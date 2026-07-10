@@ -674,3 +674,95 @@ money-path pass. Verdict: safe to push gated; the following gate the flip.**
    `deposit_escrow_v2` top-up SPL was inferred from create (now Anchor-built off the SDK IDL, wire-
    parity tested). The SDK adoption makes `scripts/sap/v2-dispute-window-smoke.ts` current
    (rewritten to the SDK path: no `create_pending_settlement`, settle inits the pending itself).
+
+---
+
+## 11. Bounty COMPOSITION rail — SAP V2 vault (LEG 1) → PayAI x402 (LEG 2)
+
+> **Set 2026-07-10 (B1 slices 2a/2b/3).** Founder spec (LOCKED): *"bounties are done via
+> escrow through SAP and then settled via x402 with PayAI."* A `payment_rail='usdc'` bounty
+> selected onto the **composed** rail custodies the creator's USDC in an on-chain SAP V2 vault
+> **at post**, then pays the winning hunter one x402 USDC payment from the house. Gated OFF +
+> dry-run by default (all four SAP gates); no money moves until a deliberate flip.
+
+### Rail selection (recorded on the row, never re-read from the flag)
+
+`bountySettlementRail()` (`services/bounty-escrow-link.ts`) → `sap-payai-composed` when BOTH
+`SAP_USDC_ESCROW_ENABLED` **and** `SAP_PAYAI_SETTLEMENT_ENABLED` are on. The decision is made
+ONCE at create and **recorded** as `bounties.composition_state='vault_held'`; every later
+transition branches on that column (not the live flag), so a mid-lifecycle flag flip can never
+re-route or double-move an existing bounty. A non-composed USDC bounty keeps `composition_state`
+NULL and uses the legacy single-leg path (`runBountyUsdcSettle`), unchanged.
+
+### The two legs + the fixed HOUSE worker
+
+The deployed program seeds every escrow with the WORKER key at open, and a bounty's hunter is
+unknown at post, so the composition uses the **ClawVille house** (Coralia, `resolveHouseAvatarId`)
+as the FIXED escrow worker:
+
+- **LEG 1 (on-chain V2 vault)** — at CREATE, `openComposedBountyEscrow` opens a V2 USDC escrow
+  `depositor=creator, worker=house, jobId=bountyId`, funded to `bountyVaultDeposit(reward)` with a
+  deterministic `bountyEscrowNonce(bountyId)`. At APPROVE: `approveJob`(creator) → `settleJobV2`(house,
+  reserves principal in a PendingSettlement) → `finalizeJobV2`(permissionless, releases principal to
+  the house after the dispute window). **LEG 1d (auto-reclaim)** fires right after finalize.
+- **LEG 2 (payai)** — one x402 exact USDC payment house→hunter through the existing PayAI rail
+  (a V1 `rail:'payai'` escrow `depositor=house, worker=hunter, jobId=${bountyId}:payout`).
+
+### FEE / DEPOSIT / CONSERVATION ($100 bounty; base units)
+
+```
+deposit       = bountyVaultDeposit = principal + MAX(0.5% fee, 1% create-floor) = 101_000_000
+settle debit  = principal 100_000_000 + fee 500_000                              = 100_500_000
+  → house receives 100_000_000 (principal at finalize); treasury 500_000 (fee)
+  → LEG 2 pays hunter EXACTLY 100_000_000 (one x402 payment)
+  → 500_000 headroom spread = creator's RECLAIMABLE dust (leg 1d) — NOT a loss
+ledger: creator(101) = hunter(100) + treasury(0.5) + creator-reclaimable(0.5)   [no mint/burn]
+```
+
+### State machine (`bounties.composition_state`)
+
+| state | meaning | set by | next |
+|---|---|---|---|
+| `vault_held` | LEG 1 opened at post; creator's USDC custodied, not settled | create | approve / cancel |
+| `awaiting_finalize` | LEG 1b settled (principal reserved); LEG 1c finalize pending the dispute window | approve/crank | crank → `paid` |
+| `reconcile_payout_failed` | LEG 1 FINALIZED (reward at house) but LEG 2 payout failed | approve/crank | crank retries LEG 2 → `paid` |
+| `paid` | both legs done: house finalized + hunter paid the reward | approve/crank | terminal |
+| `refunded` | vault refunded to creator (cancel / admin-fail-refund, `vault_held` only) | cancel/admin | terminal |
+| `failed` (transient) | LEG 1a/1b failed before any settle; funds still in the vault, `composition_state` STAYS `vault_held` | — | retry via crank |
+
+Every leg is idempotent (deterministic V2 nonce + `(escrowPda, jobId)` at-most-once ledger +
+`${bountyId}:{payout,refund,reclaim}` request ids), so approve and the crank re-drive safely and
+book the hunter's completion + the dust reclaim EXACTLY ONCE (atomic `WHERE composition_state != 'paid'`).
+
+### The two team-lead rulings
+
+1. **Dispute window = MINIMUM (1 slot).** `SAP_BOUNTY_DISPUTE_WINDOW_SLOTS` (default 1, floor 1) is
+   threaded `openComposedBountyEscrow` → `openEscrowV2` → `createEscrowV2Usdc` (per-escrow override
+   of the global `SAP_DISPUTE_WINDOW_SLOTS` default 2160 ≈ 15 min, which stays large for agent↔agent
+   escrows). A bounty's "verdict" is the creator's own approve (RequesterApproval), so no arbiter
+   window is needed and the winning hunter is paid promptly. **Raising it DELAYS the payout** — the
+   settle returns `awaiting_finalize` at approve and the resume worker completes it once the window
+   elapses.
+2. **Auto-reclaim (LEG 1d).** After LEG 1 finalizes, the creator's ~0.5% headroom dust is FREE vault
+   balance; `settleComposedBounty` idempotently withdraws it back to the creator
+   (`withdrawEscrowV2Idempotent`, `${bountyId}:reclaim`). **Non-fatal** — a reclaim failure never
+   changes the settle outcome; the dust stays reclaimable (manually or on the next pass).
+
+### The resume worker (finalize/payout crank)
+
+`resumeComposedBounty(bountyId)` + `startComposedBountyResumeWorker()` (`services/bounty-composition-worker.ts`),
+boot-wired in `index.ts` **DARK-gated** (starts ONLY when `bountySettlementRail()==='sap-payai-composed'`;
+cadence `SAP_BOUNTY_RESUME_POLL_MS`, default 5 min, floor 1 min). Each pass advances every bounty stuck in
+`awaiting_finalize` / `reconcile_payout_failed` by re-driving `settleComposedBounty` (idempotent). It
+NEVER touches `vault_held` (never approved) or terminal `paid`/`refunded`.
+
+### OPS RUNBOOK — `reconcile_payout_failed`
+
+Meaning: LEG 1 finalized, so the **reward is safe in the house wallet**; LEG 2 (the x402 hunter
+payout) failed. A CRITICAL `bounty-composition` / `bounty-composed-payout` alert pages ops. **No
+double-pay is constructible** (LEG 2 replays idempotently on `${bountyId}:payout`). Resolution:
+- Automatic: the resume worker retries LEG 2 each pass; a transient PayAI/RPC blip self-heals to `paid`.
+- Manual: re-run `resumeComposedBounty(<bountyId>)` (or wait a poll cycle). If it persists, check the
+  PayAI facilitator + the house wallet's USDC balance; the reward is in the house vault-out, not lost.
+- NEVER refund a `reconcile_payout_failed` bounty (the hunter earned it) — the money owed is the
+  house→hunter payout, not a creator refund. `admin-fail-refund` refuses any state other than `vault_held`.

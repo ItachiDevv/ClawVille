@@ -127,6 +127,60 @@ export function usdcRailGateOpen(): boolean {
   return cfg.enabled && cfg.escrowEnabled && cfg.usdcEscrowEnabled;
 }
 
+// ─── COMPOSITION-RAIL tuning + test seams (SLICE 3) ───────────────────────────
+
+/** The composed-bounty DisputeWindow default: 1 slot ≈ instant. */
+const BOUNTY_DISPUTE_WINDOW_SLOTS_DEFAULT = 1n;
+
+/**
+ * The DisputeWindow hold (in slots) a COMPOSED bounty's LEG-1 V2 vault is created
+ * with — env `SAP_BOUNTY_DISPUTE_WINDOW_SLOTS`, default 1 (≈ instant), floored at
+ * the program minimum of 1.
+ *
+ * WHY the MINIMUM by default (team-lead ruling): a bounty's "verdict" is the
+ * creator's own explicit approve (the RequesterApproval provider), so there is no
+ * third-party arbiter who needs a dispute window — the composed settle should
+ * finalize (leg 1c) and pay the hunter (leg 2) in one shot at approve. The global
+ * `SAP_DISPUTE_WINDOW_SLOTS` (default 2160 ≈ 15 min) protects agent↔agent escrows
+ * and MUST stay large for them; a bounty-specific window keeps them independent.
+ *
+ * RAISING it (a larger env value) DELAYS the hunter's payout by that many slots —
+ * `settleComposedBounty` returns `awaiting_finalize` at approve and the resume
+ * worker (`resumeComposedBounty`) finalizes + pays out once the window elapses.
+ * Never below 1 (the on-chain program rejects a 0-slot window).
+ */
+export function bountyDisputeWindowSlots(): bigint {
+  const raw = process.env.SAP_BOUNTY_DISPUTE_WINDOW_SLOTS;
+  if (!raw) return BOUNTY_DISPUTE_WINDOW_SLOTS_DEFAULT;
+  try {
+    const parsed = BigInt(raw);
+    return parsed < 1n ? 1n : parsed; // program floor: >= 1 slot
+  } catch {
+    return BOUNTY_DISPUTE_WINDOW_SLOTS_DEFAULT;
+  }
+}
+
+/**
+ * Injectable gate seams for the composed-bounty orchestration (TESTS ONLY —
+ * production passes nothing and gets the real imports). Mirrors the
+ * `SettleJobV2Deps` idiom in `escrow-gate.ts`: every field defaults to the real
+ * escrow-gate / wallet / house-resolver function, so a test can drive the full
+ * open→settle→payout→reclaim / refund lifecycle with in-memory fakes and assert
+ * conservation + idempotency WITHOUT an RPC connection, a custodial signer, or a
+ * DB. Additive + optional — every existing caller (the bounty route) is unchanged.
+ */
+export interface ComposedBountyDeps {
+  openEscrowV2?: typeof openEscrowV2;
+  approveJob?: typeof approveJob;
+  settleJobV2?: typeof settleJobV2;
+  finalizeJobV2?: typeof finalizeJobV2;
+  openEscrow?: typeof openEscrow;
+  settleJob?: typeof settleJob;
+  withdrawEscrowV2Idempotent?: typeof withdrawEscrowV2Idempotent;
+  ensureWallet?: typeof ensureWallet;
+  resolveHouseAvatarId?: typeof resolveHouseAvatarId;
+}
+
 /**
  * Open the USDC escrow for a bounty against a specific hunter (the winning
  * worker). Called at APPROVE time, once the single winning hunter is known.
@@ -483,21 +537,24 @@ export function bountyVaultDeposit(tokenReward: number): bigint {
  * same PDA ⇒ the gate replays (no double-fund). If the house avatar has not been
  * seeded/provisioned, returns a typed `internal` failure (never funds).
  */
-export async function openComposedBountyEscrow(input: {
-  bountyId: string;
-  creatorAvatarId: string;
-  tokenReward: number;
-  /** Absolute bounty expiry (converted to unix-seconds); null/absent ⇒ no expiry. */
-  expiresAt?: Date | null;
-}): Promise<EscrowGateResult> {
-  const house = await resolveHouseOrFail();
+export async function openComposedBountyEscrow(
+  input: {
+    bountyId: string;
+    creatorAvatarId: string;
+    tokenReward: number;
+    /** Absolute bounty expiry (converted to unix-seconds); null/absent ⇒ no expiry. */
+    expiresAt?: Date | null;
+  },
+  deps: ComposedBountyDeps = {},
+): Promise<EscrowGateResult> {
+  const house = await resolveHouseOrFail(deps.resolveHouseAvatarId);
   if (!house.ok) return house;
 
   const expiresAtUnix = input.expiresAt
     ? BigInt(Math.floor(input.expiresAt.getTime() / 1000))
     : 0n;
 
-  return openEscrowV2({
+  return (deps.openEscrowV2 ?? openEscrowV2)({
     depositorAvatarId: input.creatorAvatarId,
     workerAvatarId: house.houseAvatarId,
     jobId: input.bountyId,
@@ -506,6 +563,10 @@ export async function openComposedBountyEscrow(input: {
     initialDeposit: bountyVaultDeposit(input.tokenReward),
     escrowNonce: bountyEscrowNonce(input.bountyId),
     expiresAt: expiresAtUnix,
+    // SLICE 3: the composed vault takes the BOUNTY-specific dispute window (default
+    // 1 slot ≈ instant) so approve → settle → finalize → hunter payout completes in
+    // one shot; the global agent↔agent window is untouched. See bountyDisputeWindowSlots.
+    disputeWindowSlots: bountyDisputeWindowSlots(),
   });
 }
 
@@ -566,25 +627,35 @@ export type SettleComposedBountyResult =
  * section header); the two legs use disjoint (escrowPda, jobId) keys so exactly
  * one USDC movement exists per leg and no double-pay is constructible.
  */
-export async function settleComposedBounty(input: {
-  bountyId: string;
-  /** The persisted LEG-1 V2 vault PDA (from `openComposedBountyEscrow`). */
-  escrowPda: string;
-  creatorAvatarId: string;
-  hunterAvatarId: string;
-  tokenReward: number;
-}): Promise<SettleComposedBountyResult> {
+export async function settleComposedBounty(
+  input: {
+    bountyId: string;
+    /** The persisted LEG-1 V2 vault PDA (from `openComposedBountyEscrow`). */
+    escrowPda: string;
+    creatorAvatarId: string;
+    hunterAvatarId: string;
+    tokenReward: number;
+  },
+  deps: ComposedBountyDeps = {},
+): Promise<SettleComposedBountyResult> {
+  // Test seams (production ⇒ the real escrow-gate fns). See `ComposedBountyDeps`.
+  const _approveJob = deps.approveJob ?? approveJob;
+  const _settleJobV2 = deps.settleJobV2 ?? settleJobV2;
+  const _finalizeJobV2 = deps.finalizeJobV2 ?? finalizeJobV2;
+  const _openEscrow = deps.openEscrow ?? openEscrow;
+  const _settleJob = deps.settleJob ?? settleJob;
+
   const reward = usdcRewardBaseUnits(input.tokenReward);
   const payoutJobId = `${input.bountyId}:payout`;
 
-  const house = await resolveHouseOrFail();
+  const house = await resolveHouseOrFail(deps.resolveHouseAvatarId);
   if (!house.ok) {
     return { ok: false, phase: 'failed', escrowPda: input.escrowPda, code: house.code, message: house.message };
   }
   const houseAvatarId = house.houseAvatarId;
 
   // ── LEG 1a — creator approves the vault release (idempotent-tolerant). ──────
-  const approved = await approveJob({
+  const approved = await _approveJob({
     escrowPda: input.escrowPda,
     jobId: input.bountyId,
     callerAvatarId: input.creatorAvatarId,
@@ -600,7 +671,7 @@ export async function settleComposedBounty(input: {
   }
 
   // ── LEG 1b — house settles the vault (reserve principal in a PendingSettlement). ──
-  const settledV2 = await settleJobV2({
+  const settledV2 = await _settleJobV2({
     escrowPda: input.escrowPda,
     jobId: input.bountyId,
     callerAvatarId: houseAvatarId,
@@ -620,7 +691,7 @@ export async function settleComposedBounty(input: {
   // ── LEG 1c — finalize the reserved principal to the house (permissionless). ──
   // Skip when leg 1b already replayed `settled` (finalize completed on a prior pass).
   if (settledV2.phase === 'pending') {
-    const finalized = await finalizeJobV2({
+    const finalized = await _finalizeJobV2({
       escrowPda: input.escrowPda,
       jobId: input.bountyId,
       callerAvatarId: houseAvatarId,
@@ -643,9 +714,23 @@ export async function settleComposedBounty(input: {
     // finalized.ok === true → the principal is provably at the house. Fall through.
   }
 
+  // ── LEG 1d (AUTO-RECLAIM, non-fatal, SLICE 3) — leg 1 is provably finalized, so
+  // the creator's ~0.5% headroom dust is now FREE vault balance. Reclaim it to the
+  // creator idempotently (`${bountyId}:reclaim`). A failure NEVER changes the
+  // settle outcome — the dust stays reclaimable (manually, or on the next pass).
+  // Placed AFTER the finalize block (fires on BOTH the fresh-finalize and the
+  // replayed-`settled` path) and BEFORE leg 2, so EVERY caller — the approve route
+  // AND the resume crank, whether the settle ends `paid` or `reconcile_payout_failed`
+  // — reclaims exactly once (the deterministic requestId dedupes re-runs). NOT
+  // reached on the `awaiting_finalize` early-return above (leg 1 not yet finalized).
+  await reclaimComposedBountyDustSafe(
+    { bountyId: input.bountyId, creatorAvatarId: input.creatorAvatarId, tokenReward: input.tokenReward },
+    deps,
+  );
+
   // ── LEG 2 — house → hunter: ONE x402 exact USDC payment on the PayAI rail. ──
   // Reached ONLY after leg 1c is provably finalized (the house holds the reward).
-  const payoutOpened = await openEscrow({
+  const payoutOpened = await _openEscrow({
     depositorAvatarId: houseAvatarId,
     workerAvatarId: input.hunterAvatarId,
     jobId: payoutJobId,
@@ -667,7 +752,7 @@ export async function settleComposedBounty(input: {
 
   // LEG 2 approve — the house authorizes its OWN payout release (idempotent-tolerant,
   // same `job_not_open`-on-replay tolerance as leg 1a).
-  const payoutApproved = await approveJob({
+  const payoutApproved = await _approveJob({
     escrowPda: payoutEscrowPda,
     jobId: payoutJobId,
     callerAvatarId: houseAvatarId,
@@ -679,7 +764,7 @@ export async function settleComposedBounty(input: {
 
   // LEG 2 settle — the hunter settles AS ITSELF; the payai rail drives the single
   // x402 house→hunter payment. At-most-once via the (payoutPda, jobId) claim.
-  const payoutSettled = await settleJob({
+  const payoutSettled = await _settleJob({
     escrowPda: payoutEscrowPda,
     jobId: payoutJobId,
     callerAvatarId: input.hunterAvatarId,
@@ -708,13 +793,16 @@ export async function settleComposedBounty(input: {
  * withdraw re-derives the canonical PDA from the same nonce, so they agree by
  * construction.
  */
-export async function refundComposedBounty(input: {
-  bountyId: string;
-  escrowPda: string;
-  creatorAvatarId: string;
-  tokenReward: number;
-}): Promise<WithdrawEscrowV2IdempotentResult> {
-  const house = await resolveHouseOrFail();
+export async function refundComposedBounty(
+  input: {
+    bountyId: string;
+    escrowPda: string;
+    creatorAvatarId: string;
+    tokenReward: number;
+  },
+  deps: ComposedBountyDeps = {},
+): Promise<WithdrawEscrowV2IdempotentResult> {
+  const house = await resolveHouseOrFail(deps.resolveHouseAvatarId);
   if (!house.ok) return house; // { ok:false, code:'internal', … } — house not provisioned
 
   // The V2 vault PDA is derived from (worker = HOUSE wallet, depositor = creator
@@ -723,7 +811,7 @@ export async function refundComposedBounty(input: {
   // for an already-provisioned wallet).
   let houseWalletPubkey: string;
   try {
-    houseWalletPubkey = (await ensureWallet('avatar', house.houseAvatarId)).publicKey;
+    houseWalletPubkey = (await (deps.ensureWallet ?? ensureWallet)('avatar', house.houseAvatarId)).publicKey;
   } catch (err) {
     return {
       ok: false,
@@ -732,7 +820,7 @@ export async function refundComposedBounty(input: {
     };
   }
 
-  return withdrawEscrowV2Idempotent({
+  return (deps.withdrawEscrowV2Idempotent ?? withdrawEscrowV2Idempotent)({
     depositorAvatarId: input.creatorAvatarId,
     workerWalletPubkey: houseWalletPubkey,
     escrowNonce: bountyEscrowNonce(input.bountyId),
@@ -742,17 +830,110 @@ export async function refundComposedBounty(input: {
 }
 
 /**
+ * The RECLAIMABLE dust a creator is owed back AFTER a composed bounty's leg 1
+ * settle+finalize: the deposit's headroom spread that the settle did not debit.
+ *
+ *   deposit      = `bountyVaultDeposit` = principal + headroom (headroom = the
+ *                  1% create-floor, which beats the 0.5% fee ⇒ ~0.5% of principal
+ *                  survives the settle)
+ *   settle debit = principal + `computeV2ProtocolFee` (0.5%)
+ *   dust (free)  = deposit − principal − fee = headroom − fee  (≈ 0.5% of principal)
+ *
+ * Always ≥ 0 for a positive reward (the 1% floor > the 0.5% fee); clamped to 0 for
+ * safety. This is the exact free-vault balance the on-chain withdraw can reclaim
+ * once the principal has been settled to the house.
+ */
+export function bountyReclaimDustBaseUnits(tokenReward: number): bigint {
+  const principal = usdcRewardBaseUnits(tokenReward);
+  const dust = bountyVaultDeposit(tokenReward) - principal - computeV2ProtocolFee(principal);
+  return dust > 0n ? dust : 0n;
+}
+
+/** `reclaimComposedBountyDust` result: a withdraw outcome, or a no-dust skip. */
+export type ReclaimComposedBountyResult =
+  | WithdrawEscrowV2IdempotentResult
+  | { ok: true; skipped: 'no_dust' };
+
+/**
+ * AUTO-RECLAIM leg (SLICE 3) — after a composed bounty's leg 1 settle+finalize
+ * releases the principal to the house, the creator's ~0.5% headroom spread is left
+ * as FREE (unspent) balance in the V2 vault. This idempotently withdraws that dust
+ * back to the creator (depositor-bound, reusing the proven
+ * `withdrawEscrowV2Idempotent` primitive with a deterministic `${bountyId}:reclaim`
+ * requestId so a replay never double-withdraws).
+ *
+ * NON-FATAL by contract: the caller (`applyComposedSettleOutcome`) fires this on
+ * the transition into `paid` and IGNORES a failure — the dust stays reclaimable
+ * manually and no bounty state changes. A `no_dust` (0-dust) reward skips the
+ * chain call entirely. DRY-RUN is a full passthrough (no persistence, no move).
+ */
+export async function reclaimComposedBountyDust(
+  input: { bountyId: string; creatorAvatarId: string; tokenReward: number },
+  deps: ComposedBountyDeps = {},
+): Promise<ReclaimComposedBountyResult> {
+  const dust = bountyReclaimDustBaseUnits(input.tokenReward);
+  if (dust <= 0n) return { ok: true, skipped: 'no_dust' };
+
+  const house = await resolveHouseOrFail(deps.resolveHouseAvatarId);
+  if (!house.ok) return house; // { ok:false, code:'internal', … }
+
+  let houseWalletPubkey: string;
+  try {
+    houseWalletPubkey = (await (deps.ensureWallet ?? ensureWallet)('avatar', house.houseAvatarId)).publicKey;
+  } catch (err) {
+    return {
+      ok: false,
+      code: 'avatar_wallet_missing',
+      message: `house custodial wallet unavailable: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  return (deps.withdrawEscrowV2Idempotent ?? withdrawEscrowV2Idempotent)({
+    depositorAvatarId: input.creatorAvatarId,
+    workerWalletPubkey: houseWalletPubkey,
+    escrowNonce: bountyEscrowNonce(input.bountyId),
+    amount: dust,
+    requestId: `${input.bountyId}:reclaim`,
+  });
+}
+
+/**
+ * NON-FATAL wrapper around `reclaimComposedBountyDust` used inside
+ * `settleComposedBounty` (leg 1d): a reclaim failure/throw is logged and
+ * swallowed, NEVER propagated — the dust stays reclaimable and the settle outcome
+ * is unaffected. A `no_dust` skip is a silent no-op.
+ */
+async function reclaimComposedBountyDustSafe(
+  input: { bountyId: string; creatorAvatarId: string; tokenReward: number },
+  deps: ComposedBountyDeps,
+): Promise<void> {
+  try {
+    const r = await reclaimComposedBountyDust(input, deps);
+    if (r.ok === false) {
+      console.warn(
+        `[bounty-composition] dust reclaim failed for ${input.bountyId} ` +
+          `(${r.code}): ${r.message} — non-fatal; dust stays reclaimable.`,
+      );
+    }
+  } catch (err) {
+    console.warn(`[bounty-composition] dust reclaim threw for ${input.bountyId} (non-fatal):`, err);
+  }
+}
+
+/**
  * Resolve the CLAWVILLE house (Coralia) avatar id for the composition legs, or a
  * typed `internal` failure if it is not yet seeded/provisioned. Shared by all
  * three composed-rail functions so the house-missing posture is uniform + fails
  * closed (never funds/settles/refunds against a missing counterparty).
  */
-async function resolveHouseOrFail(): Promise<
+async function resolveHouseOrFail(
+  resolveFn: typeof resolveHouseAvatarId = resolveHouseAvatarId,
+): Promise<
   { ok: true; houseAvatarId: string } | { ok: false; code: 'internal'; message: string }
 > {
   let houseAvatarId: string | null;
   try {
-    houseAvatarId = await resolveHouseAvatarId();
+    houseAvatarId = await resolveFn();
   } catch (err) {
     return {
       ok: false,
