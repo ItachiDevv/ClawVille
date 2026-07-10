@@ -1072,48 +1072,72 @@ export async function depositEscrowV2Idempotent(
     return { ok: false, code: 'internal', message: 'failed to claim deposit idempotency.' };
   }
 
-  // We hold the claim — now (and only now) touch the chain.
-  const chain = await depositEscrowV2Usdc({
-    depositorAvatarId: input.depositorAvatarId,
-    workerWalletPubkey: input.workerWalletPubkey,
-    escrowNonce: input.escrowNonce,
-    amount: input.amount,
-  });
+  // We hold the claim — now (and only now) touch the chain. M2: the executor call
+  // AND the outcome-persist UPDATEs are wrapped so a THROW never strands the claim
+  // 'in_flight' forever (which would 409-brick every retry of this requestId).
+  try {
+    const chain = await depositEscrowV2Usdc({
+      depositorAvatarId: input.depositorAvatarId,
+      workerWalletPubkey: input.workerWalletPubkey,
+      escrowNonce: input.escrowNonce,
+      amount: input.amount,
+    });
 
-  if (chain.ok === true) {
-    // Confirmed (live) — persist the terminal outcome for a faithful replay.
-    await db
-      .update(sapDepositRequests)
-      .set({
-        status: 'succeeded',
-        signature: chain.dryRun ? null : chain.signature,
-        outcomeAccounts: chain.dryRun ? null : chain.accounts,
-        updatedAt: new Date(),
-      })
-      .where(eq(sapDepositRequests.id, claimId));
+    if (chain.ok === true) {
+      // Confirmed (live) — persist the terminal outcome for a faithful replay.
+      await db
+        .update(sapDepositRequests)
+        .set({
+          status: 'succeeded',
+          signature: chain.dryRun ? null : chain.signature,
+          outcomeAccounts: chain.dryRun ? null : chain.accounts,
+          updatedAt: new Date(),
+        })
+        .where(eq(sapDepositRequests.id, claimId));
+      return { ok: true, chain, replayed: false };
+    }
+
+    if (chain.broadcast) {
+      // Broadcast-unknown — the deposit MAY have landed. Hold the claim terminal +
+      // record the signature so a replay returns the same unconfirmed signal and
+      // NEVER re-sends (mirrors funding_unknown). Reconcile-only.
+      await db
+        .update(sapDepositRequests)
+        .set({
+          status: 'broadcast_unknown',
+          signature: chain.signature ?? null,
+          failureCode: chain.code,
+          updatedAt: new Date(),
+        })
+        .where(eq(sapDepositRequests.id, claimId));
+      return { ok: true, chain, replayed: false };
+    }
+
+    // Pre-broadcast failure — nothing hit the wire. DELETE the claim so the SAME
+    // requestId can be retried cleanly (documented contract: retry reuses the key).
+    await db.delete(sapDepositRequests).where(eq(sapDepositRequests.id, claimId));
     return { ok: true, chain, replayed: false };
+  } catch {
+    // M2 — a throw AFTER the claim (executor bug, or a persist UPDATE) has UNKNOWN
+    // timing relative to broadcast: the send MAY have landed. NEVER delete (that
+    // would re-open the requestId → a retry could DOUBLE-FUND). Hold the claim
+    // 'broadcast_unknown' (pessimistic, reconcile-only) so a replay returns the
+    // recorded unconfirmed signal and never re-sends. Best-effort — if this UPDATE
+    // itself throws, the row stays 'in_flight' (stuck, but still never double-funds).
+    try {
+      await db
+        .update(sapDepositRequests)
+        .set({ status: 'broadcast_unknown', failureCode: 'internal_error', updatedAt: new Date() })
+        .where(eq(sapDepositRequests.id, claimId));
+    } catch {
+      // swallow — the money invariant (no double-fund) holds regardless.
+    }
+    return {
+      ok: false,
+      code: 'internal',
+      message: 'deposit outcome unknown after an internal error; the requestId is held for reconcile.',
+    };
   }
-
-  if (chain.broadcast) {
-    // Broadcast-unknown — the deposit MAY have landed. Hold the claim terminal +
-    // record the signature so a replay returns the same unconfirmed signal and
-    // NEVER re-sends (mirrors funding_unknown). Reconcile-only.
-    await db
-      .update(sapDepositRequests)
-      .set({
-        status: 'broadcast_unknown',
-        signature: chain.signature ?? null,
-        failureCode: chain.code,
-        updatedAt: new Date(),
-      })
-      .where(eq(sapDepositRequests.id, claimId));
-    return { ok: true, chain, replayed: false };
-  }
-
-  // Pre-broadcast failure — nothing hit the wire. DELETE the claim so the SAME
-  // requestId can be retried cleanly (documented contract: retry reuses the key).
-  await db.delete(sapDepositRequests).where(eq(sapDepositRequests.id, claimId));
-  return { ok: true, chain, replayed: false };
 }
 
 // ─── 1c. V2 WITHDRAW — books the gate ledger (FIX 2b, doc line 623) ────────────
@@ -1912,6 +1936,11 @@ export async function settleJobV2(
     if (row.status === 'funding_unknown') return { ok: false, code: 'funding_unconfirmed', message: 'job funding is unconfirmed; cannot settle until reconciled.' };
     if (row.status === 'refunded' || row.status === 'failed') return { ok: false, code: 'job_not_open', message: `job is ${row.status}; cannot settle.` };
 
+    // The row is now guaranteed 'open' | 'submitted'. Capture it BEFORE any claim so
+    // M3/M4 can restore the exact pre-claim status when a claimed settle must
+    // un-claim (the in-memory `row` object may be mutated by the claim UPDATE).
+    const preClaimStatus = row.status;
+
     const approval = await db.query.sapEscrowApprovals.findFirst({
       where: and(eq(sapEscrowApprovals.escrowPda, input.escrowPda), eq(sapEscrowApprovals.jobId, input.jobId)),
     });
@@ -1979,9 +2008,37 @@ export async function settleJobV2(
       if (!inspected.pending) {
         return { ok: false, code: 'on_chain_error', message: 'on-chain pending settlement could not be decoded; retry.' };
       }
-      const decodedPrincipal = inspected.pending.amount;
-      const decodedCalls = inspected.pending.callsToSettle;
+      const p = inspected.pending;
+      // M4 (a) — a DISPUTED pending must never auto-book: finalize is on-chain-
+      // blocked and the outcome needs manual/ops resolution. Row untouched
+      // (still open|submitted), retryable.
+      if (p.isDisputed) {
+        return { ok: false, code: 'on_chain_error', message: 'on-chain pending is disputed; manual resolution required.' };
+      }
+      const decodedPrincipal = p.amount;
+      const decodedCalls = p.callsToSettle;
       const decodedFee = computeV2ProtocolFee(decodedPrincipal);
+      if (p.isFinalized) {
+        // M4 (b) — the pending was ALREADY FINALIZED on-chain (the e2e proved the
+        // account survives finalize with isFinalized=true). The principal was
+        // RELEASED to the worker; booking 'pending' would send finalizeJobV2 at an
+        // already-finalized settlement that fails on-chain forever. Reconcile
+        // TERMINAL 'settled': book the principal as RELEASED (never reserved — we
+        // never reserved it), so finalize never runs and conservation holds.
+        const [settled] = await db.update(sapEscrowSettlements).set({
+          status: 'settled', settlementIndex: inspected.settlementIndex.toString(),
+          callsSettled: (alreadySettled + decodedCalls).toString(),
+          releasedAmount: (jobReleased + decodedPrincipal).toString(),
+          reservedPrincipalAmount: jobReserved.toString(),
+          feeAmount: (jobFees + decodedFee).toString(),
+          verificationProvider: provider.id, verificationPassed: true, verificationDetail: verdict.detail ?? null,
+          auditRootHex: auth.auditRootHex, settledAt: new Date(), updatedAt: new Date(),
+          metadata: { ...((row.metadata as object) ?? {}), replayReconciledFromPendingPda: true, reconciledFinalized: true },
+        }).where(and(eq(sapEscrowSettlements.id, row.id), sql`${sapEscrowSettlements.status} IN ('open','submitted')`)).returning();
+        if (settled) return { ok: true, phase: 'settled', settlement: settled, chain: null, replay: true };
+        return { ok: false, code: 'settle_in_progress', message: 'the row changed while reconciling the finalized on-chain settlement.' };
+      }
+      // M4 (c) — a live (not-yet-finalized) pending: book 'pending' for finalize.
       const [pending] = await db.update(sapEscrowSettlements).set({
         status: 'pending', settlementIndex: inspected.settlementIndex.toString(),
         callsSettled: (alreadySettled + decodedCalls).toString(),
@@ -2008,6 +2065,17 @@ export async function settleJobV2(
         if (r.status !== 'funding_unknown') remaining += u64(r.fundedAmount);
         remaining -= u64(r.releasedAmount) + u64(r.refundedAmount) + u64(r.reservedPrincipalAmount) + u64(r.feeAmount);
       }
+      // M1 — subtract booked V2 withdrawals UNDER THE LOCK too (mirrors
+      // escrowFundsLedger: sum ALL rows — only succeeded/broadcast_unknown ever
+      // exist). Without this, a withdraw booked AFTER the pre-claim ceiling read but
+      // before this claim would be invisible here, so the RPC-null vault fallback
+      // would compute a stale (too-high) ceiling. The vault clamp below then takes
+      // the min of this now-truthful ledger and the live vault read.
+      const lockedWithdrawals = await tx
+        .select({ amount: sapEscrowWithdrawals.amount })
+        .from(sapEscrowWithdrawals)
+        .where(eq(sapEscrowWithdrawals.escrowPda, input.escrowPda));
+      for (const w of lockedWithdrawals) remaining -= u64(w.amount);
       // FIX 2a (doc line 623) — CLAMP the ledger ceiling to the LIVE on-chain vault
       // balance, read UNDER the advisory lock so the clamp is atomic with the claim.
       // This catches ANY out-of-band drain (a self-custody withdraw, or any external
@@ -2046,7 +2114,8 @@ export async function settleJobV2(
     });
     const simError = dryRunSimulationError(chain);
     if (chain.ok === false || simError) {
-      if (isV2ReplaySignal(chain.ok === false ? chain : simError)) {
+      const failure = chain.ok === false ? chain : null;
+      if (isV2ReplaySignal(failure ?? simError)) {
         const replayCheck = await inspectV2SettlementState({
           workerWalletPubkey: row.workerWalletPubkey, depositorWalletPubkey: row.depositorWalletPubkey,
           escrowNonce: nonce, settlementIndex: inspected.settlementIndex,
@@ -2054,19 +2123,51 @@ export async function settleJobV2(
         if (replayCheck.ok && replayCheck.pendingExists && replayCheck.pending) {
           // FIX 3 (doc line 624) — a settle replay hit an already-existing pending;
           // book the DECODED on-chain principal/calls, NEVER the caller's numbers.
-          // (A decode gap ⇒ replayCheck.pending is absent ⇒ fall through to the
-          // failure/quarantine handler below and book nothing.)
-          const decodedPrincipal = replayCheck.pending.amount;
-          const decodedCalls = replayCheck.pending.callsToSettle;
+          const p = replayCheck.pending;
+          const decodedPrincipal = p.amount;
+          const decodedCalls = p.callsToSettle;
           const decodedFee = computeV2ProtocolFee(decodedPrincipal);
+          if (p.isDisputed) {
+            // M4 (a) — disputed: UN-CLAIM (restore pre-claim from 'settling', release
+            // the reservation) + return an ops failure. NEVER strand the row in
+            // 'settling'. Retryable once resolved.
+            await db.update(sapEscrowSettlements).set({
+              status: preClaimStatus, reservedPrincipalAmount: jobReserved.toString(), feeAmount: jobFees.toString(), updatedAt: new Date(),
+              metadata: { ...((row.metadata as object) ?? {}), settleError: failure?.code ?? 'replay_disputed', replaySignalDisputed: true },
+            }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'settling')));
+            return { ok: false, code: 'on_chain_error', message: 'on-chain pending is disputed; manual resolution required.' };
+          }
+          if (p.isFinalized) {
+            // M4 (b) — already finalized on-chain: book TERMINAL 'settled' from
+            // 'settling' (principal RELEASED, never reserved). finalize never runs.
+            const [settled] = await db.update(sapEscrowSettlements).set({
+              status: 'settled', callsSettled: (alreadySettled + decodedCalls).toString(),
+              releasedAmount: (jobReleased + decodedPrincipal).toString(), reservedPrincipalAmount: jobReserved.toString(),
+              feeAmount: (jobFees + decodedFee).toString(), settledAt: new Date(), updatedAt: new Date(),
+              metadata: { ...((row.metadata as object) ?? {}), replayReconciledFromPendingPda: true, reconciledFinalized: true },
+            }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'settling'))).returning();
+            if (settled) return { ok: true, phase: 'settled', settlement: settled, chain: null, replay: true };
+            return { ok: false, code: 'settle_in_progress', message: 'the row changed while reconciling the finalized on-chain settlement.' };
+          }
+          // M4 (c) — a live (not-yet-finalized) pending: book 'pending' for finalize.
           const [pending] = await db.update(sapEscrowSettlements).set({
             status: 'pending', callsSettled: (alreadySettled + decodedCalls).toString(),
             reservedPrincipalAmount: (jobReserved + decodedPrincipal).toString(), feeAmount: (jobFees + decodedFee).toString(), updatedAt: new Date(),
           }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'settling'))).returning();
           return { ok: true, phase: 'pending', settlement: pending, chain: null, replay: true, next: 'finalize' };
         }
+        // M3 — the replay signal PROVES an on-chain pending exists at our index, but
+        // the re-probe failed (RPC down) or could not decode. Do NOT mark terminal
+        // 'failed' (that status is unrecoverable, so the on-chain pending would stay
+        // forever unbooked). Restore the row to its PRE-CLAIM status with the
+        // reservation released, so the NEXT settleJobV2 call re-enters the pre-claim
+        // decode-reconcile once RPC recovers. Retryable.
+        await db.update(sapEscrowSettlements).set({
+          status: preClaimStatus, reservedPrincipalAmount: jobReserved.toString(), feeAmount: jobFees.toString(), updatedAt: new Date(),
+          metadata: { ...((row.metadata as object) ?? {}), settleError: failure?.code ?? 'simulation_error', replaySignalUnresolved: true },
+        }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'settling')));
+        return { ok: false, code: 'on_chain_error', message: 'settle replay-signal: an on-chain pending exists but could not be decoded; retry.' };
       }
-      const failure = chain.ok === false ? chain : null;
       const unknown = failure?.broadcast === true;
       await db.update(sapEscrowSettlements).set({
         status: unknown ? 'settle_unknown' : 'failed',

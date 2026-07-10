@@ -20,6 +20,7 @@ const REQ = 'req-abcdef1234';
 let configDryRun = false;
 let depositOutcome: Record<string, unknown>;
 let withdrawOutcome: Record<string, unknown>;
+let depositThrows = false; // M2 — force the executor to THROW (not return a failure)
 let depositCalls = 0;
 let withdrawCalls = 0;
 let depositRows: Array<Record<string, unknown>>;
@@ -114,6 +115,7 @@ mock.module('../sap-client', () => ({
   }),
   depositEscrowV2Usdc: async () => {
     depositCalls += 1;
+    if (depositThrows) throw new Error('unexpected executor throw');
     return depositOutcome;
   },
   withdrawEscrowV2Usdc: async () => {
@@ -141,6 +143,7 @@ const gate = await import('../escrow-gate');
 
 beforeEach(() => {
   configDryRun = false;
+  depositThrows = false;
   depositCalls = 0;
   withdrawCalls = 0;
   depositRows = [];
@@ -306,6 +309,41 @@ describe('FIX 1 — V2 deposit idempotency', () => {
     if (result.ok) expect(result.replayed).toBe(false);
     expect(depositCalls).toBe(1);
     expect(depositRows).toHaveLength(0);
+  });
+
+  it('M2 — a THROW after the claim holds it broadcast_unknown (never in_flight), and a replay never re-sends', async () => {
+    depositThrows = true;
+    const first = await gate.depositEscrowV2Idempotent({
+      depositorAvatarId: DEPOSITOR,
+      workerWalletPubkey: WORKER_WALLET,
+      escrowNonce: 9n,
+      amount: 1_000_000n,
+      requestId: REQ,
+    });
+    expect(first.ok).toBe(false);
+    if (!first.ok) expect(first.code).toBe('internal');
+    // Held broadcast_unknown (pessimistic) — NOT deleted, NOT stranded in_flight.
+    expect(depositRows).toHaveLength(1);
+    expect(depositRows[0]?.status).toBe('broadcast_unknown');
+    expect(depositRows[0]?.failureCode).toBe('internal_error');
+    expect(depositCalls).toBe(1);
+
+    // Replay with the same key — returns the recorded unconfirmed signal, NO re-send.
+    depositThrows = false;
+    const replay = await gate.depositEscrowV2Idempotent({
+      depositorAvatarId: DEPOSITOR,
+      workerWalletPubkey: WORKER_WALLET,
+      escrowNonce: 9n,
+      amount: 1_000_000n,
+      requestId: REQ,
+    });
+    expect(replay.ok).toBe(true);
+    if (replay.ok) {
+      expect(replay.replayed).toBe(true);
+      expect(replay.chain.ok).toBe(false);
+      if (!replay.chain.ok) expect(replay.chain.broadcast).toBe(true);
+    }
+    expect(depositCalls).toBe(1);
   });
 });
 
