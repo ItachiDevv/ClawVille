@@ -688,11 +688,12 @@ money-path pass. Verdict: safe to push gated; the following gate the flip.**
 ### Rail selection (recorded on the row, never re-read from the flag)
 
 `bountySettlementRail()` (`services/bounty-escrow-link.ts`) → `sap-payai-composed` when BOTH
-`SAP_USDC_ESCROW_ENABLED` **and** `SAP_PAYAI_SETTLEMENT_ENABLED` are on. The decision is made
-ONCE at create and **recorded** as `bounties.composition_state='vault_held'`; every later
-transition branches on that column (not the live flag), so a mid-lifecycle flag flip can never
-re-route or double-move an existing bounty. A non-composed USDC bounty keeps `composition_state`
-NULL and uses the legacy single-leg path (`runBountyUsdcSettle`), unchanged.
+`SAP_USDC_ESCROW_ENABLED` **and** `SAP_PAYAI_SETTLEMENT_ENABLED` are on. The decision (`isComposedRail`)
+is made ONCE at create and stamped IN the insert as `bounties.composition_state='vault_pending'`
+(a FAIL-CLOSED custody sentinel — see the state machine), then flipped to the immutable `'vault_held'`
+marker on a successful vault open. Every later transition branches on that column (not the live flag),
+so a mid-lifecycle flag flip can never re-route or double-move an existing bounty. A non-composed USDC
+bounty keeps `composition_state` NULL and uses the legacy single-leg path (`runBountyUsdcSettle`), unchanged.
 
 ### The two legs + the fixed HOUSE worker
 
@@ -723,16 +724,24 @@ ledger: creator(101) = hunter(100) + treasury(0.5) + creator-reclaimable(0.5)   
 
 | state | meaning | set by | next |
 |---|---|---|---|
-| `vault_held` | LEG 1 opened at post; creator's USDC custodied, not settled | create | approve / cancel |
+| `vault_pending` | stamped IN the create insert BEFORE the vault opens (FAIL-CLOSED sentinel); a crash between the insert and the `vault_held` flip leaves this — the vault MAY or MAY NOT have opened, `escrow_pda` unrecorded, binding INDETERMINATE | create insert | open ok → `vault_held`; approve + admin-refund 409 (reconcile via the deterministic nonce); cancel refunds via the nonce |
+| `vault_held` | LEG 1 vault opened + recorded at post; creator's USDC custodied, not settled | create (open ok) | approve / cancel |
 | `awaiting_finalize` | LEG 1b settled (principal reserved); LEG 1c finalize pending the dispute window | approve/crank | crank → `paid` |
 | `reconcile_payout_failed` | LEG 1 FINALIZED (reward at house) but LEG 2 payout failed | approve/crank | crank retries LEG 2 → `paid` |
-| `paid` | both legs done: house finalized + hunter paid the reward | approve/crank | terminal |
-| `refunded` | vault refunded to creator (cancel / admin-fail-refund, `vault_held` only) | cancel/admin | terminal |
+| `paid` | both legs done: house finalized + hunter paid the reward | approve/crank (via `bookComposedBountyPaid`) | terminal |
 | `failed` (transient) | LEG 1a/1b failed before any settle; funds still in the vault, `composition_state` STAYS `vault_held` | — | retry via crank |
 
+**No `refunded` state** (by design): a refund (cancel / admin-fail-refund, `vault_held` ONLY) leaves
+`composition_state='vault_held'` and marks the terminal via `status='cancelled'` (cancel) or
+`covenant_verification_passed=false` (admin-fail-refund); the idempotent `${bountyId}:refund` withdraw
+makes a re-refund a safe no-op, so no distinct marker is needed.
+
 Every leg is idempotent (deterministic V2 nonce + `(escrowPda, jobId)` at-most-once ledger +
-`${bountyId}:{payout,refund,reclaim}` request ids), so approve and the crank re-drive safely and
-book the hunter's completion + the dust reclaim EXACTLY ONCE (atomic `WHERE composition_state != 'paid'`).
+`${bountyId}:{payout,refund,reclaim}` request ids), so approve and the crank re-drive safely and book
+the hunter's completion + the dust reclaim EXACTLY ONCE. The →paid booking (the one seam with two
+authors) rides `bookComposedBountyPaid`'s atomic per-path CAS (`WHERE composition_state = <observed
+prior> AND != 'paid' RETURNING`): approve passes `'vault_held'`, the crank passes its loaded
+`'awaiting_finalize'`/`'reconcile_payout_failed'` — disjoint priors, so each books at most once.
 
 ### The two team-lead rulings
 
@@ -754,7 +763,8 @@ book the hunter's completion + the dust reclaim EXACTLY ONCE (atomic `WHERE comp
 boot-wired in `index.ts` **DARK-gated** (starts ONLY when `bountySettlementRail()==='sap-payai-composed'`;
 cadence `SAP_BOUNTY_RESUME_POLL_MS`, default 5 min, floor 1 min). Each pass advances every bounty stuck in
 `awaiting_finalize` / `reconcile_payout_failed` by re-driving `settleComposedBounty` (idempotent). It
-NEVER touches `vault_held` (never approved) or terminal `paid`/`refunded`.
+NEVER touches `vault_held` (never approved), the terminal `paid`, or the indeterminate `vault_pending`
+(operator-reconcile only).
 
 ### OPS RUNBOOK — `reconcile_payout_failed`
 
