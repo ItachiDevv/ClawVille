@@ -81,14 +81,14 @@ import {
   provisionAgentStake,
   updateAgentPricingUsdc,
   createEscrowV2Usdc,
-  depositEscrowV2Usdc,
-  withdrawEscrowV2Usdc,
   type SapWriteResult,
   type SapFailure,
 } from '../services/sap/sap-client';
 import {
   openEscrow,
   openEscrowV2,
+  depositEscrowV2Idempotent,
+  withdrawEscrowV2Booked,
   submitJob,
   approveJob,
   settleJob,
@@ -195,14 +195,19 @@ function failureStatus(code: SapFailure['code']): 400 | 404 | 500 | 503 | 502 {
   }
 }
 
-/** Serialize a write result to a clean JSON response (never a 5xx stack leak). */
+/**
+ * Serialize a write result to a clean JSON response (never a 5xx stack leak).
+ * `extra` merges extra top-level fields into EVERY branch (e.g. the deposit
+ * idempotency `replayed` flag); undefined spreads to nothing for all other callers.
+ */
 function respondWrite(
   c: { json: (b: unknown, s?: number) => Response },
   result: SapWriteResult,
+  extra?: Record<string, unknown>,
 ) {
   if (result.ok === false) {
     return c.json(
-      { error: result.code, code: result.code, message: result.message },
+      { error: result.code, code: result.code, message: result.message, ...extra },
       failureStatus(result.code),
     );
   }
@@ -210,6 +215,7 @@ function respondWrite(
     return c.json({
       ok: true,
       dryRun: true,
+      ...extra,
       // `accepted` is honest now (FIX-B): true ONLY when the program was actually
       // invoked + decoded the instruction. `programReached:'inconclusive'` means
       // the sim aborted before the program ran (under-funded wallet) — read it as
@@ -224,7 +230,7 @@ function respondWrite(
       },
     });
   }
-  return c.json({ ok: true, dryRun: false, signature: result.signature, accounts: result.accounts });
+  return c.json({ ok: true, dryRun: false, ...extra, signature: result.signature, accounts: result.accounts });
 }
 
 // ─── status (public, no chain work) ───────────────────────────────────────────
@@ -646,6 +652,15 @@ const depositEscrowV2Schema = z
     workerWalletPubkey: z.string().min(32).max(64),
     escrowNonce: u64Str,
     amount: u64Str,
+    // FIX 1 (doc line 591) — REQUIRED idempotency token. A duplicate POST with the
+    // same requestId + same (escrow, amount) replays the recorded outcome instead
+    // of double-funding the depositor's own escrow. Trimmed, 8–128 charset-safe.
+    requestId: z
+      .string()
+      .trim()
+      .min(8)
+      .max(128)
+      .regex(/^[A-Za-z0-9._:-]+$/, 'requestId must be 8–128 chars of [A-Za-z0-9._:-]'),
   })
   .strict();
 
@@ -660,13 +675,29 @@ sapRoutes.post('/escrow/v2/deposit', requireAuthOrAgentSession, requireNonGuestI
   const identity = c.get('identity');
   const notLedger = requireLedgerCapable(c, identity);
   if (notLedger) return notLedger;
-  const result = await depositEscrowV2Usdc({
+  // FIX 1 — DB-backed idempotency: a duplicate POST (same subject+requestId, same
+  // escrow+amount) replays the recorded outcome (replayed:true) and NEVER re-funds.
+  const result = await depositEscrowV2Idempotent({
     depositorAvatarId: identity.avatarId,
     workerWalletPubkey: parsed.data.workerWalletPubkey,
     escrowNonce: BigInt(parsed.data.escrowNonce),
     amount: BigInt(parsed.data.amount),
+    requestId: parsed.data.requestId,
   });
-  return respondWrite(c, result);
+  if (!result.ok) {
+    // 409 for the idempotency conflicts (in-flight duplicate / key reuse); the
+    // remaining codes map to their natural status (missing wallet 404, else 400/500).
+    const status =
+      result.code === 'deposit_in_flight' || result.code === 'deposit_request_mismatch'
+        ? 409
+        : result.code === 'wallet_pubkey_missing'
+          ? 404
+          : result.code === 'invalid_pubkey'
+            ? 400
+            : 500;
+    return c.json({ error: result.code, code: result.code, message: result.message }, status);
+  }
+  return respondWrite(c, result.chain, { replayed: result.replayed });
 });
 
 const withdrawEscrowV2Schema = z
@@ -691,7 +722,9 @@ sapRoutes.post('/escrow/v2/withdraw', requireAuthOrAgentSession, requireNonGuest
   const identity = c.get('identity');
   const notLedger = requireLedgerCapable(c, identity);
   if (notLedger) return notLedger;
-  const result = await withdrawEscrowV2Usdc({
+  // FIX 2b (doc line 623) — book the withdraw into the gate ledger so a later
+  // settle ceiling never overstates the vault after this out-of-band drain.
+  const result = await withdrawEscrowV2Booked({
     depositorAvatarId: identity.avatarId,
     workerWalletPubkey: parsed.data.workerWalletPubkey,
     escrowNonce: BigInt(parsed.data.escrowNonce),
