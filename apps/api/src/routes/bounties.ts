@@ -1341,9 +1341,13 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
       // creator's USDC is still fully in the vault (composition_state stays
       // 'vault_held'). Mirror the legacy path: surface the gate error WITHOUT
       // un-approving the attempt, and — because the approve txn did NOT mark a
-      // composed bounty completed — the bounty is provably NOT completed. Retryable
-      // via an ops crank re-running settleComposedBounty, or reclaim via
-      // admin-fail-refund. No persistence change (the vault still holds the funds).
+      // composed bounty completed — the bounty is provably NOT completed. This now
+      // AUTO-RECOVERS: the composed resume worker sweeps `vault_held` bounties that
+      // carry an APPROVED attempt (L-1) and re-drives settleComposedBounty (idempotent),
+      // and the L-2 gate fix means a pre-broadcast settle failure restores the V2 row to
+      // a retryable status instead of terminal 'failed' — so a transient approve-time
+      // failure SELF-HEALS on the next sweep. Ops / admin-fail-refund stay a manual
+      // fallback. No persistence change here (the vault still holds the funds).
       throw new HTTPException(escrowFailureStatus(result.code), {
         message:
           `Bounty approved, but the composed USDC settle failed (${result.code}): ${result.message}. ` +
