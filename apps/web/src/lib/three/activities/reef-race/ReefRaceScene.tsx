@@ -390,10 +390,20 @@ function SceneContents({ entities, selfAvatarId, matchPhase, raceStartMs }: Scen
     shakeRef.current = Math.min(shakeRef.current + intensity, 120);
   }, []);
 
+  // v2 mechanics (2026-07-10) — REUSE the existing trail/speed-cone FX for
+  // ANY boost source, not just inventory items. `entity.boosting` is the
+  // server-authoritative "any positive boost active" flag (boost pad /
+  // mini-turbo / launch / slipstream — see EntityDelta.changed.boosting in
+  // protocol.ts), forwarded onto the self entity by applyEntityDelta. This
+  // is the parity contract: the SAME server signal that triggers a pad/
+  // turbo boost also drives the world FX, not an invented client guess.
   const boostActive = useActivityStore(
-    (s) => selfAvatarId
-      ? (s.powerUpInventory.some((p) => p.kind === 'boost' && p.charges > 0))
-      : false,
+    (s) => {
+      if (!selfAvatarId) return false;
+      const itemBoost = s.powerUpInventory.some((p) => p.kind === 'boost' && p.charges > 0);
+      const selfEntity = s.entities.get(selfAvatarId) as (ReefRaceEntity | undefined);
+      return itemBoost || Boolean(selfEntity?.boosting);
+    },
   );
 
   // SURF ROAD: the start-grid countdown gantry is no longer rendered in-scene

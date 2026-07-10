@@ -53,6 +53,7 @@ import ReefRaceDraftBadge    from './reef-race-draft-badge';
 import ReefRaceEventToasts   from './reef-race-event-toasts';
 import ReefRaceBuildSummary  from './reef-race-build-summary';
 import ReefRaceStreakCounter from './reef-race-streak-counter';
+import ReefRaceMiniTurboMeter from './reef-race-miniturbo-meter';
 
 // ─── v2 spline-sim feature flag ──────────────────────────────────────────────
 //
@@ -942,15 +943,23 @@ export default function ReefRaceHud({
           while the flag is off. */}
       {!USE_SPLINE && <ReefRaceDriftSparks />}
 
-      {/* Bottom-center: Power-up bar */}
+      {/* Bottom-center: mini-turbo meter (self-only, hidden until the server
+          sends charge data — see reef-race-miniturbo-meter.tsx) stacked
+          directly above the power-up bar, both centered together so neither
+          hardcodes a `bottom` offset that could drift out of sync. */}
       <div
         style={{
           position: 'absolute',
           bottom: 24,
           left: '50%',
           transform: 'translateX(-50%)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 10,
         }}
       >
+        <ReefRaceMiniTurboMeter />
         <PowerUpBar selfAvatarId={selfAvatarId} />
       </div>
 

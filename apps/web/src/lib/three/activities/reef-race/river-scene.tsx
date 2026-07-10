@@ -28,6 +28,8 @@
  *   - <RacingKarts /> — 5 decorative spline karts (preview only; hidden in
  *                       gameplay where server karts render via ReefRacePlayer).
  *   - <Ramps />       — jump-ramp wedge meshes at the 6 spline ramp volumes.
+ *   - <ReefRaceBoostPads /> — NEW (2026-07-10). Boost-pad glowing floor
+ *                       markers at the 4 spline boost-pad volumes.
  *
  * Iris Xe invariants (unchanged): ShaderMaterial only on plain Mesh; no
  * InstancedMesh+ShaderMaterial; no drei <Text>/<Billboard>; import 'three' (not
@@ -48,6 +50,7 @@ import { SurfRibbon } from './surf-ribbon';
 import { CanyonRiver } from './canyon-river';
 import { RacingKarts } from './racing-karts';
 import { Ramps } from './ramps';
+import ReefRaceBoostPads from './ReefRaceBoostPads';
 
 // ─── Public composite component ───────────────────────────────────────────────
 
@@ -93,6 +96,11 @@ export function RiverScene({
 
       {/* Jump-ramp wedge meshes at the 6 spline ramp volumes */}
       <Ramps />
+
+      {/* v2 mechanics — boost-pad glowing floor markers at the 4 spline
+          boost-pad volumes. Server-positioned when `reefSplineZones` is
+          available, client-mirrored fallback otherwise. */}
+      <ReefRaceBoostPads />
     </>
   );
 }

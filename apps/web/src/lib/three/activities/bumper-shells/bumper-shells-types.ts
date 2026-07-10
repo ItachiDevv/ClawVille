@@ -75,6 +75,29 @@ export interface BumperShellEntity {
    * with a non-zero value still surfaces correctly to consumers.
    */
   driftSparks?: 0 | 1 | 2 | 3;
+  /**
+   * Reef Race v2 (spline sim) — within-lap arclength progress (0..1) and
+   * total lap count. Optional — Bumper Shells never sets these. Mirrored
+   * from `EntityDelta.changed.progress`/`.totalLaps` by `applyEntityDelta`
+   * (bug fix 2026-07-10 — these were on the wire and already read by the
+   * reef HUD via `as any` casts, but the store never copied them onto the
+   * entity map, so `LapCounter`/`ProgressBar`/`BestLapTile` always read
+   * `undefined`/0).
+   */
+  progress?: number;
+  totalLaps?: number;
+  /** Reef Race v2 — body height above the river bed in wu (jump/ramp airborne offset). */
+  height?: number;
+  /**
+   * Reef Race v2 mechanics — true while ANY positive boost is active for
+   * this body (boost pad / mini-turbo / launch / slipstream). Optional —
+   * Bumper Shells never sets it.
+   */
+  boosting?: boolean;
+  /** Reef Race v2 mechanics — surf-carve mini-turbo charge, normalized 0..1. */
+  miniTurboCharge?: number;
+  /** Reef Race v2 mechanics — mini-turbo tier reached so far (0 = none, 1, 2). */
+  miniTurboLevel?: 0 | 1 | 2;
 }
 
 // ─── Pickup state ─────────────────────────────────────────────────────────────

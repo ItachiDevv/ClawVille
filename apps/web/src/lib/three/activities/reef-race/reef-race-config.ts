@@ -600,6 +600,46 @@ export interface SplineRampClient {
   halfWidth: number;
 }
 
+// ─── v2 mechanics — Boost pad positions (client mirrors) ─────────────────────
+//
+// Must stay in sync with buildSplineBoostPads() in
+//   apps/api/src/services/activity/sim/reef-race-config.ts
+// Mirrors the buildSplineRampsClient() pattern above: the client reproduces
+// the server's static zone list (not shared via wire or package import) so
+// ReefRaceBoostPads.tsx can place visual markers at the correct spline
+// positions without waiting on a `reefSplineZones` snapshot.init payload.
+// If the server DOES send `room.reefSplineZones.boostPads`, that takes
+// priority (see ReefRaceBoostPads.tsx) — this is the fallback/bootstrap set.
+
+export interface SplineBoostPadClient {
+  id: string;
+  /** Arclength fraction along the client spline (0..1). */
+  t: number;
+  /** Lateral offset from centerline in wu (0 = centerline, matches server sign). */
+  lateralOffset: number;
+}
+
+/** Visual boost-pad marker footprint (wu). Smaller than the server's AABB
+ *  (BOOST_PAD_HALF_LENGTH=130/HALF_WIDTH=170) so the glowing pad reads as a
+ *  "stand on this" strip rather than filling the whole trigger volume. */
+export const BOOST_PAD_VISUAL_LENGTH = 180;
+export const BOOST_PAD_VISUAL_WIDTH  = 110;
+/** Marker height above the ribbon surface (wu) — same order as PICKUP_Y_ABOVE_TRACK. */
+export const BOOST_PAD_Y_ABOVE_TRACK = 6;
+/** Max instances the ReefRaceBoostPads InstancedMesh allocates — headroom above
+ *  the current 4-pad list so a server-side pad-count bump doesn't need a client
+ *  code change (only a data change), matching MAX_PICKUPS-style over-allocation. */
+export const MAX_BOOST_PADS = 10;
+
+export function buildSplineBoostPadsClient(): SplineBoostPadClient[] {
+  return [
+    { id: 'pad-lagoon', t: 0.15, lateralOffset:  90 },
+    { id: 'pad-kelp',   t: 0.42, lateralOffset: -90 },
+    { id: 'pad-wreck',  t: 0.58, lateralOffset:  90 },
+    { id: 'pad-canyon', t: 0.85, lateralOffset: -90 },
+  ];
+}
+
 // ─── Reef Race v2 — surf board POSE (render-only) ────────────────────────────
 //
 // Baked 2026-06-27 from the founder-signed-off free-drive sandbox

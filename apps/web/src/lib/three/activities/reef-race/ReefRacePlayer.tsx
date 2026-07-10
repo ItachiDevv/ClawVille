@@ -967,6 +967,59 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
   }, [lastRampLaunchEvent, entity.avatarId, isSelf, triggerScreenShake]);
   // NOTE: entity.x / entity.y / entity.height are intentionally NOT deps —
   // they change every snapshot and we only want to fire once per ramp event.
+
+  // ─── v2 mechanics: boost-pad hit event subscription ──────────────────────────
+  // Mirrors the ramp-launch block above exactly. Fired for ANY avatar (WORLD↔
+  // BACKEND parity — a boost pad the sim actually triggered on renders a burst
+  // for every visible rider, not just self). No screen shake here (brief:
+  // "burst/streak on hit" only) — the HUD toast (self-only) lives in
+  // reef-race-event-toasts.tsx and reads the same store field independently.
+  const lastBoostPadEvent = useActivityStore((s) => s.lastBoostPadEvent);
+  const lastSeenBoostPadRef = useRef<{ avatarId: string; at: number } | null>(null);
+
+  useEffect(() => {
+    if (!lastBoostPadEvent) return;
+    const prev = lastSeenBoostPadRef.current;
+    if (prev && prev.avatarId === lastBoostPadEvent.avatarId && prev.at === lastBoostPadEvent.at) return;
+    if (lastBoostPadEvent.avatarId !== entity.avatarId) return;
+
+    lastSeenBoostPadRef.current = { avatarId: lastBoostPadEvent.avatarId, at: lastBoostPadEvent.at };
+
+    const height = (entity as ReefRaceEntity & { height?: number }).height ?? 0;
+    triggerBurst(
+      new THREE.Vector3(entity.x, height, entity.y),
+      '#00e5ff', // cyan — matches the boost-pad marker color
+      110,
+    );
+  }, [lastBoostPadEvent, entity.avatarId]);
+
+  // ─── v2 mechanics: mini-turbo release event subscription ─────────────────────
+  // Same fan-out as ramp-launch: burst for ANY avatar, self additionally gets
+  // screen shake (brief: "release burst + screen shake for self"). Tier 2
+  // (big) gets a stronger shake + a distinct color from tier 1 (small).
+  const lastMiniTurboFireEvent = useActivityStore((s) => s.lastMiniTurboFireEvent);
+  const lastSeenMiniTurboRef = useRef<{ avatarId: string; at: number } | null>(null);
+
+  useEffect(() => {
+    if (!lastMiniTurboFireEvent) return;
+    const prev = lastSeenMiniTurboRef.current;
+    if (prev && prev.avatarId === lastMiniTurboFireEvent.avatarId && prev.at === lastMiniTurboFireEvent.at) return;
+    if (lastMiniTurboFireEvent.avatarId !== entity.avatarId) return;
+
+    lastSeenMiniTurboRef.current = { avatarId: lastMiniTurboFireEvent.avatarId, at: lastMiniTurboFireEvent.at };
+
+    const height = (entity as ReefRaceEntity & { height?: number }).height ?? 0;
+    const isTier2 = lastMiniTurboFireEvent.level === 2;
+    triggerBurst(
+      new THREE.Vector3(entity.x, height, entity.y),
+      isTier2 ? '#ff5e2b' : '#5ce1ff', // tier 2 = hot orange, tier 1 = cyan
+      isTier2 ? 140 : 100,
+    );
+
+    if (isSelf) {
+      triggerScreenShake?.(isTier2 ? 0.16 : 0.08);
+    }
+  }, [lastMiniTurboFireEvent, entity.avatarId, isSelf, triggerScreenShake]);
   // The burst position is "good enough" at the moment the event lands.
 
   useFrame((state, delta) => {
