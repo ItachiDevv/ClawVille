@@ -506,6 +506,14 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
   const data = parsed.data;
   const avatar = await getActingAvatar(c);
   const isUsdc = data.paymentRail === 'usdc';
+  // COMPOSED-rail decision, computed ONCE here and reused for BOTH the insert
+  // sentinel (below) AND the post-insert vault open, so the row's composition_state
+  // marker and the open decision can never disagree — a live-flag flip mid-request
+  // could otherwise stamp the marker one way and branch the open the other. A composed
+  // bounty is a usdc bounty while the live settlement rail is the two-leg composed rail;
+  // CT + legacy-usdc bounties are NOT composed (their marker stays NULL). The `&&`
+  // short-circuits, so a CT bounty never calls bountySettlementRail() (unchanged).
+  const isComposedRail = isUsdc && bountySettlementRail() === 'sap-payai-composed';
 
   if (isUsdc) {
     // A USDC bounty escrows on-chain USDC (custodial-wallet sign at settle), so a
@@ -591,6 +599,17 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
         paymentRail: data.paymentRail,
         acceptanceCriteria: data.acceptanceCriteria ?? null,
         verdictRequired: isUsdc,
+        // FAIL-CLOSED sentinel (cross-review): stamp the composed marker as
+        // 'vault_pending' IN this insert, so the row is 'vault_pending' the instant it
+        // exists — BEFORE the vault opens below. If a hard crash lands between this
+        // commit and the 'vault_held' flip, the row survives as 'vault_pending' (NOT
+        // null) with a NULL escrow_pda, so every post-create transition sees
+        // isComposed=true and fails CLOSED (approve 409s; cancel refunds via the
+        // deterministic vault nonce) instead of the OLD null-marker double-charge
+        // (isComposed=false → the legacy branch opened a SECOND escrow → creator charged
+        // twice). CT + legacy-usdc stay NULL — unchanged (the column has no default, so
+        // explicit null is identical to the prior omitted-default insert).
+        compositionState: isComposedRail ? 'vault_pending' : null,
       })
       .returning();
 
@@ -613,20 +632,23 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
   // ── COMPOSED rail (SLICE 2b): open LEG 1 (the SAP V2 vault) AT POST ──────────
   // The composed rail custodies the creator's USDC on-chain at CREATE (worker =
   // the ClawVille house), unlike the legacy usdc path which opens the escrow
-  // LAZILY at approve. The rail decision is made HERE (the live flag) and RECORDED
-  // as `composition_state='vault_held'`, which becomes the IMMUTABLE per-bounty
-  // marker every later transition branches on — a mid-lifecycle flag flip can
-  // never re-route an existing bounty. A chain call must never run inside the DB
-  // transaction, so the open runs AFTER the insert commits.
+  // LAZILY at approve. The rail decision was made ONCE above (`isComposedRail`) and
+  // was already stamped into the row as `composition_state='vault_pending'`; a
+  // SUCCESSFUL open below flips it to the IMMUTABLE 'vault_held' marker every later
+  // transition branches on — a mid-lifecycle flag flip can never re-route an existing
+  // bounty. A chain call must never run inside the DB transaction, so the open runs
+  // AFTER the insert commits.
   //
   // ON FAILURE the vault did NOT open ⇒ NO custody ⇒ the bounty must NOT go live.
   // We DELETE the just-inserted row (its bounty_rewards children cascade via the
   // FK ON DELETE CASCADE) and throw the gate's mapped error — insert→open→delete-
   // on-fail keeps the DB consistent (no orphan bounty without custody), and the
   // delete runs BEFORE the reputation bump so a failed create leaves zero trace.
+  // (A HARD crash — not a gate failure — between the insert commit and the
+  // 'vault_held' flip is the exact window the 'vault_pending' sentinel above covers.)
   // DRY-RUN: the open simulates + returns a simulated escrowPda ⇒ the bounty is
-  // created `vault_held` with no real custody (the correct dry-run posture).
-  if (isUsdc && bountySettlementRail() === 'sap-payai-composed') {
+  // flipped to `vault_held` with no real custody (the correct dry-run posture).
+  if (isComposedRail) {
     const opened = await openComposedBountyEscrow({
       bountyId: bounty.id,
       creatorAvatarId: avatar.id,
@@ -1045,10 +1067,34 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
     // dry-run leg simulates only. Each of the 4 phases persists its exact
     // `composition_state` and RESPONDS — none falls through to the legacy dispatch.
     if (isComposed) {
+      // FAIL-CLOSED (cross-review, the important one): a 'vault_pending' marker means a
+      // CREATE crashed AFTER the INSERT (which stamps 'vault_pending' before opening the
+      // vault) but BEFORE the vault opened+recorded ('vault_held' + escrow_pda). The vault
+      // MAY or MAY NOT have opened and escrow_pda is unrecorded — the binding is
+      // INDETERMINATE, so settling is unsafe (we cannot prove the LEG-1 vault holds the
+      // principal). This REPLACES a far worse silent bug: with the OLD null marker this
+      // bounty read isComposed=false, took the LEGACY branch below, opened a SECOND escrow,
+      // and DOUBLE-CHARGED the creator. Refuse here — an operator reconciles (derive the
+      // vault from the deterministic bounty nonce, confirm on-chain, then set vault_held +
+      // escrow_pda or delete the orphan) before this bounty can be approved. Checked BEFORE
+      // the escrow_pda guard so vault_pending (escrow_pda always NULL) gets THIS actionable
+      // 409, not the generic 500.
+      if (bounty.compositionState === 'vault_pending') {
+        throw new HTTPException(409, {
+          message:
+            'This bounty is not settle-ready: its reward-vault binding is indeterminate ' +
+            '(composition_state=vault_pending — a create crashed mid-open, so the on-chain ' +
+            'vault may or may not have opened and its escrow PDA is unrecorded). No settlement ' +
+            'ran. An operator must reconcile it (derive the vault from the deterministic ' +
+            'bounty nonce, confirm on-chain, then set vault_held or delete the orphan) before ' +
+            'this bounty can be approved.',
+        });
+      }
       if (!bounty.escrowPda) {
-        // Invariant: a composed bounty always carries its LEG-1 vault PDA (persisted
-        // WITH composition_state at create). A null here is a corrupted row — fail
-        // closed rather than settle against an unknown vault.
+        // Invariant: a settle-ready composed bounty (state !== 'vault_pending') always
+        // carries its LEG-1 vault PDA (persisted WITH composition_state='vault_held' at
+        // create). A null here is a corrupted row — fail closed rather than settle against
+        // an unknown vault.
         throw new HTTPException(500, {
           message: 'Composed bounty is missing its escrow PDA; cannot settle. Contact an operator.',
         });
@@ -1435,27 +1481,30 @@ bountyRoutes.post('/:id/admin-fail-refund', adminOnly, async (c) => {
       message: 'admin-fail-refund only applies to a USDC (payment_rail=usdc) bounty.',
     });
   }
-  if (!bounty.escrowPda) {
-    throw new HTTPException(409, {
-      message:
-        'This USDC bounty has no open escrow to refund (the escrow is opened at ' +
-        'approve time; a bounty never approved has nothing on-chain to reclaim).',
-    });
-  }
+
   // The IMMUTABLE composed-rail marker — a composed bounty refunds its LEG-1 SAP
   // V2 vault, a legacy usdc bounty refunds its V1 escrow. Branch off THIS, never
-  // the live rail flag.
+  // the live rail flag. Evaluated BEFORE the escrow-PDA guard so a composed bounty's
+  // composition_state is the PRIMARY gate: a 'vault_pending' row carries a NULL
+  // escrow_pda (a create crashed mid-open) and must get the indeterminate-binding
+  // diagnosis below — NOT the generic "never approved, no escrow" 409, whose meaning
+  // is the legacy path's and is wrong for a composed vault that may hold funds.
   const isComposed = bounty.compositionState != null;
 
-  // SEV-2-B guard (Codex): NEVER attempt a refund on an already-SETTLED bounty —
-  // its reward already reached the worker. LEGACY usdc: a PASS verdict
-  // (`covenant_verification_passed === true`) means the escrow was released.
-  // COMPOSED: the paid terminal is `composition_state === 'paid'` (LEG 2 paid the
-  // hunter) — NOT `covenant_verification_passed`, which is ALSO true for the
-  // still-settling awaiting_finalize / reconcile_payout_failed phases (whose funds
-  // are in the vault / at the house, and whose refund attempt fails clean on the
-  // on-chain free-balance check anyway). Blocking only `paid` keeps those
-  // recoverable while refusing a genuine double-refund of a paid-out bounty.
+  // SEV-2-B guard + F2 (cross-review): a composed fail-refund is a FULL-DEPOSIT LEG-1
+  // vault withdraw, only SOUND from 'vault_held' (the vault still holds the whole
+  // deposit and nothing downstream has moved). Refuse every other composed state
+  // rather than issue an opaque on-chain failure:
+  //   • 'paid'                    → LEG 2 already paid the hunter; a refund double-spends.
+  //   • 'awaiting_finalize'       → principal reserved on-chain (LEG 1b), finalize pending.
+  //   • 'reconcile_payout_failed' → LEG 1 finalized to the house, LEG 2 retrying.
+  //       For BOTH mid-settlement states the full-deposit withdraw fails opaquely (the
+  //       funds are NOT free in the vault); re-run the finalize/payout crank
+  //       (settleComposedBounty, idempotent) to drive them to 'paid' — not a force-refund.
+  //   • 'vault_pending'           → a create crashed mid-open: the vault MAY or MAY NOT
+  //       hold funds and escrow_pda is unrecorded — the binding is indeterminate; ops must
+  //       reconcile (derive the vault from the deterministic bounty nonce, confirm
+  //       on-chain, set vault_held or delete) before ANY withdraw.
   if (isComposed) {
     if (bounty.compositionState === 'paid') {
       throw new HTTPException(409, {
@@ -1464,7 +1513,35 @@ bountyRoutes.post('/:id/admin-fail-refund', adminOnly, async (c) => {
           'its reward was released and cannot be fail-refunded.',
       });
     }
-  } else if (bounty.covenantVerificationPassed === true) {
+    if (bounty.compositionState !== 'vault_held') {
+      // awaiting_finalize | reconcile_payout_failed | vault_pending
+      throw new HTTPException(409, {
+        message:
+          `This composed USDC bounty is mid-settlement or its vault binding is indeterminate ` +
+          `(composition_state=${bounty.compositionState}) — do NOT force-refund. ` +
+          `awaiting_finalize / reconcile_payout_failed re-drive to paid via the finalize/payout ` +
+          `crank (re-run settlement — idempotent); vault_pending must first be reconciled ` +
+          `(derive the vault from the deterministic bounty nonce, confirm on-chain, then set ` +
+          `vault_held or delete). A full-deposit refund of a mid-settlement or indeterminate ` +
+          `vault would fail on-chain or risk the funds.`,
+      });
+    }
+    // vault_held falls through — it carries a real escrow_pda recorded at create, so the
+    // escrow-PDA guard below passes and refundComposedBounty reclaims the LEG-1 vault.
+  }
+
+  if (!bounty.escrowPda) {
+    throw new HTTPException(409, {
+      message:
+        'This USDC bounty has no open escrow to refund (the escrow is opened at ' +
+        'approve time; a bounty never approved has nothing on-chain to reclaim).',
+    });
+  }
+
+  // SEV-2-B guard (Codex) — LEGACY usdc path only now (composed states are fully gated
+  // above): NEVER refund an already-SETTLED legacy escrow — a PASS verdict
+  // (`covenant_verification_passed === true`) means it was released to the worker.
+  if (!isComposed && bounty.covenantVerificationPassed === true) {
     throw new HTTPException(409, {
       message:
         'This USDC bounty already settled (PASS verdict) — its escrow was released ' +
@@ -2021,17 +2098,35 @@ bountyRoutes.delete('/:id', requireAuthOrAgentSession, requireNonGuestIdentity, 
           'reclaim through POST /:id/admin-fail-refund (admin).',
       });
     }
-    // Belt-and-suspenders: a composed bounty always carries its LEG-1 vault PDA.
-    if (!bounty.escrowPda) {
+    // Belt-and-suspenders: a 'vault_held' composed bounty ALWAYS carries its LEG-1
+    // vault PDA (recorded at create) — a null there is a corrupted row → fail closed.
+    // EXCEPTION (cross-review): a 'vault_pending' bounty legitimately has a NULL
+    // escrow_pda (a create crashed after the INSERT but before the vault opened+
+    // recorded). It is NOT corrupted, so DON'T crash the cancel here — refundComposedBounty
+    // re-derives the vault PDA from the deterministic bounty nonce (bountyEscrowNonce) and
+    // IGNORES the escrow_pda arg entirely, so it reclaims an orphaned vault the crashed
+    // create may have opened; passing the NULL through is safe.
+    if (!bounty.escrowPda && bounty.compositionState !== 'vault_pending') {
       throw new HTTPException(500, {
         message: 'Composed bounty is missing its escrow PDA; cannot refund. Contact an operator.',
       });
     }
 
     // Refund the vault (idempotent chain call / dry-run sim) BEFORE flipping status.
+    // SAFETY REASONING for a 'vault_pending' cancel — refund-FIRST-then-flip means a
+    // refund failure NEVER flips the bounty to 'cancelled', so funds can't be stranded:
+    //   • if the crashed create DID open the vault → the nonce-derived refund reclaims it,
+    //     THEN the status flips to 'cancelled' (funds home, bounty gone);
+    //   • if NO vault was ever opened → the on-chain refund fails clean (nothing to
+    //     withdraw), the throw below BLOCKS the cancel (the conservative ops-reconcile
+    //     posture — a rare crash artifact ops confirms on-chain and deletes/repairs), and
+    //     nothing is left half-cancelled.
+    // Neither branch strands funds or double-refunds. DRY-RUN simulates ok either way,
+    // which is correct: a dry-run create opened no real vault, so no real funds exist. The
+    // `?? ''` only satisfies the (string) param type — refundComposedBounty never reads it.
     const refund = await refundComposedBounty({
       bountyId: bounty.id,
-      escrowPda: bounty.escrowPda,
+      escrowPda: bounty.escrowPda ?? '',
       creatorAvatarId: bounty.creatorId,
       tokenReward: bounty.tokenReward,
     });
