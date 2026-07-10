@@ -3681,6 +3681,29 @@ agentGatewayRoutes.post('/connect-token', async (c) => {
     return c.json({ error: 'Authentication required' }, 401);
   }
 
+  // Guest block (2026-07-10 security fix, defense-in-depth). A guest account runs
+  // a fully-DEMO economy (founder ruling 2026-07-06) and must NEVER reach the real
+  // ledger — including by connecting an agent it owns, since that agent would bind
+  // to the guest's userId and otherwise resolve `ledgerCapable=true`, letting the
+  // guest settle REAL CT through the agent path. Block the mint at the source so a
+  // guest can't create the binding at all. The resolveAgentSession guest demotion
+  // + requireNonGuestIdentity are the fail-closed backstops if a binding already
+  // exists; this is the front-door guard so the exploit path is never opened.
+  const guestRow = await db.query.users.findFirst({
+    where: eq(users.id, user.id),
+    columns: { isGuest: true },
+  });
+  if (guestRow?.isGuest) {
+    return c.json(
+      {
+        error:
+          'Guests run a demo economy — create a free account to connect an agent.',
+        code: 'guest_not_allowed',
+      },
+      403,
+    );
+  }
+
   // Look up avatar for this user
   const body = await c.req.json().catch(() => ({}));
   const avatarId = body.avatarId as string | undefined;
