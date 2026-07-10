@@ -16,10 +16,12 @@
  * `register` and `stake` SPEND REAL (devnet) SOL — the house's custodial wallet
  * must be FUNDED with devnet SOL BEFORE the live path can succeed. Run this ONCE
  * in dry-run first to MINT + PRINT the wallet pubkey (step "wallet" in the JSON),
- * airdrop it devnet SOL (≥ ~1.2 SOL: ~1 SOL stake + register rent + fees) via
- * https://faucet.solana.com, THEN run the live path. An unfunded wallet makes the
- * live register/stake fail with an on-chain (insufficient-funds) error — that is
- * the operator's cue to fund it.
+ * airdrop it devnet SOL (≥ ~0.2 SOL at the 0.11-SOL default stake: 0.11 stake +
+ * register/stake rent + fees; raise it to match a larger HOUSE_STAKE_LAMPORTS)
+ * via the Helius airdrop / faucet.solana.com, THEN run the live path. An unfunded
+ * wallet makes the live register/stake fail with an on-chain (insufficient-funds)
+ * error — that is the operator's cue to fund it. Devnet SOL is sourced by the
+ * orchestrator (Helius airdrop / existing devnet balances), NOT a founder step.
  *
  * ── DRY-RUN BY DEFAULT (safe) ────────────────────────────────────────────────
  * With no env set, SAP is DISABLED (the on-chain steps return `sap_disabled` /
@@ -59,7 +61,16 @@ function jsonSafe(_key: string, value: unknown): unknown {
 }
 
 async function main(): Promise<void> {
-  const summary = await ensureHouseSapIdentity();
+  // Optional stake override — `HOUSE_STAKE_LAMPORTS=<lamports>` raises the default
+  // 0.11-SOL staging stake for a larger single bounty (the stake↔max-bounty
+  // relationship is documented at DEFAULT_HOUSE_STAKE_LAMPORTS in
+  // house-sap-provisioning.ts). A non-integer/absent value uses the default.
+  const rawStake = process.env.HOUSE_STAKE_LAMPORTS;
+  const targetStakeLamports =
+    rawStake && /^\d+$/.test(rawStake) ? BigInt(rawStake) : undefined;
+  const summary = await ensureHouseSapIdentity(
+    targetStakeLamports !== undefined ? { targetStakeLamports } : undefined,
+  );
   console.log(JSON.stringify(summary, jsonSafe, 2));
   process.exit(summary.ok ? 0 : 1);
 }
