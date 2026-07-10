@@ -754,7 +754,7 @@ ledger: creator(101) = hunter(100) + treasury(0.5) + creator-reclaimable(0.5)   
 | `awaiting_finalize` | LEG 1b settled (principal reserved); LEG 1c finalize pending the dispute window | approve/crank | crank → `paid` |
 | `reconcile_payout_failed` | LEG 1 FINALIZED (reward at house) but LEG 2 payout failed | approve/crank | crank retries LEG 2 → `paid` |
 | `paid` | both legs done: house finalized + hunter paid the reward | approve/crank (via `bookComposedBountyPaid`) | terminal |
-| `failed` (transient) | LEG 1a/1b failed before any settle; funds still in the vault, `composition_state` STAYS `vault_held` | — | retry via crank |
+| `failed` (transient) | LEG 1a/1b failed before any settle; funds still in the vault, `composition_state` STAYS `vault_held`. A pre-broadcast V2 settle failure (L-2, 2026-07-10) now restores the gate row to a RETRYABLE status (not terminal `failed`), so the row is re-drivable | — | auto-retried by the `vault_held`+approved crank sweep (L-1) |
 
 **No `refunded` state** (by design): a refund (cancel / admin-fail-refund, `vault_held` ONLY) leaves
 `composition_state='vault_held'` and marks the terminal via `status='cancelled'` (cancel) or
@@ -787,9 +787,29 @@ prior> AND != 'paid' RETURNING`): approve passes `'vault_held'`, the crank passe
 `resumeComposedBounty(bountyId)` + `startComposedBountyResumeWorker()` (`services/bounty-composition-worker.ts`),
 boot-wired in `index.ts` **DARK-gated** (starts ONLY when `bountySettlementRail()==='sap-payai-composed'`;
 cadence `SAP_BOUNTY_RESUME_POLL_MS`, default 5 min, floor 1 min). Each pass advances every bounty stuck in
-`awaiting_finalize` / `reconcile_payout_failed` by re-driving `settleComposedBounty` (idempotent). It
-NEVER touches `vault_held` (never approved), the terminal `paid`, or the indeterminate `vault_pending`
-(operator-reconcile only).
+`awaiting_finalize` / `reconcile_payout_failed` — AND (L-1, 2026-07-10) every `vault_held` bounty that carries
+an **APPROVED attempt** — by re-driving `settleComposedBounty` (idempotent). The `vault_held` sweep is the
+wedge self-heal: an approve whose settle failed pre-settle leaves `vault_held` WITH an approved winner (before
+the L-2 gate fix a transient sim failure parked the V2 row terminal `failed`), and the route's 'failed'-phase
+note long promised "retryable via an ops crank" — this IS that crank.
+
+**Two-tier priority (no starvation):** the sweep runs TIER 1 (`awaiting_finalize` / `reconcile_payout_failed`
+— money mid-flight, delayed REAL payouts) first, taking up to the whole `RESUME_BATCH`; TIER 2 (`vault_held` +
+approved) runs only on the slots tier 1 leaves free, both ordered `updated_at` ASC. So the L-1 `vault_held`
+class can NEVER starve a money-mid-flight row. Residual (deferred to L-3): within tier 2, a permanently-wedged
+`vault_held` row keeps a slot each pass (a no-op `failed` resume doesn't bump `updated_at`), so ≥ batch-size
+permanent wedges delay NEWER vault_held payouts — money-safe (USDC stays custodied), and the real fix (a
+terminal quarantine/backoff needing a new `composition_state`, plus a persistent-wedge alert — a clean `failed`
+resume currently pages nothing) is bigger than this nit.
+
+**Provenance guard (money invariant):** a `vault_held` bounty is swept ONLY with a genuinely approved attempt —
+the winning hunter is resolved FROM that approved attempt row, NEVER from input; the sweep query's
+`EXISTS(approved attempt)` filter + `resumeComposedBounty`'s `no_winner` backstop exclude an unapproved
+(refund-path) `vault_held` bounty. **No double-book / double-pay under a concurrent approve retry:** both the
+approve route and the sweep feed `bookComposedBountyPaid` the SAME observed prior `'vault_held'`, so the atomic
+`WHERE composition_state='vault_held' AND != 'paid'` CAS flips exactly once; every settle leg is at-most-once
+(the V2 'settling' claim + pg advisory lock; the leg-2 payout `(payoutPda, ${id}:payout)` key). The crank still
+NEVER touches the terminal `paid`, or the indeterminate `vault_pending` (operator-reconcile only).
 
 ### OPS RUNBOOK — `reconcile_payout_failed`
 

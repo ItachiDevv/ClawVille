@@ -25,7 +25,7 @@
  */
 
 import { db, bounties, bountyAttempts, bountyReputation, eq, and, sql } from '@clawville/database';
-import { ne } from 'drizzle-orm';
+import { asc, ne } from 'drizzle-orm';
 import {
   settleComposedBounty as settleComposedBountyImpl,
   bountySettlementRail,
@@ -304,14 +304,46 @@ export async function applyComposedSettleOutcome(
 //   - `awaiting_finalize`       — leg 1b settled; leg 1c finalize not yet ready.
 //   - `reconcile_payout_failed` — leg 1 finalized (reward at the house); leg 2
 //                                 (hunter payout) failed and must be retried.
-// The crank re-drives `settleComposedBounty` (fully idempotent: it replays legs
-// 1a–1c then retries leg 2) and re-persists via `applyComposedSettleOutcome`
-// (which books the completion + reclaim EXACTLY ONCE on the paid transition). It
-// NEVER touches `vault_held` (never approved → no winning hunter to pay) or the
-// terminal `paid`/`refunded` states.
+//   - `vault_held` WITH AN APPROVED ATTEMPT — L-1: an approve whose settle failed
+//     BEFORE any on-chain settle (e.g. the pre-L-2 gate parked the V2 row terminal
+//     'failed' on a transient sim failure, or the settle otherwise errored pre-settle)
+//     leaves the bounty at `vault_held` even though the creator APPROVED a winner. The
+//     route's own 'failed'-phase note promised "retryable via an ops crank re-running
+//     settleComposedBounty" — this IS that crank. Paired with the L-2 gate fix (a
+//     pre-broadcast settle failure now restores the row to a retryable status instead
+//     of terminal 'failed'), an approve-time transient now SELF-HEALS on the next sweep.
+// The crank re-drives `settleComposedBounty` (fully idempotent: it replays legs 1a–1c
+// then retries leg 2) and re-persists via `applyComposedSettleOutcome` (which books the
+// completion + reclaim EXACTLY ONCE on the paid transition).
+//
+// PROVENANCE GUARD (the money invariant): a `vault_held` bounty is swept ONLY when it
+// carries a genuinely APPROVED attempt — the winning hunter is resolved FROM that
+// approved attempt row (`loadResumeContext`), NEVER from caller input. An UNAPPROVED
+// `vault_held` bounty is a refund-path bounty (no winner) and is NEVER touched: the
+// sweep query's `EXISTS(approved attempt)` filter excludes it, and
+// `resumeComposedBounty`'s `no_winner` guard is the backstop. The crank still NEVER
+// touches the terminal `paid`/`refunded` states.
+//
+// DOUBLE-BOOK / DOUBLE-PAY SAFETY under a concurrent approve retry: the approve route
+// settles a just-approved bounty SYNCHRONOUSLY (also from `vault_held`), so a sweep and
+// an approve can drive the SAME bounty at once. Neither can double-anything:
+//   • double-PAY is impossible — every settle leg is idempotent (V2 settle claims
+//     'settling' at-most-once + pg advisory lock; leg-2 payout is at-most-once on
+//     `(payoutPda, ${id}:payout)`); the loser replays or gets settle_in_progress.
+//   • double-BOOK is impossible — the →paid completion bump rides
+//     `bookComposedBountyPaid`'s atomic CAS (`WHERE composition_state = <observed prior>
+//     AND != 'paid'`). BOTH the sweep and the approve pass the SAME observed prior
+//     `'vault_held'`, so the vault_held→paid flip fires for EXACTLY ONE of them; the
+//     other's CAS matches 0 rows (state already 'paid') and books nothing.
 
-/** The composition states the crank is allowed to advance. */
-const RESUMABLE_STATES = ['awaiting_finalize', 'reconcile_payout_failed'] as const;
+/**
+ * The composition states the crank is allowed to advance. `vault_held` is resumable
+ * ONLY together with the sweep query's `EXISTS(approved attempt)` filter + the
+ * `no_winner` provenance backstop below — an unapproved vault_held bounty (no winner)
+ * is a refund-path row the crank must never settle. See the crank header for the full
+ * provenance + double-book/double-pay argument.
+ */
+const RESUMABLE_STATES = ['awaiting_finalize', 'reconcile_payout_failed', 'vault_held'] as const;
 
 interface ResumeContext {
   compositionState: string | null;
@@ -360,10 +392,12 @@ export type ResumeComposedBountyOutcome =
 
 /**
  * Idempotently re-drive ONE stuck composed bounty toward `paid`. Safe to call
- * repeatedly (every underlying leg is idempotent); a no-op for a bounty that is
- * not composed, is terminal (`paid`/`refunded`), or was never approved
- * (`vault_held` — nothing to pay out). Returns a structured outcome for the worker
- * + tests; throws nothing on a normal miss.
+ * repeatedly (every underlying leg is idempotent); a no-op for a bounty that is not
+ * composed, is terminal (`paid`/`refunded`), or is `vault_held` with NO approved
+ * attempt (`no_winner` — a refund-path bounty, never settled). A `vault_held` bounty
+ * WITH an approved attempt IS resumed (L-1): the winning hunter is resolved from that
+ * approved attempt row. Returns a structured outcome for the worker + tests; throws
+ * nothing on a normal miss.
  */
 export async function resumeComposedBounty(
   bountyId: string,
@@ -406,13 +440,66 @@ function resolveResumePollMs(): number {
   return Number.isFinite(n) && n >= RESUME_POLL_MS_FLOOR ? n : RESUME_POLL_MS_DEFAULT;
 }
 
-/** One sweep: advance every composed bounty stuck in a resumable state. */
+/**
+ * One sweep: advance composed bounties stuck in a resumable state, TWO-TIER by
+ * priority so the L-1 `vault_held` class can NEVER starve money-mid-flight rows.
+ *
+ * TIER 1 (money mid-flight — ALWAYS taken first): `awaiting_finalize` /
+ * `reconcile_payout_failed`. A settle already reserved principal on-chain
+ * (awaiting_finalize) or finalized it to the house with the hunter still unpaid
+ * (reconcile_payout_failed) — these are DELAYED REAL PAYOUTS. They take the whole
+ * batch if that many exist, and can never be crowded out by tier 2.
+ *
+ * TIER 2 (only with the slots tier 1 leaves): `vault_held` WITH an approved attempt
+ * (the L-1 wedge self-heal). No money has moved yet (the creator's USDC is still in
+ * the vault), so a delayed retry here is strictly less urgent than a mid-flight
+ * payout. The EXISTS is the money-provenance guard (an unapproved vault_held is a
+ * refund-path row, NEVER swept); `resumeComposedBounty` re-reads the approved attempt
+ * (`no_winner` backstop) before any settle. Both tiers order `updated_at` ASC
+ * (oldest-stuck first).
+ *
+ * RESIDUAL (accepted, deferred to the L-3 slice): WITHIN tier 2, a PERMANENTLY-wedged
+ * vault_held row (e.g. a deterministic pre-settle failure such as an out-of-band vault
+ * close) keeps occupying a slot every pass — a no-op `failed` resume does NOT bump
+ * `bounties.updated_at`, so the same oldest rows resurface first — so ≥ RESUME_BATCH
+ * simultaneous permanent wedges would starve NEWER vault_held wedges. Still MONEY-SAFE
+ * (the creator's USDC stays custodied; only a delayed payout, and tier 1 is untouched).
+ * NOT fixed here because the real fix is a terminal quarantine / backoff, which needs a
+ * NEW composition_state — a bigger change than this availability nit warrants. NOTE: a
+ * clean `failed` resume currently emits NO ops alert (only `reconcile_payout_failed`
+ * does), so a persistent-wedge ALERT rides L-3 alongside the quarantine/backoff.
+ */
 export async function runComposedBountyResumePass(): Promise<void> {
-  const stuck = await db
+  // TIER 1 — money mid-flight; never starved by tier 2.
+  const priority = await db
     .select({ id: bounties.id })
     .from(bounties)
     .where(sql`${bounties.compositionState} IN ('awaiting_finalize', 'reconcile_payout_failed')`)
+    .orderBy(asc(bounties.updatedAt))
     .limit(RESUME_BATCH);
+
+  // TIER 2 — vault_held + approved (L-1), ONLY the slots tier 1 left free.
+  const remaining = RESUME_BATCH - priority.length;
+  let vaultHeld: Array<{ id: string }> = [];
+  if (remaining > 0) {
+    vaultHeld = await db
+      .select({ id: bounties.id })
+      .from(bounties)
+      .where(
+        sql`(
+          ${bounties.compositionState} = 'vault_held'
+          AND EXISTS (
+            SELECT 1 FROM ${bountyAttempts}
+            WHERE ${bountyAttempts.bountyId} = ${bounties.id}
+              AND ${bountyAttempts.status} = 'approved'
+          )
+        )`,
+      )
+      .orderBy(asc(bounties.updatedAt))
+      .limit(remaining);
+  }
+
+  const stuck = [...priority, ...vaultHeld];
   for (const b of stuck) {
     try {
       await resumeComposedBounty(b.id);

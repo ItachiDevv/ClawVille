@@ -586,11 +586,66 @@ describe('resumeComposedBounty (finalize/payout crank)', () => {
     expect(out).toEqual({ resumed: false, reason: 'not_composed' });
   });
 
-  it('skips terminal / never-approved states (paid / vault_held / refunded)', async () => {
-    for (const s of ['paid', 'vault_held', 'refunded']) {
+  it('skips terminal states (paid / refunded)', async () => {
+    for (const s of ['paid', 'refunded']) {
       const out = await resumeComposedBounty(BOUNTY_ID, { loadContext: async () => ctx({ compositionState: s }) });
       expect(out).toEqual({ resumed: false, reason: 'not_resumable' });
     }
+  });
+
+  // ── L-1: vault_held is resumable ONLY WITH an approved attempt ───────────────
+  it('L-1 — RESUMES a vault_held bounty that HAS an approved attempt (the wedge self-heal), threading vault_held as the →paid CAS prior', async () => {
+    // The wedge: an approve whose settle failed pre-settle left composition_state
+    // 'vault_held' WITH an approved winner. loadResumeContext resolves hunterAvatarId
+    // FROM the approved attempt row (the provenance guard); here that yields HUNTER.
+    let applied: any = null;
+    const out = await resumeComposedBounty(BOUNTY_ID, {
+      loadContext: async () => ctx({ compositionState: 'vault_held', hunterAvatarId: HUNTER }),
+      applyOutcome: async (input) => {
+        applied = input;
+        return { ok: true, phase: 'paid', escrowPda: VAULT_PDA, payoutEscrowPda: PAYOUT_PDA, auditRootHex: AUDIT_ROOT, dryRun: true };
+      },
+    } as ResumeComposedBountyDeps);
+    expect(out).toEqual({ resumed: true, phase: 'paid' });
+    // Winning hunter resolved from the approved attempt, NOT from any caller input.
+    expect(applied.hunterAvatarId).toBe(HUNTER);
+    // CAS prior threaded = the observed 'vault_held' — IDENTICAL to the approve route's
+    // bookComposedBountyPaid({ expectedPriorState: 'vault_held' }), so the vault_held→paid
+    // flip fires for EXACTLY ONE of {approve, sweep}; the other's CAS matches 0 rows.
+    expect(applied.expectedPriorState).toBe('vault_held');
+  });
+
+  it('L-1 — NEVER touches a vault_held bounty with NO approved attempt (no_winner — a refund-path row, never settled)', async () => {
+    let applyCalled = false;
+    const out = await resumeComposedBounty(BOUNTY_ID, {
+      loadContext: async () => ctx({ compositionState: 'vault_held', hunterAvatarId: null }),
+      applyOutcome: async () => {
+        applyCalled = true;
+        return { ok: true, phase: 'paid', escrowPda: VAULT_PDA, payoutEscrowPda: PAYOUT_PDA, auditRootHex: AUDIT_ROOT, dryRun: true };
+      },
+    } as ResumeComposedBountyDeps);
+    expect(out).toEqual({ resumed: false, reason: 'no_winner' });
+    expect(applyCalled).toBe(false); // the money invariant: an unapproved vault_held bounty is NEVER settled
+  });
+
+  it('L-1 — concurrent approve + sweep cannot double-book: the sweep feeds the CAS the SAME vault_held prior the approve route uses', async () => {
+    // The approve route settles a just-approved bounty synchronously with
+    // bookComposedBountyPaid({ expectedPriorState: 'vault_held' }); the sweep drives the
+    // SAME bounty via resumeComposedBounty. Double-book is impossible because BOTH feed the
+    // atomic CAS (`WHERE composition_state='vault_held' AND != 'paid'`) the IDENTICAL prior,
+    // so the vault_held→paid flip fires once. This pins the sweep's author-side prior; the
+    // CAS atomicity itself lives in bookComposedBountyPaid (unchanged) + staging integration.
+    const priors: string[] = [];
+    const drive = () =>
+      resumeComposedBounty(BOUNTY_ID, {
+        loadContext: async () => ctx({ compositionState: 'vault_held', hunterAvatarId: HUNTER }),
+        applyOutcome: async (input) => {
+          priors.push(input.expectedPriorState);
+          return { ok: true, phase: 'paid', escrowPda: VAULT_PDA, payoutEscrowPda: PAYOUT_PDA, auditRootHex: AUDIT_ROOT, dryRun: true };
+        },
+      } as ResumeComposedBountyDeps);
+    await Promise.all([drive(), drive()]);
+    expect(priors).toEqual(['vault_held', 'vault_held']); // == the approve route's literal
   });
 
   it('skips a missing bounty / missing winning hunter / missing vault', async () => {
