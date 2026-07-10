@@ -2117,9 +2117,35 @@ export function resolveV2UsdcEscrowAddress(input: {
 }
 
 /**
- * Read the authoritative V2 settlement index and whether its PendingSettlement
- * PDA already exists. The gate calls this before claiming so a replay is routed
- * to finalize without ever rebuilding/re-sending settle_calls_v2.
+ * The DECODED on-chain PendingSettlement fields the gate books on a replay-
+ * reconcile (flip-gate fix, docs/sap-integration.md line 624). ALL values come
+ * from the chain account, NEVER the caller's request — the reconcile must record
+ * what the program actually reserved.
+ */
+export interface DecodedPendingSettlement {
+  /** `PendingSettlement.calls_to_settle` (u64) — the calls this pending covers. */
+  callsToSettle: bigint;
+  /**
+   * `PendingSettlement.amount` (u64) — the GROSS principal reserved for release
+   * (= calls × price; devnet-proven `amount=100000` for 10 × 10000, doc line 592),
+   * i.e. exactly what the gate books as `reservedPrincipalAmount`. The protocol
+   * fee is a SEPARATE leg the caller re-derives via `computeV2ProtocolFee(amount)`.
+   */
+  amount: bigint;
+  isFinalized: boolean;
+  isDisputed: boolean;
+}
+
+/**
+ * Read the authoritative V2 settlement index and — when its PendingSettlement PDA
+ * already exists — DECODE that account so the gate books the on-chain principal /
+ * calls on a replay-reconcile instead of the caller's requested numbers (doc line
+ * 624). The gate calls this before claiming so a replay is routed to finalize
+ * without ever rebuilding/re-sending settle_calls_v2.
+ *
+ * `pending` is populated ONLY when `pendingExists` is true and the Anchor decode
+ * succeeded. A decode/RPC failure returns a structured `SapFailure` (retryable) so
+ * the caller books NOTHING — never a fabricated amount.
  */
 export async function inspectV2SettlementState(input: {
   workerWalletPubkey: string;
@@ -2128,7 +2154,35 @@ export async function inspectV2SettlementState(input: {
   /** When supplied, inspect this persisted pre-send index, not the escrow's incremented current index. */
   settlementIndex?: bigint;
 }): Promise<
-  | { ok: true; escrowPda: string; settlementIndex: bigint; pendingExists: boolean }
+  | {
+      ok: true;
+      escrowPda: string;
+      /**
+       * R7-3 — the escrow ACCOUNT itself is provably ABSENT on-chain (closed for rent after
+       * finalize+close, or never created). DISTINCT from a read FAILURE (which returns a
+       * `SapFailure` from the catch below — `fetchNullable` only returns null for a genuinely
+       * missing account, never on RPC error). The stale-claim recovery uses this to quarantine
+       * a row whose escrow was closed during the claim (settle_unknown / finalize_unknown),
+       * instead of looping forever on a generic retryable read error. `undefined`/false when
+       * the escrow exists.
+       */
+      escrowAbsent?: boolean;
+      settlementIndex: bigint;
+      /**
+       * R5-1 — the escrow's CURRENT on-chain `settlement_index` (the monotonic
+       * counter, incremented ONLY inside settle_calls_v2 and UNTOUCHED by
+       * finalize/close), ALWAYS surfaced — distinct from `settlementIndex`, which
+       * echoes the caller's `input.settlementIndex` when supplied. The stale-claim
+       * absent-arm uses this to prove whether a slot was ever consumed
+       * (`current === persisted` ⇒ never landed) vs finalized-and-closed
+       * (`current > persisted`), disambiguating an absent PendingSettlement PDA.
+       * `0n` on the dry-run rehearsal where the escrow account doesn't exist yet.
+       */
+      currentSettlementIndex: bigint;
+      pendingExists: boolean;
+      /** The decoded pending account — present iff `pendingExists`. */
+      pending?: DecodedPendingSettlement;
+    }
   | SapFailure
 > {
   const cfg = getConfig();
@@ -2143,30 +2197,163 @@ export async function inspectV2SettlementState(input: {
     );
     if (!escrow) {
       if (!cfg.dryRun) {
+        // R7-3 — surface escrow ABSENCE distinctly (was a generic retryable `on_chain_error`
+        // that bricked stale recovery in an infinite retry loop). `fetchNullable` returns null
+        // ONLY for a genuinely-missing account (a real RPC failure THROWS → the catch below →
+        // retryable), so this is a PROVABLE absence: recovery quarantines the row for ops, the
+        // settle claim's readVaultState guard already refuses `job_not_open`, and the replay
+        // re-probe falls to its broadcast-gated handler (pendingExists:false).
         return {
-          ok: false,
-          code: 'on_chain_error',
-          message: 'V2 escrow account not found on-chain.',
+          ok: true,
+          escrowPda: resolved.escrowPda.toBase58(),
+          escrowAbsent: true,
+          settlementIndex: input.settlementIndex ?? 0n,
+          currentSettlementIndex: 0n,
+          pendingExists: false,
         };
       }
       return {
         ok: true,
         escrowPda: resolved.escrowPda.toBase58(),
         settlementIndex: 0n,
+        currentSettlementIndex: 0n,
         pendingExists: false,
       };
     }
-    const settlementIndex = input.settlementIndex ?? BigInt(escrow.settlementIndex.toString());
+    const currentSettlementIndex = BigInt(escrow.settlementIndex.toString());
+    const settlementIndex = input.settlementIndex ?? currentSettlementIndex;
     const [pendingPda] = findPendingPda(cfg.programId, resolved.escrowPda, settlementIndex);
-    const pendingExists = (await getConnection().getAccountInfo(pendingPda, COMMITMENT)) !== null;
+    // Anchor-DECODE the pending account (not a raw getAccountInfo existence probe):
+    // a non-null fetch both proves existence AND yields the authoritative reserved
+    // principal + calls for the reconcile. `fetchNullable` returns null when the
+    // PDA is absent (never settled at this index, or already finalized+closed).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pendingAcc = await (getProgram().account as any).pendingSettlement.fetchNullable(
+      pendingPda,
+    );
+    if (!pendingAcc) {
+      return {
+        ok: true,
+        escrowPda: resolved.escrowPda.toBase58(),
+        settlementIndex,
+        currentSettlementIndex,
+        pendingExists: false,
+      };
+    }
+    const callsRaw = pendingAcc.callsToSettle ?? pendingAcc.calls_to_settle;
+    const amountRaw = pendingAcc.amount;
+    if (callsRaw == null || amountRaw == null) {
+      // Decode succeeded structurally but the money fields are missing — refuse to
+      // guess. Surface a retryable failure so the caller books nothing.
+      throw new Error('PendingSettlement decode missing calls_to_settle/amount');
+    }
     return {
       ok: true,
       escrowPda: resolved.escrowPda.toBase58(),
       settlementIndex,
-      pendingExists,
+      currentSettlementIndex,
+      pendingExists: true,
+      pending: {
+        callsToSettle: BigInt(callsRaw.toString()),
+        amount: BigInt(amountRaw.toString()),
+        isFinalized: Boolean(pendingAcc.isFinalized ?? pendingAcc.is_finalized),
+        isDisputed: Boolean(pendingAcc.isDisputed ?? pendingAcc.is_disputed),
+      },
     };
   } catch (err) {
     return classifyChainError('inspectV2SettlementState', err);
+  }
+}
+
+/**
+ * The LIVE on-chain physical state of a V2 escrow: the vault ATA token balance AND
+ * the escrow account's aggregate `pending_amount` (R4-A, docs line 623/624). Both
+ * feed the settle claim:
+ *   - `physicalFree = vaultBalance − escrowPendingAmount` clamps the release ceiling
+ *     (fail-OPEN — null → ledger fallback; the chain stays the 6062 fail-closed guard).
+ *   - `escrowPendingAmount` is the AUTHORITATIVE reserved term and the ONLY source of
+ *     the unowned-pending guard (fail-CLOSED). Unlike the DB's reserved sum, it
+ *     includes out-of-band settles AND settle_unknown-landed pendings the gate cannot
+ *     see (verified field: EscrowAccountV2.pending_amount u64, accessor `pendingAmount`).
+ */
+export interface V2VaultPhysicalState {
+  /** Vault ATA USDC base units, or null on read failure. */
+  vaultBalance: bigint | null;
+  /**
+   * The escrow's on-chain aggregate `pending_amount` (sum of all settled-but-not-
+   * finalized principal reserved in the vault), or null on read/decode failure OR
+   * when the escrow account is ABSENT (both → the unowned guard fails CLOSED).
+   */
+  escrowPendingAmount: bigint | null;
+  /**
+   * R5-2 — TRUE iff the escrow account itself is ABSENT on-chain (Anchor
+   * `fetchNullable` returned null), as opposed to a read/decode failure or timeout.
+   * Absent is TERMINAL (a V2 escrow that was funded cannot vanish and still be
+   * settleable) → the caller refuses with a terminal `job_not_open` instead of the
+   * retryable `pending_state_unverifiable` retry-loop. False on a read failure.
+   */
+  escrowAbsent: boolean;
+}
+
+export async function readV2VaultPhysicalState(input: {
+  workerWalletPubkey: string;
+  depositorWalletPubkey: string;
+  escrowNonce: bigint;
+}): Promise<V2VaultPhysicalState> {
+  const empty: V2VaultPhysicalState = { vaultBalance: null, escrowPendingAmount: null, escrowAbsent: false };
+  try {
+    const cfg = getConfig();
+    if (usdcEscrowGate(cfg)) return empty;
+    let workerWallet: PublicKey;
+    let depositorWallet: PublicKey;
+    try {
+      workerWallet = new PublicKey(input.workerWalletPubkey);
+      depositorWallet = new PublicKey(input.depositorWalletPubkey);
+    } catch {
+      return empty;
+    }
+    const mint = usdcMintForEscrow(cfg);
+    const [agentPda] = findAgentPda(cfg.programId, workerWallet);
+    const [escrowPda] = findEscrowPda(cfg.programId, agentPda, depositorWallet, input.escrowNonce);
+    const vaultAta = getAssociatedTokenAddress(mint, escrowPda, true);
+    // A3 — bound the lock-hold. The settle claim calls this WHILE holding the per-escrow
+    // advisory lock (+ a pooled DB connection), so a hung RPC could pin both. Both reads
+    // race a shared ~4s timeout; each independently resolves to null on timeout/failure.
+    // R3-2 — each read carries its own .catch so a slow-then-reject can't unhandled-reject.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), 4000);
+    });
+    const balP: Promise<bigint | null> = getConnection()
+      .getTokenAccountBalance(vaultAta, COMMITMENT)
+      .then((r) => (r?.value?.amount ? BigInt(r.value.amount) : null))
+      .catch(() => null);
+    // R5-2 — 3-state: bigint (pending amount) | 'absent' (escrow null) | null (read fail).
+    const pendingP: Promise<bigint | 'absent' | null> = // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (getProgram().account as any).escrowAccountV2
+        .fetchNullable(escrowPda)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .then((acc: any): bigint | 'absent' => {
+          if (!acc) return 'absent'; // escrow account does not exist on-chain (terminal)
+          const pa = acc.pendingAmount ?? acc.pending_amount;
+          return pa != null ? BigInt(pa.toString()) : 0n;
+        })
+        .catch(() => null);
+    try {
+      const [vaultBalance, pendingResult] = await Promise.all([
+        Promise.race([balP, timeout]),
+        Promise.race([pendingP, timeout]),
+      ]);
+      return {
+        vaultBalance: vaultBalance ?? null,
+        escrowPendingAmount: typeof pendingResult === 'bigint' ? pendingResult : null,
+        escrowAbsent: pendingResult === 'absent',
+      };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  } catch {
+    return empty;
   }
 }
 
@@ -2775,6 +2962,16 @@ export interface SettleCallsV2UsdcInput {
   /** Verification provider's 32-byte audit root → on-chain service_hash. */
   auditRoot: Uint8Array;
   /**
+   * R7-1 — the settlement index CAPTURED AT CLAIM TIME (the escrow's current index the
+   * gate inspected and persisted on the row BEFORE this send). The pending PDA is derived
+   * from THIS index, NEVER a fresh on-chain re-read. If an out-of-band settle advanced the
+   * escrow's counter between the gate's claim and this send, the program's pending-PDA
+   * seeds constraint REVERTS this tx (fail-closed, exactly-once per slot) instead of
+   * silently building a SECOND pending at N+1 (the TOCTOU double-pay). A dry-run rehearsal
+   * passes the rehearsal 0n so the encoding is still exercised.
+   */
+  expectedSettlementIndex: bigint;
+  /**
    * The pending release amount (base units) the CALLER records off-chain for its own
    * ledger/reconciliation. NOTE: the deployed settle computes the on-chain pending
    * amount itself (calls × price − fee); this value is NOT sent to the program.
@@ -2792,9 +2989,12 @@ export interface SettleCallsV2UsdcInput {
  * dispute window. The SPL remaining carries the vault + worker + treasury ATAs and the
  * pending PDA (order LOAD-BEARING — see assembleV2SplRemaining('settle')).
  *
- * The pending PDA is seeded by the escrow's CURRENT (pre-increment) settlement_index,
- * READ from chain here (Anchor decodes the on-chain `settlement_index` u64 as a BN under
- * the camelCase `settlementIndex` accessor). Signer = the worker's OWN custodial wallet.
+ * The pending PDA is seeded by the escrow's CURRENT (pre-increment) settlement_index. R7-1
+ * — that index is PINNED from `input.expectedSettlementIndex` (the value the gate inspected +
+ * persisted at claim), NOT re-read here: a fresh read is a TOCTOU (an out-of-band settle that
+ * moved the counter between the claim and this send would make us build a second pending at
+ * the next index → double-pay). Pinning defers the exactly-once check to the program's seeds
+ * constraint, which reverts if the counter moved. Signer = the worker's OWN custodial wallet.
  *
  * FEATURE_GATE: sap_v2_release_path
  * Status: ROUTED THROUGH THE ESCROW GATE, GATED OFF. The nonce-scoped V2 open,
@@ -2867,37 +3067,16 @@ export async function settleCallsV2Usdc(
   // devnet-verified settle; treasury = cfg.treasuryPubkey, the protocol fee sink).
   const treasuryAta = getAssociatedTokenAddress(mint, cfg.treasuryPubkey, true);
 
-  // READ the escrow's CURRENT settlement_index (pre-increment) — the value the pending
-  // PDA seed uses. On a dry-run rehearsal the escrow may not exist yet (fetchNullable ⇒
-  // null) → default 0n so the encoding can still be exercised; a real RPC failure is
-  // surfaced as rpc_unreachable (never a silent wrong index).
-  let settlementIndex: bigint;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const escrowAcc = await (getProgram().account as any).escrowAccountV2.fetchNullable(escrowPda);
-    if (escrowAcc && escrowAcc.settlementIndex != null) {
-      settlementIndex = BigInt(escrowAcc.settlementIndex.toString());
-    } else {
-      // Escrow account not found. On a DRY-RUN rehearsal the escrow may legitimately
-      // not exist yet — default 0n so the encoding can still be exercised. But on a
-      // LIVE settle a missing escrow means we'd broadcast a real tx built against a
-      // nonexistent / wrong on-chain state (wrong pending PDA, guaranteed-fail-or-
-      // worse) — so FAIL LOUD instead (SEV: Codex money-path finding).
-      if (!cfg.dryRun) {
-        return {
-          ok: false,
-          code: 'on_chain_error',
-          message:
-            'settleCallsV2Usdc: escrow account not found on-chain — refusing a ' +
-            'LIVE settle against a nonexistent/unfunded escrow (would build a wrong pending PDA).',
-        };
-      }
-      settlementIndex = 0n;
-    }
-  } catch (err) {
-    return classifyChainError('settleCallsV2Usdc:readIndex', err);
-  }
-
+  // R7-1 — PIN the pending PDA to the CLAIM-CAPTURED index (input.expectedSettlementIndex),
+  // NEVER a fresh on-chain re-read. The OLD code re-read the escrow's CURRENT index HERE, so
+  // an out-of-band settle landing between the gate's claim and this send shifted the counter
+  // and this tx built a SECOND pending at N+1 — a chain-LEGAL double-pay (the program permits
+  // sequential settles). Pinning to the claimed index means: if the counter moved before this
+  // tx executes, the program's pending-PDA `init` seeds constraint (seeded by the escrow's
+  // CURRENT settlement_index) REVERTS this tx — exactly-once per slot, enforced ON-CHAIN. An
+  // absent / again-settled escrow is already refused by the gate's under-lock readVaultState
+  // guard; a dry-run rehearsal passes 0n so the encoding is still exercised.
+  const settlementIndex = input.expectedSettlementIndex;
   const [pendingPda] = findPendingPda(cfg.programId, escrowPda, settlementIndex);
   const auditRoot = Buffer.from(input.auditRoot);
 

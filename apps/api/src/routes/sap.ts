@@ -81,14 +81,14 @@ import {
   provisionAgentStake,
   updateAgentPricingUsdc,
   createEscrowV2Usdc,
-  depositEscrowV2Usdc,
-  withdrawEscrowV2Usdc,
   type SapWriteResult,
   type SapFailure,
 } from '../services/sap/sap-client';
 import {
   openEscrow,
   openEscrowV2,
+  depositEscrowV2Idempotent,
+  withdrawEscrowV2Idempotent,
   submitJob,
   approveJob,
   settleJob,
@@ -195,19 +195,27 @@ function failureStatus(code: SapFailure['code']): 400 | 404 | 500 | 503 | 502 {
   }
 }
 
-/** Serialize a write result to a clean JSON response (never a 5xx stack leak). */
+/**
+ * Serialize a write result to a clean JSON response (never a 5xx stack leak).
+ * `extra` merges extra top-level fields into EVERY branch (e.g. the deposit
+ * idempotency `replayed` flag); undefined spreads to nothing for all other callers.
+ * L2 — `...extra` is spread FIRST in every branch so a future extra field can never
+ * clobber a contract field (error/code/message, ok/dryRun/signature/accounts).
+ */
 function respondWrite(
   c: { json: (b: unknown, s?: number) => Response },
   result: SapWriteResult,
+  extra?: Record<string, unknown>,
 ) {
   if (result.ok === false) {
     return c.json(
-      { error: result.code, code: result.code, message: result.message },
+      { ...extra, error: result.code, code: result.code, message: result.message },
       failureStatus(result.code),
     );
   }
   if (result.dryRun) {
     return c.json({
+      ...extra,
       ok: true,
       dryRun: true,
       // `accepted` is honest now (FIX-B): true ONLY when the program was actually
@@ -224,7 +232,7 @@ function respondWrite(
       },
     });
   }
-  return c.json({ ok: true, dryRun: false, signature: result.signature, accounts: result.accounts });
+  return c.json({ ...extra, ok: true, dryRun: false, signature: result.signature, accounts: result.accounts });
 }
 
 // ─── status (public, no chain work) ───────────────────────────────────────────
@@ -646,6 +654,15 @@ const depositEscrowV2Schema = z
     workerWalletPubkey: z.string().min(32).max(64),
     escrowNonce: u64Str,
     amount: u64Str,
+    // FIX 1 (doc line 591) — REQUIRED idempotency token. A duplicate POST with the
+    // same requestId + same (escrow, amount) replays the recorded outcome instead
+    // of double-funding the depositor's own escrow. Trimmed, 8–128 charset-safe.
+    requestId: z
+      .string()
+      .trim()
+      .min(8)
+      .max(128)
+      .regex(/^[A-Za-z0-9._:-]+$/, 'requestId must be 8–128 chars of [A-Za-z0-9._:-]'),
   })
   .strict();
 
@@ -660,13 +677,29 @@ sapRoutes.post('/escrow/v2/deposit', requireAuthOrAgentSession, requireNonGuestI
   const identity = c.get('identity');
   const notLedger = requireLedgerCapable(c, identity);
   if (notLedger) return notLedger;
-  const result = await depositEscrowV2Usdc({
+  // FIX 1 — DB-backed idempotency: a duplicate POST (same subject+requestId, same
+  // escrow+amount) replays the recorded outcome (replayed:true) and NEVER re-funds.
+  const result = await depositEscrowV2Idempotent({
     depositorAvatarId: identity.avatarId,
     workerWalletPubkey: parsed.data.workerWalletPubkey,
     escrowNonce: BigInt(parsed.data.escrowNonce),
     amount: BigInt(parsed.data.amount),
+    requestId: parsed.data.requestId,
   });
-  return respondWrite(c, result);
+  if (!result.ok) {
+    // 409 for the idempotency conflicts (in-flight duplicate / key reuse); the
+    // remaining codes map to their natural status (missing wallet 404, else 400/500).
+    const status =
+      result.code === 'deposit_in_flight' || result.code === 'deposit_request_mismatch'
+        ? 409
+        : result.code === 'avatar_wallet_missing'
+          ? 404
+          : result.code === 'invalid_pubkey'
+            ? 400
+            : 500;
+    return c.json({ error: result.code, code: result.code, message: result.message }, status);
+  }
+  return respondWrite(c, result.chain, { replayed: result.replayed });
 });
 
 const withdrawEscrowV2Schema = z
@@ -674,6 +707,15 @@ const withdrawEscrowV2Schema = z
     workerWalletPubkey: z.string().min(32).max(64),
     escrowNonce: u64Str,
     amount: u64Str,
+    // R4-B (doc line 623) — REQUIRED idempotency token (mirrors deposit). A duplicate
+    // POST with the same requestId + same (escrow, amount) replays the recorded
+    // outcome instead of submitting a second real withdraw. Trimmed, 8–128 charset-safe.
+    requestId: z
+      .string()
+      .trim()
+      .min(8)
+      .max(128)
+      .regex(/^[A-Za-z0-9._:-]+$/, 'requestId must be 8–128 chars of [A-Za-z0-9._:-]'),
   })
   .strict();
 
@@ -691,13 +733,30 @@ sapRoutes.post('/escrow/v2/withdraw', requireAuthOrAgentSession, requireNonGuest
   const identity = c.get('identity');
   const notLedger = requireLedgerCapable(c, identity);
   if (notLedger) return notLedger;
-  const result = await withdrawEscrowV2Usdc({
+  // FIX 2b + R4-B (doc line 623) — book the withdraw into the gate ledger AND make it
+  // idempotent: a duplicate POST (same subject+requestId, same escrow+amount) replays
+  // the recorded outcome (replayed:true) and NEVER submits a second real withdraw.
+  const result = await withdrawEscrowV2Idempotent({
     depositorAvatarId: identity.avatarId,
     workerWalletPubkey: parsed.data.workerWalletPubkey,
     escrowNonce: BigInt(parsed.data.escrowNonce),
     amount: BigInt(parsed.data.amount),
+    requestId: parsed.data.requestId,
   });
-  return respondWrite(c, result);
+  if (!result.ok) {
+    // 409 for the idempotency conflicts (in-flight duplicate / key reuse); missing
+    // wallet 404, bad pubkey 400, else 500 — mirrors the deposit route.
+    const status =
+      result.code === 'withdraw_in_flight' || result.code === 'withdraw_request_mismatch'
+        ? 409
+        : result.code === 'avatar_wallet_missing'
+          ? 404
+          : result.code === 'invalid_pubkey'
+            ? 400
+            : 500;
+    return c.json({ error: result.code, code: result.code, message: result.message }, status);
+  }
+  return respondWrite(c, result.chain, { replayed: result.replayed });
 });
 
 // -- V2 escrow-gate release lifecycle (triple-gated, default OFF) --
@@ -952,11 +1011,19 @@ function gateFailureStatus(
     case 'job_not_open':
     case 'rail_mixed_forbidden':
     case 'release_rail_forbidden':
+    // R4-A — an unowned on-chain pending exists (out-of-band / settle_unknown-landed);
+    // ops must reconcile before settling. R5-1 — a stale settle whose slot was consumed
+    // on-chain but its pending is gone (finalized+closed). All lifecycle/ops conflicts. 409.
+    case 'unreconciled_onchain_pending':
+    case 'settle_slot_consumed':
       // Lifecycle conflicts — the job is in a state that forbids this transition.
       return 409;
     case 'rpc_unreachable':
     case 'payai_unavailable':
     case 'payai_release_failed':
+    // R4-A — could not READ the escrow's on-chain pending_amount; the unowned-pending
+    // guard fails CLOSED and refuses (retryable). Treat like an upstream read failure. 502.
+    case 'pending_state_unverifiable':
       return 502;
     case 'internal':
       return 500;
