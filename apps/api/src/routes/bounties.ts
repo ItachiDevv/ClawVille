@@ -249,6 +249,23 @@ const createBountySchema = z
           'acceptanceCriteria is required for a USDC bounty (a verdict needs criteria to judge against).',
       });
     }
+    // A USDC bounty custodies its reward in an on-chain escrow VAULT (the composed
+    // rail funds it creator→house AT POST; the legacy rail at approve). The deployed
+    // `create_escrow_v2` REQUIRES a positive expiry — the vault's refund/reclaim
+    // deadline — and refuses `expiresAt <= 0` (`invalid_amount`). A custodial bounty
+    // whose funds could lock forever with NO deadline is not a valid product, so
+    // require an explicit expiry for the USDC rail (CT bounties, which custody
+    // nothing on-chain, stay expiry-OPTIONAL). Reject at the schema boundary so the
+    // error is a clean 400 with a precise path, not a confusing vault-open failure
+    // deep in the create handler.
+    if (data.paymentRail === 'usdc' && !data.expiresAt) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['expiresAt'],
+        message:
+          'expiresAt is required for a USDC bounty (the on-chain escrow vault needs a refund/reclaim deadline).',
+      });
+    }
     // A USDC bounty is settled as a SINGLE-call escrow for the whole reward and
     // released to ONE winning hunter, so maxAttempts must be 1 (multiple parallel
     // claimants would each expect the one escrow — undefined who settles). Enforce
