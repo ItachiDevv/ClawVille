@@ -701,11 +701,36 @@ The deployed program seeds every escrow with the WORKER key at open, and a bount
 unknown at post, so the composition uses the **ClawVille house** (Coralia, `resolveHouseAvatarId`)
 as the FIXED escrow worker:
 
-- **LEG 1 (on-chain V2 vault)** — at CREATE, `openComposedBountyEscrow` opens a V2 USDC escrow
-  `depositor=creator, worker=house, jobId=bountyId`, funded to `bountyVaultDeposit(reward)` with a
-  deterministic `bountyEscrowNonce(bountyId)`. At APPROVE: `approveJob`(creator) → `settleJobV2`(house,
-  reserves principal in a PendingSettlement) → `finalizeJobV2`(permissionless, releases principal to
-  the house after the dispute window). **LEG 1d (auto-reclaim)** fires right after finalize.
+- **LEG 1 (on-chain V2 vault)** — at CREATE, `openComposedBountyEscrow`:
+  - **LEG 1 tier-publish (the 6148 fix)** — FIRST (re)publishes the house pricing tier at THIS
+    bounty's exact price (`updateAgentPricingUsdc` with `tierId='bounty-usdc'`, `pricePerCall =
+    usdcRewardBaseUnits(reward)`), because `create_escrow_v2` rejects `PricingTierNotFound 6148`
+    unless the escrow's `price_per_call` matches a tier in the WORKER's on-chain pricing_menu, and the
+    house provisioner only publishes a fixed NOMINAL 1-USDC tier that arbitrary rewards can never
+    match. `update_agent(pricing)` replaces the whole menu (last-write-wins), so the constant tier id
+    at the new price is correct. The tier-publish AND the create below are held together under a
+    per-house keyed mutex (`sap-house-pricing:<houseAvatarId>`, `services/keyed-mutex.ts`): a
+    concurrent bounty's tier-set must not land between this bounty's tier-set and its create (that
+    would make the create read the wrong price ⇒ 6148). Single API container ⇒ the in-process mutex is
+    sufficient (mirrors escrow-gate's per-escrow serialization). `settle_calls_v2` captures price at
+    CREATE and does NOT re-read the menu, so a LATER bounty overwriting the menu can never break an
+    already-created escrow's settle/finalize. If the tier-publish fails, `openComposedBountyEscrow`
+    returns a typed `internal` failure WITHOUT opening the vault (provably no custody ⇒ the create
+    route deletes the phantom bounty) — never fund a vault the create would 6148-reject.
+    **Ops caveats (adversary LOW nits, money-safe):** (1) `scripts/sap/provision-house-sap.ts` is a
+    SECOND, cross-process, un-mutexed writer to the same menu (it resets the nominal 1-USDC tier) —
+    do NOT run a house re-provision while the composed rail is live-creating; a collision is a
+    transient, atomically-reverted, retryable 6148, never stranded custody. (2) ALL composed creates
+    platform-wide serialize through the one house mutex (held across the on-chain create+confirm), so
+    a slow create head-of-line-blocks the rail for seconds — inherent to the single-tier
+    whole-menu-replace design. (3) A bounty over the house STAKE coverage (~$200 at 0.11 SOL) burns
+    one pricing tx before the coverage preflight rejects it — wasted fee only, menu self-heals on the
+    next create.
+  - then opens a V2 USDC escrow `depositor=creator, worker=house, jobId=bountyId`, funded to
+    `bountyVaultDeposit(reward)` with a deterministic `bountyEscrowNonce(bountyId)`. At APPROVE:
+    `approveJob`(creator) → `settleJobV2`(house, reserves principal in a PendingSettlement) →
+    `finalizeJobV2`(permissionless, releases principal to the house after the dispute window).
+    **LEG 1d (auto-reclaim)** fires right after finalize.
 - **LEG 2 (payai)** — one x402 exact USDC payment house→hunter through the existing PayAI rail
   (a V1 `rail:'payai'` escrow `depositor=house, worker=hunter, jobId=${bountyId}:payout`).
 

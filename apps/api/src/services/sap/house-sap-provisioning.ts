@@ -118,19 +118,25 @@ const HOUSE_SAP_DESCRIPTION =
 const HOUSE_SAP_PROTOCOLS = ['clawville'];
 
 /**
- * USDC pricing tier (6-decimal base units). NOMINAL, and in SLICE 1 only ever
- * exercised as a dry-run rehearsal. Its sole on-chain purpose is to move the
- * worker out of the "no pricing menu → PricingTierNotFound 6148" state so a V2
- * `create_escrow_v2` can read a tier. `pricePerCall = 1_000_000` = exactly 1
- * USDC/call — a legible, round nominal. The DEFINITIVE per-bounty escrow↔tier
- * arithmetic (whether the escrow-open slice scales the reward via `maxCalls` at
- * this tier, or refines the published tier) is owned by the escrow-open slice;
- * SLICE 1 only needs a VALID, published tier. `update_agent(pricing)` replaces
- * the whole menu, so this can be safely re-published later. rateLimit /
- * maxCallsPerSession are left at the sap-client defaults (100 / 1000).
+ * USDC pricing tier id (shared with the escrow-open slice). The provisioner
+ * publishes ONE tier under this id at a NOMINAL 1-USDC price to move the worker out
+ * of the "no pricing menu → PricingTierNotFound 6148" state at boot. Exported so
+ * `openComposedBountyEscrow` (bounty-escrow-link.ts) re-publishes THE SAME tier id
+ * at each bounty's exact reward price before opening its vault — one source of truth
+ * for the id keeps the menu legible across the boot-time provision and the
+ * per-bounty republish.
+ *
+ * PER-BOUNTY ARITHMETIC OWNERSHIP (was a TODO here in SLICE 1, now DONE): the
+ * DEFINITIVE per-bounty escrow↔tier price is owned by the escrow-open slice.
+ * `openComposedBountyEscrow` re-publishes this tier at `pricePerCall =
+ * usdcRewardBaseUnits(reward)` under a per-house keyed mutex BEFORE every
+ * `create_escrow_v2` — because `update_agent(pricing)` replaces the whole menu
+ * (last-write-wins), the fixed nominal tier below is only the boot-time placeholder;
+ * the live per-create price is set there, not here. rateLimit / maxCallsPerSession
+ * are left at the sap-client defaults (100 / 1000).
  */
-const HOUSE_PRICING_TIER_ID = 'bounty-usdc';
-const HOUSE_PRICING_PRICE_PER_CALL = 1_000_000n; // 1 USDC (6 dp)
+export const HOUSE_PRICING_TIER_ID = 'bounty-usdc';
+const HOUSE_PRICING_PRICE_PER_CALL = 1_000_000n; // 1 USDC (6 dp), nominal boot placeholder
 
 /**
  * Default target stake — 0.11 SOL (staging default; overridable via

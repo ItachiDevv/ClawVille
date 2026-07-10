@@ -96,9 +96,10 @@ import {
   type EscrowSettlementRail,
   type WithdrawEscrowV2IdempotentResult,
 } from './sap/escrow-gate';
-import { sapConfigSnapshot } from './sap/sap-client';
-import { resolveHouseAvatarId } from './sap/house-sap-provisioning';
+import { sapConfigSnapshot, updateAgentPricingUsdc } from './sap/sap-client';
+import { resolveHouseAvatarId, HOUSE_PRICING_TIER_ID } from './sap/house-sap-provisioning';
 import { ensureWallet } from './wallet-service';
+import { withKeyedMutex } from './keyed-mutex';
 
 /**
  * The whole-USDC reward → base-unit conversion. `tokenReward` on a bounty is a
@@ -179,6 +180,8 @@ export interface ComposedBountyDeps {
   withdrawEscrowV2Idempotent?: typeof withdrawEscrowV2Idempotent;
   ensureWallet?: typeof ensureWallet;
   resolveHouseAvatarId?: typeof resolveHouseAvatarId;
+  /** The per-bounty house pricing-tier publish (LEG-1 open prerequisite). */
+  updateAgentPricingUsdc?: typeof updateAgentPricingUsdc;
 }
 
 /**
@@ -526,16 +529,51 @@ export function bountyVaultDeposit(tokenReward: number): bigint {
 }
 
 /**
+ * Per-house-avatar mutex key — serializes a composed bounty's tier-publish +
+ * escrow-create so a concurrent bounty cannot overwrite the house pricing menu
+ * between another bounty's tier-set and its create. Mirrors `escrowMutexKey` in
+ * escrow-gate.ts (`sap-escrow:<pda>`). See `openComposedBountyEscrow`.
+ */
+function housePricingMutexKey(houseAvatarId: string): string {
+  return `sap-house-pricing:${houseAvatarId}`;
+}
+
+/**
  * LEG 1 open — at bounty CREATE, custody the creator's USDC in an on-chain SAP V2
  * escrow with the HOUSE as the fixed worker counterparty. depositor=creator,
  * worker=house, jobId=bountyId, single call priced at the reward, funded to
  * `bountyVaultDeposit`, nonce=`bountyEscrowNonce(bountyId)`.
  *
+ * ── PER-BOUNTY PRICING TIER (the 6148 fix) ───────────────────────────────────
+ * `create_escrow_v2` REQUIRES the escrow's `price_per_call` to match a tier in the
+ * worker's on-chain pricing_menu, else it rejects `PricingTierNotFound` 6148. The
+ * house provisioner publishes ONE fixed NOMINAL tier (1 USDC), but bounty rewards
+ * are arbitrary (≥10 whole USDC), so that fixed tier can NEVER match an arbitrary
+ * bounty. So this slice — which OWNS the per-bounty escrow↔tier arithmetic — first
+ * (re)publishes the house tier at THIS bounty's exact price (`pricePerCall =
+ * usdcRewardBaseUnits(reward)`), THEN opens the vault. `update_agent(pricing)`
+ * REPLACES the whole menu (last-write-wins), so a constant `tierId` at the new
+ * price is correct.
+ *
+ * ── WHY THE MUTEX MUST COVER THE CREATE TOO ──────────────────────────────────
+ * The tier-set and the create are held together under a per-house keyed mutex.
+ * Because the menu is replaced whole, a concurrent bounty B's tier-set could
+ * otherwise land BETWEEN bounty A's tier-set and A's create, so A's create would
+ * read B's price and fail 6148. Serializing the whole (set → create) critical
+ * section per house avatar prevents that interleave. The in-process mutex is
+ * sufficient because a SINGLE API container serves this rail (staging and prod are
+ * each one container) — same rationale as escrow-gate's per-escrow `withKeyedMutex`;
+ * the create itself is FURTHER serialized per-PDA by `openEscrowV2`'s own
+ * `withKeyedMutex` + `pg_advisory_xact_lock`, so no new infra is introduced here.
+ *
  * Returns the raw escrow-gate result — the caller (slice 2b) persists
  * `settlement.escrowPda` onto the bounty row (`escrow_pda`) + sets
- * `composition_state='vault_held'`. Idempotent: a retry derives the same nonce ⇒
- * same PDA ⇒ the gate replays (no double-fund). If the house avatar has not been
- * seeded/provisioned, returns a typed `internal` failure (never funds).
+ * `composition_state='vault_held'`. Idempotent: a retry re-publishes the same tier
+ * (whole-menu replace is idempotent in effect) then derives the same nonce ⇒ same
+ * PDA ⇒ the gate replays the open (no double-fund). If the house avatar has not
+ * been seeded/provisioned, returns a typed `internal` failure (never funds). If the
+ * tier publish fails, returns that typed failure WITHOUT opening the vault — never
+ * fund a vault the create would reject 6148.
  */
 export async function openComposedBountyEscrow(
   input: {
@@ -554,19 +592,61 @@ export async function openComposedBountyEscrow(
     ? BigInt(Math.floor(input.expiresAt.getTime() / 1000))
     : 0n;
 
-  return (deps.openEscrowV2 ?? openEscrowV2)({
-    depositorAvatarId: input.creatorAvatarId,
-    workerAvatarId: house.houseAvatarId,
-    jobId: input.bountyId,
-    pricePerCall: usdcRewardBaseUnits(input.tokenReward),
-    maxCalls: 1n,
-    initialDeposit: bountyVaultDeposit(input.tokenReward),
-    escrowNonce: bountyEscrowNonce(input.bountyId),
-    expiresAt: expiresAtUnix,
-    // SLICE 3: the composed vault takes the BOUNTY-specific dispute window (default
-    // 1 slot ≈ instant) so approve → settle → finalize → hunter payout completes in
-    // one shot; the global agent↔agent window is untouched. See bountyDisputeWindowSlots.
-    disputeWindowSlots: bountyDisputeWindowSlots(),
+  const pricePerCall = usdcRewardBaseUnits(input.tokenReward);
+  const _updateAgentPricingUsdc = deps.updateAgentPricingUsdc ?? updateAgentPricingUsdc;
+  const _openEscrowV2 = deps.openEscrowV2 ?? openEscrowV2;
+
+  return withKeyedMutex(housePricingMutexKey(house.houseAvatarId), async () => {
+    // 1. Publish the house pricing tier at the bounty's EXACT price. The menu is
+    // replaced whole, so the constant `HOUSE_PRICING_TIER_ID` at the new price is
+    // the correct, legible on-chain state. Self-gates + dry-runs inside the
+    // sap-client (this reads no flag).
+    const priced = await _updateAgentPricingUsdc({
+      workerAvatarId: house.houseAvatarId,
+      tierId: HOUSE_PRICING_TIER_ID,
+      pricePerCall,
+    });
+    if (priced.ok === false) {
+      // Fail closed: if the tier could not be published, NEVER open the vault — a
+      // create against a menu missing this price rejects `PricingTierNotFound` 6148,
+      // which would strand the creator's USDC in a vault the create can't consume.
+      //
+      // CODE = 'internal' (mirrors `resolveHouseOrFail`) ON PURPOSE, not the raw
+      // SapFailure code: `openEscrowV2` was NEVER reached, so there is PROVABLY no
+      // vault custody (update_agent moves NO USDC). The create route classifies
+      // delete-vs-keep off `PRE_BROADCAST_NO_CUSTODY`, whose members are exactly
+      // `openEscrowV2`'s pre-broadcast codes; `'internal'` is in that set, so the
+      // route DELETES the phantom bounty (correct — nothing to orphan). Surfacing a
+      // raw tier-publish code outside that set (e.g. `rpc_unreachable`) would make
+      // the route KEEP a `vault_pending` row implying possible custody that cannot
+      // exist. The specific sap error is preserved in the message for diagnostics.
+      return {
+        ok: false,
+        code: 'internal',
+        message: `house pricing tier publish failed before composed escrow open (${priced.code}): ${priced.message}`,
+      };
+    }
+
+    // 2. Open the vault. `price_per_call === the tier we just published`, so
+    // `create_escrow_v2` finds its tier. SAFE UNDER THE LOCK RELEASE: `settle_calls_v2`
+    // does NOT read the pricing_menu — the escrow captures its price at CREATE — so a
+    // LATER bounty overwriting the menu can never break this escrow's settle/finalize.
+    // The lock therefore only needs to cover THIS (tier-set → create), not the whole
+    // escrow lifecycle. Idempotent: same nonce ⇒ same PDA ⇒ the gate replays.
+    return _openEscrowV2({
+      depositorAvatarId: input.creatorAvatarId,
+      workerAvatarId: house.houseAvatarId,
+      jobId: input.bountyId,
+      pricePerCall,
+      maxCalls: 1n,
+      initialDeposit: bountyVaultDeposit(input.tokenReward),
+      escrowNonce: bountyEscrowNonce(input.bountyId),
+      expiresAt: expiresAtUnix,
+      // SLICE 3: the composed vault takes the BOUNTY-specific dispute window (default
+      // 1 slot ≈ instant) so approve → settle → finalize → hunter payout completes in
+      // one shot; the global agent↔agent window is untouched. See bountyDisputeWindowSlots.
+      disputeWindowSlots: bountyDisputeWindowSlots(),
+    });
   });
 }
 
