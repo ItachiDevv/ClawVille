@@ -114,12 +114,11 @@ const MANIFEST: Entry[] = [
     guard: 'requireNonGuestUser',
     routes: [p('post', '/:slug/signup')],
   },
-  {
-    // Guest SPEND holes (2026-07-07): guests are FULLY demo — no real-CT spend either.
-    file: 'items.ts',
-    guard: 'requireNonGuestIdentity',
-    routes: [p('post', '/buy')],
-  },
+  // items.ts POST /buy — REMOVED from this lock (stale entry): the founder's
+  // 2026-07-06 guest DEMO-SETTLEMENT ruling superseded the 2026-07-07 guest-403.
+  // Guests now BUY on the soft demo balance INSIDE the handler (row-locked,
+  // off-ledger, CHECK-safe — see the GUEST DEMO SETTLEMENT block in items.ts),
+  // so requireNonGuestIdentity is deliberately absent from that route's chain.
   {
     file: 'cosmetics.ts',
     guard: 'requireNonGuestUser',
