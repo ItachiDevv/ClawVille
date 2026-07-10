@@ -34,6 +34,13 @@ import {
 import { alertError } from './alert-error';
 
 /**
+ * A DB transaction handle (mirrors `LedgerTx` in `claw-token-ledger.ts`). Lets
+ * `bookHunterCompletion` run inside the SAME transaction as the →paid CAS claim, so
+ * the flip-to-paid and the completion bump commit atomically (LOW-2).
+ */
+type CompositionTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
  * The bounty reputation tier ladder — MIRRORS `calculateReputationTier` in
  * `routes/bounties.ts` (kept in lock-step; the thresholds are a stable product
  * constant). Duplicated here rather than imported so a service never depends on a
@@ -51,16 +58,22 @@ function reputationTier(totalCompleted: number): string {
  * Book the winning hunter's bounty-completion bump for a composed USDC bounty.
  * MIRRORS the legacy USDC deferred bump in `routes/bounties.ts` (totalCompleted +1
  * + tier recompute; `totalEarned` intentionally UNCHANGED — that column is a CT
- * counter and a USDC reward must never inflate it). Only ever called from inside
- * the atomic `paid`-claim below, so it runs exactly once per bounty.
+ * counter and a USDC reward must never inflate it). Runs on the caller's transaction
+ * handle `tx` so the bump commits ATOMICALLY with the →paid CAS claim (LOW-2). Only
+ * ever called from inside the winning `paid`-claim below, so it runs exactly once per
+ * bounty.
  */
-async function bookHunterCompletion(hunterAvatarId: string, now: Date): Promise<void> {
-  const rep = await db.query.bountyReputation.findFirst({
+async function bookHunterCompletion(
+  tx: CompositionTx,
+  hunterAvatarId: string,
+  now: Date,
+): Promise<void> {
+  const rep = await tx.query.bountyReputation.findFirst({
     where: eq(bountyReputation.avatarId, hunterAvatarId),
   });
   if (rep) {
     const bumped = rep.totalCompleted + 1;
-    await db
+    await tx
       .update(bountyReputation)
       .set({
         totalCompleted: bumped,
@@ -70,7 +83,7 @@ async function bookHunterCompletion(hunterAvatarId: string, now: Date): Promise<
       })
       .where(eq(bountyReputation.id, rep.id));
   } else {
-    await db.insert(bountyReputation).values({
+    await tx.insert(bountyReputation).values({
       avatarId: hunterAvatarId,
       totalCompleted: 1,
       totalEarned: 0,
@@ -126,30 +139,38 @@ export async function bookComposedBountyPaid(
   input: BookComposedBountyPaidInput,
 ): Promise<BookComposedBountyPaidResult> {
   const now = new Date();
-  const claimed = await db
-    .update(bounties)
-    .set({
-      status: 'completed',
-      completedAt: now,
-      compositionState: 'paid',
-      payoutEscrowPda: input.payoutEscrowPda,
-      escrowJobId: input.bountyId,
-      covenantAuditRootHex: input.auditRootHex,
-      covenantVerificationPassed: true,
-      updatedAt: now,
-    })
-    .where(
-      and(
-        eq(bounties.id, input.bountyId),
-        // CAS on the OBSERVED prior + belt-and-braces never-from-paid.
-        eq(bounties.compositionState, input.expectedPriorState),
-        ne(bounties.compositionState, 'paid'),
-      ),
-    )
-    .returning({ id: bounties.id });
-  if (claimed.length !== 1) return { booked: false, reason: 'already_paid_or_state_drift' };
-  await bookHunterCompletion(input.hunterAvatarId, now);
-  return { booked: true };
+  // LOW-2 atomicity: the →paid CAS claim AND the winner's completion bump commit in ONE
+  // transaction, so a crash BETWEEN them can never leave a 'paid' row whose hunter
+  // `totalCompleted` was never incremented (a permanent reputation undercount). The CAS
+  // still fires at most once — only the single caller whose UPDATE returns a row books the
+  // bump; a loser (already paid / state drift) returns booked:false and its (write-free)
+  // transaction commits as a no-op. Return contract is unchanged.
+  return db.transaction(async (tx) => {
+    const claimed = await tx
+      .update(bounties)
+      .set({
+        status: 'completed',
+        completedAt: now,
+        compositionState: 'paid',
+        payoutEscrowPda: input.payoutEscrowPda,
+        escrowJobId: input.bountyId,
+        covenantAuditRootHex: input.auditRootHex,
+        covenantVerificationPassed: true,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(bounties.id, input.bountyId),
+          // CAS on the OBSERVED prior + belt-and-braces never-from-paid.
+          eq(bounties.compositionState, input.expectedPriorState),
+          ne(bounties.compositionState, 'paid'),
+        ),
+      )
+      .returning({ id: bounties.id });
+    if (claimed.length !== 1) return { booked: false, reason: 'already_paid_or_state_drift' };
+    await bookHunterCompletion(tx, input.hunterAvatarId, now);
+    return { booked: true };
+  });
 }
 
 /**
