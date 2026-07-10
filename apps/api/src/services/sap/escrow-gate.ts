@@ -1131,6 +1131,9 @@ export async function depositEscrowV2Idempotent(
   // We hold the claim — now (and only now) touch the chain. M2: the executor call
   // AND the outcome-persist UPDATEs are wrapped so a THROW never strands the claim
   // 'in_flight' forever (which would 409-brick every retry of this requestId).
+  // R3-3 — capture any signature the executor surfaced BEFORE the persist, so a throw
+  // during the persist still parks a reconcilable signature (not null).
+  let sentSignature: string | null = null;
   try {
     const chain = await depositEscrowV2Usdc({
       depositorAvatarId: input.depositorAvatarId,
@@ -1138,6 +1141,7 @@ export async function depositEscrowV2Idempotent(
       escrowNonce: input.escrowNonce,
       amount: input.amount,
     });
+    sentSignature = chain.ok === true ? (chain.dryRun ? null : chain.signature) : (chain.signature ?? null);
 
     if (chain.ok === true) {
       // Confirmed (live) — persist the terminal outcome for a faithful replay.
@@ -1181,9 +1185,12 @@ export async function depositEscrowV2Idempotent(
     // recorded unconfirmed signal and never re-sends. Best-effort — if this UPDATE
     // itself throws, the row stays 'in_flight' (stuck, but still never double-funds).
     try {
+      // R3-4 — canonical `internal` (in the SapFailure union), not off-contract
+      // 'internal_error'. R3-3 — park the captured signature so a post-send DB blip
+      // stays reconcilable.
       await db
         .update(sapDepositRequests)
-        .set({ status: 'broadcast_unknown', failureCode: 'internal_error', updatedAt: new Date() })
+        .set({ status: 'broadcast_unknown', failureCode: 'internal', signature: sentSignature, updatedAt: new Date() })
         .where(eq(sapDepositRequests.id, claimId));
     } catch {
       // swallow — the money invariant (no double-fund) holds regardless.
@@ -2267,17 +2274,29 @@ export async function settleJobV2(
           if (reconcile.row) return { ok: true, phase: 'pending', settlement: reconcile.row, chain: null, replay: true, next: 'finalize' };
           return { ok: false, code: 'settle_in_progress', message: 'the row changed while reconciling the on-chain pending settlement.' };
         }
-        // M3 — the replay signal PROVES an on-chain pending exists at our index, but
-        // the re-probe failed (RPC down) or could not decode. Do NOT mark terminal
-        // 'failed' (that status is unrecoverable, so the on-chain pending would stay
-        // forever unbooked). Restore the row to its PRE-CLAIM status with the
-        // reservation released, so the NEXT settleJobV2 call re-enters the pre-claim
-        // decode-reconcile once RPC recovers. Retryable.
-        await db.update(sapEscrowSettlements).set({
-          status: preClaimStatus, reservedPrincipalAmount: jobReserved.toString(), feeAmount: jobFees.toString(), updatedAt: new Date(),
-          metadata: { ...((row.metadata as object) ?? {}), settleError: failure?.code ?? 'simulation_error', replaySignalUnresolved: true },
-        }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'settling')));
-        return { ok: false, code: 'on_chain_error', message: 'settle replay-signal: an on-chain pending exists but could not be decoded; retry.' };
+        // R3-1 — the re-probe did NOT positively decode a pending. GATE THE RESTORE ON
+        // BROADCAST. `isV2ReplaySignal` substring-matches the STRINGIFIED failure (incl.
+        // the base58 signature), so a genuine confirm-timeout `broadcast:true` failure can
+        // FALSE-MATCH the replay regex. Restoring + releasing the reservation on a
+        // broadcast:true tx is UNSAFE: the tx MAY still land, and a retry would then settle
+        // at the NEXT index → two pendings for one job → double principal release. So:
+        //   • broadcast:true → FALL THROUGH to the generic handler → `settle_unknown`
+        //     (reservation KEPT, reconcile-only). Safe for BOTH a false match AND a genuine
+        //     replay whose on-chain pending we simply could not read this time.
+        //   • broadcast falsy → provably pre-broadcast (nothing hit the wire): restore to
+        //     pre-claim, release the reservation, retryable — the next call reconciles
+        //     with-decode once RPC recovers. NOT terminal 'failed' (unrecoverable).
+        if (failure?.broadcast !== true) {
+          const restoreMessage = replayCheck.ok
+            ? 'settle replay-signal but no on-chain pending found at the index; retry.'
+            : 'settle replay-signal: the on-chain pending could not be read/decoded; retry.';
+          await db.update(sapEscrowSettlements).set({
+            status: preClaimStatus, reservedPrincipalAmount: jobReserved.toString(), feeAmount: jobFees.toString(), updatedAt: new Date(),
+            metadata: { ...((row.metadata as object) ?? {}), settleError: failure?.code ?? 'simulation_error', replaySignalUnresolved: true },
+          }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'settling')));
+          return { ok: false, code: 'on_chain_error', message: restoreMessage };
+        }
+        // broadcast:true + unresolved probe → fall through to the generic quarantine below.
       }
       const unknown = failure?.broadcast === true;
       await db.update(sapEscrowSettlements).set({

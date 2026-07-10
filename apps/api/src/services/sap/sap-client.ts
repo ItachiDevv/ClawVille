@@ -2272,11 +2272,14 @@ export async function readV2VaultBalanceBaseUnits(input: {
     const timeout = new Promise<null>((resolve) => {
       timer = setTimeout(() => resolve(null), 4000);
     });
+    // R3-2 — attach the rejection handler to the RPC promise itself so a slow-then-
+    // rejecting RPC (that settles AFTER the 4s timeout already won the race) can't
+    // surface as an unhandled rejection. A rejection resolves to null (ledger fallback).
+    const balP = getConnection()
+      .getTokenAccountBalance(vaultAta, COMMITMENT)
+      .catch(() => null);
     try {
-      const bal = await Promise.race([
-        getConnection().getTokenAccountBalance(vaultAta, COMMITMENT),
-        timeout,
-      ]);
+      const bal = await Promise.race([balP, timeout]);
       if (!bal?.value?.amount) return null;
       return BigInt(bal.value.amount);
     } finally {

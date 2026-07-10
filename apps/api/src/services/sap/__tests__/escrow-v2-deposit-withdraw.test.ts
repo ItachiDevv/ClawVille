@@ -325,7 +325,7 @@ describe('FIX 1 — V2 deposit idempotency', () => {
     // Held broadcast_unknown (pessimistic) — NOT deleted, NOT stranded in_flight.
     expect(depositRows).toHaveLength(1);
     expect(depositRows[0]?.status).toBe('broadcast_unknown');
-    expect(depositRows[0]?.failureCode).toBe('internal_error');
+    expect(depositRows[0]?.failureCode).toBe('internal'); // R3-4 — canonical code
     expect(depositCalls).toBe(1);
 
     // Replay with the same key — returns the recorded unconfirmed signal, NO re-send.

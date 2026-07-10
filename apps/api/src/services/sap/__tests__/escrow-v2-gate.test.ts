@@ -549,23 +549,51 @@ describe('SAP V2 gate — two-phase USDC release', () => {
     expect(settleCalls).toBe(0);
   });
 
-  it('M3 — a settle replay-signal with a FAILED re-probe restores the row (retryable), then a healthy retry reconciles', async () => {
+  it('R3-1(a) — a replay-signal FALSE-MATCH with broadcast:true + failed re-probe QUARANTINES (settle_unknown, reservation KEPT)', async () => {
     rows = [baseRow()];
     await persistApproval();
-    // Pre-claim probe: no pending → proceeds to claim + chain settle. The chain
-    // returns a replay signal; the RE-PROBE (called with a settlementIndex) fails.
+    // A GENUINE confirm-timeout (broadcast:true — the tx MAY still land) whose base58
+    // signature coincidentally contains '6138' ⇒ isV2ReplaySignal false-matches. The
+    // re-probe fails. R3-1: must NOT restore+release (a retry would settle at the NEXT
+    // index → two pendings → double release) — fall through to the settle_unknown
+    // quarantine with the reservation KEPT.
     settleOutcome = {
       ok: false,
-      code: 'on_chain_error',
-      message: 'custom program error: SettlementReplay 6138',
+      code: 'rpc_unreachable',
+      message: 'confirmation timeout',
       broadcast: true,
-      signature: 'replay-sig',
+      signature: 'sig6138maybelandedXXXXXXXXXXXXXXXXXXXX',
     };
-    reprobeOutcome = { ok: false, code: 'rpc_unreachable', message: 'confirmation timeout' };
+    reprobeOutcome = { ok: false, code: 'rpc_unreachable', message: 'timeout' };
+    const result = await gate.settleJobV2({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('settle_unconfirmed');
+    expect(rows[0]?.status).toBe('settle_unknown');
+    expect(rows[0]?.settleSignature).toBe('sig6138maybelandedXXXXXXXXXXXXXXXXXXXX');
+    // Reservation KEPT (pessimistic — the tx may land; a retry must never settle again).
+    expect(rows[0]?.reservedPrincipalAmount).toBe('1000000');
+    expect(rows[0]?.feeAmount).toBe('5000');
+    expect(settleCalls).toBe(1);
+  });
+
+  it('R3-1(b) — a replay-signal with broadcast falsy (sim) + failed re-probe RESTORES retryable, then a healthy retry reconciles', async () => {
+    rows = [baseRow()];
+    await persistApproval();
+    // A dry-run SIM surfaces a replay error — provably pre-broadcast (nothing hit the
+    // wire), so it is safe to restore + release the reservation and retry.
+    settleOutcome = {
+      ok: true,
+      dryRun: true,
+      simulation: { err: 'SettlementReplay 6138', logs: [] },
+      accepted: false,
+      programReached: 'no',
+      accounts: {},
+    };
+    reprobeOutcome = { ok: false, code: 'rpc_unreachable', message: 'timeout' };
     const first = await gate.settleJobV2({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
     expect(first.ok).toBe(false);
     if (!first.ok) expect(first.code).toBe('on_chain_error');
-    // NOT terminal 'failed' — restored to pre-claim 'open', reservation released.
+    // Provably pre-broadcast → restored to pre-claim 'open', reservation released.
     expect(rows[0]?.status).toBe('open');
     expect(rows[0]?.reservedPrincipalAmount).toBe('0');
     expect((rows[0]?.metadata as Record<string, unknown>)?.replaySignalUnresolved).toBe(true);
