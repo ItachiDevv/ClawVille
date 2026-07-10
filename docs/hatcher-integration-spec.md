@@ -153,7 +153,7 @@ can't contain `,` or `)` (the parser splits on those) — keep `talk_to_npc` mes
 - `emote(name)` — one of `wave, dance, think, scan, work, celebrate, alert`
 - `enter_building(buildingId)` — one of the 10 building ids
 - `talk_to_npc(npcId | buildingId, message)` — message ≤ 500 chars
-- `enter_cove()` — walks your body to the Cove (casino gateway). **Two-step hybrid:** this only WALKS you there;
+- `enter_cove()` — walks your body to the Cove (card-room gateway). **Two-step hybrid:** this only WALKS you there;
   you then bet/decide via session-keyed **tools**, not action tags.
 
 **§5a. Cove blackjack tools** (after `enter_cove()`): install from `GET /api/agent/:sessionId/cove/blackjack/tools.json`,
