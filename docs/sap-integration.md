@@ -796,11 +796,15 @@ note long promised "retryable via an ops crank" — this IS that crank.
 **Two-tier priority (no starvation):** the sweep runs TIER 1 (`awaiting_finalize` / `reconcile_payout_failed`
 — money mid-flight, delayed REAL payouts) first, taking up to the whole `RESUME_BATCH`; TIER 2 (`vault_held` +
 approved) runs only on the slots tier 1 leaves free, both ordered `updated_at` ASC. So the L-1 `vault_held`
-class can NEVER starve a money-mid-flight row. Residual (deferred to L-3): within tier 2, a permanently-wedged
-`vault_held` row keeps a slot each pass (a no-op `failed` resume doesn't bump `updated_at`), so ≥ batch-size
-permanent wedges delay NEWER vault_held payouts — money-safe (USDC stays custodied), and the real fix (a
-terminal quarantine/backoff needing a new `composition_state`, plus a persistent-wedge alert — a clean `failed`
-resume currently pages nothing) is bigger than this nit.
+class can NEVER starve a money-mid-flight row. **Persistent-wedge alert (L-3c):** a `vault_held`-origin resume
+that ends phase `failed` now pages ops (`alertError`, `source:bounty-composition`, severity critical) with
+`{bountyId, escrowPda, code}`, throttled per bounty to one page per hour (an in-memory Map — resets on restart;
+alert-error.ts's own limiter is only 60s, shorter than the ~5-min crank, so the worker owns the window). So ops
+sees a stuck approved bounty long before batch-size accumulates. Residual (still deferred): within tier 2 a
+permanently-wedged row keeps a slot each pass (a no-op `failed` resume doesn't bump `updated_at`), so ≥
+batch-size permanent wedges delay NEWER vault_held payouts — money-safe (USDC stays custodied). The remaining
+real fix (a terminal quarantine / backoff needing a NEW `composition_state`) is bigger than warranted until ops
+noise proves real.
 
 **Provenance guard (money invariant):** a `vault_held` bounty is swept ONLY with a genuinely approved attempt —
 the winning hunter is resolved FROM that approved attempt row, NEVER from input; the sweep query's
@@ -810,6 +814,22 @@ approve route and the sweep feed `bookComposedBountyPaid` the SAME observed prio
 `WHERE composition_state='vault_held' AND != 'paid'` CAS flips exactly once; every settle leg is at-most-once
 (the V2 'settling' claim + pg advisory lock; the leg-2 payout `(payoutPda, ${id}:payout)` key). The crank still
 NEVER touches the terminal `paid`, or the indeterminate `vault_pending` (operator-reconcile only).
+
+**Settle-failure disposition — pre-broadcast restores, may-have-landed quarantines (L-2 / L-3a / L-3b):** every
+post-claim settle failure now splits by whether the money leg MAY have reached the wire, so a transient failure
+no longer wedges an approved bounty terminal `failed` (which the settle claim refuses `job_not_open`):
+- **V2 vault settle** (`settleJobV2`, L-2): a `broadcast` falsy (pre-broadcast sim/RPC) failure RESTORES the row
+  to its pre-claim status (retryable); `broadcast:true` KEEPS `settle_unknown` (reconcile-only).
+- **payai LEG-2 payout** (`settleJob` payai branch, L-3a — the composed hunter payout): a `broadcastUnknown:false`
+  VERIFY-stage failure (the facilitator provably never called `/settle`) RESTORES retryable; `broadcastUnknown:true`
+  (verify passed → `/settle` attempted → may have executed on-chain) STAYS terminal `failed`, never auto-retried.
+  `broadcastUnknown` is a FULL equivalent of the on-chain `broadcast` flag (set in `payai-release.ts`), so there is
+  NO honesty asymmetry — both rails cleanly discriminate provable-no-move from may-have-moved.
+- **V1 vault settle** (`settleJob` chain branch, L-3b — latent, off the composed path): the same `broadcast` split.
+Money-neutral in every case (the restored arm moved nothing + the payai/V1 claim reserves no columns, so only the
+status label flips terminal→retryable); the may-have-landed arm is UNCHANGED (a payment that may have executed must
+never auto-retry — double-pay). Together these let the composed bounty SELF-HEAL to `paid`: a LEG-1 settle transient
+→ L-2 restore → next sweep; a LEG-2 payout transient → L-3a restore → next sweep.
 
 ### OPS RUNBOOK — `reconcile_payout_failed`
 

@@ -381,6 +381,37 @@ export interface ResumeComposedBountyDeps extends ApplyComposedDeps {
   loadContext?: (bountyId: string) => Promise<ResumeContext | null>;
   /** Test seam — the settle+persist step (default: `applyComposedSettleOutcome`). */
   applyOutcome?: typeof applyComposedSettleOutcome;
+  /** Test seam — the persistent-wedge alert emitter (default: `alertError`). */
+  alertError?: typeof alertError;
+}
+
+// ── L-3c — PERSISTENT VAULT_HELD WEDGE ALERT (throttled) ──────────────────────
+//
+// A `vault_held`-origin resume that ends phase `failed` is a PERSISTENT WEDGE: an
+// APPROVED bounty whose settle keeps failing PRE-settle (e.g. a deterministic
+// out-of-band vault close — the exact class L-1/L-2 self-heal cannot recover). It
+// otherwise pages NOTHING (applyComposedSettleOutcome's `failed` case is a no-op; a
+// clean `failed` return doesn't throw, so the sweep loop's console.error never fires),
+// so ops would be blind until a human noticed the unpaid hunter. We alert, throttled
+// per bounty to ONE page per WEDGE_ALERT_WINDOW_MS.
+//
+// WHY a worker-level window (not alert-error.ts's own limiter): the crank runs every
+// ~5 min but alert-error.ts dedupes only 60s, so back-to-back passes would re-page.
+// This 1h in-memory Map is the primary per-bounty throttle. IN-MEMORY ⇒ RESETS ON
+// RESTART (acceptable for an ops signal — a still-wedged bounty simply re-pages once
+// within a window after a restart). The Map is bounded to LIVE wedges two ways:
+// `resumeComposedBounty` deletes a swept row's entry the moment it heals, AND
+// `runComposedBountyResumePass` prunes every key not in the current pass's swept set
+// (so a row resolved OUT-OF-BAND — e.g. admin-fail-refund → `refunded`, never swept
+// again — cannot leak a stale entry). The throttle records DELIVERY, not attempt: the
+// timestamp is set only AFTER a successful `alertError`, so a failed alert retries next
+// pass.
+const WEDGE_ALERT_WINDOW_MS = 60 * 60 * 1000; // 1h
+const wedgeAlertLastSentAt = new Map<string, number>();
+
+/** Test-only: clear the persistent-wedge alert throttle state. */
+export function _resetComposedWedgeAlerts(): void {
+  wedgeAlertLastSentAt.clear();
 }
 
 export type ResumeComposedBountyOutcome =
@@ -420,11 +451,50 @@ export async function resumeComposedBounty(
       escrowPda: ctx.escrowPda,
       tokenReward: ctx.tokenReward,
       // The CAS guard: the crank books →paid only if the row is STILL at the state
-      // it just loaded (awaiting_finalize | reconcile_payout_failed).
+      // it just loaded (vault_held | awaiting_finalize | reconcile_payout_failed).
       expectedPriorState: ctx.compositionState,
     },
     deps,
   );
+
+  // L-3c — page ops on a PERSISTENT vault_held wedge (an APPROVED vault_held bounty
+  // whose resume ends `failed`), throttled per bounty (see WEDGE_ALERT_WINDOW_MS).
+  // Only the crank reaches here for a vault_held row — the approve route settles
+  // synchronously and surfaces the error over HTTP — so this is precisely the
+  // "keeps wedging on the sweep" signal that otherwise pages nothing.
+  if (ctx.compositionState === 'vault_held') {
+    if (settled.phase === 'failed') {
+      const now = Date.now();
+      const last = wedgeAlertLastSentAt.get(bountyId);
+      if (last === undefined || now - last >= WEDGE_ALERT_WINDOW_MS) {
+        // Record the timestamp only AFTER a SUCCESSFUL send — throttle on DELIVERY,
+        // not attempt — so a throwing/failed alert retries next pass (bounded by the
+        // ~5-min crank cadence + alert-error.ts's own 60s limiter) instead of being
+        // suppressed for a full hour. The try/catch also keeps this fn's "throws
+        // nothing" contract (alertError is non-throwing in prod; a test spy may throw).
+        try {
+          await (deps.alertError ?? alertError)({
+            severity: 'critical',
+            source: 'bounty-composition',
+            message:
+              `Composed bounty ${bountyId}: an APPROVED vault_held bounty keeps FAILING to settle ` +
+              `on the resume crank (${settled.code}): ${settled.message}. The creator's USDC is still ` +
+              `safely custodied in the vault (no money moved) but the hunter is UNPAID — a persistent ` +
+              `pre-settle wedge needs ops (reconcile the on-chain vault, or admin-fail-refund).`,
+            context: { bountyId, escrowPda: ctx.escrowPda, code: settled.code, phase: 'failed' },
+          });
+          wedgeAlertLastSentAt.set(bountyId, now);
+        } catch (err) {
+          console.warn(`[bounty-composition] wedge alert failed for ${bountyId} (non-fatal; retries next pass):`, err);
+        }
+      }
+    } else {
+      // Healed/advanced — drop the throttle entry so the Map stays bounded to
+      // currently-wedged bounties (and a future re-wedge alerts promptly).
+      wedgeAlertLastSentAt.delete(bountyId);
+    }
+  }
+
   return { resumed: true, phase: settled.phase };
 }
 
@@ -465,9 +535,11 @@ function resolveResumePollMs(): number {
  * simultaneous permanent wedges would starve NEWER vault_held wedges. Still MONEY-SAFE
  * (the creator's USDC stays custodied; only a delayed payout, and tier 1 is untouched).
  * NOT fixed here because the real fix is a terminal quarantine / backoff, which needs a
- * NEW composition_state — a bigger change than this availability nit warrants. NOTE: a
- * clean `failed` resume currently emits NO ops alert (only `reconcile_payout_failed`
- * does), so a persistent-wedge ALERT rides L-3 alongside the quarantine/backoff.
+ * NEW composition_state — a bigger change than this availability nit warrants. A clean
+ * `failed` resume DOES now page ops (the L-3c persistent-wedge alert in
+ * `resumeComposedBounty`, throttled per bounty), so ops sees a stuck approved bounty long
+ * before a batch-size backlog accumulates; only the terminal quarantine/backoff remains
+ * deferred.
  */
 export async function runComposedBountyResumePass(): Promise<void> {
   // TIER 1 — money mid-flight; never starved by tier 2.
@@ -500,6 +572,20 @@ export async function runComposedBountyResumePass(): Promise<void> {
   }
 
   const stuck = [...priority, ...vaultHeld];
+
+  // Bound the L-3c wedge-alert throttle Map to CURRENTLY-swept rows. Without this, a
+  // bounty that wedged (got an entry) and was then resolved OUT-OF-BAND (admin-fail-
+  // refund → composition_state='refunded') is never swept again, so the delete-on-heal
+  // path in resumeComposedBounty never runs and its entry lingers until restart. Dropping
+  // every key not in this pass's swept set truly bounds the Map to live wedges. (A key
+  // that merely fell out of the RESUME_BATCH-capped batch while STILL wedged simply
+  // re-alerts when it re-enters — benign, and only reachable under a >batch wedge backlog,
+  // itself a paged ops emergency.)
+  const swept = new Set(stuck.map((b) => b.id));
+  for (const k of wedgeAlertLastSentAt.keys()) {
+    if (!swept.has(k)) wedgeAlertLastSentAt.delete(k);
+  }
+
   for (const b of stuck) {
     try {
       await resumeComposedBounty(b.id);

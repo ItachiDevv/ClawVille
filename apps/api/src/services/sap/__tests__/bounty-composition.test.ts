@@ -25,6 +25,7 @@ import {
 } from '../../bounty-escrow-link';
 import {
   resumeComposedBounty,
+  _resetComposedWedgeAlerts,
   type ResumeComposedBountyDeps,
 } from '../../bounty-composition-worker';
 import { computeV2ProtocolFee, type EscrowGateResult, type EscrowGateErrorCode } from '../escrow-gate';
@@ -646,6 +647,44 @@ describe('resumeComposedBounty (finalize/payout crank)', () => {
       } as ResumeComposedBountyDeps);
     await Promise.all([drive(), drive()]);
     expect(priors).toEqual(['vault_held', 'vault_held']); // == the approve route's literal
+  });
+
+  it('L-3c — a FAILED vault_held resume pages ops ONCE, deduped on the next pass (persistent-wedge alert)', async () => {
+    _resetComposedWedgeAlerts(); // isolate the module-level throttle Map
+    const alerts: Array<{ source: string; context: any }> = [];
+    const deps = {
+      loadContext: async () => ctx({ compositionState: 'vault_held', hunterAvatarId: HUNTER }),
+      // The wedge: settle keeps failing PRE-settle → phase 'failed', funds still custodied.
+      applyOutcome: async () =>
+        ({ ok: false, phase: 'failed', escrowPda: VAULT_PDA, code: 'settle_unconfirmed', message: 'vault gone' }) as any,
+      alertError: async (p: any) => {
+        alerts.push({ source: p.source, context: p.context });
+      },
+    } as ResumeComposedBountyDeps;
+
+    const first = await resumeComposedBounty(BOUNTY_ID, deps);
+    const second = await resumeComposedBounty(BOUNTY_ID, deps); // same 5-min-cadence bounty, within the 1h window
+    expect(first).toEqual({ resumed: true, phase: 'failed' });
+    expect(second).toEqual({ resumed: true, phase: 'failed' });
+    // Alerted EXACTLY ONCE (deduped on the second pass), with the wedge provenance.
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].source).toBe('bounty-composition');
+    expect(alerts[0].context).toMatchObject({ bountyId: BOUNTY_ID, escrowPda: VAULT_PDA, code: 'settle_unconfirmed' });
+  });
+
+  it('L-3c — a vault_held resume that HEALS does not alert (and clears any prior throttle)', async () => {
+    _resetComposedWedgeAlerts();
+    let alerted = false;
+    const out = await resumeComposedBounty(BOUNTY_ID, {
+      loadContext: async () => ctx({ compositionState: 'vault_held', hunterAvatarId: HUNTER }),
+      applyOutcome: async () =>
+        ({ ok: true, phase: 'paid', escrowPda: VAULT_PDA, payoutEscrowPda: PAYOUT_PDA, auditRootHex: AUDIT_ROOT, dryRun: true }) as any,
+      alertError: async () => {
+        alerted = true;
+      },
+    } as ResumeComposedBountyDeps);
+    expect(out).toEqual({ resumed: true, phase: 'paid' });
+    expect(alerted).toBe(false); // a healed resume never pages
   });
 
   it('skips a missing bounty / missing winning hunter / missing vault', async () => {
