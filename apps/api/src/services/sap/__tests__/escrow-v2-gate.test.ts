@@ -46,6 +46,13 @@ let withdrawalRows: Array<{ amount: string }> = [];
 let withdrawalLockRows: Array<{ amount: string }> = [];
 // M3 — override for the settle-replay RE-PROBE (inspect called WITH a settlementIndex).
 let reprobeOutcome: Record<string, unknown> | null = null;
+// R4-A — the default readV2VaultPhysicalState result (clamp tests inject deps.readVaultState).
+// vaultBalance null ⇒ physical-free clamp fails OPEN (ledger ceiling); escrowPendingAmount 0n
+// ⇒ the unowned-pending guard passes (0 ≤ gateLivePending).
+let vaultBalanceVar: bigint | null = null;
+let escrowPendingVar: bigint | null = 0n;
+// R4-C — succeeded direct deposits counted as funding (db.query + in-lock tx.select).
+let depositLedgerRows: Array<{ amount: string }> = [];
 let inspectIndex = 7n;
 let settleCalls = 0;
 let finalizeCalls = 0;
@@ -104,6 +111,10 @@ const fakeDb = {
     sapEscrowWithdrawals: {
       findMany: async () => withdrawalRows,
     },
+    // R4-C — escrowFundsLedger counts succeeded direct deposits as funding (pre-txn read).
+    sapDepositRequests: {
+      findMany: async () => depositLedgerRows,
+    },
   },
   insert(table: unknown) {
     return {
@@ -161,12 +172,16 @@ const fakeDb = {
   },
   select() {
     return {
-      // M1 — table-aware: the in-lock settle re-read selects BOTH sapEscrowSettlements
-      // (→ rows) and sapEscrowWithdrawals (→ withdrawalLockRows).
+      // M1/R4-C — table-aware: the in-lock settle re-read selects sapEscrowSettlements
+      // (→ rows), sapEscrowWithdrawals (→ withdrawalLockRows), and sapDepositRequests
+      // (→ depositLedgerRows, R4-C succeeded-deposit funding).
       from(table: unknown) {
         return {
-          where: async () =>
-            table === realDatabase.sapEscrowWithdrawals ? withdrawalLockRows : rows,
+          where: async () => {
+            if (table === realDatabase.sapEscrowWithdrawals) return withdrawalLockRows;
+            if (table === realDatabase.sapDepositRequests) return depositLedgerRows;
+            return rows;
+          },
         };
       },
     };
@@ -191,6 +206,9 @@ const dryRunSuccess = (accounts: Record<string, string> = {}) => ({
   programReached: 'yes' as const,
   accounts,
 });
+
+// R4-D — an updatedAt older than SAP_STALE_CLAIM_MS (10 min); 11 min ago is safely stale.
+const staleDate = () => new Date(Date.now() - 11 * 60 * 1000);
 
 mock.module('../sap-client', () => ({
   sapConfigSnapshot: () => ({
@@ -220,9 +238,10 @@ mock.module('../sap-client', () => ({
       pending: inspectPending ? inspectPendingDecoded : undefined,
     };
   },
-  // FIX 2a — default vault reader returns null so the settle claim falls back to
-  // the ledger ceiling (the prior behavior); clamp tests inject `deps.readVaultBalance`.
-  readV2VaultBalanceBaseUnits: async () => null,
+  // R4-A — default physical-state reader: vaultBalance null ⇒ physical-free clamp fails
+  // OPEN (ledger ceiling); escrowPendingAmount 0n ⇒ the unowned-pending guard passes.
+  // Clamp/guard tests inject `deps.readVaultState` or set vaultBalanceVar/escrowPendingVar.
+  readV2VaultPhysicalState: async () => ({ vaultBalance: vaultBalanceVar, escrowPendingAmount: escrowPendingVar }),
   preflightCreateEscrowV2Coverage: async () => {
     createCoverageCalls += 1;
     return createCoverageOutcome;
@@ -310,6 +329,9 @@ beforeEach(() => {
   withdrawalRows = [];
   withdrawalLockRows = [];
   reprobeOutcome = null;
+  vaultBalanceVar = null;
+  escrowPendingVar = 0n;
+  depositLedgerRows = [];
   inspectIndex = 7n;
   settleCalls = 0;
   finalizeCalls = 0;
@@ -447,58 +469,19 @@ describe('SAP V2 gate — two-phase USDC release', () => {
     expect(settleCalls).toBe(0);
   });
 
-  it('reconciles an authoritative existing pending PDA by booking the DECODED chain amount, never the caller request', async () => {
-    rows = [baseRow()];
-    await persistApproval();
-    inspectPending = true;
-    // The on-chain pending reserves 3 calls / 3_000_000 principal; the caller asks
-    // for 1. FIX 3: the reconcile MUST book the decoded 3 / 3_000_000 (+ the derived
-    // fee), never the caller's 1 / 1_000_000.
-    const result = await gate.settleJobV2({
-      escrowPda: ESCROW,
-      jobId: 'job-1',
-      callerAvatarId: WORKER,
-      callsToSettle: 1n,
-    });
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(result.phase).toBe('pending');
-    expect(rows[0]?.status).toBe('pending');
-    expect(rows[0]?.settlementIndex).toBe('7');
-    expect(rows[0]?.callsSettled).toBe('3');
-    expect(rows[0]?.reservedPrincipalAmount).toBe('3000000');
-    // computeV2ProtocolFee(3_000_000) = 3_000_000 * 50 / 10_000 = 15_000.
-    expect(rows[0]?.feeAmount).toBe('15000');
-    expect(settleCalls).toBe(0);
-  });
+  // (R4-A item 4) The pre-claim "pending already exists at the CURRENT index" reconcile
+  // was REMOVED as dead code — under settle-increment the current index is always the
+  // next-free slot. Its decoded-booking coverage now lives in the POST-broadcast replay
+  // test and the R4-D stale-claim recovery tests below.
 
-  it('reconciles the DECODED amount even when it is SMALLER than the caller request', async () => {
+  it('R4-A — clamps the ceiling to physical-free (vault − on-chain pending) below the debit (rejects)', async () => {
     rows = [baseRow()];
     await persistApproval();
-    inspectPending = true;
-    // On-chain pending is only 2 calls / 2_000_000 — the caller (dishonestly or
-    // stale) asks for 4. The reconcile books the chain truth (2), never the 4.
-    inspectPendingDecoded = { callsToSettle: 2n, amount: 2_000_000n, isFinalized: false, isDisputed: false };
-    const result = await gate.settleJobV2({
-      escrowPda: ESCROW,
-      jobId: 'job-1',
-      callerAvatarId: WORKER,
-      callsToSettle: 4n,
-    });
-    expect(result.ok).toBe(true);
-    expect(rows[0]?.callsSettled).toBe('2');
-    expect(rows[0]?.reservedPrincipalAmount).toBe('2000000');
-    expect(rows[0]?.feeAmount).toBe('10000');
-    expect(settleCalls).toBe(0);
-  });
-
-  it('FIX 2a — clamps the settle ceiling to a LIVE vault read below the debit (rejects, never claims)', async () => {
-    rows = [baseRow()];
-    await persistApproval();
-    // The settlement ledger says 5_050_000 remaining, but the live vault holds only
-    // 100 base units (drained out-of-band). The clamp must reject BEFORE claiming.
+    // Settlement ledger says 5_050_000 remaining, but the live vault holds only 100 base
+    // units (drained out-of-band), pending_amount 0. physicalFree = 100 − 0 = 100 < debit.
     const result = await gate.settleJobV2(
       { escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n },
-      { readVaultBalance: async () => 100n },
+      { readVaultState: async () => ({ vaultBalance: 100n, escrowPendingAmount: 0n }) },
     );
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe('over_release');
@@ -506,12 +489,14 @@ describe('SAP V2 gate — two-phase USDC release', () => {
     expect(settleCalls).toBe(0);
   });
 
-  it('FIX 2a — a null vault read (RPC failure) falls back to the ledger ceiling and proceeds', async () => {
+  it('R4-A — a null vaultBalance (RPC fail) falls back to the ledger ceiling and proceeds', async () => {
     rows = [baseRow()];
     await persistApproval();
+    // vaultBalance null ⇒ physical-free clamp fails OPEN; escrowPendingAmount 0n ⇒ the
+    // unowned guard passes. The settle proceeds on the ledger ceiling.
     const result = await gate.settleJobV2(
       { escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n },
-      { readVaultBalance: async () => null },
+      { readVaultState: async () => ({ vaultBalance: null, escrowPendingAmount: 0n }) },
     );
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.phase).toBe('pending');
@@ -519,13 +504,12 @@ describe('SAP V2 gate — two-phase USDC release', () => {
     expect(settleCalls).toBe(1);
   });
 
-  it('FIX 2a — a live vault read AT OR ABOVE the debit does not block the settle', async () => {
+  it('R4-A — a physical-free AT OR ABOVE the debit does not block the settle', async () => {
     rows = [baseRow()];
     await persistApproval();
-    // Vault holds exactly the total debit (principal 1_000_000 + fee 5_000).
     const result = await gate.settleJobV2(
       { escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n },
-      { readVaultBalance: async () => 1_005_000n },
+      { readVaultState: async () => ({ vaultBalance: 1_005_000n, escrowPendingAmount: 0n }) },
     );
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.phase).toBe('pending');
@@ -535,13 +519,13 @@ describe('SAP V2 gate — two-phase USDC release', () => {
   it('M1 — the in-lock ledger re-read subtracts booked withdrawals (the RPC-null fallback stays truthful)', async () => {
     rows = [baseRow()];
     await persistApproval();
-    // The PRE-txn ledger sees NO withdrawal (withdrawalRows empty) so the ceiling
-    // PASSES; a withdrawal booked AFTER that read is visible only IN-LOCK. With the
-    // vault read null, the in-lock subtraction is the ONLY thing that can catch it.
+    // The PRE-txn ledger sees NO withdrawal (withdrawalRows empty) so the ceiling PASSES;
+    // a withdrawal booked AFTER that read is visible only IN-LOCK. With vaultBalance null
+    // (fail-open clamp), the in-lock subtraction is the ONLY thing that can catch it.
     withdrawalLockRows = [{ amount: '5000000' }]; // funded 5_050_000 − 5_000_000 = 50_000 remaining
     const result = await gate.settleJobV2(
       { escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n },
-      { readVaultBalance: async () => null },
+      { readVaultState: async () => ({ vaultBalance: null, escrowPendingAmount: 0n }) },
     );
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe('over_release');
@@ -599,54 +583,25 @@ describe('SAP V2 gate — two-phase USDC release', () => {
     expect((rows[0]?.metadata as Record<string, unknown>)?.replaySignalUnresolved).toBe(true);
     expect(settleCalls).toBe(1);
 
-    // A healthy retry: the pre-claim probe now decodes the pending → reconciles, no re-send.
+    // A healthy retry: the row is back to 'open' (provably nothing landed), so the retry
+    // genuinely RE-SETTLES from a clean state (settleCalls increments to 2). A clean
+    // dry-run success now books 'pending' with the caller's amounts.
+    settleOutcome = dryRunSuccess({ escrow: ESCROW, settlementIndex: '7' });
     reprobeOutcome = null;
-    inspectPending = true;
-    inspectPendingDecoded = { callsToSettle: 1n, amount: 1_000_000n, isFinalized: false, isDisputed: false };
     const retry = await gate.settleJobV2({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
     expect(retry.ok).toBe(true);
     if (retry.ok) expect(retry.phase).toBe('pending');
     expect(rows[0]?.status).toBe('pending');
     expect(rows[0]?.callsSettled).toBe('1');
     expect(rows[0]?.reservedPrincipalAmount).toBe('1000000');
-    expect(settleCalls).toBe(1);
+    expect(settleCalls).toBe(2);
   });
 
-  it('M4 — a DISPUTED on-chain pending books NOTHING and leaves the row retryable', async () => {
-    rows = [baseRow()];
-    await persistApproval();
-    inspectPending = true;
-    inspectPendingDecoded = { callsToSettle: 2n, amount: 2_000_000n, isFinalized: false, isDisputed: true };
-    const result = await gate.settleJobV2({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.code).toBe('on_chain_error');
-    expect(rows[0]?.status).toBe('open');
-    expect(rows[0]?.callsSettled ?? null).toBeNull();
-    expect(settleCalls).toBe(0);
-  });
-
-  it('M4 — an already-FINALIZED on-chain pending reconciles TERMINAL settled (released, not reserved)', async () => {
-    rows = [baseRow()];
-    await persistApproval();
-    inspectPending = true;
-    inspectPendingDecoded = { callsToSettle: 3n, amount: 3_000_000n, isFinalized: true, isDisputed: false };
-    const result = await gate.settleJobV2({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(result.phase).toBe('settled');
-    expect(rows[0]?.status).toBe('settled');
-    expect(rows[0]?.callsSettled).toBe('3');
-    // The principal was RELEASED on-chain — booked as released, NOT reserved.
-    expect(rows[0]?.releasedAmount).toBe('3000000');
-    expect(rows[0]?.reservedPrincipalAmount).toBe('0');
-    expect(rows[0]?.feeAmount).toBe('15000');
-    expect(settleCalls).toBe(0);
-  });
-
-  it('A1 — the vault clamp compares against vault MINUS reserved (a drain that still covers reserved is caught)', async () => {
-    // A sibling pending job has 4_000_000 principal reserved — physically in the vault
-    // until finalize. job-1 settles 1 call (debit 1_005_000). The vault holds 4_500_000
-    // (still ≥ reserved), so the OLD min(remaining, vault) would be INERT; physical-free
-    // = 4_500_000 − 4_000_000 = 500_000 < 1_005_000 → over_release.
+  it('A1 — the clamp uses physical-free = vault − on-chain pending (a drain that still covers pending is caught)', async () => {
+    // A sibling pending job (gate pending 4_000_000) is physically in the vault. The
+    // on-chain pending_amount is 4_000_000 (matches the gate). job-1 settles 1 call
+    // (debit 1_005_000). The vault holds 4_500_000 (still ≥ pending), so raw min(remaining,
+    // vault) would be INERT; physical-free = 4_500_000 − 4_000_000 = 500_000 < 1_005_000.
     rows = [
       baseRow(),
       baseRow({ id: 'row-2', jobId: 'job-2', status: 'pending', settlementIndex: '6', fundedAmount: '4020000', reservedPrincipalAmount: '4000000', feeAmount: '20000' }),
@@ -654,7 +609,7 @@ describe('SAP V2 gate — two-phase USDC release', () => {
     await persistApproval();
     const result = await gate.settleJobV2(
       { escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n },
-      { readVaultBalance: async () => 4_500_000n },
+      { readVaultState: async () => ({ vaultBalance: 4_500_000n, escrowPendingAmount: 4_000_000n }) },
     );
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe('over_release');
@@ -662,38 +617,44 @@ describe('SAP V2 gate — two-phase USDC release', () => {
     expect(settleCalls).toBe(0);
   });
 
-  it('A1 — a vault covering reserved PLUS the debit does not block', async () => {
+  it('A1 — a vault covering the on-chain pending PLUS the debit does not block', async () => {
     rows = [
       baseRow(),
       baseRow({ id: 'row-2', jobId: 'job-2', status: 'pending', settlementIndex: '6', fundedAmount: '4020000', reservedPrincipalAmount: '4000000', feeAmount: '20000' }),
     ];
     await persistApproval();
-    // vault = reserved 4_000_000 + debit 1_005_000 exactly → physical-free == debit → proceeds.
+    // vault = pending 4_000_000 + debit 1_005_000 exactly → physical-free == debit → proceeds.
     const result = await gate.settleJobV2(
       { escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n },
-      { readVaultBalance: async () => 5_005_000n },
+      { readVaultState: async () => ({ vaultBalance: 5_005_000n, escrowPendingAmount: 4_000_000n }) },
     );
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.phase).toBe('pending');
     expect(settleCalls).toBe(1);
   });
 
-  it('A2 — the pre-claim reconcile refuses when a SIBLING job already owns the on-chain pending index', async () => {
-    // job-2 already owns the pending at settlementIndex 7 (status pending). job-1's
-    // pre-claim reconcile sees the same on-chain pending and MUST NOT book it again.
+  it('A2 — the POST-broadcast reconcile refuses when a SIBLING job already owns the pending index', async () => {
+    // job-1 settles at index 7, but job-2 already owns pending_7 → the chain settle
+    // replays. The post-broadcast re-probe finds pending_7; the sibling guard must refuse
+    // and UN-CLAIM job-1 (never double-book), not book it under job-1's row.
     rows = [
       baseRow(),
-      baseRow({ id: 'row-2', jobId: 'job-2', status: 'pending', settlementIndex: '7', reservedPrincipalAmount: '3000000', feeAmount: '15000' }),
+      baseRow({ id: 'row-2', jobId: 'job-2', status: 'pending', settlementIndex: '7', fundedAmount: '3015000', reservedPrincipalAmount: '3000000', feeAmount: '15000' }),
     ];
     await persistApproval();
-    inspectPending = true; // inspectIndex default 7 ⇒ the pending is at index 7
+    settleOutcome = {
+      ok: false, code: 'on_chain_error', message: 'custom program error: SettlementReplay 6138', broadcast: true, signature: 'replay-sig',
+    };
+    reprobeOutcome = {
+      ok: true, escrowPda: ESCROW, settlementIndex: 7n, pendingExists: true,
+      pending: { callsToSettle: 3n, amount: 3_000_000n, isFinalized: false, isDisputed: false },
+    };
     const result = await gate.settleJobV2({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe('settle_in_progress');
-    // job-1's row is untouched (never double-booked the sibling's pending).
+    // job-1 un-claimed back to 'open' (never adopted the sibling's pending).
     expect(rows[0]?.status).toBe('open');
-    expect(rows[0]?.callsSettled ?? null).toBeNull();
-    expect(settleCalls).toBe(0);
+    expect(settleCalls).toBe(1);
   });
 
   it('A2 — the post-broadcast replay reconcile books the decoded pending under the lock (no sibling)', async () => {
@@ -722,6 +683,145 @@ describe('SAP V2 gate — two-phase USDC release', () => {
     expect(rows[0]?.callsSettled).toBe('2');
     expect(rows[0]?.reservedPrincipalAmount).toBe('2000000');
     expect(settleCalls).toBe(1);
+  });
+
+  it('R4-A — refuses (unreconciled_onchain_pending) when on-chain pending_amount exceeds the gate-tracked pending', async () => {
+    rows = [baseRow()]; // gateLivePending = 0 (row is 'open')
+    await persistApproval();
+    const result = await gate.settleJobV2(
+      { escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n },
+      { readVaultState: async () => ({ vaultBalance: 5_050_000n, escrowPendingAmount: 1n }) },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('unreconciled_onchain_pending');
+    expect(rows[0]?.status).toBe('open');
+    expect(settleCalls).toBe(0);
+  });
+
+  it('R4-A — refuses (pending_state_unverifiable) when pending_amount cannot be read (fail-CLOSED)', async () => {
+    rows = [baseRow()];
+    await persistApproval();
+    const result = await gate.settleJobV2(
+      { escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n },
+      { readVaultState: async () => ({ vaultBalance: 5_050_000n, escrowPendingAmount: null }) },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('pending_state_unverifiable');
+    expect(rows[0]?.status).toBe('open');
+    expect(settleCalls).toBe(0);
+  });
+
+  it('R4-A — physical-free uses on-chain pending, catching a settle_unknown-landed drain the DB reserved-sum misses (Codex #4)', async () => {
+    // A sibling row is settle_unknown with 4M reserved — the DB reserved-sum SKIPS
+    // settle_unknown, so the OLD vault−reservedInVault clamp would be inert. But the
+    // settle_unknown DID land, so escrow.pending_amount = 4M and the vault holds 4.5M →
+    // physical-free = 500_000 < debit 1_005_000 → over_release. gateLivePending counts
+    // settle_unknown, so the unowned guard passes (4M ≤ 4M) and the clamp bites.
+    rows = [
+      baseRow(),
+      baseRow({ id: 'row-2', jobId: 'job-2', status: 'settle_unknown', settlementIndex: '6', reservedPrincipalAmount: '4000000', feeAmount: '20000' }),
+    ];
+    await persistApproval();
+    const result = await gate.settleJobV2(
+      { escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n },
+      { readVaultState: async () => ({ vaultBalance: 4_500_000n, escrowPendingAmount: 4_000_000n }) },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('over_release');
+    expect(rows[0]?.status).toBe('open');
+    expect(settleCalls).toBe(0);
+  });
+
+  it('R4-C — a succeeded direct deposit counts as funding, so settle after deposit+withdraw still passes (Codex #5)', async () => {
+    // job-1 funded 1_005_000; a direct deposit added 1_005_000 (succeeded); a withdraw
+    // removed 1_005_000. Without counting the deposit, remaining = 0 and the settle wrongly
+    // rejects; with R4-C, remaining = 1_005_000 and it passes.
+    rows = [baseRow({ fundedAmount: '1005000', maxCalls: '1' })];
+    await persistApproval(1n);
+    depositLedgerRows = [{ amount: '1005000' }];
+    withdrawalRows = [{ amount: '1005000' }];
+    withdrawalLockRows = [{ amount: '1005000' }];
+    const result = await gate.settleJobV2(
+      { escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n },
+      { readVaultState: async () => ({ vaultBalance: 1_005_000n, escrowPendingAmount: 0n }) },
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.phase).toBe('pending');
+    expect(settleCalls).toBe(1);
+  });
+
+  it('R4-D — a STALE settling claim with a live on-chain pending self-heals to pending (decoded)', async () => {
+    rows = [baseRow({ status: 'settling', settlementIndex: '7', reservedPrincipalAmount: '2000000', feeAmount: '10000', updatedAt: staleDate() })];
+    reprobeOutcome = { ok: true, escrowPda: ESCROW, settlementIndex: 7n, pendingExists: true, pending: { callsToSettle: 2n, amount: 2_000_000n, isFinalized: false, isDisputed: false } };
+    const result = await gate.settleJobV2({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.phase).toBe('pending');
+    expect(rows[0]?.status).toBe('pending');
+    expect(rows[0]?.callsSettled).toBe('2');
+    expect(rows[0]?.reservedPrincipalAmount).toBe('2000000');
+    expect(settleCalls).toBe(0);
+  });
+
+  it('R4-D — a STALE finalizing claim whose pending is already finalized self-heals to settled', async () => {
+    rows = [baseRow({ status: 'finalizing', settlementIndex: '7', callsSettled: '2', reservedPrincipalAmount: '2000000', feeAmount: '10000', updatedAt: staleDate() })];
+    reprobeOutcome = { ok: true, escrowPda: ESCROW, settlementIndex: 7n, pendingExists: true, pending: { callsToSettle: 2n, amount: 2_000_000n, isFinalized: true, isDisputed: false } };
+    const result = await gate.finalizeJobV2({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: STRANGER });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.phase).toBe('settled');
+    expect(rows[0]?.status).toBe('settled');
+    expect(rows[0]?.releasedAmount).toBe('2000000');
+    expect(rows[0]?.reservedPrincipalAmount).toBe('0');
+    expect(finalizeCalls).toBe(0);
+  });
+
+  it('R4-D — a STALE settling claim with a DISPUTED pending refuses, row untouched', async () => {
+    rows = [baseRow({ status: 'settling', settlementIndex: '7', reservedPrincipalAmount: '2000000', feeAmount: '10000', updatedAt: staleDate() })];
+    reprobeOutcome = { ok: true, escrowPda: ESCROW, settlementIndex: 7n, pendingExists: true, pending: { callsToSettle: 2n, amount: 2_000_000n, isFinalized: false, isDisputed: true } };
+    const result = await gate.settleJobV2({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('on_chain_error');
+    expect(rows[0]?.status).toBe('settling');
+    expect(settleCalls).toBe(0);
+  });
+
+  it('R4-D — a STALE settling claim whose pending PDA is ABSENT restores to submitted (settle never landed)', async () => {
+    rows = [baseRow({ status: 'settling', settlementIndex: '7', reservedPrincipalAmount: '1000000', feeAmount: '5000', updatedAt: staleDate() })];
+    reprobeOutcome = { ok: true, escrowPda: ESCROW, settlementIndex: 7n, pendingExists: false };
+    const result = await gate.settleJobV2({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.phase).toBe('submitted');
+    expect(rows[0]?.status).toBe('submitted');
+    expect(rows[0]?.reservedPrincipalAmount).toBe('0');
+    expect(rows[0]?.feeAmount).toBe('0');
+    expect(settleCalls).toBe(0);
+  });
+
+  it('R4-D — a STALE finalizing claim whose pending PDA is ABSENT refuses (finalize_unresolvable)', async () => {
+    rows = [baseRow({ status: 'finalizing', settlementIndex: '7', callsSettled: '1', reservedPrincipalAmount: '1000000', feeAmount: '5000', updatedAt: staleDate() })];
+    reprobeOutcome = { ok: true, escrowPda: ESCROW, settlementIndex: 7n, pendingExists: false };
+    const result = await gate.settleJobV2({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('finalize_unresolvable');
+    expect(rows[0]?.status).toBe('finalizing');
+    expect(settleCalls).toBe(0);
+  });
+
+  it('R4-D — a STALE claim whose on-chain probe FAILS refuses retryable (never guesses)', async () => {
+    rows = [baseRow({ status: 'settling', settlementIndex: '7', reservedPrincipalAmount: '1000000', feeAmount: '5000', updatedAt: staleDate() })];
+    reprobeOutcome = { ok: false, code: 'rpc_unreachable', message: 'timeout' };
+    const result = await gate.settleJobV2({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('rpc_unreachable');
+    expect(rows[0]?.status).toBe('settling');
+    expect(settleCalls).toBe(0);
+  });
+
+  it('R4-D — a NON-stale settling claim keeps the byte-identical settle_in_progress refusal', async () => {
+    rows = [baseRow({ status: 'settling', updatedAt: new Date() })];
+    const result = await gate.settleJobV2({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('settle_in_progress');
+    expect(settleCalls).toBe(0);
   });
 
   it('rejects an over-release at the persisted approval ceiling before claiming', async () => {
