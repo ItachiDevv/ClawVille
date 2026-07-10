@@ -2488,26 +2488,37 @@ export async function settleJobV2(
         reservedPrincipalAmount: sapEscrowSettlements.reservedPrincipalAmount, feeAmount: sapEscrowSettlements.feeAmount,
       }).from(sapEscrowSettlements).where(eq(sapEscrowSettlements.escrowPda, input.escrowPda));
       let remaining = 0n;
-      // R4-A / R7-2 — `gateLivePending` is the sum of reserved principal over the rows that
-      // hold a CONFIRMED on-chain pending: pending | finalizing | finalize_unknown. It is
-      // compared against the escrow's on-chain `pending_amount` by the unowned-pending guard
-      // below (on-chain > gate ⇒ an unowned pending exists ⇒ refuse).
+      // R4-A / R7-2 / R8-1 — `gateLivePending` sums reserved principal over the ACTIVE rows whose
+      // on-chain pending PROVABLY exists right now: `pending` | `finalizing` ONLY.
+      //   • `pending`    = settle CONFIRMED on-chain → its pending PDA exists.
+      //   • `finalizing` = the transient, mutex-serialized in-flight finalize window — kept so a
+      //     concurrent settle is NOT false-refused during EVERY normal finalize (the same accepted
+      //     narrow window that excluding `settling` opens on the settle side).
+      // Compared against the escrow's on-chain `pending_amount` by the unowned-pending guard below
+      // (on-chain > gate ⇒ an unowned pending exists ⇒ refuse). BOTH broadcast-unknown quarantines
+      // — `settle_unknown` (R7-2) AND `finalize_unknown` (R8-1) — are DELIBERATELY EXCLUDED from the
+      // gate: an unconfirmed broadcast is AMBIGUOUS (and for a finalize it may have landed AND
+      // already RELEASED the pending on-chain), so counting its retained `reservedPrincipalAmount`
+      // OVERSTATES the gate and lets a genuinely-unowned on-chain pending of ≤ that amount slip
+      // through → double-pay on a multi-job escrow (it also breaks the post-restore-retry safety
+      // argument). Excluding both fails CLOSED: an escrow carrying EITHER quarantine refuses ALL
+      // settles (unreconciled_onchain_pending) until ops reconciles — the reconcile-only semantics
+      // those statuses already imply. (R7-3 also mints `finalize_unknown` for a CLOSED escrow, but
+      // there the guard's terminal `job_not_open` — escrowAbsent — fires before this comparison.)
       let gateLivePending = 0n;
       for (const r of lockedRows) {
         if (r.status === 'settle_unknown') {
-          // R7-2 — DELIBERATELY EXCLUDED from BOTH `remaining` (funding held) AND
-          // `gateLivePending`. A settle_unknown is an UNCONFIRMED broadcast — it may have
-          // landed on-chain OR never executed — so it is NOT proof of ownership. Counting it
-          // would let a phantom (never-landed) settle_unknown of X MASK a genuinely-unowned
-          // on-chain pending of X (the guard would see on-chain == gate and PASS → double-pay).
-          // Excluding it fails CLOSED instead: an escrow carrying a truly-landed settle_unknown
-          // now refuses ALL settles (on-chain pending > gate 0 → unreconciled_onchain_pending)
-          // until ops reconciles it — exactly the reconcile-only quarantine settle_unknown means.
+          // R7-2 — FULLY quarantined: skipped from `remaining` (funding HELD) AND excluded from
+          // `gateLivePending` (unconfirmed settle ⇒ ambiguous ⇒ fail-closed; see the block above).
           continue;
         }
         if (r.status !== 'funding_unknown') remaining += u64(r.fundedAmount);
         remaining -= u64(r.releasedAmount) + u64(r.refundedAmount) + u64(r.reservedPrincipalAmount) + u64(r.feeAmount);
-        if (r.status === 'pending' || r.status === 'finalizing' || r.status === 'finalize_unknown') {
+        // NB: a `finalize_unknown` row REACHES here (NOT `continue`d like settle_unknown — its
+        // settle DID confirm, so its reserved principal correctly leaves `remaining`) but is
+        // EXCLUDED from `gateLivePending` below (R8-1: an unconfirmed finalize may already have
+        // released that pending on-chain, so counting it would phantom-mask an unowned pending).
+        if (r.status === 'pending' || r.status === 'finalizing') {
           gateLivePending += u64(r.reservedPrincipalAmount);
         }
       }

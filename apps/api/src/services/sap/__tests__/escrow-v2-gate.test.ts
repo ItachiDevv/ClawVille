@@ -746,6 +746,48 @@ describe('SAP V2 gate — two-phase USDC release', () => {
     expect(settleCalls).toBe(0);
   });
 
+  it('R8-1 — a finalize_unknown row is NOT counted as gate ownership, so an unowned pending ≤ its reservation is REFUSED (fail-closed)', async () => {
+    // The adversary's double-pay: a finalize_unknown sibling holds reserved P=4M, but its
+    // FINALIZE is unconfirmed — it may have LANDED (principal released → on-chain pending gone)
+    // while the row keeps its reservation. An unowned on-chain pending X=4M (≤ P) then EXISTS.
+    // Pre-R8-1 gateLivePending counted the finalize_unknown (4M), so 4M > 4M was FALSE → the
+    // guard PASSED → double-pay. R8-1 drops finalize_unknown from the gate: gate = 0 → 4M > 0 →
+    // REFUSE unreconciled_onchain_pending. (This test REGRESSES if finalize_unknown is re-added
+    // to the gate sum.) Mirror of the R7-2 settle_unknown case.
+    rows = [
+      baseRow(),
+      baseRow({ id: 'row-2', jobId: 'job-2', status: 'finalize_unknown', settlementIndex: '6', fundedAmount: '4020000', reservedPrincipalAmount: '4000000', feeAmount: '20000' }),
+    ];
+    await persistApproval();
+    const result = await gate.settleJobV2(
+      { escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n },
+      { readVaultState: async () => ({ vaultBalance: 5_050_000n, escrowPendingAmount: 4_000_000n, escrowAbsent: false }) },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('unreconciled_onchain_pending');
+    expect(rows[0]?.status).toBe('open');
+    expect(settleCalls).toBe(0);
+  });
+
+  it('R8-1 — a healthy finalizing sibling STILL counts toward the gate (no false-fire during a normal finalize)', async () => {
+    // A finalizing sibling (transient, mutex-serialized in-flight finalize) holds reserved 4M and
+    // its on-chain pending is STILL present (escrowPendingAmount 4M). gateLivePending counts it
+    // (4M), so 4M > 4M is FALSE → the guard PASSES and job-1 settles — NOT false-refused during
+    // every normal finalize. Vault covers pending 4M + debit 1.005M → the clamp also passes.
+    rows = [
+      baseRow(),
+      baseRow({ id: 'row-2', jobId: 'job-2', status: 'finalizing', settlementIndex: '6', fundedAmount: '4020000', reservedPrincipalAmount: '4000000', feeAmount: '20000' }),
+    ];
+    await persistApproval();
+    const result = await gate.settleJobV2(
+      { escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n },
+      { readVaultState: async () => ({ vaultBalance: 5_005_000n, escrowPendingAmount: 4_000_000n, escrowAbsent: false }) },
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.phase).toBe('pending');
+    expect(settleCalls).toBe(1);
+  });
+
   it('R7-1 — the settle send is PINNED to the claim-captured index (never a fresh on-chain re-read)', async () => {
     rows = [baseRow()];
     await persistApproval();
