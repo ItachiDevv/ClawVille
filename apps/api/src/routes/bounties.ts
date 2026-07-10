@@ -19,6 +19,14 @@ import {
   usdcRailGateOpen,
 } from '../services/bounty-escrow-link';
 import { alertError } from '../services/alert-error';
+// R-team-lead ruling: the →paid booking (completed flip + composition_state='paid' +
+// the once-only completion/reputation bump) is the ONE transition reached by BOTH this
+// route (instant approve→paid, prior 'vault_held') AND the finalize/payout crank
+// (deferred awaiting_finalize→paid). It is a single SHARED write path — owned by
+// `bookComposedBountyPaid` under a per-path CAS on the expected prior — so the two authors
+// can never drift (a future hook added to one path but not the other would else book
+// deferred payouts differently than instant ones).
+import { bookComposedBountyPaid } from '../services/bounty-composition-worker';
 import {
   db,
   avatars,
@@ -1054,51 +1062,24 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
       });
 
       if (result.phase === 'paid') {
-        // Both legs done: LEG 1 finalized the principal to the house AND LEG 2's
-        // x402 paid the hunter exactly the reward. NOW mark the bounty completed
-        // (deferred from the approve txn) + run the deferred completion bump.
-        const paidAt = new Date();
-        await db
-          .update(bounties)
-          .set({
-            status: 'completed',
-            completedAt: paidAt,
-            compositionState: 'paid',
-            payoutEscrowPda: result.payoutEscrowPda,
-            covenantAuditRootHex: result.auditRootHex,
-            covenantVerificationPassed: true,
-            updatedAt: paidAt,
-          })
-          .where(and(eq(bounties.id, bounty.id), eq(bounties.status, 'open')));
-
-        // DEFERRED completion bump — mirror the legacy USDC path: book the hunter's
-        // completion count ONLY now that the payout provably landed (totalEarned is
-        // the CT counter, left untouched for a USDC reward). A crash between the DB
-        // approval and here omits the bump — a conservative undercount, never a
-        // phantom completion for an unpaid bounty.
-        const paidHunterRep = await db.query.bountyReputation.findFirst({
-          where: eq(bountyReputation.avatarId, hunterAvatarId),
+        // Both legs done: LEG 1 finalized the principal to the house AND LEG 2's x402
+        // paid the hunter exactly the reward. The →paid booking is the ONE shared write
+        // path (see the import note): `bookComposedBountyPaid` owns composition_state=
+        // 'paid' + the completed flip + the payout/covenant fields + the once-only
+        // completion bump (totalCompleted += 1; totalEarned UNCHANGED for a USDC reward —
+        // it is the CT counter), under a CAS on the expected prior. This INSTANT path is
+        // still 'vault_held' here (settleComposedBounty never touches the bounty row), so
+        // we pass that prior; the deferred crank passes 'awaiting_finalize'. The bounty IS
+        // paid either way (idempotent), so we return HTTP 200 REGARDLESS of whether THIS
+        // call won the CAS (`booked`) — the crank books it otherwise; the once-only bump
+        // is handled inside the helper.
+        await bookComposedBountyPaid({
+          bountyId: bounty.id,
+          expectedPriorState: 'vault_held',
+          hunterAvatarId,
+          payoutEscrowPda: result.payoutEscrowPda,
+          auditRootHex: result.auditRootHex,
         });
-        if (paidHunterRep) {
-          const bumped = paidHunterRep.totalCompleted + 1;
-          await db
-            .update(bountyReputation)
-            .set({
-              totalCompleted: bumped,
-              tier: calculateReputationTier(bumped) as any,
-              lastActivityAt: paidAt,
-              updatedAt: paidAt,
-            })
-            .where(eq(bountyReputation.id, paidHunterRep.id));
-        } else {
-          await db.insert(bountyReputation).values({
-            avatarId: hunterAvatarId,
-            totalCompleted: 1,
-            totalEarned: 0,
-            tier: calculateReputationTier(1) as any,
-            lastActivityAt: paidAt,
-          });
-        }
 
         return c.json({
           success: true,
