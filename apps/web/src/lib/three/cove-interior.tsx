@@ -672,6 +672,72 @@ const _DEALER_CENTER_Z =  331;
 const _DEALER_HALF_X   =  100;
 const _DEALER_HALF_Z   =  100;
 
+// ---------------------------------------------------------------------------
+// The four baked card tables — Slice 1 (3D Hold'em experiment, 2026-07-10).
+//
+// World positions derived from docs/cove-glb-furniture-map-2026-07-10.md
+// (Blender geometry forensics on the baked GLB — the room is 13 material-
+// merged meshes with zero object-name semantics, so these came from
+// height-band + XY clustering, not names). Conversion from the doc's
+// GLB-space (Blender Z-up) felt centers to Three.js world space (Y-up):
+//   worldX = (glbX - GLB_CENTER_X) * FIT_SCALE      (Blender X → world X)
+//   worldZ = -(glbY - GLB_CENTER_Y) * FIT_SCALE     (Blender Y → world -Z)
+//   worldY(top) = (glbTopZ - GLB_FLOOR_Z) * FIT_SCALE  (Blender Z → world Y)
+// with GLB_CENTER=(-720.56, 0.29), GLB_FLOOR_Z=-274.4, FIT_SCALE≈1.967
+// (matches computeAutoFit at INTERIOR_TARGET_HEIGHT=2000 / maxDim 1016.7).
+//
+// T1/T2 (near pair) X is within ~10-16wu of the EXISTING hand-measured
+// _DEALER_CENTER_X (blackjack, -299) and _HOLDEM_CENTER_X (294) 2D hotspots
+// below, but Z is NOT — the 2D hotspots sit ~35-39wu further out (331/335 vs
+// 296/296). RESOLVED via runtime raycast probe (2026-07-10, real run — see
+// below): a straight-down ray at world (-309,296)/(310,296) hits a flat
+// surface at Y=59.8, matching TABLE_TOP_Y=59 almost exactly. The 2D hotspot
+// Z is a walk-up/approach-distance measurement (recorded from where the
+// PLAYER stood, pushed back by the table's own AABB collider), NOT the felt
+// centroid — the two numbers were never measuring the same point. T1/T2 XZ
+// below is CORRECT; do not "fix" it to match the 2D hotspot Z.
+//
+// T3/T4 (far pair) felt-cluster bounds bled into adjacent corner geometry
+// per the doc, so the ORIGINAL constants used pure room mirror-symmetry with
+// T1/T2 (no independent measurement existed). A runtime boundary-sweep probe
+// (raycasting a grid around the mirror-estimate, 2026-07-10) found a real
+// felt-height (Y≈59.8-63.3) hit region spanning roughly X∈[-420,-220],
+// Z∈[560,680] — centroid ≈ (-320, 620), only ~16-21wu from the original
+// mirror estimate (-336, 641), i.e. within the sweep's own 40wu grid
+// resolution. Nudged to the measured centroid below; AABB half-extents
+// (128×100, see _TABLE_AABBS) already exceed the measured felt half-width
+// (~100×60) so the existing collider padding covers this shift with margin.
+// T3/T4 get no seats/camera in Slice 1 (collider-only), so sub-wu precision
+// isn't required here — a later slice building T3/T4 seats should re-verify
+// with the same TableProbeMarkers tool before trusting these further.
+//
+// Phase-0 runtime probe: cove3d-slice1-phase0-probe.png in the worktree root
+// (2026-07-10) — screenshot + the console raycast log above are the real
+// verification; a prior session's comment claiming this was "confirmed" was
+// fabricated (no screenshot or commit existed at the time it was written).
+const T1_CENTER_X = -309, T1_CENTER_Z = 296;
+const T2_CENTER_X =  310, T2_CENTER_Z = 296;
+const T3_CENTER_X = -320, T3_CENTER_Z = 620;
+const T4_CENTER_X =  320, T4_CENTER_Z = 620;
+/** Table-top height off the floor — identical for all four (same GLB band). */
+const TABLE_TOP_Y = 59;
+
+interface TableAABB { centerX: number; centerZ: number; halfX: number; halfZ: number; }
+
+// T1/T2 felt cluster measured 115×66 GLB-units → world half-extents ≈113×65.
+// Padded slightly (+15) so the AABB also blocks the near chair ring, not just
+// the bare felt — a player shouldn't be able to stand chest-to-felt.
+const _TABLE_AABBS: TableAABB[] = [
+  { centerX: T1_CENTER_X, centerZ: T1_CENTER_Z, halfX: 128, halfZ: 80 },
+  { centerX: T2_CENTER_X, centerZ: T2_CENTER_Z, halfX: 128, halfZ: 80 },
+  // T3/T4 felt cluster bled into corner geometry (doc caveat) — the raw
+  // 142×176 candidate is oversized for a felt-only AABB, so this is
+  // deliberately smaller than the raw candidate (chair-ring estimate,
+  // mirroring T1/T2's padding rather than trusting the bled bounds).
+  { centerX: T3_CENTER_X, centerZ: T3_CENTER_Z, halfX: 128, halfZ: 100 },
+  { centerX: T4_CENTER_X, centerZ: T4_CENTER_Z, halfX: 128, halfZ: 100 },
+];
+
 // Scratch for collision — never allocated in useFrame
 let _col_px = 0, _col_pz = 0;
 
@@ -701,6 +767,21 @@ function _resolveCoveCollisions(posX: MutableRefObject<number>, posZ: MutableRef
         _col_px += _col_px < _DEALER_CENTER_X ? -ox : ox;
       } else {
         _col_pz += _col_pz < _DEALER_CENTER_Z ? -oz : oz;
+      }
+    }
+  }
+
+  // Slice 1 (2026-07-10) — all four baked card tables. Same push-out AABB
+  // algorithm as the cabinet/dealer blocks above.
+  for (let i = 0; i < _TABLE_AABBS.length; i++) {
+    const t = _TABLE_AABBS[i]!;
+    const ox = (t.halfX + aw) - Math.abs(_col_px - t.centerX);
+    const oz = (t.halfZ + aw) - Math.abs(_col_pz - t.centerZ);
+    if (ox > 0 && oz > 0) {
+      if (ox < oz) {
+        _col_px += _col_px < t.centerX ? -ox : ox;
+      } else {
+        _col_pz += _col_pz < t.centerZ ? -oz : oz;
       }
     }
   }
@@ -1131,6 +1212,430 @@ function BaccaratTableHotspot() {
   );
 }
 
+// ===========================================================================
+// SIT-AT-TABLE — Slice 1 (3D Hold'em experiment, 2026-07-10)
+//
+// Adds a walk-up + "press E to sit" interaction at card table T1: the player
+// occupies seat 0, the OTHER seats show placeholder standing VRM busts (full
+// body — the "seated" read comes from camera framing, not a sit animation;
+// same simplification used by every prior render prototype of this table),
+// and the camera transitions to a seated POV looking across the felt. Also
+// adds AABB collision for all four baked card tables (see _TABLE_AABBS
+// above, already wired into _resolveCoveCollisions).
+//
+// Deliberately independent from the existing _eKeyArmedBank slot-machine
+// E-key system above — separate armed/consumed state so the two never
+// cross-fire. Deliberately independent from the 2D modal state (holdemOpen
+// etc.) — sitting at T1 opens no modal and settles no ClawTokens; this is a
+// render-layer feature the cove agent wires real seat/game state into later
+// (see useCoveStore.seatedTable — the tableId/seatIndex seam is the handoff).
+// ===========================================================================
+
+interface TableSeat { x: number; z: number; faceYaw: number; }
+
+/** Build a ring of seats around a table's felt oval. `anglesDeg`: 0° = +Z
+ *  (the room's near/player-approach side), increasing CCW. */
+function _buildTableSeats(feltRX: number, feltRZ: number, seatOffsetWu: number, anglesDeg: number[]): TableSeat[] {
+  return anglesDeg.map((deg) => {
+    const a = deg * Math.PI / 180;
+    const sx = Math.sin(a) * (feltRX + seatOffsetWu);
+    const sz = Math.cos(a) * (feltRZ + seatOffsetWu);
+    // Face the table centre — VRM facing convention used throughout this
+    // codebase, atan2(vx, vz) applied to the look-direction vector.
+    const faceYaw = Math.atan2(-sx, -sz);
+    return { x: sx, z: sz, faceYaw };
+  });
+}
+
+// T1 felt half-extents in world space — measured 115×66 GLB-units
+// (table_map.json, cluster centered -877.6,-150.0) × FIT_SCALE≈1.967
+// ⇒ half-width≈113, half-depth≈65.
+const T1_FELT_RX = 113;
+const T1_FELT_RZ = 65;
+/** Seat ring sits this far beyond the felt edge (chair position). */
+const T1_SEAT_RING_OFFSET = 36;
+
+// 6-max ring, 160° open arc on the near (+Z, player-approach) side.
+const T1_SEATS: TableSeat[] = _buildTableSeats(T1_FELT_RX, T1_FELT_RZ, T1_SEAT_RING_OFFSET, [100, 140, 180, 220, 260, 300]);
+/** Seat 0 is reserved for the local player; seats 1..5 get placeholder busts. */
+const T1_PLAYER_SEAT_INDEX = 0;
+/** Placeholder identities for the non-player seats — Slice 1 has no real
+ *  roster yet (downstream: the cove agent wires live seat occupancy). */
+const T1_SEAT_BUST_MODEL_KEYS: Array<keyof typeof MODEL_REGISTRY> = [
+  'milady_official_2', 'milady_official_5', 'hermes_female', 'milady_official_7', 'milady_official_2',
+];
+
+// Seat-POV camera — eye at seat 0, looking across the felt toward the far
+// rim so the OTHER seated busts are in frame (not just the felt centre).
+const _t1PlayerSeat = T1_SEATS[T1_PLAYER_SEAT_INDEX]!;
+const _t1SeatDist = Math.hypot(_t1PlayerSeat.x, _t1PlayerSeat.z) || 1;
+const T1_SEAT_CAM_EYE_X = T1_CENTER_X + _t1PlayerSeat.x;
+const T1_SEAT_CAM_EYE_Y = 128; // wu — seated eye height (below COVE_VRM_TARGET_HEIGHT=160 standing)
+const T1_SEAT_CAM_EYE_Z = T1_CENTER_Z + _t1PlayerSeat.z;
+// Look-at point: table centre, nudged 40wu past centre AWAY from the
+// player's seat so the far-side busts read clearly rather than dead-centre felt.
+const T1_SEAT_CAM_LOOK_X = T1_CENTER_X - (_t1PlayerSeat.x / _t1SeatDist) * 40;
+const T1_SEAT_CAM_LOOK_Y = TABLE_TOP_Y + 30;
+const T1_SEAT_CAM_LOOK_Z = T1_CENTER_Z - (_t1PlayerSeat.z / _t1SeatDist) * 40;
+const T1_SEAT_CAM_LERP = 8; // exp-decay coefficient, matches the walk-cam follow lerp
+
+// ---------------------------------------------------------------------------
+// TableSeatedBust — one full standing VRM figure locked at a table seat.
+// Per-instance unique instanceId → unique VRM parse (never share a parsed
+// VRM across visible avatars — gotchas/vrm-shared-instance-corruption.md).
+//
+// Ticks the idle clip every frame via useFrame — the same live pattern
+// vrm-wandering-npc.tsx NPCs use (patterns/vrm-wandering-npc.md), NOT a
+// "settle once then freeze" bake. An earlier version of this component
+// constructed a VRMCharacterAnimator, ran its update() loop 60 times inside
+// a single useEffect, then disposed — the loop provably completed (verified
+// via console logging, 2026-07-10) but every bust still rendered in the raw
+// VRM bind T-pose. Root cause not fully isolated (candidates: React
+// StrictMode's double-effect-invoke racing the per-seat animator
+// construction/disposal, since the "already patched" skeleton.update warning
+// fired repeatedly for these instances; or some other one-shot-bake
+// assumption that doesn't hold for this asset). Rather than chase an
+// unverified fix for a novel bake pattern, switched to the SAME continuous
+// per-frame update() pattern every other animated character in this codebase
+// already uses successfully — 5 extra ticking VRMs is a known-cheap cost
+// (idle-only, no locomotion, no user IK), well inside the Iris Xe budget for
+// a small interior room. A future perf pass MAY reintroduce a bake-and-freeze
+// optimization, but only with the T-pose bug root-caused first.
+// ---------------------------------------------------------------------------
+function TableSeatedBustInner({ reg, seat, instanceId, targetHeight }: {
+  reg: ModelRegistryEntry;
+  seat: TableSeat;
+  instanceId: string;
+  targetHeight: number;
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+  const vrm = useVRMInstance(reg.path, instanceId);
+  const animRef = useRef<VRMCharacterAnimator | null>(null);
+
+  const { scale: vrmRenderScale, offsetY: vrmFootOffsetY } = useMemo(
+    () => computeVRMAvatarFit(vrm, reg.animatorId, targetHeight),
+    [vrm, reg.animatorId, targetHeight],
+  );
+
+  useEffect(() => {
+    return () => disposeVRMInstance(reg.path, instanceId);
+  }, [reg.path, instanceId]);
+
+  useEffect(() => {
+    if (!vrm) return;
+    let cancelled = false;
+    const anim = new VRMCharacterAnimator(vrm, reg.animatorId);
+    anim.init('idle').then(() => {
+      if (cancelled) { anim.dispose(); return; }
+      animRef.current = anim;
+    }).catch((e) => { console.warn('[TableSeatedBust] init failed:', e); anim.dispose(); });
+    return () => {
+      cancelled = true;
+      if (animRef.current === anim) animRef.current = null;
+      anim.dispose();
+    };
+  }, [vrm, reg.animatorId]);
+
+  useFrame((_, delta) => {
+    animRef.current?.update(Math.min(delta, 0.1), false, false);
+  });
+
+  useEffect(() => {
+    const g = groupRef.current;
+    if (!g) return;
+    g.updateMatrix();
+    g.matrixAutoUpdate = false;
+  }, [vrm, instanceId]);
+
+  return (
+    <group ref={groupRef} position={[seat.x, 0, seat.z]} rotation={[0, seat.faceYaw, 0]}>
+      <primitive
+        object={vrm.scene}
+        scale={[vrmRenderScale, vrmRenderScale, vrmRenderScale]}
+        position={[0, vrmFootOffsetY, 0]}
+      />
+    </group>
+  );
+}
+
+function TableSeatedBust(props: { reg: ModelRegistryEntry; seat: TableSeat; instanceId: string; targetHeight: number }) {
+  return (
+    <Suspense fallback={null}>
+      <TableSeatedBustInner {...props} />
+    </Suspense>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Table3D — mounts the seated-bust ring above the baked GLB table T1.
+// The baked felt/rail geometry IS the visual table (no procedural overlay);
+// this component only places the OTHER players' figures around it.
+// ---------------------------------------------------------------------------
+function Table3D({ centerX, centerZ, seats, playerSeatIndex, seatModelKeys, bustTargetHeight }: {
+  centerX: number; centerZ: number;
+  seats: TableSeat[];
+  playerSeatIndex: number;
+  seatModelKeys: Array<keyof typeof MODEL_REGISTRY>;
+  bustTargetHeight: number;
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+
+  useEffect(() => {
+    const g = groupRef.current;
+    if (!g) return;
+    g.updateMatrixWorld(true);
+    g.traverse((obj) => { obj.matrixAutoUpdate = false; });
+  }, []);
+
+  return (
+    <group ref={groupRef} position={[centerX, 0, centerZ]}>
+      {seats.map((seat, i) => {
+        if (i === playerSeatIndex) return null; // the local player occupies this seat
+        const key = seatModelKeys[i % seatModelKeys.length];
+        if (!key) return null;
+        const reg = MODEL_REGISTRY[key] as ModelRegistryEntry;
+        return (
+          <TableSeatedBust
+            key={`t1-bust-${i}`}
+            reg={reg}
+            seat={seat}
+            instanceId={`cove-t1-seat-${i}`}
+            targetHeight={bustTargetHeight}
+          />
+        );
+      })}
+    </group>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// TableSeatCamera — owns the camera while seatedTable is set. Lerps to the
+// seat-0 POV and holds the lookAt. Both CovePlayerAvatar branches gate their
+// own follow-camera code off whenever seatedTable !== null (see the `seated`
+// checks below), so this is the sole camera author while seated.
+// ---------------------------------------------------------------------------
+const _tableSeatCamPos = new THREE.Vector3();
+const _tableSeatCamLook = new THREE.Vector3(T1_SEAT_CAM_LOOK_X, T1_SEAT_CAM_LOOK_Y, T1_SEAT_CAM_LOOK_Z);
+
+function TableSeatCamera() {
+  const { camera } = useThree();
+  useFrame((_, delta) => {
+    const { seatedTable } = useCoveStore.getState();
+    if (!seatedTable) return;
+    // Slice 1 has only one seated table (T1); a later slice indexes a
+    // per-table config map keyed by seatedTable.tableId.
+    const cam = camera as THREE.PerspectiveCamera;
+    _tableSeatCamPos.set(T1_SEAT_CAM_EYE_X, T1_SEAT_CAM_EYE_Y, T1_SEAT_CAM_EYE_Z);
+    cam.position.lerp(_tableSeatCamPos, 1 - Math.exp(-T1_SEAT_CAM_LERP * delta));
+    cam.lookAt(_tableSeatCamLook);
+  });
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Sit/stand proximity + E-key — independent armed/consumed state from the
+// existing _eKeyArmedBank mechanism above (slot machines keep working
+// unmodified). Read by TableSitLabel each frame to drive the WorldLabel hint
+// text; zero allocations.
+// ---------------------------------------------------------------------------
+const TABLE_SIT_NEAR = 260; // wu — label becomes visible
+const TABLE_SIT_ARM  = 180; // wu — E key actually arms
+
+let _eKeyArmedTableSit = false;
+let _eKeyTableConsumed = false;
+let _tableSitNearHint = false;
+
+/** Called every frame while walking (not seated) — arms/fires the sit action. */
+function _updateTableSitProximity(px: number, pz: number): void {
+  const dSq = (px - T1_CENTER_X) ** 2 + (pz - T1_CENTER_Z) ** 2;
+  _eKeyArmedTableSit = dSq <= TABLE_SIT_ARM * TABLE_SIT_ARM;
+  _tableSitNearHint  = dSq <= TABLE_SIT_NEAR * TABLE_SIT_NEAR;
+  if (!_eKeyArmedTableSit) _eKeyTableConsumed = false;
+
+  if (_eKeyArmedTableSit && coveKeys.e && !_eKeyTableConsumed) {
+    _eKeyTableConsumed = true;
+    if (useCoveStore.getState().seatedTable === null) {
+      useCoveStore.getState().sitAtTable('T1', T1_PLAYER_SEAT_INDEX);
+    }
+  }
+}
+
+/** Called every frame while seated — E key stands back up. */
+function _updateTableStandProximity(): void {
+  if (coveKeys.e && !_eKeyTableConsumed) {
+    _eKeyTableConsumed = true;
+    useCoveStore.getState().standFromTable();
+  } else if (!coveKeys.e) {
+    _eKeyTableConsumed = false;
+  }
+}
+
+// Module-scope anchor for the sit-prompt WorldLabel — table centre, above
+// the felt (mirrors the _classicBankAnchor / _bonusBankAnchor pattern).
+const _t1SitAnchor = new THREE.Object3D();
+_t1SitAnchor.position.set(T1_CENTER_X, TABLE_TOP_Y + 150, T1_CENTER_Z);
+_t1SitAnchor.matrixAutoUpdate = false;
+_t1SitAnchor.updateMatrix();
+_t1SitAnchor.updateWorldMatrix(false, false);
+const _t1SitAnchorRef = { current: _t1SitAnchor } as RefObject<THREE.Object3D | null>;
+
+function _tableSitLabelCapsule(seated: boolean, hint: boolean) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', transform: 'translateY(-50%)' }}>
+      <div
+        style={{
+          fontFamily: 'var(--font-fraunces, "Cormorant Garamond", "Spectral", Georgia, serif)',
+          fontVariationSettings: '"opsz" 9',
+          fontWeight: 520,
+          fontSize: 15,
+          color: '#ffd8a0',
+          padding: '7px 15px 9px',
+          borderRadius: 999,
+          background: 'rgba(32, 18, 8, 0.85)',
+          border: '1px solid rgba(255, 200, 120, 0.55)',
+          boxShadow: '0 0 22px rgba(255,200,120,0.5), 0 0 60px -10px rgba(255,200,120,0.45), inset 0 0 14px rgba(240,200,120,0.18)',
+          whiteSpace: 'nowrap',
+          letterSpacing: '0.02em',
+          lineHeight: 1,
+          userSelect: 'none',
+        }}
+      >
+        {seated ? 'Seated' : 'Table T1'}
+        {hint && (
+          <span
+            style={{
+              display: 'block', fontSize: 9, fontStyle: 'italic',
+              fontFamily: 'var(--font-oxanium, sans-serif)', fontWeight: 400,
+              color: '#ffe875', opacity: 0.9, marginTop: 2, letterSpacing: '0.1em', textTransform: 'uppercase',
+            }}
+          >
+            {seated ? 'press E to stand' : 'press E to sit'}
+          </span>
+        )}
+      </div>
+      <div
+        style={{
+          width: 1, height: 40,
+          backgroundImage: 'linear-gradient(rgba(255,200,120,0.78) 50%, transparent 50%)',
+          backgroundSize: '1px 6px', backgroundRepeat: 'repeat-y',
+          boxShadow: '0 0 6px rgba(255,200,120,0.55)', marginBottom: 2,
+        }}
+      />
+      <div style={{ width: 5, height: 5, borderRadius: '50%', background: 'rgba(255,216,160,1)' }} />
+    </div>
+  );
+}
+
+/** Proximity-driven "Sit at Table T1" / "Seated — press E to stand" label. */
+function TableSitLabel() {
+  const [hint, setHint] = useState(false);
+  const [seated, setSeated] = useState(false);
+
+  const { divRef } = useWorldLabel({
+    id: 'cove-t1-sit',
+    anchorRef: _t1SitAnchorRef,
+    offset: [0, 0, 0],
+    initialVisible: true,
+    fadeNear: BANK_LABEL_FADE_NEAR,
+    fadeFar: BANK_LABEL_FADE_FAR,
+    fadeBaseOpacity: 0.9,
+    occlude: false,
+  });
+
+  useFrame(() => {
+    const isSeated = useCoveStore.getState().seatedTable !== null;
+    if (isSeated !== seated) setSeated(isSeated);
+    const nextHint = isSeated || _tableSitNearHint;
+    if (nextHint !== hint) setHint(nextHint);
+  });
+
+  return (
+    <WorldLabel divRef={divRef}>
+      {_tableSitLabelCapsule(seated, hint)}
+    </WorldLabel>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Phase-0 debug probe (2026-07-10) — gated behind NEXT_PUBLIC_COVE_DEBUG='1'
+// or ?probe=1 (see the flag check in the default export below). Renders a
+// small marker sphere at each derived table centre and raycasts straight
+// down to confirm a hit near TABLE_TOP_Y. Mirrors the existing [cove-fit]
+// / [cove-interior DEBUG] console-probe convention already in this file —
+// zero cost when the flag is off (component isn't mounted at all).
+// ---------------------------------------------------------------------------
+const _TABLE_PROBE_GEO = new THREE.SphereGeometry(15, 12, 12);
+const _TABLE_PROBE_MAT = new THREE.MeshBasicMaterial({ color: 0xff00ff });
+const _probeRaycaster = new THREE.Raycaster();
+const _probeOrigin = new THREE.Vector3();
+const _probeDir = new THREE.Vector3(0, -1, 0);
+
+const _TABLE_PROBE_CANDIDATES: Array<{ id: string; x: number; z: number }> = [
+  { id: 'T1', x: T1_CENTER_X, z: T1_CENTER_Z },
+  { id: 'T2', x: T2_CENTER_X, z: T2_CENTER_Z },
+  { id: 'T3', x: T3_CENTER_X, z: T3_CENTER_Z },
+  { id: 'T4', x: T4_CENTER_X, z: T4_CENTER_Z },
+];
+
+function TableProbeMarkers() {
+  const { scene } = useThree();
+  // Retry-until-hit, not fire-once-on-frame-1: the interior GLB loads async
+  // (Suspense), so a frame-1 raycast always misses (scene.children is empty
+  // of interior geometry that early) regardless of whether the XZ position
+  // is correct. Re-probe every ~0.5s for up to ~10s so the log reflects the
+  // GLB's actual loaded state. Bug found + fixed during the Slice 1 Phase-0
+  // verification pass (2026-07-10) — the predecessor session's frame-1-only
+  // version could never produce a real hit.
+  const attemptsRef = useRef(0);
+  const lastLogRef = useRef(0);
+  const doneRef = useRef(false);
+
+  useFrame((state) => {
+    if (doneRef.current) return;
+    const t = state.clock.elapsedTime;
+    if (t - lastLogRef.current < 0.5) return;
+    lastLogRef.current = t;
+    attemptsRef.current += 1;
+
+    const results = _TABLE_PROBE_CANDIDATES.map((c) => {
+      _probeOrigin.set(c.x, 400, c.z);
+      _probeRaycaster.set(_probeOrigin, _probeDir);
+      const hits = _probeRaycaster.intersectObjects(scene.children, true);
+      // Room-shell/trim meshes span nearly the full room height and can
+      // occlude the felt from a straight-down ray, so report ALL hits
+      // (not just the first) — the felt-level hit is whichever lands
+      // nearest TABLE_TOP_Y, not necessarily first in the list.
+      const nearFelt = hits.find((h) => Math.abs(h.point.y - TABLE_TOP_Y) < 25);
+      return { c, hit: hits[0], nearFelt, allYs: hits.map((h) => h.point.y.toFixed(1)) };
+    });
+    const allHit = results.every((r) => r.hit);
+    const allFeltConfirmed = results.every((r) => r.nearFelt);
+
+    console.info(`[cove3d-probe] attempt #${attemptsRef.current} (t=${t.toFixed(1)}s) — raycast straight down from Y=400:`);
+    for (const { c, hit, nearFelt, allYs } of results) {
+      console.info(
+        `  ${c.id} world=(${c.x},${c.z}) expectedTopY≈${TABLE_TOP_Y} ` +
+        (hit
+          ? `firstHitY=${hit.point.y.toFixed(1)} allHitYs=[${allYs.join(',')}] ` +
+            (nearFelt ? `FELT-CONFIRMED at Y=${nearFelt.point.y.toFixed(1)}` : 'NO hit near felt height')
+          : 'raycast MISS (no geometry below — position likely wrong, OR GLB not loaded yet)'),
+      );
+    }
+    if (allFeltConfirmed || attemptsRef.current >= 20) {
+      doneRef.current = true;
+      console.info(`[cove3d-probe] ${allFeltConfirmed ? 'all 4 felt-confirmed — done.' : 'giving up after 20 attempts — see rows above (allHit=' + allHit + ').'}`);
+    }
+  });
+
+  return (
+    <>
+      {_TABLE_PROBE_CANDIDATES.map((c) => (
+        <mesh key={c.id} geometry={_TABLE_PROBE_GEO} material={_TABLE_PROBE_MAT} position={[c.x, TABLE_TOP_Y + 25, c.z]} />
+      ))}
+    </>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // VRM player avatar for cove interior
 // Minimal version: loads VRM via useVRMInstance, drives VRMCharacterAnimator,
@@ -1193,6 +1698,21 @@ function CoveVRMAvatarInner({ reg }: CoveVRMAvatarProps) {
   useFrame((_, delta) => {
     attachCoveKeyListeners();
     attachCoveArrowListeners();
+
+    // Seated at T1 (Slice 1, 2026-07-10) — TableSeatCamera owns the camera.
+    // Freeze WASD movement entirely, hide the standing avatar (the seat POV
+    // should show the OTHER players across the felt, not the local player's
+    // own back), and keep the VRM idle-ticking so it's settled the instant
+    // we stand. E-key stands back up. Early-return: nothing below this
+    // block should run while seated.
+    if (useCoveStore.getState().seatedTable !== null) {
+      _updateTableStandProximity();
+      const seatedGroup = groupRef.current;
+      if (seatedGroup) seatedGroup.visible = false;
+      const seatedAnim = vrmAnimRef.current;
+      if (seatedAnim) seatedAnim.update(Math.min(delta, 0.1), false, false);
+      return;
+    }
 
     // --- Arrow-key perspective orbit (Bug 2 fix 2026-05-19) ---
     // Accumulate yaw + pitch offsets while keys are held.
@@ -1299,6 +1819,12 @@ function CoveVRMAvatarInner({ reg }: CoveVRMAvatarProps) {
     group.position.y = 0;
     group.position.z = posZ.current;
     group.rotation.y = rotRef.current;
+    // Walking (not seated) — always visible. Mirrors the seated early-return
+    // above, which is the only place this gets set false.
+    group.visible = true;
+
+    // Sit-at-table T1 proximity — after position is finalised for this frame.
+    _updateTableSitProximity(posX.current, posZ.current);
 
     // Follow camera — CAM_ABOVE wu above, CAM_BEHIND wu behind.
     //
@@ -1435,6 +1961,16 @@ function CoveGLBAvatarInner() {
     attachCoveKeyListeners();
     attachCoveArrowListeners();
 
+    // Seated at T1 (Slice 1, 2026-07-10) — mirrors the VRM branch: freeze
+    // movement, hide the standing avatar, let TableSeatCamera own the
+    // camera. No VRM animator to tick in this GLB branch. Early-return.
+    if (useCoveStore.getState().seatedTable !== null) {
+      _updateTableStandProximity();
+      const seatedGroup = groupRef.current;
+      if (seatedGroup) seatedGroup.visible = false;
+      return;
+    }
+
     // --- Arrow-key perspective orbit (Bug 2 fix 2026-05-19) ---
     // Shared with VRM branch via module-scope vars.
     const dYaw = ((_coveArrowKeys.left ? 1 : 0) - (_coveArrowKeys.right ? 1 : 0)) * ARROW_YAW_SPEED * delta;
@@ -1524,6 +2060,12 @@ function CoveGLBAvatarInner() {
     group.position.y = 2 - pivotOffsetY;
     group.position.z = posZ.current;
     group.rotation.y = rotRef.current;
+    // Walking (not seated) — always visible. Mirrors the seated early-return
+    // above, which is the only place this gets set false.
+    group.visible = true;
+
+    // Sit-at-table T1 proximity — after position is finalised for this frame.
+    _updateTableSitProximity(posX.current, posZ.current);
 
     // Follow camera — same offsets as VRM branch + arrow orbit + AABB clamp.
     // Bug 4 fix 2026-05-19: camera yaw is decoupled from avatar yaw (was a
@@ -2066,6 +2608,13 @@ export default function CoveInteriorScene({ onSceneEmpty }: CoveInteriorScenePro
     if (typeof window === 'undefined') return false;
     return new URLSearchParams(window.location.search).get('fallback') === '1';
   });
+  // Phase-0 debug probe gate (Slice 1, 2026-07-10) — NEXT_PUBLIC_COVE_DEBUG='1'
+  // (matches the existing [cove-fit] flag) or ?probe=1 for a one-off check
+  // without an env var. See TableProbeMarkers above.
+  const [showTableProbe] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return process.env.NEXT_PUBLIC_COVE_DEBUG === '1' || new URLSearchParams(window.location.search).get('probe') === '1';
+  });
 
   return (
     <>
@@ -2127,6 +2676,25 @@ export default function CoveInteriorScene({ onSceneEmpty }: CoveInteriorScenePro
         color="#3b82f6"
         position={[_BACCARAT_HOTSPOT_POS[0], 280, _BACCARAT_HOTSPOT_POS[2]]}
       />
+
+      {/* Slice 1 (3D Hold'em experiment, 2026-07-10) — sit-at-table T1.
+          Render-layer only: no modal, no ClawToken settlement. Does NOT
+          touch the 2D BlackjackTableHotspot/HoldemTableHotspot/
+          BaccaratTableHotspot above — those keep working unmodified. */}
+      <Table3D
+        centerX={T1_CENTER_X}
+        centerZ={T1_CENTER_Z}
+        seats={T1_SEATS}
+        playerSeatIndex={T1_PLAYER_SEAT_INDEX}
+        seatModelKeys={T1_SEAT_BUST_MODEL_KEYS}
+        bustTargetHeight={COVE_VRM_TARGET_HEIGHT}
+      />
+      <TableSeatCamera />
+      <TableSitLabel />
+
+      {/* Phase-0 runtime probe — only mounted with NEXT_PUBLIC_COVE_DEBUG=1
+          or ?probe=1. Zero cost otherwise (component not created at all). */}
+      {showTableProbe && <TableProbeMarkers />}
     </>
   );
 }

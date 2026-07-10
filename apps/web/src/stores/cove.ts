@@ -134,6 +134,21 @@ export interface CoveStore {
   openBaccaratTable: (displayBalance: number) => void;
   closeBaccaratTable: () => void;
   setBaccaratBet: (bet: number) => void;
+
+  // ── Sit-at-table 3D render layer (Slice 1 — 2026-07-10) ──────────────────
+  // Distinct from the 2D modal state above (holdemOpen/blackjackOpen/etc.) —
+  // this is the NEW in-world "walk up + sit at the physical table" feature.
+  // It opens no modal and settles no ClawTokens; it only moves the camera to
+  // a seated POV and hides the standing avatar. `tableId` is a free-form
+  // string key (map-doc id, e.g. 'T1') rather than a gameType enum because
+  // Slice 1 carries no game logic — the seam is deliberately generic so a
+  // later slice can bind real Hold'em table/seat state without a store
+  // shape change. null = walk-around mode.
+  seatedTable: { tableId: string; seatIndex: number } | null;
+  /** Sit at a specific table + seat. Camera transitions to that seat's POV. */
+  sitAtTable: (tableId: string, seatIndex: number) => void;
+  /** Stand up from any table and restore the walk-around follow camera. */
+  standFromTable: () => void;
 }
 
 export const useCoveStore = create<CoveStore>((set, get) => ({
@@ -282,4 +297,19 @@ export const useCoveStore = create<CoveStore>((set, get) => ({
   },
 
   setBaccaratBet: (bet) => set({ baccaratBet: bet }),
+
+  // Sit-at-table 3D render layer (Slice 1 — 2026-07-10).
+  seatedTable: null,
+
+  sitAtTable: (tableId, seatIndex) => {
+    // Never sit while a 2D modal is already open (or vice versa is guarded
+    // by the caller not opening a modal while seated) — Slice 1 keeps the
+    // two systems mutually exclusive at the call site, not enforced here,
+    // since no call site currently opens both.
+    set({ seatedTable: { tableId, seatIndex } });
+  },
+
+  standFromTable: () => {
+    set({ seatedTable: null });
+  },
 }));
