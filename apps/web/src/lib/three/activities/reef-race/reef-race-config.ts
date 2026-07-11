@@ -422,8 +422,19 @@ export const BLOOM_THRESHOLD = 0.80;  // only the neon rails + crest-tip spray b
 
 // ─── Laps ─────────────────────────────────────────────────────────────────────
 
-/** Total laps in a standard race. */
-export const TOTAL_LAPS = 3;
+/**
+ * Total laps in a standard race — HUD fallback only.
+ *
+ * MUST equal the authoritative server sim constant `REEF_RACE_LAPS`
+ * (apps/api/src/services/activity/sim/reef-race-config.ts, currently 2). The
+ * server streams `totalLaps` on every per-body delta / keyframe and the HUD
+ * prefers that; this constant is the value shown BEFORE the first delta for
+ * the self body arrives (race start, or a body that hasn't moved yet). Keeping
+ * it at the stale 3 made the HUD read "1/3" at the line while the sim only
+ * runs 2 laps — a WORLD↔UI parity break. Bump this in lockstep with
+ * `REEF_RACE_LAPS`.
+ */
+export const TOTAL_LAPS = 2;
 
 // ─── Phase 2 — boost ribbons + hazard patches (client mirrors) ───────────────
 //

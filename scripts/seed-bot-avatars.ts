@@ -30,7 +30,7 @@ import { config } from 'dotenv';
 import { resolve } from 'path';
 config({ path: resolve(__dirname, '../.env.local') });
 
-import { db, users, avatars, eq } from '@clawville/database';
+import { db, users, avatars, eq, sql } from '@clawville/database';
 
 const BOT_POOL_CAPACITY = 64;
 const BOT_USER_EMAIL_DOMAIN = '@bots.clawville.internal';
@@ -105,29 +105,38 @@ async function seed(): Promise<void> {
     const species = SPECIES[(i - 1) % SPECIES.length];
     const color = COLORS[(i - 1) % COLORS.length];
     const gender = GENDERS[(i - 1) % GENDERS.length];
+    const personality = {
+      habitat: 'Bumper Arena',
+      hobby: 'Filling out matchmaking',
+      greeting: 'Beep boop.',
+    };
+    const stats = { strength: 5, defence: 5, movement: 5 };
 
-    await db.insert(avatars).values({
-      userId,
-      name,
-      species,
-      color,
-      gender,
-      archetype: ARCHETYPE,
-      personality: {
-        habitat: 'Bumper Arena',
-        hobby: 'Filling out matchmaking',
-        greeting: 'Beep boop.',
-      },
-      stats: { strength: 5, defence: 5, movement: 5 },
-      // characterConfig left null — bots never run an Eliza runtime; they
-      // only exist as DB rows so `activity_room_participants.avatar_id` FK
-      // stays valid. The matcher attaches them with subjectType='bot'.
-      clawTokens: 0, // bots do not earn or spend
-      isActive: false, // not visible in NPC simulation
-      agentCategory: 'openclaw',
-      modelKey: 'lobster',
-      harness: 'milady',
-    });
+    // Raw INSERT (not Drizzle .values()) on purpose: the live DB has drifted
+    // ahead of this branch's Drizzle `avatars` schema — the vCLAW split added
+    // `soft_balance`/`bought_balance`/`earned_balance` columns and the CHECK
+    // `avatars_vclaw_balance_sum` (claw_tokens = soft + bought + earned).
+    // `soft_balance` DEFAULTS to 1000, so a Drizzle insert that only sets
+    // `claw_tokens=0` (the branch schema knows no split columns) produces
+    // 0 ≠ 1000 and the CHECK REJECTS it. Bots must earn/spend nothing, so we
+    // zero all four balances explicitly. Enum columns are cast so the bound
+    // text params coerce to avatar_species/avatar_color/avatar_gender.
+    // `character_config` left null — bots never run an Eliza runtime; the row
+    // exists only so `activity_room_participants.avatar_id` FK stays valid.
+    await db.execute(sql`
+      INSERT INTO avatars (
+        user_id, name, species, color, gender, archetype,
+        personality, stats,
+        claw_tokens, soft_balance, bought_balance, earned_balance,
+        is_active, agent_category, model_key, harness
+      ) VALUES (
+        ${userId}, ${name}, ${species}::avatar_species, ${color}::avatar_color,
+        ${gender}::avatar_gender, ${ARCHETYPE},
+        ${JSON.stringify(personality)}::jsonb, ${JSON.stringify(stats)}::jsonb,
+        0, 0, 0, 0,
+        false, 'openclaw', 'lobster', 'milady'
+      )
+    `);
     petsCreated++;
   }
 
