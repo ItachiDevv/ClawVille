@@ -583,7 +583,25 @@ class ReefRaceSim {
     const seed = opts?.seed ?? this.deriveSeedFromRoomId(roomId);
     // Audit S10 — prefer the room manager's startedAt so launch-verdict
     // expirations stay aligned with the sim's tick clock.
-    const startedAt = opts?.startedAt ?? Date.now();
+    // See reef-race-spline-sim.ts / docs/reef-race-reward-int-crash-2026-07-11.md:
+    // `startedAt` drives hardEndsAt (timeout) AND totalTimeMs (-> the `integer`
+    // activity_results.score). Normalize to an integer epoch; a non-numeric
+    // value would break the timeout and crash reward issuance. Log any coercion.
+    const rawStartedAt = opts?.startedAt;
+    const coercedStartedAt = Math.round(Number(rawStartedAt));
+    // Accept only a finite, positive epoch; non-finite (NaN/±Infinity) or
+    // <=0 falls back to now (Codex #3). Fractional/Date/string inputs are
+    // normalized to an integer ms epoch.
+    const startedAt =
+      Number.isFinite(coercedStartedAt) && coercedStartedAt > 0
+        ? coercedStartedAt
+        : Date.now();
+    if (rawStartedAt != null && startedAt !== rawStartedAt) {
+      console.error(
+        `[reef-race-sim] coerced startedAt for room ${roomId}: ` +
+          `${typeof rawStartedAt} ${String(rawStartedAt)} -> ${startedAt}`,
+      );
+    }
     const checkpoints = buildReefCheckpoints();
 
     const botControllers = new Map<string, BotController>();
@@ -2053,7 +2071,8 @@ class ReefRaceSim {
           });
           if (body.lap >= REEF_LAPS) {
             body.finishedAt = now;
-            body.totalTimeMs = now - state.startedAt;
+            // Round defensively — score/score_ms are `integer` columns.
+            body.totalTimeMs = Math.round(now - state.startedAt);
             state.finishOrder.push(body.avatarId);
             // Freeze the body — no more input applies.
             body.vx = 0;
