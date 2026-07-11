@@ -13,14 +13,16 @@
  * Iris Xe invariants enforced globally here:
  *   - DPR cap: [0.55, 0.7] on low-end GPU, [0.75, 1] otherwise
  *   - No shadows (scene lights set castShadow=false in CoveLighting)
- *   - camera.far=2000 (interior is small; fog far=1200 < camera.far ✓)
+ *   - camera.far = COVE_CAMERA_FAR (room-scale-knob-derived — see
+ *     cove-interior.tsx; was a flat 2000 that undershot the room's own 3D
+ *     bbox diagonal even at today's room scale, fixed 2026-07-11)
  *   - compileAsync fired once after first R3F commit
  */
 
 import { Suspense, useEffect, useState } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
-import CoveInteriorScene from '@/lib/three/cove-interior';
+import CoveInteriorScene, { COVE_CAMERA_FAR } from '@/lib/three/cove-interior';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 
 // ---------------------------------------------------------------------------
@@ -128,7 +130,7 @@ export default function CoveCanvas() {
         camera={{
           fov: 65,
           near: 1,
-          far: 2000,
+          far: COVE_CAMERA_FAR,
           // INSIDE the room — cove interior bbox is z∈[-300,+300], y∈[0,120].
           // Follow camera takes control on frame 1 from CovePlayerAvatar.
           // Starting position is behind the player spawn (z=240) + 160wu back

@@ -80,17 +80,92 @@ const FPS_FALLBACK_THRESHOLD = 40;
  * 2000wu gives ceiling ~400wu — plenty of headroom for 270wu avatar.
  * Room proportions scale proportionally (maxDim axis = 2000, the rest scale
  * by 2000/600 ≈ 3.333). Bounds, spawn, cabinet positions all follow.
+ *
+ * THE SINGLE ROOM-SCALE KNOB (2026-07-11, founder decision): every
+ * world-space constant below that represents a physical position/size
+ * inside the baked room GLB (table centers, felt extents, seat ring,
+ * AABB colliders, spawn, bounds, cabinet hotspots, dealer AABB, camera.far,
+ * fog) is now DERIVED from either `_ROOM_SCALE` (legacy room-relative
+ * constants, unchanged mechanism) or the GLB-space ground-truth block below
+ * (Slice 1's table/seat/spawn/hotspot constants, refactored from flat
+ * world-space literals). Bumping ONLY this constant scales the whole room
+ * + furniture coherently. Avatar constants (COVE_VRM_TARGET_HEIGHT,
+ * COVE_AVATAR_SCALE, CAM_ABOVE/BEHIND/LOOK_Y, COVE_PLAYER_SPEED) are
+ * DELIBERATELY excluded — the founder's brief is "the room grows around a
+ * fixed-size avatar," not a uniform world rescale.
  */
-const INTERIOR_TARGET_HEIGHT = 2000; // world units — was 600
+const INTERIOR_TARGET_HEIGHT = 2000; // world units — was 600. THE KNOB.
 
-/** Scale factor applied to all room-relative coordinates (bounds, spawn, cabinets). */
-const _ROOM_SCALE = 2000 / 600; // ≈ 3.333
+/** Scale factor applied to all room-relative coordinates (bounds, spawn, cabinets).
+ *  MUST reference INTERIOR_TARGET_HEIGHT, not a hardcoded duplicate of its
+ *  current value — this was a real bug caught during the room-scale-knob
+ *  refactor (2026-07-11): `_ROOM_SCALE = 2000 / 600` looked knob-derived but
+ *  was actually a second hardcoded "2000" that silently stopped tracking the
+ *  knob the moment INTERIOR_TARGET_HEIGHT changed. Every constant below that
+ *  multiplies by `_ROOM_SCALE` (BOUNDS_X/Z, SLOT_CABINET_POSITIONS, cabinet
+ *  width/depth, bank centroids, fog) was affected. */
+const _ROOM_SCALE = INTERIOR_TARGET_HEIGHT / 600; // ≈ 3.333 at today's knob value
+
+// ---------------------------------------------------------------------------
+// GLB-space ground truth + fit-scale conversion (room-scale-knob refactor,
+// 2026-07-11). Source: docs/cove-glb-furniture-map-2026-07-10.md (Blender
+// Z-up geometry forensics on the baked, never-edited cove-interior GLB —
+// these numbers are measured from the mesh, not chosen). `computeAutoFit()`
+// below computes this SAME ratio at runtime from the loaded scene's actual
+// bounding box; these are the compile-time equivalents (the GLB is a fixed,
+// unchanging asset, so hardcoding its measured bbox here — exactly as the
+// furniture-map doc already did — is safe and matches computeAutoFit's own
+// behaviour). Every Slice 1 table/seat/spawn/hotspot constant is now
+// GLB_VALUE * FIT_SCALE (or the inverse for round-tripping a legacy
+// world-space value that had no independent GLB measurement), so
+// INTERIOR_TARGET_HEIGHT is the only place the knob lives.
+// ---------------------------------------------------------------------------
+const ROOM_GLB_MAX_DIM = 1016.7;   // Y-span (Blender) — the axis computeAutoFit scales to INTERIOR_TARGET_HEIGHT
+const GLB_CENTER_X     = -720.56;  // Blender X room-bbox center
+const GLB_CENTER_Y     = 0.29;     // Blender Y room-bbox center (maps to world -Z)
+const GLB_FLOOR_Z      = -274.4;   // Blender Z-up floor plane
+const GLB_CEILING_HEIGHT = 203.5;  // doc's measured floor-to-ceiling height (Blender Z units)
+
+/** wu per Blender-GLB-unit at the CURRENT knob value. Replaces the old
+ *  hardcoded "FIT_SCALE≈1.967" comment with the real derived constant. */
+const FIT_SCALE = INTERIOR_TARGET_HEIGHT / ROOM_GLB_MAX_DIM;
+
+/** Fixed scale at the ORIGINAL baseline (INTERIOR_TARGET_HEIGHT=2000, the
+ *  value every pre-refactor hardcoded world-space constant in this file was
+ *  captured at). Deliberately NOT `FIT_SCALE` — this must stay pinned to
+ *  2000 regardless of the live knob value, because it exists ONLY to invert
+ *  a legacy world-space number back into its true GLB position ONE TIME
+ *  (below). If this used the live `FIT_SCALE` instead, every legacy
+ *  constant's GLB position would silently drift every time someone changed
+ *  the knob — the opposite of what round-tripping is for. */
+const BASELINE_FIT_SCALE = 2000 / ROOM_GLB_MAX_DIM;
+
+/** Blender X → world X. */
+function glbToWorldX(glbX: number): number { return (glbX - GLB_CENTER_X) * FIT_SCALE; }
+/** Blender Y → world Z (Y-up flip). */
+function glbToWorldZ(glbY: number): number { return -(glbY - GLB_CENTER_Y) * FIT_SCALE; }
+/** Blender Z-up height-above-floor → world Y. */
+function glbHeightToWorldY(glbZ: number): number { return (glbZ - GLB_FLOOR_Z) * FIT_SCALE; }
+/** Inverse of glbToWorldX, evaluated at BASELINE_FIT_SCALE (see above) —
+ *  round-trips a legacy world-space X with no independent GLB measurement
+ *  into a GLB-space constant that then tracks the knob like everything
+ *  else. Preserves the CURRENT (INTERIOR_TARGET_HEIGHT=2000) world value
+ *  exactly; only future knob values move it. */
+function worldToGlbX(worldX: number): number { return worldX / BASELINE_FIT_SCALE + GLB_CENTER_X; }
+/** Inverse of glbToWorldZ, evaluated at BASELINE_FIT_SCALE — see worldToGlbX. */
+function worldToGlbY(worldZ: number): number { return GLB_CENTER_Y - worldZ / BASELINE_FIT_SCALE; }
 
 /** Player spawn position — at the door side near the slot machines (back wall area).
  *  Captured via [BJ-POS] probe 2026-05-27. Was (0, 800) which placed player at the
- *  opposite side; user clarified door is on the slot/back-wall end of the cove. */
-const PLAYER_SPAWN_X = -12;
-const PLAYER_SPAWN_Z = -411;
+ *  opposite side; user clarified door is on the slot/back-wall end of the cove.
+ *  Room-scale-knob refactor (2026-07-11): no independent GLB measurement exists
+ *  for the spawn point, so the ORIGINAL (-12,-411) world value is round-tripped
+ *  into GLB-space via worldToGlbX/Y (see above) — identical position at today's
+ *  knob value, now tracks the knob at any other value. */
+const PLAYER_SPAWN_GLB_X = worldToGlbX(-12);
+const PLAYER_SPAWN_GLB_Y = worldToGlbY(-411);
+const PLAYER_SPAWN_X = glbToWorldX(PLAYER_SPAWN_GLB_X);
+const PLAYER_SPAWN_Z = glbToWorldZ(PLAYER_SPAWN_GLB_Y);
 
 /** Interior bounds — keep avatar inside the room */
 const BOUNDS_X     = Math.round(115 * _ROOM_SCALE); // ≈ 383
@@ -174,15 +249,42 @@ const ARROW_PITCH_SPEED = 200;   // wu / second  (camera height shift per second
 const ARROW_PITCH_MIN   = -100;  // wu relative to CAM_ABOVE (look down)
 const ARROW_PITCH_MAX   =  400;  // wu relative to CAM_ABOVE (look up — sky)
 
+/** Ceiling height in world units at the CURRENT knob value — GLB_CEILING_HEIGHT
+ *  (measured, doc ground truth) × FIT_SCALE. ≈400wu at today's knob (2000). */
+const COVE_CEILING_Y = GLB_CEILING_HEIGHT * FIT_SCALE;
+
 // AABB for camera containment — derived from room bounds + small inward margin.
 const COVE_ROOM_BOUNDS: RoomBounds = {
   halfX: BOUNDS_X,
   zMin:  BOUNDS_Z_MIN,
   zMax:  BOUNDS_Z_MAX,
-  yMin:  30,    // floor + clearance
-  yMax:  600,   // ceiling − clearance (room ceiling ≈ 400wu, 600 gives slack for tilt)
+  yMin:  30,    // floor + clearance (fixed — avatar-relative, not room-scaled)
+  // Room-scale-knob refactor (2026-07-11): was a flat 600 ("ceiling ≈400wu,
+  // 600 gives slack for tilt") — a fixed number that stopped giving adequate
+  // tilt slack as the ceiling itself grows with the knob (at 2800 the
+  // ceiling alone reaches ~561wu, leaving only ~39wu of the old flat 600
+  // headroom vs today's ~200wu). Now ceiling-relative: scaled ceiling height
+  // + the SAME 200wu fixed slack margin that today's numbers implied
+  // (600-400≈200), so the tilt-up feel stays constant across every knob value.
+  yMax: Math.round(COVE_CEILING_Y + 200),
   margin: 50,   // wu inset from each wall face
 };
+
+/**
+ * Camera far-clip plane, exported for CoveCanvas.tsx's `<Canvas camera={{far}}>`.
+ *
+ * Room-scale-knob refactor (2026-07-11) — the far-plane dark-void gotcha:
+ * CoveCanvas.tsx previously hardcoded `far: 2000`, which was ALREADY smaller
+ * than the room's true 3D bounding-box diagonal at today's knob value
+ * (measured diagonal ≈2252wu at INTERIOR_TARGET_HEIGHT=2000 — the far plane
+ * was clipping the room's own far corners before this refactor even
+ * touched anything). At INTERIOR_TARGET_HEIGHT=2800 the diagonal grows to
+ * ≈3153wu, which would have clipped visibly. Fixed by deriving far from the
+ * room's fixed GLB proportions (3D-bbox-diagonal / maxDim ≈ 1.126, plus a
+ * ~15% safety margin ⇒ ×1.3) so it always exceeds the room diagonal
+ * regardless of knob value: 2600wu at 2000, 3120wu at 2400, 3640wu at 2800.
+ */
+export const COVE_CAMERA_FAR = Math.round(INTERIOR_TARGET_HEIGHT * 1.3);
 
 // ---------------------------------------------------------------------------
 // Module-scope scratch objects — NEVER allocated inside useFrame
@@ -667,30 +769,39 @@ const _cabinetAABBs: CabinetAABB[] = SLOT_CABINET_POSITIONS.map((pos) => ({
 // target poker table and reading the BJ-POS log. Was (367, 0) which placed
 // the sign over the roulette wheel; now matches the poker table the user
 // arrowed in their screenshot.
-const _DEALER_CENTER_X = -299;
-const _DEALER_CENTER_Z =  331;
-const _DEALER_HALF_X   =  100;
-const _DEALER_HALF_Z   =  100;
+// Room-scale-knob refactor (2026-07-11): no independent GLB measurement was
+// taken for this specific station (it predates the furniture-map doc), so
+// the ORIGINAL (-299,331) world value is round-tripped into GLB-space via
+// worldToGlbX/Y — identical position at today's knob value, now tracks the
+// knob at any other value, same treatment as PLAYER_SPAWN above.
+const _DEALER_GLB_X = worldToGlbX(-299);
+const _DEALER_GLB_Y = worldToGlbY(331);
+const _DEALER_CENTER_X = glbToWorldX(_DEALER_GLB_X);
+const _DEALER_CENTER_Z = glbToWorldZ(_DEALER_GLB_Y);
+/** Half-extent unit-converted the same way (100/BASELINE_FIT_SCALE ≈ 50.84 GLB units). */
+const _DEALER_HALF_GLB = 100 / BASELINE_FIT_SCALE;
+const _DEALER_HALF_X   = _DEALER_HALF_GLB * FIT_SCALE;
+const _DEALER_HALF_Z   = _DEALER_HALF_GLB * FIT_SCALE;
 
 // ---------------------------------------------------------------------------
 // The four baked card tables — Slice 1 (3D Hold'em experiment, 2026-07-10).
+// Room-scale-knob refactor (2026-07-11): now GLB-space constants converted
+// via the shared glbToWorldX/Z/glbHeightToWorldY helpers (top of file) —
+// ALL of the derivation history below stays true at any INTERIOR_TARGET_
+// HEIGHT, not just today's 2000, because the constants going INTO
+// glbToWorld* are the GLB's own measured geometry, not a pre-multiplied
+// world-space number.
 //
-// World positions derived from docs/cove-glb-furniture-map-2026-07-10.md
-// (Blender geometry forensics on the baked GLB — the room is 13 material-
-// merged meshes with zero object-name semantics, so these came from
-// height-band + XY clustering, not names). Conversion from the doc's
-// GLB-space (Blender Z-up) felt centers to Three.js world space (Y-up):
-//   worldX = (glbX - GLB_CENTER_X) * FIT_SCALE      (Blender X → world X)
-//   worldZ = -(glbY - GLB_CENTER_Y) * FIT_SCALE     (Blender Y → world -Z)
-//   worldY(top) = (glbTopZ - GLB_FLOOR_Z) * FIT_SCALE  (Blender Z → world Y)
-// with GLB_CENTER=(-720.56, 0.29), GLB_FLOOR_Z=-274.4, FIT_SCALE≈1.967
-// (matches computeAutoFit at INTERIOR_TARGET_HEIGHT=2000 / maxDim 1016.7).
+// World positions originally derived from docs/cove-glb-furniture-map-
+// 2026-07-10.md (Blender geometry forensics on the baked GLB — the room is
+// 13 material-merged meshes with zero object-name semantics, so these came
+// from height-band + XY clustering, not names).
 //
 // T1/T2 (near pair) X is within ~10-16wu of the EXISTING hand-measured
 // _DEALER_CENTER_X (blackjack, -299) and _HOLDEM_CENTER_X (294) 2D hotspots
-// below, but Z is NOT — the 2D hotspots sit ~35-39wu further out (331/335 vs
-// 296/296). RESOLVED via runtime raycast probe (2026-07-10, real run — see
-// below): a straight-down ray at world (-309,296)/(310,296) hits a flat
+// above, but Z is NOT — the 2D hotspots sit ~35-39wu further out (331/335 vs
+// 296/296 at today's knob). RESOLVED via runtime raycast probe (2026-07-10,
+// real run): a straight-down ray at world (-309,296)/(310,296) hits a flat
 // surface at Y=59.8, matching TABLE_TOP_Y=59 almost exactly. The 2D hotspot
 // Z is a walk-up/approach-distance measurement (recorded from where the
 // PLAYER stood, pushed back by the table's own AABB collider), NOT the felt
@@ -702,40 +813,61 @@ const _DEALER_HALF_Z   =  100;
 // T1/T2 (no independent measurement existed). A runtime boundary-sweep probe
 // (raycasting a grid around the mirror-estimate, 2026-07-10) found a real
 // felt-height (Y≈59.8-63.3) hit region spanning roughly X∈[-420,-220],
-// Z∈[560,680] — centroid ≈ (-320, 620), only ~16-21wu from the original
-// mirror estimate (-336, 641), i.e. within the sweep's own 40wu grid
-// resolution. Nudged to the measured centroid below; AABB half-extents
-// (128×100, see _TABLE_AABBS) already exceed the measured felt half-width
-// (~100×60) so the existing collider padding covers this shift with margin.
-// T3/T4 get no seats/camera in Slice 1 (collider-only), so sub-wu precision
-// isn't required here — a later slice building T3/T4 seats should re-verify
-// with the same TableProbeMarkers tool before trusting these further.
+// Z∈[560,680] at today's knob — centroid ≈ (-320, 620), only ~16-21wu from
+// the original mirror estimate (-336, 641), i.e. within the sweep's own
+// 40wu grid resolution. Nudged to the measured centroid (expressed below as
+// the GLB-space equivalent, so it scales); AABB half-extents already exceed
+// the measured felt half-width so the existing collider padding covers this
+// shift with margin. T3/T4 get no seats/camera in Slice 1 (collider-only),
+// so sub-wu precision isn't required — a later slice building T3/T4
+// seats should re-verify with TableProbeMarkers before trusting these
+// further, especially after a knob change.
 //
 // Phase-0 runtime probe: cove3d-slice1-phase0-probe.png in the worktree root
-// (2026-07-10) — screenshot + the console raycast log above are the real
+// (2026-07-10) — screenshot + the console raycast log are the real
 // verification; a prior session's comment claiming this was "confirmed" was
 // fabricated (no screenshot or commit existed at the time it was written).
-const T1_CENTER_X = -309, T1_CENTER_Z = 296;
-const T2_CENTER_X =  310, T2_CENTER_Z = 296;
-const T3_CENTER_X = -320, T3_CENTER_Z = 620;
-const T4_CENTER_X =  320, T4_CENTER_Z = 620;
-/** Table-top height off the floor — identical for all four (same GLB band). */
-const TABLE_TOP_Y = 59;
+const T1_GLB_X = -877.6,  T1_GLB_Y = -150.2; // doc raw felt-cluster centroid
+const T2_GLB_X = -563.0,  T2_GLB_Y = -150.2; // doc raw felt-cluster centroid
+const T3_GLB_X = -883.2,  T3_GLB_Y = -314.9; // 2026-07-10 boundary-sweep-corrected
+const T4_GLB_X = -557.9,  T4_GLB_Y = -314.9; // 2026-07-10 boundary-sweep-corrected
+
+const T1_CENTER_X = glbToWorldX(T1_GLB_X), T1_CENTER_Z = glbToWorldZ(T1_GLB_Y);
+const T2_CENTER_X = glbToWorldX(T2_GLB_X), T2_CENTER_Z = glbToWorldZ(T2_GLB_Y);
+const T3_CENTER_X = glbToWorldX(T3_GLB_X), T3_CENTER_Z = glbToWorldZ(T3_GLB_Y);
+const T4_CENTER_X = glbToWorldX(T4_GLB_X), T4_CENTER_Z = glbToWorldZ(T4_GLB_Y);
+
+/** Felt top surface, Blender Z-up (doc: "tabletop plane at GLB z ≈ −244.2/−244.3"). */
+const GLB_FELT_TOP_Z = -244.25;
+/** Table-top height off the floor — identical for all four (same GLB band).
+ *  ≈59wu at today's knob; raycast-verified (see comment block above). */
+const TABLE_TOP_Y = glbHeightToWorldY(GLB_FELT_TOP_Z);
 
 interface TableAABB { centerX: number; centerZ: number; halfX: number; halfZ: number; }
 
-// T1/T2 felt cluster measured 115×66 GLB-units → world half-extents ≈113×65.
-// Padded slightly (+15) so the AABB also blocks the near chair ring, not just
-// the bare felt — a player shouldn't be able to stand chest-to-felt.
+// T1/T2 felt cluster measured 115×66 GLB-units (doc) → half-extents 57.5×33
+// GLB units. Padded (+~7.6 GLB units both axes ⇒ ≈128×80 world at today's
+// knob) so the AABB also blocks the near chair ring, not just the bare felt
+// — a player shouldn't be able to stand chest-to-felt. Padding value itself
+// is unit-converted from the ORIGINAL chosen world padding (15wu at the
+// 2000 baseline) via BASELINE_FIT_SCALE, same round-trip treatment as the
+// legacy hotspot centers above.
+const _T1T2_FELT_HALF_X_GLB = 115 / 2;
+const _T1T2_FELT_HALF_Z_GLB = 66 / 2;
+const _AABB_PAD_GLB = 15 / BASELINE_FIT_SCALE; // ≈7.6 GLB units
+// T3/T4 felt cluster bled into corner geometry (doc caveat) — the raw
+// 142×176 candidate is oversized for a felt-only AABB, so the CURRENT code
+// used a deliberately smaller chair-ring estimate (128×100 world at the
+// 2000 baseline) rather than trusting the bled bounds. Round-tripped into
+// GLB units the same way as the other legacy-chosen values.
+const _T3T4_AABB_HALF_X_GLB = 128 / BASELINE_FIT_SCALE;
+const _T3T4_AABB_HALF_Z_GLB = 100 / BASELINE_FIT_SCALE;
+
 const _TABLE_AABBS: TableAABB[] = [
-  { centerX: T1_CENTER_X, centerZ: T1_CENTER_Z, halfX: 128, halfZ: 80 },
-  { centerX: T2_CENTER_X, centerZ: T2_CENTER_Z, halfX: 128, halfZ: 80 },
-  // T3/T4 felt cluster bled into corner geometry (doc caveat) — the raw
-  // 142×176 candidate is oversized for a felt-only AABB, so this is
-  // deliberately smaller than the raw candidate (chair-ring estimate,
-  // mirroring T1/T2's padding rather than trusting the bled bounds).
-  { centerX: T3_CENTER_X, centerZ: T3_CENTER_Z, halfX: 128, halfZ: 100 },
-  { centerX: T4_CENTER_X, centerZ: T4_CENTER_Z, halfX: 128, halfZ: 100 },
+  { centerX: T1_CENTER_X, centerZ: T1_CENTER_Z, halfX: (_T1T2_FELT_HALF_X_GLB + _AABB_PAD_GLB) * FIT_SCALE, halfZ: (_T1T2_FELT_HALF_Z_GLB + _AABB_PAD_GLB) * FIT_SCALE },
+  { centerX: T2_CENTER_X, centerZ: T2_CENTER_Z, halfX: (_T1T2_FELT_HALF_X_GLB + _AABB_PAD_GLB) * FIT_SCALE, halfZ: (_T1T2_FELT_HALF_Z_GLB + _AABB_PAD_GLB) * FIT_SCALE },
+  { centerX: T3_CENTER_X, centerZ: T3_CENTER_Z, halfX: _T3T4_AABB_HALF_X_GLB * FIT_SCALE, halfZ: _T3T4_AABB_HALF_Z_GLB * FIT_SCALE },
+  { centerX: T4_CENTER_X, centerZ: T4_CENTER_Z, halfX: _T3T4_AABB_HALF_X_GLB * FIT_SCALE, halfZ: _T3T4_AABB_HALF_Z_GLB * FIT_SCALE },
 ];
 
 // Scratch for collision — never allocated in useFrame
@@ -1054,8 +1186,13 @@ const _BJ_HOTSPOT_SIZE: [number, number, number] = [200, 200, 150];
 // call, matrixAutoUpdate=false after first updateMatrix (Iris Xe rule).
 // ---------------------------------------------------------------------------
 
-const _HOLDEM_CENTER_X = 294;
-const _HOLDEM_CENTER_Z = 335;
+// Room-scale-knob refactor (2026-07-11): round-tripped into GLB-space the
+// same way as _DEALER_CENTER_X/Z above — identical position at today's knob
+// value, now tracks the knob at any other value.
+const _HOLDEM_GLB_X = worldToGlbX(294);
+const _HOLDEM_GLB_Y = worldToGlbY(335);
+const _HOLDEM_CENTER_X = glbToWorldX(_HOLDEM_GLB_X);
+const _HOLDEM_CENTER_Z = glbToWorldZ(_HOLDEM_GLB_Y);
 const _HOLDEM_HOTSPOT_POS: [number, number, number] = [
   _HOLDEM_CENTER_X,
   100,
@@ -1174,8 +1311,12 @@ function HoldemTableHotspot() {
 // BaccaratModal with the current avatar's ClawToken balance as the header seed.
 // ---------------------------------------------------------------------------
 
-const _BACCARAT_CENTER_X = 285;
-const _BACCARAT_CENTER_Z = 584;
+// Room-scale-knob refactor (2026-07-11): round-tripped into GLB-space, same
+// treatment as the other hotspot centers above.
+const _BACCARAT_GLB_X = worldToGlbX(285);
+const _BACCARAT_GLB_Y = worldToGlbY(584);
+const _BACCARAT_CENTER_X = glbToWorldX(_BACCARAT_GLB_X);
+const _BACCARAT_CENTER_Z = glbToWorldZ(_BACCARAT_GLB_Y);
 const _BACCARAT_HOTSPOT_POS: [number, number, number] = [
   _BACCARAT_CENTER_X,
   100,
@@ -1261,13 +1402,19 @@ function _buildTableSeats(feltRX: number, feltRZ: number, seatOffsetWu: number, 
   });
 }
 
-// T1 felt half-extents in world space — measured 115×66 GLB-units
-// (table_map.json, cluster centered -877.6,-150.0) × FIT_SCALE≈1.967
-// ⇒ half-width≈113, half-depth≈65.
-const T1_FELT_RX = 113;
-const T1_FELT_RZ = 65;
-/** Seat ring sits this far beyond the felt edge (chair position). */
-const T1_SEAT_RING_OFFSET = 36;
+// T1 felt half-extents — measured 115×66 GLB-units (table_map.json, cluster
+// centered -877.6,-150.0), same _T1T2_FELT_HALF_X/Z_GLB source as the AABB
+// above. Room-scale-knob refactor (2026-07-11): now × FIT_SCALE (the live
+// knob-derived value) instead of a flat pre-multiplied ≈113/65.
+const T1_FELT_RX = _T1T2_FELT_HALF_X_GLB * FIT_SCALE;
+const T1_FELT_RZ = _T1T2_FELT_HALF_Z_GLB * FIT_SCALE;
+/** Seat ring sits this far beyond the felt edge (chair position). Original
+ *  chosen world value (36wu at the 2000 baseline) round-tripped into GLB
+ *  units via BASELINE_FIT_SCALE — no independent GLB chair measurement
+ *  exists yet (doc caveat), so this preserves today's ring exactly and
+ *  scales proportionally with the felt at any other knob value. */
+const _SEAT_RING_OFFSET_GLB = 36 / BASELINE_FIT_SCALE;
+const T1_SEAT_RING_OFFSET = _SEAT_RING_OFFSET_GLB * FIT_SCALE;
 
 // 6-max ring, 160° open arc on the near (+Z, player-approach) side.
 const T1_SEATS: TableSeat[] = _buildTableSeats(T1_FELT_RX, T1_FELT_RZ, T1_SEAT_RING_OFFSET, [100, 140, 180, 220, 260, 300]);
@@ -1281,17 +1428,39 @@ const T1_SEAT_BUST_MODEL_KEYS: Array<keyof typeof MODEL_REGISTRY> = [
 
 // Seat-POV camera — eye at seat 0, looking across the felt toward the far
 // rim so the OTHER seated busts are in frame (not just the felt centre).
+//
+// Room-scale-knob refactor (2026-07-11) — XZ vs Y split: the HORIZONTAL
+// (XZ) position of the seat and the "look past centre" nudge are PHYSICAL
+// positions tied to the growing table, so they scale with FIT_SCALE like
+// everything else above. The VERTICAL (Y) eye/look heights are deliberately
+// NOT re-scaled — they stay fixed avatar-relative offsets ABOVE the
+// (scaled) TABLE_TOP_Y, because the avatar's own height is fixed by
+// founder decision ("room grows around a fixed-size avatar"). A seated
+// eye height that scaled with the room would eventually exceed the
+// standing eye height (COVE_VRM_TARGET_HEIGHT) at a big enough knob value —
+// nonsensical for a person sitting down. Offset values below are the
+// ORIGINAL fixed numbers this file already had (128-59=69 eye-above-table,
+// 30 look-above-table — the look offset was ALREADY expressed this way
+// pre-refactor), now anchored to the scaled TABLE_TOP_Y instead of a flat 59.
 const _t1PlayerSeat = T1_SEATS[T1_PLAYER_SEAT_INDEX]!;
 const _t1SeatDist = Math.hypot(_t1PlayerSeat.x, _t1PlayerSeat.z) || 1;
 const T1_SEAT_CAM_EYE_X = T1_CENTER_X + _t1PlayerSeat.x;
-const T1_SEAT_CAM_EYE_Y = 128; // wu — seated eye height (below COVE_VRM_TARGET_HEIGHT=160 standing)
+/** Fixed avatar-relative offset — seated eye sits below standing eye level. */
+const SEAT_EYE_HEIGHT_ABOVE_TABLE = 69; // wu, fixed (was flat EYE_Y=128 at TABLE_TOP_Y=59)
+const T1_SEAT_CAM_EYE_Y = TABLE_TOP_Y + SEAT_EYE_HEIGHT_ABOVE_TABLE;
 const T1_SEAT_CAM_EYE_Z = T1_CENTER_Z + _t1PlayerSeat.z;
-// Look-at point: table centre, nudged 40wu past centre AWAY from the
-// player's seat so the far-side busts read clearly rather than dead-centre felt.
-const T1_SEAT_CAM_LOOK_X = T1_CENTER_X - (_t1PlayerSeat.x / _t1SeatDist) * 40;
-const T1_SEAT_CAM_LOOK_Y = TABLE_TOP_Y + 30;
-const T1_SEAT_CAM_LOOK_Z = T1_CENTER_Z - (_t1PlayerSeat.z / _t1SeatDist) * 40;
-const T1_SEAT_CAM_LERP = 8; // exp-decay coefficient, matches the walk-cam follow lerp
+// Look-at point: table centre, nudged past centre AWAY from the player's
+// seat so the far-side busts read clearly rather than dead-centre felt.
+// Nudge distance (40wu at the 2000 baseline) round-tripped into GLB units —
+// it's a framing choice tied to the table's own width, so it scales.
+const _LOOK_NUDGE_GLB = 40 / BASELINE_FIT_SCALE;
+const T1_SEAT_CAM_LOOK_NUDGE = _LOOK_NUDGE_GLB * FIT_SCALE;
+const T1_SEAT_CAM_LOOK_X = T1_CENTER_X - (_t1PlayerSeat.x / _t1SeatDist) * T1_SEAT_CAM_LOOK_NUDGE;
+/** Fixed avatar-relative offset — already expressed this way pre-refactor. */
+const SEAT_LOOK_HEIGHT_ABOVE_TABLE = 30; // wu, fixed
+const T1_SEAT_CAM_LOOK_Y = TABLE_TOP_Y + SEAT_LOOK_HEIGHT_ABOVE_TABLE;
+const T1_SEAT_CAM_LOOK_Z = T1_CENTER_Z - (_t1PlayerSeat.z / _t1SeatDist) * T1_SEAT_CAM_LOOK_NUDGE;
+const T1_SEAT_CAM_LERP = 8; // exp-decay coefficient (1/s) — not spatial, unaffected by scale
 
 // ---------------------------------------------------------------------------
 // TableSeatedBust — one full standing VRM figure locked at a table seat.
@@ -1452,8 +1621,14 @@ function TableSeatCamera() {
 // unmodified). Read by TableSitLabel each frame to drive the WorldLabel hint
 // text; zero allocations.
 // ---------------------------------------------------------------------------
-const TABLE_SIT_NEAR = 260; // wu — label becomes visible
-const TABLE_SIT_ARM  = 180; // wu — E key actually arms
+// Room-scale-knob refactor (2026-07-11): interaction radii are physical
+// distances from the (scaled) table centre, so a bigger table reasonably
+// needs a bigger "walk up" radius too — round-tripped into GLB units like
+// the other legacy-chosen values above.
+const _SIT_NEAR_GLB = 260 / BASELINE_FIT_SCALE;
+const _SIT_ARM_GLB  = 180 / BASELINE_FIT_SCALE;
+const TABLE_SIT_NEAR = _SIT_NEAR_GLB * FIT_SCALE; // wu — label becomes visible
+const TABLE_SIT_ARM  = _SIT_ARM_GLB * FIT_SCALE;  // wu — E key actually arms
 
 let _eKeyArmedTableSit = false;
 let _eKeyTableConsumed = false;
@@ -2634,8 +2809,15 @@ export default function CoveInteriorScene({ onSceneEmpty }: CoveInteriorScenePro
     <>
       <CoveLighting />
 
-      {/* Fog scaled with room: near=4000, far=10000 (was 1200/3000 for 600wu room → ×3.333) */}
-      <fog attach="fog" args={[0x0a0015, 4000, 10000]} />
+      {/* Fog scaled with room via _ROOM_SCALE (room-scale-knob refactor 2026-07-11
+          — was hardcoded 4000/10000 literals that LOOKED _ROOM_SCALE-derived per
+          the old comment but didn't actually reference it, so fog silently
+          stopped tracking the knob the same way _ROOM_SCALE itself did until
+          fixed above). Note (pre-existing, unrelated to this refactor, flagged
+          not fixed): fog.far still exceeds COVE_CAMERA_FAR at every knob value,
+          so fog never visually tapers before the hard clip — an existing
+          atmosphere-tuning gap, out of scope here. */}
+      <fog attach="fog" args={[0x0a0015, 1200 * _ROOM_SCALE, 3000 * _ROOM_SCALE]} />
 
       {/* WorldLabelsOverlay — single overlay root for BankLabels */}
       <WorldLabelsOverlayMount />
