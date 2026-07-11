@@ -274,10 +274,23 @@ async function recalculateSuccessRate(avatarId: string, tx?: BountyTx): Promise<
  * is a clean 400 at the schema boundary (solana SEV-3) — NOT a u64-range throw
  * deep in the escrow instruction builder. 1,000,000 USDC → 1e12 base units, far
  * inside u64 (max ~1.8e19) with headroom, and far above any realistic bounty. The
- * min is the shared `tokenReward` floor (10). Bump deliberately if the product
- * ever needs a larger single-bounty escrow.
+ * floor is `USDC_BOUNTY_REWARD_MIN` (below). Bump deliberately if the product ever
+ * needs a larger single-bounty escrow.
  */
 const USDC_BOUNTY_REWARD_MAX = 1_000_000;
+
+/**
+ * Env-configurable FLOOR for a USDC-rail bounty reward (whole USDC). Default 10;
+ * clamped to an integer ≥ 1. Set `USDC_BOUNTY_REWARD_MIN=1` on the mainnet smoke box
+ * so a funded 1-USDC bounty can run against a small real balance without an 11-USDC
+ * top-up. The CT rail floor is UNCHANGED (still 10, enforced separately in the
+ * superRefine) — this floor is USDC-rail ONLY. Read per-parse (env-driven, no
+ * redeploy needed beyond the Coolify env set). Exported pure resolver for tests.
+ */
+export function resolveUsdcBountyRewardMin(raw: string | undefined): number {
+  const n = Number.parseInt(raw ?? '10', 10);
+  return Number.isInteger(n) && n >= 1 ? n : 10;
+}
 
 const bonusRewardSchema = z.object({
   rewardType: z.enum(['agent_config', 'knowledge_book', 'custom']),
@@ -292,11 +305,13 @@ const createBountySchema = z
     description: z.string().min(10).max(5000),
     requirements: z.string().max(5000).optional(),
     difficulty: z.enum(['beginner', 'intermediate', 'advanced', 'expert']),
-    // The shared reward floor is 10. For a USDC bounty this is 10 WHOLE USDC (the
-    // unit is whole dollars, converted to base units × 1e6 at the escrow boundary
-    // — see bounty-escrow-link.usdcRewardBaseUnits); for CT it is 10 ClawTokens.
-    // The USDC ceiling is USDC_BOUNTY_REWARD_MAX (checked in the superRefine).
-    tokenReward: z.number().int().min(10),
+    // Positive-integer reward; the RAIL-SPECIFIC floor is enforced in the superRefine
+    // (CT: 10 ClawTokens, unchanged; USDC: `USDC_BOUNTY_REWARD_MIN`, default 10,
+    // overridable to 1 for the mainnet smoke). The field-level floor is the absolute
+    // minimum valid for EITHER rail (1) so a 1-USDC bounty can pass here and be judged
+    // per-rail below. For a USDC bounty the unit is WHOLE USDC (× 1e6 at the escrow
+    // boundary — see bounty-escrow-link.usdcRewardBaseUnits). Ceiling: USDC_BOUNTY_REWARD_MAX.
+    tokenReward: z.number().int().min(1),
     maxAttempts: z.number().int().min(1).max(100).default(1),
     tags: z.array(z.string().max(30)).max(10).optional(),
     expiresAt: z.string().datetime().optional(),
@@ -312,6 +327,26 @@ const createBountySchema = z
     acceptanceCriteria: z.string().min(10).max(5000).optional(),
   })
   .superRefine((data, ctx) => {
+    // RAIL-SPECIFIC reward floor (the field-level check only enforces ≥ 1). CT is
+    // UNCHANGED at 10; the USDC floor is env-configurable (`USDC_BOUNTY_REWARD_MIN`,
+    // default 10) so the mainnet smoke can post a funded 1-USDC bounty.
+    if (data.paymentRail === 'ct' && data.tokenReward < 10) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['tokenReward'],
+        message: 'A ClawToken bounty reward must be at least 10.',
+      });
+    }
+    if (data.paymentRail === 'usdc') {
+      const usdcMin = resolveUsdcBountyRewardMin(process.env.USDC_BOUNTY_REWARD_MIN);
+      if (data.tokenReward < usdcMin) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['tokenReward'],
+          message: `A USDC bounty reward must be at least ${usdcMin} USDC.`,
+        });
+      }
+    }
     // A USDC bounty MUST carry acceptance criteria (nothing to verify against ⇒
     // no meaningful verdict). Reject at the schema boundary, not deep in the
     // handler, so the error is a clean 400 with a precise path.

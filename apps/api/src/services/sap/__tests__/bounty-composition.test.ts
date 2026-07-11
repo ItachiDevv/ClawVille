@@ -31,7 +31,8 @@ import {
 import { computeV2ProtocolFee, type EscrowGateResult, type EscrowGateErrorCode } from '../escrow-gate';
 import type { SapWriteResult } from '../sap-client';
 // MED-1: the create route's delete-vs-keep classification for a LEG-1 open failure.
-import { PRE_BROADCAST_NO_CUSTODY } from '../../../routes/bounties';
+// resolveUsdcBountyRewardMin: the env-configurable USDC-rail reward floor (mainnet slice).
+import { PRE_BROADCAST_NO_CUSTODY, resolveUsdcBountyRewardMin } from '../../../routes/bounties';
 
 // ─── fixtures ────────────────────────────────────────────────────────────────
 
@@ -694,5 +695,31 @@ describe('resumeComposedBounty (finalize/payout crank)', () => {
       .toEqual({ resumed: false, reason: 'no_winner' });
     expect(await resumeComposedBounty(BOUNTY_ID, { loadContext: async () => ctx({ escrowPda: null }) }))
       .toEqual({ resumed: false, reason: 'no_escrow' });
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 6. USDC bounty reward FLOOR — env-configurable (mainnet-enablement slice)
+// ═══════════════════════════════════════════════════════════════════════════
+describe('resolveUsdcBountyRewardMin (USDC-rail reward floor)', () => {
+  it('defaults to 10 whole USDC when unset', () => {
+    expect(resolveUsdcBountyRewardMin(undefined)).toBe(10);
+  });
+
+  it('honors the staging/mainnet-smoke override of 1', () => {
+    expect(resolveUsdcBountyRewardMin('1')).toBe(1);
+  });
+
+  it('accepts a normal integer override', () => {
+    expect(resolveUsdcBountyRewardMin('25')).toBe(25);
+  });
+
+  it('clamps sub-1 / non-integer / garbage back to the default 10', () => {
+    expect(resolveUsdcBountyRewardMin('0')).toBe(10);
+    expect(resolveUsdcBountyRewardMin('-5')).toBe(10);
+    expect(resolveUsdcBountyRewardMin('abc')).toBe(10);
+    expect(resolveUsdcBountyRewardMin('')).toBe(10);
+    // parseInt truncates a leading integer (documented, defensive): '2.7' → 2 (a valid floor).
+    expect(resolveUsdcBountyRewardMin('2.7')).toBe(2);
   });
 });

@@ -28,8 +28,11 @@ export const TOKEN_2022_PROGRAM_ID = new PublicKey(
   'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',
 );
 
-/** Mainnet USDC mint (6 decimals) — the Option C payment token. */
-export const USDC_MINT = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+// (adversary nit, mainnet-enablement review 2026-07-10) The hardcoded-mainnet
+// `USDC_MINT` export that used to live here was DELETED — zero importers, and a
+// future edit importing it into a mint-derivation site would hardcode mainnet
+// regardless of cluster (wrong-mint ATAs on devnet). The ONLY mint source for
+// money paths is the cluster-pinned `cfg.usdcMint` (sap-config.ts).
 export const USDC_DECIMALS = 6;
 
 /**
