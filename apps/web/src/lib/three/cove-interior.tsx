@@ -1076,6 +1076,14 @@ function BlackjackTableHotspot() {
   }, []);
 
   const handleClick = () => {
+    // Slice 1 (2026-07-10, founder correction): while seated at ANY table
+    // (currently only T1), the felt-click 2D-modal path must be a no-op —
+    // the whole session is meant to render in-world on the felt, never an
+    // overlay. Founder explicitly rejected the modal-still-opens-while-
+    // seated behavior as "the exact failure we're replacing." Walk-around
+    // click still opens the modal as before (other games keep this path
+    // until they get their own in-world slice).
+    if (useCoveStore.getState().seatedTable !== null) return;
     const balance = avatar?.clawTokens ?? 0;
     openBlackjackTable(balance);
   };
@@ -1125,6 +1133,9 @@ function HoldemTableHotspot() {
   }, []);
 
   const handleClick = () => {
+    // See BlackjackTableHotspot's identical guard above — same founder
+    // correction, same rationale (2026-07-10).
+    if (useCoveStore.getState().seatedTable !== null) return;
     const balance = avatar?.clawTokens ?? 0;
     openHoldemTable(balance);
   };
@@ -1185,6 +1196,9 @@ function BaccaratTableHotspot() {
   }, []);
 
   const handleClick = () => {
+    // See BlackjackTableHotspot's identical guard above — same founder
+    // correction, same rationale (2026-07-10).
+    if (useCoveStore.getState().seatedTable !== null) return;
     const balance = avatar?.clawTokens ?? 0;
     openBaccaratTable(balance);
   };
