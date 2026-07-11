@@ -4,6 +4,32 @@
 **Plan:** `.claude/plans/sap-onchain-agents/PLAN.md` · **Owner:** orchestrator (Claude)
 **FEATURE_GATE:** `sap_onchain_agents` (review deadline 2026-09-20 — see `routes/sap.ts`).
 
+## MAINNET-ON-STAGING ENABLEMENT (2026-07-10)
+
+The validation ladder: devnet-on-staging (✅ two live e2es 2026-07-10) → **MAINNET-on-staging (this rung)** → prod fully ON. "Flags off" is the DEFAULT-SAFE posture, NOT a resting state — the target is prod ON with real value flowing.
+
+**The two-lock mainnet gate (BOTH required to touch mainnet):**
+- **LOCK 1 — code constant `SAP_ALLOW_MAINNET`** (`sap-config.ts`): flipped `false → true` 2026-07-10 as the reviewed config event this gate was designed to require. Flipping it ALONE moves no cluster. Revert to `false` = one-line return to crash-loud devnet-only.
+- **LOCK 2 — `SAP_CLUSTER=mainnet` PER BOX** (env): a box stays fully devnet unless it sets this. With LOCK 1 true, `SAP_CLUSTER=mainnet` no longer throws. Real funds move only when the box ALSO sets `SAP_DRY_RUN=false` + the enable flags (`SAP_ENABLED`, `SAP_ESCROW_ENABLED`, `SAP_USDC_ESCROW_ENABLED`, `SAP_PAYAI_SETTLEMENT_ENABLED`).
+
+**Env changes for a mainnet box:**
+- `SAP_CLUSTER=mainnet` — selects the mainnet USDC mint (`EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`) + mainnet RPC default.
+- `SAP_RPC_URL=<Helius mainnet>` — **REQUIRED**; the public mainnet RPC is rate-limited + unsuitable for real traffic.
+- `USDC_BOUNTY_REWARD_MIN=1` — lets the funded smoke post a 1-USDC bounty against a small real balance (default 10; USDC rail ONLY; the CT floor stays 10).
+
+**Funding facts (what a mainnet run actually costs):**
+- House provisioning: 0.1 SOL stake (program hard floor; 0.11 SOL default) held as a standing, REUSABLE coverage bond, plus ~0.055 SOL account rent (AgentAccount + pricing_menu + stake PDAs). BOTH recoverable (unstake + `close_agent`). Raise the stake before any single bounty > ~$200.
+- A bounty's USDC CIRCULATES between OUR custodial wallets (creator → house V2 vault → hunter), so the reward itself is not "spent" — it moves. The TRUE burn per bounty ≈ the SAP 0.5% protocol fee (to the SAP treasury) + tx fees (~0.00001 SOL/tx). The ~0.5% deposit headroom is reclaimed to the creator (leg 1d).
+
+**Fixed as part of this review (CRITICAL, pre-existing):** the live-send mainnet-broadcast guard (`assertNotMainnetGenesis`) compared `getGenesisHash()` (44-char) against a constant that held only the 32-char CAIP-2 truncation, so it NEVER matched — a devnet-configured box pointed at a mainnet RPC would NOT have been refused (silent fail-OPEN). Corrected to the full genesis hash `5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d`, pinned by `sap-config.test.ts`. The guard is SKIPPED on an intended mainnet box (mainnetGateOn) and now correctly RUNS on every devnet box — protecting exactly the misconfig case.
+
+**SMOKE RUNBOOK — money containment (adversary nits, mainnet-enablement review):**
+- **The auth gate is NOT the containment.** On a mainnet box the bounty routes are reachable by ANY logged-in non-guest; real containment is that `create_escrow_v2` is atomic create+deposit, so an UNFUNDED custodial wallet's USDC bounty fails clean. Safety of the smoke therefore rests on funding discipline: **before setting `SAP_DRY_RUN=false`, confirm NO staging custodial wallet other than the smoke creator + house holds real mainnet USDC/SOL.**
+- **Don't linger money-live:** immediately after the smoke passes, flip the box back to `SAP_CLUSTER=devnet` + `SAP_DRY_RUN=true` until the next deliberate rung (prod-ON promotes the mainnet env as its own reviewed step).
+- If ops mis-points a mainnet box at a devnet RPC, the mainnet mint makes every escrow tx fail wrong-mint — a wasted (but fund-safe) run; the dangerous reverse direction is what the genesis fix refuses.
+- **Pre-smoke config parity:** carry the proven devnet-staging SAP config (arbiter pubkey, DisputeWindow mode) over unchanged; verify the SDK treasury matches the mainnet program's expectation and the x402 facilitator is PayAI's MAINNET facilitator (payai-release derives `network` from the cluster) — each mismatch fails closed but burns a funded attempt.
+- **Follow-up (separate rail, pre-existing):** `wallet-withdraw-executor.ts` hardcodes the mainnet USDC mint on the custodial wallet-withdraw path — likely intentional (user withdrawals are real-money-only) but confirm independently; not part of the SAP escrow rail.
+
 > ## ⚠️ DEPLOYED PROGRAM IS 0.25-FAMILY — and BOTH vendored IDLs are WRONG (2026-07-09)
 > The devnet program (`SAPpUhsWLJG1FfkGRcXagEDMrMsWGjbky7AyhGpFETZ`) now runs the
 > **0.25-family** binary. A full DisputeWindow USDC lifecycle was driven END-TO-END

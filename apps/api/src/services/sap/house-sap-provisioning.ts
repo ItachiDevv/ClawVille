@@ -55,6 +55,18 @@
  * it only READS `sapConfigSnapshot().dryRun` to REPORT the posture. It calls the
  * exported sap-client functions and maps each `SapWriteResult` into a step.
  *
+ * ── CLUSTER-AGNOSTIC / MAINNET COST (2026-07-10) ─────────────────────────────
+ * This provisioner is CLUSTER-AGNOSTIC: it hardcodes NO cluster/RPC/mint — every
+ * on-chain step follows `SAP_CLUSTER` through the sap-client (`sapConfigSnapshot`),
+ * so the SAME run provisions devnet or mainnet purely by the box's env. On MAINNET
+ * (SAP_CLUSTER=mainnet + SAP_ALLOW_MAINNET + SAP_DRY_RUN=false) the stake + register
+ * spend REAL SOL: the stake is `DEFAULT_HOUSE_STAKE_LAMPORTS` (0.11 SOL default; the
+ * program's hard floor is 0.1 SOL) held as a standing coverage bond, plus ~0.055 SOL
+ * of account rent (AgentAccount + pricing_menu + stake PDAs). BOTH are RECOVERABLE
+ * (unstake + `close_agent` reclaim the stake and rent); the only true burn is tx fees
+ * (~0.00001 SOL/tx). Raise the stake (script arg / `HOUSE_STAKE_LAMPORTS`) before a
+ * single bounty > ~$200 (see the stake↔max-bounty note on DEFAULT_HOUSE_STAKE_LAMPORTS).
+ *
  * ── IDEMPOTENCY (safe to re-run) ─────────────────────────────────────────────
  *   wallet   — `ensureWallet` is idempotent (surfaced as `alreadyProvisioned`).
  *   register — pre-checked with `fetchAgentProfile` (a non-null profile ⇒ already
