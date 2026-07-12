@@ -94,7 +94,10 @@ const FPS_FALLBACK_THRESHOLD = 40;
  * DELIBERATELY excluded — the founder's brief is "the room grows around a
  * fixed-size avatar," not a uniform world rescale.
  */
-const INTERIOR_TARGET_HEIGHT = 2000; // world units — was 600. THE KNOB.
+const INTERIOR_TARGET_HEIGHT = 2800; // world units — was 600, was 2000. THE KNOB.
+// Founder-picked 2026-07-11 from the A/B/C screenshot set (2000/2400/2800):
+// "2800 looks great." Room + furniture read bigger relative to the fixed-
+// size avatar without retuning COVE_PLAYER_SPEED or any avatar constant.
 
 /** Scale factor applied to all room-relative coordinates (bounds, spawn, cabinets).
  *  MUST reference INTERIOR_TARGET_HEIGHT, not a hardcoded duplicate of its
