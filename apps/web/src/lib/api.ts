@@ -188,6 +188,10 @@ async function honoRequest<T>(path: string, options?: RequestInit): Promise<T> {
     ...options,
     credentials: 'include',
     headers,
+    // Personalized JSON must always be fetched fresh — the browser HTTP
+    // cache must never replay one session's response into another.
+    // TanStack Query is the only caching layer for API data.
+    cache: 'no-store',
   });
 
   if (!res.ok) {
@@ -204,6 +208,8 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     ...options,
     credentials: 'include',
     headers,
+    // Same no-store invariant as honoRequest — see comment there.
+    cache: 'no-store',
   });
 
   if (!res.ok) {

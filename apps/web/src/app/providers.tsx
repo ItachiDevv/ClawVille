@@ -3,6 +3,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useState } from 'react';
 import { CoveClaimToast } from '@/components/cove/CoveClaimToast';
+import { IdentityTransitionWatcher } from '@/components/identity-transition-watcher';
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(
@@ -21,6 +22,10 @@ export function Providers({ children }: { children: React.ReactNode }) {
     <QueryClientProvider client={queryClient}>
       {children}
       <CoveClaimToast />
+      {/* Auth-transition belt: sweeps identity-bearing client state when the
+          resolved ['auth-me'] identity changes (silent expiry, account
+          switch). See identity-transition-watcher.tsx. */}
+      <IdentityTransitionWatcher />
     </QueryClientProvider>
   );
 }

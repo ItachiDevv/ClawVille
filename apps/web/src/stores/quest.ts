@@ -46,6 +46,16 @@ interface QuestStoreState {
   isCompleted: (id: QuestId) => boolean;
   getStatus: (id: QuestId) => QuestStatus;
   getProgress: (id: QuestId) => number;
+
+  /**
+   * Full reset to defaults. Called by the auth-transition sweep
+   * (`clearIdentityState`) on logout/account-switch/expiry ONLY — never on
+   * guest→signup/login, where local progress must survive so the new account
+   * can claim tutorial rewards it earned as a guest ("Sign up to claim").
+   * The persist middleware writes the fresh state through to localStorage,
+   * so the next identity doesn't inherit this one's progress.
+   */
+  resetQuestStore: () => void;
 }
 
 function getDefaultProgress(): Record<QuestId, QuestProgress> {
@@ -133,6 +143,14 @@ export const useQuestStore = create<QuestStoreState>()(
 
       markServerClaimed: (id) =>
         set((s) => ({ serverClaimed: { ...s.serverClaimed, [id]: true } })),
+
+      resetQuestStore: () =>
+        set({
+          progress: getDefaultProgress(),
+          counters: { ...DEFAULT_COUNTERS },
+          distinct: { ...DEFAULT_DISTINCT },
+          serverClaimed: {},
+        }),
 
       incrementCounter: (key, amount = 1) => {
         set((s) => ({

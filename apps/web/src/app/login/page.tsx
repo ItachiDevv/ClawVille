@@ -6,7 +6,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { api } from '@/lib/api';
-import { AUTH_ME_QUERY_KEY } from '@/hooks/use-auth-me';
+import { clearIdentityState } from '@/lib/clear-identity-state';
 import { FIRST_TIME_DISCLOSURE_STORAGE_KEY } from '@/components/game/first-time-backup-modal';
 
 const LandingScene = dynamic(() => import('@/components/three/LandingScene'), { ssr: false });
@@ -33,13 +33,17 @@ function LoginForm() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  // Evict the identity-bearing queries so the post-auth destination page
-  // (/game or /create-agent) fetches them fresh as the just-authed user
-  // instead of reading a stale pre-login cache. See handleSubmit for why.
+  // Evict identity-bearing client state so the post-auth destination page
+  // (/game or /create-agent) fetches fresh as the just-authed user instead
+  // of reading a stale pre-login cache. Balance-cache fix 2026-07-12: the
+  // old 3-key removeQueries list missed ['wallet-balances']/['wallet-link']
+  // (login-as-other-account briefly showed the prior account's SOL/USDC/CLV)
+  // and never touched the Zustand stores (the cove store kept rendering the
+  // guest demo balance after login). clearIdentityState is the ONE sweep —
+  // preserveQuestProgress keeps guest tutorial progress claimable by the
+  // new account (designed flow).
   function purgeAuthCache() {
-    queryClient.removeQueries({ queryKey: AUTH_ME_QUERY_KEY });
-    queryClient.removeQueries({ queryKey: ['avatar'] });
-    queryClient.removeQueries({ queryKey: ['agent-session'] });
+    clearIdentityState(queryClient, { preserveQuestProgress: true });
   }
 
   // Phase 6.7.5 + 2026-06-21 hotfix — migrate any guest-mode Cove history rows

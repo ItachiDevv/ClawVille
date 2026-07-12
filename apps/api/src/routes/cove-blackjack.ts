@@ -91,6 +91,7 @@ import {
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import { resolveAgentSession } from '../middleware/require-auth-or-agent';
 import { isGuestUser } from '../middleware/require-non-guest';
+import { noStorePrivate } from '../middleware/no-store';
 import { npcSimulation } from '../services/npc-simulation';
 import { createServerSeed } from '../services/provable-rng';
 import {
@@ -2239,7 +2240,7 @@ coveBlackjackRouter.post('/session/close', async (c) => {
 // open shoe after a reconnect, exactly like a human after a page refresh. An
 // agent + its bound human share one userId-keyed shoe, so both see the same row.
 
-coveBlackjackRouter.get('/session/current', async (c) => {
+coveBlackjackRouter.get('/session/current', noStorePrivate, async (c) => {
   const subject = await getSubject(c);
   if (!isLedgerSubject(subject)) {
     throw new HTTPException(403, { message: 'guest_has_no_persistent_shoe: sign in or connect an agent' });
@@ -2271,7 +2272,7 @@ coveBlackjackRouter.get('/session/current', async (c) => {
 // the client to clear its local hand (the prior hand settled). A missing/foreign
 // shoe is 404/403 via ownerMatch, exactly like /session/:id.
 
-coveBlackjackRouter.get('/hand/current', async (c) => {
+coveBlackjackRouter.get('/hand/current', noStorePrivate, async (c) => {
   const subject = await getSubject(c);
   if (!isLedgerSubject(subject)) {
     throw new HTTPException(403, { message: 'guest_has_no_persistent_shoe: sign in or connect an agent' });
@@ -2343,7 +2344,7 @@ coveBlackjackRouter.get('/hand/current', async (c) => {
 // agent can inspect its own shoe; ownerMatch binds to the resolved userId, so an
 // agent can never read another user's shoe by id.
 
-coveBlackjackRouter.get('/session/:id', async (c) => {
+coveBlackjackRouter.get('/session/:id', noStorePrivate, async (c) => {
   const shoeId = c.req.param('id');
   if (!/^[0-9a-f-]{36}$/i.test(shoeId)) {
     throw new HTTPException(400, { message: 'invalid_shoe_id' });

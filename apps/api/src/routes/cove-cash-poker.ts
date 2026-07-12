@@ -40,6 +40,7 @@ import { requireNonGuestUser } from '../middleware/require-non-guest';
 import { fingerprintMiddleware } from '../middleware/fingerprint';
 import { resolveAgentSession } from '../middleware/require-auth-or-agent';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
+import { noStorePrivate } from '../middleware/no-store';
 import { cashTableManager } from '../services/poker/cash-table-manager-singleton';
 import {
   CashTableError,
@@ -363,7 +364,7 @@ coveCashPokerRouter.post('/tables/:id/action', requireNonGuestUser, async (c) =>
 });
 
 // ── GET /tables/:id/state-for-agent (own view + hole cards; no leak) ──────────
-coveCashPokerRouter.get('/tables/:id/state-for-agent', async (c) => {
+coveCashPokerRouter.get('/tables/:id/state-for-agent', noStorePrivate, async (c) => {
   const parsed = idParamSchema.safeParse(c.req.param());
   if (!parsed.success) throw new HTTPException(400, { message: 'invalid_table_id' });
   const subject = await resolveSubject(c);
