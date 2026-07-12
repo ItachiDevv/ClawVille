@@ -1391,8 +1391,13 @@ function BaccaratTableHotspot() {
 
 interface TableSeat { x: number; z: number; faceYaw: number; }
 
-/** Build a ring of seats around a table's felt oval. `anglesDeg`: 0° = +Z
- *  (the room's near/player-approach side), increasing CCW. */
+/** Build a ring of seats around a table's felt oval from an ARC FORMULA.
+ *  `anglesDeg`: 0° = +Z (the room's near/player-approach side), increasing
+ *  CCW. STILL USED — but no longer for T1 (see the measured-chair block
+ *  below). Kept for T2-T4 whenever a later slice builds their seats/camera,
+ *  as a placeholder ring until THEY get the same in-game measurement pass
+ *  T1 got here. Do not assume this formula is accurate — it wasn't for T1
+ *  (see the postmortem below). */
 function _buildTableSeats(feltRX: number, feltRZ: number, seatOffsetWu: number, anglesDeg: number[]): TableSeat[] {
   return anglesDeg.map((deg) => {
     const a = deg * Math.PI / 180;
@@ -1405,22 +1410,75 @@ function _buildTableSeats(feltRX: number, feltRZ: number, seatOffsetWu: number, 
   });
 }
 
-// T1 felt half-extents — measured 115×66 GLB-units (table_map.json, cluster
-// centered -877.6,-150.0), same _T1T2_FELT_HALF_X/Z_GLB source as the AABB
-// above. Room-scale-knob refactor (2026-07-11): now × FIT_SCALE (the live
-// knob-derived value) instead of a flat pre-multiplied ≈113/65.
-const T1_FELT_RX = _T1T2_FELT_HALF_X_GLB * FIT_SCALE;
-const T1_FELT_RZ = _T1T2_FELT_HALF_Z_GLB * FIT_SCALE;
-/** Seat ring sits this far beyond the felt edge (chair position). Original
- *  chosen world value (36wu at the 2000 baseline) round-tripped into GLB
- *  units via BASELINE_FIT_SCALE — no independent GLB chair measurement
- *  exists yet (doc caveat), so this preserves today's ring exactly and
- *  scales proportionally with the felt at any other knob value. */
-const _SEAT_RING_OFFSET_GLB = 36 / BASELINE_FIT_SCALE;
-const T1_SEAT_RING_OFFSET = _SEAT_RING_OFFSET_GLB * FIT_SCALE;
+// ---------------------------------------------------------------------------
+// T1 MEASURED chair-seat data (2026-07-11, Slice 2 postmortem fix).
+//
+// The arc-formula ring above (T1_SEAT_RING_OFFSET etc.) SYNTHESIZED seat
+// positions from the felt radius + a chosen offset — it was never checked
+// against the actual baked chair meshes. Founder + team-lead caught the
+// consequence on the seated screenshot: busts sank so low their heads hid
+// behind chair backs, and one bust sat visibly ON THE FLOOR beside her
+// chair, not on it. Root cause was conceptual, not a tuning miss — the
+// SEAT HEIGHT was calibrated as a fraction of AVATAR height (fixed,
+// avatar-relative), but the CHAIRS are baked ROOM geometry that scales
+// with the room-scale knob (2000→2800, ×1.4) while the avatar didn't. The
+// old avatar-relative estimate (~41.6wu drop) was too aggressive once the
+// room grew — it sank busts BELOW the now-taller real chair seats.
+//
+// Fixed by MEASUREMENT: an in-game raycast grid sweep (ChairSeatSweep, a
+// temp diagnostic component, removed after this data was captured) found a
+// real, consistent, room-scaled flat surface at world Y≈56.6wu (knob=2800)
+// across many XZ points near T1 — traced to mesh `Material3001` (the same
+// material the furniture-map doc already flagged as carrying "much
+// furniture trim"). A visual marker check confirmed 56.6 (green) sits at
+// the chair-cushion height, not 44.9 (blue, a lower Material2001 surface —
+// likely the chair's structural base/frame under the cushion). Converting
+// 56.6wu at knob=2800 back to GLB-space height-above-floor gives
+// GLB_CHAIR_SEAT_TOP_Z below — which independently matches the ~-253.9/
+// -256.7 GLB-Z band the team lead separately cited, corroborating the
+// measurement from two directions.
+//
+// XZ positions: a SECOND, finer local sweep (±60wu, 8wu step) around each
+// of the 6 arc-formula hypothesis points found the REAL nearby chair-seat
+// centroid for every seat (n=7-33 confirming hits each) — offsets from the
+// arc-formula guess ranged 10-58wu, confirming the old ring was in the
+// right neighborhood but not accurate. Captured once at knob=2800 and
+// converted to permanent GLB-space constants (glbX/glbY below) via the
+// SAME forward math glbToWorldX/Z use, so they correctly re-derive at any
+// future knob value — NOT hardcoded world-space numbers.
+const GLB_CHAIR_SEAT_TOP_Z = -253.85; // height-above-floor band; matches team-lead's independently-cited -253.9/-256.7
+/** Chair-seat surface height, world Y, at the CURRENT knob — replaces the
+ *  old avatar-relative SEAT_DROP estimate entirely. */
+const TABLE_SEAT_HEIGHT_Y = glbHeightToWorldY(GLB_CHAIR_SEAT_TOP_Z);
 
-// 6-max ring, 160° open arc on the near (+Z, player-approach) side.
-const T1_SEATS: TableSeat[] = _buildTableSeats(T1_FELT_RX, T1_FELT_RZ, T1_SEAT_RING_OFFSET, [100, 140, 180, 220, 260, 300]);
+interface MeasuredChairGlb { glbX: number; glbY: number; }
+/** Index 0 = the local player's own seat (T1_PLAYER_SEAT_INDEX below);
+ *  1-5 = the 5 bust seats. Order matches the OLD arc-formula's angle order
+ *  (100,140,180,220,260,300deg) purely for continuity — it no longer means
+ *  anything positional now that these are direct measurements. */
+const T1_CHAIRS_GLB: MeasuredChairGlb[] = [
+  { glbX: -821.39, glbY: -144.92 }, // seat0 (player)
+  { glbX: -844.63, glbY: -125.64 }, // seat1
+  { glbX: -876.51, glbY: -116.78 }, // seat2
+  { glbX: -906.29, glbY: -126.00 }, // seat3
+  { glbX: -942.49, glbY: -145.24 }, // seat4
+  { glbX: -932.03, glbY: -171.39 }, // seat5
+];
+
+const T1_SEATS: TableSeat[] = T1_CHAIRS_GLB.map((c) => {
+  const wx = glbToWorldX(c.glbX);
+  const wz = glbToWorldZ(c.glbY);
+  // Seat XZ is stored as an OFFSET from T1_CENTER (matching the existing
+  // TableSeat shape, which every consumer — Table3D, the seat camera —
+  // already adds to T1_CENTER_X/Z), so the measured absolute position is
+  // converted to a table-relative offset here, once.
+  const sx = wx - T1_CENTER_X;
+  const sz = wz - T1_CENTER_Z;
+  // Face the table centre, same VRM convention as the old formula.
+  const faceYaw = Math.atan2(-sx, -sz);
+  return { x: sx, z: sz, faceYaw };
+});
+
 /** Seat 0 is reserved for the local player; seats 1..5 get placeholder busts. */
 const T1_PLAYER_SEAT_INDEX = 0;
 /** Placeholder identities for the non-player seats — Slice 1 has no real
@@ -1517,31 +1575,31 @@ const _seatedKneeQuat  = new THREE.Quaternion().setFromAxisAngle(new THREE.Vecto
  * result without touching VRMHumanoidRig's hips-specific position-propagation
  * special-case).
  *
- * No ground-truth doc measurement exists for the actual baked chair-seat
- * height (the furniture-map doc measured table/floor/ceiling, not chairs) —
- * this is an ENGINEERING ESTIMATE, documented as such, not a fabricated
- * "measured" number:
- *   - SEATED_HIP_HEIGHT_FRACTION = 0.52: the fraction of standing height
- *     where the hips bone sits. VERIFIED via the same headless harness on
- *     the two body types actually used in T1_SEAT_BUST_MODEL_KEYS — Milady
- *     measured 0.5028, Hermes-female measured 0.5988; 0.52 is their
- *     midpoint, applied uniformly rather than per-model (a per-model live
- *     measurement would be more precise but adds complexity for a
- *     background NPC bust — acceptable simplification, noted here so a
- *     future pass can tighten it).
- *   - SEAT_DROP_FRACTION = 0.5: real-world seated-hip height is roughly
- *     half of standing-hip height for a normal chair/stool (standing hip
- *     ~90cm, chair seat ~45cm on a ~170cm person) — a standard human-
- *     ergonomics ratio, not room-specific. Applied to the avatar-relative
- *     (fixed) standing hip height, consistent with every other avatar-
- *     relative constant in this file staying fixed while the room scales.
- * Both constants are avatar-relative and intentionally do NOT scale with
- * INTERIOR_TARGET_HEIGHT — visually calibrated against the committed 2800
- * knob value; a later slice with real per-table seat/chair GLB measurements
- * should replace this with a measured value the same way TABLE_TOP_Y was.
+ * POSTMORTEM (2026-07-11): the first version of this drop was an
+ * avatar-relative ENGINEERING ESTIMATE (fraction of standing avatar height)
+ * — wrong in principle, not just imprecise. Chairs are baked ROOM geometry
+ * that scales with the room-scale knob (×1.4 at 2000→2800); avatars don't.
+ * "seat ≈ half of standing hip" doesn't hold once the room and the avatar
+ * scale independently — the estimate assumed a SMALLER seat than the real,
+ * now-bigger chair, so busts sank BELOW the actual seat surface (one bust
+ * visibly sat on the floor beside her chair, not on it).
+ *
+ * Fixed: drop target is now TABLE_SEAT_HEIGHT_Y, the MEASURED chair-seat
+ * surface (in-game raycast grid sweep, see the T1_CHAIRS_GLB comment
+ * block above) converted through the same knob-aware glbHeightToWorldY
+ * helper every other physical-geometry constant in this file uses — so it
+ * re-derives correctly at any future knob value, unlike the old fixed
+ * fraction.
+ *
+ * The STANDING hip height itself stays avatar-relative (correctly so — the
+ * avatar's own body proportions don't change with room scale).
+ * SEATED_HIP_HEIGHT_FRACTION = 0.52 is VERIFIED (not guessed) via a
+ * headless harness on the two body types in the roster: Milady measured
+ * 0.5028, Hermes-female measured 0.5988, averaged. A per-model live
+ * measurement would be marginally more precise; the averaged constant is
+ * an accepted simplification for a background NPC bust.
  */
 const SEATED_HIP_HEIGHT_FRACTION = 0.52;
-const SEAT_DROP_FRACTION = 0.5;
 
 // ---------------------------------------------------------------------------
 // TableSeatedBust — one seated VRM figure locked at a table seat.
@@ -1601,10 +1659,13 @@ function TableSeatedBustInner({ reg, seat, instanceId, targetHeight }: {
     [vrm, reg.animatorId, targetHeight],
   );
 
-  // Seated Y offset — see SEATED_HIP_HEIGHT_FRACTION/SEAT_DROP_FRACTION
-  // above. Avatar-relative (uses targetHeight, not the room-scale knob).
+  // Seated Y offset — standing hip height (avatar-relative, fixed) minus
+  // the MEASURED chair-seat surface (room-scale-knob-aware). See the
+  // TABLE_SEAT_HEIGHT_Y / SEATED_HIP_HEIGHT_FRACTION comment blocks above
+  // for the postmortem on why this used to be purely avatar-relative and
+  // why that was wrong.
   const seatDrop = useMemo(
-    () => targetHeight * SEATED_HIP_HEIGHT_FRACTION * SEAT_DROP_FRACTION,
+    () => (targetHeight * SEATED_HIP_HEIGHT_FRACTION) - TABLE_SEAT_HEIGHT_Y,
     [targetHeight],
   );
 

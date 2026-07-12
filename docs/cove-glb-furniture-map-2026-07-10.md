@@ -1,6 +1,6 @@
 # Cove GLB Furniture Map — the "what is a table" ground truth
 
-**Date:** 2026-07-10 · **Method:** headless Blender 5.1.2 geometry forensics (up-facing-face height-band clustering + rendered visual verification) · **Analyst:** Fable 5 session
+**Date:** 2026-07-10, updated 2026-07-11 (T1 chair-seat measurement, see below) · **Method:** headless Blender 5.1.2 geometry forensics (up-facing-face height-band clustering + rendered visual verification) for the original table/slot map; in-game raycast grid sweep (live rendered asset, not a separate Blender pass) for the 2026-07-11 chair-seat addition · **Analyst:** Fable 5 session
 **Assets analyzed (byte-identical furniture geometry):**
 - `apps/web/public/models/cove/cove-interior.glb` (origin/staging)
 - `apps/web/public/models/cove/cove-interior-cleaned-v1.glb` (origin/staging — **the LIVE asset**, served as `cove-interior-cleaned-v1-ktx.glb?v=5` per `cove-interior.tsx`)
@@ -74,4 +74,26 @@ Positive-Y half. Each bank = **2 back-to-back rows of 6 slot cabinets** on a sha
 2. **Face-level extraction:** select faces by spatial region (table cylinder) across `Material3.001`/`Material2.001`/`Material3.006`, separate → named objects (`CardTable_1..4`), re-export. Gives true per-table show/hide + seat raycast targets. The failed "instancing" attempt died because leftover welded geometry stayed behind on a `[0,0,0]` unlit material — face-level region selection with verified re-render (screenshot every step) avoids that.
 3. Either way, seats: horseshoe chair positions are readable from the clean top-down render per table; derive seat transforms from the felt center + radius at 36° spacing on the open arc.
 
-**PARITY note:** doc-only artifact (no code change). Human path and agent path unaffected; this map feeds the upcoming cove 3D build which carries its own parity gates.
+## T1 chair-seat MEASURED ground truth (added 2026-07-11, Slice 2 posture postmortem)
+
+The "36° spacing on the open arc" guidance in step 3 above was **wrong** — it was never checked against the baked chairs. The Slice 1 sit-at-table build used that arc formula to synthesize T1's 6 seat positions, and calibrated the seated hip height as a fraction of AVATAR height. Both were conceptually wrong, not just imprecise: the room-scale knob (2026-07-11, `3dStructure.md` §10c) scales the whole room INCLUDING the baked chairs, while avatars stay a fixed size — "seat height ≈ half of avatar hip height" stopped holding the moment the knob moved off its original value. The founder + team-lead caught it on a seated screenshot at knob=2800: bust heads hid behind chair backs, and one bust sat visibly on the floor beside her chair.
+
+**Fixed by measurement**, not re-estimation — an in-game raycast grid sweep (temp diagnostic component, removed after data capture) at `INTERIOR_TARGET_HEIGHT=2800`:
+
+- **Seat height:** a real, consistent, room-scaled flat surface at world Y≈56.6wu (knob=2800), found across many XZ points near T1, traced to mesh `Material3001` (same material this doc already flagged as carrying "much furniture trim"). A second, LOWER surface at Y≈44.9wu (`Material2001`) also exists at the same XZ columns — a visual marker check (two colored spheres rendered at both candidate heights, screenshotted against the real chair mesh) confirmed 56.6 is the cushion top; 44.9 is likely the chair's structural base/frame underneath. Converted to GLB-space height-above-floor: **`GLB_CHAIR_SEAT_TOP_Z ≈ -253.85`** (floor is -274.4, so ≈20.55 GLB-units above floor) — this independently matches a `-253.9/-256.7` GLB-Z band cited separately during review, corroborating the measurement from two directions.
+- **Seat XZ positions:** a second, finer local sweep (±60wu, 8wu step) around each of the arc-formula's 6 hypothesis points found the real nearby chair-seat centroid for every seat (n=7-33 confirming hits each). Offsets from the old arc-formula guess ranged 10-58wu — confirming the formula was in the right neighborhood but not accurate enough to seat a VRM cleanly. Measured GLB-space centers (captured at knob=2800, converted via the standard `glbToWorldX/Y` fit-scale math so they re-derive correctly at any future knob value):
+
+| Seat | GLB X | GLB Y | Role |
+|---|---|---|---|
+| 0 | -821.39 | -144.92 | Local player's own seat |
+| 1 | -844.63 | -125.64 | Bust |
+| 2 | -876.51 | -116.78 | Bust |
+| 3 | -906.29 | -126.00 | Bust |
+| 4 | -942.49 | -145.24 | Bust |
+| 5 | -932.03 | -171.39 | Bust |
+
+Bust yaw = `atan2` facing T1's felt center from each seat's own measured position (not a fixed per-slot angle).
+
+**Implication for T2-T4:** the arc-formula ring (`_buildTableSeats` in `cove-interior.tsx`) is still used there since no slice has built their seats/camera yet — but it should NOT be trusted at face value when that work starts. Repeat this SAME in-game raycast measurement pass for each table before shipping seats, rather than assuming the formula (proven wrong once already) is close enough.
+
+**PARITY note:** doc-only artifact (no code change in this section — the code lives in `apps/web/src/lib/three/cove-interior.tsx`, its own diff). Human path and agent path unaffected; this map feeds the cove 3D build which carries its own parity gates.
