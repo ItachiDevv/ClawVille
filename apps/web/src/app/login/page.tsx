@@ -7,6 +7,7 @@ import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { api } from '@/lib/api';
 import { clearIdentityState } from '@/lib/clear-identity-state';
+import { AUTH_ME_QUERY_KEY, type AuthMe } from '@/hooks/use-auth-me';
 import { FIRST_TIME_DISCLOSURE_STORAGE_KEY } from '@/components/game/first-time-backup-modal';
 
 const LandingScene = dynamic(() => import('@/components/three/LandingScene'), { ssr: false });
@@ -33,17 +34,32 @@ function LoginForm() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  // Evict identity-bearing client state so the post-auth destination page
-  // (/game or /create-agent) fetches fresh as the just-authed user instead
-  // of reading a stale pre-login cache. Balance-cache fix 2026-07-12: the
-  // old 3-key removeQueries list missed ['wallet-balances']/['wallet-link']
-  // (login-as-other-account briefly showed the prior account's SOL/USDC/CLV)
-  // and never touched the Zustand stores (the cove store kept rendering the
-  // guest demo balance after login). clearIdentityState is the ONE sweep —
-  // preserveQuestProgress keeps guest tutorial progress claimable by the
-  // new account (designed flow).
-  function purgeAuthCache() {
-    clearIdentityState(queryClient, { preserveQuestProgress: true });
+  // Evict identity-bearing client state around the auth swap (balance-cache
+  // fix 2026-07-12; ordering reshaped by Codex review BLOCKING 2+4):
+  //
+  // preLoginSweep runs BEFORE api.login()/api.signup(), while the OLD
+  // session cookie is still in the jar — the sweep's resetStore() fires the
+  // Autonomous server-deactivate POST, and running it post-login would aim
+  // that deactivate at the NEW account's freshly installed cookie (a direct
+  // A→B login could unenroll B's autonomous agent). Quest progress is
+  // preserved ONLY when the prior resolved identity was anonymous or a
+  // guest — the "sign up to claim what you earned as a guest" designed flow.
+  // A real account (non-guest) logging into another account must NOT hand
+  // its local progress to the next identity.
+  function preLoginSweep() {
+    const prior = queryClient.getQueryData<AuthMe>(AUTH_ME_QUERY_KEY);
+    const priorWasAccountUser = !!prior?.user && !prior.user.isGuest;
+    clearIdentityState(queryClient, { preserveQuestProgress: !priorWasAccountUser });
+  }
+
+  // postAuthReset runs AFTER the cookie swap: the pre-login sweep's
+  // refetches raced the login POST and may have re-cached the OLD identity,
+  // so reset once more — data empties and active queries refetch as the
+  // just-authed user (never clear(): see clearIdentityState on why clear()
+  // breaks active subscribers).
+  function postAuthReset() {
+    void queryClient.cancelQueries();
+    void queryClient.resetQueries();
   }
 
   // Phase 6.7.5 + 2026-06-21 hotfix — migrate any guest-mode Cove history rows
@@ -75,6 +91,11 @@ function LoginForm() {
     setLoading(true);
 
     try {
+      // Sweep BEFORE the auth call — old cookie still valid, so the
+      // autonomous-deactivate side effect targets the OLD identity (see
+      // preLoginSweep). A failed login leaves the user swept-but-anonymous,
+      // which is the safe direction.
+      preLoginSweep();
       if (isSignup) {
         const res = await api.signup({ email, password, name: name || undefined, harness });
         // P2 Path-B (2026-07-04) — signup now auto-provisions the hosted
@@ -105,8 +126,9 @@ function LoginForm() {
           }
         }
         await claimGuestCoveHistory();
-        // Drop any pre-auth cache so the destination refetches as the new user.
-        purgeAuthCache();
+        // Drop anything the pre-login sweep's refetches re-cached under the
+        // old identity so the destination refetches as the new user.
+        postAuthReset();
         // /create-agent detects the freshly-provisioned avatar and runs in
         // customize mode (prefill + PATCH) — it never dead-ends on the
         // one-avatar-per-user constraint.
@@ -117,15 +139,15 @@ function LoginForm() {
         // existing user who played slots as a guest before logging in must see
         // those plays under their account afterward.
         await claimGuestCoveHistory();
-        // Auth-state-reconciliation fix (2026-06-19). The session cookie is now
-        // in the jar, but the shared SPA QueryClient may still hold a stale
-        // `auth-me: null` (or a guest avatar) cached from BEFORE login — fresh
-        // for `staleTime` (60s). Without this, the soft-nav into /game reads
-        // that stale null and renders LOGGED-OUT until a focus-triggered
-        // refetch ~60s+ later (the "logged in but shows logged-out for ~3 min"
-        // bug). removeQueries evicts the stale entries so /game mounts with NO
-        // cached auth and fetches clean (brief loading, never wrong-logged-out).
-        purgeAuthCache();
+        // Auth-state-reconciliation fix (2026-06-19, reshaped 2026-07-12).
+        // The session cookie is now in the jar, but the QueryClient may hold
+        // a stale pre-login identity (re-cached by the pre-login sweep's own
+        // refetches racing the login POST) — fresh for `staleTime` (60s).
+        // Without this, the soft-nav into /game reads that stale value and
+        // renders LOGGED-OUT until a focus-triggered refetch (the "logged in
+        // but shows logged-out for ~3 min" bug). postAuthReset empties +
+        // refetches so /game mounts clean (brief loading, never wrong).
+        postAuthReset();
         router.push('/game');
       }
     } catch (err: any) {

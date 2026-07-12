@@ -91,6 +91,16 @@ export function clearIdentityState(
     useGuestLandSandbox.getState().resetSandbox();
   } catch { /* store not loaded on this route */ }
 
+  try {
+    // structures is the OWNER's placed-structure snapshot (see land.ts) —
+    // without this, the previous account's buildings stay rendered after
+    // logout/expiry/account switch (Codex review SHOULD-FIX 6). `parcels`
+    // is public world state and deliberately NOT cleared (wiping it would
+    // blank the world's for-sale/owned display until the next remount).
+    const { useLandStore } = require('@/stores/land') as typeof import('@/stores/land');
+    useLandStore.getState().clearOwnerStructures();
+  } catch { /* store not loaded on this route */ }
+
   if (!opts?.preserveQuestProgress) {
     try {
       const { useQuestStore } = require('@/stores/quest') as typeof import('@/stores/quest');
@@ -98,8 +108,15 @@ export function clearIdentityState(
     } catch { /* store not loaded on this route */ }
   }
 
-  // LAST: nuke the shared TanStack cache so every query (auth-me, avatar,
-  // wallet-balances, wallet-link, agent-session, leaderboards, …) refetches
-  // under the new identity. Active observers refetch automatically.
-  queryClient.clear();
+  // LAST: cancel in-flight query responses (a request begun under the old
+  // identity must not settle into the new one), then RESET — not clear() —
+  // the shared TanStack cache. Codex review BLOCKING 1: clear() REMOVES
+  // queries and their subscriber wiring, so an active observer (the
+  // IdentityTransitionWatcher's own ['auth-me'] subscription!) could go
+  // one-shot and never refetch. resetQueries() empties every query's data
+  // AND refetches the active ones, which is exactly the contract this
+  // sweep promises. Fire-and-forget: refetches settle under whatever
+  // cookie is current, and the watcher converges on the final identity.
+  void queryClient.cancelQueries();
+  void queryClient.resetQueries();
 }

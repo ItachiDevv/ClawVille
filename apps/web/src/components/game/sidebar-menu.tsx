@@ -868,6 +868,12 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
       // inside the helper.
       clearIdentityState(queryClient);
       await api.logout();
+      // The sweep's resetQueries refetches raced api.logout() with the OLD
+      // still-valid cookie and may have re-cached the logged-out identity
+      // (fresh for staleTime). Cancel those and reset again now that the
+      // session is dead — the refetches resolve 401 → anonymous.
+      void queryClient.cancelQueries();
+      void queryClient.resetQueries();
       router.push('/login');
     } catch {
       setLoggingOut(false);

@@ -21,6 +21,7 @@ import {
   type ActivityAuthContext,
 } from '../middleware/require-auth-or-agent';
 import { requireNonGuestIdentity } from '../middleware/require-non-guest';
+import { noStorePrivate } from '../middleware/no-store';
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import { logEventFromContext } from '../services/event-logger';
 import {
@@ -183,7 +184,7 @@ exchangeRoutes.get('/', async (c) => {
 
 // ─── GET /my-listings ───────────────────────────────────────────────────────
 
-exchangeRoutes.get('/my-listings', requireAuthOrAgentSession, async (c) => {
+exchangeRoutes.get('/my-listings', requireAuthOrAgentSession, noStorePrivate, async (c) => {
   const me = await getActingAvatar(c);
   const rows = await db
     .select()
@@ -195,7 +196,7 @@ exchangeRoutes.get('/my-listings', requireAuthOrAgentSession, async (c) => {
 
 // ─── GET /my-orders ─────────────────────────────────────────────────────────
 
-exchangeRoutes.get('/my-orders', requireAuthOrAgentSession, async (c) => {
+exchangeRoutes.get('/my-orders', requireAuthOrAgentSession, noStorePrivate, async (c) => {
   const me = await getActingAvatar(c);
   const rows = await db
     .select({ o: exchangeOrders, l: exchangeListings })

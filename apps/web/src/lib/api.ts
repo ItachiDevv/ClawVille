@@ -185,13 +185,16 @@ function apiErrorExtras(err: Record<string, unknown>): {
 async function honoRequest<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = await withFingerprint(options?.headers);
   const res = await fetch(`${HONO_API_URL}${path}`, {
+    // DEFAULT no-store: personalized JSON must never replay from the
+    // browser HTTP cache into another session. TanStack Query is the
+    // caching layer for API data. Placed BEFORE the spread so a caller
+    // fetching a PUBLIC, deliberately cacheable endpoint (leaderboard
+    // /agents, land catalog — server sends public,max-age) can override
+    // with `cache: 'default'` per call (web-perf constraint #1).
+    cache: 'no-store',
     ...options,
     credentials: 'include',
     headers,
-    // Personalized JSON must always be fetched fresh — the browser HTTP
-    // cache must never replay one session's response into another.
-    // TanStack Query is the only caching layer for API data.
-    cache: 'no-store',
   });
 
   if (!res.ok) {
@@ -205,11 +208,11 @@ async function honoRequest<T>(path: string, options?: RequestInit): Promise<T> {
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = await withFingerprint(options?.headers);
   const res = await fetch(`${API_URL}${path}`, {
+    // Same overridable no-store default as honoRequest — see comment there.
+    cache: 'no-store',
     ...options,
     credentials: 'include',
     headers,
-    // Same no-store invariant as honoRequest — see comment there.
-    cache: 'no-store',
   });
 
   if (!res.ok) {
