@@ -52,6 +52,7 @@ import {
   type ActivityIdentity,
 } from '../middleware/require-auth-or-agent';
 import { requireNonGuestIdentity } from '../middleware/require-non-guest';
+import { noStorePrivate } from '../middleware/no-store';
 import { CHECKOUT_MAX_PRICE_VCLAW, type CheckoutSubject } from '../services/x402-checkout';
 import {
   checkSellerLicense,
@@ -193,6 +194,7 @@ marketRoutes.get(
   '/listings/mine',
   requireAuthOrAgentSession,
   requireNonGuestIdentity,
+  noStorePrivate,
   async (c) => {
     const resolved = resolveSubject(c.get('identity'));
     if ('error' in resolved) {

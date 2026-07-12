@@ -195,6 +195,12 @@ export const useCoveStore = create<CoveStore>((set, get) => ({
   },
 
   setSessionMeta: ({ sessionId, serverSeedHash, clientSeed, walletBalance }) => {
+    // Stale-response guard (Codex review BLOCKING 3): a /session/open begun
+    // under one identity can resolve AFTER the auth-transition sweep reset
+    // this store (which also closes the modal). Writing then would
+    // repopulate the previous session's balance into the next identity's
+    // singleton. Closed modal ⇒ the response is stale by definition — drop.
+    if (!get().slotScreenOpen) return;
     // walletBalance is the AUTHORITATIVE balance from the server, snapshot
     // both as the PnL baseline AND the displayed balance. Replaces the
     // stale-cache `avatar?.clawTokens ?? 60` heuristic from openSlotScreen.
@@ -238,6 +244,9 @@ export const useCoveStore = create<CoveStore>((set, get) => ({
   setIsSpinning: (spinning) => set({ isSpinning: spinning }),
 
   recordSpin: (result, balance, spinCount) => {
+    // Same stale-response guard as setSessionMeta — a /spin resolving after
+    // the sweep (modal closed) must not write the old identity's balance.
+    if (!get().slotScreenOpen) return;
     const { sessionStartBalance } = get();
     set({
       lastSpinResult: result,
@@ -248,6 +257,8 @@ export const useCoveStore = create<CoveStore>((set, get) => ({
   },
 
   adjustBalance: (delta) => {
+    // Same stale-response guard as setSessionMeta/recordSpin.
+    if (!get().slotScreenOpen) return;
     const { sessionBalance } = get();
     set({ sessionBalance: sessionBalance + delta });
   },

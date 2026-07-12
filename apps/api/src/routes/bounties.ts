@@ -8,6 +8,7 @@ import {
 } from '../middleware/require-auth-or-agent';
 import { requireNonGuestIdentity } from '../middleware/require-non-guest';
 import { adminOnly } from '../middleware/admin-only';
+import { noStorePrivate } from '../middleware/no-store';
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
 import {
   bountySettlementRail,
@@ -479,7 +480,7 @@ bountyRoutes.get('/featured', async (c) => {
 // ---------------------------------------------------------------------------
 // 7. GET /my-bounties — Get bounties I created (auth)
 // ---------------------------------------------------------------------------
-bountyRoutes.get('/my-bounties', requireAuthOrAgentSession, async (c) => {
+bountyRoutes.get('/my-bounties', requireAuthOrAgentSession, noStorePrivate, async (c) => {
   const avatar = await getActingAvatar(c);
 
   const rows = await db
@@ -547,7 +548,7 @@ bountyRoutes.get('/my-bounties', requireAuthOrAgentSession, async (c) => {
 // ---------------------------------------------------------------------------
 // 11. GET /my-attempts — Get my bounty attempts (auth)
 // ---------------------------------------------------------------------------
-bountyRoutes.get('/my-attempts', requireAuthOrAgentSession, async (c) => {
+bountyRoutes.get('/my-attempts', requireAuthOrAgentSession, noStorePrivate, async (c) => {
   const avatar = await getActingAvatar(c);
 
   const rows = await db

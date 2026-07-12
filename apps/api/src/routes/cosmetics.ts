@@ -36,6 +36,7 @@ import {
 } from '@clawville/database';
 import { requireAuth, sessionMiddleware } from '../middleware/auth';
 import { requireNonGuestUser } from '../middleware/require-non-guest';
+import { noStorePrivate } from '../middleware/no-store';
 import { logEventFromContext } from '../services/event-logger';
 import { creditClawTokens, debitClawTokens, InsufficientTokensError, type LedgerTx } from '../services/claw-token-ledger';
 import { getHouseTreasuryAvatarId } from '../services/house-treasury-seeder';
@@ -236,7 +237,7 @@ cosmeticsRoutes.get('/catalog', async (c) => {
 // GET /owned — auth'd
 // ---------------------------------------------------------------------------
 
-cosmeticsRoutes.get('/owned', sessionMiddleware, requireAuth, async (c) => {
+cosmeticsRoutes.get('/owned', sessionMiddleware, requireAuth, noStorePrivate, async (c) => {
   const user = c.get('user') as { id: string };
   const avatar = await getCallerAvatar(user.id);
 

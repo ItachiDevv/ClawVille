@@ -1759,7 +1759,7 @@ coveSlotsRouter.get('/session/:id', noStorePrivate, async (c) => {
 // Subject-resolved (ledger subjects only), owner-only — an agent can page its own
 // session's spin history (read-only, no money). ownerMatches binds to the resolved
 // userId so an agent can never read another user's spins.
-coveSlotsRouter.get('/session/:id/spins', async (c) => {
+coveSlotsRouter.get('/session/:id/spins', noStorePrivate, async (c) => {
   const sessionId = c.req.param('id');
   if (!/^[0-9a-f-]{36}$/i.test(sessionId)) {
     throw new HTTPException(400, { message: 'invalid_session_id' });
