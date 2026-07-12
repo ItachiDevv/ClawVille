@@ -129,7 +129,7 @@ export const visitBuildingAction: Action = {
         .where(eq(avatars.id, avatarId));
 
       const shopSummary = shopBooks
-        .map((b) => `  - ${b.icon} ${b.name} (${b.price} NT)`)
+        .map((b) => `  - ${b.icon} ${b.name} (${b.price} vCLAW)`)
         .join('\n');
 
       return {

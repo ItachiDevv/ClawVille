@@ -313,7 +313,7 @@ function RaiseSlider({ config, onChange, onConfirm, onCancel }: {
         fontSize: 12, fontFamily: 'var(--pt-data)', color: 'var(--pt-amber)',
         fontWeight: 700, minWidth: 56, textAlign: 'right',
       }}>
-        {config.value} CT
+        {config.value} vCLAW
       </span>
       <button
         type="button"
@@ -810,7 +810,7 @@ export default function HoldemModal() {
       setRevealedSeed(res.serverSeed);
       setBalance(res.walletBalance);
       setTable((prev) => (prev ? { ...prev, status: 'closed', serverSeed: res.serverSeed, playerStack: '0' } : prev));
-      showToast(`Cashed out ${res.cashOut} CT — seed ${res.serverSeed.slice(0, 10)}…${res.serverSeed.slice(-6)} revealed.`, 'info');
+      showToast(`Cashed out ${res.cashOut} vCLAW — seed ${res.serverSeed.slice(0, 10)}…${res.serverSeed.slice(-6)} revealed.`, 'info');
       if (walkAwayTimerRef.current) clearTimeout(walkAwayTimerRef.current);
       walkAwayTimerRef.current = setTimeout(() => {
         walkAwayTimerRef.current = null;
@@ -989,7 +989,7 @@ export default function HoldemModal() {
               background: 'rgba(150,110,30,0.15)', border: '1px solid rgba(150,110,30,0.3)',
               borderRadius: 6, padding: '3px 10px',
             }}>
-              {balance.toLocaleString()} CT{!isAuthed ? ' demo' : ''}
+              {balance.toLocaleString()} vCLAW{!isAuthed ? ' demo' : ''}
             </div>
             <button
               type="button"
@@ -1112,7 +1112,7 @@ export default function HoldemModal() {
                 fontSize: 20, fontWeight: 700,
                 fontFamily: 'var(--pt-display)', lineHeight: 1,
               }}>
-                {humanNetNum >= 0 ? `+${humanNetNum}` : `${humanNetNum}`} CT
+                {humanNetNum >= 0 ? `+${humanNetNum}` : `${humanNetNum}`} vCLAW
               </div>
             </div>
           </div>
@@ -1144,8 +1144,8 @@ export default function HoldemModal() {
                   fontSize: 11, fontFamily: 'var(--pt-data)', color: 'var(--pt-mute)',
                   letterSpacing: '0.1em',
                 }}>
-                  Buy-in {COVE_HOLDEM_MIN_BUYIN}–{COVE_HOLDEM_MAX_BUYIN} CT · Blinds 1/2
-                  {table ? ` · Stack ${Number(table.playerStack).toLocaleString()} CT` : ''}
+                  Buy-in {COVE_HOLDEM_MIN_BUYIN}–{COVE_HOLDEM_MAX_BUYIN} vCLAW · Blinds 1/2
+                  {table ? ` · Stack ${Number(table.playerStack).toLocaleString()} vCLAW` : ''}
                 </div>
                 <button
                   type="button"
@@ -1187,7 +1187,7 @@ export default function HoldemModal() {
                     className="pt-btn pt-btn-primary"
                     style={{ height: 40, fontSize: 13, fontWeight: 700, minWidth: 90 }}
                   >
-                    Call {toCallNum > 0 ? `${toCallNum} CT` : ''}
+                    Call {toCallNum > 0 ? `${toCallNum} vCLAW` : ''}
                   </button>
                 )}
 

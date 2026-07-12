@@ -18,13 +18,17 @@
  * economy stays ClawTokens; SAP is an additive, flip-to-live, on-chain layer.
  *
  * ── Mainnet code gate (NOT just an env flip) ──────────────────────────────────
- * `SAP_ALLOW_MAINNET` is a CODE CONSTANT in this file, NOT read from env. To run
- * SAP against mainnet a human must edit this file (flip the constant to true) AND
- * set `SAP_CLUSTER=mainnet` — a config-review event, not an ops toggle. Setting
- * `SAP_CLUSTER=mainnet` while the constant is false makes `loadSapConfig()` throw
- * at call time (crash-loud, like `FINGERPRINT_SECRET`), so a mainnet env on a box
- * whose code wasn't reviewed for mainnet refuses to operate. This deliberately
- * mirrors `wager-program` (devnet-only; mainnet is a code change, not an env).
+ * `SAP_ALLOW_MAINNET` is a CODE CONSTANT in this file, NOT read from env, and it is
+ * the FIRST of two locks. FLIPPED true 2026-07-10 as the deliberate config-review
+ * event this gate was designed to require (founder-directed mainnet-on-staging
+ * enablement, reviewed with the adversary money pass on the escrow/custody rail).
+ * With the constant true, cluster selection now rests on the SECOND lock —
+ * `SAP_CLUSTER` PER BOX: a box stays fully devnet unless it sets `SAP_CLUSTER=mainnet`,
+ * and real funds move only when a box ALSO sets `SAP_DRY_RUN=false` + the enable flags.
+ * The crash-loud throw for `SAP_CLUSTER=mainnet` while the constant is false is RETAINED
+ * (dead while the constant is true) so reverting to devnet-only is a one-line change
+ * that restores the crash-loud posture. This mirrors the wager-program doctrine —
+ * mainnet is a reviewed CODE change, never a silent env toggle.
  */
 
 import { PublicKey } from '@solana/web3.js';
@@ -40,11 +44,13 @@ import { TREASURY_WALLET as SDK_TREASURY_WALLET } from '@oobe-protocol-labs/syna
 
 // ─── the mainnet code gate (edit-to-enable, NOT env) ──────────────────────────
 //
-// DO NOT change this to `true` without a deliberate code review of the whole SAP
-// money/custody path (solana-auditor + Codex adversarial on the escrow rail).
-// Flipping this alone does nothing — `SAP_CLUSTER=mainnet` must ALSO be set. But
-// without this constant true, `SAP_CLUSTER=mainnet` throws. Two locks, one code.
-export const SAP_ALLOW_MAINNET = false as boolean;
+// TRUE since 2026-07-10 (the reviewed config event). Flipping this ALONE does
+// nothing — `SAP_CLUSTER=mainnet` must ALSO be set PER BOX, and real funds move only
+// with `SAP_DRY_RUN=false` + the enable flags on top. To REVERT to devnet-only
+// (crash-loud on any `SAP_CLUSTER=mainnet`), set this back to `false` — itself a
+// one-line config-review event. Do not re-flip in EITHER direction without a
+// solana-auditor + Codex adversarial pass on the escrow/custody path.
+export const SAP_ALLOW_MAINNET = true as boolean;
 
 export type SapCluster = 'devnet' | 'mainnet';
 
@@ -91,7 +97,16 @@ export type SapSettlementMode = 'DisputeWindow' | 'CoSigned';
 // gate is on (FIX-D: close the SAP_RPC_URL=<mainnet> + SAP_CLUSTER=devnet bypass —
 // the program id is identical on every cluster, so the RPC's genesis hash is the
 // only ground truth for which chain a tx would actually hit).
-export const SOLANA_MAINNET_GENESIS_HASH = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
+//
+// This is the FULL 44-char base58 genesis hash `connection.getGenesisHash()` returns
+// — NOT the 32-char CAIP-2 reference (`solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp`, the
+// first 32 chars, which x402-payai.ts uses correctly for CAIP-2). CORRECTED 2026-07-10
+// (mainnet-enablement review): the constant previously held the 32-char CAIP-2
+// truncation, so `getGenesisHash() === SOLANA_MAINNET_GENESIS_HASH` NEVER matched (the
+// RPC returns 44 chars) and the guard SILENTLY FAILED OPEN — a devnet-configured box
+// pointed at a mainnet RPC would NOT have been refused. Value verified against Solana
+// RPC docs; its first 32 chars equal the CAIP-2 already pinned in x402-payai.ts.
+export const SOLANA_MAINNET_GENESIS_HASH = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';
 
 // Known mainnet RPC hostnames — a cheap static pre-check (the genesis-hash probe
 // on the live path is the strong, authoritative guard). A devnet-config box must

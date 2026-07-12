@@ -124,7 +124,7 @@ export function generateOpenClawSkill(opts: SkillGenOpts): { markdown: string; i
     '',
     `# ${opts.avatarName} — OpenClaw Skill`,
     '',
-    `> Exported on ${exportDate} | Species: ${opts.species} | Archetype: ${opts.archetype} | ClawTokens: ${opts.clawTokens} | Knowledge entries: ${knowledgeEntries.length}`,
+    `> Exported on ${exportDate} | Species: ${opts.species} | Archetype: ${opts.archetype} | vCLAW: ${opts.clawTokens} | Knowledge entries: ${knowledgeEntries.length}`,
     '',
   ];
 

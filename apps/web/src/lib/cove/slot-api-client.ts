@@ -541,7 +541,7 @@ export function describeCoveError(err: unknown): string {
     case 400:
       // Surface specific 400 codes that the user can fix.
       if (err.code?.startsWith('insufficient_clawtokens')) {
-        return 'Not enough ClawTokens for that predict.';
+        return 'Not enough vCLAW for that predict.';
       }
       if (err.code === 'predict_must_equal_session_reserved_predict') {
         return 'Predict was changed mid-session. Cash out and start a new session to predict differently.';
@@ -579,7 +579,7 @@ export function describeCoveError(err: unknown): string {
     case 429:
       return 'Slow down — you can spin at most 60 times per minute.';
     case 501:
-      return 'SOL/USDC cove play is coming in Phase 6.2. ClawTokens is live today.';
+      return 'SOL/USDC cove play is coming in Phase 6.2. vCLAW is live today.';
     default:
       return err.serverMessage || `Cove server error (${err.status}).`;
   }

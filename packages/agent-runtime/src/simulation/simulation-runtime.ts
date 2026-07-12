@@ -328,7 +328,7 @@ export class SimulationRuntime {
       // Phase 3: When at a building with budget remaining, offer BUY_ITEM / LEARN_SKILL
       if (isAtBuilding && hasEconomy) {
         actionChoices.push(
-          '  4. BUY_ITEM — buy a knowledge book from the current building shop (costs ClawTokens)',
+          '  4. BUY_ITEM — buy a knowledge book from the current building shop (costs vCLAW)',
           '  5. LEARN_SKILL — read a book from inventory to learn its knowledge',
         );
         examples.push(
@@ -338,7 +338,7 @@ export class SimulationRuntime {
       }
 
       const budgetLine = hasEconomy
-        ? `Budget remaining: ${avatar.budgetMaxNt - avatar.budgetSpent} NT, ${avatar.budgetMaxPurchases - avatar.budgetPurchaseCount} purchases.`
+        ? `Budget remaining: ${avatar.budgetMaxNt - avatar.budgetSpent} vCLAW, ${avatar.budgetMaxPurchases - avatar.budgetPurchaseCount} purchases.`
         : '';
 
       // P3 slice 2 directive bias — prepend the human's current directive as a

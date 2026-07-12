@@ -136,7 +136,7 @@ export default async function DashPage({
             </li>
             <li className="rounded bg-black/20 p-2">
               <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-cyan-300">4 · Gamified UI + unified leaderboard</div>
-              <div className="mt-1 text-[11px] text-slate-300">3D world + ClawTokens + cosmetic engine. Players + Trainers on one board.</div>
+              <div className="mt-1 text-[11px] text-slate-300">3D world + vCLAW + cosmetic engine. Players + Trainers on one board.</div>
             </li>
           </ol>
         </section>

@@ -37,7 +37,7 @@ export default function SeatPosition({ seat, isPlayer, revealCards }: SeatPositi
 
   return (
     <div
-      aria-label={`${seat.name} — ${seat.stack} CT`}
+      aria-label={`${seat.name} — ${seat.stack} vCLAW`}
       style={{
         display: 'flex',
         flexDirection: 'column',

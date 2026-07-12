@@ -1027,7 +1027,7 @@ openclawRoutes.get('/memory-export/:avatarId', sessionMiddleware, async (c) => {
       logLines.push('');
       for (const act of day.activities) {
         const time = act.createdAt.toISOString().split('T')[1]?.slice(0, 5) ?? '00:00';
-        const tokens = act.tokensEarned > 0 ? ` (+${act.tokensEarned} ClawTokens)` : '';
+        const tokens = act.tokensEarned > 0 ? ` (+${act.tokensEarned} vCLAW)` : '';
         logLines.push(`- [${time}] ${act.description}${tokens}`);
       }
       logLines.push('');
@@ -1044,7 +1044,7 @@ openclawRoutes.get('/memory-export/:avatarId', sessionMiddleware, async (c) => {
   const ltLines: string[] = [
     `# ${avatar.name} — Long-Term Memory`,
     '',
-    `> Species: ${avatar.species} | Archetype: ${avatar.archetype} | ClawTokens: ${avatar.clawTokens}`,
+    `> Species: ${avatar.species} | Archetype: ${avatar.archetype} | vCLAW: ${avatar.clawTokens}`,
     '',
   ];
 
@@ -1104,7 +1104,7 @@ openclawRoutes.get('/memory-export/:avatarId', sessionMiddleware, async (c) => {
   ltLines.push('## Behavioral Patterns');
   ltLines.push('');
   ltLines.push(`- Total activities: ${activities.length}`);
-  ltLines.push(`- Total ClawTokens earned: ${totalTokens}`);
+  ltLines.push(`- Total vCLAW earned: ${totalTokens}`);
   ltLines.push(`- Total conversations remembered: ${memories.length}`);
 
   const topBuildings = Object.entries(buildingVisits)

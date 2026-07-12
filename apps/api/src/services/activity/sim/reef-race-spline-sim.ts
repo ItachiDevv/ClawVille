@@ -414,7 +414,28 @@ export class ReefRaceSplineSim {
     }
 
     const seed = opts?.seed ?? deriveSeedFromRoomId(roomId);
-    const startedAt = opts?.startedAt ?? Date.now();
+    // `startedAt` drives BOTH `hardEndsAt` (the race timeout) and every body's
+    // finish time (`totalTimeMs` -> the `integer` activity_results.score). If a
+    // non-numeric/fractional value slips in, `hardEndsAt = startedAt + N` goes
+    // non-numeric (race never times out) AND totalTimeMs becomes a float that
+    // crashes reward issuance for the whole room. Normalize to an integer epoch
+    // and log any coercion so the upstream producer can be pinned. See
+    // docs/reef-race-reward-int-crash-2026-07-11.md.
+    const rawStartedAt = opts?.startedAt;
+    const coercedStartedAt = Math.round(Number(rawStartedAt));
+    // Accept only a finite, positive epoch; non-finite (NaN/±Infinity) or
+    // <=0 falls back to now (Codex #3). Fractional/Date/string inputs are
+    // normalized to an integer ms epoch.
+    const startedAt =
+      Number.isFinite(coercedStartedAt) && coercedStartedAt > 0
+        ? coercedStartedAt
+        : Date.now();
+    if (rawStartedAt != null && startedAt !== rawStartedAt) {
+      console.error(
+        `[spline-sim] coerced startedAt for room ${roomId}: ` +
+          `${typeof rawStartedAt} ${String(rawStartedAt)} -> ${startedAt}`,
+      );
+    }
 
     // Build the spline once — shared across all tick iterations.
     const spline = new ReefSpline(REEF_RACE_DEFAULT_TRACK);
@@ -1145,7 +1166,8 @@ export class ReefRaceSplineSim {
 
       if (justCrossedFinish) {
         body.finishedAt = now;
-        body.totalTimeMs = now - state.startedAt;
+        // Round defensively — score/score_ms are `integer` columns.
+        body.totalTimeMs = Math.round(now - state.startedAt);
         body.vx = 0;
         body.vz = 0;
 

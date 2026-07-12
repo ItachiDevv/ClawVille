@@ -42,9 +42,9 @@ export default function DailyLoginModal() {
 
   // Milestones
   const milestones = [
-    { day: 7, label: '7-Day Bonus', bonus: '+50 NT' },
-    { day: 14, label: '2-Week Bonus', bonus: '+100 NT' },
-    { day: 30, label: '30-Day Bonus', bonus: '+250 NT' },
+    { day: 7, label: '7-Day Bonus', bonus: '+50 vCLAW' },
+    { day: 14, label: '2-Week Bonus', bonus: '+100 vCLAW' },
+    { day: 30, label: '30-Day Bonus', bonus: '+250 vCLAW' },
   ];
 
   return (
@@ -65,7 +65,7 @@ export default function DailyLoginModal() {
             // Guests run an all-demo economy — no real CT is credited, so show a
             // sign-up prompt INSTEAD of a phantom "+N" reward (tokensEarned is 0).
             <div className="text-base font-bold text-amber-200">
-              Sign up to earn real ClawTokens
+              Sign up to earn real vCLAW
             </div>
           ) : (
             <>
@@ -73,7 +73,7 @@ export default function DailyLoginModal() {
                 +{tokensEarned} &#x1fa99;
               </div>
               <div className="text-xs text-cyan-300/70 mt-1">
-                ClawTokens earned! Total: {totalTokens}
+                vCLAW earned! Total: {totalTokens}
               </div>
             </>
           )}

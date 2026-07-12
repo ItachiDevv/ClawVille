@@ -50,7 +50,7 @@ export const TUTORIAL_QUESTS = [
   { id: 'library-card',    tier: 4, status: 'live',    icon: '📚', title: 'Library Card',       reward: 50,  description: 'Buy 3 books from 3 different buildings AND read all 3' },
   { id: 'polymath',        tier: 4, status: 'live',    icon: '🧠', title: 'Polymath',           reward: 75,  description: 'Have your agent learn 10 knowledge topics' },
   { id: 'style-statement', tier: 4, status: 'pending', icon: '🪩', title: 'Style Statement',    reward: 30,  description: 'Buy a cosmetic AND equip it' },
-  { id: 'big-spender',     tier: 4, status: 'pending', icon: '💸', title: 'Big Spender',        reward: 50,  description: 'Spend 200 ClawTokens (any combo)' },
+  { id: 'big-spender',     tier: 4, status: 'pending', icon: '💸', title: 'Big Spender',        reward: 50,  description: 'Spend 200 vCLAW (any combo)' },
 
   // ── TIER 5 — ACTIVITIES ───────────────────────────────────────────────
   { id: 'first-match',     tier: 5, status: 'live',    icon: '⚔️', title: 'First Match',        reward: 15,  description: 'Finish 1 activity match' },

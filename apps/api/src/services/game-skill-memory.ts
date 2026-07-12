@@ -88,7 +88,7 @@ function summarizeBlackjackHand(outcome: SerializedHandResult): {
 
   const summary =
     `Blackjack hand: my total ${playerDesc} vs dealer ${dealerDesc} → ${result} ` +
-    `(net ${netBig >= 0n ? '+' : ''}${net} CT).`;
+    `(net ${netBig >= 0n ? '+' : ''}${net} vCLAW).`;
 
   return { summary, dealerTotal, playerTotals, net, won, push };
 }

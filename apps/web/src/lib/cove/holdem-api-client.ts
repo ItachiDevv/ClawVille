@@ -381,10 +381,10 @@ export function describeHoldemError(err: unknown, leg: HoldemRequestLeg = 'actio
       return AMBIGUOUS_OUTCOME_COPY[leg].timeout;
     case 400:
       if (err.code?.startsWith('insufficient_clawtokens')) {
-        return 'Not enough ClawTokens to buy in. Buy-in is 20–500 CT.';
+        return 'Not enough vCLAW to buy in. Buy-in is 20–500 vCLAW.';
       }
       if (err.code?.startsWith('guest_buyin_exceeds_demo_grant')) {
-        return 'Guests get a 100 demo-CT stack. Sign up to buy in for more.';
+        return 'Guests get a 100 demo vCLAW stack. Sign up to buy in for more.';
       }
       if (err.code?.startsWith('stack_too_low_to_play')) {
         return 'Your stack is too low for another hand. Walk away to cash out, then re-buy.';
@@ -427,7 +427,7 @@ export function describeHoldemError(err: unknown, leg: HoldemRequestLeg = 'actio
     case 429:
       return 'Slow down a moment, then try again.';
     case 501:
-      return 'SOL/USDC Hold\'em is coming later. ClawTokens play is live today.';
+      return 'SOL/USDC Hold\'em is coming later. vCLAW play is live today.';
     default:
       return err.serverMessage || `Cove server error (${err.status}).`;
   }

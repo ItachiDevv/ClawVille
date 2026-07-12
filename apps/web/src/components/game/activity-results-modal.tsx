@@ -787,7 +787,7 @@ export default function ActivityResultsModal({
           <SectionHeader label="Rewards" />
           <RewardRow
             icon="🪙"
-            label="ClawTokens"
+            label="vCLAW"
             value={`+${effectiveTokens}`}
             tone="gold"
             delayIdx={0}

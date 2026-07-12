@@ -323,7 +323,7 @@ function ForSaleTab({
         <span className="font-semibold text-cyan-200">premium buildings</span>{' '}
         and <span className="font-semibold text-cyan-200">higher upgrade levels</span>.
         Higher tiers are <span className="font-semibold text-cyan-200">claimed by holding $CLAWVILLE</span>{' '}
-        in your linked wallet (no CT price — hold to keep, plus a small weekly CT
+        in your linked wallet (no vCLAW price — hold to keep, plus a small weekly vCLAW
         upkeep). The hold ladder rises from Starter Cove out at the rim up to
         Founders&apos; Row.
       </p>
@@ -476,7 +476,7 @@ function ParcelCard({
             <span className="font-mono text-[11px] text-cyan-200">
               {upkeep != null ? (
                 <>
-                  {upkeep.toLocaleString()} CT
+                  {upkeep.toLocaleString()} vCLAW
                   <span className="text-slate-400"> / week upkeep</span>
                 </>
               ) : (
@@ -506,7 +506,7 @@ function ParcelCard({
               is gated inside the modal (mirrors BuyModal's tooPoor pattern). */}
           <div className="flex items-center justify-between gap-2">
             <span className="font-mono text-sm font-bold text-amber-300">
-              Refundable {LAND_STARTER_DEPOSIT_CT.toLocaleString()} CT deposit
+              Refundable {LAND_STARTER_DEPOSIT_CT.toLocaleString()} vCLAW deposit
             </span>
             <RpgButton
               size="sm"
@@ -518,7 +518,7 @@ function ParcelCard({
             </RpgButton>
           </div>
           <span className="font-mono text-[11px] text-cyan-200">
-            {LAND_STARTER_RENT_CT_WEEKLY.toLocaleString()} CT
+            {LAND_STARTER_RENT_CT_WEEKLY.toLocaleString()} vCLAW
             <span className="text-slate-400"> / week upkeep, drawn from the deposit</span>
           </span>
         </>
@@ -565,7 +565,7 @@ function claimHoldErrorMessage(
       return `You already hold the maximum of ${MAX_PARCELS_PER_AVATAR} parcels.`;
     // Starter tier shouldn't reach this modal — defensive.
     case 'use_claim_starter':
-      return 'Starter parcels are claimed with a refundable CT deposit (For Sale or My Land), not a $CLAWVILLE hold.';
+      return 'Starter parcels are claimed with a refundable vCLAW deposit (For Sale or My Land), not a $CLAWVILLE hold.';
     // Defensive — marketplace deed escrow-lock (claim-hold doesn't emit it today).
     case 'deed_locked_by_listing':
       return 'This deed is locked by a live marketplace listing — try again once it clears.';
@@ -686,11 +686,11 @@ function ClaimHoldModal({
 
         {/* How hold-to-keep works — no CT spent to claim; hold CLV + weekly upkeep. */}
         <p className="rounded-lg border border-cyan-400/15 bg-cyan-500/[0.04] px-3 py-2.5 text-[12px] leading-relaxed text-slate-200">
-          <span className="font-semibold text-cyan-100">No CT is spent to claim.</span>{' '}
+          <span className="font-semibold text-cyan-100">No vCLAW is spent to claim.</span>{' '}
           You keep this parcel by <span className="font-semibold text-cyan-100">holding{' '}
           {formatClv(requiredClv)} $CLAWVILLE</span> in your linked wallet, plus a weekly upkeep of{' '}
           <span className="font-semibold text-cyan-100">
-            {upkeep != null ? `${upkeep.toLocaleString()} CT` : 'CT (stamped at claim)'}
+            {upkeep != null ? `${upkeep.toLocaleString()} vCLAW` : 'vCLAW (stamped at claim)'}
           </span>{' '}
           auto-charged from your balance — like rent. If the upkeep can’t be paid or your
           $CLAWVILLE drops below the hold, you get a short grace window — then the parcel is{' '}
@@ -744,7 +744,7 @@ function starterClaimErrorMessage(code: string | undefined, status: number | und
     case 'guest_not_allowed':
       return GUEST_NOT_ALLOWED_MSG;
     case 'insufficient_clawtokens':
-      return `You need ${LAND_STARTER_DEPOSIT_CT.toLocaleString()} CT for the refundable deposit — top up and try again.`;
+      return `You need ${LAND_STARTER_DEPOSIT_CT.toLocaleString()} vCLAW for the refundable deposit — top up and try again.`;
     case 'no_starter_available':
       return 'All Starter Coves are taken right now — check back soon.';
     default:
@@ -789,7 +789,7 @@ function StarterClaimModal({
         '🏡',
         res.alreadyOwned
           ? `You already have your Starter Cove (${res.parcel.parcelCode}).`
-          : `Claimed ${res.parcel.parcelCode} — your Starter Cove! ${LAND_STARTER_DEPOSIT_CT.toLocaleString()} CT is held as a refundable deposit.`,
+          : `Claimed ${res.parcel.parcelCode} — your Starter Cove! ${LAND_STARTER_DEPOSIT_CT.toLocaleString()} vCLAW is held as a refundable deposit.`,
       );
       onClaimed();
     } catch (err) {
@@ -812,20 +812,20 @@ function StarterClaimModal({
           <div className="mt-3 flex items-center justify-between text-sm">
             <span className="text-slate-200">Refundable deposit</span>
             <span className="font-mono font-bold text-amber-300">
-              {LAND_STARTER_DEPOSIT_CT.toLocaleString()} CT
+              {LAND_STARTER_DEPOSIT_CT.toLocaleString()} vCLAW
             </span>
           </div>
           <div className="mt-1 flex items-center justify-between text-sm">
             <span className="text-slate-200">Weekly upkeep</span>
             <span className="font-mono font-bold text-cyan-200">
-              {LAND_STARTER_RENT_CT_WEEKLY.toLocaleString()} CT
+              {LAND_STARTER_RENT_CT_WEEKLY.toLocaleString()} vCLAW
               <span className="font-normal text-slate-300"> / week, from the deposit</span>
             </span>
           </div>
           <div className="mt-1 flex items-center justify-between text-sm">
             <span className="text-slate-200">Your balance</span>
             <span className={`font-mono font-bold ${tooPoor ? 'text-amber-200' : 'text-cyan-200'}`}>
-              {clawTokens.toLocaleString()} CT
+              {clawTokens.toLocaleString()} vCLAW
             </span>
           </div>
         </div>
@@ -837,12 +837,12 @@ function StarterClaimModal({
           </span>{' '}
           (you don’t pick a specific lot). The{' '}
           <span className="font-semibold text-cyan-100">
-            {LAND_STARTER_DEPOSIT_CT.toLocaleString()} CT deposit is refundable
+            {LAND_STARTER_DEPOSIT_CT.toLocaleString()} vCLAW deposit is refundable
           </span>{' '}
           — held in escrow, not a purchase: release the cove and you get back whatever
           upkeep hasn’t already drawn. A weekly upkeep of{' '}
           <span className="font-semibold text-cyan-100">
-            {LAND_STARTER_RENT_CT_WEEKLY.toLocaleString()} CT
+            {LAND_STARTER_RENT_CT_WEEKLY.toLocaleString()} vCLAW
           </span>{' '}
           auto-draws from the deposit. Running low? Top it up from My Land. If it can’t
           cover a week you get a short grace window — then the cove is{' '}
@@ -871,8 +871,8 @@ function StarterClaimModal({
             disabled={tooPoor}
           >
             {tooPoor
-              ? 'Need more CT'
-              : `Claim · ${LAND_STARTER_DEPOSIT_CT.toLocaleString()} CT deposit`}
+              ? 'Need more vCLAW'
+              : `Claim · ${LAND_STARTER_DEPOSIT_CT.toLocaleString()} vCLAW deposit`}
           </RpgButton>
         </div>
       </div>
@@ -941,9 +941,9 @@ function MyLandTab({
           <span className="text-[12px] leading-relaxed text-slate-200">
             Claim a Starter Cove with a refundable{' '}
             <span className="font-semibold text-emerald-200">
-              {LAND_STARTER_DEPOSIT_CT.toLocaleString()} CT deposit
+              {LAND_STARTER_DEPOSIT_CT.toLocaleString()} vCLAW deposit
             </span>{' '}
-            ({LAND_STARTER_RENT_CT_WEEKLY.toLocaleString()} CT/week upkeep draws from
+            ({LAND_STARTER_RENT_CT_WEEKLY.toLocaleString()} vCLAW/week upkeep draws from
             it; release refunds the rest). Build a basic home or shop (up to Lv2);
             claim a higher tier later for premium buildings.
           </span>
@@ -1084,7 +1084,7 @@ function upgradeErrorMessage(code: string | undefined, status: number | undefine
     case 'max_level_reached':
       return `This tier caps at Lv${maxLevel} — buy a higher tier to build bigger.`;
     case 'insufficient_clawtokens':
-      return 'Not enough ClawTokens for this upgrade.';
+      return 'Not enough vCLAW for this upgrade.';
     // The upgrade route checks ownership of the STRUCTURE, not the parcel.
     case 'not_structure_owner':
     case 'not_parcel_owner':
@@ -1188,7 +1188,7 @@ function BuildTab({
       if (res.idempotencyReplay) {
         addToast('🔁', `Already at Lv${res.structure.level} (no double-charge).`);
       } else {
-        addToast('⬆️', `Upgraded to Lv${res.structure.level} for ${res.costCt.toLocaleString()} CT!`);
+        addToast('⬆️', `Upgraded to Lv${res.structure.level} for ${res.costCt.toLocaleString()} vCLAW!`);
       }
       onChanged();
     } catch (err) {
@@ -1414,7 +1414,7 @@ function UpgradePanel({
                 {reached ? ' ✓' : ''}
                 {locked ? ' 🔒' : ''}
               </span>
-              <span>{lvl === 1 ? 'free' : locked ? 'tier locked' : `${cost?.toLocaleString()} CT`}</span>
+              <span>{lvl === 1 ? 'free' : locked ? 'tier locked' : `${cost?.toLocaleString()} vCLAW`}</span>
             </div>
           );
         })}
@@ -1427,7 +1427,7 @@ function UpgradePanel({
         </p>
       ) : (
         <RpgButton size="sm" variant="primary" onClick={onUpgrade} loading={upgrading}>
-          Upgrade to Lv{nextLevel} · {nextCost?.toLocaleString()} CT
+          Upgrade to Lv{nextLevel} · {nextCost?.toLocaleString()} vCLAW
         </RpgButton>
       )}
     </div>
@@ -1466,7 +1466,7 @@ function serviceBuyErrorMessage(code: string | undefined, status: number | undef
     case 'listing_not_active':
       return 'This listing was paused or removed.';
     case 'insufficient_clawtokens':
-      return `Not enough ClawTokens — need ${priceCt.toLocaleString()}, you have ${have.toLocaleString()}.`;
+      return `Not enough vCLAW — need ${priceCt.toLocaleString()}, you have ${have.toLocaleString()}.`;
     case 'idempotency_key_conflict':
       return 'That purchase is already processing — give it a moment.';
     case 'listing_not_found':
@@ -1537,7 +1537,7 @@ function BuyServiceModal({
   const mutation = useMutation({
     mutationFn: () => api.buyService(listing.id, idempotencyKey),
     onSuccess: (res) => {
-      addToast('🛍️', `Bought "${listing.title}" for ${res.priceCt.toLocaleString()} CT!`);
+      addToast('🛍️', `Bought "${listing.title}" for ${res.priceCt.toLocaleString()} vCLAW!`);
       onBought();
     },
     onError: (err) => {
@@ -1558,11 +1558,11 @@ function BuyServiceModal({
           )}
           <div className="mt-3 flex items-center justify-between text-sm">
             <span className="text-slate-200">Price</span>
-            <span className="font-mono font-bold text-amber-300">{listing.priceCt.toLocaleString()} CT</span>
+            <span className="font-mono font-bold text-amber-300">{listing.priceCt.toLocaleString()} vCLAW</span>
           </div>
           <div className="mt-1 flex items-center justify-between text-sm">
             <span className="text-slate-200">Your balance</span>
-            <span className="font-mono font-bold text-cyan-200">{clawTokens.toLocaleString()} CT</span>
+            <span className="font-mono font-bold text-cyan-200">{clawTokens.toLocaleString()} vCLAW</span>
           </div>
         </div>
 
@@ -1583,7 +1583,7 @@ function BuyServiceModal({
             loading={mutation.isPending}
             disabled={clawTokens < listing.priceCt}
           >
-            {clawTokens < listing.priceCt ? 'Need more CT' : `Buy for ${listing.priceCt.toLocaleString()} CT`}
+            {clawTokens < listing.priceCt ? 'Need more vCLAW' : `Buy for ${listing.priceCt.toLocaleString()} vCLAW`}
           </RpgButton>
         </div>
       </div>
@@ -1607,7 +1607,7 @@ function ServiceListingCard({
           {listing.title}
         </span>
         <span className="shrink-0 font-mono text-sm font-bold text-amber-300">
-          {listing.priceCt.toLocaleString()} CT
+          {listing.priceCt.toLocaleString()} vCLAW
         </span>
       </div>
       {listing.description && (
@@ -1656,7 +1656,7 @@ function BrowseServicesPanel({
     <div>
       <p className="mb-3 text-[12px] leading-relaxed text-slate-200">
         Services other players (and agents) are running out of their shops — coaching, crafted
-        goods, one-off favors. Buying settles CT{' '}
+        goods, one-off favors. Buying settles vCLAW{' '}
         <span className="font-semibold text-cyan-200">directly to the seller</span>, no house rake.
       </p>
       {listings.length === 0 ? (
@@ -1730,7 +1730,7 @@ function ManageListingRow({
       return;
     }
     if (!Number.isInteger(parsedPrice) || parsedPrice < 0 || parsedPrice > 1_000_000) {
-      setError('Price must be a whole number between 0 and 1,000,000 CT.');
+      setError('Price must be a whole number between 0 and 1,000,000 vCLAW.');
       return;
     }
     patchMutation.mutate(
@@ -1760,7 +1760,7 @@ function ManageListingRow({
           )}
         </div>
         <span className="shrink-0 font-mono text-sm font-bold text-amber-300">
-          {listing.priceCt.toLocaleString()} CT
+          {listing.priceCt.toLocaleString()} vCLAW
         </span>
       </div>
 
@@ -1785,7 +1785,7 @@ function ManageListingRow({
             value={priceCt}
             onChange={(e) => setPriceCt(e.target.value.replace(/[^0-9]/g, ''))}
             inputMode="numeric"
-            placeholder="Price (CT)"
+            placeholder="Price (vCLAW)"
             className="w-full rounded-lg border border-cyan-400/30 bg-[#0a1628] px-3 py-2 font-mono text-[12px] text-cyan-50 outline-none focus:border-cyan-300"
           />
           <div className="flex justify-end gap-2">
@@ -1875,7 +1875,7 @@ function ManageShopPanel({ shop }: { shop: LandStructureDTO }) {
       return;
     }
     if (priceCt.trim().length === 0 || !Number.isInteger(parsedPrice) || parsedPrice < 0 || parsedPrice > 1_000_000) {
-      setFormError('Price must be a whole number between 0 and 1,000,000 CT.');
+      setFormError('Price must be a whole number between 0 and 1,000,000 vCLAW.');
       return;
     }
     if (activeCount >= LAND_SERVICES_MAX_ACTIVE_LISTINGS) {
@@ -1914,7 +1914,7 @@ function ManageShopPanel({ shop }: { shop: LandStructureDTO }) {
             value={priceCt}
             onChange={(e) => setPriceCt(e.target.value.replace(/[^0-9]/g, ''))}
             inputMode="numeric"
-            placeholder="Price (CT)"
+            placeholder="Price (vCLAW)"
             className="w-full rounded-lg border border-cyan-400/30 bg-[#0a1628] px-3 py-2 font-mono text-[12px] text-cyan-50 outline-none focus:border-cyan-300"
           />
           {formError && (

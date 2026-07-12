@@ -4,6 +4,32 @@
 **Plan:** `.claude/plans/sap-onchain-agents/PLAN.md` · **Owner:** orchestrator (Claude)
 **FEATURE_GATE:** `sap_onchain_agents` (review deadline 2026-09-20 — see `routes/sap.ts`).
 
+## MAINNET-ON-STAGING ENABLEMENT (2026-07-10)
+
+The validation ladder: devnet-on-staging (✅ two live e2es 2026-07-10) → **MAINNET-on-staging (this rung)** → prod fully ON. "Flags off" is the DEFAULT-SAFE posture, NOT a resting state — the target is prod ON with real value flowing.
+
+**The two-lock mainnet gate (BOTH required to touch mainnet):**
+- **LOCK 1 — code constant `SAP_ALLOW_MAINNET`** (`sap-config.ts`): flipped `false → true` 2026-07-10 as the reviewed config event this gate was designed to require. Flipping it ALONE moves no cluster. Revert to `false` = one-line return to crash-loud devnet-only.
+- **LOCK 2 — `SAP_CLUSTER=mainnet` PER BOX** (env): a box stays fully devnet unless it sets this. With LOCK 1 true, `SAP_CLUSTER=mainnet` no longer throws. Real funds move only when the box ALSO sets `SAP_DRY_RUN=false` + the enable flags (`SAP_ENABLED`, `SAP_ESCROW_ENABLED`, `SAP_USDC_ESCROW_ENABLED`, `SAP_PAYAI_SETTLEMENT_ENABLED`).
+
+**Env changes for a mainnet box:**
+- `SAP_CLUSTER=mainnet` — selects the mainnet USDC mint (`EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`) + mainnet RPC default.
+- `SAP_RPC_URL=<Helius mainnet>` — **REQUIRED**; the public mainnet RPC is rate-limited + unsuitable for real traffic.
+- `USDC_BOUNTY_REWARD_MIN=1` — lets the funded smoke post a 1-USDC bounty against a small real balance (default 10; USDC rail ONLY; the CT floor stays 10).
+
+**Funding facts (what a mainnet run actually costs):**
+- House provisioning: 0.1 SOL stake (program hard floor; 0.11 SOL default) held as a standing, REUSABLE coverage bond, plus ~0.055 SOL account rent (AgentAccount + pricing_menu + stake PDAs). BOTH recoverable (unstake + `close_agent`). Raise the stake before any single bounty > ~$200.
+- A bounty's USDC CIRCULATES between OUR custodial wallets (creator → house V2 vault → hunter), so the reward itself is not "spent" — it moves. The TRUE burn per bounty ≈ the SAP 0.5% protocol fee (to the SAP treasury) + tx fees (~0.00001 SOL/tx). The ~0.5% deposit headroom is reclaimed to the creator (leg 1d).
+
+**Fixed as part of this review (CRITICAL, pre-existing):** the live-send mainnet-broadcast guard (`assertNotMainnetGenesis`) compared `getGenesisHash()` (44-char) against a constant that held only the 32-char CAIP-2 truncation, so it NEVER matched — a devnet-configured box pointed at a mainnet RPC would NOT have been refused (silent fail-OPEN). Corrected to the full genesis hash `5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d`, pinned by `sap-config.test.ts`. The guard is SKIPPED on an intended mainnet box (mainnetGateOn) and now correctly RUNS on every devnet box — protecting exactly the misconfig case.
+
+**SMOKE RUNBOOK — money containment (adversary nits, mainnet-enablement review):**
+- **The auth gate is NOT the containment.** On a mainnet box the bounty routes are reachable by ANY logged-in non-guest; real containment is that `create_escrow_v2` is atomic create+deposit, so an UNFUNDED custodial wallet's USDC bounty fails clean. Safety of the smoke therefore rests on funding discipline: **before setting `SAP_DRY_RUN=false`, confirm NO staging custodial wallet other than the smoke creator + house holds real mainnet USDC/SOL.**
+- **Don't linger money-live:** immediately after the smoke passes, flip the box back to `SAP_CLUSTER=devnet` + `SAP_DRY_RUN=true` until the next deliberate rung (prod-ON promotes the mainnet env as its own reviewed step).
+- If ops mis-points a mainnet box at a devnet RPC, the mainnet mint makes every escrow tx fail wrong-mint — a wasted (but fund-safe) run; the dangerous reverse direction is what the genesis fix refuses.
+- **Pre-smoke config parity:** carry the proven devnet-staging SAP config (arbiter pubkey, DisputeWindow mode) over unchanged; verify the SDK treasury matches the mainnet program's expectation and the x402 facilitator is PayAI's MAINNET facilitator (payai-release derives `network` from the cluster) — each mismatch fails closed but burns a funded attempt.
+- **Follow-up (separate rail, pre-existing):** `wallet-withdraw-executor.ts` hardcodes the mainnet USDC mint on the custodial wallet-withdraw path — likely intentional (user withdrawals are real-money-only) but confirm independently; not part of the SAP escrow rail.
+
 > ## ⚠️ DEPLOYED PROGRAM IS 0.25-FAMILY — and BOTH vendored IDLs are WRONG (2026-07-09)
 > The devnet program (`SAPpUhsWLJG1FfkGRcXagEDMrMsWGjbky7AyhGpFETZ`) now runs the
 > **0.25-family** binary. A full DisputeWindow USDC lifecycle was driven END-TO-END
@@ -674,3 +700,170 @@ money-path pass. Verdict: safe to push gated; the following gate the flip.**
    `deposit_escrow_v2` top-up SPL was inferred from create (now Anchor-built off the SDK IDL, wire-
    parity tested). The SDK adoption makes `scripts/sap/v2-dispute-window-smoke.ts` current
    (rewritten to the SDK path: no `create_pending_settlement`, settle inits the pending itself).
+
+---
+
+## 11. Bounty COMPOSITION rail — SAP V2 vault (LEG 1) → PayAI x402 (LEG 2)
+
+> **Set 2026-07-10 (B1 slices 2a/2b/3).** Founder spec (LOCKED): *"bounties are done via
+> escrow through SAP and then settled via x402 with PayAI."* A `payment_rail='usdc'` bounty
+> selected onto the **composed** rail custodies the creator's USDC in an on-chain SAP V2 vault
+> **at post**, then pays the winning hunter one x402 USDC payment from the house. Gated OFF +
+> dry-run by default (all four SAP gates); no money moves until a deliberate flip.
+
+### Rail selection (recorded on the row, never re-read from the flag)
+
+`bountySettlementRail()` (`services/bounty-escrow-link.ts`) → `sap-payai-composed` when BOTH
+`SAP_USDC_ESCROW_ENABLED` **and** `SAP_PAYAI_SETTLEMENT_ENABLED` are on. The decision (`isComposedRail`)
+is made ONCE at create and stamped IN the insert as `bounties.composition_state='vault_pending'`
+(a FAIL-CLOSED custody sentinel — see the state machine), then flipped to the immutable `'vault_held'`
+marker on a successful vault open. Every later transition branches on that column (not the live flag),
+so a mid-lifecycle flag flip can never re-route or double-move an existing bounty. A non-composed USDC
+bounty keeps `composition_state` NULL and uses the legacy single-leg path (`runBountyUsdcSettle`), unchanged.
+
+### The two legs + the fixed HOUSE worker
+
+The deployed program seeds every escrow with the WORKER key at open, and a bounty's hunter is
+unknown at post, so the composition uses the **ClawVille house** (Coralia, `resolveHouseAvatarId`)
+as the FIXED escrow worker:
+
+- **LEG 1 (on-chain V2 vault)** — at CREATE, `openComposedBountyEscrow`:
+  - **LEG 1 tier-publish (the 6148 fix)** — FIRST (re)publishes the house pricing tier at THIS
+    bounty's exact price (`updateAgentPricingUsdc` with `tierId='bounty-usdc'`, `pricePerCall =
+    usdcRewardBaseUnits(reward)`), because `create_escrow_v2` rejects `PricingTierNotFound 6148`
+    unless the escrow's `price_per_call` matches a tier in the WORKER's on-chain pricing_menu, and the
+    house provisioner only publishes a fixed NOMINAL 1-USDC tier that arbitrary rewards can never
+    match. `update_agent(pricing)` replaces the whole menu (last-write-wins), so the constant tier id
+    at the new price is correct. The tier-publish AND the create below are held together under a
+    per-house keyed mutex (`sap-house-pricing:<houseAvatarId>`, `services/keyed-mutex.ts`): a
+    concurrent bounty's tier-set must not land between this bounty's tier-set and its create (that
+    would make the create read the wrong price ⇒ 6148). Single API container ⇒ the in-process mutex is
+    sufficient (mirrors escrow-gate's per-escrow serialization). `settle_calls_v2` captures price at
+    CREATE and does NOT re-read the menu, so a LATER bounty overwriting the menu can never break an
+    already-created escrow's settle/finalize. If the tier-publish fails, `openComposedBountyEscrow`
+    returns a typed `internal` failure WITHOUT opening the vault (provably no custody ⇒ the create
+    route deletes the phantom bounty) — never fund a vault the create would 6148-reject.
+    **Ops caveats (adversary LOW nits, money-safe):** (1) `scripts/sap/provision-house-sap.ts` is a
+    SECOND, cross-process, un-mutexed writer to the same menu (it resets the nominal 1-USDC tier) —
+    do NOT run a house re-provision while the composed rail is live-creating; a collision is a
+    transient, atomically-reverted, retryable 6148, never stranded custody. (2) ALL composed creates
+    platform-wide serialize through the one house mutex (held across the on-chain create+confirm), so
+    a slow create head-of-line-blocks the rail for seconds — inherent to the single-tier
+    whole-menu-replace design. (3) A bounty over the house STAKE coverage (~$200 at 0.11 SOL) burns
+    one pricing tx before the coverage preflight rejects it — wasted fee only, menu self-heals on the
+    next create.
+  - then opens a V2 USDC escrow `depositor=creator, worker=house, jobId=bountyId`, funded to
+    `bountyVaultDeposit(reward)` with a deterministic `bountyEscrowNonce(bountyId)`. At APPROVE:
+    `approveJob`(creator) → `settleJobV2`(house, reserves principal in a PendingSettlement) →
+    `finalizeJobV2`(permissionless, releases principal to the house after the dispute window).
+    **LEG 1d (auto-reclaim)** fires right after finalize.
+- **LEG 2 (payai)** — one x402 exact USDC payment house→hunter through the existing PayAI rail
+  (a V1 `rail:'payai'` escrow `depositor=house, worker=hunter, jobId=${bountyId}:payout`).
+
+### FEE / DEPOSIT / CONSERVATION ($100 bounty; base units)
+
+```
+deposit       = bountyVaultDeposit = principal + MAX(0.5% fee, 1% create-floor) = 101_000_000
+settle debit  = principal 100_000_000 + fee 500_000                              = 100_500_000
+  → house receives 100_000_000 (principal at finalize); treasury 500_000 (fee)
+  → LEG 2 pays hunter EXACTLY 100_000_000 (one x402 payment)
+  → 500_000 headroom spread = creator's RECLAIMABLE dust (leg 1d) — NOT a loss
+ledger: creator(101) = hunter(100) + treasury(0.5) + creator-reclaimable(0.5)   [no mint/burn]
+```
+
+### State machine (`bounties.composition_state`)
+
+| state | meaning | set by | next |
+|---|---|---|---|
+| `vault_pending` | stamped IN the create insert BEFORE the vault opens (FAIL-CLOSED sentinel); a crash between the insert and the `vault_held` flip leaves this — the vault MAY or MAY NOT have opened, `escrow_pda` unrecorded, binding INDETERMINATE | create insert | open ok → `vault_held`; approve + admin-refund 409 (reconcile via the deterministic nonce); cancel refunds via the nonce |
+| `vault_held` | LEG 1 vault opened + recorded at post; creator's USDC custodied, not settled | create (open ok) | approve / cancel |
+| `awaiting_finalize` | LEG 1b settled (principal reserved); LEG 1c finalize pending the dispute window | approve/crank | crank → `paid` |
+| `reconcile_payout_failed` | LEG 1 FINALIZED (reward at house) but LEG 2 payout failed | approve/crank | crank retries LEG 2 → `paid` |
+| `paid` | both legs done: house finalized + hunter paid the reward | approve/crank (via `bookComposedBountyPaid`) | terminal |
+| `failed` (transient) | LEG 1a/1b failed before any settle; funds still in the vault, `composition_state` STAYS `vault_held`. A pre-broadcast V2 settle failure (L-2, 2026-07-10) now restores the gate row to a RETRYABLE status (not terminal `failed`), so the row is re-drivable | — | auto-retried by the `vault_held`+approved crank sweep (L-1) |
+
+**No `refunded` state** (by design): a refund (cancel / admin-fail-refund, `vault_held` ONLY) leaves
+`composition_state='vault_held'` and marks the terminal via `status='cancelled'` (cancel) or
+`covenant_verification_passed=false` (admin-fail-refund); the idempotent `${bountyId}:refund` withdraw
+makes a re-refund a safe no-op, so no distinct marker is needed.
+
+Every leg is idempotent (deterministic V2 nonce + `(escrowPda, jobId)` at-most-once ledger +
+`${bountyId}:{payout,refund,reclaim}` request ids), so approve and the crank re-drive safely and book
+the hunter's completion + the dust reclaim EXACTLY ONCE. The →paid booking (the one seam with two
+authors) rides `bookComposedBountyPaid`'s atomic per-path CAS (`WHERE composition_state = <observed
+prior> AND != 'paid' RETURNING`): approve passes `'vault_held'`, the crank passes its loaded
+`'awaiting_finalize'`/`'reconcile_payout_failed'` — disjoint priors, so each books at most once.
+
+### The two team-lead rulings
+
+1. **Dispute window = MINIMUM (1 slot).** `SAP_BOUNTY_DISPUTE_WINDOW_SLOTS` (default 1, floor 1) is
+   threaded `openComposedBountyEscrow` → `openEscrowV2` → `createEscrowV2Usdc` (per-escrow override
+   of the global `SAP_DISPUTE_WINDOW_SLOTS` default 2160 ≈ 15 min, which stays large for agent↔agent
+   escrows). A bounty's "verdict" is the creator's own approve (RequesterApproval), so no arbiter
+   window is needed and the winning hunter is paid promptly. **Raising it DELAYS the payout** — the
+   settle returns `awaiting_finalize` at approve and the resume worker completes it once the window
+   elapses.
+2. **Auto-reclaim (LEG 1d).** After LEG 1 finalizes, the creator's ~0.5% headroom dust is FREE vault
+   balance; `settleComposedBounty` idempotently withdraws it back to the creator
+   (`withdrawEscrowV2Idempotent`, `${bountyId}:reclaim`). **Non-fatal** — a reclaim failure never
+   changes the settle outcome; the dust stays reclaimable (manually or on the next pass).
+
+### The resume worker (finalize/payout crank)
+
+`resumeComposedBounty(bountyId)` + `startComposedBountyResumeWorker()` (`services/bounty-composition-worker.ts`),
+boot-wired in `index.ts` **DARK-gated** (starts ONLY when `bountySettlementRail()==='sap-payai-composed'`;
+cadence `SAP_BOUNTY_RESUME_POLL_MS`, default 5 min, floor 1 min). Each pass advances every bounty stuck in
+`awaiting_finalize` / `reconcile_payout_failed` — AND (L-1, 2026-07-10) every `vault_held` bounty that carries
+an **APPROVED attempt** — by re-driving `settleComposedBounty` (idempotent). The `vault_held` sweep is the
+wedge self-heal: an approve whose settle failed pre-settle leaves `vault_held` WITH an approved winner (before
+the L-2 gate fix a transient sim failure parked the V2 row terminal `failed`), and the route's 'failed'-phase
+note long promised "retryable via an ops crank" — this IS that crank.
+
+**Two-tier priority (no starvation):** the sweep runs TIER 1 (`awaiting_finalize` / `reconcile_payout_failed`
+— money mid-flight, delayed REAL payouts) first, taking up to the whole `RESUME_BATCH`; TIER 2 (`vault_held` +
+approved) runs only on the slots tier 1 leaves free, both ordered `updated_at` ASC. So the L-1 `vault_held`
+class can NEVER starve a money-mid-flight row. **Persistent-wedge alert (L-3c):** a `vault_held`-origin resume
+that ends phase `failed` now pages ops (`alertError`, `source:bounty-composition`, severity critical) with
+`{bountyId, escrowPda, code}`, throttled per bounty to one page per hour (an in-memory Map — resets on restart;
+alert-error.ts's own limiter is only 60s, shorter than the ~5-min crank, so the worker owns the window). So ops
+sees a stuck approved bounty long before batch-size accumulates. Residual (still deferred): within tier 2 a
+permanently-wedged row keeps a slot each pass (a no-op `failed` resume doesn't bump `updated_at`), so ≥
+batch-size permanent wedges delay NEWER vault_held payouts — money-safe (USDC stays custodied). The remaining
+real fix (a terminal quarantine / backoff needing a NEW `composition_state`) is bigger than warranted until ops
+noise proves real.
+
+**Provenance guard (money invariant):** a `vault_held` bounty is swept ONLY with a genuinely approved attempt —
+the winning hunter is resolved FROM that approved attempt row, NEVER from input; the sweep query's
+`EXISTS(approved attempt)` filter + `resumeComposedBounty`'s `no_winner` backstop exclude an unapproved
+(refund-path) `vault_held` bounty. **No double-book / double-pay under a concurrent approve retry:** both the
+approve route and the sweep feed `bookComposedBountyPaid` the SAME observed prior `'vault_held'`, so the atomic
+`WHERE composition_state='vault_held' AND != 'paid'` CAS flips exactly once; every settle leg is at-most-once
+(the V2 'settling' claim + pg advisory lock; the leg-2 payout `(payoutPda, ${id}:payout)` key). The crank still
+NEVER touches the terminal `paid`, or the indeterminate `vault_pending` (operator-reconcile only).
+
+**Settle-failure disposition — pre-broadcast restores, may-have-landed quarantines (L-2 / L-3a / L-3b):** every
+post-claim settle failure now splits by whether the money leg MAY have reached the wire, so a transient failure
+no longer wedges an approved bounty terminal `failed` (which the settle claim refuses `job_not_open`):
+- **V2 vault settle** (`settleJobV2`, L-2): a `broadcast` falsy (pre-broadcast sim/RPC) failure RESTORES the row
+  to its pre-claim status (retryable); `broadcast:true` KEEPS `settle_unknown` (reconcile-only).
+- **payai LEG-2 payout** (`settleJob` payai branch, L-3a — the composed hunter payout): a `broadcastUnknown:false`
+  VERIFY-stage failure (the facilitator provably never called `/settle`) RESTORES retryable; `broadcastUnknown:true`
+  (verify passed → `/settle` attempted → may have executed on-chain) STAYS terminal `failed`, never auto-retried.
+  `broadcastUnknown` is a FULL equivalent of the on-chain `broadcast` flag (set in `payai-release.ts`), so there is
+  NO honesty asymmetry — both rails cleanly discriminate provable-no-move from may-have-moved.
+- **V1 vault settle** (`settleJob` chain branch, L-3b — latent, off the composed path): the same `broadcast` split.
+Money-neutral in every case (the restored arm moved nothing + the payai/V1 claim reserves no columns, so only the
+status label flips terminal→retryable); the may-have-landed arm is UNCHANGED (a payment that may have executed must
+never auto-retry — double-pay). Together these let the composed bounty SELF-HEAL to `paid`: a LEG-1 settle transient
+→ L-2 restore → next sweep; a LEG-2 payout transient → L-3a restore → next sweep.
+
+### OPS RUNBOOK — `reconcile_payout_failed`
+
+Meaning: LEG 1 finalized, so the **reward is safe in the house wallet**; LEG 2 (the x402 hunter
+payout) failed. A CRITICAL `bounty-composition` / `bounty-composed-payout` alert pages ops. **No
+double-pay is constructible** (LEG 2 replays idempotently on `${bountyId}:payout`). Resolution:
+- Automatic: the resume worker retries LEG 2 each pass; a transient PayAI/RPC blip self-heals to `paid`.
+- Manual: re-run `resumeComposedBounty(<bountyId>)` (or wait a poll cycle). If it persists, check the
+  PayAI facilitator + the house wallet's USDC balance; the reward is in the house vault-out, not lost.
+- NEVER refund a `reconcile_payout_failed` bounty (the hunter earned it) — the money owed is the
+  house→hunter payout, not a creator refund. `admin-fail-refund` refuses any state other than `vault_held`.

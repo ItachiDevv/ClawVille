@@ -198,7 +198,7 @@ ctTopupRoutes.post('/quote', requireAuthOrAgentSession, requireNonGuestIdentity,
     network,
     resource: {
       url: '/api/ct/topup',
-      description: `Buy ${amountCt} ClawTokens ($${(usdCents / 100).toFixed(2)} ${asset.toUpperCase()})`,
+      description: `Buy ${amountCt} vCLAW ($${(usdCents / 100).toFixed(2)} ${asset.toUpperCase()})`,
     },
     feePayer: feePayer ?? undefined,
   });

@@ -58,7 +58,7 @@ function SandboxBanner({ demoCt }: { demoCt: number }) {
         </p>
       </div>
       <span className="flex shrink-0 items-center gap-1 self-start rounded-full border border-amber-500/25 bg-amber-500/15 px-2.5 py-1 font-mono text-[11px] font-bold text-amber-200">
-        🪙 {demoCt.toLocaleString()} <span className="font-normal text-amber-200/70">DEMO CT</span>
+        🪙 {demoCt.toLocaleString()} <span className="font-normal text-amber-200/70">DEMO vCLAW</span>
       </span>
     </div>
   );
@@ -73,7 +73,7 @@ function ConversionCta() {
         <span className="font-clawville text-sm text-cyan-100">🚀 Ready for the real thing?</span>
         <p className="mt-0.5 text-[12px] leading-relaxed text-slate-200">
           Sign up to claim actual parcels, build in the shared world, and earn
-          real ClawTokens.
+          real vCLAW.
         </p>
       </div>
       <RpgButton
@@ -97,7 +97,7 @@ function ClaimCard({ onClaim, canAfford }: { onClaim: () => void; canAfford: boo
       <p className="mt-1 text-[12px] leading-relaxed text-slate-200">
         Claim a Starter Cove with a refundable{' '}
         <span className="font-semibold text-emerald-200">
-          {LAND_STARTER_DEPOSIT_CT.toLocaleString()} DEMO CT deposit
+          {LAND_STARTER_DEPOSIT_CT.toLocaleString()} DEMO vCLAW deposit
         </span>{' '}
         (held in escrow, refunded when you release the cove — just like the real
         thing). Then build a home or shop and upgrade it. It&apos;s all pretend.
@@ -111,8 +111,8 @@ function ClaimCard({ onClaim, canAfford }: { onClaim: () => void; canAfford: boo
         className="mt-3 min-h-[44px]"
       >
         {canAfford
-          ? `Claim demo cove · ${LAND_STARTER_DEPOSIT_CT.toLocaleString()} DEMO CT deposit`
-          : 'Not enough DEMO CT'}
+          ? `Claim demo cove · ${LAND_STARTER_DEPOSIT_CT.toLocaleString()} DEMO vCLAW deposit`
+          : 'Not enough DEMO vCLAW'}
       </RpgButton>
     </div>
   );
@@ -228,7 +228,7 @@ function UpgradePanel({
                 Lv{lvl}
                 {reached ? ' ✓' : ''}
               </span>
-              <span>{lvl === 1 ? 'free' : `${cost?.toLocaleString()} DEMO CT`}</span>
+              <span>{lvl === 1 ? 'free' : `${cost?.toLocaleString()} DEMO vCLAW`}</span>
             </div>
           );
         })}
@@ -240,7 +240,7 @@ function UpgradePanel({
         </p>
       ) : (
         <RpgButton size="sm" variant="primary" onClick={onUpgrade} className="min-h-[44px]">
-          Upgrade to Lv{nextLevel} · {nextCost?.toLocaleString()} DEMO CT
+          Upgrade to Lv{nextLevel} · {nextCost?.toLocaleString()} DEMO vCLAW
         </RpgButton>
       )}
     </div>
@@ -259,9 +259,9 @@ export default function GuestLandSandbox() {
   const handleClaim = () => {
     const res = claimCove();
     if (res.ok) {
-      addToast('🏡', `Claimed a demo cove — ${res.amountCt?.toLocaleString()} DEMO CT held as a refundable deposit.`);
+      addToast('🏡', `Claimed a demo cove — ${res.amountCt?.toLocaleString()} DEMO vCLAW held as a refundable deposit.`);
     } else if (res.code === 'insufficient_ct') {
-      addToast('⚠️', 'Not enough DEMO CT for the deposit.', 4000);
+      addToast('⚠️', 'Not enough DEMO vCLAW for the deposit.', 4000);
     }
   };
 
@@ -273,9 +273,9 @@ export default function GuestLandSandbox() {
   const handleUpgrade = () => {
     const res = upgradeStructure();
     if (res.ok) {
-      addToast('⬆️', `Upgraded to Lv${(cove?.structure?.level ?? 0) + 1} for ${res.amountCt?.toLocaleString()} DEMO CT!`);
+      addToast('⬆️', `Upgraded to Lv${(cove?.structure?.level ?? 0) + 1} for ${res.amountCt?.toLocaleString()} DEMO vCLAW!`);
     } else if (res.code === 'insufficient_ct') {
-      addToast('⚠️', 'Not enough DEMO CT for this upgrade.', 4000);
+      addToast('⚠️', 'Not enough DEMO vCLAW for this upgrade.', 4000);
     } else if (res.code === 'max_level') {
       addToast('🔒', `A Starter Cove caps at Lv${GUEST_SANDBOX_MAX_LEVEL}.`, 4000);
     }
@@ -284,7 +284,7 @@ export default function GuestLandSandbox() {
   const handleRelease = () => {
     const res = releaseCove();
     if (res.ok) {
-      addToast('🔄', `Released your demo cove — ${res.amountCt?.toLocaleString()} DEMO CT refunded.`);
+      addToast('🔄', `Released your demo cove — ${res.amountCt?.toLocaleString()} DEMO vCLAW refunded.`);
     }
   };
 
@@ -313,7 +313,7 @@ export default function GuestLandSandbox() {
                   : 'Empty lot — nothing built yet'}
               </div>
               <div className="mt-0.5 font-mono text-[10px] text-slate-400">
-                {cove.depositRemainingCt.toLocaleString()} DEMO CT deposit held (refundable)
+                {cove.depositRemainingCt.toLocaleString()} DEMO vCLAW deposit held (refundable)
               </div>
             </div>
             <RpgButton

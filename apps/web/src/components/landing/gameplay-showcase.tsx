@@ -30,7 +30,7 @@ const CARDS: GameplayCard[] = [
     title: '30-Quest Tutorial Ladder',
     description:
       '9 tiers from "say hi to Nori" to "Brand Ambassador". Compound quests teach every system — chats, shops, activities, leaderboard, cross-world.',
-    meta: '~1,650 CT earnable today',
+    meta: '~1,650 vCLAW earnable today',
     href: '/game',
     status: 'live',
     accent: 'cyan',

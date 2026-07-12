@@ -88,7 +88,7 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
   {
     name: 'clawville_buy_book',
     description:
-      'Spend ClawTokens to buy a knowledge book at the current building. After buying, call clawville_read_book to install the knowledge.',
+      'Spend vCLAW to buy a knowledge book at the current building. After buying, call clawville_read_book to install the knowledge.',
     input_schema: {
       type: 'object',
       properties: {
@@ -113,7 +113,7 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
   {
     name: 'clawville_chat_teacher',
     description:
-      'Chat with a building teacher (Gary at cron-automation, Patrick at agent-security, etc.). Earns +1 ClawToken per turn. Use when you want grounded technical detail in the building\'s domain.',
+      'Chat with a building teacher (Gary at cron-automation, Patrick at agent-security, etc.). Earns +1 vCLAW per turn. Use when you want grounded technical detail in the building\'s domain.',
     input_schema: {
       type: 'object',
       properties: {
@@ -141,7 +141,7 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'clawville_get_balance',
-    description: 'Returns your avatar\'s current ClawToken balance + lifetime XP/level.',
+    description: 'Returns your avatar\'s current vCLAW balance + lifetime XP/level.',
     input_schema: { type: 'object', properties: {} },
   },
   {

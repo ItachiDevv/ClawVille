@@ -232,7 +232,7 @@ export function buildTopupQuote(input: BuildTopupQuoteInput): TopupQuote {
     x402Version: 2,
     resource: input.resource ?? {
       url: '/api/ct/topup',
-      description: `Buy ${usdToCt(usdCents)} ClawTokens for $${(usdCents / 100).toFixed(2)} ${asset.toUpperCase()}`,
+      description: `Buy ${usdToCt(usdCents)} vCLAW for $${(usdCents / 100).toFixed(2)} ${asset.toUpperCase()}`,
     },
     accepts: [requirement],
   };

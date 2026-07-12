@@ -345,7 +345,7 @@ export const AVATAR_ARCHETYPES: AvatarArchetype[] = [
     lore: [
       "The Patrick's Rock sentinels were once seen saluting this avatar during a low-tide parade. The avatar has never stopped trying to earn that salute again.",
       "When shadow-fish swarmed the Sandy's Treedome three tide-cycles ago, this avatar was the last one still holding the span as the rest of the guard fell back.",
-      'Local shopkeepers pool their ClawTokens to send this avatar a shell-gift every Reef Day — anonymously, because the guardian refuses to accept payment for protection.',
+      'Local shopkeepers pool their vCLAW to send this avatar a shell-gift every Reef Day — anonymously, because the guardian refuses to accept payment for protection.',
     ],
     knowledge: [
       'True protection is prevention, not just reaction. Knowing your patrol currents, reading threat patterns, and building community trust stops more harm than any weapon.',
@@ -389,7 +389,7 @@ export const AVATAR_ARCHETYPES: AvatarArchetype[] = [
       'Never makes a deal without knowing exactly what both sides want. Believes the best trade is one where everyone drifts away feeling like they won — but they always drift away having won just a little bit more.',
     ],
     lore: [
-      'Once bought a "worthless" old lantern-shell at the Krusty Krab for one hundred ClawTokens. It turned out to be a genuine currentbinder worth over five million. They say the trader knew all along.',
+      'Once bought a "worthless" old lantern-shell at the Krusty Krab for one hundred vCLAW. It turned out to be a genuine currentbinder worth over five million. They say the trader knew all along.',
       'The Forge auction house had to write a new bidding rule after this avatar used a perfectly legal but unprecedented strategy to win seven auctions in a single tide.',
       'Rumour has it they keep a private vault somewhere under the Lighthouse that holds at least one of every rare skill-shard ever traded. No one has ever seen it.',
     ],

@@ -89,7 +89,7 @@ export default function HistoryRow({ event }: HistoryRowProps) {
         {/* Bet */}
         <td style={{ ...td(), textAlign: 'right' }}>
           <span style={{ color: 'rgba(224,255,248,0.75)', fontFamily: 'monospace', fontSize: 12 }}>
-            {formatCT(event.betAmount)} CT
+            {formatCT(event.betAmount)} vCLAW
           </span>
         </td>
 
@@ -103,7 +103,7 @@ export default function HistoryRow({ event }: HistoryRowProps) {
               fontWeight: 700,
             }}
           >
-            {isWin ? '+' : ''}{formatCT(pnl.toString())} CT
+            {isWin ? '+' : ''}{formatCT(pnl.toString())} vCLAW
           </span>
         </td>
 
