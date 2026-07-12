@@ -27,6 +27,7 @@ import {
 } from '@clawville/database';
 import { sessionMiddleware } from '../middleware/auth';
 import { adminOnly } from '../middleware/admin-only';
+import { noStorePrivate } from '../middleware/no-store';
 import { alertError } from '../services/alert-error';
 import type { AppContext } from '../types';
 
@@ -45,7 +46,7 @@ dashboardRoutes.use('*', sessionMiddleware);
 
 dashboardRoutes.get('/__check', adminOnly, (c) => c.json({ ok: true }));
 
-dashboardRoutes.get('/overview', adminOnly, async (c) => {
+dashboardRoutes.get('/overview', adminOnly, noStorePrivate, async (c) => {
   const [dauRes, miladyRes, funnelRes, retentionRes, collabRes, teacherChatRes, buildingsRes] =
     await Promise.all([
       // Card 1: DAU + 7d delta
@@ -227,7 +228,7 @@ dashboardRoutes.post('/__test-alert', adminOnly, async (c) => {
 
 // ─── Q3 plan §gamification dashboard — read endpoints for the new tabs ────
 
-dashboardRoutes.get('/quests', adminOnly, async (c) => {
+dashboardRoutes.get('/quests', adminOnly, noStorePrivate, async (c) => {
   // Tutorial quest claim counts — one row per quest_id present in the
   // tutorial_quest_claims table. Quests with zero claims are omitted from
   // the SQL but the tab fills them in client-side.
@@ -265,7 +266,7 @@ dashboardRoutes.get('/quests', adminOnly, async (c) => {
   });
 });
 
-dashboardRoutes.get('/phases', adminOnly, async (c) => {
+dashboardRoutes.get('/phases', adminOnly, noStorePrivate, async (c) => {
   const rows = await db
     .select()
     .from(dashboardPhases)
@@ -273,7 +274,7 @@ dashboardRoutes.get('/phases', adminOnly, async (c) => {
   return c.json({ phases: rows, generatedAt: new Date().toISOString() });
 });
 
-dashboardRoutes.get('/economy', adminOnly, async (c) => {
+dashboardRoutes.get('/economy', adminOnly, noStorePrivate, async (c) => {
   // Live operational metrics that complement the static config in the
   // Token Economy tab. Three queries, all aggregations over recent windows.
 
@@ -352,7 +353,7 @@ dashboardRoutes.get('/economy', adminOnly, async (c) => {
   });
 });
 
-dashboardRoutes.get('/cosmetics', adminOnly, async (c) => {
+dashboardRoutes.get('/cosmetics', adminOnly, noStorePrivate, async (c) => {
   // SKUs + variant counts + ownership counts. Three queries, one merge.
   const skus = await db.select().from(cosmeticSkus).orderBy(cosmeticSkus.createdAt);
   const variantCounts = await db

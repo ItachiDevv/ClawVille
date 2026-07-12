@@ -31,6 +31,7 @@ import bs58 from 'bs58';
 import { db, users, eq } from '@clawville/database';
 import { requireAuth, sessionMiddleware } from '../middleware/auth';
 import { requireNonGuestUser } from '../middleware/require-non-guest';
+import { noStorePrivate } from '../middleware/no-store';
 import {
   issueWalletLinkChallenge,
   consumeWalletLinkChallenge,
@@ -148,7 +149,7 @@ walletLinkRoutes.post('/', requireAuth, requireNonGuestUser, async (c) => {
 // ---------------------------------------------------------------------------
 // GET / — read the linked wallet + its (cached) CLV balance
 // ---------------------------------------------------------------------------
-walletLinkRoutes.get('/', requireAuth, async (c) => {
+walletLinkRoutes.get('/', requireAuth, noStorePrivate, async (c) => {
   const user = c.get('user') as { id: string };
   const result = await getLinkedWalletClvBalance(user.id);
   return c.json(result);

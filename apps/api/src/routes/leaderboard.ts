@@ -48,6 +48,7 @@ import {
 import { LAND_EVENT_TYPES, LAND_EVENT_WEIGHTS, LAND_EVENT_DAILY_CAPS } from '@clawville/shared';
 import { sessionMiddleware } from '../middleware/auth';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
+import { noStorePrivate } from '../middleware/no-store';
 import type { AppContext } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -1219,7 +1220,7 @@ leaderboardRoutes.get('/reef-race/daily-best-lap', async (c) => {
  *             it's outside the cap (so a mid-pack avatar can still see where
  *             they stand without paging through the whole board).
  */
-leaderboardRoutes.get('/', sessionMiddleware, async (c) => {
+leaderboardRoutes.get('/', sessionMiddleware, noStorePrivate, async (c) => {
   const rawSort = (c.req.query('sort') || 'composite').toLowerCase();
   const sort = (VALID_SORTS.includes(rawSort as SortMode) ? rawSort : 'composite') as SortMode;
 
@@ -1273,7 +1274,7 @@ leaderboardRoutes.get('/', sessionMiddleware, async (c) => {
  * Aggregate stats for the header banner — total avatars, total gold in
  * circulation, total quests completed.
  */
-leaderboardRoutes.get('/stats', sessionMiddleware, async (c) => {
+leaderboardRoutes.get('/stats', sessionMiddleware, noStorePrivate, async (c) => {
   let snapshot = getCache(DEFAULT_CAP);
   if (!snapshot) {
     snapshot = await buildSnapshot(DEFAULT_CAP);

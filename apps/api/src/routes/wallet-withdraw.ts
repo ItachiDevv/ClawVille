@@ -59,6 +59,7 @@ import {
   type ActivityAuthContext,
 } from '../middleware/require-auth-or-agent';
 import { requireNonGuestIdentity } from '../middleware/require-non-guest';
+import { noStorePrivate } from '../middleware/no-store';
 import {
   requestWithdrawal,
   getCustodialWalletBalances,
@@ -215,7 +216,7 @@ walletWithdrawRoutes.post(
 // GET /balances — read-only custodial balances (live regardless of the flag)
 // ---------------------------------------------------------------------------
 
-walletWithdrawRoutes.get('/balances', requireAuthOrAgentSession, async (c) => {
+walletWithdrawRoutes.get('/balances', requireAuthOrAgentSession, noStorePrivate, async (c) => {
   const identity = c.get('identity');
   const result = await getCustodialWalletBalances(identity.avatarId);
   if (!result.ok) {

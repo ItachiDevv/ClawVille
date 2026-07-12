@@ -45,6 +45,7 @@ import {
 } from '../services/avatar-agent-provisioning';
 import { resolveOrCreateUserByIdentity, generateIdentityKeypairForUser } from '../services/identity-service';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
+import { noStorePrivate } from '../middleware/no-store';
 import { moderateText, CONTENT_BLOCKED_CODE, CONTENT_BLOCKED_MESSAGE } from '../services/moderation-service';
 import {
   directiveBodySchema,
@@ -415,7 +416,7 @@ avatarRoutes.post('/', async (c) => {
 });
 
 // Get user's avatar
-avatarRoutes.get('/me', requireAuth, async (c) => {
+avatarRoutes.get('/me', requireAuth, noStorePrivate, async (c) => {
   const user = c.get('user');
 
   const avatar = await db.query.avatars.findFirst({

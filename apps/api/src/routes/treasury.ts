@@ -31,6 +31,7 @@ import { eq, sql } from 'drizzle-orm';
 import { db, avatars, treasurySubjects } from '@clawville/database';
 import { sessionMiddleware } from '../middleware/auth';
 import { adminOnly } from '../middleware/admin-only';
+import { noStorePrivate } from '../middleware/no-store';
 import { HOUSE_TREASURY_PURPOSE } from '../services/house-treasury-seeder';
 import type { AppContext } from '../types';
 
@@ -57,7 +58,7 @@ interface ReasonRow {
  * Admin-only. The single source of truth for "how much fee revenue has the
  * house accumulated, and from which sites".
  */
-treasuryRouter.get('/summary', adminOnly, async (c) => {
+treasuryRouter.get('/summary', adminOnly, noStorePrivate, async (c) => {
   const parsed = querySchema.safeParse({
     byReason: c.req.query('byReason') ?? undefined,
   });

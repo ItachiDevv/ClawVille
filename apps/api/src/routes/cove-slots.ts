@@ -109,6 +109,7 @@ import {
 import { sessionMiddleware } from '../middleware/auth';
 import { resolveAgentSession } from '../middleware/require-auth-or-agent';
 import { isGuestUser } from '../middleware/require-non-guest';
+import { noStorePrivate } from '../middleware/no-store';
 import {
   CLIENT_SEED_MAX_LENGTH,
   createServerSeed,
@@ -1703,7 +1704,7 @@ coveSlotsRouter.post('/session/close', async (c) => {
 // Subject-resolved (ledger subjects only) so a connected agent can restore its
 // open session after a reconnect, exactly like a human after a page refresh. An
 // agent + its bound human share one userId-keyed session, so both see the same row.
-coveSlotsRouter.get('/session/current', async (c) => {
+coveSlotsRouter.get('/session/current', noStorePrivate, async (c) => {
   const subject = await getSubject(c);
   if (!isLedgerSubject(subject)) {
     throw new HTTPException(403, { message: 'guest_has_no_persistent_session: sign in or connect an agent' });
@@ -1732,7 +1733,7 @@ coveSlotsRouter.get('/session/current', async (c) => {
 // Subject-resolved (ledger subjects only) so an agent can inspect its own
 // session; ownerMatches binds to the resolved userId, so an agent can never read
 // another user's session by id.
-coveSlotsRouter.get('/session/:id', async (c) => {
+coveSlotsRouter.get('/session/:id', noStorePrivate, async (c) => {
   const sessionId = c.req.param('id');
   if (!/^[0-9a-f-]{36}$/i.test(sessionId)) {
     throw new HTTPException(400, { message: 'invalid_session_id' });

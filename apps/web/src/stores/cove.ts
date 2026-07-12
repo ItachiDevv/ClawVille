@@ -134,22 +134,47 @@ export interface CoveStore {
   openBaccaratTable: (displayBalance: number) => void;
   closeBaccaratTable: () => void;
   setBaccaratBet: (bet: number) => void;
+
+  /**
+   * Full reset to initial state — the auth-transition sweep
+   * (`clearIdentityState`) calls this so one session's balances
+   * (guest demo OR real) never stay on screen for the next identity.
+   * This store is a module-global singleton: it survives soft navigation
+   * and login/logout, so without an explicit reset the previous session's
+   * sessionBalance/display balances keep rendering until a server refetch.
+   */
+  resetCoveStore: () => void;
 }
 
-export const useCoveStore = create<CoveStore>((set, get) => ({
+// Empty-state factory (same pattern as poker.ts/activity.ts) — the create()
+// initial object and resetCoveStore share THIS one literal so the two can
+// never drift.
+const createInitialCoveState = () => ({
   slotScreenOpen: false,
-  machineSlug: null,
-  paytableId: null,
-  sessionId: null,
-  serverSeedHash: null,
-  clientSeed: null,
-  revealedServerSeed: null,
+  machineSlug: null as MachineSlug | null,
+  paytableId: null as MachineSlug | null,
+  sessionId: null as string | null,
+  serverSeedHash: null as string | null,
+  clientSeed: null as string | null,
+  revealedServerSeed: null as string | null,
   sessionStartBalance: 0,
   sessionBalance: 0,
   spinCount: 0,
   sessionPnl: 0,
   isSpinning: false,
-  lastSpinResult: null,
+  lastSpinResult: null as SpinResult | null,
+  holdemModalOpen: false,
+  holdemBuyIn: COVE_HOLDEM_DEFAULT_BUYIN,
+  blackjackOpen: false,
+  blackjackBet: 50,
+  blackjackDisplayBalance: 0,
+  baccaratOpen: false,
+  baccaratBet: 25,
+  baccaratDisplayBalance: 0,
+});
+
+export const useCoveStore = create<CoveStore>((set, get) => ({
+  ...createInitialCoveState(),
 
   openSlotScreen: (machineSlug, paytableId, startBalance) => {
     set({
@@ -227,10 +252,8 @@ export const useCoveStore = create<CoveStore>((set, get) => ({
     set({ sessionBalance: sessionBalance + delta });
   },
 
-  // Hold'em state (Phase 6.5.0 visual shell)
-  holdemModalOpen: false,
-  holdemBuyIn: COVE_HOLDEM_DEFAULT_BUYIN,
-
+  // Hold'em state (Phase 6.5.0 visual shell) — initial values live in
+  // createInitialCoveState.
   openHoldemTable: (balance) => {
     // Cap suggested buy-in at the caller's bankroll so low-balance players
     // don't get auto-bet over their stack. Floor at 0 so a negative value
@@ -244,11 +267,8 @@ export const useCoveStore = create<CoveStore>((set, get) => ({
   },
 
   // Blackjack state (Phase 6.4.1 — real authoritative engine).
-  // Bet default 50 is a valid 5–500 chip. Modal owns the rest.
-  blackjackOpen: false,
-  blackjackBet: 50,
-  blackjackDisplayBalance: 0,
-
+  // Bet default 50 is a valid 5–500 chip. Modal owns the rest; initial
+  // values live in createInitialCoveState.
   openBlackjackTable: (displayBalance) => {
     set({
       blackjackOpen: true,
@@ -264,11 +284,8 @@ export const useCoveStore = create<CoveStore>((set, get) => ({
   setBlackjackBet: (bet) => set({ blackjackBet: bet }),
 
   // Baccarat state (Phase 6.6.1 — real authoritative engine).
-  // Bet default 25 is a valid 5–500 chip. Modal owns the rest.
-  baccaratOpen: false,
-  baccaratBet: 25,
-  baccaratDisplayBalance: 0,
-
+  // Bet default 25 is a valid 5–500 chip. Modal owns the rest; initial
+  // values live in createInitialCoveState.
   openBaccaratTable: (displayBalance) => {
     set({
       baccaratOpen: true,
@@ -282,4 +299,6 @@ export const useCoveStore = create<CoveStore>((set, get) => ({
   },
 
   setBaccaratBet: (bet) => set({ baccaratBet: bet }),
+
+  resetCoveStore: () => set(createInitialCoveState()),
 }));
