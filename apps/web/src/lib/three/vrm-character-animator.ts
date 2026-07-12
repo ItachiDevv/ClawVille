@@ -976,6 +976,29 @@ export class VRMCharacterAnimator {
   }
 
   /**
+   * Manually flush the batched skeleton.update() calls this animator patched
+   * to no-ops in its constructor (see the Verse Engine batching comment
+   * above `_skeletonUpdateFns`). `update()` already calls this internally
+   * once per frame, AFTER the mixer + vrm.update() write the current clip
+   * pose — so it is normally sufficient on its own.
+   *
+   * Exposed publicly for a caller that applies an ADDITIONAL bone override
+   * AFTER update() returns, in the SAME frame (e.g. cove-interior.tsx's
+   * seated-bust leg pose — a static per-frame override layered on top of
+   * the idle clip's upper-body life, applied every frame rather than a
+   * one-time freeze-bake). Without a second flush, `SkinnedMesh.skeleton.
+   * update` stays a no-op (patched in the constructor), so the override's
+   * new bone.matrixWorld values never reach the boneMatrices uniform the
+   * GPU actually skins from — the change would compute correctly but
+   * render completely invisibly. Caller must call `vrm.humanoid.update()`
+   * (propagate normalized→raw) and `vrm.scene.updateMatrixWorld(true)`
+   * (recompute world matrices) BEFORE calling this. (2026-07-11, Slice 2.)
+   */
+  flushSkeletonUpdates(): void {
+    for (const fn of this._skeletonUpdateFns.values()) fn();
+  }
+
+  /**
    * Transition to the action matching `isMoving`.
    *
    * three.js's `crossFadeTo` schedules weight changes but does NOT call `.play()`

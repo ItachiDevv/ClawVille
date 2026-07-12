@@ -1424,9 +1424,19 @@ const T1_SEATS: TableSeat[] = _buildTableSeats(T1_FELT_RX, T1_FELT_RZ, T1_SEAT_R
 /** Seat 0 is reserved for the local player; seats 1..5 get placeholder busts. */
 const T1_PLAYER_SEAT_INDEX = 0;
 /** Placeholder identities for the non-player seats — Slice 1 has no real
- *  roster yet (downstream: the cove agent wires live seat occupancy). */
+ *  roster yet (downstream: the cove agent wires live seat occupancy).
+ *  Slice 2 fix (2026-07-11): was 5 entries with 'milady_official_2'
+ *  duplicated (founder flag — "no duplicate models at one table"). Now 5
+ *  DISTINCT MODEL_REGISTRY entries: 4 Miladies (already-verified proportions,
+ *  hip-height fraction ~0.50 measured via headless harness) + 1 Hermes
+ *  (adult-realistic proportions, hip-height fraction ~0.60 — also measured,
+ *  not assumed) for variety without introducing a THIRD unmeasured body
+ *  type. Chibi models deliberately excluded — mixing chibi (big-head/short-
+ *  limb) proportions with these would need its own calibration pass; see
+ *  SEATED_HIP_HEIGHT_FRACTION below for how the two measured body types are
+ *  reconciled. */
 const T1_SEAT_BUST_MODEL_KEYS: Array<keyof typeof MODEL_REGISTRY> = [
-  'milady_official_2', 'milady_official_5', 'hermes_female', 'milady_official_7', 'milady_official_2',
+  'milady_official_2', 'milady_official_5', 'milady_official_7', 'milady_official_4', 'hermes_female',
 ];
 
 // Seat-POV camera — eye at seat 0, looking across the felt toward the far
@@ -1466,7 +1476,75 @@ const T1_SEAT_CAM_LOOK_Z = T1_CENTER_Z - (_t1PlayerSeat.z / _t1SeatDist) * T1_SE
 const T1_SEAT_CAM_LERP = 8; // exp-decay coefficient (1/s) — not spatial, unaffected by scale
 
 // ---------------------------------------------------------------------------
-// TableSeatedBust — one full standing VRM figure locked at a table seat.
+// Slice 2 seated posture (2026-07-11) — bent hips/knees via direct bone
+// rotation, applied every frame AFTER the idle clip ticks (no freeze-bake —
+// that path was racy, see the T-pose postmortem above). Founder + orchestrator
+// flagged: at the 2800-scaled table, full-height STANDING busts behind empty
+// chairs read clearly wrong.
+//
+// No usable "sit" clip exists anywhere in ANIM_PATHS (vrm-character-
+// animator.ts) — the only floor-relative near-crouch clip, 'squat', is a
+// KNOWN-BROKEN in-place bake (raw hips.position is a flat constant, zero
+// descent — see gotchas/squat-clip-rotation-only-no-runtime-crouch.md) and
+// was disabled in production after 3 failed procedural-grounding attempts.
+// Rather than repeat that failure mode, this bypasses the clip system
+// entirely for the leg pose: it sets the VRM humanoid's NORMALIZED
+// leftUpperLeg/rightUpperLeg/leftLowerLeg/rightLowerLeg bone quaternions
+// directly, which sidesteps the squat clip's exact limitation (no clip
+// involved, so there's no in-place-baked position track to fight).
+//
+// Rotation axis/sign VERIFIED (not assumed) via a headless VRM harness
+// (bun, no browser — same verification pattern the squat-clip memory
+// recommends): loaded milady-official-2.vrm, rotated leftUpperLeg around
+// its NORMALIZED local X axis, and read the knee/foot world position
+// before/after. -90° around local X swings the knee up to ~hip height and
+// forward (matches a horizontal, seated thigh); a further +90° on
+// leftLowerLeg (also local X) brings the shin back down so the foot lands
+// roughly below the knee (matches a natural hanging shin). Cross-checked
+// the SAME rotation values on rightUpperLeg/rightLowerLeg — VRM normalized
+// bones use a symmetric local-axis convention, no mirrored sign needed.
+const SEATED_THIGH_ROTATION_RAD = THREE.MathUtils.degToRad(-90);
+const SEATED_KNEE_ROTATION_RAD  = THREE.MathUtils.degToRad(90);
+// Module-scope, built once — never reallocated per frame or per instance.
+const _seatedThighQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), SEATED_THIGH_ROTATION_RAD);
+const _seatedKneeQuat  = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), SEATED_KNEE_ROTATION_RAD);
+
+/**
+ * How far to lower the whole VRM (group Y) so the pelvis reads at chair-seat
+ * height instead of standing-hip height, given the leg rotation above keeps
+ * the hips bone itself untouched (simpler + lower-risk than also moving the
+ * hips bone position — the group-level Y offset achieves the same visual
+ * result without touching VRMHumanoidRig's hips-specific position-propagation
+ * special-case).
+ *
+ * No ground-truth doc measurement exists for the actual baked chair-seat
+ * height (the furniture-map doc measured table/floor/ceiling, not chairs) —
+ * this is an ENGINEERING ESTIMATE, documented as such, not a fabricated
+ * "measured" number:
+ *   - SEATED_HIP_HEIGHT_FRACTION = 0.52: the fraction of standing height
+ *     where the hips bone sits. VERIFIED via the same headless harness on
+ *     the two body types actually used in T1_SEAT_BUST_MODEL_KEYS — Milady
+ *     measured 0.5028, Hermes-female measured 0.5988; 0.52 is their
+ *     midpoint, applied uniformly rather than per-model (a per-model live
+ *     measurement would be more precise but adds complexity for a
+ *     background NPC bust — acceptable simplification, noted here so a
+ *     future pass can tighten it).
+ *   - SEAT_DROP_FRACTION = 0.5: real-world seated-hip height is roughly
+ *     half of standing-hip height for a normal chair/stool (standing hip
+ *     ~90cm, chair seat ~45cm on a ~170cm person) — a standard human-
+ *     ergonomics ratio, not room-specific. Applied to the avatar-relative
+ *     (fixed) standing hip height, consistent with every other avatar-
+ *     relative constant in this file staying fixed while the room scales.
+ * Both constants are avatar-relative and intentionally do NOT scale with
+ * INTERIOR_TARGET_HEIGHT — visually calibrated against the committed 2800
+ * knob value; a later slice with real per-table seat/chair GLB measurements
+ * should replace this with a measured value the same way TABLE_TOP_Y was.
+ */
+const SEATED_HIP_HEIGHT_FRACTION = 0.52;
+const SEAT_DROP_FRACTION = 0.5;
+
+// ---------------------------------------------------------------------------
+// TableSeatedBust — one seated VRM figure locked at a table seat.
 // Per-instance unique instanceId → unique VRM parse (never share a parsed
 // VRM across visible avatars — gotchas/vrm-shared-instance-corruption.md).
 //
@@ -1485,8 +1563,21 @@ const T1_SEAT_CAM_LERP = 8; // exp-decay coefficient (1/s) — not spatial, unaf
 // per-frame update() pattern every other animated character in this codebase
 // already uses successfully — 5 extra ticking VRMs is a known-cheap cost
 // (idle-only, no locomotion, no user IK), well inside the Iris Xe budget for
-// a small interior room. A future perf pass MAY reintroduce a bake-and-freeze
-// optimization, but only with the T-pose bug root-caused first.
+// a small interior room.
+//
+// Slice 2 (2026-07-11) layers a per-frame SEATED LEG POSE on top of the idle
+// tick (see the constants above): after anim.update() ticks the idle clip
+// (upper-body life — breathing/sway), this overrides the 4 leg bones to a
+// fixed seated bend, then re-propagates (vrm.humanoid.update() + scene.
+// updateMatrixWorld) and re-flushes the skeleton (anim.flushSkeletonUpdates()
+// — a new public method; without it the override computes correctly but
+// never reaches the GPU, since skeleton.update() is patched to a no-op and
+// only the animator's OWN internal flush call runs it, which happens BEFORE
+// this override in the same frame). This doubles the per-bust
+// updateMatrixWorld cost (idle tick's internal call + this one) — a real,
+// non-zero addition on top of the already-accepted "5 idle-only ticking
+// VRMs" baseline; still small for 5 static background busts in a small
+// interior room, but flagged honestly rather than hidden.
 // ---------------------------------------------------------------------------
 function TableSeatedBustInner({ reg, seat, instanceId, targetHeight }: {
   reg: ModelRegistryEntry;
@@ -1497,15 +1588,45 @@ function TableSeatedBustInner({ reg, seat, instanceId, targetHeight }: {
   const groupRef = useRef<THREE.Group>(null);
   const vrm = useVRMInstance(reg.path, instanceId);
   const animRef = useRef<VRMCharacterAnimator | null>(null);
+  // Cached leg-bone refs — looked up once when the VRM loads, never re-queried
+  // per frame (getNormalizedBoneNode is a map lookup, cheap, but there is no
+  // reason to pay it 4x every frame for a value that never changes per-VRM).
+  const legBonesRef = useRef<{
+    leftUpperLeg: THREE.Object3D; rightUpperLeg: THREE.Object3D;
+    leftLowerLeg: THREE.Object3D; rightLowerLeg: THREE.Object3D;
+  } | null>(null);
 
   const { scale: vrmRenderScale, offsetY: vrmFootOffsetY } = useMemo(
     () => computeVRMAvatarFit(vrm, reg.animatorId, targetHeight),
     [vrm, reg.animatorId, targetHeight],
   );
 
+  // Seated Y offset — see SEATED_HIP_HEIGHT_FRACTION/SEAT_DROP_FRACTION
+  // above. Avatar-relative (uses targetHeight, not the room-scale knob).
+  const seatDrop = useMemo(
+    () => targetHeight * SEATED_HIP_HEIGHT_FRACTION * SEAT_DROP_FRACTION,
+    [targetHeight],
+  );
+
   useEffect(() => {
     return () => disposeVRMInstance(reg.path, instanceId);
   }, [reg.path, instanceId]);
+
+  useEffect(() => {
+    if (!vrm) return;
+    const humanoid = vrm.humanoid;
+    if (!humanoid) { legBonesRef.current = null; return; }
+    const leftUpperLeg = humanoid.getNormalizedBoneNode('leftUpperLeg');
+    const rightUpperLeg = humanoid.getNormalizedBoneNode('rightUpperLeg');
+    const leftLowerLeg = humanoid.getNormalizedBoneNode('leftLowerLeg');
+    const rightLowerLeg = humanoid.getNormalizedBoneNode('rightLowerLeg');
+    if (leftUpperLeg && rightUpperLeg && leftLowerLeg && rightLowerLeg) {
+      legBonesRef.current = { leftUpperLeg, rightUpperLeg, leftLowerLeg, rightLowerLeg };
+    } else {
+      console.warn('[TableSeatedBust] missing leg bone(s) on', reg.path, '— rendering standing (no seated pose).');
+      legBonesRef.current = null;
+    }
+  }, [vrm, reg.path]);
 
   useEffect(() => {
     if (!vrm) return;
@@ -1523,7 +1644,20 @@ function TableSeatedBustInner({ reg, seat, instanceId, targetHeight }: {
   }, [vrm, reg.animatorId]);
 
   useFrame((_, delta) => {
-    animRef.current?.update(Math.min(delta, 0.1), false, false);
+    const anim = animRef.current;
+    if (!anim) return;
+    anim.update(Math.min(delta, 0.1), false, false);
+
+    const legs = legBonesRef.current;
+    if (legs && vrm.humanoid) {
+      legs.leftUpperLeg.quaternion.copy(_seatedThighQuat);
+      legs.rightUpperLeg.quaternion.copy(_seatedThighQuat);
+      legs.leftLowerLeg.quaternion.copy(_seatedKneeQuat);
+      legs.rightLowerLeg.quaternion.copy(_seatedKneeQuat);
+      vrm.humanoid.update();
+      vrm.scene.updateMatrixWorld(true);
+      anim.flushSkeletonUpdates();
+    }
   });
 
   useEffect(() => {
@@ -1538,7 +1672,7 @@ function TableSeatedBustInner({ reg, seat, instanceId, targetHeight }: {
       <primitive
         object={vrm.scene}
         scale={[vrmRenderScale, vrmRenderScale, vrmRenderScale]}
-        position={[0, vrmFootOffsetY, 0]}
+        position={[0, vrmFootOffsetY - seatDrop, 0]}
       />
     </group>
   );
