@@ -97,3 +97,26 @@ Bust yaw = `atan2` facing T1's felt center from each seat's own measured positio
 **Implication for T2-T4:** the arc-formula ring (`_buildTableSeats` in `cove-interior.tsx`) is still used there since no slice has built their seats/camera yet — but it should NOT be trusted at face value when that work starts. Repeat this SAME in-game raycast measurement pass for each table before shipping seats, rather than assuming the formula (proven wrong once already) is close enough.
 
 **PARITY note:** doc-only artifact (no code change in this section — the code lives in `apps/web/src/lib/three/cove-interior.tsx`, its own diff). Human path and agent path unaffected; this map feeds the cove 3D build which carries its own parity gates.
+
+## T1 chair-seat front-edge data (added 2026-07-11, Slice 2c postmortem — backrest-through-torso fix)
+
+Founder verdict on Slice 2b: "the seats are still cutting through the middle of the avatar body" — confirmed on screenshots, clearest on the mid purple-haired bust and the skull-shirt bust. Root cause: the seat centroids above (§ "T1 chair-seat MEASURED ground truth") are the AVERAGE of every raycast hit across the full cushion depth — a seated pelvis belongs near the cushion's FRONT THIRD, not its middle. Sitting at the centroid put the torso too far back, into the tall backrest.
+
+**Fixed by a second measurement pass** (`ChairFrontEdgeSweep`, temp diagnostic component, removed from `cove-interior.tsx` after data capture): for each of the 6 seats, sampled a line along the seat's own toward-table direction (the same unit vector `faceYaw` already uses) to find where seat-height-band raycast hits START (back edge, toward the backrest) and STOP (front edge, toward the table):
+
+| Seat | measured cushion depth (wu, knob=2800) | forward offset applied (wu, knob=2800) | note |
+|---|---|---|---|
+| seat0 (player) | ~44-48 | 13.3 | consistent with the other non-outlier seats |
+| seat1 | ~44-48 | 9.3 | consistent |
+| seat2 | ~44-48 | 13.3 | consistent |
+| seat3 | ~44-48 | 13.3 | consistent |
+| seat4 | 64 (outlier) | 50.7 | its centroid was already the WEAKEST measurement in the prior pass (n=7 raycast hits vs 20-33 for the others) — the large offset compensates for a centroid that sits well toward the back of the true cushion, not a different chair shape |
+| seat5 | ~44-48 | 8.0 | consistent |
+
+Offset formula: `frontEdge − depth/3` (front-third rule, per team-lead instruction). Stored as `T1_SEAT_FORWARD_OFFSET_GLB` in `apps/web/src/lib/three/cove-interior.tsx` — GLB-space units divided by `FIT_SCALE`, so the array re-derives correctly at any future `INTERIOR_TARGET_HEIGHT` knob value, not hardcoded world-space numbers. Applied by offsetting each measured centroid toward the table along the seat's existing toward-table unit vector, keeping offset direction and bust facing (`faceYaw`) guaranteed consistent.
+
+**Visual verification (2026-07-11):** confirmed via the seated player-POV screenshot (4 busts visible across the felt, torsos and heads clearly above their chair backrests, no burial) and a north-side third-person angle (3 more busts visible up close, same result). Seats 0/1/2/3/5 verified at close range; seat1/2/3's near-side view and the north-side view together cover all 5 bust seats at least once.
+
+**Reachability caveat (discovered live, 2026-07-11):** the player-movement boundary clamp (`BOUNDS_X ≈ 537` world units at knob=2800, in `COVE_ROOM_BOUNDS`) combined with the T1 table AABB (`_TABLE_AABBS`) and the dealer-station AABB (`_DEALER_CENTER_X/Z`) leaves no walkable corridor close enough to stand directly beside seat4's measured position — its real world X sits past the west movement boundary. Seat4 was verified from a medium-distance third-person angle (no visible clipping, legs/torso readable) rather than a point-blank close-up like the other 5 seats. This is a genuine geometry/collision constraint, not a skipped verification step — flagging for whoever next touches T1's collision volumes or west-wall bound, since it also blocks any future feature that wants the player standing directly at seat4.
+
+**PARITY note:** doc-only artifact (no code change in this section — the code lives in `apps/web/src/lib/three/cove-interior.tsx`, its own diff). Human path and agent path unaffected.

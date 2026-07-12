@@ -1465,15 +1465,61 @@ const T1_CHAIRS_GLB: MeasuredChairGlb[] = [
   { glbX: -932.03, glbY: -171.39 }, // seat5
 ];
 
-const T1_SEATS: TableSeat[] = T1_CHAIRS_GLB.map((c) => {
+// ---------------------------------------------------------------------------
+// Front-edge pelvis offset (2026-07-11, Slice 2c postmortem #2).
+//
+// Founder caught chair BACKRESTS cutting through the seated torsos on the
+// 2c(b) screenshots (clearest on the mid purple-haired bust and the
+// skull-shirt bust). Root cause per team-lead: T1_CHAIRS_GLB above stores
+// each cushion's MEASURED CENTROID (the average of every raycast hit in the
+// seat-height band, which spans the cushion front-to-back) — but a seated
+// pelvis belongs near the FRONT of the cushion, not its middle. Sitting at
+// the centroid put the torso too far back, into the tall backrest.
+//
+// Fixed by a SECOND measurement pass (ChairFrontEdgeSweep, temp diagnostic,
+// removed after data capture): for each seat, sampled a line along the
+// seat's own toward-table direction (the same vector faceYaw already uses)
+// to find where seat-height-band hits START (back edge, toward the
+// backrest) and STOP (front edge, toward the table). Per team-lead's
+// instruction, the pelvis anchor is placed at the FRONT THIRD of that
+// depth: frontEdge − depth/3. Values below are each seat's measured
+// forward offset (world units at knob=2800, converted to GLB units via
+// FIT_SCALE so they re-derive correctly at any future knob value) — NOT a
+// single flat number, because per-seat cushion measurements varied.
+//
+// Seats 0/1/2/3/5 measured a consistent depth (~44-48wu) and front-third
+// offset (~8-13wu forward of centroid) — a modest, sane adjustment. Seat4
+// measured as an outlier (depth 64wu, offset 50.7wu) — its ORIGINAL
+// centroid (T1_CHAIRS_GLB above) was already the weakest measurement in
+// the prior pass (n=7 raycast hits vs 20-33 for the others, flagged at the
+// time) and a widened re-sweep still showed asymmetric back/front extents
+// around it, meaning the stored centroid itself sits well toward the BACK
+// of the true cushion — the large offset compensates for that, not a
+// different chair shape. Verify seat4 specifically after this change
+// (knee/table clearance risk from a big forward shift, per team-lead) —
+// if it visibly clips the table, reduce ITS offset only, not the others.
+const T1_SEAT_FORWARD_OFFSET_GLB: number[] = [13.3, 9.3, 13.3, 13.3, 50.7, 8.0].map((wu) => wu / FIT_SCALE);
+
+const T1_SEATS: TableSeat[] = T1_CHAIRS_GLB.map((c, i) => {
   const wx = glbToWorldX(c.glbX);
   const wz = glbToWorldZ(c.glbY);
+  // Unit vector from the measured cushion centroid toward the table centre
+  // — the SAME direction faceYaw below points, so "forward" for the offset
+  // and "forward" for facing are guaranteed consistent.
+  const towardDX = T1_CENTER_X - wx;
+  const towardDZ = T1_CENTER_Z - wz;
+  const towardDist = Math.hypot(towardDX, towardDZ) || 1;
+  const towardUX = towardDX / towardDist;
+  const towardUZ = towardDZ / towardDist;
+  const forwardOffsetWorld = T1_SEAT_FORWARD_OFFSET_GLB[i]! * FIT_SCALE;
+  const wxAdjusted = wx + towardUX * forwardOffsetWorld;
+  const wzAdjusted = wz + towardUZ * forwardOffsetWorld;
   // Seat XZ is stored as an OFFSET from T1_CENTER (matching the existing
   // TableSeat shape, which every consumer — Table3D, the seat camera —
-  // already adds to T1_CENTER_X/Z), so the measured absolute position is
-  // converted to a table-relative offset here, once.
-  const sx = wx - T1_CENTER_X;
-  const sz = wz - T1_CENTER_Z;
+  // already adds to T1_CENTER_X/Z), so the measured + adjusted absolute
+  // position is converted to a table-relative offset here, once.
+  const sx = wxAdjusted - T1_CENTER_X;
+  const sz = wzAdjusted - T1_CENTER_Z;
   // Face the table centre, same VRM convention as the old formula.
   const faceYaw = Math.atan2(-sx, -sz);
   return { x: sx, z: sz, faceYaw };
