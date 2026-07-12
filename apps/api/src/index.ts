@@ -858,6 +858,27 @@ process.on('uncaughtException', (err) => {
     console.error('[API] Wallet-withdraw resume worker failed to start:', err);
   }
 
+  // 2026-07-10 — composed-bounty FINALIZE/PAYOUT resume worker (SAP B1 slice 3),
+  // DARK-GATED: starts ONLY when the composed bounty rail is fully live
+  // (SAP_ENABLED + SAP_ESCROW_ENABLED + SAP_USDC_ESCROW_ENABLED +
+  // SAP_PAYAI_SETTLEMENT_ENABLED ⇒ bountySettlementRail()==='sap-payai-composed'),
+  // so no worker polls a dark rail (and no awaiting_finalize/reconcile rows can
+  // exist while it is off). Each pass idempotently re-drives stuck composed
+  // bounties: finalize leg 1c once the dispute window elapses, then retry the
+  // leg-2 hunter payout. Cadence SAP_BOUNTY_RESUME_POLL_MS (default 5 min, floor
+  // 1 min). The worker re-asserts the gate inside startComposedBountyResumeWorker().
+  try {
+    const { bountySettlementRail } = await import('./services/bounty-escrow-link');
+    if (bountySettlementRail() === 'sap-payai-composed') {
+      const { startComposedBountyResumeWorker } = await import(
+        './services/bounty-composition-worker'
+      );
+      startComposedBountyResumeWorker();
+    }
+  } catch (err) {
+    console.error('[API] Composed-bounty resume worker failed to start:', err);
+  }
+
   // Q2 Activity Portals — recover orphaned LIVE/COUNTDOWN rooms (pod
   // crash recovery per backend §12.1), hydrate persisted queue entries,
   // then start the room sweeper + matchmaker intervals. Order matters:
@@ -1433,6 +1454,16 @@ async function gracefulShutdown(signal: string) {
       stopWithdrawResumeWorker();
     } catch {
       // If the executor module failed to load earlier, there's nothing to stop.
+    }
+    try {
+      // Composed-bounty resume worker — idempotent no-op when the composed rail
+      // was dark and the worker never started.
+      const { stopComposedBountyResumeWorker } = await import(
+        './services/bounty-composition-worker'
+      );
+      stopComposedBountyResumeWorker();
+    } catch {
+      // If the module failed to load earlier, there's nothing to stop.
     }
     try {
       const { stopClvPriceOracle } = await import('./services/clv-price-oracle');

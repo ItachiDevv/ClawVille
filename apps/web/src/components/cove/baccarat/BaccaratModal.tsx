@@ -297,14 +297,14 @@ function OutcomeBanner({ outcome }: { outcome: SerializedBaccaratCoup }) {
           color: won ? 'var(--pt-cream)' : push ? 'var(--pt-cream-soft)' : '#e85555',
           fontSize: 20, fontWeight: 700, fontFamily: 'var(--pt-display)', lineHeight: 1,
         }}>
-          {net > 0 ? `+${net}` : `${net}`} CT
+          {net > 0 ? `+${net}` : `${net}`} vCLAW
         </div>
         {commission > 0 && (
           <div style={{
             marginTop: 6, fontSize: 10, fontFamily: 'var(--pt-data)',
             color: 'var(--pt-brass)', letterSpacing: '0.04em',
           }}>
-            Banker win — {commission} CT commission ({COVE_BACCARAT_BANKER_COMMISSION_PERCENT}%) kept
+            Banker win — {commission} vCLAW commission ({COVE_BACCARAT_BANKER_COMMISSION_PERCENT}%) kept
           </div>
         )}
       </div>
@@ -620,7 +620,7 @@ export default function BaccaratModal() {
               background: 'rgba(150,110,30,0.15)', border: '1px solid rgba(150,110,30,0.3)',
               borderRadius: 6, padding: '3px 10px',
             }}>
-              {balance.toLocaleString()} CT{!isAuthed ? ' demo' : ''}
+              {balance.toLocaleString()} vCLAW{!isAuthed ? ' demo' : ''}
             </div>
             <button
               type="button" onClick={handleClose} aria-label="Close baccarat table"
@@ -687,7 +687,7 @@ export default function BaccaratModal() {
             }}>
               Your bet: <span style={{ color: BET_META[outcome.bet].accent, fontWeight: 700 }}>
                 {BET_META[outcome.bet].label}
-              </span> · {outcome.stake} CT
+              </span> · {outcome.stake} vCLAW
             </div>
           )}
 
@@ -737,7 +737,7 @@ export default function BaccaratModal() {
                 className="pt-btn pt-btn-primary"
                 style={{ minWidth: 130, height: 40, fontSize: 13, fontWeight: 700 }}
               >
-                {inFlight ? 'Dealing…' : `Deal ${BET_META[betType].label} (${baccaratBet} CT)`}
+                {inFlight ? 'Dealing…' : `Deal ${BET_META[betType].label} (${baccaratBet} vCLAW)`}
               </button>
             )}
 

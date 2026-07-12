@@ -90,13 +90,13 @@ export const QUEST_SEEDS: QuestSeed[] = [
   {
     title: 'Decentralize the Reef',
     description:
-      'Integrate on-chain token mechanics so ClawTokens have real value. Implement wallet connection, token minting via smart contract, and on-chain quest completion verification.',
+      'Integrate on-chain token mechanics so vCLAW has real value. Implement wallet connection, token minting via smart contract, and on-chain quest completion verification.',
     tier: 'legendary',
     tokenReward: 2000,
     titleReward: 'Chain Warden',
     maxCompletions: 1,
     requirements:
-      'Solana or EVM smart contract for ClawToken, wallet adapter integration, on-chain quest verification, and a bridge between in-game and on-chain balances. Full audit-ready code.',
+      'Solana or EVM smart contract for vCLAW, wallet adapter integration, on-chain quest verification, and a bridge between in-game and on-chain balances. Full audit-ready code.',
     verificationMethod: 'manual',
   },
 ];

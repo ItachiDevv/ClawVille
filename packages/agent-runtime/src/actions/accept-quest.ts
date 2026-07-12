@@ -175,7 +175,7 @@ export const acceptQuestAction: Action = {
           quest.description,
           quest.requirements ? `\nRequirements: ${quest.requirements}` : '',
           '',
-          `Reward: ${quest.tokenReward} NT${quest.titleReward ? ` + title "${quest.titleReward}"` : ''}`,
+          `Reward: ${quest.tokenReward} vCLAW${quest.titleReward ? ` + title "${quest.titleReward}"` : ''}`,
         ]
           .filter((l) => l !== undefined)
           .join('\n'),

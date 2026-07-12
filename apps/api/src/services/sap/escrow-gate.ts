@@ -913,6 +913,14 @@ export interface OpenEscrowV2Input extends Omit<OpenEscrowInput, 'rail'> {
   escrowNonce: bigint;
   /** Test/defense seam only: V2 release is on-chain-only and rejects payai. */
   rail?: EscrowSettlementRail;
+  /**
+   * OPTIONAL per-escrow DisputeWindow hold (slots), forwarded to
+   * `createEscrowV2Usdc`. Omit ⇒ the global `SAP_DISPUTE_WINDOW_SLOTS` default
+   * (byte-unchanged for existing callers). The bounty composition rail passes a
+   * small window so the winning hunter is paid promptly; a top-up (isTopUp) never
+   * re-sets a window (create-only arg), so it is only honored on the create leg.
+   */
+  disputeWindowSlots?: bigint;
 }
 
 /**
@@ -1225,7 +1233,7 @@ export async function openEscrowV2(input: OpenEscrowV2Input): Promise<EscrowGate
   }
   const chain = isTopUp
     ? await depositEscrowV2Usdc({ depositorAvatarId: input.depositorAvatarId, workerWalletPubkey, escrowNonce: input.escrowNonce, amount: input.initialDeposit })
-    : await createEscrowV2Usdc({ depositorAvatarId: input.depositorAvatarId, workerWalletPubkey, escrowNonce: input.escrowNonce, pricePerCall: input.pricePerCall, maxCalls: input.maxCalls, initialDeposit: input.initialDeposit, expiresAt: input.expiresAt });
+    : await createEscrowV2Usdc({ depositorAvatarId: input.depositorAvatarId, workerWalletPubkey, escrowNonce: input.escrowNonce, pricePerCall: input.pricePerCall, maxCalls: input.maxCalls, initialDeposit: input.initialDeposit, expiresAt: input.expiresAt, disputeWindowSlots: input.disputeWindowSlots });
   if (chain.ok === false) {
     if (chain.broadcast) {
       await db.update(sapEscrowSettlements).set({
@@ -1979,6 +1987,12 @@ async function settleJobLocked(input: SettleJobInput): Promise<EscrowGateResult>
     return { ok: false, code: 'job_not_open', message: `job is ${row.status}; cannot settle.` };
   }
 
+  // The row is now guaranteed 'open' | 'submitted'. Capture it BEFORE the claim so a
+  // post-claim failure that is PROVABLY pre-broadcast/pre-submit (L-3a payai verify-stage,
+  // L-3b V1 pre-broadcast) can restore the EXACT pre-claim status (retryable) instead of
+  // parking terminal 'failed' — mirrors settleJobV2's preClaimStatus (L-2).
+  const preClaimStatus = row.status;
+
   // ── RAIL DISPATCH — from the ROW's recorded rail, never the live env flag ────
   // (conservation keystone: the rail chosen at open is the only rail that can
   // ever move this job's money). A payai row whose rail flag has since been
@@ -2241,26 +2255,43 @@ async function settleJobLocked(input: SettleJobInput): Promise<EscrowGateResult>
     });
 
     if (outcome.ok === false) {
-      // Failed AFTER the claim. Terminal `failed` — the exact posture of the
-      // on-chain rail: when the facilitator verify passed, a /settle was
-      // ATTEMPTED and may have landed (broadcastUnknown) — auto-retrying could
-      // double-pay; a human/reconciler inspects the facilitator + chain. A
-      // verify-stage failure provably submitted nothing, but stays terminal
-      // too (no auto-retry on the money path); the operator re-drive handle
-      // (admin re-settle) is the recovery, mirroring the on-chain rail.
+      // L-3a — split the post-claim disposition by whether the facilitator settle MAY
+      // have reached the wire (the payai equivalent of the L-2 on-chain broadcast split;
+      // `broadcastUnknown` is the discriminator set in payai-release.ts — it is a FULL
+      // equivalent of the chain `broadcast` flag, so there is no honesty asymmetry):
+      //   • broadcastUnknown === true  → the facilitator VERIFY passed, so a `/settle`
+      //     was ATTEMPTED and may have executed on-chain before the failure. KEEP terminal
+      //     `failed` (reconcile-only, NEVER auto-retried — re-driving could double-pay).
+      //     UNCHANGED from the prior always-terminal behavior.
+      //   • broadcastUnknown === false → a VERIFY-stage failure (or a dry-run verify fail):
+      //     the facilitator provably never called `/settle`, so NO USDC moved. RESTORE the
+      //     row to its pre-claim status (retryable). The payai rail has NO vault and the
+      //     claim reserved nothing (it only set status+verification), so ONLY the status
+      //     label changes. This un-wedges the composed LEG-2 hunter payout: a transient
+      //     verify/RPC failure no longer parks 'failed' (which the settle claim refuses
+      //     'job_not_open — job is failed'); the resume sweep re-drives it to paid.
+      const mayHaveSubmitted = outcome.broadcastUnknown;
       await db
         .update(sapEscrowSettlements)
         .set({
-          status: 'failed',
+          status: mayHaveSubmitted ? 'failed' : preClaimStatus,
           updatedAt: new Date(),
           metadata: {
             ...((row.metadata as object) ?? {}),
             settleError: outcome.code,
             payaiFailure: outcome.message,
             settleBroadcastUnconfirmed: outcome.broadcastUnknown,
+            // Ops/observability marker for the pre-submit restore; no gate effect.
+            ...(mayHaveSubmitted ? {} : { settleSimFailure: true }),
           },
         })
-        .where(eq(sapEscrowSettlements.id, row.id));
+        .where(
+          and(
+            eq(sapEscrowSettlements.id, row.id),
+            // Only mutate while WE hold the claim (the row is 'settling' from 4a).
+            eq(sapEscrowSettlements.status, 'settling'),
+          ),
+        );
       return { ok: false, code: outcome.code, message: outcome.message };
     }
 
@@ -2310,25 +2341,35 @@ async function settleJobLocked(input: SettleJobInput): Promise<EscrowGateResult>
   });
 
   if (chain.ok === false) {
-    // Chain failed AFTER the claim. Mark `failed` (terminal) — do NOT auto-retry.
-    // A send whose confirmation we never saw could have landed; re-releasing
-    // would double-pay. A human must inspect the chain + decide. (BLOCKING #5
-    // parity — if the failure carries `broadcast`, record the signature so the
-    // reconciler knows a settle MAY have released; we still leave it `failed`,
-    // never auto-retried.)
+    // L-3b — split by whether the settle send reached the wire (mirrors L-2/L-3a):
+    //   • chain.broadcast === true → a send whose confirmation we never saw MAY have
+    //     landed; re-releasing would double-pay. KEEP terminal `failed` + record the
+    //     signature for the reconciler. UNCHANGED (BLOCKING #5 parity).
+    //   • chain.broadcast falsy    → PROVABLY pre-broadcast (a pre-send build/RPC or
+    //     simulation failure): nothing hit the wire, so RESTORE the row to its pre-claim
+    //     status (retryable). The V1 claim reserved nothing (no vault-reservation
+    //     columns), so only the status label changes.
+    const mayHaveLanded = chain.broadcast === true;
     await db
       .update(sapEscrowSettlements)
       .set({
-        status: 'failed',
-        settleSignature: chain.broadcast ? (chain.signature ?? null) : null,
+        status: mayHaveLanded ? 'failed' : preClaimStatus,
+        settleSignature: mayHaveLanded ? (chain.signature ?? null) : null,
         updatedAt: new Date(),
         metadata: {
           ...((row.metadata as object) ?? {}),
           settleError: chain.code,
           settleBroadcastUnconfirmed: chain.broadcast === true,
+          // Ops/observability marker for the pre-broadcast restore; no gate effect.
+          ...(mayHaveLanded ? {} : { settleSimFailure: true }),
         },
       })
-      .where(eq(sapEscrowSettlements.id, row.id));
+      .where(
+        and(
+          eq(sapEscrowSettlements.id, row.id),
+          eq(sapEscrowSettlements.status, 'settling'),
+        ),
+      );
     return { ok: false, code: chain.code, message: chain.message };
   }
 
@@ -2708,20 +2749,45 @@ export async function settleJobV2(
         }
         // broadcast:true + unresolved probe → fall through to the generic quarantine below.
       }
+      // GENERIC POST-CLAIM SETTLE FAILURE — no (resolved) replay signal. TWO
+      // dispositions, split ONLY by whether the settle tx hit the wire:
+      //   • broadcast:true  → QUARANTINE `settle_unknown` (reservation KEPT,
+      //     reconcile-only, NEVER auto-retried): the tx MAY have landed, so a retry
+      //     could settle at the NEXT index → two pendings for one job → double
+      //     principal release. This arm is UNCHANGED.
+      //   • broadcast falsy → PROVABLY PRE-BROADCAST (a pre-send build/RPC error or a
+      //     simulation failure — nothing hit the wire). RESTORE to `preClaimStatus`
+      //     and release the reservation to pre-claim values, RETRYABLE — the exact
+      //     posture of the replay-signal broadcast-falsy branch above. This is the L-2
+      //     FIX: it must NOT be parked terminal `'failed'`, because the settle claim
+      //     refuses a 'failed' row ('job_not_open — job is failed; cannot settle',
+      //     see the terminal-status guards at the top of settleJobV2), which WEDGED an
+      //     approved composed bounty on a transient house-wallet-rent sim failure until
+      //     manual DB surgery (the live incident, bounty d0713537). The money is clean
+      //     — nothing was reserved on-chain, and the reservation/fee columns are
+      //     restored to their pre-claim values (identical to the old 'failed' write),
+      //     so `escrowFundsLedger` sums BYTE-IDENTICALLY; only the status label flips
+      //     terminal→retryable, letting the composed resume worker's vault_held+approved
+      //     sweep (L-1) self-heal the wedge (restored row → next sweep re-drives → paid).
       const unknown = failure?.broadcast === true;
       await db.update(sapEscrowSettlements).set({
-        status: unknown ? 'settle_unknown' : 'failed',
+        status: unknown ? 'settle_unknown' : preClaimStatus,
         settleSignature: unknown ? (failure?.signature ?? null) : null, updatedAt: new Date(),
-        // A broadcast-unknown may have charged/reserved on-chain, so retain the
-        // pessimistic claim reservation. A provably pre-broadcast refusal moved
-        // nothing and restores the prior ledger values.
         reservedPrincipalAmount: unknown ? (jobReserved + principal).toString() : jobReserved.toString(),
         feeAmount: unknown ? (jobFees + fee).toString() : jobFees.toString(),
-        metadata: { ...((row.metadata as object) ?? {}), settleError: failure?.code ?? 'simulation_error', settleBroadcastUnconfirmed: unknown, simulationError: simError ?? undefined },
+        metadata: {
+          ...((row.metadata as object) ?? {}),
+          settleError: failure?.code ?? 'simulation_error',
+          settleBroadcastUnconfirmed: unknown,
+          simulationError: simError ?? undefined,
+          // Ops/observability marker for the pre-broadcast restore; no gate effect —
+          // the row is simply back at its pre-claim status, fully retryable.
+          ...(unknown ? {} : { settleSimFailure: true }),
+        },
       }).where(and(eq(sapEscrowSettlements.id, row.id), eq(sapEscrowSettlements.status, 'settling')));
       return unknown
         ? { ok: false, code: 'settle_unconfirmed', message: 'V2 settle broadcast was unconfirmed; reconcile and never auto-retry.' }
-        : { ok: false, code: failure?.code ?? 'on_chain_error', message: failure?.message ?? 'V2 settle simulation failed after the durable claim.' };
+        : { ok: false, code: failure?.code ?? 'on_chain_error', message: failure?.message ?? 'V2 settle failed pre-broadcast after the durable claim; restored to pre-claim — retryable.' };
     }
 
     const settlementIndex = u64(chain.accounts.settlementIndex) || inspected.settlementIndex;

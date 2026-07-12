@@ -267,7 +267,7 @@ function BrowseTab({
                       {tierLabel} · {Number(t.smallBlindCt)}/{Number(t.bigBlindCt)}
                     </div>
                     <div style={{ color: 'rgba(148,184,170,0.85)', fontSize: 12, marginTop: 2 }}>
-                      Buy-in {Number(t.buyInCt).toLocaleString()} CT · {t.occupiedSeats}/{t.maxSeats}{' '}
+                      Buy-in {Number(t.buyInCt).toLocaleString()} vCLAW · {t.occupiedSeats}/{t.maxSeats}{' '}
                       seated
                     </div>
                   </div>
@@ -483,7 +483,7 @@ function CreateTab({
                   key={k}
                   active={tierKey === k}
                   onClick={() => setTierKey(k)}
-                  label={`${tier.label} · ${tier.smallBlindCt}/${tier.bigBlindCt} · ${tier.buyInCt} CT`}
+                  label={`${tier.label} · ${tier.smallBlindCt}/${tier.bigBlindCt} · ${tier.buyInCt} vCLAW`}
                 />
               );
             })}
@@ -491,7 +491,7 @@ function CreateTab({
         </Field>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr', gap: 10 }}>
-          <NumberField label="Buy-in (CT)" value={buyInCt} min={1} onChange={setBuyInCt} />
+          <NumberField label="Buy-in (vCLAW)" value={buyInCt} min={1} onChange={setBuyInCt} />
           <NumberField label="Small blind" value={smallBlindCt} min={1} onChange={setSmallBlindCt} />
           <NumberField label="Big blind" value={bigBlindCt} min={1} onChange={setBigBlindCt} />
         </div>

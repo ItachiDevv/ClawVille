@@ -68,6 +68,12 @@ let finalizeOutcome: Record<string, unknown>;
 // R7-1 — capture the last settle-executor input so a test can assert the send is PINNED to
 // the claim-captured `expectedSettlementIndex` (never a fresh on-chain re-read).
 let lastSettleInput: { expectedSettlementIndex?: bigint } | null = null;
+// L-3 — the V1 (settleJob) rail failure-disposition tests: the V1 chain settle executor
+// outcome + a call counter, and the payai executePayaiRelease outcome + counter.
+let settleV1Outcome: Record<string, unknown> = { ok: false, code: 'internal', message: 'unused' };
+let settleV1Calls = 0;
+let payaiExecOutcome: Record<string, unknown> = { ok: true, dryRun: true, signature: null, payer: null };
+let payaiExecCalls = 0;
 
 function thenable(value: unknown) {
   return {
@@ -262,6 +268,12 @@ mock.module('../sap-client', () => ({
     return dryRunSuccess({ escrow: ESCROW });
   },
   depositEscrowV2Usdc: async () => dryRunSuccess({ escrow: ESCROW }),
+  // V2 self-custody withdraw — NOT exercised by this file (covered by
+  // escrow-v2-deposit-withdraw.test.ts). Stubbed only so escrow-gate's named import
+  // resolves under this partial sap-client mock: the ae21f753 merge added the
+  // `withdrawEscrowV2Usdc` import to escrow-gate.ts but did not update this mock, which
+  // broke the whole file at module load (pre-existing, unrelated to the L-2 change).
+  withdrawEscrowV2Usdc: async () => ({ ok: false, code: 'internal', message: 'unused' }),
   settleCallsV2Usdc: async (settleInput: { expectedSettlementIndex?: bigint }) => {
     settleCalls += 1;
     lastSettleInput = settleInput;
@@ -276,13 +288,35 @@ mock.module('../sap-client', () => ({
     code: 'internal',
     message: 'unused',
   }),
-  // V1 imports remain present so the gate module can load; no V1 executor is
-  // reached by this file.
-  resolveUsdcEscrowAddresses: () => ({ ok: false, code: 'internal', message: 'unused' }),
+  // V1 executors: only `settleCallsUsdc` is reached (the L-3b V1 settle-rail tests);
+  // the rest stay unused stubs so the gate module can load.
+  resolveUsdcEscrowAddresses: () => ({ ok: true, addrs: { escrowPda: { toBase58: () => ESCROW } }, mint: { toBase58: () => 'USDCMint111111111111111111111111111111111' } }),
   createEscrowUsdc: async () => ({ ok: false, code: 'internal', message: 'unused' }),
   depositEscrowUsdc: async () => ({ ok: false, code: 'internal', message: 'unused' }),
-  settleCallsUsdc: async () => ({ ok: false, code: 'internal', message: 'unused' }),
+  settleCallsUsdc: async () => {
+    settleV1Calls += 1;
+    return settleV1Outcome;
+  },
   withdrawEscrowUsdc: async () => ({ ok: false, code: 'internal', message: 'unused' }),
+}));
+
+// L-3a — the payai settlement leg. preparePayaiRelease (pre-claim) always succeeds so
+// the claim runs; executePayaiRelease (post-claim, the money step) returns the
+// configurable outcome so a test can drive verify-stage (broadcastUnknown:false) vs
+// submitted-unknown (broadcastUnknown:true) failures.
+mock.module('../payai-release', () => ({
+  preparePayaiRelease: async () => ({
+    ok: true,
+    paymentHeader: 'header',
+    requirements: {},
+    feePayer: 'FeePayer1111111111111111111111111111111111',
+    network: 'devnet',
+    payerPubkey: DEPOSITOR_WALLET,
+  }),
+  executePayaiRelease: async () => {
+    payaiExecCalls += 1;
+    return payaiExecOutcome;
+  },
 }));
 
 const gate = await import('../escrow-gate');
@@ -352,6 +386,10 @@ beforeEach(() => {
   settleOutcome = dryRunSuccess({ escrow: ESCROW, settlementIndex: '7' });
   finalizeOutcome = dryRunSuccess({ escrow: ESCROW });
   lastSettleInput = null;
+  settleV1Outcome = { ok: false, code: 'internal', message: 'unused' };
+  settleV1Calls = 0;
+  payaiExecOutcome = { ok: true, dryRun: true, signature: null, payer: null };
+  payaiExecCalls = 0;
 });
 
 describe('SAP V2 gate — two-phase USDC release', () => {
@@ -605,6 +643,69 @@ describe('SAP V2 gate — two-phase USDC release', () => {
     expect(rows[0]?.callsSettled).toBe('1');
     expect(rows[0]?.reservedPrincipalAmount).toBe('1000000');
     expect(settleCalls).toBe(2);
+  });
+
+  it('L-2 — a GENERIC (non-replay) pre-broadcast settle failure RESTORES the row to pre-claim (retryable), and a SECOND settle proceeds (not job_not_open)', async () => {
+    rows = [baseRow()];
+    await persistApproval();
+    // A settle failure that is NOT a replay signal (no 6138/replay text) and did NOT
+    // broadcast (broadcast:false) — provably pre-broadcast. This is the LIVE incident:
+    // bounty d0713537's first settle failed at SIMULATION because the house wallet
+    // couldn't front the PendingSettlement PDA rent. PRE-L-2 the generic arm parked
+    // terminal 'failed', and the settle claim refuses a 'failed' row
+    // ('job_not_open — job is failed; cannot settle') → the approved bounty WEDGED.
+    settleOutcome = {
+      ok: false,
+      code: 'on_chain_error',
+      message: 'insufficient lamports to create PendingSettlement (rent)',
+      broadcast: false,
+    };
+    const first = await gate.settleJobV2({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
+    expect(first.ok).toBe(false);
+    if (!first.ok) expect(first.code).toBe('on_chain_error');
+    // L-2 FIX: restored to the pre-claim 'open' status (NOT terminal 'failed'),
+    // reservation released to pre-claim values — money-neutral, fully retryable.
+    expect(rows[0]?.status).toBe('open');
+    expect(rows[0]?.reservedPrincipalAmount).toBe('0');
+    expect((rows[0]?.metadata as Record<string, unknown>)?.settleSimFailure).toBe(true);
+    expect((rows[0]?.metadata as Record<string, unknown>)?.settleBroadcastUnconfirmed).toBe(false);
+    expect(settleCalls).toBe(1);
+
+    // The wedge is gone: a SECOND settle attempt now PROCEEDS from the restored 'open'
+    // (pre-L-2 it hit 'job_not_open — job is failed'). A clean sim books 'pending'.
+    settleOutcome = dryRunSuccess({ escrow: ESCROW, settlementIndex: '7' });
+    const retry = await gate.settleJobV2({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
+    expect(retry.ok).toBe(true);
+    if (retry.ok) expect(retry.phase).toBe('pending');
+    expect(rows[0]?.status).toBe('pending');
+    expect(rows[0]?.reservedPrincipalAmount).toBe('1000000');
+    expect(settleCalls).toBe(2);
+  });
+
+  it('L-2 — a GENERIC broadcast:UNKNOWN settle failure is UNCHANGED: quarantines settle_unknown (reservation KEPT, never auto-retried)', async () => {
+    rows = [baseRow()];
+    await persistApproval();
+    // broadcast:true — the settle tx MAY have landed. This arm is byte-identical to the
+    // pre-L-2 behavior: quarantine settle_unknown, KEEP the pessimistic reservation, and
+    // NEVER auto-retry (a retry could settle at the next index → double release).
+    settleOutcome = {
+      ok: false,
+      code: 'rpc_unreachable',
+      message: 'confirmation timeout',
+      broadcast: true,
+      signature: 'generic-broadcast-unknown-sig',
+    };
+    const res = await gate.settleJobV2({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.code).toBe('settle_unconfirmed');
+    expect(rows[0]?.status).toBe('settle_unknown');
+    expect(rows[0]?.settleSignature).toBe('generic-broadcast-unknown-sig');
+    expect(rows[0]?.reservedPrincipalAmount).toBe('1000000'); // reservation KEPT
+    expect((rows[0]?.metadata as Record<string, unknown>)?.settleSimFailure).toBeUndefined(); // marker only on the pre-broadcast restore
+    // A second settle does NOT re-enter the chain (settle_unknown is reconcile-only).
+    const again = await gate.settleJobV2({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
+    expect(again.ok).toBe(false);
+    expect(settleCalls).toBe(1);
   });
 
   it('A1 — the clamp uses physical-free = vault − on-chain pending (a drain that still covers pending is caught)', async () => {
@@ -1110,5 +1211,95 @@ describe('SAP V2 gate — two-phase USDC release', () => {
     expect(finalize.ok).toBe(false);
     if (!finalize.ok) expect(finalize.code).toBe('release_rail_forbidden');
     expect(finalizeCalls).toBe(0);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// L-3 — settleJob (V1) rail failure disposition: pre-broadcast/pre-submit restores
+//       retryable; may-have-landed stays terminal (mirrors the L-2 V2 split).
+// ════════════════════════════════════════════════════════════════════════════
+describe('L-3 — settleJob rail failure disposition (payai + V1 chain)', () => {
+  async function approveV1() {
+    // Persist the depositor approval for (ESCROW, job-1) so settleJob's verify passes.
+    const r = await gate.approveJob({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: DEPOSITOR, approvedCalls: 1n });
+    if (!r.ok) throw new Error(`approve setup failed: ${r.code}: ${r.message}`);
+  }
+
+  // ── L-3a — the payai LEG-2 hunter payout (the one that matters) ──────────────
+  it('L-3a — a PROVABLY-NO-SUBMIT payai failure (broadcastUnknown:false) RESTORES retryable, and a second settle proceeds', async () => {
+    rows = [baseRow({ escrowVersion: undefined, metadata: { rail: 'payai' } })];
+    await approveV1();
+    // Verify-stage failure — the facilitator provably never called /settle (no USDC moved).
+    payaiExecOutcome = { ok: false, code: 'payai_release_failed', message: 'facilitator verify failed', broadcastUnknown: false };
+    const first = await gate.settleJob({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
+    expect(first.ok).toBe(false);
+    if (!first.ok) expect(first.code).toBe('payai_release_failed');
+    // L-3a FIX: restored to pre-claim 'open' (NOT terminal 'failed').
+    expect(rows[0]?.status).toBe('open');
+    expect((rows[0]?.metadata as Record<string, unknown>)?.settleSimFailure).toBe(true);
+    expect((rows[0]?.metadata as Record<string, unknown>)?.rail).toBe('payai'); // rail preserved through the restore
+    expect(payaiExecCalls).toBe(1);
+
+    // The wedge is gone: a SECOND settle proceeds (pre-L-3a it hit 'job_not_open — job is failed').
+    payaiExecOutcome = { ok: true, dryRun: true, signature: null, payer: null };
+    const retry = await gate.settleJob({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
+    expect(retry.ok).toBe(true);
+    if (retry.ok) expect(retry.phase).toBe('settled');
+    expect(rows[0]?.status).toBe('settled');
+    expect(payaiExecCalls).toBe(2);
+  });
+
+  it('L-3a — a MAY-HAVE-SUBMITTED payai failure (broadcastUnknown:true) STAYS terminal failed; the second settle is refused (no double-pay)', async () => {
+    rows = [baseRow({ escrowVersion: undefined, metadata: { rail: 'payai' } })];
+    await approveV1();
+    // Verify passed → /settle ATTEMPTED → may have executed on-chain. Must stay terminal.
+    payaiExecOutcome = { ok: false, code: 'payai_release_failed', message: 'settle submitted, confirm unknown', broadcastUnknown: true };
+    const first = await gate.settleJob({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
+    expect(first.ok).toBe(false);
+    expect(rows[0]?.status).toBe('failed'); // UNCHANGED — quarantine, reconcile-only
+    expect((rows[0]?.metadata as Record<string, unknown>)?.settleSimFailure).toBeUndefined();
+    expect((rows[0]?.metadata as Record<string, unknown>)?.settleBroadcastUnconfirmed).toBe(true);
+    expect(payaiExecCalls).toBe(1);
+
+    // A second settle is REFUSED (job is failed) — the facilitator is NEVER re-driven.
+    const again = await gate.settleJob({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
+    expect(again.ok).toBe(false);
+    if (!again.ok) expect(again.code).toBe('job_not_open');
+    expect(payaiExecCalls).toBe(1); // unchanged — the terminal row blocks re-execute
+  });
+
+  // ── L-3b — V1 on-chain settle (latent, off the composed path) ────────────────
+  it('L-3b — a PROVABLY pre-broadcast V1 chain settle failure (broadcast falsy) RESTORES retryable, and a second settle proceeds', async () => {
+    rows = [baseRow({ escrowVersion: undefined, metadata: { rail: 'onchain' } })];
+    await approveV1();
+    settleV1Outcome = { ok: false, code: 'on_chain_error', message: 'simulation failed', broadcast: false };
+    const first = await gate.settleJob({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
+    expect(first.ok).toBe(false);
+    expect(rows[0]?.status).toBe('open'); // restored, NOT terminal 'failed'
+    expect((rows[0]?.metadata as Record<string, unknown>)?.settleSimFailure).toBe(true);
+    expect(settleV1Calls).toBe(1);
+
+    settleV1Outcome = dryRunSuccess({});
+    const retry = await gate.settleJob({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
+    expect(retry.ok).toBe(true);
+    if (retry.ok) expect(retry.phase).toBe('settled');
+    expect(rows[0]?.status).toBe('settled');
+    expect(settleV1Calls).toBe(2);
+  });
+
+  it('L-3b — a broadcast:UNKNOWN V1 chain settle failure STAYS terminal failed (records signature); the second settle is refused', async () => {
+    rows = [baseRow({ escrowVersion: undefined, metadata: { rail: 'onchain' } })];
+    await approveV1();
+    settleV1Outcome = { ok: false, code: 'rpc_unreachable', message: 'confirm timeout', broadcast: true, signature: 'v1-settle-sig' };
+    const first = await gate.settleJob({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
+    expect(first.ok).toBe(false);
+    expect(rows[0]?.status).toBe('failed');
+    expect(rows[0]?.settleSignature).toBe('v1-settle-sig');
+    expect((rows[0]?.metadata as Record<string, unknown>)?.settleSimFailure).toBeUndefined();
+
+    const again = await gate.settleJob({ escrowPda: ESCROW, jobId: 'job-1', callerAvatarId: WORKER, callsToSettle: 1n });
+    expect(again.ok).toBe(false);
+    if (!again.ok) expect(again.code).toBe('job_not_open');
+    expect(settleV1Calls).toBe(1); // unchanged — terminal row blocks re-execute
   });
 });

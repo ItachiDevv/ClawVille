@@ -102,10 +102,20 @@ itemRoutes.post('/buy', requireAuthOrAgentSession, async (c) => {
   // buckets stay soft-only). We debit it with a raw, CHECK-safe, row-locked UPDATE
   // (decrement `claw_tokens` AND `soft_balance` together so the
   // `avatars_vclaw_balance_sum` CHECK never sees a torn state) and write NO
-  // `claw_token_transactions` row. A connected/hosted AGENT is NEVER a guest
-  // (`identity.kind === 'agent'`, Rule E5), so the real-CT agent path below is
-  // structurally unreachable from this branch.
-  const isGuest = identity.kind === 'user' && (await isGuestUser(userId));
+  // `claw_token_transactions` row. GUEST-OWNED AGENT (2026-07-10 security fix):
+  // an agent is never itself a guest, but its OWNER can be — a guest can mint a
+  // connect-token bound to its own guest userId (the connect-token route had no
+  // is_guest gate), so a `kind:'agent'` session whose bound userId is a guest
+  // reached this route and, mis-classified as non-guest, entered the real-CT debit
+  // + house-treasury branch below (a guest settling REAL vCLAW). The prior comment
+  // here wrongly assumed "an agent is NEVER a guest, E5" — corrected. Now BOTH a
+  // guest human AND a guest-OWNED agent route to the demo branch (buy on demo CT),
+  // since `identity.userId` is the bound user for either kind and `isGuestUser`
+  // reads the canonical `users.is_guest`. Legit connected/hosted + Hatcher agents
+  // bind NON-guest owners (E5), so they still settle REAL CT here.
+  const isGuest =
+    (identity.kind === 'user' || identity.kind === 'agent') &&
+    (await isGuestUser(userId));
   if (isGuest) {
     const demo = await db.transaction(async (tx) => {
       // Row-lock the guest avatar and read the SOFT demo balance under the lock
@@ -166,7 +176,7 @@ itemRoutes.post('/buy', requireAuthOrAgentSession, async (c) => {
       // return a coded JSON here for a clean UI branch — see shop-overlay.tsx).
       return c.json(
         {
-          error: `Not enough demo ClawTokens. Need ${book.price}, have ${demo.total}.`,
+          error: `Not enough demo vCLAW. Need ${book.price}, have ${demo.total}.`,
           code: 'insufficient_ct',
         },
         400,
@@ -187,7 +197,7 @@ itemRoutes.post('/buy', requireAuthOrAgentSession, async (c) => {
 
   // ── REAL-CT SETTLEMENT (non-guest user OR connected/hosted agent) — UNCHANGED ──
   if (avatar.clawTokens < book.price) {
-    throw new HTTPException(400, { message: `Not enough ClawTokens. Need ${book.price}, have ${avatar.clawTokens}.` });
+    throw new HTTPException(400, { message: `Not enough vCLAW. Need ${book.price}, have ${avatar.clawTokens}.` });
   }
 
   // Debit + inventory insert in a single transaction so if the insert

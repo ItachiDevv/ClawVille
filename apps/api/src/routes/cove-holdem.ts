@@ -305,7 +305,7 @@ async function getSubject(c: {
     if (!resolved.userId || !resolved.avatarId) {
       throw new HTTPException(403, {
         message:
-          'agent_session_has_no_active_avatar: connect an avatar before playing the Cove for real ClawTokens',
+          'agent_session_has_no_active_avatar: connect an avatar before playing the Cove for real vCLAW',
       });
     }
     return {

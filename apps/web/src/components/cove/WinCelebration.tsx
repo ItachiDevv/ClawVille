@@ -263,7 +263,7 @@ export default function WinCelebration({ fx }: WinCelebrationProps) {
               letterSpacing: '0.12em',
             }}
           >
-            +{fx.winAmount.toLocaleString()} CT
+            +{fx.winAmount.toLocaleString()} vCLAW
           </div>
         </div>
       )}

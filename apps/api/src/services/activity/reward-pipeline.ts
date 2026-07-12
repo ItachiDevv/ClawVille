@@ -35,6 +35,7 @@ import {
   db,
   activityResults,
   avatars,
+  users,
   type ActivityRewardConfig,
 } from '@clawville/database';
 import { creditClawTokens } from '../claw-token-ledger';
@@ -311,7 +312,12 @@ export async function issueRewardsForRoom(
       const participant = participants.get(s.avatarId);
       if (!participant || participant.subjectType === 'bot') return false;
       const reef = s.reefRace;
-      if (!reef || reef.bestLapMs == null) return false;
+      // `reef_race_personal_bests.best_lap_ms` is an `integer` column — a
+      // fractional/non-finite lap time here would crash the PB write and
+      // silently lose the PB + daily-best update (Codex #6). Reject non-finite;
+      // the value is rounded at the write below.
+      if (!reef || reef.bestLapMs == null || !Number.isFinite(reef.bestLapMs))
+        return false;
       // Anti-cheat skip — flagged matches don't set PBs.
       const flags = reefRaceSim.getFlagCount(room.id, s.avatarId);
       if (flags > 0) return false;
@@ -323,7 +329,7 @@ export async function issueRewardsForRoom(
         const result = await maybeUpdatePersonalBest({
           avatarId: s.avatarId,
           activityId: 'reef-race',
-          newBestLapMs: reef.bestLapMs!,
+          newBestLapMs: Math.round(reef.bestLapMs!),
           ghostReplayData: { frames: reef.ghostReplayFrames ?? [] },
           sourceRoomId: room.id,
         });
@@ -396,16 +402,52 @@ export async function issueRewardsForRoom(
       // then naturally skips them (no ledger row → no mint), and
       // `activity_results.tokensAwarded` equals what was actually credited (0)
       // — no phantom tokens. Guests already had 0 leaderboardPoints.
-      const tokensAwarded = (isBot || ctx.isGuest)
+      const tokensAwardedRaw = (isBot || ctx.isGuest)
         ? 0
         : breakdown.base +
           breakdown.firstPlayOfDayBonus +
           breakdown.personalBestBonus +
           breakdown.perfectStreakBonus +
           breakdown.focusBonus;
-      const leaderboardPoints = isBot || ctx.isGuest
+      const leaderboardPointsRaw = isBot || ctx.isGuest
         ? 0
         : computeLeaderboardPoints(rewardConfig, sim.placement);
+
+      // `activity_results.{score,score_ms,tokens_awarded,leaderboard_points}`
+      // and the CT ledger `amount` are all `integer` columns. A non-integer
+      // here is ALWAYS an upstream bug (a fractional sim time / config value),
+      // and un-coerced it throws mid-transaction and rolls back the WHOLE
+      // room's rewards + results + leaderboard credit — a 100% reef-race
+      // outage on staging (0 rows ever written). Coerce so one stray float
+      // can't sink the match, and log the raw value so the producer can be
+      // pinned. Guard non-finite too: Math.round(NaN)=NaN / Infinity survive
+      // rounding and would still crash the insert (Codex #3). See
+      // docs/reef-race-reward-int-crash-2026-07-11.md.
+      const score = Number.isFinite(sim.score) ? Math.round(sim.score) : 0;
+      const scoreMs =
+        sim.scoreMs != null && Number.isFinite(sim.scoreMs)
+          ? Math.round(sim.scoreMs)
+          : null;
+      const tokensAwarded = Number.isFinite(tokensAwardedRaw)
+        ? Math.max(0, Math.round(tokensAwardedRaw))
+        : 0;
+      const leaderboardPoints = Number.isFinite(leaderboardPointsRaw)
+        ? Math.max(0, Math.round(leaderboardPointsRaw))
+        : 0;
+      if (
+        score !== sim.score ||
+        (sim.scoreMs != null && scoreMs !== sim.scoreMs) ||
+        tokensAwarded !== tokensAwardedRaw ||
+        leaderboardPoints !== leaderboardPointsRaw
+      ) {
+        console.error(
+          `[reward-pipeline] non-integer reward coerced — room ${room.id} ` +
+            `avatar ${sim.avatarId} activity ${room.activityId}: ` +
+            `score ${sim.score}->${score} scoreMs ${sim.scoreMs}->${scoreMs} ` +
+            `tokens ${tokensAwardedRaw}->${tokensAwarded} ` +
+            `lbp ${leaderboardPointsRaw}->${leaderboardPoints}`,
+        );
+      }
 
       const pbWrite = pbWritesByAvatar.get(sim.avatarId);
 
@@ -421,8 +463,8 @@ export async function issueRewardsForRoom(
           agentId: participant.agentId,
           subjectType: participant.subjectType,
           placement: sim.placement,
-          score: sim.score,
-          scoreMs: sim.scoreMs ?? null,
+          score,
+          scoreMs,
           tokensAwarded,
           leaderboardPoints,
           isPersonalBest,
@@ -481,8 +523,8 @@ export async function issueRewardsForRoom(
         agentId: participant.agentId,
         subjectType: participant.subjectType,
         placement: sim.placement,
-        score: sim.score,
-        scoreMs: sim.scoreMs ?? null,
+        score,
+        scoreMs,
         tokensAwarded,
         leaderboardPoints,
         isPersonalBest,
@@ -712,16 +754,34 @@ async function loadAvatarContexts(
   const flagsByAvatar = new Map<string, Record<string, unknown> | null>();
   const guestByAvatar = new Map<string, boolean>();
   if (nonBotAvatarIds.length > 0) {
+    // Guest suppression is a REAL-CT gate: a guest (human, or an agent bound to a
+    // guest owner) earns 0 tokens + 0 leaderboard points (founder ruling
+    // 2026-07-06). Source guest-ness belt-and-suspenders (2026-07-10 hardening):
+    // treat the avatar as guest if EITHER the `avatars.is_guest` mirror OR the
+    // OWNER's canonical `users.is_guest` is set. The `users` join is the source of
+    // truth; ORing keeps this fail-SAFE (any drift can only ADD suppression, never
+    // remove it) and consistent with the resolver/middleware guest fix, which
+    // treats `users.is_guest` as canonical and the mirror as not-trusted-alone.
     const flagRows = await db
-      .select({ id: avatars.id, flags: avatars.flags, isGuest: avatars.isGuest })
+      .select({
+        id: avatars.id,
+        flags: avatars.flags,
+        avatarGuest: avatars.isGuest,
+        userGuest: users.isGuest,
+      })
       .from(avatars)
+      .leftJoin(users, eq(users.id, avatars.userId))
       .where(inArrayWhitelist(avatars.id, nonBotAvatarIds));
     for (const row of flagRows) {
       flagsByAvatar.set(
         row.id,
         (row.flags as Record<string, unknown> | null) ?? null,
       );
-      guestByAvatar.set(row.id, !!row.isGuest);
+      // Fail-SAFE on a missing owner row: `avatars.user_id` is NOT NULL + FK, so
+      // the leftJoin always matches and `userGuest` is a real boolean — but if that
+      // invariant ever breaks (orphaned avatar), treat the unknown owner as a GUEST
+      // (`!== false`) so a money credit is SUPPRESSED, never granted on an anomaly.
+      guestByAvatar.set(row.id, !!row.avatarGuest || row.userGuest !== false);
     }
   }
 

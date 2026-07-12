@@ -1233,7 +1233,7 @@ questRoutes.post('/tutorial/:id/claim', requireAuth, async (c) => {
         ok: false,
         error: 'guest_not_eligible',
         message:
-          'Sign up to claim tutorial rewards. Guest play earns ClawTokens through activity matches; tutorial-quest rewards are reserved for real accounts.',
+          'Sign up to claim tutorial rewards. Guest play earns vCLAW through activity matches; tutorial-quest rewards are reserved for real accounts.',
         credited: 0,
         balance: 0,
       },

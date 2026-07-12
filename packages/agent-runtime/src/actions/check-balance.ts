@@ -10,7 +10,7 @@ import { hasServices, getMessageText, getDbModule } from './types';
 export const checkBalanceAction: Action = {
   name: 'CHECK_BALANCE',
   description:
-    'Check your ClawToken balance, inventory count, and knowledge count.',
+    'Check your vCLAW balance, inventory count, and knowledge count.',
   similes: [
     'VIEW_BALANCE',
     'MY_TOKENS',
@@ -110,7 +110,7 @@ export const checkBalanceAction: Action = {
         text: [
           `**${avatar.name}'s Status**`,
           `Level: ${avatar.level} (${avatar.xp} XP)`,
-          `ClawTokens: ${avatar.clawTokens} NT`,
+          `vCLAW: ${avatar.clawTokens}`,
           `Inventory: ${totalItems} items (${uniqueItems} unique)`,
           `Knowledge: ${knowledgeCount} entries`,
         ].join('\n'),

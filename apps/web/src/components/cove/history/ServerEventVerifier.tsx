@@ -280,8 +280,8 @@ function MetaPanel({
       <MetaRow label="eventId" value={event.id} mono />
       <MetaRow label="engine" value={event.engineVersion} />
       <MetaRow label="nonce" value={String(event.nonce)} />
-      <MetaRow label="bet" value={`${event.betAmount} CT`} />
-      <MetaRow label="payout" value={`${event.payout} CT`} />
+      <MetaRow label="bet" value={`${event.betAmount} vCLAW`} />
+      <MetaRow label="payout" value={`${event.payout} vCLAW`} />
       <MetaRow label="serverSeedHash" value={event.serverSeedHash} mono />
       <MetaRow
         label="serverSeed"

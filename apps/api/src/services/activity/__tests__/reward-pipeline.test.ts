@@ -81,6 +81,15 @@ const dbMock = {
     return {
       from() {
         return {
+          // Guest-source loader now `.leftJoin(users, …)` before `.where(…)`
+          // (2026-07-10 guest-owned-agent hardening) — support the extra hop.
+          leftJoin() {
+            return {
+              where() {
+                return emptyResultChain;
+              },
+            };
+          },
           where() {
             return emptyResultChain;
           },
@@ -99,7 +108,9 @@ mock.module('@clawville/database', () => ({
     createdAt: 'created_at',
     scoreMs: 'score_ms',
   },
-  avatars: { id: 'id', flags: 'flags' },
+  avatars: { id: 'id', flags: 'flags', isGuest: 'is_guest', userId: 'user_id' },
+  // Guest-source loader joins users for the canonical is_guest (2026-07-10).
+  users: { id: 'id', isGuest: 'is_guest' },
   // Phase 4 — reward-pipeline now indirectly imports
   // `reef-race-personal-best-service` which references this table. Mock
   // its column shape so the loader's column references stay typed.

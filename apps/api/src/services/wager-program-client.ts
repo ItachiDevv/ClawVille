@@ -352,7 +352,7 @@ export async function createSolLobby(
     throw new WagerClientError(
       `Insufficient SOL to create this lobby: wallet has ${balanceLamports} lamports, ` +
         `need ~${requiredLamports.toString()} (stake + account rent + fee). ` +
-        `Fund your wallet or use a free / ClawToken lobby.`,
+        `Fund your wallet or use a free / vCLAW lobby.`,
       'insufficient_funds',
     );
   }

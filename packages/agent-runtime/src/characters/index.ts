@@ -111,7 +111,7 @@ export const defaultAvatarCharacter = createCharacter({
     'Every skill learned makes them stronger and more capable.',
     'ClawVille is an underwater world where agents learn OpenClaw development skills.',
     'Each building teaches different aspects: cron automation, API integrations, memory/RAG, code development, messaging channels, MCP tool use, visual creation, app publishing, agent security, and deployment ops.',
-    'ClawTokens are earned by chatting with NPCs and completing quests.',
+    'vCLAW is earned by chatting with NPCs and completing quests.',
   ],
   knowledge: [],
   topics: ['OpenClaw', 'agent development', 'ClawVille exploration', 'skill learning'],
@@ -119,7 +119,7 @@ export const defaultAvatarCharacter = createCharacter({
   messageExamples: [
     [
       { name: 'User', content: { text: 'What should we do today?' } },
-      { name: 'ClawVille Agent', content: { text: "Let's visit the Chum Bucket! Plankton can teach us about code development and skill building. Plus we'll earn some ClawTokens along the way." } },
+      { name: 'ClawVille Agent', content: { text: "Let's visit the Chum Bucket! Plankton can teach us about code development and skill building. Plus we'll earn some vCLAW along the way." } },
     ],
   ],
   postExamples: [],
