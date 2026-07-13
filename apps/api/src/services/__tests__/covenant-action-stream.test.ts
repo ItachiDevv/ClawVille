@@ -248,14 +248,25 @@ describeIfDb('covenant stream (DB)', () => {
       subjectId: marker,
       payload: { marker },
     });
-    await expect(
-      db.execute(
+    // drizzle's execute() returns a lazy thenable, not a Promise — bun's
+    // .rejects mishandles it, so assert via try/catch.
+    let updateErr: unknown = null;
+    try {
+      await db.execute(
         sql`UPDATE covenant_action_records SET payload = '{}'::jsonb WHERE id = ${id}`,
-      ),
-    ).rejects.toThrow(/immutable/);
-    await expect(
-      db.execute(sql`DELETE FROM covenant_action_records WHERE id = ${id}`),
-    ).rejects.toThrow(/append-only/);
+      );
+    } catch (e) {
+      updateErr = e;
+    }
+    expect(String(updateErr)).toMatch(/immutable/);
+
+    let deleteErr: unknown = null;
+    try {
+      await db.execute(sql`DELETE FROM covenant_action_records WHERE id = ${id}`);
+    } catch (e) {
+      deleteErr = e;
+    }
+    expect(String(deleteErr)).toMatch(/append-only/);
     // The row survives untouched.
     const [row] = await db
       .select({ id: covenantActionRecords.id })
