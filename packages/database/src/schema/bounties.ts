@@ -45,17 +45,17 @@ export const bountyRewardTypeEnum = pgEnum('bounty_reward_type', [
 ]);
 
 /**
- * How a bounty pays out. `'ct'` = the classic ClawToken escrow (creator's CT is
+ * How a bounty pays out. `'vclaw'` = the in-game vCLAW escrow (creator's vCLAW is
  * debited at create, released to the hunter on approve). `'usdc'` = the SAP
  * Option-C on-chain USDC escrow rail (creator → depositor, hunter → worker; the
  * reward is prepaid into a SAP escrow vault, released on a PASS verdict, refunded
  * on a FAIL). The USDC rail is triple-gated OFF + dry-run by default — a
  * `payment_rail='usdc'` bounty simulates the escrow legs and NEVER moves real
- * money until a deliberate founder flip. Default `'ct'` so every existing bounty
- * and the whole live CT board are unchanged.
+ * money until a deliberate founder flip. Default `'vclaw'` for the live in-game
+ * bounty board.
  */
 export const bountyPaymentRailEnum = pgEnum('bounty_payment_rail', [
-  'ct',
+  'vclaw',
   'usdc',
 ]);
 
@@ -84,24 +84,24 @@ export const bounties = pgTable('bounties', {
   tags: jsonb('tags').$type<string[]>().default([]),
 
   // ── Phase 1: acceptance criteria + USDC escrow linkage (ALL additive) ────────
-  // These columns are NULL/default for every existing CT bounty; only a
+  // These columns are NULL/default for every existing vCLAW bounty; only a
   // `payment_rail='usdc'` bounty populates the escrow/verdict fields.
   //
   /**
    * Human/agent-readable acceptance criteria the verdict is judged against.
    * MANDATORY for a `payment_rail='usdc'` bounty (a verdict with nothing to
    * verify against is scaffolding theater — the route rejects a USDC bounty
-   * without it). Optional/NULL for a classic CT bounty.
+   * without it). Optional/NULL for an in-game vCLAW bounty.
    */
   acceptanceCriteria: text('acceptance_criteria'),
-  /** Which payout rail funds this bounty. Default 'ct' (the live CT board). */
-  paymentRail: bountyPaymentRailEnum('payment_rail').default('ct').notNull(),
+  /** Which payout rail funds this bounty. Default 'vclaw' (the live in-game board). */
+  paymentRail: bountyPaymentRailEnum('payment_rail').default('vclaw').notNull(),
 
   // ── SAP escrow binding (only for payment_rail='usdc') ────────────────────────
   /**
    * The on-chain SAP escrow PDA (base58) this bounty's reward is escrowed into.
    * Set at create time when the depositor (=creator) opens the USDC escrow.
-   * NULL for a CT bounty or a USDC bounty whose escrow open failed/was skipped
+   * NULL for a vCLAW bounty or a USDC bounty whose escrow open failed/was skipped
    * (dry-run open that never recorded a PDA). Combined with `escrow_job_id` it
    * is the (escrow, job) key the SAP settlement ledger is idempotent on.
    */
@@ -117,7 +117,7 @@ export const bounties = pgTable('bounties', {
   // ── Composition rail (SLICE 2a) — SAP-V2 vault → PayAI-x402 two-leg settle ────
   // Only a `payment_rail='usdc'` bounty on the COMPOSED rail
   // (`bountySettlementRail() === 'sap-payai-composed'`) populates these. NULL for
-  // every CT bounty, and for a USDC bounty on the legacy single-leg vault-less
+  // every vCLAW bounty, and for a USDC bounty on the legacy single-leg vault-less
   // path. Additive + nullable — see migration 0024_bounty_composition.sql.
   /**
    * The V1 PayAI payout escrow PDA (base58) for LEG 2 (house→hunter). Leg 1's
@@ -169,7 +169,7 @@ export const bounties = pgTable('bounties', {
   /**
    * When true, this bounty REQUIRES a recorded verdict before its reward can be
    * released (the escrow settle gate). Defaults true for a USDC bounty (set at
-   * create), false for a classic CT bounty (whose release is the existing
+   * create), false for an in-game vCLAW bounty (whose release is the existing
    * creator-review approve). Kept explicit so the release path can branch on it.
    */
   verdictRequired: boolean('verdict_required').default(false).notNull(),

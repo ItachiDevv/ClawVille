@@ -2,7 +2,7 @@
  * Unit tests for the bounty ↔ USDC escrow linkage PURE logic (Phase 1).
  *
  * Covers only the deterministic, DB-free pieces:
- *   - usdcRewardBaseUnits: whole-USDC reward → 6-decimal base units (the money
+ *   - usdcRewardBaseUnits: vCLAW reward → USDC base units (the money
  *     conversion the whole rail depends on), including the reject-invalid guard.
  *
  * The stateful open/approve/settle/refund orchestration is exercised by the live
@@ -15,15 +15,16 @@ import { describe, it, expect } from 'bun:test';
 import { usdcRewardBaseUnits } from '../../bounty-escrow-link';
 
 describe('usdcRewardBaseUnits', () => {
-  it('scales a whole-USDC reward by 6 decimals', () => {
-    expect(usdcRewardBaseUnits(1)).toBe(1_000_000n);
-    expect(usdcRewardBaseUnits(10)).toBe(10_000_000n);
-    expect(usdcRewardBaseUnits(250)).toBe(250_000_000n);
+  it('scales each vCLAW reward unit to 10,000 USDC base units', () => {
+    expect(usdcRewardBaseUnits(1)).toBe(10_000n);
+    expect(usdcRewardBaseUnits(5)).toBe(50_000n);
+    expect(usdcRewardBaseUnits(10)).toBe(100_000n);
+    expect(usdcRewardBaseUnits(250)).toBe(2_500_000n);
   });
 
   it('handles large rewards without float error (bigint math)', () => {
-    // 1,000,000 USDC → 1e12 base units — exact, no float drift.
-    expect(usdcRewardBaseUnits(1_000_000)).toBe(1_000_000_000_000n);
+    // 1,000,000 vCLAW ($10,000) → 1e10 base units — exact, no float drift.
+    expect(usdcRewardBaseUnits(1_000_000)).toBe(10_000_000_000n);
   });
 
   it('rejects a non-positive reward (no zero/negative escrow)', () => {
@@ -31,7 +32,7 @@ describe('usdcRewardBaseUnits', () => {
     expect(() => usdcRewardBaseUnits(-5)).toThrow();
   });
 
-  it('rejects a non-integer reward (whole-USDC only)', () => {
+  it('rejects a non-integer vCLAW reward', () => {
     expect(() => usdcRewardBaseUnits(1.5)).toThrow();
   });
 });

@@ -189,7 +189,13 @@ import { createHash } from 'crypto';
 // unchanged). The bump exists because hosted-runtime protocol-knowledge injection
 // dedupes by version, so the reworded manual must re-embed into hosted agents'
 // memory, and connected agents re-pull on the version/hash move.
-export const PROTOCOL_VERSION = 14;
+//
+// NOTE (2026-07-12, bounty micro-denomination): bumped 14 -> 15. The manual now
+// states the bounty reward unit and shared 5-vCLAW ($0.05) floor for the in-game
+// and on-chain funding paths, including the bounty API's renamed paymentRail and
+// reward response fields. No Hatcher partner wire/auth or [ACTION:]
+// verb/parameter/bound changed. The bump eagerly re-embeds the corrected contract.
+export const PROTOCOL_VERSION = 15;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -774,6 +780,14 @@ never double-charges. A FRESH sale credits the SELLER and emits the
 \`land.service.sold\` goal-stream event (§2), so an agent running a shop can replay
 its own sales from history. Guests / unbound agents cannot transact here — a real
 bound session is required (no demo tier).
+
+## 11. Bounties — reward denomination
+
+Bounty rewards use an integer vCLAW amount: **1 vCLAW = $0.01**. Both funding
+paths have a **5 vCLAW ($0.05) minimum**. A \`paymentRail: "vclaw"\` bounty
+escrows the poster's in-game vCLAW; a \`paymentRail: "usdc"\` bounty escrows
+the exact on-chain amount, converting with integer math at **10,000 USDC base
+units per vCLAW**. Never treat the reward number as whole USDC.
 `;
 }
 
