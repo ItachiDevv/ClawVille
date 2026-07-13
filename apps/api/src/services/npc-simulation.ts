@@ -530,11 +530,22 @@ class NpcSimulation {
   }
 
   /**
-   * Hard hourly budget for LLM banter — the cost backstop that holds even if
-   * the watcher latch is spoofed or held open (Codex round, 2026-07-13).
-   * Fixed window: first consume after an hour rolls it. Consumed at
-   * generation start (a failed generation still counts — conservative).
-   * `nowMs` is injectable for tests.
+   * Hourly budget for LLM banter — the cost dampener that holds even if the
+   * watcher latch is spoofed or held open (Codex round, 2026-07-13). Fixed
+   * window: first consume after an hour rolls it. Consumed once per PAID
+   * REQUEST (a failed request still counts — conservative), never per
+   * conversation.
+   *
+   * SCOPE — deliberately per-process, NOT durable (Codex round-3 finding,
+   * accepted residual): a restart/crash-loop resets the window, and multiple
+   * processes would each get an allowance. Durable (DB-backed) accounting was
+   * evaluated and rejected as disproportionate for a cosmetic-chat budget,
+   * because two stronger bounds already cap worst-case spend regardless of
+   * this counter's state: (1) the visibility-heartbeat gate, and (2) the sim's
+   * own cadence — at most one conversation start per 8s × ≤2 paid legs
+   * ≈ 900 paid requests/hour ≈ $0.25/hour on gpt-4o-mini, vs the ~$0.10/hour
+   * this cap targets. The counter's job is killing the 24/7 idle burn, which
+   * a process-local window does fully. `nowMs` is injectable for tests.
    */
   tryConsumeBanterLlmBudget(nowMs: number = Date.now()): boolean {
     if (nowMs - this.banterLlmWindowStart >= 60 * 60 * 1000) {
@@ -2826,21 +2837,30 @@ class NpcSimulation {
         npc2Theme ? `${def2.name} specializes in ${npc2Theme.focus.split(',')[0]}` : '',
       ].filter(Boolean).join('. ') || undefined;
 
-      // Watcher gate (2026-07-13): evaluate ONCE so the branches and the log
-      // below can't disagree if a watcher heartbeat lands mid-generation.
-      // - Paid legs = participants WITHOUT a client (their lines come from the
-      //   paid `default` inference route). Only these are gated.
+      // Watcher gate (2026-07-13): `watched` evaluated ONCE so the branches and
+      // the log below can't disagree if a heartbeat lands mid-generation.
+      // - Paid legs = LLM requests for participants WITHOUT a client (the paid
+      //   `default` inference route). Only these are budgeted — and per
+      //   REQUEST, not per conversation (Codex round 3: a mixed conversation
+      //   makes up to two paid calls, so per-conversation consumption
+      //   understated spend 2×).
       // - Agent legs (client.chat — hatcher-proxy / hermes-local server-managed
       //   cognition) are NEVER gated: ambient conversations ARE those bodies'
       //   cognition + [ACTION:] path, so gating them would cut a live partner
       //   agent's actions whenever no human is watching (Codex round 2,
       //   HIGH #2). Their inference is partner-hosted/local, not our OpenAI.
-      // - Budget consumed only when watched AND a paid leg exists, so an empty
-      //   world or an all-agent pair never eats the cap.
+      // - An empty world or an all-agent pair never consumes budget.
       const watched = this.hasActiveWatchers();
       const isAgentConvo = !!(client1 || client2);
       const hasPaidLeg = !client1 || !client2;
-      const allowNpcLlm = hasPaidLeg && watched && this.tryConsumeBanterLlmBudget();
+      let paidLegs = 0;
+      let refusedLegs = 0;
+      const tryConsumePaidLeg = () => {
+        const ok = watched && this.tryConsumeBanterLlmBudget();
+        if (ok) paidLegs++;
+        else refusedLegs++;
+        return ok;
+      };
 
       let messages;
       if (isAgentConvo) {
@@ -2864,11 +2884,13 @@ class NpcSimulation {
             protocolEmitsInWorldActions(client.getProtocol())
               ? this.dispatchHatcherActions(npcId, rawReply)
               : rawReply,
-          // Watcher gate: agent legs always run; the non-agent side uses
-          // canned lines when gated so no paid inference is spent.
-          { allowNpcLlm },
+          // Watcher gate: agent legs always run; each non-agent leg pays for
+          // its own request or falls back to a canned line.
+          { tryConsumePaidLeg },
         );
-      } else if (allowNpcLlm) {
+      } else if (tryConsumePaidLeg()) {
+        // Pure NPC↔NPC pair: ONE chat completion generates the whole 2-4 line
+        // conversation, so one unit here IS one paid request — exact.
         messages = await generateNpcConversation(def1, def2, this.arenaMode, cryptoContext);
       } else {
         // No visible-tab audience, or the hourly LLM budget is spent — don't
@@ -2884,14 +2906,15 @@ class NpcSimulation {
         state: 'active', typingNpcId: firstSpeaker, typingUntil: Date.now() + 2500,
       };
       this.conversations.set(conversation.id, conversation);
-      // Burn-meter log: bare = paid LLM legs ran; '(canned, …)' = fully canned;
-      // '(npc-legs canned, …)' = agent cognition ran but paid legs were gated.
+      // Burn-meter log: `paid=N` = paid LLM requests this conversation;
+      // '(canned, …)' = fully canned; '(npc-legs canned, …)' = agent cognition
+      // ran but one or more paid legs were refused.
       let gateMarker = '';
-      if (hasPaidLeg && !allowNpcLlm) {
+      if (hasPaidLeg && refusedLegs > 0) {
         const reason = watched ? 'capped' : 'unwatched';
         gateMarker = isAgentConvo ? ` (npc-legs canned, ${reason})` : ` (canned, ${reason})`;
       }
-      console.log(`[NPC Simulation] Conversation started${gateMarker}: ${initiator.name} <-> ${partner.name}`);
+      console.log(`[NPC Simulation] Conversation started${gateMarker} paid=${paidLegs}: ${initiator.name} <-> ${partner.name}`);
     } catch (err) {
       console.error(`[NPC Simulation] Conversation generation failed, resetting NPCs:`, err);
       resetNpcsOnFailure();
