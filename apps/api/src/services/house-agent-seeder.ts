@@ -41,6 +41,7 @@ import type { AgentAvatarConfig } from '@clawville/shared';
 import { AgentSubstrateClient } from './agent-substrate-client';
 import { npcSimulation } from './npc-simulation';
 import { agentOrchestrator } from './agent-orchestrator';
+import { recordCovenantAction } from './covenant-action-recorder';
 import { agentAutonomyDriver } from './agent-autonomy-driver';
 import { getSystemUserId } from './system-npc-seeder';
 import { sessionDigest } from './session-digest';
@@ -205,7 +206,15 @@ async function ensureHouseUserAndAvatar(): Promise<{ userId: string; avatarId: s
           // `ocb-…` body registered below, not an avatars-driven spawn.
           isActive: false,
         })
-        .returning({ id: avatars.id });
+        .returning({ id: avatars.id, clawTokens: avatars.clawTokens });
+      await recordCovenantAction({
+        action: 'economy.genesis',
+        subjectType: 'avatar',
+        subjectId: created.id,
+        actorKind: 'system',
+        dedupeKey: `avatar:${created.id}:genesis`,
+        payload: { amount: created.clawTokens, provenance: 'soft', reason: 'avatar_genesis' },
+      });
       return { userId, avatarId: created.id };
     } catch (err) {
       lastErr = err; // most likely the global avatars.name unique — retry suffixed

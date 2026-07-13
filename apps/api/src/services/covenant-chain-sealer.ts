@@ -142,10 +142,14 @@ export async function sealCovenantChainOnce(): Promise<number> {
     const firstPosition = position + 1n;
     let sealedCount = 0;
     for (const row of rows) {
-      // Codex round 1 HIGH #5: never trust the STORED payload_hash - recompute
-      // from the stored payload before chaining. A mismatch means an injected /
-      // corrupted row; sealing it would launder the forgery into a valid chain.
-      // Skip it (stays unsealed = a permanent, visible anomaly) + page ops.
+      // Codex round 1 HIGH #5 + round 3 HIGH #2: never trust the STORED
+      // payload_hash - recompute from the stored payload before chaining. A
+      // mismatch means an injected/corrupted row, and the chain FAILS CLOSED
+      // AT it: rows before it seal normally, NOTHING after it seals until an
+      // operator repairs the stream. Skipping-and-continuing would hide the
+      // poison from partners behind a contiguous-looking chain; a stalled
+      // sealer head is the loud, durable unhealthy signal (the growing
+      // unsealed backlog is queryable, and ops is paged CRITICAL).
       const recomputed = covenantPayloadHash(row.payload);
       if (recomputed !== row.payload_hash) {
         // One CRITICAL page per row per process — the row is re-scanned every
@@ -158,12 +162,12 @@ export async function sealCovenantChainOnce(): Promise<number> {
             message:
               `covenant_action_records ${row.id}: stored payload_hash does not match ` +
               `the stored payload (recomputed ${recomputed.slice(0, 12)}..., stored ` +
-              `${row.payload_hash.slice(0, 12)}...). Row REFUSED from the chain - ` +
-              `investigate for injection/corruption.`,
+              `${row.payload_hash.slice(0, 12)}...). CHAIN SEALING HALTED at this row ` +
+              `(fail-closed) - repair/remove the poisoned row to resume sealing.`,
             context: { recordId: row.id, action: row.action, subjectId: row.subject_id },
           });
         }
-        continue;
+        break;
       }
       position += 1n;
       const recordHash = computeRecordHash({

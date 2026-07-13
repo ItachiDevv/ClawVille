@@ -42,6 +42,7 @@
 import { eq, and, sql } from 'drizzle-orm';
 import { db, users, avatars, clawTokenTransactions } from '@clawville/database';
 import { creditClawTokens } from '../claw-token-ledger';
+import { recordCovenantAction } from '../covenant-action-recorder';
 import { houseBankBankroll, houseBankLowAlarm, houseBotPoolSize } from './cash-house-config';
 
 // ── Stable naming (single source of truth — DO NOT change without a re-seed) ──
@@ -244,7 +245,15 @@ class CashHouseSeederService {
         modelKey: 'lobster',
         harness: 'milady',
       })
-      .returning({ id: avatars.id });
+      .returning({ id: avatars.id, clawTokens: avatars.clawTokens });
+    await recordCovenantAction({
+      action: 'economy.genesis',
+      subjectType: 'avatar',
+      subjectId: avatar.id,
+      actorKind: 'system',
+      dedupeKey: `avatar:${avatar.id}:genesis`,
+      payload: { amount: avatar.clawTokens, provenance: 'soft', reason: 'avatar_genesis' },
+    });
     return avatar.id;
   }
 

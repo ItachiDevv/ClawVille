@@ -66,6 +66,7 @@ import type { AppContext } from '../types';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { verifyPartnerWriteSignature, verifyPartnerGetSignature } from '../services/partner-signature';
 import { encryptToken, decryptToken } from '../services/keypair-vault';
+import { recordCovenantAction } from '../services/covenant-action-recorder';
 import { validateHatcherProxyUrl, validateHatcherProxyUrlResolved } from '../services/hatcher-config';
 import {
   buildAvatarSessionConfig,
@@ -650,6 +651,14 @@ export async function ensureHatcherAvatar(
       .insert(avatars)
       .values(values)
       .returning({ id: avatars.id });
+    await recordCovenantAction({
+      action: 'economy.genesis',
+      subjectType: 'avatar',
+      subjectId: inserted.id,
+      actorKind: 'agent',
+      dedupeKey: `avatar:${inserted.id}:genesis`,
+      payload: { amount: 1000, provenance: 'soft', reason: 'avatar_genesis' },
+    });
     return { avatarId: inserted.id, created: true };
   } catch (err: unknown) {
     // Race-safe recovery: two concurrent registers for the same identityKey both
