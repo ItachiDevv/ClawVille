@@ -10,6 +10,20 @@ import { requireNonGuestIdentity } from '../middleware/require-non-guest';
 import { adminOnly } from '../middleware/admin-only';
 import { noStorePrivate } from '../middleware/no-store';
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
+// Covenant action-record stream (2026-07-13): bounty lifecycle commitments
+// (create/claim/submit/approve/reject/settle/refund) append records in the SAME
+// tx as their writes. vCLAW money legs additionally emit economy.* records via
+// the ledger hook; USDC on-chain/x402 legs (which never touch the vCLAW ledger)
+// get explicit bounty.settle records.
+import {
+  recordCovenantAction,
+  type CovenantActorKind,
+} from '../services/covenant-action-recorder';
+import { createHash } from 'crypto';
+
+/** Map the auth identity kind onto the covenant actor vocabulary. */
+const toActorKind = (kind: 'user' | 'agent'): CovenantActorKind =>
+  kind === 'user' ? 'human' : 'agent';
 import {
   bountySettlementRail,
   openComposedBountyEscrow,
@@ -682,6 +696,7 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
         reason: 'bounty_escrow',
         source: 'bounty',
         metadata: { bountyTitle: data.title },
+        actorKind: toActorKind(c.get('identity').kind),
       }, tx);
     }
 
@@ -729,6 +744,24 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
         }))
       );
     }
+
+    // Covenant record — same tx as the (optional) escrow debit + insert.
+    await recordCovenantAction(
+      {
+        action: 'bounty.create',
+        subjectType: 'avatar',
+        subjectId: avatar.id,
+        actorKind: toActorKind(c.get('identity').kind),
+        payload: {
+          bountyId: created.id,
+          paymentRail: created.paymentRail,
+          tokenReward: created.tokenReward,
+          maxAttempts: created.maxAttempts,
+          ...(created.compositionState ? { compositionState: created.compositionState } : {}),
+        },
+      },
+      tx,
+    );
 
     return created;
   });
@@ -1050,6 +1083,26 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
         });
       }
 
+      // Covenant record — the APPROVE verdict, same tx as the atomic claim.
+      // Money-leg records follow separately: vCLAW rides the ledger hook in
+      // this same tx; USDC rails emit bounty.settle at their release points.
+      await recordCovenantAction(
+        {
+          action: 'bounty.approve',
+          subjectType: 'avatar',
+          subjectId: attempt.hunterId,
+          actorKind: toActorKind(c.get('identity').kind),
+          payload: {
+            bountyId: bounty.id,
+            attemptId: attempt.id,
+            paymentRail: bounty.paymentRail,
+            tokenReward: bounty.tokenReward,
+            ...(reviewNote ? { reviewNote } : {}),
+          },
+        },
+        tx,
+      );
+
       // 2. Transfer escrowed tokenReward to hunter's clawTokens (CT rail ONLY).
       const hunterAvatar = await tx.query.avatars.findFirst({
         where: eq(avatars.id, attempt.hunterId),
@@ -1068,6 +1121,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
           reason: 'bounty_reward',
           source: 'bounty',
           metadata: { bountyId: bounty.id, attemptId: attempt.id },
+          actorKind: toActorKind(c.get('identity').kind),
         }, tx);
       }
 
@@ -1444,17 +1498,38 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
           message: `Bounty approved, but USDC escrow settle failed (${settle.code}): ${settle.message}`,
         });
       }
-      // PASS — persist the verdict provenance onto the bounty.
-      await db
-        .update(bounties)
-        .set({
-          escrowPda: settle.escrowPda,
-          escrowJobId: settle.escrowPda ? bounty.id : null,
-          covenantAuditRootHex: settle.auditRootHex,
-          covenantVerificationPassed: true,
-          updatedAt: new Date(),
-        })
-        .where(eq(bounties.id, bounty.id));
+      // PASS — persist the verdict provenance onto the bounty (+ the covenant
+      // settle record in the same tx: this USDC release never touches the vCLAW
+      // ledger, so this is its ONLY stream record).
+      await db.transaction(async (tx) => {
+        await tx
+          .update(bounties)
+          .set({
+            escrowPda: settle.escrowPda,
+            escrowJobId: settle.escrowPda ? bounty.id : null,
+            covenantAuditRootHex: settle.auditRootHex,
+            covenantVerificationPassed: true,
+            updatedAt: new Date(),
+          })
+          .where(eq(bounties.id, bounty.id));
+        await recordCovenantAction(
+          {
+            action: 'bounty.settle',
+            subjectType: 'avatar',
+            subjectId: hunterAvatarId,
+            actorKind: toActorKind(c.get('identity').kind),
+            payload: {
+              bountyId: bounty.id,
+              rail: 'sap-usdc',
+              rewardUsdcBaseUnits: usdcRewardBaseUnits(bounty.tokenReward).toString(),
+              ...(settle.escrowPda ? { escrowPda: settle.escrowPda } : {}),
+              ...(settle.auditRootHex ? { auditRootHex: settle.auditRootHex } : {}),
+              dryRun: settle.dryRun,
+            },
+          },
+          tx,
+        );
+      });
 
       // DEFERRED completion bump (adversary S4): now that the settle SUCCEEDED,
       // book the hunter's completion count (NOT totalEarned — that's the CT
@@ -1539,6 +1614,22 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
           message: 'Attempt already reviewed (concurrent review lost the race).',
         });
       }
+
+      // Covenant record — the REJECT verdict, same tx as the atomic claim.
+      await recordCovenantAction(
+        {
+          action: 'bounty.reject',
+          subjectType: 'avatar',
+          subjectId: attempt.hunterId,
+          actorKind: toActorKind(c.get('identity').kind),
+          payload: {
+            bountyId: bounty.id,
+            attemptId: attempt.id,
+            ...(reviewNote ? { reviewNote } : {}),
+          },
+        },
+        tx,
+      );
 
       // Decrement currentAttempts to allow new attempts + record a FAIL verdict on
       // a USDC bounty. No escrow refund is needed here: a USDC bounty's escrow is
@@ -1728,13 +1819,30 @@ bountyRoutes.post('/:id/admin-fail-refund', adminOnly, async (c) => {
   // value set has no 'refunded' marker, so (per the slice spec) the terminal
   // refunded state is carried by covenant_verification_passed=false rather than an
   // invented enum value. The creator's vault deposit has been reclaimed on-chain.
-  await db
-    .update(bounties)
-    .set({
-      covenantVerificationPassed: false,
-      updatedAt: new Date(),
-    })
-    .where(eq(bounties.id, bounty.id));
+  await db.transaction(async (tx) => {
+    await tx
+      .update(bounties)
+      .set({
+        covenantVerificationPassed: false,
+        updatedAt: new Date(),
+      })
+      .where(eq(bounties.id, bounty.id));
+    await recordCovenantAction(
+      {
+        action: 'bounty.refund',
+        subjectType: 'avatar',
+        subjectId: bounty.creatorId,
+        actorKind: 'admin',
+        payload: {
+          bountyId: bounty.id,
+          rail: isComposed ? 'sap-payai-composed' : 'sap-usdc',
+          tokenReward: bounty.tokenReward,
+          ...(bounty.escrowPda ? { escrowPda: bounty.escrowPda } : {}),
+        },
+      },
+      tx,
+    );
+  });
 
   // The refund result's chain leg is a SapWriteResult union — read dryRun only
   // from the success arm (a failed chain leg would have bubbled up as !refund.ok).
@@ -1939,6 +2047,18 @@ bountyRoutes.post('/:id/claim', requireAuthOrAgentSession, requireNonGuestIdenti
       })
       .returning();
 
+    // Covenant record — same tx as the slot increment + attempt insert.
+    await recordCovenantAction(
+      {
+        action: 'bounty.claim',
+        subjectType: 'avatar',
+        subjectId: avatar.id,
+        actorKind: toActorKind(c.get('identity').kind),
+        payload: { bountyId: id, attemptId: newAttempt.id },
+      },
+      tx,
+    );
+
     return newAttempt;
   });
 
@@ -1991,17 +2111,41 @@ bountyRoutes.post('/:id/submit', requireAuthOrAgentSession, requireNonGuestIdent
 
   const now = new Date();
 
-  const [updated] = await db
-    .update(bountyAttempts)
-    .set({
-      status: 'submitted',
-      prLink: parsed.data.prLink ?? null,
-      submissionNote: parsed.data.submissionNote,
-      submittedAt: now,
-      updatedAt: now,
-    })
-    .where(eq(bountyAttempts.id, attempt.id))
-    .returning();
+  const updated = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(bountyAttempts)
+      .set({
+        status: 'submitted',
+        prLink: parsed.data.prLink ?? null,
+        submissionNote: parsed.data.submissionNote,
+        submittedAt: now,
+        updatedAt: now,
+      })
+      .where(eq(bountyAttempts.id, attempt.id))
+      .returning();
+    if (!row) return row; // raced away (reviewed between find and CAS) — no record
+    // Covenant record — same tx as the submit flip. The note lives on the
+    // attempt row; the record binds it by sha256 + length.
+    await recordCovenantAction(
+      {
+        action: 'bounty.submit',
+        subjectType: 'avatar',
+        subjectId: avatar.id,
+        actorKind: toActorKind(c.get('identity').kind),
+        payload: {
+          bountyId: id,
+          attemptId: row.id,
+          ...(row.prLink ? { prLink: row.prLink } : {}),
+          noteSha256: createHash('sha256')
+            .update(parsed.data.submissionNote, 'utf8')
+            .digest('hex'),
+          noteLength: parsed.data.submissionNote.length,
+        },
+      },
+      tx,
+    );
+    return row;
+  });
 
   return c.json({
     success: true,

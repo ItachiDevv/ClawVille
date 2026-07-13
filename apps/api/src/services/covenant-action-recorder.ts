@@ -39,6 +39,8 @@ export type CovenantAction =
   | 'bounty.create'
   | 'bounty.claim'
   | 'bounty.submit'
+  | 'bounty.approve'
+  | 'bounty.reject'
   | 'bounty.settle'
   | 'bounty.refund';
 
