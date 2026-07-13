@@ -727,27 +727,29 @@ questRoutes.post('/:id/start', requireAuthOrAgentSession, requireLedgerCapableId
 
   const { avatarId } = c.get('identity');
 
-  // Find the avatar's accepted submission for this quest
-  const submission = await db.query.questSubmissions.findFirst({
-    where: and(
-      eq(questSubmissions.questId, id),
-      eq(questSubmissions.avatarId, avatarId),
-      eq(questSubmissions.status, 'accepted')
-    ),
-  });
+  // Single compare-and-set (Codex round 2, 2026-07-13): the status predicate
+  // lives INSIDE the update's WHERE, so a delayed/stale request can never
+  // regress a row that has since moved on (the old read-then-update let a
+  // stale start overwrite 'submitted' back to 'in_progress'). The partial
+  // unique index guarantees at most one active row matches.
+  const [updated] = await db
+    .update(questSubmissions)
+    .set({ status: 'in_progress', updatedAt: new Date() })
+    .where(
+      and(
+        eq(questSubmissions.questId, id),
+        eq(questSubmissions.avatarId, avatarId),
+        eq(questSubmissions.status, 'accepted')
+      )
+    )
+    .returning();
 
-  if (!submission) {
+  if (!updated) {
     throw new HTTPException(404, {
       message:
         'No accepted submission found for this quest. Accept the quest first.',
     });
   }
-
-  const [updated] = await db
-    .update(questSubmissions)
-    .set({ status: 'in_progress', updatedAt: new Date() })
-    .where(eq(questSubmissions.id, submission.id))
-    .returning();
 
   return c.json({
     success: true,
@@ -779,24 +781,15 @@ questRoutes.post('/:id/submit', requireAuthOrAgentSession, requireLedgerCapableI
 
   const { avatarId } = c.get('identity');
 
-  // Find the avatar's in_progress (or accepted) submission for this quest
-  const submission = await db.query.questSubmissions.findFirst({
-    where: and(
-      eq(questSubmissions.questId, id),
-      eq(questSubmissions.avatarId, avatarId),
-      sql`${questSubmissions.status} IN ('accepted', 'in_progress')`
-    ),
-  });
-
-  if (!submission) {
-    throw new HTTPException(404, {
-      message:
-        'No active submission found for this quest. Accept and start it first.',
-    });
-  }
-
   const now = new Date();
 
+  // Single compare-and-set (Codex round 2, 2026-07-13): the allowed source
+  // statuses live INSIDE the update's WHERE. The old read-then-update let two
+  // concurrent submits both pass the read, and the delayed one could overwrite
+  // a row an admin had ALREADY approved back to 'submitted' — making it
+  // approvable (and creditable) a second time. An 'approved'/'rejected' row can
+  // now never match; the quest_rewards_submission_unique index is the
+  // defense-in-depth behind this.
   const [updated] = await db
     .update(questSubmissions)
     .set({
@@ -806,8 +799,21 @@ questRoutes.post('/:id/submit', requireAuthOrAgentSession, requireLedgerCapableI
       submittedAt: now,
       updatedAt: now,
     })
-    .where(eq(questSubmissions.id, submission.id))
+    .where(
+      and(
+        eq(questSubmissions.questId, id),
+        eq(questSubmissions.avatarId, avatarId),
+        sql`${questSubmissions.status} IN ('accepted', 'in_progress')`
+      )
+    )
     .returning();
+
+  if (!updated) {
+    throw new HTTPException(404, {
+      message:
+        'No active submission found for this quest. Accept and start it first.',
+    });
+  }
 
   return c.json({
     success: true,
