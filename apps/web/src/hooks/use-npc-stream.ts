@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react';
 import { useNpcStore } from '@/stores/npc';
 import { useResearchStore } from '@/stores/research';
 import { measureSpike } from '@/lib/perf-tracker';
+import { useWatchHeartbeat } from '@/hooks/use-watch-heartbeat';
 
 const NPC_API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
 const MAX_RETRIES = 20;
@@ -11,6 +12,10 @@ const RETRY_DELAY_BASE = 3000;
 const RETRY_DELAY_MAX = 60000;
 
 export function useNpcStream() {
+  // Ambient-banter watcher heartbeat — visible-tab-only "a human is watching"
+  // signal for the server's banter inference gate (covers the legacy /arena +
+  // /perf viewers). See use-watch-heartbeat.ts.
+  useWatchHeartbeat();
   const updateFromSnapshot = useNpcStore((s) => s.updateFromSnapshot);
   const setConnected = useNpcStore((s) => s.setConnected);
   const addCollaborationEntries = useResearchStore((s) => s.addCollaborationEntries);

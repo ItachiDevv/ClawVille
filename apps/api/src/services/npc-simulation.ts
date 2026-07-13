@@ -62,11 +62,29 @@ import type { PlayerSnapshot } from '@clawville/shared';
 // necessity — if the client world dimension changes, change it here in the same diff.
 const MAP_WIDTH = 22528;
 const MAP_HEIGHT = 22528;
-// Watcher gate: how long after the last SSE connect/disconnect or REST
-// snapshot fetch the world still counts as "watched" for ambient-banter
-// inference. Long enough to ride out a tab refresh; short enough that an
-// empty world stops spending within a minute.
-const WATCHER_GRACE_MS = 60_000;
+// Watcher gate: how long after the last visibility heartbeat (POST
+// /api/npc/watch, sent every ~30s ONLY from a visible browser tab) the world
+// still counts as "watched" for ambient-banter inference. 90s tolerates two
+// missed beats/jitter; an empty (or all-hidden-tabs) world stops spending
+// within ~1.5 min. SSE connections deliberately do NOT arm this — the web
+// client keeps EventSource open in hidden tabs (join-budget protection), so a
+// backgrounded tab would otherwise hold the gate open forever (Codex round,
+// 2026-07-13).
+const WATCHER_GRACE_MS = 90_000;
+
+// Hard cost backstop for ambient banter, INDEPENDENT of the watcher latch: max
+// LLM-generated conversations per fixed hourly window (per box). The /watch
+// heartbeat is deliberately unauthenticated (anonymous explore visitors are
+// real watchers — the acquisition funnel), so the latch is spoofable by
+// design; this cap bounds the worst case a spoofer or held-open latch can burn
+// (~cap × $0.0002/convo on gpt-4o-mini) regardless of latch state (Codex
+// round, 2026-07-13). Over cap → canned lines. 0 disables LLM banter entirely.
+// Read per call so a redeploy-baked env change (or a test) takes effect
+// without module reload gymnastics.
+function banterLlmHourlyCap(): number {
+  const n = Number(process.env.NPC_BANTER_HOURLY_LLM_CAP ?? '');
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 120;
+}
 
 // Hatcher proxy-cognition (partner #2, Phase A — 2026-06-01). The canonical
 // "you are inside ClawVille" orientation text, joined + frozen once at module
@@ -369,16 +387,24 @@ class NpcSimulation {
   /**
    * Watcher-presence gate for ambient LLM banter (2026-07-13 OpenAI-usage
    * audit — ambient NPC↔NPC chatter was ~410 inference calls/hr per box with
-   * zero humans online). Epoch-ms a human-facing consumer was last known
-   * present: stamped on SSE listener add/remove (legacy + per-room) and by the
-   * REST `/api/npc/state` fallback via `noteWorldWatched()`. Ambient
-   * conversations only spend inference while `hasActiveWatchers()`; otherwise
-   * they use the canned-line pool. Agents are deliberately NOT watchers —
-   * perception reads world state server-side without SSE, and ambient banter
-   * is user entertainment, not agent signal. Unwatched conversations still
-   * EXIST (canned), so snapshot + perception shapes never change.
+   * zero humans online). Epoch-ms of the last VISIBILITY HEARTBEAT (`POST
+   * /api/npc/watch`, sent by the web client every ~30s only while
+   * `document.visibilityState === 'visible'`). This is the ONLY arming
+   * signal: SSE listeners do NOT count (the client keeps EventSource open in
+   * hidden tabs, so a backgrounded tab would hold the gate open forever), the
+   * REST snapshot fetch does NOT count (any crawler hitting the public
+   * endpoint once a minute would re-arm paid inference), and agent sessions
+   * are excluded at the route (banter is user entertainment; agents read
+   * world state via server-side perception). Ambient conversations spend
+   * inference only while `hasActiveWatchers()` AND the hourly LLM budget has
+   * headroom; otherwise they use the canned pool. Unwatched conversations
+   * still EXIST (canned), so snapshot + agent-perception shapes never change.
+   * (Codex adversarial round, 2026-07-13.)
    */
   private lastWatchedAt = 0;
+  /** Fixed hourly window for the banter LLM budget — see `banterLlmHourlyCap()`. */
+  private banterLlmWindowStart = 0;
+  private banterLlmUsed = 0;
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private arenaMode = false;
   private tickCount = 0;
@@ -481,26 +507,38 @@ class NpcSimulation {
     console.log('[NPC Simulation] Stopped');
   }
 
-  addListener(listener: SSEListener) { this.listeners.add(listener); this.noteWorldWatched(); }
-  removeListener(listener: SSEListener) { this.listeners.delete(listener); this.noteWorldWatched(); }
+  addListener(listener: SSEListener) { this.listeners.add(listener); }
+  removeListener(listener: SSEListener) { this.listeners.delete(listener); }
 
-  /** Stamp watcher presence — see `lastWatchedAt`. Called by SSE listener
-   * add/remove and by the REST snapshot route (which has no persistent
-   * connection to count, so recency is its only signal). */
+  /** Stamp watcher presence — see `lastWatchedAt`. Called ONLY by the
+   * `POST /api/npc/watch` visibility heartbeat (agent sessions excluded at
+   * the route). SSE listeners and REST snapshots must never call this. */
   noteWorldWatched(): void { this.lastWatchedAt = Date.now(); }
 
   /**
-   * True when ambient banter has an audience: a live SSE listener (legacy or
-   * any room), or any watcher seen within the grace window (covers tab
-   * refreshes mid-conversation and REST-snapshot pollers). `nowMs` is
-   * injectable for tests only.
+   * True when ambient banter has an audience: a visibility heartbeat within
+   * the grace window. Deliberately NOT derived from live SSE listeners or
+   * snapshot fetches — see `lastWatchedAt`. `nowMs` is injectable for tests.
    */
   hasActiveWatchers(nowMs: number = Date.now()): boolean {
-    if (this.listeners.size > 0) return true;
-    for (const bucket of this.roomListeners.values()) {
-      if (bucket.size > 0) return true;
-    }
     return nowMs - this.lastWatchedAt < WATCHER_GRACE_MS;
+  }
+
+  /**
+   * Hard hourly budget for LLM banter — the cost backstop that holds even if
+   * the watcher latch is spoofed or held open (Codex round, 2026-07-13).
+   * Fixed window: first consume after an hour rolls it. Consumed at
+   * generation start (a failed generation still counts — conservative).
+   * `nowMs` is injectable for tests.
+   */
+  tryConsumeBanterLlmBudget(nowMs: number = Date.now()): boolean {
+    if (nowMs - this.banterLlmWindowStart >= 60 * 60 * 1000) {
+      this.banterLlmWindowStart = nowMs;
+      this.banterLlmUsed = 0;
+    }
+    if (this.banterLlmUsed >= banterLlmHourlyCap()) return false;
+    this.banterLlmUsed++;
+    return true;
   }
 
   /**
@@ -515,14 +553,12 @@ class NpcSimulation {
       this.roomListeners.set(roomId, bucket);
     }
     bucket.add(listener);
-    this.noteWorldWatched();
   }
   removeRoomListener(roomId: string, listener: SSEListener) {
     const bucket = this.roomListeners.get(roomId);
     if (!bucket) return;
     bucket.delete(listener);
     if (bucket.size === 0) this.roomListeners.delete(roomId);
-    this.noteWorldWatched();
   }
 
   /**
@@ -2786,17 +2822,20 @@ class NpcSimulation {
       ].filter(Boolean).join('. ') || undefined;
 
       // Watcher gate (2026-07-13): evaluate ONCE so the branch and the log
-      // below can't disagree if a watcher connects mid-generation.
+      // below can't disagree if a watcher heartbeat lands mid-generation.
+      // Budget consumed only when watched, so an empty world never eats the
+      // cap that a watched hour could have spent.
       const watched = this.hasActiveWatchers();
+      const useLlm = watched && this.tryConsumeBanterLlmBudget();
 
       let messages;
-      if (!watched) {
-        // Nobody human-facing is consuming snapshots — don't spend inference
-        // (OpenAI or local) on dialogue no one sees. Canned lines keep the
-        // conversation existing so bubbles/perception behave identically. The
-        // server-hosted-cognition [ACTION:] leg is also skipped here: ambient
-        // banter actions are entertainment-driven; the AutonomyDriver remains
-        // the real agent action loop and is unaffected by this gate.
+      if (!useLlm) {
+        // No visible-tab audience, or the hourly LLM budget is spent — don't
+        // burn inference (OpenAI or local) on dialogue no one sees. Canned
+        // lines keep the conversation existing so bubbles/perception behave
+        // identically. The server-hosted-cognition [ACTION:] leg is also
+        // skipped here: ambient banter actions are entertainment-driven; the
+        // AutonomyDriver remains the real agent action loop, unaffected.
         messages = generateCannedConversation(def1, def2);
       } else if (client1 || client2) {
         messages = await generateOpenClawConversation(
@@ -2831,7 +2870,7 @@ class NpcSimulation {
         state: 'active', typingNpcId: firstSpeaker, typingUntil: Date.now() + 2500,
       };
       this.conversations.set(conversation.id, conversation);
-      console.log(`[NPC Simulation] Conversation started${watched ? '' : ' (canned, unwatched)'}: ${initiator.name} <-> ${partner.name}`);
+      console.log(`[NPC Simulation] Conversation started${useLlm ? '' : watched ? ' (canned, capped)' : ' (canned, unwatched)'}: ${initiator.name} <-> ${partner.name}`);
     } catch (err) {
       console.error(`[NPC Simulation] Conversation generation failed, resetting NPCs:`, err);
       resetNpcsOnFailure();
