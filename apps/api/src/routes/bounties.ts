@@ -1919,17 +1919,21 @@ bountyRoutes.post('/:id/admin-fail-refund', adminOnly, async (c) => {
   // refunded = status cancelled + covenant_verification_passed=false, and the
   // resume crank only drives awaiting_finalize/reconcile states, never a
   // cancelled vault_held row).
+  // CANONICAL OUTCOME (Codex covenant round 6 MED #4): both refund paths
+  // (admin fail-refund, creator composed-cancel) write a BYTE-IDENTICAL
+  // outcome record under the shared dedupe key, so either path can complete
+  // or replay the other's refund without a strict-dedupe collision. The
+  // INITIATOR lives in the path-scoped refund_requested intents; the outcome
+  // is the caller-independent settlement fact (actorKind null by design).
   await recordCovenantAction({
     action: 'bounty.refund',
     subjectType: 'avatar',
     subjectId: bounty.creatorId,
-    actorKind: 'admin',
     dedupeKey: `bounty:${bounty.id}:refund`,
     payload: {
       bountyId: bounty.id,
       rail: isComposed ? 'sap-payai-composed' : 'sap-usdc',
       tokenReward: bounty.tokenReward,
-      terminalized: 'cancelled',
       ...(bounty.escrowPda ? { escrowPda: bounty.escrowPda } : {}),
     },
   });
@@ -2578,18 +2582,19 @@ bountyRoutes.delete('/:id', requireAuthOrAgentSession, requireNonGuestIdentity, 
       });
     }
 
-    // OUTCOME record — the refund executed. Same dedupe key as
-    // admin-fail-refund: a bounty refunds once, whichever path completes it.
+    // CANONICAL OUTCOME (Codex covenant round 6 MED #4) — byte-identical to
+    // the admin fail-refund outcome under the shared dedupe key, so a lost
+    // response here can be safely completed/replayed by the admin path (and
+    // vice versa) without a strict-dedupe collision. Initiator attribution
+    // lives in the refund_requested intent above.
     await recordCovenantAction({
       action: 'bounty.refund',
       subjectType: 'avatar',
       subjectId: bounty.creatorId,
-      actorKind: toActorKind(c.get('identity').kind),
       dedupeKey: `bounty:${bounty.id}:refund`,
       payload: {
         bountyId: bounty.id,
         rail: 'sap-payai-composed',
-        reason: 'creator_cancelled',
         tokenReward: bounty.tokenReward,
         ...(bounty.escrowPda ? { escrowPda: bounty.escrowPda } : {}),
       },
