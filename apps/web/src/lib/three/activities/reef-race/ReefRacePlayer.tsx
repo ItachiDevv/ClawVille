@@ -33,7 +33,7 @@
  *   - gliderMesh: shared module-scope BoxGeometry(2.5, 0.25, 5) + MeshStandardMaterial.
  *     ONE geometry and ONE material instance for ALL player instances (no per-mount alloc).
  *   - gliderRef carries the bank tilt (rotation.z). riderMountRef.rotation.z = 0 always.
- *   - riderMountRef positioned at RIDER_MOUNT_OFFSET_DEFAULT = [0, 0.6, -0.5] local.
+ *   - riderMountRef positioned at RIDER_MOUNT_OFFSET_DEFAULT = [0, 1.2, -0.3] local.
  *   - Gentle bob on riderMountRef.position.y (±2 local units at 1.2Hz).
  *   - KART_Y_ABOVE_TRACK elevation moves from group.position.y (race-layer local) to
  *     gliderRef.position.y (local = KART_Y_ABOVE_TRACK / KART_SCALE = 0.25).
@@ -297,6 +297,30 @@ const REEF_VRM_RIDER_TARGET_HEIGHT_WU = 245.63;
  * imperceptible).
  */
 const GLB_RIDER_TARGET_HEIGHT_LOCAL = 1.1;
+
+/**
+ * Per-species OVERRIDE of GLB_RIDER_TARGET_HEIGHT_LOCAL for assets whose
+ * bbox height is a bad proxy for their visible body (2026-07-13 Codex fit
+ * audit, measured live at the /preview harness):
+ *   - jellyfish: the bbox is tentacle-dominated — full box 0.581×1.598×0.585
+ *     local but the visible bell is only 0.285 tall, so height-normalizing
+ *     to 1.1 shrinks the bell to ~31% of the board's width (reads as a speck
+ *     beside the board). 2.5 puts the bell at ~72% of board width.
+ * Species not listed use GLB_RIDER_TARGET_HEIGHT_LOCAL.
+ */
+const REEF_CREATURE_RIDER_TARGET_HEIGHT_OVERRIDE: Record<string, number> = {
+  jellyfish: 2.5,
+};
+
+/**
+ * Fraction of the fitted bbox height that belongs BELOW the intended deck
+ * contact point. Jellyfish is the special case: bbox bottom is the tentacle
+ * tips, while the visible bell bottom is 82.19% up the full 1.598-unit box.
+ * Ground the bell at the mount origin so the tentacles drape past the board.
+ */
+const REEF_CREATURE_RIDER_GROUND_SINK_FRACTION: Record<string, number> = {
+  jellyfish: 0.821877,
+};
 
 /**
  * Per-species yaw correction (radians), applied ONCE to a GLB creature
@@ -785,13 +809,25 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
     // In that case the VRM rider manages its own scene graph; this effect is a no-op.
     if (!mount || !clonedScene) return;
 
-    // GLB rider auto-fit (registry-driven rider router, 2026-07-10): normalize
-    // this creature's bbox height to GLB_RIDER_TARGET_HEIGHT_LOCAL so species
-    // whose native mesh scale wasn't authored for this context (see the
-    // constant's doc comment — several export raw quantized units in the
-    // tens of thousands) don't float above / sink through / dwarf the board.
-    // Runs HERE (effect, not the useMemo above) — a Codex review caught the
-    // original version mutating state during render, which is unsafe.
+    // GLB rider auto-fit (registry-driven rider router, 2026-07-10; reworked
+    // 2026-07-13 Codex fit audit): normalize this creature's bbox height to
+    // its target (see the constants' doc comments — several assets export raw
+    // quantized units in the tens of thousands) so species whose native mesh
+    // scale wasn't authored for this context don't float above / sink through
+    // / dwarf the board. Runs HERE (effect, not the useMemo above) — a Codex
+    // review caught the original version mutating state during render, which
+    // is unsafe.
+    //
+    // Face the board nose FIRST (2026-07-12 founder directive — creature
+    // riders sit STILL, facing FORWARD), THEN measure: a yaw about +Y never
+    // changes bbox height, and measuring the already-yawed scene puts the
+    // bbox-center X/Z residuals below in final mount-local orientation so
+    // they cancel directly (measuring pre-yaw rotated the centering deltas
+    // out from under the fit). Persistent — nothing else writes a GLB rider's
+    // rotation (the old per-frame swim call that touched rotation.x/z is
+    // REMOVED entirely — see REEF_CREATURE_RIDER_FACE_YAW).
+    clonedScene.rotation.y = REEF_CREATURE_RIDER_FACE_YAW[speciesKey] ?? 0;
+
     // updateMatrixWorld(true) FIRST, then skeleton.update() — Skeleton.update()
     // reads existing matrixWorld values, it does not recompute them, so a
     // freshly-cloned hierarchy needs its world matrices current before bone
@@ -804,19 +840,34 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
     });
     const fitBox = new THREE.Box3().setFromObject(clonedScene);
     const fitSize = new THREE.Vector3();
+    const fitCenter = new THREE.Vector3();
     fitBox.getSize(fitSize);
-    const fitScale = fitSize.y > 1e-4 ? GLB_RIDER_TARGET_HEIGHT_LOCAL / fitSize.y : 1;
-    clonedScene.scale.setScalar(fitScale);
-    const groundOffsetY = -fitBox.min.y * fitScale;
-    clonedScene.position.y = groundOffsetY;
-
-    // Face the board nose (2026-07-12, founder directive — creature riders sit
-    // STILL, facing FORWARD). Applied ONCE here, after the fit box measurement
-    // above so the yaw can never perturb the bbox-based scale/grounding fit.
-    // Persistent — nothing else writes clonedScene.rotation.y for a GLB rider
-    // (the old per-frame swim call that used to touch rotation.x/z is REMOVED
-    // entirely, not merely stopped after one call — see REEF_CREATURE_RIDER_FACE_YAW).
-    clonedScene.rotation.y = REEF_CREATURE_RIDER_FACE_YAW[speciesKey] ?? 0;
+    fitBox.getCenter(fitCenter);
+    const fitTarget =
+      REEF_CREATURE_RIDER_TARGET_HEIGHT_OVERRIDE[speciesKey] ?? GLB_RIDER_TARGET_HEIGHT_LOCAL;
+    const groundSinkFraction =
+      REEF_CREATURE_RIDER_GROUND_SINK_FRACTION[speciesKey] ?? 0;
+    // MULTIPLY the current scale by the fit ratio — never replace it. The
+    // measurement above includes whatever scale the scene already carries, so
+    // a re-run measures height == target → ratio ≈ 1 → no-op. The old
+    // replace-based fit alternated fitted/native scale on repeated mounts
+    // (HMR / strict-mode re-mounts — lobster_plush provably flip-flopped
+    // 1.1 ↔ 0.675 local; 2026-07-13 Codex fit audit).
+    const fitRatio = fitSize.y > 1e-4 ? fitTarget / fitSize.y : 1;
+    clonedScene.scale.multiplyScalar(fitRatio);
+    // Ground Y + cancel the bbox-center X/Z offset in the same one-time op —
+    // several assets are modeled off their local origin (sweet_crab's center
+    // sits ~0.34 local off in X, which read as "hanging off the board's
+    // edge"). Deltas are ADDITIVE against the measured box (which already
+    // includes the current position), so re-runs measure ≈0 residuals and
+    // converge instead of clobbering a previously-applied offset.
+    clonedScene.position.x -= fitCenter.x * fitRatio;
+    clonedScene.position.z -= fitCenter.z * fitRatio;
+    // Jellyfish bbox bottom is its tentacle tips, not the visible body. Ground
+    // against a FRACTIONAL point inside the measured box so the bell sits on
+    // the deck and a re-run measures that same point at y≈0 (no double sink).
+    clonedScene.position.y -=
+      (fitBox.min.y + groundSinkFraction * fitSize.y) * fitRatio;
 
     mount.add(clonedScene);
     return () => {
@@ -1430,11 +1481,11 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
     // whole-scene rotation.x/z/position.y oscillation for static meshes via
     // applyTransformSwim, PLUS bone-name spine/tail/fin undulation for rigged
     // meshes like seahorse) is REMOVED entirely, not merely paused after one
-    // call. The mount effect above already sets clonedScene.position.y =
-    // groundOffsetY + rotation.y = the per-species face-forward correction
-    // ONCE; rotation.x/z default to 0 and nothing writes them per frame, so
-    // not calling anything here leaves a clean static rest pose with no stale
-    // mid-oscillation values.
+    // call. The mount effect above already applies the full one-time fit
+    // (per-species yaw → measure → idempotent scale ratio → ground Y +
+    // bbox-center X/Z cancellation); rotation.x/z default to 0 and nothing
+    // writes them per frame, so not calling anything here leaves a clean
+    // static rest pose with no stale mid-oscillation values.
 
     // Mark finished if finishedAt is set.
     if (entity.finishedAt && !finishedRef.current) {
@@ -1452,7 +1503,7 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
      *   groupRef  — world XZ position + Y rotation (from server via interpolation)
      *     └── gliderRef  — local Y elevation (GLIDER_LOCAL_Y) + bank tilt (rotation.z)
      *           ├── gliderMesh  — shared BoxGeometry board (2.5×0.25×5 local)
-     *           └── riderMountRef  — offset [0, 0.6, -0.5] + bob on Y; rotation.z=0
+     *           └── riderMountRef  — offset [0, 1.2, -0.3] + bob on Y; rotation.z=0
      *                 └── clonedScene  (avatar GLB, color-tinted)
      */
     <group ref={groupRef} scale={[KART_SCALE, KART_SCALE, KART_SCALE]}>
