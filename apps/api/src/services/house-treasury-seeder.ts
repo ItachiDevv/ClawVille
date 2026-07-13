@@ -43,6 +43,7 @@
 
 import { eq } from 'drizzle-orm';
 import { db, users, avatars, treasurySubjects } from '@clawville/database';
+import { recordCovenantAction } from './covenant-action-recorder';
 
 // ── Stable naming (single source of truth — DO NOT change without a re-seed) ──
 
@@ -150,7 +151,15 @@ class HouseTreasurySeederService {
             modelKey: 'lobster',
             harness: 'milady',
           })
-          .returning({ id: avatars.id });
+          .returning({ id: avatars.id, clawTokens: avatars.clawTokens });
+        await recordCovenantAction({
+          action: 'economy.genesis',
+          subjectType: 'avatar',
+          subjectId: avatar.id,
+          actorKind: 'system',
+          dedupeKey: `avatar:${avatar.id}:genesis`,
+          payload: { amount: avatar.clawTokens, provenance: 'soft', reason: 'avatar_genesis' },
+        });
         avatarId = avatar.id;
       } catch (err) {
         // Unique avatars.userId race — re-find the winner.

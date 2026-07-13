@@ -32,6 +32,7 @@ import type { LedgerTx } from './claw-token-ledger';
 export type CovenantAction =
   | 'economy.credit'
   | 'economy.debit'
+  | 'economy.genesis'
   | 'quest.accept'
   | 'quest.submit'
   | 'quest.approve'

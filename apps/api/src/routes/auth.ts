@@ -4,6 +4,7 @@ import { eq, and, or, isNull } from 'drizzle-orm';
 import { lucia } from '../lib/auth';
 import { db, users, agentBots, avatars } from '@clawville/database';
 import { npcSimulation } from '../services/npc-simulation';
+import { recordCovenantAction } from '../services/covenant-action-recorder';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
 import { consumeTicket } from '../services/session-ticket-service';
@@ -1175,7 +1176,15 @@ async function insertGuestAvatar(
           harness: 'milady',
           isGuest: true,
         })
-        .returning({ id: avatars.id, name: avatars.name });
+        .returning({ id: avatars.id, name: avatars.name, clawTokens: avatars.clawTokens });
+      await recordCovenantAction({
+        action: 'economy.genesis',
+        subjectType: 'avatar',
+        subjectId: row.id,
+        actorKind: 'human',
+        dedupeKey: `avatar:${row.id}:genesis`,
+        payload: { amount: row.clawTokens, provenance: 'soft', reason: 'avatar_genesis' },
+      });
       return row;
     } catch (err) {
       const code =

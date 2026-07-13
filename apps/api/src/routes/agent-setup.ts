@@ -3,6 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import type { AppContext } from '../types';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
+import { recordCovenantAction } from '../services/covenant-action-recorder';
 import {
   db,
   avatars,
@@ -391,6 +392,15 @@ agentSetupRoutes.post('/create', requireAuth, async (c) => {
       totalXp: 0,
     })
     .returning();
+
+  await recordCovenantAction({
+    action: 'economy.genesis',
+    subjectType: 'avatar',
+    subjectId: avatar.id,
+    actorKind: 'human',
+    dedupeKey: `avatar:${avatar.id}:genesis`,
+    payload: { amount: avatar.clawTokens, provenance: 'soft', reason: 'avatar_genesis' },
+  });
 
   return c.json({
     agent: {
@@ -815,6 +825,15 @@ agentSetupRoutes.post('/import', requireAuth, async (c) => {
       ...(configData.harness ? { harness: configData.harness } : {}),
     })
     .returning();
+
+  await recordCovenantAction({
+    action: 'economy.genesis',
+    subjectType: 'avatar',
+    subjectId: avatar.id,
+    actorKind: 'human',
+    dedupeKey: `avatar:${avatar.id}:genesis`,
+    payload: { amount: avatar.clawTokens, provenance: 'soft', reason: 'avatar_genesis' },
+  });
 
   return c.json({
     success: true,

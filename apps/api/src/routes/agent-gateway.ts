@@ -17,6 +17,7 @@ import {
   type AgentSubstrateRegistration,
 } from '@clawville/shared';
 import { npcSimulation } from '../services/npc-simulation';
+import { recordCovenantAction } from '../services/covenant-action-recorder';
 import { findPath } from '../services/pathfinding';
 import { memoryService } from '../services/memory-service';
 import { db, agentBots, avatars, users, buildingSkills, landParcels, eq, and, sql } from '@clawville/database';
@@ -1904,6 +1905,14 @@ agentGatewayRoutes.post('/join', async (c) => {
         .returning();
       avatar = inserted;
       avatarCreated = true;
+      await recordCovenantAction({
+        action: 'economy.genesis',
+        subjectType: 'avatar',
+        subjectId: inserted.id,
+        actorKind: 'agent',
+        dedupeKey: `avatar:${inserted.id}:genesis`,
+        payload: { amount: inserted.clawTokens, provenance: 'soft', reason: 'avatar_genesis' },
+      });
     } catch (err: unknown) {
       // Race-safe recovery: two concurrent /join calls with the same
       // identity both resolve to the same user, both observe "no avatar",

@@ -1863,13 +1863,38 @@ bountyRoutes.post('/:id/admin-fail-refund', adminOnly, async (c) => {
   // refunded state is carried by covenant_verification_passed=false rather than an
   // invented enum value. The creator's vault deposit has been reclaimed on-chain.
   await db.transaction(async (tx) => {
+    const refundedAt = new Date();
+    // TERMINALIZE with the refund (Codex covenant round 3 HIGH #3): the old
+    // persist only flipped the verdict flag, leaving a refunded composed
+    // bounty status='open' + vault_held — still claimable/approvable against
+    // an EMPTIED vault. The refund is terminal: cancel the bounty and
+    // auto-reject every non-terminal attempt, atomically with the record.
+    // (composition_state deliberately stays as-is — the schema has no
+    // 'refunded' label; terminal-refunded = status cancelled +
+    // covenant_verification_passed=false, and the resume crank only drives
+    // awaiting_finalize/reconcile states, never a cancelled vault_held row.)
     await tx
       .update(bounties)
       .set({
+        status: 'cancelled',
         covenantVerificationPassed: false,
-        updatedAt: new Date(),
+        updatedAt: refundedAt,
       })
       .where(eq(bounties.id, bounty.id));
+    await tx
+      .update(bountyAttempts)
+      .set({
+        status: 'rejected',
+        reviewNote: 'Auto-rejected: bounty escrow fail-refunded to the creator by an admin',
+        reviewedAt: refundedAt,
+        updatedAt: refundedAt,
+      })
+      .where(
+        and(
+          eq(bountyAttempts.bountyId, bounty.id),
+          sql`${bountyAttempts.status} IN ('claimed', 'in_progress', 'submitted', 'approved')`,
+        ),
+      );
     await recordCovenantAction(
       {
         action: 'bounty.refund',
@@ -1881,6 +1906,7 @@ bountyRoutes.post('/:id/admin-fail-refund', adminOnly, async (c) => {
           bountyId: bounty.id,
           rail: isComposed ? 'sap-payai-composed' : 'sap-usdc',
           tokenReward: bounty.tokenReward,
+          terminalized: 'cancelled',
           ...(bounty.escrowPda ? { escrowPda: bounty.escrowPda } : {}),
         },
       },
