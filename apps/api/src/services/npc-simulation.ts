@@ -22,7 +22,7 @@ import {
   CLAWVILLE_ORIENTATION_KNOWLEDGE,
   type HatcherWorldState,
 } from '@clawville/shared';
-import { generateNpcConversation, generateOpenClawConversation } from './npc-conversation-engine';
+import { generateCannedConversation, generateNpcConversation, generateOpenClawConversation } from './npc-conversation-engine';
 import {
   findPath,
   hasClearance,
@@ -62,6 +62,34 @@ import type { PlayerSnapshot } from '@clawville/shared';
 // necessity — if the client world dimension changes, change it here in the same diff.
 const MAP_WIDTH = 22528;
 const MAP_HEIGHT = 22528;
+// Watcher gate: how long after the last visibility heartbeat (POST
+// /api/npc/watch, sent every ~30s ONLY from a visible browser tab) the world
+// still counts as "watched" for ambient-banter inference. 90s tolerates two
+// missed beats/jitter; an empty (or all-hidden-tabs) world stops spending
+// within ~1.5 min. SSE connections deliberately do NOT arm this — the web
+// client keeps EventSource open in hidden tabs (join-budget protection), so a
+// backgrounded tab would otherwise hold the gate open forever (Codex round,
+// 2026-07-13).
+const WATCHER_GRACE_MS = 90_000;
+
+// Hard cost backstop for ambient banter, INDEPENDENT of the watcher latch: max
+// LLM-generated conversations per fixed hourly window (per box). The /watch
+// heartbeat is deliberately unauthenticated (anonymous explore visitors are
+// real watchers — the acquisition funnel), so the latch is spoofable by
+// design; this cap bounds the worst case a spoofer or held-open latch can burn
+// (~cap × $0.0002/convo on gpt-4o-mini) regardless of latch state (Codex
+// round, 2026-07-13). Over cap → canned lines. 0 disables LLM banter entirely.
+// Read per call so a redeploy-baked env change (or a test) takes effect
+// without module reload gymnastics.
+function banterLlmHourlyCap(): number {
+  // Unset/blank MUST fall to the default BEFORE numeric conversion:
+  // Number('') === 0, which would silently disable LLM banter on every box
+  // that never sets the var (Codex round 2, HIGH #1).
+  const raw = process.env.NPC_BANTER_HOURLY_LLM_CAP?.trim();
+  if (!raw) return 120;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 120;
+}
 
 // Hatcher proxy-cognition (partner #2, Phase A — 2026-06-01). The canonical
 // "you are inside ClawVille" orientation text, joined + frozen once at module
@@ -361,6 +389,27 @@ class NpcSimulation {
    * `room.npcs`, players from RoomRegistry).
    */
   private roomListeners: Map<string, Set<SSEListener>> = new Map();
+  /**
+   * Watcher-presence gate for ambient LLM banter (2026-07-13 OpenAI-usage
+   * audit — ambient NPC↔NPC chatter was ~410 inference calls/hr per box with
+   * zero humans online). Epoch-ms of the last VISIBILITY HEARTBEAT (`POST
+   * /api/npc/watch`, sent by the web client every ~30s only while
+   * `document.visibilityState === 'visible'`). This is the ONLY arming
+   * signal: SSE listeners do NOT count (the client keeps EventSource open in
+   * hidden tabs, so a backgrounded tab would hold the gate open forever), the
+   * REST snapshot fetch does NOT count (any crawler hitting the public
+   * endpoint once a minute would re-arm paid inference), and agent sessions
+   * are excluded at the route (banter is user entertainment; agents read
+   * world state via server-side perception). Ambient conversations spend
+   * inference only while `hasActiveWatchers()` AND the hourly LLM budget has
+   * headroom; otherwise they use the canned pool. Unwatched conversations
+   * still EXIST (canned), so snapshot + agent-perception shapes never change.
+   * (Codex adversarial round, 2026-07-13.)
+   */
+  private lastWatchedAt = 0;
+  /** Fixed hourly window for the banter LLM budget — see `banterLlmHourlyCap()`. */
+  private banterLlmWindowStart = 0;
+  private banterLlmUsed = 0;
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private arenaMode = false;
   private tickCount = 0;
@@ -465,6 +514,48 @@ class NpcSimulation {
 
   addListener(listener: SSEListener) { this.listeners.add(listener); }
   removeListener(listener: SSEListener) { this.listeners.delete(listener); }
+
+  /** Stamp watcher presence — see `lastWatchedAt`. Called ONLY by the
+   * `POST /api/npc/watch` visibility heartbeat (agent sessions excluded at
+   * the route). SSE listeners and REST snapshots must never call this. */
+  noteWorldWatched(): void { this.lastWatchedAt = Date.now(); }
+
+  /**
+   * True when ambient banter has an audience: a visibility heartbeat within
+   * the grace window. Deliberately NOT derived from live SSE listeners or
+   * snapshot fetches — see `lastWatchedAt`. `nowMs` is injectable for tests.
+   */
+  hasActiveWatchers(nowMs: number = Date.now()): boolean {
+    return nowMs - this.lastWatchedAt < WATCHER_GRACE_MS;
+  }
+
+  /**
+   * Hourly budget for LLM banter — the cost dampener that holds even if the
+   * watcher latch is spoofed or held open (Codex round, 2026-07-13). Fixed
+   * window: first consume after an hour rolls it. Consumed once per PAID
+   * REQUEST (a failed request still counts — conservative), never per
+   * conversation.
+   *
+   * SCOPE — deliberately per-process, NOT durable (Codex round-3 finding,
+   * accepted residual): a restart/crash-loop resets the window, and multiple
+   * processes would each get an allowance. Durable (DB-backed) accounting was
+   * evaluated and rejected as disproportionate for a cosmetic-chat budget,
+   * because two stronger bounds already cap worst-case spend regardless of
+   * this counter's state: (1) the visibility-heartbeat gate, and (2) the sim's
+   * own cadence — at most one conversation start per 8s × ≤2 paid legs
+   * ≈ 900 paid requests/hour ≈ $0.25/hour on gpt-4o-mini, vs the ~$0.10/hour
+   * this cap targets. The counter's job is killing the 24/7 idle burn, which
+   * a process-local window does fully. `nowMs` is injectable for tests.
+   */
+  tryConsumeBanterLlmBudget(nowMs: number = Date.now()): boolean {
+    if (nowMs - this.banterLlmWindowStart >= 60 * 60 * 1000) {
+      this.banterLlmWindowStart = nowMs;
+      this.banterLlmUsed = 0;
+    }
+    if (this.banterLlmUsed >= banterLlmHourlyCap()) return false;
+    this.banterLlmUsed++;
+    return true;
+  }
 
   /**
    * Multiplayer Phase 1 — subscribe to per-room snapshot broadcasts. The
@@ -2746,8 +2837,33 @@ class NpcSimulation {
         npc2Theme ? `${def2.name} specializes in ${npc2Theme.focus.split(',')[0]}` : '',
       ].filter(Boolean).join('. ') || undefined;
 
+      // Watcher gate (2026-07-13): `watched` evaluated ONCE so the branches and
+      // the log below can't disagree if a heartbeat lands mid-generation.
+      // - Paid legs = LLM requests for participants WITHOUT a client (the paid
+      //   `default` inference route). Only these are budgeted — and per
+      //   REQUEST, not per conversation (Codex round 3: a mixed conversation
+      //   makes up to two paid calls, so per-conversation consumption
+      //   understated spend 2×).
+      // - Agent legs (client.chat — hatcher-proxy / hermes-local server-managed
+      //   cognition) are NEVER gated: ambient conversations ARE those bodies'
+      //   cognition + [ACTION:] path, so gating them would cut a live partner
+      //   agent's actions whenever no human is watching (Codex round 2,
+      //   HIGH #2). Their inference is partner-hosted/local, not our OpenAI.
+      // - An empty world or an all-agent pair never consumes budget.
+      const watched = this.hasActiveWatchers();
+      const isAgentConvo = !!(client1 || client2);
+      const hasPaidLeg = !client1 || !client2;
+      let paidLegs = 0;
+      let refusedLegs = 0;
+      const tryConsumePaidLeg = () => {
+        const ok = watched && this.tryConsumeBanterLlmBudget();
+        if (ok) paidLegs++;
+        else refusedLegs++;
+        return ok;
+      };
+
       let messages;
-      if (client1 || client2) {
+      if (isAgentConvo) {
         messages = await generateOpenClawConversation(
           def1,
           def2,
@@ -2768,9 +2884,19 @@ class NpcSimulation {
             protocolEmitsInWorldActions(client.getProtocol())
               ? this.dispatchHatcherActions(npcId, rawReply)
               : rawReply,
+          // Watcher gate: agent legs always run; each non-agent leg pays for
+          // its own request or falls back to a canned line.
+          { tryConsumePaidLeg },
         );
-      } else {
+      } else if (tryConsumePaidLeg()) {
+        // Pure NPC↔NPC pair: ONE chat completion generates the whole 2-4 line
+        // conversation, so one unit here IS one paid request — exact.
         messages = await generateNpcConversation(def1, def2, this.arenaMode, cryptoContext);
+      } else {
+        // No visible-tab audience, or the hourly LLM budget is spent — don't
+        // burn inference on dialogue no one sees. Canned lines keep the
+        // conversation existing so bubbles/perception behave identically.
+        messages = generateCannedConversation(def1, def2);
       }
 
       const firstSpeaker = messages.length > 0 ? messages[0].npcId : null;
@@ -2780,7 +2906,15 @@ class NpcSimulation {
         state: 'active', typingNpcId: firstSpeaker, typingUntil: Date.now() + 2500,
       };
       this.conversations.set(conversation.id, conversation);
-      console.log(`[NPC Simulation] Conversation started: ${initiator.name} <-> ${partner.name}`);
+      // Burn-meter log: `paid=N` = paid LLM requests this conversation;
+      // '(canned, …)' = fully canned; '(npc-legs canned, …)' = agent cognition
+      // ran but one or more paid legs were refused.
+      let gateMarker = '';
+      if (hasPaidLeg && refusedLegs > 0) {
+        const reason = watched ? 'capped' : 'unwatched';
+        gateMarker = isAgentConvo ? ` (npc-legs canned, ${reason})` : ` (canned, ${reason})`;
+      }
+      console.log(`[NPC Simulation] Conversation started${gateMarker} paid=${paidLegs}: ${initiator.name} <-> ${partner.name}`);
     } catch (err) {
       console.error(`[NPC Simulation] Conversation generation failed, resetting NPCs:`, err);
       resetNpcsOnFailure();

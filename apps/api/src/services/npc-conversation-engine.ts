@@ -150,6 +150,13 @@ function parseConversation(
  * For each OpenClaw participant, call their bot; for non-OpenClaw, call the LLM
  * (OpenAI — sole backend). LLM failures produce empty replies so the loop
  * degrades gracefully instead of throwing.
+ *
+ * Watcher gate (2026-07-13, Codex rounds 2-3): agent legs (`client.chat` +
+ * `processProxyReply` action dispatch) ALWAYS run — for server-managed bodies
+ * ambient conversations ARE the cognition/action path, and their inference is
+ * partner-hosted/local, not our paid route. Only the non-agent legs are
+ * budgeted, per PAID REQUEST via `opts.tryConsumePaidLeg` — a refused leg
+ * speaks a canned line instead of hitting the paid `default` route.
  */
 export async function generateOpenClawConversation(
   npc1: NpcDefinition,
@@ -166,7 +173,18 @@ export async function generateOpenClawConversation(
    * unchanged for non-proxy clients / when omitted.
    */
   processProxyReply?: (npcId: string, client: AgentSubstrateClient, rawReply: string) => string,
+  opts?: {
+    /**
+     * Per-PAID-REQUEST budget hook (Codex round 3: one conversation can make
+     * up to two paid calls — one per non-agent turn — so consuming a single
+     * unit per conversation understated spend 2×). Called immediately before
+     * EACH non-agent LLM leg; return false to substitute a canned line for
+     * that leg. Omitted ⇒ legs are unrestricted (legacy behavior).
+     */
+    tryConsumePaidLeg?: () => boolean;
+  },
 ): Promise<ConversationMessage[]> {
+  const tryConsumePaidLeg = opts?.tryConsumePaidLeg ?? (() => true);
   const arenaContext = arenaMode
     ? ' You are in the ClawVille Arena where NPCs battle each other.'
     : '';
@@ -202,11 +220,16 @@ Reply as ${npc.name} with a single short sentence (1-2 sentences max). Stay in c
           console.error(`[OpenClaw] Chat failed for ${npc.name}:`, err);
           reply = '';
         }
-      } else {
+      } else if (tryConsumePaidLeg()) {
         // Use the LLM (OpenAI, sole backend) for the non-OpenClaw participant. No
         // system instruction here — the original call shoved everything into
         // the user message as well, so we keep that shape identical for parity.
+        // Budget consumed per REQUEST (the line above), never per conversation.
         reply = await callLlmForNpc(null, contextMsg);
+      } else {
+        // Watcher gate / budget: paid leg refused — canned line, zero inference.
+        // The agent leg(s) above still ran, so partner cognition/actions are intact.
+        reply = cannedNpcLine(messages.length === 0);
       }
 
       // Clean up — remove name prefix if the model added it
@@ -234,19 +257,31 @@ Reply as ${npc.name} with a single short sentence (1-2 sentences max). Stay in c
   return messages;
 }
 
-const FALLBACK_GREETINGS = [
+// Exported for the watcher-gate regression tests (assert gated non-agent legs
+// draw from these pools instead of the paid route).
+export const FALLBACK_GREETINGS = [
   'Hey there! How\'s business?',
   'Oh, it\'s you! What brings you around?',
   'Nice day for a stroll, huh?',
   'Haven\'t seen you in a while!',
 ];
 
-const FALLBACK_RESPONSES = [
+export const FALLBACK_RESPONSES = [
   'Can\'t complain! The shop\'s been busy.',
   'Just taking a break. It\'s hectic today!',
   'Indeed! The weather\'s perfect.',
   'I\'ve been around, just busy as usual!',
 ];
+
+/**
+ * One canned line for a gated non-agent participant inside an agent-involving
+ * ambient conversation (watcher gate / hourly budget): greeting for the
+ * opener, response otherwise — the same pools the full-canned fallback uses.
+ */
+function cannedNpcLine(isOpener: boolean): string {
+  const pool = isOpener ? FALLBACK_GREETINGS : FALLBACK_RESPONSES;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
 
 function getFallbackConversation(
   npc1: NpcDefinition,
@@ -258,4 +293,18 @@ function getFallbackConversation(
     { npcId: npc1.id, npcName: npc1.name, text: FALLBACK_GREETINGS[greetIdx] },
     { npcId: npc2.id, npcName: npc2.name, text: FALLBACK_RESPONSES[respIdx] },
   ];
+}
+
+/**
+ * Zero-inference conversation for unwatched worlds — the watcher gate in
+ * `npc-simulation.tryStartConversation` calls this INSTEAD of the LLM paths
+ * when no human-facing consumer (SSE stream / recent snapshot poll) exists.
+ * Same canned pool the LLM-failure path uses, exported so the sim can skip
+ * the engine deliberately, not just on failure.
+ */
+export function generateCannedConversation(
+  npc1: NpcDefinition,
+  npc2: NpcDefinition
+): ConversationMessage[] {
+  return getFallbackConversation(npc1, npc2);
 }

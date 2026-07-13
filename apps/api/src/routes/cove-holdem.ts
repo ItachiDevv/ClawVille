@@ -95,6 +95,7 @@ import {
 import { sessionMiddleware } from '../middleware/auth';
 import { resolveAgentSession } from '../middleware/require-auth-or-agent';
 import { isGuestUser } from '../middleware/require-non-guest';
+import { noStorePrivate } from '../middleware/no-store';
 import { createServerSeed } from '../services/provable-rng';
 import {
   playHand,
@@ -1826,7 +1827,7 @@ async function loadResyncHand(
 // subject kind that owns an open table. An agent + its bound human share one
 // userId-keyed table, so both see the same row.
 
-coveHoldemRouter.get('/session/current', async (c) => {
+coveHoldemRouter.get('/session/current', noStorePrivate, async (c) => {
   const subject = await getSubject(c);
   const row = await db.query.holdemTables.findFirst({
     where: isLedgerSubject(subject)
@@ -1849,7 +1850,7 @@ coveHoldemRouter.get('/session/current', async (c) => {
 // was only ever excluding guests by an extra check, not a real ownership gap).
 // Returns the live in-progress hand (if any) for resync (A2).
 
-coveHoldemRouter.get('/session/:id', async (c) => {
+coveHoldemRouter.get('/session/:id', noStorePrivate, async (c) => {
   const tableId = c.req.param('id');
   if (!/^[0-9a-f-]{36}$/i.test(tableId)) {
     throw new HTTPException(400, { message: 'invalid_table_id' });

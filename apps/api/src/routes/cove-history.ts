@@ -52,6 +52,7 @@ import {
 } from '@clawville/database';
 import { requireAuth, sessionMiddleware } from '../middleware/auth';
 import { resolveAgentSession, AGENT_SESSION_HEADER } from '../middleware/require-auth-or-agent';
+import { noStorePrivate } from '../middleware/no-store';
 import { runSpin, type MachineSlug, type SpinResult } from '../services/slot-engine';
 import {
   replayShoeUpToHand,
@@ -248,7 +249,7 @@ function eventBelongsToSubject(event: CoveGameEvent, subject: Subject): boolean 
 
 // ─── GET / ─────────────────────────────────────────────────────────────────
 
-coveHistoryRouter.get('/', async (c) => {
+coveHistoryRouter.get('/', noStorePrivate, async (c) => {
   const queryParsed = historyQuerySchema.safeParse({
     game: c.req.query('game'),
     outcome: c.req.query('outcome'),
@@ -311,7 +312,7 @@ coveHistoryRouter.get('/', async (c) => {
 
 // ─── GET /:eventId ────────────────────────────────────────────────────────
 
-coveHistoryRouter.get('/:eventId', async (c) => {
+coveHistoryRouter.get('/:eventId', noStorePrivate, async (c) => {
   const eventId = c.req.param('eventId');
   if (!/^[0-9a-f-]{36}$/i.test(eventId)) {
     throw new HTTPException(400, { message: 'invalid_event_id' });
@@ -334,7 +335,7 @@ coveHistoryRouter.get('/:eventId', async (c) => {
 
 // ─── GET /:eventId/verify ─────────────────────────────────────────────────
 
-coveHistoryRouter.get('/:eventId/verify', async (c) => {
+coveHistoryRouter.get('/:eventId/verify', noStorePrivate, async (c) => {
   const eventId = c.req.param('eventId');
   if (!/^[0-9a-f-]{36}$/i.test(eventId)) {
     throw new HTTPException(400, { message: 'invalid_event_id' });

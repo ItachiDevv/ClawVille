@@ -64,6 +64,7 @@ import { useLocationAgent } from '@/hooks/use-locations';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { api } from '@/lib/api';
+import { clearIdentityState } from '@/lib/clear-identity-state';
 import { useAuthMe } from '@/hooks/use-auth-me';
 
 // Responsive: uses the global `useIsMobile` which catches iPad-on-Mac-UA
@@ -684,7 +685,6 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
   const openLeaderboard = useGameStore((s: GameState) => s.openLeaderboard);
   const toggleActivityFeed = useGameStore((s: GameState) => s.toggleActivityFeed);
   const addToast = useGameStore((s: GameState) => s.addToast);
-  const resetStore = useGameStore((s: GameState) => s.resetStore);
   const queryClient = useQueryClient();
 
   // Phase 5.1 — WORLDS section gates on the same avatar presence signal the
@@ -847,40 +847,33 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
   const handleLogout = async () => {
     setLoggingOut(true);
     try {
-      // Stop autonomy engine before resetting store — resetStore uses raw
-      // set() which bypasses setControlMode's cleanup logic, so the autonomy
-      // interval would keep ticking against a logged-out state.
-      const { useAutonomyStore } = require('@/stores/autonomy') as typeof import('@/stores/autonomy');
-      useAutonomyStore.getState().stopAutonomy();
-
-      // §B.1 money-path belt (2026-07-08): resetStore() fires the Autonomous
-      // server-deactivate POST (leaveAutonomousServerCleanup). Run it BEFORE
-      // api.logout() so that POST goes out with a STILL-VALID cookie instead of
-      // 401ing after the session is invalidated. Belt only — the POST is
-      // fire-and-forget so it still races the cookie invalidation; the
-      // AUTHORITATIVE guard is the server-side unenroll in POST /logout
-      // (cookie-independent). Tradeoff: resetStore runs even if api.logout()
-      // network-fails — acceptable (the client is already deactivated + the
-      // server route is the real guarantee).
-      resetStore();
+      // §B.1 money-path belt (2026-07-08): the sweep below runs resetStore(),
+      // which fires the Autonomous server-deactivate POST
+      // (leaveAutonomousServerCleanup). It MUST run BEFORE api.logout() so
+      // that POST goes out with a STILL-VALID cookie instead of 401ing after
+      // the session is invalidated. Belt only — the POST is fire-and-forget
+      // so it still races the cookie invalidation; the AUTHORITATIVE guard is
+      // the server-side unenroll in POST /logout (cookie-independent).
+      // Tradeoff: the sweep runs even if api.logout() network-fails —
+      // acceptable (the client is already deactivated + the server route is
+      // the real guarantee).
+      //
+      // Balance-cache fix 2026-07-12: the old inline sequence here
+      // (stopAutonomy → resetStore → queryClient.clear → players/research
+      // clears) moved into clearIdentityState — ONE sweep shared with
+      // login/signup and the silent-expiry watcher, now also covering the
+      // stores this handler used to miss (cove session balances, poker,
+      // activity, quest, guest land sandbox). Ordering invariants
+      // (stopAutonomy first, Zustand before queryClient.clear) are preserved
+      // inside the helper.
+      clearIdentityState(queryClient);
       await api.logout();
-      // Auth-state-reconciliation fix (2026-06-19). resetStore() only resets the
-      // GAME Zustand slice — the SHARED SPA QueryClient still holds the logged-out
-      // user's ['auth-me'] / ['avatar'] / ['agent-session'] (+ everything else),
-      // fresh for staleTime, so the next session (or a guest who switches to NPC
-      // mode after) inherits the prior identity ("login behavior follows as NPC
-      // after logout"). Nuke the whole cache so the next page load fetches clean.
-      queryClient.clear();
-      // Defensive: drop remote-player + research stream state too. The /game
-      // unmount also clears players via useWorldStream cleanup, but logging out
-      // from anywhere should leave no cross-user residue regardless of route.
-      try {
-        const { usePlayerStore } = require('@/stores/players') as typeof import('@/stores/players');
-        usePlayerStore.getState().clear();
-        const { useResearchStore } = require('@/stores/research') as typeof import('@/stores/research');
-        useResearchStore.getState().clearThoughts();
-        useResearchStore.getState().clearCollaborationEntries();
-      } catch { /* stores may not be loaded on this route */ }
+      // The sweep's resetQueries refetches raced api.logout() with the OLD
+      // still-valid cookie and may have re-cached the logged-out identity
+      // (fresh for staleTime). Cancel those and reset again now that the
+      // session is dead — the refetches resolve 401 → anonymous.
+      void queryClient.cancelQueries();
+      void queryClient.resetQueries();
       router.push('/login');
     } catch {
       setLoggingOut(false);

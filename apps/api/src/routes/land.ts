@@ -226,6 +226,7 @@ import { requireAuthOrAgentSession } from '../middleware/require-auth-or-agent';
 import type { ActivityAuthContext } from '../middleware/require-auth-or-agent';
 import { requireNonGuestIdentity } from '../middleware/require-non-guest';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
+import { noStorePrivate } from '../middleware/no-store';
 import { logEventFromContext } from '../services/event-logger';
 import { broadcastLandEvent } from './world';
 import {
@@ -899,7 +900,7 @@ landRoutes.get('/owned/:avatarId', async (c) => {
 
 // ─── 3. GET /me  (AUTH) ─────────────────────────────────────────────────────
 
-landRoutes.get('/me', requireAuthOrAgentSession, async (c) => {
+landRoutes.get('/me', requireAuthOrAgentSession, noStorePrivate, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
   // Bypass the cache for the owner's own view — a just-completed buy/place/upgrade
@@ -2742,7 +2743,7 @@ landRoutes.get('/structures/:structureId/services', async (c) => {
 // two are DISTINCT literal paths (`/services/mine` vs `/services`) with no param
 // route between them (there is no `GET /services/:id`), so there is no shadow.
 
-landRoutes.get('/services/mine', requireAuthOrAgentSession, async (c) => {
+landRoutes.get('/services/mine', requireAuthOrAgentSession, noStorePrivate, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 

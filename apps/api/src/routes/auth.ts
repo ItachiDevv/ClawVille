@@ -8,6 +8,7 @@ import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
 import { consumeTicket } from '../services/session-ticket-service';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
+import { noStorePrivate } from '../middleware/no-store';
 import { issueAuthToken, consumeAuthToken } from '../services/auth-token-service';
 import { sendEmail, isGuestEmail } from '../services/email-service';
 import {
@@ -39,7 +40,7 @@ authRoutes.use('*', sessionMiddleware);
 // mapping doesn't include either column today, so we read them off the
 // raw `users` row. Cost: one indexed PK lookup per `/me` call — same
 // shape as the agent-banner dismissal read below.
-authRoutes.get('/me', requireAuth, async (c) => {
+authRoutes.get('/me', requireAuth, noStorePrivate, async (c) => {
   const user = c.get('user');
   const row = await db.query.users.findFirst({
     where: eq(users.id, user.id),
@@ -107,7 +108,7 @@ const EXTERNAL_ACTIVE_WINDOW_MS = (() => {
   return Number.isFinite(n) && n > 0 ? n * 1000 : 300_000; // default 5 min
 })();
 
-authRoutes.get('/me/agent-session', requireAuth, async (c) => {
+authRoutes.get('/me/agent-session', requireAuth, noStorePrivate, async (c) => {
   const user = c.get('user');
 
   const avatar = await db.query.avatars.findFirst({

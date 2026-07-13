@@ -62,6 +62,15 @@ interface LandStore {
 
   /** Reset a single parcel (by parcelCode) to 'available'. */
   release: (parcelCode: string) => void;
+
+  /**
+   * Drop the OWNER's structure snapshot (auth-transition sweep,
+   * `clearIdentityState`). structures is ONE avatar's placed set — it must
+   * not stay rendered for the next identity. `parcels` (public world state)
+   * is deliberately untouched: wiping it would blank the world's
+   * for-sale/owned display until the next hydrator remount.
+   */
+  clearOwnerStructures: () => void;
 }
 
 export const useLandStore = create<LandStore>()((set) => ({
@@ -97,6 +106,9 @@ export const useLandStore = create<LandStore>()((set) => ({
       next.set(parcelId, { status: 'available', ownerAvatarId: null });
       return { parcels: next };
     }),
+
+  clearOwnerStructures: () =>
+    set(() => ({ structures: new Map<string, PlacedStructure>() })),
 }));
 
 /** Helper — get the status for a parcel, defaulting to 'available'. */

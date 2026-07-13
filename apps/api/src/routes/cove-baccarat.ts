@@ -88,6 +88,7 @@ import {
 import { sessionMiddleware } from '../middleware/auth';
 import { resolveAgentSession } from '../middleware/require-auth-or-agent';
 import { isGuestUser } from '../middleware/require-non-guest';
+import { noStorePrivate } from '../middleware/no-store';
 import { createServerSeed } from '../services/provable-rng';
 import {
   playCoup,
@@ -1194,7 +1195,7 @@ coveBaccaratRouter.post('/session/close', async (c) => {
 // open shoe after a reconnect, exactly like a human after a page refresh. An
 // agent + its bound human share one userId-keyed shoe, so both see the same row.
 
-coveBaccaratRouter.get('/session/current', async (c) => {
+coveBaccaratRouter.get('/session/current', noStorePrivate, async (c) => {
   const subject = await getSubject(c);
   if (!isLedgerSubject(subject)) {
     throw new HTTPException(403, { message: 'guest_has_no_persistent_shoe: sign in or connect an agent' });
@@ -1213,7 +1214,7 @@ coveBaccaratRouter.get('/session/current', async (c) => {
 // agent can inspect its own shoe; ownerMatch binds to the resolved userId, so an
 // agent can never read another user's shoe by id.
 
-coveBaccaratRouter.get('/session/:id', async (c) => {
+coveBaccaratRouter.get('/session/:id', noStorePrivate, async (c) => {
   const shoeId = c.req.param('id');
   if (!/^[0-9a-f-]{36}$/i.test(shoeId)) {
     throw new HTTPException(400, { message: 'invalid_shoe_id' });
