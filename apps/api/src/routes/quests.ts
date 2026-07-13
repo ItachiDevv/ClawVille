@@ -11,6 +11,18 @@ import { requireNonGuestIdentity } from '../middleware/require-non-guest';
 import { noStorePrivate } from '../middleware/no-store';
 import { creditClawTokens } from '../services/claw-token-ledger';
 import { logEventFromContext } from '../services/event-logger';
+// Covenant action-record stream (2026-07-13): quest lifecycle commitments
+// (accept/submit/approve/reject) append records in the SAME tx as the write.
+// The reward credit's economy.credit record rides the ledger hook.
+import {
+  recordCovenantAction,
+  type CovenantActorKind,
+} from '../services/covenant-action-recorder';
+import { createHash } from 'crypto';
+
+/** Map the auth identity kind onto the covenant actor vocabulary. */
+const toActorKind = (kind: 'user' | 'agent'): CovenantActorKind =>
+  kind === 'user' ? 'human' : 'agent';
 import {
   db,
   users,
@@ -511,6 +523,8 @@ questRoutes.post('/admin/:submissionId/review', requireAuth, async (c) => {
         reason: 'quest_complete',
         source: 'quest',
         metadata: { questId: quest.id, submissionId: claimed.id },
+        // Ledger-hook attribution: the ADMIN's approval drove this credit.
+        actorKind: 'admin',
       }, tx);
 
       // 4. Create quest_reward record
@@ -521,6 +535,26 @@ questRoutes.post('/admin/:submissionId/review', requireAuth, async (c) => {
         tokensAwarded: quest.tokenReward,
         titleAwarded: quest.titleReward ?? null,
       });
+
+      // Covenant record — same tx as claim+slot+credit+reward: the approval
+      // verdict and its record commit or roll back together. (The credit above
+      // additionally emitted its own economy.credit record via the ledger hook.)
+      await recordCovenantAction(
+        {
+          action: 'quest.approve',
+          subjectType: 'avatar',
+          subjectId: claimed.avatarId,
+          actorKind: 'admin',
+          payload: {
+            questId: quest.id,
+            submissionId: claimed.id,
+            tokensAwarded: quest.tokenReward,
+            ...(quest.titleReward ? { titleAwarded: quest.titleReward } : {}),
+            ...(reviewNote ? { reviewNote } : {}),
+          },
+        },
+        tx,
+      );
 
       // 5. If currentCompletions >= maxCompletions, mark quest as 'completed'
       if (quest.maxCompletions && newCompletions >= quest.maxCompletions) {
@@ -544,23 +578,42 @@ questRoutes.post('/admin/:submissionId/review', requireAuth, async (c) => {
       ...result,
     });
   } else {
-    // Rejected — also use atomic update to prevent double-review
-    const [claimed] = await db
-      .update(questSubmissions)
-      .set({
-        status: 'rejected',
-        reviewNote: reviewNote ?? null,
-        reviewedBy: admin.id,
-        reviewedAt: now,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(questSubmissions.id, submissionId),
-          sql`${questSubmissions.status} IN ('submitted', 'in_review')`
+    // Rejected — also use atomic update to prevent double-review. Wrapped in a
+    // tx so the covenant record commits with the verdict.
+    const claimed = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(questSubmissions)
+        .set({
+          status: 'rejected',
+          reviewNote: reviewNote ?? null,
+          reviewedBy: admin.id,
+          reviewedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(questSubmissions.id, submissionId),
+            sql`${questSubmissions.status} IN ('submitted', 'in_review')`
+          )
         )
-      )
-      .returning();
+        .returning();
+      if (!row) return undefined;
+      await recordCovenantAction(
+        {
+          action: 'quest.reject',
+          subjectType: 'avatar',
+          subjectId: row.avatarId,
+          actorKind: 'admin',
+          payload: {
+            questId: row.questId,
+            submissionId: row.id,
+            ...(reviewNote ? { reviewNote } : {}),
+          },
+        },
+        tx,
+      );
+      return row;
+    });
 
     if (!claimed) {
       throw new HTTPException(409, {
@@ -640,7 +693,7 @@ questRoutes.post('/:id/accept', requireAuthOrAgentSession, requireLedgerCapableI
   const id = c.req.param('id');
   validateUuid(id, 'Quest');
 
-  const { avatarId } = c.get('identity');
+  const { avatarId, kind: identityKind } = c.get('identity');
 
   // Verify quest exists, is active, and has not expired (Codex round 3 —
   // expiry was enforced by the hosted ACCEPT_QUEST action but not here, so
@@ -703,14 +756,29 @@ questRoutes.post('/:id/accept', requireAuthOrAgentSession, requireLedgerCapableI
   // and gets the same 400 the slow path returns.
   let submission;
   try {
-    [submission] = await db
-      .insert(questSubmissions)
-      .values({
-        questId: id,
-        avatarId,
-        status: 'accepted',
-      })
-      .returning();
+    submission = await db.transaction(async (tx) => {
+      const [inserted] = await tx
+        .insert(questSubmissions)
+        .values({
+          questId: id,
+          avatarId,
+          status: 'accepted',
+        })
+        .returning();
+      // Covenant record — same tx: the acceptance commitment and its record
+      // commit or roll back together.
+      await recordCovenantAction(
+        {
+          action: 'quest.accept',
+          subjectType: 'avatar',
+          subjectId: avatarId,
+          actorKind: toActorKind(identityKind),
+          payload: { questId: id, submissionId: inserted.id },
+        },
+        tx,
+      );
+      return inserted;
+    });
   } catch (err) {
     const pgCode = (err as { code?: string; cause?: { code?: string } });
     if (pgCode?.code === '23505' || pgCode?.cause?.code === '23505') {
@@ -794,7 +862,7 @@ questRoutes.post('/:id/submit', requireAuthOrAgentSession, requireLedgerCapableI
     });
   }
 
-  const { avatarId } = c.get('identity');
+  const { avatarId, kind: identityKind } = c.get('identity');
 
   const now = new Date();
 
@@ -805,23 +873,48 @@ questRoutes.post('/:id/submit', requireAuthOrAgentSession, requireLedgerCapableI
   // approvable (and creditable) a second time. An 'approved'/'rejected' row can
   // now never match; the quest_rewards_submission_unique index is the
   // defense-in-depth behind this.
-  const [updated] = await db
-    .update(questSubmissions)
-    .set({
-      status: 'submitted',
-      prLink: parsed.data.prLink ?? null,
-      submissionNote: parsed.data.submissionNote,
-      submittedAt: now,
-      updatedAt: now,
-    })
-    .where(
-      and(
-        eq(questSubmissions.questId, id),
-        eq(questSubmissions.avatarId, avatarId),
-        sql`${questSubmissions.status} IN ('accepted', 'in_progress')`
+  const updated = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(questSubmissions)
+      .set({
+        status: 'submitted',
+        prLink: parsed.data.prLink ?? null,
+        submissionNote: parsed.data.submissionNote,
+        submittedAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(questSubmissions.questId, id),
+          eq(questSubmissions.avatarId, avatarId),
+          sql`${questSubmissions.status} IN ('accepted', 'in_progress')`
+        )
       )
-    )
-    .returning();
+      .returning();
+    if (!row) return undefined;
+    // Covenant record — same tx as the submit CAS. The note itself lives on
+    // the submission row; the record carries its sha256 + length so the claim
+    // is bound without duplicating up to 2000 chars into every record.
+    await recordCovenantAction(
+      {
+        action: 'quest.submit',
+        subjectType: 'avatar',
+        subjectId: avatarId,
+        actorKind: toActorKind(identityKind),
+        payload: {
+          questId: id,
+          submissionId: row.id,
+          ...(row.prLink ? { prLink: row.prLink } : {}),
+          noteSha256: createHash('sha256')
+            .update(parsed.data.submissionNote, 'utf8')
+            .digest('hex'),
+          noteLength: parsed.data.submissionNote.length,
+        },
+      },
+      tx,
+    );
+    return row;
+  });
 
   if (!updated) {
     throw new HTTPException(404, {

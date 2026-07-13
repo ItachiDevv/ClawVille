@@ -575,7 +575,7 @@ openclawRoutes.post('/chat', async (c) => {
     try {
       const runtime = await agentOrchestrator.ensureAgentRuntime(elizaAgentId);
       if (runtime) {
-        const services = buildRuntimeServices(db);
+        const services = buildRuntimeServices(db, { actorKind: 'agent' });
         const state: Record<string, any> = {
           avatarId: bot?.id ?? sessionId,
           userId: botName,
@@ -722,7 +722,7 @@ openclawRoutes.post('/location-chat', sessionMiddleware, async (c) => {
     try {
       const runtime = await agentOrchestrator.ensureAgentRuntime(elizaAgentId);
       if (runtime) {
-        const locServices = buildRuntimeServices(db);
+        const locServices = buildRuntimeServices(db, { actorKind: 'agent' });
         const locState: Record<string, any> = {
           avatarId: locBot?.id ?? sessionId,
           userId: locBotName,

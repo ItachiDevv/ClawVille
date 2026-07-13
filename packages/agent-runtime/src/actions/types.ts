@@ -15,6 +15,19 @@ export interface ClawTokenServiceParams {
   metadata: Record<string, any>;
 }
 
+/**
+ * Covenant action-record input (2026-07-13). Mirrors the API-side
+ * `CovenantActionInput` (apps/api covenant-action-recorder.ts) — typed loosely
+ * here so agent-runtime never imports apps/api.
+ */
+export interface CovenantActionRecordParams {
+  action: string;
+  subjectType: 'avatar' | 'treasury' | 'system';
+  subjectId: string;
+  actorKind?: string | null;
+  payload: Record<string, unknown>;
+}
+
 export interface ClawvilleServices {
   /** Credit ClawTokens to an avatar (returns new balance) */
   creditClawTokens: (params: ClawTokenServiceParams) => Promise<{ balanceAfter: number }>;
@@ -22,6 +35,17 @@ export interface ClawvilleServices {
   debitClawTokens: (params: ClawTokenServiceParams) => Promise<{ balanceAfter: number }>;
   /** Drizzle query builder instance (injected from the API layer) */
   db: any;
+  /**
+   * Covenant action-record stream append (2026-07-13) — injected by the API's
+   * `buildRuntimeServices`, pre-bound to the surface's actor kind. Pass the
+   * enclosing drizzle `tx` to make the record atomic with the action's write.
+   * OPTIONAL so bespoke service constructors (tests, older bridges) keep
+   * compiling; handlers must guard for presence.
+   */
+  recordCovenantAction?: (
+    params: CovenantActionRecordParams,
+    tx?: any,
+  ) => Promise<{ id: string }>;
 }
 
 export interface ClawvilleActionState {

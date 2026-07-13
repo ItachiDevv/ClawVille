@@ -1175,7 +1175,7 @@ avatarRoutes.post('/me/chat', requireAuth, async (c) => {
   // Build state for Providers + Actions.
   // Adapter translates runtime's `avatarId` field → ledger's `avatarId` field.
   // See `services/runtime-services-adapter.ts` for rationale.
-  const services = buildRuntimeServices(db);
+  const services = buildRuntimeServices(db, { actorKind: 'human' });
 
   let worldSnapshot: any = null;
   try {
