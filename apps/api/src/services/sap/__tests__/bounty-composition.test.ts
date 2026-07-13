@@ -47,7 +47,7 @@ const VAULT_PDA = 'VaultPda1111111111111111111111111111111111';
 const VAULT_PDA_2 = 'VaultPda2222222222222222222222222222222222';
 const PAYOUT_PDA = 'PayoutPda111111111111111111111111111111111';
 const AUDIT_ROOT = 'a'.repeat(64);
-const REWARD = 100; // 100 whole USDC
+const REWARD = 100; // 100 vCLAW = $1.00
 
 // A passing house-pricing-tier publish (the LEG-1 open prerequisite). Live-shaped
 // SapWriteResult success — the escrow-open slice republishes the menu at the bounty
@@ -102,15 +102,15 @@ function happyDeps(overrides: Partial<ComposedBountyDeps> = {}): ComposedBountyD
 
 describe('composed bounty money math', () => {
   it('funds the vault at MAX(reward+fee, 1% create floor) = the 1% floor', () => {
-    // principal 100_000_000; 1% floor = 1_000_000; 0.5% fee = 500_000 ⇒ floor wins.
-    expect(bountyVaultDeposit(REWARD)).toBe(101_000_000n);
-    expect(usdcRewardBaseUnits(REWARD)).toBe(100_000_000n);
-    expect(computeV2ProtocolFee(100_000_000n)).toBe(500_000n);
+    // principal 1_000_000; 1% floor = 10_000; 0.5% fee = 5_000 ⇒ floor wins.
+    expect(bountyVaultDeposit(REWARD)).toBe(1_010_000n);
+    expect(usdcRewardBaseUnits(REWARD)).toBe(1_000_000n);
+    expect(computeV2ProtocolFee(1_000_000n)).toBe(5_000n);
   });
 
   it('reclaimable dust = deposit − principal − fee (the ~0.5% headroom spread)', () => {
-    // 101_000_000 − 100_000_000 − 500_000 = 500_000
-    expect(bountyReclaimDustBaseUnits(REWARD)).toBe(500_000n);
+    // 1_010_000 − 1_000_000 − 5_000 = 5_000
+    expect(bountyReclaimDustBaseUnits(REWARD)).toBe(5_000n);
   });
 
   it('conserves exactly: creator deposit = hunter reward + treasury fee + creator dust', () => {
@@ -200,7 +200,7 @@ describe('openComposedBountyEscrow (post → vault held)', () => {
     expect(order).toEqual(['pricing', 'open']); // pricing strictly precedes create
     expect(pricingInput.workerAvatarId).toBe(HOUSE);
     expect(pricingInput.tierId).toBe('bounty-usdc');
-    expect(pricingInput.pricePerCall).toBe(usdcRewardBaseUnits(REWARD)); // 100_000_000 for a $100 bounty
+    expect(pricingInput.pricePerCall).toBe(usdcRewardBaseUnits(REWARD)); // 1_000_000 for a $1 bounty
   });
 
   it('tier publish FAILURE ⇒ typed `internal` failure and the vault is NEVER opened (no 6148-doomed vault)', async () => {
@@ -702,8 +702,8 @@ describe('resumeComposedBounty (finalize/payout crank)', () => {
 // 6. USDC bounty reward FLOOR — env-configurable (mainnet-enablement slice)
 // ═══════════════════════════════════════════════════════════════════════════
 describe('resolveUsdcBountyRewardMin (USDC-rail reward floor)', () => {
-  it('defaults to 10 whole USDC when unset', () => {
-    expect(resolveUsdcBountyRewardMin(undefined)).toBe(10);
+  it('defaults to 5 vCLAW when unset', () => {
+    expect(resolveUsdcBountyRewardMin(undefined)).toBe(5);
   });
 
   it('honors the staging/mainnet-smoke override of 1', () => {
@@ -714,11 +714,11 @@ describe('resolveUsdcBountyRewardMin (USDC-rail reward floor)', () => {
     expect(resolveUsdcBountyRewardMin('25')).toBe(25);
   });
 
-  it('clamps sub-1 / non-integer / garbage back to the default 10', () => {
-    expect(resolveUsdcBountyRewardMin('0')).toBe(10);
-    expect(resolveUsdcBountyRewardMin('-5')).toBe(10);
-    expect(resolveUsdcBountyRewardMin('abc')).toBe(10);
-    expect(resolveUsdcBountyRewardMin('')).toBe(10);
+  it('clamps sub-1 / non-integer / garbage back to the default 5 vCLAW', () => {
+    expect(resolveUsdcBountyRewardMin('0')).toBe(5);
+    expect(resolveUsdcBountyRewardMin('-5')).toBe(5);
+    expect(resolveUsdcBountyRewardMin('abc')).toBe(5);
+    expect(resolveUsdcBountyRewardMin('')).toBe(5);
     // parseInt truncates a leading integer (documented, defensive): '2.7' → 2 (a valid floor).
     expect(resolveUsdcBountyRewardMin('2.7')).toBe(2);
   });

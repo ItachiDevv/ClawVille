@@ -17,6 +17,7 @@ import {
   refundComposedBounty,
   runBountyUsdcSettle,
   settleComposedBounty,
+  usdcRewardBaseUnits,
   usdcRailGateOpen,
 } from '../services/bounty-escrow-link';
 import { alertError } from '../services/alert-error';
@@ -51,7 +52,7 @@ import { count } from 'drizzle-orm';
 // avatar id, which is now the resolved `identity.avatarId`.
 //
 // PARITY note — human path: POST /api/bounties/* via Lucia cookie; agent path:
-//   same endpoints via X-Clawville-Agent-Session → bound avatar. CT settlement
+//   same endpoints via X-Clawville-Agent-Session → bound avatar. vCLAW settlement
 //   binds to `claw-token-ledger` on `identity.avatarId`; USDC (payment_rail=usdc)
 //   settlement binds to the SAP escrow gate (depositor=creator avatar,
 //   worker=hunter avatar) — both act as themselves, no guest fallback.
@@ -271,26 +272,25 @@ async function recalculateSuccessRate(avatarId: string, tx?: BountyTx): Promise<
 // ---------------------------------------------------------------------------
 
 /**
- * Business ceiling for a USDC-rail bounty reward (whole USDC). A create over this
+ * Business ceiling for a USDC-rail bounty reward, denominated in vCLAW. A create over this
  * is a clean 400 at the schema boundary (solana SEV-3) — NOT a u64-range throw
- * deep in the escrow instruction builder. 1,000,000 USDC → 1e12 base units, far
- * inside u64 (max ~1.8e19) with headroom, and far above any realistic bounty. The
+ * deep in the escrow instruction builder. 1,000,000 vCLAW ($10,000) × 10^4 =
+ * 1e10 USDC base units, far inside signed-u64 headroom and above any realistic bounty. The
  * floor is `USDC_BOUNTY_REWARD_MIN` (below). Bump deliberately if the product ever
  * needs a larger single-bounty escrow.
  */
 const USDC_BOUNTY_REWARD_MAX = 1_000_000;
 
 /**
- * Env-configurable FLOOR for a USDC-rail bounty reward (whole USDC). Default 10;
- * clamped to an integer ≥ 1. Set `USDC_BOUNTY_REWARD_MIN=1` on the mainnet smoke box
- * so a funded 1-USDC bounty can run against a small real balance without an 11-USDC
- * top-up. The CT rail floor is UNCHANGED (still 10, enforced separately in the
- * superRefine) — this floor is USDC-rail ONLY. Read per-parse (env-driven, no
+ * Env-configurable FLOOR for a USDC-rail bounty reward in vCLAW. Default 5;
+ * clamped to an integer ≥ 1. Set `USDC_BOUNTY_REWARD_MIN=1` on the staging smoke box
+ * to permit a 1-vCLAW ($0.01) smoke bounty. The vCLAW rail floor is fixed at 5,
+ * enforced separately in the superRefine. Read per-parse (env-driven, no
  * redeploy needed beyond the Coolify env set). Exported pure resolver for tests.
  */
 export function resolveUsdcBountyRewardMin(raw: string | undefined): number {
-  const n = Number.parseInt(raw ?? '10', 10);
-  return Number.isInteger(n) && n >= 1 ? n : 10;
+  const n = Number.parseInt(raw ?? '5', 10);
+  return Number.isInteger(n) && n >= 1 ? n : 5;
 }
 
 const bonusRewardSchema = z.object({
@@ -300,42 +300,40 @@ const bonusRewardSchema = z.object({
   customDescription: z.string().max(500).optional(),
 });
 
-const createBountySchema = z
+export const createBountySchema = z
   .object({
     title: z.string().min(3).max(200),
     description: z.string().min(10).max(5000),
     requirements: z.string().max(5000).optional(),
     difficulty: z.enum(['beginner', 'intermediate', 'advanced', 'expert']),
     // Positive-integer reward; the RAIL-SPECIFIC floor is enforced in the superRefine
-    // (CT: 10 ClawTokens, unchanged; USDC: `USDC_BOUNTY_REWARD_MIN`, default 10,
-    // overridable to 1 for the mainnet smoke). The field-level floor is the absolute
-    // minimum valid for EITHER rail (1) so a 1-USDC bounty can pass here and be judged
-    // per-rail below. For a USDC bounty the unit is WHOLE USDC (× 1e6 at the escrow
-    // boundary — see bounty-escrow-link.usdcRewardBaseUnits). Ceiling: USDC_BOUNTY_REWARD_MAX.
+    // (vCLAW: 5; USDC: `USDC_BOUNTY_REWARD_MIN`, default 5, overridable to 1 for
+    // the staging smoke). The field-level floor is the absolute minimum valid for
+    // either rail (1), then the rail-specific checks apply below. The canonical unit
+    // is vCLAW (1 vCLAW = $0.01); USDC escrow converts it to integer base units × 10^4.
     tokenReward: z.number().int().min(1),
     maxAttempts: z.number().int().min(1).max(100).default(1),
     tags: z.array(z.string().max(30)).max(10).optional(),
     expiresAt: z.string().datetime().optional(),
     bonusRewards: z.array(bonusRewardSchema).max(5).optional(),
-    // ── Phase 1: USDC rail (default 'ct' = the classic CT board) ──
+    // ── Phase 1: USDC rail (default 'vclaw' = the in-game vCLAW board) ──
     /** Payout rail. 'usdc' opens a SAP escrow (gated OFF + dry-run by default). */
-    paymentRail: z.enum(['ct', 'usdc']).default('ct'),
+    paymentRail: z.enum(['vclaw', 'usdc']).default('vclaw'),
     /**
      * Human/agent-readable acceptance criteria the verdict is judged against.
      * MANDATORY for a USDC bounty (enforced by the superRefine below — a verdict
-     * with nothing to verify against is scaffolding theater). Optional for CT.
+     * with nothing to verify against is scaffolding theater). Optional for vCLAW.
      */
     acceptanceCriteria: z.string().min(10).max(5000).optional(),
   })
   .superRefine((data, ctx) => {
-    // RAIL-SPECIFIC reward floor (the field-level check only enforces ≥ 1). CT is
-    // UNCHANGED at 10; the USDC floor is env-configurable (`USDC_BOUNTY_REWARD_MIN`,
-    // default 10) so the mainnet smoke can post a funded 1-USDC bounty.
-    if (data.paymentRail === 'ct' && data.tokenReward < 10) {
+    // RAIL-SPECIFIC reward floor (the field-level check only enforces ≥ 1). Both
+    // rails default to 5 vCLAW ($0.05); staging may lower the USDC rail via env.
+    if (data.paymentRail === 'vclaw' && data.tokenReward < 5) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['tokenReward'],
-        message: 'A ClawToken bounty reward must be at least 10.',
+        message: 'A vCLAW bounty reward must be at least 5 vCLAW ($0.05).',
       });
     }
     if (data.paymentRail === 'usdc') {
@@ -344,7 +342,9 @@ const createBountySchema = z
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['tokenReward'],
-          message: `A USDC bounty reward must be at least ${usdcMin} USDC.`,
+          message:
+            `A USDC-funded bounty reward must be at least ${usdcMin} vCLAW ` +
+            '(1 vCLAW = $0.01).',
         });
       }
     }
@@ -364,7 +364,7 @@ const createBountySchema = z
     // `create_escrow_v2` REQUIRES a positive expiry — the vault's refund/reclaim
     // deadline — and refuses `expiresAt <= 0` (`invalid_amount`). A custodial bounty
     // whose funds could lock forever with NO deadline is not a valid product, so
-    // require an explicit expiry for the USDC rail (CT bounties, which custody
+    // require an explicit expiry for the USDC rail (vCLAW bounties, which custody
     // nothing on-chain, stay expiry-OPTIONAL). Reject at the schema boundary so the
     // error is a clean 400 with a precise path, not a confusing vault-open failure
     // deep in the create handler.
@@ -389,12 +389,14 @@ const createBountySchema = z
     }
     // Cap the USDC reward at a sane business ceiling (solana SEV-3): reject an
     // oversized reward as a clean 400 HERE, not as a u64-range throw deep in the
-    // escrow builder (usdcRewardBaseUnits × 1e6 must stay well inside u64).
+    // escrow builder (usdcRewardBaseUnits × 10^4 must stay well inside u64).
     if (data.paymentRail === 'usdc' && data.tokenReward > USDC_BOUNTY_REWARD_MAX) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['tokenReward'],
-        message: `A USDC bounty reward may not exceed ${USDC_BOUNTY_REWARD_MAX} USDC.`,
+        message:
+          `A USDC-funded bounty reward may not exceed ${USDC_BOUNTY_REWARD_MAX} vCLAW ` +
+          '($10,000).',
       });
     }
   });
@@ -613,13 +615,13 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
   // marker and the open decision can never disagree — a live-flag flip mid-request
   // could otherwise stamp the marker one way and branch the open the other. A composed
   // bounty is a usdc bounty while the live settlement rail is the two-leg composed rail;
-  // CT + legacy-usdc bounties are NOT composed (their marker stays NULL). The `&&`
-  // short-circuits, so a CT bounty never calls bountySettlementRail() (unchanged).
+  // vCLAW + legacy-usdc bounties are NOT composed (their marker stays NULL). The `&&`
+  // short-circuits, so a vCLAW bounty never calls bountySettlementRail() (unchanged).
   const isComposedRail = isUsdc && bountySettlementRail() === 'sap-payai-composed';
 
   if (isUsdc) {
     // A USDC bounty escrows on-chain USDC (custodial-wallet sign at settle), so a
-    // connected agent MUST have proven ledger capability. The CT rail is fine for
+    // connected agent MUST have proven ledger capability. The vCLAW rail is fine for
     // any resolved avatar. Fail closed here, mirroring the cove / SAP gate.
     if (agentNotLedgerCapable(c.get('identity'))) {
       throw new HTTPException(403, {
@@ -637,15 +639,15 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
       throw new HTTPException(503, {
         message:
           'The USDC bounty rail is disabled (SAP_ENABLED / SAP_ESCROW_ENABLED / ' +
-          'SAP_USDC_ESCROW_ENABLED). Post a ClawToken (payment_rail=ct) bounty instead.',
+          'SAP_USDC_ESCROW_ENABLED). Post a vCLAW (payment_rail=vclaw) bounty instead.',
       });
     }
   } else {
-    // ESCROW (CT rail): Verify creator has enough tokens. USDC bounties do NOT
-    // debit CT — their reward is on-chain USDC prepaid into a SAP escrow.
+    // ESCROW (vCLAW rail): Verify creator has enough vCLAW. USDC bounties do not
+    // debit vCLAW — their reward is on-chain USDC prepaid into a SAP escrow.
     if (avatar.clawTokens < data.tokenReward) {
       throw new HTTPException(400, {
-        message: `Not enough ClawTokens. Need ${data.tokenReward}, have ${avatar.clawTokens}.`,
+        message: `Not enough vCLAW. Need ${data.tokenReward}, have ${avatar.clawTokens}.`,
       });
     }
   }
@@ -666,14 +668,14 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
     }
   }
 
-  // ESCROW: Debit (CT rail only) + bounty INSERT in a single transaction so if
-  // INSERT fails, the CT debit rolls back and the creator doesn't lose tokens.
-  // For the USDC rail there is NO CT debit — the reward is on-chain USDC that is
+  // ESCROW: Debit (vCLAW rail only) + bounty INSERT in a single transaction so if
+  // INSERT fails, the vCLAW debit rolls back and the creator doesn't lose tokens.
+  // For the USDC rail there is no vCLAW debit — the reward is on-chain USDC that is
   // escrowed LAZILY at approve time (once a winning hunter is known); the row is
   // persisted with `payment_rail='usdc'` + `verdict_required=true` + NULL escrow.
   const bounty = await db.transaction(async (tx) => {
     if (!isUsdc) {
-      // Deduct tokenReward from creator (atomic + audited) — CT rail only.
+      // Deduct tokenReward from creator (atomic + audited) — vCLAW rail only.
       await debitClawTokens({
         avatarId: avatar.id,
         amount: data.tokenReward,
@@ -696,8 +698,8 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
         maxAttempts: data.maxAttempts,
         tags: data.tags ?? [],
         expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
-        // Phase 1 — payout rail + verdict binding. A CT bounty keeps the schema
-        // defaults ('ct', verdict_required=false, criteria NULL).
+        // Phase 1 — payout rail + verdict binding. A vCLAW bounty keeps the schema
+        // defaults ('vclaw', verdict_required=false, criteria NULL).
         paymentRail: data.paymentRail,
         acceptanceCriteria: data.acceptanceCriteria ?? null,
         verdictRequired: isUsdc,
@@ -709,7 +711,7 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
         // isComposed=true and fails CLOSED (approve 409s; cancel refunds via the
         // deterministic vault nonce) instead of the OLD null-marker double-charge
         // (isComposed=false → the legacy branch opened a SECOND escrow → creator charged
-        // twice). CT + legacy-usdc stay NULL — unchanged (the column has no default, so
+        // twice). vCLAW + legacy-usdc stay NULL — unchanged (the column has no default, so
         // explicit null is identical to the prior omitted-default insert).
         compositionState: isComposedRail ? 'vault_pending' : null,
       })
@@ -1266,7 +1268,8 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
           decision: 'approved',
           paymentRail: bounty.paymentRail,
           tokensAwarded: 0,
-          usdcReward: bounty.tokenReward,
+          rewardVclaw: bounty.tokenReward,
+          rewardUsdcBaseUnits: usdcRewardBaseUnits(bounty.tokenReward).toString(),
           bonusRewardsCount: rewards.length,
           settlement: {
             rail: 'sap-payai-composed',
@@ -1300,7 +1303,8 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
           success: true,
           decision: 'approved',
           paymentRail: bounty.paymentRail,
-          usdcReward: bounty.tokenReward,
+          rewardVclaw: bounty.tokenReward,
+          rewardUsdcBaseUnits: usdcRewardBaseUnits(bounty.tokenReward).toString(),
           bonusRewardsCount: rewards.length,
           settlement: {
             rail: 'sap-payai-composed',
@@ -1496,7 +1500,10 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
       decision: 'approved',
       paymentRail: bounty.paymentRail,
       tokensAwarded: isUsdc ? 0 : bounty.tokenReward,
-      usdcReward: isUsdc ? bounty.tokenReward : 0,
+      rewardVclaw: bounty.tokenReward,
+      rewardUsdcBaseUnits: isUsdc
+        ? usdcRewardBaseUnits(bounty.tokenReward).toString()
+        : '0',
       bonusRewardsCount: rewards.length,
       escrow: escrowResult,
     });
@@ -1828,8 +1835,8 @@ bountyRoutes.get('/:id', async (c) => {
       difficulty: row.difficulty,
       status: row.status,
       tokenReward: row.tokenReward,
-      // paymentRail disambiguates whether tokenReward is CT or WHOLE USDC;
-      // acceptanceCriteria is the USDC-bounty verdict rubric (null for CT).
+      // paymentRail disambiguates vclaw (in-game, 1 vCLAW=$0.01) from usdc (on-chain);
+      // acceptanceCriteria is the USDC-bounty verdict rubric (null for vCLAW).
       paymentRail: row.paymentRail,
       acceptanceCriteria: row.acceptanceCriteria,
       maxAttempts: row.maxAttempts,
@@ -2476,7 +2483,7 @@ bountyRoutes.get('/', async (c) => {
     difficulty: r.difficulty,
     status: r.status,
     tokenReward: r.tokenReward,
-    // paymentRail disambiguates whether tokenReward is CT or WHOLE USDC.
+    // paymentRail disambiguates vclaw (in-game, 1 vCLAW=$0.01) from usdc (on-chain).
     paymentRail: r.paymentRail,
     maxAttempts: r.maxAttempts,
     currentAttempts: r.currentAttempts,

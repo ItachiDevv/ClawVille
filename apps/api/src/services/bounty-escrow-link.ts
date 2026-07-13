@@ -100,26 +100,24 @@ import { sapConfigSnapshot, updateAgentPricingUsdc } from './sap/sap-client';
 import { resolveHouseAvatarId, HOUSE_PRICING_TIER_ID } from './sap/house-sap-provisioning';
 import { ensureWallet } from './wallet-service';
 import { withKeyedMutex } from './keyed-mutex';
+import { usdCentsToUsdcAtomic } from './x402-payai';
 
 /**
- * The whole-USDC reward → base-unit conversion. `tokenReward` on a bounty is a
- * whole-number reward; for the USDC rail we treat it as WHOLE USDC and scale by
- * the mint's 6 decimals. A single-call escrow releases this exact amount.
+ * Convert a bounty reward denominated in vCLAW to USDC base units. One vCLAW is
+ * $0.01, so an on-chain escrow moves `tokenReward × 10^4` base units. A
+ * single-call escrow releases this exact amount.
  *
- * UNIT CONTRACT (documented for callers + API consumers): a USDC bounty's
- * `tokenReward` and the `usdcReward` field on the `/attempts/:id/review` response
- * are WHOLE USDC (e.g. `250` = 250 USDC). The on-chain escrow moves the base-unit
- * amount `tokenReward × 10^6` (e.g. 250_000_000). The reward is NOT a base-unit
- * value on the wire — it is whole dollars, converted here at the escrow boundary.
+ * UNIT CONTRACT: `tokenReward` is an integer vCLAW amount (for example, `250`
+ * means 250 vCLAW = $2.50). The on-chain escrow moves the corresponding integer
+ * base-unit amount (2_500_000 in that example); no floating-point money crosses
+ * this boundary.
  */
-const USDC_DECIMALS = 6n;
-
-/** Whole-USDC reward → u64 base units (6 decimals). */
+/** vCLAW reward → u64 USDC base units (1 vCLAW = 10,000 base units). */
 export function usdcRewardBaseUnits(tokenReward: number): bigint {
   if (!Number.isInteger(tokenReward) || tokenReward <= 0) {
     throw new Error(`bounty tokenReward must be a positive integer, got ${tokenReward}`);
   }
-  return BigInt(tokenReward) * 10n ** USDC_DECIMALS;
+  return BigInt(usdCentsToUsdcAtomic(tokenReward));
 }
 
 /** Is the SAP USDC escrow rail live enough to run a real (or dry-run) leg? */
@@ -451,7 +449,7 @@ export async function runBountyUsdcSettle(input: {
 // spread (~0.5% of reward) is the creator's RECLAIMABLE free vault balance
 // (`refundComposedBounty` reclaims the FULL deposit). Nothing is lost or trapped.
 //
-// ── CONSERVATION (a $100 bounty; base units = 100_000_000) ───────────────────
+// ── CONSERVATION (10,000 vCLAW = $100; base units = 100_000_000) ─────────────
 //   deposit          = 100_000_000 + max(500_000, 1_000_000) = 101_000_000 (101 USDC)
 //   settle debit     = principal 100_000_000 + fee 500_000     = 100_500_000
 //   → house receives  100_000_000 (principal, at finalize); treasury 500_000 (fee)
@@ -506,7 +504,7 @@ export function bountyEscrowNonce(bountyId: string): bigint {
 
 /**
  * The USDC base-unit amount funded into the LEG-1 V2 vault for a bounty of
- * `tokenReward` whole USDC. `pricePerCall = reward` and `maxCalls = 1`, so the
+ * `tokenReward` in vCLAW. `pricePerCall = reward` and `maxCalls = 1`, so the
  * settle obligation is `reward` and the settle debit is `reward + 0.5% fee`.
  *
  * We fund `MAX(reward + computeV2ProtocolFee(reward), openEscrowV2's create
@@ -548,7 +546,7 @@ function housePricingMutexKey(houseAvatarId: string): string {
  * `create_escrow_v2` REQUIRES the escrow's `price_per_call` to match a tier in the
  * worker's on-chain pricing_menu, else it rejects `PricingTierNotFound` 6148. The
  * house provisioner publishes ONE fixed NOMINAL tier (1 USDC), but bounty rewards
- * are arbitrary (≥10 whole USDC), so that fixed tier can NEVER match an arbitrary
+ * are arbitrary vCLAW amounts, so that fixed tier can NEVER match an arbitrary
  * bounty. So this slice — which OWNS the per-bounty escrow↔tier arithmetic — first
  * (re)publishes the house tier at THIS bounty's exact price (`pricePerCall =
  * usdcRewardBaseUnits(reward)`), THEN opens the vault. `update_agent(pricing)`

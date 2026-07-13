@@ -344,7 +344,7 @@ describe('partner-covenant handler response shapes (mocked db)', () => {
           id: TEST_UUID,
           title: 't',
           status: 'open',
-          paymentRail: 'ct',
+          paymentRail: 'vclaw',
           verdictRequired: false,
           escrowPda: null,
           escrowJobId: null,
