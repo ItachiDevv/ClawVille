@@ -415,19 +415,9 @@ const SQUASH_XZ_MAX    = 1.2;
 
 // ─── Interpolation constants ──────────────────────────────────────────────────
 /**
- * How far behind real-time we render (ms).
- *
- * Server REEF_SNAPSHOT_HZ progression: 5 → 10 (2026-04-26) → 20 (2026-04-28).
- * At 20 Hz each snap is 50 ms apart. Worst-case arrival gap = snap_interval
- * (50 ms) + jitter (~30-50 ms). INTERP_DELAY_MS must exceed that gap so
- * renderTime always falls BEFORE the newest history entry — otherwise the
- * bracket scan extrapolates and the body teleports when the next snap arrives.
- *
- *   target = 50 ms snap_interval + 30 ms jitter buffer + 20 ms safety = 100 ms
- *
- * Trade-off: 100 ms input lag (down from 200 ms). Halving the snapshot
- * interval again trims the linear-lerp piecewise seam from ~33° / bracket
- * to ~16° / bracket — well below kart-steering perceptual jerk threshold.
+ * Minimum remote render delay. The spline sim's configured 20Hz target uses
+ * round(30/20)=2 ticks, so effective delivery is currently 15Hz (~66.7ms).
+ * Runtime delay grows from observed arrival mean+jitter, capped at 220ms.
  *
  * Earlier values that failed:
  *   - 100 ms (initial) — assumed 15 Hz; server was 5 Hz; freeze for ~100 ms.
@@ -440,14 +430,23 @@ const SQUASH_XZ_MAX    = 1.2;
  *     curves ("left-right movement still choppy"). Halved alongside snap rate.
  */
 const INTERP_DELAY_MS = 100;
+const INTERP_MAX_DELAY_MS = 220;
+const INTERP_JITTER_GAIN = 2;
+/** Smooth only a short underrun; long gaps freeze at a bounded projection. */
+const INTERP_EXTRAP_MAX_MS = 80;
 
 /**
  * Maximum snapshot history kept per entity.
- * 4 entries at 20 Hz covers 200 ms — well past the 100 ms INTERP_DELAY_MS.
- * Trim logic in useFrame keeps only the latest INTERP_HISTORY_SIZE entries,
- * so the bracket scan always has ≥ 2 entries available after the 2nd snap.
+ * 8 preallocated entries cover ~533ms at the effective 15Hz cadence. The
+ * fixed ring is reused in useFrame; no per-snapshot object/array allocation.
  */
-const INTERP_HISTORY_SIZE = 4;
+const INTERP_HISTORY_SIZE = 8;
+
+/** Timestamp-matched prediction history (~3.2s at fixed 30 Hz). */
+const PRED_HISTORY_SIZE = 96;
+/** Old-server fallback: half an observed interval plus a small queue floor. */
+const REBASE_LAG_BASE_MS = 20;
+const REBASE_FALLBACK_MAX_MS = 150;
 
 // ─── Module-scope scratch — NO per-frame allocations ─────────────────────────
 const _bobTime: Record<string, number>  = {};
@@ -481,9 +480,158 @@ function lerpAngle(a: number, b: number, t: number): number {
   return a + diff * t;
 }
 
+function shortestAngleDelta(a: number, b: number): number {
+  return ((b - a) % (Math.PI * 2) + Math.PI * 3) % (Math.PI * 2) - Math.PI;
+}
+
+interface PredictionHistory {
+  t: Float64Array;
+  x: Float64Array;
+  z: Float64Array;
+  vx: Float64Array;
+  vz: Float64Array;
+  rot: Float64Array;
+  head: number;
+  size: number;
+}
+
+interface PredictionSample {
+  x: number;
+  z: number;
+  vx: number;
+  vz: number;
+  rot: number;
+}
+
+function createPredictionHistory(): PredictionHistory {
+  return {
+    t: new Float64Array(PRED_HISTORY_SIZE),
+    x: new Float64Array(PRED_HISTORY_SIZE),
+    z: new Float64Array(PRED_HISTORY_SIZE),
+    vx: new Float64Array(PRED_HISTORY_SIZE),
+    vz: new Float64Array(PRED_HISTORY_SIZE),
+    rot: new Float64Array(PRED_HISTORY_SIZE),
+    head: 0,
+    size: 0,
+  };
+}
+
+function clearPredictionHistory(history: PredictionHistory): void {
+  history.head = 0;
+  history.size = 0;
+}
+
+function pushPredictionSample(
+  history: PredictionHistory,
+  atMs: number,
+  state: SurfBodyState,
+): void {
+  const latest = (history.head - 1 + PRED_HISTORY_SIZE) % PRED_HISTORY_SIZE;
+  const replaceLatest = history.size > 0 && atMs <= history.t[latest];
+  const i = replaceLatest ? latest : history.head;
+  history.t[i] = atMs;
+  history.x[i] = state.x;
+  history.z[i] = state.z;
+  history.vx[i] = state.vx;
+  history.vz[i] = state.vz;
+  history.rot[i] = state.rot;
+  if (!replaceLatest) {
+    history.head = (history.head + 1) % PRED_HISTORY_SIZE;
+    history.size = Math.min(PRED_HISTORY_SIZE, history.size + 1);
+  }
+}
+
+function samplePredictionAt(
+  history: PredictionHistory,
+  atMs: number,
+  out: PredictionSample,
+): boolean {
+  if (history.size === 0) return false;
+  const oldest = (history.head - history.size + PRED_HISTORY_SIZE) % PRED_HISTORY_SIZE;
+  const newest = (history.head - 1 + PRED_HISTORY_SIZE) % PRED_HISTORY_SIZE;
+  if (atMs < history.t[oldest]) return false;
+  if (atMs > history.t[newest]) {
+    const aheadMs = atMs - history.t[newest];
+    if (aheadMs > CLIENT_SURF_TICK_DT * 1000) return false;
+    const aheadSeconds = aheadMs * 0.001;
+    out.x = history.x[newest] + history.vx[newest] * aheadSeconds;
+    out.z = history.z[newest] + history.vz[newest] * aheadSeconds;
+    out.vx = history.vx[newest];
+    out.vz = history.vz[newest];
+    out.rot = history.rot[newest];
+    return true;
+  }
+
+  let a = oldest;
+  let b = oldest;
+  for (let n = 1; n < history.size; n++) {
+    const i = (oldest + n) % PRED_HISTORY_SIZE;
+    if (history.t[i] >= atMs) {
+      b = i;
+      break;
+    }
+    a = i;
+    b = i;
+  }
+  const span = history.t[b] - history.t[a];
+  const alpha = span > 0 ? (atMs - history.t[a]) / span : 0;
+  out.x = history.x[a] + (history.x[b] - history.x[a]) * alpha;
+  out.z = history.z[a] + (history.z[b] - history.z[a]) * alpha;
+  out.vx = history.vx[a] + (history.vx[b] - history.vx[a]) * alpha;
+  out.vz = history.vz[a] + (history.vz[b] - history.vz[a]) * alpha;
+  out.rot = lerpAngle(history.rot[a], history.rot[b], alpha);
+  return true;
+}
+
+interface ReefReconStats {
+  snapshotCount: number;
+  matchedCount: number;
+  fallbackCount: number;
+  hardSnapCount: number;
+  meanErrDist: number;
+  maxErrDist: number;
+  meanAppliedCorrection: number;
+  maxAppliedCorrection: number;
+  lastErrDist: number;
+  lastAppliedCorrection: number;
+  lastMode: 'matched' | 'fallback' | 'hard-snap' | 'seed';
+}
+
+function getReconStats(): ReefReconStats | null {
+  if (process.env.NODE_ENV === 'production' || typeof window === 'undefined') return null;
+  const diagnosticWindow = window as typeof window & { __REEF_RECON_STATS?: ReefReconStats };
+  return diagnosticWindow.__REEF_RECON_STATS ?? null;
+}
+
+function recordReconStats(
+  errDist: number,
+  appliedCorrection: number,
+  mode: 'matched' | 'fallback' | 'hard-snap',
+): void {
+  const stats = getReconStats();
+  if (!stats) return;
+  stats.lastErrDist = errDist;
+  stats.lastAppliedCorrection = appliedCorrection;
+  stats.lastMode = mode;
+  if (mode === 'hard-snap') {
+    stats.hardSnapCount += 1;
+    return;
+  }
+  stats.snapshotCount += 1;
+  if (mode === 'matched') stats.matchedCount += 1;
+  else stats.fallbackCount += 1;
+  stats.meanErrDist += (errDist - stats.meanErrDist) / stats.snapshotCount;
+  stats.meanAppliedCorrection +=
+    (appliedCorrection - stats.meanAppliedCorrection) / stats.snapshotCount;
+  if (errDist > stats.maxErrDist) stats.maxErrDist = errDist;
+  if (appliedCorrection > stats.maxAppliedCorrection) {
+    stats.maxAppliedCorrection = appliedCorrection;
+  }
+}
+
 // ─── Per-snapshot record ──────────────────────────────────────────────────────
 interface SnapRecord {
-  /** performance.now() timestamp when this snapshot was received (ms). */
+  /** Local performance.now() arrival time used by remote interpolation. */
   t: number;
   x: number;
   z: number; // sim-space y → Three.js Z
@@ -499,6 +647,57 @@ interface SnapRecord {
 // ─── SPEC 2: VRM rider inner component ────────────────────────────────────────
 // Separate from ReefRacePlayerInner so a Suspense boundary can wrap it;
 // useVRMInstance() throws a Promise on first load (Suspense protocol).
+
+interface SnapshotHistory {
+  records: SnapRecord[];
+  head: number;
+  size: number;
+}
+
+function createSnapshotHistory(): SnapshotHistory {
+  const records: SnapRecord[] = [];
+  for (let i = 0; i < INTERP_HISTORY_SIZE; i++) {
+    records.push({ t: 0, x: 0, z: 0, rot: Number.NaN, vx: 0, vz: 0 });
+  }
+  return { records, head: 0, size: 0 };
+}
+
+function snapshotAtIndex(history: SnapshotHistory, chronologicalIndex: number): SnapRecord {
+  const oldest =
+    (history.head - history.size + INTERP_HISTORY_SIZE) % INTERP_HISTORY_SIZE;
+  return history.records[(oldest + chronologicalIndex) % INTERP_HISTORY_SIZE];
+}
+
+function pushSnapshot(
+  history: SnapshotHistory,
+  t: number,
+  x: number,
+  z: number,
+  rot: number,
+  vx: number,
+  vz: number,
+): void {
+  if (history.size > 0) {
+    const latest = snapshotAtIndex(history, history.size - 1);
+    if (t <= latest.t) {
+      latest.x = x;
+      latest.z = z;
+      latest.rot = rot;
+      latest.vx = vx;
+      latest.vz = vz;
+      return;
+    }
+  }
+  const target = history.records[history.head];
+  target.t = t;
+  target.x = x;
+  target.z = z;
+  target.rot = rot;
+  target.vx = vx;
+  target.vz = vz;
+  history.head = (history.head + 1) % INTERP_HISTORY_SIZE;
+  history.size = Math.min(INTERP_HISTORY_SIZE, history.size + 1);
+}
 
 interface ReefRaceVRMRiderProps {
   vrmPath: string;
@@ -672,7 +871,20 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
 
   // ─── Interpolation state ────────────────────────────────────────────────────
   // Ring buffer of received snapshots.
-  const historyRef = useRef<SnapRecord[]>([]);
+  const historyRef = useRef<SnapshotHistory | null>(null);
+  if (historyRef.current === null) historyRef.current = createSnapshotHistory();
+  const arrivalTimingRef = useRef({
+    lastAtMs: 0,
+    meanIntervalMs: 1000 / 15,
+    meanJitterMs: 0,
+  });
+  const remoteRecoveryRef = useRef({
+    remainingMs: 0,
+    durationMs: 1,
+    fromX: 0,
+    fromZ: 0,
+    fromRot: 0,
+  });
   // Identity compare to detect new snapshot (store builds new object per delta).
   const lastEntityRef = useRef<ReefRaceEntity | null>(null);
   // Last interpolated rotation — fallback when rot=0 + no velocity (initial spawn).
@@ -690,6 +902,14 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
   // 30 Hz tick — so we accumulate frame time and drain it in CLIENT_SURF_TICK_DT
   // steps, advancing prediction at exactly the server rate.
   const predictAccumRef = useRef(0);
+  const predictionHistoryRef = useRef<PredictionHistory | null>(null);
+  if (predictionHistoryRef.current === null) {
+    predictionHistoryRef.current = createPredictionHistory();
+  }
+  const predictionSampleRef = useRef<PredictionSample>({ x: 0, z: 0, vx: 0, vz: 0, rot: 0 });
+  const predictionTimeRef = useRef(0);
+  const lastAuthorityArrivalRef = useRef(0);
+  const authorityIntervalEwmaRef = useRef(1000 / 15);
   // True for THIS instance for the lifetime of the component when it's the self
   // kart on the spline path — gates all prediction work + pose-bus writes.
   const predictsSelf = USE_SPLINE_PLAYER && isSelf;
@@ -902,9 +1122,26 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
   // remount re-seeds predicted state from the first fresh snapshot.
   useEffect(() => {
     if (!predictsSelf) return;
+    if (process.env.NODE_ENV !== 'production') {
+      const diagnosticWindow = window as typeof window & { __REEF_RECON_STATS?: ReefReconStats };
+      diagnosticWindow.__REEF_RECON_STATS = {
+        snapshotCount: 0,
+        matchedCount: 0,
+        fallbackCount: 0,
+        hardSnapCount: 0,
+        meanErrDist: 0,
+        maxErrDist: 0,
+        meanAppliedCorrection: 0,
+        maxAppliedCorrection: 0,
+        lastErrDist: 0,
+        lastAppliedCorrection: 0,
+        lastMode: 'seed',
+      };
+    }
     return () => {
       predictInitRef.current = false;
       predictAccumRef.current = 0;
+      clearPredictionHistory(predictionHistoryRef.current!);
       resetSelfPoseBus();
     };
   }, [predictsSelf]);
@@ -1130,21 +1367,38 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
       const hasVelocity = entity.vx !== 0 || entity.vy !== 0;
       const rot = (entity.rot !== 0 || hasVelocity) ? entity.rot : NaN;
 
-      const snap: SnapRecord = {
-        t: performance.now(),
-        x: entity.x,
-        z: entity.y, // sim-space y → Three.js Z
-        rot,
-        vx: entity.vx,
-        vz: entity.vy, // sim-space vy → Three.js vz
-      };
+      const arrivedAtMs = performance.now();
+      // Remote interpolation stays on arrival time so its adaptive delay does
+      // not also need to absorb absolute one-way transit. Self reconciliation
+      // independently consumes entity.snapshotAtMs below.
+      const snapAtMs = arrivedAtMs;
+      const h = historyRef.current!;
+      pushSnapshot(h, snapAtMs, entity.x, entity.y, rot, entity.vx, entity.vy);
 
-      const h = historyRef.current;
-      h.push(snap);
-      // Trim to keep only the latest INTERP_HISTORY_SIZE entries.
-      if (h.length > INTERP_HISTORY_SIZE) {
-        h.splice(0, h.length - INTERP_HISTORY_SIZE);
+      const arrivalTiming = arrivalTimingRef.current;
+      if (arrivalTiming.lastAtMs > 0) {
+        const intervalMs = arrivedAtMs - arrivalTiming.lastAtMs;
+        const previousMean = arrivalTiming.meanIntervalMs;
+        const previousDelay = Math.max(
+          INTERP_DELAY_MS,
+          Math.min(
+            INTERP_MAX_DELAY_MS,
+            previousMean + arrivalTiming.meanJitterMs * INTERP_JITTER_GAIN,
+          ),
+        );
+        if (!predictsSelf && intervalMs > previousDelay + INTERP_EXTRAP_MAX_MS) {
+          const recovery = remoteRecoveryRef.current;
+          recovery.durationMs = Math.min(200, Math.max(100, intervalMs - previousDelay));
+          recovery.remainingMs = recovery.durationMs;
+          recovery.fromX = group.position.x;
+          recovery.fromZ = group.position.z;
+          recovery.fromRot = group.rotation.y;
+        }
+        arrivalTiming.meanIntervalMs += (intervalMs - previousMean) * 0.15;
+        arrivalTiming.meanJitterMs +=
+          (Math.abs(intervalMs - previousMean) - arrivalTiming.meanJitterMs) * 0.15;
       }
+      arrivalTiming.lastAtMs = arrivedAtMs;
 
       // ─── v2 self prediction — re-baseline toward authority ──────────────────
       // Runs once per NEW server snapshot. Pulls the locally-predicted state
@@ -1153,13 +1407,21 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
       // within a few snapshots. Big errors (respawn / teleport) hard-snap.
       if (predictsSelf) {
         const pred = predictedRef.current;
+        const predictionHistory = predictionHistoryRef.current!;
         // Server pose in prediction space (sim x → x, sim y → z).
         const sx = entity.x;
         const sz = entity.y;
         const svx = entity.vx;
         const svz = entity.vy;
         // Server rot, with the same spawn-frame fallback the snapshot used.
-        const srot = isNaN(snap.rot) ? pred.rot : snap.rot;
+        const srot = isNaN(rot) ? pred.rot : rot;
+
+        if (lastAuthorityArrivalRef.current > 0) {
+          const intervalMs = arrivedAtMs - lastAuthorityArrivalRef.current;
+          authorityIntervalEwmaRef.current +=
+            (intervalMs - authorityIntervalEwmaRef.current) * 0.15;
+        }
+        lastAuthorityArrivalRef.current = arrivedAtMs;
 
         if (!predictInitRef.current) {
           // First snapshot — initialise predicted state directly from authority.
@@ -1171,11 +1433,14 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
           predictInitRef.current = true;
           // Fresh seed — drop any accumulated fixed-step time.
           predictAccumRef.current = 0;
+          predictionTimeRef.current = arrivedAtMs;
+          clearPredictionHistory(predictionHistory);
+          pushPredictionSample(predictionHistory, predictionTimeRef.current, pred);
         } else {
-          const dx = sx - pred.x;
-          const dz = sz - pred.z;
-          const errDist = Math.hypot(dx, dz);
-          if (errDist > CLIENT_REBASE_SNAP_DIST) {
+          const rawDx = sx - pred.x;
+          const rawDz = sz - pred.z;
+          const rawErrDist = Math.hypot(rawDx, rawDz);
+          if (rawErrDist > CLIENT_REBASE_SNAP_DIST) {
             // Respawn / teleport / catastrophic desync — snap, don't slide.
             pred.x = sx;
             pred.z = sz;
@@ -1185,14 +1450,56 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
             // Teleport — discard stale accumulated time so we don't replay
             // pre-snap motion against the new pose.
             predictAccumRef.current = 0;
+            predictionTimeRef.current = arrivedAtMs;
+            clearPredictionHistory(predictionHistory);
+            pushPredictionSample(predictionHistory, predictionTimeRef.current, pred);
+            recordReconStats(rawErrDist, rawErrDist, 'hard-snap');
           } else {
             // Blend predicted toward authority. Position slower (smoothness),
             // velocity + heading faster (responsiveness to server corrections).
-            pred.x += dx * CLIENT_REBASE_POS;
-            pred.z += dz * CLIENT_REBASE_POS;
-            pred.vx += (svx - pred.vx) * CLIENT_REBASE_VEL;
-            pred.vz += (svz - pred.vz) * CLIENT_REBASE_VEL;
-            pred.rot = lerpAngle(pred.rot, srot, CLIENT_REBASE_ROT);
+            const matchedSample = predictionSampleRef.current;
+            const matched =
+              typeof entity.snapshotAtMs === 'number' &&
+              samplePredictionAt(predictionHistory, entity.snapshotAtMs, matchedSample);
+            let posErrorX: number;
+            let posErrorZ: number;
+            let velErrorX: number;
+            let velErrorZ: number;
+            let rotError: number;
+            if (matched) {
+              posErrorX = sx - matchedSample.x;
+              posErrorZ = sz - matchedSample.z;
+              velErrorX = svx - matchedSample.vx;
+              velErrorZ = svz - matchedSample.vz;
+              rotError = shortestAngleDelta(matchedSample.rot, srot);
+            } else {
+              const lagMs = Math.min(
+                REBASE_FALLBACK_MAX_MS,
+                typeof entity.snapshotAtMs === 'number'
+                  ? Math.max(0, predictionTimeRef.current - entity.snapshotAtMs)
+                  : authorityIntervalEwmaRef.current * 0.5 + REBASE_LAG_BASE_MS,
+              );
+              const lagSeconds = lagMs * 0.001;
+              posErrorX = sx + svx * lagSeconds - pred.x;
+              posErrorZ = sz + svz * lagSeconds - pred.z;
+              velErrorX = svx - pred.vx;
+              velErrorZ = svz - pred.vz;
+              rotError = shortestAngleDelta(pred.rot, srot);
+            }
+            const errDist = Math.hypot(posErrorX, posErrorZ);
+            const appliedX = posErrorX * CLIENT_REBASE_POS;
+            const appliedZ = posErrorZ * CLIENT_REBASE_POS;
+            pred.x += appliedX;
+            pred.z += appliedZ;
+            pred.vx += velErrorX * CLIENT_REBASE_VEL;
+            pred.vz += velErrorZ * CLIENT_REBASE_VEL;
+            pred.rot += rotError * CLIENT_REBASE_ROT;
+            pushPredictionSample(predictionHistory, predictionTimeRef.current, pred);
+            recordReconStats(
+              errDist,
+              Math.hypot(appliedX, appliedZ),
+              matched ? 'matched' : 'fallback',
+            );
           }
         }
       }
@@ -1217,34 +1524,44 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
     }
 
     // ─── Interpolation (BUG FIX Bug 1) ───────────────────────────────────────
-    // Render at (now - INTERP_DELAY_MS=200ms) — smooth 60fps motion from 10Hz snapshots.
-    const history = historyRef.current;
+    // Remote delay derives from observed arrivals (effective cadence is ~15Hz).
+    const history = historyRef.current!;
     let interpX   = entity.x;
     let interpZ   = entity.y;
     let interpRot = lastRotRef.current;
     let interpVx  = entity.vx;
     let interpVz  = entity.vy;
 
-    if (history.length === 1) {
+    if (history.size === 1) {
       // Only one snapshot — snap directly (startup case, no bracket yet).
-      interpX   = history[0].x;
-      interpZ   = history[0].z;
-      interpVx  = history[0].vx;
-      interpVz  = history[0].vz;
-      if (!isNaN(history[0].rot)) {
-        interpRot = history[0].rot;
+      const only = snapshotAtIndex(history, 0);
+      interpX   = only.x;
+      interpZ   = only.z;
+      interpVx  = only.vx;
+      interpVz  = only.vz;
+      if (!isNaN(only.rot)) {
+        interpRot = only.rot;
       }
-    } else if (history.length >= 2) {
-      const renderTime = performance.now() - INTERP_DELAY_MS;
+    } else if (history.size >= 2) {
+      const arrivalTiming = arrivalTimingRef.current;
+      const adaptiveDelayMs = Math.max(
+        INTERP_DELAY_MS,
+        Math.min(
+          INTERP_MAX_DELAY_MS,
+          arrivalTiming.meanIntervalMs + arrivalTiming.meanJitterMs * INTERP_JITTER_GAIN,
+        ),
+      );
+      const renderTime = performance.now() - adaptiveDelayMs;
 
       // Find the pair of snapshots that bracket renderTime.
       // history is sorted ascending by t (push-only, no reorder needed).
-      let a = history[history.length - 2];
-      let b = history[history.length - 1];
-      for (let i = 1; i < history.length; i++) {
-        if (history[i].t >= renderTime) {
-          a = history[i - 1];
-          b = history[i];
+      let a = snapshotAtIndex(history, history.size - 2);
+      let b = snapshotAtIndex(history, history.size - 1);
+      for (let i = 1; i < history.size; i++) {
+        const candidate = snapshotAtIndex(history, i);
+        if (candidate.t >= renderTime) {
+          a = snapshotAtIndex(history, i - 1);
+          b = candidate;
           break;
         }
       }
@@ -1263,6 +1580,29 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
       const rotA = isNaN(a.rot) ? lastRotRef.current : a.rot;
       const rotB = isNaN(b.rot) ? rotA               : b.rot;
       interpRot = lerpAngle(rotA, rotB, t);
+
+      const latest = snapshotAtIndex(history, history.size - 1);
+      if (renderTime > latest.t) {
+        const extrapMs = Math.min(INTERP_EXTRAP_MAX_MS, renderTime - latest.t);
+        interpX = latest.x + latest.vx * extrapMs * 0.001;
+        interpZ = latest.z + latest.vz * extrapMs * 0.001;
+        interpVx = latest.vx;
+        interpVz = latest.vz;
+        if (!isNaN(latest.rot)) interpRot = latest.rot;
+      }
+    }
+
+    // A packet returning after a long underrun can put renderTime deep inside
+    // a new bracket. Blend from the held/extrapolated pose for 100–200ms so
+    // recovery is continuous instead of stepping to that bracket in one frame.
+    const recovery = remoteRecoveryRef.current;
+    if (!predictsSelf && recovery.remainingMs > 0) {
+      recovery.remainingMs = Math.max(0, recovery.remainingMs - dt * 1000);
+      const linear = 1 - recovery.remainingMs / recovery.durationMs;
+      const eased = linear * linear * (3 - 2 * linear);
+      interpX = recovery.fromX + (interpX - recovery.fromX) * eased;
+      interpZ = recovery.fromZ + (interpZ - recovery.fromZ) * eased;
+      interpRot = lerpAngle(recovery.fromRot, interpRot, eased);
     }
 
     // Persist the interpolated rotation for the next zero-velocity spawn frame.
@@ -1283,7 +1623,8 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
     // is left in the accumulator for next frame — no extrapolation (avoids
     // jitter). Renders from the latest predicted state; the bank-tilt velocity
     // also comes from prediction so the lean matches the rendered heading.
-    // Remote karts + v1 path are untouched.
+    // Remote karts use the adaptive interpolation/recovery path above; v1 does
+    // not enable self prediction.
     if (predictsSelf && predictInitRef.current) {
       const pred = predictedRef.current;
       const dirInput = selfInputBus.valid ? selfInputBus.dir : null;
@@ -1311,6 +1652,12 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
         pred.vx = next.vx;
         pred.vz = next.vz;
         pred.rot = next.rot;
+        predictionTimeRef.current += CLIENT_SURF_TICK_DT * 1000;
+        pushPredictionSample(
+          predictionHistoryRef.current!,
+          predictionTimeRef.current,
+          pred,
+        );
         predictAccumRef.current -= CLIENT_SURF_TICK_DT;
       }
 

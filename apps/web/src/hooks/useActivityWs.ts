@@ -166,12 +166,16 @@ export function useActivityWs(opts: UseActivityWsOptions): UseActivityWsResult {
         const authToken = sessionToken && sessionToken.length > 0 ? sessionToken : 'cookie';
         sendRef.current({ type: 'auth', sessionToken: authToken, shortCode });
 
-        // Start 1 Hz ping loop.
-        pingIntervalRef.current = setInterval(() => {
+        // Prime the server-clock offset immediately, then refresh at 1 Hz.
+        // Snapshot reconciliation can use timestamp matching as soon as the
+        // first pong returns instead of dead-reckoning for the first second.
+        const sendPing = () => {
           const sentAt = Date.now();
           lastPingSentAtRef.current = sentAt;
           sendRef.current({ type: 'ping', sentAt });
-        }, PING_INTERVAL_MS);
+        };
+        sendPing();
+        pingIntervalRef.current = setInterval(sendPing, PING_INTERVAL_MS);
       };
 
       ws.onmessage = (evt) => {
