@@ -63,11 +63,11 @@ const DT = 1 / REEF_TICK_HZ;
 // N-lap race on the v6 WIDE SURF ROAD (~88 052 wu/loop, was ~59 391 in v5). The
 // synchronous tick loop runs in ~20s WALL, so the wall-clock-based hard timeout
 // never fires — the only thing that matters here is enough TICKS to cover the
-// distance. The WIDE SURF ROAD has BROAD sweeps (min R 2087, carve margin 1282)
+// distance. The WIDE SURF ROAD has BROAD sweeps (min R 2156, carve margin 905)
 // so bots can carry more speed than the v5 narrow esses, but ground the window
 // conservatively in the 2-lap arc distance at a slow carve pace (220 wu/s) +
 // margin, NOT the wall-clock timeout, so a finisher is guaranteed. The wider
-// corridor (hw 738–1038) means NO wall-clamp stall (the v5 trap) — every corner
+// corridor (hw 1144–1610) means NO wall-clamp stall (the v5 trap) — every corner
 // holds a racing line, so bodies actually progress and finish.
 const REEF_RACE_TWO_LAP_ARC_WU = 2 * 88051.9;
 const CONSERVATIVE_BOT_PACE_WU_S = 220;

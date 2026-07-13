@@ -250,7 +250,7 @@ function ChaseCamera({ selfEntity, shakeRef }: ChaseCamProps) {
 
     // ─── v2 camera unify — follow the self body's PREDICTED pose ──────────────
     // When the self kart is running client prediction (reef-race v2), the body
-    // renders from selfPoseBus, NOT the 200 ms server interp above. Follow the
+    // renders from selfPoseBus, NOT the adaptive 100–220ms remote interp above. Follow the
     // SAME pose so camera + body share one timebase — this kills the rubber-band
     // where the kart slid to the screen edge on every turn while the camera
     // lagged. The interp above still ran (keeps history/lastRot warm) and is the

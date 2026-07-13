@@ -605,7 +605,7 @@ describe('ReefRaceBot — Phase 2 heuristics (P2-T30..P2-T34)', () => {
       const px = -fy;
       const py = fx;
       // Ribbon segment 100wu ahead of bot, offset 60wu to the +perp side.
-      // 60wu < BOT_RIBBON_LOOKAHEAD_WU (150) and the segment is in the
+      // 60wu < BOT_RIBBON_LOOKAHEAD_WU (195) and the segment is in the
       // forward cone (cos(angle) ≈ cos(31°) ≈ 0.86 ≥ 0.5).
       const midX = fx * 100 + px * 60;
       const midY = fy * 100 + py * 60;

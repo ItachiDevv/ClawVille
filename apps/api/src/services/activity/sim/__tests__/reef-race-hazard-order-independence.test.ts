@@ -10,7 +10,7 @@
  *
  * Two sources whirlpool ONE victim in the SAME tick. The victim is moving
  * near the boosted ceiling and the two pulls are along DIFFERENT axes, so
- * the combined result exceeds the 925 hard cap. Under a per-application
+ * the combined result exceeds the 1.85× hard cap. Under a per-application
  * clamp (round-2), applying source-A's pull before vs after source-B's
  * yields DIFFERENT victim velocities (the first clamp discards magnitude
  * the second pull can't recover). The round-3 sum-then-clamp-once is
@@ -59,7 +59,7 @@ function input(thrust = 0, dirX = 0, dirZ = 1, actionBits = 0) {
  * Run one tick where BOTH sources whirlpool the single victim, with the
  * source order given by `sourceOrder` (→ body-map insertion order). Bodies
  * sit on the spline near t=0.5; the victim moves fast along the tangent so
- * the two cross-axis pulls tip it over the 925 clamp. Returns the victim's
+ * the two cross-axis pulls tip it over the 1.85× clamp. Returns the victim's
  * final velocity + the observed map key order.
  */
 function runTwoWhirlpools(roomId: string, sourceOrder: string[]) {
@@ -80,7 +80,8 @@ function runTwoWhirlpools(roomId: string, sourceOrder: string[]) {
   // Victim on the centerline, moving near the boosted ceiling along +tangent.
   v.rot = Math.atan2(tx, tz);
   v.x = p.x; v.z = p.z;
-  v.vx = tx * 900; v.vz = tz * 900;
+  v.vx = tx * (REEF_MAX_SPEED * 1.8);
+  v.vz = tz * (REEF_MAX_SPEED * 1.8);
 
   // Source A ahead along +tangent (pulls victim +tangent → adds to its
   // motion). Source B off to +normal (pulls victim +normal → a different
@@ -118,7 +119,7 @@ describe('Reef Race — offensive-hazard order-independence (Codex round-3 BLOCK
     expect(ab.keyOrder.indexOf(SA)).toBeLessThan(ab.keyOrder.indexOf(SB));
     expect(ba.keyOrder.indexOf(SB)).toBeLessThan(ba.keyOrder.indexOf(SA));
 
-    // Clamp engaged — combined cross-axis pull pushed the victim over 925,
+    // Clamp engaged — combined cross-axis pull pushed the victim over 1.85×,
     // so this exercises the order-sensitive per-application-clamp path that
     // round-2 got wrong.
     const CAP = REEF_MAX_SPEED * 1.85;

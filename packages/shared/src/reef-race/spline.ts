@@ -14,10 +14,11 @@
  *    only places XZ positions; the math handles the rest.
  *
  * 2. Arclength LUT — 1 000 entries via Simpson integration.
- *    Track total arc ≈ 30 000 wu. At 1 000 entries → 30 wu/entry. Body moves
- *    ≤ 16.7 wu/tick at REEF_MAX_SPEED=500 wu/s, 30 Hz. Binary search error
- *    ≤ 15 wu (half-interval), well under the 0.5 wu tolerance required for
- *    `tFromArclength`. Bumping to 2 000 is a one-line change if needed.
+ *    The current closed track is ≈ 88 052 wu, or ≈ 88 wu/LUT interval. A body
+ *    moves ≤ 21.7 wu/tick at REEF_MAX_SPEED=650 wu/s, 30 Hz. Speed does not
+ *    determine inverse-arclength accuracy: binary search brackets the monotonic
+ *    LUT and linearly interpolates within the bracket. The isolated spline suite
+ *    enforces the load-bearing <0.5 wu arclength round-trip tolerance.
  *
  * 3. Phantom control points at open endpoints (OPEN mode only).
  *    Catmull-Rom needs four control points to evaluate one segment. At the
@@ -178,8 +179,8 @@ export interface ClosestPointResult {
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 /**
- * Number of LUT samples. 1 000 is sufficient for tracks up to ~50 000 wu
- * total arc before binary search error exceeds 0.5 wu. See design note #2.
+ * Number of LUT samples. The current ~88 052 wu ring is verified by the
+ * <0.5 wu arclength round-trip tests. See design note #2.
  */
 const LUT_SAMPLES = 1000;
 

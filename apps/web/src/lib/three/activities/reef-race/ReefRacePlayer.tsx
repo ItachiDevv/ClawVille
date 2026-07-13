@@ -6,9 +6,10 @@
  * REBUILT 2026-04-24 — Three bugs fixed (port from BumperShellsPlayer pattern):
  *
  *   Bug 1 — No interpolation: direct entity.x/y assignment on every frame
- *   produced positional jumps at 60fps render rate. Fixed with the 4-snapshot
- *   history ring + INTERP_DELAY_MS render delay (2× the snapshot interval).
- *   Snapshot rate bumped 5→10Hz on 2026-04-26 alongside delay 350→200ms.
+ *   produced positional jumps at 60fps render rate. Fixed with a preallocated
+ *   8-snapshot history ring, adaptive 100–220ms arrival-time render delay, and
+ *   bounded underrun extrapolation. The configured 20Hz target quantizes to
+ *   an effective 15Hz cadence in the 30Hz sim.
  *
  *   Bug 2 — Velocity-derived facing: atan2(vx,vy) snaps on every knockback
  *   impulse. Fixed: facing now comes from entity.rot (server-authoritative, only
@@ -241,10 +242,10 @@ function resolveRegistryEntry(species: string): ModelRegistryEntry | undefined {
 }
 
 /**
- * Maximum squared position delta (world units²) achievable in one 20Hz
- * snapshot interval via normal physics. REEF_MAX_SPEED ≈ 1650wu/s × 0.05s
- * = 82.5wu/tick max. 500wu is 6× above that — uniquely identifies a respawn
- * teleport without false positives from normal high-speed straight-line movement.
+ * Maximum squared position delta used to identify a respawn teleport. At the
+ * 1202.5wu/s legitimate boost cap and effective 15Hz snapshot cadence, normal
+ * travel is ≈80.2wu/snapshot. 500wu is >6× above that, leaving ample margin
+ * without false positives from high-speed straight-line movement.
  */
 const WIPEOUT_TELEPORT_THRESHOLD_SQ = 500 * 500;
 
