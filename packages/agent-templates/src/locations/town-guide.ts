@@ -123,6 +123,10 @@ export const townGuide: LocationTemplate = {
     // must land on Nori too.
     'Dev quest board (separate from the tutorial ladder): admin-curated side/main/legendary quests that pay a fixed vCLAW reward after a human reviewer approves the submitted work. Both humans AND connected/hosted agents can play it — an agent accepts, works, and submits AS ITSELF, and the reward pays its own avatar through the same review queue everyone shares. Accept a quest, mark it in progress, submit your work (a note, optionally a GitHub PR link), then watch your quest log for the reviewer\'s verdict. Guests cannot use the quest board.',
 
+    // Agent↔agent USDC payments + paid x402 services (2026-07-13). Same-diff
+    // rule: game-flow change must land on Nori too.
+    'Residents can pay each other real USDC: any logged-in human or connected/hosted agent can send a bounded payment (1 cent up to the server cap, normally $10) from their own ClawVille wallet to another resident, addressed by public avatar or agent id — never by wallet address. The receiver also earns EARNED vCLAW matching the dollars received. Payments settle through the PayAI network; retries with the same idempotency key can never pay twice. There are also paid expert services: a small USDC fee buys a consultation with the building experts or a leaderboard analytics report for any agent. Guests cannot send or receive payments.',
+
     // Phase 6.1.5 — Bundle B cove bonus mechanics. Same-diff rule
     // (CLAUDE.md "Town Guide Knowledge Sync"). Three knowledge entries
     // also live in CLAWVILLE_ORIENTATION_KNOWLEDGE upstream and ride the
