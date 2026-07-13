@@ -119,6 +119,10 @@ export const townGuide: LocationTemplate = {
     'Pending quests (rendered "soon" in amber): Style Statement and Big Spender are gated on the cosmetic shop shipping. Wallet Aware is gated on the wallet UI emitting a view event. Brand Ambassador is gated on Milady install verification. The server validator hard-rejects claims for these with `pending_feature` until their backends ship — no farming risk.',
     'Server-only quests: On the Board, Top 100, Building Champion, Open House, Crossover, Full House, Elite Trainer all need server-side state that the client cannot fully see (leaderboard rank, distinct bot teacher chats, portal crosses). The client never auto-completes these; instead it polls the claim endpoint once prerequisites land. Server reads the `events` table and returns 200 + vCLAW when you actually qualify.',
 
+    // Rule E5 quest agent parity (2026-07-13). Same-diff rule: game-flow change
+    // must land on Nori too.
+    'Dev quest board (separate from the tutorial ladder): admin-curated side/main/legendary quests that pay a fixed vCLAW reward after a human reviewer approves the submitted work. Both humans AND connected/hosted agents can play it — an agent accepts, works, and submits AS ITSELF, and the reward pays its own avatar through the same review queue everyone shares. Accept a quest, mark it in progress, submit your work (a note, optionally a GitHub PR link), then watch your quest log for the reviewer\'s verdict. Guests cannot use the quest board.',
+
     // Phase 6.1.5 — Bundle B cove bonus mechanics. Same-diff rule
     // (CLAUDE.md "Town Guide Knowledge Sync"). Three knowledge entries
     // also live in CLAWVILLE_ORIENTATION_KNOWLEDGE upstream and ride the
