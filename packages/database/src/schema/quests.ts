@@ -79,27 +79,36 @@ export const questSubmissions = pgTable(
     // ONE active (non-terminal) submission per (quest, avatar) — the DB-backed
     // race guard behind the accept handler's advisory check (Codex adversarial
     // review 2026-07-13). Concurrent accepts collide here (23505) instead of
-    // creating parallel payable rows. Applied via
-    // migrations-manual/2026-07-13_quest_submissions_active_unique.sql —
-    // NEVER db:push.
+    // creating parallel payable rows. Applied via CI-tracked
+    // migrations/0026_quest_parity_race_guards.sql — NEVER db:push.
     activeSubmissionUnique: uniqueIndex('quest_submissions_active_unique')
       .on(t.questId, t.avatarId)
       .where(sql`status NOT IN ('approved', 'rejected')`),
   }),
 );
 
-export const questRewards = pgTable('quest_rewards', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  submissionId: uuid('submission_id')
-    .notNull()
-    .references(() => questSubmissions.id, { onDelete: 'cascade' }),
-  avatarId: uuid('avatar_id')
-    .notNull()
-    .references(() => avatars.id, { onDelete: 'cascade' }),
-  questId: uuid('quest_id')
-    .notNull()
-    .references(() => quests.id, { onDelete: 'cascade' }),
-  tokensAwarded: integer('tokens_awarded').notNull(),
-  titleAwarded: varchar('title_awarded', { length: 100 }),
-  claimedAt: timestamp('claimed_at').defaultNow().notNull(),
-});
+export const questRewards = pgTable(
+  'quest_rewards',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    submissionId: uuid('submission_id')
+      .notNull()
+      .references(() => questSubmissions.id, { onDelete: 'cascade' }),
+    avatarId: uuid('avatar_id')
+      .notNull()
+      .references(() => avatars.id, { onDelete: 'cascade' }),
+    questId: uuid('quest_id')
+      .notNull()
+      .references(() => quests.id, { onDelete: 'cascade' }),
+    tokensAwarded: integer('tokens_awarded').notNull(),
+    titleAwarded: varchar('title_awarded', { length: 100 }),
+    claimedAt: timestamp('claimed_at').defaultNow().notNull(),
+  },
+  (t) => ({
+    // At most ONE reward per submission — defense-in-depth behind the CAS
+    // status transitions (Codex round 2, 2026-07-13): a reopened-then-
+    // re-approved submission must never credit twice. Applied via
+    // migrations/0026_quest_parity_race_guards.sql.
+    submissionUnique: uniqueIndex('quest_rewards_submission_unique').on(t.submissionId),
+  }),
+);

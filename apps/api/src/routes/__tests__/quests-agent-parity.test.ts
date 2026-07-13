@@ -205,6 +205,59 @@ describeIfDb2('quest race guards (DB)', () => {
     }
   });
 
+  it('CAS submit predicate cannot reopen an approved submission (round-2 HIGH #1)', async () => {
+    const { db, quests, questSubmissions, questRewards, avatars } = await import('@clawville/database');
+    const { eq, and, sql } = await import('drizzle-orm');
+    const [quest] = await db
+      .insert(quests)
+      .values({
+        title: 'REOPEN-TEST quest (auto-cleanup)',
+        description: 'test-only row for the stale-submit reopen guard',
+        tier: 'side_quest',
+        status: 'draft',
+        tokenReward: 1,
+        maxCompletions: 1,
+      })
+      .returning();
+    const [anyAvatar] = await db.select({ id: avatars.id }).from(avatars).limit(1);
+    try {
+      const [sub] = await db
+        .insert(questSubmissions)
+        .values({ questId: quest.id, avatarId: anyAvatar.id, status: 'approved' })
+        .returning();
+      // The EXACT predicate the submit handler uses — an approved row must not match.
+      const reopened = await db
+        .update(questSubmissions)
+        .set({ status: 'submitted' })
+        .where(
+          and(
+            eq(questSubmissions.questId, quest.id),
+            eq(questSubmissions.avatarId, anyAvatar.id),
+            sql`${questSubmissions.status} IN ('accepted', 'in_progress')`,
+          ),
+        )
+        .returning();
+      expect(reopened.length).toBe(0);
+
+      // Defense-in-depth: a second reward row for the same submission is refused.
+      await db.insert(questRewards).values({
+        submissionId: sub.id, avatarId: anyAvatar.id, questId: quest.id, tokensAwarded: 1,
+      });
+      const dup = await db
+        .insert(questRewards)
+        .values({ submissionId: sub.id, avatarId: anyAvatar.id, questId: quest.id, tokensAwarded: 1 })
+        .then(() => 'ok')
+        .catch((e: { code?: string; cause?: { code?: string } }) =>
+          e?.code === '23505' || e?.cause?.code === '23505' ? 'dup' : Promise.reject(e),
+        );
+      expect(dup).toBe('dup');
+    } finally {
+      await db.delete(questRewards).where(eq(questRewards.questId, quest.id));
+      await db.delete(questSubmissions).where(eq(questSubmissions.questId, quest.id));
+      await db.delete(quests).where(eq(quests.id, quest.id));
+    }
+  });
+
   it('completion-slot consume: second approval of a 1-max quest gets 0 rows', async () => {
     const { db, quests } = await import('@clawville/database');
     const { eq, and, sql } = await import('drizzle-orm');
