@@ -21,7 +21,8 @@
 
 import { describe, it, expect } from 'bun:test';
 import { Hono } from 'hono';
-import { questRoutes } from '../quests';
+import { questRoutes, requireLedgerCapableIdentity } from '../quests';
+import type { ActivityAuthContext } from '../../middleware/require-auth-or-agent';
 
 const app = new Hono();
 app.route('/api/quests', questRoutes);
@@ -88,6 +89,56 @@ describe('quest player routes — agent-or-auth gate (Rule E5)', () => {
   });
 });
 
+describe('requireLedgerCapableIdentity — ownership-proof gate (Codex HIGH #1)', () => {
+  // Tiny harness: stamp an identity, then run the REAL exported middleware.
+  function appWithIdentity(identity: ActivityAuthContext['Variables']['identity']) {
+    const a = new Hono<ActivityAuthContext>();
+    a.use('*', async (c, next) => {
+      c.set('identity', identity);
+      return next();
+    });
+    a.get('/probe', requireLedgerCapableIdentity, (c) => c.json({ ok: true }));
+    return a;
+  }
+
+  const base = {
+    userId: 'u-1',
+    avatarId: 'av-1',
+  };
+
+  it('403s a bound-but-ownership-UNPROVEN agent session BEFORE the handler', async () => {
+    const res = await appWithIdentity({
+      kind: 'agent',
+      ...base,
+      agentId: 'a-1',
+      sessionId: 's-1',
+      ledgerCapable: false,
+    } as ActivityAuthContext['Variables']['identity']).request('/probe');
+    expect(res.status).toBe(403);
+    expect(await res.text()).toContain('agent_session_not_ledger_authorized');
+  });
+
+  it('passes a ledger-capable agent session', async () => {
+    const res = await appWithIdentity({
+      kind: 'agent',
+      ...base,
+      agentId: 'a-1',
+      sessionId: 's-1',
+      ledgerCapable: true,
+    } as ActivityAuthContext['Variables']['identity']).request('/probe');
+    expect(res.status).toBe(200);
+  });
+
+  it('passes a human identity untouched', async () => {
+    const res = await appWithIdentity({
+      kind: 'user',
+      ...base,
+      agentId: null,
+    } as ActivityAuthContext['Variables']['identity']).request('/probe');
+    expect(res.status).toBe(200);
+  });
+});
+
 describe('quest admin + tutorial routes — unchanged human-only surface', () => {
   it('POST /api/quests/admin/create → 401 without a Lucia cookie', async () => {
     const res = await app.request('/api/quests/admin/create', {
@@ -109,5 +160,84 @@ describe('quest admin + tutorial routes — unchanged human-only surface', () =>
     });
     // requireAuth ignores the agent header entirely — 401, not 403/404.
     expect(res.status).toBe(401);
+  });
+});
+
+// ─── DB-gated race coverage (Codex HIGH #2) ─────────────────────────────────
+// Runs only with DATABASE_URL (staging DB) — exercises the REAL database
+// semantics the fixes rely on: the partial unique index kills concurrent
+// duplicate accepts, and the conditional completion-slot consume refuses the
+// over-cap approval.
+const describeIfDb2 = process.env.DATABASE_URL ? describe : describe.skip;
+describeIfDb2('quest race guards (DB)', () => {
+  it('concurrent duplicate active-submission inserts: exactly one wins (unique index)', async () => {
+    const { db, quests, questSubmissions, avatars } = await import('@clawville/database');
+    const { eq, sql } = await import('drizzle-orm');
+    const [quest] = await db
+      .insert(quests)
+      .values({
+        title: 'RACE-TEST quest (auto-cleanup)',
+        description: 'test-only row for the concurrent-accept race guard',
+        tier: 'side_quest',
+        status: 'draft', // never visible on the live board
+        tokenReward: 1,
+        maxCompletions: 1,
+      })
+      .returning();
+    const [anyAvatar] = await db.select({ id: avatars.id }).from(avatars).limit(1);
+    expect(anyAvatar).toBeTruthy();
+    try {
+      const insertOnce = () =>
+        db
+          .insert(questSubmissions)
+          .values({ questId: quest.id, avatarId: anyAvatar.id, status: 'accepted' })
+          .returning()
+          .then(() => 'ok' as const)
+          .catch((e: { code?: string; cause?: { code?: string } }) =>
+            e?.code === '23505' || e?.cause?.code === '23505' ? ('dup' as const) : Promise.reject(e),
+          );
+      const results = await Promise.all([insertOnce(), insertOnce(), insertOnce()]);
+      expect(results.filter((r) => r === 'ok').length).toBe(1);
+      expect(results.filter((r) => r === 'dup').length).toBe(2);
+    } finally {
+      await db.delete(questSubmissions).where(eq(questSubmissions.questId, quest.id));
+      await db.delete(quests).where(eq(quests.id, quest.id));
+    }
+  });
+
+  it('completion-slot consume: second approval of a 1-max quest gets 0 rows', async () => {
+    const { db, quests } = await import('@clawville/database');
+    const { eq, and, sql } = await import('drizzle-orm');
+    const [quest] = await db
+      .insert(quests)
+      .values({
+        title: 'CAP-TEST quest (auto-cleanup)',
+        description: 'test-only row for the over-cap approval guard',
+        tier: 'side_quest',
+        status: 'draft',
+        tokenReward: 1,
+        maxCompletions: 1,
+      })
+      .returning();
+    try {
+      const consume = () =>
+        db
+          .update(quests)
+          .set({ currentCompletions: sql`COALESCE(${quests.currentCompletions}, 0) + 1` })
+          .where(
+            and(
+              eq(quests.id, quest.id),
+              sql`(${quests.maxCompletions} IS NULL OR COALESCE(${quests.currentCompletions}, 0) < ${quests.maxCompletions})`,
+            ),
+          )
+          .returning();
+      const first = await consume();
+      const second = await consume();
+      expect(first.length).toBe(1);
+      expect(first[0].currentCompletions).toBe(1);
+      expect(second.length).toBe(0); // cap enforced — no second payout possible
+    } finally {
+      await db.delete(quests).where(eq(quests.id, quest.id));
+    }
   });
 });

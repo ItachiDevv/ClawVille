@@ -6,7 +6,9 @@ import {
   integer,
   timestamp,
   pgEnum,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { users } from './users';
 import { avatars } from './avatars';
 
@@ -51,26 +53,40 @@ export const quests = pgTable('quests', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
-export const questSubmissions = pgTable('quest_submissions', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  questId: uuid('quest_id')
-    .notNull()
-    .references(() => quests.id, { onDelete: 'cascade' }),
-  avatarId: uuid('avatar_id')
-    .notNull()
-    .references(() => avatars.id, { onDelete: 'cascade' }),
-  status: questSubmissionStatusEnum('status').default('accepted').notNull(),
-  prLink: varchar('pr_link', { length: 500 }),
-  submissionNote: text('submission_note'),
-  reviewNote: text('review_note'),
-  reviewedBy: uuid('reviewed_by')
-    .references(() => users.id, { onDelete: 'set null' }),
-  startedAt: timestamp('started_at').defaultNow().notNull(),
-  submittedAt: timestamp('submitted_at'),
-  reviewedAt: timestamp('reviewed_at'),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
+export const questSubmissions = pgTable(
+  'quest_submissions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    questId: uuid('quest_id')
+      .notNull()
+      .references(() => quests.id, { onDelete: 'cascade' }),
+    avatarId: uuid('avatar_id')
+      .notNull()
+      .references(() => avatars.id, { onDelete: 'cascade' }),
+    status: questSubmissionStatusEnum('status').default('accepted').notNull(),
+    prLink: varchar('pr_link', { length: 500 }),
+    submissionNote: text('submission_note'),
+    reviewNote: text('review_note'),
+    reviewedBy: uuid('reviewed_by')
+      .references(() => users.id, { onDelete: 'set null' }),
+    startedAt: timestamp('started_at').defaultNow().notNull(),
+    submittedAt: timestamp('submitted_at'),
+    reviewedAt: timestamp('reviewed_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (t) => ({
+    // ONE active (non-terminal) submission per (quest, avatar) — the DB-backed
+    // race guard behind the accept handler's advisory check (Codex adversarial
+    // review 2026-07-13). Concurrent accepts collide here (23505) instead of
+    // creating parallel payable rows. Applied via
+    // migrations-manual/2026-07-13_quest_submissions_active_unique.sql —
+    // NEVER db:push.
+    activeSubmissionUnique: uniqueIndex('quest_submissions_active_unique')
+      .on(t.questId, t.avatarId)
+      .where(sql`status NOT IN ('approved', 'rejected')`),
+  }),
+);
 
 export const questRewards = pgTable('quest_rewards', {
   id: uuid('id').primaryKey().defaultRandom(),

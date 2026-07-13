@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
+import { createMiddleware } from 'hono/factory';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import {
   requireAuthOrAgentSession,
@@ -34,14 +35,34 @@ import {
 // connected/hosted agent plays quests AS ITSELF — its `X-Clawville-Agent-Session`
 // header resolves to its BOUND avatar and the submission/reward rows bind to
 // that avatar exactly as a human's do. Guests (human or guest-owned agent) are
-// blocked by `requireNonGuestIdentity` on the write paths. Like the bounty CT
-// rail (and unlike custodial USDC legs), there is NO `ledgerCapable` gate here:
-// quest rewards only EARN vCLAW into the submission's bound avatar via
-// admin-reviewed approval — no custodial decrypt/sign and no spend leg exists.
+// blocked by `requireNonGuestIdentity` on the write paths. Agent identities must
+// ALSO be `ledgerCapable` on ALL FIVE routes (Codex adversarial review
+// 2026-07-13, HIGH #1): an ownership-UNPROVEN session (agentId-only reconnect to
+// an already-bound bot / legacy register) resolves the BOUND user's avatar with
+// `ledgerCapable=false`, so without this gate it could read the victim's quest
+// history and lock them out of quests by squatting junk submissions on their
+// avatar. Same fail-closed shape as the cove — never a guest demotion.
 // Admin routes + the tutorial ladder (client-tracked human onboarding, keyed on
 // `userId`) intentionally stay human-only.
 export const questRoutes = new Hono<ActivityAuthContext>();
 questRoutes.use('*', sessionMiddleware);
+
+/**
+ * 403 an agent identity that has not PROVEN ownership of its bound avatar.
+ * Humans (`kind:'user'`) pass untouched. Exported for the parity test suite.
+ */
+export const requireLedgerCapableIdentity = createMiddleware<ActivityAuthContext>(
+  async (c, next) => {
+    const identity = c.get('identity');
+    if (identity && identity.kind === 'agent' && identity.ledgerCapable !== true) {
+      throw new HTTPException(403, {
+        message:
+          'agent_session_not_ledger_authorized: prove avatar ownership (fresh connect-token or signed-challenge reconnect) before using the quest board',
+      });
+    }
+    return next();
+  },
+);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -130,7 +151,7 @@ const reviewSchema = z.object({
 // ---------------------------------------------------------------------------
 // 6. GET /my-quests — User's quest submissions with quest details (auth)
 // ---------------------------------------------------------------------------
-questRoutes.get('/my-quests', requireAuthOrAgentSession, noStorePrivate, async (c) => {
+questRoutes.get('/my-quests', requireAuthOrAgentSession, requireLedgerCapableIdentity, noStorePrivate, async (c) => {
   const { avatarId } = c.get('identity');
 
   const rows = await db
@@ -175,7 +196,7 @@ questRoutes.get('/my-quests', requireAuthOrAgentSession, noStorePrivate, async (
 // ---------------------------------------------------------------------------
 // 7. GET /quest-log — Completed quests and rewards earned (auth)
 // ---------------------------------------------------------------------------
-questRoutes.get('/quest-log', requireAuthOrAgentSession, noStorePrivate, async (c) => {
+questRoutes.get('/quest-log', requireAuthOrAgentSession, requireLedgerCapableIdentity, noStorePrivate, async (c) => {
   const { avatarId } = c.get('identity');
 
   const rows = await db
@@ -441,18 +462,49 @@ questRoutes.post('/admin/:submissionId/review', requireAuth, async (c) => {
         });
       }
 
-      // Fetch quest details
+      // 2. Atomically CONSUME a completion slot BEFORE any credit (Codex
+      // adversarial review 2026-07-13, HIGH #2). The conditional
+      // UPDATE ... WHERE under-cap RETURNING both row-locks the quest
+      // (serializing concurrent approvals of DIFFERENT submissions) and
+      // enforces maxCompletions in the same statement — the old read-then-
+      // increment let two approvals of a 1-max quest both read
+      // currentCompletions=0 and both pay. 0 rows ⇒ cap already reached ⇒
+      // 409, and the tx rollback un-claims the submission (it stays
+      // 'submitted' so the admin can reject it instead).
       const [quest] = await tx
-        .select()
-        .from(quests)
-        .where(eq(quests.id, claimed.questId))
-        .limit(1);
+        .update(quests)
+        .set({
+          currentCompletions: sql`COALESCE(${quests.currentCompletions}, 0) + 1`,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(quests.id, claimed.questId),
+            sql`(${quests.maxCompletions} IS NULL OR COALESCE(${quests.currentCompletions}, 0) < ${quests.maxCompletions})`
+          )
+        )
+        .returning();
 
       if (!quest) {
-        throw new HTTPException(500, { message: 'Quest not found for submission' });
+        // Distinguish cap-reached from a genuinely missing quest row.
+        const [exists] = await tx
+          .select({ id: quests.id })
+          .from(quests)
+          .where(eq(quests.id, claimed.questId))
+          .limit(1);
+        if (!exists) {
+          throw new HTTPException(500, { message: 'Quest not found for submission' });
+        }
+        throw new HTTPException(409, {
+          message:
+            'Quest has reached its maximum completions — approve rolled back; reject this submission instead',
+        });
       }
 
-      // 2. Award tokens to avatar (within the same transaction)
+      // `quest.currentCompletions` is now the POST-increment value.
+      const newCompletions = quest.currentCompletions ?? 1;
+
+      // 3. Award tokens to avatar (within the same transaction)
       await creditClawTokens({
         avatarId: claimed.avatarId,
         amount: quest.tokenReward,
@@ -461,7 +513,7 @@ questRoutes.post('/admin/:submissionId/review', requireAuth, async (c) => {
         metadata: { questId: quest.id, submissionId: claimed.id },
       }, tx);
 
-      // 3. Create quest_reward record
+      // 4. Create quest_reward record
       await tx.insert(questRewards).values({
         submissionId,
         avatarId: claimed.avatarId,
@@ -470,19 +522,13 @@ questRoutes.post('/admin/:submissionId/review', requireAuth, async (c) => {
         titleAwarded: quest.titleReward ?? null,
       });
 
-      // 4. Increment quest.currentCompletions
-      const newCompletions = (quest.currentCompletions ?? 0) + 1;
-      const questUpdates: Record<string, unknown> = {
-        currentCompletions: newCompletions,
-        updatedAt: now,
-      };
-
       // 5. If currentCompletions >= maxCompletions, mark quest as 'completed'
       if (quest.maxCompletions && newCompletions >= quest.maxCompletions) {
-        questUpdates.status = 'completed';
+        await tx
+          .update(quests)
+          .set({ status: 'completed', updatedAt: now })
+          .where(eq(quests.id, quest.id));
       }
-
-      await tx.update(quests).set(questUpdates).where(eq(quests.id, quest.id));
 
       return {
         tokensAwarded: quest.tokenReward,
@@ -590,7 +636,7 @@ questRoutes.get('/:id', async (c) => {
 // ---------------------------------------------------------------------------
 // 3. POST /:id/accept — Accept a quest (auth)
 // ---------------------------------------------------------------------------
-questRoutes.post('/:id/accept', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+questRoutes.post('/:id/accept', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Quest');
 
@@ -635,14 +681,30 @@ questRoutes.post('/:id/accept', requireAuthOrAgentSession, requireNonGuestIdenti
     });
   }
 
-  const [submission] = await db
-    .insert(questSubmissions)
-    .values({
-      questId: id,
-      avatarId,
-      status: 'accepted',
-    })
-    .returning();
+  // The read-then-insert above is advisory UX; the AUTHORITATIVE guard is the
+  // partial unique index `quest_submissions_active_unique` (one active
+  // submission per quest+avatar — Codex adversarial review 2026-07-13, HIGH
+  // #2). A concurrent accept that races past the read collides here (23505)
+  // and gets the same 400 the slow path returns.
+  let submission;
+  try {
+    [submission] = await db
+      .insert(questSubmissions)
+      .values({
+        questId: id,
+        avatarId,
+        status: 'accepted',
+      })
+      .returning();
+  } catch (err) {
+    const pgCode = (err as { code?: string; cause?: { code?: string } });
+    if (pgCode?.code === '23505' || pgCode?.cause?.code === '23505') {
+      throw new HTTPException(400, {
+        message: 'You already have an active submission for this quest',
+      });
+    }
+    throw err;
+  }
 
   return c.json({
     success: true,
@@ -659,7 +721,7 @@ questRoutes.post('/:id/accept', requireAuthOrAgentSession, requireNonGuestIdenti
 // ---------------------------------------------------------------------------
 // 4. POST /:id/start — Mark submission as in_progress (auth)
 // ---------------------------------------------------------------------------
-questRoutes.post('/:id/start', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+questRoutes.post('/:id/start', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const id = c.req.param('id'); // quest ID
   validateUuid(id, 'Quest');
 
@@ -701,7 +763,7 @@ questRoutes.post('/:id/start', requireAuthOrAgentSession, requireNonGuestIdentit
 // ---------------------------------------------------------------------------
 // 5. POST /:id/submit — Submit completed work (auth)
 // ---------------------------------------------------------------------------
-questRoutes.post('/:id/submit', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+questRoutes.post('/:id/submit', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const id = c.req.param('id'); // quest ID
   validateUuid(id, 'Quest');
 
