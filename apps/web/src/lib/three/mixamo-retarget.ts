@@ -343,7 +343,9 @@ const _vrmHipsHeightCache = new WeakMap<VRM, number>();
  * function still attempts the measurement rather than throwing — a
  * possibly-stale hip height is better than crashing the character's
  * animation entirely. It emits a dev-mode `console.warn` so the regression
- * is visible instead of silently shipping wrong-but-plausible numbers.
+ * is visible instead of silently shipping wrong-but-plausible numbers. The
+ * fallback result is deliberately NOT cached because a parent transform or
+ * patched skeleton.update can make that lazy-call context untrustworthy.
  *
  * PERFORMANCE: memoized per-VRM-instance in `_vrmHipsHeightCache` — a
  * Box3.setFromObject + full skeleton traversal is real cost, so with eager
@@ -369,35 +371,84 @@ function measureVrmHipsHeightAboveFloor(vrm: VRM, _isEagerPrime = false): number
   if (!hipsNode) return 0;
 
   const savedPose = vrm.humanoid!.getRawPose();
-  vrm.humanoid!.resetRawPose();
-
   const prevScale = vrm.scene.scale.clone();
-  vrm.scene.scale.setScalar(1);
-  vrm.scene.updateMatrixWorld(true);
+  let ancestorScaleY = 1;
+  if (vrm.scene.parent) {
+    // Eager priming runs unparented; compensate for ancestor scale only as a
+    // defensive measure on the best-effort lazy path.
+    const ancestorScale = new THREE.Vector3();
+    vrm.scene.parent.getWorldScale(ancestorScale);
+    if (Number.isFinite(ancestorScale.y) && Math.abs(ancestorScale.y) > Number.EPSILON) {
+      ancestorScaleY = ancestorScale.y;
+    }
+  }
 
-  // Settle skeleton bone matrices before measuring — same requirement
-  // computeVRMAvatarFit documents: Box3.setFromObject on a SkinnedMesh reads
-  // skeleton.boneMatrices, which are stale/zero until skeleton.update() runs.
-  vrm.scene.traverse((obj) => {
-    const sm = obj as THREE.SkinnedMesh;
-    if (sm.isSkinnedMesh && sm.skeleton) sm.skeleton.update();
-  });
+  let result = 0;
+  let measurementError: unknown;
+  let measurementFailed = false;
+  let restoreError: unknown;
+  let restoreFailed = false;
+  try {
+    vrm.humanoid!.resetRawPose();
+    vrm.scene.scale.setScalar(1);
+    vrm.scene.updateMatrixWorld(true);
 
-  const box = new THREE.Box3().setFromObject(vrm.scene);
-  const hipsWorldPos = new THREE.Vector3();
-  hipsNode.getWorldPosition(hipsWorldPos);
+    // Settle skeleton bone matrices before measuring — same requirement
+    // computeVRMAvatarFit documents: Box3.setFromObject on a SkinnedMesh reads
+    // skeleton.boneMatrices, which are stale/zero until skeleton.update() runs.
+    vrm.scene.traverse((obj) => {
+      const sm = obj as THREE.SkinnedMesh;
+      if (sm.isSkinnedMesh && sm.skeleton) sm.skeleton.update();
+    });
+    // Refresh each skinned bound after every skeleton has settled:
+    // setFromObject otherwise may reuse a box cached under a previous pose.
+    vrm.scene.traverse((obj) => {
+      const sm = obj as THREE.SkinnedMesh;
+      if (sm.isSkinnedMesh) sm.computeBoundingBox();
+    });
 
-  vrm.scene.scale.copy(prevScale);
-  vrm.scene.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(vrm.scene);
+    const hipsWorldPos = new THREE.Vector3();
+    hipsNode.getWorldPosition(hipsWorldPos);
 
-  // Restore whatever pose the caller's animation had the VRM in — this
-  // function must be a read, never visibly disturb a live character.
-  vrm.humanoid!.setRawPose(savedPose);
-  vrm.scene.updateMatrixWorld(true);
+    const height = (hipsWorldPos.y - box.min.y) / ancestorScaleY;
+    result = Number.isFinite(height) ? Math.abs(height) : 0;
+  } catch (error) {
+    measurementError = error;
+    measurementFailed = true;
+  } finally {
+    // Restore whatever pose the caller's animation had the VRM in — this
+    // function must be a read, never visibly disturb a live character. Try
+    // every step even if one fails, and never mask the measurement exception.
+    const tryRestore = (restore: () => void): void => {
+      try {
+        restore();
+      } catch (error) {
+        if (!restoreFailed) restoreError = error;
+        restoreFailed = true;
+      }
+    };
 
-  const height = hipsWorldPos.y - box.min.y;
-  const result = Number.isFinite(height) ? Math.abs(height) : 0;
-  _vrmHipsHeightCache.set(vrm, result);
+    tryRestore(() => vrm.scene.scale.copy(prevScale));
+    tryRestore(() => vrm.humanoid!.setRawPose(savedPose));
+    tryRestore(() => vrm.scene.updateMatrixWorld(true));
+    tryRestore(() => {
+      vrm.scene.traverse((obj) => {
+        const sm = obj as THREE.SkinnedMesh;
+        if (sm.isSkinnedMesh && sm.skeleton) sm.skeleton.update();
+      });
+    });
+    tryRestore(() => {
+      vrm.scene.traverse((obj) => {
+        const sm = obj as THREE.SkinnedMesh;
+        if (sm.isSkinnedMesh) sm.computeBoundingBox();
+      });
+    });
+  }
+
+  if (measurementFailed) throw measurementError;
+  if (restoreFailed) throw restoreError;
+  if (_isEagerPrime) _vrmHipsHeightCache.set(vrm, result);
   return result;
 }
 
@@ -521,7 +572,7 @@ function buildRetargetedClip(
       continue;
     }
 
-    // Position tracks (typically only on hips): keep ONLY the Y axis
+    // Position tracks (hips only after the explicit gate below): keep ONLY the Y axis
     // (vertical hip bob). Rationale: Mixamo walk/run clips encode forward
     // motion as positive Z on the hip bone. After the VRM 0.x coord flip
     // (i%3!=1 → negate X and Z) that becomes -Z locally; combined with
@@ -536,19 +587,19 @@ function buildRetargetedClip(
     // game-position. We keep it so hair/skirt spring bones receive the
     // vertical shock they need to swing naturally.
     //
-    // vrmBoneName === 'hips' GATE (added for Meshy support, 2026-07-12):
-    // Mixamo GLBs only ever emit a position channel on Hips (this branch's
-    // original assumption, per the comment above — "typically only on
-    // hips" was previously unenforced, just true by luck of Mixamo's FBX
-    // export). Meshy's export bakes a translation channel on EVERY bone,
-    // even ones that never move — verified on stand_to_sit.glb: LeftUpLeg's
-    // "translation" track is 2 keyframes, both equal to its REST-local
-    // offset (1.282, -4.161, 10.124), i.e. a no-op track. Without this
-    // gate, that non-hips track would still be transformed (X/Z zeroed, Y
-    // rescaled by the HIPS-specific hipsPositionScale) and pushed as a real
-    // clip track — silently deforming the bone's length/offset every frame
-    // the clip plays (caught via the headless retarget-verification harness
-    // before this ever reached a browser, not by eyeballing a screenshot).
+    // vrmBoneName === 'hips' GATE (enforced roster-wide, 2026-07-13):
+    // scripts/mixamo/blender-convert-anims.py force-samples translation on
+    // EVERY bone; the shipped Mixamo GLBs contain 52 translation channels in
+    // idle.glb, 41 in hermes-female/idle.glb, and 1,262 across _emotes.glb.
+    // Meshy's export also bakes translation on EVERY bone, even ones that
+    // never move — verified on stand_to_sit.glb: LeftUpLeg's track is 2
+    // keyframes, both equal to its REST-local offset (1.282, -4.161, 10.124).
+    // Without this gate, those non-hips tracks are transformed (X/Z zeroed,
+    // Y rescaled by the HIPS-specific hipsPositionScale) and emitted as real
+    // clip tracks, silently deforming bone length/offset. Dropping them for
+    // both Mixamo and Meshy is an intentional roster-wide correction, pending
+    // visual validation; the gate was first caught for Meshy by the headless
+    // retarget-verification harness before it reached a browser.
     if (
       propertyName === 'position' &&
       track instanceof THREE.VectorKeyframeTrack &&

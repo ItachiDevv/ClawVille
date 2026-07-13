@@ -63,24 +63,28 @@ const io = new NodeIO().registerExtensions(ALL_EXTENSIONS);
 
 async function buildBundle(sources, outPath) {
   const real = [];
+  const invalid = [];
   for (const [name, rel] of sources) {
     const p = resolve(SIT_SRC, rel);
     if (!existsSync(p)) {
-      console.warn(`[skip] missing source: ${p}`);
+      invalid.push(`[missing] ${name}: ${p}`);
       continue;
     }
-    real.push({ name, path: p });
+    const doc = await io.read(p);
+    if (doc.getRoot().listAnimations().length === 0) {
+      invalid.push(`[no animation] ${name}: ${p}`);
+      continue;
+    }
+    real.push({ name, path: p, doc });
   }
-  if (real.length === 0) {
-    console.warn(`[skip] no sources found for ${outPath}`);
-    return 0;
+  if (invalid.length > 0) {
+    console.error('[fatal] cove sit bundle input validation failed:');
+    for (const problem of invalid) console.error(`  ${problem}`);
+    process.exit(1);
   }
 
-  const baseDoc = await io.read(real[0].path);
+  const baseDoc = real[0].doc;
   const baseAnims = baseDoc.getRoot().listAnimations();
-  if (baseAnims.length === 0) {
-    throw new Error(`[fatal] base source ${real[0].path} has no animations`);
-  }
   baseAnims[0].setName(real[0].name);
   for (let i = 1; i < baseAnims.length; i++) baseAnims[i].dispose();
 
@@ -92,13 +96,7 @@ async function buildBundle(sources, outPath) {
 
   let merged = 1;
   for (let i = 1; i < real.length; i++) {
-    const { name, path } = real[i];
-    const otherDoc = await io.read(path);
-    const otherAnim = otherDoc.getRoot().listAnimations()[0];
-    if (!otherAnim) {
-      console.warn(`[skip] no animation in ${path}`);
-      continue;
-    }
+    const { name, doc: otherDoc } = real[i];
 
     mergeDocuments(baseDoc, otherDoc);
 
