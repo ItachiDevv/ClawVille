@@ -642,16 +642,24 @@ questRoutes.post('/:id/accept', requireAuthOrAgentSession, requireLedgerCapableI
 
   const { avatarId } = c.get('identity');
 
-  // Verify quest exists and is active
+  // Verify quest exists, is active, and has not expired (Codex round 3 —
+  // expiry was enforced by the hosted ACCEPT_QUEST action but not here, so
+  // behavior differed by surface).
   const [quest] = await db
     .select()
     .from(quests)
-    .where(and(eq(quests.id, id), eq(quests.status, 'active')))
+    .where(
+      and(
+        eq(quests.id, id),
+        eq(quests.status, 'active'),
+        sql`(${quests.expiresAt} IS NULL OR ${quests.expiresAt} > now())`
+      )
+    )
     .limit(1);
 
   if (!quest) {
     throw new HTTPException(404, {
-      message: 'Quest not found or not active',
+      message: 'Quest not found, not active, or expired',
     });
   }
 
@@ -665,19 +673,26 @@ questRoutes.post('/:id/accept', requireAuthOrAgentSession, requireLedgerCapableI
     });
   }
 
-  // Verify avatar doesn't already have an active submission for this quest
-  // Active = any status that isn't 'approved' or 'rejected'
+  // One submission LINE per (quest, avatar): block when an ACTIVE submission
+  // exists, AND when an APPROVED one does (Codex round 3 — re-accepting after
+  // approval minted a fresh submission id that could be approved and PAID
+  // again; only a REJECTED submission unlocks a retry). The DB layers behind
+  // this check: quest_submissions_active_unique (concurrent accepts) and
+  // quest_rewards_avatar_quest_unique (one payout per avatar per quest).
   const existingSubmission = await db.query.questSubmissions.findFirst({
     where: and(
       eq(questSubmissions.questId, id),
       eq(questSubmissions.avatarId, avatarId),
-      sql`${questSubmissions.status} NOT IN ('approved', 'rejected')`
+      sql`${questSubmissions.status} <> 'rejected'`
     ),
   });
 
   if (existingSubmission) {
     throw new HTTPException(400, {
-      message: 'You already have an active submission for this quest',
+      message:
+        existingSubmission.status === 'approved'
+          ? 'You have already completed this quest'
+          : 'You already have an active submission for this quest',
     });
   }
 
@@ -844,12 +859,19 @@ questRoutes.get('/', async (c) => {
   const statusFilter = c.req.query('status') || 'active';
 
   // Build WHERE conditions
-  const conditions: ReturnType<typeof eq>[] = [
+  const conditions: (ReturnType<typeof eq> | ReturnType<typeof sql>)[] = [
     eq(
       quests.status,
       statusFilter as 'draft' | 'active' | 'completed' | 'archived'
     ),
   ];
+
+  // An 'active' listing must not advertise expired quests (Codex round 3 —
+  // they were listable and acceptable here while the hosted action refused
+  // them). Other status filters (admin views) keep the full history.
+  if (statusFilter === 'active') {
+    conditions.push(sql`(${quests.expiresAt} IS NULL OR ${quests.expiresAt} > now())`);
+  }
 
   if (tierFilter) {
     conditions.push(

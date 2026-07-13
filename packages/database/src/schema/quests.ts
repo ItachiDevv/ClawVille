@@ -110,5 +110,9 @@ export const questRewards = pgTable(
     // re-approved submission must never credit twice. Applied via
     // migrations/0026_quest_parity_race_guards.sql.
     submissionUnique: uniqueIndex('quest_rewards_submission_unique').on(t.submissionId),
+    // ONE payout per (quest, avatar) — a re-accept after approval must never
+    // pay the same avatar twice (Codex round 3; retry allowed only after
+    // rejection). Applied via migrations/0027_quest_reward_per_avatar.sql.
+    avatarQuestUnique: uniqueIndex('quest_rewards_avatar_quest_unique').on(t.questId, t.avatarId),
   }),
 );

@@ -128,8 +128,14 @@ export const acceptQuestAction: Action = {
         };
       }
 
-      // 2. Check if avatar already has an active submission for this quest
-      const [existingSubmission] = await db
+      // 2. One submission LINE per (quest, avatar): an ACTIVE submission
+      // blocks, and an APPROVED one blocks PERMANENTLY (Codex round 3 —
+      // re-accepting after approval minted a new payable submission; only a
+      // rejection unlocks a retry). Scan ALL rows, not the first — a rejected
+      // row must not mask an approved one. Mirrors the REST accept route;
+      // DB backstops: quest_submissions_active_unique +
+      // quest_rewards_avatar_quest_unique.
+      const existingSubmissions = await db
         .select({ id: questSubmissions.id, status: questSubmissions.status })
         .from(questSubmissions)
         .where(
@@ -137,15 +143,19 @@ export const acceptQuestAction: Action = {
             eq(questSubmissions.questId, questId),
             eq(questSubmissions.avatarId, avatarId),
           ),
-        )
-        .limit(1);
+        );
 
-      if (existingSubmission) {
-        const terminalStatuses = ['approved', 'rejected'];
-        if (!terminalStatuses.includes(existingSubmission.status)) {
+      for (const existing of existingSubmissions) {
+        if (existing.status === 'approved') {
           return {
             success: false,
-            text: `You already have an active submission for this quest (status: ${existingSubmission.status}).`,
+            text: 'You have already completed this quest.',
+          };
+        }
+        if (existing.status !== 'rejected') {
+          return {
+            success: false,
+            text: `You already have an active submission for this quest (status: ${existing.status}).`,
           };
         }
       }
