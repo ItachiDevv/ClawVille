@@ -37,7 +37,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 // strict setMeshoptDecoder signature; three-stdlib's callable does not.
 import { MeshoptDecoder } from 'meshoptimizer';
 import type { VRM } from '@pixiv/three-vrm';
-import { retargetMixamoClip, type MixamoGltf } from './mixamo-retarget';
+import { retargetMeshyClip, retargetMixamoClip, type MixamoGltf } from './mixamo-retarget';
 import { VRM_METRICS_ENABLED } from './vrm-loader';
 
 // ---------------------------------------------------------------------------
@@ -127,6 +127,7 @@ if (VRM_METRICS_ENABLED && typeof window !== 'undefined') {
 // entry on the full URL incl. query string, giving us cheap manual purges.
 const EMOTE_BUNDLE_VERSION = 1;
 const EMOTE_BUNDLE = `/avatars/animations/_emotes.glb?v=${EMOTE_BUNDLE_VERSION}`;
+const COVE_SIT_BUNDLE = '/avatars/animations/_cove_sit.glb';
 
 const ANIM_PATHS = {
   // Locomotion — separate GLBs (precached by SW).
@@ -161,6 +162,12 @@ const ANIM_PATHS = {
   swimming:        '/avatars/animations/hermes-female/swimming.glb',
   flying:          '/avatars/animations/tekk-male/flying.glb',
   praying:         '/avatars/animations/hermes-female/praying.glb',
+  // Cove seated-bust flow — Meshy source rig, bundled at a new asset path.
+  sit_stand_to_sit: `${COVE_SIT_BUNDLE}#sit_stand_to_sit`,
+  sit_idle_m:       `${COVE_SIT_BUNDLE}#sit_idle_m`,
+  sit_idle_f:       `${COVE_SIT_BUNDLE}#sit_idle_f`,
+  sit_to_stand_m:   `${COVE_SIT_BUNDLE}#sit_to_stand_m`,
+  sit_to_stand_f:   `${COVE_SIT_BUNDLE}#sit_to_stand_f`,
   // Chibi-introduced emote (2026-05-21). Source bake is chibi-proportioned;
   // retargeter handles proportion drift if a non-chibi VRM ever plays it.
   // Triggered as a one-shot via the emote bus (see EMOTE_ANIM_NAMES below).
@@ -168,6 +175,26 @@ const ANIM_PATHS = {
 } as const;
 
 export type AnimName = keyof typeof ANIM_PATHS;
+
+/** Clips authored on Meshy's animation-library rig rather than Mixamo. */
+const MESHY_ANIM_NAMES: ReadonlySet<AnimName> = new Set<AnimName>([
+  'sit_stand_to_sit',
+  'sit_idle_m',
+  'sit_idle_f',
+  'sit_to_stand_m',
+  'sit_to_stand_f',
+]);
+
+/** Route each registered clip through the retargeter matching its source rig. */
+function retargetAnimationClip(
+  animation: MixamoGltf,
+  vrm: VRM,
+  name: AnimName,
+): THREE.AnimationClip {
+  return MESHY_ANIM_NAMES.has(name)
+    ? retargetMeshyClip(animation, vrm, name)
+    : retargetMixamoClip(animation, vrm, name);
+}
 
 // ---------------------------------------------------------------------------
 // Per-character animation overrides
@@ -763,7 +790,7 @@ export class VRMCharacterAnimator {
 
         let retargeted: THREE.AnimationClip;
         try {
-          retargeted = retargetMixamoClip(gltf, this.vrm, name);
+          retargeted = retargetAnimationClip(gltf, this.vrm, name);
           if (shouldStripPosition(name, this.characterId)) stripPositionTracks(retargeted);
         } catch (err) {
           console.warn(`[VRMCharacterAnimator] retarget failed for clip "${name}":`, err);
@@ -917,7 +944,7 @@ export class VRMCharacterAnimator {
       void loadRawGltf(name, this.characterId)
         .then((gltf) => {
           if (this.disposed) return; // disposed mid-load — vrm/mixer nulled
-          const retargeted = retargetMixamoClip(gltf, this.vrm, name);
+          const retargeted = retargetAnimationClip(gltf, this.vrm, name);
           if (shouldStripPosition(name, this.characterId)) stripPositionTracks(retargeted);
           const action = this.mixer.clipAction(retargeted);
           action.setLoop(THREE.LoopRepeat, Infinity);
@@ -1238,7 +1265,7 @@ export class VRMCharacterAnimator {
       try {
         const gltf = await loadRawGltf(name, this.characterId);
         if (this.disposed || requestToken !== this.oneShotRequestToken) return;
-        const retargeted = retargetMixamoClip(gltf, this.vrm, name);
+        const retargeted = retargetAnimationClip(gltf, this.vrm, name);
         if (shouldStripPosition(name, this.characterId)) stripPositionTracks(retargeted);
         const action = this.mixer.clipAction(retargeted);
         this.actions[name] = action;
@@ -1258,7 +1285,7 @@ export class VRMCharacterAnimator {
       try {
         const gltf = await loadRawGltf(nextLoopingClip, this.characterId);
         if (this.disposed || requestToken !== this.oneShotRequestToken) return;
-        const retargeted = retargetMixamoClip(gltf, this.vrm, nextLoopingClip);
+        const retargeted = retargetAnimationClip(gltf, this.vrm, nextLoopingClip);
         if (shouldStripPosition(nextLoopingClip, this.characterId)) stripPositionTracks(retargeted);
         const action = this.mixer.clipAction(retargeted);
         action.setLoop(THREE.LoopRepeat, Infinity);

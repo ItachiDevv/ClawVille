@@ -46,7 +46,11 @@ import { useAvatar } from '@/hooks/use-avatar';
 // Phase 6.4.0 — blackjack table hotspot uses the store action openBlackjackTable
 import { useGameStore } from '@/stores/game';
 import { useVRMInstance, disposeVRMInstance } from '@/lib/three/vrm-loader';
-import { VRMCharacterAnimator } from '@/lib/three/vrm-character-animator';
+import {
+  VRMCharacterAnimator,
+  preloadClips,
+  type AnimName,
+} from '@/lib/three/vrm-character-animator';
 import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
 import { MODEL_REGISTRY, type ModelRegistryEntry } from '@/lib/three/agent-model-registry';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
@@ -66,6 +70,23 @@ import type { MachineSlug } from '@/lib/cove/types';
 const INTERIOR_GLB = '/models/cove/cove-interior-cleaned-v1-ktx.glb?v=5';
 /** Fallback cartoon GLB */
 const FALLBACK_GLB = '/models/cove/cove-interior-fallback.glb';
+
+/** Emergency rollback for the Meshy sit flow; false restores the prior
+ * static leg override + group-level seatDrop without reverting code. */
+const USE_COVE_SIT_CLIPS = true;
+const COVE_SIT_CLIP_NAMES = [
+  'sit_stand_to_sit',
+  'sit_idle_m',
+  'sit_idle_f',
+  'sit_to_stand_m',
+  'sit_to_stand_f',
+] as const satisfies readonly AnimName[];
+/** Raw stand-to-sit is ~4.8s; this keeps the visible transition near 3.2s. */
+const COVE_SIT_TRANSITION_TIME_SCALE = 1.5;
+
+// Warm exactly the cove bundle's five clips so the first seated bust does not
+// hitch. The asset path is new, so no cache-bust suffix is required.
+if (USE_COVE_SIT_CLIPS) preloadClips(COVE_SIT_CLIP_NAMES);
 
 /** FPS threshold below which we auto-switch to fallback GLB */
 const FPS_FALLBACK_THRESHOLD = 40;
@@ -95,6 +116,11 @@ const FPS_FALLBACK_THRESHOLD = 40;
  * fixed-size avatar," not a uniform world rescale.
  */
 const INTERIOR_TARGET_HEIGHT = 2800; // world units — was 600, was 2000. THE KNOB.
+const COVE_SIT_HEIGHT_CHECK_DELAY_SECONDS =
+  (4.8 / COVE_SIT_TRANSITION_TIME_SCALE) + 0.35;
+const COVE_SIT_HIP_HEIGHT_TOLERANCE = 10 * (INTERIOR_TARGET_HEIGHT / 2800);
+// Shared scratch for once-per-bust raw-hips validation; useFrame allocates none.
+const _coveSitRawHipsWorld = new THREE.Vector3();
 // Founder-picked 2026-07-11 from the A/B/C screenshot set (2000/2400/2800):
 // "2800 looks great." Room + furniture read bigger relative to the fixed-
 // size avatar without retuning COVE_PLAYER_SPEED or any avatar constant.
@@ -1374,10 +1400,10 @@ function BaccaratTableHotspot() {
 // SIT-AT-TABLE — Slice 1 (3D Hold'em experiment, 2026-07-10)
 //
 // Adds a walk-up + "press E to sit" interaction at card table T1: the player
-// occupies seat 0, the OTHER seats show placeholder standing VRM busts (full
-// body — the "seated" read comes from camera framing, not a sit animation;
-// same simplification used by every prior render prototype of this table),
-// and the camera transitions to a seated POV looking across the felt. Also
+// occupies seat 0, the OTHER seats show placeholder VRM busts pre-aligned to
+// measured chair anchors. They now transition through Meshy's stand-to-sit
+// clip and hold a seated idle (with a static-pose rollback flag), while the
+// camera transitions to a seated POV looking across the felt. Also
 // adds AABB collision for all four baked card tables (see _TABLE_AABBS
 // above, already wired into _resolveCoveCollisions).
 //
@@ -1580,22 +1606,11 @@ const T1_SEAT_CAM_LOOK_Z = T1_CENTER_Z - (_t1PlayerSeat.z / _t1SeatDist) * T1_SE
 const T1_SEAT_CAM_LERP = 8; // exp-decay coefficient (1/s) — not spatial, unaffected by scale
 
 // ---------------------------------------------------------------------------
-// Slice 2 seated posture (2026-07-11) — bent hips/knees via direct bone
-// rotation, applied every frame AFTER the idle clip ticks (no freeze-bake —
-// that path was racy, see the T-pose postmortem above). Founder + orchestrator
-// flagged: at the 2800-scaled table, full-height STANDING busts behind empty
-// chairs read clearly wrong.
-//
-// No usable "sit" clip exists anywhere in ANIM_PATHS (vrm-character-
-// animator.ts) — the only floor-relative near-crouch clip, 'squat', is a
-// KNOWN-BROKEN in-place bake (raw hips.position is a flat constant, zero
-// descent — see gotchas/squat-clip-rotation-only-no-runtime-crouch.md) and
-// was disabled in production after 3 failed procedural-grounding attempts.
-// Rather than repeat that failure mode, this bypasses the clip system
-// entirely for the leg pose: it sets the VRM humanoid's NORMALIZED
-// leftUpperLeg/rightUpperLeg/leftLowerLeg/rightLowerLeg bone quaternions
-// directly, which sidesteps the squat clip's exact limitation (no clip
-// involved, so there's no in-place-baked position track to fight).
+// Static seated-pose fallback (2026-07-11). The default path now uses the
+// Meshy transition + idle clips, whose hip track owns the full vertical
+// descent. Keep these direct normalized-bone rotations and the seatDrop math
+// intact behind USE_COVE_SIT_CLIPS so a clip regression can be disabled with
+// one module-level flag and no revert. The two paths never stack.
 //
 // Rotation axis/sign VERIFIED (not assumed) via a headless VRM harness
 // (bun, no browser — same verification pattern the squat-clip memory
@@ -1614,7 +1629,8 @@ const _seatedThighQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vecto
 const _seatedKneeQuat  = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), SEATED_KNEE_ROTATION_RAD);
 
 /**
- * How far to lower the whole VRM (group Y) so the pelvis reads at chair-seat
+ * Static-fallback-only distance to lower the whole VRM (group Y) so the
+ * pelvis reads at chair-seat
  * height instead of standing-hip height, given the leg rotation above keeps
  * the hips bone itself untouched (simpler + lower-risk than also moving the
  * hips bone position — the group-level Y offset achieves the same visual
@@ -1652,7 +1668,7 @@ const SEATED_HIP_HEIGHT_FRACTION = 0.52;
 // Per-instance unique instanceId → unique VRM parse (never share a parsed
 // VRM across visible avatars — gotchas/vrm-shared-instance-corruption.md).
 //
-// Ticks the idle clip every frame via useFrame — the same live pattern
+// Ticks the active clip every frame via useFrame — the same live pattern
 // vrm-wandering-npc.tsx NPCs use (patterns/vrm-wandering-npc.md), NOT a
 // "settle once then freeze" bake. An earlier version of this component
 // constructed a VRMCharacterAnimator, ran its update() loop 60 times inside
@@ -1669,8 +1685,8 @@ const SEATED_HIP_HEIGHT_FRACTION = 0.52;
 // (idle-only, no locomotion, no user IK), well inside the Iris Xe budget for
 // a small interior room.
 //
-// Slice 2 (2026-07-11) layers a per-frame SEATED LEG POSE on top of the idle
-// tick (see the constants above): after anim.update() ticks the idle clip
+// When USE_COVE_SIT_CLIPS=false, the Slice 2 fallback layers a per-frame
+// SEATED LEG POSE on top of the idle tick: after anim.update() ticks idle
 // (upper-body life — breathing/sway), this overrides the 4 leg bones to a
 // fixed seated bend, then re-propagates (vrm.humanoid.update() + scene.
 // updateMatrixWorld) and re-flushes the skeleton (anim.flushSkeletonUpdates()
@@ -1683,15 +1699,21 @@ const SEATED_HIP_HEIGHT_FRACTION = 0.52;
 // VRMs" baseline; still small for 5 static background busts in a small
 // interior room, but flagged honestly rather than hidden.
 // ---------------------------------------------------------------------------
-function TableSeatedBustInner({ reg, seat, instanceId, targetHeight }: {
+function TableSeatedBustInner({ reg, seat, seatIndex, instanceId, targetHeight }: {
   reg: ModelRegistryEntry;
   seat: TableSeat;
+  seatIndex: number;
   instanceId: string;
   targetHeight: number;
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const vrm = useVRMInstance(reg.path, instanceId);
   const animRef = useRef<VRMCharacterAnimator | null>(null);
+  const sitHeightElapsedRef = useRef(-1);
+  const sitHeightCheckedRef = useRef(false);
+  // ModelRegistryEntry has no gender metadata. Alternate the Meshy M/F idle
+  // variants by stable seat index until live roster metadata supplies it.
+  const sitIdleClip: AnimName = seatIndex % 2 === 0 ? 'sit_idle_f' : 'sit_idle_m';
   // Cached leg-bone refs — looked up once when the VRM loads, never re-queried
   // per frame (getNormalizedBoneNode is a map lookup, cheap, but there is no
   // reason to pay it 4x every frame for a value that never changes per-VRM).
@@ -1721,6 +1743,10 @@ function TableSeatedBustInner({ reg, seat, instanceId, targetHeight }: {
 
   useEffect(() => {
     if (!vrm) return;
+    if (USE_COVE_SIT_CLIPS) {
+      legBonesRef.current = null;
+      return;
+    }
     const humanoid = vrm.humanoid;
     if (!humanoid) { legBonesRef.current = null; return; }
     const leftUpperLeg = humanoid.getNormalizedBoneNode('leftUpperLeg');
@@ -1738,17 +1764,35 @@ function TableSeatedBustInner({ reg, seat, instanceId, targetHeight }: {
   useEffect(() => {
     if (!vrm) return;
     let cancelled = false;
+    sitHeightElapsedRef.current = -1;
+    sitHeightCheckedRef.current = false;
     const anim = new VRMCharacterAnimator(vrm, reg.animatorId);
-    anim.init('idle').then(() => {
+    anim.init('idle').then(async () => {
       if (cancelled) { anim.dispose(); return; }
       animRef.current = anim;
+      if (USE_COVE_SIT_CLIPS) {
+        // The outer group is already declaratively positioned at the seat's
+        // final XZ anchor and yaw. Flush that transform before the in-place
+        // transition starts; the clip owns vertical hip descent only.
+        groupRef.current?.updateMatrixWorld(true);
+        await anim.playOneShot(
+          'sit_stand_to_sit',
+          sitIdleClip,
+          COVE_SIT_TRANSITION_TIME_SCALE,
+        );
+        if (!cancelled) sitHeightElapsedRef.current = 0;
+      }
     }).catch((e) => { console.warn('[TableSeatedBust] init failed:', e); anim.dispose(); });
     return () => {
       cancelled = true;
       if (animRef.current === anim) animRef.current = null;
+      // React removes this scene subtree in the same teardown that disposes
+      // the animator, so sit_to_stand_m/f would never render a frame here.
+      // They stay registered/prewarmed for a future occupancy handoff that can
+      // keep the bust mounted while a leave transition completes.
       anim.dispose();
     };
-  }, [vrm, reg.animatorId]);
+  }, [vrm, reg.animatorId, sitIdleClip]);
 
   useFrame((_, delta) => {
     const anim = animRef.current;
@@ -1756,7 +1800,7 @@ function TableSeatedBustInner({ reg, seat, instanceId, targetHeight }: {
     anim.update(Math.min(delta, 0.1), false, false);
 
     const legs = legBonesRef.current;
-    if (legs && vrm.humanoid) {
+    if (!USE_COVE_SIT_CLIPS && legs && vrm.humanoid) {
       legs.leftUpperLeg.quaternion.copy(_seatedThighQuat);
       legs.rightUpperLeg.quaternion.copy(_seatedThighQuat);
       legs.leftLowerLeg.quaternion.copy(_seatedKneeQuat);
@@ -1764,6 +1808,31 @@ function TableSeatedBustInner({ reg, seat, instanceId, targetHeight }: {
       vrm.humanoid.update();
       vrm.scene.updateMatrixWorld(true);
       anim.flushSkeletonUpdates();
+    }
+
+    if (
+      USE_COVE_SIT_CLIPS &&
+      typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production' &&
+      !sitHeightCheckedRef.current && sitHeightElapsedRef.current >= 0
+    ) {
+      sitHeightElapsedRef.current += Math.min(delta, 0.1);
+      if (sitHeightElapsedRef.current >= COVE_SIT_HEIGHT_CHECK_DELAY_SECONDS) {
+        sitHeightCheckedRef.current = true;
+        const rawHips = vrm.humanoid?.getRawBoneNode('hips');
+        if (!rawHips) {
+          console.warn('[TableSeatedBust] cannot validate seated height: raw hips bone missing', reg.path);
+        } else {
+          rawHips.getWorldPosition(_coveSitRawHipsWorld);
+          const heightError = Math.abs(_coveSitRawHipsWorld.y - TABLE_SEAT_HEIGHT_Y);
+          if (heightError > COVE_SIT_HIP_HEIGHT_TOLERANCE) {
+            console.warn(
+              `[TableSeatedBust] seated raw hips Y=${_coveSitRawHipsWorld.y.toFixed(2)}wu ` +
+              `misses cushion Y=${TABLE_SEAT_HEIGHT_Y.toFixed(2)}wu by ${heightError.toFixed(2)}wu ` +
+              `(tolerance ${COVE_SIT_HIP_HEIGHT_TOLERANCE.toFixed(2)}wu; seat ${seatIndex})`,
+            );
+          }
+        }
+      }
     }
   });
 
@@ -1779,13 +1848,19 @@ function TableSeatedBustInner({ reg, seat, instanceId, targetHeight }: {
       <primitive
         object={vrm.scene}
         scale={[vrmRenderScale, vrmRenderScale, vrmRenderScale]}
-        position={[0, vrmFootOffsetY - seatDrop, 0]}
+        position={[0, USE_COVE_SIT_CLIPS ? vrmFootOffsetY : vrmFootOffsetY - seatDrop, 0]}
       />
     </group>
   );
 }
 
-function TableSeatedBust(props: { reg: ModelRegistryEntry; seat: TableSeat; instanceId: string; targetHeight: number }) {
+function TableSeatedBust(props: {
+  reg: ModelRegistryEntry;
+  seat: TableSeat;
+  seatIndex: number;
+  instanceId: string;
+  targetHeight: number;
+}) {
   return (
     <Suspense fallback={null}>
       <TableSeatedBustInner {...props} />
@@ -1826,6 +1901,7 @@ function Table3D({ centerX, centerZ, seats, playerSeatIndex, seatModelKeys, bust
             key={`t1-bust-${i}`}
             reg={reg}
             seat={seat}
+            seatIndex={i}
             instanceId={`cove-t1-seat-${i}`}
             targetHeight={bustTargetHeight}
           />
