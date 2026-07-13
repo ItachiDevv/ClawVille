@@ -29,6 +29,13 @@ import {
   PICKUP_TEXTURE_SIZE,
 } from './reef-race-config';
 import type { ReefRaceEntity } from './reef-race-types';
+import { elevationAtXZ } from './reef-race-elevation';
+
+// SURF ROAD (2026-06-23): pickups sit ON the floating ribbon, so their Y is the
+// render-only ribbon elevation at their XZ (+ PICKUP_Y_ABOVE_TRACK hover) — NOT
+// a flat plane. Positions are set once on spawn (not per-frame) so the
+// elevation lookup cost is negligible.
+const USE_SPLINE = process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
 
 // ─── Module-scope scratch ─────────────────────────────────────────────────────
 const _m4       = new THREE.Matrix4();
@@ -136,7 +143,10 @@ export default function ReefRacePickups() {
         nextSlot.current++;
         slotMap.current.set(spawnId, slot);
 
-        _pos.set(pickup.x, PICKUP_Y_ABOVE_TRACK, pickup.y);
+        const pickupY = USE_SPLINE
+          ? elevationAtXZ(pickup.x, pickup.y, 'pickup-' + spawnId) + PICKUP_Y_ABOVE_TRACK
+          : PICKUP_Y_ABOVE_TRACK;
+        _pos.set(pickup.x, pickupY, pickup.y);
         _quat.identity();
         _scl.set(1, 1, 1);
         _m4.compose(_pos, _quat, _scl);

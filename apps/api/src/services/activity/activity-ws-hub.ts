@@ -17,7 +17,7 @@
  * `websocket` fetch-handler wiring.
  */
 
-import type { ServerFrame, ClientFrame } from '@clawville/shared';
+import type { ServerFrame, ClientFrame, WorldState } from '@clawville/shared';
 import {
   clientFrameSchema,
   ACTIVITY_WS_CLOSE_CODES,
@@ -243,6 +243,21 @@ class ActivityWsHub {
       this.safeClose(existing, ACTIVITY_WS_CLOSE_CODES.UNAUTHORIZED, 'superseded by new connection');
     }
     roomMap.set(identity.avatarId, ws);
+
+    // On the first Reef Race connection only, re-anchor a soon-to-expire
+    // COUNTDOWN BEFORE building the snapshot so the
+    // `RoomMeta.countdownStartedAt` carried by snapshot.init (which the HUD's
+    // local 3-2-1 ticker reads) and the one-shot `event.countdown` below agree
+    // on the SAME window. createRoom() arms the COUNTDOWN→LIVE timer at room
+    // creation, but the client only connects after navigating the browser —
+    // that latency burned the countdown (remaining=0 ⇒ overlay gated out, or
+    // the room already auto-advanced to LIVE), so the HUD jumped straight to
+    // RACE 0% with no 3-2-1. The room-manager latch prevents staggered racers
+    // from moving an anchor already broadcast to racer one. Bumper/poker and
+    // every non-Reef activity remain on staging's original countdown behavior.
+    if (room.activityId === 'reef-race' && room.state === 'countdown') {
+      activityRoomManager.ensureSyncedCountdown(room.id);
+    }
 
     // Send snapshot.init. Source varies by room state:
     //   COUNTDOWN → participant roster + empty world
@@ -645,7 +660,11 @@ class ActivityWsHub {
 
   private async sendInit(ws: HubWs, room: Room): Promise<void> {
     // Build a WorldState snapshot from the current room members.
-    const entities = Array.from(room.participants.values()).map((p) => ({
+    // Explicitly typed as the protocol WorldState entity array so the reef-race
+    // branch can push the v2 mechanics fields (miniTurboCharge/Level/boosting,
+    // height) — the inferred type from this initial participant map omits them,
+    // which broke the Codex-finding-7 keyframe/init wire fix (TS2353).
+    const entities: WorldState['entities'] = Array.from(room.participants.values()).map((p) => ({
       avatarId: p.avatarId,
       position: { x: 0, y: 0 },
       velocity: { x: 0, y: 0 },
@@ -686,7 +705,16 @@ class ActivityWsHub {
           // snapshot bodies expose .z/.vz (XZ plane) — but the wire
           // protocol always uses {x, y} = (sceneX, sceneZ). Normalize at
           // the boundary so the client side is sim-agnostic.
-          const bb = b as { y?: number; z?: number; vy?: number; vz?: number };
+          const bb = b as {
+            y?: number;
+            z?: number;
+            vy?: number;
+            vz?: number;
+            height?: number;
+            miniTurboCharge?: number;
+            miniTurboLevel?: 0 | 1 | 2;
+            boosting?: boolean;
+          };
           const yScene = bb.y ?? bb.z ?? 0;
           const vyScene = bb.vy ?? bb.vz ?? 0;
           entities.push({
@@ -699,6 +727,13 @@ class ActivityWsHub {
               : b.finishedAt !== null
                 ? 'finished'
                 : 'racing',
+            // v2 spline-sim: carry boost/meter state on a LIVE reconnect so the
+            // HUD meter/trail isn't blank until the next delta (Codex finding 7).
+            // Ellipse-sim snapshots omit these fields (undefined → dropped).
+            ...(bb.height && bb.height !== 0 ? { height: bb.height } : {}),
+            miniTurboCharge: bb.miniTurboCharge,
+            miniTurboLevel: bb.miniTurboLevel,
+            boosting: bb.boosting,
           });
         }
         powerUps = reefState.pickups
@@ -724,6 +759,16 @@ class ActivityWsHub {
     const reefStaticZones =
       room.activityId === 'reef-race' && !REEF_RACE_USE_SPLINE
         ? reefRaceSim.getStaticZones(room.id) ?? undefined
+        : undefined;
+    // v2 mechanics — spline-sim boost-pad + ramp trigger zones so the client can
+    // render them (the spline sim has no ribbons/apex/hazards; these replace
+    // that Wave-2 gap for the boost pads + ramps). Only under REEF_RACE_USE_SPLINE.
+    // Room-independent (Codex finding 8): the pads/ramps are STATIC track
+    // features, so this returns real zones even during countdown (before the sim
+    // room exists) — no permanent client fallback to reconstructed pads.
+    const reefSplineZones =
+      room.activityId === 'reef-race' && REEF_RACE_USE_SPLINE
+        ? reefRaceSplineSim.getSplineStaticZones()
         : undefined;
     // Phase 3 — pull per-avatar racing profile (class + level) for reef-race
     // rooms so the HUD's archetype tile can show the player WHY they have
@@ -797,6 +842,9 @@ class ActivityWsHub {
         // Reef Race Phase 2 — server-authoritative static-zone positions
         // for ribbons / apex markers / hazards. Sent ONCE per snapshot.init.
         reefStaticZones,
+        // Reef Race v2 mechanics — boost-pad + ramp trigger zones (spline sim).
+        // Sent ONCE per snapshot.init; client builds pad/ramp visuals from these.
+        reefSplineZones,
         // Reef Race Phase 3 — per-avatar (class, level). Sent ONCE per
         // snapshot.init. Client filters by self avatarId.
         reefRacingProfiles,

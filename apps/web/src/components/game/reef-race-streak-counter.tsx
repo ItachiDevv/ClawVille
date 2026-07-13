@@ -5,7 +5,7 @@
  *
  * Small chip that surfaces the consecutive-clean-checkpoint streak the
  * server tracks per body. Without this surface, the +25 perfect-lap bonus
- * (credited at streak ≥ 36) is a black-box reward — players don't see the
+ * (credited at streak ≥ 24) is a black-box reward — players don't see the
  * counter climb so they can't tell why they got the bonus.
  *
  * Subscribes to a single primitive store field (`s.selfStreak`) so the

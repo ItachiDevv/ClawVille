@@ -5,7 +5,7 @@
  * Per backend §4.5 + 3d-spec §2.1:
  *   - 30Hz fixed-tick (race kinematics tolerate lower rate; halves
  *     bandwidth vs Bumper's 60Hz)
- *   - Bespoke oval, ~6000wu perimeter, 3 laps default
+ *   - Bespoke oval, ~6000wu perimeter, 2 laps default
  *   - 12 checkpoints in fixed sequence (0=finish/start; 1..11 around)
  *   - Out-of-order checkpoint crossings silently ignored — kills
  *     teleport-to-finish exploits at the source
@@ -2444,7 +2444,7 @@ class ReefRaceSim {
    * checkpoint cross. Hairpin checkpoints (cps 3 + 9) require the most-
    * recent apex verdict for THIS lap (S1 fix — keyed by `${lap}-${cpIdx}`)
    * to be `'clean'`; non-hairpin crosses are auto-clean. Edge-broadcasts
-   * `event.streak_milestone` on milestone hits (5/10/20/30/36).
+   * `event.streak_milestone` on milestone hits (5/10/16/20/24).
    *
    * Reset to 0 on dirty cross. The HUD chip subscribes to the per-tick
    * `streak` field on EntityDelta — the milestone event is glow-only.
@@ -2473,7 +2473,7 @@ class ReefRaceSim {
       if (body.currentStreak > body.bestStreakThisMatch) {
         body.bestStreakThisMatch = body.currentStreak;
       }
-      // Edge-trigger: only broadcast on milestone hits to avoid 36×8
+      // Edge-trigger: only broadcast on milestone hits to avoid 24×8
       // event spam per match. Per-tick streak count rides EntityDelta.
       if ((STREAK_MILESTONES as readonly number[]).includes(body.currentStreak)) {
         this.broadcastFn(state.roomId, {

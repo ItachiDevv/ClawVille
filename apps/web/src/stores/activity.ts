@@ -245,6 +245,21 @@ export interface ActivityState {
    */
   lastRampLaunchEvent: { avatarId: string; rampId: string; at: number } | null;
 
+  /**
+   * v2 mechanics — last `event.boost_pad` received (any avatar, not just
+   * self). Mirrors `lastRampLaunchEvent`'s pattern: `ReefRacePlayer`
+   * subscribes to fire a particle burst at the triggering avatar's position;
+   * the HUD toast filters to self-only. null until the first pad hit.
+   */
+  lastBoostPadEvent: { avatarId: string; padId: string; at: number } | null;
+  /**
+   * v2 mechanics — last `event.mini_turbo_fire` received (any avatar, not
+   * just self). Same fan-out pattern as `lastRampLaunchEvent`/
+   * `lastBoostPadEvent`: any visible rider gets a burst, self additionally
+   * gets screen shake + a tiered HUD toast. null until the first release.
+   */
+  lastMiniTurboFireEvent: { avatarId: string; level: 1 | 2; at: number } | null;
+
   // ── Reef Race Phase 3 — self avatar's racing class + level (HUD chip) ─────
   /**
    * Phase 3 — racing class derived from `avatars.archetype` for the SELF avatar,
@@ -417,6 +432,28 @@ function applyEntityDelta(map: Map<string, BumperShellEntity>, delta: EntityDelt
         typeof c.driftSparks === 'number'
           ? ((c.driftSparks as 0 | 1 | 2 | 3) ?? 0)
           : 0,
+      // ── Reef Race v2 pass-through (2026-07-10 bug fix + boost-pad/mini-
+      // turbo wiring) ──────────────────────────────────────────────────
+      // BUG FIX: `height`/`progress`/`lap`/`totalLaps` are declared on
+      // `EntityDelta.changed` and the v2 spline sim has been sending them
+      // (`reef-race-spline-sim.ts` broadcastDelta) since the CLOSED-LOOP
+      // lap rework, but this function never copied them onto the entity
+      // map — so `LapCounter`/`ProgressBar`/`BestLapTile` (which read
+      // `entity.lap`/`.progress` via `as any`) always saw `undefined`.
+      // Same conditional-pass-through style as the fields above.
+      ...(typeof c.height === 'number' ? { height: c.height } : {}),
+      ...(typeof c.progress === 'number' ? { progress: c.progress } : {}),
+      ...(typeof c.lap === 'number' ? { lap: c.lap } : {}),
+      ...(typeof c.totalLaps === 'number' ? { totalLaps: c.totalLaps } : {}),
+      // NEW — boost-pad/mini-turbo mechanics. Forwarded for ALL avatars
+      // (not just self) so any visible rider's board could show boost FX
+      // later, and so the self-only HUD meter can read
+      // `entities.get(selfAvatarId)` like every other HUD tile does.
+      ...(typeof c.boosting === 'boolean' ? { boosting: c.boosting } : {}),
+      ...(typeof c.miniTurboCharge === 'number' ? { miniTurboCharge: c.miniTurboCharge } : {}),
+      ...((c.miniTurboLevel === 0 || c.miniTurboLevel === 1 || c.miniTurboLevel === 2)
+        ? { miniTurboLevel: c.miniTurboLevel }
+        : {}),
     });
     return;
   }
@@ -432,6 +469,18 @@ function applyEntityDelta(map: Map<string, BumperShellEntity>, delta: EntityDelt
       : {}),
     ...(typeof c.driftSparks === 'number'
       ? { driftSparks: c.driftSparks as 0 | 1 | 2 | 3 }
+      : {}),
+    // ── Reef Race v2 pass-through (2026-07-10 bug fix + boost-pad/mini-
+    // turbo wiring) — see the matching comment in the first-sighting
+    // branch above.
+    ...(typeof c.height === 'number' ? { height: c.height } : {}),
+    ...(typeof c.progress === 'number' ? { progress: c.progress } : {}),
+    ...(typeof c.lap === 'number' ? { lap: c.lap } : {}),
+    ...(typeof c.totalLaps === 'number' ? { totalLaps: c.totalLaps } : {}),
+    ...(typeof c.boosting === 'boolean' ? { boosting: c.boosting } : {}),
+    ...(typeof c.miniTurboCharge === 'number' ? { miniTurboCharge: c.miniTurboCharge } : {}),
+    ...((c.miniTurboLevel === 0 || c.miniTurboLevel === 1 || c.miniTurboLevel === 2)
+      ? { miniTurboLevel: c.miniTurboLevel }
       : {}),
   });
 }
@@ -453,6 +502,20 @@ function hydrateFromWorld(world: WorldState): {
       vx: e.velocity.x,
       vy: e.velocity.y,
       alive: e.state !== 'dead' && e.state !== 'eliminated',
+      // Reef Race v2 — carry boost/meter state from keyframes + snapshot.init so
+      // the 1 Hz keyframe (and a mid-match reconnect) doesn't blank the HUD
+      // meter/trail until the next delta (Codex finding 7). The delta path
+      // (applyEntityDelta) already carries these.
+      ...(typeof e.height === 'number' ? { height: e.height } : {}),
+      ...(typeof e.boosting === 'boolean' ? { boosting: e.boosting } : {}),
+      ...(typeof e.miniTurboCharge === 'number'
+        ? { miniTurboCharge: e.miniTurboCharge }
+        : {}),
+      ...(e.miniTurboLevel === 0 ||
+      e.miniTurboLevel === 1 ||
+      e.miniTurboLevel === 2
+        ? { miniTurboLevel: e.miniTurboLevel }
+        : {}),
     });
   }
   const pickups = new Map<string, BumperPickup>();
@@ -508,6 +571,8 @@ function emptyState(): Pick<
   | 'lastRibbonCollectedAt'
   | 'lastHazardHitAt'
   | 'lastRampLaunchEvent'
+  | 'lastBoostPadEvent'
+  | 'lastMiniTurboFireEvent'
   | 'selfRacingClass'
   | 'selfLevel'
   | 'selfStreak'
@@ -550,6 +615,8 @@ function emptyState(): Pick<
     lastRibbonCollectedAt: 0,
     lastHazardHitAt: 0,
     lastRampLaunchEvent: null,
+    lastBoostPadEvent: null,
+    lastMiniTurboFireEvent: null,
     // Phase 3 — Reef Race self-avatar build summary (populated on snapshot.init)
     selfRacingClass: null,
     selfLevel: 1,
@@ -1073,6 +1140,21 @@ export const useActivityStore = create<ActivityState>()(
         // handler can fire particles + screen shake.
         case 'event.ramp_launch': {
           set({ lastRampLaunchEvent: { avatarId: frame.avatarId, rampId: frame.rampId, at: Date.now() } });
+          break;
+        }
+
+        // v2 mechanics — stored for ALL avatars (mirrors event.ramp_launch)
+        // so ReefRacePlayer can burst-FX any visible rider's pad hit, not
+        // just self. The HUD toast (reef-race-event-toasts.tsx) filters to
+        // self-only itself.
+        case 'event.boost_pad': {
+          set({ lastBoostPadEvent: { avatarId: frame.avatarId, padId: frame.padId, at: Date.now() } });
+          break;
+        }
+
+        // v2 mechanics — mini-turbo release. Same fan-out pattern.
+        case 'event.mini_turbo_fire': {
+          set({ lastMiniTurboFireEvent: { avatarId: frame.avatarId, level: frame.level, at: Date.now() } });
           break;
         }
 

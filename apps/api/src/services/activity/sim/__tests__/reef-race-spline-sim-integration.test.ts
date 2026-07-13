@@ -42,8 +42,10 @@ mock.module('../../activity-replay-log', () => ({
 }));
 
 const { reefRaceSplineSim } = await import('../reef-race-spline-sim');
-const { REEF_TICK_HZ } = await import('../reef-race-config');
+const { REEF_TICK_HZ, REEF_RACE_LOOP_HARD_TIMEOUT_MS } = await import('../reef-race-config');
 const { createReefRaceBot } = await import('../../bots/reef-race-bot');
+const { ReefSpline } = await import('../reef-race-spline');
+const { REEF_RACE_DEFAULT_TRACK } = await import('../reef-race-track-layout');
 
 // Mirrors the constant inside reef-race-spline-sim.ts; keeping it local so
 // the test doesn't rely on a private export.
@@ -57,8 +59,30 @@ const BOT_PETS = [
 const ALL_PETS = [HUMAN_PET, ...BOT_PETS];
 
 const DT = 1 / REEF_TICK_HZ;
-const SIM_DURATION_SEC = 90;
-const TOTAL_TICKS = SIM_DURATION_SEC * REEF_TICK_HZ; // 2700
+// CLOSED-LOOP: tick enough sim-ticks for a body to physically complete the full
+// N-lap race on the v6 WIDE SURF ROAD (~88 052 wu/loop, was ~59 391 in v5). The
+// synchronous tick loop runs in ~20s WALL, so the wall-clock-based hard timeout
+// never fires — the only thing that matters here is enough TICKS to cover the
+// distance. The WIDE SURF ROAD has BROAD sweeps (min R 2087, carve margin 1282)
+// so bots can carry more speed than the v5 narrow esses, but ground the window
+// conservatively in the 2-lap arc distance at a slow carve pace (220 wu/s) +
+// margin, NOT the wall-clock timeout, so a finisher is guaranteed. The wider
+// corridor (hw 738–1038) means NO wall-clamp stall (the v5 trap) — every corner
+// holds a racing line, so bodies actually progress and finish.
+const REEF_RACE_TWO_LAP_ARC_WU = 2 * 88051.9;
+const CONSERVATIVE_BOT_PACE_WU_S = 220;
+const SIM_DURATION_SEC =
+  Math.ceil(REEF_RACE_TWO_LAP_ARC_WU / CONSERVATIVE_BOT_PACE_WU_S) + 20;
+const TOTAL_TICKS = SIM_DURATION_SEC * REEF_TICK_HZ;
+// keep the import referenced (the hard timeout still gates the real sim, just
+// not this synchronous tick budget).
+void REEF_RACE_LOOP_HARD_TIMEOUT_MS;
+// Whole-race progress (lap + within-lap fraction) — the MONOTONIC ordering key.
+// Raw body.progress WRAPS 1→0 each lap on the closed loop, so regression must
+// be measured on this, not on body.progress.
+function totalProgress(lap: number, progress: number): number {
+  return lap + progress;
+}
 
 describe('ReefRaceSplineSim — full-room integration smoke test', () => {
   beforeEach(() => {
@@ -103,8 +127,12 @@ describe('ReefRaceSplineSim — full-room integration smoke test', () => {
 
     const state = reefRaceSplineSim.__getState(ROOM_ID)!;
     const humanBody = state.bodies.get(HUMAN_PET)!;
-    const humanSpawnX = humanBody.x;
-    const humanSpawnZ = humanBody.z;
+    // CLOSED-LOOP: net displacement from spawn is NOT a good "drove" proxy — a
+    // racer that completes laps returns near the start. Track CUMULATIVE path
+    // length + race progress (startCrossed) instead.
+    let humanPathLen = 0;
+    let humanPrevX = humanBody.x;
+    let humanPrevZ = humanBody.z;
 
     // Track per-avatar progress regression — the spline sim's anti-cheat
     // already flags >0.02 backward, but we double-check here so a
@@ -117,22 +145,38 @@ describe('ReefRaceSplineSim — full-room integration smoke test', () => {
       lastProgressByAvatar.set(avatar, 0);
     }
 
-    // Apply a steady forward thrust for the human so they actually drive
-    // (otherwise the human spawns and just sits there).
+    // Apply a steady forward thrust for the human so they actually drive.
+    // CLOSED-LOOP: steer along the START TANGENT (the start straight heads
+    // ~ -21°, not +Z), so the human actually drives forward around the loop.
+    const splineForDir = new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true });
+    const startTangent = splineForDir.tangentAt(0);
     let humanSeq = 1;
     const applyHumanThrust = () => {
+      // Steer toward the spline tangent just ahead of the human's current t so
+      // they follow the loop, not a fixed world direction.
+      const c = splineForDir.closestPointOnSpline({ x: humanBody.x, z: humanBody.z });
+      const tg = splineForDir.tangentAt((c.t + 0.02) % 1);
       reefRaceSplineSim.applyInput(
         ROOM_ID,
         HUMAN_PET,
         humanSeq++,
         DT,
-        { thrust: 1, dir: { x: 0, y: 1 }, actionBits: 0 },
+        { thrust: 1, dir: { x: tg.x, y: tg.z }, actionBits: 0 },
       );
     };
+    void startTangent;
     applyHumanThrust();
 
-    // Tick the sim. Stop early if the room ended.
+    // Tick the sim. Stop early if the room ended, OR shortly after the FIRST
+    // finisher crosses — the smoke test only asserts "≥1 finishes + match_ended
+    // + no regression", and on the v4 BIG ring (~53.5k wu / 2 laps) running all
+    // 12 000 ticks for every body to finish makes the synchronous loop take
+    // ~26s wall-clock. The first finisher arrives ~6 500 ticks; we tick a short
+    // tail past it then break + fast-forward firstFinishedAt to drive
+    // shouldEndRound. This keeps the smoke fast WITHOUT weakening any assertion.
+    const FINISH_TAIL_TICKS = 60;
     let ticksRun = 0;
+    let firstFinishTick = -1;
     for (let i = 0; i < TOTAL_TICKS; i++) {
       // Re-apply human input every 10 ticks so the seq advances cleanly
       // (the sim consumes seq once per applyInput; without re-application,
@@ -144,20 +188,40 @@ describe('ReefRaceSplineSim — full-room integration smoke test', () => {
       reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
       ticksRun++;
 
-      // Check progress regression on every tick.
+      // Check progress regression on every tick — on WHOLE-RACE progress
+      // (lap + within-lap fraction). Two legitimate non-monotonic events on the
+      // closed loop are NOT regressions and must be excluded:
+      //   (a) a forward lap wrap (progress 0.99→0.01 WITH lap++), and
+      //   (b) the START GUN (progress 0.99→0.01 while lap stays 0 — body started
+      //       behind the line).
+      // Both manifest as a totalProgress DROP of ~1.0 in a single tick, which a
+      // legitimately-moving body (≤ ~0.0006 of a loop/tick) can NEVER produce by
+      // going backward. So a drop > 0.5 is a forward wrap, not a regression.
       for (const avatar of ALL_PETS) {
         const body = state.bodies.get(avatar);
         if (!body) continue;
         const prev = lastProgressByAvatar.get(avatar)!;
-        const curr = body.progress;
-        const drop = prev - curr;
+        const curr = totalProgress(body.lap, body.progress);
+        let drop = prev - curr;
+        if (drop > 0.5) drop = 0; // forward lap/start-gun wrap, not a regression
         if (drop > maxRegressionByAvatar.get(avatar)!) {
           maxRegressionByAvatar.set(avatar, drop);
         }
         lastProgressByAvatar.set(avatar, curr);
       }
 
+      // Accumulate the human's cumulative path length (loop-safe "drove" proxy).
+      humanPathLen += Math.hypot(humanBody.x - humanPrevX, humanBody.z - humanPrevZ);
+      humanPrevX = humanBody.x;
+      humanPrevZ = humanBody.z;
+
       if (state.ended) break;
+
+      // Early exit a short tail past the first finisher (see loop comment).
+      if (firstFinishTick < 0 && state.firstFinishedAt !== null) {
+        firstFinishTick = i;
+      }
+      if (firstFinishTick >= 0 && i - firstFinishTick >= FINISH_TAIL_TICKS) break;
     }
 
     // Spline-sim's `shouldEndRound` ends the round either when all bodies
@@ -216,22 +280,29 @@ describe('ReefRaceSplineSim — full-room integration smoke test', () => {
       expect(maxDrop).toBeLessThanOrEqual(0.02);
     }
 
-    // 5. Human avatar moved at least 1000 wu in XZ from spawn.
-    const humanDx = humanBody.x - humanSpawnX;
-    const humanDz = humanBody.z - humanSpawnZ;
-    const humanXzMoved = Math.hypot(humanDx, humanDz);
-    expect(humanXzMoved).toBeGreaterThanOrEqual(1000);
+    // 5. The human actually DROVE the loop: crossed the start line (start gun)
+    //    and traversed a meaningful cumulative path (≥ 1000 wu). Net XZ
+    //    displacement is NOT used — a lapping racer returns near the start.
+    expect(humanBody.startCrossed).toBe(true);
+    expect(humanPathLen).toBeGreaterThanOrEqual(1000);
 
-    // 6. Performance budget — 2700 ticks should run < 5s wall-clock.
-    // Report as a soft assertion: log the actual time but don't fail unless
-    // we cross 10s (catastrophic regression). Profiling on a faster machine
-    // might want a stricter bound; this guards against runaway loops.
-    if (wallElapsedMs >= 5000) {
+    // 6. Performance budget — the loop breaks a short tail past the FIRST
+    // finisher (~10 000 ticks on the v6 WIDE ring, was ~6 500 on v4), so the
+    // synchronous sim runs in ~12–16s wall-clock alone and up to ~28s under
+    // combined-suite CPU load. Report as a soft warning above 15s and only
+    // HARD-fail past the 35s cliff (a runaway-loop guard, machine-dependent —
+    // CI boxes vary). This is sim CPU time, NOT a product metric — the v6 arc is
+    // ~46% longer than v5 (88 052 vs 60 257 wu) so the first finisher takes
+    // proportionally more synchronous ticks to reach. (Raised from 8s/20s on v5.)
+    if (wallElapsedMs >= 15000) {
       console.warn(
         `[spline-sim integration] ${ticksRun} ticks took ${wallElapsedMs.toFixed(0)} ms ` +
-          `(target: <5000 ms; 10000 ms cliff)`,
+          `(target: <15000 ms; 35000 ms cliff)`,
       );
     }
-    expect(wallElapsedMs).toBeLessThan(10000);
-  });
+    expect(wallElapsedMs).toBeLessThan(35000);
+  }, 70_000); // CLOSED-LOOP (v6): a full 2-lap race on the ~88k-wu WIDE ring is
+              // ~14 000–18 000 ticks for all bodies to finish, but the loop breaks
+              // a short tail past the FIRST finisher (~10 000 ticks). Raise the
+              // per-test timeout well above bun's 5s default for the bigger ring.
 });

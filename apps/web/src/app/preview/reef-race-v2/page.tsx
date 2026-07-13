@@ -1,87 +1,71 @@
 'use client';
 
 /**
- * /preview/reef-race-v2 — visual verification route for the v2 spline track.
+ * /preview/reef-race-v2 — visual verification route for the SURF ROAD track.
  *
- * DEV-ONLY: bypasses NEXT_PUBLIC_REEF_RACE_USE_SPLINE env flag so the human
- * can always inspect the v2 river-bed, surfboard scale, and proportions.
+ * DEV-ONLY: bypasses the NEXT_PUBLIC_REEF_RACE_USE_SPLINE env flag so the human
+ * can always inspect the floating-ribbon SURF ROAD.
  *
- * What to check:
- *   1. Track scale relative to the surfboard board
- *   2. Surfboard size relative to the magenta 5wu reference cube
- *   3. Surfboard Y mounting (on the river bed, not floating/sinking)
- *   4. River corridor width (4-5 karts side by side?)
- *   5. Bank wall heights — too short, too tall, fine?
- *   6. 3 extra karts at t=0.25, 0.5, 0.75 — consistent bed Y across curve
- *   7. Lighting + materials OK on Iris Xe (hemisphere + directional only)
- *   8. Tri count shown in overlay
+ * ─── 2026-06-23 SURF ROAD REBUILD ────────────────────────────────────────────
+ * This page used to assemble the land-disc preview: a sky-blue background, a
+ * sandy flat riverbed ribbon at Y=-250, grass-green bank walls, the CentralIsland
+ * atoll, and ground-disc framing cameras. ALL REMOVED. The preview now shows the
+ * real SURF ROAD: a glowing FLOATING WATER RIBBON winding through a cosmic void.
+ *
+ *   - <RiverScene /> mounts <CosmicVoid /> (gradient dome + starfield + glow
+ *     motes), <SurfRibbon /> (the glowing floating water + neon banked rails +
+ *     crests, rides reefTrackElevationAt(t) + reefTrackBankAngleAt(t)), the 5
+ *     decorative <RacingKarts />, and <Ramps />.
+ *   - <SurfBloom /> adds the selective neon glow (Iris-Xe-gated half-res).
+ *   - Camera presets reframed for the floating ribbon + cosmic void.
+ *
+ * What to check (orbit / side-on / cinematic):
+ *   1. A glowing floating water ribbon in an abstract cosmic void — NO land,
+ *      island, ground, or sky-over-terrain.
+ *   2. The ribbon aggressively zig-zags AND undulates in elevation (climbs/dips).
+ *   3. Neon rails along each banked edge, glowing (bloom).
+ *   4. Demo surfboard karts ride ON the ribbon through climbs/drops (not floating
+ *      above / sinking below) and lean into banked turns.
+ *   5. Starfield + drifting glow motes; deep twilight-into-cosmos gradient.
+ *   6. FPS ≥ floor on Iris Xe; zero console errors.
  *
  * Iris Xe invariants enforced:
- *   - No drei <Text> / <Billboard> — all labels are DOM HTML overlays
- *   - No InstancedMesh + ShaderMaterial
- *   - No per-frame allocations (module-scope scratch primitives only)
- *   - import from 'three' (NOT 'three/webgpu')
- *   - frustumCulled=false on every cloned SkinnedMesh scene
- *   - All geo/mat at module scope — zero repeated GC pressure
- *   - 1 hemisphere + 1 directional light with 1 shadow map (512×512)
+ *   - No drei <Text> / <Billboard>; no InstancedMesh + ShaderMaterial.
+ *   - import from 'three' (NOT 'three/webgpu'); module-scope geo/mat.
+ *   - ShaderMaterial only on plain Mesh (water); fog:false on shaders.
  */
 
 export const dynamic = 'force-dynamic';
 
-import { Suspense, useRef, useState, useEffect, useCallback, useMemo } from 'react';
+import { Suspense, useRef, useState, useEffect, useCallback } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
-import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
-import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { makeGeometryWebGPUSafe } from '@/lib/three/webgpu-geometry';
+
 import { RiverScene } from '@/lib/three/activities/reef-race/river-scene';
-import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
-import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
-
-// ─── Spline instance (always v2, bypasses env flag) ──────────────────────────
-// Import the same singleton used by ReefRaceTrack so we share the pre-built
-// arclength LUT. Module-load cost: ~1 ms (1 000-point Simpson integration).
+import { SurfBloom } from '@/lib/three/activities/reef-race/surf-bloom';
+import { ReefFreeDrive } from '@/lib/three/activities/reef-race/ReefFreeDrive';
+import ReefRacePlayer from '@/lib/three/activities/reef-race/ReefRacePlayer';
+import type { ReefRaceEntity } from '@/lib/three/activities/reef-race/reef-race-types';
 import { clientSpline } from '@/lib/three/activities/reef-race/reef-race-spline-instance';
-
-// ─── Kart / geometry constants ────────────────────────────────────────────────
+import { elevationAtT } from '@/lib/three/activities/reef-race/reef-race-elevation';
+import { ReefWaterTunerPanel } from '@/components/reef/ReefWaterTunerPanel';
+import { ReefPhysicsTunerPanel } from '@/components/reef/ReefPhysicsTunerPanel';
 import {
-  KART_SCALE,
-  KART_Y_ABOVE_TRACK,
-  GLIDER_WIDTH,
-  GLIDER_HEIGHT,
-  GLIDER_LENGTH,
-  RIDER_MOUNT_OFFSET_DEFAULT,
+  FOG_COLOR,
+  FOG_NEAR,
+  FOG_FAR,
+  CAMERA_NEAR,
+  CAMERA_FAR,
+  HEMI_SKY_COLOR,
+  HEMI_GROUND_COLOR,
+  HEMI_INTENSITY,
+  DIR_COLOR,
+  DIR_INTENSITY,
+  DIR_POSITION,
 } from '@/lib/three/activities/reef-race/reef-race-config';
-
-// ─── Production lighting / fog constants (inlined from ReefRaceScene values) ──
-// Inlined rather than imported to avoid cross-module 'use client' import issues.
-const FOG_COLOR            = '#a8d8ff'; // sky-blue atmospheric haze, matches SkyDome horizon
-// Track is 18 000 wu long × ±500 wu wide. FOG tuned for open-vista feel:
-// near=8000 keeps foreground crisp, far=30000 gives soft haze on distant banks.
-// CAMERA_FAR stays at 35000 so the dome (radius=28000) renders correctly.
-const FOG_NEAR             = 8000;
-const FOG_FAR              = 30000;
-const CAMERA_NEAR          = 1;
-const CAMERA_FAR           = 35000;
-const HEMI_SKY_COLOR       = '#a8d8ff'; // matches SkyDome horizon
-const HEMI_GROUND_COLOR    = '#7cb342'; // grass green — matches GroundPlane + bank walls
-const HEMI_INTENSITY       = 0.5;
-const DIR_COLOR            = '#fffbe6';
-const DIR_INTENSITY        = 1.2;
-// Sun position scaled 10× so the shadow frustum encloses the whole 18 000-wu track.
-const DIR_POSITION         = [3000, 8000, 2000] as const;
-const DIR_SHADOW_MAP_SIZE  = 1024;
-const DIR_SHADOW_NEAR      = 1;
-const DIR_SHADOW_FAR       = 25000;
-const DIR_SHADOW_CAM_BOUNDS = 12000;
-
-// ─── Preload assets ───────────────────────────────────────────────────────────
-useGLTF.preload('/models/reef-race/surfboards/surfboard_1.glb');
-preloadKTX2Bytes('/models/lobster-ktx.glb');
 
 // ─── Camera mode ─────────────────────────────────────────────────────────────
 const CAMERA_MODES = ['free-orbit', 'top-down', 'cinematic', 'side-on'] as const;
@@ -91,471 +75,68 @@ function isCameraMode(s: string | null): s is CameraMode {
   return CAMERA_MODES.includes(s as CameraMode);
 }
 
-// ─── Track geometry constants (mirroring ReefRaceTrack v2 values) ────────────
-const V2_RIBBON_SAMPLES = 64;
-const V2_BANK_HEIGHT    = 80;  // wu — must match ReefRaceTrack
-
 // ─── Module-scope scratch (no per-frame allocations) ─────────────────────────
 const _sc1 = new THREE.Vector3();
-const _sc2 = new THREE.Vector3();
 
-// ─── Module-scope materials (page-lifetime, never disposed) ──────────────────
-// Mirrors the exact materials in ReefRaceTrack.tsx for an accurate preview.
-
-/** Sandy river-bed surface. */
-const _riverMat = new THREE.MeshStandardMaterial({
-  color: 0xc8a572,
-  roughness: 0.85,
-  metalness: 0.0,
-  side: THREE.DoubleSide,
-  fog: false,
-});
-
-/**
- * Bank walls — recolored to grass green so they blend with the new ground plane
- * and sandy ribbon from RiverScene. The old dark-brown 0x6b5544 showed as an
- * ugly black stripe in the cinematic view (v1 leftover).
- */
-const _bankMat = new THREE.MeshStandardMaterial({
-  color: 0x7cb342,  // grass green — matches GroundPlane in river-scene.tsx
-  roughness: 0.9,
-  metalness: 0.0,
-  side: THREE.DoubleSide,
-  fog: false,
-});
-
-/** Finish-line gate (gold). */
-const _finishMat = new THREE.MeshStandardMaterial({
-  color: 0xffd600,
-  roughness: 0.3,
-  metalness: 0.6,
-  fog: false,
-  emissive: new THREE.Color(0xffd600),
-  emissiveIntensity: 0.3,
-});
-
-/** Magenta reference cube (yardstick). */
-const _refCubeMat = new THREE.MeshStandardMaterial({
-  color: 0xff00ff,
-  roughness: 0.5,
-  metalness: 0.2,
-  fog: false,
-});
-
-/** Faint grid on river bed. */
-const _gridMat = new THREE.MeshBasicMaterial({
-  color: 0xffffff,
-  wireframe: true,
-  opacity: 0.12,
-  transparent: true,
-  fog: false,
-});
-
-// ─── Reference cube geometry (5wu × 5wu × 5wu) ───────────────────────────────
-const _refCubeGeo = new THREE.BoxGeometry(5, 5, 5);
-
-// ─── Geometry builders (mirrors ReefRaceTrack.tsx buildSpline* exactly) ──────
-
-function buildSplineRibbonGeo(samples: number): THREE.BufferGeometry {
-  const positions: number[] = [];
-  const normals: number[]   = [];
-  const uvs: number[]       = [];
-  const indices: number[]   = [];
-
-  for (let i = 0; i <= samples; i++) {
-    const t  = i / samples;
-    const c  = clientSpline.centerlineAt(t);
-    const n  = clientSpline.normalAt(t);
-    const hw = clientSpline.widthAt(t);
-
-    // Left edge (normal = 90° CCW of tangent = left of travel)
-    positions.push(c.x + n.x * hw, 0, c.z + n.z * hw);
-    normals.push(0, 1, 0);
-    uvs.push(0, t);
-
-    // Right edge
-    positions.push(c.x - n.x * hw, 0, c.z - n.z * hw);
-    normals.push(0, 1, 0);
-    uvs.push(1, t);
-
-    if (i < samples) {
-      const base = i * 2;
-      indices.push(base, base + 1, base + 2);
-      indices.push(base + 1, base + 3, base + 2);
-    }
-  }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geo.setAttribute('normal',   new THREE.Float32BufferAttribute(normals,   3));
-  geo.setAttribute('uv',       new THREE.Float32BufferAttribute(uvs,       2));
-  geo.setIndex(indices);
-  return makeGeometryWebGPUSafe(geo);
+// DEV-ONLY VERIFY-HARNESS ADDITION (2026-07-12, reef creature-rider facing/static
+// audit): expose the THREE module reference so an external Playwright driver can
+// construct Box3/Quaternion/Vector3 without needing its own bundle of three.js —
+// mirrors the existing __HARNESS_GROUP pattern below. Harmless (a module
+// reference assignment, not a per-frame cost); dev-only preview route, never
+// reached by the production game bundle.
+if (typeof window !== 'undefined') {
+  (window as unknown as { __THREE_DEV?: typeof THREE }).__THREE_DEV = THREE;
 }
 
-function buildSplineBankGeos(
-  samples: number,
-): { left: THREE.BufferGeometry; right: THREE.BufferGeometry } {
-  const leftGeos:  THREE.BufferGeometry[] = [];
-  const rightGeos: THREE.BufferGeometry[] = [];
-
-  for (let i = 0; i < samples; i++) {
-    const t0 = i / samples;
-    const t1 = (i + 1) / samples;
-    const c0 = clientSpline.centerlineAt(t0);
-    const n0 = clientSpline.normalAt(t0);
-    const hw0 = clientSpline.widthAt(t0);
-    const c1 = clientSpline.centerlineAt(t1);
-    const n1 = clientSpline.normalAt(t1);
-    const hw1 = clientSpline.widthAt(t1);
-
-    // Left bank
-    {
-      const lx0 = c0.x + n0.x * hw0;  const lz0 = c0.z + n0.z * hw0;
-      const lx1 = c1.x + n1.x * hw1;  const lz1 = c1.z + n1.z * hw1;
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
-        lx0, 0,              lz0,
-        lx0, V2_BANK_HEIGHT, lz0,
-        lx1, 0,              lz1,
-        lx1, V2_BANK_HEIGHT, lz1,
-      ]), 3));
-      geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array([
-        n0.x, 0, n0.z,  n0.x, 0, n0.z,
-        n1.x, 0, n1.z,  n1.x, 0, n1.z,
-      ]), 3));
-      geo.setIndex([0, 1, 2, 1, 3, 2]);
-      leftGeos.push(geo);
-    }
-
-    // Right bank
-    {
-      const rx0 = c0.x - n0.x * hw0;  const rz0 = c0.z - n0.z * hw0;
-      const rx1 = c1.x - n1.x * hw1;  const rz1 = c1.z - n1.z * hw1;
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
-        rx0, 0,              rz0,
-        rx0, V2_BANK_HEIGHT, rz0,
-        rx1, 0,              rz1,
-        rx1, V2_BANK_HEIGHT, rz1,
-      ]), 3));
-      geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array([
-        -n0.x, 0, -n0.z,  -n0.x, 0, -n0.z,
-        -n1.x, 0, -n1.z,  -n1.x, 0, -n1.z,
-      ]), 3));
-      geo.setIndex([0, 2, 1, 1, 2, 3]);
-      rightGeos.push(geo);
-    }
-  }
-
-  const left  = makeGeometryWebGPUSafe(mergeGeometries(leftGeos)!);
-  const right = makeGeometryWebGPUSafe(mergeGeometries(rightGeos)!);
-  leftGeos.forEach(g => g.dispose());
-  rightGeos.forEach(g => g.dispose());
-  return { left, right };
-}
-
-function buildFinishGateGeo(): THREE.BufferGeometry {
-  const c    = clientSpline.centerlineAt(1.0);
-  const n    = clientSpline.normalAt(1.0);
-  const hw   = clientSpline.widthAt(1.0);
-  const pillarR = 15;
-  const pillarH = 200;
-  const barH    = 15;
-
-  const lx = c.x + n.x * hw;  const lz = c.z + n.z * hw;
-  const rx = c.x - n.x * hw;  const rz = c.z - n.z * hw;
-
-  const lp  = new THREE.CylinderGeometry(pillarR, pillarR, pillarH, 8);
-  const rp  = new THREE.CylinderGeometry(pillarR, pillarR, pillarH, 8);
-  const bar = new THREE.BoxGeometry(hw * 2 + pillarR * 2, barH, pillarR);
-
-  lp.applyMatrix4(new THREE.Matrix4().makeTranslation(lx, pillarH / 2, lz));
-  rp.applyMatrix4(new THREE.Matrix4().makeTranslation(rx, pillarH / 2, rz));
-  bar.applyMatrix4(new THREE.Matrix4().makeTranslation(c.x, pillarH + barH / 2, c.z));
-
-  const merged = makeGeometryWebGPUSafe(mergeGeometries([lp, rp, bar])!);
-  lp.dispose(); rp.dispose(); bar.dispose();
-  return merged;
-}
-
-/** Build a faint 100wu × 100wu grid at the start-line position. */
-function buildStartGrid100(): THREE.BufferGeometry {
-  const c  = clientSpline.centerlineAt(0);
-  const hw = 50; // 100wu total width, 100wu total length
-  const geo = new THREE.PlaneGeometry(hw * 2, hw * 2, 10, 10);
-  geo.rotateX(-Math.PI / 2);
-  geo.translate(c.x, 0.5, c.z); // slight Y offset to prevent z-fighting with river bed
-  return geo;
-}
-
-// ─── Measurement helpers ──────────────────────────────────────────────────────
-
-/** Compute bounding box of scene in world space, ignoring SkinnedMesh nodes. */
-function safeBBox(obj: THREE.Object3D): THREE.Box3 {
-  const box = new THREE.Box3();
-  obj.traverse((o) => {
-    const mesh = o as THREE.Mesh;
-    if (!mesh.isMesh || (o as unknown as THREE.SkinnedMesh).isSkinnedMesh) return;
-    if (!mesh.geometry) return;
-    mesh.geometry.computeBoundingBox();
-    const local = mesh.geometry.boundingBox!.clone();
-    local.applyMatrix4(mesh.matrixWorld);
-    box.union(local);
-  });
-  return box;
-}
-
-/** Count triangles in an Object3D tree. */
-function countTris(root: THREE.Object3D): number {
-  let tris = 0;
-  root.traverse((o) => {
-    const mesh = o as THREE.Mesh;
-    if (!mesh.isMesh || !mesh.geometry) return;
-    const idx = mesh.geometry.index;
-    tris += idx ? idx.count / 3 : (mesh.geometry.attributes.position?.count ?? 0) / 3;
-  });
-  return Math.round(tris);
-}
-
-// ─── Kart positions at 4 track t-values ──────────────────────────────────────
-const KART_T_VALUES = [0, 0.25, 0.5, 0.75] as const;
-
-// ─── Camera preset positions ──────────────────────────────────────────────────
-// All computed at module scope from spline to avoid repeated calls.
+// ─── Camera presets (SURF ROAD — frame the floating ribbon in the void) ──────
+// Footprint ≈ 17687 × 16941 wu; elevation span ≈ 1634 (Y ∈ [-559, 1075]).
+// Start/finish at centerlineAt(0) ≈ XZ(-2400, -8200), elevation ≈ elevationAt(0).
 const _startCenter = clientSpline.centerlineAt(0);
-
-// All preset distances sized for an 18 000-wu-long, ±500-wu-wide spline.
-// FOV is 50° → half-angle 25° → tan ≈ 0.466. To frame the whole track
-// from above (~20 000 wu visible Z) we need altitude ≈ 21 500 wu.
-
-/** Top-down: directly above track midpoint, frames the whole spline. */
-const TOPDOWN_CAM    = new THREE.Vector3(_startCenter.x, 22000, _startCenter.z + 9000);
-const TOPDOWN_TARGET = new THREE.Vector3(_startCenter.x, 0,     _startCenter.z + 9000);
-
-/** Side-on: perpendicular to start tangent, elevated. */
 const _startNormal = clientSpline.normalAt(0);
-const SIDEON_CAM    = new THREE.Vector3(
-  _startCenter.x + _startNormal.x * 6000,
-  2400,
-  _startCenter.z + _startNormal.z * 6000,
-);
-const SIDEON_TARGET = new THREE.Vector3(_startCenter.x, -50, _startCenter.z + 4000);
-
-/** Cinematic: INSIDE the canyon at water level — racer's POV. */
 const _startTangent = clientSpline.tangentAt(0);
-// 2026-04-29 iter-6b: cam relocated INSIDE the canyon. Altitude 150 above
-// ground stared at green grass — cliff face was foreshortened to nothing.
-// Now cam sits at y=-150 (50wu above water surface y=-200), behind the start
-// kart, looking forward down the channel — cliff walls flank the view, water
-// fills the foreground, sky-blue dome above the canyon rim.
-const CINEMATIC_CAM = new THREE.Vector3(
-  _startCenter.x - _startTangent.x * 700,
-  -150,                                         // option-C: deep canyon, cam y=-150 (50wu above water)
-  _startCenter.z - _startTangent.z * 700,
+const _startY = elevationAtT(0);
+
+// Top-down: high above the loop centroid, frames the whole zig-zag from above.
+// Half-span ≈ 9000wu; FOV 50 → altitude ≈ 9000/tan(25°) ≈ 19300 → 21000 headroom.
+const TOPDOWN_CAM    = new THREE.Vector3(0, 21000, 0);
+const TOPDOWN_TARGET = new THREE.Vector3(0, 300, 0);
+
+// Side-on: across the start straight, low + outside, to read the UNDULATION
+// silhouette of the floating ribbon against the void.
+const SIDEON_CAM = new THREE.Vector3(
+  _startCenter.x + _startNormal.x * 9000,
+  3200,
+  _startCenter.z + _startNormal.z * 9000,
 );
-const CINEMATIC_TARGET = new THREE.Vector3(_startCenter.x, -180, _startCenter.z + 2000);
+const SIDEON_TARGET = new THREE.Vector3(_startCenter.x, _startY + 200, _startCenter.z + 3000);
 
-/** Default free-orbit position: 3/4 perspective showing whole track length. */
-const FREE_CAM    = new THREE.Vector3(_startCenter.x + 8000, 8000, _startCenter.z + 28000);
-const FREE_TARGET = new THREE.Vector3(_startCenter.x, 0, _startCenter.z + 14000);
+// Cinematic: just above + behind the start, looking down the ribbon — a racer's
+// hero shot of the glowing road receding into the cosmos.
+const CINEMATIC_CAM = new THREE.Vector3(
+  _startCenter.x - _startTangent.x * 1200,
+  _startY + 520,
+  _startCenter.z - _startTangent.z * 1200,
+);
+const CINEMATIC_TARGET = new THREE.Vector3(
+  _startCenter.x + _startTangent.x * 1800,
+  _startY + 120,
+  _startCenter.z + _startTangent.z * 1800,
+);
 
-// ─── Spline Track component ───────────────────────────────────────────────────
-
-function SplineTrack({ onTriUpdate }: { onTriUpdate: (n: number) => void }) {
-  const riverRef  = useRef<THREE.Mesh>(null);
-  const bankGroup = useRef<THREE.Group>(null);
-  const finishRef = useRef<THREE.Mesh>(null);
-  const gridRef   = useRef<THREE.Mesh>(null);
-
-  const riverGeo  = useMemo(() => buildSplineRibbonGeo(V2_RIBBON_SAMPLES), []);
-  const bankGeos  = useMemo(() => buildSplineBankGeos(V2_RIBBON_SAMPLES),  []);
-  const finishGeo = useMemo(() => buildFinishGateGeo(), []);
-  const gridGeo   = useMemo(() => buildStartGrid100(), []);
-
-  useEffect(() => {
-    let tris = 0;
-    if (riverRef.current)  tris += countTris(riverRef.current);
-    if (bankGroup.current) tris += countTris(bankGroup.current);
-    if (finishRef.current) tris += countTris(finishRef.current);
-    onTriUpdate(tris);
-  }, [riverGeo, bankGeos, finishGeo, onTriUpdate]);
-
-  useEffect(() => {
-    // Freeze transforms for static geo (Iris Xe perf)
-    [riverRef.current, finishRef.current, gridRef.current].forEach(m => {
-      if (m) { m.matrixAutoUpdate = false; m.updateMatrix(); }
-    });
-    if (bankGroup.current) {
-      bankGroup.current.traverse(o => {
-        if ((o as THREE.Mesh).isMesh) { o.matrixAutoUpdate = false; (o as THREE.Mesh).updateMatrix(); }
-      });
-    }
-    return () => {
-      riverGeo.dispose();
-      bankGeos.left.dispose();
-      bankGeos.right.dispose();
-      finishGeo.dispose();
-      gridGeo.dispose();
-    };
-  }, [riverGeo, bankGeos, finishGeo, gridGeo]);
-
-  return (
-    <group>
-      {/* River bed — position.y -250 cascades from iter-6 WATER_Y=-200 (bed 50wu below water) */}
-      <mesh ref={riverRef} geometry={riverGeo} material={_riverMat} position-y={-250} receiveShadow matrixAutoUpdate={false} />
-
-      {/* Bank walls — HIDDEN: replaced by <RockyBanks /> from rocky-banks.tsx
-          which provides the canyon cliff geometry. The old grass-green bank
-          walls overlapped the new cliffs and cast shadows producing dark
-          rectangles inside the river area (iter-5b regression). */}
-      <group ref={bankGroup} visible={false}>
-        <mesh geometry={bankGeos.left}  material={_bankMat} matrixAutoUpdate={false} />
-        <mesh geometry={bankGeos.right} material={_bankMat} matrixAutoUpdate={false} />
-      </group>
-
-      {/* Finish gate */}
-      <mesh ref={finishRef} geometry={finishGeo} material={_finishMat} castShadow matrixAutoUpdate={false} />
-
-      {/* 100wu × 100wu scale grid at start */}
-      <mesh ref={gridRef} geometry={gridGeo} material={_gridMat} matrixAutoUpdate={false} />
-    </group>
-  );
-}
-
-// ─── Reference cube component ─────────────────────────────────────────────────
-// Placed at z=200 wu from start line. Magenta so it's unmistakable.
-
-function RefCube() {
-  const c = clientSpline.centerlineAt(0);
-  return (
-    <mesh
-      geometry={_refCubeGeo}
-      material={_refCubeMat}
-      position={[c.x + 80, 2.5, c.z + 200]}
-      matrixAutoUpdate={false}
-    />
-  );
-}
-
-// ─── Single surfboard + lobster kart ─────────────────────────────────────────
-
-interface KartProps {
-  t: number;
-  color: string;
-  onMounted?: (obj: THREE.Group) => void;
-  visible?: boolean;
-}
-
-function SplineSurfboardKart({ t, color, onMounted, visible = true }: KartProps) {
-  const { scene: sbSrc }   = useGLTF('/models/reef-race/surfboards/surfboard_1.glb');
-  const { scene: lobSrc }  = useGLTFWithKTX2('/models/lobster-ktx.glb');
-
-  const groupRef   = useRef<THREE.Group>(null);
-  const gliderRef  = useRef<THREE.Group>(null);
-  const riderRef   = useRef<THREE.Group>(null);
-
-  const clonedSurf = useMemo(() => {
-    const sb = sbSrc.clone(true);
-    sb.traverse(o => { o.frustumCulled = false; });
-    // Apply color tint (50% blend — same as ReefRacePlayer)
-    sb.traverse(o => {
-      const mesh = o as THREE.Mesh;
-      if (!mesh.isMesh) return;
-      const applyTint = (m: THREE.Material) => {
-        if ((m as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
-          const c = (m as THREE.MeshStandardMaterial).clone();
-          c.color.lerp(new THREE.Color(color), 0.5);
-          return c;
-        }
-        return m;
-      };
-      mesh.material = Array.isArray(mesh.material)
-        ? mesh.material.map(applyTint)
-        : applyTint(mesh.material);
-    });
-    sb.scale.set(GLIDER_WIDTH, GLIDER_HEIGHT * 4, GLIDER_LENGTH);
-    return sb;
-  }, [sbSrc, color]);
-
-  const clonedLob = useMemo(() => {
-    const lob = skeletonClone(lobSrc);
-    lob.traverse(o => { o.frustumCulled = false; });
-    return lob;
-  }, [lobSrc]);
-
-  // Attach surfboard clone to gliderRef
-  useEffect(() => {
-    const g = gliderRef.current;
-    if (!g) return;
-    g.add(clonedSurf);
-    return () => { g.remove(clonedSurf); };
-  }, [clonedSurf]);
-
-  // Attach lobster clone to riderRef
-  useEffect(() => {
-    const r = riderRef.current;
-    if (!r) return;
-    r.add(clonedLob);
-    return () => { r.remove(clonedLob); };
-  }, [clonedLob]);
-
-  // Place group at spline position + Y = 0 (on river bed)
-  useEffect(() => {
-    const gr = groupRef.current;
-    if (!gr) return;
-    const c = clientSpline.centerlineAt(t);
-    const tangent = clientSpline.tangentAt(t);
-    gr.position.set(c.x, 0, c.z);
-    // Facing angle: atan2(tx, tz) — tangent faces direction of travel
-    gr.rotation.y = Math.atan2(tangent.x, tangent.z);
-    gr.updateMatrix();
-    gr.matrixAutoUpdate = false;
-    if (onMounted) onMounted(gr);
-  }, [t, onMounted]);
-
-  // GLIDER_LOCAL_Y = KART_Y_ABOVE_TRACK / KART_SCALE
-  const gliderLocalY = KART_Y_ABOVE_TRACK / KART_SCALE;
-
-  return (
-    <group ref={groupRef} scale={[KART_SCALE, KART_SCALE, KART_SCALE]} visible={visible}>
-      <group ref={gliderRef} position={[0, gliderLocalY, 0]}>
-        {/* clonedSurf attached via useEffect */}
-        <group ref={riderRef} position={RIDER_MOUNT_OFFSET_DEFAULT}>
-          {/* clonedLob attached via useEffect */}
-        </group>
-      </group>
-    </group>
-  );
-}
+// Default free-orbit: a 3/4 hero of the whole floating loop in the void.
+const FREE_CAM    = new THREE.Vector3(13000, 9000, 13000);
+const FREE_TARGET = new THREE.Vector3(0, 200, 0);
 
 // ─── Production lighting (mirrors ReefLight in ReefRaceScene.tsx) ─────────────
 
 function PreviewLighting() {
-  const dirRef = useRef<THREE.DirectionalLight>(null);
-  useEffect(() => {
-    const d = dirRef.current;
-    if (!d) return;
-    d.shadow.mapSize.set(DIR_SHADOW_MAP_SIZE, DIR_SHADOW_MAP_SIZE);
-    d.shadow.camera.near = DIR_SHADOW_NEAR;
-    d.shadow.camera.far  = DIR_SHADOW_FAR;
-    const oc = d.shadow.camera as THREE.OrthographicCamera;
-    oc.left = oc.bottom = -DIR_SHADOW_CAM_BOUNDS;
-    oc.right = oc.top   =  DIR_SHADOW_CAM_BOUNDS;
-    oc.updateProjectionMatrix();
-    d.matrixAutoUpdate = false;
-    d.updateMatrix();
-  }, []);
-
   return (
     <>
       <hemisphereLight args={[HEMI_SKY_COLOR, HEMI_GROUND_COLOR, HEMI_INTENSITY]} />
       <directionalLight
-        ref={dirRef}
         color={DIR_COLOR}
         intensity={DIR_INTENSITY}
-        position={DIR_POSITION}
-        castShadow
+        position={DIR_POSITION as unknown as [number, number, number]}
       />
     </>
   );
@@ -570,10 +151,9 @@ interface CamControllerProps {
   onCamDist: (d: number) => void;
 }
 
-function CamController({ mode, autoRotate, controlsRef, onCamDist }: CamControllerProps) {
+function CamController({ mode, controlsRef, onCamDist }: CamControllerProps) {
   const { camera } = useThree();
 
-  // Apply preset on mode change
   useEffect(() => {
     const cam = camera as THREE.PerspectiveCamera;
     cam.near = CAMERA_NEAR;
@@ -584,97 +164,134 @@ function CamController({ mode, autoRotate, controlsRef, onCamDist }: CamControll
     if (!ctrl) return;
 
     switch (mode) {
-      case 'top-down': {
+      case 'top-down':
         cam.position.copy(TOPDOWN_CAM);
         ctrl.target.copy(TOPDOWN_TARGET);
-        // Switch to no FOV perspective for top-down clarity
         cam.fov = 50;
         break;
-      }
-      case 'side-on': {
+      case 'side-on':
         cam.position.copy(SIDEON_CAM);
         ctrl.target.copy(SIDEON_TARGET);
         break;
-      }
-      case 'cinematic': {
+      case 'cinematic':
         cam.position.copy(CINEMATIC_CAM);
         ctrl.target.copy(CINEMATIC_TARGET);
         break;
-      }
-      default: {
-        // free-orbit
+      default:
         cam.position.copy(FREE_CAM);
         ctrl.target.copy(FREE_TARGET);
         break;
-      }
     }
     cam.updateProjectionMatrix();
     ctrl.update();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
 
-  // Cinematic — STATIC inside canyon (no orbit). Removed orbit because it
-  // pushed the cam OUT of the canyon during sweep, breaking the "inside the
-  // ravine" framing. Static keeps the player POV consistent.
   useFrame(() => {
     if (mode === 'cinematic') {
       const ctrl = controlsRef.current;
-      if (!ctrl) return;
-      camera.position.copy(CINEMATIC_CAM);
-      ctrl.target.copy(CINEMATIC_TARGET);
-      ctrl.update();
+      if (ctrl) {
+        camera.position.copy(CINEMATIC_CAM);
+        ctrl.target.copy(CINEMATIC_TARGET);
+        ctrl.update();
+      }
     }
-
-    // Emit camera-to-origin distance for overlay
     onCamDist(camera.position.distanceTo(_sc1.set(0, 0, 0)));
   });
 
   return null;
 }
 
-// ─── Measurement collector ────────────────────────────────────────────────────
-// Reads surfboard bounding box and river half-width at t=0, reports to parent.
-
-interface MeasurementsProps {
-  kartGroupRef: React.RefObject<THREE.Group | null>;
-  onMeasurements: (m: PreviewMeasurements) => void;
-}
-
-interface PreviewMeasurements {
-  boardW: number;
-  boardL: number;
-  boardH: number;
-  riverHalfW: number;
-  riverHalfWAt025: number;
-}
-
-function MeasurementCollector({ kartGroupRef, onMeasurements }: MeasurementsProps) {
-  const measured = useRef(false);
-
+// ─── Real-race kart render harness (?mode=racer) ─────────────────────────────
+// DEV-ONLY: mounts ONE real-race <ReefRacePlayer/> (the spline path) with a fixed
+// fake entity on a banked stretch + a close 3/4 camera, so the surf-tilt / banked
+// ride / board ORIENTATION baked into ReefRacePlayer can be eyeballed WITHOUT a live
+// race. Requires a build with NEXT_PUBLIC_REEF_RACE_USE_SPLINE=true (else ReefRacePlayer
+// takes the flat v1 path). The kart surfs IN PLACE (wave time advances; XZ fixed).
+//
+// `?species=<modelKey>` (added 2026-07-10, registry-driven rider router
+// verification): overrides the rendered species; defaults to 'lobster' so the
+// existing bare `?mode=racer` URL keeps working unchanged. Any MODEL_REGISTRY
+// key works (VRM or GLB), plus the two legacy non-registry keys ('crayfish',
+// 'sea_horse'). Example: /preview/reef-race-v2?mode=racer&species=hermes_male
+const _HARNESS_T = 0.10; // a banked stretch of the spline
+function ReefRaceKartHarness({ species, camview }: { species: string; camview: string }) {
+  const { camera } = useThree();
+  const wrapRef = useRef<THREE.Group>(null);
+  const c = clientSpline.centerlineAt(_HARNESS_T);
+  const tan = clientSpline.tangentAt(_HARNESS_T);
+  const datumY = elevationAtT(_HARNESS_T);
+  const [entity] = useState<ReefRaceEntity>(() => ({
+    avatarId: 'harness-1', x: c.x, y: c.z, rot: Math.atan2(tan.x, tan.z),
+    vx: 0, vy: 0, alive: true, color: '#35d0ff', species, lap: 1,
+  }));
+  // DEV-ONLY VERIFY-HARNESS ADDITION (2026-07-12): `?camview=orbit&camyaw=<deg>` —
+  // a turntable camera at a fixed radius/height around the rider so a creature's
+  // "front" (antennae/claws/head vs. tail) can be read from whichever azimuth
+  // actually faces the lens, instead of guessing from one fixed angle.
+  const orbitSearchParams = useSearchParams();
+  const camYawDeg = Number(orbitSearchParams.get('camyaw') ?? '0');
+  // DEV-ONLY VERIFY-HARNESS ADDITION (2026-07-12): optional radius/height
+  // overrides for the orbit cam — the default 132/55 (matched to the 3q view)
+  // is tuned for ~22wu GLB creatures; VRM riders are ~245wu (pre-existing,
+  // already-documented scale gap — see reef `rider-species-router` memory,
+  // NOT something this task's scope touches), so a VRM verification shot
+  // needs a farther/higher camera to fit the whole figure in frame.
+  const camRadiusOverride = orbitSearchParams.get('camradius');
+  const camHeightOverride = orbitSearchParams.get('camheight');
   useFrame(() => {
-    if (measured.current) return;
-    const gr = kartGroupRef.current;
-    if (!gr) return;
-
-    // Force matrix world update for a freshly-placed static group
-    gr.updateMatrixWorld(true);
-    const box = safeBBox(gr);
-    if (box.isEmpty()) return;
-
-    measured.current = true;
-    const sz = _sc2.set(0, 0, 0);
-    box.getSize(sz as THREE.Vector3);
-
-    onMeasurements({
-      boardW:        parseFloat(sz.x.toFixed(1)),
-      boardL:        parseFloat(sz.z.toFixed(1)),
-      boardH:        parseFloat(sz.y.toFixed(1)),
-      riverHalfW:    parseFloat(clientSpline.widthAt(0).toFixed(1)),
-      riverHalfWAt025: parseFloat(clientSpline.widthAt(0.25).toFixed(1)),
-    });
+    // DEV-ONLY VERIFY-HARNESS ADDITION (2026-07-12, creature-rider facing audit):
+    // `?camview=top` swaps to a close, near-orthographic top-down view — the
+    // default close 3/4 view backlights the rider against the water-glint bloom
+    // and reads as a silhouette, unusable for judging which way a creature GLB
+    // is authored to face. Top-down + front daylight reads the body plan
+    // (head/claws vs tail) clearly. Default ('3q') is the pre-existing unchanged
+    // close 3/4 view used by every other preview consumer of this harness.
+    if (camview === 'orbit') {
+      // Same radius/height/target ratios as the proven-working default 3/4 view
+      // below (120 out / 55 up / datumY+12 target) — only the AZIMUTH sweeps, so
+      // the rider is reliably framed at every angle instead of guessing a radius.
+      const az = (camYawDeg * Math.PI) / 180;
+      const radius = camRadiusOverride ? Number(camRadiusOverride) : 132; // = hypot(120,55) — same 3D eye-to-kart distance as the 3q view below (Codex review 2026-07-12 caught this comment previously saying hypot(120,120)≈169.7, which is wrong)
+      const height = camHeightOverride ? Number(camHeightOverride) : 55;
+      camera.position.set(c.x + Math.sin(az) * radius, datumY + height, c.z + Math.cos(az) * radius);
+      camera.lookAt(c.x, datumY + (camHeightOverride ? Number(camHeightOverride) * 0.4 : 12), c.z);
+    } else if (camview === 'top') {
+      camera.position.set(c.x, datumY + 140, c.z + 1);
+      camera.lookAt(c.x, datumY + 12, c.z);
+    } else if (camview === 'topclose') {
+      // DEV-ONLY VERIFY-HARNESS ADDITION (2026-07-12): tighter top-down crop —
+      // 'top' framed the whole kart; this frames just the rider for reading
+      // fine anatomy (eyes/antennae/claws) at higher pixel density.
+      camera.position.set(c.x, datumY + 55, c.z + 1);
+      camera.lookAt(c.x, datumY + 25, c.z);
+    } else {
+      // Close, low 3/4 view of the kart so the BOARD PROFILE (flat vs vertical) reads
+      // clearly. The kart renders at KART_SCALE world units around c; ~120u out / ~55u up.
+      camera.position.set(c.x + 120, datumY + 55, c.z + 120);
+      camera.lookAt(c.x, datumY + 12, c.z);
+    }
+    // DEV ground-truth: expose the kart wrapper so Playwright can read the surfboard's
+    // true world pose (no scene-handle hunting needed). Harmless; dev-only preview route.
+    if (typeof window !== 'undefined') {
+      (window as unknown as { __HARNESS_GROUP?: THREE.Group }).__HARNESS_GROUP = wrapRef.current ?? undefined;
+      // DEV-ONLY VERIFY-HARNESS ADDITION (2026-07-12): expose the camera too, so a
+      // Playwright driver can read its EXACT matrixWorld basis (screen-right/up in
+      // world space) instead of hand-deriving the lookAt basis. Typed `unknown`
+      // (not `THREE.Camera`) — R3F's `useThree().camera` type and this file's
+      // direct `three` import resolve to different duplicate @types/three
+      // versions present in this monorepo's node_modules (pre-existing,
+      // repo-wide — see the `@types/three@0.170.0` vs `@types/three@0.182.0`
+      // errors already present on the unmodified baseline), which otherwise
+      // trips a needless cross-version assignability error on this line.
+      (window as unknown as { __HARNESS_CAMERA?: unknown }).__HARNESS_CAMERA = camera;
+    }
   });
-
-  return null;
+  return (
+    <group ref={wrapRef}>
+      <ReefRacePlayer entity={entity} isSelf={false} />
+    </group>
+  );
 }
 
 // ─── Scene contents ───────────────────────────────────────────────────────────
@@ -683,253 +300,189 @@ interface SceneContentsProps {
   mode: CameraMode;
   autoRotate: boolean;
   controlsRef: React.RefObject<OrbitControlsImpl | null>;
-  onTriCount: (total: number) => void;
   onCamDist: (d: number) => void;
-  onMeasurements: (m: PreviewMeasurements) => void;
+  /** DRIVE sandbox: keyboard-driven kart owns the camera — skip orbit cam + demo karts. */
+  drive: boolean;
+  /** RACER harness: mount one real-race ReefRacePlayer (spline path) + a close camera. */
+  racer: boolean;
+  /** RACER harness species override (?species=<modelKey>). Defaults to 'lobster'. */
+  species: string;
+  /** DEV-ONLY VERIFY-HARNESS ADDITION (2026-07-12): RACER harness camera variant. */
+  camview: string;
+  /** DEV-ONLY VERIFY-HARNESS ADDITION (2026-07-12): flat bright fill light + no
+   *  bloom, for reading creature-rider body-plan/orientation without the cosmic-
+   *  void backlighting turning the rider into an unreadable silhouette. */
+  diag: boolean;
 }
 
-// Stable kart colors for the 4 t-values
-const KART_COLORS = ['#00ccff', '#ff4400', '#44ff44', '#ffcc00'];
-
-function SceneContents({
-  mode,
-  autoRotate,
-  controlsRef,
-  onTriCount,
-  onCamDist,
-  onMeasurements,
-}: SceneContentsProps) {
-  // Tri counts from each sub-component, summed
-  const trackTriRef  = useRef(0);
-  const kartTrisRef  = useRef([0, 0, 0, 0]);
-  const triUpdateTick = useRef(0);
-
-  const reportTrackTris = useCallback((n: number) => {
-    trackTriRef.current = n;
-    triUpdateTick.current++;
-    onTriCount(trackTriRef.current + kartTrisRef.current.reduce((a, b) => a + b, 0));
-  }, [onTriCount]);
-
-  // Kart group ref for start kart (t=0) — used for measurements
-  const startKartRef = useRef<THREE.Group | null>(null);
-  const handleKartMounted = useCallback((gr: THREE.Group) => {
-    startKartRef.current = gr;
-  }, []);
-
-  // Grab tris from scene after mount (simple: use gl.info.render)
-  const { gl } = useThree();
-  useFrame(() => {
-    // Expose draw triangles in overlay via gl.info
-    void gl; // reference used in overlay via onTriCount from track geo
-  });
-
+function SceneContents({ mode, autoRotate, controlsRef, onCamDist, drive, racer, species, camview, diag }: SceneContentsProps) {
   return (
     <>
-      <CamController
-        mode={mode}
-        autoRotate={autoRotate}
-        controlsRef={controlsRef}
-        onCamDist={onCamDist}
-      />
-
-      {/* Free orbit / top-down / side-on: OrbitControls enabled; cinematic: overridden by CamController */}
-      <OrbitControls
-        ref={controlsRef as unknown as React.Ref<OrbitControlsImpl>}
-        enableDamping
-        dampingFactor={0.08}
-        autoRotate={autoRotate && mode === 'free-orbit'}
-        autoRotateSpeed={1.0}
-        // Prevent going under the river bed
-        maxPolarAngle={Math.PI * 0.85}
-        // Clamp zoom so the user can't drift past CAMERA_FAR (35 000 wu) and
-        // see an empty sky-blue void. Confirmed 2026-04-29 from the user
-        // reporting "as you zoom out, everything disappears" — orbit had
-        // reached 1 033 782 wu, well past the far plane.
-        minDistance={500}
-        maxDistance={28000}
-      />
-
-      {/* Production fog */}
-      <fog args={[FOG_COLOR, FOG_NEAR, FOG_FAR]} />
-      {/* Sky-blue clear color matches SkyDome horizon — prevents flash before dome renders */}
-      <color attach="background" args={['#a8d8ff']} />
-
-      {/* Low-poly stylized river atmosphere — dome, water surface, scenery */}
-      <RiverScene />
-
-      {/* Production lighting */}
-      <PreviewLighting />
-
-      {/* River bed + bank walls + finish gate + scale grid */}
-      <Suspense fallback={null}>
-        <SplineTrack onTriUpdate={reportTrackTris} />
-      </Suspense>
-
-      {/* Demo karts now ride via <AnimatedKarts /> inside <RiverScene> — see
-          river-scene.tsx. The static t=0 SplineSurfboardKart is still mounted
-          (invisible) to keep the bbox-measurement HUD readout populated. */}
-      <Suspense fallback={null}>
-        <SplineSurfboardKart
-          t={0}
-          color={KART_COLORS[0]!}
-          onMounted={handleKartMounted}
-          visible={false}
+      {/* Free-orbit / cinematic camera + orbit controls — ONLY in look modes. In
+          drive mode <ReefFreeDrive/> owns the chase camera, so these are skipped. */}
+      {!drive && !racer && (
+        <CamController mode={mode} autoRotate={autoRotate} controlsRef={controlsRef} onCamDist={onCamDist} />
+      )}
+      {!drive && !racer && (
+        <OrbitControls
+          ref={controlsRef as unknown as React.Ref<OrbitControlsImpl>}
+          enableDamping
+          dampingFactor={0.08}
+          autoRotate={autoRotate && mode === 'free-orbit'}
+          autoRotateSpeed={0.8}
+          maxPolarAngle={Math.PI * 0.92}
+          minDistance={500}
+          maxDistance={28000}
         />
-      </Suspense>
+      )}
 
-      {/* Measurement collector — reads start kart bbox */}
-      <MeasurementCollector
-        kartGroupRef={startKartRef}
-        onMeasurements={onMeasurements}
-      />
+      {/* Deep cosmic void atmosphere */}
+      <fog args={[FOG_COLOR, FOG_NEAR, FOG_FAR]} />
+      <color attach="background" args={[diag ? '#7fa8c9' : '#0c1a2e']} />
 
-      {/* Magenta reference cube: 5wu × 5wu × 5wu at z=+200 from start */}
-      <RefCube />
+      {/* SURF ROAD scene. Look modes show decorative demo karts; drive mode hides
+          them (you ARE the kart) and mounts the keyboard-driven free-drive rig. */}
+      <RiverScene showDemoKarts={!drive && !racer} />
+      {drive && <ReefFreeDrive />}
+      {racer && <ReefRaceKartHarness species={species} camview={camview} />}
+
+      <PreviewLighting />
+      {/* DEV-ONLY VERIFY-HARNESS ADDITION (2026-07-12): ?diag=1 — flat bright fill
+          so a creature-rider's body plan reads clearly instead of as a cosmic-void
+          backlit silhouette. Dev-only preview route; never affects production. */}
+      {diag && <ambientLight intensity={2.2} />}
+      {diag && <directionalLight position={[200, 400, 250]} intensity={1.5} />}
+
+      {/* Selective neon bloom — LAST so it composes the final framebuffer.
+          Skipped in diag mode — bloom crushes contrast on the creature body. */}
+      {!diag && <SurfBloom />}
     </>
   );
 }
 
 // ─── Overlay panel ────────────────────────────────────────────────────────────
 
-interface OverlayProps {
-  mode: CameraMode;
-  triCount: number | null;
-  camDist: number;
-  frameMs: number;
-  autoRotate: boolean;
-  measurements: PreviewMeasurements | null;
-  onModeChange: (m: CameraMode) => void;
-  onToggleAutoRotate: () => void;
-  onResetCamera: () => void;
-}
-
 const overlayStyle: React.CSSProperties = {
   position: 'absolute',
   top: 12,
   left: 12,
-  background: 'rgba(0,0,0,0.68)',
-  color: '#cde',
+  background: 'rgba(4,10,22,0.78)',
+  color: '#bfe8ff',
   fontFamily: 'monospace',
   fontSize: 12,
   lineHeight: 1.6,
   padding: '10px 14px',
   borderRadius: 6,
   zIndex: 20,
-  minWidth: 260,
+  minWidth: 240,
   pointerEvents: 'auto',
   userSelect: 'none',
 };
 
-const labelStyle: React.CSSProperties = {
-  color: '#8ab',
-  display: 'inline-block',
-  width: 160,
-};
-
-const valStyle: React.CSSProperties = {
-  color: '#fff',
-  fontWeight: 'bold',
-};
-
+const labelStyle: React.CSSProperties = { color: '#6fb4d6', display: 'inline-block', width: 150 };
+const valStyle: React.CSSProperties = { color: '#fff', fontWeight: 'bold' };
 const selectStyle: React.CSSProperties = {
-  background: '#1a3a6b',
-  color: '#cde',
-  border: '1px solid #4488cc',
-  borderRadius: 4,
-  padding: '2px 6px',
-  fontSize: 12,
-  cursor: 'pointer',
-  marginTop: 6,
-  width: '100%',
+  background: '#0e2a4a', color: '#bfe8ff', border: '1px solid #3a8fd0',
+  borderRadius: 4, padding: '2px 6px', fontSize: 12, cursor: 'pointer', marginTop: 6, width: '100%',
 };
-
 const btnStyle: React.CSSProperties = {
-  background: '#1a3a6b',
-  color: '#cde',
-  border: '1px solid #4488cc',
-  borderRadius: 4,
-  padding: '3px 10px',
-  fontSize: 12,
-  cursor: 'pointer',
-  marginTop: 4,
-  marginRight: 4,
+  background: '#0e2a4a', color: '#bfe8ff', border: '1px solid #3a8fd0',
+  borderRadius: 4, padding: '3px 10px', fontSize: 12, cursor: 'pointer', marginTop: 4, marginRight: 4,
 };
 
-function OverlayPanel({
-  mode,
-  triCount,
-  camDist,
-  frameMs,
-  autoRotate,
-  measurements,
-  onModeChange,
-  onToggleAutoRotate,
-  onResetCamera,
-}: OverlayProps) {
+interface OverlayProps {
+  mode: CameraMode;
+  camDist: number;
+  stats: FrameStats;
+  autoRotate: boolean;
+  onModeChange: (m: CameraMode) => void;
+  onToggleAutoRotate: () => void;
+  onResetCamera: () => void;
+}
+
+function OverlayPanel({ mode, camDist, stats, autoRotate, onModeChange, onToggleAutoRotate, onResetCamera }: OverlayProps) {
+  // Perf-tier colour on FPS: green ≥60 (floor), amber 45–60, red <45 (downgrade).
+  const fpsColor = stats.fps >= 60 ? '#7dffa0' : stats.fps >= 45 ? '#ffd166' : '#ff6b6b';
   return (
     <div style={overlayStyle}>
       <div style={{ fontWeight: 'bold', fontSize: 13, marginBottom: 6, color: '#fff', letterSpacing: 1 }}>
-        Reef Race v2 Preview
+        SURF ROAD Preview
       </div>
+      <div><span style={labelStyle}>FPS (avg)</span><span style={{ ...valStyle, color: fpsColor }}>{stats.fps > 0 ? stats.fps.toFixed(0) : '—'}</span></div>
+      <div><span style={labelStyle}>Frame time (avg)</span><span style={{ ...valStyle, color: fpsColor }}>{stats.avgMs > 0 ? stats.avgMs.toFixed(1) + ' ms' : '—'}</span></div>
+      <div><span style={labelStyle}>Jank (max)</span><span style={valStyle}>{stats.maxMs > 0 ? stats.maxMs.toFixed(1) + ' ms' : '—'}</span></div>
+      <div><span style={labelStyle}>Geo / Tex</span><span style={valStyle}>{stats.geometries} / {stats.textures}</span></div>
+      <div><span style={labelStyle}>Cam dist (origin)</span><span style={valStyle}>{camDist.toFixed(0)} wu</span></div>
 
-      {/* Performance */}
-      <div><span style={labelStyle}>Triangles</span><span style={valStyle}>{triCount !== null ? triCount.toLocaleString() : '—'}</span></div>
-      <div><span style={labelStyle}>Frame time</span><span style={valStyle}>{frameMs > 0 ? frameMs.toFixed(1) + ' ms' : '—'}</span></div>
-      <div><span style={labelStyle}>Cam dist from origin</span><span style={valStyle}>{camDist.toFixed(0)} wu</span></div>
-
-      {/* Measurements */}
-      <div style={{ marginTop: 8, borderTop: '1px solid #334', paddingTop: 6 }}>
-        <div style={{ color: '#8ab', fontSize: 11, marginBottom: 4 }}>MEASUREMENTS (at t=0 start kart)</div>
-        <div><span style={labelStyle}>Surfboard width</span><span style={valStyle}>{measurements ? measurements.boardW + ' wu' : '—'}</span></div>
-        <div><span style={labelStyle}>Surfboard length</span><span style={valStyle}>{measurements ? measurements.boardL + ' wu' : '—'}</span></div>
-        <div><span style={labelStyle}>Surfboard height</span><span style={valStyle}>{measurements ? measurements.boardH + ' wu' : '—'}</span></div>
-        <div><span style={labelStyle}>River half-width at t=0</span><span style={valStyle}>{measurements ? measurements.riverHalfW + ' wu' : '—'}</span></div>
-        <div><span style={labelStyle}>River half-width at t=0.25</span><span style={valStyle}>{measurements ? measurements.riverHalfWAt025 + ' wu' : '—'}</span></div>
-        <div><span style={labelStyle}>Bank wall height</span><span style={valStyle}>{V2_BANK_HEIGHT} wu</span></div>
-        <div style={{ color: '#8ab', fontSize: 10, marginTop: 3 }}>Ref cube = 5×5×5 wu (magenta, z+200 from start)</div>
-      </div>
-
-      {/* Mode */}
-      <div style={{ marginTop: 8, borderTop: '1px solid #334', paddingTop: 6 }}>
-        <div style={{ color: '#8ab', fontSize: 11, marginBottom: 4 }}>CAMERA MODE</div>
+      <div style={{ marginTop: 8, borderTop: '1px solid #1c3a55', paddingTop: 6 }}>
+        <div style={{ color: '#6fb4d6', fontSize: 11, marginBottom: 4 }}>CAMERA MODE</div>
         <div><span style={labelStyle}>Current</span><span style={valStyle}>{mode}</span></div>
-        <select
-          value={mode}
-          onChange={e => onModeChange(e.target.value as CameraMode)}
-          style={selectStyle}
-        >
+        <select value={mode} onChange={e => onModeChange(e.target.value as CameraMode)} style={selectStyle}>
           {CAMERA_MODES.map(m => <option key={m} value={m}>{m}</option>)}
         </select>
       </div>
 
-      {/* Controls */}
       <div style={{ marginTop: 8 }}>
         <button style={btnStyle} onClick={onResetCamera}>Reset Camera</button>
         <button
-          style={{ ...btnStyle, background: autoRotate ? '#1a5a2b' : '#1a3a6b' }}
+          style={{ ...btnStyle, background: autoRotate ? '#0e4a2b' : '#0e2a4a' }}
           onClick={onToggleAutoRotate}
         >
           Auto-Rotate {autoRotate ? 'ON' : 'OFF'}
         </button>
       </div>
 
-      <div style={{ marginTop: 8, color: '#566', fontSize: 10 }}>
-        Kart colors: cyan=t=0, red=t=0.25, green=t=0.5, yellow=t=0.75
+      <div style={{ marginTop: 8, color: '#456', fontSize: 10 }}>
+        Floating water ribbon · neon rails · cosmic void. Karts ride the elevation.
       </div>
     </div>
   );
 }
 
-// ─── FPS ticker ───────────────────────────────────────────────────────────────
-// Measures render frame time inside the R3F loop for overlay display.
+// ─── Frame-time / FPS meter (rolling avg + jank, throttled emit) ─────────────
+// Measures wall-clock between frames (includes the bloom composer pass + browser
+// composite), averaged over a ~90-frame window so the number is readable, not
+// flickering. Emits to React only ~4×/sec so the overlay re-render doesn't itself
+// skew the measurement (the old per-frame setState was a hidden cost). This is the
+// instrument for "no visual downgrade in frame time" — read avg + jank (max).
 
-function FrameTicker({ onFrameMs }: { onFrameMs: (ms: number) => void }) {
+interface FrameStats {
+  avgMs: number;
+  fps: number;
+  maxMs: number;   // worst frame in the window — the jank/hitch signal
+  geometries: number;
+  textures: number;
+}
+
+function FrameTicker({ onStats }: { onStats: (s: FrameStats) => void }) {
+  const { gl } = useThree();
+  const buf = useRef<number[]>([]);
   const lastT = useRef(performance.now());
+  const lastEmit = useRef(performance.now());
   useFrame(() => {
     const now = performance.now();
-    const dt  = now - lastT.current;
+    const dt = now - lastT.current;
     lastT.current = now;
-    onFrameMs(dt);
+    const b = buf.current;
+    b.push(dt);
+    if (b.length > 90) b.shift();
+    if (now - lastEmit.current >= 250 && b.length > 0) {
+      lastEmit.current = now;
+      let sum = 0;
+      let max = 0;
+      for (let i = 0; i < b.length; i++) {
+        sum += b[i];
+        if (b[i] > max) max = b[i];
+      }
+      const avg = sum / b.length;
+      onStats({
+        avgMs: avg,
+        fps: avg > 0 ? 1000 / avg : 0,
+        maxMs: max,
+        geometries: gl.info.memory.geometries,
+        textures: gl.info.memory.textures,
+      });
+    }
   });
   return null;
 }
@@ -941,28 +494,40 @@ function ReefRacePreviewInner() {
   const router       = useRouter();
 
   const rawMode = searchParams.get('mode');
-  // Default to top-down so first paint shows the slalom layout. free-orbit
-  // landed at an unhelpful angle that made the river render as a vertical
-  // sliver (camera was almost parallel to bed plane). Confirmed visually
-  // 2026-04-29 from the broken first preview render.
-  const mode: CameraMode = isCameraMode(rawMode) ? rawMode : 'top-down';
+  // DRIVE sandbox mode (keyboard-driven kart + physics tuner). Not a CameraMode —
+  // <ReefFreeDrive/> owns the chase camera. Reached via ?mode=drive.
+  const drive = rawMode === 'drive';
+  // RACER harness mode — mount one real-race ReefRacePlayer (spline path) to eyeball
+  // the baked surf-tilt / banked ride / board orientation (needs the spline build flag).
+  const racer = rawMode === 'racer';
+  // ?species=<modelKey> override for the racer harness (registry-driven rider
+  // router verification, 2026-07-10). Defaults to 'lobster' — the pre-existing
+  // shipped behaviour when the param is omitted.
+  const speciesParam = searchParams.get('species') ?? 'lobster';
+  // DEV-ONLY VERIFY-HARNESS ADDITION (2026-07-12): ?camview=top for the RACER
+  // harness — see ReefRaceKartHarness comment. Defaults to the pre-existing '3q'.
+  const camview = searchParams.get('camview') ?? '3q';
+  // DEV-ONLY VERIFY-HARNESS ADDITION (2026-07-12): ?diag=1 — see SceneContents.
+  const diag = searchParams.get('diag') === '1';
+  // Default to free-orbit hero of the whole floating loop in the void.
+  const mode: CameraMode = isCameraMode(rawMode) ? rawMode : 'free-orbit';
+  // DEV-ONLY VERIFY-HARNESS ADDITION (2026-07-12): `?capture=1` opts into
+  // preserveDrawingBuffer so an external screenshot driver (Playwright / a
+  // gl.readPixels probe) reads a stable framebuffer. Off by default — WebGL
+  // preserveDrawingBuffer has a real perf cost (extra buffer copy per frame) so
+  // it must never be on for a normal preview/production visit.
+  const captureMode = searchParams.get('capture') === '1';
 
-  const [triCount,     setTriCount]     = useState<number | null>(null);
-  const [camDist,      setCamDist]      = useState(0);
-  const [frameMs,      setFrameMs]      = useState(0);
-  const [autoRotate,   setAutoRotate]   = useState(false);
-  const [measurements, setMeasurements] = useState<PreviewMeasurements | null>(null);
+  const [camDist,    setCamDist]    = useState(0);
+  const [stats,      setStats]      = useState<FrameStats>({ avgMs: 0, fps: 0, maxMs: 0, geometries: 0, textures: 0 });
+  const [autoRotate, setAutoRotate] = useState(false);
 
   const controlsRef = useRef<OrbitControlsImpl>(null);
 
   const handleModeChange = useCallback((m: CameraMode) => {
     router.push(`/preview/reef-race-v2?mode=${m}`);
   }, [router]);
-
-  const handleToggleAutoRotate = useCallback(() => {
-    setAutoRotate(v => !v);
-  }, []);
-
+  const handleToggleAutoRotate = useCallback(() => setAutoRotate(v => !v), []);
   const handleResetCamera = useCallback(() => {
     const ctrl = controlsRef.current;
     if (!ctrl) return;
@@ -971,60 +536,80 @@ function ReefRacePreviewInner() {
     ctrl.target.copy(FREE_TARGET);
     ctrl.update();
   }, []);
-
-  const handleTriCount    = useCallback((n: number) => setTriCount(n), []);
-  const handleCamDist     = useCallback((d: number) => setCamDist(d),  []);
-  const handleFrameMs     = useCallback((ms: number) => setFrameMs(ms), []);
-  const handleMeasurements = useCallback((m: PreviewMeasurements) => setMeasurements(m), []);
+  const handleCamDist = useCallback((d: number) => setCamDist(d), []);
+  const handleStats = useCallback((s: FrameStats) => setStats(s), []);
 
   return (
     <div style={{
-      width: '100vw',
-      height: '100vh',
-      background: FOG_COLOR,
-      overflow: 'hidden',
-      position: 'relative',
-      fontFamily: 'monospace',
+      width: '100vw', height: '100vh', background: '#0c1a2e',
+      overflow: 'hidden', position: 'relative', fontFamily: 'monospace',
     }}>
       <Canvas
         camera={{ position: [FREE_CAM.x, FREE_CAM.y, FREE_CAM.z], fov: 60, near: CAMERA_NEAR, far: CAMERA_FAR }}
-        shadows
-        gl={{ antialias: false }}
+        gl={{ antialias: false, preserveDrawingBuffer: captureMode }}
         dpr={[1, 1.5]}
         style={{ width: '100%', height: '100%' }}
       >
-        <KTX2LoaderSetup />
         <Suspense fallback={null}>
           <SceneContents
             mode={mode}
             autoRotate={autoRotate}
             controlsRef={controlsRef}
-            onTriCount={handleTriCount}
             onCamDist={handleCamDist}
-            onMeasurements={handleMeasurements}
+            drive={drive}
+            racer={racer}
+            species={speciesParam}
+            camview={camview}
+            diag={diag}
           />
         </Suspense>
-        <FrameTicker onFrameMs={handleFrameMs} />
+        <FrameTicker onStats={handleStats} />
       </Canvas>
 
       <OverlayPanel
         mode={mode}
-        triCount={triCount}
         camDist={camDist}
-        frameMs={frameMs}
+        stats={stats}
         autoRotate={autoRotate}
-        measurements={measurements}
         onModeChange={handleModeChange}
         onToggleAutoRotate={handleToggleAutoRotate}
         onResetCamera={handleResetCamera}
       />
+
+      {/* Live tuner — physics in DRIVE mode (handling/drift/whip), water shader in
+          look modes. Both DEV TOOLs writing their singleton the loop reads each frame. */}
+      {drive ? <ReefPhysicsTunerPanel /> : <ReefWaterTunerPanel />}
+
+      {/* Drive ⇄ Look toggle. Drive = keyboard-driven free-drive sandbox + physics
+          tuner; Look = cinematic fly-through + water tuner. */}
+      <button
+        onClick={() => router.push(`/preview/reef-race-v2?mode=${drive ? 'cinematic' : 'drive'}`)}
+        style={{
+          position: 'absolute', bottom: 14, left: 14, zIndex: 30,
+          background: drive ? '#0e4a2b' : '#0e2a4a', color: '#bfe8ff',
+          border: '1px solid #3a8fd0', borderRadius: 6, padding: '8px 14px',
+          fontFamily: 'monospace', fontSize: 13, fontWeight: 'bold', cursor: 'pointer',
+        }}
+      >
+        {drive ? '👁 Exit to Look' : '🏄 Drive it'}
+      </button>
+
+      {drive && (
+        <div style={{
+          position: 'absolute', bottom: 14, left: 150, zIndex: 30,
+          background: 'rgba(4,10,22,0.78)', color: '#9cc7dd', border: '1px solid #1c3a55',
+          borderRadius: 6, padding: '8px 12px', fontFamily: 'monospace', fontSize: 12, lineHeight: 1.5,
+        }}>
+          <b style={{ color: '#fff' }}>A/D</b> or <b style={{ color: '#fff' }}>←/→</b> steer ·{' '}
+          <b style={{ color: '#fff' }}>S</b> brake · <b style={{ color: '#fff' }}>Shift</b>+turn to charge drift,{' '}
+          <b style={{ color: '#fff' }}>release</b> to boost · <b style={{ color: '#fff' }}>Space</b> whip the coral rival
+        </div>
+      )}
     </div>
   );
 }
 
 // ─── Root export — Suspense boundary for useSearchParams ─────────────────────
-// Next.js 16 requires wrapping useSearchParams in <Suspense> even on dynamic
-// 'use client' pages. The outer shell is the boundary; inner reads params.
 
 export default function ReefRaceV2PreviewPage() {
   return (

@@ -833,47 +833,52 @@ describe('ReefRaceBot — v2 spline path (V2-T1..V2-T4)', () => {
     };
   }
 
-  it('V2-T1 — follows spline centerline on a straight section (lagoon)', () => {
-    // Lagoon spans z=0..3000 with halfWidth=50 and centerline at x=0. Bot
-    // placed at x=0, z=500 should steer toward +Z (down-track).
-    const bot = createReefRaceBot('bot-self');
-    const view = makeSplineView({ selfX: 0, selfZ: 500 });
-    // Average direction over many trials to wash out jitter.
-    const TRIALS = 60;
-    let sumX = 0;
-    let sumZ = 0;
-    for (let i = 0; i < TRIALS; i++) {
-      const intent = (bot as any).computeInputSpline(
-        view,
-        view.bodies[0],
-        1 / 30,
-      );
-      sumX += intent.dir!.x;
-      sumZ += intent.dir!.y; // protocol y = sim z
-    }
-    const avgX = sumX / TRIALS;
-    const avgZ = sumZ / TRIALS;
-    // Should be predominantly +Z, near-zero X (jitter only).
-    expect(avgZ).toBeGreaterThan(0.9);
-    expect(Math.abs(avgX)).toBeLessThan(0.2);
-  });
-
-  it('V2-T2 — biases inside on a curve (kelp slalom)', () => {
-    // CP3 at z=4125 has slalom +170 X. CP4 at z=5250 swings to -170. Place
-    // the bot at the centerline between them — the curve from CP3 → CP5
-    // bends LEFT (since centerline x is heading from +170 → -170 → +170).
-    // We just want to verify the bot's lateral target is shifted away from
-    // exact centerline. The architecture-doc test is "average lateral
-    // offset is non-zero on a curved segment vs zero on a straight."
-    const bot = createReefRaceBot('bot-self');
-    const view = makeSplineView({ selfX: 0, selfZ: 4500 });
-    // Sample many trials to dampen jitter, project onto the spline normal
-    // at the bot's current t to detect lateral pull.
+  it('V2-T1 — steers FORWARD along the loop on the start straight (lagoon)', () => {
+    // CLOSED-LOOP (2026-06-22): the start straight no longer runs +Z from x=0 —
+    // it runs along the start tangent (~ -21°). Place the bot ON the start
+    // straight centerline and assert it steers FORWARD (positive dot with the
+    // forward tangent), near-tangent (small lateral) — geometry-derived, not a
+    // hardcoded +Z.
     const { ReefSpline } = require('../../sim/reef-race-spline');
     const { REEF_RACE_DEFAULT_TRACK } = require('../../sim/reef-race-track-layout');
-    const spline = new ReefSpline(REEF_RACE_DEFAULT_TRACK);
+    const spline = new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true });
+    const c = spline.centerlineAt(0.05);   // a point on the start straight
+    const tg = spline.tangentAt(0.05);     // forward direction there
+    const nx = -tg.z, nz = tg.x;           // left normal
+
+    const bot = createReefRaceBot('bot-self');
+    const view = makeSplineView({ selfX: c.x, selfZ: c.z });
     const TRIALS = 60;
-    const closest = spline.closestPointOnSpline({ x: 0, z: 4500 });
+    let sumFwd = 0;
+    let sumLat = 0;
+    for (let i = 0; i < TRIALS; i++) {
+      const intent = (bot as any).computeInputSpline(view, view.bodies[0], 1 / 30);
+      // protocol y = sim z
+      sumFwd += intent.dir!.x * tg.x + intent.dir!.y * tg.z;
+      sumLat += intent.dir!.x * nx + intent.dir!.y * nz;
+    }
+    const avgFwd = sumFwd / TRIALS;
+    const avgLat = sumLat / TRIALS;
+    // Predominantly forward along the loop tangent, small lateral (jitter only).
+    expect(avgFwd).toBeGreaterThan(0.9);
+    expect(Math.abs(avgLat)).toBeLessThan(0.25);
+  });
+
+  it('V2-T2 — biases inside on a curve (far-west hairpin)', () => {
+    // CLOSED-LOOP (2026-06-22): place the bot on a genuinely CURVED part of the
+    // loop (the far-west hairpin, t≈0.77, min radius ~300 wu) and assert the
+    // bot's steering picks up a non-zero lateral (inside) bias vs the exact
+    // centerline. Geometry-derived from the closed spline.
+    const { ReefSpline } = require('../../sim/reef-race-spline');
+    const { REEF_RACE_DEFAULT_TRACK } = require('../../sim/reef-race-track-layout');
+    const spline = new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true });
+    const onCurve = spline.centerlineAt(0.77); // hairpin tip region (curved)
+    const bot = createReefRaceBot('bot-self');
+    const view = makeSplineView({ selfX: onCurve.x, selfZ: onCurve.z });
+    // Sample many trials to dampen jitter, project onto the spline normal
+    // at the bot's current t to detect lateral pull.
+    const TRIALS = 60;
+    const closest = spline.closestPointOnSpline({ x: onCurve.x, z: onCurve.z });
     const tg = spline.tangentAt(closest.t);
     // 90° CCW normal of tangent in XZ.
     const nx = -tg.z;
@@ -903,49 +908,77 @@ describe('ReefRaceBot — v2 spline path (V2-T1..V2-T4)', () => {
     // of lookahead AND lateral deviation < 0.4 * halfWidth.
     const { ReefSpline } = require('../../sim/reef-race-spline');
     const { REEF_RACE_DEFAULT_TRACK } = require('../../sim/reef-race-track-layout');
-    const spline = new ReefSpline(REEF_RACE_DEFAULT_TRACK);
-    const selfPos = { x: 0, z: 500 };
+    // CLOSED-LOOP + v4 BIG ring: closed spline + WRAPPED lookahead to match the
+    // bot's `(tSelf + V2_LOOKAHEAD_T) % 1` logic. Place the bot on the LOWEST-
+    // curvature part of the windy ring (the start straight, t≈0.04) so the
+    // pickup pull is the dominant lateral signal — on a sweep the curvature
+    // inside-line bias swamps a small in-budget pickup nudge (the v3 t≈0.2 spot
+    // is now a curved east sweep on the bigger ring).
+    const spline = new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true });
+    // Bot on the SE east sweep (t≈0.2) — the pickup pull is cleanest with a
+    // -normal offset here (the natural inside-line leans +normal, so a -normal
+    // pickup produces the largest measurable redirect on the v4 ring).
+    const startPt = spline.centerlineAt(0.2);
+    const selfPos = { x: startPt.x, z: startPt.z };
     const c = spline.closestPointOnSpline(selfPos);
-    const tLook = Math.min(1, c.t + 0.03);
+    const tLook = (c.t + 0.03) % 1;
     const lookCenter = spline.centerlineAt(tLook);
     const halfW = spline.widthAt(tLook);
     const normal = spline.normalAt(tLook);
-    // Pickup 19 wu off the racing line in +normal direction. Budget at
-    // lagoon halfWidth=50 is 20 wu — 19 is just under the cap.
-    const lateralOffset = 19;
+    // Pickup offset 70 wu off the racing line in -normal — STRICTLY within the
+    // pickup DETECTION radius (3 * REEF_POWERUP_RADIUS = 84 wu of the lookahead
+    // centre; 84 wu itself is excluded by the strict `<`) AND well within the
+    // deviation budget (0.4 * halfWidth ≈ 270 wu at the v4 sweep halfWidth ~670).
+    const lateralOffset = -70;
     const pickupX = lookCenter.x + normal.x * lateralOffset;
     const pickupZ = lookCenter.z + normal.z * lateralOffset;
     void halfW;
 
-    const TRIALS = 80;
-    let sumLatWith = 0;
-    let sumLatWithout = 0;
-    for (let i = 0; i < TRIALS; i++) {
-      const bot = createReefRaceBot('bot-self');
+    // Signal: project the bot's dir onto the pickup direction unit vector. When
+    // the pickup branch fires, `targetX/Z` is set to the pickup, so the dir aims
+    // directly at it (projection → 1.0); without it the dir follows the natural
+    // racing line (projection slightly < 1.0). The pull is small on the v4 BIG
+    // ring (the lookahead arc is ~1600 wu, so a 70-wu offset is only ~2.5°), so
+    // we STUB OUT the ±0.08 per-tick jitter (Math.random → 0.5 makes the bot's
+    // jitter term `(0.5-0.5)*2*JITTER = 0`) and read the DETERMINISTIC pull in a
+    // single call each — averaging can't recover a sub-noise-floor signal, but
+    // the deterministic redirect is reliably positive (~+0.002).
+    let pdx = pickupX - selfPos.x;
+    let pdz = pickupZ - selfPos.z;
+    const pmag = Math.hypot(pdx, pdz) || 1;
+    pdx /= pmag;
+    pdz /= pmag;
+
+    const origRandom = Math.random;
+    Math.random = () => 0.5; // kill the per-tick steering jitter (deterministic read)
+    let projWith: number;
+    let projWithout: number;
+    try {
+      const botWith = createReefRaceBot('bot-self');
       const viewWith = makeSplineView({
         selfX: selfPos.x,
         selfZ: selfPos.z,
         pickups: [{ x: pickupX, y: pickupZ, active: true }],
       });
-      const intent = (bot as any).computeInputSpline(viewWith, viewWith.bodies[0], 1 / 30);
-      // Project dir onto normal to measure lateral component.
-      sumLatWith += intent.dir!.x * normal.x + intent.dir!.y * normal.z;
-    }
-    for (let i = 0; i < TRIALS; i++) {
-      const bot = createReefRaceBot('bot-self');
+      const iWith = (botWith as any).computeInputSpline(viewWith, viewWith.bodies[0], 1 / 30);
+      projWith = iWith.dir!.x * pdx + iWith.dir!.y * pdz;
+
+      const botWithout = createReefRaceBot('bot-self');
       const viewWithout = makeSplineView({ selfX: selfPos.x, selfZ: selfPos.z });
-      const intent = (bot as any).computeInputSpline(viewWithout, viewWithout.bodies[0], 1 / 30);
-      sumLatWithout += intent.dir!.x * normal.x + intent.dir!.y * normal.z;
+      const iWithout = (botWithout as any).computeInputSpline(
+        viewWithout,
+        viewWithout.bodies[0],
+        1 / 30,
+      );
+      projWithout = iWithout.dir!.x * pdx + iWithout.dir!.y * pdz;
+    } finally {
+      Math.random = origRandom;
     }
-    const avgWith = sumLatWith / TRIALS;
-    const avgWithout = sumLatWithout / TRIALS;
-    // With pickup pulling toward +normal, avgWith should exceed avgWithout
-    // by a measurable amount. Lift bound 0.015: pickup 19wu off, ~610wu
-    // ahead → angle ~1.8°. Bot's dir is the unit vector toward the pickup
-    // (not blended with race-line — the race-line lateral is the racing
-    // bias, redirected to pickup wholesale). Lateral-projection lift over
-    // 80 trials should comfortably exceed 0.015.
-    expect(avgWith).toBeGreaterThan(avgWithout + 0.015);
+
+    // The detected pickup redirects the dir toward it (projection ↑ → ~1.0),
+    // measurably more than the natural racing line.
+    expect(projWith).toBeGreaterThan(projWithout);
+    expect(projWith).toBeGreaterThan(0.999);
   });
 
   // TODO(reef-race-90s 2026-04-30): deviation-budget calibration drifted with the

@@ -58,14 +58,15 @@ import {
 import type { BotController } from '../bots/bot-controller';
 import {
   REEF_TICK_HZ,
+  REEF_RACE_LAPS,
   REEF_MAX_SPEED,
   REEF_MAX_ACCEL,
   // REEF_DRAG retired in the v2 surf model — replaced by directional
   // forwardDrag + lateralGrip in integrateSurfStep (still used by the ellipse
   // sim via reef-race-sim.ts).
   REEF_BODY_RADIUS,
-  REEF_SOFT_TIMEOUT_MS,
-  REEF_HARD_TIMEOUT_MS,
+  REEF_RACE_LOOP_SOFT_TIMEOUT_MS,
+  REEF_RACE_LOOP_HARD_TIMEOUT_MS,
   REEF_MAX_POWER_UP_SLOTS,
   REEF_POWERUP_RESPAWN_MS,
   REEF_POWERUP_RADIUS,
@@ -111,6 +112,28 @@ import {
   REEF_TURN_SPEED_FALLOFF,
   REEF_FORWARD_DRAG,
   REEF_LATERAL_GRIP,
+  // v2 mechanics — boost pads
+  buildSplineBoostPads,
+  type SplineBoostPad,
+  BOOST_PAD_KICK,
+  BOOST_PAD_BOOST_MULT,
+  BOOST_PAD_DURATION_MS,
+  // v2 mechanics — mini-turbo (surf-carve whip)
+  MINI_TURBO_MIN_TURN_PER_TICK,
+  MINI_TURBO_MIN_SPEED,
+  MINI_TURBO_TIER1_MS,
+  MINI_TURBO_TIER2_MS,
+  MINI_TURBO_MAX_CHARGE_MS,
+  MINI_TURBO_TIER1_MULT,
+  MINI_TURBO_TIER2_MULT,
+  MINI_TURBO_TIER1_DURATION_MS,
+  MINI_TURBO_TIER2_DURATION_MS,
+  MINI_TURBO_COOLDOWN_MS,
+  // v2 mechanics — item fixes (ink-slick rival slow, whirlpool rival knock)
+  INK_SLICK_RADIUS,
+  WHIRLPOOL_RADIUS,
+  WHIRLPOOL_PULL_IMPULSE,
+  WHIRLPOOL_SLOW_MULT,
 } from './reef-race-config';
 import { integrateSurfStep, type SurfParams } from '@clawville/shared';
 import { ReefSpline, type Vec2 } from './reef-race-spline';
@@ -229,10 +252,40 @@ interface SplineBody {
   vyAxis: number;        // vertical velocity (wu/s, +up)
   airborneTicks: number; // 0 = grounded, >0 = airborne
 
-  // ── Race progress ───────────────────────────────────────────────────────
-  /** Arclength fraction 0..1. 1.0 = finish line crossed. */
+  // ── Race progress (CLOSED-LOOP lap model, 2026-06-22) ─────────────────────
+  /**
+   * WITHIN-LAP arclength fraction 0..1 of ONE loop. Wraps 1→0 at the seam each
+   * lap. NOT the whole-race progress — combine with `lap` (see `totalProgress`).
+   */
   progress: number;
   prevProgress: number;
+  /**
+   * Completed-lap count (0-based). 0 during lap 1; increments each time the
+   * body crosses the start/finish seam in the forward direction. A body
+   * FINISHES when `lap` reaches `REEF_RACE_LAPS` (i.e. it has crossed the seam
+   * after completing the final lap). See `resolveProgress`.
+   */
+  lap: number;
+  /**
+   * True once the body has crossed the start/finish seam in the forward
+   * direction for the FIRST time (the "start gun" cross). Bodies spawn BEHIND
+   * the line (progress ≈ 1.0), so their first forward seam crossing is the
+   * race start, NOT a completed lap — it sets this flag and leaves `lap` at 0.
+   * Every forward seam crossing AFTER this increments `lap`.
+   */
+  startCrossed: boolean;
+  /**
+   * Server timestamp (ms) of the body's last start/finish line cross — set to
+   * the match start at spawn, refreshed to `now` on the start-gun cross and on
+   * each lap completion. Used to stamp `event.lap_completed.splitMs`.
+   */
+  lastLapAt: number;
+  /**
+   * False until the first `resolveProgress` sample seeds `progress`/`prevProgress`
+   * from the body's actual spawn position (behind the line, t≈0.97-1.0). Without
+   * this the first tick would read a spurious 0→0.97 jump as a seam crossing.
+   */
+  progressInitialized: boolean;
   finishedAt: number | null;
   placement: number | null;
   totalTimeMs: number;
@@ -258,6 +311,30 @@ interface SplineBody {
   // ── Phase 3 multipliers ───────────────────────────────────────────────────
   mults: BodyMultipliers;
 
+  // ── Power-up use (deferred to a post-integrate pass, v2 order-independence) ─
+  /**
+   * Slots (0/1) whose power-up ACTION bit was pressed this tick. Resolution is
+   * deferred out of the per-body integrate loop into `resolvePowerUpUses` so all
+   * rival-hazard reads see ONE consistent post-integrate world (Codex 4a).
+   * Cleared each tick after resolution.
+   */
+  pendingPowerUpSlots: number[];
+
+  // ── Mini-turbo (surf-carve whip, v2 mechanics) ───────────────────────────
+  /** Accumulated sustained-carve time (ms). Charges while carving hard in one
+   *  direction; discharges (fires) on release/flip. */
+  miniTurboChargeMs: number;
+  /** Tier the charge has reached (0 = none, 1, 2). Snapshot HUD reads this. */
+  miniTurboLevel: 0 | 1 | 2;
+  /** Sign of the current carve direction (+1 / -1 / 0). A flip resets charge. */
+  miniTurboCarveSign: number;
+  /**
+   * Sim-time (ms) until which charging is SUPPRESSED after a mini-turbo fires
+   * (anti-farm — blocks the rhythmic flick-carve reseed from producing
+   * continuous boost). 0 = not on cooldown.
+   */
+  miniTurboCooldownUntil: number;
+
   // ── Bot flag ─────────────────────────────────────────────────────────────
   isBot: boolean;
 }
@@ -271,10 +348,19 @@ interface SplineBodySnap {
   vz: number;
   rot: number;
   height: number;
+  /** Within-lap fraction 0..1 (wraps each lap). */
   progress: number;
+  /** Completed-lap count (0-based). */
+  lap: number;
   finishedAt: number | null;
   dnf: boolean;
   placement: number | null;
+  /** Mini-turbo charge normalized 0..1 (against tier-2 full charge). */
+  miniTurboCharge: number;
+  /** Mini-turbo tier reached so far (0|1|2). */
+  miniTurboLevel: 0 | 1 | 2;
+  /** True while any positive boost is active (pad/mini-turbo/launch/slipstream). */
+  boosting: boolean;
 }
 
 interface SplinePickup {
@@ -304,6 +390,17 @@ interface SplineRoomState {
   startedAt: number;
   softEndsAt: number;
   hardEndsAt: number;
+
+  /**
+   * DETERMINISTIC sim clock (ms). Advances by exactly `REEF_TICK_MS` per tick,
+   * seeded at `startedAt`. EVERY expiry/duration/cooldown in the sim reads this
+   * (via the tick's `now`), NOT `Date.now()` — so identical input+tick sequences
+   * produce identical trajectories regardless of event-loop stalls (Codex
+   * finding 6). Genuine wall-clock reads (bot advisory `Date.now()`) are kept
+   * separate. Seeded at `startedAt` so `startedAt`-relative expiries (launch
+   * boost/stall) stay consistent with `now`.
+   */
+  simTimeMs: number;
 
   /** Spline object — built once per room from REEF_RACE_DEFAULT_TRACK. */
   spline: ReefSpline;
@@ -337,6 +434,15 @@ interface SplineRoomState {
   ramps: SplineRampPatch[];
   /** SPEC 3 — per-body ramp cooldown map: avatarId → (rampId → expiresAt ms). */
   rampCooldowns: Map<string, Map<string, number>>;
+
+  /** v2 mechanics — boost-pad trigger volumes (built once per room). */
+  boostPads: SplineBoostPad[];
+  /**
+   * v2 mechanics — per-body per-pad "currently inside" latch set, so a boost pad
+   * fires only on the ENTRY edge (outside→inside), never re-firing while a body
+   * sits/coasts inside the volume (Codex finding 2).
+   */
+  boostPadInside: Map<string, Set<string>>;
 }
 
 type SimBroadcastFn = (roomId: string, frame: ServerFrame) => void;
@@ -366,6 +472,29 @@ function lcgNext(state: SplineRoomState): number {
 
 function quant(v: number, factor: number): number {
   return Math.round(v * factor) / factor;
+}
+
+/**
+ * Whole-race progress = completed laps + within-lap fraction. The monotonic
+ * ordering key for live placement (higher = further along the race). Closed-loop
+ * lap model (2026-06-22): `lap` is the completed-lap count, `progress` the
+ * within-lap fraction 0..1.
+ */
+function totalProgress(lap: number, progress: number): number {
+  return lap + progress;
+}
+
+/**
+ * Cached closed spline used ONLY to derive the static boost-pad/ramp render
+ * zones (Codex finding 8) without needing a live room. Same track + `{ closed:
+ * true }` as every room's spline, so the world positions match exactly.
+ */
+let _staticZoneSpline: ReefSpline | null = null;
+function getStaticZoneSpline(): ReefSpline {
+  if (!_staticZoneSpline) {
+    _staticZoneSpline = new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true });
+  }
+  return _staticZoneSpline;
 }
 
 // ─── Main class ───────────────────────────────────────────────────────────────
@@ -414,31 +543,13 @@ export class ReefRaceSplineSim {
     }
 
     const seed = opts?.seed ?? deriveSeedFromRoomId(roomId);
-    // `startedAt` drives BOTH `hardEndsAt` (the race timeout) and every body's
-    // finish time (`totalTimeMs` -> the `integer` activity_results.score). If a
-    // non-numeric/fractional value slips in, `hardEndsAt = startedAt + N` goes
-    // non-numeric (race never times out) AND totalTimeMs becomes a float that
-    // crashes reward issuance for the whole room. Normalize to an integer epoch
-    // and log any coercion so the upstream producer can be pinned. See
-    // docs/reef-race-reward-int-crash-2026-07-11.md.
-    const rawStartedAt = opts?.startedAt;
-    const coercedStartedAt = Math.round(Number(rawStartedAt));
-    // Accept only a finite, positive epoch; non-finite (NaN/±Infinity) or
-    // <=0 falls back to now (Codex #3). Fractional/Date/string inputs are
-    // normalized to an integer ms epoch.
-    const startedAt =
-      Number.isFinite(coercedStartedAt) && coercedStartedAt > 0
-        ? coercedStartedAt
-        : Date.now();
-    if (rawStartedAt != null && startedAt !== rawStartedAt) {
-      console.error(
-        `[spline-sim] coerced startedAt for room ${roomId}: ` +
-          `${typeof rawStartedAt} ${String(rawStartedAt)} -> ${startedAt}`,
-      );
-    }
+    const startedAt = opts?.startedAt ?? Date.now();
 
     // Build the spline once — shared across all tick iterations.
-    const spline = new ReefSpline(REEF_RACE_DEFAULT_TRACK);
+    // CLOSED-LOOP (2026-06-22): the v3 track is a periodic ring; 1 lap = one
+    // full loop. `{ closed: true }` makes the closing chord a real segment so
+    // arclengthFromT spans the whole loop and the lap/finish math below is sound.
+    const spline = new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true });
 
     const botControllers = new Map<string, BotController>();
     if (opts?.bots) {
@@ -457,8 +568,13 @@ export class ReefRaceSplineSim {
       roomId,
       activityId,
       startedAt,
-      softEndsAt: startedAt + REEF_SOFT_TIMEOUT_MS,
-      hardEndsAt: startedAt + REEF_HARD_TIMEOUT_MS,
+      // Deterministic sim clock, seeded at startedAt (see field doc). Every tick
+      // advances it by REEF_TICK_MS; all expiries read it, not Date.now().
+      simTimeMs: startedAt,
+      // CLOSED-LOOP: use the N-lap timeout budget (currently 2 × the 300s
+      // per-lap budget) so racers aren't DNF'd mid-race by a single-loop cap.
+      softEndsAt: startedAt + REEF_RACE_LOOP_SOFT_TIMEOUT_MS,
+      hardEndsAt: startedAt + REEF_RACE_LOOP_HARD_TIMEOUT_MS,
       spline,
       tick: 0,
       bodies: new Map(),
@@ -476,28 +592,43 @@ export class ReefRaceSplineSim {
       // SPEC 3 — ramp trigger volumes, built once per room.
       ramps: buildSplineRamps(),
       rampCooldowns: new Map(),
+      // v2 mechanics — boost pads, built once per room.
+      boostPads: buildSplineBoostPads(),
+      boostPadInside: new Map(),
     };
 
-    // ── Spawn bodies at the start line (t=0, z=0) ─────────────────────────
-    // Lateral stagger: 2 columns, spaced 70wu apart along -Z (behind line),
-    // 90wu left/right. Facing +Z (down-track) → rot = atan2(0, 1) = 0.
-    // tangent at t=0 is (0, 1) in XZ → rot = atan2(0, 1) = 0.
-    const startTangent = spline.tangentAt(0); // {x≈0, z≈1}
-    const startNormal  = spline.normalAt(0);  // {x≈-1, z≈0} (left of +Z)
+    // ── Spawn bodies on the start/finish line (t=0) ───────────────────────
+    // CLOSED-LOOP (2026-06-22): anchor the grid to the START CENTERLINE POSITION
+    // `centerlineAt(0)`, NOT the world origin. (The old open-track code computed
+    // the offsets from (0,0); since the new CP[0] is at (-1600,-4300), spawning
+    // relative to origin dropped every kart ~3290 wu off-track in the island
+    // centre. The fix anchors at the real start point.) Karts are placed BEHIND
+    // the line along -tangent so their FIRST forward seam crossing is the start
+    // gun (lap model: see resolveProgress). The v4 WATER-DOMINANT ring has a
+    // WIDE start/finish straight (hw≈900), so the grid is a proper wide 2×4
+    // starting grid: 2 columns 320 wu apart along the normal (well inside the
+    // 900-wu corridor, like a real start line), 120 wu apart back along
+    // -tangent. They face down-track (+tangent).
+    const startCenter  = spline.centerlineAt(0); // start/finish line centre
+    const startTangent = spline.tangentAt(0);    // direction of travel at the line
+    const startNormal  = spline.normalAt(0);     // left of travel direction
 
-    const SPAWN_SPACING_Z = 70;
-    const SPAWN_OFFSET_X  = 90;
+    const SPAWN_SPACING_Z = 120; // back-stagger between rows (was 70 on the narrow track)
+    const SPAWN_OFFSET_X  = 320; // lateral half-gap between the 2 columns (was 90; corridor hw≈900)
 
     participantAvatarIds.forEach((avatarId, i) => {
       const row = Math.floor(i / 2);
       const col = i % 2 === 0 ? -1 : 1;   // left / right column
 
-      // Place behind start line along -tangent, staggered laterally.
-      const backZ = row * SPAWN_SPACING_Z + 30;
-      const x = startTangent.x * (-backZ) + startNormal.x * col * SPAWN_OFFSET_X;
-      const z = startTangent.z * (-backZ) + startNormal.z * col * SPAWN_OFFSET_X;
+      // Place behind the start line along -tangent, staggered laterally, anchored
+      // at the start centerline so the whole grid sits ON the loop.
+      const backZ = row * SPAWN_SPACING_Z + 40;
+      const x =
+        startCenter.x + startTangent.x * (-backZ) + startNormal.x * col * SPAWN_OFFSET_X;
+      const z =
+        startCenter.z + startTangent.z * (-backZ) + startNormal.z * col * SPAWN_OFFSET_X;
 
-      // Face down-track (+Z direction).
+      // Face down-track (+tangent direction).
       const rot = Math.atan2(startTangent.x, startTangent.z);
 
       const activeBoosts = new Map<ReefBoostKind, ReefBoostEntry>();
@@ -528,6 +659,10 @@ export class ReefRaceSplineSim {
         airborneTicks: 0,
         progress: 0,
         prevProgress: 0,
+        lap: 0,
+        startCrossed: false,
+        lastLapAt: startedAt,
+        progressInitialized: false,
         finishedAt: null,
         placement: null,
         totalTimeMs: 0,
@@ -549,6 +684,11 @@ export class ReefRaceSplineSim {
         slipstreamConsecutiveTicks: 0,
         slipstreamGraceTicksLeft: 0,
         mults,
+        pendingPowerUpSlots: [],
+        miniTurboChargeMs: 0,
+        miniTurboLevel: 0,
+        miniTurboCarveSign: 0,
+        miniTurboCooldownUntil: 0,
         isBot: opts?.isBot?.(avatarId) ?? botControllers.has(avatarId),
       });
     });
@@ -642,6 +782,71 @@ export class ReefRaceSplineSim {
     return this.buildSnapshot(state);
   }
 
+  /**
+   * v2 mechanics — server-authoritative boost-pad + ramp trigger zones in WORLD
+   * coords for the client to render (sent once in snapshot.init). Positions use
+   * the `{ x, y }` (y = scene-Z) wire convention; `rot` orients the quad
+   * down-track. Returns null for an unknown room. The ws-hub calls this under
+   * REEF_RACE_USE_SPLINE and drops it into `RoomMeta.reefSplineZones`.
+   */
+  getSplineStaticZones(): {
+    boostPads: Array<{
+      id: string;
+      position: { x: number; y: number };
+      halfLength: number;
+      halfWidth: number;
+      rot: number;
+    }>;
+    ramps: Array<{
+      id: string;
+      position: { x: number; y: number };
+      halfLength: number;
+      halfWidth: number;
+      rot: number;
+    }>;
+  } {
+    // ROOM-INDEPENDENT (Codex finding 8): boost pads + ramps are STATIC track
+    // features, identical for every reef-race room. `snapshot.init` is sent
+    // during COUNTDOWN — before the sim room exists — so this must NOT require a
+    // live room, else the client permanently falls back to locally reconstructed
+    // pads (placement-skew risk). It derives from the cached static spline + the
+    // static pad/ramp builders.
+    const spline = getStaticZoneSpline();
+    const toWorld = (t: number, lateralOffset: number) => {
+      const pt = spline.centerlineAt(t);
+      const tang = spline.tangentAt(t);
+      const nx = -tang.z;
+      const nz = tang.x;
+      return {
+        x: pt.x + nx * lateralOffset,
+        z: pt.z + nz * lateralOffset,
+        rot: Math.atan2(tang.x, tang.z),
+      };
+    };
+    return {
+      boostPads: buildSplineBoostPads().map((p) => {
+        const w = toWorld(p.t, p.lateralOffset);
+        return {
+          id: p.id,
+          position: { x: w.x, y: w.z },
+          halfLength: p.halfLength,
+          halfWidth: p.halfWidth,
+          rot: w.rot,
+        };
+      }),
+      ramps: buildSplineRamps().map((r) => {
+        const w = toWorld(r.t, r.lateralOffset);
+        return {
+          id: r.id,
+          position: { x: w.x, y: w.z },
+          halfLength: r.halfLength,
+          halfWidth: r.halfWidth,
+          rot: w.rot,
+        };
+      }),
+    };
+  }
+
   applyInput(
     roomId: string,
     avatarId: string,
@@ -730,8 +935,11 @@ export class ReefRaceSplineSim {
     const dnfers = Array.from(state.bodies.values())
       .filter((b) => b.finishedAt === null || b.dnf)
       .sort((a, b) => {
-        // Higher progress = better among DNFers.
-        if (b.progress !== a.progress) return b.progress - a.progress;
+        // Higher whole-race progress (lap + within-lap fraction) = better among
+        // DNFers — a lap-2 DNF outranks a lap-1 DNF.
+        const pa = totalProgress(a.lap, a.progress);
+        const pb = totalProgress(b.lap, b.progress);
+        if (pb !== pa) return pb - pa;
         return a.avatarId.localeCompare(b.avatarId);
       });
 
@@ -755,7 +963,9 @@ export class ReefRaceSplineSim {
       out.push({
         avatarId: d.avatarId,
         placement: placement++,
-        score: -(REEF_HARD_TIMEOUT_MS + 1),
+        // DNF score floor — below any finisher's -totalTimeMs (finishers can't
+        // exceed the loop hard timeout), so finishers always outrank DNFers.
+        score: -(REEF_RACE_LOOP_HARD_TIMEOUT_MS + 1),
         scoreMs: null,
       });
     }
@@ -791,7 +1001,12 @@ export class ReefRaceSplineSim {
     if (state.ended) return;
 
     state.tick += 1;
-    const now = Date.now();
+    // DETERMINISTIC sim clock (Codex finding 6): advance by exactly one fixed
+    // tick and use it as `now` for EVERY expiry/duration/cooldown this tick. A
+    // real-time event-loop stall no longer changes trajectories — the clock is
+    // driven by tick count, not Date.now().
+    state.simTimeMs += REEF_TICK_MS;
+    const now = state.simTimeMs;
     const dt = 1 / REEF_SIM_HZ;
 
     // 0. Refresh placement cache once per tick.
@@ -838,11 +1053,21 @@ export class ReefRaceSplineSim {
       this.enforceSplineWallClamp(state, body, /*reflectVelocity*/ false);
     }
 
+    // 4b. Resolve power-up USES (deferred from the integrate loop). Positions
+    // are now final for this tick, so rival-hazard outcomes are order-
+    // independent; shields resolve before offensive items (Codex finding 4a).
+    this.resolvePowerUpUses(state, now);
+
     // 5. Power-up pickup collision.
     this.resolvePickups(state, now);
 
     // 5d. Ramp launch triggers (SPEC 3).
     this.resolveRamps(state, now);
+
+    // 5e. Boost-pad triggers (v2 mechanics). Runs AFTER applyIntentForTick so
+    // the pad's along-heading velocity kick is never measured by the intra-
+    // tick velocity-delta validator; it is clamped to the 1.85× hard cap here.
+    this.resolveBoostPads(state, now);
 
     // 6. Pickup respawn cycle.
     this.tickPickups(state, now);
@@ -890,10 +1115,24 @@ export class ReefRaceSplineSim {
       intent.consumedSeq = intent.seq;
     }
 
-    // 2. Power-up actionBits (bits 0 + 1).
+    // 2. Power-up actionBits (bits 0 + 1). RECORD the press; resolution is
+    //    DEFERRED to the post-integrate `resolvePowerUpUses` pass so every
+    //    rival-hazard read (ink/whirlpool/tide/seeker) sees ONE consistent
+    //    post-integrate world (not a mid-integration mix), and shields resolve
+    //    before offensive items — order-independent (Codex finding 4a).
     const actionBits = intent.actionBits;
-    if (actionBits & ACTION_BIT_POWERUP_0) this.tryUsePowerUp(state, body, 0, now);
-    if (actionBits & ACTION_BIT_POWERUP_1) this.tryUsePowerUp(state, body, 1, now);
+    if (
+      actionBits & ACTION_BIT_POWERUP_0 &&
+      !body.pendingPowerUpSlots.includes(0)
+    ) {
+      body.pendingPowerUpSlots.push(0);
+    }
+    if (
+      actionBits & ACTION_BIT_POWERUP_1 &&
+      !body.pendingPowerUpSlots.includes(1)
+    ) {
+      body.pendingPowerUpSlots.push(1);
+    }
 
     // 3. Speed modifier (same four-stage model as ellipse sim).
     const slicked      = body.activeEffects.has('rr-ink-slick');
@@ -916,13 +1155,28 @@ export class ReefRaceSplineSim {
       const slipAdd = body.activeBoosts.has('slipstream-boost')
         ? SLIPSTREAM_BOOST_MULT
         : 0;
-      // v2 has no drift-boost or ribbon-boost — those are oval-only
+      // v2 mechanics — boost pad + surf-carve mini-turbo. Both are timed
+      // speedMod additives that DECAY. They fold into the SAME positive stack,
+      // bounded by KINEMATIC_BOOST_CAP, so pad+mini-turbo+launch+slip can never
+      // exceed the 1.85× ceiling (adversary chaining is capped here).
+      const padAdd = body.activeBoosts.has('pad-boost')
+        ? (body.activeBoosts.get('pad-boost')!.mult ?? 0)
+        : 0;
+      const miniTurboAdd = body.activeBoosts.has('mini-turbo-boost')
+        ? (body.activeBoosts.get('mini-turbo-boost')!.mult ?? 0)
+        : 0;
+      // rr-turbo-bubble is ADDITIVE into the positive stack (Codex finding 4b).
+      // The old `Math.max(speedMod, 1+pickupAdd)` DISCARDED any active negative
+      // (a whirlpool-slowed victim on turbo kept full turbo speed). Folding it
+      // in additively — and capping the whole stack by KINEMATIC_BOOST_CAP —
+      // makes turbo COMBINE with a slow (turbo +0.35 + whirlpool −0.35 ⇒ 1.0×,
+      // the documented "turbo buys back the hazard" model) while still bounding
+      // the total ≤ 1.85×. v2 has no drift-boost or ribbon-boost (oval-only).
+      const pickupBoostAdd = powerBoosted ? 0.35 : 0; // rr-turbo-bubble
       const positiveKineticStack = Math.min(
-        launchAdd + slipAdd,
+        launchAdd + slipAdd + padAdd + miniTurboAdd + pickupBoostAdd,
         KINEMATIC_BOOST_CAP,
       );
-
-      const pickupBoostAdd = powerBoosted ? 0.35 : 0; // rr-turbo-bubble
 
       const negativeKineticStack = Math.max(
         (body.activeBoosts.has('hazard-slow')
@@ -938,9 +1192,6 @@ export class ReefRaceSplineSim {
         speedMod = 0.30;
       } else {
         speedMod = 1.0 + positiveKineticStack + negativeKineticStack;
-        if (pickupBoostAdd > 0) {
-          speedMod = Math.max(speedMod, 1.0 + pickupBoostAdd);
-        }
       }
     }
 
@@ -982,6 +1233,7 @@ export class ReefRaceSplineSim {
 
     const prevX = body.x;
     const prevZ = body.z;
+    const preRot = body.rot;
 
     const next = integrateSurfStep(
       { x: body.x, z: body.z, vx: body.vx, vz: body.vz, rot: body.rot },
@@ -1034,7 +1286,9 @@ export class ReefRaceSplineSim {
     // the hard backstop on the boost stack.
     const isPositiveBoostActive =
       body.activeBoosts.has('launch-boost') ||
-      body.activeBoosts.has('slipstream-boost');
+      body.activeBoosts.has('slipstream-boost') ||
+      body.activeBoosts.has('pad-boost') ||
+      body.activeBoosts.has('mini-turbo-boost');
     if (isPositiveBoostActive) {
       const speed = Math.hypot(body.vx, body.vz);
       const hardCap = REEF_MAX_SPEED * 1.85;
@@ -1056,6 +1310,112 @@ export class ReefRaceSplineSim {
         body.airborneTicks++;
       }
     }
+
+    // 10. Mini-turbo (surf-carve whip) — update the charge meter from the
+    //     heading change this tick. integrateSurfStep stays pure; the stateful
+    //     charge lives on the body and is derived here per-tick (fixed 30Hz).
+    this.updateMiniTurbo(state, body, preRot, effectiveThrust, dt, now);
+  }
+
+  // ─── Mini-turbo (surf-carve whip) ──────────────────────────────────────────
+
+  /**
+   * Charge/fire the mini-turbo from a SUSTAINED hard carve. Called once per tick
+   * per body at the END of applyIntentForTick (after the surf integrate) so it
+   * reads the actual heading change this tick.
+   *
+   * Charge builds while the body turns hard (|Δheading| ≥ threshold) in ONE
+   * direction, fast enough, under thrust, and grounded. It DISCHARGES (fires a
+   * short boost) the moment the carve breaks — the player straightens out, eases
+   * off, slows, or flips steer direction (the Mario-Kart "release the drift"
+   * beat, mapped onto surf carving since the drift button is retired for jump).
+   *
+   * Anti-cheat: the fire is a TIMED speedMod additive folded into the same
+   * positive kinetic stack (KINEMATIC_BOOST_CAP) + the 1.85× hard cap, so it
+   * cannot be chained into infinite speed. It never touches integrateSurfStep,
+   * never compounds a per-tick multiplier, and never mutates velocity directly.
+   */
+  private updateMiniTurbo(
+    state: SplineRoomState,
+    body: SplineBody,
+    preRot: number,
+    effectiveThrust: number,
+    dt: number,
+    now: number,
+  ): void {
+    // Signed shortest heading change this tick.
+    const d = body.rot - preRot;
+    const carveTurn = Math.atan2(Math.sin(d), Math.cos(d));
+    const speed = Math.hypot(body.vx, body.vz);
+    const airborne = body.airborneTicks > 0 || body.heightOffset > 0;
+
+    // Anti-farm: no charge builds during the post-fire cooldown (blocks the
+    // flick-carve reseed farm from producing continuous boost).
+    const onCooldown = now < body.miniTurboCooldownUntil;
+
+    const carving =
+      !onCooldown &&
+      !airborne &&
+      Math.abs(carveTurn) >= MINI_TURBO_MIN_TURN_PER_TICK &&
+      speed >= MINI_TURBO_MIN_SPEED &&
+      effectiveThrust > 0;
+
+    if (carving) {
+      const sign = carveTurn > 0 ? 1 : -1;
+      if (body.miniTurboCarveSign !== 0 && sign !== body.miniTurboCarveSign) {
+        // Steer flipped direction mid-charge — that's a counter-carve, not a
+        // sustained hold. Discharge whatever was earned, then start fresh in
+        // the new direction (this tick seeds the new charge).
+        this.releaseMiniTurbo(state, body, now);
+        body.miniTurboChargeMs = 0;
+      }
+      body.miniTurboCarveSign = sign;
+      body.miniTurboChargeMs = Math.min(
+        body.miniTurboChargeMs + dt * 1000,
+        MINI_TURBO_MAX_CHARGE_MS,
+      );
+      body.miniTurboLevel =
+        body.miniTurboChargeMs >= MINI_TURBO_TIER2_MS
+          ? 2
+          : body.miniTurboChargeMs >= MINI_TURBO_TIER1_MS
+            ? 1
+            : 0;
+    } else {
+      // Carve broke → release. releaseMiniTurbo no-ops if nothing was charged.
+      this.releaseMiniTurbo(state, body, now);
+      body.miniTurboChargeMs = 0;
+      body.miniTurboLevel = 0;
+      body.miniTurboCarveSign = 0;
+    }
+  }
+
+  /**
+   * Fire the mini-turbo if the current charge reached at least tier 1. Sets a
+   * timed `mini-turbo-boost` speedMod and broadcasts `event.mini_turbo_fire`.
+   * No-op when the charge never reached tier 1 (level 0).
+   */
+  private releaseMiniTurbo(
+    state: SplineRoomState,
+    body: SplineBody,
+    now: number,
+  ): void {
+    const lvl = body.miniTurboLevel;
+    if (lvl <= 0) return;
+    const mult = lvl === 2 ? MINI_TURBO_TIER2_MULT : MINI_TURBO_TIER1_MULT;
+    const dur =
+      lvl === 2 ? MINI_TURBO_TIER2_DURATION_MS : MINI_TURBO_TIER1_DURATION_MS;
+    // Overwrite (not stack): a fresh release replaces any lingering one so
+    // duration/mult never compound beyond a single tier's values.
+    body.activeBoosts.set('mini-turbo-boost', { expiresAt: now + dur, mult });
+    // Anti-farm cooldown (sim-time): suppress recharging briefly so rhythmic
+    // flick-carving can't hold a continuous boost.
+    body.miniTurboCooldownUntil = now + MINI_TURBO_COOLDOWN_MS;
+    this.broadcastFn(state.roomId, {
+      type: 'event.mini_turbo_fire',
+      avatarId: body.avatarId,
+      level: lvl as 1 | 2,
+    });
+    // Level is reset by the caller after this returns.
   }
 
   // ─── Wall clamp ────────────────────────────────────────────────────────────
@@ -1131,43 +1491,112 @@ export class ReefRaceSplineSim {
     }
   }
 
-  // ─── Progress + finish line ────────────────────────────────────────────────
+  // ─── Progress + lap + finish line (CLOSED-LOOP, 2026-06-22) ─────────────────
 
   /**
-   * Update body.progress from spline arclength fraction.
-   * Detects finish line crossing (progress crosses 1.0).
-   * Anti-cheat: flag progress regression beyond noise tolerance.
+   * Update body within-lap `progress` (arclength fraction of one loop) + `lap`
+   * (completed-lap count) from the spline, detect forward seam crossings, and
+   * finish a body when it completes lap `REEF_RACE_LAPS` and crosses the line.
+   *
+   * Lap model:
+   *   - `progress` ∈ [0,1) is the within-lap fraction and WRAPS 1→0 at the seam.
+   *   - A FORWARD SEAM CROSSING is `prevProgress` high (> SEAM_HI) and the new
+   *     within-lap progress low (< SEAM_LO). On a 30k-wu loop a body moves
+   *     ≤ ~17 wu/tick (≈ 0.0006 of the loop), so it can NEVER legitimately
+   *     jump 0.8→0.2 except by wrapping the seam — the gap makes the test robust.
+   *   - Bodies spawn BEHIND the line (progress ≈ 1.0). The FIRST forward seam
+   *     crossing is the "start gun" (sets `startCrossed`, leaves `lap`=0 = on
+   *     lap 1). Every crossing after that increments `lap`.
+   *   - A body FINISHES the instant it would increment `lap` to `REEF_RACE_LAPS`
+   *     — i.e. it crosses the start/finish seam after completing the final lap.
+   *
+   * Anti-cheat: a seam wrap is FORWARD progress, never a regression — the
+   * regression check runs on the WRAP-ADJUSTED within-lap delta.
    */
   private resolveProgress(state: SplineRoomState, now: number): void {
     for (const body of state.bodies.values()) {
       if (!body.alive || body.forfeited || body.finishedAt !== null) continue;
 
       const closest = state.spline.closestPointOnSpline({ x: body.x, z: body.z });
-      const arcS = state.spline.arclengthFromT(closest.t);
       const total = state.spline.totalArcLength;
+      const arcS = state.spline.arclengthFromT(closest.t);
       const newProgress = total > 0 ? arcS / total : 0;
 
-      // Anti-cheat regression check.
-      if (!progressIsMonotonic(newProgress, body.prevProgress)) {
-        this.flag(state, body.avatarId, 'checkpoint_skip',
-          `progress_regression: ${newProgress.toFixed(4)} < ${body.prevProgress.toFixed(4)} - 0.02`);
+      // First sample: seed from the spawn projection (body sits behind the line,
+      // progress ≈ 1.0) so the first tick is not read as a spurious wrap.
+      if (!body.progressInitialized) {
+        body.progress = newProgress;
+        body.prevProgress = newProgress;
+        body.progressInitialized = true;
+        continue;
       }
 
-      body.prevProgress = body.progress;
+      const prev = body.progress;
+
+      // Seam crossings on the periodic loop. A single tick moves ≤ ~31 wu ≈
+      // 0.00035 of the loop, so any within-lap jump > 0.5 is a seam WRAP, not
+      // real motion — in EITHER direction.
+      const SEAM_WRAP = 0.5;
+      const rawDelta = newProgress - prev;
+      const forwardWrap = rawDelta < -SEAM_WRAP;  // prev high, new low → FORWARD
+      const backwardWrap = rawDelta > SEAM_WRAP;  // prev low, new high → BACKWARD
+
+      // TRUE signed within-lap delta, wrap-adjusted in BOTH directions (Codex
+      // round-3 BLOCKER 3). The old code only adjusted the FORWARD wrap, so a
+      // reverse low→high seam cross read as ~+0.98 "forward progress" — letting a
+      // body SHUTTLE across the start line to farm laps toward a FINISH (finish
+      // order feeds `activity.match.placed` scoring). A backward wrap is now a
+      // small NEGATIVE delta, and a backward seam cross UNDOES a lap below.
+      const signedDelta = forwardWrap
+        ? rawDelta + 1
+        : backwardWrap
+          ? rawDelta - 1
+          : rawDelta;
+
+      // Regression guard on the TRUE signed delta (small backward moves stay
+      // within tolerance = legit knockback; a real teleport-back trips it).
+      if (!progressIsMonotonic(prev + signedDelta, prev)) {
+        this.flag(state, body.avatarId, 'checkpoint_skip',
+          `progress_regression: delta=${signedDelta.toFixed(4)} (prev=${prev.toFixed(4)} new=${newProgress.toFixed(4)})`);
+      }
+
+      body.prevProgress = prev;
       body.progress = newProgress;
 
-      // Finish line: crossed from below 0.95 to ≥ 1.0, or prevProgress was
-      // already high and body is within 1 body-radius of finish.
-      // Use a 0.95 threshold on the pre-update value to avoid false triggers
-      // from teleportation bugs — the body must have genuinely traversed the
-      // course.
-      const justCrossedFinish =
-        body.prevProgress >= 0.95 && body.progress >= 1.0;
+      if (backwardWrap) {
+        // Crossed the start/finish seam BACKWARD — UNDO one lap so shuttling
+        // across the line can never net a lap gain toward a finish. A legit
+        // racer knocked back over the line just re-crosses forward (net zero).
+        if (body.lap > 0) {
+          body.lap -= 1;
+          body.lastLapAt = now;
+        } else if (body.startCrossed) {
+          // Went back behind the start gun on lap 1 — re-arm the start crossing.
+          body.startCrossed = false;
+          body.lastLapAt = now;
+        }
+        continue;
+      }
 
-      if (justCrossedFinish) {
+      if (!forwardWrap) continue;
+
+      // ── Forward seam crossing handling ──────────────────────────────────
+      if (!body.startCrossed) {
+        // First crossing = the START GUN. Now genuinely on lap 1; lap stays 0.
+        body.startCrossed = true;
+        body.lastLapAt = now;
+        continue;
+      }
+
+      // A genuine lap completion. Increment completed-lap count.
+      const splitMs = now - body.lastLapAt;
+      body.lastLapAt = now;
+      body.lap += 1;
+
+      if (body.lap >= REEF_RACE_LAPS) {
+        // Completed the final lap and crossed the start/finish line → FINISH.
         body.finishedAt = now;
-        // Round defensively — score/score_ms are `integer` columns.
-        body.totalTimeMs = Math.round(now - state.startedAt);
+        body.totalTimeMs = now - state.startedAt;
         body.vx = 0;
         body.vz = 0;
 
@@ -1190,10 +1619,23 @@ export class ReefRaceSplineSim {
           avatarId: body.avatarId,
           placement: finishPlacement,
           totalTimeMs: body.totalTimeMs,
+          lap: body.lap,
+        } as unknown as ServerFrame);
+      } else {
+        // Mid-race lap completion — emit a lap event so the HUD ticks the counter.
+        this.broadcastFn(state.roomId, {
+          type: 'event.lap_completed',
+          avatarId: body.avatarId,
+          lap: body.lap,
+          splitMs,
+          totalMs: now - state.startedAt,
+          totalLaps: REEF_RACE_LAPS,
         } as unknown as ServerFrame);
       }
     }
   }
+
+  // ─── Segment-time anti-shortcut (NON-FORFEITING) ───────────────────────────
 
   // ─── Slipstream ────────────────────────────────────────────────────────────
 
@@ -1387,6 +1829,103 @@ export class ReefRaceSplineSim {
     }
   }
 
+  // ─── Boost pads (v2 mechanics) ─────────────────────────────────────────────
+
+  /**
+   * Check each GROUNDED body against all boost-pad AABB volumes. Fires ONLY on
+   * the entry edge (outside→inside) via a per-body per-pad latch — a body that
+   * sits/coasts inside does not re-fire (Codex finding 2a) — injecting a capped
+   * along-heading velocity kick + a short timed `pad-boost` speedMod, and
+   * broadcasting `event.boost_pad`. Airborne bodies are ignored (floor pads have
+   * no vertical reach — Codex finding 2b). Fires for bots too (position-based).
+   */
+  private resolveBoostPads(state: SplineRoomState, now: number): void {
+    for (const body of state.bodies.values()) {
+      if (!body.alive || body.forfeited || body.finishedAt !== null) continue;
+
+      // Floor pads have no vertical reach — an AIRBORNE body passing overhead
+      // must NOT trigger them (Codex finding 2b; mirrors the ramp grounded gate).
+      const grounded = body.airborneTicks === 0 && body.heightOffset === 0;
+
+      let inside = state.boostPadInside.get(body.avatarId);
+      if (!inside) {
+        inside = new Set<string>();
+        state.boostPadInside.set(body.avatarId, inside);
+      }
+
+      for (const pad of state.boostPads) {
+        const pt = state.spline.centerlineAt(pad.t);
+        const tang = state.spline.tangentAt(pad.t);
+        const nx = -tang.z;
+        const nz = tang.x;
+        const cx = pt.x + nx * pad.lateralOffset;
+        const cz = pt.z + nz * pad.lateralOffset;
+
+        const dx = body.x - cx;
+        const dz = body.z - cz;
+        const along = dx * tang.x + dz * tang.z;
+        const perp = dx * nx + dz * nz;
+        const withinXZ =
+          Math.abs(along) <= pad.halfLength && Math.abs(perp) <= pad.halfWidth;
+        const wasInside = inside.has(pad.id);
+
+        if (grounded && withinXZ && !wasInside) {
+          // ENTRY EDGE (outside→inside, grounded) — fire exactly once. A body
+          // that keeps sitting/coasting inside does NOT re-fire (Codex finding
+          // 2a); it must leave (grounded exit clears the latch) and re-enter.
+          inside.add(pad.id);
+          this.applyBoostPad(body, now);
+          this.broadcastFn(state.roomId, {
+            type: 'event.boost_pad',
+            avatarId: body.avatarId,
+            padId: pad.id,
+          });
+        } else if (grounded && !withinXZ && wasInside) {
+          // GROUNDED exit — clear the latch so a later real re-entry can fire.
+          inside.delete(pad.id);
+        }
+        // Airborne: neither fire nor clear the latch (a jump over the pad is not
+        // an exit — this prevents a bunny-hop-on-pad re-fire farm).
+      }
+    }
+  }
+
+  /**
+   * Apply a boost-pad hit: an instant along-heading velocity kick (clamped to
+   * the 1.85× hard cap) + a timed decaying `pad-boost` speedMod. Runs in the
+   * post-integrate `resolveBoostPads` pass so the kick is not measured by the
+   * per-tick velocity-delta validator; the hard-cap clamp keeps it inside the
+   * boost ceiling.
+   */
+  private applyBoostPad(body: SplineBody, now: number): void {
+    const hardCap = REEF_MAX_SPEED * 1.85;
+
+    // Decompose velocity into the current heading frame, kick the along
+    // component, recompose.
+    const fwdX = Math.sin(body.rot);
+    const fwdZ = Math.cos(body.rot);
+    const perpX = Math.cos(body.rot);
+    const perpZ = -Math.sin(body.rot);
+    let vAlong = body.vx * fwdX + body.vz * fwdZ;
+    const vPerp = body.vx * perpX + body.vz * perpZ;
+    vAlong = Math.min(vAlong + BOOST_PAD_KICK, hardCap);
+    body.vx = vAlong * fwdX + vPerp * perpX;
+    body.vz = vAlong * fwdZ + vPerp * perpZ;
+
+    // Belt-and-braces: clamp total speed (the retained perp could nudge it over).
+    const sp = Math.hypot(body.vx, body.vz);
+    if (sp > hardCap) {
+      body.vx = (body.vx / sp) * hardCap;
+      body.vz = (body.vz / sp) * hardCap;
+    }
+
+    // Timed decaying speedMod so cruise stays elevated then falls off.
+    body.activeBoosts.set('pad-boost', {
+      expiresAt: now + BOOST_PAD_DURATION_MS,
+      mult: BOOST_PAD_BOOST_MULT,
+    });
+  }
+
   // ─── Power-up pickups ──────────────────────────────────────────────────────
 
   private resolvePickups(state: SplineRoomState, now: number): void {
@@ -1447,37 +1986,117 @@ export class ReefRaceSplineSim {
 
   // ─── Power-up use ──────────────────────────────────────────────────────────
 
-  private tryUsePowerUp(
-    state: SplineRoomState,
+  /**
+   * Resolve all power-up USES pressed this tick in a SINGLE post-integrate pass,
+   * in two phases so the outcome is independent of body-map iteration order
+   * (Codex finding 4a):
+   *   Phase 1 — SELF buffs (turbo, shield). A shield used this tick is up BEFORE
+   *             any offensive item resolves, regardless of who is earlier in the
+   *             map (fixes the shield-vs-whirlpool race).
+   *   Phase 2 — OFFENSIVE / rival-affecting (ink, whirlpool, tide, seeker). All
+   *             positions are final (post-integrate), so every rival read sees
+   *             one consistent world, not a mid-integration pre/post mix.
+   * Pending slots are cleared after both phases.
+   */
+  private resolvePowerUpUses(state: SplineRoomState, now: number): void {
+    const isSelfBuff = (k: ReefPowerUpKind | null | undefined) =>
+      k === 'rr-turbo-bubble' || k === 'rr-bubble-shield';
+
+    // Phase 1 — SELF buffs (turbo, shield). A shield used this tick is up BEFORE
+    // any offensive item resolves, regardless of body-map order.
+    for (const body of state.bodies.values()) {
+      if (!body.alive || body.forfeited || body.finishedAt !== null) continue;
+      for (const slot of body.pendingPowerUpSlots) {
+        if (isSelfBuff(body.inventory[slot]?.kind as ReefPowerUpKind | null)) {
+          this.tryUsePowerUp(state, body, slot, now);
+        }
+      }
+    }
+
+    // Phase 2 — OFFENSIVE, AGGREGATED for order-independence + a single final
+    // speed clamp per target (Codex round-3 BLOCKERS 1+2). The old per-body
+    // immediate mutation made two effects on the same victim in one tick depend
+    // on body-map order, AND seeker-jelly's impulse was unclamped (an aligned
+    // seeker could push a victim to ~1225, contained only by a later whirlpool's
+    // clamp by roster luck). Now every effect is COLLECTED from the immutable
+    // post-integrate snapshot (positions unchanged this pass; velocities read
+    // as-is), AGGREGATED per target (impulses sum, slows multiply — both
+    // commutative), APPLIED once in a canonical order (impulse then slow), and
+    // clamped ONCE to the 925 hard cap (caps every knockback incl. seeker).
+    const impulseX = new Map<string, number>();
+    const impulseZ = new Map<string, number>();
+    const slowMul = new Map<string, number>();
+    const affected = new Set<string>();
+    const addImpulse = (id: string, dvx: number, dvz: number) => {
+      impulseX.set(id, (impulseX.get(id) ?? 0) + dvx);
+      impulseZ.set(id, (impulseZ.get(id) ?? 0) + dvz);
+      affected.add(id);
+    };
+    const addSlow = (id: string, factor: number) => {
+      slowMul.set(id, (slowMul.get(id) ?? 1) * (1 - factor));
+      affected.add(id);
+    };
+
+    for (const body of state.bodies.values()) {
+      if (!body.alive || body.forfeited || body.finishedAt !== null) {
+        body.pendingPowerUpSlots.length = 0;
+        continue;
+      }
+      for (const slot of body.pendingPowerUpSlots) {
+        const slotObj = body.inventory[slot];
+        const kind = slotObj?.kind as ReefPowerUpKind | null;
+        if (!slotObj || !kind || isSelfBuff(kind)) continue; // self-buffs: Phase 1
+        if (slotObj.charges <= 0 || slotObj.cooldownUntil > now) continue;
+        const def = getReefPowerUpDef(kind);
+        switch (kind) {
+          // Effect-only (no velocity) — already order-independent (max-expiry).
+          case 'rr-ink-slick':
+            this.applyInkSlick(state, body, now);
+            break;
+          case 'rr-tide-wave':
+            this.collectTideWave(state, body, addSlow);
+            break;
+          case 'rr-seeker-jelly':
+            this.collectSeekerJelly(state, body, addImpulse);
+            break;
+          case 'rr-whirlpool':
+            this.collectWhirlpool(state, body, now, addImpulse);
+            break;
+        }
+        this.consumeSlot(body, slot, def, now);
+      }
+      body.pendingPowerUpSlots.length = 0;
+    }
+
+    // Apply the aggregated velocity changes once per target, then one clamp.
+    const cap = REEF_MAX_SPEED * 1.85;
+    for (const id of affected) {
+      const target = state.bodies.get(id);
+      if (!target) continue;
+      target.vx += impulseX.get(id) ?? 0;
+      target.vz += impulseZ.get(id) ?? 0;
+      const sm = slowMul.get(id);
+      if (sm !== undefined) {
+        target.vx *= sm;
+        target.vz *= sm;
+      }
+      const sp = Math.hypot(target.vx, target.vz);
+      if (sp > cap) {
+        target.vx = (target.vx / sp) * cap;
+        target.vz = (target.vz / sp) * cap;
+      }
+    }
+  }
+
+  /** Consume one charge of a power-up slot (+ set cooldown / clear the slot). */
+  private consumeSlot(
     body: SplineBody,
     slotIndex: number,
+    def: { cooldownMs: number },
     now: number,
   ): void {
     const slot = body.inventory[slotIndex];
-    if (!slot || slot.kind === null || slot.charges <= 0) return;
-    if (slot.cooldownUntil > now) return;
-
-    const kind = slot.kind as ReefPowerUpKind;
-    const def = getReefPowerUpDef(kind);
-
-    switch (kind) {
-      case 'rr-turbo-bubble':
-      case 'rr-bubble-shield':
-      case 'rr-ink-slick':
-      case 'rr-whirlpool':
-        body.activeEffects.set(
-          kind,
-          now + def.effectMs * body.mults.powerUpDurationMult,
-        );
-        break;
-      case 'rr-tide-wave':
-        this.applyTideWave(state, body);
-        break;
-      case 'rr-seeker-jelly':
-        this.applySeekerJelly(state, body);
-        break;
-    }
-
+    if (!slot) return;
     slot.charges -= 1;
     if (slot.charges <= 0) {
       body.inventory[slotIndex] = { kind: null, charges: 0, cooldownUntil: 0 };
@@ -1486,23 +2105,54 @@ export class ReefRaceSplineSim {
     }
   }
 
-  private applyTideWave(state: SplineRoomState, src: SplineBody): void {
+  /**
+   * Resolve a SELF-BUFF power-up (turbo / shield) — Phase 1 only. Offensive
+   * items are resolved in the aggregate Phase 2 of `resolvePowerUpUses`, NOT
+   * here.
+   */
+  private tryUsePowerUp(
+    state: SplineRoomState,
+    body: SplineBody,
+    slotIndex: number,
+    now: number,
+  ): void {
+    void state;
+    const slot = body.inventory[slotIndex];
+    if (!slot || slot.kind === null || slot.charges <= 0) return;
+    if (slot.cooldownUntil > now) return;
+
+    const kind = slot.kind as ReefPowerUpKind;
+    if (kind !== 'rr-turbo-bubble' && kind !== 'rr-bubble-shield') return;
+    const def = getReefPowerUpDef(kind);
+    body.activeEffects.set(
+      kind,
+      now + def.effectMs * body.mults.powerUpDurationMult,
+    );
+    this.consumeSlot(body, slotIndex, def, now);
+  }
+
+  /**
+   * Tide-wave — a proximity SLOW. Accumulates a multiplicative slow factor per
+   * rival (order-independent) via `addSlow` instead of mutating velocity
+   * directly; the aggregate apply loop scales + clamps once. (Codex round-3.)
+   */
+  private collectTideWave(
+    state: SplineRoomState,
+    src: SplineBody,
+    addSlow: (id: string, factor: number) => void,
+  ): void {
     const radius = 250;
     for (const target of state.bodies.values()) {
       if (target.avatarId === src.avatarId) continue;
-      if (target.dnf || target.finishedAt !== null) continue;
+      if (!target.alive || target.dnf || target.finishedAt !== null) continue;
       if (target.activeEffects.has('rr-bubble-shield')) continue;
       const dx = target.x - src.x;
       const dz = target.z - src.z;
       const dist = Math.hypot(dx, dz);
       if (dist > radius) continue;
-      const speed = Math.hypot(target.vx, target.vz);
-      if (speed > 0) {
-        const factor =
-          0.4 * (1 - dist / radius) * target.mults.knockbackResistMult;
-        target.vx *= 1 - factor;
-        target.vz *= 1 - factor;
-      }
+      const factor =
+        0.4 * (1 - dist / radius) * target.mults.knockbackResistMult;
+      addSlow(target.avatarId, factor);
       this.broadcastFn(state.roomId, {
         type: 'event.hit',
         srcAvatarId: src.avatarId,
@@ -1513,13 +2163,23 @@ export class ReefRaceSplineSim {
     }
   }
 
-  private applySeekerJelly(state: SplineRoomState, src: SplineBody): void {
+  /**
+   * Seeker-jelly — an impulse AWAY from the user on the closest in-front rival.
+   * Accumulates the impulse via `addImpulse` (order-independent); the aggregate
+   * apply loop sums + CLAMPS it to 925 (Codex round-3 BLOCKER 2 — the old direct
+   * add had no clamp, so an aligned seeker could exceed the cap).
+   */
+  private collectSeekerJelly(
+    state: SplineRoomState,
+    src: SplineBody,
+    addImpulse: (id: string, dvx: number, dvz: number) => void,
+  ): void {
     let best: SplineBody | null = null;
     let bestDist = Infinity;
     const sv = Math.hypot(src.vx, src.vz);
     for (const t of state.bodies.values()) {
       if (t.avatarId === src.avatarId) continue;
-      if (t.dnf || t.finishedAt !== null) continue;
+      if (!t.alive || t.dnf || t.finishedAt !== null) continue;
       if (t.activeEffects.has('rr-bubble-shield')) continue;
       const dx = t.x - src.x;
       const dz = t.z - src.z;
@@ -1537,11 +2197,8 @@ export class ReefRaceSplineSim {
     const dx = best.x - src.x;
     const dz = best.z - src.z;
     const mag = Math.max(Math.hypot(dx, dz), 1);
-    const nx = dx / mag;
-    const nz = dz / mag;
     const impulse = REEF_MAX_SPEED * 0.6 * best.mults.knockbackResistMult;
-    best.vx += nx * impulse;
-    best.vz += nz * impulse;
+    addImpulse(best.avatarId, (dx / mag) * impulse, (dz / mag) * impulse);
     this.broadcastFn(state.roomId, {
       type: 'event.hit',
       srcAvatarId: src.avatarId,
@@ -1549,6 +2206,104 @@ export class ReefRaceSplineSim {
       position: { x: best.x, y: best.z },
       power: 1,
     });
+  }
+
+  /**
+   * rr-ink-slick (bug fix) — a defensive item that drops an ink slick BEHIND
+   * the user. Rivals within `INK_SLICK_RADIUS` and behind the dropper's heading
+   * (and not shielded) get the `rr-ink-slick` effect set on THEM; their own
+   * applyIntentForTick then reads `slicked` and drops to the 0.30 speedMod. The
+   * old code set the effect on `self`, slowing the USER — the exact inversion of
+   * the HUD copy. Duration scales by the SOURCE's powerUpDurationMult (an
+   * intelligence thrower's item lingers longer), never the victim's.
+   */
+  private applyInkSlick(
+    state: SplineRoomState,
+    src: SplineBody,
+    now: number,
+  ): void {
+    const def = getReefPowerUpDef('rr-ink-slick');
+    const dur = def.effectMs * src.mults.powerUpDurationMult;
+    const fwdX = Math.sin(src.rot);
+    const fwdZ = Math.cos(src.rot);
+    for (const target of state.bodies.values()) {
+      if (target.avatarId === src.avatarId) continue;
+      if (!target.alive || target.dnf || target.finishedAt !== null) continue;
+      if (target.activeEffects.has('rr-bubble-shield')) continue;
+      const dx = target.x - src.x;
+      const dz = target.z - src.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist > INK_SLICK_RADIUS) continue;
+      // A slick is dropped behind you — only catch rivals to the rear.
+      if (dx * fwdX + dz * fwdZ >= 0) continue;
+      // Never SHORTEN an already-active slick (Codex finding 4d): a later, weaker
+      // (or same) slick must not cut short a longer one still ticking down.
+      const existingExpiry = target.activeEffects.get('rr-ink-slick') ?? 0;
+      target.activeEffects.set(
+        'rr-ink-slick',
+        Math.max(existingExpiry, now + dur),
+      );
+      this.broadcastFn(state.roomId, {
+        type: 'event.hit',
+        srcAvatarId: src.avatarId,
+        dstAvatarId: target.avatarId,
+        position: { x: target.x, y: target.z },
+        power: 1 - dist / INK_SLICK_RADIUS,
+      });
+    }
+  }
+
+  /**
+   * rr-whirlpool (bug fix) — the rarest (legendary) item, previously INERT (set
+   * on `activeEffects` but read by nothing). Now a real AoE hazard: nearby
+   * rivals (not shielded) are PULLED toward the whirlpool center (the user's
+   * position) and briefly slowed. The pull respects `knockbackResistMult`; the
+   * slow reuses the `hazard-slow` negative kinetic stack (stored as a
+   * multiplier, converted to an additive `-1` in applyIntentForTick).
+   */
+  /**
+   * Whirlpool — a PULL toward the user + a brief slow, on every nearby rival.
+   * Accumulates the pull impulse via `addImpulse` (order-independent) and sets
+   * the `hazard-slow` effect (constant duration → order-independent). The
+   * victim's speed is CLAMPED once in the aggregate apply loop (Codex round-3:
+   * the per-effect clamp moved to the single final clamp so it also bounds a
+   * seeker+whirlpool combo on the same victim). The knockback bypasses the
+   * per-tick delta validator, so the final clamp is what keeps it ≤ 925.
+   */
+  private collectWhirlpool(
+    state: SplineRoomState,
+    src: SplineBody,
+    now: number,
+    addImpulse: (id: string, dvx: number, dvz: number) => void,
+  ): void {
+    const def = getReefPowerUpDef('rr-whirlpool');
+    for (const target of state.bodies.values()) {
+      if (target.avatarId === src.avatarId) continue;
+      if (!target.alive || target.dnf || target.finishedAt !== null) continue;
+      if (target.activeEffects.has('rr-bubble-shield')) continue;
+      // Vector points FROM the rival TOWARD the whirlpool center (pull inward).
+      const dx = src.x - target.x;
+      const dz = src.z - target.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist > WHIRLPOOL_RADIUS) continue;
+      const falloff = 1 - dist / WHIRLPOOL_RADIUS;
+      const mag = Math.max(dist, 1);
+      const pull =
+        WHIRLPOOL_PULL_IMPULSE * falloff * target.mults.knockbackResistMult;
+      addImpulse(target.avatarId, (dx / mag) * pull, (dz / mag) * pull);
+      // Brief slow — stored as a multiplier; applyIntentForTick reads (mult - 1).
+      target.activeBoosts.set('hazard-slow', {
+        expiresAt: now + def.effectMs,
+        mult: 1 + WHIRLPOOL_SLOW_MULT,
+      });
+      this.broadcastFn(state.roomId, {
+        type: 'event.hit',
+        srcAvatarId: src.avatarId,
+        dstAvatarId: target.avatarId,
+        position: { x: target.x, y: target.z },
+        power: falloff,
+      });
+    }
   }
 
   // ─── Round-end ─────────────────────────────────────────────────────────────
@@ -1645,7 +2400,15 @@ export class ReefRaceSplineSim {
       } else if (b.finishedAt !== null) {
         racing.push({ avatarId: b.avatarId, progress: Infinity, finishedAt: b.finishedAt, dnf: false });
       } else {
-        racing.push({ avatarId: b.avatarId, progress: b.progress, finishedAt: null, dnf: false });
+        // CLOSED-LOOP: order by whole-race progress (lap + within-lap fraction),
+        // NOT the within-lap fraction alone (a lap-2 leader at progress 0.1 is
+        // AHEAD of a lap-1 racer at progress 0.9).
+        racing.push({
+          avatarId: b.avatarId,
+          progress: totalProgress(b.lap, b.progress),
+          finishedAt: null,
+          dnf: false,
+        });
       }
     }
     racing.sort((a, b) => {
@@ -1678,9 +2441,20 @@ export class ReefRaceSplineSim {
         rot: quant(b.rot, ROT_QUANT),
         height: quant(b.heightOffset, POS_QUANT),
         progress: quant(b.progress, 10000),
+        lap: b.lap,
         finishedAt: b.finishedAt,
         dnf: b.dnf,
         placement: state.lastPlacementMap.get(b.avatarId) ?? null,
+        miniTurboCharge: quant(
+          Math.min(1, b.miniTurboChargeMs / MINI_TURBO_TIER2_MS),
+          100,
+        ),
+        miniTurboLevel: b.miniTurboLevel,
+        boosting:
+          b.activeBoosts.has('launch-boost') ||
+          b.activeBoosts.has('slipstream-boost') ||
+          b.activeBoosts.has('pad-boost') ||
+          b.activeBoosts.has('mini-turbo-boost'),
       })),
       pickups: state.pickups.map((pk) => ({
         spawnId: pk.spawnId,
@@ -1708,6 +2482,15 @@ export class ReefRaceSplineSim {
       velocity: { x: b.vx, y: b.vz },
       rotation: b.rot,
       state: stateStr,
+      // v2 mechanics — carry the boost/meter fields on KEYFRAMES too (Codex
+      // finding 7). The client replaces its entity map on every keyframe, so
+      // omitting these blanked the HUD meter/trail once per second (and left a
+      // mid-match reconnect with no authoritative boost state until the next
+      // delta). The delta path already carries them; this keeps keyframes whole.
+      height: b.height !== 0 ? b.height : undefined,
+      miniTurboCharge: b.miniTurboCharge,
+      miniTurboLevel: b.miniTurboLevel,
+      boosting: b.boosting,
     };
   }
 
@@ -1734,7 +2517,12 @@ export class ReefRaceSplineSim {
           })),
         scores: snap.bodies.map((b) => ({
           avatarId: b.avatarId,
-          score: quant(b.progress, 10000),
+          // CLOSED-LOOP: score = whole-race progress (lap + within-lap fraction)
+          // so a fresh keyframe orders laps correctly even before the next delta.
+          score: quant(totalProgress(b.lap, b.progress), 10000),
+          lap: b.lap,
+          totalLaps: REEF_RACE_LAPS,
+          position: b.placement ?? undefined,
         })),
       },
     });
@@ -1757,9 +2545,13 @@ export class ReefRaceSplineSim {
           p.rot !== b.rot ||
           p.height !== b.height ||
           p.progress !== b.progress ||
+          p.lap !== b.lap ||
           p.finishedAt !== b.finishedAt ||
           p.dnf !== b.dnf ||
-          p.placement !== b.placement
+          p.placement !== b.placement ||
+          p.miniTurboCharge !== b.miniTurboCharge ||
+          p.miniTurboLevel !== b.miniTurboLevel ||
+          p.boosting !== b.boosting
         );
       })
       .map((b) => ({
@@ -1771,14 +2563,27 @@ export class ReefRaceSplineSim {
           vx: b.vx,
           vy: b.vz,    // protocol vy = scene vZ
           rot: b.rot,
-          height: b.height !== 0 ? b.height : undefined,
+          // Emit the NUMERIC height, INCLUDING 0 (Codex round-3 nit): the old
+          // `!== 0 ? … : undefined` dropped height on landing, so the client
+          // (which merges deltas) kept the stale airborne height until the next
+          // keyframe. A body only appears in the delta when a field changed, so
+          // this is just one extra number on that body's frame.
+          height: b.height,
           progress: b.progress,
+          // CLOSED-LOOP lap state — the render/HUD read these directly.
+          lap: b.lap,
+          totalLaps: REEF_RACE_LAPS,
+          position: b.placement ?? undefined,
           state: b.dnf
             ? ('dnf' as const)
             : b.finishedAt !== null
               ? ('finished' as const)
               : ('racing' as const),
           placement: b.placement,
+          // v2 mechanics — mini-turbo meter + boost FX flag for the HUD/render.
+          miniTurboCharge: b.miniTurboCharge,
+          miniTurboLevel: b.miniTurboLevel,
+          boosting: b.boosting,
         },
       }));
 
@@ -1932,9 +2737,10 @@ export class ReefRaceSplineSim {
         charges: slot.charges,
         cooldownUntil: slot.cooldownUntil,
       })),
-      // Bots running the v1 bot controller use lap/nextCheckpoint for
-      // steering heuristics; fake these from progress for Phase 1.
-      lap: Math.floor(b.progress),
+      // CLOSED-LOOP: real completed-lap count + a within-lap "checkpoint" proxy
+      // (12 phantom checkpoints around one loop) for the v1 bot's steering
+      // heuristics. `b.progress` is the within-lap fraction 0..1.
+      lap: b.lap,
       nextCheckpoint: Math.round(b.progress * 12) % 12,
       currentPlacement: placementMap.get(b.avatarId) ?? null,
       finishedAt: b.finishedAt,
@@ -1943,7 +2749,7 @@ export class ReefRaceSplineSim {
     return {
       selfAvatarId,
       bodies,
-      arenaRadius: 28000,  // approximate track length as "radius" for boundary heuristics (90s rebuild)
+      arenaRadius: Math.round(state.spline.totalArcLength),  // loop arc length as "radius" boundary heuristic (closed-loop)
       now: Date.now(),
       matchStartedAt: state.startedAt,
     };
