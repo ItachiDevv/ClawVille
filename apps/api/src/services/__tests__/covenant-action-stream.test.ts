@@ -5,7 +5,7 @@
  * everywhere. DB-gated parts (recorder atomicity, ledger-hook rollback
  * coupling, sealer chaining, tamper trigger) run only with DATABASE_URL
  * (staging DB) — the same describeIfDb convention as
- * quests-agent-parity.test.ts. The DB suite requires migration 0028.
+ * quests-agent-parity.test.ts. The DB suite requires migration 0029.
  */
 
 import { describe, expect, test } from 'bun:test';

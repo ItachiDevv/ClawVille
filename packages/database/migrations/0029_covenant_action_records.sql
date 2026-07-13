@@ -1,4 +1,4 @@
--- 0028 — Covenant action-record stream (2026-07-13).
+-- 0029 — Covenant action-record stream (2026-07-13).
 --
 -- Founder directive: "the agents' actions should be managed with covenants."
 -- Append-only record of every economic agent-relevant action, written in the
