@@ -647,17 +647,23 @@ export async function ensureHatcherAvatar(
   const values = buildHatcherAvatarValues(userId, modelKey, name);
 
   try {
-    const [inserted] = await db
-      .insert(avatars)
-      .values(values)
-      .returning({ id: avatars.id });
-    await recordCovenantAction({
-      action: 'economy.genesis',
-      subjectType: 'avatar',
-      subjectId: inserted.id,
-      actorKind: 'agent',
-      dedupeKey: `avatar:${inserted.id}:genesis`,
-      payload: { amount: 1000, provenance: 'soft', reason: 'avatar_genesis' },
+    const inserted = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .insert(avatars)
+        .values(values)
+        .returning({ id: avatars.id });
+      await recordCovenantAction(
+        {
+          action: 'economy.genesis',
+          subjectType: 'avatar',
+          subjectId: row.id,
+          actorKind: 'agent',
+          dedupeKey: `avatar:${row.id}:genesis`,
+          payload: { amount: 1000, provenance: 'soft', reason: 'avatar_genesis' },
+        },
+        tx,
+      );
+      return row;
     });
     return { avatarId: inserted.id, created: true };
   } catch (err: unknown) {

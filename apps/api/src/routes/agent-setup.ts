@@ -373,33 +373,38 @@ agentSetupRoutes.post('/create', requireAuth, async (c) => {
   // and doesn't collect those selections. New avatars created via the
   // primary /create-agent flow (POST /api/avatars) go through the Phase 2
   // wiring in avatars.ts:165-179.
-  const [avatar] = await db
-    .insert(avatars)
-    .values({
-      userId: user.id,
-      name: result.data.name,
-      species: result.data.species,
-      color: result.data.color,
-      gender: result.data.gender,
-      archetype: result.data.archetypeId,
-      personality: result.data.personality,
-      stats,
-      characterConfig,
-      platformAgentId: agent.id,
-      slotIndex: nextSlot,
-      isActive: isFirstAgent, // First agent is auto-activated
-      equippedSkills: [],
-      totalXp: 0,
-    })
-    .returning();
-
-  await recordCovenantAction({
-    action: 'economy.genesis',
-    subjectType: 'avatar',
-    subjectId: avatar.id,
-    actorKind: 'human',
-    dedupeKey: `avatar:${avatar.id}:genesis`,
-    payload: { amount: avatar.clawTokens, provenance: 'soft', reason: 'avatar_genesis' },
+  const avatar = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .insert(avatars)
+      .values({
+        userId: user.id,
+        name: result.data.name,
+        species: result.data.species,
+        color: result.data.color,
+        gender: result.data.gender,
+        archetype: result.data.archetypeId,
+        personality: result.data.personality,
+        stats,
+        characterConfig,
+        platformAgentId: agent.id,
+        slotIndex: nextSlot,
+        isActive: isFirstAgent, // First agent is auto-activated
+        equippedSkills: [],
+        totalXp: 0,
+      })
+      .returning();
+    await recordCovenantAction(
+      {
+        action: 'economy.genesis',
+        subjectType: 'avatar',
+        subjectId: row.id,
+        actorKind: 'human',
+        dedupeKey: `avatar:${row.id}:genesis`,
+        payload: { amount: row.clawTokens, provenance: 'soft', reason: 'avatar_genesis' },
+      },
+      tx,
+    );
+    return row;
   });
 
   return c.json({
@@ -796,43 +801,48 @@ agentSetupRoutes.post('/import', requireAuth, async (c) => {
   // present, otherwise fall back to DB DEFAULTs ('lobster', 'openclaw',
   // 'milady'). Imports from older exports won't have these fields — the
   // safety net is the NOT NULL DEFAULT clause on the columns.
-  const [avatar] = await db
-    .insert(avatars)
-    .values({
-      userId: user.id,
-      name: agentName,
-      species: species as any,
-      color: color as any,
-      gender: 'male', // default; imports may not have gender
-      archetype: configData.archetype || 'brave-adventurer',
-      personality: configData.personality ?? { habitat: 'sea', hobby: 'exploring', greeting: 'wave-hello' },
-      stats: configData.stats ?? { strength: 5, defence: 5, movement: 5 },
-      characterConfig: configData.characterConfig,
-      platformAgentId: platformAgent.id,
-      slotIndex: targetSlot,
-      isActive: isFirstAgent,
-      equippedSkills: configData.equippedSkills ?? [],
-      totalXp: configData.totalXp ?? 0,
-      // Drop a hatcher-category modelKey from an imported config — reserved
-      // Hatcher avatars are server-assigned only and must not be renderable by a
-      // human import (world/join emits `modelKey || species`, so an imported
-      // modelKey:'cronus' would render the reserved VRM). Falls back to the DB
-      // default. (species is already whitelisted to the 2D enum above.)
-      ...(configData.modelKey && getAgentModel(configData.modelKey)?.category !== 'hatcher'
-        ? { modelKey: configData.modelKey }
-        : {}),
-      ...(configData.agentCategory ? { agentCategory: configData.agentCategory } : {}),
-      ...(configData.harness ? { harness: configData.harness } : {}),
-    })
-    .returning();
-
-  await recordCovenantAction({
-    action: 'economy.genesis',
-    subjectType: 'avatar',
-    subjectId: avatar.id,
-    actorKind: 'human',
-    dedupeKey: `avatar:${avatar.id}:genesis`,
-    payload: { amount: avatar.clawTokens, provenance: 'soft', reason: 'avatar_genesis' },
+  const avatar = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .insert(avatars)
+      .values({
+        userId: user.id,
+        name: agentName,
+        species: species as any,
+        color: color as any,
+        gender: 'male', // default; imports may not have gender
+        archetype: configData.archetype || 'brave-adventurer',
+        personality: configData.personality ?? { habitat: 'sea', hobby: 'exploring', greeting: 'wave-hello' },
+        stats: configData.stats ?? { strength: 5, defence: 5, movement: 5 },
+        characterConfig: configData.characterConfig,
+        platformAgentId: platformAgent.id,
+        slotIndex: targetSlot,
+        isActive: isFirstAgent,
+        equippedSkills: configData.equippedSkills ?? [],
+        totalXp: configData.totalXp ?? 0,
+        // Drop a hatcher-category modelKey from an imported config — reserved
+        // Hatcher avatars are server-assigned only and must not be renderable by a
+        // human import (world/join emits `modelKey || species`, so an imported
+        // modelKey:'cronus' would render the reserved VRM). Falls back to the DB
+        // default. (species is already whitelisted to the 2D enum above.)
+        ...(configData.modelKey && getAgentModel(configData.modelKey)?.category !== 'hatcher'
+          ? { modelKey: configData.modelKey }
+          : {}),
+        ...(configData.agentCategory ? { agentCategory: configData.agentCategory } : {}),
+        ...(configData.harness ? { harness: configData.harness } : {}),
+      })
+      .returning();
+    await recordCovenantAction(
+      {
+        action: 'economy.genesis',
+        subjectType: 'avatar',
+        subjectId: row.id,
+        actorKind: 'human',
+        dedupeKey: `avatar:${row.id}:genesis`,
+        payload: { amount: row.clawTokens, provenance: 'soft', reason: 'avatar_genesis' },
+      },
+      tx,
+    );
+    return row;
   });
 
   return c.json({

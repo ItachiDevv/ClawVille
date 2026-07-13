@@ -169,6 +169,9 @@ describeIfDb('covenant stream (DB)', () => {
     expect(rows.length).toBe(0);
   });
 
+  // 60s timeout: a seal pass UPDATEs row-by-row over the WAN to the staging
+  // pooler, and this test may drain a large unsealed backlog (e.g. after a
+  // chain reset) — bun's 5s default is a network artifact, not a perf budget.
   test('sealer chains unsealed rows in order and is re-runnable', async () => {
     const { db, covenantActionRecords, sql } = await import('@clawville/database');
     // Two fresh records, then age them past the 30s watermark so this test
@@ -246,7 +249,7 @@ describeIfDb('covenant stream (DB)', () => {
     // Idempotent: nothing new to seal for these rows on a re-run.
     const again = await sealCovenantChainOnce();
     expect(again).toBeGreaterThanOrEqual(0); // other tests may have appended
-  });
+  }, 60_000);
 
   test('tamper trigger: UPDATE of identity columns and DELETE are refused', async () => {
     const { db, covenantActionRecords, sql, eq } = await import('@clawville/database');
