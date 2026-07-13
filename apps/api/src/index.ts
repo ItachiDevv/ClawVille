@@ -1356,31 +1356,29 @@ process.on('uncaughtException', (err) => {
       console.error('[API] CLV price oracle init failed (non-fatal):', err);
     }
 
-    // CLV SWAP WORKER (Tokenomics C3 + GoLive executors; CONDITIONAL wiring,
-    // Codex re-review 2026-07-08). Default (CLV_SWAP_EXECUTE unset/false): the
-    // DRY-RUN worker scans `clv_buy_queue` planned rows and LOGS the clip plan
-    // it WOULD execute — NO signing, NO tx, NO row mutation. With
-    // CLV_SWAP_EXECUTE='true': the LIVE worker (clv-swap-live.ts) is selected
-    // instead. TODAY the live branch is UNREACHABLE — the module-load throw in
-    // clv-swap-executor.ts (static import above) already refused boot under
-    // the flag — so this wiring is dark-safe. AFTER the Codex-reviewed go-live
-    // change (remove ONLY that module-load throw), the flag cleanly selects
-    // the live worker here instead of crash-looping the whole API on the
-    // dry-run worker's `assertNoLiveClvSwapExecution()` gate.
+    // CLV SWAP WORKER (Tokenomics C3 + GoLive 2026-07-13; CONDITIONAL wiring).
+    // Default (CLV_SWAP_EXECUTE unset/false): the DRY-RUN worker scans
+    // `clv_buy_queue` planned rows and LOGS the clip plan it WOULD execute —
+    // NO signing, NO tx, NO row mutation. CLV_SWAP_EXECUTE='true' selects the
+    // LIVE worker (clv-swap-live.ts): real merchant→swap-wallet sweeps + Jupiter
+    // clips, each entrypoint re-asserting its own literal opt-in plus the
+    // mainnet/real-facilitator guard. A box EXPLICITLY flagged live must never
+    // run silently without its executor — live-start failure is FATAL.
     try {
       if (process.env.CLV_SWAP_EXECUTE === 'true') {
-        const { startClvSwapLiveWorker } = await import('./services/clv-swap-live');
-        startClvSwapLiveWorker();
-        console.log('[API] CLV swap LIVE worker started (CLV_SWAP_EXECUTE=true)');
+        try {
+          const { startClvSwapLiveWorker } = await import('./services/clv-swap-live');
+          startClvSwapLiveWorker();
+          console.log('[API] CLV swap LIVE worker started (CLV_SWAP_EXECUTE=true)');
+        } catch (liveErr) {
+          console.error('[API] FATAL: CLV_SWAP_EXECUTE=true but the LIVE worker failed to start:', liveErr);
+          process.exit(1);
+        }
       } else {
         startClvSwapWorker();
         console.log('[API] CLV swap dry-run worker started');
       }
     } catch (err) {
-      if ((err as Error)?.message?.includes('Codex-review-gated')) {
-        console.error('[API] FATAL:', (err as Error).message);
-        process.exit(1);
-      }
       console.error('[API] CLV swap worker init failed (non-fatal):', err);
     }
   } catch (err) {

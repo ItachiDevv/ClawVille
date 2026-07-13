@@ -8,11 +8,11 @@
  * DECIMAL, never a ClawToken amount.
  *
  * DATA SOURCES (mirroring the existing repo patterns):
- *   1. Helius (primary) — DAS `getAsset` RPC → `result.token_info.price_info
- *      .price_per_token`. Needs an API key (`HELIUS_API_KEY`); a LOCAL-dev
- *      fallback key is used ONLY when the env is unset (never the sole source).
- *      A thin token can return no `price_info`; that is treated as a Helius
- *      failure and falls through to DexScreener.
+ *   1. Helius (primary when configured) — DAS `getAsset` RPC →
+ *      `result.token_info.price_info.price_per_token`. Uses ONLY the
+ *      `HELIUS_API_KEY` environment variable; when it is unset, or when a thin
+ *      token returns no `price_info`, Helius is skipped/treated as failed and
+ *      the poll falls through to DexScreener.
  *   2. DexScreener (fallback, KEYLESS — the dependable path) — mirrors
  *      `apps/web/src/app/dash/tabs/token-economy.tsx`: `GET .../dex/tokens/<mint>`
  *      → highest-liquidity `pairs[].priceUsd`.
@@ -42,8 +42,9 @@
  *   surfaced through the cache so the CLV swap executor (`clv-swap-executor.ts`)
  *   can size price-impact-capped clips. DexScreener is the ONLY depth source
  *   (Helius DAS carries no pool liquidity), so `fetchSpot` now runs BOTH feeds
- *   in parallel every poll: the PRICE preference is unchanged (Helius primary →
- *   DexScreener fallback) while the DEPTH always refreshes from DexScreener when
+ *   in parallel every poll: the PRICE preference is unchanged (configured
+ *   Helius primary → keyless DexScreener fallback) while the DEPTH always
+ *   refreshes from DexScreener when
  *   it responds. Depth is memory-only (NOT persisted to `clv_price_snapshots` —
  *   no schema change), so it re-warms within one poll (~60s) of boot; it goes
  *   `null` when the reading is missing or older than the same max-stale window
@@ -55,13 +56,6 @@ import { asc, desc, gte } from 'drizzle-orm';
 
 /** CLV token mint (Token-2022). Same constant as the /dash token-economy tab. */
 export const CLV_MINT = 'Epht7Fw4Sgh6fdcJj6afWXuNcAUmLLMc3MSthUqELiZA';
-
-/**
- * LOCAL-dev-only Helius fallback key. Used ONLY when `HELIUS_API_KEY` is unset
- * (never the sole hard-coded source) — prod/staging boxes set the env. If both
- * the env AND this fallback fail, the poll falls through to keyless DexScreener.
- */
-const LOCAL_DEV_HELIUS_KEY = 'ce444a58-10a9-413a-bc9b-71956437af69';
 
 const DEFAULT_POLL_MS = 60_000;
 const MIN_POLL_MS = 15_000;
@@ -174,7 +168,10 @@ interface HeliusGetAssetResponse {
  * transport error, non-200, or missing `price_info` — all treated as failure).
  */
 async function fetchHeliusPrice(): Promise<number | null> {
-  const key = process.env.HELIUS_API_KEY?.trim() || LOCAL_DEV_HELIUS_KEY;
+  const key = process.env.HELIUS_API_KEY?.trim();
+  // Helius is optional and env-only. DexScreener remains the keyless fallback,
+  // so a local environment never needs a committed or placeholder API key.
+  if (!key) return null;
   try {
     const res = await fetch(`https://mainnet.helius-rpc.com/?api-key=${key}`, {
       method: 'POST',
@@ -248,8 +245,8 @@ async function fetchDexScreenerPrice(): Promise<{
 }
 
 /**
- * One poll round. PRICE preference is unchanged (Helius primary → DexScreener
- * fallback; null only when BOTH fail). DEPTH (Tokenomics C3) always comes from
+ * One poll round. PRICE preference is unchanged (configured Helius primary →
+ * keyless DexScreener fallback; null only when BOTH fail). DEPTH (Tokenomics C3) always comes from
  * DexScreener — the only feed that carries pool liquidity — so both feeds are
  * fetched in PARALLEL every round (one extra keyless request per ~60s poll)
  * instead of DexScreener only running on a Helius failure.
@@ -494,7 +491,7 @@ export function startClvPriceOracle(): void {
 
   console.log(
     `[clv-price-oracle] started — polling CLV price every ${Math.round(periodMs / 1000)}s ` +
-      `(Helius primary → DexScreener fallback)`,
+      `(configured Helius primary → keyless DexScreener fallback)`,
   );
 }
 

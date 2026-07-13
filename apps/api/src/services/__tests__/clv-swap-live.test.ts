@@ -1,7 +1,7 @@
 /**
  * CLV SWAP LIVE PATH — unit tests (Tokenomics GoLive executors, 2026-07-07).
  *
- * The live path is DARK; these tests prove the plumbing's money discipline
+ * The live path is default-OFF; these tests prove its money discipline
  * WITHOUT chain or Postgres (all I/O through the injectable ClvSwapLiveDeps):
  *
  *   1. GATES: every live entrypoint refuses when CLV_SWAP_EXECUTE != 'true';
@@ -128,6 +128,7 @@ function makeHarness(opts: {
   checkouts?: Array<Record<string, unknown>>;
   prices?: ClvPriceQuote[];
   quoteMode?: 'generous' | 'below-min-out';
+  quoteAmounts?: { outAmountAtomic: string; otherAmountThresholdAtomic: string };
   swapTxPayer?: PublicKey;
   merchantUsdcAtomic?: string;
   sendThrows?: boolean;
@@ -298,8 +299,9 @@ function makeHarness(opts: {
         inputMint: USDC_MINT_MAINNET,
         outputMint: CLV_MINT,
         inAmount: amount,
-        outAmount: String(out),
-        otherAmountThreshold: String(Math.floor(out * 0.99)),
+        outAmount: opts.quoteAmounts?.outAmountAtomic ?? String(out),
+        otherAmountThreshold:
+          opts.quoteAmounts?.otherAmountThresholdAtomic ?? String(Math.floor(out * 0.99)),
       };
       return { ok: true, status: 200, json: async () => body };
     }
@@ -414,9 +416,8 @@ const sweptFundingRow = (over: Record<string, unknown> = {}) => ({
 });
 
 beforeEach(() => {
-  // Live-context env: gate OPEN (call-time; the module-load throw already
-  // passed because the import above ran with the flag unset), mainnet, real
-  // facilitator. Individual tests override.
+  // Live-context env: literal opt-in, mainnet, real facilitator. Individual
+  // tests override; the dry-run-only assertion is no longer module-scoped.
   process.env.CLV_SWAP_EXECUTE = 'true';
   process.env.X402_TOPUP_NETWORK = 'mainnet';
   process.env.X402_FACILITATOR_PRESET = 'payai';
@@ -436,15 +437,15 @@ afterAll(() => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-describe('GATES — the live path is dark by default', () => {
+describe('GATES — the live path is default-off', () => {
   it('every live entrypoint refuses when CLV_SWAP_EXECUTE is not "true"', async () => {
     delete process.env.CLV_SWAP_EXECUTE;
     const h = makeHarness();
-    expect(() => requireLiveClvSwapExecution()).toThrow(/DARK/);
-    await expect(claimAndSweepFundingForQueueRow('q-1', h.deps)).rejects.toThrow(/DARK/);
-    await expect(executeQueuedClvBuy('q-1', h.deps)).rejects.toThrow(/DARK/);
-    await expect(runLiveClvSwapTick(h.deps)).rejects.toThrow(/DARK/);
-    expect(() => startClvSwapLiveWorker()).toThrow(/DARK/);
+    expect(() => requireLiveClvSwapExecution()).toThrow(/disabled/);
+    await expect(claimAndSweepFundingForQueueRow('q-1', h.deps)).rejects.toThrow(/disabled/);
+    await expect(executeQueuedClvBuy('q-1', h.deps)).rejects.toThrow(/disabled/);
+    await expect(runLiveClvSwapTick(h.deps)).rejects.toThrow(/disabled/);
+    expect(() => startClvSwapLiveWorker()).toThrow(/disabled/);
     expect(h.log.length).toBe(0); // nothing touched anything
   });
 
@@ -687,6 +688,40 @@ describe('LIVE EXECUTION — atomic claim + per-clip oracle-checked Jupiter swap
 
     // The atomic claim preceded custody.
     expect(h.log.indexOf('claimQueueRow')).toBeLessThan(h.log.indexOf('loadSwapKeypair'));
+  });
+
+  it('accounts from ExactIn threshold, never optimistic Jupiter outAmount', async () => {
+    const guaranteedOutAtomic = '71000000000';
+    const optimisticOutAtomic = '80000000000';
+    const h = makeHarness({
+      queueRows: [plannedQueueRow()],
+      fundingRows: [sweptFundingRow()],
+      quoteAmounts: {
+        outAmountAtomic: optimisticOutAtomic,
+        otherAmountThresholdAtomic: guaranteedOutAtomic,
+      },
+    });
+
+    const res = await executeQueuedClvBuy('q-1', h.deps);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error('unreachable');
+
+    const row = h.queue.get('q-1')!;
+    const fills = row.fills as Array<{ outAmountAtomic: string }>;
+    const expectedPrice = (
+      5 / (Number(guaranteedOutAtomic) / 10 ** 6)
+    ).toFixed(12);
+
+    // The capture-before-send record, aggregate, and persisted rate all use
+    // Jupiter's on-chain-enforced floor. Optimistic outAmount is never stored
+    // or allowed to increase downstream payout capacity.
+    expect(fills).toHaveLength(1);
+    expect(fills[0]?.outAmountAtomic).toBe(guaranteedOutAtomic);
+    expect(fills[0]?.outAmountAtomic).not.toBe(optimisticOutAtomic);
+    expect(res.totalClvOutAtomic).toBe(guaranteedOutAtomic);
+    expect(res.executedPrice).toBe(expectedPrice);
+    expect(row.executedPrice).toBe(expectedPrice);
+    expect(h.log.indexOf('appendClipFill')).toBeLessThan(h.log.indexOf('sendRaw'));
   });
 
   it('DOUBLE-CLAIM: the second executor loses the claim and never touches custody', async () => {
