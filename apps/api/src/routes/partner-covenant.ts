@@ -40,7 +40,7 @@
 
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { eq, and, desc, inArray, type SQL } from 'drizzle-orm';
+import { eq, and, desc, inArray, gt, isNotNull, like, type SQL } from 'drizzle-orm';
 import { PublicKey } from '@solana/web3.js';
 import {
   db,
@@ -48,6 +48,8 @@ import {
   bounties,
   bountyAttempts,
   bountyReputation,
+  covenantActionRecords,
+  covenantSealBatches,
   sapEscrowSettlements,
   sapEscrowApprovals,
   users,
@@ -479,5 +481,142 @@ partnerCovenantRoutes.get('/agents/:avatarId', async (c) => {
         }
       : null,
     agentIdentity: buildAgentIdentity(avatar.id, avatar.walletAddress, fingerprint),
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /actions — the covenant action-record stream (2026-07-13)
+// ---------------------------------------------------------------------------
+// The append-only, hash-chained record of every economic agent action (see
+// `services/covenant-action-recorder.ts` + `covenant-chain-sealer.ts`).
+// SEALED records only — a sealed row carries its chain position + hashes, so
+// everything served is verifiable; unsealed rows (younger than the sealer's
+// watermark) become visible within ~90s. Cursor by `sincePosition` (exclusive),
+// ascending — a poller replays the chain gaplessly from any position.
+
+const actionsQuerySchema = z.object({
+  // String→BigInt by hand: z.coerce.bigint() throws an UNCAUGHT TypeError (not
+  // a ZodError) on non-numeric input in this zod line, which would 500 the
+  // route instead of 400ing.
+  sincePosition: z
+    .string()
+    .regex(/^\d{1,19}$/)
+    .default('0')
+    .transform((s) => BigInt(s)),
+  /** Exact action verb (e.g. 'economy.credit') or a 'prefix.*' wildcard. */
+  action: z
+    .string()
+    .regex(/^[a-z_]+\.(?:[a-z_]+|\*)$/)
+    .optional(),
+  subjectId: z.string().min(1).max(128).optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+});
+
+partnerCovenantRoutes.get('/actions', async (c) => {
+  const parsed = actionsQuerySchema.safeParse({
+    sincePosition: c.req.query('sincePosition'),
+    action: c.req.query('action'),
+    subjectId: c.req.query('subjectId'),
+    limit: c.req.query('limit'),
+  });
+  if (!parsed.success) {
+    return c.json({ error: 'invalid_query', details: parsed.error.flatten() }, 400);
+  }
+  const { sincePosition, action, subjectId, limit } = parsed.data;
+
+  const conditions: SQL[] = [
+    isNotNull(covenantActionRecords.chainPosition),
+    gt(covenantActionRecords.chainPosition, sincePosition),
+  ];
+  if (action) {
+    if (action.endsWith('.*')) {
+      conditions.push(like(covenantActionRecords.action, `${action.slice(0, -1)}%`));
+    } else {
+      conditions.push(eq(covenantActionRecords.action, action));
+    }
+  }
+  if (subjectId) conditions.push(eq(covenantActionRecords.subjectId, subjectId));
+
+  const rows = await db
+    .select({
+      chainPosition: covenantActionRecords.chainPosition,
+      action: covenantActionRecords.action,
+      subjectType: covenantActionRecords.subjectType,
+      subjectId: covenantActionRecords.subjectId,
+      actorKind: covenantActionRecords.actorKind,
+      payload: covenantActionRecords.payload,
+      payloadHash: covenantActionRecords.payloadHash,
+      prevHash: covenantActionRecords.prevHash,
+      recordHash: covenantActionRecords.recordHash,
+      createdAt: covenantActionRecords.createdAt,
+      sealedAt: covenantActionRecords.sealedAt,
+    })
+    .from(covenantActionRecords)
+    .where(and(...conditions))
+    .orderBy(covenantActionRecords.chainPosition)
+    .limit(limit);
+
+  return c.json({
+    actions: rows.map((r) => ({
+      chainPosition: r.chainPosition!.toString(),
+      action: r.action,
+      subjectType: r.subjectType,
+      subjectId: r.subjectId,
+      actorKind: r.actorKind,
+      payload: r.payload,
+      payloadHash: r.payloadHash,
+      prevHash: r.prevHash,
+      recordHash: r.recordHash,
+      createdAt: r.createdAt.toISOString(),
+      sealedAt: r.sealedAt!.toISOString(),
+    })),
+    limit,
+    // Next-page cursor: the last served position (echo the request's when empty).
+    nextSincePosition: (rows.length
+      ? rows[rows.length - 1].chainPosition!
+      : sincePosition
+    ).toString(),
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /actions/head — chain head + latest seal batch (cheap poll/verify)
+// ---------------------------------------------------------------------------
+partnerCovenantRoutes.get('/actions/head', async (c) => {
+  const [head] = await db
+    .select({
+      chainPosition: covenantActionRecords.chainPosition,
+      recordHash: covenantActionRecords.recordHash,
+      sealedAt: covenantActionRecords.sealedAt,
+    })
+    .from(covenantActionRecords)
+    .where(isNotNull(covenantActionRecords.chainPosition))
+    .orderBy(desc(covenantActionRecords.chainPosition))
+    .limit(1);
+
+  const [batch] = await db
+    .select()
+    .from(covenantSealBatches)
+    .orderBy(desc(covenantSealBatches.lastPosition))
+    .limit(1);
+
+  return c.json({
+    head: head
+      ? {
+          chainPosition: head.chainPosition!.toString(),
+          recordHash: head.recordHash,
+          sealedAt: head.sealedAt!.toISOString(),
+        }
+      : null,
+    latestBatch: batch
+      ? {
+          firstPosition: batch.firstPosition.toString(),
+          lastPosition: batch.lastPosition.toString(),
+          recordCount: batch.recordCount.toString(),
+          batchRoot: batch.batchRoot,
+          prevBatchRoot: batch.prevBatchRoot,
+          createdAt: batch.createdAt.toISOString(),
+        }
+      : null,
   });
 });

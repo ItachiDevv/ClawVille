@@ -17,6 +17,10 @@ export * from './token-market';
 export * from './quests';
 export * from './agent-configs';
 export * from './bounties';
+// Covenant action-record stream (2026-07-13) — append-only hash-chained record
+// of every economic agent action; sealed by covenant-chain-sealer, served on the
+// partner-covenant read surface. See covenant-action-records.ts header.
+export * from './covenant-action-records';
 export * from './building-skills';
 // Partner #2 (Hatcher) Phase C — scoped, revocable read-token table for partner
 // integrations. Hash-not-plaintext, show-once mint. See `partner-api-keys.ts`.

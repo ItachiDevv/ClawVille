@@ -47,6 +47,15 @@
 
 import { db, avatars, clawTokenTransactions, eq, sql } from '@clawville/database';
 import { logEvent } from './event-logger';
+// Covenant action-record stream (2026-07-13): every credit/debit appends one
+// record IN THE SAME TX — the two primitives below are the complete vCLAW
+// choke point, so this is total economy coverage with zero caller churn.
+// (`covenant-action-recorder` imports only `type LedgerTx` back from this
+// module — type-only, erased at runtime, so there is no import cycle.)
+import {
+  recordCovenantAction,
+  type CovenantActorKind,
+} from './covenant-action-recorder';
 
 /**
  * Drizzle transaction type — passing this lets the helpers compose into
@@ -120,6 +129,13 @@ export interface LedgerCreditInput {
   usdBasis?: string | null;
   /** Optional reason-specific metadata */
   metadata?: Record<string, unknown>;
+  /**
+   * Covenant actor attribution — pass ONLY when the caller resolved WHO drove
+   * the action ('human' cookie / 'agent' session / 'system' sim / 'admin').
+   * Defaults to null (unattributed) — never guessed. Stamped on the covenant
+   * action record, not the ledger row.
+   */
+  actorKind?: CovenantActorKind | null;
 }
 
 export interface LedgerDebitInput {
@@ -129,6 +145,8 @@ export interface LedgerDebitInput {
   reason: string;
   source: ClawTokenSource;
   metadata?: Record<string, unknown>;
+  /** Covenant actor attribution — see LedgerCreditInput.actorKind. */
+  actorKind?: CovenantActorKind | null;
 }
 
 export interface LedgerResult {
@@ -243,6 +261,7 @@ async function applyCreditInTx(
     fpHash?: string | null;
     ipPrefixHash?: string | null;
     metadata?: Record<string, unknown>;
+    actorKind?: CovenantActorKind | null;
   },
   __earnedToken?: EarnedToken,
 ): Promise<LedgerResult> {
@@ -286,6 +305,30 @@ async function applyCreditInTx(
     })
     .returning({ id: clawTokenTransactions.id });
 
+  // Covenant record — same tx as the balance write + ledger row: the credit
+  // and its covenant record commit or roll back together.
+  await recordCovenantAction(
+    {
+      action: 'economy.credit',
+      subjectType: 'avatar',
+      subjectId: input.avatarId,
+      actorKind: input.actorKind ?? null,
+      payload: {
+        ledgerId: ledger.id,
+        amount: input.amount,
+        balanceAfter,
+        reason: input.reason,
+        source: input.source,
+        provenance: input.provenance,
+        ...(input.usdBasis != null ? { usdBasis: input.usdBasis } : {}),
+        ...(input.metadata && Object.keys(input.metadata).length > 0
+          ? { metadata: input.metadata }
+          : {}),
+      },
+    },
+    tx,
+  );
+
   return { balanceAfter, ledgerId: ledger.id };
 }
 
@@ -310,6 +353,7 @@ async function creditInTx(tx: LedgerTx, input: LedgerCreditInput): Promise<Ledge
     provenance,
     usdBasis: input.usdBasis ?? null,
     metadata: input.metadata,
+    actorKind: input.actorKind ?? null,
   });
 }
 
@@ -370,6 +414,8 @@ async function debitInTx(tx: LedgerTx, input: LedgerDebitInput): Promise<LedgerR
   const order: LedgerProvenance[] = ['soft', 'bought', 'earned'];
   let runningTotal = total;
   let lastLedgerId: string | null = null;
+  const burnedLedger: Array<{ ledgerId: string; provenance: LedgerProvenance; amount: number }> =
+    [];
   for (const tag of order) {
     const burnedAmt = burned[tag];
     if (burnedAmt <= 0) continue;
@@ -388,6 +434,7 @@ async function debitInTx(tx: LedgerTx, input: LedgerDebitInput): Promise<LedgerR
       })
       .returning({ id: clawTokenTransactions.id });
     lastLedgerId = ledger.id;
+    burnedLedger.push({ ledgerId: ledger.id, provenance: tag, amount: burnedAmt });
   }
 
   // `allocateDebit` guarantees the burns sum to `amount` > 0, so at least one tag
@@ -396,6 +443,29 @@ async function debitInTx(tx: LedgerTx, input: LedgerDebitInput): Promise<LedgerR
   if (lastLedgerId === null) {
     throw new Error('debitInTx invariant: no ledger row written for a non-zero debit');
   }
+
+  // Covenant record — ONE record for the whole debit (the ACTION is one spend;
+  // the per-tag burn breakdown rides in the payload), same tx as the burn.
+  await recordCovenantAction(
+    {
+      action: 'economy.debit',
+      subjectType: 'avatar',
+      subjectId: input.avatarId,
+      actorKind: input.actorKind ?? null,
+      payload: {
+        amount: input.amount,
+        balanceAfter: finalTotal,
+        reason: input.reason,
+        source: input.source,
+        burns: burnedLedger,
+        ...(input.metadata && Object.keys(input.metadata).length > 0
+          ? { metadata: input.metadata }
+          : {}),
+      },
+    },
+    tx,
+  );
+
   return { balanceAfter: finalTotal, ledgerId: lastLedgerId };
 }
 
@@ -461,6 +531,8 @@ export async function mintEarned(
     fpHash?: string | null;
     ipPrefixHash?: string | null;
     metadata?: Record<string, unknown>;
+    /** Covenant actor attribution — see LedgerCreditInput.actorKind. */
+    actorKind?: CovenantActorKind | null;
   },
   tx?: LedgerTx,
 ): Promise<LedgerResult> {
@@ -481,6 +553,7 @@ export async function mintEarned(
         fpHash: input.fpHash ?? null,
         ipPrefixHash: input.ipPrefixHash ?? null,
         metadata: input.metadata,
+        actorKind: input.actorKind ?? null,
       },
       EARNED_TOKEN, // the capability token — only this call site holds it
     );
@@ -505,6 +578,8 @@ export async function transferClawTokens(input: {
   reason: string;
   source: ClawTokenSource;
   metadata?: Record<string, unknown>;
+  /** Covenant actor attribution for the INITIATOR (the debited side). */
+  actorKind?: CovenantActorKind | null;
 }): Promise<{ fromBalance: number; toBalance: number }> {
   const result = await db.transaction(async (tx) => {
     const debit = await debitInTx(tx, {
@@ -513,8 +588,11 @@ export async function transferClawTokens(input: {
       reason: input.reason,
       source: input.source,
       metadata: { ...input.metadata, transferTo: input.toAvatarId },
+      actorKind: input.actorKind ?? null,
     });
     // Receiver ALWAYS gets SOFT — non-cashable recirculation, by construction.
+    // The receiver's covenant record stays unattributed (the initiator acted,
+    // not the receiver) — the transferFrom metadata carries the linkage.
     const credit = await creditInTx(tx, {
       avatarId: input.toAvatarId,
       amount: input.amount,
