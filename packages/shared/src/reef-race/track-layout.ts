@@ -16,20 +16,21 @@
  *
  * v6 vs v5 (the narrow Rainbow-Road ribbon):
  *   - WIDE FOR 4+ PLAYERS (WIDENED post-v6 per founder: "river still thin"):
- *     corridor half-width 1144–1609 wu → water surface 2289–3219 wu WIDE
+ *     corridor half-width 1144–1610 wu → water surface 2289–3219 wu WIDE
  *     (was 738–1038 wu / 1476–2077 wu in the initial v6; now ×1.55 scaled for
  *     Mario-Kart roomy racing). Even the NARROWEST point fits 26 sim bodies
  *     (REEF_BODY_RADIUS=22 → 44 wu diameter) side-by-side — far past the
  *     founder's 4-board target, with aggressive overtaking + surf room.
  *   - THE WALL-CLAMP FIX (the load-bearing geometric truth): a road of
  *     half-width hw can only carve a corner of radius R if R − hw > the carve
- *     floor (192 wu); otherwise no racing line fits inside the corridor and the
- *     sim's outward-velocity wall scrub STALLS the kart (the v5 trap — see
- *     `[[surf-road-track-v5]]`). At hw≈800 that needs R > ~992. A WIDE river
+ *     floor (250 wu at 650/2.6); otherwise no racing line fits inside the
+ *     corridor and the sim's outward-velocity wall scrub STALLS the kart (the
+ *     v5 trap — see `[[surf-road-track-v5]]`). At hw≈800 that needs R > ~1050.
+ *     A WIDE river
  *     therefore CANNOT have pinhead chicanes/hairpins — every turn must be a
  *     BROAD sweeping bend. The v6 ring is a wavy circle (radius = 12 800 +
- *     harmonics 2,3,5,7) so every corner is broad: min radius 2087 wu, leaving
- *     a CARVE MARGIN of 1282 wu (R − hw) at the tightest point — wall-clamp is
+ *     harmonics 2,3,5,7) so every corner is broad: min radius 2156 wu, leaving
+ *     a CARVE MARGIN of 905 wu (R − hw) at the tightest point — wall-clamp is
  *     now geometrically impossible. The aggressive zig-zag comes from 30
  *     curvature reversals (was 26) of broad alternating sweeps over a huge
  *     footprint, not from tight corners.
@@ -37,7 +38,7 @@
  *     space — a Mario-Kart-scale circuit.
  *   - ELEVATION (render-only): the SAME `reefTrackElevationAt(t)` /
  *     `reefTrackBankAngleAt(t)` profile (Y span ≈ 1634 wu). Because the arc is
- *     now longer (88 052 vs 60 257), the max grade DROPS to 14.8 % (was 29 %) —
+ *     now longer (88 052 vs 60 257), the max grade DROPS to 13.1 % (was 29 %) —
  *     even gentler climbs, karts stay glued to the ribbon. The profile is
  *     t-parameterised (periodic in t), so it is arc-agnostic and unchanged.
  *   - Banking: `reefTrackBankAngleAt(t)` (render-only) tilts the ribbon into
@@ -74,13 +75,13 @@
  *   - totalArcLength       = 88051.9 wu                 (need [80000, 96000])
  *   - heading sweep        = +2.0000 π                  (one clean circumnav.)
  *   - curvature reversals  = 30                          (aggressive zig-zag)
- *   - min radius of curv.  = 2087.3 wu @ t≈0.670          (broad — see below)
- *   - hw @ min-R           = 1248 wu  (×1.55 scaled from 805)
- *   - CARVE MARGIN (R−hw)  = 839.3 wu  >> 192 floor       (NO wall-clamp — the
+ *   - min radius of curv.  = 2156.0 wu @ t≈0.670          (broad — see below)
+ *   - hw @ min-R           = 1251 wu
+ *   - CARVE MARGIN (R−hw)  = 905.4 wu  >> 250 floor       (NO wall-clamp — the
  *                                                          racing line fits)
- *   - hw sweep             = [1144, 1609] wu (water 2289–3219 wu WIDE; ×1.55 of v6)
+ *   - hw sweep             = [1144, 1610] wu (water 2289–3219 wu WIDE; ×1.55 of v6)
  *   - min adjacent-CP space= 1858 wu @ CP3→CP4            (need >200, Newton guard)
- *   - XZ self-overlaps     = 0; min inter-pass edge clearance = 3226 wu
+ *   - XZ self-overlaps     = 0; min inter-pass edge clearance = 1797 wu
  *       (single-winding wavy circle — passes never touch in XZ even at the ×1.55
  *        wider corridors; elevation gives the floating Rainbow-Road feel; clearance
  *        verified by scratchpad/v6-width-verify.ts at ×1.55 scale)
@@ -91,10 +92,10 @@
  *   - centerlineAt(0) at XZ=(0, -11425) (start/finish line, south straight)
  *   - arclength round-trip < 1e-3 (LUT sane)
  *
- *   At REEF_MAX_SPEED = 500 wu/s, full-thrust straight cruise ≈ 496 wu/s and a
- *   realistic average lap pace ≈ 330 wu/s (mixed humans+bots). One loop ≈ 266 s
- *   at that pace; the per-lap soft budget (REEF_RACE_LOOP_LAP_BUDGET_MS) is
- *   grounded at 88 052 / 330 × 1.10 ≈ 294 s → 300 000 ms.
+ *   At REEF_MAX_SPEED = 650 wu/s, full-thrust straight cruise ≈ 645 wu/s and a
+ *   realistic average lap pace ≈ 429 wu/s (mixed humans+bots). One loop ≈ 205 s
+ *   at that pace. The existing 300 000 ms per-lap soft budget remains deliberately
+ *   conservative for collisions, stalls and disconnected stragglers.
  *
  * ─── 5 themed segments (LOOP-APPROPRIATE — t-ranges, NOT z-ranges) ───────────
  *
@@ -196,11 +197,11 @@ export const REEF_RACE_SEGMENTS: ReadonlyArray<ReefRaceSegmentRange> = [
 export const REEF_RACE_DEFAULT_TRACK: ReadonlyArray<SplineControlPoint> = [
   // 2026-06-23 "WIDE SURF ROAD" REBUILD — see REEF_RACE_SEGMENTS + module doc.
   // XZ positions: arc 88052 wu, heading sweep +2π, 30 curvature reversals,
-  // min R 2087, footprint ~30648×25926, elevation span 1634 (render-only, max
-  // grade 14.8%) — all unchanged from initial v6.
+  // min R 2156, footprint ~30648×25926, elevation span 1634 (render-only, max
+  // grade 13.1%) — all unchanged from initial v6.
   // halfWidths: ×1.55 of initial v6 values. Verified by scratchpad/v6-width-verify.ts:
-  //   hw [1144,1609] (water 2289-3219 WIDE), CARVE MARGIN 839 (NO wall-clamp),
-  //   min CP spacing 1858, min inter-pass edge clearance 3226 (NO overlap).
+  //   hw [1144,1610] (water 2289-3219 WIDE), CARVE MARGIN 905 (NO wall-clamp),
+  //   min CP spacing 1858, min inter-pass edge clearance 1797 (NO overlap).
   //
   // The v6 ring is a WAVY CIRCLE so every turn is a BROAD sweep (R >> corridor
   // hw): a wide river physically cannot carve pinhead chicanes/hairpins (R must
@@ -210,8 +211,8 @@ export const REEF_RACE_DEFAULT_TRACK: ReadonlyArray<SplineControlPoint> = [
 
   // ── Segment 0: lagoon — START/FINISH STRAIGHT (south, heading NE) ─────────
   // halfWidths are the original v6 values × 1.55 (rounded to nearest wu).
-  // Verified by scratchpad/v6-width-verify.ts: hw [1144,1609], water 2289-3219wu,
-  // carve margin 839wu (>> 192 floor), inter-pass clearance 3226wu.
+  // Verified by scratchpad/v6-width-verify.ts: hw [1144,1610], water 2289-3219wu,
+  // carve margin 905wu (>> 250 floor), inter-pass clearance 1797wu.
   { x:     0, z: -11425, halfWidth: 1528 }, // CP  0  START/FINISH line (t=0)
   { x:  1952, z:  -9813, halfWidth: 1520 }, // CP  1  straight
   { x:  3640, z:  -8788, halfWidth: 1578 }, // CP  2  straight end → SE sweep

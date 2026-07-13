@@ -152,7 +152,7 @@ const ACTION_BIT_JUMP = ACTION_BIT_DRIFT;
 const REEF_SIM_HZ = REEF_TICK_HZ;
 const REEF_TICK_MS = 1000 / REEF_SIM_HZ;
 
-/** Delta snapshot every 50ms (20Hz). Keyframe every 1s (1Hz). */
+/** Configured 20Hz target quantizes to every 2 ticks = 15Hz at a 30Hz sim. */
 const REEF_SNAPSHOT_HZ = 20;
 const REEF_TICKS_PER_SNAPSHOT = Math.round(REEF_SIM_HZ / REEF_SNAPSHOT_HZ);
 const REEF_TICKS_PER_KEYFRAME = REEF_SIM_HZ;
@@ -179,7 +179,7 @@ const WALL_CORRECTION_PER_TICK = 0.34;
  * Hard cap on a single tick's inward positional correction (wu). Prevents a
  * teleport-grade overshoot (e.g. a cheat packet placing the body 5000wu out)
  * from snapping back in one frame; the body walks back in over several ticks.
- * Sized above one tick of travel at top speed (≈ 925/30 ≈ 31wu boosted) so a
+ * Sized above one tick of travel at top speed (≈ 1202.5/30 ≈ 40.1wu boosted) so a
  * legitimately fast body is corrected in one tick but a pathological overshoot
  * is spread.
  */
@@ -1533,8 +1533,8 @@ export class ReefRaceSplineSim {
 
       const prev = body.progress;
 
-      // Seam crossings on the periodic loop. A single tick moves ≤ ~31 wu ≈
-      // 0.00035 of the loop, so any within-lap jump > 0.5 is a seam WRAP, not
+      // Seam crossings on the periodic loop. A single tick moves ≤ ~40.1 wu ≈
+      // 0.00046 of the loop, so any within-lap jump > 0.5 is a seam WRAP, not
       // real motion — in EITHER direction.
       const SEAM_WRAP = 0.5;
       const rawDelta = newProgress - prev;
@@ -2017,12 +2017,12 @@ export class ReefRaceSplineSim {
     // speed clamp per target (Codex round-3 BLOCKERS 1+2). The old per-body
     // immediate mutation made two effects on the same victim in one tick depend
     // on body-map order, AND seeker-jelly's impulse was unclamped (an aligned
-    // seeker could push a victim to ~1225, contained only by a later whirlpool's
+    // seeker could push a victim to ~1592.5, contained only by a later whirlpool's
     // clamp by roster luck). Now every effect is COLLECTED from the immutable
     // post-integrate snapshot (positions unchanged this pass; velocities read
     // as-is), AGGREGATED per target (impulses sum, slows multiply — both
     // commutative), APPLIED once in a canonical order (impulse then slow), and
-    // clamped ONCE to the 925 hard cap (caps every knockback incl. seeker).
+    // clamped ONCE to the 1202.5 hard cap (caps every knockback incl. seeker).
     const impulseX = new Map<string, number>();
     const impulseZ = new Map<string, number>();
     const slowMul = new Map<string, number>();
@@ -2166,7 +2166,7 @@ export class ReefRaceSplineSim {
   /**
    * Seeker-jelly — an impulse AWAY from the user on the closest in-front rival.
    * Accumulates the impulse via `addImpulse` (order-independent); the aggregate
-   * apply loop sums + CLAMPS it to 925 (Codex round-3 BLOCKER 2 — the old direct
+   * apply loop sums + CLAMPS it to 1202.5 (Codex round-3 BLOCKER 2 — the old direct
    * add had no clamp, so an aligned seeker could exceed the cap).
    */
   private collectSeekerJelly(
@@ -2268,7 +2268,7 @@ export class ReefRaceSplineSim {
    * victim's speed is CLAMPED once in the aggregate apply loop (Codex round-3:
    * the per-effect clamp moved to the single final clamp so it also bounds a
    * seeker+whirlpool combo on the same victim). The knockback bypasses the
-   * per-tick delta validator, so the final clamp is what keeps it ≤ 925.
+   * per-tick delta validator, so the final clamp is what keeps it ≤ 1202.5.
    */
   private collectWhirlpool(
     state: SplineRoomState,

@@ -80,11 +80,9 @@ export const TOTAL_CHECKPOINTS_PER_RACE =
 // ─── Phase 4 — ghost replay capture cadence ─────────────────────────────────
 
 /**
- * Ghost replay sampling rate (Hz). 5 Hz × 30 sec lap × 4 fields × ~6 bytes
- * = ~3.6 KB serialized. Doubling the bracket gap from 100 ms → 200 ms is
- * invisible at the kart's 360 wu/s top speed (the body moves ~72 wu in
- * 200 ms — well below the per-frame visual fidelity needed for a
- * transparent ghost on a 300 wu wide track).
+ * Ghost replay sampling rate (Hz). At the 650 wu/s base cap the body moves at
+ * most 130 wu between 5 Hz samples, still small against the v6 corridor's
+ * 1,144–1,609 wu half-width. Render interpolation fills the visual gap.
  */
 export const GHOST_CAPTURE_HZ = 5;
 
@@ -98,11 +96,11 @@ export const MAX_GHOST_FRAMES_PER_LAP = 250;
 
 /**
  * Minimum legal lap time. Faster than this = discarded + flag. Backend
- * §4.5: tuned for the 6000wu × 1 lap path at MAX_REEF_SPEED. A clean
- * fast lap is ~30–36s; 15s is well below the physically-reachable
- * ceiling so it cleanly catches teleport+next-checkpoint exploits.
+ * §4.5: tuned for the legacy ellipse. Scaling the old 15s floor by the
+ * 500/650 speed ratio gives 11.54s; 11.5s stays below the ~13.9s theoretical
+ * base-cap lap while preserving the same teleport-detection margin.
  */
-export const MIN_LAP_MS = 15_000;
+export const MIN_LAP_MS = 11_500;
 
 /**
  * Soft cap on round duration (ms). After this the round-end check
@@ -131,13 +129,16 @@ export const REEF_HARD_TIMEOUT_MS = REEF_SOFT_TIMEOUT_MS + REEF_STRAGGLER_GRACE_
  *
  * The 90s `REEF_SOFT_TIMEOUT_MS` was tuned for the small ~9 000–30 000 wu
  * tracks; the v6 wide ribbon is ~88 052 wu (was ~60 257 in v5) — one loop takes
- * ~215–266 s (humans ~410 wu/s avg; heavy-cornering bots ~330 wu/s → ~266 s).
+ * ~165–205 s at the 650 wu/s tuning (humans ~533 wu/s avg;
+ * heavy-cornering bots ~429 wu/s → ~205 s).
  * A 90s/200s per-lap cap would DNF every racer mid-lap-1. This budget covers the
- * SLOWEST legit loop (~266 s at heavy-cornering ~330 wu/s on the wide SURF ROAD)
+ * SLOWEST expected loop (~205 s at heavy-cornering ~429 wu/s on the wide SURF ROAD)
  * plus margin:
  *
- *   per-lap budget = arc / slowPace × 1000 × safety
- *                  = 88052 / 330 × 1000 × 1.10 ≈ 294 s  → rounded to 300 s.
+ *   observed need = arc / slowPace × 1000 × safety
+ *                 = 88052 / 429 × 1000 × 1.10 ≈ 226 s.
+ * The existing 300 s budget remains intentionally conservative for stalls,
+ * collisions and disconnected stragglers.
  *
  * NOTE: NOT derived from `REEF_SOFT_TIMEOUT_MS` (which stays the ellipse single-
  * loop value) — it is its own arc-length-grounded number so the two sims can't
@@ -169,12 +170,10 @@ export const REEF_SKIP_PATTERN_THRESHOLD = 3;
 // ─── Physics caps (founder-tunable) ─────────────────────────────────────────
 
 /**
- * Max body speed in wu/s. Per 3d-spec §2.1 a max-speed lap takes ~12s
- * for 6000wu, but we cap at ~500 to leave headroom for boost (1.4×).
- * The clean-lap pace cited above is ~30s = ~200wu/s sustained — which
- * lines up with the boost-based "fastest plausible" tail at 500wu/s.
+ * Max body speed in wu/s. Founder playtest 2026-07-13 raised the base cap
+ * 30% from 500 to 650; the additive boost stack remains bounded at 1.85×.
  */
-export const REEF_MAX_SPEED = 500;
+export const REEF_MAX_SPEED = 650;
 
 /** Boost multiplier on top-speed when turbo-bubble is active. */
 export const REEF_BOOST_MULT = 1.4;
@@ -198,8 +197,8 @@ export const REEF_BODY_RADIUS = 22;
  * Half-axes of the oval centerline (wu). Bumped 1.5× from (1100, 700) on
  * 2026-04-26 because the original sizing made the kart (40 wu glider × 50 wu
  * rider) feel cramped — only ~7.5 kart-widths across at 300 wu HALF_WIDTH * 2.
- * New perimeter ≈ 9036 wu. At REEF_MAX_SPEED 500 wu/s a clean lap is ~18s
- * (was ~12s), still under MIN_LAP_MS=15s teleport-cheat detector.
+ * New perimeter ≈ 9036 wu. At REEF_MAX_SPEED 650 wu/s the theoretical
+ * base-cap lap is ~13.9s, above the scaled MIN_LAP_MS=11.5s detector floor.
  */
 export const REEF_TRACK_A = 1650;
 export const REEF_TRACK_B = 1050;
@@ -458,7 +457,7 @@ export const DRIFT_BOOST_MULTS: readonly [number, number, number] = [0.12, 0.24,
 export const DRIFT_ANGULAR_BIAS_RAD = (15 * Math.PI) / 180;
 
 /** Minimum forward speed (wu/s) required to start OR maintain a drift charge. */
-export const DRIFT_MIN_SPEED_FOR_CHARGE = REEF_MAX_SPEED * 0.20; // 100 wu/s
+export const DRIFT_MIN_SPEED_FOR_CHARGE = REEF_MAX_SPEED * 0.20; // 130 wu/s
 
 /**
  * |dir.x| threshold — body must be cornering to initiate drift.
@@ -482,17 +481,17 @@ export const LAUNCH_STALL_THRUST_CAP  = 0.30;
  * Phase 3 (audit C1) — bumped 2.0 → 2.1 to absorb the per-tick acceleration
  * step boosted by max(accelMult=1.25, 1/turnRadiusMult=1.176) = 1.25× during
  * corner entry. Math (§5 of `.claude/plans/reef-race-phase3-detailed.md`):
- *   Worst-case body velocity at peak boost = 1.85× × 500 = 925 wu/s steady.
+ *   Worst-case body velocity at peak boost = 1.85× × 650 = 1202.5 wu/s steady.
  *   Single-tick acceleration kick = REEF_MAX_ACCEL × dt × 1.25
- *                                = 2000 × 0.0333 × 1.25 = 83.3 wu/s
- *   Peak velocity for that tick = 925 + 83.3 = 1008.3 wu/s
- *   Position step = dt × peak velocity = 0.0333 × 1008.3 = 33.6 wu
- *   Validator allowance = dt × REEF_MAX_SPEED × 2.1 = 35.0 wu
- *   Headroom = 1.4 wu (~4%) — under by 1.4 wu, no flag.
+ *                                = 2600 × 0.0333 × 1.25 = 108.3 wu/s
+ *   Peak velocity for that tick = 1202.5 + 108.3 = 1310.8 wu/s
+ *   Position step = dt × peak velocity = 0.0333 × 1310.8 = 43.7 wu
+ *   Validator allowance = dt × REEF_MAX_SPEED × 2.1 = 45.5 wu
+ *   Headroom = 1.8 wu (~4%) — no false flag.
  *
  * SAFETY (cheaters): velocity validator at the same 2.1 tolerance still
- * catches sustained over-velocity at REEF_MAX_SPEED × 2.1 = 1050 wu/s. The
- * extra 5% position headroom equates to ~10% extra speed (~51 wu/s) on a
+ * catches sustained over-velocity at REEF_MAX_SPEED × 2.1 = 1365 wu/s. The
+ * extra 5% position headroom equates to ~10% extra speed (~66 wu/s) on a
  * single-tick basis — well below the 1.85× legitimate boost stack ceiling.
  *
  * Phase 1 audit C3 raised this 1.5 → 2.0; Phase 3 raises 2.0 → 2.1. The
@@ -513,15 +512,15 @@ export const ACTION_BIT_LAUNCH    = 0b1000;
 /**
  * Phase 2 — soft cap on the SUM of POSITIVE kinematic mults applied in
  * applyIntentForTick step 4. Bounds drift + launch + slipstream + ribbon +
- * apex-bonus stacking so the sum never crosses REEF_KINEMATIC_TOLERANCE (2.0×).
+ * apex-bonus stacking so the sum never crosses REEF_KINEMATIC_TOLERANCE (2.1×).
  *
  *   Max possible additive positive stack:
  *     drift-3 (0.38) + launch (0.30) + slipstream (0.20) + ribbon (0.30)
  *     + apex-bonus (0.05) = 1.23 → 1 + 1.23 = 2.23×
  *
  *   Cap at 0.85 → 1 + 0.85 = 1.85× = same backstop as the existing hard cap
- *   in integrateMotion. Anti-cheat tolerance (2.0×) buffers above this by
- *   0.15×, leaving room for one tick of integration overshoot.
+ *   in integrateMotion. Anti-cheat tolerance (2.1×) buffers above this by
+ *   0.25×, leaving room for one tick of integration overshoot.
  *
  *   Negative entries (apex-penalty, hazard-slow) bypass the positive cap (it
  *   should not protect a slow). They are summed into a SEPARATE
@@ -1124,8 +1123,8 @@ export const REEF_AIRBORNE_STEER_MULT = 0.30;
  * ~290-540 wu, slalom ±440-460) is threadable without snap-turning.
  *
  * Anti-cheat check: per-tick velocity-vector change from a hard turn at top
- * speed ≈ speed * turnRate * dt = 500 * 2.6 * (1/30) ≈ 43 wu/s, far under the
- * velocity-delta ceiling MAX_ACCEL*dt*REEF_KINEMATIC_TOLERANCE ≈ 140 wu/s.
+ * speed ≈ speed * turnRate * dt = 650 * 2.6 * (1/30) ≈ 56 wu/s, far under the
+ * velocity-delta ceiling MAX_ACCEL*dt*REEF_KINEMATIC_TOLERANCE ≈ 182 wu/s.
  */
 export const REEF_TURN_RATE = 2.6;
 
@@ -1154,8 +1153,8 @@ export const REEF_FORWARD_DRAG = 0.992;
  * the board carves and holds a line but can still drift through a hard flick.
  *
  * Lower = grippier (less slide). Kept at 0.90 (not 0.80) to leave anti-cheat
- * headroom — a single tick of lateral bleed at top speed is ≤ 0.10*500 = 50
- * wu/s, which combined with a hard turn (~43 wu/s) stays under the 140 wu/s
+ * headroom — a single tick of lateral bleed at top speed is ≤ 0.10*650 = 65
+ * wu/s, which combined with a hard turn (~56 wu/s) stays under the 182 wu/s
  * velocity-delta ceiling.
  */
 export const REEF_LATERAL_GRIP = 0.90;
@@ -1247,10 +1246,10 @@ export const BOOST_PAD_HALF_WIDTH = 170;
 /**
  * Instant along-heading velocity kick (wu/s) added on pad entry. Applied in the
  * post-integrate `resolveBoostPads` pass and CLAMPED to the 1.85× hard cap
- * (REEF_MAX_SPEED * 1.85 = 925 wu/s), so it can never exceed the boost ceiling.
- * 160 wu/s ≈ +32% of MAX_SPEED — a noticeable pad "pop" without a teleport.
+ * (REEF_MAX_SPEED * 1.85 = 1202.5 wu/s), so it can never exceed the boost ceiling.
+ * 32% of MAX_SPEED — a noticeable pad "pop" without a teleport.
  */
-export const BOOST_PAD_KICK = 160;
+export const BOOST_PAD_KICK = REEF_MAX_SPEED * 0.32; // 208 wu/s
 /**
  * Additive speedMod contribution while `pad-boost` is active (folds into the
  * positive kinetic stack, capped by KINEMATIC_BOOST_CAP). +0.30 → target cruise
@@ -1294,7 +1293,7 @@ export function buildSplineBoostPads(): SplineBoostPad[] {
  */
 export const MINI_TURBO_MIN_TURN_PER_TICK = 0.035;
 /** Minimum forward speed (wu/s) to build charge — no charging from a near-stop. */
-export const MINI_TURBO_MIN_SPEED = REEF_MAX_SPEED * 0.35; // 175 wu/s
+export const MINI_TURBO_MIN_SPEED = REEF_MAX_SPEED * 0.35; // 227.5 wu/s
 /**
  * Sustained-carve time (ms) to reach tier 1 (small boost). 480ms ≈ a solid
  * corner hold. Charge accumulates real elapsed time (dt), so this is tick-rate
@@ -1332,7 +1331,7 @@ export const INK_SLICK_RADIUS = 260;
 /** Radius (wu) of the whirlpool rival-knock AoE. */
 export const WHIRLPOOL_RADIUS = 300;
 /** Peak inward pull speed (wu/s) applied to a rival at the whirlpool center. */
-export const WHIRLPOOL_PULL_IMPULSE = REEF_MAX_SPEED * 0.5; // 250 wu/s
+export const WHIRLPOOL_PULL_IMPULSE = REEF_MAX_SPEED * 0.5; // 325 wu/s
 /**
  * Additive negative speedMod a whirlpool inflicts on a caught rival (folds into
  * the negative kinetic stack, floored by NEGATIVE_KINETIC_FLOOR).

@@ -678,10 +678,10 @@ export const SURF_ROLL_CLAMP      = 0.8;  // ±46°
 // back onto the boosted authority within a few snapshots — never overshooting
 // because re-baseline only ever blends toward the (boost-correct) server pose.
 export const CLIENT_SURF_PARAMS = {
-  /** REEF_MAX_SPEED = 500 */
-  maxSpeed: 500,
-  /** REEF_MAX_ACCEL = REEF_MAX_SPEED * 4 = 2000 */
-  maxAccel: 2000,
+  /** REEF_MAX_SPEED = 650 */
+  maxSpeed: 650,
+  /** REEF_MAX_ACCEL = REEF_MAX_SPEED * 4 = 2600 */
+  maxAccel: 2600,
   /** REEF_TURN_RATE = 2.6 */
   turnRate: 2.6,
   /** REEF_TURN_SPEED_FALLOFF = 0.45 */

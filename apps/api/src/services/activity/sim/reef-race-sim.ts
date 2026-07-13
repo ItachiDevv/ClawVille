@@ -5,14 +5,14 @@
  * Per backend §4.5 + 3d-spec §2.1:
  *   - 30Hz fixed-tick (race kinematics tolerate lower rate; halves
  *     bandwidth vs Bumper's 60Hz)
- *   - Bespoke oval, ~6000wu perimeter, 2 laps default
+ *   - Legacy bespoke oval, ~9036wu perimeter, 2 laps default
  *   - 12 checkpoints in fixed sequence (0=finish/start; 1..11 around)
  *   - Out-of-order checkpoint crossings silently ignored — kills
  *     teleport-to-finish exploits at the source
- *   - MIN_LAP_MS = 15s; faster laps discarded + flagged
+ *   - MIN_LAP_MS = 11.5s; faster laps discarded + flagged
  *   - 6-power-up catalog (turbo-bubble, ink-slick, bubble-shield,
  *     seeker-jelly, tide-wave, whirlpool) per master plan
- *   - Snapshot delta @ 5Hz (every 6 ticks); keyframe @ 1Hz
+ *   - Snapshot delta target 20Hz, quantized to 15Hz (every 2 ticks); keyframe @ 1Hz
  *   - Soft round timeout 90s + 30s straggler grace; hard timeout 120s
  *   - Personal-best detection lives in chunk #7's reward pipeline; sim
  *     supplies authoritative `score_ms` finish times via
@@ -150,13 +150,11 @@ export const REEF_SIM_HZ = REEF_TICK_HZ;
 const REEF_TICK_MS = 1000 / REEF_SIM_HZ;
 
 /**
- * Snapshot broadcast rate (Hz). Bumped 5 → 10 (2026-04-26) → 20 (2026-04-28)
- * to halve the client-side interp segment length each time. At 30Hz sim
- * + 5.8 rad/s yaw, a 100ms (10Hz) bracket can cover ~33° of rotation that
- * the client linear-lerps over 100ms — a visible piecewise seam. 20Hz halves
- * the seam to ~16° / 50ms which is well below the perceptual jerk threshold
- * for kart-style steering. Bandwidth: 8 racers × ~50 bytes × 20Hz ≈ 8 KB/s
- * per client (comfortable). Halve client INTERP_DELAY_MS in lockstep (200 → 100).
+ * Configured snapshot target. Because the 30Hz fixed-step sim uses an integer
+ * tick divisor, round(30/20)=2 and delivery is effectively 15Hz (~66.7ms), not
+ * 20Hz/50ms. The client measures actual arrivals and adapts its interpolation
+ * delay instead of assuming this target cadence. Approximate payload bandwidth:
+ * 8 racers × ~50 bytes × 15Hz ≈ 6 KB/s per client.
  */
 const REEF_SNAPSHOT_HZ = 20;
 const REEF_TICKS_PER_SNAPSHOT = Math.round(REEF_SIM_HZ / REEF_SNAPSHOT_HZ);
@@ -1442,11 +1440,11 @@ class ReefRaceSim {
     // Phase 3 (audit C-IMPL-1) — REAL velocity-delta validator. Compares
     // velocity captured BEFORE any mutation in this method against velocity
     // AFTER the acceleration step. The legitimate per-tick delta is bounded
-    // by REEF_MAX_ACCEL × dt × max(accelMult, 1/turnRadiusMult) ≈ 83 wu/s
+    // by REEF_MAX_ACCEL × dt × max(accelMult, 1/turnRadiusMult) ≈ 108 wu/s
     // (worst case at level-50 agility / strength); the validator allows
-    // REEF_MAX_ACCEL × dt × REEF_KINEMATIC_TOLERANCE ≈ 140 wu/s — leaving
-    // 56 wu/s of headroom to catch synthetic per-tick velocity tampering.
-    // Secondary speed cap (REEF_MAX_SPEED × tolerance = 1050 wu/s) catches
+    // REEF_MAX_ACCEL × dt × REEF_KINEMATIC_TOLERANCE ≈ 182 wu/s — leaving
+    // 74 wu/s of headroom to catch synthetic per-tick velocity tampering.
+    // Secondary speed cap (REEF_MAX_SPEED × tolerance = 1365 wu/s) catches
     // sustained over-speed even if the per-tick delta stays under threshold.
     const velCheck = validateReefVelocityDelta(
       prevVelocityBeforeIntent,
@@ -1700,7 +1698,7 @@ class ReefRaceSim {
     body.vy *= REEF_DRAG;
 
     // Phase 1 (audit S5) — boost-gated hard velocity cap. Backstop only;
-    // never clamps non-boosted bodies. Max legit speed at 1.85× = 925 wu/s.
+    // never clamps non-boosted bodies. Max legit speed at 1.85× = 1202.5 wu/s.
     //
     // Phase 2 — gate widens to include ALL positive kinematic effects so the
     // cap covers the new combined-boost ceiling produced by the §2.3 cap math.
