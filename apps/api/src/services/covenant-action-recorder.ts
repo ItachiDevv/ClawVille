@@ -45,6 +45,7 @@ export type CovenantAction =
   | 'bounty.reject'
   | 'bounty.settle_requested'
   | 'bounty.settle'
+  | 'bounty.refund_requested'
   | 'bounty.refund';
 
 /** Who performed the action, when the call site has a resolved identity. */

@@ -118,7 +118,18 @@ describe('computeRecordHash', () => {
 // DB-gated: recorder atomicity, ledger coupling, sealer, tamper trigger
 // ---------------------------------------------------------------------------
 
-const describeIfDb = process.env.DATABASE_URL ? describe : describe.skip;
+// OPT-IN gate (Codex round 5 HIGH #5): covenant records are IMMUTABLE — a
+// mutating suite run against a shared long-lived DB permanently injects
+// synthetic actions into the stream (and an accidental prod DATABASE_URL
+// would contaminate production irreversibly). Unlike the repo's other DB
+// suites (whose fixtures are deletable), this one therefore requires the
+// EXPLICIT flag below in addition to DATABASE_URL. Point it at a disposable
+// or pre-launch database only; the destructive forged-row test additionally
+// needs COVENANT_DESTRUCTIVE_TESTS=1.
+const describeIfDb =
+  process.env.DATABASE_URL && process.env.COVENANT_STREAM_TESTS === '1'
+    ? describe
+    : describe.skip;
 
 describeIfDb('covenant stream (DB)', () => {
   test('recordCovenantAction inserts a row whose payload_hash is recomputable', async () => {
