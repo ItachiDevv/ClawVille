@@ -149,7 +149,12 @@ describe('quest admin + tutorial routes — unchanged human-only surface', () =>
     expect(res.status).toBe(401);
   });
 
-  it('tutorial claim stays cookie-gated (agent bearer is NOT accepted)', async () => {
+  it('tutorial claim is cookie-gated TODAY (tracked parity debt, not an endorsement)', async () => {
+    // The tutorial ladder pays real vCLAW on a Lucia-only route — a Rule E5
+    // parity gap OUTSIDE this branch's scope (the economy-audit P2 item was
+    // the dev quest board). Tracked as follow-up debt in
+    // docs/economy-audit-punchlist-2026-07-11.md (P2b); this test asserts the
+    // CURRENT behavior so the eventual fix flips it deliberately.
     const res = await app.request('/api/quests/tutorial/say-hi/claim', {
       method: 'POST',
       headers: {
@@ -254,6 +259,94 @@ describeIfDb2('quest race guards (DB)', () => {
     } finally {
       await db.delete(questRewards).where(eq(questRewards.questId, quest.id));
       await db.delete(questSubmissions).where(eq(questSubmissions.questId, quest.id));
+      await db.delete(quests).where(eq(quests.id, quest.id));
+    }
+  });
+
+  it('round 3: one payout per (quest, avatar) — duplicate reward 23505; approved row blocks the accept predicate', async () => {
+    const { db, quests, questSubmissions, questRewards, avatars } = await import('@clawville/database');
+    const { eq, and, sql } = await import('drizzle-orm');
+    const [quest] = await db
+      .insert(quests)
+      .values({
+        title: 'REPAYOUT-TEST quest (auto-cleanup)',
+        description: 'test-only row for the per-avatar repeat-payout guard',
+        tier: 'side_quest',
+        status: 'draft',
+        tokenReward: 1,
+        maxCompletions: 5,
+      })
+      .returning();
+    const [anyAvatar] = await db.select({ id: avatars.id }).from(avatars).limit(1);
+    try {
+      const [subA] = await db
+        .insert(questSubmissions)
+        .values({ questId: quest.id, avatarId: anyAvatar.id, status: 'approved' })
+        .returning();
+      // The accept route/action predicate: any non-rejected row blocks.
+      const blocking = await db
+        .select({ id: questSubmissions.id })
+        .from(questSubmissions)
+        .where(
+          and(
+            eq(questSubmissions.questId, quest.id),
+            eq(questSubmissions.avatarId, anyAvatar.id),
+            sql`${questSubmissions.status} <> 'rejected'`,
+          ),
+        );
+      expect(blocking.length).toBe(1);
+
+      // DB layer: a second reward for the same (quest, avatar) — even via a
+      // DIFFERENT submission — is refused by quest_rewards_avatar_quest_unique.
+      const [subB] = await db
+        .insert(questSubmissions)
+        .values({ questId: quest.id, avatarId: anyAvatar.id, status: 'rejected' })
+        .returning();
+      await db.insert(questRewards).values({
+        submissionId: subA.id, avatarId: anyAvatar.id, questId: quest.id, tokensAwarded: 1,
+      });
+      const dup = await db
+        .insert(questRewards)
+        .values({ submissionId: subB.id, avatarId: anyAvatar.id, questId: quest.id, tokensAwarded: 1 })
+        .then(() => 'ok')
+        .catch((e: { code?: string; cause?: { code?: string } }) =>
+          e?.code === '23505' || e?.cause?.code === '23505' ? 'dup' : Promise.reject(e),
+        );
+      expect(dup).toBe('dup');
+    } finally {
+      await db.delete(questRewards).where(eq(questRewards.questId, quest.id));
+      await db.delete(questSubmissions).where(eq(questSubmissions.questId, quest.id));
+      await db.delete(quests).where(eq(quests.id, quest.id));
+    }
+  });
+
+  it('round 3: expired active quest fails the accept lookup predicate', async () => {
+    const { db, quests } = await import('@clawville/database');
+    const { eq, and, sql } = await import('drizzle-orm');
+    const [quest] = await db
+      .insert(quests)
+      .values({
+        title: 'EXPIRY-TEST quest (auto-cleanup)',
+        description: 'test-only row for the expiry accept guard',
+        tier: 'side_quest',
+        status: 'active',
+        tokenReward: 1,
+        expiresAt: new Date(Date.now() - 60_000),
+      })
+      .returning();
+    try {
+      const rows = await db
+        .select({ id: quests.id })
+        .from(quests)
+        .where(
+          and(
+            eq(quests.id, quest.id),
+            eq(quests.status, 'active'),
+            sql`(${quests.expiresAt} IS NULL OR ${quests.expiresAt} > now())`,
+          ),
+        );
+      expect(rows.length).toBe(0);
+    } finally {
       await db.delete(quests).where(eq(quests.id, quest.id));
     }
   });
