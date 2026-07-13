@@ -37,6 +37,7 @@ export type CovenantAction =
   | 'quest.approve'
   | 'quest.reject'
   | 'bounty.create'
+  | 'bounty.create_failed'
   | 'bounty.claim'
   | 'bounty.submit'
   | 'bounty.approve'
@@ -56,6 +57,14 @@ export interface CovenantActionInput {
   actorKind?: CovenantActorKind | null;
   /** Action detail. Must be JSON-serializable; keys are canonicalized. */
   payload: Record<string, unknown>;
+  /**
+   * Business idempotency key for exactly-once actions whose external legs are
+   * RETRYABLE (bounty settle/refund/create_failed — e.g. `bounty:<id>:settle`).
+   * A retry's duplicate insert no-ops (partial unique index) instead of
+   * appending a second immutable record (Codex round 1 HIGH #2). Omit for
+   * ordinary records.
+   */
+  dedupeKey?: string;
 }
 
 /**
@@ -98,13 +107,13 @@ export function covenantPayloadHash(payload: Record<string, unknown>): string {
 export async function recordCovenantAction(
   input: CovenantActionInput,
   tx?: LedgerTx,
-): Promise<{ id: string }> {
+): Promise<{ id: string | null; deduped: boolean }> {
   const canonicalStr = canonicalJson(input.payload);
   const canonical = JSON.parse(canonicalStr) as Record<string, unknown>;
   const payloadHash = createHash('sha256').update(canonicalStr, 'utf8').digest('hex');
 
   const executor = tx ?? db;
-  const [row] = await executor
+  const rows = await executor
     .insert(covenantActionRecords)
     .values({
       action: input.action,
@@ -113,8 +122,17 @@ export async function recordCovenantAction(
       actorKind: input.actorKind ?? null,
       payload: canonical,
       payloadHash,
+      dedupeKey: input.dedupeKey ?? null,
     })
+    // A dedupe-key collision means a retry already recorded this action —
+    // no-op instead of a second immutable record. Rows without a dedupeKey
+    // never collide (NULLs are distinct in the partial unique index).
+    // Targetless ON CONFLICT: Postgres cannot infer a PARTIAL unique index
+    // from a bare column target, and the only other constraint (uuid PK,
+    // gen_random) can never collide in practice.
+    .onConflictDoNothing()
     .returning({ id: covenantActionRecords.id });
 
-  return { id: row.id };
+  if (rows.length === 0) return { id: null, deduped: true };
+  return { id: rows[0].id, deduped: false };
 }

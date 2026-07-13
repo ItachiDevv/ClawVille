@@ -181,6 +181,9 @@ export async function bookComposedBountyPaid(
         action: 'bounty.settle',
         subjectType: 'avatar',
         subjectId: input.hunterAvatarId,
+        // The CAS already guarantees exactly-once; the dedupe key is
+        // belt-and-braces against any future second settle author.
+        dedupeKey: `bounty:${input.bountyId}:settle`,
         payload: {
           bountyId: input.bountyId,
           rail: 'sap-payai-composed',

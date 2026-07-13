@@ -798,7 +798,28 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
         // went out, no on-chain vault exists, nothing to orphan. Safe to DELETE the
         // just-inserted row (its bounty_rewards children cascade via FK) and fail
         // the create — insert→open→delete-on-fail keeps the DB consistent.
-        await db.delete(bounties).where(eq(bounties.id, bounty.id));
+        // Covenant compensation (Codex covenant round 1 HIGH #3): the append-only
+        // bounty.create record survives this delete, so partners would forever
+        // observe a creation for a nonexistent bounty. Append the terminal
+        // create_failed event ATOMICALLY with the delete (idempotent via dedupe).
+        await db.transaction(async (tx) => {
+          await tx.delete(bounties).where(eq(bounties.id, bounty.id));
+          await recordCovenantAction(
+            {
+              action: 'bounty.create_failed',
+              subjectType: 'avatar',
+              subjectId: avatar.id,
+              actorKind: 'system',
+              payload: {
+                bountyId: bounty.id,
+                reason: 'vault_open_failed_pre_broadcast',
+                code: opened.code,
+              },
+              dedupeKey: `bounty:${bounty.id}:create_failed`,
+            },
+            tx,
+          );
+        });
         throw new HTTPException(escrowFailureStatus(opened.code), {
           message: `USDC bounty vault could not be opened (${opened.code}): ${opened.message}. The bounty was not created.`,
         });
@@ -1097,6 +1118,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
             attemptId: attempt.id,
             paymentRail: bounty.paymentRail,
             tokenReward: bounty.tokenReward,
+            reviewerAvatarId: reviewerAvatar.id,
             ...(reviewNote ? { reviewNote } : {}),
           },
         },
@@ -1518,6 +1540,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
             subjectType: 'avatar',
             subjectId: hunterAvatarId,
             actorKind: toActorKind(c.get('identity').kind),
+            dedupeKey: `bounty:${bounty.id}:settle`,
             payload: {
               bountyId: bounty.id,
               rail: 'sap-usdc',
@@ -1625,6 +1648,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
           payload: {
             bountyId: bounty.id,
             attemptId: attempt.id,
+            reviewerAvatarId: reviewerAvatar.id,
             ...(reviewNote ? { reviewNote } : {}),
           },
         },
@@ -1833,6 +1857,7 @@ bountyRoutes.post('/:id/admin-fail-refund', adminOnly, async (c) => {
         subjectType: 'avatar',
         subjectId: bounty.creatorId,
         actorKind: 'admin',
+        dedupeKey: `bounty:${bounty.id}:refund`,
         payload: {
           bountyId: bounty.id,
           rail: isComposed ? 'sap-payai-composed' : 'sap-usdc',
@@ -2112,6 +2137,11 @@ bountyRoutes.post('/:id/submit', requireAuthOrAgentSession, requireNonGuestIdent
   const now = new Date();
 
   const updated = await db.transaction(async (tx) => {
+    // Compare-and-set (Codex covenant round 1 HIGH #1): the pre-tx find is a
+    // stale read — a review/abandon landing between find and update would be
+    // OVERWRITTEN back to 'submitted' (re-payable) by an id-only predicate.
+    // The allowed source statuses live INSIDE the WHERE; a raced-away row
+    // matches 0 rows and nothing (row or record) is written.
     const [row] = await tx
       .update(bountyAttempts)
       .set({
@@ -2121,9 +2151,16 @@ bountyRoutes.post('/:id/submit', requireAuthOrAgentSession, requireNonGuestIdent
         submittedAt: now,
         updatedAt: now,
       })
-      .where(eq(bountyAttempts.id, attempt.id))
+      .where(
+        and(
+          eq(bountyAttempts.id, attempt.id),
+          eq(bountyAttempts.bountyId, id),
+          eq(bountyAttempts.hunterId, avatar.id),
+          sql`${bountyAttempts.status} IN ('claimed', 'in_progress')`,
+        ),
+      )
       .returning();
-    if (!row) return row; // raced away (reviewed between find and CAS) — no record
+    if (!row) return row; // raced away (reviewed/abandoned between find and CAS) — no record
     // Covenant record — same tx as the submit flip. The note lives on the
     // attempt row; the record binds it by sha256 + length.
     await recordCovenantAction(
@@ -2146,6 +2183,13 @@ bountyRoutes.post('/:id/submit', requireAuthOrAgentSession, requireNonGuestIdent
     );
     return row;
   });
+
+  if (!updated) {
+    throw new HTTPException(409, {
+      message:
+        'This attempt is no longer submittable (it was reviewed or abandoned while you were submitting).',
+    });
+  }
 
   return c.json({
     success: true,
@@ -2432,11 +2476,36 @@ bountyRoutes.delete('/:id', requireAuthOrAgentSession, requireNonGuestIdentity, 
       });
     }
 
-    const [claimed] = await db
-      .update(bounties)
-      .set({ status: 'cancelled', updatedAt: new Date() })
-      .where(and(eq(bounties.id, id), eq(bounties.status, 'open')))
-      .returning();
+    const claimed = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(bounties)
+        .set({ status: 'cancelled', updatedAt: new Date() })
+        .where(and(eq(bounties.id, id), eq(bounties.status, 'open')))
+        .returning();
+      if (!row) return undefined;
+      // Covenant record (Codex covenant round 1 HIGH #2): this cancel just
+      // refunded REAL on-chain USDC to the creator — it must appear in the
+      // stream. Same dedupe key as admin-fail-refund: a bounty refunds once,
+      // whichever path fires.
+      await recordCovenantAction(
+        {
+          action: 'bounty.refund',
+          subjectType: 'avatar',
+          subjectId: bounty.creatorId,
+          actorKind: toActorKind(c.get('identity').kind),
+          dedupeKey: `bounty:${bounty.id}:refund`,
+          payload: {
+            bountyId: bounty.id,
+            rail: 'sap-payai-composed',
+            reason: 'creator_cancelled',
+            tokenReward: bounty.tokenReward,
+            ...(bounty.escrowPda ? { escrowPda: bounty.escrowPda } : {}),
+          },
+        },
+        tx,
+      );
+      return row;
+    });
     if (!claimed) {
       throw new HTTPException(409, {
         message: 'Bounty already cancelled or no longer open',

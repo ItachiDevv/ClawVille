@@ -23,7 +23,8 @@
  * NUL-separated style):
  *   record_hash = sha256(
  *     prev_hash ‖0‖ payload_hash ‖0‖ action ‖0‖ subject_type ‖0‖ subject_id
- *     ‖0‖ chain_position(decimal) ‖0‖ created_at(ISO-8601 UTC ms)
+ *     ‖0‖ actor_kind('' when null) ‖0‖ chain_position(decimal)
+ *     ‖0‖ created_at(ISO-8601 UTC ms)
  *   )   — genesis prev_hash = 64 zeros.
  * Every field is either stored on the row or recomputable from it
  * (payload_hash = sha256(canonical sorted-key JSON of payload)), so a verifier
@@ -37,6 +38,8 @@
 import { createHash } from 'crypto';
 import { sql } from 'drizzle-orm';
 import { db, covenantActionRecords, covenantSealBatches } from '@clawville/database';
+import { covenantPayloadHash } from './covenant-action-recorder';
+import { alertError } from './alert-error';
 
 const SEAL_INTERVAL_MS = 60_000;
 /** Don't seal rows younger than this — see the watermark rationale above. */
@@ -52,11 +55,16 @@ const SEALER_LOCK_KEY = 7_413_002_601;
 
 const GENESIS_HASH = '0'.repeat(64);
 
+/** Rows already paged for a payload-hash mismatch (once per process). */
+const alertedMismatchIds = new Set<string>();
+
 type UnsealedRow = {
   id: string;
   action: string;
   subject_type: string;
   subject_id: string;
+  actor_kind: string | null;
+  payload: Record<string, unknown>;
   payload_hash: string;
   created_at: Date | string;
 };
@@ -73,6 +81,8 @@ export function computeRecordHash(parts: {
   action: string;
   subjectType: string;
   subjectId: string;
+  /** null (unattributed) encodes as the empty string - NUL separation keeps it unambiguous. */
+  actorKind: string | null;
   chainPosition: bigint;
   createdAtIso: string;
 }): string {
@@ -86,6 +96,9 @@ export function computeRecordHash(parts: {
   push(parts.action);
   push(parts.subjectType);
   push(parts.subjectId);
+  // Codex round 1 HIGH #4: attribution is partner-visible provenance, so it
+  // MUST be hash-committed - a mutated actor_kind must invalidate the chain.
+  push(parts.actorKind ?? '');
   push(parts.chainPosition.toString(10));
   push(parts.createdAtIso, true);
   return h.digest('hex');
@@ -117,7 +130,7 @@ export async function sealCovenantChainOnce(): Promise<number> {
     let prevHash = head ? head.record_hash : GENESIS_HASH;
 
     const rows = await tx.execute<UnsealedRow>(
-      sql`SELECT id, action, subject_type, subject_id, payload_hash, created_at
+      sql`SELECT id, action, subject_type, subject_id, actor_kind, payload, payload_hash, created_at
           FROM covenant_action_records
           WHERE chain_position IS NULL
             AND created_at < now() - make_interval(secs => ${SEAL_WATERMARK_MS / 1000})
@@ -127,7 +140,31 @@ export async function sealCovenantChainOnce(): Promise<number> {
     if (rows.length === 0) return 0;
 
     const firstPosition = position + 1n;
+    let sealedCount = 0;
     for (const row of rows) {
+      // Codex round 1 HIGH #5: never trust the STORED payload_hash - recompute
+      // from the stored payload before chaining. A mismatch means an injected /
+      // corrupted row; sealing it would launder the forgery into a valid chain.
+      // Skip it (stays unsealed = a permanent, visible anomaly) + page ops.
+      const recomputed = covenantPayloadHash(row.payload);
+      if (recomputed !== row.payload_hash) {
+        // One CRITICAL page per row per process — the row is re-scanned every
+        // pass (it never seals), so an unguarded alert would fire every 60s.
+        if (!alertedMismatchIds.has(row.id)) {
+          alertedMismatchIds.add(row.id);
+          void alertError({
+            severity: 'critical',
+            source: 'covenant-chain-sealer',
+            message:
+              `covenant_action_records ${row.id}: stored payload_hash does not match ` +
+              `the stored payload (recomputed ${recomputed.slice(0, 12)}..., stored ` +
+              `${row.payload_hash.slice(0, 12)}...). Row REFUSED from the chain - ` +
+              `investigate for injection/corruption.`,
+            context: { recordId: row.id, action: row.action, subjectId: row.subject_id },
+          });
+        }
+        continue;
+      }
       position += 1n;
       const recordHash = computeRecordHash({
         prevHash,
@@ -135,6 +172,7 @@ export async function sealCovenantChainOnce(): Promise<number> {
         action: row.action,
         subjectType: row.subject_type,
         subjectId: row.subject_id,
+        actorKind: row.actor_kind,
         chainPosition: position,
         createdAtIso: toCanonicalIso(row.created_at),
       });
@@ -148,17 +186,22 @@ export async function sealCovenantChainOnce(): Promise<number> {
         })
         .where(sql`${covenantActionRecords.id} = ${row.id}`);
       prevHash = recordHash;
+      sealedCount += 1;
     }
+
+    // Every eligible row may have been refused (hash mismatch) - no chain
+    // movement, no batch row.
+    if (sealedCount === 0) return 0;
 
     await tx.insert(covenantSealBatches).values({
       firstPosition,
       lastPosition: position,
-      recordCount: BigInt(rows.length),
+      recordCount: BigInt(sealedCount),
       batchRoot: prevHash, // the new chain head
       prevBatchRoot: head ? head.record_hash : GENESIS_HASH,
     });
 
-    return rows.length;
+    return sealedCount;
   });
 }
 

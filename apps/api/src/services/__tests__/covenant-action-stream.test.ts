@@ -61,6 +61,7 @@ describe('computeRecordHash', () => {
     action: 'economy.credit',
     subjectType: 'avatar',
     subjectId: '11111111-1111-1111-1111-111111111111',
+    actorKind: null as string | null,
     chainPosition: 1n,
     createdAtIso: '2026-07-13T00:00:00.000Z',
   };
@@ -72,6 +73,7 @@ describe('computeRecordHash', () => {
       base.action,
       base.subjectType,
       base.subjectId,
+      '', // actorKind null encodes as the empty string
       '1',
       base.createdAtIso,
     ];
@@ -89,6 +91,11 @@ describe('computeRecordHash', () => {
     expect(computeRecordHash({ ...base, payloadHash: 'b'.repeat(64) })).not.toBe(h0);
     expect(computeRecordHash({ ...base, action: 'economy.debit' })).not.toBe(h0);
     expect(computeRecordHash({ ...base, subjectId: 'x' })).not.toBe(h0);
+    // Codex round 1 HIGH #4: attribution mutation must invalidate the hash.
+    expect(computeRecordHash({ ...base, actorKind: 'human' })).not.toBe(h0);
+    expect(computeRecordHash({ ...base, actorKind: 'admin' })).not.toBe(
+      computeRecordHash({ ...base, actorKind: 'agent' }),
+    );
     expect(computeRecordHash({ ...base, chainPosition: 2n })).not.toBe(h0);
     expect(computeRecordHash({ ...base, createdAtIso: '2026-07-13T00:00:00.001Z' })).not.toBe(h0);
   });
@@ -124,10 +131,11 @@ describeIfDb('covenant stream (DB)', () => {
       actorKind: 'system',
       payload: { z: 1, a: { b: [2, 1] }, marker },
     });
+    expect(id).toBeTruthy();
     const [row] = await db
       .select()
       .from(covenantActionRecords)
-      .where(eq(covenantActionRecords.id, id))
+      .where(eq(covenantActionRecords.id, id!))
       .limit(1);
     expect(row).toBeDefined();
     expect(row.actorKind).toBe('system');
@@ -196,7 +204,7 @@ describeIfDb('covenant stream (DB)', () => {
 
     const rows = await db.execute<any>(
       sql`SELECT chain_position, prev_hash, record_hash, payload_hash, action,
-                 subject_type, subject_id, created_at
+                 subject_type, subject_id, actor_kind, created_at
           FROM covenant_action_records
           WHERE subject_id = ${marker}
           ORDER BY seq ASC`,
@@ -213,6 +221,7 @@ describeIfDb('covenant stream (DB)', () => {
           action: r.action,
           subjectType: r.subject_type,
           subjectId: r.subject_id,
+          actorKind: r.actor_kind,
           chainPosition: BigInt(r.chain_position),
           createdAtIso: toCanonicalIso(r.created_at),
         }),
@@ -248,6 +257,7 @@ describeIfDb('covenant stream (DB)', () => {
       subjectId: marker,
       payload: { marker },
     });
+    expect(id).toBeTruthy();
     // drizzle's execute() returns a lazy thenable, not a Promise — bun's
     // .rejects mishandles it, so assert via try/catch.
     let updateErr: unknown = null;
@@ -271,8 +281,81 @@ describeIfDb('covenant stream (DB)', () => {
     const [row] = await db
       .select({ id: covenantActionRecords.id })
       .from(covenantActionRecords)
-      .where(eq(covenantActionRecords.id, id));
+      .where(eq(covenantActionRecords.id, id!));
     expect(row).toBeDefined();
+  });
+
+  test('dedupe key: a retry appends exactly one record (Codex r1 HIGH #2)', async () => {
+    const { db, covenantActionRecords, eq } = await import('@clawville/database');
+    const marker = `dedupe-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const key = `test:${marker}:settle`;
+    const first = await recordCovenantAction({
+      action: 'bounty.settle',
+      subjectType: 'system',
+      subjectId: marker,
+      payload: { marker, try: 1 },
+      dedupeKey: key,
+    });
+    const second = await recordCovenantAction({
+      action: 'bounty.settle',
+      subjectType: 'system',
+      subjectId: marker,
+      payload: { marker, try: 2 },
+      dedupeKey: key,
+    });
+    expect(first.deduped).toBe(false);
+    expect(first.id).toBeTruthy();
+    expect(second.deduped).toBe(true);
+    expect(second.id).toBeNull();
+    const rows = await db
+      .select({ id: covenantActionRecords.id })
+      .from(covenantActionRecords)
+      .where(eq(covenantActionRecords.subjectId, marker));
+    expect(rows.length).toBe(1);
+  });
+
+  test('pre-sealed INSERT is refused by the guard trigger (Codex r1 HIGH #5)', async () => {
+    const { db, sql } = await import('@clawville/database');
+    const marker = `presealed-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    let err: unknown = null;
+    try {
+      await db.execute(
+        sql`INSERT INTO covenant_action_records
+              (action, subject_type, subject_id, payload, payload_hash,
+               chain_position, prev_hash, record_hash, sealed_at)
+            VALUES ('economy.credit', 'system', ${marker}, '{}'::jsonb,
+                    ${'a'.repeat(64)}, 999999999, ${'0'.repeat(64)},
+                    ${'b'.repeat(64)}, now())`,
+      );
+    } catch (e) {
+      err = e;
+    }
+    expect(String(err)).toMatch(/inserted unsealed/);
+  });
+
+  test('sealer refuses a row whose stored payload_hash mismatches (Codex r1 HIGH #5)', async () => {
+    const { db, covenantActionRecords, sql } = await import('@clawville/database');
+    const marker = `mismatch-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const old = new Date(Date.now() - 60_000);
+    // Forged row: stored hash does NOT match the stored payload.
+    await db.insert(covenantActionRecords).values({
+      action: 'economy.credit',
+      subjectType: 'system',
+      subjectId: marker,
+      payload: { marker, forged: true },
+      payloadHash: 'f'.repeat(64),
+      createdAt: old,
+    });
+    for (let i = 0; i < 50; i++) {
+      const sealed = await sealCovenantChainOnce();
+      if (sealed === 0) break;
+    }
+    const rows = await db.execute<any>(
+      sql`SELECT chain_position FROM covenant_action_records WHERE subject_id = ${marker}`,
+    );
+    expect(rows.length).toBe(1);
+    // Refused from the chain — permanently unsealed, visible anomaly.
+    expect(rows[0].chain_position).toBeNull();
   });
 
   test('ledger credit/debit emit coupled economy records atomically', async () => {
