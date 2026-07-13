@@ -71,6 +71,13 @@ export const covenantActionRecords = pgTable(
     payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
     /** sha256 hex of the canonical (sorted-key) JSON encoding of `payload`. */
     payloadHash: char('payload_hash', { length: 64 }).notNull(),
+    /**
+     * Business idempotency key for exactly-once actions driven by RETRYABLE
+     * external legs (bounty settle/refund/create_failed — e.g.
+     * `bounty:<id>:settle`). NULL for ordinary records. Partial unique index:
+     * a retry's duplicate insert no-ops instead of double-recording.
+     */
+    dedupeKey: text('dedupe_key'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 
     // ── seal columns — NULL until the sealer chains the row (one-shot write) ──
@@ -91,6 +98,9 @@ export const covenantActionRecords = pgTable(
     chainPositionUnique: uniqueIndex('covenant_action_records_chain_position_unique').on(
       t.chainPosition,
     ),
+    // Partial (WHERE dedupe_key IS NOT NULL) in the migration; drizzle models
+    // the uniqueness — Postgres treats NULLs as distinct so plain records pass.
+    dedupeKeyUnique: uniqueIndex('covenant_action_records_dedupe_key_unique').on(t.dedupeKey),
     // Partner reads: cursor by chain_position, filter by action / subject.
     idxAction: index('idx_covenant_records_action').on(t.action, t.chainPosition),
     idxSubject: index('idx_covenant_records_subject').on(t.subjectId, t.chainPosition),

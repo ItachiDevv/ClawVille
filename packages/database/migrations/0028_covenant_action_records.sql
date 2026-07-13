@@ -25,6 +25,11 @@ CREATE TABLE IF NOT EXISTS covenant_action_records (
   actor_kind text,
   payload jsonb NOT NULL,
   payload_hash char(64) NOT NULL,
+  -- Business idempotency key for exactly-once actions driven by RETRYABLE
+  -- external legs (bounty settle/refund/create_failed). NULL for ordinary
+  -- records; the partial unique index below makes a retry's duplicate insert
+  -- a no-op (Codex round 1 HIGH #2).
+  dedupe_key text,
   created_at timestamptz NOT NULL DEFAULT now(),
   chain_position bigint,
   prev_hash char(64),
@@ -37,6 +42,12 @@ CREATE TABLE IF NOT EXISTS covenant_action_records (
     (chain_position IS NOT NULL AND prev_hash IS NOT NULL AND record_hash IS NOT NULL AND sealed_at IS NOT NULL)
   )
 );
+
+-- Idempotent re-run path (the table may pre-exist without the column).
+ALTER TABLE covenant_action_records ADD COLUMN IF NOT EXISTS dedupe_key text;
+
+CREATE UNIQUE INDEX IF NOT EXISTS covenant_action_records_dedupe_key_unique
+  ON covenant_action_records (dedupe_key) WHERE dedupe_key IS NOT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS covenant_action_records_seq_unique
   ON covenant_action_records (seq);
@@ -73,6 +84,17 @@ BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'covenant_action_records is append-only — DELETE refused';
   END IF;
+  -- Records must be INSERTED unsealed — only the sealer's UPDATE may populate
+  -- the seal columns (Codex round 1 HIGH #5: without this, any code path with
+  -- INSERT privilege could inject a pre-sealed record and the sealer would
+  -- extend the forged head).
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.chain_position IS NOT NULL OR NEW.prev_hash IS NOT NULL
+       OR NEW.record_hash IS NOT NULL OR NEW.sealed_at IS NOT NULL THEN
+      RAISE EXCEPTION 'covenant_action_records must be inserted unsealed — seal columns are sealer-only';
+    END IF;
+    RETURN NEW;
+  END IF;
   -- Identity/payload columns are frozen at insert.
   IF NEW.id IS DISTINCT FROM OLD.id
      OR NEW.seq IS DISTINCT FROM OLD.seq
@@ -82,6 +104,7 @@ BEGIN
      OR NEW.actor_kind IS DISTINCT FROM OLD.actor_kind
      OR NEW.payload IS DISTINCT FROM OLD.payload
      OR NEW.payload_hash IS DISTINCT FROM OLD.payload_hash
+     OR NEW.dedupe_key IS DISTINCT FROM OLD.dedupe_key
      OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
     RAISE EXCEPTION 'covenant_action_records identity columns are immutable';
   END IF;
@@ -100,7 +123,7 @@ $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS covenant_action_records_guard_trg ON covenant_action_records;
 CREATE TRIGGER covenant_action_records_guard_trg
-  BEFORE UPDATE OR DELETE ON covenant_action_records
+  BEFORE INSERT OR UPDATE OR DELETE ON covenant_action_records
   FOR EACH ROW EXECUTE FUNCTION covenant_action_records_guard();
 
 -- Seal batches are equally append-only (no legal UPDATE at all).

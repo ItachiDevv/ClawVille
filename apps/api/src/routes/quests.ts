@@ -548,6 +548,7 @@ questRoutes.post('/admin/:submissionId/review', requireAuth, async (c) => {
           payload: {
             questId: quest.id,
             submissionId: claimed.id,
+            reviewedByUserId: admin.id,
             tokensAwarded: quest.tokenReward,
             ...(quest.titleReward ? { titleAwarded: quest.titleReward } : {}),
             ...(reviewNote ? { reviewNote } : {}),
@@ -607,6 +608,7 @@ questRoutes.post('/admin/:submissionId/review', requireAuth, async (c) => {
           payload: {
             questId: row.questId,
             submissionId: row.id,
+            reviewedByUserId: admin.id,
             ...(reviewNote ? { reviewNote } : {}),
           },
         },

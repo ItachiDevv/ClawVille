@@ -45,7 +45,7 @@ export interface ClawvilleServices {
   recordCovenantAction?: (
     params: CovenantActionRecordParams,
     tx?: any,
-  ) => Promise<{ id: string }>;
+  ) => Promise<{ id: string | null; deduped: boolean }>;
 }
 
 export interface ClawvilleActionState {
