@@ -36,7 +36,7 @@ import {
  * `covenant_seal_batches` are what a future on-chain `anchor_receipt_batch`
  * anchors (see docs/covenant-utilization-audit-2026-07-03.md roadmap #2).
  *
- * TAMPER GUARD: migration 0028 installs a trigger forbidding DELETE and any
+ * TAMPER GUARD: migration 0029 installs a trigger forbidding DELETE and any
  * UPDATE that touches identity/payload columns (only the one-shot NULL→value
  * seal-column assignment is allowed). In-DB defense-in-depth; real
  * tamper-evidence lands with on-chain anchoring (later phase).
