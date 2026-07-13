@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import type { AgentPayment } from '@clawville/database';
 import type { PaymentRequirements } from '@x402/core/types';
 import type { AgentPayDb, AgentPayDeps, AgentPayRecipient } from '../agent-pay';
@@ -6,34 +6,6 @@ import type {
   ExecutePreparedExactPaymentOutcome,
   PreparedCustodialExactPayment,
 } from '../custodial-x402';
-
-// This suite injects every money/DB dependency. Mock the production adapters
-// before loading the service so the durable machine can run even when Bun's
-// Windows workspace junctions are unavailable in the test environment.
-mock.module('@solana/web3.js', () => ({ Connection: class Connection {} }));
-mock.module('@clawville/database', () => ({
-  db: {}, sql: () => undefined, eq: () => undefined, and: () => undefined,
-  agentPayments: {}, wallets: {}, avatars: {}, agentBots: {}, users: {},
-}));
-mock.module('../keypair-vault', () => ({ decryptWalletRow: async () => null }));
-mock.module('../solana-token-balance', () => ({ readSplTokenBalance: async () => ({ amountAtomic: 0n }) }));
-mock.module('../claw-token-ledger', () => ({ mintEarned: async () => ({ ledgerId: '', balanceAfter: 0 }) }));
-mock.module('../x402-config', () => ({
-  loadX402Config: () => ({}),
-  isHostedPayAiFacilitatorUrl: () => false,
-}));
-mock.module('../x402-payai', () => ({
-  resolveFacilitatorFeePayer: async () => null,
-  usdCentsToUsdcAtomic: (cents: number) => String(cents * 10_000),
-  usdToCt: (cents: number) => cents,
-  usdcMintForNetwork: () => '',
-  SOLANA_DEVNET_CAIP2: 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1',
-  SOLANA_MAINNET_CAIP2: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
-}));
-mock.module('../custodial-x402', () => ({
-  prepareCustodialExactPayment: async () => { throw new Error('must inject prepare'); },
-  executePreparedExactPayment: async () => { throw new Error('must inject execute'); },
-}));
 
 const { payAgent } = await import('../agent-pay');
 

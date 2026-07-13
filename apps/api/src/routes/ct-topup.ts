@@ -663,6 +663,23 @@ async function runTopupCredit(row: TopupRow, avatarId: string): Promise<TopupOut
   }
 }
 
+/**
+ * Resume the existing captured-top-up credit machine after the reconciler has
+ * durably moved a verified row to `settling+tx_signature`. Keeping this as a
+ * narrow exported adapter avoids re-deriving ledger provenance, usd_basis, or
+ * the flip+credit transaction outside the settle machine.
+ */
+export async function fulfillReconciledTopup(topupId: string): Promise<TopupOutcome> {
+  const row = await db.query.ctTopups.findFirst({ where: eq(ctTopups.id, topupId) });
+  if (!row || row.status !== 'settling' || !row.txSignature) {
+    return {
+      httpStatus: 409,
+      json: { error: 'settle_in_flight', code: 'settle_in_flight' },
+    };
+  }
+  return runTopupCredit(row, row.avatarId);
+}
+
 /** Release a settling claim back to pending (a transient, NO-money-moved
  *  facilitator failure) so a retry can re-claim. Checked to the claim holder. */
 async function releaseTopupClaim(topupId: string, settlingId: string): Promise<void> {

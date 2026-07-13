@@ -1,22 +1,38 @@
 /**
- * x402 settle reconciler — runnable entry (Codex round-2 MEDIUM, DRY-RUN).
+ * x402 settle reconciler operator CLI.
  *
- * Thin wrapper over `apps/api/src/services/x402-reconcile.ts` (the testable
- * logic). Enumerates every `reconcile` row across x402_checkouts + ct_topups,
- * classifies each into a resolution recommendation, and logs it. NEVER mutates a
- * row or touches the chain-write path — `RECONCILE_APPLY=true` makes it refuse.
- *
- * Run: `bun apps/api/scripts/x402/reconcile-checkouts.ts` (reads DATABASE_URL).
+ * Default: read-only scan.
+ * Apply:   RECONCILE_APPLY=true bun scripts/x402/reconcile-checkouts.ts --apply
+ * Single:  append --row <x402_checkouts|ct_topups|agent_payments>:<id>
  */
 
-import { runReconcileScan } from '../../src/services/x402-reconcile';
+import {
+  parseReconcileCliArgs,
+  runReconcileScan,
+} from '../../src/services/x402-reconcile';
 
-runReconcileScan()
-  .then((r) => {
-    console.log(`[reconcile] done — ${r.scanned} row(s) classified`);
-    process.exit(0);
-  })
-  .catch((err) => {
+export { parseReconcileCliArgs };
+
+async function main(): Promise<void> {
+  const options = parseReconcileCliArgs(process.argv.slice(2));
+  const result = await runReconcileScan(options);
+  console.table(result.verdicts.map((verdict) => ({
+    table: verdict.table,
+    id: verdict.id,
+    reason: verdict.reason,
+    resolution: verdict.resolution.kind,
+    action: verdict.action,
+    detail: verdict.detail,
+  })));
+  console.log(
+    `[reconcile] done — scanned=${result.scanned} applied=${result.summary.applied} ` +
+      `skipped=${result.summary.skipped} manual=${result.summary.manual}`,
+  );
+}
+
+if (import.meta.main) {
+  main().catch((err) => {
     console.error('[reconcile] scan failed:', err);
     process.exit(1);
   });
+}

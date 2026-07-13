@@ -369,6 +369,19 @@ async function fulfill(paymentId: string, d: ReturnType<typeof deps>): Promise<A
   }
 }
 
+/**
+ * Resume the service's own captured-payment fulfillment path. Reconciliation
+ * calls this only after a verified signature has been durably captured on a
+ * `settling` row; the advisory lock, ledger mint, and settle CAS remain owned
+ * by `AgentPayDb.fulfillCaptured`.
+ */
+export async function fulfillReconciledAgentPayment(
+  paymentId: string,
+  injected?: Pick<AgentPayDeps, 'db' | 'mintEarned'>,
+): Promise<AgentPayResult> {
+  return fulfill(paymentId, deps(injected));
+}
+
 async function dispatchExisting(
   row: AgentPayment,
   input: AgentPayInput,

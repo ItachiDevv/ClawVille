@@ -92,8 +92,8 @@ describe('reconcile apply gate', () => {
     expect(() => assertNoReconcileApply()).not.toThrow();
   });
 
-  it('assertNoReconcileApply THROWS when apply is enabled (Codex-gated)', () => {
+  it('assertNoReconcileApply no longer rejects env enablement; explicit caller consent is separate', () => {
     process.env.RECONCILE_APPLY = 'true';
-    expect(() => assertNoReconcileApply()).toThrow(/Codex-review-gated/);
+    expect(() => assertNoReconcileApply()).not.toThrow();
   });
 });
