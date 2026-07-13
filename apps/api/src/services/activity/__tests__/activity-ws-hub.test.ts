@@ -76,6 +76,7 @@ mock.module('@clawville/database', () => ({
   // needs these schemas + ledger table to resolve.
   activityResults: { id: 'id', avatarId: 'avatar_id', activityId: 'activity_id' },
   avatars: { id: 'id', flags: 'flags' },
+  users: { id: 'id', isGuest: 'is_guest' },
   clawTokenTransactions: { id: 'id' },
   // Phase 4 — PB service (transitively imported by ws-hub for the
   // snapshot.init ghost frames load path) references this table.

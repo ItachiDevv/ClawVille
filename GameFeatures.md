@@ -1040,6 +1040,8 @@ Hatcher (a managed AI-agent hosting platform — "Heroku for AI agents") is the 
 
 Bumper Shells (launch title) + Reef Race. Server-authoritative simulation + WebSocket frame stream + per-activity 3D scene that takes over the route when active.
 
+**Last Audited:** 2026-07-13 — Reef Race v2 was re-applied on current staging without replacing staging's hosted-agent/Controlled-Autonomous state. The human entry remains `/game?quickQueue=reef-race` → the existing activity lobby/queue → `/activity/reef-race/:roomId`; when `NEXT_PUBLIC_REEF_RACE_USE_SPLINE==='true'`, that matched room skips only the legacy v1 wager `LobbyLanding` and mounts the already-counting-down spline race. Flag OFF and every non-Reef activity retain the wager gate. Client `TOTAL_LAPS` and server `REEF_LAPS` are both 2. Reef alone may repair a stale countdown on the room's first WS connection; staggered racers cannot move the anchor already broadcast, and non-Reef countdown behavior is unchanged. PB anti-cheat eligibility reads the counter from the flag-selected Reef sim. The v2 HUD consumes server-streamed lap/progress/boost/mini-turbo fields and events; no client-authoritative race result or settlement resolver was added. **PARITY:** human path = quickQueue + activity route; agent path is unchanged through `activity.match.placed` events; this port changes no settlement resolver.
+
 ### 18a. Routes
 
 | Route | Purpose |
@@ -1073,16 +1075,16 @@ Bumper Shells (launch title) + Reef Race. Server-authoritative simulation + WebS
 | Spec | Value |
 |---|---|
 | Players per match | 4–8 |
-| Track | Bespoke oval, half-axes `A=1100, B=700` |
-| Laps | 3 |
+| Track | Closed-loop shared spline (`@clawville/shared/reef-race` track layout); legacy ellipse config remains available to the flag-off path |
+| Laps | **2** — client `TOTAL_LAPS` and server `REEF_LAPS` / `REEF_RACE_LAPS` are lock-step |
 | Checkpoints | 12 in fixed sequence — out-of-order = silent reject |
 | Sim rate | 30 Hz |
 | Frame cadence | 5 Hz deltas + 1 Hz keyframes |
 | Anti-cheat | `REEF_MAX_SPEED=500`, `MIN_LAP_MS=15000` discard + flag, `REEF_SKIP_PATTERN_THRESHOLD=3` skips/5s flag. 5-flag forfeit. |
-| Timeout | 90 s soft + 30 s straggler grace; hard 120 s. |
+| Timeout | Legacy ellipse: 90 s soft + 30 s straggler grace = 120 s hard. Spline v2: 300 s per-lap budget × 2 laps = 600 s soft + 30 s straggler grace = 630 s hard. |
 | Personal best | `reef_race_personal_bests` table (one row per `(avatarId, activityId)`). Awaited in reward pipeline so `dailyRank` is deterministic in the match-end frame. |
-| Streak counter | `event.streak_milestone` at `[5, 10, 20, 30, 36]`. Tier-keyed glow on the HUD chip. |
-| Perfect race bonus | +25 tokens when `bestStreakThisMatch >= 36` |
+| Streak counter | `event.streak_milestone` at `[5, 10, 16, 20, 24]`. Tier-keyed glow on the HUD chip. |
+| Perfect race bonus | +25 tokens when `bestStreakThisMatch >= 24` (12 checkpoints × 2 laps) |
 
 ### 18e. HUD + spectator
 
@@ -1092,7 +1094,8 @@ Bumper Shells (launch title) + Reef Race. Server-authoritative simulation + WebS
 | `.../ActivityTutorialCard.tsx` | First-time intro (Nori-voiced, localStorage gate) |
 | `.../SpectatorCamSelector.tsx` | Spectator cam mode selector (chunk #11) |
 | `apps/web/src/components/game/activity-mobile-controls.tsx` | Touch A/B + joystick replacing open-world `mobile-controls.tsx` mid-match |
-| `apps/web/src/stores/activity.ts` | `selfStreak`, `lastMatchPbDelta`, `lastMatchStreakBest`, `lastMatchDailyRank`, `lastMatchPerfectLapBonus`, `selfBestGhostPath`, `errorBanner` |
+| `apps/web/src/components/game/reef-race-hud.tsx` + `reef-race-miniturbo-meter.tsx` + `reef-race-event-toasts.tsx` | DOM-only Reef HUD: server lap/progress, boost-pad and tiered mini-turbo feedback; no drei Text/Billboard |
+| `apps/web/src/stores/activity.ts` | Existing match/PB/streak state plus server-authoritative `height/progress/lap/totalLaps/boosting/miniTurbo*` entity pass-through and `event.boost_pad` / `event.mini_turbo_fire` fan-out |
 
 ### 18f. Reward pipeline
 
@@ -1110,7 +1113,7 @@ Tracked in `ARCHITECTURE.md §4` as service `activity/reward-pipeline`. Placemen
 
 ## 18z. Wager lobbies (Bumper Shells + Reef Race, 2026-05-12)
 
-Every activity that runs a winner-take-most match is now wrapped by a wager lobby. The same UI component (`apps/web/src/components/game/lobby-landing.tsx`) is rendered as a gate by `apps/web/src/app/activity/[activityId]/[roomId]/page.tsx` — the 3D scene only mounts after the lobby transitions to `locked`.
+Every legacy winner-take-most activity path is wrapped by a wager lobby. The same UI component (`apps/web/src/components/game/lobby-landing.tsx`) is rendered as a gate by `apps/web/src/app/activity/[activityId]/[roomId]/page.tsx` — the 3D scene only mounts after the lobby transitions to `locked`. **Spline Reef exception:** with `NEXT_PUBLIC_REEF_RACE_USE_SPLINE==='true'`, matchmaking has already created and started the authoritative activity room, so Reef seeds the page gate directly to `in-game`; flag OFF and all other activities are unchanged.
 
 ### 18z.a. Flow
 

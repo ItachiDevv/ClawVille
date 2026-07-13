@@ -154,7 +154,10 @@ const V2_PICKUP_DEVIATION_FRACTION = 0.4;
 let _splineSingleton: ReefSpline | null = null;
 function getSpline(): ReefSpline {
   if (!_splineSingleton) {
-    _splineSingleton = new ReefSpline(REEF_RACE_DEFAULT_TRACK);
+    // CLOSED-LOOP (2026-06-22): match the server sim's periodic ring so the
+    // bot's closestPointOnSpline / lookahead t wraps across the seam (no stall
+    // at the start/finish line each lap).
+    _splineSingleton = new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true });
   }
   return _splineSingleton;
 }
@@ -678,11 +681,15 @@ class ReefRaceBot implements BotController {
     const tSelf = closest.t;
 
     // ── Lookahead target on centerline + curvature-based inside offset ────
-    const tLook = Math.min(1, tSelf + V2_LOOKAHEAD_T);
+    // CLOSED-LOOP (2026-06-22): the lookahead t WRAPS modulo 1 (was clamped to
+    // 1, which collapsed the lookahead onto the seam at t≈0.99 and stalled the
+    // bot at the start/finish line every lap). `% 1` keeps the target a true
+    // V2_LOOKAHEAD_T ahead around the ring.
+    const tLook = (tSelf + V2_LOOKAHEAD_T) % 1;
     const lookCenter = spline.centerlineAt(tLook);
     const tg0 = spline.tangentAt(tSelf);
     const tg1 = spline.tangentAt(
-      Math.min(1, tSelf + V2_CURVATURE_SAMPLE_DT),
+      (tSelf + V2_CURVATURE_SAMPLE_DT) % 1,
     );
     // Signed angular delta in XZ: positive = curve LEFT (CCW), negative = curve RIGHT.
     // dot = tg0·tg1, cross = tg0.x*tg1.z - tg0.z*tg1.x (2D cross product in XZ).

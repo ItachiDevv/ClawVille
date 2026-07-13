@@ -89,6 +89,7 @@ mock.module('../activity-replay-log', () => ({
 
 const { activityQueueService, MAX_PARTY_SIZE } = await import('../activity-queue');
 const { activityRoomManager } = await import('../activity-room-manager');
+const { botPool } = await import('../bots/bot-pool');
 
 /**
  * Observer for matcher-created rooms — we use the real room manager
@@ -113,6 +114,7 @@ const ACTIVITY_ID = 'bumper-shells';
 beforeEach(() => {
   activityQueueService.__resetForTest();
   activityRoomManager.__resetForTest();
+  botPool.__resetForTest();
   dbMock.reset();
   queueRowsSeed.length = 0;
 });
@@ -130,6 +132,39 @@ async function enqueueHuman(avatarId: string, partyId: string | null = null) {
     subjectType: 'human',
     partyId,
   });
+}
+
+const REEF_ACTIVITY_ID = 'reef-race';
+
+async function enqueueReefHuman(avatarId: string) {
+  return activityQueueService.enqueue({
+    activityId: REEF_ACTIVITY_ID,
+    avatarId,
+    userId: `user-${avatarId}`,
+    agentId: null,
+    subjectType: 'human',
+    partyId: null,
+  });
+}
+
+function seedBotPool(count: number) {
+  botPool.__resetForTest(
+    Array.from({ length: count }, (_, i) => ({
+      index: i + 1,
+      slotId: `bot-${String(i + 1).padStart(3, '0')}`,
+      avatarId: `bbbbbbbb-0000-0000-0000-${String(i + 1).padStart(12, '0')}`,
+    })),
+  );
+}
+
+function backdateOldestFor(activityId: string, deltaMs: number) {
+  const queues = (
+    activityQueueService as unknown as {
+      queues: Map<string, Array<{ queuedAt: number }>>;
+    }
+  ).queues;
+  const queue = queues.get(activityId);
+  if (queue?.[0]) queue[0].queuedAt = Date.now() - deltaMs;
 }
 
 // ─── Enqueue / leave idempotency ──────────────────────────────────────────
@@ -203,6 +238,28 @@ describe('Matchmaker fill', () => {
     // No backdate — preferredFill (6) target still in effect.
     await activityQueueService.runMatchmakerSweep();
     expect(observeMatches().length).toBe(0);
+  });
+
+  it('earlyBotFill backfills reef-race at the short timeout', async () => {
+    seedBotPool(8);
+    await enqueueReefHuman(pid(1));
+    backdateOldestFor(REEF_ACTIVITY_ID, 4_000);
+
+    await activityQueueService.runMatchmakerSweep();
+
+    const [room] = activityRoomManager.listActiveRooms(REEF_ACTIVITY_ID);
+    expect(room?.participants.size).toBe(4);
+    expect(room?.hasBots).toBe(true);
+  });
+
+  it('keeps earlyBotFill scoped away from bumper-shells', async () => {
+    seedBotPool(8);
+    await enqueueHuman(pid(1));
+    backdateOldestFor(ACTIVITY_ID, 4_000);
+
+    await activityQueueService.runMatchmakerSweep();
+
+    expect(observeMatches()).toHaveLength(0);
   });
 });
 

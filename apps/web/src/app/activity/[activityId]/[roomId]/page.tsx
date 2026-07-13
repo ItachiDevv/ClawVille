@@ -115,8 +115,22 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
   // either create / join / pay before the scene boots. The `?invite=...`
   // URL param feeds the lobby's invite_code so a friend link skips the form.
   // See apps/web/src/components/game/lobby-landing.tsx for full state graph.
+  //
+  // v2 spline Reef Race is a matchmaking activity (activity-ws-hub room), NOT
+  // a wager lobby: the server room auto-starts its countdown the moment the
+  // matchmaker creates it (activity-room-manager.createRoom → PENDING→COUNTDOWN),
+  // independent of any wager lobby. So when the spline build is on we must NOT
+  // interpose the legacy `<LobbyLanding>` create/join/SOL-wager screen — the
+  // client should mount the race scene immediately and connect to the already
+  // counting-down room. Flag OFF (and every other activity, incl. bumper-shells)
+  // keeps the exact production wager-lobby gate. The v1 wager flow is untouched.
+  const useSplineReef =
+    activityId === 'reef-race' &&
+    process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
   type LobbyGate = 'in-lobby' | 'in-game' | 'cancelled';
-  const [lobbyGate, setLobbyGate] = useState<LobbyGate>('in-lobby');
+  const [lobbyGate, setLobbyGate] = useState<LobbyGate>(
+    useSplineReef ? 'in-game' : 'in-lobby',
+  );
   const inviteCodeFromUrl = searchParams?.get('invite') ?? null;
 
   const handleLobbyLocked = useCallback((lobby: LobbySnapshot) => {

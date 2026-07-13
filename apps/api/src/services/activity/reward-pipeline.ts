@@ -5,8 +5,9 @@
  * module:
  *
  *   1. Pulls the placement list from the activity sim (dependency-injected
- *      via `setComputeResultsFn` in `activity-room-manager` — no hard
- *      import of the sim from here).
+ *      via `setComputeResultsFn` in `activity-room-manager`). The Reef sim
+ *      singletons are imported here only to select the flag-aware anti-cheat
+ *      counter used for PB eligibility.
  *   2. For each non-bot participant, computes:
  *        base = placement tier OR participation floor
  *        + first-play-of-day bonus (if no prior result row today)
@@ -54,7 +55,31 @@ import {
   type PbWriteResult,
 } from './reef-race-personal-best-service';
 import { reefRaceSim } from './sim/reef-race-sim';
+import { reefRaceSplineSim } from './sim/reef-race-spline-sim';
+import { REEF_RACE_USE_SPLINE } from './sim/reef-race-config';
 import { alertError } from '../alert-error';
+
+interface ReefFlagCountSource {
+  getFlagCount(roomId: string, avatarId: string): number;
+}
+
+/**
+ * Select the anti-cheat counter owned by the sim that ran this Reef room.
+ * Dependencies are explicit so the selector is deterministic in tests and
+ * does not require process-wide module mocks or environment mutation.
+ */
+export function getReefRaceFlagCount(
+  roomId: string,
+  avatarId: string,
+  useSpline = REEF_RACE_USE_SPLINE,
+  legacySource: ReefFlagCountSource = reefRaceSim,
+  splineSource: ReefFlagCountSource = reefRaceSplineSim,
+): number {
+  return (useSpline ? splineSource : legacySource).getFlagCount(
+    roomId,
+    avatarId,
+  );
+}
 
 /**
  * Phase 4 (S7 fix) — per-recipient match-end delivery callback registered
@@ -158,7 +183,7 @@ export interface RewardBreakdown {
   personalBestBonus: number;
   /**
    * Reef Race Phase 4 — perfect-race bonus credited when bestStreakThisMatch
-   * reached TOTAL_CHECKPOINTS_PER_RACE (= 36). 0 otherwise. Sums into the
+   * reached TOTAL_CHECKPOINTS_PER_RACE (= 24). 0 otherwise. Sums into the
    * same tokens_awarded total as the other lines.
    */
   perfectStreakBonus: number;
@@ -319,7 +344,7 @@ export async function issueRewardsForRoom(
       if (!reef || reef.bestLapMs == null || !Number.isFinite(reef.bestLapMs))
         return false;
       // Anti-cheat skip — flagged matches don't set PBs.
-      const flags = reefRaceSim.getFlagCount(room.id, s.avatarId);
+      const flags = getReefRaceFlagCount(room.id, s.avatarId);
       if (flags > 0) return false;
       return true;
     });

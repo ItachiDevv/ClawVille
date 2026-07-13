@@ -38,6 +38,7 @@ mock.module('@clawville/database', () => ({
   // Chunk #7 — reward pipeline imports these.
   activityResults: { id: 'id', avatarId: 'avatar_id', activityId: 'activity_id' },
   avatars: { id: 'id', flags: 'flags' },
+  users: { id: 'id', isGuest: 'is_guest' },
   clawTokenTransactions: { id: 'id' },
   // Phase 4 — reward pipeline transitively imports the PB service which
   // references this table. Mock with the column shape used in PB queries.
@@ -189,6 +190,65 @@ describe('Room FSM transitions', () => {
   });
 });
 
+// ─── Synced countdown (ported from d490501f, 2026-06-22) ───────────────────
+
+describe('ensureSyncedCountdown', () => {
+  it('is a strict no-op for non-Reef countdowns, even when nearly expired', async () => {
+    const room = await activityRoomManager.createRoom(
+      ACTIVITY_ID,
+      makeParticipants(4),
+      ACTIVITY_CONFIG,
+    );
+    room.countdownStartedAt = Date.now() - 4_500;
+    const before = room.countdownStartedAt;
+    expect(activityRoomManager.ensureSyncedCountdown(room.id)).toBeNull();
+    expect(room.countdownStartedAt).toBe(before);
+  });
+
+  it('re-anchors an expired Reef countdown on the first connection', async () => {
+    const room = await activityRoomManager.createRoom(
+      'reef-race',
+      makeParticipants(4),
+      ACTIVITY_CONFIG,
+    );
+    room.countdownStartedAt = Date.now() - 4_500;
+    const anchored = activityRoomManager.ensureSyncedCountdown(room.id);
+    if (anchored === null) throw new Error('Reef countdown was not re-anchored');
+    expect(Date.now() - anchored).toBeLessThan(200);
+    expect(room.countdownStartedAt).toBe(anchored);
+  });
+
+  it('never moves the first Reef anchor for a staggered later connection', async () => {
+    const room = await activityRoomManager.createRoom(
+      'reef-race',
+      makeParticipants(4),
+      ACTIVITY_CONFIG,
+    );
+    const firstAnchor = room.countdownStartedAt;
+    expect(activityRoomManager.ensureSyncedCountdown(room.id)).toBe(firstAnchor);
+
+    // Model a later racer arriving after the same broadcast anchor has become
+    // stale. The second call must preserve racer one's anchor, not re-anchor.
+    const staleBroadcastAnchor = (firstAnchor ?? Date.now()) - 4_500;
+    room.countdownStartedAt = staleBroadcastAnchor;
+    expect(activityRoomManager.ensureSyncedCountdown(room.id)).toBe(
+      staleBroadcastAnchor,
+    );
+    expect(room.countdownStartedAt).toBe(staleBroadcastAnchor);
+  });
+
+  it('is a no-op on live and unknown rooms', async () => {
+    const room = await activityRoomManager.createRoom(
+      'reef-race',
+      makeParticipants(4),
+      ACTIVITY_CONFIG,
+    );
+    await activityRoomManager.transitionRoom(room.id, 'live');
+    expect(activityRoomManager.ensureSyncedCountdown(room.id)).toBeNull();
+    expect(activityRoomManager.ensureSyncedCountdown('no-such-room')).toBeNull();
+  });
+});
+
 // ─── Concurrency caps ─────────────────────────────────────────────────────
 
 describe('Concurrency caps', () => {
@@ -266,13 +326,17 @@ describe('Short-code regeneration', () => {
 // ─── Sweeper ──────────────────────────────────────────────────────────────
 
 describe('Room sweeper', () => {
-  it('aborts COUNTDOWN rooms with no connected players', async () => {
+  it('aborts COUNTDOWN rooms with no connected players (after the connect-grace window)', async () => {
     const room = await activityRoomManager.createRoom(
       ACTIVITY_ID,
       makeParticipants(4),
       ACTIVITY_CONFIG,
     );
-    // None of the participants have `connected=true` — sweeper should kill.
+    // The sweeper grants a ~10s connect-grace before aborting an unconnected
+    // COUNTDOWN room (so a client navigating from the lobby isn't raced — see
+    // the sweeper's countdown branch). Age the countdown anchor past that grace
+    // so the abort condition is genuinely met. None are connected → kill.
+    room.countdownStartedAt = Date.now() - 11_000;
     await activityRoomManager.roomSweeper();
     expect(activityRoomManager.getRoom(room.id)).toBeUndefined();
   });
@@ -719,7 +783,7 @@ function makeDbMock() {
       return thenable<unknown[]>([]);
     },
     query: {
-      agentBots: { findFirst: () => Promise.resolve(null) },
+      openclawBots: { findFirst: () => Promise.resolve(null) },
       avatars: { findFirst: () => Promise.resolve(null) },
     },
     reset() {

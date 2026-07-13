@@ -192,6 +192,7 @@ const {
   computeLeaderboardPoints,
   isFocusAligned,
   computeBreakdown,
+  getReefRaceFlagCount,
   issueRewardsForRoom,
 } = await import('../reward-pipeline');
 
@@ -386,6 +387,50 @@ describe('computeBreakdown — Reef Race personal-best', () => {
   it('finish faster than priorBest → PB bonus', () => {
     const b = computeBreakdown({ ...reefInput, priorBestMs: 100_000 });
     expect(b.personalBestBonus).toBe(10);
+  });
+});
+
+describe('getReefRaceFlagCount — PB anti-cheat sim selection', () => {
+  it('reads only the legacy counter when the spline flag is off', () => {
+    const calls: string[] = [];
+    const legacy = {
+      getFlagCount: (roomId: string, avatarId: string) => {
+        calls.push(`legacy:${roomId}:${avatarId}`);
+        return 2;
+      },
+    };
+    const spline = {
+      getFlagCount: () => {
+        calls.push('spline');
+        return 7;
+      },
+    };
+
+    expect(
+      getReefRaceFlagCount('room-reef', 'avatar-human-1', false, legacy, spline),
+    ).toBe(2);
+    expect(calls).toEqual(['legacy:room-reef:avatar-human-1']);
+  });
+
+  it('reads only the spline counter when the spline flag is on', () => {
+    const calls: string[] = [];
+    const legacy = {
+      getFlagCount: () => {
+        calls.push('legacy');
+        return 2;
+      },
+    };
+    const spline = {
+      getFlagCount: (roomId: string, avatarId: string) => {
+        calls.push(`spline:${roomId}:${avatarId}`);
+        return 7;
+      },
+    };
+
+    expect(
+      getReefRaceFlagCount('room-reef', 'avatar-human-1', true, legacy, spline),
+    ).toBe(7);
+    expect(calls).toEqual(['spline:room-reef:avatar-human-1']);
   });
 });
 

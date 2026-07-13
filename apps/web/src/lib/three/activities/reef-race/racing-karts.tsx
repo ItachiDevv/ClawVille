@@ -65,10 +65,12 @@ import {
   KART_Y_ABOVE_TRACK,
 } from './reef-race-config';
 import { clientSpline } from './reef-race-spline-instance';
+import { elevationAtT } from './reef-race-elevation';
 
-// ─── Water surface Y — MUST match WATER_Y in river-scene.tsx ────────────────
-// option-C: deep canyon 200wu.
-const WATER_Y = -200;
+// SURF ROAD (2026-06-23): the karts ride the FLOATING ribbon, so their Y is the
+// render-only elevation profile reefTrackElevationAt(t) (via elevationAtT) — NOT
+// a flat WATER_Y plane (the old -200 canyon water surface is gone). The demo
+// karts now climb/dip with the ribbon exactly like the player/bots do.
 
 // ─── Race parameters ─────────────────────────────────────────────────────────
 
@@ -130,21 +132,28 @@ useGLTF.preload('/models/reef-race/surfboards/surfboard_1.glb');
 
 // ─── Color tinting helper ─────────────────────────────────────────────────────
 /**
- * Replace the `.color` property on every MeshStandardMaterial / MeshLambertMaterial
- * / MeshBasicMaterial in the cloned scene graph.
- * Never swaps the material object — preserves maps, roughness, metalness, etc.
+ * Tint a kart by replacing `.color` on each material — but CLONE the material first.
+ * `scene.clone(true)` SHARES material instances across all 5 kart clones, so tinting
+ * in place would make the LAST kart's colour win on every kart (all 5 identical). The
+ * clone preserves maps, roughness, metalness, etc. while giving each kart its own colour.
  */
 function applyColorTint(root: THREE.Object3D, color: THREE.Color): void {
   root.traverse((child) => {
     if (!(child as THREE.Mesh).isMesh) return;
     const mesh = child as THREE.Mesh;
-    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-    for (const mat of mats) {
-      if (!mat) continue;
-      const m = mat as { color?: THREE.Color };
-      if (m.color && m.color.isColor) {
-        m.color.copy(color);
-      }
+    if (Array.isArray(mesh.material)) {
+      mesh.material = mesh.material.map((mat) => {
+        if (!mat) return mat;
+        const m = mat.clone();
+        const tintable = m as THREE.Material & { color?: THREE.Color };
+        if (tintable.color?.isColor) tintable.color.copy(color);
+        return m;
+      });
+    } else if (mesh.material) {
+      const m = mesh.material.clone();
+      const tintable = m as THREE.Material & { color?: THREE.Color };
+      if (tintable.color?.isColor) tintable.color.copy(color);
+      mesh.material = m;
     }
   });
 }
@@ -198,7 +207,7 @@ export function RacingKarts() {
       clone.scale.setScalar(KART_SCALE);
       clone.position.set(
         c.x + n.x * lat,
-        WATER_Y + KART_Y_ABOVE_TRACK,
+        elevationAtT(t0) + KART_Y_ABOVE_TRACK,
         c.z + n.z * lat,
       );
       clone.rotation.set(0, Math.atan2(tan.x, tan.z), 0);
@@ -249,7 +258,7 @@ export function RacingKarts() {
       const lat = KART_LATERAL[i];
       const wx  = c.x + n.x * lat;
       const wz  = c.z + n.z * lat;
-      const wy  = WATER_Y + KART_Y_ABOVE_TRACK
+      const wy  = elevationAtT(tc) + KART_Y_ABOVE_TRACK
                 + Math.sin(elapsed * BOB_FREQ + i * BOB_PHASE_STEP) * BOB_AMP;
 
       // ── Banking lean via curvature finite difference ───────────────────────
