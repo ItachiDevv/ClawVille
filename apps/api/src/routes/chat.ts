@@ -90,7 +90,7 @@ chatRoutes.post('/system/:slug', requireAuth, async (c) => {
   });
 
   const services = avatar
-    ? buildRuntimeServices(db)
+    ? buildRuntimeServices(db, { actorKind: 'human' })
     : undefined;
   const state: Record<string, any> = {
     avatarId: avatar?.id,
@@ -232,7 +232,7 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
   // Build state object for Providers + Actions
   // Only inject services if avatar exists — actions require a avatarId to transact
   const services = avatar
-    ? buildRuntimeServices(db)
+    ? buildRuntimeServices(db, { actorKind: 'human' })
     : undefined;
   const state: Record<string, any> = {
     avatarId: avatar?.id,

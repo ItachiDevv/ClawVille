@@ -2195,7 +2195,7 @@ agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
         // Phase 4: inject services + bot data so Actions + Providers work
         // Adapter translates runtime's `avatarId` → ledger's `avatarId`.
         // See `services/runtime-services-adapter.ts`.
-        const services = buildRuntimeServices(db);
+        const services = buildRuntimeServices(db, { actorKind: 'agent' });
 
         // Look up the bot via its resolved agentId (e.g. milady:xxx), NOT npcId
         const botConfig = npcSimulation.getAgentBotConfig(sessionId);

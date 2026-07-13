@@ -115,7 +115,7 @@ export class AvatarSimulationBridge {
       // buildRuntimeServices passes the avatar-keyed params straight through to
       // the ledger; the only translation it does now is mapping runtime-emitted
       // source labels (e.g. 'shop') to the ledger's enum values.
-      services: buildRuntimeServices(db),
+      services: buildRuntimeServices(db, { actorKind: 'agent' }),
     });
 
     // Fire-and-forget startup; tick() guards on runtimeReady before touching

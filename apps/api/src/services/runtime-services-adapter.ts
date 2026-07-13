@@ -9,6 +9,14 @@
  * `ClawTokenSource` enum — those values are NOT in the Postgres
  * `claw_token_source` enum and would throw `invalid input value for
  * enum` if passed through unchanged.
+ *
+ * COVENANT ATTRIBUTION (2026-07-13): this adapter is also the actor-kind
+ * seam for the covenant action-record stream. Each call site declares WHO
+ * drives actions on the runtime it is building services for ('human' when a
+ * Lucia-cookie user chats through a runtime, 'agent' for autonomous/hosted/
+ * connected surfaces) and every ledger call + explicit action record flowing
+ * through these services carries that attribution. Omitted → unattributed
+ * (never guessed).
  */
 
 import type { ClawvilleServices } from '@clawville/agent-runtime';
@@ -17,6 +25,11 @@ import {
   debitClawTokens as ledgerDebitClawTokens,
   type ClawTokenSource,
 } from './claw-token-ledger';
+import {
+  recordCovenantAction,
+  type CovenantAction,
+  type CovenantActorKind,
+} from './covenant-action-recorder';
 
 // Drizzle db handle is `any` on the runtime side (intentional — see
 // SimulationServices in agent-runtime/src/simulation/simulation-runtime.ts).
@@ -25,7 +38,11 @@ import {
 //
 // The adapter only translates the function `source` field — `db` passes
 // through unchanged.
-export function buildRuntimeServices(db: any): ClawvilleServices {
+export function buildRuntimeServices(
+  db: any,
+  opts?: { actorKind?: CovenantActorKind | null },
+): ClawvilleServices {
+  const actorKind = opts?.actorKind ?? null;
   return {
     db,
     creditClawTokens: async (params) => {
@@ -38,6 +55,7 @@ export function buildRuntimeServices(db: any): ClawvilleServices {
         reason: params.reason,
         source: mapRuntimeSourceToLedger(params.source),
         metadata: params.metadata,
+        actorKind,
       });
     },
     debitClawTokens: async (params) => {
@@ -47,7 +65,23 @@ export function buildRuntimeServices(db: any): ClawvilleServices {
         reason: params.reason,
         source: mapRuntimeSourceToLedger(params.source),
         metadata: params.metadata,
+        actorKind,
       });
+    },
+    recordCovenantAction: async (params, tx) => {
+      return recordCovenantAction(
+        {
+          // The runtime side types `action` as a plain string (it never
+          // imports apps/api); the recorder's union is the authority.
+          action: params.action as CovenantAction,
+          subjectType: params.subjectType,
+          subjectId: params.subjectId,
+          // The surface's attribution wins; a handler may not re-attribute.
+          actorKind,
+          payload: params.payload,
+        },
+        tx,
+      );
     },
   };
 }
