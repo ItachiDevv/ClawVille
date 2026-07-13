@@ -44,6 +44,11 @@ export const acceptQuestAction: Action = {
   ],
 
   async validate(_runtime: any, message: any, _state?: any): Promise<boolean> {
+    // Structured invocation path (executeAction builds a synthetic message
+    // with EMPTY text but real parameters — Codex round 4, same fix as
+    // SUBMIT_QUEST): a present questId param IS the intent signal; trigger
+    // words remain the natural-language fallback.
+    if (getParam(message, 'questId')) return true;
     const text = getMessageText(message).toLowerCase();
     const triggers = [
       'quest',
@@ -79,7 +84,33 @@ export const acceptQuestAction: Action = {
         };
       }
 
-      const { quests, questSubmissions, eq, and } = await getDbModule();
+      const { quests, questSubmissions, avatars, users, eq, and } = await getDbModule();
+
+      // Canonical identity gate (Codex round 5, fail-closed at the choke
+      // point regardless of which runtime/caller injected the state):
+      // `state.avatarId` must resolve to a REAL `avatars.id` (a caller that
+      // wrongly supplies e.g. an openclaw_bots.id fails HERE, honestly,
+      // instead of writing a mismatched row), and the avatar's OWNER must not
+      // be a guest (quest rewards pay real vCLAW after review — the guest
+      // demo-economy wall applies to every earning surface).
+      const [actor] = await db
+        .select({ id: avatars.id, isGuest: users.isGuest })
+        .from(avatars)
+        .innerJoin(users, eq(users.id, avatars.userId))
+        .where(eq(avatars.id, avatarId))
+        .limit(1);
+      if (!actor) {
+        return {
+          success: false,
+          text: 'quest_actor_unresolved: this runtime is not bound to a real avatar, so it cannot use the quest board.',
+        };
+      }
+      if (actor.isGuest) {
+        return {
+          success: false,
+          text: 'Guests run a demo economy — quest rewards pay real vCLAW, so the quest board needs a full account.',
+        };
+      }
 
       // 1. Find the quest
       const [quest] = await db
@@ -128,8 +159,14 @@ export const acceptQuestAction: Action = {
         };
       }
 
-      // 2. Check if avatar already has an active submission for this quest
-      const [existingSubmission] = await db
+      // 2. One submission LINE per (quest, avatar): an ACTIVE submission
+      // blocks, and an APPROVED one blocks PERMANENTLY (Codex round 3 —
+      // re-accepting after approval minted a new payable submission; only a
+      // rejection unlocks a retry). Scan ALL rows, not the first — a rejected
+      // row must not mask an approved one. Mirrors the REST accept route;
+      // DB backstops: quest_submissions_active_unique +
+      // quest_rewards_avatar_quest_unique.
+      const existingSubmissions = await db
         .select({ id: questSubmissions.id, status: questSubmissions.status })
         .from(questSubmissions)
         .where(
@@ -137,15 +174,19 @@ export const acceptQuestAction: Action = {
             eq(questSubmissions.questId, questId),
             eq(questSubmissions.avatarId, avatarId),
           ),
-        )
-        .limit(1);
+        );
 
-      if (existingSubmission) {
-        const terminalStatuses = ['approved', 'rejected'];
-        if (!terminalStatuses.includes(existingSubmission.status)) {
+      for (const existing of existingSubmissions) {
+        if (existing.status === 'approved') {
           return {
             success: false,
-            text: `You already have an active submission for this quest (status: ${existingSubmission.status}).`,
+            text: 'You have already completed this quest.',
+          };
+        }
+        if (existing.status !== 'rejected') {
+          return {
+            success: false,
+            text: `You already have an active submission for this quest (status: ${existing.status}).`,
           };
         }
       }
