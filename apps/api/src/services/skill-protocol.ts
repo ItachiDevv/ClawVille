@@ -212,11 +212,15 @@ export function contentHashOf(content: string): string {
   return `sha256:${createHash('sha256').update(content).digest('hex')}`;
 }
 
-/** Resolve the public API base URL for absolute links in served markdown. */
+/** Resolve the public API base URL for absolute links in served markdown.
+ *  Staging MUST resolve before prod (Codex round 4): 'staging.clawville.world'
+ *  contains 'clawville.world', so the old single check embedded PROD endpoint
+ *  URLs in every staging-served manual — staging bearers then aimed at prod. */
 export function resolveApiBase(): string {
-  return process.env.CORS_ORIGIN?.includes('clawville.world')
-    ? 'https://api.clawville.world'
-    : `http://localhost:${process.env.PORT ?? 4001}`;
+  const origin = process.env.CORS_ORIGIN ?? '';
+  if (origin.includes('staging.clawville.world')) return 'https://api-staging.clawville.world';
+  if (origin.includes('clawville.world')) return 'https://api.clawville.world';
+  return `http://localhost:${process.env.PORT ?? 4001}`;
 }
 
 /**
