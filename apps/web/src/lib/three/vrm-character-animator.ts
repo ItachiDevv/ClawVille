@@ -644,6 +644,8 @@ export class VRMCharacterAnimator {
   /** The handler attached for the active one-shot — referenced so we can
    * remove it if a second one-shot fires before the first finishes. */
   private oneShotFinishedHandler: ((e: { action: THREE.AnimationAction }) => void) | null = null;
+  /** Monotonic latest-request-wins guard for concurrent lazy clip loads. */
+  private oneShotRequestToken = 0;
 
   // Verse Engine skeleton.update batching (B2 2026-04-24).
   // Three.js WebGLRenderer calls skeleton.update() once per SkinnedMesh before
@@ -1200,24 +1202,42 @@ export class VRMCharacterAnimator {
    *      VRM instance). Subsequent calls reuse the cached action.
    *   2. Crossfade from the current action into the emote (CROSSFADE_DURATION).
    *   3. Suppress locomotion crossfade for the duration of the emote.
-   *   4. On 'finished' (Mixer event) crossfade back to idle/walk based on
-   *      the latest `isMoving` state we observed.
+   *   4. On 'finished' (Mixer event) crossfade into `nextLoopingClip` when
+   *      provided, otherwise return to idle/walk based on the latest
+   *      `isMoving` state we observed.
    *
    * Calling playOneShot while another one-shot is already running cancels
    * the previous one's finished handler and starts the new emote — a
    * "stomp" pattern that matches Fortnite-style emote spam.
    *
-   * @param name  Animation registry key (e.g. 'flip', 'dance_breaking').
+   * @param name Animation registry key (e.g. 'flip', 'dance_breaking').
+   * @param nextLoopingClip Optional explicit looping clip to hold after the
+   * one-shot finishes. Omit to preserve the locomotion/surface return path.
+   * @param timeScale Playback speed for this one-shot. Defaults to 1.
    */
-  async playOneShot(name: AnimName): Promise<void> {
+  async playOneShot(
+    name: AnimName,
+    nextLoopingClip?: AnimName,
+    timeScale = 1,
+  ): Promise<void> {
     if (!this.ready) return;
     if (!this.mixer) return; // disposed
+    const requestToken = ++this.oneShotRequestToken;
+
+    // A single AnimationAction cannot be faded in as a loop and faded out as
+    // the outgoing one-shot in the same completion callback.
+    if (nextLoopingClip === name) {
+      console.warn(
+        `[VRMCharacterAnimator] one-shot "${name}" cannot transition to itself`,
+      );
+      return;
+    }
 
     // Lazy-load + retarget if first time.
     if (!this.actions[name]) {
       try {
         const gltf = await loadRawGltf(name, this.characterId);
-        if (this.disposed) return;
+        if (this.disposed || requestToken !== this.oneShotRequestToken) return;
         const retargeted = retargetMixamoClip(gltf, this.vrm, name);
         if (shouldStripPosition(name, this.characterId)) stripPositionTracks(retargeted);
         const action = this.mixer.clipAction(retargeted);
@@ -1228,7 +1248,32 @@ export class VRMCharacterAnimator {
       }
     }
     // Re-check post-await — we may have been disposed mid-load.
-    if (this.disposed) return;
+    if (this.disposed || requestToken !== this.oneShotRequestToken) return;
+
+    // An explicit post-transition loop must be ready before the one-shot
+    // starts; otherwise a cold network fetch could outlast the transition and
+    // leave the avatar clamped on its final frame. Existing callers omit this
+    // parameter and retain the original lazy-load/locomotion behavior.
+    if (nextLoopingClip && !this.actions[nextLoopingClip]) {
+      try {
+        const gltf = await loadRawGltf(nextLoopingClip, this.characterId);
+        if (this.disposed || requestToken !== this.oneShotRequestToken) return;
+        const retargeted = retargetMixamoClip(gltf, this.vrm, nextLoopingClip);
+        if (shouldStripPosition(nextLoopingClip, this.characterId)) stripPositionTracks(retargeted);
+        const action = this.mixer.clipAction(retargeted);
+        action.setLoop(THREE.LoopRepeat, Infinity);
+        action.clampWhenFinished = false;
+        this.actions[nextLoopingClip] = action;
+      } catch (err) {
+        console.warn(
+          `[VRMCharacterAnimator] next-loop retarget failed for "${nextLoopingClip}":`,
+          err,
+        );
+        return;
+      }
+    }
+    // Re-check post-await — we may have been disposed mid-load.
+    if (this.disposed || requestToken !== this.oneShotRequestToken) return;
 
     const oneShot = this.actions[name];
     if (!oneShot) return;
@@ -1251,14 +1296,16 @@ export class VRMCharacterAnimator {
       this.mixer.removeEventListener('finished', onFinished as any);
       this.oneShotFinishedHandler = null;
       this.oneShotActive = false;
-      // Crossfade back to whatever locomotion state we are in NOW —
-      // including run when the player is sprinting through the emote.
-      // In surf context (surfaceClip='surf_idle') resolves to surf_idle;
-      // world context (default surfaceClip='idle') returns to idle.
+      // An explicit transition target wins over locomotion. Without one,
+      // crossfade back to whatever locomotion state we are in NOW — including
+      // run when the player is sprinting through the emote. In surf context
+      // (surfaceClip='surf_idle') this resolves to surf_idle; world context
+      // (default surfaceClip='idle') returns to idle.
       const backName: AnimName =
+        nextLoopingClip ?? (
         this.wasMotion === 'run' ? 'run'
         : this.wasMotion === 'walk' ? 'walk'
-        : this.surfaceClip;
+        : this.surfaceClip);
       const back =
         this.actions[backName] ??
         // Fallback: the run clip may not be retargeted on this VRM yet
@@ -1267,6 +1314,10 @@ export class VRMCharacterAnimator {
         (backName === 'run' ? this.actions.walk : undefined) ??
         this.actions[this.surfaceClip];
       if (back) {
+        if (nextLoopingClip) {
+          back.setLoop(THREE.LoopRepeat, Infinity);
+          back.clampWhenFinished = false;
+        }
         back.reset().fadeIn(CROSSFADE_DURATION).play();
         oneShot.fadeOut(CROSSFADE_DURATION);
         this.currentAction = back;
@@ -1276,7 +1327,7 @@ export class VRMCharacterAnimator {
     this.mixer.addEventListener('finished', onFinished as any);
 
     this.oneShotActive = true;
-    oneShot.reset().fadeIn(CROSSFADE_DURATION).play();
+    oneShot.reset().setEffectiveTimeScale(timeScale).fadeIn(CROSSFADE_DURATION).play();
     if (previous && previous !== oneShot) {
       previous.fadeOut(CROSSFADE_DURATION);
     }
