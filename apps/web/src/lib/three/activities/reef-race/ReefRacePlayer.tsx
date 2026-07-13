@@ -46,6 +46,18 @@
  *   - Shared glider geometry/material never disposed (page-lifetime, multi-instance).
  *
  * Draw calls: 2 per player (glider board + avatar).
+ *
+ * GLB creature riders now sit STATIC + face the board nose (2026-07-12,
+ * founder directive — "actual lobsters and crustaceans should just be
+ * sitting on the board facing forwards"). The old procedural
+ * `applySwimmingAnim` (Bug 3's bone-name traverse, described above, PLUS a
+ * whole-scene rotation.x/z/position.y wiggle from `sea-creature-swim.ts`'s
+ * `applyTransformSwim`) is REMOVED for reef riders entirely — not paused,
+ * not conditionally stopped after one call. VRM humanoid riders are
+ * UNCHANGED (still surf via `VRMCharacterAnimator`'s skate-retarget). See
+ * `REEF_CREATURE_RIDER_FACE_YAW` below for the per-species facing
+ * corrections. `sea-creature-swim.ts` itself is untouched — it still backs
+ * BumperShellsPlayer + the avatar-preview free-swim context.
  */
 
 import { useRef, useEffect, useMemo, useCallback, Suspense } from 'react';
@@ -94,14 +106,18 @@ import {
   createSeaCreatureAnimator,
   type SeaCreatureAnimatorHandle,
 } from '@/lib/three/sea-creature-animator';
-import {
-  SEA_CREATURE_MANIFEST,
-} from '@/lib/three/sea-creature-manifest';
+// NOTE (2026-07-12): SEA_CREATURE_MANIFEST is deliberately NOT imported here —
+// Reef Race hardcodes `wantsAnimator = false` (see the block comment at its
+// declaration below) instead of reading the shared manifest, so a future
+// `lobster.hasRig` flip for Bumper Shells can never silently re-enable
+// swim-animation on reef riders. Do not re-add this import without also
+// re-deriving `wantsAnimator` from a REEF-RACE-SPECIFIC decision, not the
+// shared manifest.
 import type {
   SeaCreatureSpecies,
   SeaCreatureAnimState,
 } from '@/lib/three/sea-creature-types';
-import { applyTransformSwim, resetTransformSwimState } from '@/lib/three/sea-creature-swim';
+import { resetTransformSwimState } from '@/lib/three/sea-creature-swim';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import {
   useVRMInstance,
@@ -283,18 +299,64 @@ const REEF_VRM_RIDER_TARGET_HEIGHT_WU = 245.63;
 const GLB_RIDER_TARGET_HEIGHT_LOCAL = 1.1;
 
 /**
- * Per-avatarId GLB rider grounding offset (rider-mount-LOCAL units),
- * computed once when `clonedScene` is built (auto-fit bbox measurement).
- * `applySwimmingAnim`'s per-frame `position.y` write (STATIC/unrigged
- * creatures only — `applyTransformSwim` returns early for rigged meshes)
- * needs this as its `baseY`; without it, that write resets `position.y`
- * back to ~0 every frame, undoing the auto-fit grounding. Rigged creatures
- * (sea_horse/sweet_crab/hermitcrab) never hit that write path, so their
- * one-time `clonedScene.position.y` assignment persists untouched.
- * Module scope, no per-frame allocation. Cleaned up on unmount alongside
- * `_lastXZ`.
+ * Per-species yaw correction (radians), applied ONCE to a GLB creature
+ * rider's `clonedScene` in the mount effect so its authored facing axis
+ * points along the board's nose — the SAME "longest axis → local +Z
+ * forward" convention `surfboardBaseQuat` (above) already uses for the
+ * surfboard mesh itself, since the rider sits under the same unrotated
+ * `riderMountRef` → `gliderRef` parent chain (no yaw between them), so
+ * `gliderRef`'s local +Z IS the board-nose direction the creature should
+ * face.
+ *
+ * Founder directive (2026-07-12): GLB creature riders ("actual lobsters
+ * and crustaceans") should sit STILL, facing FORWARD — not swim-wiggling
+ * nor facing whatever arbitrary axis the source artist happened to model
+ * on. There is no shared authoring convention across these assets (some
+ * from different Sketchfab/asset-pack sources) — each entry below was
+ * measured EMPIRICALLY via the `/preview/reef-race-v2?mode=racer&species=
+ * <key>&camview=top&diag=1` harness (anatomical read — eyes/antennae/
+ * shell/tail-fan — cross-checked against a live yaw trial + the numeric
+ * board-forward dot product), NOT guessed:
+ *   - lobster: eyes + claws already point along the mesh's local +Z (the
+ *     SAME axis the kart assembly treats as forward) → 0.
+ *   - crayfish: a DIFFERENT GLB from lobster.glb despite the similar body
+ *     plan — its unmistakable tail-fan (the V-notched paddle uropods) sits
+ *     opposite the eyes/legs along local +X, not +Z → -π/2.
+ *   - hermitcrab: shell (trails at the rear) vs. eye+antenna (head, at
+ *     local +X) → -π/2.
+ *   - sweet_crab: same crab body plan as hermitcrab, legs/eye-stalks read
+ *     consistent with the same +X-is-front axis → -π/2 (lower confidence —
+ *     this asset reads closer to radially symmetric than the others; flag
+ *     for founder sign-off).
+ *   - lobster_plush: a stylized/rounded plush toy, not the realistic
+ *     lobster.glb — its face marking (visible "eyes") sits along local -X →
+ *     +π/2.
+ *   - seahorse / sea_horse (same asset, two species keys — see the
+ *     `glbPath` switch below): the down-turned snout already reads toward
+ *     the mesh's local +Z → 0.
+ *   - jellyfish, octopus: radially-symmetric toy sculpts with no
+ *     discernible front — 0 (harmless; there is no "wrong" way for these
+ *     to sit).
+ * Species not listed here default to 0 (unmeasured / assumed already +Z).
+ *
+ * Deliberately NOT `MODEL_REGISTRY`'s `registry.faceYaw` — that field only
+ * exists on VRM entries (verified: no GLB creature entry sets it) and is
+ * PICKER-CAMERA-framing semantics for the /create-agent avatar picker, a
+ * different convention than this in-world board-relative yaw (see
+ * `feedback_vrm_facing_formula` / reef `rider-species-router` memory — the
+ * VRM rider branch below deliberately applies NO yaw for the same reason).
  */
-const _glbRiderBaseY: Record<string, number> = {};
+const REEF_CREATURE_RIDER_FACE_YAW: Record<string, number> = {
+  lobster: 0,
+  crayfish: -Math.PI / 2,
+  hermitcrab: -Math.PI / 2,
+  sweet_crab: -Math.PI / 2,
+  lobster_plush: Math.PI / 2,
+  seahorse: 0,
+  sea_horse: 0,
+  jellyfish: 0,
+  octopus: 0,
+};
 
 // ─── Shared glider geometry + material (v1, ONE instance for ALL players) ─────
 // Never disposed — page-lifetime, shared across all ReefRacePlayer instances.
@@ -364,7 +426,6 @@ const INTERP_DELAY_MS = 100;
 const INTERP_HISTORY_SIZE = 4;
 
 // ─── Module-scope scratch — NO per-frame allocations ─────────────────────────
-const _swimTime: Record<string, number> = {};
 const _bobTime: Record<string, number>  = {};
 
 /**
@@ -409,57 +470,6 @@ interface SnapRecord {
   rot: number;
   vx: number;
   vz: number; // sim-space vy → Three.js vz
-}
-
-/**
- * Apply swimming animation to the avatar scene.
- *
- * For RIGGED meshes (sea_horse.glb — 93 bone nodes): delegates to the bone-based
- * undulation path via applyTransformSwim's internal `hasBones` branch, which
- * returns early and lets the original bone traversal run via the scene.traverse below.
- *
- * For STATIC meshes (lobster.glb — 0 bones): applyTransformSwim does pure
- * rotation.x / rotation.z / position.y oscillation on the whole scene group —
- * producing visible swimming motion that was a complete no-op before this change.
- *
- * `baseY` is the GLB rider auto-fit grounding offset (see
- * `_glbRiderBaseY`/`GLB_RIDER_TARGET_HEIGHT_LOCAL`) — clonedScene is parented
- * to riderMountRef whose OWN position.y is already driven by the bob loop
- * above, so this is the resting Y clonedScene itself oscillates around
- * (previously hardcoded 0, which was correct only for lobster.glb's
- * near-zero native offset — every other GLB creature needs its own fitted
- * offset here or it renders floating/sunk).
- *
- * The bone-path below (traverse + isBone) still handles rigged species correctly
- * because applyTransformSwim returns early when hasBones=true, leaving the
- * scene's rotation/position untouched for the traverse to work on.
- */
-function applySwimmingAnim(scene: THREE.Object3D, avatarId: string, delta: number, speed: number, baseY: number): void {
-  // Transform-only path for static meshes (lobster.glb, crayfish.glb, etc.).
-  // Returns early internally when bones are present, so rigged meshes pass through.
-  applyTransformSwim(scene, avatarId, delta, speed, baseY);
-
-  // Bone-based undulation for rigged species (sea_horse.glb, future rigged GLBs).
-  // applyTransformSwim's hasBones=true guard ensures transform is NOT also applied.
-  if (!_swimTime[avatarId]) _swimTime[avatarId] = 0;
-  _swimTime[avatarId] += delta;
-  const t = _swimTime[avatarId];
-  const freq = 2.5 + speed * 0.003;
-  const amp  = 0.12;
-
-  scene.traverse((o) => {
-    const bone = o as THREE.Bone;
-    if (!bone.isBone) return;
-    const name = bone.name.toLowerCase();
-    // Undulate any spine/tail/body bones
-    if (name.includes('spine') || name.includes('tail') || name.includes('body')) {
-      bone.rotation.z = Math.sin(t * freq) * amp;
-    }
-    // Pectoral/side fins
-    if (name.includes('fin') || name.includes('wing') || name.includes('arm')) {
-      bone.rotation.x = Math.sin(t * freq * 1.3 + 0.5) * amp * 0.7;
-    }
-  });
 }
 
 // ─── SPEC 2: VRM rider inner component ────────────────────────────────────────
@@ -799,20 +809,28 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
     clonedScene.scale.setScalar(fitScale);
     const groundOffsetY = -fitBox.min.y * fitScale;
     clonedScene.position.y = groundOffsetY;
-    // Stored for applySwimmingAnim's per-frame baseY (static/unrigged creatures
-    // only — rigged creatures never hit that write path, so this assignment
-    // above already persists for them).
-    _glbRiderBaseY[entity.avatarId] = groundOffsetY;
+
+    // Face the board nose (2026-07-12, founder directive — creature riders sit
+    // STILL, facing FORWARD). Applied ONCE here, after the fit box measurement
+    // above so the yaw can never perturb the bbox-based scale/grounding fit.
+    // Persistent — nothing else writes clonedScene.rotation.y for a GLB rider
+    // (the old per-frame swim call that used to touch rotation.x/z is REMOVED
+    // entirely, not merely stopped after one call — see REEF_CREATURE_RIDER_FACE_YAW).
+    clonedScene.rotation.y = REEF_CREATURE_RIDER_FACE_YAW[speciesKey] ?? 0;
 
     mount.add(clonedScene);
     return () => {
       mount.remove(clonedScene);
       // Clear per-avatarId procedural state so a remounted clone starts at t=0
       // and re-probes for bones (important if species changes across mounts).
+      // Harmless no-op for reef now (nothing calls applyTransformSwim from this
+      // file any more) — kept because sea-creature-swim.ts's internal Map is
+      // keyed by avatarId across ALL its callers (reef + bumper-shells + the
+      // avatar preview), so this defensively clears any stale entry.
       resetTransformSwimState(entity.avatarId);
       // _lastXZ cleanup is handled by the dedicated useEffect below (covers VRM path too).
     };
-  }, [clonedScene, entity.avatarId]);
+  }, [clonedScene, entity.avatarId, speciesKey]);
 
   // Dedicated cleanup for _lastXZ: runs for BOTH GLB and VRM paths.
   // The clonedScene effect above has an early-return guard (`if (!mount || !clonedScene)`)
@@ -821,10 +839,6 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
   useEffect(() => {
     return () => {
       delete _lastXZ[entity.avatarId];
-      // Registry-driven rider router (2026-07-10): drop the GLB rider
-      // grounding-offset cache alongside _lastXZ so it doesn't accrete dead
-      // avatarIds across remounts (mirrors the forgetTKey cleanup below).
-      delete _glbRiderBaseY[entity.avatarId];
       // SURF ROAD: drop the per-kart elevation XZ→t cache key so the Map in
       // reef-race-elevation doesn't accrete dead avatarIds across remounts.
       forgetTKey(entity.avatarId);
@@ -845,27 +859,46 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
   }, [predictsSelf]);
 
   // ─── Sea-creature animator (hot-swap when manifest enables this species) ───
-  // Manifest defaults to all-empty so this hook is a no-op until rigged GLBs
-  // ship at /models/sea-creatures/<species>/{base.glb, animations/<state>.glb}
-  // and the manifest is flipped to hasRig=true. While that's the case the
-  // existing static `clonedScene` + procedural `applySwimmingAnim` keep running
-  // unchanged. When manifest is enabled, the animator's scene REPLACES
-  // clonedScene at the rider mount and the per-state animation plays.
+  // CORRECTED 2026-07-12 (Codex adversarial review caught a stale premise in
+  // this comment block — it claimed "0 species enabled (all hasRig=false)",
+  // which was WRONG: `sea-creature-manifest.ts` has shipped `lobster: {
+  // hasRig: true }` since 2026-04-27, with real rigged GLBs on disk at
+  // /models/sea-creatures/lobster/{base.glb, animations/{idle,swim,hit}.glb}.
+  // That means this hook is LIVE for lobster today, not dormant — and its
+  // 'swim' state (fired whenever speed > 50, i.e. during any actual race) is
+  // exactly the swim-wiggle the founder directive says to remove. Reef Race
+  // hard-disables this hot-swap below (`wantsAnimator` forced false) so EVERY
+  // GLB creature rider — rigged or not, regardless of what the SHARED manifest
+  // says — renders the static, facing-corrected `clonedScene`
+  // (REEF_CREATURE_RIDER_FACE_YAW) and nothing else. The manifest itself is
+  // NOT touched — BumperShellsPlayer.tsx reads the SAME shared
+  // SEA_CREATURE_MANIFEST/createSeaCreatureAnimator and legitimately still
+  // wants lobster to swim-animate there; flipping `hasRig` off in the
+  // manifest would silently regress that unrelated feature. This effect body
+  // (the hot-swap load + mount/unmount) is kept byte-for-byte in case a
+  // future reef feature needs it back — it's fully inert while
+  // `wantsAnimator` is hardcoded false, since the effect returns immediately.
   //
-  // FEATURE_GATE: sea_creature_animator
-  // Status: scaffolded import path; dormant until manifest hasRig=true.
-  // Metric to graduate: rigged base.glb + ≥1 animation clip exists for any
-  //   species AND visual review confirms motion matches the racing context.
-  // Current reading: 0 species enabled (all hasRig=false in manifest).
-  // Review deadline: 2026-05-26
-  // On deadline: if no GLBs shipped, DELETE the animator import path and
-  //   keep procedural-only. Don't extend without a Meshy export to point at.
+  // FEATURE_GATE: sea_creature_animator (REEF-RACE SCOPE ONLY — see above;
+  // Bumper Shells' own use of the same manifest is untouched and out of scope)
+  // Status: LIVE for lobster in the shared manifest; explicitly DISABLED for
+  //   Reef Race riders per the 2026-07-12 founder "sit still, face forward"
+  //   directive. Re-enabling here requires an explicit product decision
+  //   (would need per-state clips that read as "racing," not "swimming").
+  // Metric to graduate (if ever re-enabled for reef): rigged base.glb +
+  //   ≥1 animation clip whose MOTION matches the racing context, reviewed
+  //   against the current static-rider bar, not the pre-2026-07-12 baseline.
+  // Review deadline: N/A — disabled by explicit directive, not a lapsed gate.
   // Reference: tweet copyrebeldia 2026-04-26 — Meshy/Tripo auto-rig pipeline.
   const animatorRef = useRef<SeaCreatureAnimatorHandle | null>(null);
   // speciesKey is derived earlier (above useGLTF calls) for the glbPath dispatch.
-  // Cast to SeaCreatureSpecies for the manifest lookup (unknown values produce
-  // undefined from the manifest, which the hasRig ?? false guard handles safely).
-  const wantsAnimator = SEA_CREATURE_MANIFEST[speciesKey as SeaCreatureSpecies]?.hasRig ?? false;
+  // Hardcoded false (2026-07-12) — see the block comment above. Was:
+  // `SEA_CREATURE_MANIFEST[speciesKey as SeaCreatureSpecies]?.hasRig ?? false`,
+  // which let lobster's shipped rig hot-swap in and swim-animate during races,
+  // undermining the founder's "sit still, face forward" directive. The
+  // `SEA_CREATURE_MANIFEST` import was removed entirely (see the NOTE at the
+  // import block above) — Reef Race no longer reads or acts on the manifest.
+  const wantsAnimator = false;
 
   useEffect(() => {
     if (!wantsAnimator) return;
@@ -1350,9 +1383,15 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
     bankDelta = ((bankDelta % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2) - Math.PI;
     glider.rotation.z = -bankDelta * 0.15;
 
-    // ─── Rider stays level (Phase 1 §4) ──────────────────────────────────────
-    // riderMountRef.rotation.z is explicitly kept at 0 — the rider does not lean
-    // even as the board banks. This is the key visual distinction of the glider prop.
+    // ─── Rider adds no INDEPENDENT lean (Phase 1 §4) ─────────────────────────
+    // Comment corrected 2026-07-12 (Codex review caught the prior wording
+    // overclaiming): pinning riderMountRef.rotation.z to 0 does NOT make the
+    // rider appear level in world space — riderMountRef is a CHILD of
+    // gliderRef, so it still visually inherits/banks WITH gliderRef's tilt
+    // above (rotations compose down the parent chain; zeroing a child's own
+    // local rotation only means it adds no ADDITIONAL tilt on top of what it
+    // inherits). What this line actually guarantees: the rider never picks up
+    // its own separate wobble independent of the board.
     riderMount.rotation.z = 0;
 
     // ─── Gentle bob on riderMountRef.position.y (Phase 1 §4) ─────────────────
@@ -1364,7 +1403,7 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
       RIDER_MOUNT_OFFSET_DEFAULT[1] +
       Math.sin(_bobTime[entity.avatarId] * BOB_FREQ_HZ * Math.PI * 2) * BOB_AMP_LOCAL;
 
-    // ─── Animation: animator (when manifest enabled) OR procedural fallback ──
+    // ─── Animation: animator (when manifest enabled) OR static rest pose ────
     const speed = Math.sqrt(interpVx * interpVx + interpVz * interpVz);
     const animator = animatorRef.current;
     if (animator) {
@@ -1384,13 +1423,18 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
       if (animator.getState() !== desiredState) {
         animator.setState(desiredState);
       }
-    } else {
-      // Fallback path — procedural per-bone undulation on the static GLB.
-      // Guard: clonedScene is null when isVRM=true (effectiveSrcScene=null).
-      if (clonedScene) {
-        applySwimmingAnim(clonedScene, entity.avatarId, dt, speed, _glbRiderBaseY[entity.avatarId] ?? 0);
-      }
     }
+    // else: GLB creature body stays static — founder directive 2026-07-12
+    // ("actual lobsters and crustaceans should just be sitting on the board
+    // facing forwards"). The old procedural swim-wiggle (applySwimmingAnim —
+    // whole-scene rotation.x/z/position.y oscillation for static meshes via
+    // applyTransformSwim, PLUS bone-name spine/tail/fin undulation for rigged
+    // meshes like seahorse) is REMOVED entirely, not merely paused after one
+    // call. The mount effect above already sets clonedScene.position.y =
+    // groundOffsetY + rotation.y = the per-species face-forward correction
+    // ONCE; rotation.x/z default to 0 and nothing writes them per frame, so
+    // not calling anything here leaves a clean static rest pose with no stale
+    // mid-oscillation values.
 
     // Mark finished if finishedAt is set.
     if (entity.finishedAt && !finishedRef.current) {

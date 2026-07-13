@@ -78,6 +78,16 @@ function isCameraMode(s: string | null): s is CameraMode {
 // ─── Module-scope scratch (no per-frame allocations) ─────────────────────────
 const _sc1 = new THREE.Vector3();
 
+// DEV-ONLY VERIFY-HARNESS ADDITION (2026-07-12, reef creature-rider facing/static
+// audit): expose the THREE module reference so an external Playwright driver can
+// construct Box3/Quaternion/Vector3 without needing its own bundle of three.js —
+// mirrors the existing __HARNESS_GROUP pattern below. Harmless (a module
+// reference assignment, not a per-frame cost); dev-only preview route, never
+// reached by the production game bundle.
+if (typeof window !== 'undefined') {
+  (window as unknown as { __THREE_DEV?: typeof THREE }).__THREE_DEV = THREE;
+}
+
 // ─── Camera presets (SURF ROAD — frame the floating ribbon in the void) ──────
 // Footprint ≈ 17687 × 16941 wu; elevation span ≈ 1634 (Y ∈ [-559, 1075]).
 // Start/finish at centerlineAt(0) ≈ XZ(-2400, -8200), elevation ≈ elevationAt(0).
@@ -205,7 +215,7 @@ function CamController({ mode, controlsRef, onCamDist }: CamControllerProps) {
 // key works (VRM or GLB), plus the two legacy non-registry keys ('crayfish',
 // 'sea_horse'). Example: /preview/reef-race-v2?mode=racer&species=hermes_male
 const _HARNESS_T = 0.10; // a banked stretch of the spline
-function ReefRaceKartHarness({ species }: { species: string }) {
+function ReefRaceKartHarness({ species, camview }: { species: string; camview: string }) {
   const { camera } = useThree();
   const wrapRef = useRef<THREE.Group>(null);
   const c = clientSpline.centerlineAt(_HARNESS_T);
@@ -215,14 +225,67 @@ function ReefRaceKartHarness({ species }: { species: string }) {
     avatarId: 'harness-1', x: c.x, y: c.z, rot: Math.atan2(tan.x, tan.z),
     vx: 0, vy: 0, alive: true, color: '#35d0ff', species, lap: 1,
   }));
+  // DEV-ONLY VERIFY-HARNESS ADDITION (2026-07-12): `?camview=orbit&camyaw=<deg>` —
+  // a turntable camera at a fixed radius/height around the rider so a creature's
+  // "front" (antennae/claws/head vs. tail) can be read from whichever azimuth
+  // actually faces the lens, instead of guessing from one fixed angle.
+  const orbitSearchParams = useSearchParams();
+  const camYawDeg = Number(orbitSearchParams.get('camyaw') ?? '0');
+  // DEV-ONLY VERIFY-HARNESS ADDITION (2026-07-12): optional radius/height
+  // overrides for the orbit cam — the default 132/55 (matched to the 3q view)
+  // is tuned for ~22wu GLB creatures; VRM riders are ~245wu (pre-existing,
+  // already-documented scale gap — see reef `rider-species-router` memory,
+  // NOT something this task's scope touches), so a VRM verification shot
+  // needs a farther/higher camera to fit the whole figure in frame.
+  const camRadiusOverride = orbitSearchParams.get('camradius');
+  const camHeightOverride = orbitSearchParams.get('camheight');
   useFrame(() => {
-    // Close, low 3/4 view of the kart so the BOARD PROFILE (flat vs vertical) reads
-    // clearly. The kart renders at KART_SCALE world units around c; ~120u out / ~55u up.
-    camera.position.set(c.x + 120, datumY + 55, c.z + 120);
-    camera.lookAt(c.x, datumY + 12, c.z);
+    // DEV-ONLY VERIFY-HARNESS ADDITION (2026-07-12, creature-rider facing audit):
+    // `?camview=top` swaps to a close, near-orthographic top-down view — the
+    // default close 3/4 view backlights the rider against the water-glint bloom
+    // and reads as a silhouette, unusable for judging which way a creature GLB
+    // is authored to face. Top-down + front daylight reads the body plan
+    // (head/claws vs tail) clearly. Default ('3q') is the pre-existing unchanged
+    // close 3/4 view used by every other preview consumer of this harness.
+    if (camview === 'orbit') {
+      // Same radius/height/target ratios as the proven-working default 3/4 view
+      // below (120 out / 55 up / datumY+12 target) — only the AZIMUTH sweeps, so
+      // the rider is reliably framed at every angle instead of guessing a radius.
+      const az = (camYawDeg * Math.PI) / 180;
+      const radius = camRadiusOverride ? Number(camRadiusOverride) : 132; // = hypot(120,55) — same 3D eye-to-kart distance as the 3q view below (Codex review 2026-07-12 caught this comment previously saying hypot(120,120)≈169.7, which is wrong)
+      const height = camHeightOverride ? Number(camHeightOverride) : 55;
+      camera.position.set(c.x + Math.sin(az) * radius, datumY + height, c.z + Math.cos(az) * radius);
+      camera.lookAt(c.x, datumY + (camHeightOverride ? Number(camHeightOverride) * 0.4 : 12), c.z);
+    } else if (camview === 'top') {
+      camera.position.set(c.x, datumY + 140, c.z + 1);
+      camera.lookAt(c.x, datumY + 12, c.z);
+    } else if (camview === 'topclose') {
+      // DEV-ONLY VERIFY-HARNESS ADDITION (2026-07-12): tighter top-down crop —
+      // 'top' framed the whole kart; this frames just the rider for reading
+      // fine anatomy (eyes/antennae/claws) at higher pixel density.
+      camera.position.set(c.x, datumY + 55, c.z + 1);
+      camera.lookAt(c.x, datumY + 25, c.z);
+    } else {
+      // Close, low 3/4 view of the kart so the BOARD PROFILE (flat vs vertical) reads
+      // clearly. The kart renders at KART_SCALE world units around c; ~120u out / ~55u up.
+      camera.position.set(c.x + 120, datumY + 55, c.z + 120);
+      camera.lookAt(c.x, datumY + 12, c.z);
+    }
     // DEV ground-truth: expose the kart wrapper so Playwright can read the surfboard's
     // true world pose (no scene-handle hunting needed). Harmless; dev-only preview route.
-    if (typeof window !== 'undefined') (window as unknown as { __HARNESS_GROUP?: THREE.Group }).__HARNESS_GROUP = wrapRef.current ?? undefined;
+    if (typeof window !== 'undefined') {
+      (window as unknown as { __HARNESS_GROUP?: THREE.Group }).__HARNESS_GROUP = wrapRef.current ?? undefined;
+      // DEV-ONLY VERIFY-HARNESS ADDITION (2026-07-12): expose the camera too, so a
+      // Playwright driver can read its EXACT matrixWorld basis (screen-right/up in
+      // world space) instead of hand-deriving the lookAt basis. Typed `unknown`
+      // (not `THREE.Camera`) — R3F's `useThree().camera` type and this file's
+      // direct `three` import resolve to different duplicate @types/three
+      // versions present in this monorepo's node_modules (pre-existing,
+      // repo-wide — see the `@types/three@0.170.0` vs `@types/three@0.182.0`
+      // errors already present on the unmodified baseline), which otherwise
+      // trips a needless cross-version assignability error on this line.
+      (window as unknown as { __HARNESS_CAMERA?: unknown }).__HARNESS_CAMERA = camera;
+    }
   });
   return (
     <group ref={wrapRef}>
@@ -244,9 +307,15 @@ interface SceneContentsProps {
   racer: boolean;
   /** RACER harness species override (?species=<modelKey>). Defaults to 'lobster'. */
   species: string;
+  /** DEV-ONLY VERIFY-HARNESS ADDITION (2026-07-12): RACER harness camera variant. */
+  camview: string;
+  /** DEV-ONLY VERIFY-HARNESS ADDITION (2026-07-12): flat bright fill light + no
+   *  bloom, for reading creature-rider body-plan/orientation without the cosmic-
+   *  void backlighting turning the rider into an unreadable silhouette. */
+  diag: boolean;
 }
 
-function SceneContents({ mode, autoRotate, controlsRef, onCamDist, drive, racer, species }: SceneContentsProps) {
+function SceneContents({ mode, autoRotate, controlsRef, onCamDist, drive, racer, species, camview, diag }: SceneContentsProps) {
   return (
     <>
       {/* Free-orbit / cinematic camera + orbit controls — ONLY in look modes. In
@@ -269,18 +338,24 @@ function SceneContents({ mode, autoRotate, controlsRef, onCamDist, drive, racer,
 
       {/* Deep cosmic void atmosphere */}
       <fog args={[FOG_COLOR, FOG_NEAR, FOG_FAR]} />
-      <color attach="background" args={['#0c1a2e']} />
+      <color attach="background" args={[diag ? '#7fa8c9' : '#0c1a2e']} />
 
       {/* SURF ROAD scene. Look modes show decorative demo karts; drive mode hides
           them (you ARE the kart) and mounts the keyboard-driven free-drive rig. */}
       <RiverScene showDemoKarts={!drive && !racer} />
       {drive && <ReefFreeDrive />}
-      {racer && <ReefRaceKartHarness species={species} />}
+      {racer && <ReefRaceKartHarness species={species} camview={camview} />}
 
       <PreviewLighting />
+      {/* DEV-ONLY VERIFY-HARNESS ADDITION (2026-07-12): ?diag=1 — flat bright fill
+          so a creature-rider's body plan reads clearly instead of as a cosmic-void
+          backlit silhouette. Dev-only preview route; never affects production. */}
+      {diag && <ambientLight intensity={2.2} />}
+      {diag && <directionalLight position={[200, 400, 250]} intensity={1.5} />}
 
-      {/* Selective neon bloom — LAST so it composes the final framebuffer */}
-      <SurfBloom />
+      {/* Selective neon bloom — LAST so it composes the final framebuffer.
+          Skipped in diag mode — bloom crushes contrast on the creature body. */}
+      {!diag && <SurfBloom />}
     </>
   );
 }
@@ -429,8 +504,19 @@ function ReefRacePreviewInner() {
   // router verification, 2026-07-10). Defaults to 'lobster' — the pre-existing
   // shipped behaviour when the param is omitted.
   const speciesParam = searchParams.get('species') ?? 'lobster';
+  // DEV-ONLY VERIFY-HARNESS ADDITION (2026-07-12): ?camview=top for the RACER
+  // harness — see ReefRaceKartHarness comment. Defaults to the pre-existing '3q'.
+  const camview = searchParams.get('camview') ?? '3q';
+  // DEV-ONLY VERIFY-HARNESS ADDITION (2026-07-12): ?diag=1 — see SceneContents.
+  const diag = searchParams.get('diag') === '1';
   // Default to free-orbit hero of the whole floating loop in the void.
   const mode: CameraMode = isCameraMode(rawMode) ? rawMode : 'free-orbit';
+  // DEV-ONLY VERIFY-HARNESS ADDITION (2026-07-12): `?capture=1` opts into
+  // preserveDrawingBuffer so an external screenshot driver (Playwright / a
+  // gl.readPixels probe) reads a stable framebuffer. Off by default — WebGL
+  // preserveDrawingBuffer has a real perf cost (extra buffer copy per frame) so
+  // it must never be on for a normal preview/production visit.
+  const captureMode = searchParams.get('capture') === '1';
 
   const [camDist,    setCamDist]    = useState(0);
   const [stats,      setStats]      = useState<FrameStats>({ avgMs: 0, fps: 0, maxMs: 0, geometries: 0, textures: 0 });
@@ -460,7 +546,7 @@ function ReefRacePreviewInner() {
     }}>
       <Canvas
         camera={{ position: [FREE_CAM.x, FREE_CAM.y, FREE_CAM.z], fov: 60, near: CAMERA_NEAR, far: CAMERA_FAR }}
-        gl={{ antialias: false }}
+        gl={{ antialias: false, preserveDrawingBuffer: captureMode }}
         dpr={[1, 1.5]}
         style={{ width: '100%', height: '100%' }}
       >
@@ -473,6 +559,8 @@ function ReefRacePreviewInner() {
             drive={drive}
             racer={racer}
             species={speciesParam}
+            camview={camview}
+            diag={diag}
           />
         </Suspense>
         <FrameTicker onStats={handleStats} />
