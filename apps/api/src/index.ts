@@ -811,6 +811,20 @@ process.on('uncaughtException', (err) => {
     console.error('[API] Body idle sweeper failed to start:', err);
   }
 
+  // 2026-07-13 — start the COVENANT CHAIN SEALER. Every 60s it assigns the
+  // gapless hash chain (chain_position + prev/record hashes) over the
+  // covenant action-record stream that the ledger/quest/bounty choke points
+  // append to in-tx. Sealer-only advisory lock — money paths never touch it.
+  // See `services/covenant-chain-sealer.ts`.
+  try {
+    const { startCovenantChainSealer } = await import(
+      './services/covenant-chain-sealer'
+    );
+    startCovenantChainSealer();
+  } catch (err) {
+    console.error('[API] Covenant chain sealer failed to start:', err);
+  }
+
   // 2026-06-24 — start the LAND RENT sweeper (builder-economics). Runs hourly,
   // charges each due weekly rent on rented parcels, opens a grace window on a
   // failed charge, and evicts after grace (parcel back to the pool, structure
