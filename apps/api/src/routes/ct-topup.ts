@@ -633,6 +633,7 @@ async function runTopupCredit(row: TopupRow, avatarId: string): Promise<TopupOut
           provenance: 'bought',
           usdBasis,
           metadata: { txSignature, asset: meta.asset, usdCents: rowUsdCents ?? undefined, topupId },
+          actorKind: 'system',
         },
         tx,
       );

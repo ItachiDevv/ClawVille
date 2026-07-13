@@ -268,6 +268,7 @@ async function sweepRented(tx: LandTx, p: LockedParcelRow): Promise<SweepAction>
         reason: 'land_parcel_rent',
         source: 'system',
         metadata: { parcelId: p.id, parcelCode: p.parcel_code, tier: p.tier, period: 'weekly' },
+        actorKind: 'system',
       },
       tx,
     );
@@ -294,6 +295,7 @@ async function sweepRented(tx: LandTx, p: LockedParcelRow): Promise<SweepAction>
               period: 'weekly',
               renterAvatarId: ownerAvatarId,
             },
+            actorKind: 'system',
           },
           tx,
         );
@@ -390,6 +392,7 @@ async function sweepDeposit(tx: LandTx, p: LockedParcelRow): Promise<SweepAction
                 reason: 'forfeit_on_lapse',
                 tenantAvatarId: ownerAvatarId,
               },
+              actorKind: 'system',
             },
             tx,
           );
@@ -443,6 +446,7 @@ async function sweepDeposit(tx: LandTx, p: LockedParcelRow): Promise<SweepAction
               drawnFromEscrow: true,
               tenantAvatarId: ownerAvatarId,
             },
+            actorKind: 'system',
           },
           tx,
         );
@@ -641,6 +645,7 @@ async function sweepHold(tx: LandTx, p: LockedParcelRow): Promise<SweepAction> {
         reason: 'land_parcel_rent',
         source: 'system',
         metadata: { parcelId: p.id, parcelCode: p.parcel_code, tier: p.tier, tenure: 'hold', period: 'weekly' },
+        actorKind: 'system',
       },
       tx,
     );
@@ -661,6 +666,7 @@ async function sweepHold(tx: LandTx, p: LockedParcelRow): Promise<SweepAction> {
             period: 'weekly',
             holderAvatarId: ownerAvatarId,
           },
+          actorKind: 'system',
         },
         tx,
       );

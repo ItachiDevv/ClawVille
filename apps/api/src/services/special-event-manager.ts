@@ -570,6 +570,7 @@ export class SpecialEventManager {
               reason: 'special_event_entry',
               source: 'simulation',
               metadata: { eventId: e.id, slug, agentId: subject.agentId },
+              actorKind: subject.kind === 'agent' ? 'agent' : 'human',
             },
             tx,
           );

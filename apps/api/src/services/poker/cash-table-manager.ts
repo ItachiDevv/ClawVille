@@ -727,6 +727,7 @@ export class CashTableManager {
           reason: isSeeded ? 'poker_cash_house_seed' : 'poker_cash_buy_in',
           source: 'simulation',
           metadata: { tableId: table.id, seatIndex, seeded: isSeeded },
+          actorKind: isSeeded ? 'system' : subject.kind === 'agent' ? 'agent' : 'human',
         },
         tx,
       );
@@ -898,6 +899,7 @@ export class CashTableManager {
             reason: isSeeded ? 'poker_cash_house_reclaim' : 'poker_cash_cash_out',
             source: 'simulation',
             metadata: { tableId: table.id, seatIndex: seat.seatIndex, seeded: isSeeded },
+            actorKind: isSeeded ? 'system' : seat.subjectType === 'agent' ? 'agent' : 'human',
           },
           tx,
         );

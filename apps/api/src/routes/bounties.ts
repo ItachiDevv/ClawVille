@@ -1493,6 +1493,25 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
       | { ok: true; escrowPda: string | null; auditRootHex: string | null; dryRun: boolean }
       | null = null;
     if (isUsdc && !isComposed) {
+      // Covenant INTENT record BEFORE the external release (Codex covenant
+      // round 2 HIGH #2): the legacy rail has no recovery crank, so a crash
+      // between chain success and the settle record's tx would otherwise
+      // leave an irreversible payout with NO stream trace. The intent commits
+      // first — a settle_requested without a matching bounty.settle is the
+      // durable, queryable anomaly signature for reconciliation (the SAP
+      // (escrow, job) ledger holds the on-chain truth to reconcile against).
+      await recordCovenantAction({
+        action: 'bounty.settle_requested',
+        subjectType: 'avatar',
+        subjectId: hunterAvatarId,
+        actorKind: toActorKind(c.get('identity').kind),
+        dedupeKey: `bounty:${bounty.id}:settle_requested`,
+        payload: {
+          bountyId: bounty.id,
+          rail: 'sap-usdc',
+          rewardUsdcBaseUnits: usdcRewardBaseUnits(bounty.tokenReward).toString(),
+        },
+      });
       const settle = await runBountyUsdcSettle({
         bountyId: bounty.id,
         creatorAvatarId: bounty.creatorId,

@@ -1227,6 +1227,7 @@ coveSlotsRouter.post('/spin', async (c) => {
                 paytableId: session.paytableId,
                 nonce: session.nonceCounter,
               },
+              actorKind: subject.kind === 'user' ? 'human' : 'agent',
             },
             tx,
           );
@@ -1414,6 +1415,7 @@ coveSlotsRouter.post('/spin', async (c) => {
                 spinId: spinRow.id,
                 nonce: session.nonceCounter,
               },
+              actorKind: subject.kind === 'user' ? 'human' : 'agent',
             },
             tx,
           );

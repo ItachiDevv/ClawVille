@@ -138,6 +138,7 @@ chatRoutes.post('/system/:slug', requireAuth, async (c) => {
       reason: 'system_agent_chat',
       source: 'api',
       metadata: { slug },
+      actorKind: 'human',
     }).catch((err) => console.error('[chat/system] creditClawTokens failed:', err));
 
     awardXp(avatar.id, 5, 'npc-chat').catch(console.error);
@@ -344,6 +345,7 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
       reason: 'location_chat',
       source: 'api',
       metadata: { locationId },
+      actorKind: 'human',
     }).catch((err) => console.error('[chat] creditClawTokens failed:', err));
 
     // Award +5 XP for NPC chat (non-blocking)

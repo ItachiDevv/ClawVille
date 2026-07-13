@@ -40,7 +40,7 @@
 
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { eq, and, desc, inArray, gt, isNotNull, like, type SQL } from 'drizzle-orm';
+import { eq, and, desc, inArray, gt, isNotNull, like, sql, type SQL } from 'drizzle-orm';
 import { PublicKey } from '@solana/web3.js';
 import {
   db,
@@ -583,39 +583,59 @@ partnerCovenantRoutes.get('/actions', async (c) => {
 // GET /actions/head — chain head + latest seal batch (cheap poll/verify)
 // ---------------------------------------------------------------------------
 partnerCovenantRoutes.get('/actions/head', async (c) => {
-  const [head] = await db
-    .select({
-      chainPosition: covenantActionRecords.chainPosition,
-      recordHash: covenantActionRecords.recordHash,
-      sealedAt: covenantActionRecords.sealedAt,
-    })
-    .from(covenantActionRecords)
-    .where(isNotNull(covenantActionRecords.chainPosition))
-    .orderBy(desc(covenantActionRecords.chainPosition))
-    .limit(1);
+  // ONE statement = one MVCC snapshot (Codex covenant round 2 MED #5): two
+  // separate reads could straddle a sealer commit and return an "impossible"
+  // pair (old head + newer batch), tripping a verifier's corruption check.
+  // The sealer writes head + batch in one tx, so a single-snapshot read is
+  // always self-consistent.
+  const [snap] = await db.execute<{
+    head: {
+      chain_position: string | number;
+      record_hash: string;
+      sealed_at: string;
+    } | null;
+    batch: {
+      first_position: string | number;
+      last_position: string | number;
+      record_count: string | number;
+      batch_root: string;
+      prev_batch_root: string;
+      created_at: string;
+    } | null;
+  }>(
+    sql`SELECT
+          (SELECT to_jsonb(h) FROM (
+             SELECT chain_position, record_hash, sealed_at
+             FROM covenant_action_records
+             WHERE chain_position IS NOT NULL
+             ORDER BY chain_position DESC LIMIT 1
+           ) h) AS head,
+          (SELECT to_jsonb(b) FROM (
+             SELECT first_position, last_position, record_count,
+                    batch_root, prev_batch_root, created_at
+             FROM covenant_seal_batches
+             ORDER BY last_position DESC LIMIT 1
+           ) b) AS batch`,
+  );
 
-  const [batch] = await db
-    .select()
-    .from(covenantSealBatches)
-    .orderBy(desc(covenantSealBatches.lastPosition))
-    .limit(1);
-
+  const head = snap?.head ?? null;
+  const batch = snap?.batch ?? null;
   return c.json({
     head: head
       ? {
-          chainPosition: head.chainPosition!.toString(),
-          recordHash: head.recordHash,
-          sealedAt: head.sealedAt!.toISOString(),
+          chainPosition: String(head.chain_position),
+          recordHash: head.record_hash,
+          sealedAt: new Date(head.sealed_at).toISOString(),
         }
       : null,
     latestBatch: batch
       ? {
-          firstPosition: batch.firstPosition.toString(),
-          lastPosition: batch.lastPosition.toString(),
-          recordCount: batch.recordCount.toString(),
-          batchRoot: batch.batchRoot,
-          prevBatchRoot: batch.prevBatchRoot,
-          createdAt: batch.createdAt.toISOString(),
+          firstPosition: String(batch.first_position),
+          lastPosition: String(batch.last_position),
+          recordCount: String(batch.record_count),
+          batchRoot: batch.batch_root,
+          prevBatchRoot: batch.prev_batch_root,
+          createdAt: new Date(batch.created_at).toISOString(),
         }
       : null,
   });
