@@ -134,6 +134,9 @@ export * from './moonpay';
 // price_vclaw is the QUOTE unit only — the buyer pays USDC underneath, no
 // internal vCLAW debit. Migration 0016 (idempotent, by hand — NEVER db:push).
 export * from './checkout';
+// General custodial avatar-to-avatar USDC payments through PayAI. Durable
+// claim/capture/fulfill machine; migration 0028 (additive + idempotent).
+export * from './agent-payments';
 // Tokenomics C — marketplace stage / C4 (2026-07-07) — P2P marketplace v1
 // (market_listings + market_deed_locks + market_settlements). Settlement is
 // FLAG-GATED OFF (MARKETPLACE_SETTLE_ENABLED); seller CLV payouts + the 4.44%

@@ -49,18 +49,16 @@
  * throws unless SAP_ALLOW_MAINNET was deliberately flipped in code.
  */
 
-import { createKeyPairSignerFromBytes } from '@solana/kit';
-import { x402Client } from '@x402/core/client';
 import type { PaymentRequirements } from '@x402/core/types';
-import { ExactSvmScheme } from '@x402/svm/exact/client';
 import {
-  verifyAndSettle,
   resolveFacilitatorFeePayer,
-  caip2ForNetwork,
-  usdcMintForNetwork,
   type X402Network,
 } from '../x402-payai';
 import { loadX402Config } from '../x402-config';
+import {
+  prepareCustodialExactPayment,
+  executePreparedExactPayment,
+} from '../custodial-x402';
 import { sapConfigSnapshot, loadAvatarWalletForSigning } from './sap-client';
 
 // ─── structured results (NEVER throw raw to the gate) ─────────────────────────
@@ -199,48 +197,31 @@ export async function preparePayaiRelease(
     };
   }
 
-  const caip2 = caip2ForNetwork(network);
-  const requirements: PaymentRequirements = {
-    scheme: 'exact',
-    network: caip2,
-    amount: input.amountBaseUnits.toString(),
-    asset: usdcMintForNetwork(network),
-    payTo: input.workerWalletPubkey,
-    maxTimeoutSeconds: 120,
-    extra: {
-      // REQUIRED by the SVM exact scheme — the facilitator gas sponsor.
-      feePayer,
-      // Wire-level audit binding (provenance parity with the on-chain rail's
-      // service_hash): which job this payment releases + the Covenant/
-      // verification audit root that authorized it. Harmless to honest flows.
-      purpose: 'sap-payai-release',
-      jobId: input.jobId,
-      auditRootHex: input.auditRootHex,
-    },
-  };
-
   try {
     // Build + sign the x402 payment payload AS the depositor. The reference
     // @x402/svm exact client constructs the transfer_checked tx (fee payer =
     // facilitator, unsigned for that slot), signs it with the payer key, and
     // encodes it into the payload. RPC (blockhash) comes from the SAP cluster
     // config, so payment and rail can never straddle clusters.
-    const payerSigner = await createKeyPairSignerFromBytes(wallet.keypair.secretKey);
-    const client = new x402Client();
-    client.register(caip2, new ExactSvmScheme(payerSigner, { rpcUrl: cfg.rpcUrl }));
-    const payload = await client.createPaymentPayload({
-      x402Version: 2,
+    const prepared = await prepareCustodialExactPayment({
+      payerSecretKey: wallet.keypair.secretKey,
+      payerPubkey: wallet.publicKey.toBase58(),
+      payTo: input.workerWalletPubkey,
+      amountBaseUnits: input.amountBaseUnits,
+      network,
+      rpcUrl: cfg.rpcUrl,
+      feePayer,
       resource: {
         url: `clawville://sap/escrow/${input.jobId}/release`,
         description: `SAP payai-rail release for job ${input.jobId}`,
       },
-      accepts: [requirements],
+      purpose: 'sap-payai-release',
+      extra: { jobId: input.jobId, auditRootHex: input.auditRootHex },
     });
-    const paymentHeader = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
     return {
       ok: true,
-      paymentHeader,
-      requirements,
+      paymentHeader: prepared.paymentHeader,
+      requirements: prepared.requirements,
       feePayer,
       network,
       payerPubkey: wallet.publicKey.toBase58(),
@@ -271,14 +252,11 @@ export async function executePayaiRelease(
   prep: PreparedPayaiRelease,
   opts: { dryRun: boolean },
 ): Promise<PayaiExecOutcome> {
-  const result = await verifyAndSettle({
-    paymentHeader: prep.paymentHeader,
-    requirements: prep.requirements,
-    verifyOnly: opts.dryRun,
-  });
+  const outcome = await executePreparedExactPayment(prep, { verifyOnly: opts.dryRun });
+  const result = outcome.result;
 
   if (opts.dryRun) {
-    if (result.isValid === true) {
+    if (outcome.kind === 'verify_only') {
       return { ok: true, dryRun: true, signature: null, payer: result.payer };
     }
     return {
@@ -289,8 +267,8 @@ export async function executePayaiRelease(
     };
   }
 
-  if (result.settled && result.txSignature) {
-    return { ok: true, dryRun: false, signature: result.txSignature, payer: result.payer };
+  if (outcome.kind === 'settled') {
+    return { ok: true, dryRun: false, signature: outcome.signature, payer: outcome.payer };
   }
   return {
     ok: false,

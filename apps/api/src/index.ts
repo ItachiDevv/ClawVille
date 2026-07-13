@@ -61,6 +61,7 @@ import { leaderboardRoutes } from './routes/leaderboard';
 import { agentSetupRoutes } from './routes/agent-setup';
 import { skillsRoutes } from './routes/skills';
 import { agentV2Routes } from './routes/agent-v2';
+import { agentPayRoutes } from './routes/agent-pay';
 import { dashboardRoutes } from './routes/dashboard';
 // Tokenomics F2 — USDC→vCLAW on-ramp (Phase A) + the TEST-ONLY mock facilitator.
 import { ctTopupRoutes } from './routes/ct-topup';
@@ -330,6 +331,7 @@ app.route('/api/leaderboard', leaderboardRoutes);
 app.route('/api/agent-setup', agentSetupRoutes);
 app.route('/api/skills', skillsRoutes);
 app.route('/api/v2/agent', agentV2Routes);
+app.route('/api/agent-pay', agentPayRoutes);
 app.route('/api/dashboard', dashboardRoutes);
 // Tokenomics F2 — USDC→vCLAW on-ramp (Phase A): x402/PayAI quote+settle →
 // BOUGHT (non-cashable) vCLAW credit. Human (Lucia) + connected-agent

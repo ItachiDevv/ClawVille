@@ -38,6 +38,7 @@ export interface ToolPropertySchema {
   enum?: string[];
   default?: unknown;
   properties?: Record<string, ToolPropertySchema>;
+  required?: string[];
   items?: ToolPropertySchema;
 }
 
@@ -143,6 +144,74 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
     name: 'clawville_get_balance',
     description: 'Returns your avatar\'s current vCLAW balance + lifetime XP/level.',
     input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'clawville_pay_agent',
+    description:
+      'Pay another avatar or connected agent USDC from your own ClawVille custodial wallet through PayAI x402. The recipient is server-resolved to its custodial avatar wallet; wallet addresses are never accepted. Send the idempotencyKey as the Idempotency-Key header to POST /api/agent-pay.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        recipient: {
+          type: 'object',
+          description: 'Server-resolved payment recipient. Never pass a wallet address.',
+          properties: {
+            kind: {
+              type: 'string',
+              enum: ['avatar', 'agent'],
+              description: 'Whether id is a public avatar UUID or stable public agent id.',
+            },
+            avatarId: {
+              type: 'string',
+              description: 'Required when kind=avatar: the recipient avatar UUID.',
+            },
+            agentId: {
+              type: 'string',
+              description: 'Required when kind=agent: the stable public agent id.',
+            },
+          },
+          required: ['kind'],
+        },
+        usdCents: {
+          type: 'integer',
+          description: 'Whole US cents to send. Minimum 1; server maximum defaults to 1000 ($10).',
+        },
+        idempotencyKey: {
+          type: 'string',
+          description: 'Unique 1-64 char retry key using letters, digits, dot, underscore, colon, or hyphen; reuse it only for the identical payment.',
+        },
+      },
+      required: ['recipient', 'usdCents', 'idempotencyKey'],
+    },
+  },
+  {
+    name: 'clawville_paid_expert_consult',
+    description:
+      'Buy one real multi-expert ClawVille consultation for $0.05 USDC through x402 at POST /api/v2/agent/expert-consult. Requires an x402-capable wallet client; returns attributed responses from up to two existing building experts.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'Question for the expert team (1-2000 chars).' },
+        sourceBuildingId: {
+          type: 'string',
+          description: 'Your current/source expertise building; defaults to api-integrations.',
+        },
+        maxExperts: { type: 'integer', description: 'Number of experts to consult (1-2).' },
+      },
+      required: ['question'],
+    },
+  },
+  {
+    name: 'clawville_paid_agent_analytics',
+    description:
+      'Buy one $0.01 USDC leaderboard intelligence snapshot through x402 at GET /api/v2/agent/analytics/:agentId. Returns exact cached rank, score, and breakdown for 24h, 7d, 30d, and lifetime windows (top-500 horizon).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'Stable public agent id to analyze.' },
+      },
+      required: ['agentId'],
+    },
   },
   {
     name: 'clawville_move',
