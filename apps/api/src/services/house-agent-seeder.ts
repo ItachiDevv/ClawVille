@@ -182,38 +182,44 @@ async function ensureHouseUserAndAvatar(): Promise<{ userId: string; avatarId: s
   let lastErr: unknown = null;
   for (const name of candidateNames) {
     try {
-      const [created] = await db
-        .insert(avatars)
-        .values({
-          userId,
-          name,
-          species: 'cat',
-          color: 'blue',
-          gender: 'female',
-          archetype: 'brave-adventurer',
-          personality: {
-            habitat: 'ClawVille town center',
-            hobby: 'Learning from the building teachers',
-            greeting: 'Hi! What are you learning today?',
+      const created = await db.transaction(async (tx) => {
+        const [inserted] = await tx
+          .insert(avatars)
+          .values({
+            userId,
+            name,
+            species: 'cat',
+            color: 'blue',
+            gender: 'female',
+            archetype: 'brave-adventurer',
+            personality: {
+              habitat: 'ClawVille town center',
+              hobby: 'Learning from the building teachers',
+              greeting: 'Hi! What are you learning today?',
+            },
+            stats: { strength: 5, defence: 5, movement: 5 },
+            // Earns her way: start at 0 CT. softBalance MUST mirror clawTokens in
+            // the same INSERT (avatars_vclaw_balance_sum CHECK; the column
+            // defaults are both 100 and only cover omitting BOTH).
+            clawTokens: 0,
+            softBalance: 0,
+            // NOT in the avatar sim/rosters — her in-world presence is the
+            // `ocb-…` body registered below, not an avatars-driven spawn.
+            isActive: false,
+          })
+          .returning({ id: avatars.id, clawTokens: avatars.clawTokens });
+        await recordCovenantAction(
+          {
+            action: 'economy.genesis',
+            subjectType: 'avatar',
+            subjectId: inserted.id,
+            actorKind: 'system',
+            dedupeKey: `avatar:${inserted.id}:genesis`,
+            payload: { amount: inserted.clawTokens, provenance: 'soft', reason: 'avatar_genesis' },
           },
-          stats: { strength: 5, defence: 5, movement: 5 },
-          // Earns her way: start at 0 CT. softBalance MUST mirror clawTokens in
-          // the same INSERT (avatars_vclaw_balance_sum CHECK; the column
-          // defaults are both 100 and only cover omitting BOTH).
-          clawTokens: 0,
-          softBalance: 0,
-          // NOT in the avatar sim/rosters — her in-world presence is the
-          // `ocb-…` body registered below, not an avatars-driven spawn.
-          isActive: false,
-        })
-        .returning({ id: avatars.id, clawTokens: avatars.clawTokens });
-      await recordCovenantAction({
-        action: 'economy.genesis',
-        subjectType: 'avatar',
-        subjectId: created.id,
-        actorKind: 'system',
-        dedupeKey: `avatar:${created.id}:genesis`,
-        payload: { amount: created.clawTokens, provenance: 'soft', reason: 'avatar_genesis' },
+          tx,
+        );
+        return inserted;
       });
       return { userId, avatarId: created.id };
     } catch (err) {

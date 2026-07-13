@@ -117,6 +117,31 @@ BEGIN
      ) THEN
     RAISE EXCEPTION 'covenant_action_records seal columns are write-once';
   END IF;
+  -- SEAL-TRANSITION VALIDATION (Codex round 4 HIGH #2): the NULL→value seal
+  -- write must extend the chain CONTIGUOUSLY and LINKED — position is exactly
+  -- head+1 and prev_hash is exactly the head's record_hash (genesis: position
+  -- 1, 64 zeros). This blocks a forged head at arbitrary position/prev from
+  -- ANY writer holding UPDATE. (record_hash CORRECTNESS is app-defined
+  -- canonical-JSON sha256 — not recomputable in SQL without a drifting
+  -- reimplementation; the external verifier walk covers it.)
+  IF OLD.chain_position IS NULL AND NEW.chain_position IS NOT NULL THEN
+    DECLARE
+      head_position bigint;
+      head_hash char(64);
+    BEGIN
+      SELECT r.chain_position, r.record_hash INTO head_position, head_hash
+      FROM covenant_action_records r
+      WHERE r.chain_position IS NOT NULL AND r.id <> NEW.id
+      ORDER BY r.chain_position DESC LIMIT 1;
+      IF NEW.chain_position IS DISTINCT FROM COALESCE(head_position, 0) + 1 THEN
+        RAISE EXCEPTION 'covenant seal transition must extend the head contiguously (head=%, got=%)',
+          COALESCE(head_position, 0), NEW.chain_position;
+      END IF;
+      IF NEW.prev_hash IS DISTINCT FROM COALESCE(head_hash, repeat('0', 64)) THEN
+        RAISE EXCEPTION 'covenant seal transition prev_hash must equal the head record_hash';
+      END IF;
+    END;
+  END IF;
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -137,3 +162,22 @@ DROP TRIGGER IF EXISTS covenant_seal_batches_guard_trg ON covenant_seal_batches;
 CREATE TRIGGER covenant_seal_batches_guard_trg
   BEFORE UPDATE OR DELETE ON covenant_seal_batches
   FOR EACH ROW EXECUTE FUNCTION covenant_seal_batches_guard();
+
+-- TRUNCATE guards (Codex round 4 HIGH #2): row-level triggers do not fire on
+-- TRUNCATE — without these, a privileged role could erase either append-only
+-- table trigger-silently. Statement-level BEFORE TRUNCATE always raises.
+CREATE OR REPLACE FUNCTION covenant_no_truncate() RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'covenant tables are append-only — TRUNCATE refused';
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS covenant_action_records_no_truncate_trg ON covenant_action_records;
+CREATE TRIGGER covenant_action_records_no_truncate_trg
+  BEFORE TRUNCATE ON covenant_action_records
+  FOR EACH STATEMENT EXECUTE FUNCTION covenant_no_truncate();
+
+DROP TRIGGER IF EXISTS covenant_seal_batches_no_truncate_trg ON covenant_seal_batches;
+CREATE TRIGGER covenant_seal_batches_no_truncate_trg
+  BEFORE TRUNCATE ON covenant_seal_batches
+  FOR EACH STATEMENT EXECUTE FUNCTION covenant_no_truncate();

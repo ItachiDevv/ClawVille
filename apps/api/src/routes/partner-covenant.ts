@@ -602,6 +602,8 @@ partnerCovenantRoutes.get('/actions/head', async (c) => {
       prev_batch_root: string;
       created_at: string;
     } | null;
+    pending_count: string | number;
+    oldest_pending_age_s: string | number | null;
   }>(
     sql`SELECT
           (SELECT to_jsonb(h) FROM (
@@ -615,11 +617,19 @@ partnerCovenantRoutes.get('/actions/head', async (c) => {
                     batch_root, prev_batch_root, created_at
              FROM covenant_seal_batches
              ORDER BY last_position DESC LIMIT 1
-           ) b) AS batch`,
+           ) b) AS batch,
+          (SELECT count(*) FROM covenant_action_records
+           WHERE chain_position IS NULL) AS pending_count,
+          (SELECT EXTRACT(EPOCH FROM (now() - min(created_at)))
+           FROM covenant_action_records
+           WHERE chain_position IS NULL) AS oldest_pending_age_s`,
   );
 
   const head = snap?.head ?? null;
   const batch = snap?.batch ?? null;
+  const pendingCount = Number(snap?.pending_count ?? 0);
+  const oldestPendingAgeSeconds =
+    snap?.oldest_pending_age_s == null ? null : Math.floor(Number(snap.oldest_pending_age_s));
   return c.json({
     head: head
       ? {
@@ -638,5 +648,14 @@ partnerCovenantRoutes.get('/actions/head', async (c) => {
           createdAt: new Date(batch.created_at).toISOString(),
         }
       : null,
+    // Sealer health (Codex round 4 HIGH #3): without this, a stream frozen at
+    // a malformed row is indistinguishable from a quiet system — the head just
+    // stops moving. Normal operation keeps rows unsealed for up to the 30s
+    // watermark + 60s interval; STALLED_AFTER (300s) = 5 missed passes.
+    sealerHealth: {
+      pendingCount,
+      oldestPendingAgeSeconds,
+      stalled: oldestPendingAgeSeconds !== null && oldestPendingAgeSeconds > 300,
+    },
   });
 });
