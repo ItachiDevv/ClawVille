@@ -37,6 +37,16 @@ interface QuestStoreState {
   counters: QuestCounters;
   distinct: DistinctSets;
   serverClaimed: Partial<Record<QuestId, boolean>>;
+  /**
+   * Which ACCOUNT (non-guest userId) this persisted progress belongs to,
+   * or null for anonymous/guest-era progress that is still claimable by
+   * whichever account it upgrades into. IdentityTransitionWatcher
+   * reconciles this on every auth resolution: a resolved account that
+   * doesn't match a non-null owner gets a fresh store (Codex review
+   * BLOCKING 5 — an expired user's localStorage progress must not ride an
+   * "anonymous→account" upgrade into someone else's account).
+   */
+  ownerUserId: string | null;
 
   incrementCounter: (key: CounterKey, amount?: number) => void;
   recordDistinct: (setKey: DistinctSetKey, value: string) => void;
@@ -46,6 +56,19 @@ interface QuestStoreState {
   isCompleted: (id: QuestId) => boolean;
   getStatus: (id: QuestId) => QuestStatus;
   getProgress: (id: QuestId) => number;
+
+  /**
+   * Full reset to defaults. Called by the auth-transition sweep
+   * (`clearIdentityState`) on logout/account-switch/expiry ONLY — never on
+   * guest→signup/login, where local progress must survive so the new account
+   * can claim tutorial rewards it earned as a guest ("Sign up to claim").
+   * The persist middleware writes the fresh state through to localStorage,
+   * so the next identity doesn't inherit this one's progress.
+   */
+  resetQuestStore: () => void;
+
+  /** Stamp the account that owns the current progress (watcher reconcile). */
+  setQuestOwner: (userId: string) => void;
 }
 
 function getDefaultProgress(): Record<QuestId, QuestProgress> {
@@ -130,9 +153,21 @@ export const useQuestStore = create<QuestStoreState>()(
       counters: { ...DEFAULT_COUNTERS },
       distinct: { ...DEFAULT_DISTINCT },
       serverClaimed: {},
+      ownerUserId: null,
 
       markServerClaimed: (id) =>
         set((s) => ({ serverClaimed: { ...s.serverClaimed, [id]: true } })),
+
+      resetQuestStore: () =>
+        set({
+          progress: getDefaultProgress(),
+          counters: { ...DEFAULT_COUNTERS },
+          distinct: { ...DEFAULT_DISTINCT },
+          serverClaimed: {},
+          ownerUserId: null,
+        }),
+
+      setQuestOwner: (userId) => set({ ownerUserId: userId }),
 
       incrementCounter: (key, amount = 1) => {
         set((s) => ({
@@ -242,6 +277,7 @@ export const useQuestStore = create<QuestStoreState>()(
         counters: state.counters,
         distinct: state.distinct,
         serverClaimed: state.serverClaimed,
+        ownerUserId: state.ownerUserId,
       }),
       merge: (persisted, current) => {
         const safe = persisted as Partial<{
@@ -249,6 +285,7 @@ export const useQuestStore = create<QuestStoreState>()(
           counters: Partial<QuestCounters>;
           distinct: Partial<DistinctSets>;
           serverClaimed: Partial<Record<QuestId, boolean>>;
+          ownerUserId: string | null;
         }> | undefined;
         return {
           ...current,
@@ -260,6 +297,9 @@ export const useQuestStore = create<QuestStoreState>()(
             distinctBookBuildings: { ...current.distinct.distinctBookBuildings, ...(safe?.distinct?.distinctBookBuildings ?? {}) },
           },
           serverClaimed: { ...current.serverClaimed, ...(safe?.serverClaimed ?? {}) },
+          // Pre-owner-marker persisted blobs (v3 before 2026-07-12) have no
+          // ownerUserId → null = guest-era/unowned, the safe default.
+          ownerUserId: safe?.ownerUserId ?? null,
         };
       },
     }

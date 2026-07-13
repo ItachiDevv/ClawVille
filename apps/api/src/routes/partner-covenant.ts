@@ -157,7 +157,7 @@ const BOUNTY_STATUSES = [
 
 const listQuerySchema = z.object({
   status: z.enum(BOUNTY_STATUSES).optional(),
-  paymentRail: z.enum(['ct', 'usdc']).optional(),
+  paymentRail: z.enum(['vclaw', 'usdc']).optional(),
   // Query strings arrive as strings — coerce, then bound (default 25, max 100).
   limit: z.coerce.number().int().min(1).max(100).default(25),
   offset: z.coerce.number().int().min(0).default(0),

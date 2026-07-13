@@ -84,33 +84,60 @@ const state: StubState = {
 };
 
 function resetState(opts: { existingRow?: Row | null; todayCount?: number; probeAgentId?: string | null } = {}) {
-  state.existingRow = opts.existingRow ?? null;
+  // Real rows always carry createdAt/updatedAt (NOT NULL, defaultNow() —
+  // claws.ts) and publicAgentRecord serializes both (partner-hatcher.ts
+  // registeredAt/updatedAt tiles), so every fabricated row must too — a bare
+  // stub row 500s the handler mid-request (`row.createdAt.toISOString()`).
+  state.existingRow = opts.existingRow
+    ? { createdAt: new Date(), updatedAt: new Date(), ...opts.existingRow }
+    : null;
   state.inserts = [];
   state.todayCount = opts.todayCount ?? 0;
   state.probeAgentId = opts.probeAgentId ?? null;
   state.bodyLiveAtTxResolve = null;
 }
 
-function insertBuilder() {
+// Only writes to the agentBots TABLE may touch state.existingRow — the
+// handler's post-commit path also inserts/updates OTHER tables (wallet,
+// session bookkeeping) through the same mocked db, and a table-blind stub let
+// the LAST such row (agentId but no identityType) clobber the agent row,
+// 404ing every later PATCH at the `identityType !== 'hatcher'` ownership
+// guard. Table identity is compared against the real schema export.
+function isAgentBotsTable(table: unknown): boolean {
+  return table === (realDb as Record<string, unknown>).agentBots;
+}
+
+function insertBuilder(trackAsAgentRow: boolean) {
   let values: Row = {};
   return {
     values(v: Row) { values = v; return this; },
     returning: async () => {
-      const inserted: Row = { id: 'inserted-id', walletAddress: null, ...values };
-      state.inserts.push(inserted);
-      state.existingRow = inserted;
+      // Mirror the DB's defaultNow() columns — see resetState note.
+      const inserted: Row = {
+        id: 'inserted-id',
+        walletAddress: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        ...values,
+      };
+      if (trackAsAgentRow) {
+        state.inserts.push(inserted);
+        state.existingRow = inserted;
+      }
       return [inserted];
     },
   };
 }
 
-function updateBuilder() {
+function updateBuilder(trackAsAgentRow: boolean) {
   let values: Row = {};
   const builder = {
     set(v: Row) { values = v; return builder; },
     where() {
-      const merged = { ...(state.existingRow ?? {}), ...values };
-      state.existingRow = merged;
+      const merged = trackAsAgentRow
+        ? { ...(state.existingRow ?? {}), ...values }
+        : { ...values };
+      if (trackAsAgentRow) state.existingRow = merged;
       const p = Promise.resolve(undefined) as Promise<unknown> & { returning?: () => Promise<Row[]> };
       p.returning = async () => [merged];
       return p;
@@ -135,8 +162,8 @@ let sim: typeof import('../../services/npc-simulation');
 const txStub = {
   execute: async () => undefined,
   query: { agentBots: { findFirst: async () => state.existingRow } },
-  update: () => updateBuilder(),
-  insert: () => insertBuilder(),
+  update: (table: unknown) => updateBuilder(isAgentBotsTable(table)),
+  insert: (table: unknown) => insertBuilder(isAgentBotsTable(table)),
   select: () => selectBuilder(),
 };
 
@@ -154,8 +181,8 @@ const dbStub = {
     }
     return result;
   },
-  update: () => updateBuilder(),
-  insert: () => insertBuilder(),
+  update: (table: unknown) => updateBuilder(isAgentBotsTable(table)),
+  insert: (table: unknown) => insertBuilder(isAgentBotsTable(table)),
   select: () => selectBuilder(),
   query: {
     agentBots: { findFirst: async () => state.existingRow },

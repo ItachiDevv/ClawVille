@@ -15,7 +15,7 @@ The validation ladder: devnet-on-staging (✅ two live e2es 2026-07-10) → **MA
 **Env changes for a mainnet box:**
 - `SAP_CLUSTER=mainnet` — selects the mainnet USDC mint (`EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`) + mainnet RPC default.
 - `SAP_RPC_URL=<Helius mainnet>` — **REQUIRED**; the public mainnet RPC is rate-limited + unsuitable for real traffic.
-- `USDC_BOUNTY_REWARD_MIN=1` — lets the funded smoke post a 1-USDC bounty against a small real balance (default 10; USDC rail ONLY; the CT floor stays 10).
+- `USDC_BOUNTY_REWARD_MIN=1` — lets the funded smoke post a 1-vCLAW ($0.01) bounty against a small real balance (default 5 vCLAW / $0.05; the in-game `vclaw` rail has the same 5-vCLAW floor).
 
 **Funding facts (what a mainnet run actually costs):**
 - House provisioning: 0.1 SOL stake (program hard floor; 0.11 SOL default) held as a standing, REUSABLE coverage bond, plus ~0.055 SOL account rent (AgentAccount + pricing_menu + stake PDAs). BOTH recoverable (unstake + `close_agent`). Raise the stake before any single bounty > ~$200.
@@ -760,7 +760,13 @@ as the FIXED escrow worker:
 - **LEG 2 (payai)** — one x402 exact USDC payment house→hunter through the existing PayAI rail
   (a V1 `rail:'payai'` escrow `depositor=house, worker=hunter, jobId=${bountyId}:payout`).
 
-### FEE / DEPOSIT / CONSERVATION ($100 bounty; base units)
+### Reward denomination + FEE / DEPOSIT / CONSERVATION ($100 bounty; base units)
+
+`bounties.token_reward` is always an integer vCLAW count: **1 vCLAW = $0.01**.
+`usdcRewardBaseUnits(tokenReward)` converts without floating point as
+`BigInt(tokenReward) × 10_000n`, so the 5-vCLAW floor funds exactly `50_000`
+USDC base units ($0.05). In the $100 example below, `token_reward=10_000` vCLAW
+and the exact on-chain principal is `100_000_000` base units.
 
 ```
 deposit       = bountyVaultDeposit = principal + MAX(0.5% fee, 1% create-floor) = 101_000_000

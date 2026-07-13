@@ -8,6 +8,7 @@ import { usePlayerStore } from '@/stores/players';
 import { useResearchStore } from '@/stores/research';
 import { useGameStore, avatarPositionRef } from '@/stores/game';
 import { measureSpike } from '@/lib/perf-tracker';
+import { useWatchHeartbeat } from '@/hooks/use-watch-heartbeat';
 
 const WORLD_API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
 const MAX_RETRIES = 20;
@@ -60,6 +61,9 @@ interface JoinResponse {
  * across reconnects — server is idempotent on `lastPositionUpdateAt`.
  */
 export function useWorldStream() {
+  // Ambient-banter watcher heartbeat — visible-tab-only "a human is watching"
+  // signal for the server's banter inference gate. See use-watch-heartbeat.ts.
+  useWatchHeartbeat();
   const updateNpcsFromSnapshot = useNpcStore((s) => s.updateFromSnapshot);
   const setNpcConnected = useNpcStore((s) => s.setConnected);
   const updatePlayersFromSnapshot = usePlayerStore((s) => s.updateFromSnapshot);

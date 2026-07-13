@@ -53,6 +53,7 @@ import { sql } from 'drizzle-orm';
 import { db } from '@clawville/database';
 import { sessionMiddleware } from '../middleware/auth';
 import { adminOnly } from '../middleware/admin-only';
+import { noStorePrivate } from '../middleware/no-store';
 import type { AppContext } from '../types';
 
 export const coveEconomyRouter = new Hono<AppContext>();
@@ -105,7 +106,7 @@ interface GameSummary {
  * cove_game_events over the window, plus a grand total. The single source of
  * truth for "is any cove game a faucet?".
  */
-coveEconomyRouter.get('/summary', adminOnly, async (c) => {
+coveEconomyRouter.get('/summary', adminOnly, noStorePrivate, async (c) => {
   const parsed = querySchema.safeParse({
     window: c.req.query('window') ?? undefined,
     subjects: c.req.query('subjects') ?? undefined,

@@ -43,6 +43,7 @@ import { requireNonGuestUser } from '../middleware/require-non-guest';
 import { fingerprintMiddleware } from '../middleware/fingerprint';
 import { adminOnly } from '../middleware/admin-only';
 import { resolveAgentSession } from '../middleware/require-auth-or-agent';
+import { noStorePrivate } from '../middleware/no-store';
 import {
   tournamentManager,
   TournamentError,
@@ -338,7 +339,7 @@ covePokerMttRouter.post('/:id/register', requireNonGuestUser, async (c) => {
 // GET /:id/connection with X-Clawville-Agent-Session; the seat binds to the
 // resolved avatarId (human's active avatar OR agent's bound avatar), so an agent
 // learns ITS OWN seat — never another subject's.
-covePokerMttRouter.get('/:id/connection', async (c) => {
+covePokerMttRouter.get('/:id/connection', noStorePrivate, async (c) => {
   const parsed = idParamSchema.safeParse(c.req.param());
   if (!parsed.success) {
     throw new HTTPException(400, { message: 'invalid_tournament_id' });
@@ -441,7 +442,7 @@ covePokerMttRouter.post('/action', requireNonGuestUser, async (c) => {
 //
 // 409 (not 404) when the subject is not a live seat at a running hand, so a client
 // can poll through seating without distinguishing it from a missing tournament.
-covePokerMttRouter.get('/:id/state-for-agent', async (c) => {
+covePokerMttRouter.get('/:id/state-for-agent', noStorePrivate, async (c) => {
   const parsed = idParamSchema.safeParse(c.req.param());
   if (!parsed.success) {
     throw new HTTPException(400, { message: 'invalid_tournament_id' });
@@ -467,7 +468,7 @@ covePokerMttRouter.get('/:id/state-for-agent', async (c) => {
 // seat's cards (it reasons only from the requesting seat's own hole + the board).
 //
 // Allowed even when the avatar is human-controlled (advice never stakes).
-covePokerMttRouter.get('/:id/advice', async (c) => {
+covePokerMttRouter.get('/:id/advice', noStorePrivate, async (c) => {
   const parsed = idParamSchema.safeParse(c.req.param());
   if (!parsed.success) {
     throw new HTTPException(400, { message: 'invalid_tournament_id' });
