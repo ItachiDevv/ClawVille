@@ -17,6 +17,7 @@ export { learnSkillAction } from './learn-skill';
 export { checkBalanceAction } from './check-balance';
 export { listBuildingsAction } from './list-buildings';
 export { acceptQuestAction } from './accept-quest';
+export { submitQuestAction } from './submit-quest';
 export { claimBountyAction } from './claim-bounty';
 
 import { visitBuildingAction } from './visit-building';
@@ -25,10 +26,11 @@ import { learnSkillAction } from './learn-skill';
 import { checkBalanceAction } from './check-balance';
 import { listBuildingsAction } from './list-buildings';
 import { acceptQuestAction } from './accept-quest';
+import { submitQuestAction } from './submit-quest';
 import { claimBountyAction } from './claim-bounty';
 import type { Action } from './types';
 
-/** All 7 ClawVille actions, ready to register with the ElizaOS runtime. */
+/** All 8 ClawVille actions, ready to register with the ElizaOS runtime. */
 export const allActions: Action[] = [
   visitBuildingAction,
   buyItemAction,
@@ -36,5 +38,6 @@ export const allActions: Action[] = [
   checkBalanceAction,
   listBuildingsAction,
   acceptQuestAction,
+  submitQuestAction,
   claimBountyAction,
 ];

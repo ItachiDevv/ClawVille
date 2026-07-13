@@ -1,9 +1,14 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
-import type { AppContext } from '../types';
+import { createMiddleware } from 'hono/factory';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
-import { requireNonGuestUser } from '../middleware/require-non-guest';
+import {
+  requireAuthOrAgentSession,
+  type ActivityAuthContext,
+} from '../middleware/require-auth-or-agent';
+import { requireNonGuestIdentity } from '../middleware/require-non-guest';
+import { noStorePrivate } from '../middleware/no-store';
 import { creditClawTokens } from '../services/claw-token-ledger';
 import { logEventFromContext } from '../services/event-logger';
 import {
@@ -25,8 +30,39 @@ import {
   type TutorialQuestId,
 } from '@clawville/shared';
 
-export const questRoutes = new Hono<AppContext>();
+// PARITY (Rule E5, 2026-07-13): the five PLAYER routes (my-quests, quest-log,
+// accept, start, submit) resolve identity via `requireAuthOrAgentSession`, so a
+// connected/hosted agent plays quests AS ITSELF — its `X-Clawville-Agent-Session`
+// header resolves to its BOUND avatar and the submission/reward rows bind to
+// that avatar exactly as a human's do. Guests (human or guest-owned agent) are
+// blocked by `requireNonGuestIdentity` on the write paths. Agent identities must
+// ALSO be `ledgerCapable` on ALL FIVE routes (Codex adversarial review
+// 2026-07-13, HIGH #1): an ownership-UNPROVEN session (agentId-only reconnect to
+// an already-bound bot / legacy register) resolves the BOUND user's avatar with
+// `ledgerCapable=false`, so without this gate it could read the victim's quest
+// history and lock them out of quests by squatting junk submissions on their
+// avatar. Same fail-closed shape as the cove — never a guest demotion.
+// Admin routes + the tutorial ladder (client-tracked human onboarding, keyed on
+// `userId`) intentionally stay human-only.
+export const questRoutes = new Hono<ActivityAuthContext>();
 questRoutes.use('*', sessionMiddleware);
+
+/**
+ * 403 an agent identity that has not PROVEN ownership of its bound avatar.
+ * Humans (`kind:'user'`) pass untouched. Exported for the parity test suite.
+ */
+export const requireLedgerCapableIdentity = createMiddleware<ActivityAuthContext>(
+  async (c, next) => {
+    const identity = c.get('identity');
+    if (identity && identity.kind === 'agent' && identity.ledgerCapable !== true) {
+      throw new HTTPException(403, {
+        message:
+          'agent_session_not_ledger_authorized: prove avatar ownership (fresh connect-token or signed-challenge reconnect) before using the quest board',
+      });
+    }
+    return next();
+  },
+);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -115,9 +151,8 @@ const reviewSchema = z.object({
 // ---------------------------------------------------------------------------
 // 6. GET /my-quests — User's quest submissions with quest details (auth)
 // ---------------------------------------------------------------------------
-questRoutes.get('/my-quests', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
-  const avatar = await getUserAvatar(user.id);
+questRoutes.get('/my-quests', requireAuthOrAgentSession, requireLedgerCapableIdentity, noStorePrivate, async (c) => {
+  const { avatarId } = c.get('identity');
 
   const rows = await db
     .select({
@@ -131,7 +166,7 @@ questRoutes.get('/my-quests', requireAuth, async (c) => {
     })
     .from(questSubmissions)
     .innerJoin(quests, eq(questSubmissions.questId, quests.id))
-    .where(eq(questSubmissions.avatarId, avatar.id))
+    .where(eq(questSubmissions.avatarId, avatarId))
     .orderBy(desc(questSubmissions.createdAt));
 
   const submissions = rows.map((r) => ({
@@ -161,9 +196,8 @@ questRoutes.get('/my-quests', requireAuth, async (c) => {
 // ---------------------------------------------------------------------------
 // 7. GET /quest-log — Completed quests and rewards earned (auth)
 // ---------------------------------------------------------------------------
-questRoutes.get('/quest-log', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
-  const avatar = await getUserAvatar(user.id);
+questRoutes.get('/quest-log', requireAuthOrAgentSession, requireLedgerCapableIdentity, noStorePrivate, async (c) => {
+  const { avatarId } = c.get('identity');
 
   const rows = await db
     .select({
@@ -174,7 +208,7 @@ questRoutes.get('/quest-log', requireAuth, async (c) => {
     })
     .from(questRewards)
     .innerJoin(quests, eq(questRewards.questId, quests.id))
-    .where(eq(questRewards.avatarId, avatar.id))
+    .where(eq(questRewards.avatarId, avatarId))
     .orderBy(desc(questRewards.claimedAt));
 
   const rewards = rows.map((r) => ({
@@ -428,18 +462,49 @@ questRoutes.post('/admin/:submissionId/review', requireAuth, async (c) => {
         });
       }
 
-      // Fetch quest details
+      // 2. Atomically CONSUME a completion slot BEFORE any credit (Codex
+      // adversarial review 2026-07-13, HIGH #2). The conditional
+      // UPDATE ... WHERE under-cap RETURNING both row-locks the quest
+      // (serializing concurrent approvals of DIFFERENT submissions) and
+      // enforces maxCompletions in the same statement — the old read-then-
+      // increment let two approvals of a 1-max quest both read
+      // currentCompletions=0 and both pay. 0 rows ⇒ cap already reached ⇒
+      // 409, and the tx rollback un-claims the submission (it stays
+      // 'submitted' so the admin can reject it instead).
       const [quest] = await tx
-        .select()
-        .from(quests)
-        .where(eq(quests.id, claimed.questId))
-        .limit(1);
+        .update(quests)
+        .set({
+          currentCompletions: sql`COALESCE(${quests.currentCompletions}, 0) + 1`,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(quests.id, claimed.questId),
+            sql`(${quests.maxCompletions} IS NULL OR COALESCE(${quests.currentCompletions}, 0) < ${quests.maxCompletions})`
+          )
+        )
+        .returning();
 
       if (!quest) {
-        throw new HTTPException(500, { message: 'Quest not found for submission' });
+        // Distinguish cap-reached from a genuinely missing quest row.
+        const [exists] = await tx
+          .select({ id: quests.id })
+          .from(quests)
+          .where(eq(quests.id, claimed.questId))
+          .limit(1);
+        if (!exists) {
+          throw new HTTPException(500, { message: 'Quest not found for submission' });
+        }
+        throw new HTTPException(409, {
+          message:
+            'Quest has reached its maximum completions — approve rolled back; reject this submission instead',
+        });
       }
 
-      // 2. Award tokens to avatar (within the same transaction)
+      // `quest.currentCompletions` is now the POST-increment value.
+      const newCompletions = quest.currentCompletions ?? 1;
+
+      // 3. Award tokens to avatar (within the same transaction)
       await creditClawTokens({
         avatarId: claimed.avatarId,
         amount: quest.tokenReward,
@@ -448,7 +513,7 @@ questRoutes.post('/admin/:submissionId/review', requireAuth, async (c) => {
         metadata: { questId: quest.id, submissionId: claimed.id },
       }, tx);
 
-      // 3. Create quest_reward record
+      // 4. Create quest_reward record
       await tx.insert(questRewards).values({
         submissionId,
         avatarId: claimed.avatarId,
@@ -457,19 +522,13 @@ questRoutes.post('/admin/:submissionId/review', requireAuth, async (c) => {
         titleAwarded: quest.titleReward ?? null,
       });
 
-      // 4. Increment quest.currentCompletions
-      const newCompletions = (quest.currentCompletions ?? 0) + 1;
-      const questUpdates: Record<string, unknown> = {
-        currentCompletions: newCompletions,
-        updatedAt: now,
-      };
-
       // 5. If currentCompletions >= maxCompletions, mark quest as 'completed'
       if (quest.maxCompletions && newCompletions >= quest.maxCompletions) {
-        questUpdates.status = 'completed';
+        await tx
+          .update(quests)
+          .set({ status: 'completed', updatedAt: now })
+          .where(eq(quests.id, quest.id));
       }
-
-      await tx.update(quests).set(questUpdates).where(eq(quests.id, quest.id));
 
       return {
         tokensAwarded: quest.tokenReward,
@@ -577,23 +636,30 @@ questRoutes.get('/:id', async (c) => {
 // ---------------------------------------------------------------------------
 // 3. POST /:id/accept — Accept a quest (auth)
 // ---------------------------------------------------------------------------
-questRoutes.post('/:id/accept', requireAuth, requireNonGuestUser, async (c) => {
-  const user = c.get('user') as { id: string };
+questRoutes.post('/:id/accept', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Quest');
 
-  const avatar = await getUserAvatar(user.id);
+  const { avatarId } = c.get('identity');
 
-  // Verify quest exists and is active
+  // Verify quest exists, is active, and has not expired (Codex round 3 —
+  // expiry was enforced by the hosted ACCEPT_QUEST action but not here, so
+  // behavior differed by surface).
   const [quest] = await db
     .select()
     .from(quests)
-    .where(and(eq(quests.id, id), eq(quests.status, 'active')))
+    .where(
+      and(
+        eq(quests.id, id),
+        eq(quests.status, 'active'),
+        sql`(${quests.expiresAt} IS NULL OR ${quests.expiresAt} > now())`
+      )
+    )
     .limit(1);
 
   if (!quest) {
     throw new HTTPException(404, {
-      message: 'Quest not found or not active',
+      message: 'Quest not found, not active, or expired',
     });
   }
 
@@ -607,30 +673,53 @@ questRoutes.post('/:id/accept', requireAuth, requireNonGuestUser, async (c) => {
     });
   }
 
-  // Verify avatar doesn't already have an active submission for this quest
-  // Active = any status that isn't 'approved' or 'rejected'
+  // One submission LINE per (quest, avatar): block when an ACTIVE submission
+  // exists, AND when an APPROVED one does (Codex round 3 — re-accepting after
+  // approval minted a fresh submission id that could be approved and PAID
+  // again; only a REJECTED submission unlocks a retry). The DB layers behind
+  // this check: quest_submissions_active_unique (concurrent accepts) and
+  // quest_rewards_avatar_quest_unique (one payout per avatar per quest).
   const existingSubmission = await db.query.questSubmissions.findFirst({
     where: and(
       eq(questSubmissions.questId, id),
-      eq(questSubmissions.avatarId, avatar.id),
-      sql`${questSubmissions.status} NOT IN ('approved', 'rejected')`
+      eq(questSubmissions.avatarId, avatarId),
+      sql`${questSubmissions.status} <> 'rejected'`
     ),
   });
 
   if (existingSubmission) {
     throw new HTTPException(400, {
-      message: 'You already have an active submission for this quest',
+      message:
+        existingSubmission.status === 'approved'
+          ? 'You have already completed this quest'
+          : 'You already have an active submission for this quest',
     });
   }
 
-  const [submission] = await db
-    .insert(questSubmissions)
-    .values({
-      questId: id,
-      avatarId: avatar.id,
-      status: 'accepted',
-    })
-    .returning();
+  // The read-then-insert above is advisory UX; the AUTHORITATIVE guard is the
+  // partial unique index `quest_submissions_active_unique` (one active
+  // submission per quest+avatar — Codex adversarial review 2026-07-13, HIGH
+  // #2). A concurrent accept that races past the read collides here (23505)
+  // and gets the same 400 the slow path returns.
+  let submission;
+  try {
+    [submission] = await db
+      .insert(questSubmissions)
+      .values({
+        questId: id,
+        avatarId,
+        status: 'accepted',
+      })
+      .returning();
+  } catch (err) {
+    const pgCode = (err as { code?: string; cause?: { code?: string } });
+    if (pgCode?.code === '23505' || pgCode?.cause?.code === '23505') {
+      throw new HTTPException(400, {
+        message: 'You already have an active submission for this quest',
+      });
+    }
+    throw err;
+  }
 
   return c.json({
     success: true,
@@ -647,34 +736,35 @@ questRoutes.post('/:id/accept', requireAuth, requireNonGuestUser, async (c) => {
 // ---------------------------------------------------------------------------
 // 4. POST /:id/start — Mark submission as in_progress (auth)
 // ---------------------------------------------------------------------------
-questRoutes.post('/:id/start', requireAuth, requireNonGuestUser, async (c) => {
-  const user = c.get('user') as { id: string };
+questRoutes.post('/:id/start', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const id = c.req.param('id'); // quest ID
   validateUuid(id, 'Quest');
 
-  const avatar = await getUserAvatar(user.id);
+  const { avatarId } = c.get('identity');
 
-  // Find the avatar's accepted submission for this quest
-  const submission = await db.query.questSubmissions.findFirst({
-    where: and(
-      eq(questSubmissions.questId, id),
-      eq(questSubmissions.avatarId, avatar.id),
-      eq(questSubmissions.status, 'accepted')
-    ),
-  });
+  // Single compare-and-set (Codex round 2, 2026-07-13): the status predicate
+  // lives INSIDE the update's WHERE, so a delayed/stale request can never
+  // regress a row that has since moved on (the old read-then-update let a
+  // stale start overwrite 'submitted' back to 'in_progress'). The partial
+  // unique index guarantees at most one active row matches.
+  const [updated] = await db
+    .update(questSubmissions)
+    .set({ status: 'in_progress', updatedAt: new Date() })
+    .where(
+      and(
+        eq(questSubmissions.questId, id),
+        eq(questSubmissions.avatarId, avatarId),
+        eq(questSubmissions.status, 'accepted')
+      )
+    )
+    .returning();
 
-  if (!submission) {
+  if (!updated) {
     throw new HTTPException(404, {
       message:
         'No accepted submission found for this quest. Accept the quest first.',
     });
   }
-
-  const [updated] = await db
-    .update(questSubmissions)
-    .set({ status: 'in_progress', updatedAt: new Date() })
-    .where(eq(questSubmissions.id, submission.id))
-    .returning();
 
   return c.json({
     success: true,
@@ -690,8 +780,7 @@ questRoutes.post('/:id/start', requireAuth, requireNonGuestUser, async (c) => {
 // ---------------------------------------------------------------------------
 // 5. POST /:id/submit — Submit completed work (auth)
 // ---------------------------------------------------------------------------
-questRoutes.post('/:id/submit', requireAuth, requireNonGuestUser, async (c) => {
-  const user = c.get('user') as { id: string };
+questRoutes.post('/:id/submit', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const id = c.req.param('id'); // quest ID
   validateUuid(id, 'Quest');
 
@@ -705,26 +794,17 @@ questRoutes.post('/:id/submit', requireAuth, requireNonGuestUser, async (c) => {
     });
   }
 
-  const avatar = await getUserAvatar(user.id);
-
-  // Find the avatar's in_progress (or accepted) submission for this quest
-  const submission = await db.query.questSubmissions.findFirst({
-    where: and(
-      eq(questSubmissions.questId, id),
-      eq(questSubmissions.avatarId, avatar.id),
-      sql`${questSubmissions.status} IN ('accepted', 'in_progress')`
-    ),
-  });
-
-  if (!submission) {
-    throw new HTTPException(404, {
-      message:
-        'No active submission found for this quest. Accept and start it first.',
-    });
-  }
+  const { avatarId } = c.get('identity');
 
   const now = new Date();
 
+  // Single compare-and-set (Codex round 2, 2026-07-13): the allowed source
+  // statuses live INSIDE the update's WHERE. The old read-then-update let two
+  // concurrent submits both pass the read, and the delayed one could overwrite
+  // a row an admin had ALREADY approved back to 'submitted' — making it
+  // approvable (and creditable) a second time. An 'approved'/'rejected' row can
+  // now never match; the quest_rewards_submission_unique index is the
+  // defense-in-depth behind this.
   const [updated] = await db
     .update(questSubmissions)
     .set({
@@ -734,8 +814,21 @@ questRoutes.post('/:id/submit', requireAuth, requireNonGuestUser, async (c) => {
       submittedAt: now,
       updatedAt: now,
     })
-    .where(eq(questSubmissions.id, submission.id))
+    .where(
+      and(
+        eq(questSubmissions.questId, id),
+        eq(questSubmissions.avatarId, avatarId),
+        sql`${questSubmissions.status} IN ('accepted', 'in_progress')`
+      )
+    )
     .returning();
+
+  if (!updated) {
+    throw new HTTPException(404, {
+      message:
+        'No active submission found for this quest. Accept and start it first.',
+    });
+  }
 
   return c.json({
     success: true,
@@ -766,12 +859,19 @@ questRoutes.get('/', async (c) => {
   const statusFilter = c.req.query('status') || 'active';
 
   // Build WHERE conditions
-  const conditions: ReturnType<typeof eq>[] = [
+  const conditions: (ReturnType<typeof eq> | ReturnType<typeof sql>)[] = [
     eq(
       quests.status,
       statusFilter as 'draft' | 'active' | 'completed' | 'archived'
     ),
   ];
+
+  // An 'active' listing must not advertise expired quests (Codex round 3 —
+  // they were listable and acceptable here while the hosted action refused
+  // them). Other status filters (admin views) keep the full history.
+  if (statusFilter === 'active') {
+    conditions.push(sql`(${quests.expiresAt} IS NULL OR ${quests.expiresAt} > now())`);
+  }
 
   if (tierFilter) {
     conditions.push(
