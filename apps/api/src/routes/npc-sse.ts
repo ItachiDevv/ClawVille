@@ -69,5 +69,8 @@ npcRoutes.get('/stream', (c) => {
  * No auth required
  */
 npcRoutes.get('/state', (c) => {
+  // REST fallback consumers count as watchers for the ambient-banter gate
+  // (no persistent connection to count, so recency is the signal).
+  npcSimulation.noteWorldWatched();
   return c.json(npcSimulation.getSnapshot());
 });

@@ -259,3 +259,17 @@ function getFallbackConversation(
     { npcId: npc2.id, npcName: npc2.name, text: FALLBACK_RESPONSES[respIdx] },
   ];
 }
+
+/**
+ * Zero-inference conversation for unwatched worlds — the watcher gate in
+ * `npc-simulation.tryStartConversation` calls this INSTEAD of the LLM paths
+ * when no human-facing consumer (SSE stream / recent snapshot poll) exists.
+ * Same canned pool the LLM-failure path uses, exported so the sim can skip
+ * the engine deliberately, not just on failure.
+ */
+export function generateCannedConversation(
+  npc1: NpcDefinition,
+  npc2: NpcDefinition
+): ConversationMessage[] {
+  return getFallbackConversation(npc1, npc2);
+}
