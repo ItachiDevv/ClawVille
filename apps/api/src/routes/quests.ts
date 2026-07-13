@@ -1,9 +1,13 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
-import type { AppContext } from '../types';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
-import { requireNonGuestUser } from '../middleware/require-non-guest';
+import {
+  requireAuthOrAgentSession,
+  type ActivityAuthContext,
+} from '../middleware/require-auth-or-agent';
+import { requireNonGuestIdentity } from '../middleware/require-non-guest';
+import { noStorePrivate } from '../middleware/no-store';
 import { creditClawTokens } from '../services/claw-token-ledger';
 import { logEventFromContext } from '../services/event-logger';
 import {
@@ -25,7 +29,18 @@ import {
   type TutorialQuestId,
 } from '@clawville/shared';
 
-export const questRoutes = new Hono<AppContext>();
+// PARITY (Rule E5, 2026-07-13): the five PLAYER routes (my-quests, quest-log,
+// accept, start, submit) resolve identity via `requireAuthOrAgentSession`, so a
+// connected/hosted agent plays quests AS ITSELF — its `X-Clawville-Agent-Session`
+// header resolves to its BOUND avatar and the submission/reward rows bind to
+// that avatar exactly as a human's do. Guests (human or guest-owned agent) are
+// blocked by `requireNonGuestIdentity` on the write paths. Like the bounty CT
+// rail (and unlike custodial USDC legs), there is NO `ledgerCapable` gate here:
+// quest rewards only EARN vCLAW into the submission's bound avatar via
+// admin-reviewed approval — no custodial decrypt/sign and no spend leg exists.
+// Admin routes + the tutorial ladder (client-tracked human onboarding, keyed on
+// `userId`) intentionally stay human-only.
+export const questRoutes = new Hono<ActivityAuthContext>();
 questRoutes.use('*', sessionMiddleware);
 
 // ---------------------------------------------------------------------------
@@ -115,9 +130,8 @@ const reviewSchema = z.object({
 // ---------------------------------------------------------------------------
 // 6. GET /my-quests — User's quest submissions with quest details (auth)
 // ---------------------------------------------------------------------------
-questRoutes.get('/my-quests', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
-  const avatar = await getUserAvatar(user.id);
+questRoutes.get('/my-quests', requireAuthOrAgentSession, noStorePrivate, async (c) => {
+  const { avatarId } = c.get('identity');
 
   const rows = await db
     .select({
@@ -131,7 +145,7 @@ questRoutes.get('/my-quests', requireAuth, async (c) => {
     })
     .from(questSubmissions)
     .innerJoin(quests, eq(questSubmissions.questId, quests.id))
-    .where(eq(questSubmissions.avatarId, avatar.id))
+    .where(eq(questSubmissions.avatarId, avatarId))
     .orderBy(desc(questSubmissions.createdAt));
 
   const submissions = rows.map((r) => ({
@@ -161,9 +175,8 @@ questRoutes.get('/my-quests', requireAuth, async (c) => {
 // ---------------------------------------------------------------------------
 // 7. GET /quest-log — Completed quests and rewards earned (auth)
 // ---------------------------------------------------------------------------
-questRoutes.get('/quest-log', requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
-  const avatar = await getUserAvatar(user.id);
+questRoutes.get('/quest-log', requireAuthOrAgentSession, noStorePrivate, async (c) => {
+  const { avatarId } = c.get('identity');
 
   const rows = await db
     .select({
@@ -174,7 +187,7 @@ questRoutes.get('/quest-log', requireAuth, async (c) => {
     })
     .from(questRewards)
     .innerJoin(quests, eq(questRewards.questId, quests.id))
-    .where(eq(questRewards.avatarId, avatar.id))
+    .where(eq(questRewards.avatarId, avatarId))
     .orderBy(desc(questRewards.claimedAt));
 
   const rewards = rows.map((r) => ({
@@ -577,12 +590,11 @@ questRoutes.get('/:id', async (c) => {
 // ---------------------------------------------------------------------------
 // 3. POST /:id/accept — Accept a quest (auth)
 // ---------------------------------------------------------------------------
-questRoutes.post('/:id/accept', requireAuth, requireNonGuestUser, async (c) => {
-  const user = c.get('user') as { id: string };
+questRoutes.post('/:id/accept', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const id = c.req.param('id');
   validateUuid(id, 'Quest');
 
-  const avatar = await getUserAvatar(user.id);
+  const { avatarId } = c.get('identity');
 
   // Verify quest exists and is active
   const [quest] = await db
@@ -612,7 +624,7 @@ questRoutes.post('/:id/accept', requireAuth, requireNonGuestUser, async (c) => {
   const existingSubmission = await db.query.questSubmissions.findFirst({
     where: and(
       eq(questSubmissions.questId, id),
-      eq(questSubmissions.avatarId, avatar.id),
+      eq(questSubmissions.avatarId, avatarId),
       sql`${questSubmissions.status} NOT IN ('approved', 'rejected')`
     ),
   });
@@ -627,7 +639,7 @@ questRoutes.post('/:id/accept', requireAuth, requireNonGuestUser, async (c) => {
     .insert(questSubmissions)
     .values({
       questId: id,
-      avatarId: avatar.id,
+      avatarId,
       status: 'accepted',
     })
     .returning();
@@ -647,18 +659,17 @@ questRoutes.post('/:id/accept', requireAuth, requireNonGuestUser, async (c) => {
 // ---------------------------------------------------------------------------
 // 4. POST /:id/start — Mark submission as in_progress (auth)
 // ---------------------------------------------------------------------------
-questRoutes.post('/:id/start', requireAuth, requireNonGuestUser, async (c) => {
-  const user = c.get('user') as { id: string };
+questRoutes.post('/:id/start', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const id = c.req.param('id'); // quest ID
   validateUuid(id, 'Quest');
 
-  const avatar = await getUserAvatar(user.id);
+  const { avatarId } = c.get('identity');
 
   // Find the avatar's accepted submission for this quest
   const submission = await db.query.questSubmissions.findFirst({
     where: and(
       eq(questSubmissions.questId, id),
-      eq(questSubmissions.avatarId, avatar.id),
+      eq(questSubmissions.avatarId, avatarId),
       eq(questSubmissions.status, 'accepted')
     ),
   });
@@ -690,8 +701,7 @@ questRoutes.post('/:id/start', requireAuth, requireNonGuestUser, async (c) => {
 // ---------------------------------------------------------------------------
 // 5. POST /:id/submit — Submit completed work (auth)
 // ---------------------------------------------------------------------------
-questRoutes.post('/:id/submit', requireAuth, requireNonGuestUser, async (c) => {
-  const user = c.get('user') as { id: string };
+questRoutes.post('/:id/submit', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
   const id = c.req.param('id'); // quest ID
   validateUuid(id, 'Quest');
 
@@ -705,13 +715,13 @@ questRoutes.post('/:id/submit', requireAuth, requireNonGuestUser, async (c) => {
     });
   }
 
-  const avatar = await getUserAvatar(user.id);
+  const { avatarId } = c.get('identity');
 
   // Find the avatar's in_progress (or accepted) submission for this quest
   const submission = await db.query.questSubmissions.findFirst({
     where: and(
       eq(questSubmissions.questId, id),
-      eq(questSubmissions.avatarId, avatar.id),
+      eq(questSubmissions.avatarId, avatarId),
       sql`${questSubmissions.status} IN ('accepted', 'in_progress')`
     ),
   });
