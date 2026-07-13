@@ -82,7 +82,12 @@ const WATCHER_GRACE_MS = 90_000;
 // Read per call so a redeploy-baked env change (or a test) takes effect
 // without module reload gymnastics.
 function banterLlmHourlyCap(): number {
-  const n = Number(process.env.NPC_BANTER_HOURLY_LLM_CAP ?? '');
+  // Unset/blank MUST fall to the default BEFORE numeric conversion:
+  // Number('') === 0, which would silently disable LLM banter on every box
+  // that never sets the var (Codex round 2, HIGH #1).
+  const raw = process.env.NPC_BANTER_HOURLY_LLM_CAP?.trim();
+  if (!raw) return 120;
+  const n = Number(raw);
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 120;
 }
 
@@ -2821,23 +2826,24 @@ class NpcSimulation {
         npc2Theme ? `${def2.name} specializes in ${npc2Theme.focus.split(',')[0]}` : '',
       ].filter(Boolean).join('. ') || undefined;
 
-      // Watcher gate (2026-07-13): evaluate ONCE so the branch and the log
+      // Watcher gate (2026-07-13): evaluate ONCE so the branches and the log
       // below can't disagree if a watcher heartbeat lands mid-generation.
-      // Budget consumed only when watched, so an empty world never eats the
-      // cap that a watched hour could have spent.
+      // - Paid legs = participants WITHOUT a client (their lines come from the
+      //   paid `default` inference route). Only these are gated.
+      // - Agent legs (client.chat — hatcher-proxy / hermes-local server-managed
+      //   cognition) are NEVER gated: ambient conversations ARE those bodies'
+      //   cognition + [ACTION:] path, so gating them would cut a live partner
+      //   agent's actions whenever no human is watching (Codex round 2,
+      //   HIGH #2). Their inference is partner-hosted/local, not our OpenAI.
+      // - Budget consumed only when watched AND a paid leg exists, so an empty
+      //   world or an all-agent pair never eats the cap.
       const watched = this.hasActiveWatchers();
-      const useLlm = watched && this.tryConsumeBanterLlmBudget();
+      const isAgentConvo = !!(client1 || client2);
+      const hasPaidLeg = !client1 || !client2;
+      const allowNpcLlm = hasPaidLeg && watched && this.tryConsumeBanterLlmBudget();
 
       let messages;
-      if (!useLlm) {
-        // No visible-tab audience, or the hourly LLM budget is spent — don't
-        // burn inference (OpenAI or local) on dialogue no one sees. Canned
-        // lines keep the conversation existing so bubbles/perception behave
-        // identically. The server-hosted-cognition [ACTION:] leg is also
-        // skipped here: ambient banter actions are entertainment-driven; the
-        // AutonomyDriver remains the real agent action loop, unaffected.
-        messages = generateCannedConversation(def1, def2);
-      } else if (client1 || client2) {
+      if (isAgentConvo) {
         messages = await generateOpenClawConversation(
           def1,
           def2,
@@ -2858,9 +2864,17 @@ class NpcSimulation {
             protocolEmitsInWorldActions(client.getProtocol())
               ? this.dispatchHatcherActions(npcId, rawReply)
               : rawReply,
+          // Watcher gate: agent legs always run; the non-agent side uses
+          // canned lines when gated so no paid inference is spent.
+          { allowNpcLlm },
         );
-      } else {
+      } else if (allowNpcLlm) {
         messages = await generateNpcConversation(def1, def2, this.arenaMode, cryptoContext);
+      } else {
+        // No visible-tab audience, or the hourly LLM budget is spent — don't
+        // burn inference on dialogue no one sees. Canned lines keep the
+        // conversation existing so bubbles/perception behave identically.
+        messages = generateCannedConversation(def1, def2);
       }
 
       const firstSpeaker = messages.length > 0 ? messages[0].npcId : null;
@@ -2870,7 +2884,14 @@ class NpcSimulation {
         state: 'active', typingNpcId: firstSpeaker, typingUntil: Date.now() + 2500,
       };
       this.conversations.set(conversation.id, conversation);
-      console.log(`[NPC Simulation] Conversation started${useLlm ? '' : watched ? ' (canned, capped)' : ' (canned, unwatched)'}: ${initiator.name} <-> ${partner.name}`);
+      // Burn-meter log: bare = paid LLM legs ran; '(canned, …)' = fully canned;
+      // '(npc-legs canned, …)' = agent cognition ran but paid legs were gated.
+      let gateMarker = '';
+      if (hasPaidLeg && !allowNpcLlm) {
+        const reason = watched ? 'capped' : 'unwatched';
+        gateMarker = isAgentConvo ? ` (npc-legs canned, ${reason})` : ` (canned, ${reason})`;
+      }
+      console.log(`[NPC Simulation] Conversation started${gateMarker}: ${initiator.name} <-> ${partner.name}`);
     } catch (err) {
       console.error(`[NPC Simulation] Conversation generation failed, resetting NPCs:`, err);
       resetNpcsOnFailure();
