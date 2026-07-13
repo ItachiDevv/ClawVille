@@ -124,7 +124,29 @@ export const submitQuestAction: Action = {
         };
       }
 
-      const { quests, questSubmissions, eq, and, inArray } = await getDbModule();
+      const { quests, questSubmissions, avatars, users, eq, and, inArray } = await getDbModule();
+
+      // Canonical identity gate (Codex round 5) — same fail-closed check as
+      // ACCEPT_QUEST: the supplied avatarId must be a real avatars.id with a
+      // non-guest owner, no matter which runtime injected the state.
+      const [actor] = await db
+        .select({ id: avatars.id, isGuest: users.isGuest })
+        .from(avatars)
+        .innerJoin(users, eq(users.id, avatars.userId))
+        .where(eq(avatars.id, avatarId))
+        .limit(1);
+      if (!actor) {
+        return {
+          success: false,
+          text: 'quest_actor_unresolved: this runtime is not bound to a real avatar, so it cannot use the quest board.',
+        };
+      }
+      if (actor.isGuest) {
+        return {
+          success: false,
+          text: 'Guests run a demo economy — quest rewards pay real vCLAW, so the quest board needs a full account.',
+        };
+      }
 
       const now = new Date();
 

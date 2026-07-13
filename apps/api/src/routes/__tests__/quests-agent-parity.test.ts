@@ -351,6 +351,58 @@ describeIfDb2('quest race guards (DB)', () => {
     }
   });
 
+  it('round 5: native quest actions fail closed on unresolvable + guest identities', async () => {
+    const dbMod = await import('@clawville/database');
+    const { allActions } = await import('@clawville/agent-runtime');
+    const acceptQuestAction = allActions.find((a: { name: string }) => a.name === 'ACCEPT_QUEST')!;
+    const submitQuestAction = allActions.find((a: { name: string }) => a.name === 'SUBMIT_QUEST')!;
+    const services = {
+      db: dbMod.db,
+      creditClawTokens: async () => ({ balanceAfter: 0 }),
+      debitClawTokens: async () => ({ balanceAfter: 0 }),
+    };
+    const msg = (params: Record<string, string>) => ({
+      content: { text: '', parameters: params },
+      parameters: params,
+      ...params,
+    });
+
+    // Unresolvable actor (e.g. a bot-row id wrongly passed as avatarId).
+    const ghost = await acceptQuestAction.handler(
+      null,
+      msg({ questId: '3f2b8a1c-0000-4000-8000-000000000000' }),
+      { avatarId: 'a0000000-0000-4000-8000-000000000000', userId: 'u', services },
+    );
+    expect(ghost.success).toBe(false);
+    expect(ghost.text).toContain('quest_actor_unresolved');
+
+    const ghostSubmit = await submitQuestAction.handler(
+      null,
+      msg({ questId: '3f2b8a1c-0000-4000-8000-000000000000', note: 'ten characters minimum note' }),
+      { avatarId: 'a0000000-0000-4000-8000-000000000000', userId: 'u', services },
+    );
+    expect(ghostSubmit.success).toBe(false);
+    expect(ghostSubmit.text).toContain('quest_actor_unresolved');
+
+    // Guest-owned avatar (if one exists in this DB): real-economy wall holds.
+    const { avatars, users, eq } = dbMod;
+    const [guestAvatar] = await dbMod.db
+      .select({ id: avatars.id })
+      .from(avatars)
+      .innerJoin(users, eq(users.id, avatars.userId))
+      .where(eq(users.isGuest, true))
+      .limit(1);
+    if (guestAvatar) {
+      const asGuest = await acceptQuestAction.handler(
+        null,
+        msg({ questId: '3f2b8a1c-0000-4000-8000-000000000000' }),
+        { avatarId: guestAvatar.id, userId: 'u', services },
+      );
+      expect(asGuest.success).toBe(false);
+      expect(asGuest.text).toContain('demo economy');
+    }
+  });
+
   it('completion-slot consume: second approval of a 1-max quest gets 0 rows', async () => {
     const { db, quests } = await import('@clawville/database');
     const { eq, and, sql } = await import('drizzle-orm');
