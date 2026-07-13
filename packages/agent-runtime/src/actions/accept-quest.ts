@@ -44,6 +44,11 @@ export const acceptQuestAction: Action = {
   ],
 
   async validate(_runtime: any, message: any, _state?: any): Promise<boolean> {
+    // Structured invocation path (executeAction builds a synthetic message
+    // with EMPTY text but real parameters — Codex round 4, same fix as
+    // SUBMIT_QUEST): a present questId param IS the intent signal; trigger
+    // words remain the natural-language fallback.
+    if (getParam(message, 'questId')) return true;
     const text = getMessageText(message).toLowerCase();
     const triggers = [
       'quest',
