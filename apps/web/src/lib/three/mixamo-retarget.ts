@@ -9,9 +9,11 @@
  * Meshy support (2026-07-12, cove sit-flow slice): the rest-pose-differential
  * math below is source-rig-agnostic — it reads the CLIP's own scene for rest
  * poses, not a hardcoded skeleton — so a second bone-name map (`meshyVRMRigMap`)
- * plus a near-identity normalizer covers Meshy's animation-library clips. The
- * Mixamo path (`retargetMixamoClip`) is byte-identical to before this change;
- * both wrappers now call a shared `buildRetargetedClip()` core.
+ * plus a near-identity normalizer covers Meshy's animation-library clips. Both
+ * wrappers call a shared `buildRetargetedClip()` core, but explicitly select
+ * their position-track policy: Mixamo preserves the legacy all-mapped-bones
+ * output byte-for-byte, while Meshy keeps only hips translation because its
+ * exports bake junk translation channels onto every bone.
  *
  * Meshy bone-name ground truth was NOT assumed — verified headlessly against
  * the actual clip GLBs (`stand_to_sit.glb`, `sit_idle_m/f.glb`, etc.) fired
@@ -259,6 +261,8 @@ export interface MixamoGltf {
   animations: THREE.AnimationClip[];
 }
 
+type PositionTrackPolicy = 'legacy-all' | 'hips-only';
+
 /**
  * Per-VRM-instance memo for `measureVrmHipsHeightAboveFloor` — see that
  * function's doc comment for why this must be BOTH pose-safe and cached.
@@ -267,90 +271,23 @@ export interface MixamoGltf {
 const _vrmHipsHeightCache = new WeakMap<VRM, number>();
 
 /**
- * Measure a VRM's hip height ABOVE ITS OWN FEET, in the VRM's native local
- * units (scale=1, matching computeVRMAvatarFit's own measurement basis) — as
- * opposed to `normalizedRestPose.hips.position[1]`, which is the hip node's
- * local Y relative to its OWN PARENT NODE, not relative to the character's
- * feet.
+ * Measure a VRM's live hip height above its skinned-mesh floor at scale=1.
+ * This bbox-floor quantity is useful for the cove seat-height assertion and
+ * future world-space measurements, but it is deliberately NOT the retarget
+ * scale basis: retarget tracks bind to normalized humanoid nodes, so their
+ * frame-correct target basis is `normalizedRestPose.hips.position[1]`.
  *
- * Those two are usually close enough to not matter (most VRMs are authored
- * with the hip's parent chain rooted near floor level), but NOT universally
- * true — caught via the headless retarget-verification harness before ever
- * touching a browser: `hermes-female.vrm`'s Hips bone carries its own
- * scale=[100,100,100] with no compensating Armature-wrapper ancestor (unlike
- * clytemnestra.vrm's Armature-wrapper-scale=0.01 pattern), so its raw
- * hips.position.y reads 18.58 — only ~9.7% of the character's own measured
- * bbox height, vs ~55-59% for every other roster VRM tested
- * (clytemnestra/milady). Feeding that into `hipsPositionScale` under-scaled
- * every retargeted hip-descent by ~6x (verified end-to-end through
- * `computeVRMAvatarFit`'s real render-scale: 40.64wu descent for clytemnestra
- * vs 6.73wu for hermes-female at the SAME target avatar height — hermes would
- * barely visibly sit down). This bug is NOT new — it silently affected every
- * EXISTING Mixamo idle/walk/run retarget for this animatorId too; a few-cm
- * hip bob just hid a 6x scale error where a real sit-descent didn't.
+ * The measurement hardening remains load-bearing for its own consumers. It
+ * saves/resets/restores raw pose and scene scale exception-safely, refreshes
+ * skeleton matrices and skinned bounds, divides out parent Y scale on a
+ * defensive parented call, and caches only an eager pre-animator prime. That
+ * ordering matters because `VRMCharacterAnimator` later replaces automatic
+ * `skeleton.update()` calls with its batched flush; a post-animator bbox read
+ * could otherwise combine current bone nodes with stale bone matrices.
  *
- * Fix: measure hip height the same way computeVRMAvatarFit measures overall
- * body height — via the live bbox, floor-relative, at scale=1 — so the two
- * height measurements share a reference frame and stay proportionally
- * consistent regardless of how a given asset's internal node hierarchy
- * happens to be scaled.
- *
- * POSE-SAFETY, ROUND 1 (caught via the headless harness, 2026-07-12): unlike
- * the old `normalizedRestPose` lookup — a static snapshot three-vrm computes
- * once at load and never mutates — this measurement reads the LIVE skeleton,
- * so it is only correct if the VRM is at rest pose when measured. It is NOT
- * guaranteed to be: `playOneShot()` / `setSurfaceClip()` lazy-retarget a
- * clip the first time it's triggered, which can happen while the character
- * is mid-walk-cycle (skeleton posed, not resting). Verified this breaks
- * without a guard: retargeting the SAME clip onto the SAME VRM produced
- * different hip-Y readings depending on what pose a PRIOR retarget call had
- * left the skeleton in (caught when bundle-based retargeting of 5 clips in
- * sequence gave different numbers than retargeting each clip standalone).
- * Fixed (this round) by saving the current raw pose, calling
- * `resetRawPose()`, measuring, then restoring the saved pose.
- *
- * POSE-SAFETY, ROUND 2 (Codex adversarial review, 2026-07-13 — round 1's fix
- * was necessary but NOT sufficient): `resetRawPose()` correctly resets the
- * BONE NODES, so `hipsNode.getWorldPosition()` reads a true rest-pose value.
- * But `Box3.setFromObject` on a SkinnedMesh reads skinned vertex positions
- * via `skeleton.boneMatrices`, which are only refreshed by
- * `skeleton.update()` — and `VRMCharacterAnimator`'s constructor
- * monkey-patches EVERY `SkinnedMesh.skeleton.update` to a no-op the moment
- * an animator exists for a VRM (skeleton-batching optimization; see
- * `vrm-character-animator.ts` constructor, `_skeletonUpdateFns`). This
- * function's own "settle skeleton" traversal calls exactly that patched
- * no-op once any animator has been constructed for the VRM — so in the
- * BROWSER (where every visible VRM gets an animator), the bbox measurement
- * silently reads FROZEN boneMatrices from whatever pose was last genuinely
- * flushed, while `hipsNode.getWorldPosition()` reads the correctly-reset
- * LIVE node transform — two different frames mixed in one measurement. The
- * headless verification harness could not catch this because it drives
- * clips through a raw `THREE.AnimationMixer`, never constructing a
- * `VRMCharacterAnimator`, so `skeleton.update` was never patched there.
- *
- * FIX: this function must run ONCE per VRM, EAGERLY, at load time — before
- * any `VRMCharacterAnimator` is ever constructed for that VRM instance, so
- * `skeleton.update` is still the real, un-patched implementation. Call
- * `primeVrmHipsHeightCache(vrm)` from the VRM load pipeline (`vrm-loader.ts`
- * `normaliseVRM`, which runs inside the parse queue before the VRM is
- * returned to ANY consumer — guaranteed pre-animator). `buildRetargetedClip`
- * below then only ever READS the cache; it never invokes this measurement
- * itself on the lazy paths (`setSurfaceClip`/`playOneShot`).
- *
- * COLD-CACHE FALLBACK: if a lazy retarget path hits a VRM whose cache was
- * never primed (load-order regression — a new VRM-load call site skipped
- * `normaliseVRM`, or this file's own priming call was removed), this
- * function still attempts the measurement rather than throwing — a
- * possibly-stale hip height is better than crashing the character's
- * animation entirely. It emits a dev-mode `console.warn` so the regression
- * is visible instead of silently shipping wrong-but-plausible numbers. The
- * fallback result is deliberately NOT cached because a parent transform or
- * patched skeleton.update can make that lazy-call context untrustworthy.
- *
- * PERFORMANCE: memoized per-VRM-instance in `_vrmHipsHeightCache` — a
- * Box3.setFromObject + full skeleton traversal is real cost, so with eager
- * priming it runs exactly once per VRM instance's lifetime (at load), never
- * once per clip.
+ * A non-eager call is best-effort and deliberately not cached. The eager
+ * prime therefore runs once per VRM instance at load time, while future live
+ * callers remain visible through the development warning below.
  */
 function measureVrmHipsHeightAboveFloor(vrm: VRM, _isEagerPrime = false): number {
   const cached = _vrmHipsHeightCache.get(vrm);
@@ -359,7 +296,7 @@ function measureVrmHipsHeightAboveFloor(vrm: VRM, _isEagerPrime = false): number
   if (!_isEagerPrime && typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production') {
     console.warn(
       '[mixamo-retarget] measureVrmHipsHeightAboveFloor: cache was cold on a ' +
-      'lazy retarget call — primeVrmHipsHeightCache(vrm) should have run at ' +
+      'non-eager measurement — primeVrmHipsHeightCache(vrm) should have run at ' +
       'VRM load time (vrm-loader.ts normaliseVRM), before any ' +
       'VRMCharacterAnimator existed for this instance. Proceeding with a ' +
       'best-effort measurement, which may read a stale/mixed pose if an ' +
@@ -375,7 +312,7 @@ function measureVrmHipsHeightAboveFloor(vrm: VRM, _isEagerPrime = false): number
   let ancestorScaleY = 1;
   if (vrm.scene.parent) {
     // Eager priming runs unparented; compensate for ancestor scale only as a
-    // defensive measure on the best-effort lazy path.
+    // defensive measure on a best-effort non-eager call.
     const ancestorScale = new THREE.Vector3();
     vrm.scene.parent.getWorldScale(ancestorScale);
     if (Number.isFinite(ancestorScale.y) && Math.abs(ancestorScale.y) > Number.EPSILON) {
@@ -482,6 +419,8 @@ export function primeVrmHipsHeightCache(vrm: VRM): void {
  * @param vrm            The target VRM instance.
  * @param rigMap         Source rig bone name → VRMHumanBoneName.
  * @param normalizeName  Normalizes a raw track rig-name before rigMap lookup.
+ * @param positionTracks Selects legacy all-bone translations (Mixamo) or the
+ *                       hips-only safety gate required by Meshy exports.
  * @param sourceLabel    Only used in error messages (e.g. "mixamo-retarget"
  *                       vs "meshy-retarget") so a thrown error identifies
  *                       which pipeline failed.
@@ -492,6 +431,7 @@ function buildRetargetedClip(
   vrm: VRM,
   rigMap: Record<string, VRMHumanBoneName>,
   normalizeName: (name: string) => string,
+  positionTracks: PositionTrackPolicy,
   sourceLabel: string,
   clipName?: string,
 ): THREE.AnimationClip {
@@ -512,8 +452,11 @@ function buildRetargetedClip(
 
   const vrm0 = isVrm0(vrm);
 
-  // Compute hip position scale (vrmHipsHeight / motionHipsHeight) so that
-  // the hip vertical bob in the clip lands at the VRM's hip height. Without
+  // Compute hip position scale (normalized-rest target hips Y / source-rest
+  // hips Y). Retargeted tracks bind to normalized humanoid nodes, so both
+  // sides must use rest values in that target space; the bbox-floor utility
+  // above measures a different world-space quantity and is not a valid basis.
+  // This makes the hip vertical bob land at the VRM's normalized hip height. Without
   // this the bob is in source-rig units (character ~1.5-1.7m tall) applied to
   // a VRM that may be taller/shorter → disproportionate vertical movement.
   // Hips is looked up by normalized name directly against the source scene —
@@ -522,7 +465,9 @@ function buildRetargetedClip(
   const hipsRawName = Object.keys(rigMap).find((k) => rigMap[k] === 'hips') ?? 'Hips';
   const motionHipsNode = findNode(animation.scene, hipsRawName, hipsRawName);
   const motionHipsHeight = Math.abs(motionHipsNode?.position.y ?? 0);
-  const vrmHipsHeight = measureVrmHipsHeightAboveFloor(vrm);
+  const vrmHipsHeight = Math.abs(
+    (vrm.humanoid as any)?.normalizedRestPose?.hips?.position?.[1] ?? 0,
+  );
   const hipsPositionScale =
     motionHipsHeight > 1e-6 && vrmHipsHeight > 1e-6
       ? vrmHipsHeight / motionHipsHeight
@@ -572,7 +517,7 @@ function buildRetargetedClip(
       continue;
     }
 
-    // Position tracks (hips only after the explicit gate below): keep ONLY the Y axis
+    // Position tracks: keep ONLY the Y axis
     // (vertical hip bob). Rationale: Mixamo walk/run clips encode forward
     // motion as positive Z on the hip bone. After the VRM 0.x coord flip
     // (i%3!=1 → negate X and Z) that becomes -Z locally; combined with
@@ -587,23 +532,19 @@ function buildRetargetedClip(
     // game-position. We keep it so hair/skirt spring bones receive the
     // vertical shock they need to swing naturally.
     //
-    // vrmBoneName === 'hips' GATE (enforced roster-wide, 2026-07-13):
-    // scripts/mixamo/blender-convert-anims.py force-samples translation on
-    // EVERY bone; the shipped Mixamo GLBs contain 52 translation channels in
-    // idle.glb, 41 in hermes-female/idle.glb, and 1,262 across _emotes.glb.
-    // Meshy's export also bakes translation on EVERY bone, even ones that
-    // never move — verified on stand_to_sit.glb: LeftUpLeg's track is 2
-    // keyframes, both equal to its REST-local offset (1.282, -4.161, 10.124).
-    // Without this gate, those non-hips tracks are transformed (X/Z zeroed,
-    // Y rescaled by the HIPS-specific hipsPositionScale) and emitted as real
-    // clip tracks, silently deforming bone length/offset. Dropping them for
-    // both Mixamo and Meshy is an intentional roster-wide correction, pending
-    // visual validation; the gate was first caught for Meshy by the headless
-    // retarget-verification harness before it reached a browser.
+    // Policy is deliberately selected by the public wrappers, not inferred
+    // here. Mixamo's `legacy-all` path re-emits every mapped position track in
+    // source order exactly as production did before 736a2c33 (including the
+    // force-sampled translations produced by blender-convert-anims.py).
+    // Meshy's `hips-only` path drops its junk per-bone translation channels:
+    // stand_to_sit.glb's LeftUpLeg track, for example, is two identical copies
+    // of the rest-local offset (1.282, -4.161, 10.124). Scaling that Y with a
+    // hips-specific factor would deform the target skeleton; only the real
+    // hips descent is retained.
     if (
       propertyName === 'position' &&
       track instanceof THREE.VectorKeyframeTrack &&
-      vrmBoneName === 'hips'
+      (positionTracks === 'legacy-all' || vrmBoneName === 'hips')
     ) {
       const src = track.values;
       const values = new Float32Array(src.length);
@@ -665,7 +606,13 @@ export function retargetMixamoClip(
   clipName?: string,
 ): THREE.AnimationClip {
   return buildRetargetedClip(
-    animation, vrm, mixamoVRMRigMap, normalizeMixamoRigName, 'mixamo-retarget', clipName,
+    animation,
+    vrm,
+    mixamoVRMRigMap,
+    normalizeMixamoRigName,
+    'legacy-all',
+    'mixamo-retarget',
+    clipName,
   );
 }
 
@@ -673,14 +620,13 @@ export function retargetMixamoClip(
  * Retarget a Meshy animation-library GLB to a VRM humanoid skeleton.
  * Same rest-pose-differential math as `retargetMixamoClip`, different bone
  * map + normalizer (see file header for the verification this map is built
- * on). Position-track policy (X/Z zeroed, Y kept+scaled) is currently shared
- * unchanged with the Mixamo path — verified correct for `stand_to_sit` /
- * `sit_to_stand_*` (their horizontal hip drift is small/incidental; the real
- * signal is the ~40-unit vertical hip descent, which the Y-keep path already
- * preserves). NOT yet verified correct for `walk_to_sit` (large, real forward
- * hip drift — zeroing it would produce an in-place moonwalk) — that clip is
- * deliberately not wired into ANIM_PATHS yet; see cove-interior.tsx /
- * vrm-character-animator.ts sit-flow comments.
+ * on). Unlike the legacy Mixamo path, Meshy uses an explicit hips-only
+ * position-track policy: its exports bake junk rest-local translation onto
+ * every bone, while the hips track carries the real seated descent. X/Z are
+ * still zeroed and hips Y is scaled from source-rest hips height into the
+ * target VRM's normalized-rest hips height. `walk_to_sit` remains deliberately
+ * unwired because it carries large real forward hip drift that requires
+ * distance-matched root-motion consumption.
  */
 export function retargetMeshyClip(
   animation: MixamoGltf,
@@ -688,6 +634,12 @@ export function retargetMeshyClip(
   clipName?: string,
 ): THREE.AnimationClip {
   return buildRetargetedClip(
-    animation, vrm, meshyVRMRigMap, normalizeMeshyRigName, 'meshy-retarget', clipName,
+    animation,
+    vrm,
+    meshyVRMRigMap,
+    normalizeMeshyRigName,
+    'hips-only',
+    'meshy-retarget',
+    clipName,
   );
 }
