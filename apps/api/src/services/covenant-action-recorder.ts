@@ -33,6 +33,7 @@ export type CovenantAction =
   | 'economy.credit'
   | 'economy.debit'
   | 'economy.genesis'
+  | 'economy.adjustment'
   | 'quest.accept'
   | 'quest.submit'
   | 'quest.approve'
