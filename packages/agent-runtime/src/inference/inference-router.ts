@@ -132,11 +132,33 @@ interface OpenAIChatResponse {
     message?: { content?: string };
     finish_reason?: string;
   }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+  };
 }
 
 interface OllamaChatResponse {
   message?: { content?: string };
   done_reason?: string;
+  prompt_eval_count?: number;
+  eval_count?: number;
+}
+
+/**
+ * Per-call token usage as reported by the provider (2026-07-13 OpenAI-usage
+ * audit: paid OpenAI calls were INVISIBLE in our own logs — the burn had to
+ * be reconstructed from side effects; every served request now logs tokens).
+ * Fields are null when the provider omitted usage data.
+ */
+interface CallUsage {
+  inTokens: number | null;
+  outTokens: number | null;
+}
+
+interface CallResult {
+  text: string;
+  usage: CallUsage;
 }
 
 export class InferenceRouter {
@@ -273,19 +295,26 @@ export class InferenceRouter {
       const start = this.now();
       st.inflight++;
       try {
-        const text = await this.callEndpoint(ep, args);
+        const { text, usage } = await this.callEndpoint(ep, args);
         this.recordSuccess(st, this.now() - start);
-        // Ops receipt for the primary-preferred policy: which box actually
-        // served this request (grep "[InferenceRouter] served" in api logs).
-        if (ep.kind === 'local') {
-          console.log(
-            `[InferenceRouter] served route=${args.route} by=${id} inflight=${st.inflight - 1} ${this.now() - start}ms`,
-          );
-        }
+        // Ops receipt for EVERY served request — cloud included (2026-07-13
+        // OpenAI-usage audit: cloud calls were previously silent, so paid
+        // volume was invisible in our own logs). One compact greppable line
+        // per call: `grep "\[InferenceRouter\] served"` = the full inference
+        // ledger; sum in=/out= per by=openai for spend.
+        const model = args.size === 'large' ? ep.largeModel : ep.smallModel;
+        console.log(
+          `[InferenceRouter] served route=${args.route} by=${id} model=${model} in=${usage.inTokens ?? '?'} out=${usage.outTokens ?? '?'} inflight=${st.inflight - 1} ${this.now() - start}ms`,
+        );
         return { text, endpointId: id };
       } catch (err) {
         this.recordFailure(st, err, this.now() - start);
         lastErr = err instanceof Error ? err : new Error(String(err));
+        // Per-attempt failure receipt (message truncated) — failover to the
+        // next endpoint used to be silent unless ALL endpoints failed.
+        console.warn(
+          `[InferenceRouter] attempt failed route=${args.route} by=${id} ${this.now() - start}ms: ${(err instanceof Error ? err.message : String(err)).slice(0, 160)}`,
+        );
         // fall through to the next endpoint
       } finally {
         st.inflight--;
@@ -324,13 +353,13 @@ export class InferenceRouter {
     return false; // open
   }
 
-  private async callEndpoint(ep: InferenceEndpoint, args: GenerateArgs): Promise<string> {
+  private async callEndpoint(ep: InferenceEndpoint, args: GenerateArgs): Promise<CallResult> {
     return (ep.provider ?? 'openai') === 'ollama'
       ? this.callOllamaNative(ep, args)
       : this.callOpenAICompat(ep, args);
   }
 
-  private async callOpenAICompat(ep: InferenceEndpoint, args: GenerateArgs): Promise<string> {
+  private async callOpenAICompat(ep: InferenceEndpoint, args: GenerateArgs): Promise<CallResult> {
     const model = args.size === 'large' ? ep.largeModel : ep.smallModel;
     // Cloud endpoints re-read OPENAI_API_KEY at REQUEST time so a key set after the
     // router singleton was built (e.g. ElizaRuntime.start stamping it into env) is
@@ -370,7 +399,13 @@ export class InferenceRouter {
     const data = (await res.json()) as OpenAIChatResponse;
     const choice = data.choices?.[0];
     if (!choice) throw new Error(`[InferenceRouter:${ep.id}] no choices in response`);
-    return this.finalizeText(ep, choice.message?.content ?? '', `finish_reason=${choice.finish_reason}`);
+    return {
+      text: this.finalizeText(ep, choice.message?.content ?? '', `finish_reason=${choice.finish_reason}`),
+      usage: {
+        inTokens: data.usage?.prompt_tokens ?? null,
+        outTokens: data.usage?.completion_tokens ?? null,
+      },
+    };
   }
 
   /**
@@ -378,7 +413,7 @@ export class InferenceRouter {
    * think-disable is the whole reason this path exists (see the `provider` docs on
    * InferenceEndpoint): it turns a >50s empty qwen3 decide() into a ~2s valid one.
    */
-  private async callOllamaNative(ep: InferenceEndpoint, args: GenerateArgs): Promise<string> {
+  private async callOllamaNative(ep: InferenceEndpoint, args: GenerateArgs): Promise<CallResult> {
     const model = args.size === 'large' ? ep.largeModel : ep.smallModel;
     const base = ep.baseUrl.replace(/\/v1\/?$/, '');
     const options: Record<string, unknown> = {
@@ -413,7 +448,13 @@ export class InferenceRouter {
     }
 
     const data = (await res.json()) as OllamaChatResponse;
-    return this.finalizeText(ep, data.message?.content ?? '', `done_reason=${data.done_reason}`);
+    return {
+      text: this.finalizeText(ep, data.message?.content ?? '', `done_reason=${data.done_reason}`),
+      usage: {
+        inTokens: data.prompt_eval_count ?? null,
+        outTokens: data.eval_count ?? null,
+      },
+    };
   }
 
   private finalizeText(ep: InferenceEndpoint, raw: string, ctx: string): string {
