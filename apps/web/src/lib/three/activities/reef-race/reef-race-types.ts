@@ -52,6 +52,8 @@ export interface ReefRaceEntity {
   vx: number;
   vy: number;
   alive: boolean;
+  /** Authoritative sample time mapped onto the client's performance clock. */
+  snapshotAtMs?: number;
   /** Optional hex string tint applied to the kart material. */
   color?: string;
   /** 'sea_horse' | 'lobster' — determines which GLB clone is used. */

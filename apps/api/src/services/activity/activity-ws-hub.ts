@@ -535,6 +535,13 @@ class ActivityWsHub {
     const roomMap = this.rooms.get(roomId);
     if (!roomMap) return;
     const isKeyframe = frame.type === 'snapshot.keyframe';
+    // One timestamp per authoritative sample, shared by every recipient.
+    // Stamp here (the synchronous sim-broadcast boundary), never inside the
+    // per-socket loop, so clients reconcile against one coherent timebase.
+    const timedFrame =
+      frame.type === 'snapshot.delta' || frame.type === 'snapshot.keyframe'
+        ? { ...frame, serverTimeMs: frame.serverTimeMs ?? Date.now() }
+        : frame;
     for (const ws of roomMap.values()) {
       const buffered = ws.getBufferedAmount?.() ?? 0;
       if (buffered > BACKPRESSURE_DROP_BYTES && !isKeyframe) {
@@ -550,7 +557,7 @@ class ActivityWsHub {
       // Socket is draining — clear any pending slow-read tracking.
       ws.data.bufferFullSince = null;
       ws.data.skippedBroadcasts = 0;
-      this.safeSend(ws, frame);
+      this.safeSend(ws, timedFrame);
     }
   }
 
@@ -748,6 +755,10 @@ class ActivityWsHub {
           });
       }
     }
+    // Capture immediately after the sim pose snapshot, before the async PB-
+    // ghost/profile loads below. Stamping at send time would make an old pose
+    // appear current whenever those lookups are slow.
+    const snapshotServerTimeMs = Date.now();
     // Phase 2 — pull static-zone positions for reef-race rooms so the client
     // can build visual meshes (ribbons, apex markers, hazards) from a single
     // server-authoritative source. `null` for non-reef-race rooms.
@@ -829,6 +840,7 @@ class ActivityWsHub {
 
     this.safeSend(ws, {
       type: 'snapshot.init',
+      serverTimeMs: snapshotServerTimeMs,
       room: {
         roomId: room.id,
         shortCode: room.shortCode,

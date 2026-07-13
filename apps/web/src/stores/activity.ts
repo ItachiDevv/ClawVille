@@ -176,6 +176,8 @@ export interface ActivityState {
   room: RoomMeta | null;
   /** Last RTT ping in ms, computed from pong roundtrip. */
   ping: number;
+  /** EWMA of local epoch minus server epoch, estimated from ping midpoints. */
+  serverClockOffsetMs: number | null;
   connectionStatus: ConnectionStatus;
   /** Self avatar's current placement (1-indexed). null until score deltas arrive. */
   placement: number | null;
@@ -378,6 +380,21 @@ const ELIM_RING_BUFFER = 32;
 /** Chat ring buffer size — covers a typical 90s round + spectator phase. */
 const CHAT_RING_BUFFER = 64;
 
+/** Map a server epoch timestamp onto the browser's monotonic performance clock. */
+function snapshotAtPerformanceMs(
+  serverTimeMs: number | undefined,
+  localMinusServerMs: number | null,
+): number | undefined {
+  if (typeof serverTimeMs !== 'number' || localMinusServerMs === null) {
+    return undefined;
+  }
+  const nowPerf = performance.now();
+  const ageMs = Date.now() - (serverTimeMs + localMinusServerMs);
+  // A small negative age can occur while the clock EWMA settles. Authority is
+  // never from the future for interpolation purposes, so clamp it to arrival.
+  return nowPerf - Math.max(0, ageMs);
+}
+
 /** Map server `kind` strings (free-form for forward-compat) onto our enum. */
 function normalizePickupKind(raw: string): BumperPickupKind {
   // Keep the strict union for the scene's discriminated rendering; unknown
@@ -413,7 +430,11 @@ function shortAvatarId(avatarId: string): string {
 }
 
 /** Apply a single EntityDelta to a (mutable) entity map clone. */
-function applyEntityDelta(map: Map<string, BumperShellEntity>, delta: EntityDelta): void {
+function applyEntityDelta(
+  map: Map<string, BumperShellEntity>,
+  delta: EntityDelta,
+  snapshotAtMs: number | undefined,
+): void {
   const existing = map.get(delta.avatarId);
   const c = delta.changed;
   if (!existing) {
@@ -426,6 +447,7 @@ function applyEntityDelta(map: Map<string, BumperShellEntity>, delta: EntityDelt
       vx: typeof c.vx === 'number' ? c.vx : 0,
       vy: typeof c.vy === 'number' ? c.vy : 0,
       alive: c.state !== 'dead' && c.state !== 'eliminated',
+      snapshotAtMs,
       // Reef Race Phase 1 (audit S11) — initialise so a first-sighting
       // body that's already mid-drift doesn't drop the spark tier.
       driftSparks:
@@ -459,6 +481,7 @@ function applyEntityDelta(map: Map<string, BumperShellEntity>, delta: EntityDelt
   }
   map.set(delta.avatarId, {
     ...existing,
+    snapshotAtMs,
     ...(typeof c.x === 'number' ? { x: c.x } : {}),
     ...(typeof c.y === 'number' ? { y: c.y } : {}),
     ...(typeof c.rot === 'number' ? { rot: c.rot } : {}),
@@ -486,7 +509,7 @@ function applyEntityDelta(map: Map<string, BumperShellEntity>, delta: EntityDelt
 }
 
 /** Hydrate from a full WorldState (snapshot.init / snapshot.keyframe). */
-function hydrateFromWorld(world: WorldState): {
+function hydrateFromWorld(world: WorldState, snapshotAtMs: number | undefined): {
   entities: Map<string, BumperShellEntity>;
   pickups: Map<string, BumperPickup>;
   scores: Map<string, ActivityScoreEntry>;
@@ -502,6 +525,7 @@ function hydrateFromWorld(world: WorldState): {
       vx: e.velocity.x,
       vy: e.velocity.y,
       alive: e.state !== 'dead' && e.state !== 'eliminated',
+      snapshotAtMs,
       // Reef Race v2 — carry boost/meter state from keyframes + snapshot.init so
       // the 1 Hz keyframe (and a mid-match reconnect) doesn't blank the HUD
       // meter/trail until the next delta (Codex finding 7). The delta path
@@ -564,6 +588,7 @@ function emptyState(): Pick<
   | 'errorBanner'
   | 'room'
   | 'ping'
+  | 'serverClockOffsetMs'
   | 'chatLog'
   | 'reefRace'
   | 'slipstreamActive'
@@ -607,6 +632,7 @@ function emptyState(): Pick<
     errorBanner: null,
     room: null,
     ping: 0,
+    serverClockOffsetMs: null,
     chatLog: [],
     reefRace: { laps: new Map(), selfBestGhostPath: null },
     // Phase 2 — Reef Race slipstream / apex / ribbon / hazard
@@ -706,7 +732,11 @@ export const useActivityStore = create<ActivityState>()(
       switch (frame.type) {
         // ── Snapshot init ───────────────────────────────────────────────
         case 'snapshot.init': {
-          const hydrated = hydrateFromWorld(frame.world);
+          const snapshotAtMs = snapshotAtPerformanceMs(
+            frame.serverTimeMs,
+            state.serverClockOffsetMs,
+          );
+          const hydrated = hydrateFromWorld(frame.world, snapshotAtMs);
           // Phase 3 — pluck self avatar's racing profile from the room map
           // (S5 wire format). Falls back to (null, 1) so non-Reef rooms
           // and missing profiles render the chip as neutral / hidden.
@@ -774,6 +804,10 @@ export const useActivityStore = create<ActivityState>()(
 
         // ── Snapshot delta (15 Hz hot path) ─────────────────────────────
         case 'snapshot.delta': {
+          const snapshotAtMs = snapshotAtPerformanceMs(
+            frame.serverTimeMs,
+            state.serverClockOffsetMs,
+          );
           const entities = new Map(state.entities);
           // Phase 1 (audit S2) — track drift sparks for the self avatar
           // alongside the per-entity application loop. applyEntityDelta has
@@ -791,7 +825,7 @@ export const useActivityStore = create<ActivityState>()(
           let nextStreak: number = state.selfStreak;
           let nextBestStreak: number = state.selfBestStreakThisMatch;
           for (const d of frame.entities) {
-            applyEntityDelta(entities, d);
+            applyEntityDelta(entities, d, snapshotAtMs);
             if (state.selfAvatarId && d.avatarId === state.selfAvatarId) {
               if (typeof d.changed.driftSparks === 'number') {
                 nextDriftSparks = d.changed.driftSparks as 0 | 1 | 2 | 3;
@@ -879,7 +913,11 @@ export const useActivityStore = create<ActivityState>()(
 
         // ── Periodic full state refresh ─────────────────────────────────
         case 'snapshot.keyframe': {
-          const hydrated = hydrateFromWorld(frame.world);
+          const snapshotAtMs = snapshotAtPerformanceMs(
+            frame.serverTimeMs,
+            state.serverClockOffsetMs,
+          );
+          const hydrated = hydrateFromWorld(frame.world, snapshotAtMs);
           // Preserve scores from prior deltas — keyframes don't always include
           // displayName context the WS hook may have built up via player_joined.
           const merged = new Map(state.scores);
@@ -1190,10 +1228,21 @@ export const useActivityStore = create<ActivityState>()(
           break;
         }
 
-        case 'pong':
-          // Ping computation lives in `useActivityWs` because it tracks the
-          // outgoing `sentAt` per-message. Frame is a no-op here.
+        case 'pong': {
+          // NTP-style clock-offset sample: midpoint(client send, client receive)
+          // minus server receive/send time. Unlike arrival-serverTime, this
+          // removes the symmetric network leg instead of folding one-way lag
+          // into the clock mapping used by reconciliation.
+          const receivedAt = Date.now();
+          const midpoint = frame.sentAt + (receivedAt - frame.sentAt) * 0.5;
+          const sample = midpoint - frame.serverTime;
+          const nextOffset =
+            state.serverClockOffsetMs === null
+              ? sample
+              : state.serverClockOffsetMs + (sample - state.serverClockOffsetMs) * 0.1;
+          set({ serverClockOffsetMs: nextOffset });
           break;
+        }
 
         case 'error':
           set({ errorBanner: { code: frame.code, message: frame.message } });

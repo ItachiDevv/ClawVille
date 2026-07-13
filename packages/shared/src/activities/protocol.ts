@@ -495,12 +495,16 @@ export interface WorldState {
 export type ServerFrame =
   | {
       type: 'snapshot.init';
+      /** Epoch ms when the authoritative pose sample was captured. */
+      serverTimeMs?: number;
       room: RoomMeta;
       world: WorldState;
       seed: number;
     }
   | {
       type: 'snapshot.delta';
+      /** Epoch ms when the authoritative pose sample was captured. */
+      serverTimeMs?: number;
       baseSeq: number;
       seq: number;
       entities: EntityDelta[];
@@ -509,6 +513,8 @@ export type ServerFrame =
     }
   | {
       type: 'snapshot.keyframe';
+      /** Epoch ms when the authoritative pose sample was captured. */
+      serverTimeMs?: number;
       seq: number;
       world: WorldState;
     }

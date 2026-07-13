@@ -62,6 +62,8 @@ export interface BumperShellEntity {
   vx: number;
   vy: number;
   alive: boolean;
+  /** Authoritative sample time mapped onto the client's performance clock. */
+  snapshotAtMs?: number;
   /** Optional hex string tint applied to the shell material. */
   color?: string;
   /** 'lobster' | 'crayfish' — determines which GLB clone is used. */
