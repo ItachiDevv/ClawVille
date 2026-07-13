@@ -151,12 +151,12 @@ function parseConversation(
  * (OpenAI — sole backend). LLM failures produce empty replies so the loop
  * degrades gracefully instead of throwing.
  *
- * Watcher gate (2026-07-13, Codex round 2): agent legs (`client.chat` +
+ * Watcher gate (2026-07-13, Codex rounds 2-3): agent legs (`client.chat` +
  * `processProxyReply` action dispatch) ALWAYS run — for server-managed bodies
  * ambient conversations ARE the cognition/action path, and their inference is
- * partner-hosted/local, not our paid route. Only the non-agent legs honor
- * `opts.allowNpcLlm` — when false they use a canned line instead of the paid
- * `default` inference route.
+ * partner-hosted/local, not our paid route. Only the non-agent legs are
+ * budgeted, per PAID REQUEST via `opts.tryConsumePaidLeg` — a refused leg
+ * speaks a canned line instead of hitting the paid `default` route.
  */
 export async function generateOpenClawConversation(
   npc1: NpcDefinition,
@@ -174,11 +174,17 @@ export async function generateOpenClawConversation(
    */
   processProxyReply?: (npcId: string, client: AgentSubstrateClient, rawReply: string) => string,
   opts?: {
-    /** When false, non-agent participants speak canned lines (no paid LLM). Default true. */
-    allowNpcLlm?: boolean;
+    /**
+     * Per-PAID-REQUEST budget hook (Codex round 3: one conversation can make
+     * up to two paid calls — one per non-agent turn — so consuming a single
+     * unit per conversation understated spend 2×). Called immediately before
+     * EACH non-agent LLM leg; return false to substitute a canned line for
+     * that leg. Omitted ⇒ legs are unrestricted (legacy behavior).
+     */
+    tryConsumePaidLeg?: () => boolean;
   },
 ): Promise<ConversationMessage[]> {
-  const allowNpcLlm = opts?.allowNpcLlm ?? true;
+  const tryConsumePaidLeg = opts?.tryConsumePaidLeg ?? (() => true);
   const arenaContext = arenaMode
     ? ' You are in the ClawVille Arena where NPCs battle each other.'
     : '';
@@ -214,14 +220,15 @@ Reply as ${npc.name} with a single short sentence (1-2 sentences max). Stay in c
           console.error(`[OpenClaw] Chat failed for ${npc.name}:`, err);
           reply = '';
         }
-      } else if (allowNpcLlm) {
+      } else if (tryConsumePaidLeg()) {
         // Use the LLM (OpenAI, sole backend) for the non-OpenClaw participant. No
         // system instruction here — the original call shoved everything into
         // the user message as well, so we keep that shape identical for parity.
+        // Budget consumed per REQUEST (the line above), never per conversation.
         reply = await callLlmForNpc(null, contextMsg);
       } else {
-        // Watcher gate: paid leg disallowed — canned line, zero inference. The
-        // agent leg(s) above still ran, so partner cognition/actions are intact.
+        // Watcher gate / budget: paid leg refused — canned line, zero inference.
+        // The agent leg(s) above still ran, so partner cognition/actions are intact.
         reply = cannedNpcLine(messages.length === 0);
       }
 

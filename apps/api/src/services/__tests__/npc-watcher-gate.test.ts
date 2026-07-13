@@ -121,9 +121,10 @@ describe('gated agent conversations keep partner cognition alive (Codex round 2 
     personality: 'A plain resident.',
   } as unknown as NpcDefinition;
 
-  it('allowNpcLlm:false still runs client.chat + action dispatch; npc legs are canned', async () => {
+  it('refused paid legs still run client.chat + action dispatch; npc legs are canned', async () => {
     let chatCalls = 0;
     let dispatches = 0;
+    let legAsks = 0;
     const fakeClient = {
       chat: async () => {
         chatCalls++;
@@ -143,12 +144,14 @@ describe('gated agent conversations keep partner cognition alive (Codex round 2 
         dispatches++;
         return raw.replace(/\[ACTION:[^\]]*\]/g, '').trim();
       },
-      { allowNpcLlm: false },
+      { tryConsumePaidLeg: () => { legAsks++; return false; } },
     );
 
     // Agent cognition + the [ACTION:] hook MUST have run despite the gate.
     expect(chatCalls).toBeGreaterThan(0);
     expect(dispatches).toBeGreaterThan(0);
+    // The budget hook was consulted per non-agent leg (never for agent legs).
+    expect(legAsks).toBeGreaterThan(0);
     const agentLines = messages.filter((m) => m.npcId === defA.id);
     expect(agentLines.length).toBeGreaterThan(0);
     expect(agentLines[0].text).toContain('Scanning the reef');
@@ -158,5 +161,57 @@ describe('gated agent conversations keep partner cognition alive (Codex round 2 
     for (const line of npcLines) {
       expect(CANNED.has(line.text)).toBe(true);
     }
+  });
+
+  // Codex round 3 HIGH #1 regression: budget must be consumed per PAID
+  // REQUEST, not per conversation — a mixed conversation can hold up to two
+  // non-agent turns, and a single pre-consumed unit would fund both. With a
+  // one-unit budget, any leg after the first must be refused and speak from
+  // the canned pool. Turn count is random (2-3), so iterate until a two-leg
+  // conversation occurs; every observed conversation must satisfy the
+  // invariant (paid legs ≤ 1 unit granted, refused legs canned).
+  it('a single budget unit never funds two paid legs in one conversation', async () => {
+    const fakeClient = {
+      chat: async () => 'Acknowledged.',
+      getProtocol: () => 'hatcher-proxy',
+    } as never;
+
+    let sawTwoLegConversation = false;
+    for (let round = 0; round < 24 && !sawTwoLegConversation; round++) {
+      let unitsGranted = 0;
+      let legAsks = 0;
+      const oneUnitBudget = () => {
+        legAsks++;
+        if (unitsGranted >= 1) return false;
+        unitsGranted++;
+        return true;
+      };
+      // Non-agent participant FIRST so its (paid-eligible) turn opens the
+      // conversation and a 3-turn roll gives it a second leg.
+      const messages = await generateOpenClawConversation(
+        defB,
+        defA,
+        null,
+        fakeClient,
+        false,
+        undefined,
+        undefined,
+        { tryConsumePaidLeg: oneUnitBudget },
+      );
+      expect(unitsGranted).toBeLessThanOrEqual(1);
+      if (legAsks >= 2) {
+        sawTwoLegConversation = true;
+        // The refused second leg spoke a canned line (the granted first leg's
+        // real LLM call fails in the test env and its empty reply is dropped,
+        // so ALL surviving non-agent lines here must be canned).
+        const npcLines = messages.filter((m) => m.npcId === defB.id);
+        expect(npcLines.length).toBeGreaterThan(0);
+        for (const line of npcLines) {
+          expect(CANNED.has(line.text)).toBe(true);
+        }
+      }
+    }
+    // 24 rounds at ~50% odds of a 3-turn roll — flake odds ~2^-24.
+    expect(sawTwoLegConversation).toBe(true);
   });
 });
