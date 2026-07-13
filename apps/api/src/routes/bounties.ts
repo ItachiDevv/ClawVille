@@ -1833,46 +1833,15 @@ bountyRoutes.post('/:id/admin-fail-refund', adminOnly, async (c) => {
     });
   }
 
-  // Drive the depositor-bound refund. COMPOSED → the SAP V2 vault withdraw
-  // (creator ← the LEG-1 vault, idempotent on `${bountyId}:refund`); LEGACY → the
-  // V1 escrow-gate refund. Both re-assert the depositor + ceiling the amount, so
-  // the admin can only trigger the refund, never redirect the funds.
-  const refund = isComposed
-    ? await refundComposedBounty({
-        bountyId: bounty.id,
-        escrowPda: bounty.escrowPda,
-        creatorAvatarId: bounty.creatorId,
-        tokenReward: bounty.tokenReward,
-      })
-    : await refundBountyEscrow({
-        bountyId: bounty.id,
-        escrowPda: bounty.escrowPda,
-        creatorAvatarId: bounty.creatorId,
-        tokenReward: bounty.tokenReward,
-      });
-
-  if (refund.ok === false) {
-    throw new HTTPException(escrowFailureStatus(refund.code), {
-      message: `USDC escrow refund failed (${refund.code}): ${refund.message}`,
-    });
-  }
-
-  // Record the FAIL verdict provenance on the bounty (idempotent). For a COMPOSED
-  // bounty we deliberately leave `composition_state` AS-IS: the schema's documented
-  // value set has no 'refunded' marker, so (per the slice spec) the terminal
-  // refunded state is carried by covenant_verification_passed=false rather than an
-  // invented enum value. The creator's vault deposit has been reclaimed on-chain.
+  // INTENT-BEFORE-EXTERNAL (Codex covenant round 5 HIGH #4): terminalize the
+  // bounty + write the durable refund intent BEFORE the irreversible chain
+  // call. A crash after the chain succeeds can then never leave an open,
+  // claimable bounty against an emptied vault with zero stream trace — the
+  // worst post-crash state is cancelled + intent-without-refund-record, a
+  // queryable anomaly the idempotent retry of THIS route completes (the SAP
+  // refund replays on its own ledger key; the records dedupe).
   await db.transaction(async (tx) => {
     const refundedAt = new Date();
-    // TERMINALIZE with the refund (Codex covenant round 3 HIGH #3): the old
-    // persist only flipped the verdict flag, leaving a refunded composed
-    // bounty status='open' + vault_held — still claimable/approvable against
-    // an EMPTIED vault. The refund is terminal: cancel the bounty and
-    // auto-reject every non-terminal attempt, atomically with the record.
-    // (composition_state deliberately stays as-is — the schema has no
-    // 'refunded' label; terminal-refunded = status cancelled +
-    // covenant_verification_passed=false, and the resume crank only drives
-    // awaiting_finalize/reconcile states, never a cancelled vault_held row.)
     await tx
       .update(bounties)
       .set({
@@ -1897,21 +1866,72 @@ bountyRoutes.post('/:id/admin-fail-refund', adminOnly, async (c) => {
       );
     await recordCovenantAction(
       {
-        action: 'bounty.refund',
+        action: 'bounty.refund_requested',
         subjectType: 'avatar',
         subjectId: bounty.creatorId,
         actorKind: 'admin',
-        dedupeKey: `bounty:${bounty.id}:refund`,
+        dedupeKey: `bounty:${bounty.id}:refund_requested:admin`,
         payload: {
           bountyId: bounty.id,
           rail: isComposed ? 'sap-payai-composed' : 'sap-usdc',
           tokenReward: bounty.tokenReward,
-          terminalized: 'cancelled',
           ...(bounty.escrowPda ? { escrowPda: bounty.escrowPda } : {}),
         },
       },
       tx,
     );
+  });
+
+  // Drive the depositor-bound refund. COMPOSED → the SAP V2 vault withdraw
+  // (creator ← the LEG-1 vault, idempotent on `${bountyId}:refund`); LEGACY → the
+  // V1 escrow-gate refund. Both re-assert the depositor + ceiling the amount, so
+  // the admin can only trigger the refund, never redirect the funds.
+  const refund = isComposed
+    ? await refundComposedBounty({
+        bountyId: bounty.id,
+        escrowPda: bounty.escrowPda,
+        creatorAvatarId: bounty.creatorId,
+        tokenReward: bounty.tokenReward,
+      })
+    : await refundBountyEscrow({
+        bountyId: bounty.id,
+        escrowPda: bounty.escrowPda,
+        creatorAvatarId: bounty.creatorId,
+        tokenReward: bounty.tokenReward,
+      });
+
+  if (refund.ok === false) {
+    // The bounty is already terminalized (cancelled + attempts rejected +
+    // intent recorded) — funds remain safely in the vault/escrow. Retrying
+    // THIS route completes the refund: the SAP leg is idempotent and both
+    // records dedupe.
+    throw new HTTPException(escrowFailureStatus(refund.code), {
+      message:
+        `USDC escrow refund failed (${refund.code}): ${refund.message}. The bounty is ` +
+        `cancelled (non-claimable) and the refund intent is recorded — retry this route ` +
+        `to complete the refund (idempotent).`,
+    });
+  }
+
+  // OUTCOME record — the refund executed on-chain. Terminalization happened
+  // BEFORE the external call (intent-before-external above); composition_state
+  // deliberately stays as-is (the schema has no 'refunded' label; terminal-
+  // refunded = status cancelled + covenant_verification_passed=false, and the
+  // resume crank only drives awaiting_finalize/reconcile states, never a
+  // cancelled vault_held row).
+  await recordCovenantAction({
+    action: 'bounty.refund',
+    subjectType: 'avatar',
+    subjectId: bounty.creatorId,
+    actorKind: 'admin',
+    dedupeKey: `bounty:${bounty.id}:refund`,
+    payload: {
+      bountyId: bounty.id,
+      rail: isComposed ? 'sap-payai-composed' : 'sap-usdc',
+      tokenReward: bounty.tokenReward,
+      terminalized: 'cancelled',
+      ...(bounty.escrowPda ? { escrowPda: bounty.escrowPda } : {}),
+    },
   });
 
   // The refund result's chain leg is a SapWriteResult union — read dryRun only
@@ -2495,32 +2515,22 @@ bountyRoutes.delete('/:id', requireAuthOrAgentSession, requireNonGuestIdentity, 
       });
     }
 
-    // Refund the vault (idempotent chain call / dry-run sim) BEFORE flipping status.
-    // SAFETY REASONING for a 'vault_pending' cancel — refund-FIRST-then-flip means a
-    // refund failure NEVER flips the bounty to 'cancelled', so funds can't be stranded:
-    //   • if the crashed create DID open the vault → the nonce-derived refund reclaims it,
-    //     THEN the status flips to 'cancelled' (funds home, bounty gone);
-    //   • if NO vault was ever opened → the on-chain refund fails clean (nothing to
-    //     withdraw), the throw below BLOCKS the cancel (the conservative ops-reconcile
-    //     posture — a rare crash artifact ops confirms on-chain and deletes/repairs), and
-    //     nothing is left half-cancelled.
-    // Neither branch strands funds or double-refunds. DRY-RUN simulates ok either way,
-    // which is correct: a dry-run create opened no real vault, so no real funds exist. The
-    // `?? ''` only satisfies the (string) param type — refundComposedBounty never reads it.
-    const refund = await refundComposedBounty({
-      bountyId: bounty.id,
-      escrowPda: bounty.escrowPda ?? '',
-      creatorAvatarId: bounty.creatorId,
-      tokenReward: bounty.tokenReward,
-    });
-    if (refund.ok === false) {
-      throw new HTTPException(escrowFailureStatus(refund.code), {
-        message:
-          `Composed USDC bounty vault refund failed (${refund.code}): ${refund.message}. ` +
-          `The bounty was NOT cancelled; retry.`,
-      });
-    }
-
+    // INTENT-BEFORE-EXTERNAL (Codex covenant round 5 HIGH #4; supersedes the
+    // old refund-first-then-flip ordering): atomically claim the cancel (CAS
+    // open→cancelled — a raced second cancel 409s HERE, before any chain
+    // call) and write the durable refund intent, THEN run the irreversible
+    // chain refund. A crash after chain success can no longer leave an OPEN,
+    // claimable bounty with zero stream trace — the worst post-crash state is
+    // cancelled + intent-without-outcome, completed idempotently via
+    // admin-fail-refund (same SAP ledger key, same dedupe keys).
+    // FUNDS SAFETY (the old ordering's vault_pending reasoning, preserved):
+    // a refund failure leaves the vault deposit fully custodied on-chain; the
+    // bounty being 'cancelled' (instead of the old still-open) is deliberate —
+    // non-claimable while funds are in limbo. Recovery: 'vault_held' →
+    // admin-fail-refund completes it; 'vault_pending' (crash-artifact create)
+    // → ops reconcile, exactly as before. DRY-RUN simulates ok either way. The
+    // `?? ''` only satisfies the (string) param type — refundComposedBounty
+    // re-derives the vault PDA from the bounty nonce and never reads it.
     const claimed = await db.transaction(async (tx) => {
       const [row] = await tx
         .update(bounties)
@@ -2528,17 +2538,13 @@ bountyRoutes.delete('/:id', requireAuthOrAgentSession, requireNonGuestIdentity, 
         .where(and(eq(bounties.id, id), eq(bounties.status, 'open')))
         .returning();
       if (!row) return undefined;
-      // Covenant record (Codex covenant round 1 HIGH #2): this cancel just
-      // refunded REAL on-chain USDC to the creator — it must appear in the
-      // stream. Same dedupe key as admin-fail-refund: a bounty refunds once,
-      // whichever path fires.
       await recordCovenantAction(
         {
-          action: 'bounty.refund',
+          action: 'bounty.refund_requested',
           subjectType: 'avatar',
           subjectId: bounty.creatorId,
           actorKind: toActorKind(c.get('identity').kind),
-          dedupeKey: `bounty:${bounty.id}:refund`,
+          dedupeKey: `bounty:${bounty.id}:refund_requested:cancel`,
           payload: {
             bountyId: bounty.id,
             rail: 'sap-payai-composed',
@@ -2556,6 +2562,38 @@ bountyRoutes.delete('/:id', requireAuthOrAgentSession, requireNonGuestIdentity, 
         message: 'Bounty already cancelled or no longer open',
       });
     }
+
+    const refund = await refundComposedBounty({
+      bountyId: bounty.id,
+      escrowPda: bounty.escrowPda ?? '',
+      creatorAvatarId: bounty.creatorId,
+      tokenReward: bounty.tokenReward,
+    });
+    if (refund.ok === false) {
+      throw new HTTPException(escrowFailureStatus(refund.code), {
+        message:
+          `Composed USDC bounty vault refund failed (${refund.code}): ${refund.message}. ` +
+          `The bounty is cancelled (non-claimable) and your deposit remains custodied ` +
+          `on-chain — an admin completes the refund via admin-fail-refund (idempotent).`,
+      });
+    }
+
+    // OUTCOME record — the refund executed. Same dedupe key as
+    // admin-fail-refund: a bounty refunds once, whichever path completes it.
+    await recordCovenantAction({
+      action: 'bounty.refund',
+      subjectType: 'avatar',
+      subjectId: bounty.creatorId,
+      actorKind: toActorKind(c.get('identity').kind),
+      dedupeKey: `bounty:${bounty.id}:refund`,
+      payload: {
+        bountyId: bounty.id,
+        rail: 'sap-payai-composed',
+        reason: 'creator_cancelled',
+        tokenReward: bounty.tokenReward,
+        ...(bounty.escrowPda ? { escrowPda: bounty.escrowPda } : {}),
+      },
+    });
 
     const refundDryRun = refund.chain.ok ? refund.chain.dryRun : undefined;
     return c.json({

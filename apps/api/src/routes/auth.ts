@@ -4,7 +4,6 @@ import { eq, and, or, isNull } from 'drizzle-orm';
 import { lucia } from '../lib/auth';
 import { db, users, agentBots, avatars } from '@clawville/database';
 import { npcSimulation } from '../services/npc-simulation';
-import { recordCovenantAction } from '../services/covenant-action-recorder';
 import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
 import { consumeTicket } from '../services/session-ticket-service';
@@ -1178,17 +1177,12 @@ async function insertGuestAvatar(
             isGuest: true,
           })
           .returning({ id: avatars.id, name: avatars.name, clawTokens: avatars.clawTokens });
-        await recordCovenantAction(
-          {
-            action: 'economy.genesis',
-            subjectType: 'avatar',
-            subjectId: inserted.id,
-            actorKind: 'human',
-            dedupeKey: `avatar:${inserted.id}:genesis`,
-            payload: { amount: inserted.clawTokens, provenance: 'soft', reason: 'avatar_genesis' },
-          },
-          tx,
-        );
+        // NO covenant genesis for guests (Codex covenant round 5 HIGH #2):
+        // guest CT is OFF-LEDGER demo money — later guest activity mutates
+        // this balance without ledger/covenant records, so a genesis anchor
+        // here would inflate partner-visible real supply and then immediately
+        // stop reconciling. Guests are excluded from genesis, backfill, and
+        // reconciliation alike; the stream tracks the REAL economy only.
         return inserted;
       });
       return row;
