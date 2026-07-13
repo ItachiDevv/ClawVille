@@ -69,8 +69,30 @@ npcRoutes.get('/stream', (c) => {
  * No auth required
  */
 npcRoutes.get('/state', (c) => {
-  // REST fallback consumers count as watchers for the ambient-banter gate
-  // (no persistent connection to count, so recency is the signal).
-  npcSimulation.noteWorldWatched();
+  // Deliberately does NOT arm the ambient-banter watcher gate: this endpoint
+  // is public, so any crawler/monitor hitting it once a minute could force
+  // continuous paid inference (Codex round, 2026-07-13). Watching is signaled
+  // ONLY by the visibility heartbeat below.
   return c.json(npcSimulation.getSnapshot());
+});
+
+/**
+ * POST /api/npc/watch — visibility heartbeat for the ambient-banter watcher
+ * gate. The web client (`use-world-stream.ts`) sends it every ~30s ONLY while
+ * `document.visibilityState === 'visible'`; it arms the sim's inference latch
+ * for ~90s. Design notes (Codex adversarial round, 2026-07-13):
+ * - No auth BY DESIGN: anonymous explore-mode visitors are real watchers (the
+ *   acquisition funnel) and must see live banter. Spoofing this endpoint
+ *   cannot burn unbounded money — the hourly LLM banter budget in
+ *   npc-simulation bounds worst-case spend regardless of the latch.
+ * - Agent sessions are NOT watchers: a caller presenting an agent-session
+ *   header gets a 204 but does not arm the latch (banter is user
+ *   entertainment; agents read world state via server-side perception).
+ * - SSE connections do NOT arm the latch (hidden tabs hold streams open).
+ */
+npcRoutes.post('/watch', (c) => {
+  if (!c.req.header('X-Clawville-Agent-Session')) {
+    npcSimulation.noteWorldWatched();
+  }
+  return c.body(null, 204);
 });

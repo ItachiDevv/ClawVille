@@ -30,11 +30,11 @@ Not ruled out: the local tooling key in `~/.itachi-api-keys` is a DIFFERENT proj
 
 **Superseded mitigation (REVERTED):** `INFERENCE_ROUTE_DEFAULT=local-first` env rows were created on both api apps ~01:45Z, then DELETED ~02:05Z on founder direction — the local GPU capacity is reserved for the agent runtime (~20 concurrent agents comfortably on the primary box); banter must not compete for it. Both apps are back to exactly pre-audit env.
 
-**The real fix (founder-directed, 2026-07-13): watcher-presence gate — banter is "just for entertaining users," so it costs nothing when nobody is watching.** Branch `fix/banter-watcher-gate`:
-- `npcSimulation` tracks watcher presence: stamped by SSE listener add/remove on BOTH stream paths (`/api/npc/stream` legacy + `/api/world/:roomId/stream`) and by the REST `/api/npc/state` fallback; `hasActiveWatchers()` = any live SSE listener OR any watcher within a 60s grace window.
-- `tryStartConversation`: unwatched → `generateCannedConversation` (the engine's existing canned pool, zero LLM calls, on any backend); watched → LLM paths unchanged. Conversations still exist unwatched, so snapshots and agent perception keep their shape.
-- Log marker `Conversation started (canned, unwatched):` = greppable burn meter.
-- Expected effect: ~19.6k calls/day → ~0 while the world is empty; while users ARE online, worst case is the old rate (~410/hr ≈ $0.10/hr on gpt-4o-mini) — cost now scales with actual audience.
+**The real fix (founder-directed, 2026-07-13): watcher-presence gate + hard budget — banter is "just for entertaining users," so it costs nothing when nobody is watching, and is bounded even under abuse.** Branch `fix/banter-watcher-gate`, two rounds (Codex adversarial review round 1 = `needs-attention`, both HIGH findings fixed):
+- **Arming signal = visibility heartbeat ONLY**: the web client POSTs `/api/npc/watch` every 30s while the tab is visible (`use-watch-heartbeat.ts`, mounted by both stream hooks — /game, /arena, /perf); server latch expires after 90s. SSE connections do NOT arm (Codex HIGH #1 — hidden/abandoned tabs keep EventSource open and would hold the gate open indefinitely); the public REST `/api/npc/state` does NOT arm (Codex HIGH #2 — one crawler request a minute would force continuous paid inference); agent sessions get 204 without arming.
+- **Hard hourly LLM budget** independent of the latch: `NPC_BANTER_HOURLY_LLM_CAP` (default 120/hr ≈ $0.03/hr worst case; 0 = LLM banter off). /watch stays unauthenticated by design (anonymous explore visitors are the acquisition funnel), so the latch is spoofable — the budget bounds what any spoofer can burn.
+- Gated-off conversations use `generateCannedConversation` (zero LLM, any backend); conversations still exist, so snapshots and agent perception keep their shape. Log markers `(canned, unwatched)` / `(canned, capped)` = greppable burn meter.
+- Expected effect: ~19.6k calls/day → 0 while the world is empty; with users online, cost scales with actual audience and is hard-capped at ~$0.70/day/box even under deliberate abuse.
 
 **Remaining, in order:**
 1. Ship `fix/banter-watcher-gate` through the normal loop (Codex adversarial review → staging → verify canned-marker logs + zero OpenAI banter calls with no browser open → founder sign-off → rides the next staging→master PR).
