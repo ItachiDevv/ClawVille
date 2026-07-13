@@ -36,6 +36,7 @@ import { MeshoptDecoder } from 'meshoptimizer';
 import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
 import { MToonMaterialLoaderPlugin } from '@pixiv/three-vrm-materials-mtoon';
 import type { VRM } from '@pixiv/three-vrm';
+import { primeVrmHipsHeightCache } from './mixamo-retarget';
 
 // MToon plugin registration:
 //   Explicitly register MToonMaterialLoaderPlugin so VRMLoaderPlugin produces
@@ -297,6 +298,7 @@ type VRMNormaliseTimings = {
   outlineDisableMs: number;
   frustumCullingMs: number;
   springBoneScaleMs: number;
+  hipsHeightPrimeMs: number;
 };
 
 type VRMLoadMetric = {
@@ -473,6 +475,7 @@ function normaliseVRM(vrm: VRM): VRMNormaliseTimings {
     outlineDisableMs: 0,
     frustumCullingMs: 0,
     springBoneScaleMs: 0,
+    hipsHeightPrimeMs: 0,
   };
 
   // Do NOT call VRMUtils.combineSkeletons — it merges SkinnedMesh skeletons
@@ -540,6 +543,20 @@ function normaliseVRM(vrm: VRM): VRMNormaliseTimings {
     }
   }
   timings.springBoneScaleMs = roundMs(nowMs() - t);
+
+  // Eagerly measure + cache hip-height-above-floor for the Meshy/Mixamo
+  // retargeter (mixamo-retarget.ts). MUST happen here, not lazily inside a
+  // retarget call — this is the one guaranteed moment the VRM is at rest
+  // pose with an UN-patched `skeleton.update` (no VRMCharacterAnimator has
+  // been constructed for this instance yet; that constructor is what
+  // monkey-patches skeleton.update to a no-op for skeleton-batching, which
+  // would silently corrupt a bbox measurement taken after the fact). See
+  // `primeVrmHipsHeightCache`'s doc comment for the full incident writeup
+  // (Codex adversarial review, 2026-07-13).
+  t = nowMs();
+  primeVrmHipsHeightCache(vrm);
+  timings.hipsHeightPrimeMs = roundMs(nowMs() - t);
+
   return timings;
 }
 
