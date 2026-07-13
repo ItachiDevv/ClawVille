@@ -25,7 +25,7 @@
  */
 
 import { createHash } from 'crypto';
-import { db, covenantActionRecords } from '@clawville/database';
+import { db, covenantActionRecords, eq } from '@clawville/database';
 import type { LedgerTx } from './claw-token-ledger';
 
 /** The namespaced action verbs the stream records (v1). */
@@ -42,6 +42,7 @@ export type CovenantAction =
   | 'bounty.submit'
   | 'bounty.approve'
   | 'bounty.reject'
+  | 'bounty.settle_requested'
   | 'bounty.settle'
   | 'bounty.refund';
 
@@ -113,26 +114,89 @@ export async function recordCovenantAction(
   const payloadHash = createHash('sha256').update(canonicalStr, 'utf8').digest('hex');
 
   const executor = tx ?? db;
-  const rows = await executor
-    .insert(covenantActionRecords)
-    .values({
-      action: input.action,
-      subjectType: input.subjectType,
-      subjectId: input.subjectId,
-      actorKind: input.actorKind ?? null,
-      payload: canonical,
-      payloadHash,
-      dedupeKey: input.dedupeKey ?? null,
-    })
-    // A dedupe-key collision means a retry already recorded this action —
-    // no-op instead of a second immutable record. Rows without a dedupeKey
-    // never collide (NULLs are distinct in the partial unique index).
-    // Targetless ON CONFLICT: Postgres cannot infer a PARTIAL unique index
-    // from a bare column target, and the only other constraint (uuid PK,
-    // gen_random) can never collide in practice.
-    .onConflictDoNothing()
-    .returning({ id: covenantActionRecords.id });
 
-  if (rows.length === 0) return { id: null, deduped: true };
-  return { id: rows[0].id, deduped: false };
+  // Dedupe semantics (Codex round 2 HIGH #3): a collision may ONLY be treated
+  // as a successful retry when the existing row is the SAME action — same
+  // verb, subject, actor, payload hash. Anything else (a reused key with
+  // different semantics, or any non-dedupe unique violation) must ABORT the
+  // surrounding business transaction, never silently commit recordless.
+  const verifyExistingMatches = async (): Promise<{ id: string; deduped: true }> => {
+    const [existing] = await executor
+      .select({
+        id: covenantActionRecords.id,
+        action: covenantActionRecords.action,
+        subjectType: covenantActionRecords.subjectType,
+        subjectId: covenantActionRecords.subjectId,
+        actorKind: covenantActionRecords.actorKind,
+        payloadHash: covenantActionRecords.payloadHash,
+      })
+      .from(covenantActionRecords)
+      .where(eq(covenantActionRecords.dedupeKey, input.dedupeKey!))
+      .limit(1);
+    if (
+      !existing ||
+      existing.action !== input.action ||
+      existing.subjectType !== input.subjectType ||
+      existing.subjectId !== input.subjectId ||
+      (existing.actorKind ?? null) !== (input.actorKind ?? null) ||
+      existing.payloadHash !== payloadHash
+    ) {
+      throw new Error(
+        `covenant dedupe-key collision with DIFFERENT action identity (key=${input.dedupeKey}, ` +
+          `action=${input.action}) — refusing to treat as a retry`,
+      );
+    }
+    return { id: existing.id, deduped: true };
+  };
+
+  if (input.dedupeKey) {
+    // Fast path: an earlier attempt already recorded this action.
+    const [prior] = await executor
+      .select({ id: covenantActionRecords.id })
+      .from(covenantActionRecords)
+      .where(eq(covenantActionRecords.dedupeKey, input.dedupeKey))
+      .limit(1);
+    if (prior) return verifyExistingMatches();
+  }
+
+  try {
+    const [row] = await executor
+      .insert(covenantActionRecords)
+      .values({
+        action: input.action,
+        subjectType: input.subjectType,
+        subjectId: input.subjectId,
+        actorKind: input.actorKind ?? null,
+        payload: canonical,
+        payloadHash,
+        dedupeKey: input.dedupeKey ?? null,
+      })
+      .returning({ id: covenantActionRecords.id });
+    return { id: row.id, deduped: false };
+  } catch (err) {
+    // Only a dedupe-key race is retriable-as-success; every other unique
+    // violation (seq skew after a restore, PK anomaly) bubbles and aborts.
+    const pgErr = err as { code?: string; constraint_name?: string; cause?: any };
+    const code = pgErr?.code ?? pgErr?.cause?.code;
+    const constraint = pgErr?.constraint_name ?? pgErr?.cause?.constraint_name;
+    if (
+      input.dedupeKey &&
+      code === '23505' &&
+      (constraint == null || constraint === 'covenant_action_records_dedupe_key_unique')
+    ) {
+      // Inside a surrounding tx the 23505 has already ABORTED it (25P02 on any
+      // further statement), so the verify-select can only run standalone. A
+      // concurrent in-tx race therefore fails LOUD (whole tx rolls back — the
+      // caller's next attempt lands on the committed row via the pre-check);
+      // it can never silently commit recordless.
+      if (tx) {
+        throw new Error(
+          `covenant dedupe-key race inside a transaction (key=${input.dedupeKey}) — ` +
+            'business tx rolled back; retry will dedupe against the committed record',
+        );
+      }
+      return verifyExistingMatches();
+    }
+    throw err;
+  }
 }

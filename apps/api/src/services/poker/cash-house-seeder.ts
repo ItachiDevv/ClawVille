@@ -316,6 +316,7 @@ class CashHouseSeederService {
             bankroll_target: target,
             note: 'house-bank one-time bankroll seed (single-mint; never auto-refilled)',
           },
+          actorKind: 'system',
         },
         tx,
       );

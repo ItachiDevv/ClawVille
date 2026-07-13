@@ -840,6 +840,7 @@ coveBaccaratRouter.post('/coup', async (c) => {
               reason: 'cove_baccarat_stake',
               source: 'api',
               metadata: { shoeId: input.shoeId, coupIndex, bet },
+              actorKind: subject.kind === 'user' ? 'human' : 'agent',
             },
             tx,
           );
@@ -861,6 +862,7 @@ coveBaccaratRouter.post('/coup', async (c) => {
               reason: 'cove_baccarat_payout',
               source: 'api',
               metadata: { shoeId: input.shoeId, coupIndex, bet, winner: r.winner },
+              actorKind: subject.kind === 'user' ? 'human' : 'agent',
             },
             tx,
           );
@@ -887,6 +889,7 @@ coveBaccaratRouter.post('/coup', async (c) => {
                 reason: 'house_fee_baccarat_commission',
                 source: 'system',
                 metadata: { shoeId: input.shoeId, coupIndex, bet, winner: r.winner },
+                actorKind: 'system',
               },
               tx,
             );

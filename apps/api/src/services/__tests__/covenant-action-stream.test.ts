@@ -293,20 +293,36 @@ describeIfDb('covenant stream (DB)', () => {
       action: 'bounty.settle',
       subjectType: 'system',
       subjectId: marker,
-      payload: { marker, try: 1 },
+      payload: { marker, n: 1 },
       dedupeKey: key,
     });
+    // A TRUE retry (identical identity + payload) dedupes to the prior row.
     const second = await recordCovenantAction({
       action: 'bounty.settle',
       subjectType: 'system',
       subjectId: marker,
-      payload: { marker, try: 2 },
+      payload: { marker, n: 1 },
       dedupeKey: key,
     });
     expect(first.deduped).toBe(false);
     expect(first.id).toBeTruthy();
     expect(second.deduped).toBe(true);
-    expect(second.id).toBeNull();
+    expect(second.id).toBe(first.id);
+    // A key collision with DIFFERENT semantics must THROW, never silently
+    // commit recordless (Codex round 2 HIGH #3).
+    let mismatchErr: unknown = null;
+    try {
+      await recordCovenantAction({
+        action: 'bounty.settle',
+        subjectType: 'system',
+        subjectId: marker,
+        payload: { marker, n: 2 },
+        dedupeKey: key,
+      });
+    } catch (e) {
+      mismatchErr = e;
+    }
+    expect(String(mismatchErr)).toMatch(/DIFFERENT action identity/);
     const rows = await db
       .select({ id: covenantActionRecords.id })
       .from(covenantActionRecords)
@@ -333,7 +349,14 @@ describeIfDb('covenant stream (DB)', () => {
     expect(String(err)).toMatch(/inserted unsealed/);
   });
 
-  test('sealer refuses a row whose stored payload_hash mismatches (Codex r1 HIGH #5)', async () => {
+  // DESTRUCTIVE-DB ONLY (Codex round 2 HIGH #1): this test inserts a forged
+  // row that is IMMUTABLE and permanently unsealable — on a shared long-lived
+  // DB (staging) every run would accrete poison rows, page critical alerts on
+  // each process restart, and burn sealer scan capacity. Run it exclusively
+  // against a disposable database via COVENANT_DESTRUCTIVE_TESTS=1.
+  const testIfDisposableDb =
+    process.env.COVENANT_DESTRUCTIVE_TESTS === '1' ? test : test.skip;
+  testIfDisposableDb('sealer refuses a row whose stored payload_hash mismatches (Codex r1 HIGH #5)', async () => {
     const { db, covenantActionRecords, sql } = await import('@clawville/database');
     const marker = `mismatch-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const old = new Date(Date.now() - 60_000);

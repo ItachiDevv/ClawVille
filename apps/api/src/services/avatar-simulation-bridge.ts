@@ -89,6 +89,7 @@ export class AvatarSimulationBridge {
             amount: 1,
             reason: 'autonomous_visit',
             source: 'simulation',
+            actorKind: 'system',
           });
         },
         logActivity: async (
