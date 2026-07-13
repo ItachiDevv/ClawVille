@@ -84,7 +84,33 @@ export const acceptQuestAction: Action = {
         };
       }
 
-      const { quests, questSubmissions, eq, and } = await getDbModule();
+      const { quests, questSubmissions, avatars, users, eq, and } = await getDbModule();
+
+      // Canonical identity gate (Codex round 5, fail-closed at the choke
+      // point regardless of which runtime/caller injected the state):
+      // `state.avatarId` must resolve to a REAL `avatars.id` (a caller that
+      // wrongly supplies e.g. an openclaw_bots.id fails HERE, honestly,
+      // instead of writing a mismatched row), and the avatar's OWNER must not
+      // be a guest (quest rewards pay real vCLAW after review — the guest
+      // demo-economy wall applies to every earning surface).
+      const [actor] = await db
+        .select({ id: avatars.id, isGuest: users.isGuest })
+        .from(avatars)
+        .innerJoin(users, eq(users.id, avatars.userId))
+        .where(eq(avatars.id, avatarId))
+        .limit(1);
+      if (!actor) {
+        return {
+          success: false,
+          text: 'quest_actor_unresolved: this runtime is not bound to a real avatar, so it cannot use the quest board.',
+        };
+      }
+      if (actor.isGuest) {
+        return {
+          success: false,
+          text: 'Guests run a demo economy — quest rewards pay real vCLAW, so the quest board needs a full account.',
+        };
+      }
 
       // 1. Find the quest
       const [quest] = await db
