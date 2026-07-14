@@ -11,9 +11,11 @@
  * poses, not a hardcoded skeleton — so a second bone-name map (`meshyVRMRigMap`)
  * plus a near-identity normalizer covers Meshy's animation-library clips. Both
  * wrappers call a shared `buildRetargetedClip()` core, but explicitly select
- * their position-track policy: Mixamo preserves the legacy all-mapped-bones
- * output byte-for-byte, while Meshy keeps only hips translation because its
- * exports bake junk translation channels onto every bone.
+ * source policies. Mixamo preserves the legacy VRM0 X/Z quaternion flip and
+ * all-mapped-bones position output byte-for-byte. Meshy preserves that flip
+ * for the already-validated hips/legs but skips it for the arm chains, whose
+ * GLB quaternions are already target-handed after the rest differential; it
+ * also keeps only hips translation because Meshy bakes junk position channels.
  *
  * Meshy bone-name ground truth was NOT assumed — verified headlessly against
  * the actual clip GLBs (`stand_to_sit.glb`, `sit_idle_m/f.glb`, etc.) fired
@@ -262,6 +264,18 @@ export interface MixamoGltf {
 }
 
 type PositionTrackPolicy = 'legacy-all' | 'hips-only';
+type Vrm0QuaternionPolicy = 'legacy-all' | 'meshy-arm-chain-target-handed';
+
+const MESHY_TARGET_HANDED_ARM_BONES: ReadonlySet<VRMHumanBoneName> = new Set([
+  'leftShoulder',
+  'leftUpperArm',
+  'leftLowerArm',
+  'leftHand',
+  'rightShoulder',
+  'rightUpperArm',
+  'rightLowerArm',
+  'rightHand',
+]);
 
 /**
  * Per-VRM-instance memo for `measureVrmHipsHeightAboveFloor` — see that
@@ -421,6 +435,8 @@ export function primeVrmHipsHeightCache(vrm: VRM): void {
  * @param normalizeName  Normalizes a raw track rig-name before rigMap lookup.
  * @param positionTracks Selects legacy all-bone translations (Mixamo) or the
  *                       hips-only safety gate required by Meshy exports.
+ * @param vrm0Quaternion Selects the legacy all-bone VRM0 component flip or
+ *                       Meshy's arm-chain exception to that legacy policy.
  * @param sourceLabel    Only used in error messages (e.g. "mixamo-retarget"
  *                       vs "meshy-retarget") so a thrown error identifies
  *                       which pipeline failed.
@@ -432,6 +448,7 @@ function buildRetargetedClip(
   rigMap: Record<string, VRMHumanBoneName>,
   normalizeName: (name: string) => string,
   positionTracks: PositionTrackPolicy,
+  vrm0Quaternion: Vrm0QuaternionPolicy,
   sourceLabel: string,
   clipName?: string,
 ): THREE.AnimationClip {
@@ -508,10 +525,19 @@ function buildRetargetedClip(
         new THREE.QuaternionKeyframeTrack(
           `${vrmNode.name}.quaternion`,
           track.times,
-          // VRM 0.x axis flip: VRMUtils.rotateVRM0 adds π rotation to vrm.scene,
-          // which inverts the X and Z axes of every bone. Every even-indexed component
-          // (x, z in each xyzw tuple) must be negated to compensate.
-          values.map((v, i) => (vrm0 && i % 2 === 0 ? -v : v)),
+          // Legacy VRM 0.x axis flip: VRMUtils.rotateVRM0 adds π rotation to
+          // vrm.scene, so Mixamo negates every x/z quaternion component. Meshy's
+          // arm chains are already target-handed and explicitly skip that reflection.
+          values.map((v, i) => (
+            vrm0 &&
+            i % 2 === 0 &&
+            !(
+              vrm0Quaternion === 'meshy-arm-chain-target-handed' &&
+              MESHY_TARGET_HANDED_ARM_BONES.has(vrmBoneName)
+            )
+              ? -v
+              : v
+          )),
         ),
       );
       continue;
@@ -611,6 +637,7 @@ export function retargetMixamoClip(
     mixamoVRMRigMap,
     normalizeMixamoRigName,
     'legacy-all',
+    'legacy-all',
     'mixamo-retarget',
     clipName,
   );
@@ -620,13 +647,17 @@ export function retargetMixamoClip(
  * Retarget a Meshy animation-library GLB to a VRM humanoid skeleton.
  * Same rest-pose-differential math as `retargetMixamoClip`, different bone
  * map + normalizer (see file header for the verification this map is built
- * on). Unlike the legacy Mixamo path, Meshy uses an explicit hips-only
- * position-track policy: its exports bake junk rest-local translation onto
- * every bone, while the hips track carries the real seated descent. X/Z are
- * still zeroed and hips Y is scaled from source-rest hips height into the
- * target VRM's normalized-rest hips height. `walk_to_sit` remains deliberately
- * unwired because it carries large real forward hip drift that requires
- * distance-matched root-motion consumption.
+ * on). Unlike the legacy Mixamo path, Meshy skips the VRM0 X/Z component flip
+ * for shoulder/arm/forearm/hand chains: headless source-vs-raw-rig sampling
+ * proved the Mixamo-era reflection raises both hands above the shoulders,
+ * while those Meshy channels are already target-handed after the rest
+ * differential. Hips/legs retain their validated legacy output unchanged.
+ * Meshy also uses an explicit hips-only position policy: its exports bake
+ * junk rest-local translation onto every bone, while hips carries the real
+ * seated descent. X/Z are still zeroed and hips Y is scaled from source-rest
+ * hips height into the target VRM's normalized-rest hips height. `walk_to_sit`
+ * remains deliberately unwired because it carries large real forward hip
+ * drift that requires distance-matched root-motion consumption.
  */
 export function retargetMeshyClip(
   animation: MixamoGltf,
@@ -639,6 +670,7 @@ export function retargetMeshyClip(
     meshyVRMRigMap,
     normalizeMeshyRigName,
     'hips-only',
+    'meshy-arm-chain-target-handed',
     'meshy-retarget',
     clipName,
   );
