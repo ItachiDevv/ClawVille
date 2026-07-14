@@ -1202,6 +1202,7 @@ coveBlackjackRouter.post('/hand/deal', async (c) => {
             reason: 'cove_blackjack_stake',
             source: 'api',
             metadata: { shoeId: shoe.id, handIndex, kind: 'deal' },
+            actorKind: subject.kind === 'user' ? 'human' : 'agent',
           },
           tx,
         );
@@ -1453,6 +1454,7 @@ coveBlackjackRouter.post('/action', async (c) => {
                 reason: 'cove_blackjack_insurance',
                 source: 'api',
                 metadata: { shoeId: shoe.id, handId: hand.id, handIndex: locked.handIndex },
+                actorKind: subject.kind === 'user' ? 'human' : 'agent',
               },
               tx,
             );
@@ -1843,6 +1845,7 @@ async function settleHand(
               reason: 'cove_blackjack_stake_delta',
               source: 'api',
               metadata: { shoeId, handId, handIndex, kind: 'double_split_delta' },
+              actorKind: subject.kind === 'user' ? 'human' : 'agent',
             },
             tx,
           );
@@ -1867,6 +1870,7 @@ async function settleHand(
             reason: 'cove_blackjack_payout',
             source: 'api',
             metadata: { shoeId, handId, handIndex, rake: raked.rake.toString() },
+            actorKind: subject.kind === 'user' ? 'human' : 'agent',
           },
           tx,
         );
@@ -1892,6 +1896,7 @@ async function settleHand(
               reason: 'house_fee_blackjack_rake',
               source: 'system',
               metadata: { shoeId, handId, handIndex },
+              actorKind: 'system',
             },
             tx,
           );

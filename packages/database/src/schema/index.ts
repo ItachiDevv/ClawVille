@@ -17,6 +17,10 @@ export * from './token-market';
 export * from './quests';
 export * from './agent-configs';
 export * from './bounties';
+// Covenant action-record stream (2026-07-13) — append-only hash-chained record
+// of every economic agent action; sealed by covenant-chain-sealer, served on the
+// partner-covenant read surface. See covenant-action-records.ts header.
+export * from './covenant-action-records';
 export * from './building-skills';
 // Partner #2 (Hatcher) Phase C — scoped, revocable read-token table for partner
 // integrations. Hash-not-plaintext, show-once mint. See `partner-api-keys.ts`.
@@ -134,6 +138,9 @@ export * from './moonpay';
 // price_vclaw is the QUOTE unit only — the buyer pays USDC underneath, no
 // internal vCLAW debit. Migration 0016 (idempotent, by hand — NEVER db:push).
 export * from './checkout';
+// General custodial avatar-to-avatar USDC payments through PayAI. Durable
+// claim/capture/fulfill machine; migration 0028 (additive + idempotent).
+export * from './agent-payments';
 // Tokenomics C — marketplace stage / C4 (2026-07-07) — P2P marketplace v1
 // (market_listings + market_deed_locks + market_settlements). Settlement is
 // FLAG-GATED OFF (MARKETPLACE_SETTLE_ENABLED); seller CLV payouts + the 4.44%

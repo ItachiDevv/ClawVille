@@ -210,6 +210,7 @@ itemRoutes.post('/buy', requireAuthOrAgentSession, async (c) => {
       reason: 'buy_book',
       source: 'api',
       metadata: { bookId: book.id, bookName: book.name },
+      actorKind: identity.kind === 'user' ? 'human' : 'agent',
     }, tx);
 
     // 1b. T0 fee routing (2026-07-07): book revenue → house treasury, IN THIS
@@ -226,6 +227,7 @@ itemRoutes.post('/buy', requireAuthOrAgentSession, async (c) => {
             reason: 'house_fee_book_purchase',
             source: 'system',
             metadata: { bookId: book.id, buyerAvatarId: avatar.id },
+            actorKind: 'system',
           },
           tx,
         );

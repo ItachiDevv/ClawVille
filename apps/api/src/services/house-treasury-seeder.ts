@@ -43,6 +43,7 @@
 
 import { eq } from 'drizzle-orm';
 import { db, users, avatars, treasurySubjects } from '@clawville/database';
+import { recordCovenantAction } from './covenant-action-recorder';
 
 // ── Stable naming (single source of truth — DO NOT change without a re-seed) ──
 
@@ -127,30 +128,44 @@ class HouseTreasurySeederService {
       avatarId = existingAvatar.id;
     } else {
       try {
-        const [avatar] = await db
-          .insert(avatars)
-          .values({
-            userId,
-            name: HOUSE_TREASURY_AVATAR_NAME,
-            species: 'turtle',
-            color: 'green',
-            gender: 'male',
-            archetype: 'brave-adventurer',
-            personality: {
-              habitat: 'The Vault',
-              hobby: 'Counting routed fees',
-              greeting: 'The house keeps its books.',
+        const avatar = await db.transaction(async (tx) => {
+          const [inserted] = await tx
+            .insert(avatars)
+            .values({
+              userId,
+              name: HOUSE_TREASURY_AVATAR_NAME,
+              species: 'turtle',
+              color: 'green',
+              gender: 'male',
+              archetype: 'brave-adventurer',
+              personality: {
+                habitat: 'The Vault',
+                hobby: 'Counting routed fees',
+                greeting: 'The house keeps its books.',
+              },
+              stats: { strength: 5, defence: 5, movement: 5 },
+              clawTokens: 0, // pure sink — starts empty, only fee credits land here
+              softBalance: 0, // MUST mirror clawTokens (avatars_vclaw_balance_sum)
+              isActive: false, // never visible in the NPC simulation
+              isGuest: false,
+              agentCategory: 'openclaw',
+              modelKey: 'lobster',
+              harness: 'milady',
+            })
+            .returning({ id: avatars.id, clawTokens: avatars.clawTokens });
+          await recordCovenantAction(
+            {
+              action: 'economy.genesis',
+              subjectType: 'avatar',
+              subjectId: inserted.id,
+              actorKind: 'system',
+              dedupeKey: `avatar:${inserted.id}:genesis`,
+              payload: { amount: inserted.clawTokens, provenance: 'soft', reason: 'avatar_genesis' },
             },
-            stats: { strength: 5, defence: 5, movement: 5 },
-            clawTokens: 0, // pure sink — starts empty, only fee credits land here
-            softBalance: 0, // MUST mirror clawTokens (avatars_vclaw_balance_sum)
-            isActive: false, // never visible in the NPC simulation
-            isGuest: false,
-            agentCategory: 'openclaw',
-            modelKey: 'lobster',
-            harness: 'milady',
-          })
-          .returning({ id: avatars.id });
+            tx,
+          );
+          return inserted;
+        });
         avatarId = avatar.id;
       } catch (err) {
         // Unique avatars.userId race — re-find the winner.

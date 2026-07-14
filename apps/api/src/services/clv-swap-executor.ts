@@ -1,6 +1,6 @@
 /**
  * CLV SWAP EXECUTOR (Tokenomics C3, 2026-07-07) — the shared buy-queue seam +
- * a DRY-RUN-ONLY clip planner/worker. NO live DEX execution exists here.
+ * dry-run clip planner/worker. Live DEX execution lives in clv-swap-live.ts.
  *
  * WHAT THIS IS
  *   The whole tokenomics spine (checkout USDC splits, marketplace fee routing —
@@ -32,13 +32,14 @@
  *       `scripts/generate-clv-swap-wallet.ts`). The dry-run NEVER touches the
  *       encrypted secret.
  *
- * HARD GATE — LIVE EXECUTION IS CODEX-REVIEW-GATED
- *   `CLV_SWAP_EXECUTE` must NEVER be 'true'. It is checked at MODULE LOAD
- *   (this file is on index.ts's static import graph, so a box carrying the
- *   flag refuses to boot — the x402-config mock-facilitator crash-loud
- *   pattern), at worker start, and on every tick. Real swap execution (wallet
- *   decrypt → Jupiter/DEX route → sign → send) lands ONLY behind a Codex
- *   review; see the `CODEX-GATED SEAM` marker in `dryRunTick`.
+ * HARD GATE — DRY-RUN / LIVE MODE SEPARATION
+ *   Founder no-dark-flags ruling (2026-07-13): literal
+ *   `CLV_SWAP_EXECUTE=true` is now allowed to boot the separately guarded live
+ *   worker. `assertNoLiveClvSwapExecution()` remains on this DRY-RUN worker's
+ *   start and every tick, so a configuration error can never run dry-run and
+ *   live modes together. The former module-scope assertion is intentionally
+ *   removed; live entrypoints still enforce their own literal opt-in plus
+ *   mainnet/real-facilitator guards.
  *
  * MONEY DISCIPLINE
  *   Every value here is a USD DECIMAL (µUSD precision via BigInt) — NEVER a
@@ -55,23 +56,22 @@ import type { LedgerTx } from './claw-token-ledger';
 export type { LedgerTx };
 
 // ---------------------------------------------------------------------------
-// HARD GATE — refuse to run with live execution flagged on
+// HARD GATE — the dry-run path must never run while live execution is selected
 // ---------------------------------------------------------------------------
 
 const EXECUTE_GATE_MESSAGE =
-  'CLV_SWAP_EXECUTE=true but live CLV swap execution is Codex-review-gated — refusing to execute';
+  'CLV_SWAP_EXECUTE=true selects live mode — refusing to run the CLV dry-run worker';
 
 /**
- * Throws when `CLV_SWAP_EXECUTE` is 'true'. Called at module load (crash-loud
- * boot refusal — this module is statically imported by index.ts), at
- * `startClvSwapWorker()`, and at the top of every dry-run tick.
+ * Throws when `CLV_SWAP_EXECUTE` is 'true'. Called by the dry-run worker start
+ * and at the top of every dry-run tick. It is intentionally NOT called at
+ * module load, because the live worker shares this module's import graph.
  */
 export function assertNoLiveClvSwapExecution(): void {
   if (process.env.CLV_SWAP_EXECUTE === 'true') {
     throw new Error(EXECUTE_GATE_MESSAGE);
   }
 }
-assertNoLiveClvSwapExecution();
 
 // ---------------------------------------------------------------------------
 // Env resolvers (floored/clamped so a mis-set value can't produce absurd math)
@@ -124,7 +124,7 @@ function resolveWorkerPollMs(): number {
 const AMOUNT_USDC_RE = /^(?!0+(?:\.0*)?$)\d{1,14}(?:\.\d{1,6})?$/;
 
 /** Parse a validated decimal string to integer µUSD. null on invalid input.
- *  EXPORTED (GoLive executors, 2026-07-07) so the dark live path
+ *  EXPORTED (GoLive executors, 2026-07-07) so the separately gated live path
  *  (`clv-swap-live.ts`) shares THIS exact money parser instead of re-deriving
  *  a drifting copy. */
 export function usdcToMicro(amount: string): bigint | null {
@@ -460,8 +460,8 @@ const lastLoggedOutcome = new Map<string, string>();
 const LOGGED_OUTCOME_CAP = 10_000;
 
 async function dryRunTick(): Promise<void> {
-  // Re-assert the gate EVERY tick — belt-and-suspenders on top of the
-  // module-load crash (env can't legitimately change mid-process).
+  // Re-assert EVERY tick so even an illegitimate mid-process env change cannot
+  // leave the dry-run worker active while live mode is selected.
   assertNoLiveClvSwapExecution();
 
   const rows = await db
@@ -536,7 +536,7 @@ async function dryRunTick(): Promise<void> {
 
 /**
  * Start the DRY-RUN worker (idempotent). Refuses (throws) if
- * `CLV_SWAP_EXECUTE=true` — same message as the module-load gate. A tick
+ * `CLV_SWAP_EXECUTE=true` — live mode is boot-selected elsewhere. A tick
  * failure (DB/oracle hiccup) logs and retries next interval; it never crashes
  * the process.
  */
@@ -558,7 +558,7 @@ export function startClvSwapWorker(): void {
 
   console.log(
     `[clv-swap] DRY-RUN worker started — scanning clv_buy_queue every ${Math.round(periodMs / 1000)}s ` +
-      `(impact cap ${resolveClvSwapMaxImpactBps()} bps; CLV_SWAP_EXECUTE is hard-gated OFF; no execution)`,
+      `(impact cap ${resolveClvSwapMaxImpactBps()} bps; dry-run mode only; no execution)`,
   );
 }
 

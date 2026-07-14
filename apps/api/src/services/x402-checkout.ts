@@ -836,6 +836,27 @@ async function runFulfillment(
   }
 }
 
+/**
+ * Resume the existing captured-checkout fulfillment machine after the
+ * reconciler has durably moved a verified row to `settling+tx_signature`.
+ * This intentionally delegates to `runFulfillment` so its transaction,
+ * fulfiller registry, CAS, and idempotent replay rules remain the only
+ * checkout-fulfillment implementation.
+ */
+export async function fulfillReconciledCheckout(
+  checkoutId: string,
+): Promise<CheckoutSettleResult> {
+  const row = await db.query.x402Checkouts.findFirst({
+    where: eq(x402Checkouts.id, checkoutId),
+  });
+  if (!row || row.status !== 'settling' || !row.txSignature) {
+    return { ok: false, code: 'settle_in_flight' };
+  }
+  const meta = (row.metadata ?? {}) as Record<string, unknown>;
+  const kind: CheckoutSubject['kind'] = meta.subjectKind === 'agent' ? 'agent' : 'user';
+  return runFulfillment(row, { avatarId: row.avatarId, userId: row.userId, kind });
+}
+
 /** Release a settling claim back to pending (a transient, NO-money-moved
  *  facilitator failure) so a retry can re-claim. Checked to the claim holder. */
 async function releaseClaim(checkoutId: string, settlingId: string): Promise<void> {

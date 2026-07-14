@@ -353,9 +353,9 @@ describe('enqueueClvBuy — input guards + insert composition', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-describe('HARD GATE — CLV_SWAP_EXECUTE=true refuses', () => {
+describe('HARD GATE — CLV_SWAP_EXECUTE=true refuses the dry-run path', () => {
   const GATE_MSG =
-    'CLV_SWAP_EXECUTE=true but live CLV swap execution is Codex-review-gated — refusing to execute';
+    'CLV_SWAP_EXECUTE=true selects live mode — refusing to run the CLV dry-run worker';
 
   it('assertNoLiveClvSwapExecution throws the EXACT refusal', () => {
     process.env.CLV_SWAP_EXECUTE = 'true';

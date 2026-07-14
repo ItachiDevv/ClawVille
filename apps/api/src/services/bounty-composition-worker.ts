@@ -32,6 +32,7 @@ import {
   type SettleComposedBountyResult,
 } from './bounty-escrow-link';
 import { alertError } from './alert-error';
+import { recordCovenantAction } from './covenant-action-recorder';
 
 /**
  * A DB transaction handle (mirrors `LedgerTx` in `claw-token-ledger.ts`). Lets
@@ -169,6 +170,29 @@ export async function bookComposedBountyPaid(
       .returning({ id: bounties.id });
     if (claimed.length !== 1) return { booked: false, reason: 'already_paid_or_state_drift' };
     await bookHunterCompletion(tx, input.hunterAvatarId, now);
+    // Covenant record — the composed-rail SETTLE, exactly once (only the CAS
+    // winner reaches here; both →paid authors — approve route and resume
+    // crank — funnel through this helper). actorKind stays null: this seam
+    // cannot distinguish the reviewer-driven instant path from the system
+    // crank, and attribution is never guessed. The x402 payout never touches
+    // the vCLAW ledger, so this is the settle's ONLY stream record.
+    await recordCovenantAction(
+      {
+        action: 'bounty.settle',
+        subjectType: 'avatar',
+        subjectId: input.hunterAvatarId,
+        // The CAS already guarantees exactly-once; the dedupe key is
+        // belt-and-braces against any future second settle author.
+        dedupeKey: `bounty:${input.bountyId}:settle`,
+        payload: {
+          bountyId: input.bountyId,
+          rail: 'sap-payai-composed',
+          ...(input.payoutEscrowPda ? { payoutEscrowPda: input.payoutEscrowPda } : {}),
+          ...(input.auditRootHex ? { auditRootHex: input.auditRootHex } : {}),
+        },
+      },
+      tx,
+    );
     return { booked: true };
   });
 }

@@ -10,6 +10,20 @@ import { requireNonGuestIdentity } from '../middleware/require-non-guest';
 import { adminOnly } from '../middleware/admin-only';
 import { noStorePrivate } from '../middleware/no-store';
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
+// Covenant action-record stream (2026-07-13): bounty lifecycle commitments
+// (create/claim/submit/approve/reject/settle/refund) append records in the SAME
+// tx as their writes. vCLAW money legs additionally emit economy.* records via
+// the ledger hook; USDC on-chain/x402 legs (which never touch the vCLAW ledger)
+// get explicit bounty.settle records.
+import {
+  recordCovenantAction,
+  type CovenantActorKind,
+} from '../services/covenant-action-recorder';
+import { createHash } from 'crypto';
+
+/** Map the auth identity kind onto the covenant actor vocabulary. */
+const toActorKind = (kind: 'user' | 'agent'): CovenantActorKind =>
+  kind === 'user' ? 'human' : 'agent';
 import {
   bountySettlementRail,
   openComposedBountyEscrow,
@@ -682,6 +696,7 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
         reason: 'bounty_escrow',
         source: 'bounty',
         metadata: { bountyTitle: data.title },
+        actorKind: toActorKind(c.get('identity').kind),
       }, tx);
     }
 
@@ -730,6 +745,24 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
       );
     }
 
+    // Covenant record — same tx as the (optional) escrow debit + insert.
+    await recordCovenantAction(
+      {
+        action: 'bounty.create',
+        subjectType: 'avatar',
+        subjectId: avatar.id,
+        actorKind: toActorKind(c.get('identity').kind),
+        payload: {
+          bountyId: created.id,
+          paymentRail: created.paymentRail,
+          tokenReward: created.tokenReward,
+          maxAttempts: created.maxAttempts,
+          ...(created.compositionState ? { compositionState: created.compositionState } : {}),
+        },
+      },
+      tx,
+    );
+
     return created;
   });
 
@@ -765,7 +798,28 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
         // went out, no on-chain vault exists, nothing to orphan. Safe to DELETE the
         // just-inserted row (its bounty_rewards children cascade via FK) and fail
         // the create — insert→open→delete-on-fail keeps the DB consistent.
-        await db.delete(bounties).where(eq(bounties.id, bounty.id));
+        // Covenant compensation (Codex covenant round 1 HIGH #3): the append-only
+        // bounty.create record survives this delete, so partners would forever
+        // observe a creation for a nonexistent bounty. Append the terminal
+        // create_failed event ATOMICALLY with the delete (idempotent via dedupe).
+        await db.transaction(async (tx) => {
+          await tx.delete(bounties).where(eq(bounties.id, bounty.id));
+          await recordCovenantAction(
+            {
+              action: 'bounty.create_failed',
+              subjectType: 'avatar',
+              subjectId: avatar.id,
+              actorKind: 'system',
+              payload: {
+                bountyId: bounty.id,
+                reason: 'vault_open_failed_pre_broadcast',
+                code: opened.code,
+              },
+              dedupeKey: `bounty:${bounty.id}:create_failed`,
+            },
+            tx,
+          );
+        });
         throw new HTTPException(escrowFailureStatus(opened.code), {
           message: `USDC bounty vault could not be opened (${opened.code}): ${opened.message}. The bounty was not created.`,
         });
@@ -1050,6 +1104,27 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
         });
       }
 
+      // Covenant record — the APPROVE verdict, same tx as the atomic claim.
+      // Money-leg records follow separately: vCLAW rides the ledger hook in
+      // this same tx; USDC rails emit bounty.settle at their release points.
+      await recordCovenantAction(
+        {
+          action: 'bounty.approve',
+          subjectType: 'avatar',
+          subjectId: attempt.hunterId,
+          actorKind: toActorKind(c.get('identity').kind),
+          payload: {
+            bountyId: bounty.id,
+            attemptId: attempt.id,
+            paymentRail: bounty.paymentRail,
+            tokenReward: bounty.tokenReward,
+            reviewerAvatarId: reviewerAvatar.id,
+            ...(reviewNote ? { reviewNote } : {}),
+          },
+        },
+        tx,
+      );
+
       // 2. Transfer escrowed tokenReward to hunter's clawTokens (CT rail ONLY).
       const hunterAvatar = await tx.query.avatars.findFirst({
         where: eq(avatars.id, attempt.hunterId),
@@ -1068,6 +1143,7 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
           reason: 'bounty_reward',
           source: 'bounty',
           metadata: { bountyId: bounty.id, attemptId: attempt.id },
+          actorKind: toActorKind(c.get('identity').kind),
         }, tx);
       }
 
@@ -1417,6 +1493,25 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
       | { ok: true; escrowPda: string | null; auditRootHex: string | null; dryRun: boolean }
       | null = null;
     if (isUsdc && !isComposed) {
+      // Covenant INTENT record BEFORE the external release (Codex covenant
+      // round 2 HIGH #2): the legacy rail has no recovery crank, so a crash
+      // between chain success and the settle record's tx would otherwise
+      // leave an irreversible payout with NO stream trace. The intent commits
+      // first — a settle_requested without a matching bounty.settle is the
+      // durable, queryable anomaly signature for reconciliation (the SAP
+      // (escrow, job) ledger holds the on-chain truth to reconcile against).
+      await recordCovenantAction({
+        action: 'bounty.settle_requested',
+        subjectType: 'avatar',
+        subjectId: hunterAvatarId,
+        actorKind: toActorKind(c.get('identity').kind),
+        dedupeKey: `bounty:${bounty.id}:settle_requested`,
+        payload: {
+          bountyId: bounty.id,
+          rail: 'sap-usdc',
+          rewardUsdcBaseUnits: usdcRewardBaseUnits(bounty.tokenReward).toString(),
+        },
+      });
       const settle = await runBountyUsdcSettle({
         bountyId: bounty.id,
         creatorAvatarId: bounty.creatorId,
@@ -1444,17 +1539,39 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
           message: `Bounty approved, but USDC escrow settle failed (${settle.code}): ${settle.message}`,
         });
       }
-      // PASS — persist the verdict provenance onto the bounty.
-      await db
-        .update(bounties)
-        .set({
-          escrowPda: settle.escrowPda,
-          escrowJobId: settle.escrowPda ? bounty.id : null,
-          covenantAuditRootHex: settle.auditRootHex,
-          covenantVerificationPassed: true,
-          updatedAt: new Date(),
-        })
-        .where(eq(bounties.id, bounty.id));
+      // PASS — persist the verdict provenance onto the bounty (+ the covenant
+      // settle record in the same tx: this USDC release never touches the vCLAW
+      // ledger, so this is its ONLY stream record).
+      await db.transaction(async (tx) => {
+        await tx
+          .update(bounties)
+          .set({
+            escrowPda: settle.escrowPda,
+            escrowJobId: settle.escrowPda ? bounty.id : null,
+            covenantAuditRootHex: settle.auditRootHex,
+            covenantVerificationPassed: true,
+            updatedAt: new Date(),
+          })
+          .where(eq(bounties.id, bounty.id));
+        await recordCovenantAction(
+          {
+            action: 'bounty.settle',
+            subjectType: 'avatar',
+            subjectId: hunterAvatarId,
+            actorKind: toActorKind(c.get('identity').kind),
+            dedupeKey: `bounty:${bounty.id}:settle`,
+            payload: {
+              bountyId: bounty.id,
+              rail: 'sap-usdc',
+              rewardUsdcBaseUnits: usdcRewardBaseUnits(bounty.tokenReward).toString(),
+              ...(settle.escrowPda ? { escrowPda: settle.escrowPda } : {}),
+              ...(settle.auditRootHex ? { auditRootHex: settle.auditRootHex } : {}),
+              dryRun: settle.dryRun,
+            },
+          },
+          tx,
+        );
+      });
 
       // DEFERRED completion bump (adversary S4): now that the settle SUCCEEDED,
       // book the hunter's completion count (NOT totalEarned — that's the CT
@@ -1539,6 +1656,23 @@ bountyRoutes.post('/attempts/:attemptId/review', requireAuthOrAgentSession, requ
           message: 'Attempt already reviewed (concurrent review lost the race).',
         });
       }
+
+      // Covenant record — the REJECT verdict, same tx as the atomic claim.
+      await recordCovenantAction(
+        {
+          action: 'bounty.reject',
+          subjectType: 'avatar',
+          subjectId: attempt.hunterId,
+          actorKind: toActorKind(c.get('identity').kind),
+          payload: {
+            bountyId: bounty.id,
+            attemptId: attempt.id,
+            reviewerAvatarId: reviewerAvatar.id,
+            ...(reviewNote ? { reviewNote } : {}),
+          },
+        },
+        tx,
+      );
 
       // Decrement currentAttempts to allow new attempts + record a FAIL verdict on
       // a USDC bounty. No escrow refund is needed here: a USDC bounty's escrow is
@@ -1699,6 +1833,55 @@ bountyRoutes.post('/:id/admin-fail-refund', adminOnly, async (c) => {
     });
   }
 
+  // INTENT-BEFORE-EXTERNAL (Codex covenant round 5 HIGH #4): terminalize the
+  // bounty + write the durable refund intent BEFORE the irreversible chain
+  // call. A crash after the chain succeeds can then never leave an open,
+  // claimable bounty against an emptied vault with zero stream trace — the
+  // worst post-crash state is cancelled + intent-without-refund-record, a
+  // queryable anomaly the idempotent retry of THIS route completes (the SAP
+  // refund replays on its own ledger key; the records dedupe).
+  await db.transaction(async (tx) => {
+    const refundedAt = new Date();
+    await tx
+      .update(bounties)
+      .set({
+        status: 'cancelled',
+        covenantVerificationPassed: false,
+        updatedAt: refundedAt,
+      })
+      .where(eq(bounties.id, bounty.id));
+    await tx
+      .update(bountyAttempts)
+      .set({
+        status: 'rejected',
+        reviewNote: 'Auto-rejected: bounty escrow fail-refunded to the creator by an admin',
+        reviewedAt: refundedAt,
+        updatedAt: refundedAt,
+      })
+      .where(
+        and(
+          eq(bountyAttempts.bountyId, bounty.id),
+          sql`${bountyAttempts.status} IN ('claimed', 'in_progress', 'submitted', 'approved')`,
+        ),
+      );
+    await recordCovenantAction(
+      {
+        action: 'bounty.refund_requested',
+        subjectType: 'avatar',
+        subjectId: bounty.creatorId,
+        actorKind: 'admin',
+        dedupeKey: `bounty:${bounty.id}:refund_requested:admin`,
+        payload: {
+          bountyId: bounty.id,
+          rail: isComposed ? 'sap-payai-composed' : 'sap-usdc',
+          tokenReward: bounty.tokenReward,
+          ...(bounty.escrowPda ? { escrowPda: bounty.escrowPda } : {}),
+        },
+      },
+      tx,
+    );
+  });
+
   // Drive the depositor-bound refund. COMPOSED → the SAP V2 vault withdraw
   // (creator ← the LEG-1 vault, idempotent on `${bountyId}:refund`); LEGACY → the
   // V1 escrow-gate refund. Both re-assert the depositor + ceiling the amount, so
@@ -1718,23 +1901,42 @@ bountyRoutes.post('/:id/admin-fail-refund', adminOnly, async (c) => {
       });
 
   if (refund.ok === false) {
+    // The bounty is already terminalized (cancelled + attempts rejected +
+    // intent recorded) — funds remain safely in the vault/escrow. Retrying
+    // THIS route completes the refund: the SAP leg is idempotent and both
+    // records dedupe.
     throw new HTTPException(escrowFailureStatus(refund.code), {
-      message: `USDC escrow refund failed (${refund.code}): ${refund.message}`,
+      message:
+        `USDC escrow refund failed (${refund.code}): ${refund.message}. The bounty is ` +
+        `cancelled (non-claimable) and the refund intent is recorded — retry this route ` +
+        `to complete the refund (idempotent).`,
     });
   }
 
-  // Record the FAIL verdict provenance on the bounty (idempotent). For a COMPOSED
-  // bounty we deliberately leave `composition_state` AS-IS: the schema's documented
-  // value set has no 'refunded' marker, so (per the slice spec) the terminal
-  // refunded state is carried by covenant_verification_passed=false rather than an
-  // invented enum value. The creator's vault deposit has been reclaimed on-chain.
-  await db
-    .update(bounties)
-    .set({
-      covenantVerificationPassed: false,
-      updatedAt: new Date(),
-    })
-    .where(eq(bounties.id, bounty.id));
+  // OUTCOME record — the refund executed on-chain. Terminalization happened
+  // BEFORE the external call (intent-before-external above); composition_state
+  // deliberately stays as-is (the schema has no 'refunded' label; terminal-
+  // refunded = status cancelled + covenant_verification_passed=false, and the
+  // resume crank only drives awaiting_finalize/reconcile states, never a
+  // cancelled vault_held row).
+  // CANONICAL OUTCOME (Codex covenant round 6 MED #4): both refund paths
+  // (admin fail-refund, creator composed-cancel) write a BYTE-IDENTICAL
+  // outcome record under the shared dedupe key, so either path can complete
+  // or replay the other's refund without a strict-dedupe collision. The
+  // INITIATOR lives in the path-scoped refund_requested intents; the outcome
+  // is the caller-independent settlement fact (actorKind null by design).
+  await recordCovenantAction({
+    action: 'bounty.refund',
+    subjectType: 'avatar',
+    subjectId: bounty.creatorId,
+    dedupeKey: `bounty:${bounty.id}:refund`,
+    payload: {
+      bountyId: bounty.id,
+      rail: isComposed ? 'sap-payai-composed' : 'sap-usdc',
+      tokenReward: bounty.tokenReward,
+      ...(bounty.escrowPda ? { escrowPda: bounty.escrowPda } : {}),
+    },
+  });
 
   // The refund result's chain leg is a SapWriteResult union — read dryRun only
   // from the success arm (a failed chain leg would have bubbled up as !refund.ok).
@@ -1939,6 +2141,18 @@ bountyRoutes.post('/:id/claim', requireAuthOrAgentSession, requireNonGuestIdenti
       })
       .returning();
 
+    // Covenant record — same tx as the slot increment + attempt insert.
+    await recordCovenantAction(
+      {
+        action: 'bounty.claim',
+        subjectType: 'avatar',
+        subjectId: avatar.id,
+        actorKind: toActorKind(c.get('identity').kind),
+        payload: { bountyId: id, attemptId: newAttempt.id },
+      },
+      tx,
+    );
+
     return newAttempt;
   });
 
@@ -1991,17 +2205,60 @@ bountyRoutes.post('/:id/submit', requireAuthOrAgentSession, requireNonGuestIdent
 
   const now = new Date();
 
-  const [updated] = await db
-    .update(bountyAttempts)
-    .set({
-      status: 'submitted',
-      prLink: parsed.data.prLink ?? null,
-      submissionNote: parsed.data.submissionNote,
-      submittedAt: now,
-      updatedAt: now,
-    })
-    .where(eq(bountyAttempts.id, attempt.id))
-    .returning();
+  const updated = await db.transaction(async (tx) => {
+    // Compare-and-set (Codex covenant round 1 HIGH #1): the pre-tx find is a
+    // stale read — a review/abandon landing between find and update would be
+    // OVERWRITTEN back to 'submitted' (re-payable) by an id-only predicate.
+    // The allowed source statuses live INSIDE the WHERE; a raced-away row
+    // matches 0 rows and nothing (row or record) is written.
+    const [row] = await tx
+      .update(bountyAttempts)
+      .set({
+        status: 'submitted',
+        prLink: parsed.data.prLink ?? null,
+        submissionNote: parsed.data.submissionNote,
+        submittedAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(bountyAttempts.id, attempt.id),
+          eq(bountyAttempts.bountyId, id),
+          eq(bountyAttempts.hunterId, avatar.id),
+          sql`${bountyAttempts.status} IN ('claimed', 'in_progress')`,
+        ),
+      )
+      .returning();
+    if (!row) return row; // raced away (reviewed/abandoned between find and CAS) — no record
+    // Covenant record — same tx as the submit flip. The note lives on the
+    // attempt row; the record binds it by sha256 + length.
+    await recordCovenantAction(
+      {
+        action: 'bounty.submit',
+        subjectType: 'avatar',
+        subjectId: avatar.id,
+        actorKind: toActorKind(c.get('identity').kind),
+        payload: {
+          bountyId: id,
+          attemptId: row.id,
+          ...(row.prLink ? { prLink: row.prLink } : {}),
+          noteSha256: createHash('sha256')
+            .update(parsed.data.submissionNote, 'utf8')
+            .digest('hex'),
+          noteLength: parsed.data.submissionNote.length,
+        },
+      },
+      tx,
+    );
+    return row;
+  });
+
+  if (!updated) {
+    throw new HTTPException(409, {
+      message:
+        'This attempt is no longer submittable (it was reviewed or abandoned while you were submitting).',
+    });
+  }
 
   return c.json({
     success: true,
@@ -2262,18 +2519,54 @@ bountyRoutes.delete('/:id', requireAuthOrAgentSession, requireNonGuestIdentity, 
       });
     }
 
-    // Refund the vault (idempotent chain call / dry-run sim) BEFORE flipping status.
-    // SAFETY REASONING for a 'vault_pending' cancel — refund-FIRST-then-flip means a
-    // refund failure NEVER flips the bounty to 'cancelled', so funds can't be stranded:
-    //   • if the crashed create DID open the vault → the nonce-derived refund reclaims it,
-    //     THEN the status flips to 'cancelled' (funds home, bounty gone);
-    //   • if NO vault was ever opened → the on-chain refund fails clean (nothing to
-    //     withdraw), the throw below BLOCKS the cancel (the conservative ops-reconcile
-    //     posture — a rare crash artifact ops confirms on-chain and deletes/repairs), and
-    //     nothing is left half-cancelled.
-    // Neither branch strands funds or double-refunds. DRY-RUN simulates ok either way,
-    // which is correct: a dry-run create opened no real vault, so no real funds exist. The
-    // `?? ''` only satisfies the (string) param type — refundComposedBounty never reads it.
+    // INTENT-BEFORE-EXTERNAL (Codex covenant round 5 HIGH #4; supersedes the
+    // old refund-first-then-flip ordering): atomically claim the cancel (CAS
+    // open→cancelled — a raced second cancel 409s HERE, before any chain
+    // call) and write the durable refund intent, THEN run the irreversible
+    // chain refund. A crash after chain success can no longer leave an OPEN,
+    // claimable bounty with zero stream trace — the worst post-crash state is
+    // cancelled + intent-without-outcome, completed idempotently via
+    // admin-fail-refund (same SAP ledger key, same dedupe keys).
+    // FUNDS SAFETY (the old ordering's vault_pending reasoning, preserved):
+    // a refund failure leaves the vault deposit fully custodied on-chain; the
+    // bounty being 'cancelled' (instead of the old still-open) is deliberate —
+    // non-claimable while funds are in limbo. Recovery: 'vault_held' →
+    // admin-fail-refund completes it; 'vault_pending' (crash-artifact create)
+    // → ops reconcile, exactly as before. DRY-RUN simulates ok either way. The
+    // `?? ''` only satisfies the (string) param type — refundComposedBounty
+    // re-derives the vault PDA from the bounty nonce and never reads it.
+    const claimed = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(bounties)
+        .set({ status: 'cancelled', updatedAt: new Date() })
+        .where(and(eq(bounties.id, id), eq(bounties.status, 'open')))
+        .returning();
+      if (!row) return undefined;
+      await recordCovenantAction(
+        {
+          action: 'bounty.refund_requested',
+          subjectType: 'avatar',
+          subjectId: bounty.creatorId,
+          actorKind: toActorKind(c.get('identity').kind),
+          dedupeKey: `bounty:${bounty.id}:refund_requested:cancel`,
+          payload: {
+            bountyId: bounty.id,
+            rail: 'sap-payai-composed',
+            reason: 'creator_cancelled',
+            tokenReward: bounty.tokenReward,
+            ...(bounty.escrowPda ? { escrowPda: bounty.escrowPda } : {}),
+          },
+        },
+        tx,
+      );
+      return row;
+    });
+    if (!claimed) {
+      throw new HTTPException(409, {
+        message: 'Bounty already cancelled or no longer open',
+      });
+    }
+
     const refund = await refundComposedBounty({
       bountyId: bounty.id,
       escrowPda: bounty.escrowPda ?? '',
@@ -2284,20 +2577,28 @@ bountyRoutes.delete('/:id', requireAuthOrAgentSession, requireNonGuestIdentity, 
       throw new HTTPException(escrowFailureStatus(refund.code), {
         message:
           `Composed USDC bounty vault refund failed (${refund.code}): ${refund.message}. ` +
-          `The bounty was NOT cancelled; retry.`,
+          `The bounty is cancelled (non-claimable) and your deposit remains custodied ` +
+          `on-chain — an admin completes the refund via admin-fail-refund (idempotent).`,
       });
     }
 
-    const [claimed] = await db
-      .update(bounties)
-      .set({ status: 'cancelled', updatedAt: new Date() })
-      .where(and(eq(bounties.id, id), eq(bounties.status, 'open')))
-      .returning();
-    if (!claimed) {
-      throw new HTTPException(409, {
-        message: 'Bounty already cancelled or no longer open',
-      });
-    }
+    // CANONICAL OUTCOME (Codex covenant round 6 MED #4) — byte-identical to
+    // the admin fail-refund outcome under the shared dedupe key, so a lost
+    // response here can be safely completed/replayed by the admin path (and
+    // vice versa) without a strict-dedupe collision. Initiator attribution
+    // lives in the refund_requested intent above.
+    await recordCovenantAction({
+      action: 'bounty.refund',
+      subjectType: 'avatar',
+      subjectId: bounty.creatorId,
+      dedupeKey: `bounty:${bounty.id}:refund`,
+      payload: {
+        bountyId: bounty.id,
+        rail: 'sap-payai-composed',
+        tokenReward: bounty.tokenReward,
+        ...(bounty.escrowPda ? { escrowPda: bounty.escrowPda } : {}),
+      },
+    });
 
     const refundDryRun = refund.chain.ok ? refund.chain.dryRun : undefined;
     return c.json({

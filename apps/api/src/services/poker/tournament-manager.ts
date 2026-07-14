@@ -865,6 +865,7 @@ export class TournamentManager {
             reason: 'poker_mtt_buyin',
             source: 'simulation',
             metadata: { tournamentId, agentId: subject.agentId },
+            actorKind: subject.kind === 'agent' ? 'agent' : 'human',
           },
           tx,
         );
@@ -960,6 +961,7 @@ export class TournamentManager {
                 reason: 'poker_mtt_refund',
                 source: 'simulation',
                 metadata: { tournamentId, entrantId: e.id },
+                actorKind: 'system',
               },
               tx,
             );
@@ -1901,6 +1903,7 @@ export class TournamentManager {
               reason: 'poker_mtt_prize',
               source: 'simulation',
               metadata: { tournamentId, placement, agentId: e.agent_id },
+              actorKind: 'system',
             },
             tx,
           );
@@ -1938,6 +1941,7 @@ export class TournamentManager {
                 reason: 'house_fee_mtt_rake',
                 source: 'system',
                 metadata: { tournamentId, rakeBps: Number(rakeBps), prizePoolCt: pool.toString() },
+                actorKind: 'system',
               },
               tx,
             );
@@ -2082,6 +2086,7 @@ export class TournamentManager {
               reason: 'poker_mtt_refund',
               source: 'simulation',
               metadata: { tournamentId, entrantId: e.id, recovery: true },
+              actorKind: 'system',
             },
             tx,
           );

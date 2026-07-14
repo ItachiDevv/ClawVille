@@ -1136,46 +1136,55 @@ async function insertGuestAvatar(
     const suffix = Math.floor(1000 + Math.random() * 9000).toString();
     const candidate = `${base}${suffix}`;
     try {
-      const [row] = await db
-        .insert(avatars)
-        .values({
-          userId: ownerId,
-          name: candidate,
-          species,
-          color,
-          gender,
-          archetype: GUEST_ARCHETYPE,
-          personality: {
-            habitat: 'Town Center',
-            hobby: 'Visiting ClawVille',
-            greeting: 'Hi! Just visiting.',
-          },
-          stats: { strength: 5, defence: 5, movement: 5 },
-          // No characterConfig — guests don't run Eliza chat as their avatar.
-          // characterConfig is hydrated later if/when they convert to a
-          // real account. Leaving it null is safe — the avatar routes
-          // tolerate a null characterConfig (chat is gated to non-guests
-          // by other checks in the chat surfaces, not enforced here).
-          // Guest all-demo economy (founder ruling 2026-07-06): this 100 CT is a
-          // ONE-TIME DEMO starting balance (off-ledger genesis grant). Guests
-          // NEVER earn to the real CT ledger afterward — every guest earn path
-          // (daily-login, system-agent + location chat incl. XP level-up, activity
-          // matches) is gated off the ledger, and guests are blocked from the
-          // wager + bounty economies. The UI labels this balance DEMO. Do NOT
-          // change these values.
-          clawTokens: 100,
-          // F1 vCLAW provenance: mirror clawTokens into softBalance so the
-          // avatars_vclaw_balance_sum CHECK holds (100 = 100+0+0). Legacy/guest CT
-          // is SOFT (non-cashable). Explicit set is required because clawTokens is
-          // explicit here — the column default only covers omitting both.
-          softBalance: 100,
-          isActive: true,
-          modelKey: DEFAULT_AGENT_MODEL_KEY,
-          agentCategory: 'openclaw',
-          harness: 'milady',
-          isGuest: true,
-        })
-        .returning({ id: avatars.id, name: avatars.name });
+      const row = await db.transaction(async (tx) => {
+        const [inserted] = await tx
+          .insert(avatars)
+          .values({
+            userId: ownerId,
+            name: candidate,
+            species,
+            color,
+            gender,
+            archetype: GUEST_ARCHETYPE,
+            personality: {
+              habitat: 'Town Center',
+              hobby: 'Visiting ClawVille',
+              greeting: 'Hi! Just visiting.',
+            },
+            stats: { strength: 5, defence: 5, movement: 5 },
+            // No characterConfig — guests don't run Eliza chat as their avatar.
+            // characterConfig is hydrated later if/when they convert to a
+            // real account. Leaving it null is safe — the avatar routes
+            // tolerate a null characterConfig (chat is gated to non-guests
+            // by other checks in the chat surfaces, not enforced here).
+            // Guest all-demo economy (founder ruling 2026-07-06): this 100 CT is a
+            // ONE-TIME DEMO starting balance (off-ledger genesis grant). Guests
+            // NEVER earn to the real CT ledger afterward — every guest earn path
+            // (daily-login, system-agent + location chat incl. XP level-up, activity
+            // matches) is gated off the ledger, and guests are blocked from the
+            // wager + bounty economies. The UI labels this balance DEMO. Do NOT
+            // change these values.
+            clawTokens: 100,
+            // F1 vCLAW provenance: mirror clawTokens into softBalance so the
+            // avatars_vclaw_balance_sum CHECK holds (100 = 100+0+0). Legacy/guest CT
+            // is SOFT (non-cashable). Explicit set is required because clawTokens is
+            // explicit here — the column default only covers omitting both.
+            softBalance: 100,
+            isActive: true,
+            modelKey: DEFAULT_AGENT_MODEL_KEY,
+            agentCategory: 'openclaw',
+            harness: 'milady',
+            isGuest: true,
+          })
+          .returning({ id: avatars.id, name: avatars.name, clawTokens: avatars.clawTokens });
+        // NO covenant genesis for guests (Codex covenant round 5 HIGH #2):
+        // guest CT is OFF-LEDGER demo money — later guest activity mutates
+        // this balance without ledger/covenant records, so a genesis anchor
+        // here would inflate partner-visible real supply and then immediately
+        // stop reconciling. Guests are excluded from genesis, backfill, and
+        // reconciliation alike; the stream tracks the REAL economy only.
+        return inserted;
+      });
       return row;
     } catch (err) {
       const code =
