@@ -54,17 +54,18 @@
  *      claim_id, claimed_at WHERE id=$1 AND status='planned' RETURNING *`
  *      happens BEFORE any decrypt/sign/send (double-claim ⇒ 0 rows ⇒ refuse;
  *      a row left 'executing' by a crash is NEVER auto-resumed — reconciler
- *      case, partial fills durable in tx_signatures). Then per clip:
+ *      case, partial fills durable in tx_signatures). A zero-clip stop before
+ *      signing/sending safely releases the empty claim back to `planned`.
+ *      Then per clip:
  *        a. RE-FETCH `getClvPrice()` — `available===false` HARD-STOPS sizing
  *           (for BOTH quoteUsd and poolLiquidityUsd; a present-but-stale depth
  *           never sizes a clip);
  *        b. size the clip from the CURRENT depth (same constant-product cap
  *           math as `planClips`, µUSD-floored, house-favorable);
- *        c. Jupiter /quote (lite-api v1) — zod-parsed; the ON-CHAIN min-out
- *           (`otherAmountThreshold`) MUST be ≥ our ORACLE-derived min-out
- *           (quoteUsd × (1 − slippage)); a Jupiter quote below the oracle
- *           floor is REFUSED (the oracle is the independent check on the
- *           aggregator);
+ *        c. Jupiter /quote (lite-api v1) — zod-parsed; quoted `outAmount`
+ *           MUST be ≥ the oracle mid less the independent oracle-tolerance
+ *           allowance. Jupiter slippage remains separate: its
+ *           `otherAmountThreshold` is the on-chain-enforced minimum received;
  *        d. Jupiter /swap → deserialize → verify the fee payer is OUR swap
  *           wallet → sign; CAPTURE the clip signature and conservative
  *           on-chain-guaranteed output floor (append to tx_signatures) in its
@@ -183,13 +184,26 @@ export function assertMainnetRealMoneyContext(): void {
 
 /** Default max slippage for the Jupiter leg: 100 bps = 1%. */
 export const DEFAULT_SLIPPAGE_BPS = 100;
-/** `CLV_SWAP_SLIPPAGE_BPS` — integer bps, floor 1, cap 1_000 (10%). Drives BOTH
- *  the Jupiter quote's slippageBps AND the oracle-derived min-out floor. */
+/** `CLV_SWAP_SLIPPAGE_BPS` — integer bps, floor 1, cap 1_000 (10%). Drives
+ *  ONLY the Jupiter quote's slippageBps / on-chain threshold. */
 export function resolveClvSwapSlippageBps(): number {
   const raw = process.env.CLV_SWAP_SLIPPAGE_BPS;
   if (!raw) return DEFAULT_SLIPPAGE_BPS;
   const n = Number.parseInt(raw, 10);
   if (!Number.isFinite(n)) return DEFAULT_SLIPPAGE_BPS;
+  return Math.min(Math.max(1, n), 1_000);
+}
+
+/** Default route-vs-oracle shortfall tolerance: 300 bps = 3%. */
+export const DEFAULT_ORACLE_TOLERANCE_BPS = 300;
+/** `CLV_SWAP_ORACLE_TOLERANCE_BPS` — integer bps, floor 1, cap 1_000 (10%).
+ *  Independent of Jupiter slippage: this bounds the quoted route output's
+ *  shortfall from the oracle mid, covering route fees + price impact. */
+export function resolveClvSwapOracleToleranceBps(): number {
+  const raw = process.env.CLV_SWAP_ORACLE_TOLERANCE_BPS;
+  if (!raw) return DEFAULT_ORACLE_TOLERANCE_BPS;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n)) return DEFAULT_ORACLE_TOLERANCE_BPS;
   return Math.min(Math.max(1, n), 1_000);
 }
 
@@ -361,20 +375,19 @@ export function sizeClipMicro(
 }
 
 /**
- * The ORACLE-derived minimum CLV out (atomic, 6-dp) for a clip: what the
- * house-favorable oracle quote says the clip should buy, less the slippage
- * allowance. The Jupiter quote's ON-CHAIN threshold must be ≥ this — the
- * oracle is the independent check on the aggregator. Floor is fine here: the
- * ≤1-atomic-unit (1e-6 CLV) rounding is ~$1e-10 at any plausible price.
+ * The ORACLE-derived minimum quoted CLV out (atomic, 6-dp) for a clip: what the
+ * house-favorable oracle mid says the clip should buy, less the independent
+ * route-vs-oracle tolerance. Floor is fine here: the ≤1-atomic-unit (1e-6 CLV)
+ * rounding is ~$1e-10 at any plausible price.
  */
 export function oracleMinOutClvAtomic(
   clipMicro: bigint,
   quoteUsd: number,
-  slippageBps: number,
+  toleranceBps: number,
 ): bigint {
   const clipUsd = Number(clipMicro) / 1_000_000;
   const expectedClv = clipUsd / quoteUsd;
-  const minOut = Math.floor(expectedClv * (1 - slippageBps / 10_000) * 10 ** CLV_DECIMALS);
+  const minOut = Math.floor(expectedClv * (1 - toleranceBps / 10_000) * 10 ** CLV_DECIMALS);
   return BigInt(Math.max(0, minOut));
 }
 
@@ -438,6 +451,8 @@ export interface ClvSwapLiveDb {
   listStaleExecutingQueueRows(cutoff: Date, limit: number): Promise<QueueRow[]>;
   /** THE atomic claim: planned→executing, checked, RETURNING the row. */
   claimQueueRow(queueId: string, claimId: string): Promise<QueueRow | null>;
+  /** Definitive PRE-SIGN/PRE-SEND zero-fill stop only: executing→planned. */
+  releaseQueueClaim(queueId: string, claimId: string): Promise<boolean>;
   /** Capture-before-send: append one clip fill, checked to the claim. */
   appendClipFill(queueId: string, claimId: string, entry: ClipFillRecord): Promise<boolean>;
   markQueueExecuted(queueId: string, claimId: string, executedPrice: string): Promise<boolean>;
@@ -514,6 +529,21 @@ const defaultDb: ClvSwapLiveDb = {
       .where(and(eq(clvBuyQueue.id, queueId), eq(clvBuyQueue.status, 'planned')))
       .returning();
     return rows[0] ?? null;
+  },
+  async releaseQueueClaim(queueId, claimId) {
+    const rows = await db
+      .update(clvBuyQueue)
+      .set({ status: 'planned', claimId: null, claimedAt: null })
+      .where(
+        and(
+          eq(clvBuyQueue.id, queueId),
+          eq(clvBuyQueue.claimId, claimId),
+          eq(clvBuyQueue.status, 'executing'),
+          sql`jsonb_array_length(COALESCE(${clvBuyQueue.txSignatures}, '[]'::jsonb)) = 0`,
+        ),
+      )
+      .returning({ id: clvBuyQueue.id });
+    return rows.length > 0;
   },
   async appendClipFill(queueId, claimId, entry) {
     const rows = await db
@@ -966,14 +996,16 @@ export type LiveExecuteResult =
 
 /**
  * Execute ONE queued buy live: atomic claim, then price-impact-capped clips
- * against Jupiter with the oracle as the independent min-out floor. See the
- * module header for the full discipline. LIVE — gated (throws) unless the
- * seam is open AND the mainnet/real-facilitator guard holds.
+ * against Jupiter with an independent oracle sanity floor on quoted output.
+ * See the module header for the full discipline. LIVE — gated (throws) unless
+ * the seam is open AND the mainnet/real-facilitator guard holds.
  *
- * A mid-row stop (oracle outage, refused quote, ambiguous send) leaves the row
- * `executing` with every confirmed fill durable in `tx_signatures` — it is
- * NEVER auto-resumed (reconciler case), because a resume cannot prove the
- * money-state of the stopping clip.
+ * A stop after signing or after any confirmed clip leaves the row `executing`
+ * with every captured fill durable in `tx_signatures` — it is NEVER
+ * auto-resumed (reconciler case), because a resume cannot prove the money-state
+ * of the stopping clip. A zero-clip PRE-SIGN/PRE-SEND refusal/error releases
+ * the empty claim to `planned`; the DB transition independently requires no
+ * captured fills.
  */
 export async function executeQueuedClvBuy(
   queueId: string,
@@ -1017,31 +1049,73 @@ export async function executeQueuedClvBuy(
   const claimed = await d.db.claimQueueRow(queueId, claimId);
   if (!claimed) return { ok: false, code: 'claim_lost', executedClips: 0 };
 
+  let clipIndex = 0;
+  let signingStarted = false;
+  const releaseEmptyClaim = async (): Promise<void> => {
+    if (clipIndex !== 0 || signingStarted) return;
+    // The DB CAS independently requires the same executing claim AND no
+    // captured fills. This in-memory boundary can therefore never erase a
+    // signature even if a future caller invokes it from the wrong phase.
+    const released = await d.db.releaseQueueClaim(queueId, claimId);
+    if (!released) {
+      console.error(
+        `[clv-swap-live] SAFE CLAIM RELEASE MISSED — queue=${queueId} claim=${claimId}; ` +
+          `row was not the same empty executing claim; leaving state untouched`,
+      );
+    }
+  };
+  const stopBeforeSigning = async (result: LiveExecuteResult): Promise<LiveExecuteResult> => {
+    await releaseEmptyClaim();
+    return result;
+  };
+  const runBeforeSigning = async <T>(operation: () => T | Promise<T>): Promise<T> => {
+    try {
+      return await operation();
+    } catch (err) {
+      await releaseEmptyClaim();
+      throw err;
+    }
+  };
+
   // 3) Custody + wire config (AFTER the claim — the claim is the exclusivity).
-  const swapKeypair = await d.loadSwapKeypair();
-  const conn = d.connection();
-  const maxImpactBps = resolveClvSwapMaxImpactBps();
-  // Per-row max_slippage (fraction) overrides the env bps, clamped to the
-  // same ceiling; NULL/invalid ⇒ CLV_SWAP_SLIPPAGE_BPS.
-  const slippageBps = parseRowSlippageBps(claimed.maxSlippage) ?? resolveClvSwapSlippageBps();
-  const spacingMs = resolveClvSwapClipSpacingMs();
-  const jupiterBase = resolveJupiterBaseUrl();
+  const {
+    swapKeypair,
+    conn,
+    maxImpactBps,
+    slippageBps,
+    oracleToleranceBps,
+    spacingMs,
+    jupiterBase,
+  } = await runBeforeSigning(async () => ({
+    swapKeypair: await d.loadSwapKeypair(),
+    conn: d.connection(),
+    maxImpactBps: resolveClvSwapMaxImpactBps(),
+    // Per-row max_slippage overrides ONLY the Jupiter leg; oracle tolerance
+    // is independent so the same factor can never cancel on both sides.
+    slippageBps: parseRowSlippageBps(claimed.maxSlippage) ?? resolveClvSwapSlippageBps(),
+    oracleToleranceBps: resolveClvSwapOracleToleranceBps(),
+    spacingMs: resolveClvSwapClipSpacingMs(),
+    jupiterBase: resolveJupiterBaseUrl(),
+  }));
 
   let remaining = amountMicro;
-  let clipIndex = 0;
   let totalOutAtomic = 0n;
 
   while (remaining > 0n) {
     // 4a) PER-CLIP ORACLE RE-FETCH + HARD-STOP. `available === false` stops
     //     sizing outright — BOTH quoteUsd and poolLiquidityUsd are refused
     //     regardless of whether the stale struct still carries numbers.
-    const quote = d.getPrice();
+    const quote = await runBeforeSigning(() => d.getPrice());
     if (!quote.available || quote.quoteUsd === null) {
       console.error(
         `[clv-swap-live] ORACLE UNAVAILABLE mid-execution — queue=${queueId} after ` +
-          `${clipIndex} clip(s); leaving row 'executing' (partial fills durable) — reconciler case`,
+          `${clipIndex} clip(s); stopping before the next clip (partial fills, if any, stay durable)`,
       );
-      return { ok: false, code: 'oracle_unavailable', executedClips: clipIndex };
+      return stopBeforeSigning({
+        ok: false,
+        code: 'oracle_unavailable',
+        executedClips: clipIndex,
+      });
     }
 
     // 4b) Size THIS clip from the CURRENT depth (re-fetched every iteration).
@@ -1049,14 +1123,20 @@ export async function executeQueuedClvBuy(
     if (clipMicro === null) {
       console.error(
         `[clv-swap-live] NO SAFE CLIP SIZE (depth=${quote.poolLiquidityUsd ?? 'null'}) — ` +
-          `queue=${queueId} after ${clipIndex} clip(s); leaving row 'executing'`,
+          `queue=${queueId} after ${clipIndex} clip(s); stopping before the next clip`,
       );
-      return { ok: false, code: 'no_liquidity', executedClips: clipIndex };
+      return stopBeforeSigning({ ok: false, code: 'no_liquidity', executedClips: clipIndex });
     }
 
-    // 4c) Jupiter quote, zod-parsed; the ON-CHAIN threshold must clear our
-    //     ORACLE-derived min-out.
-    const minOut = oracleMinOutClvAtomic(clipMicro, quote.quoteUsd, slippageBps);
+    // 4c) Jupiter quote, zod-parsed. Oracle sanity is deliberately on quoted
+    //     outAmount with an INDEPENDENT tolerance. Comparing Jupiter's
+    //     threshold O×(1−s) to oracle M×(1−s) cancels (1−s), requiring O≥M
+    //     and making every fee-bearing route structurally impossible. We gate
+    //     O≥M×(1−t); Jupiter separately enforces threshold O×(1−s) on-chain.
+    const quoteUsd = quote.quoteUsd; // narrowed non-null above; closures don't inherit it
+    const minOut = await runBeforeSigning(() =>
+      oracleMinOutClvAtomic(clipMicro, quoteUsd, oracleToleranceBps),
+    );
     let jupQuote: JupQuote;
     let jupQuoteRaw: unknown;
     try {
@@ -1065,41 +1145,54 @@ export async function executeQueuedClvBuy(
         `&amount=${clipMicro}&slippageBps=${slippageBps}&swapMode=ExactIn&restrictIntermediateTokens=true`;
       const res = await d.fetchImpl(url, { signal: AbortSignal.timeout(OUTBOUND_FETCH_TIMEOUT_MS) });
       if (!res.ok) {
-        return {
+        return stopBeforeSigning({
           ok: false,
           code: 'jupiter_quote_failed',
           executedClips: clipIndex,
           detail: `http_${res.status}`,
-        };
+        });
       }
       jupQuoteRaw = await res.json();
       jupQuote = jupQuoteSchema.parse(jupQuoteRaw);
     } catch (err) {
-      return {
+      return stopBeforeSigning({
         ok: false,
         code: 'jupiter_quote_failed',
         executedClips: clipIndex,
         detail: (err as Error).message,
-      };
+      });
     }
     if (
       jupQuote.inputMint !== USDC_MINT_MAINNET ||
       jupQuote.outputMint !== CLV_MINT ||
       jupQuote.inAmount !== clipMicro.toString()
     ) {
-      return {
+      return stopBeforeSigning({
         ok: false,
         code: 'jupiter_quote_failed',
         executedClips: clipIndex,
         detail: 'quote_echo_mismatch',
-      };
+      });
     }
-    if (BigInt(jupQuote.otherAmountThreshold) < minOut || BigInt(jupQuote.outAmount) < minOut) {
+    const outAmount = BigInt(jupQuote.outAmount);
+    const threshold = BigInt(jupQuote.otherAmountThreshold);
+    // The threshold is untrusted wire data too. Its safe floor applies Jupiter
+    // slippage AFTER the independent oracle tolerance: H≥M×(1−t)×(1−s).
+    // An honest H=O×(1−s) can pass whenever O≥M×(1−t); cancellation reduces
+    // only to that satisfiable quote gate, never to the impossible O≥M.
+    const oracleThresholdFloor = (minOut * BigInt(10_000 - slippageBps)) / 10_000n;
+    if (outAmount < minOut || threshold < oracleThresholdFloor) {
       console.error(
         `[clv-swap-live] JUPITER QUOTE BELOW ORACLE MIN-OUT — queue=${queueId} clip=${clipIndex} ` +
-          `threshold=${jupQuote.otherAmountThreshold} oracleMinOut=${minOut}; refusing this clip`,
+          `out=${outAmount} threshold=${threshold} oracleMinOut=${minOut} ` +
+          `oracleThresholdFloor=${oracleThresholdFloor} toleranceBps=${oracleToleranceBps} ` +
+          `slippageBps=${slippageBps}; refusing this clip`,
       );
-      return { ok: false, code: 'quote_below_oracle_min_out', executedClips: clipIndex };
+      return stopBeforeSigning({
+        ok: false,
+        code: 'quote_below_oracle_min_out',
+        executedClips: clipIndex,
+      });
     }
 
     // 4d) Jupiter swap tx: fetch, deserialize, verify the payer is OUR wallet,
@@ -1119,29 +1212,36 @@ export async function executeQueuedClvBuy(
         signal: AbortSignal.timeout(OUTBOUND_FETCH_TIMEOUT_MS),
       });
       if (!res.ok) {
-        return {
+        return stopBeforeSigning({
           ok: false,
           code: 'jupiter_swap_failed',
           executedClips: clipIndex,
           detail: `http_${res.status}`,
-        };
+        });
       }
       const parsed = jupSwapSchema.parse(await res.json());
       lastValidBlockHeight = parsed.lastValidBlockHeight;
       swapTx = VersionedTransaction.deserialize(Buffer.from(parsed.swapTransaction, 'base64'));
     } catch (err) {
-      return {
+      return stopBeforeSigning({
         ok: false,
         code: 'jupiter_swap_failed',
         executedClips: clipIndex,
         detail: (err as Error).message,
-      };
+      });
     }
     const payer = swapTx.message.staticAccountKeys[0];
     if (!payer || !payer.equals(swapKeypair.publicKey)) {
       // NEVER sign a transaction whose fee payer isn't our swap wallet.
-      return { ok: false, code: 'swap_tx_payer_mismatch', executedClips: clipIndex };
+      return stopBeforeSigning({
+        ok: false,
+        code: 'swap_tx_payer_mismatch',
+        executedClips: clipIndex,
+      });
     }
+    // Set BEFORE calling sign: a throwing/partially-mutating signer is not
+    // provably unsigned and therefore must never release this row for retry.
+    signingStarted = true;
     swapTx.sign([swapKeypair]);
     const signature = bs58.encode(swapTx.signatures[0]);
 
