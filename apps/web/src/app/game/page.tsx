@@ -113,6 +113,7 @@ function NanoClawBanner({
   isAuthenticated,
   isGuest,
   provisioningPending,
+  agentSessionMode,
 }: {
   hasAvatar: boolean;
   isAuthenticated: boolean;
@@ -126,6 +127,14 @@ function NanoClawBanner({
    * guest can never see the pending surface.
    */
   provisioningPending: boolean;
+  /**
+   * Raw `mode` from the authoritative ['agent-session'] query — undefined
+   * while unresolved. Drives the avatar-owner branch below (Codex finding
+   * 2026-07-14): 'hosted'/'external-active' ⇒ connected pill; idle/expired/
+   * none ⇒ reconnect CTA; 'dismissed' ⇒ suppressed; unresolved ⇒ render
+   * nothing rather than flash a wrong claim either way.
+   */
+  agentSessionMode?: string;
 }) {
   // Paired = reload-survivable "this user has a connected agent" (drives the
   // green pill). agentConnected is the union (paired and/or live bearer); the
@@ -154,11 +163,12 @@ function NanoClawBanner({
   //   isAuthenticated && !showPaired &&
   //     !hasAvatar                              → "Create Agent" + "Connect Your Agent"
   //   isAuthenticated && !showPaired &&
-  //      hasAvatar                              → green "Agent Connected" pill (P2:
-  //                                                hosted agent is provisioned ⇒
-  //                                                connected by definition; the old
-  //                                                "Connect Your Agent" here contradicted
-  //                                                the Controlled/Autonomous toggle)
+  //      hasAvatar                              → mode-driven (Codex 2026-07-14):
+  //                                                hosted/external-active = green
+  //                                                "Agent Connected" pill;
+  //                                                external-idle/expired/none =
+  //                                                reconnect CTA; dismissed or
+  //                                                unresolved query = nothing
 
   if (showPaired) {
     return (
@@ -226,25 +236,49 @@ function NanoClawBanner({
     );
   }
 
-  // P2 hosted-agent state (2026-07-14, founder report): an authenticated
-  // non-guest account WITH an avatar and NOT provisioning-pending has a
-  // provisioned HOSTED agent — under the P2 model (account ≡ agent, see
-  // docs/agent-metaverse-model.md) it is connected BY DEFINITION. Showing
-  // "Connect Your Agent" here contradicted the Controlled/Autonomous toggle
-  // rendered right below it (control-mode-toggle.tsx derives the same union
-  // predicate). Show a connected pill instead; clicking still opens the
-  // agent-connect modal (status + external-agent connect path stay reachable).
+  // P2 hosted-agent state (2026-07-14, founder report + Codex adversarial
+  // finding #1): an avatar-owning account's banner is driven by the
+  // AUTHORITATIVE `agentSessionMode` — NOT by avatar ownership alone, which
+  // would flash "Agent Connected" for external-idle/expired sessions, for
+  // provisioning-pending avatars while the query resolves, and for accounts
+  // that dismissed the surface.
+  //   'hosted' / 'external-active' → green "Agent Connected" pill (a hosted
+  //     ElizaOS runtime IS the avatar — connected by definition under P2;
+  //     the old yellow "Connect Your Agent" CTA here contradicted the
+  //     Controlled/Autonomous toggle right below it).
+  //   'external-idle' / 'external-expired' / 'none' → keep the reconnect CTA
+  //     (the agent is real but not live — connecting is meaningful).
+  //   'dismissed' → render nothing (user suppressed the surface).
+  //   undefined (query unresolved) → render nothing; never flash a claim.
   // `agentPaired`/`agentConnected` keep their paired-external semantics for
-  // every other reader — only this banner branch widens to the hosted state.
+  // every other reader — only this banner branch reads the mode directly.
   if (hasAvatar) {
+    if (agentSessionMode === undefined || agentSessionMode === 'dismissed') {
+      return null;
+    }
+    if (agentSessionMode === 'hosted' || agentSessionMode === 'external-active') {
+      return (
+        <div className="fixed left-1/2 -translate-x-1/2 z-50 top-3">
+          <button
+            onClick={() => setAgentConnectModalOpen(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-full bg-green-600/90 backdrop-blur-sm border border-green-400/40 shadow-lg hover:bg-green-600 transition-colors"
+          >
+            <span className="w-2.5 h-2.5 rounded-full bg-green-300 shadow-[0_0_6px_rgba(74,222,128,0.6)]" />
+            <span className="text-white font-bold text-sm">Agent Connected</span>
+          </button>
+        </div>
+      );
+    }
+    // external-idle / external-expired / 'none' — reconnect CTA only
+    // (avatar exists, so no Create Agent button).
     return (
-      <div className="fixed left-1/2 -translate-x-1/2 z-50 top-3">
+      <div className="fixed left-1/2 -translate-x-1/2 z-50 top-3 flex items-center gap-2">
         <button
-          onClick={() => setAgentConnectModalOpen(true)}
-          className="flex items-center gap-2 px-4 py-2 rounded-full bg-green-600/90 backdrop-blur-sm border border-green-400/40 shadow-lg hover:bg-green-600 transition-colors"
+          onClick={() => setAgentConnectModalOpen(true, 'connect')}
+          className="flex items-center gap-2 px-4 py-2 rounded-full bg-black/60 backdrop-blur-sm border border-yellow-500/40 shadow-lg hover:bg-black/80 hover:border-yellow-400/60 transition-all animate-pulse-subtle"
         >
-          <span className="w-2.5 h-2.5 rounded-full bg-green-300 shadow-[0_0_6px_rgba(74,222,128,0.6)]" />
-          <span className="text-white font-bold text-sm">Agent Connected</span>
+          <span className="text-lg">🔌</span>
+          <span className="text-yellow-300 font-bold text-sm">Connect Your Agent</span>
         </button>
       </div>
     );
@@ -553,6 +587,7 @@ export default function GamePage() {
         isAuthenticated={isAuthenticated}
         isGuest={isGuest}
         provisioningPending={provisioningPending}
+        agentSessionMode={agentSession?.mode}
       />
       {/* Soft email-verification nudge — renders only when the user is
           authenticated, NOT a guest, HAS a real email to confirm, and that

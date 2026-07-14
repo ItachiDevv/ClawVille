@@ -185,6 +185,11 @@ export function useActivityWs(opts: UseActivityWsOptions): UseActivityWsResult {
       };
 
       ws.onmessage = (evt) => {
+        // Stale-socket guard (Codex finding 2026-07-14): dependency-driven
+        // socket replacement (e.g. an MTT table move changing roomId) closes
+        // socket A and opens B; A's late-delivered frames must not feed the
+        // NEW room's store, and its close below must not clear B's timers.
+        if (wsRef.current !== ws) return;
         if (!pingLoopStarted) {
           // First server frame ⇒ auth registration completed server-side;
           // safe to start the 1 Hz clock-offset ping loop (see note above).
@@ -228,6 +233,12 @@ export function useActivityWs(opts: UseActivityWsOptions): UseActivityWsResult {
       };
 
       ws.onclose = (evt) => {
+        // Stale-socket guard: if this socket was already replaced (cleanup
+        // nulled wsRef and a new open() installed socket B), its delayed
+        // onclose must not clear B's ping interval, null B out of wsRef, or
+        // schedule a competing reconnect. The effect cleanup that replaced us
+        // already cleared OUR timers via clearTimers().
+        if (wsRef.current !== ws) return;
         if (pingIntervalRef.current) {
           clearInterval(pingIntervalRef.current);
           pingIntervalRef.current = null;
