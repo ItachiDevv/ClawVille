@@ -32,7 +32,7 @@
 import React, { useRef, useState, useEffect, Suspense, useCallback } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import { useVRMInstance, disposeVRMInstance } from '@/lib/three/vrm-loader';
+import { useVRMInstance, disposeVRMInstance, retainVRMInstance } from '@/lib/three/vrm-loader';
 import { useVisibleFrameloop } from '@/lib/use-visible-frameloop';
 import type { VRM } from '@pixiv/three-vrm';
 
@@ -93,6 +93,7 @@ function VRMAvatarInner({ path }: { path: string }) {
   // Dispose previous instance on path change and on unmount.
   // VRM_BYTES (raw bytes) are retained for fast re-swap; only parsed GPU data freed.
   useEffect(() => {
+    retainVRMInstance(path, INSTANCE_ID); // cancel deferred dispose on StrictMode re-setup
     return () => { disposeVRMInstance(path, INSTANCE_ID); };
   }, [path]);
 

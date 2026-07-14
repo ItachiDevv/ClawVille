@@ -329,6 +329,13 @@ async function claimTutorialQuestReward(def: QuestDefinition, opts?: { silent?: 
       console.warn('[quest] server engagement gate failed for', def.id, res.reason ?? res.error);
     }
   } catch (err) {
+    // Not logged in — a claim can't succeed and retrying just spams 401s
+    // into the console (ApiError carries .status; branch on it, not the
+    // message). Return the signal so retryUnclaimedRewards stops the loop;
+    // the next authenticated session retries naturally on mount.
+    if ((err as { status?: number })?.status === 401) {
+      return 'unauthenticated';
+    }
     const msg = String((err as Error)?.message ?? '');
     if (msg.includes('already_claimed')) {
       useQuestStore.getState().markServerClaimed(def.id);
@@ -354,7 +361,8 @@ export async function retryUnclaimedRewards() {
   for (const def of QUEST_DEFINITIONS) {
     if (claimed[def.id]) continue;
     if (state.progress[def.id]?.status === 'completed') {
-      await claimTutorialQuestReward(def, { silent: true });
+      const result = await claimTutorialQuestReward(def, { silent: true });
+      if (result === 'unauthenticated') return; // logged out — every claim would 401
       continue;
     }
     if (def.condition.type === 'serverOnly') {
@@ -362,7 +370,8 @@ export async function retryUnclaimedRewards() {
         (pid) => state.progress[pid]?.status === 'completed'
       );
       if (allPrereqsMet) {
-        await claimTutorialQuestReward(def, { silent: true });
+        const result = await claimTutorialQuestReward(def, { silent: true });
+        if (result === 'unauthenticated') return;
       }
     }
   }

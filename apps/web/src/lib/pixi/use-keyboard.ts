@@ -26,7 +26,8 @@ export function useKeyboard() {
         return;
       }
 
-      const key = e.key.toLowerCase();
+      // e.key can be undefined on synthetic events (Chrome autofill).
+      const key = (e.key ?? '').toLowerCase();
       if (!state.current.pressed.has(key)) {
         state.current.justPressed.add(key);
       }
@@ -34,7 +35,7 @@ export function useKeyboard() {
     };
 
     const onKeyUp = (e: KeyboardEvent) => {
-      const key = e.key.toLowerCase();
+      const key = (e.key ?? '').toLowerCase();
       state.current.pressed.delete(key);
     };
 

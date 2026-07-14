@@ -14,7 +14,7 @@ import { Suspense, useEffect, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 
-import { useVRMInstance, disposeVRMInstance } from '@/lib/three/vrm-loader';
+import { useVRMInstance, disposeVRMInstance, retainVRMInstance } from '@/lib/three/vrm-loader';
 import {
   computeVRMAvatarFit,
   computeCosmeticHeadFit,
@@ -113,6 +113,7 @@ function AvatarWithCosmetics({ def, nudge }: { def: AvatarDef; nudge: Nudge }) {
 
   useEffect(() => {
     if (!vrm || !groupRef.current) return;
+    retainVRMInstance(def.vrmPath, def.instanceId); // cancel deferred dispose on StrictMode re-setup
     const group = groupRef.current;
     const { scale, offsetY } = computeVRMAvatarFit(vrm, def.animatorId);
     vrm.scene.scale.setScalar(scale);

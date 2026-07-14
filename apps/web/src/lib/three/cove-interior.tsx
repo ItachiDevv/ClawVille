@@ -45,7 +45,7 @@ import { useCoveStore } from '@/stores/cove';
 import { useAvatar } from '@/hooks/use-avatar';
 // Phase 6.4.0 — blackjack table hotspot uses the store action openBlackjackTable
 import { useGameStore } from '@/stores/game';
-import { useVRMInstance, disposeVRMInstance } from '@/lib/three/vrm-loader';
+import { useVRMInstance, disposeVRMInstance, retainVRMInstance } from '@/lib/three/vrm-loader';
 import { VRMCharacterAnimator } from '@/lib/three/vrm-character-animator';
 import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
 import { MODEL_REGISTRY, type ModelRegistryEntry } from '@/lib/three/agent-model-registry';
@@ -255,7 +255,8 @@ function attachCoveKeyListeners() {
   const onKeyDown = (e: KeyboardEvent) => {
     // Only single-character keys drive movement. Arrow keys (multi-char)
     // are handled exclusively by attachCoveArrowListeners for camera orbit.
-    const k = e.key.length === 1 ? e.key.toLowerCase() : null;
+    // e.key can be undefined on synthetic events (Chrome autofill).
+    const k = e.key?.length === 1 ? e.key.toLowerCase() : null;
     if (k === 'w') coveKeys.w = true;
     if (k === 's') coveKeys.s = true;
     if (k === 'a') coveKeys.a = true;
@@ -263,7 +264,7 @@ function attachCoveKeyListeners() {
     if (k === 'e') coveKeys.e = true;
   };
   const onKeyUp = (e: KeyboardEvent) => {
-    const k = e.key.length === 1 ? e.key.toLowerCase() : null;
+    const k = e.key?.length === 1 ? e.key.toLowerCase() : null;
     if (k === 'w') coveKeys.w = false;
     if (k === 's') coveKeys.s = false;
     if (k === 'a') coveKeys.a = false;
@@ -1174,6 +1175,7 @@ function CoveVRMAvatarInner({ reg }: CoveVRMAvatarProps) {
   );
 
   useEffect(() => {
+    retainVRMInstance(reg.path, 'cove-player'); // cancel deferred dispose on StrictMode re-setup
     return () => disposeVRMInstance(reg.path, 'cove-player');
   }, [reg.path]);
 

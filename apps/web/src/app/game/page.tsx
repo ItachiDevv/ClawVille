@@ -154,7 +154,11 @@ function NanoClawBanner({
   //   isAuthenticated && !showPaired &&
   //     !hasAvatar                              → "Create Agent" + "Connect Your Agent"
   //   isAuthenticated && !showPaired &&
-  //      hasAvatar                              → "Connect Your Agent" alone
+  //      hasAvatar                              → green "Agent Connected" pill (P2:
+  //                                                hosted agent is provisioned ⇒
+  //                                                connected by definition; the old
+  //                                                "Connect Your Agent" here contradicted
+  //                                                the Controlled/Autonomous toggle)
 
   if (showPaired) {
     return (
@@ -222,17 +226,39 @@ function NanoClawBanner({
     );
   }
 
+  // P2 hosted-agent state (2026-07-14, founder report): an authenticated
+  // non-guest account WITH an avatar and NOT provisioning-pending has a
+  // provisioned HOSTED agent — under the P2 model (account ≡ agent, see
+  // docs/agent-metaverse-model.md) it is connected BY DEFINITION. Showing
+  // "Connect Your Agent" here contradicted the Controlled/Autonomous toggle
+  // rendered right below it (control-mode-toggle.tsx derives the same union
+  // predicate). Show a connected pill instead; clicking still opens the
+  // agent-connect modal (status + external-agent connect path stay reachable).
+  // `agentPaired`/`agentConnected` keep their paired-external semantics for
+  // every other reader — only this banner branch widens to the hosted state.
+  if (hasAvatar) {
+    return (
+      <div className="fixed left-1/2 -translate-x-1/2 z-50 top-3">
+        <button
+          onClick={() => setAgentConnectModalOpen(true)}
+          className="flex items-center gap-2 px-4 py-2 rounded-full bg-green-600/90 backdrop-blur-sm border border-green-400/40 shadow-lg hover:bg-green-600 transition-colors"
+        >
+          <span className="w-2.5 h-2.5 rounded-full bg-green-300 shadow-[0_0_6px_rgba(74,222,128,0.6)]" />
+          <span className="text-white font-bold text-sm">Agent Connected</span>
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="fixed left-1/2 -translate-x-1/2 z-50 top-3 flex items-center gap-2">
-      {!hasAvatar && (
-        <button
-          onClick={() => setAgentConnectModalOpen(true, 'create')}
-          className="flex items-center gap-2 px-4 py-2 rounded-full bg-black/60 backdrop-blur-sm border border-cyan-400/40 shadow-lg hover:bg-black/80 hover:border-cyan-300/60 transition-all"
-        >
-          <span className="text-lg">✨</span>
-          <span className="text-cyan-200 font-bold text-sm">Create Agent</span>
-        </button>
-      )}
+      <button
+        onClick={() => setAgentConnectModalOpen(true, 'create')}
+        className="flex items-center gap-2 px-4 py-2 rounded-full bg-black/60 backdrop-blur-sm border border-cyan-400/40 shadow-lg hover:bg-black/80 hover:border-cyan-300/60 transition-all"
+      >
+        <span className="text-lg">✨</span>
+        <span className="text-cyan-200 font-bold text-sm">Create Agent</span>
+      </button>
       <button
         onClick={() => setAgentConnectModalOpen(true, 'connect')}
         className="flex items-center gap-2 px-4 py-2 rounded-full bg-black/60 backdrop-blur-sm border border-yellow-500/40 shadow-lg hover:bg-black/80 hover:border-yellow-400/60 transition-all animate-pulse-subtle"
