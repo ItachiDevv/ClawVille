@@ -1,6 +1,6 @@
 # Money Rails — Canonical Operations Reference
 
-> **Last Audited: 2026-07-14** (CLV cashout mechanism correction built locally and awaiting Fable review: one Jupiter USDC→CLV transaction, ≤$100 clips, no DexScreener money gate, pre-sign simulation. Uncommitted/un-deployed; no migration/sign-off. E1/E2 + E3 remain built locally and GATED DARK. The prior four rails remain live at master `a0b43c1c`).
+> **Last Audited: 2026-07-14** (E3 captured-delivery reconcile sweep added locally: exact mainnet on-chain proof can promote ambiguous/stale captured delivery to delivered; it never sends, resets, or clears a signature. CLV cashout mechanism correction remains local and awaiting Fable review. Uncommitted/un-deployed; no migration/sign-off. E1/E2 + E3 remain built locally and GATED DARK. The prior four rails remain live at master `a0b43c1c`).
 > Authoritative for agents and operators. Precedence: live code > this doc + ARCHITECTURE.md > memory files.
 > Deep architecture detail lives in `ARCHITECTURE.md` entries (20) agent-pay, (21)/(26) CLV cashout, (22) reconcile-apply, and (25) E1/E2/E3.
 > NEVER print, log, or commit private key material. Pubkeys only in docs.
@@ -93,6 +93,10 @@ integer-atomic amount totals, and status/reason fields. Keep the server's
 ### E3 redemption and reconcile
 
 `requested → debited → buy_queued → bought → delivering → delivered`; pre-money refusal is `refused`, ambiguity is `reconcile`. Debit + exact 444-bps fee (`amountVclaw × 444`) + buy principal (`× 9556`) + backing consumption are one transaction. `enqueueClvBuy(reason='earned_redemption', source_ref=redemptionId)` is exactly-once. Funding is classic USDC `TransferChecked` from backing custody to swap; delivery is Token-2022 CLV `TransferChecked` from swap to the server-resolved earner ATA. Capture signature before send; any ambiguous send/confirm is reconcile and never auto-retried. Delivery uses the conservative floor/SUM of confirmed queue `outAmountAtomic` values—house-favorable rounding, never an optimistic quote. Swap must retain ≥0.004 SOL plus tx fee + destination CLV ATA rent.
+
+#### Captured-delivery reconcile sweep
+
+The gated worker re-checks a bounded oldest-first batch of `reconcile` rows marked `delivery_confirm_ambiguous` (the captured send could not be conclusively confirmed/recorded) or `stale_captured_delivery` (a captured delivery outlived its worker claim). It promotes a row to `delivered` only when the captured mainnet transaction proves an exact $CLAWVILLE credit to the captured delivery wallet and, when the swap-wallet balance appears in transaction metadata, the matching exact debit. This is strictly promote-only: it never re-sends, resets to `bought`, or clears the captured signature. Failed, missing, pruned, malformed, or economically mismatched evidence remains `reconcile` for manual review.
 
 ### E1/E2 verification and claw-back
 
