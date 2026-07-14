@@ -75,7 +75,9 @@ const {
   resolveClvSwapExecutingStaleMs,
   findUsdcAta,
   findClvAta,
+  decodeJupiterV6RouteInstruction,
   jupiterExactInMinimumOut,
+  validateJupiterSwapSimulation,
 } = await import('../clv-swap-live');
 
 if (!DB_URL_WAS_SET) {
@@ -88,6 +90,7 @@ const merchantKp = Keypair.generate();
 const strangerKp = Keypair.generate();
 const SRC = '11111111-1111-4111-8111-111111111111'; // the settled checkout id
 const PRICE = 0.00007;
+const JUPITER_ROUTE_DISCRIMINATOR = Buffer.from([229, 23, 203, 151, 122, 227, 173, 42]);
 
 function buildSwapTxB64(
   payer: PublicKey,
@@ -287,6 +290,112 @@ function buildSwapTxB64(
 }
 
 // ── the injectable harness ───────────────────────────────────────────────────
+async function simulateClosedPostAccount(
+  scenario: 'transient_fresh' | 'canonical_clv' | 'transient_with_balance',
+) {
+  const wallet = Keypair.generate().publicKey;
+  const tokenProgram = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+  const token2022Program = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
+  const ataProgram = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
+  const transientMint = new PublicKey('So11111111111111111111111111111111111111112');
+  const [transientAta] = PublicKey.findProgramAddressSync(
+    [wallet.toBuffer(), tokenProgram.toBuffer(), transientMint.toBuffer()],
+    ataProgram,
+  );
+  const usdcAta = findUsdcAta(wallet);
+  const clvAta = findClvAta(wallet);
+  const tokenInfo = (mint: PublicKey, program: PublicKey, amount: bigint) => {
+    const data = Buffer.alloc(165);
+    mint.toBuffer().copy(data, 0);
+    wallet.toBuffer().copy(data, 32);
+    data.writeBigUInt64LE(amount, 64);
+    data[108] = 1;
+    return {
+      data,
+      executable: false,
+      lamports: 2_039_280,
+      owner: program,
+      rentEpoch: 0,
+    };
+  };
+  const postTokenInfo = (mint: PublicKey, program: PublicKey, amount: bigint) => {
+    const info = tokenInfo(mint, program, amount);
+    return {
+      ...info,
+      data: [info.data.toString('base64'), 'base64'],
+      owner: program.toBase58(),
+    };
+  };
+  const closedPostInfo = {
+    data: ['', 'base64'],
+    executable: false,
+    lamports: 0,
+    owner: SystemProgram.programId.toBase58(),
+    rentEpoch: 0,
+  };
+  const connection = {
+    getMultipleAccountsInfo: async (addresses: PublicKey[]) => addresses.map((address) => {
+      if (address.equals(transientAta)) {
+        return scenario === 'transient_with_balance'
+          ? tokenInfo(transientMint, tokenProgram, 10n)
+          : null;
+      }
+      if (address.equals(usdcAta)) {
+        return tokenInfo(new PublicKey(USDC_MINT_MAINNET), tokenProgram, 100_000n);
+      }
+      if (address.equals(clvAta)) {
+        return tokenInfo(new PublicKey(CLV_MINT), token2022Program, 0n);
+      }
+      if (address.equals(wallet)) {
+        return {
+          data: Buffer.alloc(0), executable: false, lamports: 50_000_000,
+          owner: SystemProgram.programId, rentEpoch: 0,
+        };
+      }
+      return null;
+    }),
+    simulateTransaction: async (_transaction: VersionedTransaction, config: {
+      accounts: { addresses: string[] };
+    }) => ({
+      context: { slot: 1 },
+      value: {
+        err: null,
+        accounts: config.accounts.addresses.map((address) => {
+          if (address === transientAta.toBase58()) return closedPostInfo;
+          if (address === usdcAta.toBase58()) {
+            return postTokenInfo(new PublicKey(USDC_MINT_MAINNET), tokenProgram, 61_776n);
+          }
+          if (address === clvAta.toBase58()) {
+            return scenario === 'canonical_clv'
+              ? closedPostInfo
+              : postTokenInfo(new PublicKey(CLV_MINT), token2022Program, 1_000n);
+          }
+          if (address === wallet.toBase58()) {
+            return {
+              data: ['', 'base64'], executable: false, lamports: 49_995_000,
+              owner: SystemProgram.programId.toBase58(), rentEpoch: 0,
+            };
+          }
+          return null;
+        }),
+      },
+    }),
+  } as unknown as Connection;
+  const transaction = VersionedTransaction.deserialize(
+    Buffer.from(buildSwapTxB64(wallet).transaction, 'base64'),
+  );
+  const result = await validateJupiterSwapSimulation({
+    transaction,
+    wallet,
+    connection,
+    inputAmount: 38_224n,
+    minimumOutAmount: 1_000n,
+    priorityFeeLamports: 0n,
+    walletAtas: [{ address: transientAta, mint: transientMint, tokenProgram }],
+  });
+  return { result, transientAta };
+}
+
 interface Harness {
   deps: ClvSwapLiveDeps;
   log: string[];
@@ -1182,6 +1291,67 @@ describe('FUNDING SWEEP — exactly-once merchant→swap-wallet USDC', () => {
     });
     expect(h.funding.get(SRC)!.status).toBe('reconcile');
     expect(h.log.filter((entry) => entry === 'sendRaw')).toHaveLength(1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe('validateJupiterSwapSimulation — closed transient ATA handling', () => {
+  it('treats an invalid post snapshot for a fresh transient wallet ATA as closed', async () => {
+    const { result } = await simulateClosedPostAccount('transient_fresh');
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('still rejects a closed canonical CLV ATA post snapshot', async () => {
+    const { result } = await simulateClosedPostAccount('canonical_clv');
+    expect(result).toEqual({ ok: false, detail: 'simulation_canonical_balance_missing' });
+  });
+
+  it('still rejects a closed transient ATA that held a pre-simulation balance', async () => {
+    const { result, transientAta } = await simulateClosedPostAccount('transient_with_balance');
+    expect(result).toEqual({
+      ok: false,
+      detail: `simulation_other_token_decrease:${transientAta.toBase58()}`,
+    });
+  });
+});
+
+describe('decodeJupiterV6RouteInstruction — route-agnostic trailing args', () => {
+  it('decodes a route whose final hop is Pump.fun Amm variant 99 without an AMM allowlist', () => {
+    const stepCount = Buffer.alloc(4);
+    stepCount.writeUInt32LE(2);
+    const args = Buffer.alloc(19);
+    args.writeBigUInt64LE(100_000_000n, 0);
+    args.writeBigUInt64LE(1_234_567_890n, 8);
+    args.writeUInt16LE(200, 16);
+    args[18] = 0;
+    const data = Buffer.concat([
+      JUPITER_ROUTE_DISCRIMINATOR,
+      stepCount,
+      Buffer.from([120, 50, 0, 1]), // unknown/new AMM variant, no payload
+      Buffer.from([99, 50, 1, 2]), // Pump.fun Amm final hop, no payload
+      args,
+    ]);
+
+    expect(decodeJupiterV6RouteInstruction(data)).toEqual({
+      kind: 'route',
+      inAmount: 100_000_000n,
+      quotedOutAmount: 1_234_567_890n,
+      slippageBps: 200,
+      platformFeeBps: 0,
+    });
+  });
+
+  it('rejects a truncated route and an unknown discriminator', () => {
+    const tooShort = Buffer.alloc(8 + 4 + 19 - 1);
+    JUPITER_ROUTE_DISCRIMINATOR.copy(tooShort);
+    tooShort.writeUInt32LE(1, 8);
+
+    const unknown = Buffer.alloc(8 + 4 + 19);
+    unknown.fill(0xff, 0, 8);
+    unknown.writeUInt32LE(1, 8);
+
+    expect(decodeJupiterV6RouteInstruction(tooShort)).toBeNull();
+    expect(decodeJupiterV6RouteInstruction(unknown)).toBeNull();
   });
 });
 
