@@ -1,5 +1,9 @@
 # ClawVille — Architecture
 
+**Last Audited:** 2026-07-14 (29): **CLV Pump.fun first-buy accumulator rent allowance — local, uncommitted, un-deployed.** The pre-sign owned-lamport guard accepts the mandatory one-time creation rent only for the swap wallet's exact derivable Pump.fun `user_volume_accumulator` PDA when it was absent pre-transaction, is Pump-AMM-program-owned post-simulation, and holds at most 2,500,000 lamports; the `priorityFeeLamports + 10,000` fee bound and all other refusal paths are unchanged.
+
+**Last Audited:** 2026-07-14 (28): **CLV swap simulation writable-account rent completeness — local, uncommitted, un-deployed.** The pre-sign owned-lamport aggregate now snapshots fully resolved writable v0/ALT accounts and credits only initialized SPL/Token-2022 accounts whose token authority is the swap wallet, neutralizing rent in CPI-created multi-hop intermediates without changing the `priorityFeeLamports + 10,000` loss bound; foreign/program/non-token accounts remain uncredited.
+
 **Last Audited:** 2026-07-14 (27): **E3 captured-delivery reconciliation — local, uncommitted, un-deployed.** The gated EARNED worker now sweeps at most 20 oldest `delivery_confirm_ambiguous`/`stale_captured_delivery` rows and CAS-promotes only exact mainnet on-chain-proven CLV deliveries from `reconcile` to `delivered`; missing, failed, indeterminate, or mismatched evidence stays quarantined, and the sweep has no send, reset-to-`bought`, or signature-clear path. No schema/protocol change; E3 remains gated dark.
 
 **Entry (26) post-simulation closure rule:** A closed transient wallet ATA (for example wrap/unwrap wSOL) is treated as gone post-simulation, while canonical USDC/CLV closure and any token or lamport drain remain rejected.
@@ -675,6 +679,10 @@ UI locale layer landed 2026-05-22 (Phase 1+2). English + Simplified Chinese ship
 ## 13. Recent material changes
 
 Compact log. Single line per change with commit hash + one-line summary. When the change is described in detail in the body above, no need to repeat it here.
+
+- 2026-07-14. **CLV Pump.fun first-buy accumulator rent allowance (local, uncommitted).** The simulation guard accepts only the newly created, Pump-owned, exact per-wallet `user_volume_accumulator` PDA up to 2.5M lamports; all other non-wallet losses still refuse and the fee bound is unchanged.
+
+- 2026-07-14. **CLV swap simulation writable-account rent completeness (local, uncommitted).** Fully resolved writable v0/ALT accounts join the pre/post snapshot set; the owned-lamport aggregate credits rent only for initialized wallet-authority SPL/Token-2022 accounts (including CPI-created Pump.fun intermediates), while the fee bound and every token-delta refusal remain unchanged.
 
 - 2026-07-14. **CLV cashout single-swap mechanism correction (local, uncommitted; Fable review pending).** One Jupiter USDC→CLV ExactIn transaction per clip (`wrapAndUnwrapSol:true`; SOL hop internal), fixed ≤$100 clips, no DexScreener gate on the live buy, quote `priceImpactPct` cap, route-agnostic trailing-19-byte Anchor argument binding (no AMM-variant allowlist), multi-ATA/multi-hop-safe validator with total-priority-fee bound, and authoritative pre-sign token-delta simulation. Default slippage is 200 bps; no schema or protocol change; E3 remains dark.
 
