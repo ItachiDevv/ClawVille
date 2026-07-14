@@ -136,6 +136,35 @@ export function classifyAgentSessionHot(input: {
     const idle = now - lastSeenMs > externalActiveWindowMs;
 
     if (expired) {
+      // EXPIRED external row + HOSTED avatar ⇒ report 'hosted', not
+      // 'external-expired' (2026-07-14, founder report). A hosted signup
+      // avatar's cognition runtime is ALWAYS alive server-side; a long-dead
+      // BYO/external credential (e.g. a prewarm/test connect from days ago)
+      // is not the account's durable truth, and letting it shadow the hosted
+      // classification made the UI demand "Connect Your Agent" from accounts
+      // that are connected by definition. A LIVE or merely-idle external
+      // session still wins below — the user deliberately connected it and
+      // its state is actionable. Genuinely-external accounts (non-hosted
+      // harness / no platformAgentId) keep the external-expired label.
+      if (
+        avatar?.platformAgentId &&
+        HOSTED_HARNESSES.has(avatar.harness ?? '')
+      ) {
+        return {
+          kind: 'response',
+          body: hostedAgentSessionResponse(avatar.platformAgentId, avatar.harness ?? null),
+        };
+      }
+      // Same principle for a NOT-YET-PROVISIONED avatar (platformAgentId null
+      // — agent rows don't exist, e.g. a legacy pre-P2 account): the dead
+      // credential must not shadow the provisioning-pending classification
+      // either. Fall through to the route's cold path (lazy is_guest read →
+      // 'provisioning-pending' for an authed non-guest, 'none' otherwise).
+      // Avatars WITH agent rows but a non-hosted harness keep the
+      // external-expired label below — the reconnect hint is their truth.
+      if (avatar && !avatar.platformAgentId) {
+        return { kind: 'cold-fallthrough' };
+      }
       return {
         kind: 'response',
         body: {
