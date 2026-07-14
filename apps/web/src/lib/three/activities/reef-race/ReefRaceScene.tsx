@@ -68,6 +68,7 @@ import {
   TRACK_SURFACE_Y,
 } from './reef-race-config';
 import { selfPoseBus, SELF_POSE_BUS_STALE_MS } from './reef-race-self-bus';
+import { clientSpline } from './reef-race-spline-instance';
 import type { ReefRaceEntity } from './reef-race-types';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 
@@ -101,6 +102,28 @@ const _selfPosScratch = new THREE.Vector3();
 
 const CAMERA_INTERP_DELAY_MS = 200;
 const CAMERA_INTERP_HISTORY_SIZE = 4;
+
+// ─── Pregame vantage — the start/finish line (spline t=0) ────────────────────
+// Before the sim room exists (lobby + countdown) there are NO entities, so the
+// chase cam used to sit at the Canvas default staring at world-origin geometry
+// ("a mangled clobber of space" — founder 2026-07-14) and only jumped to the
+// river when the first snapshot landed. Bodies spawn at t=0 heading along the
+// tangent (reef-race-spline-sim.ts:600+), so parking the camera at the exact
+// chase-cam pose for that spawn makes lobby → live seamless. Computed lazily
+// once — clientSpline is a module singleton and the track is static.
+let _pregameVantage: { x: number; z: number; heading: number } | null = null;
+function pregameVantage() {
+  if (!_pregameVantage) {
+    const start = clientSpline.centerlineAt(0);
+    const tan = clientSpline.tangentAt(0);
+    _pregameVantage = {
+      x: start.x,
+      z: start.z,
+      heading: Math.atan2(tan.x, tan.z),
+    };
+  }
+  return _pregameVantage;
+}
 
 interface CameraSnapRecord {
   t: number;
@@ -183,6 +206,8 @@ function ChaseCamera({ selfEntity, shakeRef }: ChaseCamProps) {
   const historyRef = useRef<CameraSnapRecord[]>([]);
   const lastEntityRef = useRef<ReefRaceEntity | null>(null);
   const lastRotRef = useRef(0);
+  /** True once the pregame start-line vantage snapped the camera into place. */
+  const pregameSnappedRef = useRef(false);
 
   useEffect(() => {
     // PerspectiveCamera setup.
@@ -199,6 +224,32 @@ function ChaseCamera({ selfEntity, shakeRef }: ChaseCamProps) {
     if (!selfEntity) {
       historyRef.current.length = 0;
       lastEntityRef.current = null;
+      // Lobby/countdown — no snapshots yet. Frame the start line so the
+      // player sees the river spawn instead of world-origin geometry; the
+      // pose matches the chase-cam pose of the t=0 spawn, so the transition
+      // to live is a no-op. v1 (non-spline) keeps the legacy behaviour.
+      if (USE_SPLINE_CAMERA) {
+        const vantage = pregameVantage();
+        const preCam = camera as THREE.PerspectiveCamera;
+        _rotatedOffset.set(
+          CAMERA_OFFSET.x * Math.cos(vantage.heading) + CAMERA_OFFSET.z * Math.sin(vantage.heading),
+          CAMERA_OFFSET.y,
+          -CAMERA_OFFSET.x * Math.sin(vantage.heading) + CAMERA_OFFSET.z * Math.cos(vantage.heading),
+        );
+        const groundY = TRACK_SURFACE_Y + elevationAtXZ(vantage.x, vantage.z, 'cam');
+        _targetPos.set(vantage.x, groundY, vantage.z).add(_rotatedOffset);
+        if (!pregameSnappedRef.current) {
+          // First pregame frame — snap, don't ease from the Canvas default
+          // (easing would sweep the camera through world geometry).
+          pregameSnappedRef.current = true;
+          preCam.position.copy(_targetPos);
+        } else {
+          const preLerp = Math.min(1, CAMERA_LERP * delta);
+          preCam.position.lerp(_targetPos, preLerp);
+        }
+        _lookAt.set(vantage.x, groundY, vantage.z).add(CAMERA_LOOK_OFFSET);
+        preCam.lookAt(_lookAt);
+      }
       return;
     }
 

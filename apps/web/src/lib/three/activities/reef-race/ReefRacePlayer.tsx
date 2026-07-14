@@ -127,6 +127,7 @@ import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import {
   useVRMInstance,
   disposeVRMInstance,
+  retainVRMInstance,
   preloadVRMBytes,
 } from '@/lib/three/vrm-loader';
 import {
@@ -727,6 +728,7 @@ function ReefRaceVRMRiderInner({
 
   // Dispose on unmount — must match the instanceId used above.
   useEffect(() => {
+    retainVRMInstance(vrmPath, `reef-race-${avatarId}`); // cancel deferred dispose on StrictMode re-setup
     return () => { disposeVRMInstance(vrmPath, `reef-race-${avatarId}`); };
   }, [vrmPath, avatarId]);
 
@@ -904,6 +906,16 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
   // server snapshot, advanced each frame by integrateSurfStep against the
   // self-input bus, and re-baselined toward authority on every new snapshot.
   const predictedRef = useRef<SurfBodyState>({ x: 0, z: 0, vx: 0, vz: 0, rot: 0 });
+  // Previous-tick pose for RENDER interpolation ("fix your timestep"). The
+  // fixed 30 Hz integration below only advances `pred` on tick boundaries, so
+  // rendering `pred` directly steps the kart ~21 wu at a time at top speed —
+  // on a 60–144 Hz display that reads as constant self-kart jitter (the exact
+  // regression the founder reported 2026-07-14; remote karts were smooth
+  // because they render through the 100–220 ms interpolation path). Render
+  // pose = lerp(prevTick, pred, accum/TICK_DT) — ≤1 tick (33 ms) of visual
+  // latency, motion is frame-smooth. Reconciliation corrections are applied
+  // to BOTH states so a snapshot rebase never bleeds through the blend.
+  const prevTickRef = useRef<{ x: number; z: number; rot: number }>({ x: 0, z: 0, rot: 0 });
   const predictInitRef = useRef(false);
   // Fixed-timestep accumulator (s). Render frames are ~60 fps with variable dt,
   // but integrateSurfStep's drag/grip multipliers assume the server's fixed
@@ -1438,6 +1450,9 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
           pred.vx = svx;
           pred.vz = svz;
           pred.rot = srot;
+          prevTickRef.current.x = sx;
+          prevTickRef.current.z = sz;
+          prevTickRef.current.rot = srot;
           predictInitRef.current = true;
           // Fresh seed — drop any accumulated fixed-step time.
           predictAccumRef.current = 0;
@@ -1455,6 +1470,9 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
             pred.vx = svx;
             pred.vz = svz;
             pred.rot = srot;
+            prevTickRef.current.x = sx;
+            prevTickRef.current.z = sz;
+            prevTickRef.current.rot = srot;
             // Teleport — discard stale accumulated time so we don't replay
             // pre-snap motion against the new pose.
             predictAccumRef.current = 0;
@@ -1502,6 +1520,11 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
             pred.vx += velErrorX * CLIENT_REBASE_VEL;
             pred.vz += velErrorZ * CLIENT_REBASE_VEL;
             pred.rot += rotError * CLIENT_REBASE_ROT;
+            // Shift the render-interp anchor by the same correction so the
+            // rebase applies uniformly across the blend (no partial-alpha kink).
+            prevTickRef.current.x += appliedX;
+            prevTickRef.current.z += appliedZ;
+            prevTickRef.current.rot += rotError * CLIENT_REBASE_ROT;
             pushPredictionSample(predictionHistory, predictionTimeRef.current, pred);
             recordReconStats(
               errDist,
@@ -1649,6 +1672,11 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
       }
 
       while (predictAccumRef.current >= CLIENT_SURF_TICK_DT) {
+        // Capture the pre-step pose — after the loop it holds tick N-1 while
+        // `pred` holds tick N, the bracket the render blend below needs.
+        prevTickRef.current.x = pred.x;
+        prevTickRef.current.z = pred.z;
+        prevTickRef.current.rot = pred.rot;
         const next = integrateSurfStep(
           pred,
           { dir: dirInput, thrust: thrustInput, airborne },
@@ -1669,19 +1697,43 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
         predictAccumRef.current -= CLIENT_SURF_TICK_DT;
       }
 
-      interpX = pred.x;
-      interpZ = pred.z;
-      interpRot = pred.rot;
+      // ─── Render interpolation between tick N-1 and tick N ──────────────────
+      // The integration above only advances on 33.3 ms boundaries; without this
+      // blend the kart held its pose on non-tick frames and jumped ~21 wu on
+      // tick frames (visible self-kart jitter at any refresh rate above 30 Hz).
+      // alpha = fraction of the next tick already elapsed (accumulator drains
+      // to < TICK_DT above, so alpha ∈ [0, 1)). Reconciliation shifts both
+      // anchors identically, so the blend never re-exposes a rebase as a kink.
+      const prevTick = prevTickRef.current;
+      const renderAlpha = predictAccumRef.current / CLIENT_SURF_TICK_DT;
+      interpX = prevTick.x + (pred.x - prevTick.x) * renderAlpha;
+      interpZ = prevTick.z + (pred.z - prevTick.z) * renderAlpha;
+      interpRot = lerpAngle(prevTick.rot, pred.rot, renderAlpha);
       interpVx = pred.vx;
       interpVz = pred.vz;
       lastRotRef.current = interpRot;
 
-      // Publish the rendered predicted pose for the chase camera (one timebase).
-      selfPoseBus.x = pred.x;
-      selfPoseBus.z = pred.z;
-      selfPoseBus.rot = pred.rot;
+      // Publish the RENDERED (blended) pose for the chase camera — camera and
+      // body must share one timebase or the kart vibrates against the camera.
+      selfPoseBus.x = interpX;
+      selfPoseBus.z = interpZ;
+      selfPoseBus.rot = interpRot;
       selfPoseBus.valid = true;
       selfPoseBus.updatedAt = performance.now();
+
+      // Dev-only render-pose probe — lets the headless harness measure
+      // per-frame motion deltas (smoothness), not just reconciliation error.
+      // Mutates one preallocated object; DCE-stripped from prod bundles.
+      if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') {
+        const dw = window as typeof window & {
+          __REEF_RENDER_POSE?: { x: number; z: number; rot: number; at: number };
+        };
+        if (!dw.__REEF_RENDER_POSE) dw.__REEF_RENDER_POSE = { x: 0, z: 0, rot: 0, at: 0 };
+        dw.__REEF_RENDER_POSE.x = interpX;
+        dw.__REEF_RENDER_POSE.z = interpZ;
+        dw.__REEF_RENDER_POSE.rot = interpRot;
+        dw.__REEF_RENDER_POSE.at = performance.now();
+      }
     }
 
     // ─── Apply interpolated/predicted XZ transform to groupRef ────────────────
