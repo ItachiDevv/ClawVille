@@ -152,6 +152,23 @@ export function useActivityWs(opts: UseActivityWsOptions): UseActivityWsResult {
       }
       wsRef.current = ws;
 
+      // Clock-offset ping loop. MUST NOT start before the server has
+      // processed our auth frame: the hub's `onMessage` is async and
+      // unserialized, so a ping sent right after auth races the hub's
+      // ~200ms identity DB lookup inside `registerConnection` — the hub
+      // sees a pre-auth non-auth frame and closes 4001 `auth required`
+      // (protocol §3.2: first frame must be auth). The hub sends NOTHING
+      // until registration succeeds, so "any server frame received" is
+      // proof auth completed — that's the trigger below in `onmessage`.
+      // Until the first pong, snapshot reconciliation dead-reckons (its
+      // designed fallback), so the ~1 RTT priming delay costs nothing.
+      const sendPing = () => {
+        const sentAt = Date.now();
+        lastPingSentAtRef.current = sentAt;
+        sendRef.current({ type: 'ping', sentAt });
+      };
+      let pingLoopStarted = false;
+
       ws.onopen = () => {
         setStatus('connected');
         setStoreStatus('connected');
@@ -165,20 +182,16 @@ export function useActivityWs(opts: UseActivityWsOptions): UseActivityWsResult {
         // pass the agent's sessionId via `sessionToken` prop.
         const authToken = sessionToken && sessionToken.length > 0 ? sessionToken : 'cookie';
         sendRef.current({ type: 'auth', sessionToken: authToken, shortCode });
-
-        // Prime the server-clock offset immediately, then refresh at 1 Hz.
-        // Snapshot reconciliation can use timestamp matching as soon as the
-        // first pong returns instead of dead-reckoning for the first second.
-        const sendPing = () => {
-          const sentAt = Date.now();
-          lastPingSentAtRef.current = sentAt;
-          sendRef.current({ type: 'ping', sentAt });
-        };
-        sendPing();
-        pingIntervalRef.current = setInterval(sendPing, PING_INTERVAL_MS);
       };
 
       ws.onmessage = (evt) => {
+        if (!pingLoopStarted) {
+          // First server frame ⇒ auth registration completed server-side;
+          // safe to start the 1 Hz clock-offset ping loop (see note above).
+          pingLoopStarted = true;
+          sendPing();
+          pingIntervalRef.current = setInterval(sendPing, PING_INTERVAL_MS);
+        }
         let frame: ServerFrame;
         try {
           // Server emits JSON text frames (confirmed against
