@@ -120,10 +120,15 @@ export interface Vec3 {
   z: number;
 }
 
-/** One arclength LUT entry: parametric t → accumulated arc distance s (wu). */
+/**
+ * One immutable arclength LUT sample. Position is cached alongside `t`/`s`
+ * because closest-point queries scan every sample at 30 Hz for every racer.
+ */
 interface LutEntry {
   t: number;
   s: number;
+  x: number;
+  z: number;
 }
 
 /**
@@ -246,7 +251,8 @@ export class ReefSpline {
   private readonly kStart: number;
 
   /**
-   * Arclength LUT. Monotonically increasing in both `t` and `s`.
+   * Arclength LUT. Monotonically increasing in both `t` and `s`; each entry
+   * also caches the immutable centerline position used by closest-point scans.
    * lut[0].s = 0, lut[LUT_SAMPLES].s ≈ totalArcLength.
    */
   private readonly lut: ReadonlyArray<LutEntry>;
@@ -380,7 +386,8 @@ export class ReefSpline {
     //
     // |dC/dt_global| = |dC/dtK| * kRange  (see derivative chain in module doc).
     const lutArr: LutEntry[] = new Array(LUT_SAMPLES + 1);
-    lutArr[0] = { t: 0, s: 0 };
+    const start = this.centerlineAt(0);
+    lutArr[0] = { t: 0, s: 0, x: start.x, z: start.z };
     let totalArc = 0;
     const dt = 1 / LUT_SAMPLES;
 
@@ -393,7 +400,13 @@ export class ReefSpline {
       const spd1 = this._speedAt(t1);
       const segArc = ((t1 - t0) / 6) * (spd0 + 4 * spdM + spd1);
       totalArc += segArc;
-      lutArr[i] = { t: t1, s: totalArc };
+      const center = this.centerlineAt(t1);
+      lutArr[i] = {
+        t: t1,
+        s: totalArc,
+        x: center.x,
+        z: center.z,
+      };
     }
 
     this.lut = lutArr;
@@ -547,14 +560,13 @@ export class ReefSpline {
     let bestDistSq = Infinity;
 
     for (let i = 0; i < this.lut.length; i++) {
-      const lt = this.lut[i].t;
-      const c = this.centerlineAt(lt);
-      const dx = c.x - p.x;
-      const dz = c.z - p.z;
+      const sample = this.lut[i];
+      const dx = sample.x - p.x;
+      const dz = sample.z - p.z;
       const dsq = dx * dx + dz * dz;
       if (dsq < bestDistSq) {
         bestDistSq = dsq;
-        bestT = lt;
+        bestT = sample.t;
       }
     }
 

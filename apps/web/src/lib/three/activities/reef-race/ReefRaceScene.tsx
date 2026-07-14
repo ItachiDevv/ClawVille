@@ -11,7 +11,7 @@
  *   - Route-isolated: mounts on its own Next.js route. `key={roomId}` on Canvas forces
  *     full WebGPU context recreation between rooms (per 3d-spec §3.1).
  *   - PerspectiveCamera in chase-cam mode — one frustum per client, not per player.
- *     Single shadow map regardless of racer count — sidesteps Iris Xe multi-frusta ceiling.
+ *     Shadows remain disabled, avoiding a second scene render per frame.
  *   - Chase-cam lerps behind the self player; spectators see the static track cam.
  *   - <PreCompilePipelines> fires compileAsync after first R3F commit.
  *   - Reads `useActivityStore` for entity/pickup/event state.
@@ -20,9 +20,9 @@
  *   - No drei Text/Billboard anywhere.
  *   - No InstancedMesh + ShaderMaterial anywhere.
  *   - No per-frame allocations (module-scope scratch vectors/matrices).
- *   - 1 shadow map at 512×512.
- *   - 0 post-processing passes.
- *   - Fog far (4500) < camera.far (5000). ✓
+ *   - 0 shadow maps.
+ *   - 1 half-resolution bloom pass.
+ *   - Fog far (22000) < camera.far (34000). ✓
  *   - matrixAutoUpdate=false on all static meshes (handled per-component).
  *
  * Performance budget: ≤70 draw calls / ≤220k tris.
@@ -69,6 +69,7 @@ import {
 } from './reef-race-config';
 import { selfPoseBus, SELF_POSE_BUS_STALE_MS } from './reef-race-self-bus';
 import type { ReefRaceEntity } from './reef-race-types';
+import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 
 // ─── v2 feature flag (mirror ReefRacePlayer) ──────────────────────────────────
 const USE_SPLINE_CAMERA = process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
@@ -519,6 +520,7 @@ export default function ReefRaceScene({ roomId, selfAvatarId = null }: ReefRaceS
       style={{ width: '100%', height: '100%' }}
       dpr={[1, 1.5]}
     >
+      <KTX2LoaderSetup />
       <SceneContents
         entities={entities ?? new Map()}
         selfAvatarId={selfAvatarId}
