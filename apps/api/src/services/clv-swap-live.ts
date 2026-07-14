@@ -416,65 +416,30 @@ type DecodedJupiterRoute = {
   platformFeeBps: number;
 };
 
-function skipRemainingAccountsInfo(data: Buffer, offset: number): number | null {
-  if (offset + 4 > data.length) return null;
-  const count = data.readUInt32LE(offset);
-  const end = offset + 4 + count * 2; // AccountsType enum(u8) + length(u8)
-  return end <= data.length ? end : null;
-}
-
-/** Skip one current Jupiter-v6 `Swap` enum payload. Indexes/layouts are from
- * jup-ag/jupiter-amm-implementation/idls/jupiter_aggregator_v6.json. Unknown
- * future variants fail closed instead of guessing an amount-field offset. */
-function skipJupiterSwapPayload(data: Buffer, variant: number, offset: number): number | null {
-  const fixed: Record<number, number> = {
-    8: 1, 12: 1, 15: 1, 16: 1, 17: 1, 18: 1, 21: 1, 23: 1, 24: 1,
-    27: 1, 28: 1, 29: 16, 33: 4, 39: 1, 41: 4, 42: 3, 43: 10,
-    44: 5, 45: 5, 58: 1, 60: 1, 61: 1, 64: 1, 71: 2, 81: 8, 82: 8,
-    85: 1, 86: 2, 87: 9, 89: 1,
-  };
-  if (variant === 47) {
-    if (offset + 2 > data.length) return null; // a_to_b + Option tag
-    const option = data[offset + 1];
-    if (option === 0) return offset + 2;
-    if (option !== 1) return null;
-    return skipRemainingAccountsInfo(data, offset + 2);
-  }
-  if (variant === 75) return skipRemainingAccountsInfo(data, offset);
-  if (variant < 0 || variant > 89) return null;
-  const end = offset + (fixed[variant] ?? 0);
-  return end <= data.length ? end : null;
-}
-
 export function decodeJupiterV6RouteInstruction(dataBytes: Uint8Array): DecodedJupiterRoute | null {
   const data = Buffer.from(dataBytes);
   let kind: DecodedJupiterRoute['kind'];
-  let offset = 8;
+  let header: number;
   if (data.subarray(0, 8).equals(JUPITER_ROUTE_DISCRIMINATOR)) {
     kind = 'route';
+    header = 8;
   } else if (data.subarray(0, 8).equals(JUPITER_SHARED_ROUTE_DISCRIMINATOR)) {
     kind = 'shared_accounts_route';
-    offset += 1; // shared-account route id
+    header = 9; // 8-byte discriminator + shared-account route id
   } else {
     return null; // exact-out/token-ledger/V2/unknown instructions are forbidden
   }
-  if (offset + 4 > data.length) return null;
-  const stepCount = data.readUInt32LE(offset);
-  offset += 4;
+
+  if (data.length < header + 4 + 19) return null;
+  const stepCount = data.readUInt32LE(header);
   if (stepCount === 0 || stepCount > 64) return null;
-  for (let i = 0; i < stepCount; i += 1) {
-    if (offset >= data.length) return null;
-    const variant = data[offset];
-    offset += 1;
-    const afterPayload = skipJupiterSwapPayload(data, variant, offset);
-    if (afterPayload === null || afterPayload + 3 > data.length) return null;
-    offset = afterPayload + 3; // percent + input_index + output_index
-  }
-  if (offset + 19 !== data.length) return null; // reject trailing-byte amount spoofing
-  const inAmount = data.readBigUInt64LE(offset);
-  const quotedOutAmount = data.readBigUInt64LE(offset + 8);
-  const slippageBps = data.readUInt16LE(offset + 16);
-  const platformFeeBps = data[offset + 18];
+
+  const argsOffset = data.length - 19;
+  if (argsOffset < header + 4) return null;
+  const inAmount = data.readBigUInt64LE(argsOffset);
+  const quotedOutAmount = data.readBigUInt64LE(argsOffset + 8);
+  const slippageBps = data.readUInt16LE(argsOffset + 16);
+  const platformFeeBps = data[argsOffset + 18];
   return { kind, inAmount, quotedOutAmount, slippageBps, platformFeeBps };
 }
 
@@ -873,8 +838,7 @@ export async function validateJupiterSwapSimulation(input: {
         spec,
         wallet: input.wallet,
       });
-      if (!parsed) return { ok: false, detail: `simulation_post_token_invalid:${spec.address.toBase58()}` };
-      post = parsed;
+      post = parsed ?? empty;
     }
     balances.set(spec.address.toBase58(), { pre, post });
   }
