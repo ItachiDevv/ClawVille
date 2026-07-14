@@ -1,8 +1,8 @@
 # Money Rails — Canonical Operations Reference
 
-> **Last Audited: 2026-07-14** (E1/E2 + E3 exit rail built locally, GATED DARK; no migration applied, no deploy/sign-off. The prior four rails remain live at master `a0b43c1c`).
+> **Last Audited: 2026-07-14** (CLV cashout mechanism correction built locally and awaiting Fable review: one Jupiter USDC→CLV transaction, ≤$100 clips, no DexScreener money gate, pre-sign simulation. Uncommitted/un-deployed; no migration/sign-off. E1/E2 + E3 remain built locally and GATED DARK. The prior four rails remain live at master `a0b43c1c`).
 > Authoritative for agents and operators. Precedence: live code > this doc + ARCHITECTURE.md > memory files.
-> Deep architecture detail lives in `ARCHITECTURE.md` entries (20) agent-pay, (21) CLV cashout, (22) reconcile-apply, and (25) E1/E2/E3.
+> Deep architecture detail lives in `ARCHITECTURE.md` entries (20) agent-pay, (21)/(26) CLV cashout, (22) reconcile-apply, and (25) E1/E2/E3.
 > NEVER print, log, or commit private key material. Pubkeys only in docs.
 
 ## 1. Money rails
@@ -10,7 +10,7 @@
 | # | Rail | Entry point | Gate/flag | Proof |
 |---|------|-------------|-----------|-------|
 | ① | vCLAW on-ramp (USDC → BOUGHT vCLAW) | `POST /api/x402/topup/*` (x402 v2 exact-SVM) | `X402_TOPUP_NETWORK=mainnet` | $0.10 settled prod mainnet 2026-07-13 |
-| ② | CLV cashout (settled checkouts → treasury CLV buys) | `clv-swap-live.ts` worker, boots when `CLV_SWAP_EXECUTE=true` | Flag ON prod 2026-07-14; live-worker start failure is boot-FATAL | Full ladder on mainnet-staging: checkout `5pjJ88QT…` → sweep `39xfgu3y…` → clip `5BeCGakJ…` ($0.10 → 1,483.50 CLV) |
+| ② | CLV cashout (settled checkouts → treasury CLV buys) | `clv-swap-live.ts` worker, boots when `CLV_SWAP_EXECUTE=true`; one Jupiter USDC→CLV tx per ≤$100 clip | Flag ON prod 2026-07-14; live-worker start failure is boot-FATAL. Mechanism correction is local/un-deployed | Historical full ladder on mainnet-staging: checkout `5pjJ88QT…` → sweep `39xfgu3y…` → clip `5BeCGakJ…` ($0.10 → 1,483.50 CLV); this is not sign-off on the local correction |
 | ③ | Reconcile APPLY (chain-evidence resolution of stuck rows) | `apps/api/scripts/x402/reconcile-checkouts.ts` | DOUBLE consent: env `RECONCILE_APPLY=true` (ON prod) **AND** CLI `--apply`. Env alone is inert. | 114 unit tests + clean live scans |
 | ④ | Agent↔agent USDC pay + paid routes | `POST /api/agent-pay`; paid `POST /api/v2/agent/expert-consult` ($0.05), `GET /api/v2/agent/analytics/:agentId` ($0.01) | `AGENT_PAY_MAX_USD_CENTS` (default $10) | 13/13 smokes on devnet + mainnet-staging, on-chain conservation proof; PROTOCOL_VERSION 17 |
 | E3 | EARNED vCLAW exit → market-bought CLV → earner custody | `POST /api/tokenomics/redeem`; `GET /api/tokenomics/redeem/:id`; gated worker | **BUILT-GATED**: route + service require literal `TOKENOMICS_REDEEM_ENABLED=true`; default OFF. G2 funded adversarial smoke + G3 founder legal/MSB/MT/KYC/sanctions clearance required | Verification, staging/mainnet evidence, and founder sign-off pending |
@@ -34,11 +34,12 @@
 3. **Ambiguous ⇒ reconcile, NEVER auto-retry**: any send whose money-state is unknown strands the row for evidence-based resolution.
 4. **Chain evidence before mutating a captured fill**: `getSignatureStatuses`/parseTransactions NOT-FOUND **after blockhash expiry**, evidence stamped into the reset. Never guess claim ids — read them from the row.
 5. **Zero-clip pre-SIGN stops self-release** (since `296651f0`): claim released to `planned` only when nothing signed, nothing sent, zero captured fills — enforced BOTH in-memory and by the DB CAS (`jsonb_array_length(tx_signatures)=0`).
-6. **Gate algebra** (since `296651f0`): quote passes iff `outAmount ≥ oracleMid × (1 − CLV_SWAP_ORACLE_TOLERANCE_BPS)` (default 300); untrusted wire threshold must clear `mid × (1−t) × (1−slippage)`. NEVER compare Jupiter's threshold to an oracle floor built with the same slippage — the (1−s) cancels and the gate becomes unsatisfiable.
-7. **Exactly-once by schema**: UNIQUE `source_ref`, partial-UNIQUE `tx_signature`, EARNED mints inside the settled-flip transaction.
-8. **Money test ladder**: devnet-staging → mainnet-staging → mainnet-prod. Prod IS mainnet. No rung claimed without on-chain signatures.
-9. **EARNED dollar conservation**: 1 vCLAW = 10,000 micro-USDC. Redeemable means EARNED ∧ house-backed ∧ payer-verified ∧ vested ∧ not clawed. Current on-chain custody must cover network-partitioned outstanding backing + retained fees + unswept buy principal; captured-ambiguous funding makes solvency indeterminate. Admission and funding share one custody mutex + Postgres advisory lock.
-10. **No dead economics**: no entry rake, treasury split, dividend pool, pro-rata P/E rate, 20% reserve, or fixed CLV anchor. The sole loop fee is 444 bps at exit; CLV floats.
+6. **Single Jupiter clip contract**: each clip is `min(remaining, $100 USDC)` and uses ONE ExactIn USDC→CLV `/quote` + `/swap`. Jupiter may use SOL internally and owns wrapping/unwrapping in that same transaction; ClawVille never constructs wSOL or split legs. DexScreener is `/dash` telemetry only, never a buy gate or sizing input. Refuse a quote whose `priceImpactPct` exceeds `CLV_SWAP_MAX_IMPACT_BPS`; bind the decoded Jupiter instruction's exact input, quoted output, slippage, and zero platform fee so its minimum output is enforced on-chain.
+7. **Pre-sign transaction proof**: v0 payer/single-signer/no-pre-signature remain mandatory; every idempotent ATA setup must create a canonical ATA owned by the swap wallet; priority cost is bounded by `cuLimit × cuPrice / 1e6 ≤ 1,000,000 lamports` with `cuLimit ≤ 1.4M`; no foreign writable token account controlled by the wallet is allowed. Before signing, simulation must prove CLV ATA increase ≥ decoded minimum-out, USDC ATA decrease ≤ the clip, and no other wallet-owned token account decreases. Any failure is pre-sign and releases only an empty claim.
+8. **Exactly-once by schema**: UNIQUE `source_ref`, partial-UNIQUE `tx_signature`, EARNED mints inside the settled-flip transaction.
+9. **Money test ladder**: devnet-staging → mainnet-staging → mainnet-prod. Prod IS mainnet. No rung claimed without on-chain signatures.
+10. **EARNED dollar conservation**: 1 vCLAW = 10,000 micro-USDC. Redeemable means EARNED ∧ house-backed ∧ payer-verified ∧ vested ∧ not clawed. Current on-chain custody must cover network-partitioned outstanding backing + retained fees + unswept buy principal; captured-ambiguous funding makes solvency indeterminate. Admission and funding share one custody mutex + Postgres advisory lock.
+11. **No dead economics**: no entry rake, treasury split, dividend pool, pro-rata P/E rate, 20% reserve, or fixed CLV anchor. The sole loop fee is 444 bps at exit; CLV floats.
 
 ## 4. Runbooks
 
