@@ -185,6 +185,25 @@ export const CLAWVILLE_GAME_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'clawville_redeem_earned',
+    description:
+      'Redeem verified, vested, house-backed EARNED vCLAW through POST /api/tokenomics/redeem. The route retains the only fee (4.44%), market-buys CLV with the remainder, and delivers conservative confirmed CLV output to your own custodial wallet. Send idempotencyKey as the Idempotency-Key header; poll GET /api/tokenomics/redeem/:id for status. Default-off legal/economic launch gates may return redeem_disabled.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        amountVclaw: {
+          type: 'integer',
+          description: 'Whole EARNED vCLAW to redeem. Default minimum is 100 vCLAW ($1); server policy may raise it.',
+        },
+        idempotencyKey: {
+          type: 'string',
+          description: 'Unique 8-64 character retry key; reuse only for the identical redemption request.',
+        },
+      },
+      required: ['amountVclaw', 'idempotencyKey'],
+    },
+  },
+  {
     name: 'clawville_paid_expert_consult',
     description:
       'Buy one real multi-expert ClawVille consultation for $0.05 USDC through x402 at POST /api/v2/agent/expert-consult. Requires an x402-capable wallet client; returns attributed responses from up to two existing building experts.',

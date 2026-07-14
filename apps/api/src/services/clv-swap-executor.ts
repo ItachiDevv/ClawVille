@@ -84,7 +84,26 @@ export const DEFAULT_CLIP_SPACING_MS = 60_000;
 const DEFAULT_WORKER_POLL_MS = 300_000; // 5 min
 const MIN_WORKER_POLL_MS = 30_000;
 /** Total-function guard: refuse plans that would explode into absurd clip counts. */
-const MAX_PLANNED_CLIPS = 10_000n;
+export const MAX_PLANNED_CLIPS = 10_000n;
+
+/**
+ * Shared dry/live total-function guard. `completedClips` is the number already
+ * confirmed, `remainingMicro` includes the next clip, and `nextClipMicro` is
+ * the safe size derived from the current oracle depth. The live worker calls
+ * this before asking Jupiter for the next quote, so clip 10,001 can never be
+ * constructed or signed even when liquidity shrinks between clips.
+ */
+export function wouldExceedMaxPlannedClips(
+  completedClips: number,
+  remainingMicro: bigint,
+  nextClipMicro: bigint,
+): boolean {
+  if (!Number.isSafeInteger(completedClips) || completedClips < 0) return true;
+  if (remainingMicro <= 0n) return false;
+  if (nextClipMicro <= 0n) return true;
+  const remainingClips = (remainingMicro + nextClipMicro - 1n) / nextClipMicro;
+  return BigInt(completedClips) + remainingClips > MAX_PLANNED_CLIPS;
+}
 
 /** `CLV_SWAP_MAX_IMPACT_BPS` — integer bps, floor 1 (spec), cap 10_000 (=100%). */
 export function resolveClvSwapMaxImpactBps(): number {

@@ -14,10 +14,9 @@
  *      retried; a definitive on-chain failure goes to 'failed'.
  *   3. EXECUTION: funding-swept precondition; ATOMIC CLAIM before decrypt
  *      (double-claim + restart-mid-tick refuse without touching custody);
- *      PER-CLIP oracle re-fetch (a depth change resizes the NEXT clip);
- *      oracle-unavailable HARD-STOP (zero Jupiter calls); quoted output must
- *      clear the independent ORACLE-tolerance floor while Jupiter slippage
- *      remains the on-chain threshold; zero-clip pre-sign stops release the
+ *      fixed <=$100 clips; Jupiter price-impact refusal; Jupiter's decoded
+ *      slippage threshold remains the on-chain minimum; route-agnostic
+ *      pre-sign simulation proves wallet token deltas; zero-clip pre-sign stops release the
  *      claim, but post-sign/partial states stay executing; the swap tx payer
  *      must be OUR wallet; capture-before-send per clip; conservation
  *      (Σ clips == queued amount, BigInt-exact).
@@ -46,15 +45,19 @@ delete process.env.CLV_SWAP_EXECUTE; // the module-load gate on the import graph
 
 import { describe, it, expect, beforeEach, afterAll } from 'bun:test';
 import {
+  AddressLookupTableAccount,
+  ComputeBudgetProgram,
   Connection,
   Keypair,
   PublicKey,
+  SystemProgram,
+  TransactionInstruction,
   TransactionMessage,
   VersionedTransaction,
 } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { USDC_MINT_MAINNET, SOLANA_MAINNET_CAIP2 } from '../x402-payai';
-import { CLV_MINT, type ClvPriceQuote } from '../clv-price-oracle';
+import { CLV_MINT } from '../clv-price-oracle';
 // Type-only (erased at runtime — the runtime import below controls load order).
 import type { ClvSwapLiveDb, ClvSwapLiveDeps } from '../clv-swap-live';
 
@@ -67,10 +70,14 @@ const {
   requireLiveClvSwapExecution,
   assertMainnetRealMoneyContext,
   sizeClipMicro,
-  oracleMinOutClvAtomic,
-  resolveClvSwapOracleToleranceBps,
+  resolveClvSwapSlippageBps,
   resolveJupiterBaseUrl,
   resolveClvSwapExecutingStaleMs,
+  findUsdcAta,
+  findClvAta,
+  decodeJupiterV6RouteInstruction,
+  jupiterExactInMinimumOut,
+  validateJupiterSwapSimulation,
 } = await import('../clv-swap-live');
 
 if (!DB_URL_WAS_SET) {
@@ -83,36 +90,312 @@ const merchantKp = Keypair.generate();
 const strangerKp = Keypair.generate();
 const SRC = '11111111-1111-4111-8111-111111111111'; // the settled checkout id
 const PRICE = 0.00007;
+const JUPITER_ROUTE_DISCRIMINATOR = Buffer.from([229, 23, 203, 151, 122, 227, 173, 42]);
 
-function quoteOf(
-  depth: number | null,
-  opts: { available?: boolean; quoteUsd?: number | null } = {},
-): ClvPriceQuote {
-  const available = opts.available ?? true;
-  const quoteUsd = opts.quoteUsd === undefined ? (available ? PRICE : null) : opts.quoteUsd;
-  return {
-    spotUsd: quoteUsd,
-    twap30mUsd: quoteUsd,
-    quoteUsd,
-    asOf: new Date().toISOString(),
-    source: 'dexscreener',
-    stale: false,
-    available,
-    poolLiquidityUsd: depth,
-    liquidityAsOf: depth === null ? null : new Date().toISOString(),
+function buildSwapTxB64(
+  payer: PublicKey,
+  amount = '1000000',
+  outAmount = '1000000',
+  slippageBps = 100,
+  opts: {
+    arbitraryProgram?: boolean;
+    extraSigner?: boolean;
+    includeAtaSetup?: boolean;
+    duplicateAtaSetup?: boolean;
+    realisticRoute?: boolean;
+    multiAtaSetup?: boolean;
+    token2022Close?: boolean;
+    foreignAtaOwner?: PublicKey;
+    computeUnitLimit?: number;
+    computeUnitPrice?: number;
+    maliciousWalletTokenAccount?: PublicKey;
+  } = {},
+): {
+  transaction: string;
+  lookupTables: AddressLookupTableAccount[];
+  walletAtas: Array<{ address: PublicKey; mint: PublicKey; tokenProgram: PublicKey }>;
+} {
+  const jupiter = new PublicKey('JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4');
+  const tokenProgram = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+  const token2022 = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
+  const eventAuthority = new PublicKey('D8cy77BBepLMngZx6ZukaTff5hCt1HrWyKk3Hnd9oitf');
+  const [programAuthority] = PublicKey.findProgramAddressSync([Buffer.from('authority')], jupiter);
+  const u32 = Buffer.alloc(4);
+  u32.writeUInt32LE(opts.realisticRoute ? 2 : 1);
+  const tail = Buffer.alloc(19);
+  tail.writeBigUInt64LE(BigInt(amount), 0);
+  tail.writeBigUInt64LE(BigInt(outAmount), 8);
+  tail.writeUInt16LE(slippageBps, 16);
+  const data = Buffer.concat([
+    Buffer.from([193, 32, 155, 51, 65, 214, 156, 129]),
+    Buffer.from([0]),
+    u32,
+    Buffer.from([7, 100, 0, 1]), // Raydium route step
+    ...(opts.realisticRoute ? [Buffer.from([7, 100, 1, 2])] : []),
+    tail,
+  ]);
+  const realisticRouteAccount = Keypair.generate().publicKey;
+  const ix = new TransactionInstruction({
+    programId: jupiter,
+    keys: opts.realisticRoute ? [
+      { pubkey: token2022, isSigner: false, isWritable: false },
+      { pubkey: payer, isSigner: true, isWritable: false },
+      { pubkey: findUsdcAta(payer), isSigner: false, isWritable: true },
+      { pubkey: findClvAta(payer), isSigner: false, isWritable: true },
+      { pubkey: findClvAta(payer), isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(CLV_MINT), isSigner: false, isWritable: false },
+      { pubkey: jupiter, isSigner: false, isWritable: false },
+      { pubkey: eventAuthority, isSigner: false, isWritable: false },
+      { pubkey: jupiter, isSigner: false, isWritable: false },
+      // Current Jupiter V1 routes legitimately repeat these in remaining metas.
+      { pubkey: payer, isSigner: false, isWritable: false },
+      { pubkey: findClvAta(payer), isSigner: false, isWritable: true },
+      { pubkey: realisticRouteAccount, isSigner: false, isWritable: true },
+      ...(opts.maliciousWalletTokenAccount
+        ? [{ pubkey: opts.maliciousWalletTokenAccount, isSigner: false, isWritable: true }]
+        : []),
+    ] : [
+      { pubkey: tokenProgram, isSigner: false, isWritable: false },
+      { pubkey: programAuthority, isSigner: false, isWritable: false },
+      { pubkey: payer, isSigner: true, isWritable: false },
+      { pubkey: findUsdcAta(payer), isSigner: false, isWritable: true },
+      { pubkey: Keypair.generate().publicKey, isSigner: false, isWritable: true },
+      { pubkey: Keypair.generate().publicKey, isSigner: false, isWritable: true },
+      { pubkey: findClvAta(payer), isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(USDC_MINT_MAINNET), isSigner: false, isWritable: false },
+      { pubkey: new PublicKey(CLV_MINT), isSigner: false, isWritable: false },
+      { pubkey: jupiter, isSigner: false, isWritable: false },
+      { pubkey: token2022, isSigner: false, isWritable: false },
+      { pubkey: eventAuthority, isSigner: false, isWritable: false },
+      { pubkey: jupiter, isSigner: false, isWritable: false },
+      ...(opts.extraSigner
+        ? [{ pubkey: strangerKp.publicKey, isSigner: true, isWritable: false }]
+        : []),
+    ],
+    data,
+  });
+  const ataProgram = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
+  const nativeMint = new PublicKey('So11111111111111111111111111111111111111112');
+  const intermediateMint = Keypair.generate().publicKey;
+  const ataOwner = opts.foreignAtaOwner ?? payer;
+  const makeAtaSetup = (mint: PublicKey, program: PublicKey, owner = ataOwner) => {
+    const [address] = PublicKey.findProgramAddressSync(
+      [owner.toBuffer(), program.toBuffer(), mint.toBuffer()],
+      ataProgram,
+    );
+    return {
+      spec: { address, mint, tokenProgram: program },
+      ix: new TransactionInstruction({
+        programId: ataProgram,
+        keys: [
+          { pubkey: payer, isSigner: true, isWritable: true },
+          { pubkey: address, isSigner: false, isWritable: true },
+          { pubkey: owner, isSigner: false, isWritable: false },
+          { pubkey: mint, isSigner: false, isWritable: false },
+          { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+          { pubkey: program, isSigner: false, isWritable: false },
+        ],
+        data: Buffer.from([1]),
+      }),
+    };
   };
-}
-
-function buildSwapTxB64(payer: PublicKey): string {
+  const clvSetup = makeAtaSetup(new PublicKey(CLV_MINT), token2022);
+  const intermediateSetup = makeAtaSetup(intermediateMint, tokenProgram);
+  const nativeSetup = makeAtaSetup(nativeMint, tokenProgram);
+  const token2022TempSetup = makeAtaSetup(Keypair.generate().publicKey, token2022);
+  const walletAtas = opts.multiAtaSetup
+    ? [
+        clvSetup.spec, intermediateSetup.spec, nativeSetup.spec,
+        ...(opts.token2022Close ? [token2022TempSetup.spec] : []),
+      ]
+    : opts.includeAtaSetup || opts.duplicateAtaSetup
+      ? [clvSetup.spec]
+      : [];
+  const closeNative = new TransactionInstruction({
+    programId: tokenProgram,
+    keys: [
+      { pubkey: nativeSetup.spec.address, isSigner: false, isWritable: true },
+      { pubkey: payer, isSigner: false, isWritable: true },
+      { pubkey: payer, isSigner: true, isWritable: false },
+    ],
+    data: Buffer.from([9]),
+  });
+  const wrapNative = SystemProgram.transfer({
+    fromPubkey: payer,
+    toPubkey: nativeSetup.spec.address,
+    lamports: 1_000_000,
+  });
+  const closeToken2022Temp = new TransactionInstruction({
+    programId: token2022,
+    keys: [
+      { pubkey: token2022TempSetup.spec.address, isSigner: false, isWritable: true },
+      { pubkey: payer, isSigner: false, isWritable: true },
+      { pubkey: payer, isSigner: true, isWritable: false },
+    ],
+    data: Buffer.from([9]),
+  });
+  const instructions = [
+    ...(opts.realisticRoute
+      ? [
+          ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1_000 }),
+        ]
+      : []),
+    ...(opts.computeUnitLimit !== undefined
+      ? [ComputeBudgetProgram.setComputeUnitLimit({ units: opts.computeUnitLimit })]
+      : []),
+    ...(opts.computeUnitPrice !== undefined
+      ? [ComputeBudgetProgram.setComputeUnitPrice({ microLamports: opts.computeUnitPrice })]
+      : []),
+    ...(opts.includeAtaSetup ? [clvSetup.ix] : []),
+    ...(opts.duplicateAtaSetup ? [clvSetup.ix, clvSetup.ix] : []),
+    ...(opts.multiAtaSetup
+      ? [
+          clvSetup.ix, intermediateSetup.ix, nativeSetup.ix,
+          ...(opts.token2022Close ? [token2022TempSetup.ix] : []),
+        ]
+      : []),
+    ...(opts.multiAtaSetup ? [wrapNative] : []),
+    ...(opts.arbitraryProgram
+      ? [SystemProgram.transfer({ fromPubkey: payer, toPubkey: strangerKp.publicKey, lamports: 1 })]
+      : []),
+    ix,
+    ...(opts.token2022Close ? [closeToken2022Temp] : []),
+    ...(opts.multiAtaSetup ? [closeNative] : []),
+  ];
+  const lookupTables = opts.realisticRoute
+    ? [new AddressLookupTableAccount({
+        key: Keypair.generate().publicKey,
+        state: {
+          deactivationSlot: 0xffff_ffff_ffff_ffffn,
+          lastExtendedSlot: 0,
+          lastExtendedSlotStartIndex: 0,
+          authority: undefined,
+          addresses: [realisticRouteAccount, ...(opts.maliciousWalletTokenAccount
+            ? [opts.maliciousWalletTokenAccount]
+            : [])],
+        },
+      })]
+    : [];
   const msg = new TransactionMessage({
     payerKey: payer,
     recentBlockhash: bs58.encode(new Uint8Array(32).fill(9)),
-    instructions: [],
-  }).compileToV0Message();
-  return Buffer.from(new VersionedTransaction(msg).serialize()).toString('base64');
+    instructions,
+  }).compileToV0Message(lookupTables);
+  return {
+    transaction: Buffer.from(new VersionedTransaction(msg).serialize()).toString('base64'),
+    lookupTables,
+    walletAtas,
+  };
 }
 
 // ── the injectable harness ───────────────────────────────────────────────────
+async function simulateClosedPostAccount(
+  scenario: 'transient_fresh' | 'canonical_clv' | 'transient_with_balance',
+) {
+  const wallet = Keypair.generate().publicKey;
+  const tokenProgram = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+  const token2022Program = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
+  const ataProgram = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
+  const transientMint = new PublicKey('So11111111111111111111111111111111111111112');
+  const [transientAta] = PublicKey.findProgramAddressSync(
+    [wallet.toBuffer(), tokenProgram.toBuffer(), transientMint.toBuffer()],
+    ataProgram,
+  );
+  const usdcAta = findUsdcAta(wallet);
+  const clvAta = findClvAta(wallet);
+  const tokenInfo = (mint: PublicKey, program: PublicKey, amount: bigint) => {
+    const data = Buffer.alloc(165);
+    mint.toBuffer().copy(data, 0);
+    wallet.toBuffer().copy(data, 32);
+    data.writeBigUInt64LE(amount, 64);
+    data[108] = 1;
+    return {
+      data,
+      executable: false,
+      lamports: 2_039_280,
+      owner: program,
+      rentEpoch: 0,
+    };
+  };
+  const postTokenInfo = (mint: PublicKey, program: PublicKey, amount: bigint) => {
+    const info = tokenInfo(mint, program, amount);
+    return {
+      ...info,
+      data: [info.data.toString('base64'), 'base64'],
+      owner: program.toBase58(),
+    };
+  };
+  const closedPostInfo = {
+    data: ['', 'base64'],
+    executable: false,
+    lamports: 0,
+    owner: SystemProgram.programId.toBase58(),
+    rentEpoch: 0,
+  };
+  const connection = {
+    getMultipleAccountsInfo: async (addresses: PublicKey[]) => addresses.map((address) => {
+      if (address.equals(transientAta)) {
+        return scenario === 'transient_with_balance'
+          ? tokenInfo(transientMint, tokenProgram, 10n)
+          : null;
+      }
+      if (address.equals(usdcAta)) {
+        return tokenInfo(new PublicKey(USDC_MINT_MAINNET), tokenProgram, 100_000n);
+      }
+      if (address.equals(clvAta)) {
+        return tokenInfo(new PublicKey(CLV_MINT), token2022Program, 0n);
+      }
+      if (address.equals(wallet)) {
+        return {
+          data: Buffer.alloc(0), executable: false, lamports: 50_000_000,
+          owner: SystemProgram.programId, rentEpoch: 0,
+        };
+      }
+      return null;
+    }),
+    simulateTransaction: async (_transaction: VersionedTransaction, config: {
+      accounts: { addresses: string[] };
+    }) => ({
+      context: { slot: 1 },
+      value: {
+        err: null,
+        accounts: config.accounts.addresses.map((address) => {
+          if (address === transientAta.toBase58()) return closedPostInfo;
+          if (address === usdcAta.toBase58()) {
+            return postTokenInfo(new PublicKey(USDC_MINT_MAINNET), tokenProgram, 61_776n);
+          }
+          if (address === clvAta.toBase58()) {
+            return scenario === 'canonical_clv'
+              ? closedPostInfo
+              : postTokenInfo(new PublicKey(CLV_MINT), token2022Program, 1_000n);
+          }
+          if (address === wallet.toBase58()) {
+            return {
+              data: ['', 'base64'], executable: false, lamports: 49_995_000,
+              owner: SystemProgram.programId.toBase58(), rentEpoch: 0,
+            };
+          }
+          return null;
+        }),
+      },
+    }),
+  } as unknown as Connection;
+  const transaction = VersionedTransaction.deserialize(
+    Buffer.from(buildSwapTxB64(wallet).transaction, 'base64'),
+  );
+  const result = await validateJupiterSwapSimulation({
+    transaction,
+    wallet,
+    connection,
+    inputAmount: 38_224n,
+    minimumOutAmount: 1_000n,
+    priorityFeeLamports: 0n,
+    walletAtas: [{ address: transientAta, mint: transientMint, tokenProgram }],
+  });
+  return { result, transientAta };
+}
+
 interface Harness {
   deps: ClvSwapLiveDeps;
   log: string[];
@@ -121,6 +404,7 @@ interface Harness {
   quoteRequests: Array<{ amount: string; slippageBps: string }>;
   swapRequests: Array<Record<string, unknown>>;
   sentRaw: Uint8Array[];
+  lookupRequests: PublicKey[];
   sleeps: number[];
   alerts: Array<Record<string, unknown>>;
 }
@@ -129,13 +413,41 @@ function makeHarness(opts: {
   queueRows?: Array<Record<string, unknown>>;
   fundingRows?: Array<Record<string, unknown>>;
   checkouts?: Array<Record<string, unknown>>;
-  prices?: ClvPriceQuote[];
   quoteAmounts?: { outAmountAtomic: string; otherAmountThresholdAtomic: string };
+  priceImpactPct?: string;
+  quoteRouteFee?: 'absent' | 'valid' | 'amount_only' | 'mint_only' | 'excessive' | 'wrong_mint';
   swapTxPayer?: PublicKey;
+  swapTxMode?:
+    | 'valid'
+    | 'arbitrary_program'
+    | 'extra_signer'
+    | 'wrong_amount'
+    | 'duplicate_ata'
+    | 'realistic_route'
+    | 'multi_ata'
+    | 'token2022_close'
+    | 'foreign_ata'
+    | 'priority_within_budget'
+    | 'priority_over_budget'
+    | 'priority_without_limit'
+    | 'malicious_wallet_token'
+    | 'malicious_wallet_delegate'
+    | 'malicious_wallet_close';
+  clvAtaExists?: boolean;
+  clvAtaState?: number;
   merchantUsdcAtomic?: string;
+  merchantTokenState?: number;
   sendThrows?: boolean;
+  signFundingThrows?: boolean;
+  captureSweepThrows?: boolean;
   loadSwapThrows?: boolean;
   confirmOutcome?: 'confirmed' | 'failed';
+  markFundingSweptLost?: boolean;
+  simulateClvShortfall?: boolean;
+  simulateOtherTokenDecrease?: boolean;
+  simulateErr?: boolean;
+  simulateWalletLamportDecrease?: number;
+  simulateMalformedLamports?: boolean;
 } = {}): Harness {
   const log: string[] = [];
   const queue = new Map<string, Record<string, unknown>>();
@@ -145,14 +457,17 @@ function makeHarness(opts: {
   const checkouts = new Map<string, Record<string, unknown>>();
   for (const c of opts.checkouts ?? []) checkouts.set(c.id as string, { ...c });
 
-  const prices = [...(opts.prices ?? [quoteOf(22_000)])];
-  let priceIdx = 0;
-
   const quoteRequests: Harness['quoteRequests'] = [];
   const swapRequests: Harness['swapRequests'] = [];
   const sentRaw: Uint8Array[] = [];
   const sleeps: number[] = [];
   const alerts: Array<Record<string, unknown>> = [];
+  const maliciousWalletTokenAccount = Keypair.generate().publicKey;
+  let activeLookupTables: AddressLookupTableAccount[] = [];
+  let activeWalletAtas: Array<{ address: PublicKey; mint: PublicKey; tokenProgram: PublicKey }> = [];
+  let activeInputAmount = 0n;
+  let activeMinimumOut = 0n;
+  const lookupRequests: PublicKey[] = [];
 
   const findFunding = (fid: string) =>
     [...funding.values()].find((f) => f.id === fid) as Record<string, unknown> | undefined;
@@ -257,13 +572,14 @@ function makeHarness(opts: {
     async releaseFundingClaim(fid: string, claimId: string) {
       log.push('releaseFundingClaim');
       const f = findFunding(fid);
-      if (f && f.claimId === claimId && f.status === 'sweeping') {
+      if (f && f.claimId === claimId && f.status === 'sweeping' && !f.sweepTxSignature) {
         f.status = 'pending';
         f.claimId = null;
       }
     },
     async captureSweepSignature(fid: string, claimId: string, signature: string) {
       log.push('captureSweepSignature');
+      if (opts.captureSweepThrows) throw new Error('capture store unavailable');
       const f = findFunding(fid);
       if (!f || f.claimId !== claimId || f.status !== 'sweeping' || f.sweepTxSignature) {
         return false;
@@ -273,6 +589,7 @@ function makeHarness(opts: {
     },
     async markFundingSwept(fid: string, claimId: string) {
       log.push('markFundingSwept');
+      if (opts.markFundingSweptLost) return false;
       const f = findFunding(fid);
       if (!f || f.claimId !== claimId || f.status !== 'sweeping') return false;
       f.status = 'swept';
@@ -319,13 +636,94 @@ function makeHarness(opts: {
         outAmount: opts.quoteAmounts?.outAmountAtomic ?? String(out),
         otherAmountThreshold:
           opts.quoteAmounts?.otherAmountThresholdAtomic ?? String(Math.floor(out * 0.99)),
+        swapMode: 'ExactIn',
+        slippageBps: Number(u.searchParams.get('slippageBps')),
+        instructionVersion: 'V1',
+        priceImpactPct: opts.priceImpactPct ?? '0.001',
+        routePlan: [{
+          swapInfo: {
+            ammKey: Keypair.generate().publicKey.toBase58(),
+            label: 'Raydium',
+            inputMint: USDC_MINT_MAINNET,
+            outputMint: CLV_MINT,
+            inAmount: amount,
+            outAmount: opts.quoteAmounts?.outAmountAtomic ?? String(out),
+            ...(opts.quoteRouteFee === 'valid'
+              ? { feeAmount: '1', feeMint: USDC_MINT_MAINNET }
+              : opts.quoteRouteFee === 'amount_only'
+                ? { feeAmount: '1' }
+                : opts.quoteRouteFee === 'mint_only'
+                  ? { feeMint: USDC_MINT_MAINNET }
+                  : opts.quoteRouteFee === 'excessive'
+                    ? { feeAmount: (BigInt(amount) + 1n).toString(), feeMint: USDC_MINT_MAINNET }
+                    : opts.quoteRouteFee === 'wrong_mint'
+                      ? { feeAmount: '1', feeMint: Keypair.generate().publicKey.toBase58() }
+                      : {}),
+          },
+          percent: 100,
+        }],
       };
       return { ok: true, status: 200, json: async () => body };
     }
     if (url.endsWith('/swap/v1/swap')) {
-      swapRequests.push(JSON.parse(init?.body ?? '{}'));
+      const request = JSON.parse(init?.body ?? '{}');
+      swapRequests.push(request);
+      const quoteResponse = request.quoteResponse as { inAmount: string; outAmount: string; slippageBps: number };
+      const built = buildSwapTxB64(
+          swapTxPayer,
+          opts.swapTxMode === 'wrong_amount'
+            ? (BigInt(quoteResponse.inAmount) + 1n).toString()
+            : quoteResponse.inAmount,
+          quoteResponse.outAmount,
+          quoteResponse.slippageBps,
+          {
+            arbitraryProgram: opts.swapTxMode === 'arbitrary_program',
+            extraSigner: opts.swapTxMode === 'extra_signer',
+            includeAtaSetup:
+              request.destinationTokenAccount === undefined &&
+              opts.swapTxMode !== 'multi_ata' && opts.swapTxMode !== 'foreign_ata' &&
+              opts.swapTxMode !== 'token2022_close',
+            duplicateAtaSetup: opts.swapTxMode === 'duplicate_ata',
+            multiAtaSetup:
+              opts.swapTxMode === 'multi_ata' || opts.swapTxMode === 'foreign_ata' ||
+              opts.swapTxMode === 'token2022_close',
+            token2022Close: opts.swapTxMode === 'token2022_close',
+            foreignAtaOwner:
+              opts.swapTxMode === 'foreign_ata' ? strangerKp.publicKey : undefined,
+            computeUnitLimit:
+              opts.swapTxMode === 'priority_within_budget' ? 1_000_000
+                : opts.swapTxMode === 'priority_over_budget' ? 1_400_000
+                  : undefined,
+            computeUnitPrice:
+              opts.swapTxMode === 'priority_within_budget' ? 900_000
+                : opts.swapTxMode === 'priority_over_budget' ? 800_000
+                  : opts.swapTxMode === 'priority_without_limit' ? 1
+                    : undefined,
+            realisticRoute:
+              opts.swapTxMode === 'realistic_route' ||
+              opts.swapTxMode === 'multi_ata' ||
+              opts.swapTxMode === 'token2022_close' ||
+              opts.swapTxMode === 'foreign_ata' ||
+              opts.swapTxMode === 'malicious_wallet_token' ||
+              opts.swapTxMode === 'malicious_wallet_delegate' ||
+              opts.swapTxMode === 'malicious_wallet_close',
+            maliciousWalletTokenAccount:
+              opts.swapTxMode === 'malicious_wallet_token' ||
+              opts.swapTxMode === 'malicious_wallet_delegate' ||
+              opts.swapTxMode === 'malicious_wallet_close'
+                ? maliciousWalletTokenAccount
+                : undefined,
+          },
+        );
+      activeLookupTables = built.lookupTables;
+      activeWalletAtas = built.walletAtas;
+      activeInputAmount = BigInt(quoteResponse.inAmount);
+      activeMinimumOut = jupiterExactInMinimumOut(
+        BigInt(quoteResponse.outAmount),
+        quoteResponse.slippageBps,
+      );
       const body = {
-        swapTransaction: buildSwapTxB64(swapTxPayer),
+        swapTransaction: built.transaction,
         lastValidBlockHeight: 999,
       };
       return { ok: true, status: 200, json: async () => body };
@@ -333,12 +731,197 @@ function makeHarness(opts: {
     throw new Error(`unexpected fetch: ${url}`);
   }) as unknown as typeof fetch;
 
+  const tokenProgram = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+  const token2022Program = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
+  const tokenAccountInfo = (
+    mint: PublicKey,
+    authority: PublicKey,
+    program: PublicKey,
+    extra: { delegate?: PublicKey; closeAuthority?: PublicKey; amount?: bigint } = {},
+  ) => {
+    const data = Buffer.alloc(165);
+    mint.toBuffer().copy(data, 0);
+    authority.toBuffer().copy(data, 32);
+    data.writeBigUInt64LE(extra.amount ?? 0n, 64);
+    data[108] = 1; // AccountState::Initialized
+    if (extra.delegate) {
+      data.writeUInt32LE(1, 72);
+      extra.delegate.toBuffer().copy(data, 76);
+    }
+    if (extra.closeAuthority) {
+      data.writeUInt32LE(1, 129);
+      extra.closeAuthority.toBuffer().copy(data, 133);
+    }
+    return {
+      data,
+      executable: false,
+      lamports: 2_039_280,
+      owner: program,
+      rentEpoch: 0,
+    };
+  };
   const fakeConn = {
+    getAccountInfo: async () => {
+      if (opts.clvAtaExists === false) return null;
+      const data = Buffer.alloc(165);
+      new PublicKey(CLV_MINT).toBuffer().copy(data, 0);
+      swapKp.publicKey.toBuffer().copy(data, 32);
+      data[108] = opts.clvAtaState ?? 1;
+      return {
+        data,
+        executable: false,
+        lamports: 2_039_280,
+        owner: new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'),
+        rentEpoch: 0,
+      };
+    },
     getLatestBlockhash: async () => ({
       blockhash: bs58.encode(new Uint8Array(32).fill(3)),
       lastValidBlockHeight: 500,
     }),
+    getAddressLookupTable: async (key: PublicKey) => {
+      lookupRequests.push(key);
+      return {
+        context: { slot: 1 },
+        value: activeLookupTables.find((table) => table.key.equals(key)) ?? null,
+      };
+    },
+    getMultipleAccountsInfo: async (keys: PublicKey[]) => keys.map((key) => {
+      if (key.equals(findUsdcAta(swapKp.publicKey))) {
+        return tokenAccountInfo(new PublicKey(USDC_MINT_MAINNET), swapKp.publicKey, tokenProgram, {
+          amount: 999_999_999_999n,
+        });
+      }
+      if (key.equals(findClvAta(swapKp.publicKey))) {
+        return opts.clvAtaExists === false
+          ? null
+          : tokenAccountInfo(new PublicKey(CLV_MINT), swapKp.publicKey, token2022Program);
+      }
+      if (key.equals(maliciousWalletTokenAccount)) {
+        const authority = opts.swapTxMode === 'malicious_wallet_token'
+          ? swapKp.publicKey
+          : strangerKp.publicKey;
+        return tokenAccountInfo(Keypair.generate().publicKey, authority, tokenProgram, {
+          delegate: opts.swapTxMode === 'malicious_wallet_delegate' ? swapKp.publicKey : undefined,
+          closeAuthority: opts.swapTxMode === 'malicious_wallet_close' ? swapKp.publicKey : undefined,
+        });
+      }
+      const activeAta = activeWalletAtas.find((spec) => spec.address.equals(key));
+      if (activeAta) {
+        const isNative = activeAta.mint.toBase58() === 'So11111111111111111111111111111111111111112';
+        if (
+          (opts.swapTxMode === 'multi_ata' || opts.swapTxMode === 'foreign_ata' ||
+            opts.swapTxMode === 'token2022_close') &&
+          (!opts.simulateOtherTokenDecrease || isNative)
+        ) return null;
+        return tokenAccountInfo(activeAta.mint, swapKp.publicKey, activeAta.tokenProgram, {
+          amount: opts.simulateOtherTokenDecrease ? 10n : 0n,
+        });
+      }
+      if (key.equals(swapKp.publicKey)) {
+        return {
+          data: Buffer.alloc(0), executable: false, lamports: 50_000_000,
+          owner: SystemProgram.programId, rentEpoch: 0,
+        };
+      }
+      return null;
+    }),
+    simulateTransaction: async (_tx: VersionedTransaction, config: {
+      accounts: { addresses: string[] };
+    }) => {
+      log.push('simulate');
+      const usdcAta = findUsdcAta(swapKp.publicKey).toBase58();
+      const clvAta = findClvAta(swapKp.publicKey).toBase58();
+      const account = (
+        mint: PublicKey,
+        program: PublicKey,
+        amount: bigint,
+        lamports = 2_039_280,
+      ) => {
+        const info = tokenAccountInfo(mint, swapKp.publicKey, program, { amount });
+        return {
+          data: [info.data.toString('base64'), 'base64'], executable: false,
+          lamports, owner: program.toBase58(), rentEpoch: 0,
+        };
+      };
+      const accounts = config.accounts.addresses.map((address) => {
+        if (address === usdcAta) {
+          return account(
+            new PublicKey(USDC_MINT_MAINNET), tokenProgram,
+            999_999_999_999n - activeInputAmount,
+          );
+        }
+        if (address === clvAta) {
+          return account(
+            new PublicKey(CLV_MINT), token2022Program,
+            opts.simulateClvShortfall ? activeMinimumOut - 1n : activeMinimumOut,
+          );
+        }
+        const spec = activeWalletAtas.find((candidate) => candidate.address.toBase58() === address);
+        if (spec) {
+          const isNative = spec.mint.toBase58() === 'So11111111111111111111111111111111111111112';
+          if (isNative) return null; // Jupiter closes the transient wrapped-SOL ATA.
+          return account(
+            spec.mint, spec.tokenProgram,
+            opts.simulateOtherTokenDecrease ? 9n : 0n,
+          );
+        }
+        if (address === swapKp.publicKey.toBase58()) {
+          return {
+            data: ['', 'base64'], executable: false,
+            lamports: 50_000_000 - (opts.simulateWalletLamportDecrease ?? 5_000),
+            owner: SystemProgram.programId.toBase58(), rentEpoch: 0,
+          };
+        }
+        return null;
+      });
+      return {
+        context: { slot: 1 },
+        value: {
+          err: opts.simulateErr ? { InstructionError: [5, 'Custom'] } : null,
+          accounts: opts.simulateMalformedLamports
+            ? accounts.map((value, index) => index === 0 && value ? { ...value, lamports: Number.NaN } : value)
+            : accounts,
+        },
+      };
+    },
+    getTokenAccountsByOwner: async () => {
+      const data = Buffer.alloc(165);
+      new PublicKey(USDC_MINT_MAINNET).toBuffer().copy(data, 0);
+      merchantKp.publicKey.toBuffer().copy(data, 32);
+      data.writeBigUInt64LE(BigInt(opts.merchantUsdcAtomic ?? '999999999999'), 64);
+      data[108] = opts.merchantTokenState ?? 1;
+      return {
+        context: { slot: 123_456 },
+        value: [{
+          pubkey: findUsdcAta(merchantKp.publicKey),
+          account: {
+            data,
+            executable: false,
+            lamports: 2_039_280,
+            owner: tokenProgram,
+            rentEpoch: 0,
+          },
+        }],
+      };
+    },
+    getAccountInfoAndContext: async () => {
+      const data = Buffer.alloc(82);
+      data[44] = 6;
+      data[45] = 1;
+      return {
+        context: { slot: 123_456 },
+        value: {
+          data,
+          executable: false,
+          lamports: 1_461_600,
+          owner: tokenProgram,
+          rentEpoch: 0,
+        },
+      };
+    },
     getParsedTokenAccountsByOwner: async () => ({
+      context: { slot: 123_456 },
       value: [
         {
           account: {
@@ -360,11 +943,6 @@ function makeHarness(opts: {
 
   const deps: ClvSwapLiveDeps = {
     db: dbApi,
-    getPrice: () => {
-      const q = prices[Math.min(priceIdx, prices.length - 1)];
-      priceIdx += 1;
-      return q;
-    },
     loadSwapKeypair: async () => {
       log.push('loadSwapKeypair');
       if (opts.loadSwapThrows) throw new Error('custody unavailable before signing');
@@ -377,6 +955,11 @@ function makeHarness(opts: {
     getSwapWalletPubkey: async () => swapKp.publicKey.toBase58(),
     connection: () => fakeConn,
     fetchImpl: fakeFetch,
+    signFundingTransaction: (transaction, signer) => {
+      log.push('signFundingTransaction');
+      transaction.sign(signer);
+      if (opts.signFundingThrows) throw new Error('signer threw after mutation');
+    },
     sendRawTransaction: async (_conn, raw) => {
       log.push('sendRaw');
       if (opts.sendThrows) throw new Error('boom: transport died mid-send');
@@ -396,7 +979,18 @@ function makeHarness(opts: {
     },
   };
 
-  return { deps, log, queue, funding, quoteRequests, swapRequests, sentRaw, sleeps, alerts };
+  return {
+    deps,
+    log,
+    queue,
+    funding,
+    quoteRequests,
+    swapRequests,
+    sentRaw,
+    lookupRequests,
+    sleeps,
+    alerts,
+  };
 }
 
 const settledCheckout = (over: Record<string, unknown> = {}) => ({
@@ -618,6 +1212,41 @@ describe('FUNDING SWEEP — exactly-once merchant→swap-wallet USDC', () => {
     expect(h.funding.get(SRC)!.status).toBe('pending'); // clean retry later
   });
 
+  it('frozen merchant USDC is not spendable availability and releases before signing', async () => {
+    const h = makeHarness({
+      queueRows: [plannedQueueRow()],
+      checkouts: [settledCheckout()],
+      merchantTokenState: 2,
+    });
+    await expect(claimAndSweepFundingForQueueRow('q-1', h.deps)).rejects.toThrow(
+      /rpc_token_account_invalid/,
+    );
+    expect(h.funding.get(SRC)!.status).toBe('pending');
+    expect(h.log).toContain('releaseFundingClaim');
+    expect(h.log).not.toContain('signFundingTransaction');
+    expect(h.log).not.toContain('sendRaw');
+  });
+
+  for (const failure of ['sign', 'capture'] as const) {
+    it(`${failure} failure after signing starts strands in reconcile and never releases`, async () => {
+      const h = makeHarness({
+        queueRows: [plannedQueueRow()],
+        checkouts: [settledCheckout()],
+        signFundingThrows: failure === 'sign',
+        captureSweepThrows: failure === 'capture',
+      });
+      const res = await claimAndSweepFundingForQueueRow('q-1', h.deps);
+      expect(res).toMatchObject({
+        ok: false,
+        code: 'capture_lost',
+        detail: 'unexpected_post_signing_pre_capture',
+      });
+      expect(h.funding.get(SRC)!.status).toBe('reconcile');
+      expect(h.log).not.toContain('releaseFundingClaim');
+      expect(h.log).not.toContain('sendRaw');
+    });
+  }
+
   it('AMBIGUOUS send: signature captured, row → reconcile, NEVER retried', async () => {
     const h = makeHarness({
       queueRows: [plannedQueueRow()],
@@ -647,10 +1276,87 @@ describe('FUNDING SWEEP — exactly-once merchant→swap-wallet USDC', () => {
     expect(res).toMatchObject({ ok: false, code: 'sweep_tx_failed' });
     expect(h.funding.get(SRC)!.status).toBe('failed');
   });
+
+  it('confirmed sweep with a lost terminal CAS goes to reconcile, never reports success', async () => {
+    const h = makeHarness({
+      queueRows: [plannedQueueRow()],
+      checkouts: [settledCheckout()],
+      markFundingSweptLost: true,
+    });
+    const res = await claimAndSweepFundingForQueueRow('q-1', h.deps);
+    expect(res).toMatchObject({
+      ok: false,
+      code: 'send_ambiguous',
+      detail: 'confirmed_mark_missed',
+    });
+    expect(h.funding.get(SRC)!.status).toBe('reconcile');
+    expect(h.log.filter((entry) => entry === 'sendRaw')).toHaveLength(1);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-describe('LIVE EXECUTION — atomic claim + per-clip oracle-checked Jupiter swaps', () => {
+describe('validateJupiterSwapSimulation — closed transient ATA handling', () => {
+  it('treats an invalid post snapshot for a fresh transient wallet ATA as closed', async () => {
+    const { result } = await simulateClosedPostAccount('transient_fresh');
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('still rejects a closed canonical CLV ATA post snapshot', async () => {
+    const { result } = await simulateClosedPostAccount('canonical_clv');
+    expect(result).toEqual({ ok: false, detail: 'simulation_canonical_balance_missing' });
+  });
+
+  it('still rejects a closed transient ATA that held a pre-simulation balance', async () => {
+    const { result, transientAta } = await simulateClosedPostAccount('transient_with_balance');
+    expect(result).toEqual({
+      ok: false,
+      detail: `simulation_other_token_decrease:${transientAta.toBase58()}`,
+    });
+  });
+});
+
+describe('decodeJupiterV6RouteInstruction — route-agnostic trailing args', () => {
+  it('decodes a route whose final hop is Pump.fun Amm variant 99 without an AMM allowlist', () => {
+    const stepCount = Buffer.alloc(4);
+    stepCount.writeUInt32LE(2);
+    const args = Buffer.alloc(19);
+    args.writeBigUInt64LE(100_000_000n, 0);
+    args.writeBigUInt64LE(1_234_567_890n, 8);
+    args.writeUInt16LE(200, 16);
+    args[18] = 0;
+    const data = Buffer.concat([
+      JUPITER_ROUTE_DISCRIMINATOR,
+      stepCount,
+      Buffer.from([120, 50, 0, 1]), // unknown/new AMM variant, no payload
+      Buffer.from([99, 50, 1, 2]), // Pump.fun Amm final hop, no payload
+      args,
+    ]);
+
+    expect(decodeJupiterV6RouteInstruction(data)).toEqual({
+      kind: 'route',
+      inAmount: 100_000_000n,
+      quotedOutAmount: 1_234_567_890n,
+      slippageBps: 200,
+      platformFeeBps: 0,
+    });
+  });
+
+  it('rejects a truncated route and an unknown discriminator', () => {
+    const tooShort = Buffer.alloc(8 + 4 + 19 - 1);
+    JUPITER_ROUTE_DISCRIMINATOR.copy(tooShort);
+    tooShort.writeUInt32LE(1, 8);
+
+    const unknown = Buffer.alloc(8 + 4 + 19);
+    unknown.fill(0xff, 0, 8);
+    unknown.writeUInt32LE(1, 8);
+
+    expect(decodeJupiterV6RouteInstruction(tooShort)).toBeNull();
+    expect(decodeJupiterV6RouteInstruction(unknown)).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe('LIVE EXECUTION — atomic claim + fixed-clip Jupiter swaps', () => {
   it('refuses when the funding is not swept — the claim is never taken', async () => {
     const h = makeHarness({ queueRows: [plannedQueueRow()] }); // no funding row
     const res = await executeQueuedClvBuy('q-1', h.deps);
@@ -659,29 +1365,27 @@ describe('LIVE EXECUTION — atomic claim + per-clip oracle-checked Jupiter swap
     expect(h.log).not.toContain('loadSwapKeypair');
   });
 
-  it('HAPPY PATH: per-clip depth re-fetch resizes clips; conservation exact; executed', async () => {
-    // $150 queued. Depths per clip: 22k → cap $110; then 4k → cap $20.
+  it('HAPPY PATH: $100 clip cap splits the row; conservation exact; executed', async () => {
+    // $250 queued becomes two $100 clips and the exact $50 remainder.
     const h = makeHarness({
-      queueRows: [plannedQueueRow({ amountUsdc: '150.000000' })],
-      checkouts: [settledCheckout({ usdCents: 15_000 })],
-      fundingRows: [sweptFundingRow({ amountUsdc: '150.000000' })],
-      prices: [quoteOf(22_000), quoteOf(4_000), quoteOf(4_000)],
+      queueRows: [plannedQueueRow({ amountUsdc: '250.000000' })],
+      checkouts: [settledCheckout({ usdCents: 25_000 })],
+      fundingRows: [sweptFundingRow({ amountUsdc: '250.000000' })],
     });
     const res = await executeQueuedClvBuy('q-1', h.deps);
     expect(res.ok).toBe(true);
     if (!res.ok) throw new Error('unreachable');
     expect(res.clipCount).toBe(3);
 
-    // PER-CLIP DEPTH RE-FETCH: clip 2 was sized by the NEW (4k) depth — $20,
-    // not the $40 remainder a stale 22k depth would have allowed in one clip.
     expect(h.quoteRequests.map((q) => q.amount)).toEqual([
-      '110000000', // $110 (22k depth, 100 bps)
-      '20000000', // $20 (4k depth)
-      '20000000', // $20
+      '100000000',
+      '100000000',
+      '50000000',
     ]);
     // CONSERVATION: Σ clip µUSD === queued amount exactly.
     const sum = h.quoteRequests.reduce((a, q) => a + BigInt(q.amount), 0n);
-    expect(sum).toBe(150_000_000n);
+    expect(sum).toBe(250_000_000n);
+    expect(h.swapRequests.every((request) => request.wrapAndUnwrapSol === true)).toBe(true);
 
     const row = h.queue.get('q-1')!;
     expect(row.status).toBe('executed');
@@ -710,8 +1414,11 @@ describe('LIVE EXECUTION — atomic claim + per-clip oracle-checked Jupiter swap
   });
 
   it('accounts from ExactIn threshold, never optimistic Jupiter outAmount', async () => {
-    const guaranteedOutAtomic = '71000000000';
     const optimisticOutAtomic = '80000000000';
+    const guaranteedOutAtomic = jupiterExactInMinimumOut(
+      BigInt(optimisticOutAtomic),
+      200,
+    ).toString();
     const h = makeHarness({
       queueRows: [plannedQueueRow()],
       fundingRows: [sweptFundingRow()],
@@ -772,24 +1479,15 @@ describe('LIVE EXECUTION — atomic claim + per-clip oracle-checked Jupiter swap
     expect(h.queue.get('q-1')!.claimId).toBe('dead-claim'); // untouched
   });
 
-  it('ORACLE UNAVAILABLE hard-stops sizing and releases a zero-clip pre-sign claim', async () => {
+  it('does not call DexScreener on the money path', async () => {
     const h = makeHarness({
       queueRows: [plannedQueueRow()],
-      checkouts: [settledCheckout()],
       fundingRows: [sweptFundingRow()],
-      // available:false even though numbers are still present in the struct —
-      // availability is THE gate for BOTH quoteUsd and poolLiquidityUsd.
-      prices: [quoteOf(22_000, { available: false, quoteUsd: PRICE })],
     });
     const res = await executeQueuedClvBuy('q-1', h.deps);
-    expect(res).toMatchObject({ ok: false, code: 'oracle_unavailable', executedClips: 0 });
-    expect(h.quoteRequests.length).toBe(0);
-    expect(h.log).not.toContain('sendRaw');
-    const row = h.queue.get('q-1')!;
-    expect(row.status).toBe('planned');
-    expect(row.claimId).toBeNull();
-    expect(row.claimedAt).toBeNull();
-    expect(h.log).toContain('releaseQueueClaim');
+    expect(res.ok).toBe(true);
+    expect(h.log).not.toContain('getPrice');
+    expect(h.quoteRequests).toHaveLength(1);
   });
 
   it('a thrown pre-sign dependency error releases the empty claim to planned', async () => {
@@ -807,78 +1505,319 @@ describe('LIVE EXECUTION — atomic claim + per-clip oracle-checked Jupiter swap
     expect(h.log).not.toContain('sendRaw');
   });
 
-  it('ORACLE UNAVAILABLE mid-row: confirmed fills stay durable, then hard-stop', async () => {
+  it('refuses Jupiter price impact above maxImpactBps before requesting a swap', async () => {
     const h = makeHarness({
-      queueRows: [plannedQueueRow({ amountUsdc: '150.000000' })],
-      checkouts: [settledCheckout({ usdCents: 15_000 })],
-      fundingRows: [sweptFundingRow({ amountUsdc: '150.000000' })],
-      prices: [quoteOf(22_000), quoteOf(null, { available: false, quoteUsd: null })],
-    });
-    const res = await executeQueuedClvBuy('q-1', h.deps);
-    expect(res).toMatchObject({ ok: false, code: 'oracle_unavailable', executedClips: 1 });
-    const row = h.queue.get('q-1')!;
-    expect(row.status).toBe('executing');
-    expect((row.fills as unknown[]).length).toBe(1); // clip 1 durable
-  });
-
-  it('passes below oracle mid when quoted out is within tolerance and threshold clears its composite floor', async () => {
-    const oracleMid = Math.floor((5 / PRICE) * 1e6);
-    const outWithinTolerance = Math.floor(oracleMid * 0.98);
-    const jupiterThreshold = Math.floor(outWithinTolerance * 0.95);
-    const oracleFloor = oracleMinOutClvAtomic(5_000_000n, PRICE, 300);
-    expect(BigInt(outWithinTolerance)).toBeGreaterThanOrEqual(oracleFloor);
-    expect(BigInt(jupiterThreshold)).toBeLessThan(oracleFloor);
-
-    const h = makeHarness({
-      queueRows: [plannedQueueRow({ maxSlippage: '0.0500' })],
+      queueRows: [plannedQueueRow({ maxPriceImpact: '0.0100' })],
       fundingRows: [sweptFundingRow()],
-      quoteAmounts: {
-        outAmountAtomic: String(outWithinTolerance),
-        otherAmountThresholdAtomic: String(jupiterThreshold),
-      },
+      priceImpactPct: '0.0101',
     });
     const res = await executeQueuedClvBuy('q-1', h.deps);
-    expect(res.ok).toBe(true);
-    expect(h.quoteRequests[0]?.slippageBps).toBe('500');
-    expect(h.queue.get('q-1')!.status).toBe('executed');
-    expect(h.sentRaw).toHaveLength(1);
-  });
-
-  it('refuses quoted out below the independent ORACLE tolerance — no swap, capture, or send', async () => {
-    const oracleMid = Math.floor((5 / PRICE) * 1e6);
-    const outBelowTolerance = Math.floor(oracleMid * 0.96);
-    const h = makeHarness({
-      queueRows: [plannedQueueRow()],
-      fundingRows: [sweptFundingRow()],
-      quoteAmounts: {
-        outAmountAtomic: String(outBelowTolerance),
-        otherAmountThresholdAtomic: String(Math.floor(outBelowTolerance * 0.99)),
-      },
-    });
-    const res = await executeQueuedClvBuy('q-1', h.deps);
-    expect(res).toMatchObject({ ok: false, code: 'quote_below_oracle_min_out', executedClips: 0 });
-    expect(h.swapRequests.length).toBe(0);
-    expect(h.log).not.toContain('appendClipFill');
-    expect(h.log).not.toContain('sendRaw');
-    expect(h.queue.get('q-1')!.status).toBe('planned');
-  });
-
-  it('refuses an untrusted threshold below the satisfiable tolerance-plus-slippage floor', async () => {
-    const oracleMid = Math.floor((5 / PRICE) * 1e6);
-    const h = makeHarness({
-      queueRows: [plannedQueueRow({ maxSlippage: '0.0500' })],
-      fundingRows: [sweptFundingRow()],
-      quoteAmounts: {
-        outAmountAtomic: String(Math.floor(oracleMid * 0.98)),
-        otherAmountThresholdAtomic: String(Math.floor(oracleMid * 0.5)),
-      },
-    });
-    const res = await executeQueuedClvBuy('q-1', h.deps);
-    expect(res).toMatchObject({ ok: false, code: 'quote_below_oracle_min_out', executedClips: 0 });
+    expect(res).toMatchObject({ ok: false, code: 'price_impact_exceeded', executedClips: 0 });
     expect(h.swapRequests).toHaveLength(0);
     expect(h.log).not.toContain('appendClipFill');
     expect(h.log).not.toContain('sendRaw');
     expect(h.queue.get('q-1')!.status).toBe('planned');
+  });
+
+  for (const priceImpactPct of ['', '   '] as const) {
+    it(`rejects malformed priceImpactPct ${JSON.stringify(priceImpactPct)}`, async () => {
+      const h = makeHarness({
+        queueRows: [plannedQueueRow()], fundingRows: [sweptFundingRow()], priceImpactPct,
+      });
+      const res = await executeQueuedClvBuy('q-1', h.deps);
+      expect(res).toMatchObject({ ok: false, code: 'jupiter_quote_failed' });
+      expect(h.swapRequests).toHaveLength(0);
+      expect(h.queue.get('q-1')!.status).toBe('planned');
+    });
+  }
+
+  it('rejects a zero-output Jupiter quote before requesting or signing a swap', async () => {
+    const h = makeHarness({
+      queueRows: [plannedQueueRow()], fundingRows: [sweptFundingRow()],
+      quoteAmounts: { outAmountAtomic: '0', otherAmountThresholdAtomic: '0' },
+    });
+    const res = await executeQueuedClvBuy('q-1', h.deps);
+    expect(res).toMatchObject({
+      ok: false, code: 'jupiter_quote_failed', detail: 'quote_zero_output',
+    });
+    expect(h.swapRequests).toHaveLength(0);
+    expect(h.log).not.toContain('sendRaw');
+  });
+
+  it('ignores the informational wire threshold and accounts from the decoded instruction floor', async () => {
+    const quotedOut = Math.floor((5 / PRICE) * 0.98 * 1e6);
+    const h = makeHarness({
+      queueRows: [plannedQueueRow({ maxSlippage: '0.0500' })],
+      fundingRows: [sweptFundingRow()],
+      quoteAmounts: {
+        outAmountAtomic: String(quotedOut),
+        otherAmountThresholdAtomic: String(Math.floor(quotedOut * 0.5)),
+      },
+    });
+    const res = await executeQueuedClvBuy('q-1', h.deps);
+    expect(res.ok).toBe(true);
+    const fill = (h.queue.get('q-1')!.fills as Array<{ outAmountAtomic: string }>)[0];
+    expect(fill?.outAmountAtomic).toBe(
+      jupiterExactInMinimumOut(BigInt(quotedOut), 500).toString(),
+    );
+    expect(fill?.outAmountAtomic).not.toBe(String(Math.floor(quotedOut * 0.5)));
+    const forwarded = h.swapRequests[0]?.quoteResponse as {
+      routePlan?: Array<{ swapInfo?: Record<string, unknown> }>;
+    };
+    expect(forwarded.routePlan?.[0]?.swapInfo).not.toHaveProperty('feeAmount');
+    expect(forwarded.routePlan?.[0]?.swapInfo).not.toHaveProperty('feeMint');
+  });
+
+  it('accepts optional route fee metadata when the complete pair is bounded', async () => {
+    const h = makeHarness({
+      queueRows: [plannedQueueRow()],
+      fundingRows: [sweptFundingRow()],
+      quoteRouteFee: 'valid',
+    });
+    const res = await executeQueuedClvBuy('q-1', h.deps);
+    expect(res.ok).toBe(true);
+    const forwarded = h.swapRequests[0]?.quoteResponse as {
+      routePlan?: Array<{ swapInfo?: Record<string, unknown> }>;
+    };
+    expect(forwarded.routePlan?.[0]?.swapInfo).toMatchObject({
+      feeAmount: '1',
+      feeMint: USDC_MINT_MAINNET,
+    });
+  });
+
+  for (const quoteRouteFee of [
+    'amount_only',
+    'mint_only',
+    'excessive',
+    'wrong_mint',
+  ] as const) {
+    it(`rejects malformed or unbounded optional route fee metadata: ${quoteRouteFee}`, async () => {
+      const h = makeHarness({
+        queueRows: [plannedQueueRow()],
+        fundingRows: [sweptFundingRow()],
+        quoteRouteFee,
+      });
+      const res = await executeQueuedClvBuy('q-1', h.deps);
+      expect(res).toMatchObject({
+        ok: false,
+        code: 'jupiter_quote_failed',
+        detail: 'quote_route_mismatch',
+      });
+      expect(h.swapRequests).toHaveLength(0);
+      expect(h.log).not.toContain('appendClipFill');
+      expect(h.log).not.toContain('sendRaw');
+      expect(h.queue.get('q-1')!.status).toBe('planned');
+    });
+  }
+
+  it('fresh wallet omits destinationTokenAccount so Jupiter can create the canonical CLV ATA', async () => {
+    const h = makeHarness({
+      queueRows: [plannedQueueRow()],
+      fundingRows: [sweptFundingRow()],
+      clvAtaExists: false,
+    });
+    const res = await executeQueuedClvBuy('q-1', h.deps);
+    expect(res.ok).toBe(true);
+    expect(h.swapRequests[0]).not.toHaveProperty('destinationTokenAccount');
+  });
+
+  it('existing initialized CLV ATA is pinned as destinationTokenAccount', async () => {
+    const h = makeHarness({
+      queueRows: [plannedQueueRow()],
+      fundingRows: [sweptFundingRow()],
+    });
+    const res = await executeQueuedClvBuy('q-1', h.deps);
+    expect(res.ok).toBe(true);
+    expect(h.swapRequests[0]?.destinationTokenAccount).toBe(findClvAta(swapKp.publicKey).toBase58());
+  });
+
+  it('refuses an existing uninitialized CLV ATA before requesting or signing a swap', async () => {
+    const h = makeHarness({
+      queueRows: [plannedQueueRow()],
+      fundingRows: [sweptFundingRow()],
+      clvAtaState: 0,
+    });
+    const res = await executeQueuedClvBuy('q-1', h.deps);
+    expect(res).toMatchObject({
+      ok: false,
+      code: 'jupiter_swap_failed',
+      detail: 'existing_clv_ata_invalid',
+    });
+    expect(h.swapRequests).toHaveLength(0);
+    expect(h.log).not.toContain('appendClipFill');
+    expect(h.log).not.toContain('sendRaw');
+    expect(h.queue.get('q-1')!.status).toBe('planned');
+  });
+
+  it('accepts a current Jupiter V1 route with compute budget, Token-2022 role, repeated wallet/CLV metas, and ALT keys', async () => {
+    const h = makeHarness({
+      queueRows: [plannedQueueRow()],
+      fundingRows: [sweptFundingRow()],
+      swapTxMode: 'realistic_route',
+    });
+    const res = await executeQueuedClvBuy('q-1', h.deps);
+    expect(res.ok).toBe(true);
+    expect(h.lookupRequests).toHaveLength(1);
+    expect(h.sentRaw).toHaveLength(1);
+    expect(h.log.indexOf('appendClipFill')).toBeLessThan(h.log.indexOf('sendRaw'));
+  });
+
+  for (const mode of [
+    'malicious_wallet_token',
+    'malicious_wallet_delegate',
+    'malicious_wallet_close',
+  ] as const) {
+    it(`rejects an ALT-loaded writable token account controlled through ${mode} before signing`, async () => {
+      const h = makeHarness({
+        queueRows: [plannedQueueRow()],
+        fundingRows: [sweptFundingRow()],
+        swapTxMode: mode,
+      });
+      const res = await executeQueuedClvBuy('q-1', h.deps);
+      expect(res).toMatchObject({
+        ok: false,
+        code: 'swap_tx_binding_failed',
+        executedClips: 0,
+      });
+      expect(h.lookupRequests).toHaveLength(1);
+      expect(h.log).not.toContain('appendClipFill');
+      expect(h.log).not.toContain('sendRaw');
+      expect(h.log).toContain('releaseQueueClaim');
+      expect(h.queue.get('q-1')!.status).toBe('planned');
+    });
+  }
+
+  it('rejects a correct-payer transaction containing an arbitrary outer program before sign/capture/send', async () => {
+    const h = makeHarness({
+      queueRows: [plannedQueueRow()],
+      fundingRows: [sweptFundingRow()],
+      swapTxMode: 'arbitrary_program',
+    });
+    const res = await executeQueuedClvBuy('q-1', h.deps);
+    expect(res).toMatchObject({ ok: false, code: 'swap_tx_binding_failed', executedClips: 0 });
+    expect(h.log).not.toContain('appendClipFill');
+    expect(h.log).not.toContain('sendRaw');
+    expect(h.log).toContain('releaseQueueClaim');
+    expect(h.queue.get('q-1')!.status).toBe('planned');
+  });
+
+  it('rejects a transaction requiring any signer besides the exact payer', async () => {
+    const h = makeHarness({
+      queueRows: [plannedQueueRow()],
+      fundingRows: [sweptFundingRow()],
+      swapTxMode: 'extra_signer',
+    });
+    const res = await executeQueuedClvBuy('q-1', h.deps);
+    expect(res).toMatchObject({ ok: false, code: 'swap_tx_binding_failed', executedClips: 0 });
+    expect(h.log).not.toContain('appendClipFill');
+    expect(h.log).not.toContain('sendRaw');
+    expect(h.log).toContain('releaseQueueClaim');
+  });
+
+  it('accepts a real multi-hop route with three wallet-owned idempotent ATA setups', async () => {
+    const h = makeHarness({
+      queueRows: [plannedQueueRow()],
+      fundingRows: [sweptFundingRow()],
+      swapTxMode: 'multi_ata',
+      clvAtaExists: false,
+    });
+    const res = await executeQueuedClvBuy('q-1', h.deps);
+    expect(res.ok).toBe(true);
+    expect(h.lookupRequests).toHaveLength(1);
+    expect(h.log).toContain('simulate');
+    expect(h.sentRaw).toHaveLength(1);
+  });
+
+  it('rejects an idempotent ATA setup whose owner is not the swap wallet', async () => {
+    const h = makeHarness({
+      queueRows: [plannedQueueRow()], fundingRows: [sweptFundingRow()],
+      swapTxMode: 'foreign_ata', clvAtaExists: false,
+    });
+    const res = await executeQueuedClvBuy('q-1', h.deps);
+    expect(res).toMatchObject({ ok: false, code: 'swap_tx_binding_failed', executedClips: 0 });
+    expect(h.log).not.toContain('sendRaw');
+    expect(h.log).toContain('releaseQueueClaim');
+  });
+
+  it('accepts a high CU price when the decoded total priority fee stays within budget', async () => {
+    const h = makeHarness({
+      queueRows: [plannedQueueRow()], fundingRows: [sweptFundingRow()],
+      swapTxMode: 'priority_within_budget',
+    });
+    expect(await executeQueuedClvBuy('q-1', h.deps)).toMatchObject({ ok: true });
+  });
+
+  for (const mode of ['priority_over_budget', 'priority_without_limit'] as const) {
+    it(`rejects invalid total-priority-fee shape: ${mode}`, async () => {
+      const h = makeHarness({
+        queueRows: [plannedQueueRow()], fundingRows: [sweptFundingRow()], swapTxMode: mode,
+      });
+      const res = await executeQueuedClvBuy('q-1', h.deps);
+      expect(res).toMatchObject({ ok: false, code: 'swap_tx_binding_failed' });
+      expect(h.log).not.toContain('sendRaw');
+    });
+  }
+
+  it('rejects simulation when CLV output is below the decoded on-chain minimum', async () => {
+    const h = makeHarness({
+      queueRows: [plannedQueueRow()], fundingRows: [sweptFundingRow()],
+      simulateClvShortfall: true,
+    });
+    const res = await executeQueuedClvBuy('q-1', h.deps);
+    expect(res).toMatchObject({ ok: false, code: 'swap_tx_binding_failed' });
+    expect(h.log).toContain('simulate');
+    expect(h.log).not.toContain('appendClipFill');
+    expect(h.log).not.toContain('sendRaw');
+    expect(h.queue.get('q-1')!.status).toBe('planned');
+  });
+
+  it('rejects simulation when another wallet-owned token account decreases', async () => {
+    const h = makeHarness({
+      queueRows: [plannedQueueRow()], fundingRows: [sweptFundingRow()],
+      swapTxMode: 'multi_ata', clvAtaExists: false, simulateOtherTokenDecrease: true,
+    });
+    const res = await executeQueuedClvBuy('q-1', h.deps);
+    expect(res).toMatchObject({ ok: false, code: 'swap_tx_binding_failed' });
+    expect(h.log).toContain('simulate');
+    expect(h.log).not.toContain('sendRaw');
+    expect(h.queue.get('q-1')!.status).toBe('planned');
+  });
+
+  it('bounds native lamport loss by the transaction actual priority fee, not the global maximum', async () => {
+    const h = makeHarness({
+      queueRows: [plannedQueueRow()], fundingRows: [sweptFundingRow()],
+      // This transaction carries no priority fee, so a 20k lamport decrease
+      // exceeds the 5k signature fee plus the deliberately small headroom.
+      simulateWalletLamportDecrease: 20_000,
+    });
+    const res = await executeQueuedClvBuy('q-1', h.deps);
+    expect(res).toMatchObject({ ok: false, code: 'swap_tx_binding_failed' });
+    expect(h.log).not.toContain('sendRaw');
+  });
+
+  it('releases an empty unsigned claim if malformed simulation data throws during parsing', async () => {
+    const h = makeHarness({
+      queueRows: [plannedQueueRow()], fundingRows: [sweptFundingRow()],
+      simulateMalformedLamports: true,
+    });
+    await expect(executeQueuedClvBuy('q-1', h.deps)).rejects.toThrow();
+    expect(h.queue.get('q-1')!.status).toBe('planned');
+    expect(h.log).toContain('releaseQueueClaim');
+    expect(h.log).not.toContain('appendClipFill');
+    expect(h.log).not.toContain('sendRaw');
+  });
+
+  it('rejects a Jupiter route whose encoded input is not the accepted exact clip', async () => {
+    const h = makeHarness({
+      queueRows: [plannedQueueRow()],
+      fundingRows: [sweptFundingRow()],
+      swapTxMode: 'wrong_amount',
+    });
+    const res = await executeQueuedClvBuy('q-1', h.deps);
+    expect(res).toMatchObject({ ok: false, code: 'swap_tx_binding_failed', executedClips: 0 });
+    expect(h.log).not.toContain('appendClipFill');
+    expect(h.log).not.toContain('sendRaw');
+    expect(h.log).toContain('releaseQueueClaim');
   });
 
   it('NEVER signs a swap tx whose fee payer is not our wallet', async () => {
@@ -1049,36 +1988,21 @@ describe('resolveClvSwapExecutingStaleMs — default + hard floor', () => {
   });
 });
 
-describe('resolveClvSwapOracleToleranceBps — independent default + bounds', () => {
-  it('defaults to 300; invalid falls back; floor/cap and valid overrides are honored', () => {
-    delete process.env.CLV_SWAP_ORACLE_TOLERANCE_BPS;
-    expect(resolveClvSwapOracleToleranceBps()).toBe(300);
-    process.env.CLV_SWAP_ORACLE_TOLERANCE_BPS = 'garbage';
-    expect(resolveClvSwapOracleToleranceBps()).toBe(300);
-    process.env.CLV_SWAP_ORACLE_TOLERANCE_BPS = '0';
-    expect(resolveClvSwapOracleToleranceBps()).toBe(1);
-    process.env.CLV_SWAP_ORACLE_TOLERANCE_BPS = '5000';
-    expect(resolveClvSwapOracleToleranceBps()).toBe(1_000);
-    process.env.CLV_SWAP_ORACLE_TOLERANCE_BPS = '250';
-    expect(resolveClvSwapOracleToleranceBps()).toBe(250);
-    delete process.env.CLV_SWAP_ORACLE_TOLERANCE_BPS;
+describe('resolveClvSwapSlippageBps — executable default + bounds', () => {
+  it('defaults to 200 bps while remaining environment-overridable', () => {
+    delete process.env.CLV_SWAP_SLIPPAGE_BPS;
+    expect(resolveClvSwapSlippageBps()).toBe(200);
+    process.env.CLV_SWAP_SLIPPAGE_BPS = '350';
+    expect(resolveClvSwapSlippageBps()).toBe(350);
+    delete process.env.CLV_SWAP_SLIPPAGE_BPS;
   });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
 describe('pure sizing helpers', () => {
-  it('sizeClipMicro mirrors planClips: cap = depth/2 × bps/10k, µUSD-floored', () => {
-    expect(sizeClipMicro(1_000_000_000n, 22_000, 100)).toBe(110_000_000n); // $110 cap
-    expect(sizeClipMicro(50_000_000n, 22_000, 100)).toBe(50_000_000n); // remainder clip
-    expect(sizeClipMicro(1_000_000n, null, 100)).toBeNull();
-    expect(sizeClipMicro(1_000_000n, 0, 100)).toBeNull();
-    expect(sizeClipMicro(1_000_000n, 0.0000019, 100)).toBeNull(); // dust pool
-  });
-
-  it('oracleMinOutClvAtomic: house quote less oracle tolerance, atomic-floored', () => {
-    // $110 at $0.00007/CLV = 1,571,428.571 CLV → atomic 1.571428571e12; −1%.
-    const minOut = oracleMinOutClvAtomic(110_000_000n, PRICE, 100);
-    const expected = Math.floor((110 / PRICE) * 0.99 * 1e6);
-    expect(minOut).toBe(BigInt(expected));
+  it('sizeClipMicro caps every clip at exactly $100 USDC and preserves the remainder', () => {
+    expect(sizeClipMicro(1_000_000_000n)).toBe(100_000_000n);
+    expect(sizeClipMicro(50_000_000n)).toBe(50_000_000n);
+    expect(sizeClipMicro(1n)).toBe(1n);
   });
 });

@@ -62,6 +62,11 @@ import { agentSetupRoutes } from './routes/agent-setup';
 import { skillsRoutes } from './routes/skills';
 import { agentV2Routes } from './routes/agent-v2';
 import { agentPayRoutes } from './routes/agent-pay';
+// Tokenomics E1/E2 — internal, admin-only EARNED import/verifier/claw-back.
+// Service + route are independently gated by TOKENOMICS_EARN_ENABLED.
+import { tokenomicsEarnRoutes } from './routes/tokenomics-earn';
+// Tokenomics E3 — EARNED exit rail, default-OFF behind a route+service gate.
+import { tokenomicsRedeemRoutes } from './routes/tokenomics-redeem';
 import { dashboardRoutes } from './routes/dashboard';
 // Tokenomics F2 — USDC→vCLAW on-ramp (Phase A) + the TEST-ONLY mock facilitator.
 import { ctTopupRoutes } from './routes/ct-topup';
@@ -332,6 +337,8 @@ app.route('/api/agent-setup', agentSetupRoutes);
 app.route('/api/skills', skillsRoutes);
 app.route('/api/v2/agent', agentV2Routes);
 app.route('/api/agent-pay', agentPayRoutes);
+app.route('/api/admin/tokenomics/earn', tokenomicsEarnRoutes);
+app.route('/api/tokenomics/redeem', tokenomicsRedeemRoutes);
 app.route('/api/dashboard', dashboardRoutes);
 // Tokenomics F2 — USDC→vCLAW on-ramp (Phase A): x402/PayAI quote+settle →
 // BOUGHT (non-cashable) vCLAW credit. Human (Lucia) + connected-agent
@@ -823,6 +830,35 @@ process.on('uncaughtException', (err) => {
     startCovenantChainSealer();
   } catch (err) {
     console.error('[API] Covenant chain sealer failed to start:', err);
+  }
+
+  // Tokenomics E2 payer verification. Default-off and no-ops unless EARNED
+  // import is explicitly enabled; actual pending->verified/rejected transitions
+  // are owned by the service, not a scaffold-only timer.
+  try {
+    const { startEarnedPayerVerificationWorker } = await import(
+      './services/earned-import'
+    );
+    startEarnedPayerVerificationWorker();
+  } catch (err) {
+    console.error('[API] EARNED payer verifier failed to start:', err);
+  }
+
+  // Tokenomics E3 redemption resume worker. Unlike ordinary background jobs,
+  // index does not even import/start the money mover unless the literal dark
+  // gate is open; the starter and every service entry independently re-check.
+  if (process.env.TOKENOMICS_REDEEM_ENABLED === 'true') {
+    try {
+      const { startEarnedRedemptionWorker } = await import(
+        './services/earned-redemption'
+      );
+      startEarnedRedemptionWorker();
+    } catch (err) {
+      // A box explicitly flagged for exits must not run silently without the
+      // resume machine. Crash loud so orchestration restarts after correction.
+      console.error('[API] EARNED redemption worker failed to start:', err);
+      throw err;
+    }
   }
 
   // 2026-06-24 — start the LAND RENT sweeper (builder-economics). Runs hourly,
