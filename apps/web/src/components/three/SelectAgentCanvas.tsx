@@ -38,7 +38,7 @@ import {
   type ModelRegistryEntry,
   type PickerColorId,
 } from '@/lib/three/agent-model-registry';
-import { useVRMInstance, disposeVRMInstance, preloadVRMBytes } from '@/lib/three/vrm-loader';
+import { useVRMInstance, disposeVRMInstance, retainVRMInstance, preloadVRMBytes } from '@/lib/three/vrm-loader';
 import { VRMCharacterAnimator, preloadMixamoClips } from '@/lib/three/vrm-character-animator';
 import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
 
@@ -235,6 +235,7 @@ const PlatformModelVRM = memo(function PlatformModelVRM({
   const vrm = useVRMInstance(reg.path, 'picker');
 
   React.useEffect(() => {
+    retainVRMInstance(reg.path, 'picker'); // cancel deferred dispose on StrictMode re-setup
     return () => disposeVRMInstance(reg.path, 'picker');
   }, [reg.path]);
 

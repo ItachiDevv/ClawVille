@@ -662,6 +662,18 @@ export class VRMCharacterAnimator {
   private _skeletonUpdateFns: Map<THREE.Skeleton, () => void> = new Map();
 
   /**
+   * Skeletons currently patched by a LIVE (not-yet-disposed) animator.
+   * The old double-patch detection compared `skeleton.update !==
+   * THREE.Skeleton.prototype.update`, but dispose() restores a BOUND copy of
+   * the original — never identity-equal to the prototype — so every
+   * legitimate animator reconstruction on the same VRM (StrictMode remounts
+   * do this once per mount) false-positived the "already patched" warning
+   * (~40-86 spurious warns per /game load, founder report 2026-07-14).
+   * A WeakSet of actively-owned skeletons detects REAL double-patching only.
+   */
+  private static _activePatchedSkeletons = new WeakSet<THREE.Skeleton>();
+
+  /**
    * Optional character ID used to look up per-character animation overrides
    * in CHARACTER_ANIM_OVERRIDES. When unset, the generic ANIM_PATHS are used
    * for every clip — current behavior for Milady/legacy avatars.
@@ -716,7 +728,7 @@ export class VRMCharacterAnimator {
       // leak the warn when NODE_ENV is unset. Next.js still DCE-strips this
       // branch in client production bundles because the substitution happens
       // before the typeof check is evaluated.
-      if (sm.skeleton.update !== THREE.Skeleton.prototype.update &&
+      if (VRMCharacterAnimator._activePatchedSkeletons.has(sm.skeleton) &&
           typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production') {
         console.warn(
           '[VRMCharacterAnimator] skeleton.update already patched — double-patch risk;' +
@@ -725,6 +737,7 @@ export class VRMCharacterAnimator {
       }
       const originalUpdate = sm.skeleton.update.bind(sm.skeleton);
       this._skeletonUpdateFns.set(sm.skeleton, originalUpdate);
+      VRMCharacterAnimator._activePatchedSkeletons.add(sm.skeleton);
       sm.skeleton.update = () => {}; // renderer skips; we call manually below
     });
   }
@@ -1287,6 +1300,7 @@ export class VRMCharacterAnimator {
     // (Sakura review finding #1)
     this._skeletonUpdateFns.forEach((fn, skel) => {
       skel.update = fn;
+      VRMCharacterAnimator._activePatchedSkeletons.delete(skel);
     });
     this._skeletonUpdateFns.clear();
 

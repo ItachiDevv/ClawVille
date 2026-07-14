@@ -25,7 +25,7 @@ import { getTerrainHeightAt, isTerrainHeightfieldReady } from '@/lib/three/terra
 import { jumpState } from '@/lib/three/jump-state';
 import { clampMovement2D, ENTITY_HALF_HUMANOID, ENTITY_HALF_CHIBI } from '@/lib/three/collision/world-colliders';
 import { avatarPositionRef } from '@/stores/game';
-import { useVRMInstance, disposeVRMInstance, preloadVRMBytes, applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
+import { useVRMInstance, disposeVRMInstance, retainVRMInstance, preloadVRMBytes, applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 import { VRMCharacterAnimator, preloadMixamoClips, type AnimName } from '@/lib/three/vrm-character-animator';
 import { MODEL_REGISTRY, getAnimatorIdByPath } from '@/lib/three/agent-model-registry';
 import {
@@ -1031,6 +1031,7 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
 
   // Dispose this instance when the NPC unmounts or path/id changes.
   useEffect(() => {
+    retainVRMInstance(vrmPath, npc.id); // cancel deferred dispose on StrictMode re-setup
     return () => disposeVRMInstance(vrmPath, npc.id);
   }, [vrmPath, npc.id]);
 

@@ -122,6 +122,36 @@ const VRM_BYTES = new Map<string, Promise<ArrayBuffer>>();
  */
 const VRM_INSTANCES = new Map<string, InstanceEntry>();
 
+/**
+ * Deferred-dispose timers, keyed like VRM_INSTANCES (`${path}#${instanceId}`).
+ *
+ * WHY (2026-07-14, invisible-NPC root cause): React StrictMode (dev default)
+ * double-invokes effects — mount → simulated unmount → remount. The simulated
+ * unmount used to run `disposeVRMInstance` IMMEDIATELY, `deepDispose`-ing the
+ * GPU buffers of a `<primitive object={vrm.scene}>` that was still committed
+ * to the R3F graph: every VRM NPC in /game rendered as an invisible body
+ * (name tag only) with 100+ "drawElements: no buffer is bound to enabled
+ * attribute" errors, plus animator double-patch churn as Suspense re-parsed
+ * the evicted entries. Disposal is now DEFERRED by a short grace window and
+ * CANCELLED when the same (path, instanceId) is re-acquired — the drei
+ * useGLTF pattern. Real unmounts still dispose (timer fires unopposed).
+ */
+const VRM_PENDING_DISPOSES = new Map<string, ReturnType<typeof setTimeout>>();
+
+/** Grace window before a dispose actually runs. StrictMode re-acquires within
+ * the same commit (ms); Suspense remounts within a frame or two. 500ms keeps
+ * GPU memory held briefly on real unmounts while safely covering both. */
+const VRM_DISPOSE_GRACE_MS = 500;
+
+/** Cancel a scheduled dispose for cacheKey (consumer re-acquired in time). */
+function cancelPendingDispose(cacheKey: string): void {
+  const timer = VRM_PENDING_DISPOSES.get(cacheKey);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    VRM_PENDING_DISPOSES.delete(cacheKey);
+  }
+}
+
 // Single shared GLTFLoader instance — VRMLoaderPlugin registered once.
 // Reused across all parses; the parser hooks into per-parse state internally.
 let _loader: GLTFLoader | null = null;
@@ -656,6 +686,9 @@ async function loadInstance(cacheKey: string, path: string, gen: number): Promis
  */
 export function useVRMInstance(path: string, instanceId: string): VRM {
   const cacheKey = `${path}#${instanceId}`;
+  // Re-acquire cancels any scheduled dispose (StrictMode simulated unmount /
+  // Suspense remount) — the entry stays live and its GPU buffers intact.
+  cancelPendingDispose(cacheKey);
   const entry = VRM_INSTANCES.get(cacheKey);
 
   if (!entry) {
@@ -695,6 +728,8 @@ export function useVRMInstance(path: string, instanceId: string): VRM {
  */
 export function loadVRMInstance(instanceId: string, path: string): Promise<VRM> {
   const cacheKey = `${path}#${instanceId}`;
+  // Re-acquire cancels any scheduled dispose — see useVRMInstance.
+  cancelPendingDispose(cacheKey);
   const entry = VRM_INSTANCES.get(cacheKey);
   if (entry) {
     if (entry.status === 'resolved') return Promise.resolve(entry.vrm);
@@ -737,32 +772,64 @@ export function loadVRMInstance(instanceId: string, path: string): Promise<VRM> 
  */
 export function disposeVRMInstance(path: string, instanceId: string): void {
   const cacheKey = `${path}#${instanceId}`;
-  const entry = VRM_INSTANCES.get(cacheKey);
-  if (!entry) return;
-  if (entry.status === 'resolved') {
-    try {
-      VRMUtils.deepDispose(entry.vrm.scene);
-    } catch {
-      // deepDispose can throw on partially-loaded scenes; swallow so the
-      // cache entry is always evicted (preventing leaks even on dispose error).
+  if (!VRM_INSTANCES.has(cacheKey)) return;
+  // DEFERRED (2026-07-14): never destroy buffers synchronously — a StrictMode
+  // simulated unmount calls this while the scene is still committed to the R3F
+  // graph (see VRM_PENDING_DISPOSES doc). Schedule the real teardown; a
+  // re-acquire of the same key within the grace window cancels it.
+  if (VRM_PENDING_DISPOSES.has(cacheKey)) return; // already scheduled
+  const timer = setTimeout(() => {
+    VRM_PENDING_DISPOSES.delete(cacheKey);
+    const entry = VRM_INSTANCES.get(cacheKey);
+    if (!entry) return;
+    if (entry.status === 'resolved') {
+      try {
+        VRMUtils.deepDispose(entry.vrm.scene);
+      } catch {
+        // deepDispose can throw on partially-loaded scenes; swallow so the
+        // cache entry is always evicted (preventing leaks even on dispose error).
+      }
+    } else if (entry.status === 'pending') {
+      // Increment the generation counter for this cacheKey. This "invalidates"
+      // the in-flight or queued parse task — the runner's generation check
+      // (VRM_LOAD_GEN.get(cacheKey) !== gen) will reject it without parsing,
+      // and loadInstance's post-parse guard will deepDispose any result that
+      // slipped through. The increment is idempotent under double-dispose.
+      //
+      // A re-mount of the same (path, instanceId) BEFORE the queued parse runs
+      // will record a NEW generation, and the new task's gen will again match
+      // the current counter — the stale task's gen will still be lower.
+      VRM_LOAD_GEN.set(cacheKey, (VRM_LOAD_GEN.get(cacheKey) ?? 0) + 1);
+      // Entry is evicted now. The pending promise will reject (stale-gen error),
+      // which is harmless — the consumer component has already unmounted, and
+      // the identity-guarded catch in useVRMInstance/loadVRMInstance will NOT
+      // write 'rejected' because the entry no longer exists.
     }
-  } else if (entry.status === 'pending') {
-    // Increment the generation counter for this cacheKey. This "invalidates"
-    // the in-flight or queued parse task — the runner's generation check
-    // (VRM_LOAD_GEN.get(cacheKey) !== gen) will reject it without parsing,
-    // and loadInstance's post-parse guard will deepDispose any result that
-    // slipped through. The increment is idempotent under double-dispose.
-    //
-    // A re-mount of the same (path, instanceId) BEFORE the queued parse runs
-    // will record a NEW generation, and the new task's gen will again match
-    // the current counter — the stale task's gen will still be lower.
-    VRM_LOAD_GEN.set(cacheKey, (VRM_LOAD_GEN.get(cacheKey) ?? 0) + 1);
-    // Entry is evicted now. The pending promise will reject (stale-gen error),
-    // which is harmless — the consumer component has already unmounted, and
-    // the identity-guarded catch in useVRMInstance/loadVRMInstance will NOT
-    // write 'rejected' because the entry no longer exists.
-  }
-  VRM_INSTANCES.delete(cacheKey);
+    VRM_INSTANCES.delete(cacheKey);
+  }, VRM_DISPOSE_GRACE_MS);
+  VRM_PENDING_DISPOSES.set(cacheKey, timer);
+}
+
+/**
+ * Cancel a scheduled dispose for (path, instanceId) — call in the SETUP of
+ * the same effect whose cleanup calls disposeVRMInstance:
+ *
+ *   useEffect(() => {
+ *     retainVRMInstance(path, id);
+ *     return () => disposeVRMInstance(path, id);
+ *   }, [path, id]);
+ *
+ * WHY the render-time cancel in useVRMInstance isn't enough: React StrictMode
+ * re-invokes EFFECTS (setup → cleanup → setup) without a re-render, and many
+ * consumers (NPCs driven via refs in useFrame) don't re-render for long
+ * stretches — so the scheduled dispose from the simulated unmount fired
+ * against a still-mounted scene 500ms later ("buffer used in submit while
+ * destroyed", animator double-patch churn). Effect-setup retain closes that
+ * hole: simulated unmount schedules, the immediate re-setup cancels; a real
+ * unmount schedules with no re-setup, so the timer fires and disposes.
+ */
+export function retainVRMInstance(path: string, instanceId: string): void {
+  cancelPendingDispose(`${path}#${instanceId}`);
 }
 
 /**
@@ -786,6 +853,8 @@ export function _vrmInstanceCount(): number {
 
 /** Test helper: clear all caches. Internal, not for production code. */
 export function _vrmClearAllCaches(): void {
+  for (const [, timer] of VRM_PENDING_DISPOSES) clearTimeout(timer);
+  VRM_PENDING_DISPOSES.clear();
   for (const [, entry] of VRM_INSTANCES) {
     if (entry.status === 'resolved') {
       try { VRMUtils.deepDispose(entry.vrm.scene); } catch { /* ignore */ }

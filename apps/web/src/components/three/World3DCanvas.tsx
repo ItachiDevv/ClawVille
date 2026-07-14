@@ -389,12 +389,15 @@ function WASDCameraController({
   });
 
   useEffect(() => {
+    // e.key can be undefined on synthetic events (Chrome autofill fires
+    // keydown/keyup with no key during password-manager fill) — guard or the
+    // handler throws on every login.
     const onKeyDown = (e: KeyboardEvent) => {
-      const key = e.key.toLowerCase() as keyof typeof keysRef.current;
+      const key = (e.key ?? '').toLowerCase() as keyof typeof keysRef.current;
       if (key in keysRef.current) keysRef.current[key] = true;
     };
     const onKeyUp = (e: KeyboardEvent) => {
-      const key = e.key.toLowerCase() as keyof typeof keysRef.current;
+      const key = (e.key ?? '').toLowerCase() as keyof typeof keysRef.current;
       if (key in keysRef.current) keysRef.current[key] = false;
     };
 
