@@ -15,10 +15,12 @@
  *   3. EXECUTION: funding-swept precondition; ATOMIC CLAIM before decrypt
  *      (double-claim + restart-mid-tick refuse without touching custody);
  *      PER-CLIP oracle re-fetch (a depth change resizes the NEXT clip);
- *      oracle-unavailable HARD-STOP (zero Jupiter calls); the Jupiter quote
- *      must clear the ORACLE-derived min-out; the swap tx payer must be OUR
- *      wallet; capture-before-send per clip; conservation (Σ clips == queued
- *      amount, BigInt-exact).
+ *      oracle-unavailable HARD-STOP (zero Jupiter calls); quoted output must
+ *      clear the independent ORACLE-tolerance floor while Jupiter slippage
+ *      remains the on-chain threshold; zero-clip pre-sign stops release the
+ *      claim, but post-sign/partial states stay executing; the swap tx payer
+ *      must be OUR wallet; capture-before-send per clip; conservation
+ *      (Σ clips == queued amount, BigInt-exact).
  *
  * Env preamble mirrors x402-checkout.test.ts (the module pulls
  * routes/ct-topup for resolveTopupNetwork). No @clawville/database mock is
@@ -66,6 +68,7 @@ const {
   assertMainnetRealMoneyContext,
   sizeClipMicro,
   oracleMinOutClvAtomic,
+  resolveClvSwapOracleToleranceBps,
   resolveJupiterBaseUrl,
   resolveClvSwapExecutingStaleMs,
 } = await import('../clv-swap-live');
@@ -127,11 +130,11 @@ function makeHarness(opts: {
   fundingRows?: Array<Record<string, unknown>>;
   checkouts?: Array<Record<string, unknown>>;
   prices?: ClvPriceQuote[];
-  quoteMode?: 'generous' | 'below-min-out';
   quoteAmounts?: { outAmountAtomic: string; otherAmountThresholdAtomic: string };
   swapTxPayer?: PublicKey;
   merchantUsdcAtomic?: string;
   sendThrows?: boolean;
+  loadSwapThrows?: boolean;
   confirmOutcome?: 'confirmed' | 'failed';
 } = {}): Harness {
   const log: string[] = [];
@@ -183,6 +186,22 @@ function makeHarness(opts: {
       r.claimId = claimId;
       r.claimedAt = new Date();
       return { ...r };
+    },
+    async releaseQueueClaim(id: string, claimId: string) {
+      log.push('releaseQueueClaim');
+      const r = queue.get(id);
+      if (
+        !r ||
+        r.claimId !== claimId ||
+        r.status !== 'executing' ||
+        (r.fills as unknown[]).length !== 0
+      ) {
+        return false;
+      }
+      r.status = 'planned';
+      r.claimId = null;
+      r.claimedAt = null;
+      return true;
     },
     async appendClipFill(id: string, claimId: string, entry: Record<string, unknown>) {
       log.push('appendClipFill');
@@ -283,7 +302,6 @@ function makeHarness(opts: {
     },
   } as unknown as ClvSwapLiveDb;
 
-  const quoteMode = opts.quoteMode ?? 'generous';
   const swapTxPayer = opts.swapTxPayer ?? swapKp.publicKey;
 
   const fakeFetch = (async (input: unknown, init?: { body?: string }) => {
@@ -293,8 +311,7 @@ function makeHarness(opts: {
       const amount = u.searchParams.get('amount')!;
       quoteRequests.push({ amount, slippageBps: u.searchParams.get('slippageBps')! });
       const expected = Number(amount) / PRICE; // atomic CLV
-      const out =
-        quoteMode === 'generous' ? Math.floor(expected * 1.01) : Math.floor(expected * 0.5);
+      const out = Math.floor(expected * 1.01);
       const body = {
         inputMint: USDC_MINT_MAINNET,
         outputMint: CLV_MINT,
@@ -350,6 +367,7 @@ function makeHarness(opts: {
     },
     loadSwapKeypair: async () => {
       log.push('loadSwapKeypair');
+      if (opts.loadSwapThrows) throw new Error('custody unavailable before signing');
       return swapKp;
     },
     loadMerchantKeypair: async () => {
@@ -423,6 +441,7 @@ beforeEach(() => {
   process.env.X402_FACILITATOR_PRESET = 'payai';
   delete process.env.X402_MOCK_FACILITATOR;
   delete process.env.CLV_SWAP_SLIPPAGE_BPS;
+  delete process.env.CLV_SWAP_ORACLE_TOLERANCE_BPS;
   delete process.env.CLV_SWAP_MAX_IMPACT_BPS;
   delete process.env.CLV_SWAP_CLIP_SPACING_MS;
   delete process.env.CLV_SWAP_JUPITER_BASE_URL;
@@ -753,7 +772,7 @@ describe('LIVE EXECUTION — atomic claim + per-clip oracle-checked Jupiter swap
     expect(h.queue.get('q-1')!.claimId).toBe('dead-claim'); // untouched
   });
 
-  it('ORACLE UNAVAILABLE hard-stops sizing — zero Jupiter calls, row stays executing', async () => {
+  it('ORACLE UNAVAILABLE hard-stops sizing and releases a zero-clip pre-sign claim', async () => {
     const h = makeHarness({
       queueRows: [plannedQueueRow()],
       checkouts: [settledCheckout()],
@@ -766,7 +785,26 @@ describe('LIVE EXECUTION — atomic claim + per-clip oracle-checked Jupiter swap
     expect(res).toMatchObject({ ok: false, code: 'oracle_unavailable', executedClips: 0 });
     expect(h.quoteRequests.length).toBe(0);
     expect(h.log).not.toContain('sendRaw');
-    expect(h.queue.get('q-1')!.status).toBe('executing'); // reconciler case
+    const row = h.queue.get('q-1')!;
+    expect(row.status).toBe('planned');
+    expect(row.claimId).toBeNull();
+    expect(row.claimedAt).toBeNull();
+    expect(h.log).toContain('releaseQueueClaim');
+  });
+
+  it('a thrown pre-sign dependency error releases the empty claim to planned', async () => {
+    const h = makeHarness({
+      queueRows: [plannedQueueRow()],
+      fundingRows: [sweptFundingRow()],
+      loadSwapThrows: true,
+    });
+    await expect(executeQueuedClvBuy('q-1', h.deps)).rejects.toThrow(/custody unavailable/);
+    const row = h.queue.get('q-1')!;
+    expect(row.status).toBe('planned');
+    expect(row.claimId).toBeNull();
+    expect(row.claimedAt).toBeNull();
+    expect(h.log).toContain('releaseQueueClaim');
+    expect(h.log).not.toContain('sendRaw');
   });
 
   it('ORACLE UNAVAILABLE mid-row: confirmed fills stay durable, then hard-stop', async () => {
@@ -783,18 +821,64 @@ describe('LIVE EXECUTION — atomic claim + per-clip oracle-checked Jupiter swap
     expect((row.fills as unknown[]).length).toBe(1); // clip 1 durable
   });
 
-  it('a Jupiter quote below the ORACLE min-out is refused — no swap, no send', async () => {
+  it('passes below oracle mid when quoted out is within tolerance and threshold clears its composite floor', async () => {
+    const oracleMid = Math.floor((5 / PRICE) * 1e6);
+    const outWithinTolerance = Math.floor(oracleMid * 0.98);
+    const jupiterThreshold = Math.floor(outWithinTolerance * 0.95);
+    const oracleFloor = oracleMinOutClvAtomic(5_000_000n, PRICE, 300);
+    expect(BigInt(outWithinTolerance)).toBeGreaterThanOrEqual(oracleFloor);
+    expect(BigInt(jupiterThreshold)).toBeLessThan(oracleFloor);
+
+    const h = makeHarness({
+      queueRows: [plannedQueueRow({ maxSlippage: '0.0500' })],
+      fundingRows: [sweptFundingRow()],
+      quoteAmounts: {
+        outAmountAtomic: String(outWithinTolerance),
+        otherAmountThresholdAtomic: String(jupiterThreshold),
+      },
+    });
+    const res = await executeQueuedClvBuy('q-1', h.deps);
+    expect(res.ok).toBe(true);
+    expect(h.quoteRequests[0]?.slippageBps).toBe('500');
+    expect(h.queue.get('q-1')!.status).toBe('executed');
+    expect(h.sentRaw).toHaveLength(1);
+  });
+
+  it('refuses quoted out below the independent ORACLE tolerance — no swap, capture, or send', async () => {
+    const oracleMid = Math.floor((5 / PRICE) * 1e6);
+    const outBelowTolerance = Math.floor(oracleMid * 0.96);
     const h = makeHarness({
       queueRows: [plannedQueueRow()],
-      checkouts: [settledCheckout()],
       fundingRows: [sweptFundingRow()],
-      quoteMode: 'below-min-out',
+      quoteAmounts: {
+        outAmountAtomic: String(outBelowTolerance),
+        otherAmountThresholdAtomic: String(Math.floor(outBelowTolerance * 0.99)),
+      },
     });
     const res = await executeQueuedClvBuy('q-1', h.deps);
     expect(res).toMatchObject({ ok: false, code: 'quote_below_oracle_min_out', executedClips: 0 });
     expect(h.swapRequests.length).toBe(0);
     expect(h.log).not.toContain('appendClipFill');
     expect(h.log).not.toContain('sendRaw');
+    expect(h.queue.get('q-1')!.status).toBe('planned');
+  });
+
+  it('refuses an untrusted threshold below the satisfiable tolerance-plus-slippage floor', async () => {
+    const oracleMid = Math.floor((5 / PRICE) * 1e6);
+    const h = makeHarness({
+      queueRows: [plannedQueueRow({ maxSlippage: '0.0500' })],
+      fundingRows: [sweptFundingRow()],
+      quoteAmounts: {
+        outAmountAtomic: String(Math.floor(oracleMid * 0.98)),
+        otherAmountThresholdAtomic: String(Math.floor(oracleMid * 0.5)),
+      },
+    });
+    const res = await executeQueuedClvBuy('q-1', h.deps);
+    expect(res).toMatchObject({ ok: false, code: 'quote_below_oracle_min_out', executedClips: 0 });
+    expect(h.swapRequests).toHaveLength(0);
+    expect(h.log).not.toContain('appendClipFill');
+    expect(h.log).not.toContain('sendRaw');
+    expect(h.queue.get('q-1')!.status).toBe('planned');
   });
 
   it('NEVER signs a swap tx whose fee payer is not our wallet', async () => {
@@ -842,8 +926,25 @@ describe('LIVE EXECUTION — atomic claim + per-clip oracle-checked Jupiter swap
     expect(res).toMatchObject({ ok: false, code: 'send_ambiguous', executedClips: 0 });
     const row = h.queue.get('q-1')!;
     expect(row.status).toBe('executing');
+    expect(row.claimId).not.toBeNull();
     expect((row.fills as unknown[]).length).toBe(1); // captured BEFORE the send
     expect(h.log.filter((l) => l === 'sendRaw').length).toBe(1);
+    expect(h.log).not.toContain('releaseQueueClaim');
+  });
+
+  it('definitive post-signature clip failure keeps the captured claim executing', async () => {
+    const h = makeHarness({
+      queueRows: [plannedQueueRow()],
+      fundingRows: [sweptFundingRow()],
+      confirmOutcome: 'failed',
+    });
+    const res = await executeQueuedClvBuy('q-1', h.deps);
+    expect(res).toMatchObject({ ok: false, code: 'clip_tx_failed', executedClips: 0 });
+    const row = h.queue.get('q-1')!;
+    expect(row.status).toBe('executing');
+    expect(row.claimId).not.toBeNull();
+    expect(row.fills as unknown[]).toHaveLength(1);
+    expect(h.log).not.toContain('releaseQueueClaim');
   });
 });
 
@@ -948,6 +1049,22 @@ describe('resolveClvSwapExecutingStaleMs — default + hard floor', () => {
   });
 });
 
+describe('resolveClvSwapOracleToleranceBps — independent default + bounds', () => {
+  it('defaults to 300; invalid falls back; floor/cap and valid overrides are honored', () => {
+    delete process.env.CLV_SWAP_ORACLE_TOLERANCE_BPS;
+    expect(resolveClvSwapOracleToleranceBps()).toBe(300);
+    process.env.CLV_SWAP_ORACLE_TOLERANCE_BPS = 'garbage';
+    expect(resolveClvSwapOracleToleranceBps()).toBe(300);
+    process.env.CLV_SWAP_ORACLE_TOLERANCE_BPS = '0';
+    expect(resolveClvSwapOracleToleranceBps()).toBe(1);
+    process.env.CLV_SWAP_ORACLE_TOLERANCE_BPS = '5000';
+    expect(resolveClvSwapOracleToleranceBps()).toBe(1_000);
+    process.env.CLV_SWAP_ORACLE_TOLERANCE_BPS = '250';
+    expect(resolveClvSwapOracleToleranceBps()).toBe(250);
+    delete process.env.CLV_SWAP_ORACLE_TOLERANCE_BPS;
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 describe('pure sizing helpers', () => {
   it('sizeClipMicro mirrors planClips: cap = depth/2 × bps/10k, µUSD-floored', () => {
@@ -958,7 +1075,7 @@ describe('pure sizing helpers', () => {
     expect(sizeClipMicro(1_000_000n, 0.0000019, 100)).toBeNull(); // dust pool
   });
 
-  it('oracleMinOutClvAtomic: house quote less slippage, atomic-floored', () => {
+  it('oracleMinOutClvAtomic: house quote less oracle tolerance, atomic-floored', () => {
     // $110 at $0.00007/CLV = 1,571,428.571 CLV → atomic 1.571428571e12; −1%.
     const minOut = oracleMinOutClvAtomic(110_000_000n, PRICE, 100);
     const expected = Math.floor((110 / PRICE) * 0.99 * 1e6);
