@@ -66,6 +66,10 @@ import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import {
+  preloadKTX2Bytes,
+  useGLTFWithKTX2,
+} from '@/lib/three/use-gltf-ktx2';
+import {
   KART_SCALE,
   KART_Y_ABOVE_TRACK,
   GLIDER_WIDTH,
@@ -138,9 +142,12 @@ import { useActivityStore } from '@/stores/activity';
 import { triggerBurst } from '@/lib/three/activities/shared/activity-particles';
 
 // ─── Preloads — fire at module scope ─────────────────────────────────────────
-useGLTF.preload('/models/sea_horse.glb');
-useGLTF.preload('/models/lobster.glb');
-useGLTF.preload('/models/crayfish.glb');  // SPEC 1 — 3rd species, static mesh
+// Canonical creature models use KHR_texture_basisu. The race Canvas does not
+// exist yet at module load, so warm HTTP bytes only; parsing waits until
+// KTX2LoaderSetup has detected renderer support inside ReefRaceScene.
+preloadKTX2Bytes('/models/sea_horse-ktx.glb');
+preloadKTX2Bytes('/models/lobster-ktx.glb');
+preloadKTX2Bytes('/models/crayfish-ktx.glb');  // SPEC 1 — 3rd species, static mesh
 // v2 spline path surfboard — plain .clone() (no skeleton, static mesh).
 // Asset: surfboard_1.glb, 3 220 tris, 660 KB, CC-BY 4.0 (see ATTRIBUTIONS.md).
 useGLTF.preload('/models/reef-race/surfboards/surfboard_1.glb');
@@ -148,12 +155,12 @@ useGLTF.preload('/models/reef-race/surfboards/surfboard_1.glb');
 // reachable via MODEL_REGISTRY (previously all rendered as lobster.glb). Not
 // covered by the global tier-2 preload manifest (asset-preload-manifest.ts),
 // so warm them here to avoid a Suspense-cascade stutter mid-race.
-// lobster_plush.glb is already globally preloaded (shared with the "Larry" NPC) —
+// lobster_plush-ktx.glb is already globally preloaded (shared with the "Larry" NPC) —
 // no duplicate call needed.
-useGLTF.preload('/models/sweet_crab_sketchfabweekly.glb');
-useGLTF.preload('/models/hermitcrab.glb');
-useGLTF.preload('/models/jellyfish.glb');
-useGLTF.preload('/models/octopus_toy.glb');
+preloadKTX2Bytes('/models/sweet_crab_sketchfabweekly-ktx.glb');
+preloadKTX2Bytes('/models/hermitcrab-ktx.glb');
+preloadKTX2Bytes('/models/jellyfish-ktx.glb');
+preloadKTX2Bytes('/models/octopus_toy-ktx.glb');
 
 // SPEC 2 — Milady VRM preloads.
 // preloadMixamoClips() warms the raw Mixamo GLB cache (idle/walk/run only).
@@ -800,11 +807,11 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
   // (modelKey from avatars.model_key, injected by activity store on
   // snapshot.init via reefParticipantMeta) by looking it up in MODEL_REGISTRY,
   // the same single source of truth every other avatar render site uses.
-  // Falls back to lobster.glb if species is absent or unrecognised.
+  // Falls back to the canonical lobster-ktx.glb if species is absent or unrecognised.
   //
   // `avatar_type: 'vrm'` → render via useVRMInstance in ReefRaceVRMRiderInner
   // (Suspense boundary), using the registry's own path (preserves ?v=N
-  // cache-bust queries) + animatorId. The GLB path falls back to lobster.glb
+  // cache-bust queries) + animatorId. The GLB path falls back to lobster-ktx.glb
   // sentinel in that case, but effectiveSrcScene is set to null so GLB
   // rendering is suppressed while VRM renders.
   // `avatar_type: 'glb'` → mount the registry's real creature mesh.
@@ -824,30 +831,30 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
   const vrmAnimatorId = isVRM ? regEntry?.animatorId : undefined;
 
   // Determine GLB path. For VRM species use lobster as the sentinel so the
-  // useGLTF hook is always called (Rules of Hooks).
+  // KTX2-aware GLTF hook is always called (Rules of Hooks).
   const glbPath = (() => {
-    if (isVRM) return '/models/lobster.glb'; // sentinel — not rendered when isVRM
+    if (isVRM) return '/models/lobster-ktx.glb'; // sentinel — not rendered when isVRM
     if (regEntry && regEntry.avatar_type === 'glb') return regEntry.path;
     switch (speciesKey) {
-      case 'crayfish':  return '/models/crayfish.glb';
+      case 'crayfish':  return '/models/crayfish-ktx.glb';
       case 'seahorse':
-      case 'sea_horse': return '/models/sea_horse.glb';
+      case 'sea_horse': return '/models/sea_horse-ktx.glb';
       default:
         // Unknown species — not in the registry, not a legacy special case.
         // Log once, render lobster.
         if (!_warnedUnknownSpeciesKeys.has(speciesKey)) {
           _warnedUnknownSpeciesKeys.add(speciesKey);
           console.warn(
-            `[ReefRacePlayer] unknown species="${speciesKey}" — rendering lobster.glb as fallback`,
+            `[ReefRacePlayer] unknown species="${speciesKey}" — rendering lobster-ktx.glb as fallback`,
           );
         }
-        return '/models/lobster.glb';
+        return '/models/lobster-ktx.glb';
     }
   })();
 
-  // Always call useGLTF (Rules of Hooks). When isVRM=true, srcScene is a
-  // lobster sentinel that is never mounted (effectiveSrcScene = null).
-  const { scene: srcScene } = useGLTF(glbPath);
+  // Always call the KTX2-aware loader (Rules of Hooks). When isVRM=true,
+  // srcScene is a lobster sentinel that is never mounted.
+  const { scene: srcScene } = useGLTFWithKTX2(glbPath);
   // Gate all GLB clone/mount logic on this. Null when VRM branch is active.
   const effectiveSrcScene = isVRM ? null : srcScene;
 

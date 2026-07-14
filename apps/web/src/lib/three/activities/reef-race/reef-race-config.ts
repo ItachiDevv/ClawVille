@@ -4,7 +4,7 @@
  * All constants for the Reef Race activity scene.
  * Track path, checkpoint positions, camera, fog, lighting, pickups, ghost, boost.
  *
- * Performance budget: ≤70 draw calls / ≤220k tris / 1×512² shadow map / 0 post-processing.
+ * Performance budget: ≤70 draw calls / ≤220k tris / no shadow map / 1 half-resolution bloom pass.
  * Target GPU: Intel Iris Xe (integrated). Chase-cam model: one frustum per client.
  *
  * Mirror of bumper-shells-config.ts style — one import covers the entire scene.
@@ -301,14 +301,6 @@ export const SPEED_CONE_SPREAD = 80;
 /** Camera near clip plane. */
 export const CAMERA_NEAR = 1;
 
-/**
- * Camera far clip plane.
- * Iris Xe rule: keep fog.far ≤ camera.far.
- * Bumped 2000 → 3000 → 5000 on 2026-04-26.
- * Track surface uses fog=false so the racing line is always visible,
- * but opposing-side karts and props still need camera.far ≥ fog.far.
- * With FOG_FAR=4500, CAMERA_FAR must be ≥ 4500. 5000 gives headroom.
- */
 /**
  * Camera far clip plane.
  * SURF ROAD (2026-06-23): the cosmic void dome has radius 30000wu and the ribbon
