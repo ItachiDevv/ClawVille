@@ -1,5 +1,7 @@
 # ClawVille — Game Features
 
+**Last Audited:** 2026-07-14 (**Treasury CLV-buy mechanism correction; local diff awaiting Fable review.**) The existing cashout/exit buy queue keeps one Jupiter USDC→CLV transaction per clip, now fixed at ≤$100 with any SOL hop handled internally by Jupiter. DexScreener no longer gates the money path; Jupiter's decoded on-chain minimum, price-impact cap, and pre-sign token-delta simulation protect execution. No player/agent endpoint, economy formula, settlement identity, or Hatcher action changed; E3 remains dark and `PROTOCOL_VERSION` is unchanged. No commit/deploy/sign-off.
+
 > **Strict rule:** every code change that adds, removes, or repurposes a
 > gameplay flow (modes, agent connect, economy, quests, daily login, avatar
 > system, tutorial, UI components, control toggle, NPC behavior, auth flow,
