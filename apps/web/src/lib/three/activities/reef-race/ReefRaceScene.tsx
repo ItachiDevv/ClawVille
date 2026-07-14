@@ -255,6 +255,12 @@ function ChaseCamera({ selfEntity, shakeRef }: ChaseCamProps) {
 
     const cam = camera as THREE.PerspectiveCamera;
 
+    // Live entity present — re-arm the pregame snap latch so a LATER pregame
+    // period (same-mount requeue, store reset, transient room teardown) snaps
+    // to the start vantage again instead of easing from the race-end position
+    // through world geometry (Codex finding #4, 2026-07-14).
+    pregameSnappedRef.current = false;
+
     if (selfEntity !== lastEntityRef.current) {
       lastEntityRef.current = selfEntity;
       const hasVelocity = selfEntity.vx !== 0 || selfEntity.vy !== 0;

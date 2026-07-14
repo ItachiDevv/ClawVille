@@ -662,16 +662,19 @@ export class VRMCharacterAnimator {
   private _skeletonUpdateFns: Map<THREE.Skeleton, () => void> = new Map();
 
   /**
-   * Skeletons currently patched by a LIVE (not-yet-disposed) animator.
-   * The old double-patch detection compared `skeleton.update !==
+   * Skeleton → the LIVE (not-yet-disposed) animator that currently owns its
+   * patch. The old double-patch detection compared `skeleton.update !==
    * THREE.Skeleton.prototype.update`, but dispose() restores a BOUND copy of
    * the original — never identity-equal to the prototype — so every
    * legitimate animator reconstruction on the same VRM (StrictMode remounts
    * do this once per mount) false-positived the "already patched" warning
    * (~40-86 spurious warns per /game load, founder report 2026-07-14).
-   * A WeakSet of actively-owned skeletons detects REAL double-patching only.
+   * A WeakMap keyed by OWNER (Codex NIT #6) keeps detection accurate even in
+   * the out-of-order case (animator1 disposes AFTER animator2 constructed):
+   * dispose only clears entries this instance still owns, so a third
+   * animator still sees animator2's live patch and warns.
    */
-  private static _activePatchedSkeletons = new WeakSet<THREE.Skeleton>();
+  private static _activePatchedSkeletons = new WeakMap<THREE.Skeleton, VRMCharacterAnimator>();
 
   /**
    * Optional character ID used to look up per-character animation overrides
@@ -728,7 +731,8 @@ export class VRMCharacterAnimator {
       // leak the warn when NODE_ENV is unset. Next.js still DCE-strips this
       // branch in client production bundles because the substitution happens
       // before the typeof check is evaluated.
-      if (VRMCharacterAnimator._activePatchedSkeletons.has(sm.skeleton) &&
+      const currentOwner = VRMCharacterAnimator._activePatchedSkeletons.get(sm.skeleton);
+      if (currentOwner !== undefined && currentOwner !== this &&
           typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production') {
         console.warn(
           '[VRMCharacterAnimator] skeleton.update already patched — double-patch risk;' +
@@ -737,7 +741,7 @@ export class VRMCharacterAnimator {
       }
       const originalUpdate = sm.skeleton.update.bind(sm.skeleton);
       this._skeletonUpdateFns.set(sm.skeleton, originalUpdate);
-      VRMCharacterAnimator._activePatchedSkeletons.add(sm.skeleton);
+      VRMCharacterAnimator._activePatchedSkeletons.set(sm.skeleton, this);
       sm.skeleton.update = () => {}; // renderer skips; we call manually below
     });
   }
@@ -1300,7 +1304,12 @@ export class VRMCharacterAnimator {
     // (Sakura review finding #1)
     this._skeletonUpdateFns.forEach((fn, skel) => {
       skel.update = fn;
-      VRMCharacterAnimator._activePatchedSkeletons.delete(skel);
+      // Only release ownership WE still hold — if a later animator patched
+      // the same skeleton (out-of-order lifecycles), its entry must survive
+      // so a third patch still triggers the double-patch warning.
+      if (VRMCharacterAnimator._activePatchedSkeletons.get(skel) === this) {
+        VRMCharacterAnimator._activePatchedSkeletons.delete(skel);
+      }
     });
     this._skeletonUpdateFns.clear();
 
