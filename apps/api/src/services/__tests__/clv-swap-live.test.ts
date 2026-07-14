@@ -91,6 +91,7 @@ const strangerKp = Keypair.generate();
 const SRC = '11111111-1111-4111-8111-111111111111'; // the settled checkout id
 const PRICE = 0.00007;
 const JUPITER_ROUTE_DISCRIMINATOR = Buffer.from([229, 23, 203, 151, 122, 227, 173, 42]);
+const PUMP_AMM_PROGRAM_ID = new PublicKey('pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA');
 
 function buildSwapTxB64(
   payer: PublicKey,
@@ -394,6 +395,190 @@ async function simulateClosedPostAccount(
     walletAtas: [{ address: transientAta, mint: transientMint, tokenProgram }],
   });
   return { result, transientAta };
+}
+
+async function simulateWritableIntermediateAccount(
+  scenario:
+    | 'wallet'
+    | 'wallet_close_authority'
+    | 'attacker_close_authority'
+    | 'foreign'
+    | 'token2022_multisig'
+    | 'pump_accumulator'
+    | 'pump_wrong_address'
+    | 'pump_over_cap',
+) {
+  const wallet = Keypair.generate().publicKey;
+  const pumpUserVolumeAccumulator = PublicKey.findProgramAddressSync(
+    [Buffer.from('user_volume_accumulator'), wallet.toBuffer()],
+    PUMP_AMM_PROGRAM_ID,
+  )[0];
+  const intermediateAccount = scenario === 'pump_accumulator' || scenario === 'pump_over_cap'
+    ? pumpUserVolumeAccumulator
+    : Keypair.generate().publicKey;
+  const intermediateMint = Keypair.generate().publicKey;
+  const tokenProgram = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+  const token2022Program = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
+  const usdcAta = findUsdcAta(wallet);
+  const clvAta = findClvAta(wallet);
+  const rentLamports = scenario === 'pump_over_cap'
+    ? 3_000_000n
+    : scenario === 'pump_accumulator' || scenario === 'pump_wrong_address'
+      ? 1_844_400n
+      : 2_108_880n;
+  const priorityFeeLamports = 896_968n;
+  const chargedFeeLamports = priorityFeeLamports + 5_000n;
+  const nativeDecrease = rentLamports + chargedFeeLamports;
+  const walletPreLamports = 50_000_000n;
+  const tokenInfo = (
+    mint: PublicKey,
+    tokenAuthority: PublicKey,
+    program: PublicKey,
+    amount: bigint,
+    lamports = 2_039_280n,
+    closeAuthority?: PublicKey,
+  ) => {
+    const data = Buffer.alloc(165);
+    mint.toBuffer().copy(data, 0);
+    tokenAuthority.toBuffer().copy(data, 32);
+    data.writeBigUInt64LE(amount, 64);
+    data[108] = 1;
+    if (closeAuthority) {
+      data.writeUInt32LE(1, 129);
+      closeAuthority.toBuffer().copy(data, 133);
+    }
+    return {
+      data,
+      executable: false,
+      lamports: Number(lamports),
+      owner: program,
+      rentEpoch: 0,
+    };
+  };
+  const postTokenInfo = (
+    mint: PublicKey,
+    tokenAuthority: PublicKey,
+    program: PublicKey,
+    amount: bigint,
+    lamports = 2_039_280n,
+    closeAuthority?: PublicKey,
+  ) => {
+    const info = tokenInfo(mint, tokenAuthority, program, amount, lamports, closeAuthority);
+    return {
+      ...info,
+      data: [info.data.toString('base64'), 'base64'],
+      owner: program.toBase58(),
+    };
+  };
+  const connection = {
+    getMultipleAccountsInfo: async (addresses: PublicKey[]) => addresses.map((address) => {
+      if (address.equals(intermediateAccount)) return null;
+      if (address.equals(usdcAta)) {
+        return tokenInfo(new PublicKey(USDC_MINT_MAINNET), wallet, tokenProgram, 100_000n);
+      }
+      if (address.equals(clvAta)) {
+        return tokenInfo(new PublicKey(CLV_MINT), wallet, token2022Program, 0n);
+      }
+      if (address.equals(wallet)) {
+        return {
+          data: Buffer.alloc(0), executable: false, lamports: Number(walletPreLamports),
+          owner: SystemProgram.programId, rentEpoch: 0,
+        };
+      }
+      return null;
+    }),
+    simulateTransaction: async (_transaction: VersionedTransaction, config: {
+      accounts: { addresses: string[] };
+    }) => ({
+      context: { slot: 1 },
+      value: {
+        err: null,
+        accounts: config.accounts.addresses.map((address) => {
+          if (address === intermediateAccount.toBase58()) {
+            if (
+              scenario === 'pump_accumulator' || scenario === 'pump_wrong_address' ||
+              scenario === 'pump_over_cap'
+            ) {
+              return {
+                data: ['', 'base64'],
+                executable: false,
+                lamports: Number(rentLamports),
+                owner: PUMP_AMM_PROGRAM_ID.toBase58(),
+                rentEpoch: 0,
+              };
+            }
+            if (scenario === 'token2022_multisig') {
+              const multisigData = Buffer.alloc(355);
+              wallet.toBuffer().copy(multisigData, 32);
+              multisigData[108] = 1;
+              multisigData[165] = 2;
+              return {
+                data: [multisigData.toString('base64'), 'base64'],
+                executable: false,
+                lamports: Number(rentLamports),
+                owner: token2022Program.toBase58(),
+                rentEpoch: 0,
+              };
+            }
+            return postTokenInfo(
+              intermediateMint,
+              scenario === 'foreign' ? strangerKp.publicKey : wallet,
+              tokenProgram,
+              0n,
+              rentLamports,
+              scenario === 'wallet_close_authority'
+                ? wallet
+                : scenario === 'attacker_close_authority'
+                  ? strangerKp.publicKey
+                  : undefined,
+            );
+          }
+          if (address === usdcAta.toBase58()) {
+            return postTokenInfo(
+              new PublicKey(USDC_MINT_MAINNET), wallet, tokenProgram, 61_776n,
+            );
+          }
+          if (address === clvAta.toBase58()) {
+            return postTokenInfo(new PublicKey(CLV_MINT), wallet, token2022Program, 1_000n);
+          }
+          if (address === wallet.toBase58()) {
+            return {
+              data: ['', 'base64'], executable: false,
+              lamports: Number(walletPreLamports - nativeDecrease),
+              owner: SystemProgram.programId.toBase58(), rentEpoch: 0,
+            };
+          }
+          return null;
+        }),
+      },
+    }),
+  } as unknown as Connection;
+  const built = buildSwapTxB64(wallet, '38224', '1000', 100, {
+    realisticRoute: true,
+    maliciousWalletTokenAccount: intermediateAccount,
+  });
+  const transaction = VersionedTransaction.deserialize(Buffer.from(built.transaction, 'base64'));
+  const result = await validateJupiterSwapSimulation({
+    transaction,
+    wallet,
+    connection,
+    inputAmount: 38_224n,
+    minimumOutAmount: 1_000n,
+    priorityFeeLamports,
+    addressLookupTableAccounts: built.lookupTables,
+  });
+  const intermediateLoadedFromAlt = !transaction.message.staticAccountKeys.some(
+    (key) => key.equals(intermediateAccount),
+  );
+  return {
+    result,
+    nativeDecrease,
+    priorityFeeLamports,
+    rentLamports,
+    intermediateLoadedFromAlt,
+    wallet,
+    intermediateAccount,
+  };
 }
 
 interface Harness {
@@ -1312,6 +1497,80 @@ describe('validateJupiterSwapSimulation — closed transient ATA handling', () =
       ok: false,
       detail: `simulation_other_token_decrease:${transientAta.toBase58()}`,
     });
+  });
+
+  it('credits rent in a CPI-created writable wallet-authority token account', async () => {
+    const {
+      result, nativeDecrease, priorityFeeLamports, rentLamports, intermediateLoadedFromAlt,
+    } =
+      await simulateWritableIntermediateAccount('wallet');
+
+    // Without crediting the open intermediate account, its rent remains in the
+    // native decrease and exceeds the unchanged fee bound by exactly this rent.
+    expect(nativeDecrease).toBe(priorityFeeLamports + 5_000n + rentLamports);
+    expect(nativeDecrease).toBeGreaterThan(priorityFeeLamports + 10_000n);
+    expect(intermediateLoadedFromAlt).toBe(true);
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("accepts the one-time rent for the wallet's derived Pump user-volume accumulator", async () => {
+    const {
+      result, nativeDecrease, priorityFeeLamports, rentLamports, wallet, intermediateAccount,
+    } = await simulateWritableIntermediateAccount('pump_accumulator');
+    const expectedAccumulator = PublicKey.findProgramAddressSync(
+      [Buffer.from('user_volume_accumulator'), wallet.toBuffer()],
+      PUMP_AMM_PROGRAM_ID,
+    )[0];
+
+    expect(intermediateAccount.equals(expectedAccumulator)).toBe(true);
+    expect(rentLamports).toBe(1_844_400n);
+    expect(nativeDecrease).toBe(priorityFeeLamports + 5_000n + rentLamports);
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('does not accept a newly-created Pump-owned account at a different address', async () => {
+    const { result, wallet, intermediateAccount } =
+      await simulateWritableIntermediateAccount('pump_wrong_address');
+    const expectedAccumulator = PublicKey.findProgramAddressSync(
+      [Buffer.from('user_volume_accumulator'), wallet.toBuffer()],
+      PUMP_AMM_PROGRAM_ID,
+    )[0];
+
+    expect(intermediateAccount.equals(expectedAccumulator)).toBe(false);
+    expect(result).toEqual({ ok: false, detail: 'simulation_wallet_lamport_delta' });
+  });
+
+  it('does not accept the derived Pump user-volume accumulator above the rent cap', async () => {
+    const { result, wallet, intermediateAccount, rentLamports } =
+      await simulateWritableIntermediateAccount('pump_over_cap');
+    const expectedAccumulator = PublicKey.findProgramAddressSync(
+      [Buffer.from('user_volume_accumulator'), wallet.toBuffer()],
+      PUMP_AMM_PROGRAM_ID,
+    )[0];
+
+    expect(intermediateAccount.equals(expectedAccumulator)).toBe(true);
+    expect(rentLamports).toBe(3_000_000n);
+    expect(result).toEqual({ ok: false, detail: 'simulation_wallet_lamport_delta' });
+  });
+
+  it('does not credit wallet-owned token-account rent recoverable by a foreign close authority', async () => {
+    const { result } = await simulateWritableIntermediateAccount('attacker_close_authority');
+    expect(result).toEqual({ ok: false, detail: 'simulation_wallet_lamport_delta' });
+  });
+
+  it('credits wallet-owned token-account rent when the wallet is the close authority', async () => {
+    const { result } = await simulateWritableIntermediateAccount('wallet_close_authority');
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('does not credit writable token-account rent controlled by a foreign authority', async () => {
+    const { result } = await simulateWritableIntermediateAccount('foreign');
+    expect(result).toEqual({ ok: false, detail: 'simulation_wallet_lamport_delta' });
+  });
+
+  it('does not credit a writable Token-2022 multisig with incidental account-like bytes', async () => {
+    const { result } = await simulateWritableIntermediateAccount('token2022_multisig');
+    expect(result).toEqual({ ok: false, detail: 'simulation_wallet_lamport_delta' });
   });
 });
 
