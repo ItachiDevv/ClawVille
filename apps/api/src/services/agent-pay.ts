@@ -254,9 +254,10 @@ const defaultDb: AgentPayDb = {
       if (row.status === 'settled') return { kind: 'replay' as const, row };
       if (row.status !== 'settling' || !row.txSignature) return { kind: 'not_ready' as const };
 
-      // PayAI transfers the full quoted amount directly to the recipient.
-      // EARNED therefore records and mints against that same full USDC basis;
-      // no uncollected fee/rake may reduce or misdescribe the settlement.
+      // PayAI transfers the full quoted amount directly to the recipient, NOT
+      // to house custody. The EARNED is spendable but explicitly UNBACKED and
+      // can never cross E3. A future cashable ④ must route the dollar through
+      // purpose='earned-backing' and deliver only the EARNED receipt.
       const usdBasis = (row.usdCents / 100).toFixed(6);
       const earnedVclaw = usdToCt(row.usdCents);
       const minted = await mint({
@@ -265,6 +266,11 @@ const defaultDb: AgentPayDb = {
         reason: 'agent_payai_settlement',
         source: 'x402',
         usdBasis,
+        backing: {
+          kind: 'none',
+          mintRef: `agent-pay:${row.id}`,
+          reason: 'recipient_received_usdc_directly',
+        },
         metadata: {
           agentPaymentId: row.id,
           txSignature: row.txSignature,

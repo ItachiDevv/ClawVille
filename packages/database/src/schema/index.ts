@@ -141,6 +141,10 @@ export * from './checkout';
 // General custodial avatar-to-avatar USDC payments through PayAI. Durable
 // claim/capture/fulfill machine; migration 0028 (additive + idempotent).
 export * from './agent-payments';
+// Tokenomics E1/E2 — per-mint EARNED backing lots, payer verification,
+// first-funder cluster caps, and durable claw-backs. Migration 0030.
+export * from './tokenomics-earn';
+export * from './tokenomics-redeem';
 // Tokenomics C — marketplace stage / C4 (2026-07-07) — P2P marketplace v1
 // (market_listings + market_deed_locks + market_settlements). Settlement is
 // FLAG-GATED OFF (MARKETPLACE_SETTLE_ENABLED); seller CLV payouts + the 4.44%

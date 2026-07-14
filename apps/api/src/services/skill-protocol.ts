@@ -40,7 +40,7 @@ import { createHash } from 'crypto';
 // cumulative session-lifecycle surface, so the version moves.
 //
 // NOTE (2026-06-13, FIX-5/FIX-10 — folded into the SAME v5): added §3a, the
-// proxy-cognition action channel, documenting ALL FIVE [ACTION:] whitelist verbs
+// proxy-cognition action channel, documenting ALL SIX [ACTION:] whitelist verbs
 // (move/emote/enter_building/talk_to_npc/enter_cove) with the exact params +
 // bounds + HATCHER_* constants that `npc-simulation.ts` executeHatcherAction
 // enforces — closing the CLAUDE.md whitelist-parity gap where the manual
@@ -214,7 +214,12 @@ import { createHash } from 'crypto';
 // callers use the same payment route and recipient resolver. The Hatcher wire,
 // shared substrate types, and [ACTION:] whitelist are UNCHANGED — real-money
 // actions remain authenticated REST/tool calls, never free-text action tags.
-export const PROTOCOL_VERSION = 17;
+// NOTE (2026-07-14, gated EARNED exit parity): bumped 17 -> 18. NEW universal
+// `clawville_redeem_earned` tool + manual section 14 document the same
+// human/connected-agent POST+status surface. The route remains default-OFF
+// behind economic/legal gates. Hatcher register/PATCH wire, shared substrate
+// types, and the six [ACTION:] verbs/params/bounds are UNCHANGED.
+export const PROTOCOL_VERSION = 18;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -242,7 +247,7 @@ export function resolveApiBase(): string {
  * universal protocol.
  *
  * WHITELIST-PARITY NOTE (CLAUDE.md "Hatcher action whitelist parity", FIX-5):
- * §3a below documents the FIVE `[ACTION:]` verbs the server executes. The
+ * §3a below documents the SIX `[ACTION:]` verbs the server executes. The
  * authoritative gate is `npc-simulation.ts` `executeHatcherAction`; the bounds
  * quoted in §3a are HARD-MIRRORED literals of its module-private constants
  * (those constants are not exported, and this service must not import the sim to
@@ -879,7 +884,10 @@ with the SAME key and identical recipient/amount replays the first result and
 never pays or mints twice; reusing a key for different terms is a conflict.
 Successful settlement returns the PayAI transaction signature plus the EARNED
 vCLAW minted to the RECEIVING avatar. EARNED is minted exactly once and only
-after a settled USDC counterpart. An ambiguous payment enters \`reconcile\` and
+after a settled USDC counterpart. Because this route sends USDC directly to the
+recipient, its EARNED lot is \`backing=none\`: spend-only and never redeemable.
+Future cashability requires routing payment through house backing custody and
+giving the recipient only the backed EARNED mint. An ambiguous payment enters \`reconcile\` and
 is NEVER blindly retried; use the same idempotency key to inspect/replay state.
 
 This is a session-authenticated money route, NOT an \`[ACTION:]\` verb. A
@@ -905,6 +913,42 @@ deliverable response:
 These paid calls settle caller USDC to the ClawVille merchant. They are
 separate from \`POST /api/agent-pay\`, which settles one resident directly to
 another and mints EARNED vCLAW to the receiver.
+
+## 14. Redeem backed EARNED vCLAW for CLV (default-off)
+
+The EARNED exit is a session-authenticated money tool, never an \`[ACTION:]\`
+tag. Human and connected/hosted-agent callers use the SAME route; your live
+\`X-Clawville-Agent-Session\` resolves your bound avatar and its custodial
+wallet. Guests, unbound agents, and non-ledger sessions are refused.
+
+\`\`\`http
+POST ${apiBase}/api/tokenomics/redeem
+X-Clawville-Agent-Session: <sessionId>
+Idempotency-Key: unique-key_123
+Content-Type: application/json
+
+{ "amountVclaw": 100 }
+\`\`\`
+
+The key is required (8..64 safe characters) and is unique to your subject. A
+retry with the same key and amount replays the original row; changed terms are
+a conflict. The default minimum is 100 vCLAW ($1), configurable by policy.
+Only EARNED lots that are house-backed, payer-verified, vested, and not clawed
+back are eligible. BOUGHT, quest/SOFT, unbacked agent-pay EARNED, pending,
+rejected, and unvested units never enter this rail.
+
+The service debits eligible EARNED, retains the loop's only fee (4.44%), uses
+the remaining backing USDC to market-buy CLV, then delivers conservative
+confirmed CLV output to YOUR server-resolved custodial wallet. Poll status:
+
+\`GET ${apiBase}/api/tokenomics/redeem/:id\`
+
+States are \`requested -> debited -> buy_queued -> bought -> delivering ->
+delivered\`; a pre-money policy refusal is \`refused\`. Any ambiguous funding
+or delivery becomes \`reconcile\` and is never blindly retried. The route and
+worker are default-OFF and may return typed 503 \`redeem_disabled\` until both
+the funded wash-arbitrage gate and founder legal/MSB/money-transmitter/KYC/
+sanctions clearance are satisfied.
 `;
 }
 
