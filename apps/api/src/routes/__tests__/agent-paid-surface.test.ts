@@ -32,15 +32,20 @@ describe('agent paid surfaces', () => {
     expect(names).toContain('clawville_pay_agent');
     expect(names).toContain('clawville_paid_expert_consult');
     expect(names).toContain('clawville_paid_agent_analytics');
+    expect(names).toContain('clawville_redeem_earned');
   });
 
-  it('publishes the additive v17 commerce contract', () => {
+  it('publishes the additive v18 commerce and default-off exit contract', () => {
     const manual = buildProtocolManual('https://api.example.test');
-    expect(PROTOCOL_VERSION).toBe(17);
+    expect(PROTOCOL_VERSION).toBe(18);
     expect(manual).toContain('POST https://api.example.test/api/agent-pay');
     expect(manual).toContain('Idempotency-Key');
     expect(manual).toContain('/api/v2/agent/expert-consult');
     expect(manual).toContain('/api/v2/agent/analytics/:agentId');
+    expect(manual).toContain('POST https://api.example.test/api/tokenomics/redeem');
+    expect(manual).toContain('GET https://api.example.test/api/tokenomics/redeem/:id');
+    expect(manual).toContain('redeem_disabled');
+    expect(manual).toContain('4.44%');
   });
 
   it('rejects malformed expert requests before service execution', async () => {

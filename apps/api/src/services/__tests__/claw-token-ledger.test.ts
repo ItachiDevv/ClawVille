@@ -11,6 +11,8 @@
  *     the locked avatar row (the ledger updates exactly the row it just locked).
  *   - `tx.insert(clawTokenTransactions).values({…}).returning({id})` → appends a
  *     ledger row to the in-memory log and returns a fresh id.
+ *   - EARNED mint lots / accounted-ledger membership / lot consumption are
+ *     modeled explicitly, so the E2 attribution invariant is exercised too.
  *   - `db.transaction(fn)` → runs `fn(tx)` against the same in-memory store.
  *
  * The store enforces the SAME invariant the DB CHECK does
@@ -51,6 +53,7 @@ interface AvatarRow {
 }
 
 interface LedgerRow {
+  id: string;
   avatarId: string;
   userId: string;
   amount: number;
@@ -64,9 +67,20 @@ interface LedgerRow {
   metadata: Record<string, unknown>;
 }
 
+interface EarnedLotRow {
+  id: string;
+  ledgerId: string;
+  avatarId: string;
+  backing_kind: 'backed' | 'none';
+  remaining_vclaw: number;
+  created: number;
+}
+
 const store = {
   avatars: new Map<string, AvatarRow>(),
   ledger: [] as LedgerRow[],
+  earnedLots: [] as EarnedLotRow[],
+  earnedAccounted: new Set<string>(),
   /** The avatar id locked by the most recent FOR-UPDATE select in this tx. */
   lockedId: null as string | null,
 };
@@ -74,6 +88,8 @@ const store = {
 function resetStore(): void {
   store.avatars.clear();
   store.ledger = [];
+  store.earnedLots = [];
+  store.earnedAccounted.clear();
   store.lockedId = null;
 }
 
@@ -91,39 +107,116 @@ function seedAvatar(partial: Partial<AvatarRow> & { id?: string }): AvatarRow {
     earned_balance: earned,
   };
   store.avatars.set(id, row);
+  // Post-E2, an EARNED aggregate without matching fungibility lots is invalid.
+  // Directly-seeded F1 fixtures therefore receive one synthetic unbacked lot;
+  // mintEarned tests create their lot through the real helper instead.
+  if (earned > 0) {
+    store.earnedLots.push({
+      id: `seed-lot-${id}`,
+      ledgerId: `seed-ledger-${id}`,
+      avatarId: id,
+      backing_kind: 'none',
+      remaining_vclaw: earned,
+      created: store.earnedLots.length,
+    });
+  }
   return row;
 }
 
-// Recover the FIRST bound param (the avatarId) from a drizzle `sql` template. The
-// raw SQL object exposes its interpolations as `queryChunks` (a `Param` chunk holds
-// `.value`); this mirrors the proven extraction in cash-house-scaler.test.ts.
-function firstParam(q: unknown): string | null {
-  const chunks = (q as { queryChunks?: unknown[] }).queryChunks ?? [];
-  for (const ch of chunks) {
-    const cn = (ch as { constructor?: { name?: string } })?.constructor?.name;
-    // A bare-string interpolation (`${avatarId}`) lands as a boxed `String` object
-    // whose primitive IS the value; `StringChunk` is the static SQL text (skip it).
-    // A `Param` chunk (other drizzle paths) carries `.value`.
-    if (cn === 'String') return String(ch);
-    if (cn === 'Param') return String((ch as { value: unknown }).value);
-  }
-  // Fallback: some drizzle versions surface a flattened `params` array.
-  const params = (q as { params?: unknown[] }).params;
-  if (params && params.length > 0) return String(params[0]);
-  return null;
+// Render enough of a Drizzle SQL template to distinguish the E2 cutover queries
+// without coupling the harness to queryChunks' exact nesting.
+function renderSql(q: unknown): { text: string; params: unknown[] } {
+  const out = { text: '', params: [] as unknown[] };
+  const walk = (node: unknown): void => {
+    for (const chunk of (node as { queryChunks?: unknown[] })?.queryChunks ?? []) {
+      const name = (chunk as { constructor?: { name?: string } })?.constructor?.name;
+      if (name === 'StringChunk') {
+        const value = (chunk as { value: unknown }).value;
+        out.text += Array.isArray(value) ? value.join('') : String(value);
+      } else if (name === 'SQL') {
+        walk(chunk);
+      } else if (name === 'Param') {
+        out.params.push((chunk as { value: unknown }).value);
+        out.text += '?';
+      } else if (name === 'String' || name === 'Number' || name === 'BigInt') {
+        out.params.push((chunk as { valueOf(): unknown }).valueOf());
+        out.text += '?';
+      }
+    }
+  };
+  walk(q);
+  return out;
 }
 
 // ── Fake tx implementing exactly the surface the ledger calls ──────────────────
 function makeTx() {
   return {
-    // The ledger only issues the FOR-UPDATE SELECT through execute(). Recover the
-    // avatarId from the drizzle `sql` template's bound params and return the row.
     async execute(q: unknown) {
-      const avatarId = firstParam(q);
-      if (!avatarId) throw new Error('execute: could not recover avatarId param');
-      store.lockedId = avatarId;
-      const row = store.avatars.get(avatarId);
-      return row ? [row] : [];
+      const { text, params } = renderSql(q);
+      const avatarId = params.length > 0 ? String(params[0]) : null;
+
+      if (text.includes('SELECT earned_balance FROM avatars')) {
+        if (!avatarId) throw new Error('execute: missing avatarId for EARNED reconciliation');
+        store.lockedId = avatarId;
+        const row = store.avatars.get(avatarId);
+        return row ? [{ earned_balance: row.earned_balance }] : [];
+      }
+      if (text.includes('FROM avatars WHERE id =') && text.includes('FOR UPDATE')) {
+        if (!avatarId) throw new Error('execute: missing avatarId for balance lock');
+        store.lockedId = avatarId;
+        const row = store.avatars.get(avatarId);
+        return row ? [row] : [];
+      }
+      if (text.includes('FROM claw_token_transactions t') && text.includes('t.amount < 0')) {
+        return store.ledger
+          .filter((row) => row.avatarId === avatarId && row.provenance === 'earned'
+            && row.amount < 0 && !store.earnedAccounted.has(row.id))
+          .map((row) => ({ id: row.id, amount: -row.amount }));
+      }
+      if (text.includes('FROM claw_token_transactions t') && text.includes('t.amount > 0')) {
+        return store.ledger
+          .filter((row) => row.avatarId === avatarId && row.provenance === 'earned'
+            && row.amount > 0 && !store.earnedAccounted.has(row.id))
+          .map((row) => ({ id: row.id, amount: row.amount }));
+      }
+      if (text.includes('COALESCE(SUM(remaining_vclaw)')) {
+        const amount = store.earnedLots
+          .filter((lot) => lot.avatarId === avatarId)
+          .reduce((sum, lot) => sum + lot.remaining_vclaw, 0);
+        return [{ amount: String(amount) }];
+      }
+      if (text.includes('FROM earned_mint_lots l') && text.includes('FOR UPDATE OF l')) {
+        return store.earnedLots
+          .filter((lot) => lot.avatarId === avatarId && lot.remaining_vclaw > 0)
+          .sort((a, b) => a.created - b.created)
+          .map((lot) => ({
+            id: lot.id,
+            backing_kind: lot.backing_kind,
+            remaining_vclaw: lot.remaining_vclaw,
+          }));
+      }
+      if (text.includes('UPDATE earned_mint_lots')
+        && text.includes('remaining_vclaw = remaining_vclaw -')) {
+        const requested = Number(params[0]);
+        const lot = store.earnedLots.find((row) => row.id === String(params[2]));
+        if (!lot || lot.remaining_vclaw < requested) return [];
+        lot.remaining_vclaw -= requested;
+        return [{ id: lot.id }];
+      }
+      if (text.includes('INSERT INTO earned_mint_lots')) {
+        const ledgerId = String(params[0]);
+        const targetAvatarId = String(params[1]);
+        store.earnedLots.push({
+          id: `cutover-lot-${ledgerId}`,
+          ledgerId,
+          avatarId: targetAvatarId,
+          backing_kind: 'none',
+          remaining_vclaw: Number(params[4]),
+          created: store.earnedLots.length,
+        });
+        return [];
+      }
+      throw new Error(`unhandled ledger SQL: ${text.replace(/\s+/g, ' ').trim()}`);
     },
     update(_table: unknown) {
       return {
@@ -155,27 +248,42 @@ function makeTx() {
         },
       };
     },
-    insert(_table: unknown) {
+    insert(table: unknown) {
       return {
         values(v: Record<string, unknown>) {
+          const id = randomUUID();
+          if (table === realDatabase.clawTokenTransactions) {
+            store.ledger.push({
+              id,
+              avatarId: v.avatarId as string,
+              userId: v.userId as string,
+              amount: v.amount as number,
+              balanceAfter: v.balanceAfter as number,
+              reason: v.reason as string,
+              source: v.source as string,
+              provenance: (v.provenance as string | null) ?? null,
+              usdBasis: (v.usdBasis as string | null) ?? null,
+              fpHash: (v.fpHash as string | null) ?? null,
+              ipPrefixHash: (v.ipPrefixHash as string | null) ?? null,
+              metadata: (v.metadata as Record<string, unknown>) ?? {},
+            });
+          } else if (table === realDatabase.earnedMintLots) {
+            store.earnedLots.push({
+              id,
+              ledgerId: String(v.ledgerId),
+              avatarId: String(v.avatarId),
+              backing_kind: v.backingKind as 'backed' | 'none',
+              remaining_vclaw: Number(v.remainingVclaw),
+              created: store.earnedLots.length,
+            });
+          } else if (table === realDatabase.earnedAccountedLedger) {
+            store.earnedAccounted.add(String(v.ledgerId));
+          }
           return {
             async returning(_cols: unknown) {
-              const id = randomUUID();
-              store.ledger.push({
-                avatarId: v.avatarId as string,
-                userId: v.userId as string,
-                amount: v.amount as number,
-                balanceAfter: v.balanceAfter as number,
-                reason: v.reason as string,
-                source: v.source as string,
-                provenance: (v.provenance as string | null) ?? null,
-                usdBasis: (v.usdBasis as string | null) ?? null,
-                fpHash: (v.fpHash as string | null) ?? null,
-                ipPrefixHash: (v.ipPrefixHash as string | null) ?? null,
-                metadata: (v.metadata as Record<string, unknown>) ?? {},
-              });
               return [{ id }];
             },
+            async onConflictDoNothing() {},
           };
         },
       };
@@ -315,6 +423,7 @@ describe('claw-token-ledger F1 — mintEarned chokepoint', () => {
     // Only mintEarned writes earned.
     const res = await mintEarned({
       avatarId: b.id, amount: 75, reason: 'agent_labor', source: 'x402', usdBasis: '75.000000',
+      backing: { kind: 'none', mintRef: `test:${b.id}:only-writer`, reason: 'unit_test' },
     });
     expect(res.balanceAfter).toBe(getAvatar(b.id).claw_tokens);
     const row = getAvatar(b.id);
@@ -333,6 +442,7 @@ describe('claw-token-ledger F1 — mintEarned chokepoint', () => {
       reason: 'labor',
       source: 'x402',
       usdBasis: '40.000000',
+      backing: { kind: 'none', mintRef: `test:${a.id}:hashes`, reason: 'unit_test' },
       fpHash: 'fp-abc',
       ipPrefixHash: 'ip-xyz',
     });
@@ -345,7 +455,10 @@ describe('claw-token-ledger F1 — mintEarned chokepoint', () => {
   it('mintEarned rejects an empty usdBasis (a cashable mint must carry a USD basis)', async () => {
     const a = seedAvatar({ claw_tokens: 0, soft_balance: 0 });
     await expect(
-      mintEarned({ avatarId: a.id, amount: 10, reason: 'x', source: 'x402', usdBasis: '' }),
+      mintEarned({
+        avatarId: a.id, amount: 10, reason: 'x', source: 'x402', usdBasis: '',
+        backing: { kind: 'none', mintRef: `test:${a.id}:empty`, reason: 'unit_test' },
+      }),
     ).rejects.toThrow(/usdBasis/);
     expect(earnedRows().length).toBe(0);
   });
@@ -525,7 +638,10 @@ describe('claw-token-ledger F1 — sum invariant holds after every op', () => {
     const ops: Array<() => Promise<unknown>> = [
       () => creditClawTokens({ avatarId: a.id, amount: 33, reason: 'c', source: 'quest' }),
       () => creditClawTokens({ avatarId: a.id, amount: 17, reason: 'b', source: 'x402', provenance: 'bought' }),
-      () => mintEarned({ avatarId: a.id, amount: 25, reason: 'e', source: 'x402', usdBasis: '25.000000' }),
+      () => mintEarned({
+        avatarId: a.id, amount: 25, reason: 'e', source: 'x402', usdBasis: '25.000000',
+        backing: { kind: 'none', mintRef: `test:${a.id}:sum`, reason: 'unit_test' },
+      }),
       () => debitClawTokens({ avatarId: a.id, amount: 40, reason: 'd', source: 'api' }),
       () => transferClawTokens({ fromAvatarId: a.id, toAvatarId: b.id, amount: 10, reason: 't', source: 'exchange' }),
     ];

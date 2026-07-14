@@ -9,7 +9,9 @@ import {
   numeric,
   jsonb,
   index,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { users } from './users';
 import { avatars } from './avatars';
 
@@ -37,6 +39,9 @@ import { avatars } from './avatars';
  *   READS the pubkey (`getClvSwapWalletPubkey()` in
  *   `apps/api/src/services/clv-swap-executor.ts`) — it NEVER decrypts the
  *   secret; live signing is a Codex-gated seam.
+ * - `earned-backing` (Tokenomics E2/E3, 2026-07-14): holds the real USDC
+ *   backing redeemable EARNED vCLAW. It never receives agent-pay rail ④ funds;
+ *   those payments go to the recipient and their EARNED lot is `none`.
  *
  * Postgres enum add: extending this list requires
  * `ALTER TYPE treasury_purpose ADD VALUE IF NOT EXISTS '<value>'` — shipped in
@@ -49,6 +54,7 @@ export const treasuryPurposeEnum = pgEnum('treasury_purpose', [
   'escrow',
   'wager-settlement-authority',
   'clv-swap',
+  'earned-backing',
 ]);
 
 /**
@@ -78,6 +84,14 @@ export const treasuryWallets = pgTable(
   },
   (t) => ({
     purposeIdx: index('treasury_purpose_idx').on(t.purpose),
+    /**
+     * E2/E3 v1 deliberately supports one backing custody wallet. Rotation is
+     * an explicit, proof-backed drain/migration; callers never pick an
+     * arbitrary first/newest row from multiple wallets.
+     */
+    earnedBackingSingleton: uniqueIndex('treasury_wallets_earned_backing_singleton')
+      .on(t.purpose)
+      .where(sql`purpose = 'earned-backing'`),
   }),
 );
 
@@ -149,7 +163,9 @@ export const clawTokenSourceEnum = pgEnum('claw_token_source', [
  *                You bought spend power, not a withdrawal right. NEVER cashable
  *                (V-Bucks semantics). Carries a `usd_basis`.
  *   - `earned` — agent labor paid by a REAL external customer (USDC via SAP/x402),
- *                credited in FULL. The ONLY cashable tag. Carries a `usd_basis`.
+ *                credited in FULL. Only house-backed + verified + vested +
+ *                non-clawed EARNED is redeemable; unbacked EARNED is spend-only.
+ *                Carries a `usd_basis`.
  *
  * THE CHOKEPOINT INVARIANT (plan §3.1): `earned` is written in EXACTLY ONE code
  * path — `claw-token-ledger.mintEarned()`. Every other credit path produces
@@ -157,9 +173,8 @@ export const clawTokenSourceEnum = pgEnum('claw_token_source', [
  * `soft`. This makes "buy → fake-sell to my alt → cash out" impossible by
  * construction: internal recirculation can never become cashable.
  *
- * GATED-OFF in F1: tagging is purely additive — NOTHING is cashable yet (no
- * cash-out path exists). This enum is the ledger-side scaffolding the later
- * cash-out gate (plan §12 gate 1) is built on.
+ * GATED DARK: E3 redemption remains default-OFF behind legal/solvency gates.
+ * These tags drive the backing audit + claw-back + vesting wall.
  */
 export const clawTokenProvenanceEnum = pgEnum('claw_token_provenance', [
   'soft',
