@@ -47,6 +47,7 @@ import type {
 } from '@clawville/shared';
 import { ensureWalletWithFirstTimeSecret } from './wallet-service';
 import { ensureCosmeticSignupBonus } from './cosmetic-signup-bonus';
+import { recordCovenantAction } from './covenant-action-recorder';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -497,6 +498,18 @@ export async function provisionAvatarAgent(
             learningFocus,
           })
           .returning();
+
+        await recordCovenantAction(
+          {
+            action: 'economy.genesis',
+            subjectType: 'avatar',
+            subjectId: insertedAvatar.id,
+            actorKind: 'system',
+            dedupeKey: `avatar:${insertedAvatar.id}:genesis`,
+            payload: { amount: insertedAvatar.clawTokens, provenance: 'soft', reason: 'avatar_genesis' },
+          },
+          tx,
+        );
 
         // Username system (2026-05-19): initialize users.username from the
         // avatar's name when the user doesn't have one yet. Only set when

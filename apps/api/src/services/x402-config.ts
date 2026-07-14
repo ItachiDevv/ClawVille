@@ -120,6 +120,27 @@ const PAYAI_FACILITATOR_URL = 'https://facilitator.payai.network';
 const DEFAULT_MOCK_FACILITATOR_URL = 'http://localhost:4000/api/x402-mock';
 
 /**
+ * True only for the hosted PayAI base URL used by every production USDC rail.
+ * URL parsing prevents suffix-host tricks; paths/query/auth/ports are refused
+ * because the x402 client appends its own /verify and /settle paths.
+ */
+export function isHostedPayAiFacilitatorUrl(value: string): boolean {
+  try {
+    const facilitator = new URL(value);
+    return facilitator.protocol === 'https:'
+      && facilitator.hostname === 'facilitator.payai.network'
+      && facilitator.port === ''
+      && facilitator.pathname === '/'
+      && facilitator.username === ''
+      && facilitator.password === ''
+      && facilitator.search === ''
+      && facilitator.hash === '';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Resolve the facilitator base URL. An explicit `X402_FACILITATOR_URL` always
  * wins (and is reported as explicit); otherwise the `X402_FACILITATOR_PRESET`
  * selects a known facilitator. Unknown presets fall back to CDP — the historical
@@ -222,6 +243,28 @@ export function buildX402Routes(config: X402Config): Parameters<typeof paymentMi
         maxTimeoutSeconds: 60,
       },
       description: 'Ping the ClawVille agent gateway to prove x402 is wired.',
+      mimeType: 'application/json',
+    },
+    'POST /api/v2/agent/expert-consult': {
+      accepts: {
+        scheme: 'exact',
+        payTo: config.merchantWalletPubkey,
+        price: '$0.05',
+        network: config.network as never,
+        maxTimeoutSeconds: 60,
+      },
+      description: 'Consult up to two ClawVille building experts on one bounded question.',
+      mimeType: 'application/json',
+    },
+    'GET /api/v2/agent/analytics/:agentId': {
+      accepts: {
+        scheme: 'exact',
+        payTo: config.merchantWalletPubkey,
+        price: '$0.01',
+        network: config.network as never,
+        maxTimeoutSeconds: 60,
+      },
+      description: 'Get one agent\'s exact 24h, 7d, 30d, and lifetime leaderboard analysis.',
       mimeType: 'application/json',
     },
   };

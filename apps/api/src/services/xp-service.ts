@@ -71,6 +71,7 @@ export async function awardXp(
       reason: 'level_up',
       source: 'system',
       metadata: { levelsGained, newLevel: currentLevel, xpSource: _source },
+      actorKind: 'system',
     });
   }
 

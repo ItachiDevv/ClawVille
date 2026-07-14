@@ -40,7 +40,7 @@
 
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { eq, and, desc, inArray, type SQL } from 'drizzle-orm';
+import { eq, and, desc, inArray, gt, isNotNull, like, sql, type SQL } from 'drizzle-orm';
 import { PublicKey } from '@solana/web3.js';
 import {
   db,
@@ -48,6 +48,8 @@ import {
   bounties,
   bountyAttempts,
   bountyReputation,
+  covenantActionRecords,
+  covenantSealBatches,
   sapEscrowSettlements,
   sapEscrowApprovals,
   users,
@@ -479,5 +481,181 @@ partnerCovenantRoutes.get('/agents/:avatarId', async (c) => {
         }
       : null,
     agentIdentity: buildAgentIdentity(avatar.id, avatar.walletAddress, fingerprint),
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /actions — the covenant action-record stream (2026-07-13)
+// ---------------------------------------------------------------------------
+// The append-only, hash-chained record of every economic agent action (see
+// `services/covenant-action-recorder.ts` + `covenant-chain-sealer.ts`).
+// SEALED records only — a sealed row carries its chain position + hashes, so
+// everything served is verifiable; unsealed rows (younger than the sealer's
+// watermark) become visible within ~90s. Cursor by `sincePosition` (exclusive),
+// ascending — a poller replays the chain gaplessly from any position.
+
+const actionsQuerySchema = z.object({
+  // String→BigInt by hand: z.coerce.bigint() throws an UNCAUGHT TypeError (not
+  // a ZodError) on non-numeric input in this zod line, which would 500 the
+  // route instead of 400ing.
+  sincePosition: z
+    .string()
+    .regex(/^\d{1,19}$/)
+    .default('0')
+    .transform((s) => BigInt(s)),
+  /** Exact action verb (e.g. 'economy.credit') or a 'prefix.*' wildcard. */
+  action: z
+    .string()
+    .regex(/^[a-z_]+\.(?:[a-z_]+|\*)$/)
+    .optional(),
+  subjectId: z.string().min(1).max(128).optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+});
+
+partnerCovenantRoutes.get('/actions', async (c) => {
+  const parsed = actionsQuerySchema.safeParse({
+    sincePosition: c.req.query('sincePosition'),
+    action: c.req.query('action'),
+    subjectId: c.req.query('subjectId'),
+    limit: c.req.query('limit'),
+  });
+  if (!parsed.success) {
+    return c.json({ error: 'invalid_query', details: parsed.error.flatten() }, 400);
+  }
+  const { sincePosition, action, subjectId, limit } = parsed.data;
+
+  const conditions: SQL[] = [
+    isNotNull(covenantActionRecords.chainPosition),
+    gt(covenantActionRecords.chainPosition, sincePosition),
+  ];
+  if (action) {
+    if (action.endsWith('.*')) {
+      conditions.push(like(covenantActionRecords.action, `${action.slice(0, -1)}%`));
+    } else {
+      conditions.push(eq(covenantActionRecords.action, action));
+    }
+  }
+  if (subjectId) conditions.push(eq(covenantActionRecords.subjectId, subjectId));
+
+  const rows = await db
+    .select({
+      chainPosition: covenantActionRecords.chainPosition,
+      action: covenantActionRecords.action,
+      subjectType: covenantActionRecords.subjectType,
+      subjectId: covenantActionRecords.subjectId,
+      actorKind: covenantActionRecords.actorKind,
+      payload: covenantActionRecords.payload,
+      payloadHash: covenantActionRecords.payloadHash,
+      prevHash: covenantActionRecords.prevHash,
+      recordHash: covenantActionRecords.recordHash,
+      createdAt: covenantActionRecords.createdAt,
+      sealedAt: covenantActionRecords.sealedAt,
+    })
+    .from(covenantActionRecords)
+    .where(and(...conditions))
+    .orderBy(covenantActionRecords.chainPosition)
+    .limit(limit);
+
+  return c.json({
+    actions: rows.map((r) => ({
+      chainPosition: r.chainPosition!.toString(),
+      action: r.action,
+      subjectType: r.subjectType,
+      subjectId: r.subjectId,
+      actorKind: r.actorKind,
+      payload: r.payload,
+      payloadHash: r.payloadHash,
+      prevHash: r.prevHash,
+      recordHash: r.recordHash,
+      createdAt: r.createdAt.toISOString(),
+      sealedAt: r.sealedAt!.toISOString(),
+    })),
+    limit,
+    // Next-page cursor: the last served position (echo the request's when empty).
+    nextSincePosition: (rows.length
+      ? rows[rows.length - 1].chainPosition!
+      : sincePosition
+    ).toString(),
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /actions/head — chain head + latest seal batch (cheap poll/verify)
+// ---------------------------------------------------------------------------
+partnerCovenantRoutes.get('/actions/head', async (c) => {
+  // ONE statement = one MVCC snapshot (Codex covenant round 2 MED #5): two
+  // separate reads could straddle a sealer commit and return an "impossible"
+  // pair (old head + newer batch), tripping a verifier's corruption check.
+  // The sealer writes head + batch in one tx, so a single-snapshot read is
+  // always self-consistent.
+  const [snap] = await db.execute<{
+    head: {
+      chain_position: string | number;
+      record_hash: string;
+      sealed_at: string;
+    } | null;
+    batch: {
+      first_position: string | number;
+      last_position: string | number;
+      record_count: string | number;
+      batch_root: string;
+      prev_batch_root: string;
+      created_at: string;
+    } | null;
+    pending_count: string | number;
+    oldest_pending_age_s: string | number | null;
+  }>(
+    sql`SELECT
+          (SELECT to_jsonb(h) FROM (
+             SELECT chain_position, record_hash, sealed_at
+             FROM covenant_action_records
+             WHERE chain_position IS NOT NULL
+             ORDER BY chain_position DESC LIMIT 1
+           ) h) AS head,
+          (SELECT to_jsonb(b) FROM (
+             SELECT first_position, last_position, record_count,
+                    batch_root, prev_batch_root, created_at
+             FROM covenant_seal_batches
+             ORDER BY last_position DESC LIMIT 1
+           ) b) AS batch,
+          (SELECT count(*) FROM covenant_action_records
+           WHERE chain_position IS NULL) AS pending_count,
+          (SELECT EXTRACT(EPOCH FROM (now() - min(created_at)))
+           FROM covenant_action_records
+           WHERE chain_position IS NULL) AS oldest_pending_age_s`,
+  );
+
+  const head = snap?.head ?? null;
+  const batch = snap?.batch ?? null;
+  const pendingCount = Number(snap?.pending_count ?? 0);
+  const oldestPendingAgeSeconds =
+    snap?.oldest_pending_age_s == null ? null : Math.floor(Number(snap.oldest_pending_age_s));
+  return c.json({
+    head: head
+      ? {
+          chainPosition: String(head.chain_position),
+          recordHash: head.record_hash,
+          sealedAt: new Date(head.sealed_at).toISOString(),
+        }
+      : null,
+    latestBatch: batch
+      ? {
+          firstPosition: String(batch.first_position),
+          lastPosition: String(batch.last_position),
+          recordCount: String(batch.record_count),
+          batchRoot: batch.batch_root,
+          prevBatchRoot: batch.prev_batch_root,
+          createdAt: new Date(batch.created_at).toISOString(),
+        }
+      : null,
+    // Sealer health (Codex round 4 HIGH #3): without this, a stream frozen at
+    // a malformed row is indistinguishable from a quiet system — the head just
+    // stops moving. Normal operation keeps rows unsealed for up to the 30s
+    // watermark + 60s interval; STALLED_AFTER (300s) = 5 missed passes.
+    sealerHealth: {
+      pendingCount,
+      oldestPendingAgeSeconds,
+      stalled: oldestPendingAgeSeconds !== null && oldestPendingAgeSeconds > 300,
+    },
   });
 });

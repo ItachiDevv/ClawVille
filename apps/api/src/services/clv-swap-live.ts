@@ -1,44 +1,35 @@
 /**
  * CLV SWAP EXECUTOR — LIVE PATH (Tokenomics GoLive executors, 2026-07-07).
  * ============================================================================
- * ███ DARK. NOTHING HERE RUNS TODAY. ███
+ * ███ LIVE GATE OPENED 2026-07-13 — DEFAULT OFF, LITERAL OPT-IN ONLY. ███
  *
  * This module is the fully-plumbed LIVE execution path for the C3 buy queue:
  * funding sweep (merchant USDC → clv-swap wallet) + atomic claim + per-clip
- * Jupiter USDC→CLV swaps. It ships ENTIRELY behind two independent locks:
+ * Jupiter USDC→CLV swaps. Its execution boundary is:
  *
- *   LOCK 1 — the intact module-load throw in `clv-swap-executor.ts`
- *     (`assertNoLiveClvSwapExecution()`): a box with `CLV_SWAP_EXECUTE=true`
- *     REFUSES TO BOOT. This module imports the executor, so importing it
- *     under the flag crashes the same way.
+ *   LOCK 1 — OPENED by the founder's no-dark-flags ruling (2026-07-13).
+ *     `clv-swap-executor.ts` no longer calls `assertNoLiveClvSwapExecution()`
+ *     at module scope, so a box explicitly configured with
+ *     `CLV_SWAP_EXECUTE=true` can boot into the live worker. The assertion is
+ *     retained on the dry-run worker/tick to prevent both modes running.
  *   LOCK 2 — every live entrypoint here re-asserts the DEFAULT-OFF gate
  *     (`requireLiveClvSwapExecution()`): it throws UNLESS
  *     `CLV_SWAP_EXECUTE === 'true'`.
  *
- * Together the locks make the live path STRUCTURALLY UNREACHABLE in a running
- * API today (flag on ⇒ no boot; flag off ⇒ every entrypoint refuses). THE REAL
- * GO-LIVE DIFF (corrected 2026-07-08, Codex re-review — it is NOT "one line on
- * top of unchanged boot wiring"): remove ONLY the module-load throw in
- * `clv-swap-executor.ts`. index.ts's boot wiring is ALREADY CONDITIONAL on
- * `CLV_SWAP_EXECUTE`: flag unset/false ⇒ the dry-run worker (today's only
- * reachable behavior); flag 'true' ⇒ `startClvSwapLiveWorker()` from this
- * module. While the throw stands, the live branch is DEAD CODE (a flagged box
- * refuses to boot at module load) — dark-safe; once the throw is removed, the
- * flag cleanly selects this audited path instead of crash-looping the API on
- * the dry-run worker's gate.
+ * The existing conditional boot wiring now selects exactly one mode: flag
+ * unset/false ⇒ dry-run worker; literal 'true' ⇒ this live worker. Mainnet and
+ * real-facilitator guards remain mandatory at every live entrypoint.
  *
  * // FEATURE_GATE: clv_swap_live_execution
- * // Status: dark plumbing — unreachable (module-load throw + default-OFF gate
- * //   + mainnet/mock network guard); index.ts boot wiring is CONDITIONAL on
- * //   CLV_SWAP_EXECUTE='true' (a dead branch while the throw stands).
- * // Metric to graduate: Codex adversarial review PASSED on this file +
- * //   clv-swap-custody.ts + migration 0019/0019a, AND a staging harness smoke
- * //   of the funding sweep + one clip against a funded wallet.
- * // Current reading: 0 live executions (gate has never been opened).
+ * // Status: founder-opened under the no-dark-flags ruling (2026-07-13);
+ * //   default OFF, literal CLV_SWAP_EXECUTE='true' selects live execution.
+ * // Metric to graduate: adversarial pass on the complete live money path AND
+ * //   a staging live smoke of the funding sweep + one clip, with signatures.
+ * // Current reading: adversarial pass complete; staging live smoke pending.
  * // Review deadline: 2026-08-07.
- * // On deadline: if the go-live is not scheduled, this module stays dark or is
- * //   deleted — it must never rot half-reviewed.
- * // Reference: CLAUDE.md kill-the-build invariants; clv-swap-executor.ts HARD GATE.
+ * // On deadline: if the metric is not recorded, delete this live path; do not
+ * //   silently extend or re-dark an unverified money executor.
+ * // Reference: clv-swap-executor.ts mode separation + network guards below.
  *
  * ── MONEY MODEL ──────────────────────────────────────────────────────────────
  * Real on-chain USDC and CLV ONLY. This module NEVER imports
@@ -75,11 +66,13 @@
  *           floor is REFUSED (the oracle is the independent check on the
  *           aggregator);
  *        d. Jupiter /swap → deserialize → verify the fee payer is OUR swap
- *           wallet → sign; CAPTURE the clip signature (append to
- *           tx_signatures) in its OWN committed UPDATE BEFORE sending;
+ *           wallet → sign; CAPTURE the clip signature and conservative
+ *           on-chain-guaranteed output floor (append to tx_signatures) in its
+ *           OWN committed UPDATE BEFORE sending;
  *        e. send + confirm; spacing sleep; loop.
  *      Conservation: Σ clip µUSD === the queued amount exactly (BigInt);
- *      completion sets executed_at + executed_price (realized avg USD/CLV).
+ *      completion sets executed_at + executed_price (conservative
+ *      guaranteed-output accounting avg USD/CLV).
  *
  * ── NETWORK GUARD (devnet/mock can NEVER reach a real send) ─────────────────
  * `assertMainnetRealMoneyContext()` runs at every live entrypoint: the USDC
@@ -139,25 +132,22 @@ import { resolveTopupNetwork } from '../routes/ct-topup';
 import { readSplTokenBalance } from './solana-token-balance';
 
 // ---------------------------------------------------------------------------
-// LOCK 2 — the default-OFF live gate (LOCK 1 is the executor module-load throw)
+// LOCK 2 — default-OFF literal live opt-in (LOCK 1 opened 2026-07-13)
 // ---------------------------------------------------------------------------
 
-/** True ONLY when `CLV_SWAP_EXECUTE === 'true'`. While the module-load throw in
- *  clv-swap-executor.ts stands, a process where this returns true cannot boot —
- *  the two locks together keep the live path structurally unreachable. */
+/** True ONLY when `CLV_SWAP_EXECUTE === 'true'`. The boot wiring uses the same
+ *  literal comparison to select this worker instead of the dry-run worker. */
 export function isLiveClvSwapExecutionEnabled(): boolean {
   return process.env.CLV_SWAP_EXECUTE === 'true';
 }
 
 /** Re-asserted at EVERY live entrypoint. Default-OFF: throws unless the env is
- *  the literal 'true'. Removing the executor's module-load throw (the
- *  Codex-reviewed go-live change — see the module header) is what makes this
- *  gate openable; the index.ts boot wiring is already conditional. */
+ *  the literal 'true'; mainnet/real-facilitator guards run immediately after. */
 export function requireLiveClvSwapExecution(): void {
   if (!isLiveClvSwapExecutionEnabled()) {
     throw new Error(
-      `[clv-swap-live] live execution is DARK — CLV_SWAP_EXECUTE is not 'true' ` +
-        `(default-OFF; opening the seam is a Codex-reviewed change, never an env flip alone)`,
+      `[clv-swap-live] live execution is disabled — CLV_SWAP_EXECUTE is not 'true' ` +
+        `(default OFF; literal opt-in required)`,
     );
   }
 }
@@ -429,7 +419,12 @@ export interface ClipFillRecord {
   index: number;
   amountUsdc: string;
   signature: string;
-  /** Jupiter-quoted CLV out (atomic string) — quote-derived, not chain-parsed. */
+  /**
+   * Conservative CLV output floor (atomic string): Jupiter ExactIn's
+   * `otherAmountThreshold`, which the transaction enforces on-chain. This is
+   * intentionally NOT optimistic `outAmount`; downstream obligations must not
+   * exceed the minimum this confirmed transaction guaranteed.
+   */
   outAmountAtomic: string;
   quotedAt: string;
 }
@@ -1156,7 +1151,9 @@ export async function executeQueuedClvBuy(
       index: clipIndex,
       amountUsdc: microToUsdc(clipMicro),
       signature,
-      outAmountAtomic: jupQuote.outAmount,
+      // ExactIn guarantees only otherAmountThreshold. Persist the conservative
+      // floor so payout accounting can never rely on optimistic quote output.
+      outAmountAtomic: jupQuote.otherAmountThreshold,
       quotedAt: new Date().toISOString(),
     };
     const captured = await d.db.appendClipFill(queueId, claimId, fill);
@@ -1194,7 +1191,7 @@ export async function executeQueuedClvBuy(
 
     // Clip confirmed.
     remaining -= clipMicro;
-    totalOutAtomic += BigInt(jupQuote.outAmount);
+    totalOutAtomic += BigInt(jupQuote.otherAmountThreshold);
     clipIndex += 1;
 
     if (remaining > 0n && spacingMs > 0) {
@@ -1203,8 +1200,9 @@ export async function executeQueuedClvBuy(
   }
 
   // 5) CONSERVATION: the loop structurally spends remaining down to exactly 0
-  //    (Σ clip µUSD === queued amount). Realized average price (quote-derived
-  //    — per-clip outAmount is Jupiter's quoted fill, not chain-parsed).
+  //    (Σ clip µUSD === queued amount). The accounting price is conservative:
+  //    each clip contributes the on-chain-enforced ExactIn threshold, not
+  //    Jupiter's optimistic outAmount or an unavailable chain-parsed balance.
   const executedPrice =
     totalOutAtomic > 0n
       ? (Number(amountMicro) / 1_000_000 / (Number(totalOutAtomic) / 10 ** CLV_DECIMALS)).toFixed(12)
@@ -1296,11 +1294,9 @@ export async function runLiveClvSwapTick(
 let liveWorkerTimer: ReturnType<typeof setInterval> | null = null;
 
 /**
- * The live worker loop. Boot-wired in index.ts ONLY behind
- * `CLV_SWAP_EXECUTE === 'true'` — a DEAD branch while the executor's
- * module-load throw stands (the dry-run worker stays the default boot
- * behavior). Gated at start AND inherits the per-entrypoint gates of every
- * tick.
+ * The live worker loop. Boot-selected only when
+ * `CLV_SWAP_EXECUTE === 'true'`; unset/false keeps the dry-run worker as the
+ * default. Gated at start AND inherits every tick's live/network guards.
  */
 export function startClvSwapLiveWorker(pollMs = 300_000): void {
   requireLiveClvSwapExecution();

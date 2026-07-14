@@ -234,6 +234,7 @@ import {
   creditClawTokens,
   InsufficientTokensError,
 } from '../services/claw-token-ledger';
+import { type CovenantActorKind } from '../services/covenant-action-recorder';
 import { getHouseTreasuryAvatarId } from '../services/house-treasury-seeder';
 import {
   getLinkedWalletClvBalance,
@@ -241,6 +242,10 @@ import {
   type ClvBalanceResult,
 } from '../services/linked-wallet-clv-balance';
 import type { AppContext } from '../types';
+
+/** Map the auth identity kind onto the covenant actor vocabulary. */
+const toActorKind = (kind: 'user' | 'agent'): CovenantActorKind =>
+  kind === 'user' ? 'human' : 'agent';
 
 // ─── shared shapes ──────────────────────────────────────────────────────────
 
@@ -1111,6 +1116,7 @@ landRoutes.post('/claim-starter', requireAuthOrAgentSession, requireNonGuestIden
             tier: pick.tier,
             refundable: true,
           },
+          actorKind: toActorKind(identity.kind),
         },
         tx,
       );
@@ -1688,6 +1694,7 @@ landRoutes.post('/parcels/:parcelId/deposit-topup', requireAuthOrAgentSession, r
           reason: 'land_deposit_topup',
           source: 'api',
           metadata: { parcelId: p.id, parcelCode: p.parcel_code, refundable: true },
+          actorKind: toActorKind(identity.kind),
         },
         tx,
       );
@@ -1838,6 +1845,7 @@ landRoutes.post('/parcels/:parcelId/release', requireAuthOrAgentSession, require
               reason: 'land_deposit_refund',
               source: 'api',
               metadata: { parcelId: p.id, parcelCode: p.parcel_code },
+              actorKind: toActorKind(identity.kind),
             },
             tx,
           );
@@ -2237,6 +2245,7 @@ landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, r
             reason: 'land_structure_upgrade',
             source: 'api',
             metadata: { structureId, fromLevel: level, toLevel: target, tier: s.tier },
+            actorKind: toActorKind(identity.kind),
           },
           tx,
         );
@@ -2257,6 +2266,7 @@ landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, r
                 reason: 'house_fee_structure_upgrade',
                 source: 'system',
                 metadata: { structureId, toLevel: target, tier: s.tier, ownerAvatarId: avatarId },
+                actorKind: 'system',
               },
               tx,
             );
@@ -2986,6 +2996,7 @@ landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, requireNo
             reason: 'land_service_purchase',
             source: 'api',
             metadata: { listingId, sellerAvatarId },
+            actorKind: toActorKind(identity.kind),
           },
           tx,
         );
@@ -3003,6 +3014,7 @@ landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, requireNo
             source: 'api',
             provenance: 'soft',
             metadata: { listingId, buyerAvatarId: avatarId },
+            actorKind: toActorKind(identity.kind),
           },
           tx,
         );

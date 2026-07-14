@@ -449,6 +449,7 @@ cosmeticsRoutes.post('/:skuId/buy', sessionMiddleware, requireAuth, requireNonGu
             reason: 'buy_cosmetic',
             source: 'api',
             metadata: { skuId, slug: sku.slug, category: sku.category, grantUsed, priceCt: sku.priceCt },
+            actorKind: 'human',
           },
           tx,
         );
@@ -472,6 +473,7 @@ cosmeticsRoutes.post('/:skuId/buy', sessionMiddleware, requireAuth, requireNonGu
               reason: 'house_fee_cosmetic_purchase',
               source: 'system',
               metadata: { skuId, slug: sku.slug, buyerAvatarId: avatar.id, grantUsed, priceCt: sku.priceCt },
+              actorKind: 'system',
             },
             tx,
           );

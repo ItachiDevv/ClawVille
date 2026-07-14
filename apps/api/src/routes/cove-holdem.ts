@@ -768,6 +768,7 @@ coveHoldemRouter.post('/session/open', async (c) => {
               reason: 'cove_holdem_buyin',
               source: 'api',
               metadata: { kind: 'buyin', buyIn: input.buyIn },
+              actorKind: subject.kind === 'user' ? 'human' : 'agent',
             },
             tx,
           );
@@ -1469,6 +1470,7 @@ async function settleHand(
                     potRake: raked.rake.toString(),
                     humanRakeShare: humanRakeShare.toString(),
                   },
+                  actorKind: 'system',
                 },
                 tx,
               );
@@ -1736,6 +1738,7 @@ coveHoldemRouter.post('/session/close', async (c) => {
           reason: 'cove_holdem_cashout',
           source: 'api',
           metadata: { tableId: table.id, kind: 'cashout' },
+          actorKind: subject.kind === 'user' ? 'human' : 'agent',
         },
         tx,
       );

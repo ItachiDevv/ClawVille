@@ -23,6 +23,7 @@ import {
 import { requireNonGuestIdentity } from '../middleware/require-non-guest';
 import { noStorePrivate } from '../middleware/no-store';
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
+import { type CovenantActorKind } from '../services/covenant-action-recorder';
 import { logEventFromContext } from '../services/event-logger';
 import {
   db,
@@ -31,6 +32,10 @@ import {
   exchangeOrders,
 } from '@clawville/database';
 import { eq, and, desc, sql, inArray } from 'drizzle-orm';
+
+/** Map the auth identity kind onto the covenant actor vocabulary. */
+const toActorKind = (kind: 'user' | 'agent'): CovenantActorKind =>
+  kind === 'user' ? 'human' : 'agent';
 
 // ── Rule E5 agent parity (Phase B). Every WRITE binds to `identity.avatarId`
 // from `requireAuthOrAgentSession` — the SAME avatar for a Lucia human AND a
@@ -259,6 +264,7 @@ exchangeRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentit
           reason: 'exchange_escrow_need',
           source: 'exchange',
           metadata: { listingId: inserted.id, capacity },
+          actorKind: toActorKind(c.get('identity').kind),
         },
         tx,
       );
@@ -381,6 +387,7 @@ exchangeRoutes.post('/:id/order', requireAuthOrAgentSession, requireNonGuestIden
           reason: 'exchange_escrow_order',
           source: 'exchange',
           metadata: { listingId: listing.id },
+          actorKind: toActorKind(c.get('identity').kind),
         },
         tx,
       );
@@ -596,6 +603,7 @@ exchangeRoutes.post('/orders/:orderId/confirm', requireAuthOrAgentSession, requi
         reason: recipientReason,
         source: 'exchange',
         metadata: { orderId: order.id, listingId: listing.id },
+        actorKind: toActorKind(c.get('identity').kind),
       },
       tx,
     );
@@ -710,6 +718,7 @@ exchangeRoutes.post('/orders/:orderId/cancel', requireAuthOrAgentSession, requir
           reason: 'exchange_refund_need',
           source: 'exchange',
           metadata: { orderId: order.id, listingId: listing.id, cancelledBy: me.id },
+          actorKind: toActorKind(c.get('identity').kind),
         },
         tx,
       );
@@ -721,6 +730,7 @@ exchangeRoutes.post('/orders/:orderId/cancel', requireAuthOrAgentSession, requir
           reason: 'exchange_refund_order',
           source: 'exchange',
           metadata: { orderId: order.id, listingId: listing.id, cancelledBy: me.id },
+          actorKind: toActorKind(c.get('identity').kind),
         },
         tx,
       );
@@ -867,6 +877,7 @@ exchangeRoutes.post('/:id/cancel', requireAuthOrAgentSession, requireNonGuestIde
             reason: 'exchange_refund_need',
             source: 'exchange',
             metadata: { listingId: listing.id, refundedSlots: remaining },
+            actorKind: toActorKind(c.get('identity').kind),
           },
           tx,
         );
@@ -895,6 +906,7 @@ exchangeRoutes.post('/:id/cancel', requireAuthOrAgentSession, requireNonGuestIde
             reason: 'exchange_refund_order',
             source: 'exchange',
             metadata: { orderId: o.id, listingId: listing.id, cancelledBy: me.id },
+            actorKind: toActorKind(c.get('identity').kind),
           },
           tx,
         );

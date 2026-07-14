@@ -486,6 +486,7 @@ export async function issueRewardsForRoom(
             amount: tokensAwarded,
             reason: 'activity_match_placed',
             source: 'simulation',
+            actorKind: participant.subjectType === 'agent' ? 'agent' : 'human',
             metadata: {
               roomId: room.id,
               activityId: room.activityId,

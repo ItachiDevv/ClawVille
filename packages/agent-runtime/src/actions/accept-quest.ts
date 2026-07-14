@@ -191,15 +191,33 @@ export const acceptQuestAction: Action = {
         }
       }
 
-      // 3. Create submission
-      const [submission] = await db
-        .insert(questSubmissions)
-        .values({
-          questId,
-          avatarId,
-          status: 'accepted',
-        })
-        .returning({ id: questSubmissions.id });
+      // 3. Create submission (+ covenant record in the same tx when the
+      // injected recorder is present — the acceptance commitment and its
+      // stream record commit or roll back together; see runtime-services-
+      // adapter.ts, which pre-binds the surface's actor kind).
+      const record = services.recordCovenantAction;
+      const [submission] = await db.transaction(async (tx: any) => {
+        const inserted = await tx
+          .insert(questSubmissions)
+          .values({
+            questId,
+            avatarId,
+            status: 'accepted',
+          })
+          .returning({ id: questSubmissions.id });
+        if (record) {
+          await record(
+            {
+              action: 'quest.accept',
+              subjectType: 'avatar',
+              subjectId: avatarId,
+              payload: { questId, submissionId: inserted[0].id },
+            },
+            tx,
+          );
+        }
+        return inserted;
+      });
 
       const tierLabel =
         quest.tier === 'legendary'

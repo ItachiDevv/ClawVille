@@ -17,6 +17,7 @@ import {
   type AgentSubstrateRegistration,
 } from '@clawville/shared';
 import { npcSimulation } from '../services/npc-simulation';
+import { recordCovenantAction } from '../services/covenant-action-recorder';
 import { findPath } from '../services/pathfinding';
 import { memoryService } from '../services/memory-service';
 import { db, agentBots, avatars, users, buildingSkills, landParcels, eq, and, sql } from '@clawville/database';
@@ -1866,42 +1867,56 @@ agentGatewayRoutes.post('/join', async (c) => {
     const avatarName = `${requestedName} ${suffix}`.slice(0, 100);
 
     try {
-      const [inserted] = await db
-        .insert(avatars)
-        .values({
-          userId,
-          name: avatarName,
-          // The legacy species/color/gender enums are still NOT NULL
-          // in the schema — pick the sea-world defaults that match
-          // the Phase 2 agent defaults (lobster == sea creature).
-          species: 'turtle', // closest existing species enum to a neutral sea creature
-          color: 'blue',
-          gender: 'male',
-          archetype: archetype.id,
-          personality: {
-            habitat: 'sea',
-            hobby: 'reading-and-learning',
-            greeting: 'wave-hello',
+      const inserted = await db.transaction(async (tx) => {
+        const [row] = await tx
+          .insert(avatars)
+          .values({
+            userId,
+            name: avatarName,
+            // The legacy species/color/gender enums are still NOT NULL
+            // in the schema — pick the sea-world defaults that match
+            // the Phase 2 agent defaults (lobster == sea creature).
+            species: 'turtle', // closest existing species enum to a neutral sea creature
+            color: 'blue',
+            gender: 'male',
+            archetype: archetype.id,
+            personality: {
+              habitat: 'sea',
+              hobby: 'reading-and-learning',
+              greeting: 'wave-hello',
+            },
+            stats: { strength: 5, defence: 8, movement: 7 },
+            characterConfig: {
+              bio: archetype.bio,
+              greeting: archetype.greeting,
+              tone: archetype.tone,
+              topics: archetype.topics,
+              adjectives: archetype.adjectives,
+              rules: archetype.rules,
+              style: archetype.style,
+              messageExamples: archetype.messageExamples,
+              lore: archetype.lore,
+              knowledge: archetype.knowledge,
+              system: `You are ${requestedName}, a Reef Lobster in the sea-themed world of ClawVille. Your archetype is "${archetype.label}". Stay in character.`,
+            },
+            modelKey: DEFAULT_AGENT_MODEL_KEY,
+            agentCategory: DEFAULT_AGENT_CATEGORY,
+            harness: DEFAULT_AGENT_HARNESS,
+          })
+          .returning();
+        await recordCovenantAction(
+          {
+            action: 'economy.genesis',
+            subjectType: 'avatar',
+            subjectId: row.id,
+            actorKind: 'agent',
+            dedupeKey: `avatar:${row.id}:genesis`,
+            payload: { amount: row.clawTokens, provenance: 'soft', reason: 'avatar_genesis' },
           },
-          stats: { strength: 5, defence: 8, movement: 7 },
-          characterConfig: {
-            bio: archetype.bio,
-            greeting: archetype.greeting,
-            tone: archetype.tone,
-            topics: archetype.topics,
-            adjectives: archetype.adjectives,
-            rules: archetype.rules,
-            style: archetype.style,
-            messageExamples: archetype.messageExamples,
-            lore: archetype.lore,
-            knowledge: archetype.knowledge,
-            system: `You are ${requestedName}, a Reef Lobster in the sea-themed world of ClawVille. Your archetype is "${archetype.label}". Stay in character.`,
-          },
-          modelKey: DEFAULT_AGENT_MODEL_KEY,
-          agentCategory: DEFAULT_AGENT_CATEGORY,
-          harness: DEFAULT_AGENT_HARNESS,
-        })
-        .returning();
+          tx,
+        );
+        return row;
+      });
       avatar = inserted;
       avatarCreated = true;
     } catch (err: unknown) {
@@ -2195,7 +2210,7 @@ agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
         // Phase 4: inject services + bot data so Actions + Providers work
         // Adapter translates runtime's `avatarId` → ledger's `avatarId`.
         // See `services/runtime-services-adapter.ts`.
-        const services = buildRuntimeServices(db);
+        const services = buildRuntimeServices(db, { actorKind: 'agent' });
 
         // Look up the bot via its resolved agentId (e.g. milady:xxx), NOT npcId
         const botConfig = npcSimulation.getAgentBotConfig(sessionId);

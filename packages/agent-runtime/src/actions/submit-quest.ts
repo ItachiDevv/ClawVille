@@ -153,23 +153,47 @@ export const submitQuestAction: Action = {
       // Compare-and-set: only an 'accepted'/'in_progress' row can move to
       // 'submitted' — an approved/rejected/submitted row never matches, so a
       // stale or duplicate submit cannot reopen or double-queue a review.
-      const [updated] = await db
-        .update(questSubmissions)
-        .set({
-          status: 'submitted',
-          submissionNote: note,
-          prLink,
-          submittedAt: now,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(questSubmissions.questId, questId),
-            eq(questSubmissions.avatarId, avatarId),
-            inArray(questSubmissions.status, ['accepted', 'in_progress']),
-          ),
-        )
-        .returning({ id: questSubmissions.id });
+      // Covenant record in the same tx when the injected recorder is present
+      // (runtime-services-adapter pre-binds the surface's actor kind).
+      const record = services.recordCovenantAction;
+      const [updated] = await db.transaction(async (tx: any) => {
+        const rows = await tx
+          .update(questSubmissions)
+          .set({
+            status: 'submitted',
+            submissionNote: note,
+            prLink,
+            submittedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(questSubmissions.questId, questId),
+              eq(questSubmissions.avatarId, avatarId),
+              inArray(questSubmissions.status, ['accepted', 'in_progress']),
+            ),
+          )
+          .returning({ id: questSubmissions.id });
+        if (rows[0] && record) {
+          const { createHash } = await import('crypto');
+          await record(
+            {
+              action: 'quest.submit',
+              subjectType: 'avatar',
+              subjectId: avatarId,
+              payload: {
+                questId,
+                submissionId: rows[0].id,
+                ...(prLink ? { prLink } : {}),
+                noteSha256: createHash('sha256').update(note, 'utf8').digest('hex'),
+                noteLength: note.length,
+              },
+            },
+            tx,
+          );
+        }
+        return rows;
+      });
 
       if (!updated) {
         return {
