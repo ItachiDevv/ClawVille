@@ -12,12 +12,15 @@ import {
   quarantineNullFundingClaim,
   requestEarnedRedemptionWithStore,
   requireTokenomicsRedeemEnabled,
+  runReconcileDeliverySweep,
   resolveMinRedemptionVclaw,
   sumConservativeQueueOutput,
   validateRedemptionQueueFills,
+  verifyDeliveryOnChain,
   sameFundingClaimSnapshot,
   sameCapturedFundingSnapshot,
   type EarnedRedemptionRequestStore,
+  type ReconcileDeliveryRow,
   type RedeemableLotCandidate,
 } from '../earned-redemption';
 import {
@@ -25,13 +28,112 @@ import {
   type EarnedBackingIntegrityCounts,
 } from '../earned-solvency';
 import { assertMinimumContextSlot } from '../solana-token-balance';
+import { CLV_MINT } from '../clv-price-oracle';
 import type { EarnedRedemption } from '@clawville/database';
+import type { Connection } from '@solana/web3.js';
 
 const originalGate = process.env.TOKENOMICS_REDEEM_ENABLED;
 const originalMin = process.env.TOKENOMICS_REDEEM_MIN_VCLAW;
 
 const NOW = new Date('2026-07-14T12:00:00.000Z');
 const SUBJECT = { kind: 'user' as const, avatarId: 'avatar-1', userId: 'user-1' };
+const DELIVERY_WALLET = 'delivery-wallet';
+const SWAP_WALLET = 'swap-wallet';
+const DELIVERY_ATOMIC = '574454539';
+
+function reconcileDeliveryRow(
+  overrides: Partial<ReconcileDeliveryRow> = {},
+): ReconcileDeliveryRow {
+  return {
+    id: 'redemption-reconcile-1',
+    status: 'reconcile',
+    failureReason: 'delivery_confirm_ambiguous',
+    deliveryTxSignature: 'delivery-signature',
+    deliveryClvAtomic: DELIVERY_ATOMIC,
+    deliveryWalletPubkey: DELIVERY_WALLET,
+    deliveredAt: null,
+    updatedAt: new Date(NOW),
+    ...overrides,
+  };
+}
+
+function deliveryTransaction(overrides: {
+  err?: unknown;
+  sourceOwner?: string;
+  destinationOwner?: string;
+  mint?: string;
+  destinationCredit?: string;
+  sourceDebit?: string;
+} = {}): unknown {
+  const destinationCredit = BigInt(overrides.destinationCredit ?? DELIVERY_ATOMIC);
+  const sourceDebit = BigInt(overrides.sourceDebit ?? DELIVERY_ATOMIC);
+  const sourceBefore = 1_000_000_000n;
+  return {
+    meta: {
+      err: overrides.err ?? null,
+      preTokenBalances: [{
+        accountIndex: 3,
+        mint: CLV_MINT,
+        owner: overrides.sourceOwner ?? SWAP_WALLET,
+        uiTokenAmount: { amount: sourceBefore.toString() },
+      }],
+      postTokenBalances: [
+        {
+          accountIndex: 3,
+          mint: CLV_MINT,
+          owner: overrides.sourceOwner ?? SWAP_WALLET,
+          uiTokenAmount: { amount: (sourceBefore - sourceDebit).toString() },
+        },
+        {
+          accountIndex: 7,
+          mint: overrides.mint ?? CLV_MINT,
+          owner: overrides.destinationOwner ?? DELIVERY_WALLET,
+          uiTokenAmount: { amount: destinationCredit.toString() },
+        },
+      ],
+    },
+  };
+}
+
+function deliveryConnection(
+  tx: unknown,
+  calls: Array<{ signature: string; options: unknown }> = [],
+): Pick<Connection, 'getTransaction'> {
+  return {
+    getTransaction: async (signature, options) => {
+      calls.push({ signature, options });
+      return tx as Awaited<ReturnType<Connection['getTransaction']>>;
+    },
+  } as Pick<Connection, 'getTransaction'>;
+}
+
+async function runMemoryReconcileSweep(input: {
+  row: ReconcileDeliveryRow;
+  tx: unknown;
+}): Promise<{ row: ReconcileDeliveryRow; markAttempts: number; successfulWrites: number }> {
+  let current = { ...input.row };
+  let markAttempts = 0;
+  let successfulWrites = 0;
+  await runReconcileDeliverySweep({
+    connection: deliveryConnection(input.tx),
+    loadCandidates: async () => [{ ...current }],
+    resolveSwapWalletPubkey: async () => SWAP_WALLET,
+    markDelivered: async (observed) => {
+      markAttempts += 1;
+      if (
+        current.status !== 'reconcile' ||
+        current.deliveryTxSignature !== observed.deliveryTxSignature ||
+        current.deliveryClvAtomic !== observed.deliveryClvAtomic ||
+        current.deliveryWalletPubkey !== observed.deliveryWalletPubkey ||
+        current.deliveredAt !== null
+      ) return false;
+      successfulWrites += 1;
+      current = { ...current, status: 'delivered', deliveredAt: new Date(NOW), updatedAt: new Date(NOW) };
+      return true;
+    },
+  });
+  return { row: current, markAttempts, successfulWrites };
+}
 
 function eligibleLot(overrides: Partial<RedeemableLotCandidate> = {}): RedeemableLotCandidate {
   return {
@@ -419,6 +521,153 @@ describe('delivery capture-before-send kernel', () => {
     });
     expect(result).toMatchObject({ ok: false, captured: true });
     expect(reasons).toEqual(['send_ambiguous']);
+  });
+});
+
+describe('promote-only captured-delivery reconcile sweep', () => {
+  it('promotes delivery_confirm_ambiguous and stale_captured_delivery only on exact on-chain proof', async () => {
+    for (const failureReason of ['delivery_confirm_ambiguous', 'stale_captured_delivery']) {
+      const calls: Array<{ signature: string; options: unknown }> = [];
+      const row = reconcileDeliveryRow({ failureReason });
+      const verdict = await verifyDeliveryOnChain(
+        deliveryConnection(deliveryTransaction(), calls),
+        row,
+        SWAP_WALLET,
+      );
+      expect(verdict).toBe('delivered');
+      expect(calls).toEqual([{
+        signature: 'delivery-signature',
+        options: { maxSupportedTransactionVersion: 0, commitment: 'confirmed' },
+      }]);
+
+      const result = await runMemoryReconcileSweep({ row, tx: deliveryTransaction() });
+      expect(result.row.status).toBe('delivered');
+      expect(result.row.deliveredAt).toEqual(NOW);
+      expect(result.markAttempts).toBe(1);
+      expect(result.successfulWrites).toBe(1);
+    }
+  });
+
+  it('never resets to bought, never clears the signature, and never re-sends without exact proof', async () => {
+    const failedTx = deliveryTransaction({ err: { InstructionError: [0, 'Custom'] } });
+    const cases: Array<[string, unknown]> = [
+      ['transaction absent', null],
+      ['transaction failed', failedTx],
+      ['amount mismatch', deliveryTransaction({ destinationCredit: '574454538' })],
+      ['different owner', deliveryTransaction({ destinationOwner: 'other-wallet' })],
+      ['wrong mint', deliveryTransaction({ mint: 'wrong-mint' })],
+      ['source debit mismatch', deliveryTransaction({ sourceDebit: '574454538' })],
+    ];
+
+    for (const [label, tx] of cases) {
+      const row = reconcileDeliveryRow({ id: `redemption-${label}` });
+      const expectedVerdict = label === 'transaction failed' ? 'not_delivered' : 'indeterminate';
+      expect(await verifyDeliveryOnChain(deliveryConnection(tx), row, SWAP_WALLET)).toBe(expectedVerdict);
+
+      const result = await runMemoryReconcileSweep({ row, tx });
+      expect(result.row.status, label).toBe('reconcile');
+      expect(result.row.deliveredAt, label).toBeNull();
+      expect(result.row.deliveryTxSignature, label).toBe('delivery-signature');
+      expect(result.markAttempts, label).toBe(0);
+      expect(result.successfulWrites, label).toBe(0);
+    }
+  });
+
+  it('does not promote an exact destination credit funded by a different identifiable source owner', async () => {
+    const row = reconcileDeliveryRow();
+    const tx = deliveryTransaction({ sourceOwner: 'other-source-wallet' });
+    expect(await verifyDeliveryOnChain(deliveryConnection(tx), row, SWAP_WALLET)).toBe('indeterminate');
+
+    const result = await runMemoryReconcileSweep({ row, tx });
+    expect(result.row.status).toBe('reconcile');
+    expect(result.row.deliveredAt).toBeNull();
+    expect(result.markAttempts).toBe(0);
+    expect(result.successfulWrites).toBe(0);
+  });
+
+  it('rejects malformed or nonpositive expected atomic amounts before any RPC call', async () => {
+    for (const deliveryClvAtomic of [null, '', '0', '-1', '1.5', 'abc']) {
+      let rpcCalls = 0;
+      const verdict = await verifyDeliveryOnChain({
+        getTransaction: async () => {
+          rpcCalls += 1;
+          return deliveryTransaction() as Awaited<ReturnType<Connection['getTransaction']>>;
+        },
+      } as Pick<Connection, 'getTransaction'>, reconcileDeliveryRow({ deliveryClvAtomic }), SWAP_WALLET);
+      expect(verdict, String(deliveryClvAtomic)).toBe('indeterminate');
+      expect(rpcCalls, String(deliveryClvAtomic)).toBe(0);
+    }
+  });
+
+  it('does not touch other reconcile reasons or rows already marked delivered', async () => {
+    const rows = [
+      reconcileDeliveryRow({ id: 'other-reason', failureReason: 'delivery_post_capture_error' }),
+      reconcileDeliveryRow({ id: 'already-delivered', deliveredAt: new Date(NOW) }),
+    ];
+    let rpcCalls = 0;
+    let markCalls = 0;
+    await runReconcileDeliverySweep({
+      connection: {
+        getTransaction: async () => {
+          rpcCalls += 1;
+          return deliveryTransaction() as Awaited<ReturnType<Connection['getTransaction']>>;
+        },
+      } as Pick<Connection, 'getTransaction'>,
+      loadCandidates: async () => rows,
+      resolveSwapWalletPubkey: async () => SWAP_WALLET,
+      markDelivered: async () => { markCalls += 1; return true; },
+    });
+    expect(rpcCalls).toBe(0);
+    expect(markCalls).toBe(0);
+    expect(rows[0].status).toBe('reconcile');
+    expect(rows[0].deliveredAt).toBeNull();
+    expect(rows[1].status).toBe('reconcile');
+    expect(rows[1].deliveredAt).toEqual(NOW);
+  });
+
+  it('treats a lost delivered CAS as a benign no-op with no double-write', async () => {
+    const observed = reconcileDeliveryRow();
+    let current = { ...observed };
+    let updateAttempts = 0;
+    let successfulWrites = 0;
+    await runReconcileDeliverySweep({
+      connection: deliveryConnection(deliveryTransaction()),
+      loadCandidates: async () => [{ ...observed }],
+      resolveSwapWalletPubkey: async () => {
+        current = { ...current, status: 'delivered', deliveredAt: new Date(NOW) };
+        return SWAP_WALLET;
+      },
+      markDelivered: async () => {
+        updateAttempts += 1;
+        if (current.status !== 'reconcile' || current.deliveredAt !== null) return false;
+        successfulWrites += 1;
+        return true;
+      },
+    });
+    expect(updateAttempts).toBe(1);
+    expect(successfulWrites).toBe(0);
+    expect(current.status).toBe('delivered');
+    expect(current.deliveredAt).toEqual(NOW);
+  });
+
+  it('continues with later rows after one RPC check throws', async () => {
+    const rows = [
+      reconcileDeliveryRow({ id: 'rpc-error', deliveryTxSignature: 'rpc-error-signature' }),
+      reconcileDeliveryRow({ id: 'proven', deliveryTxSignature: 'proven-signature' }),
+    ];
+    const marked: string[] = [];
+    await runReconcileDeliverySweep({
+      connection: {
+        getTransaction: async (signature) => {
+          if (signature === 'rpc-error-signature') throw new Error('https://rpc.invalid/?api-key=must-not-log');
+          return deliveryTransaction() as Awaited<ReturnType<Connection['getTransaction']>>;
+        },
+      } as Pick<Connection, 'getTransaction'>,
+      loadCandidates: async () => rows,
+      resolveSwapWalletPubkey: async () => SWAP_WALLET,
+      markDelivered: async (row) => { marked.push(row.id); return true; },
+    });
+    expect(marked).toEqual(['proven']);
   });
 });
 

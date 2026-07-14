@@ -1331,9 +1331,213 @@ export async function advanceEarnedRedemption(id: string): Promise<RedemptionRes
       };
 }
 
-/** Gated worker: bounded oldest-first progress, including stale delivery quarantine. */
+export type DeliveryOnChainVerdict = 'delivered' | 'not_delivered' | 'indeterminate';
+
+export interface ReconcileDeliveryRow {
+  id: string;
+  status: string;
+  failureReason: string | null;
+  deliveryTxSignature: string | null;
+  deliveryClvAtomic: string | null;
+  deliveryWalletPubkey: string | null;
+  deliveredAt: Date | null;
+  updatedAt: Date;
+}
+
+type DeliveryVerificationConnection = Pick<Connection, 'getTransaction'>;
+
+function parseTokenBalanceAtomic(value: string | undefined): bigint | null {
+  return typeof value === 'string' && /^\d+$/.test(value) ? BigInt(value) : null;
+}
+
+/**
+ * Proves the captured delivery signature credited the exact expected CLV
+ * amount to the captured earner wallet. This helper never mutates durable
+ * state and treats absent/malformed/mismatched chain evidence as indeterminate.
+ */
+export async function verifyDeliveryOnChain(
+  conn: DeliveryVerificationConnection,
+  row: ReconcileDeliveryRow,
+  swapWalletPubkey?: string | null,
+): Promise<DeliveryOnChainVerdict> {
+  if (
+    !row.deliveryTxSignature ||
+    !row.deliveryWalletPubkey ||
+    !row.deliveryClvAtomic ||
+    !/^[1-9]\d*$/.test(row.deliveryClvAtomic)
+  ) {
+    return 'indeterminate';
+  }
+
+  const tx = await conn.getTransaction(row.deliveryTxSignature, {
+    maxSupportedTransactionVersion: 0,
+    commitment: 'confirmed',
+  });
+  if (!tx) return 'indeterminate';
+  if (tx.meta?.err != null) return 'not_delivered';
+  if (!tx.meta || !Array.isArray(tx.meta.preTokenBalances) || !Array.isArray(tx.meta.postTokenBalances)) {
+    return 'indeterminate';
+  }
+
+  const expected = BigInt(row.deliveryClvAtomic);
+  const preByIndex = new Map(tx.meta.preTokenBalances.map((balance) => [balance.accountIndex, balance]));
+  const postByIndex = new Map(tx.meta.postTokenBalances.map((balance) => [balance.accountIndex, balance]));
+
+  const destinationCredited = tx.meta.postTokenBalances.some((post) => {
+    if (post.mint !== CLV_MINT || post.owner !== row.deliveryWalletPubkey) return false;
+    const postAmount = parseTokenBalanceAtomic(post.uiTokenAmount.amount);
+    if (postAmount === null) return false;
+    const pre = preByIndex.get(post.accountIndex);
+    if (pre && pre.mint !== CLV_MINT) return false;
+    const preAmount = pre ? parseTokenBalanceAtomic(pre.uiTokenAmount.amount) : 0n;
+    return preAmount !== null && postAmount - preAmount === expected;
+  });
+  if (!destinationCredited) return 'indeterminate';
+
+  const sourceOwner = swapWalletPubkey === undefined
+    ? await getClvSwapWalletPubkey()
+    : swapWalletPubkey;
+  if (!sourceOwner) return 'indeterminate';
+  let exactSwapDebit = false;
+  let sourceEvidencePresent = false;
+  for (const pre of tx.meta.preTokenBalances) {
+    if (pre.mint !== CLV_MINT) continue;
+    const post = postByIndex.get(pre.accountIndex);
+    if (post && post.mint !== CLV_MINT) return 'indeterminate';
+    const preAmount = parseTokenBalanceAtomic(pre.uiTokenAmount.amount);
+    const postAmount = post ? parseTokenBalanceAtomic(post.uiTokenAmount.amount) : 0n;
+    if (preAmount === null || postAmount === null) return 'indeterminate';
+    const debit = preAmount - postAmount;
+    if (pre.owner === sourceOwner) sourceEvidencePresent = true;
+    if (debit <= 0n) continue;
+    sourceEvidencePresent = true;
+    if (pre.owner === sourceOwner && debit === expected) exactSwapDebit = true;
+  }
+  if (exactSwapDebit) return 'delivered';
+  if (sourceEvidencePresent) return 'indeterminate';
+
+  // Destination-only proof is allowed only when the transaction metadata has
+  // no identifiable CLV debit side at all. A post-only swap owner is malformed
+  // source evidence, not proof that the swap wallet funded the credit.
+  const postOnlySwapOwner = tx.meta.postTokenBalances.some((post) =>
+    post.mint === CLV_MINT &&
+    post.owner === sourceOwner &&
+    preByIndex.get(post.accountIndex)?.owner !== sourceOwner);
+  return postOnlySwapOwner ? 'indeterminate' : 'delivered';
+}
+
+const RECONCILE_DELIVERY_SWEEP_LIMIT = 20;
+const RECONCILE_DELIVERY_REASONS = new Set([
+  'delivery_confirm_ambiguous',
+  'stale_captured_delivery',
+]);
+
+function isReconcileDeliveryCandidate(row: ReconcileDeliveryRow): boolean {
+  return row.status === 'reconcile' &&
+    row.deliveryTxSignature !== null &&
+    row.deliveredAt === null &&
+    row.failureReason !== null &&
+    RECONCILE_DELIVERY_REASONS.has(row.failureReason);
+}
+
+export interface ReconcileDeliverySweepInput {
+  limit?: number;
+  connection?: DeliveryVerificationConnection;
+  loadCandidates?: (limit: number) => Promise<ReconcileDeliveryRow[]>;
+  resolveSwapWalletPubkey?: () => Promise<string | null>;
+  markDelivered?: (row: ReconcileDeliveryRow) => Promise<boolean>;
+}
+
+/**
+ * Promote-only reconciliation for captured deliveries. It can prove and mark
+ * `reconcile -> delivered`; it has no send, reset-to-bought, or signature-clear
+ * capability. Every non-proof and every row-local error leaves the row intact.
+ */
+export async function runReconcileDeliverySweep(
+  input: ReconcileDeliverySweepInput = {},
+): Promise<void> {
+  const limit = Math.max(1, Math.min(input.limit ?? RECONCILE_DELIVERY_SWEEP_LIMIT, RECONCILE_DELIVERY_SWEEP_LIMIT));
+  const loadCandidates = input.loadCandidates ?? (async (batchLimit: number) => db
+    .select({
+      id: earnedRedemptions.id,
+      status: earnedRedemptions.status,
+      failureReason: earnedRedemptions.failureReason,
+      deliveryTxSignature: earnedRedemptions.deliveryTxSignature,
+      deliveryClvAtomic: earnedRedemptions.deliveryClvAtomic,
+      deliveryWalletPubkey: earnedRedemptions.deliveryWalletPubkey,
+      deliveredAt: earnedRedemptions.deliveredAt,
+      updatedAt: earnedRedemptions.updatedAt,
+    })
+    .from(earnedRedemptions)
+    .where(and(
+      eq(earnedRedemptions.status, 'reconcile'),
+      sql`${earnedRedemptions.deliveryTxSignature} IS NOT NULL`,
+      isNull(earnedRedemptions.deliveredAt),
+      sql`${earnedRedemptions.failureReason} IN ('delivery_confirm_ambiguous', 'stale_captured_delivery')`,
+    ))
+    .orderBy(asc(earnedRedemptions.updatedAt))
+    .limit(batchLimit));
+
+  let loaded: ReconcileDeliveryRow[];
+  try {
+    loaded = await loadCandidates(limit);
+  } catch {
+    console.error(JSON.stringify({ event: 'earned_redemption_reconcile_sweep_load_failed' }));
+    return;
+  }
+
+  const rows = loaded
+    .filter(isReconcileDeliveryCandidate)
+    .sort((a, b) => a.updatedAt.getTime() - b.updatedAt.getTime())
+    .slice(0, limit);
+  for (const row of rows) {
+    try {
+      const conn = input.connection ?? getClvMainnetConnection();
+      const swapWalletPubkey = await (input.resolveSwapWalletPubkey ?? getClvSwapWalletPubkey)();
+      const verdict = await verifyDeliveryOnChain(conn, row, swapWalletPubkey);
+      if (verdict !== 'delivered') {
+        console.log(JSON.stringify({
+          event: 'earned_redemption_reconcile_skip',
+          redemptionId: row.id,
+          verdict,
+        }));
+        continue;
+      }
+
+      const markDelivered = input.markDelivered ?? (async (candidate: ReconcileDeliveryRow) => {
+        if (
+          !candidate.deliveryTxSignature ||
+          !candidate.deliveryClvAtomic ||
+          !candidate.deliveryWalletPubkey
+        ) return false;
+        const marked = await db.update(earnedRedemptions)
+          .set({ status: 'delivered', deliveredAt: new Date(), updatedAt: new Date() })
+          .where(and(
+            eq(earnedRedemptions.id, candidate.id),
+            eq(earnedRedemptions.status, 'reconcile'),
+            eq(earnedRedemptions.deliveryTxSignature, candidate.deliveryTxSignature),
+            eq(earnedRedemptions.deliveryClvAtomic, candidate.deliveryClvAtomic),
+            eq(earnedRedemptions.deliveryWalletPubkey, candidate.deliveryWalletPubkey),
+            isNull(earnedRedemptions.deliveredAt),
+          ))
+          .returning({ id: earnedRedemptions.id });
+        return marked.length === 1;
+      });
+      await markDelivered(row);
+    } catch {
+      console.error(JSON.stringify({
+        event: 'earned_redemption_reconcile_row_failed',
+        redemptionId: row.id,
+        error: 'reconcile_sweep_row_error',
+      }));
+    }
+  }
+}
+
+/** Gated worker: bounded oldest-first reconcile proof + progress + stale quarantine. */
 export async function runEarnedRedemptionTick(limit = 10): Promise<void> {
   requireTokenomicsRedeemEnabled();
+  await runReconcileDeliverySweep();
   const staleCutoff = new Date(Date.now() - 5 * 60_000);
   await db.update(earnedRedemptions)
     .set({ status: 'bought', deliveryClaimId: null, deliveryClaimedAt: null, updatedAt: new Date() })
