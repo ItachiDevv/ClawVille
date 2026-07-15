@@ -43,40 +43,21 @@
  * hex; never gray/slate-700+).
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useCoveStore } from '@/stores/cove';
 import { useAvatar } from '@/hooks/use-avatar';
 import '@/styles/cove-tokens.css';
-import type {
-  HoldemCard as ViewCard,
-  SeatState,
-  SeatStatus,
-  RaiseConfig,
-} from '@/lib/cove/holdem-types';
-import { HOLDEM_SEATS, HOLDEM_BIG_BLIND } from '@/lib/cove/holdem-types';
+import type { RaiseConfig } from '@/lib/cove/holdem-types';
+import { HOLDEM_BIG_BLIND } from '@/lib/cove/holdem-types';
 import {
   COVE_HOLDEM_MIN_BUYIN,
   COVE_HOLDEM_MAX_BUYIN,
   HOLDEM_BOT_PERSONALITIES,
-  type HoldemCard as WireCard,
-  type HoldemTableWire,
-  type HoldemDealResponse,
-  type HoldemDealInProgressResponse,
-  type HoldemActionInProgressResponse,
-  type HoldemSettledResponse,
-  type HoldemResyncHandView,
-  type SerializedHoldemHand,
 } from '@clawville/shared';
 import {
-  CoveApiError,
-  describeHoldemError,
-  fetchCurrentHoldemTable,
-  isHoldemSettled,
-  useOpenHoldemTable,
-  useDealHoldemHand,
-  useHoldemAction,
-  useCloseHoldemTable,
-} from '@/lib/cove/holdem-api-client';
+  useHoldemController,
+  type HoldemAgentMode,
+} from '@/lib/cove/holdem-controller';
 
 // impl-card polished primitives — prop shapes match holdem-types.ts.
 import SeatPosition from './SeatPosition';
@@ -109,6 +90,12 @@ function botLabel(seat: number): string {
   return `${name} (${short})`;
 }
 
+function bigToNum(value: string | null | undefined): number {
+  if (value == null) return 0;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
 // ---------------------------------------------------------------------------
 // Seat oval layout positions — absolute within the felt area.
 // ---------------------------------------------------------------------------
@@ -124,21 +111,6 @@ const SEAT_POSITIONS: Array<{ top: string; left: string }> = [
 // ---------------------------------------------------------------------------
 // View-model: in-progress hand (built only from server responses).
 // ---------------------------------------------------------------------------
-interface LiveHand {
-  handId: string;
-  handIndex: number;
-  buttonSeat: number;
-  smallBlindSeat: number;
-  bigBlindSeat: number;
-  humanHole: WireCard[];
-  board: WireCard[];
-  /** Stringified bigints from the server. */
-  toCall: string;
-  currentBet: string;
-  humanStack: string;
-  humanCommitted: string;
-}
-
 /**
  * Increment 1b — map the server's owner-only resync view (`GET
  * /session/current` / `GET /session/:id` `hand` field, or the same shape
@@ -149,138 +121,13 @@ interface LiveHand {
  * rehydrate-on-ambiguous resync (`tryResync`) so the two recovery paths can
  * never drift.
  */
-function liveHandFromResync(h: HoldemResyncHandView): LiveHand {
-  return {
-    handId: h.handId,
-    handIndex: h.handIndex,
-    buttonSeat: h.buttonSeat,
-    smallBlindSeat: h.smallBlindSeat,
-    bigBlindSeat: h.bigBlindSeat,
-    humanHole: h.humanHole,
-    board: h.board,
-    toCall: h.toCall,
-    currentBet: h.currentBet,
-    humanStack: h.humanStack,
-    humanCommitted: h.humanCommitted,
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Toast (modal-local)
 // ---------------------------------------------------------------------------
-type ToastTone = 'info' | 'warn' | 'error';
-interface ToastState { message: string; tone: ToastTone; id: number; }
-
 // ---------------------------------------------------------------------------
 // Agent mode (UI seam — see AgentModeBar; no WS protocol yet)
 // ---------------------------------------------------------------------------
-type AgentMode = 'control' | 'autonomous';
 interface AdvisorMessage { id: number; text: string; }
-
-// ---------------------------------------------------------------------------
-// Helpers — build the rendered SeatState[] from server responses.
-// ---------------------------------------------------------------------------
-
-/** Convert a wire card to a view card (face-up). */
-function viewCard(c: WireCard): ViewCard {
-  return { suit: c.suit, rank: c.rank };
-}
-
-/**
- * Build the 6 rendered seats for an IN-PROGRESS hand. The server does NOT
- * expose bot hole cards / stacks mid-hand (anti-leak) — so bots render with
- * hidden cards and no stack number. Only the human seat (0) shows its hole
- * cards, live stack, and street commitment.
- */
-function seatsForLiveHand(h: LiveHand, humanIsActing: boolean): SeatState[] {
-  const seats: SeatState[] = [];
-  const humanHole: [ViewCard, ViewCard] | null =
-    h.humanHole.length === 2
-      ? [viewCard(h.humanHole[0]!), viewCard(h.humanHole[1]!)]
-      : null;
-  const humanStreetBet = bigToNum(h.currentBet) > 0 || bigToNum(h.humanCommitted) > 0
-    ? streetCommittedFromTotal(h)
-    : 0;
-
-  for (let s = 0; s < HOLDEM_SEATS; s++) {
-    const isHuman = s === 0;
-    seats.push({
-      seatIndex: s,
-      name: isHuman ? 'You' : botLabel(s),
-      stack: isHuman ? bigToNum(h.humanStack) : 0,
-      streetBet: isHuman ? humanStreetBet : 0,
-      holeCards: isHuman
-        ? humanHole
-        : ([
-            { suit: 'spades', rank: 'A', hidden: true },
-            { suit: 'spades', rank: 'A', hidden: true },
-          ] as [ViewCard, ViewCard]),
-      status: 'active',
-      isSmallBlind: s === h.smallBlindSeat,
-      isBigBlind: s === h.bigBlindSeat,
-      isDealer: s === h.buttonSeat,
-      isActing: isHuman && humanIsActing,
-    });
-  }
-  return seats;
-}
-
-/**
- * The human's street commitment for the live HUD pill. `humanCommitted` is the
- * human's TOTAL chips in the pot this hand; for a single-street display pill we
- * show what the human owes context via toCall, so the pill uses the lesser of
- * humanCommitted and currentBet (a coarse but honest "in this round" figure).
- * The authoritative per-street figure is recomputed by the server each turn;
- * this is display only.
- */
-function streetCommittedFromTotal(h: LiveHand): number {
-  const committed = bigToNum(h.humanCommitted);
-  const currentBet = bigToNum(h.currentBet);
-  return Math.min(committed, currentBet);
-}
-
-/**
- * Build the 6 rendered seats for a SETTLED hand from the full outcome. Every
- * seat reveals its hole cards (unless it folded preflop with no cards shown),
- * committed total, won, net, status, and best-hand category.
- */
-function seatsForSettled(outcome: SerializedHoldemHand): SeatState[] {
-  return outcome.seats.map((s) => {
-    const status: SeatStatus =
-      s.status === 'allin' ? 'allin' : s.status === 'folded' ? 'folded' : 'active';
-    const hole: [ViewCard, ViewCard] | null =
-      s.holeCards.length === 2
-        ? [viewCard(s.holeCards[0]!), viewCard(s.holeCards[1]!)]
-        : null;
-    return {
-      seatIndex: s.seat,
-      name: s.isHuman ? 'You' : botLabel(s.seat),
-      // After settle, "stack" shows what the seat won this hand (its return).
-      stack: Number(s.won),
-      streetBet: 0,
-      holeCards: hole,
-      status,
-      isSmallBlind: s.seat === outcome.smallBlindSeat,
-      isBigBlind: s.seat === outcome.bigBlindSeat,
-      isDealer: s.seat === outcome.buttonSeat,
-      isActing: false,
-    };
-  });
-}
-
-/** Number() a stringified bigint that provably fits a JS number (≤ 500 CT). */
-function bigToNum(s: string | null | undefined): number {
-  if (s == null) return 0;
-  const n = Number(s);
-  return Number.isFinite(n) ? n : 0;
-}
-
-/** Pad the server board (0/3/4/5 cards) to a 5-slot row with null placeholders. */
-function boardToRow(board: WireCard[]): (ViewCard | null)[] {
-  const row: (ViewCard | null)[] = [null, null, null, null, null];
-  for (let i = 0; i < board.length && i < 5; i++) row[i] = viewCard(board[i]!);
-  return row;
-}
 
 // ---------------------------------------------------------------------------
 // Raise / bet slider
@@ -339,16 +186,16 @@ function RaiseSlider({ config, onChange, onConfirm, onCancel }: {
 // Main modal
 // ---------------------------------------------------------------------------
 export default function HoldemModal() {
-  const { holdemModalOpen, holdemBuyIn, closeHoldemTable } = useCoveStore();
+  const holdemModalOpen = useCoveStore((state) => state.holdemModalOpen);
   const { data: avatar } = useAvatar();
 
   // ── Server-mirrored state ────────────────────────────────────────────────
-  const [table, setTable] = useState<HoldemTableWire | null>(null);
-  const [balance, setBalance] = useState(0);
-  const [live, setLive] = useState<LiveHand | null>(null);
-  const [settled, setSettled] = useState<HoldemSettledResponse | null>(null);
-  const [revealedSeed, setRevealedSeed] = useState<string | null>(null);
-  const [toast, setToast] = useState<ToastState | null>(null);
+  const {
+    table, balance, live, settled, revealedSeed, toast, phase, agentMode,
+    inFlight, walkAwayLocked, seats, communityCards, pot, toCallNum,
+    facingBet, canCheck, setAgentMode, resetHand, handleDeal, runAction,
+    handleClose, handleWalkAway,
+  } = useHoldemController();
   const [fairnessOpen, setFairnessOpen] = useState(false);
 
   // ── Raise slider (the only local UI state) ───────────────────────────────
@@ -356,162 +203,13 @@ export default function HoldemModal() {
   const [raiseConfig, setRaiseConfig] = useState<RaiseConfig>({ min: 0, max: 0, value: 0, verb: 'bet' });
 
   // ── Agent mode + advisor surface (seam) ──────────────────────────────────
-  const [agentMode, setAgentMode] = useState<AgentMode>('control');
   const [advisorMessages] = useState<AdvisorMessage[]>([]);
 
-  // ── API hooks ─────────────────────────────────────────────────────────────
-  const openTable = useOpenHoldemTable();
-  const dealHand = useDealHoldemHand();
-  const action = useHoldemAction();
-  const closeTable = useCloseHoldemTable();
-
-  // ── Refs ──────────────────────────────────────────────────────────────────
-  const busyRef = useRef(false);                    // synchronous double-fire lock
-  const dealKeyRef = useRef<string | null>(null);   // per-deal idempotency key
-  // Per-close idempotency key (Increment 1b, mirrors dealKeyRef). Minted on
-  // the first Walk-Away press, REUSED on a retry of the SAME close attempt
-  // (kept on error), nulled on success. The server's real replay anchor is
-  // the table's status flip under FOR UPDATE — this key rides along for
-  // audit/consistency with the deal/action legs, not as the actual anchor.
-  const closeKeyRef = useRef<string | null>(null);
-  // Decision-scoped idempotency key for /action. Keyed to the (act, amount)
-  // DECISION — not the button press, not the hand. A same-decision re-press
-  // REUSES the key so a lost-response TERMINAL action REPLAYS the settled
-  // outcome (server IdempotencyReplayError) instead of double-charging; a
-  // DIFFERENT decision mints a fresh key. Cleared on every success + in
-  // resetHand so the same (act, amount) legitimately recurring across streets
-  // (e.g. "check" preflop then "check" flop) can never collide into a stale
-  // replay — that is why we do NOT key by a hash of (handId, act, amount).
-  const pendingActionRef = useRef<{ act: string; amount?: number; key: string } | null>(null);
-  const walkAwayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null); // deferred close after cash-out
-  // Monotonic open-session epoch — bumped on every close (below). Async handlers
-  // snapshot it before their first await and BAIL if it changed, so a stalled
-  // request from a PRIOR open session can never setState (apply a stale hand /
-  // outcome) onto a freshly reopened+dealt session, nor release the new session's
-  // busyRef. Closes the reset()-un-gates-without-aborting late-continuation clobber.
-  const openEpochRef = useRef(0);
-  const toastSeqRef = useRef(0);
-  const tableRef = useRef<HoldemTableWire | null>(null);
-  tableRef.current = table;
-  // Capture the mutation reset fns in a ref (react-query returns a new mutation
-  // object every render, so referencing them directly in the close effect would
-  // churn its deps). <HoldemModal/> is always mounted (cove/page.tsx) and only
-  // self-gates with `if (!holdemModalOpen) return null`, so a stalled/in-flight
-  // mutation's isPending would otherwise PERSIST across close→reopen and freeze
-  // the reopened modal on "Dealing…"/disabled buttons. Cleared on close below.
-  const resetMutationsRef = useRef<() => void>(() => {});
-  resetMutationsRef.current = () => {
-    openTable.reset();
-    dealHand.reset();
-    action.reset();
-    closeTable.reset();
-  };
-
   const isAuthed = Boolean(avatar);
-  const phase: 'idle' | 'player-turn' | 'settled' =
-    settled ? 'settled' : live ? 'player-turn' : 'idle';
 
-  // ── Toast helpers ──────────────────────────────────────────────────────────
-  const showToast = useCallback((message: string, tone: ToastTone = 'info') => {
-    toastSeqRef.current += 1;
-    setToast({ message, tone, id: toastSeqRef.current });
-  }, []);
   useEffect(() => {
-    if (!toast) return;
-    const t = setTimeout(() => setToast((p) => (p?.id === toast.id ? null : p)), 4200);
-    return () => clearTimeout(t);
-  }, [toast]);
-
-  // ── Reset transient hand state ──────────────────────────────────────────────
-  const resetHand = useCallback(() => {
-    setLive(null);
-    setSettled(null);
-    setShowRaise(false);
-    dealKeyRef.current = null;
-    pendingActionRef.current = null;
-    closeKeyRef.current = null;
-  }, []);
-
-  // ── Eager restore on open ────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!holdemModalOpen) return;
-    setBalance(avatar?.clawTokens ?? 0);
-    setRevealedSeed(null);
-    resetHand();
-    let cancelled = false;
-    void (async () => {
-      try {
-        const current = await fetchCurrentHoldemTable();
-        if (cancelled || !current) return;
-        if (current.table.status !== 'open') return;
-        setTable(current.table);
-        setBalance(current.walletBalance);
-        // Increment 1b — the resync surface: a reopened table may have a
-        // LIVE in-progress hand (the modal was closed mid-hand, or the tab
-        // was refreshed). Hydrate `live` from it so the table is immediately
-        // PLAYABLE again instead of stranding the human on an idle table
-        // while the server still holds an open hand (the wedge class this
-        // increment closes — see holdem-api-client.ts HoldemRequestLeg doc).
-        if (current.hand) {
-          setLive(liveHandFromResync(current.hand));
-          showToast('Resumed your table — a hand is in progress.', 'info');
-        } else {
-          showToast('Resumed your open table.', 'info');
-        }
-      } catch {
-        // Network blip — lazy-open on first Deal handles it.
-      }
-    })();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!holdemModalOpen) setShowRaise(false);
   }, [holdemModalOpen]);
-
-  // ── Reset everything on close ────────────────────────────────────────────────
-  useEffect(() => {
-    if (!holdemModalOpen) {
-      // Invalidate any in-flight handler from this now-closing session (see
-      // openEpochRef) so its late continuation can't clobber the next session.
-      openEpochRef.current += 1;
-      setTable(null);
-      resetHand();
-      setRevealedSeed(null);
-      setToast(null); // clear any lingering toast so it can't flash on reopen
-      busyRef.current = false;
-      // Clear stale mutation isPending so a reopened modal starts clean (see
-      // resetMutationsRef — the component stays mounted across open/close, so
-      // a prior session's in-flight/stalled mutation would otherwise leave the
-      // freshly reopened idle modal frozen on "Dealing…" until the 15s abort).
-      resetMutationsRef.current();
-      // Cancel a pending walk-away close so a late fire can't call handleClose
-      // after the modal is already closed.
-      if (walkAwayTimerRef.current) {
-        clearTimeout(walkAwayTimerRef.current);
-        walkAwayTimerRef.current = null;
-      }
-    }
-  }, [holdemModalOpen, resetHand]);
-
-  // ── Clear a pending walk-away timer on unmount ───────────────────────────────
-  useEffect(() => () => {
-    if (walkAwayTimerRef.current) {
-      clearTimeout(walkAwayTimerRef.current);
-      walkAwayTimerRef.current = null;
-    }
-  }, []);
-
-  // ── Close handler (fire-and-forget close any open table, authed only) ────────
-  const handleClose = useCallback(() => {
-    const t = tableRef.current;
-    if (t && t.status === 'open' && isAuthed && !live && !busyRef.current && !revealedSeed) {
-      // Fire-and-forget close (X button / Escape) — no local retry loop here
-      // (unlike handleWalkAway's tracked closeKeyRef), so a throwaway key is
-      // fine; the server's close-replay is anchored on the table's status
-      // flip, not this key, so a duplicate in-flight request still can't
-      // double-credit.
-      closeTable.mutate({ tableId: t.id, idempotencyKey: crypto.randomUUID() });
-    }
-    closeHoldemTable();
-  }, [isAuthed, live, revealedSeed, closeTable, closeHoldemTable]);
 
   // ── Keyboard ──────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -526,210 +224,6 @@ export default function HoldemModal() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [holdemModalOpen, fairnessOpen, showRaise, handleClose]);
-
-  // ── Open (or reuse) a table; returns the table or null on failure ────────────
-  const ensureTable = useCallback(async (): Promise<HoldemTableWire | null> => {
-    if (tableRef.current && tableRef.current.status === 'open') return tableRef.current;
-    const myEpoch = openEpochRef.current; // bail if the modal closes mid-open
-    try {
-      const buyIn = Math.max(
-        COVE_HOLDEM_MIN_BUYIN,
-        Math.min(COVE_HOLDEM_MAX_BUYIN, Math.floor(holdemBuyIn || COVE_HOLDEM_MIN_BUYIN)),
-      );
-      const opened = await openTable.mutateAsync({ currency: 'clawtoken', buyIn });
-      // Session closed during open — drop the stale setState. The opened table +
-      // buy-in are recoverable server-side via the eager-restore on reopen.
-      if (openEpochRef.current !== myEpoch) return null;
-      setTable(opened.table);
-      setBalance(opened.walletBalance);
-      return opened.table;
-    } catch (err) {
-      if (openEpochRef.current !== myEpoch) return null; // stale error — drop toast
-      showToast(describeHoldemError(err, 'open'), err instanceof CoveApiError && err.status >= 500 ? 'error' : 'warn');
-      return null;
-    }
-  }, [openTable, holdemBuyIn, showToast]);
-
-  // ── Apply a settled response (single place balance/outcome land) ─────────────
-  const applySettled = useCallback((res: HoldemSettledResponse) => {
-    setSettled(res);
-    setBalance(res.walletBalance);
-    setLive(null);
-    setShowRaise(false);
-    // Reflect the table's new playerStack so the HUD + next deal are accurate.
-    setTable((prev) => (prev ? { ...prev, playerStack: res.playerStack } : prev));
-  }, []);
-
-  // ── Apply an in-progress response (deal or action) ──────────────────────────
-  const applyDealInProgress = useCallback((res: HoldemDealInProgressResponse) => {
-    setSettled(null);
-    setLive({
-      handId: res.handId,
-      handIndex: res.handIndex,
-      buttonSeat: res.buttonSeat,
-      smallBlindSeat: res.smallBlindSeat,
-      bigBlindSeat: res.bigBlindSeat,
-      humanHole: res.humanHole,
-      board: res.board,
-      toCall: res.toCall,
-      currentBet: res.currentBet,
-      humanStack: res.humanStack,
-      humanCommitted: res.humanCommitted,
-    });
-    setShowRaise(false);
-  }, []);
-
-  const applyActionInProgress = useCallback((res: HoldemActionInProgressResponse) => {
-    setLive((prev) =>
-      prev
-        ? {
-            ...prev,
-            humanHole: res.humanHole,
-            board: res.board,
-            toCall: res.toCall,
-            currentBet: res.currentBet,
-            humanStack: res.humanStack,
-            humanCommitted: res.humanCommitted,
-          }
-        : prev,
-    );
-    setShowRaise(false);
-  }, []);
-
-  // ── Rehydrate-on-ambiguous resync (Increment 1b) ────────────────────────────
-  // On a status-0/408 (AMBIGUOUS) deal/action error, resync from the server's
-  // authoritative live-hand view instead of leaving the client stuck on
-  // stale state with only "retry, but be careful" copy. Epoch-guarded
-  // exactly like handleWalkAway's ambiguous-close resolution (below):
-  // snapshot myEpoch before the resync await, bail after it if the modal
-  // closed/reopened meanwhile. Returns true when the CALLER should SKIP the
-  // leg-aware ambiguous-outcome toast — either because we adopted a live
-  // hand (setLive/setTable/setBalance already ran + a softened toast already
-  // shown), or because the modal session moved on and any further toast
-  // would be stale. Returns false when the caller should fall through to the
-  // existing describeHoldemError toast: the resync found NO live hand (the
-  // hand may have simply settled — we never invent a settled outcome
-  // client-side) or the resync itself failed/404'd. Shared by handleDeal and
-  // runAction so the two callers can never drift.
-  const tryResync = useCallback(async (myEpoch: number): Promise<boolean> => {
-    try {
-      const current = await fetchCurrentHoldemTable();
-      if (openEpochRef.current !== myEpoch) return true; // modal moved on — drop, skip fallback toast too
-      if (!current) return false; // no table to resync from (404/401)
-      setTable(current.table);
-      setBalance(current.walletBalance);
-      if (current.hand) {
-        setLive(liveHandFromResync(current.hand));
-        showToast('Reconnected — here’s the current hand.', 'info');
-        return true;
-      }
-      return false; // table exists but no live hand — may have settled, don't guess
-    } catch {
-      if (openEpochRef.current !== myEpoch) return true; // modal moved on — drop
-      return false; // resync itself failed — fall back to the leg-aware copy
-    }
-  }, [showToast]);
-
-  // ── DEAL ──────────────────────────────────────────────────────────────────────
-  const handleDeal = useCallback(async () => {
-    if (busyRef.current || phase !== 'idle') return;
-    if (agentMode === 'autonomous') return; // gated — no connected-agent driver yet
-    busyRef.current = true;
-    const myEpoch = openEpochRef.current; // bail if the modal closes mid-request
-    try {
-      const t = await ensureTable();
-      if (openEpochRef.current !== myEpoch) return; // session closed — drop
-      if (!t) return;
-      if (!dealKeyRef.current) dealKeyRef.current = crypto.randomUUID();
-      const res: HoldemDealResponse = await dealHand.mutateAsync({
-        tableId: t.id,
-        idempotencyKey: dealKeyRef.current,
-      });
-      if (openEpochRef.current !== myEpoch) return; // stale continuation — drop
-      if (isHoldemSettled(res)) {
-        applySettled(res); // resolved inline (human never had to act)
-      } else {
-        applyDealInProgress(res);
-      }
-      // Success — clear so the NEXT Deal press mints a fresh key. On error
-      // the key is KEPT (see catch below, and the finally no longer nulls it
-      // unconditionally) so a re-press replays via the server's deal-replay
-      // instead of orphaning the first attempt (Increment 1b).
-      dealKeyRef.current = null;
-    } catch (err) {
-      if (openEpochRef.current !== myEpoch) return; // stale error — drop
-      // Increment 1b: on an AMBIGUOUS outcome (lost response), try an
-      // authoritative resync before falling back to the leg-aware copy — if
-      // the deal actually landed, this adopts the live hand so the table is
-      // playable without the human guessing. dealKeyRef is deliberately NOT
-      // cleared here even on a successful rehydrate: Deal is gated on
-      // phase==='idle' so a kept key can never misfire a duplicate deal, and
-      // resetHand (Next Hand / modal close) clears it when a new deal is
-      // actually due.
-      const ambiguous = err instanceof CoveApiError && (err.status === 0 || err.status === 408);
-      if (ambiguous) {
-        const rehydrated = await tryResync(myEpoch);
-        if (rehydrated) return; // adopted the live hand (or session moved on) — skip the fallback toast
-      }
-      showToast(describeHoldemError(err, 'deal'), err instanceof CoveApiError && err.status >= 500 ? 'error' : 'warn');
-    } finally {
-      if (openEpochRef.current === myEpoch) busyRef.current = false; // only release MY lock
-    }
-  }, [phase, agentMode, ensureTable, dealHand, applySettled, applyDealInProgress, tryResync, showToast]);
-
-  // ── ACTION (fold / check / call / bet / raise) ──────────────────────────────
-  const runAction = useCallback(async (act: 'fold' | 'check' | 'call' | 'bet' | 'raise', amount?: number) => {
-    if (busyRef.current || !live) return;
-    if (agentMode === 'autonomous') return;
-    busyRef.current = true;
-    const myEpoch = openEpochRef.current; // bail if the modal closes mid-request
-    // Decision-scoped idempotency key. Same (act, amount) as the still-pending
-    // decision → REUSE its key so a lost-response terminal settle REPLAYS
-    // (never double-charges); a different decision mints fresh.
-    const pending = pendingActionRef.current;
-    if (!pending || pending.act !== act || pending.amount !== amount) {
-      pendingActionRef.current = { act, amount, key: crypto.randomUUID() };
-    }
-    const idempotencyKey = pendingActionRef.current.key;
-    try {
-      const res = await action.mutateAsync({
-        handId: live.handId,
-        action: act,
-        ...(amount !== undefined ? { amount } : {}),
-        idempotencyKey,
-      });
-      if (openEpochRef.current !== myEpoch) return; // stale continuation — drop
-      if (isHoldemSettled(res)) {
-        applySettled(res);
-      } else {
-        applyActionInProgress(res);
-      }
-      // Success (terminal OR non-terminal) — clear the pending decision so the
-      // NEXT action mints a fresh key, even the same (act, amount) on a later
-      // street (e.g. "check" preflop then "check" flop won't reuse a stale key).
-      pendingActionRef.current = null;
-    } catch (err) {
-      if (openEpochRef.current !== myEpoch) return; // stale error — drop
-      // KEEP pendingActionRef: a same-decision re-press replays the (possibly
-      // lost) terminal settle; a different-decision press mints fresh above.
-      // Increment 1b: try an authoritative resync BEFORE falling back to the
-      // leg-aware copy — a lost NON-terminal action is now recovered by
-      // adopting the server's live state (possibly a new street, if the move
-      // landed) instead of the old imperfect blind re-press. This is
-      // ADDITIVE recovery layered around the existing decision-scoped-key
-      // copy, not a replacement — pendingActionRef is left untouched either
-      // way (a re-press after a successful rehydrate still mints/reuses a
-      // key the normal way above).
-      const ambiguous = err instanceof CoveApiError && (err.status === 0 || err.status === 408);
-      if (ambiguous) {
-        const rehydrated = await tryResync(myEpoch);
-        if (rehydrated) return; // adopted authoritative live state — skip the fallback toast
-      }
-      showToast(describeHoldemError(err, 'action'), err instanceof CoveApiError && err.status >= 500 ? 'error' : 'warn');
-    } finally {
-      if (openEpochRef.current === myEpoch) busyRef.current = false; // only release MY lock
-    }
-  }, [live, agentMode, action, applySettled, applyActionInProgress, tryResync, showToast]);
 
   // ── Open the raise/bet slider ────────────────────────────────────────────────
   const handleOpenRaise = useCallback(() => {
@@ -780,125 +274,12 @@ export default function HoldemModal() {
 
   // ── NEXT HAND ────────────────────────────────────────────────────────────────
   const handleNextHand = useCallback(() => {
+    setShowRaise(false);
     resetHand();
   }, [resetHand]);
 
-  // ── WALK AWAY (close table → reveal seed + cash out, authed) ─────────────────
-  const handleWalkAway = useCallback(async () => {
-    // Synchronous double-fire lock — mirror handleDeal/runAction. Without this a
-    // sub-frame double-click (or a click during the 1500ms seed-reveal window
-    // when `disabled={inFlight}` has lagged react-query) would fire two
-    // concurrent POST /session/close for the same table; the loser lands in
-    // catch, cancels the just-armed auto-close timer, and the modal hangs open
-    // on a now-closed table.
-    if (busyRef.current) return;
-    const t = tableRef.current;
-    if (!t || !isAuthed) { handleClose(); return; }
-    if (live) { showToast('Finish the current hand first.', 'warn'); return; }
-    busyRef.current = true;
-    const myEpoch = openEpochRef.current; // bail if the modal closes mid-cash-out
-    // Per-close idempotency key (Increment 1b) — mint on the first press,
-    // REUSE on a retry of the SAME close (kept on error below). The server
-    // anchors the actual replay on the table's status flip, so reuse is
-    // consistent whether or not this exact key round-trips.
-    if (!closeKeyRef.current) closeKeyRef.current = crypto.randomUUID();
-    const closeIdempotencyKey = closeKeyRef.current;
-    try {
-      const res = await closeTable.mutateAsync({ tableId: t.id, idempotencyKey: closeIdempotencyKey });
-      if (openEpochRef.current !== myEpoch) return; // modal closed during cash-out — drop
-      closeKeyRef.current = null; // success — clear so a future close mints fresh
-      setRevealedSeed(res.serverSeed);
-      setBalance(res.walletBalance);
-      setTable((prev) => (prev ? { ...prev, status: 'closed', serverSeed: res.serverSeed, playerStack: '0' } : prev));
-      showToast(`Cashed out ${res.cashOut} vCLAW — seed ${res.serverSeed.slice(0, 10)}…${res.serverSeed.slice(-6)} revealed.`, 'info');
-      if (walkAwayTimerRef.current) clearTimeout(walkAwayTimerRef.current);
-      walkAwayTimerRef.current = setTimeout(() => {
-        walkAwayTimerRef.current = null;
-        handleClose();
-      }, 1500);
-    } catch (err) {
-      if (openEpochRef.current !== myEpoch) return; // stale error — drop
-      // KEEP closeKeyRef on error (unlike the success path above) — a retry
-      // reuses it so a lost-response close that actually landed replays
-      // against the same key the server logs for audit (the real anchor is
-      // the table's status='closed' flip, so this is consistency, not the
-      // load-bearing mechanism — see holdem-api-client.ts CloseHoldemArgs).
-      //
-      // Ambiguous outcome (0/408) or provably-already-closed (table_not_open):
-      // resolve against the server. A close that actually LANDED would leave a
-      // stale local 'open' table here — revealedSeed never set, Next Hand
-      // enabled — and ensureTable would reuse it, looping Deal on
-      // table_not_open 409s against a table whose chips were already credited.
-      const ambiguousClose =
-        err instanceof CoveApiError &&
-        (err.status === 0 || err.status === 408 || err.code?.startsWith('table_not_open') === true);
-      if (ambiguousClose) {
-        try {
-          const current = await fetchCurrentHoldemTable();
-          if (openEpochRef.current !== myEpoch) return; // modal closed — drop
-          if (!current || current.table.id !== t.id || current.table.status !== 'open') {
-            // The close landed server-side (chips credited in the same tx).
-            // Mark the local table closed so ensureTable can't reuse it — a
-            // Next Hand from here legitimately opens a fresh session.
-            setTable((prev) => (prev ? { ...prev, status: 'closed', playerStack: '0' } : prev));
-            if (current) setBalance(current.walletBalance);
-            showToast('Your cash-out went through — chips were credited.', 'info');
-            return;
-          }
-          // Table is genuinely still open — the close never landed; fall
-          // through to the retry copy (Walk Away again is safe).
-        } catch {
-          if (openEpochRef.current !== myEpoch) return; // modal closed — drop
-          // Resolve probe also failed — fall through to the retry copy.
-        }
-      }
-      showToast(describeHoldemError(err, 'close'), 'warn');
-    } finally {
-      if (openEpochRef.current === myEpoch) busyRef.current = false; // only release MY lock
-    }
-  }, [isAuthed, live, closeTable, showToast, handleClose]);
-
   // ── Derived display values ─────────────────────────────────────────────────
-  const inFlight =
-    openTable.isPending || dealHand.isPending || action.isPending || closeTable.isPending;
-
-  // Once the cash-out resolves (serverSeed revealed) the table is already
-  // 'closed' server-side; lock Walk Away so the 1500ms auto-close window can't
-  // re-fire a close on a closed table. Guests never reveal a seed, so their
-  // 'Close' button stays gated on inFlight only.
-  const walkAwayLocked = inFlight || Boolean(revealedSeed);
-
-  const outcome: SerializedHoldemHand | null = settled?.outcome ?? null;
-
-  const seats: SeatState[] = useMemo(() => {
-    if (outcome) return seatsForSettled(outcome);
-    if (live) return seatsForLiveHand(live, phase === 'player-turn' && !inFlight);
-    return [];
-  }, [outcome, live, phase, inFlight]);
-
-  const communityCards: (ViewCard | null)[] = useMemo(() => {
-    if (outcome) return boardToRow(outcome.board);
-    if (live) return boardToRow(live.board);
-    return [null, null, null, null, null];
-  }, [outcome, live]);
-
-  const pot = useMemo(() => {
-    if (outcome) {
-      return outcome.pots.reduce((sum, p) => sum + Number(p.amount), 0);
-    }
-    if (live) {
-      // Live pot is not directly returned — approximate from the action log we
-      // don't have; instead show the human-visible figure: humanCommitted +
-      // currentBet-context is incomplete, so we show 0 until the server-driven
-      // outcome. (Honest: the server is authoritative; we never fabricate a pot.)
-      return 0;
-    }
-    return 0;
-  }, [outcome, live]);
-
-  const toCallNum = live ? bigToNum(live.toCall) : 0;
-  const facingBet = toCallNum > 0;
-  const canCheck = !facingBet && phase === 'player-turn';
+  const outcome = settled?.outcome ?? null;
 
   const winnerLabel = useMemo(() => {
     if (!outcome) return null;
@@ -1356,8 +737,8 @@ export default function HoldemModal() {
 //   path is wired here.
 // ---------------------------------------------------------------------------
 function AgentModeBar({ mode, onMode, advisorMessages }: {
-  mode: AgentMode;
-  onMode: (m: AgentMode) => void;
+  mode: HoldemAgentMode;
+  onMode: (m: HoldemAgentMode) => void;
   advisorMessages: AdvisorMessage[];
 }) {
   return (

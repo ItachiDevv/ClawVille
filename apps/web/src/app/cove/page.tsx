@@ -32,6 +32,7 @@ import SceneTransition, { useSceneTransition } from '@/components/transitions/Sc
 import SlotScreenModal from '@/components/cove/SlotScreenModal';
 import BlackjackModal from '@/components/cove/blackjack/BlackjackModal';
 import HoldemModal from '@/components/cove/holdem/HoldemModal';
+import { HoldemControllerRuntime } from '@/lib/cove/holdem-controller';
 import BaccaratModal from '@/components/cove/baccarat/BaccaratModal';
 import CoveMobileControls from '@/components/cove/CoveMobileControls';
 import SupportLauncher from '@/components/support/SupportLauncher';
@@ -278,6 +279,7 @@ export default function CovePage() {
           server-authoritative, ClawToken stack custody, 5 deterministic bots).
           Same z-index policy as the other game modals. Connected-agent
           WebSocket protocol + real-money SOL/USDC land in Phase 6.5.2 / 6.5.4. */}
+      <HoldemControllerRuntime />
       <HoldemModal />
 
       {/* Phase 6.6.1 — Baccarat (Punto Banco) table modal (REAL engine,
