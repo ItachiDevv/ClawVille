@@ -755,6 +755,7 @@ function ReefRaceVRMRiderInner({
   }, [vrmPath, avatarId]);
 
   const vrmAnimatorRef = useRef<VRMCharacterAnimator | null>(null);
+  const surfGroundPendingRef = useRef(false);
 
   // Initialise animator once we have the VRM.
   useEffect(() => {
@@ -762,22 +763,28 @@ function ReefRaceVRMRiderInner({
     // animatorId comes straight from the resolved MODEL_REGISTRY entry (the
     // caller already has it — no reverse path→animatorId lookup needed) so
     // surf_idle/wipeout/victory use per-character Mixamo bakes when available
-    // (Hermes/Tekk/chibi/Meshy each have their own; Miladies share
-    // 'vrm-milady'). No per-character surf_idle override exists today
-    // (character-anim-overrides.json), so every animatorId retargets the same
-    // global skateboarding.glb via its own bone-name/rest-pose differential —
-    // the same retarget pipeline already proven for idle/walk/run.
+    // (Hermes/Tekk/chibi each have their own; Miladies and Meshy/Hatcher rigs
+    // without a dedicated override use the global bake). Every surf_idle path
+    // is translation-stripped so the surface base stays on the board; all use
+    // the same bone-name/rest-pose retarget pipeline proven for locomotion.
     const animator = new VRMCharacterAnimator(vrm, animatorId);
     vrmAnimatorRef.current = animator;
     animator.init('surf_idle').then(() => {
       // setSurfaceClip AFTER init so surf_idle retarget is cached in this.actions;
       // post-one-shot crossfades will correctly return to surf_idle (not idle).
       animator.setSurfaceClip('surf_idle');
+      // Evaluate the stripped surf stance at frame zero, then arm a mount-local
+      // animated-foot correction so bind-pose offsetY cannot leave a static gap.
+      // This is a one-time mount correction (scaled exactly once), never the
+      // per-frame normalized-rig feedback loop that made squat grounding flicker.
+      animator.sampleCurrentActionStart();
+      surfGroundPendingRef.current = true;
       onAnimatorReady(animator);
     }).catch((err: unknown) => {
       console.warn('[ReefRaceVRMRider] animator.init failed:', err);
     });
     return () => {
+      surfGroundPendingRef.current = false;
       vrmAnimatorRef.current = null;
       animator.dispose();
     };
@@ -813,6 +820,20 @@ function ReefRaceVRMRiderInner({
     const animator = vrmAnimatorRef.current;
     if (!animator) return;
     animator.update(Math.min(delta, 0.1), false);
+    if (surfGroundPendingRef.current) {
+      const mount = riderMountRef.current;
+      const scene = vrm?.scene;
+      if (mount && scene?.parent === mount) {
+        // mount-local Y is board-normal/deck-relative even while the kart is
+        // pitched or banked. Subtract once; never feed the result back again.
+        const footMountY = animator.getFootYMinInSpace(mount);
+        if (Number.isFinite(footMountY)) {
+          scene.position.y -= footMountY;
+          scene.updateMatrixWorld(true);
+          surfGroundPendingRef.current = false;
+        }
+      }
+    }
   });
 
   return null; // imperative scene graph — no JSX output

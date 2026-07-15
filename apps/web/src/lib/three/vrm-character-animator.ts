@@ -155,8 +155,11 @@ const ANIM_PATHS = {
   spell_cast:      `${EMOTE_BUNDLE}#spell_cast`,
   // Reef Race v2 surf clips — separate, prewarmed by ReefRacePlayer.
   surf_idle:       '/avatars/animations/skateboarding.glb',
-  wipeout:         '/avatars/animations/wipeout.glb',
-  victory:         '/avatars/animations/cheering.glb',
+  // These global files are cumulative exports: animation[0] is skateboarding
+  // in both, while the intended one-shots are .001/.002. Fragments make the
+  // loader select the exact clip before the retargeter's animations[0] read.
+  wipeout:         '/avatars/animations/wipeout.glb#Armature|mixamo.com|Layer0.001',
+  victory:         '/avatars/animations/cheering.glb#Armature|mixamo.com|Layer0.002',
   // Cross-character bakes — separate (small + only-when-needed).
   swimming:        '/avatars/animations/hermes-female/swimming.glb',
   flying:          '/avatars/animations/tekk-male/flying.glb',
@@ -494,6 +497,10 @@ const IN_PLACE_CLIPS: ReadonlySet<AnimName> = new Set([
   'run',
   'swimming',
   'flying',
+  // Reef Race holds this as a setSurfaceClip base, so it must stay deck-
+  // relative. Measured raw hips-Y amplitude: global 1.47787; character
+  // overrides up to 2.58815. Strip translation, retain rotation-only sway.
+  'surf_idle',
   'praying',  // kneeling/standing prayer pose — strictly stationary
   // 'wipeout' added 2026-05-21 because chibi's "Knocked Out" replacement bakes
   // ~77cm of Mixamo Z (forward) motion that, after Blender's Y-up→glTF axis
@@ -503,6 +510,9 @@ const IN_PLACE_CLIPS: ReadonlySet<AnimName> = new Set([
   // its small intentional backward step — acceptable since wipeout is a
   // crash one-shot, not a locomotion-defining motion.
   'wipeout',
+  // Victory is also played while mounted. The intended global cheering clip
+  // has 6.96884 raw hips-Y amplitude (override bakes: 0.03888..0.06474).
+  'victory',
   // 'kip_up' added 2026-05-21. Knocked-Out-and-recover one-shot pair; user
   // wants character to spring up in place, not drift across the floor.
   'kip_up',
@@ -990,6 +1000,35 @@ export class VRMCharacterAnimator {
       }
     }
     return minY;
+  }
+
+  /** Lowest rendered (raw-rig) foot/toe Y in reference-space coordinates. */
+  getFootYMinInSpace(referenceSpace: THREE.Object3D): number {
+    const humanoid = this.vrm.humanoid;
+    if (!humanoid) return Infinity;
+    referenceSpace.updateWorldMatrix(true, false);
+    let minY = Infinity;
+    const bones = ['leftFoot', 'rightFoot', 'leftToes', 'rightToes'] as const;
+    for (const boneName of bones) {
+      // Ground the raw/rendered skeleton. The normalized control rig can be
+      // one propagation phase away from the skin (the old squat flicker trap).
+      const node = humanoid.getRawBoneNode(boneName);
+      if (!node) continue;
+      node.getWorldPosition(_squat_footScratch);
+      referenceSpace.worldToLocal(_squat_footScratch);
+      if (_squat_footScratch.y < minY) minY = _squat_footScratch.y;
+    }
+    return minY;
+  }
+
+  /** Evaluate the current action at frame zero and refresh both rig layers. */
+  sampleCurrentActionStart(): void {
+    if (!this.ready || !this.currentAction) return;
+    this.currentAction.time = 0;
+    this.mixer.update(0);
+    this.vrm.update(0);
+    this.vrm.scene.updateMatrixWorld(true);
+    for (const fn of this._skeletonUpdateFns.values()) fn();
   }
 
   /**
