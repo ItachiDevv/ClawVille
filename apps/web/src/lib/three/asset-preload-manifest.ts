@@ -212,9 +212,8 @@ export const TOWN_PROP_GLBS: readonly string[] = [
   '/models/quest-bounty-pavilion-ktx.glb?v=4',
   '/models/bazaar-merchant-stand-ktx.glb?v=3', // ?v=3 — P1b non-color KTX2 coverage (2026-07-14)
   '/models/shisha-oasis-ktx.glb?v=2',
-  '/models/auction-dome.glb',
   // town-directory-sign.tsx uses Three.js primitives only (no GLB) — nothing to preload here.
-  // auction-podium.tsx preloads its own jellyfish-ktx.glb path.
+  // Auction podium removed 2026-07-15 — superseded by quest-bounty-pavilion.
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -289,7 +288,7 @@ export function preloadWorldAssets(): void {
   }
 
   // Town-center prop GLBs — always-present world structures (pavilion, bazaar,
-  // shisha-oasis, auction-dome). Added 2026-05-22 — were previously missing
+  // shisha-oasis). Added 2026-05-22 — were previously missing
   // from the manifest, which is why they streamed in only after canvas mount.
   for (const url of TOWN_PROP_GLBS) {
     preloadGlbUrl(url);

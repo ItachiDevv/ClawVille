@@ -15,8 +15,9 @@ import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 // joystick. Clicking the 3D ground no longer moves the avatar.
 //
 // Preserved, because they do NOT depend on this plane:
-//   - Town-center stalls (bazaar → cosmetics, auction → bounties) keep their
-//     OWN onClick handlers (bazaar-stall.tsx / auction-podium.tsx).
+//   - Town-center click targets (bazaar → cosmetics, quest pavilion →
+//     quests/bounties) keep their OWN onClick handlers
+//     (bazaar-stall.tsx / quest-bounty-pavilion.tsx).
 //   - The cove keeps its building/tunnel click + the walk-in flow.
 //   - World-Map / minimap fast-travel + warp drive the avatar via clickPath
 //     PROGRAMMATICALLY (store.setClickPath) — player-avatar.tsx still consumes

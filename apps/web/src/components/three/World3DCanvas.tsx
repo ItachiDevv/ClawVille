@@ -28,7 +28,6 @@ import TownGuide from '@/lib/three/town-guide';
 import BazaarStall from '@/lib/three/bazaar-stall';
 import MarketplaceStall from '@/lib/three/marketplace-stall';
 import QuestBountyPavilion from '@/lib/three/quest-bounty-pavilion';
-import AuctionPodium from '@/lib/three/auction-podium';
 import TownDirectorySign from '@/lib/three/town-directory-sign';
 import CoveBeacon from '@/lib/three/cove-beacon';
 import CoveEntrance from '@/lib/three/cove-entrance';
@@ -1900,9 +1899,6 @@ const SceneContents = memo(function SceneContents({
       </group>
       <group name="perf:marketplace-stall" userData={{ perfChunk: 'marketplace-stall' }}>
         <MarketplaceStall />
-      </group>
-      <group name="perf:auction-podium" userData={{ perfChunk: 'auction-podium' }}>
-        <AuctionPodium />
       </group>
       {/* Quest + Bounty Pavilion — octagonal open-air pavilion 1100wu behind
           the town directory sign. Houses both the Quest Board (boards 1+2, left
