@@ -277,10 +277,14 @@ const OUTBOUND_FETCH_TIMEOUT_MS = 15_000;
 
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
+const TOKEN_MULTISIG_SIZE = 355;
 const NATIVE_MINT = new PublicKey('So11111111111111111111111111111111111111112');
 const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
 const COMPUTE_BUDGET_PROGRAM_ID = new PublicKey('ComputeBudget111111111111111111111111111111');
 const JUPITER_V6_PROGRAM_ID = new PublicKey('JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4');
+const PUMP_AMM_PROGRAM_ID = new PublicKey('pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA');
+// Headroom over the observed 1,844,400 lamports; sized for ONE account only.
+const MAX_PUMP_USER_VOLUME_ACCUMULATOR_RENT_LAMPORTS = 2_500_000n;
 const MAX_PRIORITY_FEE_LAMPORTS = 1_000_000n;
 const MAX_COMPUTE_UNITS = 1_400_000n;
 
@@ -739,6 +743,35 @@ function parseTokenAccountSnapshot(input: {
   };
 }
 
+function parseWalletControlledLamports(input: {
+  wallet: PublicKey;
+  owner: PublicKey | string;
+  data: Buffer;
+  lamports: number;
+}): bigint {
+  if (!Number.isSafeInteger(input.lamports) || input.lamports < 0) return 0n;
+  let owner: PublicKey;
+  try {
+    owner = typeof input.owner === 'string' ? new PublicKey(input.owner) : input.owner;
+  } catch {
+    return 0n;
+  }
+  const isLegacyTokenAccount = owner.equals(TOKEN_PROGRAM_ID) && input.data.length === 165;
+  const isToken2022Account = owner.equals(TOKEN_2022_PROGRAM_ID) &&
+    input.data.length !== TOKEN_MULTISIG_SIZE &&
+    (input.data.length === 165 || (input.data.length > 165 && input.data[165] === 2));
+  if (
+    (!isLegacyTokenAccount && !isToken2022Account) ||
+    !input.data.subarray(32, 64).equals(input.wallet.toBuffer()) ||
+    input.data[108] !== 1
+  ) return 0n;
+  if (
+    input.data.readUInt32LE(129) === 1 &&
+    !input.data.subarray(133, 165).equals(input.wallet.toBuffer())
+  ) return 0n;
+  return BigInt(input.lamports);
+}
+
 /**
  * Route-agnostic, pre-sign balance proof. Solana simulation returns requested
  * post-account snapshots (not transaction-meta token balances), so this takes
@@ -752,8 +785,35 @@ export async function validateJupiterSwapSimulation(input: {
   inputAmount: bigint;
   minimumOutAmount: bigint;
   priorityFeeLamports: bigint;
+  addressLookupTableAccounts?: AddressLookupTableAccount[];
   walletAtas?: WalletAtaSpec[];
 }): Promise<SwapSimulationValidationResult> {
+  if (input.transaction.message.version !== 0) return { ok: false, detail: 'message_not_v0' };
+  let pumpUserVolumeAccumulator: PublicKey | null = null;
+  try {
+    pumpUserVolumeAccumulator = PublicKey.findProgramAddressSync(
+      [Buffer.from('user_volume_accumulator'), input.wallet.toBuffer()],
+      PUMP_AMM_PROGRAM_ID,
+    )[0];
+  } catch {
+    // Fail closed: PDA derivation failure grants no Pump accumulator allowance.
+  }
+  const message = input.transaction.message as MessageV0;
+  let keys: ReturnType<MessageV0['getAccountKeys']>;
+  try {
+    keys = message.getAccountKeys({
+      addressLookupTableAccounts: input.addressLookupTableAccounts ?? [],
+    });
+  } catch (err) {
+    return { ok: false, detail: `lookup_resolution:${(err as Error).message}` };
+  }
+  const writable = new Map<string, PublicKey>();
+  for (let index = 0; index < keys.length; index += 1) {
+    if (!message.isAccountWritable(index)) continue;
+    const key = keys.get(index);
+    if (key) writable.set(key.toBase58(), key);
+  }
+
   const usdcAta = findUsdcAta(input.wallet);
   const clvAta = findClvAta(input.wallet);
   const specs = new Map<string, WalletAtaSpec>();
@@ -769,14 +829,25 @@ export async function validateJupiterSwapSimulation(input: {
     tokenProgram: TOKEN_2022_PROGRAM_ID,
   });
   const tokenSpecs = [...specs.values()];
-  const addresses = [...tokenSpecs.map((spec) => spec.address.toBase58()), input.wallet.toBase58()];
+  const snapshotKeys = [...tokenSpecs.map((spec) => spec.address), input.wallet];
+  const snapshotKeySet = new Set(snapshotKeys.map((key) => key.toBase58()));
+  for (const key of writable.values()) {
+    if (snapshotKeySet.has(key.toBase58())) continue;
+    snapshotKeys.push(key);
+    snapshotKeySet.add(key.toBase58());
+  }
+  const addresses = snapshotKeys.map((key) => key.toBase58());
 
-  let preInfos: Awaited<ReturnType<Connection['getMultipleAccountsInfo']>>;
+  const preInfos: Awaited<ReturnType<Connection['getMultipleAccountsInfo']>> = [];
   try {
-    preInfos = await input.connection.getMultipleAccountsInfo(
-      [...tokenSpecs.map((spec) => spec.address), input.wallet],
-      'confirmed',
-    );
+    for (let offset = 0; offset < snapshotKeys.length; offset += 100) {
+      const chunk = snapshotKeys.slice(offset, offset + 100);
+      const chunkInfos = await input.connection.getMultipleAccountsInfo(chunk, 'confirmed');
+      if (chunkInfos.length !== chunk.length) {
+        return { ok: false, detail: 'simulation_pre_snapshot_shape' };
+      }
+      preInfos.push(...chunkInfos);
+    }
   } catch (err) {
     return { ok: false, detail: `simulation_pre_snapshot:${(err as Error).message}` };
   }
@@ -876,10 +947,45 @@ export async function validateJupiterSwapSimulation(input: {
     ownedLamportsPre += balance.pre.lamports;
     ownedLamportsPost += balance.post.lamports;
   }
+  for (let index = tokenSpecs.length + 1; index < snapshotKeys.length; index += 1) {
+    const preInfo = preInfos[index];
+    if (preInfo) {
+      ownedLamportsPre += parseWalletControlledLamports({
+        wallet: input.wallet,
+        owner: preInfo.owner,
+        data: Buffer.from(preInfo.data),
+        lamports: preInfo.lamports,
+      });
+    }
+    const postInfo = postInfos[index];
+    if (
+      postInfo && Array.isArray(postInfo.data) && postInfo.data.length === 2 &&
+      typeof postInfo.data[0] === 'string' && postInfo.data[1] === 'base64'
+    ) {
+      const walletControlledLamports = parseWalletControlledLamports({
+        wallet: input.wallet,
+        owner: postInfo.owner,
+        data: Buffer.from(postInfo.data[0], 'base64'),
+        lamports: postInfo.lamports,
+      });
+      if (walletControlledLamports > 0n) {
+        ownedLamportsPost += walletControlledLamports;
+      } else if (
+        pumpUserVolumeAccumulator && snapshotKeys[index].equals(pumpUserVolumeAccumulator) &&
+        preInfo == null && postInfo.owner === PUMP_AMM_PROGRAM_ID.toBase58() &&
+        Number.isSafeInteger(postInfo.lamports) && postInfo.lamports >= 0
+      ) {
+        const pumpAccumulatorRentLamports = BigInt(postInfo.lamports);
+        if (pumpAccumulatorRentLamports <= MAX_PUMP_USER_VOLUME_ACCUMULATOR_RENT_LAMPORTS) {
+          ownedLamportsPost += pumpAccumulatorRentLamports;
+        }
+      }
+    }
+  }
   const ownedLamportDecrease = ownedLamportsPre - ownedLamportsPost;
   // One required signer costs 5,000 lamports. The extra 5,000 is deliberate
-  // RPC/rent rounding headroom; temporary ATA rent is neutral in the owned
-  // aggregate because its close returns the lamports to the wallet.
+  // RPC/rent rounding headroom; wallet-controlled token-account rent is
+  // neutral because those lamports remain owned by the wallet.
   if (ownedLamportDecrease > input.priorityFeeLamports + 10_000n) {
     return { ok: false, detail: 'simulation_wallet_lamport_delta' };
   }
@@ -1817,6 +1923,7 @@ export async function executeQueuedClvBuy(
         inputAmount: clipMicro,
         minimumOutAmount: transactionMinimumOut,
         priorityFeeLamports: binding.priorityFeeLamports,
+        addressLookupTableAccounts: lookupTables,
         walletAtas: binding.walletAtas,
       }),
     );
