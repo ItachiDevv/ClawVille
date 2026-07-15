@@ -113,6 +113,15 @@ export const lobbies = pgTable(
     lockedAt: timestamp('locked_at', { withTimezone: true }),
     settledAt: timestamp('settled_at', { withTimezone: true }),
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+    /**
+     * Durable create-broadcast state. Existing/solo rows default confirmed;
+     * multiplayer creates explicitly begin prepared and are hidden from public
+     * discovery until the matching chain intent confirms and DB finalization
+     * completes.
+     */
+    onChainCreateStatus: text('on_chain_create_status')
+      .notNull()
+      .default('confirmed'),
     onChainCreateSig: text('on_chain_create_sig'),
     onChainLockSig: text('on_chain_lock_sig'),
     onChainSettleSig: text('on_chain_settle_sig'),
@@ -124,6 +133,11 @@ export const lobbies = pgTable(
       .on(t.inviteCode)
       .where(sql`invite_code IS NOT NULL`),
     roomIdIdx: index('idx_lobbies_room_id').on(t.roomId),
+    activeMultiplayerRoomUniq: uniqueIndex(
+      'idx_lobbies_active_multiplayer_room_uniq',
+    )
+      .on(t.activityId, t.roomId)
+      .where(sql`mode = 'multiplayer' AND state IN ('open','locked')`),
     maxPlayersCheck: check(
       'lobbies_max_players_range',
       sql`max_players >= 2 AND max_players <= 16`,
@@ -150,11 +164,87 @@ export const lobbies = pgTable(
       'lobbies_joined_count_range',
       sql`joined_count >= 0 AND joined_count <= max_players`,
     ),
+    createStatusCheck: check(
+      'lobbies_on_chain_create_status_valid',
+      sql`on_chain_create_status IN ('prepared','sending','confirmed','reconcile','failed')`,
+    ),
   }),
 );
 
 export type Lobby = typeof lobbies.$inferSelect;
 export type NewLobby = typeof lobbies.$inferInsert;
+
+/**
+ * Durable capture-before-send witness for wager broadcasts that move deposits.
+ * The stable operation key makes create/join idempotent before chain I/O; the
+ * signed transaction signature is committed while status='sending' before the
+ * exact bytes are broadcast. `target_pda` is the deterministic Lobby or Player
+ * PDA used by the forward-only reconciliation hook.
+ */
+export const wagerChainIntents = pgTable(
+  'wager_chain_intents',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    operationKey: varchar('operation_key', { length: 200 }).notNull(),
+    operation: text('operation').notNull(),
+    lobbyId: uuid('lobby_id')
+      .notNull()
+      .references(() => lobbies.id, { onDelete: 'restrict' }),
+    actorAvatarId: uuid('actor_avatar_id')
+      .notNull()
+      .references(() => avatars.id, { onDelete: 'restrict' }),
+    status: text('status').notNull().default('prepared'),
+    targetPda: text('target_pda').notNull(),
+    txSignature: text('tx_signature'),
+    blockhash: text('blockhash'),
+    lastValidBlockHeight: bigint('last_valid_block_height', { mode: 'bigint' }),
+    /** Machine-safe phase/reason only; never bearer, key, or raw transaction data. */
+    lastError: text('last_error'),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => ({
+    operationKeyUniq: uniqueIndex('idx_wager_chain_intents_operation_key_uniq').on(
+      t.operationKey,
+    ),
+    txSignatureUniq: uniqueIndex('idx_wager_chain_intents_tx_signature_uniq')
+      .on(t.txSignature)
+      .where(sql`tx_signature IS NOT NULL`),
+    statusUpdatedIdx: index('idx_wager_chain_intents_status_updated').on(
+      t.status,
+      t.updatedAt,
+    ),
+    operationCheck: check(
+      'wager_chain_intents_operation_valid',
+      sql`operation IN ('create','join')`,
+    ),
+    statusCheck: check(
+      'wager_chain_intents_status_valid',
+      sql`status IN ('prepared','sending','confirmed','reconcile','failed')`,
+    ),
+    captureStateCheck: check(
+      'wager_chain_intents_capture_state_valid',
+      sql`(
+        status IN ('prepared','failed')
+        AND tx_signature IS NULL
+        AND blockhash IS NULL
+        AND last_valid_block_height IS NULL
+      ) OR (
+        status IN ('sending','confirmed','reconcile')
+        AND tx_signature IS NOT NULL
+        AND blockhash IS NOT NULL
+        AND last_valid_block_height IS NOT NULL
+      )`,
+    ),
+  }),
+);
+
+export type WagerChainIntent = typeof wagerChainIntents.$inferSelect;
+export type NewWagerChainIntent = typeof wagerChainIntents.$inferInsert;
 
 /**
  * Per-player deposit witness. One row per (lobby, user) — mirrors the

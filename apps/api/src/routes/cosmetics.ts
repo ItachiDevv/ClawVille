@@ -26,7 +26,8 @@
 
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { eq, and, or, isNull, gt, lte, inArray } from 'drizzle-orm';
+import { z } from 'zod';
+import { eq, and, or, isNull, gt, lt, lte, inArray, sql } from 'drizzle-orm';
 import {
   db,
   cosmeticSkus,
@@ -34,16 +35,21 @@ import {
   avatarSkins,
   avatars,
 } from '@clawville/database';
-import { requireAuth, sessionMiddleware } from '../middleware/auth';
-import { requireNonGuestUser } from '../middleware/require-non-guest';
+import { sessionMiddleware } from '../middleware/auth';
+import {
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+  type ActivityAuthContext,
+  type ActivityIdentity,
+} from '../middleware/require-auth-or-agent';
+import { requireNonGuestIdentity } from '../middleware/require-non-guest';
 import { noStorePrivate } from '../middleware/no-store';
 import { logEventFromContext } from '../services/event-logger';
 import { creditClawTokens, debitClawTokens, InsufficientTokensError, type LedgerTx } from '../services/claw-token-ledger';
 import { getHouseTreasuryAvatarId } from '../services/house-treasury-seeder';
 import { spendCosmeticBonusInTx } from '../services/cosmetic-signup-bonus';
-import type { AppContext } from '../types';
 
-export const cosmeticsRoutes = new Hono<AppContext>();
+export const cosmeticsRoutes = new Hono<ActivityAuthContext>();
 
 // ---------------------------------------------------------------------------
 // SHARED PURCHASE HELPERS (Tokenomics C checkout stage, 2026-07-07)
@@ -65,10 +71,20 @@ export type SkuPurchasabilityCheck =
   | { ok: true; sku: typeof cosmeticSkus.$inferSelect }
   | {
       ok: false;
-      code: 'not_found' | 'not_yet_available' | 'no_longer_available' | 'wrong_currency';
+      code: 'not_found' | 'not_yet_available' | 'no_longer_available' | 'wrong_currency' | 'sold_out';
       /** For wrong_currency: the currency the SKU demands. */
       requiredCurrency?: string;
     };
+
+async function countCosmeticOwnerships(skuId: string, tx?: LedgerTx): Promise<number> {
+  const runner = tx ?? db;
+  const rows = await runner
+    .select({ ownershipCount: sql<number>`COUNT(*)::integer` })
+    .from(avatarSkins)
+    .where(eq(avatarSkins.skuId, skuId))
+    .limit(1);
+  return Number(rows[0]?.ownershipCount ?? 0);
+}
 
 /**
  * Validate a SKU is purchasable RIGHT NOW on a CT-denominated rail: exists,
@@ -76,7 +92,7 @@ export type SkuPurchasabilityCheck =
  * Behavior-identical to the checks the balance-buy always ran. Read-only.
  */
 export async function checkSkuPurchasable(skuId: string): Promise<SkuPurchasabilityCheck> {
-  if (!uuidRegex.test(skuId)) return { ok: false, code: 'not_found' };
+  if (!skuIdSchema.safeParse(skuId).success) return { ok: false, code: 'not_found' };
   const sku = await db.query.cosmeticSkus.findFirst({ where: eq(cosmeticSkus.id, skuId) });
   if (!sku) return { ok: false, code: 'not_found' };
   const now = new Date();
@@ -91,6 +107,15 @@ export async function checkSkuPurchasable(skuId: string): Promise<SkuPurchasabil
     // rail (balance OR the ¢-pegged USDC checkout) — they go through a
     // currency-specific path (Phase 4 follow-up).
     return { ok: false, code: 'wrong_currency', requiredCurrency: sku.exclusiveCurrency };
+  }
+  // During a rolling deploy, an old pod can grant ownership after the migration
+  // backfill but before every pod increments sold_count. Treat the live ledger
+  // count as authoritative whenever it is ahead of the monotonic counter.
+  if (sku.supplyCap !== null) {
+    const ownershipCount = await countCosmeticOwnerships(skuId);
+    if (Math.max(sku.soldCount, ownershipCount) >= sku.supplyCap) {
+      return { ok: false, code: 'sold_out' };
+    }
   }
   return { ok: true, sku };
 }
@@ -130,18 +155,31 @@ export async function grantSkinInTx(
     ledgerId: string | null;
   },
 ): Promise<{ avatarSkinId: string; alreadyOwned: boolean }> {
-  const inserted = await tx
-    .insert(avatarSkins)
-    .values({
-      avatarId: input.avatarId,
-      skuId: input.skuId,
-      acquiredVia: input.acquiredVia,
-      ledgerId: input.ledgerId,
-      equipped: false,
-    })
-    .onConflictDoNothing({ target: [avatarSkins.avatarId, avatarSkins.skuId] })
-    .returning({ id: avatarSkins.id });
+  let inserted: Array<{ id: string }>;
+  try {
+    inserted = await tx
+      .insert(avatarSkins)
+      .values({
+        avatarId: input.avatarId,
+        skuId: input.skuId,
+        acquiredVia: input.acquiredVia,
+        ledgerId: input.ledgerId,
+        equipped: false,
+      })
+      .onConflictDoNothing({ target: [avatarSkins.avatarId, avatarSkins.skuId] })
+      .returning({ id: avatarSkins.id });
+  } catch (err) {
+    const dbError = err as { code?: unknown; constraint_name?: unknown; constraint?: unknown };
+    const constraint = dbError.constraint_name ?? dbError.constraint;
+    if (dbError.code === '23514' && constraint === 'cosmetic_skus_supply_cap_enforced') {
+      throw new CosmeticSoldOutError(input.skuId);
+    }
+    throw err;
+  }
   if (inserted.length > 0) {
+    // Migration 0032's AFTER INSERT trigger is the inventory boundary for
+    // every writer, including old pods. It serializes on cosmetic_skus and
+    // raises the named CHECK violation before a capped SKU can oversell.
     return { avatarSkinId: inserted[0].id, alreadyOwned: false };
   }
   const existing = await findOwnedSkin(input.avatarId, input.skuId, tx);
@@ -167,13 +205,13 @@ const VALID_SCOPES = new Set([
 
 const uuidRegex =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const skuIdSchema = z.string().regex(uuidRegex);
 
-async function getCallerAvatar(userId: string) {
-  const avatar = await db.query.avatars.findFirst({
-    where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
-  });
-  if (!avatar) throw new HTTPException(404, { message: 'No active avatar found' });
-  return avatar;
+export class CosmeticSoldOutError extends Error {
+  constructor(public readonly skuId: string) {
+    super('cosmetic_sold_out');
+    this.name = 'CosmeticSoldOutError';
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -191,9 +229,19 @@ cosmeticsRoutes.get('/catalog', async (c) => {
   const scope = scopeQ && VALID_SCOPES.has(scopeQ) ? scopeQ : null;
 
   const now = new Date();
+  const actualOwnershipCount = sql<number>`(
+    SELECT COUNT(*)::integer
+    FROM ${avatarSkins}
+    WHERE ${avatarSkins.skuId} = ${cosmeticSkus.id}
+  )`;
+  const effectiveSoldCount = sql<number>`GREATEST(
+    ${cosmeticSkus.soldCount},
+    ${actualOwnershipCount}
+  )`;
   const conditions = [
     or(isNull(cosmeticSkus.availableFrom), lte(cosmeticSkus.availableFrom, now)),
     or(isNull(cosmeticSkus.availableUntil), gt(cosmeticSkus.availableUntil, now)),
+    or(isNull(cosmeticSkus.supplyCap), lt(effectiveSoldCount, cosmeticSkus.supplyCap)),
   ];
   if (scope) conditions.push(eq(cosmeticSkus.scope, scope));
 
@@ -203,9 +251,6 @@ cosmeticsRoutes.get('/catalog', async (c) => {
     .where(and(...conditions))
     .orderBy(cosmeticSkus.createdAt);
 
-  // Empty supply_cap and full supply_cap — for full check we'd join avatar_skins
-  // with COUNT; defer until Phase 4 (storefront) since the empty-catalog Phase 3
-  // launch doesn't have items hitting their caps. Plain SKUs only for now.
   return c.json({
     catalog: rows.map((r) => ({
       id: r.id,
@@ -237,9 +282,14 @@ cosmeticsRoutes.get('/catalog', async (c) => {
 // GET /owned — auth'd
 // ---------------------------------------------------------------------------
 
-cosmeticsRoutes.get('/owned', sessionMiddleware, requireAuth, noStorePrivate, async (c) => {
-  const user = c.get('user') as { id: string };
-  const avatar = await getCallerAvatar(user.id);
+cosmeticsRoutes.get(
+  '/owned',
+  sessionMiddleware,
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+  noStorePrivate,
+  async (c) => {
+  const identity = c.get('identity');
 
   // Two-step: avatar_skins → cosmetic_skus → cosmetic_variants. Could be one
   // join, but the variants are an array per SKU — easier to assemble in JS
@@ -251,7 +301,7 @@ cosmeticsRoutes.get('/owned', sessionMiddleware, requireAuth, noStorePrivate, as
     })
     .from(avatarSkins)
     .innerJoin(cosmeticSkus, eq(cosmeticSkus.id, avatarSkins.skuId))
-    .where(eq(avatarSkins.avatarId, avatar.id))
+    .where(eq(avatarSkins.avatarId, identity.avatarId))
     .orderBy(avatarSkins.acquiredAt);
 
   if (owned.length === 0) {
@@ -304,7 +354,8 @@ cosmeticsRoutes.get('/owned', sessionMiddleware, requireAuth, noStorePrivate, as
     })),
     generatedAt: new Date().toISOString(),
   });
-});
+  },
+);
 
 // ---------------------------------------------------------------------------
 // POST /:skuId/equip + /:skuId/unequip — auth'd
@@ -313,13 +364,12 @@ cosmeticsRoutes.get('/owned', sessionMiddleware, requireAuth, noStorePrivate, as
 async function setEquipped(
   c: any,
   skuId: string,
-  userId: string,
+  identity: ActivityIdentity,
   equipped: boolean,
 ) {
-  if (!uuidRegex.test(skuId)) {
+  if (!skuIdSchema.safeParse(skuId).success) {
     throw new HTTPException(400, { message: 'Invalid skuId' });
   }
-  const avatar = await getCallerAvatar(userId);
 
   // Update only if the row exists (idempotent — equipping an already-
   // equipped SKU returns the same row, no toggle).
@@ -329,7 +379,7 @@ async function setEquipped(
       equipped,
       equippedAt: equipped ? new Date() : null,
     })
-    .where(and(eq(avatarSkins.avatarId, avatar.id), eq(avatarSkins.skuId, skuId)))
+    .where(and(eq(avatarSkins.avatarId, identity.avatarId), eq(avatarSkins.skuId, skuId)))
     .returning();
 
   if (result.length === 0) {
@@ -342,23 +392,29 @@ async function setEquipped(
   // Telemetry — equipping is a meaningful engagement signal. Fire-and-forget.
   void logEventFromContext(c, {
     eventType: equipped ? 'cosmetic.equipped' : 'cosmetic.unequipped',
-    userId,
-    avatarId: avatar.id,
+    userId: identity.userId,
+    avatarId: identity.avatarId,
     payload: { skuId, equippedAt: equipped ? new Date().toISOString() : null },
   });
 
   return c.json({ ok: true, equipped: result[0].equipped });
 }
 
-cosmeticsRoutes.post('/:skuId/equip', sessionMiddleware, requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
-  return setEquipped(c, c.req.param('skuId'), user.id, true);
-});
+cosmeticsRoutes.post(
+  '/:skuId/equip',
+  sessionMiddleware,
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+  async (c) => setEquipped(c, c.req.param('skuId'), c.get('identity'), true),
+);
 
-cosmeticsRoutes.post('/:skuId/unequip', sessionMiddleware, requireAuth, async (c) => {
-  const user = c.get('user') as { id: string };
-  return setEquipped(c, c.req.param('skuId'), user.id, false);
-});
+cosmeticsRoutes.post(
+  '/:skuId/unequip',
+  sessionMiddleware,
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+  async (c) => setEquipped(c, c.req.param('skuId'), c.get('identity'), false),
+);
 
 // ---------------------------------------------------------------------------
 // POST /:skuId/buy — auth'd
@@ -383,9 +439,19 @@ class AlreadyOwnedRace extends Error {
   }
 }
 
-cosmeticsRoutes.post('/:skuId/buy', sessionMiddleware, requireAuth, requireNonGuestUser, async (c) => {
-  const user = c.get('user') as { id: string };
+cosmeticsRoutes.post(
+  '/:skuId/buy',
+  sessionMiddleware,
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+  requireNonGuestIdentity,
+  async (c) => {
+  const identity = c.get('identity');
   const skuId = c.req.param('skuId');
+  const avatar = await db.query.avatars.findFirst({
+    where: and(eq(avatars.id, identity.avatarId), eq(avatars.isActive, true)),
+  });
+  if (!avatar) throw new HTTPException(404, { message: 'No active avatar found' });
 
   // SKU must exist, be inside its availability window, and be CT-buyable —
   // the SAME shared check the USDC checkout fulfiller runs (extracted 2026-07-07).
@@ -405,11 +471,23 @@ cosmeticsRoutes.post('/:skuId/buy', sessionMiddleware, requireAuth, requireNonGu
         throw new HTTPException(400, {
           message: `This item must be purchased with ${purchasable.requiredCurrency}.`,
         });
+      case 'sold_out': {
+        // Idempotent retries by the owner of the final unit still succeed.
+        const existing = await findOwnedSkin(avatar.id, skuId);
+        if (existing) {
+          return c.json({
+            ok: true,
+            alreadyOwned: true,
+            avatarSkinId: existing.id,
+            equipped: existing.equipped,
+            clawTokens: avatar.clawTokens,
+          });
+        }
+        return c.json({ error: 'sold_out' }, 409);
+      }
     }
   }
   const sku = purchasable.sku;
-
-  const avatar = await getCallerAvatar(user.id);
 
   // Idempotent: already owned ⇒ 200 with `{ alreadyOwned: true }`.
   const existing = await findOwnedSkin(avatar.id, skuId);
@@ -434,7 +512,7 @@ cosmeticsRoutes.post('/:skuId/buy', sessionMiddleware, requireAuth, requireNonGu
       // debited from the buyer + routed to the treasury below — the grant
       // portion mints NOTHING (a house-eaten marketing expense). Rolls back with
       // the whole tx on any failure, so a failed purchase never consumes it.
-      const grantUsed = await spendCosmeticBonusInTx(tx, user.id, sku.priceCt);
+      const grantUsed = await spendCosmeticBonusInTx(tx, identity.userId, sku.priceCt);
       const realCt = sku.priceCt - grantUsed;
 
       // Debit only the real-CT remainder. Skip entirely when the grant fully
@@ -449,7 +527,7 @@ cosmeticsRoutes.post('/:skuId/buy', sessionMiddleware, requireAuth, requireNonGu
             reason: 'buy_cosmetic',
             source: 'api',
             metadata: { skuId, slug: sku.slug, category: sku.category, grantUsed, priceCt: sku.priceCt },
-            actorKind: 'human',
+            actorKind: identity.kind === 'user' ? 'human' : 'agent',
           },
           tx,
         );
@@ -501,6 +579,9 @@ cosmeticsRoutes.post('/:skuId/buy', sessionMiddleware, requireAuth, requireNonGu
       return { balanceAfter, avatarSkinId: grant.avatarSkinId, grantUsed, realCt };
     });
   } catch (err) {
+    if (err instanceof CosmeticSoldOutError) {
+      return c.json({ error: 'sold_out' }, 409);
+    }
     if (err instanceof AlreadyOwnedRace) {
       return c.json({
         ok: true,
@@ -524,7 +605,7 @@ cosmeticsRoutes.post('/:skuId/buy', sessionMiddleware, requireAuth, requireNonGu
 
   void logEventFromContext(c, {
     eventType: 'cosmetic.purchased',
-    userId: user.id,
+    userId: identity.userId,
     avatarId: avatar.id,
     payload: {
       skuId: sku.id,
@@ -547,4 +628,5 @@ cosmeticsRoutes.post('/:skuId/buy', sessionMiddleware, requireAuth, requireNonGu
     // A2 — how much of the price the cosmetics signup bonus covered (0 when none).
     bonusApplied: result.grantUsed,
   });
-});
+  },
+);

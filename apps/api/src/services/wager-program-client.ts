@@ -47,6 +47,7 @@ import {
   Keypair,
   PublicKey,
   SystemProgram,
+  Transaction,
   type Commitment,
 } from '@solana/web3.js';
 import {
@@ -56,6 +57,7 @@ import {
   AnchorError,
 } from '@coral-xyz/anchor';
 import NodeWallet from '@coral-xyz/anchor/dist/esm/nodewallet.js';
+import bs58 from 'bs58';
 import {
   IDL,
   PROGRAM_ID,
@@ -70,12 +72,17 @@ import {
   db,
   eq,
   and,
+  inArray,
+  sql,
   treasuryWallets,
   wallets,
   avatars,
   lobbies,
+  lobbyPlayers,
   lobbyEvents,
+  wagerChainIntents,
   type LobbyEventKind,
+  type WagerChainIntent,
 } from '@clawville/database';
 import { decryptSecretKey, decryptWalletRow } from './keypair-vault';
 
@@ -84,6 +91,20 @@ import { decryptSecretKey, decryptWalletRow } from './keypair-vault';
 const RPC_URL =
   process.env.SOLANA_RPC_URL ?? 'https://api.devnet.solana.com';
 const COMMITMENT: Commitment = 'confirmed';
+
+/** Full `getGenesisHash()` values (not the 32-char CAIP-2 prefixes). */
+export const SOLANA_DEVNET_GENESIS_HASH =
+  'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG';
+export const SOLANA_MAINNET_GENESIS_HASH =
+  '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';
+export const SOLANA_TESTNET_GENESIS_HASH =
+  '4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY';
+/**
+ * Code-review gate: the wager package/program id is devnet/localnet-only today.
+ * A future mainnet deployment must deliberately change this constant together
+ * with the package program-id contract; env flags alone can never unlock it.
+ */
+export const WAGER_MAINNET_PAID_CODE_APPROVED = false as boolean;
 
 const connection = new Connection(RPC_URL, COMMITMENT);
 
@@ -112,6 +133,7 @@ export class WagerClientError extends Error {
       | 'authority_missing'
       | 'avatar_wallet_missing'
       | 'pubkey_mismatch'
+      | 'network_refused'
       | 'on_chain_error'
       | 'insufficient_funds',
     public readonly cause?: unknown,
@@ -119,6 +141,72 @@ export class WagerClientError extends Error {
     super(message);
     this.name = 'WagerClientError';
   }
+}
+
+/**
+ * Ground-truth cluster gate. Every wager broadcast calls this immediately
+ * before building/signing with a fresh genesis probe. Devnet is the default;
+ * localnet requires a non-production loopback triple gate. Mainnet additionally
+ * requires the code-review constant/program-id deployment plus the existing
+ * cluster signal; env configuration alone cannot unlock it. Unknown/testnet
+ * clusters fail closed.
+ */
+export async function assertWagerBroadcastCluster(
+  conn: Pick<Connection, 'getGenesisHash' | 'rpcEndpoint'>,
+  label: string,
+): Promise<void> {
+  let genesis: string;
+  try {
+    genesis = await conn.getGenesisHash();
+  } catch (err) {
+    throw new WagerClientError(
+      `Could not verify the Solana cluster before ${label}; refusing to broadcast`,
+      'network_refused',
+      err,
+    );
+  }
+
+  if (genesis === SOLANA_DEVNET_GENESIS_HASH) return;
+
+  const mainnetEnabled =
+    WAGER_MAINNET_PAID_CODE_APPROVED &&
+    process.env.WAGER_PROGRAM_CLUSTER === 'mainnet';
+  if (genesis === SOLANA_MAINNET_GENESIS_HASH) {
+    if (mainnetEnabled) return;
+    throw new WagerClientError(
+      'Wager broadcast refused: mainnet requires the code-reviewed program-id deployment/code gate plus WAGER_PROGRAM_CLUSTER=mainnet',
+      'network_refused',
+    );
+  }
+  if (genesis === SOLANA_TESTNET_GENESIS_HASH) {
+    throw new WagerClientError(
+      'Wager broadcast refused: Solana testnet is not an approved wager cluster',
+      'network_refused',
+    );
+  }
+
+  let loopbackRpc = false;
+  try {
+    const host = new URL(conn.rpcEndpoint).hostname.toLowerCase();
+    loopbackRpc =
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host === '[::1]' ||
+      host === '::1';
+  } catch {
+    loopbackRpc = false;
+  }
+  const localnetEnabled =
+    process.env.WAGER_PROGRAM_CLUSTER === 'localnet' &&
+    process.env.NODE_ENV !== 'production' &&
+    process.env.CLAWVILLE_ENV !== 'production' &&
+    loopbackRpc;
+  if (localnetEnabled) return;
+
+  throw new WagerClientError(
+    `Wager ${label} refused: RPC cluster is not approved devnet/localnet`,
+    'network_refused',
+  );
 }
 
 // ─── settlement authority loading ─────────────────────────────────────────
@@ -309,11 +397,256 @@ async function withChainErrors<T>(label: string, fn: () => Promise<T>): Promise<
 
 // ─── public API ───────────────────────────────────────────────────────────
 
+interface DurableBroadcastInput {
+  intentId: string;
+  label: string;
+  transaction: Transaction;
+  feePayer: PublicKey;
+  signers: Keypair[];
+  targetPda: PublicKey;
+}
+
+type WagerDbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+const WAGER_PREPARED_STALE_MS = 5 * 60_000;
+
+async function acquireWagerLobbyFence(tx: WagerDbTx, lobbyId: string): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`wager-lobby:${lobbyId}`}, 0))`,
+  );
+}
+
+async function markPreparedIntentFailed(intentId: string, reason: string): Promise<void> {
+  await db
+    .update(wagerChainIntents)
+    .set({ status: 'failed', lastError: reason, updatedAt: new Date() })
+    .where(
+      and(
+        eq(wagerChainIntents.id, intentId),
+        eq(wagerChainIntents.status, 'prepared'),
+      ),
+    );
+}
+
+/**
+ * Only RPC preflight/simulation rejection proves the node did not broadcast.
+ * Transport errors, timeouts, and generic send failures remain ambiguous.
+ */
+export function isDefinitelyUnsentWagerBroadcastError(err: unknown): boolean {
+  const named = err as { name?: unknown; message?: unknown } | null;
+  const name = typeof named?.name === 'string' ? named.name : '';
+  const message =
+    typeof named?.message === 'string'
+      ? named.message
+      : err instanceof Error
+        ? err.message
+        : String(err);
+  return (
+    name === 'SendTransactionError' ||
+    message.includes('Simulation failed') ||
+    message.includes('Transaction simulation failed')
+  );
+}
+
+async function resetDefinitelyUnsentIntent(
+  intentId: string,
+  signature: string,
+  reason: string,
+): Promise<void> {
+  await db
+    .update(wagerChainIntents)
+    .set({
+      status: 'failed',
+      txSignature: null,
+      blockhash: null,
+      lastValidBlockHeight: null,
+      lastError: reason,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(wagerChainIntents.id, intentId),
+        eq(wagerChainIntents.status, 'sending'),
+        eq(wagerChainIntents.txSignature, signature),
+      ),
+    );
+}
+
+/** Capture the deterministic first signature before broadcasting exact bytes. */
+async function broadcastDurableTransaction(
+  input: DurableBroadcastInput,
+): Promise<string> {
+  await assertWagerBroadcastCluster(connection, input.label);
+  const { blockhash, lastValidBlockHeight } = await withChainErrors(
+    `${input.label}:getLatestBlockhash`,
+    () => connection.getLatestBlockhash(COMMITMENT),
+  );
+  input.transaction.feePayer = input.feePayer;
+  input.transaction.recentBlockhash = blockhash;
+  input.transaction.sign(...input.signers);
+  if (!input.transaction.signature) {
+    throw new WagerClientError(
+      `${input.label} signing produced no transaction signature`,
+      'on_chain_error',
+    );
+  }
+  const signature = bs58.encode(input.transaction.signature);
+
+  // Capture and lifecycle transitions share one cross-pod advisory lock. The
+  // capture commits BEFORE any bytes are sent, while cancel/lock/settle hold
+  // the same lock until their DB state advances. Therefore either capture wins
+  // first (and lifecycle sees an unresolved `sending` intent and refuses), or
+  // lifecycle wins first (and this re-check sees a non-open lobby and refuses
+  // without broadcasting).
+  const captured = await db.transaction(async (tx) => {
+    const intent = await tx.query.wagerChainIntents.findFirst({
+      where: eq(wagerChainIntents.id, input.intentId),
+    });
+    if (!intent) return null;
+    await acquireWagerLobbyFence(tx, intent.lobbyId);
+
+    const lobby = await tx.query.lobbies.findFirst({
+      where: eq(lobbies.id, intent.lobbyId),
+      columns: { state: true, onChainCreateStatus: true },
+    });
+    const lifecycleAllowsBroadcast =
+      lobby?.state === 'open' &&
+      (intent.operation === 'create'
+        ? lobby.onChainCreateStatus !== 'confirmed'
+        : lobby.onChainCreateStatus === 'confirmed');
+    if (!lifecycleAllowsBroadcast) return null;
+
+    const [row] = await tx
+      .update(wagerChainIntents)
+      .set({
+        status: 'sending',
+        txSignature: signature,
+        blockhash,
+        lastValidBlockHeight: BigInt(lastValidBlockHeight),
+        lastError: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(wagerChainIntents.id, input.intentId),
+          eq(wagerChainIntents.status, 'prepared'),
+          eq(wagerChainIntents.targetPda, input.targetPda.toBase58()),
+          sql`${wagerChainIntents.txSignature} IS NULL`,
+        ),
+      )
+      .returning({ id: wagerChainIntents.id });
+    return row ?? null;
+  });
+  if (!captured) {
+    throw new WagerClientError(
+      `${input.label} intent is no longer prepared; refusing duplicate broadcast`,
+      'state_noop',
+    );
+  }
+
+  let wireTransaction: Buffer;
+  try {
+    wireTransaction = input.transaction.serialize();
+  } catch (err) {
+    await resetDefinitelyUnsentIntent(input.intentId, signature, 'serialization_failed');
+    throw new WagerClientError(
+      `${input.label} transaction could not be serialized before broadcast`,
+      'on_chain_error',
+      err,
+    );
+  }
+
+  let sent = false;
+  try {
+    const echoedSignature = await connection.sendRawTransaction(
+      wireTransaction,
+      { skipPreflight: false, preflightCommitment: COMMITMENT },
+    );
+    sent = true;
+    if (echoedSignature !== signature) throw new Error('rpc_signature_mismatch');
+    const confirmation = await connection.confirmTransaction(
+      { signature, blockhash, lastValidBlockHeight },
+      COMMITMENT,
+    );
+    if (confirmation.value.err) {
+      await db
+        .update(wagerChainIntents)
+        .set({
+          status: 'reconcile',
+          lastError: 'tx_failed_on_chain',
+          updatedAt: new Date(),
+        })
+        .where(eq(wagerChainIntents.id, input.intentId));
+      throw new WagerClientError(
+        `On-chain ${input.label} transaction failed; reconciliation required`,
+        'on_chain_error',
+        confirmation.value.err,
+      );
+    }
+  } catch (err) {
+    if (err instanceof WagerClientError && err.message.includes('reconciliation required')) {
+      throw err;
+    }
+    if (!sent && isDefinitelyUnsentWagerBroadcastError(err)) {
+      await resetDefinitelyUnsentIntent(input.intentId, signature, 'preflight_rejected');
+      throw new WagerClientError(
+        `On-chain ${input.label} preflight rejected before broadcast`,
+        'on_chain_error',
+        err,
+      );
+    }
+    await db
+      .update(wagerChainIntents)
+      .set({
+        status: 'reconcile',
+        lastError: sent ? 'confirm_ambiguous' : 'send_ambiguous',
+        updatedAt: new Date(),
+      })
+      .where(eq(wagerChainIntents.id, input.intentId));
+    throw new WagerClientError(
+      `RPC outcome ambiguous during ${input.label}; reconciliation required`,
+      'rpc_unreachable',
+      err,
+    );
+  }
+
+  await db
+    .update(wagerChainIntents)
+    .set({ status: 'confirmed', lastError: null, updatedAt: new Date() })
+    .where(eq(wagerChainIntents.id, input.intentId));
+  return signature;
+}
+
+export function deriveCreateSolLobbyIntentPda(lobbyIdBigint: bigint): PublicKey {
+  return findLobbyPda(lobbyIdBigint)[0];
+}
+
+export async function deriveJoinSolLobbyIntentPda(input: {
+  lobbyIdBigint: bigint;
+  joinerAvatarId: string;
+}): Promise<PublicKey> {
+  const wallet = await db.query.wallets.findFirst({
+    where: and(
+      eq(wallets.subjectType, 'avatar'),
+      eq(wallets.subjectId, input.joinerAvatarId),
+    ),
+    columns: { publicKey: true },
+  });
+  if (!wallet) {
+    throw new WagerClientError(
+      `Avatar ${input.joinerAvatarId} has no wallet row`,
+      'avatar_wallet_missing',
+    );
+  }
+  return findPlayerPda(input.lobbyIdBigint, new PublicKey(wallet.publicKey))[0];
+}
+
 export interface CreateSolLobbyInput {
   creatorAvatarId: string;
   lobbyIdBigint: bigint;
   wagerAmountLamports: bigint;
   maxPlayers: number;
+  intentId: string;
 }
 
 export interface CreateSolLobbyResult {
@@ -334,6 +667,7 @@ export async function createSolLobby(
   input: CreateSolLobbyInput,
 ): Promise<CreateSolLobbyResult> {
   const program = await getProgram();
+  const feePayer = await loadSettlementAuthority();
   const { keypair: creator, publicKey: creatorPubkey } = await loadAvatarWallet(
     input.creatorAvatarId,
   );
@@ -362,8 +696,9 @@ export async function createSolLobby(
   const [vaultPda] = findVaultPda(input.lobbyIdBigint);
   const [creatorPlayerPda] = findPlayerPda(input.lobbyIdBigint, creatorPubkey);
 
-  const txSig = await withChainErrors('createSolLobby', () =>
-    program.methods
+  let txSig: string;
+  try {
+    const transaction = await program.methods
       .createLobbySol(
         new BN(input.lobbyIdBigint.toString()),
         new BN(input.wagerAmountLamports.toString()),
@@ -378,8 +713,21 @@ export async function createSolLobby(
         systemProgram: SystemProgram.programId,
       })
       .signers([creator])
-      .rpc(),
-  );
+      .transaction();
+    txSig = await broadcastDurableTransaction({
+      intentId: input.intentId,
+      label: 'createSolLobby',
+      transaction,
+      // Preserve AnchorProvider `.rpc()` semantics: its settlement-authority
+      // wallet was the fee payer, while creator remained the deposit signer.
+      feePayer: feePayer.publicKey,
+      signers: [creator, feePayer],
+      targetPda: lobbyPda,
+    });
+  } catch (err) {
+    await markPreparedIntentFailed(input.intentId, 'pre_broadcast_failure');
+    throw err;
+  }
 
   const rowId = await resolveLobbyRowId(input.lobbyIdBigint);
   if (rowId) {
@@ -403,6 +751,7 @@ export async function createSolLobby(
 export interface JoinSolLobbyInput {
   joinerAvatarId: string;
   lobbyIdBigint: bigint;
+  intentId: string;
 }
 
 export interface JoinSolLobbyResult {
@@ -415,6 +764,7 @@ export async function joinSolLobby(
   input: JoinSolLobbyInput,
 ): Promise<JoinSolLobbyResult> {
   const program = await getProgram();
+  const feePayer = await loadSettlementAuthority();
   const { keypair: joiner, publicKey: joinerPubkey } = await loadAvatarWallet(
     input.joinerAvatarId,
   );
@@ -424,8 +774,9 @@ export async function joinSolLobby(
   const [vaultPda] = findVaultPda(input.lobbyIdBigint);
   const [playerPda] = findPlayerPda(input.lobbyIdBigint, joinerPubkey);
 
-  const txSig = await withChainErrors('joinSolLobby', () =>
-    program.methods
+  let txSig: string;
+  try {
+    const transaction = await program.methods
       .joinLobbySol()
       .accountsStrict({
         config: configPda,
@@ -436,8 +787,19 @@ export async function joinSolLobby(
         systemProgram: SystemProgram.programId,
       })
       .signers([joiner])
-      .rpc(),
-  );
+      .transaction();
+    txSig = await broadcastDurableTransaction({
+      intentId: input.intentId,
+      label: 'joinSolLobby',
+      transaction,
+      feePayer: feePayer.publicKey,
+      signers: [joiner, feePayer],
+      targetPda: playerPda,
+    });
+  } catch (err) {
+    await markPreparedIntentFailed(input.intentId, 'pre_broadcast_failure');
+    throw err;
+  }
 
   const rowId = await resolveLobbyRowId(input.lobbyIdBigint);
   if (rowId) {
@@ -470,6 +832,7 @@ export async function lockLobby(input: LockLobbyInput): Promise<LockLobbyResult>
   const [configPda] = findConfigPda();
   const [lobbyPda] = findLobbyPda(input.lobbyIdBigint);
 
+  await assertWagerBroadcastCluster(connection, 'lockLobby');
   const txSig = await withChainErrors('lockLobby', () =>
     program.methods
       .lockLobby()
@@ -573,6 +936,7 @@ export async function settleSolLobby(
   const [vaultPda] = findVaultPda(input.lobbyIdBigint);
   const [winnerPlayerPda] = findPlayerPda(input.lobbyIdBigint, winnerPubkey);
 
+  await assertWagerBroadcastCluster(connection, 'settleSolLobby');
   const txSig = await withChainErrors('settleSolLobby', () =>
     program.methods
       .settleLobbySol(winnerPubkey)
@@ -667,6 +1031,7 @@ export async function cancelLobby(
     signer = handle.keypair;
   }
 
+  await assertWagerBroadcastCluster(connection, 'cancelLobby');
   const txSig = await withChainErrors('cancelLobby', () =>
     program.methods
       .cancelLobby()
@@ -742,6 +1107,7 @@ export async function claimSolRefund(
   const [vaultPda] = findVaultPda(input.lobbyIdBigint);
   const [playerPda] = findPlayerPda(input.lobbyIdBigint, playerPubkey);
 
+  await assertWagerBroadcastCluster(connection, 'claimSolRefund');
   const txSig = await withChainErrors('claimSolRefund', () =>
     program.methods
       .claimRefundSol()
@@ -774,6 +1140,432 @@ export async function claimSolRefund(
  * Touch test — verifies RPC connectivity + settlement-authority decryption
  * without issuing a tx. Called by `/api/wager/health` (if we add one).
  */
+async function finalizeConfirmedWagerIntentInTx(
+  tx: WagerDbTx,
+  intent: WagerChainIntent,
+): Promise<void> {
+  if (intent.status !== 'confirmed' || !intent.txSignature) {
+    throw new WagerClientError('wager_intent_not_confirmed', 'state_noop');
+  }
+  const lobby = await tx.query.lobbies.findFirst({
+    where: eq(lobbies.id, intent.lobbyId),
+  });
+  if (!lobby) throw new WagerClientError('wager_intent_lobby_missing', 'state_noop');
+
+  const witnessAvatarId =
+    intent.operation === 'create' ? lobby.creatorAvatarId : intent.actorAvatarId;
+  const witnessUserId =
+    intent.operation === 'create'
+      ? lobby.creatorUserId
+      : (
+          await tx.query.avatars.findFirst({
+            where: eq(avatars.id, intent.actorAvatarId),
+            columns: { userId: true },
+          })
+        )?.userId;
+  if (!witnessUserId) {
+    throw new WagerClientError('wager_intent_avatar_missing', 'state_noop');
+  }
+
+  const [inserted] = await tx
+    .insert(lobbyPlayers)
+    .values({
+      lobbyId: lobby.id,
+      userId: witnessUserId,
+      avatarId: witnessAvatarId,
+      depositAmountLamports: lobby.wagerAmountLamports,
+      onChainJoinSig: intent.txSignature,
+    })
+    .onConflictDoNothing()
+    .returning({ id: lobbyPlayers.id });
+
+  // `lobby_players` is unique by (lobby,user). Never treat a conflict owned by
+  // a different avatar as successful finalization: the on-chain Player PDA is
+  // avatar-wallet-specific, so doing so would discard the real refund witness.
+  const witness = await tx.query.lobbyPlayers.findFirst({
+    where: and(
+      eq(lobbyPlayers.lobbyId, lobby.id),
+      eq(lobbyPlayers.avatarId, witnessAvatarId),
+    ),
+    columns: { id: true },
+  });
+  if (!witness) {
+    throw new WagerClientError('wager_player_witness_identity_conflict', 'state_noop');
+  }
+
+  if (intent.operation === 'create') {
+    await tx
+      .update(lobbies)
+      .set({
+        onChainCreateStatus: 'confirmed',
+        onChainCreateSig: intent.txSignature,
+      })
+      .where(eq(lobbies.id, lobby.id));
+    return;
+  }
+
+  if (inserted) {
+    await tx
+      .update(lobbies)
+      .set({ joinedCount: sql`${lobbies.joinedCount} + 1` })
+      .where(eq(lobbies.id, lobby.id));
+  }
+}
+
+/** Idempotently repair the off-chain witness after chain confirmation. */
+export async function finalizeConfirmedWagerIntent(intentId: string): Promise<void> {
+  await db.transaction(async (tx) => {
+    const intent = await tx.query.wagerChainIntents.findFirst({
+      where: eq(wagerChainIntents.id, intentId),
+    });
+    if (!intent) throw new WagerClientError('wager_intent_not_found', 'state_noop');
+    await finalizeConfirmedWagerIntentInTx(tx, intent);
+  });
+}
+
+export class WagerIntentFenceError extends Error {
+  constructor(
+    public readonly lobbyId: string,
+    public readonly unresolvedIntentIds: string[],
+  ) {
+    super('wager_intent_reconciliation_required');
+    this.name = 'WagerIntentFenceError';
+  }
+}
+
+/**
+ * Reconcile every signed/confirmed create or join intent for a lobby. Prepared
+ * rows are deliberately left alone here: a live request may be between reserve
+ * and capture. The advisory-fenced lifecycle path expires only prepared rows
+ * older than five minutes, then refuses while any newer one remains.
+ */
+export async function reconcileLobbyWagerIntents(lobbyId: string): Promise<void> {
+  const intents = await db.query.wagerChainIntents.findMany({
+    where: and(
+      eq(wagerChainIntents.lobbyId, lobbyId),
+      inArray(wagerChainIntents.status, ['sending', 'confirmed', 'reconcile']),
+    ),
+  });
+  for (const intent of intents) {
+    await reconcileWagerChainIntent(intent.id);
+  }
+}
+
+/**
+ * Cross-pod lifecycle fence shared by route and activity-bridge transitions.
+ * Reconciliation happens first without a lock (RPC may be slow), then the
+ * advisory lock prevents a create/join capture from interleaving with the
+ * final unresolved check and the caller's chain+DB lifecycle transition.
+ */
+export async function withResolvedWagerLobbyFence<T>(
+  lobbyId: string,
+  run: (tx: WagerDbTx) => Promise<T>,
+): Promise<T> {
+  await reconcileLobbyWagerIntents(lobbyId);
+  return db.transaction(async (tx) => {
+    await acquireWagerLobbyFence(tx, lobbyId);
+
+    const staleBefore = new Date(Date.now() - WAGER_PREPARED_STALE_MS);
+    await tx
+      .update(wagerChainIntents)
+      .set({ status: 'failed', lastError: 'prepared_stale', updatedAt: new Date() })
+      .where(
+        and(
+          eq(wagerChainIntents.lobbyId, lobbyId),
+          eq(wagerChainIntents.status, 'prepared'),
+          sql`${wagerChainIntents.updatedAt} <= ${staleBefore}`,
+          sql`${wagerChainIntents.txSignature} IS NULL`,
+        ),
+      );
+
+    const intents = await tx.query.wagerChainIntents.findMany({
+      where: eq(wagerChainIntents.lobbyId, lobbyId),
+    });
+    for (const intent of intents) {
+      if (intent.status === 'confirmed') {
+        await finalizeConfirmedWagerIntentInTx(tx, intent);
+      }
+    }
+    const unresolved = intents.filter((intent) =>
+      intent.status === 'prepared' ||
+      intent.status === 'sending' ||
+      intent.status === 'reconcile',
+    );
+    if (unresolved.length > 0) {
+      throw new WagerIntentFenceError(lobbyId, unresolved.map((intent) => intent.id));
+    }
+    return run(tx);
+  });
+}
+
+export type WagerIntentReconcileResult =
+  | { status: 'confirmed'; evidence: 'signature' | 'pda' }
+  | { status: 'reconcile'; evidence: 'pending' | 'tx_failed_on_chain' | 'expired_absent' }
+  | { status: 'failed'; evidence: 'never_signed' };
+
+const LOBBY_ACCOUNT_DISCRIMINATOR = Uint8Array.from([
+  167, 194, 217, 163, 92, 92, 103, 49,
+]);
+const PLAYER_ACCOUNT_DISCRIMINATOR = Uint8Array.from([
+  205, 222, 112, 7, 165, 155, 206, 218,
+]);
+
+function hasDiscriminator(data: Buffer, expected: Uint8Array): boolean {
+  return data.length >= expected.length && expected.every((byte, index) => data[index] === byte);
+}
+
+export interface DecodedWagerLobbyAccount {
+  lobbyId: bigint;
+  creator: string;
+  wagerAmountLamports: bigint;
+  wagerMint: string;
+  maxPlayers: number;
+  state: number;
+}
+
+export interface DecodedWagerPlayerAccount {
+  lobbyId: bigint;
+  player: string;
+  depositAmountLamports: bigint;
+  refunded: boolean;
+}
+
+export function decodeWagerLobbyAccount(data: Buffer): DecodedWagerLobbyAccount | null {
+  if (!hasDiscriminator(data, LOBBY_ACCOUNT_DISCRIMINATOR) || data.length < 183) return null;
+  return {
+    lobbyId: data.readBigUInt64LE(8),
+    creator: new PublicKey(data.subarray(16, 48)).toBase58(),
+    wagerAmountLamports: data.readBigUInt64LE(48),
+    wagerMint: new PublicKey(data.subarray(56, 88)).toBase58(),
+    maxPlayers: data[88]!,
+    state: data[90]!,
+  };
+}
+
+export function decodeWagerPlayerAccount(data: Buffer): DecodedWagerPlayerAccount | null {
+  if (!hasDiscriminator(data, PLAYER_ACCOUNT_DISCRIMINATOR) || data.length < 58) return null;
+  return {
+    lobbyId: data.readBigUInt64LE(8),
+    player: new PublicKey(data.subarray(16, 48)).toBase58(),
+    depositAmountLamports: data.readBigUInt64LE(48),
+    refunded: data[56] === 1,
+  };
+}
+
+export function wagerLobbyAccountMatches(input: {
+  account: DecodedWagerLobbyAccount;
+  lobbyId: bigint;
+  creator: string;
+  wagerAmountLamports: bigint;
+  maxPlayers: number;
+  state: number;
+}): boolean {
+  return (
+    input.account.lobbyId === input.lobbyId &&
+    input.account.creator === input.creator &&
+    input.account.wagerAmountLamports === input.wagerAmountLamports &&
+    input.account.wagerMint === PublicKey.default.toBase58() &&
+    input.account.maxPlayers === input.maxPlayers &&
+    input.account.state === input.state
+  );
+}
+
+export function wagerPlayerAccountMatches(input: {
+  account: DecodedWagerPlayerAccount;
+  lobbyId: bigint;
+  player: string;
+  depositAmountLamports: bigint;
+}): boolean {
+  return (
+    input.account.lobbyId === input.lobbyId &&
+    input.account.player === input.player &&
+    input.account.depositAmountLamports === input.depositAmountLamports &&
+    input.account.refunded === false
+  );
+}
+
+const WAGER_CHAIN_STATE: Record<string, number> = {
+  open: 0,
+  locked: 1,
+  settled: 2,
+  cancelled: 3,
+};
+
+async function loadAvatarWalletPublicKey(avatarId: string): Promise<PublicKey> {
+  const wallet = await db.query.wallets.findFirst({
+    where: and(eq(wallets.subjectType, 'avatar'), eq(wallets.subjectId, avatarId)),
+    columns: { publicKey: true },
+  });
+  if (!wallet) {
+    throw new WagerClientError(`Avatar ${avatarId} has no wallet row`, 'avatar_wallet_missing');
+  }
+  return new PublicKey(wallet.publicKey);
+}
+
+async function deriveExpectedIntentContext(intent: WagerChainIntent) {
+  const lobby = await db.query.lobbies.findFirst({
+    where: eq(lobbies.id, intent.lobbyId),
+    columns: {
+      lobbyId: true,
+      creatorAvatarId: true,
+      wagerAmountLamports: true,
+      maxPlayers: true,
+      state: true,
+    },
+  });
+  if (!lobby) throw new WagerClientError('wager_intent_lobby_missing', 'state_noop');
+  const creator = await loadAvatarWalletPublicKey(lobby.creatorAvatarId);
+  const actor =
+    intent.actorAvatarId === lobby.creatorAvatarId
+      ? creator
+      : await loadAvatarWalletPublicKey(intent.actorAvatarId);
+  const expectedPda =
+    intent.operation === 'create'
+      ? deriveCreateSolLobbyIntentPda(lobby.lobbyId)
+      : findPlayerPda(lobby.lobbyId, actor)[0];
+  return { lobby, creator, actor, expectedPda };
+}
+
+/**
+ * Forward-only create/join reconciliation hook. It never signs or sends. It
+ * checks the stored signature first, then the exact derived program-owned PDA
+ * and Anchor discriminator. Absence is definitive only after blockhash expiry.
+ */
+export async function reconcileWagerChainIntent(
+  intentId: string,
+): Promise<WagerIntentReconcileResult> {
+  const intent = await db.query.wagerChainIntents.findFirst({
+    where: eq(wagerChainIntents.id, intentId),
+  });
+  if (!intent) throw new WagerClientError('wager_intent_not_found', 'state_noop');
+  if (intent.status === 'confirmed') {
+    await finalizeConfirmedWagerIntent(intent.id);
+    return { status: 'confirmed', evidence: 'signature' };
+  }
+  if (!intent.txSignature) {
+    await markPreparedIntentFailed(intent.id, 'never_signed');
+    return { status: 'failed', evidence: 'never_signed' };
+  }
+
+  await assertWagerBroadcastCluster(connection, 'reconcileWagerChainIntent');
+  const expected = await deriveExpectedIntentContext(intent);
+  const { expectedPda } = expected;
+  if (intent.targetPda !== expectedPda.toBase58()) {
+    throw new WagerClientError('wager_intent_target_pda_mismatch', 'pubkey_mismatch');
+  }
+
+  const statuses = await withChainErrors('reconcileWagerIntent:getSignatureStatuses', () =>
+    connection.getSignatureStatuses([intent.txSignature!], { searchTransactionHistory: true }),
+  );
+  const status = statuses.value[0];
+  if (status?.err) {
+    await db.update(wagerChainIntents).set({
+      status: 'reconcile',
+      lastError: 'tx_failed_on_chain',
+      updatedAt: new Date(),
+    }).where(eq(wagerChainIntents.id, intent.id));
+    return { status: 'reconcile', evidence: 'tx_failed_on_chain' };
+  }
+  if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') {
+    await db.update(wagerChainIntents).set({
+      status: 'confirmed',
+      lastError: null,
+      updatedAt: new Date(),
+    }).where(eq(wagerChainIntents.id, intent.id));
+    await finalizeConfirmedWagerIntent(intent.id);
+    return { status: 'confirmed', evidence: 'signature' };
+  }
+
+  const account = await withChainErrors('reconcileWagerIntent:getAccountInfo', () =>
+    connection.getAccountInfo(expectedPda, COMMITMENT),
+  );
+  const expectedState = WAGER_CHAIN_STATE[expected.lobby.state];
+  if (expectedState === undefined) {
+    throw new WagerClientError('wager_lobby_state_unknown', 'state_noop');
+  }
+
+  let accountMatches = false;
+  if (account?.owner.equals(PROGRAM_ID)) {
+    if (intent.operation === 'create') {
+      const decoded = decodeWagerLobbyAccount(account.data);
+      accountMatches = decoded !== null && wagerLobbyAccountMatches({
+        account: decoded,
+        lobbyId: expected.lobby.lobbyId,
+        creator: expected.creator.toBase58(),
+        wagerAmountLamports: expected.lobby.wagerAmountLamports,
+        maxPlayers: expected.lobby.maxPlayers,
+        state: expectedState,
+      });
+    } else {
+      const decodedPlayer = decodeWagerPlayerAccount(account.data);
+      const lobbyPda = deriveCreateSolLobbyIntentPda(expected.lobby.lobbyId);
+      const lobbyAccount = await withChainErrors('reconcileWagerIntent:getLobbyAccountInfo', () =>
+        connection.getAccountInfo(lobbyPda, COMMITMENT),
+      );
+      const decodedLobby =
+        lobbyAccount?.owner.equals(PROGRAM_ID)
+          ? decodeWagerLobbyAccount(lobbyAccount.data)
+          : null;
+      accountMatches =
+        decodedPlayer !== null &&
+        decodedLobby !== null &&
+        wagerPlayerAccountMatches({
+          account: decodedPlayer,
+          lobbyId: expected.lobby.lobbyId,
+          player: expected.actor.toBase58(),
+          depositAmountLamports: expected.lobby.wagerAmountLamports,
+        }) &&
+        wagerLobbyAccountMatches({
+          account: decodedLobby,
+          lobbyId: expected.lobby.lobbyId,
+          creator: expected.creator.toBase58(),
+          wagerAmountLamports: expected.lobby.wagerAmountLamports,
+          maxPlayers: expected.lobby.maxPlayers,
+          state: expectedState,
+        });
+    }
+  }
+  if (accountMatches) {
+    await db.update(wagerChainIntents).set({
+      status: 'confirmed',
+      lastError: null,
+      updatedAt: new Date(),
+    }).where(eq(wagerChainIntents.id, intent.id));
+    await finalizeConfirmedWagerIntent(intent.id);
+    return { status: 'confirmed', evidence: 'pda' };
+  }
+
+  if (account) {
+    await db.update(wagerChainIntents).set({
+      status: 'reconcile',
+      lastError: 'pda_account_mismatch',
+      updatedAt: new Date(),
+    }).where(eq(wagerChainIntents.id, intent.id));
+    return { status: 'reconcile', evidence: 'pending' };
+  }
+
+  if (intent.lastValidBlockHeight != null) {
+    const currentBlockHeight = await withChainErrors('reconcileWagerIntent:getBlockHeight', () =>
+      connection.getBlockHeight(COMMITMENT),
+    );
+    if (BigInt(currentBlockHeight) > intent.lastValidBlockHeight) {
+      await db.update(wagerChainIntents).set({
+        status: 'reconcile',
+        lastError: 'expired_absent',
+        updatedAt: new Date(),
+      }).where(eq(wagerChainIntents.id, intent.id));
+      return { status: 'reconcile', evidence: 'expired_absent' };
+    }
+  }
+
+  await db.update(wagerChainIntents).set({
+    status: 'reconcile',
+    lastError: 'chain_pending',
+    updatedAt: new Date(),
+  }).where(eq(wagerChainIntents.id, intent.id));
+  return { status: 'reconcile', evidence: 'pending' };
+}
+
 export async function wagerHealthCheck(): Promise<{
   rpcUrl: string;
   authorityPubkey: string;
