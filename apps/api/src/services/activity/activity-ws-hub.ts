@@ -21,6 +21,7 @@ import type { ServerFrame, ClientFrame, WorldState } from '@clawville/shared';
 import {
   clientFrameSchema,
   ACTIVITY_WS_CLOSE_CODES,
+  REEF_RACE_COUNTDOWN_DURATION_MS,
 } from '@clawville/shared';
 import {
   resolveActivityIdentity,
@@ -272,7 +273,12 @@ class ActivityWsHub {
     if (room.state === 'countdown') {
       const countdownStartedAt = room.countdownStartedAt ?? Date.now();
       const elapsed = Date.now() - countdownStartedAt;
-      const remaining = Math.max(0, Math.ceil((5_000 - elapsed) / 1000));
+      const countdownDurationMs =
+        room.activityId === 'reef-race' ? REEF_RACE_COUNTDOWN_DURATION_MS : 5_000;
+      const remaining = Math.max(
+        0,
+        Math.ceil((countdownDurationMs - elapsed) / 1000),
+      );
       this.safeSend(ws, { type: 'event.countdown', secondsRemaining: remaining });
     }
 
@@ -701,6 +707,22 @@ class ActivityWsHub {
             kind: s.kind,
             position: { x: s.x, y: s.y },
           }));
+      }
+    } else if (room.activityId === 'reef-race' && room.state === 'countdown') {
+      // The Reef sim is intentionally absent until the authoritative LIVE
+      // transition. Send an explicit wire roster so the countdown renderer can
+      // replace these neutral poses with the shared Mario-Kart start grid.
+      // `room.participants` is a Map whose insertion order is the exact order
+      // consumed by startRoom; display metadata order is not authoritative.
+      entities.length = 0;
+      for (const avatarId of room.participants.keys()) {
+        entities.push({
+          avatarId,
+          position: { x: 0, y: 0 },
+          velocity: { x: 0, y: 0 },
+          rotation: 0,
+          state: 'racing',
+        });
       }
     } else if (room.activityId === 'reef-race') {
       const reefState = getReefSim().getStateSnapshot(room.id);

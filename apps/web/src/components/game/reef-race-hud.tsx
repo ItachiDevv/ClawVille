@@ -43,7 +43,10 @@ import {
   selectSelfAlive,
   type ActivityState,
 } from '@/stores/activity';
-import type { ReefPowerUpKind } from '@clawville/shared';
+import {
+  REEF_RACE_COUNTDOWN_DURATION_MS,
+  type ReefPowerUpKind,
+} from '@clawville/shared';
 import { TOTAL_LAPS } from '@/lib/three/activities/reef-race/reef-race-config';
 import ActivityResultsModal from './activity-results-modal';
 import ReefRaceInstructions from './reef-race-instructions';
@@ -71,7 +74,6 @@ import ReefRaceMiniTurboMeter from './reef-race-miniturbo-meter';
 // and revert to lap-counter-only HUD.
 // Reference: .claude/plans/reef-race-v2.md
 const USE_SPLINE = process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
-const REEF_COUNTDOWN_DURATION_MS = 5_000;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -880,7 +882,9 @@ export default function ReefRaceHud({
     (s) => s.room?.countdownStartedAt ?? null,
   );
   const serverClockOffsetMs = useActivityStore((s) => s.serverClockOffsetMs);
-  const [localSecondsRemaining, setLocalSecondsRemaining] = useState(5);
+  const [localSecondsRemaining, setLocalSecondsRemaining] = useState(
+    REEF_RACE_COUNTDOWN_DURATION_MS / 1000,
+  );
   const previousMatchPhaseRef = useRef(matchPhase);
   const [showGoFlash, setShowGoFlash] = useState(false);
   // The local deadline may reach zero before event.match_started arrives over
@@ -894,9 +898,9 @@ export default function ReefRaceHud({
     if (matchPhase !== 'pregame-countdown') return;
     const fallbackSeconds = countdownSecondsRemaining > 0
       ? countdownSecondsRemaining
-      : REEF_COUNTDOWN_DURATION_MS / 1000;
+      : REEF_RACE_COUNTDOWN_DURATION_MS / 1000;
     const deadline = countdownStartedAt != null && serverClockOffsetMs != null
-      ? countdownStartedAt + REEF_COUNTDOWN_DURATION_MS + serverClockOffsetMs
+      ? countdownStartedAt + REEF_RACE_COUNTDOWN_DURATION_MS + serverClockOffsetMs
       : Date.now() + fallbackSeconds * 1000;
     const tick = () => {
       setLocalSecondsRemaining(Math.max(0, Math.ceil((deadline - Date.now()) / 1000)));
