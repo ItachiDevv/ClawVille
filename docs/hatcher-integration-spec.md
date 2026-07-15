@@ -25,6 +25,12 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 > until then, older version numbers below are historical evidence, not the
 > current served-manual value.
 
+> **2026-07-15 identity-gate note.** The canonical dual-identity middleware now
+> exports a reusable ownership-proof gate for ledger and custodial-money routes.
+> This does not change Hatcher registration, bearer validation, session TTL,
+> signing, or any request/response shape; the staging signed harness remains the
+> required pre-production regression gate for the protected integration surface.
+
 ---
 
 ## 0. At a glance

@@ -43,7 +43,7 @@ const p = (method: Method, path: string) => ({ method, path });
 const MANIFEST: Entry[] = [
   {
     file: 'wager.ts',
-    guard: 'requireNonGuestUser',
+    guard: 'requireNonGuestIdentity',
     routes: [
       p('post', '/lobbies'),
       p('post', '/lobbies/:id/join'),
@@ -127,8 +127,12 @@ const MANIFEST: Entry[] = [
   // guest-OWNED-agent safety is asserted by the demo-resolution source check below.
   {
     file: 'cosmetics.ts',
-    guard: 'requireNonGuestUser',
-    routes: [p('post', '/:skuId/buy')],
+    guard: 'requireNonGuestIdentity',
+    routes: [
+      p('post', '/:skuId/buy'),
+      p('post', '/:skuId/equip'),
+      p('post', '/:skuId/unequip'),
+    ],
   },
   {
     // Latent hardening (2026-07-08): EVERY SAP write route does a custodial

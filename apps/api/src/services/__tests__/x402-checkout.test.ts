@@ -153,11 +153,13 @@ function makeUpdate() {
 
 /** select(...).from(...).where(...).limit(n) — findOwnedSkin's shape. */
 let selectReturnRows: Row[] = [];
+let selectReturnQueue: Row[][] = [];
 function makeSelect() {
   return (_sel: unknown) => ({
     from: (_t: unknown) => ({
       where: (_w: unknown) => ({
-        limit: async (_n: number) => selectReturnRows,
+        limit: async (_n: number) =>
+          selectReturnQueue.length > 0 ? selectReturnQueue.shift()! : selectReturnRows,
       }),
     }),
   });
@@ -331,6 +333,7 @@ beforeEach(() => {
   findFirstQueue = [];
   executeQueue = [];
   selectReturnRows = [];
+  selectReturnQueue = [];
   txRan = 0;
   verifyAndSettleCalls = 0;
   verifyAndSettleResult = {
@@ -761,6 +764,19 @@ describe('cosmetic_purchase fulfiller — conservation', () => {
     expect(enqueueCalls.length).toBe(1);
   });
 
+  it('sub-second stock race: refuses through the durable refund-required path and enqueues no CLV buy', async () => {
+    insertReturnRows = [{ id: 'skin-row-provisional' }];
+    updateReturningImpl = () => [];
+    const fulfiller = checkout.getFulfiller('cosmetic_purchase')!;
+
+    await expect(fulfiller(cosmeticCtx())).rejects.toMatchObject({
+      name: 'CheckoutFulfillmentRefusal',
+      code: 'sold_out',
+    });
+    expect(enqueueCalls).toEqual([]);
+    expect(ledgerCalls).toEqual([]);
+  });
+
   it('quote resolver refuses a zero-priced SKU (unquotable as USDC) and an already-owned SKU', async () => {
     // checkSkuPurchasable goes through db.query.cosmeticSkus — stub it here.
     const q = fakeDb.query as Record<string, { findFirst: (o: unknown) => Promise<unknown> }>;
@@ -791,6 +807,50 @@ describe('cosmetic_purchase fulfiller — conservation', () => {
     selectReturnRows = [{ id: 'owned-row', equipped: true }]; // findOwnedSkin hit
     const owned = await cosmeticFulfillerModule.resolveCosmeticCheckoutItem('avatar-1', skuId);
     expect(owned).toEqual({ ok: false, code: 'already_owned' });
+  });
+
+  it('quote resolver refuses a sold-out SKU for a non-owner', async () => {
+    const q = fakeDb.query as Record<string, { findFirst: (o: unknown) => Promise<unknown> }>;
+    const skuId = 'b6e7c1de-0000-4000-8000-000000000003';
+    q.cosmeticSkus = {
+      findFirst: async () => ({
+        id: skuId,
+        slug: 'last-hat',
+        priceCt: 300,
+        exclusiveCurrency: 'CT',
+        availableFrom: null,
+        availableUntil: null,
+        supplyCap: 1,
+        soldCount: 1,
+      }),
+    };
+    selectReturnRows = [];
+
+    const soldOut = await cosmeticFulfillerModule.resolveCosmeticCheckoutItem('avatar-1', skuId);
+    expect(soldOut).toEqual({ ok: false, code: 'sold_out' });
+  });
+
+  it('quote resolver detects ownership granted by an old rollout pod even when soldCount is stale', async () => {
+    const q = fakeDb.query as Record<string, { findFirst: (o: unknown) => Promise<unknown> }>;
+    const skuId = 'b6e7c1de-0000-4000-8000-000000000004';
+    q.cosmeticSkus = {
+      findFirst: async () => ({
+        id: skuId,
+        slug: 'rollout-last-hat',
+        priceCt: 300,
+        exclusiveCurrency: 'CT',
+        availableFrom: null,
+        availableUntil: null,
+        supplyCap: 1,
+        soldCount: 0,
+      }),
+    };
+    // First select is the live ownership COUNT; second proves this caller is
+    // not the owner, so the refusal is sold_out rather than already_owned.
+    selectReturnQueue = [[{ ownershipCount: 1 }], []];
+
+    const soldOut = await cosmeticFulfillerModule.resolveCosmeticCheckoutItem('avatar-1', skuId);
+    expect(soldOut).toEqual({ ok: false, code: 'sold_out' });
   });
 });
 

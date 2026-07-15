@@ -411,3 +411,24 @@ export const requireAuthOrAgentSession = createMiddleware<ActivityAuthContext>(
     return next();
   },
 );
+
+/**
+ * Fail closed when an agent session has not proved ownership of its bound
+ * avatar. Human identities pass unchanged. Run after
+ * `requireAuthOrAgentSession` on every ledger or custodial-money route.
+ *
+ * This is intentionally separate from identity resolution: non-ledger agent
+ * sessions remain valid for perception, chat, and movement, but cannot spend
+ * vCLAW or authorize an on-chain transaction.
+ */
+export const requireLedgerCapableIdentity =
+  createMiddleware<ActivityAuthContext>(async (c, next) => {
+    const identity = c.get('identity');
+    if (identity?.kind === 'agent' && identity.ledgerCapable !== true) {
+      throw new HTTPException(403, {
+        message:
+          'agent_session_not_ledger_authorized: prove avatar ownership before using a ledger or custodial-money route',
+      });
+    }
+    return next();
+  });
