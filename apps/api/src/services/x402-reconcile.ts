@@ -34,6 +34,7 @@ import {
   x402Checkouts,
   ctTopups,
   agentPayments,
+  x402SettlementReceipts,
   and,
   eq,
   isNull,
@@ -137,6 +138,7 @@ export function classifyReconcile(row: ReconcileRow): ReconcileResolution {
 
   switch (reason) {
     case 'capture_lost':
+    case 'independent_chain_unavailable':
       // We settled (hold the signature) but the row could not capture it. The
       // money is OURS → verify the signature landed, then capture + fulfill.
       return sig
@@ -298,6 +300,12 @@ function isUniqueViolation(err: unknown): boolean {
 }
 
 async function defaultIsSignatureBound(signature: string): Promise<boolean> {
+  const receipt = await db
+    .select({ signature: x402SettlementReceipts.txSignature })
+    .from(x402SettlementReceipts)
+    .where(eq(x402SettlementReceipts.txSignature, signature))
+    .limit(1);
+  if (receipt.length > 0) return true;
   const checkout = await db
     .select({ id: x402Checkouts.id })
     .from(x402Checkouts)
@@ -328,12 +336,18 @@ const defaultApplyStore: ReconcileApplyStore = {
         // waits out and blocks their ROW EXCLUSIVE capture updates while the
         // cross-table ownership check + bind runs. Apply is operator-only/rare.
         await tx.execute(
-          sql`LOCK TABLE x402_checkouts, ct_topups, agent_payments IN SHARE ROW EXCLUSIVE MODE`,
+          sql`LOCK TABLE x402_settlement_receipts, x402_checkouts, ct_topups, agent_payments IN SHARE ROW EXCLUSIVE MODE`,
         );
         // Also serializes two reconciler captures of the same proof.
         await tx.execute(
           sql`SELECT pg_advisory_xact_lock(hashtextextended(${`x402-reconcile:${signature}`}, 0))`,
         );
+        const receiptOwner = await tx
+          .select({ signature: x402SettlementReceipts.txSignature })
+          .from(x402SettlementReceipts)
+          .where(eq(x402SettlementReceipts.txSignature, signature))
+          .limit(1);
+        if (receiptOwner.length > 0) return 'signature_conflict' as const;
         const checkoutOwner = await tx
           .select({ id: x402Checkouts.id })
           .from(x402Checkouts)

@@ -94,7 +94,20 @@ function makeUpdate() {
     },
   });
 }
-const fakeTx = { update: makeUpdate() };
+const receiptInsertCalls: Row[] = [];
+const fakeTx = {
+  update: makeUpdate(),
+  insert: (_table: unknown) => ({
+    values: (value: Row) => {
+      receiptInsertCalls.push(value);
+      return {
+        onConflictDoNothing: (_opts: unknown) => ({
+          returning: async () => [{ ...value, createdAt: new Date() }],
+        }),
+      };
+    },
+  }),
+};
 const fakeDb = {
   ...(realDatabase as unknown as { db: Record<string, unknown> }).db,
   update: makeUpdate(),
@@ -240,6 +253,7 @@ const throw23505 = () => () => {
 beforeEach(() => {
   updateCalls.length = 0;
   creditCalls.length = 0;
+  receiptInsertCalls.length = 0;
   updateReturningImpl = () => [{ id: 'topup-1', amountCt: 500 }];
   updateReturningQueue = [];
   findFirstQueue = [];
@@ -266,6 +280,13 @@ describe('ct-topup settle — durable claim → capture → resumable credit', (
     expect(json.balance).toBe(7777 + 500);
     expect(verifyAndSettleCalls).toBe(1);
     expect(txRan).toBe(1); // only the credit runs in a tx
+    expect(receiptInsertCalls).toHaveLength(1);
+    expect(receiptInsertCalls[0]).toMatchObject({
+      txSignature: 'SIG_TOPUP_1',
+      rail: 'ct_topup',
+      referenceId: 'topup-1',
+      amountUsdcAtomic: 5_000_000n,
+    });
 
     // CLAIM staked settling + idem key BEFORE the facilitator.
     const claim = updateCalls.find((s) => s.status === 'settling');
@@ -378,6 +399,22 @@ describe('ct-topup settle — durable claim → capture → resumable credit', (
     expect(updateCalls.find((s) => s.status === 'pending')).toBeUndefined();
     expect(updateCalls.find((s) => s.status === 'failed')).toBeUndefined();
     expect(creditCalls.length).toBe(0);
+  });
+
+  it('post-settle independent proof failure preserves the signature and credits nothing', async () => {
+    findFirstQueue = [pendingRow()];
+    verifyAndSettleResult = {
+      settled: false,
+      isValid: true,
+      txSignature: 'SIG_CHAIN_UNAVAILABLE',
+      failureReason: 'independent_chain_unavailable',
+    };
+    const res = await settle();
+    expect(res.status).toBe(409);
+    const json = (await res.json()) as Record<string, unknown>;
+    expect(json.code).toBe('topup_reconciliation');
+    expect(updateCalls.find((s) => s.status === 'reconcile')).toBeDefined();
+    expect(creditCalls).toHaveLength(0);
   });
 
   it('STALE settling claim (no signature, aged) ⇒ 409 reconcile, facilitator NOT re-called', async () => {

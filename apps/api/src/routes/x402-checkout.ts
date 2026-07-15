@@ -310,6 +310,7 @@ x402CheckoutRoutes.post('/settle', requireAuthOrAgentSession, requireNonGuestIde
         return c.json({ error: result.code, code: result.code }, 409);
       case 'checkout_reconciliation':
       case 'signature_conflict':
+      case 'already_settled':
         // Money-state needs reconciliation: a stale settling claim (money-state
         // unknown), a capture that could not be recorded, or a settled signature
         // already owned by another checkout. The row is in `reconcile` — a
