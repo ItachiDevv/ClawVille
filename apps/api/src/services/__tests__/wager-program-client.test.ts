@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { Keypair, PublicKey, type Connection } from '@solana/web3.js';
 import {
   assertWagerBroadcastCluster,
+  assertWagerLobbyIdInEnvNamespace,
   isDefinitelyUnsentWagerBroadcastError,
   SOLANA_DEVNET_GENESIS_HASH,
   SOLANA_MAINNET_GENESIS_HASH,
@@ -250,5 +251,66 @@ describe('strict wager PDA reconciliation decoding', () => {
       player: player.toBase58(),
       depositAmountLamports: 50_000n,
     })).toBe(false);
+  });
+});
+
+
+describe('assertWagerLobbyIdInEnvNamespace', () => {
+  const SPAN = 1n << 32n;
+
+  test('production accepts ids in [1, 2^32)', () => {
+    expect(() => assertWagerLobbyIdInEnvNamespace(1n, { env: 'production' })).not.toThrow();
+    expect(() => assertWagerLobbyIdInEnvNamespace(170n, { env: 'production' })).not.toThrow();
+    expect(() => assertWagerLobbyIdInEnvNamespace(SPAN - 1n, { env: 'production' })).not.toThrow();
+  });
+
+  test('production rejects 0 and ids at/above 2^32', () => {
+    expect(() => assertWagerLobbyIdInEnvNamespace(0n, { env: 'production' })).toThrow();
+    expect(() => assertWagerLobbyIdInEnvNamespace(SPAN, { env: 'production' }))
+      .toThrow(/outside the 'production' namespace/);
+  });
+
+  test('staging accepts [2^32, 2*2^32) and rejects prod-range ids', () => {
+    expect(() => assertWagerLobbyIdInEnvNamespace(SPAN, { env: 'staging' })).not.toThrow();
+    expect(() => assertWagerLobbyIdInEnvNamespace(2n * SPAN - 1n, { env: 'staging' })).not.toThrow();
+    expect(() => assertWagerLobbyIdInEnvNamespace(5n, { env: 'staging' }))
+      .toThrow(/outside the 'staging' namespace/);
+    expect(() => assertWagerLobbyIdInEnvNamespace(2n * SPAN, { env: 'staging' })).toThrow();
+  });
+
+  test('dev/unset env gets the third range', () => {
+    expect(() => assertWagerLobbyIdInEnvNamespace(2n * SPAN, { env: undefined })).not.toThrow();
+    expect(() => assertWagerLobbyIdInEnvNamespace(3n * SPAN - 1n, { env: undefined })).not.toThrow();
+    expect(() => assertWagerLobbyIdInEnvNamespace(170n, { env: undefined }))
+      .toThrow(/outside the 'development' namespace/);
+    expect(() => assertWagerLobbyIdInEnvNamespace(3n * SPAN, { env: undefined })).toThrow();
+  });
+
+  test('localnet is exempt regardless of env or id', () => {
+    expect(() =>
+      assertWagerLobbyIdInEnvNamespace(5n, { env: 'production', cluster: 'localnet' }),
+    ).not.toThrow();
+    expect(() =>
+      assertWagerLobbyIdInEnvNamespace(999n * SPAN, { env: 'staging', cluster: 'localnet' }),
+    ).not.toThrow();
+  });
+
+  test('rejection carries network_refused code and the setval repair command', () => {
+    try {
+      assertWagerLobbyIdInEnvNamespace(5n, { env: 'staging' });
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toMatchObject({ code: 'network_refused' });
+      expect((err as Error).message).toContain(
+        "SELECT setval('wager_lobby_id_seq', 4294967296, false);",
+      );
+    }
+  });
+
+  test('falls back to process.env when no overrides are injected', () => {
+    process.env.CLAWVILLE_ENV = 'staging';
+    delete process.env.WAGER_PROGRAM_CLUSTER;
+    expect(() => assertWagerLobbyIdInEnvNamespace(SPAN)).not.toThrow();
+    expect(() => assertWagerLobbyIdInEnvNamespace(5n)).toThrow();
   });
 });
