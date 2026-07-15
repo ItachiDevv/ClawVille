@@ -143,28 +143,46 @@ export const claimBountyAction: Action = {
         }
       }
 
-      // 4. Create attempt record
-      const [attempt] = await db
-        .insert(bountyAttempts)
-        .values({
-          bountyId,
-          hunterId: avatarId,
-          status: 'claimed',
-        })
-        .returning({ id: bountyAttempts.id });
+      // 4/5. Create the attempt, advance the bounty, and append the covenant
+      // record atomically. The injected adapter pre-binds actorKind='agent'.
+      // Older/bespoke service constructors may omit the recorder; the business
+      // action remains backward-compatible and commits recordless in that case.
+      const record = services.recordCovenantAction;
+      const attempt = await db.transaction(async (tx: typeof db) => {
+        const [inserted] = await tx
+          .insert(bountyAttempts)
+          .values({
+            bountyId,
+            hunterId: avatarId,
+            status: 'claimed',
+          })
+          .returning({ id: bountyAttempts.id });
 
-      // 5. Increment current attempts on the bounty
-      await db
-        .update(bounties)
-        .set({
-          currentAttempts: bounty.currentAttempts + 1,
-          status:
-            bounty.currentAttempts + 1 >= bounty.maxAttempts
-              ? 'in_progress'
-              : 'open',
-          updatedAt: new Date(),
-        })
-        .where(eq(bounties.id, bountyId));
+        await tx
+          .update(bounties)
+          .set({
+            currentAttempts: bounty.currentAttempts + 1,
+            status:
+              bounty.currentAttempts + 1 >= bounty.maxAttempts
+                ? 'in_progress'
+                : 'open',
+            updatedAt: new Date(),
+          })
+          .where(eq(bounties.id, bountyId));
+
+        if (record) {
+          await record(
+            {
+              action: 'bounty.claim',
+              subjectType: 'avatar',
+              subjectId: avatarId,
+              payload: { bountyId, attemptId: inserted.id },
+            },
+            tx,
+          );
+        }
+        return inserted;
+      });
 
       const difficultyLabel =
         bounty.difficulty.charAt(0).toUpperCase() +

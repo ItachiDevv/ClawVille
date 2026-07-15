@@ -118,15 +118,31 @@ export const visitBuildingAction: Action = {
       // But we use raw SQL via db to avoid the direct import chain
       const { avatars, eq } = await getDbModule();
 
-      // Update avatar position to building entrance
-      await db
-        .update(avatars)
-        .set({
-          positionX: location.positionX + Math.floor(location.width / 2),
-          positionY: location.positionY + Math.floor(location.height / 2),
-          lastActiveAt: new Date(),
-        })
-        .where(eq(avatars.id, avatarId));
+      // Update the visit and append its covenant record in one transaction.
+      // The injected adapter pre-binds actorKind='agent'. Bespoke/older service
+      // constructors may omit the recorder and retain recordless behavior.
+      const record = services.recordCovenantAction;
+      await db.transaction(async (tx: typeof db) => {
+        await tx
+          .update(avatars)
+          .set({
+            positionX: location.positionX + Math.floor(location.width / 2),
+            positionY: location.positionY + Math.floor(location.height / 2),
+            lastActiveAt: new Date(),
+          })
+          .where(eq(avatars.id, avatarId));
+        if (record) {
+          await record(
+            {
+              action: 'agent.visit',
+              subjectType: 'avatar',
+              subjectId: avatarId,
+              payload: { destination: buildingId },
+            },
+            tx,
+          );
+        }
+      });
 
       const shopSummary = shopBooks
         .map((b) => `  - ${b.icon} ${b.name} (${b.price} vCLAW)`)

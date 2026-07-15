@@ -667,6 +667,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
         // The user this session proved ownership of — re-validated against the
         // live row at spend time (rebind backstop, hardening round 2).
         boundUserId,
+        avatarId: pendingConn?.avatarId ?? undefined,
       });
       const client = new AgentSubstrateClient(config);
       npcSimulation.registerAgentBot(config, client);
@@ -727,6 +728,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
         // The user this session proved ownership of — re-validated against the
         // live row at spend time (rebind backstop, hardening round 2).
         boundUserId,
+        avatarId: pendingConn?.avatarId ?? undefined,
       });
 
       // Stub client — nanoclaw/anonymous agents don't use outbound chat routing
@@ -798,6 +800,12 @@ agentGatewayRoutes.post('/connect', async (c) => {
     existingAvatarName: pendingConn?.avatarName ?? null,
   });
   const sessionTicket = resolved.ticket;
+  if (resolved.avatarId) {
+    // IdentityKey/Milady first-contact can resolve/create the avatar only after
+    // the body was registered above. Complete the INTERNAL attribution before
+    // returning the bearer so subsequent `[ACTION:]` records bind correctly.
+    npcSimulation.bindAgentAvatarAttribution(sessionId, resolved.avatarId);
+  }
 
   // First-contact stays NON-LEDGER by design (Codex auth-lens, orchestrator
   // decision 2026-06-03 — BLOCKING #3 is the inconsistency, NOT the feature).
@@ -1195,6 +1203,7 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
       bot: existingBot,
       provenUserId: userId,
       sessionId: freshSessionId,
+      avatarId: userAvatar?.id,
       credentials: {
         gatewayUrl: parsed.data.gatewayUrl,
         authToken: parsed.data.authToken,

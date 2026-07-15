@@ -349,6 +349,12 @@ redeem declaration is served through ClawVille's universal `tools.json` and
 manual only: no Hatcher request/response field, signed path, auth header, or
 `[ACTION:]` verb/param/bound changes. Harness verification remains pending.*
 
+*Internal covenant recording added 2026-07-15: attributed movement, entry, and
+chat effects from the existing six-verb `[ACTION:]` surface now append
+best-effort records after validation; cosmetic emotes remain unrecorded. No Hatcher
+request/response/auth/cognition field or verb parameter/
+bound changed; `PROTOCOL_VERSION 18` remains unchanged.*
+
 *Reconciled against live staging on 2026-06-15; **§7a partner storefront + `PROTOCOL_VERSION 5→7` correction added
 2026-07-02** (Phase D, additive — the wire contract for the existing partner-hatcher routes is unchanged);
 **`PROTOCOL_VERSION 8→9` added 2026-07-03** (public `POST /api/agent/reconnect` now additionally mints a fresh

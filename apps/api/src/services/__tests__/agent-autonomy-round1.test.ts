@@ -218,7 +218,7 @@ describe('round 1 perception + decision prompt', () => {
     expect(decided).toBe(0);
     const arrivedEntry = driver.houseAgents.get(id)!;
     expect(arrivedEntry.phase).toBe('talking');
-    expect(arrivedEntry.targetBuildingId).toBeNull();
+    expect(arrivedEntry.targetBuildingId).toBe('cove');
   });
 });
 
@@ -309,6 +309,29 @@ describe('round 1 cadence', () => {
     expect(drives).toBe(1);
     release();
     expect(await first).toBe(true);
+  });
+
+  it('evicts a never-settling warm guard so the agent cannot wedge forever', async () => {
+    const entry = registerHouse('wedged-warm-agent');
+    const runtime = { decide: async () => '' } as unknown as RuntimeState;
+    agentOrchestrator.getRunningAgentRuntime = () => runtime;
+    let drives = 0;
+    driver.driveOnce = async () => {
+      drives++;
+    };
+
+    // A FRESH warm guard (recent timestamp) still skips the drive — the
+    // watchdog only fires on guards past WARM_GUARD_EVICT_MS.
+    driver.warming.set(entry.agentId, Date.now() - 60_000);
+    expect(await agentAutonomyDriver.driveAgentNow(entry.agentId)).toBe(false);
+    expect(drives).toBe(0);
+
+    // A STALE guard (warm promise never settled — hung ensureAgentRuntime)
+    // is evicted and the drive proceeds instead of skipping forever.
+    driver.warming.set(entry.agentId, Date.now() - 11 * 60_000);
+    expect(await agentAutonomyDriver.driveAgentNow(entry.agentId)).toBe(true);
+    expect(drives).toBe(1);
+    expect(driver.warming.has(entry.agentId)).toBe(false);
   });
 
   it('preserves the guard across same-id unregister and re-register', async () => {

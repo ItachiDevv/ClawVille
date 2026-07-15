@@ -243,6 +243,29 @@ describe('learnBookAtomically', () => {
     expect(harness.state.inventory.get('not-a-real-book')).toBe(1);
   });
 
+  it('records agent.action.learn with stable ids inside the existing transaction', async () => {
+    const harness = makeHarness({ [firstBook.id]: 1 });
+    let recorded: { input: unknown; tx: unknown } | null = null;
+
+    await learnBookAtomically(
+      harness.db,
+      { avatarId: AVATAR_ID, bookId: firstBook.id },
+      async (input, tx) => {
+        recorded = { input, tx };
+        return { id: 'learn-record', deduped: false };
+      },
+    );
+
+    expect(recorded).not.toBeNull();
+    expect(recorded!.tx).toBeDefined();
+    expect(recorded!.input).toEqual({
+      action: 'agent.action.learn',
+      subjectType: 'avatar',
+      subjectId: AVATAR_ID,
+      payload: { bookId: firstBook.id },
+    });
+  });
+
   it('serializes two concurrent reads of quantity 2 and consumes both copies', async () => {
     const harness = makeHarness({ [firstBook.id]: 2 });
 
