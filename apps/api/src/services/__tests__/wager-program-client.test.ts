@@ -1,11 +1,15 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import type { Connection } from '@solana/web3.js';
+import { Keypair, PublicKey, type Connection } from '@solana/web3.js';
 import {
   assertWagerBroadcastCluster,
   isDefinitelyUnsentWagerBroadcastError,
   SOLANA_DEVNET_GENESIS_HASH,
   SOLANA_MAINNET_GENESIS_HASH,
   SOLANA_TESTNET_GENESIS_HASH,
+  decodeWagerLobbyAccount,
+  decodeWagerPlayerAccount,
+  wagerLobbyAccountMatches,
+  wagerPlayerAccountMatches,
 } from '../wager-program-client';
 
 const originalCluster = process.env.WAGER_PROGRAM_CLUSTER;
@@ -131,5 +135,120 @@ describe('isDefinitelyUnsentWagerBroadcastError', () => {
     expect(
       isDefinitelyUnsentWagerBroadcastError(new Error('fetch failed: request timed out')),
     ).toBe(false);
+  });
+});
+
+const LOBBY_DISCRIMINATOR = Buffer.from([167, 194, 217, 163, 92, 92, 103, 49]);
+const PLAYER_DISCRIMINATOR = Buffer.from([205, 222, 112, 7, 165, 155, 206, 218]);
+
+function lobbyAccountData(input: {
+  lobbyId: bigint;
+  creator: PublicKey;
+  wager: bigint;
+  maxPlayers: number;
+  state: number;
+}) {
+  const data = Buffer.alloc(183);
+  LOBBY_DISCRIMINATOR.copy(data, 0);
+  data.writeBigUInt64LE(input.lobbyId, 8);
+  input.creator.toBuffer().copy(data, 16);
+  data.writeBigUInt64LE(input.wager, 48);
+  PublicKey.default.toBuffer().copy(data, 56);
+  data[88] = input.maxPlayers;
+  data[89] = 1;
+  data[90] = input.state;
+  return data;
+}
+
+function playerAccountData(input: {
+  lobbyId: bigint;
+  player: PublicKey;
+  deposit: bigint;
+  refunded?: boolean;
+}) {
+  const data = Buffer.alloc(58);
+  PLAYER_DISCRIMINATOR.copy(data, 0);
+  data.writeBigUInt64LE(input.lobbyId, 8);
+  input.player.toBuffer().copy(data, 16);
+  data.writeBigUInt64LE(input.deposit, 48);
+  data[56] = input.refunded ? 1 : 0;
+  return data;
+}
+
+describe('strict wager PDA reconciliation decoding', () => {
+  const creator = Keypair.generate().publicKey;
+  const player = Keypair.generate().publicKey;
+
+  test('accepts a lobby account only when every committed field matches', () => {
+    const account = decodeWagerLobbyAccount(lobbyAccountData({
+      lobbyId: 42n,
+      creator,
+      wager: 50_000n,
+      maxPlayers: 4,
+      state: 0,
+    }));
+    expect(account).not.toBeNull();
+    expect(wagerLobbyAccountMatches({
+      account: account!,
+      lobbyId: 42n,
+      creator: creator.toBase58(),
+      wagerAmountLamports: 50_000n,
+      maxPlayers: 4,
+      state: 0,
+    })).toBe(true);
+  });
+
+  test.each([
+    ['wrong lobby id', { lobbyId: 43n }],
+    ['wrong creator', { creator: Keypair.generate().publicKey.toBase58() }],
+    ['wrong wager', { wagerAmountLamports: 50_001n }],
+    ['wrong max players', { maxPlayers: 5 }],
+    ['wrong state', { state: 3 }],
+  ])('rejects %s on a predictable lobby PDA', (_label, override) => {
+    const account = decodeWagerLobbyAccount(lobbyAccountData({
+      lobbyId: 42n,
+      creator,
+      wager: 50_000n,
+      maxPlayers: 4,
+      state: 0,
+    }))!;
+    expect(wagerLobbyAccountMatches({
+      account,
+      lobbyId: 42n,
+      creator: creator.toBase58(),
+      wagerAmountLamports: 50_000n,
+      maxPlayers: 4,
+      state: 0,
+      ...override,
+    })).toBe(false);
+  });
+
+  test('rejects a player PDA owned by the wrong avatar wallet', () => {
+    const account = decodeWagerPlayerAccount(playerAccountData({
+      lobbyId: 42n,
+      player,
+      deposit: 50_000n,
+    }))!;
+    expect(wagerPlayerAccountMatches({
+      account,
+      lobbyId: 42n,
+      player: Keypair.generate().publicKey.toBase58(),
+      depositAmountLamports: 50_000n,
+    })).toBe(false);
+  });
+
+  test('rejects an already-refunded player account as a fresh join witness', () => {
+    const account = decodeWagerPlayerAccount(playerAccountData({
+      lobbyId: 42n,
+      player,
+      deposit: 50_000n,
+      refunded: true,
+    }))!;
+    expect(wagerPlayerAccountMatches({
+      account,
+      lobbyId: 42n,
+      player: player.toBase58(),
+      depositAmountLamports: 50_000n,
+    })).toBe(false);
   });
 });

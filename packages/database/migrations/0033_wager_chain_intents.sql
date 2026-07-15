@@ -4,6 +4,14 @@
 ALTER TABLE lobbies
   ADD COLUMN IF NOT EXISTS on_chain_create_status text NOT NULL DEFAULT 'confirmed';
 
+-- Operator preflight before applying (must return zero rows; duplicates require
+-- money-aware chain reconciliation, never automatic deletion):
+-- SELECT activity_id, room_id, COUNT(*) AS n,
+--        array_agg(id ORDER BY created_at) AS lobby_ids
+-- FROM lobbies
+-- WHERE mode = 'multiplayer' AND state IN ('open', 'locked')
+-- GROUP BY activity_id, room_id
+-- HAVING COUNT(*) > 1;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_lobbies_active_multiplayer_room_uniq
   ON lobbies(activity_id, room_id)
   WHERE mode = 'multiplayer' AND state IN ('open','locked');
@@ -50,6 +58,10 @@ CREATE TABLE IF NOT EXISTS wager_chain_intents (
       )
     )
 );
+
+-- Partial-attempt preflight: SELECT to_regclass('public.wager_chain_intents');
+-- If this returns a table from an earlier failed/manual attempt, compare every
+-- column + constraint below before rerunning: IF NOT EXISTS cannot repair drift.
 
 DO $$
 BEGIN

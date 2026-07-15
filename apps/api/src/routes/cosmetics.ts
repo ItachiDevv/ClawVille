@@ -35,7 +35,7 @@ import {
   avatarSkins,
   avatars,
 } from '@clawville/database';
-import { requireAuth, sessionMiddleware } from '../middleware/auth';
+import { sessionMiddleware } from '../middleware/auth';
 import {
   requireAuthOrAgentSession,
   requireLedgerCapableIdentity,
@@ -155,41 +155,31 @@ export async function grantSkinInTx(
     ledgerId: string | null;
   },
 ): Promise<{ avatarSkinId: string; alreadyOwned: boolean }> {
-  const inserted = await tx
-    .insert(avatarSkins)
-    .values({
-      avatarId: input.avatarId,
-      skuId: input.skuId,
-      acquiredVia: input.acquiredVia,
-      ledgerId: input.ledgerId,
-      equipped: false,
-    })
-    .onConflictDoNothing({ target: [avatarSkins.avatarId, avatarSkins.skuId] })
-    .returning({ id: avatarSkins.id });
+  let inserted: Array<{ id: string }>;
+  try {
+    inserted = await tx
+      .insert(avatarSkins)
+      .values({
+        avatarId: input.avatarId,
+        skuId: input.skuId,
+        acquiredVia: input.acquiredVia,
+        ledgerId: input.ledgerId,
+        equipped: false,
+      })
+      .onConflictDoNothing({ target: [avatarSkins.avatarId, avatarSkins.skuId] })
+      .returning({ id: avatarSkins.id });
+  } catch (err) {
+    const dbError = err as { code?: unknown; constraint_name?: unknown; constraint?: unknown };
+    const constraint = dbError.constraint_name ?? dbError.constraint;
+    if (dbError.code === '23514' && constraint === 'cosmetic_skus_supply_cap_enforced') {
+      throw new CosmeticSoldOutError(input.skuId);
+    }
+    throw err;
+  }
   if (inserted.length > 0) {
-    // GREATEST closes the migration→new-pod rollout window: the live count
-    // includes this transaction's provisional insert plus any ownership rows
-    // committed by old pods. `sold_count + 1` remains the serialized atomic
-    // claim, so two new pods racing for one unit cannot both win even when a
-    // statement snapshot cannot see the other transaction's provisional row.
-    const actualOwnershipCount = sql<number>`(
-      SELECT COUNT(*)::integer
-      FROM ${avatarSkins}
-      WHERE ${avatarSkins.skuId} = ${input.skuId}
-    )`;
-    const nextSoldCount = sql<number>`GREATEST(
-      ${cosmeticSkus.soldCount} + 1,
-      ${actualOwnershipCount}
-    )`;
-    const reserved = await tx
-      .update(cosmeticSkus)
-      .set({ soldCount: nextSoldCount })
-      .where(and(
-        eq(cosmeticSkus.id, input.skuId),
-        or(isNull(cosmeticSkus.supplyCap), lte(nextSoldCount, cosmeticSkus.supplyCap)),
-      ))
-      .returning({ soldCount: cosmeticSkus.soldCount });
-    if (reserved.length === 0) throw new CosmeticSoldOutError(input.skuId);
+    // Migration 0032's AFTER INSERT trigger is the inventory boundary for
+    // every writer, including old pods. It serializes on cosmetic_skus and
+    // raises the named CHECK violation before a capped SKU can oversell.
     return { avatarSkinId: inserted[0].id, alreadyOwned: false };
   }
   const existing = await findOwnedSkin(input.avatarId, input.skuId, tx);
@@ -222,14 +212,6 @@ export class CosmeticSoldOutError extends Error {
     super('cosmetic_sold_out');
     this.name = 'CosmeticSoldOutError';
   }
-}
-
-async function getCallerAvatar(userId: string) {
-  const avatar = await db.query.avatars.findFirst({
-    where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
-  });
-  if (!avatar) throw new HTTPException(404, { message: 'No active avatar found' });
-  return avatar;
 }
 
 // ---------------------------------------------------------------------------
@@ -300,9 +282,14 @@ cosmeticsRoutes.get('/catalog', async (c) => {
 // GET /owned — auth'd
 // ---------------------------------------------------------------------------
 
-cosmeticsRoutes.get('/owned', sessionMiddleware, requireAuth, noStorePrivate, async (c) => {
-  const user = c.get('user') as { id: string };
-  const avatar = await getCallerAvatar(user.id);
+cosmeticsRoutes.get(
+  '/owned',
+  sessionMiddleware,
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+  noStorePrivate,
+  async (c) => {
+  const identity = c.get('identity');
 
   // Two-step: avatar_skins → cosmetic_skus → cosmetic_variants. Could be one
   // join, but the variants are an array per SKU — easier to assemble in JS
@@ -314,7 +301,7 @@ cosmeticsRoutes.get('/owned', sessionMiddleware, requireAuth, noStorePrivate, as
     })
     .from(avatarSkins)
     .innerJoin(cosmeticSkus, eq(cosmeticSkus.id, avatarSkins.skuId))
-    .where(eq(avatarSkins.avatarId, avatar.id))
+    .where(eq(avatarSkins.avatarId, identity.avatarId))
     .orderBy(avatarSkins.acquiredAt);
 
   if (owned.length === 0) {
@@ -367,7 +354,8 @@ cosmeticsRoutes.get('/owned', sessionMiddleware, requireAuth, noStorePrivate, as
     })),
     generatedAt: new Date().toISOString(),
   });
-});
+  },
+);
 
 // ---------------------------------------------------------------------------
 // POST /:skuId/equip + /:skuId/unequip — auth'd
@@ -417,7 +405,6 @@ cosmeticsRoutes.post(
   sessionMiddleware,
   requireAuthOrAgentSession,
   requireLedgerCapableIdentity,
-  requireNonGuestIdentity,
   async (c) => setEquipped(c, c.req.param('skuId'), c.get('identity'), true),
 );
 
@@ -426,7 +413,6 @@ cosmeticsRoutes.post(
   sessionMiddleware,
   requireAuthOrAgentSession,
   requireLedgerCapableIdentity,
-  requireNonGuestIdentity,
   async (c) => setEquipped(c, c.req.param('skuId'), c.get('identity'), false),
 );
 

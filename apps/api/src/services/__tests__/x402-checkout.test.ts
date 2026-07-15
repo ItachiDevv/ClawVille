@@ -99,6 +99,7 @@ type Row = Record<string, unknown>;
 
 const insertCalls: Array<{ values: Row; conflictTarget: boolean }> = [];
 let insertReturnRows: Row[] = [{ id: 'checkout-1' }];
+let insertReturningImpl: (() => Row[]) | null = null;
 const updateCalls: Array<{ set: Row; hasReturning: boolean }> = [];
 /** Programmable behavior for the NEXT update(...).returning() — throw or rows. */
 let updateReturningImpl: () => Row[] = () => [{ id: 'checkout-1' }];
@@ -132,10 +133,14 @@ function makeInsert() {
       const call = { values: v, conflictTarget: false };
       insertCalls.push(call);
       return {
-        returning: async (_sel: unknown) => insertReturnRows,
+        returning: async (_sel: unknown) =>
+          insertReturningImpl ? insertReturningImpl() : insertReturnRows,
         onConflictDoNothing: (_target: unknown) => {
           call.conflictTarget = true;
-          return { returning: async (_sel: unknown) => insertReturnRows };
+          return {
+            returning: async (_sel: unknown) =>
+              insertReturningImpl ? insertReturningImpl() : insertReturnRows,
+          };
         },
       };
     },
@@ -328,6 +333,7 @@ beforeEach(() => {
   ledgerCalls.length = 0;
   enqueueCalls.length = 0;
   insertReturnRows = [{ id: 'checkout-1' }];
+  insertReturningImpl = null;
   updateReturningImpl = () => [{ id: 'checkout-1' }];
   updateReturningQueue = [];
   findFirstQueue = [];
@@ -765,8 +771,15 @@ describe('cosmetic_purchase fulfiller — conservation', () => {
   });
 
   it('sub-second stock race: refuses through the durable refund-required path and enqueues no CLV buy', async () => {
-    insertReturnRows = [{ id: 'skin-row-provisional' }];
-    updateReturningImpl = () => [];
+    // Migration 0032's insertion-boundary trigger is authoritative. The losing
+    // transaction never receives a provisional ownership row; Postgres raises
+    // the named 23514 and rolls the INSERT back.
+    insertReturningImpl = () => {
+      throw {
+        code: '23514',
+        constraint: 'cosmetic_skus_supply_cap_enforced',
+      };
+    };
     const fulfiller = checkout.getFulfiller('cosmetic_purchase')!;
 
     await expect(fulfiller(cosmeticCtx())).rejects.toMatchObject({

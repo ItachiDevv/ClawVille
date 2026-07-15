@@ -424,7 +424,12 @@ export const requireAuthOrAgentSession = createMiddleware<ActivityAuthContext>(
 export const requireLedgerCapableIdentity =
   createMiddleware<ActivityAuthContext>(async (c, next) => {
     const identity = c.get('identity');
-    if (identity?.kind === 'agent' && identity.ledgerCapable !== true) {
+    if (!identity) {
+      throw new HTTPException(401, {
+        message: 'identity_resolution_required_before_ledger_capability_check',
+      });
+    }
+    if (identity.kind === 'agent' && identity.ledgerCapable !== true) {
       throw new HTTPException(403, {
         message:
           'agent_session_not_ledger_authorized: prove avatar ownership before using a ledger or custodial-money route',
