@@ -25,19 +25,31 @@
  */
 
 import { db, eq, lobbies, lobbyPlayers, lobbyEvents } from '@clawville/database';
-import { lockLobby, settleSolLobby, WagerClientError } from '../wager-program-client';
+import {
+  lockLobby,
+  settleSolLobby,
+  withResolvedWagerLobbyFence,
+  WagerClientError,
+} from '../wager-program-client';
 
 interface LobbyHandle {
   rowId: string;
   lobbyId: bigint;
   state: 'open' | 'locked' | 'settled' | 'cancelled';
   mode: 'multiplayer' | 'solo-bots';
+  onChainCreateStatus: string;
 }
 
 async function findLobbyForRoom(roomId: string): Promise<LobbyHandle | null> {
   const row = await db.query.lobbies.findFirst({
     where: eq(lobbies.roomId, roomId),
-    columns: { id: true, lobbyId: true, state: true, mode: true },
+    columns: {
+      id: true,
+      lobbyId: true,
+      state: true,
+      mode: true,
+      onChainCreateStatus: true,
+    },
   });
   if (!row) return null;
   return {
@@ -45,6 +57,7 @@ async function findLobbyForRoom(roomId: string): Promise<LobbyHandle | null> {
     lobbyId: row.lobbyId,
     state: row.state as LobbyHandle['state'],
     mode: row.mode as LobbyHandle['mode'],
+    onChainCreateStatus: row.onChainCreateStatus,
   };
 }
 
@@ -61,8 +74,14 @@ export async function lockLobbyForRoom(roomId: string): Promise<void> {
     handle = await findLobbyForRoom(roomId);
     if (!handle) return; // no lobby attached (legacy queue-matched room or pre-wager activity)
 
-    if (handle.state === 'locked' || handle.state === 'settled') return;
+    if (
+      handle.mode === 'solo-bots' &&
+      (handle.state === 'locked' || handle.state === 'settled')
+    ) return;
     if (handle.state === 'cancelled') {
+      if (handle.mode === 'multiplayer') {
+        await withResolvedWagerLobbyFence(handle.rowId, async () => undefined);
+      }
       console.warn(
         `[wager-bridge] room ${roomId} reached LIVE but lobby ${handle.rowId} is already cancelled — skipping lock`,
       );
@@ -84,11 +103,21 @@ export async function lockLobbyForRoom(roomId: string): Promise<void> {
     }
 
     // Multiplayer — issue on-chain lock_lobby.
-    const result = await lockLobby({ lobbyIdBigint: handle.lobbyId });
-    await db
-      .update(lobbies)
-      .set({ state: 'locked', lockedAt: new Date(), onChainLockSig: result.txSig })
-      .where(eq(lobbies.id, handle.rowId));
+    await withResolvedWagerLobbyFence(handle.rowId, async (tx) => {
+      const current = await tx.query.lobbies.findFirst({
+        where: eq(lobbies.id, handle!.rowId),
+      });
+      if (!current || current.onChainCreateStatus !== 'confirmed') {
+        throw new Error('wager_create_reconciliation_required');
+      }
+      if (current.state === 'locked' || current.state === 'settled') return;
+      if (current.state !== 'open') throw new Error(`lobby_state_${current.state}`);
+      const result = await lockLobby({ lobbyIdBigint: current.lobbyId });
+      await tx
+        .update(lobbies)
+        .set({ state: 'locked', lockedAt: new Date(), onChainLockSig: result.txSig })
+        .where(eq(lobbies.id, current.id));
+    });
   } catch (err) {
     if (err instanceof WagerClientError && err.code === 'state_noop') {
       // Already in target state — fine.
@@ -138,7 +167,14 @@ export async function settleLobbyForRoom(
   try {
     handle = await findLobbyForRoom(roomId);
     if (!handle) return;
-    if (handle.state === 'settled' || handle.state === 'cancelled') return;
+    if (
+      handle.mode === 'solo-bots' &&
+      (handle.state === 'settled' || handle.state === 'cancelled')
+    ) return;
+    if (handle.mode === 'multiplayer' && handle.state === 'cancelled') {
+      await withResolvedWagerLobbyFence(handle.rowId, async () => undefined);
+      return;
+    }
     if (handle.state !== 'locked') {
       console.warn(
         `[wager-bridge] room ${roomId} → RESULTS but lobby is in state '${handle.state}'; expected 'locked' — settling anyway`,
@@ -166,6 +202,7 @@ export async function settleLobbyForRoom(
     }
 
     if (!winnerAvatarId) {
+      await withResolvedWagerLobbyFence(handle.rowId, async () => undefined);
       console.warn(
         `[wager-bridge] room ${roomId} → RESULTS with no winnerAvatarId; cannot settle on-chain. ` +
           `Operator must call POST /api/wager/lobbies/${handle.rowId}/cancel to unlock refunds.`,
@@ -181,56 +218,38 @@ export async function settleLobbyForRoom(
 
     // Make sure the winner is actually one of the depositors. Bot winners
     // are filtered out by virtue of having no `lobby_players` row.
-    const playerRow = await db.query.lobbyPlayers.findFirst({
-      where: eq(lobbyPlayers.lobbyId, handle.rowId),
-      columns: { avatarId: true },
-    });
-    void playerRow; // existence check only — we re-query with avatarId below
-    const depositorWinner = await db.query.lobbyPlayers.findFirst({
-      where: eq(lobbyPlayers.lobbyId, handle.rowId),
-    });
-    // Simpler: list all players, see if winner is one of them.
-    const allPlayers = await db
-      .select({ avatarId: lobbyPlayers.avatarId, userId: lobbyPlayers.userId })
-      .from(lobbyPlayers)
-      .where(eq(lobbyPlayers.lobbyId, handle.rowId));
-    void depositorWinner;
-    const winnerIsDepositor = allPlayers.some((p) => p.avatarId === winnerAvatarId);
-    if (!winnerIsDepositor) {
-      console.warn(
-        `[wager-bridge] room ${roomId} winner ${winnerAvatarId} is not a depositor — skipping on-chain settle`,
-      );
-      await db.insert(lobbyEvents).values({
-        lobbyId: handle.rowId,
-        kind: 'settled',
-        txSig: null,
-        rawEventJson: {
-          failed: true,
-          reason: 'winner_not_depositor',
-          winnerAvatarId,
-        },
+    await withResolvedWagerLobbyFence(handle.rowId, async (tx) => {
+      const current = await tx.query.lobbies.findFirst({
+        where: eq(lobbies.id, handle!.rowId),
       });
-      return;
-    }
+      if (!current || current.onChainCreateStatus !== 'confirmed') {
+        throw new Error('wager_create_reconciliation_required');
+      }
+      if (current.state === 'settled' || current.state === 'cancelled') return;
+      if (current.state !== 'locked') throw new Error(`lobby_state_${current.state}`);
 
-    const winnerUserId =
-      allPlayers.find((p) => p.avatarId === winnerAvatarId)?.userId ?? null;
+      const allPlayers = await tx
+        .select({ avatarId: lobbyPlayers.avatarId, userId: lobbyPlayers.userId })
+        .from(lobbyPlayers)
+        .where(eq(lobbyPlayers.lobbyId, current.id));
+      const winner = allPlayers.find((player) => player.avatarId === winnerAvatarId);
+      if (!winner) throw new Error('winner_not_depositor');
 
-    const result = await settleSolLobby({
-      lobbyIdBigint: handle.lobbyId,
-      winnerAvatarId,
+      const result = await settleSolLobby({
+        lobbyIdBigint: current.lobbyId,
+        winnerAvatarId,
+      });
+      await tx
+        .update(lobbies)
+        .set({
+          state: 'settled',
+          settledAt: new Date(),
+          settledWinnerAvatarId: winnerAvatarId,
+          settledWinnerUserId: winner.userId,
+          onChainSettleSig: result.txSig,
+        })
+        .where(eq(lobbies.id, current.id));
     });
-
-    await db
-      .update(lobbies)
-      .set({
-        state: 'settled',
-        settledAt: new Date(),
-        settledWinnerAvatarId: winnerAvatarId,
-        settledWinnerUserId: winnerUserId,
-        onChainSettleSig: result.txSig,
-      })
-      .where(eq(lobbies.id, handle.rowId));
   } catch (err) {
     console.error(
       `[wager-bridge] settleLobbyForRoom(${roomId}, ${winnerAvatarId}) failed:`,

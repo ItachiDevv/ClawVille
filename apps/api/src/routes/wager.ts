@@ -43,6 +43,7 @@
  */
 
 import { Hono } from 'hono';
+import { createMiddleware } from 'hono/factory';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import { createHash, randomBytes } from 'crypto';
@@ -58,15 +59,18 @@ import {
   avatars,
   wagerChainIntents,
   type Lobby,
+  type LobbyPlayer,
   type WagerChainIntent,
 } from '@clawville/database';
 import { sessionMiddleware } from '../middleware/auth';
 import {
   requireAuthOrAgentSession,
   requireLedgerCapableIdentity,
+  resolveAgentSession,
+  AGENT_SESSION_HEADER,
   type ActivityAuthContext,
 } from '../middleware/require-auth-or-agent';
-import { requireNonGuestIdentity } from '../middleware/require-non-guest';
+import { isGuestUser, requireNonGuestIdentity } from '../middleware/require-non-guest';
 import { adminOnly } from '../middleware/admin-only';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { logEventFromContext } from '../services/event-logger';
@@ -82,9 +86,17 @@ import {
   deriveJoinSolLobbyIntentPda,
   finalizeConfirmedWagerIntent,
   reconcileWagerChainIntent,
+  withResolvedWagerLobbyFence,
+  WagerIntentFenceError,
 } from '../services/wager-program-client';
 
-export const wagerRoutes = new Hono<ActivityAuthContext>();
+interface WagerRouteContext extends ActivityAuthContext {
+  Variables: ActivityAuthContext['Variables'] & {
+    wagerAdminWithoutAvatarUserId?: string;
+  };
+}
+
+export const wagerRoutes = new Hono<WagerRouteContext>();
 wagerRoutes.use('*', sessionMiddleware);
 
 // ─── shared per-IP rate limiters (cheap and bounded) ──────────────────────
@@ -167,6 +179,9 @@ function serializeLobby(row: Lobby) {
 }
 
 function handleWagerClientError(err: unknown): never {
+  if (err instanceof WagerIntentFenceError) {
+    throw new HTTPException(503, { message: 'wager_intent_reconciliation_required' });
+  }
   if (err instanceof WagerClientError) {
     if (err.code === 'state_noop') throw new HTTPException(409, { message: err.message });
     if (err.code === 'rpc_unreachable') throw new HTTPException(503, { message: err.message });
@@ -185,6 +200,87 @@ function handleWagerClientError(err: unknown): never {
   }
   throw err;
 }
+
+function serializeLobbyPlayer(row: LobbyPlayer) {
+  return {
+    ...row,
+    depositAmountLamports: row.depositAmountLamports.toString(),
+    depositedAt: row.depositedAt.toISOString(),
+    refundedAt: row.refundedAt?.toISOString() ?? null,
+  };
+}
+
+interface WagerReadIdentity {
+  kind: 'user' | 'agent';
+  userId: string;
+  avatarId: string | null;
+}
+
+/** Resolve ownership for public reads without making the public route auth-only. */
+async function resolveOptionalWagerReadIdentity(c: any): Promise<WagerReadIdentity | null> {
+  const user = c.get('user') as { id: string } | null;
+  if (user) return { kind: 'user', userId: user.id, avatarId: null };
+
+  const sessionId = c.req.header(AGENT_SESSION_HEADER);
+  if (!sessionId) return null;
+  const resolved = await resolveAgentSession(sessionId);
+  if (!resolved) throw new HTTPException(401, { message: 'invalid_or_expired_agent_session' });
+  if (!resolved.userId || !resolved.avatarId) {
+    throw new HTTPException(403, { message: 'agent_session_not_bound_to_avatar' });
+  }
+  if (resolved.ledgerCapable !== true) {
+    throw new HTTPException(403, { message: 'agent_session_not_ledger_authorized' });
+  }
+  return {
+    kind: 'agent',
+    userId: resolved.userId,
+    avatarId: resolved.avatarId,
+  };
+}
+
+async function reconcileExistingIntent(operationKey: string) {
+  const intent = await db.query.wagerChainIntents.findFirst({
+    where: eq(wagerChainIntents.operationKey, operationKey),
+  });
+  if (!intent) return null;
+  if (intent.status === 'prepared') {
+    return { status: 'reconcile' as const, evidence: 'pending' as const };
+  }
+  return reconcileWagerChainIntent(intent.id);
+}
+
+function wagerAdminIds(): string[] {
+  return (process.env.ADMIN_USER_IDS ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+/** Preserve the legacy human-admin cancel path even without an active avatar. */
+const requireWagerCancelCaller = createMiddleware<WagerRouteContext>(async (c, next) => {
+  const user = c.get('user');
+  if (user && wagerAdminIds().includes(user.id)) {
+    const avatar = await db.query.avatars.findFirst({
+      where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
+      columns: { id: true },
+    });
+    if (!avatar) {
+      if (await isGuestUser(user.id)) {
+        throw new HTTPException(403, { message: 'guest_not_allowed' });
+      }
+      c.set('wagerAdminWithoutAvatarUserId', user.id);
+      return next();
+    }
+  }
+
+  return requireAuthOrAgentSession(c, async () => {
+    await requireLedgerCapableIdentity(c, async () => {
+      await requireNonGuestIdentity(c, async () => {
+        await next();
+      });
+    });
+  });
+});
 
 function createOperationKey(avatarId: string, activityId: string, roomId: string): string {
   const digest = createHash('sha256')
@@ -328,6 +424,7 @@ wagerRoutes.post(
   // after a lost response must return its row instead of depositing again. A
   // terminal room cannot be recycled into a new escrow deposit; callers must
   // mint a fresh room id. The partial-UNIQUE index closes the first-create race.
+  const operationKey = createOperationKey(avatarId, input.activityId, input.roomId);
   let draft = await db.query.lobbies.findFirst({
     where: and(
       eq(lobbies.activityId, input.activityId),
@@ -336,9 +433,6 @@ wagerRoutes.post(
     ),
   });
   if (draft) {
-    if (draft.state === 'cancelled' || draft.state === 'settled') {
-      return c.json({ error: 'match_room_terminal', state: draft.state }, 409);
-    }
     if (draft.creatorAvatarId !== avatarId) {
       return c.json({ error: 'active_lobby_owned_by_another_avatar' }, 409);
     }
@@ -348,6 +442,16 @@ wagerRoutes.post(
       draft.visibility === input.visibility;
     if (!sameRequest) {
       return c.json({ error: 'active_lobby_request_conflict' }, 409);
+    }
+    if (draft.state === 'cancelled' || draft.state === 'settled') {
+      // Terminal retries still repair a landed create whose response/DB
+      // finalization was lost. Without this, the creator Player witness can
+      // never be recovered and `/refund` reports not_in_lobby forever.
+      const reconciled = await reconcileExistingIntent(operationKey);
+      if (reconciled?.status === 'reconcile') {
+        return c.json({ error: 'wager_create_reconciliation_required' }, 503);
+      }
+      return c.json({ error: 'match_room_terminal', state: draft.state }, 409);
     }
   }
 
@@ -382,11 +486,15 @@ wagerRoutes.post(
         ),
       });
       if (!draft) throw new HTTPException(500, { message: 'lobby_insert_failed' });
-      if (draft.state === 'cancelled' || draft.state === 'settled') {
-        return c.json({ error: 'match_room_terminal', state: draft.state }, 409);
-      }
       if (draft.creatorAvatarId !== avatarId) {
         return c.json({ error: 'active_lobby_owned_by_another_avatar' }, 409);
+      }
+      if (draft.state === 'cancelled' || draft.state === 'settled') {
+        const reconciled = await reconcileExistingIntent(operationKey);
+        if (reconciled?.status === 'reconcile') {
+          return c.json({ error: 'wager_create_reconciliation_required' }, 503);
+        }
+        return c.json({ error: 'match_room_terminal', state: draft.state }, 409);
       }
     }
   }
@@ -400,7 +508,6 @@ wagerRoutes.post(
     return c.json({ error: 'active_lobby_request_conflict' }, 409);
   }
 
-  const operationKey = createOperationKey(avatarId, input.activityId, input.roomId);
   if (draft.onChainCreateStatus === 'confirmed') {
     const existingIntent = await db.query.wagerChainIntents.findFirst({
       where: eq(wagerChainIntents.operationKey, operationKey),
@@ -424,7 +531,10 @@ wagerRoutes.post(
     targetPda: targetPda.toBase58(),
   });
   if (!reserved.mayBroadcast) {
-    const reconciled = await reconcileWagerChainIntent(reserved.intent.id);
+    const reconciled =
+      reserved.intent.status === 'prepared'
+        ? { status: 'reconcile' as const, evidence: 'pending' as const }
+        : await reconcileWagerChainIntent(reserved.intent.id);
     if (reconciled.status === 'confirmed') {
       const replay = await db.query.lobbies.findFirst({
         where: eq(lobbies.id, draft.id),
@@ -520,6 +630,7 @@ wagerRoutes.get('/lobbies', async (c) => {
     throw new HTTPException(400, { message: 'invalid_query: ' + parsed.error.message });
   }
   const { activityId, roomId, state, mine, limit } = parsed.data;
+  const readIdentity = await resolveOptionalWagerReadIdentity(c);
 
   const filters: Parameters<typeof and>[number][] = [
     eq(lobbies.onChainCreateStatus, 'confirmed'),
@@ -528,9 +639,12 @@ wagerRoutes.get('/lobbies', async (c) => {
   if (roomId) filters.push(eq(lobbies.roomId, roomId));
   if (state) filters.push(eq(lobbies.state, state));
   if (mine) {
-    const user = c.get('user');
-    if (!user) throw new HTTPException(401, { message: 'mine_requires_auth' });
-    filters.push(eq(lobbies.creatorUserId, user.id));
+    if (!readIdentity) throw new HTTPException(401, { message: 'mine_requires_auth' });
+    filters.push(
+      readIdentity.kind === 'agent' && readIdentity.avatarId
+        ? eq(lobbies.creatorAvatarId, readIdentity.avatarId)
+        : eq(lobbies.creatorUserId, readIdentity.userId),
+    );
   }
 
   const rows = await db
@@ -542,13 +656,15 @@ wagerRoutes.get('/lobbies', async (c) => {
 
   // Hide invite codes from list responses for private/friends rows the caller
   // doesn't own. Public lobbies have null invite_code anyway.
-  const user = c.get('user');
-  const callerUserId = user?.id ?? null;
   const serialized = rows.map((row) => {
     const s = serializeLobby(row);
+    const ownsLobby =
+      readIdentity?.kind === 'agent'
+        ? row.creatorAvatarId === readIdentity.avatarId
+        : row.creatorUserId === readIdentity?.userId;
     if (
       (row.visibility === 'private' || row.visibility === 'friends') &&
-      row.creatorUserId !== callerUserId
+      !ownsLobby
     ) {
       s.inviteCode = null;
     }
@@ -563,6 +679,7 @@ wagerRoutes.get('/lobbies', async (c) => {
 wagerRoutes.get('/lobbies/:idOrInviteCode', async (c) => {
   checkRate(readLimiter, getClientIp(c.req.raw.headers));
   const idOrInvite = c.req.param('idOrInviteCode');
+  const readIdentity = await resolveOptionalWagerReadIdentity(c);
 
   let row: Lobby | undefined;
   if (isUuid(idOrInvite)) {
@@ -593,12 +710,14 @@ wagerRoutes.get('/lobbies/:idOrInviteCode', async (c) => {
     .where(eq(lobbyPlayers.lobbyId, row.id))
     .orderBy(desc(lobbyPlayers.depositedAt));
 
-  const user = c.get('user');
-  const callerUserId = user?.id ?? null;
   const s = serializeLobby(row);
+  const ownsLobby =
+    readIdentity?.kind === 'agent'
+      ? row.creatorAvatarId === readIdentity.avatarId
+      : row.creatorUserId === readIdentity?.userId;
   if (
     (row.visibility === 'private' || row.visibility === 'friends') &&
-    row.creatorUserId !== callerUserId
+    !ownsLobby
   ) {
     s.inviteCode = null;
   }
@@ -634,15 +753,6 @@ wagerRoutes.post(
   if (lobby.mode === 'solo-bots') {
     throw new HTTPException(400, { message: 'solo_bots_lobby_cannot_join' });
   }
-  if (lobby.onChainCreateStatus !== 'confirmed') {
-    return c.json({ error: 'wager_create_reconciliation_required' }, 503);
-  }
-  if (lobby.state !== 'open') {
-    throw new HTTPException(409, { message: `lobby_state_${lobby.state}` });
-  }
-  if (lobby.joinedCount >= lobby.maxPlayers) {
-    throw new HTTPException(409, { message: 'lobby_full' });
-  }
 
   // Already joined?
   const existing = await db.query.lobbyPlayers.findFirst({
@@ -653,19 +763,55 @@ wagerRoutes.post(
   });
   if (existing) return c.json({ lobby: serializeLobby(lobby), idempotent: true });
 
+  const joinOperationKey = `join:${lobby.id}:${avatarId}`;
+  const existingIntent = await db.query.wagerChainIntents.findFirst({
+    where: eq(wagerChainIntents.operationKey, joinOperationKey),
+  });
+  if (existingIntent) {
+    const reconciled =
+      existingIntent.status === 'prepared'
+        ? { status: 'reconcile' as const, evidence: 'pending' as const }
+        : await reconcileWagerChainIntent(existingIntent.id);
+    if (reconciled.status === 'confirmed') {
+      const replay = await db.query.lobbies.findFirst({
+        where: eq(lobbies.id, lobby.id),
+      });
+      return c.json({ lobby: replay ? serializeLobby(replay) : null, idempotent: true });
+    }
+    if (reconciled.status === 'reconcile') {
+      return c.json({ error: 'wager_join_reconciliation_required' }, 503);
+    }
+  }
+
+  // State rejection happens only AFTER an existing intent had a chance to
+  // repair its Player witness. This is critical for landed joins whose creator
+  // cancelled before the join response reached the caller.
+  if (lobby.onChainCreateStatus !== 'confirmed') {
+    return c.json({ error: 'wager_create_reconciliation_required' }, 503);
+  }
+  if (lobby.state !== 'open') {
+    throw new HTTPException(409, { message: `lobby_state_${lobby.state}` });
+  }
+  if (lobby.joinedCount >= lobby.maxPlayers) {
+    throw new HTTPException(409, { message: 'lobby_full' });
+  }
+
   const targetPda = await deriveJoinSolLobbyIntentPda({
     lobbyIdBigint: lobby.lobbyId,
     joinerAvatarId: avatarId,
   });
   let reserved = await reserveWagerIntent({
-    operationKey: `join:${lobby.id}:${avatarId}`,
+    operationKey: joinOperationKey,
     operation: 'join',
     lobbyId: lobby.id,
     actorAvatarId: avatarId,
     targetPda: targetPda.toBase58(),
   });
   if (!reserved.mayBroadcast) {
-    const reconciled = await reconcileWagerChainIntent(reserved.intent.id);
+    const reconciled =
+      reserved.intent.status === 'prepared'
+        ? { status: 'reconcile' as const, evidence: 'pending' as const }
+        : await reconcileWagerChainIntent(reserved.intent.id);
     if (reconciled.status === 'confirmed') {
       const replay = await db.query.lobbies.findFirst({
         where: eq(lobbies.id, lobby.id),
@@ -674,7 +820,7 @@ wagerRoutes.post(
     }
     if (reconciled.status === 'failed') {
       reserved = await reserveWagerIntent({
-        operationKey: `join:${lobby.id}:${avatarId}`,
+        operationKey: joinOperationKey,
         operation: 'join',
         lobbyId: lobby.id,
         actorAvatarId: avatarId,
@@ -756,40 +902,46 @@ wagerRoutes.post('/lobbies/:id/lock', adminOnly, async (c) => {
     return c.json({ lobby: updated ? serializeLobby(updated) : null });
   }
 
-  if (lobby.state === 'locked') {
-    return c.json({ lobby: serializeLobby(lobby), idempotent: true });
-  }
-  if (lobby.state !== 'open') {
-    throw new HTTPException(409, { message: `lobby_state_${lobby.state}` });
-  }
-
-  let result;
   try {
-    result = await chainLockLobby({ lobbyIdBigint: lobby.lobbyId });
+    const fenced = await withResolvedWagerLobbyFence(lobby.id, async (tx) => {
+      const current = await tx.query.lobbies.findFirst({
+        where: eq(lobbies.id, lobby.id),
+      });
+      if (!current) throw new HTTPException(404, { message: 'lobby_not_found' });
+      if (current.state === 'locked') {
+        return { lobby: current, idempotent: true as const, txSig: null };
+      }
+      if (current.onChainCreateStatus !== 'confirmed') {
+        throw new HTTPException(503, { message: 'wager_create_reconciliation_required' });
+      }
+      if (current.state !== 'open') {
+        throw new HTTPException(409, { message: `lobby_state_${current.state}` });
+      }
+
+      const result = await chainLockLobby({ lobbyIdBigint: current.lobbyId });
+      const [updated] = await tx
+        .update(lobbies)
+        .set({ state: 'locked', lockedAt: new Date(), onChainLockSig: result.txSig })
+        .where(eq(lobbies.id, current.id))
+        .returning();
+      return { lobby: updated ?? current, idempotent: false as const, txSig: result.txSig };
+    });
+
+    if (fenced.idempotent) {
+      return c.json({ lobby: serializeLobby(fenced.lobby), idempotent: true });
+    }
+    void logEventFromContext(c, {
+      eventType: 'wager.lobby.locked',
+      payload: {
+        lobbyId: lobby.id,
+        onChainLobbyId: lobby.lobbyId.toString(),
+        txSig: fenced.txSig,
+      },
+    });
+    return c.json({ lobby: serializeLobby(fenced.lobby) });
   } catch (err) {
     handleWagerClientError(err);
   }
-
-  const [updated] = await db
-    .update(lobbies)
-    .set({
-      state: 'locked',
-      lockedAt: new Date(),
-      onChainLockSig: result.txSig,
-    })
-    .where(eq(lobbies.id, lobby.id))
-    .returning();
-
-  void logEventFromContext(c, {
-    eventType: 'wager.lobby.locked',
-    payload: {
-      lobbyId: lobby.id,
-      onChainLobbyId: lobby.lobbyId.toString(),
-      txSig: result.txSig,
-    },
-  });
-
-  return c.json({ lobby: updated ? serializeLobby(updated) : null });
 });
 
 // ─── POST /lobbies/:id/settle ─────────────────────────────────────────────
@@ -806,23 +958,6 @@ wagerRoutes.post('/lobbies/:id/settle', adminOnly, async (c) => {
 
   const lobby = await db.query.lobbies.findFirst({ where: eq(lobbies.id, id.data) });
   if (!lobby) throw new HTTPException(404, { message: 'lobby_not_found' });
-  if (lobby.state === 'settled') {
-    return c.json({ lobby: serializeLobby(lobby), idempotent: true });
-  }
-  if (lobby.state !== 'locked') {
-    throw new HTTPException(409, { message: `lobby_state_${lobby.state}` });
-  }
-
-  // Winner must be in lobby_players.
-  const winnerRow = await db.query.lobbyPlayers.findFirst({
-    where: and(
-      eq(lobbyPlayers.lobbyId, lobby.id),
-      eq(lobbyPlayers.avatarId, winnerAvatarId),
-    ),
-  });
-  if (!winnerRow && lobby.mode === 'multiplayer') {
-    throw new HTTPException(400, { message: 'winner_not_in_lobby' });
-  }
   const winnerAvatar = await db.query.avatars.findFirst({
     where: eq(avatars.id, winnerAvatarId),
     columns: { id: true, userId: true },
@@ -830,6 +965,12 @@ wagerRoutes.post('/lobbies/:id/settle', adminOnly, async (c) => {
   if (!winnerAvatar) throw new HTTPException(400, { message: 'winner_avatar_unknown' });
 
   if (lobby.mode === 'solo-bots') {
+    if (lobby.state === 'settled') {
+      return c.json({ lobby: serializeLobby(lobby), idempotent: true });
+    }
+    if (lobby.state !== 'locked') {
+      throw new HTTPException(409, { message: `lobby_state_${lobby.state}` });
+    }
     const [updated] = await db
       .update(lobbies)
       .set({
@@ -849,63 +990,107 @@ wagerRoutes.post('/lobbies/:id/settle', adminOnly, async (c) => {
     return c.json({ lobby: updated ? serializeLobby(updated) : null });
   }
 
-  let result;
   try {
-    result = await settleSolLobby({
-      lobbyIdBigint: lobby.lobbyId,
-      winnerAvatarId,
+    const fenced = await withResolvedWagerLobbyFence(lobby.id, async (tx) => {
+      const current = await tx.query.lobbies.findFirst({
+        where: eq(lobbies.id, lobby.id),
+      });
+      if (!current) throw new HTTPException(404, { message: 'lobby_not_found' });
+      if (current.state === 'settled') {
+        return {
+          lobby: current,
+          idempotent: true as const,
+          payoutLamports: null,
+          rakeLamports: null,
+          txSig: null,
+        };
+      }
+      if (current.onChainCreateStatus !== 'confirmed') {
+        throw new HTTPException(503, { message: 'wager_create_reconciliation_required' });
+      }
+      if (current.state !== 'locked') {
+        throw new HTTPException(409, { message: `lobby_state_${current.state}` });
+      }
+      const winnerRow = await tx.query.lobbyPlayers.findFirst({
+        where: and(
+          eq(lobbyPlayers.lobbyId, current.id),
+          eq(lobbyPlayers.avatarId, winnerAvatarId),
+        ),
+      });
+      if (!winnerRow) {
+        throw new HTTPException(400, { message: 'winner_not_in_lobby' });
+      }
+
+      const result = await settleSolLobby({
+        lobbyIdBigint: current.lobbyId,
+        winnerAvatarId,
+      });
+      const [updated] = await tx
+        .update(lobbies)
+        .set({
+          state: 'settled',
+          settledAt: new Date(),
+          settledWinnerUserId: winnerAvatar.userId,
+          settledWinnerAvatarId: winnerAvatarId,
+          onChainSettleSig: result.txSig,
+        })
+        .where(eq(lobbies.id, current.id))
+        .returning();
+      return {
+        lobby: updated ?? current,
+        idempotent: false as const,
+        payoutLamports: result.payoutLamports,
+        rakeLamports: result.rakeLamports,
+        txSig: result.txSig,
+      };
+    });
+
+    if (fenced.idempotent) {
+      return c.json({ lobby: serializeLobby(fenced.lobby), idempotent: true });
+    }
+    void logEventFromContext(c, {
+      eventType: 'wager.lobby.settled',
+      payload: {
+        lobbyId: lobby.id,
+        onChainLobbyId: lobby.lobbyId.toString(),
+        winnerAvatarId,
+        payoutLamports: fenced.payoutLamports.toString(),
+        rakeLamports: fenced.rakeLamports.toString(),
+        txSig: fenced.txSig,
+      },
+    });
+    return c.json({
+      lobby: serializeLobby(fenced.lobby),
+      payoutLamports: fenced.payoutLamports.toString(),
+      rakeLamports: fenced.rakeLamports.toString(),
     });
   } catch (err) {
     handleWagerClientError(err);
   }
-
-  const [updated] = await db
-    .update(lobbies)
-    .set({
-      state: 'settled',
-      settledAt: new Date(),
-      settledWinnerUserId: winnerAvatar.userId,
-      settledWinnerAvatarId: winnerAvatarId,
-      onChainSettleSig: result.txSig,
-    })
-    .where(eq(lobbies.id, lobby.id))
-    .returning();
-
-  void logEventFromContext(c, {
-    eventType: 'wager.lobby.settled',
-    payload: {
-      lobbyId: lobby.id,
-      onChainLobbyId: lobby.lobbyId.toString(),
-      winnerAvatarId,
-      payoutLamports: result.payoutLamports.toString(),
-      rakeLamports: result.rakeLamports.toString(),
-      txSig: result.txSig,
-    },
-  });
-
-  return c.json({
-    lobby: updated ? serializeLobby(updated) : null,
-    payoutLamports: result.payoutLamports.toString(),
-    rakeLamports: result.rakeLamports.toString(),
-  });
 });
 
 // ─── POST /lobbies/:id/cancel ─────────────────────────────────────────────
 
 wagerRoutes.post(
   '/lobbies/:id/cancel',
-  requireAuthOrAgentSession,
-  requireLedgerCapableIdentity,
-  requireNonGuestIdentity,
+  requireWagerCancelCaller,
   async (c) => {
   checkRate(writeLimiter, getClientIp(c.req.raw.headers));
   const id = lobbyIdParam.safeParse(c.req.param('id'));
   if (!id.success) throw new HTTPException(400, { message: 'invalid_lobby_id' });
 
-  const identity = c.get('identity');
+  const adminWithoutAvatarUserId = c.get('wagerAdminWithoutAvatarUserId');
+  const identity = adminWithoutAvatarUserId ? null : c.get('identity');
   const lobby = await db.query.lobbies.findFirst({ where: eq(lobbies.id, id.data) });
   if (!lobby) throw new HTTPException(404, { message: 'lobby_not_found' });
   if (lobby.state === 'cancelled') {
+    if (lobby.mode === 'multiplayer') {
+      try {
+        await withResolvedWagerLobbyFence(lobby.id, async () => undefined);
+      } catch (err) {
+        handleWagerClientError(err);
+      }
+    }
     return c.json({ lobby: serializeLobby(lobby), idempotent: true });
   }
 
@@ -913,13 +1098,10 @@ wagerRoutes.post(
   // adminOnly is checked separately via ADMIN_USER_IDS env list — we replicate
   // that check here inline so the route can accept BOTH the creator and an
   // admin caller without forcing the FE to know which.
-  const adminIds = (process.env.ADMIN_USER_IDS ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
   const isAdmin =
-    identity.kind === 'user' && adminIds.includes(identity.userId);
-  const isCreator = lobby.creatorAvatarId === identity.avatarId;
+    adminWithoutAvatarUserId !== undefined ||
+    (identity?.kind === 'user' && wagerAdminIds().includes(identity.userId));
+  const isCreator = identity ? lobby.creatorAvatarId === identity.avatarId : false;
 
   let signerKind: 'creator' | 'settlement-authority';
   if (isAdmin) {
@@ -947,46 +1129,69 @@ wagerRoutes.post(
     await db.insert(lobbyEvents).values({
       lobbyId: lobby.id,
       kind: 'cancelled',
-      actorUserId: identity.userId,
+      actorUserId: adminWithoutAvatarUserId ?? identity?.userId ?? null,
       txSig: null,
       rawEventJson: { mode: 'solo-bots' },
     });
     return c.json({ lobby: updated ? serializeLobby(updated) : null });
   }
 
-  let result;
   try {
-    result = await chainCancelLobby({
-      lobbyIdBigint: lobby.lobbyId,
-      signerKind,
+    const fenced = await withResolvedWagerLobbyFence(lobby.id, async (tx) => {
+      const current = await tx.query.lobbies.findFirst({
+        where: eq(lobbies.id, lobby.id),
+      });
+      if (!current) throw new HTTPException(404, { message: 'lobby_not_found' });
+      if (current.state === 'cancelled') {
+        return { lobby: current, idempotent: true as const, txSig: null };
+      }
+      if (current.onChainCreateStatus !== 'confirmed') {
+        throw new HTTPException(503, { message: 'wager_create_reconciliation_required' });
+      }
+      if (signerKind === 'settlement-authority') {
+        if (current.state !== 'open' && current.state !== 'locked') {
+          throw new HTTPException(409, { message: `lobby_state_${current.state}` });
+        }
+      } else if (current.state !== 'open') {
+        throw new HTTPException(409, {
+          message: `creator_cannot_cancel_state_${current.state}`,
+        });
+      }
+
+      const result = await chainCancelLobby({
+        lobbyIdBigint: current.lobbyId,
+        signerKind,
+      });
+      const [updated] = await tx
+        .update(lobbies)
+        .set({
+          state: 'cancelled',
+          cancelledAt: new Date(),
+          onChainCancelSig: result.txSig,
+        })
+        .where(eq(lobbies.id, current.id))
+        .returning();
+      return { lobby: updated ?? current, idempotent: false as const, txSig: result.txSig };
     });
+
+    if (fenced.idempotent) {
+      return c.json({ lobby: serializeLobby(fenced.lobby), idempotent: true });
+    }
+    void logEventFromContext(c, {
+      eventType: 'wager.lobby.cancelled',
+      userId: adminWithoutAvatarUserId ?? identity?.userId,
+      avatarId: identity?.avatarId,
+      payload: {
+        lobbyId: lobby.id,
+        onChainLobbyId: lobby.lobbyId.toString(),
+        signerKind,
+        txSig: fenced.txSig,
+      },
+    });
+    return c.json({ lobby: serializeLobby(fenced.lobby) });
   } catch (err) {
     handleWagerClientError(err);
   }
-
-  const [updated] = await db
-    .update(lobbies)
-    .set({
-      state: 'cancelled',
-      cancelledAt: new Date(),
-      onChainCancelSig: result.txSig,
-    })
-    .where(eq(lobbies.id, lobby.id))
-    .returning();
-
-  void logEventFromContext(c, {
-    eventType: 'wager.lobby.cancelled',
-    userId: identity.userId,
-    avatarId: identity.avatarId,
-    payload: {
-      lobbyId: lobby.id,
-      onChainLobbyId: lobby.lobbyId.toString(),
-      signerKind,
-      txSig: result.txSig,
-    },
-  });
-
-  return c.json({ lobby: updated ? serializeLobby(updated) : null });
   },
 );
 
@@ -1009,6 +1214,13 @@ wagerRoutes.post(
   if (lobby.state !== 'cancelled') {
     throw new HTTPException(409, { message: `lobby_not_cancelled` });
   }
+  if (lobby.mode === 'multiplayer') {
+    try {
+      await withResolvedWagerLobbyFence(lobby.id, async () => undefined);
+    } catch (err) {
+      handleWagerClientError(err);
+    }
+  }
 
   const playerRow = await db.query.lobbyPlayers.findFirst({
     where: and(
@@ -1018,7 +1230,7 @@ wagerRoutes.post(
   });
   if (!playerRow) throw new HTTPException(404, { message: 'not_in_lobby' });
   if (playerRow.refunded) {
-    return c.json({ playerRow, idempotent: true });
+    return c.json({ playerRow: serializeLobbyPlayer(playerRow), idempotent: true });
   }
 
   // Solo-bots lobbies are never on-chain so refund is a no-op.
@@ -1035,7 +1247,7 @@ wagerRoutes.post(
       txSig: null,
       rawEventJson: { mode: lobby.mode, freePlay: true },
     });
-    return c.json({ playerRow: updated });
+    return c.json({ playerRow: updated ? serializeLobbyPlayer(updated) : null });
   }
 
   let result;
@@ -1070,14 +1282,7 @@ wagerRoutes.post(
   });
 
   return c.json({
-    playerRow: updated
-      ? {
-          ...updated,
-          depositAmountLamports: updated.depositAmountLamports.toString(),
-          depositedAt: updated.depositedAt.toISOString(),
-          refundedAt: updated.refundedAt?.toISOString() ?? null,
-        }
-      : null,
+    playerRow: updated ? serializeLobbyPlayer(updated) : null,
   });
   },
 );
