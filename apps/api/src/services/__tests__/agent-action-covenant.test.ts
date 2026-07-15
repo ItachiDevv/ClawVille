@@ -215,6 +215,60 @@ describe('in-world executor covenant hooks', () => {
     expect(records).toEqual([]);
   });
 
+  it('parses talk_to_npc message robustly: space-separated params and commas inside the message', () => {
+    const records: CovenantActionInput[] = [];
+    npcSimulation.covenantRecord = async (input) => {
+      records.push(input);
+      return { id: 'record', deduped: false };
+    };
+    const npc = body('parser-body');
+    sim.npcs.set(npc.id, npc);
+    sim.agentBotSessions.set('parser-session', {
+      config: { agentId: npc.id, mode: 'avatar', avatarId: AVATAR },
+      client: { getProtocol: () => 'hatcher-proxy' },
+    });
+    sim.npcOverrides.set(npc.id, 'parser-session');
+
+    // Live staging drop 2026-07-15: the model omitted the comma between params.
+    // The old comma-split glued ` message=…` onto buildingId and dropped the
+    // action as an unknown target — no bubble, no record, no teacher settle.
+    const spaceMsg = 'How do I effectively use MCP servers in custom tool development';
+    npcSimulation.dispatchHatcherActions(
+      npc.id,
+      `[ACTION: talk_to_npc(buildingId=api-integrations message=${spaceMsg})]`,
+    );
+
+    // A message containing commas must reach the bubble/record IN FULL — the
+    // old parser truncated it at the first comma.
+    const commaMsg = 'Hello, teacher, tell me about APIs';
+    npcSimulation.dispatchHatcherActions(
+      npc.id,
+      `[ACTION: talk_to_npc(buildingId=api-integrations, message=${commaMsg})]`,
+    );
+
+    expect(sim.pendingEvents).toHaveLength(2);
+    expect(sim.pendingEvents[0].data.message).toBe(spaceMsg);
+    expect(sim.pendingEvents[1].data.message).toBe(commaMsg);
+    expect(records).toEqual([
+      expect.objectContaining({
+        action: 'agent.chat',
+        payload: {
+          target: 'api-integrations',
+          msgSha256: createHash('sha256').update(spaceMsg, 'utf8').digest('hex'),
+          len: spaceMsg.length,
+        },
+      }),
+      expect.objectContaining({
+        action: 'agent.chat',
+        payload: {
+          target: 'api-integrations',
+          msgSha256: createHash('sha256').update(commaMsg, 'utf8').digest('hex'),
+          len: commaMsg.length,
+        },
+      }),
+    ]);
+  });
+
   it('missing attribution executes without a record or throw and warns once per body', () => {
     const records: CovenantActionInput[] = [];
     npcSimulation.covenantRecord = async (input) => {

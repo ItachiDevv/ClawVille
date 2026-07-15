@@ -294,18 +294,18 @@ function decisionThought(action: ParsedDriverAction): string {
 }
 
 /** Extract the talk_to_npc message param from a reply, or null if none. Mirrors
- * the executor's param split (comma-separated k=v, message last by prompt). */
+ * the executor's parsing: `message` is free text and documented LAST, so it is
+ * captured from its `message=` marker to the END of the param string — never
+ * comma-split (a comma-split truncates "Hello, teacher" at the comma, and loses
+ * the message entirely when the model separates params with SPACES instead of
+ * commas — live drop observed on staging 2026-07-15). */
 export function extractTalkMessage(reply: string): string | null {
   const m = TALK_ACTION_RE.exec(reply);
   if (!m) return null;
-  for (const part of m[1].split(',')) {
-    const eq = part.indexOf('=');
-    if (eq > 0 && part.slice(0, eq).trim() === 'message') {
-      const v = part.slice(eq + 1).trim();
-      return v.length > 0 ? v : null;
-    }
-  }
-  return null;
+  const msg = /(?:^|[,\s])message\s*=\s*(.+)$/.exec(m[1]);
+  if (!msg) return null;
+  const v = msg[1].trim();
+  return v.length > 0 ? v : null;
 }
 
 class AgentAutonomyDriver {
