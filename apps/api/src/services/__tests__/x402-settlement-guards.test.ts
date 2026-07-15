@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'bun:test';
-import { assertProductionFacilitatorAllowed } from '../x402-config';
+import { Keypair, SystemProgram, Transaction } from '@solana/web3.js';
+import {
+  assertMeteredAgentPaywallSafe,
+  assertProductionFacilitatorAllowed,
+} from '../x402-config';
 import { receiptMatchesOwner } from '../x402-settlement-receipts';
-import { independentUnavailableAfterPayerDecode } from '../x402-payai';
+import {
+  independentUnavailableAfterPayerDecode,
+  signedPayloadMessageMatchesChain,
+} from '../x402-payai';
 
 describe('production facilitator origin guard', () => {
   it('allows only the exact production origins over credential-free HTTPS', () => {
@@ -25,6 +32,15 @@ describe('production facilitator origin guard', () => {
   it('does not constrain staging or local test facilitators', () => {
     expect(() => assertProductionFacilitatorAllowed('http://127.0.0.1:4000/mock', 'staging')).not.toThrow();
     expect(() => assertProductionFacilitatorAllowed('http://localhost:4000/mock', undefined)).not.toThrow();
+  });
+});
+
+describe('metered-agent cross-rail replay gate', () => {
+  it('refuses X402_ENABLED until metered settlements join the durable receipt registry', () => {
+    expect(() => assertMeteredAgentPaywallSafe(true)).toThrow(
+      /FEATURE_GATE metered_agent_receipt_registry/,
+    );
+    expect(() => assertMeteredAgentPaywallSafe(false)).not.toThrow();
   });
 });
 
@@ -61,5 +77,32 @@ describe('post-decode RPC setup failure', () => {
       reason: 'independent_chain_mismatch',
       payer: null,
     });
+  });
+});
+
+describe('independent settlement transaction binding', () => {
+  it('accepts the submitted message and rejects an older matching-payer transaction', () => {
+    const payer = Keypair.generate();
+    const recipient = Keypair.generate().publicKey;
+    const buildTransaction = (recentBlockhash: string) => {
+      const tx = new Transaction({ feePayer: payer.publicKey, recentBlockhash });
+      tx.add(SystemProgram.transfer({
+        fromPubkey: payer.publicKey,
+        toPubkey: recipient,
+        lamports: 1,
+      }));
+      tx.sign(payer);
+      return tx;
+    };
+    const submitted = buildTransaction(Keypair.generate().publicKey.toBase58());
+    const older = buildTransaction(Keypair.generate().publicKey.toBase58());
+    const payload = {
+      x402Version: 2,
+      accepted: {} as never,
+      payload: { transaction: submitted.serialize().toString('base64') },
+    } as Parameters<typeof signedPayloadMessageMatchesChain>[0];
+
+    expect(signedPayloadMessageMatchesChain(payload, submitted.serializeMessage())).toBe(true);
+    expect(signedPayloadMessageMatchesChain(payload, older.serializeMessage())).toBe(false);
   });
 });

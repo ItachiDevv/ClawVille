@@ -1,5 +1,6 @@
 // FEATURE_GATE: x402_payment_middleware
-// Status: scaffold live, flag OFF (X402_ENABLED defaults to false).
+// Status: scaffold quarantined; X402_ENABLED=true now fail-boots until metered
+// settlements have a durable capture-first receipt registry integration.
 // Retained, not deleted, on 2026-04-21 per founder call — reserved for later
 // metered-access features unrelated to peer skill commerce (removed 2026-07-02).
 // Metric to graduate: any future feature requiring per-call metered access is
@@ -17,9 +18,10 @@
  * `x402ResourceServer`, and the protected-routes map consumed by
  * `paymentMiddleware` from `@x402/hono`.
  *
- * Activation is gated on the `X402_ENABLED=true` env var so that the rest of
- * the API keeps working while we iterate on payment testing (we need funded
- * wallets + a facilitator endpoint before we can actually serve paid traffic).
+ * Paid middleware activation remains quarantined: `agent-v2.ts` crash-loud
+ * refuses `X402_ENABLED=true` until metered settlements join the durable global
+ * receipt registry. The configuration builders remain for that future wiring
+ * and for the independent x402 facilitator primitives used by other rails.
  *
  * Environment variables consumed:
  *   X402_ENABLED                       — "true" to register the middleware on
@@ -106,6 +108,27 @@ export interface X402Config {
   facilitatorUrl: string;
   merchantWalletPubkey: string;
   network: string;
+}
+
+/**
+ * Fail closed while the generic @x402/hono middleware has no durable purchase
+ * row whose signature can be claimed before a paid response is released.
+ *
+ * An onAfterSettle hook is insufficient: settlement has already moved money,
+ * and a process crash before the hook commits would leave the signature reusable
+ * by another rail. Keep the metered /api/v2/agent surface dark until it uses a
+ * capture-first settle machine like the other x402 rails.
+ */
+export function assertMeteredAgentPaywallSafe(
+  requestedEnabled = process.env.X402_ENABLED === 'true',
+): void {
+  if (requestedEnabled) {
+    throw new Error(
+      '[x402] FEATURE_GATE metered_agent_receipt_registry: X402_ENABLED=true is unsafe; ' +
+        'the /api/v2/agent paywall must remain disabled until settlement signatures are ' +
+        'durably claimed before paid responses are released.',
+    );
+  }
 }
 
 /** Coinbase CDP v2 x402 facilitator (Base/EVM first-party + Solana via CDP). */

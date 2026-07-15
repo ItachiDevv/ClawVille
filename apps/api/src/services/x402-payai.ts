@@ -399,6 +399,25 @@ function payerFromSignedPayload(payload: PaymentPayload): string | null {
   return null;
 }
 
+/** Bind a facilitator-returned signature to the exact transaction message the
+ * payer signed. The facilitator may add its fee-payer signature, but it must not
+ * substitute another transaction (even one with the same payer/amount/payee). */
+export function signedPayloadMessageMatchesChain(
+  payload: PaymentPayload,
+  chainMessageBytes: Uint8Array,
+): boolean {
+  const svmPayload = payload.payload as { transaction?: unknown } | undefined;
+  if (typeof svmPayload?.transaction !== 'string') return false;
+  try {
+    const signed = decodeTransactionFromPayload({ transaction: svmPayload.transaction });
+    const signedBytes = signed.messageBytes;
+    if (signedBytes.length !== chainMessageBytes.length) return false;
+    return signedBytes.every((byte, index) => byte === chainMessageBytes[index]);
+  } catch {
+    return false;
+  }
+}
+
 const waitForChainIndex = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** Preserve signed-payload identity across an RPC/connection setup exception.
@@ -440,6 +459,20 @@ async function defaultIndependentSettlementVerifier(
     const { verifyUsdcTransfer } = await import('./x402-chain-verifier');
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
+        const chainTransaction = await connection.getTransaction(input.txSignature, {
+          commitment: 'confirmed',
+          maxSupportedTransactionVersion: 0,
+        });
+        if (chainTransaction === null) {
+          if (attempt < 2) await waitForChainIndex(attempt === 0 ? 250 : 750);
+          continue;
+        }
+        if (!signedPayloadMessageMatchesChain(
+          input.payload,
+          chainTransaction.transaction.message.serialize(),
+        )) {
+          return { ok: false, reason: 'independent_chain_mismatch', payer: decodedPayer };
+        }
         const verdict = await verifyUsdcTransfer({
           network,
           signature: input.txSignature,
