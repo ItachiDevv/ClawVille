@@ -22,6 +22,7 @@ export * from './bounties';
 // partner-covenant read surface. See covenant-action-records.ts header.
 export * from './covenant-action-records';
 export * from './building-skills';
+export * from './building-chat-reward-claims';
 // Partner #2 (Hatcher) Phase C — scoped, revocable read-token table for partner
 // integrations. Hash-not-plaintext, show-once mint. See `partner-api-keys.ts`.
 export * from './partner-api-keys';
