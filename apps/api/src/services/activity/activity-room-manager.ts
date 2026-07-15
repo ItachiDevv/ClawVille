@@ -39,7 +39,10 @@ import {
 import type { Room, RoomState, RoomDbStatus, RoomParticipant, MatchFoundDeliveryFn, RoomBroadcastFn } from './types';
 import { logEvent } from '../event-logger';
 import { alertError } from '../alert-error';
-import type { ServerFrame } from '@clawville/shared';
+import {
+  REEF_RACE_COUNTDOWN_DURATION_MS,
+  type ServerFrame,
+} from '@clawville/shared';
 import { v4 as uuidv4 } from 'uuid';
 import { activityReplayLog } from './activity-replay-log';
 import type { ActivityReplayParticipantsJson } from '@clawville/database';
@@ -89,16 +92,11 @@ const RESULTS_RETENTION_MS = 120_000;
 /** Sweep cadence — every 15s (backend §1.6) */
 const SWEEPER_INTERVAL_MS = 15_000;
 
-/** Countdown duration before sim starts (backend §1.2) */
+/** Countdown duration for non-Reef activities (backend §1.2; unchanged). */
 const COUNTDOWN_DURATION_MS = 5_000;
 
-/**
- * Minimum countdown remainder a connecting client must still have for the
- * 3-2-1 overlay to be worth showing. Below this, `ensureSyncedCountdown()`
- * re-anchors the window to the connect time so navigation latency can't burn
- * the countdown before the client can render it. 3s = a full "3…2…1…GO".
- */
-const COUNTDOWN_MIN_SYNC_MS = 3_000;
+/** Reef rooms with no connected non-bot racer are aborted at this hard cap. */
+export const REEF_RACE_NO_SHOW_ABORT_MS = 60_000;
 
 /** Crockford base32 alphabet (no I, L, O, U) — short-code character set */
 const CROCKFORD_BASE32 = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
@@ -205,22 +203,24 @@ class ActivityRoomManager {
     null;
 
   /**
-   * Per-room countdown timers. Set when a room transitions into COUNTDOWN
-   * and cleared when it transitions out (LIVE / ABORTED). Each timer
-   * fires `transitionRoom(roomId, 'live')` after `COUNTDOWN_DURATION_MS`
-   * — without this, the FSM would sit in COUNTDOWN forever (no other
-   * code path moves rooms to LIVE in production; chunk #3 added the
-   * COUNTDOWN state machine but never wired the timer that exits it).
-   * Discovered 2026-04-24 when the first guests actually queued matches.
+   * Per-room COUNTDOWN→LIVE timers, cleared on any transition out. Non-Reef
+   * rooms arm here at COUNTDOWN creation; Reef arms only after the first
+   * eligible WS presence through `ensureSyncedCountdown()`.
    */
   private countdownTimers = new Map<
     string,
     ReturnType<typeof setTimeout>
   >();
 
+  /** Reef-only creation-time safety cap while waiting for the first racer WS. */
+  private reefNoShowTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
+
   /**
-   * Reef-only, room-lifetime latch for the connect-time countdown repair.
-   * The first successful WS connection may re-anchor a stale countdown; later
+   * Reef-only, room-lifetime latch for the connect-anchored countdown.
+   * The first eligible (non-bot) live WS re-anchors and arms the start; later
    * racers must observe that already-broadcast anchor rather than move it.
    */
   private countdownSyncAttemptedRooms = new Set<string>();
@@ -357,7 +357,10 @@ class ActivityRoomManager {
           roomId,
           shortCode,
           activityId,
-          countdown: COUNTDOWN_DURATION_MS / 1000,
+          countdown:
+            (activityId === 'reef-race'
+              ? REEF_RACE_COUNTDOWN_DURATION_MS
+              : COUNTDOWN_DURATION_MS) / 1000,
         });
       }
     }
@@ -446,6 +449,11 @@ class ActivityRoomManager {
         clearTimeout(pending);
         this.countdownTimers.delete(roomId);
       }
+      const noShow = this.reefNoShowTimers.get(roomId);
+      if (noShow) {
+        clearTimeout(noShow);
+        this.reefNoShowTimers.delete(roomId);
+      }
     }
 
     try {
@@ -453,15 +461,55 @@ class ActivityRoomManager {
         case 'countdown':
           room.countdownStartedAt = now;
           await this.persistCountdownTransition(room);
-          // Schedule the COUNTDOWN→LIVE auto-transition. Chunk #3 added
-          // every other piece of this FSM but missed the timer that
-          // actually advances state, so before this fix every match sat
-          // in COUNTDOWN forever. The timer is room-scoped + cleared on
-          // any transition out of countdown (above) and on evictRoom().
-          console.log(
-            `[activity-room-manager] room ${roomId} → COUNTDOWN (will auto-advance to LIVE in ${COUNTDOWN_DURATION_MS}ms; ${room.participants.size} participants, hasBots=${room.hasBots})`,
-          );
-          {
+          if (room.activityId === 'reef-race') {
+            // Reef navigation routinely takes longer than the countdown itself.
+            // Do not start an unwatched bot race at room creation: the first
+            // connected non-bot participant arms the full shared window through
+            // ensureSyncedCountdown(). A separate creation-time cap evicts a
+            // room nobody reaches and releases its room/bot reservations.
+            console.log(
+              `[activity-room-manager] room ${roomId} → COUNTDOWN (awaiting first non-bot WS; no-show abort in ${REEF_RACE_NO_SHOW_ABORT_MS}ms; ${room.participants.size} participants, hasBots=${room.hasBots})`,
+            );
+            const noShowDelayMs = Math.max(
+              0,
+              room.createdAt + REEF_RACE_NO_SHOW_ABORT_MS - Date.now(),
+            );
+            const noShowTimer = setTimeout(() => {
+              this.reefNoShowTimers.delete(roomId);
+              const r = this.rooms.get(roomId);
+              if (!r || r.state !== 'countdown') return;
+              if (this.hasEligibleReefCountdownPresence(r)) {
+                // Defensive recovery if a future connection path marks presence
+                // without calling ensureSyncedCountdown() as the hub does today.
+                this.ensureSyncedCountdown(roomId);
+                return;
+              }
+              console.log(
+                `[activity-room-manager] room ${roomId} Reef countdown no-show cap fired → aborting (connectedNonBotCount=0)`,
+              );
+              this.transitionRoom(roomId, 'aborted')
+                .then(() => logEvent({
+                  eventType: 'activity.match.swept',
+                  payload: {
+                    activityId: r.activityId,
+                    roomId: r.id,
+                    reason: 'reef_countdown_no_show',
+                    playerCount: r.participants.size,
+                  },
+                }))
+                .catch((err) => {
+                  console.error(
+                    `[activity-room-manager] Reef countdown no-show abort failed for ${roomId}:`,
+                    err,
+                  );
+                });
+            }, noShowDelayMs);
+            this.reefNoShowTimers.set(roomId, noShowTimer);
+          } else {
+            // Preserve the existing non-Reef room-creation timer exactly.
+            console.log(
+              `[activity-room-manager] room ${roomId} → COUNTDOWN (will auto-advance to LIVE in ${COUNTDOWN_DURATION_MS}ms; ${room.participants.size} participants, hasBots=${room.hasBots})`,
+            );
             const timer = setTimeout(() => {
               this.countdownTimers.delete(roomId);
               const r = this.rooms.get(roomId);
@@ -517,26 +565,19 @@ class ActivityRoomManager {
   }
 
   /**
-   * On the first Reef Race WS connection only, re-anchor a soon-to-expire
-   * COUNTDOWN so the room gets a full synced 3-2-1 before the sim starts.
+   * On the first eligible Reef Race WS connection only, re-anchor COUNTDOWN
+   * and arm a full shared 3-2-1 window before the sim starts.
    *
-   * WHY: `createRoom()` flips PENDING→COUNTDOWN immediately and arms the
-   * COUNTDOWN→LIVE timer at room-creation time — but the player still has to
-   * navigate the browser to the room page and open a WebSocket, which on a
-   * cold load easily burns 4-5s. By the time `registerConnection()` runs the
-   * original window is gone: the `event.countdown` sent on connect computes
-   * `remaining=0` (overlay is gated on `>0`) or the room already auto-advanced
-   * to LIVE — so the HUD jumps straight to RACE 0% with no countdown. This
-   * manifested in Reef solo-vs-bots playtests as "no 3-2-1". Both the ellipse
-   * and CLOSED-LOOP spline Reef sims race the same room-manager window.
+   * WHY: room creation precedes browser navigation + route compilation + WS
+   * auth, which routinely consumed the old creation-anchored 5s window. Rooms
+   * reached LIVE with zero connected racers and ran bot races nobody watched.
    *
-   * FIX: when the first Reef player connects while the room is still in
-   * COUNTDOWN and the remaining window is below `COUNTDOWN_MIN_SYNC_MS`, restart the
-   * COUNTDOWN→LIVE timer anchored to NOW so everyone gets a clean, synced
-   * countdown. The room-lifetime latch is consumed even when that first
-   * connection sees a healthy window: later racers can never move an anchor
-   * already sent to the first racer. Non-Reef, LIVE, and RESULTS rooms are
-   * strict no-ops, preserving the staging lifecycle for Bumper and poker.
+   * FIX: Reef creation enters COUNTDOWN but arms no LIVE timer. Once the hub has
+   * marked the first non-bot participant connected, this method unconditionally
+   * anchors to NOW, cancels the 60s no-show cap, and arms exactly one full Reef
+   * countdown. `subjectType:'agent'` is eligible alongside human; only house
+   * bots are excluded. Later racers cannot move the anchor. Non-Reef, LIVE,
+   * and RESULTS rooms are strict no-ops.
    *
    * Returns the (possibly refreshed) `countdownStartedAt` so the caller can
    * emit an accurate `event.countdown` in the same connect turn.
@@ -546,7 +587,8 @@ class ActivityRoomManager {
     if (
       !room ||
       room.activityId !== 'reef-race' ||
-      room.state !== 'countdown'
+      room.state !== 'countdown' ||
+      !this.hasEligibleReefCountdownPresence(room)
     ) {
       return null;
     }
@@ -557,18 +599,14 @@ class ActivityRoomManager {
     this.countdownSyncAttemptedRooms.add(roomId);
 
     const now = Date.now();
-    const anchoredAt = room.countdownStartedAt ?? room.createdAt;
-    const remaining = COUNTDOWN_DURATION_MS - (now - anchoredAt);
-
-    // Healthy first-connect window: leave it untouched, but retain the latch
-    // so a later staggered connection cannot push the start time out.
-    if (remaining >= COUNTDOWN_MIN_SYNC_MS) {
-      return room.countdownStartedAt;
-    }
-
-    // Re-anchor to now and rearm the auto-advance timer for a fresh window.
     room.countdownStartedAt = now;
     room.lastTouchedAt = now;
+
+    const noShowTimer = this.reefNoShowTimers.get(roomId);
+    if (noShowTimer) {
+      clearTimeout(noShowTimer);
+      this.reefNoShowTimers.delete(roomId);
+    }
 
     const existing = this.countdownTimers.get(roomId);
     if (existing) clearTimeout(existing);
@@ -583,11 +621,11 @@ class ActivityRoomManager {
           err,
         );
       });
-    }, COUNTDOWN_DURATION_MS);
+    }, REEF_RACE_COUNTDOWN_DURATION_MS);
     this.countdownTimers.set(roomId, timer);
 
     console.log(
-      `[activity-room-manager] room ${roomId} countdown re-anchored on connect (was ${Math.max(0, Math.round(remaining))}ms remaining → full ${COUNTDOWN_DURATION_MS}ms)`,
+      `[activity-room-manager] room ${roomId} Reef countdown anchored on first non-bot WS (full ${REEF_RACE_COUNTDOWN_DURATION_MS}ms)`,
     );
 
     return room.countdownStartedAt;
@@ -603,6 +641,7 @@ class ActivityRoomManager {
   async roomSweeper(): Promise<void> {
     const now = Date.now();
     const toAbort: Room[] = [];
+    const reefNoShowAbortIds = new Set<string>();
     // LIVE rooms with no WS connections must use `aborted_crash` (the
     // FSM does not allow live → aborted; only live → aborted_crash).
     // Tracked separately so the dispatch loop below picks the right
@@ -629,7 +668,17 @@ class ActivityRoomManager {
           // the user could connect (manifested as "Match Starting…"
           // sticking forever after the client finally connected to a
           // room that was already aborted server-side).
-          if (
+          if (room.activityId === 'reef-race') {
+            // Fallback to the exact creation-time cap if the dedicated timer
+            // was delayed or lost; bot-only presence never starts a race.
+            if (
+              !this.hasEligibleReefCountdownPresence(room) &&
+              now - room.createdAt >= REEF_RACE_NO_SHOW_ABORT_MS
+            ) {
+              toAbort.push(room);
+              reefNoShowAbortIds.add(room.id);
+            }
+          } else if (
             this.connectedCount(room) === 0 &&
             now - (room.countdownStartedAt ?? room.createdAt) > 10_000
           ) {
@@ -678,7 +727,9 @@ class ActivityRoomManager {
           payload: {
             activityId: room.activityId,
             roomId: room.id,
-            reason: 'pending_empty',
+            reason: reefNoShowAbortIds.has(room.id)
+              ? 'reef_countdown_no_show'
+              : 'pending_empty',
             playerCount: room.participants.size,
           },
         });
@@ -927,6 +978,10 @@ class ActivityRoomManager {
 
   /** Test hook — clear all in-memory state. */
   __resetForTest(): void {
+    for (const timer of this.countdownTimers.values()) clearTimeout(timer);
+    this.countdownTimers.clear();
+    for (const timer of this.reefNoShowTimers.values()) clearTimeout(timer);
+    this.reefNoShowTimers.clear();
     this.rooms.clear();
     this.shortCodeIndex.clear();
     this.playerToRoom.clear();
@@ -1182,6 +1237,11 @@ class ActivityRoomManager {
       clearTimeout(pendingTimer);
       this.countdownTimers.delete(room.id);
     }
+    const noShowTimer = this.reefNoShowTimers.get(room.id);
+    if (noShowTimer) {
+      clearTimeout(noShowTimer);
+      this.reefNoShowTimers.delete(room.id);
+    }
     this.countdownSyncAttemptedRooms.delete(room.id);
     this.rooms.delete(room.id);
     this.shortCodeIndex.delete(room.shortCode);
@@ -1231,12 +1291,23 @@ class ActivityRoomManager {
     return count;
   }
 
+  /** Human and connected-agent WS presence count; house bots never qualify. */
+  private hasEligibleReefCountdownPresence(room: Room): boolean {
+    for (const participant of room.participants.values()) {
+      if (participant.connected && participant.subjectType !== 'bot') return true;
+    }
+    return false;
+  }
+
   private fsmEventFrame(room: Room, toState: RoomState): ServerFrame {
     switch (toState) {
       case 'countdown':
         return {
           type: 'event.countdown',
-          secondsRemaining: COUNTDOWN_DURATION_MS / 1000,
+          secondsRemaining:
+            (room.activityId === 'reef-race'
+              ? REEF_RACE_COUNTDOWN_DURATION_MS
+              : COUNTDOWN_DURATION_MS) / 1000,
         };
       case 'live':
         return { type: 'event.match_started', startedAt: room.startedAt ?? Date.now() };
