@@ -157,9 +157,12 @@ function NanoClawBanner({
   //                                                just routes them through the connect
   //                                                modal which then bounces them to /login)
   //   provisioningPending (non-guest only —
-  //     evaluated AFTER the guest branch)       → "finish customizing" CTA → /create-agent
-  //                                                (+ "Connect Your Agent" so the external
-  //                                                path stays reachable)
+  //     evaluated AFTER the guest branch)       → single amber CTA → /create-agent
+  //                                                (founder 2026-07-15: no second
+  //                                                "Connect Your Agent" button here;
+  //                                                server-side legacy backfill means
+  //                                                avatar-owning hosted accounts skip
+  //                                                this state entirely)
   //   isAuthenticated && !showPaired &&
   //     !hasAvatar                              → "Create Agent" + "Connect Your Agent"
   //   isAuthenticated && !showPaired &&
@@ -213,25 +216,27 @@ function NanoClawBanner({
   // not — the page detects which). Guests can never reach this branch (the
   // guest/logged-out return above runs first, and the parent already gates
   // the prop on !isGuest).
+  // Founder directive 2026-07-15: this surface shows ONE clear CTA — the
+  // duplicate "Connect Your Agent" button confused the state ("if they're
+  // logged in through our hosting it should be connected"); the external-
+  // connect path stays reachable via the agent-connect modal elsewhere.
+  // Since the server now lazily backfills the missing agent row for
+  // hosted-harness avatars (auth.ts /me/agent-session cold path), an
+  // avatar-owning account essentially never lands here — this branch is
+  // for accounts still missing an avatar (or non-hosted harness), where
+  // /create-agent genuinely finishes the setup.
   if (provisioningPending) {
     return (
-      <div className="fixed left-1/2 -translate-x-1/2 z-50 top-3 flex items-center gap-2">
+      <div className="fixed left-1/2 -translate-x-1/2 z-50 top-3">
         <Link
           href="/create-agent"
           className="flex items-center gap-2 px-4 py-2 rounded-full bg-black/60 backdrop-blur-sm border border-amber-400/50 shadow-lg hover:bg-black/80 hover:border-amber-300/70 transition-all"
         >
           <span className="w-2.5 h-2.5 rounded-full bg-amber-300 shadow-[0_0_6px_rgba(252,211,77,0.6)] animate-pulse" />
           <span className="text-amber-200 font-bold text-sm">
-            Your agent is being set up — finish customizing
+            {hasAvatar ? 'Your agent is being set up — finish customizing' : 'Finish creating your agent'}
           </span>
         </Link>
-        <button
-          onClick={() => setAgentConnectModalOpen(true, 'connect')}
-          className="flex items-center gap-2 px-4 py-2 rounded-full bg-black/60 backdrop-blur-sm border border-yellow-500/40 shadow-lg hover:bg-black/80 hover:border-yellow-400/60 transition-all"
-        >
-          <span className="text-lg">🔌</span>
-          <span className="text-yellow-300 font-bold text-sm">Connect Your Agent</span>
-        </button>
       </div>
     );
   }

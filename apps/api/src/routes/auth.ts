@@ -15,9 +15,14 @@ import {
   provisionAvatarAgentForSignup,
   runProvisioningFailSoft,
   isAgentProvisioningPending,
+  backfillPlatformAgentForAvatar,
   type ProvisionAvatarAgentResult,
 } from '../services/avatar-agent-provisioning';
-import { classifyAgentSessionHot } from '../services/agent-session-classify';
+import {
+  classifyAgentSessionHot,
+  hostedAgentSessionResponse,
+  HOSTED_HARNESSES,
+} from '../services/agent-session-classify';
 import {
   verifyEmailTemplate,
   resetPasswordTemplate,
@@ -189,6 +194,22 @@ authRoutes.get('/me/agent-session', requireAuth, noStorePrivate, async (c) => {
       hasPlatformAgent: !!avatar?.platformAgentId,
     })
   ) {
+    // LAZY LEGACY BACKFILL (2026-07-15, founder report): a hosted-harness
+    // avatar with no platform_agents row is a pre-P2 legacy shape — nothing
+    // is pending that the USER can act on (the avatar is already customized;
+    // only a server-side row is missing). Mint the missing agent row from
+    // the avatar's own stored fields and report 'hosted' immediately —
+    // the D1 "Player tier is a migration, not a rename" completion, done
+    // lazily here instead of a batch script. Fail-soft: any backfill error
+    // falls through to the pending surface exactly as before. Avatars
+    // without a hosted harness (e.g. 'custom') and no-avatar accounts keep
+    // the pending surface — those genuinely need /create-agent.
+    if (avatar && HOSTED_HARNESSES.has(avatar.harness ?? '')) {
+      const agentId = await backfillPlatformAgentForAvatar(user.id, avatar.id);
+      if (agentId) {
+        return c.json(hostedAgentSessionResponse(agentId, avatar.harness ?? null));
+      }
+    }
     return c.json({
       connected: false,
       reason: 'no_bot',
