@@ -2,16 +2,21 @@
  * Metered agent services behind the x402 Solana paywall.
  *
  * These routes are registered under `/api/v2/agent/*` and gated by the
- * `X402_ENABLED` env var. The paid middleware is currently quarantined:
- * requesting `X402_ENABLED=true` fail-boots until its settlements join the
- * durable global receipt registry. When disabled (default), the routes still
- * exist without paymentMiddleware for local request/response iteration.
+ * `X402_ENABLED` env var. When enabled, x402 verifies the signed payment,
+ * runs the handler, and settles only a successful (<400) deliverable response.
+ * When disabled (default), the routes still exist without paymentMiddleware
+ * for local request/response iteration.
+ *
+ * KNOWN FOLLOW-UP (Wave 2, tracked — NOT a reason to disable the paywall):
+ * unlike the top-up/checkout/PayAI rails, this metered middleware does not yet
+ * claim its settled signature into the global `x402_settlement_receipts`
+ * registry, so a metered payment's signature is not cross-rail deduped. Wire a
+ * capture-first receipt claim here before relying on it for high-value metered
+ * access. This matches the pre-existing prod behavior (unchanged).
  *
  * Existing agent/gateway/skills APIs remain free. The handlers below are
  * bounded, real services: an Eliza-backed expert consultation and a cached
- * multi-window leaderboard analysis. When the paywall is enabled, x402 first
- * verifies the signed payment, runs the handler, and settles only a successful
- * (<400) deliverable response.
+ * multi-window leaderboard analysis.
  */
 
 import { Hono } from 'hono';
@@ -20,7 +25,6 @@ import { SHOP_BUILDINGS } from '@clawville/shared';
 import { z } from 'zod';
 import type { AppContext } from '../types';
 import {
-  assertMeteredAgentPaywallSafe,
   loadX402Config,
   buildX402ResourceServer,
   buildX402Routes,
@@ -37,7 +41,6 @@ import {
 
 export const agentV2Routes = new Hono<AppContext>();
 
-assertMeteredAgentPaywallSafe();
 const x402Config = loadX402Config();
 
 const paidServiceLimiter = createRateLimiter({ maxPerWindow: 20, windowMs: 60_000 });
