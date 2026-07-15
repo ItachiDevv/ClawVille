@@ -1129,6 +1129,10 @@ Tracked in `ARCHITECTURE.md §4` as service `activity/reward-pipeline`. Placemen
 | SPEC 2 | Milady VRM rider with `surf_idle / wipeout / victory` Mixamo clips | 2026-04-29 |
 | SPEC 3 | Ramp launch volumes — AABB collision in tangent/normal basis, 500 ms per-body cooldown, `event.ramp_launch` payload `{type, avatarId, rampId, launchVel}` | 2026-04-29 |
 
+**Rider is the account's real avatar (not an NPC default):** a racer's rendered species = `avatars.model_key` verbatim (server `loadParticipantMeta` → `snapshot.init.room.reefParticipantMeta` → client `entity.species` → `MODEL_REGISTRY`; self players take the SAME path as rivals, `isSelf` only gates prediction/camera/FX). VRM `model_key` (e.g. `milady_official_N`, `hermes_*`, `tekk`, chibis) ⇒ humanoid VRM rider; GLB `model_key` (e.g. `lobster`, default when `model_key` is NULL) ⇒ sea-creature rider. There is no queue-time NPC/default substitution — a lobster racer means that account's `model_key` IS `lobster`.
+
+**Rider sizing + deck-plant (2026-07-15 founder round):** VRM riders fit to **80wu** (board length ≈99.4wu ⇒ realistic ~1.24 board/rider surfer proportion; was 245.63wu = 2.47× board length), GLB creatures unchanged; every rider is RIGIDLY planted on the board deck (independent bob removed — was floating 12–22wu above + adding a VRM-only shimmer). See `3dStructure.md §10b`.
+
 ---
 
 ## 18z. Wager lobbies (Bumper Shells + Reef Race, 2026-05-12)

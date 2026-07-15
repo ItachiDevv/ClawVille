@@ -34,8 +34,11 @@
  *   - gliderMesh: shared module-scope BoxGeometry(2.5, 0.25, 5) + MeshStandardMaterial.
  *     ONE geometry and ONE material instance for ALL player instances (no per-mount alloc).
  *   - gliderRef carries the bank tilt (rotation.z). riderMountRef.rotation.z = 0 always.
- *   - riderMountRef positioned at RIDER_MOUNT_OFFSET_DEFAULT = [0, 1.2, -0.3] local.
- *   - Gentle bob on riderMountRef.position.y (±2 local units at 1.2Hz).
+ *   - riderMountRef planted on the board DECK (2026-07-15): X/Z from
+ *     RIDER_MOUNT_OFFSET_DEFAULT (0 / -0.3), Y = static deck-top plane
+ *     (SURFBOARD_DECK_TOP_LOCAL_Y ≈ 0.235 local v2 / GLIDER_HEIGHT/2 v1). The old
+ *     [0, 1.2, -0.3] mount + gentle per-frame bob are REMOVED — board+rider are
+ *     one rigid unit and per-rider grounding lands feet/body on the deck.
  *   - KART_Y_ABOVE_TRACK elevation moves from group.position.y (race-layer local) to
  *     gliderRef.position.y (local = KART_Y_ABOVE_TRACK / KART_SCALE = 0.25).
  *
@@ -219,6 +222,27 @@ function surfboardBaseQuat(size: THREE.Vector3): THREE.Quaternion {
 const SURFBOARD_UNIFORM_SCALE = 2.5;
 
 /**
+ * Board DECK-TOP height in gliderRef-LOCAL units — the grounding plane the
+ * rider's feet (VRM) / body-bottom (GLB creature) sit ON. The board clone is
+ * recentered at the gliderRef origin (see `clonedSurfboard`), so its deck top =
+ * half the fitted board thickness.
+ *
+ * surfboard_1.glb thinnest raw axis = 0.18814 local (gltf-transform 2026-07-15)
+ * → ×SURFBOARD_UNIFORM_SCALE(2.5) = 0.47035 → /2 = 0.23517 local (= 4.70wu at
+ * KART_SCALE=20). Cross-checked LIVE at the /preview harness
+ * (board-rider-measure 2026-07-15): measured deckTopY_local = 0.23517. ✓
+ *
+ * Founder 2026-07-15: "the board should be the grounding point for the feet …
+ * feet planted on the board." Mounting `riderMountRef` AT this Y, combined with
+ * the per-rider grounding already applied at mount (VRM: computeVRMAvatarFit's
+ * offsetY drops feet to the mount origin; GLB: bbox-min → mount origin), plants
+ * every rider ON the deck instead of floating ~12–22wu above it (measured
+ * before-fix gap). The v1 BoxGeometry board (non-spline path) uses its own
+ * GLIDER_HEIGHT/2 deck top.
+ */
+const SURFBOARD_DECK_TOP_LOCAL_Y = (0.18814 * SURFBOARD_UNIFORM_SCALE) / 2;
+
+/**
  * Registry-driven rider router (2026-07-10 generalization).
  *
  * Was: `isMiladySpecies()` hard-gated ONLY `milady_official_N` species into the
@@ -282,8 +306,20 @@ const _warnedUnknownSpeciesKeys = new Set<string>();
  * preserves Milady's exact prior visual height; Mixamo-rig VRMs — Hermes/
  * Tekk/chibi/Meshy — previously had NO grounding at all since they never
  * reached this branch, and now correctly ground via fit.offsetY).
+ *
+ * CORRECTED 2026-07-15 (founder playtest — "board is TINY vs avatar"): the old
+ * 245.63wu made the humanoid rider 2.47× the SURFBOARD LENGTH (board length =
+ * 99.43wu, measured live at the /preview harness), so the surfer dwarfed the
+ * board — the opposite of a real surfer. A real surfer's board is ≈1.2–1.5×
+ * the rider's height. Retargeted to 80wu → board(99.43)/rider(80) = 1.24, a
+ * clean longboard/funboard proportion the founder can read as a surfer on a
+ * board. GLB creature riders (lobster 22wu, board/rider 4.52 — founder said
+ * "better for the Lobster") are UNCHANGED; only the oversized humanoid shrinks.
+ * Board is deliberately NOT grown (growing it would shrink the well-liked GLB
+ * creatures relative to it). Measured before→after at /preview:
+ * board/riderHeight 0.405 → 1.24.
  */
-const REEF_VRM_RIDER_TARGET_HEIGHT_WU = 245.63;
+const REEF_VRM_RIDER_TARGET_HEIGHT_WU = 80;
 
 /**
  * Rider-mount-LOCAL (not world) bbox-height target for GLB creature riders
@@ -457,24 +493,10 @@ const PRED_HISTORY_SIZE = 96;
 const REBASE_LAG_BASE_MS = 20;
 const REBASE_FALLBACK_MAX_MS = 150;
 
-// ─── Module-scope scratch — NO per-frame allocations ─────────────────────────
-const _bobTime: Record<string, number>  = {};
+// (Removed 2026-07-15: the per-avatar `_bobTime` scratch + BOB_AMP_LOCAL /
+// BOB_FREQ_HZ — the independent rider bob is gone; the rider is rigidly parented
+// to the board deck. See the riderMount mount note in the render tree below.)
 
-/**
- * Bob amplitude in local units (× KART_SCALE = world units).
- *
- * Old value was 2 local = 40 world units — caused rider to oscillate between
- * +52 wu and -28 wu, sinking FAR below the board (board top = 7.5 wu world).
- *
- * New value: 0.04 local = 0.8 wu world — gentle float effect.
- * With RIDER_MOUNT_OFFSET_DEFAULT[1] = 1.2 local:
- *   rider Y range in local = [1.16, 1.24] → world = [23.2, 24.8] wu
- *   board top in world     = 7.5 wu
- *   clearance above board  = 15.7 – 17.3 wu  ✓  never clips board
- */
-const BOB_AMP_LOCAL  = 0.04;
-/** Bob frequency in Hz. */
-const BOB_FREQ_HZ    = 1.2;
 /** gliderRef Y in local space = KART_Y_ABOVE_TRACK (world) / KART_SCALE. */
 const GLIDER_LOCAL_Y = KART_Y_ABOVE_TRACK / KART_SCALE; // = 0.25
 
@@ -1852,14 +1874,17 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
     // its own separate wobble independent of the board.
     riderMount.rotation.z = 0;
 
-    // ─── Gentle bob on riderMountRef.position.y (Phase 1 §4) ─────────────────
-    // ±BOB_AMP_LOCAL local units at BOB_FREQ_HZ — rider appears to float on board.
-    // Accumulate per-avatarId bob time in module-scope scratch (no per-frame alloc).
-    if (!_bobTime[entity.avatarId]) _bobTime[entity.avatarId] = 0;
-    _bobTime[entity.avatarId] += dt;
-    riderMount.position.y =
-      RIDER_MOUNT_OFFSET_DEFAULT[1] +
-      Math.sin(_bobTime[entity.avatarId] * BOB_FREQ_HZ * Math.PI * 2) * BOB_AMP_LOCAL;
+    // ─── Rider is RIGIDLY mounted to the board deck (2026-07-15) ──────────────
+    // Founder playtest: "the board should be the grounding point for the feet …
+    // feet planted on the board … board+rider one rigid unit." The old
+    // independent per-frame bob (riderMount.position.y = 1.2local + sin·BOB_AMP)
+    // is REMOVED — it (a) floated the rider ~12–22wu ABOVE the deck (mount at
+    // 1.2local=24wu vs deck top 0.235local=4.7wu) and (b) added a VRM-ONLY Y
+    // shimmer the board never shared, which read as self-jitter on the humanoid
+    // rider specifically. riderMount.position.y is now a STATIC deck-top plane
+    // (set once in JSX, below); the per-rider grounding already applied at mount
+    // (VRM offsetY / GLB bbox-min → mount origin) plants feet/body on the deck.
+    // No per-frame write here — the board+rider move as one rigid transform.
 
     // ─── Animation: animator (when manifest enabled) OR static rest pose ────
     const speed = Math.sqrt(interpVx * interpVx + interpVz * interpVz);
@@ -1910,7 +1935,7 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
      *   groupRef  — world XZ position + Y rotation (from server via interpolation)
      *     └── gliderRef  — local Y elevation (GLIDER_LOCAL_Y) + bank tilt (rotation.z)
      *           ├── gliderMesh  — shared BoxGeometry board (2.5×0.25×5 local)
-     *           └── riderMountRef  — offset [0, 1.2, -0.3] + bob on Y; rotation.z=0
+     *           └── riderMountRef  — X/Z [0,·,-0.3], Y=STATIC deck-top plane; rotation.z=0
      *                 └── clonedScene  (avatar GLB, color-tinted)
      */
     <group ref={groupRef} scale={[KART_SCALE, KART_SCALE, KART_SCALE]}>
@@ -1924,10 +1949,18 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
         {!USE_SPLINE_PLAYER && (
           <mesh geometry={_gliderGeom} material={_gliderMat} />
         )}
-        {/* Rider mount — offset so avatar sits on board; rotation.z pinned 0 */}
+        {/* Rider mount — planted ON the board deck (rigid, no bob; 2026-07-15).
+            X/Z keep RIDER_MOUNT_OFFSET_DEFAULT (0 / slightly back toward tail);
+            Y is the STATIC deck-top plane (v2 surfboard vs v1 box board) so the
+            per-rider grounding (VRM offsetY / GLB bbox-min → mount origin) lands
+            feet/body on the deck instead of ~12–22wu above it. rotation.z pinned 0. */}
         <group
           ref={riderMountRef}
-          position={RIDER_MOUNT_OFFSET_DEFAULT}
+          position={[
+            RIDER_MOUNT_OFFSET_DEFAULT[0],
+            USE_SPLINE_PLAYER ? SURFBOARD_DECK_TOP_LOCAL_Y : GLIDER_HEIGHT / 2,
+            RIDER_MOUNT_OFFSET_DEFAULT[2],
+          ]}
         />
       </group>
       {/*
