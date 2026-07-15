@@ -1708,6 +1708,24 @@ class NpcSimulation {
             if (k.length > 0) params[k] = v;
           }
         }
+        // `message` is FREE TEXT and documented last, so the naive comma-split
+        // above truncates it at its first comma AND — when the model separates
+        // params with spaces instead of commas (live drop on staging
+        // 2026-07-15: `talk_to_npc(buildingId=x message=...)` parsed as an
+        // unknown target and was silently dropped, losing the bubble, the
+        // covenant record, and the teacher settle) — leaves it glued onto the
+        // previous param's value. Re-extract message from the RAW param string
+        // to end-of-string and strip the spill-over from sibling params.
+        // Leniency-only: correctly comma-separated tags parse identically.
+        const msgMatch = /(?:^|[,\s])message\s*=\s*(.+)$/.exec(paramStr);
+        if (msgMatch) {
+          params.message = msgMatch[1].trim();
+          for (const key of Object.keys(params)) {
+            if (key === 'message') continue;
+            const spill = params[key].search(/\s+message\s*=/);
+            if (spill >= 0) params[key] = params[key].slice(0, spill).trim();
+          }
+        }
       }
       // Body must be in-world to act; still strip the tag below either way.
       if (!npc) {
