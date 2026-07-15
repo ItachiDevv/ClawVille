@@ -365,11 +365,22 @@ export const FOG_FAR = 22000;
 // sky-blue / grass-green for the old land-disc scene.
 export const HEMI_SKY_COLOR    = '#3fd0ff'; // cyan void glow (top fill)
 export const HEMI_GROUND_COLOR = '#1a1640'; // deep indigo (bottom fill)
-export const HEMI_INTENSITY    = 0.65;
+// RETUNED 2026-07-15 (founder playtest: rider rendered as a BLACK unlit
+// silhouette): 0.65/1.25 was calibrated when everything visible was self-lit
+// (ShaderMaterial water, textured sky dome) so nobody noticed the lights were
+// far too weak for LIT meshes — the moment a MeshStandardMaterial rider/board
+// or the canyon walls entered frame they read near-black. Verified live at the
+// /preview racer harness (rider-material-probe / rider-light-bump 2026-07-15):
+// textures were loaded fine (1024px maps, white base color) and hot-bumping
+// ONLY these intensities turned the black silhouette into a fully-readable
+// rider + orange board + green canyon with the water untouched (it ignores
+// scene lights). 2.0/2.6 chosen over 3.0/4.0 — fully readable without
+// flattening the key/fill contrast.
+export const HEMI_INTENSITY    = 2.0;
 
 // Cool key light from above-front so the riders read crisply against the void.
 export const DIR_COLOR             = '#dff2ff';
-export const DIR_INTENSITY         = 1.25;
+export const DIR_INTENSITY         = 2.6;
 export const DIR_POSITION          = [300, 800, 200] as const;
 export const DIR_SHADOW_MAP_SIZE   = 512;
 export const DIR_SHADOW_NEAR       = 1;

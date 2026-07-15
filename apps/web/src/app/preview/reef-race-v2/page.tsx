@@ -51,6 +51,7 @@ import ReefRacePlayer from '@/lib/three/activities/reef-race/ReefRacePlayer';
 import type { ReefRaceEntity } from '@/lib/three/activities/reef-race/reef-race-types';
 import { clientSpline } from '@/lib/three/activities/reef-race/reef-race-spline-instance';
 import { elevationAtT } from '@/lib/three/activities/reef-race/reef-race-elevation';
+import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 import { ReefWaterTunerPanel } from '@/components/reef/ReefWaterTunerPanel';
 import { ReefPhysicsTunerPanel } from '@/components/reef/ReefPhysicsTunerPanel';
 import {
@@ -550,6 +551,12 @@ function ReefRacePreviewInner() {
         dpr={[1, 1.5]}
         style={{ width: '100%', height: '100%' }}
       >
+        {/* KTX2 renderer-capability setup MUST precede any *-ktx.glb consumer —
+            the staging merge moved rider assets to KHR_texture_basisu, and
+            ReefRaceScene (live race) already mounts this; without it the racer
+            harness crashes "setKTX2Loader must be called before loading KTX2
+            textures" (caught by rider-material-probe 2026-07-15). */}
+        <KTX2LoaderSetup />
         <Suspense fallback={null}>
           <SceneContents
             mode={mode}
