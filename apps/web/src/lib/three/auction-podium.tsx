@@ -36,7 +36,7 @@ import { useGameStore } from '@/stores/game';
 // Preloads at module scope
 // ---------------------------------------------------------------------------
 useGLTF.preload('/models/auction-dome.glb');
-preloadKTX2Bytes('/models/jellyfish-ktx.glb');
+preloadKTX2Bytes('/models/jellyfish-ktx.glb?v=2');
 
 // ---------------------------------------------------------------------------
 // World position — unchanged from old podium
@@ -76,7 +76,7 @@ function computeScale(root: THREE.Group, targetHeight: number): number {
 // ---------------------------------------------------------------------------
 function FloatingJellyfish() {
   const floatRef = useRef<THREE.Group>(null!);
-  const { scene } = useGLTFWithKTX2('/models/jellyfish-ktx.glb');
+  const { scene } = useGLTFWithKTX2('/models/jellyfish-ktx.glb?v=2');
 
   const cloned = useMemo(() => {
     const c = scene.clone(true);

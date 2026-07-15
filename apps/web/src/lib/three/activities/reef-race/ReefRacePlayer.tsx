@@ -147,9 +147,9 @@ import { triggerBurst } from '@/lib/three/activities/shared/activity-particles';
 // Canonical creature models use KHR_texture_basisu. The race Canvas does not
 // exist yet at module load, so warm HTTP bytes only; parsing waits until
 // KTX2LoaderSetup has detected renderer support inside ReefRaceScene.
-preloadKTX2Bytes('/models/sea_horse-ktx.glb');
-preloadKTX2Bytes('/models/lobster-ktx.glb');
-preloadKTX2Bytes('/models/crayfish-ktx.glb');  // SPEC 1 — 3rd species, static mesh
+preloadKTX2Bytes('/models/sea_horse-ktx.glb?v=2');
+preloadKTX2Bytes('/models/lobster-ktx.glb?v=2');
+preloadKTX2Bytes('/models/crayfish-ktx.glb?v=2');  // SPEC 1 — 3rd species, static mesh
 // v2 spline path surfboard — plain .clone() (no skeleton, static mesh).
 // Asset: surfboard_1.glb, 3 220 tris, 660 KB, CC-BY 4.0 (see ATTRIBUTIONS.md).
 useGLTF.preload('/models/reef-race/surfboards/surfboard_1.glb');
@@ -836,12 +836,12 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
   // Determine GLB path. For VRM species use lobster as the sentinel so the
   // KTX2-aware GLTF hook is always called (Rules of Hooks).
   const glbPath = (() => {
-    if (isVRM) return '/models/lobster-ktx.glb'; // sentinel — not rendered when isVRM
+    if (isVRM) return '/models/lobster-ktx.glb?v=2'; // sentinel — not rendered when isVRM
     if (regEntry && regEntry.avatar_type === 'glb') return regEntry.path;
     switch (speciesKey) {
-      case 'crayfish':  return '/models/crayfish-ktx.glb';
+      case 'crayfish':  return '/models/crayfish-ktx.glb?v=2';
       case 'seahorse':
-      case 'sea_horse': return '/models/sea_horse-ktx.glb';
+      case 'sea_horse': return '/models/sea_horse-ktx.glb?v=2';
       default:
         // Unknown species — not in the registry, not a legacy special case.
         // Log once, render lobster.
@@ -851,7 +851,7 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
             `[ReefRacePlayer] unknown species="${speciesKey}" — rendering lobster-ktx.glb as fallback`,
           );
         }
-        return '/models/lobster-ktx.glb';
+        return '/models/lobster-ktx.glb?v=2';
     }
   })();
 

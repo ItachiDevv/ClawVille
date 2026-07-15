@@ -53,9 +53,9 @@ import type { VRM } from '@pixiv/three-vrm';
 const VRM_PATH   = '/avatars/milady-official-3.vrm';
 const VRM_ID     = 'building-visit-vignette';
 const IDLE_PATH  = '/avatars/animations/idle.glb'; // Milady stands + breathes (no walk)
-const BLDG_PATH  = '/models/pineapple-house-opt1-ktx.glb?v=2';
-const SB_PATH    = '/models/characters/spongebob.glb';
-const GARY_PATH  = '/models/characters/gary.glb';
+const BLDG_PATH  = '/models/pineapple-house-opt1-ktx.glb?v=3';
+const SB_PATH    = '/models/characters/spongebob-ktx.glb';
+const GARY_PATH  = '/models/characters/gary-ktx.glb';
 
 // ---------------------------------------------------------------------------
 // Scene constants
@@ -221,8 +221,8 @@ function SandSeabed() {
 preloadVRMBytes(VRM_PATH);
 preloadKTX2Bytes(BLDG_PATH);
 useGLTF.preload(IDLE_PATH);
-useGLTF.preload(SB_PATH);
-useGLTF.preload(GARY_PATH);
+preloadKTX2Bytes(SB_PATH);
+preloadKTX2Bytes(GARY_PATH);
 
 // ---------------------------------------------------------------------------
 // computeNormalizedScaleSimple — scale + pivotOffsetY for a cloned GLB.
@@ -313,7 +313,7 @@ const BuildingMesh = memo(function BuildingMesh() {
 // SpongeBob teacher — stands facing the player, gentle idle.
 // ---------------------------------------------------------------------------
 const SpongeBobTeacher = memo(function SpongeBobTeacher() {
-  const { scene: src, animations } = useGLTF(SB_PATH);
+  const { scene: src, animations } = useGLTFWithKTX2(SB_PATH);
   const animGroupRef = useRef<THREE.Group>(null);
   const mixerRef = useRef<THREE.AnimationMixer | null>(null);
 
@@ -375,7 +375,7 @@ const SpongeBobTeacher = memo(function SpongeBobTeacher() {
 // Gary companion beside SpongeBob
 // ---------------------------------------------------------------------------
 const GaryCompanion = memo(function GaryCompanion() {
-  const { scene: src } = useGLTF(GARY_PATH);
+  const { scene: src } = useGLTFWithKTX2(GARY_PATH);
   const animGroupRef = useRef<THREE.Group>(null);
 
   const { cloned, scale, pivotY } = useMemo(() => {

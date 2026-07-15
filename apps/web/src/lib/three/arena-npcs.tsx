@@ -297,16 +297,16 @@ function getTerrainY(x: number, z: number, _scene: THREE.Scene): number {
 
 // Map species strings to GLB paths + model keys for the new character system
 const SPECIES_MODEL: Record<string, { path: string; key: string }> = {
-  lobster:       { path: '/models/lobster-ktx.glb',                    key: 'lobster' },
-  crayfish:      { path: '/models/crayfish-ktx.glb',                   key: 'crayfish' },
-  sweet_crab:    { path: '/models/sweet_crab_sketchfabweekly-ktx.glb', key: 'sweet_crab' },
-  lobster_plush: { path: '/models/lobster_plush-ktx.glb',              key: 'lobster_plush' },
-  hermitcrab:    { path: '/models/hermitcrab-ktx.glb',                 key: 'hermitcrab' },
+  lobster:       { path: '/models/lobster-ktx.glb?v=2',                    key: 'lobster' },
+  crayfish:      { path: '/models/crayfish-ktx.glb?v=2',                   key: 'crayfish' },
+  sweet_crab:    { path: '/models/sweet_crab_sketchfabweekly-ktx.glb?v=2', key: 'sweet_crab' },
+  lobster_plush: { path: '/models/lobster_plush-ktx.glb?v=2',              key: 'lobster_plush' },
+  hermitcrab:    { path: '/models/hermitcrab-ktx.glb?v=2',                 key: 'hermitcrab' },
   // chihiro / priestess / chibi_goku removed 2026-04-21 — GLBs deleted from disk.
   // Any legacy DB rows with these species values will fall back to DEFAULT_SPECIES (lobster).
-  jellyfish:     { path: '/models/jellyfish-ktx.glb',                  key: 'jellyfish' },
-  octopus:       { path: '/models/octopus_toy-ktx.glb',                key: 'octopus' },
-  seahorse:      { path: '/models/sea_horse-ktx.glb',                  key: 'seahorse' },
+  jellyfish:     { path: '/models/jellyfish-ktx.glb?v=2',                  key: 'jellyfish' },
+  octopus:       { path: '/models/octopus_toy-ktx.glb?v=2',                key: 'octopus' },
+  seahorse:      { path: '/models/sea_horse-ktx.glb?v=2',                  key: 'seahorse' },
 };
 const DEFAULT_SPECIES = SPECIES_MODEL.lobster;
 

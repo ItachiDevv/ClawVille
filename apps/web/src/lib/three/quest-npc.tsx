@@ -46,7 +46,7 @@ const QUEST_NPC_Z = -60;
 const QUEST_NPC_FLOOR_Y = -2;
 
 // Preload so GLB is ready before first render
-preloadKTX2Bytes('/models/crayfish-ktx.glb');
+preloadKTX2Bytes('/models/crayfish-ktx.glb?v=2');
 
 // Gold color for the quest marker octahedron
 const MARKER_COLOR = 0xffd700;
@@ -100,7 +100,7 @@ const QuestNpcInner = memo(function QuestNpcInner() {
   const animRef    = useRef<THREE.Group>(null!);
   const hoveredRef = useRef(false);
 
-  const { scene } = useGLTFWithKTX2('/models/crayfish-ktx.glb');
+  const { scene } = useGLTFWithKTX2('/models/crayfish-ktx.glb?v=2');
 
   // Clone + normalize to ~61 world units (×1.75 of original 35, matches 2026-04-23
   // CHARACTER_HEIGHT bump 55→96 in arena-location-npcs.tsx so the town-center

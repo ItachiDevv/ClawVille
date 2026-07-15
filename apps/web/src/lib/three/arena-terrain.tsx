@@ -165,14 +165,14 @@ interface DecoEntry {
 // Small props (anchor, barrel, chest, lantern, tower2) already safe at their caps.
 const DECO_TYPES = [
   // Coral — moderate presence, capped at 15 to prevent 500+ wu wide clusters
-  { model: '/models/coral-reef1-ktx.glb', weight: 3, minScale: 4,   maxScale: 15  },
-  { model: '/models/coral-reef2-ktx.glb', weight: 3, minScale: 3,   maxScale: 13  },
-  { model: '/models/coral-reef3-ktx.glb', weight: 3, minScale: 3,   maxScale: 12  },
+  { model: '/models/coral-reef1-ktx.glb?v=2', weight: 3, minScale: 4,   maxScale: 15  },
+  { model: '/models/coral-reef2-ktx.glb?v=2', weight: 3, minScale: 3,   maxScale: 13  },
+  { model: '/models/coral-reef3-ktx.glb?v=2', weight: 3, minScale: 3,   maxScale: 12  },
   // Kelp — tall accent, capped at 15 (was 30; was producing 600+ wu wide blades)
   { model: '/models/kelp.glb',        weight: 3, minScale: 6,   maxScale: 15  },
   // Shells — clusters of tiny to medium (was maxScale 18-20, now 12)
-  { model: '/models/building-shell-ktx.glb',    weight: 5, minScale: 2,   maxScale: 12  },
-  { model: '/models/building-seashell-ktx.glb', weight: 5, minScale: 2,   maxScale: 12  },
+  { model: '/models/building-shell-ktx.glb?v=2',    weight: 5, minScale: 2,   maxScale: 12  },
+  { model: '/models/building-seashell-ktx.glb?v=2', weight: 5, minScale: 2,   maxScale: 12  },
   // Anchors — scattered singles, small to moderate
   { model: '/models/building-anchor.glb', weight: 4, minScale: 3,   maxScale: 14  },
   // Barrels — common ocean-floor clutter
@@ -180,9 +180,9 @@ const DECO_TYPES = [
   // Chests — treasure accents
   { model: '/models/building-chest.glb',  weight: 4, minScale: 3,   maxScale: 12  },
   // Lanterns — ambient glow props, small to medium
-  { model: '/models/building-lantern-ktx.glb', weight: 3, minScale: 4,  maxScale: 12  },
+  { model: '/models/building-lantern-ktx.glb?v=2', weight: 3, minScale: 4,  maxScale: 12  },
   // Crayfish — scattered critters, small
-  { model: '/models/crayfish-ktx.glb',         weight: 3, minScale: 3,  maxScale: 10  },
+  { model: '/models/crayfish-ktx.glb?v=2',         weight: 3, minScale: 3,  maxScale: 10  },
   // Tower2 — distinctive landmark towers, rare
   { model: '/models/building-tower2.glb',  weight: 2, minScale: 4,  maxScale: 14  },
   // Shipwrecks and submarines are placed as FIXED LANDMARKS below (not scattered)
@@ -384,17 +384,17 @@ function disposeClone(root: THREE.Object3D): void {
 
 // All 12 unique decoration model paths (must match DECO_TYPES exactly)
 const DECO_MODEL_PATHS = [
-  '/models/coral-reef1-ktx.glb',
-  '/models/coral-reef2-ktx.glb',
-  '/models/coral-reef3-ktx.glb',
+  '/models/coral-reef1-ktx.glb?v=2',
+  '/models/coral-reef2-ktx.glb?v=2',
+  '/models/coral-reef3-ktx.glb?v=2',
   '/models/kelp.glb',
-  '/models/building-shell-ktx.glb',
-  '/models/building-seashell-ktx.glb',
+  '/models/building-shell-ktx.glb?v=2',
+  '/models/building-seashell-ktx.glb?v=2',
   '/models/building-anchor.glb',
   '/models/building-barrel.glb',
   '/models/building-chest.glb',
-  '/models/building-lantern-ktx.glb',
-  '/models/crayfish-ktx.glb',
+  '/models/building-lantern-ktx.glb?v=2',
+  '/models/crayfish-ktx.glb?v=2',
   '/models/building-tower2.glb',
 ] as const;
 
