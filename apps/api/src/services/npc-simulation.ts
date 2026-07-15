@@ -4,6 +4,9 @@ import {
   BUILDING_INTERACTION_RADIUS,
   buildingEdgeDistanceGamePx,
   MAP_LOCATIONS,
+  AUTONOMY_ENTERABLE_PLACES,
+  HATCHER_ACTION_VERBS,
+  type HatcherActionVerb,
   BUILDING_OPENCLAW_THEMES,
   type NpcDefinition,
   type AgentSubstrateRegistration,
@@ -132,6 +135,12 @@ const HATCHER_EMOTE_MAP: Record<string, { activity: NpcActivity; emoji: string }
 const HATCHER_ACTION_REGEX = /\[ACTION:\s*(\w+)\(([^)]*)\)\]/g;
 const HATCHER_TALK_MESSAGE_MAX = 500;
 
+const HATCHER_ACTION_VERB_SET: ReadonlySet<string> = new Set(HATCHER_ACTION_VERBS);
+
+function isHatcherActionVerb(name: string): name is HatcherActionVerb {
+  return HATCHER_ACTION_VERB_SET.has(name);
+}
+
 // Hard cap on how many [ACTION:] tags we will EXECUTE per cognition reply.
 // Each move()/enter_building() runs an A* search (up to ~6000 iterations) and
 // each talk_to_npc() pushes a pending event broadcast to every connected
@@ -143,16 +152,23 @@ const HATCHER_TALK_MESSAGE_MAX = 500;
 // just never executed.
 const MAX_HATCHER_ACTIONS_PER_REPLY = 4;
 
-// Cove center, in world pixel coords, for the enter_cove() verb. The Cove is
-// NOT in NPC_BUILDING_CENTERS (that map is the 10 teaching buildings only), so
-// we derive the center from its MAP_LOCATIONS rect (positionX/Y is the top-left
-// corner; center = corner + half the width/height). Computed once at module
-// load; null if the 'cove' location is somehow missing (enter_cove then no-ops
-// loudly rather than crashing).
+// Non-teaching place centers in world pixel coords. Every coordinate is derived
+// from MAP_LOCATIONS; AUTONOMY_ENTERABLE_PLACES only maps prompt ids/actions to
+// an existing location, so perception and execution cannot acquire independent
+// magic coordinates.
+const AUTONOMY_PLACE_CENTERS = AUTONOMY_ENTERABLE_PLACES.flatMap((place) => {
+  const location = MAP_LOCATIONS.find((candidate) => candidate.id === place.mapLocationId);
+  if (!location) return [];
+  return [{
+    ...place,
+    centerX: location.positionX + location.width / 2,
+    centerY: location.positionY + location.height / 2,
+  }];
+});
+
 const COVE_CENTER: { x: number; y: number } | null = (() => {
-  const cove = MAP_LOCATIONS.find((l) => l.id === 'cove');
-  if (!cove) return null;
-  return { x: cove.positionX + cove.width / 2, y: cove.positionY + cove.height / 2 };
+  const cove = AUTONOMY_PLACE_CENTERS.find((place) => place.placeId === 'cove');
+  return cove ? { x: cove.centerX, y: cove.centerY } : null;
 })();
 
 // Town-center anchor and the annulus (ring) free-roaming wanderers stay inside.
@@ -1453,6 +1469,25 @@ class NpcSimulation {
       };
     }).sort((a, b) => a.distance - b.distance);
 
+    // Non-teaching destinations exposed to autonomous decision paths. Cove and
+    // poker intentionally share one physical center but keep distinct action
+    // syntax, allowing the model to express the requested activity precisely.
+    const places = AUTONOMY_PLACE_CENTERS.map((place) => {
+      const dx = place.centerX - npc.x;
+      const dy = place.centerY - npc.y;
+      return {
+        placeId: place.placeId,
+        label: place.label,
+        description: place.description,
+        actionVerb: place.actionVerb,
+        actionSyntax: place.actionSyntax,
+        destinationId: place.destinationId,
+        centerX: place.centerX,
+        centerY: place.centerY,
+        distance: Math.round(Math.sqrt(dx * dx + dy * dy)),
+      };
+    }).sort((a, b) => a.distance - b.distance);
+
     // Active conversations involving this NPC
     const conversations = this.getActiveConversations();
     const activeConversations = conversations.map((conv) => ({
@@ -1499,6 +1534,7 @@ class NpcSimulation {
       },
       nearbyNpcs,
       nearbyBuildings,
+      places,
       activeConversations,
       activeCombats,
       gameMode: this.getMode(),
@@ -1653,6 +1689,12 @@ class NpcSimulation {
     name: string,
     params: Record<string, string>,
   ): void {
+    // Canonical hard membership gate shared with the autonomous decision menu.
+    // Parameter validation remains in the exhaustive switch below.
+    if (!isHatcherActionVerb(name)) {
+      console.warn(`[Hatcher] action dropped — not in whitelist: "${name}"`);
+      return;
+    }
     switch (name) {
       case 'move': {
         const x = Number(params.x);
@@ -1841,9 +1883,9 @@ class NpcSimulation {
         this.injectAgentChat(npcId, message);
         return;
       }
-      default:
-        console.warn(`[Hatcher] action dropped — not in whitelist: "${name}"`);
     }
+    const exhaustive: never = name;
+    return exhaustive;
   }
 
   // --- Browser Claw Methods ---

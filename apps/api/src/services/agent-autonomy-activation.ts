@@ -128,6 +128,15 @@ export const activationSeams = {
       })
       .then((row) => row ?? null),
   ensureSession: ensureHostedAvatarAgentSession,
+  /** Fire-and-forget immediate drive after a successful new enrollment. */
+  kickDriver: (agentId: string): void => {
+    void agentAutonomyDriver.driveAgentNow(agentId).catch((err) =>
+      console.error(
+        `[AutonomyActivation] immediate drive failed for ${sessionDigest(agentId)}:`,
+        err instanceof Error ? err.message : err,
+      ),
+    );
+  },
   /**
    * PERSIST the durable "intends to run autonomous" flag on the hosted-avatar
    * session row (by agent_id), so a server restart re-enrolls it with no client
@@ -213,6 +222,12 @@ export async function activateAutonomyForOwner(
   // activation (idempotent) so a Controlled→Autonomous toggle always lands
   // un-suppressed regardless of what state the binding was left in.
   npcSimulation.releaseHumanControlledOpenClaw(ownerUserId, session.agentId);
+
+  // Enrollment reaction: once the Controlled-mode suppression is released, a
+  // NEW enrollment perceives/decides/dispatches immediately instead of waiting
+  // up to 30 seconds for the steady tick. Idempotent keepalive re-activations do
+  // not spend another decision; a newly minted/rotated body still gets a kick.
+  if (!registered.reused || !session.reused) activationSeams.kickDriver(session.agentId);
 
   // DURABLE AUTONOMY — persist the enrollment intent AFTER a successful enroll so
   // the server-side reconcile re-enrolls this agent across a restart/deploy with

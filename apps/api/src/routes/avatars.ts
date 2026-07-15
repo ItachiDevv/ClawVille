@@ -1394,6 +1394,11 @@ avatarRoutes.post('/me/directive', requireAuth, async (c) => {
     void runtime.injectDirectiveMemory(value.text, user.id);
   }
 
+  // Immediate reaction for an actively-enrolled autonomous agent. The driver
+  // verifies owner enrollment AND exact platform-agent identity, so a stale
+  // enrollment cannot consume a directive persisted to a rebound avatar.
+  agentAutonomyDriver.kickEnrolledOwnerNow(user.id, avatar.platformAgentId);
+
   return c.json({ ok: true, directive: value });
 });
 
