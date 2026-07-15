@@ -24,6 +24,8 @@
  *     network error (see use-auth-me.ts module header).
  *   - First RESOLUTION records the identity without a sweep (cold load is
  *     not a transition) but DOES run the quest-owner reconcile below.
+ *   - Anonymous → guest MINT is the same human continuing, so it records
+ *     and reconciles without an identity-state sweep.
  *   - The ref updates BEFORE the sweep: clearIdentityState resets
  *     ['auth-me'] itself, which refetches and resolves the SAME identity —
  *     ref already equal, so no clear-refetch loop. (The sweep uses
@@ -111,6 +113,18 @@ export function IdentityTransitionWatcher() {
     const prev = lastRef.current;
     if (prev === null) {
       lastRef.current = next; // cold load — record, never sweep
+      reconcileQuestOwner();
+      return;
+    }
+    // 2026-07-15 founder repro on staging: a guest MINT (anonymous → guest)
+    // is the SAME human continuing, not an identity switch. There is no prior
+    // account whose state could leak. Sweeping here bounced the first NPC-mode
+    // click out of 'npc' via resetStore and wiped the former-selves presence
+    // filter mid-stream-reseat, exposing the visitor's ghost own-body at spawn.
+    // Guest → account, guest → guest (expired guest re-mint with different
+    // non-null ids), account switches, and expiry (→ null) all still sweep.
+    if (prev.id === null && next.isGuest) {
+      lastRef.current = next;
       reconcileQuestOwner();
       return;
     }
