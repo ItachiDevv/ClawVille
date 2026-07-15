@@ -77,8 +77,8 @@ import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 
 // ─── Preloads — fire at module scope so GLBs are warm before a round starts ──
-preloadKTX2Bytes('/models/lobster-ktx.glb');
-preloadKTX2Bytes('/models/crayfish-ktx.glb');
+preloadKTX2Bytes('/models/lobster-ktx.glb?v=2');
+preloadKTX2Bytes('/models/crayfish-ktx.glb?v=2');
 
 // ─── Module-scope player group registry ──────────────────────────────────────
 // BumperShellsScene's HitEventProcessor uses this to call triggerCombatAction
@@ -173,7 +173,7 @@ function BumperShellsPlayerInner({
   displayName,
 }: BumperShellsPlayerProps) {
   const species = entity.species ?? 'lobster';
-  const glbPath = species === 'crayfish' ? '/models/crayfish-ktx.glb' : '/models/lobster-ktx.glb';
+  const glbPath = species === 'crayfish' ? '/models/crayfish-ktx.glb?v=2' : '/models/lobster-ktx.glb?v=2';
 
   const { scene: srcScene } = useGLTFWithKTX2(glbPath);
 

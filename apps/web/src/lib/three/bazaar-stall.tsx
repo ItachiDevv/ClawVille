@@ -29,7 +29,7 @@ import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 // ---------------------------------------------------------------------------
 // Preload at module scope so Suspense has the data ready before first render.
 // ---------------------------------------------------------------------------
-preloadKTX2Bytes('/models/bazaar-merchant-stand-ktx.glb?v=2');
+preloadKTX2Bytes('/models/bazaar-merchant-stand-ktx.glb?v=3');
 
 // ---------------------------------------------------------------------------
 // World position (Y computed at runtime via groundedYOffset — see below).
@@ -66,7 +66,7 @@ function computeScale(root: THREE.Group): number {
 // Inner component (wrapped in memo — position never changes)
 // ---------------------------------------------------------------------------
 const BazaarStallInner = memo(function BazaarStallInner() {
-  const { scene } = useGLTFWithKTX2('/models/bazaar-merchant-stand-ktx.glb?v=2');
+  const { scene } = useGLTFWithKTX2('/models/bazaar-merchant-stand-ktx.glb?v=3');
 
   // Clone so multiple mounts don't share mutable scene state.
   const cloned = useMemo(() => scene.clone(true), [scene]);

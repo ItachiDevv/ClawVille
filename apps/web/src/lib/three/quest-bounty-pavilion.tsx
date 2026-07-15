@@ -4,7 +4,7 @@
  * QuestBountyPavilion — octagonal open-air pavilion housing the QUEST and
  * BOUNTY notice boards.
  *
- * Asset: /models/quest-bounty-pavilion-ktx.glb?v=3 (Sketchfab "Can You Dig It? Virtual
+ * Asset: /models/quest-bounty-pavilion-ktx.glb?v=4 (Sketchfab "Can You Dig It? Virtual
  * Drop-In" by GGLP, originally a museum display reconstruction). Optimised
  * with @gltf-transform: dedup → metalrough (KHR_materials_pbrSpecularGlossiness
  * dropped) → resize 1024 → webp. 35 MB → 8.7 MB. DO NOT re-optimise.
@@ -42,7 +42,7 @@ import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 // ---------------------------------------------------------------------------
 // Preload at module scope so Suspense has the asset ready
 // ---------------------------------------------------------------------------
-preloadKTX2Bytes('/models/quest-bounty-pavilion-ktx.glb?v=3');
+preloadKTX2Bytes('/models/quest-bounty-pavilion-ktx.glb?v=4');
 
 // ---------------------------------------------------------------------------
 // World position — 1100 wu behind town-directory-sign at (0, 0, -120)
@@ -88,7 +88,7 @@ const LABEL_Y_OFFSET = TARGET_HEIGHT_WU * 0.95;    // above the roof line
 // Inner component (memoized — pavilion never moves)
 // ---------------------------------------------------------------------------
 const QuestBountyPavilionInner = memo(function QuestBountyPavilionInner() {
-  const { scene } = useGLTFWithKTX2('/models/quest-bounty-pavilion-ktx.glb?v=3');
+  const { scene } = useGLTFWithKTX2('/models/quest-bounty-pavilion-ktx.glb?v=4');
 
   // Clone so we don't mutate the cached GLB
   const cloned = useMemo(() => scene.clone(true), [scene]);

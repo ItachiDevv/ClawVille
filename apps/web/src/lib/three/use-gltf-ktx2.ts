@@ -15,12 +15,13 @@
  *   - The model must contain KHR_texture_basisu textures (KTX2-compressed).
  *     For GLBs with WebP or PNG textures useGLTF is fine as-is.
  *
- * Note on GLB compatibility:
- *   gltf-transform 4.3.0 fails to process GLBs that have both
+ * Historical GLB compatibility note:
+ *   gltf-transform 4.3.0 failed to process some GLBs that have both
  *   KHR_materials_clearcoat AND KHR_draco_mesh_compression (parse error:
- *   "Cannot read properties of undefined (reading 'source')"). These files
- *   (e.g. characters/spongebob.glb) must be compressed by an alternative
- *   path or skipped — see compress-ktx2.ts for details.
+ *   "Cannot read properties of undefined (reading 'source')"). The current
+ *   compress-ktx2.ts pipeline processes characters/spongebob.glb successfully;
+ *   use an alternative path or skip only if another asset reproduces the old
+ *   parser limitation.
  */
 
 import { useGLTF } from '@react-three/drei';
