@@ -135,7 +135,12 @@ import {
   WHIRLPOOL_PULL_IMPULSE,
   WHIRLPOOL_SLOW_MULT,
 } from './reef-race-config';
-import { integrateSurfStep, type SurfParams } from '@clawville/shared';
+import {
+  integrateSurfStep,
+  reefRaceStartGridPose,
+  type ReefRaceStartFrame,
+  type SurfParams,
+} from '@clawville/shared';
 import { ReefSpline, type Vec2 } from './reef-race-spline';
 import {
   REEF_RACE_DEFAULT_TRACK,
@@ -612,24 +617,22 @@ export class ReefRaceSplineSim {
     const startCenter  = spline.centerlineAt(0); // start/finish line centre
     const startTangent = spline.tangentAt(0);    // direction of travel at the line
     const startNormal  = spline.normalAt(0);     // left of travel direction
-
-    const SPAWN_SPACING_Z = 120; // back-stagger between rows (was 70 on the narrow track)
-    const SPAWN_OFFSET_X  = 320; // lateral half-gap between the 2 columns (was 90; corridor hw≈900)
+    const startFrame: ReefRaceStartFrame = {
+      center: startCenter,
+      tangent: startTangent,
+      normal: startNormal,
+    };
 
     participantAvatarIds.forEach((avatarId, i) => {
-      const row = Math.floor(i / 2);
-      const col = i % 2 === 0 ? -1 : 1;   // left / right column
+      const spawnPose = reefRaceStartGridPose(startFrame, i);
 
       // Place behind the start line along -tangent, staggered laterally, anchored
       // at the start centerline so the whole grid sits ON the loop.
-      const backZ = row * SPAWN_SPACING_Z + 40;
-      const x =
-        startCenter.x + startTangent.x * (-backZ) + startNormal.x * col * SPAWN_OFFSET_X;
-      const z =
-        startCenter.z + startTangent.z * (-backZ) + startNormal.z * col * SPAWN_OFFSET_X;
+      const x = spawnPose.x;
+      const z = spawnPose.z;
 
       // Face down-track (+tangent direction).
-      const rot = Math.atan2(startTangent.x, startTangent.z);
+      const rot = spawnPose.heading;
 
       const activeBoosts = new Map<ReefBoostKind, ReefBoostEntry>();
       const verdict = opts?.launchBoosts?.get(avatarId) ?? null;

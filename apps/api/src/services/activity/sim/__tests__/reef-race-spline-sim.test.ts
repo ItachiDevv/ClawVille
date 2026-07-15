@@ -44,7 +44,11 @@ const {
   REEF_TURN_RATE,
   REEF_KINEMATIC_TOLERANCE,
 } = await import('../reef-race-config');
-const { integrateSurfStep, turnToward } = await import('@clawville/shared');
+const {
+  integrateSurfStep,
+  reefRaceStartGridPose,
+  turnToward,
+} = await import('@clawville/shared');
 
 const ROOM_ID   = 'test-spline-room';
 const ROOM_ID_2 = 'test-spline-room-2';
@@ -95,6 +99,33 @@ describe('ReefRaceSplineSim', () => {
       expect(bodyA.startCrossed).toBe(false);
       expect(bodyA.alive).toBe(true);
       expect(bodyA.finishedAt).toBeNull();
+    });
+
+    it('uses the shared exact 2-column / 4-row formation for all 8 racers', () => {
+      const avatarIds = Array.from({ length: 8 }, (_, i) => `grid-avatar-${i}`);
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', avatarIds);
+      const state = reefRaceSplineSim.__getState(ROOM_ID)!;
+      const frame = {
+        center: state.spline.centerlineAt(0),
+        tangent: state.spline.tangentAt(0),
+        normal: state.spline.normalAt(0),
+      };
+
+      avatarIds.forEach((avatarId, i) => {
+        const body = state.bodies.get(avatarId)!;
+        const expected = reefRaceStartGridPose(frame, i);
+        expect(body.x).toBe(expected.x);
+        expect(body.z).toBe(expected.z);
+        expect(body.rot).toBe(expected.heading);
+
+        // Independent projections pin insertion order: left/right, then 120wu back.
+        const dx = body.x - frame.center.x;
+        const dz = body.z - frame.center.z;
+        const back = -(dx * frame.tangent.x + dz * frame.tangent.z);
+        const lateral = dx * frame.normal.x + dz * frame.normal.z;
+        expect(back).toBeCloseTo(Math.floor(i / 2) * 120 + 40, 8);
+        expect(lateral).toBeCloseTo((i % 2 === 0 ? -1 : 1) * 320, 8);
+      });
     });
 
     it('emits event.match_started', () => {
@@ -533,7 +564,11 @@ describe('ReefRaceSplineSim', () => {
       reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
       const firstStep = before - distFromCenter(); // positive = moved inward
       expect(firstStep).toBeGreaterThan(0);   // moved inward
-      expect(firstStep).toBeLessThan(200);    // but not a hard snap-back
+      // Not a hard snap-back: the per-tick inward walk is bounded by
+      // WALL_MAX_CORRECTION_WU, doubled 60→120 alongside the 2× speed cap
+      // (2026-07-15), so the first step is ~234 wu (was <200). 400 stays well
+      // under a hard yank of the full 2500 wu overshoot while tracking the cap.
+      expect(firstStep).toBeLessThan(400);
 
       // Over many ticks the spring + outward scrub converge the body into the
       // corridor (halfWidth + body radius + inset tolerance).

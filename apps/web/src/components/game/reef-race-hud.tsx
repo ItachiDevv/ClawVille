@@ -71,6 +71,7 @@ import ReefRaceMiniTurboMeter from './reef-race-miniturbo-meter';
 // and revert to lap-counter-only HUD.
 // Reference: .claude/plans/reef-race-v2.md
 const USE_SPLINE = process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
+const REEF_COUNTDOWN_DURATION_MS = 5_000;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -878,17 +879,50 @@ export default function ReefRaceHud({
   const countdownStartedAt = useActivityStore(
     (s) => s.room?.countdownStartedAt ?? null,
   );
+  const serverClockOffsetMs = useActivityStore((s) => s.serverClockOffsetMs);
   const [localSecondsRemaining, setLocalSecondsRemaining] = useState(5);
+  const previousMatchPhaseRef = useRef(matchPhase);
+  const [showGoFlash, setShowGoFlash] = useState(false);
+  // The local deadline may reach zero before event.match_started arrives over
+  // the wire. Hold visually at 1 until LIVE so GO is the authority start gun,
+  // never an optimistic client prediction of it.
+  const displayedCountdownSeconds = matchPhase === 'pregame-countdown'
+    ? Math.max(1, localSecondsRemaining)
+    : 0;
+
   useEffect(() => {
-    if (!countdownStartedAt) return;
+    if (matchPhase !== 'pregame-countdown') return;
+    const fallbackSeconds = countdownSecondsRemaining > 0
+      ? countdownSecondsRemaining
+      : REEF_COUNTDOWN_DURATION_MS / 1000;
+    const deadline = countdownStartedAt != null && serverClockOffsetMs != null
+      ? countdownStartedAt + REEF_COUNTDOWN_DURATION_MS + serverClockOffsetMs
+      : Date.now() + fallbackSeconds * 1000;
     const tick = () => {
-      const elapsed = (Date.now() - countdownStartedAt) / 1000;
-      setLocalSecondsRemaining(Math.max(0, Math.ceil(5 - elapsed)));
+      setLocalSecondsRemaining(Math.max(0, Math.ceil((deadline - Date.now()) / 1000)));
     };
     tick();
-    const id = setInterval(tick, 200); // 5Hz is plenty for a 1s countdown
+    const id = setInterval(tick, 100);
     return () => clearInterval(id);
-  }, [countdownStartedAt]);
+  }, [
+    countdownSecondsRemaining,
+    countdownStartedAt,
+    matchPhase,
+    serverClockOffsetMs,
+  ]);
+
+  useEffect(() => {
+    const previous = previousMatchPhaseRef.current;
+    previousMatchPhaseRef.current = matchPhase;
+    if (matchPhase === 'pregame-countdown') {
+      setShowGoFlash(false);
+      return;
+    }
+    if (previous !== 'pregame-countdown' || matchPhase !== 'live') return;
+    setShowGoFlash(true);
+    const id = window.setTimeout(() => setShowGoFlash(false), 800);
+    return () => window.clearTimeout(id);
+  }, [matchPhase]);
 
   const baseStyle: React.CSSProperties = {
     position: 'absolute',
@@ -977,11 +1011,15 @@ export default function ReefRaceHud({
 
       {/* Pregame countdown overlay + how-to-play card. Both auto-dismiss
           when the match goes live (parent conditional). */}
-      {matchPhase === 'pregame-countdown' && countdownSecondsRemaining > 0 && (
+      {(matchPhase === 'pregame-countdown' || showGoFlash) && (
+        <RoundCountdown
+          secondsRemaining={showGoFlash ? 0 : displayedCountdownSeconds}
+        />
+      )}
+      {matchPhase === 'pregame-countdown' && (
         <>
-          <RoundCountdown secondsRemaining={countdownSecondsRemaining} />
           <ReefRaceInstructions
-            countdownSecondsRemaining={countdownSecondsRemaining}
+            countdownSecondsRemaining={displayedCountdownSeconds}
           />
         </>
       )}
@@ -989,7 +1027,7 @@ export default function ReefRaceHud({
       {/* Phase 1 launch-glow ring — overlaid at the very last second of the
           countdown so a player priming a launch press sees a clear "go now"
           cue. Local-countdown-driven (audit S9). */}
-      {matchPhase === 'pregame-countdown' && localSecondsRemaining === 1 && (
+      {matchPhase === 'pregame-countdown' && displayedCountdownSeconds === 1 && (
         <div
           style={{
             position: 'absolute',

@@ -35,6 +35,7 @@ export type {
 } from './reef-race/spline';
 export { ReefSpline } from './reef-race/spline';
 export * from './reef-race/track-layout';
+export * from './reef-race/start-grid';
 // Reef Race v2 — pure surf-carving integrate step (server sim + client predict
 // share this function so the physics is identical on both sides).
 export * from './reef-race/surf-physics';

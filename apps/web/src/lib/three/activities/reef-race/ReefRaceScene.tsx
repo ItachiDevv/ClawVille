@@ -28,7 +28,7 @@
  * Performance budget: ≤70 draw calls / ≤220k tris.
  */
 
-import { Suspense, useEffect, useRef, useCallback } from 'react';
+import { Suspense, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 
@@ -71,6 +71,7 @@ import { selfPoseBus, SELF_POSE_BUS_STALE_MS } from './reef-race-self-bus';
 import { clientSpline } from './reef-race-spline-instance';
 import type { ReefRaceEntity } from './reef-race-types';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
+import { reefRaceStartGridPose, type ReefRaceStartFrame } from '@clawville/shared';
 
 // ─── v2 feature flag (mirror ReefRacePlayer) ──────────────────────────────────
 const USE_SPLINE_CAMERA = process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
@@ -123,6 +124,70 @@ function pregameVantage() {
     };
   }
   return _pregameVantage;
+}
+
+interface StagedEntityView {
+  entities: Map<string, ReefRaceEntity>;
+  stagedAvatarIds: Set<string>;
+}
+
+/**
+ * Replace countdown `(0,0)` roster placeholders with the exact authoritative
+ * spline grid. The Map's insertion order is the room-participant order used by
+ * `startRoom`; `reefParticipantMeta` is display-only and has a different order.
+ * Each staged twin survives `event.match_started` until that avatar's first real
+ * spline delta supplies lap/progress fields, covering the event-to-delta gap.
+ */
+function buildStagedEntityView(
+  entities: Map<string, ReefRaceEntity>,
+  participantMeta: Record<string, { modelKey: string }>,
+  matchPhase: string,
+): StagedEntityView {
+  if (!USE_SPLINE_CAMERA || matchPhase === 'ended' || entities.size === 0) {
+    return { entities, stagedAvatarIds: new Set() };
+  }
+
+  const startFrame: ReefRaceStartFrame = {
+    center: clientSpline.centerlineAt(0),
+    tangent: clientSpline.tangentAt(0),
+    normal: clientSpline.normalAt(0),
+  };
+  const displayed = new Map<string, ReefRaceEntity>();
+  const stagedAvatarIds = new Set<string>();
+  let participantIndex = 0;
+
+  entities.forEach((entity, avatarId) => {
+    const hasAuthoritativePose =
+      matchPhase === 'live' &&
+      (typeof entity.lap === 'number' ||
+        typeof entity.progress === 'number' ||
+        typeof entity.totalLaps === 'number' ||
+        entity.x !== 0 ||
+        entity.y !== 0 ||
+        entity.rot !== 0 ||
+        entity.vx !== 0 ||
+        entity.vy !== 0);
+
+    if (hasAuthoritativePose) {
+      displayed.set(avatarId, entity);
+    } else {
+      const pose = reefRaceStartGridPose(startFrame, participantIndex);
+      displayed.set(avatarId, {
+        ...entity,
+        x: pose.x,
+        y: pose.z,
+        rot: pose.heading,
+        vx: 0,
+        vy: 0,
+        alive: true,
+        species: participantMeta[avatarId]?.modelKey ?? entity.species,
+      });
+      stagedAvatarIds.add(avatarId);
+    }
+    participantIndex += 1;
+  });
+
+  return { entities: displayed, stagedAvatarIds };
 }
 
 interface CameraSnapRecord {
@@ -197,11 +262,12 @@ const _shakeOffset = new THREE.Vector3();
 
 interface ChaseCamProps {
   selfEntity: ReefRaceEntity | null;
+  selfIsStaged: boolean;
   /** Mutable ref holding current shake magnitude (wu). Decays in useFrame. */
   shakeRef: React.MutableRefObject<number>;
 }
 
-function ChaseCamera({ selfEntity, shakeRef }: ChaseCamProps) {
+function ChaseCamera({ selfEntity, selfIsStaged, shakeRef }: ChaseCamProps) {
   const { camera } = useThree();
   const historyRef = useRef<CameraSnapRecord[]>([]);
   const lastEntityRef = useRef<ReefRaceEntity | null>(null);
@@ -259,7 +325,7 @@ function ChaseCamera({ selfEntity, shakeRef }: ChaseCamProps) {
     // period (same-mount requeue, store reset, transient room teardown) snaps
     // to the start vantage again instead of easing from the race-end position
     // through world geometry (Codex finding #4, 2026-07-14).
-    pregameSnappedRef.current = false;
+    if (!selfIsStaged) pregameSnappedRef.current = false;
 
     if (selfEntity !== lastEntityRef.current) {
       lastEntityRef.current = selfEntity;
@@ -315,6 +381,7 @@ function ChaseCamera({ selfEntity, shakeRef }: ChaseCamProps) {
     // tab-throttle), we keep the interp-derived renderX/renderZ/heading.
     if (
       USE_SPLINE_CAMERA &&
+      !selfIsStaged &&
       selfPoseBus.valid &&
       performance.now() - selfPoseBus.updatedAt <= SELF_POSE_BUS_STALE_MS
     ) {
@@ -364,9 +431,16 @@ function ChaseCamera({ selfEntity, shakeRef }: ChaseCamProps) {
     _targetPos.set(renderX, camGroundY, renderZ).add(_rotatedOffset);
 
     // Lerp camera position.
-    const lerpFactor = Math.min(1, CAMERA_LERP * delta);
-    _camPos.copy(cam.position).lerp(_targetPos, lerpFactor);
-    cam.position.copy(_camPos);
+    if (selfIsStaged && !pregameSnappedRef.current) {
+      // First staged frame: never sweep from the Canvas default through world
+      // geometry. Park directly behind the actual self grid slot.
+      pregameSnappedRef.current = true;
+      cam.position.copy(_targetPos);
+    } else {
+      const lerpFactor = Math.min(1, CAMERA_LERP * delta);
+      _camPos.copy(cam.position).lerp(_targetPos, lerpFactor);
+      cam.position.copy(_camPos);
+    }
 
     // Look at kart + upward offset (also riding the elevation datum).
     _lookAt.set(renderX, camGroundY, renderZ).add(CAMERA_LOOK_OFFSET);
@@ -417,13 +491,21 @@ function DebugExpose({ entities }: { entities: Map<string, ReefRaceEntity> }) {
 
 interface SceneContentsProps {
   entities: Map<string, ReefRaceEntity>;
+  stagedAvatarIds: Set<string>;
   selfAvatarId: string | null;
   matchPhase: string;
   raceStartMs: number;
 }
 
-function SceneContents({ entities, selfAvatarId, matchPhase, raceStartMs }: SceneContentsProps) {
+function SceneContents({
+  entities,
+  stagedAvatarIds,
+  selfAvatarId,
+  matchPhase,
+  raceStartMs,
+}: SceneContentsProps) {
   const selfEntity = selfAvatarId ? (entities.get(selfAvatarId) ?? null) : null;
+  const selfIsStaged = selfAvatarId ? stagedAvatarIds.has(selfAvatarId) : false;
   // Use module-scope scratch to avoid a `new Vector3()` allocation every render.
   // ReefRaceBoostFX only reads playerPos.x/y/z inside useFrame (RAF), which fires
   // after this render — the scratch value is stable for the duration of the frame.
@@ -473,7 +555,7 @@ function SceneContents({ entities, selfAvatarId, matchPhase, raceStartMs }: Scen
   return (
     <>
       {/* Chase camera (follows selfEntity) */}
-      <ChaseCamera selfEntity={selfEntity} shakeRef={shakeRef} />
+      <ChaseCamera selfEntity={selfEntity} selfIsStaged={selfIsStaged} shakeRef={shakeRef} />
 
       {/* Atmosphere — SURF ROAD: deep cosmic void. Fog is pushed far out (9000–
           22000) so it only softens the FAR side of the loop into the void; the
@@ -513,6 +595,7 @@ function SceneContents({ entities, selfAvatarId, matchPhase, raceStartMs }: Scen
               key={entity.avatarId}
               entity={entity}
               isSelf={entity.avatarId === selfAvatarId}
+              predictionEnabled={!stagedAvatarIds.has(entity.avatarId)}
               triggerScreenShake={entity.avatarId === selfAvatarId ? triggerScreenShake : undefined}
             />
           ))}
@@ -559,8 +642,13 @@ export interface ReefRaceSceneProps {
 export default function ReefRaceScene({ roomId, selfAvatarId = null }: ReefRaceSceneProps) {
   const entities    = useActivityStore((s) => s.entities as Map<string, ReefRaceEntity>);
   const matchPhase  = useActivityStore((s) => s.matchPhase);
+  const participantMeta = useActivityStore((s) => s.reefParticipantMeta);
   const raceStartMs = useActivityStore((s) =>
     s.matchPhase === 'live' ? (s.room?.startedAt ?? 0) : 0,
+  );
+  const stagedView = useMemo(
+    () => buildStagedEntityView(entities, participantMeta, matchPhase),
+    [entities, participantMeta, matchPhase],
   );
 
   return (
@@ -579,7 +667,8 @@ export default function ReefRaceScene({ roomId, selfAvatarId = null }: ReefRaceS
     >
       <KTX2LoaderSetup />
       <SceneContents
-        entities={entities ?? new Map()}
+        entities={stagedView.entities}
+        stagedAvatarIds={stagedView.stagedAvatarIds}
         selfAvatarId={selfAvatarId}
         matchPhase={matchPhase}
         raceStartMs={raceStartMs}

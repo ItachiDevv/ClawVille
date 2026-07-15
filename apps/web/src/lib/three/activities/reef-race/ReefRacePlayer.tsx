@@ -823,11 +823,18 @@ function ReefRaceVRMRiderInner({
 interface ReefRacePlayerProps {
   entity: ReefRaceEntity;
   isSelf?: boolean;
+  /** False for countdown-only staged twins; prevents any input prediction. */
+  predictionEnabled?: boolean;
   /** Called on ramp launch for the self player — triggers camera screen shake. */
   triggerScreenShake?: (intensity: number) => void;
 }
 
-function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: ReefRacePlayerProps) {
+function ReefRacePlayerInner({
+  entity,
+  isSelf = false,
+  predictionEnabled = true,
+  triggerScreenShake,
+}: ReefRacePlayerProps) {
   // Registry-driven rider router (2026-07-10) — derive from entity.species
   // (modelKey from avatars.model_key, injected by activity store on
   // snapshot.init via reefParticipantMeta) by looking it up in MODEL_REGISTRY,
@@ -952,9 +959,9 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
   const predictionTimeRef = useRef(0);
   const lastAuthorityArrivalRef = useRef(0);
   const authorityIntervalEwmaRef = useRef(1000 / 15);
-  // True for THIS instance for the lifetime of the component when it's the self
-  // kart on the spline path — gates all prediction work + pose-bus writes.
-  const predictsSelf = USE_SPLINE_PLAYER && isSelf;
+  // True only after the self kart has a real live authority pose. Countdown
+  // staging keeps the same keyed instance but gates prediction + pose-bus writes.
+  const predictsSelf = USE_SPLINE_PLAYER && isSelf && predictionEnabled;
 
   const clonedScene = useMemo(() => {
     // When isVRM=true, effectiveSrcScene=null — return null so the GLB mount
