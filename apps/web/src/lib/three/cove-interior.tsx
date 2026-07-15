@@ -59,6 +59,7 @@ import { useWorldLabel, WorldLabel, WorldLabelsOverlayMount } from '@/lib/three/
 import { extendLoaderWithKTX2 } from '@/lib/three/ktx2-loader-setup';
 import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 import type { MachineSlug } from '@/lib/cove/types';
+import { TableCards3D } from '@/lib/three/cove-table-cards';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -157,7 +158,7 @@ const GLB_CEILING_HEIGHT = 203.5;  // doc's measured floor-to-ceiling height (Bl
 
 /** wu per Blender-GLB-unit at the CURRENT knob value. Replaces the old
  *  hardcoded "FIT_SCALE≈1.967" comment with the real derived constant. */
-const FIT_SCALE = INTERIOR_TARGET_HEIGHT / ROOM_GLB_MAX_DIM;
+export const FIT_SCALE = INTERIOR_TARGET_HEIGHT / ROOM_GLB_MAX_DIM;
 
 /** Fixed scale at the ORIGINAL baseline (INTERIOR_TARGET_HEIGHT=2000, the
  *  value every pre-refactor hardcoded world-space constant in this file was
@@ -861,7 +862,7 @@ const T2_GLB_X = -563.0,  T2_GLB_Y = -150.2; // doc raw felt-cluster centroid
 const T3_GLB_X = -883.2,  T3_GLB_Y = -314.9; // 2026-07-10 boundary-sweep-corrected
 const T4_GLB_X = -557.9,  T4_GLB_Y = -314.9; // 2026-07-10 boundary-sweep-corrected
 
-const T1_CENTER_X = glbToWorldX(T1_GLB_X), T1_CENTER_Z = glbToWorldZ(T1_GLB_Y);
+export const T1_CENTER_X = glbToWorldX(T1_GLB_X), T1_CENTER_Z = glbToWorldZ(T1_GLB_Y);
 const T2_CENTER_X = glbToWorldX(T2_GLB_X), T2_CENTER_Z = glbToWorldZ(T2_GLB_Y);
 const T3_CENTER_X = glbToWorldX(T3_GLB_X), T3_CENTER_Z = glbToWorldZ(T3_GLB_Y);
 const T4_CENTER_X = glbToWorldX(T4_GLB_X), T4_CENTER_Z = glbToWorldZ(T4_GLB_Y);
@@ -870,7 +871,21 @@ const T4_CENTER_X = glbToWorldX(T4_GLB_X), T4_CENTER_Z = glbToWorldZ(T4_GLB_Y);
 const GLB_FELT_TOP_Z = -244.25;
 /** Table-top height off the floor — identical for all four (same GLB band).
  *  ≈59wu at today's knob; raycast-verified (see comment block above). */
-const TABLE_TOP_Y = glbHeightToWorldY(GLB_FELT_TOP_Z);
+export const TABLE_TOP_Y = glbHeightToWorldY(GLB_FELT_TOP_Z);
+
+/** P2 felt-card layout. The approved 40x56wu sizing and all physical gaps
+ * are captured at the founder-selected 2800 room knob, converted back to GLB
+ * units, then re-applied through FIT_SCALE so a future knob change keeps the
+ * entire layer proportional to the baked T1 felt. */
+const T1_FELT_CARD_REFERENCE_FIT_SCALE = 2800 / ROOM_GLB_MAX_DIM;
+export const T1_FELT_CARD_LAYOUT = Object.freeze({
+  cardWidth: (40 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
+  cardHeight: (56 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
+  boardSpacing: (46 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
+  holePairGap: (8 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
+  surfaceLift: (1.5 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
+  holeAnchorScale: 0.70,
+});
 
 interface TableAABB { centerX: number; centerZ: number; halfX: number; halfZ: number; }
 
@@ -1526,7 +1541,7 @@ const T1_CHAIRS_GLB: MeasuredChairGlb[] = [
 // if it visibly clips the table, reduce ITS offset only, not the others.
 const T1_SEAT_FORWARD_OFFSET_GLB: number[] = [13.3, 9.3, 13.3, 13.3, 50.7, 8.0].map((wu) => wu / FIT_SCALE);
 
-const T1_SEATS: TableSeat[] = T1_CHAIRS_GLB.map((c, i) => {
+export const T1_SEATS: TableSeat[] = T1_CHAIRS_GLB.map((c, i) => {
   const wx = glbToWorldX(c.glbX);
   const wz = glbToWorldZ(c.glbY);
   // Unit vector from the measured cushion centroid toward the table centre
@@ -1552,7 +1567,7 @@ const T1_SEATS: TableSeat[] = T1_CHAIRS_GLB.map((c, i) => {
 });
 
 /** Seat 0 is reserved for the local player; seats 1..5 get placeholder busts. */
-const T1_PLAYER_SEAT_INDEX = 0;
+export const T1_PLAYER_SEAT_INDEX = 0;
 /** Placeholder identities for the non-player seats — Slice 1 has no real
  *  roster yet (downstream: the cove agent wires live seat occupancy).
  *  Slice 2 fix (2026-07-11): was 5 entries with 'milady_official_2'
@@ -3204,6 +3219,14 @@ export default function CoveInteriorScene({ onSceneEmpty }: CoveInteriorScenePro
         playerSeatIndex={T1_PLAYER_SEAT_INDEX}
         seatModelKeys={T1_SEAT_BUST_MODEL_KEYS}
         bustTargetHeight={COVE_VRM_TARGET_HEIGHT}
+      />
+      <TableCards3D
+        centerX={T1_CENTER_X}
+        centerZ={T1_CENTER_Z}
+        feltTopY={TABLE_TOP_Y}
+        seats={T1_SEATS}
+        playerSeatIndex={T1_PLAYER_SEAT_INDEX}
+        layout={T1_FELT_CARD_LAYOUT}
       />
       <TableSeatCamera />
       <TableSitLabel />

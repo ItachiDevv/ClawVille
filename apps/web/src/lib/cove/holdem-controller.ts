@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { create } from 'zustand';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useCoveStore } from '@/stores/cove';
