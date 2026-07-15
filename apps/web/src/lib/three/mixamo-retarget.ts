@@ -13,9 +13,11 @@
  * wrappers call a shared `buildRetargetedClip()` core, but explicitly select
  * source policies. Mixamo preserves the legacy VRM0 X/Z quaternion flip and
  * all-mapped-bones position output byte-for-byte. Meshy preserves that flip
- * for the already-validated hips/legs but skips it for the arm chains, whose
- * GLB quaternions are already target-handed after the rest differential; it
- * also keeps only hips translation because Meshy bakes junk position channels.
+ * for the already-validated hips/legs. Clean rigs skip it for the arm chains,
+ * whose GLB quaternions are already target-handed after the rest differential;
+ * the known scale-100 Mixamo-era rigs expose a vertical raw-arm basis instead,
+ * so Meshy reflects X/Z for those eight arm bones only. Meshy also keeps only
+ * hips translation because its exports bake junk position channels.
  *
  * Meshy bone-name ground truth was NOT assumed — verified headlessly against
  * the actual clip GLBs (`stand_to_sit.glb`, `sit_idle_m/f.glb`, etc.) fired
@@ -278,6 +280,34 @@ const MESHY_TARGET_HANDED_ARM_BONES: ReadonlySet<VRMHumanBoneName> = new Set([
 ]);
 
 /**
+ * Hermes-female's Mixamo-era VRM 1 export bakes a uniform scale of ~100 into
+ * raw Hips and expresses both upper-arm offsets primarily along local Y;
+ * Hermes-male/Tekk share that detected signature. Clean Milady rigs use scale
+ * 1 and a horizontal local-X arm basis. Hermes-female raw-rig sampling proves
+ * the Meshy arm channels need the opposite X/Z convention on that scaled
+ * vertical basis. Keep this structural (the affected assets have no reliable
+ * authored name/title metadata) and require both sides so a lone unusual bone
+ * cannot opt an otherwise clean rig into the compatibility path.
+ */
+function hasScaledVerticalRawArmBasis(vrm: VRM): boolean {
+  const hips = vrm.humanoid?.getRawBoneNode('hips');
+  const leftUpperArm = vrm.humanoid?.getRawBoneNode('leftUpperArm');
+  const rightUpperArm = vrm.humanoid?.getRawBoneNode('rightUpperArm');
+  if (!hips || !leftUpperArm || !rightUpperArm) return false;
+
+  const hipsScale = [Math.abs(hips.scale.x), Math.abs(hips.scale.y), Math.abs(hips.scale.z)];
+  const minHipsScale = Math.min(...hipsScale);
+  const maxHipsScale = Math.max(...hipsScale);
+  const hipsHasBakedScale = minHipsScale > 10 && maxHipsScale / minHipsScale <= 1.01;
+  const isVertical = (position: THREE.Vector3): boolean => {
+    const y = Math.abs(position.y);
+    return y > 1e-6 && y > Math.abs(position.x) * 4 && y > Math.abs(position.z) * 4;
+  };
+
+  return hipsHasBakedScale && isVertical(leftUpperArm.position) && isVertical(rightUpperArm.position);
+}
+
+/**
  * Per-VRM-instance memo for `measureVrmHipsHeightAboveFloor` — see that
  * function's doc comment for why this must be BOTH pose-safe and cached.
  * WeakMap keyed by the VRM instance so disposed VRMs don't leak entries.
@@ -468,6 +498,10 @@ function buildRetargetedClip(
   const q                        = new THREE.Quaternion();
 
   const vrm0 = isVrm0(vrm);
+  const meshyScaledVerticalArmBasis =
+    !vrm0 &&
+    vrm0Quaternion === 'meshy-arm-chain-target-handed' &&
+    hasScaledVerticalRawArmBasis(vrm);
 
   // Compute hip position scale (normalized-rest target hips Y / source-rest
   // hips Y). Retargeted tracks bind to normalized humanoid nodes, so both
@@ -521,23 +555,22 @@ function buildRetargetedClip(
         q.toArray(values, i);
       }
 
+      const isMeshyArmChain =
+        vrm0Quaternion === 'meshy-arm-chain-target-handed' &&
+        MESHY_TARGET_HANDED_ARM_BONES.has(vrmBoneName);
+      // Clean Meshy targets keep their already-target-handed arm channels.
+      // The scale-100 vertical-arm family needs the opposite arm-only basis;
+      // non-arm tracks retain the existing VRM0 rule, and Mixamo never enters
+      // this source-specific branch.
+      const reflectXZ = isMeshyArmChain ? meshyScaledVerticalArmBasis : vrm0;
+
       tracks.push(
         new THREE.QuaternionKeyframeTrack(
           `${vrmNode.name}.quaternion`,
           track.times,
           // Legacy VRM 0.x axis flip: VRMUtils.rotateVRM0 adds π rotation to
-          // vrm.scene, so Mixamo negates every x/z quaternion component. Meshy's
-          // arm chains are already target-handed and explicitly skip that reflection.
-          values.map((v, i) => (
-            vrm0 &&
-            i % 2 === 0 &&
-            !(
-              vrm0Quaternion === 'meshy-arm-chain-target-handed' &&
-              MESHY_TARGET_HANDED_ARM_BONES.has(vrmBoneName)
-            )
-              ? -v
-              : v
-          )),
+          // vrm.scene, so Mixamo negates every x/z quaternion component.
+          values.map((v, i) => (reflectXZ && i % 2 === 0 ? -v : v)),
         ),
       );
       continue;
@@ -647,11 +680,12 @@ export function retargetMixamoClip(
  * Retarget a Meshy animation-library GLB to a VRM humanoid skeleton.
  * Same rest-pose-differential math as `retargetMixamoClip`, different bone
  * map + normalizer (see file header for the verification this map is built
- * on). Unlike the legacy Mixamo path, Meshy skips the VRM0 X/Z component flip
- * for shoulder/arm/forearm/hand chains: headless source-vs-raw-rig sampling
- * proved the Mixamo-era reflection raises both hands above the shoulders,
- * while those Meshy channels are already target-handed after the rest
- * differential. Hips/legs retain their validated legacy output unchanged.
+ * on). Unlike the legacy Mixamo path, clean Meshy targets skip the VRM0 X/Z
+ * component flip for shoulder/arm/forearm/hand chains: headless source-vs-raw-
+ * rig sampling proved those channels are already target-handed after the rest
+ * differential. The scale-100 Mixamo-era vertical-arm family needs that arm-
+ * only reflection restored; the predicate reads raw rest basis, not unreliable
+ * asset metadata. Hips/legs retain their validated legacy output unchanged.
  * Meshy also uses an explicit hips-only position policy: its exports bake
  * junk rest-local translation onto every bone, while hips carries the real
  * seated descent. X/Z are still zeroed and hips Y is scaled from source-rest
