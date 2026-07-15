@@ -77,18 +77,26 @@ function runTwoWhirlpools(roomId: string, sourceOrder: string[]) {
   const nz = tx;
 
   const v = state.bodies.get(V)!;
-  // Victim on the centerline, moving near the boosted ceiling along +tangent.
+  // Victim on the centerline, sitting AT the legit boosted ceiling (1.85×) along
+  // +tangent so the two cross-axis pulls genuinely tip it over the clamp.
   v.rot = Math.atan2(tx, tz);
   v.x = p.x; v.z = p.z;
-  v.vx = tx * (REEF_MAX_SPEED * 1.8);
-  v.vz = tz * (REEF_MAX_SPEED * 1.8);
+  v.vx = tx * (REEF_MAX_SPEED * 1.85);
+  v.vz = tz * (REEF_MAX_SPEED * 1.85);
 
-  // Source A ahead along +tangent (pulls victim +tangent → adds to its
-  // motion). Source B off to +normal (pulls victim +normal → a different
-  // axis). 80 wu offset: inside whirlpool radius (300), > 1 kart diameter
-  // (44) so no collision, << corridor half-width so no wall-clamp.
+  // Source A ahead along +tangent (pulls victim +tangent → adds to its motion).
+  // Source B off to +normal (pulls victim +normal → a different axis).
+  // 2026-07-15 (2× speed cap 650→1300): the victim now displaces ~79 wu ALONG
+  // +tangent during the pre-power-up integrate step, so Source A must sit FAR
+  // enough ahead that the fast victim doesn't rear-end it (a proximity momentum-
+  // exchange that used to drop the victim below the cap before the pull was even
+  // applied — the exact regression that made this test go red at 1300). 200 wu
+  // keeps A ≥ 120 wu clear of the post-integrate victim (> 1 kart diameter 44),
+  // still inside whirlpool radius (300), and << corridor half-width so no
+  // wall-clamp. Source B stays at 80 wu on +normal — perpendicular to the
+  // victim's tangent drift, so it never enters the collision band either.
   const sa = state.bodies.get(SA)!;
-  sa.rot = 0; sa.x = p.x + tx * 80; sa.z = p.z + tz * 80; sa.vx = 0; sa.vz = 0;
+  sa.rot = 0; sa.x = p.x + tx * 200; sa.z = p.z + tz * 200; sa.vx = 0; sa.vz = 0;
   sa.inventory[0] = { kind: 'rr-whirlpool', charges: 1, cooldownUntil: 0 };
 
   const sb = state.bodies.get(SB)!;
