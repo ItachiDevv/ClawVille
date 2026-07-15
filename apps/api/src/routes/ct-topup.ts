@@ -62,11 +62,13 @@ import {
   resolveFacilitatorFeePayer,
   verifyAndSettle,
   usdToCt,
+  usdCentsToUsdcAtomic,
   type X402Asset,
   type X402Network,
 } from '../services/x402-payai';
 import { creditClawTokens } from '../services/claw-token-ledger';
 import { withKeyedMutex } from '../services/keyed-mutex';
+import { claimX402Settlement } from '../services/x402-settlement-receipts';
 
 export const ctTopupRoutes = new Hono<ActivityAuthContext>();
 
@@ -243,6 +245,13 @@ class TopupCreditAlreadyDone extends Error {
   }
 }
 
+class TopupSignatureAlreadySettled extends Error {
+  constructor() {
+    super('x402_signature_already_settled');
+    this.name = 'TopupSignatureAlreadySettled';
+  }
+}
+
 /** A `settling` row with NO signature older than this is a DEAD claim (its
  *  process died before the facilitator returned) → reconcile, NEVER an auto-retry
  *  of the facilitator. The floor MUST exceed the facilitator settle timeout
@@ -405,6 +414,20 @@ ctTopupRoutes.post('/settle', requireAuthOrAgentSession, requireNonGuestIdentity
     const result = await verifyAndSettle({ paymentHeader, requirements });
     if (!result.settled || !result.txSignature) {
       const reason = result.failureReason ?? 'unsettled';
+      if (reason.startsWith('independent_chain_') && result.txSignature) {
+        await markTopupReconcile(
+          topupId,
+          settlingId,
+          reason,
+          result.txSignature,
+          result,
+          { allowExistingReconcile: true },
+        );
+        return c.json(
+          { error: 'topup_reconciliation', code: 'topup_reconciliation', status: 'reconcile' },
+          409,
+        );
+      }
       if (reason === 'facilitator_settle_error') {
         // AMBIGUOUS — money-state UNKNOWN. Reconcile (never pending, never failed).
         console.error(
@@ -602,6 +625,21 @@ async function runTopupCredit(row: TopupRow, avatarId: string): Promise<TopupOut
 
   try {
     const out = await db.transaction(async (tx) => {
+      if (rowUsdCents === null) {
+        throw new Error('captured top-up has no persisted usdCents');
+      }
+      const receipt = await claimX402Settlement({
+        txSignature,
+        rail: 'ct_topup',
+        kind: 'topup',
+        referenceId: topupId,
+        subjectId: avatarId,
+        amountUsdcAtomic: BigInt(usdCentsToUsdcAtomic(rowUsdCents)),
+      }, tx);
+      if (receipt.kind === 'foreign_owner') {
+        throw new TopupSignatureAlreadySettled();
+      }
+
       // Flip settling(+sig) → settled FIRST, checked. A concurrent resume that
       // already credited ⇒ 0 rows ⇒ TopupCreditAlreadyDone ⇒ replay (the credit
       // NEVER runs twice).
@@ -644,6 +682,20 @@ async function runTopupCredit(row: TopupRow, avatarId: string): Promise<TopupOut
       json: { ctCredited: out.creditedCt, balance: out.balanceAfter, txSignature },
     };
   } catch (err) {
+    if (err instanceof TopupSignatureAlreadySettled) {
+      await markTopupReconcile(
+        topupId,
+        row.settlingId,
+        'global_signature_conflict',
+        txSignature,
+        null,
+        { allowExistingReconcile: true },
+      );
+      return {
+        httpStatus: 409,
+        json: { error: 'already_settled', code: 'already_settled', status: 'reconcile', txSignature },
+      };
+    }
     if (err instanceof TopupCreditAlreadyDone) {
       const settled = await db.query.ctTopups.findFirst({
         where: and(eq(ctTopups.id, topupId), eq(ctTopups.avatarId, avatarId)),

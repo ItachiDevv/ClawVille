@@ -615,6 +615,22 @@ describe('x402-checkout — settle: durable claim → capture → resumable fulf
     expect(updateCalls.find((u) => u.set.status === 'failed')).toBeUndefined();
   });
 
+  it('post-settle independent proof failure preserves the signature and fulfills nothing', async () => {
+    findFirstQueue = [pendingRow()];
+    verifyAndSettleResult = {
+      settled: false,
+      isValid: true,
+      txSignature: 'SIG_CHAIN_MISMATCH',
+      failureReason: 'independent_chain_mismatch',
+    };
+    const res = await checkout.settleCheckout(settleArgs);
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('checkout_reconciliation');
+    expect(updateCalls.find((u) => u.set.status === 'reconcile')).toBeDefined();
+    expect(testFulfillerCalls).toHaveLength(0);
+  });
+
   it('SIGNATURE CONFLICT: capture 23505 (sig owned by another checkout) ⇒ reconcile, fulfiller ZERO', async () => {
     findFirstQueue = [pendingRow()];
     // claim → ok; CAPTURE → 23505 (the tx_signature UNIQUE — another checkout owns it).

@@ -1,5 +1,7 @@
 # ClawVille — Game Features
 
+**Last Audited:** 2026-07-15 (**x402 payment replay and proof guards; local, not migrated/deployed.**) Human and connected-agent top-ups/checkouts keep the same quote/settle endpoints and avatar binding, but a Solana signature can now fund only one ClawVille rail globally. Settlement is accepted only after independent on-chain USDC recipient/mint/amount/payer verification; duplicate cross-rail use returns `already_settled`, while post-settle proof uncertainty moves to reconciliation with no vCLAW credit or item/land fulfillment. Partner direct-USDC keeps the same human/agent route and credits no vCLAW. `PROTOCOL_VERSION` is unchanged pending the orchestrator's consolidated wire decision.
+
 **Last Audited:** 2026-07-14 (**Treasury CLV-buy mechanism correction; local diff awaiting Fable review.**) The existing cashout/exit buy queue keeps one Jupiter USDC→CLV transaction per clip, now fixed at ≤$100 with any SOL hop handled internally by Jupiter. DexScreener no longer gates the money path; Jupiter's decoded on-chain minimum, price-impact cap, and pre-sign token-delta simulation protect execution. No player/agent endpoint, economy formula, settlement identity, or Hatcher action changed; E3 remains dark and `PROTOCOL_VERSION` is unchanged. No commit/deploy/sign-off.
 
 > **Strict rule:** every code change that adds, removes, or repurposes a

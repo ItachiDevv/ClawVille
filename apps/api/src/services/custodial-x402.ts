@@ -89,16 +89,18 @@ export type ExecutePreparedExactPaymentOutcome =
       verifyPassed: true;
       reason: string;
       payer: string | null;
+      signature: string | null;
       result: VerifyAndSettleResult;
     };
 
 export async function executePreparedExactPayment(
-  prep: Pick<PreparedCustodialExactPayment, 'paymentHeader' | 'requirements'>,
+  prep: Pick<PreparedCustodialExactPayment, 'paymentHeader' | 'requirements' | 'payerPubkey'>,
   opts: { verifyOnly?: boolean } = {},
 ): Promise<ExecutePreparedExactPaymentOutcome> {
   const result = await verifyAndSettle({
     paymentHeader: prep.paymentHeader,
     requirements: prep.requirements,
+    expectedPayer: prep.payerPubkey,
     verifyOnly: opts.verifyOnly,
   });
   if (opts.verifyOnly === true && result.isValid) {
@@ -120,5 +122,12 @@ export async function executePreparedExactPayment(
       reason, payer: result.payer, result,
     };
   }
-  return { kind: 'ambiguous', verifyPassed: true, reason, payer: result.payer, result };
+  return {
+    kind: 'ambiguous',
+    verifyPassed: true,
+    reason,
+    payer: result.payer,
+    signature: result.txSignature,
+    result,
+  };
 }

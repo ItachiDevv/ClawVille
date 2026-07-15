@@ -41,6 +41,9 @@ import type {
   VerifyResponse,
   SettleResponse,
 } from '@x402/core/types';
+import { Connection } from '@solana/web3.js';
+import { z } from 'zod';
+import { decodeTransactionFromPayload, getTokenPayerFromTransaction } from '@x402/svm';
 import { loadX402Config } from './x402-config';
 
 // ---------------------------------------------------------------------------
@@ -346,6 +349,124 @@ export interface VerifyAndSettleInput {
    * facilitator settle succeeded with a non-empty signature.
    */
   verifyOnly?: boolean;
+  /** Custodial callers pin the decoded payload payer to their own signer. */
+  expectedPayer?: string;
+  /** Test seam only; production callers use the default independent RPC proof. */
+  independentVerifier?: IndependentSettlementVerifier;
+}
+
+export interface IndependentSettlementVerificationInput {
+  payload: PaymentPayload;
+  requirements: PaymentRequirements;
+  txSignature: string;
+  facilitatorPayer: string | null;
+  reportedNetwork: string | null;
+  expectedPayer?: string;
+}
+
+export type IndependentSettlementVerifier = (
+  input: IndependentSettlementVerificationInput,
+) => Promise<
+  | { ok: true; payer: string }
+  | {
+      ok: false;
+      reason: 'independent_chain_unavailable' | 'independent_chain_mismatch';
+      /** Authoritative only when decoded from the signed SVM payload. */
+      payer: string | null;
+    }
+>;
+
+const settlementRequirementSchema = z.object({
+  scheme: z.literal('exact'),
+  network: z.enum([SOLANA_MAINNET_CAIP2, SOLANA_DEVNET_CAIP2]),
+  amount: z.string().regex(/^[1-9]\d*$/),
+  asset: z.string().min(32).max(64),
+  payTo: z.string().min(32).max(64),
+}).passthrough();
+
+let _devnetSettlementConnection: Connection | null = null;
+
+function payerFromSignedPayload(payload: PaymentPayload): string | null {
+  const svmPayload = payload.payload as { transaction?: unknown; payer?: unknown } | undefined;
+  if (typeof svmPayload?.transaction === 'string') {
+    try {
+      const transaction = decodeTransactionFromPayload({ transaction: svmPayload.transaction });
+      return getTokenPayerFromTransaction(transaction);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+const waitForChainIndex = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** Preserve signed-payload identity across an RPC/connection setup exception.
+ * Without a decoded payer the outcome is mismatch/manual, never an unbound
+ * auto-capture candidate. Exported for the regression test. */
+export function independentUnavailableAfterPayerDecode(
+  payer: string | null,
+): Awaited<ReturnType<IndependentSettlementVerifier>> {
+  return payer
+    ? { ok: false, reason: 'independent_chain_unavailable', payer }
+    : { ok: false, reason: 'independent_chain_mismatch', payer: null };
+}
+
+async function defaultIndependentSettlementVerifier(
+  input: IndependentSettlementVerificationInput,
+): ReturnType<IndependentSettlementVerifier> {
+  let authoritativePayer: string | null = null;
+  try {
+    const requirements = settlementRequirementSchema.parse(input.requirements);
+    const network: X402Network = requirements.network === SOLANA_MAINNET_CAIP2 ? 'mainnet' : 'devnet';
+    if (
+      requirements.asset !== usdcMintForNetwork(network)
+      || (input.reportedNetwork !== null && input.reportedNetwork !== requirements.network)
+    ) {
+      return { ok: false, reason: 'independent_chain_mismatch', payer: null };
+    }
+    const decodedPayer = payerFromSignedPayload(input.payload);
+    authoritativePayer = decodedPayer;
+    if (!decodedPayer || (input.expectedPayer && decodedPayer !== input.expectedPayer)) {
+      return { ok: false, reason: 'independent_chain_mismatch', payer: decodedPayer };
+    }
+
+    const connection = network === 'mainnet'
+      ? (await import('./clv-swap-custody')).getClvMainnetConnection()
+      : (_devnetSettlementConnection ??= new Connection(
+          process.env.SOLANA_RPC_URL?.trim() || 'https://api.devnet.solana.com',
+          'confirmed',
+        ));
+    const { verifyUsdcTransfer } = await import('./x402-chain-verifier');
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const verdict = await verifyUsdcTransfer({
+          network,
+          signature: input.txSignature,
+          expectedAtomic: requirements.amount,
+          expectedMint: requirements.asset,
+          destinationOwner: requirements.payTo,
+          expectedPayer: decodedPayer,
+          amountMode: 'at_least',
+        }, {
+          getParsedTransaction: async (_network, signature) => connection.getParsedTransaction(signature, {
+            commitment: 'confirmed',
+            maxSupportedTransactionVersion: 0,
+          }),
+        });
+        if (verdict.kind === 'confirmed_match') return { ok: true, payer: decodedPayer };
+        if (verdict.kind !== 'not_found') {
+          return { ok: false, reason: 'independent_chain_mismatch', payer: decodedPayer };
+        }
+      } catch {
+        // A transient RPC/parse failure is retried below, never the facilitator.
+      }
+      if (attempt < 2) await waitForChainIndex(attempt === 0 ? 250 : 750);
+    }
+    return { ok: false, reason: 'independent_chain_unavailable', payer: decodedPayer };
+  } catch {
+    return independentUnavailableAfterPayerDecode(authoritativePayer);
+  }
 }
 
 export interface VerifyAndSettleResult {
@@ -357,7 +478,7 @@ export interface VerifyAndSettleResult {
   txSignature: string | null;
   /** The CAIP-2 network the settlement reported (echoed from settle, else null). */
   network: string | null;
-  /** The buyer pubkey the facilitator resolved (best-effort, for audit). */
+  /** Buyer pubkey derived from the signed SVM payload after settlement proof. */
   payer: string | null;
   /** A short machine reason when NOT settled (for the route's clean 4xx body). */
   failureReason: string | null;
@@ -510,12 +631,41 @@ export async function verifyAndSettle(
     });
   }
 
+  const facilitatorPayer = settle.payer ?? verify.payer ?? null;
+  const reportedNetwork = settle.network ?? requirements.network ?? null;
+  let independent: Awaited<ReturnType<IndependentSettlementVerifier>>;
+  try {
+    independent = await (input.independentVerifier ?? defaultIndependentSettlementVerifier)({
+      payload,
+      requirements,
+      txSignature,
+      facilitatorPayer,
+      reportedNetwork,
+      expectedPayer: input.expectedPayer,
+    });
+  } catch {
+    independent = { ok: false, reason: 'independent_chain_unavailable', payer: null };
+  }
+  if (!independent.ok) {
+    console.error('[x402-payai] independent settlement proof failed', {
+      reason: independent.reason,
+      txPrefix: txSignature.slice(0, 8),
+    });
+    return failed(independent.reason, {
+      isValid: true,
+      txSignature,
+      network: reportedNetwork,
+      payer: independent.payer,
+      raw: { verify, settle },
+    });
+  }
+
   return {
     settled: true,
     isValid: true,
     txSignature,
-    network: settle.network ?? requirements.network ?? null,
-    payer: settle.payer ?? verify.payer ?? null,
+    network: reportedNetwork,
+    payer: independent.payer,
     failureReason: null,
     raw: { verify, settle },
   };
@@ -599,5 +749,10 @@ export async function settlePartnerPurchase(
   if (!input.expectedPayoutPubkey || input.requirements.payTo !== input.expectedPayoutPubkey) {
     return failed('payout_binding_mismatch');
   }
-  return verifyAndSettle({ paymentHeader: input.paymentHeader, requirements: input.requirements });
+  return verifyAndSettle({
+    paymentHeader: input.paymentHeader,
+    requirements: input.requirements,
+    expectedPayer: input.expectedPayer,
+    independentVerifier: input.independentVerifier,
+  });
 }
