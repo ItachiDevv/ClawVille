@@ -273,4 +273,24 @@ describe('no-bot branches', () => {
   it('no bot + hosted harness but NO platformAgentId → cold-fallthrough (not hosted)', () => {
     expect(call(null, hostedAvatar({ platformAgentId: null })).kind).toBe('cold-fallthrough');
   });
+
+  it('dismissed + UNPROVISIONED hosted avatar → cold-fallthrough (dismissal must not block the lazy backfill)', () => {
+    // Codex BLOCKING 2026-07-15: a presentation preference must never
+    // suppress the account-data migration. The route re-honors the
+    // dismissal in its response after healing.
+    const r = call(
+      null,
+      hostedAvatar({ platformAgentId: null, flags: { agentBannerDismissed: true } }),
+    );
+    expect(r.kind).toBe('cold-fallthrough');
+  });
+
+  it('dismissed + unprovisioned NON-hosted avatar stays dismissed (no backfill applies)', () => {
+    const r = call(
+      null,
+      hostedAvatar({ platformAgentId: null, harness: 'custom', flags: { agentBannerDismissed: true } }),
+    );
+    if (r.kind !== 'response') throw new Error('unreachable');
+    expect(r.body.mode).toBe('dismissed');
+  });
 });

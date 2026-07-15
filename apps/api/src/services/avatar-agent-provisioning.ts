@@ -656,9 +656,20 @@ export async function backfillPlatformAgentForAvatar(
 ): Promise<string | null> {
   try {
     return await db.transaction(async (tx) => {
-      const avatar = await tx.query.avatars.findFirst({
-        where: and(eq(avatars.id, avatarId), eq(avatars.userId, userId)),
-      });
+      // SELECT ... FOR UPDATE (Codex BLOCKING, 2026-07-15): serialize ALL
+      // missing-link writers on the avatar row. Without the lock, this GET
+      // backfill and the PATCH /api/avatars/me mint-on-customize path could
+      // both observe platformAgentId NULL, each insert an agent row, and the
+      // PATCH's later unconditional link overwrite would orphan ours AFTER
+      // our CAS already committed. Holding the row lock from the first read
+      // means the concurrent writer blocks here until we commit, then sees
+      // the linked id and skips its own mint (the PATCH side re-reads under
+      // the same lock).
+      const [avatar] = await tx
+        .select()
+        .from(avatars)
+        .where(and(eq(avatars.id, avatarId), eq(avatars.userId, userId)))
+        .for('update');
       if (!avatar) return null;
       if (avatar.platformAgentId) return avatar.platformAgentId; // raced: already healed
       if (!['milady', 'hermes', 'openclaw'].includes(avatar.harness ?? '')) return null;
