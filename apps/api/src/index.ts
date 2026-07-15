@@ -769,7 +769,9 @@ process.on('uncaughtException', (err) => {
     try {
       const { getInferenceRouter, describeInferenceConfig } = await import('@clawville/agent-runtime');
       console.log(describeInferenceConfig());
-      void getInferenceRouter()
+      const inferenceRouter = getInferenceRouter();
+      inferenceRouter.startHealthProbes();
+      void inferenceRouter
         .warmup()
         .then(() => console.log('[API] Inference local boxes warmed'))
         .catch(() => {});

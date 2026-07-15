@@ -78,6 +78,11 @@ async function generate(
     ? ((params as any).stopSequences as string[])
     : [];
 
+  const localAttemptTimeoutMs =
+    typeof (params as any)?.localAttemptTimeoutMs === 'number'
+      ? ((params as any).localAttemptTimeoutMs as number)
+      : undefined;
+
   const { text } = await getInferenceRouter().generateText({
     route: config.route ?? 'default',
     size: config.forceSize ?? size,
@@ -85,6 +90,7 @@ async function generate(
     temperature,
     maxTokens,
     stopSequences,
+    localAttemptTimeoutMs,
   });
   return text;
 }

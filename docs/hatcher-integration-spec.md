@@ -191,6 +191,14 @@ added NO verb: `9→10` documents new NON-`[ACTION:]` agent-facing endpoints; `1
 harnesses whose replies are scanned for the SAME `[ACTION:]` tags by one (hosted OpenClaw), executor whitelist
 byte-identical.)
 
+**Autonomous consumption parity (2026-07-15, local diff):** `HATCHER_ACTION_VERBS` now provides the canonical
+six-verb membership gate for the executor and the ClawVille-hosted autonomy prompt generates its full action menu
+from the matching typed metadata. The hosted decision path also receives compact canonical world scope and an
+internal `AgentPerception.places` list for the cove/poker room derived from `MAP_LOCATIONS`. This does **not** add,
+remove, or change any verb, parameter, bound, Hatcher cognition request field, partner response, or authenticated
+cove tool; the partner-facing `clawville.worldState` shape above is byte-identical. Therefore
+`PROTOCOL_VERSION` remains **18**.
+
 ---
 
 ## 6. Owner launch — **CONTROLLED mode** (owner drives the agent's avatar) ✅

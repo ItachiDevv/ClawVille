@@ -562,3 +562,406 @@ describe('InferenceRouter breaker timing + concurrency + error paths', () => {
     }
   });
 });
+
+describe('InferenceRouter background local health probes', () => {
+  const flushAsync = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  function timerHarness() {
+    let callback: (() => void) | undefined;
+    let scheduled = 0;
+    let cleared = 0;
+    let unrefed = 0;
+    const handle = { unref: () => { unrefed += 1; } };
+    return {
+      setIntervalImpl: ((cb: () => void) => {
+        callback = cb;
+        scheduled += 1;
+        return handle as any;
+      }) as any,
+      clearIntervalImpl: (() => { cleared += 1; }) as any,
+      trigger: async () => {
+        callback?.();
+        await flushAsync();
+      },
+      counts: () => ({ scheduled, cleared, unrefed }),
+    };
+  }
+
+  it('opens a dead local breaker immediately and refreshes the hold on later failures', async () => {
+    const clock = { t: 0 };
+    const timer = timerHarness();
+    let probes = 0;
+    const local: InferenceEndpoint = { ...PRIMARY, provider: 'ollama' };
+    const r = new InferenceRouter({
+      endpoints: [OPENAI, local],
+      routes: { ...ROUTES, fleet: ['local-primary', 'openai'] },
+      breaker: { failThreshold: 3, cooldownMs: 100 },
+      now: () => clock.t,
+      setIntervalImpl: timer.setIntervalImpl,
+      clearIntervalImpl: timer.clearIntervalImpl,
+      fetchImpl: (async (url: string | URL | Request) => {
+        if (String(url).endsWith('/api/tags')) {
+          probes += 1;
+          throw new Error('tailnet blackhole');
+        }
+        throw new Error(`unexpected ${url}`);
+      }) as typeof fetch,
+    });
+
+    r.startHealthProbes({ intervalMs: 1_000, timeoutMs: 25 });
+    await flushAsync();
+    expect(r.stats().find((s) => s.id === 'local-primary')).toMatchObject({
+      breakerOpen: true,
+      consecutiveFailures: 3,
+    });
+
+    clock.t = 5_000;
+    await timer.trigger(); // refreshes openUntil from 6_000 to 11_000
+    r.stopHealthProbes();
+    clock.t = 7_000;
+    expect(r.stats().find((s) => s.id === 'local-primary')).toMatchObject({
+      breakerOpen: true,
+      lastError: 'tailnet blackhole',
+    });
+    expect(probes).toBe(2);
+  });
+
+  it('warms a recovered box before closing its breaker and logs no live request stats', async () => {
+    const timer = timerHarness();
+    const timeouts: number[] = [];
+    const events: string[] = [];
+    let up = false;
+    const local: InferenceEndpoint = { ...PRIMARY, provider: 'ollama' };
+    const r = new InferenceRouter({
+      endpoints: [OPENAI, local],
+      routes: { ...ROUTES, fleet: ['local-primary', 'openai'] },
+      setIntervalImpl: timer.setIntervalImpl,
+      clearIntervalImpl: timer.clearIntervalImpl,
+      timeoutSignal: (ms) => {
+        timeouts.push(ms);
+        return new AbortController().signal;
+      },
+      fetchImpl: (async (url: string | URL | Request) => {
+        const u = String(url);
+        if (u.endsWith('/api/tags')) {
+          events.push(up ? 'tags-up' : 'tags-down');
+          if (!up) throw new Error('down');
+          return { ok: true, status: 200, statusText: 'OK' } as Response;
+        }
+        if (u.endsWith('/api/chat')) {
+          events.push('warm');
+          return {
+            ok: true, status: 200, statusText: 'OK', text: async () => '',
+            json: async () => ({ message: { content: 'w' } }),
+          } as unknown as Response;
+        }
+        throw new Error(`unexpected ${u}`);
+      }) as typeof fetch,
+    });
+
+    r.startHealthProbes({ intervalMs: 1_000, timeoutMs: 25 });
+    await flushAsync();
+    expect(r.stats().find((s) => s.id === 'local-primary')).toMatchObject({
+      breakerOpen: true,
+      lastError: 'down',
+    });
+
+    up = true;
+    await timer.trigger();
+    const localStats = r.stats().find((s) => s.id === 'local-primary')!;
+    expect(localStats.breakerOpen).toBe(false);
+    expect(localStats.requests).toBe(0); // probes/warmups are not served traffic
+    expect(events).toEqual(['tags-down', 'tags-up', 'warm']);
+    expect(timeouts).toEqual([25, 25, 180_000]);
+    r.stopHealthProbes();
+  });
+
+  it('keeps a recovered liveness endpoint DOWN when its warm request fails', async () => {
+    const timer = timerHarness();
+    let up = false;
+    const local: InferenceEndpoint = { ...PRIMARY, provider: 'ollama' };
+    const r = new InferenceRouter({
+      endpoints: [OPENAI, local],
+      routes: { ...ROUTES, fleet: ['local-primary', 'openai'] },
+      setIntervalImpl: timer.setIntervalImpl,
+      clearIntervalImpl: timer.clearIntervalImpl,
+      fetchImpl: (async (url: string | URL | Request) => {
+        const u = String(url);
+        if (u.endsWith('/api/tags')) {
+          if (!up) throw new Error('down');
+          return { ok: true, status: 200, statusText: 'OK' } as Response;
+        }
+        if (u.endsWith('/api/chat')) throw new Error('model load failed');
+        throw new Error(`unexpected ${u}`);
+      }) as typeof fetch,
+    });
+
+    r.startHealthProbes({ intervalMs: 1_000 });
+    await flushAsync();
+    up = true;
+    await timer.trigger();
+    expect(r.stats().find((s) => s.id === 'local-primary')?.breakerOpen).toBe(true);
+    r.stopHealthProbes();
+  });
+
+  it('skips an open local after cooldown while the prober is active; no live half-open probe', async () => {
+    const clock = { t: 0 };
+    const timer = timerHarness();
+    let tagCalls = 0;
+    let liveLocalCalls = 0;
+    const local: InferenceEndpoint = { ...PRIMARY, provider: 'ollama' };
+    const r = new InferenceRouter({
+      endpoints: [OPENAI, local],
+      routes: { ...ROUTES, fleet: ['local-primary', 'openai'] },
+      breaker: { failThreshold: 1, cooldownMs: 1 },
+      now: () => clock.t,
+      setIntervalImpl: timer.setIntervalImpl,
+      clearIntervalImpl: timer.clearIntervalImpl,
+      fetchImpl: (async (url: string | URL | Request) => {
+        const u = String(url);
+        if (u.endsWith('/api/tags')) {
+          tagCalls += 1;
+          throw new Error('down');
+        }
+        if (u.endsWith('/api/chat')) {
+          liveLocalCalls += 1;
+          throw new Error('must not be called');
+        }
+        return {
+          ok: true, status: 200, statusText: 'OK', text: async () => '',
+          json: async () => ({ choices: [{ message: { content: 'cloud' } }] }),
+        } as unknown as Response;
+      }) as typeof fetch,
+    });
+
+    r.startHealthProbes({ intervalMs: 1_000 });
+    await flushAsync();
+    clock.t = 100_000;
+    const res = await r.generateText({
+      route: 'fleet', size: 'small', messages: [{ role: 'user', content: 'decide' }],
+    });
+    expect(res.endpointId).toBe('openai');
+    expect(tagCalls).toBe(1);
+    expect(liveLocalCalls).toBe(0);
+    r.stopHealthProbes();
+  });
+
+  it('a live success already in flight cannot close a later probe-forced DOWN breaker', async () => {
+    const timer = timerHarness();
+    let releaseLive!: () => void;
+    const liveGate = new Promise<void>((resolve) => { releaseLive = resolve; });
+    let liveLocalCalls = 0;
+    const local: InferenceEndpoint = { ...PRIMARY, provider: 'openai' };
+    const r = new InferenceRouter({
+      endpoints: [OPENAI, local],
+      routes: { ...ROUTES, fleet: ['local-primary', 'openai'] },
+      setIntervalImpl: timer.setIntervalImpl,
+      clearIntervalImpl: timer.clearIntervalImpl,
+      fetchImpl: (async (url: string | URL | Request) => {
+        const u = String(url);
+        if (u.endsWith('/models')) throw new Error('probe says down');
+        if (u.includes('prim.local')) {
+          liveLocalCalls += 1;
+          await liveGate;
+          return {
+            ok: true, status: 200, statusText: 'OK', text: async () => '',
+            json: async () => ({ choices: [{ message: { content: 'late local success' } }] }),
+          } as unknown as Response;
+        }
+        return {
+          ok: true, status: 200, statusText: 'OK', text: async () => '',
+          json: async () => ({ choices: [{ message: { content: 'cloud' } }] }),
+        } as unknown as Response;
+      }) as typeof fetch,
+    });
+
+    const live = r.generateText({
+      route: 'fleet', size: 'small', messages: [{ role: 'user', content: 'started first' }],
+    });
+    await flushAsync();
+    r.startHealthProbes({ intervalMs: 1_000 });
+    await flushAsync();
+    releaseLive();
+    expect((await live).endpointId).toBe('local-primary');
+    expect(r.stats().find((s) => s.id === 'local-primary')).toMatchObject({
+      breakerOpen: true,
+      lastError: 'probe says down',
+    });
+
+    const after = await r.generateText({
+      route: 'fleet', size: 'small', messages: [{ role: 'user', content: 'after probe down' }],
+    });
+    expect(after.endpointId).toBe('openai');
+    expect(liveLocalCalls).toBe(1);
+    r.stopHealthProbes();
+  });
+
+  it('an in-flight live success cannot close a live-opened breaker before probe warming finishes', async () => {
+    const timer = timerHarness();
+    let releaseSecondLive!: () => void;
+    let releaseWarm!: () => void;
+    const secondLiveGate = new Promise<void>((resolve) => { releaseSecondLive = resolve; });
+    const warmGate = new Promise<void>((resolve) => { releaseWarm = resolve; });
+    let liveLocalCalls = 0;
+    let warmStarted = false;
+    const local: InferenceEndpoint = { ...PRIMARY, provider: 'openai' };
+    const r = new InferenceRouter({
+      endpoints: [OPENAI, local],
+      routes: { ...ROUTES, fleet: ['local-primary', 'openai'] },
+      breaker: { failThreshold: 1, cooldownMs: 1_000 },
+      setIntervalImpl: timer.setIntervalImpl,
+      clearIntervalImpl: timer.clearIntervalImpl,
+      fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+        const u = String(url);
+        if (u.endsWith('/models')) {
+          return { ok: true, status: 200, statusText: 'OK' } as Response;
+        }
+        if (u.includes('prim.local')) {
+          const body = JSON.parse(String(init?.body ?? '{}')) as { max_completion_tokens?: number };
+          if (body.max_completion_tokens === 1) {
+            warmStarted = true;
+            await warmGate;
+            return {
+              ok: true, status: 200, statusText: 'OK', text: async () => '',
+              json: async () => ({ choices: [{ message: { content: 'warm' } }] }),
+            } as unknown as Response;
+          }
+          liveLocalCalls += 1;
+          if (liveLocalCalls === 1) {
+            return {
+              ok: false, status: 503, statusText: 'ERR', text: async () => 'down',
+              json: async () => ({}),
+            } as unknown as Response;
+          }
+          if (liveLocalCalls === 2) await secondLiveGate;
+          return {
+            ok: true, status: 200, statusText: 'OK', text: async () => '',
+            json: async () => ({ choices: [{ message: { content: 'local' } }] }),
+          } as unknown as Response;
+        }
+        return {
+          ok: true, status: 200, statusText: 'OK', text: async () => '',
+          json: async () => ({ choices: [{ message: { content: 'cloud' } }] }),
+        } as unknown as Response;
+      }) as typeof fetch,
+    });
+
+    // Both requests enter the local while closed. The first fails and opens the
+    // breaker; the second remains in flight.
+    const first = r.generateText({
+      route: 'fleet', size: 'small', messages: [{ role: 'user', content: 'first' }],
+    });
+    const second = r.generateText({
+      route: 'fleet', size: 'small', messages: [{ role: 'user', content: 'second' }],
+    });
+    expect((await first).endpointId).toBe('openai');
+    expect(r.stats().find((s) => s.id === 'local-primary')?.breakerOpen).toBe(true);
+
+    // Liveness succeeds, but the required recovery warm remains gated.
+    r.startHealthProbes({ intervalMs: 1_000 });
+    await flushAsync();
+    expect(warmStarted).toBe(true);
+
+    // The older live request succeeds during warmup. It must NOT close the
+    // breaker, and fresh traffic must continue to the cloud.
+    releaseSecondLive();
+    expect((await second).endpointId).toBe('local-primary');
+    expect(r.stats().find((s) => s.id === 'local-primary')?.breakerOpen).toBe(true);
+    const duringWarm = await r.generateText({
+      route: 'fleet', size: 'small', messages: [{ role: 'user', content: 'during warm' }],
+    });
+    expect(duringWarm.endpointId).toBe('openai');
+    expect(liveLocalCalls).toBe(2);
+
+    // Only the prober's completed warm closes the breaker; live traffic returns.
+    releaseWarm();
+    await flushAsync();
+    expect(r.stats().find((s) => s.id === 'local-primary')?.breakerOpen).toBe(false);
+    const recovered = await r.generateText({
+      route: 'fleet', size: 'small', messages: [{ role: 'user', content: 'recovered' }],
+    });
+    expect(recovered.endpointId).toBe('local-primary');
+    expect(liveLocalCalls).toBe(3);
+    r.stopHealthProbes();
+  });
+
+  it('start is idempotent/unrefed and overlapping intervals do not duplicate a probe', async () => {
+    const timer = timerHarness();
+    let releaseProbe!: () => void;
+    const probeGate = new Promise<void>((resolve) => { releaseProbe = resolve; });
+    let probeCalls = 0;
+    const local: InferenceEndpoint = { ...PRIMARY, provider: 'ollama' };
+    const r = new InferenceRouter({
+      endpoints: [OPENAI, local],
+      routes: { ...ROUTES, fleet: ['local-primary', 'openai'] },
+      setIntervalImpl: timer.setIntervalImpl,
+      clearIntervalImpl: timer.clearIntervalImpl,
+      fetchImpl: (async (url: string | URL | Request) => {
+        if (!String(url).endsWith('/api/tags')) throw new Error(`unexpected ${url}`);
+        probeCalls += 1;
+        await probeGate;
+        return { ok: true, status: 200, statusText: 'OK' } as Response;
+      }) as typeof fetch,
+    });
+
+    r.startHealthProbes();
+    r.startHealthProbes();
+    await flushAsync();
+    await timer.trigger();
+    expect(timer.counts()).toEqual({ scheduled: 1, cleared: 0, unrefed: 1 });
+    expect(probeCalls).toBe(1);
+    releaseProbe();
+    await flushAsync();
+    r.stopHealthProbes();
+    expect(timer.counts().cleared).toBe(1);
+  });
+});
+
+describe('InferenceRouter per-attempt local timeouts', () => {
+  it('uses timeoutMs > localAttemptTimeoutMs > endpoint timeout, and never applies local budget to cloud', async () => {
+    const seenTimeouts: number[] = [];
+    const timeoutSignal = (ms: number) => {
+      seenTimeouts.push(ms);
+      return new AbortController().signal;
+    };
+    const fetchImpl = (async (url: string | URL | Request) => {
+      if (String(url).endsWith('/api/chat')) {
+        return {
+          ok: true, status: 200, statusText: 'OK', text: async () => '',
+          json: async () => ({ message: { content: 'local' } }),
+        } as unknown as Response;
+      }
+      return {
+        ok: true, status: 200, statusText: 'OK', text: async () => '',
+        json: async () => ({ choices: [{ message: { content: 'cloud' } }] }),
+      } as unknown as Response;
+    }) as typeof fetch;
+    const local: InferenceEndpoint = { ...PRIMARY, provider: 'ollama', timeoutMs: 1_111 };
+    const cloud: InferenceEndpoint = { ...OPENAI, timeoutMs: 2_222 };
+    const r = new InferenceRouter({
+      endpoints: [cloud, local],
+      routes: { teacher: ['openai'], fleet: ['local-primary', 'openai'], 'hosted-user': ['openai'], default: ['openai'] },
+      fetchImpl,
+      timeoutSignal,
+    });
+
+    await r.generateText({
+      route: 'fleet', size: 'small', messages: [{ role: 'user', content: 'a' }],
+      localAttemptTimeoutMs: 6_000,
+    });
+    await r.generateText({
+      route: 'teacher', size: 'small', messages: [{ role: 'user', content: 'b' }],
+      localAttemptTimeoutMs: 6_000,
+    });
+    await r.generateText({
+      route: 'fleet', size: 'small', messages: [{ role: 'user', content: 'c' }],
+      localAttemptTimeoutMs: 6_000,
+      timeoutMs: 77,
+    });
+    await r.generateText({
+      route: 'fleet', size: 'small', messages: [{ role: 'user', content: 'd' }],
+    });
+
+    expect(seenTimeouts).toEqual([6_000, 2_222, 77, 1_111]);
+  });
+});

@@ -51,6 +51,22 @@ export interface AgentPerceptionBuilding {
   edgeDistance: number;
 }
 
+export interface AgentPerceptionPlace {
+  /** Stable prompt-facing id (for example `cove` or `poker-room`). */
+  placeId: string;
+  label: string;
+  description: string;
+  /** Exact no-tool-call action verb accepted by the executor. */
+  actionVerb: 'enter_cove' | 'enter_poker_room';
+  /** Exact action call shown to the deciding model. */
+  actionSyntax: 'enter_cove()' | 'enter_poker_room()';
+  /** Destination stamped on the NPC body by the executor. */
+  destinationId: string;
+  centerX: number;
+  centerY: number;
+  distance: number;
+}
+
 export interface AgentPerceptionConversation {
   id: string;
   participants: string[];
@@ -70,6 +86,8 @@ export interface AgentPerception {
   self: AgentPerceptionSelf;
   nearbyNpcs: AgentPerceptionNpc[];
   nearbyBuildings: AgentPerceptionBuilding[];
+  /** Non-teaching destinations that the action executor can enter. */
+  places: AgentPerceptionPlace[];
   activeConversations: AgentPerceptionConversation[];
   activeCombats: AgentPerceptionCombat[];
   gameMode: 'arena' | 'world';
