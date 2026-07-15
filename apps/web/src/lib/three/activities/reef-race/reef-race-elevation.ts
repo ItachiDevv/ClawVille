@@ -69,8 +69,8 @@ interface _TCacheEntry {
 const _tCache = new Map<string, _TCacheEntry>();
 
 /** LUT half-window for the local scan. The LUT has 1000 entries (Δt=0.001). A
- *  kart at REEF_MAX_SPEED=650 wu/s over the current ~88052 wu arc covers
- *  ≈0.0074 t/s ≈ 0.00012 t/frame@60fps — so ±24 samples (±0.024 t) is
+ *  kart at REEF_MAX_SPEED=1300 wu/s over the current ~88052 wu arc covers
+ *  ≈0.0148 t/s ≈ 0.00025 t/frame@60fps — so ±24 samples (±0.024 t) is
  *  a generous, robust window even
  *  after a few dropped frames. */
 const _SCAN_HALF_WINDOW = 24;

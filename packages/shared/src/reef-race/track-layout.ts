@@ -23,7 +23,7 @@
  *     founder's 4-board target, with aggressive overtaking + surf room.
  *   - THE WALL-CLAMP FIX (the load-bearing geometric truth): a road of
  *     half-width hw can only carve a corner of radius R if R − hw > the carve
- *     floor (250 wu at 650/2.6); otherwise no racing line fits inside the
+ *     floor (500 wu at 1300/2.6); otherwise no racing line fits inside the
  *     corridor and the sim's outward-velocity wall scrub STALLS the kart (the
  *     v5 trap — see `[[surf-road-track-v5]]`). At hw≈800 that needs R > ~1050.
  *     A WIDE river
@@ -77,7 +77,7 @@
  *   - curvature reversals  = 30                          (aggressive zig-zag)
  *   - min radius of curv.  = 2156.0 wu @ t≈0.670          (broad — see below)
  *   - hw @ min-R           = 1251 wu
- *   - CARVE MARGIN (R−hw)  = 905.4 wu  >> 250 floor       (NO wall-clamp — the
+ *   - CARVE MARGIN (R−hw)  = 905.4 wu  > 500 floor        (NO wall-clamp — the
  *                                                          racing line fits)
  *   - hw sweep             = [1144, 1610] wu (water 2289–3219 wu WIDE; ×1.55 of v6)
  *   - min adjacent-CP space= 1858 wu @ CP3→CP4            (need >200, Newton guard)
@@ -92,10 +92,11 @@
  *   - centerlineAt(0) at XZ=(0, -11425) (start/finish line, south straight)
  *   - arclength round-trip < 1e-3 (LUT sane)
  *
- *   At REEF_MAX_SPEED = 650 wu/s, full-thrust straight cruise ≈ 645 wu/s and a
- *   realistic average lap pace ≈ 429 wu/s (mixed humans+bots). One loop ≈ 205 s
- *   at that pace. The existing 300 000 ms per-lap soft budget remains deliberately
- *   conservative for collisions, stalls and disconnected stragglers.
+ *   At REEF_MAX_SPEED = 1300 wu/s, full-thrust straight cruise ≈ 1290 wu/s and
+ *   a realistic average lap pace ≈ 858 wu/s (mixed humans+bots). One loop
+ *   takes ≈ 102.6 s at that pace; 88 052/858×1.10 ≈ 113 s with safety.
+ *   The existing 300 000 ms per-lap soft budget remains deliberately conservative
+ *   for collisions, stalls and disconnected stragglers.
  *
  * ─── 5 themed segments (LOOP-APPROPRIATE — t-ranges, NOT z-ranges) ───────────
  *
@@ -200,7 +201,7 @@ export const REEF_RACE_DEFAULT_TRACK: ReadonlyArray<SplineControlPoint> = [
   // min R 2156, footprint ~30648×25926, elevation span 1634 (render-only, max
   // grade 13.1%) — all unchanged from initial v6.
   // halfWidths: ×1.55 of initial v6 values. Verified by scratchpad/v6-width-verify.ts:
-  //   hw [1144,1610] (water 2289-3219 WIDE), CARVE MARGIN 905 (NO wall-clamp),
+  //   hw [1144,1610] (water 2289-3219 WIDE), CARVE MARGIN 905 (>500 floor; NO wall-clamp),
   //   min CP spacing 1858, min inter-pass edge clearance 1797 (NO overlap).
   //
   // The v6 ring is a WAVY CIRCLE so every turn is a BROAD sweep (R >> corridor
@@ -212,7 +213,7 @@ export const REEF_RACE_DEFAULT_TRACK: ReadonlyArray<SplineControlPoint> = [
   // ── Segment 0: lagoon — START/FINISH STRAIGHT (south, heading NE) ─────────
   // halfWidths are the original v6 values × 1.55 (rounded to nearest wu).
   // Verified by scratchpad/v6-width-verify.ts: hw [1144,1610], water 2289-3219wu,
-  // carve margin 905wu (>> 250 floor), inter-pass clearance 1797wu.
+  // carve margin 905wu (>500 floor), inter-pass clearance 1797wu.
   { x:     0, z: -11425, halfWidth: 1528 }, // CP  0  START/FINISH line (t=0)
   { x:  1952, z:  -9813, halfWidth: 1520 }, // CP  1  straight
   { x:  3640, z:  -8788, halfWidth: 1578 }, // CP  2  straight end → SE sweep

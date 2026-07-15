@@ -702,7 +702,7 @@ describe('ReefRaceSim — launch boost (Phase 1 T11–T15)', () => {
       reefRaceSim.__tickOnceForTest('room-launch');
     }
     const speed = Math.hypot(body.vx, body.vy);
-    // Stall caps effective speed at REEF_MAX_SPEED * 0.5 * 0.30 = 97.5 wu/s.
+    // Stall caps effective speed at REEF_MAX_SPEED * 0.5 * 0.30 = 195 wu/s.
     // Allow 10% slack because integration converges asymptotically.
     expect(speed).toBeLessThan(REEF_MAX_SPEED * LAUNCH_STALL_THRUST_CAP * 0.55);
   });
@@ -775,7 +775,7 @@ describe('ReefRaceSim — speedMod stacking (Phase 1 T16)', () => {
       reefRaceSim.__tickOnceForTest('room-drift');
     }
     const speed = Math.hypot(body.vx, body.vy);
-    // Asymptote should approach 910 (1.4 × 650), allow 5% slack.
+    // Asymptote should approach 1820 (1.4 × 1300 @ 2× cap), allow 5% slack.
     expect(speed).toBeLessThan(REEF_MAX_SPEED * 1.55);
   });
 });
@@ -1151,7 +1151,7 @@ describe('ReefRaceSim — Phase 2 cornering apex (P2-T6..P2-T10)', () => {
       reefRaceSim.__tickOnceForTest('room-drift');
     }
     const speed = Math.hypot(body.vx, body.vy);
-    // Asymptotes toward REEF_MAX_SPEED * (1 + 0.38 + 0.05) = 929.5. Allow slack.
+    // Asymptotes toward REEF_MAX_SPEED * (1 + 0.38 + 0.05) = 1859. Allow slack.
     expect(speed).toBeGreaterThan(REEF_MAX_SPEED * 1.30);
     expect(speed).toBeLessThanOrEqual(REEF_MAX_SPEED * 1.85 + 5);
   });
@@ -1306,7 +1306,7 @@ describe('ReefRaceSim — Phase 2 hazards (P2-T15..P2-T18)', () => {
       reefRaceSim.__tickOnceForTest('room-drift');
     }
     const speed = Math.hypot(body.vx, body.vy);
-    // Asymptote target: REEF_MAX_SPEED * 0.98 = 637 wu/s.
+    // Asymptote target: REEF_MAX_SPEED * 0.98 = 1274 wu/s.
     // Allow generous slack for integration + drag.
     expect(speed).toBeGreaterThan(REEF_MAX_SPEED * 0.85);
     expect(speed).toBeLessThan(REEF_MAX_SPEED * 1.05);
@@ -1518,7 +1518,7 @@ describe('ReefRaceSim — Phase 2 anti-cheat / cap regression (P2-T27..P2-T29)',
       reefRaceSim.__tickOnceForTest('room-drift');
     }
     const speed = Math.hypot(body.vx, body.vy);
-    // Asymptote: REEF_MAX_SPEED * (1 - 0.45) = 357.5 wu/s.
+    // Asymptote: REEF_MAX_SPEED * (1 - 0.45) = 715 wu/s.
     expect(speed).toBeLessThan(REEF_MAX_SPEED * 0.65);
     // Now plant a hypothetical extra negative — confirm flooring.
     // We use a non-existent kind via direct mutation as the cap math reads
@@ -1629,9 +1629,9 @@ describe('ReefRaceSim — Phase 2 audit-gap tests (P2-T36..P2-T42)', () => {
     }
     const speed = Math.hypot(body.vx, body.vy);
     // Stall short-circuit: speedMod = 0.5, effectiveThrust ≤ 0.30.
-    // Asymptote: REEF_MAX_SPEED * 0.5 * 0.30 = 97.5 wu/s.
+    // Asymptote: REEF_MAX_SPEED * 0.5 * 0.30 = 195 wu/s.
     // Hazard's negative kineticMult is SKIPPED inside the stall branch,
-    // so the speed should NOT be lower than the stall floor — 97.5 wu/s.
+    // so the speed should NOT be lower than the stall floor — 195 wu/s.
     // Bound: stall floor + 10% slack for integration approach.
     expect(speed).toBeLessThanOrEqual(REEF_MAX_SPEED * 0.5 * LAUNCH_STALL_THRUST_CAP * 1.1);
   });
@@ -1682,7 +1682,7 @@ describe('ReefRaceSim — Phase 2 audit-gap tests (P2-T36..P2-T42)', () => {
 
     // Now add turbo — turbo +0.40 wins positive slot vs drift +0.38 via Math.max,
     // hazard -0.40 lives in negative slot, kineticDelta = 0.40 - 0.40 = 0.00 → 1.00×.
-    // Re-anchor this independent convergence leg: at the 650 wu/s base cap,
+    // Re-anchor this independent convergence leg: at the 1300 wu/s base cap,
     // continuing from the first leg reaches the legacy oval wall and measures
     // wall-clamp behavior instead of the boost-stack asymptote.
     body.x = 0;
@@ -2141,13 +2141,13 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
 
   // P3-T15 — velocity validator NOW actually fires (N1 fix). Direct
   // validator call — proves the validator clamps at REEF_MAX_ACCEL × dt ×
-  // 2.1 ≈ 182 wu/s, AND also asserts the applyIntentForTick call-site no
+  // 2.1 ≈ 364 wu/s, AND also asserts the applyIntentForTick call-site no
   // longer passes (prevV, prevV) — see C-IMPL-1 fix at
   // reef-race-sim.ts:~1132 (validator runs at end of applyIntentForTick).
-  it('P3-T15 — velocity validator clamps a synthetic 200 wu/s jump', () => {
+  it('P3-T15 — velocity validator clamps a synthetic 400 wu/s jump', () => {
     const dt = 1 / REEF_SIM_HZ;
     const prev = { x: 0, y: 200 };
-    const synthetic = { x: 0, y: 200 + 200 }; // +200 wu/s magnitude jump
+    const synthetic = { x: 0, y: 200 + 400 }; // +400 wu/s magnitude jump
     const verdict = validateReefVelocityDelta(
       prev,
       synthetic,
@@ -2156,9 +2156,9 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     );
     expect(verdict.ok).toBe(false);
     expect(verdict.flagged).toBe(true);
-    // And a legitimate 80 wu/s acceleration step (well under the
-    // REEF_MAX_ACCEL × dt × 2.1 ≈ 182 allowance) should NOT flag.
-    const legit = { x: 0, y: 200 + 80 };
+    // And a legitimate 160 wu/s acceleration step (well under the
+    // REEF_MAX_ACCEL × dt × 2.1 ≈ 364 allowance) should NOT flag.
+    const legit = { x: 0, y: 200 + 160 };
     const ok = validateReefVelocityDelta(
       prev,
       legit,
@@ -2172,7 +2172,7 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
   // P3-T15b — REAL wiring proof for C-IMPL-1. Drives the actual
   // applyIntentForTick → validator pipeline by poisoning body.mults.accelMult
   // to a value that produces a per-tick velocity delta well above the
-  // validator's REEF_MAX_ACCEL × dt × 2.1 ≈ 182 wu/s allowance. With the
+  // validator's REEF_MAX_ACCEL × dt × 2.1 ≈ 364 wu/s allowance. With the
   // pre-fix wiring (prev/curr both captured AFTER acceleration), no flag
   // would ever appear regardless of accel magnitude. With C-IMPL-1 fixed
   // (prev captured BEFORE acceleration, validator at end of
@@ -2188,7 +2188,7 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     });
     const body = state.bodies.get('p1')!;
     // Poison accelMult to 5.0 so a single applyIntentForTick step adds
-    // ~433 wu/s — well over the validator's ~182 wu/s allowance. This
+    // ~867 wu/s — well over the validator's ~364 wu/s allowance. This
     // simulates a future regression / cheat path that pumps the per-tick
     // delta past the legitimate ceiling. With C-IMPL-1 fixed the
     // validator catches it; without the fix it never sees a non-zero dv.
@@ -2198,7 +2198,7 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     setIntent(body, { dir: { x: 0, y: 1 }, thrust: 1 });
     reefRaceSim.__tickOnceForTest('room-p3');
     // The body's velocity must have been clamped down toward the validator's
-    // allowance, not the poisoned 333 wu/s target. This is the load-bearing
+    // allowance, not the poisoned ~867 wu/s target. This is the load-bearing
     // assertion — clamp is what actually protects the sim from a cheat path.
     const speedAfterClamp = Math.hypot(body.vx, body.vy);
     expect(speedAfterClamp).toBeLessThanOrEqual(

@@ -268,11 +268,11 @@ function resolveRegistryEntry(species: string): ModelRegistryEntry | undefined {
 
 /**
  * Maximum squared position delta used to identify a respawn teleport. At the
- * 1202.5wu/s legitimate boost cap and effective 15Hz snapshot cadence, normal
- * travel is ≈80.2wu/snapshot. 500wu is >6× above that, leaving ample margin
+ * 2405wu/s legitimate boost cap and effective 15Hz snapshot cadence, normal
+ * travel is ≈160.3wu/snapshot. 1000wu is >6× above that, leaving ample margin
  * without false positives from high-speed straight-line movement.
  */
-const WIPEOUT_TELEPORT_THRESHOLD_SQ = 500 * 500;
+const WIPEOUT_TELEPORT_THRESHOLD_SQ = 1000 * 1000;
 
 /** Per-avatarId last known XZ (for wipeout teleport detection). Module scope,
  * no per-frame allocations. Cleaned up on component unmount. */
@@ -930,7 +930,7 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
   const predictedRef = useRef<SurfBodyState>({ x: 0, z: 0, vx: 0, vz: 0, rot: 0 });
   // Previous-tick pose for RENDER interpolation ("fix your timestep"). The
   // fixed 30 Hz integration below only advances `pred` on tick boundaries, so
-  // rendering `pred` directly steps the kart ~21 wu at a time at top speed —
+  // rendering `pred` directly steps the kart ~43 wu at a time at top speed —
   // on a 60–144 Hz display that reads as constant self-kart jitter (the exact
   // regression the founder reported 2026-07-14; remote karts were smooth
   // because they render through the 100–220 ms interpolation path). Render
@@ -1559,8 +1559,8 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
 
       // SPEC 2 — Wipeout detection (VRM only).
       // Server doesn't surface respawnAt to the client yet (see §C.2 in the plan).
-      // Heuristic: detect XZ teleport > 500wu in one snapshot interval — this is
-      // only achievable by a respawn teleport, not normal physics.
+      // Heuristic: detect XZ teleport > 1000wu in one snapshot interval. That
+      // remains >6× the 160.3wu legitimate boosted travel at effective 15Hz.
       // Fires once per new snapshot, inside this guard, not per frame.
       if (isVRM && vrmAnimatorRef.current) {
         const prev = _lastXZ[entity.avatarId];
@@ -1721,7 +1721,7 @@ function ReefRacePlayerInner({ entity, isSelf = false, triggerScreenShake }: Ree
 
       // ─── Render interpolation between tick N-1 and tick N ──────────────────
       // The integration above only advances on 33.3 ms boundaries; without this
-      // blend the kart held its pose on non-tick frames and jumped ~21 wu on
+      // blend the kart held its pose on non-tick frames and jumped ~43 wu on
       // tick frames (visible self-kart jitter at any refresh rate above 30 Hz).
       // alpha = fraction of the next tick already elapsed (accumulator drains
       // to < TICK_DT above, so alpha ∈ [0, 1)). Reconciliation shifts both

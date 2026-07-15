@@ -179,11 +179,11 @@ const WALL_CORRECTION_PER_TICK = 0.34;
  * Hard cap on a single tick's inward positional correction (wu). Prevents a
  * teleport-grade overshoot (e.g. a cheat packet placing the body 5000wu out)
  * from snapping back in one frame; the body walks back in over several ticks.
- * Sized above one tick of travel at top speed (≈ 1202.5/30 ≈ 40.1wu boosted) so a
+ * Sized above one tick of travel at top speed (≈ 2405/30 ≈ 80.2wu boosted) so a
  * legitimately fast body is corrected in one tick but a pathological overshoot
  * is spread.
  */
-const WALL_MAX_CORRECTION_WU = 60;
+const WALL_MAX_CORRECTION_WU = 120;
 
 /**
  * Fraction of the OUTWARD velocity component scrubbed per tick at a wall
@@ -1249,8 +1249,9 @@ export class ReefRaceSplineSim {
 
     // 7. Velocity delta validator (Phase 3 anti-cheat backstop). Carving
     //    redirects momentum but never raises speed above the thrust+boost cap,
-    //    so a legitimate hard turn at top speed (~43 wu/s vector change) plus
-    //    one tick of lateral bleed (≤ ~50 wu/s) stays well under this ceiling.
+    //    so a legitimate hard turn at top speed (~62 wu/s vector change after
+    //    full-speed turn falloff) plus one tick of lateral bleed (≤ ~130 wu/s)
+    //    stays well under the ~364 wu/s ceiling.
     const deltaMag = Math.hypot(body.vx - prevVx, body.vz - prevVz);
     const maxLegitDelta =
       REEF_MAX_ACCEL * dt * REEF_KINEMATIC_TOLERANCE;
@@ -1501,8 +1502,8 @@ export class ReefRaceSplineSim {
    * Lap model:
    *   - `progress` ∈ [0,1) is the within-lap fraction and WRAPS 1→0 at the seam.
    *   - A FORWARD SEAM CROSSING is `prevProgress` high (> SEAM_HI) and the new
-   *     within-lap progress low (< SEAM_LO). On a 30k-wu loop a body moves
-   *     ≤ ~17 wu/tick (≈ 0.0006 of the loop), so it can NEVER legitimately
+   *     within-lap progress low (< SEAM_LO). On the ~88 052-wu loop a body moves
+   *     ≤ ~80.2 wu/tick boosted (≈ 0.00091 of the loop), so it can NEVER legitimately
    *     jump 0.8→0.2 except by wrapping the seam — the gap makes the test robust.
    *   - Bodies spawn BEHIND the line (progress ≈ 1.0). The FIRST forward seam
    *     crossing is the "start gun" (sets `startCrossed`, leaves `lap`=0 = on
@@ -1533,8 +1534,8 @@ export class ReefRaceSplineSim {
 
       const prev = body.progress;
 
-      // Seam crossings on the periodic loop. A single tick moves ≤ ~40.1 wu ≈
-      // 0.00046 of the loop, so any within-lap jump > 0.5 is a seam WRAP, not
+      // Seam crossings on the periodic loop. A single tick moves ≤ ~80.2 wu ≈
+      // 0.00091 of the loop, so any within-lap jump > 0.5 is a seam WRAP, not
       // real motion — in EITHER direction.
       const SEAM_WRAP = 0.5;
       const rawDelta = newProgress - prev;
@@ -2022,7 +2023,7 @@ export class ReefRaceSplineSim {
     // post-integrate snapshot (positions unchanged this pass; velocities read
     // as-is), AGGREGATED per target (impulses sum, slows multiply — both
     // commutative), APPLIED once in a canonical order (impulse then slow), and
-    // clamped ONCE to the 1202.5 hard cap (caps every knockback incl. seeker).
+    // clamped ONCE to the 2405 hard cap (caps every knockback incl. seeker).
     const impulseX = new Map<string, number>();
     const impulseZ = new Map<string, number>();
     const slowMul = new Map<string, number>();
@@ -2166,7 +2167,7 @@ export class ReefRaceSplineSim {
   /**
    * Seeker-jelly — an impulse AWAY from the user on the closest in-front rival.
    * Accumulates the impulse via `addImpulse` (order-independent); the aggregate
-   * apply loop sums + CLAMPS it to 1202.5 (Codex round-3 BLOCKER 2 — the old direct
+   * apply loop sums + CLAMPS it to 2405 (Codex round-3 BLOCKER 2 — the old direct
    * add had no clamp, so an aligned seeker could exceed the cap).
    */
   private collectSeekerJelly(
@@ -2268,7 +2269,7 @@ export class ReefRaceSplineSim {
    * victim's speed is CLAMPED once in the aggregate apply loop (Codex round-3:
    * the per-effect clamp moved to the single final clamp so it also bounds a
    * seeker+whirlpool combo on the same victim). The knockback bypasses the
-   * per-tick delta validator, so the final clamp is what keeps it ≤ 1202.5.
+   * per-tick delta validator, so the final clamp is what keeps it ≤ 2405.
    */
   private collectWhirlpool(
     state: SplineRoomState,

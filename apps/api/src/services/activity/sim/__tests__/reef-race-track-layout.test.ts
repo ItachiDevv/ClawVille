@@ -29,7 +29,7 @@
  * start XZ (0, -11425), arc bounds [80k,96k], widths, segment t-ranges all move.
  *
  * KEY GEOMETRIC TRUTH: a road of half-width hw can only carve a corner of radius
- * R if R − hw > the carve floor (250 wu); otherwise no racing line fits inside
+ * R if R − hw > the carve floor (500 wu @ 2× cap); otherwise no racing line fits inside
  * the corridor and the sim wall-clamps + stalls (the v5 trap). So a WIDE river
  * CANNOT have pinhead chicanes/hairpins — every turn is a broad sweep, and the
  * zig-zag comes from many broad alternating sweeps over a huge footprint.
@@ -72,19 +72,22 @@ const ARC_LENGTH_LOWER_WU = 80_000;
 /** Upper bound on totalArcLength — keeps the 2-lap race inside the lap budget. */
 const ARC_LENGTH_UPPER_WU = 96_000;
 
-/** Carve floor: REEF_MAX_SPEED / REEF_TURN_RATE = 650 / 2.6 = 250 wu. */
+/** Carve floor: REEF_MAX_SPEED / REEF_TURN_RATE = 1300 / 2.6 = 500 wu (2× cap 2026-07-15). */
 const MIN_TURN_RADIUS_FLOOR_WU = REEF_MAX_SPEED / REEF_TURN_RATE;
 
 /**
  * THE WALL-CLAMP FIX (v6, widened ×1.55 for Mario-Kart-roomy gameplay): the min
  * radius of curvature must comfortably exceed the WIDEST corridor half-width plus
  * the carve floor, so a racing line fits inside the wide corridor on EVERY corner.
- * With max hw≈1610 and the 250 floor, the min radius must beat ~1860 wu. The track
- * verifies min R ~2156 (real min carve margin R−hw ~905 at the binding corner).
+ * With max hw≈1610 and the 500 floor (2× cap), the min radius must beat ~2110 wu.
+ * The track verifies min R ~2156 (real min carve margin R−hw ~905 at the binding
+ * corner; 905 > 500 floor, so the racing line still fits — margin shrank from 655
+ * to 405 but stays positive). The design target moves to 2120, just above the
+ * ~2110 max-width-plus-carve requirement and below the measured ~2156 radius.
  * We assert min R ≥ this design target — above max-hw+floor — so a future
  * tightening that would wall-clamp the wide corridor fails the test.
  */
-const MIN_TURN_RADIUS_TARGET_WU = 1900;
+const MIN_TURN_RADIUS_TARGET_WU = 2120;
 
 /** Widest per-CP halfWidth after the ×1.55 widen (water ~3220 wu); test bound only. */
 const MAX_CORRIDOR_HALF_WIDTH_WU = 1620;
@@ -217,7 +220,7 @@ describe('REEF_RACE_DEFAULT_TRACK — closed spline integration', () => {
 
   it('min radius beats the WIDEST corridor + carve floor (THE WALL-CLAMP FIX)', () => {
     // THE v6 INVARIANT: a racing line must fit INSIDE the wide corridor on every
-    // corner. That needs min R − hw(at min-R) > the carve floor (250 wu). With a
+    // corner. That needs min R − hw(at min-R) > the carve floor (500 wu @ 2× cap). With a
     // wide corridor (max hw≈1610) a tight corner walls off the line and the sim
     // wall-clamp stalls the kart (the v5 trap). Sample finely with WRAP-AROUND
     // finite differences (the loop has no endpoints) and assert the carve margin.

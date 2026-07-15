@@ -9,7 +9,7 @@
  *   - 12 checkpoints in fixed sequence (0=finish/start; 1..11 around)
  *   - Out-of-order checkpoint crossings silently ignored — kills
  *     teleport-to-finish exploits at the source
- *   - MIN_LAP_MS = 11.5s; faster laps discarded + flagged
+ *   - MIN_LAP_MS = 5.75s; faster laps discarded + flagged
  *   - 6-power-up catalog (turbo-bubble, ink-slick, bubble-shield,
  *     seeker-jelly, tide-wave, whirlpool) per master plan
  *   - Snapshot delta target 20Hz, quantized to 15Hz (every 2 ticks); keyframe @ 1Hz
@@ -1440,11 +1440,11 @@ class ReefRaceSim {
     // Phase 3 (audit C-IMPL-1) — REAL velocity-delta validator. Compares
     // velocity captured BEFORE any mutation in this method against velocity
     // AFTER the acceleration step. The legitimate per-tick delta is bounded
-    // by REEF_MAX_ACCEL × dt × max(accelMult, 1/turnRadiusMult) ≈ 108 wu/s
+    // by REEF_MAX_ACCEL × dt × max(accelMult, 1/turnRadiusMult) ≈ 217 wu/s
     // (worst case at level-50 agility / strength); the validator allows
-    // REEF_MAX_ACCEL × dt × REEF_KINEMATIC_TOLERANCE ≈ 182 wu/s — leaving
-    // 74 wu/s of headroom to catch synthetic per-tick velocity tampering.
-    // Secondary speed cap (REEF_MAX_SPEED × tolerance = 1365 wu/s) catches
+    // REEF_MAX_ACCEL × dt × REEF_KINEMATIC_TOLERANCE ≈ 364 wu/s — leaving
+    // 147 wu/s of headroom to catch synthetic per-tick velocity tampering.
+    // Secondary speed cap (REEF_MAX_SPEED × tolerance = 2730 wu/s) catches
     // sustained over-speed even if the per-tick delta stays under threshold.
     const velCheck = validateReefVelocityDelta(
       prevVelocityBeforeIntent,
@@ -1698,7 +1698,7 @@ class ReefRaceSim {
     body.vy *= REEF_DRAG;
 
     // Phase 1 (audit S5) — boost-gated hard velocity cap. Backstop only;
-    // never clamps non-boosted bodies. Max legit speed at 1.85× = 1202.5 wu/s.
+    // never clamps non-boosted bodies. Max legit speed at 1.85× = 2405 wu/s.
     //
     // Phase 2 — gate widens to include ALL positive kinematic effects so the
     // cap covers the new combined-boost ceiling produced by the §2.3 cap math.

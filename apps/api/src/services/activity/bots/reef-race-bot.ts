@@ -208,7 +208,7 @@ interface ReefV2BotRoomView {
  * its forward cone (cos(angle) ≥ `BOT_RIBBON_FORWARD_COS`). If found, the
  * dir vector blends `BOT_RIBBON_PULL_WEIGHT` toward the nearest ribbon point.
  *
- * Lookahead is 30% of base top speed (195wu at 650), preserving the bot's
+ * Lookahead is 30% of base top speed (390wu at 1300), preserving the bot's
  * reaction horizon as the race-speed tuning changes. It is long enough to
  * commit without locking onto a ribbon halfway across the track.
  * Forward cone cos(60°) = 0.5 — wider than draft cone (cos(30°)) because
