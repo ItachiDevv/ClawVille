@@ -59,6 +59,7 @@ import {
   resolveFacilitatorFeePayer,
   verifyAndSettle,
   usdToCt,
+  usdCentsToUsdcAtomic,
   CT_PER_USDC,
   type TopupQuote,
   type X402Network,
@@ -66,6 +67,7 @@ import {
 import { resolveTopupNetwork } from '../routes/ct-topup';
 import { withKeyedMutex } from './keyed-mutex';
 import type { LedgerTx } from './claw-token-ledger';
+import { claimX402Settlement } from './x402-settlement-receipts';
 
 // ---------------------------------------------------------------------------
 // ¢-PEG TRIPWIRE — the whole quote model assumes 1 vCLAW = $0.01
@@ -325,6 +327,7 @@ export type CheckoutSettleResult =
         | 'idempotency_key_conflict'
         | 'checkout_reconciliation'
         | 'signature_conflict'
+        | 'already_settled'
         | 'settle_failed';
       /** payment_not_settled: the facilitator reason + whether a retry may work. */
       reason?: string;
@@ -361,6 +364,13 @@ class CheckoutAlreadySettled extends Error {
   constructor() {
     super('x402_checkout_already_settled');
     this.name = 'CheckoutAlreadySettled';
+  }
+}
+
+class CheckoutSignatureAlreadySettled extends Error {
+  constructor() {
+    super('x402_signature_already_settled');
+    this.name = 'CheckoutSignatureAlreadySettled';
   }
 }
 
@@ -498,6 +508,17 @@ export async function settleCheckout(input: {
     const result = await verifyAndSettle({ paymentHeader, requirements });
     if (!result.settled || !result.txSignature) {
       const reason = result.failureReason ?? 'unsettled';
+      if (reason.startsWith('independent_chain_') && result.txSignature) {
+        await markReconcile(
+          checkoutId,
+          settlingId,
+          reason,
+          result.txSignature,
+          result,
+          { allowExistingReconcile: true },
+        );
+        return { ok: false as const, code: 'checkout_reconciliation' as const, status: 'reconcile' };
+      }
       if (reason === 'facilitator_settle_error') {
         // AMBIGUOUS — money-state UNKNOWN. Move to reconcile (never pending, never
         // failed); the reconciler resolves it against the chain.
@@ -718,6 +739,18 @@ async function runFulfillment(
 
   try {
     const out = await db.transaction(async (tx) => {
+      const receipt = await claimX402Settlement({
+        txSignature,
+        rail: 'x402_checkout',
+        kind: itemKind,
+        referenceId: checkoutId,
+        subjectId: subject.avatarId,
+        amountUsdcAtomic: BigInt(usdCentsToUsdcAtomic(rowUsdCents)),
+      }, tx);
+      if (receipt.kind === 'foreign_owner') {
+        throw new CheckoutSignatureAlreadySettled();
+      }
+
       // Flip settling(+sig) → settled FIRST, checked. A concurrent resume that
       // already settled ⇒ 0 rows ⇒ CheckoutAlreadySettled ⇒ replay (the fulfiller
       // NEVER runs twice).
@@ -771,6 +804,17 @@ async function runFulfillment(
       fulfillment: out.detail,
     };
   } catch (err) {
+    if (err instanceof CheckoutSignatureAlreadySettled) {
+      await markReconcile(
+        checkoutId,
+        row.settlingId,
+        'global_signature_conflict',
+        txSignature,
+        null,
+        { allowExistingReconcile: true },
+      );
+      return { ok: false as const, code: 'already_settled' as const, status: 'reconcile' };
+    }
     if (err instanceof CheckoutAlreadySettled) {
       const settled = await db.query.x402Checkouts.findFirst({
         where: and(eq(x402Checkouts.id, checkoutId), eq(x402Checkouts.avatarId, subject.avatarId)),

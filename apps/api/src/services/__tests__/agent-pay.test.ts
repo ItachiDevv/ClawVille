@@ -64,6 +64,7 @@ function ambiguousOutcome(): ExecutePreparedExactPaymentOutcome {
     verifyPassed: true,
     reason: 'facilitator_settle_error',
     payer: SENDER_WALLET,
+    signature: null,
     result: {
       settled: false, isValid: true, txSignature: null, network: null,
       payer: SENDER_WALLET, failureReason: 'facilitator_settle_error', raw: {},

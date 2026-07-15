@@ -154,6 +154,8 @@ export interface VerifyUsdcTransferInput {
   expectedMint: string;
   destinationOwner: string;
   expectedPayer?: string | null;
+  /** Reconcile remains exact; live facilitator settlement accepts an overpay. */
+  amountMode?: 'exact' | 'at_least';
 }
 
 function transferMismatchReason(
@@ -241,7 +243,9 @@ export async function verifyUsdcTransfer(
       && transfer.mint === expectedMint
       && (!expectedPayer || transfer.payer === expectedPayer));
   const exactGroups = aggregatePayerTransfers(applicable)
-    .filter((group) => group.total === BigInt(expectedAtomic));
+    .filter((group) => input.amountMode === 'at_least'
+      ? group.total >= BigInt(expectedAtomic)
+      : group.total === BigInt(expectedAtomic));
   if (exactGroups.length === 1) {
     const group = exactGroups[0];
     return {

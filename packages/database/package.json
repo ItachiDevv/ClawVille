@@ -15,8 +15,8 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "generate": "drizzle-kit generate",
-    "migrate": "drizzle-kit push --force",
-    "push": "drizzle-kit push --force",
+    "migrate": "bun scripts/migrate-ci.ts",
+    "push": "bun scripts/migrate-ci.ts",
     "studio": "drizzle-kit studio"
   },
   "dependencies": {

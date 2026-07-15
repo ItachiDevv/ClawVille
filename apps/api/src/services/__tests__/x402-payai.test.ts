@@ -165,6 +165,10 @@ describe('x402-payai — partner direct-USDC primitives (mock-facilitator harnes
       paymentHeader: paymentHeader(q.accepts[0].network),
       requirements: q.accepts[0],
       expectedPayoutPubkey: PARTNER_PAYOUT,
+      independentVerifier: async () => ({
+        ok: true as const,
+        payer: 'BUYER1111111111111111111111111111111111111111',
+      }),
     });
     expect(res.settled).toBe(true);
     expect(res.isValid).toBe(true);
