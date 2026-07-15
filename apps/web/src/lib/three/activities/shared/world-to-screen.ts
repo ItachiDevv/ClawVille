@@ -10,7 +10,8 @@
  * Per 3d-spec §3.2:
  *   - No 3D geometry involved — pure math.
  *   - Caller owns the camera and renderer references.
- *   - `visible` is false when the point is behind the camera (z > 1 in NDC).
+ *   - `visible` is false when the point is behind the camera (view-space z ≥ 0;
+ *     NDC z is unreliable for this under the r185 reversed-depth renderer).
  *
  * Example (in a HUD component):
  *   const { gl, camera } = useThree();
@@ -22,6 +23,7 @@ import * as THREE from 'three';
 
 // ─── Module-scope scratch — no per-call allocation ────────────────────────────
 const _ndc = new THREE.Vector3();
+const _view = new THREE.Vector3();
 
 export interface ScreenPosition {
   /** CSS pixel X from left edge of the canvas. */
@@ -49,8 +51,13 @@ export function worldToScreen(
   _ndc.copy(worldPos);
   _ndc.project(camera);
 
-  // NDC z > 1 or < -1 means behind camera.
-  const visible = _ndc.z <= 1;
+  // Behind-camera test uses VIEW-space z, not NDC z: with the r185
+  // reversedDepthBuffer renderer (camera.reversedDepth) NDC z semantics
+  // invert (near→1, far→0) and a behind-camera point projects to z < 0,
+  // so an `ndc.z <= 1` check wrongly keeps it visible at mirrored coords.
+  // View-space z < 0 = in front of the camera under every projection.
+  const visible =
+    _view.copy(worldPos).applyMatrix4(camera.matrixWorldInverse).z < 0;
 
   const canvas = gl.domElement;
   const halfW  = canvas.clientWidth  / 2;

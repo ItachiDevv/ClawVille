@@ -751,6 +751,59 @@ export class SpecialEventManager {
   }
 
   /**
+   * Read the event plus its dependent tournament/results without mutating either
+   * lifecycle. This is the public-status read used by GET /api/events/:slug;
+   * event completion remains an explicit command through `settleEvent`.
+   */
+  async getEventSettlementSnapshot(slug: string): Promise<{
+    event: EventRow;
+    tournamentId: string | null;
+    results: Array<{ avatarId: string; agentId: string | null; placement: number; prizeCt: string }>;
+  } | null> {
+    const event = await this.getEventBySlug(slug);
+    if (!event) return null;
+
+    // Preserve the existing public response semantics: dependent settlement is
+    // surfaced only after the event has started.
+    if (event.status !== 'live' && event.status !== 'completed') {
+      return { event, tournamentId: null, results: [] };
+    }
+
+    const tournamentRows = await this.db.execute<{ id: string; status: string }>(
+      sql`SELECT id, status FROM poker_tournaments
+          WHERE special_event_id = ${event.id}
+          ORDER BY created_at DESC LIMIT 1`,
+    );
+    const tournament = tournamentRows[0] ?? null;
+    if (!tournament) {
+      return { event, tournamentId: null, results: [] };
+    }
+
+    const results = await this.db.execute<{
+      avatar_id: string;
+      agent_id: string | null;
+      placement: number;
+      prize_ct: string;
+    }>(
+      sql`SELECT avatar_id, agent_id, placement, prize_ct
+          FROM poker_tournament_results
+          WHERE tournament_id = ${tournament.id}
+          ORDER BY placement ASC`,
+    );
+
+    return {
+      event,
+      tournamentId: tournament.id,
+      results: results.map((row) => ({
+        avatarId: row.avatar_id,
+        agentId: row.agent_id,
+        placement: row.placement,
+        prizeCt: row.prize_ct,
+      })),
+    };
+  }
+
+  /**
    * Settle the event: read the LINKED tournament's results (found via the
    * dependency FK — `WHERE special_event_id = event.id`) and flip the event →
    * 'completed'. Prize CREDITS were already paid by the tournament's own
@@ -811,6 +864,62 @@ export class SpecialEventManager {
       }
 
       return { alreadySettled: false, tournamentId: tournament?.id ?? null, results: mapped };
+    });
+  }
+
+  /**
+   * Reconcile the parent event for one EXACT dependent tournament. This is the
+   * automatic completion path called by TournamentManager after its settlement
+   * transaction commits. A standalone tournament has no parent and returns null.
+   * The event row lock makes concurrent automatic/admin retries one-winner and
+   * the completed-state replay is idempotent.
+   */
+  async settleEventForTournament(tournamentId: string): Promise<{
+    alreadySettled: boolean;
+    tournamentId: string;
+    results: Array<{ avatarId: string; agentId: string | null; placement: number; prizeCt: string }>;
+  } | null> {
+    return this.db.transaction(async (tx) => {
+      const rows = await tx.execute<EventRow & { tournament_status: string }>(
+        sql`SELECT e.*, t.status AS tournament_status
+            FROM poker_tournaments t
+            JOIN special_events e ON e.id = t.special_event_id
+            WHERE t.id = ${tournamentId}
+            FOR UPDATE OF e`,
+      );
+      const linked = rows[0];
+      if (!linked) return null;
+
+      const results = await tx.execute<{
+        avatar_id: string;
+        agent_id: string | null;
+        placement: number;
+        prize_ct: string;
+      }>(
+        sql`SELECT avatar_id, agent_id, placement, prize_ct
+            FROM poker_tournament_results
+            WHERE tournament_id = ${tournamentId}
+            ORDER BY placement ASC`,
+      );
+      const mapped = results.map((r) => ({
+        avatarId: r.avatar_id,
+        agentId: r.agent_id,
+        placement: r.placement,
+        prizeCt: r.prize_ct,
+      }));
+
+      if (linked.status === 'completed') {
+        return { alreadySettled: true, tournamentId, results: mapped };
+      }
+      if (linked.tournament_status !== 'completed' || linked.status !== 'live') {
+        return { alreadySettled: false, tournamentId, results: mapped };
+      }
+
+      await tx.execute(
+        sql`UPDATE special_events SET status = 'completed', completed_at = now()
+            WHERE id = ${linked.id} AND status = 'live'`,
+      );
+      return { alreadySettled: false, tournamentId, results: mapped };
     });
   }
 }

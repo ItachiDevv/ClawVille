@@ -51,8 +51,12 @@
 // 2026-07-07 v9 (P1 texture memory):
 //   - Precache points at KTX2 ETC1S world texture variants for the converted
 //     player lobster + converted building GLBs. New filenames bust Cloudflare.
+//
+// 2026-07-14 v10 (P1b texture memory):
+//   - Re-precached regenerated KTX2 assets with versioned URLs after extending
+//     compression to non-color slots (UASTC normals, ETC1S data maps).
 
-const CACHE_VERSION = 'v9';
+const CACHE_VERSION = 'v10';
 const GLB_CACHE = `clawville-assets-${CACHE_VERSION}`;
 const STATIC_CACHE = `clawville-static-${CACHE_VERSION}`;
 
@@ -67,25 +71,25 @@ const MAX_GLB_CACHE_BYTES = 60 * 1024 * 1024; // 60 MB
 // Phase 2 perf (2026-05-22): updated to *-opt1.glb paths that match
 // arena-buildings.tsx BUILDING_MODELS. Old roster removed.
 const PRECACHE_GLBS = [
-  '/models/lobster-ktx.glb',           // player character, KTX2 ETC1S baseColor
-  '/models/coral-reef1-ktx.glb',            // 388 KB
-  '/models/coral-reef2-ktx.glb',            // 192 KB
-  '/models/coral-reef3-ktx.glb',            // 260 KB
+  '/models/lobster-ktx.glb?v=2',           // player character, P1b KTX2 slot coverage
+  '/models/coral-reef1-ktx.glb?v=2',            // 388 KB
+  '/models/coral-reef2-ktx.glb?v=2',            // 192 KB
+  '/models/coral-reef3-ktx.glb?v=2',            // 260 KB
   '/models/kelp.glb',                   //  25 KB
-  '/models/building-seashell-ktx.glb',      // 108 KB
+  '/models/building-seashell-ktx.glb?v=2',      // 108 KB
   // Building models (Phase 2 opt1 variants, ?v= queries busted). Sandy's
   // Treedome is procedural and intentionally not pre-cached.
-  '/models/pineapple-house-opt1-ktx.glb',
-  '/models/chum-bucket-v2-opt1-ktx.glb',
-  '/models/krusty-krab-v2-opt1-ktx.glb',
-  '/models/salty-spitoon-opt1-ktx.glb?v=2',
-  '/models/boating-school-opt1-ktx.glb?v=2',
-  '/models/patty-building-opt1-ktx.glb',
-  '/models/building-lighthouse-opt1-ktx.glb?v=2',
-  '/models/arcade/claw-arcade-exterior-opt1-ktx.glb',
-  '/models/cove/cove-exterior-opt1-ktx.glb',
-  '/models/patricks-rock-v2-opt1-ktx.glb',
-  '/models/squidward-house-opt1-ktx.glb',
+  '/models/pineapple-house-opt1-ktx.glb?v=3',
+  '/models/chum-bucket-v2-opt1-ktx.glb?v=4',
+  '/models/krusty-krab-v2-opt1-ktx.glb?v=4',
+  '/models/salty-spitoon-opt1-ktx.glb?v=3',
+  '/models/boating-school-opt1-ktx.glb?v=3',
+  '/models/patty-building-opt1-ktx.glb?v=3',
+  '/models/building-lighthouse-opt1-ktx.glb?v=3',
+  '/models/arcade/claw-arcade-exterior-opt1-ktx.glb?v=4',
+  '/models/cove/cove-exterior-opt1-ktx.glb?v=4',
+  '/models/patricks-rock-v2-opt1-ktx.glb?v=5',
+  '/models/squidward-house-opt1-ktx.glb?v=5',
   // The 3 locomotion clips every VRM avatar needs to render without a T-pose
   // flash. Loaded eagerly on /game mount by preloadLocomotionClips() —
   // pre-caching them here means the SECOND-visit network panel has 0 anim GLB

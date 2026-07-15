@@ -18,6 +18,7 @@ import { describe, expect, it, beforeEach, mock } from 'bun:test';
 // ─── Mocks ────────────────────────────────────────────────────────────────
 
 const txCalls: Array<{ op: string; args: unknown[] }> = [];
+const duplicateResultAvatarIds = new Set<string>();
 
 function makeTxThenable<T>(value: T) {
   return {
@@ -26,7 +27,7 @@ function makeTxThenable<T>(value: T) {
     },
     values(v: unknown) {
       txCalls.push({ op: 'tx.insert.values', args: [v] });
-      return makeReturning();
+      return makeReturning(v);
     },
     set() {
       return makeTxThenable(value);
@@ -40,13 +41,22 @@ function makeTxThenable<T>(value: T) {
   };
 }
 
-function makeReturning() {
-  return {
+function makeReturning(values: unknown) {
+  const builder = {
+    onConflictDoNothing(config: unknown) {
+      txCalls.push({ op: 'tx.insert.onConflictDoNothing', args: [config] });
+      return builder;
+    },
     returning() {
+      const avatarId = (values as { avatarId?: unknown })?.avatarId;
+      if (typeof avatarId === 'string' && duplicateResultAvatarIds.has(avatarId)) {
+        return Promise.resolve([]);
+      }
       // Insert returning a synthetic id every call.
       return Promise.resolve([{ id: `result-${txCalls.length}` }]);
     },
   };
+  return builder;
 }
 
 const dbMock = {
@@ -103,6 +113,7 @@ mock.module('@clawville/database', () => ({
   db: dbMock,
   activityResults: {
     id: 'id',
+    roomId: 'room_id',
     avatarId: 'avatar_id',
     activityId: 'activity_id',
     createdAt: 'created_at',
@@ -204,6 +215,7 @@ const REEF = ACTIVITY_REGISTRY.find((a) => a.id === 'reef-race')!;
 beforeEach(() => {
   txCalls.length = 0;
   creditCalls.length = 0;
+  duplicateResultAvatarIds.clear();
 });
 
 // ─── Pure helpers ─────────────────────────────────────────────────────────
@@ -485,5 +497,27 @@ describe('issueRewardsForRoom', () => {
     // Two `tx.insert` calls — one per result row.
     const inserts = txCalls.filter((c) => c.op === 'tx.insert');
     expect(inserts.length).toBe(2);
+  });
+
+  it('treats the result insert as the reward claim and suppresses a conflict loser', async () => {
+    const room = buildRoom();
+    duplicateResultAvatarIds.add('avatar-human-1');
+
+    const issued = await issueRewardsForRoom({
+      room,
+      simResults: [
+        { avatarId: 'avatar-human-1', placement: 1, score: 4 },
+      ],
+    });
+
+    expect(issued).toEqual([]);
+    expect(creditCalls).toHaveLength(0);
+    const conflictCalls = txCalls.filter(
+      (call) => call.op === 'tx.insert.onConflictDoNothing',
+    );
+    expect(conflictCalls).toHaveLength(1);
+    expect(conflictCalls[0].args[0]).toEqual({
+      target: ['room_id', 'avatar_id'],
+    });
   });
 });

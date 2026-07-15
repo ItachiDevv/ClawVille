@@ -1,14 +1,14 @@
 /**
  * compress-ktx2.ts
  *
- * Converts selected world GLB baseColor/emissive textures to KTX2 ETC1S
- * (KHR_texture_basisu), writing NEW sibling files named <name>-ktx.glb.
+ * Converts selected world GLB textures to KTX2 (KHR_texture_basisu), writing
+ * NEW sibling files named <name>-ktx.glb. Color/data maps use ETC1S; normal
+ * maps use UASTC so their direction vectors survive compression cleanly.
  *
  * Source GLBs are the current shipped assets in apps/web/public/models. Most
- * source textures are embedded WebP; gltf-transform's etc1s command cannot
- * encode WebP directly, so this script builds a temporary GLB that remaps only
- * eligible WebP texture slots to PNG images. Normal, metallic/roughness, and
- * occlusion textures remain untouched and uncompressed.
+ * source textures are embedded WebP; gltf-transform's texture commands cannot
+ * encode WebP directly, so this script builds a temporary GLB that remaps every
+ * eligible WebP texture slot to PNG before encoding.
  *
  * Usage from repo root:
  *   bun run scripts/compress-ktx2.ts
@@ -22,14 +22,50 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
+import { NodeIO } from '@gltf-transform/core';
+import { ALL_EXTENSIONS, EXTMeshoptCompression } from '@gltf-transform/extensions';
+import { MeshoptDecoder, MeshoptEncoder } from 'meshoptimizer';
 import sharp from 'sharp';
 
 const MODELS_DIR = path.resolve('apps/web/public/models');
 const QLEVEL = 192;
-const ETC1S_SLOTS = '{baseColorTexture,emissiveTexture}';
+const ETC1S_SLOT_NAMES = [
+  'baseColorTexture',
+  'emissiveTexture',
+  'metallicRoughnessTexture',
+  'occlusionTexture',
+  'diffuseTexture',
+  'specularGlossinessTexture',
+  'specularTexture',
+  'specularColorTexture',
+] as const;
+const UASTC_SLOT_NAMES = ['normalTexture'] as const;
+
+function buildSlotPattern(slotNames: readonly string[]): string {
+  if (slotNames.length === 0) throw new Error('Texture slot pattern cannot be empty');
+  return slotNames.length === 1 ? slotNames[0] : `{${slotNames.join(',')}}`;
+}
+
+const ETC1S_SLOTS = buildSlotPattern(ETC1S_SLOT_NAMES);
+const UASTC_SLOTS = buildSlotPattern(UASTC_SLOT_NAMES);
 const GLB_MAGIC = 0x46546c67;
 const JSON_CHUNK = 0x4e4f534a;
 const BIN_CHUNK = 0x004e4942;
+
+function resolveToktxBinDir(): string | null {
+  const configured = process.env.KTX2_TOKTX_BIN;
+  if (configured && fs.existsSync(path.join(configured, 'toktx.exe'))) return configured;
+
+  const scoopAppDir = path.join(os.homedir(), 'scoop', 'apps', 'ktx-software');
+  if (!fs.existsSync(scoopAppDir)) return null;
+  const candidates = fs.readdirSync(scoopAppDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
+    .map((entry) => path.join(scoopAppDir, entry.name, 'bin'))
+    .filter((binDir) => fs.existsSync(path.join(binDir, 'toktx.exe')))
+    .sort()
+    .reverse();
+  return candidates[0] ?? null;
+}
 
 type Status = 'ok' | 'skipped' | 'error';
 
@@ -100,14 +136,27 @@ const TARGETS: Target[] = [
   { path: 'sea-creatures/lobster/animations/idle.glb' },
   { path: 'sea-creatures/lobster/animations/swim.glb' },
   { path: 'sea-creatures/lobster/animations/hit.glb' },
+
+  // Location-NPC teachers. Keep sandy-static-backup.glb as an untouched backup.
+  { path: 'characters/spongebob.glb' },
+  { path: 'characters/gary.glb' },
+  { path: 'characters/squidward.glb' },
+  { path: 'characters/flying-dutchman.glb' },
+  { path: 'characters/pearl.glb' },
+  { path: 'characters/mrs-puff.glb' },
+  { path: 'characters/mr-krabs.glb' },
+  { path: 'characters/plankton.glb' },
+  { path: 'characters/karen.glb' },
+  { path: 'characters/sandy.glb' },
+  { path: 'characters/patrick.glb' },
 ];
 
-const ALLOWED_SLOTS = new Set(['baseColorTexture', 'emissiveTexture']);
-const SKIPPED_SLOT_NAMES = [
-  'normalTexture',
-  'metallicRoughnessTexture',
-  'occlusionTexture',
-];
+const ETC1S_SLOT_SET = new Set<string>(ETC1S_SLOT_NAMES);
+const UASTC_SLOT_SET = new Set<string>(UASTC_SLOT_NAMES);
+const ALLOWED_SLOTS = new Set<string>([
+  ...ETC1S_SLOT_NAMES,
+  ...UASTC_SLOT_NAMES,
+]);
 
 function formatBytes(bytes: number): string {
   if (!bytes) return '-';
@@ -202,6 +251,18 @@ function getTextureSlots(json: any): Map<number, Set<string>> {
     pushSlot(slotsByTexture, material.normalTexture?.index, 'normalTexture');
     pushSlot(slotsByTexture, material.occlusionTexture?.index, 'occlusionTexture');
     pushSlot(slotsByTexture, material.emissiveTexture?.index, 'emissiveTexture');
+
+    const specGloss = material.extensions?.KHR_materials_pbrSpecularGlossiness;
+    pushSlot(slotsByTexture, specGloss?.diffuseTexture?.index, 'diffuseTexture');
+    pushSlot(
+      slotsByTexture,
+      specGloss?.specularGlossinessTexture?.index,
+      'specularGlossinessTexture',
+    );
+
+    const specular = material.extensions?.KHR_materials_specular;
+    pushSlot(slotsByTexture, specular?.specularTexture?.index, 'specularTexture');
+    pushSlot(slotsByTexture, specular?.specularColorTexture?.index, 'specularColorTexture');
   }
   return slotsByTexture;
 }
@@ -233,6 +294,10 @@ function normalizeTextureInfoExtensions(json: any): void {
       material.normalTexture,
       material.occlusionTexture,
       material.emissiveTexture,
+      material.extensions?.KHR_materials_pbrSpecularGlossiness?.diffuseTexture,
+      material.extensions?.KHR_materials_pbrSpecularGlossiness?.specularGlossinessTexture,
+      material.extensions?.KHR_materials_specular?.specularTexture,
+      material.extensions?.KHR_materials_specular?.specularColorTexture,
     ]) {
       if (textureInfo) textureInfo.extensions ??= {};
     }
@@ -247,8 +312,11 @@ function hasEligibleTexture(json: any, textureIndex: number, slots: Set<string>)
   return mimeType === 'image/webp' || mimeType === 'image/png' || mimeType === 'image/jpeg';
 }
 
-async function prepareEtc1sInput(sourceAbs: string, tempAbs: string): Promise<{
+async function prepareKtx2Input(sourceAbs: string, tempAbs: string): Promise<{
   converted: number;
+  etc1sConverted: number;
+  uastcConverted: number;
+  hadMeshopt: boolean;
   skippedBySlot: Record<string, number>;
 }> {
   const { json, bin } = readGlb(sourceAbs);
@@ -271,8 +339,21 @@ async function prepareEtc1sInput(sourceAbs: string, tempAbs: string): Promise<{
 
   const skippedBySlot = countSkippedSlots(slotsByTexture);
   if (!eligibleTextureIndexes.length) {
-    throw new Error('skip: no baseColor/emissive PNG/JPEG/WebP textures');
+    throw new Error('skip: no supported PNG/JPEG/WebP texture slots');
   }
+
+  const etc1sTextureIndexes = [...slotsByTexture.entries()]
+    .filter(([textureIndex, slots]) =>
+      hasEligibleTexture(json, textureIndex, slots) &&
+      [...slots].some((slot) => ETC1S_SLOT_SET.has(slot)),
+    )
+    .map(([textureIndex]) => textureIndex);
+  const uastcTextureIndexes = [...slotsByTexture.entries()]
+    .filter(([textureIndex, slots]) =>
+      hasEligibleTexture(json, textureIndex, slots) &&
+      [...slots].some((slot) => UASTC_SLOT_SET.has(slot)),
+    )
+    .map(([textureIndex]) => textureIndex);
 
   let nextBin = Buffer.from(bin);
   const convertedImageIndexes = new Set<number>();
@@ -313,11 +394,12 @@ async function prepareEtc1sInput(sourceAbs: string, tempAbs: string): Promise<{
     convertedImageIndexes.add(sourceIndex);
   }
 
-  for (const textureIndex of eligibleTextureIndexes) {
-    const texture = json.textures[textureIndex];
-    const sourceIndex = getTextureSource(json, textureIndex);
-    if (sourceIndex == null) continue;
-    texture.source = sourceIndex;
+  // A converted image can be shared by multiple glTF textures. Remap every
+  // reference to it, not only the eligible slot that caused the conversion.
+  for (const texture of json.textures ?? []) {
+    const webpSource = texture?.extensions?.EXT_texture_webp?.source;
+    if (typeof webpSource !== 'number' || !convertedImageIndexes.has(webpSource)) continue;
+    texture.source = webpSource;
     if (texture.extensions?.EXT_texture_webp) {
       delete texture.extensions.EXT_texture_webp;
       if (!Object.keys(texture.extensions).length) delete texture.extensions;
@@ -351,11 +433,15 @@ async function prepareEtc1sInput(sourceAbs: string, tempAbs: string): Promise<{
 
   return {
     converted: eligibleTextureIndexes.length,
+    etc1sConverted: etc1sTextureIndexes.length,
+    uastcConverted: uastcTextureIndexes.length,
+    hadMeshopt: usedExtensions.has('EXT_meshopt_compression'),
     skippedBySlot,
   };
 }
 
 function run(command: string, args: string[], timeoutMs: number): string {
+  const toktxBinDir = resolveToktxBinDir();
   const child = spawnSync(command, args, {
     cwd: process.cwd(),
     encoding: 'utf8',
@@ -363,7 +449,11 @@ function run(command: string, args: string[], timeoutMs: number): string {
     shell: process.platform === 'win32',
     env: {
       ...process.env,
-      PATH: `${path.join(os.homedir(), 'scoop', 'shims')}${path.delimiter}${process.env.PATH ?? ''}`,
+      PATH: [
+        toktxBinDir,
+        path.join(os.homedir(), 'scoop', 'shims'),
+        process.env.PATH ?? '',
+      ].filter(Boolean).join(path.delimiter),
     },
   });
 
@@ -387,12 +477,62 @@ function hasBasisu(filePath: string): boolean {
   return (json.extensionsUsed ?? []).includes('KHR_texture_basisu');
 }
 
+function accessorSignature(accessor: any): Record<string, unknown> | null {
+  if (!accessor) return null;
+  return {
+    componentType: accessor.componentType,
+    type: accessor.type,
+    count: accessor.count,
+    normalized: accessor.normalized ?? false,
+  };
+}
+
+function collectAttributeArchitecture(json: any): unknown {
+  const signatureForIndex = (index: unknown) =>
+    typeof index === 'number' ? accessorSignature(json.accessors?.[index]) : null;
+  return (json.meshes ?? []).map((mesh: any) =>
+    (mesh.primitives ?? []).map((primitive: any) => ({
+      mode: primitive.mode ?? 4,
+      indices: signatureForIndex(primitive.indices),
+      attributes: Object.fromEntries(
+        Object.entries(primitive.attributes ?? {})
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([semantic, index]) => [semantic, signatureForIndex(index)]),
+      ),
+      targets: (primitive.targets ?? []).map((target: Record<string, unknown>) =>
+        Object.fromEntries(
+          Object.entries(target)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([semantic, index]) => [semantic, signatureForIndex(index)]),
+        ),
+      ),
+    })),
+  );
+}
+
+async function restoreMeshoptCompression(inputPath: string, outputPath: string): Promise<void> {
+  await Promise.all([MeshoptDecoder.ready, MeshoptEncoder.ready]);
+  const io = new NodeIO()
+    .registerExtensions(ALL_EXTENSIONS)
+    .registerDependencies({
+      'meshopt.decoder': MeshoptDecoder,
+      'meshopt.encoder': MeshoptEncoder,
+    });
+  const document = await io.read(inputPath);
+  document.createExtension(EXTMeshoptCompression)
+    .setRequired(true)
+    .setEncoderOptions({ method: EXTMeshoptCompression.EncoderMethod.QUANTIZE });
+  await io.write(outputPath, document);
+}
+
 async function convertTarget(target: Target): Promise<Result> {
   const sourceAbs = path.join(MODELS_DIR, target.path);
   const outputRel = outputPathFor(target.path);
   const outputAbs = path.join(MODELS_DIR, outputRel);
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clawville-ktx2-'));
   const tempInput = path.join(tempDir, 'input.glb');
+  const tempEtc1sOutput = path.join(tempDir, 'etc1s.glb');
+  const tempTextureOutput = path.join(tempDir, 'textures.glb');
   const tempOutput = path.join(tempDir, 'output.glb');
 
   const result: Result = {
@@ -408,24 +548,59 @@ async function convertTarget(target: Target): Promise<Result> {
   try {
     if (!fs.existsSync(sourceAbs)) throw new Error('source file missing');
 
-    const prep = await prepareEtc1sInput(sourceAbs, tempInput);
+    const prep = await prepareKtx2Input(sourceAbs, tempInput);
     result.converted = prep.converted;
     result.skippedBySlot = prep.skippedBySlot;
 
-    run(
-      'bunx',
-      [
-        '@gltf-transform/cli',
-        'etc1s',
-        tempInput,
-        tempOutput,
-        '--quality',
-        String(QLEVEL),
-        '--slots',
-        ETC1S_SLOTS,
-      ],
-      600_000,
-    );
+    let currentInput = tempInput;
+    if (prep.etc1sConverted > 0) {
+      run(
+        'bunx',
+        [
+          '@gltf-transform/cli',
+          'etc1s',
+          currentInput,
+          tempEtc1sOutput,
+          '--quality',
+          String(QLEVEL),
+          '--slots',
+          ETC1S_SLOTS,
+        ],
+        600_000,
+      );
+      currentInput = tempEtc1sOutput;
+    }
+
+    if (prep.uastcConverted > 0) {
+      run(
+        'bunx',
+        [
+          '@gltf-transform/cli',
+          'uastc',
+          currentInput,
+          tempTextureOutput,
+          '--slots',
+          UASTC_SLOTS,
+        ],
+        600_000,
+      );
+    } else {
+      fs.copyFileSync(currentInput, tempTextureOutput);
+    }
+
+    // glTF Transform's texture commands decode EXT_meshopt_compression. Restore
+    // it at write time without the CLI meshopt transform, which would reorder
+    // and requantize geometry. Existing accessor arrays remain unchanged.
+    if (prep.hadMeshopt) {
+      await restoreMeshoptCompression(tempTextureOutput, tempOutput);
+      const sourceArchitecture = collectAttributeArchitecture(readGlb(sourceAbs).json);
+      const outputArchitecture = collectAttributeArchitecture(readGlb(tempOutput).json);
+      if (JSON.stringify(sourceArchitecture) !== JSON.stringify(outputArchitecture)) {
+        throw new Error('Meshopt restore changed mesh attribute architecture');
+      }
+    } else {
+      fs.copyFileSync(tempTextureOutput, tempOutput);
+    }
 
     if (!fs.existsSync(tempOutput)) throw new Error('gltf-transform produced no output');
     assertGlb(tempOutput);
@@ -450,9 +625,11 @@ async function convertTarget(target: Target): Promise<Result> {
 }
 
 async function main(): Promise<void> {
-  console.log('=== ClawVille GLB Texture -> KTX2 ETC1S ===');
+  console.log('=== ClawVille GLB Texture -> KTX2 ETC1S + UASTC ===');
   console.log(`Targets: ${TARGETS.length}`);
   console.log(`ETC1S qlevel: ${QLEVEL}`);
+  console.log(`ETC1S slots: ${ETC1S_SLOTS}`);
+  console.log(`UASTC slots: ${UASTC_SLOTS}`);
   run('toktx', ['--version'], 30_000);
 
   const targetFilter = process.env.KTX2_TARGET;

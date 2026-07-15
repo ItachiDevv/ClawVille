@@ -276,7 +276,7 @@ function buildColliders(): Collider2D[] {
   // ---------------------------------------------------------------------------
   // 2. Town-center prop colliders — hardcoded world-space positions.
   //    Positions sourced from each prop's tsx file (verified 2026-05-21):
-  //      AuctionPodium:       (0, -1000) — auction-podium.tsx DOME_X/Z
+  //      AuctionPodium removed 2026-07-15 — superseded by quest-bounty-pavilion.
   //      TownDirectorySign:   (0, -120)  — town-directory-sign.tsx SIGN_X/Z
   //      BazaarStall:         (-1273, -120) — bazaar-stall.tsx STALL_X/Z
   //      MarketplaceStall:    (1273, -120)  — marketplace-stall.tsx STALL_X/Z
@@ -297,7 +297,6 @@ function buildColliders(): Collider2D[] {
   //    extents read tighter (less invisible-wall feel along the narrow axis).
   // ---------------------------------------------------------------------------
   const PROPS: Collider2D[] = [
-    { id: 'auction-podium',       centerX:     0, centerZ: -1000, halfX: 160, halfZ: 160, kind: 'prop' },
     { id: 'town-directory-sign',  centerX:     0, centerZ:  -120, halfX:  70, halfZ:  40, kind: 'prop' },
     { id: 'bazaar-stall',         centerX: -1273, centerZ:  -120, halfX: 180, halfZ: 140, kind: 'prop' },
     // -----------------------------------------------------------------------

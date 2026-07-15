@@ -1,15 +1,3 @@
-// FEATURE_GATE: x402_payment_middleware
-// Status: scaffold live, flag OFF (X402_ENABLED defaults to false).
-// Retained, not deleted, on 2026-04-21 per founder call — reserved for later
-// metered-access features unrelated to peer skill commerce (removed 2026-07-02).
-// Metric to graduate: any future feature requiring per-call metered access is
-//   proposed AND has a traction signal (e.g. gated API tier with visible
-//   demand on /dash).
-// Review deadline: 2026-07-21.
-// On deadline: if no metered feature is proposed, rip @x402/* + agent-v2.ts;
-//   if a feature IS proposed, convert this gate to a specific metric for that
-//   feature.
-// Reference: Brand Identity §4, CLAUDE.md Priority #3, improvements.md §7.
 /**
  * x402 payment middleware configuration for ClawVille.
  *
@@ -17,9 +5,12 @@
  * `x402ResourceServer`, and the protected-routes map consumed by
  * `paymentMiddleware` from `@x402/hono`.
  *
- * Activation is gated on the `X402_ENABLED=true` env var so that the rest of
- * the API keeps working while we iterate on payment testing (we need funded
- * wallets + a facilitator endpoint before we can actually serve paid traffic).
+ * KNOWN FOLLOW-UP (Wave 2, tracked): the metered `/api/v2/agent` middleware
+ * does not yet claim its settled signature into the global
+ * `x402_settlement_receipts` registry (unlike top-up/checkout/PayAI). Wire a
+ * capture-first receipt claim there before relying on it for high-value
+ * metered access. This is pre-existing behavior and is NOT a reason to disable
+ * the paywall.
  *
  * Environment variables consumed:
  *   X402_ENABLED                       — "true" to register the middleware on
@@ -78,23 +69,19 @@ import type { paymentMiddleware } from '@x402/hono';
 // of whether `X402_ENABLED` is set.
 //
 // `CLAWVILLE_ENV` is the immutable deploy signal (NODE_ENV is 'production' on
-// BOTH Coolify boxes, so it can't discriminate). The mock is allowed ONLY when
-// CLAWVILLE_ENV === 'staging' — production OR UNSET both throw. An UNSET env on a
-// prod box must NOT silently permit a free-CT mint (the `=== 'production'` form
-// failed open on unset). Mirrors partner-signature.ts's ALLOW_TEST_PARTNER_PUBKEY
-// gate (`!isStagingEnv()`): allow-list staging, deny everything else.
+// BOTH Coolify boxes, so it cannot discriminate). Production forbids the mock;
+// staging and local development retain the test harness.
 {
   const mockPresetActive =
     process.env.X402_MOCK_FACILITATOR === 'true' ||
     process.env.X402_FACILITATOR_PRESET?.trim().toLowerCase() === 'mock';
-  if (mockPresetActive && process.env.CLAWVILLE_ENV !== 'staging') {
+  if (mockPresetActive && process.env.CLAWVILLE_ENV === 'production') {
     throw new Error(
       `[x402] The MOCK x402 facilitator is active (X402_MOCK_FACILITATOR=true and/or ` +
-        `X402_FACILITATOR_PRESET=mock) while CLAWVILLE_ENV is not 'staging' (it is ` +
-        `${process.env.CLAWVILLE_ENV ?? 'UNSET'}). The mock rubber-stamps settlement and ` +
-        `would MINT FREE ClawTokens — it may run ONLY on the staging box. Unset ` +
+        `X402_FACILITATOR_PRESET=mock) on production. The mock rubber-stamps settlement and ` +
+        `would mint unbacked vCLAW. Unset ` +
         `X402_MOCK_FACILITATOR and set X402_FACILITATOR_PRESET to a real facilitator ` +
-        `(payai/cdp), or set CLAWVILLE_ENV=staging if this genuinely IS the staging box.`,
+        `(payai/cdp).`,
     );
   }
 }
@@ -118,6 +105,45 @@ const CDP_FACILITATOR_URL = 'https://api.cdp.coinbase.com/platform/v2/x402';
 const PAYAI_FACILITATOR_URL = 'https://facilitator.payai.network';
 /** Default base path the in-API mock facilitator is mounted at (see index.ts). */
 const DEFAULT_MOCK_FACILITATOR_URL = 'http://localhost:4000/api/x402-mock';
+const PRODUCTION_FACILITATOR_ORIGINS = new Set([
+  'https://facilitator.payai.network',
+  'https://api.cdp.coinbase.com',
+]);
+
+function isPrivateFacilitatorHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || host === '::1' || host.endsWith('.localhost')) return true;
+  if (/^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host)) return true;
+  const match172 = /^172\.(\d{1,3})\./.exec(host);
+  if (match172 && Number(match172[1]) >= 16 && Number(match172[1]) <= 31) return true;
+  return host === '0.0.0.0' || host === '169.254.169.254' || host.startsWith('fc') || host.startsWith('fd');
+}
+
+/** Crash-loud production guard over the fully resolved URL (including explicit
+ * overrides). Local/staging are intentionally unchanged for the mock harness. */
+export function assertProductionFacilitatorAllowed(
+  facilitatorUrl: string,
+  environment = process.env.CLAWVILLE_ENV,
+): void {
+  if (environment !== 'production') return;
+  let parsed: URL;
+  try {
+    parsed = new URL(facilitatorUrl);
+  } catch {
+    throw new Error('[x402] production facilitator URL is invalid; refusing to boot');
+  }
+  if (
+    parsed.protocol !== 'https:'
+    || parsed.username !== ''
+    || parsed.password !== ''
+    || isPrivateFacilitatorHost(parsed.hostname)
+    || !PRODUCTION_FACILITATOR_ORIGINS.has(parsed.origin)
+  ) {
+    throw new Error(
+      `[x402] production facilitator origin is not allowlisted (${parsed.origin}); refusing to boot`,
+    );
+  }
+}
 
 /**
  * True only for the hosted PayAI base URL used by every production USDC rail.
@@ -175,6 +201,10 @@ function resolveFacilitator(): {
   }
 }
 
+// Module-load fail-closed guard: an explicit override cannot bypass preset
+// validation, even when the metered x402 middleware itself is disabled.
+assertProductionFacilitatorAllowed(resolveFacilitator().url);
+
 /**
  * Read + validate the x402 env config. Always returns a config object even
  * when disabled, so callers can distinguish "no env vars" from "explicitly
@@ -184,6 +214,7 @@ export function loadX402Config(): X402Config {
   const enabled = process.env.X402_ENABLED === 'true';
   const { url: facilitatorUrl, preset: facilitatorPreset, explicit: facilitatorUrlExplicit } =
     resolveFacilitator();
+  assertProductionFacilitatorAllowed(facilitatorUrl);
   const merchantWalletPubkey = process.env.CLAWVILLE_MERCHANT_WALLET_PUBKEY ?? '';
   const network = process.env.X402_NETWORK ?? 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
 

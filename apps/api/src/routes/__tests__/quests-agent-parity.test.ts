@@ -22,7 +22,10 @@
 import { describe, it, expect } from 'bun:test';
 import { Hono } from 'hono';
 import { questRoutes, requireLedgerCapableIdentity } from '../quests';
-import type { ActivityAuthContext } from '../../middleware/require-auth-or-agent';
+import {
+  requireLedgerCapableIdentity as requireSharedLedgerCapableIdentity,
+  type ActivityAuthContext,
+} from '../../middleware/require-auth-or-agent';
 
 const app = new Hono();
 app.route('/api/quests', questRoutes);
@@ -105,6 +108,14 @@ describe('requireLedgerCapableIdentity — ownership-proof gate (Codex HIGH #1)'
     userId: 'u-1',
     avatarId: 'av-1',
   };
+
+  it('fails closed when identity resolution middleware was omitted', async () => {
+    const a = new Hono<ActivityAuthContext>();
+    a.get('/probe', requireSharedLedgerCapableIdentity, (c) => c.json({ ok: true }));
+    const res = await a.request('/probe');
+    expect(res.status).toBe(401);
+    expect(await res.text()).toContain('identity_resolution_required');
+  });
 
   it('403s a bound-but-ownership-UNPROVEN agent session BEFORE the handler', async () => {
     const res = await appWithIdentity({

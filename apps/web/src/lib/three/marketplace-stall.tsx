@@ -28,7 +28,7 @@ import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 // ---------------------------------------------------------------------------
 // Preload at module scope so Suspense has the data ready before first render.
 // ---------------------------------------------------------------------------
-preloadKTX2Bytes('/models/shisha-oasis-ktx.glb');
+preloadKTX2Bytes('/models/shisha-oasis-ktx.glb?v=2');
 
 // ---------------------------------------------------------------------------
 // World position (Y computed at runtime via groundedYOffset — same canonical
@@ -64,7 +64,7 @@ function computeScale(root: THREE.Group): number {
 // Inner component (wrapped in memo — position never changes)
 // ---------------------------------------------------------------------------
 const MarketplaceStallInner = memo(function MarketplaceStallInner() {
-  const { scene } = useGLTFWithKTX2('/models/shisha-oasis-ktx.glb');
+  const { scene } = useGLTFWithKTX2('/models/shisha-oasis-ktx.glb?v=2');
 
   // Clone so multiple mounts don't share mutable scene state.
   const cloned = useMemo(() => scene.clone(true), [scene]);

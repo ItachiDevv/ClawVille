@@ -29,6 +29,7 @@ import {
   type X402Network,
 } from './x402-payai';
 import { isHostedPayAiFacilitatorUrl, loadX402Config } from './x402-config';
+import { claimX402Settlement } from './x402-settlement-receipts';
 import {
   prepareCustodialExactPayment,
   executePreparedExactPayment,
@@ -128,7 +129,11 @@ export interface AgentPayDb {
   fulfillCaptured(
     id: string,
     mint: typeof mintEarned,
-  ): Promise<{ kind: 'settled' | 'replay'; row: AgentPayment } | { kind: 'not_ready' }>;
+  ): Promise<
+    | { kind: 'settled' | 'replay'; row: AgentPayment }
+    | { kind: 'not_ready' }
+    | { kind: 'already_settled' }
+  >;
 }
 
 export interface AgentPayDeps {
@@ -254,6 +259,16 @@ const defaultDb: AgentPayDb = {
       if (row.status === 'settled') return { kind: 'replay' as const, row };
       if (row.status !== 'settling' || !row.txSignature) return { kind: 'not_ready' as const };
 
+      const receipt = await claimX402Settlement({
+        txSignature: row.txSignature,
+        rail: 'agent_payment',
+        kind: 'agent_payment',
+        referenceId: row.id,
+        subjectId: row.recipientAvatarId,
+        amountUsdcAtomic: BigInt(row.usdcAtomic),
+      }, tx as LedgerTx);
+      if (receipt.kind === 'foreign_owner') return { kind: 'already_settled' as const };
+
       // PayAI transfers the full quoted amount directly to the recipient, NOT
       // to house custody. The EARNED is spendable but explicitly UNBACKED and
       // can never cross E3. A future cashable ④ must route the dollar through
@@ -363,6 +378,16 @@ function success(row: AgentPayment, replay: boolean): AgentPayResult {
 async function fulfill(paymentId: string, d: ReturnType<typeof deps>): Promise<AgentPayResult> {
   try {
     const result = await d.db.fulfillCaptured(paymentId, d.mintEarned);
+    if (result.kind === 'already_settled') {
+      await d.db.markReconcile(paymentId, null, 'global_signature_conflict');
+      return {
+        ok: false,
+        code: 'payment_reconcile',
+        paymentId,
+        status: 'reconcile',
+        detail: 'already_settled',
+      };
+    }
     if (result.kind === 'not_ready') {
       return { ok: false, code: 'fulfillment_pending', paymentId, status: 'settling' };
     }
@@ -499,7 +524,12 @@ async function executePending(row: AgentPayment, d: ReturnType<typeof deps>): Pr
   }
   if (outcome.kind !== 'settled') {
     const reason = outcome.kind === 'ambiguous' ? outcome.reason : 'unexpected_verify_only';
-    await d.db.markReconcile(row.id, settlingId, reason);
+    await d.db.markReconcile(
+      row.id,
+      settlingId,
+      reason,
+      outcome.kind === 'ambiguous' ? outcome.signature : null,
+    );
     return { ok: false, code: 'payment_reconcile', paymentId: row.id, status: 'reconcile', detail: reason };
   }
 

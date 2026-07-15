@@ -28,7 +28,6 @@ import TownGuide from '@/lib/three/town-guide';
 import BazaarStall from '@/lib/three/bazaar-stall';
 import MarketplaceStall from '@/lib/three/marketplace-stall';
 import QuestBountyPavilion from '@/lib/three/quest-bounty-pavilion';
-import AuctionPodium from '@/lib/three/auction-podium';
 import TownDirectorySign from '@/lib/three/town-directory-sign';
 import CoveBeacon from '@/lib/three/cove-beacon';
 import CoveEntrance from '@/lib/three/cove-entrance';
@@ -125,6 +124,15 @@ const SKY_COLOR = new THREE.Color(0x0a2a4a); // Deeper ocean blue
 const USE_MESHLET_BUILDINGS: boolean =
   typeof window !== 'undefined' &&
   new URLSearchParams(window.location.search).get('meshlets') === '1';
+// 2026-07-14 — reversed-Z reduces far-plane z-fighting across the world's
+// camera.near=1 / camera.far=11500 range. Three introduced the option in r183,
+// moved reversed WebGPU depth attachments to depth32float in r184 (#33184),
+// and fixed reversed-depth sorting in r185 (#33700). Configure it before init()
+// for both WebGPU and forceWebGL; r185's WebGL2 backend warns and falls back to
+// standard depth when EXT_clip_control is unavailable. The experimental meshlet
+// rasterizer stays standard-Z because its visibility buffer packs (1 - NDC z),
+// selects with atomicMax, then writes that conventional value via depthNode.
+const USE_REVERSED_DEPTH_BUFFER = !USE_MESHLET_BUILDINGS;
 const FOG_COLOR = new THREE.Color(0x0e3458); // Underwater haze — matches sky
 const LOW_END_DPR_RANGE: [number, number] = [0.55, 0.7];
 const STANDARD_DPR_RANGE: [number, number] = [0.75, 1];
@@ -1892,9 +1900,6 @@ const SceneContents = memo(function SceneContents({
       <group name="perf:marketplace-stall" userData={{ perfChunk: 'marketplace-stall' }}>
         <MarketplaceStall />
       </group>
-      <group name="perf:auction-podium" userData={{ perfChunk: 'auction-podium' }}>
-        <AuctionPodium />
-      </group>
       {/* Quest + Bounty Pavilion — octagonal open-air pavilion 1100wu behind
           the town directory sign. Houses both the Quest Board (boards 1+2, left
           half) and the Bounty Board (boards 3+4, right half). Replaces the
@@ -1970,9 +1975,9 @@ const SceneContents = memo(function SceneContents({
 // ---------------------------------------------------------------------------
 // WebGPU renderer factory
 // ---------------------------------------------------------------------------
-// Three.js 0.182 ships a WebGPURenderer that auto-falls back to WebGL2.
+// Three.js 0.185 ships a WebGPURenderer that auto-falls back to WebGL2.
 // R3F v9 supports async gl factory: (defaultProps) => Promise<Renderer>.
-// We dynamically import the WebGPU build to avoid bundling it when unsupported.
+// The renderer and TSL materials share the static three/webgpu import above.
 // ---------------------------------------------------------------------------
 
 function getCanvasCssSize(canvas: HTMLCanvasElement): { width: number; height: number } | null {
@@ -2122,6 +2127,7 @@ async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
     canvas,
     antialias: false,
     alpha: false,
+    reversedDepthBuffer: USE_REVERSED_DEPTH_BUFFER,
     // forceWebGL: bypass the navigator.gpu adapter path on iOS Safari and any
     // browser where WebGPU is absent. WebGLBackend with TSL (GLSLNodeBuilder)
     // compiles all MeshBasicNodeMaterial / PointsNodeMaterial / MeshStandardNodeMaterial
@@ -2193,7 +2199,7 @@ function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
 
   // Stable async gl factory — R3F v9 awaits this before rendering.
   // Returns a WebGPURenderer (with automatic WebGL2 fallback built in).
-  // Falls back to standard WebGLRenderer if the dynamic import or init fails.
+  // If primary init fails, retries a fresh WebGPURenderer forced to WebGL2.
   const glFactory = useCallback(
     async (defaultProps: { canvas: HTMLCanvasElement }) => {
       try {
@@ -2211,6 +2217,8 @@ function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
           canvas: fallbackCanvas,
           antialias: false,
           alpha: false,
+          // Match the primary renderer's constructor-time depth convention.
+          reversedDepthBuffer: USE_REVERSED_DEPTH_BUFFER,
           forceWebGL: true,
         });
         await fallbackRenderer.init();

@@ -89,11 +89,11 @@ function ringPos(slot: number): [number, number] {
 
 const BUILDINGS: BuildingSpec[] = [
   // Slot 0 — N — visual-creation (pineapple-house)
-  { id: 'visual-creation',    model: '/models/pineapple-house-opt1-ktx.glb?v=2',                    posX: ringPos(0)[0],  posZ: ringPos(0)[1]  },
+  { id: 'visual-creation',    model: '/models/pineapple-house-opt1-ktx.glb?v=3',                    posX: ringPos(0)[0],  posZ: ringPos(0)[1]  },
   // Slot 1 — NNE — code-development (chum-bucket)
-  { id: 'code-development',   model: '/models/chum-bucket-v2-opt1-ktx.glb?v=2',                     posX: ringPos(1)[0],  posZ: ringPos(1)[1]  },
+  { id: 'code-development',   model: '/models/chum-bucket-v2-opt1-ktx.glb?v=4',                     posX: ringPos(1)[0],  posZ: ringPos(1)[1]  },
   // Slot 2 — ENE — mcp-tool-use (krusty-krab)
-  { id: 'mcp-tool-use',       model: '/models/krusty-krab-v2-opt1-ktx.glb?v=2',                     posX: ringPos(2)[0],  posZ: ringPos(2)[1]  },
+  { id: 'mcp-tool-use',       model: '/models/krusty-krab-v2-opt1-ktx.glb?v=4',                     posX: ringPos(2)[0],  posZ: ringPos(2)[1]  },
   // Slot 3 — E — messaging-channels (sandy-treedome) — DISABLED for spike
   // 2026-05-24: source GLB is a 1.1M-tri Draco vertex-color tree, 22× the rest
   // of the scene combined. User will replace with a lower-poly variant later.
@@ -101,21 +101,21 @@ const BUILDINGS: BuildingSpec[] = [
   // this single outlier dragging the average.
   // { id: 'messaging-channels', model: '/models/sandy-treedome-v3-opt1.glb?v=2',                  posX: ringPos(3)[0],  posZ: ringPos(3)[1]  },
   // Slot 4 — ESE — api-integrations (salty-spitoon)
-  { id: 'api-integrations',   model: '/models/salty-spitoon-opt1-ktx.glb?v=2',                      posX: ringPos(4)[0],  posZ: ringPos(4)[1]  },
+  { id: 'api-integrations',   model: '/models/salty-spitoon-opt1-ktx.glb?v=3',                      posX: ringPos(4)[0],  posZ: ringPos(4)[1]  },
   // Slot 5 — SSE — app-publishing (boating-school)
-  { id: 'app-publishing',     model: '/models/boating-school-opt1-ktx.glb?v=2',                     posX: ringPos(5)[0],  posZ: ringPos(5)[1]  },
+  { id: 'app-publishing',     model: '/models/boating-school-opt1-ktx.glb?v=3',                     posX: ringPos(5)[0],  posZ: ringPos(5)[1]  },
   // Slot 6 — S — cron-automation (patty-building)
-  { id: 'cron-automation',    model: '/models/patty-building-opt1-ktx.glb?v=2',                     posX: ringPos(6)[0],  posZ: ringPos(6)[1]  },
+  { id: 'cron-automation',    model: '/models/patty-building-opt1-ktx.glb?v=3',                     posX: ringPos(6)[0],  posZ: ringPos(6)[1]  },
   // Slot 7 — SSW — deployment-ops (lighthouse)
-  { id: 'deployment-ops',     model: '/models/building-lighthouse-opt1-ktx.glb?v=2',                posX: ringPos(7)[0],  posZ: ringPos(7)[1]  },
+  { id: 'deployment-ops',     model: '/models/building-lighthouse-opt1-ktx.glb?v=3',                posX: ringPos(7)[0],  posZ: ringPos(7)[1]  },
   // Slot 8 — WSW — claw-arcade
-  { id: 'claw-arcade',        model: '/models/arcade/claw-arcade-exterior-opt1-ktx.glb?v=2',        posX: ringPos(8)[0],  posZ: ringPos(8)[1]  },
+  { id: 'claw-arcade',        model: '/models/arcade/claw-arcade-exterior-opt1-ktx.glb?v=4',        posX: ringPos(8)[0],  posZ: ringPos(8)[1]  },
   // Slot 9 — W — cove
-  { id: 'cove',               model: '/models/cove/cove-exterior-opt1-ktx.glb?v=2',                 posX: ringPos(9)[0],  posZ: ringPos(9)[1]  },
+  { id: 'cove',               model: '/models/cove/cove-exterior-opt1-ktx.glb?v=4',                 posX: ringPos(9)[0],  posZ: ringPos(9)[1]  },
   // Slot 10 — WNW — agent-security (patricks-rock)
-  { id: 'agent-security',     model: '/models/patricks-rock-v2-opt1-ktx.glb?v=3',                   posX: ringPos(10)[0], posZ: ringPos(10)[1] },
+  { id: 'agent-security',     model: '/models/patricks-rock-v2-opt1-ktx.glb?v=5',                   posX: ringPos(10)[0], posZ: ringPos(10)[1] },
   // Slot 11 — NNW — memory-rag (squidward-house)
-  { id: 'memory-rag',         model: '/models/squidward-house-opt1-ktx.glb?v=3',                    posX: ringPos(11)[0], posZ: ringPos(11)[1] },
+  { id: 'memory-rag',         model: '/models/squidward-house-opt1-ktx.glb?v=5',                    posX: ringPos(11)[0], posZ: ringPos(11)[1] },
 ];
 
 // ---------------------------------------------------------------------------

@@ -65,10 +65,10 @@ import { clientSpline } from './reef-race-spline-instance';
 const USE_SPLINE_TRACK = process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
 
 // ─── Preloads ────────────────────────────────────────────────────────────────
-preloadKTX2Bytes('/models/coral-reef1-ktx.glb');
-preloadKTX2Bytes('/models/coral-reef2-ktx.glb');
-preloadKTX2Bytes('/models/coral-reef3-ktx.glb');
-preloadKTX2Bytes('/models/jellyfish-ktx.glb');
+preloadKTX2Bytes('/models/coral-reef1-ktx.glb?v=2');
+preloadKTX2Bytes('/models/coral-reef2-ktx.glb?v=2');
+preloadKTX2Bytes('/models/coral-reef3-ktx.glb?v=2');
+preloadKTX2Bytes('/models/jellyfish-ktx.glb?v=2');
 
 // ─── Module-scope scratch ─────────────────────────────────────────────────────
 const _mat4 = new THREE.Matrix4();
@@ -669,9 +669,9 @@ function EllipseTrack() {
       <Guardrails />
 
       {/* Coral decorations — 3 InstancedMesh draw calls */}
-      <CoralInstances glbPath="/models/coral-reef1-ktx.glb" seed={1} side={1}  />
-      <CoralInstances glbPath="/models/coral-reef2-ktx.glb" seed={2} side={-1} />
-      <CoralInstances glbPath="/models/coral-reef3-ktx.glb" seed={3} side={1}  />
+      <CoralInstances glbPath="/models/coral-reef1-ktx.glb?v=2" seed={1} side={1}  />
+      <CoralInstances glbPath="/models/coral-reef2-ktx.glb?v=2" seed={2} side={-1} />
+      <CoralInstances glbPath="/models/coral-reef3-ktx.glb?v=2" seed={3} side={1}  />
     </group>
   );
 }

@@ -25,20 +25,25 @@
  * rails can never drift on validation or grant semantics.
  *
  * Race handling: the QUOTE resolver + the registered settle PREFLIGHT both
- * reject an already-owned SKU BEFORE any money moves. If ownership lands in
- * the sub-second window between the facilitator settle and our row insert,
- * the idempotent grant reports `alreadyOwned:true` and we STILL complete the
- * settle (the USDC settled — failing the checkout would strand the payment);
- * the detail records the no-op for the audit.
+ * reject an already-owned or already-sold-out SKU BEFORE any money moves. If
+ * the final unit sells in the sub-second window after facilitator settlement,
+ * the checkout enters the durable manual-refund path; it never silently grants
+ * an oversold unit or enqueues the downstream buy.
  */
 
 import {
   registerFulfiller,
   registerCheckoutPreflight,
+  CheckoutFulfillmentRefusal,
   type CheckoutFulfiller,
   type CheckoutPreflight,
 } from '../x402-checkout';
-import { checkSkuPurchasable, findOwnedSkin, grantSkinInTx } from '../../routes/cosmetics';
+import {
+  checkSkuPurchasable,
+  CosmeticSoldOutError,
+  findOwnedSkin,
+  grantSkinInTx,
+} from '../../routes/cosmetics';
 import { enqueueClvBuy } from '../clv-swap-executor';
 
 /** Kind-specific quote refusals the route maps to HTTP statuses. */
@@ -47,6 +52,7 @@ export type CosmeticCheckoutRefusal =
   | 'not_yet_available'
   | 'no_longer_available'
   | 'wrong_currency'
+  | 'sold_out'
   | 'zero_price'
   | 'already_owned';
 
@@ -63,7 +69,14 @@ export async function resolveCosmeticCheckoutItem(
   skuId: string,
 ): Promise<CosmeticCheckoutItem> {
   const purchasable = await checkSkuPurchasable(skuId);
-  if (!purchasable.ok) return { ok: false, code: purchasable.code };
+  if (!purchasable.ok) {
+    if (purchasable.code === 'sold_out') {
+      // Preserve quote idempotency for the owner of the final unit.
+      const owned = await findOwnedSkin(avatarId, skuId);
+      return { ok: false, code: owned ? 'already_owned' : 'sold_out' };
+    }
+    return { ok: false, code: purchasable.code };
+  }
   // AMOUNT DISCIPLINE: a 0-price SKU is a legit FREE grant on the balance
   // rail, but a USDC checkout for $0.00 is unquotable (the x402 requirement
   // rejects a non-positive amount) — refuse BEFORE any row exists.
@@ -87,12 +100,20 @@ const cosmeticFulfiller: CheckoutFulfiller = async (ctx) => {
   //    acquiredVia 'shop_usdc' (already a documented avatar_skins provenance
   //    value); ledgerId null BY DESIGN — there is NO CT debit ledger row on
   //    this rail (the x402_checkouts row + tx signature is the money audit).
-  const grant = await grantSkinInTx(ctx.tx, {
-    avatarId: ctx.subject.avatarId,
-    skuId: ctx.itemRef,
-    acquiredVia: 'shop_usdc',
-    ledgerId: null,
-  });
+  let grant: Awaited<ReturnType<typeof grantSkinInTx>>;
+  try {
+    grant = await grantSkinInTx(ctx.tx, {
+      avatarId: ctx.subject.avatarId,
+      skuId: ctx.itemRef,
+      acquiredVia: 'shop_usdc',
+      ledgerId: null,
+    });
+  } catch (err) {
+    if (err instanceof CosmeticSoldOutError) {
+      throw new CheckoutFulfillmentRefusal('sold_out', 'cosmetic_sold_out_after_settlement');
+    }
+    throw err;
+  }
 
   // 2) Record the owed USDC→CLV buy in the SAME tx (commits/rolls back with
   //    the settle). µUSD decimal string per the C3 seam contract.

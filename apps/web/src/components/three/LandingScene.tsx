@@ -108,16 +108,16 @@ interface LandingBuildingDef {
 }
 
 const LANDING_BUILDINGS: LandingBuildingDef[] = [
-  { model: '/models/pineapple-house-opt1-ktx.glb?v=2',      rotY:  0.000 },  // visual-creation
-  { model: '/models/chum-bucket-v2-opt1-ktx.glb?v=2',       rotY: -0.522 },  // code-development
-  { model: '/models/krusty-krab-v2-opt1-ktx.glb?v=2',       rotY: -1.049 },  // mcp-tool-use
-  { model: '/models/salty-spitoon-opt1-ktx.glb?v=2',        rotY: -2.093 },  // api-integrations
-  { model: '/models/boating-school-opt1-ktx.glb?v=2',       rotY: -2.620 },  // app-publishing
-  { model: '/models/patty-building-opt1-ktx.glb?v=2',       rotY:  3.142 },  // cron-automation
-  { model: '/models/building-lighthouse-opt1-ktx.glb?v=2',  rotY:  2.620 },  // deployment-ops
-  { model: '/models/arcade/claw-arcade-exterior-opt1-ktx.glb?v=2', rotY: 2.093 }, // claw-arcade
-  { model: '/models/patricks-rock-v2-opt1-ktx.glb?v=3',    rotY:  1.049 },  // agent-security
-  { model: '/models/squidward-house-opt1-ktx.glb?v=3',      rotY:  0.522 },  // memory-rag
+  { model: '/models/pineapple-house-opt1-ktx.glb?v=3',      rotY:  0.000 },  // visual-creation
+  { model: '/models/chum-bucket-v2-opt1-ktx.glb?v=4',       rotY: -0.522 },  // code-development
+  { model: '/models/krusty-krab-v2-opt1-ktx.glb?v=4',       rotY: -1.049 },  // mcp-tool-use
+  { model: '/models/salty-spitoon-opt1-ktx.glb?v=3',        rotY: -2.093 },  // api-integrations
+  { model: '/models/boating-school-opt1-ktx.glb?v=3',       rotY: -2.620 },  // app-publishing
+  { model: '/models/patty-building-opt1-ktx.glb?v=3',       rotY:  3.142 },  // cron-automation
+  { model: '/models/building-lighthouse-opt1-ktx.glb?v=3',  rotY:  2.620 },  // deployment-ops
+  { model: '/models/arcade/claw-arcade-exterior-opt1-ktx.glb?v=4', rotY: 2.093 }, // claw-arcade
+  { model: '/models/patricks-rock-v2-opt1-ktx.glb?v=5',    rotY:  1.049 },  // agent-security
+  { model: '/models/squidward-house-opt1-ktx.glb?v=5',      rotY:  0.522 },  // memory-rag
 ];
 
 // Preload all 10 buildings at module scope.
@@ -427,14 +427,14 @@ interface ReefDecoDef {
 // (coral clusters + kelp merged); coral-reef1/2/3 + kelp fill the rest.
 // R5: sizes bumped ~15-20% so decos pop against the new sandy floor.
 const REEF_DECOS: ReefDecoDef[] = [
-  { model: '/models/coral-reef1-ktx.glb',            x:  260, z:   30, size: 52, rotY: 0.3 },
-  { model: '/models/coral-reef2-ktx.glb',            x: -220, z:  120, size: 46, rotY: 1.8 },
-  { model: '/models/coral-reef3-ktx.glb',            x:   80, z: -270, size: 49, rotY: 0.9 },
+  { model: '/models/coral-reef1-ktx.glb?v=2',            x:  260, z:   30, size: 52, rotY: 0.3 },
+  { model: '/models/coral-reef2-ktx.glb?v=2',            x: -220, z:  120, size: 46, rotY: 1.8 },
+  { model: '/models/coral-reef3-ktx.glb?v=2',            x:   80, z: -270, size: 49, rotY: 0.9 },
   { model: '/models/kelp.glb',                   x: -290, z: -100, size: 41, rotY: 2.4 },
   { model: '/models/kelp.glb',                   x:  160, z:  290, size: 35, rotY: 0.6 },
-  { model: '/models/coral-reef1-ktx.glb',            x: -150, z: -310, size: 44, rotY: 3.1 },
-  { model: '/models/coral-reef2-ktx.glb',            x:  310, z: -200, size: 42, rotY: 1.2 },
-  { model: '/models/coral-reef3-ktx.glb',            x: -330, z:  180, size: 46, rotY: 2.7 },
+  { model: '/models/coral-reef1-ktx.glb?v=2',            x: -150, z: -310, size: 44, rotY: 3.1 },
+  { model: '/models/coral-reef2-ktx.glb?v=2',            x:  310, z: -200, size: 42, rotY: 1.2 },
+  { model: '/models/coral-reef3-ktx.glb?v=2',            x: -330, z:  180, size: 46, rotY: 2.7 },
   { model: '/models/underwater-decorations.glb', x:  220, z: -340, size: 58, rotY: 0.5 },
   { model: '/models/underwater-decorations.glb', x: -200, z:  340, size: 56, rotY: 1.5 },
 ];
