@@ -140,12 +140,14 @@ export const activationSeams = {
   /**
    * PERSIST the durable "intends to run autonomous" flag on the hosted-avatar
    * session row (by agent_id), so a server restart re-enrolls it with no client
-   * (the reconcile). Set AFTER a successful enroll.
+   * (the reconcile). The same fail-soft UPDATE slides `last_seen_at` so a newly
+   * reconciled enrollment cannot look stale to the body sweeper. It deliberately
+   * leaves session_expires_at/session_swept_at/session_key_hash untouched.
    */
   setEnrolledFlag: async (agentId: string): Promise<void> => {
     await db
       .update(agentBots)
-      .set({ autonomyEnrolled: true, updatedAt: new Date() })
+      .set({ autonomyEnrolled: true, lastSeenAt: new Date(), updatedAt: new Date() })
       .where(eq(agentBots.agentId, agentId));
   },
   /**
