@@ -207,18 +207,29 @@ export function classifyAgentSessionHot(input: {
   }
 
   // No external bot — dismissal flag suppresses the banner (server runtime is
-  // always alive; purely a UI preference).
+  // always alive; purely a UI preference). EXCEPTION (Codex BLOCKING,
+  // 2026-07-15): a presentation preference must never suppress the account-
+  // DATA migration — an UNPROVISIONED hosted-harness avatar (legacy
+  // `platformAgentId` null) falls through to the cold path so the route's
+  // lazy backfill can heal it; the route re-honors the dismissal preference
+  // in its response after a successful backfill, and once the row is linked
+  // this branch returns 'dismissed' exactly as before.
   const flags = avatar?.flags ?? {};
   if (flags.agentBannerDismissed === true) {
-    return {
-      kind: 'response',
-      body: {
-        connected: false,
-        reason: 'dismissed',
-        mode: 'dismissed',
-        harness: avatar?.harness ?? null,
-      },
-    };
+    const unprovisionedHosted =
+      !!avatar && !avatar.platformAgentId && HOSTED_HARNESSES.has(avatar.harness ?? '');
+    if (!unprovisionedHosted) {
+      return {
+        kind: 'response',
+        body: {
+          connected: false,
+          reason: 'dismissed',
+          mode: 'dismissed',
+          harness: avatar?.harness ?? null,
+        },
+      };
+    }
+    return { kind: 'cold-fallthrough' };
   }
 
   // No-bot hosted-harness carve-out (pre-mint hosted case; fix 30352e60).

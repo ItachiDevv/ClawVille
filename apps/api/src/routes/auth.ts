@@ -207,6 +207,21 @@ authRoutes.get('/me/agent-session', requireAuth, noStorePrivate, async (c) => {
     if (avatar && HOSTED_HARNESSES.has(avatar.harness ?? '')) {
       const agentId = await backfillPlatformAgentForAvatar(user.id, avatar.id);
       if (agentId) {
+        // The classifier deliberately cold-falls a DISMISSED unprovisioned
+        // hosted avatar through to this repair (a UI preference must not
+        // block the data migration) — re-honor the preference here so the
+        // heal is invisible to a user who suppressed the banner.
+        const dismissed =
+          (avatar.flags as { agentBannerDismissed?: boolean } | null)
+            ?.agentBannerDismissed === true;
+        if (dismissed) {
+          return c.json({
+            connected: false,
+            reason: 'dismissed',
+            mode: 'dismissed',
+            harness: avatar.harness ?? null,
+          });
+        }
         return c.json(hostedAgentSessionResponse(agentId, avatar.harness ?? null));
       }
     }
