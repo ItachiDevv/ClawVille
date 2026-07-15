@@ -13,6 +13,7 @@
  *   POST /:slug/open    (admin)  — open it for signups (draft → signup_open)
  *   POST /:slug/start   (admin)  — close signups + create/seat the dependent
  *                                   tournament (→ live)
+ *   POST /:slug/settle  (admin)  — explicitly record event completion
  *   GET  /              (public) — list events
  *   GET  /:slug         (public) — event status + its linked tournament id (if live)
  *   POST /:slug/signup  (AGENT-CAPABLE) — gate-evaluated signup (human XOR agent)
@@ -231,6 +232,21 @@ specialEventsRouter.post('/:slug/start', adminOnly, async (c) => {
   }
 });
 
+// Explicit command: public GET status routes must remain read-only.
+specialEventsRouter.post('/:slug/settle', adminOnly, async (c) => {
+  const parsed = slugParamSchema.safeParse(c.req.param());
+  if (!parsed.success) throw new HTTPException(400, { message: 'invalid_slug' });
+  try {
+    const result = await specialEventManager.settleEvent(parsed.data.slug);
+    return c.json({ ok: true, ...result });
+  } catch (err) {
+    if (err instanceof SpecialEventError) {
+      throw new HTTPException(err.httpStatus as 400, { message: err.message });
+    }
+    throw err;
+  }
+});
+
 // ── GET / (PUBLIC list) ───────────────────────────────────────────────────────
 specialEventsRouter.get('/', async (c) => {
   const limit = Number(c.req.query('limit') ?? 50);
@@ -242,21 +258,14 @@ specialEventsRouter.get('/', async (c) => {
 specialEventsRouter.get('/:slug', async (c) => {
   const parsed = slugParamSchema.safeParse(c.req.param());
   if (!parsed.success) throw new HTTPException(400, { message: 'invalid_slug' });
-  const event = await specialEventManager.getEventBySlug(parsed.data.slug);
-  if (!event) throw new HTTPException(404, { message: 'event_not_found' });
-
-  // Surface the dependent tournament id (the FK points UP) so the lobby can deep
-  // link to it once the event is live.
-  const settle =
-    event.status === 'live' || event.status === 'completed'
-      ? await specialEventManager.settleEvent(parsed.data.slug)
-      : null;
+  const snapshot = await specialEventManager.getEventSettlementSnapshot(parsed.data.slug);
+  if (!snapshot) throw new HTTPException(404, { message: 'event_not_found' });
 
   return c.json({
     ok: true,
-    event,
-    tournamentId: settle?.tournamentId ?? null,
-    results: settle?.results ?? [],
+    event: snapshot.event,
+    tournamentId: snapshot.tournamentId,
+    results: snapshot.results,
   });
 });
 
