@@ -146,7 +146,11 @@ x402CheckoutRoutes.post('/quote', requireAuthOrAgentSession, requireNonGuestIden
     const item = await resolveCosmeticCheckoutItem(subject.avatarId, parsed.data.itemRef);
     if (!item.ok) {
       const status =
-        item.code === 'not_found' ? 404 : item.code === 'already_owned' ? 409 : 400;
+        item.code === 'not_found'
+          ? 404
+          : item.code === 'already_owned' || item.code === 'sold_out'
+            ? 409
+            : 400;
       return c.json({ error: item.code, code: item.code }, status);
     }
     priceVclaw = item.priceVclaw;

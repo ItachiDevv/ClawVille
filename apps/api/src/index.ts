@@ -861,6 +861,18 @@ process.on('uncaughtException', (err) => {
     }
   }
 
+  // Wager create/join repair loop: forward-only reconciliation of signed or
+  // confirmed intents plus stale unsigned reservation expiry. This is the
+  // operational backstop when a caller never retries after an ambiguous RPC.
+  try {
+    const { startWagerIntentReconciler } = await import(
+      './services/wager-intent-reconciler'
+    );
+    startWagerIntentReconciler();
+  } catch (err) {
+    console.error('[API] Wager intent reconciler failed to start:', err);
+  }
+
   // 2026-06-24 — start the LAND RENT sweeper (builder-economics). Runs hourly,
   // charges each due weekly rent on rented parcels, opens a grace window on a
   // failed charge, and evicts after grace (parcel back to the pool, structure
@@ -1480,6 +1492,14 @@ async function gracefulShutdown(signal: string) {
       stopSessionSweeper();
     } catch {
       // If the sweeper module failed to load earlier, there's nothing to stop.
+    }
+    try {
+      const { stopWagerIntentReconciler } = await import(
+        './services/wager-intent-reconciler'
+      );
+      stopWagerIntentReconciler();
+    } catch {
+      // If the reconciler module failed to load earlier, there's nothing to stop.
     }
     try {
       const { stopLandRentSweeper } = await import('./services/land-rent-sweeper');
