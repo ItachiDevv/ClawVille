@@ -1422,12 +1422,16 @@ export class ElizaRuntime {
    * Returns the raw model text (never throws to the caller for an empty/odd
    * result — it coerces to a string; a runtime that isn't started throws).
    */
-  async decide(prompt: string, opts?: { maxTokens?: number }): Promise<string> {
+  async decide(
+    prompt: string,
+    opts?: { maxTokens?: number; localAttemptTimeoutMs?: number },
+  ): Promise<string> {
     if (!this.runtime) throw new Error('ElizaRuntime.decide: runtime not started');
     const result = await this.runtime.useModel(ModelType.TEXT_SMALL, {
       prompt,
       maxTokens: opts?.maxTokens ?? 220,
       stopSequences: [],
+      localAttemptTimeoutMs: opts?.localAttemptTimeoutMs,
     } as any);
     return typeof result === 'string' ? result : String(result ?? '');
   }

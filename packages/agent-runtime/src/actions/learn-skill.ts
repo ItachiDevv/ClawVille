@@ -95,7 +95,11 @@ export const learnSkillAction: Action = {
 
       let learned;
       try {
-        learned = await learnBookAtomically(db, { avatarId, bookId: itemId });
+        learned = await learnBookAtomically(
+          db,
+          { avatarId, bookId: itemId },
+          services.recordCovenantAction,
+        );
       } catch (error) {
         if (error instanceof LearnBookError) {
           if (error.code === 'book_not_found') {

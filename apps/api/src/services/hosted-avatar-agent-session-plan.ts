@@ -99,6 +99,8 @@ export interface HostedAvatarConfigInput {
   sessionId: string;
   /** The avatar OWNER's userId. Bound BOTH here and on the row (trap 4). */
   ownerUserId: string;
+  /** Bound avatars.id for internal covenant attribution. */
+  avatarId?: string;
   /** The avatar's render model key (what the in-world VRM/GLB loader routes on). */
   modelKey: string;
   /** The avatar's display name. */
@@ -138,6 +140,7 @@ export function buildHostedAvatarAgentConfig(
     // userId to equal the owner. The orchestration writes `userId = ownerUserId`.
     ledgerCapable: true,
     boundUserId: input.ownerUserId,
+    avatarId: input.avatarId,
   });
 }
 

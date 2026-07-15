@@ -1,6 +1,7 @@
 import type {
   AgentCategory,
   AgentHarness,
+  AutonomyStatusResponse,
   HatcherLaunchExchangeResponse,
   LandTier,
 } from '@clawville/shared';
@@ -623,6 +624,12 @@ export const api = {
         body: JSON.stringify({ clear: true }),
       }
     ),
+
+  // RC3 (2026-07-15) — owner-only projection of the REAL server autonomy
+  // driver. TanStack Query polls this only while the UI is in Autonomous mode;
+  // the response contains no agent/session/inference identifiers.
+  getAutonomyStatus: () =>
+    honoRequest<AutonomyStatusResponse>('/api/world/autonomy/status'),
 
   // Transient world-NPC chat — used by TalkToCharacterBar in NPC mode.
   // Stateless one-shot OpenAI; no Eliza, no DB writes. Client owns history.

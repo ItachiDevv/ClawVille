@@ -13,6 +13,7 @@
  *   INFERENCE_LOCAL_SECONDARY_URL/_MODEL/_KEY   → adds 'local-secondary' (default qwen3.6:27b)
  *   INFERENCE_ROUTE_TEACHER / _FLEET / _HOSTED_USER / _DEFAULT   CSV of endpoint ids (override defaults)
  *   INFERENCE_CLOUD_TIMEOUT_MS / INFERENCE_LOCAL_TIMEOUT_MS      per-request abort budget (default 60000)
+ *   INFERENCE_PROBE_INTERVAL_MS / INFERENCE_PROBE_TIMEOUT_MS     local health cadence / abort (15000 / 3000)
  *   INFERENCE_FAIL_THRESHOLD / INFERENCE_COOLDOWN_MS            breaker tuning (default 3 / 30000)
  *   INFERENCE_PRIMARY_MAX_INFLIGHT   primary-preferred-overflow saturation cap (default 3):
  *       route-list order is the PREFERENCE order; the FIRST local in a route absorbs
@@ -100,8 +101,8 @@ export function buildEndpointsFromEnv(env: Env = process.env): InferenceEndpoint
   // CANCELS an in-flight load when the client aborts, so a shorter timeout kills the
   // load before it finishes → the box never warms → the breaker re-opens forever
   // (observed with a 12s cutoff). 60s lets the load complete + cache, so the box
-  // self-heals. A DOWN box still fails over fast (ECONNREFUSED, not a timeout), and
-  // the autonomy driver's own 15s decide() timeout bounds user-facing latency.
+  // self-heals. Live callers may set a tighter per-attempt local budget; boot
+  // warmup plus the health prober own cold recovery rather than live decisions.
   const localTimeout = numEnv(env.INFERENCE_LOCAL_TIMEOUT_MS, 60_000);
 
   const endpoints: InferenceEndpoint[] = [];
@@ -219,6 +220,8 @@ export function buildInferenceRouterFromEnv(env: Env = process.env): InferenceRo
     // local in a route absorbs before work spills to the next local. Route-list
     // order is the preference order (put the 7900 XTX box first).
     primaryMaxInflight: numEnv(env.INFERENCE_PRIMARY_MAX_INFLIGHT, 3),
+    probeIntervalMs: numEnv(env.INFERENCE_PROBE_INTERVAL_MS, 15_000),
+    probeTimeoutMs: numEnv(env.INFERENCE_PROBE_TIMEOUT_MS, 3_000),
   });
 }
 

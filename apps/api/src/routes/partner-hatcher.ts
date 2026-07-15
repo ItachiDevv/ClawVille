@@ -1036,9 +1036,11 @@ partnerHatcherRoutes.post('/agents', async (c) => {
     // persisted (the agent can still perceive/chat), and the next register
     // retries; the cove gate fails CLOSED (403, never a silent guest demotion).
     let avatarProvisioned = false;
+    let boundAvatarId: string | undefined;
     if (row.userId) {
       try {
-        const { created } = await ensureHatcherAvatar(row.userId, row.species, data.name);
+        const { avatarId, created } = await ensureHatcherAvatar(row.userId, row.species, data.name);
+        boundAvatarId = avatarId;
         avatarProvisioned = true;
         if (created) {
           void logEvent({
@@ -1103,6 +1105,7 @@ partnerHatcherRoutes.post('/agents', async (c) => {
           // spend time (rebind backstop, hardening round 2). Use `row.userId` (what
           // was actually PERSISTED) not the request-local `userId`.
           boundUserId: row.userId ?? null,
+          avatarId: boundAvatarId,
           protocolOverride: 'hatcher-proxy',
         });
       } else {
@@ -1124,6 +1127,7 @@ partnerHatcherRoutes.post('/agents', async (c) => {
           personality: data.personality ?? '',
           ledgerCapable: true,
           boundUserId: row.userId ?? null,
+          avatarId: boundAvatarId,
           protocolOverride: 'hatcher-proxy',
         });
       }
@@ -1493,6 +1497,21 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
           const sessionId = preservedSessionId ?? `hat-${randomBytes(24).toString('base64url')}`;
           const minted = preservedSessionId === null;
           const stats = row.metadata?.stats ?? { hp: 100, attack: 10, defense: 8, speed: 6 };
+          let boundAvatarId: string | undefined;
+          if (row.userId) {
+            try {
+              const boundAvatar = await db.query.avatars.findFirst({
+                where: and(eq(avatars.userId, row.userId), eq(avatars.isActive, true)),
+                columns: { id: true },
+              });
+              boundAvatarId = boundAvatar?.id;
+            } catch (err) {
+              // Covenant attribution is optional and must never make the signed
+              // PATCH wire fail. The body propagates recordless and restore can
+              // rehydrate attribution on the next request/restart.
+              console.warn('[Hatcher/patch] avatar attribution lookup failed (non-fatal):', err);
+            }
+          }
           // Ledger-capable: partner-signed path (proven ownership), same as the
           // /register mint above (auth-lens fix #2/#3, 2026-06-03).
           let config: AgentSubstrateRegistration;
@@ -1511,6 +1530,7 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
               targetNpcId: nextTargetNpcId,
               ledgerCapable: true,
               boundUserId: row.userId ?? null,
+              avatarId: boundAvatarId,
               protocolOverride: 'hatcher-proxy',
             });
           } else {
@@ -1534,6 +1554,7 @@ partnerHatcherRoutes.patch('/agents/:agentId', async (c) => {
               personality: row.metadata?.personality ?? '',
               ledgerCapable: true,
               boundUserId: row.userId ?? null,
+              avatarId: boundAvatarId,
               protocolOverride: 'hatcher-proxy',
             });
           }

@@ -249,6 +249,7 @@ async function ensureHouseUserAndAvatar(): Promise<{ userId: string; avatarId: s
 export function buildHouseAvatarConfig(
   sessionId: string,
   species: string,
+  avatarId?: string,
 ): AgentAvatarConfig {
   return {
     mode: 'avatar',
@@ -263,6 +264,7 @@ export function buildHouseAvatarConfig(
     // B1: self-managed → the 200ms sim planner leaves the body alone; the
     // autonomy driver is its ONLY mover.
     autonomyMode: 'self-managed',
+    avatarId,
     name: HOUSE_AGENT_NAME,
     species,
     color: HOUSE_AGENT_COLOR,
@@ -446,7 +448,7 @@ export async function ensureHouseAgent(): Promise<HouseAgentSeedResult | null> {
   // slow/failed brain must NEVER cost the body: register the body here; the
   // driver lazy-warms the runtime off the boot crush and drives once ready.
   const sessionId = `oc-${randomBytes(24).toString('base64url')}`;
-  const avatarConfig = buildHouseAvatarConfig(sessionId, species);
+  const avatarConfig = buildHouseAvatarConfig(sessionId, species, settle.avatarId);
   const client = new AgentSubstrateClient(avatarConfig);
   npcSimulation.registerAgentBot(avatarConfig, client);
   const bodyId = npcSimulation.getNpcIdForSession(sessionId);

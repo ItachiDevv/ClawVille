@@ -154,6 +154,17 @@ export interface AgentBotConfig {
   protocol?: AgentWireProtocol;
   autonomyMode?: AgentAutonomyMode;
   /**
+   * INTERNAL attribution only (2026-07-15): the bound `avatars.id` for this
+   * ephemeral in-world registration. Server-side config assembly populates it
+   * after identity resolution so the `[ACTION:]` executor can append covenant
+   * records without re-resolving authentication.
+   *
+   * This is NOT accepted from or returned on the Hatcher/agent HTTP wire. It is
+   * optional and fail-open for world actions: when absent, the body still acts
+   * exactly as before and simply emits no covenant record.
+   */
+  avatarId?: string;
+  /**
    * Security (Codex auth-lens hardening, 2026-06-03): does THIS session prove
    * ownership of the avatar it is bound to, and may it therefore spend that
    * avatar's REAL ClawTokens in the Cove?
