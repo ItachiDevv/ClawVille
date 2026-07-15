@@ -17,6 +17,9 @@ export interface ReefRaceStartGridPose {
   heading: number;
 }
 
+/** Authoritative Reef Race pre-start window shared by server and HUD. */
+export const REEF_RACE_COUNTDOWN_DURATION_MS = 5_000;
+
 /** Back-stagger between successive two-racer rows. */
 export const REEF_START_GRID_ROW_SPACING_WU = 120;
 

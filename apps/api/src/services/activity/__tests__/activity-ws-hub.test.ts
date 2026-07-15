@@ -160,6 +160,20 @@ async function roomWithAvatars(avatarIds: string[]) {
   );
 }
 
+async function reefRoomWithAvatars(avatarIds: string[]) {
+  return activityRoomManager.createRoom(
+    'reef-race',
+    avatarIds.map((p) => ({
+      avatarId: p,
+      userId: 'user-x',
+      agentId: null,
+      subjectType: 'human' as const,
+      partyId: null,
+    })),
+    ACTIVITY_CONFIG,
+  );
+}
+
 // ─── Auth handshake ─────────────────────────────────────────────────────────
 
 describe('WS auth handshake', () => {
@@ -177,6 +191,36 @@ describe('WS auth handshake', () => {
     expect(fake.closes).toHaveLength(0);
     const init = fake.sent.map(readFrame).find((f) => f.type === 'snapshot.init');
     expect(init).toBeDefined();
+  });
+
+  it('sends Reef countdown roster placeholders in participant insertion order', async () => {
+    const participantOrder = ['avatar-3', 'avatar-1', 'avatar-4', 'avatar-2'];
+    const room = await reefRoomWithAvatars(participantOrder);
+    const fake = makeFakeWs(room.id);
+
+    await activityWsHub.handleMessage(
+      fake.ws,
+      JSON.stringify({
+        type: 'auth',
+        sessionToken: 'valid-user',
+        shortCode: room.shortCode,
+      }),
+    );
+
+    const init = fake.sent
+      .map(readFrame)
+      .find((frame) => frame.type === 'snapshot.init') as
+      | { world: { entities: unknown[] } }
+      | undefined;
+    expect(init?.world.entities).toEqual(
+      participantOrder.map((avatarId) => ({
+        avatarId,
+        position: { x: 0, y: 0 },
+        velocity: { x: 0, y: 0 },
+        rotation: 0,
+        state: 'racing',
+      })),
+    );
   });
 
   it('closes 4001 on unknown sessionToken', async () => {
