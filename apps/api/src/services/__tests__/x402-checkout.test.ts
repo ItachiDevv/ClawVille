@@ -14,10 +14,11 @@
  *   3. DURABLE SETTLE MACHINE (the Codex money-path review): pending → settling
  *      (a DB-backed CLAIM that stakes the idempotency key BEFORE the facilitator
  *      — a key reused on another checkout 23505s to a clean conflict, no money
- *      moved) → CAPTURE (the signature is persisted in its OWN UPDATE the instant
- *      the facilitator settles, BEFORE fulfillment — a capture 23505 means the
- *      signature is owned by another checkout ⇒ reconcile, the fulfiller NEVER
- *      runs on another item's payment) → FULFILL (flip settling→settled + the
+ *      moved) → CAPTURE (the signature + global receipt commit in one transaction
+ *      the instant the facilitator settles, BEFORE fulfillment — a capture
+ *      conflict means the signature is owned by another checkout ⇒ reconcile,
+ *      and the fulfiller NEVER runs on another item's payment) → FULFILL (flip
+ *      settling→settled + the
  *      fulfiller atomically). A captured-but-unfulfilled row RESUMES without
  *      re-calling the facilitator; a settled row replays; a settled row WITHOUT a
  *      signature refuses replay (corruption). A stale settling claim with no
@@ -69,6 +70,7 @@ import * as realDatabase from '@clawville/database';
 import * as realPayai from '../x402-payai';
 import * as realLedger from '../claw-token-ledger';
 import * as realSwap from '../clv-swap-executor';
+import * as realReceipts from '../x402-settlement-receipts';
 
 // ── LEAK GUARD ───────────────────────────────────────────────────────────────
 // bun's mock.module is PROCESS-GLOBAL and files share one module registry, so
@@ -93,6 +95,7 @@ const REAL_debit = realLedger.debitClawTokens;
 const REAL_mintEarned = realLedger.mintEarned;
 const REAL_transfer = realLedger.transferClawTokens;
 const REAL_enqueueClvBuy = realSwap.enqueueClvBuy;
+const REAL_claimSettlement = realReceipts.claimX402Settlement;
 
 // ── @clawville/database stub ────────────────────────────────────────────────
 type Row = Record<string, unknown>;
@@ -226,6 +229,27 @@ mock.module('../x402-payai', () => ({
   },
 }));
 
+const receiptOwners = new Map<string, realReceipts.ClaimX402SettlementInput>();
+const claimSettlement = async (
+  input: realReceipts.ClaimX402SettlementInput,
+  tx: realLedger.LedgerTx,
+): Promise<realReceipts.ClaimX402SettlementResult> => {
+  if (!intercept) return REAL_claimSettlement(input, tx);
+  const existing = receiptOwners.get(input.txSignature);
+  if (!existing) {
+    receiptOwners.set(input.txSignature, input);
+    return { kind: 'claimed', receipt: { ...input, createdAt: new Date() } };
+  }
+  const receipt = { ...existing, createdAt: new Date() };
+  return realReceipts.receiptMatchesOwner(receipt, input)
+    ? { kind: 'same_owner', receipt }
+    : { kind: 'foreign_owner', receipt };
+};
+mock.module('../x402-settlement-receipts', () => ({
+  ...realReceipts,
+  claimX402Settlement: claimSettlement,
+}));
+
 // ── claw-token-ledger: spies — the CONSERVATION assertions ──────────────────
 const ledgerCalls: string[] = [];
 mock.module('../claw-token-ledger', () => ({
@@ -331,6 +355,7 @@ beforeEach(() => {
   findFirstQueue = [];
   executeQueue = [];
   selectReturnRows = [];
+  receiptOwners.clear();
   txRan = 0;
   verifyAndSettleCalls = 0;
   verifyAndSettleResult = {
@@ -348,12 +373,17 @@ beforeEach(() => {
 // module, whose registration would collide in the shared bun module registry)
 // so registry/settle tests control their own fulfillment.
 let testFulfillerCalls: Array<import('../x402-checkout').CheckoutFulfillmentContext> = [];
+let testFulfillerImpl: import('../x402-checkout').CheckoutFulfiller = async () => ({
+  fulfilled: true,
+  detail: { proof: 'test-fulfilled' },
+});
 checkout.registerFulfiller('tournament_entry', async (ctx) => {
   testFulfillerCalls.push(ctx);
-  return { fulfilled: true, detail: { proof: 'test-fulfilled' } };
+  return testFulfillerImpl(ctx);
 });
 beforeEach(() => {
   testFulfillerCalls = [];
+  testFulfillerImpl = async () => ({ fulfilled: true, detail: { proof: 'test-fulfilled' } });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -533,7 +563,7 @@ describe('x402-checkout — settle: durable claim → capture → resumable fulf
     expect(res.txSignature).toBe('SIG_TEST_1');
     expect(res.replay).toBe(false);
     expect(res.fulfillment).toEqual({ proof: 'test-fulfilled' });
-    expect(txRan).toBe(1); // ONLY the fulfillment runs in a tx; claim+capture are direct UPDATEs
+    expect(txRan).toBe(2); // capture+global receipt, then fulfillment, are separate committed txs
     expect(verifyAndSettleCalls).toBe(1);
     expect(testFulfillerCalls.length).toBe(1);
     const ctx = testFulfillerCalls[0]!;
@@ -615,6 +645,22 @@ describe('x402-checkout — settle: durable claim → capture → resumable fulf
     expect(updateCalls.find((u) => u.set.status === 'failed')).toBeUndefined();
   });
 
+  it('post-settle independent proof failure preserves the signature and fulfills nothing', async () => {
+    findFirstQueue = [pendingRow()];
+    verifyAndSettleResult = {
+      settled: false,
+      isValid: true,
+      txSignature: 'SIG_CHAIN_MISMATCH',
+      failureReason: 'independent_chain_mismatch',
+    };
+    const res = await checkout.settleCheckout(settleArgs);
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('checkout_reconciliation');
+    expect(updateCalls.find((u) => u.set.status === 'reconcile')).toBeDefined();
+    expect(testFulfillerCalls).toHaveLength(0);
+  });
+
   it('SIGNATURE CONFLICT: capture 23505 (sig owned by another checkout) ⇒ reconcile, fulfiller ZERO', async () => {
     findFirstQueue = [pendingRow()];
     // claim → ok; CAPTURE → 23505 (the tx_signature UNIQUE — another checkout owns it).
@@ -627,6 +673,36 @@ describe('x402-checkout — settle: durable claim → capture → resumable fulf
     expect(verifyAndSettleCalls).toBe(1); // money DID move — hence reconcile, not a clean fail
     expect(testFulfillerCalls.length).toBe(0); // NEVER fulfilled on another item's signature
     expect(updateCalls.find((u) => u.set.status === 'reconcile')).toBeDefined();
+  });
+
+  it('CAPTURE then REFUSAL preserves the receipt and blocks reuse by a top-up rail', async () => {
+    findFirstQueue = [pendingRow(), capturedRow()];
+    testFulfillerImpl = async () => {
+      throw new checkout.CheckoutFulfillmentRefusal('inventory_changed');
+    };
+
+    const res = await checkout.settleCheckout(settleArgs);
+    expect(res).toEqual({
+      ok: false,
+      code: 'fulfillment_refused',
+      refusalCode: 'inventory_changed',
+    });
+    expect(receiptOwners.get('SIG_TEST_1')).toMatchObject({
+      rail: 'x402_checkout',
+      referenceId: 'checkout-1',
+      subjectId: 'avatar-1',
+    });
+
+    const replay = await claimSettlement({
+      txSignature: 'SIG_TEST_1',
+      rail: 'ct_topup',
+      kind: 'topup',
+      referenceId: 'topup-2',
+      subjectId: 'avatar-2',
+      amountUsdcAtomic: 5_000_000n,
+    }, fakeTx as never);
+    expect(replay.kind).toBe('foreign_owner');
+    expect(updateCalls.find((u) => u.set.status === 'failed')).toBeDefined();
   });
 
   it('RESUME: a captured row (settling + signature) re-fulfills WITHOUT re-calling the facilitator', async () => {
