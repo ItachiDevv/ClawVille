@@ -2,6 +2,7 @@ import {
   pgTable,
   pgEnum,
   uuid,
+  bigint,
   numeric,
   text,
   timestamp,
@@ -170,6 +171,8 @@ export const clvSwapFunding = pgTable(
     claimId: uuid('claim_id'),
     claimedAt: timestamp('claimed_at', { withTimezone: true }),
     sweptAt: timestamp('swept_at', { withTimezone: true }),
+    /** Confirmation context that orders later custody reads across RPC replicas. */
+    sweepConfirmedSlot: bigint('sweep_confirmed_slot', { mode: 'number' }),
     /** Machine reason for failed/reconcile rows. */
     failureReason: text('failure_reason'),
     metadata: jsonb('metadata').default({}).notNull(),

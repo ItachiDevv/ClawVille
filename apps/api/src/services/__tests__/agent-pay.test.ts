@@ -82,6 +82,7 @@ function harness(options: {
   let ids = 0;
   let executeCalls = 0;
   let mintCalls = 0;
+  const mintBackings: unknown[] = [];
   let failFulfillment = options.failFirstFulfillment ?? false;
   let fulfillmentBarrier = Promise.resolve();
 
@@ -172,6 +173,10 @@ function harness(options: {
           avatarId: row.recipientAvatarId, amount: row.usdCents,
           reason: 'agent_payai_settlement', source: 'x402',
           usdBasis: (row.usdCents / 100).toFixed(6),
+          backing: {
+            kind: 'none', mintRef: `agent-pay:${row.id}`,
+            reason: 'recipient_received_usdc_directly',
+          },
         });
         Object.assign(row, {
           status: 'settled', earnedVclaw: row.usdCents,
@@ -199,15 +204,22 @@ function harness(options: {
       if (options.executeThrows) throw new Error('synthetic ambiguous transport failure');
       return options.outcome ?? settledOutcome();
     },
-    mintEarned: async () => {
+    mintEarned: async (input) => {
       mintCalls += 1;
+      mintBackings.push(input.backing);
       return { ledgerId: `ledger-${mintCalls}`, balanceAfter: 0 };
     },
     resolveFeePayer: async () => '33333333333333333333333333333333',
     resolveRail: () => ({ network: 'devnet', rpcUrl: 'http://rpc.test', allowed: true }),
     randomId: () => `00000000-0000-4000-9000-${String(ids).padStart(12, '0')}`,
   };
-  return { deps, rows, executeCalls: () => executeCalls, mintCalls: () => mintCalls };
+  return {
+    deps,
+    rows,
+    executeCalls: () => executeCalls,
+    mintCalls: () => mintCalls,
+    mintBackings,
+  };
 }
 
 const request = (overrides: Partial<Parameters<typeof payAgent>[0]> = {}) => ({
@@ -232,6 +244,11 @@ describe('agent-pay durable x402 machine', () => {
     expect(replay).toMatchObject({ ok: true, replay: true, earnedVclaw: 100 });
     expect(h.executeCalls()).toBe(1);
     expect(h.mintCalls()).toBe(1);
+    expect(h.mintBackings).toEqual([{
+      kind: 'none',
+      mintRef: `agent-pay:${[...h.rows.values()][0]!.id}`,
+      reason: 'recipient_received_usdc_directly',
+    }]);
     expect([...h.rows.values()][0]).toMatchObject({ usdCents: 100, earnedUsdBasis: '1.000000' });
   });
 

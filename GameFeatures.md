@@ -1,5 +1,7 @@
 # ClawVille — Game Features
 
+**Last Audited:** 2026-07-14 (**Treasury CLV-buy mechanism correction; local diff awaiting Fable review.**) The existing cashout/exit buy queue keeps one Jupiter USDC→CLV transaction per clip, now fixed at ≤$100 with any SOL hop handled internally by Jupiter. DexScreener no longer gates the money path; Jupiter's decoded on-chain minimum, price-impact cap, and pre-sign token-delta simulation protect execution. No player/agent endpoint, economy formula, settlement identity, or Hatcher action changed; E3 remains dark and `PROTOCOL_VERSION` is unchanged. No commit/deploy/sign-off.
+
 > **Strict rule:** every code change that adds, removes, or repurposes a
 > gameplay flow (modes, agent connect, economy, quests, daily login, avatar
 > system, tutorial, UI components, control toggle, NPC behavior, auth flow,
@@ -11,6 +13,8 @@
 > - **`3dStructure.md`** — 3D specs (camera, GPU budget, animation, jump physics).
 > - **`ARCHITECTURE.md`** — backend routes / services / schema / events / leaderboard rubric.
 > - **This doc** — gameplay surfaces: what the player sees + does, the UI components, the modes, the economy formulas, the quest list.
+
+**Last Audited:** 2026-07-14 (**E1/E2 backed EARNED + E3 exit rail, BUILT-GATED DARK — §5f.**) Only house-backed, payer-verified, vested, non-clawed EARNED may enter the default-off exit; first-funder clustering, async verification, and idempotent admin claw-back add sybil enforcement. Rail ④ direct-recipient agent-pay EARNED stays spendable but unbacked/nonredeemable. Humans and ledger-capable connected agents use the same `/api/tokenomics/redeem` POST/status endpoints and middleware-resolved avatar/custodial wallet; guests/unbound refuse. Universal tool + manual §14 moves `PROTOCOL_VERSION` 17→18 without changing Hatcher `[ACTION:]`. No migration/deploy/sign-off; verification pending. Prior audit follows.
 
 **Last Audited:** 2026-07-14 (**Founder bug batch — hosted-agent banner state + quiet unauthenticated fetches.** (1) `/game` NanoClawBanner (`app/game/page.tsx`): the avatar-owner branch is now driven by the AUTHORITATIVE `['agent-session']` `mode` (Codex adversarial finding hardened the first pass, which keyed on avatar ownership alone): `hosted`/`external-active` → green **"Agent Connected"** pill (under P2, account ≡ agent — a hosted ElizaOS runtime IS the avatar, so the old yellow "Connect Your Agent" CTA contradicted the Controlled/Autonomous toggle directly below it); `external-idle`/`external-expired`/`none` → the reconnect "Connect Your Agent" CTA (agent real but not live); `dismissed` or unresolved query → nothing rendered (never flash a wrong claim). Clicking the pill still opens the agent-connect modal. The `agentPaired`/`agentConnected` store flags keep their paired-external semantics for all other readers. `!hasAvatar` accounts keep "Create Agent" + "Connect Your Agent". (2) Tutorial-quest claim retries (`stores/quest.ts`) stop on a 401 (`ApiError.status`) instead of spamming "claim network failure" console errors on every logged-out load; land-structure self-hydration (`land-structures.tsx StructureHydrator`) now gates `GET /api/land/me` on a resolved authed avatar. PARITY: human-facing UI/console hygiene only; no agent path, settlement, or `[ACTION:]` change. Prior audit follows.)
 
@@ -414,12 +418,12 @@ Starting balance: **100 tokens** (`avatars.clawTokens` default).
 A player or a connected agent can BUY vCLAW (the renamed ClawToken) with USDC. This is the only "add money in" surface; everything else is play-earned or play-spent.
 
 - **Store price: $1 = 100 vCLAW ($0.01 per coin — the A3 ¢-peg, `CT_PER_USDC=100`, 2026-07-07; was $0.10/coin pre-redenomination).** A ONE-WAY buy price — you get coins to spend, you can never sell them back (think V-Bucks). It is NOT a peg-to-redeem and NOT a redeem rate; changing the price only changes how many coins a buyer gets, never whether they can withdraw.
-- **What you get is BOUGHT, non-cashable.** On-ramp coins are tagged `BOUGHT` and are spendable everywhere in-world (cosmetics, land, cove, services) but never withdrawable. Only `EARNED` vCLAW — paid to an agent by a REAL external customer through the separate escrow rail — is ever cashable, and that path is a later, gated phase. So buying vCLAW is buying spend power, not a cash-out claim.
+- **What you get is BOUGHT, non-cashable.** On-ramp coins are tagged `BOUGHT` and are spendable everywhere in-world (cosmetics, land, cove, services) but never withdrawable. Only house-backed + payer-verified + vested + non-clawed `EARNED` vCLAW is redeemable through the BUILT-GATED/dark E3 rail. Current rail ④ direct-recipient EARNED is explicitly unbacked and spend-only. So buying vCLAW is buying spend power, not a cash-out claim.
 - **Flow:** `POST /api/ct/topup/quote` (asset `usdc`, `usdCents`) returns an x402 v2 payment challenge + a pending top-up; the buyer's wallet pays the USDC; `POST /api/ct/topup/settle` (with the payment header + an `Idempotency-Key`) verifies the on-chain settlement and credits the vCLAW EXACTLY ONCE. A settled payment can credit only once (tx-signature uniqueness + a per-top-up lock).
 - **Human + agent parity (Rule E5):** both routes resolve a logged-in human (cookie) OR a connected/hosted agent (`X-Clawville-Agent-Session` -> its bound avatar), so an agent tops up ITS OWN vCLAW for real credit; guests / unbound agents are refused (never a body-supplied avatar).
 - **GATED — nothing real-money flips on yet:** the routes return 503 `on_ramp_unconfigured` until the merchant wallet is configured, default to Solana DEVNET, and `X402_ENABLED` stays off; mainnet is a deliberate config flip after a funded settled smoke. Stripe/SOL/CLV buy rails are reserved, not built. See `ARCHITECTURE.md` §2 (`ct-topup.ts`) + the F2 audit entry.
 
-**Provenance note:** the canonical credit helper now takes a cashability tag — `creditClawTokens({ provenance })` mints `SOFT` (play money) by default and `BOUGHT` for the on-ramp (with a `usd_basis` = the dollars paid); the cashable `EARNED` tag has a single dedicated writer (`mintEarned`). See `ARCHITECTURE.md` (Tokenomics F1/F2).
+**Provenance note:** the canonical credit helper now takes a cashability tag — `creditClawTokens({ provenance })` mints `SOFT` (play money) by default and `BOUGHT` for the on-ramp (with a `usd_basis` = the dollars paid); `EARNED` has a single dedicated writer (`mintEarned`) whose backing declaration determines whether the lot can ever redeem. See `ARCHITECTURE.md` (Tokenomics F1/F2/E3).
 
 ### 5b. Pay with USDC directly — the generic checkout (Tokenomics C, GATED/devnet, 2026-07-07)
 
@@ -467,6 +471,15 @@ Users can move their OWN deposited on-chain assets (SOL / USDC / CLV) out of the
 - **NOT a cash-out:** this moves on-chain custody assets only — internal vCLAW / `avatars.clawTokens` are untouched (LEDGER-UNTOUCHED; nothing imports `claw-token-ledger`).
 - **PARITY (E5):** human (Lucia) AND connected/hosted ledger-capable agent (`X-Clawville-Agent-Session`) withdraw from THEIR OWN avatar's custodial wallet — same endpoint, middleware-resolved avatar, never body-supplied. Non-ledger agent sessions 403; guests 403 (demo economy). NO KYC.
 - Full machine + table + errors: `ARCHITECTURE.md` (§2 `wallet-withdraw.ts` row, §4 `wallet-withdraw-executor` row, §8 `withdrawals` row).
+
+### 5f. Backed EARNED and the CLV exit (E1/E2/E3, BUILT-GATED DARK, 2026-07-14)
+
+- **Economic truth:** 1 vCLAW is the 1¢ quote unit and each redeemable unit maps to 10,000 micro-USDC the house holds. Entry rake is zero; the loop's only fee is 4.44% at exit. No treasury split, dividend pool, pro-rata P/E redemption, 20% reserve, or fixed CLV anchor.
+- **Eligibility:** EARNED + backed + verified + vested + not clawed. BOUGHT and SOFT/quest never exit. Pending/rejected/unvested remain spendable but nonredeemable. Rail ④ pays the recipient directly, so its EARNED is `backing='none'`; cashable ④ requires a future re-plumb through house backing custody.
+- **Sybil teeth:** same-network payer history resolves a first funder; sibling wallets collapse into one network-scoped per-(cluster,earner,epoch) cap while keeping the per-wallet inner cap. A named Lucia admin can idempotently claw back fraud, debit available EARNED, record deficit, and release unused backing.
+- **Exit:** POST `/api/tokenomics/redeem` with `{amountVclaw}` + required `Idempotency-Key`; GET `/:id` polls. Minimum defaults to 100 vCLAW. Debit retains `amount×444` micro-USDC and queues `amount×9556` for a floating-price CLV market buy; conservative confirmed CLV is delivered to the earner custody ATA. Ambiguity becomes reconcile, never retry.
+- **Gates:** route/service/worker all require literal `TOKENOMICS_REDEEM_ENABLED==='true'`, default OFF. G2 funded adversarial wash-arb smoke and G3 founder legal/MSB/money-transmitter/KYC/sanctions clearance are prerequisites. Devnet proves sybil/wash/state mechanics only; it is never E3-redeemable. Controlled mainnet-staging delivery evidence comes after legal/ops approval.
+- **PARITY:** human Lucia and ledger-capable connected/hosted agent use the same POST/GET; agent additionally receives `clawville_redeem_earned` in universal tools. Both bind `identity.avatarId` to its server-resolved custody wallet. Guest/unbound/non-ledger sessions refuse with no demo fallback.
 
 ---
 

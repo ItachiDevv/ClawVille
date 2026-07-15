@@ -42,7 +42,7 @@
  */
 
 import { useRef, useEffect, useMemo } from 'react';
-import { useGLTF } from '@react-three/drei';
+import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { makeGeometryWebGPUSafe } from '@/lib/three/webgpu-geometry';
@@ -65,10 +65,10 @@ import { elevationAtT } from './reef-race-elevation';
 const USE_SPLINE_TRACK = process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
 
 // ─── Preloads ────────────────────────────────────────────────────────────────
-useGLTF.preload('/models/coral-reef1.glb');
-useGLTF.preload('/models/coral-reef2.glb');
-useGLTF.preload('/models/coral-reef3.glb');
-useGLTF.preload('/models/jellyfish.glb');
+preloadKTX2Bytes('/models/coral-reef1-ktx.glb?v=2');
+preloadKTX2Bytes('/models/coral-reef2-ktx.glb?v=2');
+preloadKTX2Bytes('/models/coral-reef3-ktx.glb?v=2');
+preloadKTX2Bytes('/models/jellyfish-ktx.glb?v=2');
 
 // ─── Module-scope scratch ─────────────────────────────────────────────────────
 const _mat4 = new THREE.Matrix4();
@@ -221,7 +221,7 @@ interface CoralInstProps {
 }
 
 function CoralInstances({ glbPath, seed, side }: CoralInstProps) {
-  const { scene: srcScene } = useGLTF(glbPath);
+  const { scene: srcScene } = useGLTFWithKTX2(glbPath);
   const meshRef = useRef<THREE.InstancedMesh>(null);
 
   // Extract first mesh geometry from GLB.
@@ -497,9 +497,9 @@ function EllipseTrack() {
       <Guardrails />
 
       {/* Coral decorations — 3 InstancedMesh draw calls */}
-      <CoralInstances glbPath="/models/coral-reef1.glb" seed={1} side={1}  />
-      <CoralInstances glbPath="/models/coral-reef2.glb" seed={2} side={-1} />
-      <CoralInstances glbPath="/models/coral-reef3.glb" seed={3} side={1}  />
+      <CoralInstances glbPath="/models/coral-reef1-ktx.glb?v=2" seed={1} side={1}  />
+      <CoralInstances glbPath="/models/coral-reef2-ktx.glb?v=2" seed={2} side={-1} />
+      <CoralInstances glbPath="/models/coral-reef3-ktx.glb?v=2" seed={3} side={1}  />
     </group>
   );
 }

@@ -17,6 +17,14 @@ pull (ClawVille→Hatcher, ClawVille-signed) — the live heartbeat.
 
 Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 
+> **Current local protocol: `PROTOCOL_VERSION 18` (2026-07-14).** Version 17
+> documented agent-pay and paid x402 services; version 18 adds the universal,
+> default-off `clawville_redeem_earned` REST/tool contract and status polling.
+> The six `[ACTION:]` verbs and Hatcher register/PATCH/stats/401/DELETE wire are
+> unchanged. Staging mock-harness + contract-probe evidence is still required;
+> until then, older version numbers below are historical evidence, not the
+> current served-manual value.
+
 ---
 
 ## 0. At a glance
@@ -30,7 +38,7 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 | Stats (signed GET) | `GET /api/partner/hatcher/agents/:agentId/stats` ✅ |
 | Cognition (we call you) | `POST {proxyBaseUrl}/integrations/clawville/agents/:agentId/chat` ✅ |
 | Owner launch (controlled) | portal `mint-for-hatcher` → `/game` → `POST /api/partner/hatcher/launch/exchange` ✅ |
-| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 16`** ✅ staging-harness-verified 2026-07-13 (mock-hatcher-client ALL ASSERTIONS PASSED ×2 at `8e5876ac` + `a242fa61`, protocol pointer echoed `version:16`; contract-probe clean; test signer set per-run then deleted, count 0) (5→7: poker MTT §8, 2026-06-16; 7→8: control-link/directive §9, 2026-07-02; 8→9: public `/reconnect` now ALSO mints a fresh agent bearer `sessionId`+`expiresAt` with optional gateway-credential re-supply + dormant fallback, 2026-07-03; 9→10: P3 slices 1-4 agent-facing endpoint docs — event replay/goal stream §2, chat-bar directive awareness §9, earned skill-memory read §4, run-a-store land services §10 — plus §3a [ACTION:] generalized to ClawVille-hosted-cognition agents (SAME verbs, NO new [ACTION:] verb), 2026-07-06; **10→11: hosted-OpenClaw host-it-for-me — a gateway-less `openclaw` connect can now be ClawVille-hosted (`openclaw-local` wire, operator-gated by `OPENCLAW_LOCAL_GATEWAY_ENABLED`), joining hosted Hermes as an [ACTION:]-emitting hosted harness (SAME verbs, NO new [ACTION:] verb; proximity exemption stays Hatcher-only), 2026-07-08; **11→12: skills-manifest agent-session access — the manifest (`/api/skills/manifest.json`), this protocol manual (`/api/skills/protocol/skill.md`), and each per-building `:buildingId/skill.md` now accept a LIVE connected/hosted agent session on the `X-Clawville-Agent-Session` header (fail-closed `validateLiveAgentSession`, per-agent rate-limited) IN ADDITION to a `skills:read` partner key — closing the Agent-Connect gap where a non-partner connected agent got 401 at the manual it was pointed at; §4 documents the session-header auth, 2026-07-09; **12→13: rebrand copy pass — COPY-ONLY reframe of the manual to the "living social ecosystem / first self-sustaining agent–human economy" voice + removal of the word "casino" from all served text (now "the Cove" / "card room"); NO verb/param/bound/auth change, 2026-07-09; 13→14: vCLAW copy rebrand, no identifier/wire change, 2026-07-10; 14→15: bounty reward documentation now states integer vCLAW, the shared 5-vCLAW ($0.05) minimum, and ×10^4 USDC-base-unit conversion, with the bounty API request/response changes documented by the manual and no Hatcher partner wire/auth or [ACTION:] verb/param/bound change, 2026-07-12; 15→16: quest agent parity (Rule E5) — the five PLAYER endpoints under `/api/quests` (my-quests, quest-log, accept, start, submit) now accept the `X-Clawville-Agent-Session` bearer via `requireAuthOrAgentSession` and bind submissions/rewards to the agent's BOUND avatar; NEW manual §12 documents the quest-board contract; no existing verb/param/bound/response changed, 2026-07-13**. In EVERY bump the [ACTION:] whitelist is UNCHANGED and the Hatcher partner WIRE is UNTOUCHED: hatcher rows never mint through public `/reconnect`; a BYO openclaw with its own gateway is byte-identical under both gate states; partner register/PATCH/stats/401/DELETE are byte-identical — the partner key path is unchanged (Hatcher never sends the agent-session header); a version bump is only an eager re-embed signal for NEW agent-facing docs) |
+| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 18`** ⚠️ local version; staging harness pending. Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 adds default-off EARNED redemption tool/manual §14. In both bumps the six `[ACTION:]` verbs and Hatcher register/PATCH/stats/401/DELETE wire remain unchanged. |
 
 ---
 
@@ -168,7 +176,7 @@ call `POST /api/agent/:sessionId/cove/blackjack/:tool` — `cove_blackjack_open_
 avatar's **real vCLAW balance** (no demo tier). Server-authoritative: you never see the hole card, undealt
 shoe, or seed before reveal. Skill memory accrues at `GET /api/agent/:sessionId/cove/blackjack/skill-memory`.
 
-This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 16`); the server executor
+This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 18`); the server executor
 (`dispatchHatcherActions`) is authoritative and version-bumped in lockstep with the manual, so polling on a
 version bump keeps you current — a verb never exists in one layer without the other. (The `9→10` and `10→11` bumps
 added NO verb: `9→10` documents new NON-`[ACTION:]` agent-facing endpoints; `10→11` widens the set of hosted
@@ -239,12 +247,13 @@ in `apps/api/src/routes/partner-hatcher-launch.ts`.
 
 ---
 
-## 7. Wallet / vCLAW (read-only for now)
+## 7. Wallet / vCLAW (live balance; exit remains gated dark)
 
 vCLAW (formerly "ClawTokens"/"CT" — rename 2026-07-10, PROTOCOL_VERSION 14; code identifiers like `clawTokens` are
-unchanged) is an **off-chain in-game counter** (DB ledger), **not** an on-chain SPL token — no withdraw/cashout
-today, by design. Each agent gets a real **custodial Solana wallet** (pubkey at registration), but vCLAW does not
-live in it (it's the identity/economic anchor for future on-chain features). **Dashboard: show `walletAddress` +
+unchanged) is an **off-chain in-game counter** (DB ledger), **not** an on-chain SPL token. There is no LIVE
+cashout while E3 remains dark: v18 documents the default-off, house-backed EARNED exit; BOUGHT, SOFT, and
+unbacked EARNED remain non-cashable. Each agent gets a real **custodial Solana wallet** (pubkey at registration),
+but vCLAW does not live in it; gated E3 delivers market-bought CLV there. **Dashboard: show `walletAddress` +
 vCLAW + rank as read-only.**
 
 ---
@@ -314,6 +323,15 @@ re-exchange semantics). Then register **1 OpenClaw + 1 Hermes** test agent on st
 play end to end.
 
 ---
+
+*Partner cross-check for version 18 (2026-07-14): refreshed public
+`HatcherLabs/hatcher-host-frontend` main at
+`9cc426b608bd66d0f40cd9f72beb95574f221712`; reviewed
+`.hatcher-ref/lib/api/types.ts` `ClawVilleRegisterBody`/response types and
+`.hatcher-ref/lib/api/methods.ts` register/PATCH/DELETE/stats methods. The new
+redeem declaration is served through ClawVille's universal `tools.json` and
+manual only: no Hatcher request/response field, signed path, auth header, or
+`[ACTION:]` verb/param/bound changes. Harness verification remains pending.*
 
 *Reconciled against live staging on 2026-06-15; **§7a partner storefront + `PROTOCOL_VERSION 5→7` correction added
 2026-07-02** (Phase D, additive — the wire contract for the existing partner-hatcher routes is unchanged);

@@ -62,13 +62,32 @@ import { detectLowEndGpuClass } from '@/lib/three/gpu-tier';
 // MeshoptLoader all route through DefaultLoadingManager, so this captures
 // every GLB / VRM / texture the world streams in.
 // ---------------------------------------------------------------------------
+const defaultLoadingManagerIdleListeners = new Set<() => void>();
+
+// The LoadingManager bridge is installed before any Canvas/gate exists, so it
+// reports through one stable module-level function. The active gate owns the
+// timestamp; this indirection adds no allocation to each loader progress tick.
+let activeWorldWarmupProgressNotifier: (() => void) | undefined;
+function noteWorldWarmupProgress(): void {
+  activeWorldWarmupProgressNotifier?.();
+}
+
 if (typeof window !== 'undefined') {
   const _mgr = THREE.DefaultLoadingManager;
   const _prevOnProgress = _mgr.onProgress?.bind(_mgr);
+  const _prevOnLoad = _mgr.onLoad?.bind(_mgr);
   _mgr.onProgress = (url: string, loaded: number, total: number) => {
     (window as unknown as { __W3D_PROGRESS?: number }).__W3D_PROGRESS =
       total > 0 ? Math.max(0, Math.min(1, loaded / total)) : 0;
+    noteWorldWarmupProgress();
     if (_prevOnProgress) _prevOnProgress(url, loaded, total);
+  };
+  _mgr.onLoad = () => {
+    try {
+      if (_prevOnLoad) _prevOnLoad();
+    } finally {
+      for (const listener of defaultLoadingManagerIdleListeners) listener();
+    }
   };
 }
 
@@ -106,6 +125,15 @@ const SKY_COLOR = new THREE.Color(0x0a2a4a); // Deeper ocean blue
 const USE_MESHLET_BUILDINGS: boolean =
   typeof window !== 'undefined' &&
   new URLSearchParams(window.location.search).get('meshlets') === '1';
+// 2026-07-14 — reversed-Z reduces far-plane z-fighting across the world's
+// camera.near=1 / camera.far=11500 range. Three introduced the option in r183,
+// moved reversed WebGPU depth attachments to depth32float in r184 (#33184),
+// and fixed reversed-depth sorting in r185 (#33700). Configure it before init()
+// for both WebGPU and forceWebGL; r185's WebGL2 backend warns and falls back to
+// standard depth when EXT_clip_control is unavailable. The experimental meshlet
+// rasterizer stays standard-Z because its visibility buffer packs (1 - NDC z),
+// selects with atomicMax, then writes that conventional value via depthNode.
+const USE_REVERSED_DEPTH_BUFFER = !USE_MESHLET_BUILDINGS;
 const FOG_COLOR = new THREE.Color(0x0e3458); // Underwater haze — matches sky
 const LOW_END_DPR_RANGE: [number, number] = [0.55, 0.7];
 const STANDARD_DPR_RANGE: [number, number] = [0.75, 1];
@@ -791,11 +819,13 @@ function kickRenderLoop(state: any): void {
   if (typeof state.invalidate === 'function') {
     state.invalidate();
   }
-  // Delay __W3D assignment until after the first rendered frame. On iOS
-  // WebGL2, shaders compile synchronously on first draw — setting __W3D in
-  // onCreated (before any frame renders) let the loading screen dismiss while
-  // the canvas was still blank during shader compilation, producing the
-  // "loaded twice" appearance. The RAF fires after the first paint.
+  // Delay __W3D assignment by one RAF. Historically that RAF followed the first
+  // rendered frame; on iOS WebGL2 this kept the loading screen over synchronous
+  // first-draw shader compilation and avoided the "loaded twice" appearance.
+  // 2026-07-14 gate exception: while frameloop="never" this RAF runs after the
+  // Canvas commit but BEFORE any R3F render. That timing is intentionally kept;
+  // __W3D_TEXTURES_READY remains false until the later controlled warm render,
+  // so markWorldReadyIfUploadsDone still cannot dismiss the overlay early.
   if (typeof window !== 'undefined') {
     requestAnimationFrame(() => {
       (window as any).__W3D = state;
@@ -830,27 +860,153 @@ function kickRenderLoop(state: any): void {
           } as { calls: number; triangles: number; lines: number; points: number; programs: number };
         };
       }
-      // Heal both blue-until-resize boot races (WebGPU swapchain config +
-      // WebGL2 camera.aspect=0 NaN projection) so the world paints on first
-      // load instead of staying blue until a manual resize.
-      forceFirstPaintSizeSync(state);
     });
   }
 }
 
 // ---------------------------------------------------------------------------
-// PreCompilePipelines — WebGPU pipeline pre-compilation
+// Runtime warmup frameloop gate (2026-07-14)
 // ---------------------------------------------------------------------------
-// Three.js WebGPURenderer.compileAsync(scene, camera) walks the scene graph
-// and asynchronously compiles every render pipeline needed for the current
-// scene. Calling it AFTER the first R3F commit (all child meshes are in the
-// scene) moves the 274ms post-mount main-thread block into the loading-spinner
-// phase so users never see the hitch.
-//
-// We use useEffect + requestAnimationFrame so the call fires after the first
-// React commit paint, by which point all sibling components (ArenaTerrain,
-// ArenaBuildings, etc.) have been added to scene.children.  Runs once only.
-// ---------------------------------------------------------------------------
+
+type WorldWarmupGate = {
+  readonly resumed: boolean;
+  resume: (reason: 'warmup-complete' | 'warmup-error' | 'safety-timeout') => void;
+  onResume: (listener: () => void) => () => void;
+  dispose: () => void;
+};
+
+// The renderer survives RootState object replacement when setFrameloop updates
+// the zustand store, so key the gate by `gl`, not by the transient state snapshot.
+const WORLD_WARMUP_GATES = new WeakMap<object, WorldWarmupGate>();
+
+/**
+ * Runtime frameloop gate (2026-07-14).
+ *
+ * Canvas must still be CREATED with frameloop="always" because R3F v9 skips
+ * our async renderer factory when it is created as "never". onCreated is the
+ * first safe point to switch the live store to "never", before R3F's first
+ * full-scene render can synchronously upload every compressed KTX2 mip.
+ *
+ * 2026-07-14: the React prop must switch with the live store. R3F 9.5's
+ * root.configure() reconciles state.frameloop back to the Canvas prop on every
+ * Canvas re-render (installed events-5a94e5eb.esm.js:15670). A store-only pause
+ * was therefore silently reverted during world/NPC commits and leaked a real
+ * R3F frame mid-warmup, measured as a 6.4-6.8s compressed-texture upload task.
+ *
+ * Resume is deliberately centralized and idempotent. The normal warmup path,
+ * any thrown warmup step, and the progress-aware safety watchdog all converge
+ * here. Only R3F 9.5's invalidate explicitly no-ops while frameloop is "never",
+ * so the historical kick remains in onCreated to preserve
+ * __W3D_CANVAS_READY timing. Only the first-paint size healer is deferred until
+ * the loop is live again.
+ */
+function createWorldWarmupGate(
+  state: any,
+  pauseForWarmup: boolean,
+  onFrameloopChange: (mode: 'always' | 'never') => void,
+): WorldWarmupGate {
+  let disposed = false;
+  let resumed = !pauseForWarmup;
+  let lastProgressAt = performance.now();
+  let watchdogInterval: number | undefined;
+  let absoluteCeilingTimer: number | undefined;
+  let safetyFuseCause: 'no-progress' | 'absolute-ceiling' | undefined;
+  const resumeListeners = new Set<() => void>();
+  const noteProgress = () => {
+    if (disposed || resumed) return;
+    lastProgressAt = performance.now();
+  };
+  const clearWatchdog = () => {
+    if (watchdogInterval !== undefined) {
+      window.clearInterval(watchdogInterval);
+      watchdogInterval = undefined;
+    }
+    if (absoluteCeilingTimer !== undefined) {
+      window.clearTimeout(absoluteCeilingTimer);
+      absoluteCeilingTimer = undefined;
+    }
+    if (activeWorldWarmupProgressNotifier === noteProgress) {
+      activeWorldWarmupProgressNotifier = undefined;
+    }
+  };
+
+  const gate: WorldWarmupGate = {
+    get resumed() {
+      return resumed;
+    },
+    resume(reason) {
+      if (disposed || resumed) return;
+      resumed = true;
+      clearWatchdog();
+      onFrameloopChange('always');
+      state.setFrameloop('always');
+      state.invalidate();
+      // 2026-07-14: fail open as one atomic UI transition. SeaLoadingScreen
+      // dismisses only after __W3D_READY; resuming R3F without releasing its
+      // texture-ready half would render behind the overlay until its 45s ceiling.
+      // The normal completion path already set this flag, so repeating it here
+      // keeps every resume reason idempotent and prevents a safety fuse/error
+      // from turning into a second, much longer apparent hang.
+      (window as any).__W3D_TEXTURES_READY = true;
+      markWorldReadyIfUploadsDone();
+      // Heal both blue-until-resize boot races (WebGPU swapchain config +
+      // WebGL2 camera.aspect=0 NaN projection) only after resume. Its internal
+      // invalidate must never be allowed to create a pre-warmup draw.
+      forceFirstPaintSizeSync(state);
+      for (const listener of resumeListeners) listener();
+      resumeListeners.clear();
+      if (reason === 'safety-timeout') {
+        const limit = safetyFuseCause === 'absolute-ceiling'
+          ? 'hit the 40s absolute ceiling'
+          : 'made no progress for 10s';
+        console.warn(`[World3D] warmup ${limit}; resumed render loop via safety fuse`);
+      }
+    },
+    onResume(listener) {
+      if (disposed) return () => {};
+      if (resumed) {
+        listener();
+        return () => {};
+      }
+      resumeListeners.add(listener);
+      return () => resumeListeners.delete(listener);
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      clearWatchdog();
+      resumeListeners.clear();
+      if (WORLD_WARMUP_GATES.get(state.gl) === gate) {
+        WORLD_WARMUP_GATES.delete(state.gl);
+      }
+    },
+  };
+
+  WORLD_WARMUP_GATES.set(state.gl, gate);
+  if (pauseForWarmup) {
+    state.setFrameloop('never');
+    onFrameloopChange('never');
+    lastProgressAt = performance.now();
+    activeWorldWarmupProgressNotifier = noteProgress;
+    // 2026-07-14: a fixed 10s-from-canvas fuse fired while cold-network asset
+    // loading was still healthy, then the first resumed R3F frame paid all
+    // remaining uploads/compiles in one measured 9.9s main-thread task. Treat
+    // only 10s with NO loader/upload/scan/compile progress as a hang. A separate
+    // 40s absolute ceiling still fails open before SeaLoadingScreen's 45s
+    // force-dismiss, allowing resume() to release renderer + overlay atomically.
+    watchdogInterval = window.setInterval(() => {
+      if (resumed || performance.now() - lastProgressAt <= 10_000) return;
+      safetyFuseCause = 'no-progress';
+      gate.resume('safety-timeout');
+    }, 2_000);
+    absoluteCeilingTimer = window.setTimeout(() => {
+      safetyFuseCause = 'absolute-ceiling';
+      gate.resume('safety-timeout');
+    }, 40_000);
+  }
+  return gate;
+}
+
 // ---------------------------------------------------------------------------
 // MinimapPositionTracker — writes the current follow-point to gameStore.avatarPosition
 // each frame when neither the player-avatar nor the NPC-possession controller is
@@ -858,7 +1014,6 @@ function kickRenderLoop(state: any): void {
 // the focus point — that's what the user is actually looking at. Also handles
 // NPC-mode by copying the possessed NPC's map coordinates on each tick.
 // ---------------------------------------------------------------------------
-
 function MinimapPositionTracker() {
   const { camera } = useThree();
   const lastWriteRef = useRef(0);
@@ -909,58 +1064,6 @@ function MinimapPositionTracker() {
       store.setAvatarPosition(mapX, mapY);
     }
   });
-  return null;
-}
-
-function PreCompilePipelines() {
-  const { gl, scene, camera } = useThree();
-  useEffect(() => {
-    // DEBUG PROBE: expose scene/camera/renderer globally so CDP can introspect
-    // scale issues without an extra deploy cycle. Safe — no runtime cost.
-    if (typeof window !== 'undefined') {
-      (window as any).__R3F = { scene, camera, gl };
-      (window as any).__CV_STORES__ = { useGameStore, useNpcStore };
-    }
-    const raf = requestAnimationFrame(() => {
-      if (typeof (gl as any).compileAsync === 'function') {
-        (gl as any).compileAsync(scene, camera).catch((err: unknown) => {
-          console.warn('[World3D] compileAsync failed:', err);
-        });
-      }
-
-      // Perf round-3 change A — second compileAsync after VRM batch settles.
-      //
-      // The initial compileAsync above fires at mount, but the 14 VRMs load
-      // asynchronously over the following ~10s. Their skinned-MeshStandardMaterial
-      // pipeline variants are NOT in the scene at that point, so they fall back to
-      // lazy compilation at first reveal (7.5s main-thread self-time, confirmed in
-      // baseline trace). registerBulkVRMIdleCallback fires once the parse queue
-      // drains for the first time (bulk load complete), at which point all VRM
-      // meshes ARE in the scene. We kick a second compileAsync then so the skinned
-      // variants compile under the loading spinner via KHR_parallel_shader_compile
-      // instead of smearing across the reveal frames.
-      //
-      // Safety: guard with typeof check (same as first call). Does NOT call
-      // gl.render() — no blue-screen risk. The loading overlay is still up when
-      // this fires, so there is no second render path here.
-      registerBulkVRMIdleCallback(() => {
-        if (typeof (gl as any).compileAsync === 'function') {
-          (gl as any).compileAsync(scene, camera)
-            .then(() => {
-              if (typeof window !== 'undefined') {
-                (window as any).__W3D_VRM_COMPILE_DONE = performance.now();
-              }
-            })
-            .catch((err: unknown) => {
-              console.warn('[World3D] post-VRM compileAsync failed:', err);
-            });
-        }
-      });
-    });
-    return () => cancelAnimationFrame(raf);
-    // gl/scene/camera are stable R3F refs — intentionally omitted from deps
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
   return null;
 }
 
@@ -1050,25 +1153,19 @@ function CoveEntranceCameraPush() {
 // ("stabilize world canvas presentation"); that "stabilization" was the regression.
 
 // ---------------------------------------------------------------------------
-// StaggeredTextureUpload — spread GPU texture uploads across idle time
+// WorldWarmup — ordered upload/compile/render behind the loading overlay
 // ---------------------------------------------------------------------------
-// Problem: after WebP decode, uploading all RGBA8 textures to the GPU in one
-// frame causes a 400ms+ long task on Iris Xe (the WebP decode → GPU upload
-// pipeline is CPU-bound and unthreaded).
+// 2026-07-14: the old PreCompilePipelines + StaggeredTextureUpload helpers both
+// started AFTER R3F registered its frameloop callback. The first ordinary scene
+// render therefore always won, synchronously uploading ~115 compressed KTX2
+// textures (CPU writeTexture per mip) and compiling/drawing the whole scene in
+// one 4.1–4.3s main-thread task. Their pacing code never got a chance to help.
 //
-// Old fix (BATCH=2 per rAF tick): 200 textures × 1 frame each = 200 frames to
-// upload everything. At 12fps that's ~17s of "avatar not visible". The fixed
-// per-frame count wastes the frame budget on fast machines and bottlenecks
-// slow ones.
-//
-// New fix: use requestIdleCallback with a 6ms budget per slice. The browser
-// schedules the slice during idle time after a frame paints, so we never
-// steal the frame budget — but on fast hardware we burn through ~6ms of
-// texture uploads per idle slice (~1-2 textures per slice on Iris Xe, more
-// on a desktop GPU). On a fast machine the whole 200-texture pool finishes
-// in a handful of slices (< 200ms total). On slow hardware it self-paces.
-//
-// Fallback for Safari (no rIC): rAF with BATCH=4 (still 2× the old rate).
+// The runtime gate now makes ordering structural: wait for loader idle + a
+// committed scene, pre-upload until two scans find nothing new, await Three
+// r185's cooperative compileAsync, perform exactly one warm render, then resume
+// R3F. Post-ready scans every 2s for 60s use the gentle path to catch late VRM
+// textures without adding any per-frame allocation or changing steady state.
 // ---------------------------------------------------------------------------
 // Gentle pacing — used once __W3D_READY (world is interactive, frame budget matters)
 const IDLE_SLICE_BUDGET_MS = 6;
@@ -1083,12 +1180,6 @@ const RAF_FALLBACK_BATCH = 4;
 const FAST_SLICE_BUDGET_MS = 30;
 const FAST_MAX_TEXTURES_PER_SLICE = 32;
 const RAF_FAST_BATCH = 24;
-
-/** Returns true when the loading overlay is still up (world not yet interactive). */
-function isLoadingOverlayUp(): boolean {
-  if (typeof window === 'undefined') return false;
-  return (window as any).__W3D_READY !== true;
-}
 
 // All standard texture slot names on MeshStandardMaterial and related.
 const TEXTURE_SLOTS = [
@@ -1150,174 +1241,385 @@ function completeTextureUploadMetrics(metrics: TextureUploadMetrics): void {
   metrics.durationMs = Math.round((metrics.completedAt - metrics.startedAt) * 10) / 10;
 }
 
-function StaggeredTextureUpload() {
-  const { camera, gl, scene } = useThree();
+function WorldWarmup() {
+  const state = useThree();
+  const { camera, gl, scene } = state;
 
   useEffect(() => {
-    const markTextureUploadReady = () => {
-      gl.setClearColor(SKY_COLOR, 1);
-      gl.setClearAlpha?.(1);
-      gl.render(scene, camera);
-      if (typeof window === 'undefined') return;
-      (window as any).__W3D_TEXTURES_READY = true;
-      markWorldReadyIfUploadsDone();
+    // DEBUG PROBE: expose scene/camera/renderer globally so CDP can introspect
+    // scale issues without an extra deploy cycle. Safe — no per-frame cost.
+    (window as any).__R3F = { scene, camera, gl };
+    (window as any).__CV_STORES__ = { useGameStore, useNpcStore };
+
+    const gate = WORLD_WARMUP_GATES.get(gl as object);
+    const gateWasPending = gate?.resumed === false;
+    const canInitTexture = typeof (gl as any).initTexture === 'function';
+    const hasIdle = typeof (window as any).requestIdleCallback === 'function';
+    const seen = new Set<THREE.Texture>();
+    const bridge = window as any;
+    let cancelled = false;
+    let discoveredTotal = Math.max(0, Number(bridge.__W3D_TEXTURE_UPLOAD_TOTAL) || 0);
+    let uploadedDone = Math.max(0, Number(bridge.__W3D_TEXTURE_UPLOAD_DONE) || 0);
+    let idleHandle: number | undefined;
+    let uploadRaf: number | undefined;
+    let settleRaf: number | undefined;
+    let managerCapTimer: number | undefined;
+    let postScanTimer: number | undefined;
+    let postStopTimer: number | undefined;
+    let managerIdleCleanup: (() => void) | undefined;
+    let activeUploadResolve: (() => void) | undefined;
+    let settleRafResolve: (() => void) | undefined;
+    let uploadQueue = Promise.resolve();
+    let postScanStarted = false;
+    let warmupUploadedTextures = 0;
+
+    // Perf round-3 change A, retained by the 2026-07-14 warmup gate: the
+    // initial ordered compile can still precede the 14 asynchronously parsed NPC
+    // VRMs. Their skinned-MeshStandardMaterial variants are absent from that
+    // first scene walk and otherwise lazy-compile at reveal (7.5s main-thread
+    // smear in the pre-r185 baseline). The bulk-idle hook fires once the parse
+    // queue first drains, when those meshes are in the scene, so run one more
+    // cooperative r185 compileAsync pass. It may occur after resume; it yields
+    // between objects, performs no independent render, and is guarded against
+    // an unmounted/stale renderer.
+    registerBulkVRMIdleCallback(() => {
+      if (cancelled || typeof (gl as any).compileAsync !== 'function') return;
+      noteWorldWarmupProgress();
+      (gl as any).compileAsync(scene, camera)
+        .then(() => {
+          if (!cancelled) bridge.__W3D_VRM_COMPILE_DONE = performance.now();
+        })
+        .catch((err: unknown) => {
+          console.warn('[World3D] post-VRM compileAsync failed:', err);
+        })
+        .finally(() => {
+          noteWorldWarmupProgress();
+        });
+    });
+
+    const uploadMetrics = createTextureUploadMetrics(hasIdle ? 'idle' : 'raf', discoveredTotal);
+
+    const publishProgress = () => {
+      // Re-scans may grow TOTAL, but neither counter may ever move backwards:
+      // SeaLoadingScreen polls these globals and a reset would regress its bar.
+      bridge.__W3D_TEXTURE_UPLOAD_TOTAL = Math.max(
+        Number(bridge.__W3D_TEXTURE_UPLOAD_TOTAL) || 0,
+        discoveredTotal,
+      );
+      bridge.__W3D_TEXTURE_UPLOAD_DONE = Math.max(
+        Number(bridge.__W3D_TEXTURE_UPLOAD_DONE) || 0,
+        uploadedDone,
+      );
+      uploadMetrics.totalTextures = Math.max(uploadMetrics.totalTextures, discoveredTotal);
     };
 
-    // Verify initTexture is available (guard for unusual renderer builds)
-    if (typeof (gl as any).initTexture !== 'function') {
-      console.warn('[World3D] StaggeredTextureUpload: renderer.initTexture() not available, skipping');
-      (window as any).__W3D_TEXTURE_UPLOAD_TOTAL = 0;
-      (window as any).__W3D_TEXTURE_UPLOAD_DONE = 0;
-      markTextureUploadReady();
-      return;
-    }
-
-    // Wait two rAF ticks: first tick is PreCompilePipelines' compileAsync kick,
-    // second tick is after at least one compile cycle has started.
-    let outerRaf: number;
-    let innerRaf: number;
-    // Hoisted so the useEffect cleanup can cancel in-progress upload batches.
-    // Need both rIC and rAF refs because we pick one per browser capability.
-    let uploadRaf: number | undefined;
-    let idleHandle: number | undefined;
-
-    outerRaf = requestAnimationFrame(() => {
-      innerRaf = requestAnimationFrame(() => {
-        // Collect all textures referenced by mesh materials in scene
-        const seen = new Set<THREE.Texture>();
-
-        scene.traverse((obj) => {
-          if (!(obj instanceof THREE.Mesh)) return;
-          const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-          for (const mat of mats) {
-            if (!mat) continue;
-            for (const slot of TEXTURE_SLOTS) {
-              const tex = (mat as any)[slot];
-              if (tex instanceof THREE.Texture && !seen.has(tex)) {
-                seen.add(tex);
-              }
+    const scanForUnseenTextures = (): THREE.Texture[] => {
+      const fresh: THREE.Texture[] = [];
+      scene.traverse((obj) => {
+        if (!(obj instanceof THREE.Mesh)) return;
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        for (const mat of mats) {
+          if (!mat) continue;
+          for (const slot of TEXTURE_SLOTS) {
+            const tex = (mat as any)[slot];
+            if (tex instanceof THREE.Texture && !seen.has(tex)) {
+              seen.add(tex);
+              fresh.push(tex);
             }
           }
-        });
+        }
+      });
+      if (fresh.length > 0) {
+        noteWorldWarmupProgress();
+        discoveredTotal += fresh.length;
+        publishProgress();
+      }
+      return fresh;
+    };
 
-        const unique = Array.from(seen);
-        if (unique.length === 0) {
-          // No-textures path — still publish the counters so the loader bar
-          // doesn't get stuck waiting for an update that never arrives.
-          (window as any).__W3D_TEXTURE_UPLOAD_TOTAL = 0;
-          (window as any).__W3D_TEXTURE_UPLOAD_DONE = 0;
-          markTextureUploadReady();
+    const finishActiveUpload = () => {
+      const resolve = activeUploadResolve;
+      activeUploadResolve = undefined;
+      resolve?.();
+    };
+
+    const uploadBatch = (
+      textures: THREE.Texture[],
+      fastMode: boolean,
+      recordMetrics: boolean,
+    ): Promise<void> => new Promise((resolve) => {
+      if (cancelled || !canInitTexture || textures.length === 0) {
+        resolve();
+        return;
+      }
+
+      let i = 0;
+      activeUploadResolve = resolve;
+      const finish = () => {
+        idleHandle = undefined;
+        uploadRaf = undefined;
+        finishActiveUpload();
+      };
+
+      const uploadOne = (texture: THREE.Texture) => {
+        try {
+          (gl as any).initTexture(texture);
+        } catch (err) {
+          console.warn('[World3D] initTexture error (non-fatal):', err);
+        }
+        uploadedDone += 1;
+        if (recordMetrics) warmupUploadedTextures += 1;
+        noteWorldWarmupProgress();
+      };
+
+      const uploadIdle = (deadline: IdleDeadline) => {
+        if (cancelled) {
+          finish();
           return;
         }
-
-        const hasIdle = typeof (window as any).requestIdleCallback === 'function';
-        console.log(`[World3D] StaggeredTextureUpload: uploading ${unique.length} textures via ${hasIdle ? 'rIC' : 'rAF'} budget`);
-
-        // 2026-05-31: publish upload progress so the SeaLoadingScreen bar can
-        // track the GPU-upload phase honestly. Without this the bar hit 99%
-        // once asset downloads finished and then stalled for the entire
-        // texture-upload window — the user's "loads another 2-3× the wait"
-        // complaint. Window flags are cheap (no React state, no allocs in
-        // the slice loop).
-        (window as any).__W3D_TEXTURE_UPLOAD_TOTAL = unique.length;
-        (window as any).__W3D_TEXTURE_UPLOAD_DONE = 0;
-
-        let i = 0;
-        const uploadMetrics = createTextureUploadMetrics(hasIdle ? 'idle' : 'raf', unique.length);
-
-        function uploadIdle(deadline: IdleDeadline) {
-          const t0 = performance.now();
-          const before = i;
-          // Perf round-3 change B: while the loading overlay is up (__W3D_READY is
-          // not set), use fast constants (30ms / 32-tex cap) so the 179 textures
-          // drain in as few idle slices as possible. Once the world is interactive,
-          // switch to gentle constants (6ms / 4-tex) so we don't steal frame budget.
-          const fastMode = isLoadingOverlayUp();
-          const budgetMs = fastMode ? FAST_SLICE_BUDGET_MS : IDLE_SLICE_BUDGET_MS;
-          const maxPerSlice = fastMode ? FAST_MAX_TEXTURES_PER_SLICE : IDLE_MAX_TEXTURES_PER_SLICE;
-          // Deadline-aware path: when rIC provides a real idle window
-          // (timeRemaining() > 0 and not timed-out), upload as many textures
-          // as fit until <2ms remains — no fixed cap. This is the fast path
-          // that resolved the 10.8s→20.5s regression caused by IDLE_MAX_TEXTURES_PER_SLICE=4.
-          // On fast hardware a single 50ms idle window can drain the entire queue.
-          // Fallback when rIC timed out or no remaining time: upload max N per slice
-          // guarded by budgetMs (N and budget depend on fast vs gentle mode).
-          const useDeadline = !deadline.didTimeout && deadline.timeRemaining() > 0;
-          while (i < unique.length) {
-            if (i > before) {
-              // Not the first texture of this slice — check budget.
-              if (useDeadline) {
-                if (deadline.timeRemaining() < 2) break;
-              } else {
-                if (i - before >= maxPerSlice) break;
-                if (performance.now() - t0 >= budgetMs) break;
-              }
+        const t0 = performance.now();
+        const before = i;
+        const budgetMs = fastMode ? FAST_SLICE_BUDGET_MS : IDLE_SLICE_BUDGET_MS;
+        const maxPerSlice = fastMode ? FAST_MAX_TEXTURES_PER_SLICE : IDLE_MAX_TEXTURES_PER_SLICE;
+        // Preserve the proven deadline-aware path: a real idle window drains
+        // until <2ms remains; timed-out callbacks use the bounded fast/gentle
+        // constants. At least one texture is attempted in every slice.
+        const useDeadline = !deadline.didTimeout && deadline.timeRemaining() > 0;
+        while (i < textures.length) {
+          if (i > before) {
+            if (useDeadline) {
+              if (deadline.timeRemaining() < 2) break;
+            } else {
+              if (i - before >= maxPerSlice) break;
+              if (performance.now() - t0 >= budgetMs) break;
             }
-            try {
-              (gl as any).initTexture(unique[i]);
-            } catch (err) {
-              console.warn('[World3D] initTexture error (non-fatal):', err);
-            }
-            i++;
           }
-          (window as any).__W3D_TEXTURE_UPLOAD_DONE = i;
-          pushTextureUploadSlice(uploadMetrics, 'idle', t0, i - before, i);
-          if (i < unique.length) {
-            idleHandle = (window as any).requestIdleCallback(uploadIdle, { timeout: 200 });
-          } else {
-            idleHandle = undefined;
-            completeTextureUploadMetrics(uploadMetrics);
-            console.log('[World3D] StaggeredTextureUpload: all textures uploaded');
-            markTextureUploadReady();
-          }
+          uploadOne(textures[i]);
+          i += 1;
         }
-
-        function uploadRafFallback() {
-          const t0 = performance.now();
-          const before = i;
-          // Perf round-3 change B: fast batch while loading overlay up, gentle after.
-          const batch = isLoadingOverlayUp() ? RAF_FAST_BATCH : RAF_FALLBACK_BATCH;
-          const end = Math.min(i + batch, unique.length);
-          for (; i < end; i++) {
-            try {
-              (gl as any).initTexture(unique[i]);
-            } catch (err) {
-              console.warn('[World3D] initTexture error (non-fatal):', err);
-            }
-          }
-          (window as any).__W3D_TEXTURE_UPLOAD_DONE = i;
-          const elapsed = performance.now() - t0;
-          pushTextureUploadSlice(uploadMetrics, 'raf', t0, i - before, i);
-          if (elapsed > 20) {
-            console.warn(`[World3D] StaggeredTextureUpload: batch took ${elapsed.toFixed(1)}ms`);
-          }
-          if (i < unique.length) {
-            uploadRaf = requestAnimationFrame(uploadRafFallback);
-          } else {
-            uploadRaf = undefined;
-            completeTextureUploadMetrics(uploadMetrics);
-            console.log('[World3D] StaggeredTextureUpload: all textures uploaded');
-            markTextureUploadReady();
-          }
+        publishProgress();
+        if (recordMetrics) {
+          pushTextureUploadSlice(uploadMetrics, 'idle', t0, i - before, uploadedDone);
         }
-
-        if (hasIdle) {
+        if (i < textures.length) {
           idleHandle = (window as any).requestIdleCallback(uploadIdle, { timeout: 200 });
         } else {
-          uploadRaf = requestAnimationFrame(uploadRafFallback);
+          finish();
         }
+      };
+
+      const uploadRafFallback = () => {
+        if (cancelled) {
+          finish();
+          return;
+        }
+        const t0 = performance.now();
+        const before = i;
+        const batch = fastMode ? RAF_FAST_BATCH : RAF_FALLBACK_BATCH;
+        const end = Math.min(i + batch, textures.length);
+        for (; i < end; i += 1) uploadOne(textures[i]);
+        publishProgress();
+        if (recordMetrics) {
+          pushTextureUploadSlice(uploadMetrics, 'raf', t0, i - before, uploadedDone);
+        }
+        const elapsed = performance.now() - t0;
+        if (elapsed > 20) {
+          console.warn(`[World3D] texture upload batch took ${elapsed.toFixed(1)}ms`);
+        }
+        if (i < textures.length) {
+          uploadRaf = requestAnimationFrame(uploadRafFallback);
+        } else {
+          finish();
+        }
+      };
+
+      if (hasIdle) {
+        idleHandle = (window as any).requestIdleCallback(uploadIdle, { timeout: 200 });
+      } else {
+        uploadRaf = requestAnimationFrame(uploadRafFallback);
+      }
+    });
+
+    const queueUpload = (
+      textures: THREE.Texture[],
+      fastMode: boolean,
+      recordMetrics: boolean,
+    ): Promise<void> => {
+      uploadQueue = uploadQueue.then(() => uploadBatch(textures, fastMode, recordMetrics));
+      return uploadQueue;
+    };
+
+    const waitForCommitFrame = (): Promise<void> => new Promise((resolve) => {
+      if (cancelled) {
+        resolve();
+        return;
+      }
+      settleRafResolve = resolve;
+      settleRaf = requestAnimationFrame(() => {
+        settleRaf = undefined;
+        settleRafResolve = undefined;
+        resolve();
       });
     });
 
+    const waitForLoadingManagerIdle = (): Promise<void> => new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        defaultLoadingManagerIdleListeners.delete(finish);
+        managerIdleCleanup = undefined;
+        if (managerCapTimer !== undefined) {
+          window.clearTimeout(managerCapTimer);
+          managerCapTimer = undefined;
+        }
+        resolve();
+      };
+      defaultLoadingManagerIdleListeners.add(finish);
+      managerIdleCleanup = finish;
+      managerCapTimer = window.setTimeout(finish, 8_000);
+
+      // LoadingManager exposes no public isLoading/counts. A synthetic balanced
+      // item is an exact barrier that cannot miss tier-1 preloads already active
+      // before this dynamically imported module installed its callbacks: onLoad
+      // fires now when idle, or after every pre-existing item drains.
+      const barrierUrl = `__w3d-warmup-barrier-${performance.now()}`;
+      THREE.DefaultLoadingManager.itemStart(barrierUrl);
+      THREE.DefaultLoadingManager.itemEnd(barrierUrl);
+    });
+
+    const startPostReadyScans = () => {
+      if (cancelled || postScanStarted || !canInitTexture) return;
+      postScanStarted = true;
+      const scan = () => {
+        if (cancelled) return;
+        const fresh = scanForUnseenTextures();
+        if (fresh.length > 0) {
+          // Serialize with any still-finishing initial batch if the safety
+          // watchdog resumed early. Nothing uploads concurrently with another batch.
+          void queueUpload(fresh, false, false);
+        }
+        postScanTimer = window.setTimeout(scan, 2_000);
+      };
+      postScanTimer = window.setTimeout(scan, 2_000);
+      postStopTimer = window.setTimeout(() => {
+        if (postScanTimer !== undefined) window.clearTimeout(postScanTimer);
+        postScanTimer = undefined;
+      }, 60_000);
+    };
+
+    const unsubscribeResume = gate?.onResume(startPostReadyScans) ?? (() => {
+      startPostReadyScans();
+    });
+
+    void (async () => {
+      try {
+        // The effect itself proves one React commit. The manager barrier waits
+        // for all already-started world loads (8s cap), then this RAF gives
+        // Suspense retries one commit opportunity before the first scan.
+        const barrierStartedAt = performance.now();
+        await waitForLoadingManagerIdle();
+        await waitForCommitFrame();
+        const barrierMs = performance.now() - barrierStartedAt;
+        if (cancelled || (gateWasPending && gate?.resumed)) return;
+
+        const scansStartedAt = performance.now();
+        if (!canInitTexture) {
+          console.warn('[World3D] WorldWarmup: renderer.initTexture() not available, skipping uploads');
+          publishProgress();
+        } else {
+          console.log(`[World3D] WorldWarmup: pre-uploading textures via ${hasIdle ? 'rIC' : 'rAF'} budget`);
+          let zeroScans = 0;
+          while (!cancelled && zeroScans < 2) {
+            const fresh = scanForUnseenTextures();
+            if (fresh.length > 0) {
+              zeroScans = 0;
+              await queueUpload(fresh, true, true);
+            } else {
+              zeroScans += 1;
+            }
+            if (zeroScans < 2) await waitForCommitFrame();
+            if (gateWasPending && gate?.resumed) return;
+          }
+          completeTextureUploadMetrics(uploadMetrics);
+          console.log(`[World3D] WorldWarmup: uploaded ${uploadedDone}/${discoveredTotal} textures`);
+        }
+        const scansMs = performance.now() - scansStartedAt;
+
+        if (cancelled || (gateWasPending && gate?.resumed)) return;
+        let compileMs = 0;
+        if (typeof (gl as any).compileAsync === 'function') {
+          const compileStartedAt = performance.now();
+          noteWorldWarmupProgress();
+          try {
+            await (gl as any).compileAsync(scene, camera);
+          } catch (err) {
+            console.warn('[World3D] compileAsync failed (continuing warmup):', err);
+          } finally {
+            compileMs = performance.now() - compileStartedAt;
+            noteWorldWarmupProgress();
+          }
+        }
+        if (cancelled || (gateWasPending && gate?.resumed)) return;
+
+        // One controlled warm draw behind the overlay. On WebGL2 this is also
+        // the synchronous shader compile. Never run it after the safety watchdog
+        // has resumed R3F or it could recreate the historic double-render blue screen.
+        if (cancelled || (gateWasPending && gate?.resumed)) return;
+        const warmRenderStartedAt = performance.now();
+        noteWorldWarmupProgress();
+        gl.setClearColor(SKY_COLOR, 1);
+        gl.setClearAlpha?.(1);
+        gl.render(scene, camera);
+        const warmRenderMs = performance.now() - warmRenderStartedAt;
+        bridge.__W3D_TEXTURES_READY = true;
+        markWorldReadyIfUploadsDone();
+        console.log(
+          `[World3D] WorldWarmup done: barrier ${barrierMs.toFixed(1)}ms, `
+          + `scans ${scansMs.toFixed(1)}ms (${warmupUploadedTextures} textures), `
+          + `compile ${compileMs.toFixed(1)}ms, warmRender ${warmRenderMs.toFixed(1)}ms`,
+        );
+
+        if (gate) {
+          gate.resume('warmup-complete');
+        } else {
+          // Defensive fallback: onCreated always installs a gate, but never let
+          // a future refactor strand the canvas if that contract changes.
+          state.setFrameloop('always');
+          state.invalidate();
+          forceFirstPaintSizeSync(state);
+          startPostReadyScans();
+        }
+      } catch (err) {
+        if (cancelled) return;
+        console.warn('[World3D] WorldWarmup failed; resuming render loop:', err);
+        if (gate) {
+          gate.resume('warmup-error');
+        } else {
+          state.setFrameloop('always');
+          state.invalidate();
+          forceFirstPaintSizeSync(state);
+          startPostReadyScans();
+        }
+      }
+    })();
+
     return () => {
-      cancelAnimationFrame(outerRaf);
-      cancelAnimationFrame(innerRaf);
+      cancelled = true;
+      unsubscribeResume();
+      if (managerCapTimer !== undefined) window.clearTimeout(managerCapTimer);
+      managerIdleCleanup?.();
+      if (postScanTimer !== undefined) window.clearTimeout(postScanTimer);
+      if (postStopTimer !== undefined) window.clearTimeout(postStopTimer);
+      if (settleRaf !== undefined) cancelAnimationFrame(settleRaf);
       if (uploadRaf !== undefined) cancelAnimationFrame(uploadRaf);
       if (idleHandle !== undefined && typeof (window as any).cancelIdleCallback === 'function') {
         (window as any).cancelIdleCallback(idleHandle);
       }
+      settleRafResolve?.();
+      finishActiveUpload();
     };
-    // gl/scene/camera are stable R3F refs — intentionally omitted from deps
+    // gl/scene/camera/state are stable R3F refs — intentionally omitted from deps
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1363,14 +1665,11 @@ const SceneContents = memo(function SceneContents({
 
   return (
     <>
-      {/* Pre-compile WebGPU render pipelines once after the first frame commit.
-          Eliminates the 274ms post-mount main-thread hitch. No-ops on WebGL. */}
-      <PreCompilePipelines />
-
-      {/* Stagger GPU texture uploads across frames to prevent the 400ms+
-          long task caused by uploading all WebP-decoded textures simultaneously.
-          Fires 2 frames after mount, uploads TEXTURE_UPLOAD_BATCH textures/frame. */}
-      <StaggeredTextureUpload />
+      {/* 2026-07-14: first child by design. Its passive effect proves the world
+          tree committed once, then explicitly waits for LoadingManager idle and
+          Suspense retry time before the stable texture scans. R3F stays paused
+          until this ordered upload → compile → warm-render sequence completes. */}
+      <WorldWarmup />
 
       {/* KTX2Loader initialisation — detects GPU compressed format support
           (BC7 on Iris Xe via WebGPU) and arms the module-level singleton used
@@ -1683,9 +1982,9 @@ const SceneContents = memo(function SceneContents({
 // ---------------------------------------------------------------------------
 // WebGPU renderer factory
 // ---------------------------------------------------------------------------
-// Three.js 0.182 ships a WebGPURenderer that auto-falls back to WebGL2.
+// Three.js 0.185 ships a WebGPURenderer that auto-falls back to WebGL2.
 // R3F v9 supports async gl factory: (defaultProps) => Promise<Renderer>.
-// We dynamically import the WebGPU build to avoid bundling it when unsupported.
+// The renderer and TSL materials share the static three/webgpu import above.
 // ---------------------------------------------------------------------------
 
 function getCanvasCssSize(canvas: HTMLCanvasElement): { width: number; height: number } | null {
@@ -1835,6 +2134,7 @@ async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
     canvas,
     antialias: false,
     alpha: false,
+    reversedDepthBuffer: USE_REVERSED_DEPTH_BUFFER,
     // forceWebGL: bypass the navigator.gpu adapter path on iOS Safari and any
     // browser where WebGPU is absent. WebGLBackend with TSL (GLSLNodeBuilder)
     // compiles all MeshBasicNodeMaterial / PointsNodeMaterial / MeshStandardNodeMaterial
@@ -1896,9 +2196,17 @@ function ContextLostFallback() {
 
 function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
   const resolvedPerfFlags = useAdaptiveWorldPerfFlags(perfFlags);
+  const [frameloopMode, setFrameloopMode] = useState<'always' | 'never'>('always');
+  const warmupGateRef = useRef<WorldWarmupGate | null>(null);
+
+  useEffect(() => () => {
+    warmupGateRef.current?.dispose();
+    warmupGateRef.current = null;
+  }, []);
+
   // Stable async gl factory — R3F v9 awaits this before rendering.
   // Returns a WebGPURenderer (with automatic WebGL2 fallback built in).
-  // Falls back to standard WebGLRenderer if the dynamic import or init fails.
+  // If primary init fails, retries a fresh WebGPURenderer forced to WebGL2.
   const glFactory = useCallback(
     async (defaultProps: { canvas: HTMLCanvasElement }) => {
       try {
@@ -1916,6 +2224,8 @@ function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
           canvas: fallbackCanvas,
           antialias: false,
           alpha: false,
+          // Match the primary renderer's constructor-time depth convention.
+          reversedDepthBuffer: USE_REVERSED_DEPTH_BUFFER,
           forceWebGL: true,
         });
         await fallbackRenderer.init();
@@ -1949,10 +2259,13 @@ function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
         // the scene is much less fragment-bound, so dropping the cap to 0.5 floor
         // is now visually acceptable on the device classes that need it.
         dpr={LOW_END_GPU_DETECTED ? LOW_END_DPR_RANGE : STANDARD_DPR_RANGE}
-        // MUST be "always" — R3F v9 with an async gl factory appears to skip
+        // MUST be "always" AT CREATION — R3F v9 with an async gl factory skips
         // calling the factory entirely when frameloop="never" is set, so the
-        // Canvas never initializes. "always" drives the normal RAF loop.
-        frameloop="always"
+        // Canvas never initializes. After onCreated, this React state-backed
+        // prop is the source of truth: root.configure() re-applies it on every
+        // Canvas re-render (installed events-5a94e5eb.esm.js:15670), so the prop
+        // and live store must pause/resume together throughout WorldWarmup.
+        frameloop={frameloopMode}
         camera={{
           fov: 50,
           near: 1,
@@ -1968,6 +2281,15 @@ function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
           position: mode === 'game' ? [0, 600, 1300] : [0, 560, 1000],
         }}
         onCreated={(state) => {
+          // 2026-07-14: pause the LIVE R3F store immediately, while retaining
+          // frameloop="always" at Canvas creation for the async gl factory.
+          // SeaLoadingScreen resets __W3D_READY=false before this canvas mounts,
+          // so SPA remounts intentionally re-run the gate for the fresh renderer.
+          const pauseForWarmup = (window as any).__W3D_READY !== true;
+          warmupGateRef.current?.dispose();
+          const warmupGate = createWorldWarmupGate(state, pauseForWarmup, setFrameloopMode);
+          warmupGateRef.current = warmupGate;
+
           const { scene, gl } = state;
           scene.background = SKY_COLOR;
           gl.setClearColor(SKY_COLOR, 1);
@@ -1985,7 +2307,15 @@ function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
           } else {
             console.log('[World3D] Using WebGLRenderer');
           }
+          // Preserve kickRenderLoop's historical onCreated timing. In installed
+          // R3F 9.5 invalidate() is an explicit no-op while frameloop="never",
+          // while the diagnostic/__W3D_CANVAS_READY RAF still runs as before.
           kickRenderLoop(state);
+          if (!pauseForWarmup) {
+            // Defensive already-ready/no-overlay path: if no loader reset ran,
+            // the loop was never paused, so retain today's immediate healer.
+            forceFirstPaintSizeSync(state);
+          }
         }}
       >
         <SceneContents mode={mode} perfFlags={resolvedPerfFlags} />

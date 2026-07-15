@@ -1,16 +1,13 @@
 /**
  * Operator-only one-shot CLV live tick.
  *
- * This script never prints custody material. It emits the current oracle and
- * Jupiter route first, runs exactly one live tick, then prints each row's full
- * sweep/execute outcome plus public transaction signatures.
+ * This script never prints custody material. It emits the pinned Jupiter base,
+ * runs exactly one live tick, then prints each row's full sweep/execute outcome
+ * plus public transaction signatures. The live buy path deliberately has no
+ * DexScreener/oracle availability gate; Jupiter's quote, on-chain ExactIn
+ * minimum, price-impact cap, and pre-sign simulation are the safety boundary.
  */
 import { db, clvBuyQueue, eq } from '@clawville/database';
-import {
-  getClvPrice,
-  startClvPriceOracle,
-  stopClvPriceOracle,
-} from '../../src/services/clv-price-oracle';
 import {
   resolveJupiterBaseUrl,
   runLiveClvSwapTick,
@@ -24,85 +21,40 @@ interface PersistedClipSignature {
   signature?: unknown;
 }
 
-type ClvPrice = ReturnType<typeof getClvPrice>;
-
-function isOracleReady(price: ClvPrice): boolean {
-  return (
-    price.available &&
-    typeof price.quoteUsd === 'number' &&
-    Number.isFinite(price.quoteUsd) &&
-    price.quoteUsd > 0 &&
-    typeof price.poolLiquidityUsd === 'number' &&
-    Number.isFinite(price.poolLiquidityUsd) &&
-    price.poolLiquidityUsd > 0
-  );
-}
-
-async function waitForOracleReady(): Promise<ClvPrice> {
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    const price = getClvPrice();
-    if (isOracleReady(price)) return price;
-    await new Promise<void>((resolve) => setTimeout(resolve, 250));
-  }
-  throw new Error(
-    'CLV oracle did not expose a positive finite quote and pool depth within 30 seconds; live tick was not run',
-  );
-}
-
 async function main(): Promise<void> {
-  console.log('[clv-swap-live-once] getClvPrice():');
-  const initialPrice = getClvPrice();
-  console.log(JSON.stringify(initialPrice, null, 2));
   console.log('[clv-swap-live-once] resolveJupiterBaseUrl():');
   console.log(resolveJupiterBaseUrl());
 
-  // Require BOTH price and live DexScreener depth before any funding sweep.
-  // seedFromDb can make `available` true while depth is still cold, so checking
-  // `available` alone can move USDC and then stop at the first clip.
-  let startedOracle = false;
-  try {
-    if (!isOracleReady(initialPrice)) {
-      startClvPriceOracle();
-      startedOracle = true;
-      const readyPrice = await waitForOracleReady();
-      console.log('[clv-swap-live-once] warmed getClvPrice():');
-      console.log(JSON.stringify(readyPrice, null, 2));
-    }
+  const results = await runLiveClvSwapTick();
+  console.log(`[clv-swap-live-once] tick rows: ${results.length}`);
 
-    const results = await runLiveClvSwapTick();
-    console.log(`[clv-swap-live-once] tick rows: ${results.length}`);
+  for (const result of results) {
+    const [persisted] = await db
+      .select({ txSignatures: clvBuyQueue.txSignatures })
+      .from(clvBuyQueue)
+      .where(eq(clvBuyQueue.id, result.queueId))
+      .limit(1);
+    const clipSignatures = Array.isArray(persisted?.txSignatures)
+      ? (persisted.txSignatures as PersistedClipSignature[])
+          .map((fill) => fill.signature)
+          .filter((signature): signature is string => typeof signature === 'string')
+      : [];
 
-    for (const result of results) {
-      const [persisted] = await db
-        .select({ txSignatures: clvBuyQueue.txSignatures })
-        .from(clvBuyQueue)
-        .where(eq(clvBuyQueue.id, result.queueId))
-        .limit(1);
-      const clipSignatures = Array.isArray(persisted?.txSignatures)
-        ? (persisted.txSignatures as PersistedClipSignature[])
-            .map((fill) => fill.signature)
-            .filter((signature): signature is string => typeof signature === 'string')
-        : [];
-
-      console.log(
-        JSON.stringify(
-          {
-            queueId: result.queueId,
-            sweep: result.sweep,
-            execute: result.execute,
-            signatures: {
-              sweep: result.sweep.ok ? result.sweep.sweepTxSignature : null,
-              clips: clipSignatures,
-            },
+    console.log(
+      JSON.stringify(
+        {
+          queueId: result.queueId,
+          sweep: result.sweep,
+          execute: result.execute,
+          signatures: {
+            sweep: result.sweep.ok ? result.sweep.sweepTxSignature : null,
+            clips: clipSignatures,
           },
-          null,
-          2,
-        ),
-      );
-    }
-  } finally {
-    if (startedOracle) stopClvPriceOracle();
+        },
+        null,
+        2,
+      ),
+    );
   }
 }
 

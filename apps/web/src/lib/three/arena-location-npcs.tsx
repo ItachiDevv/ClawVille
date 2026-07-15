@@ -113,10 +113,10 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   // Gary lives here too: he's a passive companion (no chat target)
   'visual-creation': {
     name: 'SpongeBob',
-    model: '/models/characters/spongebob.glb',
+    model: '/models/characters/spongebob-ktx.glb',
     companion: {
       name: 'Gary',
-      model: '/models/characters/gary.glb',
+      model: '/models/characters/gary-ktx.glb',
       offsetX: 180,
       offsetZ: 0,
       // gary.glb is authored facing +X; -π/2 rotates +X forward → +Z forward (toward center)
@@ -125,7 +125,7 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   },
 
   // Slot 1 — memory-rag — bb-building (interim Squidward's house)
-  'memory-rag': { name: 'Squidward', model: '/models/characters/squidward.glb' },
+  'memory-rag': { name: 'Squidward', model: '/models/characters/squidward-ktx.glb' },
 
   // Slot 2 — api-integrations — Salty Spitoon (the tough fish bar)
   // Flying Dutchman GLB sourced from Sketchfab (CC-BY 4.0) 2026-04-23 — the
@@ -135,34 +135,34 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   // ghostFloat: static mesh with no skeleton — uses procedural ghost-float
   // (large Y bob + Z sway) which is more thematic for a ghost than walk anims
   // anyway. Compare to Pearl in cron-automation which ships with 5 built-in animations.
-  'api-integrations': { name: 'Flying Dutchman', model: '/models/characters/flying-dutchman.glb', ghostFloat: true },
+  'api-integrations': { name: 'Flying Dutchman', model: '/models/characters/flying-dutchman-ktx.glb', ghostFloat: true },
 
   // Slot 3 — cron-automation — Downtown Building (Pearl Krabs's downtown teen vibe)
   // Pearl Krabs GLB sourced from Sketchfab (CC-BY 4.0) 2026-04-23 — official-look
   // low-poly Pearl, rigged with 5 idle/talk animations. ~4k tris, 2.1MB.
   // scaleOverride=184 (2026-05-18 pass 3): user requested 20-25% size increase from 150.
   // Midpoint 22.5% → 150 * 1.225 ≈ 184.
-  'cron-automation': { name: 'Pearl', model: '/models/characters/pearl.glb', scaleOverride: 184 },
+  'cron-automation': { name: 'Pearl', model: '/models/characters/pearl-ktx.glb', scaleOverride: 184 },
 
   // Slot 4 — app-publishing — Boating School (Mrs. Puff's workplace)
   // scaleOverride=3.3 (2026-05-18 pass 3): user requested 20-25% size increase from 2.7.
   // Midpoint 22.5% → 2.7 * 1.225 ≈ 3.3.
   // mrs-puff.glb uses INT16-quantized positions; native visual height ≈ 66.5wu post-node-scale.
-  'app-publishing': { name: 'Mrs. Puff', model: '/models/characters/mrs-puff.glb', scaleOverride: 3.3 },
+  'app-publishing': { name: 'Mrs. Puff', model: '/models/characters/mrs-puff-ktx.glb', scaleOverride: 3.3 },
 
   // Slot 5 — deployment-ops — Lighthouse (Larry the Lobster as lighthouse keeper)
   // TODO: source proper larry.glb asset — currently using lobster_plush as a distinct stand-in.
   // lobster_plush had a broken bbox (world height 331 at CH=32). SkinnedMesh exclusion
   // should fix normalization; scaleOverride=55 is fallback assuming visual_native_H≈1.0 (= CHARACTER_HEIGHT/1.0).
   // Pass 2 (2026-04-16): reduced 90→55 to match CHARACTER_HEIGHT scale-down.
-  'deployment-ops': { name: 'Larry', model: '/models/lobster_plush-ktx.glb', color: 0xff2020, scaleOverride: 96 },
+  'deployment-ops': { name: 'Larry', model: '/models/lobster_plush-ktx.glb?v=2', color: 0xff2020, scaleOverride: 96 },
 
   // Slot 6 — mcp-tool-use — patty-building (Krusty Krab — Mr. Krabs's restaurant)
   // mr-krabs.glb: non-skinned geometry is only tiny accessories → computed scale > CLAMP_MAX.
   // The non-skinned path now falls back to bind-pose bbox when computed > CLAMP_MAX, which
   // gives a reliable body height. scaleOverride removed (was 148, rendered at ~11487 wu
   // because native body h ≈ 77–82 units × 148 = 11000+).
-  'mcp-tool-use': { name: 'Mr. Krabs', model: '/models/characters/mr-krabs.glb' },
+  'mcp-tool-use': { name: 'Mr. Krabs', model: '/models/characters/mr-krabs-ktx.glb' },
 
   // Slot 7 — code-development — Chum Bucket (Plankton + Karen both live here)
   // Karen: karen.glb had a broken bbox (world height 1940 at CH=32) caused by
@@ -173,7 +173,7 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   // (= CHARACTER_HEIGHT/1.5 = 55/1.5 ≈ 37). Pass 2 (2026-04-16): reduced 60→37.
   'code-development': {
     name: 'Plankton',
-    model: '/models/characters/plankton.glb',
+    model: '/models/characters/plankton-ktx.glb',
     // plankton.glb native body ~2.14 units tall. Target render 55 wu → scale 55/2.14 ≈ 26.
     // History: 110 (rendered sy=118 + underground), 55 (rendered sy=118, half underground
     // because localMinY*55≈121 pushed group to terrain-117 but geometry went to terrain-35).
@@ -181,7 +181,7 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
     scaleOverride: 44, // pass 3 (2026-04-23): bumped 25→44 (×1.75) with CHARACTER_HEIGHT 55→96.
     companion: {
       name: 'Karen',
-      model: '/models/characters/karen.glb',
+      model: '/models/characters/karen-ktx.glb',
       scaleOverride: 65, // pass 3 (2026-04-23): bumped 37→65 (×1.75) with CHARACTER_HEIGHT 55→96.
       offsetX: 180,
       offsetZ: 0,
@@ -194,10 +194,10 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   // 1 animation clip 'mixamo.com' — runtime AnimationMixer auto-plays it (idle).
   // Native bind-pose ~1.7m; computeNormalizedScale produces scale ≈ 56 → ~96wu render.
   // scaleOverride=106 (1.8x) matches the Pearl/Mrs.Puff visual ratio with player VRM.
-  'messaging-channels': { name: 'Sandy', model: '/models/characters/sandy.glb', scaleOverride: 106 },
+  'messaging-channels': { name: 'Sandy', model: '/models/characters/sandy-ktx.glb', scaleOverride: 106 },
 
   // Slot 9 — agent-security — building-cave (interim Patrick's Rock)
-  'agent-security': { name: 'Patrick', model: '/models/characters/patrick.glb' },
+  'agent-security': { name: 'Patrick', model: '/models/characters/patrick-ktx.glb' },
 };
 
 const extendLoaderWithMeshoptAndKTX2 = (loader: unknown) => {
@@ -812,7 +812,7 @@ export function DeferredNpcPreloads(): ReactElement | null {
 
       const run = () => {
         if (cancelled) return;
-        useGLTF.preload(models[index], undefined, undefined, extendLoaderWithMeshopt);
+        useGLTF.preload(models[index], undefined, undefined, extendLoaderWithMeshoptAndKTX2);
         preloadNext(models, index + 1);
       };
 
