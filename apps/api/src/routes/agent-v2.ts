@@ -2,10 +2,10 @@
  * Metered agent services behind the x402 Solana paywall.
  *
  * These routes are registered under `/api/v2/agent/*` and gated by the
- * `X402_ENABLED` env var. When disabled (default), the routes still exist but
- * the paymentMiddleware is not attached — so a plain GET returns the payload
- * without any 402 dance. This lets us iterate on the request/response shape
- * locally before flipping the paywall on in prod.
+ * `X402_ENABLED` env var. The paid middleware is currently quarantined:
+ * requesting `X402_ENABLED=true` fail-boots until its settlements join the
+ * durable global receipt registry. When disabled (default), the routes still
+ * exist without paymentMiddleware for local request/response iteration.
  *
  * Existing agent/gateway/skills APIs remain free. The handlers below are
  * bounded, real services: an Eliza-backed expert consultation and a cached
@@ -19,7 +19,12 @@ import { paymentMiddleware } from '@x402/hono';
 import { SHOP_BUILDINGS } from '@clawville/shared';
 import { z } from 'zod';
 import type { AppContext } from '../types';
-import { loadX402Config, buildX402ResourceServer, buildX402Routes } from '../services/x402-config';
+import {
+  assertMeteredAgentPaywallSafe,
+  loadX402Config,
+  buildX402ResourceServer,
+  buildX402Routes,
+} from '../services/x402-config';
 import { collaborateOnQuery, detectRelevantExperts } from '../services/agent-collaboration';
 import { getAgentLeaderboardEntry } from './leaderboard';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
@@ -32,6 +37,7 @@ import {
 
 export const agentV2Routes = new Hono<AppContext>();
 
+assertMeteredAgentPaywallSafe();
 const x402Config = loadX402Config();
 
 const paidServiceLimiter = createRateLimiter({ maxPerWindow: 20, windowMs: 60_000 });

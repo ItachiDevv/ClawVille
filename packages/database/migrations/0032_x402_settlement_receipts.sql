@@ -1,5 +1,10 @@
 -- Global x402 settlement-signature ownership. A signature may fund exactly one
 -- economic rail across top-ups, generic checkouts, and agent payments.
+-- PRE-PROMOTION: run the collision query from the reconciler report (UNION ALL
+-- tx_signature from ct_topups, x402_checkouts, and agent_payments; GROUP BY
+-- tx_signature HAVING count(*) > 1) and resolve every returned owner set. The
+-- deterministic backfill below can select one future owner but cannot reverse
+-- any historical double economic effect.
 CREATE TABLE IF NOT EXISTS x402_settlement_receipts (
   tx_signature text PRIMARY KEY,
   rail text NOT NULL,
