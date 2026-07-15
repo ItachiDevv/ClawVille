@@ -85,6 +85,34 @@ const defaultDeps: BuildingRewardDeps = {
   credit: creditClawTokens,
 };
 
+/** Minimal spend-time identity shape required by connected-agent chat rewards. */
+export interface AgentBuildingChatRewardSubject {
+  avatarId: string | null;
+  ledgerCapable: boolean;
+}
+
+/**
+ * Fail-closed reward-subject decision shared by the gateway route and unit tests.
+ * The only possible output is the canonical session resolver's exact active
+ * avatar id. A live but ownership-unproven session deliberately retains chat
+ * access while receiving null here (zero real-vCLAW reward).
+ */
+export function agentBuildingChatRewardAvatarId(
+  subject: AgentBuildingChatRewardSubject | null,
+): string | null {
+  return subject?.ledgerCapable === true && subject.avatarId
+    ? subject.avatarId
+    : null;
+}
+
+/** Canonical human guest decision after users.is_guest has been resolved. */
+export function humanBuildingChatRewardAvatarId(
+  avatarId: string | null,
+  canonicalGuest: boolean,
+): string | null {
+  return avatarId && !canonicalGuest ? avatarId : null;
+}
+
 // ---------------------------------------------------------------------------
 // creditBuildingRewardOncePerDay — idempotent per-(avatar, building, reason,
 // UTC-day) 1-CT building reward (M2 anti-faucet).

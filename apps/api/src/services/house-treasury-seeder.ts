@@ -15,10 +15,12 @@
  *
  * ── NO BANKROLL MINT — THE LOAD-BEARING DIFFERENCE FROM cash-house-seeder ────
  * The treasury is a pure revenue SINK. It starts at 0 CT and ONLY accumulates
- * the fee credits routed by T0 (cove rakes / baccarat commission / MTT rake /
- * cosmetic + book purchases / land sale + upgrade + rent). ZERO CT is ever
- * minted INTO it by this seeder, and in T0 it NEVER pays players (no faucet).
- * Contrast the cash-house bank, which deliberately mints a one-time bankroll.
+ * the fee credits routed by T0 (cove rakes / MTT rake / cosmetic + book
+ * purchases / land sale + upgrade + rent). Baccarat commission is NOT routed
+ * here; it remains withheld in the engine's reduced player payout. ZERO CT is
+ * ever minted INTO it by this seeder, and in T0 it NEVER pays players (no
+ * faucet). Contrast the cash-house bank, which deliberately mints a one-time
+ * bankroll.
  *
  * MONEY DISCIPLINE: this file performs NO ClawToken balance write at all. The
  * only writes are the system user row, the avatar row (created AT 0), and the
@@ -186,9 +188,9 @@ class HouseTreasurySeederService {
         purpose: HOUSE_TREASURY_PURPOSE,
         avatarId,
         notes:
-          'T0 house-fee sink — receives every routed fee credit (cove rakes, baccarat ' +
-          'commission, MTT rake, cosmetics/books, land sale/upgrade/rent). Never funded, ' +
-          'never pays players.',
+          'T0 house-fee sink — receives every routed fee credit (cove rakes, MTT rake, ' +
+          'cosmetics/books, land sale/upgrade/rent). Baccarat commission stays withheld ' +
+          'in the reduced player payout. Never funded, never pays players.',
       })
       .onConflictDoNothing({ target: treasurySubjects.purpose });
     const registered = await db.query.treasurySubjects.findFirst({

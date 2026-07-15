@@ -20,6 +20,7 @@ let creditCalls: Array<{
   tx: unknown;
 }>;
 const activeTransactions = new Set<unknown>();
+const markerAuthorizedTransactions = new Set<unknown>();
 
 function renderSql(query: unknown): { text: string; params: unknown[] } {
   const rendered = { text: '', params: [] as unknown[] };
@@ -54,6 +55,10 @@ function makeTx() {
       const rendered = renderSql(query);
       const normalized = rendered.text.replace(/\s+/g, ' ').trim();
       lockQueries.push(normalized);
+      if (normalized.includes("set_config('clawville.xp_write_authorized', '1', true)")) {
+        markerAuthorizedTransactions.add(tx);
+        return [{ set_config: '1' }];
+      }
       if (!normalized.includes('FROM avatars') || !normalized.includes('FOR UPDATE')) {
         throw new Error(`expected avatar SELECT FOR UPDATE, got: ${normalized}`);
       }
@@ -76,6 +81,9 @@ function makeTx() {
             async where(_condition: unknown) {
               if (lockedRowId !== row.id) {
                 throw new Error('XP update attempted without the avatar row lock');
+              }
+              if (!markerAuthorizedTransactions.has(tx)) {
+                throw new Error('XP update attempted without the transaction-local marker');
               }
               row = {
                 ...row,
@@ -112,6 +120,7 @@ const fakeDb = {
       throw error;
     } finally {
       activeTransactions.delete(transaction.tx);
+      markerAuthorizedTransactions.delete(transaction.tx);
       transaction.release();
     }
   },
@@ -146,6 +155,7 @@ beforeEach(() => {
   lockQueries = [];
   creditCalls = [];
   activeTransactions.clear();
+  markerAuthorizedTransactions.clear();
 });
 
 describe('awardXp concurrency', () => {
@@ -166,8 +176,8 @@ describe('awardXp concurrency', () => {
       source: 'system',
       metadata: { levelsGained: 1, newLevel: 2, xpSource: 'npc-chat' },
     });
-    expect(lockQueries).toHaveLength(2);
-    expect(lockQueries.every((query) => query.includes('FOR UPDATE'))).toBe(true);
+    expect(lockQueries.filter((query) => query.includes('FOR UPDATE'))).toHaveLength(2);
+    expect(lockQueries.filter((query) => query.includes('set_config'))).toHaveLength(2);
   });
 
   it('rolls back XP metadata when the ledger mint fails', async () => {
@@ -179,7 +189,7 @@ describe('awardXp concurrency', () => {
 
     expect(row).toEqual({ id: AVATAR_ID, xp: 95, level: 1, total_xp: 95 });
     expect(creditCalls).toHaveLength(1);
-    expect(lockQueries).toHaveLength(1);
-    expect(lockQueries[0]).toContain('FOR UPDATE');
+    expect(lockQueries.filter((query) => query.includes('FOR UPDATE'))).toHaveLength(1);
+    expect(lockQueries.filter((query) => query.includes('set_config'))).toHaveLength(1);
   });
 });

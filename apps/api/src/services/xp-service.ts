@@ -60,6 +60,12 @@ export async function awardXp(
     const newTotalXp = Number(avatar.total_xp ?? 0) + amount;
 
     // XP metadata and any level-up mint commit or roll back together.
+    // Migration 0032's rolling-deploy guard rejects the pre-fix XP writer. The
+    // transaction-local marker authorizes only this atomic lock+update+mint path
+    // and automatically disappears at transaction end (including rollback).
+    await tx.execute(
+      sql`SELECT set_config('clawville.xp_write_authorized', '1', true)`,
+    );
     await tx
       .update(avatars)
       .set({

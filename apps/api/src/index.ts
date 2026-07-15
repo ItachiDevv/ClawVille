@@ -832,6 +832,19 @@ process.on('uncaughtException', (err) => {
     console.error('[API] Covenant chain sealer failed to start:', err);
   }
 
+  // 2026-07-15 — durable special-event completion reconciliation. Tournament
+  // settlement calls the parent immediately as a fast path; this bounded boot +
+  // periodic pass repairs a transient failed callback without mutating GETs or
+  // requiring an operator to notice the still-live parent.
+  try {
+    const { startSpecialEventSettlementWorker } = await import(
+      './services/special-event-settlement-worker'
+    );
+    await startSpecialEventSettlementWorker();
+  } catch (err) {
+    console.error('[API] Special-event settlement worker failed to start:', err);
+  }
+
   // Tokenomics E2 payer verification. Default-off and no-ops unless EARNED
   // import is explicitly enabled; actual pending->verified/rejected transitions
   // are owned by the service, not a scaffold-only timer.
@@ -1374,12 +1387,13 @@ process.on('uncaughtException', (err) => {
     // `ensure()` provisions the system user + 0-CT avatar + the
     // `treasury_subjects` ('house-fees') registry row, idempotently, with NO
     // bankroll mint (pure revenue sink — contrast the cash-house bank above).
-    // Every routed fee site (cove rakes, baccarat commission, MTT rake,
-    // cosmetics/books, land sale/upgrade/rent) resolves the id lazily at settle
-    // time via `getHouseTreasuryAvatarId()`, which self-heals by re-running
+    // Every routed fee site (cove rakes, MTT rake, cosmetics/books, land
+    // sale/upgrade/rent) resolves the id lazily at settle time via
+    // `getHouseTreasuryAvatarId()`, which self-heals by re-running
     // `ensure()` if this boot pass failed — so a failure here degrades fee
     // routing to the pre-T0 burn behavior, never blocks a player settlement,
-    // and never crashes boot.
+    // and never crashes boot. Baccarat commission is NOT a treasury credit; it
+    // remains withheld in the engine's reduced player payout.
     try {
       const { houseTreasurySeeder } = await import('./services/house-treasury-seeder');
       await houseTreasurySeeder.ensure();
@@ -1494,6 +1508,14 @@ async function gracefulShutdown(signal: string) {
       stopMarketListingExpirySweeper();
     } catch {
       // If the sweeper module failed to load earlier, there's nothing to stop.
+    }
+    try {
+      const { stopSpecialEventSettlementWorker } = await import(
+        './services/special-event-settlement-worker'
+      );
+      stopSpecialEventSettlementWorker();
+    } catch {
+      // If the worker module failed to load earlier, there's nothing to stop.
     }
     try {
       // Withdraw resume worker — idempotent no-op when the withdraw flag was

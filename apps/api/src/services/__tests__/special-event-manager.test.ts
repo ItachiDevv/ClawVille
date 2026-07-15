@@ -178,6 +178,14 @@ class FakeDb {
       }
       return [];
     }
+    if (text.startsWith("UPDATE special_events SET status = 'completed', completed_at = now() WHERE id = ? AND status = 'live'")) {
+      const e = this.events.get(String(p[0]));
+      if (e?.status === 'live') {
+        e.status = 'completed';
+        e.completed_at = new Date(++this.seq);
+      }
+      return [];
+    }
 
     // ── special_event_signups ─────────────────────────────────────────────────
     if (text.startsWith('SELECT id, status, entry_method FROM special_event_signups WHERE event_id = ? AND avatar_id = ?')) {
@@ -264,6 +272,12 @@ class FakeDb {
         .filter((tt) => tt.special_event_id === p[0])
         .sort((a, b) => Number(b.created_at ?? 0) - Number(a.created_at ?? 0))[0];
       return t ? [{ id: t.id, status: t.status }] : [];
+    }
+    if (text.startsWith('SELECT e.*, t.status AS tournament_status FROM poker_tournaments t JOIN special_events e ON e.id = t.special_event_id WHERE t.id = ? FOR UPDATE OF e')) {
+      const t = this.tournaments.get(String(p[0]));
+      if (!t || !t.special_event_id) return [];
+      const e = this.events.get(String(t.special_event_id));
+      return e ? [{ ...e, tournament_status: t.status }] : [];
     }
     if (text.startsWith('SELECT avatar_id, agent_id, placement, prize_ct FROM poker_tournament_results WHERE tournament_id = ?')) {
       return this.results
@@ -767,5 +781,56 @@ describe('SpecialEventManager — settleEvent (reads the linked tournament UP th
     // Idempotent: second settle reports alreadySettled.
     const again = await mgr.settleEvent('done-evt');
     expect(again.alreadySettled).toBe(true);
+  });
+
+  it('early admin refusal is repaired by tournament completion and automatic replay is idempotent', async () => {
+    const { mgr, db } = makeManager();
+    const ev = await mgr.createEvent({ slug: 'late-finish', name: 'Late Finish' }, null);
+    db.events.get(ev.id)!.status = 'live';
+    const tid = randomUUID();
+    db.seedTournament({ id: tid, status: 'running', special_event_id: ev.id, created_at: 1 });
+
+    // Recovery command called too early: it must not complete the parent.
+    const early = await mgr.settleEvent('late-finish');
+    expect(early.alreadySettled).toBe(false);
+    expect(db.events.get(ev.id)!.status).toBe('live');
+
+    // The authoritative tournament transition later invokes this exact-id path.
+    db.tournaments.get(tid)!.status = 'completed';
+    db.seedResult({
+      tournament_id: tid,
+      avatar_id: 'winner',
+      agent_id: null,
+      placement: 1,
+      prize_ct: '5000',
+    });
+    const automatic = await mgr.settleEventForTournament(tid);
+    expect(automatic?.tournamentId).toBe(tid);
+    expect(automatic?.results[0]?.prizeCt).toBe('5000');
+    expect(db.events.get(ev.id)!.status).toBe('completed');
+
+    // A replay (including a retry after an uncertain caller outcome) is harmless.
+    const replay = await mgr.settleEventForTournament(tid);
+    expect(replay?.alreadySettled).toBe(true);
+    expect(db.events.get(ev.id)!.status).toBe('completed');
+  });
+
+  it('exact-id reconciliation never revives draft, signup-open, or cancelled parents', async () => {
+    const { mgr, db } = makeManager();
+    for (const status of ['draft', 'signup_open', 'cancelled']) {
+      const ev = await mgr.createEvent(
+        { slug: `${status.replace('_', '-')}-parent`, name: `${status} Parent` },
+        null,
+      );
+      db.events.get(ev.id)!.status = status;
+      const tid = randomUUID();
+      db.seedTournament({ id: tid, status: 'completed', special_event_id: ev.id, created_at: 1 });
+
+      const reconciliation = await mgr.settleEventForTournament(tid);
+
+      expect(reconciliation?.alreadySettled).toBe(false);
+      expect(db.events.get(ev.id)!.status).toBe(status);
+      expect(db.events.get(ev.id)!.completed_at).toBeNull();
+    }
   });
 });
