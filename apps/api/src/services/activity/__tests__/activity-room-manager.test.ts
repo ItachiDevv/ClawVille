@@ -9,7 +9,7 @@
  * Run: `bun test apps/api/src/services/activity/__tests__/`
  */
 
-import { describe, expect, it, beforeEach, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, jest, mock } from 'bun:test';
 
 // ─── Mock Drizzle client BEFORE importing the SUT ─────────────────────────
 //
@@ -82,9 +82,16 @@ mock.module('../activity-replay-log', () => ({
   },
 }));
 
-const { activityRoomManager, RoomCapacityError, MAX_ROOMS_PER_ACTIVITY, MAX_ROOMS_TOTAL } = await import(
+const {
+  activityRoomManager,
+  RoomCapacityError,
+  MAX_ROOMS_PER_ACTIVITY,
+  MAX_ROOMS_TOTAL,
+  REEF_RACE_NO_SHOW_ABORT_MS,
+} = await import(
   '../activity-room-manager'
 );
+const { REEF_RACE_COUNTDOWN_DURATION_MS } = await import('@clawville/shared');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -109,6 +116,14 @@ beforeEach(() => {
   activityRoomManager.__resetForTest();
   dbMock.reset();
 });
+
+afterEach(() => {
+  jest.useRealTimers();
+});
+
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+}
 
 // ─── FSM transition tests ─────────────────────────────────────────────────
 
@@ -190,63 +205,118 @@ describe('Room FSM transitions', () => {
   });
 });
 
-// ─── Synced countdown (ported from d490501f, 2026-06-22) ───────────────────
+// ─── Connect-anchored Reef countdown ───────────────────────────────────────
 
 describe('ensureSyncedCountdown', () => {
-  it('is a strict no-op for non-Reef countdowns, even when nearly expired', async () => {
+  it('does not advance a Reef room while zero non-bot participants are connected', async () => {
+    jest.useFakeTimers();
+    const baseParticipants = makeParticipants(2);
+    const participants = [
+      baseParticipants[0],
+      {
+        ...baseParticipants[1],
+        userId: null,
+        subjectType: 'bot' as const,
+      },
+    ];
+    const room = await activityRoomManager.createRoom(
+      'reef-race',
+      participants,
+      ACTIVITY_CONFIG,
+    );
+    room.participants.get(participants[1].avatarId)!.connected = true;
+    expect(activityRoomManager.ensureSyncedCountdown(room.id)).toBeNull();
+
+    jest.advanceTimersByTime(REEF_RACE_COUNTDOWN_DURATION_MS * 2);
+    expect(room.state).toBe('countdown');
+  });
+
+  it('unconditionally re-anchors on first non-bot connect and waits a full window', async () => {
+    jest.useFakeTimers();
+    const participants = [
+      {
+        ...makeParticipants(1)[0],
+        userId: 'agent-owner-1',
+        agentId: 'agent-1',
+        subjectType: 'agent' as const,
+      },
+      { ...makeParticipants(2)[1] },
+    ];
+    const room = await activityRoomManager.createRoom(
+      'reef-race',
+      participants,
+      ACTIVITY_CONFIG,
+    );
+
+    jest.advanceTimersByTime(4_500);
+    const creationAnchor = room.countdownStartedAt;
+    room.participants.get(participants[0].avatarId)!.connected = true;
+    const anchored = activityRoomManager.ensureSyncedCountdown(room.id);
+    if (anchored === null) throw new Error('Reef countdown was not armed');
+    expect(anchored).not.toBe(creationAnchor);
+    expect(anchored).toBe(Date.now());
+    expect(room.countdownStartedAt).toBe(anchored);
+
+    room.participants.get(participants[1].avatarId)!.connected = true;
+    expect(activityRoomManager.ensureSyncedCountdown(room.id)).toBe(anchored);
+    jest.advanceTimersByTime(REEF_RACE_COUNTDOWN_DURATION_MS - 1);
+    expect(room.state).toBe('countdown');
+    jest.advanceTimersByTime(1);
+    expect(room.state).toBe('live');
+  });
+
+  it('aborts and evicts a Reef no-show 60s from room creation', async () => {
+    jest.useFakeTimers();
+    const room = await activityRoomManager.createRoom(
+      'reef-race',
+      makeParticipants(4),
+      ACTIVITY_CONFIG,
+    );
+
+    jest.advanceTimersByTime(REEF_RACE_NO_SHOW_ABORT_MS - 1);
+    expect(activityRoomManager.getRoom(room.id)).toBeDefined();
+    jest.advanceTimersByTime(1);
+    await flushMicrotasks();
+    expect(activityRoomManager.getRoom(room.id)).toBeUndefined();
+  });
+
+  it('uses only the remaining no-show budget after delayed countdown persistence', async () => {
+    jest.useFakeTimers();
+    const persistenceDelayMs = 10_000;
+    dbMock.delayNextInsert(persistenceDelayMs);
+    const roomPromise = activityRoomManager.createRoom(
+      'reef-race',
+      makeParticipants(4),
+      ACTIVITY_CONFIG,
+    );
+
+    await flushMicrotasks();
+    jest.advanceTimersByTime(persistenceDelayMs);
+    await flushMicrotasks();
+    const room = await roomPromise;
+
+    const remainingMs = REEF_RACE_NO_SHOW_ABORT_MS - persistenceDelayMs;
+    jest.advanceTimersByTime(remainingMs - 1);
+    expect(activityRoomManager.getRoom(room.id)).toBeDefined();
+    jest.advanceTimersByTime(1);
+    await flushMicrotasks();
+    expect(activityRoomManager.getRoom(room.id)).toBeUndefined();
+  });
+
+  it('preserves the existing creation-anchored countdown for non-Reef rooms', async () => {
+    jest.useFakeTimers();
     const room = await activityRoomManager.createRoom(
       ACTIVITY_ID,
       makeParticipants(4),
       ACTIVITY_CONFIG,
     );
-    room.countdownStartedAt = Date.now() - 4_500;
-    const before = room.countdownStartedAt;
-    expect(activityRoomManager.ensureSyncedCountdown(room.id)).toBeNull();
-    expect(room.countdownStartedAt).toBe(before);
+
+    jest.advanceTimersByTime(4_999);
+    expect(room.state).toBe('countdown');
+    jest.advanceTimersByTime(1);
+    expect(room.state).toBe('live');
   });
 
-  it('re-anchors an expired Reef countdown on the first connection', async () => {
-    const room = await activityRoomManager.createRoom(
-      'reef-race',
-      makeParticipants(4),
-      ACTIVITY_CONFIG,
-    );
-    room.countdownStartedAt = Date.now() - 4_500;
-    const anchored = activityRoomManager.ensureSyncedCountdown(room.id);
-    if (anchored === null) throw new Error('Reef countdown was not re-anchored');
-    expect(Date.now() - anchored).toBeLessThan(200);
-    expect(room.countdownStartedAt).toBe(anchored);
-  });
-
-  it('never moves the first Reef anchor for a staggered later connection', async () => {
-    const room = await activityRoomManager.createRoom(
-      'reef-race',
-      makeParticipants(4),
-      ACTIVITY_CONFIG,
-    );
-    const firstAnchor = room.countdownStartedAt;
-    expect(activityRoomManager.ensureSyncedCountdown(room.id)).toBe(firstAnchor);
-
-    // Model a later racer arriving after the same broadcast anchor has become
-    // stale. The second call must preserve racer one's anchor, not re-anchor.
-    const staleBroadcastAnchor = (firstAnchor ?? Date.now()) - 4_500;
-    room.countdownStartedAt = staleBroadcastAnchor;
-    expect(activityRoomManager.ensureSyncedCountdown(room.id)).toBe(
-      staleBroadcastAnchor,
-    );
-    expect(room.countdownStartedAt).toBe(staleBroadcastAnchor);
-  });
-
-  it('is a no-op on live and unknown rooms', async () => {
-    const room = await activityRoomManager.createRoom(
-      'reef-race',
-      makeParticipants(4),
-      ACTIVITY_CONFIG,
-    );
-    await activityRoomManager.transitionRoom(room.id, 'live');
-    expect(activityRoomManager.ensureSyncedCountdown(room.id)).toBeNull();
-    expect(activityRoomManager.ensureSyncedCountdown('no-such-room')).toBeNull();
-  });
 });
 
 // ─── Concurrency caps ─────────────────────────────────────────────────────
@@ -737,14 +807,20 @@ describe('Reef Race — computeLaunchVerdicts (T-LAUNCH-VERDICT)', () => {
  */
 function makeDbMock() {
   const calls: { op: string; args: unknown[] }[] = [];
+  let nextInsertDelayMs = 0;
 
-  function thenable<T>(value: T = undefined as T) {
+  function thenable<T>(value: T = undefined as T, delayMs = 0) {
     return {
       then(resolve: (v: T) => unknown) {
+        if (delayMs > 0) {
+          return new Promise<T>((done) => {
+            setTimeout(() => done(value), delayMs);
+          }).then(resolve);
+        }
         return Promise.resolve(value).then(resolve);
       },
       values() {
-        return thenable(value);
+        return thenable(value, delayMs);
       },
       set() {
         return thenable(value);
@@ -771,7 +847,9 @@ function makeDbMock() {
   return {
     insert(_table: unknown) {
       calls.push({ op: 'insert', args: [_table] });
-      return thenable<unknown>(undefined);
+      const delayMs = nextInsertDelayMs;
+      nextInsertDelayMs = 0;
+      return thenable<unknown>(undefined, delayMs);
     },
     update(_table: unknown) {
       calls.push({ op: 'update', args: [_table] });
@@ -788,6 +866,10 @@ function makeDbMock() {
     },
     reset() {
       calls.length = 0;
+      nextInsertDelayMs = 0;
+    },
+    delayNextInsert(delayMs: number) {
+      nextInsertDelayMs = delayMs;
     },
     get calls() {
       return calls;
