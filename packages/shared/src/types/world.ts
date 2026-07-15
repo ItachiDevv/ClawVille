@@ -64,3 +64,33 @@ export interface RoomSnapshot {
   /** Players currently in this room (may include the local viewer). */
   players: PlayerSnapshot[];
 }
+
+/** Public phase names exposed by the owner-only Autonomous status endpoint. */
+export type AutonomyDrivePhase = 'deciding' | 'walking' | 'arrived' | 'talking';
+
+/**
+ * One bounded, presentation-safe driver event. The server deliberately omits
+ * raw model output, inference details, and every private agent/session id.
+ */
+export interface AutonomyStatusThought {
+  at: number;
+  type: 'decision' | 'arrival' | 'observation' | 'directive';
+  text: string;
+}
+
+/**
+ * Lucia-owner view of the in-memory Autonomous driver. `bodyId` is the public
+ * snapshot id already sent to world clients; no agent bearer or platform id is
+ * part of this contract.
+ */
+export type AutonomyStatusResponse =
+  | { enrolled: false }
+  | {
+      enrolled: true;
+      phase: AutonomyDrivePhase;
+      targetBuildingId: string | null;
+      targetLabel: string | null;
+      bodyId: string;
+      phaseSince: number;
+      thoughts: AutonomyStatusThought[];
+    };

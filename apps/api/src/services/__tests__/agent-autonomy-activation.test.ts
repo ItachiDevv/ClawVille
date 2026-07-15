@@ -84,6 +84,7 @@ const originalResolveActiveAvatar = activationSeams.resolveActiveAvatar;
 const originalEnsureSession = activationSeams.ensureSession;
 const originalSetFlag = activationSeams.setEnrolledFlag;
 const originalClearFlag = activationSeams.clearEnrolledFlagForOwner;
+const originalKickDriver = activationSeams.kickDriver;
 
 let ensureSessionCalls = 0;
 let bearerCounter = 0;
@@ -91,6 +92,7 @@ let bearerCounter = 0;
 // here we record the calls so we can assert the flag lifecycle).
 let flagSetCalls: string[] = [];
 let flagClearCalls: string[] = [];
+let kickCalls: string[] = [];
 
 /** Default happy-path seams: a real owner avatar + a real registered body. */
 function installHappySeams(platformAgentId = PLATFORM_AGENT_ID) {
@@ -137,12 +139,16 @@ beforeEach(() => {
   bearerCounter = 0;
   flagSetCalls = [];
   flagClearCalls = [];
+  kickCalls = [];
   // Swap the durable-flag DB writes for recorders (DB-free).
   activationSeams.setEnrolledFlag = async (agentId: string) => {
     flagSetCalls.push(agentId);
   };
   activationSeams.clearEnrolledFlagForOwner = async (ownerUserId: string) => {
     flagClearCalls.push(ownerUserId);
+  };
+  activationSeams.kickDriver = (agentId: string) => {
+    kickCalls.push(agentId);
   };
   installHappySeams();
 });
@@ -152,6 +158,7 @@ afterEach(() => {
   activationSeams.ensureSession = originalEnsureSession;
   activationSeams.setEnrolledFlag = originalSetFlag;
   activationSeams.clearEnrolledFlagForOwner = originalClearFlag;
+  activationSeams.kickDriver = originalKickDriver;
   clearDriver();
 });
 
@@ -175,6 +182,23 @@ describe('(1) activate releases the Controlled-mode suppression (freeze bug)', (
     // surviving binding would re-mark + path-wipe the driver body 5×/sec).
     npcSimulation.refreshHumanControlledOpenClawForUser(OWNER);
     expect(npcSimulation.isAgentHumanControlled(PLATFORM_AGENT_ID)).toBe(false);
+  });
+
+  it('kicks one immediate drive only after suppression is released', async () => {
+    npcSimulation.bindHumanControlledOpenClawLaunch(OWNER, PLATFORM_AGENT_ID);
+    npcSimulation.markHumanControlledOpenClaw(PLATFORM_AGENT_ID, 60_000);
+    activationSeams.kickDriver = (agentId: string) => {
+      expect(npcSimulation.isAgentHumanControlled(PLATFORM_AGENT_ID)).toBe(false);
+      kickCalls.push(agentId);
+    };
+
+    expect((await activateAutonomyForOwner(OWNER)).ok).toBe(true);
+    expect(kickCalls).toEqual([PLATFORM_AGENT_ID]);
+
+    // A keepalive re-activation reuses both body + enrollment and does not spend
+    // a second decision.
+    expect((await activateAutonomyForOwner(OWNER)).ok).toBe(true);
+    expect(kickCalls).toEqual([PLATFORM_AGENT_ID]);
   });
 });
 

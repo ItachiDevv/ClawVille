@@ -77,6 +77,9 @@ export interface GenerateArgs {
   /** Per-call abort budget override (ms). Used by warmup() to allow a slow cold
    *  model-load without inheriting the tight per-request timeout. */
   timeoutMs?: number;
+  /** Per-attempt abort budget for LOCAL endpoints only. The all-endpoint
+   * `timeoutMs` override takes precedence when both are supplied. */
+  localAttemptTimeoutMs?: number;
 }
 
 export interface GenerateResult {
@@ -125,6 +128,16 @@ interface EndpointState {
   lastError?: string;
 }
 
+export interface HealthProbeOptions {
+  /** Probe cadence. Defaults to INFERENCE_PROBE_INTERVAL_MS / 15 seconds. */
+  intervalMs?: number;
+  /** Abort budget for the cheap liveness request. Defaults to 3 seconds. */
+  timeoutMs?: number;
+}
+
+type ProbeHealth = 'unknown' | 'up' | 'down';
+type IntervalHandle = ReturnType<typeof setInterval>;
+
 const THINK_TAG_RE = /<think>[\s\S]*?<\/think>/gi;
 
 interface OpenAIChatResponse {
@@ -170,6 +183,19 @@ export class InferenceRouter {
   private readonly primaryMaxInflight: number;
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
+  private readonly timeoutSignal: (timeoutMs: number) => AbortSignal;
+  private readonly setIntervalImpl: (callback: () => void, intervalMs: number) => IntervalHandle;
+  private readonly clearIntervalImpl: (handle: IntervalHandle) => void;
+  private readonly defaultProbeIntervalMs: number;
+  private readonly defaultProbeTimeoutMs: number;
+  private healthProbesActive = false;
+  private healthProbeTimer: IntervalHandle | null = null;
+  private healthProbeIntervalMs = 15_000;
+  private healthProbeTimeoutMs = 3_000;
+  private healthProbeGeneration = 0;
+  private readonly healthProbeInFlight = new Set<string>();
+  private readonly probeForcedOpen = new Set<string>();
+  private readonly probeHealth = new Map<string, ProbeHealth>();
 
   constructor(opts: {
     endpoints: InferenceEndpoint[];
@@ -182,6 +208,13 @@ export class InferenceRouter {
     fetchImpl?: typeof fetch;
     /** Injectable clock for tests. */
     now?: () => number;
+    /** Default background-health cadence and liveness timeout. */
+    probeIntervalMs?: number;
+    probeTimeoutMs?: number;
+    /** Injectable timers/signals for deterministic tests. */
+    setIntervalImpl?: (callback: () => void, intervalMs: number) => IntervalHandle;
+    clearIntervalImpl?: (handle: IntervalHandle) => void;
+    timeoutSignal?: (timeoutMs: number) => AbortSignal;
   }) {
     this.endpoints = new Map(opts.endpoints.map((e) => [e.id, e]));
     this.routes = opts.routes;
@@ -192,6 +225,11 @@ export class InferenceRouter {
     this.primaryMaxInflight = Math.max(1, opts.primaryMaxInflight ?? 3);
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.now = opts.now ?? (() => Date.now());
+    this.timeoutSignal = opts.timeoutSignal ?? ((timeoutMs) => AbortSignal.timeout(timeoutMs));
+    this.setIntervalImpl = opts.setIntervalImpl ?? ((callback, intervalMs) => setInterval(callback, intervalMs));
+    this.clearIntervalImpl = opts.clearIntervalImpl ?? ((handle) => clearInterval(handle));
+    this.defaultProbeIntervalMs = this.positiveMs(opts.probeIntervalMs, 15_000);
+    this.defaultProbeTimeoutMs = this.positiveMs(opts.probeTimeoutMs, 3_000);
     for (const e of opts.endpoints) {
       this.state.set(e.id, {
         consecutiveFailures: 0,
@@ -203,6 +241,7 @@ export class InferenceRouter {
         failures: 0,
         lastLatencyMs: 0,
       });
+      if (e.kind === 'local') this.probeHealth.set(e.id, 'unknown');
     }
   }
 
@@ -213,8 +252,8 @@ export class InferenceRouter {
   /**
    * Pre-load every LOCAL model so the boxes are WARM before the first real
    * decision (avoids the cold-start timeout on boot/restart). Fire-and-forget +
-   * fault-tolerant: a down box just fails silently (the breaker handles it later).
-   * Bypasses the breaker/round-robin — it hits each local endpoint directly with a
+   * fault-tolerant: a down box just fails silently (the health prober holds its
+   * breaker open). Bypasses routing — it hits each local endpoint directly with a
    * tiny request that loads the model and sets keep_alive. Never throws.
    */
   async warmup(): Promise<void> {
@@ -235,6 +274,39 @@ export class InferenceRouter {
         }).catch(() => undefined),
       ),
     );
+  }
+
+  /**
+   * Start the LOCAL endpoint health prober. This is deliberately opt-in rather
+   * than constructor-started so tests and non-API consumers retain the existing
+   * live half-open behavior. The first round runs immediately; subsequent rounds
+   * run on the configured interval. Repeated starts are no-ops.
+   */
+  startHealthProbes(opts: HealthProbeOptions = {}): void {
+    if (this.healthProbesActive) return;
+    this.healthProbesActive = true;
+    const generation = ++this.healthProbeGeneration;
+    this.healthProbeIntervalMs = this.positiveMs(opts.intervalMs, this.defaultProbeIntervalMs);
+    this.healthProbeTimeoutMs = this.positiveMs(opts.timeoutMs, this.defaultProbeTimeoutMs);
+
+    void this.runHealthProbeRound(generation);
+    this.healthProbeTimer = this.setIntervalImpl(
+      () => void this.runHealthProbeRound(generation),
+      this.healthProbeIntervalMs,
+    );
+    // Node/Bun timers expose unref(); browsers return a number.
+    (this.healthProbeTimer as unknown as { unref?: () => void }).unref?.();
+  }
+
+  /** Stop future probe rounds. Any already-running fetch/warm is ignored on settle. */
+  stopHealthProbes(): void {
+    if (!this.healthProbesActive) return;
+    this.healthProbesActive = false;
+    this.healthProbeGeneration += 1;
+    if (this.healthProbeTimer !== null) {
+      this.clearIntervalImpl(this.healthProbeTimer);
+      this.healthProbeTimer = null;
+    }
   }
 
   /**
@@ -269,8 +341,9 @@ export class InferenceRouter {
       const rest = ids.filter((id) => this.endpoints.get(id)!.kind !== 'local');
       const nowSel = this.now();
       let startIdx = locals.findIndex((id) => {
+        const ep = this.endpoints.get(id)!;
         const st = this.state.get(id)!;
-        return st.inflight < this.primaryMaxInflight && this.canAttempt(st, nowSel);
+        return st.inflight < this.primaryMaxInflight && this.canAttemptEndpoint(ep, st, nowSel);
       });
       if (startIdx < 0) startIdx = 0;
       ids = [...locals.slice(startIdx), ...locals.slice(0, startIdx), ...rest];
@@ -287,6 +360,9 @@ export class InferenceRouter {
       // Breaker gate — earlier endpoints are skipped while open (outside the
       // half-open probe window, and only ONE probe at a time). The last-resort
       // endpoint bypasses the gate so inference never hard-fails during a cooldown.
+      // While the background prober owns LOCAL recovery, an open local is
+      // skipped even after its deadline. Only probe warmup may close it.
+      if (this.healthProbesActive && ep.kind === 'local' && st.openUntil !== 0) continue;
       if (!isLast && !this.canAttempt(st, now)) continue;
 
       const isHalfOpenProbe = st.openUntil !== 0 && now >= st.openUntil;
@@ -296,7 +372,10 @@ export class InferenceRouter {
       st.inflight++;
       try {
         const { text, usage } = await this.callEndpoint(ep, args);
-        this.recordSuccess(st, this.now() - start);
+        const preserveProbeOpen =
+          this.healthProbesActive && ep.kind === 'local' && st.openUntil !== 0;
+        this.recordSuccess(st, this.now() - start, preserveProbeOpen);
+        if (!preserveProbeOpen) this.probeForcedOpen.delete(id);
         // Ops receipt for EVERY served request — cloud included (2026-07-13
         // OpenAI-usage audit: cloud calls were previously silent, so paid
         // volume was invisible in our own logs). One compact greppable line
@@ -338,7 +417,9 @@ export class InferenceRouter {
         successes: st.successes,
         failures: st.failures,
         lastLatencyMs: st.lastLatencyMs,
-        breakerOpen: st.openUntil !== 0 && now < st.openUntil,
+        breakerOpen:
+          st.openUntil !== 0 &&
+          ((this.healthProbesActive && ep.kind === 'local') || now < st.openUntil),
         consecutiveFailures: st.consecutiveFailures,
         inflight: st.inflight,
         lastError: st.lastError,
@@ -351,6 +432,13 @@ export class InferenceRouter {
     if (st.openUntil === 0) return true; // closed
     if (now >= st.openUntil) return !st.probeInFlight; // half-open: one probe only
     return false; // open
+  }
+
+  private canAttemptEndpoint(ep: InferenceEndpoint, st: EndpointState, now: number): boolean {
+    if (this.healthProbesActive && ep.kind === 'local' && st.openUntil !== 0) {
+      return false;
+    }
+    return this.canAttempt(st, now);
   }
 
   private async callEndpoint(ep: InferenceEndpoint, args: GenerateArgs): Promise<CallResult> {
@@ -386,7 +474,7 @@ export class InferenceRouter {
         ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(args.timeoutMs ?? ep.timeoutMs),
+      signal: this.timeoutSignal(this.attemptTimeoutMs(ep, args)),
     });
 
     if (!res.ok) {
@@ -437,7 +525,7 @@ export class InferenceRouter {
         keep_alive: ep.keepAlive ?? '60m',
         options,
       }),
-      signal: AbortSignal.timeout(args.timeoutMs ?? ep.timeoutMs),
+      signal: this.timeoutSignal(this.attemptTimeoutMs(ep, args)),
     });
 
     if (!res.ok) {
@@ -467,13 +555,105 @@ export class InferenceRouter {
     return text;
   }
 
-  private recordSuccess(st: EndpointState, latencyMs: number): void {
-    st.consecutiveFailures = 0;
-    st.openUntil = 0;
+  private attemptTimeoutMs(ep: InferenceEndpoint, args: GenerateArgs): number {
+    return (
+      args.timeoutMs ??
+      (ep.kind === 'local' ? args.localAttemptTimeoutMs : undefined) ??
+      ep.timeoutMs
+    );
+  }
+
+  private positiveMs(value: number | undefined, fallback: number): number {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
+  }
+
+  private async warmEndpoint(ep: InferenceEndpoint): Promise<void> {
+    await this.callEndpoint(ep, {
+      route: 'fleet',
+      size: 'small',
+      messages: [{ role: 'user', content: 'warmup' }],
+      maxTokens: 1,
+      // Recovery warming is off the live decision path. A cold 27B load can take
+      // roughly 48 seconds, so allow enough time to load and become resident.
+      timeoutMs: 180_000,
+    });
+  }
+
+  private async runHealthProbeRound(generation: number): Promise<void> {
+    if (!this.healthProbesActive || generation !== this.healthProbeGeneration) return;
+    const locals = [...this.endpoints.values()].filter((ep) => ep.kind === 'local');
+    await Promise.allSettled(locals.map((ep) => this.probeLocalEndpoint(ep, generation)));
+  }
+
+  private async probeLocalEndpoint(ep: InferenceEndpoint, generation: number): Promise<void> {
+    if (this.healthProbeInFlight.has(ep.id)) return;
+    this.healthProbeInFlight.add(ep.id);
+    const st = this.state.get(ep.id)!;
+    const wasOpen = st.openUntil !== 0 || this.probeForcedOpen.has(ep.id);
+    try {
+      const provider = ep.provider ?? 'openai';
+      const url =
+        provider === 'ollama'
+          ? `${ep.baseUrl.replace(/\/v1\/?$/, '')}/api/tags`
+          : `${ep.baseUrl}/models`;
+      const res = await this.fetchImpl(url, {
+        method: 'GET',
+        headers: ep.apiKey ? { Authorization: `Bearer ${ep.apiKey}` } : undefined,
+        signal: this.timeoutSignal(this.healthProbeTimeoutMs),
+      });
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`.trim());
+      if (!this.probeGenerationIsCurrent(generation)) return;
+
+      if (wasOpen) {
+        try {
+          await this.warmEndpoint(ep);
+        } catch (err) {
+          if (this.probeGenerationIsCurrent(generation)) {
+            this.holdProbeBreakerOpen(ep.id, st, err);
+          }
+          return;
+        }
+        if (!this.probeGenerationIsCurrent(generation)) return;
+        st.openUntil = 0;
+        st.consecutiveFailures = 0;
+        st.lastError = undefined;
+        this.probeForcedOpen.delete(ep.id);
+        console.log(`[InferenceRouter] probe: ${ep.id} UP`);
+      }
+      this.probeHealth.set(ep.id, 'up');
+    } catch (err) {
+      if (this.probeGenerationIsCurrent(generation)) {
+        this.holdProbeBreakerOpen(ep.id, st, err);
+      }
+    } finally {
+      this.healthProbeInFlight.delete(ep.id);
+    }
+  }
+
+  private probeGenerationIsCurrent(generation: number): boolean {
+    return this.healthProbesActive && generation === this.healthProbeGeneration;
+  }
+
+  private holdProbeBreakerOpen(id: string, st: EndpointState, err: unknown): void {
+    st.consecutiveFailures = Math.max(st.consecutiveFailures, this.breaker.failThreshold);
+    st.openUntil = this.now() + this.healthProbeIntervalMs + 5_000;
+    st.lastError = err instanceof Error ? err.message : String(err);
+    this.probeForcedOpen.add(id);
+    if (this.probeHealth.get(id) !== 'down') {
+      console.warn(`[InferenceRouter] probe: ${id} DOWN`);
+    }
+    this.probeHealth.set(id, 'down');
+  }
+
+  private recordSuccess(st: EndpointState, latencyMs: number, preserveBreaker = false): void {
+    if (!preserveBreaker) {
+      st.consecutiveFailures = 0;
+      st.openUntil = 0;
+    }
     st.requests += 1;
     st.successes += 1;
     st.lastLatencyMs = latencyMs;
-    st.lastError = undefined;
+    if (!preserveBreaker) st.lastError = undefined;
   }
 
   private recordFailure(st: EndpointState, err: unknown, latencyMs: number): void {

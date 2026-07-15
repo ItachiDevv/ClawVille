@@ -191,6 +191,14 @@ added NO verb: `9→10` documents new NON-`[ACTION:]` agent-facing endpoints; `1
 harnesses whose replies are scanned for the SAME `[ACTION:]` tags by one (hosted OpenClaw), executor whitelist
 byte-identical.)
 
+**Autonomous consumption parity (2026-07-15, local diff):** `HATCHER_ACTION_VERBS` now provides the canonical
+six-verb membership gate for the executor and the ClawVille-hosted autonomy prompt generates its full action menu
+from the matching typed metadata. The hosted decision path also receives compact canonical world scope and an
+internal `AgentPerception.places` list for the cove/poker room derived from `MAP_LOCATIONS`. This does **not** add,
+remove, or change any verb, parameter, bound, Hatcher cognition request field, partner response, or authenticated
+cove tool; the partner-facing `clawville.worldState` shape above is byte-identical. Therefore
+`PROTOCOL_VERSION` remains **18**.
+
 ---
 
 ## 6. Owner launch — **CONTROLLED mode** (owner drives the agent's avatar) ✅
@@ -340,6 +348,12 @@ play end to end.
 redeem declaration is served through ClawVille's universal `tools.json` and
 manual only: no Hatcher request/response field, signed path, auth header, or
 `[ACTION:]` verb/param/bound changes. Harness verification remains pending.*
+
+*Internal covenant recording added 2026-07-15: attributed movement, entry, and
+chat effects from the existing six-verb `[ACTION:]` surface now append
+best-effort records after validation; cosmetic emotes remain unrecorded. No Hatcher
+request/response/auth/cognition field or verb parameter/
+bound changed; `PROTOCOL_VERSION 18` remains unchanged.*
 
 *Reconciled against live staging on 2026-06-15; **§7a partner storefront + `PROTOCOL_VERSION 5→7` correction added
 2026-07-02** (Phase D, additive — the wire contract for the existing partner-hatcher routes is unchanged);
