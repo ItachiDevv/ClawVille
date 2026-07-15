@@ -43,10 +43,10 @@ import { ensureWallet, ensureWalletWithFirstTimeSecret } from '../services/walle
 // /visit-building, /building/:buildingId/chat and /move. Lives in its own
 // dependency-free module so the F1 money-path test can exercise the SAME guard.
 import { resolveBuildingCenter } from '../services/building-center';
-// Once-per-day building reward + bot→avatar resolver — extracted (P1 slice 4) to
-// the dependency-light services/building-reward.ts so the autonomous settle path
-// shares the SAME probe+credit these routes use. Behavior-identical re-import.
+// Shared building reward + bot→avatar resolver. Visits retain their legacy
+// ledger-row probe; teacher chats use one durable human/agent daily claim.
 import {
+  creditBuildingChatRewardOncePerDay,
   creditBuildingRewardOncePerDay,
   resolveAvatarIdForBot,
 } from '../services/building-reward';
@@ -175,12 +175,10 @@ const reconnectRateLimiter = createRateLimiter({
 });
 
 // ---------------------------------------------------------------------------
-// resolveAvatarIdForBot + creditBuildingRewardOncePerDay — MOVED (P1 slice 4,
-// 2026-07-03) to the dependency-light `services/building-reward.ts` VERBATIM so
-// the autonomous settle path (world-teacher-chat.ts) shares the EXACT same
-// once-per-day probe + ledger credit these two gateway call sites use (identical
-// economics; one probe key = no double-dip across paths). Behavior at the
-// `/visit-building` + `/building/:buildingId/chat` call sites is unchanged.
+// Bot→avatar resolution + both reward policies live in dependency-light
+// `services/building-reward.ts`: visit uses the legacy ledger-row probe, while
+// building chat uses the route-agnostic durable claim shared with human and
+// autonomous teacher-chat paths.
 // (Imported at the top of this file.)
 
 // ---------------------------------------------------------------------------
@@ -2586,16 +2584,18 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
         // userId/avatar (tokenAwarded stays 0).
         const avatarId = await resolveAvatarIdForBot(bot.userId ?? null);
         if (avatarId) {
-          // M2 anti-faucet: idempotent per (avatar, building, reason, UTC-day). A
-          // same-day repeat teaching turn returns false → tokenAwarded stays 0.
+          // M7b anti-faucet: idempotent per (avatar, building, UTC-day) across
+          // human, connected-agent, and autonomous teacher-chat surfaces. A
+          // same-day repeat from ANY path returns false → tokenAwarded stays 0.
           // sessionDigest, NOT the raw sessionId (Codex auth-lens fix #4) — see the
           // building-visit credit above; money-ledger metadata is persisted, never
           // store the recoverable real-CT bearer in it.
-          tokenAwarded = (await creditBuildingRewardOncePerDay({
+          tokenAwarded = (await creditBuildingChatRewardOncePerDay({
             avatarId,
             buildingId,
             reason: 'building_chat_teaching',
             metadata: { buildingId, sessionDigest: sessionDigest(sessionId), agentId: bot.agentId, characterName: system.locationAgent.agentName },
+            actorKind: 'agent',
           }))
             ? 1
             : 0;

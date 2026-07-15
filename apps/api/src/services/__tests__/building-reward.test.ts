@@ -21,7 +21,10 @@
  */
 
 import { describe, expect, it, beforeEach } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
+  creditBuildingChatRewardOncePerDay,
   creditBuildingRewardOncePerDay,
   type BuildingRewardDeps,
   type BuildingRewardTx,
@@ -65,6 +68,13 @@ interface Harness {
   credits: Array<{ avatarId: string; amount: number; reason: string; metadata: unknown }>;
   /** What the claw_token_transactions probe returns (empty = no reward today). */
   probeRows: Array<{ present: number }>;
+  /** What INSERT ... ON CONFLICT RETURNING yields for the chat claim. */
+  claimRows: Array<{ id: string }>;
+  claimValues: Array<Record<string, unknown>>;
+  claimConflictTargets: unknown[];
+  claimUpdates: Array<Record<string, unknown>>;
+  transactionTxs: BuildingRewardTx[];
+  creditTxs: BuildingRewardTx[];
 }
 
 function makeHarness(probeRows: Array<{ present: number }> = []): Harness {
@@ -72,6 +82,12 @@ function makeHarness(probeRows: Array<{ present: number }> = []): Harness {
     executed: [],
     credits: [],
     probeRows,
+    claimRows: [{ id: 'claim-1' }],
+    claimValues: [],
+    claimConflictTargets: [],
+    claimUpdates: [],
+    transactionTxs: [],
+    creditTxs: [],
     deps: {
       transaction: async <T>(fn: (tx: BuildingRewardTx) => Promise<T>): Promise<T> => {
         const tx = {
@@ -83,17 +99,40 @@ function makeHarness(probeRows: Array<{ present: number }> = []): Harness {
             if (text.includes('claw_token_transactions')) return harness.probeRows as never;
             return [] as never;
           },
+          insert: () => ({
+            values: (values: Record<string, unknown>) => {
+              harness.claimValues.push(values);
+              const returningBuilder = {
+                onConflictDoNothing: (config: unknown) => {
+                  harness.claimConflictTargets.push(config);
+                  return returningBuilder;
+                },
+                returning: async () => harness.claimRows,
+              };
+              return returningBuilder;
+            },
+          }),
+          update: () => ({
+            set: (values: Record<string, unknown>) => {
+              harness.claimUpdates.push(values);
+              return {
+                where: async () => [],
+              };
+            },
+          }),
         } as unknown as BuildingRewardTx;
+        harness.transactionTxs.push(tx);
         return fn(tx);
       },
-      credit: (async (input: { avatarId: string; amount: number; reason: string; metadata?: unknown }) => {
+      credit: (async (input: { avatarId: string; amount: number; reason: string; metadata?: unknown }, tx?: BuildingRewardTx) => {
         harness.credits.push({
           avatarId: input.avatarId,
           amount: input.amount,
           reason: input.reason,
           metadata: input.metadata,
         });
-        return { balanceAfter: input.amount } as never;
+        if (tx) harness.creditTxs.push(tx);
+        return { balanceAfter: input.amount, ledgerId: 'ledger-chat-1' } as never;
       }) as BuildingRewardDeps['credit'],
     },
   };
@@ -171,5 +210,97 @@ describe('creditBuildingRewardOncePerDay (extracted, behavior-identical)', () =>
     h.executed = [];
     await creditBuildingRewardOncePerDay({ ...OPTS, reason: 'building_visit' }, h.deps);
     expect(h.executed[1].params).toContain('building_visit');
+  });
+});
+
+describe('creditBuildingChatRewardOncePerDay (shared durable claim)', () => {
+  const HUMAN_CHAT = {
+    avatarId: 'av-coralia',
+    buildingId: 'api-integrations',
+    reason: 'location_chat' as const,
+    metadata: { locationId: 'api-integrations', via: 'human' },
+    actorKind: 'human' as const,
+  };
+
+  let h: Harness;
+  beforeEach(() => {
+    h = makeHarness();
+  });
+
+  it('claims and credits exactly once in the same transaction', async () => {
+    const credited = await creditBuildingChatRewardOncePerDay(HUMAN_CHAT, h.deps);
+
+    expect(credited).toBe(true);
+    expect(h.claimValues).toHaveLength(1);
+    expect(h.claimValues[0]).toMatchObject({
+      avatarId: 'av-coralia',
+      buildingId: 'api-integrations',
+    });
+    expect(h.claimValues[0].rewardDay).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(h.credits).toHaveLength(1);
+    expect(h.credits[0]).toMatchObject({
+      avatarId: 'av-coralia',
+      amount: 1,
+      reason: 'location_chat',
+      metadata: {
+        locationId: 'api-integrations',
+        buildingId: 'api-integrations',
+      },
+    });
+    expect(h.creditTxs[0]).toBe(h.transactionTxs[0]);
+    expect(h.claimUpdates).toEqual([{ ledgerId: 'ledger-chat-1' }]);
+  });
+
+  it('conflict loser returns false and never touches the ledger', async () => {
+    h.claimRows = [];
+
+    const credited = await creditBuildingChatRewardOncePerDay(HUMAN_CHAT, h.deps);
+
+    expect(credited).toBe(false);
+    expect(h.credits).toHaveLength(0);
+    expect(h.claimUpdates).toHaveLength(0);
+  });
+
+  it('uses one route-agnostic key across human and agent reasons', async () => {
+    const first = await creditBuildingChatRewardOncePerDay(HUMAN_CHAT, h.deps);
+    h.claimRows = [];
+    const second = await creditBuildingChatRewardOncePerDay(
+      {
+        ...HUMAN_CHAT,
+        reason: 'building_chat_teaching',
+        actorKind: 'agent',
+        metadata: { via: 'connected-agent' },
+      },
+      h.deps,
+    );
+
+    expect(first).toBe(true);
+    expect(second).toBe(false);
+    expect(h.credits).toHaveLength(1);
+    expect(h.claimValues).toHaveLength(2);
+    expect(h.claimValues[0]).toEqual(h.claimValues[1]);
+    expect('reason' in h.claimValues[0]).toBe(false);
+    expect(h.claimConflictTargets).toHaveLength(2);
+  });
+
+  it('is wired into all three chat paths while visits retain the legacy helper', () => {
+    const chatSource = readFileSync(
+      join(import.meta.dir, '..', '..', 'routes', 'chat.ts'),
+      'utf8',
+    );
+    const gatewaySource = readFileSync(
+      join(import.meta.dir, '..', '..', 'routes', 'agent-gateway.ts'),
+      'utf8',
+    );
+    const autonomousSource = readFileSync(
+      join(import.meta.dir, '..', 'world-teacher-chat.ts'),
+      'utf8',
+    );
+
+    expect(chatSource.match(/await creditBuildingChatRewardOncePerDay\(/g)).toHaveLength(1);
+    expect(gatewaySource.match(/await creditBuildingChatRewardOncePerDay\(/g)).toHaveLength(1);
+    expect(autonomousSource.match(/await creditBuildingChatRewardOncePerDay\(/g)).toHaveLength(1);
+    expect(gatewaySource.match(/await creditBuildingRewardOncePerDay\(/g)).toHaveLength(1);
+    expect(autonomousSource.match(/await creditBuildingRewardOncePerDay\(/g)).toHaveLength(1);
   });
 });

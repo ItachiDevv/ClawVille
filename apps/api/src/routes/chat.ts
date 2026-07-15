@@ -11,6 +11,7 @@ import { shouldCollaborate, collaborateOnQuery } from '../services/agent-collabo
 import { logEvent, logEventFromContext } from '../services/event-logger';
 import { miladyGateway } from '../services/milady-gateway';
 import { creditClawTokens } from '../services/claw-token-ledger';
+import { creditBuildingChatRewardOncePerDay } from '../services/building-reward';
 import { buildRuntimeServices } from '../services/runtime-services-adapter';
 import { getSystemNpcAgent, getSystemAgent } from '../services/system-npc-seeder';
 import { systemAgentRewardLimiter } from '../services/system-agent-reward-limiter';
@@ -333,23 +334,31 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
     conversational: true,
   });
 
-  // Award +1 ClawToken for chatting with a location agent (atomic + audited).
+  // Award +1 vCLAW once per (avatar, building, UTC day), shared with connected
+  // and autonomous agent teacher-chat paths. The durable claim + mint are one tx.
   // Guest avatars run an ALL-DEMO economy: they NEVER touch the real CT ledger,
   // so BOTH the direct credit AND the `awardXp` level-up token leak (50 real CT
   // on level-up) are skipped for guests — gating the whole block is what closes
   // the XP leak (awardXp is only ever called from this file).
+  let tokenAwarded: 0 | 1 = 0;
   if (avatar && !avatar.isGuest) {
-    await creditClawTokens({
-      avatarId: avatar.id,
-      amount: 1,
-      reason: 'location_chat',
-      source: 'api',
-      metadata: { locationId },
-      actorKind: 'human',
-    }).catch((err) => console.error('[chat] creditClawTokens failed:', err));
+    try {
+      tokenAwarded = (await creditBuildingChatRewardOncePerDay({
+        avatarId: avatar.id,
+        buildingId: locationId,
+        reason: 'location_chat',
+        metadata: { locationId },
+        actorKind: 'human',
+      })) ? 1 : 0;
+    } catch (err) {
+      console.error('[chat] building-chat reward failed:', err);
+    }
 
-    // Award +5 XP for NPC chat (non-blocking)
-    awardXp(avatar.id, 5, 'npc-chat').catch(console.error);
+    // XP follows the same durable daily claim, so repeat chat cannot farm level
+    // bonus mints through awardXp. Non-blocking behavior is preserved.
+    if (tokenAwarded === 1) {
+      awardXp(avatar.id, 5, 'npc-chat').catch(console.error);
+    }
   }
 
   void logEventFromContext(c, {
@@ -362,7 +371,7 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
       messageLength: result.data.content.length,
       // Guests earn NO real CT (all-demo economy) → tokenAwarded is 0 for them,
       // so this event field equals what was actually credited (conservation).
-      tokenAwarded: (avatar && !avatar.isGuest) ? 1 : 0,
+      tokenAwarded,
       // Guest-avatar carve-out (2026-04-23) — flag for /dash teacher-chat
       // metric so guest chats are excluded from the "real engagement"
       // count. The dashboard SQL filters `payload->>'isGuest' <> 'true'`.

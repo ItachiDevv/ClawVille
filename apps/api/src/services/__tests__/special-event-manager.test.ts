@@ -750,6 +750,14 @@ describe('SpecialEventManager — settleEvent (reads the linked tournament UP th
     db.seedResult({ tournament_id: tid, avatar_id: 'a1', agent_id: null, placement: 1, prize_ct: '3000' });
     db.seedResult({ tournament_id: tid, avatar_id: 'a2', agent_id: 'oc-x', placement: 2, prize_ct: '2000' });
 
+    // A public status snapshot surfaces the linked results without performing
+    // the event lifecycle write owned by the explicit settlement command.
+    const snapshot = await mgr.getEventSettlementSnapshot('done-evt');
+    expect(snapshot?.event.status).toBe('live');
+    expect(snapshot?.tournamentId).toBe(tid);
+    expect(snapshot?.results.length).toBe(2);
+    expect(db.events.get(ev.id)!.status).toBe('live');
+
     const settle = await mgr.settleEvent('done-evt');
     expect(settle.tournamentId).toBe(tid);
     expect(settle.results.length).toBe(2);

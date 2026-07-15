@@ -751,6 +751,59 @@ export class SpecialEventManager {
   }
 
   /**
+   * Read the event plus its dependent tournament/results without mutating either
+   * lifecycle. This is the public-status read used by GET /api/events/:slug;
+   * event completion remains an explicit command through `settleEvent`.
+   */
+  async getEventSettlementSnapshot(slug: string): Promise<{
+    event: EventRow;
+    tournamentId: string | null;
+    results: Array<{ avatarId: string; agentId: string | null; placement: number; prizeCt: string }>;
+  } | null> {
+    const event = await this.getEventBySlug(slug);
+    if (!event) return null;
+
+    // Preserve the existing public response semantics: dependent settlement is
+    // surfaced only after the event has started.
+    if (event.status !== 'live' && event.status !== 'completed') {
+      return { event, tournamentId: null, results: [] };
+    }
+
+    const tournamentRows = await this.db.execute<{ id: string; status: string }>(
+      sql`SELECT id, status FROM poker_tournaments
+          WHERE special_event_id = ${event.id}
+          ORDER BY created_at DESC LIMIT 1`,
+    );
+    const tournament = tournamentRows[0] ?? null;
+    if (!tournament) {
+      return { event, tournamentId: null, results: [] };
+    }
+
+    const results = await this.db.execute<{
+      avatar_id: string;
+      agent_id: string | null;
+      placement: number;
+      prize_ct: string;
+    }>(
+      sql`SELECT avatar_id, agent_id, placement, prize_ct
+          FROM poker_tournament_results
+          WHERE tournament_id = ${tournament.id}
+          ORDER BY placement ASC`,
+    );
+
+    return {
+      event,
+      tournamentId: tournament.id,
+      results: results.map((row) => ({
+        avatarId: row.avatar_id,
+        agentId: row.agent_id,
+        placement: row.placement,
+        prizeCt: row.prize_ct,
+      })),
+    };
+  }
+
+  /**
    * Settle the event: read the LINKED tournament's results (found via the
    * dependency FK — `WHERE special_event_id = event.id`) and flip the event →
    * 'completed'. Prize CREDITS were already paid by the tournament's own

@@ -1,7 +1,15 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and, sql, isNull, or, gt } from 'drizzle-orm';
-import { db, avatars, avatarInventory, agents, agentBots, users } from '@clawville/database';
+import {
+  db,
+  avatars,
+  avatarInventory,
+  agents,
+  agentBots,
+  users,
+  type AvatarCharacterConfigJson,
+} from '@clawville/database';
 import { getBookById, getBooksForBuilding, KNOWLEDGE_BOOKS, BUILDING_MILADY_SKILLS } from '@clawville/shared';
 import { miladyGateway } from '../services/milady-gateway';
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
@@ -307,58 +315,104 @@ itemRoutes.post('/learn', requireAuthOrAgentSession, async (c) => {
     throw new HTTPException(404, { message: 'Book not found' });
   }
 
-  const avatar = await db.query.avatars.findFirst({
-    where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
-  });
+  const learned = await db.transaction(async (tx) => {
+    // Lock the avatar first (the same order used by the purchase ledger path),
+    // then derive knowledge from the latest committed character config.
+    const lockedRows = await tx.execute<{
+      id: string;
+      platform_agent_id: string | null;
+      character_config: Record<string, unknown> | null;
+    }>(
+      sql`SELECT id, platform_agent_id, character_config
+          FROM avatars
+          WHERE user_id = ${userId} AND is_active = true
+          FOR UPDATE`,
+    );
+    const lockedAvatar = lockedRows[0];
+    if (!lockedAvatar) {
+      throw new HTTPException(404, { message: 'No avatar found' });
+    }
 
-  if (!avatar) {
-    throw new HTTPException(404, { message: 'No avatar found' });
-  }
+    // Claim exactly one positive inventory unit under a row lock. The conditional
+    // decrement is the consume point; a concurrent request cannot reuse qty=1.
+    const consumedRows = await tx.execute<{ id: string; quantity: number }>(
+      sql`WITH inventory_item AS (
+            SELECT id
+            FROM avatar_inventory
+            WHERE avatar_id = ${lockedAvatar.id}
+              AND item_id = ${result.data.bookId}
+              AND quantity > 0
+            ORDER BY acquired_at ASC, id ASC
+            LIMIT 1
+            FOR UPDATE
+          )
+          UPDATE avatar_inventory AS inventory
+          SET quantity = inventory.quantity - 1
+          FROM inventory_item
+          WHERE inventory.id = inventory_item.id
+          RETURNING inventory.id, inventory.quantity`,
+    );
+    const consumed = consumedRows[0];
+    if (!consumed) {
+      throw new HTTPException(400, { message: 'You do not have this book in your inventory' });
+    }
 
-  // Check inventory
-  const inventoryItem = await db.query.avatarInventory.findFirst({
-    where: and(
-      eq(avatarInventory.avatarId, avatar.id),
-      eq(avatarInventory.itemId, result.data.bookId)
-    ),
-  });
+    const currentConfig = lockedAvatar.character_config ?? {};
+    const configuredKnowledge = currentConfig.knowledge;
+    const currentKnowledge = Array.isArray(configuredKnowledge)
+      ? configuredKnowledge.filter((entry): entry is string => typeof entry === 'string')
+      : [];
+    const known = new Set(currentKnowledge);
+    const newKnowledge = book.knowledgeEntries.filter((entry) => !known.has(entry));
+    const mergedKnowledge = [...currentKnowledge, ...newKnowledge];
+    const updatedConfig = {
+      ...currentConfig,
+      knowledge: mergedKnowledge,
+    };
 
-  if (!inventoryItem || inventoryItem.quantity < 1) {
-    throw new HTTPException(400, { message: 'You do not have this book in your inventory' });
-  }
-
-  // Merge knowledge entries into characterConfig
-  const currentConfig = (avatar.characterConfig as any) ?? {};
-  const currentKnowledge: string[] = currentConfig.knowledge ?? [];
-  const newKnowledge = book.knowledgeEntries.filter(
-    (entry) => !currentKnowledge.includes(entry)
-  );
-  const mergedKnowledge = [...currentKnowledge, ...newKnowledge];
-
-  const updatedConfig = {
-    ...currentConfig,
-    knowledge: mergedKnowledge,
-  };
-
-  // Update avatar's characterConfig in DB
-  const [updatedAvatar] = await db
-    .update(avatars)
-    .set({
-      characterConfig: updatedConfig,
-      updatedAt: new Date(),
-    })
-    .where(eq(avatars.id, avatar.id))
-    .returning();
-
-  // Also update the platform agent's customization so restart picks up new knowledge
-  if (avatar.platformAgentId) {
-    await db
-      .update(agents)
+    const [updatedAvatar] = await tx
+      .update(avatars)
       .set({
-        customization: updatedConfig,
+        characterConfig: updatedConfig as AvatarCharacterConfigJson,
         updatedAt: new Date(),
       })
-      .where(eq(agents.id, avatar.platformAgentId));
+      .where(eq(avatars.id, lockedAvatar.id))
+      .returning();
+    if (!updatedAvatar) {
+      throw new HTTPException(404, { message: 'No avatar found' });
+    }
+
+    // Keep the persisted platform-agent config atomic with the avatar knowledge
+    // and inventory consume. Runtime/embedding side effects happen after commit.
+    if (lockedAvatar.platform_agent_id) {
+      await tx
+        .update(agents)
+        .set({
+          customization: updatedConfig,
+          updatedAt: new Date(),
+        })
+        .where(eq(agents.id, lockedAvatar.platform_agent_id));
+    }
+
+    if (consumed.quantity === 0) {
+      await tx
+        .delete(avatarInventory)
+        .where(and(eq(avatarInventory.id, consumed.id), eq(avatarInventory.quantity, 0)));
+    }
+
+    return {
+      updatedAvatar,
+      platformAgentId: lockedAvatar.platform_agent_id,
+      newKnowledge,
+      mergedKnowledge,
+    };
+  });
+
+  const { updatedAvatar, platformAgentId, newKnowledge, mergedKnowledge } = learned;
+
+  // Update runtime memories after the DB transaction commits. These effects are
+  // idempotent/best-effort and must never turn a committed consume into a 500.
+  if (platformAgentId) {
 
     // Phase 2 RAG: embed new knowledge entries via the ElizaOS runtime and
     // store as searchable memories. Uses runtime.createMemory() which the
@@ -369,19 +423,19 @@ itemRoutes.post('/learn', requireAuthOrAgentSession, async (c) => {
     if (newKnowledge.length > 0) {
       try {
         const runtime = await agentOrchestrator.ensureAgentRuntime(
-          avatar.platformAgentId,
+          platformAgentId,
           userId,
         );
         if (runtime) {
           const { v5: uuidv5 } = await import('uuid');
           // Distinct namespace from ROOM_NAMESPACE to avoid UUID collisions
           const KNOWLEDGE_NS = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
-          const agentId = avatar.platformAgentId as any;
+          const agentId = platformAgentId as any;
 
           for (const entry of newKnowledge) {
             try {
               const embedding = await embedText(entry);
-              const memoryId = uuidv5(`knowledge:${avatar.id}:${entry}`, KNOWLEDGE_NS);
+              const memoryId = uuidv5(`knowledge:${updatedAvatar.id}:${entry}`, KNOWLEDGE_NS);
               const elizaRuntime = runtime.getElizaRuntime();
 
               if (elizaRuntime?.createMemory) {
@@ -404,25 +458,20 @@ itemRoutes.post('/learn', requireAuthOrAgentSession, async (c) => {
               console.warn(`[items/learn] Failed to embed entry: ${(entryErr as Error).message}`);
             }
           }
-          console.log(`[items/learn] Embedded ${newKnowledge.length} knowledge entries for avatar ${avatar.id}`);
+          console.log(`[items/learn] Embedded ${newKnowledge.length} knowledge entries for avatar ${updatedAvatar.id}`);
         }
       } catch (err) {
         console.warn(`[items/learn] Knowledge embedding failed (non-blocking): ${(err as Error).message}`);
       }
     }
 
-    // Stop running agent so next chat message restarts with new knowledge
-    await agentOrchestrator.stopAgent(avatar.platformAgentId);
-  }
-
-  // Remove book from inventory (decrement or delete)
-  if (inventoryItem.quantity > 1) {
-    await db
-      .update(avatarInventory)
-      .set({ quantity: inventoryItem.quantity - 1 })
-      .where(eq(avatarInventory.id, inventoryItem.id));
-  } else {
-    await db.delete(avatarInventory).where(eq(avatarInventory.id, inventoryItem.id));
+    // Stop running agent so next chat message restarts with new knowledge. A
+    // stop failure is operationally visible but cannot undo the committed learn.
+    try {
+      await agentOrchestrator.stopAgent(platformAgentId);
+    } catch (err) {
+      console.warn(`[items/learn] Agent restart preparation failed (non-blocking): ${(err as Error).message}`);
+    }
   }
 
   // Q3 plan §2.6 — emit event so the tutorial-quest `agent-scholar`
@@ -433,7 +482,7 @@ itemRoutes.post('/learn', requireAuthOrAgentSession, async (c) => {
     void logEventFromContext(c, {
       eventType: 'book.read',
       userId: userId,
-      avatarId: avatar.id,
+      avatarId: updatedAvatar.id,
       payload: {
         bookId: book.id,
         bookName: book.name,
@@ -474,7 +523,7 @@ itemRoutes.post('/learn', requireAuthOrAgentSession, async (c) => {
           void logEventFromContext(c, {
             eventType: 'agent.knowledge_added',
             userId,
-            avatarId: avatar.id,
+            avatarId: updatedAvatar.id,
             agentId: b.agentId,
             buildingId: book.building,
             payload: {
