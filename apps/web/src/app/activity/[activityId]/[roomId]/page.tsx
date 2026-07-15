@@ -344,6 +344,19 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
     return <FullScreenStatus message="RESOLVING ROOM…" tone="neutral" />;
   }
 
+  if (status === 'closed') {
+    return (
+      <FullScreenStatus
+        message="MATCH EXPIRED — THIS ROOM IS NO LONGER AVAILABLE"
+        tone="danger"
+        action={{
+          label: 'REQUEUE',
+          onClick: () => router.push(`/game?quickQueue=${encodeURIComponent(activityId)}`),
+        }}
+      />
+    );
+  }
+
   // Wager-lobby gate — render <LobbyLanding> first. Until the user creates
   // / joins / locks a lobby, the 3D scene stays unmounted to keep the WebGPU
   // context off and the pipeline-compile cost deferred.
