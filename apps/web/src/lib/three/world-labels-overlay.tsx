@@ -256,6 +256,8 @@ function _getSnapshot(): ReadonlyArray<LabelEntry> {
 
 const _scratchPos = new THREE.Vector3();
 const _scratchOffset = new THREE.Vector3();
+/** View-space copy for the behind-camera cull — see the reversed-depth note at the project() call. */
+const _scratchView = new THREE.Vector3();
 // Holds the anchor world-position before .project(camera) destroys it — needed
 // for distance calculation and occlusion raycast direction.
 const _scratchAnchorWorld = new THREE.Vector3();
@@ -565,6 +567,16 @@ export function WorldLabelsOverlayMount() {
     const H = _canvasH;
     if (W <= 0 || H <= 0) return;
 
+    // Refresh the camera's world matrix ONCE before the label pass. R3F runs
+    // useFrame subscribers BEFORE gl.render() (where three normally refreshes
+    // camera matrices), and earlier subscribers (e.g. the cove entrance camera
+    // push) mutate camera.position this same frame. Camera.updateMatrixWorld()
+    // also refreshes matrixWorldInverse (three r185 Camera override), so both
+    // the view-space behind-camera cull and .project() below read a current
+    // inverse (Codex review 2026-07-14; second round removed a redundant
+    // manual copy/invert).
+    camera.updateMatrixWorld();
+
     _occFrameCounter++;
 
     // --- Occlusion round-robin ---
@@ -663,11 +675,22 @@ export function WorldLabelsOverlayMount() {
         return;
       }
 
+      // Behind-camera cull MUST use view-space z, not projected NDC z. The
+      // r185 renderer runs with reversedDepthBuffer (camera.reversedDepth),
+      // which inverts NDC z semantics (near→1, far→0) — a behind-camera point
+      // projects to z ≈ -0.002, so the old `ndc.z > 1` check never fired and
+      // behind-camera labels rendered at mirrored screen coords (2026-07-14
+      // staging regression). View-space z ≥ 0 = at/behind the camera plane,
+      // true under standard Z, reversed Z, and orthographic projection alike.
+      _scratchView.copy(_scratchPos).applyMatrix4(camera.matrixWorldInverse);
+      if (_scratchView.z >= 0) {
+        _hideEntry(entry, div);
+        return;
+      }
+
       _scratchPos.project(camera);
 
-      // NDC z > 1 → behind near plane → hide.
       if (
-        _scratchPos.z > 1 ||
         _scratchPos.x < -LABEL_NDC_MARGIN ||
         _scratchPos.x > LABEL_NDC_MARGIN ||
         _scratchPos.y < -LABEL_NDC_MARGIN ||
