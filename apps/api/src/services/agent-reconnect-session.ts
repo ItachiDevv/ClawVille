@@ -181,6 +181,8 @@ export function planReconnectSession(input: {
   provenUserId: string;
   /** The freshly-drawn `ag-…` bearer this plan is keyed to. */
   sessionId: string;
+  /** Bound active avatar already resolved by the authenticated route. */
+  avatarId?: string;
   credentials?: ReconnectGatewayCredentials;
 }): ReconnectSessionPlan {
   const { bot, provenUserId, sessionId } = input;
@@ -240,6 +242,7 @@ export function planReconnectSession(input: {
     // self-managed; everything else server-managed.
     ledgerCapable,
     boundUserId,
+    avatarId: input.avatarId,
     // Rule 2 — the dormant-inert wire. 'nanoclaw' `.chat()` returns '' with no
     // network call, so a credential-less real-gateway body is mute-but-alive
     // (never a broken localhost:0 POST). Non-dormant configs derive normally.

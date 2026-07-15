@@ -85,19 +85,21 @@ Autonomous body = server-streamed NPC: ~5Hz snapshots, render-one-tick-behind in
 
 ## 4. Covenant coverage of agent actions (founder directive: "agents' actions should be managed with covenants")
 
-The PR #198 stream fully covers vCLAW money (choke point `applyCreditInTx`/`debitInTx` holds on this sha; wave1-economy merges added **no** off-ledger vCLAW mutations), quests, and bounties. The **in-world agent action surface is at zero**:
+> **Implemented 2026-07-15 (Autonomy Round 2, local diff; not deployed):** the §4 gaps below are closed. Executor attribution resolves once from the in-memory session's internal `config.avatarId`; missing attribution remains action-compatible but recordless. Driver arrival/directive records are deduped at decision/arrival boundaries, never movement ticks. Native claim/learn/visit records share their business transaction. Payloads contain ids/hashes only. The Hatcher wire/whitelist and `PROTOCOL_VERSION 18` are unchanged.
+
+The PR #198 stream fully covers vCLAW money (choke point `applyCreditInTx`/`debitInTx` holds on this sha; wave1-economy merges added **no** off-ledger vCLAW mutations), quests, and bounties. **At audit time, the in-world agent action surface was at zero**; the table now marks the Round 2 implementation:
 
 | Surface | Covenant status | Choke point |
 |---|---|---|
-| `[ACTION:]` move / emote / enter_building / enter_cove / enter_poker_room / talk_to_npc | **NONE** (executor has no auth/tx context by design) | `npc-simulation.ts:1650-1846` |
-| Native `claim-bounty` | **NONE** (bypasses route-level bounty.claim; seam not threaded) | `claim-bounty.ts:147-167` |
-| Native `learn-book-transaction` / `visit-building` | **NONE** | `learn-book-transaction.ts:112-132`, `visit-building.ts:122` |
+| `[ACTION:]` move / emote / enter_building / enter_cove / enter_poker_room / talk_to_npc | ✅ `agent.move` after validated path; `agent.chat` after target/proximity validation; emote deliberately records nothing | `npc-simulation.ts` executor |
+| Native `claim-bounty` | ✅ existing `bounty.claim`, same tx as attempt insert + bounty update | `claim-bounty.ts` |
+| Native `learn-book-transaction` / `visit-building` | ✅ `agent.action.learn` / `agent.visit`, same tx as business write | `learn-book-transaction.ts`, `visit-building.ts` |
 | Native `accept-quest` / `submit-quest` | ✅ records via seam | `accept-quest.ts:209`, `submit-quest.ts:~166` |
 | `buy-item`, cove bets/settles, building-visit payouts | ✅ money legs auto-covered (ledger) — no action-verb record | `claw-token-ledger.ts:350,757` |
-| Agent chat turns / autonomous decide→move | **NONE** | driver + executor |
+| Agent chat turns / autonomous decide→move | ✅ `agent.chat`; driver `agent.visit` + deduped `agent.directive.received/acted` | driver + executor |
 | SOL wagers (`routes/wager.ts` → `settleSolLobby`) | **NONE** — on-chain SOL, never touches the vCLAW ledger; separate gap category | `wager.ts` |
 
-**Proposed taxonomy (decisions + arrivals, never per-step ticks — chain-bloat rule):** `agent.move` (committed destination; hook after `setNpcPath`, `npc-simulation.ts:1673`) · `agent.visit` (arrival + native visit-building) · `agent.chat` (`talk_to_npc` post-proximity, payload `{target, msgSha256, len}`) · `agent.action.learn` · `agent.action.claim_bounty` · `agent.directive.received/acted` (autonomy intake — pairs with RC1 fix). Wiring blockers: the `[ACTION:]` executor must resolve the bound avatar at `dispatchHatcherActions` entry for attribution; the three native gaps are one-line seam adds inside existing transactions (same pattern as `accept-quest.ts:208`).
+**Implemented taxonomy (decisions + arrivals, never per-step ticks — chain-bloat rule):** `agent.move` (committed destination after `setNpcPath`) · `agent.visit` (arrival + native visit-building) · `agent.chat` (`talk_to_npc` post-proximity, payload `{target, msgSha256, len}`) · `agent.action.learn` · existing `bounty.claim` for the native claim · `agent.directive.received/acted` (hash-deduped autonomy intake). The actor kind distinguishes native agent claims from human route claims; there is one verb per business action.
 
 ---
 

@@ -14,6 +14,7 @@ declare module '@react-three/fiber' {
 extend(THREE as any);
 import ArenaTerrain from '@/lib/three/arena-terrain';
 import { registerInputReset } from '@/lib/three/input-reset';
+import { dampTowardConfirmedTarget } from '@/lib/three/npc-interpolation-damping';
 import ArenaBuildings from '@/lib/three/arena-buildings';
 import MeshletBuildingsR3F from '@/lib/three/meshlet/meshlet-buildings-r3f';
 import ArenaNpcs from '@/lib/three/arena-npcs';
@@ -320,7 +321,6 @@ const CHAR_TARGET_Y = 15;
 // Frame-rate independent follow stiffness. The previous fixed 0.1/frame lerp
 // became visibly mushy when the scene dipped below 60 FPS.
 const FPS_FOLLOW_STIFFNESS = 14;
-
 // ---------------------------------------------------------------------------
 // Arrow key camera rotation — active in ALL modes
 // Reads _arrowKeys, adjusts orbit camera angles via spherical coordinates.
@@ -533,6 +533,15 @@ function FPSFollowCamera({
 }: {
   controlsRef: React.RefObject<OrbitControlsImpl | null>;
 }) {
+  // Persisted scalar scratch: allocated once, mutated in useFrame. This mirrors
+  // the streamed body's rendered XZ because the mesh position is not published.
+  const autonomousBodyFollowRef = useRef({
+    bodyId: null as string | null,
+    initialized: false,
+    x: 0,
+    y: 0,
+  });
+
   useFrame((_, delta) => {
     const controls = controlsRef.current;
     if (!controls) return;
@@ -579,6 +588,11 @@ function FPSFollowCamera({
     let gameX: number;
     let gameY: number;
 
+    if (controlMode !== 'autonomous') {
+      autonomousBodyFollowRef.current.bodyId = null;
+      autonomousBodyFollowRef.current.initialized = false;
+    }
+
     if (controlMode === 'npc' && possessedNpcId) {
       const npc = useNpcStore.getState().npcs.find((n) => n.id === possessedNpcId);
       if (!npc) return;
@@ -594,11 +608,42 @@ function FPSFollowCamera({
       // (no-op this frame) until the id is confirmed and/or has streamed in —
       // avoids snapping the camera to the map origin during the brief window
       // between the toggle and the activation response / first SSE tick.
-      if (!autonomousBodyId) return;
+      if (!autonomousBodyId) {
+        autonomousBodyFollowRef.current.bodyId = null;
+        autonomousBodyFollowRef.current.initialized = false;
+        return;
+      }
       const body = useNpcStore.getState().npcs.find((n) => n.id === autonomousBodyId);
-      if (!body) return;
-      gameX = body.x;
-      gameY = body.y;
+      if (!body) {
+        autonomousBodyFollowRef.current.bodyId = autonomousBodyId;
+        autonomousBodyFollowRef.current.initialized = false;
+        return;
+      }
+
+      // The camera does not read the mesh's rendered position; reconstruct the
+      // exact same prev→latest interpolation target, then apply the mesh's k=10
+      // damping. Both endpoints are confirmed snapshots, and the convex update
+      // never projects ahead of that target (no extrapolation).
+      const nowMs = Date.now();
+      const tsDelta = body.tsDelta > 0 ? body.tsDelta : 200;
+      const elapsed = nowMs - body.ts;
+      const interpAlpha = body.ts === 0
+        ? 1
+        : Math.max(0, Math.min(1, elapsed / tsDelta));
+      const interpTargetX = body.prevX + (body.x - body.prevX) * interpAlpha;
+      const interpTargetY = body.prevY + (body.y - body.prevY) * interpAlpha;
+      const follow = autonomousBodyFollowRef.current;
+      if (follow.bodyId !== autonomousBodyId || !follow.initialized || body.ts === 0) {
+        follow.bodyId = autonomousBodyId;
+        follow.initialized = true;
+        follow.x = interpTargetX;
+        follow.y = interpTargetY;
+      } else {
+        follow.x = dampTowardConfirmedTarget(follow.x, interpTargetX, delta);
+        follow.y = dampTowardConfirmedTarget(follow.y, interpTargetY, delta);
+      }
+      gameX = follow.x;
+      gameY = follow.y;
     } else {
       // 'player' — follow the locally-driven avatar
       gameX = avatarPositionRef.x;

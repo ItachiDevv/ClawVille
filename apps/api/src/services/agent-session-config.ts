@@ -682,6 +682,8 @@ export interface AgentConfigBase {
   autonomyMode?: AgentAutonomyMode | null;
   ledgerCapable: boolean;
   boundUserId: string | null;
+  /** Bound avatar for internal covenant attribution; never part of agent wire. */
+  avatarId?: string;
   /**
    * Force the in-world wire protocol regardless of identity inference. Used by
    * the hatcher mint path which knows it is hatcher-proxy before the row's
@@ -767,6 +769,7 @@ export function buildAvatarSessionConfig(
     personality: inputs.personality,
     ledgerCapable: inputs.ledgerCapable,
     boundUserId: inputs.boundUserId,
+    avatarId: inputs.avatarId,
   } as AgentSubstrateRegistration;
 }
 
@@ -797,6 +800,7 @@ export function buildOverrideSessionConfig(
     targetNpcId: inputs.targetNpcId,
     ledgerCapable: inputs.ledgerCapable,
     boundUserId: inputs.boundUserId,
+    avatarId: inputs.avatarId,
   } as AgentSubstrateRegistration;
 }
 

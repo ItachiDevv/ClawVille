@@ -1,3 +1,9 @@
+/**
+ * NPC town-liveliness scripted layer.
+ *
+ * NOT the user-agent Autonomous engine; decoupled from the toggle 2026-07-15
+ * (RC3); server driver = apps/api/src/services/agent-autonomy-driver.ts.
+ */
 import { create } from 'zustand';
 import { NPC_BUILDING_CENTERS } from '@clawville/shared';
 import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';

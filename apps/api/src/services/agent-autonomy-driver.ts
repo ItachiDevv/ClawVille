@@ -57,9 +57,14 @@
 
 import {
   BUILDING_INTERACTION_RADIUS,
+  BUILDING_OPENCLAW_THEMES,
   DECISION_SCOPE,
   HATCHER_ACTION_MENU,
+  MAP_LOCATIONS,
+  type AutonomyStatusResponse,
+  type AutonomyStatusThought,
 } from '@clawville/shared';
+import { createHash } from 'crypto';
 import { npcSimulation } from './npc-simulation';
 import { agentOrchestrator } from './agent-orchestrator';
 import { sessionDigest } from './session-digest';
@@ -74,6 +79,8 @@ import {
   type CurrentDirective,
 } from './agent-autonomy-state';
 import { queryDurableAgentEventsNewest } from './agent-event-query';
+import { recordCovenantAction } from './covenant-action-recorder';
+import { resolveBuildingId } from './building-center';
 
 /** Per-agent phase in the perceive→decide→act loop. */
 type DrivePhase = 'deciding' | 'walking' | 'arrived' | 'talking';
@@ -138,6 +145,12 @@ interface HouseAgentEntry {
    * into the decision prompt. Null until seeded / when nothing new happened.
    */
   recentEventSummary: string | null;
+  /** Public-safe, bounded driver narration used by the owner HUD. */
+  recentThoughts: AutonomyStatusThought[];
+  /** Last directive content hash observed (text itself never enters a record). */
+  lastDirectiveSha: string | null;
+  /** Last directive hash for which a parsed action was recorded. */
+  lastActedDirectiveSha: string | null;
 }
 
 /** A single decision generator — real LLM in prod, canned in tests. */
@@ -171,6 +184,15 @@ const DECIDE_MAX_TOKENS = 200;
 // drive skips, but the non-cancellable warm remains tracked until it settles so
 // no later tick/kick can launch overlapping work for the same agent.
 const WARM_TIMEOUT_MS = 90_000;
+// Round-2 review fix (warm-guard wedge): if the underlying ensureAgentRuntime
+// promise NEVER settles (hung DB call / stuck plugin init), the `warming` guard
+// would be held forever and every future tick/kick for that agent would skip —
+// a silent permanent stall. WARM_TIMEOUT_MS only bounds the WAIT, not the
+// guard. Past this age the guard is force-evicted with a loud warn so the next
+// drive can re-warm. Safe because `clearWarm` is token-guarded (it deletes only
+// its OWN captured token), so a late settle of the evicted warm can never erase
+// a newer warm's guard. Far above any legitimate warm (90s bound + boot crush).
+const WARM_GUARD_EVICT_MS = 10 * 60 * 1000;
 // R4: consecutive empty decide() replies past this threshold WARN — a persistent
 // empty (OpenAI 429 / quota exhausted / bad key) otherwise spins the deciding phase
 // silently, since withTimeout maps a timeout/error to '' by contract.
@@ -208,11 +230,68 @@ const SEED_FETCH_TIMEOUT_MS = 1_500;
 // Cap the durable events replayed once on wake to seed "since I last acted"
 // context — this is prompt seasoning, not a transcript.
 const SEED_EVENT_LIMIT = 20;
+const RECENT_THOUGHTS_MAX = 20;
 
 /** Matches the executor's HATCHER_ACTION_REGEX (npc-simulation.ts) — used to
  * pull the `message` param out of the model's talk_to_npc tag so the SAME text
  * the in-world bubble shows is what the teacher turn conducts. */
 const TALK_ACTION_RE = /\[ACTION:\s*talk_to_npc\(([^)]*)\)\]/;
+const DRIVER_ACTION_RE = /\[ACTION:\s*(\w+)\(([^)]*)\)\]/;
+
+interface ParsedDriverAction {
+  verb: string;
+  params: Record<string, string>;
+}
+
+function parseDriverAction(reply: string): ParsedDriverAction | null {
+  const match = DRIVER_ACTION_RE.exec(reply);
+  if (!match || !HATCHER_ACTION_MENU.some((action) => action.verb === match[1])) return null;
+  const params: Record<string, string> = {};
+  for (const part of match[2].split(',')) {
+    const eq = part.indexOf('=');
+    if (eq <= 0) continue;
+    const key = part.slice(0, eq).trim();
+    if (key) params[key] = part.slice(eq + 1).trim();
+  }
+  return { verb: match[1], params };
+}
+
+function destinationLabel(destination: string | null): string | null {
+  if (!destination) return null;
+  if (destination === 'cove') return 'the Cove';
+  const canonical = resolveBuildingId(destination) ?? destination;
+  return BUILDING_OPENCLAW_THEMES[canonical]?.label
+    ?? MAP_LOCATIONS.find((location) => location.id === canonical)?.name
+    ?? canonical;
+}
+
+function decisionThought(action: ParsedDriverAction): string {
+  switch (action.verb) {
+    case 'enter_cove':
+    case 'enter_poker_room':
+      return 'Heading to the Cove';
+    case 'enter_building':
+      return `Heading to ${destinationLabel(action.params.buildingId) ?? 'a building'}`;
+    case 'move': {
+      const x = Number(action.params.x);
+      const y = Number(action.params.y);
+      return Number.isFinite(x) && Number.isFinite(y)
+        ? `Moving to (${Math.round(x)}, ${Math.round(y)})`
+        : 'Moving through town';
+    }
+    case 'talk_to_npc': {
+      const target = action.params.target
+        ?? action.params.npcId
+        ?? action.params.buildingId
+        ?? 'someone nearby';
+      return `Talking to ${destinationLabel(target) ?? target}`;
+    }
+    case 'emote':
+      return `Emoting: ${action.params.name ?? 'reacting'}`;
+    default:
+      return 'Choosing the next action';
+  }
+}
 
 /** Extract the talk_to_npc message param from a reply, or null if none. Mirrors
  * the executor's param split (comma-separated k=v, message last by prompt). */
@@ -254,6 +333,7 @@ class AgentAutonomyDriver {
   // Production values are the real world-teacher-chat functions.
   teacherTurn: typeof conductTeacherTurn = conductTeacherTurn;
   arrivalSettle: typeof settleBuildingArrival = settleBuildingArrival;
+  covenantRecord: typeof recordCovenantAction = recordCovenantAction;
 
   /**
    * Register a boot-seeded house agent for autonomous driving. Bounded: past
@@ -295,6 +375,9 @@ class AgentAutonomyDriver {
       lastLesson: null,
       cursorSeeded: false,
       recentEventSummary: null,
+      recentThoughts: [],
+      lastDirectiveSha: null,
+      lastActedDirectiveSha: null,
     });
     console.log(
       `[AutonomyDriver] registered house agent ${sessionDigest(entry.agentId)} (${this.houseAgents.size} total)`,
@@ -417,6 +500,9 @@ class AgentAutonomyDriver {
       lastLesson: null,
       cursorSeeded: false,
       recentEventSummary: null,
+      recentThoughts: [],
+      lastDirectiveSha: null,
+      lastActedDirectiveSha: null,
     });
     this.enrolledOwners.set(entry.houseUserId, entry.agentId);
     console.log(
@@ -452,6 +538,53 @@ class AgentAutonomyDriver {
     return this.enrolledOwners.get(userId) ?? null;
   }
 
+  /** Public-safe owner status for the Autonomous HUD. */
+  getOwnerStatus(ownerUserId: string): AutonomyStatusResponse {
+    const agentId = this.enrolledOwners.get(ownerUserId);
+    const entry = agentId ? this.userAgents.get(agentId) : null;
+    if (!entry) return { enrolled: false };
+    return {
+      enrolled: true,
+      phase: entry.phase,
+      targetBuildingId: entry.targetBuildingId,
+      targetLabel: destinationLabel(entry.targetBuildingId),
+      bodyId: entry.bodyId,
+      phaseSince: entry.phaseSince,
+      thoughts: entry.recentThoughts.map((thought) => ({ ...thought })),
+    };
+  }
+
+  private pushThought(
+    entry: HouseAgentEntry,
+    type: AutonomyStatusThought['type'],
+    text: string,
+    at: number = Date.now(),
+  ): void {
+    entry.recentThoughts.push({ at, type, text });
+    if (entry.recentThoughts.length > RECENT_THOUGHTS_MAX) {
+      entry.recentThoughts.splice(0, entry.recentThoughts.length - RECENT_THOUGHTS_MAX);
+    }
+  }
+
+  private async recordDriverAction(
+    entry: HouseAgentEntry,
+    action: 'agent.visit' | 'agent.directive.received' | 'agent.directive.acted',
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    await this.covenantRecord({
+      action,
+      subjectType: 'avatar',
+      subjectId: entry.avatarId,
+      actorKind: 'agent',
+      payload,
+    }).catch((err: unknown) => {
+      console.warn(
+        `[AutonomyDriver] covenant ${action} record failed for ${sessionDigest(entry.agentId)}:`,
+        err instanceof Error ? err.message : err,
+      );
+    });
+  }
+
   /** Current user-agent enrollment count (capacity introspection). */
   userAgentCount(): number {
     return this.userAgents.size;
@@ -470,7 +603,18 @@ class AgentAutonomyDriver {
    */
   async driveAgentNow(agentId: string): Promise<boolean> {
     const entry = this.houseAgents.get(agentId) ?? this.userAgents.get(agentId);
-    if (!entry || this.inFlight.has(agentId) || this.warming.has(agentId)) return false;
+    if (!entry || this.inFlight.has(agentId)) return false;
+    // Watchdog: a warm whose promise never settles must not wedge this agent
+    // forever — evict a stale guard loudly (see WARM_GUARD_EVICT_MS).
+    const warmingSince = this.warming.get(agentId);
+    if (warmingSince !== undefined) {
+      if (Date.now() - warmingSince <= WARM_GUARD_EVICT_MS) return false;
+      console.warn(
+        `[AutonomyDriver] evicting stale warm guard for ${sessionDigest(agentId)} — ` +
+          `runtime warm never settled after ${Date.now() - warmingSince}ms`,
+      );
+      this.warming.delete(agentId);
+    }
 
     this.inFlight.add(agentId);
     try {
@@ -671,6 +815,18 @@ class AgentAutonomyDriver {
     // Phase: walking — cheap arrival poll, NO llm.
     if (entry.phase === 'walking') {
       if (this.hasArrived(perception, entry)) {
+        const arrivedDestination = entry.targetBuildingId;
+        if (arrivedDestination) {
+          this.pushThought(
+            entry,
+            'arrival',
+            `Arrived at ${destinationLabel(arrivedDestination) ?? arrivedDestination}`,
+            now,
+          );
+          await this.recordDriverAction(entry, 'agent.visit', {
+            destination: arrivedDestination,
+          });
+        }
         const teachingTarget = entry.targetBuildingId
           ? perception.nearbyBuildings.some((building) =>
               building.buildingId === entry.targetBuildingId)
@@ -697,10 +853,12 @@ class AgentAutonomyDriver {
           // an invalid talk_to_npc(buildingId=cove) or teacher reward.
           entry.phase = 'talking';
           entry.phaseSince = now;
-          entry.targetBuildingId = null;
+          // Retain the reached place through the talking/linger phase so the
+          // owner HUD truthfully reads "At the Cove" until the next re-decide.
         }
       } else if (now - entry.phaseSince > WALK_TIMEOUT_MS) {
         // Stuck / no progress — abandon this target and replan next tick.
+        this.pushThought(entry, 'observation', 'Walk timed out — re-deciding', now);
         entry.phase = 'deciding';
         entry.targetBuildingId = null;
         entry.phaseSince = now;
@@ -785,6 +943,24 @@ class AgentAutonomyDriver {
     // retrieval (lessons relevant to what the human asked surface first); both
     // reads are bounded + fail-soft so a slow store never stalls the tick.
     const directive = await this.readDirectiveBounded(entry.platformAgentId);
+    let directiveSha: string | null = null;
+    if (directive?.text) {
+      directiveSha = createHash('sha256').update(directive.text, 'utf8').digest('hex');
+      if (directiveSha !== entry.lastDirectiveSha) {
+        // Stamp before the best-effort write: an outage must not cause repeated
+        // record attempts on every tick or block decision-making.
+        entry.lastDirectiveSha = directiveSha;
+        this.pushThought(
+          entry,
+          'directive',
+          `Directive: "${directive.text.slice(0, 80)}"`,
+        );
+        await this.recordDriverAction(entry, 'agent.directive.received', {
+          directiveSha256: directiveSha,
+          len: directive.text.length,
+        });
+      }
+    }
     const lessons = await this.readRecentLessons(entry, directive?.text ?? null);
     const prompt = this.buildDecisionPrompt(perception, entry, lessons, directive?.text ?? null);
     const reply = await decide(prompt);
@@ -800,6 +976,7 @@ class AgentAutonomyDriver {
     // past the threshold. This does NOT alter drive behavior: an empty reply still
     // just fails to stamp a destination and we retry deciding next tick.
     if (reply.trim().length === 0) {
+      this.pushThought(entry, 'observation', 'Decision timed out — retrying', now);
       entry.consecutiveEmptyDecides++;
       if (entry.consecutiveEmptyDecides >= EMPTY_DECIDE_WARN_THRESHOLD) {
         console.warn(
@@ -808,6 +985,17 @@ class AgentAutonomyDriver {
       }
     } else {
       entry.consecutiveEmptyDecides = 0;
+    }
+    const parsedAction = parseDriverAction(reply);
+    if (parsedAction) {
+      this.pushThought(entry, 'decision', decisionThought(parsedAction), now);
+      if (directiveSha && entry.lastActedDirectiveSha !== directiveSha) {
+        entry.lastActedDirectiveSha = directiveSha;
+        await this.recordDriverAction(entry, 'agent.directive.acted', {
+          directiveSha256: directiveSha,
+          action: parsedAction.verb,
+        });
+      }
     }
     // N3: clear any STALE destination from a PRIOR turn BEFORE dispatching, so
     // post-dispatch destinationBuildingId is non-null ONLY if THIS turn's

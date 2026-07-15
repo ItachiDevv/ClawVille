@@ -9,6 +9,7 @@ import {
   type Database,
 } from '@clawville/database';
 import { getBookById, type KnowledgeBook } from '@clawville/shared';
+import type { ClawvilleServices } from './types';
 
 export type LearnBookErrorCode =
   | 'book_not_found'
@@ -34,6 +35,9 @@ export interface LearnBookResult {
 }
 
 export type LearnBookDatabase = Pick<Database, 'transaction'>;
+export type LearnBookCovenantRecorder = NonNullable<
+  ClawvilleServices['recordCovenantAction']
+>;
 
 /**
  * Consume one knowledge book and persist its knowledge as one atomic operation.
@@ -45,6 +49,7 @@ export type LearnBookDatabase = Pick<Database, 'transaction'>;
 export async function learnBookAtomically(
   database: LearnBookDatabase,
   input: { avatarId: string; bookId: string },
+  recordCovenantAction?: LearnBookCovenantRecorder,
 ): Promise<LearnBookResult> {
   // Validate before opening the transaction so an unknown id can never consume
   // an inventory row, even if a malformed row with that id exists.
@@ -135,6 +140,18 @@ export async function learnBookAtomically(
       await tx
         .delete(avatarInventory)
         .where(and(eq(avatarInventory.id, consumed.id), eq(avatarInventory.quantity, 0)));
+    }
+
+    if (recordCovenantAction) {
+      await recordCovenantAction(
+        {
+          action: 'agent.action.learn',
+          subjectType: 'avatar',
+          subjectId: input.avatarId,
+          payload: { bookId: book.id },
+        },
+        tx,
+      );
     }
 
     return {
