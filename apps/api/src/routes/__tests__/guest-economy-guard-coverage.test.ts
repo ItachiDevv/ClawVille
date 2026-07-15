@@ -31,10 +31,10 @@ import { join } from 'path';
 const ROUTES_DIR = join(import.meta.dir, '..');
 const MIDDLEWARE_FILE = join(import.meta.dir, '..', '..', 'middleware', 'require-non-guest.ts');
 
-type Method = 'post' | 'patch' | 'delete';
+type Method = 'get' | 'post' | 'patch' | 'delete';
 interface Entry {
   file: string;
-  guard: 'requireNonGuestUser' | 'requireNonGuestIdentity';
+  guard: 'requireNonGuestUser' | 'requireNonGuestIdentity' | 'requireWagerCancelCaller';
   routes: Array<{ method: Method; path: string }>;
 }
 
@@ -43,13 +43,17 @@ const p = (method: Method, path: string) => ({ method, path });
 const MANIFEST: Entry[] = [
   {
     file: 'wager.ts',
-    guard: 'requireNonGuestUser',
+    guard: 'requireNonGuestIdentity',
     routes: [
       p('post', '/lobbies'),
       p('post', '/lobbies/:id/join'),
-      p('post', '/lobbies/:id/cancel'),
       p('post', '/lobbies/:id/refund'),
     ],
+  },
+  {
+    file: 'wager.ts',
+    guard: 'requireWagerCancelCaller',
+    routes: [p('post', '/lobbies/:id/cancel')],
   },
   {
     file: 'bounties.ts',
@@ -97,7 +101,7 @@ const MANIFEST: Entry[] = [
   },
   {
     file: 'quests.ts',
-    guard: 'requireNonGuestUser',
+    guard: 'requireNonGuestIdentity',
     routes: [p('post', '/:id/accept'), p('post', '/:id/start'), p('post', '/:id/submit')],
   },
   {
@@ -127,7 +131,7 @@ const MANIFEST: Entry[] = [
   // guest-OWNED-agent safety is asserted by the demo-resolution source check below.
   {
     file: 'cosmetics.ts',
-    guard: 'requireNonGuestUser',
+    guard: 'requireNonGuestIdentity',
     routes: [p('post', '/:skuId/buy')],
   },
   {
@@ -217,6 +221,26 @@ describe('guest→real-CT guard coverage lock', () => {
     expect(mw).toContain('export async function isGuestUser');
     expect(mw).toContain('export const requireNonGuestUser');
     expect(mw).toContain('export const requireNonGuestIdentity');
+  });
+
+  describe('cosmetic guest + agent read parity', () => {
+    for (const path of ['/:skuId/equip', '/:skuId/unequip']) {
+      it(`POST ${path} preserves the authenticated guest happy path`, () => {
+        const chain = readRoute('cosmetics.ts').match(routeChainRegex('post', path));
+        expect(chain).not.toBeNull();
+        expect(chain![0]).toContain('requireAuthOrAgentSession');
+        expect(chain![0]).toContain('requireLedgerCapableIdentity');
+        expect(chain![0]).not.toContain('requireNonGuestIdentity');
+      });
+    }
+
+    it('GET /owned accepts a live ledger-capable agent identity', () => {
+      const chain = readRoute('cosmetics.ts').match(routeChainRegex('get', '/owned'));
+      expect(chain).not.toBeNull();
+      expect(chain![0]).toContain('requireAuthOrAgentSession');
+      expect(chain![0]).toContain('requireLedgerCapableIdentity');
+      expect(chain![0]).not.toContain('requireNonGuestIdentity');
+    });
   });
 
   // ── Demo-resolution surfaces (2026-07-10): a guest-OWNED agent must be treated

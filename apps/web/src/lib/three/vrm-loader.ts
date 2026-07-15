@@ -101,8 +101,13 @@ export function applyFattenedFrustumCulling(root: THREE.Object3D, factor: number
 
 type InstanceEntry =
   | { status: 'pending';  promise: Promise<VRM> }
-  | { status: 'resolved'; vrm:     VRM }
+  | { status: 'resolved'; vrm: VRM; sharedTextureKeys: Set<string> }
   | { status: 'rejected'; error:   unknown };
+
+type CanonicalTextureEntry = {
+  tex: THREE.Texture;
+  refs: number;
+};
 
 /**
  * Bytes cache, keyed by path. One fetch per file per session.
@@ -121,6 +126,13 @@ const VRM_BYTES = new Map<string, Promise<ArrayBuffer>>();
  * textures) and CPU memory (skeleton/scene graph) until disposed.
  */
 const VRM_INSTANCES = new Map<string, InstanceEntry>();
+
+/**
+ * Cross-instance texture cache. The path prefix intentionally prevents
+ * content-identical textures in different VRM files from sharing ownership.
+ * `refs` counts resolved VRM instances, not material slots.
+ */
+const VRM_CANONICAL_TEXTURES = new Map<string, CanonicalTextureEntry>();
 
 // Single shared GLTFLoader instance — VRMLoaderPlugin registered once.
 // Reused across all parses; the parser hooks into per-parse state internally.
@@ -357,6 +369,222 @@ function collectVRMSceneCounts(root: THREE.Object3D): VRMSceneCounts {
   };
 }
 
+type MaterialTextureSlotVisitor = (
+  texture: THREE.Texture,
+  replace: (texture: THREE.Texture) => boolean,
+) => void;
+
+/**
+ * Enumerate the texture slots used by both ordinary Three.js materials and
+ * MToon. MToon extends ShaderMaterial and stores its texture accessors in
+ * `uniforms.*.value`, so direct Object.entries(material) alone cannot see
+ * them with the installed three-vrm version.
+ */
+function forEachMaterialTextureSlot(
+  material: THREE.Material,
+  visit: MaterialTextureSlotVisitor,
+): void {
+  const properties = material as unknown as Record<string, unknown>;
+  for (const [property, value] of Object.entries(properties)) {
+    if (!(value instanceof THREE.Texture)) continue;
+    visit(value, (replacement) => {
+      try {
+        properties[property] = replacement;
+        return true;
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  const shaderMaterial = material as THREE.ShaderMaterial;
+  if (!shaderMaterial.isShaderMaterial) return;
+  for (const uniformValue of Object.values(shaderMaterial.uniforms)) {
+    const uniform = uniformValue as { value?: unknown };
+    if (!(uniform.value instanceof THREE.Texture)) continue;
+    visit(uniform.value, (replacement) => {
+      try {
+        uniform.value = replacement;
+        return true;
+      } catch {
+        return false;
+      }
+    });
+  }
+}
+
+/**
+ * Replace this instance's associated glTF textures with the per-path
+ * canonical objects. Association misses deliberately fail open: those
+ * textures remain private to the instance and are disposed with its scene.
+ *
+ * This whole traversal is synchronous. Even when multiple parses finish in
+ * adjacent microtasks, the first traversal registers each key atomically and
+ * the next traversal observes it, disposes its never-uploaded duplicate, and
+ * increments the existing entry exactly once for this instance.
+ */
+function canonicaliseVRMTextures(
+  root: THREE.Object3D,
+  path: string,
+  associations: ReadonlyMap<THREE.Object3D | THREE.Material | THREE.Texture, { textures?: number }>,
+): Set<string> {
+  const instanceKeys = new Set<string>();
+  const disposedDuplicates = new Set<THREE.Texture>();
+  const visitedMaterials = new Set<THREE.Material>();
+  const replacements: Array<{
+    replace: (texture: THREE.Texture) => boolean;
+    original: THREE.Texture;
+  }> = [];
+  const acquisitions: Array<{
+    key: string;
+    canonical: CanonicalTextureEntry;
+    created: boolean;
+  }> = [];
+
+  try {
+    root.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      if (!mesh.material) return;
+      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+
+      for (const material of materials) {
+        if (!material || visitedMaterials.has(material)) continue;
+        visitedMaterials.add(material);
+        forEachMaterialTextureSlot(material, (value, replace) => {
+          const textureIndex = associations.get(value)?.textures;
+          if (
+            textureIndex === undefined
+            || !Number.isInteger(textureIndex)
+            || textureIndex < 0
+          ) return;
+
+          const key = `${path}#tx${textureIndex}`;
+          let canonical = VRM_CANONICAL_TEXTURES.get(key);
+
+          if (!canonical) {
+            canonical = { tex: value, refs: 1 };
+            VRM_CANONICAL_TEXTURES.set(key, canonical);
+            instanceKeys.add(key);
+            acquisitions.push({ key, canonical, created: true });
+            return;
+          }
+
+          // A non-writable custom material slot cannot safely be shared. Leave
+          // it private and fail open rather than corrupting ownership.
+          if (value !== canonical.tex) {
+            if (!replace(canonical.tex)) return;
+            replacements.push({ replace, original: value });
+          }
+          if (!instanceKeys.has(key)) {
+            canonical.refs++;
+            instanceKeys.add(key);
+            acquisitions.push({ key, canonical, created: false });
+          }
+          if (value !== canonical.tex) disposedDuplicates.add(value);
+        });
+      }
+    });
+  } catch (error) {
+    // Duplicate disposal is deliberately deferred until after the traversal,
+    // so rollback can restore every original slot without reviving a disposed
+    // texture. Restore in reverse order, then unwind each per-instance ref.
+    for (let i = replacements.length - 1; i >= 0; i--) {
+      const replacement = replacements[i];
+      replacement.replace(replacement.original);
+    }
+    for (let i = acquisitions.length - 1; i >= 0; i--) {
+      const acquisition = acquisitions[i];
+      if (acquisition.created) {
+        if (VRM_CANONICAL_TEXTURES.get(acquisition.key) === acquisition.canonical) {
+          VRM_CANONICAL_TEXTURES.delete(acquisition.key);
+        }
+      } else {
+        acquisition.canonical.refs--;
+      }
+    }
+    throw error;
+  }
+
+  // Fresh duplicates have not reached the renderer, so they normally have no
+  // dispose listeners. Keep the now-committed acquisition non-throwing even if
+  // a loader plugin attached an unexpected listener.
+  for (const texture of disposedDuplicates) {
+    try { texture.dispose(); } catch { /* best-effort duplicate cleanup */ }
+  }
+
+  return instanceKeys;
+}
+
+/**
+ * Dispose a VRM scene without touching canonical textures still owned by the
+ * cross-instance cache. Geometry, materials, and private textures are each
+ * disposed at most once even when shared by several meshes or slots.
+ */
+function disposeVRMSceneSharedAware(
+  scene: THREE.Object3D,
+  sharedTextures: ReadonlySet<THREE.Texture>,
+): void {
+  const geometries = new Set<THREE.BufferGeometry>();
+  const skeletons = new Set<THREE.Skeleton>();
+  const materials = new Set<THREE.Material>();
+  const privateTextures = new Set<THREE.Texture>();
+
+  scene.traverse((obj) => {
+    const renderable = obj as THREE.Object3D & {
+      geometry?: THREE.BufferGeometry;
+      skeleton?: THREE.Skeleton;
+      material?: THREE.Material | THREE.Material[];
+    };
+    if (renderable.geometry) geometries.add(renderable.geometry);
+    if (renderable.skeleton) skeletons.add(renderable.skeleton);
+    if (!renderable.material) return;
+
+    const materialList = Array.isArray(renderable.material)
+      ? renderable.material
+      : [renderable.material];
+    for (const material of materialList) {
+      if (!material || materials.has(material)) continue;
+      materials.add(material);
+      forEachMaterialTextureSlot(material, (value) => {
+        if (!sharedTextures.has(value)) {
+          privateTextures.add(value);
+        }
+      });
+    }
+  });
+
+  for (const texture of privateTextures) texture.dispose();
+  for (const material of materials) material.dispose();
+  for (const geometry of geometries) geometry.dispose();
+  for (const skeleton of skeletons) skeleton.dispose();
+}
+
+function disposeResolvedVRMInstance(
+  entry: Extract<InstanceEntry, { status: 'resolved' }>,
+): void {
+  const sharedTextures = new Set<THREE.Texture>();
+  for (const key of entry.sharedTextureKeys) {
+    const canonical = VRM_CANONICAL_TEXTURES.get(key);
+    if (canonical) sharedTextures.add(canonical.tex);
+  }
+
+  try {
+    disposeVRMSceneSharedAware(entry.vrm.scene, sharedTextures);
+  } finally {
+    // Each key was acquired once by canonicaliseVRMTextures, so release each
+    // once regardless of material-slot multiplicity or disposal exceptions.
+    for (const key of entry.sharedTextureKeys) {
+      const canonical = VRM_CANONICAL_TEXTURES.get(key);
+      if (!canonical) continue;
+      canonical.refs--;
+      if (canonical.refs <= 0) {
+        VRM_CANONICAL_TEXTURES.delete(key);
+        canonical.tex.dispose();
+      }
+    }
+  }
+}
+
 function pushVRMLoadMetric(metric: VRMLoadMetric): void {
   if (typeof window === 'undefined') return;
   const bridge = window as unknown as { __CV_VRM_LOAD_METRICS?: VRMLoadMetric[] };
@@ -576,12 +804,25 @@ async function loadInstance(cacheKey: string, path: string, gen: number): Promis
     const normalise = normaliseVRM(vrm);
     const normaliseDone = nowMs();
     const sceneAfter = VRM_METRICS_ENABLED ? collectVRMSceneCounts(vrm.scene) : _EMPTY_SCENE_COUNTS;
-    return { vrm, queueStart, sliceDone, parseDone, normaliseDone, sceneBefore, sceneAfter, normalise };
+    return {
+      vrm,
+      associations: gltf.parser.associations,
+      queueStart,
+      sliceDone,
+      parseDone,
+      normaliseDone,
+      sceneBefore,
+      sceneAfter,
+      normalise,
+    };
   }, { priority: isPlayer, cacheKey, gen });
 
   // Post-parse generation / stale-entry guard.
   //
-  // Two cases require deep-disposing the parsed VRM without writing 'resolved':
+  // These guards deliberately run BEFORE canonical texture registration. A
+  // stale parse therefore owns only private textures and can be disposed with
+  // an empty shared set; it never acquires refs that would need rolling back.
+  // Two cases require disposing the parsed VRM without writing 'resolved':
   //
   //   (A) Generation mismatch: disposeVRMInstance was called while parseAsync
   //       was in flight (race window up to ~19s on Iris Xe), incrementing the
@@ -603,7 +844,7 @@ async function loadInstance(cacheKey: string, path: string, gen: number): Promis
   // loadVRMInstance) ensures that the throw below does NOT clobber the new
   // pending entry — the catch only writes 'rejected' when cur.promise === promise.
   if (VRM_LOAD_GEN.get(cacheKey) !== gen) {
-    try { VRMUtils.deepDispose(parsed.vrm.scene); } catch { /* ignore */ }
+    try { disposeVRMSceneSharedAware(parsed.vrm.scene, new Set()); } catch { /* ignore */ }
     // Throw so the caller's catch fires. The identity-guarded catch skips the
     // 'rejected' write because the entry was deleted or replaced; this is safe.
     throw new Error(`[vrm-loader] parse completed after dispose (stale gen) for ${cacheKey}`);
@@ -612,7 +853,7 @@ async function loadInstance(cacheKey: string, path: string, gen: number): Promis
   // Defensive: entry must still be pending (not already settled by another path).
   const currentEntry = VRM_INSTANCES.get(cacheKey);
   if (!currentEntry || currentEntry.status !== 'pending') {
-    try { VRMUtils.deepDispose(parsed.vrm.scene); } catch { /* ignore */ }
+    try { disposeVRMSceneSharedAware(parsed.vrm.scene, new Set()); } catch { /* ignore */ }
     throw new Error(`[vrm-loader] entry gone or already settled for ${cacheKey}`);
   }
 
@@ -633,7 +874,26 @@ async function loadInstance(cacheKey: string, path: string, gen: number): Promis
     });
   }
 
-  VRM_INSTANCES.set(cacheKey, { status: 'resolved', vrm: parsed.vrm });
+  // No await may occur between registration and storing the resolved entry:
+  // the acquired key set must become reachable by disposal atomically.
+  let sharedTextureKeys: Set<string>;
+  try {
+    sharedTextureKeys = canonicaliseVRMTextures(
+      parsed.vrm.scene,
+      path,
+      parsed.associations,
+    );
+  } catch (error) {
+    // canonicaliseVRMTextures rolls back slot swaps and refs before throwing,
+    // so the parsed scene is private again and can use the empty shared set.
+    try { disposeVRMSceneSharedAware(parsed.vrm.scene, new Set()); } catch { /* ignore */ }
+    throw error;
+  }
+  VRM_INSTANCES.set(cacheKey, {
+    status: 'resolved',
+    vrm: parsed.vrm,
+    sharedTextureKeys,
+  });
   return parsed.vrm;
 }
 
@@ -728,7 +988,7 @@ export function loadVRMInstance(instanceId: string, path: string): Promise<VRM> 
 /**
  * Dispose a specific VRM instance. Call from useEffect cleanup on unmount.
  *
- * Disposes the VRM's scene meshes/materials/geometries via VRMUtils.deepDispose,
+ * Disposes the VRM's scene meshes/materials/geometries and private textures,
  * then evicts the cache entry. Cached BYTES are kept — the next instance for
  * the same path can parse without re-fetching.
  *
@@ -740,17 +1000,21 @@ export function disposeVRMInstance(path: string, instanceId: string): void {
   const entry = VRM_INSTANCES.get(cacheKey);
   if (!entry) return;
   if (entry.status === 'resolved') {
+    // Evict first so a synchronous dispose-event listener cannot re-enter this
+    // function and release the same instance's canonical refs twice.
+    VRM_INSTANCES.delete(cacheKey);
     try {
-      VRMUtils.deepDispose(entry.vrm.scene);
+      disposeResolvedVRMInstance(entry);
     } catch {
-      // deepDispose can throw on partially-loaded scenes; swallow so the
-      // cache entry is always evicted (preventing leaks even on dispose error).
+      // Scene disposal can throw on partially-loaded scenes; ref release runs
+      // in a finally block and the cache entry is still always evicted.
     }
+    return;
   } else if (entry.status === 'pending') {
     // Increment the generation counter for this cacheKey. This "invalidates"
     // the in-flight or queued parse task — the runner's generation check
     // (VRM_LOAD_GEN.get(cacheKey) !== gen) will reject it without parsing,
-    // and loadInstance's post-parse guard will deepDispose any result that
+    // and loadInstance's post-parse guard will dispose any result that
     // slipped through. The increment is idempotent under double-dispose.
     //
     // A re-mount of the same (path, instanceId) BEFORE the queued parse runs
@@ -784,13 +1048,50 @@ export function _vrmInstanceCount(): number {
   return VRM_INSTANCES.size;
 }
 
+/**
+ * Debug introspection for the cross-instance texture cache (CDP probes,
+ * `window.__CV_VRM_TEX_STATS()`). refs > 1 on any key is live proof that two
+ * VRM instances of the same path share one GPU texture.
+ */
+function _vrmTexCacheStats(): { canonicalCount: number; sharedKeys: number; refsByKey: Record<string, number> } {
+  const refsByKey: Record<string, number> = {};
+  let sharedKeys = 0;
+  for (const [key, entry] of VRM_CANONICAL_TEXTURES) {
+    refsByKey[key] = entry.refs;
+    if (entry.refs > 1) sharedKeys++;
+  }
+  return { canonicalCount: VRM_CANONICAL_TEXTURES.size, sharedKeys, refsByKey };
+}
+
+if (typeof window !== 'undefined') {
+  (window as unknown as Record<string, unknown>).__CV_VRM_TEX_STATS = _vrmTexCacheStats;
+}
+
 /** Test helper: clear all caches. Internal, not for production code. */
 export function _vrmClearAllCaches(): void {
-  for (const [, entry] of VRM_INSTANCES) {
-    if (entry.status === 'resolved') {
-      try { VRMUtils.deepDispose(entry.vrm.scene); } catch { /* ignore */ }
+  const entries = [...VRM_INSTANCES.entries()];
+  for (const [cacheKey, entry] of entries) {
+    if (entry.status === 'pending') {
+      // Invalidate queued/in-flight parses before clearing their entries. A
+      // parse that finishes later hits the pre-dedupe stale guard, disposes
+      // only its private scene, and cannot repopulate either cache.
+      VRM_LOAD_GEN.set(cacheKey, (VRM_LOAD_GEN.get(cacheKey) ?? 0) + 1);
     }
   }
+  // Evict before disposal to make texture/material dispose-event re-entry a
+  // no-op rather than a second release of the same instance keys.
   VRM_INSTANCES.clear();
   VRM_BYTES.clear();
+
+  for (const [, entry] of entries) {
+    if (entry.status === 'resolved') {
+      try { disposeResolvedVRMInstance(entry); } catch { /* ignore */ }
+    }
+  }
+
+  // Accurate refcounts empty the map during the resolved-entry loop. Dispose
+  // any defensive residue before clearing so debug/test resets cannot leak a
+  // canonical texture after a partially-loaded or externally-mutated scene.
+  for (const [, canonical] of VRM_CANONICAL_TEXTURES) canonical.tex.dispose();
+  VRM_CANONICAL_TEXTURES.clear();
 }

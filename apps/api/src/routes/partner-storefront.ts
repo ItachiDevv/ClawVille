@@ -90,9 +90,11 @@ import {
   buildPartnerPurchaseQuote,
   resolveFacilitatorFeePayer,
   settlePartnerPurchase,
+  usdCentsToUsdcAtomic,
   type X402Asset,
   type X402Network,
 } from '../services/x402-payai';
+import { claimX402Settlement } from '../services/x402-settlement-receipts';
 
 /**
  * `DualContext` = base app context (user/session for the admin + partner-signed
@@ -679,12 +681,25 @@ partnerStorefrontRoutes.post('/settle', requireAuthOrAgentSession, requireNonGue
       );
     }
 
+    const settledSignature = result.txSignature;
+    const receipt = await db.transaction((tx) => claimX402Settlement({
+      txSignature: settledSignature,
+      rail: 'partner_storefront',
+      kind: 'partner_purchase',
+      referenceId: `${slug}:${offeringId}:${idempotencyKey}`,
+      subjectId: identity.avatarId,
+      amountUsdcAtomic: BigInt(usdCentsToUsdcAtomic(offering.priceUsdCents)),
+    }, tx));
+    if (receipt.kind === 'foreign_owner') {
+      return c.json({ error: 'already_settled', code: 'already_settled' }, 409);
+    }
+
     // CREDIT NO CT — the buyer already received real off-platform value from the
     // partner. A durable `service_purchases(kind='partner')` recording is
     // land-owned and deferred.
     return c.json({
       settled: true,
-      txSignature: result.txSignature,
+      txSignature: settledSignature,
       buyerAvatarId: identity.avatarId,
     });
   });

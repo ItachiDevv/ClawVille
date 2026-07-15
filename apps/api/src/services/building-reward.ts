@@ -5,8 +5,9 @@
  * `routes/agent-gateway.ts` so the autonomous settle path (`world-teacher-chat.ts`,
  * driven by `agent-autonomy-driver.ts`) can share the EXACT once-per-day credit
  * gate the connected-agent gateway uses — identical economics = human/agent/house
- * parity, and one probe means double-dipping across the two paths is impossible
- * (same `claw_token_transactions` key: avatarId + buildingId + reason + UTC-day).
+ * parity. Building visits retain the original ledger-row probe; building chats
+ * now use the durable route-agnostic claim table below so human, connected, and
+ * autonomous surfaces cannot double-dip one avatar's daily reward.
  *
  * DEPENDENCY-LIGHT ON PURPOSE: this module imports NO route modules and NOTHING
  * that transitively pulls the fingerprint middleware — `routes/agent-gateway.ts`
@@ -14,8 +15,18 @@
  * driver imports must never reach it (same rule as `building-center.ts`).
  */
 
-import { db, avatars, users, eq, sql } from '@clawville/database';
-import { creditClawTokens } from './claw-token-ledger';
+import {
+  db,
+  avatars,
+  users,
+  buildingChatRewardClaims,
+  eq,
+  sql,
+} from '@clawville/database';
+import {
+  creditClawTokens,
+  type LedgerCreditInput,
+} from './claw-token-ledger';
 
 // ---------------------------------------------------------------------------
 // resolveAvatarIdForBot — map an openclaw_bots.userId to that user's avatars.id
@@ -73,6 +84,34 @@ const defaultDeps: BuildingRewardDeps = {
   transaction: (fn) => db.transaction(fn),
   credit: creditClawTokens,
 };
+
+/** Minimal spend-time identity shape required by connected-agent chat rewards. */
+export interface AgentBuildingChatRewardSubject {
+  avatarId: string | null;
+  ledgerCapable: boolean;
+}
+
+/**
+ * Fail-closed reward-subject decision shared by the gateway route and unit tests.
+ * The only possible output is the canonical session resolver's exact active
+ * avatar id. A live but ownership-unproven session deliberately retains chat
+ * access while receiving null here (zero real-vCLAW reward).
+ */
+export function agentBuildingChatRewardAvatarId(
+  subject: AgentBuildingChatRewardSubject | null,
+): string | null {
+  return subject?.ledgerCapable === true && subject.avatarId
+    ? subject.avatarId
+    : null;
+}
+
+/** Canonical human guest decision after users.is_guest has been resolved. */
+export function humanBuildingChatRewardAvatarId(
+  avatarId: string | null,
+  canonicalGuest: boolean,
+): string | null {
+  return avatarId && !canonicalGuest ? avatarId : null;
+}
 
 // ---------------------------------------------------------------------------
 // creditBuildingRewardOncePerDay — idempotent per-(avatar, building, reason,
@@ -134,6 +173,69 @@ export async function creditBuildingRewardOncePerDay(
       },
       tx,
     );
+    return true;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// creditBuildingChatRewardOncePerDay — ONE shared human/agent chat reward.
+// ---------------------------------------------------------------------------
+// The claim key deliberately omits route, session, and ledger reason. Humans,
+// connected agents, and autonomous agents all settle to an avatars.id, so the
+// same avatar can earn at most 1 vCLAW per building per UTC day even if its owner
+// switches surfaces. INSERT ... ON CONFLICT is the concurrency claim; the claim
+// and ledger mint share one tx, so a credit failure rolls the claim back.
+export async function creditBuildingChatRewardOncePerDay(
+  opts: {
+    avatarId: string;
+    buildingId: string;
+    reason: 'location_chat' | 'building_chat_teaching';
+    metadata: Record<string, unknown>;
+    actorKind: NonNullable<LedgerCreditInput['actorKind']>;
+  },
+  deps: BuildingRewardDeps = defaultDeps,
+): Promise<boolean> {
+  const rewardDay = new Date().toISOString().slice(0, 10);
+
+  return deps.transaction(async (tx) => {
+    const [claim] = await tx
+      .insert(buildingChatRewardClaims)
+      .values({
+        avatarId: opts.avatarId,
+        buildingId: opts.buildingId,
+        rewardDay,
+      })
+      .onConflictDoNothing({
+        target: [
+          buildingChatRewardClaims.avatarId,
+          buildingChatRewardClaims.buildingId,
+          buildingChatRewardClaims.rewardDay,
+        ],
+      })
+      .returning({ id: buildingChatRewardClaims.id });
+
+    if (!claim) return false;
+
+    const credited = await deps.credit(
+      {
+        avatarId: opts.avatarId,
+        amount: 1,
+        reason: opts.reason,
+        source: 'api',
+        metadata: {
+          ...opts.metadata,
+          buildingId: opts.buildingId,
+        },
+        actorKind: opts.actorKind,
+      },
+      tx,
+    );
+
+    await tx
+      .update(buildingChatRewardClaims)
+      .set({ ledgerId: credited.ledgerId })
+      .where(eq(buildingChatRewardClaims.id, claim.id));
+
     return true;
   });
 }

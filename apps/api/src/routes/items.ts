@@ -1,7 +1,13 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and, sql, isNull, or, gt } from 'drizzle-orm';
-import { db, avatars, avatarInventory, agents, agentBots, users } from '@clawville/database';
+import {
+  db,
+  avatars,
+  avatarInventory,
+  agentBots,
+  users,
+} from '@clawville/database';
 import { getBookById, getBooksForBuilding, KNOWLEDGE_BOOKS, BUILDING_MILADY_SKILLS } from '@clawville/shared';
 import { miladyGateway } from '../services/milady-gateway';
 import { creditClawTokens, debitClawTokens } from '../services/claw-token-ledger';
@@ -11,7 +17,11 @@ import { sessionMiddleware } from '../middleware/auth';
 import { requireAuthOrAgentSession } from '../middleware/require-auth-or-agent';
 import { isGuestUser } from '../middleware/require-non-guest';
 import { agentOrchestrator } from '../services/agent-orchestrator';
-import { embedText } from '@clawville/agent-runtime';
+import {
+  embedText,
+  learnBookAtomically,
+  LearnBookError,
+} from '@clawville/agent-runtime';
 import { logEventFromContext } from '../services/event-logger';
 import { publishKnowledgeAdded } from '../services/skill-event-bus';
 import { npcSimulation } from '../services/npc-simulation';
@@ -302,63 +312,38 @@ itemRoutes.post('/learn', requireAuthOrAgentSession, async (c) => {
     throw new HTTPException(400, { message: 'Invalid book ID' });
   }
 
-  const book = getBookById(result.data.bookId);
-  if (!book) {
-    throw new HTTPException(404, { message: 'Book not found' });
+  let learned;
+  try {
+    learned = await learnBookAtomically(db, {
+      avatarId: identity.avatarId,
+      bookId: result.data.bookId,
+    });
+  } catch (error) {
+    if (error instanceof LearnBookError) {
+      if (error.code === 'book_not_found') {
+        throw new HTTPException(404, { message: 'Book not found' });
+      }
+      if (error.code === 'avatar_not_found') {
+        throw new HTTPException(404, { message: 'No avatar found' });
+      }
+      throw new HTTPException(400, {
+        message: 'You do not have this book in your inventory',
+      });
+    }
+    throw error;
   }
 
-  const avatar = await db.query.avatars.findFirst({
-    where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
-  });
+  const {
+    book,
+    updatedAvatar,
+    platformAgentId,
+    newKnowledge,
+    mergedKnowledge,
+  } = learned;
 
-  if (!avatar) {
-    throw new HTTPException(404, { message: 'No avatar found' });
-  }
-
-  // Check inventory
-  const inventoryItem = await db.query.avatarInventory.findFirst({
-    where: and(
-      eq(avatarInventory.avatarId, avatar.id),
-      eq(avatarInventory.itemId, result.data.bookId)
-    ),
-  });
-
-  if (!inventoryItem || inventoryItem.quantity < 1) {
-    throw new HTTPException(400, { message: 'You do not have this book in your inventory' });
-  }
-
-  // Merge knowledge entries into characterConfig
-  const currentConfig = (avatar.characterConfig as any) ?? {};
-  const currentKnowledge: string[] = currentConfig.knowledge ?? [];
-  const newKnowledge = book.knowledgeEntries.filter(
-    (entry) => !currentKnowledge.includes(entry)
-  );
-  const mergedKnowledge = [...currentKnowledge, ...newKnowledge];
-
-  const updatedConfig = {
-    ...currentConfig,
-    knowledge: mergedKnowledge,
-  };
-
-  // Update avatar's characterConfig in DB
-  const [updatedAvatar] = await db
-    .update(avatars)
-    .set({
-      characterConfig: updatedConfig,
-      updatedAt: new Date(),
-    })
-    .where(eq(avatars.id, avatar.id))
-    .returning();
-
-  // Also update the platform agent's customization so restart picks up new knowledge
-  if (avatar.platformAgentId) {
-    await db
-      .update(agents)
-      .set({
-        customization: updatedConfig,
-        updatedAt: new Date(),
-      })
-      .where(eq(agents.id, avatar.platformAgentId));
+  // Update runtime memories after the DB transaction commits. These effects are
+  // idempotent/best-effort and must never turn a committed consume into a 500.
+  if (platformAgentId) {
 
     // Phase 2 RAG: embed new knowledge entries via the ElizaOS runtime and
     // store as searchable memories. Uses runtime.createMemory() which the
@@ -369,19 +354,19 @@ itemRoutes.post('/learn', requireAuthOrAgentSession, async (c) => {
     if (newKnowledge.length > 0) {
       try {
         const runtime = await agentOrchestrator.ensureAgentRuntime(
-          avatar.platformAgentId,
+          platformAgentId,
           userId,
         );
         if (runtime) {
           const { v5: uuidv5 } = await import('uuid');
           // Distinct namespace from ROOM_NAMESPACE to avoid UUID collisions
           const KNOWLEDGE_NS = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
-          const agentId = avatar.platformAgentId as any;
+          const agentId = platformAgentId as any;
 
           for (const entry of newKnowledge) {
             try {
               const embedding = await embedText(entry);
-              const memoryId = uuidv5(`knowledge:${avatar.id}:${entry}`, KNOWLEDGE_NS);
+              const memoryId = uuidv5(`knowledge:${updatedAvatar.id}:${entry}`, KNOWLEDGE_NS);
               const elizaRuntime = runtime.getElizaRuntime();
 
               if (elizaRuntime?.createMemory) {
@@ -404,25 +389,20 @@ itemRoutes.post('/learn', requireAuthOrAgentSession, async (c) => {
               console.warn(`[items/learn] Failed to embed entry: ${(entryErr as Error).message}`);
             }
           }
-          console.log(`[items/learn] Embedded ${newKnowledge.length} knowledge entries for avatar ${avatar.id}`);
+          console.log(`[items/learn] Embedded ${newKnowledge.length} knowledge entries for avatar ${updatedAvatar.id}`);
         }
       } catch (err) {
         console.warn(`[items/learn] Knowledge embedding failed (non-blocking): ${(err as Error).message}`);
       }
     }
 
-    // Stop running agent so next chat message restarts with new knowledge
-    await agentOrchestrator.stopAgent(avatar.platformAgentId);
-  }
-
-  // Remove book from inventory (decrement or delete)
-  if (inventoryItem.quantity > 1) {
-    await db
-      .update(avatarInventory)
-      .set({ quantity: inventoryItem.quantity - 1 })
-      .where(eq(avatarInventory.id, inventoryItem.id));
-  } else {
-    await db.delete(avatarInventory).where(eq(avatarInventory.id, inventoryItem.id));
+    // Stop running agent so next chat message restarts with new knowledge. A
+    // stop failure is operationally visible but cannot undo the committed learn.
+    try {
+      await agentOrchestrator.stopAgent(platformAgentId);
+    } catch (err) {
+      console.warn(`[items/learn] Agent restart preparation failed (non-blocking): ${(err as Error).message}`);
+    }
   }
 
   // Q3 plan §2.6 — emit event so the tutorial-quest `agent-scholar`
@@ -433,7 +413,7 @@ itemRoutes.post('/learn', requireAuthOrAgentSession, async (c) => {
     void logEventFromContext(c, {
       eventType: 'book.read',
       userId: userId,
-      avatarId: avatar.id,
+      avatarId: updatedAvatar.id,
       payload: {
         bookId: book.id,
         bookName: book.name,
@@ -474,7 +454,7 @@ itemRoutes.post('/learn', requireAuthOrAgentSession, async (c) => {
           void logEventFromContext(c, {
             eventType: 'agent.knowledge_added',
             userId,
-            avatarId: avatar.id,
+            avatarId: updatedAvatar.id,
             agentId: b.agentId,
             buildingId: book.building,
             payload: {

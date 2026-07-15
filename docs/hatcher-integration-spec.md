@@ -25,6 +25,14 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 > until then, older version numbers below are historical evidence, not the
 > current served-manual value.
 
+> **2026-07-15 identity-gate note.** The canonical dual-identity middleware now
+> exports a reusable ownership-proof gate for ledger and custodial-money routes;
+> the gate fails closed when no resolved identity exists. Wager/cosmetic reads
+> reuse the live session resolver to bind `mine`/owned views to the Hatcher
+> avatar. This changes no Hatcher registration, bearer validation, session TTL,
+> signing, or request/response shape. Current-Hatcher source cross-check plus the
+> staging signed harness remain mandatory central gates before promotion.
+
 ---
 
 ## 0. At a glance

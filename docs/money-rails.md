@@ -1,5 +1,6 @@
 # Money Rails — Canonical Operations Reference
 
+> **Last Audited: 2026-07-15** (x402 reconcile pass: checkout receipt ownership now commits with durable signature capture before fulfillment; independent verification binds the exact signed transaction message. The generic metered `/api/v2/agent/*` paywall stays ENABLED when `X402_ENABLED=true` (prod + staging) — it does NOT yet claim its settled signature into the global receipt registry; that capture-first wiring is a tracked Wave-2 follow-up, NOT a reason to gate or disable the paywall. Migrations `0032`–`0039` applied to staging + deployed at `2281d1bf`; live DB-guard smoke passed.)
 > **Last Audited: 2026-07-14** (CLV swap simulation now includes every writable v0/ALT account in its snapshots, credits rent only when an account parses as an initialized wallet-authority SPL/Token-2022 account, and accepts the mandatory one-time Pump.fun `user_volume_accumulator` creation rent only for the swap wallet's exact derivable PDA when newly created, Pump-program-owned, and no larger than 2.5M lamports. The `priorityFeeLamports + 10,000` fee bound is unchanged. The broader CLV cashout mechanism correction remains local and awaiting Fable review; the E3 captured-delivery reconcile sweep also remains local. Uncommitted/un-deployed, no migration/sign-off. E1/E2 + E3 remain built locally and GATED DARK. The prior four rails remain live at master `a0b43c1c`).
 > Authoritative for agents and operators. Precedence: live code > this doc + ARCHITECTURE.md > memory files.
 > Deep architecture detail lives in `ARCHITECTURE.md` entries (20) agent-pay, (21)/(26) CLV cashout, (22) reconcile-apply, and (25) E1/E2/E3.
@@ -12,7 +13,7 @@
 | ① | vCLAW on-ramp (USDC → BOUGHT vCLAW) | `POST /api/x402/topup/*` (x402 v2 exact-SVM) | `X402_TOPUP_NETWORK=mainnet` | $0.10 settled prod mainnet 2026-07-13 |
 | ② | CLV cashout (settled checkouts → treasury CLV buys) | `clv-swap-live.ts` worker, boots when `CLV_SWAP_EXECUTE=true`; one Jupiter USDC→CLV tx per ≤$100 clip | Flag ON prod 2026-07-14; live-worker start failure is boot-FATAL. Mechanism correction is local/un-deployed | Historical full ladder on mainnet-staging: checkout `5pjJ88QT…` → sweep `39xfgu3y…` → clip `5BeCGakJ…` ($0.10 → 1,483.50 CLV); this is not sign-off on the local correction |
 | ③ | Reconcile APPLY (chain-evidence resolution of stuck rows) | `apps/api/scripts/x402/reconcile-checkouts.ts` | DOUBLE consent: env `RECONCILE_APPLY=true` (ON prod) **AND** CLI `--apply`. Env alone is inert. | 114 unit tests + clean live scans |
-| ④ | Agent↔agent USDC pay + paid routes | `POST /api/agent-pay`; paid `POST /api/v2/agent/expert-consult` ($0.05), `GET /api/v2/agent/analytics/:agentId` ($0.01) | `AGENT_PAY_MAX_USD_CENTS` (default $10) | 13/13 smokes on devnet + mainnet-staging, on-chain conservation proof; PROTOCOL_VERSION 17 |
+| ④ | Agent↔agent USDC pay; metered routes quarantined | `POST /api/agent-pay`; `/api/v2/agent/*` paywall is FEATURE-GATED | `AGENT_PAY_MAX_USD_CENTS` (default $10); `X402_ENABLED=true` is crash-loud refused until metered settlements have a durable capture-first receipt machine | Agent-pay: 13/13 smokes on devnet + mainnet-staging, on-chain conservation proof; metered routes: no paid traffic may be enabled |
 | E3 | EARNED vCLAW exit → market-bought CLV → earner custody | `POST /api/tokenomics/redeem`; `GET /api/tokenomics/redeem/:id`; gated worker | **BUILT-GATED**: route + service require literal `TOKENOMICS_REDEEM_ENABLED=true`; default OFF. G2 funded adversarial smoke + G3 founder legal/MSB/MT/KYC/sanctions clearance required | Verification, staging/mainnet evidence, and founder sign-off pending |
 
 ## 2. Wallet map (pubkeys only)
@@ -40,6 +41,7 @@
 9. **Money test ladder**: devnet-staging → mainnet-staging → mainnet-prod. Prod IS mainnet. No rung claimed without on-chain signatures.
 10. **EARNED dollar conservation**: 1 vCLAW = 10,000 micro-USDC. Redeemable means EARNED ∧ house-backed ∧ payer-verified ∧ vested ∧ not clawed. Current on-chain custody must cover network-partitioned outstanding backing + retained fees + unswept buy principal; captured-ambiguous funding makes solvency indeterminate. Admission and funding share one custody mutex + Postgres advisory lock.
 11. **No dead economics**: no entry rake, treasury split, dividend pool, pro-rata P/E rate, 20% reserve, or fixed CLV anchor. The sole loop fee is 444 bps at exit; CLV floats.
+12. **Global signature ownership at capture**: a signature receipt commits with the rail's durable capture, before rollback-prone fulfillment. The generic `@x402/hono` metered middleware cannot currently satisfy this invariant and is fail-boot gated when `X402_ENABLED=true`.
 
 ## 4. Runbooks
 

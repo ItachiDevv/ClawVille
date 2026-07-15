@@ -59,6 +59,7 @@ import {
   resolveFacilitatorFeePayer,
   verifyAndSettle,
   usdToCt,
+  usdCentsToUsdcAtomic,
   CT_PER_USDC,
   type TopupQuote,
   type X402Network,
@@ -66,6 +67,7 @@ import {
 import { resolveTopupNetwork } from '../routes/ct-topup';
 import { withKeyedMutex } from './keyed-mutex';
 import type { LedgerTx } from './claw-token-ledger';
+import { claimX402Settlement } from './x402-settlement-receipts';
 
 // ---------------------------------------------------------------------------
 // ¢-PEG TRIPWIRE — the whole quote model assumes 1 vCLAW = $0.01
@@ -325,6 +327,7 @@ export type CheckoutSettleResult =
         | 'idempotency_key_conflict'
         | 'checkout_reconciliation'
         | 'signature_conflict'
+        | 'already_settled'
         | 'settle_failed';
       /** payment_not_settled: the facilitator reason + whether a retry may work. */
       reason?: string;
@@ -361,6 +364,13 @@ class CheckoutAlreadySettled extends Error {
   constructor() {
     super('x402_checkout_already_settled');
     this.name = 'CheckoutAlreadySettled';
+  }
+}
+
+class CheckoutSignatureAlreadySettled extends Error {
+  constructor() {
+    super('x402_signature_already_settled');
+    this.name = 'CheckoutSignatureAlreadySettled';
   }
 }
 
@@ -498,6 +508,17 @@ export async function settleCheckout(input: {
     const result = await verifyAndSettle({ paymentHeader, requirements });
     if (!result.settled || !result.txSignature) {
       const reason = result.failureReason ?? 'unsettled';
+      if (reason.startsWith('independent_chain_') && result.txSignature) {
+        await markReconcile(
+          checkoutId,
+          settlingId,
+          reason,
+          result.txSignature,
+          result,
+          { allowExistingReconcile: true },
+        );
+        return { ok: false as const, code: 'checkout_reconciliation' as const, status: 'reconcile' };
+      }
       if (reason === 'facilitator_settle_error') {
         // AMBIGUOUS — money-state UNKNOWN. Move to reconcile (never pending, never
         // failed); the reconciler resolves it against the chain.
@@ -537,11 +558,10 @@ export async function settleCheckout(input: {
     }
 
     // 9) CAPTURE (Codex finding 2): the facilitator settled — persist the tx
-    //    signature IMMEDIATELY in its OWN committed UPDATE, BEFORE fulfillment is
-    //    attempted. The money proof is now durable, so a later fulfillment
-    //    failure can NEVER lose it and re-settle real USDC on retry. The
-    //    tx_signature partial-UNIQUE makes the capture the single exactly-once
-    //    binding of this on-chain payment to this checkout.
+    //    signature + global receipt IMMEDIATELY in one committed transaction,
+    //    BEFORE fulfillment is attempted. The money proof and cross-rail owner
+    //    are now durable, so a later fulfillment failure can NEVER release the
+    //    signature for another economic effect or re-settle real USDC on retry.
     const txSignature = result.txSignature;
     const usdBasis = (rowUsdCents / 100).toFixed(2);
     const captureMeta: Record<string, unknown> = {
@@ -552,20 +572,43 @@ export async function settleCheckout(input: {
     };
     let captured: { id: string }[];
     try {
-      captured = await db
-        .update(x402Checkouts)
-        .set({ txSignature, usdBasisAtReceipt: usdBasis, metadata: captureMeta })
-        .where(
-          and(
-            eq(x402Checkouts.id, checkoutId),
-            eq(x402Checkouts.status, 'settling'),
-            eq(x402Checkouts.settlingId, settlingId),
-            isNull(x402Checkouts.txSignature),
-          ),
-        )
-        .returning({ id: x402Checkouts.id });
+      captured = await db.transaction(async (tx) => {
+        const rows = await tx
+          .update(x402Checkouts)
+          .set({ txSignature, usdBasisAtReceipt: usdBasis, metadata: captureMeta })
+          .where(
+            and(
+              eq(x402Checkouts.id, checkoutId),
+              eq(x402Checkouts.status, 'settling'),
+              eq(x402Checkouts.settlingId, settlingId),
+              isNull(x402Checkouts.txSignature),
+            ),
+          )
+          .returning({ id: x402Checkouts.id });
+        if (rows.length === 0) return rows;
+
+        // Global ownership MUST commit with durable capture, before the
+        // rollback-prone fulfillment transaction. An authoritative fulfillment
+        // refusal rolls fulfillment back but must not release this already-paid
+        // signature for another rail.
+        const receipt = await claimX402Settlement({
+          txSignature,
+          rail: 'x402_checkout',
+          kind: itemKind,
+          referenceId: checkoutId,
+          subjectId: subject.avatarId,
+          amountUsdcAtomic: BigInt(usdCentsToUsdcAtomic(rowUsdCents)),
+        }, tx);
+        if (receipt.kind === 'foreign_owner') {
+          throw new CheckoutSignatureAlreadySettled();
+        }
+        return rows;
+      });
     } catch (err) {
-      if ((err as { code?: string } | undefined)?.code === '23505') {
+      if (
+        err instanceof CheckoutSignatureAlreadySettled
+        || (err as { code?: string } | undefined)?.code === '23505'
+      ) {
         // The settled signature is ALREADY owned by a DIFFERENT checkout (Codex
         // finding 4): the same on-chain payment maps to another item. NEVER
         // fulfill this one on that signature — reconcile, recording the spent
@@ -718,6 +761,18 @@ async function runFulfillment(
 
   try {
     const out = await db.transaction(async (tx) => {
+      const receipt = await claimX402Settlement({
+        txSignature,
+        rail: 'x402_checkout',
+        kind: itemKind,
+        referenceId: checkoutId,
+        subjectId: subject.avatarId,
+        amountUsdcAtomic: BigInt(usdCentsToUsdcAtomic(rowUsdCents)),
+      }, tx);
+      if (receipt.kind === 'foreign_owner') {
+        throw new CheckoutSignatureAlreadySettled();
+      }
+
       // Flip settling(+sig) → settled FIRST, checked. A concurrent resume that
       // already settled ⇒ 0 rows ⇒ CheckoutAlreadySettled ⇒ replay (the fulfiller
       // NEVER runs twice).
@@ -738,7 +793,8 @@ async function runFulfillment(
 
       // THE FULFILLER — all item-domain writes compose into THIS tx. On any throw
       // (refusal OR error) the whole tx (flip included) rolls back → the row
-      // stays settling+sig, resumable, and the signature is never lost.
+      // stays settling+sig, resumable, while the capture transaction's global
+      // receipt remains committed.
       const fulfillment = await fulfiller({
         tx,
         checkoutId,
@@ -771,6 +827,17 @@ async function runFulfillment(
       fulfillment: out.detail,
     };
   } catch (err) {
+    if (err instanceof CheckoutSignatureAlreadySettled) {
+      await markReconcile(
+        checkoutId,
+        row.settlingId,
+        'global_signature_conflict',
+        txSignature,
+        null,
+        { allowExistingReconcile: true },
+      );
+      return { ok: false as const, code: 'already_settled' as const, status: 'reconcile' };
+    }
     if (err instanceof CheckoutAlreadySettled) {
       const settled = await db.query.x402Checkouts.findFirst({
         where: and(eq(x402Checkouts.id, checkoutId), eq(x402Checkouts.avatarId, subject.avatarId)),

@@ -171,27 +171,27 @@ function seededRng(seed: number): () => number {
 
 // Model paths — all already preloaded by DeferredTerrainPreloads in arena-terrain.tsx
 const PROP_MODELS_RING = [
-  '/models/coral-reef1-ktx.glb',
-  '/models/coral-reef2-ktx.glb',
-  '/models/coral-reef3-ktx.glb',
+  '/models/coral-reef1-ktx.glb?v=2',
+  '/models/coral-reef2-ktx.glb?v=2',
+  '/models/coral-reef3-ktx.glb?v=2',
   '/models/kelp.glb',
   '/models/building-barrel.glb',
-  '/models/building-lantern-ktx.glb',
+  '/models/building-lantern-ktx.glb?v=2',
   '/models/building-anchor.glb',
-  '/models/building-shell-ktx.glb',
+  '/models/building-shell-ktx.glb?v=2',
 ] as const;
 type PropModel = typeof PROP_MODELS_RING[number];
 
 // Model config: scale range and weight for random selection
 const MODEL_CFG: Array<{ model: PropModel; minS: number; maxS: number; weight: number }> = [
-  { model: '/models/coral-reef1-ktx.glb',      minS: 6,  maxS: 18, weight: 4 },
-  { model: '/models/coral-reef2-ktx.glb',      minS: 5,  maxS: 14, weight: 3 },
-  { model: '/models/coral-reef3-ktx.glb',      minS: 4,  maxS: 12, weight: 3 },
+  { model: '/models/coral-reef1-ktx.glb?v=2',      minS: 6,  maxS: 18, weight: 4 },
+  { model: '/models/coral-reef2-ktx.glb?v=2',      minS: 5,  maxS: 14, weight: 3 },
+  { model: '/models/coral-reef3-ktx.glb?v=2',      minS: 4,  maxS: 12, weight: 3 },
   { model: '/models/kelp.glb',             minS: 7,  maxS: 16, weight: 3 },
   { model: '/models/building-barrel.glb',  minS: 4,  maxS: 8,  weight: 3 },
-  { model: '/models/building-lantern-ktx.glb', minS: 5,  maxS: 9,  weight: 3 },
+  { model: '/models/building-lantern-ktx.glb?v=2', minS: 5,  maxS: 9,  weight: 3 },
   { model: '/models/building-anchor.glb',  minS: 4,  maxS: 10, weight: 2 },
-  { model: '/models/building-shell-ktx.glb',   minS: 3,  maxS: 8,  weight: 3 },
+  { model: '/models/building-shell-ktx.glb?v=2',   minS: 3,  maxS: 8,  weight: 3 },
 ];
 const TOTAL_WEIGHT = MODEL_CFG.reduce((s, m) => s + m.weight, 0);
 

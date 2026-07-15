@@ -23,10 +23,9 @@
  *      the bubble when absent — the turn still settles.
  *   4. SETTLE, all three legs, ONLY on a successful (proximity-passed,
  *      genuinely conversed) reply:
- *      a. CT — the SHARED `creditBuildingRewardOncePerDay` (building-reward.ts),
- *         SAME reason 'building_chat_teaching' + amount (1) as the connected
- *         path: identical economics = parity; the daily probe makes
- *         double-dipping impossible. DEFAULT (soft) provenance via
+ *      a. vCLAW — the shared durable building-chat claim (building-reward.ts),
+ *         keyed by avatar + building + UTC day across human, connected, and
+ *         autonomous paths. DEFAULT (soft) provenance via
  *         creditClawTokens — NEVER mintEarned (external-USDC only).
  *      b. Leaderboard — direct `logEvent` (the documented no-HTTP path, fp/ip
  *         null) with the EXISTING 'agent.chat.turn' event type (weight 10, cap
@@ -61,7 +60,10 @@ import { npcSimulation } from './npc-simulation';
 import { agentOrchestrator } from './agent-orchestrator';
 import { getSystemNpcAgent } from './system-npc-seeder';
 import { logEvent } from './event-logger';
-import { creditBuildingRewardOncePerDay } from './building-reward';
+import {
+  creditBuildingChatRewardOncePerDay,
+  creditBuildingRewardOncePerDay,
+} from './building-reward';
 import { resolveBuildingCenter } from './building-center';
 import { sessionDigest } from './session-digest';
 import { recordEarnedSkillLesson, readEarnedSkillLessons } from './earned-skill-memory';
@@ -274,12 +276,12 @@ export async function conductTeacherTurn(
       npcSimulation.injectAgentChat(buildingId, reply.slice(0, TEACHER_BUBBLE_MAX));
     }
 
-    // 4a. CT — the SHARED once-per-day credit (identical to the connected path:
-    // same reason, same amount 1, same probe key). Fail-soft: a ledger error
+    // 4a. vCLAW — the shared once-per-day chat claim (same avatar/building/day
+    // key as human + connected paths). Fail-soft: a ledger error
     // costs the token, not the turn.
     let tokenAwarded: 0 | 1 = 0;
     try {
-      tokenAwarded = (await creditBuildingRewardOncePerDay({
+      tokenAwarded = (await creditBuildingChatRewardOncePerDay({
         avatarId,
         buildingId,
         reason: 'building_chat_teaching',
@@ -289,6 +291,7 @@ export async function conductTeacherTurn(
           characterName: teacherName,
           via: 'world-autonomous',
         },
+        actorKind: 'agent',
       }))
         ? 1
         : 0;

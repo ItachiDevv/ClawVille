@@ -81,7 +81,7 @@ const DIR_SHADOW_CAM_BOUNDS = 12000;
 
 // ─── Preload assets ───────────────────────────────────────────────────────────
 useGLTF.preload('/models/reef-race/surfboards/surfboard_1.glb');
-preloadKTX2Bytes('/models/lobster-ktx.glb');
+preloadKTX2Bytes('/models/lobster-ktx.glb?v=2');
 
 // ─── Camera mode ─────────────────────────────────────────────────────────────
 const CAMERA_MODES = ['free-orbit', 'top-down', 'cinematic', 'side-on'] as const;
@@ -449,7 +449,7 @@ interface KartProps {
 
 function SplineSurfboardKart({ t, color, onMounted, visible = true }: KartProps) {
   const { scene: sbSrc }   = useGLTF('/models/reef-race/surfboards/surfboard_1.glb');
-  const { scene: lobSrc }  = useGLTFWithKTX2('/models/lobster-ktx.glb');
+  const { scene: lobSrc }  = useGLTFWithKTX2('/models/lobster-ktx.glb?v=2');
 
   const groupRef   = useRef<THREE.Group>(null);
   const gliderRef  = useRef<THREE.Group>(null);

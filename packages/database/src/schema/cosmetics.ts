@@ -41,7 +41,9 @@ import {
   timestamp,
   uniqueIndex,
   index,
+  check,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { avatars } from './avatars';
 
 export const cosmeticSkus = pgTable(
@@ -95,6 +97,8 @@ export const cosmeticSkus = pgTable(
      * the SKU from new buyers. Existing owners keep theirs.
      */
     supplyCap: integer('supply_cap'),
+    /** Number of ownership grants committed for this SKU. */
+    soldCount: integer('sold_count').notNull().default(0),
 
     createdAt: timestamp('created_at', { withTimezone: true })
       .defaultNow()
@@ -105,6 +109,10 @@ export const cosmeticSkus = pgTable(
     // optionally filtered by scope.
     idxScope: index('idx_cosmetic_skus_scope').on(t.scope),
     idxAvailUntil: index('idx_cosmetic_skus_avail_until').on(t.availableUntil),
+    soldCountNonnegative: check(
+      'cosmetic_skus_sold_count_nonnegative',
+      sql`${t.soldCount} >= 0`,
+    ),
   }),
 );
 
@@ -194,6 +202,8 @@ export const avatarSkins = pgTable(
   (t) => ({
     // Each avatar owns each SKU exactly once. Re-purchases are a no-op (idempotent).
     uniqAvatarSku: uniqueIndex('uniq_avatar_skin_avatar_sku').on(t.avatarId, t.skuId),
+    // Limited-supply reconciliation counts ownership by SKU during rollout.
+    idxSku: index('idx_avatar_skins_sku_id').on(t.skuId),
     // Hot path: load all equipped skins for an avatar.
     idxAvatarEquipped: index('idx_avatar_skin_avatar_equipped').on(t.avatarId, t.equipped),
   }),

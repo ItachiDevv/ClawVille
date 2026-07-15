@@ -146,7 +146,11 @@ x402CheckoutRoutes.post('/quote', requireAuthOrAgentSession, requireNonGuestIden
     const item = await resolveCosmeticCheckoutItem(subject.avatarId, parsed.data.itemRef);
     if (!item.ok) {
       const status =
-        item.code === 'not_found' ? 404 : item.code === 'already_owned' ? 409 : 400;
+        item.code === 'not_found'
+          ? 404
+          : item.code === 'already_owned' || item.code === 'sold_out'
+            ? 409
+            : 400;
       return c.json({ error: item.code, code: item.code }, status);
     }
     priceVclaw = item.priceVclaw;
@@ -310,6 +314,7 @@ x402CheckoutRoutes.post('/settle', requireAuthOrAgentSession, requireNonGuestIde
         return c.json({ error: result.code, code: result.code }, 409);
       case 'checkout_reconciliation':
       case 'signature_conflict':
+      case 'already_settled':
         // Money-state needs reconciliation: a stale settling claim (money-state
         // unknown), a capture that could not be recorded, or a settled signature
         // already owned by another checkout. The row is in `reconcile` — a
