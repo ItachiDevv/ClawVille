@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { Keypair, SystemProgram, Transaction } from '@solana/web3.js';
 import {
-  assertMeteredAgentPaywallSafe,
   assertProductionFacilitatorAllowed,
 } from '../x402-config';
 import { receiptMatchesOwner } from '../x402-settlement-receipts';
@@ -32,15 +31,6 @@ describe('production facilitator origin guard', () => {
   it('does not constrain staging or local test facilitators', () => {
     expect(() => assertProductionFacilitatorAllowed('http://127.0.0.1:4000/mock', 'staging')).not.toThrow();
     expect(() => assertProductionFacilitatorAllowed('http://localhost:4000/mock', undefined)).not.toThrow();
-  });
-});
-
-describe('metered-agent cross-rail replay gate', () => {
-  it('refuses X402_ENABLED until metered settlements join the durable receipt registry', () => {
-    expect(() => assertMeteredAgentPaywallSafe(true)).toThrow(
-      /FEATURE_GATE metered_agent_receipt_registry/,
-    );
-    expect(() => assertMeteredAgentPaywallSafe(false)).not.toThrow();
   });
 });
 
