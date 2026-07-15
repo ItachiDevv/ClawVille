@@ -11,7 +11,11 @@ import { shouldCollaborate, collaborateOnQuery } from '../services/agent-collabo
 import { logEvent, logEventFromContext } from '../services/event-logger';
 import { miladyGateway } from '../services/milady-gateway';
 import { creditClawTokens } from '../services/claw-token-ledger';
-import { creditBuildingChatRewardOncePerDay } from '../services/building-reward';
+import {
+  creditBuildingChatRewardOncePerDay,
+  humanBuildingChatRewardAvatarId,
+} from '../services/building-reward';
+import { isGuestUser } from '../middleware/require-non-guest';
 import { buildRuntimeServices } from '../services/runtime-services-adapter';
 import { getSystemNpcAgent, getSystemAgent } from '../services/system-npc-seeder';
 import { systemAgentRewardLimiter } from '../services/system-agent-reward-limiter';
@@ -127,11 +131,12 @@ chatRoutes.post('/system/:slug', requireAuth, async (c) => {
 
   // Reward a token + XP for chatting, same economy as a building teacher —
   // but only once per (userId, slug) every 60s to stop spam mints.
-  // Guest avatars run an ALL-DEMO economy: they NEVER touch the real CT
+  // Guest users run an ALL-DEMO economy: they NEVER touch the real CT
   // ledger (and `&&` short-circuits so they also don't consume the limiter),
   // so both `creditClawTokens` AND the `awardXp` level-up leak are skipped.
   let tokenAwarded: 0 | 1 = 0;
-  if (avatar && !avatar.isGuest && systemAgentRewardLimiter.tryConsume(user.id, slug)) {
+  const canonicalGuest = avatar ? await isGuestUser(user.id) : false;
+  if (avatar && !canonicalGuest && systemAgentRewardLimiter.tryConsume(user.id, slug)) {
     tokenAwarded = 1;
     await creditClawTokens({
       avatarId: avatar.id,
@@ -336,15 +341,20 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
 
   // Award +1 vCLAW once per (avatar, building, UTC day), shared with connected
   // and autonomous agent teacher-chat paths. The durable claim + mint are one tx.
-  // Guest avatars run an ALL-DEMO economy: they NEVER touch the real CT ledger,
+  // Guest users run an ALL-DEMO economy: they NEVER touch the real CT ledger,
   // so BOTH the direct credit AND the `awardXp` level-up token leak (50 real CT
   // on level-up) are skipped for guests — gating the whole block is what closes
   // the XP leak (awardXp is only ever called from this file).
   let tokenAwarded: 0 | 1 = 0;
-  if (avatar && !avatar.isGuest) {
+  // `users.is_guest` is the canonical security state. `avatars.is_guest` is a
+  // denormalized mirror and may be stale/default-false, so it must not authorize
+  // this mint (or the XP level-up mint reachable through awardXp).
+  const canonicalGuest = avatar ? await isGuestUser(user.id) : false;
+  const rewardAvatarId = humanBuildingChatRewardAvatarId(avatar?.id ?? null, canonicalGuest);
+  if (rewardAvatarId) {
     try {
       tokenAwarded = (await creditBuildingChatRewardOncePerDay({
-        avatarId: avatar.id,
+        avatarId: rewardAvatarId,
         buildingId: locationId,
         reason: 'location_chat',
         metadata: { locationId },
@@ -357,7 +367,7 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
     // XP follows the same durable daily claim, so repeat chat cannot farm level
     // bonus mints through awardXp. Non-blocking behavior is preserved.
     if (tokenAwarded === 1) {
-      awardXp(avatar.id, 5, 'npc-chat').catch(console.error);
+      awardXp(rewardAvatarId, 5, 'npc-chat').catch(console.error);
     }
   }
 
@@ -375,7 +385,7 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
       // Guest-avatar carve-out (2026-04-23) — flag for /dash teacher-chat
       // metric so guest chats are excluded from the "real engagement"
       // count. The dashboard SQL filters `payload->>'isGuest' <> 'true'`.
-      isGuest: avatar?.isGuest ?? false,
+      isGuest: canonicalGuest,
     },
   });
 

@@ -5,10 +5,8 @@ import {
   db,
   avatars,
   avatarInventory,
-  agents,
   agentBots,
   users,
-  type AvatarCharacterConfigJson,
 } from '@clawville/database';
 import { getBookById, getBooksForBuilding, KNOWLEDGE_BOOKS, BUILDING_MILADY_SKILLS } from '@clawville/shared';
 import { miladyGateway } from '../services/milady-gateway';
@@ -19,7 +17,11 @@ import { sessionMiddleware } from '../middleware/auth';
 import { requireAuthOrAgentSession } from '../middleware/require-auth-or-agent';
 import { isGuestUser } from '../middleware/require-non-guest';
 import { agentOrchestrator } from '../services/agent-orchestrator';
-import { embedText } from '@clawville/agent-runtime';
+import {
+  embedText,
+  learnBookAtomically,
+  LearnBookError,
+} from '@clawville/agent-runtime';
 import { logEventFromContext } from '../services/event-logger';
 import { publishKnowledgeAdded } from '../services/skill-event-bus';
 import { npcSimulation } from '../services/npc-simulation';
@@ -310,105 +312,34 @@ itemRoutes.post('/learn', requireAuthOrAgentSession, async (c) => {
     throw new HTTPException(400, { message: 'Invalid book ID' });
   }
 
-  const book = getBookById(result.data.bookId);
-  if (!book) {
-    throw new HTTPException(404, { message: 'Book not found' });
+  let learned;
+  try {
+    learned = await learnBookAtomically(db, {
+      avatarId: identity.avatarId,
+      bookId: result.data.bookId,
+    });
+  } catch (error) {
+    if (error instanceof LearnBookError) {
+      if (error.code === 'book_not_found') {
+        throw new HTTPException(404, { message: 'Book not found' });
+      }
+      if (error.code === 'avatar_not_found') {
+        throw new HTTPException(404, { message: 'No avatar found' });
+      }
+      throw new HTTPException(400, {
+        message: 'You do not have this book in your inventory',
+      });
+    }
+    throw error;
   }
 
-  const learned = await db.transaction(async (tx) => {
-    // Lock the avatar first (the same order used by the purchase ledger path),
-    // then derive knowledge from the latest committed character config.
-    const lockedRows = await tx.execute<{
-      id: string;
-      platform_agent_id: string | null;
-      character_config: Record<string, unknown> | null;
-    }>(
-      sql`SELECT id, platform_agent_id, character_config
-          FROM avatars
-          WHERE user_id = ${userId} AND is_active = true
-          FOR UPDATE`,
-    );
-    const lockedAvatar = lockedRows[0];
-    if (!lockedAvatar) {
-      throw new HTTPException(404, { message: 'No avatar found' });
-    }
-
-    // Claim exactly one positive inventory unit under a row lock. The conditional
-    // decrement is the consume point; a concurrent request cannot reuse qty=1.
-    const consumedRows = await tx.execute<{ id: string; quantity: number }>(
-      sql`WITH inventory_item AS (
-            SELECT id
-            FROM avatar_inventory
-            WHERE avatar_id = ${lockedAvatar.id}
-              AND item_id = ${result.data.bookId}
-              AND quantity > 0
-            ORDER BY acquired_at ASC, id ASC
-            LIMIT 1
-            FOR UPDATE
-          )
-          UPDATE avatar_inventory AS inventory
-          SET quantity = inventory.quantity - 1
-          FROM inventory_item
-          WHERE inventory.id = inventory_item.id
-          RETURNING inventory.id, inventory.quantity`,
-    );
-    const consumed = consumedRows[0];
-    if (!consumed) {
-      throw new HTTPException(400, { message: 'You do not have this book in your inventory' });
-    }
-
-    const currentConfig = lockedAvatar.character_config ?? {};
-    const configuredKnowledge = currentConfig.knowledge;
-    const currentKnowledge = Array.isArray(configuredKnowledge)
-      ? configuredKnowledge.filter((entry): entry is string => typeof entry === 'string')
-      : [];
-    const known = new Set(currentKnowledge);
-    const newKnowledge = book.knowledgeEntries.filter((entry) => !known.has(entry));
-    const mergedKnowledge = [...currentKnowledge, ...newKnowledge];
-    const updatedConfig = {
-      ...currentConfig,
-      knowledge: mergedKnowledge,
-    };
-
-    const [updatedAvatar] = await tx
-      .update(avatars)
-      .set({
-        characterConfig: updatedConfig as AvatarCharacterConfigJson,
-        updatedAt: new Date(),
-      })
-      .where(eq(avatars.id, lockedAvatar.id))
-      .returning();
-    if (!updatedAvatar) {
-      throw new HTTPException(404, { message: 'No avatar found' });
-    }
-
-    // Keep the persisted platform-agent config atomic with the avatar knowledge
-    // and inventory consume. Runtime/embedding side effects happen after commit.
-    if (lockedAvatar.platform_agent_id) {
-      await tx
-        .update(agents)
-        .set({
-          customization: updatedConfig,
-          updatedAt: new Date(),
-        })
-        .where(eq(agents.id, lockedAvatar.platform_agent_id));
-    }
-
-    if (consumed.quantity === 0) {
-      await tx
-        .delete(avatarInventory)
-        .where(and(eq(avatarInventory.id, consumed.id), eq(avatarInventory.quantity, 0)));
-    }
-
-    return {
-      updatedAvatar,
-      platformAgentId: lockedAvatar.platform_agent_id,
-      newKnowledge,
-      mergedKnowledge,
-    };
-  });
-
-  const { updatedAvatar, platformAgentId, newKnowledge, mergedKnowledge } = learned;
+  const {
+    book,
+    updatedAvatar,
+    platformAgentId,
+    newKnowledge,
+    mergedKnowledge,
+  } = learned;
 
   // Update runtime memories after the DB transaction commits. These effects are
   // idempotent/best-effort and must never turn a committed consume into a 500.

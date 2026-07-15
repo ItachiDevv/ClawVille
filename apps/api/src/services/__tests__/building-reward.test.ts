@@ -24,11 +24,56 @@ import { describe, expect, it, beforeEach } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  agentBuildingChatRewardAvatarId,
   creditBuildingChatRewardOncePerDay,
   creditBuildingRewardOncePerDay,
+  humanBuildingChatRewardAvatarId,
   type BuildingRewardDeps,
   type BuildingRewardTx,
 } from '../building-reward';
+
+describe('building-chat reward subject decisions', () => {
+  it.each([
+    {
+      name: 'legitimate ledger-capable session uses its exact active avatar',
+      subject: { ledgerCapable: true, avatarId: 'active-session-avatar' },
+      expected: 'active-session-avatar',
+    },
+    {
+      name: 'ownership-unproven reconnect may chat but cannot reward the bound victim avatar',
+      subject: { ledgerCapable: false, avatarId: 'victim-active-avatar' },
+      expected: null,
+    },
+    {
+      name: 'ledger-capable session without an active avatar fails closed',
+      subject: { ledgerCapable: true, avatarId: null },
+      expected: null,
+    },
+    {
+      name: 'unresolved session fails closed',
+      subject: null,
+      expected: null,
+    },
+  ])('$name', ({ subject, expected }) => {
+    expect(agentBuildingChatRewardAvatarId(subject)).toBe(expected);
+  });
+
+  it('wrong-avatar regression: only the resolved active avatar can flow', () => {
+    const historicalBotOwnerAvatar = 'inactive-or-wrong-avatar';
+    const resolved = { ledgerCapable: true, avatarId: 'resolved-active-avatar' };
+
+    expect(agentBuildingChatRewardAvatarId(resolved)).toBe('resolved-active-avatar');
+    expect(agentBuildingChatRewardAvatarId(resolved)).not.toBe(historicalBotOwnerAvatar);
+  });
+
+  it.each([
+    { name: 'real human', avatarId: 'human-avatar', isGuest: false, expected: 'human-avatar' },
+    { name: 'canonical guest despite an avatar row', avatarId: 'guest-avatar', isGuest: true, expected: null },
+    { name: 'no active avatar', avatarId: null, isGuest: false, expected: null },
+  ])('$name', ({ avatarId, isGuest, expected }) => {
+    expect(humanBuildingChatRewardAvatarId(avatarId, isGuest)).toBe(expected);
+  });
+});
 
 // ── drizzle `sql` template introspection (pattern proven in
 //    claw-token-ledger.test.ts / cash-house-scaler.test.ts) ───────────────────
@@ -302,5 +347,133 @@ describe('creditBuildingChatRewardOncePerDay (shared durable claim)', () => {
     expect(autonomousSource.match(/await creditBuildingChatRewardOncePerDay\(/g)).toHaveLength(1);
     expect(gatewaySource.match(/await creditBuildingRewardOncePerDay\(/g)).toHaveLength(1);
     expect(autonomousSource.match(/await creditBuildingRewardOncePerDay\(/g)).toHaveLength(1);
+  });
+
+  it('connected-agent chat mints only for the canonical ledger-capable session avatar', () => {
+    const gatewaySource = readFileSync(
+      join(import.meta.dir, '..', '..', 'routes', 'agent-gateway.ts'),
+      'utf8',
+    );
+    const routeStart = gatewaySource.indexOf(
+      "agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat'",
+    );
+    const routeEnd = gatewaySource.indexOf(
+      "agentGatewayRoutes.get('/:sessionId/skills/:buildingId/skill-memory'",
+      routeStart,
+    );
+    const routeSource = gatewaySource.slice(routeStart, routeEnd);
+
+    expect(routeStart).toBeGreaterThan(-1);
+    expect(routeEnd).toBeGreaterThan(routeStart);
+    expect(routeSource).toContain('await resolveAgentSession(sessionId)');
+    expect(routeSource).toContain('agentBuildingChatRewardAvatarId(rewardSubject)');
+    expect(routeSource).toContain('avatarId: rewardAvatarId');
+    expect(routeSource).toContain('agentId: bot.agentId');
+    // Regression: the liveness-only bot.userId lookup let an ownership-unproven
+    // reconnect target the row owner's avatar (and could select an inactive one).
+    expect(routeSource).not.toContain('resolveAvatarIdForBot(');
+  });
+
+  it('connected-agent visits reward and attribute only the canonical ledger-capable session subject', () => {
+    const gatewaySource = readFileSync(
+      join(import.meta.dir, '..', '..', 'routes', 'agent-gateway.ts'),
+      'utf8',
+    );
+    const routeStart = gatewaySource.indexOf(
+      "agentGatewayRoutes.post('/:sessionId/visit-building'",
+    );
+    const routeEnd = gatewaySource.indexOf(
+      "agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat'",
+      routeStart,
+    );
+    const routeSource = gatewaySource.slice(routeStart, routeEnd);
+
+    expect(routeStart).toBeGreaterThan(-1);
+    expect(routeEnd).toBeGreaterThan(routeStart);
+    expect(routeSource).toContain('await resolveAgentSession(sessionId)');
+    expect(routeSource).toContain('agentBuildingChatRewardAvatarId(rewardSubject)');
+    expect(routeSource).toContain('avatarId,');
+    expect(routeSource).toContain(
+      'visitUserId = avatarId ? (rewardSubject?.userId ?? null) : null',
+    );
+    expect(routeSource).not.toContain('resolveAvatarIdForBot(');
+    expect(routeSource).not.toContain('visitUserId = bot.userId');
+  });
+
+  it('human chat authorizes the mint and XP from canonical users.is_guest, not the avatar mirror', () => {
+    const chatSource = readFileSync(
+      join(import.meta.dir, '..', '..', 'routes', 'chat.ts'),
+      'utf8',
+    );
+
+    expect(chatSource).toContain("import { isGuestUser } from '../middleware/require-non-guest'");
+    expect(chatSource).toContain('const canonicalGuest = avatar ? await isGuestUser(user.id) : false');
+    expect(chatSource).toContain('humanBuildingChatRewardAvatarId(avatar?.id ?? null, canonicalGuest)');
+    expect(chatSource).toContain('if (rewardAvatarId)');
+    expect(chatSource).toContain('isGuest: canonicalGuest');
+    expect(chatSource).not.toContain('if (avatar && !avatar.isGuest)');
+  });
+
+  it('system-agent chat checks canonical guest state before consuming its limiter', () => {
+    const chatSource = readFileSync(
+      join(import.meta.dir, '..', '..', 'routes', 'chat.ts'),
+      'utf8',
+    );
+    const routeStart = chatSource.indexOf("chatRoutes.post('/system/:slug'");
+    const routeEnd = chatSource.indexOf("chatRoutes.post('/:id/chat'", routeStart);
+    const routeSource = chatSource.slice(routeStart, routeEnd);
+
+    expect(routeStart).toBeGreaterThan(-1);
+    expect(routeEnd).toBeGreaterThan(routeStart);
+    const guestCheckAt = routeSource.indexOf('await isGuestUser(user.id)');
+    const limiterAt = routeSource.indexOf('systemAgentRewardLimiter.tryConsume(user.id, slug)');
+    expect(guestCheckAt).toBeGreaterThan(-1);
+    expect(limiterAt).toBeGreaterThan(guestCheckAt);
+    expect(routeSource).toContain('avatar && !canonicalGuest &&');
+    expect(routeSource).not.toContain('!avatar.isGuest');
+  });
+
+  it('0032 commits guards before split backfill/index migrations', () => {
+    const migrationDir = join(
+      import.meta.dir,
+      '..',
+      '..',
+      '..',
+      '..',
+      '..',
+      'packages',
+      'database',
+      'migrations',
+    );
+    const migration = readFileSync(join(migrationDir, '0032_supply_mint_idempotency.sql'), 'utf8');
+    const backfill = readFileSync(join(migrationDir, '0032a_supply_mint_chat_backfill.sql'), 'utf8');
+    const activity = readFileSync(join(migrationDir, '0032b_activity_result_uniqueness.sql'), 'utf8');
+    const xpTriggerAt = migration.indexOf(
+      'CREATE TRIGGER "guard_atomic_xp_update_before_update"',
+    );
+    const ledgerTriggerAt = migration.indexOf(
+      'CREATE TRIGGER "capture_building_chat_reward_claim_after_insert"',
+    );
+
+    expect(xpTriggerAt).toBeGreaterThan(-1);
+    expect(ledgerTriggerAt).toBeGreaterThan(xpTriggerAt);
+    expect(migration).not.toContain('DROP TRIGGER');
+    expect(migration).not.toContain('SELECT DISTINCT ON');
+    expect(migration).toContain("NEW.\"reason\" NOT IN ('location_chat', 'building_chat_teaching')");
+    expect(migration).toContain("NEW.\"metadata\"->>'buildingId'");
+    expect(migration).toContain("NEW.\"metadata\"->>'locationId'");
+    expect(migration).toContain('IF existing_ledger_id IS NULL THEN');
+    expect(migration).toContain('SET "ledger_id" = NEW."id"');
+    expect(migration).toContain('IF existing_ledger_id = NEW."id" THEN');
+    expect(migration).toContain(
+      "MESSAGE = 'duplicate building-chat reward rejected during rolling deploy'",
+    );
+    expect(migration).toContain("current_setting('clawville.xp_write_authorized', true)");
+    expect(migration).toContain('BEFORE UPDATE OF "xp", "level", "total_xp"');
+    expect(backfill).toContain('INSERT INTO "building_chat_reward_claims" (');
+    expect(backfill).toContain('"id" AS "ledger_id"');
+    expect(backfill).toContain('WHERE "building_chat_reward_claims"."ledger_id" IS NULL');
+    expect(activity).toContain('activity_results has duplicate (room_id, avatar_id) rows');
+    expect(activity).toContain("WHERE reason = 'activity_match_placed'");
   });
 });

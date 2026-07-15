@@ -46,9 +46,9 @@ import { resolveBuildingCenter } from '../services/building-center';
 // Shared building reward + bot→avatar resolver. Visits retain their legacy
 // ledger-row probe; teacher chats use one durable human/agent daily claim.
 import {
+  agentBuildingChatRewardAvatarId,
   creditBuildingChatRewardOncePerDay,
   creditBuildingRewardOncePerDay,
-  resolveAvatarIdForBot,
 } from '../services/building-reward';
 import { buildRuntimeServices } from '../services/runtime-services-adapter';
 import { getSystemNpcAgent } from '../services/system-npc-seeder';
@@ -88,7 +88,10 @@ import { queryDurableAgentEvents } from '../services/agent-event-query';
 import { runTool } from '../services/skill-tools-dispatcher';
 import { coveBlackjackRouter } from './cove-blackjack';
 import { covePokerMttRouter } from './cove-poker-mtt';
-import { validateLiveAgentSession } from '../middleware/require-auth-or-agent';
+import {
+  resolveAgentSession,
+  validateLiveAgentSession,
+} from '../middleware/require-auth-or-agent';
 import { sessionDigest, sha256Hex } from '../services/session-digest';
 import {
   isReservedPartnerAgentId,
@@ -2343,10 +2346,9 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
   // Award 1 ClawToken for visiting a building (best-effort — openclaw bots
   // without a matching avatars row will silently skip the credit)
   let tokenAwarded = 0;
-  // Capture bot's userId so the event row can be attributed to the human
-  // account behind the agent — required for the deep-explorer tutorial
-  // quest validator's `(user_id = X OR avatar_id = Y)` check (audit-fix
-  // 2026-04-29).
+  // Attribute only to the owner proven by this exact bearer. A chat-only
+  // reconnect may be live while ownership is unproven; it must not mint to OR
+  // emit a quest-credit userId for the bot row's victim owner.
   let visitUserId: string | null = null;
   const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (botConfig) {
@@ -2355,14 +2357,13 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
         where: eq(agentBots.agentId, botConfig.agentId),
       });
       if (bot) {
-        visitUserId = bot.userId ?? null;
-        // BUG FIX (2026-06-01, Hatcher Phase A): credit the BOUND AVATAR, not
-        // `bot.id`. `bot.id` is an openclaw_bots PK, not an avatars PK, so the
-        // ledger threw "avatar not found" (swallowed) and connected agents
-        // never earned CT for building visits. Resolve the avatar via
-        // bot.userId -> avatars.id and credit that. If the bot has no
-        // userId/avatar, skip the credit honestly (tokenAwarded stays 0).
-        const avatarId = await resolveAvatarIdForBot(bot.userId ?? null);
+        visitUserId = null;
+        // Resolve through the canonical spend-time session gate. Liveness alone
+        // does not authorize rewards; an ownership-unproven reconnect stays
+        // successful but earns zero and attributes no victim userId.
+        const rewardSubject = await resolveAgentSession(sessionId);
+        const avatarId = agentBuildingChatRewardAvatarId(rewardSubject);
+        visitUserId = avatarId ? (rewardSubject?.userId ?? null) : null;
         if (avatarId) {
           // M2 anti-faucet: idempotent per (avatar, building, reason, UTC-day). A
           // same-day repeat visit returns false → tokenAwarded stays 0 (honest).
@@ -2423,9 +2424,8 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
   void logEventFromContext(c, {
     eventType: 'building.visited',
     // Audit-fix 2026-04-29 — userId attribution lets the deep-explorer
-    // tutorial quest validator credit the human account for autonomous
-    // agent visits. Was missing pre-fix; quest was effectively unclaimable
-    // for users whose agents did all the visiting.
+    // tutorial quest validator credit the proven human account for autonomous
+    // agent visits. Ownership-unproven sessions deliberately leave this null.
     userId: visitUserId,
     agentId: botConfig?.agentId ?? sessionDigest(sessionId),
     sessionId: sessionDigest(sessionId),
@@ -2577,13 +2577,18 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
             .where(eq(agentBots.id, bot.id));
           knowledgePersisted = true;
         }
-        // Award +1 ClawToken for successful teaching turn.
-        // BUG FIX (2026-06-01, Hatcher Phase A): credit the BOUND AVATAR, not
-        // `bot.id` (same no-op bug as building-visit). Resolve the avatar via
-        // bot.userId -> avatars.id; skip honestly if the bot has no
-        // userId/avatar (tokenAwarded stays 0).
-        const avatarId = await resolveAvatarIdForBot(bot.userId ?? null);
-        if (avatarId) {
+        // Award +1 ClawToken only when THIS bearer proved ledger ownership.
+        // `validateLiveAgentSession` above proves liveness, but reconnecting to a
+        // known agent id intentionally yields a live chat-only session until
+        // ownership is proven. Resolve the economic subject through the canonical
+        // spend-time gate and use its exact ACTIVE avatar id; never re-derive from
+        // bot.userId (which could target the row owner's avatar from an
+        // ownership-unproven session, or select a historical inactive avatar).
+        // A non-ledger session still receives the successful chat response and
+        // knowledge persistence, but tokenAwarded remains 0.
+        const rewardSubject = await resolveAgentSession(sessionId);
+        const rewardAvatarId = agentBuildingChatRewardAvatarId(rewardSubject);
+        if (rewardAvatarId) {
           // M7b anti-faucet: idempotent per (avatar, building, UTC-day) across
           // human, connected-agent, and autonomous teacher-chat surfaces. A
           // same-day repeat from ANY path returns false → tokenAwarded stays 0.
@@ -2591,7 +2596,7 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
           // building-visit credit above; money-ledger metadata is persisted, never
           // store the recoverable real-CT bearer in it.
           tokenAwarded = (await creditBuildingChatRewardOncePerDay({
-            avatarId,
+            avatarId: rewardAvatarId,
             buildingId,
             reason: 'building_chat_teaching',
             metadata: { buildingId, sessionDigest: sessionDigest(sessionId), agentId: bot.agentId, characterName: system.locationAgent.agentName },

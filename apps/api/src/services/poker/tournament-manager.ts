@@ -174,6 +174,14 @@ export interface TournamentManagerDeps {
    * the rake (a missing treasury must never strand a field's prizes).
    */
   resolveTreasuryAvatarId?: () => Promise<string | null>;
+  /**
+   * Parent-lifecycle seam. Invoked after every successful tournament settlement
+   * transaction (fresh or replay) so a linked special event can reconcile itself.
+   * Replays deliberately notify again: if the first parent update failed after
+   * the tournament committed, an idempotent retry repairs it. Standalone
+   * tournaments are a no-op in the production handler.
+   */
+  onTournamentSettledFn?: (tournamentId: string) => Promise<void> | void;
 }
 
 /** One leaderboard placement emission (one per placed entrant at settle). */
@@ -483,6 +491,7 @@ export class TournamentManager {
   private onSeatFn: TournamentManagerDeps['onSeatFn'] | null;
   private onTournamentEndFn: TournamentManagerDeps['onTournamentEndFn'] | null;
   private onMoveFn: TournamentManagerDeps['onMoveFn'] | null;
+  private onTournamentSettledFn: TournamentManagerDeps['onTournamentSettledFn'] | null;
 
   /** tournamentId → running tournament driver. */
   private readonly running = new Map<string, RunningTournament>();
@@ -547,6 +556,7 @@ export class TournamentManager {
     this.onSeatFn = deps.onSeatFn ?? null;
     this.onTournamentEndFn = deps.onTournamentEndFn ?? null;
     this.onMoveFn = deps.onMoveFn ?? null;
+    this.onTournamentSettledFn = deps.onTournamentSettledFn ?? null;
     // T0 fee routing: default = the real house-treasury resolver, LAZY-imported
     // at call time so constructing a TM (incl. in unit tests, where rakeBps is
     // usually 0 and the resolver never fires) touches no real DB. The real
@@ -1798,6 +1808,7 @@ export class TournamentManager {
    * exactly: sum(prizeCt) + rakeTaken == prizePoolCt.
    */
   async settleTournament(tournamentId: string): Promise<SettleResult> {
+    let tournamentCompleted = false;
     const settle = await this.db.transaction(async (tx) => {
       const lockRows = await tx.execute<{
         id: string;
@@ -1824,6 +1835,7 @@ export class TournamentManager {
       }
 
       if (t.settled_at) {
+        tournamentCompleted = t.status === 'completed';
         const rows = await tx.execute<{
           avatar_id: string;
           agent_id: string | null;
@@ -1958,6 +1970,7 @@ export class TournamentManager {
             SET status = 'completed', settled_at = now(), rake_taken_ct = ${rake.toString()}
             WHERE id = ${tournamentId}`,
       );
+      tournamentCompleted = true;
 
       return {
         alreadySettled: false,
@@ -1968,6 +1981,22 @@ export class TournamentManager {
 
     if (!settle.alreadySettled) {
       this.emitLeaderboard(tournamentId, settle as SettleResult);
+    }
+
+    // The tournament row is now durably terminal. Reconcile its optional parent
+    // special event from this authoritative transition, never from a public GET.
+    // Parent failure cannot roll back already-paid prizes or strand WS teardown;
+    // the idempotent replay path notifies again and the admin settle command is a
+    // recovery surface for a persistent failure.
+    if (tournamentCompleted && this.onTournamentSettledFn) {
+      try {
+        await this.onTournamentSettledFn(tournamentId);
+      } catch (err) {
+        console.error(
+          `[poker-mtt] linked special-event settlement failed for tournament ${tournamentId}:`,
+          err,
+        );
+      }
     }
 
     return settle as SettleResult;
@@ -2551,4 +2580,12 @@ export const DEFAULT_PAYOUT_CURVE: PayoutCurveEntry[] = [
 ];
 
 /** The process-wide TournamentManager (production singleton, real db + ledger + sim). */
-export const tournamentManager = new TournamentManager();
+export const tournamentManager = new TournamentManager({
+  // Bind this at singleton construction rather than relying on a route-import
+  // side effect. Any API/worker path using the production TM gets parent-event
+  // reconciliation; the dynamic import avoids the manager modules' static cycle.
+  onTournamentSettledFn: async (tournamentId) => {
+    const { specialEventManager } = await import('../special-event-manager');
+    await specialEventManager.settleEventForTournament(tournamentId);
+  },
+});
