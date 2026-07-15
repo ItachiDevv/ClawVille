@@ -678,10 +678,10 @@ export const SURF_ROLL_CLAMP      = 0.8;  // ±46°
 // back onto the boosted authority within a few snapshots — never overshooting
 // because re-baseline only ever blends toward the (boost-correct) server pose.
 export const CLIENT_SURF_PARAMS = {
-  /** REEF_MAX_SPEED = 650 */
-  maxSpeed: 650,
-  /** REEF_MAX_ACCEL = REEF_MAX_SPEED * 4 = 2600 */
-  maxAccel: 2600,
+  /** REEF_MAX_SPEED = 1300 (2026-07-15 2× cap; MUST match the server config) */
+  maxSpeed: 1300,
+  /** REEF_MAX_ACCEL = REEF_MAX_SPEED * 4 = 5200 */
+  maxAccel: 5200,
   /** REEF_TURN_RATE = 2.6 */
   turnRate: 2.6,
   /** REEF_TURN_SPEED_FALLOFF = 0.45 */
@@ -741,7 +741,7 @@ export const CLIENT_REBASE_ROT = 0.5; // 50% of the (shortest-arc) heading error
  * to the server pose instead of blending (which would visibly slide across the
  * track). Matches the wipeout teleport heuristic order of magnitude.
  */
-export const CLIENT_REBASE_SNAP_DIST = 250;
+export const CLIENT_REBASE_SNAP_DIST = 500;
 
 // MUST match RAMP_HALF_LENGTH / RAMP_HALF_WIDTH in API reef-race-config.ts.
 const RAMP_HALF_LENGTH_CLIENT = 150;

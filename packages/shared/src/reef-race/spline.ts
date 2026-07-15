@@ -15,7 +15,7 @@
  *
  * 2. Arclength LUT — 1 000 entries via Simpson integration.
  *    The current closed track is ≈ 88 052 wu, or ≈ 88 wu/LUT interval. A body
- *    moves ≤ 21.7 wu/tick at REEF_MAX_SPEED=650 wu/s, 30 Hz. Speed does not
+ *    moves ≤ 43.3 wu/tick at REEF_MAX_SPEED=1300 wu/s, 30 Hz. Speed does not
  *    determine inverse-arclength accuracy: binary search brackets the monotonic
  *    LUT and linearly interpolates within the bracket. The isolated spline suite
  *    enforces the load-bearing <0.5 wu arclength round-trip tolerance.

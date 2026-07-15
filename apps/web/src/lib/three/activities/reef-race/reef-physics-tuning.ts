@@ -27,8 +27,8 @@
 
 export interface ReefPhysicsTuning {
   // ── Surf-carving kinematics (mirror surf-physics.ts SurfParams / reef-race-config) ──
-  maxSpeed: number;          // REEF_MAX_SPEED 650 (wu/s)
-  maxAccel: number;          // REEF_MAX_ACCEL 2600 (wu/s²) — 0.25s to top speed
+  maxSpeed: number;          // REEF_MAX_SPEED 1300 (wu/s)
+  maxAccel: number;          // REEF_MAX_ACCEL 5200 (wu/s²) — 0.25s to top speed
   turnRate: number;          // REEF_TURN_RATE 2.6 (rad/s) base, grounded, low speed
   turnSpeedFalloff: number;  // REEF_TURN_SPEED_FALLOFF 0.45 (turn rate × (1-falloff·speedFrac))
   airborneSteerMult: number; // REEF_AIRBORNE_STEER_MULT 0.30
@@ -93,9 +93,10 @@ export interface ReefPhysicsTuning {
 
 // ─── Canonical defaults (mirror reef-race-config.ts) ──────────────────────
 const CANONICAL: ReefPhysicsTuning = {
-  // Founder playtest 2026-07-13: +30% base speed, same 0.25s-to-cap feel.
-  maxSpeed: 650,
-  maxAccel: 2600,
+  // Founder playtest 2026-07-13: +30% base speed. 2026-07-15: doubled 650→1300
+  // for a clean 2× ("should be ~DOUBLE"), same 0.25s-to-cap feel (accel = 4×).
+  maxSpeed: 1300,
+  maxAccel: 5200,
   turnRate: 2.6,
   turnSpeedFalloff: 0.45,
   airborneSteerMult: 0.3,

@@ -5,7 +5,7 @@
  *   - Boost pads: ENTRY-EDGE trigger (no re-fire while sitting inside) +
  *     AIRBORNE reject (floor pads have no vertical reach).
  *   - rr-ink-slick: slows RIVALS (behind the dropper), never the user.
- *   - rr-whirlpool: pulls rivals AND clamps the victim's speed to the 1202.5 cap.
+ *   - rr-whirlpool: pulls rivals AND clamps the victim's speed to the 2405 cap (1.85× @ 2× speed cap).
  *   - Deterministic sim clock: identical input+tick sequences → identical
  *     trajectories (no Date.now() in the sim).
  */
@@ -150,7 +150,7 @@ describe('ReefRaceSplineSim — race mechanics (v7)', () => {
   });
 
   describe('rr-whirlpool', () => {
-    it('pulls a nearby rival but clamps the victim speed to the 1202.5 cap', () => {
+    it('pulls a nearby rival but clamps the victim speed to the 2405 cap (1.85× @ 2× speed cap)', () => {
       reefRaceSplineSim.startRoom('r-whirl', 'reef-race', [A, B]);
       const state = reefRaceSplineSim.__getState('r-whirl')!;
       const src = state.bodies.get(A)!;

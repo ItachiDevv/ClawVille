@@ -47,9 +47,9 @@
  * existing momentum. Effective XZ speed still tops out near
  * `MAX_SPEED * speedMod` (≤ MAX_SPEED * 1.85 with the boost stack). The
  * per-tick velocity-vector change from a hard turn at top speed is
- * `2*speed*sin(turnRate*dt/2)` ≈ speed*turnRate*dt; at speed=650,
- * turnRate≈2.6 rad/s, dt=1/30 that's ≈ 56 wu/s, far under the velocity-delta
- * validator ceiling of `MAX_ACCEL*dt*REEF_KINEMATIC_TOLERANCE` ≈ 182 wu/s.
+ * `2*speed*sin(turnRate*dt/2)` ≈ speed*turnRate*dt; at speed=1300,
+ * turnRate≈2.6 rad/s, dt=1/30 that's ≈ 113 wu/s, far under the velocity-delta
+ * validator ceiling of `MAX_ACCEL*dt*REEF_KINEMATIC_TOLERANCE` ≈ 364 wu/s.
  * (Worst-case combined with one tick of lateral bleed stays under that ceiling
  * — see the anti-cheat test in the sim test suite.)
  *
