@@ -73,6 +73,8 @@ import {
   eq,
   and,
   inArray,
+  isNull,
+  lte,
   sql,
   treasuryWallets,
   wallets,
@@ -205,6 +207,62 @@ export async function assertWagerBroadcastCluster(
 
   throw new WagerClientError(
     `Wager ${label} refused: RPC cluster is not approved devnet/localnet`,
+    'network_refused',
+  );
+}
+
+// ─── per-environment lobby-id namespace (shared devnet program) ───────────
+
+/**
+ * Every deploy environment (prod, staging, dev) broadcasts to the SAME devnet
+ * program id, but lobby/vault/player PDAs derive from `lobby_id` alone and
+ * each environment issues ids from its OWN `wager_lobby_id_seq`. Two envs
+ * issuing the same u64 would fight over one on-chain PDA: first create wins,
+ * the other env's create fails closed forever (pda_account_mismatch).
+ *
+ * The u64 id space is therefore partitioned per environment. Each env's DB
+ * sequence is parked at its range start (staging was moved via
+ * `SELECT setval('wager_lobby_id_seq', 4294967296, false)` on 2026-07-15;
+ * prod was already inside its range at ~170).
+ */
+const WAGER_LOBBY_ID_RANGE_SPAN = 1n << 32n;
+export const WAGER_LOBBY_ID_NAMESPACES = {
+  production: { start: 1n, end: WAGER_LOBBY_ID_RANGE_SPAN },
+  staging: { start: WAGER_LOBBY_ID_RANGE_SPAN, end: 2n * WAGER_LOBBY_ID_RANGE_SPAN },
+  development: { start: 2n * WAGER_LOBBY_ID_RANGE_SPAN, end: 3n * WAGER_LOBBY_ID_RANGE_SPAN },
+} as const;
+
+/**
+ * Create-broadcast-only guard: refuses to broadcast `create_lobby_sol` for a
+ * lobby id outside the current environment's namespace, so a misconfigured
+ * sequence fails loudly with a repair command instead of silently squatting
+ * another environment's PDA.
+ *
+ * Deliberately NOT called on join/lock/settle/cancel/reconcile/derive paths —
+ * legacy ids that predate the partition (staging 1–4, prod 1–170) must keep
+ * reconciling and settling without throwing.
+ *
+ * `overrides` exists for unit tests only; production callers pass nothing.
+ */
+export function assertWagerLobbyIdInEnvNamespace(
+  lobbyId: bigint,
+  overrides?: { env?: string; cluster?: string },
+): void {
+  const cluster = overrides?.cluster ?? process.env.WAGER_PROGRAM_CLUSTER ?? 'devnet';
+  // Localnet is a private chain per test run — no cross-environment sharing.
+  if (cluster === 'localnet') return;
+
+  const env = overrides?.env ?? process.env.CLAWVILLE_ENV;
+  const key =
+    env === 'production' ? 'production' : env === 'staging' ? 'staging' : 'development';
+  const range = WAGER_LOBBY_ID_NAMESPACES[key];
+  if (lobbyId >= range.start && lobbyId < range.end) return;
+
+  throw new WagerClientError(
+    `lobby_id ${lobbyId} is outside the '${key}' namespace [${range.start}, ${range.end}) ` +
+      `on the shared devnet wager program — broadcasting would squat another environment's PDA. ` +
+      `Park this environment's sequence inside its range: ` +
+      `SELECT setval('wager_lobby_id_seq', ${range.start}, false);`,
     'network_refused',
   );
 }
@@ -666,6 +724,10 @@ export interface CreateSolLobbyResult {
 export async function createSolLobby(
   input: CreateSolLobbyInput,
 ): Promise<CreateSolLobbyResult> {
+  // First line on purpose: a sequence/env misconfiguration fails instantly,
+  // before any DB decrypt or RPC work. The intent stays 'prepared' and the
+  // reconciler sweep expires it to 'failed' (retryable) within ~5 minutes.
+  assertWagerLobbyIdInEnvNamespace(input.lobbyIdBigint);
   const program = await getProgram();
   const feePayer = await loadSettlementAuthority();
   const { keypair: creator, publicKey: creatorPubkey } = await loadAvatarWallet(
@@ -1266,6 +1328,11 @@ export async function withResolvedWagerLobbyFence<T>(
     await acquireWagerLobbyFence(tx, lobbyId);
 
     const staleBefore = new Date(Date.now() - WAGER_PREPARED_STALE_MS);
+    // Typed operators, NOT raw sql fragments: a raw `sql\`… <= ${staleBefore}\``
+    // bind has no column type mapping, and the postgres.js driver serializes the
+    // untyped Date param via Buffer.byteLength → TypeError at Bind time, before
+    // row matching — which made EVERY fence call (lock/settle/cancel/refund on
+    // any multiplayer lobby) throw. Caught live on staging 2026-07-15.
     await tx
       .update(wagerChainIntents)
       .set({ status: 'failed', lastError: 'prepared_stale', updatedAt: new Date() })
@@ -1273,8 +1340,8 @@ export async function withResolvedWagerLobbyFence<T>(
         and(
           eq(wagerChainIntents.lobbyId, lobbyId),
           eq(wagerChainIntents.status, 'prepared'),
-          sql`${wagerChainIntents.updatedAt} <= ${staleBefore}`,
-          sql`${wagerChainIntents.txSignature} IS NULL`,
+          lte(wagerChainIntents.updatedAt, staleBefore),
+          isNull(wagerChainIntents.txSignature),
         ),
       );
 
