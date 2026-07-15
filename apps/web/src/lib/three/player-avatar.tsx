@@ -190,7 +190,7 @@ function mapToWorld(px: number, py: number): [number, number, number] {
 }
 
 // Preload
-preloadKTX2Bytes('/models/lobster-ktx.glb');
+preloadKTX2Bytes('/models/lobster-ktx.glb?v=2');
 
 // Scratch objects for computeLocalMinY — module-scope to avoid GC in useMemo.
 const _avatarBbox = new THREE.Box3();

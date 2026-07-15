@@ -63,7 +63,7 @@ import type { MachineSlug } from '@/lib/cove/types';
 /** Gameready GLB path — temporarily pointed at cleaned-v1 to evaluate the
  *  Blender artifact removal pass (pillar fragments + Material4 ghost mesh
  *  removed; stump cleanup possibly over-broad — visual verification pending). */
-const INTERIOR_GLB = '/models/cove/cove-interior-cleaned-v1-ktx.glb?v=5';
+const INTERIOR_GLB = '/models/cove/cove-interior-cleaned-v1-ktx.glb?v=6';
 /** Fallback cartoon GLB */
 const FALLBACK_GLB = '/models/cove/cove-interior-fallback.glb';
 
@@ -348,7 +348,7 @@ const extendWithDraco = (loader: unknown) => {
 if (typeof window !== 'undefined') {
   preloadKTX2Bytes(INTERIOR_GLB);
   useGLTF.preload(FALLBACK_GLB);
-  preloadKTX2Bytes('/models/lobster-ktx.glb');
+  preloadKTX2Bytes('/models/lobster-ktx.glb?v=2');
   _dracoLoader.preload();
 }
 
@@ -1402,7 +1402,7 @@ function CoveGLBAvatarInner() {
     _coveArrowPitchOffset = 0;
   }, []);
 
-  const { scene } = useGLTFWithKTX2('/models/lobster-ktx.glb');
+  const { scene } = useGLTFWithKTX2('/models/lobster-ktx.glb?v=2');
 
   const { cloned, pivotOffsetY } = useMemo(() => {
     const c = scene.clone(true);

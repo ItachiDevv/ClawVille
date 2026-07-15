@@ -25,22 +25,22 @@
  * (update this comment + the arrays below whenever an asset is added/removed)
  *
  * BUILDINGS (11 GLBs + 1 procedural treedome, arena-buildings.tsx BUILDING_MODELS):
- *   pineapple-house-opt1-ktx.glb?v=2, chum-bucket-v2-opt1-ktx.glb?v=3,
- *   krusty-krab-v2-opt1-ktx.glb?v=3, salty-spitoon-opt1-ktx.glb?v=2,
- *   boating-school-opt1-ktx.glb?v=2,
- *   patty-building-opt1-ktx.glb?v=2, building-lighthouse-opt1-ktx.glb?v=2,
- *   arcade/claw-arcade-exterior-opt1-ktx.glb?v=3, cove/cove-exterior-opt1-ktx.glb?v=3,
- *   patricks-rock-v2-opt1-ktx.glb?v=4, squidward-house-opt1-ktx.glb?v=4
+ *   pineapple-house-opt1-ktx.glb?v=3, chum-bucket-v2-opt1-ktx.glb?v=4,
+ *   krusty-krab-v2-opt1-ktx.glb?v=4, salty-spitoon-opt1-ktx.glb?v=3,
+ *   boating-school-opt1-ktx.glb?v=3,
+ *   patty-building-opt1-ktx.glb?v=3, building-lighthouse-opt1-ktx.glb?v=3,
+ *   arcade/claw-arcade-exterior-opt1-ktx.glb?v=4, cove/cove-exterior-opt1-ktx.glb?v=4,
+ *   patricks-rock-v2-opt1-ktx.glb?v=5, squidward-house-opt1-ktx.glb?v=5
  *   Sandy's Treedome is procedural in /game after 2026-05-25 perf pass; the
  *   old GLB contributed ~1.13M live tris after material merge.
  *
  * LOCATION NPC CHARACTERS (10 SpongeBob + 2 companions, arena-location-npcs.tsx):
- *   spongebob.glb, gary.glb, squidward.glb, flying-dutchman.glb,
- *   pearl.glb, mrs-puff.glb, lobster_plush-ktx.glb, mr-krabs.glb,
- *   plankton.glb, karen.glb, sandy.glb, patrick.glb
+ *   spongebob-ktx.glb, gary-ktx.glb, squidward-ktx.glb, flying-dutchman-ktx.glb,
+ *   pearl-ktx.glb, mrs-puff-ktx.glb, lobster_plush-ktx.glb?v=2, mr-krabs-ktx.glb,
+ *   plankton-ktx.glb, karen-ktx.glb, sandy-ktx.glb, patrick-ktx.glb
  *
  * WANDERING NPC GLBs (1 live species, arena-npcs.tsx SPECIES_MODEL):
- *   lobster-ktx.glb
+ *   lobster-ktx.glb?v=2
  *
  * WANDERING NPC VRMs (6 distinct paths, arena-npcs.tsx preloadVRMBytes):
  *   milady-official-1..8.vrm (8 wanderers + Hermes/chibi),
@@ -53,10 +53,10 @@
  *   for non-chibi players when the wandering roster included them).
  *
  * TERRAIN DECORATIONS (12 models, arena-terrain.tsx DECO_MODEL_PATHS):
- *   coral-reef1-ktx.glb, coral-reef2-ktx.glb, coral-reef3-ktx.glb, kelp.glb,
- *   building-shell-ktx.glb, building-seashell-ktx.glb, building-anchor.glb,
- *   building-barrel.glb, building-chest.glb, building-lantern-ktx.glb,
- *   crayfish-ktx.glb, building-tower2.glb
+ *   coral-reef1-ktx.glb?v=2, coral-reef2-ktx.glb?v=2, coral-reef3-ktx.glb?v=2, kelp.glb,
+ *   building-shell-ktx.glb?v=2, building-seashell-ktx.glb?v=2, building-anchor.glb,
+ *   building-barrel.glb, building-chest.glb, building-lantern-ktx.glb?v=2,
+ *   crayfish-ktx.glb?v=2, building-tower2.glb
  *
  * LOCOMOTION ANIMATIONS (3 GLBs, vrm-character-animator.ts):
  *   /avatars/animations/idle.glb
@@ -87,17 +87,17 @@ import { preloadKTX2Bytes } from '@/lib/three/use-gltf-ktx2';
 
 /** Building GLBs from arena-buildings.tsx BUILDING_MODELS. Sandy's Treedome is procedural. */
 export const BUILDING_GLBS: readonly string[] = [
-  '/models/pineapple-house-opt1-ktx.glb?v=2',
-  '/models/chum-bucket-v2-opt1-ktx.glb?v=3',
-  '/models/krusty-krab-v2-opt1-ktx.glb?v=3',
-  '/models/salty-spitoon-opt1-ktx.glb?v=2',
-  '/models/boating-school-opt1-ktx.glb?v=2',
-  '/models/patty-building-opt1-ktx.glb?v=2',
-  '/models/building-lighthouse-opt1-ktx.glb?v=2',
-  '/models/arcade/claw-arcade-exterior-opt1-ktx.glb?v=3',
-  '/models/cove/cove-exterior-opt1-ktx.glb?v=3',
-  '/models/patricks-rock-v2-opt1-ktx.glb?v=4',
-  '/models/squidward-house-opt1-ktx.glb?v=4',
+  '/models/pineapple-house-opt1-ktx.glb?v=3',
+  '/models/chum-bucket-v2-opt1-ktx.glb?v=4',
+  '/models/krusty-krab-v2-opt1-ktx.glb?v=4',
+  '/models/salty-spitoon-opt1-ktx.glb?v=3',
+  '/models/boating-school-opt1-ktx.glb?v=3',
+  '/models/patty-building-opt1-ktx.glb?v=3',
+  '/models/building-lighthouse-opt1-ktx.glb?v=3',
+  '/models/arcade/claw-arcade-exterior-opt1-ktx.glb?v=4',
+  '/models/cove/cove-exterior-opt1-ktx.glb?v=4',
+  '/models/patricks-rock-v2-opt1-ktx.glb?v=5',
+  '/models/squidward-house-opt1-ktx.glb?v=5',
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -106,7 +106,7 @@ export const BUILDING_GLBS: readonly string[] = [
 
 /** GLB species used by the live arena-npcs.tsx wandering GLB roster */
 export const WANDERING_NPC_GLBS: readonly string[] = [
-  '/models/lobster-ktx.glb',
+  '/models/lobster-ktx.glb?v=2',
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -165,18 +165,18 @@ export const PLAYER_VRM_PATHS: readonly string[] = [
 
 /** SpongeBob character GLBs from arena-location-npcs.tsx LOCATION_NPCS */
 export const LOCATION_NPC_GLBS: readonly string[] = [
-  '/models/characters/spongebob.glb',
-  '/models/characters/gary.glb',       // companion at visual-creation
-  '/models/characters/squidward.glb',
-  '/models/characters/flying-dutchman.glb',
-  '/models/characters/pearl.glb',
-  '/models/characters/mrs-puff.glb',
-  '/models/characters/mr-krabs.glb',
-  '/models/characters/plankton.glb',
-  '/models/characters/karen.glb',      // companion at code-development
-  '/models/characters/sandy.glb',
-  '/models/characters/patrick.glb',
-  '/models/lobster_plush-ktx.glb',          // Larry (deployment-ops) — shared path w/ wandering
+  '/models/characters/spongebob-ktx.glb',
+  '/models/characters/gary-ktx.glb',       // companion at visual-creation
+  '/models/characters/squidward-ktx.glb',
+  '/models/characters/flying-dutchman-ktx.glb',
+  '/models/characters/pearl-ktx.glb',
+  '/models/characters/mrs-puff-ktx.glb',
+  '/models/characters/mr-krabs-ktx.glb',
+  '/models/characters/plankton-ktx.glb',
+  '/models/characters/karen-ktx.glb',      // companion at code-development
+  '/models/characters/sandy-ktx.glb',
+  '/models/characters/patrick-ktx.glb',
+  '/models/lobster_plush-ktx.glb?v=2',          // Larry (deployment-ops) — shared path w/ wandering
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -185,17 +185,17 @@ export const LOCATION_NPC_GLBS: readonly string[] = [
 
 /** 12 scatter decoration GLBs from arena-terrain.tsx DECO_MODEL_PATHS */
 export const DECORATION_GLBS: readonly string[] = [
-  '/models/coral-reef1-ktx.glb',
-  '/models/coral-reef2-ktx.glb',
-  '/models/coral-reef3-ktx.glb',
+  '/models/coral-reef1-ktx.glb?v=2',
+  '/models/coral-reef2-ktx.glb?v=2',
+  '/models/coral-reef3-ktx.glb?v=2',
   '/models/kelp.glb',
-  '/models/building-shell-ktx.glb',
-  '/models/building-seashell-ktx.glb',
+  '/models/building-shell-ktx.glb?v=2',
+  '/models/building-seashell-ktx.glb?v=2',
   '/models/building-anchor.glb',
   '/models/building-barrel.glb',
   '/models/building-chest.glb',
-  '/models/building-lantern-ktx.glb',
-  '/models/crayfish-ktx.glb',
+  '/models/building-lantern-ktx.glb?v=2',
+  '/models/crayfish-ktx.glb?v=2',
   '/models/building-tower2.glb',
 ] as const;
 
@@ -209,9 +209,9 @@ export const DECORATION_GLBS: readonly string[] = [
  * 7-day edge cache would keep serving the old 8.7 MB version.
  */
 export const TOWN_PROP_GLBS: readonly string[] = [
-  '/models/quest-bounty-pavilion-ktx.glb?v=3',
-  '/models/bazaar-merchant-stand-ktx.glb?v=2', // ?v=2 — meshopt+WebP recompress 2.34MB→421K (2026-06-06)
-  '/models/shisha-oasis-ktx.glb',
+  '/models/quest-bounty-pavilion-ktx.glb?v=4',
+  '/models/bazaar-merchant-stand-ktx.glb?v=3', // ?v=3 — P1b non-color KTX2 coverage (2026-07-14)
+  '/models/shisha-oasis-ktx.glb?v=2',
   '/models/auction-dome.glb',
   // town-directory-sign.tsx uses Three.js primitives only (no GLB) — nothing to preload here.
   // auction-podium.tsx preloads its own jellyfish-ktx.glb path.
