@@ -377,6 +377,12 @@ export interface EntityDelta {
      */
     height?: number;
     /**
+     * Reef Race v2 â€” authoritative effective speed multiplier used by the
+     * server for this body's latest surf-integration step. Quantized to 0.01;
+     * the self renderer mirrors it for presentation-only client prediction.
+     */
+    speedMod?: number;
+    /**
      * Reef Race v2 (spline sim) — body's WITHIN-LAP race progress as a 0..1
      * fraction of one loop of spline arclength (wraps 1→0 at the seam each lap).
      * Optional; ellipse sim does not emit this field. The render/HUD combine
@@ -463,6 +469,8 @@ export interface WorldState {
      * grounded. Carried on keyframes so a keyframe doesn't drop a jump's height.
      */
     height?: number;
+    /** Reef Race v2 — latest authoritative effective speed multiplier. */
+    speedMod?: number;
     /**
      * Reef Race v2 mechanics — surf-carve mini-turbo charge 0..1 (HUD meter),
      * carried on keyframes so the 1 Hz keyframe doesn't blank the meter.

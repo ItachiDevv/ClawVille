@@ -82,6 +82,11 @@ export interface ReefRaceEntity {
   /** v2 spline sim — body height above the river bed in wu (jump/ramp airborne offset). */
   height?: number;
   /**
+   * v2 spline sim - latest server-authoritative effective speed multiplier.
+   * Self prediction consumes this for presentation parity; authority stays server-side.
+   */
+  speedMod?: number;
+  /**
    * v2 mechanics — true while ANY positive boost is active for this body
    * (boost pad / mini-turbo / launch / slipstream). Drives the trail/speed-
    * cone FX via `ReefRaceBoostFX` (OR'd into the existing item-boost

@@ -740,6 +740,7 @@ class ActivityWsHub {
             vy?: number;
             vz?: number;
             height?: number;
+            speedMod?: number;
             miniTurboCharge?: number;
             miniTurboLevel?: 0 | 1 | 2;
             boosting?: boolean;
@@ -760,6 +761,7 @@ class ActivityWsHub {
             // HUD meter/trail isn't blank until the next delta (Codex finding 7).
             // Ellipse-sim snapshots omit these fields (undefined → dropped).
             ...(bb.height && bb.height !== 0 ? { height: bb.height } : {}),
+            speedMod: bb.speedMod,
             miniTurboCharge: bb.miniTurboCharge,
             miniTurboLevel: bb.miniTurboLevel,
             boosting: bb.boosting,

@@ -251,6 +251,8 @@ interface SplineBody {
   vx: number;
   vz: number;
   rot: number;   // Three.js Y-rotation = Math.atan2(tangent.x, tangent.z)
+  /** Effective server-authoritative speed multiplier used by the latest step. */
+  speedMod: number;
 
   // ── Vertical axis (v2) ──────────────────────────────────────────────────
   heightOffset: number;  // metres above track surface (0 = grounded)
@@ -353,6 +355,8 @@ interface SplineBodySnap {
   vz: number;
   rot: number;
   height: number;
+  /** Effective server-authoritative speed multiplier, quantized to 0.01. */
+  speedMod: number;
   /** Within-lap fraction 0..1 (wraps each lap). */
   progress: number;
   /** Completed-lap count (0-based). */
@@ -657,6 +661,7 @@ export class ReefRaceSplineSim {
         vx: 0,
         vz: 0,
         rot,
+        speedMod: 1,
         heightOffset: 0,
         vyAxis: 0,
         airborneTicks: 0,
@@ -1197,6 +1202,10 @@ export class ReefRaceSplineSim {
         speedMod = 1.0 + positiveKineticStack + negativeKineticStack;
       }
     }
+
+    // Presentation parity: persist the exact effective multiplier consumed by
+    // this authoritative surf step so snapshots can drive self prediction.
+    body.speedMod = speedMod;
 
     // 4. Jump-trigger (heading + velocity integrate happen below via the
     //    shared surf-carving step).
@@ -2444,6 +2453,7 @@ export class ReefRaceSplineSim {
         vz: quant(b.vz, POS_QUANT),
         rot: quant(b.rot, ROT_QUANT),
         height: quant(b.heightOffset, POS_QUANT),
+        speedMod: quant(b.speedMod, 100),
         progress: quant(b.progress, 10000),
         lap: b.lap,
         finishedAt: b.finishedAt,
@@ -2492,6 +2502,7 @@ export class ReefRaceSplineSim {
       // mid-match reconnect with no authoritative boost state until the next
       // delta). The delta path already carries them; this keeps keyframes whole.
       height: b.height !== 0 ? b.height : undefined,
+      speedMod: b.speedMod,
       miniTurboCharge: b.miniTurboCharge,
       miniTurboLevel: b.miniTurboLevel,
       boosting: b.boosting,
@@ -2548,6 +2559,7 @@ export class ReefRaceSplineSim {
           p.vz !== b.vz ||
           p.rot !== b.rot ||
           p.height !== b.height ||
+          p.speedMod !== b.speedMod ||
           p.progress !== b.progress ||
           p.lap !== b.lap ||
           p.finishedAt !== b.finishedAt ||
@@ -2573,6 +2585,7 @@ export class ReefRaceSplineSim {
           // keyframe. A body only appears in the delta when a field changed, so
           // this is just one extra number on that body's frame.
           height: b.height,
+          speedMod: b.speedMod,
           progress: b.progress,
           // CLOSED-LOOP lap state — the render/HUD read these directly.
           lap: b.lap,

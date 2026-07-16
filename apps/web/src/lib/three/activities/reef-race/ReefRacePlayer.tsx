@@ -36,7 +36,7 @@
  *   - gliderRef carries the bank tilt (rotation.z). riderMountRef.rotation.z = 0 always.
  *   - riderMountRef planted on the board DECK (2026-07-15): X/Z from
  *     RIDER_MOUNT_OFFSET_DEFAULT (0 / -0.3), Y = static deck-top plane
- *     (SURFBOARD_DECK_TOP_LOCAL_Y ≈ 0.320 local v2 / GLIDER_HEIGHT/2 v1). The old
+ *     (SURFBOARD_DECK_TOP_LOCAL_Y ≈ 0.357 local v2 / GLIDER_HEIGHT/2 v1). The old
  *     [0, 1.2, -0.3] mount + gentle per-frame bob are REMOVED — board+rider are
  *     one rigid unit and per-rider grounding lands feet/body on the deck.
  *   - KART_Y_ABOVE_TRACK elevation moves from group.position.y (race-layer local) to
@@ -95,6 +95,8 @@ import {
   SURF_ROLL_HALF_WIDTH,
   SURF_PITCH_CLAMP,
   SURF_ROLL_CLAMP,
+  SURF_HEAVE_DAMPING,
+  SURF_TILT_DAMPING,
 } from './reef-race-config';
 
 /** Degrees→radians for the surf nose-up trim. */
@@ -102,6 +104,7 @@ const SURF_DEG2RAD = 0.0174532925;
 import {
   integrateSurfStep,
   type SurfBodyState,
+  type SurfParams,
 } from '@clawville/shared';
 import { selfInputBus, selfPoseBus, resetSelfPoseBus } from './reef-race-self-bus';
 import { tAtXZ, bankedDatumYAtT, forgetTKey } from './reef-race-elevation';
@@ -218,9 +221,10 @@ function surfboardBaseQuat(size: THREE.Vector3): THREE.Quaternion {
 }
 
 /** Uniform scale (gliderRef-local) for the orientation-corrected surfboard.
- *  Founder sizing pass (2026-07-15): GLB longest ≈1.989 local → ×3.4 →
- *  ≈135wu at KART_SCALE=20. Rider target heights stay unchanged. */
-const SURFBOARD_UNIFORM_SCALE = 3.4;
+ *  Founder sizing pass (2026-07-16): GLB longest ≈1.989 local → ×3.8 →
+ *  ≈151wu at KART_SCALE=20. Creature rider targets stay unchanged. */
+// Founder knob: larger values grow the board without changing creature riders.
+const SURFBOARD_UNIFORM_SCALE = 3.8;
 
 /**
  * Board DECK-TOP height in gliderRef-LOCAL units — the grounding plane the
@@ -229,8 +233,8 @@ const SURFBOARD_UNIFORM_SCALE = 3.4;
  * half the fitted board thickness.
  *
  * surfboard_1.glb thinnest raw axis = 0.18814 local (gltf-transform 2026-07-15)
- * → ×SURFBOARD_UNIFORM_SCALE(3.4) = 0.63968 → /2 = 0.31984 local (= 6.40wu at
- * KART_SCALE=20). The expression below deliberately derives from the SAME
+ * → ×SURFBOARD_UNIFORM_SCALE(3.8) = 0.714932 → /2 = 0.357466 local (= 7.14932wu
+ * at KART_SCALE=20). The expression below deliberately derives from the SAME
  * scale constant so every rider remains planted when board sizing changes.
  *
  * Founder 2026-07-15: "the board should be the grounding point for the feet …
@@ -308,14 +312,13 @@ const _warnedUnknownSpeciesKeys = new Set<string>();
  * Tekk/chibi/Meshy — previously had NO grounding at all since they never
  * reached this branch, and now correctly ground via fit.offsetY).
  *
- * CORRECTED 2026-07-15 (founder playtest — "board is TINY vs avatar"): the old
- * 245.63wu humanoid dwarfed the then-99.43wu board, so VRMs were retargeted to
- * 80wu. Founder follow-up: creatures still read too bulky and boards should be
- * larger in general, so SURFBOARD_UNIFORM_SCALE grows 2.5→3.4 while ALL rider
- * targets remain fixed. The board is now ≈135.2wu: board/VRM = 1.69 and
- * board/22wu lobster = 6.15.
+ * ROUND 5 2026-07-16 (founder playtest — rider+board still a screen speck):
+ * VRMs grow 80→110wu while SURFBOARD_UNIFORM_SCALE grows 3.4→3.8. The board is
+ * now ≈151.2wu: board/VRM = 1.37 and board/22wu lobster = 6.87. Creature target
+ * constants remain fixed, so the larger board intentionally reads bigger beside them.
  */
-const REEF_VRM_RIDER_TARGET_HEIGHT_WU = 80;
+// Founder knob: one consistent humanoid height; computeVRMAvatarFit keeps feet deck-planted.
+const REEF_VRM_RIDER_TARGET_HEIGHT_WU = 110;
 
 /**
  * Rider-mount-LOCAL (not world) bbox-height target for GLB creature riders
@@ -438,6 +441,16 @@ const _gliderMat  = new THREE.MeshStandardMaterial({
 const _prevHeight: Record<string, number> = {};
 /** Per-avatarId squash progress (0 = at rest, >0 = squashing, decrements each frame). */
 const _squashTime: Record<string, number> = {};
+
+interface SurfPoseDampingState {
+  heave: number;
+  wavePitch: number;
+  waveRoll: number;
+  initialized: boolean;
+}
+
+/** Per-avatarId wave-only render filters. Banking/jumps/yaw never enter this state. */
+const _surfPoseDamping: Record<string, SurfPoseDampingState> = {};
 
 /** Nose-up pitch when airborne (radians). ~8°. */
 const JUMP_NOSE_UP_RAD = 0.14;
@@ -952,6 +965,11 @@ function ReefRacePlayerInner({
   // server snapshot, advanced each frame by integrateSurfStep against the
   // self-input bus, and re-baselined toward authority on every new snapshot.
   const predictedRef = useRef<SurfBodyState>({ x: 0, z: 0, vx: 0, vz: 0, rot: 0 });
+  // Allocated once: only speedMod is refreshed from authority; accelMult stays 1.
+  const clientSurfParamsRef = useRef<SurfParams | null>(null);
+  if (clientSurfParamsRef.current === null) {
+    clientSurfParamsRef.current = { ...CLIENT_SURF_PARAMS };
+  }
   // Previous-tick pose for RENDER interpolation ("fix your timestep"). The
   // fixed 30 Hz integration below only advances `pred` on tick boundaries, so
   // rendering `pred` directly steps the kart ~43 wu at a time at top speed —
@@ -979,6 +997,8 @@ function ReefRacePlayerInner({
   // True only after the self kart has a real live authority pose. Countdown
   // staging keeps the same keyed instance but gates prediction + pose-bus writes.
   const predictsSelf = USE_SPLINE_PLAYER && isSelf && predictionEnabled;
+  const surfPoseDamping = _surfPoseDamping[entity.avatarId] ??=
+    { heave: 0, wavePitch: 0, waveRoll: 0, initialized: false };
 
   const clonedScene = useMemo(() => {
     // When isVRM=true, effectiveSrcScene=null — return null so the GLB mount
@@ -1176,6 +1196,7 @@ function ReefRacePlayerInner({
   useEffect(() => {
     return () => {
       delete _lastXZ[entity.avatarId];
+      delete _surfPoseDamping[entity.avatarId];
       // SURF ROAD: drop the per-kart elevation XZ→t cache key so the Map in
       // reef-race-elevation doesn't accrete dead avatarIds across remounts.
       forgetTKey(entity.avatarId);
@@ -1511,6 +1532,7 @@ function ReefRacePlayerInner({
           const rawErrDist = Math.hypot(rawDx, rawDz);
           if (rawErrDist > CLIENT_REBASE_SNAP_DIST) {
             // Respawn / teleport / catastrophic desync — snap, don't slide.
+            surfPoseDamping.initialized = false;
             pred.x = sx;
             pred.z = sz;
             pred.vx = svx;
@@ -1581,23 +1603,25 @@ function ReefRacePlayerInner({
         }
       }
 
-      // SPEC 2 — Wipeout detection (VRM only).
+      // Respawn detection for render-filter reset + SPEC 2 VRM wipeout.
       // Server doesn't surface respawnAt to the client yet (see §C.2 in the plan).
       // Heuristic: detect XZ teleport > 1000wu in one snapshot interval. That
       // remains >6× the 160.3wu legitimate boosted travel at effective 15Hz.
       // Fires once per new snapshot, inside this guard, not per frame.
-      if (isVRM && vrmAnimatorRef.current) {
-        const prev = _lastXZ[entity.avatarId];
-        if (prev) {
-          const dx = entity.x - prev.x;
-          const dz = entity.y - prev.z; // entity.y = sim-Y = Three.js Z
-          const distSq = dx * dx + dz * dz;
-          if (distSq > WIPEOUT_TELEPORT_THRESHOLD_SQ) {
+      const prev = _lastXZ[entity.avatarId];
+      if (prev) {
+        const dx = entity.x - prev.x;
+        const dz = entity.y - prev.z; // entity.y = sim-Y = Three.js Z
+        const distSq = dx * dx + dz * dz;
+        if (distSq > WIPEOUT_TELEPORT_THRESHOLD_SQ) {
+          // Never ease old wave state across a server respawn/teleport.
+          surfPoseDamping.initialized = false;
+          if (isVRM && vrmAnimatorRef.current) {
             void vrmAnimatorRef.current.playOneShot('wipeout');
           }
         }
-        _lastXZ[entity.avatarId] = { x: entity.x, z: entity.y };
       }
+      _lastXZ[entity.avatarId] = { x: entity.x, z: entity.y };
     }
 
     // ─── Interpolation (BUG FIX Bug 1) ───────────────────────────────────────
@@ -1707,6 +1731,10 @@ function ReefRacePlayerInner({
       const dirInput = selfInputBus.valid ? selfInputBus.dir : null;
       const thrustInput = selfInputBus.valid ? selfInputBus.thrust : 0;
       const airborne = entityHeight > 0;
+      // Presentation parity only: authority remains server-owned. Reuse the
+      // allocated params object so the fixed-step loop creates no frame garbage.
+      const clientSurfParams = clientSurfParamsRef.current!;
+      clientSurfParams.speedMod = entity.speedMod ?? 1;
 
       // Clamp the FRAME dt first (spiral-of-death guard after a tab-out), then
       // accumulate, then cap the accumulator so a long stall can't run dozens
@@ -1726,7 +1754,7 @@ function ReefRacePlayerInner({
         const next = integrateSurfStep(
           pred,
           { dir: dirInput, thrust: thrustInput, airborne },
-          CLIENT_SURF_PARAMS,
+          clientSurfParams,
           CLIENT_SURF_TICK_DT, // fixed step — NOT the frame dt
         );
         pred.x = next.x;
@@ -1803,12 +1831,10 @@ function ReefRacePlayerInner({
       // SURF RIDE (baked from the founder-signed-off sandbox 2026-06-27): the kart
       // sits ON the BANKED + WAVE water surface (not the flat centerline datum, which
       // floated it above the low side of banked turns + ignored the swell). Y =
-      // banked-datum + Gerstner wave heave + a small ride-height, plus the sim's
-      // airborne heightOffset. Same datum the water shader renders (phase-locked).
-      group.position.y =
-        bankedDatumYAtT(interpX, interpZ, tHere) +
-        surfWaveHeightAt(interpX, interpZ, surfTime) +
-        SURF_RIDE_HEIGHT + entityHeight;
+      // banked-datum + DAMPED Gerstner wave heave + a small ride-height, plus
+      // the sim's raw airborne heightOffset. Banking/jumps remain immediate.
+      const bankedDatum = bankedDatumYAtT(interpX, interpZ, tHere);
+      const rawWaveHeave = surfWaveHeightAt(interpX, interpZ, surfTime);
 
       // SURF TILT — pitch (nose-up trim + wave fore-aft slope) + roll (CONFORM to the
       // surface's lateral slope so the board lies flat on the banked/waved water).
@@ -1817,13 +1843,40 @@ function ReefRacePlayerInner({
       const rX = Math.cos(interpRot), rZ = -Math.sin(interpRot);  // right
       const hNose = surfWaveHeightAt(interpX + fX * SURF_PITCH_HALF_LEN, interpZ + fZ * SURF_PITCH_HALF_LEN, surfTime);
       const hTail = surfWaveHeightAt(interpX - fX * SURF_PITCH_HALF_LEN, interpZ - fZ * SURF_PITCH_HALF_LEN, surfTime);
-      let surfPitch = -Math.atan2(hNose - hTail, 2 * SURF_PITCH_HALF_LEN) * SURF_PITCH_WAVE_GAIN - SURF_PITCH_TRIM_DEG * SURF_DEG2RAD;
-      if (surfPitch < -SURF_PITCH_CLAMP) surfPitch = -SURF_PITCH_CLAMP; else if (surfPitch > SURF_PITCH_CLAMP) surfPitch = SURF_PITCH_CLAMP;
+      const rawWavePitch = -Math.atan2(hNose - hTail, 2 * SURF_PITCH_HALF_LEN) * SURF_PITCH_WAVE_GAIN;
       const rxR = interpX + rX * SURF_ROLL_HALF_WIDTH, rzR = interpZ + rZ * SURF_ROLL_HALF_WIDTH;
       const rxL = interpX - rX * SURF_ROLL_HALF_WIDTH, rzL = interpZ - rZ * SURF_ROLL_HALF_WIDTH;
-      const sR = bankedDatumYAtT(rxR, rzR, tHere) + surfWaveHeightAt(rxR, rzR, surfTime);
-      const sL = bankedDatumYAtT(rxL, rzL, tHere) + surfWaveHeightAt(rxL, rzL, surfTime);
-      let surfRoll = Math.atan2(sR - sL, 2 * SURF_ROLL_HALF_WIDTH);   // conform: lie flat on the lateral slope
+      const bankR = bankedDatumYAtT(rxR, rzR, tHere);
+      const bankL = bankedDatumYAtT(rxL, rzL, tHere);
+      const waveR = surfWaveHeightAt(rxR, rzR, surfTime);
+      const waveL = surfWaveHeightAt(rxL, rzL, surfTime);
+      const rollSampleWidth = 2 * SURF_ROLL_HALF_WIDTH;
+      const bankRoll = Math.atan2(bankR - bankL, rollSampleWidth);
+      const rawSurfaceRoll = Math.atan2((bankR + waveR) - (bankL + waveL), rollSampleWidth);
+      const rawWaveRoll = rawSurfaceRoll - bankRoll;
+
+      if (!predictionEnabled || !surfPoseDamping.initialized) {
+        // Pregame/first frame/respawn is a hard seed, matching ChaseCamera's
+        // staged reset: never ease stale wave state into a new race pose.
+        surfPoseDamping.heave = rawWaveHeave;
+        surfPoseDamping.wavePitch = rawWavePitch;
+        surfPoseDamping.waveRoll = rawWaveRoll;
+        surfPoseDamping.initialized = true;
+      } else {
+        const heaveFactor = 1 - Math.exp(-SURF_HEAVE_DAMPING * dt);
+        const tiltFactor = 1 - Math.exp(-SURF_TILT_DAMPING * dt);
+        surfPoseDamping.heave += (rawWaveHeave - surfPoseDamping.heave) * heaveFactor;
+        surfPoseDamping.wavePitch += (rawWavePitch - surfPoseDamping.wavePitch) * tiltFactor;
+        surfPoseDamping.waveRoll += (rawWaveRoll - surfPoseDamping.waveRoll) * tiltFactor;
+      }
+
+      group.position.y =
+        bankedDatum + surfPoseDamping.heave + SURF_RIDE_HEIGHT + entityHeight;
+
+      let surfPitch = surfPoseDamping.wavePitch - SURF_PITCH_TRIM_DEG * SURF_DEG2RAD;
+      if (surfPitch < -SURF_PITCH_CLAMP) surfPitch = -SURF_PITCH_CLAMP; else if (surfPitch > SURF_PITCH_CLAMP) surfPitch = SURF_PITCH_CLAMP;
+      // Bank roll is raw track truth; only the Gerstner contribution is filtered.
+      let surfRoll = bankRoll + surfPoseDamping.waveRoll;
       if (surfRoll < -SURF_ROLL_CLAMP) surfRoll = -SURF_ROLL_CLAMP; else if (surfRoll > SURF_ROLL_CLAMP) surfRoll = SURF_ROLL_CLAMP;
       // YXZ order (yaw → pitch → roll) to MATCH the sandbox pivot the signs were
       // verified against. The glider child adds the airborne jump nose-up (rotation.x)
@@ -1903,7 +1956,7 @@ function ReefRacePlayerInner({
     // feet planted on the board … board+rider one rigid unit." The old
     // independent per-frame bob (riderMount.position.y = 1.2local + sin·BOB_AMP)
     // is REMOVED — it (a) floated the rider ~12–22wu ABOVE the deck (mount at
-    // 1.2local=24wu vs current deck top 0.320local=6.4wu) and (b) added a VRM-ONLY Y
+    // 1.2local=24wu vs current deck top 0.357466local=7.14932wu) and (b) added a VRM-ONLY Y
     // shimmer the board never shared, which read as self-jitter on the humanoid
     // rider specifically. riderMount.position.y is now a STATIC deck-top plane
     // (set once in JSX, below); the per-rider grounding already applied at mount
