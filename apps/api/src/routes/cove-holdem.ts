@@ -14,8 +14,9 @@
  *   POST /action          (auth optional) — one human decision (fold|check|call|
  *                                           bet|raise); server runs bots to the
  *                                           next human turn or settles at showdown
- *   POST /session/close   (user or agent)  — close the session, reveal serverSeed,
+ *   POST /session/close   (any owner)      — close the session, reveal serverSeed,
  *                                           cash out the player's remaining stack
+ *                                           (guest: own demo table, no ledger ops)
  *   GET  /session/current (user or agent)  — restore the open table
  *   GET  /session/:id     (user or agent)  — owner-only table detail (seed redacted)
  *
@@ -1626,11 +1627,11 @@ async function buildSettledResponse(
 //
 // Subject-resolved (NOT requireAuth) so a connected AGENT can close its own table
 // and cash its remaining stack back to its bound avatar — without this an agent's
-// buy-in could never be recovered and its table would wedge open. Ledger subjects
-// only (human or agent): a guest demo table has no real stack to cash out and the
-// prior Lucia-only gate already excluded guests, so we keep that exclusion (403).
-// ownerMatch binds the table to the resolved userId, so an agent can never close
-// another user's table.
+// buy-in could never be recovered and its table would wedge open. GUESTS may also
+// close their OWN demo table (2026-07-16 un-brick): status flip + seed reveal
+// with zero ledger ops — demo chips vaporize; nothing is credited. ownerMatch
+// binds ledger subjects by userId and guests by guestFpHash, so no subject can
+// close another owner's table.
 //
 // A4 CLOSE-REPLAY (Increment 1b): a lost-response close retry used to 409
 // `table_not_open` even though the close had actually LANDED — stranding the

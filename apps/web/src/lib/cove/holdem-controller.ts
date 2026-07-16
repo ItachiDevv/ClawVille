@@ -620,7 +620,7 @@ export function HoldemControllerRuntime(): null {
       );
     }
     closeHoldemModal();
-  }, [closeHoldemModal, closeTable, isAuthed]);
+  }, [closeHoldemModal, closeTable]);
 
   const handleWalkAway = useCallback(async () => {
     if (busyRef.current) return;
