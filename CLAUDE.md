@@ -45,6 +45,13 @@ ClawVille's reason to exist is the three bidirectional axes (Human↔Agent, Huma
 
 **Retroactive debt — RESOLVED 2026-06-15:** the Cove was the known violation (`getSubject()` resolved user-XOR-guest only, no agent session). All four games now have agent parity: `cove-blackjack.ts` shipped it first (2026-06-03), and `cove-baccarat.ts`, `cove-holdem.ts`, and `cove-slots.ts` now resolve a connected/hosted agent session (`X-Clawville-Agent-Session` → `resolveAgentSession`) to the bound avatar for REAL-CT settlement, matching blackjack (`user` + `agent` are both ledger subjects; guests stay demo; non-ledger/unbound agents get 403, never a guest demotion). No `PROTOCOL_VERSION` bump — only the settlement resolver changed; the agent ACTION whitelist is unchanged. Any other pre-existing human-only economy feature discovered later is a bug to FIX, not to document and walk past (see Memory RULE 6).
 
+**Substrate corollary — RESOLVED 2026-07-16 (see `docs/agent-onboarding-audit-2026-07-16.md`):** parity audits must check that an agent can *become* bound, not just that bound agents settle correctly. The 2026-06-03 pass deferred the self-connect user bind as a "FOLLOW-UP #6" code comment; it silently strangled open onboarding for six weeks (178/232 prod agent rows unbound). Fixed by the identity-key bind (`planConnectOwnerBinding`, PROTOCOL_VERSION 19).
+
+### Rule E6 — deferrals must be tracked; agent-facing knowledge lives in code (set 2026-07-16 after the onboarding audit)
+1. **No comment-only deferrals.** Any review pass that intentionally defers load-bearing work ("FOLLOW-UP #N", "deferred FEATURE", "not part of this pass") MUST, in the same diff, create a `FEATURE_GATE` block or a tracked punch-list entry in the relevant audit/plan doc with an owner condition and a review deadline. A deferral that exists only as a code comment is a silent product regression, not a decision.
+2. **Knowledge surfaces served to agents are code-generated.** Every manual/skill/orientation body an agent can fetch MUST be generated from source (like `buildProtocolManual` / `buildPlayManual`) or from a constant in `packages/shared` — never hand-written into a DB row by a one-time script. Same-diff rules bind on file edits; DB-resident prose is invisible to them and fossilizes (the `clawville-play` entry skill served a wrong connect contract for 10 weeks).
+3. **The public onboarding smoke (`apps/api/scripts/agent-onboarding-smoke.ts`) is a release gate** for any change touching `/api/agent/connect`, identity issuance/binding, session-authed skill surfaces, or the served manuals: run it against staging before promotion, exactly like the mock-Hatcher harness gates the partner surface.
+
 ---
 
 ## Brand Identity
