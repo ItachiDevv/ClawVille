@@ -804,7 +804,7 @@ const LocationNpc = memo(function LocationNpc({
 export function DeferredNpcPreloads(): ReactElement | null {
   useEffect(() => {
     let cancelled = false;
-    let timer = 0;
+    let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
     let idleHandle = 0;
 
     const preloadNext = (models: string[], index: number) => {
@@ -819,14 +819,14 @@ export function DeferredNpcPreloads(): ReactElement | null {
       if ('requestIdleCallback' in window) {
         idleHandle = window.requestIdleCallback(run, { timeout: 2500 });
       } else {
-        timer = window.setTimeout(run, 250);
+        timer = globalThis.setTimeout(run, 250);
       }
     };
 
     const waitForReady = () => {
       if (cancelled) return;
       if (!(window as any).__W3D_READY) {
-        timer = window.setTimeout(waitForReady, 500);
+        timer = globalThis.setTimeout(waitForReady, 500);
         return;
       }
 
@@ -846,11 +846,11 @@ export function DeferredNpcPreloads(): ReactElement | null {
       preloadNext(models, 0);
     };
 
-    timer = window.setTimeout(waitForReady, 500);
+    timer = globalThis.setTimeout(waitForReady, 500);
 
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
+      if (timer !== undefined) globalThis.clearTimeout(timer);
       if (idleHandle && 'cancelIdleCallback' in window) {
         window.cancelIdleCallback(idleHandle);
       }
