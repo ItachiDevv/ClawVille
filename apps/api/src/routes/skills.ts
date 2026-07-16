@@ -36,8 +36,10 @@ import { requirePartnerKey, partnerRateLimit } from '../middleware/partner-key';
 import { createRateLimiter } from '../middleware/rate-limit';
 import {
   PROTOCOL_VERSION,
+  buildPlayManual,
   buildProtocolManual,
   contentHashOf,
+  protocolPointer,
   resolveApiBase,
 } from '../services/skill-protocol';
 import type { AppContext } from '../types';
@@ -207,9 +209,9 @@ skillsRoutes.get(
       })
       .from(buildingSkills);
 
-    // The protocol manual is generated in-process — hash the SAME bytes the
-    // protocol endpoint serves so a partner's diff is exact.
-    const protocolMd = buildProtocolManual(apiBase);
+    // Both code-owned manuals are hashed from the SAME bytes their endpoints
+    // serve, independent of whether the seed table contains an entry row.
+    const playMd = buildPlayManual(apiBase);
 
     const buildings = rows
       .filter((r) => r.buildingId !== 'clawville-play')
@@ -223,25 +225,15 @@ skillsRoutes.get(
         url: `/api/skills/${r.buildingId}/skill.md`,
       }));
 
-    // The public entry skill is listed separately so a partner knows it's the
-    // one body it can fetch WITHOUT a partner key.
-    const playRow = rows.find((r) => r.buildingId === 'clawville-play');
-
     const body: Record<string, unknown> = {
       generatedAt: new Date().toISOString(),
-      protocol: {
+      protocol: protocolPointer(apiBase),
+      orientation: {
         version: PROTOCOL_VERSION,
-        contentHash: contentHashOf(protocolMd),
-        url: '/api/skills/protocol/skill.md',
+        contentHash: contentHashOf(playMd),
+        url: '/api/skills/clawville-play/skill.md',
+        public: true,
       },
-      orientation: playRow
-        ? {
-            version: playRow.generatorVersion,
-            contentHash: contentHashOf(playRow.content),
-            url: '/api/skills/clawville-play/skill.md',
-            public: true,
-          }
-        : null,
       buildings,
     };
 
@@ -587,10 +579,39 @@ async function serveBuildingSkill(
   });
 }
 
-// PUBLIC entry skill — registered BEFORE the gated wildcard so the open-
-// onboarding `clawville-play` meta skill is reachable with no partner key
-// (brand priority #2). No `via` tag — an organic fetch of the play skill counts.
-skillsRoutes.get('/clawville-play/skill.md', (c) => serveBuildingSkill(c, 'clawville-play', undefined));
+// PUBLIC entry skill — generated from code and registered BEFORE the gated
+// wildcard. It never consults `building_skills`, so an empty staging/dev seed
+// cannot take open onboarding offline.
+skillsRoutes.get('/clawville-play/skill.md', (c) => {
+  const md = buildPlayManual(resolveApiBase());
+  void logEventFromContext(c, {
+    eventType: 'skill_md.fetched',
+    agentId: c.req.header('x-clawville-agent-id') ?? null,
+    sessionId: c.req.header('x-clawville-session-id') ?? null,
+    payload: {
+      userAgent: c.req.header('user-agent') ?? null,
+      referer: c.req.header('referer') ?? null,
+      skillName: 'clawville-play',
+      generatorVersion: PROTOCOL_VERSION,
+      gated: false,
+    },
+  });
+
+  return new Response(md, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/markdown; charset=utf-8',
+      'Content-Disposition': 'attachment; filename="clawville-clawville-play.md"',
+      'Cache-Control': 'private, max-age=60',
+      'X-Skill-Name': 'clawville-play',
+      'X-Skill-Filename': 'clawville-clawville-play.md',
+      'X-Skill-Version': String(PROTOCOL_VERSION),
+      'X-Skill-Content-Hash': contentHashOf(md),
+      'Access-Control-Expose-Headers':
+        'Content-Disposition, X-Skill-Name, X-Skill-Filename, X-Skill-Version, X-Skill-Content-Hash',
+    },
+  });
+});
 
 // Per-building reads — DUAL gate (plan §4 points B + E):
 //   • Authenticated END-USERS (Lucia browser cookie or connected-agent session)

@@ -16,12 +16,11 @@ import { requireAuth } from '../middleware/auth';
 import { sessionMiddleware } from '../middleware/auth';
 import { requireAuthOrAgentSession } from '../middleware/require-auth-or-agent';
 import { isGuestUser } from '../middleware/require-non-guest';
-import { agentOrchestrator } from '../services/agent-orchestrator';
 import {
-  embedText,
   learnBookAtomically,
   LearnBookError,
 } from '@clawville/agent-runtime';
+import { syncHostedAgentKnowledge } from '../services/hosted-agent-knowledge';
 import { logEventFromContext } from '../services/event-logger';
 import { publishKnowledgeAdded } from '../services/skill-event-bus';
 import { npcSimulation } from '../services/npc-simulation';
@@ -341,68 +340,18 @@ itemRoutes.post('/learn', requireAuthOrAgentSession, async (c) => {
     mergedKnowledge,
   } = learned;
 
-  // Update runtime memories after the DB transaction commits. These effects are
-  // idempotent/best-effort and must never turn a committed consume into a 500.
+  // The transaction already merged both JSONB configuration surfaces. Route
+  // the post-commit ElizaOS memory + restart effects through the same service
+  // used by autonomous building learning; provider failures stay non-fatal.
   if (platformAgentId) {
-
-    // Phase 2 RAG: embed new knowledge entries via the ElizaOS runtime and
-    // store as searchable memories. Uses runtime.createMemory() which the
-    // framework guarantees handles the memory → embeddings table split.
-    //
-    // We get the runtime BEFORE stopping it, embed the entries, THEN stop.
-    // Non-blocking on individual entry failures — JSONB fallback works.
-    if (newKnowledge.length > 0) {
-      try {
-        const runtime = await agentOrchestrator.ensureAgentRuntime(
-          platformAgentId,
-          userId,
-        );
-        if (runtime) {
-          const { v5: uuidv5 } = await import('uuid');
-          // Distinct namespace from ROOM_NAMESPACE to avoid UUID collisions
-          const KNOWLEDGE_NS = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
-          const agentId = platformAgentId as any;
-
-          for (const entry of newKnowledge) {
-            try {
-              const embedding = await embedText(entry);
-              const memoryId = uuidv5(`knowledge:${updatedAvatar.id}:${entry}`, KNOWLEDGE_NS);
-              const elizaRuntime = runtime.getElizaRuntime();
-
-              if (elizaRuntime?.createMemory) {
-                await elizaRuntime.createMemory(
-                  {
-                    id: memoryId,
-                    agentId,
-                    entityId: agentId,
-                    roomId: agentId,
-                    content: { text: entry, source: 'book' } as any,
-                    embedding,
-                    createdAt: Date.now(),
-                    metadata: { type: 'custom', subtype: 'knowledge', source: 'book', bookId: book.id },
-                  },
-                  'knowledge',
-                  true, // unique — idempotent on re-learn
-                );
-              }
-            } catch (entryErr) {
-              console.warn(`[items/learn] Failed to embed entry: ${(entryErr as Error).message}`);
-            }
-          }
-          console.log(`[items/learn] Embedded ${newKnowledge.length} knowledge entries for avatar ${updatedAvatar.id}`);
-        }
-      } catch (err) {
-        console.warn(`[items/learn] Knowledge embedding failed (non-blocking): ${(err as Error).message}`);
-      }
-    }
-
-    // Stop running agent so next chat message restarts with new knowledge. A
-    // stop failure is operationally visible but cannot undo the committed learn.
-    try {
-      await agentOrchestrator.stopAgent(platformAgentId);
-    } catch (err) {
-      console.warn(`[items/learn] Agent restart preparation failed (non-blocking): ${(err as Error).message}`);
-    }
+    await syncHostedAgentKnowledge({
+      userId,
+      avatarId: updatedAvatar.id,
+      entries: newKnowledge,
+      source: 'book',
+      metadata: { bookId: book.id },
+      databaseAlreadyMerged: { platformAgentId, mergedKnowledge },
+    });
   }
 
   // Q3 plan §2.6 — emit event so the tutorial-quest `agent-scholar`

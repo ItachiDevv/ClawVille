@@ -369,6 +369,13 @@ describe('creditBuildingChatRewardOncePerDay (shared durable claim)', () => {
     expect(routeSource).toContain('agentBuildingChatRewardAvatarId(rewardSubject)');
     expect(routeSource).toContain('avatarId: rewardAvatarId');
     expect(routeSource).toContain('agentId: bot.agentId');
+    expect(routeSource).toContain('knowledge: [...current, entry]');
+    expect(routeSource).toContain('await recordEarnedSkillLesson({');
+    expect(routeSource).toContain('columns: { platformAgentId: true }');
+    expect(routeSource).toContain(
+      'where: eq(avatars.id, chatKnowledgeSubject.avatarId)',
+    );
+    expect(routeSource).not.toContain('syncHostedAgentKnowledge({');
     // Regression: the liveness-only bot.userId lookup let an ownership-unproven
     // reconnect target the row owner's avatar (and could select an inactive one).
     expect(routeSource).not.toContain('resolveAvatarIdForBot(');
@@ -398,6 +405,7 @@ describe('creditBuildingChatRewardOncePerDay (shared durable claim)', () => {
     );
     expect(routeSource).not.toContain('resolveAvatarIdForBot(');
     expect(routeSource).not.toContain('visitUserId = bot.userId');
+    expect(routeSource.match(/syncHostedAgentKnowledge\(\{/g)).toHaveLength(1);
   });
 
   it('human chat authorizes the mint and XP from canonical users.is_guest, not the avatar mirror', () => {

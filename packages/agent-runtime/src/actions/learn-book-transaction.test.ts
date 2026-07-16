@@ -108,11 +108,15 @@ function avatarRow(characterConfig: Record<string, unknown>) {
 function makeHarness(
   inventory: Record<string, number>,
   initialKnowledge: string[] = ['existing-knowledge'],
+  initialPlatformCustomization: Record<string, unknown> | null = {
+    bio: ['test'],
+    knowledge: [...initialKnowledge],
+  },
 ): Harness {
   const state: HarnessState = {
     characterConfig: { bio: ['test'], knowledge: [...initialKnowledge] },
     inventory: new Map(Object.entries(inventory)),
-    platformCustomization: { bio: ['test'], knowledge: [...initialKnowledge] },
+    platformCustomization: structuredClone(initialPlatformCustomization),
   };
   let failAgentUpdate = false;
   let transactions = 0;
@@ -134,18 +138,22 @@ function makeHarness(
         inventory: new Map(state.inventory),
         platformCustomization: structuredClone(state.platformCustomization),
       };
-      let executeCount = 0;
-
       const tx = {
         async execute(query: unknown) {
-          executedSql.push(sqlText(query));
-          executeCount += 1;
-          if (executeCount === 1) {
+          const text = sqlText(query);
+          executedSql.push(text);
+          if (text.includes('FROM avatars')) {
             return [{
               id: AVATAR_ID,
               platform_agent_id: AGENT_ID,
               character_config: structuredClone(state.characterConfig),
             }];
+          }
+
+          if (text.includes('FROM platform_agents')) {
+            return state.platformCustomization === null
+              ? [{ customization: null }]
+              : [{ customization: structuredClone(state.platformCustomization) }];
           }
 
           const params = sqlParams(query);
@@ -303,6 +311,41 @@ describe('learnBookAtomically', () => {
         ...secondBook.knowledgeEntries,
       ]),
     );
+  });
+
+  it('merges learned knowledge without clobbering agent gateway or persona customization', async () => {
+    const existingCustomization = {
+      gateway: {
+        url: 'https://agent.example/v1',
+        protocol: 'openai-compat',
+        authToken: 'encrypted-at-rest',
+      },
+      persona: {
+        voice: 'measured',
+        systemPrompt: 'Preserve this agent-specific prompt.',
+      },
+      knowledge: ['agent-side-stale-entry'],
+    };
+    const harness = makeHarness(
+      { [firstBook.id]: 1 },
+      ['existing-avatar-knowledge'],
+      existingCustomization,
+    );
+
+    const result = await learnBookAtomically(harness.db, {
+      avatarId: AVATAR_ID,
+      bookId: firstBook.id,
+    });
+
+    expect(harness.state.platformCustomization).toEqual({
+      gateway: existingCustomization.gateway,
+      persona: existingCustomization.persona,
+      knowledge: [
+        'agent-side-stale-entry',
+        ...result.mergedKnowledge,
+      ],
+    });
+    expect(harness.state.platformCustomization).not.toHaveProperty('bio');
   });
 
   it('rolls back a captured copy on post-consume refusal so a retry can reuse it', async () => {
