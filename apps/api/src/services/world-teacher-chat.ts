@@ -248,7 +248,10 @@ export async function conductTeacherTurn(
         userId: agentId,
         platform: 'clawville-world-autonomous',
         dynamicContext: contextParts.join('\n'),
-        state: { nearLocation: buildingId },
+        state: {
+          nearLocation: buildingId,
+          platformAgentId: system.locationAgent.platformAgentId,
+        },
         conversational: true,
         // Cost win (P1 slice 4): a house teacher turn carries the teacher's full
         // merged SKILL.md corpus — run it on TEXT_SMALL (gpt-4o-mini) rather than

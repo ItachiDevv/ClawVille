@@ -109,13 +109,12 @@ export const knowledgeProvider: Provider = {
     const config = state?.characterConfig as { knowledge?: string[] } | undefined;
     const allKnowledge = config?.knowledge ?? [];
     const userMessage = state?.userMessage ?? message?.content?.text ?? '';
-    const avatarId = state?.avatarId;
+    const agentId = state?.platformAgentId ?? state?.avatarId;
 
     // Try vector retrieval first (Phase 2 path)
-    if (runtime?.searchMemories && userMessage && avatarId) {
+    if (runtime?.searchMemories && userMessage && agentId) {
       try {
         const queryEmbedding = await embedText(userMessage);
-        const agentId = state?.platformAgentId ?? avatarId;
         let entries: string[] = [];
         let protocolEntries: string[] = [];
 

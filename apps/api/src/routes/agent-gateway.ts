@@ -104,6 +104,7 @@ import {
 import { getBlackjackSkillContext } from '../services/game-skill-memory';
 import { readEarnedSkillLessons, recordEarnedSkillLesson } from '../services/earned-skill-memory';
 import { syncHostedAgentKnowledge } from '../services/hosted-agent-knowledge';
+import { installBuildingSkillIntoAgent } from '../services/building-skill-install';
 import {
   getBooksForBuilding,
   SHOP_BUILDINGS,
@@ -2500,6 +2501,16 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
           source: 'building-visit',
           metadata: { buildingId, interaction: 'visit' },
         });
+        void installBuildingSkillIntoAgent({
+          ...visitKnowledgeSubject,
+          buildingId,
+          provenAgentId: botConfig.agentId,
+        }).catch((error) => {
+          console.warn(
+            '[AgentGateway] Building skill auto-install failed (non-fatal):',
+            error instanceof Error ? error.message : error,
+          );
+        });
       }
     } catch (err) {
       console.error('[AgentGateway] Failed to persist knowledge:', err);
@@ -2633,6 +2644,7 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
       dynamicContext,
       state: {
         nearLocation: buildingId,
+        platformAgentId: system.locationAgent.platformAgentId,
       },
     });
     responseContent = response.content;

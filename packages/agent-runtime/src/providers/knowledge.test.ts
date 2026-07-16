@@ -44,6 +44,30 @@ const state = {
 };
 
 describe('knowledgeProvider protocol manual retrieval', () => {
+  it('uses the verified platform agent for both rooms without requiring an avatar id', async () => {
+    const searchMemories = mock(async () => []);
+
+    await knowledgeProvider.get(
+      { searchMemories },
+      { content: { text: state.userMessage } },
+      {
+        platformAgentId: PLATFORM_AGENT_ID,
+        userMessage: state.userMessage,
+        characterConfig: { knowledge: [] },
+      },
+    );
+
+    expect(searchMemories).toHaveBeenCalledTimes(2);
+    expect(searchMemories.mock.calls[0]![0]).toMatchObject({
+      roomId: PLATFORM_AGENT_ID,
+      entityId: PLATFORM_AGENT_ID,
+    });
+    expect(searchMemories.mock.calls[1]![0]).toMatchObject({
+      roomId: protocolKnowledgeRoomId(PLATFORM_AGENT_ID),
+      entityId: protocolKnowledgeEntityId(PLATFORM_AGENT_ID),
+    });
+  });
+
   it('issues the agent-scoped second search and keeps the highest version per section', async () => {
     const queryEmbedding = [0.1, 0.2, 0.3];
     globalThis.fetch = mock(async () =>
