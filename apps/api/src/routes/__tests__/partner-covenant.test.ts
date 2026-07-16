@@ -18,7 +18,7 @@
  * and this gate is the security boundary worth locking).
  */
 
-import { describe, it, expect, beforeEach, afterEach, beforeAll, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, mock } from 'bun:test';
 import { Hono } from 'hono';
 import { createHash } from 'crypto';
 import bs58 from 'bs58';
@@ -148,16 +148,32 @@ function ensureEnv(k: string, v: string) {
 }
 const HEX32 = '0'.repeat(64);
 ensureEnv('FINGERPRINT_SECRET', HEX32);
+const DB_URL_WAS_SET = !!process.env.DATABASE_URL;
 ensureEnv('DATABASE_URL', 'postgresql://u:p@localhost:5432/db');
 ensureEnv('CLOUDFLARE_WORKER_URL', 'https://example.invalid');
 ensureEnv('CLOUDFLARE_WORKER_BEARER', 'dummy');
 ensureEnv('VANITY_ENCRYPTION_KEY', HEX32);
 
+// Leak-guard: `mock.module` is process-global, so once this file's suite is done
+// every db property read delegates to the db that was live at this file's load —
+// later files (quest race guards etc.) see real behavior instead of this stub.
+let covenantSuiteActive = true;
+afterAll(() => {
+  covenantSuiteActive = false;
+});
 const realDbForCovenant = await import('@clawville/database');
+const DELEGATE_DB = (realDbForCovenant as unknown as { db: Record<string, unknown> }).db;
 mock.module('@clawville/database', () => ({
   ...realDbForCovenant,
-  db: covDbStub,
+  db: new Proxy(covDbStub, {
+    get: (t, p, r) =>
+      covenantSuiteActive ? Reflect.get(t, p, r) : Reflect.get(DELEGATE_DB, p, DELEGATE_DB),
+  }),
 }));
+// The database client is now loaded (and mocked), so drop the module-init
+// DATABASE_URL placeholder — later DB-gated suites in the shared bun process
+// must keep their skip-when-no-DB behavior instead of seeing a fake URL.
+if (!DB_URL_WAS_SET) delete process.env.DATABASE_URL;
 
 /** Signed GET headers for a covenant request to `path` from the allowed IP. */
 function covenantHeaders(path: string): Record<string, string> {

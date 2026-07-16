@@ -48,7 +48,14 @@ import {
 import type { AppContext } from '../../types';
 
 const HAS_DB = !!process.env.DATABASE_URL;
-const describeIfDb = HAS_DB ? describe : describe.skip;
+// Setup creates avatars through the real routes, which mint custodial wallets
+// via the Cloudflare worker — without real worker creds (or with a sibling
+// suite's 'example.invalid' placeholder) the hooks fail, so gate like HAS_DB.
+const HAS_WALLET_INFRA =
+  !!process.env.CLOUDFLARE_WORKER_URL &&
+  !process.env.CLOUDFLARE_WORKER_URL.includes('example.invalid') &&
+  !!process.env.CLOUDFLARE_WORKER_BEARER;
+const describeIfDb = HAS_DB && HAS_WALLET_INFRA ? describe : describe.skip;
 
 const SERVICE_SOLD_WEIGHT = 40;
 const SERVICE_SOLD_CAP = 50;
