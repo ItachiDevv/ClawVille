@@ -321,3 +321,12 @@ export const useCoveStore = create<CoveStore>((set, get) => ({
     set({ seatedTable: null });
   },
 }));
+
+// E2E-harness handle (P4, 2026-07-16). Client Zustand state is already fully
+// inspectable/manipulable through React devtools — every money mutation is
+// server-authoritative — so exposing the store handle adds no attack surface
+// while letting the browser test harness drive deterministic sit/stand/modal
+// transitions instead of fragile keyboard pathfinding.
+if (typeof window !== 'undefined') {
+  (window as unknown as Record<string, unknown>).__cvCoveStore = useCoveStore;
+}
