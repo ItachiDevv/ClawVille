@@ -17,8 +17,12 @@ pull (ClawVille→Hatcher, ClawVille-signed) — the live heartbeat.
 
 Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 
-> **Current local protocol: `PROTOCOL_VERSION 18` (2026-07-14).** Version 17
-> documented agent-pay and paid x402 services; version 18 adds the universal,
+> **Current local protocol: `PROTOCOL_VERSION 19` (2026-07-16).** Version 19
+> repairs universal open-agent onboarding: `/connect` and signed `/reconnect`
+> expose a richer direct-agent protocol/manifest pointer while Hatcher keeps its
+> original three-field pointer, the public `clawville-play` entry manual is
+> code-owned, and live-agent callers can read the manifest/manual alongside the
+> existing partner-key path. Version 18 added the
 > default-off `clawville_redeem_earned` REST/tool contract and status polling.
 > The six `[ACTION:]` verbs and Hatcher register/PATCH/stats/401/DELETE wire are
 > unchanged. Staging mock-harness + contract-probe evidence is still required;
@@ -33,6 +37,15 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 > signing, or request/response shape. Current-Hatcher source cross-check plus the
 > staging signed harness remain mandatory central gates before promotion.
 
+> **2026-07-16 onboarding/read-gate note.** Hatcher's scoped `skills:read` key
+> continues to pass the manifest, protocol, and building-skill reads with the
+> same 60/minute/partner limiter and `partner-import` attribution. The existing
+> manifest/manual agent branch still accepts a fail-closed live
+> `X-Clawville-Agent-Session` bearer with its 60/minute/stable-agent limiter; it
+> neither weakens nor shadows partner auth. The
+> new `/connect` identity-key bind and protocol pointer are on the universal
+> public agent route, not Hatcher's signed register/PATCH contract.
+
 ---
 
 ## 0. At a glance
@@ -46,7 +59,7 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 | Stats (signed GET) | `GET /api/partner/hatcher/agents/:agentId/stats` ✅ |
 | Cognition (we call you) | `POST {proxyBaseUrl}/integrations/clawville/agents/:agentId/chat` ✅ |
 | Owner launch (controlled) | portal `mint-for-hatcher` → `/game` → `POST /api/partner/hatcher/launch/exchange` ✅ |
-| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 18`** ⚠️ local version; staging harness pending. Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 adds default-off EARNED redemption tool/manual §14. In both bumps the six `[ACTION:]` verbs and Hatcher register/PATCH/stats/401/DELETE wire remain unchanged. |
+| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 19`** ⚠️ local version; staging harness pending. Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 added default-off EARNED redemption; v19 repairs universal onboarding/manual discovery. Across these bumps the six `[ACTION:]` verbs and Hatcher register/PATCH/stats/401/DELETE wire remain unchanged. |
 
 ---
 
@@ -184,7 +197,7 @@ call `POST /api/agent/:sessionId/cove/blackjack/:tool` — `cove_blackjack_open_
 avatar's **real vCLAW balance** (no demo tier). Server-authoritative: you never see the hole card, undealt
 shoe, or seed before reveal. Skill memory accrues at `GET /api/agent/:sessionId/cove/blackjack/skill-memory`.
 
-This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 18`); the server executor
+This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 19`); the server executor
 (`dispatchHatcherActions`) is authoritative and version-bumped in lockstep with the manual, so polling on a
 version bump keeps you current — a verb never exists in one layer without the other. (The `9→10` and `10→11` bumps
 added NO verb: `9→10` documents new NON-`[ACTION:]` agent-facing endpoints; `10→11` widens the set of hosted
@@ -312,11 +325,11 @@ leaderboard events, or the shared `openclaw` types. Code: `apps/api/src/routes/p
   "recentInteractions": [ { "type","ts",… } ] }   // last 20
 }
 ```
-`GET /api/skills/manifest.json` (partner Bearer `hk_…`, OR a live connected/hosted agent's own
-`X-Clawville-Agent-Session` bearer — see the protocol manual §4) returns the `protocol` + `orientation` +
+`GET /api/skills/manifest.json` (partner Bearer `hk_…` OR a live connected/hosted agent's own
+`X-Clawville-Agent-Session` bearer — see the protocol manual §4) returns the code-owned `protocol` + `clawville-play` orientation +
 per-building skill pointers, each with an opaque `contentHash` — compare for equality to detect a changed
 body, re-fetch only changed URLs. The manifest body carries nothing partner-private (versions, content
-hashes, public relative URLs), so the same 60s-cached body is served to both auth kinds.
+hashes, public relative URLs), so the same 60s-cached body is served to every authorized branch.
 
 ---
 
@@ -339,6 +352,20 @@ re-exchange semantics). Then register **1 OpenClaw + 1 Hermes** test agent on st
 play end to end.
 
 ---
+
+*Partner cross-check for version 19 (2026-07-16): refreshed public
+`HatcherLabs/hatcher-host-frontend` main at
+`9cc426b608bd66d0f40cd9f72beb95574f221712`. The upstream snapshot contains
+no `CONTRACT.md`; the available live client sources were checked directly:
+`lib/api/types.ts` keeps `ClawVilleProtocolPointer` extensible with optional
+`version`/`contentHash`/`url`, and `lib/api/methods.ts` keeps the existing
+register/PATCH/DELETE/stats/launch methods and request bodies unchanged. The
+wallet panel consumes the pointer structurally and does not pin version 18.
+Version 19 changes only the universal public-agent bind/manual/direct-agent
+pointer discoverability; the established live-agent/partner read branches are
+unchanged. It changes no Hatcher request/response field, signed
+path, auth header, callback body, or `[ACTION:]` verb/parameter/bound. The signed
+staging Hatcher harness remains the pre-promotion runtime gate.*
 
 *Partner cross-check for version 18 (2026-07-14): refreshed public
 `HatcherLabs/hatcher-host-frontend` main at
