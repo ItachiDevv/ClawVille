@@ -878,25 +878,28 @@ export const TABLE_TOP_Y = glbHeightToWorldY(GLB_FELT_TOP_Z);
  * units, then re-applied through FIT_SCALE so a future knob change keeps the
  * entire layer proportional to the baked T1 felt. */
 const T1_FELT_CARD_REFERENCE_FIT_SCALE = 2800 / ROOM_GLB_MAX_DIM;
-/** P2.1 per-role layout (2026-07-15). Sizes diverge by role because the
- * seated camera geometry demands it: the player's holes stay the approved
- * 40x56 and hinge 18° toward the eye (anchored at 0.40 so they clear the
- * bottom frame edge after the look-target drop below); the 5-card board runs
- * PERPENDICULAR to the seat-0 sight line at 32x44.8 so its 168wu span fits
- * the felt's 182wu short axis; bot backs are 26x36.4 presence markers. */
+/** P2.1 per-role layout (2026-07-15) — RESIZED 2026-07-16 after founder
+ * live-test: the original 40x56 holes (chosen for legibility before the 18°
+ * hinge existed) rendered ~1/6 of the SCREEN each from the seated POV —
+ * "way too big" verdict. Cards are now ~55% of that: still comfortably
+ * legible seated (the hinge tilts them toward the eye), and they read as
+ * cards on a table from standing height instead of billboards. Board runs
+ * PERPENDICULAR to the seat-0 sight line (spacing 24 → 5-card span 116wu
+ * inside the felt's 182wu short axis); bot backs are small presence
+ * markers. */
 export const T1_FELT_CARD_LAYOUT = Object.freeze({
-  holeCardWidth: (40 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
-  holeCardHeight: (56 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
-  holePairGap: (8 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
+  holeCardWidth: (22 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
+  holeCardHeight: (30.8 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
+  holePairGap: (5 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
   holeAnchorScale: 0.40,
   holeHingeTiltRad: (18 * Math.PI) / 180,
-  boardCardWidth: (32 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
-  boardCardHeight: (44.8 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
-  boardSpacing: (34 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
+  boardCardWidth: (20 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
+  boardCardHeight: (28 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
+  boardSpacing: (24 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
   boardBackOffset: (24 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
-  botCardWidth: (26 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
-  botCardHeight: (36.4 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
-  botPairGap: (6 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
+  botCardWidth: (16 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
+  botCardHeight: (22.4 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
+  botPairGap: (4 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
   botAnchorScale: 0.55,
   surfaceLift: (1.5 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
 });
@@ -1258,6 +1261,15 @@ const _HOLDEM_HOTSPOT_POS: [number, number, number] = [
 ];
 const _HOLDEM_HOTSPOT_SIZE: [number, number, number] = [200, 200, 150];
 
+// TABLE-IDENTITY SWAP (2026-07-16, founder live-test): the seated hold'em
+// experience (T1_SEATS, busts, felt cards, E-to-sit) was built at the table
+// the BLACKJACK hotspot + banner occupied — T1 center (-432,414) vs the BJ
+// hotspot (-419,463); the founder walked up to the hold'em busts, clicked
+// the felt, and got the blackjack modal. Fixed by swapping the two 2D
+// hotspots + banners: HOLD'EM now lives at T1 (_BJ_HOTSPOT_POS, kept name
+// for the physical spot) and BLACKJACK at the mirror table T2
+// (_HOLDEM_HOTSPOT_POS). The dealer-station COLLISION AABB above is
+// physical geometry and deliberately unmoved.
 function BlackjackTableHotspot() {
   const meshRef = useRef<THREE.Mesh>(null);
   const openBlackjackTable = useCoveStore((s) => s.openBlackjackTable);
@@ -1286,7 +1298,7 @@ function BlackjackTableHotspot() {
   return (
     <mesh
       ref={meshRef}
-      position={_BJ_HOTSPOT_POS}
+      position={_HOLDEM_HOTSPOT_POS}
       onPointerOver={(e) => {
         e.stopPropagation();
         if (typeof document !== 'undefined') document.body.style.cursor = 'pointer';
@@ -1309,10 +1321,12 @@ function BlackjackTableHotspot() {
 // ---------------------------------------------------------------------------
 // Phase 6.5.0 — Texas Hold'em table hotspot.
 //
-// Mirror of BlackjackTableHotspot at the second poker table (+X mirror of
-// the blackjack station). Click opens the HoldemModal with the current
-// avatar's ClawToken balance as the suggested buy-in cap (clamped inside
-// the store via `min(balance, COVE_HOLDEM_DEFAULT_BUYIN)`).
+// Click opens the HoldemModal with the current avatar's ClawToken balance as
+// the suggested buy-in cap (clamped inside the store via
+// `min(balance, COVE_HOLDEM_DEFAULT_BUYIN)`). Since the 2026-07-16 identity
+// swap (see BlackjackTableHotspot above) this sits at T1 — the SAME table
+// the seated felt experience uses, so click-to-2D-modal and E-to-sit now
+// open the same game on the same session state.
 // ---------------------------------------------------------------------------
 
 function HoldemTableHotspot() {
@@ -1338,7 +1352,7 @@ function HoldemTableHotspot() {
   return (
     <mesh
       ref={meshRef}
-      position={_HOLDEM_HOTSPOT_POS}
+      position={_BJ_HOTSPOT_POS}
       onPointerOver={(e) => {
         e.stopPropagation();
         if (typeof document !== 'undefined') document.body.style.cursor = 'pointer';
@@ -1553,7 +1567,12 @@ const T1_CHAIRS_GLB: MeasuredChairGlb[] = [
 // different chair shape. Verify seat4 specifically after this change
 // (knee/table clearance risk from a big forward shift, per team-lead) —
 // if it visibly clips the table, reduce ITS offset only, not the others.
-const T1_SEAT_FORWARD_OFFSET_GLB: number[] = [13.3, 9.3, 13.3, 13.3, 50.7, 8.0].map((wu) => wu / FIT_SCALE);
+// Seat4 verified 2026-07-16 (the check the block above demanded): at the
+// measured 50.7wu forward offset the bust reads pushed INTO the table —
+// upright torso leaning over the felt, butt off the cushion ("standing at
+// the table" in the founder's live test). Halved to 20wu: still forward of
+// the weak centroid measurement, but keeps the pelvis on the chair.
+const T1_SEAT_FORWARD_OFFSET_GLB: number[] = [13.3, 9.3, 13.3, 13.3, 20.0, 8.0].map((wu) => wu / FIT_SCALE);
 
 export const T1_SEATS: TableSeat[] = T1_CHAIRS_GLB.map((c, i) => {
   const wx = glbToWorldX(c.glbX);
@@ -1746,9 +1765,13 @@ function TableSeatedBustInner({ reg, seat, seatIndex, instanceId, targetHeight }
   const animRef = useRef<VRMCharacterAnimator | null>(null);
   const sitHeightElapsedRef = useRef(-1);
   const sitHeightCheckedRef = useRef(false);
-  // ModelRegistryEntry has no gender metadata. Alternate the Meshy M/F idle
-  // variants by stable seat index until live roster metadata supplies it.
-  const sitIdleClip: AnimName = seatIndex % 2 === 0 ? 'sit_idle_f' : 'sit_idle_m';
+  // ALL seats use sit_idle_m (2026-07-16, founder live-test verdict). The
+  // f-variant's expressive phases (arms extending horizontally at shoulder
+  // height — faithful SOURCE content, flagged 2026-07-14) read as "zombie
+  // arms" in-game and were rejected on the live table. The m-clip is the
+  // numerically-verified calm one (hands below shoulders across its whole
+  // loop). Variety comes from per-seat phase offsets below, not clip mixing.
+  const sitIdleClip: AnimName = 'sit_idle_m';
   // Cached leg-bone refs — looked up once when the VRM loads, never re-queried
   // per frame (getNormalizedBoneNode is a map lookup, cheap, but there is no
   // reason to pay it 4x every frame for a value that never changes per-VRM).
@@ -1815,7 +1838,14 @@ function TableSeatedBustInner({ reg, seat, seatIndex, instanceId, targetHeight }
           sitIdleClip,
           COVE_SIT_TRANSITION_TIME_SCALE,
         );
-        if (!cancelled) sitHeightElapsedRef.current = 0;
+        if (!cancelled) {
+          sitHeightElapsedRef.current = 0;
+          // Desync the shared idle loop across seats — 5 busts breathing in
+          // perfect unison reads uncanny. One large tick fast-forwards this
+          // seat's loop phase; mixer.update handles any dt, and the hip
+          // height assert below is phase-independent.
+          anim.update(seatIndex * 1.37, false, false);
+        }
       }
     }).catch((e) => { console.warn('[TableSeatedBust] init failed:', e); anim.dispose(); });
     return () => {
@@ -1988,9 +2018,21 @@ const TABLE_SIT_ARM  = _SIT_ARM_GLB * FIT_SCALE;  // wu — E key actually arms
 let _eKeyArmedTableSit = false;
 let _eKeyTableConsumed = false;
 let _tableSitNearHint = false;
+/** True while the cartoon fallback room is active (2026-07-16). The T1
+ *  seat/felt constants describe the HQ room's baked geometry — in the
+ *  fallback GLB they land on arbitrary space, so the whole seated
+ *  experience (busts, felt cards, sit prompt, seat camera, E-arming) is
+ *  disabled rather than rendered floating mid-air. Set from
+ *  CoveInteriorScene, read by the player-avatar frame loop below. */
+let _coveFallbackActive = false;
 
 /** Called every frame while walking (not seated) — arms/fires the sit action. */
 function _updateTableSitProximity(px: number, pz: number): void {
+  if (_coveFallbackActive) {
+    _eKeyArmedTableSit = false;
+    _tableSitNearHint = false;
+    return;
+  }
   const dSq = (px - T1_CENTER_X) ** 2 + (pz - T1_CENTER_Z) ** 2;
   _eKeyArmedTableSit = dSq <= TABLE_SIT_ARM * TABLE_SIT_ARM;
   _tableSitNearHint  = dSq <= TABLE_SIT_NEAR * TABLE_SIT_NEAR;
@@ -2044,7 +2086,7 @@ function _tableSitLabelCapsule(seated: boolean, hint: boolean) {
           userSelect: 'none',
         }}
       >
-        {seated ? 'Seated' : 'Table T1'}
+        {seated ? 'Seated' : "Hold'em — Table T1"}
         {hint && (
           <span
             style={{
@@ -2943,6 +2985,14 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
   useFrame((_, delta) => {
     if (useFallback && fpsChecked.current && emptyFired.current) return;
 
+    // Hidden-tab guard (2026-07-16): RAF pauses while the tab is hidden, so
+    // the resume frame carries a delta spanning the whole hidden gap — one
+    // alt-tab (e.g. the founder grabbing a screenshot) during the sample
+    // window cratered avgFps and swapped the room to the cartoon fallback
+    // mid-session. Pause/hidden frames are not evidence of GPU speed; skip
+    // them entirely.
+    if (delta > 0.25 || (typeof document !== 'undefined' && document.hidden)) return;
+
     fpsAccum.current += delta;
     fpsFrames.current += 1;
 
@@ -3152,6 +3202,17 @@ export default function CoveInteriorScene({ onSceneEmpty }: CoveInteriorScenePro
     if (typeof window === 'undefined') return false;
     return new URLSearchParams(window.location.search).get('fallback') === '1';
   });
+
+  // Keep the module-scope gate in sync + stand the player up if the fallback
+  // trips while seated (the seat camera/HUD anchor geometry no longer exists
+  // in the fallback room; their table session survives server-side and can
+  // be resumed by clicking the table → 2D modal).
+  useEffect(() => {
+    _coveFallbackActive = useFallback;
+    if (useFallback && useCoveStore.getState().seatedTable !== null) {
+      useCoveStore.getState().standFromTable();
+    }
+  }, [useFallback]);
   // Phase-0 debug probe gate (Slice 1, 2026-07-10) — NEXT_PUBLIC_COVE_DEBUG='1'
   // (matches the existing [cove-fit] flag) or ?probe=1 for a one-off check
   // without an env var. See TableProbeMarkers above.
@@ -3192,28 +3253,23 @@ export default function CoveInteriorScene({ onSceneEmpty }: CoveInteriorScenePro
       {/* Bank labels + E-key proximity hints */}
       <BankLabels />
 
-      {/* Phase 6.4.0 — blackjack table click hotspot.
-          Positioned at the dealer station (right wall, X≈307, Z=0).
-          Invisible mesh — cursor: pointer on hover. Opens BlackjackModal. */}
+      {/* 2026-07-16 table-identity swap (see BlackjackTableHotspot comment):
+          BLACKJACK 2D hotspot now at the MIRROR table (T2 side); its banner
+          follows. */}
       <BlackjackTableHotspot />
-
-      {/* Blackjack table label — rendered above the dealer station */}
       <BankBanner
         label="BLACKJACK"
         color="#ef4444"
-        position={[_BJ_HOTSPOT_POS[0], 280, _BJ_HOTSPOT_POS[2]]}
+        position={[_HOLDEM_HOTSPOT_POS[0], 280, _HOLDEM_HOTSPOT_POS[2]]}
       />
 
-      {/* Phase 6.5.0 — Texas Hold'em table click hotspot at the second
-          poker table (mirror across X of the blackjack station). Same
-          invisible hit-box pattern; opens HoldemModal. */}
+      {/* Texas Hold'em 2D hotspot now at T1 — the seated-experience table —
+          so felt-click and E-to-sit are the same game. */}
       <HoldemTableHotspot />
-
-      {/* Hold'em table label — rendered above the second poker table. */}
       <BankBanner
         label="TEXAS HOLD'EM"
         color="#ffffff"
-        position={[_HOLDEM_HOTSPOT_POS[0], 280, _HOLDEM_HOTSPOT_POS[2]]}
+        position={[_BJ_HOTSPOT_POS[0], 280, _BJ_HOTSPOT_POS[2]]}
       />
 
       {/* Phase 6.6.1 — Baccarat (Punto Banco) table click hotspot at the
@@ -3231,25 +3287,32 @@ export default function CoveInteriorScene({ onSceneEmpty }: CoveInteriorScenePro
       {/* Slice 1 (3D Hold'em experiment, 2026-07-10) — sit-at-table T1.
           Render-layer only: no modal, no ClawToken settlement. Does NOT
           touch the 2D BlackjackTableHotspot/HoldemTableHotspot/
-          BaccaratTableHotspot above — those keep working unmodified. */}
-      <Table3D
-        centerX={T1_CENTER_X}
-        centerZ={T1_CENTER_Z}
-        seats={T1_SEATS}
-        playerSeatIndex={T1_PLAYER_SEAT_INDEX}
-        seatModelKeys={T1_SEAT_BUST_MODEL_KEYS}
-        bustTargetHeight={COVE_VRM_TARGET_HEIGHT}
-      />
-      <TableCards3D
-        centerX={T1_CENTER_X}
-        centerZ={T1_CENTER_Z}
-        feltTopY={TABLE_TOP_Y}
-        seats={T1_SEATS}
-        playerSeatIndex={T1_PLAYER_SEAT_INDEX}
-        layout={T1_FELT_CARD_LAYOUT}
-      />
-      <TableSeatCamera />
-      <TableSitLabel />
+          BaccaratTableHotspot above — those keep working unmodified.
+          Gated off in fallback mode (2026-07-16): the T1 constants are HQ
+          room geometry — in the cartoon fallback GLB the busts/cards would
+          float in space (the founder's "way too big" first load). */}
+      {!useFallback && (
+        <>
+          <Table3D
+            centerX={T1_CENTER_X}
+            centerZ={T1_CENTER_Z}
+            seats={T1_SEATS}
+            playerSeatIndex={T1_PLAYER_SEAT_INDEX}
+            seatModelKeys={T1_SEAT_BUST_MODEL_KEYS}
+            bustTargetHeight={COVE_VRM_TARGET_HEIGHT}
+          />
+          <TableCards3D
+            centerX={T1_CENTER_X}
+            centerZ={T1_CENTER_Z}
+            feltTopY={TABLE_TOP_Y}
+            seats={T1_SEATS}
+            playerSeatIndex={T1_PLAYER_SEAT_INDEX}
+            layout={T1_FELT_CARD_LAYOUT}
+          />
+          <TableSeatCamera />
+          <TableSitLabel />
+        </>
+      )}
 
       {/* Phase-0 runtime probe — only mounted with NEXT_PUBLIC_COVE_DEBUG=1
           or ?probe=1. Zero cost otherwise (component not created at all). */}
