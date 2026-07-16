@@ -53,6 +53,13 @@ export type {
   LearnBookErrorCode,
   LearnBookResult,
 } from './actions/learn-book-transaction';
+export {
+  knowledgeEntriesFrom,
+  mergeKnowledgeCustomization,
+  mergeKnowledgeEntries,
+  recordValue,
+} from './actions/knowledge-merge';
+export type { KnowledgeMergeResult } from './actions/knowledge-merge';
 export type { Provider, ProviderResult } from './providers/types';
 
 // Embedding utility (Phase 2 — standalone embedText for knowledge RAG).
