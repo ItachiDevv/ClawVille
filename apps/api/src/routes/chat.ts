@@ -99,6 +99,7 @@ chatRoutes.post('/system/:slug', requireAuth, async (c) => {
     : undefined;
   const state: Record<string, any> = {
     avatarId: avatar?.id,
+    platformAgentId: agent.platformAgent.id,
     userId: user.id,
     services,
     avatarData: avatar ?? null,
@@ -243,6 +244,7 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
     : undefined;
   const state: Record<string, any> = {
     avatarId: avatar?.id,
+    platformAgentId: locationAgent.platformAgentId!,
     userId: user.id,
     services,
     // Provider data
