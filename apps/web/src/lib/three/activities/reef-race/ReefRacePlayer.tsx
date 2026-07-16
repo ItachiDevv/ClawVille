@@ -36,7 +36,7 @@
  *   - gliderRef carries the bank tilt (rotation.z). riderMountRef.rotation.z = 0 always.
  *   - riderMountRef planted on the board DECK (2026-07-15): X/Z from
  *     RIDER_MOUNT_OFFSET_DEFAULT (0 / -0.3), Y = static deck-top plane
- *     (SURFBOARD_DECK_TOP_LOCAL_Y ≈ 0.235 local v2 / GLIDER_HEIGHT/2 v1). The old
+ *     (SURFBOARD_DECK_TOP_LOCAL_Y ≈ 0.320 local v2 / GLIDER_HEIGHT/2 v1). The old
  *     [0, 1.2, -0.3] mount + gentle per-frame bob are REMOVED — board+rider are
  *     one rigid unit and per-rider grounding lands feet/body on the deck.
  *   - KART_Y_ABOVE_TRACK elevation moves from group.position.y (race-layer local) to
@@ -217,9 +217,10 @@ function surfboardBaseQuat(size: THREE.Vector3): THREE.Quaternion {
   return new THREE.Quaternion().setFromRotationMatrix(m);
 }
 
-/** Uniform scale (gliderRef-local) for the orientation-corrected surfboard so its longest
- *  (now forward) extent ≈ GLIDER_LENGTH. GLB longest ≈ 2.0 local → ×2.5 ≈ 5.0. */
-const SURFBOARD_UNIFORM_SCALE = 2.5;
+/** Uniform scale (gliderRef-local) for the orientation-corrected surfboard.
+ *  Founder sizing pass (2026-07-15): GLB longest ≈1.989 local → ×3.4 →
+ *  ≈135wu at KART_SCALE=20. Rider target heights stay unchanged. */
+const SURFBOARD_UNIFORM_SCALE = 3.4;
 
 /**
  * Board DECK-TOP height in gliderRef-LOCAL units — the grounding plane the
@@ -228,9 +229,9 @@ const SURFBOARD_UNIFORM_SCALE = 2.5;
  * half the fitted board thickness.
  *
  * surfboard_1.glb thinnest raw axis = 0.18814 local (gltf-transform 2026-07-15)
- * → ×SURFBOARD_UNIFORM_SCALE(2.5) = 0.47035 → /2 = 0.23517 local (= 4.70wu at
- * KART_SCALE=20). Cross-checked LIVE at the /preview harness
- * (board-rider-measure 2026-07-15): measured deckTopY_local = 0.23517. ✓
+ * → ×SURFBOARD_UNIFORM_SCALE(3.4) = 0.63968 → /2 = 0.31984 local (= 6.40wu at
+ * KART_SCALE=20). The expression below deliberately derives from the SAME
+ * scale constant so every rider remains planted when board sizing changes.
  *
  * Founder 2026-07-15: "the board should be the grounding point for the feet …
  * feet planted on the board." Mounting `riderMountRef` AT this Y, combined with
@@ -308,16 +309,11 @@ const _warnedUnknownSpeciesKeys = new Set<string>();
  * reached this branch, and now correctly ground via fit.offsetY).
  *
  * CORRECTED 2026-07-15 (founder playtest — "board is TINY vs avatar"): the old
- * 245.63wu made the humanoid rider 2.47× the SURFBOARD LENGTH (board length =
- * 99.43wu, measured live at the /preview harness), so the surfer dwarfed the
- * board — the opposite of a real surfer. A real surfer's board is ≈1.2–1.5×
- * the rider's height. Retargeted to 80wu → board(99.43)/rider(80) = 1.24, a
- * clean longboard/funboard proportion the founder can read as a surfer on a
- * board. GLB creature riders (lobster 22wu, board/rider 4.52 — founder said
- * "better for the Lobster") are UNCHANGED; only the oversized humanoid shrinks.
- * Board is deliberately NOT grown (growing it would shrink the well-liked GLB
- * creatures relative to it). Measured before→after at /preview:
- * board/riderHeight 0.405 → 1.24.
+ * 245.63wu humanoid dwarfed the then-99.43wu board, so VRMs were retargeted to
+ * 80wu. Founder follow-up: creatures still read too bulky and boards should be
+ * larger in general, so SURFBOARD_UNIFORM_SCALE grows 2.5→3.4 while ALL rider
+ * targets remain fixed. The board is now ≈135.2wu: board/VRM = 1.69 and
+ * board/22wu lobster = 6.15.
  */
 const REEF_VRM_RIDER_TARGET_HEIGHT_WU = 80;
 
@@ -1907,7 +1903,7 @@ function ReefRacePlayerInner({
     // feet planted on the board … board+rider one rigid unit." The old
     // independent per-frame bob (riderMount.position.y = 1.2local + sin·BOB_AMP)
     // is REMOVED — it (a) floated the rider ~12–22wu ABOVE the deck (mount at
-    // 1.2local=24wu vs deck top 0.235local=4.7wu) and (b) added a VRM-ONLY Y
+    // 1.2local=24wu vs current deck top 0.320local=6.4wu) and (b) added a VRM-ONLY Y
     // shimmer the board never shared, which read as self-jitter on the humanoid
     // rider specifically. riderMount.position.y is now a STATIC deck-top plane
     // (set once in JSX, below); the per-rider grounding already applied at mount
@@ -1955,7 +1951,9 @@ function ReefRacePlayerInner({
         void vrmAnimatorRef.current.playOneShot('victory');
       }
     }
-  });
+  // Publish/render before ChaseCamera's -1 reader. Both priorities stay
+  // negative so R3F retains automatic render ownership (SurfBloom is +1).
+  }, -2);
 
   return (
     /*

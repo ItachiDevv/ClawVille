@@ -12,7 +12,7 @@
  *     full WebGPU context recreation between rooms (per 3d-spec §3.1).
  *   - PerspectiveCamera in chase-cam mode — one frustum per client, not per player.
  *     Shadows remain disabled, avoiding a second scene render per frame.
- *   - Chase-cam lerps behind the self player; spectators see the static track cam.
+ *   - Chase-cam exponentially damps behind the self player; spectators see the static track cam.
  *   - <PreCompilePipelines> fires compileAsync after first R3F commit.
  *   - Reads `useActivityStore` for entity/pickup/event state.
  *
@@ -254,11 +254,15 @@ function ReefLight() {
 }
 
 // ─── Chase camera ─────────────────────────────────────────────────────────────
-// Procedural lerp-follow in useFrame — no OrbitControls.
+// Procedural exponentially-damped follow in useFrame — no OrbitControls.
 // Module-scope scratch vectors prevent GC pressure.
 
 // Module-scope scratch for screen shake (no per-frame allocation).
 const _shakeOffset = new THREE.Vector3();
+
+// 12/s gives the look target an ~83ms time constant: responsive through normal
+// carving while filtering raw 30Hz prediction/reconciliation micro-noise.
+const CAMERA_LOOK_DAMPING = 12;
 
 interface ChaseCamProps {
   selfEntity: ReefRaceEntity | null;
@@ -274,6 +278,9 @@ function ChaseCamera({ selfEntity, selfIsStaged, shakeRef }: ChaseCamProps) {
   const lastRotRef = useRef(0);
   /** True once the pregame start-line vantage snapped the camera into place. */
   const pregameSnappedRef = useRef(false);
+  // Persisted per-camera look target, allocated once rather than in useFrame.
+  const dampedLookAt = useMemo(() => new THREE.Vector3(), []);
+  const lookDampingInitializedRef = useRef(false);
 
   useEffect(() => {
     // PerspectiveCamera setup.
@@ -304,17 +311,21 @@ function ChaseCamera({ selfEntity, selfIsStaged, shakeRef }: ChaseCamProps) {
         );
         const groundY = TRACK_SURFACE_Y + elevationAtXZ(vantage.x, vantage.z, 'cam');
         _targetPos.set(vantage.x, groundY, vantage.z).add(_rotatedOffset);
+        _lookAt.set(vantage.x, groundY, vantage.z).add(CAMERA_LOOK_OFFSET);
+        // Pregame orientation is always a hard pose. If a staged entity drops
+        // out before live, never ease from its grid target back to the vantage.
+        dampedLookAt.copy(_lookAt);
+        lookDampingInitializedRef.current = true;
         if (!pregameSnappedRef.current) {
           // First pregame frame — snap, don't ease from the Canvas default
           // (easing would sweep the camera through world geometry).
           pregameSnappedRef.current = true;
           preCam.position.copy(_targetPos);
         } else {
-          const preLerp = Math.min(1, CAMERA_LERP * delta);
-          preCam.position.lerp(_targetPos, preLerp);
+          const eyeFactor = 1 - Math.exp(-CAMERA_LERP * delta);
+          preCam.position.lerp(_targetPos, eyeFactor);
         }
-        _lookAt.set(vantage.x, groundY, vantage.z).add(CAMERA_LOOK_OFFSET);
-        preCam.lookAt(_lookAt);
+        preCam.lookAt(dampedLookAt);
       }
       return;
     }
@@ -429,22 +440,36 @@ function ChaseCamera({ selfEntity, selfIsStaged, shakeRef }: ChaseCamProps) {
       : TRACK_SURFACE_Y;
 
     _targetPos.set(renderX, camGroundY, renderZ).add(_rotatedOffset);
+    _lookAt.set(renderX, camGroundY, renderZ).add(CAMERA_LOOK_OFFSET);
 
-    // Lerp camera position.
-    if (selfIsStaged && !pregameSnappedRef.current) {
-      // First staged frame: never sweep from the Canvas default through world
-      // geometry. Park directly behind the actual self grid slot.
+    const lookFactor = 1 - Math.exp(-CAMERA_LOOK_DAMPING * delta);
+    if (selfIsStaged || !lookDampingInitializedRef.current) {
+      // Seed every persisted filter on a hard snap; otherwise old room/live
+      // state would ease the camera orientation through world geometry. Staged
+      // orientation remains raw even when pregame already armed the eye latch.
+      dampedLookAt.copy(_lookAt);
+      lookDampingInitializedRef.current = true;
+    } else {
+      // The one existing elevation sample feeds this desired target and the eye
+      // target above. Damping both outputs co-smooths Y without another lookup.
+      dampedLookAt.lerp(_lookAt, lookFactor);
+    }
+
+    // Frame-rate-independent eye damping. CAMERA_LERP remains the response rate
+    // so the established chase distance/feel is preserved.
+    if (selfIsStaged) {
+      // Staged framing is a hard pose: never sweep from the pregame vantage or
+      // Canvas default through world geometry. Park at the actual self grid slot.
       pregameSnappedRef.current = true;
       cam.position.copy(_targetPos);
     } else {
-      const lerpFactor = Math.min(1, CAMERA_LERP * delta);
-      _camPos.copy(cam.position).lerp(_targetPos, lerpFactor);
+      const eyeFactor = 1 - Math.exp(-CAMERA_LERP * delta);
+      _camPos.copy(cam.position).lerp(_targetPos, eyeFactor);
       cam.position.copy(_camPos);
     }
 
-    // Look at kart + upward offset (also riding the elevation datum).
-    _lookAt.set(renderX, camGroundY, renderZ).add(CAMERA_LOOK_OFFSET);
-    cam.lookAt(_lookAt);
+    // Raw pose/heading/elevation noise no longer rotates the whole background.
+    cam.lookAt(dampedLookAt);
 
     // Screen shake — decay and apply camera position offset.
     // shakeRef.current holds magnitude in wu. Decays at 2.5×/second.
@@ -460,7 +485,10 @@ function ChaseCamera({ selfEntity, selfIsStaged, shakeRef }: ChaseCamProps) {
     } else {
       shakeRef.current = 0;
     }
-  });
+  // ReefRacePlayer publishes selfPoseBus at -2. Reading at -1 guarantees this
+  // frame's rendered pose while negative priority preserves automatic render;
+  // SurfBloom continues to own the final render at +1.
+  }, -1);
 
   return null;
 }

@@ -118,12 +118,14 @@ describe('ReefRaceSplineSim', () => {
         expect(body.z).toBe(expected.z);
         expect(body.rot).toBe(expected.heading);
 
-        // Independent projections pin insertion order: left/right, then 120wu back.
+        // Independent projections pin insertion order: left/right, then 160wu back
+        // (row spacing raised 120→160 for the 135wu founder-sized boards,
+        // 2026-07-15 — deliberately a literal so a silent helper drift fails here).
         const dx = body.x - frame.center.x;
         const dz = body.z - frame.center.z;
         const back = -(dx * frame.tangent.x + dz * frame.tangent.z);
         const lateral = dx * frame.normal.x + dz * frame.normal.z;
-        expect(back).toBeCloseTo(Math.floor(i / 2) * 120 + 40, 8);
+        expect(back).toBeCloseTo(Math.floor(i / 2) * 160 + 40, 8);
         expect(lateral).toBeCloseTo((i % 2 === 0 ? -1 : 1) * 320, 8);
       });
     });
