@@ -103,10 +103,7 @@ import {
 } from '../services/reserved-agent-namespaces';
 import { getBlackjackSkillContext } from '../services/game-skill-memory';
 import { readEarnedSkillLessons, recordEarnedSkillLesson } from '../services/earned-skill-memory';
-import {
-  connectedAgentLessonTarget,
-  syncHostedAgentKnowledge,
-} from '../services/hosted-agent-knowledge';
+import { syncHostedAgentKnowledge } from '../services/hosted-agent-knowledge';
 import {
   getBooksForBuilding,
   SHOP_BUILDINGS,
@@ -2648,7 +2645,6 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
   let tokenAwarded = 0;
   let knowledgePersisted = false;
   let chatKnowledgeSubject: { userId: string; avatarId: string } | null = null;
-  let chatKnowledgeTarget: Awaited<ReturnType<typeof syncHostedAgentKnowledge>> = null;
   const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (botConfig) {
     try {
@@ -2683,17 +2679,6 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
             userId: rewardSubject.userId,
             avatarId: rewardAvatarId,
           };
-          try {
-            chatKnowledgeTarget = await syncHostedAgentKnowledge({
-              userId: rewardSubject.userId,
-              avatarId: rewardAvatarId,
-              entries: [entry],
-              source: 'building-visit',
-              metadata: { buildingId, interaction: 'chat' },
-            });
-          } catch (err) {
-            console.error('[AgentGateway] hosted knowledge sync failed:', err);
-          }
         }
         if (rewardAvatarId) {
           // M7b anti-faucet: idempotent per (avatar, building, UTC-day) across
@@ -2726,10 +2711,25 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
   // chat response and is fully independent of the CT money path above. Lands in
   // the agent's OWN ElizaOS runtime when warm (the wrapper case) else the
   // avatar-keyed keyword store (readEarnedSkillLessons reads either back).
-  const lessonTarget = connectedAgentLessonTarget(
-    chatKnowledgeSubject,
-    chatKnowledgeTarget,
-  );
+  let lessonPlatformAgentId = '';
+  if (chatKnowledgeSubject) {
+    try {
+      const provenAvatar = await db.query.avatars.findFirst({
+        columns: { platformAgentId: true },
+        where: eq(avatars.id, chatKnowledgeSubject.avatarId),
+      });
+      lessonPlatformAgentId = provenAvatar?.platformAgentId ?? '';
+    } catch {
+      // Preserve the avatar-keyed earned-skill fallback if this cheap lookup
+      // fails; the proven avatar subject itself remains authoritative.
+    }
+  }
+  const lessonTarget = chatKnowledgeSubject
+    ? {
+        avatarId: chatKnowledgeSubject.avatarId,
+        platformAgentId: lessonPlatformAgentId,
+      }
+    : null;
   if (botConfig && lessonTarget && responseContent.trim().length > 0) {
     void (async () => {
       try {
@@ -2739,8 +2739,8 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
           .slice(0, 240)}`;
         await recordEarnedSkillLesson({
           // A proven owner without a hosted platform agent still uses the
-          // baseline avatar-keyed fallback. Only the hosted mirror/embed above
-          // requires platformAgentId; never recover this subject from bot.userId.
+          // baseline avatar-keyed fallback. Never recover this subject from
+          // bot.userId.
           platformAgentId: lessonTarget.platformAgentId,
           avatarId: lessonTarget.avatarId,
           agentId: botConfig.agentId,

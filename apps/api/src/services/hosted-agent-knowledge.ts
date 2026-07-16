@@ -251,14 +251,14 @@ export async function syncHostedAgentKnowledge(
         `[hosted-agent-knowledge] Runtime unavailable (non-fatal): ${(error as Error).message}`,
       );
     }
-  }
 
-  try {
-    await dependencies.stopRuntime(target.platformAgentId);
-  } catch (error) {
-    console.warn(
-      `[hosted-agent-knowledge] Runtime restart preparation failed (non-fatal): ${(error as Error).message}`,
-    );
+    try {
+      await dependencies.stopRuntime(target.platformAgentId);
+    } catch (error) {
+      console.warn(
+        `[hosted-agent-knowledge] Runtime restart preparation failed (non-fatal): ${(error as Error).message}`,
+      );
+    }
   }
 
   return target;
