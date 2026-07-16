@@ -28,7 +28,7 @@ import { createHash } from 'crypto';
 import { db, covenantActionRecords, eq } from '@clawville/database';
 import type { LedgerTx } from './claw-token-ledger';
 
-/** The namespaced action verbs the stream records (v1). */
+/** The namespaced action verbs the stream records. */
 export type CovenantAction =
   | 'economy.credit'
   | 'economy.debit'
@@ -47,7 +47,13 @@ export type CovenantAction =
   | 'bounty.settle_requested'
   | 'bounty.settle'
   | 'bounty.refund_requested'
-  | 'bounty.refund';
+  | 'bounty.refund'
+  | 'agent.move'
+  | 'agent.visit'
+  | 'agent.chat'
+  | 'agent.action.learn'
+  | 'agent.directive.received'
+  | 'agent.directive.acted';
 
 /** Who performed the action, when the call site has a resolved identity. */
 export type CovenantActorKind = 'human' | 'agent' | 'system' | 'admin';

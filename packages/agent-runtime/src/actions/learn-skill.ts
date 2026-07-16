@@ -1,6 +1,7 @@
-import { KNOWLEDGE_BOOKS, getBookById } from '@clawville/shared';
+import { KNOWLEDGE_BOOKS } from '@clawville/shared';
 import type { Action, ActionResult } from './types';
-import { hasServices, getMessageText, getParam , getDbModule } from './types';
+import { hasServices, getMessageText, getParam } from './types';
+import { learnBookAtomically, LearnBookError } from './learn-book-transaction';
 
 /**
  * LEARN_SKILL — read a knowledge book from inventory and absorb its entries
@@ -92,68 +93,34 @@ export const learnSkillAction: Action = {
         };
       }
 
-      const book = getBookById(itemId);
-      if (!book) {
-        return { success: false, text: `Book "${itemId}" not found.` };
+      let learned;
+      try {
+        learned = await learnBookAtomically(
+          db,
+          { avatarId, bookId: itemId },
+          services.recordCovenantAction,
+        );
+      } catch (error) {
+        if (error instanceof LearnBookError) {
+          if (error.code === 'book_not_found') {
+            return { success: false, text: `Book "${itemId}" not found.` };
+          }
+          if (error.code === 'avatar_not_found') {
+            return { success: false, text: 'Avatar not found.' };
+          }
+
+          const knownBook = KNOWLEDGE_BOOKS.find((candidate) => candidate.id === itemId);
+          return {
+            success: false,
+            text: knownBook
+              ? `You don't have "${knownBook.name}" in your inventory. Visit ${knownBook.building} to buy it first.`
+              : error.message,
+          };
+        }
+        throw error;
       }
 
-      const { avatarInventory, avatars, eq, and } = await getDbModule();
-
-      // Check inventory
-      const [inventoryItem] = await db
-        .select({ id: avatarInventory.id, quantity: avatarInventory.quantity })
-        .from(avatarInventory)
-        .where(and(eq(avatarInventory.avatarId, avatarId), eq(avatarInventory.itemId, itemId)))
-        .limit(1);
-
-      if (!inventoryItem || inventoryItem.quantity < 1) {
-        return {
-          success: false,
-          text: `You don't have "${book.name}" in your inventory. Visit ${book.building} to buy it first.`,
-        };
-      }
-
-      // Get current character config
-      const [avatar] = await db
-        .select({ characterConfig: avatars.characterConfig })
-        .from(avatars)
-        .where(eq(avatars.id, avatarId))
-        .limit(1);
-
-      if (!avatar) {
-        return { success: false, text: 'Avatar not found.' };
-      }
-
-      // Merge knowledge entries
-      const existingKnowledge: string[] = avatar.characterConfig?.knowledge ?? [];
-      const newEntries = book.knowledgeEntries.filter(
-        (entry) => !existingKnowledge.includes(entry),
-      );
-
-      const mergedKnowledge = [...existingKnowledge, ...newEntries];
-
-      // Update characterConfig
-      const updatedConfig = {
-        ...(avatar.characterConfig ?? {}),
-        knowledge: mergedKnowledge,
-      };
-
-      await db
-        .update(avatars)
-        .set({ characterConfig: updatedConfig, updatedAt: new Date() })
-        .where(eq(avatars.id, avatarId));
-
-      // Decrement inventory quantity (remove row if 0)
-      if (inventoryItem.quantity <= 1) {
-        await db
-          .delete(avatarInventory)
-          .where(eq(avatarInventory.id, inventoryItem.id));
-      } else {
-        await db
-          .update(avatarInventory)
-          .set({ quantity: inventoryItem.quantity - 1 })
-          .where(eq(avatarInventory.id, inventoryItem.id));
-      }
+      const { book, newKnowledge: newEntries, mergedKnowledge } = learned;
 
       return {
         success: true,

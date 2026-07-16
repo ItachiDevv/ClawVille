@@ -51,6 +51,7 @@ export * from './types/cove-holdem';
 // Phase 6.6.1 — cove Baccarat (Punto Banco) shared wire types.
 export * from './types/cove-baccarat';
 export * from './constants/orientation-skill';
+export * from './constants/hatcher-actions';
 // Q3 plan §2.6 — server-credited token rewards for tutorial quests.
 export * from './constants/tutorial-quest-rewards';
 // `agent-models` uses type + value dual exports; explicit re-exports

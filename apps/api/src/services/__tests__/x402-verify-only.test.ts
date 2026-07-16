@@ -97,7 +97,14 @@ describe('verifyAndSettle — verifyOnly (payai dry-run posture)', () => {
   it('LIVE mode still settles only after a passing verify (regression guard)', async () => {
     verifyResponse = { isValid: true, payer: 'PayerPubkey11111111111111111111111111111111' };
     const before = settleHits;
-    const res = await verifyAndSettle({ paymentHeader, requirements });
+    const res = await verifyAndSettle({
+      paymentHeader,
+      requirements,
+      independentVerifier: async () => ({
+        ok: true as const,
+        payer: 'PayerPubkey11111111111111111111111111111111',
+      }),
+    });
     expect(settleHits).toBe(before + 1);
     expect(res.settled).toBe(true);
     expect(res.txSignature).toBe(
@@ -112,5 +119,55 @@ describe('verifyAndSettle — verifyOnly (payai dry-run posture)', () => {
     expect(settleHits).toBe(before);
     expect(res.settled).toBe(false);
     expect(res.isValid).toBe(false);
+  });
+
+  it('post-settle independent mismatch preserves the observed signature for reconciliation', async () => {
+    verifyResponse = { isValid: true, payer: 'untrusted-facilitator-payer' };
+    const res = await verifyAndSettle({
+      paymentHeader,
+      requirements,
+      independentVerifier: async () => ({
+        ok: false as const,
+        reason: 'independent_chain_mismatch' as const,
+        payer: 'SignedPayloadPayer111111111111111111111111111',
+      }),
+    });
+    expect(res.settled).toBe(false);
+    expect(res.isValid).toBe(true);
+    expect(res.failureReason).toBe('independent_chain_mismatch');
+    expect(res.txSignature).toBe('FakeSig1111111111111111111111111111111111111111111111111111111111');
+    expect(res.payer).toBe('SignedPayloadPayer111111111111111111111111111');
+    expect(res.payer).not.toBe('untrusted-facilitator-payer');
+    expect(res.raw.settle?.success).toBe(true);
+  });
+
+  it('a thrown independent verifier is fail-closed with durable signature evidence', async () => {
+    verifyResponse = { isValid: true, payer: 'untrusted-facilitator-payer' };
+    const res = await verifyAndSettle({
+      paymentHeader,
+      requirements,
+      independentVerifier: async () => { throw new Error('rpc unavailable'); },
+    });
+    expect(res.settled).toBe(false);
+    expect(res.failureReason).toBe('independent_chain_unavailable');
+    expect(res.txSignature).not.toBeNull();
+  });
+
+  it('chain-unavailable reconciliation uses signed-payload payer, never facilitator payer', async () => {
+    verifyResponse = { isValid: true, payer: 'untrusted-facilitator-payer' };
+    const signedPayer = 'SignedPayloadPayer111111111111111111111111111';
+    const res = await verifyAndSettle({
+      paymentHeader,
+      requirements,
+      independentVerifier: async () => ({
+        ok: false as const,
+        reason: 'independent_chain_unavailable' as const,
+        payer: signedPayer,
+      }),
+    });
+    expect(res.settled).toBe(false);
+    expect(res.failureReason).toBe('independent_chain_unavailable');
+    expect(res.payer).toBe(signedPayer);
+    expect(res.payer).not.toBe('untrusted-facilitator-payer');
   });
 });

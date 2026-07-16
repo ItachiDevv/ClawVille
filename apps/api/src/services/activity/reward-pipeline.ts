@@ -500,7 +500,15 @@ export async function issueRewardsForRoom(
             room.activityId === 'reef-race' ? bestStreakThisMatch : null,
           matchPbDailyRank: pbWrite?.dailyRank ?? null,
         })
+        .onConflictDoNothing({
+          target: [activityResults.roomId, activityResults.avatarId],
+        })
         .returning({ id: activityResults.id });
+
+      // The result insert is the durable reward claim. A crash retry, duplicate
+      // manager, or repeated sim row that loses the unique conflict must not mint,
+      // emit another placement event, or re-deliver a reward preview.
+      if (!resultRow) continue;
 
       // Credit tokens for non-bots only. Compose into the same tx so a
       // ledger failure rolls back the result row too.

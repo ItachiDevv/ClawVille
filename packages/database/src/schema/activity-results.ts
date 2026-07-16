@@ -6,6 +6,7 @@ import {
   boolean,
   timestamp,
   index,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { activities } from './activities';
@@ -90,6 +91,10 @@ export const activityResults = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
+    roomAvatarUnique: uniqueIndex('activity_results_room_avatar_unique').on(
+      t.roomId,
+      t.avatarId,
+    ),
     activityPlacementIdx: index('idx_activity_results_activity_placement').on(
       t.activityId,
       t.placement,

@@ -174,3 +174,29 @@ export const MAP_LOCATIONS: MapLocation[] = [
 ];
 
 export const LOCATION_IDS = MAP_LOCATIONS.map((l) => l.id);
+
+/**
+ * Non-teaching destinations the autonomous decision path can enter through the
+ * strict in-world action executor. Coordinates are deliberately NOT duplicated
+ * here: perception resolves each `mapLocationId` through MAP_LOCATIONS.
+ */
+export const AUTONOMY_ENTERABLE_PLACES = [
+  {
+    placeId: 'cove',
+    mapLocationId: 'cove',
+    label: 'The Cove',
+    description: 'Provably-fair card tables and other games.',
+    actionVerb: 'enter_cove',
+    actionSyntax: 'enter_cove()',
+    destinationId: 'cove',
+  },
+  {
+    placeId: 'poker-room',
+    mapLocationId: 'cove',
+    label: 'Cove Poker Room',
+    description: 'The cove poker tables.',
+    actionVerb: 'enter_poker_room',
+    actionSyntax: 'enter_poker_room()',
+    destinationId: 'cove',
+  },
+] as const;

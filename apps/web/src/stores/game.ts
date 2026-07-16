@@ -696,17 +696,6 @@ export const useGameStore = create<GameState>((set, get) => ({
       possessedNpcId = null;
     }
 
-    // Stop autonomy engine when leaving autonomous mode
-    if (prev === 'autonomous' && mode !== 'autonomous') {
-      const { useAutonomyStore } = require('@/stores/autonomy') as typeof import('@/stores/autonomy');
-      useAutonomyStore.getState().stopAutonomy();
-    }
-    // Start autonomy engine when entering autonomous mode
-    if (mode === 'autonomous' && prev !== 'autonomous') {
-      const { useAutonomyStore } = require('@/stores/autonomy') as typeof import('@/stores/autonomy');
-      useAutonomyStore.getState().startAutonomy();
-    }
-
     // §B.1 — SERVER Autonomous enrollment (see the module header above). Enroll
     // the owner's hosted avatar-agent in the full autonomy driver, and start a
     // keepalive re-arm so autonomy survives an API restart (B3). On a rejection

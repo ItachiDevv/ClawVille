@@ -44,6 +44,15 @@ export type { ClawvillePlugin } from './plugins/clawville-plugin';
 export { allActions } from './actions/index';
 export { allProviders } from './providers/index';
 export type { Action, ActionResult, ClawvilleActionState, ClawvilleServices } from './actions/types';
+export {
+  learnBookAtomically,
+  LearnBookError,
+} from './actions/learn-book-transaction';
+export type {
+  LearnBookDatabase,
+  LearnBookErrorCode,
+  LearnBookResult,
+} from './actions/learn-book-transaction';
 export type { Provider, ProviderResult } from './providers/types';
 
 // Embedding utility (Phase 2 — standalone embedText for knowledge RAG).

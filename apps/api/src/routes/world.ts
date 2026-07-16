@@ -8,6 +8,7 @@
  *                                     current room and schedule NPC restore.
  *  POST /api/world/position         — fire-and-forget 5 Hz position update.
  *                                     Server-side rate-limited to 10 Hz/session.
+ *  GET  /api/world/autonomy/status  — owner-safe server autonomy state.
  *  GET  /api/world/:roomId/stream   — SSE snapshot stream for the room.
  *  GET  /api/world/rooms            — admin-only roster of live rooms.
  *
@@ -39,6 +40,7 @@ import {
   activateAutonomyForOwner,
   deactivateAutonomyForOwner,
 } from '../services/agent-autonomy-activation';
+import { agentAutonomyDriver } from '../services/agent-autonomy-driver';
 import { roomRegistry, ROOM_MAX_PLAYERS, PresenceSupersededError } from '../services/room-registry';
 import { signRoomTicket, resolveRecoveryRoomId } from '../services/room-ticket';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
@@ -310,6 +312,13 @@ const autonomyRateLimiter = createRateLimiter({
   windowMs: 60_000,
 });
 
+// 30/min/IP supports the HUD's ~4s cadence with headroom for a second tab,
+// while bounding unauthenticated polling before it reaches driver state.
+const autonomyStatusRateLimiter = createRateLimiter({
+  maxPerWindow: 30,
+  windowMs: 60_000,
+});
+
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
@@ -525,6 +534,29 @@ worldRoutes.post('/autonomy', async (c) => {
     }
   }
   return c.json({ ok: true, enrolled: true, reused: result.reused, bodyId: result.bodyId });
+});
+
+/**
+ * GET /api/world/autonomy/status — owner-safe projection of the REAL server
+ * driver used by AutonomyHUD. Lucia cookie auth only: fingerprint-only visitors
+ * receive the same typed 401 as the toggle route, while a logged-in guest gets
+ * `{ enrolled:false }` because guests can never enter the driver registry.
+ *
+ * Keep this static control route grouped before the dynamic world stream.
+ */
+worldRoutes.get('/autonomy/status', (c) => {
+  const ip = getClientIp(c.req.raw.headers);
+  if (!autonomyStatusRateLimiter.check(ip)) {
+    return c.json(
+      { error: 'Too many autonomy status checks — try again in a minute', code: 'rate_limited' },
+      429,
+    );
+  }
+  const user = c.get('user');
+  if (!user) {
+    return c.json({ error: 'Login required to view agent autonomy', code: 'auth_required' }, 401);
+  }
+  return c.json(agentAutonomyDriver.getOwnerStatus(user.id));
 });
 
 worldRoutes.get('/:roomId/stream', async (c) => {

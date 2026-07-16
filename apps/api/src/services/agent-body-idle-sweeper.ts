@@ -44,6 +44,21 @@ import { agentAutonomyDriver } from './agent-autonomy-driver';
 const DEFAULT_IDLE_DESPAWN_MS = 30 * 60 * 1000; // 30 min
 const MIN_IDLE_DESPAWN_MS = 5 * 60 * 1000; // 5 min floor (per spec)
 
+/** Narrow injectable read seam so idle lifecycle tests stay DB-free. */
+export const bodyIdleSweeperSeams = {
+  readRows: async (
+    agentIds: string[],
+  ): Promise<Array<{ agentId: string; lastSeenAt: Date; isHouse: boolean }>> =>
+    db
+      .select({
+        agentId: agentBots.agentId,
+        lastSeenAt: agentBots.lastSeenAt,
+        isHouse: agentBots.isHouse,
+      })
+      .from(agentBots)
+      .where(inArray(agentBots.agentId, agentIds)),
+};
+
 /**
  * Resolve the idle-despawn window from env. Floors at 5 min so a mis-set tiny
  * value can't thrash bodies in and out every sweep.
@@ -76,14 +91,7 @@ export async function sweepIdleAgentBodies(): Promise<number> {
   const agentIds = [...new Set(pairs.map((p) => p.agentId))];
   let rows: Array<{ agentId: string; lastSeenAt: Date; isHouse: boolean }>;
   try {
-    rows = await db
-      .select({
-        agentId: agentBots.agentId,
-        lastSeenAt: agentBots.lastSeenAt,
-        isHouse: agentBots.isHouse,
-      })
-      .from(agentBots)
-      .where(inArray(agentBots.agentId, agentIds));
+    rows = await bodyIdleSweeperSeams.readRows(agentIds);
   } catch (err) {
     console.warn('[BodyIdleSweeper] last_seen_at read failed (non-fatal):', err);
     return 0;
@@ -92,26 +100,26 @@ export async function sweepIdleAgentBodies(): Promise<number> {
   // agentId -> lastSeenAt ms. A live body with no surviving row (shouldn't
   // happen — a live session always has a row) is treated as NOT idle (skip),
   // because despawning a body we can't restore from would strand the agent.
-  // House agents (agent-metaverse P1) are EXEMPT: they are ClawVille-hosted
-  // fixtures driven by the autonomy driver via `useModel` (which does not slide
-  // `last_seen_at`), so they'd otherwise look idle and get reaped out from under
-  // the driver — collect their agentIds and skip them below.
-  // R5 (belt-and-suspenders): a body is exempt if EITHER the autonomy driver is
-  // actively driving it (its in-memory registry) OR the DB is_house flag is set.
-  // Seeding the set with the driver's known house-agent ids means a silent is_house
-  // schema drift (column dropped/renamed → the DB flag reads false for every row)
-  // can NEVER cause a LIVE house body the driver is mid-drive on to be idle-reaped
-  // out from under it. The DB flag remains the second source of truth.
+  // Autonomy-driver agents are EXEMPT while enrolled: both house fixtures and
+  // user-owned agents are driven via `useModel` (which does not slide
+  // `last_seen_at`), so they'd otherwise look idle and get reaped mid-drive.
+  // R5 (belt-and-suspenders): seed from BOTH live driver registries, then add
+  // every DB is_house row as the durable second source of truth for fixtures.
+  // User enrollment intentionally has no DB exemption flag: unregistering it
+  // removes the in-memory exemption and restores normal idle-sweep eligibility.
   const lastSeen = new Map<string, number>();
-  const houseAgentIds = new Set<string>(agentAutonomyDriver.getHouseAgentIds());
+  const autonomyExemptAgentIds = new Set<string>([
+    ...agentAutonomyDriver.getHouseAgentIds(),
+    ...agentAutonomyDriver.getUserAgentIds(),
+  ]);
   for (const r of rows) {
-    if (r.isHouse) houseAgentIds.add(r.agentId);
+    if (r.isHouse) autonomyExemptAgentIds.add(r.agentId);
     if (r.lastSeenAt) lastSeen.set(r.agentId, r.lastSeenAt.getTime());
   }
 
   let despawned = 0;
   for (const { sessionId, agentId } of pairs) {
-    if (houseAgentIds.has(agentId)) continue; // hosted fixture — never idle-reaped
+    if (autonomyExemptAgentIds.has(agentId)) continue; // actively driven / house fixture
     const seen = lastSeen.get(agentId);
     if (seen === undefined) continue; // no row read — don't strand the agent
     if (seen >= cutoff) continue; // still active within the window

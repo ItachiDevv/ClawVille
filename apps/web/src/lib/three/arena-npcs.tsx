@@ -33,6 +33,7 @@ import {
   VRM_AVATAR_TARGET_HEIGHT_WU,
   VRM_AVATAR_FALLBACK_SCALE,
 } from '@/lib/three/vrm-avatar-sizing';
+import { dampTowardConfirmedTarget } from '@/lib/three/npc-interpolation-damping';
 // Camera-cull import REMOVED 2026-05-11 — all NPC/label culling deleted per user
 // directive ("remove all the culling completely it ruins the game"). The helper
 // still ships for BumperShellsPlayer but is not used in the open world scene.
@@ -45,7 +46,7 @@ import {
 const HALF_W = MAP_WIDTH / 2;
 const HALF_H = MAP_HEIGHT / 2;
 /**
- * NPC motion smoother — entity interpolation (CURRENT, 2026-05-18 PM).
+ * NPC motion smoother — entity interpolation + output damping (CURRENT, 2026-07-15).
  *
  * Render 1 server tick BEHIND real-time, lerp between the two most
  * recent snapshots. Adds ~200 ms latency (irrelevant for wandering
@@ -56,8 +57,9 @@ const HALF_H = MAP_HEIGHT / 2;
  *   alpha   = clamp((Date.now() - d.ts) / d.tsDelta, 0, 1)
  *   renderX = lerp(d.prevX, d.x, alpha)
  *
- * Both GLBNpcMesh and VRMNpcMesh useFrames use this pattern inline (no
- * helper function — keeps the hot path allocation-free at 60 × NPC × Hz).
+ * Both GLBNpcMesh and VRMNpcMesh useFrames compute that confirmed target
+ * inline, then damp their persisted rendered position toward it. There is no
+ * helper allocation in the hot path at 60 × NPC × Hz.
  *
  * History (oldest → current):
  *   1. Pure exp-lerp toward raw d.x/d.y at LERP_SPEED=1.5. Tracked a
@@ -476,12 +478,13 @@ export const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteStat
   });
 
   // Per-frame rendered position. The entity-interpolation smoother
-  // (see useFrame below) computes renderX/renderZ from the two latest
+  // (see useFrame below) computes an XZ target from the two latest
   // server snapshots; we mirror it into simPos so the facing/velocity
   // math further down can read previous-frame position via `simPos -
   // glbPrev`. simPos holds RENDER coordinates (post-HALF_W shift),
   // matching what's written to group.position.
   const simPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
+  const renderedPositionInitializedRef = useRef(false);
   const currentRotY = useRef(0);
   const currentTerrainY = useRef(0);
   const smoothedSpeedRef = useRef(0);
@@ -625,8 +628,8 @@ export const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteStat
     const tsDelta = d.tsDelta > 0 ? d.tsDelta : 200;
     const elapsed = nowMs - d.ts;
     const alpha = d.ts === 0 ? 1 : Math.max(0, Math.min(1, elapsed / tsDelta));
-    const renderX = (d.prevX + (d.x - d.prevX) * alpha) - HALF_W;
-    const renderZ = (d.prevY + (d.y - d.prevY) * alpha) - HALF_H;
+    const interpTargetX = (d.prevX + (d.x - d.prevX) * alpha) - HALF_W;
+    const interpTargetZ = (d.prevY + (d.y - d.prevY) * alpha) - HALF_H;
 
     // Facing velocity from displayed motion (not raw server step).
     // Reads simPos as a 1-frame velocity tracker — interp positions
@@ -651,9 +654,28 @@ export const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteStat
     const glbNpcHalf = (npc.id.startsWith('milady-') || npc.id.startsWith('chibi-'))
       ? ENTITY_HALF_CHIBI
       : ENTITY_HALF_HUMANOID;
-    const npcClamped = clampMovement2D(simPos.current.x, simPos.current.z, renderX, renderZ, glbNpcHalf);
-    simPos.current.x = glbIsPossessed ? npcClamped.x : renderX;
-    simPos.current.z = glbIsPossessed ? npcClamped.z : renderZ;
+    const npcClamped = clampMovement2D(
+      simPos.current.x,
+      simPos.current.z,
+      interpTargetX,
+      interpTargetZ,
+      glbNpcHalf,
+    );
+    const targetX = glbIsPossessed ? npcClamped.x : interpTargetX;
+    const targetZ = glbIsPossessed ? npcClamped.z : interpTargetZ;
+    if (!renderedPositionInitializedRef.current || d.ts === 0) {
+      // The JSX group has no initial position; useFrame writes before its first
+      // draw. Seed that first rendered frame at the confirmed interp target
+      // instead of damping from simPos's constructor-only latest-x/y scratch.
+      // The ts=0 client-authored sentinel stays raw on every subsequent frame.
+      simPos.current.x = targetX;
+      simPos.current.z = targetZ;
+      renderedPositionInitializedRef.current = true;
+    } else {
+      // Convex damping toward a known target: no projection or extrapolation.
+      simPos.current.x = dampTowardConfirmedTarget(simPos.current.x, targetX, dt);
+      simPos.current.z = dampTowardConfirmedTarget(simPos.current.z, targetZ, dt);
+    }
     // Track walkable surface Y for stair/ramp zones. Used below in group.position.y.
     const npcGroundY = npcClamped.groundY;
 
@@ -984,6 +1006,7 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
   // GLBNpcMesh useFrame for full rationale. simPos mirrors the rendered
   // position each frame so the facing math can read previous-frame state.
   const simPos = useRef(new THREE.Vector3(...mapToWorld(npc.x, npc.y)));
+  const renderedPositionInitializedRef = useRef(false);
   const currentRotY = useRef(VRM_DIR_ROTATION.idle);
   // Pitch ref for the swim-upward lean — see player-avatar.tsx for full
   // rationale. Only meaningful for the possessed-player NPC; wandering
@@ -1103,8 +1126,8 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
     const tsDelta = d.tsDelta > 0 ? d.tsDelta : 200;
     const elapsed = nowMs - d.ts;
     const alpha = d.ts === 0 ? 1 : Math.max(0, Math.min(1, elapsed / tsDelta));
-    const renderX = (d.prevX + (d.x - d.prevX) * alpha) - HALF_W;
-    const renderZ = (d.prevY + (d.y - d.prevY) * alpha) - HALF_H;
+    const interpTargetX = (d.prevX + (d.x - d.prevX) * alpha) - HALF_W;
+    const interpTargetZ = (d.prevY + (d.y - d.prevY) * alpha) - HALF_H;
 
     // Hoisted above the collision block (2026-06-10): the clamp decision
     // depends on who authors this entity's movement.
@@ -1126,11 +1149,30 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
     const vrmNpcHalf = (npc.id.startsWith('milady-') || npc.id.startsWith('chibi-'))
       ? ENTITY_HALF_CHIBI
       : ENTITY_HALF_HUMANOID;
-    const vrmClamped = clampMovement2D(simPos.current.x, simPos.current.z, renderX, renderZ, vrmNpcHalf);
+    const vrmClamped = clampMovement2D(
+      simPos.current.x,
+      simPos.current.z,
+      interpTargetX,
+      interpTargetZ,
+      vrmNpcHalf,
+    );
     const prevX = simPos.current.x;
     const prevZ = simPos.current.z;
-    simPos.current.x = vrmIsPossessed ? vrmClamped.x : renderX;
-    simPos.current.z = vrmIsPossessed ? vrmClamped.z : renderZ;
+    const targetX = vrmIsPossessed ? vrmClamped.x : interpTargetX;
+    const targetZ = vrmIsPossessed ? vrmClamped.z : interpTargetZ;
+    if (!renderedPositionInitializedRef.current || d.ts === 0) {
+      // The JSX group has no initial position; useFrame writes before its first
+      // draw. Seed that first rendered frame at the confirmed interp target
+      // instead of damping from simPos's constructor-only latest-x/y scratch.
+      // The ts=0 client-authored sentinel stays raw on every subsequent frame.
+      simPos.current.x = targetX;
+      simPos.current.z = targetZ;
+      renderedPositionInitializedRef.current = true;
+    } else {
+      // Convex damping toward a known target: no projection or extrapolation.
+      simPos.current.x = dampTowardConfirmedTarget(simPos.current.x, targetX, dt);
+      simPos.current.z = dampTowardConfirmedTarget(simPos.current.z, targetZ, dt);
+    }
     // Track walkable surface Y for stair/ramp zones. Used below in group.position.y.
     const vrmNpcGroundY = vrmClamped.groundY;
 

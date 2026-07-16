@@ -402,8 +402,8 @@ const DECORATIVE_NAME_PREFIXES = ['Skybox_'] as const;
  *  leaves the tree floating ~245 wu above the terrain. Stripping it
  *  lets the small meshes drive the pivot.
  *
- *  Background_Material004_0 is the Auction Podium's intentional glass
- *  dome (auction-dome.glb) — NOT in the kill list. */
+ *  Background_Material004_0 was the Auction Podium's intentional glass dome
+ *  (auction-dome.glb); the podium was removed 2026-07-15. */
 const BACKDROP_KILL_NAMES = new Set<string>(['Object_1']);
 
 /** Material kill list also empty for now — "Mesh_0030.rip" / "Mesh_0022.rip"
