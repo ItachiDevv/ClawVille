@@ -213,6 +213,7 @@ function appendCardQuad(
   cardWidth: number,
   cardHeight: number,
   atlasCell: number,
+  hingeTiltRad: number,
 ): void {
   if (indices.length / 6 >= MAX_CARD_QUADS) return;
 
@@ -220,6 +221,8 @@ function appendCardQuad(
   const halfHeight = cardHeight / 2;
   const cosine = Math.cos(yaw);
   const sine = Math.sin(yaw);
+  const tiltCos = Math.cos(hingeTiltRad);
+  const tiltSin = Math.sin(hingeTiltRad);
   const vertexOffset = positions.length / 3;
   const corners = [
     [-halfWidth, -halfHeight],
@@ -229,10 +232,15 @@ function appendCardQuad(
   ] as const;
 
   for (const [localX, localZ] of corners) {
+    // Hinge about the NEAR edge (local -Z, the edge toward the seat): the far
+    // edge lifts off the felt so the face tips toward the seated eye and no
+    // corner ever dips below the surface. hingeTiltRad=0 keeps the card flat.
+    const hingeDist = localZ + halfHeight;
+    const tiltedZ = -halfHeight + hingeDist * tiltCos;
     positions.push(
-      centerX + localX * cosine + localZ * sine,
-      centerY,
-      centerZ - localX * sine + localZ * cosine,
+      centerX + localX * cosine + tiltedZ * sine,
+      centerY + hingeDist * tiltSin,
+      centerZ - localX * sine + tiltedZ * cosine,
     );
   }
 
@@ -280,12 +288,25 @@ export interface TableCardSeat {
 }
 
 export interface TableCardLayout {
-  cardWidth: number;
-  cardHeight: number;
-  boardSpacing: number;
+  /** Player's own hole cards — full-size, hinged toward the seated eye. */
+  holeCardWidth: number;
+  holeCardHeight: number;
   holePairGap: number;
-  surfaceLift: number;
   holeAnchorScale: number;
+  holeHingeTiltRad: number;
+  /** Community cards — perpendicular row, smaller so 5 fit the short felt axis. */
+  boardCardWidth: number;
+  boardCardHeight: number;
+  boardSpacing: number;
+  /** Push the row past table centre AWAY from the seat so the hinged hole
+   * cards don't occlude it from the seated POV. */
+  boardBackOffset: number;
+  /** Opponent backs — presence markers, smallest of the three roles. */
+  botCardWidth: number;
+  botCardHeight: number;
+  botPairGap: number;
+  botAnchorScale: number;
+  surfaceLift: number;
 }
 
 export interface TableCards3DProps {
@@ -346,7 +367,6 @@ export function TableCards3D({
     const uvs: number[] = [];
     const indices: number[] = [];
     const cardY = feltTopY + layout.surfaceLift;
-    const pairCenterSpacing = layout.cardWidth + layout.holePairGap;
 
     for (let engineSeatIndex = 0; engineSeatIndex < tableSeats.length; engineSeatIndex += 1) {
       const tableSeat = tableSeats[engineSeatIndex];
@@ -359,8 +379,12 @@ export function TableCards3D({
       const faceDown = !isPlayer && (
         controller.phase !== 'settled' || seatState?.status === 'folded'
       );
-      const anchorX = centerX + tableSeat.x * layout.holeAnchorScale;
-      const anchorZ = centerZ + tableSeat.z * layout.holeAnchorScale;
+      const cardWidth = isPlayer ? layout.holeCardWidth : layout.botCardWidth;
+      const cardHeight = isPlayer ? layout.holeCardHeight : layout.botCardHeight;
+      const anchorScale = isPlayer ? layout.holeAnchorScale : layout.botAnchorScale;
+      const pairCenterSpacing = cardWidth + (isPlayer ? layout.holePairGap : layout.botPairGap);
+      const anchorX = centerX + tableSeat.x * anchorScale;
+      const anchorZ = centerZ + tableSeat.z * anchorScale;
       const cosine = Math.cos(tableSeat.faceYaw);
       const sine = Math.sin(tableSeat.faceYaw);
 
@@ -375,28 +399,58 @@ export function TableCards3D({
           cardY,
           anchorZ - across * sine,
           tableSeat.faceYaw,
-          layout.cardWidth,
-          layout.cardHeight,
+          cardWidth,
+          cardHeight,
           faceDown ? ATLAS_BACK_CELL : atlasCellForCard(card),
+          isPlayer ? layout.holeHingeTiltRad : 0,
         );
       }
     }
 
+    // Board row runs PERPENDICULAR to the player's sight line (along the
+    // seated viewer's screen-horizontal), reading left-to-right from seat 0.
+    // The old along-the-sight-axis row collided with the player's hole pair
+    // and ran off the felt's long axis from the seated POV.
+    const playerSeat = tableSeats[playerSeatIndex];
+    const boardYaw = playerSeat?.faceYaw ?? 0;
+    const boardRightX = -Math.cos(boardYaw);
+    const boardRightZ = Math.sin(boardYaw);
+    const boardAwayX = Math.sin(boardYaw) * layout.boardBackOffset;
+    const boardAwayZ = Math.cos(boardYaw) * layout.boardBackOffset;
     for (let slotIndex = 0; slotIndex < controller.communityCards.length && slotIndex < 5; slotIndex += 1) {
       const card = controller.communityCards[slotIndex];
       if (!card) continue;
+      const alongRow = (slotIndex - 2) * layout.boardSpacing;
       appendCardQuad(
         positions,
         uvs,
         indices,
-        centerX + (slotIndex - 2) * layout.boardSpacing,
+        centerX + alongRow * boardRightX + boardAwayX,
         cardY,
-        centerZ,
-        0,
-        layout.cardWidth,
-        layout.cardHeight,
+        centerZ + alongRow * boardRightZ + boardAwayZ,
+        boardYaw,
+        layout.boardCardWidth,
+        layout.boardCardHeight,
         atlasCellForCard(card),
+        0,
       );
+    }
+
+    if (process.env.NODE_ENV !== 'production') {
+      // Conservative on-felt bound: every vertex within ±140 x / ±80 z of the
+      // table centre (green felt measured 182wu on the short axis).
+      const feltHalfX = layout.boardSpacing * (140 / 34);
+      const feltHalfZ = layout.boardSpacing * (80 / 34);
+      for (let i = 0; i < positions.length; i += 3) {
+        const dx = positions[i]! - centerX;
+        const dz = positions[i + 2]! - centerZ;
+        if (Math.abs(dx) > feltHalfX || Math.abs(dz) > feltHalfZ) {
+          console.warn(
+            `[TableCards3D] card vertex off felt: dx=${dx.toFixed(1)} dz=${dz.toFixed(1)} (bounds ±${feltHalfX.toFixed(0)}/±${feltHalfZ.toFixed(0)})`,
+          );
+          break;
+        }
+      }
     }
 
     const positionAttribute = new THREE.Float32BufferAttribute(positions, 3);

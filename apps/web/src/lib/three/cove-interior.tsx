@@ -878,13 +878,27 @@ export const TABLE_TOP_Y = glbHeightToWorldY(GLB_FELT_TOP_Z);
  * units, then re-applied through FIT_SCALE so a future knob change keeps the
  * entire layer proportional to the baked T1 felt. */
 const T1_FELT_CARD_REFERENCE_FIT_SCALE = 2800 / ROOM_GLB_MAX_DIM;
+/** P2.1 per-role layout (2026-07-15). Sizes diverge by role because the
+ * seated camera geometry demands it: the player's holes stay the approved
+ * 40x56 and hinge 18° toward the eye (anchored at 0.40 so they clear the
+ * bottom frame edge after the look-target drop below); the 5-card board runs
+ * PERPENDICULAR to the seat-0 sight line at 32x44.8 so its 168wu span fits
+ * the felt's 182wu short axis; bot backs are 26x36.4 presence markers. */
 export const T1_FELT_CARD_LAYOUT = Object.freeze({
-  cardWidth: (40 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
-  cardHeight: (56 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
-  boardSpacing: (46 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
+  holeCardWidth: (40 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
+  holeCardHeight: (56 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
   holePairGap: (8 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
+  holeAnchorScale: 0.40,
+  holeHingeTiltRad: (18 * Math.PI) / 180,
+  boardCardWidth: (32 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
+  boardCardHeight: (44.8 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
+  boardSpacing: (34 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
+  boardBackOffset: (24 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
+  botCardWidth: (26 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
+  botCardHeight: (36.4 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
+  botPairGap: (6 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
+  botAnchorScale: 0.55,
   surfaceLift: (1.5 / T1_FELT_CARD_REFERENCE_FIT_SCALE) * FIT_SCALE,
-  holeAnchorScale: 0.70,
 });
 
 interface TableAABB { centerX: number; centerZ: number; halfX: number; halfZ: number; }
@@ -1614,8 +1628,14 @@ const T1_SEAT_CAM_EYE_Z = T1_CENTER_Z + _t1PlayerSeat.z;
 const _LOOK_NUDGE_GLB = 40 / BASELINE_FIT_SCALE;
 const T1_SEAT_CAM_LOOK_NUDGE = _LOOK_NUDGE_GLB * FIT_SCALE;
 const T1_SEAT_CAM_LOOK_X = T1_CENTER_X - (_t1PlayerSeat.x / _t1SeatDist) * T1_SEAT_CAM_LOOK_NUDGE;
-/** Fixed avatar-relative offset — already expressed this way pre-refactor. */
-const SEAT_LOOK_HEIGHT_ABOVE_TABLE = 30; // wu, fixed
+/** Fixed avatar-relative offset — already expressed this way pre-refactor.
+ * P2.1 (2026-07-15): 30 → 8, pitching the seated view down ~6° (view axis
+ * 11.1° → 17.1° below horizontal). This moves the bottom-of-frame-on-felt
+ * locus from ~71wu to ~57wu from the eye — the unlock that brings the
+ * player's own hole cards into frame at all. Far-side busts stay fully
+ * framed (top frame edge remains 15.4° above horizontal). Flagged for
+ * founder sign-off vs the approved sit-flow framing. */
+const SEAT_LOOK_HEIGHT_ABOVE_TABLE = 8; // wu, fixed
 const T1_SEAT_CAM_LOOK_Y = TABLE_TOP_Y + SEAT_LOOK_HEIGHT_ABOVE_TABLE;
 const T1_SEAT_CAM_LOOK_Z = T1_CENTER_Z - (_t1PlayerSeat.z / _t1SeatDist) * T1_SEAT_CAM_LOOK_NUDGE;
 const T1_SEAT_CAM_LERP = 8; // exp-decay coefficient (1/s) — not spatial, unaffected by scale
