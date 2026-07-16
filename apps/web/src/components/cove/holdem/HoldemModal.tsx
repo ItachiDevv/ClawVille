@@ -687,10 +687,11 @@ export default function HoldemModal() {
     // decision → REUSE its key so a lost-response terminal settle REPLAYS
     // (never double-charges); a different decision mints fresh.
     const pending = pendingActionRef.current;
-    if (!pending || pending.act !== act || pending.amount !== amount) {
-      pendingActionRef.current = { act, amount, key: crypto.randomUUID() };
-    }
-    const idempotencyKey = pendingActionRef.current.key;
+    const activePending = !pending || pending.act !== act || pending.amount !== amount
+      ? { act, amount, key: crypto.randomUUID() }
+      : pending;
+    pendingActionRef.current = activePending;
+    const idempotencyKey = activePending.key;
     try {
       const res = await action.mutateAsync({
         handId: live.handId,
