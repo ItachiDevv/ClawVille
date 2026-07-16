@@ -63,6 +63,43 @@ function protocolKnowledgeEntries(results: unknown): string[] {
   return [...bySection.values()].map(({ text }) => text);
 }
 
+function jsonbFallbackResult(allKnowledge: string[]): ProviderResult {
+  if (allKnowledge.length === 0) {
+    return { text: '', values: {}, data: {} };
+  }
+
+  const count = allKnowledge.length;
+  const recentLabels = allKnowledge
+    .slice(-5)
+    .map((entry) => {
+      const firstSentence = entry.split(/[.!?]/)[0] ?? entry;
+      return firstSentence.length > 40
+        ? firstSentence.slice(0, 37) + '...'
+        : firstSentence;
+    });
+
+  const lines: string[] = [
+    `[Knowledge]`,
+    `${count} skill${count === 1 ? '' : 's'} learned`,
+  ];
+  if (recentLabels.length > 0) {
+    lines.push(`Recent: ${recentLabels.join(', ')}`);
+  }
+
+  return {
+    text: lines.join('\n'),
+    values: {
+      knowledgeCount: count,
+      retrievalMode: 'jsonb-fallback',
+    },
+    data: {
+      knowledgeEntries: allKnowledge,
+      knowledgeCount: count,
+      retrievalMode: 'jsonb-fallback',
+    },
+  };
+}
+
 export const knowledgeProvider: Provider = {
   name: 'knowledge',
   description: 'Relevant learned knowledge retrieved by semantic similarity',
@@ -126,6 +163,29 @@ export const knowledgeProvider: Provider = {
           );
         }
 
+        // If ordinary vector retrieval failed/returned no matches, retain its
+        // JSONB fallback before appending protocol matches. The manual augments
+        // learned knowledge; it must never replace it in either failure direction.
+        if (
+          entries.length === 0 &&
+          protocolEntries.length > 0 &&
+          allKnowledge.length > 0
+        ) {
+          const fallback = jsonbFallbackResult(allKnowledge);
+          return {
+            text: `${fallback.text}\n[Game manual \u2014 relevant sections]\n${protocolEntries.join('\n')}`,
+            values: {
+              ...(fallback.values ?? {}),
+              protocolRelevantCount: protocolEntries.length,
+            },
+            data: {
+              ...(fallback.data ?? {}),
+              protocolKnowledgeEntries: protocolEntries,
+              protocolRelevantCount: protocolEntries.length,
+            },
+          };
+        }
+
         if (entries.length > 0 || protocolEntries.length > 0) {
           const totalCount = allKnowledge.length || entries.length;
           const lines: string[] = [];
@@ -174,42 +234,6 @@ export const knowledgeProvider: Provider = {
     }
 
     // Fallback: read from characterConfig.knowledge[] (pre-Phase 2 path)
-    if (allKnowledge.length === 0) {
-      return { text: '', values: {}, data: {} };
-    }
-
-    const count = allKnowledge.length;
-
-    // Show up to 5 recent entries as short labels (first ~40 chars)
-    const recentLabels = allKnowledge
-      .slice(-5)
-      .map((entry) => {
-        const firstSentence = entry.split(/[.!?]/)[0] ?? entry;
-        return firstSentence.length > 40
-          ? firstSentence.slice(0, 37) + '...'
-          : firstSentence;
-      });
-
-    const lines: string[] = [
-      `[Knowledge]`,
-      `${count} skill${count === 1 ? '' : 's'} learned`,
-    ];
-
-    if (recentLabels.length > 0) {
-      lines.push(`Recent: ${recentLabels.join(', ')}`);
-    }
-
-    return {
-      text: lines.join('\n'),
-      values: {
-        knowledgeCount: count,
-        retrievalMode: 'jsonb-fallback',
-      },
-      data: {
-        knowledgeEntries: allKnowledge,
-        knowledgeCount: count,
-        retrievalMode: 'jsonb-fallback',
-      },
-    };
+    return jsonbFallbackResult(allKnowledge);
   },
 };
