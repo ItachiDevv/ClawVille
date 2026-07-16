@@ -1,6 +1,9 @@
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import * as realDatabase from '@clawville/database';
 import * as realLedger from '../claw-token-ledger';
+
+const realDb = realDatabase.db;
+const realCreditClawTokens = realLedger.creditClawTokens;
 
 interface XpRow {
   id: string;
@@ -11,6 +14,7 @@ interface XpRow {
 
 const AVATAR_ID = '00000000-0000-4000-8000-000000000001';
 
+let xpSuiteActive = false;
 let row: XpRow;
 let lockTail: Promise<void>;
 let creditShouldFail: boolean;
@@ -126,9 +130,16 @@ const fakeDb = {
   },
 };
 
+const dbForMock = new Proxy(fakeDb as object, {
+  get(target, prop, receiver) {
+    if (!xpSuiteActive) return Reflect.get(realDb as object, prop, realDb);
+    return Reflect.get(target, prop, receiver);
+  },
+});
+
 mock.module('@clawville/database', () => ({
   ...realDatabase,
-  db: fakeDb,
+  db: dbForMock,
 }));
 
 mock.module('../claw-token-ledger', () => ({
@@ -137,6 +148,9 @@ mock.module('../claw-token-ledger', () => ({
     input: Parameters<typeof realLedger.creditClawTokens>[0],
     tx?: unknown,
   ) => {
+    if (!xpSuiteActive) {
+      return realCreditClawTokens(input as never, tx as never);
+    }
     if (!tx || !activeTransactions.has(tx)) {
       throw new Error('creditClawTokens must receive the active XP transaction');
     }
@@ -147,6 +161,14 @@ mock.module('../claw-token-ledger', () => ({
 }));
 
 const { awardXp } = await import('../xp-service');
+
+beforeAll(() => {
+  xpSuiteActive = true;
+});
+
+afterAll(() => {
+  xpSuiteActive = false;
+});
 
 beforeEach(() => {
   row = { id: AVATAR_ID, xp: 95, level: 1, total_xp: 95 };
