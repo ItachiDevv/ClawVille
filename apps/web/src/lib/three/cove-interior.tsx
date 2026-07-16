@@ -59,7 +59,6 @@ import { useWorldLabel, WorldLabel, WorldLabelsOverlayMount } from '@/lib/three/
 import { extendLoaderWithKTX2 } from '@/lib/three/ktx2-loader-setup';
 import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 import type { MachineSlug } from '@/lib/cove/types';
-import { TableCards3D } from '@/lib/three/cove-table-cards';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1321,18 +1320,13 @@ function BlackjackTableHotspot() {
 // ---------------------------------------------------------------------------
 // Phase 6.5.0 — Texas Hold'em table hotspot.
 //
-// Click opens the HoldemModal with the current avatar's ClawToken balance as
-// the suggested buy-in cap (clamped inside the store via
-// `min(balance, COVE_HOLDEM_DEFAULT_BUYIN)`). Since the 2026-07-16 identity
-// swap (see BlackjackTableHotspot above) this sits at T1 — the SAME table
-// the seated felt experience uses, so click-to-2D-modal and E-to-sit now
-// open the same game on the same session state.
+// Click requests the dedicated `/cove/table` route. The page-level router
+// observes the one-shot store flag so this R3F module remains navigation-free.
+// The 2D HoldemModal is reserved for the explicit `?table=holdem` deep link.
 // ---------------------------------------------------------------------------
 
 function HoldemTableHotspot() {
   const meshRef = useRef<THREE.Mesh>(null);
-  const openHoldemTable = useCoveStore((s) => s.openHoldemTable);
-  const { data: avatar } = useAvatar();
 
   useEffect(() => {
     const mesh = meshRef.current;
@@ -1342,11 +1336,7 @@ function HoldemTableHotspot() {
   }, []);
 
   const handleClick = () => {
-    // See BlackjackTableHotspot's identical guard above — same founder
-    // correction, same rationale (2026-07-10).
-    if (useCoveStore.getState().seatedTable !== null) return;
-    const balance = avatar?.clawTokens ?? 0;
-    openHoldemTable(balance);
+    useCoveStore.getState().requestEnterTableRoom();
   };
 
   return (
@@ -2045,9 +2035,7 @@ function _updateTableSitProximity(px: number, pz: number): void {
 
   if (_eKeyArmedTableSit && coveKeys.e && !_eKeyTableConsumed) {
     _eKeyTableConsumed = true;
-    if (useCoveStore.getState().seatedTable === null) {
-      useCoveStore.getState().sitAtTable('T1', T1_PLAYER_SEAT_INDEX);
-    }
+    useCoveStore.getState().requestEnterTableRoom();
   }
 }
 
@@ -3304,36 +3292,6 @@ export default function CoveInteriorScene({ onSceneEmpty }: CoveInteriorScenePro
         color="#3b82f6"
         position={[_BACCARAT_HOTSPOT_POS[0], 280, _BACCARAT_HOTSPOT_POS[2]]}
       />
-
-      {/* Slice 1 (3D Hold'em experiment, 2026-07-10) — sit-at-table T1.
-          Render-layer only: no modal, no ClawToken settlement. Does NOT
-          touch the 2D BlackjackTableHotspot/HoldemTableHotspot/
-          BaccaratTableHotspot above — those keep working unmodified.
-          Gated off in fallback mode (2026-07-16): the T1 constants are HQ
-          room geometry — in the cartoon fallback GLB the busts/cards would
-          float in space (the founder's "way too big" first load). */}
-      {!useFallback && (
-        <>
-          <Table3D
-            centerX={T1_CENTER_X}
-            centerZ={T1_CENTER_Z}
-            seats={T1_SEATS}
-            playerSeatIndex={T1_PLAYER_SEAT_INDEX}
-            seatModelKeys={T1_SEAT_BUST_MODEL_KEYS}
-            bustTargetHeight={COVE_VRM_TARGET_HEIGHT}
-          />
-          <TableCards3D
-            centerX={T1_CENTER_X}
-            centerZ={T1_CENTER_Z}
-            feltTopY={TABLE_TOP_Y}
-            seats={T1_SEATS}
-            playerSeatIndex={T1_PLAYER_SEAT_INDEX}
-            layout={T1_FELT_CARD_LAYOUT}
-          />
-          <TableSeatCamera />
-          <TableSitLabel />
-        </>
-      )}
 
       {/* Phase-0 runtime probe — only mounted with NEXT_PUBLIC_COVE_DEBUG=1
           or ?probe=1. Zero cost otherwise (component not created at all). */}

@@ -287,26 +287,22 @@ function handSignature(
 }
 
 export interface TableCardSeat {
+  engineSeatIndex: number;
   x: number;
   z: number;
   faceYaw: number;
 }
 
 export interface TableCardLayout {
-  /** Player's own hole cards — full-size, hinged toward the seated eye. */
-  holeCardWidth: number;
-  holeCardHeight: number;
-  holePairGap: number;
-  holeAnchorScale: number;
-  holeHingeTiltRad: number;
-  /** Community cards — perpendicular row, smaller so 5 fit the short felt axis. */
+  /** Public board row anchor/yaw in table-local world coordinates. */
+  boardX: number;
+  boardZ: number;
+  boardYaw: number;
+  /** Community cards — real-proportioned and small enough for all five. */
   boardCardWidth: number;
   boardCardHeight: number;
   boardSpacing: number;
-  /** Push the row past table centre AWAY from the seat so the hinged hole
-   * cards don't occlude it from the seated POV. */
-  boardBackOffset: number;
-  /** Opponent backs — presence markers, smallest of the three roles. */
+  /** Opponent backs/faces — presence markers in front of bot seats. */
   botCardWidth: number;
   botCardHeight: number;
   botPairGap: number;
@@ -319,7 +315,6 @@ export interface TableCards3DProps {
   centerZ: number;
   feltTopY: number;
   seats: readonly TableCardSeat[];
-  playerSeatIndex: number;
   layout: Readonly<TableCardLayout>;
 }
 
@@ -328,7 +323,6 @@ export function TableCards3D({
   centerZ,
   feltTopY,
   seats: tableSeats,
-  playerSeatIndex,
   layout,
 }: TableCards3DProps) {
   const meshRef = useRef<THREE.Mesh>(null);
@@ -373,21 +367,18 @@ export function TableCards3D({
     const indices: number[] = [];
     const cardY = feltTopY + layout.surfaceLift;
 
-    for (let engineSeatIndex = 0; engineSeatIndex < tableSeats.length; engineSeatIndex += 1) {
-      const tableSeat = tableSeats[engineSeatIndex];
-      if (!tableSeat) continue;
-      const seatState = controller.seats.find((seat) => seat.seatIndex === engineSeatIndex);
-      const isPlayer = engineSeatIndex === playerSeatIndex;
-      const holeCards = isPlayer ? controller.playerHoleCards : seatState?.holeCards ?? [];
+    for (const tableSeat of tableSeats) {
+      const seatState = controller.seats.find((seat) => seat.seatIndex === tableSeat.engineSeatIndex);
+      const holeCards = seatState?.holeCards ?? [];
       if (holeCards.length === 0) continue;
 
-      const faceDown = !isPlayer && (
+      const faceDown = (
         controller.phase !== 'settled' || seatState?.status === 'folded'
       );
-      const cardWidth = isPlayer ? layout.holeCardWidth : layout.botCardWidth;
-      const cardHeight = isPlayer ? layout.holeCardHeight : layout.botCardHeight;
-      const anchorScale = isPlayer ? layout.holeAnchorScale : layout.botAnchorScale;
-      const pairCenterSpacing = cardWidth + (isPlayer ? layout.holePairGap : layout.botPairGap);
+      const cardWidth = layout.botCardWidth;
+      const cardHeight = layout.botCardHeight;
+      const anchorScale = layout.botAnchorScale;
+      const pairCenterSpacing = cardWidth + layout.botPairGap;
       const anchorX = centerX + tableSeat.x * anchorScale;
       const anchorZ = centerZ + tableSeat.z * anchorScale;
       const cosine = Math.cos(tableSeat.faceYaw);
@@ -407,21 +398,15 @@ export function TableCards3D({
           cardWidth,
           cardHeight,
           faceDown ? ATLAS_BACK_CELL : atlasCellForCard(card),
-          isPlayer ? layout.holeHingeTiltRad : 0,
+          0,
         );
       }
     }
 
-    // Board row runs PERPENDICULAR to the player's sight line (along the
-    // seated viewer's screen-horizontal), reading left-to-right from seat 0.
-    // The old along-the-sight-axis row collided with the player's hole pair
-    // and ran off the felt's long axis from the seated POV.
-    const playerSeat = tableSeats[playerSeatIndex];
-    const boardYaw = playerSeat?.faceYaw ?? 0;
-    const boardRightX = -Math.cos(boardYaw);
-    const boardRightZ = Math.sin(boardYaw);
-    const boardAwayX = Math.sin(boardYaw) * layout.boardBackOffset;
-    const boardAwayZ = Math.cos(boardYaw) * layout.boardBackOffset;
+    // Placement is supplied by the dedicated room, whose camera/table axes
+    // are code-owned. Player hole cards intentionally have no 3D path.
+    const boardRightX = Math.cos(layout.boardYaw);
+    const boardRightZ = -Math.sin(layout.boardYaw);
     for (let slotIndex = 0; slotIndex < controller.communityCards.length && slotIndex < 5; slotIndex += 1) {
       const card = controller.communityCards[slotIndex];
       if (!card) continue;
@@ -430,10 +415,10 @@ export function TableCards3D({
         positions,
         uvs,
         indices,
-        centerX + alongRow * boardRightX + boardAwayX,
+        centerX + layout.boardX + alongRow * boardRightX,
         cardY,
-        centerZ + alongRow * boardRightZ + boardAwayZ,
-        boardYaw,
+        centerZ + layout.boardZ + alongRow * boardRightZ,
+        layout.boardYaw,
         layout.boardCardWidth,
         layout.boardCardHeight,
         atlasCellForCard(card),
@@ -483,7 +468,6 @@ export function TableCards3D({
     isVisible,
     layout,
     material,
-    playerSeatIndex,
     tableSeats,
   ]);
 

@@ -620,6 +620,9 @@ export function HoldemControllerRuntime(): null {
       );
     }
     closeHoldemModal();
+    if (useCoveStore.getState().seatedTable?.tableId === 'T1') {
+      useCoveStore.getState().standFromTable();
+    }
   }, [closeHoldemModal, closeTable]);
 
   const handleWalkAway = useCallback(async () => {

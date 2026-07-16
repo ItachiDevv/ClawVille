@@ -28,6 +28,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import SceneTransition, { useSceneTransition } from '@/components/transitions/SceneTransition';
 import SlotScreenModal from '@/components/cove/SlotScreenModal';
 import BlackjackModal from '@/components/cove/blackjack/BlackjackModal';
@@ -96,7 +97,15 @@ const COVE_EXIT_PX = { x: MAP_WIDTH / 2 - 3760, y: MAP_HEIGHT / 2 };
 // ---------------------------------------------------------------------------
 export default function CovePage() {
   const { triggerTransition } = useSceneTransition();
+  const router = useRouter();
   const isMobile = useIsMobile();
+  const enterTableRoom = useCoveStore((state) => state.enterTableRoom);
+
+  useEffect(() => {
+    if (!enterTableRoom) return;
+    useCoveStore.getState().clearEnterTableRoom();
+    router.push('/cove/table');
+  }, [enterTableRoom, router]);
 
   // Phase 6.1.20 — sync the user's authenticated avatar into the gameStore
   // every time this page mounts. Mirrors the same effect on /game (line 346)

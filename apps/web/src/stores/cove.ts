@@ -149,6 +149,10 @@ export interface CoveStore {
   sitAtTable: (tableId: string, seatIndex: number) => void;
   /** Stand up from any table and restore the walk-around follow camera. */
   standFromTable: () => void;
+  /** One-shot navigation intent emitted by T1 proximity/click interactions. */
+  enterTableRoom: boolean;
+  requestEnterTableRoom: () => void;
+  clearEnterTableRoom: () => void;
 }
 
 export const useCoveStore = create<CoveStore>((set, get) => ({
@@ -320,6 +324,10 @@ export const useCoveStore = create<CoveStore>((set, get) => ({
   standFromTable: () => {
     set({ seatedTable: null });
   },
+
+  enterTableRoom: false,
+  requestEnterTableRoom: () => set({ enterTableRoom: true }),
+  clearEnterTableRoom: () => set({ enterTableRoom: false }),
 }));
 
 // E2E-harness handle (P4, 2026-07-16). Client Zustand state is already fully

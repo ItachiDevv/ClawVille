@@ -1,5 +1,7 @@
 # ClawVille — Game Features
 
+**Last Audited:** 2026-07-16 (**Dedicated Hold'em table room, §18a.g.**) `/cove/table` replaces the rejected in-cove seated experience: T1 click/E routes into an isolated fixed-camera 3D table room; `HoldemControllerRuntime` remains the sole mutation owner; player hole cards are private DOM overlay cards, community cards appear both on felt and in the overlay, and opponent pairs remain felt-only (backs until showdown). The legacy `?table=holdem` modal deep link remains available. Client/render only; server, ledger, and agent action surfaces are unchanged. Prior audit follows.
+
 > **Strict rule:** every code change that adds, removes, or repurposes a
 > gameplay flow (modes, agent connect, economy, quests, daily login, avatar
 > system, tutorial, UI components, control toggle, NPC behavior, auth flow,
@@ -1352,6 +1354,10 @@ Player avatar (VRM or GLB) mounts inside the casino interior scene. Fully self-c
 **Page mount:** `apps/web/src/app/cove/page.tsx` — `<HoldemModal />` mounted after `<BlackjackModal />`. Interior subtitle "Slots · Blackjack · Hold'em".
 
 **Same-diff knowledge surfaces (three-surface rule):** (1) Nori's `knowledge[]` in `packages/agent-templates/src/locations/town-guide.ts` + `CLAWVILLE_ORIENTATION_KNOWLEDGE` in `packages/shared/src/constants/orientation-skill.ts` — updated with the real NLHE rules, bot personalities, provably-fair flow, and agent modes (replacing the 6.5.0 "visual shell" note). (2) Connection SKILL.md protocol manual content authored at `.claude/plans/cove-texas-holdem.md §11` with an explicit TODO — the global endpoint + content-hash manifest is the documented infra gap (Phase 6.5.2), so eager-on-connect enforcement is best-effort. (3) Hosted-agent runtime injection of #2 also deferred to 6.5.2.
+
+**Dedicated table-room redesign (2026-07-16):** the primary 3D Hold'em path is now `/cove/table`, an isolated R3F room staged from the player-seat POV with a semicircle table, five frozen seated bots, a frozen standing dealer, and no controls/fog. In the cove, T1 proximity + E and the Hold'em hotspot request navigation to this route; they never open `HoldemModal`. The old in-cove `Table3D`/`TableCards3D`/seat camera/sit-label mounts are removed. The 2D modal remains functional only through `/cove?table=holdem`. The room mounts the existing controller runtime and seated HUD, calls `sitAtTable('T1', 0)` on entry, and stands on exit; Walk Away/Close returns to `/cove` through that lifecycle. Player hole cards are screen-space/private in `SeatedHoldemHud`; community cards are mirrored in the DOM overlay and as small public felt quads; bot pairs are felt backs until the settled reveal. `cove-table-cards.tsx` no longer contains a player-hole felt path.
+
+**PARITY note:** human path: T1 click/E -> `/cove/table` -> existing controller/HUD; agent path: existing Hold'em API/protocol actions unchanged; settlement binds to the same resolved subject/avatar and ledger path as before. This route adds no fetch or mutation path.
 
 ### 18a.h. Cove cross-game history + provable-fair verifier (Phase 6.7.0, 2026-05-27)
 

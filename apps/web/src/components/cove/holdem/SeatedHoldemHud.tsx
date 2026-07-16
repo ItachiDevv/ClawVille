@@ -11,14 +11,16 @@ import {
   useHoldemController,
 } from '@/lib/cove/holdem-controller';
 import { RaiseSlider } from './RaiseSlider';
+import PokerCard from './PokerCard';
+import CommunityCardRow from './CommunityCardRow';
 
 /** P3 — seated in-world action HUD (2026-07-15). While the player is seated
  * at T1 the 2D modal is suppressed (founder contract: the entire session
  * renders on the felt), so this DOM overlay is the ONLY action surface. It is
  * a pure consumer of the shared Hold'em controller — the SAME handleDeal /
  * runAction / handleWalkAway mutation path the modal uses; it never issues
- * its own requests. Cards render on the felt via TableCards3D; this bar only
- * carries the buttons + the minimal numbers (pot, stack, to-call, outcome). */
+ * its own requests. It owns the private hole-card/public-board DOM overlay;
+ * TableCards3D renders only public board cards and opponent pairs on felt. */
 export function SeatedHoldemHud() {
   const seatedTable = useCoveStore((state) => state.seatedTable);
   const holdemModalOpen = useCoveStore((state) => state.holdemModalOpen);
@@ -27,6 +29,7 @@ export function SeatedHoldemHud() {
   const {
     table, live, settled, revealedSeed, toast, phase, agentMode, inFlight,
     walkAwayLocked, pot, toCallNum, facingBet, canCheck, humanStack,
+    playerHoleCards, communityCards,
     resetHand, handleDeal, runAction, handleWalkAway,
   } = useHoldemController();
 
@@ -109,6 +112,22 @@ export function SeatedHoldemHud() {
       }}
       data-testid="seated-holdem-hud"
     >
+      {phase !== 'idle' && (
+        <div style={{
+          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 7,
+          padding: '8px 12px', borderRadius: 10,
+          background: 'rgba(8,14,18,0.82)', border: '1px solid rgba(60,180,100,0.2)',
+          backdropFilter: 'blur(6px)', maxWidth: '100%',
+        }}>
+          <div aria-label="Your private hole cards" style={{ display: 'flex', gap: 6 }}>
+            {playerHoleCards.map((card, index) => (
+              <PokerCard key={`${card.suit}-${card.rank}-${index}`} card={card} compact />
+            ))}
+          </div>
+          <CommunityCardRow cards={communityCards} />
+        </div>
+      )}
+
       {toast && (
         <div style={{
           fontSize: 12, fontFamily: 'var(--pt-data)', padding: '6px 12px', borderRadius: 6,

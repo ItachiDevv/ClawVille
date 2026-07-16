@@ -925,6 +925,34 @@ export class VRMCharacterAnimator {
   }
 
   /**
+   * Apply one animation sample and then leave the skeleton frozen forever.
+   * Dedicated table-room figures use this instead of a useFrame loop: the
+   * action is explicitly started (cross-fades do not start stopped actions),
+   * one tiny mixer/VRM/skeleton flush uploads the pose, and callers never tick
+   * this animator again.
+   */
+  applyFrozenPose(name: AnimName, sampleDelta = 0.0001): boolean {
+    if (!this.ready || this.disposed) return false;
+    const action = this.actions[name];
+    if (!action) return false;
+
+    for (const candidate of Object.values(this.actions)) candidate?.stop();
+    action.reset();
+    action.enabled = true;
+    action.setEffectiveWeight(1);
+    action.setEffectiveTimeScale(1);
+    action.play();
+    this.currentAction = action;
+    this.oneShotActive = false;
+
+    this.mixer.update(sampleDelta);
+    this.vrm.update(sampleDelta);
+    this.vrm.scene.updateMatrixWorld(true);
+    for (const fn of this._skeletonUpdateFns.values()) fn();
+    return true;
+  }
+
+  /**
    * Override the resting locomotion target when isMoving=false.
    * Call after init() resolves with the desired persistent clip.
    * In Reef Race: call with 'surf_idle' so post-one-shot crossfades return
