@@ -5,7 +5,7 @@ import { create } from 'zustand';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useCoveStore } from '@/stores/cove';
 import type { HoldemCard as ViewCard, SeatState, SeatStatus } from './holdem-types';
-import { HOLDEM_SEATS } from './holdem-types';
+import { HOLDEM_BIG_BLIND, HOLDEM_SEATS } from './holdem-types';
 import {
   COVE_HOLDEM_MIN_BUYIN,
   COVE_HOLDEM_MAX_BUYIN,
@@ -154,6 +154,37 @@ function bigToNum(value: string | null | undefined): number {
   if (value == null) return 0;
   const number = Number(value);
   return Number.isFinite(number) ? number : 0;
+}
+
+/** Shared bet/raise sizing for every action surface (modal + seated HUD) so
+ * the client-side money math has exactly ONE home. The server remains the
+ * final validator of every amount. */
+export type RaiseOpenResult =
+  | { kind: 'call' }
+  | { kind: 'slider'; min: number; max: number; verb: 'bet' | 'raise' };
+
+export function computeRaiseOpen(live: LiveHoldemHand): RaiseOpenResult {
+  const currentBet = bigToNum(live.currentBet);
+  const humanCommitted = bigToNum(live.humanCommitted);
+  const humanStack = bigToNum(live.humanStack);
+  const maxShove = humanCommitted + humanStack; // TOTAL street commitment ceiling
+  // Can't out-bet the current bet — only a call/all-in is legal.
+  if (maxShove <= currentBet) return { kind: 'call' };
+  const verb: 'bet' | 'raise' = currentBet === 0 ? 'bet' : 'raise';
+  // Min TOTAL street commitment: opening bet ≥ committed + BB; raise ≥
+  // currentBet + BB (the server rejects a short raise that isn't an all-in).
+  const minRaise = verb === 'bet'
+    ? humanCommitted + HOLDEM_BIG_BLIND
+    : currentBet + HOLDEM_BIG_BLIND;
+  return { kind: 'slider', min: Math.min(minRaise, maxShove), max: maxShove, verb };
+}
+
+export function computeAllIn(live: LiveHoldemHand): { action: HoldemAction; amount?: number } {
+  const currentBet = bigToNum(live.currentBet);
+  const shoveTotal = bigToNum(live.humanCommitted) + bigToNum(live.humanStack);
+  // If shoving still doesn't exceed the current bet, it's an all-in CALL.
+  if (shoveTotal <= currentBet) return { action: 'call' };
+  return { action: currentBet === 0 ? 'bet' : 'raise', amount: shoveTotal };
 }
 
 function botLabel(seat: number): string {

@@ -32,6 +32,7 @@ import SceneTransition, { useSceneTransition } from '@/components/transitions/Sc
 import SlotScreenModal from '@/components/cove/SlotScreenModal';
 import BlackjackModal from '@/components/cove/blackjack/BlackjackModal';
 import HoldemModal from '@/components/cove/holdem/HoldemModal';
+import { SeatedHoldemHud } from '@/components/cove/holdem/SeatedHoldemHud';
 import { HoldemControllerRuntime } from '@/lib/cove/holdem-controller';
 import BaccaratModal from '@/components/cove/baccarat/BaccaratModal';
 import CoveMobileControls from '@/components/cove/CoveMobileControls';
@@ -281,6 +282,10 @@ export default function CovePage() {
           WebSocket protocol + real-money SOL/USDC land in Phase 6.5.2 / 6.5.4. */}
       <HoldemControllerRuntime />
       <HoldemModal />
+      {/* P3 — seated in-world action HUD: the ONLY action surface while
+          seated at T1 (the modal is suppressed there). Pure consumer of the
+          shared controller — same mutation path as the modal. */}
+      <SeatedHoldemHud />
 
       {/* Phase 6.6.1 — Baccarat (Punto Banco) table modal (REAL engine,
           server-authoritative, ClawToken fun-money tier, 8-deck commit-reveal
