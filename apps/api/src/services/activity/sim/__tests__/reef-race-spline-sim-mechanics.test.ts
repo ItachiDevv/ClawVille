@@ -29,9 +29,16 @@ mock.module('../../activity-replay-log', () => ({
 }));
 
 const { reefRaceSplineSim } = await import('../reef-race-spline-sim');
+const { integrateSurfStep } = await import('@clawville/shared');
 const {
   REEF_TICK_HZ,
   REEF_MAX_SPEED,
+  REEF_MAX_ACCEL,
+  REEF_TURN_RATE,
+  REEF_TURN_SPEED_FALLOFF,
+  REEF_AIRBORNE_STEER_MULT,
+  REEF_FORWARD_DRAG,
+  REEF_LATERAL_GRIP,
   ACTION_BIT_POWERUP_0,
   buildSplineBoostPads,
 } = await import('../reef-race-config');
@@ -219,6 +226,94 @@ describe('ReefRaceSplineSim — race mechanics (v7)', () => {
   });
 
   // ── Determinism (sim clock) ─────────────────────────────────────────────────
+
+  describe('held steering target refresh', () => {
+    const params = {
+      maxSpeed: REEF_MAX_SPEED,
+      maxAccel: REEF_MAX_ACCEL,
+      turnRate: REEF_TURN_RATE,
+      turnSpeedFalloff: REEF_TURN_SPEED_FALLOFF,
+      airborneSteerMult: REEF_AIRBORNE_STEER_MULT,
+      forwardDrag: REEF_FORWARD_DRAG,
+      lateralGrip: REEF_LATERAL_GRIP,
+      speedMod: 1,
+      accelMult: 1,
+    };
+    const TURN_BIAS = 0.12;
+
+    it('recomputed held-A target keeps advancing at the effective limiter rate', () => {
+      let state = { x: 0, z: 0, vx: 0, vz: 0, rot: 0 };
+      let measuredYaw = 0;
+      let integratedLimiter = 0;
+
+      for (let tick = 0; tick < 90; tick++) {
+        // Mirror the client helper: target = current-heading forward + right*0.12.
+        const fwdX = Math.sin(state.rot);
+        const fwdZ = Math.cos(state.rot);
+        const rightX = Math.cos(state.rot);
+        const rightZ = -Math.sin(state.rot);
+        const dirX = fwdX + rightX * TURN_BIAS;
+        const dirZ = fwdZ + rightZ * TURN_BIAS;
+        const mag = Math.hypot(dirX, dirZ);
+        const speedFrac = Math.min(1, Math.hypot(state.vx, state.vz) / REEF_MAX_SPEED);
+        const limiter =
+          REEF_TURN_RATE * (1 - REEF_TURN_SPEED_FALLOFF * speedFrac) * DT;
+        const next = integrateSurfStep(
+          state,
+          { dir: { x: dirX / mag, z: dirZ / mag }, thrust: 1, airborne: false },
+          params,
+          DT,
+        );
+        const delta = Math.atan2(
+          Math.sin(next.rot - state.rot),
+          Math.cos(next.rot - state.rot),
+        );
+        if (tick >= 30) {
+          expect(delta).toBeGreaterThan(0);
+          measuredYaw += delta;
+          integratedLimiter += limiter;
+        }
+        state = next;
+      }
+
+      // 60 post-convergence ticks: no plateau, full 2.86 rad limiter integral.
+      expect(measuredYaw).toBeCloseTo(2.86, 6);
+      expect(integratedLimiter).toBeCloseTo(2.86, 6);
+      expect(measuredYaw).toBeGreaterThanOrEqual(integratedLimiter * 0.85);
+    });
+
+    it('fixed initial target reproduces the old dead-pause shape', () => {
+      let state = { x: 0, z: 0, vx: 0, vz: 0, rot: 0 };
+      const fixedMag = Math.hypot(TURN_BIAS, 1);
+      const fixedDir = { x: TURN_BIAS / fixedMag, z: 1 / fixedMag };
+      let totalYaw = 0;
+      let tick0Delta = 0;
+      let tick1Delta = 0;
+
+      for (let tick = 0; tick < 90; tick++) {
+        const next = integrateSurfStep(
+          state,
+          { dir: fixedDir, thrust: 1, airborne: false },
+          params,
+          DT,
+        );
+        const delta = Math.atan2(
+          Math.sin(next.rot - state.rot),
+          Math.cos(next.rot - state.rot),
+        );
+        if (tick === 0) tick0Delta = delta;
+        if (tick === 1) tick1Delta = delta;
+        if (tick >= 2) expect(Math.abs(delta)).toBeLessThan(1e-12);
+        totalYaw += delta;
+        state = next;
+      }
+
+      expect(tick0Delta).toBeCloseTo(0.086666667, 8);
+      expect(tick1Delta).toBeCloseTo(0.032762259, 8);
+      expect(totalYaw).toBeCloseTo(Math.atan(TURN_BIAS), 9);
+      expect(totalYaw).toBeCloseTo(0.119428926, 8);
+    });
+  });
 
   describe('deterministic sim clock', () => {
     it('identical input+tick sequences produce identical trajectories', () => {

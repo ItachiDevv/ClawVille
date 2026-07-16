@@ -672,10 +672,12 @@ export const SURF_PITCH_HALF_LEN  = 120;  // wu — sample the wave at nose & ta
 export const SURF_ROLL_HALF_WIDTH = 36;   // wu — sample the surface at left & right rail
 export const SURF_PITCH_CLAMP     = 0.6;  // ±34°
 export const SURF_ROLL_CLAMP      = 0.8;  // ±46°
-// Founder knob: higher values follow Gerstner heave faster; lower values feel calmer.
-export const SURF_HEAVE_DAMPING   = 10;
-// Founder knob: higher values follow Gerstner pitch/roll faster; lower values feel steadier.
-export const SURF_TILT_DAMPING    = 6;
+// Founder knob: k=7 lets heave glide through chop; lower increases transient water overlap.
+export const SURF_HEAVE_DAMPING   = 7;
+// Founder knob: k=3.5 lets pitch/roll cut through small chop instead of tracking it tightly.
+export const SURF_TILT_DAMPING    = 3.5;
+// Founder knob: higher values follow velocity-slip bank faster; k=8 smooths 30 Hz lean steps.
+export const SURF_BANK_LEAN_DAMPING = 8;
 
 // ─── Reef Race v2 — client-side surf prediction params ───────────────────────
 //

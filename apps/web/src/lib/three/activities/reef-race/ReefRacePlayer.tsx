@@ -97,6 +97,7 @@ import {
   SURF_ROLL_CLAMP,
   SURF_HEAVE_DAMPING,
   SURF_TILT_DAMPING,
+  SURF_BANK_LEAN_DAMPING,
 } from './reef-race-config';
 
 /** Degrees→radians for the surf nose-up trim. */
@@ -446,10 +447,11 @@ interface SurfPoseDampingState {
   heave: number;
   wavePitch: number;
   waveRoll: number;
+  bankLean: number;
   initialized: boolean;
 }
 
-/** Per-avatarId wave-only render filters. Banking/jumps/yaw never enter this state. */
+/** Per-avatarId surf render filters. Jumps/yaw never enter this state. */
 const _surfPoseDamping: Record<string, SurfPoseDampingState> = {};
 
 /** Nose-up pitch when airborne (radians). ~8°. */
@@ -979,7 +981,13 @@ function ReefRacePlayerInner({
   // pose = lerp(prevTick, pred, accum/TICK_DT) — ≤1 tick (33 ms) of visual
   // latency, motion is frame-smooth. Reconciliation corrections are applied
   // to BOTH states so a snapshot rebase never bleeds through the blend.
-  const prevTickRef = useRef<{ x: number; z: number; rot: number }>({ x: 0, z: 0, rot: 0 });
+  const prevTickRef = useRef<{ x: number; z: number; vx: number; vz: number; rot: number }>({
+    x: 0,
+    z: 0,
+    vx: 0,
+    vz: 0,
+    rot: 0,
+  });
   const predictInitRef = useRef(false);
   // Fixed-timestep accumulator (s). Render frames are ~60 fps with variable dt,
   // but integrateSurfStep's drag/grip multipliers assume the server's fixed
@@ -998,7 +1006,7 @@ function ReefRacePlayerInner({
   // staging keeps the same keyed instance but gates prediction + pose-bus writes.
   const predictsSelf = USE_SPLINE_PLAYER && isSelf && predictionEnabled;
   const surfPoseDamping = _surfPoseDamping[entity.avatarId] ??=
-    { heave: 0, wavePitch: 0, waveRoll: 0, initialized: false };
+    { heave: 0, wavePitch: 0, waveRoll: 0, bankLean: 0, initialized: false };
 
   const clonedScene = useMemo(() => {
     // When isVRM=true, effectiveSrcScene=null — return null so the GLB mount
@@ -1519,6 +1527,8 @@ function ReefRacePlayerInner({
           pred.rot = srot;
           prevTickRef.current.x = sx;
           prevTickRef.current.z = sz;
+          prevTickRef.current.vx = svx;
+          prevTickRef.current.vz = svz;
           prevTickRef.current.rot = srot;
           predictInitRef.current = true;
           // Fresh seed — drop any accumulated fixed-step time.
@@ -1540,6 +1550,8 @@ function ReefRacePlayerInner({
             pred.rot = srot;
             prevTickRef.current.x = sx;
             prevTickRef.current.z = sz;
+            prevTickRef.current.vx = svx;
+            prevTickRef.current.vz = svz;
             prevTickRef.current.rot = srot;
             // Teleport — discard stale accumulated time so we don't replay
             // pre-snap motion against the new pose.
@@ -1593,6 +1605,8 @@ function ReefRacePlayerInner({
             prevTickRef.current.x += appliedX;
             prevTickRef.current.z += appliedZ;
             prevTickRef.current.rot += rotError * CLIENT_REBASE_ROT;
+            // Velocity reconciliation applies directly to `pred`; unlike the
+            // position/yaw anchors it needs no matching previous-tick shift.
             pushPredictionSample(predictionHistory, predictionTimeRef.current, pred);
             recordReconStats(
               errDist,
@@ -1750,6 +1764,8 @@ function ReefRacePlayerInner({
         // `pred` holds tick N, the bracket the render blend below needs.
         prevTickRef.current.x = pred.x;
         prevTickRef.current.z = pred.z;
+        prevTickRef.current.vx = pred.vx;
+        prevTickRef.current.vz = pred.vz;
         prevTickRef.current.rot = pred.rot;
         const next = integrateSurfStep(
           pred,
@@ -1783,8 +1799,8 @@ function ReefRacePlayerInner({
       interpX = prevTick.x + (pred.x - prevTick.x) * renderAlpha;
       interpZ = prevTick.z + (pred.z - prevTick.z) * renderAlpha;
       interpRot = lerpAngle(prevTick.rot, pred.rot, renderAlpha);
-      interpVx = pred.vx;
-      interpVz = pred.vz;
+      interpVx = prevTick.vx + (pred.vx - prevTick.vx) * renderAlpha;
+      interpVz = prevTick.vz + (pred.vz - prevTick.vz) * renderAlpha;
       lastRotRef.current = interpRot;
 
       // Publish the RENDERED (blended) pose for the chase camera — camera and
@@ -1795,19 +1811,6 @@ function ReefRacePlayerInner({
       selfPoseBus.valid = true;
       selfPoseBus.updatedAt = performance.now();
 
-      // Dev-only render-pose probe — lets the headless harness measure
-      // per-frame motion deltas (smoothness), not just reconciliation error.
-      // Mutates one preallocated object; DCE-stripped from prod bundles.
-      if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') {
-        const dw = window as typeof window & {
-          __REEF_RENDER_POSE?: { x: number; z: number; rot: number; at: number };
-        };
-        if (!dw.__REEF_RENDER_POSE) dw.__REEF_RENDER_POSE = { x: 0, z: 0, rot: 0, at: 0 };
-        dw.__REEF_RENDER_POSE.x = interpX;
-        dw.__REEF_RENDER_POSE.z = interpZ;
-        dw.__REEF_RENDER_POSE.rot = interpRot;
-        dw.__REEF_RENDER_POSE.at = performance.now();
-      }
     }
 
     // ─── Apply interpolated/predicted XZ transform to groupRef ────────────────
@@ -1826,6 +1829,12 @@ function ReefRacePlayerInner({
     // rider + camera together. v1 ellipse path is untouched (stays flat at y=0).
     group.position.x = interpX;
     group.position.z = interpZ;
+    const velAngle = (interpVx !== 0 || interpVz !== 0)
+      ? Math.atan2(interpVx, interpVz)
+      : interpRot;
+    let bankDelta = velAngle - interpRot;
+    bankDelta = ((bankDelta % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2) - Math.PI;
+    const hardSeedSurfPose = !predictionEnabled || !surfPoseDamping.initialized;
     if (USE_SPLINE_PLAYER) {
       const tHere = tAtXZ(interpX, interpZ, entity.avatarId);
       // SURF RIDE (baked from the founder-signed-off sandbox 2026-06-27): the kart
@@ -1855,19 +1864,23 @@ function ReefRacePlayerInner({
       const rawSurfaceRoll = Math.atan2((bankR + waveR) - (bankL + waveL), rollSampleWidth);
       const rawWaveRoll = rawSurfaceRoll - bankRoll;
 
-      if (!predictionEnabled || !surfPoseDamping.initialized) {
+      if (hardSeedSurfPose) {
         // Pregame/first frame/respawn is a hard seed, matching ChaseCamera's
         // staged reset: never ease stale wave state into a new race pose.
         surfPoseDamping.heave = rawWaveHeave;
         surfPoseDamping.wavePitch = rawWavePitch;
         surfPoseDamping.waveRoll = rawWaveRoll;
+        surfPoseDamping.bankLean = bankDelta;
         surfPoseDamping.initialized = true;
       } else {
         const heaveFactor = 1 - Math.exp(-SURF_HEAVE_DAMPING * dt);
         const tiltFactor = 1 - Math.exp(-SURF_TILT_DAMPING * dt);
+        const bankLeanFactor = 1 - Math.exp(-SURF_BANK_LEAN_DAMPING * dt);
         surfPoseDamping.heave += (rawWaveHeave - surfPoseDamping.heave) * heaveFactor;
         surfPoseDamping.wavePitch += (rawWavePitch - surfPoseDamping.wavePitch) * tiltFactor;
         surfPoseDamping.waveRoll += (rawWaveRoll - surfPoseDamping.waveRoll) * tiltFactor;
+        surfPoseDamping.bankLean +=
+          (bankDelta - surfPoseDamping.bankLean) * bankLeanFactor;
       }
 
       group.position.y =
@@ -1886,6 +1899,14 @@ function ReefRacePlayerInner({
     } else {
       group.position.y = 0;
       group.rotation.y = interpRot;
+      if (hardSeedSurfPose) {
+        surfPoseDamping.bankLean = bankDelta;
+        surfPoseDamping.initialized = true;
+      } else {
+        const bankLeanFactor = 1 - Math.exp(-SURF_BANK_LEAN_DAMPING * dt);
+        surfPoseDamping.bankLean +=
+          (bankDelta - surfPoseDamping.bankLean) * bankLeanFactor;
+      }
     }
 
     // ─── Jump nose-up tilt (v2 only) ─────────────────────────────────────────
@@ -1928,17 +1949,37 @@ function ReefRacePlayerInner({
     }
 
     // ─── Bank tilt on gliderRef (Phase 1 §4) ─────────────────────────────────
-    // Bank uses velocity direction relative to current facing. Because facing is
-    // now server-authoritative (entity.rot), delta between velocity angle and
-    // group.rotation.y gives the correct lean amount without spazzing.
+    // Bank uses render-interpolated velocity relative to render-interpolated
+    // facing, then damps the applied slip lean so 30 Hz state never steps.
     // MOVES HERE from meshRootRef — now the BOARD tilts; the rider stays level.
-    const velAngle = (interpVx !== 0 || interpVz !== 0)
-      ? Math.atan2(interpVx, interpVz)
-      : interpRot;
-    // Wrap bank delta into (-π, π]
-    let bankDelta = velAngle - group.rotation.y;
-    bankDelta = ((bankDelta % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2) - Math.PI;
-    glider.rotation.z = -bankDelta * 0.15;
+    glider.rotation.z = -surfPoseDamping.bankLean * 0.15;
+
+    // Dev-only render-pose probe — lets the headless harness measure
+    // per-frame motion and applied-bank deltas, not just reconciliation error.
+    // Mutates one preallocated object; DCE-stripped from prod bundles.
+    if (
+      predictsSelf &&
+      process.env.NODE_ENV !== 'production' &&
+      typeof window !== 'undefined'
+    ) {
+      const dw = window as typeof window & {
+        __REEF_RENDER_POSE?: {
+          x: number;
+          z: number;
+          rot: number;
+          bank: number;
+          at: number;
+        };
+      };
+      if (!dw.__REEF_RENDER_POSE) {
+        dw.__REEF_RENDER_POSE = { x: 0, z: 0, rot: 0, bank: 0, at: 0 };
+      }
+      dw.__REEF_RENDER_POSE.x = interpX;
+      dw.__REEF_RENDER_POSE.z = interpZ;
+      dw.__REEF_RENDER_POSE.rot = interpRot;
+      dw.__REEF_RENDER_POSE.bank = glider.rotation.z;
+      dw.__REEF_RENDER_POSE.at = performance.now();
+    }
 
     // ─── Rider adds no INDEPENDENT lean (Phase 1 §4) ─────────────────────────
     // Comment corrected 2026-07-12 (Codex review caught the prior wording
