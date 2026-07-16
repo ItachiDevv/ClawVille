@@ -51,7 +51,16 @@ const fakeDb = {
     }),
   }),
 };
-mock.module('@clawville/database', () => ({ ...realDatabase, db: fakeDb }));
+// Leak-guarded like the middleware mocks below: once this file's suite is done
+// (intercept=false), every property read delegates to the db that was live at
+// this file's load — so later files (quest race guards etc.) see real behavior.
+const DELEGATE_DB = (realDatabase as unknown as { db: Record<string, unknown> }).db;
+mock.module('@clawville/database', () => ({
+  ...realDatabase,
+  db: new Proxy(fakeDb, {
+    get: (t, p, r) => (intercept ? Reflect.get(t, p, r) : Reflect.get(DELEGATE_DB, p, DELEGATE_DB)),
+  }),
+}));
 
 const passthrough: Middleware = async (_c, next) => next();
 const injectGuest: Middleware = async (c, next) => {

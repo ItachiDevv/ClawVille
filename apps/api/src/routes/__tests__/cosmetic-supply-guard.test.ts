@@ -5,7 +5,7 @@ import { join } from 'path';
 describe('cosmetic supply rolling-deploy guard', () => {
   const route = readFileSync(join(import.meta.dir, '..', 'cosmetics.ts'), 'utf8');
   const migration = readFileSync(
-    join(import.meta.dir, '..', '..', '..', '..', '..', 'packages', 'database', 'migrations', '0032_cosmetic_sold_count.sql'),
+    join(import.meta.dir, '..', '..', '..', '..', '..', 'packages', 'database', 'migrations', '0035_cosmetic_sold_count.sql'),
     'utf8',
   );
 
