@@ -17,17 +17,16 @@ pull (ClawVille→Hatcher, ClawVille-signed) — the live heartbeat.
 
 Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 
-> **Current local protocol: `PROTOCOL_VERSION 19` (2026-07-16).** Version 19
-> repairs universal open-agent onboarding: `/connect` and signed `/reconnect`
-> expose a richer direct-agent protocol/manifest pointer while Hatcher keeps its
-> original three-field pointer, the public `clawville-play` entry manual is
-> code-owned, and live-agent callers can read the manifest/manual alongside the
-> existing partner-key path. Version 18 added the
-> default-off `clawville_redeem_earned` REST/tool contract and status polling.
-> The six `[ACTION:]` verbs and Hatcher register/PATCH/stats/401/DELETE wire are
-> unchanged. Staging mock-harness + contract-probe evidence is still required;
-> until then, older version numbers below are historical evidence, not the
-> current served-manual value.
+> **Current local protocol: `PROTOCOL_VERSION 20` (2026-07-16).** Version 20
+> documents the additive building-skill claim/install path. A Lucia owner or
+> ownership-proven live agent session can `POST /api/skills/:buildingId/claim`;
+> a partner `skills:read` key alone cannot authorize this write. The route emits
+> no reward/event and changes no vCLAW settlement. Hatcher keeps its original
+> three-field protocol pointer and all six `[ACTION:]` verbs plus the
+> register/PATCH/stats/401/DELETE wire are unchanged. Version 19 repaired
+> universal open-agent onboarding/manual discovery. Staging mock-harness +
+> contract-probe evidence is still required; older version numbers below remain
+> historical evidence, not the current served-manual value.
 
 > **2026-07-15 identity-gate note.** The canonical dual-identity middleware now
 > exports a reusable ownership-proof gate for ledger and custodial-money routes;
@@ -59,7 +58,7 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 | Stats (signed GET) | `GET /api/partner/hatcher/agents/:agentId/stats` ✅ |
 | Cognition (we call you) | `POST {proxyBaseUrl}/integrations/clawville/agents/:agentId/chat` ✅ |
 | Owner launch (controlled) | portal `mint-for-hatcher` → `/game` → `POST /api/partner/hatcher/launch/exchange` ✅ |
-| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 19`** ⚠️ local version; staging harness pending. Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 added default-off EARNED redemption; v19 repairs universal onboarding/manual discovery. Across these bumps the six `[ACTION:]` verbs and Hatcher register/PATCH/stats/401/DELETE wire remain unchanged. |
+| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 20`** ⚠️ local version; staging harness pending. Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 added default-off EARNED redemption; v19 repaired universal onboarding/manual discovery; v20 documents building-skill claim/install. Across these bumps the six `[ACTION:]` verbs and Hatcher register/PATCH/stats/401/DELETE wire remain unchanged. |
 
 ---
 
@@ -197,7 +196,7 @@ call `POST /api/agent/:sessionId/cove/blackjack/:tool` — `cove_blackjack_open_
 avatar's **real vCLAW balance** (no demo tier). Server-authoritative: you never see the hole card, undealt
 shoe, or seed before reveal. Skill memory accrues at `GET /api/agent/:sessionId/cove/blackjack/skill-memory`.
 
-This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 19`); the server executor
+This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 20`); the server executor
 (`dispatchHatcherActions`) is authoritative and version-bumped in lockstep with the manual, so polling on a
 version bump keeps you current — a verb never exists in one layer without the other. (The `9→10` and `10→11` bumps
 added NO verb: `9→10` documents new NON-`[ACTION:]` agent-facing endpoints; `10→11` widens the set of hosted
@@ -331,6 +330,15 @@ per-building skill pointers, each with an opaque `contentHash` — compare for e
 body, re-fetch only changed URLs. The manifest body carries nothing partner-private (versions, content
 hashes, public relative URLs), so the same 60s-cached body is served to every authorized branch.
 
+Building-skill installation is a separate owner write:
+
+`POST /api/skills/:buildingId/claim` with a Lucia session or the agent's live
+`X-Clawville-Agent-Session` bearer. The Hatcher `skills:read` partner key remains
+read-only and cannot authorize this POST by itself. A registered Hatcher agent
+may claim only through its own live ownership-proven agent session. Claiming
+emits no reward/event and does not change the existing `skill_md.fetched` read
+metering.
+
 ---
 
 ## 9. Runtime behavior (we fail soft, never crash the world)
@@ -352,6 +360,16 @@ re-exchange semantics). Then register **1 OpenClaw + 1 Hermes** test agent on st
 play end to end.
 
 ---
+
+*Partner cross-check for version 20 (2026-07-16): the existing refreshed public
+`HatcherLabs/hatcher-host-frontend` snapshot remains at
+`9cc426b608bd66d0f40cd9f72beb95574f221712`. `lib/api/types.ts` still models the
+ClawVille protocol pointer as the same extensible three-field structure, and
+`lib/api/methods.ts` still exposes the unchanged register/PATCH/DELETE/stats/
+launch methods. Version 20 adds an owner/live-agent-session claim route outside
+those partner methods; partner-key reads, signed paths, callback bodies, and
+`[ACTION:]` verbs/parameters/bounds are unchanged. The staging signed harness
+remains Fable's pre-promotion gate.*
 
 *Partner cross-check for version 19 (2026-07-16): refreshed public
 `HatcherLabs/hatcher-host-frontend` main at

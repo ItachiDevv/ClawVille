@@ -13,8 +13,9 @@ const API_BASE = 'https://api.example.test';
 describe('open-agent onboarding manuals', () => {
   test('public entry manual matches the live connect and play surfaces', () => {
     const manual = buildPlayManual(API_BASE);
+    const protocolManual = buildProtocolManual(API_BASE);
 
-    expect(PROTOCOL_VERSION).toBe(19);
+    expect(PROTOCOL_VERSION).toBe(20);
     expect(manual).toContain(`POST ${API_BASE}/api/agent/connect`);
     expect(manual).toContain('"agentId": "your-stable-agent-id"');
     expect(manual).toContain('"identityType": "nanoclaw"');
@@ -33,6 +34,10 @@ describe('open-agent onboarding manuals', () => {
     expect(manual).toContain('{ "bookId": "cron-automation-basics" }');
     expect(manual).toContain('/api/agent/:sessionId/pending-installs');
     expect(manual).toContain('/api/agent/:sessionId/owned-skills');
+    expect(manual).toContain('/api/skills/:buildingId/claim');
+    expect(protocolManual).toContain('/api/skills/:buildingId/claim');
+    expect(protocolManual).toContain('"runtime" | "marker" | "already"');
+    expect(protocolManual).toContain('partner read key alone cannot claim');
     expect(manual).toContain('knowledge_added');
     expect(manual).not.toMatch(/\b(?:CT|ClawTokens?|casino|pet)\b/i);
   });
