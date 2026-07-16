@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useMemo, useEffect } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useGameStore } from '@/stores/game';
 import { useQuestStore, triggerQuestCheck } from '@/stores/quest';
@@ -29,6 +29,7 @@ const CATEGORY_GLYPH: Record<AgentCategory, string> = {
   hermes: '⚡',
   milady: '💗',
   other: '🐠',
+  chibi: '🦞',
   // Hatcher (partner #2, added 2026-06-01) — egg/hatch motif. Phase 2 art is
   // the placeholder Milady VRM fleet, but the chat-pill glyph stays distinct.
   hatcher: '🐣',
@@ -54,6 +55,7 @@ interface AvatarMessage {
 }
 
 export default function AvatarChatBar() {
+  const queryClient = useQueryClient();
   const { data: avatar } = useAvatar();
   // Read the SHARED auth-me cache (same queryKey game/page.tsx populates — no
   // extra fetch). Used to decide whether a dead-agent-session clear should keep
@@ -192,6 +194,7 @@ export default function AvatarChatBar() {
       setLoading(true);
       try {
         await api.setDirective(content);
+        void queryClient.invalidateQueries({ queryKey: ['autonomy-status'] });
         const okMsg: AvatarMessage = {
           id: crypto.randomUUID(),
           role: 'assistant',

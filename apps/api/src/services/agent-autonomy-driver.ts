@@ -151,6 +151,8 @@ interface HouseAgentEntry {
   lastDirectiveSha: string | null;
   /** Last directive hash for which a parsed action was recorded. */
   lastActedDirectiveSha: string | null;
+  /** A new human directive landed and has not yet been consumed by a decide. */
+  directivePending: boolean;
 }
 
 /** A single decision generator — real LLM in prod, canned in tests. */
@@ -378,6 +380,7 @@ class AgentAutonomyDriver {
       recentThoughts: [],
       lastDirectiveSha: null,
       lastActedDirectiveSha: null,
+      directivePending: false,
     });
     console.log(
       `[AutonomyDriver] registered house agent ${sessionDigest(entry.agentId)} (${this.houseAgents.size} total)`,
@@ -503,6 +506,7 @@ class AgentAutonomyDriver {
       recentThoughts: [],
       lastDirectiveSha: null,
       lastActedDirectiveSha: null,
+      directivePending: false,
     });
     this.enrolledOwners.set(entry.houseUserId, entry.agentId);
     console.log(
@@ -601,7 +605,7 @@ class AgentAutonomyDriver {
    * enrollment/directive kick can never overlap the steady-state tick. A busy
    * agent is skipped rather than queued.
    */
-  async driveAgentNow(agentId: string): Promise<boolean> {
+  async driveAgentNow(agentId: string, allowDirectiveFollowup = true): Promise<boolean> {
     const entry = this.houseAgents.get(agentId) ?? this.userAgents.get(agentId);
     if (!entry || this.inFlight.has(agentId)) return false;
     // Watchdog: a warm whose promise never settles must not wedge this agent
@@ -632,10 +636,23 @@ class AgentAutonomyDriver {
           localAttemptTimeoutMs: 6_000,
         })),
       );
-      return true;
     } finally {
       this.inFlight.delete(agentId);
     }
+
+    // P5: a directive that arrived during this cycle (after driveOnce passed the
+    // preemption gate) would otherwise wait for the next 30s tick. The kick's
+    // overlapping drive returns false, then this successful cycle runs ONE
+    // follow-up to consume the surviving flag. A directive that lands before the
+    // gate is consumed by this cycle instead, so no follow-up is needed.
+    const currentEntry = this.houseAgents.get(agentId) ?? this.userAgents.get(agentId);
+    if (allowDirectiveFollowup && currentEntry?.directivePending) {
+      // The follow-up cannot recursively enqueue another follow-up. If the body
+      // is absent and driveOnce cannot reach the consumption point, the flag
+      // remains for the next steady-state tick instead of hot-looping here.
+      void this.driveAgentNow(agentId, false).catch(() => {});
+    }
+    return true;
   }
 
   /**
@@ -647,6 +664,7 @@ class AgentAutonomyDriver {
     const agentId = this.enrolledOwners.get(ownerUserId);
     const entry = agentId ? this.userAgents.get(agentId) : null;
     if (!agentId || !entry || entry.platformAgentId !== expectedPlatformAgentId) return false;
+    entry.directivePending = true;
     void this.driveAgentNow(agentId).catch((err) =>
       console.error(
         `[AutonomyDriver] directive kick failed for ${sessionDigest(agentId)}:`,
@@ -812,6 +830,16 @@ class AgentAutonomyDriver {
 
     const now = Date.now();
 
+    // P5: a fresh human directive outranks the autonomous plan — interrupt the
+    // current walk/linger/arrival and replan NOW instead of waiting out the
+    // phase machine (measured 30-180s of dead time without this).
+    if (entry.directivePending && entry.phase !== 'deciding') {
+      this.pushThought(entry, 'directive', 'New directive — replanning now', now);
+      entry.phase = 'deciding';
+      entry.targetBuildingId = null;
+      entry.phaseSince = now;
+    }
+
     // Phase: walking — cheap arrival poll, NO llm.
     if (entry.phase === 'walking') {
       if (this.hasArrived(perception, entry)) {
@@ -943,6 +971,7 @@ class AgentAutonomyDriver {
     // retrieval (lessons relevant to what the human asked surface first); both
     // reads are bounded + fail-soft so a slow store never stalls the tick.
     const directive = await this.readDirectiveBounded(entry.platformAgentId);
+    entry.directivePending = false;
     let directiveSha: string | null = null;
     if (directive?.text) {
       directiveSha = createHash('sha256').update(directive.text, 'utf8').digest('hex');
