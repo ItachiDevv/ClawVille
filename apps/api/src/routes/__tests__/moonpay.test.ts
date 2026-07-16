@@ -46,7 +46,7 @@ process.env.MOONPAY_SECRET_KEY = 'sk_test_secret456';
 process.env.MOONPAY_WEBHOOK_KEY = 'wk_test_whsec789';
 delete process.env.MOONPAY_CARD_FEE_BPS;
 
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { afterAll, describe, it, expect, beforeEach, mock } from 'bun:test';
 import { createHmac } from 'node:crypto';
 import { Hono } from 'hono';
 import * as realDatabase from '@clawville/database';
@@ -82,9 +82,20 @@ const fakeDb = {
   }),
 };
 
+// Leak-guard: `mock.module` is process-global, so once this file's suite is done
+// every db property read delegates to the db that was live at this file's load —
+// later files (quest race guards etc.) see real behavior instead of this stub.
+let moonpaySuiteActive = true;
+afterAll(() => {
+  moonpaySuiteActive = false;
+});
+const DELEGATE_DB = (realDatabase as unknown as { db: Record<string, unknown> }).db;
 mock.module('@clawville/database', () => ({
   ...realDatabase,
-  db: fakeDb,
+  db: new Proxy(fakeDb, {
+    get: (t, p, r) =>
+      moonpaySuiteActive ? Reflect.get(t, p, r) : Reflect.get(DELEGATE_DB, p, DELEGATE_DB),
+  }),
 }));
 
 // Import AFTER the mock is registered.

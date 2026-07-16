@@ -120,7 +120,15 @@ const fakeDb = {
     avatars: { findFirst: async (_o: unknown) => ({ clawTokens: 7777 }) },
   },
 };
-mock.module('@clawville/database', () => ({ ...realDatabase, db: fakeDb }));
+// Leak-guarded like every other mock in this file: after afterAll flips
+// `intercept`, all db property reads delegate to the db live at this file's load.
+const DELEGATE_DB = (realDatabase as unknown as { db: Record<string, unknown> }).db;
+mock.module('@clawville/database', () => ({
+  ...realDatabase,
+  db: new Proxy(fakeDb, {
+    get: (t, p, r) => (intercept ? Reflect.get(t, p, r) : Reflect.get(DELEGATE_DB, p, DELEGATE_DB)),
+  }),
+}));
 
 // ── x402-payai: REAL peg/quote; stub only the facilitator boundary ──────────
 let verifyAndSettleCalls = 0;
