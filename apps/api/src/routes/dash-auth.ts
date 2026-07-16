@@ -52,10 +52,8 @@ dashAuthRoutes.post('/login', async (c) => {
     );
   }
 
-  let body: { password?: unknown };
-  try {
-    body = await c.req.json();
-  } catch {
+  const body = await c.req.json<{ password?: unknown }>().catch(() => null);
+  if (body === null) {
     return c.json({ ok: false, error: 'invalid_json' }, 400);
   }
 

@@ -18,6 +18,7 @@ import {
   MODEL_REGISTRY,
   PICKER_COLORS,
   type ModelKey,
+  type ModelRegistryEntry,
   type PickerColorId,
 } from '@/lib/three/agent-model-registry';
 import { useEditAvatarAppearance } from '@/hooks/use-avatar';
@@ -72,7 +73,7 @@ export function EditAppearanceSection({ avatar }: EditAppearanceSectionProps) {
   // Filter the avatar pool by harness. Milady → only VRMs; non-Milady →
   // only GLBs. Mirrors the server-side guard in PATCH /me/appearance.
   const pool = useMemo(() => {
-    const all = Object.entries(MODEL_REGISTRY) as [ModelKey, typeof MODEL_REGISTRY[ModelKey]][];
+    const all = Object.entries(MODEL_REGISTRY) as [ModelKey, ModelRegistryEntry][];
     return all.filter(([, e]) =>
       // pickerHidden models (Hatcher-reserved avatars) are server-assigned only —
       // never human-selectable. Mirrors the server guards in POST / and
