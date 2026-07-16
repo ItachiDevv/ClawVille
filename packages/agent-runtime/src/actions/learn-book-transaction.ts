@@ -10,6 +10,11 @@ import {
 } from '@clawville/database';
 import { getBookById, type KnowledgeBook } from '@clawville/shared';
 import type { ClawvilleServices } from './types';
+import {
+  mergeKnowledgeCustomization,
+  mergeKnowledgeEntries,
+  recordValue,
+} from './knowledge-merge';
 
 export type LearnBookErrorCode =
   | 'book_not_found'
@@ -101,19 +106,33 @@ export async function learnBookAtomically(
       );
     }
 
-    const currentConfig = lockedAvatar.character_config ?? {};
-    const configuredKnowledge = currentConfig.knowledge;
-    const currentKnowledge = Array.isArray(configuredKnowledge)
-      ? configuredKnowledge.filter((entry): entry is string => typeof entry === 'string')
-      : [];
-    const known = new Set(currentKnowledge);
-    const newKnowledge = book.knowledgeEntries.filter((entry) => !known.has(entry));
-    const mergedKnowledge = [...currentKnowledge, ...newKnowledge];
+    const currentConfig = recordValue(lockedAvatar.character_config);
+    const { newKnowledge, mergedKnowledge } = mergeKnowledgeEntries(
+      currentConfig.knowledge,
+      book.knowledgeEntries,
+    );
     const updatedConfig = {
       ...currentConfig,
       knowledge: mergedKnowledge,
     };
 
+    // The platform-agent customization is a separate configuration surface
+    // from the avatar's characterConfig. In particular, connected agents keep
+    // their gateway credentials and persona fields here. Lock and merge the
+    // current agent row inside this transaction; copying `updatedConfig` over
+    // it would silently erase every agent-only field on each book read.
+    const lockedAgent = lockedAvatar.platform_agent_id
+      ? (
+          await tx.execute<{
+            customization: Record<string, unknown> | null;
+          }>(
+            sql`SELECT customization
+                FROM platform_agents
+                WHERE id = ${lockedAvatar.platform_agent_id}
+                FOR UPDATE`,
+          )
+        )[0]
+      : undefined;
     const [updatedAvatar] = await tx
       .update(avatars)
       .set({
@@ -126,11 +145,18 @@ export async function learnBookAtomically(
       throw new LearnBookError('avatar_not_found', 'No avatar found');
     }
 
-    if (lockedAvatar.platform_agent_id) {
+    if (lockedAvatar.platform_agent_id && lockedAgent) {
+      const hostedKnowledge = mergeKnowledgeEntries(
+        recordValue(lockedAgent.customization).knowledge,
+        mergedKnowledge,
+      ).mergedKnowledge;
       await tx
         .update(agents)
         .set({
-          customization: updatedConfig,
+          customization: mergeKnowledgeCustomization(
+            lockedAgent.customization,
+            hostedKnowledge,
+          ),
           updatedAt: new Date(),
         })
         .where(eq(agents.id, lockedAvatar.platform_agent_id));
