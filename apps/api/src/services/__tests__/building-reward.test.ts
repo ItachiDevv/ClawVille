@@ -433,7 +433,7 @@ describe('creditBuildingChatRewardOncePerDay (shared durable claim)', () => {
     expect(routeSource).not.toContain('!avatar.isGuest');
   });
 
-  it('0032 commits guards before split backfill/index migrations', () => {
+  it('0037 commits guards before split backfill/index migrations', () => {
     const migrationDir = join(
       import.meta.dir,
       '..',
@@ -445,9 +445,9 @@ describe('creditBuildingChatRewardOncePerDay (shared durable claim)', () => {
       'database',
       'migrations',
     );
-    const migration = readFileSync(join(migrationDir, '0032_supply_mint_idempotency.sql'), 'utf8');
-    const backfill = readFileSync(join(migrationDir, '0032a_supply_mint_chat_backfill.sql'), 'utf8');
-    const activity = readFileSync(join(migrationDir, '0032b_activity_result_uniqueness.sql'), 'utf8');
+    const migration = readFileSync(join(migrationDir, '0037_supply_mint_idempotency.sql'), 'utf8');
+    const backfill = readFileSync(join(migrationDir, '0038_supply_mint_chat_backfill.sql'), 'utf8');
+    const activity = readFileSync(join(migrationDir, '0039_activity_result_uniqueness.sql'), 'utf8');
     const xpTriggerAt = migration.indexOf(
       'CREATE TRIGGER "guard_atomic_xp_update_before_update"',
     );
