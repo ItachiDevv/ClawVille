@@ -590,8 +590,12 @@ export function HoldemControllerRuntime(): null {
   const handleClose = useCallback(() => {
     const state = useHoldemController.getState();
     const table = tableRef.current;
+    // Guests fire the close too (P4, 2026-07-16): the server now accepts an
+    // owner-matched guest DEMO close (status flip + seed reveal, zero ledger
+    // ops). Without it a guest's fingerprint-keyed table resumed forever —
+    // bricked at stack 0 once the demo chips ran out.
     if (
-      table?.status === 'open' && isAuthed && !state.live &&
+      table?.status === 'open' && !state.live &&
       !busyRef.current && !state.revealedSeed
     ) {
       closeTable.mutate(

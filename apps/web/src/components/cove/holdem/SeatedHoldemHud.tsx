@@ -153,15 +153,37 @@ export function SeatedHoldemHud() {
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
           {phase === 'idle' && (
-            <button
-              type="button"
-              onClick={() => { void handleDeal(); }}
-              disabled={actionsDisabled}
-              className="pt-btn pt-btn-primary"
-              style={{ height: 44, fontSize: 13, fontWeight: 700, minWidth: 120 }}
-            >
-              {inFlight ? 'Dealing…' : 'Deal'}
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => { void handleDeal(); }}
+                disabled={actionsDisabled}
+                className="pt-btn pt-btn-primary"
+                style={{ height: 44, fontSize: 13, fontWeight: 700, minWidth: 120 }}
+              >
+                {inFlight ? 'Dealing…' : 'Deal'}
+              </button>
+              {/* Escape hatch at idle too (the modal's X equivalent): a
+                  resumed table can be un-dealable (stack < big blind) and
+                  the server copy says to close + re-buy — so the close must
+                  be reachable HERE, not only at settled. */}
+              {table && (
+                <button
+                  type="button" onClick={() => { void handleWalkAway(); }}
+                  disabled={walkAwayLocked}
+                  style={{
+                    height: 44, fontSize: 12, fontWeight: 600,
+                    fontFamily: 'var(--pt-data)', letterSpacing: '0.06em',
+                    paddingLeft: 16, paddingRight: 16, borderRadius: 6,
+                    border: 'none', background: '#dc2626', color: '#ffffff',
+                    cursor: walkAwayLocked ? 'not-allowed' : 'pointer',
+                    opacity: walkAwayLocked ? 0.6 : 1,
+                  }}
+                >
+                  {isAuthed ? 'Walk Away' : 'Close'}
+                </button>
+              )}
+            </>
           )}
 
           {phase === 'player-turn' && !showRaise && (
@@ -225,22 +247,24 @@ export function SeatedHoldemHud() {
               >
                 Next Hand
               </button>
-              {isAuthed && (
-                <button
-                  type="button" onClick={() => { void handleWalkAway(); }}
-                  disabled={walkAwayLocked}
-                  style={{
-                    height: 44, fontSize: 12, fontWeight: 600,
-                    fontFamily: 'var(--pt-data)', letterSpacing: '0.06em',
-                    paddingLeft: 16, paddingRight: 16, borderRadius: 6,
-                    border: 'none', background: '#dc2626', color: '#ffffff',
-                    cursor: walkAwayLocked ? 'not-allowed' : 'pointer',
-                    opacity: walkAwayLocked ? 0.6 : 1,
-                  }}
-                >
-                  Walk Away
-                </button>
-              )}
+              {/* Same button for BOTH tiers, exactly like the modal ("Close"
+                  for guests): without it, a guest whose demo stack hits 0 has
+                  a dead Deal button and no way to reset the table from the
+                  seat (P4 live-run find). */}
+              <button
+                type="button" onClick={() => { void handleWalkAway(); }}
+                disabled={walkAwayLocked}
+                style={{
+                  height: 44, fontSize: 12, fontWeight: 600,
+                  fontFamily: 'var(--pt-data)', letterSpacing: '0.06em',
+                  paddingLeft: 16, paddingRight: 16, borderRadius: 6,
+                  border: 'none', background: '#dc2626', color: '#ffffff',
+                  cursor: walkAwayLocked ? 'not-allowed' : 'pointer',
+                  opacity: walkAwayLocked ? 0.6 : 1,
+                }}
+              >
+                {isAuthed ? 'Walk Away' : 'Close'}
+              </button>
             </>
           )}
         </div>

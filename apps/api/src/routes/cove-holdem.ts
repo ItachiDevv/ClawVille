@@ -1670,9 +1670,13 @@ coveHoldemRouter.post('/session/close', async (c) => {
   // not this key (see header note).
   const closeIdempotencyKey = readIdempotencyKey(c);
   const subject = await getSubject(c);
-  if (!isLedgerSubject(subject)) {
-    throw new HTTPException(403, { message: 'guest_cannot_close_table: sign in or connect an agent' });
-  }
+  // Guests MAY close their own DEMO table (P4 fix, 2026-07-16): their buy-in
+  // never debited the ledger, so close is a pure status flip + seed reveal
+  // with ZERO ledger ops — demo chips vaporize, nothing is credited. Without
+  // this, a guest whose demo stack hits 0 was bricked forever: the deal
+  // handler's own copy says "Re-buy by closing + reopening" while close
+  // returned 403, and the fingerprint-keyed table resumed on every visit.
+  const isGuestClose = !isLedgerSubject(subject);
 
   const table = await db.query.holdemTables.findFirst({
     where: eq(holdemTables.id, parsed.data.tableId),
@@ -1682,11 +1686,11 @@ coveHoldemRouter.post('/session/close', async (c) => {
 
   // Pre-lock replay shortcut — already closed before we even try to lock.
   if (table.status === 'closed') {
-    const avatarPre = await loadAvatarForUser(subject.userId);
-    return c.json(buildCloseReplayResponse(table, avatarPre.clawTokens), 200);
+    const balancePre = isGuestClose ? 0 : (await loadAvatarForUser(subject.userId!)).clawTokens;
+    return c.json(buildCloseReplayResponse(table, balancePre), 200);
   }
 
-  const avatar = await loadAvatarForUser(subject.userId);
+  const avatar = isGuestClose ? null : await loadAvatarForUser(subject.userId!);
 
   type CloseTxResult =
     | { kind: 'already-closed' }
@@ -1721,10 +1725,11 @@ coveHoldemRouter.post('/session/close', async (c) => {
     }
 
     // Cash out the remaining stack back to the avatar (ledger subject — human
-    // or agent, resolved + owner-checked above).
+    // or agent, resolved + owner-checked above). Guest demo chips are NEVER
+    // credited — their buy-in never debited the ledger (avatar is null).
     const cashOut = BigInt(lock.player_stack);
-    let cashOutBalance = avatar.clawTokens;
-    if (cashOut > 0n) {
+    let cashOutBalance = avatar?.clawTokens ?? 0;
+    if (avatar && cashOut > 0n) {
       if (cashOut > BigInt(Number.MAX_SAFE_INTEGER)) {
         throw new HTTPException(500, { message: 'cashout_exceeds_supported_range' });
       }
@@ -1759,14 +1764,14 @@ coveHoldemRouter.post('/session/close', async (c) => {
 
   if (closed.kind === 'already-closed') {
     const fresh = await loadTableOrThrow(table.id);
-    const avatarFresh = await loadAvatarForUser(subject.userId);
-    return c.json(buildCloseReplayResponse(fresh, avatarFresh.clawTokens), 200);
+    const balanceFresh = isGuestClose ? 0 : (await loadAvatarForUser(subject.userId!)).clawTokens;
+    return c.json(buildCloseReplayResponse(fresh, balanceFresh), 200);
   }
 
   void logEventFromContext(c, {
     eventType: 'cove.holdem.table.closed',
     userId: subject.userId,
-    avatarId: avatar.id,
+    avatarId: avatar?.id ?? null,
     agentId: subject.kind === 'agent' ? subject.agentId : null,
     payload: {
       tableId: closed.closedTable.id,
@@ -1775,6 +1780,7 @@ coveHoldemRouter.post('/session/close', async (c) => {
       totalPayout: closed.closedTable.totalPayout,
       cashOut: closed.cashOut,
       isAgent: subject.kind === 'agent',
+      isGuest: isGuestClose,
       idempotencyKey: closeIdempotencyKey ?? null,
     },
   });
