@@ -1211,6 +1211,7 @@ avatarRoutes.post('/me/chat', requireAuth, async (c) => {
 
   const state: Record<string, any> = {
     avatarId: avatar.id,
+    platformAgentId: avatar.platformAgentId,
     userId: user.id,
     services,
     avatarData: avatar,

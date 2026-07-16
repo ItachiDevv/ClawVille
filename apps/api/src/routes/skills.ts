@@ -31,6 +31,9 @@ import type { MiddlewareHandler } from 'hono';
 import { db, buildingSkills, agentBots, avatars, eq, and } from '@clawville/database';
 import { getBooksForBuilding, BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 import { lucia } from '../lib/auth';
+import { sessionMiddleware } from '../middleware/auth';
+import { requireAuthOrAgentSession } from '../middleware/require-auth-or-agent';
+import type { ActivityIdentity } from '../middleware/require-auth-or-agent';
 import { logEventFromContext } from '../services/event-logger';
 import { requirePartnerKey, partnerRateLimit } from '../middleware/partner-key';
 import { createRateLimiter } from '../middleware/rate-limit';
@@ -42,6 +45,10 @@ import {
   protocolPointer,
   resolveApiBase,
 } from '../services/skill-protocol';
+import {
+  BuildingSkillInstallError,
+  installBuildingSkillIntoAgent,
+} from '../services/building-skill-install';
 import type { AppContext } from '../types';
 
 export const skillsRoutes = new Hono<AppContext>();
@@ -627,6 +634,84 @@ skillsRoutes.get(
   '/:buildingId/skill.md',
   endUserOrPartnerKey,
   (c) => serveBuildingSkill(c, c.req.param('buildingId'), c.get('skillReadVia')),
+);
+
+// Additive human/agent claim surface. Unlike the GET download, this installs
+// the curriculum into the subject's agent and intentionally emits no event or
+// reward. Partner keys alone never authorize this write.
+export async function executeBuildingSkillClaim(
+  identity: ActivityIdentity,
+  buildingId: string,
+  install: typeof installBuildingSkillIntoAgent = installBuildingSkillIntoAgent,
+): Promise<{
+  status: 200 | 400 | 403 | 404 | 409 | 503;
+  body: Record<string, unknown>;
+}> {
+  if (identity.kind === 'agent' && identity.ledgerCapable !== true) {
+    return {
+      status: 403,
+      body: {
+        error: 'ownership_required',
+        hint: 'Reconnect with ownership proof before claiming a skill.',
+      },
+    };
+  }
+
+  try {
+    const result = await install({
+      userId: identity.userId,
+      avatarId: identity.avatarId,
+      buildingId,
+      ...(identity.kind === 'agent' ? { provenAgentId: identity.agentId } : {}),
+    });
+    return { status: 200, body: { ok: true, ...result } };
+  } catch (error) {
+    if (error instanceof BuildingSkillInstallError) {
+      if (error.code === 'entry_skill_auto_installed') {
+        return {
+          status: 400,
+          body: {
+            error: error.code,
+            hint:
+              'clawville-play installs automatically for hosted agents; claim a building skill instead.',
+          },
+        };
+      }
+      if (error.code === 'skill_not_found') {
+        return { status: 404, body: { error: error.code, buildingId } };
+      }
+      if (error.code === 'runtime_unavailable') {
+        return {
+          status: 503,
+          body: {
+            error: error.code,
+            hint: 'Your hosted agent could not persist this skill. Try again shortly.',
+          },
+        };
+      }
+      return {
+        status: 409,
+        body: {
+          error: error.code,
+          hint: 'Connect or host an agent, then claim the skill again.',
+        },
+      };
+    }
+    throw error;
+  }
+}
+
+skillsRoutes.post(
+  '/:buildingId/claim',
+  sessionMiddleware,
+  requireAuthOrAgentSession,
+  async (c) => {
+    const result = await executeBuildingSkillClaim(
+      c.get('identity'),
+      c.req.param('buildingId'),
+    );
+    return c.json(result.body, result.status);
+  },
 );
 
 skillsRoutes.get('/:buildingId', async (c) => {
