@@ -76,6 +76,7 @@ import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
 import { logEventFromContext } from '../services/event-logger';
 import {
   WagerClientError,
+  assertWagerLobbyIdInEnvNamespace,
   createSolLobby,
   joinSolLobby,
   lockLobby as chainLockLobby,
@@ -88,7 +89,11 @@ import {
   reconcileWagerChainIntent,
   withResolvedWagerLobbyFence,
   WagerIntentFenceError,
+  resolveVerifiedWagerBroadcastCluster,
+  resolveWagerLobbyNamespaceEnv,
+  type VerifiedWagerBroadcastCluster,
 } from '../services/wager-program-client';
+import { withKeyedMutex } from '../services/keyed-mutex';
 
 interface WagerRouteContext extends ActivityAuthContext {
   Variables: ActivityAuthContext['Variables'] & {
@@ -178,7 +183,7 @@ function serializeLobby(row: Lobby) {
   };
 }
 
-function handleWagerClientError(err: unknown): never {
+export function handleWagerClientError(err: unknown): never {
   if (err instanceof WagerIntentFenceError) {
     throw new HTTPException(503, { message: 'wager_intent_reconciliation_required' });
   }
@@ -193,6 +198,10 @@ function handleWagerClientError(err: unknown): never {
       throw new HTTPException(500, { message: err.message });
     if (err.code === 'network_refused')
       throw new HTTPException(503, { message: err.message });
+    if (err.code === 'namespace_violation')
+      throw new HTTPException(500, {
+        message: `wager_namespace_configuration_fault: ${err.message}`,
+      });
     if (err.code === 'on_chain_error')
       throw new HTTPException(400, { message: err.message });
     if (err.code === 'insufficient_funds')
@@ -287,6 +296,263 @@ function createOperationKey(avatarId: string, activityId: string, roomId: string
     .update(`${avatarId}\0${activityId}\0${roomId}`)
     .digest('hex');
   return `create:${digest}`;
+}
+
+type WagerRouteDbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+async function nextWagerLobbyId(tx: WagerRouteDbTx): Promise<bigint> {
+  const rows = await tx.execute<{ lobby_id: string }>(
+    sql`SELECT nextval('wager_lobby_id_seq')::text AS lobby_id`,
+  );
+  const value = rows[0]?.lobby_id;
+  if (!value) throw new HTTPException(500, { message: 'wager_lobby_id_allocation_failed' });
+  return BigInt(value);
+}
+
+export interface PrepareCreateDraftInput {
+  operationKey: string;
+  activityId: string;
+  roomId: string;
+  userId: string;
+  avatarId: string;
+  wagerAmountLamports: bigint;
+  maxPlayers: number;
+  visibility: (typeof visibilityValues)[number];
+  inviteCode: string | null;
+  resolveVerifiedCluster: () => Promise<VerifiedWagerBroadcastCluster>;
+}
+
+export function canRemintWagerCreateDraft(
+  intent: Pick<WagerChainIntent, 'status' | 'txSignature'> | null,
+): boolean {
+  return (
+    !intent ||
+    (intent.txSignature === null &&
+      (intent.status === 'prepared' || intent.status === 'failed'))
+  );
+}
+
+/** Allocate or repair a create draft before any on-chain bytes can exist. */
+export async function prepareCreateDraft(
+  input: PrepareCreateDraftInput,
+  overrides?: {
+    withMutex?: typeof withKeyedMutex;
+    transaction?: typeof db.transaction;
+    findDraft?: () => Promise<Lobby | undefined>;
+  },
+): Promise<{ draft: Lobby; verifiedCluster?: VerifiedWagerBroadcastCluster }> {
+  const runWithMutex = overrides?.withMutex ?? withKeyedMutex;
+  const runTransaction = overrides?.transaction ?? db.transaction.bind(db);
+  const findDraft =
+    overrides?.findDraft ??
+    (() =>
+      db.query.lobbies.findFirst({
+        where: and(
+          eq(lobbies.activityId, input.activityId),
+          eq(lobbies.roomId, input.roomId),
+          eq(lobbies.mode, 'multiplayer'),
+        ),
+      }));
+  return runWithMutex(input.operationKey, async () => {
+    const preliminaryDraft = await findDraft();
+    if (preliminaryDraft) {
+      const sameRequest =
+        preliminaryDraft.wagerAmountLamports === input.wagerAmountLamports &&
+        preliminaryDraft.maxPlayers === input.maxPlayers &&
+        preliminaryDraft.visibility === input.visibility;
+      if (
+        preliminaryDraft.creatorAvatarId !== input.avatarId ||
+        !sameRequest ||
+        preliminaryDraft.onChainCreateStatus === 'confirmed' ||
+        preliminaryDraft.state === 'cancelled' ||
+        preliminaryDraft.state === 'settled'
+      ) {
+        return { draft: preliminaryDraft };
+      }
+    }
+
+    // Never hold a DB connection/transaction open across the external RPC.
+    resolveWagerLobbyNamespaceEnv();
+    const verifiedCluster = await input.resolveVerifiedCluster();
+
+    return runTransaction(async (tx) => {
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtextextended(${`wager-create:${input.operationKey}`}, 0))`,
+      );
+
+      let draft = await tx.query.lobbies.findFirst({
+        where: and(
+          eq(lobbies.activityId, input.activityId),
+          eq(lobbies.roomId, input.roomId),
+          eq(lobbies.mode, 'multiplayer'),
+        ),
+      });
+
+      if (draft) {
+        const sameRequest =
+          draft.wagerAmountLamports === input.wagerAmountLamports &&
+          draft.maxPlayers === input.maxPlayers &&
+          draft.visibility === input.visibility;
+        if (
+          draft.creatorAvatarId !== input.avatarId ||
+          !sameRequest ||
+          draft.onChainCreateStatus === 'confirmed' ||
+          draft.state === 'cancelled' ||
+          draft.state === 'settled'
+        ) {
+          return { draft };
+        }
+      }
+
+      if (!draft) {
+        const lobbyId = await nextWagerLobbyId(tx);
+        assertWagerLobbyIdInEnvNamespace(lobbyId, { verifiedCluster });
+        [draft] = await tx
+          .insert(lobbies)
+          .values({
+            lobbyId,
+            activityId: input.activityId,
+            roomId: input.roomId,
+            creatorUserId: input.userId,
+            creatorAvatarId: input.avatarId,
+            wagerAmountLamports: input.wagerAmountLamports,
+            wagerMint: null,
+            maxPlayers: input.maxPlayers,
+            joinedCount: 1,
+            state: 'open',
+            visibility: input.visibility,
+            inviteCode: input.inviteCode,
+            mode: 'multiplayer',
+            onChainCreateStatus: 'prepared',
+          })
+          .onConflictDoNothing()
+          .returning();
+        if (!draft) {
+          draft = await tx.query.lobbies.findFirst({
+            where: and(
+              eq(lobbies.activityId, input.activityId),
+              eq(lobbies.roomId, input.roomId),
+              eq(lobbies.mode, 'multiplayer'),
+            ),
+          });
+        }
+      }
+      if (!draft) throw new HTTPException(500, { message: 'lobby_insert_failed' });
+      if (draft.creatorAvatarId !== input.avatarId) return { draft };
+      const sameRequest =
+        draft.wagerAmountLamports === input.wagerAmountLamports &&
+        draft.maxPlayers === input.maxPlayers &&
+        draft.visibility === input.visibility;
+      if (!sameRequest) return { draft };
+      if (
+        draft.onChainCreateStatus === 'confirmed' ||
+        draft.state === 'cancelled' ||
+        draft.state === 'settled'
+      ) {
+        return { draft };
+      }
+
+      try {
+        assertWagerLobbyIdInEnvNamespace(draft.lobbyId, { verifiedCluster });
+        return { draft, verifiedCluster };
+      } catch (err) {
+        if (
+          !(err instanceof WagerClientError) ||
+          err.code !== 'namespace_violation' ||
+          err.namespaceReason !== 'id_out_of_range'
+        ) {
+          throw err;
+        }
+
+        // Serialize against durable signature capture using its exact lobby fence.
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtextextended(${`wager-lobby:${draft.id}`}, 0))`,
+        );
+        const lockedDraft = await tx.query.lobbies.findFirst({
+          where: eq(lobbies.id, draft.id),
+        });
+        if (!lockedDraft) throw new HTTPException(500, { message: 'lobby_lookup_failed' });
+        try {
+          assertWagerLobbyIdInEnvNamespace(lockedDraft.lobbyId, { verifiedCluster });
+          return { draft: lockedDraft, verifiedCluster };
+        } catch (lockedErr) {
+          if (
+            !(lockedErr instanceof WagerClientError) ||
+            lockedErr.namespaceReason !== 'id_out_of_range'
+          ) {
+            throw lockedErr;
+          }
+        }
+
+        const intent = await tx.query.wagerChainIntents.findFirst({
+          where: eq(wagerChainIntents.operationKey, input.operationKey),
+        });
+        const oldTargetPda = deriveCreateSolLobbyIntentPda(lockedDraft.lobbyId).toBase58();
+        const identityMatches = intent
+          ? intent.operation === 'create' &&
+            intent.lobbyId === lockedDraft.id &&
+            intent.actorAvatarId === input.avatarId &&
+            intent.targetPda === oldTargetPda
+          : lockedDraft.onChainCreateStatus === 'prepared';
+        const unsignedRetryable =
+          lockedDraft.state === 'open' &&
+          (lockedDraft.onChainCreateStatus === 'prepared' ||
+            lockedDraft.onChainCreateStatus === 'failed') &&
+          identityMatches &&
+          canRemintWagerCreateDraft(intent ?? null);
+        if (!unsignedRetryable) throw err;
+
+        const lobbyId = await nextWagerLobbyId(tx);
+        assertWagerLobbyIdInEnvNamespace(lobbyId, { verifiedCluster });
+        const targetPda = deriveCreateSolLobbyIntentPda(lobbyId).toBase58();
+
+        if (intent) {
+          const [updatedIntent] = await tx
+            .update(wagerChainIntents)
+            .set({
+              status: 'failed',
+              targetPda,
+              txSignature: null,
+              blockhash: null,
+              lastValidBlockHeight: null,
+              lastError: 'namespace_reminted',
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(wagerChainIntents.id, intent.id),
+                eq(wagerChainIntents.operation, 'create'),
+                eq(wagerChainIntents.lobbyId, lockedDraft.id),
+                eq(wagerChainIntents.actorAvatarId, input.avatarId),
+                eq(wagerChainIntents.targetPda, oldTargetPda),
+                sql`${wagerChainIntents.status} IN ('prepared','failed')`,
+                sql`${wagerChainIntents.txSignature} IS NULL`,
+              ),
+            )
+            .returning();
+          if (!updatedIntent) throw err;
+        }
+
+        const [updatedDraft] = await tx
+          .update(lobbies)
+          .set({
+            lobbyId,
+            onChainCreateStatus: intent ? 'failed' : 'prepared',
+          })
+          .where(
+            and(
+              eq(lobbies.id, lockedDraft.id),
+              eq(lobbies.lobbyId, lockedDraft.lobbyId),
+              eq(lobbies.state, 'open'),
+              sql`${lobbies.onChainCreateStatus} IN ('prepared','failed')`,
+            ),
+          )
+          .returning();
+        if (!updatedDraft) throw err;
+        return { draft: updatedDraft, verifiedCluster };
+      }
+    });
+  });
 }
 
 async function reserveWagerIntent(input: {
@@ -425,78 +691,30 @@ wagerRoutes.post(
   // terminal room cannot be recycled into a new escrow deposit; callers must
   // mint a fresh room id. The partial-UNIQUE index closes the first-create race.
   const operationKey = createOperationKey(avatarId, input.activityId, input.roomId);
-  let draft = await db.query.lobbies.findFirst({
-    where: and(
-      eq(lobbies.activityId, input.activityId),
-      eq(lobbies.roomId, input.roomId),
-      eq(lobbies.mode, 'multiplayer'),
-    ),
-  });
-  if (draft) {
-    if (draft.creatorAvatarId !== avatarId) {
-      return c.json({ error: 'active_lobby_owned_by_another_avatar' }, 409);
-    }
-    const sameRequest =
-      draft.wagerAmountLamports === input.wagerAmountLamports &&
-      draft.maxPlayers === input.maxPlayers &&
-      draft.visibility === input.visibility;
-    if (!sameRequest) {
-      return c.json({ error: 'active_lobby_request_conflict' }, 409);
-    }
-    if (draft.state === 'cancelled' || draft.state === 'settled') {
-      // Terminal retries still repair a landed create whose response/DB
-      // finalization was lost. Without this, the creator Player witness can
-      // never be recovered and `/refund` reports not_in_lobby forever.
-      const reconciled = await reconcileExistingIntent(operationKey);
-      if (reconciled?.status === 'reconcile') {
-        return c.json({ error: 'wager_create_reconciliation_required' }, 503);
-      }
-      return c.json({ error: 'match_room_terminal', state: draft.state }, 409);
-    }
+  let verifiedCluster: VerifiedWagerBroadcastCluster | undefined;
+  let draft: Lobby;
+  try {
+    const prepared = await prepareCreateDraft({
+      operationKey,
+      activityId: input.activityId,
+      roomId: input.roomId,
+      userId,
+      avatarId,
+      wagerAmountLamports: input.wagerAmountLamports,
+      maxPlayers: input.maxPlayers,
+      visibility: input.visibility,
+      inviteCode,
+      resolveVerifiedCluster: () =>
+        resolveVerifiedWagerBroadcastCluster('createSolLobby'),
+    });
+    draft = prepared.draft;
+    verifiedCluster = prepared.verifiedCluster;
+  } catch (err) {
+    handleWagerClientError(err);
   }
 
-  // INSERT first so the on-chain `lobby_id` is reserved + lobby_events FK
-  // resolves on the first chain emit.
-  if (!draft) {
-    [draft] = await db
-      .insert(lobbies)
-      .values({
-        activityId: input.activityId,
-        roomId: input.roomId,
-        creatorUserId: userId,
-        creatorAvatarId: avatarId,
-        wagerAmountLamports: input.wagerAmountLamports,
-        wagerMint: null,
-        maxPlayers: input.maxPlayers,
-        joinedCount: 1,
-        state: 'open',
-        visibility: input.visibility,
-        inviteCode,
-        mode: 'multiplayer',
-        onChainCreateStatus: 'prepared',
-      })
-      .onConflictDoNothing()
-      .returning();
-    if (!draft) {
-      draft = await db.query.lobbies.findFirst({
-        where: and(
-          eq(lobbies.activityId, input.activityId),
-          eq(lobbies.roomId, input.roomId),
-          eq(lobbies.mode, 'multiplayer'),
-        ),
-      });
-      if (!draft) throw new HTTPException(500, { message: 'lobby_insert_failed' });
-      if (draft.creatorAvatarId !== avatarId) {
-        return c.json({ error: 'active_lobby_owned_by_another_avatar' }, 409);
-      }
-      if (draft.state === 'cancelled' || draft.state === 'settled') {
-        const reconciled = await reconcileExistingIntent(operationKey);
-        if (reconciled?.status === 'reconcile') {
-          return c.json({ error: 'wager_create_reconciliation_required' }, 503);
-        }
-        return c.json({ error: 'match_room_terminal', state: draft.state }, 409);
-      }
-    }
+  if (draft.creatorAvatarId !== avatarId) {
+    return c.json({ error: 'active_lobby_owned_by_another_avatar' }, 409);
   }
 
   const sameDraftRequest =
@@ -506,6 +724,17 @@ wagerRoutes.post(
     draft.creatorAvatarId === avatarId;
   if (!sameDraftRequest) {
     return c.json({ error: 'active_lobby_request_conflict' }, 409);
+  }
+
+  if (draft.state === 'cancelled' || draft.state === 'settled') {
+    // Terminal retries still repair a landed create whose response/DB
+    // finalization was lost. Without this, the creator Player witness can
+    // never be recovered and `/refund` reports not_in_lobby forever.
+    const reconciled = await reconcileExistingIntent(operationKey);
+    if (reconciled?.status === 'reconcile') {
+      return c.json({ error: 'wager_create_reconciliation_required' }, 503);
+    }
+    return c.json({ error: 'match_room_terminal', state: draft.state }, 409);
   }
 
   if (draft.onChainCreateStatus === 'confirmed') {
@@ -566,13 +795,16 @@ wagerRoutes.post(
       }
       createTxSig = reserved.intent.txSignature;
     } else {
+      if (!verifiedCluster) {
+        throw new HTTPException(500, { message: 'wager_cluster_proof_missing' });
+      }
       const createResult = await createSolLobby({
         creatorAvatarId: avatarId,
         lobbyIdBigint: draft.lobbyId,
         wagerAmountLamports: draft.wagerAmountLamports,
         maxPlayers: draft.maxPlayers,
         intentId: reserved.intent.id,
-      });
+      }, { verifiedCluster });
       createTxSig = createResult.txSig;
     }
   } catch (err) {
