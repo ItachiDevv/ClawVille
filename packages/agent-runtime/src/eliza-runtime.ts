@@ -27,8 +27,14 @@ import { embedText } from './plugins/embed-text';
 import { clawvillePlugin } from './plugins/clawville-plugin';
 import type { Provider, ProviderResult } from './providers/types';
 import type { Action, ActionResult, ClawvilleActionState } from './actions/types';
-
-const ROOM_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
+import {
+  generateRoomId,
+  PROTOCOL_KNOWLEDGE_KEY,
+  ROOM_NAMESPACE,
+  protocolKnowledgeEntityId,
+  protocolKnowledgeMemoryId,
+  splitProtocolManualSections,
+} from './protocol-knowledge';
 
 // R1 (2026-07-02): hard ceiling on ONE agent's ElizaOS init. `runtime.initialize()`
 // takes the plugin-sql `pg_advisory_lock`; if a prior init hangs holding it, both a
@@ -123,38 +129,6 @@ export function toSupabaseSessionModeUrl(url: string): string {
     return url.replace('pooler.supabase.com:6543', 'pooler.supabase.com:5432');
   }
   return url;
-}
-
-function generateRoomId(agentId: string, userId: string): UUID {
-  return uuidv5(`${agentId}-${userId}`, ROOM_NAMESPACE) as UUID;
-}
-
-/**
- * Split the connection protocol manual into `## `-heading sections (P3 slice 6,
- * surface #3). Any content before the first `## ` heading (the frontmatter + H1 +
- * intro) becomes its own leading chunk. This mirrors the EXACT re-chunk
- * granularity the manual itself instructs agents to use ("split on `## `
- * headings"); deeper `### ` subsections stay within their parent `## ` chunk.
- * Pure + total (never throws); returns [] only for empty input.
- */
-function splitProtocolManualSections(manual: string): string[] {
-  const sections: string[] = [];
-  let current: string[] = [];
-  const flush = () => {
-    if (current.length === 0) return;
-    const joined = current.join('\n').trim();
-    if (joined) sections.push(joined);
-  };
-  for (const line of manual.split('\n')) {
-    if (line.startsWith('## ')) {
-      flush();
-      current = [line];
-    } else {
-      current.push(line);
-    }
-  }
-  flush();
-  return sections;
 }
 
 export interface ElizaRuntimeConfig {
@@ -875,23 +849,25 @@ export class ElizaRuntime {
    * CONNECTION PROTOCOL MANUAL into THIS hosted agent's OWN ElizaOS runtime so a
    * ClawVille-hosted player agent knows the same protocol/table contract a
    * connected agent fetches from `/api/skills/protocol/skill.md`. The
-   * `protocol-knowledge` metadata subtype was named-but-UNUSED until now — this is
-   * its first writer.
+   * `protocol-knowledge` metadata subtype identifies this writer's rows for the
+   * KnowledgeProvider's bounded, isolated secondary search.
    *
    * Mirrors `recordEarnedSkillMemory`: embed + `createMemory` into the `knowledge`
    * table, but under a FIXED per-agent ISOLATED room/entity (`protocol-knowledge`)
-   * distinct from BOTH the platform-agent-keyed book-knowledge the KnowledgeProvider
-   * reads AND the `earned-skill:<avatarId>` scope — so the manual never bleeds into
-   * teacher / human-chat RAG, and a future protocol-aware reader can query just this
-   * room. The full manual is CHUNKED on `## ` headings (the exact granularity agents
-   * are told to re-chunk it at) and each section embedded as its own row.
+   * distinct from BOTH the platform-agent-keyed book-knowledge room and the
+   * `earned-skill:<avatarId>` scope. The KnowledgeProvider queries just this room
+   * for the same hosted platform agent; teacher/system agents have no injected rows.
+   * The full manual is CHUNKED on `## ` headings (the exact granularity agents are
+   * told to re-chunk it at) and each section embedded as its own row.
    *
-   * DEDUPE BY VERSION: each chunk's memory id is derived from
-   * `protocol-knowledge:v<version>:<index>` + `unique:true`, so re-injecting the
-   * SAME version is idempotent, and a `PROTOCOL_VERSION` bump ADDS the new rows
-   * (old-version rows harmlessly remain; the `version` metadata lets a reader prefer
-   * the newest). Re-injection happens on the next runtime START after a version
-   * bump (the caller passes the LIVE version) — the natural lifecycle boundary; no
+   * DEDUPE BY AGENT + VERSION: each chunk's memory id is derived from
+   * `protocol-knowledge:<agentId>:v<version>:<index>` + `unique:true`, and the
+   * entity id is likewise agent-scoped. Re-injecting the SAME version for the SAME
+   * agent is idempotent without colliding with any other agent. A
+   * `PROTOCOL_VERSION` bump ADDS new rows (old-version rows harmlessly remain; the
+   * `version` metadata lets the reader prefer the newest). Re-injection happens on
+   * the next runtime START after a version bump (the caller passes the LIVE version)
+   * — the natural lifecycle boundary; no
    * out-of-band stop is needed because `knowledge` rows are read live at query time,
    * not cached at construction.
    *
@@ -911,9 +887,9 @@ export class ElizaRuntime {
 
     try {
       const agentId = this.config.agentId as UUID;
-      const key = 'protocol-knowledge';
+      const key = PROTOCOL_KNOWLEDGE_KEY;
       const roomId = generateRoomId(this.config.agentId, key);
-      const entityId = uuidv5(key, ROOM_NAMESPACE) as UUID;
+      const entityId = protocolKnowledgeEntityId(this.config.agentId);
       const worldId = await this.ensureWorld();
       await this.ensureRoom(roomId, key, worldId);
       await this.ensureEntity(entityId, agentId);
@@ -935,10 +911,11 @@ export class ElizaRuntime {
             );
             continue;
           }
-          const memoryId = uuidv5(
-            `protocol-knowledge:v${version}:${i}`,
-            ROOM_NAMESPACE,
-          ) as UUID;
+          const memoryId = protocolKnowledgeMemoryId(
+            this.config.agentId,
+            version,
+            i,
+          );
           await this.runtime.createMemory(
             {
               id: memoryId,
