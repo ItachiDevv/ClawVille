@@ -83,8 +83,8 @@
  * promise so concurrent restores of the SAME agent coalesce onto one rebuild.
  */
 
-import { eq } from 'drizzle-orm';
-import { db, agentBots } from '@clawville/database';
+import { and, eq } from 'drizzle-orm';
+import { db, agentBots, avatars } from '@clawville/database';
 import type { AgentSubstrateRegistration } from '@clawville/shared';
 import { npcSimulation } from './npc-simulation';
 import { AgentSubstrateClient } from './agent-substrate-client';
@@ -119,6 +119,39 @@ const inFlightRestores = new Map<string, Promise<LiveAgentSession | null>>();
 
 type BotRow = typeof agentBots.$inferSelect;
 
+interface RestoreAvatarAttributionDeps {
+  findActiveAvatarId(userId: string): Promise<{ id: string } | null | undefined>;
+  warn(message: string): void;
+}
+
+const restoreAvatarAttributionDeps: RestoreAvatarAttributionDeps = {
+  findActiveAvatarId: (userId) =>
+    db.query.avatars.findFirst({
+      where: and(eq(avatars.userId, userId), eq(avatars.isActive, true)),
+      columns: { id: true },
+    }),
+  warn: (message) => console.warn(message),
+};
+
+/**
+ * Resolve optional covenant attribution without expanding the authentication
+ * boundary. A storage failure here must never turn a still-live bearer into a
+ * restore/auth failure; the body is rebuilt without attribution and its world
+ * actions remain functional but recordless until a later reconnect/rebind.
+ */
+export async function resolveRestoreAvatarIdFailOpen(
+  userId: string | null,
+  deps: RestoreAvatarAttributionDeps = restoreAvatarAttributionDeps,
+): Promise<string | undefined> {
+  if (!userId) return undefined;
+  try {
+    return (await deps.findActiveAvatarId(userId))?.id;
+  } catch {
+    deps.warn('[Covenant] active-avatar attribution lookup failed during session restore; continuing recordless');
+    return undefined;
+  }
+}
+
 /**
  * Rebuild the in-memory `{config, client}` for a surviving row and register it
  * under the incoming (hash-matched) sessionId. Returns the live session, or null
@@ -129,6 +162,7 @@ type BotRow = typeof agentBots.$inferSelect;
 function rebuildAndRegister(
   bot: BotRow,
   sessionId: string,
+  avatarId?: string,
 ): LiveAgentSession | null {
   // If a concurrent restore (or a fresh connect) already re-registered this
   // exact sessionId while we were awaiting the DB read, reuse it rather than
@@ -193,6 +227,7 @@ function rebuildAndRegister(
             targetNpcId: bot.targetNpcId!,
             ledgerCapable: boundUserId !== null,
             boundUserId,
+            avatarId,
             protocolOverride: 'hatcher-proxy',
           })
         : buildAvatarSessionConfig({
@@ -217,6 +252,7 @@ function rebuildAndRegister(
             personality: meta.personality ?? '',
             ledgerCapable: boundUserId !== null,
             boundUserId,
+            avatarId,
             protocolOverride: 'hatcher-proxy',
           });
 
@@ -289,6 +325,7 @@ function rebuildAndRegister(
           targetNpcId: bot.targetNpcId!,
           ledgerCapable: false,
           boundUserId,
+          avatarId,
         })
       : buildAvatarSessionConfig({
           mode: 'avatar',
@@ -307,6 +344,7 @@ function rebuildAndRegister(
           personality: meta.personality ?? '',
           ledgerCapable: false,
           boundUserId,
+          avatarId,
         });
 
   const client = new AgentSubstrateClient(config);
@@ -374,7 +412,8 @@ export async function restoreAgentSessionFromRow(
     const sweptAt = bot.sessionSweptAt;
     if (sweptAt && sweptAt.getTime() >= expiresAt.getTime()) return null;
 
-    const live = rebuildAndRegister(bot, sessionId);
+    const avatarId = await resolveRestoreAvatarIdFailOpen(bot.userId);
+    const live = rebuildAndRegister(bot, sessionId, avatarId);
     if (live) {
       console.log(
         `[OpenClaw] session restored after restart sess:${sessionDigest(sessionId)} (${bot.identityType}/${bot.mode})`,

@@ -150,6 +150,7 @@ export async function ensureHostedAvatarAgentSession(
       eq(avatars.isActive, true),
     ),
     columns: {
+      id: true,
       userId: true,
       name: true,
       modelKey: true,
@@ -232,6 +233,7 @@ export async function ensureHostedAvatarAgentSession(
       agentId,
       sessionId: bearer,
       ownerUserId,
+      avatarId: avatar.id,
       modelKey,
       name,
     });

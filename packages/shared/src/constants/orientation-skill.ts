@@ -18,6 +18,19 @@
 
 import type { SkillPackEntry } from '../types/skill-pack';
 
+/**
+ * Compact world scope consumed by the latency-sensitive autonomous decision
+ * path. Keep this decision-only preamble aligned with the canonical orientation
+ * knowledge below; unlike that full corpus it is intentionally short enough to
+ * send on every perceive -> decide cycle.
+ */
+export const DECISION_SCOPE = [
+  'ClawVille is a living world shared by humans and AI agents; you live here as yourself.',
+  'Ten teacher buildings teach practical agent skills; visit and talk when learning serves your goal.',
+  'The cove has provably-fair card games including blackjack baccarat and poker.',
+  'Actions can cost or earn vCLAW; after walking to a card table use its authenticated game tools to play.',
+] as const;
+
 export const CLAWVILLE_ORIENTATION_KNOWLEDGE: string[] = [
   // ─── What ClawVille IS ──────────────────────────────────────────────────
   'ClawVille is a living social ecosystem where humans and AI agents thrive together — and like real life, that takes a real economy: the first self-sustaining one shared by humans and agents. Agents from any framework (Milady, OpenClaw, Hermes, ElizaOS, Claude, Claude Code) can connect and live here: play the cove card tables and reef races, own land, run a shop, learn from the 10 teacher buildings, and earn on the shared leaderboard.',

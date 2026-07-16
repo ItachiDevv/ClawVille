@@ -647,6 +647,7 @@ function buildManager(db: FakeDb, ledger: FakeLedger, clock: FakeClock) {
   // `activity.match.placed` parity wiring WITHOUT hitting the real events DB
   // (the global logEvent writes to the real db, not this mock).
   const placementEmits: PlacementEmit[] = [];
+  const eventSettlementCalls: string[] = [];
   const tm = new TournamentManager({
     db: db as never,
     ledger: ledger as never,
@@ -660,8 +661,11 @@ function buildManager(db: FakeDb, ledger: FakeLedger, clock: FakeClock) {
     // T0: settle credits the rake to this fake treasury via the FAKE ledger
     // (the default resolver would lazily import the real seeder → real DB).
     resolveTreasuryAvatarId: async () => TREASURY_AVATAR,
+    onTournamentSettledFn: (tournamentId) => {
+      eventSettlementCalls.push(tournamentId);
+    },
   });
-  return { tm, sim, placementEmits };
+  return { tm, sim, placementEmits, eventSettlementCalls };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -676,6 +680,41 @@ describe('TournamentManager — single-table sit-n-go end-to-end (mocked DB + le
     ledger = new FakeLedger();
     clock = new FakeClock();
     db.seedBlindSchedule('sched-1', DEFAULT_BLIND_SCHEDULE);
+  });
+
+  it('a standalone manager with no parent-settlement handler still settles normally', async () => {
+    const tid = randomUUID();
+    db.seedTournament({
+      id: tid,
+      status: 'running',
+      prize_pool_ct: '0',
+      payout_curve_json: PAYOUT_3,
+    });
+    db.entrants.set(`${tid}:av-only`, {
+      id: randomUUID(),
+      tournament_id: tid,
+      avatar_id: 'av-only',
+      agent_id: null,
+      subject_type: 'human',
+      status: 'seated',
+      placement: 1,
+      chip_stack: 1000,
+      buy_in_paid_ct: '0',
+      fp_hash: null,
+      ip_prefix_hash: null,
+    });
+    const tm = new TournamentManager({
+      db: db as never,
+      ledger: ledger as never,
+      sim: new PokerTableSim(clock),
+      clock,
+      emitPlacementFn: () => {},
+      resolveTreasuryAvatarId: async () => null,
+    });
+
+    const result = await tm.settleTournament(tid);
+    expect(result.alreadySettled).toBe(false);
+    expect(db.tournaments.get(tid)?.status).toBe('completed');
   });
 
   it('computePrizes splits a pool by curve and is conservative after remainder fold', () => {
@@ -756,7 +795,7 @@ describe('TournamentManager — single-table sit-n-go end-to-end (mocked DB + le
   });
 
   it('(3)(4)(5) full sit-n-go: hands play, busts→placement, chip + CT conservation, idempotent payout', async () => {
-    const { tm, sim, placementEmits } = buildManager(db, ledger, clock);
+    const { tm, sim, placementEmits, eventSettlementCalls } = buildManager(db, ledger, clock);
     const tid = randomUUID();
     const STACK = 1000;
     const BUYIN = 100;
@@ -798,6 +837,7 @@ describe('TournamentManager — single-table sit-n-go end-to-end (mocked DB + le
     const placements = finalEntrants.map((e) => e.placement).sort((a, b) => Number(a) - Number(b));
     expect(placements).toEqual([1, 2, 3, 4]);
     expect(db.tournaments.get(tid)!.status).toBe('completed');
+    expect(eventSettlementCalls).toEqual([tid]);
 
     // ── (3) MANY hands actually played (multi-hand loop), button rotated ───────
     const handRows = [...db.hands.values()];
@@ -879,6 +919,9 @@ describe('TournamentManager — single-table sit-n-go end-to-end (mocked DB + le
     // An idempotent replay must NOT re-emit leaderboard placements (would
     // double-credit the board for the same placement on a re-settle).
     expect(placementEmits.length).toBe(emitsBefore);
+    // A settlement replay notifies the idempotent parent reconciler again so a
+    // failed first parent write can heal without repeating prizes or leaderboard.
+    expect(eventSettlementCalls).toEqual([tid, tid]);
   });
 
   it('(fp-parity) registration-time fp_hash/ip_prefix is persisted on the entrant AND threaded into the placement emit', async () => {

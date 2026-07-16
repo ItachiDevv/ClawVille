@@ -154,6 +154,19 @@ describe('x402 Solana chain verifier', () => {
     expect(verdict).toMatchObject({ kind: 'confirmed_mismatch', reason: 'wrong_amount' });
   });
 
+  it('live settlement mode accepts an overpay but still rejects an underpay', async () => {
+    const over = await verifyUsdcTransfer(
+      verifyInput('over', { amountMode: 'at_least' }),
+      verifierDeps({ over: transaction({ instructions: [transferChecked({ amount: '1000001' })] }) }),
+    );
+    expect(over.kind).toBe('confirmed_match');
+    const under = await verifyUsdcTransfer(
+      verifyInput('under', { amountMode: 'at_least' }),
+      verifierDeps({ under: transaction({ instructions: [transferChecked({ amount: '999999' })] }) }),
+    );
+    expect(under).toMatchObject({ kind: 'confirmed_mismatch', reason: 'wrong_amount' });
+  });
+
   it('allows unrelated destination/payer transfers while binding the expected payer total', async () => {
     const verdict = await verifyUsdcTransfer(
       verifyInput('unrelated'),

@@ -2,16 +2,21 @@
  * Metered agent services behind the x402 Solana paywall.
  *
  * These routes are registered under `/api/v2/agent/*` and gated by the
- * `X402_ENABLED` env var. When disabled (default), the routes still exist but
- * the paymentMiddleware is not attached — so a plain GET returns the payload
- * without any 402 dance. This lets us iterate on the request/response shape
- * locally before flipping the paywall on in prod.
+ * `X402_ENABLED` env var. When enabled, x402 verifies the signed payment,
+ * runs the handler, and settles only a successful (<400) deliverable response.
+ * When disabled (default), the routes still exist without paymentMiddleware
+ * for local request/response iteration.
+ *
+ * KNOWN FOLLOW-UP (Wave 2, tracked — NOT a reason to disable the paywall):
+ * unlike the top-up/checkout/PayAI rails, this metered middleware does not yet
+ * claim its settled signature into the global `x402_settlement_receipts`
+ * registry, so a metered payment's signature is not cross-rail deduped. Wire a
+ * capture-first receipt claim here before relying on it for high-value metered
+ * access. This matches the pre-existing prod behavior (unchanged).
  *
  * Existing agent/gateway/skills APIs remain free. The handlers below are
  * bounded, real services: an Eliza-backed expert consultation and a cached
- * multi-window leaderboard analysis. When the paywall is enabled, x402 first
- * verifies the signed payment, runs the handler, and settles only a successful
- * (<400) deliverable response.
+ * multi-window leaderboard analysis.
  */
 
 import { Hono } from 'hono';
@@ -19,7 +24,11 @@ import { paymentMiddleware } from '@x402/hono';
 import { SHOP_BUILDINGS } from '@clawville/shared';
 import { z } from 'zod';
 import type { AppContext } from '../types';
-import { loadX402Config, buildX402ResourceServer, buildX402Routes } from '../services/x402-config';
+import {
+  loadX402Config,
+  buildX402ResourceServer,
+  buildX402Routes,
+} from '../services/x402-config';
 import { collaborateOnQuery, detectRelevantExperts } from '../services/agent-collaboration';
 import { getAgentLeaderboardEntry } from './leaderboard';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';

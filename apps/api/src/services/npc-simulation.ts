@@ -4,6 +4,9 @@ import {
   BUILDING_INTERACTION_RADIUS,
   buildingEdgeDistanceGamePx,
   MAP_LOCATIONS,
+  AUTONOMY_ENTERABLE_PLACES,
+  HATCHER_ACTION_VERBS,
+  type HatcherActionVerb,
   BUILDING_OPENCLAW_THEMES,
   type NpcDefinition,
   type AgentSubstrateRegistration,
@@ -54,6 +57,8 @@ import { resolveBuildingId } from './building-center';
 import { canBindAgentOwner } from './agent-owner-binding';
 import { roomRegistry, FREE_ROAMER_NPC_IDS, derivePublicId } from './room-registry';
 import type { PlayerSnapshot } from '@clawville/shared';
+import { createHash } from 'crypto';
+import { recordCovenantAction } from './covenant-action-recorder';
 
 // Map dimensions — land-builder-economics (2026-06-24): 704×704 grid of 32px tiles = 22528×22528 world.
 // CROSS-PACKAGE INVARIANT: this MUST equal the client `MAP_WIDTH`/`MAP_HEIGHT` in
@@ -132,6 +137,12 @@ const HATCHER_EMOTE_MAP: Record<string, { activity: NpcActivity; emoji: string }
 const HATCHER_ACTION_REGEX = /\[ACTION:\s*(\w+)\(([^)]*)\)\]/g;
 const HATCHER_TALK_MESSAGE_MAX = 500;
 
+const HATCHER_ACTION_VERB_SET: ReadonlySet<string> = new Set(HATCHER_ACTION_VERBS);
+
+function isHatcherActionVerb(name: string): name is HatcherActionVerb {
+  return HATCHER_ACTION_VERB_SET.has(name);
+}
+
 // Hard cap on how many [ACTION:] tags we will EXECUTE per cognition reply.
 // Each move()/enter_building() runs an A* search (up to ~6000 iterations) and
 // each talk_to_npc() pushes a pending event broadcast to every connected
@@ -142,17 +153,30 @@ const HATCHER_TALK_MESSAGE_MAX = 500;
 // for one cognition turn. Tags beyond the cap are STILL stripped from speech,
 // just never executed.
 const MAX_HATCHER_ACTIONS_PER_REPLY = 4;
+const MISSING_ACTION_ATTRIBUTION_WARN_MAX = 1_024;
 
-// Cove center, in world pixel coords, for the enter_cove() verb. The Cove is
-// NOT in NPC_BUILDING_CENTERS (that map is the 10 teaching buildings only), so
-// we derive the center from its MAP_LOCATIONS rect (positionX/Y is the top-left
-// corner; center = corner + half the width/height). Computed once at module
-// load; null if the 'cove' location is somehow missing (enter_cove then no-ops
-// loudly rather than crashing).
+interface AgentActionAttribution {
+  avatarId: string;
+  actorKind: 'agent';
+}
+
+// Non-teaching place centers in world pixel coords. Every coordinate is derived
+// from MAP_LOCATIONS; AUTONOMY_ENTERABLE_PLACES only maps prompt ids/actions to
+// an existing location, so perception and execution cannot acquire independent
+// magic coordinates.
+const AUTONOMY_PLACE_CENTERS = AUTONOMY_ENTERABLE_PLACES.flatMap((place) => {
+  const location = MAP_LOCATIONS.find((candidate) => candidate.id === place.mapLocationId);
+  if (!location) return [];
+  return [{
+    ...place,
+    centerX: location.positionX + location.width / 2,
+    centerY: location.positionY + location.height / 2,
+  }];
+});
+
 const COVE_CENTER: { x: number; y: number } | null = (() => {
-  const cove = MAP_LOCATIONS.find((l) => l.id === 'cove');
-  if (!cove) return null;
-  return { x: cove.positionX + cove.width / 2, y: cove.positionY + cove.height / 2 };
+  const cove = AUTONOMY_PLACE_CENTERS.find((place) => place.placeId === 'cove');
+  return cove ? { x: cove.centerX, y: cove.centerY } : null;
 })();
 
 // Town-center anchor and the annulus (ring) free-roaming wanderers stay inside.
@@ -418,12 +442,16 @@ class NpcSimulation {
   private idCounter = 0;
   private pendingEvents: SimulationEvent[] = [];
   public avatarAutonomyManager = new AvatarSimulationBridge();
+  /** Test seam; production remains the canonical covenant recorder. */
+  covenantRecord: typeof recordCovenantAction = recordCovenantAction;
   private arenaSettings: ArenaSettings = { ...DEFAULT_ARENA_SETTINGS };
   private arenaRound: ArenaRoundState | null = null;
 
   // OpenClaw bot registry
   private agentBotSessions: Map<string, { config: AgentSubstrateRegistration; client: AgentSubstrateClient }> = new Map();
   private npcOverrides: Map<string, string> = new Map(); // npcId → sessionId
+  /** Bounded warn-once keys for bodies whose action attribution is unavailable. */
+  private missingActionAttributionWarned: Set<string> = new Set();
   // Magic-link onboarding D3 (2026-07-02): direct npcId → agentId for AVATAR-mode
   // (`ocb-`) bodies, written at registerAgentBot and cleared with the ownership-
   // scoped body teardown. The human-control suppression predicate consults THIS
@@ -1115,6 +1143,18 @@ class NpcSimulation {
   }
 
   /**
+   * Attach server-resolved covenant attribution after a connect flow resolves
+   * or creates its avatar later than body registration. Internal-only: callers
+   * must supply an authoritative avatars.id; this changes no wire response.
+   */
+  bindAgentAvatarAttribution(sessionId: string, avatarId: string): boolean {
+    const session = this.agentBotSessions.get(sessionId);
+    if (!session || !avatarId) return false;
+    session.config.avatarId = avatarId;
+    return true;
+  }
+
+  /**
    * Find all currently-connected agent session IDs whose agent IDs are in
    * the given set. Used by the skill-event-bus auto-install push so a
    * book read by a human triggers a `knowledge_added` SSE event on every
@@ -1453,6 +1493,25 @@ class NpcSimulation {
       };
     }).sort((a, b) => a.distance - b.distance);
 
+    // Non-teaching destinations exposed to autonomous decision paths. Cove and
+    // poker intentionally share one physical center but keep distinct action
+    // syntax, allowing the model to express the requested activity precisely.
+    const places = AUTONOMY_PLACE_CENTERS.map((place) => {
+      const dx = place.centerX - npc.x;
+      const dy = place.centerY - npc.y;
+      return {
+        placeId: place.placeId,
+        label: place.label,
+        description: place.description,
+        actionVerb: place.actionVerb,
+        actionSyntax: place.actionSyntax,
+        destinationId: place.destinationId,
+        centerX: place.centerX,
+        centerY: place.centerY,
+        distance: Math.round(Math.sqrt(dx * dx + dy * dy)),
+      };
+    }).sort((a, b) => a.distance - b.distance);
+
     // Active conversations involving this NPC
     const conversations = this.getActiveConversations();
     const activeConversations = conversations.map((conv) => ({
@@ -1499,6 +1558,7 @@ class NpcSimulation {
       },
       nearbyNpcs,
       nearbyBuildings,
+      places,
       activeConversations,
       activeCombats,
       gameMode: this.getMode(),
@@ -1600,6 +1660,27 @@ class NpcSimulation {
       return replyText.replace(HATCHER_ACTION_REGEX, '').replace(/\s{2,}/g, ' ').trim();
     }
     const npc = this.npcs.get(npcId);
+    // Resolve covenant attribution ONCE per cognition reply. The in-memory
+    // body/session config is authoritative at this executor boundary; never
+    // re-resolve authentication per action. Missing attribution deliberately
+    // leaves visible world actions unchanged.
+    const sessionId = this.npcOverrides.get(npcId);
+    const avatarId = sessionId
+      ? this.agentBotSessions.get(sessionId)?.config.avatarId
+      : undefined;
+    const attribution: AgentActionAttribution | null = avatarId
+      ? { avatarId, actorKind: 'agent' }
+      : null;
+    if (!attribution && !this.missingActionAttributionWarned.has(npcId)) {
+      if (this.missingActionAttributionWarned.size >= MISSING_ACTION_ATTRIBUTION_WARN_MAX) {
+        const oldest = this.missingActionAttributionWarned.values().next().value;
+        if (oldest !== undefined) this.missingActionAttributionWarned.delete(oldest);
+      }
+      this.missingActionAttributionWarned.add(npcId);
+      console.warn(
+        `[Covenant] no avatar attribution for in-world agent body ${npcId}; actions continue without records`,
+      );
+    }
 
     let match: RegExpExecArray | null;
     let executed = 0; // bound A*/broadcast cost per reply (DoS guard)
@@ -1627,6 +1708,24 @@ class NpcSimulation {
             if (k.length > 0) params[k] = v;
           }
         }
+        // `message` is FREE TEXT and documented last, so the naive comma-split
+        // above truncates it at its first comma AND — when the model separates
+        // params with spaces instead of commas (live drop on staging
+        // 2026-07-15: `talk_to_npc(buildingId=x message=...)` parsed as an
+        // unknown target and was silently dropped, losing the bubble, the
+        // covenant record, and the teacher settle) — leaves it glued onto the
+        // previous param's value. Re-extract message from the RAW param string
+        // to end-of-string and strip the spill-over from sibling params.
+        // Leniency-only: correctly comma-separated tags parse identically.
+        const msgMatch = /(?:^|[,\s])message\s*=\s*(.+)$/.exec(paramStr);
+        if (msgMatch) {
+          params.message = msgMatch[1].trim();
+          for (const key of Object.keys(params)) {
+            if (key === 'message') continue;
+            const spill = params[key].search(/\s+message\s*=/);
+            if (spill >= 0) params[key] = params[key].slice(0, spill).trim();
+          }
+        }
       }
       // Body must be in-world to act; still strip the tag below either way.
       if (!npc) {
@@ -1635,7 +1734,7 @@ class NpcSimulation {
       }
       executed++; // counts attempts that reach execution (A*/broadcast cost)
       try {
-        this.executeHatcherAction(npcId, npc, name, params);
+        this.executeHatcherAction(npcId, npc, name, params, attribution);
       } catch (err) {
         console.error(`[Hatcher] action "${name}" execution failed for ${npcId} — dropped:`, err);
       }
@@ -1652,7 +1751,14 @@ class NpcSimulation {
     npc: NpcRuntimeState,
     name: string,
     params: Record<string, string>,
+    attribution: AgentActionAttribution | null = null,
   ): void {
+    // Canonical hard membership gate shared with the autonomous decision menu.
+    // Parameter validation remains in the exhaustive switch below.
+    if (!isHatcherActionVerb(name)) {
+      console.warn(`[Hatcher] action dropped — not in whitelist: "${name}"`);
+      return;
+    }
     switch (name) {
       case 'move': {
         const x = Number(params.x);
@@ -1671,6 +1777,10 @@ class NpcSimulation {
           return;
         }
         this.setNpcPath(npcId, path);
+        this.recordAgentWorldAction(attribution, 'agent.move', {
+          x: Math.round(x),
+          y: Math.round(y),
+        });
         return;
       }
       case 'emote': {
@@ -1708,6 +1818,9 @@ class NpcSimulation {
           return;
         }
         this.setNpcPath(npcId, path, buildingId);
+        this.recordAgentWorldAction(attribution, 'agent.move', {
+          destination: buildingId,
+        });
         return;
       }
       case 'enter_cove': {
@@ -1736,6 +1849,10 @@ class NpcSimulation {
         // 'trading' is the closest valid NpcActivity for casino play; override
         // the emoji to the slot 🎰 so the bubble reads as "at the Cove".
         this.setNpcActivity(npcId, 'trading', '🎰');
+        this.recordAgentWorldAction(attribution, 'agent.move', {
+          destination: 'cove',
+          venue: 'cove',
+        });
         return;
       }
       case 'enter_poker_room': {
@@ -1763,6 +1880,10 @@ class NpcSimulation {
         // 'trading' is the closest valid NpcActivity for casino play; ♠ reads as
         // "at the poker tables".
         this.setNpcActivity(npcId, 'trading', '♠️');
+        this.recordAgentWorldAction(attribution, 'agent.move', {
+          destination: 'cove',
+          venue: 'poker',
+        });
         return;
       }
       case 'talk_to_npc': {
@@ -1839,11 +1960,42 @@ class NpcSimulation {
           }
         }
         this.injectAgentChat(npcId, message);
+        this.recordAgentWorldAction(attribution, 'agent.chat', {
+          target,
+          msgSha256: createHash('sha256').update(message, 'utf8').digest('hex'),
+          len: message.length,
+        });
         return;
       }
-      default:
-        console.warn(`[Hatcher] action dropped — not in whitelist: "${name}"`);
     }
+    const exhaustive: never = name;
+    return exhaustive;
+  }
+
+  /**
+   * Best-effort standalone record for non-money world actions. There is no
+   * surrounding business transaction at this synchronous executor boundary,
+   * so this deliberately uses the recorder's documented standalone mode. A
+   * recorder failure is observational only and must never undo a world action.
+   */
+  private recordAgentWorldAction(
+    attribution: AgentActionAttribution | null,
+    action: 'agent.move' | 'agent.chat',
+    payload: Record<string, unknown>,
+  ): void {
+    if (!attribution) return;
+    void this.covenantRecord({
+      action,
+      subjectType: 'avatar',
+      subjectId: attribution.avatarId,
+      actorKind: attribution.actorKind,
+      payload,
+    }).catch((err: unknown) => {
+      console.error(
+        `[Covenant] failed to record ${action} for ${attribution.avatarId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    });
   }
 
   // --- Browser Claw Methods ---

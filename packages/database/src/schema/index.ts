@@ -22,6 +22,7 @@ export * from './bounties';
 // partner-covenant read surface. See covenant-action-records.ts header.
 export * from './covenant-action-records';
 export * from './building-skills';
+export * from './building-chat-reward-claims';
 // Partner #2 (Hatcher) Phase C — scoped, revocable read-token table for partner
 // integrations. Hash-not-plaintext, show-once mint. See `partner-api-keys.ts`.
 export * from './partner-api-keys';
@@ -138,6 +139,9 @@ export * from './moonpay';
 // price_vclaw is the QUOTE unit only — the buyer pays USDC underneath, no
 // internal vCLAW debit. Migration 0016 (idempotent, by hand — NEVER db:push).
 export * from './checkout';
+// Global cross-rail x402 signature registry. Every economic effect claims one
+// receipt in the same transaction; migration 0032 backfills legacy rails.
+export * from './x402-settlement-receipts';
 // General custodial avatar-to-avatar USDC payments through PayAI. Durable
 // claim/capture/fulfill machine; migration 0028 (additive + idempotent).
 export * from './agent-payments';

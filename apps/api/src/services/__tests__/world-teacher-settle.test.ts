@@ -250,6 +250,14 @@ describe('extractTalkMessage — executor-parity param parse', () => {
     expect(extractTalkMessage('[ACTION: talk_to_npc(buildingId=api-integrations)]')).toBeNull();
     expect(extractTalkMessage('[ACTION: talk_to_npc(buildingId=x, message=)]')).toBeNull();
   });
+  it('parses space-separated params and keeps commas inside the message (executor parity)', () => {
+    expect(
+      extractTalkMessage('[ACTION: talk_to_npc(buildingId=mcp-tool-use message=How do I use MCP servers)]'),
+    ).toBe('How do I use MCP servers');
+    expect(
+      extractTalkMessage('[ACTION: talk_to_npc(buildingId=x, message=Hello, teacher, tell me more)]'),
+    ).toBe('Hello, teacher, tell me more');
+  });
 });
 
 describe('world-teacher-chat — fail-closed proximity (no walk → no reward)', () => {
