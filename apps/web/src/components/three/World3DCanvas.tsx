@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useState, useEffect, useCallback, memo, Suspense, type RefObject } from 'react';
-import { Canvas, useFrame, extend, useThree } from '@react-three/fiber';
+import { Canvas, _roots, useFrame, extend, useStore, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
@@ -913,10 +913,16 @@ function kickRenderLoop(state: any): void {
 // ---------------------------------------------------------------------------
 
 type WorldWarmupGate = {
+  readonly startedPaused: boolean;
   readonly resumed: boolean;
   resume: (reason: 'warmup-complete' | 'warmup-error' | 'safety-timeout') => void;
   onResume: (listener: () => void) => () => void;
   dispose: () => void;
+};
+
+type CapturedR3FRoot = {
+  canvas: HTMLCanvasElement;
+  entry: NonNullable<ReturnType<typeof _roots.get>>;
 };
 
 // The renderer survives RootState object replacement when setFrameloop updates
@@ -939,15 +945,18 @@ const WORLD_WARMUP_GATES = new WeakMap<object, WorldWarmupGate>();
  *
  * Resume is deliberately centralized and idempotent. The normal warmup path,
  * any thrown warmup step, and the progress-aware safety watchdog all converge
- * here. Only R3F 9.5's invalidate explicitly no-ops while frameloop is "never",
- * so the historical kick remains in onCreated to preserve
- * __W3D_CANVAS_READY timing. Only the first-paint size healer is deferred until
- * the loop is live again.
+ * here. Every call reasserts BOTH the React prop and live store, even after the
+ * first transition: an overlapping R3F configure/onCreated pass may otherwise
+ * inherit a stale "never" prop after readiness changed. Only R3F 9.5's
+ * invalidate explicitly no-ops while frameloop is "never", so the historical
+ * kick remains in onCreated to preserve __W3D_CANVAS_READY timing. Only the
+ * first-paint size healer is deferred until the loop is live again.
  */
 function createWorldWarmupGate(
   state: any,
   pauseForWarmup: boolean,
   onFrameloopChange: (mode: 'always' | 'never') => void,
+  rearmNativeRoot: (state: any) => boolean,
 ): WorldWarmupGate {
   let disposed = false;
   let resumed = !pauseForWarmup;
@@ -975,16 +984,31 @@ function createWorldWarmupGate(
   };
 
   const gate: WorldWarmupGate = {
+    startedPaused: pauseForWarmup,
     get resumed() {
       return resumed;
     },
     resume(reason) {
-      if (disposed || resumed) return;
+      if (disposed) return;
+      const firstResume = !resumed;
       resumed = true;
-      clearWatchdog();
+      if (firstResume) clearWatchdog();
+      // R3F root.configure() reapplies the Canvas prop on every render. These
+      // two writes are intentionally repeated even after the first resume so a
+      // replacement/no-pause gate cannot leave the final live root at "never".
       onFrameloopChange('always');
       state.setFrameloop('always');
+      // R3F 9.5's Canvas StrictMode cleanup can delete this canvas from the
+      // module-scope roots map while the async configure replay keeps using the
+      // same store/fiber. Restore that exact captured entry before invalidate()
+      // asks R3F's own global loop to iterate roots. The ordinary/prod path is
+      // already registered, so this is a strict identity-checked no-op there.
+      if (rearmNativeRoot(state)) {
+        // Dev StrictMode replay only — prod roots are always still registered.
+        console.log('[World3D] re-registered native R3F root after StrictMode replay');
+      }
       state.invalidate();
+      if (!firstResume) return;
       // 2026-07-14: fail open as one atomic UI transition. SeaLoadingScreen
       // dismisses only after __W3D_READY; resuming R3F without releasing its
       // texture-ready half would render behind the overlay until its 45s ceiling.
@@ -1285,7 +1309,12 @@ function completeTextureUploadMetrics(metrics: TextureUploadMetrics): void {
   metrics.durationMs = Math.round((metrics.completedAt - metrics.startedAt) * 10) / 10;
 }
 
-function WorldWarmup() {
+function WorldWarmup({
+  onFrameloopChange,
+}: {
+  onFrameloopChange: (mode: 'always' | 'never') => void;
+}) {
+  const rootStore = useStore();
   const state = useThree();
   const { camera, gl, scene } = state;
 
@@ -1295,8 +1324,22 @@ function WorldWarmup() {
     (window as any).__R3F = { scene, camera, gl };
     (window as any).__CV_STORES__ = { useGameStore, useNpcStore };
 
-    const gate = WORLD_WARMUP_GATES.get(gl as object);
-    const gateWasPending = gate?.resumed === false;
+    // CanvasImpl runs configure() from a no-deps layout effect, so async root
+    // configuration and onCreated ownership can change while this long-lived
+    // effect is awaiting loaders/idle slices/compilation. Never cache a gate or
+    // RootState snapshot across those boundaries.
+    let syncResumeSubscription: ((gate: WorldWarmupGate | undefined) => void) | undefined;
+    const resolveLiveWarmup = () => {
+      const liveState = rootStore.getState();
+      const liveGate = WORLD_WARMUP_GATES.get(liveState.gl as object);
+      syncResumeSubscription?.(liveGate);
+      return { liveState, liveGate };
+    };
+    const livePendingGateResumed = () => {
+      const { liveGate } = resolveLiveWarmup();
+      return liveGate?.startedPaused === true && liveGate.resumed;
+    };
+    resolveLiveWarmup();
     const canInitTexture = typeof (gl as any).initTexture === 'function';
     const hasIdle = typeof (window as any).requestIdleCallback === 'function';
     const seen = new Set<THREE.Texture>();
@@ -1552,9 +1595,34 @@ function WorldWarmup() {
       }, 60_000);
     };
 
-    const unsubscribeResume = gate?.onResume(startPostReadyScans) ?? (() => {
+    let subscribedResumeGate: WorldWarmupGate | undefined;
+    let unsubscribeResume = () => {};
+    syncResumeSubscription = (liveGate) => {
+      if (liveGate === subscribedResumeGate) return;
+      unsubscribeResume();
+      subscribedResumeGate = liveGate;
+      unsubscribeResume = liveGate?.onResume(startPostReadyScans) ?? (() => {});
+    };
+    resolveLiveWarmup();
+
+    const resumeLiveWarmup = (
+      reason: 'warmup-complete' | 'warmup-error',
+    ) => {
+      const { liveState, liveGate } = resolveLiveWarmup();
+      if (liveGate) {
+        liveGate.resume(reason);
+      } else {
+        // Defensive fallback for future lifecycle refactors. Unlike the old
+        // store-only fallback, this also heals the Canvas prop source of truth.
+        onFrameloopChange('always');
+        liveState.setFrameloop('always');
+        liveState.invalidate();
+        (window as any).__W3D_TEXTURES_READY = true;
+        markWorldReadyIfUploadsDone();
+        forceFirstPaintSizeSync(liveState);
+      }
       startPostReadyScans();
-    });
+    };
 
     void (async () => {
       try {
@@ -1565,7 +1633,7 @@ function WorldWarmup() {
         await waitForLoadingManagerIdle();
         await waitForCommitFrame();
         const barrierMs = performance.now() - barrierStartedAt;
-        if (cancelled || (gateWasPending && gate?.resumed)) return;
+        if (cancelled || livePendingGateResumed()) return;
 
         const scansStartedAt = performance.now();
         if (!canInitTexture) {
@@ -1583,14 +1651,14 @@ function WorldWarmup() {
               zeroScans += 1;
             }
             if (zeroScans < 2) await waitForCommitFrame();
-            if (gateWasPending && gate?.resumed) return;
+            if (livePendingGateResumed()) return;
           }
           completeTextureUploadMetrics(uploadMetrics);
           console.log(`[World3D] WorldWarmup: uploaded ${uploadedDone}/${discoveredTotal} textures`);
         }
         const scansMs = performance.now() - scansStartedAt;
 
-        if (cancelled || (gateWasPending && gate?.resumed)) return;
+        if (cancelled || livePendingGateResumed()) return;
         let compileMs = 0;
         if (typeof (gl as any).compileAsync === 'function') {
           const compileStartedAt = performance.now();
@@ -1604,12 +1672,12 @@ function WorldWarmup() {
             noteWorldWarmupProgress();
           }
         }
-        if (cancelled || (gateWasPending && gate?.resumed)) return;
+        if (cancelled || livePendingGateResumed()) return;
 
         // One controlled warm draw behind the overlay. On WebGL2 this is also
         // the synchronous shader compile. Never run it after the safety watchdog
         // has resumed R3F or it could recreate the historic double-render blue screen.
-        if (cancelled || (gateWasPending && gate?.resumed)) return;
+        if (cancelled || livePendingGateResumed()) return;
         const warmRenderStartedAt = performance.now();
         noteWorldWarmupProgress();
         gl.setClearColor(SKY_COLOR, 1);
@@ -1624,27 +1692,11 @@ function WorldWarmup() {
           + `compile ${compileMs.toFixed(1)}ms, warmRender ${warmRenderMs.toFixed(1)}ms`,
         );
 
-        if (gate) {
-          gate.resume('warmup-complete');
-        } else {
-          // Defensive fallback: onCreated always installs a gate, but never let
-          // a future refactor strand the canvas if that contract changes.
-          state.setFrameloop('always');
-          state.invalidate();
-          forceFirstPaintSizeSync(state);
-          startPostReadyScans();
-        }
+        resumeLiveWarmup('warmup-complete');
       } catch (err) {
         if (cancelled) return;
         console.warn('[World3D] WorldWarmup failed; resuming render loop:', err);
-        if (gate) {
-          gate.resume('warmup-error');
-        } else {
-          state.setFrameloop('always');
-          state.invalidate();
-          forceFirstPaintSizeSync(state);
-          startPostReadyScans();
-        }
+        resumeLiveWarmup('warmup-error');
       }
     })();
 
@@ -1663,9 +1715,10 @@ function WorldWarmup() {
       settleRafResolve?.();
       finishActiveUpload();
     };
-    // gl/scene/camera/state are stable R3F refs — intentionally omitted from deps
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    // A second async Canvas configure may replace the renderer generation.
+    // Cleanup cancels the stale pipeline; these identity deps restart every
+    // upload/compile/warm-render step against the final live renderer.
+  }, [camera, gl, onFrameloopChange, rootStore, scene]);
 
   return null;
 }
@@ -1680,9 +1733,11 @@ const isTouchDevice = typeof window !== 'undefined' &&
 const SceneContents = memo(function SceneContents({
   mode,
   perfFlags,
+  onFrameloopChange,
 }: {
   mode: WorldMode;
   perfFlags?: Partial<WorldPerfFlags>;
+  onFrameloopChange: (mode: 'always' | 'never') => void;
 }) {
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
   const isGame = mode === 'game';
@@ -1713,7 +1768,7 @@ const SceneContents = memo(function SceneContents({
           tree committed once, then explicitly waits for LoadingManager idle and
           Suspense retry time before the stable texture scans. R3F stays paused
           until this ordered upload → compile → warm-render sequence completes. */}
-      <WorldWarmup />
+      <WorldWarmup onFrameloopChange={onFrameloopChange} />
 
       {/* KTX2Loader initialisation — detects GPU compressed format support
           (BC7 on Iris Xe via WebGPU) and arms the module-level singleton used
@@ -2239,10 +2294,40 @@ function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
   const resolvedPerfFlags = useAdaptiveWorldPerfFlags(perfFlags);
   const [frameloopMode, setFrameloopMode] = useState<'always' | 'never'>('always');
   const warmupGateRef = useRef<WorldWarmupGate | null>(null);
+  const warmupLifecycleRef = useRef<object | null>(null);
+  const capturedR3FRootRef = useRef<CapturedR3FRoot | null>(null);
 
-  useEffect(() => () => {
-    warmupGateRef.current?.dispose();
-    warmupGateRef.current = null;
+  const rearmNativeR3FRoot = useCallback((state: any): boolean => {
+    const captured = capturedR3FRootRef.current;
+    if (!captured || !captured.canvas.isConnected) return false;
+
+    const liveState = captured.entry.store.getState();
+    if (liveState.gl !== state.gl) return false;
+
+    const registered = _roots.get(captured.canvas);
+    if (registered === captured.entry) return false;
+    // Never replace a newer root that legitimately owns this canvas.
+    if (registered) return false;
+
+    _roots.set(captured.canvas, captured.entry);
+    return true;
+  }, []);
+
+  useEffect(() => {
+    const lifecycle = {};
+    warmupLifecycleRef.current = lifecycle;
+    return () => {
+      // React StrictMode replays setup immediately after its simulated cleanup.
+      // Defer ownership disposal one microtask: a replay replaces the token and
+      // keeps the LIVE gate/timers; a real unmount has no replacement and retires
+      // whichever gate an overlapping async configure left in this lifetime.
+      queueMicrotask(() => {
+        if (warmupLifecycleRef.current !== lifecycle) return;
+        const gate = warmupGateRef.current;
+        gate?.dispose();
+        if (warmupGateRef.current === gate) warmupGateRef.current = null;
+      });
+    };
   }, []);
 
   // Stable async gl factory — R3F v9 awaits this before rendering.
@@ -2250,6 +2335,14 @@ function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
   // If primary init fails, retries a fresh WebGPURenderer forced to WebGL2.
   const glFactory = useCallback(
     async (defaultProps: { canvas: HTMLCanvasElement }) => {
+      // Capture the native root synchronously, before the async renderer
+      // factory yields. R3F's StrictMode passive cleanup may remove it from
+      // _roots during that await, while CanvasImpl intentionally retains and
+      // reuses root.current for its configure replay.
+      const entry = _roots.get(defaultProps.canvas);
+      if (entry) {
+        capturedR3FRootRef.current = { canvas: defaultProps.canvas, entry };
+      }
       try {
         return await createWebGPURenderer(defaultProps.canvas);
       } catch (err) {
@@ -2327,9 +2420,18 @@ function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
           // SeaLoadingScreen resets __W3D_READY=false before this canvas mounts,
           // so SPA remounts intentionally re-run the gate for the fresh renderer.
           const pauseForWarmup = (window as any).__W3D_READY !== true;
-          warmupGateRef.current?.dispose();
-          const warmupGate = createWorldWarmupGate(state, pauseForWarmup, setFrameloopMode);
+          const previousGate = warmupGateRef.current;
+          const warmupGate = createWorldWarmupGate(
+            state,
+            pauseForWarmup,
+            setFrameloopMode,
+            rearmNativeR3FRoot,
+          );
           warmupGateRef.current = warmupGate;
+          // Publish the replacement before retiring the prior gate. Its identity
+          // guard then cannot delete the new WeakMap entry, and a paused live
+          // Canvas is never left without its independent 40s ceiling.
+          previousGate?.dispose();
 
           const { scene, gl } = state;
           scene.background = SKY_COLOR;
@@ -2359,7 +2461,11 @@ function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
           }
         }}
       >
-        <SceneContents mode={mode} perfFlags={resolvedPerfFlags} />
+        <SceneContents
+          mode={mode}
+          perfFlags={resolvedPerfFlags}
+          onFrameloopChange={setFrameloopMode}
+        />
       </Canvas>
     </div>
   );

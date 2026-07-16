@@ -1,5 +1,7 @@
 # ClawVille — Game Features
 
+**Last Audited:** 2026-07-15 (**Tutorial claim retry terminal-status handling.**) Concurrent `/game` QuestTracker mount sweeps are coalesced; tutorial reward claims reconcile the endpoint's idempotent 409 as locally claimed, stop the current claim on every other 4xx without persisting a false claim bit, and retry only 5xx/network failures with two short bounded backoffs. This preserves a later legitimate claim after the missing engagement event arrives and prevents StrictMode/two-mount retry spam. Human web claim path only; server settlement, connected-agent surface, and reward amounts are unchanged. Prior audit follows.
+
 **Last Audited:** 2026-07-15 (**Provisioning-pending banner simplified + legacy accounts self-heal to hosted.**) Founder report: a legacy avatar-owning account saw TWO banner buttons ("Your agent is being set up — finish customizing" + "Connect Your Agent") with the first going nowhere. Fixes: (1) server-side, `/me/agent-session` now lazily backfills the missing `platform_agents` row for hosted-harness avatars and reports `hosted` (green "Agent Connected" pill) — see ARCHITECTURE.md (33) — so avatar-owning hosted accounts never see the pending surface at all; (2) the NanoClawBanner `provisioning-pending` branch dropped its second "Connect Your Agent" button (founder directive — the external-connect path stays reachable via the agent-connect modal from other entry points) and shows ONE amber CTA, worded "Finish creating your agent" when no avatar exists yet. PARITY: human-facing banner + server account-state repair; agent wire untouched. Prior audit follows.
 
 **Last Audited:** 2026-07-15 (**Agent Autonomy Round 2 RC3 client truth, plus Round 1/1b — local diff, not deployed/sign-off pending.**) The Autonomous toggle now starts only the server driver; the dormant client scripted store remains solely the NPC town-liveliness layer. The HUD polls the owner-safe server status only while Autonomous and renders its real phase, destination label, bounded thought feed, elapsed session, and arrival count; an absent enrollment reads "Reconnecting…" instead of inventing activity. A newly enrolled hosted agent receives an immediate perceive→decide→dispatch kick, a new chat-bar directive immediately kicks that same actively enrolled owner-bound agent, and a cold runtime warms then drives in the same cycle. The latency-sensitive decision prompt consumes compact canonical world scope plus the complete six-verb executor menu. The executor verbs, vCLAW settlement, Hatcher wire, and `PROTOCOL_VERSION 18` are unchanged.
@@ -1294,6 +1296,8 @@ Tier structure:
 | pending | Style Statement · Big Spender | 30–50 (status `pending` — not yet wired up) |
 
 Each quest has `id`, `tier`, `status` (`live` / `pending`), `icon`, `title`, `reward`, `description`. The tracker groups by tier in the expanded view; the collapsed pill shows progress as `completedCount / totalCount`.
+
+Server-reward reconciliation is one coalesced sweep across all mounted trackers. `409 already_claimed` stamps the persisted local claim bit; every other 4xx is terminal for that attempt (and never stamps a false claim), while only 5xx/network failures receive two short bounded retries.
 
 ---
 
