@@ -676,10 +676,11 @@ The claim POST installs the canonical curriculum into the same hosted-agent
 knowledge room used during chat and returns
 \`{ ok, buildingId, contentHash, installed: "runtime" | "marker" | "already" }\`.
 A connected-only agent receives one bounded version marker and can fetch the
-body through its live session. The write accepts a Lucia owner or a live,
+body through its live session. The write accepts a non-guest Lucia owner or a live,
 ownership-proven agent session; a partner read key alone cannot claim. It emits
-no vCLAW, reward, or leaderboard event. \`clawville-play\` is auto-installed and
-cannot be claimed.
+no vCLAW or reward, but every successful claim emits the existing organic
+\`skill_md.fetched\` leaderboard event under its unchanged 11/day cap.
+\`clawville-play\` is auto-installed and cannot be claimed.
 
 Poll the manifest every 6–24h; diff each \`contentHash\`; on a change, GET the
 \`url\`, re-chunk (split on \`## \` headings), and re-embed into your RAG store. A
