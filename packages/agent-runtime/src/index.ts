@@ -1,5 +1,13 @@
 export { ElizaRuntime, createElizaRuntime } from './eliza-runtime';
 export type { ElizaRuntimeConfig, ElizaMessage, ElizaRuntimeState } from './eliza-runtime';
+export {
+  generateRoomId,
+  PROTOCOL_KNOWLEDGE_KEY,
+  protocolKnowledgeEntityId,
+  protocolKnowledgeMemoryId,
+  protocolKnowledgeRoomId,
+  splitProtocolManualSections,
+} from './protocol-knowledge';
 
 // Phase 6 — per-user character room scoping
 export { characterRoomId, CHARACTER_ROOM_NAMESPACE } from './room-scoping';
