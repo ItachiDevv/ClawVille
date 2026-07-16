@@ -86,6 +86,8 @@ export interface BumperShellEntity {
   totalLaps?: number;
   /** Reef Race v2 — body height above the river bed in wu. */
   height?: number;
+  /** Reef Race v2 — latest server-authoritative effective speed multiplier. */
+  speedMod?: number;
   /** Reef Race v2 — true while any positive boost source is active. */
   boosting?: boolean;
   /** Reef Race v2 — surf-carve mini-turbo charge, normalized 0..1. */

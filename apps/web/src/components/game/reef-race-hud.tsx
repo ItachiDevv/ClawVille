@@ -585,6 +585,8 @@ function PowerUpBar({ selfAvatarId: _selfAvatarId }: { selfAvatarId: string | nu
         >
           <span><b style={{ color: '#ffd24a' }}>SHIFT</b> · JUMP</span>
           <span style={{ color: '#ffffff22' }}>·</span>
+          <span><b style={{ color: '#ffffff99' }}>S</b> · BRAKE</span>
+          <span style={{ color: '#ffffff22' }}>·</span>
           <span><b style={{ color: '#ffffff99' }}>SPACE/Q</b> · USE ITEM</span>
         </div>
       </div>

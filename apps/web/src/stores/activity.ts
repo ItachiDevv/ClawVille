@@ -464,6 +464,7 @@ function applyEntityDelta(
       // `entity.lap`/`.progress` via `as any`) always saw `undefined`.
       // Same conditional-pass-through style as the fields above.
       ...(typeof c.height === 'number' ? { height: c.height } : {}),
+      ...(typeof c.speedMod === 'number' ? { speedMod: c.speedMod } : {}),
       ...(typeof c.progress === 'number' ? { progress: c.progress } : {}),
       ...(typeof c.lap === 'number' ? { lap: c.lap } : {}),
       ...(typeof c.totalLaps === 'number' ? { totalLaps: c.totalLaps } : {}),
@@ -497,6 +498,7 @@ function applyEntityDelta(
     // turbo wiring) — see the matching comment in the first-sighting
     // branch above.
     ...(typeof c.height === 'number' ? { height: c.height } : {}),
+    ...(typeof c.speedMod === 'number' ? { speedMod: c.speedMod } : {}),
     ...(typeof c.progress === 'number' ? { progress: c.progress } : {}),
     ...(typeof c.lap === 'number' ? { lap: c.lap } : {}),
     ...(typeof c.totalLaps === 'number' ? { totalLaps: c.totalLaps } : {}),
@@ -531,6 +533,7 @@ function hydrateFromWorld(world: WorldState, snapshotAtMs: number | undefined): 
       // meter/trail until the next delta (Codex finding 7). The delta path
       // (applyEntityDelta) already carries these.
       ...(typeof e.height === 'number' ? { height: e.height } : {}),
+      ...(typeof e.speedMod === 'number' ? { speedMod: e.speedMod } : {}),
       ...(typeof e.boosting === 'boolean' ? { boosting: e.boosting } : {}),
       ...(typeof e.miniTurboCharge === 'number'
         ? { miniTurboCharge: e.miniTurboCharge }

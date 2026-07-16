@@ -118,14 +118,15 @@ describe('ReefRaceSplineSim', () => {
         expect(body.z).toBe(expected.z);
         expect(body.rot).toBe(expected.heading);
 
-        // Independent projections pin insertion order: left/right, then 160wu back
-        // (row spacing raised 120→160 for the 135wu founder-sized boards,
-        // 2026-07-15 — deliberately a literal so a silent helper drift fails here).
+        // Independent projections pin insertion order: left/right, then 176wu back
+        // (151wu boards + ~25wu nose-to-tail clearance; deliberately a literal
+        // so a silent helper drift fails here). The +40 front-row backoff is an
+        // independent constant, not spacing/4.
         const dx = body.x - frame.center.x;
         const dz = body.z - frame.center.z;
         const back = -(dx * frame.tangent.x + dz * frame.tangent.z);
         const lateral = dx * frame.normal.x + dz * frame.normal.z;
-        expect(back).toBeCloseTo(Math.floor(i / 2) * 160 + 40, 8);
+        expect(back).toBeCloseTo(Math.floor(i / 2) * 176 + 40, 8);
         expect(lateral).toBeCloseTo((i % 2 === 0 ? -1 : 1) * 320, 8);
       });
     });
@@ -679,6 +680,27 @@ describe('ReefRaceSplineSim', () => {
       expect(snap).toBeTruthy();
       expect(snap!.bodies).toHaveLength(1);
       expect(snap!.bodies[0].avatarId).toBe(AVATAR_A);
+    });
+
+    it('emits the authoritative effective speedMod on wire entity deltas', () => {
+      const frames: unknown[] = [];
+      reefRaceSplineSim.setBroadcastFn((_id, frame) => frames.push(frame));
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
+      const body = reefRaceSplineSim.__getState(ROOM_ID)!.bodies.get(AVATAR_A)!;
+      body.activeEffects.set('rr-turbo-bubble', Date.now() + 60_000);
+
+      reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
+      reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
+
+      const delta = frames.find(
+        (frame) => (frame as { type?: string }).type === 'snapshot.delta',
+      ) as
+        | { entities: Array<{ avatarId: string; changed: { speedMod?: number } }> }
+        | undefined;
+      expect(delta).toBeTruthy();
+      expect(
+        delta!.entities.find((e) => e.avatarId === AVATAR_A)?.changed.speedMod,
+      ).toBe(1.35);
     });
   });
 });

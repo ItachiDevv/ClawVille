@@ -298,7 +298,7 @@ export const SPEED_CONE_SPREAD = 80;
 
 // ─── Camera (chase-cam) ───────────────────────────────────────────────────────
 
-/** Camera near clip plane. */
+/** Camera near clip plane; 1wu remains safely inside the closer 444wu chase arm. */
 export const CAMERA_NEAR = 1;
 
 /**
@@ -313,13 +313,13 @@ export const CAMERA_FAR = 34000;
 
 /**
  * Chase-cam offset in player-local space (behind and above).
- * SURF ROAD (2026-06-23): raised + pulled back (320/-350 → 420/-560) to frame
- * the floating ribbon through its climbs/drops + the wider void. The camera Y is
- * also lifted by reefTrackElevationAt(t) at runtime (ReefRaceScene), so this is
- * the LOCAL offset above the elevation datum. The extra height/pull-back keeps
- * the rider centred when the ribbon undulates beneath the camera.
+ * ROUND 5 (2026-07-16): 420/-560 → 260/-360 brings the rider about 1.58×
+ * closer at unchanged fov 60. Runtime still adds reefTrackElevationAt(t), so
+ * this remains a LOCAL offset; near=1/far=34000 still safely contain the closer
+ * wave field, ribbon, and 30000wu void dome.
  */
-export const CAMERA_OFFSET = new THREE.Vector3(0, 420, -560);
+// Founder knob: lower Y / less-negative Z makes the rider fill more of the frame.
+export const CAMERA_OFFSET = new THREE.Vector3(0, 260, -360);
 
 /**
  * Chase-cam look-at offset from player position (slightly above kart).
@@ -672,6 +672,10 @@ export const SURF_PITCH_HALF_LEN  = 120;  // wu — sample the wave at nose & ta
 export const SURF_ROLL_HALF_WIDTH = 36;   // wu — sample the surface at left & right rail
 export const SURF_PITCH_CLAMP     = 0.6;  // ±34°
 export const SURF_ROLL_CLAMP      = 0.8;  // ±46°
+// Founder knob: higher values follow Gerstner heave faster; lower values feel calmer.
+export const SURF_HEAVE_DAMPING   = 10;
+// Founder knob: higher values follow Gerstner pitch/roll faster; lower values feel steadier.
+export const SURF_TILT_DAMPING    = 6;
 
 // ─── Reef Race v2 — client-side surf prediction params ───────────────────────
 //
@@ -683,11 +687,10 @@ export const SURF_ROLL_CLAMP      = 0.8;  // ±46°
 // re-baselines toward each server snapshot (see ReefRacePlayer) and the only
 // per-input job here is to make steering feel instant.
 //
-// speedMod / accelMult are pinned to 1: the client can't know server-side boost
-// stacks (turbo, drift, slipstream, ramp, Phase-3 stat mults). Prediction runs
-// the baseline kinematics and the snapshot re-baseline pulls the predicted body
-// back onto the boosted authority within a few snapshots — never overshooting
-// because re-baseline only ever blends toward the (boost-correct) server pose.
+// speedMod starts at 1 here, then ReefRacePlayer overwrites it from the latest
+// server snapshot so visible self prediction matches authoritative turbo/pad/
+// launch/slip speed. accelMult remains pinned to 1 because Phase-3 acceleration
+// stats are still server-only; snapshot re-baselining corrects that residual.
 export const CLIENT_SURF_PARAMS = {
   /** REEF_MAX_SPEED = 1300 (2026-07-15 2× cap; MUST match the server config) */
   maxSpeed: 1300,
@@ -703,7 +706,7 @@ export const CLIENT_SURF_PARAMS = {
   forwardDrag: 0.992,
   /** REEF_LATERAL_GRIP = 0.90 */
   lateralGrip: 0.9,
-  /** Client can't know boosts — baseline. Re-baseline corrects. */
+  /** Snapshot-fed by ReefRacePlayer; 1 is the pre-snapshot/compat baseline. */
   speedMod: 1,
   /** Client can't know Phase-3 accel stat — baseline. Re-baseline corrects. */
   accelMult: 1,

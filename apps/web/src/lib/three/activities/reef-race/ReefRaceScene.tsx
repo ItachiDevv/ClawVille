@@ -406,7 +406,7 @@ function ChaseCamera({ selfEntity, selfIsStaged, shakeRef }: ChaseCamProps) {
     _playerWorldDir.set(Math.sin(heading), 0, Math.cos(heading));
 
     // Camera target position: behind + above player.
-    // CAMERA_OFFSET: (0, 200, -350) in player-local space (kart-local).
+    // CAMERA_OFFSET: (0, 260, -360) in player-local space (kart-local).
     //
     // Convention:
     //   server `body.rot = atan2(intent.dir.x, intent.dir.y)` and the kart's

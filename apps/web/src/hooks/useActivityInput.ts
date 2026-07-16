@@ -98,7 +98,7 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
   // Reef Race uses a chase camera that follows the kart's facing. World-axis
   // WASD (W=north, A=west, etc.) feels "reversed" to a player whose camera is
   // pointed along an arbitrary direction. The kart-relative scheme:
-  //   W/S = thrust forward / backward in the kart's CURRENT facing direction
+  //   W = forward thrust; S/ArrowDown = brake/coast in the current heading
   //   A/D = steering bias (slight side push so the server's atan2 yaws the
   //         kart left/right while still moving forward)
   //
@@ -113,6 +113,7 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
   const isReefRace = pathname.includes('/activity/reef-race/');
   const isReefRaceRef = useRef(isReefRace);
   isReefRaceRef.current = isReefRace;
+  const reefBrakeRef = useRef(false);
 
   // Kart-relative-controls state. Only read in Reef Race mode.
   // headingRef mirrors the server-authoritative entity.rot of the self avatar so
@@ -181,7 +182,8 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
         // Right (90° clockwise of forward) is
         //   (cos(h), -sin(h))    — 2D rotation by -π/2 of the forward vector.
         //
-        // W/S contribute thrust along ±forward.
+        // W contributes forward thrust; S/ArrowDown requests brake/coast and
+        // never reverses the direction vector.
         // A/D contribute a SMALL side bias (TURN_BIAS) along ±right. The bias
         // is intentionally small so the server's atan2-snap yaws the kart by
         // only a few degrees per tick — i.e., it acts like a steering rate, not
@@ -217,8 +219,9 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
         // D press → bias -right (= left) vec → kart visually turns RIGHT.
         const rightX = Math.cos(h);
         const rightY = -Math.sin(h);
-        const thrust =
-          (k.w || k.arrowUp ? 1 : 0) - (k.s || k.arrowDown ? 1 : 0);
+        const thrust = k.w || k.arrowUp ? 1 : 0;
+        const brake = k.s || k.arrowDown;
+        reefBrakeRef.current = brake;
         // A = +1 (will bias along +right vec → screen-LEFT yaw)
         // D = -1 (biases along -right vec → screen-RIGHT yaw)
         const keyTurn = (k.a ? 1 : 0) - (k.d ? 1 : 0);
@@ -227,10 +230,10 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
           keyTurn * TURN_BIAS + arrowTurn * ARROW_TURN_BIAS;
         x = fwdX * thrust + rightX * turnBias;
         y = fwdY * thrust + rightY * turnBias;
-        // Edge case — only A or D held with no W/S: synthesize forward thrust
-        // so the kart yaws (Mario Kart rule: can't steer in place, but the
-        // input shouldn't feel dead).
-        if (thrust === 0 && turnBias !== 0) {
+        // With steering or brake held but no forward thrust, synthesize a small
+        // forward DIRECTION so the heading remains stable and A/D can still
+        // yaw. The send loop separately forces brake thrust to zero.
+        if (thrust === 0 && (turnBias !== 0 || brake)) {
           x = fwdX * 0.15 + rightX * turnBias;
           y = fwdY * 0.15 + rightY * turnBias;
         }
@@ -418,6 +421,7 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       // queued one-shot (boost / use-powerup) would fire on refocus.
       dirRef.current = { x: 0, y: 0 };
       oneShotBitsRef.current = 0;
+      reefBrakeRef.current = false;
     }
     /** Power-up alt: left-click anywhere on the viewport → use. */
     function onPointerDown(e: MouseEvent) {
@@ -476,6 +480,7 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       oneShotBitsRef.current = 0;
       dirRef.current = { x: 0, y: 0 };
       targetDirRef.current = { x: 0, y: 0 };
+      reefBrakeRef.current = false;
     };
   }, []);
 
@@ -529,11 +534,17 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       // body never moved. That's why "the controls don't work" on mobile and
       // desktop alike — players had to hold the boost key to make the player
       // move at all.
-      const thrust = moving
-        ? bits & ACTION_BIT_BOOST
-          ? 1
-          : Math.min(1, dirMag)
-        : 0;
+      const braking = isReefRaceRef.current && reefBrakeRef.current;
+      // S/ArrowDown is deliberately coast-only this round: preserve the
+      // forward direction/steering but send zero thrust, even while boost is
+      // held. A true active brake needs a server/protocol change.
+      const sentThrust = braking
+        ? 0
+        : moving
+          ? bits & ACTION_BIT_BOOST
+            ? 1
+            : Math.min(1, dirMag)
+          : 0;
 
       // Publish the SAME smoothed dir/thrust to the self-input bus for the
       // self kart's client prediction (reef-race v2 only). Map sim {x,y} →
@@ -543,7 +554,7 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       // predicted heading locked to what the server integrates.
       if (isReefRaceRef.current) {
         selfInputBus.dir = moving ? { x: dir.x, z: dir.y } : null;
-        selfInputBus.thrust = moving ? thrust : 0;
+        selfInputBus.thrust = moving ? sentThrust : 0;
         selfInputBus.valid = true;
       }
 
@@ -551,7 +562,7 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
         type: 'input',
         seq: seqRef.current,
         dt,
-        ...(moving ? { dir: { x: dir.x, y: dir.y }, thrust } : {}),
+        ...(moving ? { dir: { x: dir.x, y: dir.y }, thrust: sentThrust } : {}),
         ...(bits ? { actionBits: bits } : {}),
       };
 

@@ -21,8 +21,9 @@ export interface ReefRaceStartGridPose {
 export const REEF_RACE_COUNTDOWN_DURATION_MS = 5_000;
 
 /** Back-stagger between successive two-racer rows.
- * 160wu preserves ~25wu clearance around the 135wu founder-sized boards. */
-export const REEF_START_GRID_ROW_SPACING_WU = 160;
+ * 176wu preserves ~25wu nose-to-tail clearance around the 151wu boards. */
+// Founder knob: raise/lower the two-racer row spacing as board length changes.
+export const REEF_START_GRID_ROW_SPACING_WU = 176;
 
 /** Lateral half-gap between the left and right grid columns. */
 export const REEF_START_GRID_COLUMN_OFFSET_WU = 320;
