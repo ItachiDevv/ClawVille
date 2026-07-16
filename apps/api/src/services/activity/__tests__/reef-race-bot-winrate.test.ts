@@ -54,9 +54,18 @@ const dbMock = {
             return Promise.resolve(undefined).then(resolve);
           },
           values(_v: unknown) {
-            return {
+            // reward-pipeline's durable claim chains
+            // .values(...).onConflictDoNothing({target}).returning(...) — a
+            // fresh insert must resolve a row or the reward is skipped.
+            const insertTail = {
               returning() {
                 return Promise.resolve([{ id: 'result-stub' }]);
+              },
+            };
+            return {
+              ...insertTail,
+              onConflictDoNothing(_c?: unknown) {
+                return insertTail;
               },
             };
           },
