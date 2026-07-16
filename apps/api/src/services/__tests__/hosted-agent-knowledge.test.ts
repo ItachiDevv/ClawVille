@@ -233,4 +233,35 @@ describe('hosted agent knowledge synchronization', () => {
     expect(result?.mergedKnowledge).toEqual(['durable lesson']);
     expect(stopped).toBe(true);
   });
+
+  it('does not start or stop the runtime when the merge found nothing new', async () => {
+    let ensured = false;
+    let stopped = false;
+    const dependencies: HostedAgentKnowledgeDependencies = {
+      mergeDatabase: async () => ({
+        userId: USER_ID,
+        avatarId: AVATAR_ID,
+        platformAgentId: AGENT_ID,
+        newKnowledge: [],
+        mergedKnowledge: ['already known'],
+      }),
+      ensureRuntime: async () => {
+        ensured = true;
+        return null;
+      },
+      embed: async () => [1],
+      stopRuntime: async () => { stopped = true; },
+    };
+
+    const result = await syncHostedAgentKnowledge({
+      userId: USER_ID,
+      avatarId: AVATAR_ID,
+      entries: ['already known'],
+      source: 'building-visit',
+    }, dependencies);
+
+    expect(result?.newKnowledge).toEqual([]);
+    expect(ensured).toBe(false);
+    expect(stopped).toBe(false);
+  });
 });
