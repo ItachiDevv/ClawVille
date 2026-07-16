@@ -443,9 +443,15 @@ export function TableCards3D({
 
     if (process.env.NODE_ENV !== 'production') {
       // Conservative on-felt bound: every vertex within ±140 x / ±80 z of the
-      // table centre (green felt measured 182wu on the short axis).
-      const feltHalfX = layout.boardSpacing * (140 / 34);
-      const feltHalfZ = layout.boardSpacing * (80 / 34);
+      // table centre (green felt measured 182wu on the short axis), in the
+      // layout's reference units. Anchored on surfaceLift (a fixed 1.5
+      // ref-wu physical constant) rather than boardSpacing — spacing is a
+      // TUNING knob (34→24 in the 2026-07-16 resize), and deriving the
+      // bounds from it silently shrank them below legitimately-placed
+      // vertices (Codex review nit).
+      const refUnitWu = layout.surfaceLift / 1.5;
+      const feltHalfX = 140 * refUnitWu;
+      const feltHalfZ = 80 * refUnitWu;
       for (let i = 0; i < positions.length; i += 3) {
         const dx = positions[i]! - centerX;
         const dz = positions[i + 2]! - centerZ;

@@ -1841,10 +1841,15 @@ function TableSeatedBustInner({ reg, seat, seatIndex, instanceId, targetHeight }
         if (!cancelled) {
           sitHeightElapsedRef.current = 0;
           // Desync the shared idle loop across seats — 5 busts breathing in
-          // perfect unison reads uncanny. One large tick fast-forwards this
-          // seat's loop phase; mixer.update handles any dt, and the hip
-          // height assert below is phase-independent.
-          anim.update(seatIndex * 1.37, false, false);
+          // perfect unison reads uncanny. This tick fast-forwards the
+          // still-playing sit TRANSITION (playOneShot resolves at start,
+          // not finish), so each seat's transition ENDS — and its idle
+          // STARTS — at a different wall-clock time. Capped BELOW the
+          // ~3.2s transition length: an overshooting tick would finish the
+          // transition inside this single mixer update and start every
+          // overshot seat's idle at t=0 simultaneously, re-synchronizing
+          // them (Codex review nit on the first 1.37s/seat version).
+          anim.update(Math.min(seatIndex * 0.45, 2.2), false, false);
         }
       }
     }).catch((e) => { console.warn('[TableSeatedBust] init failed:', e); anim.dispose(); });
@@ -2723,6 +2728,16 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
   const fpsAccum   = useRef(0);
   const fpsChecked = useRef(false);
   const emptyFired = useRef(false);
+  // Set when the tab goes hidden; the FIRST frame after visibility returns
+  // carries a delta spanning the whole hidden gap (RAF pauses) and must not
+  // pollute the FPS sample. Event-based — `document.hidden` is already false
+  // again by the time that resume frame runs, so it can't be read directly.
+  const hiddenResume = useRef(false);
+  useEffect(() => {
+    const onVis = () => { if (document.hidden) hiddenResume.current = true; };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, []);
 
   const { cloned, hotspots, meshCount, classicCentroid, bonusCentroid, hasDiscovery } = useMemo(() => {
     const c = scene.clone(true);
@@ -2985,13 +3000,19 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
   useFrame((_, delta) => {
     if (useFallback && fpsChecked.current && emptyFired.current) return;
 
-    // Hidden-tab guard (2026-07-16): RAF pauses while the tab is hidden, so
-    // the resume frame carries a delta spanning the whole hidden gap — one
-    // alt-tab (e.g. the founder grabbing a screenshot) during the sample
-    // window cratered avgFps and swapped the room to the cartoon fallback
-    // mid-session. Pause/hidden frames are not evidence of GPU speed; skip
-    // them entirely.
-    if (delta > 0.25 || (typeof document !== 'undefined' && document.hidden)) return;
+    // Hidden-tab guard (2026-07-16, corrected per Codex review): RAF pauses
+    // while the tab is hidden, so the resume frame carries a delta spanning
+    // the whole hidden gap — one alt-tab (e.g. the founder grabbing a
+    // screenshot) during the sample window cratered avgFps and swapped the
+    // room to the cartoon fallback mid-session. Skip exactly that resume
+    // frame (event-tracked above) plus multi-second stalls (breakpoints, OS
+    // freezes). The first cut of this guard skipped any `delta > 0.25`,
+    // which starved the sampler on machines genuinely rendering < 4 FPS —
+    // the exact users the fallback exists for; a 1s threshold keeps every
+    // real slow frame in the sample (even 1 FPS sustained still trips the
+    // check) while excluding pause artifacts.
+    if (hiddenResume.current) { hiddenResume.current = false; return; }
+    if (delta > 1.0) return;
 
     fpsAccum.current += delta;
     fpsFrames.current += 1;
