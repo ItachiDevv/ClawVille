@@ -150,4 +150,42 @@ describe('knowledgeProvider protocol manual retrieval', () => {
       retrievalMode: 'vector',
     });
   });
+
+  it('keeps JSONB fallback knowledge when the main search throws and protocol succeeds', async () => {
+    const searchMemories = mock(async (input: Record<string, unknown>) => {
+      if (input.roomId === PLATFORM_AGENT_ID) {
+        throw new Error('main room unavailable');
+      }
+      return [
+        {
+          content: { text: 'Current manual section' },
+          metadata: { subtype: 'protocol-knowledge', version: 20, section: 5 },
+        },
+      ];
+    });
+
+    const result = await knowledgeProvider.get(
+      { searchMemories },
+      { content: { text: state.userMessage } },
+      state,
+    );
+
+    expect(searchMemories).toHaveBeenCalledTimes(2);
+    expect(result.text).toContain('[Knowledge]');
+    expect(result.text).toContain('Recent: Learned skill');
+    expect(result.text).toContain('[Game manual \u2014 relevant sections]');
+    expect(result.text).toContain('Current manual section');
+    expect(result.values).toEqual({
+      knowledgeCount: 1,
+      retrievalMode: 'jsonb-fallback',
+      protocolRelevantCount: 1,
+    });
+    expect(result.data).toEqual({
+      knowledgeEntries: ['Learned skill'],
+      knowledgeCount: 1,
+      retrievalMode: 'jsonb-fallback',
+      protocolKnowledgeEntries: ['Current manual section'],
+      protocolRelevantCount: 1,
+    });
+  });
 });
