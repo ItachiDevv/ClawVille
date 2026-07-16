@@ -52,6 +52,18 @@ const ownedSkillsResponseSchema = z.object({
   ownedSkills: z.array(z.object({ buildingId: z.string().min(1) }).passthrough()),
 }).passthrough();
 
+const claimSkillResponseSchema = z.object({
+  ok: z.literal(true),
+  buildingId: z.string().min(1),
+  contentHash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  installed: z.enum(['runtime', 'marker', 'already']),
+});
+
+const joinResponseSchema = z.object({
+  userId: z.string().min(1),
+  avatarId: z.string().uuid(),
+}).passthrough();
+
 const sessionStatusResponseSchema = z.object({
   connected: z.literal(true),
 });
@@ -196,13 +208,51 @@ async function main(): Promise<void> {
     }
   });
 
+  await check('identity join provisions an active avatar', async () => {
+    await expectJson(
+      await postJson(base, '/api/agent/join', {
+        identityType: connectBody.identityType,
+        identityKey,
+        name: connectBody.name,
+      }),
+      joinResponseSchema,
+    );
+  });
+
+  let ownershipConnect!: z.infer<typeof returningConnectResponseSchema>;
+  await check('post-join reconnect proves avatar ownership', async () => {
+    ownershipConnect = await expectJson(
+      await postJson(base, '/api/agent/connect', connectBody),
+      returningConnectResponseSchema,
+    );
+    if (ownershipConnect.sessionId === firstConnect.sessionId) {
+      throw new SmokeFailure('post-join session bearer did not rotate');
+    }
+  });
+
   await check('bound owned-skills read', async () => {
     await expectJson(
       await fetchWithTimeout(
-        `${base}/api/agent/${encodeURIComponent(firstConnect.sessionId)}/owned-skills`,
+        `${base}/api/agent/${encodeURIComponent(ownershipConnect.sessionId)}/owned-skills`,
       ),
       ownedSkillsResponseSchema,
     );
+  });
+
+  await check('agent-session building skill claim', async () => {
+    const claimed = await expectJson(
+      await fetchWithTimeout(
+        `${base}/api/skills/${encodeURIComponent(buildingId)}/claim`,
+        {
+          method: 'POST',
+          headers: { 'X-Clawville-Agent-Session': ownershipConnect.sessionId },
+        },
+      ),
+      claimSkillResponseSchema,
+    );
+    if (claimed.buildingId !== buildingId) {
+      throw new SmokeFailure('claim response buildingId mismatch');
+    }
   });
 
   await check('session status', async () => {
@@ -217,7 +267,7 @@ async function main(): Promise<void> {
   await check('move', async () => {
     const response = await postJson(
       base,
-      `/api/agent/${encodeURIComponent(firstConnect.sessionId)}/move`,
+      `/api/agent/${encodeURIComponent(ownershipConnect.sessionId)}/move`,
       { buildingId },
     );
     if (!response.ok) throw new SmokeFailure(`HTTP ${response.status}`);
@@ -225,13 +275,13 @@ async function main(): Promise<void> {
   });
 
   await check('visit building', async () => {
-    await waitForVisit(base, firstConnect.sessionId, buildingId);
+    await waitForVisit(base, ownershipConnect.sessionId, buildingId);
   });
 
   await check('chat', async () => {
     const response = await postJson(
       base,
-      `/api/agent/${encodeURIComponent(firstConnect.sessionId)}/chat`,
+      `/api/agent/${encodeURIComponent(ownershipConnect.sessionId)}/chat`,
       { message: 'Onboarding smoke check.' },
     );
     if (!response.ok) throw new SmokeFailure(`HTTP ${response.status}`);
@@ -239,8 +289,8 @@ async function main(): Promise<void> {
   });
 
   await check('bearer-authenticated protocol manual', async () => {
-    const response = await fetchWithTimeout(`${base}${firstConnect.protocol.url}`, {
-      headers: { 'X-Clawville-Agent-Session': firstConnect.sessionId },
+    const response = await fetchWithTimeout(`${base}${ownershipConnect.protocol.url}`, {
+      headers: { 'X-Clawville-Agent-Session': ownershipConnect.sessionId },
     });
     if (!response.ok) throw new SmokeFailure(`HTTP ${response.status}`);
     const servedVersion = Number(response.headers.get('X-Skill-Version'));
@@ -256,7 +306,7 @@ async function main(): Promise<void> {
     while (Date.now() < knowledgeDeadline) {
       const snapshot = await expectJson(
         await fetchWithTimeout(
-          `${base}/api/agent/${encodeURIComponent(firstConnect.sessionId)}/knowledge`,
+          `${base}/api/agent/${encodeURIComponent(ownershipConnect.sessionId)}/knowledge`,
         ),
         knowledgeResponseSchema,
       );
@@ -278,7 +328,7 @@ async function main(): Promise<void> {
     }
     const parsed = returningConnectResponseSchema.safeParse(raw);
     if (!parsed.success) throw new SmokeFailure('response contract mismatch');
-    if (parsed.data.sessionId === firstConnect.sessionId) {
+    if (parsed.data.sessionId === ownershipConnect.sessionId) {
       throw new SmokeFailure('session bearer did not rotate');
     }
     if (parsed.data.protocol.version !== PROTOCOL_VERSION) {

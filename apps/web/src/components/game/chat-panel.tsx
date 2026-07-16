@@ -5,6 +5,7 @@ import { useGameStore } from '@/stores/game';
 import { useLocationChat } from '@/hooks/use-location-chat';
 import { useGuideChat } from '@/hooks/use-guide-chat';
 import { useLocationAgent } from '@/hooks/use-locations';
+import { useAuthMe } from '@/hooks/use-auth-me';
 import { MAP_LOCATIONS, isShopBuilding } from '@clawville/shared';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '';
@@ -203,8 +204,10 @@ function LocationChatBody({ locationId }: { locationId: string }) {
 
   const { messages, sendMessage, isLoading } = useLocationChat(locationId);
   const { data: agent, isLoading: isAgentLoading } = useLocationAgent(locationId);
+  const { data: authData, isLoading: isAuthLoading } = useAuthMe();
 
   const [input, setInput] = useState('');
+  const [isClaimingSkill, setIsClaimingSkill] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const location = MAP_LOCATIONS.find((l) => l.id === locationId);
@@ -212,6 +215,8 @@ function LocationChatBody({ locationId }: { locationId: string }) {
   // opened chat; fall back to the system-seeded agent's name (e.g. Gary),
   // and finally the building name if neither is available.
   const headerName = currentCharacter ?? agent?.agentName ?? location?.name ?? 'Unknown';
+  const canInstallSkill =
+    !isAuthLoading && !!authData?.user && !authData.user.isGuest;
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -230,22 +235,7 @@ function LocationChatBody({ locationId }: { locationId: string }) {
     }
   };
 
-  /**
-   * Claim the building's compiled SKILL.md — works for humans (downloads
-   * the markdown file so they can hand it to their own agent) and is the
-   * same payload the agent-gateway returns to autonomous agents. The
-   * `/api/skills/:buildingId/skill.md` route serves it as text/markdown
-   * straight from `building_skills.content`.
-   *
-   * `credentials: 'include'` is REQUIRED — Phase C (Hatcher) put the
-   * per-building read behind an end-user-OR-partner-key gate. The human
-   * download path authenticates via the Lucia session cookie, which only
-   * rides cross-origin to the API when credentials are included. Without it
-   * the server sees an anonymous caller, demands a partner key, and 401s →
-   * the misleading "No skill available" toast. (See routes/skills.ts
-   * `endUserOrPartnerKey`.)
-   */
-  const handleClaimSkill = async () => {
+  const handleDownloadSkill = async () => {
     try {
       const res = await fetch(`${API_BASE}/api/skills/${locationId}/skill.md`, {
         credentials: 'include',
@@ -264,10 +254,48 @@ function LocationChatBody({ locationId }: { locationId: string }) {
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-      addToast?.('📥', `${headerName}'s skill claimed!`);
+      addToast?.('📥', `${headerName}'s skill file downloaded`);
+    } catch (err) {
+      console.error('[ChatPanel] skill download failed:', err);
+      addToast?.('⚠️', 'Skill download failed — check your connection');
+    }
+  };
+
+  const handleClaimSkill = async () => {
+    if (!canInstallSkill) {
+      await handleDownloadSkill();
+      return;
+    }
+
+    setIsClaimingSkill(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/skills/${locationId}/claim`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      const body = (await res.json().catch(() => null)) as
+        | {
+            ok?: boolean;
+            installed?: 'runtime' | 'marker' | 'already';
+            hint?: string;
+          }
+        | null;
+      if (!res.ok || body?.ok !== true || !body.installed) {
+        addToast?.('⚠️', body?.hint ?? 'Skill install failed — try again');
+        return;
+      }
+
+      const message = {
+        runtime: "Installed into your agent's memory",
+        marker: 'Claimed — your agent can fetch it via its session',
+        already: 'Already installed',
+      }[body.installed];
+      addToast?.('🧠', message);
     } catch (err) {
       console.error('[ChatPanel] claim skill failed:', err);
-      addToast?.('⚠️', 'Skill download failed — check your connection');
+      addToast?.('⚠️', 'Skill install failed — check your connection');
+    } finally {
+      setIsClaimingSkill(false);
     }
   };
 
@@ -280,11 +308,26 @@ function LocationChatBody({ locationId }: { locationId: string }) {
             <span className="truncate">💬 {headerName}</span>
             <button
               onClick={handleClaimSkill}
+              disabled={isClaimingSkill}
               className="text-[11px] font-bold px-2 py-0.5 rounded bg-emerald-500/30 hover:bg-emerald-400/50 transition-colors shrink-0 flex items-center gap-1"
-              title="Download this character's SKILL.md — drop it into your agent's skills folder"
+              title={
+                canInstallSkill
+                  ? "Install this character's skill into your agent"
+                  : "Download this character's SKILL.md"
+              }
             >
-              <span aria-hidden>📥</span> Claim Skill
+              <span aria-hidden>{isClaimingSkill ? '…' : '📥'}</span> Claim Skill
             </button>
+            {canInstallSkill && (
+              <button
+                onClick={handleDownloadSkill}
+                className="text-[10px] px-1.5 py-0.5 rounded bg-white/[0.06] hover:bg-white/15 text-white/65 hover:text-white transition-colors shrink-0"
+                title="Download the SKILL.md file"
+                aria-label={`Download ${headerName}'s SKILL.md file`}
+              >
+                ↓ .md
+              </button>
+            )}
             {isShopBuilding(locationId) && (
               <button
                 onClick={openShop}

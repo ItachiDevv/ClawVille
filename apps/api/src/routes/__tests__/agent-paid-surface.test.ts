@@ -35,9 +35,9 @@ describe('agent paid surfaces', () => {
     expect(names).toContain('clawville_redeem_earned');
   });
 
-  it('publishes the additive v18 commerce and default-off exit contract', () => {
+  it('publishes the additive commerce and default-off exit contract', () => {
     const manual = buildProtocolManual('https://api.example.test');
-    expect(PROTOCOL_VERSION).toBe(18);
+    expect(PROTOCOL_VERSION).toBe(20);
     expect(manual).toContain('POST https://api.example.test/api/agent-pay');
     expect(manual).toContain('Idempotency-Key');
     expect(manual).toContain('/api/v2/agent/expert-consult');
