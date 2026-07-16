@@ -40,6 +40,7 @@ import { useActivityStore } from '@/stores/activity';
 import { registerInputReset } from '@/lib/three/input-reset';
 import {
   selfInputBus,
+  selfPoseBus,
   resetSelfInputBus,
 } from '@/lib/three/activities/reef-race/reef-race-self-bus';
 
@@ -54,6 +55,61 @@ export const ACTION_BIT_USE_POWERUP = 1 << 1;
 export const ACTION_BIT_JUMP = 1 << 2;
 
 const SEND_INTERVAL_MS = 1000 / 30;
+// Founder knob: raise for a larger held-A/D steering lead; 0.12 stays limiter-bound without twitch.
+const TURN_BIAS = 0.12;
+// Founder knob: raise for a larger held-arrow steering lead; arrows intentionally carve harder than A/D.
+const ARROW_TURN_BIAS = 0.18;
+const REEF_RENDER_HEADING_STALE_MS = 250;
+
+interface MovementKeys {
+  w: boolean;
+  a: boolean;
+  s: boolean;
+  d: boolean;
+  arrowUp: boolean;
+  arrowLeft: boolean;
+  arrowDown: boolean;
+  arrowRight: boolean;
+}
+
+function hasMovementKey(k: MovementKeys): boolean {
+  return (
+    k.w ||
+    k.a ||
+    k.s ||
+    k.d ||
+    k.arrowUp ||
+    k.arrowLeft ||
+    k.arrowDown ||
+    k.arrowRight
+  );
+}
+
+/** Mutates `out`; safe to call from the 30 Hz send loop without allocation. */
+function recomputeReefKeyboardDir(
+  k: MovementKeys,
+  heading: number,
+  out: { x: number; y: number },
+): void {
+  const fwdX = Math.sin(heading);
+  const fwdY = Math.cos(heading);
+  const rightX = Math.cos(heading);
+  const rightY = -Math.sin(heading);
+  const thrust = k.w || k.arrowUp ? 1 : 0;
+  const brake = k.s || k.arrowDown;
+  const keyTurn = (k.a ? 1 : 0) - (k.d ? 1 : 0);
+  const arrowTurn = (k.arrowLeft ? 1 : 0) - (k.arrowRight ? 1 : 0);
+  const turnBias = keyTurn * TURN_BIAS + arrowTurn * ARROW_TURN_BIAS;
+  let x = fwdX * thrust + rightX * turnBias;
+  let y = fwdY * thrust + rightY * turnBias;
+  if (thrust === 0 && (turnBias !== 0 || brake)) {
+    x = fwdX * 0.15 + rightX * turnBias;
+    y = fwdY * 0.15 + rightY * turnBias;
+  }
+  const mag = Math.hypot(x, y);
+  out.x = mag > 0 ? x / mag : 0;
+  out.y = mag > 0 ? y / mag : 0;
+}
 
 export interface UseActivityInputOptions {
   /** WS send fn returned by `useActivityWs`. */
@@ -67,16 +123,7 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
   // and keep the keyboard handlers stable across the session.
   const dirRef = useRef({ x: 0, y: 0 });
   const targetDirRef = useRef({ x: 0, y: 0 });
-  const keysRef = useRef<{
-    w: boolean;
-    a: boolean;
-    s: boolean;
-    d: boolean;
-    arrowUp: boolean;
-    arrowLeft: boolean;
-    arrowDown: boolean;
-    arrowRight: boolean;
-  }>({
+  const keysRef = useRef<MovementKeys>({
     w: false,
     a: false,
     s: false,
@@ -99,8 +146,8 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
   // WASD (W=north, A=west, etc.) feels "reversed" to a player whose camera is
   // pointed along an arbitrary direction. The kart-relative scheme:
   //   W = forward thrust; S/ArrowDown = brake/coast in the current heading
-  //   A/D = steering bias (slight side push so the server's atan2 yaws the
-  //         kart left/right while still moving forward)
+  //   A/D = steering bias (atan2 computes the desired heading; shared
+  //         turnToward rate-limits body.rot while the kart moves forward)
   //
   // Bumper Shells uses a top-down camera where world-axis = screen-axis, so
   // there's no disconnect — keep its existing world-axis WASD (legacy path).
@@ -114,10 +161,11 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
   const isReefRaceRef = useRef(isReefRace);
   isReefRaceRef.current = isReefRace;
   const reefBrakeRef = useRef(false);
+  const keyboardDirRef = useRef({ x: 0, y: 0 });
+  const recomputeDirFromKeysRef = useRef<() => void>(() => {});
 
-  // Kart-relative-controls state. Only read in Reef Race mode.
-  // headingRef mirrors the server-authoritative entity.rot of the self avatar so
-  // the input loop computes "forward" against the latest rot the server saw.
+  // Kart-relative-controls fallback state. The send loop prefers the fresh
+  // rendered heading, while this mirrors authority for v1/no-prediction/stale pose.
   const headingRef = useRef(0);
   useEffect(() => {
     if (!isReefRace) return;
@@ -158,7 +206,8 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       ) {
         // joystickVelocity uses world-down as +y. We feed the input frame
         // an unaltered vector — server-side sim normalizes its own axes.
-        targetDirRef.current = { x: s.joystickVelocity.x, y: s.joystickVelocity.y };
+        targetDirRef.current.x = s.joystickVelocity.x;
+        targetDirRef.current.y = s.joystickVelocity.y;
       }
     });
     return unsub;
@@ -171,12 +220,13 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       let x = 0;
       let y = 0;
 
-      if (isReefRace) {
+      if (isReefRaceRef.current) {
         // ─── Mario Kart-style kart-relative controls ───────────────────
         // Compute "forward" (kart's current facing) and "right" (perpendicular)
         // unit vectors in sim-space.
         //
-        // Server convention: body.rot = atan2(intent.dir.x, intent.dir.y).
+        // Server convention: atan2(intent.dir.x, intent.dir.y) produces the
+        // desired heading; shared turnToward rate-limits body.rot toward it.
         // So at rot=h, the unit forward vector in sim-space is
         //   (sin(h), cos(h))     — same parameterization as server uses.
         // Right (90° clockwise of forward) is
@@ -185,18 +235,19 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
         // W contributes forward thrust; S/ArrowDown requests brake/coast and
         // never reverses the direction vector.
         // A/D contribute a SMALL side bias (TURN_BIAS) along ±right. The bias
-        // is intentionally small so the server's atan2-snap yaws the kart by
-        // only a few degrees per tick — i.e., it acts like a steering rate, not
-        // a hard 90° pivot. Held A while moving = continuous gentle left turn.
+        // is intentionally small so it creates a heading lead, not a hard 90°
+        // pivot. The shared turnToward advances toward that per-tick-refreshed
+        // lead at its bounded limiter. Held A = continuous gentle left turn.
         //
-        // TURN_BIAS = tan(per-tick yaw angle). Arrow steering is tracked
-        // separately so A+Left / D+Right can turn harder without making
-        // default WASD steering twitchy.
-        const TURN_BIAS = 0.12;
-        const ARROW_TURN_BIAS = 0.18;
-        const h = headingRef.current;
-        const fwdX = Math.sin(h);
-        const fwdY = Math.cos(h);
+        // TURN_BIAS creates atan(0.12)=6.84° of heading lead. Arrow steering
+        // is tracked separately so A+Left / D+Right can turn harder without
+        // making default WASD steering twitchy.
+        const renderNow = performance.now();
+        const h =
+          selfPoseBus.valid &&
+          renderNow - selfPoseBus.updatedAt < REEF_RENDER_HEADING_STALE_MS
+            ? selfPoseBus.rot
+            : headingRef.current;
         // Three.js camera convention surprise:
         //
         // Chase camera lookAt(playerCenter) sets `_x = up × back` for camera-
@@ -217,26 +268,15 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
         // D = right. So D bias must produce yaw toward CAMERA-RIGHT.
         // A press → bias right vec → kart visually turns LEFT.
         // D press → bias -right (= left) vec → kart visually turns RIGHT.
-        const rightX = Math.cos(h);
-        const rightY = -Math.sin(h);
-        const thrust = k.w || k.arrowUp ? 1 : 0;
-        const brake = k.s || k.arrowDown;
-        reefBrakeRef.current = brake;
+        recomputeReefKeyboardDir(k, h, keyboardDirRef.current);
+        x = keyboardDirRef.current.x;
+        y = keyboardDirRef.current.y;
+        reefBrakeRef.current = k.s || k.arrowDown;
         // A = +1 (will bias along +right vec → screen-LEFT yaw)
         // D = -1 (biases along -right vec → screen-RIGHT yaw)
-        const keyTurn = (k.a ? 1 : 0) - (k.d ? 1 : 0);
-        const arrowTurn = (k.arrowLeft ? 1 : 0) - (k.arrowRight ? 1 : 0);
-        const turnBias =
-          keyTurn * TURN_BIAS + arrowTurn * ARROW_TURN_BIAS;
-        x = fwdX * thrust + rightX * turnBias;
-        y = fwdY * thrust + rightY * turnBias;
         // With steering or brake held but no forward thrust, synthesize a small
         // forward DIRECTION so the heading remains stable and A/D can still
         // yaw. The send loop separately forces brake thrust to zero.
-        if (thrust === 0 && (turnBias !== 0 || brake)) {
-          x = fwdX * 0.15 + rightX * turnBias;
-          y = fwdY * 0.15 + rightY * turnBias;
-        }
       } else {
         // ─── Bumper Shells / legacy: world-axis WASD ────────────────────
         if (k.a || k.arrowLeft) x -= 1;
@@ -254,22 +294,15 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       }
       // Only OVERRIDE the joystick when keyboard is actively pressed —
       // a mobile user using both shouldn't have keys clobber thumb input.
-      if (
-        k.w ||
-        k.a ||
-        k.s ||
-        k.d ||
-        k.arrowUp ||
-        k.arrowLeft ||
-        k.arrowDown ||
-        k.arrowRight
-      ) {
-        targetDirRef.current = { x, y };
+      if (hasMovementKey(k)) {
+        targetDirRef.current.x = x;
+        targetDirRef.current.y = y;
       } else if (
         useGameStore.getState().joystickVelocity.x === 0 &&
         useGameStore.getState().joystickVelocity.y === 0
       ) {
-        targetDirRef.current = { x: 0, y: 0 };
+        targetDirRef.current.x = 0;
+        targetDirRef.current.y = 0;
       }
     }
 
@@ -346,6 +379,8 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
           break;
       }
     }
+
+    recomputeDirFromKeysRef.current = recomputeDirFromKeys;
 
     function onKeyUp(e: KeyboardEvent) {
       // We unset key state regardless of `enabled` — otherwise toggling the
@@ -489,6 +524,11 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
     let timer: ReturnType<typeof setInterval> | null = null;
     timer = setInterval(() => {
       if (!enabledRef.current) return;
+      // Reef keyboard intent is heading-relative: refresh it every send tick
+      // while held. Key events still recompute too for immediate onset/release.
+      if (isReefRaceRef.current && hasMovementKey(keysRef.current)) {
+        recomputeDirFromKeysRef.current();
+      }
       const now = Date.now();
       const dt = lastSendAtRef.current ? (now - lastSendAtRef.current) / 1000 : 0;
       lastSendAtRef.current = now;
@@ -512,12 +552,16 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
         const nextX = current.x + (targetDir.x - current.x) * alpha;
         const nextY = current.y + (targetDir.y - current.y) * alpha;
         const nextMag = Math.hypot(nextX, nextY);
-        dirRef.current =
-          targetMag <= 0.001 && nextMag < 0.015
-            ? { x: 0, y: 0 }
-            : { x: nextX, y: nextY };
+        if (targetMag <= 0.001 && nextMag < 0.015) {
+          current.x = 0;
+          current.y = 0;
+        } else {
+          current.x = nextX;
+          current.y = nextY;
+        }
       } else {
-        dirRef.current = targetDir;
+        dirRef.current.x = targetDir.x;
+        dirRef.current.y = targetDir.y;
       }
 
       const dir = dirRef.current;
