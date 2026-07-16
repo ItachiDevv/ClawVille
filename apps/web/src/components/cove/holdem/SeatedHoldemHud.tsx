@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useCoveStore } from '@/stores/cove';
 import { useAvatar } from '@/hooks/use-avatar';
 import '@/styles/cove-tokens.css';
@@ -26,12 +26,21 @@ export function SeatedHoldemHud() {
 
   const {
     table, live, settled, revealedSeed, toast, phase, agentMode, inFlight,
-    walkAwayLocked, pot, toCallNum, facingBet, canCheck,
+    walkAwayLocked, pot, toCallNum, facingBet, canCheck, humanStack,
     resetHand, handleDeal, runAction, handleWalkAway,
   } = useHoldemController();
 
   const [showRaise, setShowRaise] = useState(false);
   const [raiseConfig, setRaiseConfig] = useState<RaiseConfig>({ min: 0, max: 0, value: 0, verb: 'bet' });
+
+  // The HUD renders null while unseated but stays MOUNTED, so slider state
+  // would otherwise survive standing, modal play, and hand changes (P3.1,
+  // Codex finding: a stale-but-legal raise could submit into a later hand).
+  // Close it on any hand identity or phase transition.
+  const liveHandId = live?.handId ?? null;
+  useEffect(() => {
+    setShowRaise(false);
+  }, [liveHandId, phase]);
 
   const isAuthed = Boolean(avatar);
   const actionsDisabled = inFlight || agentMode === 'autonomous';
@@ -49,14 +58,23 @@ export function SeatedHoldemHud() {
 
   const handleConfirmRaise = useCallback(() => {
     setShowRaise(false);
-    void runAction(raiseConfig.verb, raiseConfig.value);
-  }, [raiseConfig, runAction]);
+    if (!live || phase !== 'player-turn') return;
+    // Re-derive against CURRENT live state at submit time — the hand can have
+    // advanced (resync) since the slider opened. Clamp into today's legal
+    // window; if raising is no longer possible, drop the click (the action
+    // row re-renders with the legal options).
+    const open = computeRaiseOpen(live);
+    if (open.kind !== 'slider') return;
+    const value = Math.min(Math.max(raiseConfig.value, open.min), open.max);
+    void runAction(open.verb, value);
+  }, [live, phase, raiseConfig, runAction]);
 
   const handleAllIn = useCallback(() => {
     if (!live || phase !== 'player-turn') return;
     const shove = computeAllIn(live);
     setShowRaise(false);
-    void runAction(shove.action, shove.amount);
+    if (shove.action === 'call') void runAction('call');
+    else void runAction(shove.action, shove.amount);
   }, [live, phase, runAction]);
 
   const handleNextHand = useCallback(() => {
@@ -110,8 +128,12 @@ export function SeatedHoldemHud() {
           display: 'flex', gap: 14, justifyContent: 'center', flexWrap: 'wrap',
           fontSize: 11, fontFamily: 'var(--pt-data)', color: '#a8c0ae', letterSpacing: '0.08em',
         }}>
-          {phase !== 'idle' && <span>POT <b style={{ color: 'var(--pt-amber)' }}>{pot}</b></span>}
-          {table && <span>STACK <b style={{ color: '#d8e8dc' }}>{Number(table.playerStack).toLocaleString()}</b></span>}
+          {/* The live wire carries no pot total (only settled outcomes do),
+              so POT shows at settle only — never a misleading live zero.
+              STACK uses the controller's humanStack (live mid-hand,
+              table.playerStack otherwise). P3.1 Codex finding. */}
+          {phase === 'settled' && <span>POT <b style={{ color: 'var(--pt-amber)' }}>{pot}</b></span>}
+          {table && <span>STACK <b style={{ color: '#d8e8dc' }}>{Number(humanStack).toLocaleString()}</b></span>}
           {phase === 'player-turn' && facingBet && toCallNum > 0 && (
             <span>TO CALL <b style={{ color: 'var(--pt-amber)' }}>{toCallNum}</b></span>
           )}

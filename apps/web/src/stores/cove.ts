@@ -302,11 +302,19 @@ export const useCoveStore = create<CoveStore>((set, get) => ({
   seatedTable: null,
 
   sitAtTable: (tableId, seatIndex) => {
-    // Never sit while a 2D modal is already open (or vice versa is guarded
-    // by the caller not opening a modal while seated) — Slice 1 keeps the
-    // two systems mutually exclusive at the call site, not enforced here,
-    // since no call site currently opens both.
-    set({ seatedTable: { tableId, seatIndex } });
+    // Founder contract: NO 2D game modal while seated — the whole session
+    // renders on the felt. The hotspots refuse to OPEN a modal while seated,
+    // but the E-key sit path must also close any modal already open (P3.1,
+    // Codex finding: sit with the blackjack modal up left the HUD mounted
+    // behind it). One atomic set() so the hold'em controller's
+    // `modalOpen || seated` activation never blips false between states.
+    set({
+      seatedTable: { tableId, seatIndex },
+      holdemModalOpen: false,
+      blackjackOpen: false,
+      baccaratOpen: false,
+      slotScreenOpen: false,
+    });
   },
 
   standFromTable: () => {

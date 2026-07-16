@@ -250,7 +250,12 @@ function appendCardQuad(
   const u1 = ((column + 1) * ATLAS_CELL_WIDTH - ATLAS_UV_INSET) / ATLAS_WIDTH;
   const vTop = 1 - (row * ATLAS_CELL_HEIGHT + ATLAS_UV_INSET) / ATLAS_HEIGHT;
   const vBottom = 1 - ((row + 1) * ATLAS_CELL_HEIGHT - ATLAS_UV_INSET) / ATLAS_HEIGHT;
-  uvs.push(u0, vBottom, u0, vTop, u1, vTop, u1, vBottom);
+  // u runs HIGH→LOW across local +X: for a +Y-facing quad in the XZ plane,
+  // the straight u0→u1 order horizontally mirrors the face (caught live in
+  // P3.1 — a "3" rendered as "Ɛ" from the seat; overhead symmetric pips hid
+  // it). Swapped order renders every glyph unmirrored, upright for the
+  // viewer the card's yaw faces (texture top pointing away from them).
+  uvs.push(u1, vBottom, u1, vTop, u0, vTop, u0, vBottom);
   indices.push(
     vertexOffset,
     vertexOffset + 1,

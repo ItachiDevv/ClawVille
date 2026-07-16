@@ -195,7 +195,8 @@ export default function HoldemModal() {
     if (!live || phase !== 'player-turn') return;
     const shove = computeAllIn(live);
     setShowRaise(false);
-    void runAction(shove.action, shove.amount);
+    if (shove.action === 'call') void runAction('call');
+    else void runAction(shove.action, shove.amount);
   }, [live, phase, runAction]);
 
   // ── NEXT HAND ────────────────────────────────────────────────────────────────
