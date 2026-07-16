@@ -13,6 +13,7 @@ import {
   type PickerColorId,
   type HarnessId,
   type ModelKey,
+  type ModelRegistryEntry,
   type LegacySpecies,
 } from '@/lib/three/agent-model-registry';
 import { SetupGate } from '@/components/create-agent/setup-gate';
@@ -407,7 +408,7 @@ export default function CreateAgentPage() {
 
   // --- Card renderer (shared across tabs) ---------------------------------
   const renderCard = (key: ModelKey, index: number) => {
-    const entry = MODEL_REGISTRY[key];
+    const entry: ModelRegistryEntry = MODEL_REGISTRY[key];
     const isSelected = selectedModelInPool === key;
     const isVRM = entry.avatar_type === 'vrm';
     const glbStyle = GLB_STYLE[key];
