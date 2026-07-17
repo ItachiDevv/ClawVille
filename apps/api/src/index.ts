@@ -98,6 +98,7 @@ import { alertError } from './services/alert-error';
 import { getPublishedIssuerInfo } from './services/service-issuer';
 import { warnIfTestPartnerPubkeyEnabled } from './services/partner-signature';
 import { fingerprintMiddleware } from './middleware/fingerprint';
+import { jsonBodyGuard } from './middleware/json-body-guard';
 import { cosmeticsRoutes } from './routes/cosmetics';
 import { dashAuthRoutes } from './routes/dash-auth';
 import { wagerRoutes } from './routes/wager';
@@ -224,6 +225,12 @@ app.use(
 // every emitted event carries the hash. Throws at module load if
 // FINGERPRINT_SECRET is missing — fail-fast is intentional.
 app.use('*', fingerprintMiddleware);
+
+// Reject malformed, non-empty JSON before route handlers call `c.req.json()`.
+// Raw-body signed/HMAC endpoints are exempt inside the guard so their exact
+// request bytes remain available to signature verification. Must stay before
+// every route mount; successful parses are cached by Hono for downstream reads.
+app.use('*', jsonBodyGuard);
 
 // Health check
 app.get('/health', (c) => {

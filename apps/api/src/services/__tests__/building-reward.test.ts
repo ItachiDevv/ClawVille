@@ -369,6 +369,13 @@ describe('creditBuildingChatRewardOncePerDay (shared durable claim)', () => {
     expect(routeSource).toContain('agentBuildingChatRewardAvatarId(rewardSubject)');
     expect(routeSource).toContain('avatarId: rewardAvatarId');
     expect(routeSource).toContain('agentId: bot.agentId');
+    expect(routeSource).toContain('knowledge: [...current, entry]');
+    expect(routeSource).toContain('await recordEarnedSkillLesson({');
+    expect(routeSource).toContain('columns: { platformAgentId: true }');
+    expect(routeSource).toContain(
+      'where: eq(avatars.id, chatKnowledgeSubject.avatarId)',
+    );
+    expect(routeSource).not.toContain('syncHostedAgentKnowledge({');
     // Regression: the liveness-only bot.userId lookup let an ownership-unproven
     // reconnect target the row owner's avatar (and could select an inactive one).
     expect(routeSource).not.toContain('resolveAvatarIdForBot(');
@@ -398,6 +405,7 @@ describe('creditBuildingChatRewardOncePerDay (shared durable claim)', () => {
     );
     expect(routeSource).not.toContain('resolveAvatarIdForBot(');
     expect(routeSource).not.toContain('visitUserId = bot.userId');
+    expect(routeSource.match(/syncHostedAgentKnowledge\(\{/g)).toHaveLength(1);
   });
 
   it('human chat authorizes the mint and XP from canonical users.is_guest, not the avatar mirror', () => {
@@ -433,7 +441,7 @@ describe('creditBuildingChatRewardOncePerDay (shared durable claim)', () => {
     expect(routeSource).not.toContain('!avatar.isGuest');
   });
 
-  it('0032 commits guards before split backfill/index migrations', () => {
+  it('0037 commits guards before split backfill/index migrations', () => {
     const migrationDir = join(
       import.meta.dir,
       '..',
@@ -445,9 +453,9 @@ describe('creditBuildingChatRewardOncePerDay (shared durable claim)', () => {
       'database',
       'migrations',
     );
-    const migration = readFileSync(join(migrationDir, '0032_supply_mint_idempotency.sql'), 'utf8');
-    const backfill = readFileSync(join(migrationDir, '0032a_supply_mint_chat_backfill.sql'), 'utf8');
-    const activity = readFileSync(join(migrationDir, '0032b_activity_result_uniqueness.sql'), 'utf8');
+    const migration = readFileSync(join(migrationDir, '0037_supply_mint_idempotency.sql'), 'utf8');
+    const backfill = readFileSync(join(migrationDir, '0038_supply_mint_chat_backfill.sql'), 'utf8');
+    const activity = readFileSync(join(migrationDir, '0039_activity_result_uniqueness.sql'), 'utf8');
     const xpTriggerAt = migration.indexOf(
       'CREATE TRIGGER "guard_atomic_xp_update_before_update"',
     );

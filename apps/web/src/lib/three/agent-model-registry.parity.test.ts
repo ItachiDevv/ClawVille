@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { MODEL_REGISTRY } from './agent-model-registry';
+import { MODEL_REGISTRY, type ModelRegistryEntry } from './agent-model-registry';
 import { AGENT_MODEL_KEYS } from '@clawville/shared';
 
 /**
@@ -22,7 +22,7 @@ describe('web MODEL_REGISTRY ↔ shared AGENT_MODEL_KEYS parity (F5)', () => {
     // in the shared enum and cannot be silently dropped at signup. The invariant
     // that prevents the chibi bug is: every key the PICKER can offer must be a
     // valid shared key.
-    const missing = Object.entries(MODEL_REGISTRY)
+    const missing = (Object.entries(MODEL_REGISTRY) as [string, ModelRegistryEntry][])
       .filter(([, e]) => !e.pickerHidden)
       .map(([k]) => k)
       .filter((k) => !shared.has(k));

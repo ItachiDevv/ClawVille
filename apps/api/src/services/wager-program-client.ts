@@ -136,9 +136,11 @@ export class WagerClientError extends Error {
       | 'avatar_wallet_missing'
       | 'pubkey_mismatch'
       | 'network_refused'
+      | 'namespace_violation'
       | 'on_chain_error'
       | 'insufficient_funds',
     public readonly cause?: unknown,
+    public readonly namespaceReason?: 'invalid_env' | 'id_out_of_range',
   ) {
     super(message);
     this.name = 'WagerClientError';
@@ -146,17 +148,27 @@ export class WagerClientError extends Error {
 }
 
 /**
- * Ground-truth cluster gate. Every wager broadcast calls this immediately
- * before building/signing with a fresh genesis probe. Devnet is the default;
+ * Ground-truth cluster gate. Every wager broadcast uses a verified genesis
+ * proof before building/signing. Create resolves it before DB allocation and
+ * reuses that proof through broadcast; other operations probe at broadcast.
+ * Devnet is the default;
  * localnet requires a non-production loopback triple gate. Mainnet additionally
  * requires the code-review constant/program-id deployment plus the existing
  * cluster signal; env configuration alone cannot unlock it. Unknown/testnet
  * clusters fail closed.
  */
-export async function assertWagerBroadcastCluster(
-  conn: Pick<Connection, 'getGenesisHash' | 'rpcEndpoint'>,
+export interface VerifiedWagerBroadcastCluster {
+  genesisHash: string;
+  kind: 'devnet' | 'mainnet' | 'localnet';
+}
+
+export async function resolveVerifiedWagerBroadcastCluster(
   label: string,
-): Promise<void> {
+  overrides?: {
+    connection?: Pick<Connection, 'getGenesisHash' | 'rpcEndpoint'>;
+  },
+): Promise<VerifiedWagerBroadcastCluster> {
+  const conn = overrides?.connection ?? connection;
   let genesis: string;
   try {
     genesis = await conn.getGenesisHash();
@@ -168,13 +180,15 @@ export async function assertWagerBroadcastCluster(
     );
   }
 
-  if (genesis === SOLANA_DEVNET_GENESIS_HASH) return;
+  if (genesis === SOLANA_DEVNET_GENESIS_HASH) {
+    return { genesisHash: genesis, kind: 'devnet' };
+  }
 
   const mainnetEnabled =
     WAGER_MAINNET_PAID_CODE_APPROVED &&
     process.env.WAGER_PROGRAM_CLUSTER === 'mainnet';
   if (genesis === SOLANA_MAINNET_GENESIS_HASH) {
-    if (mainnetEnabled) return;
+    if (mainnetEnabled) return { genesisHash: genesis, kind: 'mainnet' };
     throw new WagerClientError(
       'Wager broadcast refused: mainnet requires the code-reviewed program-id deployment/code gate plus WAGER_PROGRAM_CLUSTER=mainnet',
       'network_refused',
@@ -203,12 +217,19 @@ export async function assertWagerBroadcastCluster(
     process.env.NODE_ENV !== 'production' &&
     process.env.CLAWVILLE_ENV !== 'production' &&
     loopbackRpc;
-  if (localnetEnabled) return;
+  if (localnetEnabled) return { genesisHash: genesis, kind: 'localnet' };
 
   throw new WagerClientError(
     `Wager ${label} refused: RPC cluster is not approved devnet/localnet`,
     'network_refused',
   );
+}
+
+export async function assertWagerBroadcastCluster(
+  conn: Pick<Connection, 'getGenesisHash' | 'rpcEndpoint'>,
+  label: string,
+): Promise<void> {
+  await resolveVerifiedWagerBroadcastCluster(label, { connection: conn });
 }
 
 // ─── per-environment lobby-id namespace (shared devnet program) ───────────
@@ -232,6 +253,26 @@ export const WAGER_LOBBY_ID_NAMESPACES = {
   development: { start: 2n * WAGER_LOBBY_ID_RANGE_SPAN, end: 3n * WAGER_LOBBY_ID_RANGE_SPAN },
 } as const;
 
+export function resolveWagerLobbyNamespaceEnv(
+  env: string | undefined = process.env.CLAWVILLE_ENV,
+): keyof typeof WAGER_LOBBY_ID_NAMESPACES {
+  if (
+    env !== undefined &&
+    env !== 'production' &&
+    env !== 'staging' &&
+    env !== 'development'
+  ) {
+    throw new WagerClientError(
+      `Invalid CLAWVILLE_ENV '${env}' for wager lobby allocation. ` +
+        `Accepted values are 'production', 'staging', 'development', or unset.`,
+      'namespace_violation',
+      undefined,
+      'invalid_env',
+    );
+  }
+  return env ?? 'development';
+}
+
 /**
  * Create-broadcast-only guard: refuses to broadcast `create_lobby_sol` for a
  * lobby id outside the current environment's namespace, so a misconfigured
@@ -246,15 +287,19 @@ export const WAGER_LOBBY_ID_NAMESPACES = {
  */
 export function assertWagerLobbyIdInEnvNamespace(
   lobbyId: bigint,
-  overrides?: { env?: string; cluster?: string },
+  overrides?: { env?: string; verifiedCluster?: VerifiedWagerBroadcastCluster },
 ): void {
-  const cluster = overrides?.cluster ?? process.env.WAGER_PROGRAM_CLUSTER ?? 'devnet';
-  // Localnet is a private chain per test run — no cross-environment sharing.
-  if (cluster === 'localnet') return;
-
   const env = overrides?.env ?? process.env.CLAWVILLE_ENV;
-  const key =
-    env === 'production' ? 'production' : env === 'staging' ? 'staging' : 'development';
+  const key = resolveWagerLobbyNamespaceEnv(env);
+  const verifiedGenesis = overrides?.verifiedCluster?.genesisHash;
+  const knownGenesis =
+    verifiedGenesis === SOLANA_DEVNET_GENESIS_HASH ||
+    verifiedGenesis === SOLANA_TESTNET_GENESIS_HASH ||
+    verifiedGenesis === SOLANA_MAINNET_GENESIS_HASH;
+  // Only a genesis-verified private validator is exempt; the config label is
+  // not network evidence, and a forged known-genesis/local-kind seam fails shut.
+  if (overrides?.verifiedCluster?.kind === 'localnet' && verifiedGenesis && !knownGenesis) return;
+
   const range = WAGER_LOBBY_ID_NAMESPACES[key];
   if (lobbyId >= range.start && lobbyId < range.end) return;
 
@@ -263,7 +308,9 @@ export function assertWagerLobbyIdInEnvNamespace(
       `on the shared devnet wager program — broadcasting would squat another environment's PDA. ` +
       `Park this environment's sequence inside its range: ` +
       `SELECT setval('wager_lobby_id_seq', ${range.start}, false);`,
-    'network_refused',
+    'namespace_violation',
+    undefined,
+    'id_out_of_range',
   );
 }
 
@@ -462,6 +509,7 @@ interface DurableBroadcastInput {
   feePayer: PublicKey;
   signers: Keypair[];
   targetPda: PublicKey;
+  verifiedCluster?: VerifiedWagerBroadcastCluster;
 }
 
 type WagerDbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -534,7 +582,9 @@ async function resetDefinitelyUnsentIntent(
 async function broadcastDurableTransaction(
   input: DurableBroadcastInput,
 ): Promise<string> {
-  await assertWagerBroadcastCluster(connection, input.label);
+  if (!input.verifiedCluster) {
+    await resolveVerifiedWagerBroadcastCluster(input.label);
+  }
   const { blockhash, lastValidBlockHeight } = await withChainErrors(
     `${input.label}:getLatestBlockhash`,
     () => connection.getLatestBlockhash(COMMITMENT),
@@ -723,11 +773,12 @@ export interface CreateSolLobbyResult {
  */
 export async function createSolLobby(
   input: CreateSolLobbyInput,
+  overrides?: { verifiedCluster?: VerifiedWagerBroadcastCluster },
 ): Promise<CreateSolLobbyResult> {
-  // First line on purpose: a sequence/env misconfiguration fails instantly,
-  // before any DB decrypt or RPC work. The intent stays 'prepared' and the
-  // reconciler sweep expires it to 'failed' (retryable) within ~5 minutes.
-  assertWagerLobbyIdInEnvNamespace(input.lobbyIdBigint);
+  const verifiedCluster =
+    overrides?.verifiedCluster ??
+    (await resolveVerifiedWagerBroadcastCluster('createSolLobby'));
+  assertWagerLobbyIdInEnvNamespace(input.lobbyIdBigint, { verifiedCluster });
   const program = await getProgram();
   const feePayer = await loadSettlementAuthority();
   const { keypair: creator, publicKey: creatorPubkey } = await loadAvatarWallet(
@@ -785,6 +836,7 @@ export async function createSolLobby(
       feePayer: feePayer.publicKey,
       signers: [creator, feePayer],
       targetPda: lobbyPda,
+      verifiedCluster,
     });
   } catch (err) {
     await markPreparedIntentFailed(input.intentId, 'pre_broadcast_failure');

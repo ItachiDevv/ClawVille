@@ -173,7 +173,7 @@ export function QwertiBuyWidget() {
     };
 
     // Defer past the hero's first paint — load only when the browser is idle.
-    const ric = window.requestIdleCallback;
+    const ric = (window as Partial<Pick<Window, 'requestIdleCallback'>>).requestIdleCallback;
     const handle: number = ric
       ? ric(inject, { timeout: 4000 })
       : window.setTimeout(inject, 2000);

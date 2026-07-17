@@ -35,6 +35,7 @@ function ensureEnv(k: string, v: string) {
   if (!process.env[k]) process.env[k] = v;
 }
 ensureEnv('FINGERPRINT_SECRET', HEX32);
+const DB_URL_WAS_SET = !!process.env.DATABASE_URL;
 ensureEnv('DATABASE_URL', 'postgresql://u:p@localhost:5432/db');
 ensureEnv('CLOUDFLARE_WORKER_URL', 'https://example.invalid');
 ensureEnv('CLOUDFLARE_WORKER_BEARER', 'dummy');
@@ -43,6 +44,11 @@ ensureEnv('VANITY_ENCRYPTION_KEY', HEX32);
 import { describe, it, expect } from 'bun:test';
 import { Hono } from 'hono';
 import { partnerStorefrontRoutes, isStorefrontFulfillmentGated } from '../partner-storefront';
+
+// Route chain loaded — drop the module-init DATABASE_URL placeholder so later
+// DB-gated suites in the shared bun process (quest race guards etc.) keep their
+// skip-when-no-DB behavior instead of dialing a fake localhost URL.
+if (!DB_URL_WAS_SET) delete process.env.DATABASE_URL;
 
 /**
  * Build the MINIMAL app in the DOCUMENTED index.ts mount order: a stub

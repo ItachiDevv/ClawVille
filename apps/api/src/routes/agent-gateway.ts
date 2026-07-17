@@ -20,7 +20,7 @@ import { npcSimulation } from '../services/npc-simulation';
 import { recordCovenantAction } from '../services/covenant-action-recorder';
 import { findPath } from '../services/pathfinding';
 import { memoryService } from '../services/memory-service';
-import { db, agentBots, avatars, users, buildingSkills, landParcels, eq, and, sql } from '@clawville/database';
+import { db, agentBots, avatars, users, buildingSkills, landParcels, eq, and, sql, type AgentBotAck } from '@clawville/database';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { getSessionAgent } from '../services/session-agent-map';
 import { AgentSubstrateClient } from '../services/agent-substrate-client';
@@ -62,10 +62,14 @@ import { mintSessionTicket } from '../services/session-ticket-service';
 // honesty rule is unit-tested without this route graph's env requirements).
 import {
   buildAgentStatusResponse,
+  buildReturningIdentityDisclosure,
+  connectionTokenClaimError,
+  planConnectOwnerBinding,
   sessionLedgerCapable,
   type AgentStatusStats,
   type AgentStatusOwnership,
 } from '../services/agent-owner-binding';
+import { agentProtocolPointer, resolveApiBase } from '../services/skill-protocol';
 // Cached public-board lookup (same score/rank the /leaderboard page shows;
 // precedent: partner-hatcher.ts stats endpoint imports this the same way).
 import { getAgentLeaderboardEntry } from './leaderboard';
@@ -99,6 +103,8 @@ import {
 } from '../services/reserved-agent-namespaces';
 import { getBlackjackSkillContext } from '../services/game-skill-memory';
 import { readEarnedSkillLessons, recordEarnedSkillLesson } from '../services/earned-skill-memory';
+import { syncHostedAgentKnowledge } from '../services/hosted-agent-knowledge';
+import { installBuildingSkillIntoAgent } from '../services/building-skill-install';
 import {
   getBooksForBuilding,
   SHOP_BUILDINGS,
@@ -114,8 +120,11 @@ import {
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
 import { randomBytes } from 'crypto';
+import { agentSessionAckRoutes } from './agent-session-ack';
 
 const agentGatewayRoutes = new Hono();
+
+agentGatewayRoutes.route('/session', agentSessionAckRoutes);
 
 // ---------------------------------------------------------------------------
 // Hatcher partner #2 (2026-06-01) — /connect orientation payload.
@@ -323,7 +332,16 @@ agentGatewayRoutes.post('/connect', async (c) => {
     return c.json({ error: 'Invalid request' }, 400);
   }
 
-  // Step 0: If connectionToken is present, validate it and auto-generate agentId if missing
+  // A connection token is a single-use human-issued capability. Requiring the
+  // caller's stable agentId before we even look up/reserve the token prevents a
+  // successful claim from consuming the user's one-shot identity issuance on a
+  // throwaway auto-generated id the caller cannot reconnect as.
+  const tokenClaimError = connectionTokenClaimError(data);
+  if (tokenClaimError) {
+    return c.json({ error: tokenClaimError }, 400);
+  }
+
+  // Step 0: If connectionToken is present, validate and reserve it atomically.
   if (data.connectionToken) {
     const pending = pendingConnections.get(data.connectionToken);
     if (!pending) {
@@ -351,10 +369,6 @@ agentGatewayRoutes.post('/connect', async (c) => {
     }
     pending.connected = true;
     pendingConn = pending;
-    // Auto-generate agentId from token if not provided
-    if (!resolvedAgentId) {
-      resolvedAgentId = data.agentId ?? `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    }
   }
 
   // Step 1: Resolve Milady identity (runtime-trust — no external verification).
@@ -415,6 +429,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
   let isReturning = false;
   let totalSessions = 1;
   let knowledge: string[] = [];
+  let storedProtocolAck: AgentBotAck | null = null;
   let uuid = '';
   let lastX: number | undefined;
   let lastY: number | undefined;
@@ -444,6 +459,38 @@ agentGatewayRoutes.post('/connect', async (c) => {
   // on the next reload — agent state evaporates between sessions.
   const tokenUserId = pendingConn?.userId ?? null;
 
+  // An explicit identityKey is a SECRET ownership credential, not a public
+  // label. Resolve it before the bot upsert so a self-connecting agent can bind
+  // its row to the stable user derived from sha256(`${type}:${key}`). Inferred
+  // gateway/Milady identities do not qualify for this bind, and a connection
+  // token keeps precedence by supplying its already-authenticated user instead.
+  // Never log or echo the raw key.
+  let identityKeyUserId: string | null = null;
+  let identityKeyAvatarId: string | null = null;
+  let identityKeyAvatarName: string | null = null;
+  if (data.identityKey && tokenUserId === null) {
+    try {
+      const identity = resolveIdentityForTicket(data);
+      if (identity) {
+        const user = await resolveOrCreateUserByIdentity(
+          identity.identityType,
+          identity.identityKey,
+        );
+        identityKeyUserId = user.id;
+        const activeAvatar = await db.query.avatars.findFirst({
+          where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
+          columns: { id: true, name: true },
+        });
+        identityKeyAvatarId = activeAvatar?.id ?? null;
+        identityKeyAvatarName = activeAvatar?.name ?? null;
+      }
+    } catch (err) {
+      console.error('[AgentConnect] explicit identity resolution failed:', err);
+      if (pendingConn) pendingConn.connected = false;
+      return c.json({ error: 'Identity resolution failed' }, 500);
+    }
+  }
+
   // Ledger-capability (Codex auth-lens fix #2/#3, 2026-06-03). The session this
   // /connect mints is the bearer the cove trusts for REAL-CT play. Previously an
   // `agentId`-only reconnect to an ALREADY-BOUND bot returned a fully-trusted
@@ -452,6 +499,12 @@ agentGatewayRoutes.post('/connect', async (c) => {
   // ONLY when ownership is proven (see below). `existingBoundUserId` records
   // whether the matched row was already bound to a human before this connect.
   let existingBoundUserId: string | null = null;
+  let ownerBinding = planConnectOwnerBinding({
+    existingUserId: null,
+    tokenUserId,
+    identityKeyUserId,
+    activeAvatarId: pendingConn?.avatarId ?? identityKeyAvatarId,
+  });
 
   try {
     const existing = await db.query.agentBots.findFirst({
@@ -472,9 +525,51 @@ agentGatewayRoutes.post('/connect', async (c) => {
         return c.json({ error: 'Invalid request' }, 400);
       }
       existingBoundUserId = existing.userId ?? null;
+      ownerBinding = planConnectOwnerBinding({
+        existingUserId: existingBoundUserId,
+        tokenUserId,
+        identityKeyUserId,
+        activeAvatarId: pendingConn?.avatarId ?? identityKeyAvatarId,
+      });
+
+      // Cross-pod atomic identity claim. The read above is only a snapshot; a
+      // second credential may bind the row before this write. This conditional
+      // UPDATE is therefore the enforcement point for NEVER REBIND. Owned-token
+      // claims intentionally keep their existing direct-write precedence below.
+      if (tokenUserId === null && identityKeyUserId !== null) {
+        const [claimed] = await db
+          .update(agentBots)
+          .set({ userId: identityKeyUserId, updatedAt: new Date() })
+          .where(
+            and(
+              eq(agentBots.id, existing.id),
+              sql`(${agentBots.userId} IS NULL OR ${agentBots.userId} = ${identityKeyUserId})`,
+            ),
+          )
+          .returning({ userId: agentBots.userId });
+
+        if (!claimed) {
+          const liveOwner = await db.query.agentBots.findFirst({
+            where: eq(agentBots.id, existing.id),
+            columns: { userId: true },
+          });
+          ownerBinding = planConnectOwnerBinding({
+            existingUserId: liveOwner?.userId ?? existingBoundUserId,
+            tokenUserId: null,
+            identityKeyUserId,
+            activeAvatarId: identityKeyAvatarId,
+          });
+        }
+      }
+      if (ownerBinding.identityMismatch) {
+        console.warn(
+          `[AgentConnect] identity credential owner mismatch for agentId=${resolvedAgentId}; preserving existing owner`,
+        );
+      }
       isReturning = true;
       totalSessions = (existing.totalSessions ?? 0) + 1;
       knowledge = existing.knowledge ?? [];
+      storedProtocolAck = existing.ack ?? null;
       uuid = existing.id;
       const meta = existing.metadata as { lastX?: number; lastY?: number } | null;
       lastX = meta?.lastX;
@@ -501,12 +596,10 @@ agentGatewayRoutes.post('/connect', async (c) => {
         color: data.color ?? existing.color,
         totalSessions,
         lastSeenAt: new Date(),
-        // If a fresh connect-token claim brings a userId, prefer it over
-        // any prior value (handles the case where the bot was first
-        // created anonymously, then later claimed by a logged-in user).
-        // Falls back to existing.userId so we never NULL-out a
-        // previously-bound row.
-        userId: tokenUserId ?? existing.userId,
+        // Token proof retains its legacy rebind precedence. Identity claims
+        // were already applied by the conditional UPDATE above; credentialless
+        // metadata refreshes omit userId entirely and cannot clobber a race.
+        ...(tokenUserId !== null ? { userId: tokenUserId } : {}),
         // Fresh 24h TTL on every reconnect — matches the Phase 6 session
         // liveness contract. Without this, returning bots kept whatever
         // stale expiry was on the row from their last connect.
@@ -540,11 +633,9 @@ agentGatewayRoutes.post('/connect', async (c) => {
         // Persist the resolved render model so reconnects keep the same avatar.
         species: resolvedSpecies,
         color: data.color ?? null,
-        // Bind to the human who issued the connection token so the bot
-        // is recognized on later page loads + cross-session reconnect
-        // flows. Anonymous one-shot connects (no token) leave userId
-        // null — they're not expected to persist across reloads.
-        userId: tokenUserId,
+        // A new row binds only from an owned token or caller-supplied secret
+        // identity credential. Bare agentId connects stay unbound/non-ledger.
+        userId: ownerBinding.persistedUserId,
         metadata: {
           personality: data.personality,
           homeX: data.homeX ?? 2560,
@@ -575,36 +666,16 @@ agentGatewayRoutes.post('/connect', async (c) => {
     return c.json({ error: 'Database error during agent registration' }, 500);
   }
 
-  // Ledger-capability decision (Codex auth-lens fix #2/#3, 2026-06-03). Grant
-  // real-CT trust ONLY when ownership of the bound avatar is proven on THIS
-  // request:
-  //   (a) a valid OWNED connection token brought a userId (`tokenUserId`) — the
-  //       Moltbook claim, where an authed human issued the token for their own
-  //       avatar; OR
-  //   (b) genuine first-contact: the matched row was NOT already bound to a
-  //       human before this connect (`existingBoundUserId === null`) — either a
-  //       brand-new bot, or one that was only ever anonymous (no victim to take
-  //       over; the agent self-owns its avatar).
-  //
-  // Set FALSE for the takeover vector: an `agentId`-only reconnect to a bot that
-  // was ALREADY bound to a human, with no owned token on this request. Such a
-  // session can still perceive/chat/move, but the cove getSubject rejects it with
-  // 403 `agent_session_not_ledger_authorized` (NOT a guest demote, NOT real-CT
-  // play). A returning owner that wants real-CT play re-proves ownership via a
-  // fresh connect-token or the signed-challenge reconnect.
-  const ledgerCapable = tokenUserId !== null || existingBoundUserId === null;
+  // Fail closed: only a credential-proven owner with an active avatar gets the
+  // config-level grant. Spend-time resolution rechecks the live bot row.
+  const ledgerCapable = ownerBinding.ledgerCapable;
 
   // `boundUserId` (Codex auth-lens hardening round 2, 2026-06-03) — the user this
   // session proves ownership of, stamped onto the session config so
   // resolveAgentSession can re-validate it against the LIVE row at spend time.
-  // It is exactly the userId now written to `openclaw_bots.userId` (see the
-  // upsert: `tokenUserId ?? existing.userId` on the returning branch,
-  // `tokenUserId` on insert). For a pure owned-token claim that's the proven
-  // owner; for first-contact it's null (and the cove rejects a null-bound session
-  // anyway). It is NOT a free-floating value — it must equal what the row carries,
-  // so a later rebind to a different user makes them diverge and demotes the
-  // stale session.
-  const boundUserId: string | null = tokenUserId ?? existingBoundUserId;
+  // It is the owner actually proven and persisted by this request, never merely
+  // an owner found by looking up a public agentId.
+  const boundUserId: string | null = ownerBinding.boundUserId;
 
   // Eviction on ownership rebind (Codex auth-lens hardening round 2 — Option B,
   // the primary close). If this connect CHANGES the row's bound userId (an
@@ -614,10 +685,9 @@ agentGatewayRoutes.post('/connect', async (c) => {
   // new owner's avatar. Evict them BEFORE registering the new session so a stale
   // ledger-capable handle can't spend the new owner's real CT. The map is keyed on
   // sessionId, so we scan by agentId (same helper partner-hatcher already uses for
-  // its re-register hygiene). A rebind is only possible when an owned token brought
-  // a userId that differs from the prior bound userId.
-  const ownershipRebound =
-    tokenUserId !== null && tokenUserId !== existingBoundUserId;
+  // its re-register hygiene). This includes healing an unbound row with an
+  // explicit identity credential, not only owned-token rebinds.
+  const ownershipRebound = ownerBinding.ownershipChanged;
   if (ownershipRebound) {
     try {
       for (const stale of npcSimulation.findActiveSessionsByAgentIds([resolvedAgentId])) {
@@ -795,9 +865,9 @@ agentGatewayRoutes.post('/connect', async (c) => {
     resolvedAgentId,
     identityType,
     sessionId,
-    existingUserId: pendingConn?.userId ?? null,
-    existingAvatarId: pendingConn?.avatarId ?? null,
-    existingAvatarName: pendingConn?.avatarName ?? null,
+    existingUserId: pendingConn?.userId ?? identityKeyUserId,
+    existingAvatarId: pendingConn?.avatarId ?? identityKeyAvatarId,
+    existingAvatarName: pendingConn?.avatarName ?? identityKeyAvatarName,
   });
   const sessionTicket = resolved.ticket;
   if (resolved.avatarId) {
@@ -807,22 +877,9 @@ agentGatewayRoutes.post('/connect', async (c) => {
     npcSimulation.bindAgentAvatarAttribution(sessionId, resolved.avatarId);
   }
 
-  // First-contact stays NON-LEDGER by design (Codex auth-lens, orchestrator
-  // decision 2026-06-03 — BLOCKING #3 is the inconsistency, NOT the feature).
-  // A first-contact /connect grants the config-level `ledgerCapable=true` flag
-  // (no existing bound owner), but its `boundUserId` is null and the bot row's
-  // `userId` stays null, so the round-2 resolve-time backstop
-  // (`config.boundUserId === liveBot.userId`, both non-null) DEMOTES it to
-  // non-ledger — the cove then rejects it the same as any no-active-avatar
-  // session. That demotion is what RESOLVES the lens's "ledgerCapable=true but
-  // can't actually play" contradiction: it's simply non-ledger, consistently.
-  //
-  // We deliberately do NOT bind the row's `userId` back to the agent's
-  // self-resolved user here. "A first-contact agent plays its OWN avatar for
-  // real CT" is a deferred FEATURE (needs the bot-row userId bind + an active
-  // avatar) tracked as FOLLOW-UP #6, not part of this security pass. First-
-  // contact agents reach real-CT play through the owned-connection-token claim
-  // or the ed25519 partner-signed Hatcher path (both ledger-capable).
+  // Explicit identity credentials heal previously-unbound rows organically on
+  // reconnect. A user without an active avatar is still non-ledger until `/join`
+  // or the game UI creates one; bare agentId connects remain unbound.
 
   // Phase 5.1 — first-time identity keypair. The `/connect` response
   // gains an `identity` block the agent is instructed (via SKILL.md) to
@@ -834,8 +891,9 @@ agentGatewayRoutes.post('/connect', async (c) => {
   //   a) isFirstTime=true                 → include publicKey + secretKey
   //   b) isFirstTime=false, needsReauth=true (race loser) → include
   //      publicKey + needsHumanReauth flag, no secret
-  //   c) isFirstTime=false, needsReauth=false (returning user) → skip
-  //      the block entirely (agent already has its identity)
+  //   c) isFirstTime=false, needsReauth=false (returning user) → include
+  //      nonsecret publicKey + recovery metadata so a second fleet agent can
+  //      detect a missing signing secret before this live session expires
   //
   // Logging: only log `identity.issued` for the first-time case.
   let identityBlock: {
@@ -844,6 +902,9 @@ agentGatewayRoutes.post('/connect', async (c) => {
     secretKey?: string;
     isFirstTime: boolean;
     needsHumanReauth?: boolean;
+    secretIncluded?: boolean;
+    secretIssuedPreviously?: boolean;
+    recovery?: string;
   } | null = null;
   if (resolved.userId) {
     try {
@@ -854,6 +915,8 @@ agentGatewayRoutes.post('/connect', async (c) => {
           publicKey: ident.publicKey,
           secretKey: ident.secretKey,
           isFirstTime: true,
+          secretIncluded: true,
+          secretIssuedPreviously: false,
         };
         await logEvent({
           eventType: 'identity.issued',
@@ -874,8 +937,12 @@ agentGatewayRoutes.post('/connect', async (c) => {
           isFirstTime: false,
           needsHumanReauth: true,
         };
+      } else {
+        identityBlock = buildReturningIdentityDisclosure(
+          resolved.userId,
+          ident.publicKey,
+        );
       }
-      // Else: returning user, agent already has identity — omit block.
     } catch (err) {
       console.error('[AgentConnect] identity generation failed (non-fatal):', err);
     }
@@ -1015,6 +1082,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
     knowledge,
     ownedSkills,
     gameTools: gameToolsBundle,
+    protocol: agentProtocolPointer(resolveApiBase(), storedProtocolAck),
     identityType,
     autonomyMode,
     walletAddress,
@@ -1028,6 +1096,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
     // every connecting agent (not just Hatcher) so any framework that brings
     // its own brain starts orientation-aware. See CONNECT_ORIENTATION above.
     orientation: CONNECT_ORIENTATION,
+    ...(ownerBinding.identityMismatch ? { identityMismatch: true } : {}),
     ...(sessionTicket ? { sessionTicket } : {}),
     ...(identityBlock ? { identity: identityBlock } : {}),
     ...(walletBlock ? { wallet: walletBlock } : {}),
@@ -1287,6 +1356,7 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
 
   return c.json({
     sessionTicket,
+    protocol: agentProtocolPointer(resolveApiBase(), existingBot?.ack),
     // P0 gate fix (2026-07-03), ADDITIVE: the fresh agent bearer + its TTL
     // deadline. Present IFF the user has a bot row and the mint succeeded (a
     // reserved partner row or a mint failure keeps the legacy ticket-only
@@ -1814,8 +1884,12 @@ async function mintSessionTicketFromConnect(args: {
 // insert can burn budget on a spam wave.
 // ---------------------------------------------------------------------------
 const joinSchema = z.object({
+  // Keep in parity with the /connect identityType enum (minus the partner-only
+  // 'hatcher'). 'hermes' added 2026-07-17 (fleet brief #2): /connect accepted a
+  // hermes identity but /join couldn't provision its avatar, so Hermes BYO
+  // agents fell back to a nanoclaw identity for first-contact onboarding.
   identityType: z.enum([
-    'openclaw', 'ironclaw', 'nanoclaw', 'milady', 'custom', 'anonymous',
+    'openclaw', 'ironclaw', 'nanoclaw', 'milady', 'custom', 'anonymous', 'hermes',
   ]),
   identityKey: z.string().min(1).max(256),
   /** Optional display name for the auto-provisioned avatar. Falls back to `Unnamed Agent`. */
@@ -2359,6 +2433,7 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
   // reconnect may be live while ownership is unproven; it must not mint to OR
   // emit a quest-credit userId for the bot row's victim owner.
   let visitUserId: string | null = null;
+  let visitKnowledgeSubject: { userId: string; avatarId: string } | null = null;
   const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (botConfig) {
     try {
@@ -2373,6 +2448,9 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
         const rewardSubject = await resolveAgentSession(sessionId);
         const avatarId = agentBuildingChatRewardAvatarId(rewardSubject);
         visitUserId = avatarId ? (rewardSubject?.userId ?? null) : null;
+        visitKnowledgeSubject = avatarId && rewardSubject?.userId
+          ? { userId: rewardSubject.userId, avatarId }
+          : null;
         if (avatarId) {
           // M2 anti-faucet: idempotent per (avatar, building, reason, UTC-day). A
           // same-day repeat visit returns false → tokenAwarded stays 0 (honest).
@@ -2408,26 +2486,44 @@ agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
     metadata: { buildingId, activity: picked },
   }).catch(() => {});
 
-  // Persist knowledge to openclaw_bots table (fire-and-forget)
+  // Keep openclaw_bots continuity for every live session. Mirror into the
+  // active avatar + hosted ElizaOS agent only when this exact bearer proved
+  // ledger ownership; a bare-agentId reconnect must not poison a victim brain.
   if (botConfig && knowledgeGained) {
-    (async () => {
-      try {
-        const bot = await db.query.agentBots.findFirst({
-          where: eq(agentBots.agentId, botConfig.agentId),
-        });
-        if (bot) {
-          const current: string[] = bot.knowledge ?? [];
-          if (!current.includes(knowledgeGained!)) {
-            await db.update(agentBots).set({
-              knowledge: [...current, knowledgeGained!],
-              updatedAt: new Date(),
-            }).where(eq(agentBots.id, bot.id));
-          }
+    try {
+      const bot = await db.query.agentBots.findFirst({
+        where: eq(agentBots.agentId, botConfig.agentId),
+      });
+      if (bot) {
+        const current: string[] = bot.knowledge ?? [];
+        if (!current.includes(knowledgeGained)) {
+          await db.update(agentBots).set({
+            knowledge: [...current, knowledgeGained],
+            updatedAt: new Date(),
+          }).where(eq(agentBots.id, bot.id));
         }
-      } catch (err) {
-        console.error('[AgentGateway] Failed to persist knowledge:', err);
       }
-    })();
+      if (visitKnowledgeSubject) {
+        await syncHostedAgentKnowledge({
+          ...visitKnowledgeSubject,
+          entries: [knowledgeGained],
+          source: 'building-visit',
+          metadata: { buildingId, interaction: 'visit' },
+        });
+        void installBuildingSkillIntoAgent({
+          ...visitKnowledgeSubject,
+          buildingId,
+          provenAgentId: botConfig.agentId,
+        }).catch((error) => {
+          console.warn(
+            '[AgentGateway] Building skill auto-install failed (non-fatal):',
+            error instanceof Error ? error.message : error,
+          );
+        });
+      }
+    } catch (err) {
+      console.error('[AgentGateway] Failed to persist knowledge:', err);
+    }
   }
 
   void logEventFromContext(c, {
@@ -2557,6 +2653,7 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
       dynamicContext,
       state: {
         nearLocation: buildingId,
+        platformAgentId: system.locationAgent.platformAgentId,
       },
     });
     responseContent = response.content;
@@ -2568,6 +2665,7 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
   // Persist the teaching into the bot's learned-knowledge ledger
   let tokenAwarded = 0;
   let knowledgePersisted = false;
+  let chatKnowledgeSubject: { userId: string; avatarId: string } | null = null;
   const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   if (botConfig) {
     try {
@@ -2597,6 +2695,12 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
         // knowledge persistence, but tokenAwarded remains 0.
         const rewardSubject = await resolveAgentSession(sessionId);
         const rewardAvatarId = agentBuildingChatRewardAvatarId(rewardSubject);
+        if (rewardAvatarId && rewardSubject?.userId) {
+          chatKnowledgeSubject = {
+            userId: rewardSubject.userId,
+            avatarId: rewardAvatarId,
+          };
+        }
         if (rewardAvatarId) {
           // M7b anti-faucet: idempotent per (avatar, building, UTC-day) across
           // human, connected-agent, and autonomous teacher-chat surfaces. A
@@ -2628,26 +2732,38 @@ agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
   // chat response and is fully independent of the CT money path above. Lands in
   // the agent's OWN ElizaOS runtime when warm (the wrapper case) else the
   // avatar-keyed keyword store (readEarnedSkillLessons reads either back).
-  if (botConfig && responseContent.trim().length > 0) {
+  let lessonPlatformAgentId = '';
+  if (chatKnowledgeSubject) {
+    try {
+      const provenAvatar = await db.query.avatars.findFirst({
+        columns: { platformAgentId: true },
+        where: eq(avatars.id, chatKnowledgeSubject.avatarId),
+      });
+      lessonPlatformAgentId = provenAvatar?.platformAgentId ?? '';
+    } catch {
+      // Preserve the avatar-keyed earned-skill fallback if this cheap lookup
+      // fails; the proven avatar subject itself remains authoritative.
+    }
+  }
+  const lessonTarget = chatKnowledgeSubject
+    ? {
+        avatarId: chatKnowledgeSubject.avatarId,
+        platformAgentId: lessonPlatformAgentId,
+      }
+    : null;
+  if (botConfig && lessonTarget && responseContent.trim().length > 0) {
     void (async () => {
       try {
-        const learnBot = await db.query.agentBots.findFirst({
-          where: eq(agentBots.agentId, botConfig.agentId),
-          columns: { userId: true },
-        });
-        if (!learnBot?.userId) return;
-        const learnAvatar = await db.query.avatars.findFirst({
-          where: and(eq(avatars.userId, learnBot.userId), eq(avatars.isActive, true)),
-          columns: { id: true, platformAgentId: true },
-        });
-        if (!learnAvatar) return;
         const teacherName = system.locationAgent.agentName;
         const lesson = `${teacherName} at ${theme?.label ?? buildingId} taught me: ${responseContent
           .replace(/\s+/g, ' ')
           .slice(0, 240)}`;
         await recordEarnedSkillLesson({
-          platformAgentId: learnAvatar.platformAgentId ?? '',
-          avatarId: learnAvatar.id,
+          // A proven owner without a hosted platform agent still uses the
+          // baseline avatar-keyed fallback. Never recover this subject from
+          // bot.userId.
+          platformAgentId: lessonTarget.platformAgentId,
+          avatarId: lessonTarget.avatarId,
           agentId: botConfig.agentId,
           buildingId,
           teacherName,

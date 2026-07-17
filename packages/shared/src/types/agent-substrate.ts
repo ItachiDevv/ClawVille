@@ -28,6 +28,27 @@ export type AgentWireProtocol =
   | 'nanoclaw'
   | 'hatcher-proxy';
 
+/** Informational installation posture for a connected/BYO agent's protocol manual. */
+export type AgentProtocolAckState = 'none' | 'current' | 'stale';
+
+/**
+ * Extended protocol pointer returned only by the universal agent connect and
+ * signed-reconnect surfaces. The Hatcher partner pointer deliberately uses its
+ * separate frozen three-field response shape.
+ */
+export interface DirectAgentProtocolPointer {
+  version: number;
+  contentHash: string;
+  url: string;
+  manifestUrl: string;
+  auth: string;
+  /**
+   * Optional, additive hint comparing the agent's last manual-install ACK with
+   * the currently served manual. Informational only; it never gates play.
+   */
+  ackState?: AgentProtocolAckState;
+}
+
 /**
  * Identity framework an agent is connecting as. Influences how the /connect
  * endpoint resolves the agentId and whether outbound chat routing is used.

@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { eq, and, or, isNull } from 'drizzle-orm';
 import { lucia } from '../lib/auth';
@@ -34,6 +34,15 @@ import { z } from 'zod';
 import { DEFAULT_AGENT_MODEL_KEY } from '@clawville/shared';
 
 export const authRoutes = new Hono<AppContext>();
+
+/** Body-parse guard: a malformed/empty JSON body is client error 400, never an uncaught 500. */
+async function readJsonBody(c: Context): Promise<unknown> {
+  try {
+    return await c.req.json();
+  } catch {
+    return null;
+  }
+}
 
 authRoutes.use('*', sessionMiddleware);
 
@@ -302,7 +311,7 @@ authRoutes.post('/signup', async (c) => {
     });
   }
 
-  const body = await c.req.json();
+  const body = await readJsonBody(c);
   const result = signupSchema.safeParse(body);
 
   if (!result.success) {
@@ -426,7 +435,7 @@ const loginSchema = z.object({
 });
 
 authRoutes.post('/login', async (c) => {
-  const body = await c.req.json();
+  const body = await readJsonBody(c);
   const result = loginSchema.safeParse(body);
 
   if (!result.success) {
@@ -548,13 +557,13 @@ authRoutes.post('/forgot-password', async (c) => {
     });
   }
 
-  const body = await c.req.json().catch(() => ({}));
+  const body = (await readJsonBody(c)) ?? {};
   const parsed = forgotPasswordSchema.safeParse(body);
 
-  // Invalid body: still return the generic success message — never
-  // let a 400 distinguish "email format wrong" from "email not on the
-  // list". The shape of the response stays identical so the client
-  // can't infer anything about the input.
+  // Invalid body — malformed JSON included — still returns the generic
+  // success message: never let a 400 distinguish "email format wrong"
+  // from "email not on the list". The response shape stays identical so
+  // the client can't infer anything about the input.
   if (!parsed.success) {
     return c.json({
       ok: true,
@@ -653,7 +662,7 @@ authRoutes.post('/reset-password', async (c) => {
     });
   }
 
-  const body = await c.req.json().catch(() => ({}));
+  const body = (await readJsonBody(c)) ?? {};
   const parsed = resetPasswordSchema.safeParse(body);
 
   // Generic 400 for any failure — body shape, missing fields, weak
@@ -1020,7 +1029,7 @@ authRoutes.post('/milady-session-exchange', async (c) => {
     });
   }
 
-  const body = await c.req.json();
+  const body = await readJsonBody(c);
   const parsed = miladyExchangeSchema.safeParse(body);
   if (!parsed.success) {
     throw new HTTPException(400, { message: 'sessionId is required' });
@@ -1267,7 +1276,9 @@ authRoutes.post('/guest', async (c) => {
     });
   }
 
-  const body = await c.req.json().catch(() => ({}));
+  // Missing/malformed body coerces to {} (all fields optional) — a bare
+  // `POST /guest` with no body has always minted a guest; keep that contract.
+  const body = (await readJsonBody(c)) ?? {};
   const parsed = guestBodySchema.safeParse(body);
   if (!parsed.success) {
     throw new HTTPException(400, { message: 'Invalid request body' });
