@@ -1,5 +1,7 @@
 # ClawVille — 3D Structure
 
+**Last edit:** 2026-07-17 (Meshy fun animation pack, local diff pending visual sign-off): added the 15-clip Meshy-rig `_emotes2.glb` family (12 shop emotes + 3 ambient-only clips), bundle version 1, targeted runtime loading, and idle-only wandering-NPC one-shots. Meshy and Mixamo clips keep separate base scenes because their rest poses differ; donor GLBs live outside `public/`. See §6f.
+
 **Last Audited:** 2026-07-17 (Kelp Revival B3 + humanoid-width review fix): the northeast Kelp Forest now contains a canonical shared eight-wall switchback maze, a 128-wu south entry, a 480×320-wu center clearing, a tile-aligned photo spot, and a one-draw pulsing pearl/shell landmark. Nine shared AABBs (eight walls plus the landmark) drive client movement and server A* with exact humanoid-expanded tile-center rasterization (lanes sized for the widest live body class — 100-wu humanoid — after review caught 75-wu lanes locking out guest possession and humanoid NPC/agent bodies). Section 8 records the live blade, collider, path-clearance, and draw budgets.
 
 **Last edit:** 2026-07-16 (pre-existing web strict-TypeScript cleanup; no runtime behavior change): the VRM cosmetic head-fit boundary now uses the upstream `Pick<VRM, 'humanoid' | 'scene'>` surface, preserving the library's `VRMHumanBoneName` parameter contract while accepting loaded VRMs in the preview and player render paths. The deferred resident-preload fallback uses `globalThis.setTimeout` so DOM typings no longer narrow the unsupported-window branch to `never`. Render behavior, avatar/cosmetic fit math, assets, draw calls, and per-frame work are unchanged.
@@ -667,8 +669,10 @@ Lobster / crayfish GLB avatars don't participate (no swim/fly clip in their proc
 
 **Every animation change MUST follow this checklist.** Hard-won across an evening of iteration on emote loading, NPC stutter, and jump pipeline. Skipping any of these reintroduces a class of bug we've already paid for. Same standing as the same-diff doc rule.
 
+**Animation bundle inventory (2026-07-17).** `_emotes.glb` contains 19 legacy Mixamo-family clips and is cache-versioned by `EMOTE_BUNDLE_VERSION`. `_emotes2.glb` contains 15 Meshy-family clips (12 player/shop emotes plus 3 ambient-only system clips) and is cache-versioned by `EMOTE2_BUNDLE_VERSION` (both currently version 1). Each bundle owns exactly one source rig/rest-pose scene; channel rebinding is safe only within that family. Never merge clips across rig families with different rest poses.
+
 **1. Asset delivery — bundle, don't fan out.**
-- New emote / one-shot clips go INTO `apps/web/public/avatars/animations/_emotes.glb` via `scripts/build-anim-bundles.mjs`. Single multi-clip GLB per group; runtime picks by name via the `bundle.glb#clipName` syntax in `ANIM_PATHS`.
+- New emote / one-shot clips go into the correct rig-family multi-clip bundle via `scripts/build-anim-bundles.mjs`: `_emotes.glb` for the legacy Mixamo family and `_emotes2.glb` for the Meshy family. Never merge different source rest poses into one base document. Runtime picks by name via the `bundle.glb#clipName` syntax in `ANIM_PATHS`.
 - Never add 19 individual `.glb` files to the manifest. The hosting cost is fine; the **request count** at mount is what kills cold-load (visible in network panel as the `injected.js` fanout pattern). gltf-transform `dedup()` shrinks the bundle 11 % below the sum of singles anyway.
 - Locomotion (idle/walk/run) stays separate per-character — they're SW-precached and must load eagerly, and bundling them would force the 2.2 MB emote payload to load alongside.
 
