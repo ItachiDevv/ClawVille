@@ -39,7 +39,8 @@ if (databaseUrl.includes(PROD_DATABASE_REF) && !allowProd) {
   process.exit(1);
 }
 
-const { and, avatars, db, eq, isNull } = await import('@clawville/database');
+const { and, avatars, db, eq, isNull, sql, users } = await import('@clawville/database');
+const { BOT_USER_EMAIL_DOMAIN } = await import('../src/services/activity/bots/bot-pool');
 // Single implementation policy: reuse the staging-proven lazy-backfill row mint
 // (`backfillPlatformAgentForAvatar`, CAS race-guarded, no double-genesis) as the
 // batch entry point too — two implementations of the same row mint is exactly
@@ -48,6 +49,14 @@ const { backfillPlatformAgentForAvatar } = await import(
   '../src/services/avatar-agent-provisioning'
 );
 
+// Two exclusions are load-bearing — BOTH caught by prod dry-runs before apply:
+// 1. Guests (274→95): demo-economy accounts must NEVER get a hosted runtime.
+//    The lazy path enforces this at the route's cold is_guest read; the batch
+//    entry point mirrors it via the denormalized `avatars.isGuest`.
+// 2. Activity backfill bots (95→human tail): `Bot-Crab-###` avatars belong to
+//    seeded bot-owner users (`bot-NNN@bots.clawville.internal` — the seeder's
+//    authoritative marker). Bots are never players and provisioning ~80 idle
+//    ElizaOS runtimes would be pure sim cost.
 const candidates = await db
   .select({
     userId: avatars.userId,
@@ -55,7 +64,13 @@ const candidates = await db
     name: avatars.name,
   })
   .from(avatars)
-  .where(and(eq(avatars.harness, 'milady'), isNull(avatars.platformAgentId)));
+  .innerJoin(users, eq(users.id, avatars.userId))
+  .where(and(
+    eq(avatars.harness, 'milady'),
+    isNull(avatars.platformAgentId),
+    eq(avatars.isGuest, false),
+    sql`(${users.email} IS NULL OR ${users.email} NOT ILIKE ${`%${BOT_USER_EMAIL_DOMAIN}`})`,
+  ));
 
 console.log(`[repair-provisioning] mode=${apply ? 'APPLY' : 'DRY-RUN'} accounts=${candidates.length}`);
 for (const candidate of candidates) {
