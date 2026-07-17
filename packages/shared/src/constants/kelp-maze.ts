@@ -24,10 +24,11 @@ export const KELP_MAZE_WALL_THICKNESS_WU = 24;
  * bodies clamp at ENTITY_HALF_HUMANOID=50 (100-wu body). A 75-wu opening
  * locked those classes out (and let server A*, rastered at 25, path a
  * humanoid body into a lane its client clamp cannot traverse). 128 wu =
- * 4 A* tiles: humanoid keeps 28 wu total clearance, chibi keeps 78 wu, and
- * every opening is centered on a 32-wu A* tile center so the humanoid-
- * expanded free band (128 − 100 = 28 wu... band [±14] around center) always
- * contains exactly one walkable tile-center lane.
+ * 4 A* tiles: humanoid keeps 28 wu total clearance and chibi keeps 78 wu at
+ * the south entry. The east/west interior lanes are physically 132 wu because
+ * the 24-wu outer walls contribute a 12-wu inward half-thickness; those lanes
+ * keep 32 wu humanoid clearance. Every opening is centered on a 32-wu A* tile
+ * center so its humanoid-expanded free band contains a walkable tile-center lane.
  */
 export const KELP_MAZE_PATH_WIDTH_WU = 128;
 
@@ -67,15 +68,16 @@ export const KELP_MAZE_LANDMARK_COLLIDER = Object.freeze({
   halfZ: 112,
 }) satisfies KelpMazeWallAabb;
 
-/** Tile-center-aligned photo position west of the pearl, outside its chibi-expanded AABB. */
+/** Tile-center photo position west of the pearl; clears its HUMANOID-expanded AABB by 42 wu. */
 export const KELP_MAZE_PHOTO_SPOT = Object.freeze({
   worldX: 7600,
   worldZ: -10000,
 });
 
 /**
- * Eight stable AABBs form a south-entry switchback maze. Alternating 128-wu
- * openings sit on A* tile-center lanes: entry x=7824 (exact tile center),
+ * Eight stable AABBs form a south-entry switchback maze. The south entry is
+ * 128 wu; east/west lanes are physically 132 wu due to the outer walls' 12-wu
+ * half-thickness. Openings sit on A* tile-center lanes: entry x=7824,
  * east lane tile center x=8240 (free band 8226..8258 after humanoid
  * expansion), west lane tile center x=7408 (free band 7390..7422). No
  * consumer may duplicate these numeric wall values.

@@ -799,7 +799,7 @@ No `InstancedMesh + ShaderMaterial` — known WebGPU silent crash on Iris Xe. Me
 | Geometry / draws | Per variant: 1,800 blades, 32,400 vertices, 28,800 triangles, 1 merged indexed `BufferGeometry`, and 1 mesh draw; total: 97,200 vertices, 86,400 triangles, 3 draws. Source planes are disposed after merge |
 | Material | Three `MeshStandardNodeMaterial` instances using deep green-teal baked vertex palettes; existing world lighting only |
 | Wind | Slow, heavy TSL `positionNode` displacement from `positionLocal`, `time`, normalized blade height, and a seeded per-blade phase attribute; merged bounds include the maximum displacement |
-| Runtime gate | `showWaterFogParticles && showGroundCover && !FORCE_WEBGL`; wrapper is `perf:kelp-forest` / `userData.perfChunk='kelp-forest'` |
+| Runtime gate | AMBIENT blades only (`KelpForestAmbient`): `showWaterFogParticles && showGroundCover && !FORCE_WEBGL`; wrapper `perf:kelp-forest`. The maze walls + landmark are a SEPARATE component with NO gate — see §8b mount policy |
 
 The forest adds no light, postprocessing pass, instancing, `useFrame`, or per-frame allocation. B3 layers the shared human/agent maze contract below onto the same three foliage buckets.
 
@@ -808,6 +808,8 @@ The forest adds no light, postprocessing pass, instancing, `useFrame`, or per-fr
 | Spec | Value |
 |---|---|
 | Canonical layout | `packages/shared/src/constants/kelp-maze.ts`; 8 readonly, stable-ID wall AABBs imported by renderer, client collision, and server collision/pathfinding |
+| Mount policy (review BLOCKING fix 2026-07-17) | `KelpMazeStructure` (1,929 wall blades + landmark, group `perf:kelp-maze`) mounts UNCONDITIONALLY on every render path — its 9 colliders are always live, so visibility must match collision on every hardware tier (the prior all-kelp gate produced invisible walls on Iris Xe / governor tier 1). WebGPU: TSL wind + emissive pulse. `FORCE_WEBGL`: static plain `MeshStandardMaterial` (vertexColors) + constant-emissive pearl — NEVER a NodeMaterial on the WebGL path. Ambient forest (`KelpForestAmbient`) keeps the perf gate. Bounding box/sphere computed + wind-expanded, so distance frustum culling is correct |
+| Lane widths (precise) | South entry 128 wu physical; east/west interior lanes physically 132 wu (outer walls contribute 12-wu half-thickness); humanoid free bands 28/32/32 wu, each containing one A* tile-center lane (7824 / 8240 / 7408) |
 | Forest / maze bounds | Forest: x `7040..8576`, z `-10668..-9132` (1,536×1,536 wu). Maze: x `7328..8320`, z `-10384..-9424` (992×960 wu) |
 | Entry | South side at `(7824, -9424)`, physical width 128 wu (4 A* tiles), aligned to one A* tile-center lane; ambient approach carve widens by the 24-wu maximum visual sway without changing collision geometry |
 | Body/path derivation | Sized for the WIDEST live body class: `ENTITY_HALF_HUMANOID=50` wu → 100-wu body keeps 28 wu total clearance; `ENTITY_HALF_CHIBI=25` keeps 78 wu. (Review fix 2026-07-17 — original 75-wu lanes fit only the chibi clamp and locked out guest NPC-possession + humanoid NPC/agent bodies) |
