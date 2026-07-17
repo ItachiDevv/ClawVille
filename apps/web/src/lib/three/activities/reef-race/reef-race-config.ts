@@ -752,6 +752,19 @@ export const CLIENT_REBASE_VEL = 0.5; // 50% of the velocity error per snapshot
 export const CLIENT_REBASE_ROT = 0.5; // 50% of the (shortest-arc) heading error
 
 /**
+ * Founder knob for the self-kart's presentation-only reconciliation offset.
+ * k=10 is a 100 ms time constant (~69 ms half-life): authority still rebases
+ * prediction immediately, while the screen receives that correction smoothly.
+ */
+export const SURF_REBASE_RENDER_DAMPING = 10;
+
+/**
+ * Maximum accumulated self-kart XZ render offset (wu). Larger corrections keep
+ * their residual as an immediate step instead of smearing a pathological error.
+ */
+export const SURF_REBASE_RENDER_OFFSET_MAX = 120;
+
+/**
  * Hard-snap threshold (wu). When predicted vs server XZ error exceeds this, the
  * gap is a respawn / teleport / catastrophic desync — snap predicted straight
  * to the server pose instead of blending (which would visibly slide across the

@@ -88,6 +88,8 @@ import {
   CLIENT_REBASE_VEL,
   CLIENT_REBASE_ROT,
   CLIENT_REBASE_SNAP_DIST,
+  SURF_REBASE_RENDER_DAMPING,
+  SURF_REBASE_RENDER_OFFSET_MAX,
   SURF_RIDE_HEIGHT,
   SURF_PITCH_TRIM_DEG,
   SURF_PITCH_WAVE_GAIN,
@@ -988,6 +990,10 @@ function ReefRacePlayerInner({
     vz: 0,
     rot: 0,
   });
+  // Self-only presentation offset. A soft authority rebase moves prediction
+  // immediately, then this inverse offset keeps the arrival frame visually
+  // continuous and decays away in the render loop. Allocated once per rider.
+  const rebaseRenderOffsetRef = useRef({ x: 0, z: 0, rot: 0 });
   const predictInitRef = useRef(false);
   // Fixed-timestep accumulator (s). Render frames are ~60 fps with variable dt,
   // but integrateSurfStep's drag/grip multipliers assume the server's fixed
@@ -1236,6 +1242,9 @@ function ReefRacePlayerInner({
     return () => {
       predictInitRef.current = false;
       predictAccumRef.current = 0;
+      rebaseRenderOffsetRef.current.x = 0;
+      rebaseRenderOffsetRef.current.z = 0;
+      rebaseRenderOffsetRef.current.rot = 0;
       clearPredictionHistory(predictionHistoryRef.current!);
       resetSelfPoseBus();
     };
@@ -1450,6 +1459,17 @@ function ReefRacePlayerInner({
     // Cap delta to prevent spiral-of-death on stall frames.
     const dt = Math.min(delta, 0.1);
 
+    // Decay the prior self-only render correction BEFORE ingesting this frame's
+    // snapshot. A new inverse correction therefore cancels its prediction rebase
+    // exactly on the arrival frame, then begins easing out next render frame.
+    if (predictsSelf) {
+      const renderOffset = rebaseRenderOffsetRef.current;
+      const decay = Math.exp(-SURF_REBASE_RENDER_DAMPING * dt);
+      renderOffset.x *= decay;
+      renderOffset.z *= decay;
+      renderOffset.rot *= decay;
+    }
+
     // ─── Snapshot ingestion (BUG FIX Bug 1 + Bug 2) ──────────────────────────
     // Detect new entity object by identity — store builds a new object per delta.
     if (entity !== lastEntityRef.current) {
@@ -1530,6 +1550,9 @@ function ReefRacePlayerInner({
           prevTickRef.current.vx = svx;
           prevTickRef.current.vz = svz;
           prevTickRef.current.rot = srot;
+          rebaseRenderOffsetRef.current.x = 0;
+          rebaseRenderOffsetRef.current.z = 0;
+          rebaseRenderOffsetRef.current.rot = 0;
           predictInitRef.current = true;
           // Fresh seed — drop any accumulated fixed-step time.
           predictAccumRef.current = 0;
@@ -1553,6 +1576,9 @@ function ReefRacePlayerInner({
             prevTickRef.current.vx = svx;
             prevTickRef.current.vz = svz;
             prevTickRef.current.rot = srot;
+            rebaseRenderOffsetRef.current.x = 0;
+            rebaseRenderOffsetRef.current.z = 0;
+            rebaseRenderOffsetRef.current.rot = 0;
             // Teleport — discard stale accumulated time so we don't replay
             // pre-snap motion against the new pose.
             predictAccumRef.current = 0;
@@ -1595,16 +1621,30 @@ function ReefRacePlayerInner({
             const errDist = Math.hypot(posErrorX, posErrorZ);
             const appliedX = posErrorX * CLIENT_REBASE_POS;
             const appliedZ = posErrorZ * CLIENT_REBASE_POS;
+            const appliedRot = rotError * CLIENT_REBASE_ROT;
             pred.x += appliedX;
             pred.z += appliedZ;
             pred.vx += velErrorX * CLIENT_REBASE_VEL;
             pred.vz += velErrorZ * CLIENT_REBASE_VEL;
-            pred.rot += rotError * CLIENT_REBASE_ROT;
+            pred.rot += appliedRot;
             // Shift the render-interp anchor by the same correction so the
             // rebase applies uniformly across the blend (no partial-alpha kink).
             prevTickRef.current.x += appliedX;
             prevTickRef.current.z += appliedZ;
-            prevTickRef.current.rot += rotError * CLIENT_REBASE_ROT;
+            prevTickRef.current.rot += appliedRot;
+            // Prediction/history convergence stays immediate. Apply the exact
+            // inverse only to the self render pose, then cap pathological
+            // accumulated corrections; any residual deliberately remains a step.
+            const renderOffset = rebaseRenderOffsetRef.current;
+            renderOffset.x -= appliedX;
+            renderOffset.z -= appliedZ;
+            renderOffset.rot -= appliedRot;
+            const renderOffsetLength = Math.hypot(renderOffset.x, renderOffset.z);
+            if (renderOffsetLength > SURF_REBASE_RENDER_OFFSET_MAX) {
+              const renderOffsetScale = SURF_REBASE_RENDER_OFFSET_MAX / renderOffsetLength;
+              renderOffset.x *= renderOffsetScale;
+              renderOffset.z *= renderOffsetScale;
+            }
             // Velocity reconciliation applies directly to `pred`; unlike the
             // position/yaw anchors it needs no matching previous-tick shift.
             pushPredictionSample(predictionHistory, predictionTimeRef.current, pred);
@@ -1801,6 +1841,14 @@ function ReefRacePlayerInner({
       interpRot = lerpAngle(prevTick.rot, pred.rot, renderAlpha);
       interpVx = prevTick.vx + (pred.vx - prevTick.vx) * renderAlpha;
       interpVz = prevTick.vz + (pred.vz - prevTick.vz) * renderAlpha;
+
+      // Authority rebases prediction/history immediately, but reaches the
+      // screen through this exponentially decaying inverse offset. Camera,
+      // group and dev probe all consume the same smoothed pose below.
+      const renderOffset = rebaseRenderOffsetRef.current;
+      interpX += renderOffset.x;
+      interpZ += renderOffset.z;
+      interpRot += renderOffset.rot;
       lastRotRef.current = interpRot;
 
       // Publish the RENDERED (blended) pose for the chase camera — camera and
@@ -1843,7 +1891,7 @@ function ReefRacePlayerInner({
       // banked-datum + DAMPED Gerstner wave heave + a small ride-height, plus
       // the sim's raw airborne heightOffset. Banking/jumps remain immediate.
       const bankedDatum = bankedDatumYAtT(interpX, interpZ, tHere);
-      const rawWaveHeave = surfWaveHeightAt(interpX, interpZ, surfTime);
+      const centerWave = surfWaveHeightAt(interpX, interpZ, surfTime);
 
       // SURF TILT — pitch (nose-up trim + wave fore-aft slope) + roll (CONFORM to the
       // surface's lateral slope so the board lies flat on the banked/waved water).
@@ -1859,6 +1907,9 @@ function ReefRacePlayerInner({
       const bankL = bankedDatumYAtT(rxL, rzL, tHere);
       const waveR = surfWaveHeightAt(rxR, rzR, surfTime);
       const waveL = surfWaveHeightAt(rxL, rzL, surfTime);
+      // Board-footprint heave box filter: the ~151wu board bridges chop shorter
+      // than itself. Pitch/roll inputs remain the same board-span differences.
+      const rawWaveHeave = (centerWave + hNose + hTail + waveL + waveR) / 5;
       const rollSampleWidth = 2 * SURF_ROLL_HALF_WIDTH;
       const bankRoll = Math.atan2(bankR - bankL, rollSampleWidth);
       const rawSurfaceRoll = Math.atan2((bankR + waveR) - (bankL + waveL), rollSampleWidth);

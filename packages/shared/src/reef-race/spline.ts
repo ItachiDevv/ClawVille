@@ -176,6 +176,29 @@ export interface ClosestPointResult {
   closestZ: number;
 }
 
+/**
+ * Parabolic 3-point refinement of a discrete closest-sample scan. Given the
+ * squared distances at three equally spaced parameters (t-dt, t, t+dt) where
+ * the middle is the discrete minimum, returns the sub-sample offset in
+ * [-dt/2, +dt/2] of the parabola vertex. Falls back to 0 on a degenerate
+ * (flat) denominator.
+ */
+export function parabolicRefineOffset(
+  dPrevSq: number,
+  dMidSq: number,
+  dNextSq: number,
+  dt: number,
+): number {
+  const denominator = dPrevSq - 2 * dMidSq + dNextSq;
+  if (!Number.isFinite(denominator) || Math.abs(denominator) < 1e-12) return 0;
+
+  const offset = dt * 0.5 * (dPrevSq - dNextSq) / denominator;
+  if (!Number.isFinite(offset)) return 0;
+
+  const halfDt = Math.abs(dt) * 0.5;
+  return Math.max(-halfDt, Math.min(halfDt, offset));
+}
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 /**
