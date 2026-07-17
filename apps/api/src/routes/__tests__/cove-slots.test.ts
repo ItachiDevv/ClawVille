@@ -48,7 +48,15 @@ import { serializeSpinResult } from '../cove-slots.types';
 import type { AppContext } from '../../types';
 
 const HAS_DB = !!process.env.DATABASE_URL;
-const describeIfDb = HAS_DB ? describe : describe.skip;
+// Setup creates avatars through the real routes — the new-row wallet write path
+// hard-requires the Cloudflare worker (keypair-vault requireWorkerEnv), so gate
+// on real worker creds too (a sibling suite may leak an 'example.invalid'
+// placeholder into env; treat that as absent).
+const HAS_WALLET_INFRA =
+  !!process.env.CLOUDFLARE_WORKER_URL &&
+  !process.env.CLOUDFLARE_WORKER_URL.includes('example.invalid') &&
+  !!process.env.CLOUDFLARE_WORKER_BEARER;
+const describeIfDb = HAS_DB && HAS_WALLET_INFRA ? describe : describe.skip;
 
 function buildApp() {
   const app = new Hono<AppContext>();
@@ -161,10 +169,13 @@ describe('Cove Slots — paytable + verify (no DB)', () => {
 
 // ─── DB-backed lifecycle tests ─────────────────────────────────────────────
 
+// Guarded top-level await import (bun test supports TLA) so module load doesn't
+// crash test discovery when DATABASE_URL is unset — CJS `require()` of the
+// workspace package does not resolve under bun test, so the old in-describe
+// require threw whenever DATABASE_URL was set. Kept `any`-typed like require.
+const dbMod = HAS_DB ? ((await import('@clawville/database')) as any) : null;
+
 describeIfDb('Cove Slots — session lifecycle (requires DATABASE_URL)', () => {
-  // We import @clawville/database here so the module load itself doesn't
-  // crash test discovery when DATABASE_URL is unset.
-  const dbMod = HAS_DB ? require('@clawville/database') : null;
 
   const TEST_EMAIL = `cove-${Date.now()}@clawville-test.com`;
   const TEST_PASSWORD = 'covepassword123';
@@ -195,20 +206,13 @@ describeIfDb('Cove Slots — session lifecycle (requires DATABASE_URL)', () => {
         species: 'cat',
         color: 'green',
         gender: 'male',
+        // Archetype-based create schema (characterConfig was removed; the
+        // route builds the persona from the archetype).
+        archetypeId: 'curious-scholar',
         personality: {
           habitat: 'forest',
           hobby: 'exploring',
           greeting: 'wave-hello',
-        },
-        characterConfig: {
-          bio: 'A cove-test avatar.',
-          greeting: 'Hello there!',
-          personality: 'Test avatar',
-          tone: 'friendly',
-          topics: ['cove'],
-          adjectives: ['lucky'],
-          rules: [],
-          style: [],
         },
       }),
     });

@@ -225,11 +225,19 @@ class AgentOrchestrator {
       // P3 slice 6 (surface #3): inject the connection protocol manual into a
       // ClawVille-HOSTED PLAYER runtime's OWN ElizaOS memory so it plays the same
       // contract a connected agent fetches from `/api/skills/protocol/skill.md`.
-      // Scoped to PLAYER runtimes only — a hosted avatar-agent (the default hosted
-      // ElizaOS/Milady agent) or a house agent. Teacher `location-agent`s + Nori
-      // `system-agent` don't play in-world, so the manual would be noise in their
-      // RAG. Fire-and-forget + fail-soft; NEVER blocks boot.
-      if (agentType === 'avatar-agent' || isHouseAgent) {
+      // Scoped to ALL PLAYER runtimes — hosted avatar-agents (the default hosted
+      // ElizaOS/Milady agent) AND every `openclaw-bot` shell (declared-gateway
+      // BYO, hermes-local/openclaw-local hosted, house agents). Widened from
+      // `avatar-agent || isHouseAgent` 2026-07-17 (founder uniformity directive:
+      // every hosted player class gets the manual — the old scope left a
+      // declared-gateway shell's external brain blind to the world contract
+      // unless the agent self-installed). Teacher `location-agent`s + Nori
+      // `system-agent` stay excluded — they are world NPCs, not players, and the
+      // manual would be noise in their teaching RAG. Injection is agent-scoped +
+      // version-deduped (idempotent), fire-and-forget + fail-soft; NEVER blocks
+      // boot. Regression gate: hosted-skill-runtime-probe (default openclaw-bot
+      // fixture, no house flag).
+      if (agentType === 'avatar-agent' || agentType === 'openclaw-bot' || isHouseAgent) {
         void this.injectProtocolKnowledgeIntoRuntime(runtime);
       }
 

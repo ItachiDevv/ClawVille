@@ -28,6 +28,7 @@
  */
 
 import * as THREE from 'three';
+import type { VRM } from '@pixiv/three-vrm';
 
 /**
  * Default on-screen height (world units) for every humanoid VRM avatar.
@@ -373,13 +374,7 @@ const HEAD_WEIGHT_THRESHOLD = 0.5;
 export const GLASSES_FACING_SIGN = -1;
 
 export function computeCosmeticHeadFit(
-  vrm: {
-    humanoid?: {
-      getRawBoneNode?: (name: string) => THREE.Object3D | null;
-      getNormalizedBoneNode?: (name: string) => THREE.Object3D | null;
-    } | null;
-    scene: THREE.Object3D;
-  } | null | undefined,
+  vrm: Pick<VRM, 'humanoid' | 'scene'> | null | undefined,
   category: 'hat' | 'glasses',
   renderScale: number,
   rigKey?: string,

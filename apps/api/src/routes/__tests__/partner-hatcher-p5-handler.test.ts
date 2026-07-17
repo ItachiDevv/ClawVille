@@ -24,7 +24,7 @@
  *   committed row is left honest (body-less, restorable), not rolled back.
  */
 
-import { describe, it, expect, beforeAll, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeAll, afterEach, afterAll, mock } from 'bun:test';
 import { createHash } from 'crypto';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
@@ -38,6 +38,7 @@ function ensureEnv(k: string, v: string) {
   if (!process.env[k]) process.env[k] = v;
 }
 ensureEnv('FINGERPRINT_SECRET', HEX32);
+const DB_URL_WAS_SET = !!process.env.DATABASE_URL;
 ensureEnv('DATABASE_URL', 'postgresql://u:p@localhost:5432/db');
 ensureEnv('CLOUDFLARE_WORKER_URL', 'https://example.invalid');
 ensureEnv('CLOUDFLARE_WORKER_BEARER', 'dummy');
@@ -194,11 +195,26 @@ const dbStub = {
 // export resolves) and override ONLY `db`. The real `sql` tag is kept (our no-op
 // tx.execute never runs it). Spreading the real module satisfies all the named
 // imports the transitive graph pulls in without enumerating ~40 table names.
+// Leak-guard: `mock.module` is process-global, so once this file's suite is done
+// every db property read delegates to the db that was live at this file's load —
+// later files (quest race guards etc.) see real behavior instead of this stub.
+let p5SuiteActive = true;
+afterAll(() => {
+  p5SuiteActive = false;
+});
 const realDb = await import('@clawville/database');
+const DELEGATE_DB = (realDb as unknown as { db: Record<string, unknown> }).db;
 mock.module('@clawville/database', () => ({
   ...realDb,
-  db: dbStub,
+  db: new Proxy(dbStub, {
+    get: (t, p, r) =>
+      p5SuiteActive ? Reflect.get(t, p, r) : Reflect.get(DELEGATE_DB, p, DELEGATE_DB),
+  }),
 }));
+// The database client is now loaded (and mocked), so drop the module-init
+// DATABASE_URL placeholder — later DB-gated suites in the shared bun process
+// must keep their skip-when-no-DB behavior instead of seeing a fake URL.
+if (!DB_URL_WAS_SET) delete process.env.DATABASE_URL;
 
 // --- WRITE-signature helper -------------------------------------------------
 function sha256hex(s: string): string {

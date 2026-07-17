@@ -34,6 +34,7 @@ import {
 } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
+import type { VRM } from '@pixiv/three-vrm';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'meshoptimizer';
 import { useQuery } from '@tanstack/react-query';
@@ -118,10 +119,7 @@ export interface CosmeticLoaderProps {
    * legacy bone-name lookup path (findHeadBone). Hat/glasses on non-humanoid
    * rigs are a Phase D concern.
    */
-  vrm?: {
-    humanoid?: { getRawBoneNode?: (name: string) => THREE.Object3D | null } | null;
-    scene: THREE.Object3D;
-  } | null;
+  vrm?: Pick<VRM, 'humanoid' | 'scene'> | null;
   /**
    * The world render scale applied to vrm.scene (from computeVRMAvatarFit).
    * Required by computeCosmeticHeadFit to convert head metrics from rig-native

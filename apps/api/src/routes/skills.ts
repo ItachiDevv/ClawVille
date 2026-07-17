@@ -31,15 +31,26 @@ import type { MiddlewareHandler } from 'hono';
 import { db, buildingSkills, agentBots, avatars, eq, and } from '@clawville/database';
 import { getBooksForBuilding, BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 import { lucia } from '../lib/auth';
+import { sessionMiddleware } from '../middleware/auth';
+import { requireAuthOrAgentSession } from '../middleware/require-auth-or-agent';
+import type { ActivityIdentity } from '../middleware/require-auth-or-agent';
+import { isGuestUser } from '../middleware/require-non-guest';
 import { logEventFromContext } from '../services/event-logger';
 import { requirePartnerKey, partnerRateLimit } from '../middleware/partner-key';
 import { createRateLimiter } from '../middleware/rate-limit';
+import { sessionDigest } from '../services/session-digest';
 import {
   PROTOCOL_VERSION,
+  buildPlayManual,
   buildProtocolManual,
   contentHashOf,
+  protocolPointer,
   resolveApiBase,
 } from '../services/skill-protocol';
+import {
+  BuildingSkillInstallError,
+  installBuildingSkillIntoAgent,
+} from '../services/building-skill-install';
 import type { AppContext } from '../types';
 
 export const skillsRoutes = new Hono<AppContext>();
@@ -74,6 +85,15 @@ const partnerSkillsRateLimit = partnerRateLimit({ maxPerWindow: 60, windowMs: 60
 // Keyed on the STABLE agentId (see the gate below), mirroring the partner 60/min
 // ceiling — one connected agent cannot hammer the 60s manifest cache into a DoS.
 const agentSkillsRateLimit = createRateLimiter({ maxPerWindow: 60, windowMs: 60_000 });
+
+// Claim writes can open an advisory-lock transaction and spend on embeddings,
+// so budget them per canonical subject (not IP or rotating bearer).
+const buildingSkillClaimRateLimit = createRateLimiter({ maxPerWindow: 30, windowMs: 60_000 });
+
+/** Test seam only; production never resets a subject's claim budget. */
+export function resetBuildingSkillClaimRateLimit(): void {
+  buildingSkillClaimRateLimit.reset();
+}
 
 // Own `skills:read` partner-key validator for the manifest/protocol composite
 // gate. (The per-building gate below keeps its own instance; both are the same
@@ -207,9 +227,9 @@ skillsRoutes.get(
       })
       .from(buildingSkills);
 
-    // The protocol manual is generated in-process — hash the SAME bytes the
-    // protocol endpoint serves so a partner's diff is exact.
-    const protocolMd = buildProtocolManual(apiBase);
+    // Both code-owned manuals are hashed from the SAME bytes their endpoints
+    // serve, independent of whether the seed table contains an entry row.
+    const playMd = buildPlayManual(apiBase);
 
     const buildings = rows
       .filter((r) => r.buildingId !== 'clawville-play')
@@ -223,25 +243,15 @@ skillsRoutes.get(
         url: `/api/skills/${r.buildingId}/skill.md`,
       }));
 
-    // The public entry skill is listed separately so a partner knows it's the
-    // one body it can fetch WITHOUT a partner key.
-    const playRow = rows.find((r) => r.buildingId === 'clawville-play');
-
     const body: Record<string, unknown> = {
       generatedAt: new Date().toISOString(),
-      protocol: {
+      protocol: protocolPointer(apiBase),
+      orientation: {
         version: PROTOCOL_VERSION,
-        contentHash: contentHashOf(protocolMd),
-        url: '/api/skills/protocol/skill.md',
+        contentHash: contentHashOf(playMd),
+        url: '/api/skills/clawville-play/skill.md',
+        public: true,
       },
-      orientation: playRow
-        ? {
-            version: playRow.generatorVersion,
-            contentHash: contentHashOf(playRow.content),
-            url: '/api/skills/clawville-play/skill.md',
-            public: true,
-          }
-        : null,
       buildings,
     };
 
@@ -587,10 +597,39 @@ async function serveBuildingSkill(
   });
 }
 
-// PUBLIC entry skill — registered BEFORE the gated wildcard so the open-
-// onboarding `clawville-play` meta skill is reachable with no partner key
-// (brand priority #2). No `via` tag — an organic fetch of the play skill counts.
-skillsRoutes.get('/clawville-play/skill.md', (c) => serveBuildingSkill(c, 'clawville-play', undefined));
+// PUBLIC entry skill — generated from code and registered BEFORE the gated
+// wildcard. It never consults `building_skills`, so an empty staging/dev seed
+// cannot take open onboarding offline.
+skillsRoutes.get('/clawville-play/skill.md', (c) => {
+  const md = buildPlayManual(resolveApiBase());
+  void logEventFromContext(c, {
+    eventType: 'skill_md.fetched',
+    agentId: c.req.header('x-clawville-agent-id') ?? null,
+    sessionId: c.req.header('x-clawville-session-id') ?? null,
+    payload: {
+      userAgent: c.req.header('user-agent') ?? null,
+      referer: c.req.header('referer') ?? null,
+      skillName: 'clawville-play',
+      generatorVersion: PROTOCOL_VERSION,
+      gated: false,
+    },
+  });
+
+  return new Response(md, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/markdown; charset=utf-8',
+      'Content-Disposition': 'attachment; filename="clawville-clawville-play.md"',
+      'Cache-Control': 'private, max-age=60',
+      'X-Skill-Name': 'clawville-play',
+      'X-Skill-Filename': 'clawville-clawville-play.md',
+      'X-Skill-Version': String(PROTOCOL_VERSION),
+      'X-Skill-Content-Hash': contentHashOf(md),
+      'Access-Control-Expose-Headers':
+        'Content-Disposition, X-Skill-Name, X-Skill-Filename, X-Skill-Version, X-Skill-Content-Hash',
+    },
+  });
+});
 
 // Per-building reads — DUAL gate (plan §4 points B + E):
 //   • Authenticated END-USERS (Lucia browser cookie or connected-agent session)
@@ -606,6 +645,192 @@ skillsRoutes.get(
   '/:buildingId/skill.md',
   endUserOrPartnerKey,
   (c) => serveBuildingSkill(c, c.req.param('buildingId'), c.get('skillReadVia')),
+);
+
+type BuildingSkillClaimDependencies = {
+  install?: typeof installBuildingSkillIntoAgent;
+  isGuest?: typeof isGuestUser;
+  allowSubject?: (subjectKey: string) => boolean;
+  onSuccess?: () => Promise<void> | void;
+};
+
+function buildingSkillClaimSubjectKey(identity: ActivityIdentity): string {
+  return identity.kind === 'agent'
+    ? `agent:${identity.agentId}`
+    : `user:${identity.userId}`;
+}
+
+type ClaimEventContext = {
+  get(key: string): unknown;
+  req: { header(name: string): string | undefined };
+};
+
+type ClaimSkillEventMetadata = {
+  name: string;
+  generatorVersion: number;
+};
+
+/**
+ * Emit the existing organic skill-fetch event after a successful install.
+ * Metadata lookup is fail-soft so analytics can never turn a persisted install
+ * into a 500; the canonical resolved identity, never caller headers, attributes
+ * the event to the human avatar or agent leaderboard leg.
+ */
+export async function emitBuildingSkillClaimEvent(
+  c: ClaimEventContext,
+  identity: ActivityIdentity,
+  buildingId: string,
+  dependencies: {
+    loadMetadata?: () => Promise<ClaimSkillEventMetadata | null>;
+    emit?: typeof logEventFromContext;
+  } = {},
+): Promise<void> {
+  let metadata: ClaimSkillEventMetadata | null = null;
+  try {
+    metadata = dependencies.loadMetadata
+      ? await dependencies.loadMetadata()
+      : ((await db.query.buildingSkills.findFirst({
+          where: eq(buildingSkills.buildingId, buildingId),
+          columns: { name: true, generatorVersion: true },
+        })) ?? null);
+  } catch {
+    // The installer already persisted successfully. Event logging remains
+    // best-effort, matching logEventFromContext's never-throw contract.
+  }
+
+  const emit = dependencies.emit ?? logEventFromContext;
+  await emit(c, {
+    eventType: 'skill_md.fetched',
+    userId: identity.userId,
+    avatarId: identity.avatarId,
+    agentId: identity.kind === 'agent' ? identity.agentId : null,
+    sessionId:
+      identity.kind === 'agent' ? sessionDigest(identity.sessionId) : null,
+    buildingId,
+    payload: {
+      userAgent: c.req.header('user-agent') ?? null,
+      referer: c.req.header('referer') ?? null,
+      skillName: metadata?.name ?? buildingId,
+      generatorVersion: metadata?.generatorVersion ?? null,
+      gated: true,
+      method: 'claim',
+    },
+  });
+}
+
+// Additive human/agent claim surface. It installs the curriculum and, on every
+// successful runtime/marker/already result, emits the existing organic
+// skill_md.fetched event (no vCLAW or reward). Partner keys alone never
+// authorize this write.
+export async function executeBuildingSkillClaim(
+  identity: ActivityIdentity,
+  buildingId: string,
+  dependencies: BuildingSkillClaimDependencies = {},
+): Promise<{
+  status: 200 | 400 | 403 | 404 | 409 | 429 | 503;
+  body: Record<string, unknown>;
+}> {
+  if (
+    identity.kind === 'user' &&
+    await (dependencies.isGuest ?? isGuestUser)(identity.userId)
+  ) {
+    return {
+      status: 403,
+      body: {
+        error: 'demo_account',
+        hint: 'Guest accounts play the demo economy - sign up to install skills.',
+      },
+    };
+  }
+
+  if (identity.kind === 'agent' && identity.ledgerCapable !== true) {
+    return {
+      status: 403,
+      body: {
+        error: 'ownership_required',
+        hint: 'Reconnect with ownership proof before claiming a skill.',
+      },
+    };
+  }
+
+  const allowSubject =
+    dependencies.allowSubject ?? ((key) => buildingSkillClaimRateLimit.check(key));
+  if (!allowSubject(buildingSkillClaimSubjectKey(identity))) {
+    return {
+      status: 429,
+      body: {
+        error: 'rate_limited',
+        hint: 'Too many skill claims. Try again shortly.',
+      },
+    };
+  }
+
+  try {
+    const result = await (dependencies.install ?? installBuildingSkillIntoAgent)({
+      userId: identity.userId,
+      avatarId: identity.avatarId,
+      buildingId,
+      ...(identity.kind === 'agent' ? { provenAgentId: identity.agentId } : {}),
+    });
+    try {
+      await dependencies.onSuccess?.();
+    } catch {
+      // The curriculum is already durable. Analytics must never turn a
+      // successful install into an error response.
+    }
+    return { status: 200, body: { ok: true, ...result } };
+  } catch (error) {
+    if (error instanceof BuildingSkillInstallError) {
+      if (error.code === 'entry_skill_auto_installed') {
+        return {
+          status: 400,
+          body: {
+            error: error.code,
+            hint:
+              'clawville-play installs automatically for hosted agents; claim a building skill instead.',
+          },
+        };
+      }
+      if (error.code === 'skill_not_found') {
+        return { status: 404, body: { error: error.code, buildingId } };
+      }
+      if (error.code === 'runtime_unavailable') {
+        return {
+          status: 503,
+          body: {
+            error: error.code,
+            hint: 'Your hosted agent could not persist this skill. Try again shortly.',
+          },
+        };
+      }
+      return {
+        status: 409,
+        body: {
+          error: error.code,
+          hint: 'Connect or host an agent, then claim the skill again.',
+        },
+      };
+    }
+    throw error;
+  }
+}
+
+skillsRoutes.post(
+  '/:buildingId/claim',
+  sessionMiddleware,
+  requireAuthOrAgentSession,
+  async (c) => {
+    const identity = c.get('identity');
+    const buildingId = c.req.param('buildingId');
+    const result = await executeBuildingSkillClaim(
+      identity,
+      buildingId,
+      {
+        onSuccess: () => emitBuildingSkillClaimEvent(c, identity, buildingId),
+      },
+    );
+    return c.json(result.body, result.status);
+  },
 );
 
 skillsRoutes.get('/:buildingId', async (c) => {

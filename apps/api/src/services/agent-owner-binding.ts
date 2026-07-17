@@ -33,6 +33,83 @@ export function canBindAgentOwner(
   return currentOwnerUserId === null || currentOwnerUserId === redeemingUserId;
 }
 
+export const CONNECTION_TOKEN_AGENT_ID_ERROR =
+  'agentId required when claiming a connection token';
+
+/** Deterministic pre-reservation validation for a one-shot token claim. */
+export function connectionTokenClaimError(inputs: {
+  connectionToken?: string;
+  agentId?: string;
+}): string | null {
+  return inputs.connectionToken && !inputs.agentId
+    ? CONNECTION_TOKEN_AGENT_ID_ERROR
+    : null;
+}
+
+export const RETURNING_IDENTITY_RECOVERY =
+  'If you do not hold the identity secret for this userId in your config, you cannot reconnect after session expiry. Obtain it from the human through the game-UI re-auth link, or from the agent that first connected for this user, before this session lapses.';
+
+/** Nonsecret disclosure that prevents a returning/fleet agent being stranded. */
+export function buildReturningIdentityDisclosure(userId: string, publicKey: string) {
+  return {
+    userId,
+    publicKey,
+    isFirstTime: false as const,
+    secretIncluded: false as const,
+    secretIssuedPreviously: true as const,
+    recovery: RETURNING_IDENTITY_RECOVERY,
+  };
+}
+
+export interface ConnectOwnerBindingPlan {
+  /** The user id that must be written to `openclaw_bots.user_id`. */
+  persistedUserId: string | null;
+  /** True when a supplied identity credential resolves to a different owner. */
+  identityMismatch: boolean;
+  /** The owner this request actually proved; copied into the session config. */
+  boundUserId: string | null;
+  /** Config-level grant. Spend-time code still rechecks the live bot row. */
+  ledgerCapable: boolean;
+  /** Whether prior in-memory sessions must be evicted before this one is minted. */
+  ownershipChanged: boolean;
+}
+
+/**
+ * Plan the owner write for `POST /api/agent/connect` without touching the DB.
+ *
+ * An owned connection token remains the strongest proof and retains its legacy
+ * rebind behavior. A caller-supplied `identityKey` may bind an unowned row or
+ * prove the same owner, but it must never clobber a different non-null owner.
+ * Bare `agentId` knowledge is not represented here because it is public and is
+ * never an ownership credential.
+ */
+export function planConnectOwnerBinding(inputs: {
+  existingUserId: string | null;
+  tokenUserId: string | null;
+  identityKeyUserId: string | null;
+  activeAvatarId: string | null;
+}): ConnectOwnerBindingPlan {
+  const identityMismatch =
+    inputs.tokenUserId === null &&
+    inputs.identityKeyUserId !== null &&
+    inputs.existingUserId !== null &&
+    inputs.existingUserId !== inputs.identityKeyUserId;
+
+  const acceptedIdentityUserId = identityMismatch ? null : inputs.identityKeyUserId;
+  const provenUserId = inputs.tokenUserId ?? acceptedIdentityUserId;
+  const persistedUserId = provenUserId ?? inputs.existingUserId;
+  const boundUserId =
+    provenUserId !== null && provenUserId === persistedUserId ? provenUserId : null;
+
+  return {
+    persistedUserId,
+    identityMismatch,
+    boundUserId,
+    ledgerCapable: boundUserId !== null && inputs.activeAvatarId !== null,
+    ownershipChanged: persistedUserId !== inputs.existingUserId,
+  };
+}
+
 /**
  * The EXACT ledger-capability grant condition `resolveAgentSession`
  * (middleware/require-auth-or-agent.ts) enforces at spend time, restated as a

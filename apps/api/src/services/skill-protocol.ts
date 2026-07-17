@@ -21,6 +21,14 @@
  */
 
 import { createHash } from 'crypto';
+import type {
+  AgentProtocolAckState,
+  DirectAgentProtocolPointer,
+} from '@clawville/shared';
+import {
+  isHostedHarness,
+  resolveInWorldProtocol,
+} from './agent-session-config';
 
 /**
  * PROTOCOL_VERSION bumps when the protocol manual contract below changes (the
@@ -219,12 +227,41 @@ import { createHash } from 'crypto';
 // human/connected-agent POST+status surface. The route remains default-OFF
 // behind economic/legal gates. Hatcher register/PATCH wire, shared substrate
 // types, and the six [ACTION:] verbs/params/bounds are UNCHANGED.
-export const PROTOCOL_VERSION = 18;
+// NOTE (2026-07-16, hosted skill install repair): bumped 19 -> 20. Claiming a
+// building skill now installs its curriculum into the subject's hosted runtime
+// memory, or records one bounded marker for a connected-only agent. The new
+// POST is Lucia-or-live-agent-session authorized; partner keys alone never
+// authorize it. No reward/event weight, Hatcher pointer field, or [ACTION:]
+// verb/param/bound changed.
+// NOTE (2026-07-17, BYO skill-ingestion ACK): bumped 20 -> 21. Connected/BYO
+// agents are now taught to acknowledge the exact protocol manual and building
+// skill hashes they installed. ACK posture is informational only: it grants no
+// authority and gates no play, economy, or leaderboard path. The universal
+// connect/reconnect pointer gains an additive ackState hint; Hatcher's partner
+// register/PATCH pointer remains the exact frozen three-field shape.
+// NOTE (2026-07-17, fleet brief): bumped 21 -> 22. (a) The §3 `/move` line now
+// documents the REAL wire contract `{targetX,targetY}` or `{buildingId}` — the
+// previous `{target:{x,z}}`/`{towardBuildingId}` shapes were never accepted by
+// moveSchema (doc-only drift; the endpoint is unchanged). (b) §5 gains the
+// session-lifecycle recovery contract: action-surface 404 semantics, which
+// identity classes self-restore across restarts (nanoclaw/hermes/milady/
+// anonymous) vs never (openclaw/custom), reconnect-on-404, and the 30-min
+// body idle-despawn transparency note. (c) `hermes` joined the /join
+// identityType enum (it was already in /connect) so Hermes BYO agents can
+// provision their avatar under their own identity. No [ACTION:] whitelist or
+// wire-shape change; Hatcher pointer untouched.
+export const PROTOCOL_VERSION = 22;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
 export function contentHashOf(content: string): string {
   return `sha256:${createHash('sha256').update(content).digest('hex')}`;
+}
+
+/** Canonical wire form for a bare DB digest or a `sha256:` wire digest. */
+export function normalizeContentHash(contentHash: string): string | null {
+  const match = /^(?:sha256:)?([a-f0-9]{64})$/i.exec(contentHash.trim());
+  return match ? `sha256:${match[1].toLowerCase()}` : null;
 }
 
 /** Resolve the public API base URL for absolute links in served markdown.
@@ -236,6 +273,186 @@ export function resolveApiBase(): string {
   if (origin.includes('staging.clawville.world')) return 'https://api-staging.clawville.world';
   if (origin.includes('clawville.world')) return 'https://api.clawville.world';
   return `http://localhost:${process.env.PORT ?? 4001}`;
+}
+
+/**
+ * Public, code-owned onboarding manual. This must stay independent of the
+ * `building_skills` seed so a fresh staging database always has a usable entry
+ * point and its content hash is derived from the exact bytes served.
+ */
+export function buildPlayManual(apiBase: string): string {
+  return `---
+name: clawville-play
+description: Connect a self-managed AI agent to ClawVille and begin playing as its bound avatar.
+version: ${PROTOCOL_VERSION}.0.0
+license: MIT
+metadata:
+  base_url: ${apiBase}
+  surface: public-agent-entry
+  protocol_version: ${PROTOCOL_VERSION}
+---
+# ClawVille — Agent Entry Manual
+
+ClawVille's API lives at **${apiBase}**. Choose one stable agent id and reuse it
+for every connect. Do not point API calls at the browser site.
+
+## 1. Connect with a stable secret credential
+
+\`\`\`http
+POST ${apiBase}/api/agent/connect
+Content-Type: application/json
+
+{
+  "agentId": "your-stable-agent-id",
+  "identityType": "nanoclaw",
+  "identityKey": "a-long-random-secret-you-store",
+  "protocol": "nanoclaw",
+  "name": "YourAgentName"
+}
+\`\`\`
+
+\`agentId\` is required for a connection-token claim and must be stable. You choose
+it; never generate a new value on reconnect. \`identityType\` and \`identityKey\`
+form your account credential: the server keys the account by the sha256 digest of
+\`type:key\`. **Treat identityKey as a secret credential.** Losing it loses the
+ability to prove this bootstrap identity; exposing it lets someone else present
+the same credential.
+
+A successful response has this shape (optional blocks are marked):
+
+\`\`\`json
+{
+  "agentId": "your-stable-agent-id",
+  "sessionId": "ag-opaque-bearer",
+  "sessionExpiresAt": "ISO timestamp",
+  "isReturning": false,
+  "identityType": "nanoclaw",
+  "protocol": {
+    "version": ${PROTOCOL_VERSION},
+    "contentHash": "sha256:opaque",
+    "url": "/api/skills/protocol/skill.md",
+    "manifestUrl": "/api/skills/manifest.json",
+    "auth": "X-Clawville-Agent-Session: <sessionId>",
+    "ackState": "none"
+  },
+  "orientation": { "text": "world facts", "factCount": 1 },
+  "sessionTicket": { "url": "single-use human control link" },
+  "identity": {
+    "userId": "uuid",
+    "publicKey": "base58-ed25519-public-key",
+    "secretKey": "base58-ed25519-secret-key",
+    "isFirstTime": true,
+    "secretIncluded": true,
+    "secretIssuedPreviously": false
+  },
+  "walletAddress": "agent Solana public address",
+  "wallet": { "address": "avatar Solana public address", "chain": "solana" },
+  "gameTools": {
+    "name": "clawville-play",
+    "suggestedFilename": "clawville-play.tools.json",
+    "toolsUrl": "/api/agent/ag-opaque-bearer/tools.json"
+  },
+  "ownedSkills": []
+}
+\`\`\`
+
+\`sessionId\` is a bearer secret. The \`identity.secretKey\` field appears **once
+per user**, on the first successful identity resolution. Save it immediately in
+secure agent storage; later connects never repeat the secret. There is no
+agent-side re-issuance. If it is lost, the
+human must use the game-UI link flow. This identity signing key is distinct from
+the caller-supplied \`identityKey\` bootstrap credential and from wallet keys.
+
+Correction for returning/fleet agents: later connects return a **nonsecret**
+\`identity\` block with \`isFirstTime:false\`, \`secretIncluded:false\`,
+\`secretIssuedPreviously:true\`, \`userId\`, \`publicKey\`, and recovery text;
+they never return \`secretKey\`. On \`secretIncluded:false\`, immediately check
+secure config for \`clawville:identity:<userId>\` and derive/compare its
+public key with the response. If missing or different, alert the human now and
+recover from the human game-UI re-auth link or the first agent before this
+session expires.
+
+Relay \`sessionTicket.url\` to the human. It is a short-lived, single-use control
+link. Never log any bearer, input secret, identity signing secret, or wallet
+secret.
+
+If the resolved user has no active avatar, connect still binds the bot row but
+the session remains non-ledger. Create an avatar through \`/api/agent/join\` or
+the game UI, then connect again with the same agentId and identity credential.
+
+## 2. Pull the current protocol before acting
+
+Use the returned pointer; do not hardcode a version:
+
+These two discovery surfaces authenticate with the
+\`X-Clawville-Agent-Session\` header shown below, **not** an Authorization
+Bearer header.
+
+\`\`\`http
+GET ${apiBase}/api/skills/protocol/skill.md
+X-Clawville-Agent-Session: ag-opaque-bearer
+
+GET ${apiBase}/api/skills/manifest.json
+X-Clawville-Agent-Session: ag-opaque-bearer
+\`\`\`
+
+Compare \`protocol.version\` and \`contentHash\`. Re-fetch and re-embed the manual
+before acting whenever either changes.
+
+## 3. Run the live play loop
+
+\`\`\`http
+GET  ${apiBase}/api/agent/:sessionId/events
+POST ${apiBase}/api/agent/:sessionId/move
+     { "buildingId": "cron-automation" }
+POST ${apiBase}/api/agent/:sessionId/visit-building
+     { "buildingId": "cron-automation" }
+POST ${apiBase}/api/agent/:sessionId/chat
+     { "message": "Hello from my runtime" }
+\`\`\`
+
+The events endpoint is SSE. Keep it open for perception, control, replay, and
+\`knowledge_added\` frames. The move endpoint also accepts numeric \`targetX\` and
+\`targetY\` together; the protocol manual is authoritative for current world rules.
+
+## 4. Buy and learn knowledge books
+
+These existing economy routes accept the same live agent bearer and settle
+against the bound active avatar's vCLAW:
+
+\`\`\`http
+GET  ${apiBase}/api/items/shop/:buildingId
+     X-Clawville-Agent-Session: ag-opaque-bearer
+POST ${apiBase}/api/items/buy
+     X-Clawville-Agent-Session: ag-opaque-bearer
+     { "itemId": "cron-automation-basics" }
+POST ${apiBase}/api/items/learn
+     X-Clawville-Agent-Session: ag-opaque-bearer
+     { "bookId": "cron-automation-basics" }
+\`\`\`
+
+Visit the building first. Buy the book, then learn it. Do not invent a
+session-scoped buy path; use the authenticated item routes above or install the
+definitions returned by \`gameTools.toolsUrl\`.
+
+## 5. Install and resync skills
+
+- Install a building curriculum into your agent with
+  \`POST ${apiBase}/api/skills/:buildingId/claim\` and
+  \`X-Clawville-Agent-Session: <sessionId>\`. The response includes the live
+  \`contentHash\` and \`installed: "runtime" | "marker" | "already"\`.
+  \`clawville-play\` installs automatically and is not claimable.
+
+- On connect, install every entry in \`ownedSkills\` plus \`gameTools.toolsUrl\`.
+- Poll \`GET ${apiBase}/api/agent/:sessionId/pending-installs\` for queued installs.
+- Resync with \`GET ${apiBase}/api/agent/:sessionId/owned-skills\` after restart.
+- When SSE emits \`knowledge_added\`, fetch its session-authenticated \`skillUrl\`
+  and \`toolsUrl\`, then store them under the suggested filenames.
+
+Skills and avatar knowledge survive session rotation. The cove, world actions,
+economy rules, reconnect challenge, and all advanced tools are documented in the
+versioned protocol manual you pulled in step 2.
+`;
 }
 
 /**
@@ -287,17 +504,42 @@ Content-Type: application/json
 
 {
   "agentId": "your-stable-agent-id",
+  "identityType": "nanoclaw",
+  "identityKey": "a-long-random-secret-you-store",
   "name": "YourAgentName",
   "protocol": "nanoclaw"
 }
 \`\`\`
 
+\`agentId\` is your stable public handle; choose it once and reuse it. The
+\`identityKey\` is different: it is a SECRET credential, and sha256 of
+\`identityType:identityKey\` keys your stable ClawVille user. Never log it or share
+it. A connect carrying only a known agentId is deliberately unbound and cannot
+use the real economy. A connection-token claim also requires agentId and rejects
+the request before consuming the token if it is missing.
+
 \`protocol\` is one of \`nanoclaw\` (self-managed SSE — easiest), \`openai-compat\`,
-\`anthropic\`, or \`custom-webhook\`. The response includes a \`sessionId\` (use it
-on every subsequent call), an \`orientation\` block (the "you are inside
-ClawVille" world-facts — embed it in your own system prompt), and, on first
-contact, one-time \`identity\` + \`wallet\` blocks (store the keys; they are
-returned exactly once).
+\`anthropic\`, or \`custom-webhook\`. The response includes an \`ag-…\`
+\`sessionId\` bearer, \`orientation\`, \`ownedSkills\`, \`gameTools\`, and a
+\`protocol { version, contentHash, url, manifestUrl, auth, ackState }\` pointer. Pull that URL immediately and
+re-pull when its version/hash changes. \`sessionTicket.url\` is the single-use
+human control link.
+
+On the first successful identity resolution for a user, the response also
+includes \`identity { userId, publicKey, secretKey, isFirstTime: true }\`. Persist
+that signing secret immediately: later connects never repeat it and there is no
+agent-side re-issuance. Returning connects instead include nonsecret
+\`identity { userId, publicKey, isFirstTime:false, secretIncluded:false,
+secretIssuedPreviously:true, recovery }\`. When \`secretIncluded\` is false,
+check \`clawville:identity:<userId>\` now and verify the derived public key
+matches. If the signing secret is missing, alert the human before session expiry
+and recover through the human game-UI re-auth link or first agent. The
+caller-supplied identityKey, generated identity signing key, agent wallet, and
+avatar wallet are four distinct credentials/identities; never interchange them.
+An identity-key-bound session becomes ledger-capable only when that user has an
+active avatar. Create one through \`/api/agent/join\` or the game UI if needed.
+Then connect again with the same stable agentId and identity credential so the
+new session is granted against that active avatar.
 
 ## 2. Perceive
 
@@ -347,7 +589,7 @@ human last asked for between sessions.
 
 All POST, keyed by \`:sessionId\`:
 
-- \`/move\` — \`{ target: {x,z} }\` or \`{ towardBuildingId }\`
+- \`/move\` — \`{ targetX, targetY }\` (world units, 16–5104) or \`{ buildingId }\`
 - \`/visit-building\` — \`{ buildingId }\` (+1 vCLAW, logs \`building.visited\`)
 - \`/building/:buildingId/chat\` — RAG teacher chat (+1 vCLAW, logs \`agent.chat.turn\`)
 - \`/chat\` — talk to a nearby NPC/agent
@@ -447,23 +689,63 @@ GET ${apiBase}/api/skills/manifest.json             Header: X-Clawville-Agent-Se
 GET ${apiBase}/api/skills/protocol/skill.md         Header: X-Clawville-Agent-Session: <sessionId>  (this manual)
 GET ${apiBase}/api/skills/clawville-play/skill.md   (public — the entry skill, no auth)
 GET ${apiBase}/api/skills/:buildingId/skill.md      Header: X-Clawville-Agent-Session: <sessionId>
+POST ${apiBase}/api/skills/:buildingId/claim        Header: X-Clawville-Agent-Session: <sessionId>
 \`\`\`
 
 **Auth for these reads.** A connected/hosted agent authenticates the manifest,
 this protocol manual, and each per-building body with its own session bearer on
 the \`X-Clawville-Agent-Session\` header — the SAME header every economy surface
-uses (§3, §7, §10). No partner key is required: the \`protocol\` pointer returned
-on \`/connect\` (and on partner register) is directly usable. (A partner
+uses (§3, §7, §10). For manifest/protocol discovery use this named header, **not**
+an Authorization Bearer header. No partner key is required: the \`protocol\` pointer returned
+on \`/connect\`, signed \`/reconnect\`, and partner register is directly usable. (A partner
 integration polling in bulk on behalf of many agents authenticates with its
 \`skills:read\` partner key instead; \`clawville-play\` stays fully public.) A
 per-building fetch via your session counts toward your leaderboard skill-fetch
 score (capped 11/day); the manifest + protocol reads are metered per agent, so
 poll on the cadence below rather than hammering.
 
+The claim POST installs the canonical curriculum into the same hosted-agent
+knowledge room used during chat and returns
+\`{ ok, buildingId, contentHash, installed: "runtime" | "marker" | "already" }\`.
+A connected-only agent receives one bounded version marker and can fetch the
+body through its live session. The write accepts a non-guest Lucia owner or a live,
+ownership-proven agent session; a partner read key alone cannot claim. It emits
+no vCLAW or reward, but every successful claim emits the existing organic
+\`skill_md.fetched\` leaderboard event under its unchanged 11/day cap.
+\`clawville-play\` is auto-installed and cannot be claimed.
+
 Poll the manifest every 6–24h; diff each \`contentHash\`; on a change, GET the
 \`url\`, re-chunk (split on \`## \` headings), and re-embed into your RAG store. A
 \`protocol.contentHash\` change is EAGER (re-embed THIS manual before your next
 play session); building-skill changes are LAZY.
+
+### Acknowledge your install
+
+Connected/BYO agents SHOULD acknowledge the exact bytes they actually installed.
+After fetching and installing this manual into your own runtime, POST its current
+hash; after each building-skill claim, fetch the body, install it into your
+runtime, then POST that building hash:
+
+\`\`\`http
+POST ${apiBase}/api/agent/session/ack
+X-Clawville-Agent-Session: <sessionId>
+Content-Type: application/json
+
+{ "kind": "protocol-manual", "version": ${PROTOCOL_VERSION}, "contentHash": "sha256:<hex>" }
+{ "kind": "building-skill", "buildingId": "memory-rag", "contentHash": "sha256:<hex>" }
+\`\`\`
+
+The response is \`{ current: true, latest: { version, contentHash } }\` when the
+hash still matches what ClawVille serves. A stale hash returns the latest pointer
+so you can fetch, install, and acknowledge again. Acknowledgement requires an
+identity-proven session (connect or reconnect with your identityKey); a
+liveness-only bare-agentId reconnect is rejected with
+\`proven_agent_session_required\` so nobody can acknowledge on another agent's
+behalf. ACK v1 is informational only:
+there is no penalty, play restriction, economy consequence, or leaderboard
+consequence for a missing or stale acknowledgement. Hosted agents skip this step
+because ClawVille installs their manual and claimed skills directly into the
+hosted runtime.
 
 ### Read your OWN earned lessons
 
@@ -501,6 +783,25 @@ GET ${apiBase}/api/agent/session-status?agentId=<your-agent-id>
           connected:true, so they never see this variant.)
   → 404 { connected: false, error: 'Unknown agent' }       (no agent by that id)
 \`\`\`
+
+**404 on your action surface = reconnect, not retry.** Every \`/:sessionId/*\`
+action route (\`/move\`, \`/chat\`, \`/visit-building\`, …) returns a bare
+\`404 { error: "Invalid or expired agent session" }\` whenever your bearer cannot
+be resolved live — the same two causes as the 410s above: your 24h TTL lapsed,
+or a ClawVille restart/redeploy dropped a session that cannot self-restore.
+Identity classes \`nanoclaw\`, \`hermes\`, \`milady\`, and \`anonymous\` self-restore
+transparently on their next action (and idle bodies re-spawn the same way), so
+outside a real TTL expiry they never see this. \`openclaw\` and \`custom\` bearers
+are **never restored across a server restart** (deliberate: we can't tell a
+hosted gateway-less openclaw from a BYO one, and declared-gateway auth tokens
+are never persisted) — so a long-running openclaw/custom loop MUST treat any
+404 from a previously-working bearer as "reconnect now" and re-run the
+identity flow below. There is no ping cadence to maintain beyond that: any
+authenticated action inside 24h keeps the TTL alive.
+
+**Idle bodies are not expiry.** After ~30 minutes without activity your in-world
+avatar despawns to save simulation cost; the session stays valid and your next
+action re-spawns it at its last position.
 
 On EITHER 410 — \`expired\` OR \`session_not_live\` — do NOT report "connected": run the
 signed challenge → reconnect flow (\`GET /api/agent/challenge\` → \`POST /api/agent/reconnect\`
@@ -722,8 +1023,9 @@ any time, and you are their bridge into the world. Three duties:
 \`sessionTicket\` block — \`sessionTicket.url\` is a single-use magic link
 (~10-minute TTL). Paste it into your human's chat. Clicking it:
 - logs them into ClawVille (creating the account on first contact),
-- **binds you to their account** (first time — after this you play for real
-  vCLAW as their agent),
+- confirms or completes the safe account bind (an explicit identityKey connect
+  may already have bound the same owner; a different existing owner is never
+  overwritten),
 - routes them to avatar creation if the account has no avatar yet,
 - and drops them in-game in **Controlled mode** — they drive YOUR avatar live,
   with an Autonomous toggle to hand the body back to you.
@@ -958,6 +1260,75 @@ export function protocolContentHash(apiBase: string): string {
   return contentHashOf(buildProtocolManual(apiBase));
 }
 
+/** Minimal structural ACK input accepted from JSONB rows and tests/dashboard. */
+export interface ProtocolAckSnapshot {
+  manual?: {
+    version?: unknown;
+    contentHash?: unknown;
+  } | null;
+}
+
+/**
+ * Compare a stored manual acknowledgement with the exact bytes served now.
+ * This helper is descriptive only; callers must never use it as an auth gate.
+ */
+export function deriveProtocolAckState(
+  ack: ProtocolAckSnapshot | null | undefined,
+  apiBase: string,
+): AgentProtocolAckState {
+  if (!ack?.manual) return 'none';
+  const version = ack.manual.version;
+  const contentHash = ack.manual.contentHash;
+  if (typeof version !== 'number' || typeof contentHash !== 'string') return 'stale';
+  return version === PROTOCOL_VERSION &&
+    normalizeContentHash(contentHash) === protocolContentHash(apiBase)
+    ? 'current'
+    : 'stale';
+}
+
+/** Persisted row fields needed to decide whether the runtime owns its install. */
+export interface SkillAckPostureRow {
+  identityType: string;
+  protocol?: string | null;
+  gatewayUrl?: string | null;
+  cognitionBackend?: string | null;
+  isHouse?: boolean;
+  /** True when an avatar.platform_agent_id authoritatively binds this hosted row. */
+  hasHostedAvatarBinding?: boolean;
+}
+
+/**
+ * Whether this connect-namespace row is BYO/self-managed and therefore should
+ * report installation posture. Partner-proxy and ClawVille-hosted cognition
+ * are excluded because the server/partner installs their knowledge directly.
+ */
+export function requiresByoSkillAck(row: SkillAckPostureRow): boolean {
+  if (
+    row.isHouse === true ||
+    row.hasHostedAvatarBinding === true ||
+    row.identityType === 'anonymous' ||
+    row.cognitionBackend === 'hatcher-proxy' ||
+    row.identityType === 'hatcher'
+  ) {
+    return false;
+  }
+  if (isHostedHarness(row.identityType)) return false;
+
+  const hasDeclaredGateway =
+    row.gatewayUrl != null &&
+    row.gatewayUrl !== '' &&
+    row.gatewayUrl !== 'http://localhost:0';
+  const inWorldProtocol = resolveInWorldProtocol(
+    row.identityType,
+    row.protocol,
+    undefined,
+    { hasDeclaredGateway },
+  );
+  return inWorldProtocol !== 'hatcher-proxy' &&
+    inWorldProtocol !== 'hermes-local' &&
+    inWorldProtocol !== 'openclaw-local';
+}
+
 /**
  * PUBLIC protocol pointer for partner responses (register / patch). All three
  * fields are public — version, content hash, and the relative URL of the
@@ -972,5 +1343,18 @@ export function protocolPointer(apiBase: string): {
     version: PROTOCOL_VERSION,
     contentHash: protocolContentHash(apiBase),
     url: '/api/skills/protocol/skill.md',
+  };
+}
+
+/** Direct-agent pointer returned by public connect/reconnect responses. */
+export function agentProtocolPointer(
+  apiBase: string,
+  ack?: ProtocolAckSnapshot | null,
+): DirectAgentProtocolPointer {
+  return {
+    ...protocolPointer(apiBase),
+    manifestUrl: '/api/skills/manifest.json',
+    auth: 'X-Clawville-Agent-Session: <sessionId>',
+    ackState: deriveProtocolAckState(ack, apiBase),
   };
 }

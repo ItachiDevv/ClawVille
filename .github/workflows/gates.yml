@@ -60,12 +60,13 @@ jobs:
         # The money tests transitively import npc-simulation.ts → @clawville/
         # agent-runtime, so build agent-runtime; turbo pulls its deps
         # (database, shared, agent-templates) in dependency order. This is the
-        # minimal set the suite resolves (verified 546/0 with exactly these
-        # dists). NOT '--filter=./packages/*' (drags in apps/web + wager-program).
+        # PR #203's wager client/reconciliation tests also import
+        # @clawville/wager-program, so CI must build its dist too. This remains
+        # explicit rather than '--filter=./packages/*', which drags in apps/web.
         # Requires the same-commit agent-runtime build fixes (declared
         # @clawville/database dep + test-file tsc exclude) — without them a fresh
         # CI build of agent-runtime errors TS2307, masked locally by turbo cache.
-        run: bunx turbo run build --filter=@clawville/agent-runtime
+        run: bunx turbo run build --filter=@clawville/agent-runtime --filter=@clawville/wager-program
 
       - name: Run the money/cove/poker invariant suite
         # SCOPED to the service test dirs (poker tournament/cash/sims + the

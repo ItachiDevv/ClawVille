@@ -1,5 +1,13 @@
 export { ElizaRuntime, createElizaRuntime } from './eliza-runtime';
 export type { ElizaRuntimeConfig, ElizaMessage, ElizaRuntimeState } from './eliza-runtime';
+export {
+  generateRoomId,
+  PROTOCOL_KNOWLEDGE_KEY,
+  protocolKnowledgeEntityId,
+  protocolKnowledgeMemoryId,
+  protocolKnowledgeRoomId,
+  splitProtocolManualSections,
+} from './protocol-knowledge';
 
 // Phase 6 — per-user character room scoping
 export { characterRoomId, CHARACTER_ROOM_NAMESPACE } from './room-scoping';
@@ -53,6 +61,13 @@ export type {
   LearnBookErrorCode,
   LearnBookResult,
 } from './actions/learn-book-transaction';
+export {
+  knowledgeEntriesFrom,
+  mergeKnowledgeCustomization,
+  mergeKnowledgeEntries,
+  recordValue,
+} from './actions/knowledge-merge';
+export type { KnowledgeMergeResult } from './actions/knowledge-merge';
 export type { Provider, ProviderResult } from './providers/types';
 
 // Embedding utility (Phase 2 — standalone embedText for knowledge RAG).

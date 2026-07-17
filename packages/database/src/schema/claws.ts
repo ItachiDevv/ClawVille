@@ -23,6 +23,18 @@ export interface AgentBotMetadata {
   lastY?: number;
 }
 
+export interface AgentBotAck {
+  manual?: {
+    version: number;
+    contentHash: string;
+    at: string;
+  };
+  skills?: Record<string, {
+    contentHash: string;
+    at: string;
+  }>;
+}
+
 export const agentBots = pgTable('openclaw_bots', {
   id: uuid('id').primaryKey().defaultRandom(),
   agentId: varchar('agent_id', { length: 200 }).notNull().unique(),
@@ -44,6 +56,11 @@ export const agentBots = pgTable('openclaw_bots', {
   color: integer('color'),
   knowledge: jsonb('knowledge').$type<string[]>().default([]),
   metadata: jsonb('metadata').$type<AgentBotMetadata>(),
+  /**
+   * Informational BYO-install acknowledgements. These hashes never authorize or
+   * gate play; they only make protocol/skill ingestion drift observable.
+   */
+  ack: jsonb('ack').$type<AgentBotAck>().default({}).notNull(),
   /**
    * Mirror of the agent's custodial Solana wallet address (base58 public key).
    * Secret key lives encrypted in the unified `wallets` table keyed on
