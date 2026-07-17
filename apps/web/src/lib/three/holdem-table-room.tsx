@@ -65,7 +65,10 @@ const BOT_SEATS: readonly RoomSeat[] = [
 // faces must read upright to the player camera at -Z.
 const CARD_LAYOUT: Readonly<TableCardLayout> = Object.freeze({
   boardX: 0,
-  boardZ: 14 * S,
+  // Mid-felt (founder-praised placement) — after the table-mesh rotation
+  // the old +14 offset visually landed the row at the far edge among the
+  // bot backs.
+  boardZ: 0,
   boardYaw: Math.PI,
   boardCardWidth: 8 * S,
   boardCardHeight: 11.2 * S,
@@ -73,7 +76,10 @@ const CARD_LAYOUT: Readonly<TableCardLayout> = Object.freeze({
   botCardWidth: 6.5 * S,
   botCardHeight: 9.1 * S,
   botPairGap: 1.2 * S,
-  botAnchorScale: 0.72,
+  // 0.62 (was 0.72) after the table-mesh π rotation: the felt boundary is
+  // asymmetric around the oval, and at 0.72 the far-side bot backs landed
+  // on the black rail instead of the felt.
+  botAnchorScale: 0.62,
   surfaceLift: 0.7 * S,
 });
 
@@ -254,7 +260,15 @@ function HoldemTableRoomScene() {
         <planeGeometry args={[800, 280]} />
         <meshStandardMaterial color={0x43283a} roughness={0.9} metalness={0.02} />
       </mesh>
-      <primitive object={table} />
+      {/* Table mesh rotated π (2026-07-17 founder catch): the GLB's built-in
+          DEALER STATION CUTOUT is baked into what we treated as the player
+          arc — unrotated, the cutout notch sat directly in front of the
+          camera ("the playable character is on the dealer side"). The spin
+          puts the cutout under the standing dealer; seats/cards/camera are
+          mesh-independent and unchanged. */}
+      <group rotation={[0, Math.PI, 0]}>
+        <primitive object={table} />
+      </group>
 
       {/* Stools deliberately NOT rendered (2026-07-16 framing pass 4): the
           wire-frame stool GLB read as floating white baskets at the table
