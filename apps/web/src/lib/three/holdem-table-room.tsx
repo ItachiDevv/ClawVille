@@ -54,11 +54,11 @@ interface RoomSeat extends TableCardSeat {
 // sits at the ARC APEX at -Z; bots take arc seats toward the flat corners;
 // the DEALER stands at the +Z flat edge. Basis coords x S as before.
 const BOT_SEATS: readonly RoomSeat[] = [
-  { engineSeatIndex: 1, x: -48 * S, z: -34 * S, faceYaw: Math.atan2(48, 34), chairX: -55 * S, chairZ: -43 * S },
-  { engineSeatIndex: 2, x: -78 * S, z: -10 * S, faceYaw: Math.atan2(78, 10), chairX: -89 * S, chairZ: -12 * S },
-  { engineSeatIndex: 3, x: -88 * S, z: 26 * S, faceYaw: Math.atan2(88, -26), chairX: -99 * S, chairZ: 32 * S },
-  { engineSeatIndex: 4, x: 78 * S, z: -10 * S, faceYaw: Math.atan2(-78, 10), chairX: 89 * S, chairZ: -12 * S },
-  { engineSeatIndex: 5, x: 88 * S, z: 26 * S, faceYaw: Math.atan2(-88, -26), chairX: 99 * S, chairZ: 32 * S },
+  { engineSeatIndex: 1, x: -46 * S, z: -40 * S, faceYaw: Math.atan2(46, 40), chairX: -53 * S, chairZ: -50 * S },
+  { engineSeatIndex: 2, x: -86 * S, z: -12 * S, faceYaw: Math.atan2(86, 12), chairX: -98 * S, chairZ: -15 * S },
+  { engineSeatIndex: 3, x: -94 * S, z: 32 * S, faceYaw: Math.atan2(94, -32), chairX: -106 * S, chairZ: 39 * S },
+  { engineSeatIndex: 4, x: 86 * S, z: -12 * S, faceYaw: Math.atan2(-86, 12), chairX: 98 * S, chairZ: -15 * S },
+  { engineSeatIndex: 5, x: 94 * S, z: 32 * S, faceYaw: Math.atan2(-94, -32), chairX: 106 * S, chairZ: 39 * S },
 ] as const;
 
 // boardYaw π: the board row sits toward the dealer's flat side (+Z) and its
@@ -93,7 +93,11 @@ const BOT_MODEL_KEYS = [
 ] as const satisfies readonly (keyof typeof MODEL_REGISTRY)[];
 // (index 3 = hermes -> BOT_SEATS[3], the right side-rail seat: her fixed
 // t=2.0 lean reads natural side-on, lunging head-on.)
-const HERMES_SAMPLE_AT = 2.0; // seconds into sit_idle_m — tuned visually
+const HERMES_SAMPLE_AT = (() => {
+  if (typeof window === 'undefined') return 8.5;
+  const raw = Number(new URLSearchParams(window.location.search).get('hermesSample'));
+  return Number.isFinite(raw) && raw > 0 ? raw : 8.5;
+})(); // seconds into sit_idle_m — per-rig frames read differently
 const DEALER_MODEL_KEY = 'milady_official_6' as const;
 
 function preparedClone(source: THREE.Group, scale: number): THREE.Group {
@@ -115,6 +119,7 @@ function FrozenFigure({
   targetHeight,
   cushionY,
   sampleAt = 0.0001,
+  freezeVia = 'sample',
 }: {
   reg: ModelRegistryEntry;
   instanceId: string;
@@ -125,6 +130,12 @@ function FrozenFigure({
   cushionY?: number;
   /** Clip time (seconds) to freeze at — per-rig frames read differently. */
   sampleAt?: number;
+  /** 'sample' applies one direct clip sample (clean rigs). 'transition'
+   *  simulates the full stand_to_sit -> hold path in a synchronous tick
+   *  burst before freezing — the hermes-family rig only reaches a correct
+   *  seated pose through the real transition (its direct sit_idle sample
+   *  leaves the legs standing; founder-approved live path = transition). */
+  freezeVia?: 'sample' | 'transition';
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const vrm = useVRMInstance(reg.path, instanceId);
@@ -140,8 +151,28 @@ function FrozenFigure({
     let cancelled = false;
     const animator = new VRMCharacterAnimator(vrm, reg.animatorId);
 
-    void animator.init(pose).then(() => {
-      if (cancelled || !animator.applyFrozenPose(pose, sampleAt)) return;
+    const freeze = async (): Promise<boolean> => {
+      if (freezeVia === 'transition') {
+        // Simulate the approved sit-down: idle base -> stand_to_sit one-shot
+        // chaining into the hold pose, ticked synchronously (~5s of sim at
+        // 30Hz — a one-time ~160-iteration burst, no per-frame cost after).
+        await animator.init('idle');
+        if (cancelled) return false;
+        await animator.playOneShot('sit_stand_to_sit', pose, 1.5);
+        if (cancelled) return false;
+        const totalSim = 4.8 / 1.5 + sampleAt;
+        const step = 1 / 30;
+        for (let t = 0; t < totalSim; t += step) animator.update(step, false, false);
+        animator.flushSkeletonUpdates();
+        return true;
+      }
+      await animator.init(pose);
+      if (cancelled) return false;
+      return animator.applyFrozenPose(pose, sampleAt);
+    };
+
+    void freeze().then((ok) => {
+      if (cancelled || !ok) return;
       group.updateMatrixWorld(true);
 
       // Ground the POSED figure by its real bounding box. The first cut
@@ -180,7 +211,7 @@ function FrozenFigure({
       cancelled = true;
       animator.dispose();
     };
-  }, [cushionY, instanceId, invalidate, pose, reg.animatorId, sampleAt, vrm]);
+  }, [cushionY, freezeVia, instanceId, invalidate, pose, reg.animatorId, sampleAt, vrm]);
 
   useEffect(() => () => disposeVRMInstance(reg.path, instanceId), [instanceId, reg.path]);
 
@@ -202,6 +233,42 @@ function FrozenFigure({
 // they do from a real seat.
 const CAM_EYE: readonly [number, number, number] = [0, 150, -49.6 * S - 46];
 const CAM_LOOK: readonly [number, number, number] = [0, 66, 78 * S];
+
+let dealerPlateCache: THREE.CanvasTexture | null = null;
+function getDealerPlate(): THREE.CanvasTexture {
+  if (dealerPlateCache) return dealerPlateCache;
+  const canvas = document.createElement('canvas');
+  canvas.width = 512; canvas.height = 128;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = 'rgba(10, 14, 16, 0.88)';
+  ctx.beginPath();
+  (ctx as CanvasRenderingContext2D & { roundRect?: (...a: number[]) => void }).roundRect?.(6, 6, 500, 116, 28);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255, 205, 120, 0.85)';
+  ctx.lineWidth = 6;
+  ctx.stroke();
+  ctx.fillStyle = '#ffd88a';
+  ctx.font = '700 64px ui-monospace, Consolas, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('DEALER', 256, 68);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  dealerPlateCache = tex;
+  return tex;
+}
+
+/** Floating DEALER nameplate above the dealer's head, facing the player
+ *  camera (founder item 4: make it obvious who the dealer is). */
+function DealerPlate({ position }: { position: readonly [number, number, number] }) {
+  const tex = useMemo(() => getDealerPlate(), []);
+  return (
+    <mesh position={[position[0], position[1], position[2]]} rotation={[0, Math.PI, 0]}>
+      <planeGeometry args={[52, 13]} />
+      <meshBasicMaterial map={tex} transparent toneMapped={false} />
+    </mesh>
+  );
+}
 
 function FixedCamera() {
   const { camera } = useThree();
@@ -286,6 +353,7 @@ function HoldemTableRoomScene() {
             yaw={seat.faceYaw}
             targetHeight={BOT_TARGET_HEIGHT}
             sampleAt={BOT_MODEL_KEYS[index] === 'hermes_female' ? HERMES_SAMPLE_AT : undefined}
+            freezeVia={BOT_MODEL_KEYS[index] === 'hermes_female' ? 'transition' : 'sample'}
           />
         </group>
       ))}
@@ -300,6 +368,7 @@ function HoldemTableRoomScene() {
         yaw={Math.PI}
         targetHeight={DEALER_TARGET_HEIGHT}
       />
+      <DealerPlate position={[0, DEALER_TARGET_HEIGHT + 18, 78 * S]} />
 
       <TableCards3D
         centerX={0}
