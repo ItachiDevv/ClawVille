@@ -23,6 +23,12 @@ const AGENT: ActivityIdentity = {
   avatarId: 'avatar-1',
   agentId: 'agent-1',
   sessionId: 'session-redacted',
+  ledgerCapable: true,
+};
+
+/** Liveness-only bare-agentId reconnect: proves the session, not ownership. */
+const UNPROVEN_AGENT: ActivityIdentity = {
+  ...AGENT,
   ledgerCapable: false,
 };
 
@@ -63,6 +69,23 @@ describe('POST /api/agent/session/ack', () => {
     expect(result).toEqual({
       status: 403,
       body: { error: 'agent_session_required' },
+    });
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it('rejects a liveness-only (ownership-unproven) agent session with 403', async () => {
+    // A bare-agentId reconnect could otherwise ack valid current hashes on a
+    // victim agent's behalf, spoofing its ackState to "current".
+    const persist = mock(async () => {});
+    const result = await executeAgentSkillAck(
+      UNPROVEN_AGENT,
+      { kind: 'protocol-manual', contentHash: MANUAL_HASH },
+      { apiBase: API_BASE, persist },
+    );
+
+    expect(result).toEqual({
+      status: 403,
+      body: { error: 'proven_agent_session_required' },
     });
     expect(persist).not.toHaveBeenCalled();
   });

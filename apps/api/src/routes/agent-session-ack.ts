@@ -195,6 +195,19 @@ export async function executeAgentSkillAck(
       body: { error: 'agent_session_required' },
     };
   }
+  // Ownership-proven sessions only (2026-06-03 model): a bare-agentId reconnect
+  // proves liveness, not ownership (`ledgerCapable: false`), and could otherwise
+  // ack VALID current hashes on a victim agent's behalf — spoofing that agent's
+  // ackState to "current" and hiding real ingestion drift. ACK v1 is
+  // informational, but the drift data must stay trustworthy and v2 enforcement
+  // must not inherit a spoofable input. IdentityKey connects are ledgerCapable,
+  // so every legitimately self-connecting BYO agent passes this gate.
+  if (!identity.ledgerCapable) {
+    return {
+      status: 403,
+      body: { error: 'proven_agent_session_required' },
+    };
+  }
 
   const allowSubject = dependencies.allowSubject ??
     ((key: string) => agentSkillAckRateLimit.check(key));
