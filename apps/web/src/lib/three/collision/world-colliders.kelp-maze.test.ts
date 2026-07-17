@@ -7,6 +7,8 @@ import {
 } from '@clawville/shared';
 import { getAllColliders } from './world-colliders';
 import {
+  KelpForestAmbient,
+  KelpMazeStructure,
   KELP_FOREST_BLADE_COUNT,
   KELP_FOREST_TOTAL_BLADE_COUNT,
   KELP_MAZE_WALL_BLADE_COUNT,
@@ -32,6 +34,8 @@ describe('Kelp maze client collider parity', () => {
   });
 
   it('keeps the ambient count and derives the dense wall-row budget', () => {
+    expect(typeof KelpForestAmbient).toBe('function');
+    expect(typeof KelpMazeStructure).toBe('function');
     expect(KELP_FOREST_BLADE_COUNT).toBe(5400);
     expect(KELP_MAZE_WALL_BLADE_COUNT).toBe(1929);
     expect(KELP_FOREST_TOTAL_BLADE_COUNT).toBe(7329);

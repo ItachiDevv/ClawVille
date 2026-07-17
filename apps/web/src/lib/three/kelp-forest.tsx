@@ -21,6 +21,7 @@ const GRID_COLUMNS = 75;
 const GRID_ROWS = 72;
 const HEIGHT_SEGMENTS = 8;
 const MAX_WIND_DISPLACEMENT_WU = 24;
+const MAX_AMBIENT_RELOCATION_ATTEMPTS = 200;
 const WALL_ROW_OFFSETS = [-8, 0, 8] as const;
 const WALL_BLADE_SPACING_WU = 10;
 
@@ -168,9 +169,21 @@ function generatePlacements(): KelpBladePlacement[][] {
       // Preserve exactly 5,400 ambient blades while opening the whole maze
       // footprint, clearing, and south approach. Rejected lattice blades are
       // deterministically relocated elsewhere in the forest footprint.
-      while (isAmbientCarved(x, z)) {
+      let relocationAttempts = 0;
+      while (isAmbientCarved(x, z) && relocationAttempts < MAX_AMBIENT_RELOCATION_ATTEMPTS) {
         x = (rng() - 0.5) * KELP_FOREST_SIZE_WU;
         z = (rng() - 0.5) * KELP_FOREST_SIZE_WU;
+        relocationAttempts++;
+      }
+      if (isAmbientCarved(x, z)) {
+        // A future footprint expansion must never hang this mount. Keep the
+        // fixed budget deterministic by moving the blade to a fallback lattice
+        // immediately east of (and therefore outside) the forest bounds.
+        const fallbackIndex = start + offset;
+        x = KELP_FOREST_SIZE_WU / 2 + MAX_WIND_DISPLACEMENT_WU
+          + (fallbackIndex % GRID_COLUMNS + 0.5) * cellWidth;
+        z = -KELP_FOREST_SIZE_WU / 2
+          + (Math.floor(fallbackIndex / GRID_COLUMNS) + 0.5) * cellDepth;
       }
 
       placements.push(createPlacement(variant, rng, x, z));
@@ -330,6 +343,15 @@ function createVariantMaterial(variant: KelpVariant): THREE.MeshStandardNodeMate
   }
 }
 
+function createStaticVariantMaterial(): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    side: THREE.DoubleSide,
+    roughness: 0.88,
+    metalness: 0,
+  });
+}
+
 function setSolidVertexColor(geometry: THREE.BufferGeometry, hex: number): void {
   const vertexCount = geometry.getAttribute('position').count;
   const value = new THREE.Color(hex);
@@ -402,53 +424,122 @@ function createLandmarkMaterial(): THREE.MeshStandardNodeMaterial {
   }
 }
 
-function createLandmarkResource(): {
+function createStaticLandmarkMaterial(): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    roughness: 0.42,
+    metalness: 0.08,
+    emissive: new THREE.Color(0x2eb89e),
+    emissiveIntensity: 0.26,
+  });
+}
+
+type KelpMaterial = THREE.MeshStandardMaterial | THREE.MeshStandardNodeMaterial;
+
+interface KelpVariantResource {
   geometry: THREE.BufferGeometry;
-  material: THREE.MeshStandardNodeMaterial;
+  material: KelpMaterial;
+}
+
+function createVariantResources(
+  placements: readonly KelpBladePlacement[][],
+  forceWebGL: boolean,
+): KelpVariantResource[] {
+  const created: KelpVariantResource[] = [];
+
+  try {
+    for (let index = 0; index < KELP_VARIANTS.length; index++) {
+      const variant = KELP_VARIANTS[index]!;
+      const geometry = createVariantGeometry(placements[index]!, variant);
+      let material: KelpMaterial;
+      try {
+        // Never instantiate a node material on the force-WebGL path: the TSL
+        // positionNode-to-GLSL loops are the compile/frame cost this fallback avoids.
+        material = forceWebGL
+          ? createStaticVariantMaterial()
+          : createVariantMaterial(variant);
+      } catch (error) {
+        geometry.dispose();
+        throw error;
+      }
+      created.push({ geometry, material });
+    }
+    return created;
+  } catch (error) {
+    for (const resource of created) {
+      resource.geometry.dispose();
+      resource.material.dispose();
+    }
+    throw error;
+  }
+}
+
+function createLandmarkResource(forceWebGL: boolean): {
+  geometry: THREE.BufferGeometry;
+  material: KelpMaterial;
 } {
   const geometry = createLandmarkGeometry();
   try {
-    return { geometry, material: createLandmarkMaterial() };
+    return {
+      geometry,
+      material: forceWebGL ? createStaticLandmarkMaterial() : createLandmarkMaterial(),
+    };
   } catch (error) {
     geometry.dispose();
     throw error;
   }
 }
 
-export default function KelpForest() {
+function useDisposableVariantResources(
+  placementsFactory: () => KelpBladePlacement[][],
+  forceWebGL: boolean,
+): KelpVariantResource[] {
   const resources = useMemo(() => {
-    const placements = generatePlacements();
-    const wallPlacements = generateWallPlacements();
-    for (let index = 0; index < placements.length; index++) {
-      placements[index]!.push(...wallPlacements[index]!);
-    }
-    const created: Array<{
-      geometry: THREE.BufferGeometry;
-      material: THREE.MeshStandardNodeMaterial;
-    }> = [];
+    return createVariantResources(placementsFactory(), forceWebGL);
+  }, [forceWebGL, placementsFactory]);
 
-    try {
-      for (let index = 0; index < KELP_VARIANTS.length; index++) {
-        const variant = KELP_VARIANTS[index];
-        const geometry = createVariantGeometry(placements[index], variant);
-        let material: THREE.MeshStandardNodeMaterial;
-        try {
-          material = createVariantMaterial(variant);
-        } catch (error) {
-          geometry.dispose();
-          throw error;
-        }
-        created.push({ geometry, material });
+  useEffect(() => {
+    return () => {
+      for (const resource of resources) {
+        resource.geometry.dispose();
+        resource.material.dispose();
       }
-      return { variants: created, landmark: createLandmarkResource() };
+    };
+  }, [resources]);
+
+  return resources;
+}
+
+export function KelpForestAmbient() {
+  const resources = useDisposableVariantResources(generatePlacements, false);
+
+  return (
+    <group position={[KELP_FOREST_CENTER.x, -2, KELP_FOREST_CENTER.z]}>
+      {resources.map((resource, index) => (
+        <mesh
+          key={index}
+          geometry={resource.geometry}
+          material={resource.material}
+          matrixAutoUpdate={false}
+        />
+      ))}
+    </group>
+  );
+}
+
+export function KelpMazeStructure({ forceWebGL }: { forceWebGL: boolean }) {
+  const resources = useMemo(() => {
+    const variants = createVariantResources(generateWallPlacements(), forceWebGL);
+    try {
+      return { variants, landmark: createLandmarkResource(forceWebGL) };
     } catch (error) {
-      for (const resource of created) {
+      for (const resource of variants) {
         resource.geometry.dispose();
         resource.material.dispose();
       }
       throw error;
     }
-  }, []);
+  }, [forceWebGL]);
 
   useEffect(() => {
     return () => {
