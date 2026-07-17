@@ -177,9 +177,16 @@ const NPC_AMBIENT_ONE_SHOTS = [
   'think',
   AMBIENT_ANIM_NAMES[2],
 ] as const satisfies readonly AnimName[];
-const NPC_AMBIENT_MIN_DELAY_SECONDS = 25;
-const NPC_AMBIENT_DELAY_RANGE_SECONDS = 35;
-const NPC_AMBIENT_PLAY_CHANCE = 0.3;
+// Tuned 2026-07-17 (review, twice): idle time ACCUMULATES across walk
+// segments (paused while moving, not reset) — the original continuous-idle
+// 25-60s window practically never completed. Second tune: accrual only runs
+// while an NPC is NEAR (LOD gate, ~3 NPCs at a time, rotating cast), so
+// per-NPC idle-seconds collect slowly; 6-16s cumulative at 50% keeps a
+// lingering nearby NPC firing within a couple of idle windows, verified
+// live (fires + bundle fetch observed) rather than assumed.
+const NPC_AMBIENT_MIN_DELAY_SECONDS = 6;
+const NPC_AMBIENT_DELAY_RANGE_SECONDS = 10;
+const NPC_AMBIENT_PLAY_CHANCE = 0.5;
 
 /** Deterministic per-NPC/cycle random in [0, 1), with no object allocation. */
 function npcAmbientRandom(seed: number, cycle: number, salt: number): number {
@@ -1444,7 +1451,9 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
           !d.inCombat &&
           !d.isDead;
         if (!ambientEligible) {
-          ambientElapsedRef.current = 0;
+          // Pause (do NOT reset) the idle accumulator — idle time accrues
+          // across walk segments so one-shots actually fire in a live town.
+          // Only the in-flight one-shot is cancelled when movement resumes.
           if (ambientOneShotOwnedRef.current) {
             animator.cancelOneShot(animationMoving, d.isRunning ?? false);
             ambientOneShotOwnedRef.current = false;
