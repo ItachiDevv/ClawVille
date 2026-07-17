@@ -36,9 +36,9 @@
  *    party holds a pre-restart bearer, so overwriting the row hash strands nothing.
  *    This deliberately sidesteps the restore path's NON-ledger demotion of
  *    no-gateway types WITHOUT weakening that contract (which protects every
- *    milady/nanoclaw/anonymous/hermes restore).
- *  - NO partner-wire change: identityType 'nanoclaw' already exists; the gate
- *    contract, shared types, and PROTOCOL_VERSION are untouched.
+ *    supported no-gateway identity restore).
+ *  - NO partner-wire change: the gate contract, shared types, and Hatcher wire
+ *    are untouched.
  *
  * ── TWO-BODY / TRAP 1 (the human + agent share ONE avatar) ─────────────────────
  *  The recommended TRIGGER (wired by §B.1) is Autonomous-mode activation, so the

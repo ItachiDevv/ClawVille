@@ -7,7 +7,7 @@
  * (`agent-session-config.ts`) the production mint paths and restore path both
  * call.
  *
- * The original bug: a restored `anonymous`/`milady` agent came back wired as an
+ * The original bug: a restored no-gateway Milady agent came back wired as an
  * OpenAI-compat gateway client (because restore read the row's stored
  * `'openai-compat'` protocol column verbatim) and 502'd on every autonomous NPC
  * conversation tick. The fix derives the in-world protocol from the
@@ -31,14 +31,213 @@ import {
   resolveAgentSpecies,
   resolveAutonomyMode,
   spawnRelevantProjection,
-  isRowRestorableFromIdentity,
+  isRowRestorableFromFacts,
   isSessionRestorable,
   protocolEmitsInWorldActions,
   protocolProximityGateExempt,
   isHostedHarness,
+  resolveDirectAgentIdentityType,
+  directAgentIdentityValidationError,
+  hasRealDeclaredGateway,
+  resolveIdentityForTicket,
+  resolveConnectGatewayForPersistence,
   type AvatarConfigInputs,
   type OverrideConfigInputs,
 } from '../agent-session-config';
+
+describe('resolveDirectAgentIdentityType — supported-only request inference', () => {
+  test('explicit supported identities are preserved, including gateway-less named runtimes', () => {
+    for (const identityType of ['milady', 'hermes', 'openclaw', 'custom'] as const) {
+      expect(resolveDirectAgentIdentityType({
+        explicitIdentityType: identityType,
+        hasMiladyRuntimeSignal: false,
+        hasDeclaredGateway: false,
+      })).toBe(identityType);
+    }
+  });
+
+  test('Milady runtime signal infers milady; a generic declared gateway infers custom', () => {
+    expect(resolveDirectAgentIdentityType({
+      hasMiladyRuntimeSignal: true,
+      hasDeclaredGateway: false,
+    })).toBe('milady');
+    expect(resolveDirectAgentIdentityType({
+      hasMiladyRuntimeSignal: false,
+      hasDeclaredGateway: true,
+    })).toBe('custom');
+  });
+
+  test('omitted identity + no runtime/gateway fact fails closed', () => {
+    const identityType = resolveDirectAgentIdentityType({
+      hasMiladyRuntimeSignal: false,
+      hasDeclaredGateway: false,
+    });
+    expect(identityType).toBeNull();
+    expect(directAgentIdentityValidationError({
+      identityType,
+      hasMiladyRuntimeSignal: false,
+      hasDeclaredGateway: false,
+    })).toBe('identityType is required when no Milady runtime or gateway is declared');
+  });
+
+  test('custom requires a gateway; proven Milady and Hermes remain valid without one', () => {
+    expect(directAgentIdentityValidationError({
+      identityType: 'custom',
+      hasMiladyRuntimeSignal: false,
+      hasDeclaredGateway: false,
+    })).toBe('custom identity requires gatewayUrl');
+    for (const identityType of ['milady', 'hermes'] as const) {
+      expect(directAgentIdentityValidationError({
+        identityType,
+        hasMiladyRuntimeSignal: identityType === 'milady',
+        hasDeclaredGateway: false,
+      })).toBeNull();
+    }
+    expect(directAgentIdentityValidationError({
+      identityType: 'openclaw',
+      hasMiladyRuntimeSignal: false,
+      hasDeclaredGateway: false,
+      openclawLocalGatewayEnabled: false,
+    })).toBe('gateway-less openclaw identity requires OPENCLAW_LOCAL_GATEWAY_ENABLED');
+    expect(directAgentIdentityValidationError({
+      identityType: 'openclaw',
+      hasMiladyRuntimeSignal: false,
+      hasDeclaredGateway: false,
+      openclawLocalGatewayEnabled: true,
+    })).toBeNull();
+  });
+
+  test('Milady requires its runtime signal and rejects conflicting named identities', () => {
+    expect(directAgentIdentityValidationError({
+      identityType: 'milady',
+      hasMiladyRuntimeSignal: false,
+      hasDeclaredGateway: false,
+    })).toBe('milady identity requires miladyAgentId');
+    expect(directAgentIdentityValidationError({
+      identityType: 'milady',
+      hasMiladyRuntimeSignal: true,
+      hasDeclaredGateway: false,
+    })).toBeNull();
+
+    for (const identityType of ['hermes', 'openclaw', 'custom'] as const) {
+      expect(directAgentIdentityValidationError({
+        identityType,
+        hasMiladyRuntimeSignal: true,
+        hasDeclaredGateway: identityType === 'custom',
+      })).toBe('miladyAgentId requires milady identityType');
+    }
+  });
+
+  test('gateway declarations reject no-POST and named no-gateway combinations', () => {
+    for (const identityType of ['milady', 'hermes'] as const) {
+      expect(directAgentIdentityValidationError({
+        identityType,
+        hasMiladyRuntimeSignal: identityType === 'milady',
+        hasDeclaredGateway: true,
+      })).toBe(`${identityType} identity does not accept gatewayUrl`);
+    }
+
+    for (const identityType of ['openclaw', 'custom'] as const) {
+      expect(directAgentIdentityValidationError({
+        identityType,
+        hasMiladyRuntimeSignal: false,
+        hasDeclaredGateway: true,
+        declaredProtocol: 'nanoclaw',
+      })).toBe('gatewayUrl does not accept nanoclaw protocol');
+      expect(directAgentIdentityValidationError({
+        identityType,
+        hasMiladyRuntimeSignal: false,
+        hasDeclaredGateway: true,
+        declaredProtocol: 'openai-compat',
+      })).toBeNull();
+    }
+  });
+
+  test('declared-gateway fact excludes the internal localhost dummy', () => {
+    expect(hasRealDeclaredGateway('https://agent.example/gateway')).toBe(true);
+    expect(hasRealDeclaredGateway('http://localhost:0')).toBe(false);
+    expect(hasRealDeclaredGateway(null)).toBe(false);
+    expect(hasRealDeclaredGateway(undefined)).toBe(false);
+  });
+
+  test('ticket identity reuses the validated label for inferred and explicit custom', () => {
+    const inferredIdentityType = resolveDirectAgentIdentityType({
+      hasMiladyRuntimeSignal: false,
+      hasDeclaredGateway: true,
+    });
+    if (!inferredIdentityType) throw new Error('expected inferred custom identity');
+    expect(resolveIdentityForTicket({
+      gatewayUrl: 'https://custom.example/v1',
+      authToken: 'custom-secret',
+    }, inferredIdentityType)).toEqual({
+      identityType: 'custom',
+      identityKey: 'https://custom.example/v1#custom-s',
+    });
+    expect(resolveIdentityForTicket({
+      identityKey: 'explicit-custom-key',
+      gatewayUrl: 'https://custom.example/v1',
+      authToken: 'custom-secret',
+    }, 'custom')).toEqual({
+      identityType: 'custom',
+      identityKey: 'explicit-custom-key',
+    });
+  });
+
+  test('ticket identity keeps explicit OpenClaw distinct and ignores dummy gateways', () => {
+    expect(resolveIdentityForTicket({
+      gatewayUrl: 'https://openclaw.example/v1',
+      authToken: 'openclaw-secret',
+    }, 'openclaw')).toEqual({
+      identityType: 'openclaw',
+      identityKey: 'https://openclaw.example/v1#openclaw',
+    });
+    expect(resolveIdentityForTicket({
+      gatewayUrl: 'http://localhost:0',
+      authToken: 'not-an-owner-proof',
+    }, 'openclaw')).toBeNull();
+  });
+
+  test('gateway-less OpenClaw clears stale BYO row state and restores by the same fact', () => {
+    const gatewayUrl = resolveConnectGatewayForPersistence({
+      identityType: 'openclaw',
+      requestGatewayUrl: undefined,
+      existingGatewayUrl: 'https://stale-byo.example/v1',
+    });
+    expect(gatewayUrl).toBeNull();
+    expect(resolveInWorldProtocol(
+      'openclaw',
+      'openai-compat',
+      false,
+      { enabled: true, hasDeclaredGateway: hasRealDeclaredGateway(gatewayUrl) },
+    )).toBe('openclaw-local');
+    expect(isRowRestorableFromFacts('openclaw', gatewayUrl, true)).toBe(true);
+    expect(isSessionRestorable(
+      'openclaw',
+      'openai-compat',
+      undefined,
+      gatewayUrl,
+      true,
+    )).toBe(true);
+  });
+
+  test('validated request fact replaces stale URLs and clears every no-gateway runtime', () => {
+    expect(resolveConnectGatewayForPersistence({
+      identityType: 'openclaw',
+      requestGatewayUrl: 'https://fresh-openclaw.example/v1',
+    })).toBe('https://fresh-openclaw.example/v1');
+    expect(resolveConnectGatewayForPersistence({
+      identityType: 'custom',
+      requestGatewayUrl: 'https://custom.example/v1',
+    })).toBe('https://custom.example/v1');
+    for (const identityType of ['milady', 'hermes', 'openclaw'] as const) {
+      expect(resolveConnectGatewayForPersistence({
+        identityType,
+        requestGatewayUrl: undefined,
+        existingGatewayUrl: 'https://stale-before-relabel.example/v1',
+      })).toBeNull();
+    }
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Identity-type matrix: how each type is PERSISTED on the openclaw_bots row and
@@ -65,25 +264,11 @@ interface MatrixRow {
 const MATRIX: MatrixRow[] = [
   // No-outbound-gateway types: MUST resolve to 'nanoclaw' (fail-soft, no POST).
   {
-    identityType: 'anonymous',
-    storedProtocol: 'openai-compat', // the meaningless default the row carries
-    expectInWorldProtocol: 'nanoclaw',
-    expectSpeciesFallback: DEFAULT_AGENT_MODEL_KEY,
-    expectAutonomy: 'server-managed',
-  },
-  {
     identityType: 'milady',
     storedProtocol: 'openai-compat',
     expectInWorldProtocol: 'nanoclaw',
     expectSpeciesFallback: DEFAULT_AGENT_MODEL_KEY,
     expectAutonomy: 'server-managed',
-  },
-  {
-    identityType: 'nanoclaw',
-    storedProtocol: 'nanoclaw',
-    expectInWorldProtocol: 'nanoclaw',
-    expectSpeciesFallback: DEFAULT_AGENT_MODEL_KEY,
-    expectAutonomy: 'self-managed',
   },
   // Real-gateway types: honor their declared HTTP protocol.
   {
@@ -91,14 +276,6 @@ const MATRIX: MatrixRow[] = [
     storedProtocol: 'openai-compat',
     gatewayUrl: 'https://gw.example.com',
     expectInWorldProtocol: 'openai-compat',
-    expectSpeciesFallback: DEFAULT_AGENT_MODEL_KEY,
-    expectAutonomy: 'server-managed',
-  },
-  {
-    identityType: 'ironclaw',
-    storedProtocol: 'anthropic',
-    gatewayUrl: 'https://gw.example.com',
-    expectInWorldProtocol: 'anthropic',
     expectSpeciesFallback: DEFAULT_AGENT_MODEL_KEY,
     expectAutonomy: 'server-managed',
   },
@@ -137,7 +314,7 @@ describe('resolveInWorldProtocol — derives from identity, not stored column', 
   }
 
   test('a no-gateway type NEVER yields a gateway-POSTing protocol', () => {
-    for (const t of ['anonymous', 'milady', 'nanoclaw']) {
+    for (const t of ['milady']) {
       // Even if the row mislabels the protocol as a POSTing one, identity wins.
       for (const stored of ['openai-compat', 'anthropic', 'custom-webhook']) {
         expect(resolveInWorldProtocol(t, stored)).toBe('nanoclaw');
@@ -146,36 +323,33 @@ describe('resolveInWorldProtocol — derives from identity, not stored column', 
   });
 });
 
-describe('isRowRestorableFromIdentity — #6 restore gate (identity, not gatewayUrl shape)', () => {
+describe('isRowRestorableFromFacts — restore follows the declared-gateway fact', () => {
   test('no-gateway types ARE restorable from the row alone', () => {
-    for (const t of ['anonymous', 'milady', 'nanoclaw']) {
-      expect(isRowRestorableFromIdentity(t)).toBe(true);
+    for (const t of ['milady', 'hermes']) {
+      expect(isRowRestorableFromFacts(t, null)).toBe(true);
     }
   });
 
-  test('every real-gateway type is NOT restorable (auth_token never persisted)', () => {
-    for (const t of ['openclaw', 'ironclaw', 'custom']) {
-      expect(isRowRestorableFromIdentity(t)).toBe(false);
-    }
+  test('declared-gateway OpenClaw/custom are NOT restorable (auth_token never persisted)', () => {
+    expect(isRowRestorableFromFacts('openclaw', 'https://agent.example/gateway')).toBe(false);
+    expect(isRowRestorableFromFacts('custom', 'https://agent.example/gateway')).toBe(false);
   });
 
-  test('THE #6 regression: a malformed legacy real-gateway row (null/dummy gatewayUrl) is still REFUSED', () => {
-    // The bug: a legacy `openclaw`/`custom` row with protocol='openai-compat' and
-    // a NULL/dummy gateway_url fell through the old `!!gatewayUrl && gatewayUrl !==
-    // dummy` guard and restore built a mute body POSTing to http://localhost:0.
-    // The predicate gates on IDENTITY TYPE, so the gatewayUrl shape is irrelevant:
-    // these are refused regardless of what gateway_url holds.
-    expect(isRowRestorableFromIdentity('openclaw')).toBe(false);
-    expect(isRowRestorableFromIdentity('custom')).toBe(false);
+  test('gateway-less OpenClaw requires its host gate; missing fact/custom fail closed', () => {
+    expect(isRowRestorableFromFacts('openclaw', null, true)).toBe(true);
+    expect(isRowRestorableFromFacts('openclaw', 'http://localhost:0', true)).toBe(true);
+    expect(isRowRestorableFromFacts('openclaw', null, false)).toBe(false);
+    expect(isRowRestorableFromFacts('openclaw')).toBe(false);
+    expect(isRowRestorableFromFacts('custom', null)).toBe(false);
     // An unknown/future identity type also fails closed (not in the no-gateway set).
-    expect(isRowRestorableFromIdentity('some-future-framework')).toBe(false);
+    expect(isRowRestorableFromFacts('some-future-framework', null)).toBe(false);
   });
 
   test('hatcher is NOT covered by this predicate (handled by a separate restore branch)', () => {
     // restore.ts keys the hatcher rebuild on protocol==='hatcher-proxy', not the
     // identityType enum (which excludes 'hatcher'); this predicate is consulted
     // only for the non-hatcher path, so it intentionally returns false here.
-    expect(isRowRestorableFromIdentity('hatcher')).toBe(false);
+    expect(isRowRestorableFromFacts('hatcher', null)).toBe(false);
   });
 });
 
@@ -185,21 +359,21 @@ describe('resolveAgentSpecies — hatcher fallback is the hatcher default', () =
     expect(resolveAgentSpecies('hatcher', undefined)).toBe(DEFAULT_HATCHER_MODEL_KEY);
   });
   test('non-hatcher with null species → DEFAULT_AGENT_MODEL_KEY', () => {
-    for (const t of ['anonymous', 'milady', 'nanoclaw', 'openclaw', 'custom']) {
+    for (const t of ['milady', 'hermes', 'openclaw', 'custom']) {
       expect(resolveAgentSpecies(t, null)).toBe(DEFAULT_AGENT_MODEL_KEY);
     }
   });
   test('explicit species is passed through verbatim for every type', () => {
-    for (const t of ['hatcher', 'anonymous', 'milady', 'openclaw']) {
+    for (const t of ['hatcher', 'milady', 'hermes', 'openclaw', 'custom']) {
       expect(resolveAgentSpecies(t, 'turtle')).toBe('turtle');
     }
   });
 });
 
 describe('resolveAutonomyMode', () => {
-  test('nanoclaw is always self-managed', () => {
-    expect(resolveAutonomyMode('nanoclaw', 'nanoclaw')).toBe('self-managed');
-    expect(resolveAutonomyMode('nanoclaw', 'nanoclaw', 'server-managed')).toBe(
+  test('the internal nanoclaw wire forces self-managed regardless of identity', () => {
+    expect(resolveAutonomyMode('milady', 'nanoclaw')).toBe('self-managed');
+    expect(resolveAutonomyMode('custom', 'nanoclaw', 'server-managed')).toBe(
       'self-managed',
     );
   });
@@ -315,7 +489,7 @@ describe('mint ≡ restore — spawn-relevant config is byte-identical per type'
     // config" to compare. They are exercised by the resolver tests above. Here
     // we assert drift-freedom for the types restore ACTUALLY rebuilds.
     const restoreRebuilds = row.expectInWorldProtocol !== 'openai-compat' ||
-      row.identityType === 'anonymous' || row.identityType === 'milady';
+      row.identityType === 'milady';
     const isRealGateway = !!row.gatewayUrl;
 
     test(`AVATAR ${row.identityType}: protocol=${row.expectInWorldProtocol}, species fallback, mint≡restore`, () => {
@@ -374,7 +548,7 @@ describe('mint ≡ restore — spawn-relevant config is byte-identical per type'
 // POST to gatewayUrl — the bug.)
 // ---------------------------------------------------------------------------
 describe('no-gateway avatar bodies cannot POST to a gateway (the 502 guard)', () => {
-  for (const t of ['anonymous', 'milady', 'nanoclaw']) {
+  for (const t of ['milady']) {
     test(`${t}: protocol nanoclaw + dummy gateway`, () => {
       const cfg = buildAvatarSessionConfig({
         mode: 'avatar',
@@ -407,14 +581,16 @@ describe('isSessionRestorable — restore-aware session-status (D-2) + hatcher-p
     // hatcher self-heals via the encrypted proxy token (restore keys on protocol).
     expect(isSessionRestorable('hatcher', 'hatcher-proxy')).toBe(true);
     // no-gateway identity types rebuild as fail-soft bodies.
-    for (const t of ['anonymous', 'milady', 'nanoclaw']) {
+    for (const t of ['milady', 'hermes']) {
       expect(isSessionRestorable(t, 'nanoclaw')).toBe(true);
       expect(isSessionRestorable(t, null)).toBe(true);
     }
     // real-gateway types can't self-heal (no persisted auth_token) → must reconnect.
-    for (const t of ['openclaw', 'ironclaw', 'custom']) {
-      expect(isSessionRestorable(t, 'openai-compat')).toBe(false);
+    for (const t of ['openclaw', 'custom']) {
+      expect(isSessionRestorable(t, 'openai-compat', undefined, 'https://agent.example/gateway')).toBe(false);
     }
+    expect(isSessionRestorable('openclaw', 'openai-compat', undefined, null, true)).toBe(true);
+    expect(isSessionRestorable('openclaw', 'openai-compat', undefined, null, false)).toBe(false);
   });
 
   test('hatcher-proxy presence refinement: false ⇒ NOT restorable; true/omitted ⇒ restorable', () => {
@@ -427,9 +603,9 @@ describe('isSessionRestorable — restore-aware session-status (D-2) + hatcher-p
 
   test('presence flag is IGNORED for non-hatcher-proxy protocols', () => {
     // a no-gateway type stays restorable even if a stray false is passed…
-    expect(isSessionRestorable('nanoclaw', 'nanoclaw', false)).toBe(true);
+    expect(isSessionRestorable('milady', 'nanoclaw', false)).toBe(true);
     // …and a real-gateway type stays non-restorable even if a stray true is passed.
-    expect(isSessionRestorable('openclaw', 'openai-compat', true)).toBe(false);
+    expect(isSessionRestorable('openclaw', 'openai-compat', true, 'https://agent.example/gateway')).toBe(false);
   });
 });
 
@@ -455,15 +631,12 @@ describe('slice 6 — hermes host-it-for-me gate (deterministic via explicit par
     for (const enabled of [true, false]) {
       expect(resolveInWorldProtocol('hatcher', 'hatcher-proxy', enabled)).toBe('hatcher-proxy');
       expect(resolveInWorldProtocol('milady', 'openai-compat', enabled)).toBe('nanoclaw');
-      expect(resolveInWorldProtocol('anonymous', 'openai-compat', enabled)).toBe('nanoclaw');
-      expect(resolveInWorldProtocol('nanoclaw', 'nanoclaw', enabled)).toBe('nanoclaw');
       expect(resolveInWorldProtocol('openclaw', 'openai-compat', enabled)).toBe('openai-compat');
-      expect(resolveInWorldProtocol('ironclaw', 'anthropic', enabled)).toBe('anthropic');
       expect(resolveInWorldProtocol('custom', 'custom-webhook', enabled)).toBe('custom-webhook');
     }
   });
   test('hermes across the OTHER resolvers: restorable, self-managed, default species', () => {
-    expect(isRowRestorableFromIdentity('hermes')).toBe(true);
+    expect(isRowRestorableFromFacts('hermes', null)).toBe(true);
     expect(isSessionRestorable('hermes', 'openai-compat')).toBe(true);
     expect(resolveAutonomyMode('hermes', 'openai-compat')).toBe('self-managed');
     expect(resolveAutonomyMode('hermes', 'openai-compat', 'server-managed')).toBe('self-managed');
@@ -476,13 +649,13 @@ describe('slice 6 — registry fail-closed for unknown / prototype-key identity 
   test('unknown identity → declared-gateway protocol, NOT restorable, server-managed, default species', () => {
     expect(resolveInWorldProtocol('some-future-framework', 'openai-compat')).toBe('openai-compat');
     expect(resolveInWorldProtocol('some-future-framework', null)).toBe('openai-compat');
-    expect(isRowRestorableFromIdentity('some-future-framework')).toBe(false);
+    expect(isRowRestorableFromFacts('some-future-framework', null)).toBe(false);
     expect(resolveAutonomyMode('some-future-framework', 'openai-compat')).toBe('server-managed');
     expect(resolveAgentSpecies('some-future-framework', null)).toBe(DEFAULT_AGENT_MODEL_KEY);
   });
   test('a prototype-key identity string cannot bypass into an inherited adapter', () => {
     for (const key of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf']) {
-      expect(isRowRestorableFromIdentity(key)).toBe(false);
+      expect(isRowRestorableFromFacts(key, null)).toBe(false);
       expect(resolveInWorldProtocol(key, 'openai-compat')).toBe('openai-compat');
       expect(resolveAgentSpecies(key, null)).toBe(DEFAULT_AGENT_MODEL_KEY);
       expect(resolveAutonomyMode(key, 'openai-compat')).toBe('server-managed');
@@ -559,7 +732,7 @@ describe('slice 6 — isHostedHarness: connect-namespace native-runtime hosting 
   });
   test('every external / self-managed / partner harness is NOT hosted', () => {
     for (const enabled of [true, false]) {
-      for (const h of ['openclaw', 'ironclaw', 'custom', 'nanoclaw', 'anonymous', 'hatcher']) {
+      for (const h of ['openclaw', 'custom', 'hatcher']) {
         expect(isHostedHarness(h, enabled)).toBe(false);
       }
     }

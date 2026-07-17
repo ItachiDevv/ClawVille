@@ -91,7 +91,7 @@ export const partnerHatcherRoutes = new Hono<AppContext>();
 /**
  * `openclaw_bots.agent_id` is a SHARED, globally-unique namespace across every
  * framework — `/api/agent/connect` lets ANY caller pick an arbitrary raw
- * `agentId` (milady prefixes `milady:<id>`, openclaw/nanoclaw/custom register
+ * `agentId` (Milady prefixes `milady:<id>`; Hermes/OpenClaw/custom register
  * their own). A holder of the single Hatcher partner key must therefore NOT be
  * able to address (and overwrite / rebind / tombstone) a row that belongs to a
  * different framework. We defend two ways:

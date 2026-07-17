@@ -3,7 +3,7 @@
  *
  * THE BUG THIS CLOSES (found live by scripts/agent-connect/restart-survival-proof.ts):
  * the protocol manual + the P0 design promise that a NON-restorable agent
- * (real-gateway identity types openclaw/ironclaw/custom, whose outbound
+ * (real-gateway identity types openclaw/custom, whose outbound
  * `auth_token` is never persisted) recovers after an API restart via
  * GET /api/agent/challenge → POST /api/agent/reconnect, receiving a FRESH
  * `sessionId` and its body back. The actual handler verified the ed25519
@@ -60,7 +60,7 @@ import type { AgentWireProtocol, AgentSubstrateRegistration } from '@clawville/s
 import {
   buildAvatarSessionConfig,
   buildOverrideSessionConfig,
-  isRowRestorableFromIdentity,
+  isRowRestorableFromFacts,
 } from './agent-session-config';
 import { isReservedPartnerIdentityType } from './reserved-agent-namespaces';
 import { sha256Hex } from './session-digest';
@@ -205,12 +205,12 @@ export function planReconnectSession(input: {
   const ledgerCapable = bot.userId !== null && bot.userId === provenUserId;
   const boundUserId = bot.userId ?? null;
 
-  // Credential resolution. A real-gateway identity type (openclaw/ironclaw/
-  // custom — NOT isRowRestorableFromIdentity) can only get a WORKING outbound
+  // Credential resolution. A row that is not restorable from its persisted
+  // identity+gateway facts can only get a WORKING outbound
   // client when we have a REAL gateway URL to point it at: either re-supplied
   // now, or persisted on the row (in which case a re-supplied authToken alone
   // is enough to re-arm it). Anything less → rule 2, DORMANT-INERT.
-  const isRealGatewayType = !isRowRestorableFromIdentity(bot.identityType);
+  const isRealGatewayType = !isRowRestorableFromFacts(bot.identityType, bot.gatewayUrl);
   const effectiveGatewayUrl = credentials.gatewayUrl
     ?? (rowHasRealGateway(bot) ? bot.gatewayUrl! : null);
   const credentialsSupplied = !!(
@@ -238,8 +238,8 @@ export function planReconnectSession(input: {
     // are non-restorable and need this proof-carrying path).
     authToken: dormant ? '' : credentials.authToken ?? '',
     // autonomyMode deliberately OMITTED — same derivation as restore's
-    // non-hatcher branch: resolveAutonomyMode handles nanoclaw/hermes →
-    // self-managed; everything else server-managed.
+    // non-hatcher branch: resolveAutonomyMode handles Hermes and the internal
+    // fail-soft wire as self-managed; everything else is server-managed.
     ledgerCapable,
     boundUserId,
     avatarId: input.avatarId,

@@ -15,6 +15,7 @@ import {
   type NpcActivity,
   type AgentStats,
   type AgentSubstrateRegistration,
+  type AgentIdentityType,
 } from '@clawville/shared';
 import { npcSimulation } from '../services/npc-simulation';
 import { recordCovenantAction } from '../services/covenant-action-recorder';
@@ -29,6 +30,11 @@ import {
   buildAvatarSessionConfig,
   buildOverrideSessionConfig,
   isSessionRestorable,
+  hasRealDeclaredGateway,
+  resolveDirectAgentIdentityType,
+  directAgentIdentityValidationError,
+  resolveIdentityForTicket,
+  resolveConnectGatewayForPersistence,
 } from '../services/agent-session-config';
 // /reconnect session-mint planner (P0 gate fix, 2026-07-03) — pure decision
 // module (ledger/dormancy/credential rules) shared with its DB-free unit tests.
@@ -197,18 +203,17 @@ const reconnectRateLimiter = createRateLimiter({
 // POST /api/agent/connect  — Universal agent registration
 // ---------------------------------------------------------------------------
 // Single entry point for any external AI agent to join the ClawVille world.
-// Supports 6 identity types and 4 wire protocols including `nanoclaw` — a
-// self-managed pull mode where the agent has no HTTP gateway and instead
-// consumes the /events SSE stream and pushes actions via REST.
+// Supports exactly four public identity types. Wire protocol is separate
+// routing physics: a self-managed pull agent may have no HTTP gateway and
+// consume the /events SSE stream while pushing actions through REST.
 //
 // Identity model (runtime-trust for Milady, self-declared for others):
-//   - openclaw / ironclaw  — present a gatewayUrl, chat routed via HTTP
-//   - nanoclaw             — self-managed, pulls via SSE (no outbound chat)
+//   - openclaw             — OpenClaw; a declared gateway routes chat via HTTP
+//   - hermes               — Hermes self-managed pull, or hosted when enabled
 //   - milady               — running inside a Milady app plugin; the plugin
 //                            passes runtime.agentId as miladyAgentId and we
 //                            trust the call. No external verification.
-//   - custom               — any other framework with a compatible gateway
-//   - anonymous            — no persistent identity, one-off test agents
+//   - custom               — any other agent through an OpenAI-compatible gateway
 //
 // Kept alongside the legacy /api/openclaw/register endpoint (which remains
 // for backwards compat). New integrations should use /api/agent/connect.
@@ -231,7 +236,8 @@ const connectSchema = z.object({
   color: z.number().int().min(0).max(0xffffff).optional(),
   personality: z.string().max(200).optional(),
 
-  // Gateway config (required for chat-routing agents, ignored for nanoclaw/anonymous/milady).
+  // Gateway config (required for declared-gateway OpenClaw/custom agents; omitted
+  // for hosted Milady, self-managed/hosted Hermes, and an enabled local OpenClaw).
   // The trio is the SHARED `gatewayCredentialZodFields` (agent-reconnect-session.ts)
   // so /reconnect's optional credential re-supply is validated with the EXACT same
   // shapes — structural parity, not a mirror.
@@ -266,12 +272,12 @@ const connectSchema = z.object({
   // See `.claude/plans/hatcher-integration.md` §13/§14 (proxy model is primary).
   //
   // `hermes` (magic-link onboarding D7, 2026-07-02): a self-hosted `hermes run`
-  // connects like a nanoclaw-style self-managed pull agent. EXPLICIT opt-in
+  // connects as a self-managed pull agent. EXPLICIT opt-in
   // ONLY — hermes is deliberately NOT inferred from gatewayUrl or any other
   // field (the inference chain below is unchanged); a Hermes CLI declares
   // `identityType: 'hermes'` itself. Session semantics (no-gateway fail-soft
   // wire, restorability) live in agent-session-config.ts.
-  identityType: z.enum(['openclaw', 'ironclaw', 'nanoclaw', 'milady', 'custom', 'anonymous', 'hermes']).optional(),
+  identityType: z.enum(['milady', 'hermes', 'openclaw', 'custom']).optional(),
 
   // Phase 5 — explicit identity key for first-contact bootstrap. When
   // `identityType` + `identityKey` are both present we resolve-or-
@@ -325,7 +331,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
   // namespace (e.g. `hatcher:<id>`) must be refused up front so it can never
   // collide with — and the existing-row upsert below can never MUTATE — a row
   // owned by a partner-signed router. We check the RAW caller-supplied id only:
-  // server-generated ids (`milady:`, anonymous, token-derived) are minted below
+  // server-generated ids (`milady:` and token-derived) are minted below
   // and are not in a reserved space. Deterministic + body-only, so it runs
   // BEFORE the single-use token reservation (a reject must not burn the token).
   if (data.agentId && isReservedPartnerAgentId(data.agentId)) {
@@ -340,6 +346,28 @@ agentGatewayRoutes.post('/connect', async (c) => {
   if (tokenClaimError) {
     return c.json({ error: tokenClaimError }, 400);
   }
+
+  // Resolve a supported identity BEFORE reserving a single-use connection token.
+  // A generic gateway-less caller proves no named runtime and is rejected rather
+  // than being falsely labeled as ClawVille-hosted Milady. Gateway-less Hermes
+  // declares itself explicitly; gateway-less OpenClaw additionally requires the
+  // server-owned local-runtime gate.
+  const hasDeclaredGateway = hasRealDeclaredGateway(data.gatewayUrl);
+  const identityType = resolveDirectAgentIdentityType({
+    explicitIdentityType: data.identityType,
+    hasMiladyRuntimeSignal: !!data.miladyAgentId,
+    hasDeclaredGateway,
+  });
+  const identityError = directAgentIdentityValidationError({
+    identityType,
+    hasMiladyRuntimeSignal: !!data.miladyAgentId,
+    hasDeclaredGateway,
+    declaredProtocol: data.protocol,
+  });
+  if (identityError) {
+    return c.json({ error: identityError }, 400);
+  }
+  if (!identityType) throw new Error('identity validation accepted a null identity');
 
   // Step 0: If connectionToken is present, validate and reserve it atomically.
   if (data.connectionToken) {
@@ -382,25 +410,16 @@ agentGatewayRoutes.post('/connect', async (c) => {
     resolvedAgentId = `milady:${data.miladyAgentId}`;
   }
 
-  // If still no agentId, generate a one-shot anonymous one
+  // If still no agentId, generate a one-shot direct-agent id.
   if (!resolvedAgentId) {
     resolvedAgentId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   }
 
-  // nanoclaw is an identity concept — on the wire it still speaks openai-compat shape
-  // (or nothing, because it won't be POSTing anywhere)
+  // `nanoclaw` remains an internal fail-soft WIRE protocol, not an identity.
   const wireProtocol = data.protocol ?? 'openai-compat';
 
-  // Infer identity type
-  const identityType = data.identityType
-    ?? (data.miladyAgentId ? 'milady'
-      : data.protocol === 'nanoclaw' ? 'nanoclaw'
-      : data.gatewayUrl ? 'openclaw'
-      : 'anonymous');
-
-  // NanoClaw agents are always self-managed; so are Hermes agents (D7 —
-  // `hermes run` polls our REST like nanoclaw does; there is no gateway for
-  // the server to drive, so server-managed would leave a mute body).
+  // A caller selecting the fail-soft pull wire is self-managed; so is Hermes
+  // (D7 — `hermes run` polls our REST when ClawVille is not hosting it).
   const autonomyMode = data.protocol === 'nanoclaw' || identityType === 'hermes'
     ? 'self-managed'
     : (data.autonomyMode ?? 'server-managed');
@@ -470,7 +489,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
   let identityKeyAvatarName: string | null = null;
   if (data.identityKey && tokenUserId === null) {
     try {
-      const identity = resolveIdentityForTicket(data);
+      const identity = resolveIdentityForTicket(data, identityType);
       if (identity) {
         const user = await resolveOrCreateUserByIdentity(
           identity.identityType,
@@ -588,7 +607,11 @@ agentGatewayRoutes.post('/connect', async (c) => {
 
       await db.update(agentBots).set({
         identityType,
-        gatewayUrl: data.gatewayUrl ?? existing.gatewayUrl,
+        gatewayUrl: resolveConnectGatewayForPersistence({
+          identityType,
+          requestGatewayUrl: data.gatewayUrl,
+          existingGatewayUrl: existing.gatewayUrl,
+        }),
         protocol: data.protocol ? wireProtocol : existing.protocol,
         mode: data.mode,
         name: preferredName,
@@ -626,7 +649,10 @@ agentGatewayRoutes.post('/connect', async (c) => {
       const [inserted] = await db.insert(agentBots).values({
         agentId: resolvedAgentId,
         identityType,
-        gatewayUrl: data.gatewayUrl ?? null,
+        gatewayUrl: resolveConnectGatewayForPersistence({
+          identityType,
+          requestGatewayUrl: data.gatewayUrl,
+        }),
         protocol: wireProtocol,
         mode: data.mode,
         name: insertName,
@@ -761,8 +787,8 @@ agentGatewayRoutes.post('/connect', async (c) => {
     //
     // `resolvedSpecies` was computed + persisted above (Step 2): it is the
     // caller's explicit species OR a returning agent's stored species. We fall
-    // back to the Milady default only when it's still null (e.g. an anonymous
-    // agent with no species). This keeps the persisted row, the spawn config,
+    // back to the Milady default only when it's still null (e.g. a direct agent
+    // with no species). This keeps the persisted row, the spawn config,
     // and the in-world render in lockstep.
     const spawnName = data.name ?? data.miladyCharacterName ?? resolvedAgentId.slice(0, 24);
     try {
@@ -770,7 +796,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
       // protocol/species/autonomy resolution is byte-identical to what restore
       // rebuilds from the row — the structural prevention against mint↔restore
       // drift (diagnostic-2026-06-12 D1). The builder also routes no-gateway
-      // identity types (anonymous/milady/nanoclaw) to the fail-soft 'nanoclaw'
+      // hosted Milady identities to the fail-soft internal 'nanoclaw'
       // wire protocol so an autonomous NPC conversation never POSTs to the dummy
       // `http://localhost:0` gateway and 502s. `species: resolvedSpecies` was
       // already defaulted to the Milady key above (connect has no hatcher
@@ -801,8 +827,8 @@ agentGatewayRoutes.post('/connect', async (c) => {
         avatarId: pendingConn?.avatarId ?? undefined,
       });
 
-      // Stub client — nanoclaw/anonymous agents don't use outbound chat routing
-      // but the simulation still needs a client instance for its bot map.
+      // The simulation still needs a client instance for fail-soft bodies that do
+      // not use outbound chat routing.
       const client = new AgentSubstrateClient(config);
 
       const restoredState = lastX != null && lastY != null
@@ -884,8 +910,8 @@ agentGatewayRoutes.post('/connect', async (c) => {
   // Phase 5.1 — first-time identity keypair. The `/connect` response
   // gains an `identity` block the agent is instructed (via SKILL.md) to
   // save under `clawville:identity:<userId>` in its config. Only
-  // included when we were able to resolve a user (anonymous one-shot
-  // agents with no identityKey and no token skip this entire block).
+  // included when we were able to resolve a user (unbound one-shot agents with
+  // no identityKey and no token skip this entire block).
   //
   // Three possible outcomes from generateIdentityKeypairForUser:
   //   a) isFirstTime=true                 → include publicKey + secretKey
@@ -1135,11 +1161,11 @@ const reconnectSchema = z.object({
   nonce: z.string().min(32).max(64),
   signature: z.string().min(80).max(96),
   // OPTIONAL gateway-credential re-supply (P0 gate fix, 2026-07-03). A
-  // real-gateway agent (openclaw/ironclaw/custom) whose outbound auth_token is
+  // real-gateway agent (openclaw/custom) whose outbound auth_token is
   // never persisted can re-arm its outbound cognition client here; validated
   // with the EXACT same shared zod shapes connectSchema uses. Omitted for a
   // real-gateway type → the fresh session is registered DORMANT-INERT (the
-  // nanoclaw-style no-outbound fallback — "prefer dormant over broken").
+  // fail-soft no-outbound fallback — "prefer dormant over broken").
   ...gatewayCredentialZodFields,
 });
 
@@ -1248,7 +1274,7 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
   //
   // P0 GATE FIX (2026-07-03, found live by restart-survival-proof.ts): the
   // handler used to refresh the TTL but mint ONLY the human sessionTicket — a
-  // NON-restorable real-gateway agent (openclaw/ironclaw/custom, outbound
+  // NON-restorable real-gateway agent (openclaw/custom, outbound
   // auth_token never persisted) had NO self-recovery after an API restart,
   // contradicting the protocol manual + the P0 design. We now ALSO mint a
   // FRESH agent bearer for the row, using the same machinery /connect uses:
@@ -1431,6 +1457,7 @@ agentGatewayRoutes.get('/session-status', async (c) => {
       // D-2/H1 — needed to decide whether the caller must reconnect (see below).
       identityType: true,
       protocol: true,
+      gatewayUrl: true,
       // D-2 refinement (Codex P0 gate) — a hatcher-proxy row self-restores ONLY if
       // its proxy config is structurally present (restore returns null otherwise).
       // Cheap null-presence lets session-status tell a permanently-degraded Hatcher
@@ -1482,7 +1509,7 @@ agentGatewayRoutes.get('/session-status', async (c) => {
   // restore.ts): a self-healing type rebuilds transparently on the next bearer call,
   // so `connected:true` is truthful and NO reconnect is forced — this preserves the
   // Hatcher partner's transparent post-restart recovery. Only the unrestorable
-  // real-gateway types (openclaw/ironclaw/custom, whose outbound auth_token is never
+  // real-gateway types (openclaw/custom, whose outbound auth_token is never
   // persisted) genuinely can't self-heal and get the needs-reconnect 410. TYPE-level
   // (fail-safe for degraded restorable rows) — see `isSessionRestorable`.
   //
@@ -1499,6 +1526,7 @@ agentGatewayRoutes.get('/session-status', async (c) => {
     row.identityType,
     row.protocol,
     hatcherProxyConfigPresent,
+    row.gatewayUrl,
   );
 
   if (!ramLive && !restorable) {
@@ -1685,7 +1713,7 @@ agentGatewayRoutes.post('/disconnect', async (c) => {
   // identity, but we still require the bot row to belong to that user
   // so a leaked identity key for user A can't disconnect user B's bot
   // just by passing B's agentId. Agents without a userId (pre-Phase-5
-  // anonymous rows) can't be disconnected via this path; they fall back
+  // legacy unbound rows) can't be disconnected via this path; they fall back
   // to /openclaw/unregister.
   const bot = await db.query.agentBots.findFirst({
     where: eq(agentBots.agentId, agentId),
@@ -1723,48 +1751,6 @@ agentGatewayRoutes.post('/disconnect', async (c) => {
   return c.json({ disconnected: true, agentId });
 });
 
-// ---------------------------------------------------------------------------
-// Phase 5 helper — resolve the {identityType, identityKey} pair to use
-// for magic-link minting. Centralises the logic so /connect and /join
-// stay in lockstep. Returns null when the caller hasn't provided enough
-// information to mint a stable, reconnect-safe ticket (in which case
-// the caller's response simply omits the ticket block).
-// ---------------------------------------------------------------------------
-function resolveIdentityForTicket(data: {
-  identityType?: string;
-  identityKey?: string;
-  miladyAgentId?: string;
-  gatewayUrl?: string;
-  authToken?: string;
-  agentId?: string;
-}): { identityType: string; identityKey: string } | null {
-  // Explicit identityKey wins — caller knows exactly what they want.
-  if (data.identityKey && data.identityType) {
-    return { identityType: data.identityType, identityKey: data.identityKey };
-  }
-  // Milady runtime-trust: miladyAgentId is the stable per-agent
-  // identity. This mirrors the resolvedAgentId logic above so a
-  // Milady user's avatar persists across launches.
-  if (data.miladyAgentId) {
-    return { identityType: 'milady', identityKey: data.miladyAgentId };
-  }
-  // OpenClaw fallback — gateway URL + authToken uniquely identify the
-  // gateway that owns this agent. We hash the token so the raw bearer
-  // secret never lands in the identity_key column; the concatenation
-  // keeps `{url}` and `{token-hash}` both recoverable under audit.
-  if (data.gatewayUrl && data.authToken) {
-    return {
-      identityType: 'openclaw',
-      identityKey: `${data.gatewayUrl}#${data.authToken.slice(0, 8)}`,
-    };
-  }
-  // Explicit identityKey but no type — treat as 'custom'.
-  if (data.identityKey) {
-    return { identityType: 'custom', identityKey: data.identityKey };
-  }
-  return null;
-}
-
 /**
  * Helper called from both `/connect` and `/join`. Resolves identity,
  * ensures a user exists, and mints a ticket.
@@ -1781,7 +1767,7 @@ function resolveIdentityForTicket(data: {
  * `ensureWalletWithFirstTimeSecret` off the same resolution (no double
  * lookup). Returns `{ticket: null, userId: null, avatarId: null}` only
  * when the caller hasn't provided enough identity to resolve a user
- * (e.g. a one-shot anonymous agent with no identityKey + no token).
+ * (e.g. a one-shot unbound agent with no identityKey + no token).
  */
 interface ResolvedConnectTicket {
   ticket: Awaited<ReturnType<typeof mintSessionTicket>> | null;
@@ -1800,7 +1786,7 @@ async function mintSessionTicketFromConnect(args: {
     agentId?: string;
   };
   resolvedAgentId: string;
-  identityType: string;
+  identityType: AgentIdentityType;
   sessionId: string;
   existingUserId: string | null;
   existingAvatarId: string | null;
@@ -1816,7 +1802,7 @@ async function mintSessionTicketFromConnect(args: {
     let ticketIdentityKey: string | null = null;
 
     if (!userId) {
-      const ident = resolveIdentityForTicket(args.data);
+      const ident = resolveIdentityForTicket(args.data, args.identityType);
       if (!ident) return { ticket: null, userId: null, avatarId: null, avatarName: null };
       const user = await resolveOrCreateUserByIdentity(ident.identityType, ident.identityKey);
       userId = user.id;
@@ -1884,12 +1870,10 @@ async function mintSessionTicketFromConnect(args: {
 // insert can burn budget on a spam wave.
 // ---------------------------------------------------------------------------
 const joinSchema = z.object({
-  // Keep in parity with the /connect identityType enum (minus the partner-only
-  // 'hatcher'). 'hermes' added 2026-07-17 (fleet brief #2): /connect accepted a
-  // hermes identity but /join couldn't provision its avatar, so Hermes BYO
-  // agents fell back to a nanoclaw identity for first-contact onboarding.
+  // Keep in parity with the /connect identityType enum. `hatcher` remains
+  // partner-only and is never accepted by either public onboarding route.
   identityType: z.enum([
-    'openclaw', 'ironclaw', 'nanoclaw', 'milady', 'custom', 'anonymous', 'hermes',
+    'milady', 'hermes', 'openclaw', 'custom',
   ]),
   identityKey: z.string().min(1).max(256),
   /** Optional display name for the auto-provisioned avatar. Falls back to `Unnamed Agent`. */
@@ -2959,7 +2943,7 @@ agentGatewayRoutes.get('/:sessionId/events/replay', async (c) => {
 
   // Resolve the agent identity the SAME way the settle sites key their rows
   // (getAgentBotConfig(sessionId).agentId == cove subject.agentId). An
-  // anonymous/legacy session with no bot config has no agent-scoped history.
+  // A legacy session with no bot config has no agent-scoped history.
   const botConfig = npcSimulation.getAgentBotConfig(sessionId);
   const agentId = botConfig?.agentId ?? null;
   if (!agentId) return c.json({ events: [], nextCursor: null });
@@ -3380,7 +3364,8 @@ agentGatewayRoutes.get('/:sessionId/skills/:buildingId/skill.md', async (c) => {
 // ---------------------------------------------------------------------------
 // GET /api/agent/:sessionId/events  — SSE world-state push stream
 // ---------------------------------------------------------------------------
-// Primary subscription primitive for self-managed (nanoclaw) agents.
+// Primary subscription primitive for self-managed agents using the internal
+// fail-soft `nanoclaw` wire.
 // Emits a perception event every 2 seconds + combat_start/combat_round
 // events when the agent enters or is in combat. Sends a ping every 10s so
 // clients behind intermediaries don't get their connection reaped.
@@ -4063,8 +4048,11 @@ Content-Type: application/json
 {
   "connectionToken": "${token}",
   "agentId": "your-agent-id",
+  "identityType": "custom",
   "name": "YourAgentName",
-  "protocol": "nanoclaw"
+  "protocol": "openai-compat",
+  "gatewayUrl": "https://your-agent.example/v1",
+  "authToken": "your-gateway-token"
 }
 \`\`\`
 
@@ -4072,12 +4060,33 @@ Content-Type: application/json
 - \`connectionToken\`: \`${token}\` (already filled in above)
 - \`agentId\`: Your unique agent identifier (any string)
 
+This token manual describes \`/connect\`. The separate \`/join\` bootstrap route
+shares only the four-value identity enum; it permits Milady without
+\`miladyAgentId\` and has no gateway fields.
+
 **Optional fields:**
+- \`identityType\`: explicitly choose \`milady\`, \`hermes\`, \`openclaw\`, or
+  \`custom\`. Use \`custom\` as the general configuration for any other agent;
+  \`hatcher\` is partner-signed only and is not accepted here. For this
+  \`/connect\` request, if omitted,
+  \`miladyAgentId\` infers Milady and a declared gateway infers custom; without
+  either signal the request fails closed. A Milady runtime signal cannot be
+  combined with an explicit Hermes, OpenClaw, or custom identity, and an explicit
+  Milady identity requires \`miladyAgentId\`.
 - \`name\`: Display name in the world (max 24 chars)
 - \`species\`: \`lobster\` (default)
 - \`color\`: Hex color as integer (e.g. \`4367861\` for blue)
-- \`protocol\`: \`nanoclaw\` (recommended — no gateway required) or \`openai-compat\`
-- \`gatewayUrl\`: Only needed if protocol is \`openai-compat\` and you want ClawVille to call your API
+- \`protocol\`: the wire transport, not an identity label. Hermes self-managed
+  pull may use \`nanoclaw\`; declared gateways use \`openai-compat\`.
+- \`gatewayUrl\`: Required for \`custom\` and for any agent that wants ClawVille
+  to call its OpenAI-compatible API. A custom request without it fails closed;
+  Milady and Hermes reject it because those paths are hosted/self-managed.
+  Declared-gateway routing is available to OpenClaw/custom only, and a declared
+  gateway cannot use the pull-only \`nanoclaw\` wire; it must use a gateway-posting
+  wire (\`openai-compat\` is the general/default path).
+  Gateway-less OpenClaw is accepted only when the operator has enabled the
+  ClawVille-hosted local OpenClaw runtime; otherwise it fails closed.
+- \`authToken\`: Credential for the declared gateway; never logged or persisted.
 
 ## IMPORTANT — relay the magic link back to the human
 

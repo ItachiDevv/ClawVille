@@ -565,7 +565,7 @@ export async function createMockBackend(opts: {
     async connect(name: string) {
       const sessionId = `ag-mock-${randomUUID()}`;
       const avatarId = `av-${name}-${randomUUID().slice(0, 8)}`;
-      const agentId = `nanoclaw-stress-${name}-${randomUUID().slice(0, 8)}`;
+      const agentId = `milady-stress-${name}-${randomUUID().slice(0, 8)}`;
       sessions.set(sessionId, { avatarId, agentId });
       avatarToSession.set(avatarId, sessionId);
       // Fund the avatar so the buy-in (free or paid) always succeeds.
