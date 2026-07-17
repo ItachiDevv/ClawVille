@@ -18,6 +18,15 @@ const TABLE_PATH = '/models/cove-table-clean.glb';
 // chairs walled off the frame corners and the far-center chair completely
 // hid the dealer. Stools keep every sight line open.
 const STOOL_PATH = '/models/cove-stool.glb';
+// hermes NATIVE sit (2026-07-17 founder start-over): her own mesh, rigged by
+// Meshy, chair-sit idle baked ON HER SKELETON — no VRM retarget anywhere.
+// ?hermesClip=f swaps the female-variant clip for comparison.
+const HERMES_SIT_PATH = (() => {
+  if (typeof window === 'undefined') return '/models/hermes-female-sit-m.glb';
+  return new URLSearchParams(window.location.search).get('hermesClip') === 'f'
+    ? '/models/hermes-female-sit-f.glb'
+    : '/models/hermes-female-sit-m.glb';
+})();
 
 // SCALE UNIFICATION (2026-07-17 founder feedback): every figure renders at
 // the SAME world-standard height the walkable cove uses for the player's
@@ -87,16 +96,16 @@ const CARD_LAYOUT: Readonly<TableCardLayout> = Object.freeze({
 const BOT_MODEL_KEYS = [
   'milady_official_2',
   'milady_official_5',
-  'milady_official_7',
   'hermes_female',
+  'milady_official_7',
   'milady_official_4',
 ] as const satisfies readonly (keyof typeof MODEL_REGISTRY)[];
 // (index 3 = hermes -> BOT_SEATS[3], the right side-rail seat: her fixed
 // t=2.0 lean reads natural side-on, lunging head-on.)
 const HERMES_SAMPLE_AT = (() => {
-  if (typeof window === 'undefined') return 8.5;
+  if (typeof window === 'undefined') return 0.2;
   const raw = Number(new URLSearchParams(window.location.search).get('hermesSample'));
-  return Number.isFinite(raw) && raw > 0 ? raw : 8.5;
+  return Number.isFinite(raw) && raw > 0 ? raw : 0.2;
 })(); // seconds into sit_idle_m — per-rig frames read differently
 const DEALER_MODEL_KEY = 'milady_official_6' as const;
 
@@ -234,6 +243,57 @@ function FrozenFigure({
 const CAM_EYE: readonly [number, number, number] = [0, 150, -49.6 * S - 46];
 const CAM_LOOK: readonly [number, number, number] = [0, 66, 78 * S];
 
+/** Frozen figure from a NATIVE Meshy-rigged GLB (mesh + rig + clip in one
+ *  asset, zero retargeting). Plays its baked clip once to `sampleAt` and
+ *  freezes. Single-mount asset: the cached useGLTF scene is used directly.
+ *  rawHeightMeters: the GLB's standing-normalized height, used for world
+ *  scale (WORLD_AVATAR_HEIGHT / rawHeightMeters). */
+function FrozenGlbFigure({
+  path,
+  position,
+  yaw,
+  sampleAt = 0.0001,
+  rawHeightMeters = 1.7,
+}: {
+  path: string;
+  position: readonly [number, number, number];
+  yaw: number;
+  sampleAt?: number;
+  rawHeightMeters?: number;
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+  const gltf = useGLTF(path);
+  const { invalidate } = useThree();
+  const scale = WORLD_AVATAR_HEIGHT / rawHeightMeters;
+
+  useEffect(() => {
+    const group = groupRef.current;
+    const clip = gltf.animations[0];
+    if (!group || !clip) return;
+    const mixer = new THREE.AnimationMixer(gltf.scene);
+    const action = mixer.clipAction(clip);
+    action.setLoop(THREE.LoopRepeat, Infinity);
+    action.play();
+    mixer.update(sampleAt);
+    group.updateMatrixWorld(true);
+    // Ground the POSED figure: feet exactly on the floor.
+    const bbox = new THREE.Box3().setFromObject(gltf.scene);
+    group.position.setY(group.position.y - bbox.min.y);
+    group.updateMatrixWorld(true);
+    if (process.env.NODE_ENV !== 'production') {
+      console.info(`[HoldemTableRoom] native GLB frozen: ${path} @ t=${sampleAt}`);
+    }
+    invalidate();
+    return () => { mixer.stopAllAction(); mixer.uncacheRoot(gltf.scene); };
+  }, [gltf, invalidate, path, sampleAt]);
+
+  return (
+    <group ref={groupRef} position={[position[0], position[1], position[2]]} rotation={[0, yaw, 0]}>
+      <primitive object={gltf.scene} scale={[scale, scale, scale]} />
+    </group>
+  );
+}
+
 let dealerPlateCache: THREE.CanvasTexture | null = null;
 function getDealerPlate(): THREE.CanvasTexture {
   if (dealerPlateCache) return dealerPlateCache;
@@ -345,6 +405,14 @@ function HoldemTableRoomScene() {
           <group position={[seat.chairX, 0, seat.chairZ]} rotation={[0, seat.faceYaw, 0]} visible={false}>
             <primitive object={chairs[index]!} />
           </group>
+          {BOT_MODEL_KEYS[index] === 'hermes_female' ? (
+            <FrozenGlbFigure
+              path={HERMES_SIT_PATH}
+              position={[seat.chairX, 0, seat.chairZ]}
+              yaw={seat.faceYaw}
+              sampleAt={HERMES_SAMPLE_AT}
+            />
+          ) : (
           <FrozenFigure
             reg={MODEL_REGISTRY[BOT_MODEL_KEYS[index]!] as ModelRegistryEntry}
             instanceId={`holdem-room-seat-${seat.engineSeatIndex}`}
@@ -352,9 +420,8 @@ function HoldemTableRoomScene() {
             position={[seat.chairX, 0, seat.chairZ]}
             yaw={seat.faceYaw}
             targetHeight={BOT_TARGET_HEIGHT}
-            sampleAt={BOT_MODEL_KEYS[index] === 'hermes_female' ? HERMES_SAMPLE_AT : undefined}
-            freezeVia={BOT_MODEL_KEYS[index] === 'hermes_female' ? 'transition' : 'sample'}
           />
+          )}
         </group>
       ))}
 
@@ -403,3 +470,4 @@ export default function HoldemTableRoomCanvas() {
 useGLTF.preload(ROOM_PATH);
 useGLTF.preload(TABLE_PATH);
 useGLTF.preload(STOOL_PATH);
+useGLTF.preload('/models/hermes-female-sit-m.glb');
