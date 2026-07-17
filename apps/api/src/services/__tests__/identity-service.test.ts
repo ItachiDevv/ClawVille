@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   healLegacyFingerprintInTransaction,
   identityFingerprint,
+  resolvePublicOnboardingIdentityWithStore,
   resolveOrCreateUserByIdentityWithStore,
 } from '../identity-service';
 import type { IdentityResolutionStore } from '../identity-service';
@@ -63,14 +64,39 @@ describe('identity fingerprint heal-on-reconnect', () => {
     const key = 'same-secret';
     const victim = store.seed(identityFingerprint('nanoclaw', key), 'victim');
 
-    const result = await resolveOrCreateUserByIdentityWithStore('custom', key, store);
+    const coordinated = await resolvePublicOnboardingIdentityWithStore('nanoclaw', key, store);
+    const result = coordinated.user;
 
+    expect(coordinated.identityType).toBe('custom');
     expect(result.id).toBe(victim.id);
     expect(result.isNewUser).toBe(false);
     expect(result.identityFingerprint).toBe(identityFingerprint('custom', key));
     expect(store.legacyProbes).toEqual([
       identityFingerprint('nanoclaw', key),
     ]);
+  });
+
+  test('different novel framework labels with the same key resolve one canonical custom account', async () => {
+    const store = new MemoryIdentityStore();
+    const key = 'one-general-secret';
+    const first = await resolvePublicOnboardingIdentityWithStore(
+      'futureclaw',
+      key,
+      store,
+    );
+    const second = await resolvePublicOnboardingIdentityWithStore(
+      'reef_agent-v2',
+      key,
+      store,
+    );
+
+    expect(first.identityType).toBe('custom');
+    expect(second.identityType).toBe('custom');
+    expect(first.user.isNewUser).toBe(true);
+    expect(second.user.isNewUser).toBe(false);
+    expect(second.user.id).toBe(first.user.id);
+    expect(second.user.identityFingerprint).toBe(identityFingerprint('custom', key));
+    expect(store.rows.size).toBe(1);
   });
 
   test('the second reconnect hits the new fingerprint without a legacy probe', async () => {

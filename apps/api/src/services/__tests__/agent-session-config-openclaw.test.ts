@@ -124,10 +124,13 @@ describe('resolveInWorldProtocol — openclaw host-it-for-me gate', () => {
   });
 
   test('the gate NEVER leaks openclaw-local to any other identity type', () => {
-    // custom is declared-gateway, NOT openclaw-gated — untouched even with the
-    // openclaw opts forced ON + gateway-less.
+    // Custom is optional-gateway, NOT openclaw-gated: gateway-less is fail-soft
+    // regardless of the OpenClaw gate, while a declared gateway stays declared.
     expect(
       resolveInWorldProtocol('custom', 'custom-webhook', false, { enabled: true, hasDeclaredGateway: false }),
+    ).toBe('nanoclaw');
+    expect(
+      resolveInWorldProtocol('custom', 'custom-webhook', false, { enabled: false, hasDeclaredGateway: true }),
     ).toBe('custom-webhook');
     // Milady stays on the internal fail-soft wire.
     expect(

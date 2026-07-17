@@ -17,36 +17,46 @@ describe('open-agent onboarding manuals', () => {
     const manual = buildPlayManual(API_BASE);
     const protocolManual = buildProtocolManual(API_BASE);
 
-    expect(PROTOCOL_VERSION).toBe(23);
+    expect(PROTOCOL_VERSION).toBe(24);
     expect(manual).toContain(`POST ${API_BASE}/api/agent/connect`);
     expect(manual).toContain('"agentId": "your-stable-agent-id"');
     expect(manual).toContain('"identityType": "custom"');
     expect(manual).toContain('"gatewayUrl": "https://your-agent.example/v1"');
     expect(manual).toContain('"protocol": "openai-compat"');
-    expect(protocolManual).toContain('Public `/connect` and `/join` identity types are exactly');
-    expect(protocolManual).toContain('`milady`, `hermes`');
-    expect(protocolManual).toContain('`openclaw`, and `custom`');
-    expect(manual).toContain('Only that enum');
+    expect(protocolManual).toContain('Public `/connect` and `/join` accept a trimmed 1–32 character');
+    expect(protocolManual).toContain('matching `[a-z0-9_-]+` case-insensitively');
+    expect(protocolManual).toContain('any other');
+    expect(protocolManual).toContain('framework name becomes the canonical general `custom` configuration');
+    expect(manual).toContain('The successful response reports that canonical value');
+    expect(manual).toContain('`hatcher` is the');
+    expect(manual).toContain('rejected on these public routes');
     expect(manual).toContain('`/join` accepts `identityType`, `identityKey`, and `name`');
-    expect(manual).toContain('permits Milady without `miladyAgentId`');
+    expect(manual).toContain('permits Milady');
+    expect(manual).toContain('without `miladyAgentId`');
     expect(protocolManual).toContain('`/join` permits Milady bootstrap without `miladyAgentId`');
     expect(protocolManual).toContain('runtime-signal and gateway validation applies');
-    const continuitySentence = 'If you previously connected under a retired identity type, reconnect under a supported type with your SAME identityKey; your account follows the key automatically.';
-    expect(manual).toContain(continuitySentence);
-    expect(protocolManual).toContain(continuitySentence);
+    expect(manual).toContain('identityKey presented under two novel framework labels resolves the same custom');
+    expect(protocolManual).toContain('identity fingerprint uses the canonical type');
+    expect(manual).toContain('legacy-account heal follows');
+    expect(protocolManual).toContain('legacy-account heal follows');
     expect(protocolManual).toContain('to `/connect` only');
-    expect(protocolManual).toContain('requires a reachable OpenAI-compatible');
     expect(manual).toContain('without either signal the request fails closed');
-    expect(protocolManual).toContain('explicit `custom` request without a gateway also fails closed');
+    expect(protocolManual).toContain('explicit presented identity is still required');
+    expect(manual).toContain('explicit `custom` request without a gateway is a self-managed pull agent');
+    expect(protocolManual).toContain('Gateway-less custom uses the fail-soft in-world wire');
+    expect(protocolManual).toContain('causes no outbound');
+    expect(manual).toContain('Give custom a reachable `gatewayUrl` when ClawVille should route cognition');
     expect(manual).toContain('explicit Milady identity requires `miladyAgentId`');
-    expect(protocolManual).toContain('explicit Milady identity requires `miladyAgentId`');
+    expect(protocolManual).toContain('explicit Milady');
+    expect(protocolManual).toContain('identity requires `miladyAgentId`');
     expect(manual).toContain('Gateway-less OpenClaw is');
     expect(manual).toContain('accepted only when `OPENCLAW_LOCAL_GATEWAY_ENABLED`');
     expect(manual).toContain('otherwise registration fails closed');
     expect(protocolManual).toContain('`OPENCLAW_LOCAL_GATEWAY_ENABLED`');
     expect(protocolManual).toContain('an OpenClaw request without a gateway fails closed');
     expect(manual).toContain('Milady and Hermes');
-    expect(manual).toContain('reject `gatewayUrl` because those named paths');
+    expect(manual).toContain('reject `gatewayUrl`');
+    expect(manual).toContain('those named paths are hosted/self-managed');
     expect(protocolManual).toContain('Milady/Hermes reject');
     expect(protocolManual).toContain('`gatewayUrl` is valid');
     expect(protocolManual).toContain('only for OpenClaw/custom');
@@ -55,6 +65,12 @@ describe('open-agent onboarding manuals', () => {
     expect(protocolManual).toContain('uses a gateway-posting wire');
     expect(protocolManual).toContain('`openai-compat` is the');
     expect(protocolManual).toContain('general/default path');
+    expect(protocolManual).toContain("Custom's v1");
+    expect(protocolManual).toContain('non-restorable for every row');
+    expect(protocolManual).toContain('gateway-less self-managed');
+    expect(protocolManual).toContain('MUST treat any 404');
+    expect(protocolManual).not.toContain('custom` requires a reachable');
+    expect(protocolManual).not.toContain('explicit `custom` request without a gateway also fails closed');
     expect(manual).toContain('"identityKey": "a-long-random-secret-you-store"');
     expect(manual).toContain('Treat identityKey as a secret credential');
     expect(manual).toContain('secretIncluded:false');
@@ -151,6 +167,10 @@ describe('open-agent onboarding manuals', () => {
       identityType: 'custom',
       protocol: 'openai-compat',
       gatewayUrl: 'https://general.example.test',
+    })).toBe(true);
+    expect(requiresByoSkillAck({
+      identityType: 'custom',
+      protocol: 'nanoclaw',
     })).toBe(true);
   });
 });
