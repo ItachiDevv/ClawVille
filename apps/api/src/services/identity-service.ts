@@ -18,7 +18,9 @@ import { createHash } from 'crypto';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
 import { db, users, eq, and, isNull, sql } from '@clawville/database';
+import type { AgentIdentityType } from '@clawville/shared';
 import { encryptSecretKeyEnveloped } from './keypair-vault';
+import { canonicalizePublicAgentIdentityType } from './agent-session-config';
 
 /**
  * Stable hash of `{type}:{key}` as hex SHA-256 (64 chars). The colon
@@ -165,6 +167,40 @@ const databaseIdentityStore: IdentityResolutionStore = {
     return inserted;
   },
 };
+
+export interface PublicOnboardingIdentityResolution {
+  identityType: AgentIdentityType;
+  user: IdentityUser;
+}
+
+/**
+ * The identity coordinator shared verbatim by public `/connect` and `/join`.
+ * Callers must reject reserved partner labels before entering this function.
+ * Every accepted presented label is canonicalized exactly once, and that same
+ * canonical type feeds the fingerprint resolver, so route response, ticket,
+ * account lookup/heal, and persisted identity can never disagree.
+ */
+export async function resolvePublicOnboardingIdentityWithStore(
+  presentedIdentityType: string,
+  identityKey: string,
+  store: IdentityResolutionStore,
+): Promise<PublicOnboardingIdentityResolution> {
+  const identityType = canonicalizePublicAgentIdentityType(presentedIdentityType);
+  const user = await resolveOrCreateUserByIdentityWithStore(identityType, identityKey, store);
+  return { identityType, user };
+}
+
+/** Production database wrapper for the shared public-onboarding coordinator. */
+export async function resolvePublicOnboardingIdentity(
+  presentedIdentityType: string,
+  identityKey: string,
+): Promise<PublicOnboardingIdentityResolution> {
+  return resolvePublicOnboardingIdentityWithStore(
+    presentedIdentityType,
+    identityKey,
+    databaseIdentityStore,
+  );
+}
 
 /**
  * Resolve the user row for an agent identity, creating a minimal row

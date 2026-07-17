@@ -19,6 +19,7 @@ const protocolPointerSchema = z.object({
 
 const connectResponseSchema = z.object({
   agentId: z.string().min(1),
+  identityType: z.literal('milady'),
   sessionId: z.string().regex(/^ag-/),
   knowledge: z.array(z.string()),
   protocol: protocolPointerSchema,
@@ -34,6 +35,7 @@ const connectResponseSchema = z.object({
 
 const returningConnectResponseSchema = z.object({
   agentId: z.string().min(1),
+  identityType: z.literal('milady'),
   sessionId: z.string().regex(/^ag-/),
   knowledge: z.array(z.string()),
   protocol: protocolPointerSchema,
@@ -62,6 +64,7 @@ const claimSkillResponseSchema = z.object({
 const joinResponseSchema = z.object({
   userId: z.string().min(1),
   avatarId: z.string().uuid(),
+  identityType: z.literal('milady'),
 }).passthrough();
 
 const sessionStatusResponseSchema = z.object({
