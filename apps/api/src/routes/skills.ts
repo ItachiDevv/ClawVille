@@ -422,12 +422,12 @@ async function resolveAvatarId(c: any): Promise<string | null> {
   // Try agent Bearer sessionId — sessionId itself is opaque, so we look up
   // the openclaw_bots row by agent_id matching the in-memory map. Cheap
   // alternative: skip sessionId resolution entirely and take agent_id from
-  // the X-Clawville-Agent-Id header that nanoclaw clients already send for
+  // the X-Clawville-Agent-Id header that self-managed clients already send for
   // event logging.
   const auth = c.req.header('Authorization');
   const agentIdHeader = c.req.header('X-Clawville-Agent-Id');
   if (auth?.startsWith('Bearer ') || agentIdHeader) {
-    // Prefer agent-id header (set by nanoclaw harnesses); fall back to the
+    // Prefer agent-id header (set by self-managed harnesses); fall back to the
     // session-resolution map for sessionId-only callers.
     const { npcSimulation } = await import('../services/npc-simulation');
     let agentId: string | null = agentIdHeader ?? null;

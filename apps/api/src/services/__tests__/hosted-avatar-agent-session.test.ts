@@ -10,7 +10,7 @@
  *   (1) agentId derivation — verbatim platformAgentId, reserved-namespace refusal;
  *   (2) config binding — ledgerCapable=true + boundUserId=owner + self-managed +
  *       fail-soft 'nanoclaw' wire (trap 4 / no-outbound-gateway);
- *   (3) row values — nanoclaw identity, is_house=false, owner-bound, non-null
+ *   (3) row values — Milady identity, is_house=false, owner-bound, non-null
  *       future TTL (fail-closed), atomic hash;
  *   (4) reuse decision — reuse ONLY when RAM-live AND body-present;
  *   (5) sim mechanics — ONE deterministic ocb- body; the gate-relevant config is
@@ -97,9 +97,9 @@ describe('(3) hostedAvatarBotRowValues', () => {
     name: NAME,
   });
 
-  it('is a non-house, owner-bound nanoclaw avatar row', () => {
+  it('is a non-house, owner-bound Milady avatar row using the fail-soft wire', () => {
     expect(values.identityType).toBe(HOSTED_AVATAR_IDENTITY_TYPE);
-    expect(values.identityType).toBe('nanoclaw');
+    expect(values.identityType).toBe('milady');
     expect(values.protocol).toBe('nanoclaw');
     expect(values.mode).toBe('avatar');
     expect(values.isHouse).toBe(false);

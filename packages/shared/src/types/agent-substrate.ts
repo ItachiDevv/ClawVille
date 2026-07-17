@@ -50,24 +50,21 @@ export interface DirectAgentProtocolPointer {
 }
 
 /**
- * Identity framework an agent is connecting as. Influences how the /connect
- * endpoint resolves the agentId and whether outbound chat routing is used.
+ * Public identity framework an agent is connecting as. The partner-signed
+ * Hatcher surface uses its reserved identity separately and is not public here.
+ * Cognition routing is resolved from the declared gateway fact plus the hosted
+ * runtime gates, not from legacy framework aliases.
  *
- * - 'openclaw' / 'ironclaw' — classic chat-routing agents with a reachable HTTP gateway
- * - 'nanoclaw'              — self-managed pull-based agents (no HTTP server required)
- * - 'milady'                — running inside a Milady app plugin (runtime-trust,
- *                             no external verification; agentId derived from the
- *                             Milady runtime's agentId)
- * - 'custom'                — any other framework with a compatible gateway
- * - 'anonymous'             — one-off test agents with no persistent identity
+ * - 'milady'   — ClawVille-hosted ElizaOS/Milady runtime
+ * - 'hermes'   — self-managed pull, optionally upgraded to hermes-local hosting
+ * - 'openclaw' — declared-gateway BYO, optionally openclaw-local when gateway-less
+ * - 'custom'   — any other agent through an OpenAI-compatible gateway
  */
 export type AgentIdentityType =
-  | 'openclaw'
-  | 'ironclaw'
-  | 'nanoclaw'
   | 'milady'
-  | 'custom'
-  | 'anonymous';
+  | 'hermes'
+  | 'openclaw'
+  | 'custom';
 
 /**
  * Structured, PUBLIC-ONLY world-state snapshot handed to a Hatcher proxy in the

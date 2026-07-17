@@ -17,10 +17,41 @@ describe('open-agent onboarding manuals', () => {
     const manual = buildPlayManual(API_BASE);
     const protocolManual = buildProtocolManual(API_BASE);
 
-    expect(PROTOCOL_VERSION).toBe(22);
+    expect(PROTOCOL_VERSION).toBe(23);
     expect(manual).toContain(`POST ${API_BASE}/api/agent/connect`);
     expect(manual).toContain('"agentId": "your-stable-agent-id"');
-    expect(manual).toContain('"identityType": "nanoclaw"');
+    expect(manual).toContain('"identityType": "custom"');
+    expect(manual).toContain('"gatewayUrl": "https://your-agent.example/v1"');
+    expect(manual).toContain('"protocol": "openai-compat"');
+    expect(protocolManual).toContain('Public `/connect` and `/join` identity types are exactly');
+    expect(protocolManual).toContain('`milady`, `hermes`');
+    expect(protocolManual).toContain('`openclaw`, and `custom`');
+    expect(manual).toContain('Only that enum');
+    expect(manual).toContain('`/join` accepts `identityType`, `identityKey`, and `name`');
+    expect(manual).toContain('permits Milady without `miladyAgentId`');
+    expect(protocolManual).toContain('`/join` permits Milady bootstrap without `miladyAgentId`');
+    expect(protocolManual).toContain('runtime-signal and gateway validation applies');
+    expect(protocolManual).toContain('to `/connect` only');
+    expect(protocolManual).toContain('requires a reachable OpenAI-compatible');
+    expect(manual).toContain('without either signal the request fails closed');
+    expect(protocolManual).toContain('explicit `custom` request without a gateway also fails closed');
+    expect(manual).toContain('explicit Milady identity requires `miladyAgentId`');
+    expect(protocolManual).toContain('explicit Milady identity requires `miladyAgentId`');
+    expect(manual).toContain('Gateway-less OpenClaw is');
+    expect(manual).toContain('accepted only when `OPENCLAW_LOCAL_GATEWAY_ENABLED`');
+    expect(manual).toContain('otherwise registration fails closed');
+    expect(protocolManual).toContain('`OPENCLAW_LOCAL_GATEWAY_ENABLED`');
+    expect(protocolManual).toContain('an OpenClaw request without a gateway fails closed');
+    expect(manual).toContain('Milady and Hermes');
+    expect(manual).toContain('reject `gatewayUrl` because those named paths');
+    expect(protocolManual).toContain('Milady/Hermes reject');
+    expect(protocolManual).toContain('`gatewayUrl` is valid');
+    expect(protocolManual).toContain('only for OpenClaw/custom');
+    expect(protocolManual).not.toMatch(/\b(?:anonymous|ironclaw)\b/);
+    expect(protocolManual).toContain('pull-only `nanoclaw` wire');
+    expect(protocolManual).toContain('uses a gateway-posting wire');
+    expect(protocolManual).toContain('`openai-compat` is the');
+    expect(protocolManual).toContain('general/default path');
     expect(manual).toContain('"identityKey": "a-long-random-secret-you-store"');
     expect(manual).toContain('Treat identityKey as a secret credential');
     expect(manual).toContain('secretIncluded:false');
@@ -97,15 +128,14 @@ describe('open-agent onboarding manuals', () => {
       cognitionBackend: 'hatcher-proxy',
     })).toBe(false);
     expect(requiresByoSkillAck({ identityType: 'milady', protocol: 'nanoclaw' })).toBe(false);
-    expect(requiresByoSkillAck({ identityType: 'anonymous', protocol: 'nanoclaw' })).toBe(false);
     expect(requiresByoSkillAck({
-      identityType: 'nanoclaw',
-      protocol: 'nanoclaw',
+      identityType: 'custom',
+      protocol: 'openai-compat',
       isHouse: true,
     })).toBe(false);
     expect(requiresByoSkillAck({
-      identityType: 'nanoclaw',
-      protocol: 'nanoclaw',
+      identityType: 'milady',
+      protocol: 'openai-compat',
       isHouse: false,
       hasHostedAvatarBinding: true,
     })).toBe(false);
@@ -114,6 +144,10 @@ describe('open-agent onboarding manuals', () => {
       protocol: 'openai-compat',
       gatewayUrl: 'https://byo.example.test',
     })).toBe(true);
-    expect(requiresByoSkillAck({ identityType: 'nanoclaw', protocol: 'nanoclaw' })).toBe(true);
+    expect(requiresByoSkillAck({
+      identityType: 'custom',
+      protocol: 'openai-compat',
+      gatewayUrl: 'https://general.example.test',
+    })).toBe(true);
   });
 });

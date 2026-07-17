@@ -4,7 +4,7 @@
  *
  * Proves the 'hermes' identityType on the open connect path: a self-hosted
  * `hermes run` agent connects as ITSELF with NO gatewayUrl (self-managed pull,
- * nanoclaw-like), gets a real-CT-bound avatar, is present in-world, self-drives
+ * self-managed), gets a real-vCLAW-bound avatar, is present in-world, self-drives
  * an action that settles REAL ClawTokens (E5 parity), and its session is the
  * restorable class (no-gateway → survives an API restart via lazy restore).
  *
@@ -112,7 +112,7 @@ async function main() {
 
   // 4. connect the Hermes agent BOUND to the token ----------------------------
   // Deliberately NO gatewayUrl and NO protocol: 'hermes' is a self-managed pull
-  // identity (like nanoclaw) — the server derives the in-world wire protocol
+  // identity — the server derives the in-world wire protocol
   // from the identityType alone ('hermes-local' only when the host-it-for-me
   // gate is on server-side; never from anything this request could supply).
   const conn = await req('POST', '/api/agent/connect', {

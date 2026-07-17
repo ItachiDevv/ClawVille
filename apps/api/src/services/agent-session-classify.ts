@@ -75,17 +75,17 @@ export type AgentSessionClassification =
  *   1. the row's `agentId` equals the user's avatar-agent's `platform_agents.id`
  *      (`avatars.platformAgentId` — a UUID WE generate);
  *   2. the row's `identityType` is exactly what the §B.2 mint writes
- *      (`HOSTED_AVATAR_IDENTITY_TYPE` = 'nanoclaw'); AND
+ *      (`HOSTED_AVATAR_IDENTITY_TYPE` = 'milady'); AND
  *   3. the avatar's harness is ClawVille-hosted (HOSTED_HARNESSES).
  *
  * Conjunct 2 was added after a Codex adversarial pass (2026-07-08): `agentId` is
  * caller-supplied at `POST /api/agent/connect` and `identityType` is a public enum
- * that INCLUDES 'nanoclaw', so a HARNESS-only + agentId-match discriminator could
+ * that includes `milady`, so a HARNESS-only + agentId-match discriminator could
  * mislabel a same-user BYO agent (one that deliberately connected with
- * `agentId == its owner's platformAgentId` and a non-nanoclaw identity) as
- * 'hosted' AND mask its dead/expired state. Requiring identityType 'nanoclaw'
- * closes the realistic gap: a BYO agent connecting as openclaw/hermes/milady/
- * custom/hatcher no longer matches. (Cross-user is already impossible — the
+ * `agentId == its owner's platformAgentId` and a non-Milady identity) as
+ * 'hosted' AND mask its dead/expired state. Requiring the exact hosted identity
+ * closes the realistic gap: a BYO agent connecting as openclaw/hermes/custom/
+ * hatcher no longer matches. (Cross-user is already impossible — the
  * `/me/agent-session` bot query is keyed by the AUTHED user's own id; the sole
  * residual is a user maximally self-spoofing all three conjuncts of their OWN
  * account label, which carries zero security/economy impact and points at their

@@ -12,16 +12,16 @@
  *   is captured by the hosted path.
  *
  * What is pinned here:
- *   1. Wire derivation: GATEWAY-LESS 'openclaw' → 'openai-compat' when the gate is
- *      OFF, 'openclaw-local' when ON; a BYO 'openclaw' WITH a gateway → its
- *      declared protocol in BOTH states; ironclaw/custom NEVER touched. Decided by
+ *   1. Wire derivation: GATEWAY-LESS 'openclaw' → fail-soft 'nanoclaw' when the
+ *      gate is OFF, 'openclaw-local' when ON; a BYO 'openclaw' WITH a gateway → its
+ *      declared protocol in BOTH states; custom is NEVER captured. Decided by
  *      the AUTHORITATIVE identityType + gateway signal (never the stored `protocol`
  *      column alone), gate exercised through the explicit test-seam parameter (no
  *      process.env mutation — the module reads the env ONCE at boot by design).
  *   2. The gate never leaks 'openclaw-local' to any other identity type.
  *   3. Builders: a gateway-less openclaw avatar/override config derives the gated
  *      wire; mint ≡ restore on the spawn-relevant fields.
- *   4. Autonomy: openclaw stays SERVER-managed (unlike hermes/nanoclaw) in both
+ *   4. Autonomy: openclaw stays SERVER-managed (unlike hermes) in both
  *      gate states — the hosted brain is server-driven, not a self-pull agent.
  *   5. Capabilities: 'openclaw-local' emits [ACTION:] but stays proximity-GATED
  *      (the exemption is Hatcher-only).
@@ -48,7 +48,7 @@ import {
   resolveAgentSpecies,
   resolveAutonomyMode,
   spawnRelevantProjection,
-  isRowRestorableFromIdentity,
+  isRowRestorableFromFacts,
   isSessionRestorable,
   protocolEmitsInWorldActions,
   protocolProximityGateExempt,
@@ -65,7 +65,7 @@ import {
  */
 const ENV_GATE = process.env.OPENCLAW_LOCAL_GATEWAY_ENABLED === 'true';
 /** Expected builder wire for a GATEWAY-LESS openclaw at the boot-time env gate. */
-const ENV_EXPECTED_GATELESS_WIRE = ENV_GATE ? 'openclaw-local' : 'openai-compat';
+const ENV_EXPECTED_GATELESS_WIRE = ENV_GATE ? 'openclaw-local' : 'nanoclaw';
 
 /** A real BYO gateway url the way /connect would carry it. */
 const BYO_GATEWAY = 'https://byo.example.com/gateway';
@@ -76,17 +76,17 @@ const DUMMY_GATEWAY = 'http://localhost:0';
 // 1. Wire derivation — identity + gateway authoritative, gate-decided.
 // ---------------------------------------------------------------------------
 describe('resolveInWorldProtocol — openclaw host-it-for-me gate', () => {
-  test('GATEWAY-LESS openclaw, gate OFF → openai-compat (legacy declared-gateway default)', () => {
-    // No opts bag → legacy behaviour (byte-identical to pre-feature).
+  test('GATEWAY-LESS openclaw, gate OFF → fail-soft wire (no declared gateway to POST)', () => {
+    // No opts bag keeps the fail-safe legacy assumption that a gateway exists.
     expect(resolveInWorldProtocol('openclaw', 'openai-compat')).toBe('openai-compat');
-    // Explicit opts, gate off, no declared gateway → still legacy.
+    // Explicit no-gateway fact means no outbound POST is allowed.
     expect(
       resolveInWorldProtocol('openclaw', 'openai-compat', false, { enabled: false, hasDeclaredGateway: false }),
-    ).toBe('openai-compat');
-    // A missing/null stored protocol still defaults to openai-compat.
+    ).toBe('nanoclaw');
+    // A missing/null stored protocol is equally fail-soft.
     expect(
       resolveInWorldProtocol('openclaw', null, false, { enabled: false, hasDeclaredGateway: false }),
-    ).toBe('openai-compat');
+    ).toBe('nanoclaw');
   });
 
   test('GATEWAY-LESS openclaw, gate ON → openclaw-local (the hosted path)', () => {
@@ -124,34 +124,33 @@ describe('resolveInWorldProtocol — openclaw host-it-for-me gate', () => {
   });
 
   test('the gate NEVER leaks openclaw-local to any other identity type', () => {
-    // ironclaw/custom are declared-gateway, NOT openclaw-gated — untouched even
-    // with the openclaw opts forced ON + gateway-less.
-    expect(
-      resolveInWorldProtocol('ironclaw', 'anthropic', false, { enabled: true, hasDeclaredGateway: false }),
-    ).toBe('anthropic');
+    // custom is declared-gateway, NOT openclaw-gated — untouched even with the
+    // openclaw opts forced ON + gateway-less.
     expect(
       resolveInWorldProtocol('custom', 'custom-webhook', false, { enabled: true, hasDeclaredGateway: false }),
     ).toBe('custom-webhook');
-    // No-gateway siblings stay fail-soft nanoclaw.
-    for (const t of ['anonymous', 'milady', 'nanoclaw']) {
-      expect(
-        resolveInWorldProtocol(t, 'openai-compat', false, { enabled: true, hasDeclaredGateway: false }),
-      ).toBe('nanoclaw');
-    }
+    // Milady stays on the internal fail-soft wire.
+    expect(
+      resolveInWorldProtocol('milady', 'openai-compat', false, { enabled: true, hasDeclaredGateway: false }),
+    ).toBe('nanoclaw');
   });
 });
 
 // ---------------------------------------------------------------------------
-// 2. Restorability — openclaw STAYS the non-restorable real-gateway class.
+// 2. Restorability — OpenClaw follows its per-row declared-gateway fact.
 // ---------------------------------------------------------------------------
-describe('openclaw restorability — unchanged (fail-safe reconnect)', () => {
-  test('isRowRestorableFromIdentity(openclaw) → false (BYO auth_token never persisted)', () => {
-    expect(isRowRestorableFromIdentity('openclaw')).toBe(false);
+describe('openclaw restorability — fact-based', () => {
+  test('declared-gateway BYO is not restorable; gateway-less requires the host gate', () => {
+    expect(isRowRestorableFromFacts('openclaw', BYO_GATEWAY)).toBe(false);
+    expect(isRowRestorableFromFacts('openclaw', null, true)).toBe(true);
+    expect(isRowRestorableFromFacts('openclaw', DUMMY_GATEWAY, true)).toBe(true);
+    expect(isRowRestorableFromFacts('openclaw', null, false)).toBe(false);
   });
 
-  test('isSessionRestorable(openclaw, *) → false for any non-hatcher-proxy stored column', () => {
-    expect(isSessionRestorable('openclaw', 'openai-compat')).toBe(false);
-    expect(isSessionRestorable('openclaw', null)).toBe(false);
+  test('session-status uses the same gateway fact', () => {
+    expect(isSessionRestorable('openclaw', 'openai-compat', undefined, BYO_GATEWAY)).toBe(false);
+    expect(isSessionRestorable('openclaw', 'openai-compat', undefined, null, true)).toBe(true);
+    expect(isSessionRestorable('openclaw', 'openai-compat', undefined, null, false)).toBe(false);
   });
 });
 
@@ -188,7 +187,7 @@ describe('openclaw builders — gated wire + mint ≡ restore (gateway-less)', (
   test('AVATAR: gateway-less openclaw derives the boot-gate wire; dummy gateway; empty authToken', () => {
     const cfg = buildAvatarSessionConfig(gatelessOpenclawAvatar());
     const c = cfg as unknown as Record<string, unknown>;
-    expect(['openai-compat', 'openclaw-local']).toContain(c.protocol as string);
+    expect(['nanoclaw', 'openclaw-local']).toContain(c.protocol as string);
     expect(c.protocol).toBe(ENV_EXPECTED_GATELESS_WIRE as never);
     expect(c.gatewayUrl).toBe(DUMMY_GATEWAY);
     expect(c.authToken).toBe('');
@@ -275,7 +274,7 @@ describe('hatcher inertness — openclaw gate cannot touch hatcher derivation', 
   });
 
   test('hatcher restorability + species fallback unchanged', () => {
-    expect(isRowRestorableFromIdentity('hatcher')).toBe(false);
+    expect(isRowRestorableFromFacts('hatcher', null)).toBe(false);
     expect(isSessionRestorable('hatcher', 'hatcher-proxy')).toBe(true);
     expect(isSessionRestorable('hatcher', 'hatcher-proxy', false)).toBe(false);
     expect(resolveAgentSpecies('hatcher', null)).toBe(DEFAULT_HATCHER_MODEL_KEY);

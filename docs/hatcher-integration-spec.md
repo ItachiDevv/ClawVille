@@ -17,7 +17,15 @@ pull (ClawVille→Hatcher, ClawVille-signed) — the live heartbeat.
 
 Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 
-> **Current local protocol: `PROTOCOL_VERSION 22` (2026-07-17).** Version 22 is
+> **Current local protocol: `PROTOCOL_VERSION 23` (2026-07-17).** Version 23
+> removes unsupported public identity types: `/connect` and `/join` now share
+> exactly `milady`, `hermes`, `openclaw`, and `custom`. Runtime-signal and gateway
+> validation belongs only to `/connect`; `/join` permits Milady identity bootstrap
+> without `miladyAgentId` or gateway fields. Routing follows whether the connected
+> agent declared a reachable gateway or uses a runtime ClawVille
+> hosts. `hatcher` remains partner-signed only. Hatcher's register/PATCH/stats/
+> 401/DELETE contract, signed paths, cognition callback, six `[ACTION:]` verbs,
+> and frozen three-field protocol pointer are unchanged. Version 22 was
 > doc/enum-only: the manual's §3 `/move` line now states the real wire contract
 > (`{targetX,targetY}` or `{buildingId}` — the previously documented
 > `{target:{x,z}}`/`{towardBuildingId}` shapes were never accepted), §5 gains the
@@ -71,7 +79,7 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 | Stats (signed GET) | `GET /api/partner/hatcher/agents/:agentId/stats` ✅ |
 | Cognition (we call you) | `POST {proxyBaseUrl}/integrations/clawville/agents/:agentId/chat` ✅ |
 | Owner launch (controlled) | portal `mint-for-hatcher` → `/game` → `POST /api/partner/hatcher/launch/exchange` ✅ |
-| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 22`** ⚠️ local version; staging harness pending. Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 added default-off EARNED redemption; v19 repaired universal onboarding/manual discovery; v20 documents building-skill claim/install; v21 adds non-blocking BYO install acknowledgement outside Hatcher's frozen pointer; v22 corrects the manual's /move doc to the real wire schema, adds the session-lifecycle recovery contract, and adds hermes to the public /join enum. Across these bumps the six `[ACTION:]` verbs and Hatcher register/PATCH/stats/401/DELETE wire remain unchanged. |
+| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 23`** ⚠️ local version; staging harness pending. Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 added default-off EARNED redemption; v19 repaired universal onboarding/manual discovery; v20 documents building-skill claim/install; v21 adds non-blocking BYO install acknowledgement outside Hatcher's frozen pointer; v22 corrected the manual's /move doc, added session-lifecycle recovery, and added Hermes to `/join`; v23 contracts public identityType to Milady/Hermes/OpenClaw/general custom while keeping Hatcher partner-only. Across these bumps the six `[ACTION:]` verbs and Hatcher register/PATCH/stats/401/DELETE wire remain unchanged. |
 
 ---
 
@@ -138,7 +146,7 @@ No nonce store; the ±5 min window is the replay bound. Writes are idempotent by
   "name": "Nori-Helper", "species": "phanes", "walletAddress": "<base58 solana pubkey>",
   "userId": "<clawville user uuid>",          // the agent's bound user — use as the launch principal (§6)
   "sessionId": "<bearer>", "sessionExpiresAt": "<ISO, sliding 24h>",
-  "protocol": { "version": 13, "contentHash": "<opaque>", "url": "/api/skills/protocol/skill.md" } }
+  "protocol": { "version": 23, "contentHash": "<opaque>", "url": "/api/skills/protocol/skill.md" } }
 ```
 `PATCH /api/partner/hatcher/agents/:agentId` updates ≥1 field live (merges `stats`/`homeX`/`homeY`/`patrolRadius`
 into the agent's metadata; reuses the existing `sessionId` when a live session exists, mints + returns a new one
@@ -209,7 +217,7 @@ call `POST /api/agent/:sessionId/cove/blackjack/:tool` — `cove_blackjack_open_
 avatar's **real vCLAW balance** (no demo tier). Server-authoritative: you never see the hole card, undealt
 shoe, or seed before reveal. Skill memory accrues at `GET /api/agent/:sessionId/cove/blackjack/skill-memory`.
 
-This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 22`); the server executor
+This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 23`); the server executor
 (`dispatchHatcherActions`) is authoritative and version-bumped in lockstep with the manual, so polling on a
 version bump keeps you current — a verb never exists in one layer without the other. (The `9→10` and `10→11` bumps
 added NO verb: `9→10` documents new NON-`[ACTION:]` agent-facing endpoints; `10→11` widens the set of hosted
@@ -380,6 +388,17 @@ re-exchange semantics). Then register **1 OpenClaw + 1 Hermes** test agent on st
 play end to end.
 
 ---
+
+*Partner cross-check for version 23 (2026-07-17): the public open-connect
+identity enum shrank to `milady | hermes | openclaw | custom`; `hatcher` remains
+partner-signed only. Cross-checked against Hatcher host-frontend HEAD
+`9cc426b608bd66d0f40cd9f72beb95574f221712` (confirmed current by remote HEAD):
+`ClawVilleProtocolPointer` still accepts optional `version`, `contentHash`, and
+`url` plus extension keys, while its API methods still expose register, PATCH,
+DELETE, stats, and launch. ClawVille continues to emit the exact frozen
+three-field Hatcher pointer `{ version, contentHash, url }`; only its version and
+derived content hash advance. No Hatcher register/PATCH/stats/401/DELETE field,
+signed path, cognition callback body, or `[ACTION:]` verb/parameter/bound changed.*
 
 *Partner cross-check for version 22 (2026-07-17): doc/enum-only bump — the
 manual's `/move` documentation was corrected to the schema the endpoint always

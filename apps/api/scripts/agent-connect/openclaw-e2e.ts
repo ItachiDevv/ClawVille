@@ -4,7 +4,7 @@
  * Proves the PRIMARY open-onboarding path (Priority #2): an external OpenClaw
  * agent connects as ITSELF, gets a real-CT-bound avatar, is present in-world,
  * and self-drives an action that settles REAL ClawTokens (E5 parity) — NOT the
- * hosted nanoclaw house agent (Coralia) and NOT the partner-signed Hatcher path.
+ * hosted Milady house agent (Coralia) and NOT the partner-signed Hatcher path.
  *
  * Flow (mirrors a real self-managed OpenClaw runtime's own loop):
  *   1. login as a staging test account            → auth_session cookie
