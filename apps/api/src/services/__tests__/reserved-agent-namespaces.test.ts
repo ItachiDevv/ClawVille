@@ -59,7 +59,7 @@ describe('isReservedPartnerIdentityType', () => {
   });
 
   it('allows non-partner identity types', () => {
-    for (const t of ['openclaw', 'ironclaw', 'nanoclaw', 'milady', 'custom', 'anonymous']) {
+    for (const t of ['milady', 'hermes', 'openclaw', 'custom']) {
       expect(isReservedPartnerIdentityType(t)).toBe(false);
     }
   });

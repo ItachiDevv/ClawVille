@@ -48,8 +48,8 @@ export interface ActivityRewardConfig {
   personalBestBonusTokens?: number;
   /**
    * Reef Race Phase 4 — bonus for completing a "perfect race" — i.e.
-   * `bestStreakThisMatch` reaches `TOTAL_CHECKPOINTS_PER_RACE` (= 36 =
-   * 12 cps × 3 laps with every hairpin clean). Defaults to 0 when not
+   * `bestStreakThisMatch` reaches `TOTAL_CHECKPOINTS_PER_RACE` (= 24 =
+   * 12 cps × 2 laps with every hairpin clean). Defaults to 0 when not
    * configured. C3-fix consumers read `bestStreakThisMatch` from the
    * `SimResultRow.reefRace` block embedded at `computeResults()` time —
    * never from a live state accessor that could race sim teardown.
@@ -92,6 +92,12 @@ export interface ActivityDefinition {
   status: 'live' | 'coming-soon';
   /** Payout schedule — null for coming-soon stubs */
   rewardConfig?: ActivityRewardConfig;
+  /**
+   * Matchmaker hint: when `true`, bot backfill is enabled at
+   * `QUEUE_TIMEOUT_MS` (~3s) instead of `EXTENDED_TIMEOUT_MS` (~6s).
+   * Activities that omit this keep the default human-fill grace.
+   */
+  earlyBotFill?: boolean;
 }
 
 /**
@@ -138,7 +144,7 @@ const REEF_RACE_REWARD_CONFIG: ActivityRewardConfig = {
   participationTokens: 10,
   firstPlayOfDayBonusTokens: 15,
   personalBestBonusTokens: 10,
-  // Phase 4 — perfect race (36/36 clean checkpoint crosses). Sits on top
+  // Phase 4 — perfect race (24/24 clean checkpoint crosses). Sits on top
   // of placement + first-play + PB + focus bonuses; sums into the same
   // `tokens_awarded` total surfaced on the match-end modal.
   perfectStreakBonusTokens: 25,
@@ -239,7 +245,7 @@ export const ACTIVITY_REGISTRY: readonly ActivityDefinition[] = [
     id: 'reef-race',
     buildingId: 'app-publishing', // Boating School
     title: 'Reef Race',
-    tagline: 'Three laps through the reef. Drift, boost, outrun the pack.',
+    tagline: 'Two laps through the reef. Drift, boost, outrun the pack.',
     minPlayers: 4,
     maxPlayers: 8,
     queueMinPlayers: 4,
@@ -249,6 +255,8 @@ export const ACTIVITY_REGISTRY: readonly ActivityDefinition[] = [
     skillBuildingMatches: ['app-publishing'],
     status: 'live',
     rewardConfig: REEF_RACE_REWARD_CONFIG,
+    // Reef Race needs 4 to start; a lone queuer gets 3 bots after ~3s.
+    earlyBotFill: true,
   },
 
   // ─── Coming soon (8 stubs — one per non-live building) ────────────────────

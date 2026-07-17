@@ -134,6 +134,56 @@ const VRM_INSTANCES = new Map<string, InstanceEntry>();
  */
 const VRM_CANONICAL_TEXTURES = new Map<string, CanonicalTextureEntry>();
 
+/**
+ * Deferred-dispose timers, keyed like VRM_INSTANCES (`${path}#${instanceId}`).
+ *
+ * WHY (2026-07-14, invisible-NPC root cause): React StrictMode (dev default)
+ * double-invokes effects — mount → simulated unmount → remount. The simulated
+ * unmount used to run `disposeVRMInstance` IMMEDIATELY, `deepDispose`-ing the
+ * GPU buffers of a `<primitive object={vrm.scene}>` that was still committed
+ * to the R3F graph: every VRM NPC in /game rendered as an invisible body
+ * (name tag only) with 100+ "drawElements: no buffer is bound to enabled
+ * attribute" errors, plus animator double-patch churn as Suspense re-parsed
+ * the evicted entries. Disposal is now DEFERRED by a short grace window and
+ * CANCELLED when the same (path, instanceId) is re-acquired — the drei
+ * useGLTF pattern. Real unmounts still dispose (timer fires unopposed).
+ */
+const VRM_PENDING_DISPOSES = new Map<string, ReturnType<typeof setTimeout>>();
+
+/** Grace window before a dispose actually runs. StrictMode re-acquires within
+ * the same commit (ms); Suspense remounts within a frame or two. 500ms keeps
+ * GPU memory held briefly on real unmounts while safely covering both. */
+const VRM_DISPOSE_GRACE_MS = 500;
+
+/** Cancel a scheduled dispose for cacheKey (consumer re-acquired in time). */
+function cancelPendingDispose(cacheKey: string): void {
+  const timer = VRM_PENDING_DISPOSES.get(cacheKey);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    VRM_PENDING_DISPOSES.delete(cacheKey);
+  }
+}
+
+/**
+ * EXTEND (not cancel) a scheduled dispose — the render-time acquire path.
+ * A render alone must never permanently cancel a real disposal (Codex
+ * finding 2026-07-14): React can abandon a render before its effects commit,
+ * and a render-time cancel would then leak the VRM's GPU memory forever.
+ * Extending resets the grace window so the freshly-rendered component's
+ * effect setup (`retainVRMInstance`) — which only runs on COMMIT — has time
+ * to issue the authoritative cancel; an abandoned render just delays the
+ * dispose by one grace window.
+ */
+function extendPendingDispose(cacheKey: string): void {
+  const timer = VRM_PENDING_DISPOSES.get(cacheKey);
+  if (timer === undefined) return;
+  clearTimeout(timer);
+  VRM_PENDING_DISPOSES.set(
+    cacheKey,
+    setTimeout(() => executePendingDispose(cacheKey), VRM_DISPOSE_GRACE_MS),
+  );
+}
+
 // Single shared GLTFLoader instance — VRMLoaderPlugin registered once.
 // Reused across all parses; the parser hooks into per-parse state internally.
 let _loader: GLTFLoader | null = null;
@@ -916,6 +966,10 @@ async function loadInstance(cacheKey: string, path: string, gen: number): Promis
  */
 export function useVRMInstance(path: string, instanceId: string): VRM {
   const cacheKey = `${path}#${instanceId}`;
+  // Render-time re-acquire EXTENDS any scheduled dispose (never cancels —
+  // React can abandon a render before its effects commit; the authoritative
+  // cancel is retainVRMInstance() in the consumer's committed effect setup).
+  extendPendingDispose(cacheKey);
   const entry = VRM_INSTANCES.get(cacheKey);
 
   if (!entry) {
@@ -955,6 +1009,8 @@ export function useVRMInstance(path: string, instanceId: string): VRM {
  */
 export function loadVRMInstance(instanceId: string, path: string): Promise<VRM> {
   const cacheKey = `${path}#${instanceId}`;
+  // Re-acquire cancels any scheduled dispose — see useVRMInstance.
+  cancelPendingDispose(cacheKey);
   const entry = VRM_INSTANCES.get(cacheKey);
   if (entry) {
     if (entry.status === 'resolved') return Promise.resolve(entry.vrm);
@@ -997,6 +1053,22 @@ export function loadVRMInstance(instanceId: string, path: string): Promise<VRM> 
  */
 export function disposeVRMInstance(path: string, instanceId: string): void {
   const cacheKey = `${path}#${instanceId}`;
+  if (!VRM_INSTANCES.has(cacheKey)) return;
+  // DEFERRED (2026-07-14): never destroy buffers synchronously — a StrictMode
+  // simulated unmount calls this while the scene is still committed to the R3F
+  // graph (see VRM_PENDING_DISPOSES doc). Schedule the real teardown; a
+  // re-acquire of the same key within the grace window cancels (effect) or
+  // extends (render) it.
+  if (VRM_PENDING_DISPOSES.has(cacheKey)) return; // already scheduled
+  VRM_PENDING_DISPOSES.set(
+    cacheKey,
+    setTimeout(() => executePendingDispose(cacheKey), VRM_DISPOSE_GRACE_MS),
+  );
+}
+
+/** The actual teardown a deferred dispose runs when its grace timer fires. */
+function executePendingDispose(cacheKey: string): void {
+  VRM_PENDING_DISPOSES.delete(cacheKey);
   const entry = VRM_INSTANCES.get(cacheKey);
   if (!entry) return;
   if (entry.status === 'resolved') {
@@ -1027,6 +1099,28 @@ export function disposeVRMInstance(path: string, instanceId: string): void {
     // write 'rejected' because the entry no longer exists.
   }
   VRM_INSTANCES.delete(cacheKey);
+}
+
+/**
+ * Cancel a scheduled dispose for (path, instanceId) — call in the SETUP of
+ * the same effect whose cleanup calls disposeVRMInstance:
+ *
+ *   useEffect(() => {
+ *     retainVRMInstance(path, id);
+ *     return () => disposeVRMInstance(path, id);
+ *   }, [path, id]);
+ *
+ * WHY the render-time cancel in useVRMInstance isn't enough: React StrictMode
+ * re-invokes EFFECTS (setup → cleanup → setup) without a re-render, and many
+ * consumers (NPCs driven via refs in useFrame) don't re-render for long
+ * stretches — so the scheduled dispose from the simulated unmount fired
+ * against a still-mounted scene 500ms later ("buffer used in submit while
+ * destroyed", animator double-patch churn). Effect-setup retain closes that
+ * hole: simulated unmount schedules, the immediate re-setup cancels; a real
+ * unmount schedules with no re-setup, so the timer fires and disposes.
+ */
+export function retainVRMInstance(path: string, instanceId: string): void {
+  cancelPendingDispose(`${path}#${instanceId}`);
 }
 
 /**
@@ -1069,6 +1163,8 @@ if (typeof window !== 'undefined') {
 
 /** Test helper: clear all caches. Internal, not for production code. */
 export function _vrmClearAllCaches(): void {
+  for (const [, timer] of VRM_PENDING_DISPOSES) clearTimeout(timer);
+  VRM_PENDING_DISPOSES.clear();
   const entries = [...VRM_INSTANCES.entries()];
   for (const [cacheKey, entry] of entries) {
     if (entry.status === 'pending') {

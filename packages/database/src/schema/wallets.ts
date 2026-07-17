@@ -18,7 +18,7 @@ import {
  *
  *   'avatar'  — a human-owned avatar from the avatars table
  *   'agent'   — an external agent from the openclaw_bots table
- *               (Milady, OpenClaw, Hermes, nanoclaw, etc.)
+ *               (Milady, OpenClaw, Hermes, custom, etc.)
  *   'treasury'— a process-owned wallet (merchant, fee collector, escrow)
  *               — NOTE: the existing `treasury_wallets` table is the
  *               authoritative store for treasury keypairs. This enum value

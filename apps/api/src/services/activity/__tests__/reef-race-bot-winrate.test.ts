@@ -54,9 +54,18 @@ const dbMock = {
             return Promise.resolve(undefined).then(resolve);
           },
           values(_v: unknown) {
-            return {
+            // reward-pipeline's durable claim chains
+            // .values(...).onConflictDoNothing({target}).returning(...) — a
+            // fresh insert must resolve a row or the reward is skipped.
+            const insertTail = {
               returning() {
                 return Promise.resolve([{ id: 'result-stub' }]);
+              },
+            };
+            return {
+              ...insertTail,
+              onConflictDoNothing(_c?: unknown) {
+                return insertTail;
               },
             };
           },
@@ -98,11 +107,15 @@ const dbMock = {
     };
     return {
       from() {
-        return {
+        const fromChain = {
+          leftJoin() {
+            return fromChain;
+          },
           where() {
             return chain;
           },
         };
+        return fromChain;
       },
     };
   },
@@ -117,6 +130,8 @@ mock.module('@clawville/database', () => ({
     createdAt: 'created_at',
     scoreMs: 'score_ms',
   },
+  // Current staging's guest-aware reward pipeline imports users transitively.
+  users: { id: 'id', isGuest: 'is_guest' },
   avatars: { id: 'id', level: 'level', flags: 'flags' },
   // Phase 4 — PB service is transitively imported by reward-pipeline.
   reefRacePersonalBests: {
@@ -124,6 +139,19 @@ mock.module('@clawville/database', () => ({
     avatarId: 'avatar_id',
     activityId: 'activity_id',
     bestLapMs: 'best_lap_ms',
+  },
+  // 2026-06-23: `activity-replay-log.ts` (transitively imported via the reward
+  // pipeline) references `activityReplays`; the schema gained this table after
+  // this mock was first written, so the named export was missing → Bun threw
+  // "Export named 'activityReplays' not found" at module load. Mock it with the
+  // column-name shape the replay log reads (id + the insert columns).
+  activityReplays: {
+    id: 'id',
+    roomId: 'room_id',
+    activityId: 'activity_id',
+    frames: 'frames',
+    participants: 'participants',
+    createdAt: 'created_at',
   },
 }));
 

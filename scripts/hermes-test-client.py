@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 """
-ClawVille nanoclaw test client.
+ClawVille Hermes self-managed test client.
 
 Minimal self-managed agent that joins the ClawVille world, walks to every
-building in sequence, and "learns" from each one. Demonstrates the generic
-POST /api/agent/connect + SSE /events + REST action protocol — no HTTP
+building in sequence, and "learns" from each one. Demonstrates the supported
+Hermes POST /api/agent/connect + SSE /events + REST action flow — no HTTP
 server needed on the agent side.
 
-This is the reference implementation for plugging Hermes, raw Python
-scripts, or anything-that-isn't-a-gateway into the game.
+This is the reference implementation for a self-managed Hermes runtime.
 
 Usage:
-    python3 scripts/nanoclaw-test-client.py
+    python3 scripts/hermes-test-client.py
 
     # Override the API base or bot name:
     CLAWVILLE_API=https://api-new.clawville.world \
-    BOT_NAME=HermesTester python3 scripts/nanoclaw-test-client.py
+    BOT_NAME=HermesTester python3 scripts/hermes-test-client.py
 
 Dependencies: stdlib only (urllib + json). No pip install required.
 """
@@ -34,7 +33,7 @@ API_BASE = os.environ.get("CLAWVILLE_API", "https://api-new.clawville.world")
 BOT_NAME = os.environ.get("BOT_NAME", "HermesTester")[:24]
 BOT_SPECIES = os.environ.get("BOT_SPECIES", "crab")
 BOT_COLOR = int(os.environ.get("BOT_COLOR", "0x44FFCC"), 16)
-AGENT_ID = os.environ.get("AGENT_ID", f"nanoclaw-test-{random.randint(1000, 9999)}")
+AGENT_ID = os.environ.get("AGENT_ID", f"hermes-test-{random.randint(1000, 9999)}")
 
 # Default stats (must satisfy 50..150 hp, 5..25 other)
 STATS = {"hp": 100, "attack": 10, "defense": 8, "speed": 8}
@@ -90,6 +89,9 @@ def connect() -> dict[str, Any]:
     print(f"→ Connecting to {API_BASE} as '{BOT_NAME}' (agentId={AGENT_ID})")
     result = post("/api/agent/connect", {
         "agentId": AGENT_ID,
+        "identityType": "hermes",
+        # `nanoclaw` is the internal no-outbound-HTTP wire used by a
+        # self-managed Hermes runtime; it is not an identity type.
         "protocol": "nanoclaw",
         "mode": "avatar",
         "name": BOT_NAME,

@@ -12,7 +12,8 @@
  *
  *   LIVE (default): `HttpTransport` hits a REAL running API at TARGET_URL
  *     (default http://localhost:4001). It POSTs /api/agent/connect (protocol
- *     'nanoclaw') for each agent, then POST /:id/register, GET /:id/state-for-agent,
+ *     internal fail-soft wire) for each Milady agent, then POST /:id/register,
+ *     GET /:id/state-for-agent,
  *     GET /:id/advice, POST /action, GET /:id — the EXACT shipping endpoints in
  *     `apps/api/src/routes/cove-poker-mtt.ts` and `agent-gateway.ts`. This
  *     exercises the real router + middleware + auth + DB + TournamentManager
@@ -77,7 +78,7 @@
  *     AUTONOMOUS_COUNT  how many play autonomous (default ceil(0.6*AGENT_COUNT)).
  *     AGENT_SESSIONS    LIVE-only: comma-separated pre-provisioned LEDGER-CAPABLE
  *                       agent session ids (one per agent, in order). REQUIRED to
- *                       register on a hardened server — a plain nanoclaw /connect is
+ *                       register on a hardened server — a plain direct /connect is
  *                       not avatar-bound (see the AGENT_SESSIONS const note below).
  *     TOURNAMENT_ID     play an existing tournament instead of creating one (LIVE).
  *     ADMIN_COOKIE      dash cookie / Lucia session for POST /create (LIVE create).
@@ -122,7 +123,7 @@ const AUTONOMOUS_COUNT = clampInt(
 const ENV_TOURNAMENT_ID = process.env.TOURNAMENT_ID?.trim() || null;
 const ADMIN_COOKIE = process.env.ADMIN_COOKIE?.trim() || null;
 // LIVE-only: pre-provisioned LEDGER-CAPABLE agent session ids (comma-separated).
-// A plain `nanoclaw` /connect does NOT bind the bot row's userId to an active avatar
+// A plain direct `/connect` does NOT bind the bot row's userId to an active avatar
 // on a hardened server (see agent-gateway.ts ~L700: first-contact real-CT play needs
 // an owned connection token or the partner-signed Hatcher path), so its session would
 // 403 at /register with `agent_session_has_no_active_avatar`. Supply ledger-capable
@@ -278,7 +279,7 @@ interface StateForAgentResult {
  * it identically so the agent loop + assertions are path-shared.
  */
 interface PokerTransport {
-  /** Spin up one agent (protocol 'nanoclaw') → { sessionId, agentId }. */
+  /** Spin up one Milady agent (internal fail-soft wire) → { sessionId, agentId }. */
   connect(name: string): Promise<ConnectResult>;
   /** Create a tournament (LIVE: admin POST /create; DRY: TM.createTournament). */
   createTournament(cfg: {
@@ -371,16 +372,18 @@ class HttpTransport implements PokerTransport {
       const sessionId = AGENT_SESSIONS[this.sessionCursor++]!;
       return { sessionId, agentId: `provided-${name}` };
     }
-    // Fallback: a plain nanoclaw /connect. This yields a sessionId, but on a hardened
+    // Fallback: a plain Milady /connect. This yields a sessionId, but on a hardened
     // server its bot row is NOT bound to an active avatar (first-contact real-CT play
     // requires an owned connection token / partner signature), so /register may 403.
     // Acceptable for a connect-surface smoke or a permissive local build.
-    const agentId = `nanoclaw-stress-${name}-${randomBytes(4).toString('hex')}`;
+    const miladyAgentId = `milady-stress-${name}-${randomBytes(4).toString('hex')}`;
+    const agentId = `milady:${miladyAgentId}`;
     const { status, body } = await this.json('POST', '/api/agent/connect', {
       body: {
         agentId,
+        miladyAgentId,
         protocol: 'nanoclaw',
-        identityType: 'nanoclaw',
+        identityType: 'milady',
         identityKey: agentId,
         name: name.slice(0, 24),
       },

@@ -9,30 +9,91 @@ import { api } from '@/lib/api';
 import { clearIdentityState } from '@/lib/clear-identity-state';
 import { AUTH_ME_QUERY_KEY, type AuthMe } from '@/hooks/use-auth-me';
 import { FIRST_TIME_DISCLOSURE_STORAGE_KEY } from '@/components/game/first-time-backup-modal';
+import { AgentConnectInstructions } from '@/components/agent-connect-instructions';
 
 const LandingScene = dynamic(() => import('@/components/three/LandingScene'), { ssr: false });
+
+type LoginMode = 'connect' | 'login' | 'signup';
+
+const CONNECT_TICKET_PATTERN = /^sess-[1-9A-HJ-NP-Za-km-z]{16,22}$/;
+
+function resolveLoginMode(value: string | null): LoginMode {
+  if (value === 'connect' || value === 'signup') return value;
+  return 'login';
+}
+
+function normalizeConnectDestination(value: string, origin: string): string | null {
+  const candidate = value.trim();
+  let ticket: string | null = CONNECT_TICKET_PATTERN.test(candidate) ? candidate : null;
+
+  if (!ticket) {
+    try {
+      const url = new URL(candidate, origin);
+      const queryKeys = Array.from(url.searchParams.keys());
+      const ticketValues = url.searchParams.getAll('t');
+
+      if (
+        url.origin !== origin ||
+        url.username !== '' ||
+        url.password !== '' ||
+        url.pathname !== '/enter' ||
+        candidate.includes('#') ||
+        queryKeys.length !== 1 ||
+        queryKeys[0] !== 't' ||
+        ticketValues.length !== 1 ||
+        !CONNECT_TICKET_PATTERN.test(ticketValues[0])
+      ) {
+        return null;
+      }
+
+      ticket = ticketValues[0];
+    } catch {
+      return null;
+    }
+  }
+
+  return `/enter?t=${encodeURIComponent(ticket)}`;
+}
 
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
-  const [isSignup, setIsSignup] = useState(false);
-
-  useEffect(() => {
-    if (searchParams.get('mode') === 'signup') {
-      setIsSignup(true);
-    }
-  }, [searchParams]);
-
+  const [mode, setMode] = useState<LoginMode>(() => resolveLoginMode(searchParams.get('mode')));
+  const isSignup = mode === 'signup';
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
+  const [connectValue, setConnectValue] = useState('');
   // Founder spec: the runtime harness is CHOSEN at sign up (Milady preselected
   // as the recommended hosted default, never forced). Mirrors the server
   // signupSchema enum; 'custom' (BYO gateway) stays a /create-agent concern.
   const [harness, setHarness] = useState<'milady' | 'hermes' | 'openclaw'>('milady');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    setMode(resolveLoginMode(searchParams.get('mode')));
+    setError('');
+  }, [searchParams]);
+
+  function selectMode(nextMode: LoginMode) {
+    setMode(nextMode);
+    setError('');
+  }
+
+  function handleConnectSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+
+    const destination = normalizeConnectDestination(connectValue, window.location.origin);
+    if (!destination) {
+      setError('Paste a valid ClawVille /enter connect link or sess- ticket.');
+      return;
+    }
+
+    window.location.assign(destination);
+  }
 
   // Evict identity-bearing client state around the auth swap (balance-cache
   // fix 2026-07-12; ordering reshaped by Codex review BLOCKING 2+4):
@@ -221,12 +282,13 @@ function LoginForm() {
 
           <div className="relative bg-[#0a1628]/95 border border-cyan-500/20 rounded-2xl p-8 backdrop-blur-xl shadow-[0_0_40px_rgba(0,229,255,0.08)]">
             {/* Toggle */}
-            <div className="flex justify-center gap-1 mb-6 bg-white/[0.03] rounded-lg p-1">
+            <div className="grid grid-cols-3 gap-1 mb-6 bg-white/[0.03] rounded-lg p-1">
               <button
                 type="button"
-                onClick={() => { setIsSignup(false); setError(''); }}
-                className={`font-clawville text-sm px-5 py-2 rounded-md transition-all ${
-                  !isSignup
+                onClick={() => selectMode('login')}
+                aria-pressed={mode === 'login'}
+                className={`font-clawville text-xs px-2 py-2 rounded-md transition-all ${
+                  mode === 'login'
                     ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 shadow-[0_0_12px_rgba(0,229,255,0.15)]'
                     : 'text-white/40 hover:text-white/60'
                 }`}
@@ -235,19 +297,78 @@ function LoginForm() {
               </button>
               <button
                 type="button"
-                onClick={() => { setIsSignup(true); setError(''); }}
-                className={`font-clawville text-sm px-5 py-2 rounded-md transition-all ${
-                  isSignup
+                onClick={() => selectMode('signup')}
+                aria-pressed={mode === 'signup'}
+                className={`font-clawville text-xs px-2 py-2 rounded-md transition-all ${
+                  mode === 'signup'
                     ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 shadow-[0_0_12px_rgba(0,229,255,0.15)]'
                     : 'text-white/40 hover:text-white/60'
                 }`}
               >
                 Sign Up
               </button>
+              <button
+                type="button"
+                onClick={() => selectMode('connect')}
+                aria-pressed={mode === 'connect'}
+                className={`font-clawville text-xs px-2 py-2 rounded-md transition-all ${
+                  mode === 'connect'
+                    ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 shadow-[0_0_12px_rgba(0,229,255,0.15)]'
+                    : 'text-white/40 hover:text-white/60'
+                }`}
+              >
+                Connect your agent
+              </button>
             </div>
 
-            {/* Form */}
-            <form onSubmit={handleSubmit} className="space-y-4">
+            {mode === 'connect' ? (
+              <form onSubmit={handleConnectSubmit} className="space-y-4">
+                <AgentConnectInstructions context="front-door" />
+
+                <div>
+                  <label
+                    htmlFor="connect-link"
+                    className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1.5"
+                  >
+                    Personal connect link or ticket
+                  </label>
+                  <input
+                    id="connect-link"
+                    type="text"
+                    required
+                    value={connectValue}
+                    onChange={(e) => {
+                      setConnectValue(e.target.value);
+                      setError('');
+                    }}
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    className="w-full px-4 py-2.5 rounded-lg bg-white/[0.05] border border-white/10 text-white placeholder:text-white/20 focus:outline-none focus:border-cyan-500/50 focus:shadow-[0_0_12px_rgba(0,229,255,0.1)] transition-all font-mono text-sm"
+                    placeholder="https://clawville.world/enter?t=sess-..."
+                    aria-describedby={error ? 'connect-link-error' : undefined}
+                  />
+                </div>
+
+                {error && (
+                  <p
+                    id="connect-link-error"
+                    role="alert"
+                    className="text-red-400 text-sm text-center bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2"
+                  >
+                    {error}
+                  </p>
+                )}
+
+                <button
+                  type="submit"
+                  className="w-full py-3 rounded-lg font-clawville text-sm uppercase tracking-wider transition-all bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-white shadow-[0_0_20px_rgba(0,229,255,0.2)] hover:shadow-[0_0_28px_rgba(0,229,255,0.35)]"
+                >
+                  Open Connect Link
+                </button>
+              </form>
+            ) : (
+              <form onSubmit={handleSubmit} className="space-y-4">
               {isSignup && (
                 <div>
                   <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1.5">Agent Name</label>
@@ -327,9 +448,10 @@ function LoginForm() {
               >
                 {loading ? 'Connecting...' : isSignup ? 'Create Agent' : 'Enter ClawVille'}
               </button>
-            </form>
+              </form>
+            )}
 
-            {!isSignup && (
+            {mode === 'login' && (
               <p className="text-center text-white/40 text-xs mt-4 font-mono">
                 <Link href="/forgot-password" className="text-cyan-400/80 hover:text-cyan-300 transition-colors">
                   Forgot password?
@@ -337,7 +459,7 @@ function LoginForm() {
               </p>
             )}
 
-            {isSignup && (
+            {mode === 'signup' && (
               <p className="text-center text-white/30 text-xs mt-4 leading-relaxed font-mono">
                 Pick your species and archetype next.
                 Your agent starts learning immediately.

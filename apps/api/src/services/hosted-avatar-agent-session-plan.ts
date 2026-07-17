@@ -17,13 +17,13 @@
  * test env.
  *
  * DESIGN (why these choices — the trap map):
- *  - identityType 'nanoclaw': the session is PURELY the tool-surface credential;
+ *  - identityType 'milady': the session is PURELY the tool-surface credential;
  *    cognition for an avatar-agent runs through its `platform_agents` ElizaOS
- *    runtime (the orchestrator), NOT this session's gateway. 'nanoclaw' is the
- *    no-outbound-gateway, self-managed, `isRowRestorableFromIdentity`-TRUE identity
- *    (agent-session-config.ts) — exactly the house-agent precedent
- *    (house-agent-seeder.ts). Its `.chat()` is a no-op stub, so the body never
- *    POSTs anywhere.
+ *    runtime (the orchestrator), NOT this session's gateway. 'milady' is the
+ *    supported no-outbound-gateway, `isRowRestorableFromFacts`-TRUE hosted
+ *    identity (agent-session-config.ts) — exactly the house-agent precedent
+ *    (house-agent-seeder.ts). The session still speaks the internal fail-soft
+ *    `nanoclaw` wire, whose `.chat()` is a no-op, so the body never POSTs anywhere.
  *  - ledgerCapable TRUE + boundUserId = OWNER (BOTH): the mint's whole point is
  *    real-CT play. `resolveAgentSession` demotes to non-ledger unless
  *    `config.boundUserId === live row userId`, so the config AND the row's
@@ -36,10 +36,9 @@
  *    schema change / migration — the existing `openclaw_bots.agent_id` UNIQUE
  *    column IS the 1:1 key.
  *
- * NO partner-wire change: 'nanoclaw' already exists; the bearer/TTL gate contract
- * (require-auth-or-agent.ts), the shared openclaw types, and PROTOCOL_VERSION are
- * all untouched. The existing tool surface resolves this session with ZERO gate
- * edits.
+ * NO partner-wire change: the bearer/TTL gate contract and Hatcher registration
+ * wire are untouched. The existing tool surface resolves this session with ZERO
+ * gate edits.
  */
 
 import type { AgentSubstrateRegistration } from '@clawville/shared';
@@ -51,13 +50,13 @@ import {
 import { isReservedPartnerAgentId } from './reserved-agent-namespaces';
 
 /**
- * The identity type for a hosted avatar-agent's internal session. 'nanoclaw' is
- * the no-gateway, self-managed, restorable-from-row identity — the same choice the
+ * The identity type for a hosted avatar-agent's internal session. `milady` is the
+ * supported no-gateway, restorable-from-row hosted identity — the same choice the
  * house agent makes, for the same reasons (cognition is NOT via this session's
- * gateway). Changing this is a keystone decision: a real-gateway type would be
- * NON-restorable AND would arm an outbound POST the body must never make.
+ * gateway). A real-gateway identity would be NON-restorable and could arm an
+ * outbound POST the body must never make.
  */
-export const HOSTED_AVATAR_IDENTITY_TYPE = 'nanoclaw' as const;
+export const HOSTED_AVATAR_IDENTITY_TYPE = 'milady' as const;
 
 /** The persisted `protocol` column value (mirrors identityType; re-derived on
  *  mint/restore from the identity, never trusted from the column). */
@@ -113,8 +112,9 @@ export interface HostedAvatarConfigInput {
  * Assemble the in-world `{config}` for a hosted avatar-agent body, via the SHARED
  * builder so mint and (lazy) restore can never drift. ledgerCapable + boundUserId
  * are the trap-4 binding: BOTH set to the owner so `resolveAgentSession` keeps the
- * session ledger-capable. `storedProtocol: 'nanoclaw'` + identityType 'nanoclaw'
- * both force self-managed + the fail-soft 'nanoclaw' wire (no outbound POST).
+ * session ledger-capable. The requested self-managed mode plus the internal
+ * `storedProtocol: 'nanoclaw'` wire keep this tool-surface body fail-soft (no
+ * outbound POST), while identityType remains the supported hosted runtime tag.
  */
 export function buildHostedAvatarAgentConfig(
   input: HostedAvatarConfigInput,

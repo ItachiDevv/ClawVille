@@ -33,7 +33,7 @@ function hostedSessionBot(over: Partial<AgentSessionBotInput> = {}): AgentSessio
     agentId: PLATFORM_AGENT_ID,
     lastSeenAt: new Date(NOW - 1000),
     sessionExpiresAt: new Date(NOW + 86_400_000),
-    identityType: 'nanoclaw',
+    identityType: 'milady',
     ...over,
   };
 }
@@ -65,8 +65,8 @@ describe('isHostedAvatarAgentSessionRow — the un-spoofable discriminator', () 
     // agentId + hosted harness match BUT identityType is a BYO/external one →
     // false (Codex 2026-07-08: agentId + identityType are both caller-suppliable at
     // /connect, so a same-user BYO agent with a matching agentId must NOT be
-    // mislabeled hosted — the 'nanoclaw' identity conjunct excludes it).
-    for (const identityType of ['openclaw', 'hermes', 'milady', 'custom', 'hatcher', 'ironclaw', 'anonymous']) {
+    // mislabeled hosted — the exact Milady identity conjunct excludes it).
+    for (const identityType of ['openclaw', 'hermes', 'custom', 'hatcher']) {
       expect(
         isHostedAvatarAgentSessionRow(hostedSessionBot({ identityType }), hostedAvatar()),
       ).toBe(false);
@@ -190,10 +190,10 @@ describe('genuine BYO/external rows are unchanged', () => {
     expect(r.body.mode).toBe('external-active');
   });
 
-  it('SAME-USER BYO collision: matching agentId + hosted harness but non-nanoclaw identity → external (Codex fix)', () => {
+  it('SAME-USER BYO collision: matching agentId + hosted harness but non-Milady identity → external (Codex fix)', () => {
     // A same-user BYO agent that deliberately connected with agentId == its owner's
     // platformAgentId and identityType 'openclaw' must report external-active (and
-    // stay subject to expired/idle), NOT be masked as always-alive 'hosted'.
+    // stay subject to idle), NOT be masked as always-alive 'hosted'.
     const active = call(
       hostedSessionBot({ agentId: PLATFORM_AGENT_ID, identityType: 'openclaw' }),
       hostedAvatar(),
@@ -201,7 +201,14 @@ describe('genuine BYO/external rows are unchanged', () => {
     if (active.kind !== 'response') throw new Error('unreachable');
     expect(active.body.mode).toBe('external-active');
 
-    // ...and a DEAD such BYO row is correctly reported expired (not masked hosted).
+    // UPDATED 2026-07-14 (founder report — stale external rows shadowed hosted
+    // accounts): once such a row is DEAD (expired), a HOSTED-harness avatar
+    // falls back to 'hosted' — the dead credential is not the account's
+    // durable truth; the hosted cognition runtime is. The masked-dead-state
+    // concern from the original Codex fix applies to LIVE/idle rows (still
+    // external above); an expired row + hosted avatar reporting 'hosted' is
+    // the accurate account state (self-spoof residual: own-label only, zero
+    // security/economy impact — see classifier doc).
     const expired = call(
       hostedSessionBot({
         agentId: PLATFORM_AGENT_ID,
@@ -211,7 +218,27 @@ describe('genuine BYO/external rows are unchanged', () => {
       hostedAvatar(),
     );
     if (expired.kind !== 'response') throw new Error('unreachable');
-    expect(expired.body.mode).toBe('external-expired');
+    expect(expired.body.mode).toBe('hosted');
+    expect(expired.body.connected).toBe(true);
+  });
+
+  it('expired external row + NON-hosted avatar (agent rows exist) stays external-expired (no hosted fallback)', () => {
+    const r = call(
+      byoBot({ sessionExpiresAt: new Date(NOW - 1) }),
+      hostedAvatar({ harness: 'custom' }),
+    );
+    if (r.kind !== 'response') throw new Error('unreachable');
+    expect(r.body.mode).toBe('external-expired');
+  });
+
+  it('expired external row + UNPROVISIONED avatar (platformAgentId null) → cold-fallthrough (pending, not expired)', () => {
+    // Legacy pre-P2 accounts: a dead prewarm/test bot row must not shadow the
+    // provisioning-pending truth (founder report 2026-07-14 — landtest1 shape).
+    const r = call(
+      byoBot({ sessionExpiresAt: new Date(NOW - 1) }),
+      hostedAvatar({ platformAgentId: null }),
+    );
+    expect(r.kind).toBe('cold-fallthrough');
   });
 });
 
@@ -245,5 +272,25 @@ describe('no-bot branches', () => {
 
   it('no bot + hosted harness but NO platformAgentId → cold-fallthrough (not hosted)', () => {
     expect(call(null, hostedAvatar({ platformAgentId: null })).kind).toBe('cold-fallthrough');
+  });
+
+  it('dismissed + UNPROVISIONED hosted avatar → cold-fallthrough (dismissal must not block the lazy backfill)', () => {
+    // Codex BLOCKING 2026-07-15: a presentation preference must never
+    // suppress the account-data migration. The route re-honors the
+    // dismissal in its response after healing.
+    const r = call(
+      null,
+      hostedAvatar({ platformAgentId: null, flags: { agentBannerDismissed: true } }),
+    );
+    expect(r.kind).toBe('cold-fallthrough');
+  });
+
+  it('dismissed + unprovisioned NON-hosted avatar stays dismissed (no backfill applies)', () => {
+    const r = call(
+      null,
+      hostedAvatar({ platformAgentId: null, harness: 'custom', flags: { agentBannerDismissed: true } }),
+    );
+    if (r.kind !== 'response') throw new Error('unreachable');
+    expect(r.body.mode).toBe('dismissed');
   });
 });
