@@ -58,7 +58,7 @@ export interface DirectAgentProtocolPointer {
  * - 'milady'   — ClawVille-hosted ElizaOS/Milady runtime
  * - 'hermes'   — self-managed pull, optionally upgraded to hermes-local hosting
  * - 'openclaw' — declared-gateway BYO, optionally openclaw-local when gateway-less
- * - 'custom'   — any other agent through an OpenAI-compatible gateway
+ * - 'custom'   — any other agent; declared-gateway cognition or self-managed pull
  */
 export type AgentIdentityType =
   | 'milady'
