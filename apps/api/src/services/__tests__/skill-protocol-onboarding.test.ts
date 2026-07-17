@@ -31,6 +31,9 @@ describe('open-agent onboarding manuals', () => {
     expect(manual).toContain('permits Milady without `miladyAgentId`');
     expect(protocolManual).toContain('`/join` permits Milady bootstrap without `miladyAgentId`');
     expect(protocolManual).toContain('runtime-signal and gateway validation applies');
+    const continuitySentence = 'If you previously connected under a retired identity type, reconnect under a supported type with your SAME identityKey; your account follows the key automatically.';
+    expect(manual).toContain(continuitySentence);
+    expect(protocolManual).toContain(continuitySentence);
     expect(protocolManual).toContain('to `/connect` only');
     expect(protocolManual).toContain('requires a reachable OpenAI-compatible');
     expect(manual).toContain('without either signal the request fails closed');

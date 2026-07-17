@@ -31,6 +31,7 @@
  */
 
 import { db, avatars, agents, users } from '@clawville/database';
+import type { Database } from '@clawville/database';
 import { eq, and, isNull } from 'drizzle-orm';
 import {
   AVATAR_ARCHETYPES,
@@ -54,6 +55,8 @@ import { recordCovenantAction } from './covenant-action-recorder';
 // ---------------------------------------------------------------------------
 
 type AvatarRow = typeof avatars.$inferSelect;
+type AvatarProvisioningTransaction = Parameters<Parameters<Database['transaction']>[0]>[0];
+type PlatformAgentRow = typeof agents.$inferSelect;
 
 export type AvatarSpecies =
   | 'cat' | 'dragon' | 'fox' | 'owl' | 'wolf' | 'bunny' | 'phoenix' | 'turtle';
@@ -135,6 +138,23 @@ export interface ProvisionAvatarAgentResult {
    */
   wallet: FirstTimeWalletPayload | null;
 }
+
+interface PlatformAgentInsertInput {
+  userId: string;
+  name: string;
+  species: AvatarSpecies;
+  color: AvatarColor;
+  archetypeId: AvatarArchetypeId;
+  modelKey: AgentModelKey;
+  agentCategory: AgentCategory;
+  harness: AgentHarness;
+  customization: ReturnType<typeof buildCharacterConfig>;
+}
+
+export type RepairProvisioningPendingResult =
+  | { outcome: 'created'; avatarId: string; userId: string; agentId: string }
+  | { outcome: 'already-provisioned'; avatarId: string; userId: string; agentId: string }
+  | { outcome: 'not-found'; userId: string };
 
 /** Thrown when the avatar/username name is already taken (23505 mapped). */
 export class AvatarNameTakenError extends Error {
@@ -401,6 +421,38 @@ function extractPgErrorCode(err: unknown): string | undefined {
 }
 
 /**
+ * Shared P2 platform-agent insertion primitive. Fresh signup/create
+ * provisioning and provisioning repair use this exact hosted-agent row shape.
+ */
+async function insertPlatformAgent(
+  tx: AvatarProvisioningTransaction,
+  input: PlatformAgentInsertInput,
+): Promise<PlatformAgentRow> {
+  const [insertedAgent] = await tx
+    .insert(agents)
+    .values({
+      userId: input.userId,
+      name: input.name,
+      type: 'avatar-agent',
+      status: 'pending',
+      config: {
+        species: input.species,
+        color: input.color,
+        archetypeId: input.archetypeId,
+        modelKey: input.modelKey,
+        agentCategory: input.agentCategory,
+        harness: input.harness,
+      },
+      customization: input.customization,
+    })
+    .returning();
+  if (!insertedAgent) {
+    throw new Error('[avatar-provisioning] platform agent insert returned no row');
+  }
+  return insertedAgent;
+}
+
+/**
  * Create the (platform_agents 'avatar-agent', avatars, users.username-init)
  * triple in ONE transaction, then optionally provision the custodial wallet.
  *
@@ -460,24 +512,17 @@ export async function provisionAvatarAgent(
       // Audit Fix C §6 lineage — agent + avatar inserts in a transaction so a
       // failed avatar insert rolls back the orphan agent row.
       inserted = await db.transaction(async (tx) => {
-        const [insertedAgent] = await tx
-          .insert(agents)
-          .values({
-            userId,
-            name: candidateName,
-            type: 'avatar-agent',
-            status: 'pending',
-            config: {
-              species: params.species,
-              color: params.color,
-              archetypeId: params.archetypeId,
-              modelKey: params.modelKey,
-              agentCategory: params.agentCategory,
-              harness: params.harness,
-            },
-            customization: characterConfig,
-          })
-          .returning();
+        const insertedAgent = await insertPlatformAgent(tx, {
+          userId,
+          name: candidateName,
+          species: params.species,
+          color: params.color,
+          archetypeId: params.archetypeId,
+          modelKey: params.modelKey,
+          agentCategory: params.agentCategory,
+          harness: params.harness,
+          customization: characterConfig,
+        });
 
         const [insertedAvatar] = await tx
           .insert(avatars)
@@ -618,5 +663,102 @@ export async function provisionAvatarAgentForSignup(
     onNameCollision: 'suffix-retry',
     wallet: 'include-nonfatal',
     skipIfAvatarExists: true,
+  });
+}
+
+/**
+ * Repair the P2 provisioning-pending tail for one existing Milady avatar.
+ *
+ * This is the operator-facing sibling of `provisionAvatarAgentForSignup`: it
+ * reuses the same P2 character-config builder and platform-agent row shape, but
+ * links the already-existing avatar instead of trying to insert a second one.
+ * The avatar row is locked before the idempotency check, so concurrent repair
+ * attempts serialize and the loser returns the winner without creating an
+ * orphan platform_agents row.
+ */
+export async function repairProvisioningPendingAvatarAgent(
+  userId: string,
+): Promise<RepairProvisioningPendingResult> {
+  return db.transaction(async (tx) => {
+    const [avatar] = await tx
+      .select()
+      .from(avatars)
+      .where(and(eq(avatars.userId, userId), eq(avatars.harness, 'milady')))
+      .for('update');
+
+    if (!avatar) return { outcome: 'not-found', userId };
+    if (avatar.platformAgentId) {
+      return {
+        outcome: 'already-provisioned',
+        avatarId: avatar.id,
+        userId,
+        agentId: avatar.platformAgentId,
+      };
+    }
+
+    const modelKey = avatar.modelKey ?? DEFAULT_AGENT_MODEL_KEY;
+    const modelMeta = getAgentModel(modelKey);
+    if (!modelMeta) {
+      throw new Error(`[avatar-provisioning] Unknown modelKey: ${modelKey}`);
+    }
+    const archetype = AVATAR_ARCHETYPES.find((entry) => entry.id === avatar.archetype);
+    if (!archetype) {
+      throw new Error(`[avatar-provisioning] Unknown archetype: ${avatar.archetype}`);
+    }
+
+    const fresh = buildCharacterConfig(
+      avatar.archetype as AvatarArchetypeId,
+      avatar.name,
+      modelMeta.label,
+      avatar.learningFocus,
+    );
+    const priorKnowledge = Array.isArray(
+      (avatar.characterConfig as { knowledge?: unknown } | null)?.knowledge,
+    )
+      ? (avatar.characterConfig as { knowledge: string[] }).knowledge
+      : [];
+    const baseline = new Set<string>([
+      ...archetype.knowledge,
+      ...CLAWVILLE_ORIENTATION_KNOWLEDGE,
+    ]);
+    const learned = priorKnowledge.filter((entry) => !baseline.has(entry));
+    const customization = {
+      ...fresh,
+      knowledge: [
+        ...fresh.knowledge,
+        ...learned.filter((entry) => !fresh.knowledge.includes(entry)),
+      ],
+    };
+
+    const agent = await insertPlatformAgent(tx, {
+      userId,
+      name: avatar.name,
+      species: avatar.species as AvatarSpecies,
+      color: avatar.color as AvatarColor,
+      archetypeId: avatar.archetype as AvatarArchetypeId,
+      modelKey: modelKey as AgentModelKey,
+      agentCategory: (avatar.agentCategory ?? modelMeta.category) as AgentCategory,
+      harness: 'milady',
+      customization,
+    });
+
+    const [linked] = await tx
+      .update(avatars)
+      .set({ platformAgentId: agent.id, updatedAt: new Date() })
+      .where(and(eq(avatars.id, avatar.id), isNull(avatars.platformAgentId)))
+      .returning({ platformAgentId: avatars.platformAgentId });
+    if (!linked?.platformAgentId) {
+      // This throw rolls the insert back, so an unexpected guard miss cannot
+      // strand an orphan. A concurrent caller normally waits on FOR UPDATE and
+      // takes the already-provisioned branch above instead.
+      throw new Error('[avatar-provisioning] avatar link guard lost after row lock');
+    }
+
+    return {
+      outcome: 'created',
+      avatarId: avatar.id,
+      userId,
+      agentId: linked.platformAgentId,
+    };
   });
 }
