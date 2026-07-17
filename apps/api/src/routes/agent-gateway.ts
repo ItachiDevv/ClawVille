@@ -3649,10 +3649,10 @@ const controlLinkRateLimiter = createRateLimiter({
   windowMs: 3_600_000,
 });
 
-const controlLinkSchema = z.object({
+export const controlLinkSchema = z.object({
   // max 16 matches agent_session_tickets.identity_type varchar(16) — a longer
   // type would make the mint INSERT throw (500) instead of a clean 400 here.
-  identityType: z.string().min(1).max(16).optional(),
+  identityType: z.enum(['milady', 'hermes', 'openclaw', 'custom']).optional(),
   identityKey: z.string().min(1).max(256).optional(),
 });
 

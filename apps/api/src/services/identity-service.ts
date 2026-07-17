@@ -39,6 +39,133 @@ export interface IdentityUser {
   isNewUser: boolean;
 }
 
+type IdentityUserRow = Omit<IdentityUser, 'isNewUser'>;
+
+export interface IdentityResolutionStore {
+  findByFingerprint(fingerprint: string): Promise<IdentityUserRow | undefined>;
+  tryHealLegacyFingerprint(
+    legacyFingerprints: readonly string[],
+    newFingerprint: string,
+  ): Promise<IdentityUserRow | undefined>;
+  insert(input: {
+    name: string;
+    identityFingerprint: string;
+  }): Promise<IdentityUserRow>;
+}
+
+export interface IdentityHealTransactionStore {
+  findByFingerprint(fingerprint: string): Promise<IdentityUserRow | undefined>;
+  updateFingerprintIfMatches(input: {
+    userId: string;
+    legacyFingerprint: string;
+    newFingerprint: string;
+  }): Promise<IdentityUserRow | undefined>;
+}
+
+const SUPPORTED_IDENTITY_TYPES = new Set(['milady', 'hermes', 'openclaw', 'custom']);
+const LEGACY_IDENTITY_TYPES = ['nanoclaw', 'anonymous', 'ironclaw'] as const;
+
+function identityResult(row: IdentityUserRow, isNewUser: boolean): IdentityUser {
+  return { ...row, isNewUser };
+}
+
+/**
+ * Transaction-local legacy fingerprint repair. The guarded update is the
+ * concurrency authority: when it affects zero rows, another reconnect healed
+ * first, so this request re-reads and returns that winner under the new digest.
+ */
+export async function healLegacyFingerprintInTransaction(
+  legacyFingerprints: readonly string[],
+  newFingerprint: string,
+  store: IdentityHealTransactionStore,
+): Promise<IdentityUserRow | undefined> {
+  for (const legacyFingerprint of legacyFingerprints) {
+    const legacy = await store.findByFingerprint(legacyFingerprint);
+    if (!legacy) continue;
+
+    const healed = await store.updateFingerprintIfMatches({
+      userId: legacy.id,
+      legacyFingerprint,
+      newFingerprint,
+    });
+    if (healed) return healed;
+
+    const winner = await store.findByFingerprint(newFingerprint);
+    if (!winner) {
+      throw new Error('Identity fingerprint heal race: winner row not found');
+    }
+    return winner;
+  }
+  return undefined;
+}
+
+const databaseIdentityStore: IdentityResolutionStore = {
+  async findByFingerprint(fingerprint) {
+    return db.query.users.findFirst({
+      where: eq(users.identityFingerprint, fingerprint),
+      columns: {
+        id: true,
+        email: true,
+        name: true,
+        identityFingerprint: true,
+      },
+    });
+  },
+
+  async tryHealLegacyFingerprint(legacyFingerprints, newFingerprint) {
+    return db.transaction(async (tx) => {
+      const columns = {
+        id: true,
+        email: true,
+        name: true,
+        identityFingerprint: true,
+      } as const;
+      return healLegacyFingerprintInTransaction(legacyFingerprints, newFingerprint, {
+        findByFingerprint(fingerprint) {
+          return tx.query.users.findFirst({
+            where: eq(users.identityFingerprint, fingerprint),
+            columns,
+          });
+        },
+        async updateFingerprintIfMatches(input) {
+          const [healed] = await tx
+            .update(users)
+            .set({ identityFingerprint: input.newFingerprint, updatedAt: new Date() })
+            .where(and(
+              eq(users.id, input.userId),
+              eq(users.identityFingerprint, input.legacyFingerprint),
+            ))
+            .returning({
+              id: users.id,
+              email: users.email,
+              name: users.name,
+              identityFingerprint: users.identityFingerprint,
+            });
+          return healed;
+        },
+      });
+    });
+  },
+
+  async insert(input) {
+    const [inserted] = await db
+      .insert(users)
+      .values({
+        email: null,
+        passwordHash: null,
+        name: input.name,
+        identityFingerprint: input.identityFingerprint,
+      })
+      .returning({
+        id: users.id,
+        email: users.email,
+        name: users.name,
+        identityFingerprint: users.identityFingerprint,
+      });
+    return inserted;
+  },
+};
+
 /**
  * Resolve the user row for an agent identity, creating a minimal row
  * if one doesn't exist yet. Never returns null — any DB failure that
@@ -60,20 +187,36 @@ export async function resolveOrCreateUserByIdentity(
   identityType: string,
   identityKey: string,
 ): Promise<IdentityUser> {
+  return resolveOrCreateUserByIdentityWithStore(
+    identityType,
+    identityKey,
+    databaseIdentityStore,
+  );
+}
+
+/** Test seam for the fingerprint resolver; production callers use the wrapper above. */
+export async function resolveOrCreateUserByIdentityWithStore(
+  identityType: string,
+  identityKey: string,
+  store: IdentityResolutionStore,
+): Promise<IdentityUser> {
   const fingerprint = identityFingerprint(identityType, identityKey);
 
   // 1. Try to find an existing row by fingerprint.
-  const existing = await db.query.users.findFirst({
-    where: eq(users.identityFingerprint, fingerprint),
-  });
+  const existing = await store.findByFingerprint(fingerprint);
   if (existing) {
-    return {
-      id: existing.id,
-      email: existing.email,
-      name: existing.name,
-      identityFingerprint: existing.identityFingerprint,
-      isNewUser: false,
-    };
+    return identityResult(existing, false);
+  }
+
+  // Probe retired derivations only for the four supported public identities
+  // and only after the new derivation misses. This heals credential continuity;
+  // it does not make a retired type name valid on the wire.
+  if (SUPPORTED_IDENTITY_TYPES.has(identityType)) {
+    const healed = await store.tryHealLegacyFingerprint(
+      LEGACY_IDENTITY_TYPES.map((legacyType) => identityFingerprint(legacyType, identityKey)),
+      fingerprint,
+    );
+    if (healed) return identityResult(healed, false);
   }
 
   // 2. Not found — try to insert. Friendly default name: `Agent <first-12-of-key>`.
@@ -86,23 +229,11 @@ export async function resolveOrCreateUserByIdentity(
   const displayName = `Agent ${identityKey.slice(0, 12)}`;
 
   try {
-    const [inserted] = await db
-      .insert(users)
-      .values({
-        email: null,
-        passwordHash: null,
-        name: displayName,
-        identityFingerprint: fingerprint,
-      })
-      .returning();
-
-    return {
-      id: inserted.id,
-      email: inserted.email,
-      name: inserted.name,
-      identityFingerprint: inserted.identityFingerprint,
-      isNewUser: true,
-    };
+    const inserted = await store.insert({
+      name: displayName,
+      identityFingerprint: fingerprint,
+    });
+    return identityResult(inserted, true);
   } catch (err: unknown) {
     // 3. Race-loser path — the concurrent caller beat us to the insert.
     //    Catch the unique-violation and re-read. Any other error is a
@@ -113,21 +244,13 @@ export async function resolveOrCreateUserByIdentity(
 
     if (code !== '23505') throw err;
 
-    const raced = await db.query.users.findFirst({
-      where: eq(users.identityFingerprint, fingerprint),
-    });
+    const raced = await store.findByFingerprint(fingerprint);
     if (!raced) {
       // Exceptionally unlikely — either the DB is lying or the
       // concurrent INSERT rolled back after we saw it. Surface loudly.
       throw new Error('Identity fingerprint race: row vanished after 23505');
     }
-    return {
-      id: raced.id,
-      email: raced.email,
-      name: raced.name,
-      identityFingerprint: raced.identityFingerprint,
-      isNewUser: false,
-    };
+    return identityResult(raced, false);
   }
 }
 
