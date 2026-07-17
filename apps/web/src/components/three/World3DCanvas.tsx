@@ -24,6 +24,7 @@ import { VRM_METRICS_ENABLED, registerBulkVRMIdleCallback } from '@/lib/three/vr
 import PlayerAvatar from '@/lib/three/player-avatar';
 import NpcController from '@/lib/three/npc-controller';
 import MergedSeaweed from '@/lib/three/merged-seaweed';
+import KelpForest from '@/lib/three/kelp-forest';
 import QuestNpc from '@/lib/three/quest-npc';
 import TownGuide from '@/lib/three/town-guide';
 import BazaarStall from '@/lib/three/bazaar-stall';
@@ -1916,6 +1917,14 @@ const SceneContents = memo(function SceneContents({
       {showGroundCover && !FORCE_WEBGL && (
         <group name="perf:seaweed" userData={{ perfChunk: 'seaweed' }}>
           <MergedSeaweed />
+        </group>
+      )}
+
+      {/* Northeast Kelp Forest — three merged tall-blade variants with heavy TSL wind.
+          It shares the water-fog, ground-cover, and WebGPU-only performance gates. */}
+      {showWaterFogParticles && showGroundCover && !FORCE_WEBGL && (
+        <group name="perf:kelp-forest" userData={{ perfChunk: 'kelp-forest' }}>
+          <KelpForest />
         </group>
       )}
 
