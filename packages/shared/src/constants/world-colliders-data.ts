@@ -166,14 +166,16 @@ function buildServerColliders(): ServerCollider2D[] {
   list.push(...PROP_COLLIDERS);
 
   // 3. Kelp-maze walls — exact same shared AABBs consumed by the client.
-  // The 75-wu passages cannot use the legacy 128-wu A* safety margin; raster
-  // tile centers against each wall expanded by the live chibi half-width.
+  // The 128-wu passages cannot use the legacy 128-wu A* safety margin; raster
+  // tile centers against each wall expanded by the WIDEST live body class
+  // (ENTITY_HALF_HUMANOID) so the server never paths a humanoid NPC/agent
+  // body into a lane its client clamp cannot traverse.
   for (const wall of KELP_MAZE_WALLS) {
     list.push({
       ...wall,
       pathfindingRaster: {
         mode: 'cell-center-expanded-aabb',
-        paddingWu: ENTITY_HALF_CHIBI,
+        paddingWu: ENTITY_HALF_HUMANOID,
       },
     });
   }
@@ -181,7 +183,7 @@ function buildServerColliders(): ServerCollider2D[] {
     ...KELP_MAZE_LANDMARK_COLLIDER,
     pathfindingRaster: {
       mode: 'cell-center-expanded-aabb',
-      paddingWu: ENTITY_HALF_CHIBI,
+      paddingWu: ENTITY_HALF_HUMANOID,
     },
   });
 

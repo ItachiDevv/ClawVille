@@ -191,7 +191,7 @@ function generateWallPlacements(): KelpBladePlacement[][] {
     const steps = Math.ceil((halfLength * 2) / WALL_BLADE_SPACING_WU);
     // Inset visual endpoints without changing collider geometry or blade count.
     // This adds 16 wu to every visible gap so 24-wu wind sway cannot visually
-    // seal a physically open 75-wu passage at its narrowest moment.
+    // seal a physically open 128-wu passage at its narrowest moment.
     const visualHalfLength = Math.max(0, halfLength - 8);
 
     for (const rowOffset of WALL_ROW_OFFSETS) {
