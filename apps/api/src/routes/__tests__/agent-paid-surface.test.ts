@@ -37,7 +37,7 @@ describe('agent paid surfaces', () => {
 
   it('publishes the additive commerce and default-off exit contract', () => {
     const manual = buildProtocolManual('https://api.example.test');
-    expect(PROTOCOL_VERSION).toBe(21);
+    expect(PROTOCOL_VERSION).toBe(22);
     expect(manual).toContain('POST https://api.example.test/api/agent-pay');
     expect(manual).toContain('Idempotency-Key');
     expect(manual).toContain('/api/v2/agent/expert-consult');
