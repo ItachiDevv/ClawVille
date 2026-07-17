@@ -47,17 +47,18 @@ interface RoomSeat extends TableCardSeat {
 // other curve seats flanking left/right, and the dealer stands across at
 // the flat side. All coordinates authored at the scale-2 basis × S.
 // The arc apex bulges toward -Z; the flat edge runs along +Z.
-// FIRST-PERSON RESTAGE (2026-07-17, founder spec): the camera IS the
-// player's avatar seated at the 6-o'clock spot; the dealer STANDS across at
-// 12 o'clock facing you; the stand-ins take the remaining seats around the
-// oval — two diagonal-across flanking the dealer, two at the side rails,
-// one immediate left neighbor. Real avatars later replace stand-ins 1:1.
+// MEASURED ORIENTATION (2026-07-17, vertex-profile ground truth): the
+// table's FLAT full-width edge is at +Z (251wu straight edge at the zMax
+// extreme) and the players' arc tapers to -Z (72wu at zMin) — every prior
+// round had the player parked on the flat/dealer side. Player (camera) now
+// sits at the ARC APEX at -Z; bots take arc seats toward the flat corners;
+// the DEALER stands at the +Z flat edge. Basis coords x S as before.
 const BOT_SEATS: readonly RoomSeat[] = [
-  { engineSeatIndex: 1, x: -52 * S, z: -32 * S, faceYaw: Math.atan2(52, 32), chairX: -60 * S, chairZ: -40 * S },
-  { engineSeatIndex: 2, x: -85 * S, z: 12 * S, faceYaw: Math.atan2(85, -12), chairX: -96 * S, chairZ: 15 * S },
-  { engineSeatIndex: 3, x: -50 * S, z: 38 * S, faceYaw: Math.atan2(50, -38), chairX: -57 * S, chairZ: 48 * S },
-  { engineSeatIndex: 4, x: 85 * S, z: 12 * S, faceYaw: Math.atan2(-85, -12), chairX: 96 * S, chairZ: 15 * S },
-  { engineSeatIndex: 5, x: 52 * S, z: -32 * S, faceYaw: Math.atan2(-52, 32), chairX: 60 * S, chairZ: -40 * S },
+  { engineSeatIndex: 1, x: -48 * S, z: -34 * S, faceYaw: Math.atan2(48, 34), chairX: -55 * S, chairZ: -43 * S },
+  { engineSeatIndex: 2, x: -78 * S, z: -10 * S, faceYaw: Math.atan2(78, 10), chairX: -89 * S, chairZ: -12 * S },
+  { engineSeatIndex: 3, x: -88 * S, z: 26 * S, faceYaw: Math.atan2(88, -26), chairX: -99 * S, chairZ: 32 * S },
+  { engineSeatIndex: 4, x: 78 * S, z: -10 * S, faceYaw: Math.atan2(-78, 10), chairX: 89 * S, chairZ: -12 * S },
+  { engineSeatIndex: 5, x: 88 * S, z: 26 * S, faceYaw: Math.atan2(-88, -26), chairX: 99 * S, chairZ: 32 * S },
 ] as const;
 
 // boardYaw π: the board row sits toward the dealer's flat side (+Z) and its
@@ -68,7 +69,7 @@ const CARD_LAYOUT: Readonly<TableCardLayout> = Object.freeze({
   // the old +14 offset visually landed the row at the far edge among the
   // bot backs.
   boardZ: 0,
-  boardYaw: 0,
+  boardYaw: Math.PI,
   boardCardWidth: 8 * S,
   boardCardHeight: 11.2 * S,
   boardSpacing: 10 * S,
@@ -90,6 +91,8 @@ const BOT_MODEL_KEYS = [
   'hermes_female',
   'milady_official_4',
 ] as const satisfies readonly (keyof typeof MODEL_REGISTRY)[];
+// (index 3 = hermes -> BOT_SEATS[3], the right side-rail seat: her fixed
+// t=2.0 lean reads natural side-on, lunging head-on.)
 const HERMES_SAMPLE_AT = 2.0; // seconds into sit_idle_m — tuned visually
 const DEALER_MODEL_KEY = 'milady_official_6' as const;
 
@@ -197,8 +200,8 @@ function FrozenFigure({
 // 160wu body, just behind the near rail, gazing slightly down across the
 // felt at the standing dealer. Neighbors appear at the frame edges the way
 // they do from a real seat.
-const CAM_EYE: readonly [number, number, number] = [0, 124, 49.6 * S + 22];
-const CAM_LOOK: readonly [number, number, number] = [0, 84, -78 * S];
+const CAM_EYE: readonly [number, number, number] = [0, 150, -49.6 * S - 46];
+const CAM_LOOK: readonly [number, number, number] = [0, 66, 78 * S];
 
 function FixedCamera() {
   const { camera } = useThree();
@@ -242,9 +245,9 @@ function HoldemTableRoomScene() {
       <directionalLight position={[-70, 130, 80]} intensity={2.2} color={0xffd2a1} />
       <directionalLight position={[85, 85, 25]} intensity={1.35} color={0x7fd6ff} />
       <pointLight position={[0, 115, -55]} intensity={1150} distance={260} decay={2} color={0xffb86b} />
-      {/* Dealer key — the dealer stands at -Z (first-person restage); keep
-          that zone lit or she reads as a silhouette. */}
-      <pointLight position={[0, 150, -110]} intensity={900} distance={260} decay={2} color={0xffd9b0} />
+      {/* Dealer key — the dealer stands at the +Z flat edge; keep that
+          zone lit or she reads as a silhouette. */}
+      <pointLight position={[0, 150, 110]} intensity={900} distance={260} decay={2} color={0xffd9b0} />
 
       <primitive object={room} />
       {/* Procedural floor/backdrop guarantees a clean modal-like stage even
@@ -256,7 +259,7 @@ function HoldemTableRoomScene() {
         <planeGeometry args={[700, 700]} />
         <meshStandardMaterial color={0x241a26} roughness={0.92} metalness={0.04} />
       </mesh>
-      <mesh position={[0, 120, -185]}>
+      <mesh position={[0, 120, 185]} rotation={[0, Math.PI, 0]}>
         <planeGeometry args={[800, 280]} />
         <meshStandardMaterial color={0x43283a} roughness={0.9} metalness={0.02} />
       </mesh>
@@ -287,15 +290,14 @@ function HoldemTableRoomScene() {
         </group>
       ))}
 
-      {/* Dealer STANDS at 12 o'clock facing the player camera (+Z ⇒ yaw 0)
-          — founder spec: "the dealer should be standing where it looks
-          like my perspective is as a user". */}
+      {/* Dealer STANDS at the MEASURED flat edge (+Z, the 251wu straight
+          side), facing the player at the arc (-Z ⇒ yaw π). */}
       <FrozenFigure
         reg={MODEL_REGISTRY[DEALER_MODEL_KEY] as ModelRegistryEntry}
         instanceId="holdem-room-dealer"
         pose="idle"
-        position={[0, 0, -78 * S]}
-        yaw={0}
+        position={[0, 0, 78 * S]}
+        yaw={Math.PI}
         targetHeight={DEALER_TARGET_HEIGHT}
       />
 
