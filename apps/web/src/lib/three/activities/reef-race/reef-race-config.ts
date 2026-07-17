@@ -4,7 +4,7 @@
  * All constants for the Reef Race activity scene.
  * Track path, checkpoint positions, camera, fog, lighting, pickups, ghost, boost.
  *
- * Performance budget: ≤70 draw calls / ≤220k tris / 1×512² shadow map / 0 post-processing.
+ * Performance budget: ≤70 draw calls / ≤220k tris / no shadow map / 1 half-resolution bloom pass.
  * Target GPU: Intel Iris Xe (integrated). Chase-cam model: one frustum per client.
  *
  * Mirror of bumper-shells-config.ts style — one import covers the entire scene.
@@ -178,8 +178,8 @@ export const FLAG_WAVE_FREQ = 3.0;
 // ─── Player kart ─────────────────────────────────────────────────────────────
 
 /**
- * Scale applied to sea_horse-ktx.glb clone.
- * sea_horse-ktx.glb native bbox.max.y needs verification at runtime;
+ * Scale applied to sea_horse.glb clone.
+ * sea_horse.glb native bbox.max.y needs verification at runtime;
  * if it differs significantly, computeKartScale() in ReefRacePlayer.tsx
  * corrects it. Default 20 targets ~40wu kart height.
  */
@@ -219,7 +219,7 @@ export const GLIDER_LENGTH = 5;
  *   BOB_AMP_LOCAL = 0.04 local = 0.8 wu — gentle float, never sinks below board
  *   Worst-case low  = (1.45 - 0.04) × 20 = 28.2 wu  (still 20.7 wu above board top)
  *
- * lobster-ktx.glb bbox: origin is not measured; assuming center-of-mass pivot.
+ * lobster.glb bbox: origin is not measured; assuming center-of-mass pivot.
  * The 21.5 wu static clearance above board top is sufficient for any origin
  * placement (feet, center, or head) at KART_SCALE=20.
  *
@@ -260,8 +260,18 @@ export const PICKUP_SPIN_SPEED = 0.8;
 
 /** Pickup Y hover height above track surface. */
 export const PICKUP_Y_ABOVE_TRACK = 50;
-// Keep in sync with WATER_Y in water-surf.tsx:49 so race content sits on the flowing river surface.
-export const TRACK_SURFACE_Y = -200;
+/**
+ * Track-group base Y.
+ *
+ * SURF ROAD (2026-06-23): the floating ribbon's vertical datum is now the
+ * render-only `reefTrackElevationAt(t)` profile (reef-race-elevation.ts), NOT a
+ * flat plane. The ribbon vertices, the rider, and the chase camera all read
+ * elevation(t) directly, so the wrapping track group sits at world Y=0 and the
+ * per-t altitude lives in the geometry/transforms. Was -200 (the old flat water
+ * plane); a flat offset here would DOUBLE-shift everything off the elevation
+ * datum. Keep at 0.
+ */
+export const TRACK_SURFACE_Y = 0;
 
 /** Canvas texture size for '?' face. */
 export const PICKUP_TEXTURE_SIZE = 64;
@@ -288,71 +298,89 @@ export const SPEED_CONE_SPREAD = 80;
 
 // ─── Camera (chase-cam) ───────────────────────────────────────────────────────
 
-/** Camera near clip plane. */
+/** Camera near clip plane; 1wu remains safely inside the closer 444wu chase arm. */
 export const CAMERA_NEAR = 1;
 
 /**
  * Camera far clip plane.
- * Iris Xe rule: keep fog.far ≤ camera.far.
- * Bumped 2000 → 3000 → 5000 on 2026-04-26.
- * Track surface uses fog=false so the racing line is always visible,
- * but opposing-side karts and props still need camera.far ≥ fog.far.
- * With FOG_FAR=4500, CAMERA_FAR must be ≥ 4500. 5000 gives headroom.
+ * SURF ROAD (2026-06-23): the cosmic void dome has radius 30000wu and the ribbon
+ * footprint is ~17687×16941wu, so the far plane must reach the dome from a chase
+ * pull-back without clipping the void. 34000 gives headroom beyond the 30000
+ * dome. Iris Xe rule: fog.far ≤ camera.far still holds (fog is pushed far out —
+ * the void IS the backdrop, not fog).
  */
-export const CAMERA_FAR = 5000;
+export const CAMERA_FAR = 34000;
 
 /**
  * Chase-cam offset in player-local space (behind and above).
- * Y raised 200→280→320 (2026-04-29 QA: 280 still clipped Milady's hair tip ~5-10px;
- * 320 gives ~12° headroom above lookAt, well clear of 30° FOV half-angle top edge).
- * Math: lookAt at Y=130 from camera Y=320 at chase 350wu = 32° down pitch;
- * head_top at world Y≈175 → relative pitch atan2(45,350)=7.3° above lookAt = -25° from top edge.
+ * ROUND 5 (2026-07-16): 420/-560 → 260/-360 brings the rider about 1.58×
+ * closer at unchanged fov 60. Runtime still adds reefTrackElevationAt(t), so
+ * this remains a LOCAL offset; near=1/far=34000 still safely contain the closer
+ * wave field, ribbon, and 30000wu void dome.
  */
-export const CAMERA_OFFSET = new THREE.Vector3(0, 320, -350);
+// Founder knob: lower Y / less-negative Z makes the rider fill more of the frame.
+export const CAMERA_OFFSET = new THREE.Vector3(0, 260, -360);
 
 /**
  * Chase-cam look-at offset from player position (slightly above kart).
- * Y raised from 80→130 (2026-04-29 QA fix S1): lookAt at Y=130 targets chest
- * height; head sits ~89wu above that point; at 350wu chase distance the
- * vertical angle is atan2(89,350)≈14°, well within the ±30° FOV half-angle.
+ * SURF ROAD: lookAt Y 130→180 — the look target also rides elevation(t) at
+ * runtime; the higher local offset frames the rider + a little of the ribbon
+ * ahead/below through crests so the surfer is never lost over a rise.
  */
-export const CAMERA_LOOK_OFFSET = new THREE.Vector3(0, 130, 0);
+export const CAMERA_LOOK_OFFSET = new THREE.Vector3(0, 180, 0);
 
 /** Chase-cam lerp factor per second (0→1: instant, 1: no follow). */
 export const CAMERA_LERP = 5.0;
 
 // ─── Fog ─────────────────────────────────────────────────────────────────────
 
-/** Fog color — sky-blue atmospheric haze matching SkyDome horizon. */
-export const FOG_COLOR = '#a8d8ff';
+/**
+ * Fog color — deep cosmic void (matches the CosmicVoid dome horizon band).
+ * SURF ROAD (2026-06-23): was sky-blue '#a8d8ff'. The scene is now a deep void,
+ * so distant karts/props fade INTO the void colour rather than a bright sky.
+ */
+export const FOG_COLOR = '#0c1a2e';
 
 /**
  * Fog near distance.
- * Pushed out 800 → 1200 → 2000 on 2026-04-26.
- * Track surface uses fog=false so the racing line is always visible; fog is only
- * used for atmospheric depth on props/karts. Pushing near to 2000 keeps karts
- * crisp at normal racing distances (~350wu arm + 1000wu ahead).
+ * SURF ROAD: pushed far out (2000 → 9000). The ribbon + rails are fog:false
+ * (always crisp). Fog now only softens distant OPPOSING-side karts/props into
+ * the void at the far reaches of the ~17687wu footprint, so it must not bite
+ * until well past the chase framing (~560wu arm + a few thousand wu ahead).
  */
-export const FOG_NEAR = 2000;
+export const FOG_NEAR = 9000;
 
 /**
- * Fog far distance. MUST be ≤ CAMERA_FAR.
- * Iris Xe rule: fog.far > camera.far → FPS drop.
- * Bumped 1800 → 2700 → 4500 on 2026-04-26.
- * Ellipse perimeter ≈ 8500wu; far-side karts are up to ~2100wu from the
- * player + 350wu camera arm = ~2450wu from camera. 4500 keeps them visible
- * with gentle atmospheric haze (not instant pop-off).
+ * Fog far distance. MUST be ≤ CAMERA_FAR (34000). Iris Xe rule: fog.far ≤
+ * camera.far. SURF ROAD: 22000 fades the far side of the loop gently into the
+ * void without reaching/colouring the 30000 dome. Keeps the cosmic depth.
  */
-export const FOG_FAR = 4500;
+export const FOG_FAR = 22000;
 
 // ─── Lighting ────────────────────────────────────────────────────────────────
 
-export const HEMI_SKY_COLOR    = '#a8d8ff'; // matches SkyDome horizon
-export const HEMI_GROUND_COLOR = '#7cb342'; // grass green — matches GroundPlane in river-scene
-export const HEMI_INTENSITY    = 0.5;
+// SURF ROAD (2026-06-23): hemisphere recoloured for the cosmic void — a cool
+// cyan sky bounce + a deep-violet "ground" bounce (there is no ground; this is
+// the ambient fill that tints the rider/karts to match the void mood). Was
+// sky-blue / grass-green for the old land-disc scene.
+export const HEMI_SKY_COLOR    = '#3fd0ff'; // cyan void glow (top fill)
+export const HEMI_GROUND_COLOR = '#1a1640'; // deep indigo (bottom fill)
+// RETUNED 2026-07-15 (founder playtest: rider rendered as a BLACK unlit
+// silhouette): 0.65/1.25 was calibrated when everything visible was self-lit
+// (ShaderMaterial water, textured sky dome) so nobody noticed the lights were
+// far too weak for LIT meshes — the moment a MeshStandardMaterial rider/board
+// or the canyon walls entered frame they read near-black. Verified live at the
+// /preview racer harness (rider-material-probe / rider-light-bump 2026-07-15):
+// textures were loaded fine (1024px maps, white base color) and hot-bumping
+// ONLY these intensities turned the black silhouette into a fully-readable
+// rider + orange board + green canyon with the water untouched (it ignores
+// scene lights). 2.0/2.6 chosen over 3.0/4.0 — fully readable without
+// flattening the key/fill contrast.
+export const HEMI_INTENSITY    = 2.0;
 
-export const DIR_COLOR             = '#fffbe6';
-export const DIR_INTENSITY         = 1.2;
+// Cool key light from above-front so the riders read crisply against the void.
+export const DIR_COLOR             = '#dff2ff';
+export const DIR_INTENSITY         = 2.6;
 export const DIR_POSITION          = [300, 800, 200] as const;
 export const DIR_SHADOW_MAP_SIZE   = 512;
 export const DIR_SHADOW_NEAR       = 1;
@@ -366,19 +394,50 @@ export const DIR_SHADOW_NEAR       = 1;
 export const DIR_SHADOW_FAR        = 4000;
 export const DIR_SHADOW_CAM_BOUNDS = 4000;
 
-// ─── Atmosphere (light rays + depth backdrop) ─────────────────────────────────
+// ─── Atmosphere (cosmic void backdrop) ────────────────────────────────────────
 
 /** Number of TSL volumetric light rays (4, not 7 per spec §2.9). */
 export const LIGHT_RAY_COUNT = 4;
 
-/** Y position of the depth backdrop plane. */
-export const VOID_BACKDROP_Y    = -1000;
-export const VOID_BACKDROP_SIZE = 12000;
+/**
+ * SURF ROAD (2026-06-23): the depth backdrop plane below the old flat water is
+ * RETIRED — there is no land/water plane any more, the ribbon floats in the
+ * CosmicVoid (cosmic-void.tsx: gradient dome + starfield + glow motes). These
+ * constants are kept ONLY so the (now-removed) DepthBackdrop import in any stale
+ * reference still type-checks; nothing renders them. The void dome (radius
+ * 30000) is the true backdrop. Safe to delete once all references are gone.
+ */
+export const VOID_BACKDROP_Y    = -8000;
+export const VOID_BACKDROP_SIZE = 60000;
+
+// ─── Bloom (selective neon glow — Iris-Xe gated) ──────────────────────────────
+//
+// The neon rails + water crests are the bloom targets. Bloom is the single
+// post-process pass for the SURF ROAD; it is CHEAP (UnrealBloomPass at low res)
+// and gated so the Iris-Xe floor stays ≥60 FPS. See ReefRaceScene <SurfBloom>.
+export const BLOOM_STRENGTH  = 0.75;  // glow intensity — reduced slightly (water no longer over-bloomed)
+export const BLOOM_RADIUS    = 0.45;  // spread — tighter glow
+// Raised threshold 0.65 → 0.80 so the darker water body (deep #052d4a ≈ 0.11,
+// shallow #0e7a8a ≈ 0.43) stays BELOW the threshold and does not glow. The
+// neon rails (#98f0ff ≈ 0.93) still bloom. Foam crests on the water tips may
+// briefly bloom — acceptable (it reads as spray catching light, not solid glow).
+export const BLOOM_THRESHOLD = 0.80;  // only the neon rails + crest-tip spray bloom
 
 // ─── Laps ─────────────────────────────────────────────────────────────────────
 
-/** Total laps in a standard race. */
-export const TOTAL_LAPS = 3;
+/**
+ * Total laps in a standard race — HUD fallback only.
+ *
+ * MUST equal the authoritative server sim constant `REEF_RACE_LAPS`
+ * (apps/api/src/services/activity/sim/reef-race-config.ts, currently 2). The
+ * server streams `totalLaps` on every per-body delta / keyframe and the HUD
+ * prefers that; this constant is the value shown BEFORE the first delta for
+ * the self body arrives (race start, or a body that hasn't moved yet). Keeping
+ * it at the stale 3 made the HUD read "1/3" at the line while the sim only
+ * runs 2 laps — a WORLD↔UI parity break. Bump this in lockstep with
+ * `REEF_RACE_LAPS`.
+ */
+export const TOTAL_LAPS = 2;
 
 // ─── Phase 2 — boost ribbons + hazard patches (client mirrors) ───────────────
 //
@@ -555,6 +614,71 @@ export interface SplineRampClient {
   halfWidth: number;
 }
 
+// ─── v2 mechanics — Boost pad positions (client mirrors) ─────────────────────
+//
+// Must stay in sync with buildSplineBoostPads() in
+//   apps/api/src/services/activity/sim/reef-race-config.ts
+// Mirrors the buildSplineRampsClient() pattern above: the client reproduces
+// the server's static zone list (not shared via wire or package import) so
+// ReefRaceBoostPads.tsx can place visual markers at the correct spline
+// positions without waiting on a `reefSplineZones` snapshot.init payload.
+// If the server DOES send `room.reefSplineZones.boostPads`, that takes
+// priority (see ReefRaceBoostPads.tsx) — this is the fallback/bootstrap set.
+
+export interface SplineBoostPadClient {
+  id: string;
+  /** Arclength fraction along the client spline (0..1). */
+  t: number;
+  /** Lateral offset from centerline in wu (0 = centerline, matches server sign). */
+  lateralOffset: number;
+}
+
+/** Visual boost-pad marker footprint (wu). Smaller than the server's AABB
+ *  (BOOST_PAD_HALF_LENGTH=130/HALF_WIDTH=170) so the glowing pad reads as a
+ *  "stand on this" strip rather than filling the whole trigger volume. */
+export const BOOST_PAD_VISUAL_LENGTH = 180;
+export const BOOST_PAD_VISUAL_WIDTH  = 110;
+/** Marker height above the ribbon surface (wu) — same order as PICKUP_Y_ABOVE_TRACK. */
+export const BOOST_PAD_Y_ABOVE_TRACK = 6;
+/** Max instances the ReefRaceBoostPads InstancedMesh allocates — headroom above
+ *  the current 4-pad list so a server-side pad-count bump doesn't need a client
+ *  code change (only a data change), matching MAX_PICKUPS-style over-allocation. */
+export const MAX_BOOST_PADS = 10;
+
+export function buildSplineBoostPadsClient(): SplineBoostPadClient[] {
+  return [
+    { id: 'pad-lagoon', t: 0.15, lateralOffset:  90 },
+    { id: 'pad-kelp',   t: 0.42, lateralOffset: -90 },
+    { id: 'pad-wreck',  t: 0.58, lateralOffset:  90 },
+    { id: 'pad-canyon', t: 0.85, lateralOffset: -90 },
+  ];
+}
+
+// ─── Reef Race v2 — surf board POSE (render-only) ────────────────────────────
+//
+// Baked 2026-06-27 from the founder-signed-off free-drive sandbox
+// (REEF_PHYSICS_TUNING in reef-physics-tuning.ts). RENDER-ONLY — these make the
+// real-race kart RIDE the banked + waving water surface and SURF-TILT (nose-up +
+// wave-conform) exactly like the sandbox, instead of sitting flat on the centerline
+// datum. Used by ReefRacePlayer (real race) + mirrored by the sandbox tuner. The
+// SIM physics constants (speed/accel/turn) are NOT here — those live in
+// reef-race-config.ts (both web CLIENT_SURF_PARAMS + the api server config) and a
+// speed bump is a coordinated client+server change.
+export const SURF_RIDE_HEIGHT     = 20;   // wu the board floats ABOVE the local surface
+export const SURF_PITCH_TRIM_DEG  = 10;   // baseline nose-up plane angle
+export const SURF_PITCH_WAVE_GAIN = 1.3;  // × the nose-vs-tail wave slope
+export const SURF_TURN_LEAN_GAIN  = 0;    // optional lean-into-carve (× angVel rad/s); 0 = off
+export const SURF_PITCH_HALF_LEN  = 120;  // wu — sample the wave at nose & tail
+export const SURF_ROLL_HALF_WIDTH = 36;   // wu — sample the surface at left & right rail
+export const SURF_PITCH_CLAMP     = 0.6;  // ±34°
+export const SURF_ROLL_CLAMP      = 0.8;  // ±46°
+// Founder knob: k=7 lets heave glide through chop; lower increases transient water overlap.
+export const SURF_HEAVE_DAMPING   = 7;
+// Founder knob: k=3.5 lets pitch/roll cut through small chop instead of tracking it tightly.
+export const SURF_TILT_DAMPING    = 3.5;
+// Founder knob: higher values follow velocity-slip bank faster; k=8 smooths 30 Hz lean steps.
+export const SURF_BANK_LEAN_DAMPING = 8;
+
 // ─── Reef Race v2 — client-side surf prediction params ───────────────────────
 //
 // keep in sync with apps/api/src/services/activity/sim/reef-race-config.ts
@@ -565,16 +689,15 @@ export interface SplineRampClient {
 // re-baselines toward each server snapshot (see ReefRacePlayer) and the only
 // per-input job here is to make steering feel instant.
 //
-// speedMod / accelMult are pinned to 1: the client can't know server-side boost
-// stacks (turbo, drift, slipstream, ramp, Phase-3 stat mults). Prediction runs
-// the baseline kinematics and the snapshot re-baseline pulls the predicted body
-// back onto the boosted authority within a few snapshots — never overshooting
-// because re-baseline only ever blends toward the (boost-correct) server pose.
+// speedMod starts at 1 here, then ReefRacePlayer overwrites it from the latest
+// server snapshot so visible self prediction matches authoritative turbo/pad/
+// launch/slip speed. accelMult remains pinned to 1 because Phase-3 acceleration
+// stats are still server-only; snapshot re-baselining corrects that residual.
 export const CLIENT_SURF_PARAMS = {
-  /** REEF_MAX_SPEED = 500 */
-  maxSpeed: 500,
-  /** REEF_MAX_ACCEL = REEF_MAX_SPEED * 4 = 2000 */
-  maxAccel: 2000,
+  /** REEF_MAX_SPEED = 1300 (2026-07-15 2× cap; MUST match the server config) */
+  maxSpeed: 1300,
+  /** REEF_MAX_ACCEL = REEF_MAX_SPEED * 4 = 5200 */
+  maxAccel: 5200,
   /** REEF_TURN_RATE = 2.6 */
   turnRate: 2.6,
   /** REEF_TURN_SPEED_FALLOFF = 0.45 */
@@ -585,7 +708,7 @@ export const CLIENT_SURF_PARAMS = {
   forwardDrag: 0.992,
   /** REEF_LATERAL_GRIP = 0.90 */
   lateralGrip: 0.9,
-  /** Client can't know boosts — baseline. Re-baseline corrects. */
+  /** Snapshot-fed by ReefRacePlayer; 1 is the pre-snapshot/compat baseline. */
   speedMod: 1,
   /** Client can't know Phase-3 accel stat — baseline. Re-baseline corrects. */
   accelMult: 1,
@@ -629,12 +752,25 @@ export const CLIENT_REBASE_VEL = 0.5; // 50% of the velocity error per snapshot
 export const CLIENT_REBASE_ROT = 0.5; // 50% of the (shortest-arc) heading error
 
 /**
+ * Founder knob for the self-kart's presentation-only reconciliation offset.
+ * k=10 is a 100 ms time constant (~69 ms half-life): authority still rebases
+ * prediction immediately, while the screen receives that correction smoothly.
+ */
+export const SURF_REBASE_RENDER_DAMPING = 10;
+
+/**
+ * Maximum accumulated self-kart XZ render offset (wu). Larger corrections keep
+ * their residual as an immediate step instead of smearing a pathological error.
+ */
+export const SURF_REBASE_RENDER_OFFSET_MAX = 120;
+
+/**
  * Hard-snap threshold (wu). When predicted vs server XZ error exceeds this, the
  * gap is a respawn / teleport / catastrophic desync — snap predicted straight
  * to the server pose instead of blending (which would visibly slide across the
  * track). Matches the wipeout teleport heuristic order of magnitude.
  */
-export const CLIENT_REBASE_SNAP_DIST = 250;
+export const CLIENT_REBASE_SNAP_DIST = 500;
 
 // MUST match RAMP_HALF_LENGTH / RAMP_HALF_WIDTH in API reef-race-config.ts.
 const RAMP_HALF_LENGTH_CLIENT = 150;

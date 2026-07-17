@@ -75,8 +75,9 @@ function attachNpcKeyListeners() {
     // NOTE: onUp intentionally has NO target guard — it must always clear state
     // so keys don't get stranded 'true' when the user taps into an input mid-move.
     if (isEditable(e.target)) return;
-    const rawKey = e.key.toLowerCase();
-    const rawCode = e.code.toLowerCase();
+    // e.key/e.code can be undefined on synthetic events (Chrome autofill).
+    const rawKey = (e.key ?? '').toLowerCase();
+    const rawCode = (e.code ?? '').toLowerCase();
     if (rawKey === 'shift' || rawCode === 'shiftleft' || rawCode === 'shiftright') {
       _keys.shift = true;
       return;
@@ -86,8 +87,8 @@ function attachNpcKeyListeners() {
     if (k in _keys) _keys[k] = true;
   };
   const onUp = (e: KeyboardEvent) => {
-    const rawKey = e.key.toLowerCase();
-    const rawCode = e.code.toLowerCase();
+    const rawKey = (e.key ?? '').toLowerCase();
+    const rawCode = (e.code ?? '').toLowerCase();
     if (rawKey === 'shift' || rawCode === 'shiftleft' || rawCode === 'shiftright') {
       _keys.shift = false;
       return;

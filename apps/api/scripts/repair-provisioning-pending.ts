@@ -40,7 +40,11 @@ if (databaseUrl.includes(PROD_DATABASE_REF) && !allowProd) {
 }
 
 const { and, avatars, db, eq, isNull } = await import('@clawville/database');
-const { repairProvisioningPendingAvatarAgent } = await import(
+// Single implementation policy: reuse the staging-proven lazy-backfill row mint
+// (`backfillPlatformAgentForAvatar`, CAS race-guarded, no double-genesis) as the
+// batch entry point too — two implementations of the same row mint is exactly
+// the drift class this ripout removes.
+const { backfillPlatformAgentForAvatar } = await import(
   '../src/services/avatar-agent-provisioning'
 );
 
@@ -70,20 +74,17 @@ let skipped = 0;
 let failed = 0;
 for (const candidate of candidates) {
   try {
-    const result = await repairProvisioningPendingAvatarAgent(candidate.userId);
-    if (result.outcome === 'created') {
+    const agentId = await backfillPlatformAgentForAvatar(candidate.userId, candidate.avatarId);
+    if (agentId) {
       created++;
       console.log(
-        `  CREATED user=${result.userId} avatar=${result.avatarId} agent=${result.agentId}`,
-      );
-    } else if (result.outcome === 'already-provisioned') {
-      skipped++;
-      console.log(
-        `  SKIP user=${result.userId} avatar=${result.avatarId} already agent=${result.agentId}`,
+        `  LINKED user=${candidate.userId} avatar=${candidate.avatarId} agent=${agentId}`,
       );
     } else {
       skipped++;
-      console.log(`  SKIP user=${result.userId} no pending Milady avatar`);
+      console.log(
+        `  SKIP user=${candidate.userId} avatar=${candidate.avatarId} (already linked, missing, or not hosted-harness)`,
+      );
     }
   } catch (error) {
     failed++;

@@ -40,6 +40,7 @@ import { useVisibleFrameloop } from '@/lib/use-visible-frameloop';
 import {
   useVRMInstance,
   disposeVRMInstance,
+  retainVRMInstance,
   preloadVRMBytes,
 } from '@/lib/three/vrm-loader';
 import { retargetMixamoClip } from '@/lib/three/mixamo-retarget';
@@ -280,6 +281,7 @@ const AvatarInner = memo(function AvatarInner({
 
   // Dispose mixer + VRM instance on unmount.
   useEffect(() => {
+    retainVRMInstance(vrmPath, instanceId); // cancel deferred dispose on StrictMode re-setup
     return () => {
       mixer.stopAllAction();
       disposeVRMInstance(vrmPath, instanceId);

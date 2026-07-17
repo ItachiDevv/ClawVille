@@ -11,8 +11,8 @@
  *   - Route-isolated: mounts on its own Next.js route. `key={roomId}` on Canvas forces
  *     full WebGPU context recreation between rooms (per 3d-spec §3.1).
  *   - PerspectiveCamera in chase-cam mode — one frustum per client, not per player.
- *     Single shadow map regardless of racer count — sidesteps Iris Xe multi-frusta ceiling.
- *   - Chase-cam lerps behind the self player; spectators see the static track cam.
+ *     Shadows remain disabled, avoiding a second scene render per frame.
+ *   - Chase-cam exponentially damps behind the self player; spectators see the static track cam.
  *   - <PreCompilePipelines> fires compileAsync after first R3F commit.
  *   - Reads `useActivityStore` for entity/pickup/event state.
  *
@@ -20,31 +20,31 @@
  *   - No drei Text/Billboard anywhere.
  *   - No InstancedMesh + ShaderMaterial anywhere.
  *   - No per-frame allocations (module-scope scratch vectors/matrices).
- *   - 1 shadow map at 512×512.
- *   - 0 post-processing passes.
- *   - Fog far (4500) < camera.far (5000). ✓
+ *   - 0 shadow maps.
+ *   - 1 half-resolution bloom pass.
+ *   - Fog far (22000) < camera.far (34000). ✓
  *   - matrixAutoUpdate=false on all static meshes (handled per-component).
  *
  * Performance budget: ≤70 draw calls / ≤220k tris.
  */
 
-import { Suspense, useEffect, useRef, useMemo, useCallback } from 'react';
+import { Suspense, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 
 import ReefRaceTrack         from './ReefRaceTrack';
-import ReefRaceCheckpoints   from './ReefRaceCheckpoints';
-import ReefRaceStartGrid     from './ReefRaceStartGrid';
 import ReefRacePlayer        from './ReefRacePlayer';
 import ReefRaceGhost         from './ReefRaceGhost';
 import ReefRacePickups       from './ReefRacePickups';
 import ReefRaceBoostFX       from './ReefRaceBoostFX';
-import ReefRaceBoostRibbons  from './ReefRaceBoostRibbons';
-import ReefRaceHazards       from './ReefRaceHazards';
-import ReefRaceApexMarkers   from './ReefRaceApexMarkers';
+// SURF ROAD (2026-06-23): ReefRaceCheckpoints / ReefRaceStartGrid /
+// ReefRaceBoostRibbons / ReefRaceHazards / ReefRaceApexMarkers are no longer
+// mounted — flat v1-coordinate overlays that float wrong against the elevated
+// floating ribbon. See the SceneContents note. Imports removed.
 import { ActivityBursts }    from '@/lib/three/activities/shared/activity-particles';
-import { KTX2LoaderSetup }   from '@/lib/three/ktx2-loader-setup';
 import { RiverScene }       from './river-scene';
+import { SurfBloom }        from './surf-bloom';
+import { elevationAtXZ, forgetTKey } from './reef-race-elevation';
 import { useActivityStore } from '@/stores/activity';
 import {
   FOG_COLOR,
@@ -65,12 +65,13 @@ import {
   DIR_SHADOW_NEAR,
   DIR_SHADOW_FAR,
   DIR_SHADOW_CAM_BOUNDS,
-  VOID_BACKDROP_Y,
-  VOID_BACKDROP_SIZE,
   TRACK_SURFACE_Y,
 } from './reef-race-config';
 import { selfPoseBus, SELF_POSE_BUS_STALE_MS } from './reef-race-self-bus';
+import { clientSpline } from './reef-race-spline-instance';
 import type { ReefRaceEntity } from './reef-race-types';
+import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
+import { reefRaceStartGridPose, type ReefRaceStartFrame } from '@clawville/shared';
 
 // ─── v2 feature flag (mirror ReefRacePlayer) ──────────────────────────────────
 const USE_SPLINE_CAMERA = process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
@@ -102,6 +103,92 @@ const _selfPosScratch = new THREE.Vector3();
 
 const CAMERA_INTERP_DELAY_MS = 200;
 const CAMERA_INTERP_HISTORY_SIZE = 4;
+
+// ─── Pregame vantage — the start/finish line (spline t=0) ────────────────────
+// Before the sim room exists (lobby + countdown) there are NO entities, so the
+// chase cam used to sit at the Canvas default staring at world-origin geometry
+// ("a mangled clobber of space" — founder 2026-07-14) and only jumped to the
+// river when the first snapshot landed. Bodies spawn at t=0 heading along the
+// tangent (reef-race-spline-sim.ts:600+), so parking the camera at the exact
+// chase-cam pose for that spawn makes lobby → live seamless. Computed lazily
+// once — clientSpline is a module singleton and the track is static.
+let _pregameVantage: { x: number; z: number; heading: number } | null = null;
+function pregameVantage() {
+  if (!_pregameVantage) {
+    const start = clientSpline.centerlineAt(0);
+    const tan = clientSpline.tangentAt(0);
+    _pregameVantage = {
+      x: start.x,
+      z: start.z,
+      heading: Math.atan2(tan.x, tan.z),
+    };
+  }
+  return _pregameVantage;
+}
+
+interface StagedEntityView {
+  entities: Map<string, ReefRaceEntity>;
+  stagedAvatarIds: Set<string>;
+}
+
+/**
+ * Replace countdown `(0,0)` roster placeholders with the exact authoritative
+ * spline grid. The Map's insertion order is the room-participant order used by
+ * `startRoom`; `reefParticipantMeta` is display-only and has a different order.
+ * Each staged twin survives `event.match_started` until that avatar's first real
+ * spline delta supplies lap/progress fields, covering the event-to-delta gap.
+ */
+function buildStagedEntityView(
+  entities: Map<string, ReefRaceEntity>,
+  participantMeta: Record<string, { modelKey: string }>,
+  matchPhase: string,
+): StagedEntityView {
+  if (!USE_SPLINE_CAMERA || matchPhase === 'ended' || entities.size === 0) {
+    return { entities, stagedAvatarIds: new Set() };
+  }
+
+  const startFrame: ReefRaceStartFrame = {
+    center: clientSpline.centerlineAt(0),
+    tangent: clientSpline.tangentAt(0),
+    normal: clientSpline.normalAt(0),
+  };
+  const displayed = new Map<string, ReefRaceEntity>();
+  const stagedAvatarIds = new Set<string>();
+  let participantIndex = 0;
+
+  entities.forEach((entity, avatarId) => {
+    const hasAuthoritativePose =
+      matchPhase === 'live' &&
+      (typeof entity.lap === 'number' ||
+        typeof entity.progress === 'number' ||
+        typeof entity.totalLaps === 'number' ||
+        entity.x !== 0 ||
+        entity.y !== 0 ||
+        entity.rot !== 0 ||
+        entity.vx !== 0 ||
+        entity.vy !== 0);
+
+    if (hasAuthoritativePose) {
+      displayed.set(avatarId, entity);
+    } else {
+      const pose = reefRaceStartGridPose(startFrame, participantIndex);
+      displayed.set(avatarId, {
+        ...entity,
+        x: pose.x,
+        y: pose.z,
+        rot: pose.heading,
+        vx: 0,
+        vy: 0,
+        alive: true,
+        species: participantMeta[avatarId]?.modelKey ?? entity.species,
+      });
+      stagedAvatarIds.add(avatarId);
+    }
+    participantIndex += 1;
+  });
+
+  return { entities: displayed, stagedAvatarIds };
+}
 
 interface CameraSnapRecord {
   t: number;
@@ -166,51 +253,34 @@ function ReefLight() {
   );
 }
 
-// ─── Depth backdrop (below track plane) ──────────────────────────────────────
-// MeshBasicMaterial ignores fog — placed far enough to be invisible.
-function DepthBackdrop() {
-  const geo = useMemo(() => new THREE.PlaneGeometry(VOID_BACKDROP_SIZE, VOID_BACKDROP_SIZE), []);
-  const mat = useMemo(
-    () => new THREE.MeshBasicMaterial({ color: '#061020', side: THREE.FrontSide }),
-    [],
-  );
-  useEffect(() => {
-    return () => {
-      geo.dispose();
-      mat.dispose();
-    };
-  }, [geo, mat]);
-
-  return (
-    <mesh
-      geometry={geo}
-      material={mat}
-      position={[0, VOID_BACKDROP_Y, 0]}
-      rotation={[-Math.PI / 2, 0, 0]}
-      frustumCulled={false}
-      matrixAutoUpdate={false}
-    />
-  );
-}
-
 // ─── Chase camera ─────────────────────────────────────────────────────────────
-// Procedural lerp-follow in useFrame — no OrbitControls.
+// Procedural exponentially-damped follow in useFrame — no OrbitControls.
 // Module-scope scratch vectors prevent GC pressure.
 
 // Module-scope scratch for screen shake (no per-frame allocation).
 const _shakeOffset = new THREE.Vector3();
 
+// 12/s gives the look target an ~83ms time constant: responsive through normal
+// carving while filtering raw 30Hz prediction/reconciliation micro-noise.
+const CAMERA_LOOK_DAMPING = 12;
+
 interface ChaseCamProps {
   selfEntity: ReefRaceEntity | null;
+  selfIsStaged: boolean;
   /** Mutable ref holding current shake magnitude (wu). Decays in useFrame. */
   shakeRef: React.MutableRefObject<number>;
 }
 
-function ChaseCamera({ selfEntity, shakeRef }: ChaseCamProps) {
+function ChaseCamera({ selfEntity, selfIsStaged, shakeRef }: ChaseCamProps) {
   const { camera } = useThree();
   const historyRef = useRef<CameraSnapRecord[]>([]);
   const lastEntityRef = useRef<ReefRaceEntity | null>(null);
   const lastRotRef = useRef(0);
+  /** True once the pregame start-line vantage snapped the camera into place. */
+  const pregameSnappedRef = useRef(false);
+  // Persisted per-camera look target, allocated once rather than in useFrame.
+  const dampedLookAt = useMemo(() => new THREE.Vector3(), []);
+  const lookDampingInitializedRef = useRef(false);
 
   useEffect(() => {
     // PerspectiveCamera setup.
@@ -219,16 +289,54 @@ function ChaseCamera({ selfEntity, shakeRef }: ChaseCamProps) {
     cam.far  = CAMERA_FAR;
     cam.fov  = 60;
     cam.updateProjectionMatrix();
+    // SURF ROAD: drop the 'cam' elevation-cache key on teardown.
+    return () => { forgetTKey('cam'); };
   }, [camera]);
 
   useFrame((_, delta) => {
     if (!selfEntity) {
       historyRef.current.length = 0;
       lastEntityRef.current = null;
+      // Lobby/countdown — no snapshots yet. Frame the start line so the
+      // player sees the river spawn instead of world-origin geometry; the
+      // pose matches the chase-cam pose of the t=0 spawn, so the transition
+      // to live is a no-op. v1 (non-spline) keeps the legacy behaviour.
+      if (USE_SPLINE_CAMERA) {
+        const vantage = pregameVantage();
+        const preCam = camera as THREE.PerspectiveCamera;
+        _rotatedOffset.set(
+          CAMERA_OFFSET.x * Math.cos(vantage.heading) + CAMERA_OFFSET.z * Math.sin(vantage.heading),
+          CAMERA_OFFSET.y,
+          -CAMERA_OFFSET.x * Math.sin(vantage.heading) + CAMERA_OFFSET.z * Math.cos(vantage.heading),
+        );
+        const groundY = TRACK_SURFACE_Y + elevationAtXZ(vantage.x, vantage.z, 'cam');
+        _targetPos.set(vantage.x, groundY, vantage.z).add(_rotatedOffset);
+        _lookAt.set(vantage.x, groundY, vantage.z).add(CAMERA_LOOK_OFFSET);
+        // Pregame orientation is always a hard pose. If a staged entity drops
+        // out before live, never ease from its grid target back to the vantage.
+        dampedLookAt.copy(_lookAt);
+        lookDampingInitializedRef.current = true;
+        if (!pregameSnappedRef.current) {
+          // First pregame frame — snap, don't ease from the Canvas default
+          // (easing would sweep the camera through world geometry).
+          pregameSnappedRef.current = true;
+          preCam.position.copy(_targetPos);
+        } else {
+          const eyeFactor = 1 - Math.exp(-CAMERA_LERP * delta);
+          preCam.position.lerp(_targetPos, eyeFactor);
+        }
+        preCam.lookAt(dampedLookAt);
+      }
       return;
     }
 
     const cam = camera as THREE.PerspectiveCamera;
+
+    // Live entity present — re-arm the pregame snap latch so a LATER pregame
+    // period (same-mount requeue, store reset, transient room teardown) snaps
+    // to the start vantage again instead of easing from the race-end position
+    // through world geometry (Codex finding #4, 2026-07-14).
+    if (!selfIsStaged) pregameSnappedRef.current = false;
 
     if (selfEntity !== lastEntityRef.current) {
       lastEntityRef.current = selfEntity;
@@ -276,7 +384,7 @@ function ChaseCamera({ selfEntity, shakeRef }: ChaseCamProps) {
 
     // ─── v2 camera unify — follow the self body's PREDICTED pose ──────────────
     // When the self kart is running client prediction (reef-race v2), the body
-    // renders from selfPoseBus, NOT the 200 ms server interp above. Follow the
+    // renders from selfPoseBus, NOT the adaptive 100–220ms remote interp above. Follow the
     // SAME pose so camera + body share one timebase — this kills the rubber-band
     // where the kart slid to the screen edge on every turn while the camera
     // lagged. The interp above still ran (keeps history/lastRot warm) and is the
@@ -284,6 +392,7 @@ function ChaseCamera({ selfEntity, shakeRef }: ChaseCamProps) {
     // tab-throttle), we keep the interp-derived renderX/renderZ/heading.
     if (
       USE_SPLINE_CAMERA &&
+      !selfIsStaged &&
       selfPoseBus.valid &&
       performance.now() - selfPoseBus.updatedAt <= SELF_POSE_BUS_STALE_MS
     ) {
@@ -297,7 +406,7 @@ function ChaseCamera({ selfEntity, shakeRef }: ChaseCamProps) {
     _playerWorldDir.set(Math.sin(heading), 0, Math.cos(heading));
 
     // Camera target position: behind + above player.
-    // CAMERA_OFFSET: (0, 200, -350) in player-local space (kart-local).
+    // CAMERA_OFFSET: (0, 260, -360) in player-local space (kart-local).
     //
     // Convention:
     //   server `body.rot = atan2(intent.dir.x, intent.dir.y)` and the kart's
@@ -318,16 +427,49 @@ function ChaseCamera({ selfEntity, shakeRef }: ChaseCamProps) {
       CAMERA_OFFSET.y,
       -CAMERA_OFFSET.x * Math.sin(heading) + CAMERA_OFFSET.z * Math.cos(heading),
     );
-    _targetPos.set(renderX, TRACK_SURFACE_Y, renderZ).add(_rotatedOffset);
 
-    // Lerp camera position.
-    const lerpFactor = Math.min(1, CAMERA_LERP * delta);
-    _camPos.copy(cam.position).lerp(_targetPos, lerpFactor);
-    cam.position.copy(_camPos);
+    // ─── SURF ROAD: lift the camera datum by the FLOATING ribbon elevation ────
+    // The ribbon Y at the kart's XZ is reefTrackElevationAt(closest spline-t),
+    // cheaply cached under the 'cam' key (one local-scan lookup/frame). Both the
+    // camera eye AND the lookAt rise/dip by the SAME value the ribbon + rider
+    // use (the parity contract) so the camera frames the rider through every
+    // climb/drop and never clips into the ribbon or loses the rider over a
+    // crest. TRACK_SURFACE_Y is now 0 (the datum is the elevation function).
+    const camGroundY = USE_SPLINE_CAMERA
+      ? TRACK_SURFACE_Y + elevationAtXZ(renderX, renderZ, 'cam')
+      : TRACK_SURFACE_Y;
 
-    // Look at kart + upward offset.
-    _lookAt.set(renderX, TRACK_SURFACE_Y, renderZ).add(CAMERA_LOOK_OFFSET);
-    cam.lookAt(_lookAt);
+    _targetPos.set(renderX, camGroundY, renderZ).add(_rotatedOffset);
+    _lookAt.set(renderX, camGroundY, renderZ).add(CAMERA_LOOK_OFFSET);
+
+    const lookFactor = 1 - Math.exp(-CAMERA_LOOK_DAMPING * delta);
+    if (selfIsStaged || !lookDampingInitializedRef.current) {
+      // Seed every persisted filter on a hard snap; otherwise old room/live
+      // state would ease the camera orientation through world geometry. Staged
+      // orientation remains raw even when pregame already armed the eye latch.
+      dampedLookAt.copy(_lookAt);
+      lookDampingInitializedRef.current = true;
+    } else {
+      // The one existing elevation sample feeds this desired target and the eye
+      // target above. Damping both outputs co-smooths Y without another lookup.
+      dampedLookAt.lerp(_lookAt, lookFactor);
+    }
+
+    // Frame-rate-independent eye damping. CAMERA_LERP remains the response rate
+    // so the established chase distance/feel is preserved.
+    if (selfIsStaged) {
+      // Staged framing is a hard pose: never sweep from the pregame vantage or
+      // Canvas default through world geometry. Park at the actual self grid slot.
+      pregameSnappedRef.current = true;
+      cam.position.copy(_targetPos);
+    } else {
+      const eyeFactor = 1 - Math.exp(-CAMERA_LERP * delta);
+      _camPos.copy(cam.position).lerp(_targetPos, eyeFactor);
+      cam.position.copy(_camPos);
+    }
+
+    // Raw pose/heading/elevation noise no longer rotates the whole background.
+    cam.lookAt(dampedLookAt);
 
     // Screen shake — decay and apply camera position offset.
     // shakeRef.current holds magnitude in wu. Decays at 2.5×/second.
@@ -343,7 +485,10 @@ function ChaseCamera({ selfEntity, shakeRef }: ChaseCamProps) {
     } else {
       shakeRef.current = 0;
     }
-  });
+  // ReefRacePlayer publishes selfPoseBus at -2. Reading at -1 guarantees this
+  // frame's rendered pose while negative priority preserves automatic render;
+  // SurfBloom continues to own the final render at +1.
+  }, -1);
 
   return null;
 }
@@ -374,18 +519,33 @@ function DebugExpose({ entities }: { entities: Map<string, ReefRaceEntity> }) {
 
 interface SceneContentsProps {
   entities: Map<string, ReefRaceEntity>;
+  stagedAvatarIds: Set<string>;
   selfAvatarId: string | null;
   matchPhase: string;
   raceStartMs: number;
 }
 
-function SceneContents({ entities, selfAvatarId, matchPhase, raceStartMs }: SceneContentsProps) {
+function SceneContents({
+  entities,
+  stagedAvatarIds,
+  selfAvatarId,
+  matchPhase,
+  raceStartMs,
+}: SceneContentsProps) {
   const selfEntity = selfAvatarId ? (entities.get(selfAvatarId) ?? null) : null;
+  const selfIsStaged = selfAvatarId ? stagedAvatarIds.has(selfAvatarId) : false;
   // Use module-scope scratch to avoid a `new Vector3()` allocation every render.
   // ReefRaceBoostFX only reads playerPos.x/y/z inside useFrame (RAF), which fires
   // after this render — the scratch value is stable for the duration of the frame.
+  // SURF ROAD: lift the boost-FX anchor onto the floating ribbon (render-only
+  // elevation at the self kart's XZ; reuses the 'cam' elevation-cache key since
+  // it's the same neighbourhood the camera already resolved this frame).
   const selfPos = selfEntity
-    ? _selfPosScratch.set(selfEntity.x, 0, selfEntity.y)
+    ? _selfPosScratch.set(
+        selfEntity.x,
+        USE_SPLINE_CAMERA ? elevationAtXZ(selfEntity.x, selfEntity.y, 'cam') : 0,
+        selfEntity.y,
+      )
     : null;
 
   // Screen shake — mutable ref, zero re-renders.
@@ -398,56 +558,63 @@ function SceneContents({ entities, selfAvatarId, matchPhase, raceStartMs }: Scen
     shakeRef.current = Math.min(shakeRef.current + intensity, 120);
   }, []);
 
+  // v2 mechanics (2026-07-10) — REUSE the existing trail/speed-cone FX for
+  // ANY boost source, not just inventory items. `entity.boosting` is the
+  // server-authoritative "any positive boost active" flag (boost pad /
+  // mini-turbo / launch / slipstream — see EntityDelta.changed.boosting in
+  // protocol.ts), forwarded onto the self entity by applyEntityDelta. This
+  // is the parity contract: the SAME server signal that triggers a pad/
+  // turbo boost also drives the world FX, not an invented client guess.
   const boostActive = useActivityStore(
-    (s) => selfAvatarId
-      ? (s.powerUpInventory.some((p) => p.kind === 'boost' && p.charges > 0))
-      : false,
+    (s) => {
+      if (!selfAvatarId) return false;
+      const itemBoost = s.powerUpInventory.some((p) => p.kind === 'boost' && p.charges > 0);
+      const selfEntity = s.entities.get(selfAvatarId) as (ReefRaceEntity | undefined);
+      return itemBoost || Boolean(selfEntity?.boosting);
+    },
   );
 
-  const gantryPhase = useMemo(() => {
-    if (matchPhase === 'pregame-countdown') return 'red' as const;
-    if (matchPhase === 'live')              return 'green' as const;
-    return 'off' as const;
-  }, [matchPhase]);
+  // SURF ROAD: the start-grid countdown gantry is no longer rendered in-scene
+  // (the flat v1 start grid is unmounted — see the SceneContents note). The
+  // pregame countdown is shown in the HUD. `matchPhase` is still received for
+  // contract stability but no longer drives an in-scene gantry colour.
+  void matchPhase;
 
   return (
     <>
       {/* Chase camera (follows selfEntity) */}
-      <ChaseCamera selfEntity={selfEntity} shakeRef={shakeRef} />
+      <ChaseCamera selfEntity={selfEntity} selfIsStaged={selfIsStaged} shakeRef={shakeRef} />
 
-      {/* Atmosphere */}
+      {/* Atmosphere — SURF ROAD: deep cosmic void. Fog is pushed far out (9000–
+          22000) so it only softens the FAR side of the loop into the void; the
+          ribbon + rails are fog:false (always crisp). Background = void colour so
+          the first paint (before the dome resolves) is already deep, not sky-blue. */}
       <fog args={[FOG_COLOR, FOG_NEAR, FOG_FAR]} />
-      {/* Sky-blue clear color matches SkyDome horizon — prevents flash before dome renders */}
-      <color attach="background" args={['#a8d8ff']} />
+      <color attach="background" args={['#0c1a2e']} />
 
-      {/* Low-poly stylized river atmosphere — dome, water surface, scenery.
-          showDemoKarts/Pickups disabled in real gameplay so the 5 cosmetic
-          spline karts and decorative power-up boxes don't visually compete
-          with the server-driven <ReefRacePlayer /> + <ReefRacePickups />. */}
+      {/* SURF ROAD: the cosmic void backdrop + the glowing FLOATING WATER RIBBON
+          (+ neon rails + crests) + ramps. No land/island/ground/sky. The ribbon
+          rides reefTrackElevationAt(t) + reefTrackBankAngleAt(t). Demo karts off
+          in gameplay (server karts render via <ReefRacePlayer />). */}
       <RiverScene showDemoKarts={false} showDemoPickups={false} />
 
       {/* Lighting */}
       <ReefLight />
 
-      {/* Depth backdrop (below track plane) */}
-      <DepthBackdrop />
-
       <group position-y={TRACK_SURFACE_Y}>
-        {/* Static track geometry */}
+        {/* Spline-derived start/finish gate (lifted onto the ribbon).
+            SURF ROAD (2026-06-23): the flat v1-ellipse-coordinate overlays —
+            <ReefRaceCheckpoints/>, <ReefRaceBoostRibbons/>, <ReefRaceHazards/>,
+            <ReefRaceApexMarkers/>, <ReefRaceStartGrid/> — are NOT mounted in the
+            floating-ribbon scene. They were authored against the old flat plane
+            (Y=0) and the v1 ellipse/zone coords, so against the undulating ribbon
+            they float detached at the wrong altitude/position. They are pure
+            client visuals (no sim/scoring dependency); the countdown still shows
+            in the HUD, and the start/finish is marked by the spline finish gate.
+            Re-add later as spline-t + elevation-aware overlays if desired. */}
         <Suspense fallback={null}>
           <ReefRaceTrack />
         </Suspense>
-
-        {/* Checkpoints (merged static) */}
-        <ReefRaceCheckpoints />
-
-        {/* Phase 2 — boost ribbons, hazard patches, apex markers (static) */}
-        <ReefRaceBoostRibbons />
-        <ReefRaceHazards />
-        <ReefRaceApexMarkers />
-
-        {/* Start grid + gantry + flags */}
-        <ReefRaceStartGrid gantryPhase={gantryPhase} />
 
         {/* Player karts — up to 8 draw calls */}
         <Suspense fallback={null}>
@@ -456,6 +623,7 @@ function SceneContents({ entities, selfAvatarId, matchPhase, raceStartMs }: Scen
               key={entity.avatarId}
               entity={entity}
               isSelf={entity.avatarId === selfAvatarId}
+              predictionEnabled={!stagedAvatarIds.has(entity.avatarId)}
               triggerScreenShake={entity.avatarId === selfAvatarId ? triggerScreenShake : undefined}
             />
           ))}
@@ -479,8 +647,13 @@ function SceneContents({ entities, selfAvatarId, matchPhase, raceStartMs }: Scen
       {/* Dev debug surface — exposes window.__reefDebug in dev / ?debug=1 */}
       <DebugExpose entities={entities} />
 
-      {/* Pipeline pre-compilation — must be LAST */}
+      {/* Pipeline pre-compilation */}
       <PreCompilePipelines />
+
+      {/* SURF ROAD: selective bloom on the neon rails + water crests. Takes over
+          the render loop (positive-priority useFrame) so it MUST be the LAST
+          child — it composes the final framebuffer. Iris-Xe-gated (half-res). */}
+      <SurfBloom />
     </>
   );
 }
@@ -497,8 +670,13 @@ export interface ReefRaceSceneProps {
 export default function ReefRaceScene({ roomId, selfAvatarId = null }: ReefRaceSceneProps) {
   const entities    = useActivityStore((s) => s.entities as Map<string, ReefRaceEntity>);
   const matchPhase  = useActivityStore((s) => s.matchPhase);
+  const participantMeta = useActivityStore((s) => s.reefParticipantMeta);
   const raceStartMs = useActivityStore((s) =>
     s.matchPhase === 'live' ? (s.room?.startedAt ?? 0) : 0,
+  );
+  const stagedView = useMemo(
+    () => buildStagedEntityView(entities, participantMeta, matchPhase),
+    [entities, participantMeta, matchPhase],
   );
 
   return (
@@ -517,7 +695,8 @@ export default function ReefRaceScene({ roomId, selfAvatarId = null }: ReefRaceS
     >
       <KTX2LoaderSetup />
       <SceneContents
-        entities={entities ?? new Map()}
+        entities={stagedView.entities}
+        stagedAvatarIds={stagedView.stagedAvatarIds}
         selfAvatarId={selfAvatarId}
         matchPhase={matchPhase}
         raceStartMs={raceStartMs}

@@ -26,7 +26,7 @@ import {
 import { jumpState, isEditable, type ChargeMode } from '@/lib/three/jump-state';
 import { triggerCoveWalkIn } from './arena-buildings';
 import { registerInputReset } from '@/lib/three/input-reset';
-import { useVRMInstance, disposeVRMInstance, applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
+import { useVRMInstance, disposeVRMInstance, retainVRMInstance, applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 import {
   VRMCharacterAnimator,
   preloadMixamoClips,
@@ -156,8 +156,9 @@ function attachKeyListeners() {
     // NOTE: keyup intentionally has NO target guard — it must always clear state
     // so keys don't get stranded 'true' when the user taps into an input mid-move.
     if (isEditable(e.target)) return;
-    const rawKey = e.key.toLowerCase();
-    const rawCode = e.code.toLowerCase();
+    // e.key/e.code can be undefined on synthetic events (Chrome autofill).
+    const rawKey = (e.key ?? '').toLowerCase();
+    const rawCode = (e.code ?? '').toLowerCase();
     if (rawKey === 'shift' || rawCode === 'shiftleft' || rawCode === 'shiftright') {
       keyState.shift = true;
       return;
@@ -167,8 +168,8 @@ function attachKeyListeners() {
     if (key in keyState) keyState[key] = true;
   };
   const onKeyUp = (e: KeyboardEvent) => {
-    const rawKey = e.key.toLowerCase();
-    const rawCode = e.code.toLowerCase();
+    const rawKey = (e.key ?? '').toLowerCase();
+    const rawCode = (e.code ?? '').toLowerCase();
     if (rawKey === 'shift' || rawCode === 'shiftleft' || rawCode === 'shiftright') {
       keyState.shift = false;
       return;
@@ -285,6 +286,7 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
 
   // Dispose this player-avatar's instance when the avatar path changes or unmounts.
   useEffect(() => {
+    retainVRMInstance(reg.path, 'player-avatar'); // cancel deferred dispose on StrictMode re-setup
     return () => disposeVRMInstance(reg.path, 'player-avatar');
   }, [reg.path]);
 

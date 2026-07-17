@@ -741,7 +741,29 @@ avatarRoutes.patch('/me', requireAuth, async (c) => {
       // (fleet-only). NOT an openclaw_bots row (would flip /me/agent-session
       // off 'hosted').
       const backfillPatch: Record<string, unknown> = { ...patch };
+      // Codex BLOCKING (2026-07-15): `needsAgentBackfill` was computed from a
+      // snapshot read OUTSIDE this transaction — the /me/agent-session lazy
+      // backfill (backfillPlatformAgentForAvatar, which the frontend's
+      // ['agent-session'] query fires automatically) can link an agent row in
+      // between, and the unconditional platformAgentId overwrite below would
+      // then orphan the winner's row. Re-read UNDER a row lock (the service
+      // takes the same FOR UPDATE lock) and skip the mint if the link
+      // already exists — the mirror branch below then treats it like any
+      // pre-linked avatar.
+      let effectiveBackfill = needsAgentBackfill;
+      let linkedAgentId = current.platformAgentId;
       if (needsAgentBackfill) {
+        const [locked] = await tx
+          .select({ platformAgentId: avatars.platformAgentId })
+          .from(avatars)
+          .where(and(eq(avatars.userId, user.id), eq(avatars.isActive, true)))
+          .for('update');
+        if (locked?.platformAgentId) {
+          effectiveBackfill = false;
+          linkedAgentId = locked.platformAgentId;
+        }
+      }
+      if (effectiveBackfill) {
         const [backfilledAgent] = await tx
           .insert(agents)
           .values({
@@ -798,14 +820,14 @@ avatarRoutes.patch('/me', requireAuth, async (c) => {
       // from the avatars row. Skipped on the backfill path — the row we just
       // inserted already carries the POST-patch config/customization/name.
       const needsAgentMirror =
-        !needsAgentBackfill &&
-        !!current.platformAgentId &&
+        !effectiveBackfill &&
+        !!linkedAgentId &&
         (nameChanging || speciesChanging || archetypeChanging || !!nextCharacterConfig);
       if (needsAgentMirror) {
         const [agentRow] = await tx
           .select()
           .from(agents)
-          .where(eq(agents.id, current.platformAgentId!))
+          .where(eq(agents.id, linkedAgentId!))
           .limit(1);
         if (agentRow) {
           // P3 slice 2 (spec A4) — mirror the changed keys via an ATOMIC jsonb

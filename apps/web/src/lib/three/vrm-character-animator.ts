@@ -155,8 +155,11 @@ const ANIM_PATHS = {
   spell_cast:      `${EMOTE_BUNDLE}#spell_cast`,
   // Reef Race v2 surf clips — separate, prewarmed by ReefRacePlayer.
   surf_idle:       '/avatars/animations/skateboarding.glb',
-  wipeout:         '/avatars/animations/wipeout.glb',
-  victory:         '/avatars/animations/cheering.glb',
+  // These global files are cumulative exports: animation[0] is skateboarding
+  // in both, while the intended one-shots are .001/.002. Fragments make the
+  // loader select the exact clip before the retargeter's animations[0] read.
+  wipeout:         '/avatars/animations/wipeout.glb#Armature|mixamo.com|Layer0.001',
+  victory:         '/avatars/animations/cheering.glb#Armature|mixamo.com|Layer0.002',
   // Cross-character bakes — separate (small + only-when-needed).
   swimming:        '/avatars/animations/hermes-female/swimming.glb',
   flying:          '/avatars/animations/tekk-male/flying.glb',
@@ -494,6 +497,10 @@ const IN_PLACE_CLIPS: ReadonlySet<AnimName> = new Set([
   'run',
   'swimming',
   'flying',
+  // Reef Race holds this as a setSurfaceClip base, so it must stay deck-
+  // relative. Measured raw hips-Y amplitude: global 1.47787; character
+  // overrides up to 2.58815. Strip translation, retain rotation-only sway.
+  'surf_idle',
   'praying',  // kneeling/standing prayer pose — strictly stationary
   // 'wipeout' added 2026-05-21 because chibi's "Knocked Out" replacement bakes
   // ~77cm of Mixamo Z (forward) motion that, after Blender's Y-up→glTF axis
@@ -503,6 +510,9 @@ const IN_PLACE_CLIPS: ReadonlySet<AnimName> = new Set([
   // its small intentional backward step — acceptable since wipeout is a
   // crash one-shot, not a locomotion-defining motion.
   'wipeout',
+  // Victory is also played while mounted. The intended global cheering clip
+  // has 6.96884 raw hips-Y amplitude (override bakes: 0.03888..0.06474).
+  'victory',
   // 'kip_up' added 2026-05-21. Knocked-Out-and-recover one-shot pair; user
   // wants character to spring up in place, not drift across the floor.
   'kip_up',
@@ -662,6 +672,21 @@ export class VRMCharacterAnimator {
   private _skeletonUpdateFns: Map<THREE.Skeleton, () => void> = new Map();
 
   /**
+   * Skeleton → the LIVE (not-yet-disposed) animator that currently owns its
+   * patch. The old double-patch detection compared `skeleton.update !==
+   * THREE.Skeleton.prototype.update`, but dispose() restores a BOUND copy of
+   * the original — never identity-equal to the prototype — so every
+   * legitimate animator reconstruction on the same VRM (StrictMode remounts
+   * do this once per mount) false-positived the "already patched" warning
+   * (~40-86 spurious warns per /game load, founder report 2026-07-14).
+   * A WeakMap keyed by OWNER (Codex NIT #6) keeps detection accurate even in
+   * the out-of-order case (animator1 disposes AFTER animator2 constructed):
+   * dispose only clears entries this instance still owns, so a third
+   * animator still sees animator2's live patch and warns.
+   */
+  private static _activePatchedSkeletons = new WeakMap<THREE.Skeleton, VRMCharacterAnimator>();
+
+  /**
    * Optional character ID used to look up per-character animation overrides
    * in CHARACTER_ANIM_OVERRIDES. When unset, the generic ANIM_PATHS are used
    * for every clip — current behavior for Milady/legacy avatars.
@@ -716,7 +741,8 @@ export class VRMCharacterAnimator {
       // leak the warn when NODE_ENV is unset. Next.js still DCE-strips this
       // branch in client production bundles because the substitution happens
       // before the typeof check is evaluated.
-      if (sm.skeleton.update !== THREE.Skeleton.prototype.update &&
+      const currentOwner = VRMCharacterAnimator._activePatchedSkeletons.get(sm.skeleton);
+      if (currentOwner !== undefined && currentOwner !== this &&
           typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production') {
         console.warn(
           '[VRMCharacterAnimator] skeleton.update already patched — double-patch risk;' +
@@ -725,6 +751,7 @@ export class VRMCharacterAnimator {
       }
       const originalUpdate = sm.skeleton.update.bind(sm.skeleton);
       this._skeletonUpdateFns.set(sm.skeleton, originalUpdate);
+      VRMCharacterAnimator._activePatchedSkeletons.set(sm.skeleton, this);
       sm.skeleton.update = () => {}; // renderer skips; we call manually below
     });
   }
@@ -973,6 +1000,35 @@ export class VRMCharacterAnimator {
       }
     }
     return minY;
+  }
+
+  /** Lowest rendered (raw-rig) foot/toe Y in reference-space coordinates. */
+  getFootYMinInSpace(referenceSpace: THREE.Object3D): number {
+    const humanoid = this.vrm.humanoid;
+    if (!humanoid) return Infinity;
+    referenceSpace.updateWorldMatrix(true, false);
+    let minY = Infinity;
+    const bones = ['leftFoot', 'rightFoot', 'leftToes', 'rightToes'] as const;
+    for (const boneName of bones) {
+      // Ground the raw/rendered skeleton. The normalized control rig can be
+      // one propagation phase away from the skin (the old squat flicker trap).
+      const node = humanoid.getRawBoneNode(boneName);
+      if (!node) continue;
+      node.getWorldPosition(_squat_footScratch);
+      referenceSpace.worldToLocal(_squat_footScratch);
+      if (_squat_footScratch.y < minY) minY = _squat_footScratch.y;
+    }
+    return minY;
+  }
+
+  /** Evaluate the current action at frame zero and refresh both rig layers. */
+  sampleCurrentActionStart(): void {
+    if (!this.ready || !this.currentAction) return;
+    this.currentAction.time = 0;
+    this.mixer.update(0);
+    this.vrm.update(0);
+    this.vrm.scene.updateMatrixWorld(true);
+    for (const fn of this._skeletonUpdateFns.values()) fn();
   }
 
   /**
@@ -1287,6 +1343,12 @@ export class VRMCharacterAnimator {
     // (Sakura review finding #1)
     this._skeletonUpdateFns.forEach((fn, skel) => {
       skel.update = fn;
+      // Only release ownership WE still hold — if a later animator patched
+      // the same skeleton (out-of-order lifecycles), its entry must survive
+      // so a third patch still triggers the double-patch warning.
+      if (VRMCharacterAnimator._activePatchedSkeletons.get(skel) === this) {
+        VRMCharacterAnimator._activePatchedSkeletons.delete(skel);
+      }
     });
     this._skeletonUpdateFns.clear();
 

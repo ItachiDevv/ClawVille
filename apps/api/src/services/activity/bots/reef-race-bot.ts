@@ -20,6 +20,7 @@
 import type { BotController, BotInput, BotRoomView } from './bot-controller';
 import {
   REEF_TRACK_HALF_WIDTH,
+  REEF_MAX_SPEED,
   REEF_TICK_HZ,
   REEF_TICK_MS,
   DRIFT_SPARK_TICK_1,
@@ -53,7 +54,7 @@ const BOT_OPENING_GRACE_MS = 2_500;
 /**
  * Phase 1 — bot drift trigger probability per tick once a hairpin is
  * detected (`dot < 0.5 && distToTarget > 200`). Tuned so the bot picks up
- * a drift roughly twice per typical 36s lap.
+ * a drift roughly twice per typical legacy-ellipse lap.
  */
 const BOT_DRIFT_TRIGGER_PER_SEC = 0.60;
 
@@ -154,7 +155,10 @@ const V2_PICKUP_DEVIATION_FRACTION = 0.4;
 let _splineSingleton: ReefSpline | null = null;
 function getSpline(): ReefSpline {
   if (!_splineSingleton) {
-    _splineSingleton = new ReefSpline(REEF_RACE_DEFAULT_TRACK);
+    // CLOSED-LOOP (2026-06-22): match the server sim's periodic ring so the
+    // bot's closestPointOnSpline / lookahead t wraps across the seam (no stall
+    // at the start/finish line each lap).
+    _splineSingleton = new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true });
   }
   return _splineSingleton;
 }
@@ -204,8 +208,9 @@ interface ReefV2BotRoomView {
  * its forward cone (cos(angle) ≥ `BOT_RIBBON_FORWARD_COS`). If found, the
  * dir vector blends `BOT_RIBBON_PULL_WEIGHT` toward the nearest ribbon point.
  *
- * Lookahead 150wu = ~0.5s of cruise travel — long enough to commit, short
- * enough that the bot doesn't lock onto a ribbon halfway across the track.
+ * Lookahead is 30% of base top speed (390wu at 1300), preserving the bot's
+ * reaction horizon as the race-speed tuning changes. It is long enough to
+ * commit without locking onto a ribbon halfway across the track.
  * Forward cone cos(60°) = 0.5 — wider than draft cone (cos(30°)) because
  * ribbons are static targets, not moving targets.
  * Pull weight 0.30 = same magnitude as the apex-inside pull, so a hairpin
@@ -213,7 +218,7 @@ interface ReefV2BotRoomView {
  * in computeInput). Net effect: bots collect ribbons on the long straights
  * but don't sacrifice apex line through hairpins.
  */
-const BOT_RIBBON_LOOKAHEAD_WU = 150;
+const BOT_RIBBON_LOOKAHEAD_WU = REEF_MAX_SPEED * 0.30;
 const BOT_RIBBON_FORWARD_COS = 0.5;
 const BOT_RIBBON_PULL_WEIGHT = 0.30;
 
@@ -678,11 +683,15 @@ class ReefRaceBot implements BotController {
     const tSelf = closest.t;
 
     // ── Lookahead target on centerline + curvature-based inside offset ────
-    const tLook = Math.min(1, tSelf + V2_LOOKAHEAD_T);
+    // CLOSED-LOOP (2026-06-22): the lookahead t WRAPS modulo 1 (was clamped to
+    // 1, which collapsed the lookahead onto the seam at t≈0.99 and stalled the
+    // bot at the start/finish line every lap). `% 1` keeps the target a true
+    // V2_LOOKAHEAD_T ahead around the ring.
+    const tLook = (tSelf + V2_LOOKAHEAD_T) % 1;
     const lookCenter = spline.centerlineAt(tLook);
     const tg0 = spline.tangentAt(tSelf);
     const tg1 = spline.tangentAt(
-      Math.min(1, tSelf + V2_CURVATURE_SAMPLE_DT),
+      (tSelf + V2_CURVATURE_SAMPLE_DT) % 1,
     );
     // Signed angular delta in XZ: positive = curve LEFT (CCW), negative = curve RIGHT.
     // dot = tg0·tg1, cross = tg0.x*tg1.z - tg0.z*tg1.x (2D cross product in XZ).

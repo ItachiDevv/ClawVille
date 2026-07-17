@@ -54,6 +54,7 @@ import { useGLTF } from '@react-three/drei';
 import { LAND_PARCELS, MAX_PARCELS_PER_AVATAR } from '@clawville/shared';
 import type { ParcelSlot } from '@clawville/shared';
 import { api } from '@/lib/api';
+import { useAvatar } from '@/hooks/use-avatar';
 import { useLandStore, type PlacedStructure } from '@/stores/land';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { extendLoaderWithMeshopt } from '@/lib/three/meshopt-loader-setup';
@@ -387,8 +388,14 @@ function StructureSlot({ parcel, structure }: { parcel: ParcelSlot; structure: P
 
 function StructureHydrator() {
   const setStructures = useLandStore((s) => s.setStructures);
+  // Only fetch once an authed avatar resolved — useAvatar returns null for
+  // guests/logged-out (its queryFn swallows the 401), so gating here stops
+  // the unconditional GET /api/land/me from 401-spamming the console on
+  // every logged-out load.
+  const { data: avatar } = useAvatar();
 
   useEffect(() => {
+    if (!avatar) return;
     let cancelled = false;
     (async () => {
       try {
@@ -420,7 +427,7 @@ function StructureHydrator() {
     return () => {
       cancelled = true;
     };
-  }, [setStructures]);
+  }, [setStructures, avatar]);
 
   return null;
 }

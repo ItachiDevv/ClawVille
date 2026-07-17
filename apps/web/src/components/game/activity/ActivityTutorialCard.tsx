@@ -25,7 +25,7 @@
  *
  * Copy decisions:
  *  - Bumper Shells = "ram opponents off the edge" (accurate to chunk #4 sim).
- *  - Reef Race = "three laps around the reef" (matches chunk #5 sim).
+ *  - Reef Race = "two laps around the reef" (matches the authoritative sim).
  *  - Cove games (blackjack / baccarat / slots / holdem / texas-holdem-mtt) added
  *    P-player-facing — Nori-voiced, kept in sync with town-guide.ts knowledge[]
  *    (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync"). The MTT deck
@@ -71,7 +71,7 @@ const COPY: Record<ActivityTutorialActivityId, TutorialCopy> = {
   'reef-race': {
     title: "Nori's Quick Tour: Reef Race",
     voice:
-      "Three laps around the reef. Hit the boost pads, use Turbo Bubbles to overtake, and don't let the Tide Wave catch you near the front.",
+      "Two laps around the reef. Hit the boost pads, use Turbo Bubbles to overtake, and don't let the Tide Wave catch you near the front.",
     controlsHint: 'WASD steer · SPACE boost · Q (or B on mobile) use Turbo',
   },
   // ── Cove: Texas Hold'em (cash table, 6-max vs house bots) ────────────────
