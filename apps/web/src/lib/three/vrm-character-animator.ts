@@ -100,8 +100,9 @@ if (VRM_METRICS_ENABLED && typeof window !== 'undefined') {
 // Mixamo animation asset paths
 // ---------------------------------------------------------------------------
 
-// Phase 2 (2026-05-17): 19 emote GLBs (the 6 originals + 13 from the Milady
-// fork) are baked into ONE multi-clip bundle by scripts/build-anim-bundles.mjs.
+// Phase 2 (2026-05-17): 19 Mixamo emote GLBs are baked into one multi-clip
+// bundle. The 2026-07-17 Meshy pack adds a second, rig-family-specific bundle;
+// the two source rest poses are intentionally never merged.
 // Path syntax `bundle.glb#clipName` tells loadRawGltf to fetch the bundle
 // once and pick the named clip from its `animations[]`. First emote trigger
 // pays 2.2 MB once (vs 19 × ~80-300 KB lazy fetches over a session); every
@@ -127,6 +128,12 @@ if (VRM_METRICS_ENABLED && typeof window !== 'undefined') {
 // entry on the full URL incl. query string, giving us cheap manual purges.
 const EMOTE_BUNDLE_VERSION = 1;
 const EMOTE_BUNDLE = `/avatars/animations/_emotes.glb?v=${EMOTE_BUNDLE_VERSION}`;
+// Meshy clips use a separate bundle because the Meshy donor rest pose differs
+// from the Mixamo family kept in EMOTE_BUNDLE. All clips inside this second
+// bundle share one Meshy rig/rest scene, so node-name rebinding is safe only
+// within this family.
+const EMOTE2_BUNDLE_VERSION = 1; // bump whenever _emotes2.glb changes
+const EMOTE2_BUNDLE = `/avatars/animations/_emotes2.glb?v=${EMOTE2_BUNDLE_VERSION}`;
 
 const ANIM_PATHS = {
   // Locomotion — separate GLBs (precached by SW).
@@ -153,6 +160,22 @@ const ANIM_PATHS = {
   rude_gesture:    `${EMOTE_BUNDLE}#rude_gesture`,
   sorrow:          `${EMOTE_BUNDLE}#sorrow`,
   spell_cast:      `${EMOTE_BUNDLE}#spell_cast`,
+  // Meshy fun pack - separate bundle/rest-pose family from Mixamo.
+  sit_ground:      `${EMOTE2_BUNDLE}#sit_ground`,
+  shrug:           `${EMOTE2_BUNDLE}#shrug`,
+  think:           `${EMOTE2_BUNDLE}#think`,
+  stomp:           `${EMOTE2_BUNDLE}#stomp`,
+  backflip_2:      `${EMOTE2_BUNDLE}#backflip_2`,
+  breakdance:      `${EMOTE2_BUNDLE}#breakdance`,
+  handstand:       `${EMOTE2_BUNDLE}#handstand`,
+  dance_funny:     `${EMOTE2_BUNDLE}#dance_funny`,
+  pushup:          `${EMOTE2_BUNDLE}#pushup`,
+  kick_ball:       `${EMOTE2_BUNDLE}#kick_ball`,
+  clap:            `${EMOTE2_BUNDLE}#clap`,
+  wave_one:        `${EMOTE2_BUNDLE}#wave_one`,
+  idle_var_a:      `${EMOTE2_BUNDLE}#idle_var_a`,
+  idle_var_b:      `${EMOTE2_BUNDLE}#idle_var_b`,
+  doze:            `${EMOTE2_BUNDLE}#doze`,
   // Reef Race v2 surf clips — separate, prewarmed by ReefRacePlayer.
   surf_idle:       '/avatars/animations/skateboarding.glb',
   wipeout:         '/avatars/animations/wipeout.glb',
@@ -237,8 +260,30 @@ export const EMOTE_ANIM_NAMES = [
   'float',
   'praying',   // female-only emote: serenity/devotion (kneels, hands together)
   'kip_up',    // chibi-introduced 2026-05-21: prone-to-stand springback emote
+  // Meshy fun-pack shop emotes. The ambient-only clips stay out of this
+  // whitelist so cosmetics/hotbar validation can never equip them.
+  'sit_ground',
+  'shrug',
+  'think',
+  'stomp',
+  'backflip_2',
+  'breakdance',
+  'handstand',
+  'dance_funny',
+  'pushup',
+  'kick_ball',
+  'clap',
+  'wave_one',
 ] as const satisfies readonly AnimName[];
 export type EmoteAnimName = (typeof EMOTE_ANIM_NAMES)[number];
+
+/** Free system clips used by wandering NPCs, never by the cosmetic hotbar. */
+export const AMBIENT_ANIM_NAMES = [
+  'idle_var_a',
+  'idle_var_b',
+  'doze',
+] as const satisfies readonly AnimName[];
+export type AmbientAnimName = (typeof AMBIENT_ANIM_NAMES)[number];
 
 export function isEmoteAnimName(name: string): name is EmoteAnimName {
   return (EMOTE_ANIM_NAMES as readonly string[]).includes(name);
@@ -269,7 +314,7 @@ const RAW_CLIP_CACHE = new Map<string, RawGltfEntry>();
 // suffix). Letting multiple `#clip` entries in RAW_CLIP_CACHE share one
 // underlying GLB fetch is the whole point of the bundle — without this
 // the first 19 emote triggers would each spin up a separate fetch even
-// though they all target the same file.
+// though they target one of only two rig-family bundle files.
 type BundleEntry =
   | { status: 'pending';  promise: Promise<MixamoGltf> }
   | { status: 'resolved'; gltf:    MixamoGltf }
@@ -310,8 +355,9 @@ function getAnimLoader(): GLTFLoader {
  * For multi-clip bundles (`#clipName`), each AnimName gets a MixamoGltf
  * whose `animations[]` contains the ONE matching clip (so the retargeter's
  * existing `animations[0]` pick keeps working). The shared `scene` is the
- * bundle's single base scene — all clips inherit it via Mixamo's shared
- * rest-pose invariant (see build-anim-bundles.mjs for the merge details).
+ * bundle's single family-specific base scene. All clips in that file inherit
+ * the same donor rest pose; different rig families use different bundles
+ * (see build-anim-bundles.mjs for the merge details).
  */
 function loadRawGltf(name: AnimName, characterId?: string): Promise<MixamoGltf> {
   const fullPath = resolveAnimPath(name, characterId);
@@ -368,9 +414,10 @@ function loadRawGltf(name: AnimName, characterId?: string): Promise<MixamoGltf> 
         }
         // The retargeter reads animations[0] and uses bundle.scene for
         // rest-pose lookups. Sharing the scene across clips is correct —
-        // every Mixamo bake uses the same default rig with the same rest
-        // pose, and the bundle build script preserved exactly one base
-        // scene + N animations that all bind to it by node name.
+        // every clip in one bundle uses the same donor rig/rest pose, and the
+        // build script preserves exactly one family-specific base scene plus
+        // N animations bound to it by node name. Mixamo and Meshy remain in
+        // separate bundle files because their rest poses differ.
         entry = { scene: bundle.scene, animations: [clip] };
       } else {
         entry = bundle;
@@ -641,6 +688,8 @@ export class VRMCharacterAnimator {
    * and crossfades to the correct locomotion target.
    */
   private oneShotActive = false;
+  /** Invalidates a lazy one-shot request when it is superseded or cancelled. */
+  private oneShotRequestGeneration = 0;
   /** The handler attached for the active one-shot — referenced so we can
    * remove it if a second one-shot fires before the first finishes. */
   private oneShotFinishedHandler: ((e: { action: THREE.AnimationAction }) => void) | null = null;
@@ -1189,12 +1238,13 @@ export class VRMCharacterAnimator {
   async playOneShot(name: AnimName): Promise<void> {
     if (!this.ready) return;
     if (!this.mixer) return; // disposed
+    const requestGeneration = ++this.oneShotRequestGeneration;
 
     // Lazy-load + retarget if first time.
     if (!this.actions[name]) {
       try {
         const gltf = await loadRawGltf(name, this.characterId);
-        if (this.disposed) return;
+        if (this.disposed || requestGeneration !== this.oneShotRequestGeneration) return;
         const retargeted = retargetMixamoClip(gltf, this.vrm, name);
         if (shouldStripPosition(name, this.characterId)) stripPositionTracks(retargeted);
         const action = this.mixer.clipAction(retargeted);
@@ -1205,7 +1255,7 @@ export class VRMCharacterAnimator {
       }
     }
     // Re-check post-await — we may have been disposed mid-load.
-    if (this.disposed) return;
+    if (this.disposed || requestGeneration !== this.oneShotRequestGeneration) return;
 
     const oneShot = this.actions[name];
     if (!oneShot) return;
@@ -1258,6 +1308,43 @@ export class VRMCharacterAnimator {
       previous.fadeOut(CROSSFADE_DURATION);
     }
     this.currentAction = oneShot;
+  }
+
+  /**
+   * Cancel an active or still-loading one-shot and return to the caller's
+   * current locomotion state. Ambient NPCs use this when movement or a
+   * conversation begins, so a lazy bundle fetch cannot start a stale emote
+   * after the eligibility condition has changed.
+   */
+  cancelOneShot(isMoving = false, isRunning = false): void {
+    // Invalidate any playOneShot() currently awaiting its GLB/retarget work.
+    this.oneShotRequestGeneration++;
+    if (this.disposed || !this.ready) return;
+
+    this.wasMoving = isMoving;
+    this.wasMotion = !isMoving ? 'idle' : isRunning ? 'run' : 'walk';
+    if (!this.oneShotActive && !this.oneShotFinishedHandler) return;
+
+    if (this.oneShotFinishedHandler) {
+      this.mixer.removeEventListener('finished', this.oneShotFinishedHandler as any);
+      this.oneShotFinishedHandler = null;
+    }
+    this.oneShotActive = false;
+
+    const previous = this.currentAction;
+    const backName: AnimName =
+      this.wasMotion === 'run' ? 'run'
+      : this.wasMotion === 'walk' ? 'walk'
+      : this.surfaceClip;
+    const back =
+      this.actions[backName] ??
+      (backName === 'run' ? this.actions.walk : undefined) ??
+      this.actions[this.surfaceClip];
+    if (!back || back === previous) return;
+
+    back.reset().fadeIn(CROSSFADE_DURATION).play();
+    previous?.fadeOut(CROSSFADE_DURATION);
+    this.currentAction = back;
   }
 
   /**
