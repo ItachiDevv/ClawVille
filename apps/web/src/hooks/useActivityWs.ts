@@ -84,7 +84,7 @@ export function useActivityWs(opts: UseActivityWsOptions): UseActivityWsResult {
   const wsRef = useRef<WebSocket | null>(null);
   const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** Wall-clock when the last close fired — gates reconnect grace window. */
+  /** Wall-clock when the current outage began — gates reconnect grace window. */
   const lastCloseAtRef = useRef<number>(0);
   /** True after the consumer-initiated unmount/close so we don't reconnect. */
   const intentionallyClosedRef = useRef(false);
@@ -122,6 +122,7 @@ export function useActivityWs(opts: UseActivityWsOptions): UseActivityWsResult {
     if (!wsUrl) return;
 
     intentionallyClosedRef.current = false;
+    lastCloseAtRef.current = 0;
     const setStoreStatus = useActivityStore.getState().setConnectionStatus;
     const setStorePing = useActivityStore.getState().setPing;
     const applyFrame = useActivityStore.getState().applyServerFrame;
@@ -147,12 +148,35 @@ export function useActivityWs(opts: UseActivityWsOptions): UseActivityWsResult {
         ws = new WebSocket(wsUrl);
       } catch (err) {
         console.error('[useActivityWs] construction threw', err);
+        if (lastCloseAtRef.current === 0) {
+          lastCloseAtRef.current = Date.now();
+        }
         scheduleReconnect();
         return;
       }
       wsRef.current = ws;
 
+      // Clock-offset ping loop. MUST NOT start before the server has
+      // processed our auth frame: the hub's `onMessage` is async and
+      // unserialized, so a ping sent right after auth races the hub's
+      // ~200ms identity DB lookup inside `registerConnection` — the hub
+      // sees a pre-auth non-auth frame and closes 4001 `auth required`
+      // (protocol §3.2: first frame must be auth). The hub sends NOTHING
+      // until registration succeeds, so "any server frame received" is
+      // proof auth completed — that's the trigger below in `onmessage`.
+      // Until the first pong, snapshot reconciliation dead-reckons (its
+      // designed fallback), so the ~1 RTT priming delay costs nothing.
+      const sendPing = () => {
+        const sentAt = Date.now();
+        lastPingSentAtRef.current = sentAt;
+        sendRef.current({ type: 'ping', sentAt });
+      };
+      let pingLoopStarted = false;
+
       ws.onopen = () => {
+        // A successful upgrade ends the previous outage. If this socket later
+        // drops, its close begins a fresh 10s grace window.
+        lastCloseAtRef.current = 0;
         setStatus('connected');
         setStoreStatus('connected');
 
@@ -165,16 +189,21 @@ export function useActivityWs(opts: UseActivityWsOptions): UseActivityWsResult {
         // pass the agent's sessionId via `sessionToken` prop.
         const authToken = sessionToken && sessionToken.length > 0 ? sessionToken : 'cookie';
         sendRef.current({ type: 'auth', sessionToken: authToken, shortCode });
-
-        // Start 1 Hz ping loop.
-        pingIntervalRef.current = setInterval(() => {
-          const sentAt = Date.now();
-          lastPingSentAtRef.current = sentAt;
-          sendRef.current({ type: 'ping', sentAt });
-        }, PING_INTERVAL_MS);
       };
 
       ws.onmessage = (evt) => {
+        // Stale-socket guard (Codex finding 2026-07-14): dependency-driven
+        // socket replacement (e.g. an MTT table move changing roomId) closes
+        // socket A and opens B; A's late-delivered frames must not feed the
+        // NEW room's store, and its close below must not clear B's timers.
+        if (wsRef.current !== ws) return;
+        if (!pingLoopStarted) {
+          // First server frame ⇒ auth registration completed server-side;
+          // safe to start the 1 Hz clock-offset ping loop (see note above).
+          pingLoopStarted = true;
+          sendPing();
+          pingIntervalRef.current = setInterval(sendPing, PING_INTERVAL_MS);
+        }
         let frame: ServerFrame;
         try {
           // Server emits JSON text frames (confirmed against
@@ -211,12 +240,22 @@ export function useActivityWs(opts: UseActivityWsOptions): UseActivityWsResult {
       };
 
       ws.onclose = (evt) => {
+        // Stale-socket guard: if this socket was already replaced (cleanup
+        // nulled wsRef and a new open() installed socket B), its delayed
+        // onclose must not clear B's ping interval, null B out of wsRef, or
+        // schedule a competing reconnect. The effect cleanup that replaced us
+        // already cleared OUR timers via clearTimers().
+        if (wsRef.current !== ws) return;
         if (pingIntervalRef.current) {
           clearInterval(pingIntervalRef.current);
           pingIntervalRef.current = null;
         }
         wsRef.current = null;
-        lastCloseAtRef.current = Date.now();
+        // Keep the first failure as the outage anchor. Repeated failed
+        // upgrades must not restart the 10s reconnect grace indefinitely.
+        if (lastCloseAtRef.current === 0) {
+          lastCloseAtRef.current = Date.now();
+        }
 
         if (intentionallyClosedRef.current) {
           setStatus('closed');
@@ -243,7 +282,7 @@ export function useActivityWs(opts: UseActivityWsOptions): UseActivityWsResult {
     function scheduleReconnect() {
       if (intentionallyClosedRef.current) return;
       const elapsed = lastCloseAtRef.current ? Date.now() - lastCloseAtRef.current : 0;
-      if (elapsed > RECONNECT_GRACE_MS) {
+      if (elapsed >= RECONNECT_GRACE_MS) {
         // Grace exhausted — give up.
         setStatus('closed');
         setStoreStatus('closed');
@@ -251,10 +290,20 @@ export function useActivityWs(opts: UseActivityWsOptions): UseActivityWsResult {
       }
       setStatus('reconnecting');
       setStoreStatus('reconnecting');
+      const retryDelay = Math.min(RECONNECT_DELAY_MS, RECONNECT_GRACE_MS - elapsed);
       reconnectTimerRef.current = setTimeout(() => {
         if (intentionallyClosedRef.current) return;
+        const outageStartedAt = lastCloseAtRef.current;
+        if (
+          outageStartedAt !== 0 &&
+          Date.now() - outageStartedAt >= RECONNECT_GRACE_MS
+        ) {
+          setStatus('closed');
+          setStoreStatus('closed');
+          return;
+        }
         open();
-      }, RECONNECT_DELAY_MS);
+      }, retryDelay);
     }
 
     open();

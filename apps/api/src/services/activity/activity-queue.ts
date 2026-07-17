@@ -599,10 +599,13 @@ class ActivityQueueService {
     const oldestAge = Date.now() - oldest.queuedAt;
 
     // Determine fill target. preferredFill if reachable; minFill at QUEUE_TIMEOUT;
-    // bot backfill warning at EXTENDED_TIMEOUT.
+    // bot backfill at EXTENDED_TIMEOUT unless the activity opts into earlyBotFill.
     let targetFill = preferredFill;
     let allowBots = false;
-    if (oldestAge > EXTENDED_TIMEOUT_MS) {
+    if (
+      oldestAge > EXTENDED_TIMEOUT_MS ||
+      (def.earlyBotFill && oldestAge > QUEUE_TIMEOUT_MS)
+    ) {
       targetFill = minFill;
       allowBots = true;
     } else if (oldestAge > QUEUE_TIMEOUT_MS) {

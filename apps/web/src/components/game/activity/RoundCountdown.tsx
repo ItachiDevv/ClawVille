@@ -2,9 +2,9 @@
 
 /**
  * RoundCountdown — full-screen "3 · 2 · 1 · GO!" overlay during the
- * pregame phase. Spec: frontend-spec.md §3.4. Driven by the store's
- * `countdownSecondsRemaining` (server-authoritative; we just animate the
- * value as it changes).
+ * pregame phase. Spec: frontend-spec.md §3.4. Its caller supplies a
+ * locally ticking server-deadline projection, clamped at 1 until the
+ * authoritative match phase becomes live and supplies 0 for GO.
  *
  * Chunk #12 — fires `countdown-tick` SFX on every integer change while
  * counting down (3 / 2 / 1) and `round-start` on the GO! transition.
@@ -17,14 +17,14 @@ import { useEffect, useRef, useState } from 'react';
 import { playActivitySound } from '@/lib/activity-audio';
 
 export interface RoundCountdownProps {
-  /** Seconds remaining (server-driven). 0 → render "GO!". */
+  /** Seconds remaining. 0 → render "GO!". */
   secondsRemaining: number;
   /** Fires once when secondsRemaining transitions through 0. */
   onComplete?: () => void;
 }
 
 export default function RoundCountdown({ secondsRemaining, onComplete }: RoundCountdownProps) {
-  const [showGo, setShowGo] = useState(false);
+  const [goDismissed, setGoDismissed] = useState(false);
   const [pulseKey, setPulseKey] = useState(0);
   const lastTickRef = useRef<number | null>(null);
 
@@ -50,15 +50,17 @@ export default function RoundCountdown({ secondsRemaining, onComplete }: RoundCo
   // GO splash on transition to 0.
   useEffect(() => {
     if (secondsRemaining === 0) {
-      setShowGo(true);
+      setGoDismissed(false);
       playActivitySound('round-start');
       onComplete?.();
-      const t = setTimeout(() => setShowGo(false), 800);
+      const t = setTimeout(() => setGoDismissed(true), 800);
       return () => clearTimeout(t);
     }
+    setGoDismissed(false);
   }, [secondsRemaining, onComplete]);
 
-  if (secondsRemaining > 3 && !showGo) return null;
+  if (secondsRemaining > 3 || (secondsRemaining === 0 && goDismissed)) return null;
+  const showGo = secondsRemaining === 0;
 
   return (
     <div

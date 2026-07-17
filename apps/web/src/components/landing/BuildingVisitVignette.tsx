@@ -40,6 +40,7 @@ import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 import {
   useVRMInstance,
   disposeVRMInstance,
+  retainVRMInstance,
   preloadVRMBytes,
 } from '@/lib/three/vrm-loader';
 import { retargetMixamoClip } from '@/lib/three/mixamo-retarget';
@@ -452,6 +453,7 @@ const MiladyTalker = memo(function MiladyTalker() {
   }, [vrm]);
 
   useEffect(() => {
+    retainVRMInstance(VRM_PATH, VRM_ID); // cancel deferred dispose on StrictMode re-setup
     return () => { mixer.stopAllAction(); disposeVRMInstance(VRM_PATH, VRM_ID); };
   }, [mixer]);
 

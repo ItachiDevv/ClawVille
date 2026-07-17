@@ -306,40 +306,79 @@ export const useQuestStore = create<QuestStoreState>()(
   )
 );
 
-async function claimTutorialQuestReward(def: QuestDefinition, opts?: { silent?: boolean }) {
-  try {
-    const res = await api.claimTutorialQuest(def.id);
-    if (res.ok) {
-      useQuestStore.getState().markServerClaimed(def.id);
-      if (!opts?.silent) {
-        useGameStore
-          .getState()
-          .addToast('💰', `+${res.credited} vCLAW (balance: ${res.balance})`, 3500);
+type TutorialClaimResult = 'claimed' | 'terminal' | 'unauthenticated' | 'retryable-failed';
+
+// One initial attempt + two short retries. 4xx responses never enter this
+// retry path; only a transient 5xx or network failure consumes the backoff.
+const TUTORIAL_CLAIM_RETRY_DELAYS_MS = [250, 750] as const;
+let retryUnclaimedRewardsInFlight: Promise<void> | null = null;
+
+function waitForClaimRetry(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function claimTutorialQuestReward(
+  def: QuestDefinition,
+  opts?: { silent?: boolean },
+): Promise<TutorialClaimResult> {
+  let lastRetryableError: unknown;
+
+  for (let attempt = 0; attempt <= TUTORIAL_CLAIM_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      const res = await api.claimTutorialQuest(def.id);
+      if (res.ok) {
+        useQuestStore.getState().markServerClaimed(def.id);
+        if (!opts?.silent) {
+          useGameStore
+            .getState()
+            .addToast('💰', `+${res.credited} vCLAW (balance: ${res.balance})`, 3500);
+        }
+        return 'claimed';
       }
-    } else if (res.error === 'already_claimed') {
-      useQuestStore.getState().markServerClaimed(def.id);
-    } else if (res.error === 'guest_not_eligible') {
-      useQuestStore.getState().markServerClaimed(def.id);
-      if (!opts?.silent) {
+      if (res.error === 'already_claimed') {
+        useQuestStore.getState().markServerClaimed(def.id);
+        return 'claimed';
+      }
+      if (res.error === 'guest_not_eligible' && !opts?.silent) {
         useGameStore
           .getState()
           .addToast('🔒', 'Sign up to claim tutorial rewards', 4000);
       }
-    } else if (res.error === 'engagement_required' || res.error === 'pending_feature') {
-      console.warn('[quest] server engagement gate failed for', def.id, res.reason ?? res.error);
-    }
-  } catch (err) {
-    const msg = String((err as Error)?.message ?? '');
-    if (msg.includes('already_claimed')) {
-      useQuestStore.getState().markServerClaimed(def.id);
-    } else if (msg.includes('guest_not_eligible')) {
-      useQuestStore.getState().markServerClaimed(def.id);
-    } else if (msg.includes('pending_feature') || msg.includes('engagement_required')) {
-      // Quiet — feature not shipped or events haven't landed yet.
-    } else {
-      console.warn('[quest] claim network failure for', def.id, err);
+      console.warn('[quest] tutorial claim rejected permanently for', def.id, res.reason ?? res.error);
+      return 'terminal';
+    } catch (err) {
+      // honoRequest throws for every non-2xx response, so HTTP status — not
+      // response-body string matching — owns retryability here.
+      const status = (err as { status?: number })?.status;
+      if (status === 401) return 'unauthenticated';
+      if (status === 409) {
+        // This endpoint's sole 409 contract is idempotent already_claimed.
+        useQuestStore.getState().markServerClaimed(def.id);
+        return 'claimed';
+      }
+      if (status !== undefined && status >= 400 && status < 500) {
+        if (status === 403 && String((err as Error)?.message ?? '').includes('guest_not_eligible')) {
+          if (!opts?.silent) {
+            useGameStore
+              .getState()
+              .addToast('🔒', 'Sign up to claim tutorial rewards', 4000);
+          }
+        }
+        // Do NOT persist serverClaimed for generic 4xx. In particular, a 400
+        // engagement_required may become claimable after a later portal/event.
+        console.warn('[quest] tutorial claim rejected permanently for', def.id, `HTTP ${status}`, err);
+        return 'terminal';
+      }
+
+      lastRetryableError = err;
+      const retryDelay = TUTORIAL_CLAIM_RETRY_DELAYS_MS[attempt];
+      if (retryDelay === undefined) break;
+      await waitForClaimRetry(retryDelay);
     }
   }
+
+  console.warn('[quest] claim network failure after bounded retries for', def.id, lastRetryableError);
+  return 'retryable-failed';
 }
 
 /**
@@ -348,13 +387,15 @@ async function claimTutorialQuestReward(def: QuestDefinition, opts?: { silent?: 
  * `serverOnly` quests whose prerequisites are met — the server validator
  * is the only authority for those, so we ask periodically.
  */
-export async function retryUnclaimedRewards() {
+async function runUnclaimedRewardSweep(): Promise<void> {
   const state = useQuestStore.getState();
   const claimed = state.serverClaimed;
   for (const def of QUEST_DEFINITIONS) {
     if (claimed[def.id]) continue;
     if (state.progress[def.id]?.status === 'completed') {
-      await claimTutorialQuestReward(def, { silent: true });
+      const result = await claimTutorialQuestReward(def, { silent: true });
+      if (result === 'unauthenticated') return; // logged out — every claim would 401
+      if (result === 'retryable-failed') return; // outage — do not multiply it across the quest list
       continue;
     }
     if (def.condition.type === 'serverOnly') {
@@ -362,10 +403,24 @@ export async function retryUnclaimedRewards() {
         (pid) => state.progress[pid]?.status === 'completed'
       );
       if (allPrereqsMet) {
-        await claimTutorialQuestReward(def, { silent: true });
+        const result = await claimTutorialQuestReward(def, { silent: true });
+        if (result === 'unauthenticated') return;
+        if (result === 'retryable-failed') return;
       }
     }
   }
+}
+
+export function retryUnclaimedRewards(): Promise<void> {
+  // /game has two potential QuestTracker mount sites and StrictMode replays
+  // mount effects in development. Coalesce the whole sweep so they cannot all
+  // snapshot the same unclaimed state and POST the same rewards concurrently.
+  if (retryUnclaimedRewardsInFlight) return retryUnclaimedRewardsInFlight;
+  const sweep = runUnclaimedRewardSweep().finally(() => {
+    if (retryUnclaimedRewardsInFlight === sweep) retryUnclaimedRewardsInFlight = null;
+  });
+  retryUnclaimedRewardsInFlight = sweep;
+  return sweep;
 }
 
 export function triggerQuestCheck() {

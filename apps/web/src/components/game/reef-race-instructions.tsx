@@ -142,7 +142,7 @@ export default function ReefRaceInstructions({
         <Row
           glyph="🏁"
           label="Goal"
-          desc="3 laps. First past the line wins."
+          desc="2 laps. First past the line wins."
         />
         <Row
           glyph="📦"

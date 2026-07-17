@@ -31,7 +31,6 @@
  */
 
 import { db, avatars, agents, users } from '@clawville/database';
-import type { Database } from '@clawville/database';
 import { eq, and, isNull } from 'drizzle-orm';
 import {
   AVATAR_ARCHETYPES,
@@ -55,8 +54,6 @@ import { recordCovenantAction } from './covenant-action-recorder';
 // ---------------------------------------------------------------------------
 
 type AvatarRow = typeof avatars.$inferSelect;
-type AvatarProvisioningTransaction = Parameters<Parameters<Database['transaction']>[0]>[0];
-type PlatformAgentRow = typeof agents.$inferSelect;
 
 export type AvatarSpecies =
   | 'cat' | 'dragon' | 'fox' | 'owl' | 'wolf' | 'bunny' | 'phoenix' | 'turtle';
@@ -138,23 +135,6 @@ export interface ProvisionAvatarAgentResult {
    */
   wallet: FirstTimeWalletPayload | null;
 }
-
-interface PlatformAgentInsertInput {
-  userId: string;
-  name: string;
-  species: AvatarSpecies;
-  color: AvatarColor;
-  archetypeId: AvatarArchetypeId;
-  modelKey: AgentModelKey;
-  agentCategory: AgentCategory;
-  harness: AgentHarness;
-  customization: ReturnType<typeof buildCharacterConfig>;
-}
-
-export type RepairProvisioningPendingResult =
-  | { outcome: 'created'; avatarId: string; userId: string; agentId: string }
-  | { outcome: 'already-provisioned'; avatarId: string; userId: string; agentId: string }
-  | { outcome: 'not-found'; userId: string };
 
 /** Thrown when the avatar/username name is already taken (23505 mapped). */
 export class AvatarNameTakenError extends Error {
@@ -421,38 +401,6 @@ function extractPgErrorCode(err: unknown): string | undefined {
 }
 
 /**
- * Shared P2 platform-agent insertion primitive. Fresh signup/create
- * provisioning and provisioning repair use this exact hosted-agent row shape.
- */
-async function insertPlatformAgent(
-  tx: AvatarProvisioningTransaction,
-  input: PlatformAgentInsertInput,
-): Promise<PlatformAgentRow> {
-  const [insertedAgent] = await tx
-    .insert(agents)
-    .values({
-      userId: input.userId,
-      name: input.name,
-      type: 'avatar-agent',
-      status: 'pending',
-      config: {
-        species: input.species,
-        color: input.color,
-        archetypeId: input.archetypeId,
-        modelKey: input.modelKey,
-        agentCategory: input.agentCategory,
-        harness: input.harness,
-      },
-      customization: input.customization,
-    })
-    .returning();
-  if (!insertedAgent) {
-    throw new Error('[avatar-provisioning] platform agent insert returned no row');
-  }
-  return insertedAgent;
-}
-
-/**
  * Create the (platform_agents 'avatar-agent', avatars, users.username-init)
  * triple in ONE transaction, then optionally provision the custodial wallet.
  *
@@ -512,17 +460,24 @@ export async function provisionAvatarAgent(
       // Audit Fix C §6 lineage — agent + avatar inserts in a transaction so a
       // failed avatar insert rolls back the orphan agent row.
       inserted = await db.transaction(async (tx) => {
-        const insertedAgent = await insertPlatformAgent(tx, {
-          userId,
-          name: candidateName,
-          species: params.species,
-          color: params.color,
-          archetypeId: params.archetypeId,
-          modelKey: params.modelKey,
-          agentCategory: params.agentCategory,
-          harness: params.harness,
-          customization: characterConfig,
-        });
+        const [insertedAgent] = await tx
+          .insert(agents)
+          .values({
+            userId,
+            name: candidateName,
+            type: 'avatar-agent',
+            status: 'pending',
+            config: {
+              species: params.species,
+              color: params.color,
+              archetypeId: params.archetypeId,
+              modelKey: params.modelKey,
+              agentCategory: params.agentCategory,
+              harness: params.harness,
+            },
+            customization: characterConfig,
+          })
+          .returning();
 
         const [insertedAvatar] = await tx
           .insert(avatars)
@@ -667,98 +622,128 @@ export async function provisionAvatarAgentForSignup(
 }
 
 /**
- * Repair the P2 provisioning-pending tail for one existing Milady avatar.
+ * LAZY BACKFILL for legacy pre-P2 avatars — 2026-07-15, founder report ("two
+ * buttons: 'being set up — finish customizing' + 'Connect Your Agent'; first
+ * goes nowhere; nothing is left to customize").
  *
- * This is the operator-facing sibling of `provisionAvatarAgentForSignup`: it
- * reuses the same P2 character-config builder and platform-agent row shape, but
- * links the already-existing avatar instead of trying to insert a second one.
- * The avatar row is locked before the idempotency check, so concurrent repair
- * attempts serialize and the loser returns the winner without creating an
- * orphan platform_agents row.
+ * A legacy account can hold a FULLY-CUSTOMIZED avatar whose `platform_agents`
+ * row simply doesn't exist (`avatars.platformAgentId IS NULL` — created before
+ * P2 wired agent rows into avatar creation). Under "account ≡ agent" such an
+ * account is NOT pending anything the USER can act on: the only missing piece
+ * is a server-side row we can mint from the avatar's own stored fields. This
+ * is the D1 "Player tier → migration, not a rename" completion, done lazily at
+ * the `/me/agent-session` cold path instead of a batch script.
+ *
+ * Scope guards:
+ *  - Hosted harnesses only (milady/hermes/openclaw). A 'custom'-harness avatar
+ *    without an agent row keeps provisioning-pending — its gateway config is a
+ *    genuine /create-agent concern.
+ *  - NO `economy.genesis` covenant record: the avatar (and its vCLAW balance)
+ *    already exists and was reconciled by `scripts/covenant/backfill-genesis.ts`
+ *    — recording a second genesis would double-count the anchor.
+ *  - NO wallet mint, NO signup bonus, NO username init — those are creation
+ *    concerns; this only restores the missing agent row.
+ *  - Race-safe: the `platform_agent_id IS NULL` CAS update decides the winner;
+ *    a loser's freshly-inserted agent row rolls back with its transaction.
+ *
+ * Returns the linked platform agent id, or null when the avatar is missing,
+ * already linked (returns the existing link instead where possible), or not
+ * hosted-harness.
  */
-export async function repairProvisioningPendingAvatarAgent(
+export async function backfillPlatformAgentForAvatar(
   userId: string,
-): Promise<RepairProvisioningPendingResult> {
-  return db.transaction(async (tx) => {
-    const [avatar] = await tx
-      .select()
-      .from(avatars)
-      .where(and(eq(avatars.userId, userId), eq(avatars.harness, 'milady')))
-      .for('update');
+  avatarId: string,
+): Promise<string | null> {
+  try {
+    return await db.transaction(async (tx) => {
+      // SELECT ... FOR UPDATE (Codex BLOCKING, 2026-07-15): serialize ALL
+      // missing-link writers on the avatar row. Without the lock, this GET
+      // backfill and the PATCH /api/avatars/me mint-on-customize path could
+      // both observe platformAgentId NULL, each insert an agent row, and the
+      // PATCH's later unconditional link overwrite would orphan ours AFTER
+      // our CAS already committed. Holding the row lock from the first read
+      // means the concurrent writer blocks here until we commit, then sees
+      // the linked id and skips its own mint (the PATCH side re-reads under
+      // the same lock).
+      const [avatar] = await tx
+        .select()
+        .from(avatars)
+        .where(and(eq(avatars.id, avatarId), eq(avatars.userId, userId)))
+        .for('update');
+      if (!avatar) return null;
+      if (avatar.platformAgentId) return avatar.platformAgentId; // raced: already healed
+      if (!['milady', 'hermes', 'openclaw'].includes(avatar.harness ?? '')) return null;
 
-    if (!avatar) return { outcome: 'not-found', userId };
-    if (avatar.platformAgentId) {
-      return {
-        outcome: 'already-provisioned',
-        avatarId: avatar.id,
-        userId,
-        agentId: avatar.platformAgentId,
-      };
-    }
+      // Reuse the avatar's persisted characterConfig verbatim when present
+      // (it already carries the user's actual customization); rebuild only
+      // for very old rows that predate the column. Those same rows can carry
+      // archetype ids that no longer exist in AVATAR_ARCHETYPES (live example:
+      // 'explorer' on a staging test account) — fall back to the signup
+      // default archetype rather than failing the whole backfill over a
+      // system-prompt flavor.
+      let characterConfig = avatar.characterConfig;
+      if (!characterConfig) {
+        const modelMeta = getAgentModel((avatar.modelKey ?? DEFAULT_AGENT_MODEL_KEY) as AgentModelKey);
+        const archetypeId = AVATAR_ARCHETYPES.some((a) => a.id === avatar.archetype)
+          ? (avatar.archetype as AvatarArchetypeId)
+          : (SIGNUP_PROVISION_ARCHETYPE as AvatarArchetypeId);
+        characterConfig = buildCharacterConfig(
+          archetypeId,
+          avatar.name,
+          modelMeta?.label ?? avatar.species,
+          avatar.learningFocus ?? null,
+        );
+      }
 
-    const modelKey = avatar.modelKey ?? DEFAULT_AGENT_MODEL_KEY;
-    const modelMeta = getAgentModel(modelKey);
-    if (!modelMeta) {
-      throw new Error(`[avatar-provisioning] Unknown modelKey: ${modelKey}`);
-    }
-    const archetype = AVATAR_ARCHETYPES.find((entry) => entry.id === avatar.archetype);
-    if (!archetype) {
-      throw new Error(`[avatar-provisioning] Unknown archetype: ${avatar.archetype}`);
-    }
+      const [insertedAgent] = await tx
+        .insert(agents)
+        .values({
+          userId,
+          name: avatar.name,
+          type: 'avatar-agent',
+          status: 'pending',
+          config: {
+            species: avatar.species,
+            color: avatar.color,
+            archetypeId: avatar.archetype,
+            modelKey: avatar.modelKey,
+            agentCategory: avatar.agentCategory,
+            harness: avatar.harness,
+          },
+          // AvatarCharacterConfigJson has no index signature, so it isn't
+          // directly assignable to the column's Record<string, unknown>.
+          customization: characterConfig as unknown as Record<string, unknown>,
+        })
+        .returning();
 
-    const fresh = buildCharacterConfig(
-      avatar.archetype as AvatarArchetypeId,
-      avatar.name,
-      modelMeta.label,
-      avatar.learningFocus,
-    );
-    const priorKnowledge = Array.isArray(
-      (avatar.characterConfig as { knowledge?: unknown } | null)?.knowledge,
-    )
-      ? (avatar.characterConfig as { knowledge: string[] }).knowledge
-      : [];
-    const baseline = new Set<string>([
-      ...archetype.knowledge,
-      ...CLAWVILLE_ORIENTATION_KNOWLEDGE,
-    ]);
-    const learned = priorKnowledge.filter((entry) => !baseline.has(entry));
-    const customization = {
-      ...fresh,
-      knowledge: [
-        ...fresh.knowledge,
-        ...learned.filter((entry) => !fresh.knowledge.includes(entry)),
-      ],
-    };
+      const linked = await tx
+        .update(avatars)
+        .set({ platformAgentId: insertedAgent.id, updatedAt: new Date() })
+        .where(and(eq(avatars.id, avatarId), isNull(avatars.platformAgentId)))
+        .returning({ id: avatars.id });
 
-    const agent = await insertPlatformAgent(tx, {
-      userId,
-      name: avatar.name,
-      species: avatar.species as AvatarSpecies,
-      color: avatar.color as AvatarColor,
-      archetypeId: avatar.archetype as AvatarArchetypeId,
-      modelKey: modelKey as AgentModelKey,
-      agentCategory: (avatar.agentCategory ?? modelMeta.category) as AgentCategory,
-      harness: 'milady',
-      customization,
+      if (linked.length === 0) {
+        // Lost the CAS race — roll back our orphan agent insert; the winner's
+        // link is authoritative and the caller's next read sees it.
+        throw new BackfillLostRaceError();
+      }
+      return insertedAgent.id;
     });
-
-    const [linked] = await tx
-      .update(avatars)
-      .set({ platformAgentId: agent.id, updatedAt: new Date() })
-      .where(and(eq(avatars.id, avatar.id), isNull(avatars.platformAgentId)))
-      .returning({ platformAgentId: avatars.platformAgentId });
-    if (!linked?.platformAgentId) {
-      // This throw rolls the insert back, so an unexpected guard miss cannot
-      // strand an orphan. A concurrent caller normally waits on FOR UPDATE and
-      // takes the already-provisioned branch above instead.
-      throw new Error('[avatar-provisioning] avatar link guard lost after row lock');
+  } catch (err) {
+    if (err instanceof BackfillLostRaceError) {
+      const winner = await db.query.avatars.findFirst({
+        where: eq(avatars.id, avatarId),
+        columns: { platformAgentId: true },
+      });
+      return winner?.platformAgentId ?? null;
     }
+    console.error('[avatar-provisioning] legacy agent-row backfill failed (fail-soft):', err);
+    return null;
+  }
+}
 
-    return {
-      outcome: 'created',
-      avatarId: avatar.id,
-      userId,
-      agentId: linked.platformAgentId,
-    };
-  });
+class BackfillLostRaceError extends Error {
+  constructor() {
+    super('backfill lost platform_agent_id CAS race');
+  }
 }

@@ -52,6 +52,8 @@ export interface ReefRaceEntity {
   vx: number;
   vy: number;
   alive: boolean;
+  /** Authoritative sample time mapped onto the client's performance clock. */
+  snapshotAtMs?: number;
   /** Optional hex string tint applied to the kart material. */
   color?: string;
   /** 'sea_horse' | 'lobster' — determines which GLB clone is used. */
@@ -66,6 +68,35 @@ export interface ReefRaceEntity {
   totalTimeMs?: number;
   /** Best single-lap time in ms. */
   bestLapMs?: number;
+  /**
+   * v2 CLOSED-LOOP spline sim — within-lap arclength progress (0..1).
+   * Forwarded from `EntityDelta.changed.progress` by `applyEntityDelta`
+   * (bug fix 2026-07-10 — this field existed on the wire and was already
+   * read by the HUD's ProgressBar/BestLapTile via `as any`, but the store
+   * never actually copied it onto the entity map, so it always read
+   * `undefined`). See `applyEntityDelta` in `stores/activity.ts`.
+   */
+  progress?: number;
+  /** v2 CLOSED-LOOP spline sim — total laps in the race (bug-fix, see `progress`). */
+  totalLaps?: number;
+  /** v2 spline sim — body height above the river bed in wu (jump/ramp airborne offset). */
+  height?: number;
+  /**
+   * v2 spline sim - latest server-authoritative effective speed multiplier.
+   * Self prediction consumes this for presentation parity; authority stays server-side.
+   */
+  speedMod?: number;
+  /**
+   * v2 mechanics — true while ANY positive boost is active for this body
+   * (boost pad / mini-turbo / launch / slipstream). Drives the trail/speed-
+   * cone FX via `ReefRaceBoostFX` (OR'd into the existing item-boost
+   * `boostActive` computation in `ReefRaceScene.tsx`).
+   */
+  boosting?: boolean;
+  /** v2 mechanics — surf-carve mini-turbo charge, normalized 0..1 vs the tier-2 threshold. */
+  miniTurboCharge?: number;
+  /** v2 mechanics — mini-turbo tier reached so far (0 = none, 1, 2). */
+  miniTurboLevel?: 0 | 1 | 2;
 }
 
 // ─── Ghost replay frame ───────────────────────────────────────────────────────
