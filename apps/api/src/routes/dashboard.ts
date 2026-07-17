@@ -15,7 +15,7 @@
  */
 
 import { Hono } from 'hono';
-import { sql, sql as drizzleSql } from 'drizzle-orm';
+import { gt, sql, sql as drizzleSql } from 'drizzle-orm';
 import {
   db,
   tutorialQuestClaims,
@@ -23,15 +23,100 @@ import {
   cosmeticSkus,
   cosmeticVariants,
   avatarSkins,
+  avatars,
   dashboardPhases,
+  agentBots,
 } from '@clawville/database';
 import { sessionMiddleware } from '../middleware/auth';
 import { adminOnly } from '../middleware/admin-only';
 import { noStorePrivate } from '../middleware/no-store';
 import { alertError } from '../services/alert-error';
+import {
+  deriveProtocolAckState,
+  requiresByoSkillAck,
+  resolveApiBase,
+} from '../services/skill-protocol';
 import type { AppContext } from '../types';
 
 export const dashboardRoutes = new Hono<AppContext>();
+
+export type AgentSkillAckDashboardRow = Pick<
+  typeof agentBots.$inferSelect,
+  | 'agentId'
+  | 'name'
+  | 'identityType'
+  | 'protocol'
+  | 'gatewayUrl'
+  | 'cognitionBackend'
+  | 'isHouse'
+  | 'ack'
+  | 'lastSeenAt'
+  | 'sessionExpiresAt'
+> & {
+  /** Authoritative hosted-avatar binding: avatars.platform_agent_id = agent_id. */
+  hasHostedAvatarBinding: boolean;
+};
+
+/** Build the minimal admin posture response from the canonical ACK helpers. */
+export function buildAgentSkillAckDashboard(
+  rows: AgentSkillAckDashboardRow[],
+  apiBase: string,
+  now: Date = new Date(),
+) {
+  const counts = { none: 0, current: 0, stale: 0 };
+  const needsAttention: Array<{
+    ackState: 'none' | 'stale';
+    agentId: string;
+    name: string | null;
+    lastAckedVersion: number | null;
+    lastSeenAt: Date;
+  }> = [];
+
+  for (const row of rows) {
+    // Match validateLiveAgentSession's fail-closed TTL semantics. Historical,
+    // expired, and legacy-null sessions are not currently connected posture.
+    if (row.sessionExpiresAt === null || row.sessionExpiresAt <= now) continue;
+
+    // Keep the cohort definition shared with connect/reconnect. Hatcher and
+    // ClawVille-hosted cognition install server-side and do not owe an ACK.
+    if (!requiresByoSkillAck(row)) continue;
+
+    const ackState = deriveProtocolAckState(row.ack, apiBase);
+    counts[ackState] += 1;
+    if (ackState === 'current') continue;
+
+    needsAttention.push({
+      ackState,
+      agentId: row.agentId,
+      name: row.name,
+      lastAckedVersion:
+        typeof row.ack?.manual?.version === 'number'
+          ? row.ack.manual.version
+          : null,
+      lastSeenAt: row.lastSeenAt,
+    });
+  }
+
+  // Show the most recently active agents first so the 20-row operator list is
+  // actionable. Grouping by state communicates posture without adding fields to
+  // the deliberately minimal per-agent response shape.
+  needsAttention.sort((a, b) => b.lastSeenAt.getTime() - a.lastSeenAt.getTime());
+  const attention = needsAttention.slice(0, 20);
+  const serialize = (row: (typeof attention)[number]) => ({
+    agentId: row.agentId,
+    name: row.name,
+    lastAckedVersion: row.lastAckedVersion,
+    lastSeenAt: row.lastSeenAt.toISOString(),
+  });
+
+  return {
+    counts,
+    agents: {
+      stale: attention.filter((row) => row.ackState === 'stale').map(serialize),
+      none: attention.filter((row) => row.ackState === 'none').map(serialize),
+    },
+  };
+}
 
 // Lightweight auth-check endpoint for the /dash server component to gate
 // the entire dashboard page (not just per-tab data). Returns 200 if the
@@ -45,6 +130,38 @@ const MEASUREMENT_START = process.env.METRICS_MEASUREMENT_START ?? '2026-04-21';
 dashboardRoutes.use('*', sessionMiddleware);
 
 dashboardRoutes.get('/__check', adminOnly, (c) => c.json({ ok: true }));
+
+dashboardRoutes.get('/agent-skill-acks', adminOnly, noStorePrivate, async (c) => {
+  const now = new Date();
+  // Select only posture fields: this endpoint must never expose the live session
+  // hash, partner proxy configuration/token envelope, or user binding.
+  const rows = await db
+    .select({
+      agentId: agentBots.agentId,
+      name: agentBots.name,
+      identityType: agentBots.identityType,
+      protocol: agentBots.protocol,
+      gatewayUrl: agentBots.gatewayUrl,
+      cognitionBackend: agentBots.cognitionBackend,
+      isHouse: agentBots.isHouse,
+      hasHostedAvatarBinding: drizzleSql<boolean>`EXISTS (
+        SELECT 1 FROM ${avatars}
+        WHERE ${avatars.platformAgentId} = ${agentBots.agentId}
+      )`,
+      ack: agentBots.ack,
+      lastSeenAt: agentBots.lastSeenAt,
+      sessionExpiresAt: agentBots.sessionExpiresAt,
+    })
+    .from(agentBots)
+    .where(gt(agentBots.sessionExpiresAt, now));
+
+  const posture = buildAgentSkillAckDashboard(rows, resolveApiBase(), now);
+
+  return c.json({
+    ...posture,
+    generatedAt: now.toISOString(),
+  });
+});
 
 dashboardRoutes.get('/overview', adminOnly, noStorePrivate, async (c) => {
   const [dauRes, miladyRes, funnelRes, retentionRes, collabRes, teacherChatRes, buildingsRes] =

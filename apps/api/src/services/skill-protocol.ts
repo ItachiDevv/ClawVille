@@ -21,6 +21,14 @@
  */
 
 import { createHash } from 'crypto';
+import type {
+  AgentProtocolAckState,
+  DirectAgentProtocolPointer,
+} from '@clawville/shared';
+import {
+  isHostedHarness,
+  resolveInWorldProtocol,
+} from './agent-session-config';
 
 /**
  * PROTOCOL_VERSION bumps when the protocol manual contract below changes (the
@@ -225,12 +233,24 @@ import { createHash } from 'crypto';
 // POST is Lucia-or-live-agent-session authorized; partner keys alone never
 // authorize it. No reward/event weight, Hatcher pointer field, or [ACTION:]
 // verb/param/bound changed.
-export const PROTOCOL_VERSION = 20;
+// NOTE (2026-07-17, BYO skill-ingestion ACK): bumped 20 -> 21. Connected/BYO
+// agents are now taught to acknowledge the exact protocol manual and building
+// skill hashes they installed. ACK posture is informational only: it grants no
+// authority and gates no play, economy, or leaderboard path. The universal
+// connect/reconnect pointer gains an additive ackState hint; Hatcher's partner
+// register/PATCH pointer remains the exact frozen three-field shape.
+export const PROTOCOL_VERSION = 21;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
 export function contentHashOf(content: string): string {
   return `sha256:${createHash('sha256').update(content).digest('hex')}`;
+}
+
+/** Canonical wire form for a bare DB digest or a `sha256:` wire digest. */
+export function normalizeContentHash(contentHash: string): string | null {
+  const match = /^(?:sha256:)?([a-f0-9]{64})$/i.exec(contentHash.trim());
+  return match ? `sha256:${match[1].toLowerCase()}` : null;
 }
 
 /** Resolve the public API base URL for absolute links in served markdown.
@@ -301,7 +321,8 @@ A successful response has this shape (optional blocks are marked):
     "contentHash": "sha256:opaque",
     "url": "/api/skills/protocol/skill.md",
     "manifestUrl": "/api/skills/manifest.json",
-    "auth": "X-Clawville-Agent-Session: <sessionId>"
+    "auth": "X-Clawville-Agent-Session: <sessionId>",
+    "ackState": "none"
   },
   "orientation": { "text": "world facts", "factCount": 1 },
   "sessionTicket": { "url": "single-use human control link" },
@@ -489,7 +510,7 @@ the request before consuming the token if it is missing.
 \`protocol\` is one of \`nanoclaw\` (self-managed SSE — easiest), \`openai-compat\`,
 \`anthropic\`, or \`custom-webhook\`. The response includes an \`ag-…\`
 \`sessionId\` bearer, \`orientation\`, \`ownedSkills\`, \`gameTools\`, and a
-\`protocol { version, contentHash, url, manifestUrl, auth }\` pointer. Pull that URL immediately and
+\`protocol { version, contentHash, url, manifestUrl, auth, ackState }\` pointer. Pull that URL immediately and
 re-pull when its version/hash changes. \`sessionTicket.url\` is the single-use
 human control link.
 
@@ -686,6 +707,34 @@ Poll the manifest every 6–24h; diff each \`contentHash\`; on a change, GET the
 \`url\`, re-chunk (split on \`## \` headings), and re-embed into your RAG store. A
 \`protocol.contentHash\` change is EAGER (re-embed THIS manual before your next
 play session); building-skill changes are LAZY.
+
+### Acknowledge your install
+
+Connected/BYO agents SHOULD acknowledge the exact bytes they actually installed.
+After fetching and installing this manual into your own runtime, POST its current
+hash; after each building-skill claim, fetch the body, install it into your
+runtime, then POST that building hash:
+
+\`\`\`http
+POST ${apiBase}/api/agent/session/ack
+X-Clawville-Agent-Session: <sessionId>
+Content-Type: application/json
+
+{ "kind": "protocol-manual", "version": ${PROTOCOL_VERSION}, "contentHash": "sha256:<hex>" }
+{ "kind": "building-skill", "buildingId": "memory-rag", "contentHash": "sha256:<hex>" }
+\`\`\`
+
+The response is \`{ current: true, latest: { version, contentHash } }\` when the
+hash still matches what ClawVille serves. A stale hash returns the latest pointer
+so you can fetch, install, and acknowledge again. Acknowledgement requires an
+identity-proven session (connect or reconnect with your identityKey); a
+liveness-only bare-agentId reconnect is rejected with
+\`proven_agent_session_required\` so nobody can acknowledge on another agent's
+behalf. ACK v1 is informational only:
+there is no penalty, play restriction, economy consequence, or leaderboard
+consequence for a missing or stale acknowledgement. Hosted agents skip this step
+because ClawVille installs their manual and claimed skills directly into the
+hosted runtime.
 
 ### Read your OWN earned lessons
 
@@ -1181,6 +1230,75 @@ export function protocolContentHash(apiBase: string): string {
   return contentHashOf(buildProtocolManual(apiBase));
 }
 
+/** Minimal structural ACK input accepted from JSONB rows and tests/dashboard. */
+export interface ProtocolAckSnapshot {
+  manual?: {
+    version?: unknown;
+    contentHash?: unknown;
+  } | null;
+}
+
+/**
+ * Compare a stored manual acknowledgement with the exact bytes served now.
+ * This helper is descriptive only; callers must never use it as an auth gate.
+ */
+export function deriveProtocolAckState(
+  ack: ProtocolAckSnapshot | null | undefined,
+  apiBase: string,
+): AgentProtocolAckState {
+  if (!ack?.manual) return 'none';
+  const version = ack.manual.version;
+  const contentHash = ack.manual.contentHash;
+  if (typeof version !== 'number' || typeof contentHash !== 'string') return 'stale';
+  return version === PROTOCOL_VERSION &&
+    normalizeContentHash(contentHash) === protocolContentHash(apiBase)
+    ? 'current'
+    : 'stale';
+}
+
+/** Persisted row fields needed to decide whether the runtime owns its install. */
+export interface SkillAckPostureRow {
+  identityType: string;
+  protocol?: string | null;
+  gatewayUrl?: string | null;
+  cognitionBackend?: string | null;
+  isHouse?: boolean;
+  /** True when an avatar.platform_agent_id authoritatively binds this hosted row. */
+  hasHostedAvatarBinding?: boolean;
+}
+
+/**
+ * Whether this connect-namespace row is BYO/self-managed and therefore should
+ * report installation posture. Partner-proxy and ClawVille-hosted cognition
+ * are excluded because the server/partner installs their knowledge directly.
+ */
+export function requiresByoSkillAck(row: SkillAckPostureRow): boolean {
+  if (
+    row.isHouse === true ||
+    row.hasHostedAvatarBinding === true ||
+    row.identityType === 'anonymous' ||
+    row.cognitionBackend === 'hatcher-proxy' ||
+    row.identityType === 'hatcher'
+  ) {
+    return false;
+  }
+  if (isHostedHarness(row.identityType)) return false;
+
+  const hasDeclaredGateway =
+    row.gatewayUrl != null &&
+    row.gatewayUrl !== '' &&
+    row.gatewayUrl !== 'http://localhost:0';
+  const inWorldProtocol = resolveInWorldProtocol(
+    row.identityType,
+    row.protocol,
+    undefined,
+    { hasDeclaredGateway },
+  );
+  return inWorldProtocol !== 'hatcher-proxy' &&
+    inWorldProtocol !== 'hermes-local' &&
+    inWorldProtocol !== 'openclaw-local';
+}
+
 /**
  * PUBLIC protocol pointer for partner responses (register / patch). All three
  * fields are public — version, content hash, and the relative URL of the
@@ -1199,16 +1317,14 @@ export function protocolPointer(apiBase: string): {
 }
 
 /** Direct-agent pointer returned by public connect/reconnect responses. */
-export function agentProtocolPointer(apiBase: string): {
-  version: number;
-  contentHash: string;
-  url: string;
-  manifestUrl: string;
-  auth: string;
-} {
+export function agentProtocolPointer(
+  apiBase: string,
+  ack?: ProtocolAckSnapshot | null,
+): DirectAgentProtocolPointer {
   return {
     ...protocolPointer(apiBase),
     manifestUrl: '/api/skills/manifest.json',
     auth: 'X-Clawville-Agent-Session: <sessionId>',
+    ackState: deriveProtocolAckState(ack, apiBase),
   };
 }
