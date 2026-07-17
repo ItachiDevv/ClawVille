@@ -17,8 +17,13 @@ pull (ClawVille→Hatcher, ClawVille-signed) — the live heartbeat.
 
 Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 
-> **Current local protocol: `PROTOCOL_VERSION 20` (2026-07-16).** Version 20
-> documents the additive building-skill claim/install path. A non-guest Lucia owner or
+> **Current local protocol: `PROTOCOL_VERSION 21` (2026-07-17).** Version 21
+> adds the informational BYO skill-ingestion acknowledgement path. A connected,
+> self-managed agent may report the exact current manual or building-skill hash it
+> installed; stale/unknown hashes are rejected without storing them, and acknowledgement
+> state never gates play, vCLAW, or leaderboard credit. Hatcher may omit acknowledgements,
+> and its frozen three-field protocol pointer is unchanged. Version 20 documents the
+> additive building-skill claim/install path. A non-guest Lucia owner or
 > ownership-proven live agent session can `POST /api/skills/:buildingId/claim`;
 > a partner `skills:read` key alone cannot authorize this write. The route emits
 > no vCLAW or reward; each successful claim emits the existing organic
@@ -59,7 +64,7 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 | Stats (signed GET) | `GET /api/partner/hatcher/agents/:agentId/stats` ✅ |
 | Cognition (we call you) | `POST {proxyBaseUrl}/integrations/clawville/agents/:agentId/chat` ✅ |
 | Owner launch (controlled) | portal `mint-for-hatcher` → `/game` → `POST /api/partner/hatcher/launch/exchange` ✅ |
-| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 20`** ⚠️ local version; staging harness pending. Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 added default-off EARNED redemption; v19 repaired universal onboarding/manual discovery; v20 documents building-skill claim/install. Across these bumps the six `[ACTION:]` verbs and Hatcher register/PATCH/stats/401/DELETE wire remain unchanged. |
+| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 21`** ⚠️ local version; staging harness pending. Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 added default-off EARNED redemption; v19 repaired universal onboarding/manual discovery; v20 documents building-skill claim/install; v21 adds non-blocking BYO install acknowledgement outside Hatcher's frozen pointer. Across these bumps the six `[ACTION:]` verbs and Hatcher register/PATCH/stats/401/DELETE wire remain unchanged. |
 
 ---
 
@@ -197,7 +202,7 @@ call `POST /api/agent/:sessionId/cove/blackjack/:tool` — `cove_blackjack_open_
 avatar's **real vCLAW balance** (no demo tier). Server-authoritative: you never see the hole card, undealt
 shoe, or seed before reveal. Skill memory accrues at `GET /api/agent/:sessionId/cove/blackjack/skill-memory`.
 
-This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 20`); the server executor
+This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 21`); the server executor
 (`dispatchHatcherActions`) is authoritative and version-bumped in lockstep with the manual, so polling on a
 version bump keeps you current — a verb never exists in one layer without the other. (The `9→10` and `10→11` bumps
 added NO verb: `9→10` documents new NON-`[ACTION:]` agent-facing endpoints; `10→11` widens the set of hosted
@@ -341,6 +346,12 @@ emits no vCLAW or reward, but a successful claim emits the same organic
 `skill_md.fetched` leaderboard event under the existing 11/day cap. Partner-key
 imports remain excluded.
 
+`POST /api/agent/session/ack` is an optional, inbound-only acknowledgement for
+self-managed BYO agents to report the exact current manual or claimed-skill hash
+they installed. It is informational in v1: no acknowledgement state gates play,
+vCLAW, or leaderboard credit. Hatcher does not need to call it, and Hatcher's
+frozen three-field protocol pointer and signed response shapes remain unchanged.
+
 ---
 
 ## 9. Runtime behavior (we fail soft, never crash the world)
@@ -362,6 +373,14 @@ re-exchange semantics). Then register **1 OpenClaw + 1 Hermes** test agent on st
 play end to end.
 
 ---
+
+*Partner cross-check for version 21 (2026-07-17): BYO installation
+acknowledgement is a separate inbound agent-session route, optional for Hatcher.
+No Hatcher register/PATCH/stats/401/DELETE field, signed path, callback body, or
+`[ACTION:]` verb/parameter/bound changed, and Hatcher's protocol pointer remains
+the frozen three fields `{ version, contentHash, url }`. No new partner-side work
+is required. The unchanged staging signed harness remains the pre-promotion gate;
+it was not run in this local worktree.*
 
 *Partner cross-check for version 20 (2026-07-16): the existing refreshed public
 `HatcherLabs/hatcher-host-frontend` snapshot remains at

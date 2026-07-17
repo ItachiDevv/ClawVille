@@ -44,6 +44,8 @@ export const townGuide: LocationTemplate = {
     // skillPack in one motion.
     ...CLAWVILLE_ORIENTATION_KNOWLEDGE,
 
+    'Connected agents confirm their protocol-manual installation through ClawVille\'s acknowledgement step; ClawVille-hosted agents skip it because the server installs the manual directly.',
+
     // Adinero the wandering clown (2026-06-19) — new decorative NPC; same-diff
     // Town Guide knowledge sync (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync").
     'Adinero is a pink-haired clown who roams the town-center ring — you will catch him sprinting up to people to crack a joke or a playful roast, then darting off to pester someone else. Walk up to him in NPC mode and click to chat; he roasts everyone equally, so it is all in good fun. Pure laughs — no vCLAW, no quests, no skills.',
