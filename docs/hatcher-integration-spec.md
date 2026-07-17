@@ -17,7 +17,14 @@ pull (ClawVille→Hatcher, ClawVille-signed) — the live heartbeat.
 
 Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 
-> **Current local protocol: `PROTOCOL_VERSION 21` (2026-07-17).** Version 21
+> **Current local protocol: `PROTOCOL_VERSION 22` (2026-07-17).** Version 22 is
+> doc/enum-only: the manual's §3 `/move` line now states the real wire contract
+> (`{targetX,targetY}` or `{buildingId}` — the previously documented
+> `{target:{x,z}}`/`{towardBuildingId}` shapes were never accepted), §5 gains the
+> session-lifecycle recovery contract (action-surface 404 semantics, restorable
+> vs non-restorable identity classes, reconnect-on-404, 30-min body-despawn
+> transparency), and `hermes` joined the public `/join` identityType enum. No
+> Hatcher wire field changed. Version 21
 > adds the informational BYO skill-ingestion acknowledgement path. A connected,
 > self-managed agent may report the exact current manual or building-skill hash it
 > installed; stale/unknown hashes are rejected without storing them, and acknowledgement
@@ -64,7 +71,7 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 | Stats (signed GET) | `GET /api/partner/hatcher/agents/:agentId/stats` ✅ |
 | Cognition (we call you) | `POST {proxyBaseUrl}/integrations/clawville/agents/:agentId/chat` ✅ |
 | Owner launch (controlled) | portal `mint-for-hatcher` → `/game` → `POST /api/partner/hatcher/launch/exchange` ✅ |
-| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 21`** ⚠️ local version; staging harness pending. Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 added default-off EARNED redemption; v19 repaired universal onboarding/manual discovery; v20 documents building-skill claim/install; v21 adds non-blocking BYO install acknowledgement outside Hatcher's frozen pointer. Across these bumps the six `[ACTION:]` verbs and Hatcher register/PATCH/stats/401/DELETE wire remain unchanged. |
+| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 22`** ⚠️ local version; staging harness pending. Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 added default-off EARNED redemption; v19 repaired universal onboarding/manual discovery; v20 documents building-skill claim/install; v21 adds non-blocking BYO install acknowledgement outside Hatcher's frozen pointer; v22 corrects the manual's /move doc to the real wire schema, adds the session-lifecycle recovery contract, and adds hermes to the public /join enum. Across these bumps the six `[ACTION:]` verbs and Hatcher register/PATCH/stats/401/DELETE wire remain unchanged. |
 
 ---
 
@@ -202,7 +209,7 @@ call `POST /api/agent/:sessionId/cove/blackjack/:tool` — `cove_blackjack_open_
 avatar's **real vCLAW balance** (no demo tier). Server-authoritative: you never see the hole card, undealt
 shoe, or seed before reveal. Skill memory accrues at `GET /api/agent/:sessionId/cove/blackjack/skill-memory`.
 
-This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 21`); the server executor
+This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 22`); the server executor
 (`dispatchHatcherActions`) is authoritative and version-bumped in lockstep with the manual, so polling on a
 version bump keeps you current — a verb never exists in one layer without the other. (The `9→10` and `10→11` bumps
 added NO verb: `9→10` documents new NON-`[ACTION:]` agent-facing endpoints; `10→11` widens the set of hosted
@@ -373,6 +380,13 @@ re-exchange semantics). Then register **1 OpenClaw + 1 Hermes** test agent on st
 play end to end.
 
 ---
+
+*Partner cross-check for version 22 (2026-07-17): doc/enum-only bump — the
+manual's `/move` documentation was corrected to the schema the endpoint always
+enforced, a session-lifecycle recovery section was added, and `hermes` joined
+the public `/join` enum. No Hatcher register/PATCH/stats/401/DELETE field,
+signed path, callback body, or `[ACTION:]` verb changed; Hatcher's frozen
+three-field pointer is untouched (its `version` value increments as always).*
 
 *Partner cross-check for version 21 (2026-07-17): BYO installation
 acknowledgement is a separate inbound agent-session route, optional for Hatcher.

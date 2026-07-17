@@ -325,9 +325,13 @@ async function insertFixture(
         }
       : {}),
   };
-  const config = input.kind === 'declared-gateway'
-    ? { houseAgentId: `hosted-skill-runtime-probe-${input.runId}` }
-    : {};
+  // DEFAULT config on purpose (no houseAgentId flag): since 2026-07-17 the
+  // orchestrator injects the manual into EVERY player runtime class, and this
+  // probe must exercise the ordinary declared-gateway `openclaw-bot` path — a
+  // fixture that rides a special-case branch would let per-class regressions
+  // through the gate (the founder's uniformity directive: one result counts,
+  // every agent class getting the same skill injection).
+  const config = {};
   const agentType = input.kind === 'declared-gateway' ? 'openclaw-bot' : 'avatar-agent';
 
   await client.begin(async (tx) => {

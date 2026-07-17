@@ -1884,8 +1884,12 @@ async function mintSessionTicketFromConnect(args: {
 // insert can burn budget on a spam wave.
 // ---------------------------------------------------------------------------
 const joinSchema = z.object({
+  // Keep in parity with the /connect identityType enum (minus the partner-only
+  // 'hatcher'). 'hermes' added 2026-07-17 (fleet brief #2): /connect accepted a
+  // hermes identity but /join couldn't provision its avatar, so Hermes BYO
+  // agents fell back to a nanoclaw identity for first-contact onboarding.
   identityType: z.enum([
-    'openclaw', 'ironclaw', 'nanoclaw', 'milady', 'custom', 'anonymous',
+    'openclaw', 'ironclaw', 'nanoclaw', 'milady', 'custom', 'anonymous', 'hermes',
   ]),
   identityKey: z.string().min(1).max(256),
   /** Optional display name for the auto-provisioned avatar. Falls back to `Unnamed Agent`. */
