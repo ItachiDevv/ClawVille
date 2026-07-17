@@ -27,17 +27,23 @@
  * O(1000)-sample LUT scan + 6 Newton iters — far too costly to run per-frame for
  * up to 8 karts (8000 centerline evals/frame). Instead we keep a PER-KEY cached
  * last-t and only LOCAL-SCAN a small window of LUT samples around it (the kart's
- * t changes by a tiny amount each frame), then one Newton polish. ~2×WINDOW+1
- * centerline evals/lookup vs 1000 — a >10× cut, and it tracks the smooth motion
- * exactly. A fresh key (first frame, or a teleport/respawn) falls back to the
- * full closest-point scan once, then rides the cache.
+ * t changes by a tiny amount each frame), then parabolically refine the best
+ * sample from its two neighbours. ~2×WINDOW+1 centerline evals/lookup vs 1000 —
+ * a >10× cut, with continuous sub-sample t. A fresh key (first frame, or a
+ * teleport/respawn) falls back to the full closest-point scan once, then rides
+ * the cache.
  *
- * Zero per-call allocation (scalars + a reused scratch object).
+ * The round-7 refinement bookkeeping adds no per-call containers or allocations
+ * (scalars only); existing spline-evaluator return semantics are unchanged.
  *
  * @module reef-race-elevation
  */
 
-import { reefTrackElevationAt, reefTrackBankAngleAt } from '@clawville/shared';
+import {
+  parabolicRefineOffset,
+  reefTrackElevationAt,
+  reefTrackBankAngleAt,
+} from '@clawville/shared';
 import { clientSpline } from './reef-race-spline-instance';
 
 // ─── Heading sampler bound to the shared client spline ───────────────────────
@@ -101,7 +107,12 @@ export function tAtXZ(x: number, z: number, key: string): number {
   // ── Local scan: sample LUT t-values in a window around the cached t ────────
   const centerSample = Math.round(cached.t * _LUT_SAMPLES);
   let bestT = cached.t;
+  let bestSampleIndex = centerSample;
+  let bestScanOffset = 0;
   let bestDistSq = Infinity;
+  let bestPrevDistSq = Infinity;
+  let bestNextDistSq = Infinity;
+  let previousDistSq = Infinity;
 
   for (let d = -_SCAN_HALF_WINDOW; d <= _SCAN_HALF_WINDOW; d++) {
     // Wrap into [0,1) — the loop is closed/periodic.
@@ -115,7 +126,31 @@ export function tAtXZ(x: number, z: number, key: string): number {
     if (dsq < bestDistSq) {
       bestDistSq = dsq;
       bestT = lt;
+      bestSampleIndex = i;
+      bestScanOffset = d;
+      bestPrevDistSq = previousDistSq;
+      bestNextDistSq = Infinity;
+    } else if (d === bestScanOffset + 1) {
+      bestNextDistSq = dsq;
     }
+    previousDistSq = dsq;
+  }
+
+  // Interior neighbours were already visited by the scalar scan. Only a best
+  // sample pinned to an exact scan edge needs one direct wrapped evaluation.
+  if (bestScanOffset === -_SCAN_HALF_WINDOW) {
+    const prevIndex = (bestSampleIndex + _LUT_SAMPLES - 1) % _LUT_SAMPLES;
+    const prev = clientSpline.centerlineAt(prevIndex / _LUT_SAMPLES);
+    const dx = prev.x - x;
+    const dz = prev.z - z;
+    bestPrevDistSq = dx * dx + dz * dz;
+  }
+  if (bestScanOffset === _SCAN_HALF_WINDOW) {
+    const nextIndex = (bestSampleIndex + 1) % _LUT_SAMPLES;
+    const next = clientSpline.centerlineAt(nextIndex / _LUT_SAMPLES);
+    const dx = next.x - x;
+    const dz = next.z - z;
+    bestNextDistSq = dx * dx + dz * dz;
   }
 
   // ── Window-escape guard ────────────────────────────────────────────────────
@@ -127,6 +162,16 @@ export function tAtXZ(x: number, z: number, key: string): number {
   let t = bestT;
   if (delta >= edge - 1e-6) {
     t = clientSpline.closestPointOnSpline({ x, z }).t;
+  } else {
+    t = _wrap01(
+      bestT
+        + parabolicRefineOffset(
+          bestPrevDistSq,
+          bestDistSq,
+          bestNextDistSq,
+          1 / _LUT_SAMPLES,
+        ),
+    );
   }
 
   cached.t = t;
@@ -140,6 +185,12 @@ function _cyclicDelta(a: number, b: number): number {
   while (d > 0.5) d -= 1;
   while (d < -0.5) d += 1;
   return d;
+}
+
+/** Wrap a scalar spline parameter into [0, 1) without allocating. */
+function _wrap01(t: number): number {
+  const wrapped = t % 1;
+  return wrapped < 0 ? wrapped + 1 : wrapped;
 }
 
 /** Render-only Y altitude for a world XZ position, cached per key. Convenience

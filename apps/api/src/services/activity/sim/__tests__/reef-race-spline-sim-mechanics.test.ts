@@ -29,7 +29,13 @@ mock.module('../../activity-replay-log', () => ({
 }));
 
 const { reefRaceSplineSim } = await import('../reef-race-spline-sim');
-const { integrateSurfStep } = await import('@clawville/shared');
+const {
+  integrateSurfStep,
+  parabolicRefineOffset,
+  ReefSpline,
+  REEF_RACE_DEFAULT_TRACK,
+  reefTrackElevationAt,
+} = await import('@clawville/shared');
 const {
   REEF_TICK_HZ,
   REEF_MAX_SPEED,
@@ -64,6 +70,89 @@ function padWorldCenter(state: any, padIndex: number) {
     z: pt.z + nz * pad.lateralOffset,
   };
 }
+
+describe('parabolic closest-sample refinement', () => {
+  it('returns exact symmetric, asymmetric, degenerate, and clamped offsets', () => {
+    const dt = 0.1;
+    expect(parabolicRefineOffset(4, 1, 4, dt)).toBe(0);
+    expect(parabolicRefineOffset(4, 1, 2, dt)).toBeCloseTo(dt / 4, 12);
+    expect(parabolicRefineOffset(1, 1, 1, dt)).toBe(0);
+    expect(parabolicRefineOffset(100, 10, 9, dt)).toBe(dt / 2);
+    expect(parabolicRefineOffset(9, 10, 100, dt)).toBe(-dt / 2);
+  });
+
+  it('keeps real-track elevation continuous across three LUT cells', () => {
+    const spline = new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true });
+    const lutSamples = 1000;
+    const dt = 1 / lutSamples;
+    const startT = 0.12;
+    const endT = startT + 3 * dt;
+    const scanCenter = Math.round((startT + endT) * 0.5 * lutSamples);
+    const start = spline.centerlineAt(startT);
+    const end = spline.centerlineAt(endT);
+    const chordX = end.x - start.x;
+    const chordZ = end.z - start.z;
+    const querySteps = Math.ceil(Math.hypot(chordX, chordZ) / 10);
+
+    // Inline warm-path mirror: local coarse scan followed by wrapped-neighbour
+    // parabolic refinement. The fixed window contains this three-cell walk.
+    const refinedTAt = (x: number, z: number): number => {
+      let bestIndex = scanCenter;
+      let bestDistSq = Infinity;
+      for (let d = -6; d <= 6; d++) {
+        const index = ((scanCenter + d) % lutSamples + lutSamples) % lutSamples;
+        const point = spline.centerlineAt(index * dt);
+        const dx = point.x - x;
+        const dz = point.z - z;
+        const distSq = dx * dx + dz * dz;
+        if (distSq < bestDistSq) {
+          bestDistSq = distSq;
+          bestIndex = index;
+        }
+      }
+
+      const prev = spline.centerlineAt(((bestIndex + lutSamples - 1) % lutSamples) * dt);
+      const next = spline.centerlineAt(((bestIndex + 1) % lutSamples) * dt);
+      const prevDx = prev.x - x;
+      const prevDz = prev.z - z;
+      const nextDx = next.x - x;
+      const nextDz = next.z - z;
+      const offset = parabolicRefineOffset(
+        prevDx * prevDx + prevDz * prevDz,
+        bestDistSq,
+        nextDx * nextDx + nextDz * nextDz,
+        dt,
+      );
+      const refined = bestIndex * dt + offset;
+      return ((refined % 1) + 1) % 1;
+    };
+
+    let fullCellElevationDelta = 0;
+    for (let i = 0; i < 3; i++) {
+      fullCellElevationDelta = Math.max(
+        fullCellElevationDelta,
+        Math.abs(
+          reefTrackElevationAt(startT + (i + 1) * dt)
+            - reefTrackElevationAt(startT + i * dt),
+        ),
+      );
+    }
+    expect(querySteps).toBeGreaterThan(3);
+    expect(fullCellElevationDelta).toBeGreaterThan(0);
+
+    let previousY = reefTrackElevationAt(refinedTAt(start.x, start.z));
+    for (let step = 1; step <= querySteps; step++) {
+      const alpha = step / querySteps;
+      const x = start.x + chordX * alpha;
+      const z = start.z + chordZ * alpha;
+      const y = reefTrackElevationAt(refinedTAt(x, z));
+      expect(Math.abs(y - previousY)).toBeLessThanOrEqual(
+        fullCellElevationDelta * 0.2,
+      );
+      previousY = y;
+    }
+  });
+});
 
 describe('ReefRaceSplineSim — race mechanics (v7)', () => {
   beforeEach(() => reefRaceSplineSim.__resetForTest());
