@@ -36,6 +36,7 @@ import {
   protocolEmitsInWorldActions,
   protocolProximityGateExempt,
   isHostedHarness,
+  canonicalizePublicAgentIdentityType,
   resolveDirectAgentIdentityType,
   directAgentIdentityValidationError,
   hasRealDeclaredGateway,
@@ -44,6 +45,16 @@ import {
   type AvatarConfigInputs,
   type OverrideConfigInputs,
 } from '../agent-session-config';
+
+describe('public identity canonicalization', () => {
+  test('preserves known labels and collapses novel labels to custom', () => {
+    for (const identityType of ['milady', 'hermes', 'openclaw', 'custom'] as const) {
+      expect(canonicalizePublicAgentIdentityType(identityType)).toBe(identityType);
+    }
+    expect(canonicalizePublicAgentIdentityType('nanoclaw')).toBe('custom');
+    expect(canonicalizePublicAgentIdentityType('future_framework-v2')).toBe('custom');
+  });
+});
 
 describe('resolveDirectAgentIdentityType — supported-only request inference', () => {
   test('explicit supported identities are preserved, including gateway-less named runtimes', () => {
@@ -80,12 +91,12 @@ describe('resolveDirectAgentIdentityType — supported-only request inference', 
     })).toBe('identityType is required when no Milady runtime or gateway is declared');
   });
 
-  test('custom requires a gateway; proven Milady and Hermes remain valid without one', () => {
+  test('gateway-less custom, proven Milady, and Hermes remain valid', () => {
     expect(directAgentIdentityValidationError({
       identityType: 'custom',
       hasMiladyRuntimeSignal: false,
       hasDeclaredGateway: false,
-    })).toBe('custom identity requires gatewayUrl');
+    })).toBeNull();
     for (const identityType of ['milady', 'hermes'] as const) {
       expect(directAgentIdentityValidationError({
         identityType,
@@ -229,7 +240,7 @@ describe('resolveDirectAgentIdentityType — supported-only request inference', 
       identityType: 'custom',
       requestGatewayUrl: 'https://custom.example/v1',
     })).toBe('https://custom.example/v1');
-    for (const identityType of ['milady', 'hermes', 'openclaw'] as const) {
+    for (const identityType of ['milady', 'hermes', 'openclaw', 'custom'] as const) {
       expect(resolveConnectGatewayForPersistence({
         identityType,
         requestGatewayUrl: undefined,
@@ -321,6 +332,21 @@ describe('resolveInWorldProtocol — derives from identity, not stored column', 
       }
     }
   });
+
+  test('custom selects declared-gateway cognition or gateway-less fail-soft pull from one fact', () => {
+    expect(resolveInWorldProtocol(
+      'custom',
+      'custom-webhook',
+      false,
+      { hasDeclaredGateway: true },
+    )).toBe('custom-webhook');
+    expect(resolveInWorldProtocol(
+      'custom',
+      'custom-webhook',
+      false,
+      { hasDeclaredGateway: false },
+    )).toBe('nanoclaw');
+  });
 });
 
 describe('isRowRestorableFromFacts — restore follows the declared-gateway fact', () => {
@@ -382,6 +408,67 @@ describe('resolveAutonomyMode', () => {
     expect(resolveAutonomyMode('openclaw', 'openai-compat', 'self-managed')).toBe(
       'self-managed',
     );
+  });
+  test('gateway-less custom is self-managed even when the persisted protocol uses its default', () => {
+    expect(resolveAutonomyMode('custom', 'openai-compat', undefined, false)).toBe('self-managed');
+    expect(resolveAutonomyMode('custom', 'openai-compat', 'server-managed', false)).toBe('self-managed');
+    expect(resolveAutonomyMode('custom', 'openai-compat', undefined, true)).toBe('server-managed');
+  });
+});
+
+describe('gateway-less custom config builders', () => {
+  test('avatar config is fail-soft/self-managed while gateway custom remains unchanged', () => {
+    const base = {
+      mode: 'avatar' as const,
+      agentId: 'agent-custom-pull',
+      sessionId: 'session-custom-pull',
+      identityType: 'custom',
+      storedProtocol: 'openai-compat',
+      ledgerCapable: false,
+      boundUserId: null,
+      name: 'PullAgent',
+      species: null,
+      color: null,
+      stats: { hp: 100, attack: 10, defense: 8, speed: 6 },
+      homeX: 2560,
+      homeY: 2560,
+      patrolRadius: 100,
+      personality: 'pulls its own actions',
+    };
+    const pull = buildAvatarSessionConfig(base);
+    expect(pull.protocol).toBe('nanoclaw');
+    expect(pull.autonomyMode).toBe('self-managed');
+    expect(pull.gatewayUrl).toBe('http://localhost:0');
+
+    const declared = buildAvatarSessionConfig({
+      ...base,
+      gatewayUrl: 'https://agent.example/v1',
+      authToken: 'declared-secret',
+      storedProtocol: 'custom-webhook',
+    });
+    expect(declared.protocol).toBe('custom-webhook');
+    expect(declared.autonomyMode).toBe('server-managed');
+    expect(declared.gatewayUrl).toBe('https://agent.example/v1');
+  });
+
+  test('override config shares the same gateway-less custom decision', () => {
+    const config = buildOverrideSessionConfig({
+      mode: 'override',
+      agentId: 'agent-custom-pull',
+      sessionId: 'session-custom-pull',
+      identityType: 'custom',
+      storedProtocol: 'openai-compat',
+      targetNpcId: 'npc-1',
+      ledgerCapable: false,
+      boundUserId: null,
+    });
+    expect(config.protocol).toBe('nanoclaw');
+    expect(config.autonomyMode).toBe('self-managed');
+  });
+
+  test('custom remains non-restorable even when gateway-less or stored as nanoclaw', () => {
+    expect(isRowRestorableFromFacts('custom', null)).toBe(false);
+    expect(isSessionRestorable('custom', 'nanoclaw', undefined, null)).toBe(false);
   });
 });
 
