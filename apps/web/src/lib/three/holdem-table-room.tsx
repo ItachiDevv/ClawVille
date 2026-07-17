@@ -47,18 +47,17 @@ interface RoomSeat extends TableCardSeat {
 // other curve seats flanking left/right, and the dealer stands across at
 // the flat side. All coordinates authored at the scale-2 basis × S.
 // The arc apex bulges toward -Z; the flat edge runs along +Z.
-// Bots occupy the FAR half of the seating oval — the side rails at mid
-// table and the flat-edge corners flanking the dealer. Two failed layouts
-// proved the constraint (rounds 7-8): any 160wu body within ~100wu of the
-// camera renders as a giant frame-edge blocker, so every occupied seat
-// stays across the table; the player's own apex zone and both near rails
-// are empty. This is how seated-POV poker games stage 6-max for a reason.
+// FIRST-PERSON RESTAGE (2026-07-17, founder spec): the camera IS the
+// player's avatar seated at the 6-o'clock spot; the dealer STANDS across at
+// 12 o'clock facing you; the stand-ins take the remaining seats around the
+// oval — two diagonal-across flanking the dealer, two at the side rails,
+// one immediate left neighbor. Real avatars later replace stand-ins 1:1.
 const BOT_SEATS: readonly RoomSeat[] = [
-  { engineSeatIndex: 1, x: -82 * S, z: 18 * S, faceYaw: Math.atan2(82, -18), chairX: -93 * S, chairZ: 23 * S },
-  { engineSeatIndex: 2, x: -48 * S, z: 34 * S, faceYaw: Math.atan2(48, -34), chairX: -55 * S, chairZ: 43 * S },
-  { engineSeatIndex: 3, x: -16 * S, z: 42 * S, faceYaw: Math.atan2(16, -42), chairX: -18 * S, chairZ: 53 * S },
-  { engineSeatIndex: 4, x: 48 * S, z: 34 * S, faceYaw: Math.atan2(-48, -34), chairX: 55 * S, chairZ: 43 * S },
-  { engineSeatIndex: 5, x: 82 * S, z: 18 * S, faceYaw: Math.atan2(-82, -18), chairX: 93 * S, chairZ: 23 * S },
+  { engineSeatIndex: 1, x: -52 * S, z: -32 * S, faceYaw: Math.atan2(52, 32), chairX: -60 * S, chairZ: -40 * S },
+  { engineSeatIndex: 2, x: -85 * S, z: 12 * S, faceYaw: Math.atan2(85, -12), chairX: -96 * S, chairZ: 15 * S },
+  { engineSeatIndex: 3, x: -50 * S, z: 38 * S, faceYaw: Math.atan2(50, -38), chairX: -57 * S, chairZ: 48 * S },
+  { engineSeatIndex: 4, x: 85 * S, z: 12 * S, faceYaw: Math.atan2(-85, -12), chairX: 96 * S, chairZ: 15 * S },
+  { engineSeatIndex: 5, x: 52 * S, z: -32 * S, faceYaw: Math.atan2(-52, 32), chairX: 60 * S, chairZ: -40 * S },
 ] as const;
 
 // boardYaw π: the board row sits toward the dealer's flat side (+Z) and its
@@ -69,30 +68,29 @@ const CARD_LAYOUT: Readonly<TableCardLayout> = Object.freeze({
   // the old +14 offset visually landed the row at the far edge among the
   // bot backs.
   boardZ: 0,
-  boardYaw: Math.PI,
+  boardYaw: 0,
   boardCardWidth: 8 * S,
   boardCardHeight: 11.2 * S,
   boardSpacing: 10 * S,
   botCardWidth: 6.5 * S,
   botCardHeight: 9.1 * S,
   botPairGap: 1.2 * S,
-  // 0.62 (was 0.72) after the table-mesh π rotation: the felt boundary is
-  // asymmetric around the oval, and at 0.72 the far-side bot backs landed
-  // on the black rail instead of the felt.
-  botAnchorScale: 0.62,
+  botAnchorScale: 0.72,
   surfaceLift: 0.7 * S,
 });
 
-// hermes_female REMOVED (2026-07-17 founder verdict — her defective rig's
-// frozen frame still reads "possessed"; the milady-family poses are the
-// approved ones). Five distinct miladys; dealer is milady_official_6.
+// hermes_female RESTORED (2026-07-17 founder correction — fix her, don't
+// cut her): her frozen pose samples the clip at HERMES_SAMPLE_AT instead of
+// t=0 (per-figure sampleAt) — the t=0 frame on her rig reads possessed;
+// later frames hold hands-on-lap.
 const BOT_MODEL_KEYS = [
   'milady_official_2',
   'milady_official_5',
   'milady_official_7',
+  'hermes_female',
   'milady_official_4',
-  'milady_official_3',
 ] as const satisfies readonly (keyof typeof MODEL_REGISTRY)[];
+const HERMES_SAMPLE_AT = 2.0; // seconds into sit_idle_m — tuned visually
 const DEALER_MODEL_KEY = 'milady_official_6' as const;
 
 function preparedClone(source: THREE.Group, scale: number): THREE.Group {
@@ -113,6 +111,7 @@ function FrozenFigure({
   yaw,
   targetHeight,
   cushionY,
+  sampleAt = 0.0001,
 }: {
   reg: ModelRegistryEntry;
   instanceId: string;
@@ -121,6 +120,8 @@ function FrozenFigure({
   yaw: number;
   targetHeight: number;
   cushionY?: number;
+  /** Clip time (seconds) to freeze at — per-rig frames read differently. */
+  sampleAt?: number;
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const vrm = useVRMInstance(reg.path, instanceId);
@@ -137,7 +138,7 @@ function FrozenFigure({
     const animator = new VRMCharacterAnimator(vrm, reg.animatorId);
 
     void animator.init(pose).then(() => {
-      if (cancelled || !animator.applyFrozenPose(pose, 0.0001)) return;
+      if (cancelled || !animator.applyFrozenPose(pose, sampleAt)) return;
       group.updateMatrixWorld(true);
 
       // Ground the POSED figure by its real bounding box. The first cut
@@ -176,7 +177,7 @@ function FrozenFigure({
       cancelled = true;
       animator.dispose();
     };
-  }, [cushionY, instanceId, invalidate, pose, reg.animatorId, vrm]);
+  }, [cushionY, instanceId, invalidate, pose, reg.animatorId, sampleAt, vrm]);
 
   useEffect(() => () => disposeVRMInstance(reg.path, instanceId), [instanceId, reg.path]);
 
@@ -191,13 +192,13 @@ function FrozenFigure({
   );
 }
 
-// Player-side elevated POV — the 2D modal's actual read: behind + above the
-// player's own (empty) seat at the arc apex, high enough that the LATERAL
-// arc neighbors land inside the frustum. A true eye-level seat POV leaves
-// the whole table looking empty (verified: at eye height the flanking bots
-// sit outside a 52° FOV and only the dealer is visible).
-const CAM_EYE: readonly [number, number, number] = [0, 178, -49.6 * S - 90];
-const CAM_LOOK: readonly [number, number, number] = [0, 42, 25 * S];
+// FIRST-PERSON seated POV (founder spec 2026-07-17): the camera is the
+// player avatar's EYES at the 6-o'clock seat — seated eye height for a
+// 160wu body, just behind the near rail, gazing slightly down across the
+// felt at the standing dealer. Neighbors appear at the frame edges the way
+// they do from a real seat.
+const CAM_EYE: readonly [number, number, number] = [0, 124, 49.6 * S + 22];
+const CAM_LOOK: readonly [number, number, number] = [0, 84, -78 * S];
 
 function FixedCamera() {
   const { camera } = useThree();
@@ -241,10 +242,9 @@ function HoldemTableRoomScene() {
       <directionalLight position={[-70, 130, 80]} intensity={2.2} color={0xffd2a1} />
       <directionalLight position={[85, 85, 25]} intensity={1.35} color={0x7fd6ff} />
       <pointLight position={[0, 115, -55]} intensity={1150} distance={260} decay={2} color={0xffb86b} />
-      {/* Dealer/back-row key — the flat (dealer) side now faces +Z after the
-          2026-07-17 perspective flip; keep it lit or the dealer reads as a
-          silhouette. */}
-      <pointLight position={[0, 150, 110]} intensity={900} distance={260} decay={2} color={0xffd9b0} />
+      {/* Dealer key — the dealer stands at -Z (first-person restage); keep
+          that zone lit or she reads as a silhouette. */}
+      <pointLight position={[0, 150, -110]} intensity={900} distance={260} decay={2} color={0xffd9b0} />
 
       <primitive object={room} />
       {/* Procedural floor/backdrop guarantees a clean modal-like stage even
@@ -256,19 +256,14 @@ function HoldemTableRoomScene() {
         <planeGeometry args={[700, 700]} />
         <meshStandardMaterial color={0x241a26} roughness={0.92} metalness={0.04} />
       </mesh>
-      <mesh position={[0, 120, 185]} rotation={[0, Math.PI, 0]}>
+      <mesh position={[0, 120, -185]}>
         <planeGeometry args={[800, 280]} />
         <meshStandardMaterial color={0x43283a} roughness={0.9} metalness={0.02} />
       </mesh>
-      {/* Table mesh rotated π (2026-07-17 founder catch): the GLB's built-in
-          DEALER STATION CUTOUT is baked into what we treated as the player
-          arc — unrotated, the cutout notch sat directly in front of the
-          camera ("the playable character is on the dealer side"). The spin
-          puts the cutout under the standing dealer; seats/cards/camera are
-          mesh-independent and unchanged. */}
-      <group rotation={[0, Math.PI, 0]}>
-        <primitive object={table} />
-      </group>
+      {/* Table unrotated: its baked dealer-station cutout faces -Z — which
+          is where the dealer now STANDS (first-person restage). Betting
+          spots face +Z, in front of the player camera and the near seats. */}
+      <primitive object={table} />
 
       {/* Stools deliberately NOT rendered (2026-07-16 framing pass 4): the
           wire-frame stool GLB read as floating white baskets at the table
@@ -287,19 +282,20 @@ function HoldemTableRoomScene() {
             position={[seat.chairX, 0, seat.chairZ]}
             yaw={seat.faceYaw}
             targetHeight={BOT_TARGET_HEIGHT}
+            sampleAt={BOT_MODEL_KEYS[index] === 'hermes_female' ? HERMES_SAMPLE_AT : undefined}
           />
         </group>
       ))}
 
-      {/* Dealer at the FLAT side (+Z) facing the table (-Z ⇒ yaw π under
-          the atan2(vx, vz) convention) — the 2026-07-17 correction: the
-          camera now owns the players' curve, the dealer the flat edge. */}
+      {/* Dealer STANDS at 12 o'clock facing the player camera (+Z ⇒ yaw 0)
+          — founder spec: "the dealer should be standing where it looks
+          like my perspective is as a user". */}
       <FrozenFigure
         reg={MODEL_REGISTRY[DEALER_MODEL_KEY] as ModelRegistryEntry}
         instanceId="holdem-room-dealer"
         pose="idle"
-        position={[0, 0, 78 * S]}
-        yaw={Math.PI}
+        position={[0, 0, -78 * S]}
+        yaw={0}
         targetHeight={DEALER_TARGET_HEIGHT}
       />
 
@@ -321,7 +317,7 @@ export default function HoldemTableRoomCanvas() {
       key="holdem-table-room"
       dpr={[0.65, 1]}
       frameloop="always"
-      camera={{ fov: 52, near: 0.5, far: 900, position: [CAM_EYE[0], CAM_EYE[1], CAM_EYE[2]] }}
+      camera={{ fov: 62, near: 0.5, far: 900, position: [CAM_EYE[0], CAM_EYE[1], CAM_EYE[2]] }}
       gl={{ antialias: false, powerPreference: 'low-power' }}
       onCreated={({ scene }) => { scene.background = new THREE.Color(0x100b16); }}
     >
