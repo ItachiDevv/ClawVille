@@ -33,7 +33,7 @@ describe('Kelp maze client collider parity', () => {
 
   it('keeps the ambient count and derives the dense wall-row budget', () => {
     expect(KELP_FOREST_BLADE_COUNT).toBe(5400);
-    expect(KELP_MAZE_WALL_BLADE_COUNT).toBe(1995);
-    expect(KELP_FOREST_TOTAL_BLADE_COUNT).toBe(7395);
+    expect(KELP_MAZE_WALL_BLADE_COUNT).toBe(1929);
+    expect(KELP_FOREST_TOTAL_BLADE_COUNT).toBe(7329);
   });
 });

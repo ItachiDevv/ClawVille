@@ -91,8 +91,9 @@ function buildWalkabilityGrid(): boolean[][] {
     if (col.pathfindingRaster?.mode === 'cell-center-expanded-aabb') {
       // Mark a cell iff its CENTER intersects the collider expanded by the
       // typed per-collider padding. This is the exact Minkowski raster needed
-      // by 75-wu maze lanes: +25 wu for the live chibi body, without the
-      // legacy +128 wu safety halo that would erase every passage.
+      // by 128-wu maze lanes: +50 wu for the widest live body class
+      // (humanoid), without the legacy +128 wu safety halo that would erase
+      // every passage.
       const padding = col.pathfindingRaster.paddingWu;
       const minWorldX = col.centerX - col.halfX - padding;
       const maxWorldX = col.centerX + col.halfX + padding;

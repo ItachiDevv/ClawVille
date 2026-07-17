@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
   ENTITY_HALF_CHIBI,
+  ENTITY_HALF_HUMANOID,
   KELP_MAZE_COLLIDER_COUNT,
   KELP_MAZE_ENTRY,
   KELP_MAZE_LANDMARK,
@@ -36,7 +37,7 @@ describe('Kelp maze human/agent navigation parity', () => {
     }))).toEqual(KELP_MAZE_WALLS.map((wall) => ({ ...wall })));
     expect(serverWalls.every((wall) =>
       wall.pathfindingRaster?.mode === 'cell-center-expanded-aabb'
-      && wall.pathfindingRaster.paddingWu === ENTITY_HALF_CHIBI
+      && wall.pathfindingRaster.paddingWu === ENTITY_HALF_HUMANOID
     )).toBe(true);
 
     const landmark = getServerColliders().filter(
@@ -47,13 +48,16 @@ describe('Kelp maze human/agent navigation parity', () => {
     expect(landmark[0]).toMatchObject(KELP_MAZE_LANDMARK_COLLIDER);
     expect(landmark[0]?.pathfindingRaster).toEqual({
       mode: 'cell-center-expanded-aabb',
-      paddingWu: ENTITY_HALF_CHIBI,
+      paddingWu: ENTITY_HALF_HUMANOID,
     });
   });
 
-  it('leaves body clearance and routes from the south entry to the photo spot', () => {
-    expect(KELP_MAZE_PATH_WIDTH_WU).toBeGreaterThan(ENTITY_HALF_CHIBI * 2);
-    expect(KELP_MAZE_PATH_WIDTH_WU - ENTITY_HALF_CHIBI * 2).toBe(25);
+  it('leaves clearance for BOTH live body classes and routes entry → photo spot', () => {
+    // Humanoid (widest class — guest possession + humanoid NPC/agent bodies)
+    expect(KELP_MAZE_PATH_WIDTH_WU).toBeGreaterThan(ENTITY_HALF_HUMANOID * 2);
+    expect(KELP_MAZE_PATH_WIDTH_WU - ENTITY_HALF_HUMANOID * 2).toBe(28);
+    // Chibi keeps generous clearance
+    expect(KELP_MAZE_PATH_WIDTH_WU - ENTITY_HALF_CHIBI * 2).toBe(78);
 
     const startX = gamePx(KELP_MAZE_ENTRY.approachWorldX);
     const startY = gamePx(KELP_MAZE_ENTRY.approachWorldZ);
@@ -61,8 +65,14 @@ describe('Kelp maze human/agent navigation parity', () => {
     const targetY = gamePx(KELP_MAZE_PHOTO_SPOT.worldZ);
     const path = findPath(startX, startY, targetX, targetY);
 
-    expect(isCollisionFreeWorld(targetX, targetY, ENTITY_HALF_CHIBI)).toBe(true);
     expect(path.length).toBeGreaterThan(0);
+    // The humanoid body must clear the whole route — this is the exact
+    // failure mode the 75-wu lanes shipped with (A* rastered for chibi could
+    // path a humanoid body into a lane its client clamp cannot traverse).
+    expect(isCollisionFreeWorld(targetX, targetY, ENTITY_HALF_HUMANOID)).toBe(true);
+    expect(isPathCollisionFree(startX, startY, path, ENTITY_HALF_HUMANOID)).toBe(true);
+    // Chibi follows a fortiori, asserted for regression symmetry.
+    expect(isCollisionFreeWorld(targetX, targetY, ENTITY_HALF_CHIBI)).toBe(true);
     expect(isPathCollisionFree(startX, startY, path, ENTITY_HALF_CHIBI)).toBe(true);
   });
 

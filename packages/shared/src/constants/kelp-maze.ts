@@ -18,11 +18,18 @@ export const KELP_MAZE_BOUNDS = Object.freeze({
 export const KELP_MAZE_WALL_THICKNESS_WU = 24;
 
 /**
- * Physical opening between wall AABBs. The live chibi/player half-width is
- * ENTITY_HALF_CHIBI=25 wu, so a 50-wu-wide body retains 25 wu total clearance
- * (12.5 wu per side). Openings are centered on 32-wu A* tile centers.
+ * Physical opening between wall AABBs — sized for the WIDEST live body class,
+ * not just the player clamp. Reviewer finding (2026-07-17): the player clamp
+ * uses ENTITY_HALF_CHIBI=25, but guest NPC-possession and humanoid NPC/agent
+ * bodies clamp at ENTITY_HALF_HUMANOID=50 (100-wu body). A 75-wu opening
+ * locked those classes out (and let server A*, rastered at 25, path a
+ * humanoid body into a lane its client clamp cannot traverse). 128 wu =
+ * 4 A* tiles: humanoid keeps 28 wu total clearance, chibi keeps 78 wu, and
+ * every opening is centered on a 32-wu A* tile center so the humanoid-
+ * expanded free band (128 − 100 = 28 wu... band [±14] around center) always
+ * contains exactly one walkable tile-center lane.
  */
-export const KELP_MAZE_PATH_WIDTH_WU = 75;
+export const KELP_MAZE_PATH_WIDTH_WU = 128;
 
 export const KELP_MAZE_ENTRY = Object.freeze({
   side: 'south' as const,
@@ -67,19 +74,21 @@ export const KELP_MAZE_PHOTO_SPOT = Object.freeze({
 });
 
 /**
- * Eight stable AABBs form a south-entry switchback maze. Alternating 75-wu
- * gaps are aligned to A* cell centers: entry x=7824, east lane x=8272, and
- * west lane x=7376. No consumer may duplicate these numeric wall values.
+ * Eight stable AABBs form a south-entry switchback maze. Alternating 128-wu
+ * openings sit on A* tile-center lanes: entry x=7824 (exact tile center),
+ * east lane tile center x=8240 (free band 8226..8258 after humanoid
+ * expansion), west lane tile center x=7408 (free band 7390..7422). No
+ * consumer may duplicate these numeric wall values.
  */
 export const KELP_MAZE_WALLS = [
-  { id: 'kelp-maze-outer-south-west', centerX: 7557.25, centerZ: -9424, halfX: 229.25, halfZ: 12 },
-  { id: 'kelp-maze-outer-south-east', centerX: 8090.75, centerZ: -9424, halfX: 229.25, halfZ: 12 },
+  { id: 'kelp-maze-outer-south-west', centerX: 7544, centerZ: -9424, halfX: 216, halfZ: 12 },
+  { id: 'kelp-maze-outer-south-east', centerX: 8104, centerZ: -9424, halfX: 216, halfZ: 12 },
   { id: 'kelp-maze-outer-north', centerX: 7824, centerZ: -10384, halfX: 496, halfZ: 12 },
   { id: 'kelp-maze-outer-west', centerX: 7328, centerZ: -9904, halfX: 12, halfZ: 480 },
   { id: 'kelp-maze-outer-east', centerX: 8320, centerZ: -9904, halfX: 12, halfZ: 480 },
-  { id: 'kelp-maze-switchback-south', centerX: 7780.5, centerZ: -9600, halfX: 452.5, halfZ: 12 },
-  { id: 'kelp-maze-switchback-middle', centerX: 7867.5, centerZ: -9792, halfX: 452.5, halfZ: 12 },
-  { id: 'kelp-maze-switchback-north', centerX: 7780.5, centerZ: -10240, halfX: 452.5, halfZ: 12 },
+  { id: 'kelp-maze-switchback-south', centerX: 7752, centerZ: -9600, halfX: 424, halfZ: 12 },
+  { id: 'kelp-maze-switchback-middle', centerX: 7896, centerZ: -9792, halfX: 424, halfZ: 12 },
+  { id: 'kelp-maze-switchback-north', centerX: 7752, centerZ: -10240, halfX: 424, halfZ: 12 },
 ] as const satisfies readonly KelpMazeWallAabb[];
 
 export const KELP_MAZE_WALL_COUNT = KELP_MAZE_WALLS.length;
