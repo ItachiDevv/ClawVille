@@ -22,6 +22,7 @@
 // ---------------------------------------------------------------------------
 
 import { BUILDING_TILE_ZONES } from './npc-definitions';
+import { KELP_MAZE_LANDMARK_COLLIDER, KELP_MAZE_WALLS } from './kelp-maze';
 
 // ---------------------------------------------------------------------------
 // Constants — must match tilemap-data.ts values
@@ -34,6 +35,11 @@ const TILE_SIZE = 32;
 // (+64 tile) shift in BUILDING_TILE_ZONES is exactly cancelled by the +2048 MAP_HALF bump
 // (centerX = gamePxX − MAP_HALF), so each building's WORLD position is unchanged.
 const MAP_HALF = 11264;
+
+// Server-side entity-half constants. KEEP IN SYNC with the client exports in
+// apps/web/src/lib/three/collision/world-colliders.ts.
+export const ENTITY_HALF_CHIBI = 25;    // chibi VRM (135 wu height)
+export const ENTITY_HALF_HUMANOID = 50; // adult humanoid (270 wu height)
 
 /**
  * Per-building AABB half-extents — mirrors BUILDING_EXTENTS in world-colliders.ts.
@@ -74,6 +80,10 @@ const BUILDING_COLLISION_BUFFER = 28; // wu
 // Collider type
 // ---------------------------------------------------------------------------
 
+export type PathfindingRasterPolicy =
+  | { readonly mode: 'legacy-safety-tiles' }
+  | { readonly mode: 'cell-center-expanded-aabb'; readonly paddingWu: number };
+
 export interface ServerCollider2D {
   id: string;
   /** Three.js world-space center X (NOT game-pixel X). Conversion: worldX = gameX - MAP_HALF */
@@ -95,6 +105,12 @@ export interface ServerCollider2D {
    * Not currently consumed server-side (NPC Y is set by terrain raycast on the client).
    */
   topY?: number;
+  /**
+   * Optional A* raster policy. Undefined preserves the legacy 4-tile safety
+   * expansion byte-for-byte. Narrow maze corridors opt into exact tile-center
+   * intersection against the AABB expanded by the moving entity half-width.
+   */
+  pathfindingRaster?: PathfindingRasterPolicy;
 }
 
 // ---------------------------------------------------------------------------
@@ -148,6 +164,26 @@ function buildServerColliders(): ServerCollider2D[] {
     { id: 'town-guide',            centerX:     0, centerZ:   240, halfX:  40, halfZ:  40 },
   ];
   list.push(...PROP_COLLIDERS);
+
+  // 3. Kelp-maze walls — exact same shared AABBs consumed by the client.
+  // The 75-wu passages cannot use the legacy 128-wu A* safety margin; raster
+  // tile centers against each wall expanded by the live chibi half-width.
+  for (const wall of KELP_MAZE_WALLS) {
+    list.push({
+      ...wall,
+      pathfindingRaster: {
+        mode: 'cell-center-expanded-aabb',
+        paddingWu: ENTITY_HALF_CHIBI,
+      },
+    });
+  }
+  list.push({
+    ...KELP_MAZE_LANDMARK_COLLIDER,
+    pathfindingRaster: {
+      mode: 'cell-center-expanded-aabb',
+      paddingWu: ENTITY_HALF_CHIBI,
+    },
+  });
 
   return list;
 }
@@ -252,11 +288,3 @@ export const WORLD_COLLIDER_MAP_HALF = MAP_HALF;
 
 /** TILE_SIZE for game-px → tile conversions. Mirrors tilemap-data.ts. */
 export const WORLD_COLLIDER_TILE_SIZE = TILE_SIZE;
-
-// ---------------------------------------------------------------------------
-// Server-side entity-half constants (duplicated from
-// apps/web/src/lib/three/collision/world-colliders.ts so server code that
-// cannot import from apps/web has access). KEEP IN SYNC with that file.
-// ---------------------------------------------------------------------------
-export const ENTITY_HALF_CHIBI = 25;    // chibi VRM (135 wu height)
-export const ENTITY_HALF_HUMANOID = 50; // adult humanoid (270 wu height)

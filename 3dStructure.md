@@ -1,6 +1,6 @@
 # ClawVille — 3D Structure
 
-**Last Audited:** 2026-07-17 (Kelp Revival B2): the northeast parcel gap now contains a dedicated 48×48-tile Kelp Forest with 5,400 deterministic tall blades, three merged variant draws, deep green-teal vertex color, and slow TSL wind. It adds no lights or postprocessing and stays behind the water-fog + ground-cover + WebGPU gates. Section 8 reflects the live placement and render budget.
+**Last Audited:** 2026-07-17 (Kelp Revival B3): the northeast Kelp Forest now contains a canonical shared eight-wall switchback maze, a 75-wu south entry, a 480×320-wu center clearing, a tile-aligned photo spot, and a one-draw pulsing pearl/shell landmark. Nine shared AABBs (eight walls plus the landmark) drive client movement and server A* with exact chibi-expanded tile-center rasterization. Section 8 records the live blade, collider, path-clearance, and draw budgets.
 
 **Last edit:** 2026-07-16 (pre-existing web strict-TypeScript cleanup; no runtime behavior change): the VRM cosmetic head-fit boundary now uses the upstream `Pick<VRM, 'humanoid' | 'scene'>` surface, preserving the library's `VRMHumanBoneName` parameter contract while accepting loaded VRMs in the preview and player render paths. The deferred resident-preload fallback uses `globalThis.setTimeout` so DOM typings no longer narrow the unsupported-window branch to `never`. Render behavior, avatar/cosmetic fit math, assets, draw calls, and per-frame work are unchanged.
 
@@ -178,39 +178,39 @@ Source: `arena-buildings.tsx`. See `WorldContent.md §2` for the building roster
 
 **Ring geometry — Phase 6.2.1 (2026-05-18):**
 
-Ring tuned R=160→130 tiles (5120→4160wu — R=160 was too spaced out from player spawn at (0,0,1300)). Arc spacing ≈ 2178wu (was 2680wu at R=160). 43-tile border clearance on all sides. Grid stays at 360×360.
+Ring tuned R=160→130 tiles (5120→4160wu — R=160 was too spaced out from player spawn at (0,0,1300)). Arc spacing ≈ 2178wu (was 2680wu at R=160). The live 704×704 grid leaves 215 tiles from the ring centerline to a 14×14 zone edge (`352 - 130 - 7`).
 
 **Phase 6.2 history (2026-05-18):** Grid 240→360, ring R=100→160. **Phase 6.1 history (2026-05-18):** Grid 160→240, ring R=72→100. Casino + Patrick's Rock swap to entertainment district. claw-arcade at WSW (2 slots from casino, NOT adjacent — preserved in Phase 6.2/6.2.1).
 
 | Dimension | Value |
 |---|---|
 | Layout | 12 buildings at 30° angular spacing (true circle) |
-| Radius | 130 tiles = 4160 wu from center (180,180) / world (0,0,0) |
+| Radius | 130 tiles = 4160 wu from center (352,352) / world (0,0,0) |
 | Angular spacing | 30° (π/6 rad) per slot |
 | Starting angle | −π/2 (North), clockwise |
 | Zone footprint | 14×14 tiles = 448×448 wu |
 | Zone upper-left | `(round(cx) − 7, round(cy) − 7)` |
-| cx formula | `180 + 130 * cos(−π/2 + slot * π/6)` |
-| cy formula | `180 + 130 * sin(−π/2 + slot * π/6)` |
+| cx formula | `352 + 130 * cos(−π/2 + slot * π/6)` |
+| cy formula | `352 + 130 * sin(−π/2 + slot * π/6)` |
 
 Slot table (clockwise from North, cx/cy in tile coords, Phase 6.2.1):
 
 | Slot | Angle | cx | cy | Building | rotY | targetMaxDim | Notes |
 |---|---|---|---|---|---|---|---|
-| 0 | N (0°) | 180 | 50 | visual-creation | 0.000 | 1100 | |
-| 1 | NNE (30°) | 245 | 67 | code-development | −0.522 | 1400 | 1000→1400; max-dim normalization |
-| 2 | ENE (60°) | 293 | 115 | mcp-tool-use | −1.049 | 1400 | childScaleOverrides: "The Krusty Krab" ×1.5; bodyAnchorChild: "The Krusty Krab" (node name literal — no underscore sanitization) |
-| 3 | E (90°) | 310 | 180 | messaging-channels | −1.571 | 2500 | 1000→2500; dome square XZ≈25.87wu, MAX_FOOTPRINT=2000 cap → effective 820wu height; rotYOffset +π; DoubleSide fix |
-| 4 | ESE (120°) | 293 | 245 | api-integrations | −2.093 | 2500 | 1300→2500; km-scale GLB, after flat-base strip effective 1209wu; rotYOffset −π/2 |
-| 5 | SSE (150°) | 245 | 293 | app-publishing | −2.620 | 1000 | rotYOffset +π/2 |
-| 6 | S (180°) | 180 | 310 | cron-automation | 3.142 | 2200 | 1300→2200; Patty Building flat hierarchy (Object_N nodes), effective 1513wu; MAX_FOOTPRINT=2000 cap active |
-| 7 | SSW (210°) | 115 | 293 | deployment-ops | 2.620 | 1400 | tallest landmark |
-| 8 | WSW (240°) | 67 | 245 | claw-arcade | 2.093 | 1100 | 2 slots (60°) from casino — NOT adjacent |
-| 9 | W (270°) | 50 | 180 | casino | 1.571 | 1300 | entertainment district; box3Recenter=true |
-| 10 | WNW (300°) | 67 | 115 | agent-security | 1.049 | 1100 | adjacent to casino (slot 9) |
-| 11 | NNW (330°) | 115 | 67 | memory-rag | 0.522 | 1700 | 1400→1700; childScaleOverrides: "Squidward's_House" ×1.7 (straight U+0027 + underscore — CDP-verified node name); bodyAnchorChild: "Squidward's_House"; pivotZBias removed |
+| 0 | N (0°) | 352 | 222 | visual-creation | 0.000 | 1100 | |
+| 1 | NNE (30°) | 417 | 239 | code-development | −0.522 | 1400 | 1000→1400; max-dim normalization |
+| 2 | ENE (60°) | 465 | 287 | mcp-tool-use | −1.049 | 1400 | childScaleOverrides: "The Krusty Krab" ×1.5; bodyAnchorChild: "The Krusty Krab" (node name literal — no underscore sanitization) |
+| 3 | E (90°) | 482 | 352 | messaging-channels | −1.571 | 2500 | 1000→2500; dome square XZ≈25.87wu, MAX_FOOTPRINT=2000 cap → effective 820wu height; rotYOffset +π; DoubleSide fix |
+| 4 | ESE (120°) | 465 | 417 | api-integrations | −2.093 | 2500 | 1300→2500; km-scale GLB, after flat-base strip effective 1209wu; rotYOffset −π/2 |
+| 5 | SSE (150°) | 417 | 465 | app-publishing | −2.620 | 1000 | rotYOffset +π/2 |
+| 6 | S (180°) | 352 | 482 | cron-automation | 3.142 | 2200 | 1300→2200; Patty Building flat hierarchy (Object_N nodes), effective 1513wu; MAX_FOOTPRINT=2000 cap active |
+| 7 | SSW (210°) | 287 | 465 | deployment-ops | 2.620 | 1400 | tallest landmark |
+| 8 | WSW (240°) | 239 | 417 | claw-arcade | 2.093 | 1100 | 2 slots (60°) from cove — NOT adjacent |
+| 9 | W (270°) | 222 | 352 | cove | 1.571 | 1300 | entertainment district; box3Recenter=true |
+| 10 | WNW (300°) | 239 | 287 | agent-security | 1.049 | 1100 | adjacent to cove (slot 9) |
+| 11 | NNW (330°) | 287 | 239 | memory-rag | 0.522 | 1700 | 1400→1700; childScaleOverrides: "Squidward's_House" ×1.7 (straight U+0027 + underscore — CDP-verified node name); bodyAnchorChild: "Squidward's_House"; pivotZBias removed |
 
-**rotY formula:** `atan2(180 − cx, 180 − cy)` — each building's +Z axis points toward plaza center (world 0, 0). Values are identical across all ring expansions because atan2 depends only on direction, not magnitude. Model-authored `rotYOffset` values are additive and stay with the building regardless of slot.
+**rotY formula:** `atan2(352 − cx, 352 − cy)` — each building's +Z axis points toward plaza center (world 0, 0). Values are identical across all ring expansions because atan2 depends only on direction, not magnitude. Model-authored `rotYOffset` values are additive and stay with the building regardless of slot.
 
 **Building scale normalization — Phase 6.2:** `computeBuildingScale` now normalizes to `max(X,Y,Z)` of the bounding box (`targetMaxDim` parameter). Prior `targetHeight` normalized Y-only, causing wide/squat buildings (Chum Bucket, Patrick's Rock) to balloon in XZ while tall/narrow buildings stayed small. Max-dim normalization gives consistent visual cube size across all GLB aspect ratios. `BUILDING_TARGET_HEIGHT = 800 wu` remains as default fallback; per-building `targetMaxDim` in `BUILDING_MODELS` overrides it via `computeBuildingScale(c, config.targetMaxDim ?? BUILDING_TARGET_HEIGHT)`.
 
@@ -739,7 +739,7 @@ Lobster / crayfish GLB avatars don't participate (no swim/fly clip in their proc
 
 | Spec | Value |
 |---|---|
-| Plane size | `MAP_WIDTH × 3` × `MAP_HEIGHT × 3` = 34560 × 34560 wu (Phase 6.2: MAP_WIDTH=11520) |
+| Plane size | `MAP_WIDTH × 3` × `MAP_HEIGHT × 3` = 67584 × 67584 wu (live `MAP_WIDTH=22528`) |
 | Segments | 120 × 120 |
 | Material | `MeshStandardNodeMaterial` (TSL) |
 | Render Y | -2 |
@@ -797,7 +797,24 @@ No `InstancedMesh + ShaderMaterial` — known WebGPU silent crash on Iris Xe. Me
 | Wind | Slow, heavy TSL `positionNode` displacement from `positionLocal`, `time`, normalized blade height, and a seeded per-blade phase attribute; merged bounds include the maximum displacement |
 | Runtime gate | `showWaterFogParticles && showGroundCover && !FORCE_WEBGL`; wrapper is `perf:kelp-forest` / `userData.perfChunk='kelp-forest'` |
 
-The forest adds no light, postprocessing pass, instancing, `useFrame`, or per-frame allocation. The B2 forest is render-only; the shared human/agent maze collider layout arrives in B3.
+The forest adds no light, postprocessing pass, instancing, `useFrame`, or per-frame allocation. B3 layers the shared human/agent maze contract below onto the same three foliage buckets.
+
+### 8b. Kelp maze + pearl landmark (Kelp Revival B3)
+
+| Spec | Value |
+|---|---|
+| Canonical layout | `packages/shared/src/constants/kelp-maze.ts`; 8 readonly, stable-ID wall AABBs imported by renderer, client collision, and server collision/pathfinding |
+| Forest / maze bounds | Forest: x `7040..8576`, z `-10668..-9132` (1,536×1,536 wu). Maze: x `7328..8320`, z `-10384..-9424` (992×960 wu) |
+| Entry | South side at `(7824, -9424)`, physical width 75 wu, aligned to one A* tile-center lane; ambient approach carve widens by the 24-wu maximum visual sway without changing collision geometry |
+| Body/path derivation | Live `ENTITY_HALF_CHIBI=25` wu → 50-wu body diameter; 75-wu physical passage leaves 25 wu total clearance (12.5 wu/side) |
+| Clearing / landmark | Clearing centered `(7824, -10000)`, half-extents `240×160` wu (480×320). Giant pearl + ancient shell cluster are merged into 1 indexed geometry / 1 `MeshStandardNodeMaterial` draw with subtle TSL emissive pulse; no point light. Measured relative footprint x `-120..125.01`, z `-105.09..94`; conservative shared collider half-extents are `132×112` wu |
+| Photo spot | Tile-center-aligned `(7600, -10000)`, 224 wu west of the pearl; it remains 67 wu beyond the landmark AABB after the live 25-wu entity expansion |
+| Collision parity | 9 client colliders (`kind:'prop'`) and the same 9 server colliders: 8 walls from `KELP_MAZE_WALLS` plus 1 shared landmark collider; no duplicated coordinates |
+| Server A* raster | Maze walls and the landmark opt into typed `cell-center-expanded-aabb` raster with `paddingWu=25`; inclusive tile range is derived from cell-center intersection. All pre-existing colliders retain the legacy 4-tile / 128-wu safety raster unchanged |
+| Blade budget | Ambient remains exactly 5,400. Three dense rows per wall add 1,995 blades (665/variant), for 7,395 total: 2,465/variant, 133,110 vertices, 354,960 indices, 118,320 triangles |
+| Draw budget | Kelp walls reuse the existing three variant geometry/material buckets, so kelp remains exactly 3 draws; landmark adds 1 draw (4 total forest/maze draws) |
+
+Ambient blades are deterministically relocated outside the maze footprint and south approach, leaving readable corridors and the full clearing while preserving the B2 count. Wall blades remain in the same three `mergeGeometries` buckets and carry the same indexed geometry, vertex color, phase, height, wind, bounds, and disposal contract as ambient blades. Focused tests assert exact shared→client/server AABB parity, entry-to-photo-spot A* reachability plus segment collision safety, rejection of a direct segment through the walls, and rejection of a photo-spot segment through the landmark.
 
 ---
 

@@ -34,9 +34,10 @@
 // ---------------------------------------------------------------------------
 
 import { buildingZones, TILE_SIZE, MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
+import { KELP_MAZE_LANDMARK_COLLIDER, KELP_MAZE_WALLS } from '@clawville/shared';
 
-const HALF_W = MAP_WIDTH / 2;  // 5760
-const HALF_H = MAP_HEIGHT / 2; // 5760
+const HALF_W = MAP_WIDTH / 2;  // 11264 (704 × 32 / 2)
+const HALF_H = MAP_HEIGHT / 2; // 11264 (704 × 32 / 2)
 
 /**
  * Axis-aligned bounding box collider in world XZ coordinates.
@@ -330,6 +331,13 @@ function buildColliders(): Collider2D[] {
     { id: 'town-guide',           centerX:     0, centerZ:   240, halfX:  40, halfZ:  40, kind: 'prop' },
   ];
   colliders.push(...PROPS);
+
+  // Kelp Revival B3: one client movement collider per canonical shared wall.
+  // Server A* consumes the same list, so hosted agents cannot ghost through.
+  for (const wall of KELP_MAZE_WALLS) {
+    colliders.push({ ...wall, kind: 'prop' });
+  }
+  colliders.push({ ...KELP_MAZE_LANDMARK_COLLIDER, kind: 'prop' });
 
   return colliders;
 }
