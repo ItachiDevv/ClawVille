@@ -1909,7 +1909,7 @@ const SceneContents = memo(function SceneContents({
       )}
 
       {/* Seaweed ground cover — merged geometry + TSL GPU animation (no InstancedMesh).
-          Skipped on iOS/forceWebGL: 4500 blades with per-vertex TSL positionNode wind
+          Skipped on iOS/forceWebGL: 18,000 blades with per-vertex TSL positionNode wind
           animation compile to GLSL loops on WebGL2 backend and spike frame time past
           the A-series GPU budget on first draw. Plain WebGL path has no equivalent
           GPU-side procedural animation so the cost isn't recoverable. */}
