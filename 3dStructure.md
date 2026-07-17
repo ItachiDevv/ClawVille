@@ -1,6 +1,6 @@
 # ClawVille — 3D Structure
 
-**Last Audited:** 2026-07-17 (Kelp Revival B1): ambient seaweed now matches the expanded 704×704-tile / 22,528×22,528-wu world with 18,000 seeded, exclusion-aware blades in one merged draw call. Section 8 now reflects the live geometry/material/wind implementation.
+**Last Audited:** 2026-07-17 (Kelp Revival B2): the northeast parcel gap now contains a dedicated 48×48-tile Kelp Forest with 5,400 deterministic tall blades, three merged variant draws, deep green-teal vertex color, and slow TSL wind. It adds no lights or postprocessing and stays behind the water-fog + ground-cover + WebGPU gates. Section 8 reflects the live placement and render budget.
 
 **Last edit:** 2026-07-16 (pre-existing web strict-TypeScript cleanup; no runtime behavior change): the VRM cosmetic head-fit boundary now uses the upstream `Pick<VRM, 'humanoid' | 'scene'>` surface, preserving the library's `VRMHumanBoneName` parameter contract while accepting loaded VRMs in the preview and player render paths. The deferred resident-preload fallback uses `globalThis.setTimeout` so DOM typings no longer narrow the unsupported-window branch to `never`. Render behavior, avatar/cosmetic fit math, assets, draw calls, and per-frame work are unchanged.
 
@@ -784,6 +784,20 @@ TSL fragment shader (`createSandMaterial()`):
 | Distribution | Seeded clustered scatter across the 704×704-tile / 22,528×22,528-wu world; canonical building and land-parcel exclusion zones remain clear |
 
 No `InstancedMesh + ShaderMaterial` — known WebGPU silent crash on Iris Xe. Merged geometry is the only safe path for high-count animated foliage.
+
+### 8a. Northeast Kelp Forest (`apps/web/src/lib/three/kelp-forest.tsx`)
+
+| Spec | Value |
+|---|---|
+| Center / footprint | `(7808, -9900)` in the northeast parcel gap; 48×48 tiles = 1,536×1,536 wu |
+| Blade count | 5,400 deterministic blades: exactly 1,800 per variant |
+| Height variants | 135–148 wu, 150–164 wu, and 166–180 wu (3–4× the ambient kelp's 45-wu unscaled maximum) |
+| Geometry / draws | Per variant: 1,800 blades, 32,400 vertices, 28,800 triangles, 1 merged indexed `BufferGeometry`, and 1 mesh draw; total: 97,200 vertices, 86,400 triangles, 3 draws. Source planes are disposed after merge |
+| Material | Three `MeshStandardNodeMaterial` instances using deep green-teal baked vertex palettes; existing world lighting only |
+| Wind | Slow, heavy TSL `positionNode` displacement from `positionLocal`, `time`, normalized blade height, and a seeded per-blade phase attribute; merged bounds include the maximum displacement |
+| Runtime gate | `showWaterFogParticles && showGroundCover && !FORCE_WEBGL`; wrapper is `perf:kelp-forest` / `userData.perfChunk='kelp-forest'` |
+
+The forest adds no light, postprocessing pass, instancing, `useFrame`, or per-frame allocation. The B2 forest is render-only; the shared human/agent maze collider layout arrives in B3.
 
 ---
 
