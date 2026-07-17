@@ -20,7 +20,7 @@ import { npcSimulation } from '../services/npc-simulation';
 import { recordCovenantAction } from '../services/covenant-action-recorder';
 import { findPath } from '../services/pathfinding';
 import { memoryService } from '../services/memory-service';
-import { db, agentBots, avatars, users, buildingSkills, landParcels, eq, and, sql } from '@clawville/database';
+import { db, agentBots, avatars, users, buildingSkills, landParcels, eq, and, sql, type AgentBotAck } from '@clawville/database';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { getSessionAgent } from '../services/session-agent-map';
 import { AgentSubstrateClient } from '../services/agent-substrate-client';
@@ -120,8 +120,11 @@ import {
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
 import { randomBytes } from 'crypto';
+import { agentSessionAckRoutes } from './agent-session-ack';
 
 const agentGatewayRoutes = new Hono();
+
+agentGatewayRoutes.route('/session', agentSessionAckRoutes);
 
 // ---------------------------------------------------------------------------
 // Hatcher partner #2 (2026-06-01) — /connect orientation payload.
@@ -426,6 +429,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
   let isReturning = false;
   let totalSessions = 1;
   let knowledge: string[] = [];
+  let storedProtocolAck: AgentBotAck | null = null;
   let uuid = '';
   let lastX: number | undefined;
   let lastY: number | undefined;
@@ -565,6 +569,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
       isReturning = true;
       totalSessions = (existing.totalSessions ?? 0) + 1;
       knowledge = existing.knowledge ?? [];
+      storedProtocolAck = existing.ack ?? null;
       uuid = existing.id;
       const meta = existing.metadata as { lastX?: number; lastY?: number } | null;
       lastX = meta?.lastX;
@@ -1077,7 +1082,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
     knowledge,
     ownedSkills,
     gameTools: gameToolsBundle,
-    protocol: agentProtocolPointer(resolveApiBase()),
+    protocol: agentProtocolPointer(resolveApiBase(), storedProtocolAck),
     identityType,
     autonomyMode,
     walletAddress,
@@ -1351,7 +1356,7 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
 
   return c.json({
     sessionTicket,
-    protocol: agentProtocolPointer(resolveApiBase()),
+    protocol: agentProtocolPointer(resolveApiBase(), existingBot?.ack),
     // P0 gate fix (2026-07-03), ADDITIVE: the fresh agent bearer + its TTL
     // deadline. Present IFF the user has a bot row and the mint succeeded (a
     // reserved partner row or a mint failure keeps the legacy ticket-only
