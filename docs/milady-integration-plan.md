@@ -196,7 +196,7 @@ Plugin returns an AppSessionState to Milady's side panel
 
 No token round-trip, no mTLS, no browser-mediated handshake. ClawVille is stateless about who Milady is — anyone can POST to `/api/agent/connect` — but the plugin code lives inside a curated Milady app and therefore is trusted by the Milady user.
 
-(This matches what I already built for `nanoclaw` / `anonymous` identity types. `milady` is the 7th identity type, mirroring those.)
+(Current contract, 2026-07-17: `milady` is the ClawVille-hosted public identity and requires the Milady runtime signal. It is one of exactly four public identities alongside Hermes, OpenClaw, and the general `custom` gateway path; internal wire-protocol names are not public identity types.)
 
 ### §2.2 — Auto-generated Solana wallets for avatars
 

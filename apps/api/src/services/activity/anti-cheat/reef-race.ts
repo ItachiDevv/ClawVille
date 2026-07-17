@@ -364,9 +364,15 @@ export const REEF_SEGMENT_MIN_TIME_FRACTION = 0.7;
  * Pure function. Caller (spline sim) supplies prev/current t values that
  * have already been computed via `closestPointOnSpline(...).t`.
  *
- * - currentT >= prevT                 → ok=true (forward progress).
- * - currentT  < prevT but within tol  → ok=true (legitimate knockback).
- * - currentT  < prevT - tol           → ok=false, flagged='progress_regression'.
+ * CLOSED-LOOP (2026-06-22): on a periodic ring, t WRAPS 1→0 at the start/finish
+ * seam every lap. A large backward drop (> 0.5) is therefore a FORWARD seam
+ * crossing, NOT a regression — we wrap-adjust the delta before judging it. A
+ * body moves ≤ ~0.0006 of the loop per tick, so a genuine 0.99→0.01 wrap is
+ * unambiguous and is treated as forward progress.
+ *
+ * - wrapped delta >= -tol  → ok=true (forward progress, incl. a legit seam wrap
+ *                            or a small knockback within tolerance).
+ * - wrapped delta  < -tol  → ok=false, flagged='progress_regression'.
  *
  * The returned `value` is `currentT` unchanged in every branch — this
  * validator does NOT clamp progress (the spline sim owns the canonical t).
@@ -385,7 +391,10 @@ export function validateProgressMonotonic(
       detail: `progress_value_invalid_curr_${currentT}_prev_${prevT}`,
     };
   }
-  const delta = currentT - prevT;
+  let delta = currentT - prevT;
+  // Wrap-adjust a forward seam crossing: a drop bigger than half the loop is a
+  // wrap (currentT is one loop ahead, just past the seam), so add 1.0.
+  if (delta < -0.5) delta += 1;
   if (delta >= -REEF_PROGRESS_REGRESSION_TOLERANCE) {
     return { ok: true, value: currentT, clamped: false, flagged: false };
   }
@@ -402,11 +411,11 @@ export function validateProgressMonotonic(
 }
 
 /**
- * Per-segment t-range entry. Built once per segments-array reference by
- * sampling the spline at each segment's `zStart`/`zEnd` boundary. The
- * spline track is monotonic in z by construction (CP z values are strictly
- * increasing — see `REEF_RACE_DEFAULT_TRACK`), so `tStart < tEnd` for every
- * segment and the array is monotonic in `tStart`.
+ * Per-segment t-range entry. Built once per segments-array reference. The
+ * CLOSED-LOOP track (2026-06-22) carries explicit `tStart`/`tEnd` spline-
+ * parameter fractions directly on each segment (z is NON-monotonic on a ring,
+ * so the old z-bisection is retired) — `buildSegmentTRanges` reads them
+ * verbatim and derives `minSegmentMs` from the segment's arc length.
  */
 interface SegmentTRange {
   /** Index into the original segments array (parallel). */
@@ -435,15 +444,18 @@ const segmentTRangeCache = new WeakMap<
 >();
 
 /**
- * Build the (segments) → (t-ranges) table by binary-searching the spline
- * for each segment's z-boundary. The default track CP layout is monotonic
- * in z, so a simple bisection on `centerlineAt(t).z` converges to the
- * matching t.
+ * Build the (segments) → (t-ranges) table. CLOSED-LOOP (2026-06-22): the
+ * segments carry explicit `tStart`/`tEnd` directly, so this reads them
+ * verbatim (NO z-bisection — z is non-monotonic on the ring). `minSegmentMs`
+ * is derived from the segment's ARC LENGTH on the closed spline:
  *
- * MIN_SEGMENT_MS per architecture doc §6:
- *   minSegmentMs = (zEnd - zStart) / REEF_MAX_SPEED * REEF_SEGMENT_MIN_TIME_FRACTION * 1000
+ *   minSegmentMs = (arc(tEnd) − arc(tStart)) / REEF_MAX_SPEED
+ *                  × REEF_SEGMENT_MIN_TIME_FRACTION × 1000
  *
- * (z-length wu / wu-per-second = seconds; ×1000 = ms; ×0.7 = generous floor.)
+ * (arc-length wu / wu-per-second = seconds; ×1000 = ms; ×0.7 = generous floor.)
+ *
+ * The spline is built `{ closed: true }` so the arc lengths match the sim's
+ * lap math exactly.
  */
 function buildSegmentTRanges(
   segments: ReadonlyArray<ReefRaceSegmentRange>,
@@ -452,27 +464,17 @@ function buildSegmentTRanges(
   const cached = segmentTRangeCache.get(segments);
   if (cached) return cached;
 
-  const spline = new ReefSpline(track);
-
-  // Bisect t ∈ [0, 1] for the smallest t whose centerline.z >= zTarget.
-  // 50 iterations gives ~1e-15 t-precision — overkill but cheap one-shot.
-  const tForZ = (zTarget: number): number => {
-    let lo = 0;
-    let hi = 1;
-    for (let i = 0; i < 50; i++) {
-      const mid = (lo + hi) * 0.5;
-      const c = spline.centerlineAt(mid);
-      if (c.z < zTarget) lo = mid;
-      else hi = mid;
-    }
-    return (lo + hi) * 0.5;
-  };
+  const spline = new ReefSpline(track, { closed: true });
 
   const out: SegmentTRange[] = segments.map((seg, idx) => {
-    const tStart = tForZ(seg.zStart);
-    const tEnd = tForZ(seg.zEnd);
-    const zLen = Math.max(0, seg.zEnd - seg.zStart);
-    const minSeconds = (zLen / REEF_MAX_SPEED) * REEF_SEGMENT_MIN_TIME_FRACTION;
+    const tStart = seg.tStart;
+    const tEnd = seg.tEnd;
+    const arcLen = Math.max(
+      0,
+      spline.arclengthFromT(tEnd) - spline.arclengthFromT(tStart),
+    );
+    const minSeconds =
+      (arcLen / REEF_MAX_SPEED) * REEF_SEGMENT_MIN_TIME_FRACTION;
     const minSegmentMs = minSeconds * 1000;
     return { index: idx, tStart, tEnd, minSegmentMs, id: seg.id };
   });

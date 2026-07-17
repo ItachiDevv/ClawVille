@@ -247,13 +247,13 @@ export interface RewardPreview {
   /**
    * Reef Race Phase 4 — best consecutive clean checkpoint crosses this
    * match. Always present on Reef Race matches (>= 0); absent for other
-   * activities. Hitting `TOTAL_CHECKPOINTS_PER_RACE` (= 36) yields the
+   * activities. Hitting `TOTAL_CHECKPOINTS_PER_RACE` (= 24) yields the
    * perfect-lap bonus, surfaced via `perfectLapBonus`.
    */
   streakBest?: number;
   /**
    * Reef Race Phase 4 — additional ClawTokens credited for a perfect race
-   * (streakBest >= 36). 0 when not earned. Sums into `tokens` already; the
+   * (streakBest >= 24). 0 when not earned. Sums into `tokens` already; the
    * field is included so the modal can render the bonus line.
    */
   perfectLapBonus?: number;
@@ -288,6 +288,32 @@ export interface RoomMeta {
       outerCenter: Vec2;
     }>;
     hazards: Array<{ id: string; center: Vec2; radius: number }>;
+  };
+  /**
+   * Reef Race v2 (spline sim) — server-authoritative boost-pad + ramp trigger
+   * zones so the client can render them. Sent ONCE in `snapshot.init`; never
+   * updated. `undefined` for the ellipse sim (which uses `reefStaticZones`
+   * instead) and all non-reef-race rooms. `position` = world centerline point
+   * of the zone center in the `{ x, y }` (y = scene-Z) convention shared with
+   * entity positions; `rot` = atan2(tangent.x, tangent.z) so the client can
+   * orient the quad down-track; `halfLength`/`halfWidth` are the AABB extents
+   * along / perpendicular to the tangent.
+   */
+  reefSplineZones?: {
+    boostPads: Array<{
+      id: string;
+      position: Vec2;
+      halfLength: number;
+      halfWidth: number;
+      rot: number;
+    }>;
+    ramps: Array<{
+      id: string;
+      position: Vec2;
+      halfLength: number;
+      halfWidth: number;
+      rot: number;
+    }>;
   };
   /**
    * Phase 3 — Reef Race per-avatar racing profile. Class is derived from
@@ -351,11 +377,52 @@ export interface EntityDelta {
      */
     height?: number;
     /**
-     * Reef Race v2 (spline sim) — body's race progress as 0..1 fraction of
-     * spline arclength. Replaces lap-counter for the linear river layout.
-     * Optional; ellipse sim does not emit this field.
+     * Reef Race v2 â€” authoritative effective speed multiplier used by the
+     * server for this body's latest surf-integration step. Quantized to 0.01;
+     * the self renderer mirrors it for presentation-only client prediction.
+     */
+    speedMod?: number;
+    /**
+     * Reef Race v2 (spline sim) — body's WITHIN-LAP race progress as a 0..1
+     * fraction of one loop of spline arclength (wraps 1→0 at the seam each lap).
+     * Optional; ellipse sim does not emit this field. The render/HUD combine
+     * this with `lap` (below) for the true race position; `lap + progress` is
+     * the monotonic ordering key.
      */
     progress?: number;
+    /**
+     * Reef Race v2 CLOSED-LOOP sim — completed-lap count (0-based: 0 on lap 1,
+     * increments each time the body crosses the start/finish seam forward).
+     * Pairs with `progress` (within-lap fraction). Render shows `lap+1 / totalLaps`.
+     */
+    lap?: number;
+    /**
+     * Reef Race v2 CLOSED-LOOP sim — live finishing position (1 = leading),
+     * ordered by (lap desc, then within-lap progress desc; finishers by time,
+     * DNF last). Server-computed each tick; the HUD reads this directly.
+     */
+    position?: number;
+    /**
+     * Reef Race v2 CLOSED-LOOP sim — total laps in the race (constant for the
+     * room; carried for HUD "lap X / N" rendering without a separate fetch).
+     */
+    totalLaps?: number;
+    /**
+     * Reef Race v2 mechanics — surf-carve mini-turbo charge, normalized 0..1
+     * against the tier-2 full-charge threshold (HUD meter fill). 0 when not
+     * charging. Optional; ellipse sim omits it.
+     */
+    miniTurboCharge?: number;
+    /**
+     * Reef Race v2 mechanics — mini-turbo tier the charge has reached so far
+     * (0 = none, 1, 2). Drives the HUD meter color. Optional.
+     */
+    miniTurboLevel?: 0 | 1 | 2;
+    /**
+     * Reef Race v2 mechanics — true while ANY positive boost is active (boost
+     * pad / mini-turbo / launch / slipstream). Drives kart trail/FX. Optional.
+     */
+    boosting?: boolean;
     [k: string]: unknown;
   };
 }
@@ -377,6 +444,14 @@ export interface ScoreDelta {
   avatarId: string;
   score: number;
   placement?: number;
+  /**
+   * Reef Race v2 CLOSED-LOOP sim — completed-lap count, mirrored into the
+   * keyframe `scores[]` so a fresh keyframe carries lap state without waiting
+   * for the next per-entity delta. Optional; other activities omit it.
+   */
+  lap?: number;
+  /** Reef Race v2 CLOSED-LOOP sim — total laps in the race (HUD "lap X / N"). */
+  totalLaps?: number;
 }
 
 /** Full room state (for snapshot.init and snapshot.keyframe) */
@@ -389,13 +464,38 @@ export interface WorldState {
     rotation: number;
     state: string;
     hp?: number;
+    /**
+     * Reef Race v2 — height above the ribbed water (wu). Omitted (= 0) when
+     * grounded. Carried on keyframes so a keyframe doesn't drop a jump's height.
+     */
+    height?: number;
+    /** Reef Race v2 — latest authoritative effective speed multiplier. */
+    speedMod?: number;
+    /**
+     * Reef Race v2 mechanics — surf-carve mini-turbo charge 0..1 (HUD meter),
+     * carried on keyframes so the 1 Hz keyframe doesn't blank the meter.
+     */
+    miniTurboCharge?: number;
+    /** Reef Race v2 mechanics — mini-turbo tier reached (0|1|2). */
+    miniTurboLevel?: 0 | 1 | 2;
+    /** Reef Race v2 mechanics — any positive boost active (kart trail/FX). */
+    boosting?: boolean;
   }>;
   powerUps: Array<{
     spawnId: string;
     kind: string;
     position: Vec2;
   }>;
-  scores: Array<{ avatarId: string; score: number }>;
+  scores: Array<{
+    avatarId: string;
+    score: number;
+    /** Reef Race v2 CLOSED-LOOP sim — completed-lap count (keyframe lap state). */
+    lap?: number;
+    /** Reef Race v2 CLOSED-LOOP sim — total laps in the race. */
+    totalLaps?: number;
+    /** Reef Race v2 CLOSED-LOOP sim — live finishing position (1 = leading). */
+    position?: number;
+  }>;
 }
 
 // ─── Server → Client frame union ────────────────────────────────────────────
@@ -403,12 +503,16 @@ export interface WorldState {
 export type ServerFrame =
   | {
       type: 'snapshot.init';
+      /** Epoch ms when the authoritative pose sample was captured. */
+      serverTimeMs?: number;
       room: RoomMeta;
       world: WorldState;
       seed: number;
     }
   | {
       type: 'snapshot.delta';
+      /** Epoch ms when the authoritative pose sample was captured. */
+      serverTimeMs?: number;
       baseSeq: number;
       seq: number;
       entities: EntityDelta[];
@@ -417,6 +521,8 @@ export type ServerFrame =
     }
   | {
       type: 'snapshot.keyframe';
+      /** Epoch ms when the authoritative pose sample was captured. */
+      serverTimeMs?: number;
       seq: number;
       world: WorldState;
     }
@@ -444,16 +550,21 @@ export type ServerFrame =
     }
   | {
       /**
-       * Live ellipse Reef Race sim only. Retires when the v2 spline sim ships
-       * (`REEF_RACE_USE_SPLINE=true`) — the linear river layout has no laps,
-       * uses `event.crossed_finish` + per-tick `EntityDelta.changed.progress`
-       * instead. Kept here for backward compat with the live sim.
+       * Lap completed. Emitted by BOTH sims now:
+       *   - Ellipse sim (live): per-checkpoint-loop lap.
+       *   - v2 CLOSED-LOOP spline sim (2026-06-22): one per forward start/finish
+       *     seam crossing that completes a NON-final lap (the final lap fires
+       *     `event.crossed_finish` instead). It stamps real `splitMs` (time since
+       *     the previous lap line) + `totalMs` (since match start), and adds
+       *     `totalLaps` for "lap X / N" HUD rendering.
        */
       type: 'event.lap_completed';
       avatarId: string;
       lap: number;
       splitMs: number;
       totalMs: number;
+      /** v2 CLOSED-LOOP sim: total laps in the race (HUD "lap X / N"). Optional for the ellipse sim. */
+      totalLaps?: number;
     }
   | {
       /**
@@ -571,7 +682,7 @@ export type ServerFrame =
     }
   | {
       /**
-       * Reef Race Phase 4 — streak milestone (5/10/20/30/36 clean checkpoint
+       * Reef Race Phase 4 — streak milestone (5/10/16/20/24 clean checkpoint
        * crosses in a row). Edge-triggered, NOT broadcast per checkpoint — the
        * per-tick streak count rides `EntityDelta.changed.streak` instead.
        *
@@ -618,6 +729,28 @@ export type ServerFrame =
       avatarId: string;
       rampId: string;
       launchVel: number;
+    }
+  | {
+      /**
+       * Reef Race v2 mechanics — a body entered a boost-pad AABB on the spline
+       * track. Fired for self, rivals, and bots. Client flashes the pad,
+       * screen-shakes + particle-bursts for the SELF player only (like
+       * event.ramp_launch). Old clients ignore it (switch default → no-op).
+       */
+      type: 'event.boost_pad';
+      avatarId: string;
+      padId: string;
+    }
+  | {
+      /**
+       * Reef Race v2 mechanics — a sustained surf-carve discharged into a
+       * mini-turbo. `level` is the tier reached (1 = small, 2 = big). Fired on
+       * release for self, rivals, and bots. Client plays a spark/whoosh FX.
+       * Old clients ignore it (switch default → no-op).
+       */
+      type: 'event.mini_turbo_fire';
+      avatarId: string;
+      level: 1 | 2;
     }
   // ─── Texas Hold'em (`poker.*`) server frames — ADDITIVE ───────────────────
   //

@@ -27,6 +27,15 @@ const FRAME_ANCESTORS =
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Dev-only: allow the founder's laptop (tailnet) to load dev assets —
+  // Next's dev server 403s _next/* requests from non-localhost hosts otherwise.
+  // No effect on production builds. (Local worktree edit, not for PR.)
+  allowedDevOrigins: [
+    '100.67.104.70',
+    'localhost',
+    '127.0.0.1',
+    'itachi222.tail06a01b.ts.net',
+  ],
   // Local-build speedup: skip TS check during `bun run build` so the build
   // produces .next/ artifacts even with pre-existing dual-@types/three
   // errors in non-meshlet files (e.g. reef-race-v2 BufferGeometry mismatch).

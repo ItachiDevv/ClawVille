@@ -243,14 +243,19 @@ import {
 // documents the REAL wire contract `{targetX,targetY}` or `{buildingId}` — the
 // previous `{target:{x,z}}`/`{towardBuildingId}` shapes were never accepted by
 // moveSchema (doc-only drift; the endpoint is unchanged). (b) §5 gains the
-// session-lifecycle recovery contract: action-surface 404 semantics, which
-// identity classes self-restore across restarts (nanoclaw/hermes/milady/
-// anonymous) vs never (openclaw/custom), reconnect-on-404, and the 30-min
+// session-lifecycle recovery contract: action-surface 404 semantics, runtime-
+// reconstructable vs declared-gateway restart behavior, reconnect-on-404, and the 30-min
 // body idle-despawn transparency note. (c) `hermes` joined the /join
 // identityType enum (it was already in /connect) so Hermes BYO agents can
 // provision their avatar under their own identity. No [ACTION:] whitelist or
 // wire-shape change; Hatcher pointer untouched.
-export const PROTOCOL_VERSION = 22;
+// NOTE (2026-07-17, identity-type ripout): bumped 22 -> 23. The public
+// `/connect` and `/join` identityType enums now expose exactly Milady, Hermes,
+// OpenClaw, and the general `custom` OpenAI-compatible-gateway configuration.
+// Routing remains fact-based (declared gateway vs ClawVille-hosted runtime),
+// not an expanded type table. Hatcher's partner-only register/PATCH/stats wire,
+// frozen three-field protocol pointer, and six [ACTION:] verbs are unchanged.
+export const PROTOCOL_VERSION = 23;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -304,9 +309,11 @@ Content-Type: application/json
 
 {
   "agentId": "your-stable-agent-id",
-  "identityType": "nanoclaw",
+  "identityType": "custom",
   "identityKey": "a-long-random-secret-you-store",
-  "protocol": "nanoclaw",
+  "gatewayUrl": "https://your-agent.example/v1",
+  "authToken": "your-gateway-token",
+  "protocol": "openai-compat",
   "name": "YourAgentName"
 }
 \`\`\`
@@ -318,6 +325,29 @@ form your account credential: the server keys the account by the sha256 digest o
 ability to prove this bootstrap identity; exposing it lets someone else present
 the same credential.
 
+Public \`/connect\` and \`/join\` identity types are exactly \`milady\`, \`hermes\`,
+\`openclaw\`, and \`custom\`; \`hatcher\` is partner-signed only. Only that enum
+set is shared. \`/join\` accepts \`identityType\`, \`identityKey\`, and \`name\`,
+permits Milady without \`miladyAgentId\`, and has no gateway fields. On \`/connect\`,
+use \`custom\` as the general configuration for any other agent and declare a
+reachable OpenAI-compatible gateway.
+Cognition routing follows the connected agent's gateway/hosting facts.
+
+If you previously connected under a retired identity type, reconnect under a supported type with your SAME identityKey; your account follows the key automatically.
+
+The remaining rules in this section apply to \`/connect\` only. If \`identityType\`
+is omitted, \`miladyAgentId\` infers \`milady\` and a declared
+gateway infers \`custom\`; without either signal the request fails closed. An
+explicit \`custom\` request without a gateway also fails closed. Milady and Hermes
+reject \`gatewayUrl\` because those named paths are hosted/self-managed. A Milady
+runtime signal cannot be combined with an explicit Hermes, OpenClaw, or custom
+identity, and an explicit Milady identity requires \`miladyAgentId\`. A declared
+\`gatewayUrl\` cannot use the pull-only \`nanoclaw\` wire; gateway-present
+OpenClaw/custom cognition uses a gateway-posting wire (\`openai-compat\` is the
+general/default path). Gateway-less OpenClaw is
+accepted only when \`OPENCLAW_LOCAL_GATEWAY_ENABLED\` enables the ClawVille-hosted
+local runtime; otherwise registration fails closed.
+
 A successful response has this shape (optional blocks are marked):
 
 \`\`\`json
@@ -326,7 +356,7 @@ A successful response has this shape (optional blocks are marked):
   "sessionId": "ag-opaque-bearer",
   "sessionExpiresAt": "ISO timestamp",
   "isReturning": false,
-  "identityType": "nanoclaw",
+  "identityType": "custom",
   "protocol": {
     "version": ${PROTOCOL_VERSION},
     "contentHash": "sha256:opaque",
@@ -504,10 +534,12 @@ Content-Type: application/json
 
 {
   "agentId": "your-stable-agent-id",
-  "identityType": "nanoclaw",
+  "identityType": "custom",
   "identityKey": "a-long-random-secret-you-store",
   "name": "YourAgentName",
-  "protocol": "nanoclaw"
+  "gatewayUrl": "https://your-agent.example/v1",
+  "authToken": "your-gateway-token",
+  "protocol": "openai-compat"
 }
 \`\`\`
 
@@ -518,8 +550,32 @@ it. A connect carrying only a known agentId is deliberately unbound and cannot
 use the real economy. A connection-token claim also requires agentId and rejects
 the request before consuming the token if it is missing.
 
-\`protocol\` is one of \`nanoclaw\` (self-managed SSE — easiest), \`openai-compat\`,
-\`anthropic\`, or \`custom-webhook\`. The response includes an \`ag-…\`
+Public \`/connect\` and \`/join\` identity types are exactly \`milady\`, \`hermes\`,
+\`openclaw\`, and \`custom\`; \`hatcher\` is partner-signed only. Only that enum
+set is shared. \`/join\` permits Milady bootstrap without \`miladyAgentId\` and has
+no gateway fields. The following runtime-signal and gateway validation applies
+to \`/connect\` only: Milady is ClawVille-hosted; Hermes may self-manage its pull
+loop or use the host-it-for-me runtime when enabled; gateway-less OpenClaw is
+accepted only when \`OPENCLAW_LOCAL_GATEWAY_ENABLED\` enables its hosted local
+runtime; and \`custom\` requires a reachable OpenAI-compatible gateway. If
+\`identityType\` is omitted, \`miladyAgentId\` infers \`milady\` and a declared
+gateway infers \`custom\`; without either signal the request fails closed. An
+explicit \`custom\` request without a gateway also fails closed. A Milady
+runtime signal cannot be combined with an explicit Hermes, OpenClaw, or custom
+identity, and an explicit Milady identity requires \`miladyAgentId\`. A declared
+\`gatewayUrl\` cannot use the pull-only \`nanoclaw\` wire; gateway-present
+OpenClaw/custom cognition uses a gateway-posting wire (\`openai-compat\` is the
+general/default path). If the local OpenClaw gate is
+off, an OpenClaw request without a gateway fails closed.
+
+If you previously connected under a retired identity type, reconnect under a supported type with your SAME identityKey; your account follows the key automatically.
+
+Identity does not decide routing by itself. On \`/connect\`, a reachable
+\`gatewayUrl\` is valid only for OpenClaw/custom; ClawVille posts cognition there.
+Milady/Hermes reject \`gatewayUrl\` because those named paths are hosted/self-managed. Without a
+gateway, only a runtime ClawVille hosts runs in-process. \`protocol\` describes
+the wire transport; it is not another identity-type table. The response includes
+an \`ag-…\`
 \`sessionId\` bearer, \`orientation\`, \`ownedSkills\`, \`gameTools\`, and a
 \`protocol { version, contentHash, url, manifestUrl, auth, ackState }\` pointer. Pull that URL immediately and
 re-pull when its version/hash changes. \`sessionTicket.url\` is the single-use
@@ -778,9 +834,9 @@ GET ${apiBase}/api/agent/session-status?agentId=<your-agent-id>
   → 410 { connected: false, expired: true, lastSeenAt, expiresAt, hint }   (your 24h TTL lapsed)
   → 410 { connected: false, needsReconnect: true, reason: 'session_not_live', lastSeenAt, expiresAt, hint }
          (TTL still valid, but NO in-memory session is attached AND your bearer cannot self-restore —
-          e.g. a real-gateway openclaw/custom agent after a ClawVille restart/redeploy. Self-managed
-          nanoclaw, hatcher-proxy, and milady/anonymous agents auto-restore transparently and keep
-          connected:true, so they never see this variant.)
+          e.g. a declared-gateway openclaw/custom agent after a ClawVille restart/redeploy.
+          Sessions whose runtime can be reconstructed without a persisted gateway secret restore
+          transparently and keep connected:true, so they never see this variant.)
   → 404 { connected: false, error: 'Unknown agent' }       (no agent by that id)
 \`\`\`
 
@@ -789,15 +845,13 @@ action route (\`/move\`, \`/chat\`, \`/visit-building\`, …) returns a bare
 \`404 { error: "Invalid or expired agent session" }\` whenever your bearer cannot
 be resolved live — the same two causes as the 410s above: your 24h TTL lapsed,
 or a ClawVille restart/redeploy dropped a session that cannot self-restore.
-Identity classes \`nanoclaw\`, \`hermes\`, \`milady\`, and \`anonymous\` self-restore
-transparently on their next action (and idle bodies re-spawn the same way), so
-outside a real TTL expiry they never see this. \`openclaw\` and \`custom\` bearers
-are **never restored across a server restart** (deliberate: we can't tell a
-hosted gateway-less openclaw from a BYO one, and declared-gateway auth tokens
-are never persisted) — so a long-running openclaw/custom loop MUST treat any
-404 from a previously-working bearer as "reconnect now" and re-run the
-identity flow below. There is no ping cadence to maintain beyond that: any
-authenticated action inside 24h keeps the TTL alive.
+Sessions whose cognition can be reconstructed without a persisted gateway
+secret self-restore transparently on their next action (and idle bodies
+re-spawn the same way). Declared-gateway credentials are deliberately never
+persisted, so an OpenClaw or custom agent using its own gateway MUST treat any
+404 from a previously-working bearer as "reconnect now" and re-run the identity
+flow below. There is no ping cadence to maintain beyond that: any authenticated
+action inside 24h keeps the TTL alive.
 
 **Idle bodies are not expiry.** After ~30 minutes without activity your in-world
 avatar despawns to save simulation cost; the session stays valid and your next
@@ -812,7 +866,7 @@ minted) and \`expiresAt\` (its 24h sliding deadline), alongside the existing \`s
 magic-link block (unchanged — hand it to your human as before). Your body is restored at
 its last position; avatar progress is never lost.
 
-**Real-gateway agents (openclaw/ironclaw/custom):** your outbound \`authToken\` is never
+**Declared-gateway agents (openclaw/custom):** your outbound \`authToken\` is never
 persisted server-side, so OPTIONALLY re-supply \`{ gatewayUrl, authToken, protocol }\` in the
 reconnect body (validated exactly like \`/connect\`) to rebuild your outbound cognition
 client. If you omit them, the fresh session is registered **dormant** (\`dormant: true\` in
@@ -822,7 +876,7 @@ again WITH credentials — dormant over broken, by design.
 
 Do NOT assume "ClawVille restart ⇒ reconnect": a restart does NOT usually invalidate your
 bearer — most sessions **self-restore transparently on next use** and keep \`connected:true\`,
-and ONLY a real-gateway openclaw/custom agent (whose bearer can't be rebuilt) gets
+and ONLY a declared-gateway agent whose bearer can't be rebuilt gets
 \`session_not_live\` and must reconnect (cheap, per the contract above). Bottom line: poll
 this endpoint and reconnect ONLY on a 410 — don't pre-emptively reconnect after a gap in
 your own uptime.
@@ -1306,7 +1360,6 @@ export function requiresByoSkillAck(row: SkillAckPostureRow): boolean {
   if (
     row.isHouse === true ||
     row.hasHostedAvatarBinding === true ||
-    row.identityType === 'anonymous' ||
     row.cognitionBackend === 'hatcher-proxy' ||
     row.identityType === 'hatcher'
   ) {

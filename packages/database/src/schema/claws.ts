@@ -39,14 +39,16 @@ export const agentBots = pgTable('openclaw_bots', {
   id: uuid('id').primaryKey().defaultRandom(),
   agentId: varchar('agent_id', { length: 200 }).notNull().unique(),
   // Identity type — which framework is connecting.
-  // Values: 'openclaw' | 'ironclaw' | 'nanoclaw' | 'milady' | 'custom' | 'anonymous'
+  // Public values: 'milady' | 'hermes' | 'openclaw' | 'custom'.
+  // Partner-signed registration additionally uses 'hatcher'.
   //
   // For 'milady', the agent_id is prefixed with "milady:" and derived from
   // the Milady runtime's agentId. Runtime-trust model: no external
   // verification happens — the @clawville/app-clawville plugin is the
   // trust boundary.
   identityType: varchar('identity_type', { length: 50 }).default('openclaw').notNull(),
-  // Nullable: nanoclaw / anonymous / milady agents have no outbound gateway
+  // Nullable: hosted Milady and gateway-less hosted Hermes/OpenClaw sessions
+  // have no caller-declared outbound gateway.
   gatewayUrl: varchar('gateway_url', { length: 500 }),
   protocol: varchar('protocol', { length: 50 }).default('openai-compat').notNull(),
   mode: varchar('mode', { length: 20 }).notNull(),
@@ -73,7 +75,7 @@ export const agentBots = pgTable('openclaw_bots', {
    *
    * `cognitionBackend` selects how the simulation gets an LLM response for
    * this agent. `null`/absent = the legacy behaviour (the agent's own gateway
-   * via `protocol`, or none for nanoclaw/anonymous). `'hatcher-proxy'` =
+   * via `protocol`, or none for hosted/in-process cognition). `'hatcher-proxy'` =
    * ClawVille POSTs to a Hatcher-managed per-agent proxy that owns the real
    * OpenClaw/Hermes brain. See `.claude/plans/hatcher-integration.md` §13/§14.
    */
@@ -173,7 +175,7 @@ export const agentBots = pgTable('openclaw_bots', {
    *   - SET false → `deactivateAutonomyForOwner` (explicit toggle + logout route),
    *     cleared FIRST/atomically by user_id so a crash can't re-enroll a user who
    *     left; AND the 24h TTL sweep clears it in its mark-swept UPDATE.
-   * Only ever true on a hosted-avatar (is_house=false, nanoclaw) session row.
+   * Only ever true on a hosted-avatar (is_house=false, milady) session row.
    */
   autonomyEnrolled: boolean('autonomy_enrolled').default(false).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),

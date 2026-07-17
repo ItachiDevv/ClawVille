@@ -242,8 +242,8 @@ async function ensureHouseUserAndAvatar(): Promise<{ userId: string; avatarId: s
  * bodies, so the house body is driven EXCLUSIVELY by `agentAutonomyDriver`'s
  * ~30s perceive→decide→act loop and is never wander-hijacked out from under the
  * driver (which would break the walk→talk loop via the proximity gate). This
- * also matches the canonical rule "NanoClaw agents are always self-managed"
- * (routes/agent-gateway.ts). Path movement in `moveNpcs` is mode-independent, so
+ * also matches the internal fail-soft tool body's self-managed routing rule.
+ * Path movement in `moveNpcs` is mode-independent, so
  * the driver's A*-set walk paths still execute for a self-managed body.
  */
 export function buildHouseAvatarConfig(
@@ -254,7 +254,7 @@ export function buildHouseAvatarConfig(
   return {
     mode: 'avatar',
     sessionId,
-    // Dummy gateway/auth — never used: nanoclaw's client.chat() returns '' and
+    // Dummy gateway/auth — never used: the fail-soft wire's client.chat() returns '' and
     // makes no outbound call (cognition is the local ElizaOS runtime).
     gatewayUrl: 'http://localhost',
     authToken: '',
@@ -288,7 +288,7 @@ export function buildHouseAvatarConfig(
  */
 export async function ensureHouseAgent(): Promise<HouseAgentSeedResult | null> {
   const systemUserId = await getSystemUserId();
-  const species = resolveAgentSpecies('nanoclaw', undefined);
+  const species = resolveAgentSpecies('milady', undefined);
 
   // ── 0. SETTLE TARGET (slice 4) — dedicated internal user + avatar ─────────
   // Must exist BEFORE the bot row so openclaw_bots.userId can point at it. The
@@ -304,7 +304,7 @@ export async function ensureHouseAgent(): Promise<HouseAgentSeedResult | null> {
     where: eq(agentBots.agentId, HOUSE_AGENT_ID),
   });
   const botValues = {
-    identityType: 'nanoclaw',
+    identityType: 'milady',
     gatewayUrl: null,
     protocol: 'nanoclaw',
     mode: 'avatar' as const,

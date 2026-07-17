@@ -18,7 +18,7 @@
  * `ocb-` body, enrolls). NO client involvement.
  *
  * WHY THIS CANNOT REPRODUCE THE OLD BOOT-REHYDRATE DOUBLE-BODY / OVERRIDE-LOCKOUT:
- *   - It re-enrolls ONLY hosted-avatar (nanoclaw, self-managed, AVATAR-mode)
+ *   - It re-enrolls ONLY hosted-avatar (milady identity, self-managed, AVATAR-mode)
  *     §B.2 sessions — never override-mode bodies, never the partner/Hatcher path.
  *   - The body id is the DETERMINISTIC `ocb-<base64url(agentId)>`; re-registering
  *     it is idempotent (same id, overwrites in place) — it cannot spawn a second

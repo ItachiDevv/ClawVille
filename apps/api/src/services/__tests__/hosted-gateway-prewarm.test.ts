@@ -115,7 +115,7 @@ describe('predicate composed with resolveInWorldProtocol — gate-off & BYO fall
   });
 
   test('non-hosted identities never resolve to a prewarmable protocol', () => {
-    for (const id of ['anonymous', 'milady', 'nanoclaw', 'ironclaw', 'custom', 'hatcher']) {
+    for (const id of ['milady', 'openclaw', 'custom', 'hatcher']) {
       expect(isPrewarmableProtocol(resolveInWorldProtocol(id, null, true))).toBe(false);
     }
   });

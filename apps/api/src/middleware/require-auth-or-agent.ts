@@ -293,7 +293,7 @@ export async function resolveAgentSession(
     if (!boundUserId || boundUserId !== userId) {
       ledgerCapable = false;
       // Only unregister when the row was rebound to a DIFFERENT real user — that
-      // is the theft signal. A first-contact/anonymous session (boundUserId null,
+      // is the theft signal. A first-contact unbound session (boundUserId null,
       // userId still null) is legitimately non-ledger but must stay alive so the
       // agent can keep perceiving/chatting; don't evict it.
       if (boundUserId && userId && boundUserId !== userId) {

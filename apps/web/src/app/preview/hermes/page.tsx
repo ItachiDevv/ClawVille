@@ -31,7 +31,7 @@ import { useSearchParams } from 'next/navigation';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
-import { useVRMInstance, disposeVRMInstance } from '@/lib/three/vrm-loader';
+import { useVRMInstance, disposeVRMInstance, retainVRMInstance } from '@/lib/three/vrm-loader';
 import { VRMCharacterAnimator } from '@/lib/three/vrm-character-animator';
 
 const SCENE_BG = new THREE.Color(0xffffff); // white backdrop for video capture
@@ -60,6 +60,7 @@ function HermesAvatar({ character, mode }: { character: Character; mode: Mode })
 
   useEffect(() => {
     if (!vrm) return;
+    retainVRMInstance(path, `preview-${character}`); // cancel deferred dispose on StrictMode re-setup
 
     // Memory rule: every cloned SkinnedMesh in a VRM scene needs frustumCulled=false
     // (otherwise close-range traversal can cull the avatar mid-pose).
