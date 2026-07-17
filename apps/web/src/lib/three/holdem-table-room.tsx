@@ -19,62 +19,73 @@ const TABLE_PATH = '/models/cove-table-clean.glb';
 // hid the dealer. Stools keep every sight line open.
 const STOOL_PATH = '/models/cove-stool.glb';
 
-// World scale is explicit and shared by the extracted table/chairs. The raw
-// table is 86.6 units wide; 2x makes it 173wu wide and legible from a 6-max
-// first-person camera without reintroducing the giant in-cove room scale.
-const FURNITURE_SCALE = 2;
-// 1.0, not 0.5: at 0.5 the shell's ceiling landed at y=101.7 — BELOW the
-// y=104 camera, which therefore looked at the roof from outside (solid
-// black first render, caught in the 2026-07-16 headed verify).
-const ROOM_SCALE = 1.0;
-const TABLE_TOP_Y = 63.2;
-const CHAIR_CUSHION_Y = 42;
-// 108/118, not 84/92 (2026-07-16 reframe): at 84 the table top sat at 75%
-// of body height — seated bots barely peeked over the rim. 108 puts the
-// top at ~58% (bar-table proportion), so heads + shoulders + arms read
-// above the rail like the modal's seat row.
-const BOT_TARGET_HEIGHT = 108;
-const DEALER_TARGET_HEIGHT = 118;
+// SCALE UNIFICATION (2026-07-17 founder feedback): every figure renders at
+// the SAME world-standard height the walkable cove uses for the player's
+// own avatar (COVE_VRM_TARGET_HEIGHT = 160) — the earlier 108-bot/118-dealer
+// mix read as "the dealer milady is a giant" and none of them matched the
+// movable agent's scale. The TABLE scales to the bodies (top ≈ 57% of body
+// height), not the bodies to the table. `S` converts every layout constant
+// authored at the original scale-2 basis.
+const WORLD_AVATAR_HEIGHT = 160;
+const FURNITURE_SCALE = 2.9;
+const S = FURNITURE_SCALE / 2;
+// Room shell scaled with the furniture so wall/ceiling proportions track.
+const ROOM_SCALE = 1.45;
+const TABLE_TOP_Y = 63.2 * S;
+const BOT_TARGET_HEIGHT = WORLD_AVATAR_HEIGHT;
+const DEALER_TARGET_HEIGHT = WORLD_AVATAR_HEIGHT;
 
 interface RoomSeat extends TableCardSeat {
   chairX: number;
   chairZ: number;
 }
 
-// MODAL STAGING (2026-07-16 headed-verify reframe): the camera IS the
-// player at the near curve; all five opponents sit in an arc ACROSS the
-// table facing the camera, none beside/behind it. The first cut put four
-// bots on the near curve hugging the lens — cramped, backs-of-chairs
-// framing, opposite of the 2D modal's read. chairX/Z is the stool anchor,
-// slightly outward of the body along its own facing direction.
+// PLAYER-SEAT STAGING (2026-07-17 founder correction): the previous framing
+// put the camera at the table's FLAT side — the DEALER's position. The felt
+// betting-spot arc marks the players' curve; the camera now sits AT that
+// curve's apex (a real player seat among the bots), the bots occupy the
+// other curve seats flanking left/right, and the dealer stands across at
+// the flat side. All coordinates authored at the scale-2 basis × S.
+// The arc apex bulges toward -Z; the flat edge runs along +Z.
+// Bots occupy the FAR half of the seating oval — the side rails at mid
+// table and the flat-edge corners flanking the dealer. Two failed layouts
+// proved the constraint (rounds 7-8): any 160wu body within ~100wu of the
+// camera renders as a giant frame-edge blocker, so every occupied seat
+// stays across the table; the player's own apex zone and both near rails
+// are empty. This is how seated-POV poker games stage 6-max for a reason.
 const BOT_SEATS: readonly RoomSeat[] = [
-  { engineSeatIndex: 1, x: -72, z: -26, faceYaw: Math.atan2(72, 26), chairX: -82, chairZ: -32 },
-  { engineSeatIndex: 2, x: -50, z: -34, faceYaw: Math.atan2(50, 34), chairX: -58, chairZ: -44 },
-  { engineSeatIndex: 3, x: -18, z: -48, faceYaw: Math.atan2(18, 48), chairX: -20, chairZ: -60 },
-  { engineSeatIndex: 4, x: 18, z: -48, faceYaw: Math.atan2(-18, 48), chairX: 20, chairZ: -60 },
-  { engineSeatIndex: 5, x: 72, z: -26, faceYaw: Math.atan2(-72, 26), chairX: 82, chairZ: -32 },
+  { engineSeatIndex: 1, x: -82 * S, z: 18 * S, faceYaw: Math.atan2(82, -18), chairX: -93 * S, chairZ: 23 * S },
+  { engineSeatIndex: 2, x: -48 * S, z: 34 * S, faceYaw: Math.atan2(48, -34), chairX: -55 * S, chairZ: 43 * S },
+  { engineSeatIndex: 3, x: -16 * S, z: 42 * S, faceYaw: Math.atan2(16, -42), chairX: -18 * S, chairZ: 53 * S },
+  { engineSeatIndex: 4, x: 48 * S, z: 34 * S, faceYaw: Math.atan2(-48, -34), chairX: 55 * S, chairZ: 43 * S },
+  { engineSeatIndex: 5, x: 82 * S, z: 18 * S, faceYaw: Math.atan2(-82, -18), chairX: 93 * S, chairZ: 23 * S },
 ] as const;
 
+// boardYaw π: the board row sits toward the dealer's flat side (+Z) and its
+// faces must read upright to the player camera at -Z.
 const CARD_LAYOUT: Readonly<TableCardLayout> = Object.freeze({
   boardX: 0,
-  boardZ: -8,
-  boardYaw: 0,
-  boardCardWidth: 8,
-  boardCardHeight: 11.2,
-  boardSpacing: 10,
-  botCardWidth: 6.5,
-  botCardHeight: 9.1,
-  botPairGap: 1.2,
+  boardZ: 14 * S,
+  boardYaw: Math.PI,
+  boardCardWidth: 8 * S,
+  boardCardHeight: 11.2 * S,
+  boardSpacing: 10 * S,
+  botCardWidth: 6.5 * S,
+  botCardHeight: 9.1 * S,
+  botPairGap: 1.2 * S,
   botAnchorScale: 0.72,
-  surfaceLift: 0.7,
+  surfaceLift: 0.7 * S,
 });
 
+// hermes_female REMOVED (2026-07-17 founder verdict — her defective rig's
+// frozen frame still reads "possessed"; the milady-family poses are the
+// approved ones). Five distinct miladys; dealer is milady_official_6.
 const BOT_MODEL_KEYS = [
   'milady_official_2',
   'milady_official_5',
   'milady_official_7',
   'milady_official_4',
-  'hermes_female',
+  'milady_official_3',
 ] as const satisfies readonly (keyof typeof MODEL_REGISTRY)[];
 const DEALER_MODEL_KEY = 'milady_official_6' as const;
 
@@ -174,11 +185,19 @@ function FrozenFigure({
   );
 }
 
+// Player-side elevated POV — the 2D modal's actual read: behind + above the
+// player's own (empty) seat at the arc apex, high enough that the LATERAL
+// arc neighbors land inside the frustum. A true eye-level seat POV leaves
+// the whole table looking empty (verified: at eye height the flanking bots
+// sit outside a 52° FOV and only the dealer is visible).
+const CAM_EYE: readonly [number, number, number] = [0, 178, -49.6 * S - 90];
+const CAM_LOOK: readonly [number, number, number] = [0, 42, 25 * S];
+
 function FixedCamera() {
   const { camera } = useThree();
   useEffect(() => {
-    camera.position.set(0, 104, 158);
-    camera.lookAt(0, 45, -5);
+    camera.position.set(...CAM_EYE);
+    camera.lookAt(...CAM_LOOK);
     camera.updateProjectionMatrix();
   }, [camera]);
   return null;
@@ -216,19 +235,23 @@ function HoldemTableRoomScene() {
       <directionalLight position={[-70, 130, 80]} intensity={2.2} color={0xffd2a1} />
       <directionalLight position={[85, 85, 25]} intensity={1.35} color={0x7fd6ff} />
       <pointLight position={[0, 115, -55]} intensity={1150} distance={260} decay={2} color={0xffb86b} />
-      {/* Dealer/back-row key — the far zone read pitch-black on the first
-          headed verify (dark VRM against a near-black backdrop). */}
-      <pointLight position={[0, 130, -110]} intensity={900} distance={240} decay={2} color={0xffd9b0} />
+      {/* Dealer/back-row key — the flat (dealer) side now faces +Z after the
+          2026-07-17 perspective flip; keep it lit or the dealer reads as a
+          silhouette. */}
+      <pointLight position={[0, 150, 110]} intensity={900} distance={260} decay={2} color={0xffd9b0} />
 
       <primitive object={room} />
       {/* Procedural floor/backdrop guarantees a clean modal-like stage even
-          where the extracted shell opens beyond the fixed camera frustum. */}
+          where the extracted shell opens beyond the fixed camera frustum.
+          Backdrop sits BEHIND THE DEALER (+Z, facing the camera at -Z) —
+          after the perspective flip the old -Z plane sat behind the camera,
+          leaving the shell's dark far-wall openings as black voids. */}
       <mesh position={[0, -0.5, 0]} rotation={[-Math.PI / 2, 0, 0]}>
         <planeGeometry args={[700, 700]} />
         <meshStandardMaterial color={0x241a26} roughness={0.92} metalness={0.04} />
       </mesh>
-      <mesh position={[0, 100, -160]}>
-        <planeGeometry args={[700, 240]} />
+      <mesh position={[0, 120, 185]} rotation={[0, Math.PI, 0]}>
+        <planeGeometry args={[800, 280]} />
         <meshStandardMaterial color={0x43283a} roughness={0.9} metalness={0.02} />
       </mesh>
       <primitive object={table} />
@@ -250,20 +273,19 @@ function HoldemTableRoomScene() {
             position={[seat.chairX, 0, seat.chairZ]}
             yaw={seat.faceYaw}
             targetHeight={BOT_TARGET_HEIGHT}
-            cushionY={CHAIR_CUSHION_Y}
           />
         </group>
       ))}
 
-      {/* yaw 0, not π: this codebase's VRM facing convention is
-          atan2(vx, vz), so facing the camera (+Z) is 0 — π rendered the
-          dealer's BACK to the table on the first framing pass. */}
+      {/* Dealer at the FLAT side (+Z) facing the table (-Z ⇒ yaw π under
+          the atan2(vx, vz) convention) — the 2026-07-17 correction: the
+          camera now owns the players' curve, the dealer the flat edge. */}
       <FrozenFigure
         reg={MODEL_REGISTRY[DEALER_MODEL_KEY] as ModelRegistryEntry}
         instanceId="holdem-room-dealer"
         pose="idle"
-        position={[0, 0, -84]}
-        yaw={0}
+        position={[0, 0, 78 * S]}
+        yaw={Math.PI}
         targetHeight={DEALER_TARGET_HEIGHT}
       />
 
@@ -285,7 +307,7 @@ export default function HoldemTableRoomCanvas() {
       key="holdem-table-room"
       dpr={[0.65, 1]}
       frameloop="always"
-      camera={{ fov: 52, near: 0.5, far: 900, position: [0, 104, 158] }}
+      camera={{ fov: 52, near: 0.5, far: 900, position: [CAM_EYE[0], CAM_EYE[1], CAM_EYE[2]] }}
       gl={{ antialias: false, powerPreference: 'low-power' }}
       onCreated={({ scene }) => { scene.background = new THREE.Color(0x100b16); }}
     >
