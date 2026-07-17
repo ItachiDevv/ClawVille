@@ -227,6 +227,13 @@ export default function HomePage() {
               >
                 Log in
               </Link>
+              <span className="mx-2 text-white/20">·</span>
+              <Link
+                href="/login?mode=connect"
+                className="text-cyan-400/80 hover:text-cyan-300 underline underline-offset-4 decoration-cyan-500/30 hover:decoration-cyan-400/60 transition-colors"
+              >
+                Connect your agent
+              </Link>
             </div>
           </div>
 
