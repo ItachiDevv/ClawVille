@@ -1,5 +1,7 @@
 # ClawVille — 3D Structure
 
+**Last Audited:** 2026-07-17 (Kelp Revival B1): ambient seaweed now matches the expanded 704×704-tile / 22,528×22,528-wu world with 18,000 seeded, exclusion-aware blades in one merged draw call. Section 8 now reflects the live geometry/material/wind implementation.
+
 **Last edit:** 2026-07-16 (pre-existing web strict-TypeScript cleanup; no runtime behavior change): the VRM cosmetic head-fit boundary now uses the upstream `Pick<VRM, 'humanoid' | 'scene'>` surface, preserving the library's `VRMHumanBoneName` parameter contract while accepting loaded VRMs in the preview and player render paths. The deferred resident-preload fallback uses `globalThis.setTimeout` so DOM typings no longer narrow the unsupported-window branch to `never`. Render behavior, avatar/cosmetic fit math, assets, draw calls, and per-frame work are unchanged.
 
 **Last edit:** 2026-07-16 (pre-existing web strict-TypeScript cleanup; no runtime behavior change): the `MODEL_REGISTRY` parity test now widens literal registry entries to the existing `ModelRegistryEntry` interface before reading optional `pickerHidden`. Registry contents, picker visibility, asset URLs, renderer behavior, draw calls, and per-frame work are unchanged.
@@ -144,18 +146,18 @@ Source: `apps/web/src/lib/pixi/tilemap-data.ts:6-10`
 | Constant | Value |
 |---|---|
 | `TILE_SIZE` | 32 px |
-| `MAP_COLS`, `MAP_ROWS` | 576 (Phase 0 land 2026-06-15: 360→576; Phase 6.2: 240→360; Phase 6.1: 160→240) |
-| `MAP_WIDTH`, `MAP_HEIGHT` | 18432 wu (= 576 × 32) |
-| `CENTER_TILE` | 288 (= MAP_COLS / 2) |
-| `HALF_W`, `HALF_H` | 9216 wu |
+| `MAP_COLS`, `MAP_ROWS` | 704 (Phase 1 land: 576→704; Phase 0 land: 360→576) |
+| `MAP_WIDTH`, `MAP_HEIGHT` | 22528 wu (= 704 × 32) |
+| `CENTER_TILE` | 352 (= MAP_COLS / 2) |
+| `HALF_W`, `HALF_H` | 11264 wu |
 
 **Game-space → 3D world:**
-- Game-space (2D pixel plane): `(0..18432, 0..18432)` — origin top-left, +x right, +y down.
-- Three.js world (XZ plane): `(-9216..+9216, -9216..+9216)` — origin center.
+- Game-space (2D pixel plane): `(0..22528, 0..22528)` — origin top-left, +x right, +y down.
+- Three.js world (XZ plane): `(-11264..+11264, -11264..+11264)` — origin center.
 - Conversion: `worldX = gameX - HALF_W; worldZ = gameY - HALF_H` (`World3DCanvas.tsx`, `player-avatar.tsx`, `arena-npcs.tsx`).
-- Village center tile `(288, 288)` → world `(0, 0)`.
+- Village center tile `(352, 352)` → world `(0, 0)`.
 
-**Player spawn (game-px) — SINGLE SOURCE OF TRUTH (S3, 2026-06-16):** `SPAWN_PX = { x: 9216, y: 9756 }` = world center X, 540 wu SOUTH of center (world Z = +540 — ~140 wu south of Nori at world Z = +400, clear of the town-directory sign at world Z = −120). The CLIENT computes this from `MAP_WIDTH/2` + offset (`apps/web/src/stores/game.ts`); the SERVER + DB read the SAME numbers from `@clawville/shared` `world-dimensions.ts` (`SPAWN_PX`, `WORLD_PX_WIDTH/HEIGHT`, `WORLD_CENTER_PX`). `apps/api/src/routes/world.ts` `TOWN_CENTER_X/Y` = `SPAWN_PX`; `avatars.position_x/y` default to `9216, 9756` (literals pinned by comment; migration `0002_avatar_spawn_recenter.sql` resets old rows). A dev-only assertion in `game.ts` fails loud if the tilemap and the shared constants ever drift. **Why this exists:** Land Phase 0 re-centered the client world 5120→18432 (center 2560→9216) but left the server/DB at 2560, so logged-in players' broadcast bodies seated at a corner-ward diagonal; aligning all three layers on one shared constant is the fix. **NPC mode:** the dedicated "You" body (`apps/web/src/stores/npc.ts` `spawnPlayerNpc`) also reads shared `SPAWN_PX` — it previously hardcoded the **11520-era** center `(5760, 6300)`, which the 18432 grow left as the user-visible NPC-mode diagonal spawn.
+**Player spawn (game-px) — SINGLE SOURCE OF TRUTH (S3, 2026-06-16; Phase 1 grow 2026-06-24):** `SPAWN_PX = { x: 11264, y: 11804 }` = world center X, 540 wu SOUTH of center (world Z = +540 — ~140 wu south of Nori at world Z = +400, clear of the town-directory sign at world Z = −120). The CLIENT computes this from `MAP_WIDTH/2` + offset (`apps/web/src/stores/game.ts`); the SERVER + DB read the SAME numbers from `@clawville/shared` `world-dimensions.ts` (`SPAWN_PX`, `WORLD_PX_WIDTH/HEIGHT`, `WORLD_CENTER_PX`). `apps/api/src/routes/world.ts` `TOWN_CENTER_X/Y` = `SPAWN_PX`; `avatars.position_x/y` default to `11264, 11804`. A dev-only assertion in `game.ts` fails loud if the tilemap and shared constants ever drift. **NPC mode:** the dedicated "You" body (`apps/web/src/stores/npc.ts` `spawnPlayerNpc`) also reads shared `SPAWN_PX`.
 
 | Axis | Meaning |
 |---|---|
@@ -166,7 +168,7 @@ Source: `apps/web/src/lib/pixi/tilemap-data.ts:6-10`
 
 Sand floor sits at `y = -2` (`arena-terrain.tsx:203`). Buildings, NPCs, and decorations ground to this plane.
 
-**Phase 1 land grow note (2026-06-24 — pending orchestrator constants freeze):** world will expand 576→704 tiles (18432→22528wu, half 9216→11264wu). The new tier-`c` outer land-parcel ring sits at half-side ~9760wu from origin — within the fog zone (`fog.near=5000, far=10500`). From spawn the ring reads at ~86% fog and materializes on approach; this is intended (see §4 fog note). All 3D render layers already read `MAP_WIDTH` dynamically and scale automatically. The three cove world-position literals (cove-beacon.tsx, cove-entrance.tsx, character-positions.ts) have been fixed to world-absolute constants (`-4160, 0`) so the cove stays at its current position regardless of grid size.
+**Phase 1 land grow (live 2026-06-24):** world expanded 576→704 tiles (18432→22528wu, half 9216→11264wu). The tier-`c` outer land-parcel ring sits at half-side ~9760wu from origin — within the fog zone (`fog.near=5000, far=10500`). From spawn the ring reads at ~86% fog and materializes on approach; this is intended (see §4 fog note). All 3D render layers read `MAP_WIDTH` dynamically. The three cove world-position literals (cove-beacon.tsx, cove-entrance.tsx, character-positions.ts) are world-absolute constants (`-4160, 0`) so the cove stays at its current position regardless of grid size.
 
 ---
 
@@ -774,11 +776,12 @@ TSL fragment shader (`createSandMaterial()`):
 
 | Spec | Value |
 |---|---|
-| Blade count | 3 000 (was 1 200 before merge sweep) |
+| Blade count | 18,000 ambient blades (214,316 vertices; was 6,500 before Kelp Revival B1) |
 | Variants | 3 height tiers, color-graded |
-| Geometry | One `BufferGeometry` per variant via `mergeGeometries` — all blades baked into vertex positions |
-| Material | `MeshStandardNodeMaterial` with TSL wind |
-| Wind | Time-varying sin sway driven by `timerLocal()` × position offset per blade |
+| Geometry | One merged `BufferGeometry` for all three variants; blade transforms and per-vertex wind/color attributes are baked at mount |
+| Material | One `MeshBasicNodeMaterial` draw call with TSL `positionNode` wind |
+| Wind | Two time-varying TSL waves driven by `time`, seeded per-blade phase, normalized height, and variant amplitude |
+| Distribution | Seeded clustered scatter across the 704×704-tile / 22,528×22,528-wu world; canonical building and land-parcel exclusion zones remain clear |
 
 No `InstancedMesh + ShaderMaterial` — known WebGPU silent crash on Iris Xe. Merged geometry is the only safe path for high-count animated foliage.
 
