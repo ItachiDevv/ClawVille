@@ -57,9 +57,9 @@ export interface AgentPerceptionPlace {
   label: string;
   description: string;
   /** Exact no-tool-call action verb accepted by the executor. */
-  actionVerb: 'enter_cove' | 'enter_poker_room' | 'move';
+  actionVerb: 'enter_cove' | 'enter_poker_room' | 'enter_kelp_forest' | 'move';
   /** Exact action call shown to the deciding model. */
-  actionSyntax: 'enter_cove()' | 'enter_poker_room()' | `move(x=${number}, y=${number})`;
+  actionSyntax: 'enter_cove()' | 'enter_poker_room()' | 'enter_kelp_forest()' | `move(x=${number}, y=${number})`;
   /** Logical destination used by the autonomous planner. */
   destinationId: string;
   centerX: number;

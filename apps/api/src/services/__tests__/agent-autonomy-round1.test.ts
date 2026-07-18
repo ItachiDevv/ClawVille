@@ -134,6 +134,12 @@ describe('round 1 perception + decision prompt', () => {
         centerX,
         centerY,
       }),
+      expect.objectContaining({
+        placeId: 'kelp-forest',
+        actionVerb: 'enter_kelp_forest',
+        actionSyntax: 'enter_kelp_forest()',
+        destinationId: 'kelp-forest-portal',
+      }),
     ]));
   });
 

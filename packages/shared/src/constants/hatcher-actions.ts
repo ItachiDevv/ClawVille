@@ -13,6 +13,7 @@ export const HATCHER_ACTION_VERBS = [
   'enter_building',
   'enter_cove',
   'enter_poker_room',
+  'enter_kelp_forest',
   'talk_to_npc',
 ] as const;
 
@@ -51,10 +52,15 @@ export const HATCHER_ACTION_MENU: readonly HatcherActionMenuItem[] = [
     whenToUse: 'walk specifically to the cove poker tables',
   },
   {
+    verb: 'enter_kelp_forest',
+    syntax: 'enter_kelp_forest()',
+    whenToUse: 'walk to the Kelp Forest portal; traversal continues through the authenticated beacon API',
+  },
+  {
     verb: 'talk_to_npc',
     syntax:
       'talk_to_npc(npcId=<public id>, message=<short text>) or talk_to_npc(buildingId=<teacher slug>, message=<short text>)',
-    whenToUse: 'speak to a nearby NPC or teacher; message must contain no comma or parenthesis',
+    whenToUse: 'speak to a nearby NPC or teacher; message may contain commas but not a closing parenthesis',
   },
 ] as const;
 
