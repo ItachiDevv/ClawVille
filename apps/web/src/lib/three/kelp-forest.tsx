@@ -5,6 +5,7 @@ import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three/webgpu';
 import { attribute, cos, float, positionLocal, sin, time, vec3 } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { KELP_REALM_SWAY_HEIGHT_FRACTION } from '@clawville/shared';
 import { KELP_FOREST_CENTER } from './kelp-forest-location';
 
 export const KELP_FOREST_SIZE_WU = 48 * 32;
@@ -14,7 +15,21 @@ const BLADES_PER_VARIANT = KELP_FOREST_BLADE_COUNT / 3;
 const GRID_COLUMNS = 75;
 const GRID_ROWS = 72;
 const HEIGHT_SEGMENTS = 8;
-export const MAX_WIND_DISPLACEMENT_WU = 24;
+const WORLD_GROVE_WIND = Object.freeze({
+  primaryZRateScale: 0.72,
+  primaryZPhaseScale: 1.31,
+  primaryZAmplitudeScale: 0.48,
+  currentXRate: 0.055,
+  currentXPhaseScale: 0.37,
+  currentXAmplitudeScale: 0.22,
+  currentZRate: 0.043,
+  currentZPhaseScale: 0.51,
+  currentZAmplitudeScale: 0.16,
+});
+const WORLD_GROVE_X_ENVELOPE_FACTOR = 1 + WORLD_GROVE_WIND.currentXAmplitudeScale;
+export const MAX_WIND_DISPLACEMENT_WU = Math.ceil(
+  180 * KELP_REALM_SWAY_HEIGHT_FRACTION,
+);
 
 interface WindTimeUniform {
   value: number;
@@ -54,8 +69,8 @@ const KELP_VARIANTS: readonly KelpVariant[] = [
     bendMax: 12,
     rootColor: new THREE.Color(0x063b38),
     tipColor: new THREE.Color(0x168c78),
-    windAmplitude: 13,
-    windRate: 0.24,
+    windAmplitude: 148 * KELP_REALM_SWAY_HEIGHT_FRACTION / WORLD_GROVE_X_ENVELOPE_FACTOR,
+    windRate: Math.PI * 2 / 5.8,
   },
   {
     heightMin: 150,
@@ -66,8 +81,8 @@ const KELP_VARIANTS: readonly KelpVariant[] = [
     bendMax: 15,
     rootColor: new THREE.Color(0x073f32),
     tipColor: new THREE.Color(0x23996f),
-    windAmplitude: 15,
-    windRate: 0.2,
+    windAmplitude: 164 * KELP_REALM_SWAY_HEIGHT_FRACTION / WORLD_GROVE_X_ENVELOPE_FACTOR,
+    windRate: Math.PI * 2 / 5.2,
   },
   {
     heightMin: 166,
@@ -78,8 +93,8 @@ const KELP_VARIANTS: readonly KelpVariant[] = [
     bendMax: 18,
     rootColor: new THREE.Color(0x052f35),
     tipColor: new THREE.Color(0x147f83),
-    windAmplitude: 17,
-    windRate: 0.16,
+    windAmplitude: 180 * KELP_REALM_SWAY_HEIGHT_FRACTION / WORLD_GROVE_X_ENVELOPE_FACTOR,
+    windRate: Math.PI * 2 / 4.6,
   },
 ] as const;
 
@@ -234,15 +249,15 @@ function applyNodeWind(
     const primaryX = sin(time.mul(float(variant.windRate)).add(phase))
       .mul(height.mul(height))
       .mul(float(variant.windAmplitude));
-    const primaryZ = cos(time.mul(float(variant.windRate * 0.72)).add(phase.mul(float(1.31))))
+    const primaryZ = cos(time.mul(float(variant.windRate * WORLD_GROVE_WIND.primaryZRateScale)).add(phase.mul(float(WORLD_GROVE_WIND.primaryZPhaseScale))))
       .mul(height.mul(height))
-      .mul(float(variant.windAmplitude * 0.48));
-    const currentX = cos(time.mul(float(0.055)).add(phase.mul(float(0.37))))
+      .mul(float(variant.windAmplitude * WORLD_GROVE_WIND.primaryZAmplitudeScale));
+    const currentX = cos(time.mul(float(WORLD_GROVE_WIND.currentXRate)).add(phase.mul(float(WORLD_GROVE_WIND.currentXPhaseScale))))
       .mul(height)
-      .mul(float(variant.windAmplitude * 0.22));
-    const currentZ = sin(time.mul(float(0.043)).add(phase.mul(float(0.51))))
+      .mul(float(variant.windAmplitude * WORLD_GROVE_WIND.currentXAmplitudeScale));
+    const currentZ = sin(time.mul(float(WORLD_GROVE_WIND.currentZRate)).add(phase.mul(float(WORLD_GROVE_WIND.currentZPhaseScale))))
       .mul(height)
-      .mul(float(variant.windAmplitude * 0.16));
+      .mul(float(variant.windAmplitude * WORLD_GROVE_WIND.currentZAmplitudeScale));
 
     material.positionNode = positionLocal.add(
       vec3(primaryX.add(currentX), float(0), primaryZ.add(currentZ)),
@@ -293,12 +308,12 @@ ${shader.vertexShader}`;
 float kelpHeightSq = aHeight * aHeight;
 float kelpPrimaryX = sin(uKelpTime * ${variant.windRate.toFixed(6)} + aPhase)
   * kelpHeightSq * ${variant.windAmplitude.toFixed(6)};
-float kelpPrimaryZ = cos(uKelpTime * ${(variant.windRate * 0.72).toFixed(6)} + aPhase * 1.31)
-  * kelpHeightSq * ${(variant.windAmplitude * 0.48).toFixed(6)};
-float kelpCurrentX = cos(uKelpTime * 0.055 + aPhase * 0.37)
-  * aHeight * ${(variant.windAmplitude * 0.22).toFixed(6)};
-float kelpCurrentZ = sin(uKelpTime * 0.043 + aPhase * 0.51)
-  * aHeight * ${(variant.windAmplitude * 0.16).toFixed(6)};
+float kelpPrimaryZ = cos(uKelpTime * ${(variant.windRate * WORLD_GROVE_WIND.primaryZRateScale).toFixed(6)} + aPhase * ${WORLD_GROVE_WIND.primaryZPhaseScale.toFixed(6)})
+  * kelpHeightSq * ${(variant.windAmplitude * WORLD_GROVE_WIND.primaryZAmplitudeScale).toFixed(6)};
+float kelpCurrentX = cos(uKelpTime * ${WORLD_GROVE_WIND.currentXRate.toFixed(6)} + aPhase * ${WORLD_GROVE_WIND.currentXPhaseScale.toFixed(6)})
+  * aHeight * ${(variant.windAmplitude * WORLD_GROVE_WIND.currentXAmplitudeScale).toFixed(6)};
+float kelpCurrentZ = sin(uKelpTime * ${WORLD_GROVE_WIND.currentZRate.toFixed(6)} + aPhase * ${WORLD_GROVE_WIND.currentZPhaseScale.toFixed(6)})
+  * aHeight * ${(variant.windAmplitude * WORLD_GROVE_WIND.currentZAmplitudeScale).toFixed(6)};
 transformed.x += kelpPrimaryX + kelpCurrentX;
 transformed.z += kelpPrimaryZ + kelpCurrentZ;`,
     );

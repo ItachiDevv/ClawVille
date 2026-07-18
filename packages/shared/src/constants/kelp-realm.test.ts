@@ -8,8 +8,16 @@ import {
   KELP_REALM_ENTRY_CELL,
   KELP_REALM_LAYOUT,
   KELP_REALM_LAYOUT_INVARIANTS,
+  KELP_REALM_MAX_AUTHORED_BEND_WU,
+  KELP_REALM_MAX_BLADE_HALF_WIDTH_WU,
+  KELP_REALM_MAX_CORRIDOR_INTRUSION_WU,
+  KELP_REALM_MAX_STATIC_TIP_OFFSET_WU,
   KELP_REALM_MAX_SWAY_WU,
   KELP_REALM_ONE_SIDED_SWAY_WU,
+  KELP_REALM_SWAY_HEIGHT_FRACTION,
+  KELP_REALM_VISIBLE_CORRIDOR_MIN_WU,
+  KELP_REALM_WALL_HEIGHT_WU,
+  KELP_REALM_WALL_ROOT_SETBACK_WU,
   KELP_REALM_PLAYER_SPAWN,
   KELP_REALM_PLAYER_SPEED_WU_PER_SEC,
   KELP_REALM_ROWS,
@@ -55,13 +63,27 @@ describe('Kelp Forest realm layout invariants', () => {
     ]);
   });
 
-  test('keeps a 160wu visible corridor after the full sway envelope', () => {
+  test('keeps at least 60wu visible between opposing 100wu sways', () => {
     expect(KELP_REALM_CORRIDOR_WIDTH_WU).toBe(KELP_REALM_CELL_WU);
+    expect(KELP_REALM_CORRIDOR_WIDTH_WU).toBe(200);
+    expect(KELP_REALM_ONE_SIDED_SWAY_WU).toBe(100);
+    expect(KELP_REALM_SWAY_HEIGHT_FRACTION).toBe(
+      KELP_REALM_ONE_SIDED_SWAY_WU / KELP_REALM_WALL_HEIGHT_WU,
+    );
     expect(KELP_REALM_MAX_SWAY_WU).toBe(KELP_REALM_ONE_SIDED_SWAY_WU * 2);
+    expect(KELP_REALM_MAX_STATIC_TIP_OFFSET_WU).toBe(
+      Math.hypot(KELP_REALM_MAX_BLADE_HALF_WIDTH_WU, KELP_REALM_MAX_AUTHORED_BEND_WU),
+    );
+    expect(KELP_REALM_MAX_CORRIDOR_INTRUSION_WU).toBeCloseTo(
+      KELP_REALM_ONE_SIDED_SWAY_WU
+        + KELP_REALM_MAX_STATIC_TIP_OFFSET_WU
+        - KELP_REALM_WALL_ROOT_SETBACK_WU,
+    );
     expect(
-      KELP_REALM_CORRIDOR_WIDTH_WU - KELP_REALM_ONE_SIDED_SWAY_WU * 2,
-    ).toBeGreaterThanOrEqual(160);
-    expect(KELP_REALM_LAYOUT_INVARIANTS.visibleCorridorMinWu).toBe(160);
+      KELP_REALM_CORRIDOR_WIDTH_WU - KELP_REALM_MAX_CORRIDOR_INTRUSION_WU * 2,
+    ).toBeGreaterThanOrEqual(60);
+    expect(KELP_REALM_VISIBLE_CORRIDOR_MIN_WU).toBeCloseTo(66.925, 3);
+    expect(KELP_REALM_LAYOUT_INVARIANTS.visibleCorridorMinWu).toBeCloseTo(66.925, 3);
   });
 
   test('shares the real movement speed, proximity radius, and entry spawn with the server', () => {
