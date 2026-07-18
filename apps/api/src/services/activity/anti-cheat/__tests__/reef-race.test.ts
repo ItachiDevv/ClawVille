@@ -238,22 +238,22 @@ describe('validateSegmentTime', () => {
   // from. On the CLOSED loop the segments carry explicit t-ranges (z is
   // non-monotonic), and `minSegmentMs` is derived from the segment's ARC LENGTH
   // on the live spline: minSegmentMs = segArc / REEF_MAX_SPEED * 0.7 * 1000.
-  // v6 WIDE SURF ROAD: kelp t-range ≈ [0.083, 0.273] → arc ≈ 17 246 wu →
-  // floor ≈ 9 286 ms (@ 2× cap 1300: 17246/1300*0.7*1000). The floor auto-tracks the
+  // v7 TECHNICAL SURF ROAD: kelp t-range [0.1742, 0.3366] → arc 13 968.1 wu →
+  // floor 7 521 ms (@ 2× cap 1300: 13968.1/1300*0.7*1000). The floor auto-tracks the
   // track geometry, so these tests assert the BEHAVIOUR (under-floor flags,
-  // over-floor clears), with the elapsed times chosen relative to the v6 floor.
+  // over-floor clears), with elapsed times chosen relative to the v7 floor.
   const ranges = __getSegmentTRangesForTest(REEF_RACE_SEGMENTS);
 
   it('T5: flags too-fast traversal (segment crossed under min time)', () => {
     // Pick the kelp segment (index 1) and a t inside its range.
-    // v6 WIDE SURF ROAD: kelp arc ≈ 17 246 wu → floor = (17246/1300)*0.7*1000
-    // ≈ 9 286 ms (@ 2× cap). Floors are arc-derived from
+    // v7 kelp arc 13 968.1 wu → floor = (13968.1/1300)*0.7*1000
+    // ≈ 7 521 ms (@ 2× cap). Floors are arc-derived from
     // the live spline, so they auto-track the track — the test asserts the
     // BEHAVIOUR (under-floor flags, over-floor clears), not a hardcoded number.
     const kelp = ranges[1];
     expect(kelp.id).toBe('kelp');
     const tMid = (kelp.tStart + kelp.tEnd) * 0.5;
-    // Body entered the segment 1000ms ago — way under the ~9 286ms floor.
+    // Body entered the segment 1000ms ago — way under the ~7 521ms floor.
     const v = validateSegmentTime(tMid, 1_000_000, 999_000, REEF_RACE_SEGMENTS);
     expect(v.ok).toBe(false);
     expect(v.flagged).toBe(true);
@@ -261,8 +261,8 @@ describe('validateSegmentTime', () => {
     expect(v.detail).toContain('kelp');
   });
 
-  it('T6: ok when traversal exceeds min time (17.5s in a ~9.3s-floor segment)', () => {
-    // v6 kelp arc ≈ 17 246 wu → floor = (17246/1300)*0.7*1000 ≈ 9 286 ms (@ 2× cap).
+  it('T6: ok when traversal exceeds min time (17.5s in a ~7.5s-floor segment)', () => {
+    // v7 kelp arc 13 968.1 wu → floor = (13968.1/1300)*0.7*1000 ≈ 7 521 ms.
     // Scale the old 35s fixture by 650/1300: 17.5s keeps the same margin.
     const kelp = ranges[1];
     const tMid = (kelp.tStart + kelp.tEnd) * 0.5;

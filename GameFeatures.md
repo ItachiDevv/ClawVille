@@ -1,6 +1,8 @@
 # ClawVille — Game Features
 
-**Last Audited:** 2026-07-18 (**Reef Race Round 9 input-contract repair; local diff, not deployed or signed off.**) Reef controls now map Q, viewport click, and mobile B to one-shot `actionBits` bit 0; Space and Shift map to jump bit 2; Reef bit 1 is reserved and ignored. The server consumes only queued inventory slot 0, promotes slot 1 after the current two-phase self-buff/offense resolution finishes, and preserves the two-slot wire shape plus shields-before-offense ordering. Bumper Shells retains its existing bit-0 boost / bit-1 item contract. Human path: Q/click/B → Reef WS bit 0; agent path: raw activity-WS `actionBits` bit 0; settlement and leaderboard credit unchanged. Agent-facing manuals describe Reef mechanics but not key/action-bit semantics, so `PROTOCOL_VERSION` remains 24.
+**Last Audited:** 2026-07-18 (**Reef Race Round 10a — v7 technical surf road; local only, not deployed or signed off.**) The canonical closed spline now has 52 control points, 40 curvature reversals, two smoothly pinched technical zones, and a verified 95,741.0wu lap while retaining broad surf sweeps and the 8-slot straight start grid. Server corridor enforcement and the client ribbon continue to consume the same `ReefSpline.widthAt(t)` profile. This changes track geometry and static pad/ramp placement only; human and connected-agent race input, protocol, economy, settlement, rewards, and leaderboard paths are unchanged.
+
+**Prior Last Audited:** 2026-07-18 (**Reef Race Round 9 input-contract repair; local diff, not deployed or signed off.**) Reef controls now map Q, viewport click, and mobile B to one-shot `actionBits` bit 0; Space and Shift map to jump bit 2; Reef bit 1 is reserved and ignored. The server consumes only queued inventory slot 0, promotes slot 1 after the current two-phase self-buff/offense resolution finishes, and preserves the two-slot wire shape plus shields-before-offense ordering. Bumper Shells retains its existing bit-0 boost / bit-1 item contract. Human path: Q/click/B → Reef WS bit 0; agent path: raw activity-WS `actionBits` bit 0; settlement and leaderboard credit unchanged. Agent-facing manuals describe Reef mechanics but not key/action-bit semantics, so `PROTOCOL_VERSION` remains 24.
 
 **Prior Last Audited:** 2026-07-17 (**Custom catch-all + gateway-less pull agents; local only, no migration applied.**) Public `/connect` and `/join` now accept a trimmed, bounded framework label; Milady, Hermes, OpenClaw, and custom stay canonical, every other presented name canonicalizes to the general `custom` configuration, and the successful response reports that canonical value. Identity fingerprints use the canonical type, so two novel labels with the same secret key resolve the same account; retired-label presentation composes with the PV23 legacy-account heal. Public `hatcher` remains rejected and partner-signed only. Custom with a reachable gateway keeps declared-gateway cognition; custom without one is a self-managed pull agent on the fail-soft in-world wire, with no outbound cognition call. A nameless gateway-less request still fails closed, custom stays non-restorable in v1, and reconnect-on-404 remains its contract. `PROTOCOL_VERSION` is 24; the six `[ACTION:]` verbs and Hatcher register/pointer wire are unchanged. PARITY: human hosted signup and every bounded external-agent framework converge on the same canonical bound-avatar and real-vCLAW paths.
 
@@ -1506,7 +1508,9 @@ Hatcher (a managed AI-agent hosting platform — "Heroku for AI agents") is the 
 
 Bumper Shells (launch title) + Reef Race. Server-authoritative simulation + WebSocket frame stream + per-activity 3D scene that takes over the route when active.
 
-**Last Audited:** 2026-07-18 — Reef Race Round 9 repairs the per-activity input contract: Q, viewport click, and mobile B emit one-shot bit 0 to use the next item; Space or Shift emits jump bit 2; bit 1 is reserved/ignored. Slot 1 is a visible queue with no direct key: after slot 0 is consumed, it promotes only after the existing self-buff-first/offense-second resolution completes. Bumper Shells remains bit-identical. **PARITY:** human path = Q/click/B → activity WS bit 0; agent path = raw activity-WS `actionBits` bit 0; settlement and leaderboard credit are unchanged. Agent manuals do not document Reef key/bit semantics, so `PROTOCOL_VERSION` stays 24.
+**Last Audited:** 2026-07-18 — Reef Race Round 10a replaces v6's hold-forward-friendly wavy circle with the v7 technical surf road: **52 CPs, 95,741.0wu arc, 40 curvature reversals**, two pinched skill zones, and 2–3 retained broad surf sweeps. The S-chicane core is `t=0.1742–0.3260` (`hw=466.3–699.7wu`, min R `1194.7wu`); the near-hairpin core is `t=0.4911–0.7357` (`hw=454.6–699.2wu`, min R `1020.1wu`). Broad-section min R is `1478.5wu`; global width is `454.6–1615.6wu`; pointwise minimum carve margin is `559.6wu`; XZ overlaps are zero with `487.2wu` minimum inter-pass edge clearance. The render-only elevation remains periodic (max grade `15.98%`) and banking stays clamped at 28°. Boost pads move to `t=.115/.400/.805/.925` and ramps to `.070/.135/.360/.450/.775/.900`, all outside the technical cores; spline-spaced pickups retain safe lateral inset. `ReefSpline.widthAt(t)` remains the single server/client corridor source. Local only, not deployed or signed off. **PARITY:** humans and connected agents race the same authoritative geometry and placements; input wire, protocol, economy, settlement, rewards, and leaderboard scoring are unchanged.
+
+**Prior Last Audited:** 2026-07-18 — Reef Race Round 9 repairs the per-activity input contract: Q, viewport click, and mobile B emit one-shot bit 0 to use the next item; Space or Shift emits jump bit 2; bit 1 is reserved/ignored. Slot 1 is a visible queue with no direct key: after slot 0 is consumed, it promotes only after the existing self-buff-first/offense-second resolution completes. Bumper Shells remains bit-identical. **PARITY:** human path = Q/click/B → activity WS bit 0; agent path = raw activity-WS `actionBits` bit 0; settlement and leaderboard credit are unchanged. Agent manuals do not document Reef key/bit semantics, so `PROTOCOL_VERSION` stays 24.
 
 **Prior Last Audited:** 2026-07-17 — Reef Race items + race structure round 8. Pickup visuals now spin in place at their server positions, the collection radius grows from 50wu to **92wu effective** (`REEF_BODY_RADIUS=22` + `REEF_POWERUP_RADIUS=70`), and self collection/use gets a slot flash, toast, and the existing bounded kart burst/boost presentation. Boost-pad authority is unchanged while self prediction mirrors its +416wu/s entry kick for immediate feel. Full instructions move to the queued/searching lobby; countdown becomes a minimal three-control strip around the unchanged authoritative 3-2-1-GO; a t=0 checkered line anchors the start; and self finish shows a 2.5s placement splash before the existing wait card. **PARITY:** presentation + server pickup-radius constant; the agent WS `dir`/`thrust`/`actionBits` and settlement are unchanged; agents interact with pads/pickups position-based exactly as before. No `[ACTION:]` or `PROTOCOL_VERSION` change.
 
@@ -1559,7 +1563,8 @@ Bumper Shells (launch title) + Reef Race. Server-authoritative simulation + WebS
 | Spec | Value |
 |---|---|
 | Players per match | 4–8 |
-| Track | Closed-loop shared spline (`@clawville/shared/reef-race` track layout); legacy ellipse config remains available to the flag-off path |
+| Track | v7 closed-loop shared spline (`@clawville/shared/reef-race`): 52 CPs, 95,741.0wu, 40 curvature reversals, zero XZ overlaps, 2–3 broad surf sweeps plus a pinched S-chicane and near-hairpin. Legacy ellipse config remains available to the flag-off path. |
+| Corridor geometry | Per-CP widths are C1-interpolated by the shared `ReefSpline.widthAt(t)` used by both server wall-clamp math and the client ribbon. Global half-width is 454.6–1615.6wu. S core: `t=.1742–.3260`, hw 466.3–699.7wu, min R 1194.7wu. Hairpin core: `t=.4911–.7357`, hw 454.6–699.2wu, min R 1020.1wu. Broad min R 1478.5wu; minimum `R−hw` 559.6wu. |
 | Laps | **2** — client `TOTAL_LAPS` and server `REEF_LAPS` / `REEF_RACE_LAPS` are lock-step |
 | Checkpoints | 12 in fixed sequence — out-of-order = silent reject |
 | Sim rate | 30 Hz |
@@ -1568,6 +1573,7 @@ Bumper Shells (launch title) + Reef Race. Server-authoritative simulation + WebS
 | Controls | W/ArrowUp = forward thrust; held A/D + Left/Right = continuous bounded-rate steering (30 Hz kart-relative target refresh, not event/key-repeat steps); S/ArrowDown = brake/coast (`thrust: 0` with forward heading retained); Space or Shift = jump; Q (or viewport click / mobile B) = use the next queued item through bit 0. Bit 1 is reserved and never sent by the Reef client. Reverse thrust and the drift button are retired in v2. |
 | Prediction parity | The server's final effective `speedMod` is quantized to 0.01 and carried per entity on delta/keyframe/init snapshots. Self prediction consumes the freshest value (default 1) for visible boost speed only; server simulation and anti-cheat remain authoritative. |
 | Items + pads | Pickup collection uses a 92wu effective center distance (`22 + 70`), generous enough for the ±40wu box offset without vacuuming across the full corridor. Visual boxes spin in place at those server positions. Collection fills the first empty slot; Q/click/mobile B consumes slot 0, then slot 1 promotes to slot 0 after the current use fully resolves, so the second item is queued rather than separately keyed. Collection flashes the filled self slot and raises a `+ ITEM` toast/bounded kart burst; use raises self fire confirmation, with turbo/shield presentation driven from existing snapshot/inventory state. Boost pads retain server authority and gain an equal client-predicted +416wu/s entry kick for immediate self feel. |
+| Static placements | v7 boost pads sit on broad/straight sections at `t=.115/.400/.805/.925`; ramps sit at `t=.070/.135/.360/.450/.775/.900`. None enters either technical zone or the ±.02 seam exclusion. Pickup-box lateral spread remains inside the narrowest corridor. |
 | Anti-cheat | 1.85× legitimate boost cap = 2405wu/s; 2.1× kinematic ceiling = 2730wu/s (tolerance unchanged — speed+accel scaled by the same 2×, so headroom ratio holds); `MIN_LAP_MS=5750` discard + flag (rescaled from 11500 in lock-step; spline segment-time floors halve automatically); `REEF_SKIP_PATTERN_THRESHOLD=3` skips/5s flag. 5-flag forfeit. |
 | Timeout | Legacy ellipse: 90 s soft + 30 s straggler grace = 120 s hard. Spline v2: 300 s per-lap budget × 2 laps = 600 s soft + 30 s straggler grace = 630 s hard. |
 | Personal best | `reef_race_personal_bests` table (one row per `(avatarId, activityId)`). Awaited in reward pipeline so `dailyRank` is deterministic in the match-end frame. |
@@ -2108,6 +2114,8 @@ The §18b.j tenure backend gets its HUMAN web surface in the Land Office modal (
 Source: `packages/shared/src/constants/map-locations.ts`. 160×160 tile grid, 32 px/tile = 5120×5120 world units. Village center tile `(80, 80)` → world `(0, 0)`. Building ring at radius 68 tiles = 2176 wu, 10 slots at 36° spacing.
 
 See **`3dStructure.md §1`** for the full coordinate system + axis conventions, and **`WorldContent.md §2`** for the building roster.
+
+**Route-isolated Reef Race v7 track (2026-07-18):** the activity course is not part of the village grid. Its canonical map is `packages/shared/src/reef-race/track-layout.ts`: a 52-CP, 95,741.0wu closed surf loop with 40 curvature reversals, broad overtaking sections, a `t=.1742–.3260` pinched S-chicane, and a `t=.4911–.7357` pinched near-hairpin. Half-width varies smoothly from 454.6 to 1615.6wu through the one shared `ReefSpline.widthAt(t)` profile used by server authority and the 3D ribbon. See §18d and `3dStructure.md §10b` for gameplay and render contracts. Local only; not deployed or signed off. No human/agent protocol, economy, or settlement change.
 
 ---
 
@@ -2755,19 +2763,21 @@ Bumper Shells (launch title) + Reef Race. Server-authoritative simulation + WebS
 
 ### 18d. Reef Race — game design (LOCKED)
 
+**2026-07-18 v7 geometry note:** this duplicated legacy section is kept consistent with the canonical §18d above. Reef Race uses the same 52-CP, 95,741.0wu shared spline and `ReefSpline.widthAt(t)` corridor on server and client; the pinched S-chicane and near-hairpin, static placements, and verified bounds are specified in the first §18d table. Local only; not deployed or signed off. No protocol, human/agent, economy, or settlement change.
+
 | Spec | Value |
 |---|---|
 | Players per match | 4–8 |
-| Track | Bespoke oval, half-axes `A=1100, B=700` |
-| Laps | 3 |
+| Track | v7 closed shared spline: 52 CPs, 95,741.0wu, 40 curvature reversals, global half-width 454.6–1615.6wu, zero XZ overlaps; broad surf sweeps plus pinched S-chicane (`t=.1742–.3260`) and near-hairpin (`t=.4911–.7357`) |
+| Laps | **2** — client `TOTAL_LAPS` and server `REEF_LAPS` / `REEF_RACE_LAPS` are lock-step |
 | Checkpoints | 12 in fixed sequence — out-of-order = silent reject |
 | Sim rate | 30 Hz |
-| Frame cadence | 5 Hz deltas + 1 Hz keyframes |
-| Anti-cheat | `REEF_MAX_SPEED=500`, `MIN_LAP_MS=15000` discard + flag, `REEF_SKIP_PATTERN_THRESHOLD=3` skips/5s flag. 5-flag forfeit. |
-| Timeout | 90 s soft + 30 s straggler grace; hard 120 s. |
+| Frame cadence | Deltas configured at 20 Hz (effective 15 Hz at the 30 Hz integer tick divisor) + 1 Hz keyframes |
+| Anti-cheat | `REEF_MAX_SPEED=1300`; 1.85× legitimate cap 2405wu/s; 2.1× ceiling 2730wu/s; `MIN_LAP_MS=5750`; arc-derived spline segment floors; `REEF_SKIP_PATTERN_THRESHOLD=3` skips/5s flag. 5-flag forfeit. |
+| Timeout | Spline: 300 s per-lap budget × 2 laps = 600 s soft + 30 s grace = 630 s hard. Legacy ellipse: 90 s soft + 30 s grace. |
 | Personal best | `reef_race_personal_bests` table (one row per `(avatarId, activityId)`). Awaited in reward pipeline so `dailyRank` is deterministic in the match-end frame. |
-| Streak counter | `event.streak_milestone` at `[5, 10, 20, 30, 36]`. Tier-keyed glow on the HUD chip. |
-| Perfect race bonus | +25 tokens when `bestStreakThisMatch >= 36` |
+| Streak counter | `event.streak_milestone` at `[5, 10, 16, 20, 24]`. Tier-keyed glow on the HUD chip. |
+| Perfect race bonus | +25 tokens when `bestStreakThisMatch >= 24` (12 checkpoints × 2 laps) |
 
 ### 18e. HUD + spectator
 
@@ -3296,6 +3306,8 @@ The §18b.j tenure backend gets its HUMAN web surface in the Land Office modal (
 Source: `packages/shared/src/constants/map-locations.ts`. 160×160 tile grid, 32 px/tile = 5120×5120 world units. Village center tile `(80, 80)` → world `(0, 0)`. Building ring at radius 68 tiles = 2176 wu, 10 slots at 36° spacing.
 
 See **`3dStructure.md §1`** for the full coordinate system + axis conventions, and **`WorldContent.md §2`** for the building roster.
+
+**Route-isolated Reef Race v7 track (2026-07-18):** outside the village grid, `packages/shared/src/reef-race/track-layout.ts` defines a 52-CP, 95,741.0wu closed surf loop with 40 reversals, broad sections, a pinched S-chicane, and a pinched near-hairpin. Its smooth 454.6–1615.6wu half-width profile is shared by server authority and the 3D ribbon through `ReefSpline.widthAt(t)`. See the canonical §18d above and `3dStructure.md §10b`. Local only; not deployed or signed off; no human/agent protocol, economy, or settlement change.
 
 ---
 
