@@ -1,52 +1,20 @@
 /**
  * reef-race-track-layout.ts
  *
- * LOCKED v6 "WIDE SURF ROAD" default track for Reef Race — an aggressively
- * twisty Rainbow-Road-style CLOSED-LOOP circuit of 32 centripetal Catmull-Rom
- * control points, now WIDE ENOUGH for real 4-player side-by-side racing with
- * overtaking + surf room. The track is a GLOWING FLOATING WATER RIBBON winding
- * through an abstract cosmic void — there is NO land, NO island, NO ground
- * beneath it. Consumed by `ReefSpline` (see `./spline.ts`, built with
- * `{ closed: true }`) for both the server sim corridor math AND the client-side
- * 3D ribbon builder. Single source of truth.
+ * LOCKED v7 "TECHNICAL SURF ROAD" default: a 52-control-point closed
+ * centripetal Catmull-Rom water ribbon. It preserves broad surf sweeps while
+ * adding a four-bend alternating S-chicane and a 180-degree near-hairpin.
+ * Those technical cores pinch smoothly to 455–700 wu half-width; broad runs
+ * remain 800–1616 wu for overtaking. Per-CP `halfWidth` is interpolated by
+ * `ReefSpline.widthAt(t)`, so server wall-clamp math and the client ribbon read
+ * the exact same C1-continuous profile. There is no parallel width function.
  *
- * 2026-06-23 "WIDE SURF ROAD" REBUILD (this version, v6). The founder: "The
- * river is WAY TOO THIN, not nearly enough for 4 players. It needs to be rebuilt
- * … Redesign if you have to. ENLARGE the ring if needed to keep clearance."
- *
- * v6 vs v5 (the narrow Rainbow-Road ribbon):
- *   - WIDE FOR 4+ PLAYERS (WIDENED post-v6 per founder: "river still thin"):
- *     corridor half-width 1144–1610 wu → water surface 2289–3219 wu WIDE
- *     (was 738–1038 wu / 1476–2077 wu in the initial v6; now ×1.55 scaled for
- *     Mario-Kart roomy racing). Even the NARROWEST point fits 26 sim bodies
- *     (REEF_BODY_RADIUS=22 → 44 wu diameter) side-by-side — far past the
- *     founder's 4-board target, with aggressive overtaking + surf room.
- *   - THE WALL-CLAMP FIX (the load-bearing geometric truth): a road of
- *     half-width hw can only carve a corner of radius R if R − hw > the carve
- *     floor (500 wu at 1300/2.6); otherwise no racing line fits inside the
- *     corridor and the sim's outward-velocity wall scrub STALLS the kart (the
- *     v5 trap — see `[[surf-road-track-v5]]`). At hw≈800 that needs R > ~1050.
- *     A WIDE river
- *     therefore CANNOT have pinhead chicanes/hairpins — every turn must be a
- *     BROAD sweeping bend. The v6 ring is a wavy circle (radius = 12 800 +
- *     harmonics 2,3,5,7) so every corner is broad: min radius 2156 wu, leaving
- *     a CARVE MARGIN of 905 wu (R − hw) at the tightest point — wall-clamp is
- *     now geometrically impossible. The aggressive zig-zag comes from 30
- *     curvature reversals (was 26) of broad alternating sweeps over a huge
- *     footprint, not from tight corners.
- *   - SPRAWLS: footprint ≈ 30 648 × 25 926 wu (was ~17 687 × 16 941). Uses the
- *     space — a Mario-Kart-scale circuit.
- *   - ELEVATION (render-only): the SAME `reefTrackElevationAt(t)` /
- *     `reefTrackBankAngleAt(t)` profile (Y span ≈ 1634 wu). Because the arc is
- *     now longer (88 052 vs 60 257), the max grade DROPS to 13.1 % (was 29 %) —
- *     even gentler climbs, karts stay glued to the ribbon. The profile is
- *     t-parameterised (periodic in t), so it is arc-agnostic and unchanged.
- *   - Banking: `reefTrackBankAngleAt(t)` (render-only) tilts the ribbon into
- *     turns proportional to signed curvature. Unchanged.
- *
- *   Built as: `new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true })`.
- *   The array is the 32 REAL control points only — do NOT repeat CP[0] at the
- *   end; the periodic wrap is internal to ReefSpline (see spline.ts note #3b).
+ * The load-bearing constraint is pointwise: R(t) - widthAt(t) > 550 wu. v7
+ * narrows before it sharpens, yielding technical minima near 1020/1195 wu
+ * without recreating the v5 wall-clamp stall. The seam remains a broad straight
+ * with room for the complete 2x4 start grid (568 wu rear reach, +/-320 lateral).
+ * Build with `new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true })`; do
+ * not repeat CP0 because periodic closure supplies the closing segment.
  *
  * Why a loop: progress `t` is CYCLIC. A lap/finish crossing is a +direction seam
  * crossing (t 0.99→0.01), NOT "t reaches 1". The sim + anti-cheat handle the wrap
@@ -69,32 +37,27 @@
  *   the start/finish seam (no kink at the line).
  *
  * ─── Numeric verification (driving the REAL closed ReefSpline) ──────────────
- *   (full harness: scratchpad/ring-final.ts + scratchpad/width-scan.ts — drive
- *    the real spline + the elevation profile, never hand-pick numbers)
+ *   Full harness: `scripts/reef/verify-track-v7.ts`, which drives the real
+ *   shared spline, width, elevation, placement and start-grid implementations.
  *
- *   - totalArcLength       = 88051.9 wu                 (need [80000, 96000])
- *   - heading sweep        = +2.0000 π                  (one clean circumnav.)
- *   - curvature reversals  = 30                          (aggressive zig-zag)
- *   - min radius of curv.  = 2156.0 wu @ t≈0.670          (broad — see below)
- *   - hw @ min-R           = 1251 wu
- *   - CARVE MARGIN (R−hw)  = 905.4 wu  > 500 floor        (NO wall-clamp — the
- *                                                          racing line fits)
- *   - hw sweep             = [1144, 1610] wu (water 2289–3219 wu WIDE; ×1.55 of v6)
- *   - min adjacent-CP space= 1858 wu @ CP3→CP4            (need >200, Newton guard)
- *   - XZ self-overlaps     = 0; min inter-pass edge clearance = 1797 wu
- *       (single-winding wavy circle — passes never touch in XZ even at the ×1.55
- *        wider corridors; elevation gives the floating Rainbow-Road feel; clearance
- *        verified by scratchpad/v6-width-verify.ts at ×1.55 scale)
- *   - ELEVATION Y range    = [-559, 1075] wu (span 1634); max grade 14.8 %
- *       (< 35 % so karts/surfers stay glued to the ribbon through climbs)
- *   - elevation seam       : Y(0)===Y(1) and slope(0)≈slope(1) (C1, no kink)
- *   - footprint X ∈ [-13876, 16772], Z ∈ [-13816, 12109]  (span ≈ 30648 × 25926)
- *   - centerlineAt(0) at XZ=(0, -11425) (start/finish line, south straight)
- *   - arclength round-trip < 1e-3 (LUT sane)
+ *   - totalArcLength       = 95741.0 wu (required [70000, 96000])
+ *   - heading sweep        = +2.000000 pi; XZ overlaps = 0
+ *   - curvature reversals  = 40 (stable at N=4000 and N=8000)
+ *   - min radius overall   = 1020.1 wu @ t=0.63762
+ *   - S-chicane core       = t 0.1742–0.3260, minR 1194.7, hw 466.3–699.7
+ *   - near-hairpin core    = t 0.4911–0.7357, minR 1020.1, hw 454.6–699.2
+ *   - broad-section minR   = 1478.5 wu
+ *   - hw sweep             = 454.6–1615.6 wu
+ *   - min carve margin     = 559.6 wu (>550, >=10% over the 500 floor)
+ *   - min adjacent CP gap  = 556.0 wu (>200 Newton guard)
+ *   - min inter-pass edge clearance = 487.2 wu (>300); edge overlaps = 0
+ *   - max elevation grade  = 15.98%; elevation seam is C1
+ *   - bank max             = 28 degrees (clamped; 20.49% sample saturation)
+ *   - start-grid min inset = 1166.7 wu; min local tangent dot = 0.999996
  *
  *   At REEF_MAX_SPEED = 1300 wu/s, full-thrust straight cruise ≈ 1290 wu/s and
  *   a realistic average lap pace ≈ 858 wu/s (mixed humans+bots). One loop
- *   takes ≈ 102.6 s at that pace; 88 052/858×1.10 ≈ 113 s with safety.
+ *   takes ≈ 111.6 s at that pace; 95 741/858×1.10 ≈ 123 s with safety.
  *   The existing 300 000 ms per-lap soft budget remains deliberately conservative
  *   for collisions, stalls and disconnected stragglers.
  *
@@ -108,19 +71,19 @@
  *
  *   Segment            t-range          CPs        Theme / shape
  *   ----------------   --------------   --------    -------------------------
- *   0  lagoon          0.0000–0.0828    CP 0-3     start/finish straight (S→NE)
- *   1  kelp            0.0828–0.2732    CP 3-9     broad SE sweep + EAST bend
- *   2  shipwreck       0.2732–0.4363    CP 9-14    broad L-R sweeps + N entry
- *   3  coral           0.4363–0.7279    CP 14-24   N sweep + far-WEST broad bend
- *   4  finish          0.7279–1.0000    CP 24-0    SW broad sweeps + return run
+ *   0  lagoon          0.0000–0.1742    CP 0-8     start straight + broad east run
+ *   1  kelp            0.1742–0.3366    CP 8-17    pinched S-chicane cluster
+ *   2  shipwreck       0.3366–0.5086    CP 17-25   broad north/west surf sweep
+ *   3  coral           0.5086–0.7885    CP 25-44   pinched near-hairpin + recovery
+ *   4  finish          0.7885–1.0000    CP 44-0    broad south return to seam
  *
  * ─── Periodic closure (no phantom CPs) ───────────────────────────────────────
  *
  *   Per `./spline.ts` note #3b, the closed ReefSpline wraps the four-point
  *   Catmull-Rom neighbours around the ring (CP[N-1] and CP[0] are neighbours).
- *   There are N=32 SEGMENTS (the closing chord CP31→CP0 is a real segment), and
+ *   There are N=52 SEGMENTS (the closing chord CP51→CP0 is a real segment), and
  *   centerlineAt(0)===centerlineAt(1) by construction. Authors place only the
- *   32 real CPs; the wrap is added internally. No phantoms, no reflection.
+ *   52 real CPs; the wrap is added internally. No phantoms, no reflection.
  *
  * @module reef-race-track-layout
  */
@@ -155,112 +118,121 @@ export interface ReefRaceSegmentRange {
 }
 
 export const REEF_RACE_SEGMENTS: ReadonlyArray<ReefRaceSegmentRange> = [
-  // 2026-06-23 "WIDE SURF ROAD" REBUILD — t-range segments, all verified by
-  // driving the real closed spline (see module doc for the full numbers block).
-  // The t-boundaries are exact closest-point projections of the boundary CPs:
-  //   CP0 -> 0.0000, CP3 -> 0.0828, CP9 -> 0.2732, CP14 -> 0.4363,
-  //   CP18 -> 0.5538 (within coral), CP24 -> 0.7279, CP31 -> 0.9668.
-  //
-  //   lagoon    CP0-3    start/finish straight (south, heading NE)
-  //   kelp      CP3-9    broad SE sweep + wide EAST bend
-  //   shipwreck CP9-14   broad L-R sweeps + north entry
-  //   coral     CP14-24  north sweep + far-west broad bend
-  //   finish    CP24-0   SW broad sweeps + long return run to start
-  // halfWidth values are documented design-intent (×1.55 of original v6 values):
-  { id: 'lagoon',    tStart: 0.0000, tEnd: 0.0828, halfWidth: 1550 },
-  { id: 'kelp',      tStart: 0.0828, tEnd: 0.2732, halfWidth: 1364 },
-  { id: 'shipwreck', tStart: 0.2732, tEnd: 0.4363, halfWidth: 1488 },
-  { id: 'coral',     tStart: 0.4363, tEnd: 0.7279, halfWidth: 1395 },
-  { id: 'finish',    tStart: 0.7279, tEnd: 1.0000, halfWidth: 1395 },
+  // v7 boundaries are closest-point projections of CP0/8/17/25/44.
+  // `halfWidth` here is documented intent; real geometry uses spline.widthAt(t).
+  { id: 'lagoon',    tStart: 0.0000, tEnd: 0.1742, halfWidth: 1450 },
+  { id: 'kelp',      tStart: 0.1742, tEnd: 0.3366, halfWidth: 550 },
+  { id: 'shipwreck', tStart: 0.3366, tEnd: 0.5086, halfWidth: 1400 },
+  { id: 'coral',     tStart: 0.5086, tEnd: 0.7885, halfWidth: 550 },
+  { id: 'finish',    tStart: 0.7885, tEnd: 1.0000, halfWidth: 1300 },
+];
+
+export interface ReefRaceTechnicalZone {
+  readonly id: 's-chicane' | 'near-hairpin';
+  readonly tStart: number;
+  readonly tEnd: number;
+}
+
+/** Canonical v7 pinched technical-zone bounds, shared by verification + placements. */
+export const REEF_RACE_TECHNICAL_ZONES: ReadonlyArray<ReefRaceTechnicalZone> = [
+  { id: 's-chicane', tStart: 0.1742, tEnd: 0.3260 },
+  { id: 'near-hairpin', tStart: 0.4911, tEnd: 0.7357 },
 ];
 
 // ─── Track layout ───────────────────────────────────────────────────────────
 
 /**
- * REEF_RACE_DEFAULT_TRACK — locked v6 "WIDE SURF ROAD" aggressively-twisty
- * floating CLOSED-LOOP ribbon, 32 real control points, Mario-Kart-roomy WIDE
- * for 4+ player racing (water surface 2289–3219wu, ×1.55 of initial v6 widths).
+ * Locked v7 technical surf-road: 52 real control points with two pinched cores.
  *
  * Coordinate frame: XZ plane (Y altitude is RENDER-ONLY via
  * `reefTrackElevationAt` + per-body `heightOffset`; the sim is 2D). The ring
  * winds CCW around (0,0). CP[0] sits on the START/FINISH line on the south
- * straight at (0, -11425), facing NE.
+ * straight at scaled XZ=(0, -10179.675), facing NE.
  *
  * Build with `new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true })`. Do
  * NOT append a copy of CP[0] — the periodic wrap is internal to ReefSpline.
  *
- * Field shape matches `SplineControlPoint` exactly. Indices map to the themed
- * segments documented above. XZ positions generated by scratchpad/ring-final.ts
- * (radius = 12 800 + 2700·sin(2θ+0.4) + …); halfWidths set by scratchpad/
- * v6-width-verify.ts at scale ×1.55 of original v6 values. NEVER hand-pick
- * halfWidths — re-run the harness if you touch them.
+ * Source coordinates below are multiplied by `REEF_RACE_V7_XZ_SCALE`; the
+ * canonical verified values are therefore the mapped export, not raw literals.
+ * Re-run `bun scripts/reef/verify-track-v7.ts` after any geometry/width edit.
  */
-export const REEF_RACE_DEFAULT_TRACK: ReadonlyArray<SplineControlPoint> = [
-  // 2026-06-23 "WIDE SURF ROAD" REBUILD — see REEF_RACE_SEGMENTS + module doc.
-  // XZ positions: arc 88052 wu, heading sweep +2π, 30 curvature reversals,
-  // min R 2156, footprint ~30648×25926, elevation span 1634 (render-only, max
-  // grade 13.1%) — all unchanged from initial v6.
-  // halfWidths: ×1.55 of initial v6 values. Verified by scratchpad/v6-width-verify.ts:
-  //   hw [1144,1610] (water 2289-3219 WIDE), CARVE MARGIN 905 (>500 floor; NO wall-clamp),
-  //   min CP spacing 1858, min inter-pass edge clearance 1797 (NO overlap).
-  //
-  // The v6 ring is a WAVY CIRCLE so every turn is a BROAD sweep (R >> corridor
-  // hw): a wide river physically cannot carve pinhead chicanes/hairpins (R must
-  // exceed hw + carve floor or the sim wall-clamps and stalls — the v5 lesson).
-  // The aggressive zig-zag is 30 reversals of broad alternating sweeps over a
-  // huge footprint, not tight corners.
+const REEF_RACE_V7_XZ_SCALE = 0.891;
 
-  // ── Segment 0: lagoon — START/FINISH STRAIGHT (south, heading NE) ─────────
-  // halfWidths are the original v6 values × 1.55 (rounded to nearest wu).
-  // Verified by scratchpad/v6-width-verify.ts: hw [1144,1610], water 2289-3219wu,
-  // carve margin 905wu (>500 floor), inter-pass clearance 1797wu.
+export const REEF_RACE_DEFAULT_TRACK: ReadonlyArray<SplineControlPoint> = ([
+  // 2026-07-18 v7: 95,741wu arc, 40 reversals, minR 1,020wu, hw 455–1,616wu.
+
+  // ── Segment 0: lagoon — START/FINISH + broad east run (CP0→CP8) ──────────
   { x:     0, z: -11425, halfWidth: 1528 }, // CP  0  START/FINISH line (t=0)
   { x:  1952, z:  -9813, halfWidth: 1520 }, // CP  1  straight
   { x:  3640, z:  -8788, halfWidth: 1578 }, // CP  2  straight end → SE sweep
 
-  // ── Segment 1: kelp — broad SE sweep into a wide EAST bend ────────────────
   { x:  5284, z:  -7909, halfWidth: 1455 }, // CP  3  SE sweep
   { x:  6658, z:  -6658, halfWidth: 1593 }, // CP  4  broad climb
   { x:  8011, z:  -5353, halfWidth: 1403 }, // CP  5  sweep
   { x: 10320, z:  -4275, halfWidth: 1609 }, // CP  6  widening into east bend
-  { x: 13682, z:  -2721, halfWidth: 1386 }, // CP  7  east approach
-  { x: 16369, z:      0, halfWidth: 1165 }, // CP  8  EAST apex (broad bend)
+  { x: 13682, z:  -2721, halfWidth: 900 },
 
-  // ── Segment 2: shipwreck — broad L-R alternating sweeps + north entry ─────
-  { x: 16606, z:   3303, halfWidth: 1178 }, // CP  9  east exit (sweep R)
-  { x: 14647, z:   6067, halfWidth: 1426 }, // CP 10  broad sweep L
-  { x: 12072, z:   8066, halfWidth: 1581 }, // CP 11  broad sweep
-  { x:  9715, z:   9715, halfWidth: 1545 }, // CP 12  broad sweep R
-  { x:  7360, z:  11016, halfWidth: 1468 }, // CP 13  → north entry
+  // ── Segment 1: kelp — pinched alternating S-chicane (CP8→CP17) ───────────
+  { x: 16369, z:      0, halfWidth: 700 },
+  { x: 16606, z:   3303, halfWidth: 650 },
+  { x: 15833, z:   4556, halfWidth: 500 },
+  { x: 14711, z:   5583, halfWidth: 470 },
+  { x: 13646, z:   6850, halfWidth: 470 },
+  { x: 12160, z:   7582, halfWidth: 470 },
+  { x: 11095, z:   8849, halfWidth: 520 },
+  { x:  9715, z:   9715, halfWidth: 650 },
+  { x:  8500, z:  10400, halfWidth: 600 },
 
-  // ── Segment 3: coral — N sweep + far-west broad bend ──────────────────────
-  { x:  4857, z:  11727, halfWidth: 1513 }, // CP 14  north sweep
-  { x:  2391, z:  12023, halfWidth: 1550 }, // CP 15  north straight (far N)
-  { x:     0, z:  12072, halfWidth: 1451 }, // CP 16  NORTH apex
-  { x: -2292, z:  11523, halfWidth: 1393 }, // CP 17  NW run
-  { x: -4242, z:  10240, halfWidth: 1555 }, // CP 18  NW descent
-  { x: -5938, z:   8887, halfWidth: 1471 }, // CP 19  W run-in
-  { x: -7927, z:   7927, halfWidth: 1589 }, // CP 20  wide W bend approach
-  { x:-10123, z:   6764, halfWidth: 1296 }, // CP 21  W bend top
-  { x:-11456, z:   4745, halfWidth: 1246 }, // CP 22  WEST apex (far west, broad)
-  { x:-11465, z:   2281, halfWidth: 1573 }, // CP 23  W exit
+  // ── Segment 2: shipwreck — broad north/west surf sweep (CP17→CP25) ───────
+  { x:  7360, z:  11016, halfWidth: 1000 },
+  { x:  4857, z:  11727, halfWidth: 1513 },
+  { x:  2391, z:  12023, halfWidth: 1550 },
+  { x:     0, z:  12072, halfWidth: 1451 },
+  { x: -2292, z:  11523, halfWidth: 1393 },
+  { x: -4242, z:  10240, halfWidth: 1555 },
+  { x: -5938, z:   8887, halfWidth: 1471 },
+  { x: -7927, z:   7927, halfWidth: 800 },
 
-  // ── Segment 4: finish — SW broad sweeps + long return run to start ────────
-  { x:-11334, z:      0, halfWidth: 1344 }, // CP 24  SW run
-  { x:-12274, z:  -2442, halfWidth: 1592 }, // CP 25  SW broad sweep
-  { x:-13627, z:  -5645, halfWidth: 1373 }, // CP 26  SW descent
-  { x:-13703, z:  -9156, halfWidth: 1232 }, // CP 27  SW apex (broad)
-  { x:-11903, z: -11903, halfWidth: 1288 }, // CP 28  SW sweep back
-  { x: -8968, z: -13422, halfWidth: 1384 }, // CP 29  S sweep widening
-  { x: -5716, z: -13800, halfWidth: 1389 }, // CP 30  S sweep (far south)
-  { x: -2595, z: -13047, halfWidth: 1409 }, // CP 31  → closing chord to CP0
-];
+  // ── Segment 3: coral — pinched near-hairpin + recovery (CP25→CP44) ───────
+  { x:-10500, z:   7000, halfWidth: 550 },
+  { x:-12000, z:   6000, halfWidth: 550 },
+  { x:-13000, z:   5300, halfWidth: 550 },
+  { x:-13600, z:   4750, halfWidth: 500 },
+  { x:-14100, z:   3800, halfWidth: 500 },
+  { x:-14300, z:   2400, halfWidth: 500 },
+  { x:-13714, z:    986, halfWidth: 460 },
+  { x:-12300, z:    400, halfWidth: 455 },
+  { x:-10886, z:    986, halfWidth: 460 },
+  { x:-10300, z:   2400, halfWidth: 500 },
+  { x:-10300, z:   4000, halfWidth: 540 },
+  { x:-10178, z:   4612, halfWidth: 540 },
+  { x: -9831, z:   5131, halfWidth: 560 },
+  { x: -9312, z:   5478, halfWidth: 580 },
+  { x: -8700, z:   5600, halfWidth: 600 },
+  { x: -7858, z:   5433, halfWidth: 650 },
+  { x: -7144, z:   4956, halfWidth: 750 },
+  { x: -6667, z:   4242, halfWidth: 900 },
+  { x: -6500, z:   3400, halfWidth: 1100 },
+
+  // ── Segment 4: finish — broad south return to the seam (CP44→CP0) ────────
+  { x: -6500, z:   1000, halfWidth: 900 },
+  { x:-10500, z:  -2500, halfWidth: 1400 },
+  { x:-13627, z:  -5645, halfWidth: 1373 },
+  { x:-13703, z:  -9156, halfWidth: 1232 },
+  { x:-11903, z: -11903, halfWidth: 1288 },
+  { x: -8968, z: -13422, halfWidth: 1384 },
+  { x: -5716, z: -13800, halfWidth: 1389 },
+  { x: -2595, z: -13047, halfWidth: 1409 }, // CP51 → closing chord to CP0
+] satisfies ReadonlyArray<SplineControlPoint>).map(({ x, z, halfWidth }) => ({
+  x: x * REEF_RACE_V7_XZ_SCALE,
+  z: z * REEF_RACE_V7_XZ_SCALE,
+  halfWidth,
+}));
 
 /**
- * Compile-time sanity: 32 real control points exactly. The closing chord
- * CP31→CP0 is the 32nd SEGMENT, added internally by ReefSpline's periodic wrap.
+ * Compile-time sanity: 52 real control points. CP51→CP0 is the closing segment.
  */
-export const REEF_RACE_DEFAULT_TRACK_LENGTH = 32 as const;
+export const REEF_RACE_DEFAULT_TRACK_LENGTH = 52 as const;
 
 /**
  * Verified total arc length of the closed ring (wu), driving the real
@@ -268,7 +240,7 @@ export const REEF_RACE_DEFAULT_TRACK_LENGTH = 32 as const;
  * sim/anti-cheat can avoid re-constructing the spline just to read the length.
  * INCLUDES the closing chord. Re-verify if any CP changes.
  */
-export const REEF_RACE_DEFAULT_TRACK_ARC_LENGTH = 88051.9 as const;
+export const REEF_RACE_DEFAULT_TRACK_ARC_LENGTH = 95741.0 as const;
 
 // ─── RENDER-ONLY elevation + banking profile (the sim NEVER reads these) ─────
 //
@@ -292,9 +264,8 @@ const REEF_TWO_PI = Math.PI * 2;
  *   - hump   : one broad "mountain" via a high-power raised-cosine centred at
  *              ~t=0.72 — a dramatic climb.
  *
- * Verified (scratchpad/elev-check.ts against the v6 arc 88052): Y ∈ [-559, 1075]
- * wu (span 1634), max |dY/ds| grade = 14.8 % (< 35 % so karts stay glued to the
- * ribbon — gentler than v5 because the v6 arc is ~46% longer).
+ * Verified by `verify-track-v7.ts`: Y ∈ [-559, 1075] wu (span 1634), max
+ * |dY/ds| grade = 15.98% (<20%).
  *
  * IMPORTANT: this is the SINGLE SOURCE of the ribbon's vertical datum. The 3D
  * scene MUST read it (not hand-author a parallel Y curve) so the ribbon, rider
@@ -321,12 +292,9 @@ export function reefTrackElevationAt(t: number): number {
  * evaluations. NO allocation (returns a scalar).
  */
 const BANK_MAX_RAD = (28 * Math.PI) / 180; // 28° max lean — Rainbow-Road banking
-// rad-of-bank per (rad-of-heading-change-rate per unit t). Re-tuned for the v6
-// WIDE ring (scratchpad/bank-tune.ts): the broad-sweep heading-rate runs ±9 rad/t
-// median, ±27 p99, so 0.016 leaves straights ~flat, broad turns ~8°, and only the
-// very tightest sweep approaches the 28° cap (≈2% saturation) — NOT the v5 gain
-// of 9.0, which pegged the whole v6 ribbon at the cap (a violently rolling
-// ribbon). Re-tune if the track curvature changes.
+// rad-of-bank per (rad-of-heading-change-rate per unit t). v7 retains the 0.016
+// gain and verifies the ±28° clamp; sharper technical bends saturate 20.49% of
+// samples while the start straight remains near-flat.
 const BANK_GAIN = 0.016;
 export function reefTrackBankAngleAt(
   t: number,
