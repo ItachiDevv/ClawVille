@@ -18,6 +18,10 @@
 import postgres from 'postgres';
 import { resolve } from 'path';
 import { config } from 'dotenv';
+import {
+  PEARL_OF_THE_DEPTHS_SLUG,
+  REWARD_ONLY_COSMETIC_CURRENCY,
+} from '@clawville/shared';
 
 config({ path: resolve(__dirname, '../../../.env.local') });
 
@@ -48,6 +52,21 @@ const MESHY_BUNDLE_PATH = '/avatars/animations/_emotes2.glb?v=1';
 const MESHY_ATTRIBUTION = 'Meshy AI animation library';
 const MESHY_ATTRIBUTION_URL = 'https://www.meshy.ai';
 const MESHY_LICENSE = 'Meshy-Terms';
+
+const PEARL_REWARD = Object.freeze({
+  slug: PEARL_OF_THE_DEPTHS_SLUG,
+  displayName: 'Pearl of the Depths',
+  description: 'An exclusive orbiting pearl aura earned by reaching the heart of the Kelp Forest.',
+  rarity: 'epic',
+  assetUrl: 'builtin:pearl-of-depths-aura',
+  assetMeta: Object.freeze({
+    color: '#d9fff7',
+    orbitRadiusWu: 72,
+    pearlRadiusWu: 8,
+    orbitHeightWu: 112,
+    orbitSpeed: 0.85,
+  }),
+});
 
 const EMOTES: EmoteSeed[] = [
   {
@@ -333,6 +352,39 @@ try {
 
     console.log(`  ✓ ${e.slug.padEnd(28)} (${e.rarity}, ${e.priceCt} CT, key=${e.animationKey})`);
   }
+
+  const [pearlSku] = await client<[{ id: string }]>`
+    INSERT INTO cosmetic_skus (
+      slug, category, scope, display_name, description, rarity,
+      price_ct, exclusive_currency, license_spdx, supply_cap,
+      available_from, available_until
+    ) VALUES (
+      ${PEARL_REWARD.slug}, 'aura', 'all', ${PEARL_REWARD.displayName},
+      ${PEARL_REWARD.description}, ${PEARL_REWARD.rarity}, 0,
+      ${REWARD_ONLY_COSMETIC_CURRENCY}, 'OWN', NULL, NULL, NULL
+    )
+    ON CONFLICT (slug) DO UPDATE SET
+      category = EXCLUDED.category,
+      scope = EXCLUDED.scope,
+      display_name = EXCLUDED.display_name,
+      description = EXCLUDED.description,
+      rarity = EXCLUDED.rarity,
+      price_ct = EXCLUDED.price_ct,
+      exclusive_currency = EXCLUDED.exclusive_currency,
+      license_spdx = EXCLUDED.license_spdx,
+      supply_cap = EXCLUDED.supply_cap,
+      available_from = EXCLUDED.available_from,
+      available_until = EXCLUDED.available_until
+    RETURNING id
+  `;
+  await client`
+    INSERT INTO cosmetic_variants (sku_id, rig_type, asset_url, asset_meta)
+    VALUES (${pearlSku.id}, 'universal', ${PEARL_REWARD.assetUrl}, ${PEARL_REWARD.assetMeta}::jsonb)
+    ON CONFLICT (sku_id, rig_type) DO UPDATE SET
+      asset_url = EXCLUDED.asset_url,
+      asset_meta = EXCLUDED.asset_meta
+  `;
+  console.log(`  ✓ ${PEARL_REWARD.slug} (epic, reward-only aura)`);
 
   const skuRows = await client`
     SELECT slug, rarity, price_ct

@@ -301,6 +301,37 @@ describe('in-world executor covenant hooks', () => {
     expect(responseAt).toBeGreaterThan(bindAt);
   });
 
+  it('dispatches enter_kelp_forest through the public seven-verb whitelist', () => {
+    const records: CovenantActionInput[] = [];
+    npcSimulation.covenantRecord = async (input) => {
+      records.push(input);
+      return { id: 'record', deduped: false };
+    };
+    const npc = body('kelp-dispatch-body');
+    sim.npcs.set(npc.id, npc);
+    sim.agentBotSessions.set('kelp-dispatch-session', {
+      config: { agentId: npc.id, mode: 'avatar', avatarId: AVATAR },
+      client: { getProtocol: () => 'hatcher-proxy' },
+    });
+    sim.npcOverrides.set(npc.id, 'kelp-dispatch-session');
+
+    const speech = npcSimulation.dispatchHatcherActions(
+      npc.id,
+      'I will follow the beacon trail. [ACTION: enter_kelp_forest()]',
+    );
+
+    expect(speech).toBe('I will follow the beacon trail.');
+    expect(npc.destinationBuildingId).toBe('kelp-forest-portal');
+    expect(npc.path.length).toBeGreaterThan(0);
+    expect(records).toEqual([
+      expect.objectContaining({
+        action: 'agent.move',
+        subjectId: AVATAR,
+        payload: { destination: 'kelp-forest-portal', venue: 'kelp-forest' },
+      }),
+    ]);
+  });
+
   it('records validated move/building/cove/poker/chat decisions with ids and hashes only', () => {
     const records: CovenantActionInput[] = [];
     npcSimulation.covenantRecord = async (input) => {
@@ -321,6 +352,7 @@ describe('in-world executor covenant hooks', () => {
     );
     sim.executeHatcherAction(npc.id, npc, 'enter_cove', {}, attribution);
     sim.executeHatcherAction(npc.id, npc, 'enter_poker_room', {}, attribution);
+    sim.executeHatcherAction(npc.id, npc, 'enter_kelp_forest', {}, attribution);
 
     // Hatcher protocol is contractually proximity-exempt; the executor still
     // validates the target and message before injecting/recording.
@@ -356,6 +388,10 @@ describe('in-world executor covenant hooks', () => {
       expect.objectContaining({
         action: 'agent.move',
         payload: { destination: 'cove', venue: 'poker' },
+      }),
+      expect.objectContaining({
+        action: 'agent.move',
+        payload: { destination: 'kelp-forest-portal', venue: 'kelp-forest' },
       }),
       expect.objectContaining({
         action: 'agent.chat',

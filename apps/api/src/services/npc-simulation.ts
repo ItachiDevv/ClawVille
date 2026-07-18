@@ -176,8 +176,8 @@ function isHatcherActionVerb(name: string): name is HatcherActionVerb {
 // client. NpcSimulation is a SHARED singleton, so an unbounded action count
 // from a single (hostile / prompt-injected) Hatcher reply would block the
 // single-threaded event loop and stall the sim tick for ALL co-present users.
-// Cap matches the 4-verb MVP whitelist — one of each is the realistic ceiling
-// for one cognition turn. Tags beyond the cap are STILL stripped from speech,
+// Four visible actions are already more than one plausible cognition turn;
+// the cap stays fixed as the whitelist grows. Tags beyond it are STILL stripped,
 // just never executed.
 const MAX_HATCHER_ACTIONS_PER_REPLY = 4;
 const MISSING_ACTION_ATTRIBUTION_WARN_MAX = 1_024;
@@ -211,6 +211,11 @@ const AUTONOMY_PLACE_CENTERS = AUTONOMY_ENTERABLE_PLACES.flatMap<AutonomyPlaceCe
 const COVE_CENTER: { x: number; y: number } | null = (() => {
   const cove = AUTONOMY_PLACE_CENTERS.find((place) => place.placeId === 'cove');
   return cove ? { x: cove.centerX, y: cove.centerY } : null;
+})();
+
+const KELP_FOREST_CENTER: { x: number; y: number } | null = (() => {
+  const kelp = AUTONOMY_PLACE_CENTERS.find((place) => place.placeId === 'kelp-forest');
+  return kelp ? { x: kelp.centerX, y: kelp.centerY } : null;
 })();
 
 // Town-center anchor and the annulus (ring) free-roaming wanderers stay inside.
@@ -1680,6 +1685,7 @@ class NpcSimulation {
    *   enter_building(buildingId in the 10 MAP_LOCATIONS ids)      -> walk to building
    *   enter_cove()                                        -> walk to the Cove (casino gateway)
    *   enter_poker_room()                                  -> walk to the Cove poker tables
+   *   enter_kelp_forest()                                 -> walk to the Kelp Forest portal
    *   talk_to_npc(npcId|buildingId, message<=500)         -> injectAgentChat bubble
    *
    * Unknown names / bad params are DROPPED (never executed, never throw). Only
@@ -1932,6 +1938,28 @@ class NpcSimulation {
         this.recordAgentWorldAction(attribution, 'agent.move', {
           destination: 'cove',
           venue: 'poker',
+        });
+        return;
+      }
+      case 'enter_kelp_forest': {
+        // Gateway-only parity verb: walk the visible body to the safe approach
+        // outside the solid portal collider. The agent's brain then traverses
+        // the SAME neighbor-reveal beacon REST API as a human; reward settlement
+        // never occurs in this unauthenticated action parser.
+        if (!KELP_FOREST_CENTER) {
+          console.warn('[Hatcher] enter_kelp_forest dropped — shared portal approach missing');
+          return;
+        }
+        const path = findPath(npc.x, npc.y, KELP_FOREST_CENTER.x, KELP_FOREST_CENTER.y);
+        if (path.length === 0) {
+          console.warn('[Hatcher] enter_kelp_forest dropped — no path to the portal approach');
+          return;
+        }
+        this.setNpcPath(npcId, path, 'kelp-forest-portal');
+        this.setNpcActivity(npcId, 'exploring', '🫧');
+        this.recordAgentWorldAction(attribution, 'agent.move', {
+          destination: 'kelp-forest-portal',
+          venue: 'kelp-forest',
         });
         return;
       }

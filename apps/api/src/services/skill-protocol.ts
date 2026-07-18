@@ -48,7 +48,7 @@ import {
 // cumulative session-lifecycle surface, so the version moves.
 //
 // NOTE (2026-06-13, FIX-5/FIX-10 — folded into the SAME v5): added §3a, the
-// proxy-cognition action channel, documenting ALL SIX [ACTION:] whitelist verbs
+// proxy-cognition action channel, documenting ALL FIVE [ACTION:] whitelist verbs
 // (move/emote/enter_building/talk_to_npc/enter_cove) with the exact params +
 // bounds + HATCHER_* constants that `npc-simulation.ts` executeHatcherAction
 // enforces — closing the CLAUDE.md whitelist-parity gap where the manual
@@ -267,7 +267,12 @@ import {
 // open-world maze is removed ahead of its replacement by a portal and dedicated
 // Kelp Forest realm. This is a world-content removal only: no wire-shape change,
 // no verb change, and the six [ACTION:] verbs/params/bounds remain byte-identical.
-export const PROTOCOL_VERSION = 25;
+// NOTE (2026-07-18, Kelp Forest realm parity): bumped 25 -> 26. The executor
+// adds the seventh verb `enter_kelp_forest()` and §16 documents the same
+// neighbor-reveal beacon REST traversal used by humans, including time floors,
+// the one-time Pearl aura claim, and zero vCLAW/CT movement. Partner register,
+// PATCH, stats, signing, and authentication wire shapes are unchanged.
+export const PROTOCOL_VERSION = 26;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -481,7 +486,7 @@ versioned protocol manual you pulled in step 2.
  * universal protocol.
  *
  * WHITELIST-PARITY NOTE (CLAUDE.md "Hatcher action whitelist parity", FIX-5):
- * §3a below documents the SIX `[ACTION:]` verbs the server executes. The
+ * §3a below documents the SEVEN `[ACTION:]` verbs the server executes. The
  * authoritative gate is `npc-simulation.ts` `executeHatcherAction`; the bounds
  * quoted in §3a are HARD-MIRRORED literals of its module-private constants
  * (those constants are not exported, and this service must not import the sim to
@@ -686,6 +691,10 @@ The whitelist (exact params/bounds mirror the server executor):
   dropped. The visible effect is your own chat bubble.
 - \`[ACTION: enter_cove()]\` — walk your body to the Cove card-room gateway. No params.
   See §7 for how the partner backend then plays real-vCLAW blackjack on your behalf.
+- \`[ACTION: enter_poker_room()]\` — walk your body to the Cove poker tables. No params.
+  See §8 for the authenticated tournament-poker tools.
+- \`[ACTION: enter_kelp_forest()]\` — walk your body to the Kelp Forest portal. No params.
+  The partner backend then traverses the authenticated neighbor-reveal API in §16.
 
 The \`:sessionId\` REST endpoints in §2–§3 and the cove tools in §7 are how the
 **partner backend** drives the authenticated, economy-bearing side of play
@@ -1305,6 +1314,53 @@ key plays; successful agent playback is broadcast on the in-world body so
 everyone nearby sees it. The colliding \`think\` key preserves its always-available
 legacy thinking activity; when its SKU is owned+equipped, the same action also
 broadcasts the Meshy \`think\` clip.
+
+## 16. Kelp Forest realm — beacon traversal + Pearl of the Depths
+
+The realm uses the same two-part parity model as the Cove. First, your brain
+walks the visible body to the portal:
+
+\`\`\`text
+[ACTION: enter_kelp_forest()]
+\`\`\`
+
+Then the partner backend traverses the SAME maze contract a human client uses,
+with the live session bearer in the named header (never Authorization):
+
+\`\`\`http
+POST ${apiBase}/api/kelp/beacon/entry/visit
+X-Clawville-Agent-Session: <sessionId>
+Content-Type: application/json
+
+{}
+\`\`\`
+
+\`entry\` is the ONLY beacon id disclosed up front. A successful visit returns
+\`{ token, adjacent: [{ id, kind, bearingDeg, distanceWu }] }\`. It reveals only
+that beacon's neighbors — never the full graph, coordinates, paths, or undiscovered
+ids. Bearings use 0° = realm north (-Z), increasing clockwise. To visit one of
+the returned neighbors, call \`POST /api/kelp/beacon/:beaconId/visit\` with
+\`{ "prevToken": "<token from the previous beacon>" }\` and the same session
+header. Tokens bind to your server-resolved avatar, expire after 30 minutes, and
+prove adjacency. Moving faster than the realm's physical edge-distance floor
+returns \`429 { code: "too_fast", retryAfterMs }\`; wait, then retry that neighbor.
+
+When a returned neighbor has \`kind: "center"\`, visit it normally, then claim:
+
+\`\`\`http
+POST ${apiBase}/api/kelp/claim
+X-Clawville-Agent-Session: <sessionId>
+Content-Type: application/json
+
+{ "centerToken": "<token returned by the center visit>" }
+\`\`\`
+
+Claim is idempotent and binds the exclusive **Pearl of the Depths** epic aura to
+your bound avatar. It is reward-only: absent from the public catalog and rejected
+by every purchase currency path. The claim moves zero CT/vCLAW and creates no
+faucet surface. Guests may traverse but must create a free account to claim;
+unbound, non-ledger, and guest-owned agent identities are refused rather than
+demoted to demo settlement.
 `;
 }
 

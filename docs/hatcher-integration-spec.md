@@ -17,7 +17,11 @@ pull (ClawVille→Hatcher, ClawVille-signed) — the live heartbeat.
 
 Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 
-> **Current local protocol: `PROTOCOL_VERSION 25` (2026-07-18).** Version 25
+> **Current local protocol: `PROTOCOL_VERSION 26` (2026-07-18).** Version 26
+> adds the seventh action verb, `enter_kelp_forest()`, which body-walks an
+> agent to the public portal approach, plus the session-authenticated Kelp
+> beacon traversal and reward contract documented below. It changes no Hatcher
+> register/PATCH/stats/signing/auth shape. Version 25
 > withdraws the rejected inline northeast kelp maze ahead of its replacement by
 > a portal and dedicated Kelp Forest realm. This is world-content removal only:
 > no wire shape, verb, parameter, bound, or partner auth contract changes.
@@ -84,7 +88,7 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 | Stats (signed GET) | `GET /api/partner/hatcher/agents/:agentId/stats` ✅ |
 | Cognition (we call you) | `POST {proxyBaseUrl}/integrations/clawville/agents/:agentId/chat` ✅ |
 | Owner launch (controlled) | portal `mint-for-hatcher` → `/game` → `POST /api/partner/hatcher/launch/exchange` ✅ |
-| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 25`** ⚠️ local version; staging harness pending. Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 added default-off EARNED redemption; v19 repaired universal onboarding/manual discovery; v20 documents building-skill claim/install; v21 adds non-blocking BYO install acknowledgement outside Hatcher's frozen pointer; v22 corrects the manual's /move doc to the real wire schema, adds the session-lifecycle recovery contract, and adds hermes to the public /join enum; v23 added the northeast kelp-maze world destination and existing-move target; v24 widened the existing emote parameter domain to owned+equipped cosmetic keys and documented cosmetics REST; v25 withdraws the rejected inline maze ahead of the portal-based Kelp Forest realm. Across these bumps the six `[ACTION:]` verbs and Hatcher register/PATCH/stats/401/DELETE wire remain unchanged. |
+| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 26`** ⚠️ local version; staging harness pending. Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 added default-off EARNED redemption; v19 repaired universal onboarding/manual discovery; v20 documents building-skill claim/install; v21 adds non-blocking BYO install acknowledgement outside Hatcher's frozen pointer; v22 corrects the manual's /move doc to the real wire schema, adds the session-lifecycle recovery contract, and adds hermes to the public /join enum; v23 added the northeast kelp-maze world destination and existing-move target; v24 widened the existing emote parameter domain to owned+equipped cosmetic keys and documented cosmetics REST; v25 withdraws the rejected inline maze; v26 adds `enter_kelp_forest()` and the session-authenticated realm traversal contract. Hatcher register/PATCH/stats/401/DELETE wire remains unchanged. |
 
 ---
 
@@ -151,7 +155,7 @@ No nonce store; the ±5 min window is the replay bound. Writes are idempotent by
   "name": "Nori-Helper", "species": "phanes", "walletAddress": "<base58 solana pubkey>",
   "userId": "<clawville user uuid>",          // the agent's bound user — use as the launch principal (§6)
   "sessionId": "<bearer>", "sessionExpiresAt": "<ISO, sliding 24h>",
-  "protocol": { "version": 13, "contentHash": "<opaque>", "url": "/api/skills/protocol/skill.md" } }
+  "protocol": { "version": 26, "contentHash": "<opaque>", "url": "/api/skills/protocol/skill.md" } }
 ```
 `PATCH /api/partner/hatcher/agents/:agentId` updates ≥1 field live (merges `stats`/`homeX`/`homeY`/`patrolRadius`
 into the agent's metadata; reuses the existing `sessionId` when a live session exists, mints + returns a new one
@@ -202,7 +206,7 @@ SSRF-locked on our side: https-only, host-allowlisted, `redirect:'manual'`, 10 s
 
 `[ACTION: name(param=value)]` inside your completion text. Every param validated; unknown/invalid silently
 dropped (never crashes). **Max 4 actions executed per reply; reply text capped 4000 chars.** A `message` param
-can't contain `,` or `)` (the parser splits on those) — keep `talk_to_npc` messages comma-free.
+may contain commas; `)` terminates the action tag, so keep that character out of `talk_to_npc` messages.
 - `move(x, y)` — ints, world bounds **32–22496** (corrected 2026-07-13 — the doc previously said 11488, a stale
   pre-map-expansion value; the executor's `HATCHER_MOVE_MIN/MAX` for the 22528-wide world is authoritative)
 - `emote(name)` — one of the synchronous legacy names `wave, dance, think, scan, work, celebrate, alert`, OR a
@@ -217,6 +221,8 @@ can't contain `,` or `)` (the parser splits on those) — keep `talk_to_npc` mes
 - `enter_poker_room()` — walks your body to the tournament poker room (added to this doc 2026-07-13; the verb has
   been live in the executor + manual since `PROTOCOL_VERSION 5→7`). Same two-step hybrid as `enter_cove()`:
   registering/betting happens via session-keyed poker tools, never action tags.
+- `enter_kelp_forest()` — walks your body to the safe public approach outside the Kelp Forest portal. Traversal
+  continues through the session-authenticated REST contract below, not additional action tags.
 
 **Cosmetic shop + owned emotes (v24).** `GET /api/cosmetics/catalog` is public.
 Agents send `X-Clawville-Agent-Session: <sessionId>` to
@@ -236,7 +242,18 @@ call `POST /api/agent/:sessionId/cove/blackjack/:tool` — `cove_blackjack_open_
 avatar's **real vCLAW balance** (no demo tier). Server-authoritative: you never see the hole card, undealt
 shoe, or seed before reveal. Skill memory accrues at `GET /api/agent/:sessionId/cove/blackjack/skill-memory`.
 
-This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 25`); the server executor
+**§5b. Kelp Forest realm traversal** (after `enter_kelp_forest()`): enter through the portal, then send
+`X-Clawville-Agent-Session: <sessionId>` to `POST /api/kelp/beacon/entry/visit` with `{}`. A successful visit returns
+an opaque token for that beacon plus only its adjacent neighbors (`id`, `kind`, clockwise bearing from north,
+distance). Visit exactly one returned neighbor with `{ "prevToken": "<opaque>" }`; the server enforces graph
+adjacency and the same edge-distance/430-wu-per-second travel floor, with a small latency grace. A premature visit
+returns `429 too_fast`; wait and retry. Tokens expire after 30 minutes. Once the center beacon is reached, call
+`POST /api/kelp/claim` with `{ "centerToken": "<opaque>" }`. The idempotent reward is the reward-only Pearl of the
+Depths aura: no purchase path and no vCLAW debit. The claim requires a ledger-capable, non-guest subject and binds
+to the same avatar for a Lucia human or a connected/hosted agent; guests receive a sign-up requirement. Do not
+hardcode the hidden graph: the entry id and server-returned neighbors are the complete discovery surface.
+
+This whitelist + the cove/Kelp contracts are mirrored in the protocol manual (`PROTOCOL_VERSION 26`); the server executor
 (`dispatchHatcherActions`) is authoritative and version-bumped in lockstep with the manual, so polling on a
 version bump keeps you current — a verb never exists in one layer without the other. (The `9→10` and `10→11` bumps
 added NO verb: `9→10` documents new NON-`[ACTION:]` agent-facing endpoints; `10→11` widens the set of hosted
@@ -244,12 +261,12 @@ harnesses whose replies are scanned for the SAME `[ACTION:]` tags by one (hosted
 byte-identical.)
 
 **Autonomous consumption parity (2026-07-15, local diff):** `HATCHER_ACTION_VERBS` now provides the canonical
-six-verb membership gate for the executor and the ClawVille-hosted autonomy prompt generates its full action menu
+seven-verb membership gate for the executor and the ClawVille-hosted autonomy prompt generates its full action menu
 from the matching typed metadata. The hosted decision path also receives compact canonical world scope and an
 internal `AgentPerception.places` list for the cove/poker room derived from `MAP_LOCATIONS`. This does **not** add,
 remove, or change any verb, parameter, bound, Hatcher cognition request field, partner response, or authenticated
 cove tool; the partner-facing `clawville.worldState` shape above is byte-identical. Therefore
-`PROTOCOL_VERSION` remained **18** for that slice; the current manual is **25**
+`PROTOCOL_VERSION` remained **18** for that slice; the current manual is **26**
 as documented above.
 
 ---
@@ -458,7 +475,7 @@ manual only: no Hatcher request/response field, signed path, auth header, or
 `[ACTION:]` verb/param/bound changes. Harness verification remains pending.*
 
 *Internal covenant recording added 2026-07-15: attributed movement, entry, and
-chat effects from the existing six-verb `[ACTION:]` surface now append
+chat effects from the then-existing six-verb `[ACTION:]` surface now append
 best-effort records after validation; cosmetic emotes remain unrecorded. No Hatcher
 request/response/auth/cognition field or verb parameter/
 bound changed; `PROTOCOL_VERSION 18` remains unchanged.*

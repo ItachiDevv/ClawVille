@@ -1,5 +1,25 @@
+import { WORLD_CENTER_PX } from './world-dimensions';
+
 export const KELP_REALM_CELL_WU = 200;
 export const KELP_REALM_WALL_HEIGHT_WU = 800;
+export const KELP_REALM_PLAYER_SPEED_WU_PER_SEC = 430;
+export const KELP_REALM_BEACON_VISIT_RADIUS_WU = 72;
+export const KELP_REALM_TOKEN_TTL_MS = 30 * 60 * 1000;
+export const KELP_REALM_SPEED_GRACE_MULTIPLIER = 1.2;
+export const PEARL_OF_THE_DEPTHS_SLUG = 'pearl-of-the-depths';
+export const REWARD_ONLY_COSMETIC_CURRENCY = 'REWARD_ONLY';
+
+export const KELP_FOREST_PORTAL_ID = 'kelp-forest-portal';
+export const KELP_FOREST_PORTAL_WORLD_CENTER = Object.freeze({ x: 7808, z: -9900 });
+export const KELP_FOREST_PORTAL_APPROACH_WORLD = Object.freeze({
+  x: KELP_FOREST_PORTAL_WORLD_CENTER.x,
+  z: KELP_FOREST_PORTAL_WORLD_CENTER.z + 240,
+});
+export const KELP_FOREST_PORTAL_APPROACH_GAME = Object.freeze({
+  x: KELP_FOREST_PORTAL_APPROACH_WORLD.x + WORLD_CENTER_PX.x,
+  y: KELP_FOREST_PORTAL_APPROACH_WORLD.z + WORLD_CENTER_PX.y,
+});
+export const KELP_FOREST_PORTAL_PROMPT_RADIUS_WU = 360;
 /** Maximum animated intrusion from either one wall into its corridor. */
 export const KELP_REALM_ONE_SIDED_SWAY_WU = 20;
 /** Complete visible-width loss between two opposing animated walls. */
@@ -231,13 +251,13 @@ function findCell(marker: 'E' | 'C'): KelpRealmCellCoord {
 }
 
 function derivePlayerSpawn(entry: KelpRealmCellCoord): Readonly<{ x: number; z: number }> {
-  const inside = corridorNeighbors(entry.row, entry.col).find(
+  const inside = corridorNeighbors(entry.row, entry.col).some(
     (cell) => cell.row > 0 && cell.row < KELP_REALM_ROWS - 1 && cell.col > 0 && cell.col < KELP_REALM_COLS - 1,
   );
   if (!inside) throw new Error('Kelp realm entry has no interior corridor neighbor');
   return Object.freeze({
-    x: kelpRealmCellCenterX(inside.col),
-    z: kelpRealmCellCenterZ(inside.row),
+    x: kelpRealmCellCenterX(entry.col),
+    z: kelpRealmCellCenterZ(entry.row),
   });
 }
 

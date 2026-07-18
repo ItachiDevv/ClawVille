@@ -17,6 +17,7 @@ import {
   isKelpRealmCorridorCell,
 } from '@clawville/shared';
 import KelpRealmPlayer from './kelp-realm-player';
+import { subscribeKelpRealmBeaconVisits } from './kelp-realm-visit-state';
 
 const BLADE_COUNT = 15_000;
 const BLADES_PER_VARIANT = BLADE_COUNT / 3;
@@ -270,10 +271,24 @@ function createPointGeometry(count: number, radius: number, height: number, seed
   return geometry;
 }
 
+const beaconVertexRanges = new Map<string, { start: number; count: number }>();
+const beaconIdleColor = new THREE.Color(0x72ffe0);
+const beaconCenterColor = new THREE.Color(0xb9fff1);
+const beaconVisitedColor = new THREE.Color(0xffefb0);
+
 function createBeaconGeometry(): THREE.BufferGeometry {
+  beaconVertexRanges.clear();
+  let vertexOffset = 0;
   const sources = KELP_REALM_BEACON_GRAPH.nodes.map((node) => {
     const geometry = new THREE.SphereGeometry(node.kind === 'center' ? 24 : 12, 8, 6);
     geometry.translate(node.x, node.kind === 'center' ? 120 : 70, node.z);
+    const count = geometry.getAttribute('position').count;
+    const colors = new Float32Array(count * 3);
+    const base = node.kind === 'center' ? beaconCenterColor : beaconIdleColor;
+    for (let index = 0; index < count; index++) base.toArray(colors, index * 3);
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    beaconVertexRanges.set(node.id, { start: vertexOffset, count });
+    vertexOffset += count;
     return geometry;
   });
   try {
@@ -283,6 +298,16 @@ function createBeaconGeometry(): THREE.BufferGeometry {
   } finally {
     for (const geometry of sources) geometry.dispose();
   }
+}
+
+function markBeaconGeometryVisited(geometry: THREE.BufferGeometry, beaconId: string): void {
+  const range = beaconVertexRanges.get(beaconId);
+  const color = geometry.getAttribute('color') as THREE.BufferAttribute | undefined;
+  if (!range || !color) return;
+  for (let index = range.start; index < range.start + range.count; index++) {
+    color.setXYZ(index, beaconVisitedColor.r, beaconVisitedColor.g, beaconVisitedColor.b);
+  }
+  color.needsUpdate = true;
 }
 
 function RealmEnvironment({ forceWebGL }: { forceWebGL: boolean }) {
@@ -297,7 +322,7 @@ function RealmEnvironment({ forceWebGL }: { forceWebGL: boolean }) {
     const moteGeometry = createPointGeometry(700, KELP_REALM_FOOTPRINT_WU * 0.7, 760, 0x4d4f5445);
     const moteMaterial = new THREE.PointsMaterial({ color: 0x8fffe3, size: 5, transparent: true, opacity: 0.42, depthWrite: false, sizeAttenuation: true });
     const beaconGeometry = createBeaconGeometry();
-    const beaconMaterial = new THREE.MeshBasicMaterial({ color: 0x72ffe0, transparent: true, opacity: 0.72, fog: false });
+    const beaconMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true, transparent: true, opacity: 0.82, fog: false });
     const shellGeometry = new THREE.SphereGeometry(180, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.58);
     shellGeometry.scale(1.25, 0.55, 0.9);
     shellGeometry.rotateX(Math.PI);
@@ -315,6 +340,11 @@ function RealmEnvironment({ forceWebGL }: { forceWebGL: boolean }) {
     const disposable = Object.values(resources);
     for (let index = 0; index < disposable.length; index++) disposable[index]!.dispose();
   }, [resources]);
+
+  useEffect(
+    () => subscribeKelpRealmBeaconVisits((beaconId) => markBeaconGeometryVisited(resources.beaconGeometry, beaconId)),
+    [resources.beaconGeometry],
+  );
 
   useFrame(({ clock }, delta) => {
     for (let index = 0; index < kelp.length; index++) {

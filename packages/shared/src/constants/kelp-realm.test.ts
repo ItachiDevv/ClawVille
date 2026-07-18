@@ -10,7 +10,12 @@ import {
   KELP_REALM_LAYOUT_INVARIANTS,
   KELP_REALM_MAX_SWAY_WU,
   KELP_REALM_ONE_SIDED_SWAY_WU,
+  KELP_REALM_PLAYER_SPAWN,
+  KELP_REALM_PLAYER_SPEED_WU_PER_SEC,
   KELP_REALM_ROWS,
+  KELP_REALM_BEACON_VISIT_RADIUS_WU,
+  kelpRealmCellCenterX,
+  kelpRealmCellCenterZ,
   isKelpRealmCorridorCell,
 } from './kelp-realm';
 
@@ -57,6 +62,16 @@ describe('Kelp Forest realm layout invariants', () => {
       KELP_REALM_CORRIDOR_WIDTH_WU - KELP_REALM_ONE_SIDED_SWAY_WU * 2,
     ).toBeGreaterThanOrEqual(160);
     expect(KELP_REALM_LAYOUT_INVARIANTS.visibleCorridorMinWu).toBe(160);
+  });
+
+  test('shares the real movement speed, proximity radius, and entry spawn with the server', () => {
+    expect(KELP_REALM_PLAYER_SPEED_WU_PER_SEC).toBe(430);
+    expect(KELP_REALM_BEACON_VISIT_RADIUS_WU).toBe(72);
+    expect(KELP_REALM_BEACON_VISIT_RADIUS_WU).toBeLessThan(KELP_REALM_CELL_WU / 2);
+    expect(KELP_REALM_PLAYER_SPAWN).toEqual({
+      x: kelpRealmCellCenterX(KELP_REALM_ENTRY_CELL.col),
+      z: kelpRealmCellCenterZ(KELP_REALM_ENTRY_CELL.row),
+    });
   });
 
   test('has one unique entry-to-center route and six substantial dead ends', () => {

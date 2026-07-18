@@ -1,4 +1,5 @@
 import type { MapLocation } from '../types/location';
+import { KELP_FOREST_PORTAL_APPROACH_GAME, KELP_FOREST_PORTAL_ID } from './kelp-realm';
 
 // 12-building TRUE CIRCULAR ring layout — recentered land-builder-economics (2026-06-24).
 // Ring R=130 tiles (4160wu). Grid grew 576→704 tiles; ring footprint unchanged,
@@ -184,8 +185,8 @@ export type AutonomyEnterablePlace = Readonly<{
   placeId: string;
   label: string;
   description: string;
-  actionVerb: 'enter_cove' | 'enter_poker_room' | 'move';
-  actionSyntax: 'enter_cove()' | 'enter_poker_room()' | `move(x=${number}, y=${number})`;
+  actionVerb: 'enter_cove' | 'enter_poker_room' | 'enter_kelp_forest' | 'move';
+  actionSyntax: 'enter_cove()' | 'enter_poker_room()' | 'enter_kelp_forest()' | `move(x=${number}, y=${number})`;
   destinationId: string;
 } & (
   | { mapLocationId: string; center?: never }
@@ -210,5 +211,14 @@ export const AUTONOMY_ENTERABLE_PLACES: readonly AutonomyEnterablePlace[] = [
     actionVerb: 'enter_poker_room',
     actionSyntax: 'enter_poker_room()',
     destinationId: 'cove',
+  },
+  {
+    placeId: 'kelp-forest',
+    center: KELP_FOREST_PORTAL_APPROACH_GAME,
+    label: 'Kelp Forest',
+    description: 'A route-isolated kelp maze whose beacons reveal only adjacent paths.',
+    actionVerb: 'enter_kelp_forest',
+    actionSyntax: 'enter_kelp_forest()',
+    destinationId: KELP_FOREST_PORTAL_ID,
   },
 ] as const;
