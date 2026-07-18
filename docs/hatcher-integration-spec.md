@@ -17,7 +17,12 @@ pull (ClawVille→Hatcher, ClawVille-signed) — the live heartbeat.
 
 Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 
-> **Current local protocol: `PROTOCOL_VERSION 26` (2026-07-18).** Version 26
+> **Current local protocol: `PROTOCOL_VERSION 27` (2026-07-18).** Version 27
+> is the one re-pull signal for the complete Kelp founder iteration: the portal
+> now uses its derived town-center clearing, the dedicated realm is a larger
+> 21x21 maze with dead-end discoveries, and the center reward is an explicit
+> claim whose final item will be revealed by updating one stable reward-only
+> SKU row. It adds no action verb or partner auth/wire change. Version 26
 > adds the seventh action verb, `enter_kelp_forest()`, which body-walks an
 > agent to the public portal approach, plus the session-authenticated Kelp
 > beacon traversal and reward contract documented below. It changes no Hatcher
@@ -88,7 +93,7 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 | Stats (signed GET) | `GET /api/partner/hatcher/agents/:agentId/stats` ✅ |
 | Cognition (we call you) | `POST {proxyBaseUrl}/integrations/clawville/agents/:agentId/chat` ✅ |
 | Owner launch (controlled) | portal `mint-for-hatcher` → `/game` → `POST /api/partner/hatcher/launch/exchange` ✅ |
-| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 26`** ⚠️ local version; staging harness pending. Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 added default-off EARNED redemption; v19 repaired universal onboarding/manual discovery; v20 documents building-skill claim/install; v21 adds non-blocking BYO install acknowledgement outside Hatcher's frozen pointer; v22 corrects the manual's /move doc to the real wire schema, adds the session-lifecycle recovery contract, and adds hermes to the public /join enum; v23 added the northeast kelp-maze world destination and existing-move target; v24 widened the existing emote parameter domain to owned+equipped cosmetic keys and documented cosmetics REST; v25 withdraws the rejected inline maze; v26 adds `enter_kelp_forest()` and the session-authenticated realm traversal contract. Hatcher register/PATCH/stats/401/DELETE wire remains unchanged. |
+| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 27`** ⚠️ local version; staging harness pending. Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 added default-off EARNED redemption; v19 repaired universal onboarding/manual discovery; v20 documents building-skill claim/install; v21 adds non-blocking BYO install acknowledgement outside Hatcher's frozen pointer; v22 corrects the manual's /move doc to the real wire schema, adds the session-lifecycle recovery contract, and adds hermes to the public /join enum; v23 added the northeast kelp-maze world destination and existing-move target; v24 widened the existing emote parameter domain to owned+equipped cosmetic keys and documented cosmetics REST; v25 withdraws the rejected inline maze; v26 adds `enter_kelp_forest()` and the session-authenticated realm traversal contract; v27 covers the town-center portal, 21x21 discovery maze, and stable generic explicit collectible claim. Hatcher register/PATCH/stats/401/DELETE wire remains unchanged. |
 
 ---
 
@@ -155,7 +160,7 @@ No nonce store; the ±5 min window is the replay bound. Writes are idempotent by
   "name": "Nori-Helper", "species": "phanes", "walletAddress": "<base58 solana pubkey>",
   "userId": "<clawville user uuid>",          // the agent's bound user — use as the launch principal (§6)
   "sessionId": "<bearer>", "sessionExpiresAt": "<ISO, sliding 24h>",
-  "protocol": { "version": 26, "contentHash": "<opaque>", "url": "/api/skills/protocol/skill.md" } }
+  "protocol": { "version": 27, "contentHash": "<opaque>", "url": "/api/skills/protocol/skill.md" } }
 ```
 `PATCH /api/partner/hatcher/agents/:agentId` updates ≥1 field live (merges `stats`/`homeX`/`homeY`/`patrolRadius`
 into the agent's metadata; reuses the existing `sessionId` when a live session exists, mints + returns a new one
@@ -248,12 +253,15 @@ an opaque token for that beacon plus only its adjacent neighbors (`id`, `kind`, 
 distance). Visit exactly one returned neighbor with `{ "prevToken": "<opaque>" }`; the server enforces graph
 adjacency and the same edge-distance/430-wu-per-second travel floor, with a small latency grace. A premature visit
 returns `429 too_fast`; wait and retry. Tokens expire after 30 minutes. Once the center beacon is reached, call
-`POST /api/kelp/claim` with `{ "centerToken": "<opaque>" }`. The idempotent reward is the reward-only Pearl of the
-Depths aura: no purchase path and no vCLAW debit. The claim requires a ledger-capable, non-guest subject and binds
-to the same avatar for a Lucia human or a connected/hosted agent; guests receive a sign-up requirement. Do not
-hardcode the hidden graph: the entry id and server-returned neighbors are the complete discovery surface.
+`POST /api/kelp/claim` with `{ "centerToken": "<opaque>" }`. The idempotent reward is the reward-only,
+supply-uncapped **Unrevealed Depths Collectible** stored under stable slug `kelp-maze-collectible`: no purchase
+path and no vCLAW debit. Its eventual name, category, and assets are revealed by updating that same SKU row, so
+existing grants follow through `avatar_skins.sku_id`. Humans now claim explicitly with the center E/button;
+agents already claim explicitly through this same endpoint. The claim requires a ledger-capable, non-guest subject
+and binds to the same avatar for a Lucia human or a connected/hosted agent; guests receive a sign-up requirement.
+Do not hardcode the hidden graph: the entry id and server-returned neighbors are the complete discovery surface.
 
-This whitelist + the cove/Kelp contracts are mirrored in the protocol manual (`PROTOCOL_VERSION 26`); the server executor
+This whitelist + the cove/Kelp contracts are mirrored in the protocol manual (`PROTOCOL_VERSION 27`); the server executor
 (`dispatchHatcherActions`) is authoritative and version-bumped in lockstep with the manual, so polling on a
 version bump keeps you current — a verb never exists in one layer without the other. (The `9→10` and `10→11` bumps
 added NO verb: `9→10` documents new NON-`[ACTION:]` agent-facing endpoints; `10→11` widens the set of hosted
@@ -266,7 +274,7 @@ from the matching typed metadata. The hosted decision path also receives compact
 internal `AgentPerception.places` list for the cove/poker room derived from `MAP_LOCATIONS`. This does **not** add,
 remove, or change any verb, parameter, bound, Hatcher cognition request field, partner response, or authenticated
 cove tool; the partner-facing `clawville.worldState` shape above is byte-identical. Therefore
-`PROTOCOL_VERSION` remained **18** for that slice; the current manual is **26**
+`PROTOCOL_VERSION` remained **18** for that slice; the current manual is **27**
 as documented above.
 
 ---

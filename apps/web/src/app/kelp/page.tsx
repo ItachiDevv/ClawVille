@@ -6,6 +6,7 @@ import SceneTransition, { useSceneTransition } from '@/components/transitions/Sc
 import { avatarPositionRef, useGameStore } from '@/stores/game';
 import { useAvatar } from '@/hooks/use-avatar';
 import KelpRealmMobileControls from '@/components/kelp/KelpRealmMobileControls';
+import { KelpRealmClaimHud } from '@/components/kelp/KelpRealmClaimHud';
 import { MAP_HEIGHT, MAP_WIDTH } from '@/lib/pixi/tilemap-data';
 import { KELP_FOREST_EXIT_WORLD } from '@/lib/three/kelp-forest-location';
 
@@ -62,6 +63,7 @@ export default function KelpPage() {
       >
         Back to the Reef
       </button>
+      <KelpRealmClaimHud />
       <KelpRealmMobileControls />
     </main>
   );

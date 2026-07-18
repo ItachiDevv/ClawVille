@@ -706,12 +706,26 @@ function AuraRenderer({
 }
 
 // ---------------------------------------------------------------------------
-// Pearl of the Depths — one merged draw, both renderer backends
+// AssetMeta-declared orbiting-orbs aura — one merged draw, both backends
 // ---------------------------------------------------------------------------
 
-const PEARL_AURA_ASSET = 'builtin:pearl-of-depths-aura';
+const ORBITING_ORBS_RENDERER = 'orbiting-orbs';
 
-function PearlAuraRenderer({
+function usesOrbitingOrbsRenderer(variant: OwnedCosmetic['variants'][0]): boolean {
+  return variant.assetMeta?.renderer === ORBITING_ORBS_RENDERER;
+}
+
+function finiteAuraMetaNumber(
+  value: unknown,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : fallback;
+}
+
+function OrbitingOrbsAuraRenderer({
   parentObject,
   variant,
   worldScale = 1,
@@ -723,27 +737,28 @@ function PearlAuraRenderer({
   const groupRef = useRef<THREE.Group | null>(null);
   const meta = variant.assetMeta ?? {};
   const color = String(meta.color ?? '#d9fff7');
-  const orbitRadiusWu = Number(meta.orbitRadiusWu ?? 72);
-  const pearlRadiusWu = Number(meta.pearlRadiusWu ?? 8);
-  const orbitHeightWu = Number(meta.orbitHeightWu ?? 112);
-  const orbitSpeed = Number(meta.orbitSpeed ?? 0.85);
-  const safeScale = Math.max(0.001, worldScale);
+  const orbitRadiusWu = finiteAuraMetaNumber(meta.orbitRadiusWu, 72, 0, 1000);
+  const orbRadiusWu = finiteAuraMetaNumber(meta.orbRadiusWu, 8, 0.1, 200);
+  const orbitHeightWu = finiteAuraMetaNumber(meta.orbitHeightWu, 112, -1000, 1000);
+  const orbitSpeed = finiteAuraMetaNumber(meta.orbitSpeed, 0.85, -10, 10);
+  const orbCount = Math.trunc(finiteAuraMetaNumber(meta.orbCount, 6, 1, 12));
+  const safeScale = finiteAuraMetaNumber(worldScale, 1, 0.001, 1000);
 
   const resources = useMemo(() => {
     const sources: THREE.BufferGeometry[] = [];
     try {
-      for (let index = 0; index < 6; index++) {
-        const angle = index / 6 * Math.PI * 2;
-        const pearl = new THREE.IcosahedronGeometry(pearlRadiusWu / safeScale, 1);
-        pearl.translate(
+      for (let index = 0; index < orbCount; index++) {
+        const angle = index / orbCount * Math.PI * 2;
+        const orb = new THREE.IcosahedronGeometry(orbRadiusWu / safeScale, 1);
+        orb.translate(
           Math.cos(angle) * orbitRadiusWu / safeScale,
           Math.sin(angle * 2) * 10 / safeScale,
           Math.sin(angle) * orbitRadiusWu / safeScale,
         );
-        sources.push(pearl);
+        sources.push(orb);
       }
       const geometry = mergeGeometries(sources, false);
-      if (!geometry) throw new Error('Pearl aura geometry merge failed');
+      if (!geometry) throw new Error('Orbiting-orbs aura geometry merge failed');
       const material = new THREE.MeshBasicMaterial({
         color,
         transparent: true,
@@ -759,7 +774,7 @@ function PearlAuraRenderer({
     } finally {
       for (const source of sources) source.dispose();
     }
-  }, [color, orbitHeightWu, orbitRadiusWu, pearlRadiusWu, safeScale]);
+  }, [color, orbCount, orbRadiusWu, orbitHeightWu, orbitRadiusWu, safeScale]);
 
   useEffect(() => {
     groupRef.current = resources.group;
@@ -1085,7 +1100,8 @@ export function CosmeticLoader({
 
   const hasShaderAura = renderableEquipped.some((item) => {
     if (item.sku.category !== 'aura') return false;
-    return pickVariant(item.variants, rigType)?.assetUrl !== PEARL_AURA_ASSET;
+    const variant = pickVariant(item.variants, rigType);
+    return !!variant && !usesOrbitingOrbsRenderer(variant);
   });
 
   return (
@@ -1099,9 +1115,9 @@ export function CosmeticLoader({
         const cat = item.sku.category;
         const onDispose = makeOnDispose(item.id);
 
-        if (cat === 'aura' && variant.assetUrl === PEARL_AURA_ASSET) {
+        if (cat === 'aura' && usesOrbitingOrbsRenderer(variant)) {
           return (
-            <PearlAuraRenderer
+            <OrbitingOrbsAuraRenderer
               key={item.id}
               parentObject={parentObject}
               variant={variant}

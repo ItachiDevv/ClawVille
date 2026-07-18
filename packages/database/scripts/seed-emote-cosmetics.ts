@@ -19,7 +19,7 @@ import postgres from 'postgres';
 import { resolve } from 'path';
 import { config } from 'dotenv';
 import {
-  PEARL_OF_THE_DEPTHS_SLUG,
+  KELP_MAZE_COLLECTIBLE_SLUG,
   REWARD_ONLY_COSMETIC_CURRENCY,
 } from '@clawville/shared';
 
@@ -53,18 +53,20 @@ const MESHY_ATTRIBUTION = 'Meshy AI animation library';
 const MESHY_ATTRIBUTION_URL = 'https://www.meshy.ai';
 const MESHY_LICENSE = 'Meshy-Terms';
 
-const PEARL_REWARD = Object.freeze({
-  slug: PEARL_OF_THE_DEPTHS_SLUG,
-  displayName: 'Pearl of the Depths',
-  description: 'An exclusive orbiting pearl aura earned by reaching the heart of the Kelp Forest.',
+const KELP_COLLECTIBLE_PLACEHOLDER = Object.freeze({
+  slug: KELP_MAZE_COLLECTIBLE_SLUG,
+  displayName: 'Unrevealed Depths Collectible',
+  description: 'A reward from the heart of the Kelp Forest. Its true form has not been revealed yet.',
   rarity: 'epic',
-  assetUrl: 'builtin:pearl-of-depths-aura',
+  assetUrl: 'builtin:orbiting-orbs-aura',
   assetMeta: Object.freeze({
+    renderer: 'orbiting-orbs',
     color: '#d9fff7',
-    orbitRadiusWu: 72,
-    pearlRadiusWu: 8,
+    orbCount: 4,
+    orbitRadiusWu: 58,
+    orbRadiusWu: 6,
     orbitHeightWu: 112,
-    orbitSpeed: 0.85,
+    orbitSpeed: 0.65,
   }),
 });
 
@@ -353,38 +355,36 @@ try {
     console.log(`  ✓ ${e.slug.padEnd(28)} (${e.rarity}, ${e.priceCt} CT, key=${e.animationKey})`);
   }
 
-  const [pearlSku] = await client<[{ id: string }]>`
+  // Founder-controlled reveal row: seed it only when absent. Re-running this
+  // script must never overwrite a later in-place DB UPDATE to its name,
+  // category, asset URL, or renderer metadata.
+  await client`
     INSERT INTO cosmetic_skus (
       slug, category, scope, display_name, description, rarity,
       price_ct, exclusive_currency, license_spdx, supply_cap,
       available_from, available_until
     ) VALUES (
-      ${PEARL_REWARD.slug}, 'aura', 'all', ${PEARL_REWARD.displayName},
-      ${PEARL_REWARD.description}, ${PEARL_REWARD.rarity}, 0,
+      ${KELP_COLLECTIBLE_PLACEHOLDER.slug}, 'aura', 'all', ${KELP_COLLECTIBLE_PLACEHOLDER.displayName},
+      ${KELP_COLLECTIBLE_PLACEHOLDER.description}, ${KELP_COLLECTIBLE_PLACEHOLDER.rarity}, 0,
       ${REWARD_ONLY_COSMETIC_CURRENCY}, 'OWN', NULL, NULL, NULL
     )
-    ON CONFLICT (slug) DO UPDATE SET
-      category = EXCLUDED.category,
-      scope = EXCLUDED.scope,
-      display_name = EXCLUDED.display_name,
-      description = EXCLUDED.description,
-      rarity = EXCLUDED.rarity,
-      price_ct = EXCLUDED.price_ct,
-      exclusive_currency = EXCLUDED.exclusive_currency,
-      license_spdx = EXCLUDED.license_spdx,
-      supply_cap = EXCLUDED.supply_cap,
-      available_from = EXCLUDED.available_from,
-      available_until = EXCLUDED.available_until
-    RETURNING id
+    ON CONFLICT (slug) DO NOTHING
   `;
+  const [collectibleSku] = await client<[{ id: string }]>`
+    SELECT id
+    FROM cosmetic_skus
+    WHERE slug = ${KELP_COLLECTIBLE_PLACEHOLDER.slug}
+    LIMIT 1
+  `;
+  if (!collectibleSku) {
+    throw new Error(`Stable Kelp collectible SKU missing after seed: ${KELP_COLLECTIBLE_PLACEHOLDER.slug}`);
+  }
   await client`
     INSERT INTO cosmetic_variants (sku_id, rig_type, asset_url, asset_meta)
-    VALUES (${pearlSku.id}, 'universal', ${PEARL_REWARD.assetUrl}, ${PEARL_REWARD.assetMeta}::jsonb)
-    ON CONFLICT (sku_id, rig_type) DO UPDATE SET
-      asset_url = EXCLUDED.asset_url,
-      asset_meta = EXCLUDED.asset_meta
+    VALUES (${collectibleSku.id}, 'universal', ${KELP_COLLECTIBLE_PLACEHOLDER.assetUrl}, ${KELP_COLLECTIBLE_PLACEHOLDER.assetMeta}::jsonb)
+    ON CONFLICT (sku_id, rig_type) DO NOTHING
   `;
-  console.log(`  ✓ ${PEARL_REWARD.slug} (epic, reward-only aura)`);
+  console.log(`  ✓ ${KELP_COLLECTIBLE_PLACEHOLDER.slug} (unrevealed, reward-only, create-if-absent)`);
 
   const skuRows = await client`
     SELECT slug, rarity, price_ct

@@ -270,9 +270,15 @@ import {
 // NOTE (2026-07-18, Kelp Forest realm parity): bumped 25 -> 26. The executor
 // adds the seventh verb `enter_kelp_forest()` and §16 documents the same
 // neighbor-reveal beacon REST traversal used by humans, including time floors,
-// the one-time Pearl aura claim, and zero vCLAW/CT movement. Partner register,
+// the one-time collectible claim, and zero vCLAW/CT movement. Partner register,
 // PATCH, stats, signing, and authentication wire shapes are unchanged.
-export const PROTOCOL_VERSION = 26;
+// NOTE (2026-07-18, Kelp founder iteration): bumped 26 -> 27 ONCE for the
+// complete visible series: the portal now sits at its derived town-center
+// clearing, the realm is a larger 21x21 maze with dead-end discoveries, and
+// the center reward is an explicit claim whose final item is decided later by
+// updating one stable reward-only SKU row. The seven action verbs and all
+// partner registration/authentication wire shapes remain unchanged.
+export const PROTOCOL_VERSION = 27;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -1316,7 +1322,7 @@ everyone nearby sees it. The colliding \`think\` key preserves its always-availa
 legacy thinking activity; when its SKU is owned+equipped, the same action also
 broadcasts the Meshy \`think\` clip.
 
-## 16. Kelp Forest realm — beacon traversal + Pearl of the Depths
+## 16. Kelp Forest realm — beacon traversal + unrevealed collectible
 
 The realm uses the same two-part parity model as the Cove. Its portal is just
 west of town center at world \`(-600, 250)\`, with the safe public approach at
@@ -1357,12 +1363,16 @@ Content-Type: application/json
 { "centerToken": "<token returned by the center visit>" }
 \`\`\`
 
-Claim is idempotent and binds the exclusive **Pearl of the Depths** epic aura to
-your bound avatar. It is reward-only: absent from the public catalog and rejected
-by every purchase currency path. The claim moves zero CT/vCLAW and creates no
-faucet surface. Guests may traverse but must create a free account to claim;
-unbound, non-ledger, and guest-owned agent identities are refused rather than
-demoted to demo settlement.
+Claim is idempotent and binds the reward currently stored under the stable
+\`kelp-maze-collectible\` SKU to your bound avatar. Its placeholder name is
+**Unrevealed Depths Collectible**; its final name, category, and assets will be
+decided later by updating that SAME database row, so existing grants follow the
+reveal through their \`skuId\`. It is reward-only, supply-uncapped, absent from the
+public catalog, and rejected by every purchase currency path. The claim moves
+zero CT/vCLAW and creates no faucet surface. Humans claim explicitly with the
+center E/button; agents already claim explicitly by calling this same endpoint.
+Guests may traverse but must create a free account to claim; unbound, non-ledger,
+and guest-owned agent identities are refused rather than demoted to demo settlement.
 `;
 }
 
