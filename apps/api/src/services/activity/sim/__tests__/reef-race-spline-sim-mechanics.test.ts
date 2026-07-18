@@ -48,9 +48,18 @@ const {
   REEF_LATERAL_GRIP,
   ACTION_BIT_POWERUP_0,
   ACTION_BIT_POWERUP_1,
+  ACTION_BIT_DRIFT_HOLD,
   BOOST_PAD_KICK,
   REEF_POWERUP_RESPAWN_MS,
   buildSplineBoostPads,
+  COMMITTED_DRIFT_MIN_SPEED,
+  COMMITTED_DRIFT_TIER1_MS,
+  COMMITTED_DRIFT_TIER2_MS,
+  COMMITTED_DRIFT_TIER1_MULT,
+  COMMITTED_DRIFT_TIER2_MULT,
+  COMMITTED_DRIFT_TIER1_DURATION_MS,
+  COMMITTED_DRIFT_TIER2_DURATION_MS,
+  COMMITTED_DRIFT_COOLDOWN_MS,
 } = await import('../reef-race-config');
 
 const DT = 1 / REEF_TICK_HZ;
@@ -155,6 +164,230 @@ describe('parabolic closest-sample refinement', () => {
       );
       previousY = y;
     }
+  });
+});
+
+describe('ReefRaceSplineSim — committed drift (Round 10b)', () => {
+  beforeEach(() => reefRaceSplineSim.__resetForTest());
+
+  function boot(roomId: string, events: any[] = []) {
+    reefRaceSplineSim.setBroadcastFn((_id, frame) => events.push(frame));
+    reefRaceSplineSim.startRoom(roomId, 'reef-race', [A], {
+      startedAt: 1_000_000,
+      seed: 10,
+    });
+    const state = reefRaceSplineSim.__getState(roomId)!;
+    const body = state.bodies.get(A)!;
+    const center = state.spline.centerlineAt(0.05);
+    const tangent = state.spline.tangentAt(0.05);
+    body.x = center.x;
+    body.z = center.z;
+    body.rot = Math.atan2(tangent.x, tangent.z);
+    body.vx = tangent.x * 700;
+    body.vz = tangent.z * 700;
+    return { state, body, events };
+  }
+
+  function stepRelative(
+    roomId: string,
+    body: any,
+    steerSign: 1 | -1,
+    actionBits = ACTION_BIT_DRIFT_HOLD,
+    steerMagnitude = 0.8,
+  ) {
+    const desired = body.rot + steerSign * steerMagnitude;
+    reefRaceSplineSim.applyInput(
+      roomId,
+      A,
+      body.intent.seq + 1,
+      DT,
+      input(1, Math.sin(desired), Math.cos(desired), actionBits),
+    );
+    reefRaceSplineSim.__tickOnceForTest(roomId);
+  }
+
+  function charge(roomId: string, body: any, ticks: number, sign: 1 | -1 = 1) {
+    for (let i = 0; i < ticks; i++) stepRelative(roomId, body, sign);
+  }
+
+  function driftEvents(events: any[]) {
+    return events.filter((event) => event.type === 'event.mini_turbo_fire');
+  }
+
+  it('charges only with bit 4 held while actually turning, without stale-input false cancel', () => {
+    const { body } = boot('r-drift-held-turn');
+
+    // Held but straight cannot initiate.
+    reefRaceSplineSim.applyInput(
+      'r-drift-held-turn',
+      A,
+      1,
+      DT,
+      input(1, Math.sin(body.rot), Math.cos(body.rot), ACTION_BIT_DRIFT_HOLD),
+    );
+    reefRaceSplineSim.__tickOnceForTest('r-drift-held-turn');
+    expect(body.miniTurboCarveSign).toBe(0);
+    expect(body.miniTurboChargeMs).toBe(0);
+
+    // Normal keyboard A/D is only ~0.1194 rad. Keep that RAW desired heading
+    // intentionally stale for several server ticks: outward bias must never
+    // rotate past it or false-cancel the held drift.
+    const staleDesired = body.rot + 0.119428926;
+    for (let i = 0; i < 6; i++) {
+      reefRaceSplineSim.applyInput(
+        'r-drift-held-turn',
+        A,
+        body.intent.seq + 1,
+        DT,
+        input(
+          1,
+          Math.sin(staleDesired),
+          Math.cos(staleDesired),
+          ACTION_BIT_DRIFT_HOLD,
+        ),
+      );
+      reefRaceSplineSim.__tickOnceForTest('r-drift-held-turn');
+    }
+    expect(body.miniTurboCarveSign).toBe(1);
+    expect(body.miniTurboMustRelease).toBe(false);
+    expect(body.miniTurboChargeMs).toBeGreaterThan(0);
+    const settledCharge = body.miniTurboChargeMs;
+    for (let i = 0; i < 5; i++) {
+      reefRaceSplineSim.applyInput(
+        'r-drift-held-turn',
+        A,
+        body.intent.seq + 1,
+        DT,
+        input(
+          1,
+          Math.sin(staleDesired),
+          Math.cos(staleDesired),
+          ACTION_BIT_DRIFT_HOLD,
+        ),
+      );
+      reefRaceSplineSim.__tickOnceForTest('r-drift-held-turn');
+    }
+    expect(body.miniTurboCarveSign).toBe(1);
+    expect(body.miniTurboChargeMs).toBe(settledCharge);
+  });
+
+  it('plain carving without drift hold never charges or boosts', () => {
+    const { body, events } = boot('r-drift-passive-gone');
+    for (let i = 0; i < 45; i++) {
+      stepRelative('r-drift-passive-gone', body, 1, 0);
+    }
+    expect(body.miniTurboChargeMs).toBe(0);
+    expect(body.miniTurboLevel).toBe(0);
+    expect(body.activeBoosts.has('mini-turbo-boost')).toBe(false);
+    expect(driftEvents(events)).toHaveLength(0);
+  });
+
+  it('fires exact tier-1 and tier-2 magnitudes, durations, and one event on release', () => {
+    const tiers = [
+      {
+        roomId: 'r-drift-tier-1',
+        ticks: Math.ceil(COMMITTED_DRIFT_TIER1_MS / (DT * 1000)),
+        level: 1,
+        mult: COMMITTED_DRIFT_TIER1_MULT,
+        duration: COMMITTED_DRIFT_TIER1_DURATION_MS,
+      },
+      {
+        roomId: 'r-drift-tier-2',
+        ticks: Math.ceil(COMMITTED_DRIFT_TIER2_MS / (DT * 1000)) + 1,
+        level: 2,
+        mult: COMMITTED_DRIFT_TIER2_MULT,
+        duration: COMMITTED_DRIFT_TIER2_DURATION_MS,
+      },
+    ] as const;
+
+    for (const tier of tiers) {
+      const { state, body, events } = boot(tier.roomId);
+      charge(tier.roomId, body, tier.ticks);
+      expect(body.miniTurboLevel).toBe(tier.level);
+
+      stepRelative(tier.roomId, body, 1, 0);
+      const boost = body.activeBoosts.get('mini-turbo-boost');
+      expect(boost?.mult).toBe(tier.mult);
+      expect(boost!.expiresAt - state.simTimeMs).toBeCloseTo(tier.duration, 8);
+      expect(driftEvents(events)).toEqual([
+        expect.objectContaining({
+          type: 'event.mini_turbo_fire',
+          avatarId: A,
+          level: tier.level,
+        }),
+      ]);
+      expect(body.miniTurboChargeMs).toBe(0);
+      expect(body.miniTurboLevel).toBe(0);
+    }
+  });
+
+  it('countersteer or speed-floor cancellation gives no boost and requires release to rearm', () => {
+    const counter = boot('r-drift-counter');
+    charge(
+      'r-drift-counter',
+      counter.body,
+      Math.ceil(COMMITTED_DRIFT_TIER1_MS / (DT * 1000)),
+    );
+    expect(counter.body.miniTurboLevel).toBe(1);
+
+    // Gradual analog countersteer: first stay inside the dead zone, then cross.
+    stepRelative('r-drift-counter', counter.body, -1, ACTION_BIT_DRIFT_HOLD, 0.05);
+    expect(counter.body.miniTurboCarveSign).toBe(1);
+    stepRelative('r-drift-counter', counter.body, -1, ACTION_BIT_DRIFT_HOLD, 0.11);
+    expect(counter.body.miniTurboCarveSign).toBe(0);
+    expect(counter.body.miniTurboChargeMs).toBe(0);
+    expect(counter.body.miniTurboMustRelease).toBe(true);
+    expect(counter.body.activeBoosts.has('mini-turbo-boost')).toBe(false);
+    expect(driftEvents(counter.events)).toHaveLength(0);
+
+    // Held button cannot rearm after cancel.
+    for (let i = 0; i < 3; i++) stepRelative('r-drift-counter', counter.body, 1);
+    expect(counter.body.miniTurboCarveSign).toBe(0);
+    stepRelative('r-drift-counter', counter.body, 1, 0);
+    expect(counter.body.miniTurboMustRelease).toBe(false);
+    stepRelative('r-drift-counter', counter.body, 1);
+    expect(counter.body.miniTurboCarveSign).toBe(1);
+
+    const floor = boot('r-drift-speed-floor');
+    charge(
+      'r-drift-speed-floor',
+      floor.body,
+      Math.ceil(COMMITTED_DRIFT_TIER1_MS / (DT * 1000)),
+    );
+    floor.body.vx = 0;
+    floor.body.vz = COMMITTED_DRIFT_MIN_SPEED - 1;
+    stepRelative('r-drift-speed-floor', floor.body, 1);
+    expect(floor.body.miniTurboCarveSign).toBe(0);
+    expect(floor.body.miniTurboChargeMs).toBe(0);
+    expect(floor.body.activeBoosts.has('mini-turbo-boost')).toBe(false);
+    expect(driftEvents(floor.events)).toHaveLength(0);
+  });
+
+  it('enforces the deterministic post-fire cooldown before charge can restart', () => {
+    const { state, body, events } = boot('r-drift-cooldown');
+    charge(
+      'r-drift-cooldown',
+      body,
+      Math.ceil(COMMITTED_DRIFT_TIER1_MS / (DT * 1000)),
+    );
+    stepRelative('r-drift-cooldown', body, 1, 0);
+    expect(driftEvents(events)).toHaveLength(1);
+    expect(body.miniTurboCooldownUntil - state.simTimeMs).toBeCloseTo(
+      COMMITTED_DRIFT_COOLDOWN_MS,
+      8,
+    );
+
+    while (state.simTimeMs + DT * 1000 < body.miniTurboCooldownUntil - 0.001) {
+      stepRelative('r-drift-cooldown', body, 1);
+      expect(body.miniTurboCarveSign).toBe(0);
+      expect(body.miniTurboChargeMs).toBe(0);
+    }
+
+    // The first tick at/after the deterministic expiry may rearm.
+    stepRelative('r-drift-cooldown', body, 1);
+    expect(state.simTimeMs).toBeGreaterThanOrEqual(body.miniTurboCooldownUntil);
+    expect(body.miniTurboCarveSign).toBe(1);
+    expect(driftEvents(events)).toHaveLength(1);
   });
 });
 

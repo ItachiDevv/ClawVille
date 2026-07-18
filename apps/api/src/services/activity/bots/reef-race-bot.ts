@@ -27,8 +27,11 @@ import {
   DRIFT_SPARK_TICK_2,
   DRIFT_SPARK_TICK_3,
   ACTION_BIT_DRIFT,
+  ACTION_BIT_DRIFT_HOLD,
+  ACTION_BIT_JUMP,
   ACTION_BIT_LAUNCH,
   ACTION_BIT_POWERUP_0,
+  COMMITTED_DRIFT_MIN_SPEED,
   // Phase 2 — bot heuristics
   APEX_HAIRPIN_CHECKPOINT_INDICES,
   APEX_INSIDE_OFFSET,
@@ -40,7 +43,10 @@ import {
   type ReefHazardPatch,
 } from '../sim/reef-race-config';
 import { ReefSpline } from '../sim/reef-race-spline';
-import { REEF_RACE_DEFAULT_TRACK } from '../sim/reef-race-track-layout';
+import {
+  REEF_RACE_DEFAULT_TRACK,
+  REEF_RACE_TECHNICAL_ZONES,
+} from '../sim/reef-race-track-layout';
 
 const POWERUP_USE_CHANCE = 0.3;
 const JITTER_MAGNITUDE = 0.08;
@@ -113,8 +119,7 @@ interface ReefBotRoomView extends Omit<BotRoomView, 'bodies'> {
 //
 // The v2 path is fully separate from the legacy ellipse heuristics above —
 // flag-gated inside computeInput so production stays bit-identical until the
-// flag flips. Drift logic is DROPPED on the v2 path (ACTION_BIT_DRIFT bit is
-// reused as ACTION_BIT_JUMP in v2; the sim handles the bit).
+// flag flips. Spline v2 keeps jump on bit 2 and uses bit 4 for committed drift.
 
 /** Lookahead for race-line target in spline t-space (NOT arclength). */
 const V2_LOOKAHEAD_T = 0.03;
@@ -252,11 +257,9 @@ class ReefRaceBot implements BotController {
     }
 
     // ─── v2 spline path — fully separate from ellipse heuristics ─────────
-    // Active when REEF_RACE_USE_SPLINE is true. Drift logic is dropped on
-    // this path; ACTION_BIT_DRIFT bit is reused as ACTION_BIT_JUMP server-
-    // side. Bot only emits jump when entering a ramp AABB (v2 layout has
-    // zero ramps in Phase 1 so this is dead code by design — Phase 2
-    // populates REEF_RACE_RAMP_ZONES).
+    // Active when REEF_RACE_USE_SPLINE is true. Bit 2 remains jump; bit 4 is
+    // committed drift. The bot models drift only in canonical technical zones,
+    // where sharper curvature can repay its 8% forward-speed cost.
     if (REEF_RACE_USE_SPLINE) {
       return this.computeInputSpline(view, self, dt);
     }
@@ -664,7 +667,7 @@ class ReefRaceBot implements BotController {
   //   - Race-line: lookahead at t+0.03 with curvature-based inside offset
   //   - Pickup deviation: only if pickup within budget
   //   - Always emit ACTION_BIT_JUMP on ramp AABB entry (Phase 2 placeholder)
-  //   - DROP all drift logic; bit 2 is now ACTION_BIT_JUMP server-side
+  //   - Hold committed drift bit 4 through sharp canonical technical zones
   //
   // The bot reads `self.x` (sim X) + `self.y` (sim Z, mapped from body.z by
   // the sim's buildBotRoomView). It builds a Vec2 {x, z} for the spline math.
@@ -792,20 +795,33 @@ class ReefRaceBot implements BotController {
     // ── Action bits: jump + powerups (no drift) ──────────────────────────
     let actionBits = 0;
 
-    // Ramp jump — emit ACTION_BIT_JUMP (= ACTION_BIT_DRIFT bit, semantically
-    // re-purposed in v2) when forward-projected lookahead position is
-    // inside any ramp AABB. Phase 1: REEF_RACE_RAMP_ZONES is empty, so this
-    // branch is a no-op until Phase 2 lands ramp definitions.
+    // Ramp jump — bit 2 remains the stable jump verb.
     if (REEF_RACE_RAMP_ZONES.length > 0) {
       // Use the lookahead point so the bot triggers a tick before entry.
       for (const zone of REEF_RACE_RAMP_ZONES) {
         const adx = lookCenter.x - zone.centerX;
         const adz = lookCenter.z - zone.centerZ;
         if (Math.abs(adx) <= zone.halfX && Math.abs(adz) <= zone.halfZ) {
-          actionBits |= ACTION_BIT_DRIFT; // = ACTION_BIT_JUMP in v2 sim
+          actionBits |= ACTION_BIT_JUMP;
           break;
         }
       }
+    }
+
+    // Deterministic committed-drift heuristic. All spline bots use it because
+    // the current bot contract carries no skill tier. Restricting the hold to
+    // v7's technical zones keeps broad-section lap pace sane; the authoritative
+    // sim still enforces speed, steer direction, release, and cooldown.
+    const inTechnicalZone = REEF_RACE_TECHNICAL_ZONES.some(
+      (zone) => tSelf >= zone.tStart && tSelf <= zone.tEnd,
+    );
+    if (
+      !inGrace &&
+      inTechnicalZone &&
+      Math.abs(delta) > V2_CURVATURE_THRESHOLD_RAD &&
+      speed >= COMMITTED_DRIFT_MIN_SPEED
+    ) {
+      actionBits |= ACTION_BIT_DRIFT_HOLD;
     }
 
     // Power-up usage — same probabilistic policy as v1, gated past grace.

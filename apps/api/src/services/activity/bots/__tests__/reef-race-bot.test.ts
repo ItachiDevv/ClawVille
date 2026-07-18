@@ -13,6 +13,7 @@ import type { BotRoomView } from '../bot-controller';
 import {
   buildReefCheckpoints,
   ACTION_BIT_DRIFT,
+  ACTION_BIT_DRIFT_HOLD,
   ACTION_BIT_LAUNCH,
   type ReefPowerUpKind,
 } from '../../sim/reef-race-config';
@@ -796,7 +797,7 @@ describe('ReefRaceBot — Phase 2 heuristics (P2-T30..P2-T34)', () => {
 // keep the test suite portable). Spec: `.claude/plans/reef-race-v2.md` and
 // architecture §5 of `.claude/plans/reef-race-v2-spline-architecture.md`.
 
-describe('ReefRaceBot — v2 spline path (V2-T1..V2-T4)', () => {
+describe('ReefRaceBot — v2 spline path (V2-T1..V2-T6)', () => {
   // Helper: build a spline view shaped like the spline sim's buildBotRoomView.
   // self.x = sim X, self.y = sim Z (protocol convention).
   function makeSplineView(opts: {
@@ -1034,10 +1035,9 @@ describe('ReefRaceBot — v2 spline path (V2-T1..V2-T4)', () => {
     expect(Math.abs(avgWith - avgWithout)).toBeLessThan(0.03);
   });
 
-  it('V2-T5 — drift bit is NEVER emitted on the v2 spline path', () => {
-    // Spec: drift logic is dropped on v2; ACTION_BIT_DRIFT (= ACTION_BIT_JUMP
-    // in v2) is only emitted on ramp AABB entry. Phase 1 has zero ramps, so
-    // the bot must NEVER set bit 2.
+  it('V2-T5 — legacy bit 2 remains jump-only outside ramp zones', () => {
+    // ACTION_BIT_DRIFT is the legacy ellipse name for bit 2. Spline v2 reads
+    // that wire position as jump only; with no ramp zone the bot leaves it off.
     const bot = createReefRaceBot('bot-self');
     // Place the bot mid-curve so v1 hairpin-drift would have triggered.
     // Tick repeatedly — ACTION_BIT_DRIFT must stay 0.
@@ -1052,5 +1052,44 @@ describe('ReefRaceBot — v2 spline path (V2-T1..V2-T4)', () => {
       // should NOT emit it because REEF_RACE_RAMP_ZONES is empty in Phase 1.
       expect((intent.actionBits ?? 0) & 0b0100).toBe(0);
     }
+  });
+
+  it('V2-T6 — holds bit 4 in a sharp technical zone but not a broad section', () => {
+    const { ReefSpline } = require('../../sim/reef-race-spline');
+    const { REEF_RACE_DEFAULT_TRACK } = require('../../sim/reef-race-track-layout');
+    const spline = new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true });
+    const bot = createReefRaceBot('bot-self');
+
+    const technical = spline.centerlineAt(0.55);
+    const technicalTangent = spline.tangentAt(0.55);
+    const technicalView = makeSplineView({
+      selfX: technical.x,
+      selfZ: technical.z,
+      selfVx: technicalTangent.x * 700,
+      selfVz: technicalTangent.z * 700,
+    });
+    const technicalIntent = (bot as any).computeInputSpline(
+      technicalView,
+      technicalView.bodies[0],
+      1 / 30,
+    );
+    expect((technicalIntent.actionBits ?? 0) & ACTION_BIT_DRIFT_HOLD).toBe(
+      ACTION_BIT_DRIFT_HOLD,
+    );
+
+    const broad = spline.centerlineAt(0.05);
+    const broadTangent = spline.tangentAt(0.05);
+    const broadView = makeSplineView({
+      selfX: broad.x,
+      selfZ: broad.z,
+      selfVx: broadTangent.x * 700,
+      selfVz: broadTangent.z * 700,
+    });
+    const broadIntent = (bot as any).computeInputSpline(
+      broadView,
+      broadView.bodies[0],
+      1 / 30,
+    );
+    expect((broadIntent.actionBits ?? 0) & ACTION_BIT_DRIFT_HOLD).toBe(0);
   });
 });
