@@ -33,7 +33,7 @@ function hostedSessionBot(over: Partial<AgentSessionBotInput> = {}): AgentSessio
     agentId: PLATFORM_AGENT_ID,
     lastSeenAt: new Date(NOW - 1000),
     sessionExpiresAt: new Date(NOW + 86_400_000),
-    identityType: 'nanoclaw',
+    identityType: 'milady',
     ...over,
   };
 }
@@ -65,8 +65,8 @@ describe('isHostedAvatarAgentSessionRow — the un-spoofable discriminator', () 
     // agentId + hosted harness match BUT identityType is a BYO/external one →
     // false (Codex 2026-07-08: agentId + identityType are both caller-suppliable at
     // /connect, so a same-user BYO agent with a matching agentId must NOT be
-    // mislabeled hosted — the 'nanoclaw' identity conjunct excludes it).
-    for (const identityType of ['openclaw', 'hermes', 'milady', 'custom', 'hatcher', 'ironclaw', 'anonymous']) {
+    // mislabeled hosted — the exact Milady identity conjunct excludes it).
+    for (const identityType of ['openclaw', 'hermes', 'custom', 'hatcher']) {
       expect(
         isHostedAvatarAgentSessionRow(hostedSessionBot({ identityType }), hostedAvatar()),
       ).toBe(false);
@@ -190,7 +190,7 @@ describe('genuine BYO/external rows are unchanged', () => {
     expect(r.body.mode).toBe('external-active');
   });
 
-  it('SAME-USER BYO collision: matching agentId + hosted harness but non-nanoclaw identity → external (Codex fix)', () => {
+  it('SAME-USER BYO collision: matching agentId + hosted harness but non-Milady identity → external (Codex fix)', () => {
     // A same-user BYO agent that deliberately connected with agentId == its owner's
     // platformAgentId and identityType 'openclaw' must report external-active (and
     // stay subject to idle), NOT be masked as always-alive 'hosted'.

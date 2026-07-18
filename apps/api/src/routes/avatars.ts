@@ -211,10 +211,12 @@ avatarRoutes.post('/', async (c) => {
   let ownerId: string;
 
   if (isAutoProvision) {
-    // Anonymous identity — unique per submission, so each /create-agent
-    // POST without a session produces its own fresh user row.
+    // Hosted Milady identity — unique per submission, so each /create-agent
+    // POST without a session produces its own fresh user row. ClawVille's own
+    // hosted-avatar signups use the real hosted runtime tag, never a legacy
+    // placeholder identity.
     const identityKey = crypto.randomUUID();
-    const resolved = await resolveOrCreateUserByIdentity('anonymous', identityKey);
+    const resolved = await resolveOrCreateUserByIdentity('milady', identityKey);
     ownerId = resolved.id;
   } else {
     // Existing-session path — guard against creating a second avatar.
@@ -392,7 +394,7 @@ avatarRoutes.post('/', async (c) => {
       userId: ownerId,
       avatarId: avatar.id,
       payload: {
-        identityType: 'anonymous',
+        identityType: 'milady',
         identityPubkey: firstTimeIdentity?.publicKey ?? ident.publicKey,
         via: 'create-agent',
       },

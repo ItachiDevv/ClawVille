@@ -794,7 +794,7 @@ export class AgentSubstrateClient {
   }
 
   async ping(): Promise<boolean> {
-    // nanoclaw agents have no outbound gateway to ping — treat them as
+    // Clients on the fail-soft `nanoclaw` wire have no outbound gateway to ping — treat them as
     // always-reachable so registration doesn't block. Same for hermes-local and
     // openclaw-local: the local cognition runtime is strictly BEST-EFFORT
     // (chatHermesLocal / chatOpenclawLocal fail soft to ''), so a not-yet-running

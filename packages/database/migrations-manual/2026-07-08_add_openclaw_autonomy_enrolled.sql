@@ -15,7 +15,7 @@
 -- Lifecycle: SET true by activateAutonomyForOwner after a successful enroll;
 -- SET false by deactivateAutonomyForOwner (explicit toggle + the logout route)
 -- and atomically in the 24h TTL sweep's mark-swept UPDATE. Only ever true on a
--- hosted-avatar (is_house=false, nanoclaw) row.
+-- hosted-avatar (is_house=false, milady identity) row.
 --
 -- Idempotent: ADD COLUMN IF NOT EXISTS — safe to run multiple times. Drizzle's
 -- db:push would emit the column from the schema (claws.ts); this manual SQL is
