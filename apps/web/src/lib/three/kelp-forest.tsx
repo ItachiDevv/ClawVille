@@ -1,11 +1,12 @@
 'use client';
 
 import { useEffect, useMemo } from 'react';
+import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three/webgpu';
 import { attribute, cos, float, positionLocal, sin, time, vec3 } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { KELP_FOREST_CENTER } from './kelp-forest-location';
 
-export const KELP_FOREST_CENTER = Object.freeze({ x: 7808, z: -9900 });
 export const KELP_FOREST_SIZE_WU = 48 * 32;
 export const KELP_FOREST_BLADE_COUNT = 5400;
 
@@ -13,7 +14,11 @@ const BLADES_PER_VARIANT = KELP_FOREST_BLADE_COUNT / 3;
 const GRID_COLUMNS = 75;
 const GRID_ROWS = 72;
 const HEIGHT_SEGMENTS = 8;
-const MAX_WIND_DISPLACEMENT_WU = 24;
+export const MAX_WIND_DISPLACEMENT_WU = 24;
+
+interface WindTimeUniform {
+  value: number;
+}
 
 interface KelpVariant {
   heightMin: number;
@@ -217,14 +222,10 @@ function createVariantGeometry(
   }
 }
 
-function createVariantMaterial(variant: KelpVariant): THREE.MeshStandardNodeMaterial {
-  const material = new THREE.MeshStandardNodeMaterial({
-    vertexColors: true,
-    side: THREE.DoubleSide,
-    roughness: 0.88,
-    metalness: 0,
-  });
-  try {
+function applyNodeWind(
+  material: { positionNode: THREE.Node | null },
+  variant: KelpVariant,
+): void {
     const phase = attribute<'float'>('aPhase', 'float');
     const height = attribute<'float'>('aHeight', 'float');
 
@@ -246,6 +247,17 @@ function createVariantMaterial(variant: KelpVariant): THREE.MeshStandardNodeMate
     material.positionNode = positionLocal.add(
       vec3(primaryX.add(currentX), float(0), primaryZ.add(currentZ)),
     );
+}
+
+function createWebGpuVariantMaterial(variant: KelpVariant): THREE.MeshStandardNodeMaterial {
+  const material = new THREE.MeshStandardNodeMaterial({
+    vertexColors: true,
+    side: THREE.DoubleSide,
+    roughness: 0.88,
+    metalness: 0,
+  });
+  try {
+    applyNodeWind(material, variant);
     return material;
   } catch (error) {
     material.dispose();
@@ -253,13 +265,66 @@ function createVariantMaterial(variant: KelpVariant): THREE.MeshStandardNodeMate
   }
 }
 
+function createWebGlVariantMaterial(
+  variant: KelpVariant,
+  timeUniform: WindTimeUniform,
+): THREE.MeshStandardMaterial {
+  const material = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    side: THREE.DoubleSide,
+    roughness: 0.88,
+    metalness: 0,
+  });
+
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uKelpTime = timeUniform;
+    shader.vertexShader = `
+uniform float uKelpTime;
+attribute float aPhase;
+attribute float aHeight;
+${shader.vertexShader}`;
+    const anchor = '#include <begin_vertex>';
+    if (!shader.vertexShader.includes(anchor)) {
+      throw new Error('Kelp Forest WebGL wind shader anchor missing');
+    }
+    shader.vertexShader = shader.vertexShader.replace(
+      anchor,
+      `${anchor}
+float kelpHeightSq = aHeight * aHeight;
+float kelpPrimaryX = sin(uKelpTime * ${variant.windRate.toFixed(6)} + aPhase)
+  * kelpHeightSq * ${variant.windAmplitude.toFixed(6)};
+float kelpPrimaryZ = cos(uKelpTime * ${(variant.windRate * 0.72).toFixed(6)} + aPhase * 1.31)
+  * kelpHeightSq * ${(variant.windAmplitude * 0.48).toFixed(6)};
+float kelpCurrentX = cos(uKelpTime * 0.055 + aPhase * 0.37)
+  * aHeight * ${(variant.windAmplitude * 0.22).toFixed(6)};
+float kelpCurrentZ = sin(uKelpTime * 0.043 + aPhase * 0.51)
+  * aHeight * ${(variant.windAmplitude * 0.16).toFixed(6)};
+transformed.x += kelpPrimaryX + kelpCurrentX;
+transformed.z += kelpPrimaryZ + kelpCurrentZ;`,
+    );
+  };
+  material.customProgramCacheKey = () => `kelp-forest-webgl-wind-v1-${variant.windAmplitude}-${variant.windRate}`;
+  // The live fallback is WebGPURenderer(forceWebGL), which converts standard
+  // materials to node materials before GLSLNodeBuilder runs and does not call
+  // WebGLRenderer.onBeforeCompile. Keep the requested plain-material GLSL hook
+  // for a classic renderer, and carry the identical node displacement so the
+  // current force-WebGL backend actually sways after that conversion.
+  applyNodeWind(
+    material as THREE.MeshStandardMaterial & { positionNode: THREE.Node | null },
+    variant,
+  );
+  return material;
+}
+
 interface KelpVariantResource {
   geometry: THREE.BufferGeometry;
-  material: THREE.MeshStandardNodeMaterial;
+  material: THREE.Material;
+  webGlTimeUniform: WindTimeUniform | null;
 }
 
 function createVariantResources(
   placements: readonly KelpBladePlacement[][],
+  forceWebGL: boolean,
 ): KelpVariantResource[] {
   const created: KelpVariantResource[] = [];
 
@@ -268,8 +333,11 @@ function createVariantResources(
       const variant = KELP_VARIANTS[index]!;
       const geometry = createVariantGeometry(placements[index]!, variant);
       try {
-        const material = createVariantMaterial(variant);
-        created.push({ geometry, material });
+        const webGlTimeUniform = forceWebGL ? { value: 0 } : null;
+        const material = forceWebGL
+          ? createWebGlVariantMaterial(variant, webGlTimeUniform!)
+          : createWebGpuVariantMaterial(variant);
+        created.push({ geometry, material, webGlTimeUniform });
       } catch (error) {
         geometry.dispose();
         throw error;
@@ -287,10 +355,11 @@ function createVariantResources(
 
 function useDisposableVariantResources(
   placementsFactory: () => KelpBladePlacement[][],
+  forceWebGL: boolean,
 ): KelpVariantResource[] {
   const resources = useMemo(() => {
-    return createVariantResources(placementsFactory());
-  }, [placementsFactory]);
+    return createVariantResources(placementsFactory(), forceWebGL);
+  }, [placementsFactory, forceWebGL]);
 
   useEffect(() => {
     return () => {
@@ -304,8 +373,15 @@ function useDisposableVariantResources(
   return resources;
 }
 
-export function KelpForestAmbient() {
-  const resources = useDisposableVariantResources(generatePlacements);
+export function KelpForestAmbient({ forceWebGL }: { forceWebGL: boolean }) {
+  const resources = useDisposableVariantResources(generatePlacements, forceWebGL);
+
+  useFrame(({ clock }) => {
+    for (let index = 0; index < resources.length; index++) {
+      const uniform = resources[index]!.webGlTimeUniform;
+      if (uniform) uniform.value = clock.elapsedTime;
+    }
+  });
 
   return (
     <group position={[KELP_FOREST_CENTER.x, -2, KELP_FOREST_CENTER.z]}>

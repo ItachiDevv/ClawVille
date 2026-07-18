@@ -328,6 +328,9 @@ function buildColliders(): Collider2D[] {
     { id: 'quest-bounty-pavilion',centerX:     0, centerZ: -1220, halfX: 280, halfZ: 280, kind: 'prop' },
     { id: 'quest-npc',            centerX:  -110, centerZ:   -60, halfX:  40, halfZ:  40, kind: 'prop' },
     { id: 'town-guide',           centerX:     0, centerZ:   240, halfX:  40, halfZ:  40, kind: 'prop' },
+    // Kelp Forest portal arch plane. The return spawn is 240 wu south, safely
+    // outside this AABB plus the 25-wu chibi Minkowski expansion.
+    { id: 'kelp-forest-portal',    centerX:  7808, centerZ: -9900, halfX: 170, halfZ:  42, kind: 'prop' },
   ];
   colliders.push(...PROPS);
 

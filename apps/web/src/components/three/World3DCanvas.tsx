@@ -25,6 +25,7 @@ import PlayerAvatar from '@/lib/three/player-avatar';
 import NpcController from '@/lib/three/npc-controller';
 import MergedSeaweed from '@/lib/three/merged-seaweed';
 import { KelpForestAmbient } from '@/lib/three/kelp-forest';
+import { KelpForestPortal } from '@/lib/three/kelp-forest-portal';
 import QuestNpc from '@/lib/three/quest-npc';
 import TownGuide from '@/lib/three/town-guide';
 import BazaarStall from '@/lib/three/bazaar-stall';
@@ -1921,12 +1922,18 @@ const SceneContents = memo(function SceneContents({
       )}
 
       {/* Northeast Kelp Forest — three merged tall-blade variants with heavy TSL wind.
-          Ambient blades share the water-fog, ground-cover, and WebGPU-only performance gates. */}
-      {showWaterFogParticles && showGroundCover && !FORCE_WEBGL && (
+          Ambient blades keep the water-fog and ground-cover governor gates;
+          their TSL/GLSL wind now runs on both renderer backends. */}
+      {showWaterFogParticles && showGroundCover && (
         <group name="perf:kelp-forest" userData={{ perfChunk: 'kelp-forest' }}>
-          <KelpForestAmbient />
+          <KelpForestAmbient forceWebGL={FORCE_WEBGL} />
         </group>
       )}
+
+      {/* Realm entrance stays mounted when the adaptive governor hides ground cover. */}
+      <group name="perf:kelp-forest-portal" userData={{ perfChunk: 'kelp-forest-portal' }}>
+        <KelpForestPortal forceWebGL={FORCE_WEBGL} />
+      </group>
 
       {/* NPC possession controller — active when controlMode === 'npc' */}
       {showNpcs && <NpcController />}

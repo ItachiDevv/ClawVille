@@ -4,6 +4,7 @@ import { useGameStore, type GameState } from '@/stores/game';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { MAP_LOCATIONS, BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 import { triggerCoveWalkIn } from '@/lib/three/arena-buildings';
+import { triggerKelpForestWalkIn } from '@/lib/three/kelp-forest-transition';
 
 /**
  * Building-entry prompt — replaces the prior tiny top-center hint
@@ -39,8 +40,9 @@ export default function LocationHUD() {
   if (buildingChatOpen || systemAgentChatOpen) return null;
   if (!nearLocation) return null;
 
+  const isKelpForest = nearLocation === 'kelp-forest-portal';
   const location = MAP_LOCATIONS.find((l) => l.id === nearLocation);
-  if (!location) return null;
+  if (!location && !isKelpForest) return null;
 
   const theme = BUILDING_OPENCLAW_THEMES[nearLocation];
   const characterName = nearCharacter;
@@ -52,25 +54,31 @@ export default function LocationHUD() {
   // Only the Cove (a real walk-in interior with a SceneTransition) keeps "Enter".
   const npcMode = controlMode === 'npc';
   const isCove = nearLocation === 'cove';
-  const showTalk = !isCove && !!characterName;
+  const showTalk = !isCove && !isKelpForest && !!characterName;
   // Cove gets a distinct CTA — it's an entertainment venue, not a teacher building.
-  const subjectLabel = isCove
-    ? 'The Cove'
+  const subjectLabel = isKelpForest
+    ? 'Kelp Forest'
+    : isCove
+      ? 'The Cove'
     : showTalk
       ? characterName!
-      : (theme?.label ?? location.name);
-  const ctaLine = isCove
-    ? 'Enter the Cove'
+      : (theme?.label ?? location!.name);
+  const ctaLine = isKelpForest
+    ? 'Enter the Kelp Forest'
+    : isCove
+      ? 'Enter the Cove'
     : showTalk
       ? `Talk to ${characterName}`
       : theme?.label
         ? `Enter ${theme.label}`
-        : `Enter ${location.name}`;
+        : `Enter ${location!.name}`;
 
   // The cove has its own walk-in flow (avatar pathfinds to the door then a
   // SceneTransition fires) — not the standard teacher-chat enterBuilding modal.
   const handleTap = () => {
-    if (nearLocation === 'cove') {
+    if (isKelpForest) {
+      triggerKelpForestWalkIn();
+    } else if (nearLocation === 'cove') {
       triggerCoveWalkIn();
     } else {
       enterBuilding(nearLocation, characterName ?? undefined);
@@ -161,11 +169,11 @@ export default function LocationHUD() {
         }}
       >
         <span aria-hidden style={{ fontSize: 22 }}>
-          {isCove ? '🎰' : showTalk ? '💬' : location.icon}
+          {isKelpForest ? '🪸' : isCove ? '🎰' : showTalk ? '💬' : location!.icon}
         </span>
         {ctaLine}
       </span>
-      {theme && !isCove && (
+      {theme && !isCove && !isKelpForest && (
         <span
           style={{
             fontSize: 11,
