@@ -140,6 +140,11 @@ type IntervalHandle = ReturnType<typeof setInterval>;
 
 const THINK_TAG_RE = /<think>[\s\S]*?<\/think>/gi;
 
+/** These models accept only default temperature and reject `temperature`/`stop`. */
+export function isReasoningModel(model: string | undefined): boolean {
+  return /^(gpt-5|o\d)/i.test(model ?? '');
+}
+
 interface OpenAIChatResponse {
   choices?: Array<{
     message?: { content?: string };
@@ -460,25 +465,54 @@ export class InferenceRouter {
     const body: Record<string, unknown> = {
       model,
       messages: args.messages,
-      temperature: args.temperature ?? 0.7,
       // max_completion_tokens (not the deprecated max_tokens) — the current OpenAI
       // param, also accepted by Ollama's OpenAI-compat endpoint (proven on johns-pc).
       max_completion_tokens: args.maxTokens ?? 1000,
     };
-    if (args.stopSequences && args.stopSequences.length > 0) body.stop = args.stopSequences;
+    if (!isReasoningModel(model)) {
+      body.temperature = args.temperature ?? 0.7;
+      if (args.stopSequences && args.stopSequences.length > 0) body.stop = args.stopSequences;
+    }
 
-    const res = await this.fetchImpl(`${ep.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-      },
-      body: JSON.stringify(body),
-      signal: this.timeoutSignal(this.attemptTimeoutMs(ep, args)),
-    });
+    let res: Response;
+    let strippedParams = 0;
+    while (true) {
+      res = await this.fetchImpl(`${ep.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
+        body: JSON.stringify(body),
+        signal: this.timeoutSignal(this.attemptTimeoutMs(ep, args)),
+      });
 
-    if (!res.ok) {
+      if (res.ok) break;
+
       const errBody = await res.text().catch(() => '');
+      let rejectedParam: string | undefined;
+      if (res.status === 400 && strippedParams < 2) {
+        try {
+          const parsed = JSON.parse(errBody) as { error?: { param?: unknown } };
+          if (typeof parsed.error?.param === 'string') rejectedParam = parsed.error.param;
+        } catch {
+          // Fall through to the provider-message pattern below.
+        }
+        rejectedParam ??= /Unsupported (?:value|parameter):\s*'([a-z_]+)'/i.exec(errBody)?.[1];
+
+        if (
+          (rejectedParam === 'temperature' || rejectedParam === 'stop' || rejectedParam === 'top_p') &&
+          Object.prototype.hasOwnProperty.call(body, rejectedParam)
+        ) {
+          console.warn(
+            `[InferenceRouter:${ep.id}] model ${model} rejected param '${rejectedParam}' — stripping and retrying`,
+          );
+          delete body[rejectedParam];
+          strippedParams++;
+          continue;
+        }
+      }
+
       throw new Error(
         `[InferenceRouter:${ep.id}] ${res.status} ${res.statusText}: ${errBody.slice(0, 300)}`,
       );
