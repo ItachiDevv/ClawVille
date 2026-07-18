@@ -58,6 +58,15 @@ import { resolveBuildingId } from './building-center';
 import { canBindAgentOwner } from './agent-owner-binding';
 import { roomRegistry, FREE_ROAMER_NPC_IDS, derivePublicId } from './room-registry';
 import type { PlayerSnapshot } from '@clawville/shared';
+import {
+  and,
+  avatarSkins,
+  cosmeticSkus,
+  cosmeticVariants,
+  db,
+  eq,
+  sql,
+} from '@clawville/database';
 import { createHash } from 'crypto';
 import { recordCovenantAction } from './covenant-action-recorder';
 
@@ -132,6 +141,23 @@ const HATCHER_EMOTE_MAP: Record<string, { activity: NpcActivity; emoji: string }
   celebrate: { activity: 'socializing', emoji: '🎉' },
   alert: { activity: 'training', emoji: '⚠️' },
 };
+const OWNED_EMOTE_NAME_PATTERN = /^[a-z0-9_]{1,40}$/;
+
+async function ownsEquippedEmote(avatarId: string, animationKey: string): Promise<boolean> {
+  const rows = await db
+    .select({ id: avatarSkins.id })
+    .from(avatarSkins)
+    .innerJoin(cosmeticSkus, eq(cosmeticSkus.id, avatarSkins.skuId))
+    .innerJoin(cosmeticVariants, eq(cosmeticVariants.skuId, cosmeticSkus.id))
+    .where(and(
+      eq(avatarSkins.avatarId, avatarId),
+      eq(avatarSkins.equipped, true),
+      eq(cosmeticSkus.category, 'emote'),
+      sql`${cosmeticVariants.assetMeta} ->> 'animationKey' = ${animationKey}`,
+    ))
+    .limit(1);
+  return rows.length > 0;
+}
 
 // Parse pattern shared with eliza-runtime.ts (parseActionInvocations) so the
 // hatcher-proxy reply and the Eliza action path stay consistent.
@@ -232,6 +258,10 @@ export interface NpcRuntimeState {
   // Activity system
   activity: NpcActivity;
   activityEmoji: string;
+  /** Last server-broadcast owned emote clip. Clients trigger only on seq change. */
+  emoteClip?: string;
+  /** Monotonic per-body trigger sequence for the keep-last emote payload. */
+  emoteSeq?: number;
   destinationBuildingId: string | null;
   path: PathNode[];
   pathIndex: number;
@@ -452,6 +482,8 @@ class NpcSimulation {
   public avatarAutonomyManager = new AvatarSimulationBridge();
   /** Test seam; production remains the canonical covenant recorder. */
   covenantRecord: typeof recordCovenantAction = recordCovenantAction;
+  /** Test seam; production performs the canonical equipped-emote ownership query. */
+  emoteOwnershipQuery: (avatarId: string, animationKey: string) => Promise<boolean> = ownsEquippedEmote;
   private arenaSettings: ArenaSettings = { ...DEFAULT_ARENA_SETTINGS };
   private arenaRound: ArenaRoundState | null = null;
 
@@ -1797,11 +1829,20 @@ class NpcSimulation {
         // truthy bracket-access guard would treat `HATCHER_EMOTE_MAP['constructor']`
         // (the Object ctor fn) as a valid emote and corrupt NPC activity state.
         if (!Object.hasOwn(HATCHER_EMOTE_MAP, params.name)) {
+          if (this.dispatchOwnedEmote(npcId, npc, params.name, attribution)) return;
           console.warn(`[Hatcher] emote dropped — unknown name "${params.name}"`);
           return;
         }
         const emote = HATCHER_EMOTE_MAP[params.name];
         this.setNpcActivity(npcId, emote.activity, emote.emoji);
+        // `think` is both a frozen legacy activity name and a Meshy shop SKU
+        // animationKey. Preserve the immediate legacy behavior above for every
+        // caller; an attributed owner with the equipped SKU additionally gets
+        // the real one-shot broadcast. An ownership miss is not an unknown
+        // legacy action, so it stays silent and leaves the activity intact.
+        if (params.name === 'think') {
+          this.dispatchOwnedEmote(npcId, npc, params.name, attribution, false);
+        }
         return;
       }
       case 'enter_building': {
@@ -1978,6 +2019,48 @@ class NpcSimulation {
     }
     const exhaustive: never = name;
     return exhaustive;
+  }
+
+  /**
+   * Start an additive owned-emote lookup without making the synchronous action
+   * executor async. Invalid/prototype names and unattributed bodies fail before
+   * any database work. The body identity fence after the await prevents a stale
+   * result from mutating a despawned/replaced body with the same id.
+   */
+  private dispatchOwnedEmote(
+    npcId: string,
+    npc: NpcRuntimeState,
+    name: string,
+    attribution: AgentActionAttribution | null,
+    warnOnMiss = true,
+  ): boolean {
+    if (
+      typeof name !== 'string' ||
+      !OWNED_EMOTE_NAME_PATTERN.test(name) ||
+      Object.hasOwn(Object.prototype, name) ||
+      !attribution
+    ) {
+      return false;
+    }
+
+    void this.emoteOwnershipQuery(attribution.avatarId, name)
+      .then((owned) => {
+        if (!owned) {
+          if (!warnOnMiss) return;
+          console.warn(`[Hatcher] emote dropped — unknown name "${name}"`);
+          return;
+        }
+        if (this.npcs.get(npcId) !== npc) return;
+        npc.emoteClip = name;
+        npc.emoteSeq = (npc.emoteSeq ?? 0) + 1;
+      })
+      .catch((err: unknown) => {
+        console.error(
+          `[Hatcher] emote ownership check failed for ${npcId} — dropped:`,
+          err instanceof Error ? err.message : err,
+        );
+      });
+    return true;
   }
 
   /**

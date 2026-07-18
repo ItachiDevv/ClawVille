@@ -28,6 +28,7 @@ import { avatarPositionRef } from '@/stores/game';
 import { useVRMInstance, disposeVRMInstance, preloadVRMBytes, applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 import {
   AMBIENT_ANIM_NAMES,
+  isEmoteAnimName,
   VRMCharacterAnimator,
   preloadMixamoClips,
   type AnimName,
@@ -1025,6 +1026,10 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
   const ambientDelayRef = useRef(ambientInitialDelay);
   const ambientCycleRef = useRef(0);
   const ambientOneShotOwnedRef = useRef(false);
+  // Keep-last server payloads trigger only on a sequence CHANGE. Seed from the
+  // mount snapshot so remounting an existing body never replays stale history.
+  const serverEmoteSeqRef = useRef(npc.emoteSeq);
+  const serverOneShotOwnedRef = useRef(false);
 
   // WorldLabelsOverlay label — same parameters as GLBNpcMesh except for the
   // Y offset: VRM humanoids are ~270wu tall (vs ~45wu for GLB crustaceans),
@@ -1361,6 +1366,35 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
 
     const animator = vrmAnimatorRef.current;
     if (animator) {
+      // Server-broadcast owned emotes are edge-triggered, not state-held. The
+      // store mutates this NPC object in place between SSE ticks, so this check
+      // belongs in useFrame rather than a React effect. Consume every changed
+      // sequence (including invalid/moving cases) to prevent delayed replay.
+      const serverEmoteSeq = d.emoteSeq;
+      if (
+        serverEmoteSeq !== undefined &&
+        serverEmoteSeq !== serverEmoteSeqRef.current
+      ) {
+        serverEmoteSeqRef.current = serverEmoteSeq;
+        const serverEmoteClip = d.emoteClip;
+        if (
+          !animationMoving &&
+          !d.isDead &&
+          serverEmoteClip !== undefined &&
+          isEmoteAnimName(serverEmoteClip)
+        ) {
+          // playOneShot supersedes any ambient clip; transfer ownership so the
+          // ambient cancellation block below cannot cancel this server event.
+          ambientOneShotOwnedRef.current = false;
+          serverOneShotOwnedRef.current = true;
+          void animator.playOneShot(serverEmoteClip);
+        }
+      }
+      if (serverOneShotOwnedRef.current && animationMoving) {
+        animator.cancelOneShot(animationMoving, d.isRunning ?? false);
+        serverOneShotOwnedRef.current = false;
+      }
+
       // Squat / swim / fly pipeline for the possessed-player NPC.
       // Mirrors the VRM player-avatar branch — surfaceClip is selected
       // every frame from jumpState.phase + airborne and only re-set
@@ -1445,6 +1479,7 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
           !d.id.startsWith('autonomous-') &&
           !d.id.startsWith('oc-') &&
           !d.id.startsWith('ocb-') &&
+          !d.isOpenClaw &&
           !animationMoving &&
           d.direction === 'idle' &&
           !d.inConversation &&

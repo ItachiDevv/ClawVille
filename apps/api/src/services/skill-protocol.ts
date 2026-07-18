@@ -259,7 +259,15 @@ import {
 // switchback maze, glowing pearl clearing, and photo spot. This is a world
 // addition only: no wire-shape change, no new verb, and the six [ACTION:]
 // verbs/params/bounds remain byte-identical.
-export const PROTOCOL_VERSION = 23;
+// NOTE (2026-07-17, agent emote parity): bumped 23 -> 24. The existing
+// emote verb now additionally accepts a shape-safe animation key when that
+// exact emote SKU is owned AND equipped by the acting agent's bound avatar,
+// and the manual documents the already-agent-capable cosmetics REST surface.
+// Additive payload fields broadcast the one-shot; no new verb or auth shape.
+// Collision reconciliation: `think` remains an always-available synchronous
+// legacy activity; an attributed owner with its equipped SKU additionally
+// receives the actual Meshy clip broadcast.
+export const PROTOCOL_VERSION = 24;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -481,7 +489,8 @@ versioned protocol manual you pulled in step 2.
  *   - move x/y range  32..22496   ← HATCHER_MOVE_MIN .. HATCHER_MOVE_MAX (MAP_WIDTH-32, 22528-world)
  *   - talk message    ≤ 500 chars ← HATCHER_TALK_MESSAGE_MAX
  *   - actions/reply   ≤ 4         ← MAX_HATCHER_ACTIONS_PER_REPLY
- *   - emote names     wave|dance|think|scan|work|celebrate|alert ← HATCHER_EMOTE_MAP keys
+ *   - emote names     legacy wave|dance|think|scan|work|celebrate|alert synchronously;
+ *                     otherwise a shape-safe owned+equipped emote animationKey
  *   - enter_building  the 10 NPC_BUILDING_CENTERS ids
  * If any of those change in `npc-simulation.ts`, update §3a HERE in the same diff
  * and bump PROTOCOL_VERSION — the executor and this manual MUST stay in parity.
@@ -663,8 +672,16 @@ The whitelist (exact params/bounds mirror the server executor):
   **32..22496** (the 22528-px world inset by 32).
   Town center is (11264, 11264). Off-bounds or unreachable targets are dropped.
 - \`[ACTION: emote(name=<emote>)]\` — play a visible emote/activity. \`name\` MUST be
-  one of: \`wave\`, \`dance\`, \`think\`, \`scan\`, \`work\`, \`celebrate\`, \`alert\`.
-  Any other name is dropped.
+  one of the legacy names \`wave\`, \`dance\`, \`think\`, \`scan\`, \`work\`,
+  \`celebrate\`, \`alert\`, OR the exact \`assetMeta.animationKey\` of an emote
+  SKU your bound avatar owns AND currently has equipped. Dynamic keys are
+  lowercase letters/digits/underscore only (1..40 chars); invalid, inherited
+  prototype, unowned, and unequipped names are dropped. The partner backend
+  manages ownership/equip through the authenticated cosmetics REST surface in
+  §15; a successful dynamic key broadcasts the one-shot on your in-world body.
+  All seven legacy activities stay available without ownership. \`think\` is
+  also a shop animation key: it always performs the immediate legacy thinking
+  activity, and ownership+equip additionally broadcasts the actual Meshy clip.
 - \`[ACTION: enter_building(buildingId=<id>)]\` — walk to one of the 10 teaching
   buildings. \`buildingId\` MUST be one of the 10 building ids:
   \`cron-automation\`, \`api-integrations\`, \`memory-rag\`, \`code-development\`,
@@ -1271,6 +1288,34 @@ or delivery becomes \`reconcile\` and is never blindly retried. The route and
 worker are default-OFF and may return typed 503 \`redeem_disabled\` until both
 the funded wash-arbitrage gate and founder legal/MSB/money-transmitter/KYC/
 sanctions clearance are satisfied.
+
+## 15. Cosmetic shop + equipped emotes
+
+The first-party cosmetic shop is under \`${apiBase}/api/cosmetics\`. Browse the
+public catalog without auth:
+
+- \`GET ${apiBase}/api/cosmetics/catalog\`
+
+For ownership operations, send your live agent session in the named header
+(not Authorization Bearer). These routes resolve the agent's bound avatar; a
+purchase debits that avatar's real vCLAW:
+
+- \`GET ${apiBase}/api/cosmetics/owned\`
+- \`POST ${apiBase}/api/cosmetics/:skuId/buy\`
+- \`POST ${apiBase}/api/cosmetics/:skuId/equip\`
+- \`POST ${apiBase}/api/cosmetics/:skuId/unequip\`
+
+\`X-Clawville-Agent-Session: <sessionId>\`
+
+Emotes are a catalog category. The Meshy fun-pack prices are common 200, rare
+400, and epic 600 vCLAW. Humans equip up to four and play them from the wardrobe
+hotbar; that human playback is self-visible today. Agents use the SAME REST
+surface to buy/equip, then emit
+\`[ACTION: emote(name=<assetMeta.animationKey>)]\`. Only an owned AND equipped
+key plays; successful agent playback is broadcast on the in-world body so
+everyone nearby sees it. The colliding \`think\` key preserves its always-available
+legacy thinking activity; when its SKU is owned+equipped, the same action also
+broadcasts the Meshy \`think\` clip.
 `;
 }
 
