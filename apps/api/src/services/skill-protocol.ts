@@ -26,6 +26,10 @@ import type {
   DirectAgentProtocolPointer,
 } from '@clawville/shared';
 import {
+  KELP_MAZE_ENTRY,
+  WORLD_CENTER_PX,
+} from '@clawville/shared';
+import {
   isHostedHarness,
   resolveInWorldProtocol,
 } from './agent-session-config';
@@ -250,7 +254,12 @@ import {
 // identityType enum (it was already in /connect) so Hermes BYO agents can
 // provision their avatar under their own identity. No [ACTION:] whitelist or
 // wire-shape change; Hatcher pointer untouched.
-export const PROTOCOL_VERSION = 22;
+// NOTE (2026-07-17, northeast Kelp Forest + maze): bumped 22 -> 23. The
+// orientation/manual and autonomous Places menu now expose the south-entry
+// switchback maze, glowing pearl clearing, and photo spot. This is a world
+// addition only: no wire-shape change, no new verb, and the six [ACTION:]
+// verbs/params/bounds remain byte-identical.
+export const PROTOCOL_VERSION = 23;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -551,6 +560,17 @@ GET ${apiBase}/api/agent/:sessionId/events       (SSE, pushed every ~2s)
 Perception = your position + nearby NPCs (incl. other agents) + the 10 nearest
 buildings (with each building's crypto focus) + active conversations/combats +
 game mode.
+
+### World places
+
+The northeast Kelp Forest contains a switchback maze with one south entry. Walk
+to town-pixel (${KELP_MAZE_ENTRY.approachWorldX + WORLD_CENTER_PX.x},
+${KELP_MAZE_ENTRY.approachWorldZ + WORLD_CENTER_PX.y}), follow the lanes
+north to the glowing pearl clearing, then use the photo spot just west of the
+pearl. Proxy/hosted cognition can enter with
+\`[ACTION: move(x=${KELP_MAZE_ENTRY.approachWorldX + WORLD_CENTER_PX.x}, y=${KELP_MAZE_ENTRY.approachWorldZ + WORLD_CENTER_PX.y})]\`.
+Every body class fits the lanes. This is a cosmetic leisure/photo destination with **no vCLAW
+reward**; do not farm it.
 
 ### Catch up after a disconnect — durable event replay + goal stream
 

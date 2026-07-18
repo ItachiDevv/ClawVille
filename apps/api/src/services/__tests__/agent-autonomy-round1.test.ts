@@ -3,7 +3,10 @@ import {
   BUILDING_INTERACTION_RADIUS,
   DECISION_SCOPE,
   HATCHER_ACTION_VERBS,
+  KELP_MAZE_ENTRY,
+  KELP_MAZE_PHOTO_SPOT,
   MAP_LOCATIONS,
+  WORLD_CENTER_PX,
 } from '@clawville/shared';
 import { agentAutonomyDriver } from '../agent-autonomy-driver';
 import { agentOrchestrator } from '../agent-orchestrator';
@@ -109,7 +112,7 @@ afterEach(() => {
 });
 
 describe('round 1 perception + decision prompt', () => {
-  it('derives cove and poker places from MAP_LOCATIONS with exact executor syntax', () => {
+  it('derives map venues and the inline kelp-maze POI with exact executor syntax', () => {
     const id = 'places-agent';
     registerHouse(id);
     const perception = npcSimulation.buildPerception(id)!;
@@ -134,6 +137,14 @@ describe('round 1 perception + decision prompt', () => {
         centerX,
         centerY,
       }),
+      expect.objectContaining({
+        placeId: 'kelp-maze',
+        actionVerb: 'move',
+        actionSyntax: `move(x=${KELP_MAZE_ENTRY.approachWorldX + WORLD_CENTER_PX.x}, y=${KELP_MAZE_ENTRY.approachWorldZ + WORLD_CENTER_PX.y})`,
+        destinationId: 'kelp-maze',
+        centerX: KELP_MAZE_PHOTO_SPOT.worldX + WORLD_CENTER_PX.x,
+        centerY: KELP_MAZE_PHOTO_SPOT.worldZ + WORLD_CENTER_PX.y,
+      }),
     ]));
   });
 
@@ -156,6 +167,12 @@ describe('round 1 perception + decision prompt', () => {
     expect(scopeAt).toBeLessThan(menuAt);
     expect(prompt).toContain('cove');
     expect(prompt).toContain('enter_cove()');
+    const kelpPlaceLine = prompt.split('\n').find((line) => line.startsWith('- kelp-maze:'));
+    expect(kelpPlaceLine).toContain('"Northeast Kelp Maze"');
+    expect(kelpPlaceLine).toContain('the photo spot is just west of the pearl.');
+    expect(kelpPlaceLine).toContain(
+      `move(x=${KELP_MAZE_ENTRY.approachWorldX + WORLD_CENTER_PX.x}, y=${KELP_MAZE_ENTRY.approachWorldZ + WORLD_CENTER_PX.y})`,
+    );
     expect(prompt).toContain('satisfy it before learning');
     for (const verb of HATCHER_ACTION_VERBS) expect(prompt).toContain(verb);
   });

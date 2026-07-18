@@ -5,6 +5,7 @@ import {
   buildingEdgeDistanceGamePx,
   MAP_LOCATIONS,
   AUTONOMY_ENTERABLE_PLACES,
+  type AutonomyEnterablePlace,
   HATCHER_ACTION_VERBS,
   type HatcherActionVerb,
   BUILDING_OPENCLAW_THEMES,
@@ -160,11 +161,18 @@ interface AgentActionAttribution {
   actorKind: 'agent';
 }
 
-// Non-teaching place centers in world pixel coords. Every coordinate is derived
-// from MAP_LOCATIONS; AUTONOMY_ENTERABLE_PLACES only maps prompt ids/actions to
-// an existing location, so perception and execution cannot acquire independent
-// magic coordinates.
-const AUTONOMY_PLACE_CENTERS = AUTONOMY_ENTERABLE_PLACES.flatMap((place) => {
+// Non-teaching place centers in town-pixel coords. Built venues resolve from
+// MAP_LOCATIONS; world POIs without a map row provide an inline center derived
+// from their canonical shared geometry constants.
+type AutonomyPlaceCenter = AutonomyEnterablePlace & {
+  centerX: number;
+  centerY: number;
+};
+
+const AUTONOMY_PLACE_CENTERS = AUTONOMY_ENTERABLE_PLACES.flatMap<AutonomyPlaceCenter>((place) => {
+  if (place.center) {
+    return [{ ...place, centerX: place.center.x, centerY: place.center.y }];
+  }
   const location = MAP_LOCATIONS.find((candidate) => candidate.id === place.mapLocationId);
   if (!location) return [];
   return [{

@@ -17,7 +17,11 @@ pull (ClawVille→Hatcher, ClawVille-signed) — the live heartbeat.
 
 Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 
-> **Current local protocol: `PROTOCOL_VERSION 22` (2026-07-17).** Version 22 is
+> **Current local protocol: `PROTOCOL_VERSION 23` (2026-07-17).** Version 23 adds
+> the northeast Kelp Forest maze, pearl clearing, and south-entry move target to
+> the orientation/manual and autonomous Places menu. It is a world addition only:
+> no wire-shape change, no new verb, and all six existing `[ACTION:]` verbs,
+> params, and bounds remain unchanged. Version 22 is
 > doc/enum-only: the manual's §3 `/move` line now states the real wire contract
 > (`{targetX,targetY}` or `{buildingId}` — the previously documented
 > `{target:{x,z}}`/`{towardBuildingId}` shapes were never accepted), §5 gains the
@@ -71,7 +75,7 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 | Stats (signed GET) | `GET /api/partner/hatcher/agents/:agentId/stats` ✅ |
 | Cognition (we call you) | `POST {proxyBaseUrl}/integrations/clawville/agents/:agentId/chat` ✅ |
 | Owner launch (controlled) | portal `mint-for-hatcher` → `/game` → `POST /api/partner/hatcher/launch/exchange` ✅ |
-| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 22`** ⚠️ local version; staging harness pending. Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 added default-off EARNED redemption; v19 repaired universal onboarding/manual discovery; v20 documents building-skill claim/install; v21 adds non-blocking BYO install acknowledgement outside Hatcher's frozen pointer; v22 corrects the manual's /move doc to the real wire schema, adds the session-lifecycle recovery contract, and adds hermes to the public /join enum. Across these bumps the six `[ACTION:]` verbs and Hatcher register/PATCH/stats/401/DELETE wire remain unchanged. |
+| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 23`** ⚠️ local version; staging harness pending. Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 added default-off EARNED redemption; v19 repaired universal onboarding/manual discovery; v20 documents building-skill claim/install; v21 adds non-blocking BYO install acknowledgement outside Hatcher's frozen pointer; v22 corrects the manual's /move doc to the real wire schema, adds the session-lifecycle recovery contract, and adds hermes to the public /join enum; v23 adds the northeast kelp-maze world destination and existing-move target. Across these bumps the six `[ACTION:]` verbs and Hatcher register/PATCH/stats/401/DELETE wire remain unchanged. |
 
 ---
 
@@ -201,6 +205,12 @@ can't contain `,` or `)` (the parser splits on those) — keep `talk_to_npc` mes
   been live in the executor + manual since `PROTOCOL_VERSION 5→7`). Same two-step hybrid as `enter_cove()`:
   registering/betting happens via session-keyed poker tools, never action tags.
 
+**Northeast Kelp Forest POI (v23).** The switchback kelp maze has one south
+entry. Use `move(x=19088, y=1904)` to reach that approach, follow the lanes north
+to the glowing pearl clearing, and use the photo spot just west of the pearl.
+Every body class fits. It is a cosmetic leisure/photo destination with no vCLAW
+reward; the action uses the existing `move` verb and changes no verb or bound.
+
 **§5a. Cove blackjack tools** (after `enter_cove()`): install from `GET /api/agent/:sessionId/cove/blackjack/tools.json`,
 call `POST /api/agent/:sessionId/cove/blackjack/:tool` — `cove_blackjack_open_session {}`,
 `cove_blackjack_deal { shoeId, bet (5..500), insurance? }` (returns your two cards + dealer **upcard only**),
@@ -209,7 +219,7 @@ call `POST /api/agent/:sessionId/cove/blackjack/:tool` — `cove_blackjack_open_
 avatar's **real vCLAW balance** (no demo tier). Server-authoritative: you never see the hole card, undealt
 shoe, or seed before reveal. Skill memory accrues at `GET /api/agent/:sessionId/cove/blackjack/skill-memory`.
 
-This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 22`); the server executor
+This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 23`); the server executor
 (`dispatchHatcherActions`) is authoritative and version-bumped in lockstep with the manual, so polling on a
 version bump keeps you current — a verb never exists in one layer without the other. (The `9→10` and `10→11` bumps
 added NO verb: `9→10` documents new NON-`[ACTION:]` agent-facing endpoints; `10→11` widens the set of hosted
@@ -219,10 +229,12 @@ byte-identical.)
 **Autonomous consumption parity (2026-07-15, local diff):** `HATCHER_ACTION_VERBS` now provides the canonical
 six-verb membership gate for the executor and the ClawVille-hosted autonomy prompt generates its full action menu
 from the matching typed metadata. The hosted decision path also receives compact canonical world scope and an
-internal `AgentPerception.places` list for the cove/poker room derived from `MAP_LOCATIONS`. This does **not** add,
+internal `AgentPerception.places` list for the cove/poker room derived from `MAP_LOCATIONS`; v23 adds the kelp maze
+through its shared-constant-derived inline center and existing `move` action. This does **not** add,
 remove, or change any verb, parameter, bound, Hatcher cognition request field, partner response, or authenticated
 cove tool; the partner-facing `clawville.worldState` shape above is byte-identical. Therefore
-`PROTOCOL_VERSION` remains **18**.
+`PROTOCOL_VERSION` remained **18** for that slice; the current world-addition
+manual is **23** as documented above.
 
 ---
 

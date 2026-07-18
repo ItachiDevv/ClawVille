@@ -1,4 +1,6 @@
 import type { MapLocation } from '../types/location';
+import { KELP_MAZE_ENTRY, KELP_MAZE_PHOTO_SPOT } from './kelp-maze';
+import { WORLD_CENTER_PX } from './world-dimensions';
 
 // 12-building TRUE CIRCULAR ring layout — recentered land-builder-economics (2026-06-24).
 // Ring R=130 tiles (4160wu). Grid grew 576→704 tiles; ring footprint unchanged,
@@ -177,10 +179,22 @@ export const LOCATION_IDS = MAP_LOCATIONS.map((l) => l.id);
 
 /**
  * Non-teaching destinations the autonomous decision path can enter through the
- * strict in-world action executor. Coordinates are deliberately NOT duplicated
- * here: perception resolves each `mapLocationId` through MAP_LOCATIONS.
+ * strict in-world action executor. Built venues resolve through MAP_LOCATIONS;
+ * world destinations without a map row carry a shared-constant-derived center.
  */
-export const AUTONOMY_ENTERABLE_PLACES = [
+export type AutonomyEnterablePlace = Readonly<{
+  placeId: string;
+  label: string;
+  description: string;
+  actionVerb: 'enter_cove' | 'enter_poker_room' | 'move';
+  actionSyntax: 'enter_cove()' | 'enter_poker_room()' | `move(x=${number}, y=${number})`;
+  destinationId: string;
+} & (
+  | { mapLocationId: string; center?: never }
+  | { mapLocationId?: never; center: Readonly<{ x: number; y: number }> }
+)>;
+
+export const AUTONOMY_ENTERABLE_PLACES: readonly AutonomyEnterablePlace[] = [
   {
     placeId: 'cove',
     mapLocationId: 'cove',
@@ -198,5 +212,17 @@ export const AUTONOMY_ENTERABLE_PLACES = [
     actionVerb: 'enter_poker_room',
     actionSyntax: 'enter_poker_room()',
     destinationId: 'cove',
+  },
+  {
+    placeId: 'kelp-maze',
+    center: {
+      x: KELP_MAZE_PHOTO_SPOT.worldX + WORLD_CENTER_PX.x,
+      y: KELP_MAZE_PHOTO_SPOT.worldZ + WORLD_CENTER_PX.y,
+    },
+    label: 'Northeast Kelp Maze',
+    description: 'Enter from the south, walk the switchbacks north to the pearl clearing; the photo spot is just west of the pearl.',
+    actionVerb: 'move',
+    actionSyntax: `move(x=${KELP_MAZE_ENTRY.approachWorldX + WORLD_CENTER_PX.x}, y=${KELP_MAZE_ENTRY.approachWorldZ + WORLD_CENTER_PX.y})`,
+    destinationId: 'kelp-maze',
   },
 ] as const;
