@@ -325,6 +325,103 @@ function ReefRaceMiniTurboToast() {
   );
 }
 
+// ─── Power-up collect/use confirmation (self inventory, Round 8) ─────────────
+
+const POWER_UP_TOAST_DURATION_MS = 900;
+const POWER_UP_LABELS: Readonly<Record<string, string>> = {
+  'rr-turbo-bubble': 'TURBO BUBBLE',
+  'rr-bubble-shield': 'BUBBLE SHIELD',
+  'rr-ink-slick': 'INK SLICK',
+  'rr-seeker-jelly': 'SEEKER JELLY',
+  'rr-tide-wave': 'TIDE WAVE',
+  'rr-whirlpool': 'WHIRLPOOL',
+};
+
+interface InventoryToastState {
+  label: string;
+  color: string;
+}
+
+function ReefRacePowerUpToast() {
+  const inventory = useActivityStore((s) => s.powerUpInventory);
+  const matchPhase = useActivityStore((s) => s.matchPhase);
+  const previousRef = useRef<Array<{ kind: string | null; charges: number }>>([]);
+  const [toast, setToast] = useState<InventoryToastState | null>(null);
+
+  useEffect(() => {
+    const previous = previousRef.current;
+    previousRef.current = inventory.map((slot) => ({
+      kind: slot.kind,
+      charges: slot.charges,
+    }));
+
+    if (matchPhase !== 'live') {
+      setToast(null);
+      return;
+    }
+
+    let nextToast: InventoryToastState | null = null;
+    const slotCount = Math.max(previous.length, inventory.length);
+    for (let index = 0; index < slotCount; index += 1) {
+      const before = previous[index];
+      const after = inventory[index];
+      const beforeKind = before?.kind ?? null;
+      const afterKind = after?.kind ?? null;
+      const collected =
+        !!afterKind &&
+        (!beforeKind || beforeKind !== afterKind || after!.charges > before!.charges);
+      if (collected && afterKind) {
+        nextToast = {
+          label: `+ ${POWER_UP_LABELS[afterKind] ?? afterKind.toUpperCase()}`,
+          color: '#6ee7b7',
+        };
+        break;
+      }
+
+      const used =
+        !!beforeKind &&
+        (!afterKind || beforeKind !== afterKind || after!.charges < before!.charges);
+      if (used && beforeKind) {
+        nextToast = {
+          label: `${POWER_UP_LABELS[beforeKind] ?? beforeKind.toUpperCase()} FIRED`,
+          color: '#ffd24a',
+        };
+        break;
+      }
+    }
+
+    if (!nextToast) return;
+    setToast(nextToast);
+  }, [inventory, matchPhase]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const id = window.setTimeout(() => setToast(null), POWER_UP_TOAST_DURATION_MS);
+    return () => window.clearTimeout(id);
+  }, [toast]);
+
+  return (
+    <ToastBox
+      visible={toast !== null}
+      color={toast?.color ?? '#6ee7b7'}
+      glowColor={toast?.color ? `${toast.color}66` : '#6ee7b766'}
+      topOffset="25%"
+    >
+      <span
+        style={{
+          fontSize: 13,
+          fontWeight: 800,
+          letterSpacing: '0.1em',
+          color: toast?.color ?? '#6ee7b7',
+          fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
+        }}
+      >
+        {toast?.label ?? ''}
+      </span>
+    </ToastBox>
+  );
+}
+
 // ─── Public composite component ───────────────────────────────────────────────
 
 /**
@@ -339,6 +436,7 @@ export default function ReefRaceEventToasts() {
       <ReefRaceRibbonToast />
       <ReefRaceBoostPadToast />
       <ReefRaceMiniTurboToast />
+      <ReefRacePowerUpToast />
     </>
   );
 }

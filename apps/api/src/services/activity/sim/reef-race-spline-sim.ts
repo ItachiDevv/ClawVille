@@ -115,7 +115,6 @@ import {
   // v2 mechanics — boost pads
   buildSplineBoostPads,
   type SplineBoostPad,
-  BOOST_PAD_KICK,
   BOOST_PAD_BOOST_MULT,
   BOOST_PAD_DURATION_MS,
   // v2 mechanics — mini-turbo (surf-carve whip)
@@ -136,6 +135,7 @@ import {
   WHIRLPOOL_SLOW_MULT,
 } from './reef-race-config';
 import {
+  computeReefBoostPadKick,
   integrateSurfStep,
   reefRaceStartGridPose,
   type ReefRaceStartFrame,
@@ -1911,26 +1911,13 @@ export class ReefRaceSplineSim {
    * boost ceiling.
    */
   private applyBoostPad(body: SplineBody, now: number): void {
-    const hardCap = REEF_MAX_SPEED * 1.85;
-
-    // Decompose velocity into the current heading frame, kick the along
-    // component, recompose.
-    const fwdX = Math.sin(body.rot);
-    const fwdZ = Math.cos(body.rot);
-    const perpX = Math.cos(body.rot);
-    const perpZ = -Math.sin(body.rot);
-    let vAlong = body.vx * fwdX + body.vz * fwdZ;
-    const vPerp = body.vx * perpX + body.vz * perpZ;
-    vAlong = Math.min(vAlong + BOOST_PAD_KICK, hardCap);
-    body.vx = vAlong * fwdX + vPerp * perpX;
-    body.vz = vAlong * fwdZ + vPerp * perpZ;
-
-    // Belt-and-braces: clamp total speed (the retained perp could nudge it over).
-    const sp = Math.hypot(body.vx, body.vz);
-    if (sp > hardCap) {
-      body.vx = (body.vx / sp) * hardCap;
-      body.vz = (body.vz / sp) * hardCap;
-    }
+    computeReefBoostPadKick(
+      body.vx,
+      body.vz,
+      body.rot,
+      REEF_MAX_SPEED,
+      body,
+    );
 
     // Timed decaying speedMod so cruise stays elevated then falls off.
     body.activeBoosts.set('pad-boost', {
