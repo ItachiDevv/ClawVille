@@ -24,7 +24,7 @@ import { VRM_METRICS_ENABLED, registerBulkVRMIdleCallback } from '@/lib/three/vr
 import PlayerAvatar from '@/lib/three/player-avatar';
 import NpcController from '@/lib/three/npc-controller';
 import MergedSeaweed from '@/lib/three/merged-seaweed';
-import { KelpForestAmbient, KelpMazeStructure } from '@/lib/three/kelp-forest';
+import { KelpForestAmbient } from '@/lib/three/kelp-forest';
 import QuestNpc from '@/lib/three/quest-npc';
 import TownGuide from '@/lib/three/town-guide';
 import BazaarStall from '@/lib/three/bazaar-stall';
@@ -1927,13 +1927,6 @@ const SceneContents = memo(function SceneContents({
           <KelpForestAmbient />
         </group>
       )}
-
-      {/* Collision-critical maze walls + landmark stay visible wherever their
-          always-live client/server colliders apply. FORCE_WEBGL selects static,
-          plain materials; staticWorldOnly retains this structure like buildings. */}
-      <group name="perf:kelp-maze" userData={{ perfChunk: 'kelp-maze' }}>
-        <KelpMazeStructure forceWebGL={FORCE_WEBGL} />
-      </group>
 
       {/* NPC possession controller — active when controlMode === 'npc' */}
       {showNpcs && <NpcController />}

@@ -17,12 +17,6 @@
  */
 
 import type { SkillPackEntry } from '../types/skill-pack';
-import {
-  KELP_MAZE_ENTRY,
-  KELP_MAZE_LANDMARK,
-  KELP_MAZE_PHOTO_SPOT,
-} from './kelp-maze';
-import { WORLD_CENTER_PX } from './world-dimensions';
 
 /**
  * Compact world scope consumed by the latency-sensitive autonomous decision
@@ -35,11 +29,9 @@ export const DECISION_SCOPE = [
   'Ten teacher buildings teach practical agent skills; visit and talk when learning serves your goal.',
   'The cove has provably-fair card games including blackjack baccarat and poker.',
   'Actions can cost or earn vCLAW; after walking to a card table use its authenticated game tools to play.',
-  'A leisure and photo destination waits in the northeast Kelp Forest maze.',
 ] as const;
 
 export const CLAWVILLE_ORIENTATION_KNOWLEDGE: string[] = [
-  `The northeast Kelp Forest contains a switchback kelp maze with one south entry at town-pixel (${KELP_MAZE_ENTRY.approachWorldX + WORLD_CENTER_PX.x}, ${KELP_MAZE_ENTRY.approachWorldZ + WORLD_CENTER_PX.y}). Enter by normal walking or move(x=${KELP_MAZE_ENTRY.approachWorldX + WORLD_CENTER_PX.x}, y=${KELP_MAZE_ENTRY.approachWorldZ + WORLD_CENTER_PX.y}), then follow the lanes north to the interior clearing and its glowing pearl landmark at (${KELP_MAZE_LANDMARK.worldX + WORLD_CENTER_PX.x}, ${KELP_MAZE_LANDMARK.worldZ + WORLD_CENTER_PX.y}); the photo spot at (${KELP_MAZE_PHOTO_SPOT.worldX + WORLD_CENTER_PX.x}, ${KELP_MAZE_PHOTO_SPOT.worldZ + WORLD_CENTER_PX.y}) is just west of the pearl. Every body class fits the lanes. This is a cosmetic leisure/photo destination with explicitly NO vCLAW reward, so do not farm it.`,
   'The first-party cosmetic shop lives under `/api/cosmetics`: GET `/api/cosmetics/catalog` is public; GET `/api/cosmetics/owned` and POST `/:skuId/buy`, `/:skuId/equip`, and `/:skuId/unequip` require authentication. Connected agents send `X-Clawville-Agent-Session: <sessionId>`; purchases debit real vCLAW from the agent\'s own bound avatar. Emotes are one category, priced common 200, rare 400, and epic 600 vCLAW in the Meshy fun pack.',
   'Humans play up to four equipped emotes from the wardrobe hotbar; that human playback is self-visible today. A connected/hosted agent plays an owned AND equipped emote in-world with `[ACTION: emote(name=<animationKey>)]`; the server broadcasts it on the agent body so everyone nearby sees it. Manage the equipped set through the same `/api/cosmetics` REST surface first. The legacy `think` action remains available to every agent as an immediate thinking activity; owning+equipping the `think` SKU additionally broadcasts its actual Meshy clip.',
   // ─── What ClawVille IS ──────────────────────────────────────────────────
@@ -72,7 +64,7 @@ export const CLAWVILLE_ORIENTATION_KNOWLEDGE: string[] = [
   'Milady users have a faster path: the @clawville/app-clawville plugin is live on npm. Any Milady instance can install it via POST /api/plugins/install and the ClawVille app grid entry opens ClawVille from inside Milady chat. Type "open clawville" from any Milady chat surface.',
   'After connecting, the agent receives an Identity signing keypair (used for signed reconnect challenges) and an Avatar Wallet keypair (Solana, custodial, envelope-encrypted under the Cloudflare KEK). `identity.secretKey` is returned ONCE per user on the first successful identity resolution; the agent must save it immediately because reconnects omit it and there is no agent-side re-issuance. It is distinct from the caller-supplied identityKey bootstrap credential and from wallet keys.',
   'A returning or second fleet agent receives the nonsecret identity disclosure `{ userId, publicKey, isFirstTime:false, secretIncluded:false, secretIssuedPreviously:true, recovery }`, never the secret again. On `secretIncluded:false`, it must immediately check `clawville:identity:<userId>` in secure config and verify the derived public key matches; if missing or different, alert the human and recover through the game-UI re-auth link or first agent before the session expires.',
-  'Connect and signed reconnect responses carry the protocol v24 pointer `{ version, contentHash, url, manifestUrl, auth: "X-Clawville-Agent-Session: <sessionId>", ackState? }`. Fetch both discovery URLs with that named header (not Authorization Bearer), compare version/hash, and re-pull before acting whenever either changes. The optional none/current/stale ackState is informational for self-managed agents and never gates play, vCLAW, or leaderboard credit; ClawVille-hosted agents skip acknowledgement because the server installs the manual directly.',
+  'Connect and signed reconnect responses carry the protocol v25 pointer `{ version, contentHash, url, manifestUrl, auth: "X-Clawville-Agent-Session: <sessionId>", ackState? }`. Fetch both discovery URLs with that named header (not Authorization Bearer), compare version/hash, and re-pull before acting whenever either changes. The optional none/current/stale ackState is informational for self-managed agents and never gates play, vCLAW, or leaderboard credit; ClawVille-hosted agents skip acknowledgement because the server installs the manual directly.',
   'Every connect + reconnect response includes the avatar wallet public address (`wallet.address`). Agents should save this as `clawville.wallet.address` in their config and use it with GET /api/agent/wallet?sessionId=<session> to report vCLAW balance and session earnings to the human. The address is public on Solana — safe to commit in config. Only the first-connect response includes `wallet.secretKey`, and agents must never store that — it is the human\'s self-custody backup.',
 
   // ─── Connected worlds (cross-world portal) ─────────────────────────────

@@ -65,10 +65,6 @@ export const townGuide: LocationTemplate = {
     'Shared rooms (multiplayer): the open world runs as small shared rooms. Auto-fill keeps rooms cozy by gathering players together up to about a dozen (a soft cap of 12) before opening a new room, so you spawn next to other people rather than alone. Friends can still pile into a specific room together with a 4-character invite code, which is honored up to a hard cap of 20. Everyone in your room sees everyone else move in real time, and a wandering NPC quietly steps aside to make space when a player joins. This is full human/agent parity: a connected or hosted agent can be co-present in the SAME room as a human, walking around AS ITSELF (its own avatar, real vCLAW and leaderboard credit, marked with a connected-agent dot), not as an anonymous guest. Humans join via the site; agents join with their session header. Either way only an opaque presence id ever goes over the wire, so nobody can read anyone else\'s session.',
     'Nori\'s rule: if the question is about a SPECIFIC skill (cron, APIs, RAG, agent security, MCP, deployment, visual creation, app publishing, code, communication channels), send the visitor to the relevant building teacher. Nori teaches the MAP. The building teachers teach the CRAFT.',
 
-    // Northeast Kelp Forest/maze (2026-07-17). Canonical coordinates, route,
-    // body-class parity, and the no-reward rule ride the orientation spread.
-    'Looking for a quiet photo walk? Head northeast into the Kelp Forest and enter its switchback maze from the south. Follow the lanes north to the glowing pearl clearing; the photo spot is just west of the pearl. Every body type fits, and it is purely a cosmetic leisure stop - no vCLAW reward, so visit for the view rather than farming it.',
-
     // 2026-06-01 Hatcher portal (partner #2) — same-diff knowledge sync.
     // The canonical world-fact rides the CLAWVILLE_ORIENTATION_KNOWLEDGE
     // spread above; this inline Nori-voice copy guarantees a grep against

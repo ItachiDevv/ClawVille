@@ -1,6 +1,4 @@
 import type { MapLocation } from '../types/location';
-import { KELP_MAZE_ENTRY, KELP_MAZE_PHOTO_SPOT } from './kelp-maze';
-import { WORLD_CENTER_PX } from './world-dimensions';
 
 // 12-building TRUE CIRCULAR ring layout — recentered land-builder-economics (2026-06-24).
 // Ring R=130 tiles (4160wu). Grid grew 576→704 tiles; ring footprint unchanged,
@@ -212,17 +210,5 @@ export const AUTONOMY_ENTERABLE_PLACES: readonly AutonomyEnterablePlace[] = [
     actionVerb: 'enter_poker_room',
     actionSyntax: 'enter_poker_room()',
     destinationId: 'cove',
-  },
-  {
-    placeId: 'kelp-maze',
-    center: {
-      x: KELP_MAZE_PHOTO_SPOT.worldX + WORLD_CENTER_PX.x,
-      y: KELP_MAZE_PHOTO_SPOT.worldZ + WORLD_CENTER_PX.y,
-    },
-    label: 'Northeast Kelp Maze',
-    description: 'Enter from the south, walk the switchbacks north to the pearl clearing; the photo spot is just west of the pearl.',
-    actionVerb: 'move',
-    actionSyntax: `move(x=${KELP_MAZE_ENTRY.approachWorldX + WORLD_CENTER_PX.x}, y=${KELP_MAZE_ENTRY.approachWorldZ + WORLD_CENTER_PX.y})`,
-    destinationId: 'kelp-maze',
   },
 ] as const;

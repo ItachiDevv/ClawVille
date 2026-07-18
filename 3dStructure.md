@@ -1,10 +1,10 @@
 # ClawVille — 3D Structure
 
+**Last Audited:** 2026-07-18 (inline northeast kelp maze withdrawn): the rejected corner maze, landmark, unconditional render group, and nine shared client/server colliders are removed because the feature was undersized, non-immersive, and collided with the tier-c land ring. The ambient northeast grove remains unchanged at exactly 5,400 deterministic blades and three draws, now filling its complete footprint without a maze carve. The maze is superseded by a portal and dedicated Kelp Forest realm in a separate build; that replacement is not claimed live here.
+
 **Last Audited:** 2026-07-17 (server-broadcast agent emotes, local diff pending visual sign-off): optional `emoteClip`/`emoteSeq` NPC snapshot fields now survive the client store's identity-preserving mutation path. `VRMNpcMesh` consumes sequence changes inside its allocation-free frame loop, validates against the purchasable emote whitelist, suppresses stale mount replay, and cancels a server-owned one-shot when movement resumes. Drift note: this adds an edge-triggered VRM one-shot consumer to the existing snapshot/interpolation path; it adds no binary, preload, draw call, material, light, or asset-cache mutation. See §6f rule 11.
 
 **Last edit:** 2026-07-17 (Meshy fun animation pack, local diff pending visual sign-off): added the 15-clip Meshy-rig `_emotes2.glb` family (12 shop emotes + 3 ambient-only clips), bundle version 1, targeted runtime loading, and idle-only wandering-NPC one-shots. Meshy and Mixamo clips keep separate base scenes because their rest poses differ; donor GLBs live outside `public/`. See §6f.
-
-**Last Audited:** 2026-07-17 (Kelp Revival B3 + humanoid-width review fix): the northeast Kelp Forest now contains a canonical shared eight-wall switchback maze, a 128-wu south entry, a 480×320-wu center clearing, a tile-aligned photo spot, and a one-draw pulsing pearl/shell landmark. Nine shared AABBs (eight walls plus the landmark) drive client movement and server A* with exact humanoid-expanded tile-center rasterization (lanes sized for the widest live body class — 100-wu humanoid — after review caught 75-wu lanes locking out guest possession and humanoid NPC/agent bodies). Section 8 records the live blade, collider, path-clearance, and draw budgets.
 
 **Last edit:** 2026-07-16 (pre-existing web strict-TypeScript cleanup; no runtime behavior change): the VRM cosmetic head-fit boundary now uses the upstream `Pick<VRM, 'humanoid' | 'scene'>` surface, preserving the library's `VRMHumanBoneName` parameter contract while accepting loaded VRMs in the preview and player render paths. The deferred resident-preload fallback uses `globalThis.setTimeout` so DOM typings no longer narrow the unsupported-window branch to `never`. Render behavior, avatar/cosmetic fit math, assets, draw calls, and per-frame work are unchanged.
 
@@ -807,28 +807,13 @@ No `InstancedMesh + ShaderMaterial` — known WebGPU silent crash on Iris Xe. Me
 | Geometry / draws | Per variant: 1,800 blades, 32,400 vertices, 28,800 triangles, 1 merged indexed `BufferGeometry`, and 1 mesh draw; total: 97,200 vertices, 86,400 triangles, 3 draws. Source planes are disposed after merge |
 | Material | Three `MeshStandardNodeMaterial` instances using deep green-teal baked vertex palettes; existing world lighting only |
 | Wind | Slow, heavy TSL `positionNode` displacement from `positionLocal`, `time`, normalized blade height, and a seeded per-blade phase attribute; merged bounds include the maximum displacement |
-| Runtime gate | AMBIENT blades only (`KelpForestAmbient`): `showWaterFogParticles && showGroundCover && !FORCE_WEBGL`; wrapper `perf:kelp-forest`. The maze walls + landmark are a SEPARATE component with NO gate — see §8b mount policy |
+| Runtime gate | `KelpForestAmbient`: `showWaterFogParticles && showGroundCover && !FORCE_WEBGL`; wrapper `perf:kelp-forest` |
 
-The forest adds no light, postprocessing pass, instancing, `useFrame`, or per-frame allocation. B3 layers the shared human/agent maze contract below onto the same three foliage buckets.
+The forest adds no light, postprocessing pass, instancing, `useFrame`, or per-frame allocation. Ambient blades fill the complete forest footprint while preserving the exact 5,400-blade budget.
 
-### 8b. Kelp maze + pearl landmark (Kelp Revival B3)
+### 8b. Withdrawn inline maze (2026-07-18)
 
-| Spec | Value |
-|---|---|
-| Canonical layout | `packages/shared/src/constants/kelp-maze.ts`; 8 readonly, stable-ID wall AABBs imported by renderer, client collision, and server collision/pathfinding |
-| Mount policy (review BLOCKING fix 2026-07-17) | `KelpMazeStructure` (1,929 wall blades + landmark, group `perf:kelp-maze`) mounts UNCONDITIONALLY on every render path — its 9 colliders are always live, so visibility must match collision on every hardware tier (the prior all-kelp gate produced invisible walls on Iris Xe / governor tier 1). WebGPU: TSL wind + emissive pulse. `FORCE_WEBGL`: static plain `MeshStandardMaterial` (vertexColors) + constant-emissive pearl — NEVER a NodeMaterial on the WebGL path. Ambient forest (`KelpForestAmbient`) keeps the perf gate. Bounding box/sphere computed + wind-expanded, so distance frustum culling is correct |
-| Lane widths (precise) | South entry 128 wu physical; east/west interior lanes physically 132 wu (outer walls contribute 12-wu half-thickness); humanoid free bands 28/32/32 wu, each containing one A* tile-center lane (7824 / 8240 / 7408) |
-| Forest / maze bounds | Forest: x `7040..8576`, z `-10668..-9132` (1,536×1,536 wu). Maze: x `7328..8320`, z `-10384..-9424` (992×960 wu) |
-| Entry | South side at `(7824, -9424)`, physical width 128 wu (4 A* tiles), aligned to one A* tile-center lane; ambient approach carve widens by the 24-wu maximum visual sway without changing collision geometry |
-| Body/path derivation | Sized for the WIDEST live body class: `ENTITY_HALF_HUMANOID=50` wu → 100-wu body keeps 28 wu total clearance; `ENTITY_HALF_CHIBI=25` keeps 78 wu. (Review fix 2026-07-17 — original 75-wu lanes fit only the chibi clamp and locked out guest NPC-possession + humanoid NPC/agent bodies) |
-| Clearing / landmark | Clearing centered `(7824, -10000)`, half-extents `240×160` wu (480×320). Giant pearl + ancient shell cluster are merged into 1 indexed geometry / 1 `MeshStandardNodeMaterial` draw with subtle TSL emissive pulse; no point light. Measured relative footprint x `-120..125.01`, z `-105.09..94`; conservative shared collider half-extents are `132×112` wu |
-| Photo spot | Tile-center-aligned `(7600, -10000)`, 224 wu west of the pearl; it remains 42 wu beyond the landmark AABB after the 50-wu humanoid expansion (67 wu for chibi) |
-| Collision parity | 9 client colliders (`kind:'prop'`) and the same 9 server colliders: 8 walls from `KELP_MAZE_WALLS` plus 1 shared landmark collider; no duplicated coordinates |
-| Server A* raster | Maze walls and the landmark opt into typed `cell-center-expanded-aabb` raster with `paddingWu=ENTITY_HALF_HUMANOID` (50) so the grid can never route a body class the client clamp rejects; inclusive tile range is derived from cell-center intersection. All pre-existing colliders retain the legacy 4-tile / 128-wu safety raster unchanged |
-| Blade budget | Ambient remains exactly 5,400. Three dense rows per wall add 1,929 blades (643/variant), for 7,329 total: 2,443/variant, 131,922 vertices, 351,792 indices, 117,264 triangles |
-| Draw budget | Kelp walls reuse the existing three variant geometry/material buckets, so kelp remains exactly 3 draws; landmark adds 1 draw (4 total forest/maze draws) |
-
-Ambient blades are deterministically relocated outside the maze footprint and south approach, leaving readable corridors and the full clearing while preserving the B2 count. Wall blades remain in the same three `mergeGeometries` buckets and carry the same indexed geometry, vertex color, phase, height, wind, bounds, and disposal contract as ambient blades. Focused tests assert exact shared→client/server AABB parity, entry-to-photo-spot A* reachability plus segment collision safety, rejection of a direct segment through the walls, and rejection of a photo-spot segment through the landmark.
+The corner maze and pearl landmark are no longer part of the open world. Their render geometry, WebGL fallback materials, collision/pathfinding data, and agent destination were removed together. A portal and dedicated Kelp Forest realm supersede this concept in a separate build; until that realm ships, the northeast grove is ambient portal dressing only.
 
 ---
 
