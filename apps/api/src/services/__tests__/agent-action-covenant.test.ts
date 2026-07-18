@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { createHash } from 'crypto';
-import { NPC_BUILDING_CENTERS } from '@clawville/shared';
+import {
+  KELP_MAZE_ENTRY,
+  KELP_MAZE_PHOTO_SPOT,
+  NPC_BUILDING_CENTERS,
+  WORLD_CENTER_PX,
+} from '@clawville/shared';
 import { npcSimulation } from '../npc-simulation';
 import type { CovenantActionInput } from '../covenant-action-recorder';
 
@@ -9,6 +14,7 @@ interface TestNpc {
   name: string;
   x: number;
   y: number;
+  path: Array<{ x: number; y: number }>;
   [key: string]: unknown;
 }
 
@@ -105,6 +111,22 @@ afterEach(() => {
 });
 
 describe('in-world executor covenant hooks', () => {
+  it('accepts a move from outside the kelp maze and raster-paths to its photo spot', () => {
+    const npc = body(
+      'kelp-maze-executor-body',
+      KELP_MAZE_ENTRY.approachWorldX + WORLD_CENTER_PX.x,
+      KELP_MAZE_ENTRY.approachWorldZ + WORLD_CENTER_PX.y,
+    );
+    sim.npcs.set(npc.id, npc);
+
+    sim.executeHatcherAction(npc.id, npc, 'move', {
+      x: String(KELP_MAZE_PHOTO_SPOT.worldX + WORLD_CENTER_PX.x),
+      y: String(KELP_MAZE_PHOTO_SPOT.worldZ + WORLD_CENTER_PX.y),
+    });
+
+    expect(npc.path.length).toBeGreaterThan(0);
+  });
+
   it('completes late identityKey/Milady avatar attribution before connect returns', async () => {
     const source = await Bun.file(
       new URL('../../routes/agent-gateway.ts', import.meta.url),
