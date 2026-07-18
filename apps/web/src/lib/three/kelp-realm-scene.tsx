@@ -370,7 +370,7 @@ export const KELP_REALM_SCENE_BUDGET = Object.freeze({
   bladeCount: BLADE_COUNT,
   kelpDrawCalls: VARIANTS.length,
   environmentDrawCalls: 10,
-  realmAvatarDrawCalls: 1,
-  maxTotalDrawCallsIncludingAvatar: 11,
+  maxAvatarDrawCalls: 14,
+  maxTotalDrawCallsIncludingAvatar: 24,
   wallHeightWu: KELP_REALM_WALL_HEIGHT_WU,
 });
