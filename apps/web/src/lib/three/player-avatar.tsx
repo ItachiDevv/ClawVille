@@ -9,7 +9,11 @@ import {
   MAP_WIDTH,
   MAP_HEIGHT,
 } from '@/lib/pixi/tilemap-data';
-import { findNearestCharacter, isCoveProximate } from '@/lib/three/character-positions';
+import {
+  findNearestCharacter,
+  isCoveProximate,
+  isKelpForestPortalProximate,
+} from '@/lib/three/character-positions';
 import { NORI_WORLD_X, NORI_WORLD_Z, NORI_TALK_RADIUS_SQ } from '@/lib/three/town-guide';
 import { applyWalkAnimation, applyIdleAnimation } from '@/lib/three/procedural-animation';
 import { LobsterAnimator } from '@/lib/three/lobster-animations';
@@ -25,6 +29,7 @@ import {
 } from '@/lib/three/character-animations';
 import { jumpState, isEditable, type ChargeMode } from '@/lib/three/jump-state';
 import { triggerCoveWalkIn } from './arena-buildings';
+import { triggerKelpForestWalkIn } from './kelp-forest-transition';
 import { registerInputReset } from '@/lib/three/input-reset';
 import { useVRMInstance, disposeVRMInstance, applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 import {
@@ -367,6 +372,7 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
           // The cove is a walk-in venue (SceneTransition), not a teacher chat —
           // E near it runs the walk-in flow, never enterBuilding's chat path.
           if (store.nearLocation === 'cove') triggerCoveWalkIn();
+          else if (store.nearLocation === 'kelp-forest-portal') triggerKelpForestWalkIn();
           else store.enterBuilding(store.nearLocation);
           lastEState = eNow;
           return;
@@ -557,7 +563,9 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
         ? nearest.buildingId
         : isCoveProximate(wx, wz)
           ? 'cove'
-          : null;
+          : isKelpForestPortalProximate(wx, wz)
+            ? 'kelp-forest-portal'
+            : null;
       const nearName = nearest ? nearest.characterName : null;
       if (nearId !== store.nearLocation) store.setNearLocation(nearId);
       if (nearName !== store.nearCharacter) store.setNearCharacter(nearName);
@@ -847,6 +855,7 @@ function PlayerAvatarGLBInner() {
           // The cove is a walk-in venue (SceneTransition), not a teacher chat —
           // E near it runs the walk-in flow, never enterBuilding's chat path.
           if (store.nearLocation === 'cove') triggerCoveWalkIn();
+          else if (store.nearLocation === 'kelp-forest-portal') triggerKelpForestWalkIn();
           else store.enterBuilding(store.nearLocation);
           lastEState = eNow;
           return;
@@ -1016,7 +1025,9 @@ function PlayerAvatarGLBInner() {
         ? nearest.buildingId
         : isCoveProximate(wx, wz)
           ? 'cove'
-          : null;
+          : isKelpForestPortalProximate(wx, wz)
+            ? 'kelp-forest-portal'
+            : null;
       const nearName = nearest ? nearest.characterName : null;
       if (nearId !== store.nearLocation) store.setNearLocation(nearId);
       if (nearName !== store.nearCharacter) store.setNearCharacter(nearName);

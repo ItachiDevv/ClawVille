@@ -1,5 +1,7 @@
 # ClawVille — 3D Structure
 
+**Last Audited:** 2026-07-18 (Kelp Forest realm Run A, commit 1 pending local gates): the northeast grove now keeps the same deterministic 5,400-blade geometry and governor gates on both renderer backends, selecting TSL wind for WebGPU and an `onBeforeCompile` GLSL patch on the force-WebGL backend with identical attributes, displacement terms, and 24-wu bound. A gameplay-critical two-draw merged kelp arch + asymmetric spiral portal now mounts independently of the ground-cover governor at world `(7808, -9900)`, with matching client/server prop AABB `(170, 42)`, the existing proximity HUD/keyboard/tap transition to `/kelp`, and return spawn 240 wu south of the collider. This is local work awaiting visual sign-off; the dedicated realm scene lands in the next commit.
+
 **Last Audited:** 2026-07-18 (inline northeast kelp maze withdrawn): the rejected corner maze, landmark, unconditional render group, and nine shared client/server colliders are removed because the feature was undersized, non-immersive, and collided with the tier-c land ring. The ambient northeast grove remains unchanged at exactly 5,400 deterministic blades and three draws, now filling its complete footprint without a maze carve. The maze is superseded by a portal and dedicated Kelp Forest realm in a separate build; that replacement is not claimed live here.
 
 **Last Audited:** 2026-07-17 (server-broadcast agent emotes, local diff pending visual sign-off): optional `emoteClip`/`emoteSeq` NPC snapshot fields now survive the client store's identity-preserving mutation path. `VRMNpcMesh` consumes sequence changes inside its allocation-free frame loop, validates against the purchasable emote whitelist, suppresses stale mount replay, and cancels a server-owned one-shot when movement resumes. Drift note: this adds an edge-triggered VRM one-shot consumer to the existing snapshot/interpolation path; it adds no binary, preload, draw call, material, light, or asset-cache mutation. See §6f rule 11.
@@ -317,7 +319,7 @@ Pure XZ-plane AABB (axis-aligned bounding box) collision — no physics engine, 
 | Kind | Count | Half-extents | Source |
 |---|---|---|---|
 | Building (ring) | 12 | Per-building (303–850 wu) | `BUILDING_EXTENTS` table in `world-colliders.ts` (GLB-measured 2026-05-22) |
-| Prop (town center) | 7 | 40–420 wu (anisotropic) | Hardcoded from each prop's TSX constants |
+| Prop (world + town center) | 7 | 40–420 wu (anisotropic) | Hardcoded from each prop's TSX constants |
 | **Total** | **19** | | |
 
 **Building half-extent derivation (2026-05-22 — per-building GLB measurement):**
@@ -359,13 +361,13 @@ Fallback `BUILDING_HALF ≈ 206 wu` (0.92 × 224) retained in code for any unkno
 
 | ID | World XZ | halfX × halfZ | Kind | Notes |
 |---|---|---|---|---|
-| auction-podium | (0, −1000) | 160 × 160 wu | solid | |
 | town-directory-sign | (0, −120) | 70 × 40 wu | solid | |
 | bazaar-stall | (−1273, −120) | 180 × 140 wu | solid | |
 | **marketplace-stall** | **(1178, −240)** | **420 × 410 wu** | **solid** | **shisha-oasis full footprint; ROUND 1 walkable zone reverted — see below** |
 | quest-bounty-pavilion | (0, −1220) | 280 × 280 wu | solid | |
 | quest-npc | (−110, −60) | 40 × 40 wu | solid | |
 | town-guide | (0, 240) | 40 × 40 wu | solid | |
+| kelp-forest-portal | (7808, −9900) | 170 × 42 wu | solid prop | Gameplay entrance; client/shared-server AABBs match |
 
 **Shisha-oasis GLB bbox math (2026-05-22, verified via Node.js binary parse):**
 ```
@@ -805,11 +807,19 @@ No `InstancedMesh + ShaderMaterial` — known WebGPU silent crash on Iris Xe. Me
 | Blade count | 5,400 deterministic blades: exactly 1,800 per variant |
 | Height variants | 135–148 wu, 150–164 wu, and 166–180 wu (3–4× the ambient kelp's 45-wu unscaled maximum) |
 | Geometry / draws | Per variant: 1,800 blades, 32,400 vertices, 28,800 triangles, 1 merged indexed `BufferGeometry`, and 1 mesh draw; total: 97,200 vertices, 86,400 triangles, 3 draws. Source planes are disposed after merge |
-| Material | Three `MeshStandardNodeMaterial` instances using deep green-teal baked vertex palettes; existing world lighting only |
-| Wind | Slow, heavy TSL `positionNode` displacement from `positionLocal`, `time`, normalized blade height, and a seeded per-blade phase attribute; merged bounds include the maximum displacement |
-| Runtime gate | `KelpForestAmbient`: `showWaterFogParticles && showGroundCover && !FORCE_WEBGL`; wrapper `perf:kelp-forest` |
+| Material | WebGPU: three `MeshStandardNodeMaterial` instances. Force-WebGL: three plain `MeshStandardMaterial` instances patched with `onBeforeCompile`. Because the live fallback is `WebGPURenderer(forceWebGL)` (which converts standard materials and skips classic `onBeforeCompile`), each plain material also carries the identical `positionNode` for `GLSLNodeBuilder`; a classic `WebGLRenderer` uses the injected hook. Both use the same baked palettes and lighting |
+| Wind | Identical four-term heavy-current displacement on both backends from time, normalized height, and seeded per-blade phase. TSL/GLSLNodeBuilder use `positionNode`; classic WebGL injects GLSL at `<begin_vertex>`. The maximum vector displacement is bounded by `MAX_WIND_DISPLACEMENT_WU = 24` and merged bounds include it |
+| Runtime gate | `KelpForestAmbient`: `showWaterFogParticles && showGroundCover` on both backends; wrapper `perf:kelp-forest`. The adaptive governor may still hide ambient cover under pressure |
 
-The forest adds no light, postprocessing pass, instancing, `useFrame`, or per-frame allocation. Ambient blades fill the complete forest footprint while preserving the exact 5,400-blade budget.
+The forest adds no light, postprocessing pass, instancing, or per-frame allocation. A single `useFrame` loop updates only the three stable GLSL time-uniform scalars on force-WebGL; the TSL path remains entirely GPU-time-driven. Ambient blades fill the complete forest footprint while preserving the exact 5,400-blade budget.
+
+### 8c. Kelp Forest realm portal (Run A commit 1, 2026-07-18)
+
+The world-side entrance is anchored at `(7808, -9900)` inside the northeast grove. Its kelp-shaped arch is five procedural source pieces merged into one `BufferGeometry`; its visible swirl is one asymmetric spiral-ribbon `BufferGeometry`, for exactly two portal draw calls. WebGPU uses `MeshStandardNodeMaterial.emissiveNode`; force-WebGL uses a plain `MeshStandardMaterial` with a stable time uniform injected at `<emissivemap_fragment>` plus the identical enumerable `emissiveNode` needed by the live renderer's standard-to-node conversion. Both share the same `1.5 + 0.5*sin(time*1.8)` envelope. The arch and static parent transforms are frozen after R3F applies them; only the in-place spiral rotation and WebGL uniform advance in `useFrame`, with no allocation.
+
+The portal is gameplay-critical and mounts outside `showGroundCover`/`showWaterFogParticles`; the ambient grove retains those governor gates. Human proximity sets `nearLocation='kelp-forest-portal'`, rendering the existing DOM action pill as **Enter the Kelp Forest** (`Press E` on desktop, tap on mobile), then `SceneTransition` pushes `/kelp`. The temporary route stub owns `fadeInOnMount` and returns through the same transition, restoring both the avatar ref and Zustand position to world `(7808, -9660)`. Agent entry, beacon traversal, and reward remain explicitly out of Run A commit 1.
+
+Spatial parity follows §2h: both `world-colliders.ts` and shared `world-colliders-data.ts` register `kelp-forest-portal` at `(7808, -9900)` with half-extents `(170, 42)` as a prop. The return spawn is outside that AABB plus the 25-wu chibi expansion.
 
 ### 8b. Withdrawn inline maze (2026-07-18)
 
