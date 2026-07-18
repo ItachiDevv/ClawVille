@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'bun:test';
 import { agents, avatars, type Database } from '@clawville/database';
 import {
-  connectedAgentLessonTarget,
   mergeHostedAgentKnowledgeAtomically,
+  readHostedAgentKnowledge,
   syncHostedAgentKnowledge,
   type HostedAgentKnowledgeDependencies,
+  type HostedAgentKnowledgeReadDependencies,
 } from '../hosted-agent-knowledge';
 
 const USER_ID = '00000000-0000-4000-8000-000000000001';
@@ -113,18 +114,6 @@ function makeDatabaseHarness(options: { active?: boolean; platformAgentId?: stri
 }
 
 describe('hosted agent knowledge synchronization', () => {
-  it('keeps the proven avatar lesson fallback without a hosted platform agent', () => {
-    expect(connectedAgentLessonTarget({ avatarId: AVATAR_ID }, null)).toEqual({
-      avatarId: AVATAR_ID,
-      platformAgentId: '',
-    });
-    expect(connectedAgentLessonTarget(null, {
-      userId: USER_ID,
-      avatarId: AVATAR_ID,
-      platformAgentId: AGENT_ID,
-    })).toBeNull();
-  });
-
   it('merges each knowledge surface independently and preserves customization siblings', async () => {
     const { database, state } = makeDatabaseHarness();
     const result = await mergeHostedAgentKnowledgeAtomically(database, {
@@ -263,5 +252,76 @@ describe('hosted agent knowledge synchronization', () => {
     expect(result?.newKnowledge).toEqual([]);
     expect(ensured).toBe(false);
     expect(stopped).toBe(false);
+  });
+});
+
+describe('hosted agent knowledge read', () => {
+  function readDependencies(input: {
+    runtime: ReturnType<HostedAgentKnowledgeReadDependencies['getRunningRuntime']>;
+    customization?: Record<string, unknown> | null;
+    databaseError?: boolean;
+    onDatabaseRead?: () => void;
+  }): HostedAgentKnowledgeReadDependencies {
+    return {
+      getRunningRuntime: () => input.runtime,
+      readCustomization: async () => {
+        input.onDatabaseRead?.();
+        if (input.databaseError) throw new Error('database offline');
+        return input.customization ?? null;
+      },
+    };
+  }
+
+  it('returns a warm-runtime semantic hit without reading the database', async () => {
+    let databaseReads = 0;
+    const knowledge = await readHostedAgentKnowledge({
+      platformAgentId: AGENT_ID,
+      query: 'what should I learn?',
+      limit: 3,
+    }, readDependencies({
+      runtime: {
+        searchBookKnowledgeMemories: async () => ['semantic result'],
+      },
+      onDatabaseRead: () => { databaseReads++; },
+    }));
+
+    expect(knowledge).toEqual(['semantic result']);
+    expect(databaseReads).toBe(0);
+  });
+
+  it('falls through from a warm empty runtime to the newest database tail', async () => {
+    const knowledge = await readHostedAgentKnowledge({
+      platformAgentId: AGENT_ID,
+      query: 'recent knowledge',
+      limit: 2,
+    }, readDependencies({
+      runtime: { searchBookKnowledgeMemories: async () => [] },
+      customization: { knowledge: ['oldest', 7, '', 'newer', 'newest'] },
+    }));
+
+    expect(knowledge).toEqual(['newest', 'newer']);
+  });
+
+  it('uses the authoritative database fallback when the runtime is cold', async () => {
+    const knowledge = await readHostedAgentKnowledge({
+      platformAgentId: AGENT_ID,
+      query: 'recent knowledge',
+      limit: 3,
+    }, readDependencies({
+      runtime: null,
+      customization: { knowledge: ['first', 'second'] },
+    }));
+
+    expect(knowledge).toEqual(['second', 'first']);
+  });
+
+  it('returns an empty array when the database fallback fails', async () => {
+    expect(await readHostedAgentKnowledge({
+      platformAgentId: AGENT_ID,
+      query: 'recent knowledge',
+    }, readDependencies({
+      runtime: null,
+      databaseError: true,
+    }))).toEqual([]);
   });
 });

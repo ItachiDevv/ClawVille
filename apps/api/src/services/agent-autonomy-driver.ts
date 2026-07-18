@@ -49,9 +49,9 @@
  *     teacher's full skill corpus; the once-per-day CT probe does NOT bound
  *     LLM cost by itself).
  *   - Memory is behaviorally LIVE, not inert: the ~3 most relevant earned-skill
- *     lessons (P3 slice 3 — semantic RAG from the agent's OWN ElizaOS runtime,
- *     keyword-store fallback when cold) are folded into the decide prompt, and
- *     the teacher's latest reply feeds the next decision context.
+ *     lessons plus book/building-visit knowledge (semantic RAG from the agent's
+ *     OWN ElizaOS runtime, authoritative-store fallbacks when cold) are folded
+ *     into the decide prompt; the teacher's latest reply feeds the next context.
  *   - Leak: logs use `sessionDigest(agentId)` — NEVER the raw agentId/sessionId.
  */
 
@@ -69,6 +69,7 @@ import { npcSimulation } from './npc-simulation';
 import { agentOrchestrator } from './agent-orchestrator';
 import { sessionDigest } from './session-digest';
 import { readEarnedSkillLessons } from './earned-skill-memory';
+import { readHostedAgentKnowledge } from './hosted-agent-knowledge';
 import { conductTeacherTurn, settleBuildingArrival } from './world-teacher-chat';
 import {
   getAgentDirective,
@@ -990,8 +991,17 @@ class AgentAutonomyDriver {
         });
       }
     }
-    const lessons = await this.readRecentLessons(entry, directive?.text ?? null);
-    const prompt = this.buildDecisionPrompt(perception, entry, lessons, directive?.text ?? null);
+    const [lessons, knowledge] = await Promise.all([
+      this.readRecentLessons(entry, directive?.text ?? null),
+      this.readRecentKnowledge(entry, directive?.text ?? null),
+    ]);
+    const prompt = this.buildDecisionPrompt(
+      perception,
+      entry,
+      lessons,
+      directive?.text ?? null,
+      knowledge,
+    );
     const reply = await decide(prompt);
     // TEMP DEBUG (see tick()): the RAW decision reply — the smoking gun for
     // candidate (a). If this has content but no [ACTION: enter_building(...)] the
@@ -1089,6 +1099,7 @@ class AgentAutonomyDriver {
     entry: HouseAgentEntry,
     recentLessons: string[] = [],
     directiveText: string | null = null,
+    recentKnowledge: string[] = [],
   ): string {
     const now = Date.now();
     const options = perception.nearbyBuildings
@@ -1120,6 +1131,16 @@ class AgentAutonomyDriver {
       lessonLines.length > 0
         ? `\nWhat you learned recently (avoid repeating — build on it or learn something NEW):\n${lessonLines.join('\n')}\n`
         : '';
+    const knowledgeLines = recentKnowledge
+      .slice(0, 3)
+      .map(
+        (knowledge) =>
+          `- ${knowledge.replace(/\s+/g, ' ').slice(0, LESSON_SNIPPET_MAX)}`,
+      );
+    const knowledgeHeld =
+      knowledgeLines.length > 0
+        ? `\nKnowledge you already hold (from books and visits — apply it; prefer learning what you do NOT know):\n${knowledgeLines.join('\n')}\n`
+        : '';
     // P3 slice 2: the human's directive (top priority) + the wake-up event seed.
     // Both are conditional spreads so the prompt is byte-identical to pre-slice-2
     // when neither is present.
@@ -1139,6 +1160,7 @@ class AgentAutonomyDriver {
       options,
       avoid,
       learned,
+      ...(knowledgeHeld ? [knowledgeHeld] : []),
       'Places (placeId: name — purpose — exact action — distance):',
       places,
       '',
@@ -1203,6 +1225,38 @@ class AgentAutonomyDriver {
           .then((lessons) => {
             clearTimeout(timer);
             resolve(lessons);
+          })
+          .catch(() => {
+            clearTimeout(timer);
+            resolve([]);
+          });
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Fetch book/building-visit knowledge without lazy-starting a runtime. The
+   * service owns warm-RAG versus authoritative JSONB fallback selection; this
+   * driver adds the same per-read soft timeout used for earned-skill lessons.
+   */
+  private async readRecentKnowledge(
+    entry: HouseAgentEntry,
+    queryHint: string | null,
+  ): Promise<string[]> {
+    const query = queryHint && queryHint.trim().length > 0 ? queryHint : DEFAULT_LESSON_QUERY;
+    try {
+      return await new Promise<string[]>((resolve) => {
+        const timer = setTimeout(() => resolve([]), LESSON_RAG_TIMEOUT_MS);
+        readHostedAgentKnowledge({
+          platformAgentId: entry.platformAgentId,
+          query,
+          limit: 3,
+        })
+          .then((knowledge) => {
+            clearTimeout(timer);
+            resolve(knowledge);
           })
           .catch(() => {
             clearTimeout(timer);
