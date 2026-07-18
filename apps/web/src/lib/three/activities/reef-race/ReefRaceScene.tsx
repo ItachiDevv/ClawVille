@@ -72,6 +72,11 @@ import { clientSpline } from './reef-race-spline-instance';
 import type { ReefRaceEntity } from './reef-race-types';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 import { reefRaceStartGridPose, type ReefRaceStartFrame } from '@clawville/shared';
+import {
+  getReefRaceSurgeSnapshot,
+  isReefRaceTurboBubbleActive,
+  sampleReefRaceSurge,
+} from './reef-race-speed-surge';
 
 // ─── v2 feature flag (mirror ReefRacePlayer) ──────────────────────────────────
 const USE_SPLINE_CAMERA = process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
@@ -263,6 +268,8 @@ const _shakeOffset = new THREE.Vector3();
 // 12/s gives the look target an ~83ms time constant: responsive through normal
 // carving while filtering raw 30Hz prediction/reconciliation micro-noise.
 const CAMERA_LOOK_DAMPING = 12;
+const CAMERA_BASE_FOV = 60;
+const CAMERA_SURGE_PULLBACK = 0.085;
 
 interface ChaseCamProps {
   selfEntity: ReefRaceEntity | null;
@@ -287,13 +294,34 @@ function ChaseCamera({ selfEntity, selfIsStaged, shakeRef }: ChaseCamProps) {
     const cam = camera as THREE.PerspectiveCamera;
     cam.near = CAMERA_NEAR;
     cam.far  = CAMERA_FAR;
-    cam.fov  = 60;
+    cam.fov  = CAMERA_BASE_FOV;
     cam.updateProjectionMatrix();
     // SURF ROAD: drop the 'cam' elevation-cache key on teardown.
-    return () => { forgetTKey('cam'); };
+    return () => {
+      cam.fov = CAMERA_BASE_FOV;
+      cam.updateProjectionMatrix();
+      forgetTKey('cam');
+    };
   }, [camera]);
 
   useFrame((_, delta) => {
+    const surgeSnapshot = getReefRaceSurgeSnapshot();
+    const surgeStrength = sampleReefRaceSurge(performance.now());
+    const surgeEnvelope = surgeSnapshot.magnitude > 0
+      ? surgeStrength / surgeSnapshot.magnitude
+      : 0;
+    const surgeFov = CAMERA_BASE_FOV +
+      (10 + 4 * surgeSnapshot.magnitude) * surgeEnvelope;
+    const surgePullback = 1 + CAMERA_SURGE_PULLBACK * surgeStrength;
+    const activeCamera = camera as THREE.PerspectiveCamera;
+    if (
+      Math.abs(activeCamera.fov - surgeFov) > 0.02 ||
+      (surgeStrength === 0 && activeCamera.fov !== CAMERA_BASE_FOV)
+    ) {
+      activeCamera.fov = surgeFov;
+      activeCamera.updateProjectionMatrix();
+    }
+
     if (!selfEntity) {
       historyRef.current.length = 0;
       lastEntityRef.current = null;
@@ -305,9 +333,9 @@ function ChaseCamera({ selfEntity, selfIsStaged, shakeRef }: ChaseCamProps) {
         const vantage = pregameVantage();
         const preCam = camera as THREE.PerspectiveCamera;
         _rotatedOffset.set(
-          CAMERA_OFFSET.x * Math.cos(vantage.heading) + CAMERA_OFFSET.z * Math.sin(vantage.heading),
+          CAMERA_OFFSET.x * Math.cos(vantage.heading) + CAMERA_OFFSET.z * surgePullback * Math.sin(vantage.heading),
           CAMERA_OFFSET.y,
-          -CAMERA_OFFSET.x * Math.sin(vantage.heading) + CAMERA_OFFSET.z * Math.cos(vantage.heading),
+          -CAMERA_OFFSET.x * Math.sin(vantage.heading) + CAMERA_OFFSET.z * surgePullback * Math.cos(vantage.heading),
         );
         const groundY = TRACK_SURFACE_Y + elevationAtXZ(vantage.x, vantage.z, 'cam');
         _targetPos.set(vantage.x, groundY, vantage.z).add(_rotatedOffset);
@@ -423,9 +451,9 @@ function ChaseCamera({ selfEntity, selfIsStaged, shakeRef }: ChaseCamProps) {
     // WEST of player, so the player saw their kart from in-front and the
     // controls felt fully reversed (W drove "toward" the camera, A/D mirrored).
     _rotatedOffset.set(
-      CAMERA_OFFSET.x * Math.cos(heading) + CAMERA_OFFSET.z * Math.sin(heading),
+      CAMERA_OFFSET.x * Math.cos(heading) + CAMERA_OFFSET.z * surgePullback * Math.sin(heading),
       CAMERA_OFFSET.y,
-      -CAMERA_OFFSET.x * Math.sin(heading) + CAMERA_OFFSET.z * Math.cos(heading),
+      -CAMERA_OFFSET.x * Math.sin(heading) + CAMERA_OFFSET.z * surgePullback * Math.cos(heading),
     );
 
     // ─── SURF ROAD: lift the camera datum by the FLOATING ribbon elevation ────
@@ -559,18 +587,18 @@ function SceneContents({
   }, []);
 
   // v2 mechanics (2026-07-10) — REUSE the existing trail/speed-cone FX for
-  // ANY boost source, not just inventory items. `entity.boosting` is the
-  // server-authoritative "any positive boost active" flag (boost pad /
-  // mini-turbo / launch / slipstream — see EntityDelta.changed.boosting in
-  // protocol.ts), forwarded onto the self entity by applyEntityDelta. This
-  // is the parity contract: the SAME server signal that triggers a pad/
-  // turbo boost also drives the world FX, not an invented client guess.
+  // ANY positive kinetic stack. `boosting` covers pad/mini/launch/slipstream;
+  // `speedMod > 1` plus the promotion-safe local effect deadline covers
+  // rr-turbo-bubble even when an equal slow makes the net multiplier 1.
   const boostActive = useActivityStore(
     (s) => {
       if (!selfAvatarId) return false;
-      const itemBoost = s.powerUpInventory.some((p) => p.kind === 'boost' && p.charges > 0);
       const selfEntity = s.entities.get(selfAvatarId) as (ReefRaceEntity | undefined);
-      return itemBoost || Boolean(selfEntity?.boosting);
+      return Boolean(
+        selfEntity?.boosting ||
+        (selfEntity?.speedMod ?? 1) > 1.001 ||
+        isReefRaceTurboBubbleActive(performance.now()),
+      );
     },
   );
 

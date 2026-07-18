@@ -57,6 +57,11 @@ import ReefRaceEventToasts   from './reef-race-event-toasts';
 import ReefRaceBuildSummary  from './reef-race-build-summary';
 import ReefRaceStreakCounter from './reef-race-streak-counter';
 import ReefRaceMiniTurboMeter from './reef-race-miniturbo-meter';
+import {
+  isReefRaceTurboBubbleActive,
+  useReefRaceSurgeSnapshot,
+} from '@/lib/three/activities/reef-race/reef-race-speed-surge';
+import type { ReefRaceEntity } from '@/lib/three/activities/reef-race/reef-race-types';
 
 // ─── v2 spline-sim feature flag ──────────────────────────────────────────────
 //
@@ -122,6 +127,52 @@ function LapCounter({ selfAvatarId }: { selfAvatarId: string | null }) {
       </div>
       <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '0.05em', color: '#ffffff' }}>
         {lapDisplay}/{totalLaps}
+      </div>
+    </div>
+  );
+}
+
+function ReefRaceSpeedometer({ selfAvatarId }: { selfAvatarId: string | null }) {
+  const entity = useActivityStore((state) =>
+    selfAvatarId
+      ? state.entities.get(selfAvatarId) as ReefRaceEntity | undefined
+      : undefined,
+  );
+  const surge = useReefRaceSurgeSnapshot();
+  const speed = entity ? Math.hypot(entity.vx, entity.vy) : 0;
+  const kineticActive = Boolean(
+    entity?.boosting ||
+    (entity?.speedMod ?? 1) > 1.001 ||
+    isReefRaceTurboBubbleActive(performance.now()),
+  );
+  const bandColor = kineticActive ? surge.color : '#7df9ff';
+
+  return (
+    <div
+      key={`${surge.sequence}-${kineticActive ? 1 : 0}`}
+      style={{
+        minWidth: 100,
+        padding: '7px 12px',
+        borderRadius: 8,
+        border: `1px solid ${kineticActive ? bandColor : '#00e5ff44'}`,
+        background: kineticActive
+          ? `linear-gradient(110deg, ${bandColor}33, rgba(0,0,0,.76) 72%)`
+          : 'rgba(0, 0, 0, 0.65)',
+        boxShadow: kineticActive ? `0 0 20px ${bandColor}55` : 'none',
+        animation: kineticActive ? 'reef-speed-surge-flash 520ms ease-out' : 'none',
+        transition: 'border-color 160ms ease, background 160ms ease, box-shadow 160ms ease',
+      }}
+      aria-label={`Speed ${Math.round(speed)} world units per second${kineticActive ? ', surge active' : ''}`}
+    >
+      <style>{`@keyframes reef-speed-surge-flash { 0% { transform: scale(1.08); filter: brightness(1.9); } 100% { transform: scale(1); filter: brightness(1); } }`}</style>
+      <div style={{ fontSize: 9, letterSpacing: '0.16em', color: kineticActive ? bandColor : '#7df9ff99' }}>
+        {kineticActive ? 'SURGE' : 'SPEED'}
+      </div>
+      <div style={{ fontSize: 18, lineHeight: 1.05, fontWeight: 800, color: '#fff' }}>
+        {Math.round(speed)}
+        <span style={{ marginLeft: 4, fontSize: 8, letterSpacing: '0.1em', color: '#ffffff88' }}>
+          WU/S
+        </span>
       </div>
     </div>
   );
@@ -352,10 +403,12 @@ function PowerUpSlotCard({
   slot,
   useKey,
   slotIndex,
+  consumedSignal,
 }: {
   slot: { kind: string; charges: number; cooldownUntil?: number } | null;
   useKey: string;
   slotIndex: number;
+  consumedSignal?: { kind: string; seq: number } | null;
 }) {
   // The inventory mutation written by self event.power_up_collected identifies
   // the exact filled slot. Charge gains flash too, not just empty → filled.
@@ -372,7 +425,11 @@ function PowerUpSlotCard({
     const prev = prevKindRef.current;
     const charges = slot?.charges ?? 0;
 
-    const gainedItem = !!cur && (!prev || cur !== prev || charges > prevChargesRef.current);
+    // A non-empty kind swap is slot-1 promotion, not a new pickup. Treat it as
+    // consumption of the previous slot-0 item and never flash the promoted
+    // queued item as newly collected.
+    const gainedItem =
+      !!cur && (!prev || (cur === prev && charges > prevChargesRef.current));
     if (gainedItem) {
       setPickupFlash(true);
       const t = window.setTimeout(() => setPickupFlash(false), 600);
@@ -382,19 +439,20 @@ function PowerUpSlotCard({
       prevChargesRef.current = charges;
       return () => window.clearTimeout(t);
     }
-    // filled → empty = use (or wipeout consume — close enough for HUD)
-    if (prev && !cur) {
-      const meta = getPowerUpMeta(prev);
-      if (meta.effectMs > 0) {
-        setActiveEffect({ kind: prev, until: performance.now() + meta.effectMs });
-      }
-      prevKindRef.current = null;
-      prevChargesRef.current = 0;
-      return;
-    }
     prevKindRef.current = cur;
     prevChargesRef.current = charges;
   }, [slot?.charges, slot?.kind]);
+
+  useEffect(() => {
+    if (!consumedSignal) return;
+    const meta = getPowerUpMeta(consumedSignal.kind);
+    if (meta.effectMs > 0) {
+      setActiveEffect({
+        kind: consumedSignal.kind,
+        until: performance.now() + meta.effectMs,
+      });
+    }
+  }, [consumedSignal]);
 
   // Tick the active-effect timer at 30 Hz so the countdown bar animates.
   const [, force] = useState(0);
@@ -542,6 +600,47 @@ function PowerUpSlotCard({
 
 function PowerUpBar({ selfAvatarId: _selfAvatarId }: { selfAvatarId: string | null }) {
   const inventory = useActivityStore((s) => s.powerUpInventory);
+  const previousInventoryRef = useRef<
+    Array<{ kind: string | null; charges: number }>
+  >([]);
+  const consumedSeqRef = useRef(0);
+  const [consumedSignal, setConsumedSignal] = useState<{
+    kind: string;
+    seq: number;
+  } | null>(null);
+
+  useEffect(() => {
+    const previous = previousInventoryRef.current;
+    previousInventoryRef.current = inventory.map((slot) => ({
+      kind: slot.kind,
+      charges: slot.charges,
+    }));
+    const beforeCharges = new Map<string, number>();
+    const afterCharges = new Map<string, number>();
+    for (const slot of previous) {
+      if (slot.kind) {
+        beforeCharges.set(
+          slot.kind,
+          (beforeCharges.get(slot.kind) ?? 0) + slot.charges,
+        );
+      }
+    }
+    for (const slot of inventory) {
+      if (slot.kind) {
+        afterCharges.set(
+          slot.kind,
+          (afterCharges.get(slot.kind) ?? 0) + slot.charges,
+        );
+      }
+    }
+    for (const [kind, charges] of beforeCharges) {
+      if ((afterCharges.get(kind) ?? 0) < charges) {
+        consumedSeqRef.current += 1;
+        setConsumedSignal({ kind, seq: consumedSeqRef.current });
+        break;
+      }
+    }
+  }, [inventory]);
   // Pad to REEF_MAX_POWER_UP_SLOTS (= 2) so empty slots stay visible — the
   // whole point of this HUD is "you can SEE you have nothing yet" instead of
   // wondering whether your pickup landed.
@@ -549,7 +648,7 @@ function PowerUpBar({ selfAvatarId: _selfAvatarId }: { selfAvatarId: string | nu
     inventory[0] ?? null,
     inventory[1] ?? null,
   ];
-  const useKeys = ['SPACE', 'Q'];
+  const useKeys = ['Q', 'NEXT'];
 
   return (
     <>
@@ -569,7 +668,13 @@ function PowerUpBar({ selfAvatarId: _selfAvatarId }: { selfAvatarId: string | nu
       >
         <div style={{ display: 'flex', gap: 14 }}>
           {slots.map((slot, i) => (
-            <PowerUpSlotCard key={i} slot={slot} useKey={useKeys[i]} slotIndex={i} />
+            <PowerUpSlotCard
+              key={i}
+              slot={slot}
+              useKey={useKeys[i]}
+              slotIndex={i}
+              consumedSignal={i === 0 ? consumedSignal : null}
+            />
           ))}
         </div>
         {/* Controls hint strip — Mario-Kart-feel parity. Shift = JUMP in v2.
@@ -592,7 +697,7 @@ function PowerUpBar({ selfAvatarId: _selfAvatarId }: { selfAvatarId: string | nu
           <span style={{ color: '#ffffff22' }}>·</span>
           <span><b style={{ color: '#ffffff99' }}>S</b> · BRAKE</span>
           <span style={{ color: '#ffffff22' }}>·</span>
-          <span><b style={{ color: '#ffffff99' }}>SPACE/Q</b> · USE ITEM</span>
+          <span><b style={{ color: '#ffffff99' }}>Q</b> · USE ITEM</span>
         </div>
       </div>
     </>
@@ -991,6 +1096,7 @@ export default function ReefRaceHud({
   const baseStyle: React.CSSProperties = {
     position: 'absolute',
     inset: 0,
+    zIndex: 10,
     pointerEvents: 'none',
     fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
     color: '#ffffff',
@@ -1015,6 +1121,7 @@ export default function ReefRaceHud({
             displays lap+1) and `e.totalLaps` from the server delta. */}
         <LapCounter selfAvatarId={selfAvatarId} />
         <PlacementTile selfAvatarId={selfAvatarId} />
+        <ReefRaceSpeedometer selfAvatarId={selfAvatarId} />
         {/* Phase 4 — clean-checkpoint streak chip (C-IMPL-3 fix). Only
             renders mid-match; auto-dismisses on streak=0. Tier glow tracks
             the shared `streakMilestoneKind` enum so it stays in lock-step

@@ -517,7 +517,9 @@ export const LAUNCH_STALL_THRUST_CAP  = 0.30;
  */
 export const REEF_KINEMATIC_TOLERANCE = 2.1;
 
-// actionBit assignments. Bits 0+1 are pre-existing power-up slot toggles.
+// Reef actionBit assignments. Bit 0 is the single queued-item USE verb;
+// bit 1 stays reserved on the wire and is deliberately ignored by both sims.
+// The inventory remains two slots: consuming slot 0 promotes slot 1 forward.
 export const ACTION_BIT_POWERUP_0 = 0b0001;
 export const ACTION_BIT_POWERUP_1 = 0b0010;
 export const ACTION_BIT_DRIFT     = 0b0100;

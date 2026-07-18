@@ -106,7 +106,6 @@ import {
   type SplineRampPatch,
   REEF_AIRBORNE_STEER_MULT,
   ACTION_BIT_POWERUP_0,
-  ACTION_BIT_POWERUP_1,
   // v2 surf-carving kinematics (2026-06-01)
   REEF_TURN_RATE,
   REEF_TURN_SPEED_FALLOFF,
@@ -1119,28 +1118,25 @@ export class ReefRaceSplineSim {
     const intent = body.intent;
 
     // 1. Consume seq.
-    if (intent.seq > intent.consumedSeq) {
+    const hasFreshIntent = intent.seq > intent.consumedSeq;
+    if (hasFreshIntent) {
       intent.consumedSeq = intent.seq;
     }
 
-    // 2. Power-up actionBits (bits 0 + 1). RECORD the press; resolution is
+    // 2. Queued-item USE (bit 0). RECORD the press; resolution is
     //    DEFERRED to the post-integrate `resolvePowerUpUses` pass so every
     //    rival-hazard read (ink/whirlpool/tide/seeker) sees ONE consistent
     //    post-integrate world (not a mid-integration mix), and shields resolve
     //    before offensive items — order-independent (Codex finding 4a).
     const actionBits = intent.actionBits;
     if (
+      hasFreshIntent &&
       actionBits & ACTION_BIT_POWERUP_0 &&
       !body.pendingPowerUpSlots.includes(0)
     ) {
       body.pendingPowerUpSlots.push(0);
     }
-    if (
-      actionBits & ACTION_BIT_POWERUP_1 &&
-      !body.pendingPowerUpSlots.includes(1)
-    ) {
-      body.pendingPowerUpSlots.push(1);
-    }
+    // Bit 1 is reserved and intentionally ignored.
 
     // 3. Speed modifier (same four-stage model as ellipse sim).
     const slicked      = body.activeEffects.has('rr-ink-slick');
@@ -2001,6 +1997,18 @@ export class ReefRaceSplineSim {
   private resolvePowerUpUses(state: SplineRoomState, now: number): void {
     const isSelfBuff = (k: ReefPowerUpKind | null | undefined) =>
       k === 'rr-turbo-bubble' || k === 'rr-bubble-shield';
+    // Promotion is deferred until BOTH phases finish. Promoting inside
+    // consumeSlot would let one pending slot-0 press consume the promoted
+    // slot-1 item again in Phase 2 when the first item was a self-buff.
+    const slotZeroWasOccupied = new Set<string>();
+    for (const body of state.bodies.values()) {
+      if (
+        body.pendingPowerUpSlots.includes(0) &&
+        body.inventory[0]?.kind !== null
+      ) {
+        slotZeroWasOccupied.add(body.avatarId);
+      }
+    }
 
     // Phase 1 — SELF buffs (turbo, shield). A shield used this tick is up BEFORE
     // any offensive item resolves, regardless of body-map order.
@@ -2064,6 +2072,14 @@ export class ReefRaceSplineSim {
             break;
         }
         this.consumeSlot(body, slot, def, now);
+      }
+      if (
+        slotZeroWasOccupied.has(body.avatarId) &&
+        body.inventory[0]?.kind === null &&
+        body.inventory[1]?.kind !== null
+      ) {
+        body.inventory[0] = body.inventory[1];
+        body.inventory[1] = { kind: null, charges: 0, cooldownUntil: 0 };
       }
       body.pendingPowerUpSlots.length = 0;
     }

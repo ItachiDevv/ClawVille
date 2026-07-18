@@ -3,9 +3,10 @@
 /**
  * ReefRaceBoostFX.tsx
  *
- * Two boost visual effects:
+ * Three boost visual effects:
  *   1. BufferGeometry trail (30-point ring buffer) behind the player's kart.
  *   2. 12 InstancedMesh speed cones attached to camera-forward group (visible during boost).
+ *   3. Water spray on surge start via the existing shared ActivityBursts pool.
  *
  * Only renders for the self player (chase-cam client). Other players' trails are NOT rendered.
  *
@@ -33,7 +34,8 @@ import {
   SPEED_CONE_RADIAL_SEGS,
   SPEED_CONE_SPREAD,
 } from './reef-race-config';
-import type { ReefRaceEntity } from './reef-race-types';
+import { triggerBurst } from '@/lib/three/activities/shared/activity-particles';
+import { getReefRaceSurgeSnapshot } from './reef-race-speed-surge';
 
 // ─── Module-scope scratch ─────────────────────────────────────────────────────
 const _m4     = new THREE.Matrix4();
@@ -162,6 +164,7 @@ export default function ReefRaceBoostFX({ playerPos, boostActive }: ReefRaceBoos
   const trailRef  = useRef<THREE.Mesh>(null);
   const conesRef  = useRef<THREE.InstancedMesh>(null);
   const trailGeoRef = useRef<THREE.BufferGeometry | null>(null);
+  const lastSpraySequenceRef = useRef(0);
 
   // Ring buffer state (module-scope-like, per-instance via ref).
   const trailState = useRef<TrailState>({
@@ -218,6 +221,16 @@ export default function ReefRaceBoostFX({ playerPos, boostActive }: ReefRaceBoos
   useFrame((_, delta) => {
     const trail = trailRef.current;
     const cones = conesRef.current;
+    const surge = getReefRaceSurgeSnapshot();
+
+    // Surge-start water spray reuses the scene's existing bounded Points pool:
+    // no new mesh/material pair, draw call, or per-frame allocation here.
+    if (surge.sequence !== lastSpraySequenceRef.current) {
+      lastSpraySequenceRef.current = surge.sequence;
+      if (surge.magnitude > 0 && playerPos) {
+        triggerBurst(playerPos, '#c8fbff', 72 + surge.magnitude * 58);
+      }
+    }
 
     // Show/hide cones based on boost.
     if (cones) {

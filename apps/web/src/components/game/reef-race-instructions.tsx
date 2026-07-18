@@ -51,7 +51,7 @@ export default function ReefRaceInstructions({
         aria-label="Reef Race controls"
       >
         <ControlHint glyph={isMobile ? '◉' : 'WASD'} label="STEER" />
-        <ControlHint glyph={isMobile ? 'A' : 'SPACE'} label="BOOST" />
+        <ControlHint glyph={isMobile ? 'A' : 'SPACE/SHIFT'} label="JUMP" />
         <ControlHint glyph={isMobile ? 'B' : 'Q'} label="ITEM" />
       </div>
     );
@@ -104,13 +104,13 @@ export default function ReefRaceInstructions({
         />
         <Row
           glyph={isMobile ? 'A' : '⎵'}
-          label={isMobile ? 'Right A button' : 'Space'}
-          desc="Boost when held with input"
+          label={isMobile ? 'Right A button' : 'Space or Shift'}
+          desc="Jump"
         />
         <Row
           glyph={isMobile ? 'B' : 'Q'}
           label={isMobile ? 'Right B button' : 'Q (or click)'}
-          desc="Use a power-up from your slots"
+          desc="Use the next queued item"
         />
         <Row glyph="🏁" label="Goal" desc="2 laps. First past the line wins." />
         <Row glyph="📦" label="Pickups" desc="Hit the boxes for boosts and power-ups." />

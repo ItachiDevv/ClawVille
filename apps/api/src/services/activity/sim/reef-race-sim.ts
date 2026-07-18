@@ -1228,13 +1228,24 @@ class ReefRaceSim {
 
     const intent = body.intent;
     // 1. Consume seq.
-    if (intent.seq > intent.consumedSeq) {
+    const hasFreshIntent = intent.seq > intent.consumedSeq;
+    if (hasFreshIntent) {
       intent.consumedSeq = intent.seq;
     }
-    // 2. Power-up actionBits 0b01 / 0b10 (existing).
+    // 2. Queued-item USE: bit 0 consumes slot 0. Bit 1 is reserved/ignored.
     const actionBits = intent.actionBits;
-    if (actionBits & 0b01) this.tryUsePowerUp(state, body, 0, now);
-    if (actionBits & 0b10) this.tryUsePowerUp(state, body, 1, now);
+    if (hasFreshIntent && actionBits & 0b01) {
+      const slotZeroWasOccupied = body.inventory[0]?.kind !== null;
+      this.tryUsePowerUp(state, body, 0, now);
+      if (
+        slotZeroWasOccupied &&
+        body.inventory[0]?.kind === null &&
+        body.inventory[1]?.kind !== null
+      ) {
+        body.inventory[0] = body.inventory[1];
+        body.inventory[1] = { kind: null, charges: 0, cooldownUntil: 0 };
+      }
+    }
 
     // 3. NOTE: activeEffects + activeBoosts expiry sweep runs in
     //    `tickRoom` step 3 — which is AFTER this function (step 1). A

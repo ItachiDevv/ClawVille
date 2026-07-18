@@ -261,6 +261,8 @@ export interface ActivityState {
    * gets screen shake + a tiered HUD toast. null until the first release.
    */
   lastMiniTurboFireEvent: { avatarId: string; level: 1 | 2; at: number } | null;
+  /** Last Reef Race countdown launch verdict (self-filtered by consumers). */
+  lastLaunchEvent: { avatarId: string; kind: 'boost' | 'stall'; at: number } | null;
 
   // ── Reef Race Phase 3 — self avatar's racing class + level (HUD chip) ─────
   /**
@@ -601,6 +603,7 @@ function emptyState(): Pick<
   | 'lastRampLaunchEvent'
   | 'lastBoostPadEvent'
   | 'lastMiniTurboFireEvent'
+  | 'lastLaunchEvent'
   | 'selfRacingClass'
   | 'selfLevel'
   | 'selfStreak'
@@ -646,6 +649,7 @@ function emptyState(): Pick<
     lastRampLaunchEvent: null,
     lastBoostPadEvent: null,
     lastMiniTurboFireEvent: null,
+    lastLaunchEvent: null,
     // Phase 3 — Reef Race self-avatar build summary (populated on snapshot.init)
     selfRacingClass: null,
     selfLevel: 1,
@@ -1258,9 +1262,16 @@ export const useActivityStore = create<ActivityState>()(
           break;
 
         // Reef Race Phase 1 — per-avatar launch verdict broadcast at LIVE.
-        // Phase 1 launch glow ring is countdown-driven (local computation
-        // from room.countdownStartedAt), so this is a no-op here today.
+        // Phase 1 launch glow ring remains countdown-driven. Retaining the
+        // verdict edge lets local presentation distinguish boost from stall.
         case 'event.launch':
+          set({
+            lastLaunchEvent: {
+              avatarId: frame.avatarId,
+              kind: frame.kind,
+              at: Date.now(),
+            },
+          });
           break;
 
         // Reef Race Phase 4 — streak milestone glow trigger. The per-tick
