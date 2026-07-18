@@ -514,6 +514,8 @@ export function clampEntityMovement2D(
   return { x: _eEx, z: _eEz, hit, groundY };
 }
 
-/** Half-width constants for entity push-out. */
-export const ENTITY_HALF_CHIBI = 25;    // chibi VRM (135 wu height)
-export const ENTITY_HALF_HUMANOID = 50; // adult humanoid (270 wu height)
+/** Half-width constants for entity push-out — canonical values live in
+ *  @clawville/shared (world-colliders-data) beside the server A* raster that
+ *  consumes the same numbers; re-exported so client callers keep one import
+ *  site and the two sides can never drift. */
+export { ENTITY_HALF_CHIBI, ENTITY_HALF_HUMANOID } from '@clawville/shared';
