@@ -5,7 +5,7 @@ import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three/webgpu';
 import { color, float, sin, time } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { KELP_FOREST_CENTER } from './kelp-forest-location';
+import { KELP_FOREST_PORTAL_WORLD_CENTER } from './kelp-forest-location';
 
 interface PortalUniform {
   value: number;
@@ -242,7 +242,7 @@ export function KelpForestPortal({ forceWebGL }: { forceWebGL: boolean }) {
   });
 
   return (
-    <group ref={groupRef} position={[KELP_FOREST_CENTER.x, -2, KELP_FOREST_CENTER.z]}>
+    <group ref={groupRef} position={[KELP_FOREST_PORTAL_WORLD_CENTER.x, -2, KELP_FOREST_PORTAL_WORLD_CENTER.z]}>
       <mesh ref={archRef} geometry={resources.archGeometry} material={resources.archMaterial} />
       <mesh
         ref={discRef}

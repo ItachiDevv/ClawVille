@@ -1,5 +1,6 @@
 import type { MapLocation } from '../types/location';
-import { KELP_FOREST_PORTAL_APPROACH_GAME, KELP_FOREST_PORTAL_ID } from './kelp-realm';
+import { KELP_FOREST_PORTAL_APPROACH_GAME } from './kelp-realm';
+import { KELP_FOREST_PORTAL_ID } from './world-colliders-data';
 
 // 12-building TRUE CIRCULAR ring layout — recentered land-builder-economics (2026-06-24).
 // Ring R=130 tiles (4160wu). Grid grew 576→704 tiles; ring footprint unchanged,

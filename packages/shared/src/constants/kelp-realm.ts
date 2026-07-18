@@ -1,4 +1,5 @@
 import { WORLD_CENTER_PX } from './world-dimensions';
+import { KELP_FOREST_PORTAL_WORLD_CENTER } from './world-colliders-data';
 
 export const KELP_REALM_CELL_WU = 200;
 export const KELP_REALM_WALL_HEIGHT_WU = 800;
@@ -9,8 +10,8 @@ export const KELP_REALM_SPEED_GRACE_MULTIPLIER = 1.2;
 export const PEARL_OF_THE_DEPTHS_SLUG = 'pearl-of-the-depths';
 export const REWARD_ONLY_COSMETIC_CURRENCY = 'REWARD_ONLY';
 
-export const KELP_FOREST_PORTAL_ID = 'kelp-forest-portal';
-export const KELP_FOREST_PORTAL_WORLD_CENTER = Object.freeze({ x: 7808, z: -9900 });
+/** The rejected corner maze is gone, but its northeast kelp grove stays scenery. */
+export const KELP_FOREST_GROVE_WORLD_CENTER = Object.freeze({ x: 7808, z: -9900 });
 export const KELP_FOREST_PORTAL_APPROACH_WORLD = Object.freeze({
   x: KELP_FOREST_PORTAL_WORLD_CENTER.x,
   z: KELP_FOREST_PORTAL_WORLD_CENTER.z + 240,
