@@ -1,8 +1,11 @@
 'use client';
 
-import { useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
+import dynamic from 'next/dynamic';
 import SceneTransition, { useSceneTransition } from '@/components/transitions/SceneTransition';
 import { avatarPositionRef, useGameStore } from '@/stores/game';
+import { useAvatar } from '@/hooks/use-avatar';
+import KelpRealmMobileControls from '@/components/kelp/KelpRealmMobileControls';
 import { MAP_HEIGHT, MAP_WIDTH } from '@/lib/pixi/tilemap-data';
 import { KELP_FOREST_EXIT_WORLD } from '@/lib/three/kelp-forest-location';
 
@@ -11,8 +14,18 @@ const KELP_EXIT_PX = Object.freeze({
   y: MAP_HEIGHT / 2 + KELP_FOREST_EXIT_WORLD.z,
 });
 
-export default function KelpRouteStub() {
+const KelpRealmCanvas = dynamic(() => import('@/components/three/KelpRealmCanvas'), {
+  ssr: false,
+  loading: () => <div style={{ position: 'absolute', inset: 0, background: '#031b20' }} />,
+});
+
+export default function KelpPage() {
   const { triggerTransition } = useSceneTransition();
+  const { data: avatar } = useAvatar();
+  useEffect(() => {
+    if (!avatar) return;
+    useGameStore.getState().setAvatarAppearance(avatar.species, avatar.color, undefined, avatar.modelKey);
+  }, [avatar]);
   const handleBack = useCallback(() => {
     triggerTransition({
       to: '/game',
@@ -26,17 +39,9 @@ export default function KelpRouteStub() {
 
   return (
     <main
-      style={{
-        position: 'fixed',
-        inset: 0,
-        display: 'grid',
-        placeItems: 'center',
-        overflow: 'hidden',
-        background: 'radial-gradient(circle at 50% 35%, #0a4c49 0%, #032725 48%, #011211 100%)',
-        color: '#c7fff4',
-        fontFamily: 'monospace',
-      }}
+      style={{ position: 'fixed', inset: 0, overflow: 'hidden', background: '#031b20', color: '#c7fff4', fontFamily: 'monospace' }}
     >
+      <div style={{ position: 'absolute', inset: 0 }}><KelpRealmCanvas /></div>
       <SceneTransition fadeInOnMount />
       <button
         type="button"
@@ -57,12 +62,7 @@ export default function KelpRouteStub() {
       >
         Back to the Reef
       </button>
-      <div style={{ textAlign: 'center', padding: 24 }}>
-        <h1 style={{ margin: 0, fontSize: 34 }}>Kelp Forest</h1>
-        <p style={{ marginTop: 12, color: 'rgba(199,255,244,0.72)' }}>
-          The current stirs. The grove opens in the next scene pass.
-        </p>
-      </div>
+      <KelpRealmMobileControls />
     </main>
   );
 }
