@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import {
   InferenceRouter,
+  isReasoningModel,
   type InferenceEndpoint,
   type RouteTable,
 } from '../inference-router';
@@ -11,24 +12,29 @@ import {
 } from '../inference-config';
 
 // --- mock fetch: route by a host fragment to a per-endpoint responder --------
-type Responder = () => { ok: boolean; status?: number; content?: string };
+type Responder = (init?: RequestInit) => {
+  ok: boolean;
+  status?: number;
+  content?: string;
+  errorBody?: string;
+};
 
 function makeFetch(
   behaviors: Record<string, Responder>,
   calls: Record<string, number>,
 ): typeof fetch {
-  return (async (url: string | URL | Request) => {
+  return (async (url: string | URL | Request, init?: RequestInit) => {
     const u = String(url);
     const key = Object.keys(behaviors).find((k) => u.includes(k));
     if (!key) throw new Error(`no mock behavior for ${u}`);
     calls[key] = (calls[key] ?? 0) + 1;
-    const r = behaviors[key]();
+    const r = behaviors[key](init);
     if (!r.ok) {
       return {
         ok: false,
         status: r.status ?? 500,
         statusText: 'ERR',
-        text: async () => 'upstream boom',
+        text: async () => r.errorBody ?? 'upstream boom',
         json: async () => ({}),
       } as unknown as Response;
     }
@@ -110,6 +116,168 @@ function router1(
   });
   return { r, calls, clock };
 }
+
+describe('InferenceRouter OpenAI-compatible request parameters', () => {
+  it('recognizes the reasoning families without matching unrelated model names', () => {
+    for (const model of ['gpt-5-mini', 'gpt-5.6-sol', 'o1-mini', 'o3', 'o4-mini']) {
+      expect(isReasoningModel(model)).toBe(true);
+    }
+    for (const model of ['gpt-4o', 'gpt-4o-mini', 'qwen3:8b', 'llama3', 'olmo2', undefined]) {
+      expect(isReasoningModel(model)).toBe(false);
+    }
+  });
+
+  it('omits temperature and stop for a gpt-5 reasoning model', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const calls: Record<string, number> = {};
+    const endpoint = { ...OPENAI, largeModel: 'gpt-5-mini' };
+    const r = new InferenceRouter({
+      endpoints: [endpoint],
+      routes: ROUTES,
+      fetchImpl: makeFetch(
+        {
+          'api.openai.com': (init) => {
+            bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+            return { ok: true, content: 'reasoned' };
+          },
+        },
+        calls,
+      ),
+    });
+
+    await r.generateText({
+      route: 'teacher',
+      size: 'large',
+      messages: [{ role: 'user', content: 'hi' }],
+      temperature: 0.2,
+      stopSequences: ['STOP'],
+    });
+
+    expect('temperature' in bodies[0]).toBe(false);
+    expect('stop' in bodies[0]).toBe(false);
+  });
+
+  it('preserves the default temperature for gpt-4o-mini', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const calls: Record<string, number> = {};
+    const r = new InferenceRouter({
+      endpoints: [OPENAI],
+      routes: ROUTES,
+      fetchImpl: makeFetch(
+        {
+          'api.openai.com': (init) => {
+            bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+            return { ok: true };
+          },
+        },
+        calls,
+      ),
+    });
+
+    await r.generateText({
+      route: 'teacher',
+      size: 'small',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+
+    expect(bodies[0].temperature).toBe(0.7);
+  });
+
+  it('strips a rejected temperature and retries a future reasoning family', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const calls: Record<string, number> = {};
+    const endpoint: InferenceEndpoint = {
+      ...OPENAI,
+      id: 'future',
+      baseUrl: 'https://future.local/v1',
+      smallModel: 'future-reasoner',
+      largeModel: 'future-reasoner',
+    };
+    const routes: RouteTable = {
+      teacher: ['future'],
+      fleet: ['future'],
+      'hosted-user': ['future'],
+      default: ['future'],
+    };
+    let attempt = 0;
+    const r = new InferenceRouter({
+      endpoints: [endpoint],
+      routes,
+      fetchImpl: makeFetch(
+        {
+          'future.local': (init) => {
+            bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+            attempt++;
+            if (attempt === 1) {
+              return {
+                ok: false,
+                status: 400,
+                errorBody: JSON.stringify({
+                  error: {
+                    message: "Unsupported value: 'temperature' for this model",
+                    type: 'invalid_request_error',
+                    param: 'temperature',
+                    code: 'unsupported_value',
+                  },
+                }),
+              };
+            }
+            return { ok: true, content: 'recovered' };
+          },
+        },
+        calls,
+      ),
+    });
+
+    const result = await r.generateText({
+      route: 'teacher',
+      size: 'small',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+
+    expect(result.text).toBe('recovered');
+    expect(calls['future.local']).toBe(2);
+    expect('temperature' in bodies[1]).toBe(false);
+  });
+
+  it('does not retry a 400 that names no strippable parameter', async () => {
+    const calls: Record<string, number> = {};
+    const endpoint: InferenceEndpoint = {
+      ...OPENAI,
+      id: 'bad-request',
+      baseUrl: 'https://bad-request.local/v1',
+    };
+    const routes: RouteTable = {
+      teacher: ['bad-request'],
+      fleet: ['bad-request'],
+      'hosted-user': ['bad-request'],
+      default: ['bad-request'],
+    };
+    const r = new InferenceRouter({
+      endpoints: [endpoint],
+      routes,
+      fetchImpl: makeFetch(
+        {
+          'bad-request.local': () => ({
+            ok: false,
+            status: 400,
+            errorBody: JSON.stringify({ error: { message: 'Malformed messages' } }),
+          }),
+        },
+        calls,
+      ),
+    });
+
+    await expect(
+      r.generateText({
+        route: 'teacher',
+        size: 'small',
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    ).rejects.toThrow('[InferenceRouter:bad-request] 400');
+    expect(calls['bad-request.local']).toBe(1);
+  });
+});
 
 describe('InferenceRouter routing', () => {
   it('teacher route hits OpenAI and NEVER a local box (even when locals are up)', async () => {
