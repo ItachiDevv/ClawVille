@@ -1,7 +1,7 @@
 'use client';
 
 import { Suspense, useEffect, useMemo, useRef } from 'react';
-import { Canvas, useThree } from '@react-three/fiber';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
@@ -10,6 +10,11 @@ import { VRMCharacterAnimator, type AnimName } from '@/lib/three/vrm-character-a
 import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
 import { MODEL_REGISTRY, type ModelRegistryEntry } from '@/lib/three/agent-model-registry';
 import { TableCards3D, type TableCardLayout, type TableCardSeat } from '@/lib/three/cove-table-cards';
+import {
+  getHoldemBadgeRegistryVersion,
+  getHoldemSeatBadgeElement,
+  getHoldemTableRecenterEpoch,
+} from '@/lib/cove/holdem-table-view';
 
 const ROOM_PATH = '/models/cove-room-only.glb';
 const TABLE_PATH = '/models/cove-table-clean.glb';
@@ -243,6 +248,36 @@ function FrozenFigure({
 const CAM_EYE: readonly [number, number, number] = [0, 150, -49.6 * S - 46];
 const CAM_LOOK: readonly [number, number, number] = [0, 66, 78 * S];
 
+const LOOK_YAW_LIMIT = THREE.MathUtils.degToRad(75);
+const LOOK_YAW_SPEED = THREE.MathUtils.degToRad(92);
+const LOOK_EASE = 9;
+const BASE_LOOK_DX = CAM_LOOK[0] - CAM_EYE[0];
+const BASE_LOOK_DY = CAM_LOOK[1] - CAM_EYE[1];
+const BASE_LOOK_DZ = CAM_LOOK[2] - CAM_EYE[2];
+const BASE_LOOK_HORIZONTAL = Math.hypot(BASE_LOOK_DX, BASE_LOOK_DZ);
+const BASE_LOOK_DISTANCE = Math.hypot(BASE_LOOK_DX, BASE_LOOK_DY, BASE_LOOK_DZ);
+const BASE_LOOK_YAW = Math.atan2(BASE_LOOK_DX, BASE_LOOK_DZ);
+const BASE_LOOK_PITCH = Math.atan2(BASE_LOOK_DY, BASE_LOOK_HORIZONTAL);
+const BASE_LOOK_COS_PITCH = Math.cos(BASE_LOOK_PITCH);
+const BASE_LOOK_SIN_PITCH = Math.sin(BASE_LOOK_PITCH);
+
+/** Six static world anchors. Seat 0 is the viewer's own near-edge marker;
+ * its registered DOM label remains inside the screen-fixed private tray.
+ * Opponent anchors sit outside each torso so the badge never masks a face. */
+const SEAT_BADGE_WORLD_ANCHORS: readonly (readonly [number, number, number])[] = [
+  [0, 106, -45 * S],
+  [BOT_SEATS[0]!.x - 14 * S, 126, BOT_SEATS[0]!.z],
+  [BOT_SEATS[1]!.x - 12 * S, 126, BOT_SEATS[1]!.z],
+  [BOT_SEATS[2]!.x - 10 * S, 126, BOT_SEATS[2]!.z],
+  [BOT_SEATS[3]!.x + 12 * S, 126, BOT_SEATS[3]!.z],
+  [BOT_SEATS[4]!.x + 10 * S, 126, BOT_SEATS[4]!.z],
+] as const;
+
+// Module-scope scratch only: the yaw loop never allocates Three.js objects.
+const CAMERA_LOOK_TARGET = new THREE.Vector3();
+const BADGE_PROJECT_SCRATCH = new THREE.Vector3();
+const BADGE_VIEW_PROJECTION = new THREE.Matrix4();
+
 /** Frozen figure from a NATIVE Meshy-rigged GLB (mesh + rig + clip in one
  *  asset, zero retargeting). Plays its baked clip once to `sampleAt` and
  *  freezes. Single-mount asset: the cached useGLTF scene is used directly.
@@ -330,13 +365,129 @@ function DealerPlate({ position }: { position: readonly [number, number, number]
   );
 }
 
-function FixedCamera() {
-  const { camera } = useThree();
+function SeatedLookCamera() {
+  const { camera, size } = useThree();
+  const heldRef = useRef({ left: false, right: false });
+  const viewRef = useRef({
+    yaw: 0,
+    targetYaw: 0,
+    snapCenter: true,
+    lastProjectedYaw: Number.NaN,
+    lastWidth: 0,
+    lastHeight: 0,
+    badgeVersion: -1,
+    recenterEpoch: getHoldemTableRecenterEpoch(),
+  });
+
   useEffect(() => {
     camera.position.set(...CAM_EYE);
     camera.lookAt(...CAM_LOOK);
     camera.updateProjectionMatrix();
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (target instanceof HTMLInputElement || target instanceof HTMLButtonElement) return;
+      if (event.key === 'ArrowLeft') {
+        heldRef.current.left = true;
+        event.preventDefault();
+      } else if (event.key === 'ArrowRight') {
+        heldRef.current.right = true;
+        event.preventDefault();
+      } else if (event.key === 'Home') {
+        viewRef.current.targetYaw = 0;
+        viewRef.current.snapCenter = true;
+        event.preventDefault();
+      }
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key === 'ArrowLeft') heldRef.current.left = false;
+      else if (event.key === 'ArrowRight') heldRef.current.right = false;
+    };
+    const onBlur = () => {
+      heldRef.current.left = false;
+      heldRef.current.right = false;
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
+    };
   }, [camera]);
+
+  useFrame((_, delta) => {
+    const view = viewRef.current;
+    const held = heldRef.current;
+    const recenterEpoch = getHoldemTableRecenterEpoch();
+    if (recenterEpoch !== view.recenterEpoch) {
+      view.recenterEpoch = recenterEpoch;
+      view.targetYaw = 0;
+    }
+
+    const lookDirection = Number(held.left) - Number(held.right);
+    if (lookDirection !== 0) {
+      view.targetYaw = THREE.MathUtils.clamp(
+        view.targetYaw + lookDirection * LOOK_YAW_SPEED * Math.min(delta, 0.05),
+        -LOOK_YAW_LIMIT,
+        LOOK_YAW_LIMIT,
+      );
+    }
+
+    if (view.snapCenter) {
+      view.snapCenter = false;
+      view.yaw = 0;
+      view.targetYaw = 0;
+    } else {
+      const ease = 1 - Math.exp(-LOOK_EASE * Math.min(delta, 0.05));
+      view.yaw += (view.targetYaw - view.yaw) * ease;
+      if (Math.abs(view.targetYaw - view.yaw) < 0.00005) view.yaw = view.targetYaw;
+    }
+
+    const badgeVersion = getHoldemBadgeRegistryVersion();
+    const cameraChanged = view.yaw !== view.lastProjectedYaw;
+    const viewportChanged = size.width !== view.lastWidth || size.height !== view.lastHeight;
+    const registryChanged = badgeVersion !== view.badgeVersion;
+    if (!cameraChanged && !viewportChanged && !registryChanged) return;
+
+    view.lastProjectedYaw = view.yaw;
+    view.lastWidth = size.width;
+    view.lastHeight = size.height;
+    view.badgeVersion = badgeVersion;
+
+    const lookYaw = BASE_LOOK_YAW + view.yaw;
+    CAMERA_LOOK_TARGET.set(
+      CAM_EYE[0] + Math.sin(lookYaw) * BASE_LOOK_COS_PITCH * BASE_LOOK_DISTANCE,
+      CAM_EYE[1] + BASE_LOOK_SIN_PITCH * BASE_LOOK_DISTANCE,
+      CAM_EYE[2] + Math.cos(lookYaw) * BASE_LOOK_COS_PITCH * BASE_LOOK_DISTANCE,
+    );
+    camera.position.set(...CAM_EYE);
+    camera.lookAt(CAMERA_LOOK_TARGET);
+    camera.updateMatrixWorld();
+
+    BADGE_VIEW_PROJECTION.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    for (let seat = 0; seat < SEAT_BADGE_WORLD_ANCHORS.length; seat += 1) {
+      const element = getHoldemSeatBadgeElement(seat);
+      if (!element) continue;
+      const anchor = SEAT_BADGE_WORLD_ANCHORS[seat]!;
+      BADGE_PROJECT_SCRATCH.set(anchor[0], anchor[1], anchor[2]).applyMatrix4(BADGE_VIEW_PROJECTION);
+      const outwardNudge = seat === 0 ? 0 : (BADGE_PROJECT_SCRATCH.x < 0 ? -42 : 42);
+      const left = (BADGE_PROJECT_SCRATCH.x * 0.5 + 0.5) * size.width + outwardNudge;
+      const top = (-BADGE_PROJECT_SCRATCH.y * 0.5 + 0.5) * size.height + 10;
+      const visible = BADGE_PROJECT_SCRATCH.z > -1
+        && BADGE_PROJECT_SCRATCH.z < 1
+        && left > 58
+        && left < size.width - 58
+        && top > 44
+        && top < size.height - 84;
+      element.style.left = left + 'px';
+      element.style.top = top + 'px';
+      element.style.setProperty('--seat-visible', visible ? '1' : '0');
+    }
+  });
+
   return null;
 }
 
@@ -367,7 +518,7 @@ function HoldemTableRoomScene() {
 
   return (
     <>
-      <FixedCamera />
+      <SeatedLookCamera />
       <ambientLight intensity={0.85} color={0xffe6cf} />
       <directionalLight position={[-70, 130, 80]} intensity={2.2} color={0xffd2a1} />
       <directionalLight position={[85, 85, 25]} intensity={1.35} color={0x7fd6ff} />

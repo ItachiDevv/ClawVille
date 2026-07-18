@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { HoldemControllerRuntime } from '@/lib/cove/holdem-controller';
 import { SeatedHoldemHud } from '@/components/cove/holdem/SeatedHoldemHud';
 import { useCoveStore } from '@/stores/cove';
+import styles from '@/components/cove/holdem/SeatedHoldemHud.module.css';
 
 const HoldemTableRoomCanvas = dynamic(
   () => import('@/lib/three/holdem-table-room'),
@@ -14,9 +15,10 @@ const HoldemTableRoomCanvas = dynamic(
     loading: () => (
       <div style={{
         position: 'absolute', inset: 0, display: 'grid', placeItems: 'center',
-        background: '#100b16', color: '#d8e8dc', fontFamily: 'monospace',
+        background: '#100b16', color: '#f3ead8', fontFamily: 'monospace',
+        fontSize: 11, fontWeight: 800, letterSpacing: '0.16em', textTransform: 'uppercase',
       }}>
-        Loading table room…
+        Preparing the table…
       </div>
     ),
   },
@@ -45,6 +47,18 @@ export default function HoldemTableRoomPage() {
     router.push('/cove');
   }, [router]);
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== 'e' || event.repeat) return;
+      const target = event.target;
+      if (target instanceof HTMLInputElement || target instanceof HTMLButtonElement) return;
+      event.preventDefault();
+      handleBack();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [handleBack]);
+
   return (
     <main style={{ position: 'fixed', inset: 0, overflow: 'hidden', background: '#100b16' }}>
       <div style={{ position: 'absolute', inset: 0 }}>
@@ -55,13 +69,7 @@ export default function HoldemTableRoomPage() {
         type="button"
         onClick={handleBack}
         aria-label="Back to Cove"
-        style={{
-          position: 'absolute', top: 'max(16px, env(safe-area-inset-top))', left: 16,
-          zIndex: 60, minHeight: 44, padding: '0 16px', borderRadius: 8,
-          border: '1px solid rgba(60,180,120,0.32)', background: 'rgba(8,14,18,0.88)',
-          color: '#d8e8dc', fontFamily: 'monospace', fontSize: 13, fontWeight: 700,
-          cursor: 'pointer', backdropFilter: 'blur(6px)',
-        }}
+        className={styles.backButton}
       >
         ← Back to Cove
       </button>

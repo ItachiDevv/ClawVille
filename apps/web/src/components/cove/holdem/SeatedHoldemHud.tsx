@@ -13,6 +13,11 @@ import {
 import { RaiseSlider } from './RaiseSlider';
 import PokerCard from './PokerCard';
 import CommunityCardRow from './CommunityCardRow';
+import styles from './SeatedHoldemHud.module.css';
+import {
+  registerHoldemSeatBadge,
+  requestHoldemTableRecenter,
+} from '@/lib/cove/holdem-table-view';
 import {
   deriveHoldemPublicSeats,
   type HoldemStreet,
@@ -30,21 +35,29 @@ const BOT_NAMES: Record<number, string> = {
   5: 'Nita',
 };
 
+/** Display-only decision duration. A future enforcement round may reuse this
+ * constant; this HUD never auto-acts, folds, or calls when it reaches zero. */
+export const HOLDEM_DECISION_SECONDS = 12;
+const HOLDEM_DECISION_MS = HOLDEM_DECISION_SECONDS * 1_000;
+
 /**
- * Static DOM anchors derived once from `holdem-table-room.tsx`'s CAM_EYE,
- * CAM_LOOK, FOV=62 and BOT_SEATS by projecting a y=105 torso point at 16:9.
- * The raw near-side points land beyond the frustum; x/y are clamped into an
- * 8â€“92% / 18â€“72% safe frame while preserving their projected order. No
- * per-frame Three.js projection or allocation is needed.
+ * Initial no-JS/fresh-mount positions. The room camera replaces seats 1-5
+ * with live world projections whenever yaw or viewport geometry changes.
+ * Side badges start farther outside the avatar silhouettes than the prior
+ * anchors, so the default player view never masks a face.
  */
 const TABLE_ROOM_SEAT_ANCHORS: ReadonlyArray<Readonly<{ left: number; top: number }>> = [
   { left: 50, top: 76 },
-  { left: 92, top: 72 },
-  { left: 92, top: 57 },
-  { left: 90, top: 42 },
-  { left: 8, top: 57 },
-  { left: 10, top: 42 },
+  { left: 95, top: 70 },
+  { left: 95, top: 54 },
+  { left: 94, top: 37 },
+  { left: 5, top: 54 },
+  { left: 6, top: 37 },
 ];
+const TABLE_ROOM_SEAT_REFS: readonly ((element: HTMLDivElement | null) => void)[] =
+  TABLE_ROOM_SEAT_ANCHORS.map((_, seat) => (
+    (element: HTMLDivElement | null) => registerHoldemSeatBadge(seat, element)
+  ));
 
 type PlaybackEvent =
   | { kind: 'action'; entry: SerializedHoldemLogEntry }
@@ -56,7 +69,6 @@ function boardCountForStreet(street: HoldemStreet): 0 | 3 | 4 | 5 {
   if (street === 'river') return 5;
   return 0;
 }
-
 function nextStreetEvent(boardCount: number): PlaybackEvent & { kind: 'street' } {
   if (boardCount < 3) return { kind: 'street', street: 'flop', boardCount: 3 };
   if (boardCount < 4) return { kind: 'street', street: 'turn', boardCount: 4 };
@@ -145,6 +157,7 @@ export function SeatedHoldemHud() {
   const [replayBusy, setReplayBusy] = useState(false);
   const [actionFlash, setActionFlash] = useState<{ seat: number; text: string } | null>(null);
   const [streetToast, setStreetToast] = useState<string | null>(null);
+  const [decisionRemainingMs, setDecisionRemainingMs] = useState(HOLDEM_DECISION_MS);
   const playbackHandRef = useRef<string | null>(null);
   const renderedLogRef = useRef<SerializedHoldemLogEntry[]>([]);
   const revealedBoardCountRef = useRef(0);
@@ -268,6 +281,25 @@ export function SeatedHoldemHud() {
     || revealedBoardCount < targetBoardCount
   );
   const actionsDisabled = inFlight || agentMode === 'autonomous' || playoutPending;
+  const decisionActive = phase === 'player-turn' && !actionsDisabled;
+  const decisionKey = `${live?.handId ?? ''}:${live?.publicActionLog.length ?? 0}:${toCallNum}`;
+
+  useEffect(() => {
+    if (!decisionActive) {
+      setDecisionRemainingMs(HOLDEM_DECISION_MS);
+      return;
+    }
+
+    requestHoldemTableRecenter();
+    const startedAt = performance.now();
+    setDecisionRemainingMs(HOLDEM_DECISION_MS);
+    const timer = window.setInterval(() => {
+      const next = Math.max(0, HOLDEM_DECISION_MS - (performance.now() - startedAt));
+      setDecisionRemainingMs(next);
+      if (next === 0) window.clearInterval(timer);
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, [decisionActive, decisionKey]);
 
   const handleOpenRaise = useCallback(() => {
     if (!live || phase !== 'player-turn' || actionsDisabled) return;
@@ -321,6 +353,14 @@ export function SeatedHoldemHud() {
     : revealedBoardCount >= 4 ? 'turn'
       : revealedBoardCount >= 3 ? 'flop' : 'preflop';
   const renderedStreet = renderedLog.at(-1)?.street ?? 'preflop';
+  const decisionSeconds = Math.ceil(decisionRemainingMs / 1_000);
+  const timerTone = decisionRemainingMs < 3_000
+    ? styles.timerDanger
+    : decisionRemainingMs < 5_000
+      ? styles.timerWarn
+      : '';
+  const timerZero = decisionRemainingMs === 0 ? styles.timerZero : '';
+  const timerProgress = `${(decisionRemainingMs / HOLDEM_DECISION_MS) * 100}%`;
 
   // Seated-only surface: T1 with the modal closed (the hotspot suppresses the
   // modal while seated, but a hand resumed IN the modal then carried to the
@@ -328,7 +368,7 @@ export function SeatedHoldemHud() {
   if (seatedTable?.tableId !== 'T1' || holdemModalOpen) return null;
 
   return (
-    <>
+    <div className={styles.surface}>
       {livePositions && TABLE_ROOM_SEAT_ANCHORS.map((anchor, seat) => {
         if (seat === 0) return null;
         const publicSeat = publicSeats[seat];
@@ -339,285 +379,263 @@ export function SeatedHoldemHud() {
         const isFlashing = actionFlash?.seat === seat;
         return (
           <div
-            key={`holdem-public-seat-${seat}`}
-            style={{
-              position: 'fixed', left: `clamp(52px, ${anchor.left}%, calc(100% - 52px))`, top: `${anchor.top}%`,
-              transform: 'translate(-50%, -50%)', zIndex: 36,
-              minWidth: seat === 0 ? 112 : 96, maxWidth: 150,
-              padding: '6px 8px', borderRadius: 8, pointerEvents: 'none',
-              background: folded ? 'rgba(45,50,54,0.86)' : 'rgba(8,14,18,0.88)',
-              border: `1px solid ${isFlashing ? '#ffd27a' : folded ? 'rgba(150,160,165,0.35)' : 'rgba(60,180,120,0.38)'}`,
-              boxShadow: isFlashing ? '0 0 22px rgba(255,194,92,0.72)' : '0 4px 16px rgba(0,0,0,0.38)',
-              opacity: folded ? 0.62 : 1,
-              color: '#e8f3ea', fontFamily: 'var(--pt-data)', textAlign: 'center',
-              transition: 'border-color 140ms ease, box-shadow 140ms ease, opacity 180ms ease',
-            }}
-            data-testid={`holdem-seat-badge-${seat}`}
+            key={'holdem-public-seat-' + seat}
+            ref={TABLE_ROOM_SEAT_REFS[seat]}
+            className={styles.seatBadge
+              + (folded ? ' ' + styles.seatBadgeFolded : '')
+              + (isFlashing ? ' ' + styles.seatBadgeThinking : '')}
+            style={{ left: anchor.left + '%', top: anchor.top + '%' }}
+            data-testid={'holdem-seat-badge-' + seat}
           >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
-              <b style={{ fontSize: 10, letterSpacing: '0.08em' }}>{seatName(seat)}</b>
-              {livePositions.buttonSeat === seat && <span style={{ color: '#ffd27a' }}>D</span>}
-              {livePositions.smallBlindSeat === seat && <span style={{ color: '#7dd3fc' }}>SB</span>}
-              {livePositions.bigBlindSeat === seat && <span style={{ color: '#c4b5fd' }}>BB</span>}
+            <div className={styles.seatNameRow + ' ' + styles.smallCaps}>
+              <span>{seatName(seat)}</span>
+              {livePositions.buttonSeat === seat && (
+                <span className={styles.positionChip + ' ' + styles.dealerChip} title="Dealer button">D</span>
+              )}
+              {livePositions.smallBlindSeat === seat && (
+                <span className={styles.positionChip} title="Small blind">SB</span>
+              )}
+              {livePositions.bigBlindSeat === seat && (
+                <span className={styles.positionChip} title="Big blind">BB</span>
+              )}
             </div>
-            <div style={{ marginTop: 3, color: folded ? '#b6bec2' : '#ffd27a', fontSize: 10, fontWeight: 700 }}>
-              {folded ? 'FOLDED' : isFlashing ? actionFlash.text : BigInt(streetBet) > 0n ? `BET ${streetBet}` : '—'}
+            <div className={styles.seatAction}>
+              {folded
+                ? 'Folded'
+                : isFlashing
+                  ? actionFlash.text
+                  : BigInt(streetBet) > 0n
+                    ? 'Bet ' + streetBet
+                    : '—'}
             </div>
           </div>
         );
       })}
 
-      {streetToast && (
-        <div style={{
-          position: 'fixed', left: '50%', top: '34%', transform: 'translate(-50%, -50%)',
-          zIndex: 48, pointerEvents: 'none', padding: '10px 24px', borderRadius: 999,
-          background: 'rgba(8,14,18,0.92)', border: '1px solid rgba(255,205,120,0.7)',
-          color: '#ffd27a', fontFamily: 'var(--pt-display)', fontWeight: 800,
-          letterSpacing: '0.22em', boxShadow: '0 0 26px rgba(255,194,92,0.3)',
-        }}>
-          {streetToast}
-        </div>
-      )}
+      {streetToast && <div className={styles.streetToast}>{streetToast}</div>}
 
       {settled && narration && !playoutPending && (
-        <div style={{
-          position: 'fixed', left: '50%', top: '58%', transform: 'translate(-50%, -50%)',
-          zIndex: 47, width: 'min(620px, calc(100vw - 24px))', pointerEvents: 'none',
-          padding: '14px 18px', borderRadius: 12, textAlign: 'center',
-          background: 'rgba(25,12,27,0.94)', border: '2px solid rgba(255,205,120,0.75)',
-          boxShadow: '0 0 34px rgba(255,194,92,0.28)', color: '#fff4dc',
-        }} data-testid="holdem-settlement-narration">
-          <div style={{ fontFamily: 'var(--pt-display)', fontSize: 18, fontWeight: 800 }}>
-            {narration.headline}
-          </div>
-          <div style={{ marginTop: 5, fontFamily: 'var(--pt-data)', fontSize: 11, color: '#d6c8b2' }}>
-            {narration.detail}
-          </div>
+        <div className={styles.settlement} data-testid="holdem-settlement-narration">
+          <div className={styles.settlementHeadline}>{narration.headline}</div>
+          <div className={styles.settlementDetail}>{narration.detail}</div>
         </div>
       )}
 
-    <div
-      style={{
-        position: 'fixed', left: '50%', bottom: 'max(16px, env(safe-area-inset-bottom))',
-        transform: 'translateX(-50%)', zIndex: 40,
-        display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center',
-        width: 'min(560px, calc(100vw - 24px))', pointerEvents: 'auto',
-      }}
-      data-testid="seated-holdem-hud"
-    >
-      {phase !== 'idle' && (
-        <div style={{
-          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 7,
-          padding: '8px 12px', borderRadius: 10,
-          background: 'rgba(8,14,18,0.82)', border: '1px solid rgba(60,180,100,0.2)',
-          backdropFilter: 'blur(6px)', maxWidth: '100%',
-        }}>
-          {livePositions && (
-            <div style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
-              color: publicSeats[0]?.folded ? '#aeb7bb' : '#e8f3ea',
-              fontFamily: 'var(--pt-data)', fontSize: 10, fontWeight: 700,
-              letterSpacing: '0.08em',
-            }} data-testid="holdem-seat-badge-0">
-              <span>YOU</span>
-              {livePositions.buttonSeat === 0 && <span style={{ color: '#ffd27a' }}>D</span>}
-              {livePositions.smallBlindSeat === 0 && <span style={{ color: '#7dd3fc' }}>SB</span>}
-              {livePositions.bigBlindSeat === 0 && <span style={{ color: '#c4b5fd' }}>BB</span>}
-              <span style={{ color: publicSeats[0]?.folded ? '#aeb7bb' : '#ffd27a' }}>
-                {publicSeats[0]?.folded
-                  ? 'FOLDED'
-                  : actionFlash?.seat === 0
-                    ? actionFlash.text
-                    : renderedStreet === visibleStreet && BigInt(publicSeats[0]?.streetCommitted ?? '0') > 0n
-                      ? `BET ${publicSeats[0]!.streetCommitted}`
-                      : '—'}
-              </span>
+      <div className={styles.hud} data-testid="seated-holdem-hud">
+        {phase !== 'idle' && (
+          <div className={styles.cardTray} data-testid="holdem-card-tray">
+            <div className={styles.privateCards}>
+              {livePositions && (
+                <div
+                  ref={TABLE_ROOM_SEAT_REFS[0]}
+                  className={styles.trayLabel + ' ' + styles.smallCaps}
+                  data-testid="holdem-seat-badge-0"
+                >
+                  <span>You</span>
+                  {livePositions.buttonSeat === 0 && (
+                    <span className={styles.positionChip + ' ' + styles.dealerChip} title="Dealer button">D</span>
+                  )}
+                  {livePositions.smallBlindSeat === 0 && (
+                    <span className={styles.positionChip} title="Small blind">SB</span>
+                  )}
+                  {livePositions.bigBlindSeat === 0 && (
+                    <span className={styles.positionChip} title="Big blind">BB</span>
+                  )}
+                  <span className={styles.seatAction}>
+                    {publicSeats[0]?.folded
+                      ? 'Folded'
+                      : actionFlash?.seat === 0
+                        ? actionFlash.text
+                        : renderedStreet === visibleStreet
+                            && BigInt(publicSeats[0]?.streetCommitted ?? '0') > 0n
+                          ? 'Bet ' + publicSeats[0]!.streetCommitted
+                          : '—'}
+                  </span>
+                </div>
+              )}
+              <div aria-label="Your private hole cards" className={styles.cardPair}>
+                {playerHoleCards.map((card, cardIndex) => (
+                  <PokerCard
+                    key={[card.suit, card.rank, cardIndex].join('-')}
+                    card={card}
+                    compact
+                  />
+                ))}
+              </div>
             </div>
-          )}
-          <div aria-label="Your private hole cards" style={{ display: 'flex', gap: 6 }}>
-            {playerHoleCards.map((card, index) => (
-              <PokerCard key={`${card.suit}-${card.rank}-${index}`} card={card} compact />
-            ))}
+            <div className={styles.trayDivider} aria-hidden />
+            <div className={styles.boardCards}>
+              <div className={styles.trayLabel + ' ' + styles.smallCaps}>Table</div>
+              <CommunityCardRow cards={narratedCards} />
+            </div>
           </div>
-          <CommunityCardRow cards={narratedCards} />
-        </div>
-      )}
-
-      {toast && (
-        <div style={{
-          fontSize: 12, fontFamily: 'var(--pt-data)', padding: '6px 12px', borderRadius: 6,
-          background: 'rgba(8,14,18,0.92)', border: '1px solid rgba(60,180,100,0.25)',
-          color: toast.tone === 'error' ? '#f87171' : toast.tone === 'warn' ? '#f59e0b' : '#d8e8dc',
-        }}>
-          {toast.message}
-        </div>
-      )}
-
-      <div style={{
-        display: 'flex', flexDirection: 'column', gap: 8, width: '100%',
-        background: 'rgba(8,14,18,0.88)', border: '1px solid rgba(60,180,100,0.22)',
-        borderRadius: 10, padding: '10px 14px', backdropFilter: 'blur(6px)',
-      }}>
-        <div style={{
-          display: 'flex', gap: 14, justifyContent: 'center', flexWrap: 'wrap',
-          fontSize: 11, fontFamily: 'var(--pt-data)', color: '#a8c0ae', letterSpacing: '0.08em',
-        }}>
-          {/* The live wire carries no pot total (only settled outcomes do),
-              so POT shows at settle only — never a misleading live zero.
-              STACK uses the controller's humanStack (live mid-hand,
-              table.playerStack otherwise). P3.1 Codex finding. */}
-          {phase !== 'idle' && <span>POT <b style={{ color: 'var(--pt-amber)' }}>{pot}</b></span>}
-          <span style={{
-            padding: '2px 7px', borderRadius: 999,
-            border: '1px solid rgba(125,211,252,0.34)', color: '#bfe8ff',
-          }}>
-            BLINDS {live?.smallBlind ?? table?.smallBlind ?? '1'}/{live?.bigBlind ?? table?.bigBlind ?? '2'} vCLAW
-          </span>
-          {table && <span>STACK <b style={{ color: '#d8e8dc' }}>{Number(humanStack).toLocaleString()}</b></span>}
-          {phase === 'player-turn' && facingBet && toCallNum > 0 && (
-            <span>TO CALL <b style={{ color: 'var(--pt-amber)' }}>{toCallNum}</b></span>
-          )}
-          {playoutPending && <span style={{ color: '#ffd27a', fontWeight: 700 }}>PLAYING ACTIONS…</span>}
-        </div>
-
-        {showRaise && phase === 'player-turn' && (
-          <RaiseSlider
-            config={raiseConfig}
-            pot={publicPot}
-            bigBlind={live?.bigBlind ?? table?.bigBlind ?? '2'}
-            humanCommitted={humanCommitted}
-            onChange={(v) => setRaiseConfig((c) => ({ ...c, value: v }))}
-            onConfirm={handleConfirmRaise}
-            onCancel={() => setShowRaise(false)}
-          />
         )}
 
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
-          {phase === 'idle' && (
-            <>
-              <button
-                type="button"
-                onClick={() => { void handleDeal(); }}
-                disabled={actionsDisabled}
-                className="pt-btn pt-btn-primary"
-                style={{ height: 44, fontSize: 13, fontWeight: 700, minWidth: 120 }}
-              >
-                {inFlight ? 'Dealing…' : 'Deal'}
-              </button>
-              {/* Escape hatch at idle too (the modal's X equivalent): a
-                  resumed table can be un-dealable (stack < big blind) and
-                  the server copy says to close + re-buy — so the close must
-                  be reachable HERE, not only at settled. */}
-              {table && (
+        {toast && (
+          <div
+            className={styles.toast
+              + (toast.tone === 'error' ? ' ' + styles.toastError : '')
+              + (toast.tone === 'warn' ? ' ' + styles.toastWarn : '')}
+          >
+            {toast.message}
+          </div>
+        )}
+
+        <div className={styles.panel + ' ' + styles.actionPanel}>
+          <div className={styles.statusRow}>
+            {phase !== 'idle' && (
+              <span className={styles.metric}>Pot <strong>{pot}</strong></span>
+            )}
+            <span className={styles.blindPill}>
+              Blinds {live?.smallBlind ?? table?.smallBlind ?? '1'}/
+              {live?.bigBlind ?? table?.bigBlind ?? '2'} vCLAW
+            </span>
+            {table && (
+              <span className={styles.metric}>
+                Stack <strong>{Number(humanStack).toLocaleString()}</strong>
+              </span>
+            )}
+            {phase === 'player-turn' && facingBet && toCallNum > 0 && (
+              <span className={styles.metric}>To call <strong>{toCallNum}</strong></span>
+            )}
+            {playoutPending && <span className={styles.playout}>Playing actions…</span>}
+          </div>
+
+          {decisionActive && (
+            <div
+              className={styles.decisionTimer
+                + (timerTone ? ' ' + timerTone : '')
+                + (timerZero ? ' ' + timerZero : '')}
+              role="timer"
+              aria-label={decisionSeconds + ' seconds left to act; visual timer only'}
+              data-testid="holdem-decision-timer"
+            >
+              <span className={styles.smallCaps}>Your decision</span>
+              <div className={styles.timerTrack} aria-hidden>
+                <div className={styles.timerFill} style={{ width: timerProgress }} />
+              </div>
+              <span className={styles.timerNumber}>{decisionSeconds}s</span>
+            </div>
+          )}
+
+          {showRaise && phase === 'player-turn' && (
+            <RaiseSlider
+              config={raiseConfig}
+              pot={publicPot}
+              bigBlind={live?.bigBlind ?? table?.bigBlind ?? '2'}
+              humanCommitted={humanCommitted}
+              onChange={(value) => setRaiseConfig((current) => ({ ...current, value }))}
+              onConfirm={handleConfirmRaise}
+              onCancel={() => setShowRaise(false)}
+            />
+          )}
+
+          <div className={styles.actionRow}>
+            {phase === 'idle' && (
+              <>
                 <button
-                  type="button" onClick={() => { void handleWalkAway(); }}
+                  type="button"
+                  onClick={() => { void handleDeal(); }}
+                  disabled={actionsDisabled}
+                  className={styles.actionButton + ' ' + styles.primaryButton}
+                >
+                  {inFlight ? 'Dealing…' : 'Deal'}
+                </button>
+                {table && (
+                  <button
+                    type="button"
+                    onClick={() => { void handleWalkAway(); }}
+                    disabled={walkAwayLocked || playoutPending}
+                    className={styles.actionButton + ' ' + styles.walkButton}
+                  >
+                    {isAuthed ? 'Walk Away' : 'Close'}
+                  </button>
+                )}
+              </>
+            )}
+
+            {phase === 'player-turn' && !showRaise && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => { void runAction('fold'); }}
+                  disabled={actionsDisabled}
+                  className={styles.actionButton + ' ' + styles.foldButton}
+                >
+                  Fold
+                </button>
+                {canCheck ? (
+                  <button
+                    type="button"
+                    onClick={() => { void runAction('check'); }}
+                    disabled={actionsDisabled}
+                    className={styles.actionButton + ' ' + styles.primaryButton}
+                  >
+                    Check
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => { void runAction('call'); }}
+                    disabled={actionsDisabled}
+                    className={styles.actionButton + ' ' + styles.primaryButton}
+                  >
+                    {'Call' + (toCallNum > 0 ? ' ' + toCallNum + ' vCLAW' : '')}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleOpenRaise}
+                  disabled={actionsDisabled}
+                  className={styles.actionButton}
+                >
+                  {facingBet ? 'Raise' : 'Bet'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleAllIn}
+                  disabled={actionsDisabled}
+                  className={styles.actionButton + ' ' + styles.allInButton}
+                >
+                  All In
+                </button>
+              </>
+            )}
+
+            {phase === 'settled' && (
+              <>
+                <button
+                  type="button"
+                  onClick={handleNextHand}
+                  disabled={inFlight || Boolean(revealedSeed) || playoutPending}
+                  className={styles.actionButton + ' ' + styles.primaryButton}
+                >
+                  Next Hand
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { void handleWalkAway(); }}
                   disabled={walkAwayLocked || playoutPending}
-                  style={{
-                    height: 44, fontSize: 12, fontWeight: 600,
-                    fontFamily: 'var(--pt-data)', letterSpacing: '0.06em',
-                    paddingLeft: 16, paddingRight: 16, borderRadius: 6,
-                    border: 'none', background: '#dc2626', color: '#ffffff',
-                    cursor: walkAwayLocked || playoutPending ? 'not-allowed' : 'pointer',
-                    opacity: walkAwayLocked || playoutPending ? 0.6 : 1,
-                  }}
+                  className={styles.actionButton + ' ' + styles.walkButton}
                 >
                   {isAuthed ? 'Walk Away' : 'Close'}
                 </button>
-              )}
-            </>
-          )}
+              </>
+            )}
+          </div>
 
-          {phase === 'player-turn' && !showRaise && (
-            <>
-              <button
-                type="button" onClick={() => { void runAction('fold'); }}
-                disabled={actionsDisabled}
-                className="pt-btn pt-btn-ghost"
-                style={{ height: 44, fontSize: 12, minWidth: 64 }}
-              >
-                Fold
-              </button>
-              {canCheck ? (
-                <button
-                  type="button" onClick={() => { void runAction('check'); }}
-                  disabled={actionsDisabled}
-                  className="pt-btn pt-btn-primary"
-                  style={{ height: 44, fontSize: 13, fontWeight: 700, minWidth: 76 }}
-                >
-                  Check
-                </button>
-              ) : (
-                <button
-                  type="button" onClick={() => { void runAction('call'); }}
-                  disabled={actionsDisabled}
-                  className="pt-btn pt-btn-primary"
-                  style={{ height: 44, fontSize: 13, fontWeight: 700, minWidth: 96 }}
-                >
-                  Call {toCallNum > 0 ? `${toCallNum} vCLAW` : ''}
-                </button>
-              )}
-              <button
-                type="button" onClick={handleOpenRaise}
-                disabled={actionsDisabled}
-                className="pt-btn pt-btn-ghost"
-                style={{ height: 44, fontSize: 12, minWidth: 76 }}
-              >
-                {facingBet ? 'Raise' : 'Bet'}
-              </button>
-              <button
-                type="button" onClick={handleAllIn}
-                disabled={actionsDisabled}
-                className="pt-btn pt-btn-ghost"
-                style={{ height: 44, fontSize: 12, minWidth: 76, color: '#f59e0b' }}
-              >
-                All In
-              </button>
-            </>
-          )}
-
-          {phase === 'settled' && (
-            <>
-              {/* revealedSeed gate mirrors the modal: after Walk Away cashes
-                  out, Next Hand inside the auto-close window would orphan a
-                  fresh buy-in. */}
-              <button
-                type="button" onClick={handleNextHand}
-                disabled={inFlight || Boolean(revealedSeed) || playoutPending}
-                className="pt-btn pt-btn-primary"
-                style={{ height: 44, fontSize: 13, minWidth: 110 }}
-              >
-                Next Hand
-              </button>
-              {/* Same button for BOTH tiers, exactly like the modal ("Close"
-                  for guests): without it, a guest whose demo stack hits 0 has
-                  a dead Deal button and no way to reset the table from the
-                  seat (P4 live-run find). */}
-              <button
-                type="button" onClick={() => { void handleWalkAway(); }}
-                  disabled={walkAwayLocked || playoutPending}
-                style={{
-                  height: 44, fontSize: 12, fontWeight: 600,
-                  fontFamily: 'var(--pt-data)', letterSpacing: '0.06em',
-                  paddingLeft: 16, paddingRight: 16, borderRadius: 6,
-                  border: 'none', background: '#dc2626', color: '#ffffff',
-                  cursor: walkAwayLocked || playoutPending ? 'not-allowed' : 'pointer',
-                  opacity: walkAwayLocked || playoutPending ? 0.6 : 1,
-                }}
-              >
-                {isAuthed ? 'Walk Away' : 'Close'}
-              </button>
-            </>
-          )}
-        </div>
-
-        <div style={{
-          textAlign: 'center', fontSize: 10, fontFamily: 'var(--pt-data)',
-          color: '#6f8a76', letterSpacing: '0.1em',
-        }}>
-          PRESS E TO STAND
+          <div className={styles.legendRow}>
+            <span>
+              <span className={styles.positionChip + ' ' + styles.dealerChip}>D</span> Dealer
+            </span>
+            <span><span className={styles.positionChip}>SB</span> Small blind</span>
+            <span><span className={styles.positionChip}>BB</span> Big blind</span>
+            <span className={styles.controlHint}>
+              ←/→ Look around · Home center · E stand
+            </span>
+          </div>
         </div>
       </div>
     </div>
-    </>
   );
 }
