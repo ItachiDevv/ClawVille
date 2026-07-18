@@ -357,9 +357,10 @@ function PowerUpSlotCard({
   useKey: string;
   slotIndex: number;
 }) {
-  // Track previous slot state so we can detect pickup vs use transitions and
-  // run a local-only effect timer (server doesn't broadcast active duration).
+  // The inventory mutation written by self event.power_up_collected identifies
+  // the exact filled slot. Charge gains flash too, not just empty → filled.
   const prevKindRef = useRef<string | null>(null);
+  const prevChargesRef = useRef(0);
   const [pickupFlash, setPickupFlash] = useState(false);
   const [activeEffect, setActiveEffect] = useState<{
     kind: string;
@@ -369,14 +370,16 @@ function PowerUpSlotCard({
   useEffect(() => {
     const cur = slot?.kind ?? null;
     const prev = prevKindRef.current;
+    const charges = slot?.charges ?? 0;
 
-    // empty → filled = pickup
-    if (!prev && cur) {
+    const gainedItem = !!cur && (!prev || cur !== prev || charges > prevChargesRef.current);
+    if (gainedItem) {
       setPickupFlash(true);
       const t = window.setTimeout(() => setPickupFlash(false), 600);
       // also clear any lingering "active" pip from prior round
       setActiveEffect(null);
       prevKindRef.current = cur;
+      prevChargesRef.current = charges;
       return () => window.clearTimeout(t);
     }
     // filled → empty = use (or wipeout consume — close enough for HUD)
@@ -386,10 +389,12 @@ function PowerUpSlotCard({
         setActiveEffect({ kind: prev, until: performance.now() + meta.effectMs });
       }
       prevKindRef.current = null;
+      prevChargesRef.current = 0;
       return;
     }
     prevKindRef.current = cur;
-  }, [slot?.kind]);
+    prevChargesRef.current = charges;
+  }, [slot?.charges, slot?.kind]);
 
   // Tick the active-effect timer at 30 Hz so the countdown bar animates.
   const [, force] = useState(0);
@@ -618,6 +623,19 @@ function WaitAtFinishOverlay() {
   const finishedRacers = useActivityStore((s) => s.finishedRacers);
   const scores = useActivityStore((s) => s.scores);
   const selfAvatarId = useActivityStore((s) => s.selfAvatarId);
+  const [showPlacementSplash, setShowPlacementSplash] = useState(true);
+
+  // The overlay remains mounted for the whole race. Starting true ensures the
+  // first render after crossed_finish is the placement moment, then the
+  // detailed wait card takes over after 2.5 seconds.
+  useEffect(() => {
+    if (!selfFinished || matchPhase !== 'live') {
+      setShowPlacementSplash(true);
+      return;
+    }
+    const id = window.setTimeout(() => setShowPlacementSplash(false), 2_500);
+    return () => window.clearTimeout(id);
+  }, [selfFinished, matchPhase]);
 
   // Render-time deadline recompute — cheap, drift-proof, no interval cleanup.
   // Bump a tick counter at 5Hz so the displayed countdown updates.
@@ -630,6 +648,46 @@ function WaitAtFinishOverlay() {
 
   if (!selfFinished || matchPhase !== 'live' || selfPlacement == null) {
     return null;
+  }
+
+  if (showPlacementSplash) {
+    return (
+      <div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          pointerEvents: 'none',
+        }}
+        aria-live="assertive"
+      >
+        <div
+          style={{
+            color: '#ffd600',
+            fontSize: 'clamp(42px, 8vw, 88px)',
+            fontWeight: 950,
+            lineHeight: 1,
+            letterSpacing: '0.05em',
+            textAlign: 'center',
+            textShadow:
+              '0 0 16px rgba(255, 214, 0, 0.9), 0 6px 0 rgba(0, 0, 0, 0.65), 0 12px 36px rgba(0, 0, 0, 0.85)',
+            animation: 'reefFinishPlacement 2.5s ease-out both',
+          }}
+        >
+          {ordinal(selfPlacement).toUpperCase()} PLACE
+        </div>
+        <style jsx>{`
+          @keyframes reefFinishPlacement {
+            0% { transform: scale(0.62); opacity: 0; }
+            12% { transform: scale(1.1); opacity: 1; }
+            22%, 78% { transform: scale(1); opacity: 1; }
+            100% { transform: scale(1.05); opacity: 0; }
+          }
+        `}</style>
+      </div>
+    );
   }
 
   const remainingMs =
@@ -1015,19 +1073,15 @@ export default function ReefRaceHud({
         <LeaveButton onLeave={onLeave} />
       </div>
 
-      {/* Pregame countdown overlay + how-to-play card. Both auto-dismiss
-          when the match goes live (parent conditional). */}
+      {/* The full reading card lives in the matchmaking lobby. Countdown keeps
+          only a compact control strip so the staged track and start gun lead. */}
       {(matchPhase === 'pregame-countdown' || showGoFlash) && (
         <RoundCountdown
           secondsRemaining={showGoFlash ? 0 : displayedCountdownSeconds}
         />
       )}
       {matchPhase === 'pregame-countdown' && (
-        <>
-          <ReefRaceInstructions
-            countdownSecondsRemaining={displayedCountdownSeconds}
-          />
-        </>
+        <ReefRaceInstructions variant="countdown" />
       )}
 
       {/* Phase 1 launch-glow ring — overlaid at the very last second of the
