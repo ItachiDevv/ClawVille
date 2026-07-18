@@ -10,8 +10,11 @@ import {
   KELP_REALM_CELL_WU,
   KELP_REALM_CENTER,
   KELP_REALM_FOOTPRINT_WU,
+  KELP_REALM_MAX_AUTHORED_BEND_WU,
+  KELP_REALM_MAX_BLADE_HALF_WIDTH_WU,
   KELP_REALM_MAX_SWAY_WU,
   KELP_REALM_ONE_SIDED_SWAY_WU,
+  KELP_REALM_WALL_ROOT_SETBACK_WU,
   KELP_REALM_WALL_AABBS,
   KELP_REALM_WALL_HEIGHT_WU,
   isKelpRealmCorridorCell,
@@ -23,7 +26,19 @@ const BLADE_COUNT = 15_000;
 const BLADES_PER_VARIANT = BLADE_COUNT / 3;
 const BLADE_ROWS = 8;
 const FOG_COLOR = new THREE.Color(0x031b20);
-const MAX_PRIMARY_AMPLITUDE_WU = KELP_REALM_ONE_SIDED_SWAY_WU / 1.16;
+const REALM_WIND = Object.freeze({
+  primaryZRateScale: 0.71,
+  primaryZPhaseScale: 1.27,
+  primaryZAmplitudeScale: 0.42,
+  currentXRate: 0.041,
+  currentXPhaseScale: 0.43,
+  currentXAmplitudeScale: 0.16,
+  currentZRate: 0.037,
+  currentZPhaseScale: 0.59,
+  currentZAmplitudeScale: 0.12,
+});
+const MAX_PRIMARY_AMPLITUDE_WU =
+  KELP_REALM_ONE_SIDED_SWAY_WU / (1 + REALM_WIND.currentXAmplitudeScale);
 
 interface RealmKelpVariant {
   readonly minHeight: number;
@@ -37,9 +52,9 @@ interface RealmKelpVariant {
 }
 
 const VARIANTS: readonly RealmKelpVariant[] = Object.freeze([
-  { minHeight: 650, maxHeight: 780, minWidth: 22, maxWidth: 34, root: new THREE.Color(0x052d27), tip: new THREE.Color(0x16886d), amplitude: MAX_PRIMARY_AMPLITUDE_WU * 0.78, rate: 0.17 },
-  { minHeight: 600, maxHeight: 750, minWidth: 25, maxWidth: 39, root: new THREE.Color(0x07372d), tip: new THREE.Color(0x24a16e), amplitude: MAX_PRIMARY_AMPLITUDE_WU * 0.86, rate: 0.14 },
-  { minHeight: 680, maxHeight: 800, minWidth: 19, maxWidth: 31, root: new THREE.Color(0x042d34), tip: new THREE.Color(0x138b83), amplitude: MAX_PRIMARY_AMPLITUDE_WU, rate: 0.11 },
+  { minHeight: 650, maxHeight: 780, minWidth: 22, maxWidth: 34, root: new THREE.Color(0x052d27), tip: new THREE.Color(0x16886d), amplitude: MAX_PRIMARY_AMPLITUDE_WU * 0.78, rate: Math.PI * 2 / 5.8 },
+  { minHeight: 600, maxHeight: 750, minWidth: 25, maxWidth: KELP_REALM_MAX_BLADE_HALF_WIDTH_WU * 2, root: new THREE.Color(0x07372d), tip: new THREE.Color(0x24a16e), amplitude: MAX_PRIMARY_AMPLITUDE_WU * 0.86, rate: Math.PI * 2 / 5.2 },
+  { minHeight: 680, maxHeight: 800, minWidth: 19, maxWidth: 31, root: new THREE.Color(0x042d34), tip: new THREE.Color(0x138b83), amplitude: MAX_PRIMARY_AMPLITUDE_WU, rate: Math.PI * 2 / 4.6 },
 ]);
 
 interface WindUniform { value: number }
@@ -65,12 +80,12 @@ function applyRealmWind(
   const height = attribute<'float'>('aHeight', 'float');
   const primaryX = sin(time.mul(float(variant.rate)).add(phase))
     .mul(height.mul(height)).mul(float(variant.amplitude));
-  const primaryZ = cos(time.mul(float(variant.rate * 0.71)).add(phase.mul(float(1.27))))
-    .mul(height.mul(height)).mul(float(variant.amplitude * 0.42));
-  const currentX = cos(time.mul(float(0.041)).add(phase.mul(float(0.43))))
-    .mul(height).mul(float(variant.amplitude * 0.16));
-  const currentZ = sin(time.mul(float(0.037)).add(phase.mul(float(0.59))))
-    .mul(height).mul(float(variant.amplitude * 0.12));
+  const primaryZ = cos(time.mul(float(variant.rate * REALM_WIND.primaryZRateScale)).add(phase.mul(float(REALM_WIND.primaryZPhaseScale))))
+    .mul(height.mul(height)).mul(float(variant.amplitude * REALM_WIND.primaryZAmplitudeScale));
+  const currentX = cos(time.mul(float(REALM_WIND.currentXRate)).add(phase.mul(float(REALM_WIND.currentXPhaseScale))))
+    .mul(height).mul(float(variant.amplitude * REALM_WIND.currentXAmplitudeScale));
+  const currentZ = sin(time.mul(float(REALM_WIND.currentZRate)).add(phase.mul(float(REALM_WIND.currentZPhaseScale))))
+    .mul(height).mul(float(variant.amplitude * REALM_WIND.currentZAmplitudeScale));
   material.positionNode = positionLocal.add(
     vec3(primaryX.add(currentX), float(0), primaryZ.add(currentZ)),
   );
@@ -90,18 +105,18 @@ function createRealmKelpGeometry(variantIndex: number): THREE.BufferGeometry {
 
   for (let blade = 0; blade < BLADES_PER_VARIANT; blade++) {
     const wall = KELP_REALM_WALL_AABBS[(blade * 37 + variantIndex * 17) % KELP_REALM_WALL_AABBS.length]!;
-    // Keep roots 60 wu back from every corridor-facing cell edge. With the
-    // <=20 wu one-sided animated displacement plus blade width/bend, each
-    // opposing wall consumes <=20 wu of corridor space: 200 - 20 - 20 = 160.
-    const minX = isKelpRealmCorridorCell(wall.row, wall.col - 1) ? -40 : -96;
-    const maxX = isKelpRealmCorridorCell(wall.row, wall.col + 1) ? 40 : 96;
-    const minZ = isKelpRealmCorridorCell(wall.row - 1, wall.col) ? -40 : -96;
-    const maxZ = isKelpRealmCorridorCell(wall.row + 1, wall.col) ? 40 : 96;
+    // Keep roots 60 wu back from every corridor-facing cell edge. The shared
+    // sway + authored-radius budget leaves 66.9 wu between opposing tips.
+    const corridorRootLimit = KELP_REALM_CELL_WU / 2 - KELP_REALM_WALL_ROOT_SETBACK_WU;
+    const minX = isKelpRealmCorridorCell(wall.row, wall.col - 1) ? -corridorRootLimit : -96;
+    const maxX = isKelpRealmCorridorCell(wall.row, wall.col + 1) ? corridorRootLimit : 96;
+    const minZ = isKelpRealmCorridorCell(wall.row - 1, wall.col) ? -corridorRootLimit : -96;
+    const maxZ = isKelpRealmCorridorCell(wall.row + 1, wall.col) ? corridorRootLimit : 96;
     const x = wall.centerX + minX + rng() * (maxX - minX);
     const z = wall.centerZ + minZ + rng() * (maxZ - minZ);
     const bladeHeight = variant.minHeight + rng() * (variant.maxHeight - variant.minHeight);
     const width = variant.minWidth + rng() * (variant.maxWidth - variant.minWidth);
-    const bend = 10 + rng() * 8;
+    const bend = 10 + rng() * (KELP_REALM_MAX_AUTHORED_BEND_WU - 10);
     const rotation = rng() * Math.PI * 2;
     const phase = rng() * Math.PI * 2;
     const cosRotation = Math.cos(rotation);
@@ -185,9 +200,9 @@ function createKelpMaterial(variant: RealmKelpVariant, forceWebGL: boolean): Pic
     shader.vertexShader = shader.vertexShader.replace(anchor, `${anchor}
 float h2 = aHeight * aHeight;
 transformed.x += sin(uKelpTime * ${variant.rate.toFixed(6)} + aPhase) * h2 * ${variant.amplitude.toFixed(6)};
-transformed.z += cos(uKelpTime * ${(variant.rate * 0.71).toFixed(6)} + aPhase * 1.27) * h2 * ${(variant.amplitude * 0.42).toFixed(6)};
-transformed.x += cos(uKelpTime * 0.041 + aPhase * 0.43) * aHeight * ${(variant.amplitude * 0.16).toFixed(6)};
-transformed.z += sin(uKelpTime * 0.037 + aPhase * 0.59) * aHeight * ${(variant.amplitude * 0.12).toFixed(6)};`);
+transformed.z += cos(uKelpTime * ${(variant.rate * REALM_WIND.primaryZRateScale).toFixed(6)} + aPhase * ${REALM_WIND.primaryZPhaseScale.toFixed(6)}) * h2 * ${(variant.amplitude * REALM_WIND.primaryZAmplitudeScale).toFixed(6)};
+transformed.x += cos(uKelpTime * ${REALM_WIND.currentXRate.toFixed(6)} + aPhase * ${REALM_WIND.currentXPhaseScale.toFixed(6)}) * aHeight * ${(variant.amplitude * REALM_WIND.currentXAmplitudeScale).toFixed(6)};
+transformed.z += sin(uKelpTime * ${REALM_WIND.currentZRate.toFixed(6)} + aPhase * ${REALM_WIND.currentZPhaseScale.toFixed(6)}) * aHeight * ${(variant.amplitude * REALM_WIND.currentZAmplitudeScale).toFixed(6)};`);
   };
   material.customProgramCacheKey = () => `kelp-realm-wind-v1-${variantIndexKey(variant)}`;
   // WebGPURenderer(forceWebGL) converts this standard material to a node

@@ -21,13 +21,32 @@ export const KELP_FOREST_PORTAL_APPROACH_GAME = Object.freeze({
   y: KELP_FOREST_PORTAL_APPROACH_WORLD.z + WORLD_CENTER_PX.y,
 });
 export const KELP_FOREST_PORTAL_PROMPT_RADIUS_WU = 360;
-/** Maximum animated intrusion from either one wall into its corridor. */
-export const KELP_REALM_ONE_SIDED_SWAY_WU = 20;
+/** Maximum animated tip displacement from a realm blade's authored position. */
+export const KELP_REALM_ONE_SIDED_SWAY_WU = 100;
+/** Tallest realm blades establish the shared world/realm sway fraction. */
+export const KELP_REALM_SWAY_HEIGHT_FRACTION =
+  KELP_REALM_ONE_SIDED_SWAY_WU / KELP_REALM_WALL_HEIGHT_WU;
+/** Realm blade roots stay this far behind a corridor-facing wall edge. */
+export const KELP_REALM_WALL_ROOT_SETBACK_WU = 60;
+export const KELP_REALM_MAX_BLADE_HALF_WIDTH_WU = 39 / 2;
+export const KELP_REALM_MAX_AUTHORED_BEND_WU = 18;
+/** Conservative transverse radius of the widest, most-bent authored blade. */
+export const KELP_REALM_MAX_STATIC_TIP_OFFSET_WU = Math.hypot(
+  KELP_REALM_MAX_BLADE_HALF_WIDTH_WU,
+  KELP_REALM_MAX_AUTHORED_BEND_WU,
+);
+/** Worst animated tip intrusion beyond a corridor-facing wall edge. */
+export const KELP_REALM_MAX_CORRIDOR_INTRUSION_WU = Math.max(
+  0,
+  KELP_REALM_ONE_SIDED_SWAY_WU
+  + KELP_REALM_MAX_STATIC_TIP_OFFSET_WU
+  - KELP_REALM_WALL_ROOT_SETBACK_WU,
+);
 /** Complete visible-width loss between two opposing animated walls. */
 export const KELP_REALM_MAX_SWAY_WU = KELP_REALM_ONE_SIDED_SWAY_WU * 2;
 export const KELP_REALM_CORRIDOR_WIDTH_WU = KELP_REALM_CELL_WU;
 export const KELP_REALM_VISIBLE_CORRIDOR_MIN_WU =
-  KELP_REALM_CORRIDOR_WIDTH_WU - KELP_REALM_ONE_SIDED_SWAY_WU * 2;
+  KELP_REALM_CORRIDOR_WIDTH_WU - KELP_REALM_MAX_CORRIDOR_INTRUSION_WU * 2;
 
 export type KelpRealmCell = '#' | '.' | 'E' | 'C';
 
