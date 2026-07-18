@@ -5,7 +5,10 @@ import {
   KELP_REALM_CENTER_CELL,
   KELP_REALM_COLS,
   KELP_REALM_CORRIDOR_WIDTH_WU,
+  KELP_REALM_DEAD_END_DISCOVERIES,
+  KELP_REALM_DISCOVERY_TYPES,
   KELP_REALM_ENTRY_CELL,
+  KELP_REALM_FOOTPRINT_WU,
   KELP_REALM_LAYOUT,
   KELP_REALM_LAYOUT_INVARIANTS,
   KELP_REALM_MAX_AUTHORED_BEND_WU,
@@ -18,6 +21,7 @@ import {
   KELP_REALM_VISIBLE_CORRIDOR_MIN_WU,
   KELP_REALM_WALL_HEIGHT_WU,
   KELP_REALM_WALL_ROOT_SETBACK_WU,
+  KELP_REALM_WALL_AABBS,
   KELP_REALM_PLAYER_SPAWN,
   KELP_REALM_PLAYER_SPEED_WU_PER_SEC,
   KELP_REALM_ROWS,
@@ -45,10 +49,14 @@ function corridorNeighbors(row: number, col: number): Array<readonly [number, nu
 }
 
 describe('Kelp Forest realm layout invariants', () => {
-  test('is a 13x13 origin-centered maze with one outer entry gap', () => {
-    expect(KELP_REALM_ROWS).toBe(13);
-    expect(KELP_REALM_COLS).toBe(13);
+  test('is a 21x21 origin-centered maze with one outer entry gap', () => {
+    expect(KELP_REALM_ROWS).toBe(21);
+    expect(KELP_REALM_COLS).toBe(21);
+    expect(KELP_REALM_FOOTPRINT_WU).toBe(4_200);
+    expect(KELP_REALM_WALL_AABBS).toHaveLength(278);
     expect(KELP_REALM_LAYOUT.every((row) => row.length === KELP_REALM_COLS)).toBe(true);
+    expect(KELP_REALM_LAYOUT.flatMap((row) => [...row]).filter((cell) => cell === 'E')).toHaveLength(1);
+    expect(KELP_REALM_LAYOUT.flatMap((row) => [...row]).filter((cell) => cell === 'C')).toHaveLength(1);
 
     const boundaryOpenings: Array<{ row: number; col: number; cell: string }> = [];
     for (let row = 0; row < KELP_REALM_ROWS; row++) {
@@ -96,7 +104,7 @@ describe('Kelp Forest realm layout invariants', () => {
     });
   });
 
-  test('has one unique entry-to-center route and six substantial dead ends', () => {
+  test('has one unique entry-to-center route and nine substantial raw dead ends', () => {
     const corridors: Array<readonly [number, number]> = [];
     let undirectedEdges = 0;
     for (let row = 0; row < KELP_REALM_ROWS; row++) {
@@ -110,12 +118,14 @@ describe('Kelp Forest realm layout invariants', () => {
 
     const seen = new Set<string>([key(KELP_REALM_ENTRY_CELL.row, KELP_REALM_ENTRY_CELL.col)]);
     const queue: Array<readonly [number, number]> = [[KELP_REALM_ENTRY_CELL.row, KELP_REALM_ENTRY_CELL.col]];
+    const cameFrom = new Map<string, readonly [number, number]>();
     while (queue.length > 0) {
       const [row, col] = queue.shift()!;
       for (const [nextRow, nextCol] of corridorNeighbors(row, col)) {
         const nextKey = key(nextRow, nextCol);
         if (seen.has(nextKey)) continue;
         seen.add(nextKey);
+        cameFrom.set(nextKey, [row, col]);
         queue.push([nextRow, nextCol]);
       }
     }
@@ -124,13 +134,61 @@ describe('Kelp Forest realm layout invariants', () => {
     expect(seen.size).toBe(corridors.length);
     expect(undirectedEdges).toBe(corridors.length - 1);
 
+    const centerKey = key(KELP_REALM_CENTER_CELL.row, KELP_REALM_CENTER_CELL.col);
+    const entryKey = key(KELP_REALM_ENTRY_CELL.row, KELP_REALM_ENTRY_CELL.col);
+    const entryToCenter: Array<readonly [number, number]> = [];
+    let cursor = centerKey;
+    while (true) {
+      const [row, col] = cursor.split(':').map(Number) as [number, number];
+      entryToCenter.push([row, col]);
+      if (cursor === entryKey) break;
+      const previous = cameFrom.get(cursor);
+      expect(previous).toBeDefined();
+      cursor = key(previous![0], previous![1]);
+    }
+    entryToCenter.reverse();
+    let turns = 0;
+    let previousDirection: string | null = null;
+    for (let index = 1; index < entryToCenter.length; index++) {
+      const previous = entryToCenter[index - 1]!;
+      const current = entryToCenter[index]!;
+      const direction = `${current[0] - previous[0]}:${current[1] - previous[1]}`;
+      if (previousDirection !== null && direction !== previousDirection) turns++;
+      previousDirection = direction;
+    }
+    expect(turns).toBeGreaterThanOrEqual(3);
+    expect(entryToCenter.some(([, col]) => col !== KELP_REALM_ENTRY_CELL.col)).toBe(true);
+
+    const rawDeadEnds = corridors.filter(([row, col]) => {
+      const cell = KELP_REALM_LAYOUT[row]![col];
+      return cell !== 'E' && cell !== 'C' && corridorNeighbors(row, col).length === 1;
+    });
+    expect(rawDeadEnds.length).toBeGreaterThanOrEqual(8);
+    expect(rawDeadEnds.length).toBeLessThanOrEqual(10);
+    expect(rawDeadEnds).toHaveLength(9);
+
     const deadEnds = KELP_REALM_BEACON_GRAPH.nodes.filter((node) => node.kind === 'dead-end');
-    expect(deadEnds).toHaveLength(6);
+    expect(deadEnds).toHaveLength(rawDeadEnds.length);
     for (const deadEnd of deadEnds) {
       const branchEdge = KELP_REALM_BEACON_GRAPH.edges.find(
         (edge) => edge.from === deadEnd.id || edge.to === deadEnd.id,
       );
       expect(branchEdge?.distanceWu).toBeGreaterThanOrEqual(KELP_REALM_CELL_WU * 2);
+    }
+  });
+
+  test('derives one deterministic three-type discovery for every dead end', () => {
+    const deadEndIds = KELP_REALM_BEACON_GRAPH.nodes
+      .filter((node) => node.kind === 'dead-end')
+      .map((node) => node.id);
+    expect(KELP_REALM_DEAD_END_DISCOVERIES.map((discovery) => discovery.beaconId)).toEqual(deadEndIds);
+    expect(new Set(KELP_REALM_DEAD_END_DISCOVERIES.map((discovery) => discovery.beaconId)).size)
+      .toBe(deadEndIds.length);
+    expect(new Set(KELP_REALM_DEAD_END_DISCOVERIES.map((discovery) => discovery.type)))
+      .toEqual(new Set(KELP_REALM_DISCOVERY_TYPES));
+    for (let index = 0; index < KELP_REALM_DEAD_END_DISCOVERIES.length; index++) {
+      const discovery = KELP_REALM_DEAD_END_DISCOVERIES[index]!;
+      expect(discovery.type).toBe(KELP_REALM_DISCOVERY_TYPES[index % 3]);
     }
   });
 
