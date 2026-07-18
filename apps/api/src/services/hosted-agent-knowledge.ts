@@ -29,21 +29,6 @@ export interface HostedKnowledgeTarget {
   platformAgentId: string;
 }
 
-/** Preserve the earned-skill avatar fallback when no hosted agent is linked. */
-export function connectedAgentLessonTarget(
-  provenSubject: Pick<HostedKnowledgeTarget, 'avatarId'> | null,
-  hostedTarget: HostedKnowledgeTarget | null,
-): { avatarId: string; platformAgentId: string } | null {
-  if (!provenSubject) return null;
-  return {
-    avatarId: provenSubject.avatarId,
-    platformAgentId:
-      hostedTarget?.avatarId === provenSubject.avatarId
-        ? hostedTarget.platformAgentId
-        : '',
-  };
-}
-
 export interface SyncHostedAgentKnowledgeInput {
   userId: string;
   avatarId: string;
@@ -76,6 +61,20 @@ export interface HostedAgentKnowledgeDependencies {
   ) => Promise<{ getElizaRuntime(): unknown } | null>;
   embed: (text: string) => Promise<number[]>;
   stopRuntime: (platformAgentId: string) => Promise<void>;
+}
+
+interface HostedKnowledgeReader {
+  searchBookKnowledgeMemories(input: {
+    query: string;
+    limit?: number;
+  }): Promise<string[]>;
+}
+
+export interface HostedAgentKnowledgeReadDependencies {
+  getRunningRuntime: (platformAgentId: string) => HostedKnowledgeReader | null;
+  readCustomization: (
+    platformAgentId: string,
+  ) => Promise<Record<string, unknown> | null>;
 }
 
 interface KnowledgeMemoryWriter {
@@ -182,6 +181,62 @@ const defaultDependencies: HostedAgentKnowledgeDependencies = {
   embed: embedText,
   stopRuntime: (platformAgentId) => agentOrchestrator.stopAgent(platformAgentId),
 };
+
+const defaultReadDependencies: HostedAgentKnowledgeReadDependencies = {
+  getRunningRuntime: (platformAgentId) =>
+    agentOrchestrator.getRunningAgentRuntime(platformAgentId) as HostedKnowledgeReader | null,
+  readCustomization: async (platformAgentId) => {
+    const [row] = await db
+      .select({ customization: agents.customization })
+      .from(agents)
+      .where(eq(agents.id, platformAgentId))
+      .limit(1);
+    return row?.customization ?? null;
+  },
+};
+
+/**
+ * Read book/building-visit knowledge without starting a cold runtime. A warm
+ * semantic hit wins; otherwise the authoritative customization tail is used.
+ * Fail-soft on every memory or database error.
+ */
+export async function readHostedAgentKnowledge(
+  input: { platformAgentId: string; query: string; limit?: number },
+  dependencies: HostedAgentKnowledgeReadDependencies = defaultReadDependencies,
+): Promise<string[]> {
+  const limit = input.limit ?? 5;
+  if (!input.platformAgentId || limit <= 0) return [];
+
+  try {
+    const runtime = dependencies.getRunningRuntime(input.platformAgentId);
+    if (runtime) {
+      const knowledge = await runtime.searchBookKnowledgeMemories({
+        query: input.query,
+        limit,
+      });
+      if (knowledge.length > 0) return knowledge;
+    }
+  } catch {
+    // Fall through to the authoritative JSONB store.
+  }
+
+  try {
+    const customization = await dependencies.readCustomization(
+      input.platformAgentId,
+    );
+    const knowledge = recordValue(customization).knowledge;
+    if (!Array.isArray(knowledge)) return [];
+    return knowledge
+      .filter(
+        (entry): entry is string =>
+          typeof entry === 'string' && entry.trim().length > 0,
+      )
+      .slice(-limit)
+      .reverse();
+  } catch {
+    return [];
+  }
+}
 
 /**
  * Make learned knowledge available to the hosted ElizaOS brain.
