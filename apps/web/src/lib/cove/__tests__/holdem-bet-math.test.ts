@@ -7,7 +7,7 @@
  * the final validator — these guard the CLIENT's offered options.
  */
 import { describe, expect, test } from 'bun:test';
-import { computeAllIn, computeRaiseOpen } from '../holdem-bet-math';
+import { computeAllIn, computeRaiseOpen, computeRaisePresets } from '../holdem-bet-math';
 
 const hand = (currentBet: string, humanCommitted: string, humanStack: string) => ({
   currentBet, humanCommitted, humanStack,
@@ -67,5 +67,34 @@ describe('computeAllIn', () => {
 
   test('shove exactly equal to the current bet → all-in CALL, not a zero raise', () => {
     expect(computeAllIn(hand('25', '5', '20'))).toEqual({ action: 'call' });
+  });
+});
+
+describe('computeRaisePresets', () => {
+  test('builds total-commitment Min / 3BB / half-pot / pot sizes', () => {
+    expect(computeRaisePresets({ min: 12, max: 100 }, '30', '2', '4')).toEqual([
+      { label: 'Min', value: 12 },
+      { label: '3BB', value: 12 },
+      { label: '½ Pot', value: 19 },
+      { label: 'Pot', value: 34 },
+    ]);
+  });
+
+  test('clamps every preset to the legal slider window', () => {
+    expect(computeRaisePresets({ min: 20, max: 25 }, '1000', '2', '0')).toEqual([
+      { label: 'Min', value: 20 },
+      { label: '3BB', value: 20 },
+      { label: '½ Pot', value: 25 },
+      { label: 'Pot', value: 25 },
+    ]);
+  });
+
+  test('parses bigint pot strings without Number precision loss', () => {
+    expect(computeRaisePresets(
+      { min: 2, max: 500 },
+      '900719925474099312345',
+      '2',
+      '0',
+    )[3]).toEqual({ label: 'Pot', value: 500 });
   });
 });

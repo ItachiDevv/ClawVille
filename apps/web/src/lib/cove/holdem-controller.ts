@@ -10,6 +10,7 @@ import {
   COVE_HOLDEM_MIN_BUYIN,
   COVE_HOLDEM_MAX_BUYIN,
   HOLDEM_BOT_PERSONALITIES,
+  deriveHoldemPublicSeats,
   type HoldemCard as WireCard,
   type HoldemTableWire,
   type HoldemDealResponse,
@@ -18,6 +19,7 @@ import {
   type HoldemSettledResponse,
   type HoldemResyncHandView,
   type SerializedHoldemHand,
+  type SerializedHoldemLogEntry,
 } from '@clawville/shared';
 import {
   CoveApiError,
@@ -42,6 +44,9 @@ export interface LiveHoldemHand {
   currentBet: string;
   humanStack: string;
   humanCommitted: string;
+  smallBlind: string;
+  bigBlind: string;
+  publicActionLog: SerializedHoldemLogEntry[];
 }
 
 export type HoldemPhase = 'idle' | 'player-turn' | 'settled';
@@ -65,6 +70,7 @@ interface HoldemControllerState {
   communityCards: (ViewCard | null)[];
   playerHoleCards: ViewCard[];
   pot: number;
+  publicPot: string;
   toCall: string;
   currentBet: string;
   humanStack: string;
@@ -110,6 +116,7 @@ export const useHoldemController = create<HoldemControllerState>(() => ({
   communityCards: [null, null, null, null, null],
   playerHoleCards: [],
   pot: 0,
+  publicPot: '0',
   toCall: '0',
   currentBet: '0',
   humanStack: '0',
@@ -143,6 +150,12 @@ function liveHandFromResync(hand: HoldemResyncHandView): LiveHoldemHand {
     currentBet: hand.currentBet,
     humanStack: hand.humanStack,
     humanCommitted: hand.humanCommitted,
+    smallBlind: hand.smallBlind,
+    bigBlind: hand.bigBlind,
+    // Additive-wire rolling-deploy guard: an older API process may briefly
+    // omit the new field while web has already deployed. Empty history keeps
+    // play usable; the enriched server response restores narration next poll.
+    publicActionLog: hand.publicActionLog ?? [],
   };
 }
 
@@ -181,24 +194,23 @@ function seatsForLiveHand(hand: LiveHoldemHand, humanIsActing: boolean): SeatSta
   const humanHole: [ViewCard, ViewCard] | null = hand.humanHole.length === 2
     ? [viewCard(hand.humanHole[0]!), viewCard(hand.humanHole[1]!)]
     : null;
-  const streetBet = bigToNum(hand.currentBet) > 0 || bigToNum(hand.humanCommitted) > 0
-    ? Math.min(bigToNum(hand.humanCommitted), bigToNum(hand.currentBet))
-    : 0;
+  const publicSeats = deriveHoldemPublicSeats(hand.publicActionLog);
 
   return Array.from({ length: HOLDEM_SEATS }, (_, seatIndex): SeatState => {
     const isHuman = seatIndex === 0;
+    const publicSeat = publicSeats[seatIndex];
     return {
       seatIndex,
       name: isHuman ? 'You' : botLabel(seatIndex),
       stack: isHuman ? bigToNum(hand.humanStack) : 0,
-      streetBet: isHuman ? streetBet : 0,
+      streetBet: bigToNum(publicSeat?.streetCommitted),
       holeCards: isHuman
         ? humanHole
         : [
             { suit: 'spades', rank: 'A', hidden: true },
             { suit: 'spades', rank: 'A', hidden: true },
           ],
-      status: 'active',
+      status: publicSeat?.folded ? 'folded' : 'active',
       isSmallBlind: seatIndex === hand.smallBlindSeat,
       isBigBlind: seatIndex === hand.bigBlindSeat,
       isDealer: seatIndex === hand.buttonSeat,
@@ -250,7 +262,7 @@ function deriveControllerState(
   revealedSeed: string | null,
 ): Pick<HoldemControllerState,
   'phase' | 'walkAwayLocked' | 'seats' | 'communityCards' | 'playerHoleCards' |
-  'pot' | 'toCall' | 'currentBet' | 'humanStack' | 'humanCommitted' | 'toCallNum' |
+  'pot' | 'publicPot' | 'toCall' | 'currentBet' | 'humanStack' | 'humanCommitted' | 'toCallNum' |
   'facingBet' | 'canDeal' | 'canFold' | 'canCheck' | 'canCall' | 'canBet' |
   'canRaise' | 'canAllIn'> {
   const phase: HoldemPhase = settled ? 'settled' : live ? 'player-turn' : 'idle';
@@ -262,6 +274,14 @@ function deriveControllerState(
   const toCallNum = bigToNum(toCall);
   const facingBet = toCallNum > 0;
   const playerTurn = phase === 'player-turn';
+  let publicPotBig = 0n;
+  if (outcome) {
+    for (const pot of outcome.pots) publicPotBig += BigInt(pot.amount);
+  } else if (live) {
+    for (const seat of Object.values(deriveHoldemPublicSeats(live.publicActionLog))) {
+      publicPotBig += BigInt(seat.totalCommitted);
+    }
+  }
   return {
     phase,
     walkAwayLocked: inFlight || Boolean(revealedSeed),
@@ -274,7 +294,10 @@ function deriveControllerState(
     playerHoleCards: live?.humanHole.map(viewCard)
       ?? outcome?.seats.find((seat) => seat.isHuman)?.holeCards.map(viewCard)
       ?? [],
-    pot: outcome?.pots.reduce((sum, pot) => sum + Number(pot.amount), 0) ?? 0,
+    // Today's stack bounds make this display conversion safe; `publicPot`
+    // remains the bigint-string source used by sizing presets.
+    pot: Number(publicPotBig),
+    publicPot: publicPotBig.toString(),
     toCall,
     currentBet,
     humanStack,
@@ -391,36 +414,12 @@ export function HoldemControllerRuntime(): null {
   const applyDealInProgress = useCallback((response: HoldemDealInProgressResponse) => {
     publishControllerState({
       settled: null,
-      live: {
-        handId: response.handId,
-        handIndex: response.handIndex,
-        buttonSeat: response.buttonSeat,
-        smallBlindSeat: response.smallBlindSeat,
-        bigBlindSeat: response.bigBlindSeat,
-        humanHole: response.humanHole,
-        board: response.board,
-        toCall: response.toCall,
-        currentBet: response.currentBet,
-        humanStack: response.humanStack,
-        humanCommitted: response.humanCommitted,
-      },
+      live: liveHandFromResync(response),
     });
   }, []);
 
   const applyActionInProgress = useCallback((response: HoldemActionInProgressResponse) => {
-    const live = useHoldemController.getState().live;
-    if (!live) return;
-    publishControllerState({
-      live: {
-        ...live,
-        humanHole: response.humanHole,
-        board: response.board,
-        toCall: response.toCall,
-        currentBet: response.currentBet,
-        humanStack: response.humanStack,
-        humanCommitted: response.humanCommitted,
-      },
-    });
+    publishControllerState({ live: liveHandFromResync(response) });
   }, []);
 
   const toast = useHoldemController((state) => state.toast);

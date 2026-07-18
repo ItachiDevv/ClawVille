@@ -140,7 +140,8 @@ export default function HoldemModal() {
   // ── Server-mirrored state ────────────────────────────────────────────────
   const {
     table, balance, live, settled, revealedSeed, toast, phase, agentMode,
-    inFlight, walkAwayLocked, seats, communityCards, pot, toCallNum,
+    inFlight, walkAwayLocked, seats, communityCards, pot, publicPot, toCallNum,
+    humanCommitted,
     facingBet, canCheck, setAgentMode, resetHand, handleDeal, runAction,
     handleClose, handleWalkAway,
   } = useHoldemController();
@@ -437,6 +438,9 @@ export default function HoldemModal() {
           {showRaise && phase === 'player-turn' && (
             <RaiseSlider
               config={raiseConfig}
+              pot={publicPot}
+              bigBlind={live?.bigBlind ?? table?.bigBlind ?? '2'}
+              humanCommitted={humanCommitted}
               onChange={(v) => setRaiseConfig((c) => ({ ...c, value: v }))}
               onConfirm={handleConfirmRaise}
               onCancel={() => setShowRaise(false)}

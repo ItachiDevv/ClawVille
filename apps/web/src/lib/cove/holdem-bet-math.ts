@@ -17,10 +17,50 @@ export type RaiseOpenResult =
   | { kind: 'call' }
   | { kind: 'slider'; min: number; max: number; verb: 'bet' | 'raise' };
 
+export interface RaisePreset {
+  label: 'Min' | '3BB' | '½ Pot' | 'Pot';
+  value: number;
+}
+
 function bigToNum(value: string | null | undefined): number {
   if (value == null) return 0;
   const number = Number(value);
   return Number.isFinite(number) ? number : 0;
+}
+
+function safeBigInt(value: string | null | undefined): bigint {
+  try {
+    return BigInt(value ?? '0');
+  } catch {
+    return 0n;
+  }
+}
+
+/**
+ * Display-only quick sizes expressed as TOTAL street commitments, matching the
+ * server wire. Pot/blind/current-commit arithmetic stays bigint-exact until the
+ * final clamp into the already-number-bounded slider config.
+ */
+export function computeRaisePresets(
+  config: { min: number; max: number },
+  pot: string,
+  bigBlind: string,
+  humanCommitted: string,
+): RaisePreset[] {
+  const min = BigInt(config.min);
+  const max = BigInt(config.max);
+  const committed = safeBigInt(humanCommitted);
+  const potBig = safeBigInt(pot);
+  const bb = safeBigInt(bigBlind);
+  const clamp = (candidate: bigint): number => Number(
+    candidate < min ? min : candidate > max ? max : candidate,
+  );
+  return [
+    { label: 'Min', value: config.min },
+    { label: '3BB', value: clamp(committed + (3n * bb)) },
+    { label: '½ Pot', value: clamp(committed + (potBig / 2n)) },
+    { label: 'Pot', value: clamp(committed + potBig) },
+  ];
 }
 
 export function computeRaiseOpen(live: BetSizingHandView): RaiseOpenResult {
