@@ -250,7 +250,11 @@ function createBladeGeometry(
   const color = new THREE.Color();
 
   for (let index = 0; index < positions.count; index++) {
-    const normalizedHeight = positions.getY(index) / blade.height;
+    // Clamp: after translate(0, height/2, 0) the root row's float32 y lands a
+    // few ULP below zero for ~half of all heights, and Math.pow(negative,
+    // 1.45) is NaN — which poisoned both root verts (bottom segment dropped,
+    // bounding box/sphere NaN, frustum culling broken) on ~50% of blades.
+    const normalizedHeight = Math.min(1, Math.max(0, positions.getY(index) / blade.height));
     const taper = 1 - Math.pow(normalizedHeight, 1.45) * 0.82;
     const curve = Math.sin(normalizedHeight * Math.PI * 0.72) * blade.bend;
 
