@@ -655,10 +655,10 @@ export const MAX_BOOST_PADS = 10;
 
 export function buildSplineBoostPadsClient(): SplineBoostPadClient[] {
   return [
-    { id: 'pad-lagoon', t: 0.15, lateralOffset:  90, halfLength: BOOST_PAD_TRIGGER_HALF_LENGTH, halfWidth: BOOST_PAD_TRIGGER_HALF_WIDTH },
-    { id: 'pad-kelp',   t: 0.42, lateralOffset: -90, halfLength: BOOST_PAD_TRIGGER_HALF_LENGTH, halfWidth: BOOST_PAD_TRIGGER_HALF_WIDTH },
-    { id: 'pad-wreck',  t: 0.58, lateralOffset:  90, halfLength: BOOST_PAD_TRIGGER_HALF_LENGTH, halfWidth: BOOST_PAD_TRIGGER_HALF_WIDTH },
-    { id: 'pad-canyon', t: 0.85, lateralOffset: -90, halfLength: BOOST_PAD_TRIGGER_HALF_LENGTH, halfWidth: BOOST_PAD_TRIGGER_HALF_WIDTH },
+    { id: 'pad-lagoon', t: 0.115, lateralOffset:  90, halfLength: BOOST_PAD_TRIGGER_HALF_LENGTH, halfWidth: BOOST_PAD_TRIGGER_HALF_WIDTH },
+    { id: 'pad-kelp',   t: 0.400, lateralOffset: -90, halfLength: BOOST_PAD_TRIGGER_HALF_LENGTH, halfWidth: BOOST_PAD_TRIGGER_HALF_WIDTH },
+    { id: 'pad-wreck',  t: 0.805, lateralOffset:  90, halfLength: BOOST_PAD_TRIGGER_HALF_LENGTH, halfWidth: BOOST_PAD_TRIGGER_HALF_WIDTH },
+    { id: 'pad-canyon', t: 0.925, lateralOffset: -90, halfLength: BOOST_PAD_TRIGGER_HALF_LENGTH, halfWidth: BOOST_PAD_TRIGGER_HALF_WIDTH },
   ];
 }
 
@@ -790,11 +790,11 @@ const RAMP_HALF_WIDTH_CLIENT  = 200;
  */
 export function buildSplineRampsClient(): SplineRampClient[] {
   return [
-    { id: 'ramp-lagoon',     t: 0.09, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH_CLIENT, halfWidth: RAMP_HALF_WIDTH_CLIENT },
-    { id: 'ramp-kelp-1',    t: 0.22, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH_CLIENT, halfWidth: RAMP_HALF_WIDTH_CLIENT },
-    { id: 'ramp-kelp-2',    t: 0.35, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH_CLIENT, halfWidth: RAMP_HALF_WIDTH_CLIENT },
-    { id: 'ramp-shipwreck', t: 0.50, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH_CLIENT, halfWidth: RAMP_HALF_WIDTH_CLIENT },
-    { id: 'ramp-canyon-1',  t: 0.65, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH_CLIENT, halfWidth: RAMP_HALF_WIDTH_CLIENT },
-    { id: 'ramp-canyon-2',  t: 0.78, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH_CLIENT, halfWidth: RAMP_HALF_WIDTH_CLIENT },
+    { id: 'ramp-lagoon',     t: 0.070, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH_CLIENT, halfWidth: RAMP_HALF_WIDTH_CLIENT },
+    { id: 'ramp-kelp-1',    t: 0.135, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH_CLIENT, halfWidth: RAMP_HALF_WIDTH_CLIENT },
+    { id: 'ramp-kelp-2',    t: 0.360, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH_CLIENT, halfWidth: RAMP_HALF_WIDTH_CLIENT },
+    { id: 'ramp-shipwreck', t: 0.450, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH_CLIENT, halfWidth: RAMP_HALF_WIDTH_CLIENT },
+    { id: 'ramp-canyon-1',  t: 0.775, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH_CLIENT, halfWidth: RAMP_HALF_WIDTH_CLIENT },
+    { id: 'ramp-canyon-2',  t: 0.900, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH_CLIENT, halfWidth: RAMP_HALF_WIDTH_CLIENT },
   ];
 }

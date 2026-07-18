@@ -14,7 +14,7 @@
  *    only places XZ positions; the math handles the rest.
  *
  * 2. Arclength LUT — 1 000 entries via Simpson integration.
- *    The current closed track is ≈ 88 052 wu, or ≈ 88 wu/LUT interval. A body
+ *    The current v7 closed track is ≈ 95 741 wu, or ≈ 96 wu/LUT interval. A body
  *    moves ≤ 43.3 wu/tick at REEF_MAX_SPEED=1300 wu/s, 30 Hz. Speed does not
  *    determine inverse-arclength accuracy: binary search brackets the monotonic
  *    LUT and linearly interpolates within the bracket. The isolated spline suite
@@ -202,7 +202,7 @@ export function parabolicRefineOffset(
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 /**
- * Number of LUT samples. The current ~88 052 wu ring is verified by the
+ * Number of LUT samples. The current ~95 741 wu ring is verified by the
  * <0.5 wu arclength round-trip tests. See design note #2.
  */
 const LUT_SAMPLES = 1000;

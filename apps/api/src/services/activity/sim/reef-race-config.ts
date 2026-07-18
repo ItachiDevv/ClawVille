@@ -15,7 +15,7 @@
  *
  * Track timing now has two distinct budgets:
  *   - Legacy ellipse (flag OFF): 90s soft timeout + 30s grace.
- *   - v2 closed spline: ~88 052 wu per lap with a dedicated 300s per-lap
+ *   - v2 closed spline: ~95 741 wu per lap with a dedicated 300s per-lap
  *     budget; the current 2-lap race therefore has a 600s soft timeout.
  *
  * Checkpoint sequence: 12 AABB volumes evenly spaced around the
@@ -133,16 +133,15 @@ export const REEF_STRAGGLER_GRACE_MS = 30_000;
 export const REEF_HARD_TIMEOUT_MS = REEF_SOFT_TIMEOUT_MS + REEF_STRAGGLER_GRACE_MS;
 
 /**
- * CLOSED-LOOP per-lap soft budget (ms) for the v6 "WIDE SURF ROAD" floating
- * ribbon.
+ * CLOSED-LOOP per-lap soft budget (ms) for the v7 technical surf-road ribbon.
  *
  * The 90s `REEF_SOFT_TIMEOUT_MS` was tuned for the small ~9 000–30 000 wu
- * tracks; the v6 wide ribbon is ~88 052 wu (was ~60 257 in v5). At the 1300
+ * tracks; the v7 ribbon is ~95 741 wu. At the 1300
  * wu/s tuning one loop takes ~83–103 s (humans ~1,066 wu/s avg;
- * heavy-cornering bots ~858 wu/s → ~102.6 s). The slow-pace safety need is:
+ * heavy-cornering bots ~858 wu/s → ~111.6 s). The slow-pace safety need is:
  *
  *   observed need = arc / slowPace × 1000 × safety
- *                 = 88052 / 858 × 1000 × 1.10 ≈ 113 s.
+ *                 = 95741 / 858 × 1000 × 1.10 ≈ 123 s.
  *
  * The existing 300 s budget remains intentionally conservative for stalls,
  * collisions and disconnected stragglers, matching the 2026-07-13 speed-pass
@@ -156,7 +155,7 @@ export const REEF_RACE_LOOP_LAP_BUDGET_MS = 300_000;
 
 /**
  * CLOSED-LOOP N-lap race soft timeout (ms) — the per-lap budget × lap count.
- * On the current ~88 052 wu-per-lap ring, the 2-lap configuration yields a
+ * On the current ~95 741 wu-per-lap ring, the 2-lap configuration yields a
  * 600s soft cap. This must cover the full race or racers DNF before finishing.
  * The spline sim uses these in `startRoom`; the ellipse sim keeps the unscaled
  * single-loop caps above.
@@ -1228,12 +1227,12 @@ export const RAMP_HALF_WIDTH = 200;
  */
 export function buildSplineRamps(): SplineRampPatch[] {
   return [
-    { id: 'ramp-lagoon',     t: 0.09, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
-    { id: 'ramp-kelp-1',    t: 0.22, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
-    { id: 'ramp-kelp-2',    t: 0.35, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
-    { id: 'ramp-shipwreck', t: 0.50, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
-    { id: 'ramp-canyon-1',  t: 0.65, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
-    { id: 'ramp-canyon-2',  t: 0.78, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
+    { id: 'ramp-lagoon',     t: 0.070, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
+    { id: 'ramp-kelp-1',    t: 0.135, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
+    { id: 'ramp-kelp-2',    t: 0.360, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
+    { id: 'ramp-shipwreck', t: 0.450, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
+    { id: 'ramp-canyon-1',  t: 0.775, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
+    { id: 'ramp-canyon-2',  t: 0.900, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
   ];
 }
 
@@ -1287,10 +1286,10 @@ export const BOOST_PAD_DURATION_MS = 1_500;
  */
 export function buildSplineBoostPads(): SplineBoostPad[] {
   return [
-    { id: 'pad-lagoon',  t: 0.15, lateralOffset:  90, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
-    { id: 'pad-kelp',    t: 0.42, lateralOffset: -90, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
-    { id: 'pad-wreck',   t: 0.58, lateralOffset:  90, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
-    { id: 'pad-canyon',  t: 0.85, lateralOffset: -90, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
+    { id: 'pad-lagoon',  t: 0.115, lateralOffset:  90, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
+    { id: 'pad-kelp',    t: 0.400, lateralOffset: -90, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
+    { id: 'pad-wreck',   t: 0.805, lateralOffset:  90, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
+    { id: 'pad-canyon',  t: 0.925, lateralOffset: -90, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
   ];
 }
 
