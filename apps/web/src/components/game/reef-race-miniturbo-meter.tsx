@@ -3,10 +3,10 @@
 /**
  * reef-race-miniturbo-meter.tsx
  *
- * v2 mechanics (2026-07-10) — self-only mini-turbo charge meter. The signature
- * "surf whip" verb: sustained hard carving CHARGES a meter over ticks; on
- * release it fires a tiered boost (see `event.mini_turbo_fire` handling in
- * `ReefRacePlayer.tsx` + the toast in `reef-race-event-toasts.tsx`).
+ * Round 10b committed drift — self-only drift charge meter. Holding the Reef
+ * drift bit while actually turning builds server-owned charge; releasing it
+ * fires the attained tier through `event.mini_turbo_fire`. Ordinary carving
+ * without the held drift bit never charges.
  *
  * WORLD↔BACKEND↔UI parity: reads `entities.get(selfAvatarId)?.miniTurboCharge`
  * / `.miniTurboLevel` — the SAME server-forwarded fields `ReefRaceScene.tsx`
@@ -33,8 +33,8 @@ import type { ReefRaceEntity } from '@/lib/three/activities/reef-race/reef-race-
 // Tier color ramp — dim track → cyan (tier 1) → hot orange (tier 2, "READY").
 const TRACK_COLOR = 'rgba(255,255,255,0.10)';
 const TIER_COLORS: Record<0 | 1 | 2, { fill: string; glow: string; label: string }> = {
-  0: { fill: '#5ce1ff88', glow: '#5ce1ff33', label: 'CHARGE' },
-  1: { fill: '#5ce1ff', glow: '#5ce1ff88', label: 'MINI-TURBO' },
+  0: { fill: '#5ce1ff88', glow: '#5ce1ff33', label: 'DRIFT' },
+  1: { fill: '#5ce1ff', glow: '#5ce1ff88', label: 'BOOST READY' },
   2: { fill: '#ff5e2b', glow: '#ff5e2bcc', label: 'SUPER READY' },
 };
 
@@ -72,7 +72,7 @@ export default function ReefRaceMiniTurboMeter() {
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={pct}
-      aria-label={`Mini-turbo charge ${pct}%`}
+      aria-label={`Drift charge ${pct}%`}
     >
       <div
         style={{

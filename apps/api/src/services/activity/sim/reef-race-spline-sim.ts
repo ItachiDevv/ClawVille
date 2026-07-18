@@ -25,9 +25,9 @@
  *   - Protocol position: { x: body.x, y: body.z }  (legacy y = scene Z)
  *   - body.rot = Math.atan2(tangent.x, tangent.z)  (Three.js Y-rotation, XZ)
  *
- * Drift mechanic is RETIRED. ACTION_BIT_DRIFT (bit 2) is REUSED as
- * ACTION_BIT_JUMP — same wire bit, new semantic. Jump state machine replaces
- * the drift state machine in every tick step.
+ * Spline-v2 wire controls: bit 0 = queued-item use, bit 1 = reserved, bit 2 =
+ * jump, bit 3 = launch, bit 4 = committed drift hold. Drift is authoritative:
+ * the client only holds/releases bit 4; charge, cancel, and boost live here.
  *
  * v2-specific additions to each body vs v1 ellipse:
  *   heightOffset  : number   — metres above track surface (0 = on ground)
@@ -40,7 +40,7 @@
  *   - Apex zones and ribbons (track-geometry-specific to the ellipse)
  *   - Off-track reset (spline corridor wall clamp replaces it)
  *   - Lap counter + checkpoint AABB system (progress replaces)
- *   - Drift charge sparks and drift-boost (drift retired for jump)
+ *   - Oval apex/ribbon drift variant (spline owns committed drift instead)
  *   - Ghost frame capture (TODO Phase 2)
  *   - Streak counter (TODO Phase 2)
  */
@@ -78,7 +78,8 @@ import {
   LAUNCH_BOOST_DURATION_MS,
   LAUNCH_STALL_DURATION_MS,
   LAUNCH_STALL_THRUST_CAP,
-  ACTION_BIT_DRIFT,        // reused as ACTION_BIT_JUMP — same wire bit
+  ACTION_BIT_JUMP,
+  ACTION_BIT_DRIFT_HOLD,
   REEF_KINEMATIC_TOLERANCE,
   KINEMATIC_BOOST_CAP,
   NEGATIVE_KINETIC_FLOOR,
@@ -116,17 +117,20 @@ import {
   type SplineBoostPad,
   BOOST_PAD_BOOST_MULT,
   BOOST_PAD_DURATION_MS,
-  // v2 mechanics — mini-turbo (surf-carve whip)
-  MINI_TURBO_MIN_TURN_PER_TICK,
-  MINI_TURBO_MIN_SPEED,
-  MINI_TURBO_TIER1_MS,
-  MINI_TURBO_TIER2_MS,
-  MINI_TURBO_MAX_CHARGE_MS,
-  MINI_TURBO_TIER1_MULT,
-  MINI_TURBO_TIER2_MULT,
-  MINI_TURBO_TIER1_DURATION_MS,
-  MINI_TURBO_TIER2_DURATION_MS,
-  MINI_TURBO_COOLDOWN_MS,
+  // v2 committed drift (release reuses mini-turbo wire/presentation plumbing)
+  COMMITTED_DRIFT_MIN_TURN_PER_TICK,
+  COMMITTED_DRIFT_MIN_SPEED,
+  COMMITTED_DRIFT_MIN_STEER_RAD,
+  COMMITTED_DRIFT_ANGULAR_BIAS_RAD,
+  COMMITTED_DRIFT_FORWARD_SPEED_MULT,
+  COMMITTED_DRIFT_TIER1_MS,
+  COMMITTED_DRIFT_TIER2_MS,
+  COMMITTED_DRIFT_MAX_CHARGE_MS,
+  COMMITTED_DRIFT_TIER1_MULT,
+  COMMITTED_DRIFT_TIER2_MULT,
+  COMMITTED_DRIFT_TIER1_DURATION_MS,
+  COMMITTED_DRIFT_TIER2_DURATION_MS,
+  COMMITTED_DRIFT_COOLDOWN_MS,
   // v2 mechanics — item fixes (ink-slick rival slow, whirlpool rival knock)
   INK_SLICK_RADIUS,
   WHIRLPOOL_RADIUS,
@@ -148,9 +152,6 @@ import { ReefFlagCounter } from '../anti-cheat/reef-race';
 import type { PowerUpInventorySlot } from '../anti-cheat/reef-race';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
-
-/** Same wire bit as ACTION_BIT_DRIFT, new semantic for v2. */
-const ACTION_BIT_JUMP = ACTION_BIT_DRIFT;
 
 /** Sim tick rate inherited from config. */
 const REEF_SIM_HZ = REEF_TICK_HZ;
@@ -239,7 +240,7 @@ interface SplineBodyIntent {
  *   - vx, vz instead of vx, vy
  *   - heightOffset / vyAxis / airborneTicks — vertical axis (v2 new)
  *   - progress / prevProgress — arclength fraction 0..1 (replaces lap/nextCheckpoint)
- *   - NO drift fields
+ *   - committed drift reuses the miniTurbo snapshot/delivery fields
  */
 interface SplineBody {
   avatarId: string;
@@ -326,14 +327,15 @@ interface SplineBody {
    */
   pendingPowerUpSlots: number[];
 
-  // ── Mini-turbo (surf-carve whip, v2 mechanics) ───────────────────────────
-  /** Accumulated sustained-carve time (ms). Charges while carving hard in one
-   *  direction; discharges (fires) on release/flip. */
+  // ── Committed drift (mini-turbo wire/presentation fields) ────────────────
+  /** Accumulated held-drift turning time (ms). */
   miniTurboChargeMs: number;
   /** Tier the charge has reached (0 = none, 1, 2). Snapshot HUD reads this. */
   miniTurboLevel: 0 | 1 | 2;
-  /** Sign of the current carve direction (+1 / -1 / 0). A flip resets charge. */
+  /** Latched local turn direction (+1 / -1 / 0 inactive). */
   miniTurboCarveSign: number;
+  /** Cancel latch: countersteer/speed-floor cancel must see button-up to rearm. */
+  miniTurboMustRelease: boolean;
   /**
    * Sim-time (ms) until which charging is SUPPRESSED after a mini-turbo fires
    * (anti-farm — blocks the rhythmic flick-carve reseed from producing
@@ -695,6 +697,7 @@ export class ReefRaceSplineSim {
         miniTurboChargeMs: 0,
         miniTurboLevel: 0,
         miniTurboCarveSign: 0,
+        miniTurboMustRelease: false,
         miniTurboCooldownUntil: 0,
         isBot: opts?.isBot?.(avatarId) ?? botControllers.has(avatarId),
       });
@@ -1138,6 +1141,14 @@ export class ReefRaceSplineSim {
     }
     // Bit 1 is reserved and intentionally ignored.
 
+    // 2b. Committed drift button state. This transition runs before the speed
+    // stack so a valid falling-edge release can contribute its timed boost on
+    // this same authoritative tick. Countersteer/speed-floor cancels never fire.
+    const dir = intent.dir; // Vec2 {x,z} or null
+    const driftHeld = (actionBits & ACTION_BIT_DRIFT_HOLD) !== 0;
+    this.updateCommittedDriftInputState(state, body, dir, driftHeld, now);
+    const driftActive = body.miniTurboCarveSign !== 0;
+
     // 3. Speed modifier (same four-stage model as ellipse sim).
     const slicked      = body.activeEffects.has('rr-ink-slick');
     const powerBoosted = body.activeEffects.has('rr-turbo-bubble');
@@ -1159,7 +1170,7 @@ export class ReefRaceSplineSim {
       const slipAdd = body.activeBoosts.has('slipstream-boost')
         ? SLIPSTREAM_BOOST_MULT
         : 0;
-      // v2 mechanics — boost pad + surf-carve mini-turbo. Both are timed
+      // v2 mechanics — boost pad + committed-drift release. Both are timed
       // speedMod additives that DECAY. They fold into the SAME positive stack,
       // bounded by KINEMATIC_BOOST_CAP, so pad+mini-turbo+launch+slip can never
       // exceed the 1.85× ceiling (adversary chaining is capped here).
@@ -1199,15 +1210,20 @@ export class ReefRaceSplineSim {
       }
     }
 
+    // Committed drift trades about 8% forward target speed for the angular
+    // bias/risk window. Multiplying the target (rather than velocity every tick)
+    // avoids exponential braking and lets the existing forward drag settle it.
+    const surfSpeedMod = driftActive
+      ? speedMod * COMMITTED_DRIFT_FORWARD_SPEED_MULT
+      : speedMod;
+
     // Presentation parity: persist the exact effective multiplier consumed by
     // this authoritative surf step so snapshots can drive self prediction.
-    body.speedMod = speedMod;
+    body.speedMod = surfSpeedMod;
 
     // 4. Jump-trigger (heading + velocity integrate happen below via the
     //    shared surf-carving step).
-    const dir = intent.dir;  // Vec2 {x,z} or null
-
-    // v2: jump trigger replaces drift charge. Bit 2 = ACTION_BIT_JUMP.
+    // v2: bit 2 is jump; committed drift uses independent bit 4.
     const jumpBit = (actionBits & ACTION_BIT_JUMP) !== 0;
     if (jumpBit && body.airborneTicks === 0 && body.heightOffset === 0) {
       body.vyAxis += REEF_JUMP_IMPULSE_MANUAL;
@@ -1235,7 +1251,7 @@ export class ReefRaceSplineSim {
       airborneSteerMult: REEF_AIRBORNE_STEER_MULT,
       forwardDrag: REEF_FORWARD_DRAG,
       lateralGrip: REEF_LATERAL_GRIP,
-      speedMod,
+      speedMod: surfSpeedMod,
       accelMult: body.mults.accelMult,
     };
 
@@ -1243,9 +1259,27 @@ export class ReefRaceSplineSim {
     const prevZ = body.z;
     const preRot = body.rot;
 
+    // Apply the legacy drift tune as an outward slide angle of UP TO 15°.
+    // Bias is capped to half the raw steer error, preserving at least half of
+    // the player's same-sign steering and never overshooting/reversing it. It
+    // is never added to body.rot, so holding drift cannot accumulate spin.
+    let surfDir = dir;
+    if (driftActive && dir && (dir.x !== 0 || dir.z !== 0)) {
+      const desiredHeading = Math.atan2(dir.x, dir.z);
+      const rawDelta = desiredHeading - body.rot;
+      const rawSteerError = Math.atan2(Math.sin(rawDelta), Math.cos(rawDelta));
+      const biasMagnitude = Math.min(
+        COMMITTED_DRIFT_ANGULAR_BIAS_RAD,
+        Math.abs(rawSteerError) * 0.5,
+      );
+      const biasedHeading =
+        desiredHeading - body.miniTurboCarveSign * biasMagnitude;
+      surfDir = { x: Math.sin(biasedHeading), z: Math.cos(biasedHeading) };
+    }
+
     const next = integrateSurfStep(
       { x: body.x, z: body.z, vx: body.vx, vz: body.vz, rot: body.rot },
-      { dir: dir ?? null, thrust: effectiveThrust, airborne },
+      { dir: surfDir ?? null, thrust: effectiveThrust, airborne },
       surfParams,
       dt,
     );
@@ -1320,82 +1354,117 @@ export class ReefRaceSplineSim {
       }
     }
 
-    // 10. Mini-turbo (surf-carve whip) — update the charge meter from the
-    //     heading change this tick. integrateSurfStep stays pure; the stateful
-    //     charge lives on the body and is derived here per-tick (fixed 30Hz).
-    this.updateMiniTurbo(state, body, preRot, effectiveThrust, dt, now);
+    // 10. Committed drift charge reads the ACTUAL heading delta after the pure
+    // integrate. Plain carving can never reach this path with an active latch.
+    this.accrueCommittedDriftCharge(body, preRot, dt);
   }
 
-  // ─── Mini-turbo (surf-carve whip) ──────────────────────────────────────────
+  // ─── Committed drift ──────────────────────────────────────────────────────
 
   /**
-   * Charge/fire the mini-turbo from a SUSTAINED hard carve. Called once per tick
-   * per body at the END of applyIntentForTick (after the surf integrate) so it
-   * reads the actual heading change this tick.
-   *
-   * Charge builds while the body turns hard (|Δheading| ≥ threshold) in ONE
-   * direction, fast enough, under thrust, and grounded. It DISCHARGES (fires a
-   * short boost) the moment the carve breaks — the player straightens out, eases
-   * off, slows, or flips steer direction (the Mario-Kart "release the drift"
-   * beat, mapped onto surf carving since the drift button is retired for jump).
+   * Latch drift from held bit 4 + speed + local steer. Charge is measured from
+   * actual same-direction heading change after integration. Only button release
+   * may fire; countersteer/speed-floor cancellation explicitly clears charge.
    *
    * Anti-cheat: the fire is a TIMED speedMod additive folded into the same
    * positive kinetic stack (KINEMATIC_BOOST_CAP) + the 1.85× hard cap, so it
    * cannot be chained into infinite speed. It never touches integrateSurfStep,
    * never compounds a per-tick multiplier, and never mutates velocity directly.
    */
-  private updateMiniTurbo(
+  private updateCommittedDriftInputState(
     state: SplineRoomState,
     body: SplineBody,
-    preRot: number,
-    effectiveThrust: number,
-    dt: number,
+    dir: Vec2 | null,
+    driftHeld: boolean,
     now: number,
   ): void {
-    // Signed shortest heading change this tick.
-    const d = body.rot - preRot;
-    const carveTurn = Math.atan2(Math.sin(d), Math.cos(d));
+    const activeSign = body.miniTurboCarveSign;
     const speed = Math.hypot(body.vx, body.vz);
     const airborne = body.airborneTicks > 0 || body.heightOffset > 0;
 
-    // Anti-farm: no charge builds during the post-fire cooldown (blocks the
-    // flick-carve reseed farm from producing continuous boost).
-    const onCooldown = now < body.miniTurboCooldownUntil;
-
-    const carving =
-      !onCooldown &&
-      !airborne &&
-      Math.abs(carveTurn) >= MINI_TURBO_MIN_TURN_PER_TICK &&
-      speed >= MINI_TURBO_MIN_SPEED &&
-      effectiveThrust > 0;
-
-    if (carving) {
-      const sign = carveTurn > 0 ? 1 : -1;
-      if (body.miniTurboCarveSign !== 0 && sign !== body.miniTurboCarveSign) {
-        // Steer flipped direction mid-charge — that's a counter-carve, not a
-        // sustained hold. Discharge whatever was earned, then start fresh in
-        // the new direction (this tick seeds the new charge).
-        this.releaseMiniTurbo(state, body, now);
-        body.miniTurboChargeMs = 0;
-      }
-      body.miniTurboCarveSign = sign;
-      body.miniTurboChargeMs = Math.min(
-        body.miniTurboChargeMs + dt * 1000,
-        MINI_TURBO_MAX_CHARGE_MS,
-      );
-      body.miniTurboLevel =
-        body.miniTurboChargeMs >= MINI_TURBO_TIER2_MS
-          ? 2
-          : body.miniTurboChargeMs >= MINI_TURBO_TIER1_MS
-            ? 1
-            : 0;
-    } else {
-      // Carve broke → release. releaseMiniTurbo no-ops if nothing was charged.
-      this.releaseMiniTurbo(state, body, now);
-      body.miniTurboChargeMs = 0;
-      body.miniTurboLevel = 0;
-      body.miniTurboCarveSign = 0;
+    // Button-up clears a prior cancel latch. If a committed drift is active,
+    // this is its ONLY boost-producing transition (a real falling edge).
+    if (!driftHeld) {
+      body.miniTurboMustRelease = false;
+      if (activeSign !== 0) this.releaseMiniTurbo(state, body, now);
+      this.clearCommittedDrift(body, false);
+      return;
     }
+
+    // Countersteer/speed-floor cancels require a release before rearming, so a
+    // held button cannot immediately seed a fresh drift on the next tick.
+    if (body.miniTurboMustRelease) return;
+
+    let desiredHeading: number | null = null;
+    let steerError = 0;
+    if (dir && (dir.x !== 0 || dir.z !== 0)) {
+      desiredHeading = Math.atan2(dir.x, dir.z);
+      const delta = desiredHeading - body.rot;
+      steerError = Math.atan2(Math.sin(delta), Math.cos(delta));
+    }
+    const steerSign =
+      Math.abs(steerError) >= COMMITTED_DRIFT_MIN_STEER_RAD
+        ? steerError > 0 ? 1 : -1
+        : 0;
+
+    if (activeSign !== 0) {
+      // The outward bias never crosses the raw desired heading, so local steer
+      // sign remains stable for unchanged/stale input. This direct check also
+      // catches gradual analog/agent countersteer once it crosses the dead zone.
+      const countersteering = steerSign !== 0 && steerSign !== activeSign;
+      if (countersteering || speed < COMMITTED_DRIFT_MIN_SPEED || airborne) {
+        this.clearCommittedDrift(body, true);
+      }
+      return;
+    }
+
+    // Initiation is deliberate: held bit + speed + active local steering.
+    // Cooldown only follows a real tiered boost (sub-tier release leaves 0).
+    if (
+      now >= body.miniTurboCooldownUntil &&
+      !airborne &&
+      speed >= COMMITTED_DRIFT_MIN_SPEED &&
+      steerSign !== 0
+    ) {
+      body.miniTurboCarveSign = steerSign;
+    }
+  }
+
+  private accrueCommittedDriftCharge(
+    body: SplineBody,
+    preRot: number,
+    dt: number,
+  ): void {
+    const activeSign = body.miniTurboCarveSign;
+    if (activeSign === 0) return;
+
+    const delta = body.rot - preRot;
+    const actualTurn = Math.atan2(Math.sin(delta), Math.cos(delta));
+    const actualSign = actualTurn > 0 ? 1 : actualTurn < 0 ? -1 : 0;
+    if (
+      actualSign !== activeSign ||
+      Math.abs(actualTurn) < COMMITTED_DRIFT_MIN_TURN_PER_TICK
+    ) {
+      return;
+    }
+
+    body.miniTurboChargeMs = Math.min(
+      body.miniTurboChargeMs + dt * 1000,
+      COMMITTED_DRIFT_MAX_CHARGE_MS,
+    );
+    body.miniTurboLevel =
+      body.miniTurboChargeMs >= COMMITTED_DRIFT_TIER2_MS
+        ? 2
+        : body.miniTurboChargeMs >= COMMITTED_DRIFT_TIER1_MS
+          ? 1
+          : 0;
+  }
+
+  private clearCommittedDrift(body: SplineBody, mustRelease: boolean): void {
+    body.miniTurboChargeMs = 0;
+    body.miniTurboLevel = 0;
+    body.miniTurboCarveSign = 0;
+    body.miniTurboMustRelease = mustRelease;
   }
 
   /**
@@ -1410,15 +1479,18 @@ export class ReefRaceSplineSim {
   ): void {
     const lvl = body.miniTurboLevel;
     if (lvl <= 0) return;
-    const mult = lvl === 2 ? MINI_TURBO_TIER2_MULT : MINI_TURBO_TIER1_MULT;
+    const mult =
+      lvl === 2 ? COMMITTED_DRIFT_TIER2_MULT : COMMITTED_DRIFT_TIER1_MULT;
     const dur =
-      lvl === 2 ? MINI_TURBO_TIER2_DURATION_MS : MINI_TURBO_TIER1_DURATION_MS;
+      lvl === 2
+        ? COMMITTED_DRIFT_TIER2_DURATION_MS
+        : COMMITTED_DRIFT_TIER1_DURATION_MS;
     // Overwrite (not stack): a fresh release replaces any lingering one so
     // duration/mult never compound beyond a single tier's values.
     body.activeBoosts.set('mini-turbo-boost', { expiresAt: now + dur, mult });
     // Anti-farm cooldown (sim-time): suppress recharging briefly so rhythmic
     // flick-carving can't hold a continuous boost.
-    body.miniTurboCooldownUntil = now + MINI_TURBO_COOLDOWN_MS;
+    body.miniTurboCooldownUntil = now + COMMITTED_DRIFT_COOLDOWN_MS;
     this.broadcastFn(state.roomId, {
       type: 'event.mini_turbo_fire',
       avatarId: body.avatarId,
@@ -2463,7 +2535,7 @@ export class ReefRaceSplineSim {
         dnf: b.dnf,
         placement: state.lastPlacementMap.get(b.avatarId) ?? null,
         miniTurboCharge: quant(
-          Math.min(1, b.miniTurboChargeMs / MINI_TURBO_TIER2_MS),
+          Math.min(1, b.miniTurboChargeMs / COMMITTED_DRIFT_TIER2_MS),
           100,
         ),
         miniTurboLevel: b.miniTurboLevel,

@@ -18,12 +18,9 @@
  *   - <ProgressBar> replaces <LapCounter> (top-left). Linear river layout
  *     has no laps; we show the local avatar's `entity.progress` (0..1 fraction
  *     of spline arclength) as "RACE 47%".
- *   - <ReefRaceDriftSparks /> is HIDDEN — drift mechanic retired in v2 (see
- *     `.claude/plans/reef-race-v2.md` "Drift Mechanic — RETIRED"). The
- *     sparks component remains in the tree under the OLD path so the live
- *     ellipse sim keeps its UX while the spline sim rolls out behind a flag.
- *     DELETE the sparks import + component entirely once the flag is removed
- *     post-Phase 1 graduation.
+ *   - <ReefRaceDriftSparks /> remains hidden on v2 because it reads the legacy
+ *     ellipse-only spark field. The v2 committed-drift meter below instead
+ *     reads server-authoritative `miniTurboCharge` / `miniTurboLevel` fields.
  *   - <WaitAtFinishOverlay> is rendered once the local avatar crosses the
  *     finish line. Server emits `event.crossed_finish` (single racer) and
  *     `event.finish_wait_started` (per-match countdown). Both are wired in
@@ -33,7 +30,7 @@
  *     so it disappears the moment the results modal arrives.
  *   - <PowerUpBar> is unchanged — power-ups are Phase 1 carry-over.
  *
- * The chip strip in <PowerUpBar> already says "SHIFT · JUMP" — no change here.
+ * The chip strip in <PowerUpBar> documents Space drift, Shift jump, and Q item.
  */
 
 import { useEffect, useRef, useState, useMemo } from 'react';
@@ -677,11 +674,8 @@ function PowerUpBar({ selfAvatarId: _selfAvatarId }: { selfAvatarId: string | nu
             />
           ))}
         </div>
-        {/* Controls hint strip — Mario-Kart-feel parity. Shift = JUMP in v2.
-            Live ellipse sim still consumes the same bit as DRIFT, but the
-            Shift binding doesn't change between sims — only the chip label
-            and the server-side semantic do. See
-            `.claude/plans/reef-race-v2.md` "Jump Mechanic — NEW". */}
+        {/* Controls hint strip: v2 Reef uses a dedicated held-drift bit while
+            Shift remains the stable jump binding. */}
         <div
           style={{
             display: 'flex',
@@ -693,6 +687,8 @@ function PowerUpBar({ selfAvatarId: _selfAvatarId }: { selfAvatarId: string | nu
             paddingTop: 2,
           }}
         >
+          <span><b style={{ color: '#5ce1ff' }}>SPACE</b> · HOLD DRIFT / RELEASE BOOST</span>
+          <span style={{ color: '#ffffff22' }}>·</span>
           <span><b style={{ color: '#ffd24a' }}>SHIFT</b> · JUMP</span>
           <span style={{ color: '#ffffff22' }}>·</span>
           <span><b style={{ color: '#ffffff99' }}>S</b> · BRAKE</span>
@@ -1148,8 +1144,8 @@ export default function ReefRaceHud({
           while the flag is off. */}
       {!USE_SPLINE && <ReefRaceDriftSparks />}
 
-      {/* Bottom-center: mini-turbo meter (self-only, hidden until the server
-          sends charge data — see reef-race-miniturbo-meter.tsx) stacked
+      {/* Bottom-center: committed-drift meter (self-only, hidden until the
+          server sends authoritative charge data) stacked
           directly above the power-up bar, both centered together so neither
           hardcodes a `bottom` offset that could drift out of sync. */}
       <div
