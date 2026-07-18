@@ -7,7 +7,7 @@ import {
   KELP_REALM_PLAYER_SPEED_WU_PER_SEC,
   KELP_REALM_SPEED_GRACE_MULTIPLIER,
   KELP_REALM_TOKEN_TTL_MS,
-  PEARL_OF_THE_DEPTHS_SLUG,
+  KELP_MAZE_COLLECTIBLE_SLUG,
   REWARD_ONLY_COSMETIC_CURRENCY,
 } from '@clawville/shared';
 import { avatarSkins, cosmeticSkus, db } from '@clawville/database';
@@ -121,7 +121,9 @@ function adjacentFor(beaconId: string) {
   });
 }
 
-type RewardGrantResult = { alreadyOwned: boolean } | null;
+export type RewardGrantResult =
+  | { ok: true; alreadyOwned: boolean; skuId: string }
+  | { ok: false; reason: 'missing' | 'misconfigured' };
 type KelpTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 interface KelpRouteDependencies {
@@ -137,9 +139,13 @@ interface KelpRouteDependencies {
     c: Context<ActivityAuthContext>,
     identity: ActivityIdentity,
   ) => void;
+  logRewardConfigurationError: (details: {
+    slug: string;
+    reason: 'missing' | 'misconfigured';
+  }) => void;
 }
 
-export async function grantPearlRewardInTransaction(
+export async function grantKelpCollectibleInTransaction(
   tx: KelpTransaction,
   avatarId: string,
   nowMs: number,
@@ -147,17 +153,17 @@ export async function grantPearlRewardInTransaction(
     const [sku] = await tx
       .select({
         id: cosmeticSkus.id,
-        category: cosmeticSkus.category,
         exclusiveCurrency: cosmeticSkus.exclusiveCurrency,
+        supplyCap: cosmeticSkus.supplyCap,
       })
       .from(cosmeticSkus)
-      .where(eq(cosmeticSkus.slug, PEARL_OF_THE_DEPTHS_SLUG))
+      .where(eq(cosmeticSkus.slug, KELP_MAZE_COLLECTIBLE_SLUG))
       .limit(1);
+    if (!sku) return { ok: false, reason: 'missing' };
     if (
-      !sku ||
-      sku.category !== 'aura' ||
-      sku.exclusiveCurrency !== REWARD_ONLY_COSMETIC_CURRENCY
-    ) return null;
+      sku.exclusiveCurrency !== REWARD_ONLY_COSMETIC_CURRENCY ||
+      sku.supplyCap !== null
+    ) return { ok: false, reason: 'misconfigured' };
     const inserted = await tx
       .insert(avatarSkins)
       .values({
@@ -170,11 +176,11 @@ export async function grantPearlRewardInTransaction(
       })
       .onConflictDoNothing({ target: [avatarSkins.avatarId, avatarSkins.skuId] })
       .returning({ id: avatarSkins.id });
-    return { alreadyOwned: inserted.length === 0 };
+    return { ok: true, alreadyOwned: inserted.length === 0, skuId: sku.id };
 }
 
-async function grantPearlReward(avatarId: string, nowMs: number): Promise<RewardGrantResult> {
-  return db.transaction((tx) => grantPearlRewardInTransaction(tx, avatarId, nowMs));
+async function grantKelpCollectible(avatarId: string, nowMs: number): Promise<RewardGrantResult> {
+  return db.transaction((tx) => grantKelpCollectibleInTransaction(tx, avatarId, nowMs));
 }
 
 const DEFAULT_DEPENDENCIES: KelpRouteDependencies = {
@@ -185,15 +191,18 @@ const DEFAULT_DEPENDENCIES: KelpRouteDependencies = {
   requireLedger: requireLedgerCapableIdentity,
   requireNonGuest: requireNonGuestIdentity,
   noStore: noStorePrivate as unknown as MiddlewareHandler<ActivityAuthContext>,
-  grantReward: grantPearlReward,
+  grantReward: grantKelpCollectible,
   recordCompletion: (c, identity) => {
     void logEventFromContext(c, {
       eventType: 'kelp_maze.completed',
       userId: identity.userId,
       avatarId: identity.avatarId,
       agentId: identity.kind === 'agent' ? identity.agentId : null,
-      payload: { rewardSlug: PEARL_OF_THE_DEPTHS_SLUG },
+      payload: { rewardSlug: KELP_MAZE_COLLECTIBLE_SLUG },
     });
+  },
+  logRewardConfigurationError: ({ slug, reason }) => {
+    console.error('[Kelp claim] stable collectible SKU is unavailable', { slug, reason });
   },
 };
 
@@ -265,7 +274,16 @@ export function createKelpRoutes(
     }
 
     const result = await dependencies.grantReward(identity.avatarId, nowMs);
-    if (!result) return c.json({ error: 'reward_unavailable', code: 'reward_unavailable' }, 503);
+    if (!result.ok) {
+      dependencies.logRewardConfigurationError({
+        slug: KELP_MAZE_COLLECTIBLE_SLUG,
+        reason: result.reason,
+      });
+      return c.json({
+        error: 'collectible_sku_unavailable',
+        code: 'collectible_sku_unavailable',
+      }, 500);
+    }
 
     if (!result.alreadyOwned) {
       dependencies.recordCompletion(c, identity);

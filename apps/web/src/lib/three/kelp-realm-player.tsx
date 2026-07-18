@@ -1,8 +1,7 @@
 'use client';
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
-import { useQueryClient } from '@tanstack/react-query';
 import * as THREE from 'three';
 import {
   KELP_REALM_FOOTPRINT_WU,
@@ -11,7 +10,7 @@ import {
   KELP_REALM_PLAYER_SPAWN,
   KELP_REALM_PLAYER_SPEED_WU_PER_SEC,
   KELP_REALM_WALL_AABBS,
-  PEARL_OF_THE_DEPTHS_SLUG,
+  KELP_MAZE_COLLECTIBLE_SLUG,
 } from '@clawville/shared';
 import { useGameStore } from '@/stores/game';
 import { MODEL_REGISTRY, type ModelRegistryEntry } from '@/lib/three/agent-model-registry';
@@ -22,8 +21,12 @@ import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 import { CosmeticLoader } from '@/lib/three/cosmetic-loader';
 import {
+  describeKelpVisitFailure,
   markKelpRealmBeaconVisited,
+  publishKelpRealmNotice,
   resetKelpRealmBeaconVisits,
+  setKelpRealmBeaconTotalCount,
+  setKelpRealmCenterProximity,
 } from '@/lib/three/kelp-realm-visit-state';
 
 const PLAYER_RADIUS = 34;
@@ -36,7 +39,7 @@ const CAM_PITCH_SPEED = 180;
 const CAM_PITCH_MIN = -70;
 const CAM_PITCH_MAX = 210;
 const HALF_REALM = KELP_REALM_FOOTPRINT_WU / 2;
-const KELP_REALM_COSMETIC_SKU_ALLOWLIST = Object.freeze([PEARL_OF_THE_DEPTHS_SLUG]);
+const KELP_REALM_COSMETIC_SKU_ALLOWLIST = Object.freeze([KELP_MAZE_COLLECTIBLE_SLUG]);
 
 const keyboard = { w: false, a: false, s: false, d: false, left: false, right: false, up: false, down: false };
 const touch = { x: 0, z: 0, yaw: 0, pitch: 0 };
@@ -320,77 +323,98 @@ interface BeaconVisitResponse {
 const KELP_API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
 const BEACON_RADIUS_SQ = KELP_REALM_BEACON_VISIT_RADIUS_WU * KELP_REALM_BEACON_VISIT_RADIUS_WU;
 
-async function kelpPost(path: string, body: Record<string, string>): Promise<Response> {
+async function kelpPost(
+  path: string,
+  body: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<Response> {
   return fetch(`${KELP_API_BASE}/api/kelp${path}`, {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   });
 }
 
 function KelpRealmBeaconController() {
-  const queryClient = useQueryClient();
-  const [chain, setChain] = useState<{ beaconId: string; token: string } | null>(null);
-  const [, setVisitedBeaconIds] = useState<readonly string[]>([]);
-  const chainRef = useRef(chain);
+  const chainRef = useRef<{ beaconId: string; token: string } | null>(null);
   const pendingRef = useRef(false);
   const lastInsideRef = useRef<string | null>(null);
   const retryAtRef = useRef(0);
-  const claimedRef = useRef(false);
+  const activeRef = useRef(true);
+  const visitAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    chainRef.current = chain;
-  }, [chain]);
-  useEffect(() => {
+    activeRef.current = true;
     resetKelpRealmBeaconVisits();
-    return () => resetKelpRealmBeaconVisits();
+    setKelpRealmBeaconTotalCount(KELP_REALM_BEACON_GRAPH.nodes.length);
+    return () => {
+      activeRef.current = false;
+      visitAbortRef.current?.abort();
+      visitAbortRef.current = null;
+      resetKelpRealmBeaconVisits();
+    };
   }, []);
 
   const visit = useCallback(async (beaconId: string) => {
     const previous = chainRef.current;
-    const response = await kelpPost(
-      `/beacon/${encodeURIComponent(beaconId)}/visit`,
-      previous && beaconId !== 'entry' ? { prevToken: previous.token } : {},
-    );
-    const payload = await response.json().catch(() => ({})) as BeaconVisitResponse & {
-      code?: string;
-      retryAfterMs?: number;
-    };
-    if (!response.ok) {
-      if (response.status === 429 && payload.code === 'too_fast') {
-        retryAtRef.current = performance.now() + Math.max(1, payload.retryAfterMs ?? 250);
-        lastInsideRef.current = null;
+    const controller = new AbortController();
+    visitAbortRef.current = controller;
+    try {
+      const response = await kelpPost(
+        `/beacon/${encodeURIComponent(beaconId)}/visit`,
+        previous && beaconId !== 'entry' ? { prevToken: previous.token } : {},
+        controller.signal,
+      );
+      const payload = await response.json().catch(() => ({})) as BeaconVisitResponse & {
+        code?: string;
+        retryAfterMs?: number;
+      };
+      if (!activeRef.current || controller.signal.aborted) return;
+      if (!response.ok) {
+        publishKelpRealmNotice(describeKelpVisitFailure(
+          response.status,
+          payload.code,
+          payload.retryAfterMs,
+        ));
+        if (response.status === 429 && payload.code === 'too_fast') {
+          retryAtRef.current = performance.now() + Math.max(1, payload.retryAfterMs ?? 250);
+          lastInsideRef.current = null;
+          return;
+        }
+        if (payload.code === 'invalid_token' || payload.code === 'expired_token') {
+          chainRef.current = null;
+          resetKelpRealmBeaconVisits();
+          setKelpRealmBeaconTotalCount(KELP_REALM_BEACON_GRAPH.nodes.length);
+        }
+        // Do not spam an anonymous 401/error every frame while standing on the
+        // same beacon. Stepping away and back is the explicit retry gesture.
+        lastInsideRef.current = beaconId;
         return;
       }
-      useGameStore.getState().addToast('⚠️', 'That beacon did not accept the route token.', 2800);
-      lastInsideRef.current = null;
-      return;
-    }
 
-    const next = { beaconId, token: payload.token };
-    chainRef.current = next;
-    setChain(next);
-    setVisitedBeaconIds((current) => current.includes(beaconId) ? current : [...current, beaconId]);
-    markKelpRealmBeaconVisited(beaconId);
-
-    if (beaconId !== 'center' || claimedRef.current) return;
-    claimedRef.current = true;
-    const claimResponse = await kelpPost('/claim', { centerToken: payload.token });
-    const claimPayload = await claimResponse.json().catch(() => ({})) as { code?: string };
-    if (claimResponse.ok) {
-      await queryClient.invalidateQueries({ queryKey: ['cosmetics', 'owned'] });
-      useGameStore.getState().addToast('🫧', 'Pearl of the Depths earned', 5000);
-    } else if (claimPayload.code === 'guest_not_allowed') {
-      useGameStore.getState().addToast('🔒', 'Create a free account to claim the Pearl of the Depths', 5000);
-    } else {
-      useGameStore.getState().addToast('⚠️', 'The Pearl reward could not be claimed yet.', 4000);
-      claimedRef.current = false;
+      const next = { beaconId, token: payload.token };
+      chainRef.current = next;
+      markKelpRealmBeaconVisited(
+        beaconId,
+        payload.token,
+        KELP_REALM_BEACON_GRAPH.nodes.length,
+      );
+    } catch (error) {
+      if (!activeRef.current || controller.signal.aborted) return;
+      publishKelpRealmNotice(
+        error instanceof Error
+          ? `The beacon request could not reach the reef (${error.message}). Step away and try again.`
+          : 'The beacon request could not reach the reef. Step away and try again.',
+      );
+      lastInsideRef.current = beaconId;
+    } finally {
+      if (visitAbortRef.current === controller) visitAbortRef.current = null;
     }
-  }, [queryClient]);
+  }, []);
 
   useFrame(() => {
-    if (pendingRef.current || performance.now() < retryAtRef.current) return;
     let insideId: string | null = null;
     let nearestSq = Number.POSITIVE_INFINITY;
     for (const node of KELP_REALM_BEACON_GRAPH.nodes) {
@@ -402,10 +426,12 @@ function KelpRealmBeaconController() {
         insideId = node.id;
       }
     }
+    setKelpRealmCenterProximity(insideId === 'center');
     if (!insideId) {
       lastInsideRef.current = null;
       return;
     }
+    if (pendingRef.current || performance.now() < retryAtRef.current) return;
     if (lastInsideRef.current === insideId || chainRef.current?.beaconId === insideId) return;
     if (!chainRef.current && insideId !== 'entry') return;
     lastInsideRef.current = insideId;

@@ -66,7 +66,7 @@ mock.module('@clawville/database', () => ({
 
 const {
   createKelpRoutes,
-  grantPearlRewardInTransaction,
+  grantKelpCollectibleInTransaction,
   issueKelpBeaconToken,
   verifyKelpBeaconToken,
 } = await import('../kelp');
@@ -102,11 +102,13 @@ afterAll(() => {
   simulation.agentBotSessions.delete(AGENT_IDENTITY.sessionId);
 });
 
-describe('Kelp Forest authenticated traversal and Pearl claim', () => {
+describe('Kelp Forest authenticated traversal and collectible claim', () => {
   let nowMs = BASE_TIME;
   let alreadyOwned = false;
+  let rewardFailure: 'missing' | 'misconfigured' | null;
   let grantCalls: string[];
   let completionIdentities: ActivityIdentity[];
+  let rewardConfigurationErrors: Array<{ slug: string; reason: string }>;
 
   function routes() {
     return createKelpRoutes({
@@ -116,11 +118,13 @@ describe('Kelp Forest authenticated traversal and Pearl claim', () => {
       noStore: pass,
       grantReward: async (avatarId) => {
         grantCalls.push(avatarId);
-        const result = { alreadyOwned };
+        if (rewardFailure) return { ok: false, reason: rewardFailure };
+        const result = { ok: true as const, alreadyOwned, skuId: 'collectible-sku' };
         alreadyOwned = true;
         return result;
       },
       recordCompletion: (_c, identity) => completionIdentities.push(identity),
+      logRewardConfigurationError: (details) => rewardConfigurationErrors.push(details),
     });
   }
 
@@ -140,8 +144,10 @@ describe('Kelp Forest authenticated traversal and Pearl claim', () => {
     nowMs = BASE_TIME;
     caller = 'human';
     alreadyOwned = false;
+    rewardFailure = null;
     grantCalls = [];
     completionIdentities = [];
+    rewardConfigurationErrors = [];
     simulation.agentBotSessions.set(AGENT_IDENTITY.sessionId, {
       config: {
         agentId: AGENT_IDENTITY.agentId,
@@ -261,6 +267,24 @@ describe('Kelp Forest authenticated traversal and Pearl claim', () => {
     expect(grantCalls).toEqual([]);
   });
 
+  for (const reason of ['missing', 'misconfigured'] as const) {
+    it(`returns a logged 500 when the stable collectible SKU is ${reason}`, async () => {
+      rewardFailure = reason;
+      const centerToken = issueKelpBeaconToken(USER_IDENTITY.avatarId, 'center', nowMs, SECRET);
+      const response = await post('/claim', { centerToken });
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({
+        error: 'collectible_sku_unavailable',
+        code: 'collectible_sku_unavailable',
+      });
+      expect(rewardConfigurationErrors).toEqual([{
+        slug: 'kelp-maze-collectible',
+        reason,
+      }]);
+      expect(completionIdentities).toEqual([]);
+    });
+  }
+
   it('resolves the named agent-session header to its bound avatar for the identical claim path', async () => {
     caller = 'agent';
     const centerToken = issueKelpBeaconToken(AGENT_IDENTITY.avatarId, 'center', nowMs, SECRET);
@@ -281,7 +305,7 @@ describe('Kelp Forest authenticated traversal and Pearl claim', () => {
     expect(grantCalls).toEqual([]);
   });
 
-  it('executes the production reward transaction with idempotent provenance and equip state', async () => {
+  it('looks up the stable slug at claim time without category hard-binding', async () => {
     const values: Array<Record<string, unknown>> = [];
     const conflictTargets: unknown[] = [];
     let insertAttempt = 0;
@@ -290,9 +314,10 @@ describe('Kelp Forest authenticated traversal and Pearl claim', () => {
         from: () => ({
           where: () => ({
             limit: async () => [{
-              id: 'pearl-sku',
-              category: 'aura',
+              id: 'collectible-sku',
+              category: 'hat',
               exclusiveCurrency: 'REWARD_ONLY',
+              supplyCap: null,
             }],
           }),
         }),
@@ -312,27 +337,47 @@ describe('Kelp Forest authenticated traversal and Pearl claim', () => {
       }),
     };
 
-    const first = await grantPearlRewardInTransaction(tx as never, USER_IDENTITY.avatarId, nowMs);
-    const second = await grantPearlRewardInTransaction(tx as never, USER_IDENTITY.avatarId, nowMs);
-    expect(first).toEqual({ alreadyOwned: false });
-    expect(second).toEqual({ alreadyOwned: true });
+    const first = await grantKelpCollectibleInTransaction(tx as never, USER_IDENTITY.avatarId, nowMs);
+    const second = await grantKelpCollectibleInTransaction(tx as never, USER_IDENTITY.avatarId, nowMs);
+    expect(first).toEqual({ ok: true, alreadyOwned: false, skuId: 'collectible-sku' });
+    expect(second).toEqual({ ok: true, alreadyOwned: true, skuId: 'collectible-sku' });
     expect(values).toEqual([
       expect.objectContaining({
         avatarId: USER_IDENTITY.avatarId,
-        skuId: 'pearl-sku',
+        skuId: 'collectible-sku',
         acquiredVia: 'reward',
         ledgerId: null,
         equipped: true,
       }),
       expect.objectContaining({
         avatarId: USER_IDENTITY.avatarId,
-        skuId: 'pearl-sku',
+        skuId: 'collectible-sku',
         acquiredVia: 'reward',
         ledgerId: null,
         equipped: true,
       }),
     ]);
     expect(conflictTargets).toHaveLength(2);
+  });
+
+  it('fails closed before insert when the stable claim-time slug is missing', async () => {
+    let insertCalled = false;
+    const tx = {
+      select: () => ({
+        from: () => ({ where: () => ({ limit: async () => [] }) }),
+      }),
+      insert: () => {
+        insertCalled = true;
+        throw new Error('insert must not run without the stable SKU row');
+      },
+    };
+
+    expect(await grantKelpCollectibleInTransaction(
+      tx as never,
+      USER_IDENTITY.avatarId,
+      nowMs,
+    )).toEqual({ ok: false, reason: 'missing' });
+    expect(insertCalled).toBe(false);
   });
 
   it('keeps the reward-only sentinel out of the public cosmetics catalog query', async () => {

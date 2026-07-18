@@ -898,13 +898,13 @@ describe('cosmetic_purchase fulfiller — conservation', () => {
     expect(owned).toEqual({ ok: false, code: 'already_owned' });
   });
 
-  it('refuses the reward-only Pearl SKU on every purchasable checkout rail', async () => {
+  it('refuses the reward-only Kelp collectible on every purchasable checkout rail', async () => {
     const q = fakeDb.query as Record<string, { findFirst: (o: unknown) => Promise<unknown> }>;
     const skuId = 'b6e7c1de-0000-4000-8000-000000000099';
     q.cosmeticSkus = {
       findFirst: async () => ({
         id: skuId,
-        slug: 'pearl-of-the-depths',
+        slug: 'kelp-maze-collectible',
         priceCt: 0,
         exclusiveCurrency: 'REWARD_ONLY',
         availableFrom: null,

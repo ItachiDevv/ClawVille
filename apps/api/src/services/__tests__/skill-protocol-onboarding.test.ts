@@ -18,7 +18,7 @@ describe('open-agent onboarding manuals', () => {
     const manual = buildPlayManual(API_BASE);
     const protocolManual = buildProtocolManual(API_BASE);
 
-    expect(PROTOCOL_VERSION).toBe(26);
+    expect(PROTOCOL_VERSION).toBe(27);
     expect(manual).toContain(`POST ${API_BASE}/api/agent/connect`);
     expect(manual).toContain('"agentId": "your-stable-agent-id"');
     expect(manual).toContain('"identityType": "nanoclaw"');
@@ -58,6 +58,10 @@ describe('open-agent onboarding manuals', () => {
     expect(protocolManual).toContain('429');
     expect(protocolManual).toContain('30 minutes');
     expect(protocolManual).toContain('zero CT/vCLAW');
+    expect(protocolManual).toContain('kelp-maze-collectible');
+    expect(protocolManual).toContain('Unrevealed Depths Collectible');
+    expect(protocolManual).toContain('center E/button');
+    expect(protocolManual).not.toContain('Pearl of the Depths');
     for (const node of KELP_REALM_BEACON_GRAPH.nodes) {
       if (node.id === 'entry') continue;
       expect(protocolManual).not.toContain(`/beacon/${node.id}/visit`);

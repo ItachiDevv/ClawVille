@@ -7,7 +7,8 @@ export const KELP_REALM_PLAYER_SPEED_WU_PER_SEC = 430;
 export const KELP_REALM_BEACON_VISIT_RADIUS_WU = 72;
 export const KELP_REALM_TOKEN_TTL_MS = 30 * 60 * 1000;
 export const KELP_REALM_SPEED_GRACE_MULTIPLIER = 1.2;
-export const PEARL_OF_THE_DEPTHS_SLUG = 'pearl-of-the-depths';
+/** Stable claim-time lookup key. Reveal this collectible by updating this SKU row in place. */
+export const KELP_MAZE_COLLECTIBLE_SLUG = 'kelp-maze-collectible';
 export const REWARD_ONLY_COSMETIC_CURRENCY = 'REWARD_ONLY';
 
 /** The rejected corner maze is gone, but its northeast kelp grove stays scenery. */
