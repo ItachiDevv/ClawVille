@@ -53,23 +53,31 @@ export type KelpRealmCell = '#' | '.' | 'E' | 'C';
 /**
  * The sole authored maze source. `#` is kelp wall, `.` is corridor, `E` is
  * the only outer-boundary entry gap, and `C` is the center Pearl landmark.
- * The corridor graph is a tree: one entry-to-center route plus six meaningful
+ * The corridor graph is a tree: one entry-to-center route plus nine meaningful
  * dead-end branches. Everything spatial below is derived from these rows.
  */
 export const KELP_REALM_LAYOUT = Object.freeze([
-  '#############',
-  '###.#.#######',
-  '###.#.#######',
-  '###.#.#######',
-  '###......####',
-  '########.##.#',
-  '#.#...C...#.#',
-  '#...#####...#',
-  '#########.###',
-  '###.##......#',
-  '###.##.####.#',
-  '###....####.#',
-  '######E######',
+  '#####################',
+  '#####################',
+  '##.....#...#...#...##',
+  '##.###.#.#.#.#.###.##',
+  '##.#.....#...#.#...##',
+  '##.#.#########.#.#.##',
+  '##.#.#...#...#...#.##',
+  '##.###.#.#.#.#####.##',
+  '##.....#.#.#.....#.##',
+  '##.#####.#.#####.####',
+  '##.#.#...#C....#...##',
+  '##.#.#.#######.###.##',
+  '##.#.#.......#.#...##',
+  '##.#.#####.###.#.####',
+  '##.....#.#.....#...##',
+  '######.#.#########.##',
+  '##...#...#.....#...##',
+  '##.#.###.#.###.#.#.##',
+  '##.#.....#.#.....#.##',
+  '##########.##########',
+  '##########E##########',
 ] as const);
 
 export const KELP_REALM_ROWS = KELP_REALM_LAYOUT.length;
@@ -114,6 +122,22 @@ export interface KelpRealmBeaconGraph {
   readonly nodes: readonly KelpRealmBeaconNode[];
   readonly edges: readonly KelpRealmBeaconEdge[];
 }
+
+export type KelpRealmDiscoveryType = 'jellyfish' | 'anemone' | 'clam';
+
+export interface KelpRealmDeadEndDiscovery {
+  readonly beaconId: string;
+  readonly type: KelpRealmDiscoveryType;
+  readonly x: number;
+  readonly z: number;
+  readonly seed: number;
+}
+
+export const KELP_REALM_DISCOVERY_TYPES = Object.freeze([
+  'jellyfish',
+  'anemone',
+  'clam',
+] as const satisfies readonly KelpRealmDiscoveryType[]);
 
 const DIRECTIONS = Object.freeze([
   Object.freeze({ row: -1, col: 0 }),
@@ -290,6 +314,17 @@ export const KELP_REALM_CENTER = Object.freeze({
 });
 export const KELP_REALM_WALL_AABBS = buildWallAabbs();
 export const KELP_REALM_BEACON_GRAPH = buildBeaconGraph();
+export const KELP_REALM_DEAD_END_DISCOVERIES = Object.freeze(
+  KELP_REALM_BEACON_GRAPH.nodes
+    .filter((node) => node.kind === 'dead-end')
+    .map((node, index) => Object.freeze({
+      beaconId: node.id,
+      type: KELP_REALM_DISCOVERY_TYPES[index % KELP_REALM_DISCOVERY_TYPES.length]!,
+      x: node.x,
+      z: node.z,
+      seed: 0x4b444500 + index * 977,
+    })),
+);
 
 export const KELP_REALM_LAYOUT_INVARIANTS = Object.freeze({
   rows: KELP_REALM_ROWS,
