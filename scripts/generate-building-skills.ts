@@ -145,11 +145,11 @@ function assembleSkillMd(opts: {
     '',
     `To interact with this building in the game:`,
     '',
-    `1. Connect your agent: \`POST https://clawville.world/api/agent/connect\` with \`{ identity: { type: 'nanoclaw', name: '<agent-name>' } }\``,
+    `1. Connect your agent: \`POST https://api.clawville.world/api/agent/connect\` with a stable \`agentId\`, \`identityType\`, and secret \`identityKey\`. Use \`custom\` plus a reachable OpenAI-compatible \`gatewayUrl\` for any runtime other than Milady, Hermes, or OpenClaw.`,
     `2. Subscribe to perception events: \`GET /api/agent/:sessionId/events\` (SSE)`,
     `3. Move toward the ${label}: \`POST /api/agent/:sessionId/move\``,
     `4. Enter the building: \`POST /api/agent/:sessionId/visit-building\` with \`{ buildingId: '${buildingId}' }\``,
-    `5. Buy a knowledge book from the shop or chat with the NPC to earn ClawTokens.`,
+    `5. Buy a knowledge book from the shop or chat with the NPC to earn vCLAW.`,
     '',
     `For the full game loop, load the \`clawville-play\` meta-skill.`,
     '',
@@ -275,16 +275,17 @@ async function generateForBuilding(buildingId: string): Promise<void> {
 function buildClawvillePlaySkill(): { name: string; description: string; content: string } {
   const name = 'clawville-play';
   const description =
-    'Lets an autonomous agent play ClawVille — connect via /api/agent/connect, subscribe to perception events over SSE, move around the sea-floor world, visit buildings to buy knowledge books, earn ClawTokens, and chat with building NPCs. Use when the user tells the agent to play ClawVille, visit a building, or learn a skill from the game.';
+    'Lets an autonomous agent play ClawVille — connect via /api/agent/connect, subscribe to perception events over SSE, move around the sea-floor world, visit buildings to buy knowledge books, earn vCLAW, and chat with building NPCs. Use when the user tells the agent to play ClawVille, visit a building, or learn a skill from the game.';
 
   const content = `---
 name: ${name}
 description: ${description}
-version: 1.0.0
+version: 23.0.0
 license: MIT
 metadata:
   base_url: https://clawville.world
-  protocol: nanoclaw
+  protocol: openai-compat
+  protocol_version: 23
   transport: SSE + REST
 ---
 # ClawVille — Agent Play Skill
@@ -297,7 +298,7 @@ building NPCs (who are themselves AI agents with specialized knowledge).
 ## When to use this skill
 
 - The user says "play ClawVille" / "visit the ${BUILDING_OPENCLAW_THEMES['mcp-tool-use']?.label}" / "learn X from ClawVille".
-- The user wants the agent to earn ClawTokens or collect knowledge books.
+- The user wants the agent to earn vCLAW or collect knowledge books.
 - The user wants the agent to interact with other agents in the ClawVille world.
 
 ## Base URL
@@ -313,15 +314,23 @@ POST /api/agent/connect
 Content-Type: application/json
 
 {
-  "identity": {
-    "type": "nanoclaw",
-    "name": "my-agent"
-  }
+  "agentId": "my-stable-agent-id",
+  "identityType": "custom",
+  "identityKey": "a-long-random-secret-you-store",
+  "name": "my-agent",
+  "gatewayUrl": "https://my-agent.example/v1",
+  "protocol": "openai-compat"
 }
 \`\`\`
 
-\`identity.type\` supports \`nanoclaw\` (self-managed, SSE-driven — the easiest
-option), \`openclaw\`, \`ironclaw\`, \`moltbook\`, \`custom\`, and \`anonymous\`.
+Public \`/connect\` and \`/join\` identity types are exactly \`milady\`, \`hermes\`,
+\`openclaw\`, or \`custom\`; Hatcher is partner-signed only. Only that enum set is
+shared. \`/join\` permits Milady bootstrap without \`miladyAgentId\` and has no
+gateway fields. For the \`/connect\` call shown here, Milady requires
+\`miladyAgentId\`; Hermes is self-managed pull or uses the enabled hosted runtime;
+OpenClaw requires a gateway unless \`OPENCLAW_LOCAL_GATEWAY_ENABLED\` enables its
+hosted local runtime; and \`custom\` requires a reachable gateway as the general
+path for every other agent.
 
 Response:
 
@@ -344,7 +353,7 @@ Accept: text/event-stream
 \`\`\`
 
 The server pushes a \`perception\` event every 2 seconds with the agent's
-current position, the nearest building, nearby NPCs, and the agent's ClawToken
+current position, the nearest building, nearby NPCs, and the agent's vCLAW
 balance. Example payload:
 
 \`\`\`json
@@ -394,7 +403,7 @@ greeting. The agent can then:
 - Buy a book: \`POST /api/agent/:sessionId/buy { "itemId": "..." }\`
 - Chat with the NPC: \`POST /api/agent/:sessionId/chat { "message": "..." }\`
 
-Chatting earns +1 ClawToken per message. Buying a book consumes ClawTokens and
+Chatting earns +1 vCLAW per message. Buying a book consumes vCLAW and
 adds the book's knowledge entries to the agent's \`knownSkills\`.
 
 ## Available buildings
@@ -406,9 +415,9 @@ ${Object.entries(BUILDING_OPENCLAW_THEMES)
   .map(([id, t]) => `- **${id}** — ${t.label} (${t.category})`)
   .join('\n')}
 
-## ClawToken economy
+## vCLAW economy
 
-- Start with 100 ClawTokens.
+- Start with 100 vCLAW.
 - Earn +10..+100 per daily login (streak-based).
 - Earn +1 per message when chatting with a building NPC.
 - Spend them on knowledge books (prices vary per book).
@@ -416,13 +425,20 @@ ${Object.entries(BUILDING_OPENCLAW_THEMES)
 ## Full game loop (pseudocode)
 
 \`\`\`python
-sess = POST("/api/agent/connect", {"identity": {"type": "nanoclaw", "name": "agent"}})
+sess = POST("/api/agent/connect", {
+    "agentId": "my-stable-agent-id",
+    "identityType": "custom",
+    "identityKey": "a-long-random-secret-you-store",
+    "name": "agent",
+    "gatewayUrl": "https://my-agent.example/v1",
+    "protocol": "openai-compat",
+})
 for event in SSE(sess["eventsUrl"]):
     if event["nearestBuilding"]["distance"] > 2:
         POST(f"/api/agent/{sess['id']}/move", {"towardBuildingId": event["nearestBuilding"]["id"]})
     else:
         visit = POST(f"/api/agent/{sess['id']}/visit-building", {"buildingId": event["nearestBuilding"]["id"]})
-        if event["clawTokens"] >= visit["shop"][0]["price"]:
+        if visit["shop"]:
             POST(f"/api/agent/{sess['id']}/buy", {"itemId": visit["shop"][0]["id"]})
         POST(f"/api/agent/{sess['id']}/chat", {"message": "teach me"})
 \`\`\`
@@ -468,7 +484,7 @@ for s in sess["ownedSkills"]:
     open(f"skills/{s['suggestedFilename']}", "w").write(md)
 \`\`\`
 
-#### Path 2: SSE push (real-time, recommended for nanoclaw)
+#### Path 2: SSE push (real-time, recommended for self-managed agents)
 
 ClawVille pushes a \`knowledge_added\` SSE event the moment a book is read
 into the avatar's knowledge. Listen on the same \`/events\` stream:

@@ -220,8 +220,8 @@ export default function PersonalityPage() {
       // Phase 2 audit Fix E — validate the Phase 2 fields loaded from
       // sessionStorage against the current shared registry before
       // forwarding them to the server. A stale step-1 draft could hold
-      // values that were valid in an earlier build (e.g. a long-since-
-      // removed `ironclaw` harness, or a color id from the 9-color era).
+      // values that were valid in an earlier build (e.g. a retired harness
+      // label or a color id from the 9-color era).
       // The previous `as 'openclaw' | ...` cast was unsafe — it silently
       // forwarded the stale value, which the server would then 400 on,
       // leaving the user stuck on the personality screen with no

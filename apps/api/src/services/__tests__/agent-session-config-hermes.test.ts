@@ -12,7 +12,7 @@
  *      exercised through the explicit test-seam parameter (no process.env
  *      mutation — the module reads the env ONCE at boot by design).
  *   2. Restorability: hermes ∈ NO_GATEWAY → restorable from the row alone
- *      (`isRowRestorableFromIdentity` / `isSessionRestorable`), because the row
+ *      (`isRowRestorableFromFacts` / `isSessionRestorable`), because the row
  *      carries no caller gateway and no secrets for it.
  *   3. Restore re-derivation: a hermes row whose stored column mislabels the
  *      protocol as a gateway-POSTing one still rebuilds fail-soft (the 502
@@ -41,7 +41,7 @@ import {
   resolveAgentSpecies,
   resolveAutonomyMode,
   spawnRelevantProjection,
-  isRowRestorableFromIdentity,
+  isRowRestorableFromFacts,
   isSessionRestorable,
   HERMES_LOCAL_GATEWAY_URL,
   type AvatarConfigInputs,
@@ -81,23 +81,20 @@ describe('resolveInWorldProtocol — hermes host-it-for-me gate', () => {
   });
 
   test('the gate NEVER leaks hermes-local to any other identity type', () => {
-    // No-gateway siblings stay fail-soft nanoclaw with the gate forced ON…
-    for (const t of ['anonymous', 'milady', 'nanoclaw']) {
-      expect(resolveInWorldProtocol(t, 'openai-compat', true)).toBe('nanoclaw');
-    }
+    // Milady stays on the fail-soft internal wire with the Hermes gate forced ON.
+    expect(resolveInWorldProtocol('milady', 'openai-compat', true)).toBe('nanoclaw');
     // …and real-gateway types keep honoring their declared protocol.
     expect(resolveInWorldProtocol('openclaw', 'openai-compat', true)).toBe('openai-compat');
-    expect(resolveInWorldProtocol('ironclaw', 'anthropic', true)).toBe('anthropic');
     expect(resolveInWorldProtocol('custom', 'custom-webhook', true)).toBe('custom-webhook');
   });
 });
 
 // ---------------------------------------------------------------------------
-// 2. Restorability — hermes is the restorable no-gateway class (like nanoclaw).
+// 2. Restorability — Hermes is a supported restorable no-gateway class.
 // ---------------------------------------------------------------------------
 describe('hermes restorability — NO_GATEWAY membership', () => {
-  test('isRowRestorableFromIdentity(hermes) → true (no secrets on the row)', () => {
-    expect(isRowRestorableFromIdentity('hermes')).toBe(true);
+  test('isRowRestorableFromFacts(hermes) → true (no secrets on the row)', () => {
+    expect(isRowRestorableFromFacts('hermes', null)).toBe(true);
   });
 
   test('isSessionRestorable(hermes, *) → true for any non-hatcher-proxy stored column', () => {
@@ -211,7 +208,7 @@ describe('hatcher inertness — hermes gate cannot touch hatcher derivation', ()
   });
 
   test('hatcher restorability rules unchanged (protocol-keyed, presence-refined)', () => {
-    expect(isRowRestorableFromIdentity('hatcher')).toBe(false); // separate restore branch
+    expect(isRowRestorableFromFacts('hatcher', null)).toBe(false); // separate restore branch
     expect(isSessionRestorable('hatcher', 'hatcher-proxy')).toBe(true);
     expect(isSessionRestorable('hatcher', 'hatcher-proxy', false)).toBe(false);
   });
