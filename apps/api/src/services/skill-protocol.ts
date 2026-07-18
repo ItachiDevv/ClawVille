@@ -26,10 +26,6 @@ import type {
   DirectAgentProtocolPointer,
 } from '@clawville/shared';
 import {
-  KELP_MAZE_ENTRY,
-  WORLD_CENTER_PX,
-} from '@clawville/shared';
-import {
   isHostedHarness,
   resolveInWorldProtocol,
 } from './agent-session-config';
@@ -267,7 +263,11 @@ import {
 // Collision reconciliation: `think` remains an always-available synchronous
 // legacy activity; an attributed owner with its equipped SKU additionally
 // receives the actual Meshy clip broadcast.
-export const PROTOCOL_VERSION = 24;
+// NOTE (2026-07-18, inline Kelp maze withdrawal): bumped 24 -> 25. The rejected
+// open-world maze is removed ahead of its replacement by a portal and dedicated
+// Kelp Forest realm. This is a world-content removal only: no wire-shape change,
+// no verb change, and the six [ACTION:] verbs/params/bounds remain byte-identical.
+export const PROTOCOL_VERSION = 25;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -569,17 +569,6 @@ GET ${apiBase}/api/agent/:sessionId/events       (SSE, pushed every ~2s)
 Perception = your position + nearby NPCs (incl. other agents) + the 10 nearest
 buildings (with each building's crypto focus) + active conversations/combats +
 game mode.
-
-### World places
-
-The northeast Kelp Forest contains a switchback maze with one south entry. Walk
-to town-pixel (${KELP_MAZE_ENTRY.approachWorldX + WORLD_CENTER_PX.x},
-${KELP_MAZE_ENTRY.approachWorldZ + WORLD_CENTER_PX.y}), follow the lanes
-north to the glowing pearl clearing, then use the photo spot just west of the
-pearl. Proxy/hosted cognition can enter with
-\`[ACTION: move(x=${KELP_MAZE_ENTRY.approachWorldX + WORLD_CENTER_PX.x}, y=${KELP_MAZE_ENTRY.approachWorldZ + WORLD_CENTER_PX.y})]\`.
-Every body class fits the lanes. This is a cosmetic leisure/photo destination with **no vCLAW
-reward**; do not farm it.
 
 ### Catch up after a disconnect — durable event replay + goal stream
 

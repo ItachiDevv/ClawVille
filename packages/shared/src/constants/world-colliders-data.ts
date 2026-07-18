@@ -22,7 +22,6 @@
 // ---------------------------------------------------------------------------
 
 import { BUILDING_TILE_ZONES } from './npc-definitions';
-import { KELP_MAZE_LANDMARK_COLLIDER, KELP_MAZE_WALLS } from './kelp-maze';
 
 // ---------------------------------------------------------------------------
 // Constants — must match tilemap-data.ts values
@@ -107,7 +106,7 @@ export interface ServerCollider2D {
   topY?: number;
   /**
    * Optional A* raster policy. Undefined preserves the legacy 4-tile safety
-   * expansion byte-for-byte. Narrow maze corridors opt into exact tile-center
+   * expansion byte-for-byte. Narrow structures may opt into exact tile-center
    * intersection against the AABB expanded by the moving entity half-width.
    */
   pathfindingRaster?: PathfindingRasterPolicy;
@@ -164,28 +163,6 @@ function buildServerColliders(): ServerCollider2D[] {
     { id: 'town-guide',            centerX:     0, centerZ:   240, halfX:  40, halfZ:  40 },
   ];
   list.push(...PROP_COLLIDERS);
-
-  // 3. Kelp-maze walls — exact same shared AABBs consumed by the client.
-  // The 128-wu passages cannot use the legacy 128-wu A* safety margin; raster
-  // tile centers against each wall expanded by the WIDEST live body class
-  // (ENTITY_HALF_HUMANOID) so the server never paths a humanoid NPC/agent
-  // body into a lane its client clamp cannot traverse.
-  for (const wall of KELP_MAZE_WALLS) {
-    list.push({
-      ...wall,
-      pathfindingRaster: {
-        mode: 'cell-center-expanded-aabb',
-        paddingWu: ENTITY_HALF_HUMANOID,
-      },
-    });
-  }
-  list.push({
-    ...KELP_MAZE_LANDMARK_COLLIDER,
-    pathfindingRaster: {
-      mode: 'cell-center-expanded-aabb',
-      paddingWu: ENTITY_HALF_HUMANOID,
-    },
-  });
 
   return list;
 }

@@ -4,13 +4,6 @@ import { useEffect, useMemo } from 'react';
 import * as THREE from 'three/webgpu';
 import { attribute, cos, float, positionLocal, sin, time, vec3 } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import {
-  KELP_MAZE_BOUNDS,
-  KELP_MAZE_ENTRY,
-  KELP_MAZE_LANDMARK,
-  KELP_MAZE_PATH_WIDTH_WU,
-  KELP_MAZE_WALLS,
-} from '@clawville/shared';
 
 export const KELP_FOREST_CENTER = Object.freeze({ x: 7808, z: -9900 });
 export const KELP_FOREST_SIZE_WU = 48 * 32;
@@ -21,21 +14,6 @@ const GRID_COLUMNS = 75;
 const GRID_ROWS = 72;
 const HEIGHT_SEGMENTS = 8;
 const MAX_WIND_DISPLACEMENT_WU = 24;
-const MAX_AMBIENT_RELOCATION_ATTEMPTS = 200;
-const WALL_ROW_OFFSETS = [-8, 0, 8] as const;
-const WALL_BLADE_SPACING_WU = 10;
-
-function wallBladeCount(halfX: number, halfZ: number): number {
-  const length = Math.max(halfX, halfZ) * 2;
-  return (Math.ceil(length / WALL_BLADE_SPACING_WU) + 1) * WALL_ROW_OFFSETS.length;
-}
-
-export const KELP_MAZE_WALL_BLADE_COUNT = KELP_MAZE_WALLS.reduce(
-  (total, wall) => total + wallBladeCount(wall.halfX, wall.halfZ),
-  0,
-);
-export const KELP_FOREST_TOTAL_BLADE_COUNT =
-  KELP_FOREST_BLADE_COUNT + KELP_MAZE_WALL_BLADE_COUNT;
 
 interface KelpVariant {
   heightMin: number;
@@ -126,20 +104,6 @@ function createPlacement(
   };
 }
 
-function isAmbientCarved(localX: number, localZ: number): boolean {
-  const worldX = localX + KELP_FOREST_CENTER.x;
-  const worldZ = localZ + KELP_FOREST_CENTER.z;
-  const insideMaze = worldX >= KELP_MAZE_BOUNDS.minX
-    && worldX <= KELP_MAZE_BOUNDS.maxX
-    && worldZ >= KELP_MAZE_BOUNDS.minZ
-    && worldZ <= KELP_MAZE_BOUNDS.maxZ;
-  const insideEntryApproach = Math.abs(worldX - KELP_MAZE_ENTRY.centerX)
-      <= KELP_MAZE_PATH_WIDTH_WU / 2 + MAX_WIND_DISPLACEMENT_WU
-    && worldZ >= KELP_MAZE_BOUNDS.maxZ
-    && worldZ <= KELP_FOREST_CENTER.z + KELP_FOREST_SIZE_WU / 2;
-  return insideMaze || insideEntryApproach;
-}
-
 function generatePlacements(): KelpBladePlacement[][] {
   const rng = seededRandom(0x4b454c50);
   const cellWidth = KELP_FOREST_SIZE_WU / GRID_COLUMNS;
@@ -161,74 +125,16 @@ function generatePlacements(): KelpBladePlacement[][] {
       const cellIndex = cells[start + offset];
       const column = cellIndex % GRID_COLUMNS;
       const row = Math.floor(cellIndex / GRID_COLUMNS);
-      let x = -KELP_FOREST_SIZE_WU / 2 + (column + 0.5) * cellWidth
+      const x = -KELP_FOREST_SIZE_WU / 2 + (column + 0.5) * cellWidth
         + (rng() - 0.5) * cellWidth * 0.76;
-      let z = -KELP_FOREST_SIZE_WU / 2 + (row + 0.5) * cellDepth
+      const z = -KELP_FOREST_SIZE_WU / 2 + (row + 0.5) * cellDepth
         + (rng() - 0.5) * cellDepth * 0.76;
-
-      // Preserve exactly 5,400 ambient blades while opening the whole maze
-      // footprint, clearing, and south approach. Rejected lattice blades are
-      // deterministically relocated elsewhere in the forest footprint.
-      let relocationAttempts = 0;
-      while (isAmbientCarved(x, z) && relocationAttempts < MAX_AMBIENT_RELOCATION_ATTEMPTS) {
-        x = (rng() - 0.5) * KELP_FOREST_SIZE_WU;
-        z = (rng() - 0.5) * KELP_FOREST_SIZE_WU;
-        relocationAttempts++;
-      }
-      if (isAmbientCarved(x, z)) {
-        // A future footprint expansion must never hang this mount. Keep the
-        // fixed budget deterministic by moving the blade to a fallback lattice
-        // immediately east of (and therefore outside) the forest bounds.
-        const fallbackIndex = start + offset;
-        x = KELP_FOREST_SIZE_WU / 2 + MAX_WIND_DISPLACEMENT_WU
-          + (fallbackIndex % GRID_COLUMNS + 0.5) * cellWidth;
-        z = -KELP_FOREST_SIZE_WU / 2
-          + (Math.floor(fallbackIndex / GRID_COLUMNS) + 0.5) * cellDepth;
-      }
 
       placements.push(createPlacement(variant, rng, x, z));
     }
 
     return placements;
   });
-}
-
-function generateWallPlacements(): KelpBladePlacement[][] {
-  const rng = seededRandom(0x4d415a45);
-  const placements = KELP_VARIANTS.map(() => [] as KelpBladePlacement[]);
-  let bladeIndex = 0;
-
-  for (const wall of KELP_MAZE_WALLS) {
-    const horizontal = wall.halfX >= wall.halfZ;
-    const halfLength = horizontal ? wall.halfX : wall.halfZ;
-    const steps = Math.ceil((halfLength * 2) / WALL_BLADE_SPACING_WU);
-    // Inset visual endpoints without changing collider geometry or blade count.
-    // This adds 16 wu to every visible gap so 24-wu wind sway cannot visually
-    // seal a physically open 128-wu passage at its narrowest moment.
-    const visualHalfLength = Math.max(0, halfLength - 8);
-
-    for (const rowOffset of WALL_ROW_OFFSETS) {
-      for (let step = 0; step <= steps; step++) {
-        const variantIndex = bladeIndex % KELP_VARIANTS.length;
-        const variant = KELP_VARIANTS[variantIndex]!;
-        const along = -visualHalfLength + (step / steps) * visualHalfLength * 2
-          + (step === 0 || step === steps ? 0 : (rng() - 0.5) * 3);
-        const across = rowOffset + (rng() - 0.5) * 1.5;
-        const worldX = horizontal ? wall.centerX + along : wall.centerX + across;
-        const worldZ = horizontal ? wall.centerZ + across : wall.centerZ + along;
-
-        placements[variantIndex]!.push(createPlacement(
-          variant,
-          rng,
-          worldX - KELP_FOREST_CENTER.x,
-          worldZ - KELP_FOREST_CENTER.z,
-        ));
-        bladeIndex++;
-      }
-    }
-  }
-
-  return placements;
 }
 
 function createBladeGeometry(
@@ -347,107 +253,13 @@ function createVariantMaterial(variant: KelpVariant): THREE.MeshStandardNodeMate
   }
 }
 
-function createStaticVariantMaterial(): THREE.MeshStandardMaterial {
-  return new THREE.MeshStandardMaterial({
-    vertexColors: true,
-    side: THREE.DoubleSide,
-    roughness: 0.88,
-    metalness: 0,
-  });
-}
-
-function setSolidVertexColor(geometry: THREE.BufferGeometry, hex: number): void {
-  const vertexCount = geometry.getAttribute('position').count;
-  const value = new THREE.Color(hex);
-  const colors = new Float32Array(vertexCount * 3);
-  for (let index = 0; index < vertexCount; index++) {
-    colors[index * 3] = value.r;
-    colors[index * 3 + 1] = value.g;
-    colors[index * 3 + 2] = value.b;
-  }
-  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-}
-
-function createLandmarkGeometry(): THREE.BufferGeometry {
-  const localX = KELP_MAZE_LANDMARK.worldX - KELP_FOREST_CENTER.x;
-  const localZ = KELP_MAZE_LANDMARK.worldZ - KELP_FOREST_CENTER.z;
-  const sources: THREE.BufferGeometry[] = [];
-
-  let merged: THREE.BufferGeometry | null = null;
-  try {
-    const pearl = new THREE.SphereGeometry(64, 24, 16);
-    sources.push(pearl);
-    pearl.translate(localX, 72, localZ);
-    setSolidVertexColor(pearl, 0xb9fff0);
-
-    const shellBowl = new THREE.SphereGeometry(100, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2);
-    sources.push(shellBowl);
-    shellBowl.scale(1.2, 0.36, 0.86);
-    shellBowl.translate(localX, 14, localZ + 8);
-    setSolidVertexColor(shellBowl, 0x5f8f7c);
-
-    const shellFan = new THREE.TorusGeometry(108, 17, 10, 32, Math.PI * 1.5);
-    sources.push(shellFan);
-    shellFan.rotateZ(-Math.PI * 0.75);
-    shellFan.translate(localX, 72, localZ + 24);
-    setSolidVertexColor(shellFan, 0x3b756c);
-
-    const shellLip = new THREE.TorusGeometry(78, 13, 8, 28, Math.PI * 1.35);
-    sources.push(shellLip);
-    shellLip.rotateX(Math.PI / 2);
-    shellLip.rotateZ(-Math.PI * 0.68);
-    shellLip.translate(localX, 28, localZ - 24);
-    setSolidVertexColor(shellLip, 0x76aa8f);
-
-    merged = mergeGeometries(sources, false);
-    if (!merged) throw new Error('Kelp maze landmark geometry could not be merged');
-    merged.computeBoundingBox();
-    merged.computeBoundingSphere();
-    return merged;
-  } catch (error) {
-    merged?.dispose();
-    throw error;
-  } finally {
-    for (const source of sources) source.dispose();
-  }
-}
-
-function createLandmarkMaterial(): THREE.MeshStandardNodeMaterial {
-  const material = new THREE.MeshStandardNodeMaterial({
-    vertexColors: true,
-    roughness: 0.42,
-    metalness: 0.08,
-  });
-  try {
-    const pulse = float(0.26).add(sin(time.mul(float(0.52))).mul(float(0.07)));
-    material.emissiveNode = vec3(float(0.18), float(0.72), float(0.62)).mul(pulse);
-    return material;
-  } catch (error) {
-    material.dispose();
-    throw error;
-  }
-}
-
-function createStaticLandmarkMaterial(): THREE.MeshStandardMaterial {
-  return new THREE.MeshStandardMaterial({
-    vertexColors: true,
-    roughness: 0.42,
-    metalness: 0.08,
-    emissive: new THREE.Color(0x2eb89e),
-    emissiveIntensity: 0.26,
-  });
-}
-
-type KelpMaterial = THREE.MeshStandardMaterial | THREE.MeshStandardNodeMaterial;
-
 interface KelpVariantResource {
   geometry: THREE.BufferGeometry;
-  material: KelpMaterial;
+  material: THREE.MeshStandardNodeMaterial;
 }
 
 function createVariantResources(
   placements: readonly KelpBladePlacement[][],
-  forceWebGL: boolean,
 ): KelpVariantResource[] {
   const created: KelpVariantResource[] = [];
 
@@ -455,18 +267,13 @@ function createVariantResources(
     for (let index = 0; index < KELP_VARIANTS.length; index++) {
       const variant = KELP_VARIANTS[index]!;
       const geometry = createVariantGeometry(placements[index]!, variant);
-      let material: KelpMaterial;
       try {
-        // Never instantiate a node material on the force-WebGL path: the TSL
-        // positionNode-to-GLSL loops are the compile/frame cost this fallback avoids.
-        material = forceWebGL
-          ? createStaticVariantMaterial()
-          : createVariantMaterial(variant);
+        const material = createVariantMaterial(variant);
+        created.push({ geometry, material });
       } catch (error) {
         geometry.dispose();
         throw error;
       }
-      created.push({ geometry, material });
     }
     return created;
   } catch (error) {
@@ -478,29 +285,12 @@ function createVariantResources(
   }
 }
 
-function createLandmarkResource(forceWebGL: boolean): {
-  geometry: THREE.BufferGeometry;
-  material: KelpMaterial;
-} {
-  const geometry = createLandmarkGeometry();
-  try {
-    return {
-      geometry,
-      material: forceWebGL ? createStaticLandmarkMaterial() : createLandmarkMaterial(),
-    };
-  } catch (error) {
-    geometry.dispose();
-    throw error;
-  }
-}
-
 function useDisposableVariantResources(
   placementsFactory: () => KelpBladePlacement[][],
-  forceWebGL: boolean,
 ): KelpVariantResource[] {
   const resources = useMemo(() => {
-    return createVariantResources(placementsFactory(), forceWebGL);
-  }, [forceWebGL, placementsFactory]);
+    return createVariantResources(placementsFactory());
+  }, [placementsFactory]);
 
   useEffect(() => {
     return () => {
@@ -515,7 +305,7 @@ function useDisposableVariantResources(
 }
 
 export function KelpForestAmbient() {
-  const resources = useDisposableVariantResources(generatePlacements, false);
+  const resources = useDisposableVariantResources(generatePlacements);
 
   return (
     <group position={[KELP_FOREST_CENTER.x, -2, KELP_FOREST_CENTER.z]}>
@@ -527,51 +317,6 @@ export function KelpForestAmbient() {
           matrixAutoUpdate={false}
         />
       ))}
-    </group>
-  );
-}
-
-export function KelpMazeStructure({ forceWebGL }: { forceWebGL: boolean }) {
-  const resources = useMemo(() => {
-    const variants = createVariantResources(generateWallPlacements(), forceWebGL);
-    try {
-      return { variants, landmark: createLandmarkResource(forceWebGL) };
-    } catch (error) {
-      for (const resource of variants) {
-        resource.geometry.dispose();
-        resource.material.dispose();
-      }
-      throw error;
-    }
-  }, [forceWebGL]);
-
-  useEffect(() => {
-    return () => {
-      for (const resource of resources.variants) {
-        resource.geometry.dispose();
-        resource.material.dispose();
-      }
-      resources.landmark.geometry.dispose();
-      resources.landmark.material.dispose();
-    };
-  }, [resources]);
-
-  return (
-    <group position={[KELP_FOREST_CENTER.x, -2, KELP_FOREST_CENTER.z]}>
-      {resources.variants.map((resource, index) => (
-        <mesh
-          key={index}
-          geometry={resource.geometry}
-          material={resource.material}
-          matrixAutoUpdate={false}
-        />
-      ))}
-      <mesh
-        name="kelp-maze-pearl-shell-landmark"
-        geometry={resources.landmark.geometry}
-        material={resources.landmark.material}
-        matrixAutoUpdate={false}
-      />
     </group>
   );
 }
