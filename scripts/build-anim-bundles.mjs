@@ -248,6 +248,44 @@ async function buildBundle(
     await baseDoc.transform(prune(), dedup());
   }
 
+  if (stripRenderPayload) {
+    // prune() spares nodes it considers referenced, which leaves the Meshy
+    // donors' detached doc-level node graphs (~350 nodes) in the JSON after
+    // their scenes were disposed above. A node that is neither reachable from
+    // the surviving scene nor targeted by a kept animation channel is dead
+    // weight; a TARGETED-but-unreachable node means a channel rebind failed —
+    // that must fail loud, never ship.
+    const reachable = new Set();
+    const walk = (node) => {
+      if (reachable.has(node)) return;
+      reachable.add(node);
+      for (const child of node.listChildren()) walk(child);
+    };
+    for (const scene of baseDoc.getRoot().listScenes()) {
+      for (const node of scene.listChildren()) walk(node);
+    }
+    const targeted = new Set();
+    for (const animation of baseDoc.getRoot().listAnimations()) {
+      for (const channel of animation.listChannels()) {
+        const targetNode = channel.getTargetNode();
+        if (targetNode) targeted.add(targetNode);
+      }
+    }
+    let orphans = 0;
+    for (const node of baseDoc.getRoot().listNodes()) {
+      if (reachable.has(node)) continue;
+      if (targeted.has(node)) {
+        if (requireExactRig) {
+          throw new Error(`[fatal] animation targets unreachable node: ${node.getName()}`);
+        }
+        continue;
+      }
+      node.dispose();
+      orphans++;
+    }
+    if (orphans > 0) console.log(`[strip] removed ${orphans} orphan doc-level nodes`);
+  }
+
   // Consolidate buffers — GLB format requires 0 or 1 buffer. After merging
   // N source docs we have N buffers. Move everything into the first one
   // and dispose the rest.
@@ -290,6 +328,21 @@ async function buildBundle(
     if (root.listScenes().length !== 1 || root.listNodes().length === 0) {
       throw new Error(
         `[fatal] expected one non-empty rest-pose scene, got ${root.listScenes().length} scenes and ${root.listNodes().length} nodes`,
+      );
+    }
+    // Orphan gate: every surviving doc node must be reachable from the single
+    // rest-pose scene (the strip pass above enforces this at build time; this
+    // re-verifies it on the actual written bytes).
+    const checkReachable = new Set();
+    const checkWalk = (node) => {
+      if (checkReachable.has(node)) return;
+      checkReachable.add(node);
+      for (const child of node.listChildren()) checkWalk(child);
+    };
+    for (const node of root.listScenes()[0].listChildren()) checkWalk(node);
+    if (checkReachable.size !== root.listNodes().length) {
+      throw new Error(
+        `[fatal] orphan doc-level nodes survived: ${root.listNodes().length - checkReachable.size} unreachable of ${root.listNodes().length}`,
       );
     }
     const outputBytes = statSync(outPath).size;
