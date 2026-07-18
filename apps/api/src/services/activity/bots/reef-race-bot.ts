@@ -28,6 +28,7 @@ import {
   DRIFT_SPARK_TICK_3,
   ACTION_BIT_DRIFT,
   ACTION_BIT_LAUNCH,
+  ACTION_BIT_POWERUP_0,
   // Phase 2 — bot heuristics
   APEX_HAIRPIN_CHECKPOINT_INDICES,
   APEX_INSIDE_OFFSET,
@@ -537,15 +538,13 @@ class ReefRaceBot implements BotController {
               ? 0.45
               : 0.30 + (ownPlacement - 1) * (0.15 / 7);
 
-      const inv = self.inventory;
-      for (let i = 0; i < inv.length; i++) {
-        const slot = inv[i];
-        if (slot.kind === null) continue;
-        if (slot.cooldownUntil > view.now) continue;
-        if (Math.random() < useChance) {
-          actionBits |= 1 << i;
-          break;
-        }
+      const queuedItem = self.inventory[0];
+      if (
+        queuedItem?.kind !== null &&
+        queuedItem.cooldownUntil <= view.now &&
+        Math.random() < useChance
+      ) {
+        actionBits |= ACTION_BIT_POWERUP_0;
       }
     }
 
@@ -820,15 +819,13 @@ class ReefRaceBot implements BotController {
             : ownPlacement >= 8
               ? 0.45
               : 0.30 + (ownPlacement - 1) * (0.15 / 7);
-      const inv = self.inventory;
-      for (let i = 0; i < inv.length; i++) {
-        const slot = inv[i];
-        if (slot.kind === null) continue;
-        if (slot.cooldownUntil > view.now) continue;
-        if (Math.random() < useChance) {
-          actionBits |= 1 << i;
-          break;
-        }
+      const queuedItem = self.inventory[0];
+      if (
+        queuedItem?.kind !== null &&
+        queuedItem.cooldownUntil <= view.now &&
+        Math.random() < useChance
+      ) {
+        actionBits |= ACTION_BIT_POWERUP_0;
       }
     }
 

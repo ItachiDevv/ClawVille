@@ -14,11 +14,11 @@
  *     plumbing — `useActivityInput` already subscribes to it) and replaces
  *     the right joystick + E button with two thumb action buttons:
  *
- *         A = boost   (Space-equivalent — synthetic keyboard event so the
- *                      existing `useActivityInput` boost path handles it,
- *                      including held-button thrust state)
- *         B = use power-up (dispatches the `clawville:activity-action`
- *                           CustomEvent the input hook already listens for)
+ *         Bumper Shells: A = boost, B = use power-up.
+ *         Reef Race: A = jump, B = use queued item.
+ *
+ *     The shared event carries Bumper's bit values. `useActivityInput`
+ *     translates those semantics at the Reef activity boundary.
  *
  *   - Touch targets ≥ 44px (WCAG 2.1 AA — frontend-spec §11.1).
  *   - `navigator.vibrate(20)` haptic feedback on press if available.
@@ -71,9 +71,13 @@ export interface ActivityMobileControlsProps {
    *  / pre-match / post-match). Joystick stays alive throughout because
    *  the input hook gates the actual send loop on `enabled`. */
   active: boolean;
+  activityId: string;
 }
 
-export default function ActivityMobileControls({ active }: ActivityMobileControlsProps) {
+export default function ActivityMobileControls({
+  active,
+  activityId,
+}: ActivityMobileControlsProps) {
   const isMobile = useIsMobile();
   const leftContainerRef = useRef<HTMLDivElement>(null);
   const leftJoystickRef = useRef<JoystickManager | null>(null);
@@ -138,15 +142,8 @@ export default function ActivityMobileControls({ active }: ActivityMobileControl
     };
   }, [isMobile]);
 
-  // Boost = sticky bit while held + a one-shot bit on press so even brief
-  // taps register before the next 30 Hz send. The input hook clears the
-  // sticky bit on `keyup`-equivalent — but we don't have a `keyup` for the
-  // touch button, so we ALSO emit a release event by dispatching a 0-bit
-  // action when the press ends. That doesn't actually clear the sticky
-  // state in the existing hook (which only clears via key handlers), so
-  // for chunk #12 we keep boost as a one-shot per tap — short presses
-  // get a single thrust, hold doesn't continuously thrust on mobile yet.
-  // FEATURE_GATE could chase a held-thrust path in a later chunk.
+  // Shared A semantic: one-shot Bumper boost or one-shot Reef jump. The input
+  // hook translates the same event bit at the per-activity boundary.
   const handleBoostPress = useCallback(() => {
     if (!active) return;
     vibrate(HAPTIC_PRESS_MS);
@@ -197,6 +194,7 @@ export default function ActivityMobileControls({ active }: ActivityMobileControl
       `}</style>
       <div
         className="absolute pointer-events-auto"
+        data-hud-interactive="true"
         style={{
           right: 24,
           bottom: 60,
@@ -229,7 +227,7 @@ export default function ActivityMobileControls({ active }: ActivityMobileControl
               e.preventDefault();
               handleBoostPress();
             }}
-            aria-label="Boost"
+            aria-label={activityId === 'reef-race' ? 'Jump' : 'Boost'}
             style={{
               width: 64,
               height: 64,

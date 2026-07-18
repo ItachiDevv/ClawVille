@@ -2,7 +2,8 @@
 
 /**
  * useActivityInput — captures keyboard + mobile-joystick input for the
- * active Bumper Shells room and sends `{type:'input'}` frames at ~30 Hz.
+ * active Bumper Shells / Reef Race room and sends `{type:'input'}` frames at
+ * ~30 Hz.
  *
  * Why 30 Hz, not 60: backend §3.4 caps inbound at 60 Hz and the protocol
  * note says ">60 Hz inputs are dropped with `error: input_rate`". 30 Hz
@@ -17,23 +18,15 @@
  *   - `enabled` should be false during pregame countdown, after self
  *     elimination, after match-end, or while disconnected.
  *
- * Action bits (16-bit packed):
- *   bit 0 — boost (Space)
- *   bit 1 — power-up use (Q OR click-on-viewport)
- *   bit 2 — jump (Shift)
+ * Action bits are activity-specific (16-bit packed):
+ *   Bumper Shells: bit 0 = boost, bit 1 = power-up use, bit 2 = jump.
+ *   Reef Race:     bit 0 = use queued item, bit 1 = reserved, bit 2 = jump.
  *
- * Note on bit 2: the live ellipse Reef Race sim still consumes this bit as
- * DRIFT (semantic owned server-side). The Reef Race v2 spline sim — gated by
- * `REEF_RACE_USE_SPLINE=true` — consumes the same bit as JUMP. Same Shift
- * binding, same wire format; only the server-side semantic differs. This
- * rename reflects the v2 spec ("Jump Mechanic — NEW") while keeping the
- * client wire-compatible with the live ellipse sim. See
- * `.claude/plans/reef-race-v2.md` "Drift Mechanic — RETIRED" + "Jump
- * Mechanic — NEW" sections.
+ * Keep this mapping local to the activity. Bumper Shells' bit-0 boost contract
+ * is live and must not move when Reef Race controls change.
  */
 
 import { useEffect, useRef } from 'react';
-import { usePathname } from 'next/navigation';
 import type { ClientFrame } from '@clawville/shared';
 import { useGameStore } from '@/stores/game';
 import { useActivityStore } from '@/stores/activity';
@@ -46,12 +39,7 @@ import {
 
 export const ACTION_BIT_BOOST = 1 << 0;
 export const ACTION_BIT_USE_POWERUP = 1 << 1;
-/**
- * Bit 2 — Shift key. Live ellipse Reef Race sim consumes as DRIFT; v2 spline
- * sim consumes as JUMP. Same wire bit, server picks the semantic from the
- * `REEF_RACE_USE_SPLINE` env flag. Renamed from `ACTION_BIT_DRIFT` for the
- * v2 rebuild — see `.claude/plans/reef-race-v2.md`.
- */
+/** Bit 2 — jump. Reef maps both Space and Shift here in Round 9. */
 export const ACTION_BIT_JUMP = 1 << 2;
 
 const SEND_INTERVAL_MS = 1000 / 30;
@@ -116,9 +104,15 @@ export interface UseActivityInputOptions {
   send: (frame: ClientFrame) => boolean;
   /** Master gate — false suppresses ALL input (HUD overlays etc.). */
   enabled: boolean;
+  /** Selects the activity-specific key-to-action-bit contract. */
+  activityId: string;
 }
 
-export function useActivityInput({ send, enabled }: UseActivityInputOptions): void {
+export function useActivityInput({
+  send,
+  enabled,
+  activityId,
+}: UseActivityInputOptions): void {
   // Per-input mutable state. Stored in refs to avoid React re-renders
   // and keep the keyboard handlers stable across the session.
   const dirRef = useRef({ x: 0, y: 0 });
@@ -152,14 +146,13 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
   // Bumper Shells uses a top-down camera where world-axis = screen-axis, so
   // there's no disconnect — keep its existing world-axis WASD (legacy path).
   //
-  // We detect the active activity from the URL path because the input hook is
-  // mounted by the activity page wrapper which knows the activity id, but the
-  // hook itself doesn't currently take it as a prop. Adding the prop would
-  // ripple through every caller; the path check is one-line.
-  const pathname = usePathname() ?? '';
-  const isReefRace = pathname.includes('/activity/reef-race/');
+  // The route passes its activity id explicitly so key-to-bit semantics never
+  // depend on URL parsing and Bumper's live contract stays isolated.
+  const isReefRace = activityId === 'reef-race';
   const isReefRaceRef = useRef(isReefRace);
   isReefRaceRef.current = isReefRace;
+  const spaceHeldRef = useRef(false);
+  const shiftHeldRef = useRef(false);
   const reefBrakeRef = useRef(false);
   const keyboardDirRef = useRef({ x: 0, y: 0 });
   const recomputeDirFromKeysRef = useRef<() => void>(() => {});
@@ -362,17 +355,31 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
           e.preventDefault();
           break;
         case 'Space':
-          actionBitsRef.current |= ACTION_BIT_BOOST;
-          // Capture immediately so even short taps register on the next send.
-          oneShotBitsRef.current |= ACTION_BIT_BOOST;
+          spaceHeldRef.current = true;
+          if (isReefRaceRef.current) {
+            // Round 9 Reef binding. Round 10 can reclaim Space by changing
+            // this one branch; Shift remains the stable jump fallback.
+            actionBitsRef.current |= ACTION_BIT_JUMP;
+          } else {
+            actionBitsRef.current |= ACTION_BIT_BOOST;
+            // Capture immediately so even short taps register on the next send.
+            oneShotBitsRef.current |= ACTION_BIT_BOOST;
+          }
           e.preventDefault();
           break;
         case 'KeyQ':
-          oneShotBitsRef.current |= ACTION_BIT_USE_POWERUP;
+          if (isReefRaceRef.current && e.repeat) {
+            e.preventDefault();
+            break;
+          }
+          oneShotBitsRef.current |= isReefRaceRef.current
+            ? ACTION_BIT_BOOST
+            : ACTION_BIT_USE_POWERUP;
           e.preventDefault();
           break;
         case 'ShiftLeft':
         case 'ShiftRight':
+          shiftHeldRef.current = true;
           actionBitsRef.current |= ACTION_BIT_JUMP;
           break;
         default:
@@ -419,11 +426,21 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
           recomputeDirFromKeys();
           break;
         case 'Space':
-          actionBitsRef.current &= ~ACTION_BIT_BOOST;
+          spaceHeldRef.current = false;
+          if (isReefRaceRef.current) {
+            if (!shiftHeldRef.current) {
+              actionBitsRef.current &= ~ACTION_BIT_JUMP;
+            }
+          } else {
+            actionBitsRef.current &= ~ACTION_BIT_BOOST;
+          }
           break;
         case 'ShiftLeft':
         case 'ShiftRight':
-          actionBitsRef.current &= ~ACTION_BIT_JUMP;
+          shiftHeldRef.current = false;
+          if (!isReefRaceRef.current || !spaceHeldRef.current) {
+            actionBitsRef.current &= ~ACTION_BIT_JUMP;
+          }
           break;
         default:
           break;
@@ -449,6 +466,8 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       keysRef.current.arrowDown = false;
       keysRef.current.arrowRight = false;
       actionBitsRef.current &= ~(ACTION_BIT_BOOST | ACTION_BIT_JUMP);
+      spaceHeldRef.current = false;
+      shiftHeldRef.current = false;
       targetDirRef.current = { x: 0, y: 0 };
       // Audit fix (S7) — also zero the SMOOTHED dir and any PENDING one-shot.
       // On a focus-loss reset the send loop would otherwise keep smoothing from
@@ -469,7 +488,9 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       // keeps unrelated click targets safe.
       const target = e.target as HTMLElement | null;
       if (target?.closest('[data-hud-interactive="true"]')) return;
-      oneShotBitsRef.current |= ACTION_BIT_USE_POWERUP;
+      oneShotBitsRef.current |= isReefRaceRef.current
+        ? ACTION_BIT_BOOST
+        : ACTION_BIT_USE_POWERUP;
     }
 
     /** Mobile B-button → power-up. Provided as a window event so the
@@ -479,7 +500,17 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       if (!enabledRef.current) return;
       const detail = (e as CustomEvent<{ bit?: number }>).detail;
       if (typeof detail?.bit === 'number') {
-        oneShotBitsRef.current |= detail.bit;
+        if (isReefRaceRef.current) {
+          // Shared mobile controls dispatch Bumper semantics: A=bit0, B=bit1.
+          // Translate at the Reef boundary so A jumps and B uses the item.
+          if (detail.bit === ACTION_BIT_BOOST) {
+            oneShotBitsRef.current |= ACTION_BIT_JUMP;
+          } else if (detail.bit === ACTION_BIT_USE_POWERUP) {
+            oneShotBitsRef.current |= ACTION_BIT_BOOST;
+          }
+        } else {
+          oneShotBitsRef.current |= detail.bit;
+        }
       }
     }
 
@@ -516,6 +547,8 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       dirRef.current = { x: 0, y: 0 };
       targetDirRef.current = { x: 0, y: 0 };
       reefBrakeRef.current = false;
+      spaceHeldRef.current = false;
+      shiftHeldRef.current = false;
     };
   }, []);
 
@@ -534,8 +567,14 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       lastSendAtRef.current = now;
       const frameDt = dt > 0 && dt < 0.2 ? dt : SEND_INTERVAL_MS / 1000;
 
-      // Combine sticky bits (boost held) with one-shot bits (Q/click).
-      const bits = actionBitsRef.current | oneShotBitsRef.current;
+      // Combine held bits with one-shot bits. Bumper holds bit-0 boost; Reef
+      // holds bit-2 jump and fires bit-0 item use for a single send tick.
+      const rawBits = actionBitsRef.current | oneShotBitsRef.current;
+      // Reef bit 1 is reserved. Mask it defensively even if a future custom
+      // action source dispatches raw bits instead of semantic A/B values.
+      const bits = isReefRaceRef.current
+        ? rawBits & ~ACTION_BIT_USE_POWERUP
+        : rawBits;
       oneShotBitsRef.current = 0;
 
       const targetDir = targetDirRef.current;
@@ -585,7 +624,7 @@ export function useActivityInput({ send, enabled }: UseActivityInputOptions): vo
       const sentThrust = braking
         ? 0
         : moving
-          ? bits & ACTION_BIT_BOOST
+          ? !isReefRaceRef.current && bits & ACTION_BIT_BOOST
             ? 1
             : Math.min(1, dirMag)
           : 0;

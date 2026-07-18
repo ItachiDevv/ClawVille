@@ -34,6 +34,10 @@ import LobbyLanding, {
 } from '@/components/game/lobby-landing';
 import { primeActivitySounds, preloadActivitySounds } from '@/lib/activity-audio';
 import type { SpectatorCamMode } from '@/components/game/activity';
+import {
+  ReefRaceSpeedLinesOverlay,
+  ReefRaceSurgeDriver,
+} from '@/lib/three/activities/reef-race/reef-race-speed-surge';
 
 // 3da-owned scenes — dynamic-imported so WebGPU context only initializes
 // after the page mounts (avoids bundling Three.js WebGPU into the entry
@@ -214,7 +218,7 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
   const inputEnabled =
     wsEnabled && status === 'connected' && matchPhase === 'live' && selfAlive;
 
-  useActivityInput({ send, enabled: inputEnabled });
+  useActivityInput({ send, enabled: inputEnabled, activityId });
 
   // ── Chunk #12 — spectator camera state lifted from HUD to page ─────────
   // The HUD owns the *picker* + *target cycle*; the page owns the *scene
@@ -389,15 +393,17 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
         <div style={{ position: 'absolute', inset: 0 }}>
           <ReefRaceScene roomId={roomId} selfAvatarId={avatarId} />
         </div>
+        <ReefRaceSurgeDriver roomId={roomId} />
+        <ReefRaceSpeedLinesOverlay />
         <ReefRaceHud
           onLeave={handleLeave}
           onPlayAgain={() => router.push('/game?quickQueue=reef-race')}
           activityId={activityId}
           roomId={roomId}
         />
-        {/* Mobile A (boost) + B (power-up) thumb buttons — same component
-            Bumper Shells uses; reef-race input also uses dir + actionBits. */}
-        <ActivityMobileControls active={inputEnabled} />
+        {/* Shared mobile A/B thumb buttons. Reef maps A=jump/B=item;
+            Bumper preserves A=boost/B=power-up. */}
+        <ActivityMobileControls active={inputEnabled} activityId={activityId} />
       </main>
     );
   }
@@ -429,10 +435,9 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
         sendEmote={handleSendEmote}
         onSpectatorStateChange={handleSpectatorStateChange}
       />
-      {/* Chunk #12 — mobile A (boost) + B (power-up) thumb buttons.
-          Only renders on touch devices; replaces the open-world E button
-          while we're on the activity route. */}
-      <ActivityMobileControls active={inputEnabled} />
+      {/* Chunk #12 — activity-specific mobile A/B actions. Only renders on
+          touch devices; replaces the open-world E button on this route. */}
+      <ActivityMobileControls active={inputEnabled} activityId={activityId} />
     </main>
   );
 }

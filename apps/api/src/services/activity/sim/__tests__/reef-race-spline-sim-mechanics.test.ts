@@ -47,6 +47,7 @@ const {
   REEF_FORWARD_DRAG,
   REEF_LATERAL_GRIP,
   ACTION_BIT_POWERUP_0,
+  ACTION_BIT_POWERUP_1,
   BOOST_PAD_KICK,
   REEF_POWERUP_RESPAWN_MS,
   buildSplineBoostPads,
@@ -305,6 +306,120 @@ describe('ReefRaceSplineSim — race mechanics (v7)', () => {
       expect(pickup.active).toBe(true);
       expect(pickup.collectedAt).toBeNull();
       expect(pickup.respawnAt).toBe(0);
+    });
+  });
+
+  describe('queued item input contract', () => {
+    function collectPickup(roomId: string, pickupIndex: number) {
+      const state = reefRaceSplineSim.__getState(roomId)!;
+      const body = state.bodies.get(A)!;
+      const pickup = state.pickups[pickupIndex]!;
+
+      for (const candidate of state.pickups) {
+        candidate.active = false;
+        candidate.respawnAt = Number.MAX_SAFE_INTEGER;
+      }
+      pickup.active = true;
+      pickup.collectedAt = null;
+      pickup.respawnAt = 0;
+      body.x = pickup.position.x;
+      body.z = pickup.position.z;
+      body.vx = 0;
+      body.vz = 0;
+      body.heightOffset = 0;
+      body.airborneTicks = 0;
+
+      reefRaceSplineSim.__tickOnceForTest(roomId);
+      expect(pickup.active).toBe(false);
+      return body;
+    }
+
+    it('collects one item and consumes slot 0 on a bit-0 press', () => {
+      reefRaceSplineSim.setBroadcastFn(() => {});
+      reefRaceSplineSim.startRoom('r-item-one', 'reef-race', [A]);
+      const body = collectPickup('r-item-one', 0);
+
+      expect(body.inventory[0].kind).not.toBeNull();
+      expect(body.inventory[1].kind).toBeNull();
+
+      reefRaceSplineSim.applyInput(
+        'r-item-one',
+        A,
+        1,
+        DT,
+        input(0, 0, 1, ACTION_BIT_POWERUP_0),
+      );
+      reefRaceSplineSim.__tickOnceForTest('r-item-one');
+
+      expect(body.inventory[0].kind).toBeNull();
+      expect(body.inventory[1].kind).toBeNull();
+    });
+
+    it('promotes slot 1 so two bit-0 presses consume both items in order', () => {
+      reefRaceSplineSim.setBroadcastFn(() => {});
+      reefRaceSplineSim.startRoom('r-item-two', 'reef-race', [A]);
+      const body = collectPickup('r-item-two', 0);
+      const firstKind = body.inventory[0].kind;
+      collectPickup('r-item-two', 1);
+      const secondKind = body.inventory[1].kind;
+
+      expect(firstKind).not.toBeNull();
+      expect(secondKind).not.toBeNull();
+
+      reefRaceSplineSim.applyInput(
+        'r-item-two',
+        A,
+        1,
+        DT,
+        input(0, 0, 1, ACTION_BIT_POWERUP_0),
+      );
+      reefRaceSplineSim.__tickOnceForTest('r-item-two');
+
+      expect(body.inventory[0].kind).toBe(secondKind);
+      expect(body.inventory[1].kind).toBeNull();
+
+      // The last bit-0 frame remains latched in intent state between network
+      // inputs. A second authority tick with no fresh seq must NOT consume the
+      // promoted item.
+      reefRaceSplineSim.__tickOnceForTest('r-item-two');
+      expect(body.inventory[0].kind).toBe(secondKind);
+      expect(body.inventory[0].charges).toBe(1);
+      expect(body.inventory[1].kind).toBeNull();
+
+      // Release between one-shot presses, then use the promoted item.
+      reefRaceSplineSim.applyInput('r-item-two', A, 2, DT, input());
+      reefRaceSplineSim.__tickOnceForTest('r-item-two');
+      reefRaceSplineSim.applyInput(
+        'r-item-two',
+        A,
+        3,
+        DT,
+        input(0, 0, 1, ACTION_BIT_POWERUP_0),
+      );
+      reefRaceSplineSim.__tickOnceForTest('r-item-two');
+
+      expect(body.inventory[0].kind).toBeNull();
+      expect(body.inventory[1].kind).toBeNull();
+    });
+
+    it('ignores reserved bit 1 without consuming or promoting inventory', () => {
+      reefRaceSplineSim.setBroadcastFn(() => {});
+      reefRaceSplineSim.startRoom('r-item-reserved', 'reef-race', [A]);
+      const body = collectPickup('r-item-reserved', 0);
+      const heldKind = body.inventory[0].kind;
+
+      reefRaceSplineSim.applyInput(
+        'r-item-reserved',
+        A,
+        1,
+        DT,
+        input(0, 0, 1, ACTION_BIT_POWERUP_1),
+      );
+      reefRaceSplineSim.__tickOnceForTest('r-item-reserved');
+
+      expect(body.inventory[0].kind).toBe(heldKind);
+      expect(body.inventory[0].charges).toBe(1);
+      expect(body.inventory[1].kind).toBeNull();
     });
   });
 

@@ -154,6 +154,10 @@ import {
 import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
 import { useActivityStore } from '@/stores/activity';
 import { triggerBurst } from '@/lib/three/activities/shared/activity-particles';
+import {
+  findCollectedReefRaceItemKind,
+  findConsumedReefRaceItemKind,
+} from './reef-race-speed-surge';
 
 // ─── Preloads — fire at module scope ─────────────────────────────────────────
 // Canonical creature models use KHR_texture_basisu. The race Canvas does not
@@ -1522,10 +1526,10 @@ function ReefRacePlayerInner({
   // The burst position is "good enough" at the moment the event lands.
 
   // Self-only item confirmation from the EXISTING inventory snapshots. The
-  // wire has no item-used event or activeEffects field: empty->filled is a
-  // confirmed collect, and filled->empty is a confirmed successful use. This
-  // deliberately adds no protocol/store shape. Turbo's server `boosting`
-  // snapshot continues to drive the existing speed-cone/trail in the scene.
+  // wire has no item-used event or activeEffects field, so whole-inventory
+  // charge deltas confirm collect/use. This remains correct when slot 1 is
+  // promoted into slot 0 after a consume. Scene FX uses the server kinetic
+  // fields plus the controller's bounded Turbo Bubble presentation deadline.
   const powerUpInventory = useActivityStore((s) => s.powerUpInventory);
   const lastPowerUpInventoryRef = useRef<typeof powerUpInventory | null>(null);
 
@@ -1534,33 +1538,30 @@ function ReefRacePlayerInner({
     lastPowerUpInventoryRef.current = powerUpInventory;
     if (!isSelf || previous === null) return;
 
-    const slotCount = Math.max(previous.length, powerUpInventory.length);
-    for (let slot = 0; slot < slotCount; slot++) {
-      const previousKind = previous[slot]?.kind ?? null;
-      const currentKind = powerUpInventory[slot]?.kind ?? null;
-      if (previousKind === currentKind) continue;
+    const consumedKind = findConsumedReefRaceItemKind(previous, powerUpInventory);
+    const collectedKind = findCollectedReefRaceItemKind(previous, powerUpInventory);
+    if (consumedKind === null && collectedKind === null) return;
 
-      const group = groupRef.current;
-      if (!group) continue;
-      _itemBurstPosition.set(
-        group.position.x,
-        group.position.y + 28,
-        group.position.z,
+    const group = groupRef.current;
+    if (!group) return;
+    _itemBurstPosition.set(
+      group.position.x,
+      group.position.y + 28,
+      group.position.z,
+    );
+
+    if (consumedKind !== null) {
+      triggerBurst(
+        _itemBurstPosition,
+        itemUseBurstColor(consumedKind),
+        consumedKind === 'rr-turbo-bubble' ? 125 : 105,
       );
-
-      if (previousKind === null && currentKind !== null) {
-        triggerBurst(_itemBurstPosition, '#ffd24a', 90);
-        triggerScreenShake?.(0.035);
-      } else if (previousKind !== null && currentKind === null) {
-        triggerBurst(
-          _itemBurstPosition,
-          itemUseBurstColor(previousKind),
-          previousKind === 'rr-turbo-bubble' ? 125 : 105,
-        );
-        triggerScreenShake?.(
-          previousKind === 'rr-turbo-bubble' ? 0.09 : 0.05,
-        );
-      }
+      triggerScreenShake?.(
+        consumedKind === 'rr-turbo-bubble' ? 0.09 : 0.05,
+      );
+    } else if (collectedKind !== null) {
+      triggerBurst(_itemBurstPosition, '#ffd24a', 90);
+      triggerScreenShake?.(0.035);
     }
   }, [powerUpInventory, isSelf, triggerScreenShake]);
 

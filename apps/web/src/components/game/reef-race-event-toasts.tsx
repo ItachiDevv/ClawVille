@@ -360,33 +360,47 @@ function ReefRacePowerUpToast() {
       return;
     }
 
-    let nextToast: InventoryToastState | null = null;
-    const slotCount = Math.max(previous.length, inventory.length);
-    for (let index = 0; index < slotCount; index += 1) {
-      const before = previous[index];
-      const after = inventory[index];
-      const beforeKind = before?.kind ?? null;
-      const afterKind = after?.kind ?? null;
-      const collected =
-        !!afterKind &&
-        (!beforeKind || beforeKind !== afterKind || after!.charges > before!.charges);
-      if (collected && afterKind) {
-        nextToast = {
-          label: `+ ${POWER_UP_LABELS[afterKind] ?? afterKind.toUpperCase()}`,
-          color: '#6ee7b7',
-        };
-        break;
+    // Compare whole-inventory charge totals by kind. Slot-by-slot inference
+    // breaks when [used, queued] becomes [queued, empty]: that transition must
+    // report the used kind, not claim the queued item fired or was collected.
+    const beforeCharges = new Map<string, number>();
+    const afterCharges = new Map<string, number>();
+    for (const slot of previous) {
+      if (slot.kind) {
+        beforeCharges.set(
+          slot.kind,
+          (beforeCharges.get(slot.kind) ?? 0) + slot.charges,
+        );
       }
+    }
+    for (const slot of inventory) {
+      if (slot.kind) {
+        afterCharges.set(
+          slot.kind,
+          (afterCharges.get(slot.kind) ?? 0) + slot.charges,
+        );
+      }
+    }
 
-      const used =
-        !!beforeKind &&
-        (!afterKind || beforeKind !== afterKind || after!.charges < before!.charges);
-      if (used && beforeKind) {
+    let nextToast: InventoryToastState | null = null;
+    for (const [kind, charges] of beforeCharges) {
+      if ((afterCharges.get(kind) ?? 0) < charges) {
         nextToast = {
-          label: `${POWER_UP_LABELS[beforeKind] ?? beforeKind.toUpperCase()} FIRED`,
+          label: `${POWER_UP_LABELS[kind] ?? kind.toUpperCase()} FIRED`,
           color: '#ffd24a',
         };
         break;
+      }
+    }
+    if (!nextToast) {
+      for (const [kind, charges] of afterCharges) {
+        if ((beforeCharges.get(kind) ?? 0) < charges) {
+          nextToast = {
+            label: `+ ${POWER_UP_LABELS[kind] ?? kind.toUpperCase()}`,
+            color: '#6ee7b7',
+          };
+          break;
+        }
       }
     }
 
