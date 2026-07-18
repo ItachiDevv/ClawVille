@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import {
@@ -9,6 +9,12 @@ import {
   KELP_REALM_WALL_AABBS,
 } from '@clawville/shared';
 import { useGameStore } from '@/stores/game';
+import { MODEL_REGISTRY, type ModelRegistryEntry } from '@/lib/three/agent-model-registry';
+import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
+import { VRMCharacterAnimator } from '@/lib/three/vrm-character-animator';
+import { disposeVRMInstance, useVRMInstance } from '@/lib/three/vrm-loader';
+import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
+import { useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 
 const PLAYER_RADIUS = 34;
 const PLAYER_SPEED = 430;
@@ -194,35 +200,105 @@ function KelpRealmAvatarMotion({ children, baseY = 0, updateAnimation }: MotionP
   return <group ref={groupRef}>{children}</group>;
 }
 
-function RealmAvatarProxy() {
-  const avatarColor = useGameStore((state) => state.avatarColor);
-  const resources = useMemo(() => {
-    const geometry = new THREE.CapsuleGeometry(58, AVATAR_TARGET_HEIGHT - 116, 8, 12);
-    geometry.translate(0, AVATAR_TARGET_HEIGHT / 2, 0);
-    const material = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(avatarColor || '#3dd6b3'),
-      roughness: 0.72,
-      metalness: 0.04,
+function KelpRealmVRMPlayerInner({ reg }: { readonly reg: ModelRegistryEntry }) {
+  const vrm = useVRMInstance(reg.path, 'kelp-realm-player');
+  const { scale: vrmRenderScale, offsetY: vrmFootOffsetY } = useMemo(
+    () => computeVRMAvatarFit(vrm, reg.animatorId, AVATAR_TARGET_HEIGHT),
+    [vrm, reg.animatorId],
+  );
+  const animatorRef = useRef<VRMCharacterAnimator | null>(null);
+
+  useEffect(() => () => disposeVRMInstance(reg.path, 'kelp-realm-player'), [reg.path]);
+
+  useEffect(() => {
+    const animator = new VRMCharacterAnimator(vrm, reg.animatorId);
+    animatorRef.current = animator;
+    animator.init().catch((error) => {
+      console.warn('[KelpRealm VRM] animator init failed:', error);
     });
-    return { geometry, material };
-  }, [avatarColor]);
+    return () => {
+      animatorRef.current = null;
+      animator.dispose();
+    };
+  }, [vrm, reg.animatorId]);
+
+  const updateAnimation = useCallback((delta: number, _elapsed: number, moving: boolean) => {
+    animatorRef.current?.update(delta, moving, false);
+  }, []);
+
+  return (
+    <KelpRealmAvatarMotion updateAnimation={updateAnimation}>
+      <primitive
+        object={vrm.scene}
+        scale={[vrmRenderScale, vrmRenderScale, vrmRenderScale]}
+        position={[0, vrmFootOffsetY, 0]}
+      />
+    </KelpRealmAvatarMotion>
+  );
+}
+
+const glbBoundsScratch = new THREE.Box3();
+
+function KelpRealmGLBPlayerInner({ reg }: { readonly reg: ModelRegistryEntry }) {
+  const { scene } = useGLTFWithKTX2(reg.path);
+  const { cloned, scale, offsetY } = useMemo(() => {
+    const next = scene.clone(true);
+    makeObject3DWebGPUSafe(next);
+    next.traverse((object) => {
+      const mesh = object as THREE.Mesh;
+      if (!mesh.isMesh || !mesh.material) return;
+      mesh.material = Array.isArray(mesh.material)
+        ? mesh.material.map((material) => material.clone())
+        : mesh.material.clone();
+    });
+    next.updateMatrixWorld(true);
+    glbBoundsScratch.setFromObject(next);
+    const nativeHeight = Math.max(0.001, glbBoundsScratch.max.y - glbBoundsScratch.min.y);
+    const renderScale = AVATAR_TARGET_HEIGHT / nativeHeight;
+    return {
+      cloned: next,
+      scale: renderScale,
+      offsetY: -glbBoundsScratch.min.y * renderScale,
+    };
+  }, [scene]);
+
   useEffect(() => () => {
-    resources.geometry.dispose();
-    resources.material.dispose();
-  }, [resources]);
+    cloned.traverse((object) => {
+      const mesh = object as THREE.Mesh;
+      if (!mesh.isMesh || !mesh.material) return;
+      if (Array.isArray(mesh.material)) {
+        mesh.material.forEach((material) => material.dispose());
+      } else {
+        mesh.material.dispose();
+      }
+    });
+  }, [cloned]);
+
   const updateAnimation = useCallback(() => undefined, []);
   return (
     <KelpRealmAvatarMotion updateAnimation={updateAnimation}>
-      <mesh geometry={resources.geometry} material={resources.material} matrixAutoUpdate={false} />
+      <primitive object={cloned} scale={scale} position={[0, offsetY, 0]} />
     </KelpRealmAvatarMotion>
   );
+}
+
+function KelpRealmAvatarRouter() {
+  const avatarModelKey = useGameStore((state) => state.avatarModelKey);
+  const reg: ModelRegistryEntry =
+    MODEL_REGISTRY[avatarModelKey as keyof typeof MODEL_REGISTRY] ?? MODEL_REGISTRY.lobster;
+
+  return reg.avatar_type === 'vrm'
+    ? <KelpRealmVRMPlayerInner reg={reg} />
+    : <KelpRealmGLBPlayerInner reg={reg} />;
 }
 
 export default function KelpRealmPlayer() {
   return (
     <>
       <InputLifecycle />
-      <RealmAvatarProxy />
+      <Suspense fallback={null}>
+        <KelpRealmAvatarRouter />
+      </Suspense>
     </>
   );
 }
