@@ -120,7 +120,10 @@ import { getHouseTreasuryAvatarId } from '../services/house-treasury-seeder';
 import { logEventFromContext, logEventFromContextReturningId } from '../services/event-logger';
 import { publishCoveSettlement } from '../services/agent-settlement-publish';
 import type { AppContext } from '../types';
-import type { HoldemResyncHandView } from '@clawville/shared';
+import type {
+  HoldemResyncHandView,
+  SerializedHoldemLogEntry,
+} from '@clawville/shared';
 
 export const coveHoldemRouter = new Hono<AppContext>();
 coveHoldemRouter.use('*', sessionMiddleware);
@@ -519,6 +522,7 @@ export function peekState(
   currentBet: string;
   humanStack: string;
   humanCommitted: string;
+  publicActionLog: SerializedHoldemLogEntry[];
 } {
   // Reconstruct the live betting context by replaying the recorded actions and
   // stopping right where the human is next to act. We do this by running the
@@ -553,7 +557,32 @@ export function peekState(
     currentBet: ctx.currentBet.toString(),
     humanStack: (BigInt(hand.startingStack) - human.committed).toString(),
     humanCommitted: human.committed.toString(),
+    publicActionLog: publicActionLogFromPeek(peek.actionLog),
   };
+}
+
+/**
+ * Fairness-safe log analogue to `visibleBoardCountForStreet`: a peek appends a
+ * synthetic human fold, which resolves the entire deterministic hand and lets
+ * bots continue with seed-derived FUTURE actions. The last human entry is that
+ * sentinel on every reachable in-progress peek, so only the strict prefix
+ * BEFORE it is public: posted blinds, recorded human decisions, and bot actions
+ * already revealed up to the current decision point. Fail-closed if the engine
+ * shape ever changes: dropping a real final human action is safer than leaking
+ * post-fold continuation.
+ */
+export function publicActionLogFromPeek(
+  log: readonly HoldemHandResult['actionLog'][number][],
+): SerializedHoldemLogEntry[] {
+  let syntheticFoldIndex = -1;
+  for (let index = log.length - 1; index >= 0; index -= 1) {
+    if (log[index]!.isHuman) {
+      syntheticFoldIndex = index;
+      break;
+    }
+  }
+  if (syntheticFoldIndex < 0) return [];
+  return log.slice(0, syntheticFoldIndex).map((entry) => ({ ...entry }));
 }
 
 /**
@@ -679,6 +708,7 @@ export function buildInProgressHandView(
     humanCommitted: peek.humanCommitted,
     smallBlind: SMALL_BLIND.toString(),
     bigBlind: BIG_BLIND.toString(),
+    publicActionLog: peek.publicActionLog,
     status: 'in_progress',
   };
 }
@@ -1187,20 +1217,11 @@ coveHoldemRouter.post('/action', async (c) => {
   );
 
   if (!terminal) {
-    const peek = peekState({ serverSeed: table.serverSeed, clientSeed: table.clientSeed }, meta, actions);
-    return c.json(
-      {
-        handId: hand.id,
-        status: 'in_progress',
-        humanHole: peek.humanHole,
-        board: peek.board,
-        toCall: peek.toCall,
-        currentBet: peek.currentBet,
-        humanStack: peek.humanStack,
-        humanCommitted: peek.humanCommitted,
-      },
-      200,
+    const view = buildInProgressHandView(
+      { serverSeed: table.serverSeed, clientSeed: table.clientSeed },
+      updatedHand,
     );
+    return c.json(view, 200);
   }
 
   const settled = await settleHand(c, table.id, hand.id, subject, idempotencyKey);
