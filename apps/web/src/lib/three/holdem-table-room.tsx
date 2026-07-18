@@ -6,7 +6,7 @@ import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 import { useVRMInstance, disposeVRMInstance } from '@/lib/three/vrm-loader';
-import { VRMCharacterAnimator, type AnimName } from '@/lib/three/vrm-character-animator';
+import { preloadClips, VRMCharacterAnimator, type AnimName } from '@/lib/three/vrm-character-animator';
 import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
 import { MODEL_REGISTRY, type ModelRegistryEntry } from '@/lib/three/agent-model-registry';
 import { TableCards3D, type TableCardLayout, type TableCardSeat } from '@/lib/three/cove-table-cards';
@@ -23,15 +23,31 @@ const TABLE_PATH = '/models/cove-table-clean.glb';
 // chairs walled off the frame corners and the far-center chair completely
 // hid the dealer. Stools keep every sight line open.
 const STOOL_PATH = '/models/cove-stool.glb';
-// hermes NATIVE sit (2026-07-17 founder start-over): her own mesh, rigged by
-// Meshy, chair-sit idle baked ON HER SKELETON — no VRM retarget anywhere.
-// ?hermesClip=f swaps the female-variant clip for comparison.
+// Hermes NATIVE stool sit: her own mesh, rigged by Meshy, with
+// Sit_on_Chair_Arms_Crossed baked ON HER SKELETON — no VRM retarget.
+// Keep the existing query overrides: ?hermesClip=<path-or-f> and
+// ?hermesSample=<seconds> remain useful for asset/phase comparisons.
 const HERMES_SIT_PATH = (() => {
-  if (typeof window === 'undefined') return '/models/hermes-female-sit-m.glb';
-  return new URLSearchParams(window.location.search).get('hermesClip') === 'f'
-    ? '/models/hermes-female-sit-f.glb'
-    : '/models/hermes-female-sit-m.glb';
+  const fallback = '/models/hermes-sit-arms-crossed.glb';
+  if (typeof window === 'undefined') return fallback;
+  const override = new URLSearchParams(window.location.search).get('hermesClip');
+  if (!override) return fallback;
+  if (override === 'f') return '/models/hermes-female-sit-f.glb';
+  return override.startsWith('/') ? override : `/models/${override}`;
 })();
+
+const TABLE_SIT_POSE = 'sit_on_chair_arms_crossed' as const satisfies AnimName;
+const TABLE_SIT_DURATION = 2.433333396911621;
+const TABLE_SIT_LAP_SAMPLE = 0.2;
+const TABLE_SIT_CROSSED_SAMPLE = 1.2;
+const TABLE_SIT_SAMPLE_BY_BOT = [
+  TABLE_SIT_LAP_SAMPLE,
+  TABLE_SIT_CROSSED_SAMPLE,
+  TABLE_SIT_LAP_SAMPLE,
+  TABLE_SIT_CROSSED_SAMPLE,
+  TABLE_SIT_LAP_SAMPLE,
+] as const;
+preloadClips([TABLE_SIT_POSE]);
 
 // SCALE UNIFICATION (2026-07-17 founder feedback): every figure renders at
 // the SAME world-standard height the walkable cove uses for the player's
@@ -94,10 +110,9 @@ const CARD_LAYOUT: Readonly<TableCardLayout> = Object.freeze({
   surfaceLift: 0.7 * S,
 });
 
-// hermes_female RESTORED (2026-07-17 founder correction — fix her, don't
-// cut her): her frozen pose samples the clip at HERMES_SAMPLE_AT instead of
-// t=0 (per-figure sampleAt) — the t=0 frame on her rig reads possessed;
-// later frames hold hands-on-lap.
+// All seated figures use the same stool-safe pose and alternate held phases:
+// t=0.20 hands-in-lap, t=1.20 arms-crossed (duration 2.4333s). The dealer is
+// standing and therefore remains on the ordinary idle clip.
 const BOT_MODEL_KEYS = [
   'milady_official_2',
   'milady_official_5',
@@ -105,13 +120,13 @@ const BOT_MODEL_KEYS = [
   'milady_official_7',
   'milady_official_4',
 ] as const satisfies readonly (keyof typeof MODEL_REGISTRY)[];
-// (index 3 = hermes -> BOT_SEATS[3], the right side-rail seat: her fixed
-// t=2.0 lean reads natural side-on, lunging head-on.)
 const HERMES_SAMPLE_AT = (() => {
-  if (typeof window === 'undefined') return 0.2;
+  if (typeof window === 'undefined') return TABLE_SIT_SAMPLE_BY_BOT[2];
   const raw = Number(new URLSearchParams(window.location.search).get('hermesSample'));
-  return Number.isFinite(raw) && raw > 0 ? raw : 0.2;
-})(); // seconds into sit_idle_m — per-rig frames read differently
+  return Number.isFinite(raw) && raw >= 0 && raw < TABLE_SIT_DURATION
+    ? raw
+    : TABLE_SIT_SAMPLE_BY_BOT[2];
+})();
 const DEALER_MODEL_KEY = 'milady_official_6' as const;
 
 function preparedClone(source: THREE.Group, scale: number): THREE.Group {
@@ -567,10 +582,11 @@ function HoldemTableRoomScene() {
           <FrozenFigure
             reg={MODEL_REGISTRY[BOT_MODEL_KEYS[index]!] as ModelRegistryEntry}
             instanceId={`holdem-room-seat-${seat.engineSeatIndex}`}
-            pose="sit_idle_m"
+            pose={TABLE_SIT_POSE}
             position={[seat.chairX, 0, seat.chairZ]}
             yaw={seat.faceYaw}
             targetHeight={BOT_TARGET_HEIGHT}
+            sampleAt={TABLE_SIT_SAMPLE_BY_BOT[index]}
           />
           )}
         </group>
