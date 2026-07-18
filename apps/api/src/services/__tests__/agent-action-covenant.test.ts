@@ -27,6 +27,7 @@ interface SimInternals {
   npcOverrides: Map<string, string>;
   pendingEvents: Array<{ type: string; data: { message: string } }>;
   missingActionAttributionWarned: Set<string>;
+  emoteOwnershipQuery: (avatarId: string, animationKey: string) => Promise<boolean>;
   initNpcs: () => void;
   executeHatcherAction: (
     npcId: string,
@@ -39,6 +40,7 @@ interface SimInternals {
 
 const sim = npcSimulation as unknown as SimInternals;
 const originalCovenantRecord = npcSimulation.covenantRecord;
+const originalEmoteOwnershipQuery = npcSimulation.emoteOwnershipQuery;
 const AVATAR = 'executor-avatar';
 
 function body(id: string, x = 11264, y = 11264): TestNpc {
@@ -108,9 +110,185 @@ beforeEach(() => {
 
 afterEach(() => {
   npcSimulation.covenantRecord = originalCovenantRecord;
+  npcSimulation.emoteOwnershipQuery = originalEmoteOwnershipQuery;
 });
 
+async function flushEmoteLookup(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 describe('in-world executor covenant hooks', () => {
+  it('broadcasts an owned+equipped emote and serializes its monotonic sequence', async () => {
+    const lookups: Array<{ avatarId: string; animationKey: string }> = [];
+    npcSimulation.emoteOwnershipQuery = async (avatarId, animationKey) => {
+      lookups.push({ avatarId, animationKey });
+      return true;
+    };
+    const npc = body('owned-emote-body');
+    sim.npcs.set(npc.id, npc);
+    sim.agentBotSessions.set('owned-emote-session', {
+      config: { agentId: npc.id, mode: 'avatar', avatarId: AVATAR },
+      client: { getProtocol: () => 'hatcher-proxy' },
+    });
+    sim.npcOverrides.set(npc.id, 'owned-emote-session');
+
+    npcSimulation.dispatchHatcherActions(
+      npc.id,
+      '[ACTION: emote(name=breakdance)]',
+    );
+    await flushEmoteLookup();
+
+    expect(lookups).toEqual([{ avatarId: AVATAR, animationKey: 'breakdance' }]);
+    expect(npc.emoteClip).toBe('breakdance');
+    expect(npc.emoteSeq).toBe(1);
+    const serialized = npcSimulation.getSnapshot().npcs.find((entry) => entry.id === npc.id);
+    expect(serialized?.emoteClip).toBe('breakdance');
+    expect(serialized?.emoteSeq).toBe(1);
+
+    npcSimulation.dispatchHatcherActions(
+      npc.id,
+      '[ACTION: emote(name=breakdance)]',
+    );
+    await flushEmoteLookup();
+    expect(npc.emoteSeq).toBe(2);
+  });
+
+  it('keeps legacy think immediate while an equipped think SKU adds its clip broadcast', async () => {
+    let resolveOwned: ((owned: boolean) => void) | undefined;
+    npcSimulation.emoteOwnershipQuery = () => new Promise<boolean>((resolve) => {
+      resolveOwned = resolve;
+    });
+    const npc = body('legacy-think-owned-body');
+    sim.npcs.set(npc.id, npc);
+    sim.agentBotSessions.set('legacy-think-owned-session', {
+      config: { agentId: npc.id, mode: 'avatar', avatarId: AVATAR },
+      client: { getProtocol: () => 'hatcher-proxy' },
+    });
+    sim.npcOverrides.set(npc.id, 'legacy-think-owned-session');
+
+    npcSimulation.dispatchHatcherActions(npc.id, '[ACTION: emote(name=think)]');
+    expect(npc.activity).toBe('thinking');
+    expect(npc.emoteClip).toBeUndefined();
+
+    resolveOwned?.(true);
+    await flushEmoteLookup();
+    expect(npc.activity).toBe('thinking');
+    expect(npc.emoteClip).toBe('think');
+    expect(npc.emoteSeq).toBe(1);
+
+    npcSimulation.emoteOwnershipQuery = async () => false;
+    const unowned = body('legacy-think-unowned-body');
+    sim.npcs.set(unowned.id, unowned);
+    sim.agentBotSessions.set('legacy-think-unowned-session', {
+      config: { agentId: unowned.id, mode: 'avatar', avatarId: AVATAR },
+      client: { getProtocol: () => 'hatcher-proxy' },
+    });
+    sim.npcOverrides.set(unowned.id, 'legacy-think-unowned-session');
+    npcSimulation.dispatchHatcherActions(unowned.id, '[ACTION: emote(name=think)]');
+    await flushEmoteLookup();
+    expect(unowned.activity).toBe('thinking');
+    expect(unowned.emoteSeq).toBeUndefined();
+
+    let unattributedLookups = 0;
+    npcSimulation.emoteOwnershipQuery = async () => {
+      unattributedLookups++;
+      return true;
+    };
+    const unattributed = body('legacy-think-unattributed-body');
+    sim.npcs.set(unattributed.id, unattributed);
+    sim.executeHatcherAction(
+      unattributed.id,
+      unattributed,
+      'emote',
+      { name: 'think' },
+      null,
+    );
+    await flushEmoteLookup();
+    expect(unattributed.activity).toBe('thinking');
+    expect(unattributed.emoteSeq).toBeUndefined();
+    expect(unattributedLookups).toBe(0);
+  });
+
+  it('drops owned-but-unequipped and unowned emote keys', async () => {
+    const lookups: string[] = [];
+    npcSimulation.emoteOwnershipQuery = async (_avatarId, animationKey) => {
+      lookups.push(animationKey);
+      return false;
+    };
+    const npc = body('not-equipped-emote-body');
+    sim.npcs.set(npc.id, npc);
+    sim.agentBotSessions.set('not-equipped-emote-session', {
+      config: { agentId: npc.id, mode: 'avatar', avatarId: AVATAR },
+      client: { getProtocol: () => 'hatcher-proxy' },
+    });
+    sim.npcOverrides.set(npc.id, 'not-equipped-emote-session');
+
+    npcSimulation.dispatchHatcherActions(npc.id, '[ACTION: emote(name=shrug)]');
+    npcSimulation.dispatchHatcherActions(npc.id, '[ACTION: emote(name=not_owned)]');
+    await flushEmoteLookup();
+
+    expect(lookups).toEqual(['shrug', 'not_owned']);
+    expect(npc.emoteClip).toBeUndefined();
+    expect(npc.emoteSeq).toBeUndefined();
+  });
+
+  it('shape/prototype/missing gates drop before any emote ownership query', async () => {
+    const lookups: string[] = [];
+    npcSimulation.emoteOwnershipQuery = async (_avatarId, animationKey) => {
+      lookups.push(animationKey);
+      return true;
+    };
+    const npc = body('invalid-emote-body');
+    sim.npcs.set(npc.id, npc);
+    sim.agentBotSessions.set('invalid-emote-session', {
+      config: { agentId: npc.id, mode: 'avatar', avatarId: AVATAR },
+      client: { getProtocol: () => 'hatcher-proxy' },
+    });
+    sim.npcOverrides.set(npc.id, 'invalid-emote-session');
+
+    npcSimulation.dispatchHatcherActions(npc.id, '[ACTION: emote(name=bad-name!)]');
+    npcSimulation.dispatchHatcherActions(npc.id, '[ACTION: emote(name=constructor)]');
+    npcSimulation.dispatchHatcherActions(npc.id, '[ACTION: emote(name=__proto__)]');
+    npcSimulation.dispatchHatcherActions(npc.id, '[ACTION: emote()]');
+    sim.executeHatcherAction(
+      npc.id,
+      npc,
+      'emote',
+      { name: 7 as unknown as string },
+      { avatarId: AVATAR, actorKind: 'agent' },
+    );
+    sim.executeHatcherAction(npc.id, npc, 'emote', { name: 'handstand' }, null);
+    await flushEmoteLookup();
+
+    expect(lookups).toEqual([]);
+    expect(npc.emoteClip).toBeUndefined();
+    expect(npc.emoteSeq).toBeUndefined();
+  });
+
+  it('does not apply an owned-emote result to a despawned/replaced body', async () => {
+    let resolveOwned: ((owned: boolean) => void) | undefined;
+    npcSimulation.emoteOwnershipQuery = () => new Promise<boolean>((resolve) => {
+      resolveOwned = resolve;
+    });
+    const npc = body('stale-emote-body');
+    sim.npcs.set(npc.id, npc);
+    sim.agentBotSessions.set('stale-emote-session', {
+      config: { agentId: npc.id, mode: 'avatar', avatarId: AVATAR },
+      client: { getProtocol: () => 'hatcher-proxy' },
+    });
+    sim.npcOverrides.set(npc.id, 'stale-emote-session');
+
+    npcSimulation.dispatchHatcherActions(npc.id, '[ACTION: emote(name=clap)]');
+    const replacement = body(npc.id);
+    sim.npcs.set(npc.id, replacement);
+    resolveOwned?.(true);
+    await flushEmoteLookup();
+
+    expect(npc.emoteClip).toBeUndefined();
+    expect(replacement.emoteClip).toBeUndefined();
+  });
+
   it('accepts a move from outside the kelp maze and raster-paths to its photo spot', () => {
     const npc = body(
       'kelp-maze-executor-body',

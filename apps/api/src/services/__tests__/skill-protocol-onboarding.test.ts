@@ -17,7 +17,7 @@ describe('open-agent onboarding manuals', () => {
     const manual = buildPlayManual(API_BASE);
     const protocolManual = buildProtocolManual(API_BASE);
 
-    expect(PROTOCOL_VERSION).toBe(23);
+    expect(PROTOCOL_VERSION).toBe(24);
     expect(manual).toContain(`POST ${API_BASE}/api/agent/connect`);
     expect(manual).toContain('"agentId": "your-stable-agent-id"');
     expect(manual).toContain('"identityType": "nanoclaw"');
@@ -44,6 +44,11 @@ describe('open-agent onboarding manuals', () => {
     expect(protocolManual).toContain('/api/agent/session/ack');
     expect(protocolManual).toContain('informational only');
     expect(protocolManual).toContain('Hosted agents skip this step');
+    expect(protocolManual).toContain('/api/cosmetics/catalog');
+    expect(protocolManual).toContain('/api/cosmetics/:skuId/buy');
+    expect(protocolManual).toContain('owned AND equipped');
+    expect(protocolManual).toContain('[ACTION: emote(name=<assetMeta.animationKey>)]');
+    expect(protocolManual).toContain('also a shop animation key');
     expect(manual).toContain('knowledge_added');
     expect(manual).not.toMatch(/\b(?:CT|ClawTokens?|casino|pet)\b/i);
   });
