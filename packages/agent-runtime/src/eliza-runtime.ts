@@ -844,6 +844,53 @@ export class ElizaRuntime {
   }
 
   /**
+   * Semantic-RAG retrieval of this agent's book and building-visit knowledge.
+   * These rows use the raw platform-agent id for both room and entity, matching
+   * the shared hosted-knowledge writer. Never lazy-starts and never throws.
+   */
+  async searchBookKnowledgeMemories(input: {
+    query: string;
+    limit?: number;
+  }): Promise<string[]> {
+    if (this.state !== 'running' || !this.runtime) return [];
+    const limit = input.limit ?? 5;
+    try {
+      let embedding: number[];
+      try {
+        embedding = await embedText(input.query && input.query.trim().length > 0 ? input.query : 'recent knowledge');
+      } catch {
+        return [];
+      }
+      const agentId = this.config.agentId as UUID;
+      const results: Array<{ content?: { text?: string }; metadata?: Record<string, unknown> }> =
+        (await (this.runtime as any).searchMemories({
+          embedding,
+          tableName: 'knowledge',
+          roomId: agentId,
+          entityId: agentId,
+          count: Math.max(limit * 3, 15),
+          match_threshold: 0.1,
+          unique: true,
+        })) ?? [];
+      const out: string[] = [];
+      for (const m of results) {
+        const meta = (m.metadata ?? {}) as Record<string, unknown>;
+        if (meta.subtype !== 'knowledge') continue;
+        const text = m.content?.text;
+        if (typeof text === 'string' && text.length > 0) out.push(text);
+        if (out.length >= limit) break;
+      }
+      return out;
+    } catch (err) {
+      console.warn(
+        '[ElizaRuntime] searchBookKnowledgeMemories failed (non-fatal):',
+        (err as Error)?.message,
+      );
+      return [];
+    }
+  }
+
+  /**
    * P3 slice 6 — SURFACE #3 of the three operational-knowledge surfaces
    * (CLAUDE.md "Game-flow changes propagate to all three ... surfaces"): inject the
    * CONNECTION PROTOCOL MANUAL into THIS hosted agent's OWN ElizaOS runtime so a
