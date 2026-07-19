@@ -127,7 +127,7 @@ if (VRM_METRICS_ENABLED && typeof window !== 'undefined') {
 // entry on the full URL incl. query string, giving us cheap manual purges.
 const EMOTE_BUNDLE_VERSION = 1;
 const EMOTE_BUNDLE = `/avatars/animations/_emotes.glb?v=${EMOTE_BUNDLE_VERSION}`;
-const COVE_SIT_BUNDLE = '/avatars/animations/_cove_sit.glb?v=2';
+const COVE_SIT_BUNDLE = '/avatars/animations/_cove_sit.glb?v=3';
 
 const ANIM_PATHS = {
   // Locomotion — separate GLBs (precached by SW).
@@ -169,6 +169,10 @@ const ANIM_PATHS = {
   sit_to_stand_m:   `${COVE_SIT_BUNDLE}#sit_to_stand_m`,
   sit_to_stand_f:   `${COVE_SIT_BUNDLE}#sit_to_stand_f`,
   sit_on_chair_arms_crossed: `${COVE_SIT_BUNDLE}#sit_on_chair_arms_crossed`,
+  cove_peek: `${COVE_SIT_BUNDLE}#cove_peek`,
+  cove_think: `${COVE_SIT_BUNDLE}#cove_think`,
+  cove_watch: `${COVE_SIT_BUNDLE}#cove_watch`,
+  cove_rest: `${COVE_SIT_BUNDLE}#cove_rest`,
   // Chibi-introduced emote (2026-05-21). Source bake is chibi-proportioned;
   // retargeter handles proportion drift if a non-chibi VRM ever plays it.
   // Triggered as a one-shot via the emote bus (see EMOTE_ANIM_NAMES below).
@@ -185,6 +189,10 @@ const MESHY_ANIM_NAMES: ReadonlySet<AnimName> = new Set<AnimName>([
   'sit_to_stand_m',
   'sit_to_stand_f',
   'sit_on_chair_arms_crossed',
+  'cove_peek',
+  'cove_think',
+  'cove_watch',
+  'cove_rest',
 ]);
 
 /** Route each registered clip through the retargeter matching its source rig. */

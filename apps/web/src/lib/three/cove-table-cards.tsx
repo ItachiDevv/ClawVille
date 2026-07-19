@@ -316,6 +316,7 @@ export interface TableCards3DProps {
   feltTopY: number;
   seats: readonly TableCardSeat[];
   layout: Readonly<TableCardLayout>;
+  suppressSeatIndices?: readonly number[];
 }
 
 export function TableCards3D({
@@ -324,6 +325,7 @@ export function TableCards3D({
   feltTopY,
   seats: tableSeats,
   layout,
+  suppressSeatIndices = [],
 }: TableCards3DProps) {
   const meshRef = useRef<THREE.Mesh>(null);
   const geometry = useMemo(() => new THREE.BufferGeometry(), []);
@@ -345,6 +347,7 @@ export function TableCards3D({
   const hasHandState = phase !== 'idle' && (live !== null || settled !== null);
   const isVisible = seatedTable?.tableId === 'T1' && hasHandState;
   const cardStateSignature = handSignature(phase, playerHoleCards, communityCards, seats);
+  const suppressedSeatSignature = suppressSeatIndices.join(',');
 
   useLayoutEffect(() => {
     const mesh = meshRef.current;
@@ -368,6 +371,7 @@ export function TableCards3D({
     const cardY = feltTopY + layout.surfaceLift;
 
     for (const tableSeat of tableSeats) {
+      if (suppressSeatIndices.includes(tableSeat.engineSeatIndex)) continue;
       const seatState = controller.seats.find((seat) => seat.seatIndex === tableSeat.engineSeatIndex);
       const holeCards = seatState?.holeCards ?? [];
       if (holeCards.length === 0) continue;
@@ -468,6 +472,7 @@ export function TableCards3D({
     isVisible,
     layout,
     material,
+    suppressedSeatSignature,
     tableSeats,
   ]);
 

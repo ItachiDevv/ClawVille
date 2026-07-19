@@ -2,7 +2,7 @@
 /**
  * build-cove-sit-bundle.mjs
  *
- * Merges the 6 mesh-stripped Meshy cove sit-flow clips under
+ * Merges the 10 mesh-stripped Meshy cove sit-flow/card-pose clips under
  * apps/web/animations-src/cove-sit/ into ONE multi-clip GLB, _cove_sit.glb,
  * written to apps/web/public/avatars/animations/ — mirrors
  * scripts/build-anim-bundles.mjs's merge strategy (§6f rule 1: "bundle,
@@ -58,6 +58,10 @@ const SIT_CLIPS = [
   ['sit_to_stand_m',     'sit_to_stand_m.glb'],
   ['sit_to_stand_f',     'sit_to_stand_f.glb'],
   ['sit_on_chair_arms_crossed', 'sit_on_chair_arms_crossed.glb'],
+  ['cove_peek',          'cove_peek.glb'],
+  ['cove_think',         'cove_think.glb'],
+  ['cove_watch',         'cove_watch.glb'],
+  ['cove_rest',          'cove_rest.glb'],
 ];
 
 const io = new NodeIO().registerExtensions(ALL_EXTENSIONS);

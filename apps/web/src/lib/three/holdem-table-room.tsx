@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useMemo, useRef } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
@@ -10,6 +10,7 @@ import { preloadClips, VRMCharacterAnimator, type AnimName } from '@/lib/three/v
 import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
 import { MODEL_REGISTRY, type ModelRegistryEntry } from '@/lib/three/agent-model-registry';
 import { TableCards3D, type TableCardLayout, type TableCardSeat } from '@/lib/three/cove-table-cards';
+import { useHoldemController } from '@/lib/cove/holdem-controller';
 import {
   getHoldemBadgeRegistryVersion,
   getHoldemSeatBadgeElement,
@@ -28,7 +29,7 @@ const STOOL_PATH = '/models/cove-stool.glb';
 // Keep the existing query overrides: ?hermesClip=<path-or-f> and
 // ?hermesSample=<seconds> remain useful for asset/phase comparisons.
 const HERMES_SIT_PATH = (() => {
-  const fallback = '/models/hermes-sit-arms-crossed.glb';
+  const fallback = '/models/hermes-sit-watch.glb';
   if (typeof window === 'undefined') return fallback;
   const override = new URLSearchParams(window.location.search).get('hermesClip');
   if (!override) return fallback;
@@ -36,18 +37,16 @@ const HERMES_SIT_PATH = (() => {
   return override.startsWith('/') ? override : `/models/${override}`;
 })();
 
-const TABLE_SIT_POSE = 'sit_on_chair_arms_crossed' as const satisfies AnimName;
-const TABLE_SIT_DURATION = 2.433333396911621;
-const TABLE_SIT_LAP_SAMPLE = 0.2;
-const TABLE_SIT_CROSSED_SAMPLE = 1.2;
-const TABLE_SIT_SAMPLE_BY_BOT = [
-  TABLE_SIT_LAP_SAMPLE,
-  TABLE_SIT_CROSSED_SAMPLE,
-  TABLE_SIT_LAP_SAMPLE,
-  TABLE_SIT_CROSSED_SAMPLE,
-  TABLE_SIT_LAP_SAMPLE,
-] as const;
-preloadClips([TABLE_SIT_POSE]);
+const TABLE_POSE_SAMPLE_AT = 0.02;
+const TABLE_POSE_BY_BOT = [
+  'cove_peek',
+  'cove_think',
+  'cove_watch',
+  'cove_peek',
+  'cove_rest',
+] as const satisfies readonly AnimName[];
+const PEEK_ENGINE_SEATS = [1, 4] as const;
+preloadClips(TABLE_POSE_BY_BOT);
 
 // SCALE UNIFICATION (2026-07-17 founder feedback): every figure renders at
 // the SAME world-standard height the walkable cove uses for the player's
@@ -110,9 +109,9 @@ const CARD_LAYOUT: Readonly<TableCardLayout> = Object.freeze({
   surfaceLift: 0.7 * S,
 });
 
-// All seated figures use the same stool-safe pose and alternate held phases:
-// t=0.20 hands-in-lap, t=1.20 arms-crossed (duration 2.4333s). The dealer is
-// standing and therefore remains on the ordinary idle clip.
+// Card-player rotations are authored once on the clyt Meshy reference rig
+// and retargeted to every Milady. Future avatars inherit these same clips;
+// Hermes is the sole native-GLB compatibility path.
 const BOT_MODEL_KEYS = [
   'milady_official_2',
   'milady_official_5',
@@ -121,13 +120,39 @@ const BOT_MODEL_KEYS = [
   'milady_official_4',
 ] as const satisfies readonly (keyof typeof MODEL_REGISTRY)[];
 const HERMES_SAMPLE_AT = (() => {
-  if (typeof window === 'undefined') return TABLE_SIT_SAMPLE_BY_BOT[2];
+  if (typeof window === 'undefined') return TABLE_POSE_SAMPLE_AT;
   const raw = Number(new URLSearchParams(window.location.search).get('hermesSample'));
-  return Number.isFinite(raw) && raw >= 0 && raw < TABLE_SIT_DURATION
+  return Number.isFinite(raw) && raw >= 0
     ? raw
-    : TABLE_SIT_SAMPLE_BY_BOT[2];
+    : TABLE_POSE_SAMPLE_AT;
 })();
 const DEALER_MODEL_KEY = 'milady_official_6' as const;
+
+interface HandPoseSample {
+  left: readonly [number, number, number];
+  right: readonly [number, number, number];
+}
+
+type HandSampleHandler = (engineSeatIndex: number, sample: HandPoseSample | null) => void;
+
+const HAND_SAMPLE_LEFT = new THREE.Vector3();
+const HAND_SAMPLE_RIGHT = new THREE.Vector3();
+
+function sampleHands(
+  leftHand: THREE.Object3D | null | undefined,
+  rightHand: THREE.Object3D | null | undefined,
+): HandPoseSample | null {
+  if (!leftHand || !rightHand) return null;
+  leftHand.getWorldPosition(HAND_SAMPLE_LEFT);
+  rightHand.getWorldPosition(HAND_SAMPLE_RIGHT);
+  const values = [HAND_SAMPLE_LEFT.x, HAND_SAMPLE_LEFT.y, HAND_SAMPLE_LEFT.z,
+    HAND_SAMPLE_RIGHT.x, HAND_SAMPLE_RIGHT.y, HAND_SAMPLE_RIGHT.z];
+  if (!values.every(Number.isFinite)) return null;
+  return {
+    left: [HAND_SAMPLE_LEFT.x, HAND_SAMPLE_LEFT.y, HAND_SAMPLE_LEFT.z],
+    right: [HAND_SAMPLE_RIGHT.x, HAND_SAMPLE_RIGHT.y, HAND_SAMPLE_RIGHT.z],
+  };
+}
 
 function preparedClone(source: THREE.Group, scale: number): THREE.Group {
   const clone = source.clone(true);
@@ -149,6 +174,8 @@ function FrozenFigure({
   cushionY,
   sampleAt = 0.0001,
   freezeVia = 'sample',
+  handSampleSeat,
+  onHandSample,
 }: {
   reg: ModelRegistryEntry;
   instanceId: string;
@@ -165,6 +192,8 @@ function FrozenFigure({
    *  seated pose through the real transition (its direct sit_idle sample
    *  leaves the legs standing; founder-approved live path = transition). */
   freezeVia?: 'sample' | 'transition';
+  handSampleSeat?: number;
+  onHandSample?: HandSampleHandler;
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const vrm = useVRMInstance(reg.path, instanceId);
@@ -215,6 +244,13 @@ function FrozenFigure({
       vrm.scene.position.y += -bbox.min.y;
       vrm.scene.updateMatrixWorld(true);
       animator.flushSkeletonUpdates();
+      group.updateMatrixWorld(true);
+      if (handSampleSeat !== undefined && onHandSample) {
+        onHandSample(handSampleSeat, sampleHands(
+          vrm.humanoid?.getRawBoneNode('leftHand'),
+          vrm.humanoid?.getRawBoneNode('rightHand'),
+        ));
+      }
 
       if (process.env.NODE_ENV !== 'production') {
         const hips = vrm.humanoid?.getRawBoneNode('hips');
@@ -240,7 +276,7 @@ function FrozenFigure({
       cancelled = true;
       animator.dispose();
     };
-  }, [cushionY, freezeVia, instanceId, invalidate, pose, reg.animatorId, sampleAt, vrm]);
+  }, [cushionY, freezeVia, handSampleSeat, instanceId, invalidate, onHandSample, pose, reg.animatorId, sampleAt, vrm]);
 
   useEffect(() => () => disposeVRMInstance(reg.path, instanceId), [instanceId, reg.path]);
 
@@ -293,6 +329,62 @@ const CAMERA_LOOK_TARGET = new THREE.Vector3();
 const BADGE_PROJECT_SCRATCH = new THREE.Vector3();
 const BADGE_VIEW_PROJECTION = new THREE.Matrix4();
 
+let handCardBackTextureCache: THREE.CanvasTexture | null = null;
+function getHandCardBackTexture(): THREE.CanvasTexture {
+  if (handCardBackTextureCache) return handCardBackTextureCache;
+  const canvas = document.createElement('canvas');
+  canvas.width = 192;
+  canvas.height = 256;
+  const context = canvas.getContext('2d')!;
+  const gradient = context.createLinearGradient(0, 0, 192, 256);
+  gradient.addColorStop(0, '#0d3a4a');
+  gradient.addColorStop(1, '#0a2d3a');
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, 192, 256);
+  context.strokeStyle = 'rgba(0, 200, 180, 0.32)';
+  context.lineWidth = 7;
+  context.strokeRect(8, 8, 176, 240);
+  context.strokeStyle = 'rgba(0, 200, 180, 0.18)';
+  context.lineWidth = 4;
+  context.strokeRect(22, 22, 148, 212);
+  context.fillStyle = 'rgba(0, 200, 180, 0.22)';
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.font = '800 92px ui-monospace, Consolas, monospace';
+  context.fillText('?', 96, 132);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.minFilter = THREE.LinearMipmapLinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  handCardBackTextureCache = texture;
+  return texture;
+}
+
+function PeekHandCards({ seat, sample }: { seat: RoomSeat; sample: HandPoseSample }) {
+  const texture = useMemo(() => getHandCardBackTexture(), []);
+  const center = useMemo(() => [
+    (sample.left[0] + sample.right[0]) / 2,
+    (sample.left[1] + sample.right[1]) / 2,
+    (sample.left[2] + sample.right[2]) / 2,
+  ] as const, [sample]);
+  const cardWidth = CARD_LAYOUT.botCardWidth;
+  const cardHeight = CARD_LAYOUT.botCardHeight;
+  return (
+    <group position={center} rotation={[0, seat.faceYaw, 0]}>
+      {([-1, 1] as const).map((fan, index) => (
+        <mesh
+          key={`peek-card-${seat.engineSeatIndex}-${index}`}
+          position={[fan * cardWidth * 0.30, fan * 0.15, 0]}
+          rotation={[THREE.MathUtils.degToRad(-14), 0, THREE.MathUtils.degToRad(fan * 10)]}
+        >
+          <planeGeometry args={[cardWidth, cardHeight]} />
+          <meshBasicMaterial map={texture} side={THREE.DoubleSide} toneMapped={false} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
 /** Frozen figure from a NATIVE Meshy-rigged GLB (mesh + rig + clip in one
  *  asset, zero retargeting). Plays its baked clip once to `sampleAt` and
  *  freezes. Single-mount asset: the cached useGLTF scene is used directly.
@@ -304,12 +396,16 @@ function FrozenGlbFigure({
   yaw,
   sampleAt = 0.0001,
   rawHeightMeters = 1.7,
+  handSampleSeat,
+  onHandSample,
 }: {
   path: string;
   position: readonly [number, number, number];
   yaw: number;
   sampleAt?: number;
   rawHeightMeters?: number;
+  handSampleSeat?: number;
+  onHandSample?: HandSampleHandler;
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const gltf = useGLTF(path);
@@ -330,12 +426,18 @@ function FrozenGlbFigure({
     const bbox = new THREE.Box3().setFromObject(gltf.scene);
     group.position.setY(group.position.y - bbox.min.y);
     group.updateMatrixWorld(true);
+    if (handSampleSeat !== undefined && onHandSample) {
+      onHandSample(handSampleSeat, sampleHands(
+        gltf.scene.getObjectByName('LeftHand'),
+        gltf.scene.getObjectByName('RightHand'),
+      ));
+    }
     if (process.env.NODE_ENV !== 'production') {
       console.info(`[HoldemTableRoom] native GLB frozen: ${path} @ t=${sampleAt}`);
     }
     invalidate();
     return () => { mixer.stopAllAction(); mixer.uncacheRoot(gltf.scene); };
-  }, [gltf, invalidate, path, sampleAt]);
+  }, [gltf, handSampleSeat, invalidate, onHandSample, path, sampleAt]);
 
   return (
     <group ref={groupRef} position={[position[0], position[1], position[2]]} rotation={[0, yaw, 0]}>
@@ -530,6 +632,22 @@ function HoldemTableRoomScene() {
     () => BOT_SEATS.map(() => preparedClone(stoolGltf.scene, FURNITURE_SCALE)),
     [stoolGltf.scene],
   );
+  const phase = useHoldemController((state) => state.phase);
+  const live = useHoldemController((state) => state.live);
+  const publicSeats = useHoldemController((state) => state.seats);
+  const [handSamples, setHandSamples] = useState<Readonly<Record<number, HandPoseSample | null>>>({});
+  const onHandSample = useCallback<HandSampleHandler>((engineSeatIndex, sample) => {
+    setHandSamples((current) => ({ ...current, [engineSeatIndex]: sample }));
+  }, []);
+  const inHandPeekSeats = useMemo(() => {
+    if (!live || phase === 'idle' || phase === 'settled') return [];
+    return PEEK_ENGINE_SEATS.filter((engineSeatIndex) => {
+      const seat = publicSeats.find((candidate) => candidate.seatIndex === engineSeatIndex);
+      return handSamples[engineSeatIndex] != null
+        && seat?.status !== 'folded'
+        && (seat?.holeCards?.length ?? 0) > 0;
+    });
+  }, [handSamples, live, phase, publicSeats]);
 
   return (
     <>
@@ -577,20 +695,32 @@ function HoldemTableRoomScene() {
               position={[seat.chairX, 0, seat.chairZ]}
               yaw={seat.faceYaw}
               sampleAt={HERMES_SAMPLE_AT}
+              handSampleSeat={PEEK_ENGINE_SEATS.some((value) => value === seat.engineSeatIndex) ? seat.engineSeatIndex : undefined}
+              onHandSample={onHandSample}
             />
           ) : (
           <FrozenFigure
             reg={MODEL_REGISTRY[BOT_MODEL_KEYS[index]!] as ModelRegistryEntry}
             instanceId={`holdem-room-seat-${seat.engineSeatIndex}`}
-            pose={TABLE_SIT_POSE}
+            pose={TABLE_POSE_BY_BOT[index]!}
             position={[seat.chairX, 0, seat.chairZ]}
             yaw={seat.faceYaw}
             targetHeight={BOT_TARGET_HEIGHT}
-            sampleAt={TABLE_SIT_SAMPLE_BY_BOT[index]}
+            sampleAt={TABLE_POSE_SAMPLE_AT}
+            handSampleSeat={PEEK_ENGINE_SEATS.some((value) => value === seat.engineSeatIndex) ? seat.engineSeatIndex : undefined}
+            onHandSample={onHandSample}
           />
           )}
         </group>
       ))}
+
+      {inHandPeekSeats.map((engineSeatIndex) => {
+        const seat = BOT_SEATS.find((candidate) => candidate.engineSeatIndex === engineSeatIndex);
+        const sample = handSamples[engineSeatIndex];
+        return seat && sample
+          ? <PeekHandCards key={`peek-hand-${engineSeatIndex}`} seat={seat} sample={sample} />
+          : null;
+      })}
 
       {/* Dealer STANDS at the MEASURED flat edge (+Z, the 251wu straight
           side), facing the player at the arc (-Z ⇒ yaw π). */}
@@ -610,6 +740,7 @@ function HoldemTableRoomScene() {
         feltTopY={TABLE_TOP_Y}
         seats={BOT_SEATS}
         layout={CARD_LAYOUT}
+        suppressSeatIndices={inHandPeekSeats}
       />
       <Precompile />
     </>
@@ -638,3 +769,4 @@ useGLTF.preload(ROOM_PATH);
 useGLTF.preload(TABLE_PATH);
 useGLTF.preload(STOOL_PATH);
 useGLTF.preload('/models/hermes-female-sit-m.glb');
+useGLTF.preload('/models/hermes-sit-watch.glb');
