@@ -1,5 +1,7 @@
 import { useCallback } from 'react';
 import { useGameStore, avatarPositionRef, type MovementDirection } from '@/stores/game';
+import { isKelpForestPortalProximate } from '@/lib/three/character-positions';
+import { triggerKelpForestWalkIn } from '@/lib/three/kelp-forest-transition';
 import { useKeyboard } from './use-keyboard';
 
 const SPEED = 200; // pixels per second
@@ -85,9 +87,13 @@ export function useGameLoop({ mapWidth, mapHeight, buildingZones, isSpectator = 
       // Skip movement when frozen
       if (store.movementFrozen) return;
 
-      // Handle E to enter building
+      // Handle E to enter a building or walk-in venue.
       if (keyboard.wasJustPressed('e') && store.nearLocation) {
-        store.enterBuilding(store.nearLocation);
+        if (store.nearLocation === 'kelp-forest-portal') {
+          triggerKelpForestWalkIn();
+        } else {
+          store.enterBuilding(store.nearLocation);
+        }
         return;
       }
 
@@ -148,6 +154,12 @@ export function useGameLoop({ mapWidth, mapHeight, buildingZones, isSpectator = 
           nearZone = zone.id;
           break;
         }
+      }
+      if (
+        nearZone === null
+        && isKelpForestPortalProximate(newX - mapWidth / 2, newY - mapHeight / 2)
+      ) {
+        nearZone = 'kelp-forest-portal';
       }
       if (nearZone !== store.nearLocation) {
         store.setNearLocation(nearZone);

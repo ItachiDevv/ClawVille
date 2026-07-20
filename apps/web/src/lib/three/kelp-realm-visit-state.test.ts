@@ -8,6 +8,7 @@ import {
   resetKelpRealmBeaconVisits,
   setKelpRealmBeaconTotalCount,
   setKelpRealmCenterProximity,
+  subscribeKelpRealmBeaconVisits,
   subscribeKelpRealmClaimState,
 } from './kelp-realm-visit-state';
 
@@ -21,17 +22,19 @@ describe('Kelp realm explicit collectible claim state', () => {
     setKelpRealmCenterProximity(false);
     expect(emissions).toBe(0);
     setKelpRealmBeaconTotalCount(12);
-    markKelpRealmBeaconVisited('entry', 'entry-token', 12);
-    markKelpRealmBeaconVisited('entry', 'entry-token', 12);
+    markKelpRealmBeaconVisited('entry', 'entry-token', 12, { found: 0, total: 3 });
+    markKelpRealmBeaconVisited('entry', 'entry-token', 12, { found: 0, total: 3 });
     setKelpRealmCenterProximity(true);
     setKelpRealmCenterProximity(true);
-    markKelpRealmBeaconVisited('center', 'center-token', 12);
+    markKelpRealmBeaconVisited('center', 'center-token', 12, { found: 1, total: 3 });
 
     expect(getKelpRealmClaimSnapshot()).toMatchObject({
       nearCenter: true,
       centerToken: 'center-token',
       visitedCount: 2,
       totalCount: 12,
+      sporesFound: 1,
+      sporesTotal: 3,
     });
     expect(emissions).toBe(4);
     unsubscribe();
@@ -58,6 +61,8 @@ describe('Kelp realm explicit collectible claim state', () => {
       centerToken: null,
       visitedCount: 4,
       totalCount: 12,
+      sporesFound: 2,
+      sporesTotal: 3,
       notice: null,
     } as const;
     expect(deriveKelpRealmClaimPrompt(base, true)).toEqual({
@@ -82,5 +87,25 @@ describe('Kelp realm explicit collectible claim state', () => {
       .toBe('The collectible is not ready to reveal yet. The team has been alerted.');
     expect(describeKelpClaimFailure(403, 'guest_not_allowed'))
       .toBe('Sign in to claim the collectible at the center.');
+    expect(describeKelpClaimFailure(409, 'spores_missing', 2, 3))
+      .toBe('The pearl resists - find the glowing spores (2/3)');
+  });
+
+  it('publishes a reset event so collected spore geometry can brighten again', () => {
+    const visits: string[] = [];
+    let resets = 0;
+    const unsubscribe = subscribeKelpRealmBeaconVisits(
+      (beaconId) => visits.push(beaconId),
+      () => { resets += 1; },
+    );
+    markKelpRealmBeaconVisited('dead-end-1', 'token', 12, { found: 1, total: 3 });
+    resetKelpRealmBeaconVisits();
+    expect(visits).toEqual(['dead-end-1']);
+    expect(resets).toBe(1);
+    expect(getKelpRealmClaimSnapshot()).toMatchObject({
+      sporesFound: 0,
+      sporesTotal: 0,
+    });
+    unsubscribe();
   });
 });
