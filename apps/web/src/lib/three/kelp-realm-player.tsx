@@ -3,12 +3,14 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
+import { z } from 'zod';
 import {
   KELP_REALM_FOOTPRINT_WU,
   KELP_REALM_BEACON_GRAPH,
   KELP_REALM_BEACON_VISIT_RADIUS_WU,
   KELP_REALM_PLAYER_SPAWN,
   KELP_REALM_PLAYER_SPEED_WU_PER_SEC,
+  KELP_REALM_SPORE_COUNT,
   KELP_REALM_WALL_AABBS,
   KELP_MAZE_COLLECTIBLE_SLUG,
 } from '@clawville/shared';
@@ -318,6 +320,38 @@ function KelpRealmGLBPlayerInner({ reg }: { readonly reg: ModelRegistryEntry }) 
 interface BeaconVisitResponse {
   token: string;
   adjacent: readonly { id: string; kind: string; bearingDeg: number; distanceWu: number }[];
+  spores: { found: number; total: number };
+  spore?: true;
+}
+
+const beaconAdjacentResponseSchema = z.object({
+  id: z.string().min(1).max(96),
+  kind: z.enum(['entry', 'junction', 'dead-end', 'center']),
+  bearingDeg: z.number().finite().min(0).lt(360),
+  distanceWu: z.number().finite().positive(),
+}).strict();
+
+const beaconVisitResponseSchema = z.object({
+  token: z.string().min(1).max(1024),
+  adjacent: z.array(beaconAdjacentResponseSchema).max(4),
+  spores: z.object({
+    found: z.number().int().min(0).max(KELP_REALM_SPORE_COUNT),
+    total: z.literal(KELP_REALM_SPORE_COUNT),
+  }).strict(),
+  spore: z.literal(true).optional(),
+}).strict();
+
+const beaconVisitErrorSchema = z.object({
+  error: z.string().optional(),
+  code: z.string().optional(),
+  retryAfterMs: z.number().finite().int().nonnegative().optional(),
+}).strict();
+
+export function parseKelpRealmBeaconVisitResponse(
+  payload: unknown,
+): BeaconVisitResponse | null {
+  const result = beaconVisitResponseSchema.safeParse(payload);
+  return result.success ? result.data : null;
 }
 
 const KELP_API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
@@ -367,23 +401,22 @@ function KelpRealmBeaconController() {
         previous && beaconId !== 'entry' ? { prevToken: previous.token } : {},
         controller.signal,
       );
-      const payload = await response.json().catch(() => ({})) as BeaconVisitResponse & {
-        code?: string;
-        retryAfterMs?: number;
-      };
+      const payload = await response.json().catch(() => null) as unknown;
       if (!activeRef.current || controller.signal.aborted) return;
       if (!response.ok) {
+        const errorResult = beaconVisitErrorSchema.safeParse(payload);
+        const errorPayload = errorResult.success ? errorResult.data : {};
         publishKelpRealmNotice(describeKelpVisitFailure(
           response.status,
-          payload.code,
-          payload.retryAfterMs,
+          errorPayload.code,
+          errorPayload.retryAfterMs,
         ));
-        if (response.status === 429 && payload.code === 'too_fast') {
-          retryAtRef.current = performance.now() + Math.max(1, payload.retryAfterMs ?? 250);
+        if (response.status === 429 && errorPayload.code === 'too_fast') {
+          retryAtRef.current = performance.now() + Math.max(1, errorPayload.retryAfterMs ?? 250);
           lastInsideRef.current = null;
           return;
         }
-        if (payload.code === 'invalid_token' || payload.code === 'expired_token') {
+        if (errorPayload.code === 'invalid_token' || errorPayload.code === 'expired_token') {
           chainRef.current = null;
           resetKelpRealmBeaconVisits();
           setKelpRealmBeaconTotalCount(KELP_REALM_BEACON_GRAPH.nodes.length);
@@ -394,12 +427,20 @@ function KelpRealmBeaconController() {
         return;
       }
 
-      const next = { beaconId, token: payload.token };
+      const parsedPayload = parseKelpRealmBeaconVisitResponse(payload);
+      if (!parsedPayload) {
+        publishKelpRealmNotice(describeKelpVisitFailure(response.status, 'invalid_response'));
+        lastInsideRef.current = beaconId;
+        return;
+      }
+
+      const next = { beaconId, token: parsedPayload.token };
       chainRef.current = next;
       markKelpRealmBeaconVisited(
         beaconId,
-        payload.token,
+        parsedPayload.token,
         KELP_REALM_BEACON_GRAPH.nodes.length,
+        parsedPayload.spores,
       );
     } catch (error) {
       if (!activeRef.current || controller.signal.aborted) return;

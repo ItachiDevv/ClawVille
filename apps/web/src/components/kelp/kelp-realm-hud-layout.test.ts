@@ -3,7 +3,9 @@ import {
   KELP_MOBILE_CLAIM_PANEL_BOTTOM,
   calculateKelpMobileClaimPanelTop,
   shouldShowKelpGuestEntryBanner,
+  shouldShowKelpSporeCounter,
 } from './kelp-realm-hud-layout';
+import { parseKelpClaimErrorPayload } from './KelpRealmClaimHud';
 
 describe('Kelp realm mobile claim HUD layout', () => {
   it('keeps the full claim panel visible on phone and iPad orientations', () => {
@@ -38,5 +40,21 @@ describe('Kelp realm mobile claim HUD layout', () => {
     expect(shouldShowKelpGuestEntryBanner(true, false)).toBe(true);
     expect(shouldShowKelpGuestEntryBanner(true, true)).toBe(false);
     expect(shouldShowKelpGuestEntryBanner(false, false)).toBe(false);
+  });
+
+  it('reveals the spore chip only after a successful visit reports its total', () => {
+    expect(shouldShowKelpSporeCounter(0)).toBe(false);
+    expect(shouldShowKelpSporeCounter(3)).toBe(true);
+  });
+
+  it('accepts only complete numeric spores-missing claim details', () => {
+    expect(parseKelpClaimErrorPayload({ code: 'spores_missing', found: 2, total: 3 }))
+      .toEqual({ code: 'spores_missing', found: 2, total: 3 });
+    expect(parseKelpClaimErrorPayload({ code: 'spores_missing', found: '2', total: 3 }))
+      .toEqual({});
+    expect(parseKelpClaimErrorPayload({ code: 'spores_missing', found: 2 }))
+      .toEqual({});
+    expect(parseKelpClaimErrorPayload({ code: 'spores_missing', found: 2, total: 3, extra: true }))
+      .toEqual({});
   });
 });

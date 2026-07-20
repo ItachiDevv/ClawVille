@@ -26,6 +26,9 @@ import {
   KELP_REALM_PLAYER_SPEED_WU_PER_SEC,
   KELP_REALM_ROWS,
   KELP_REALM_BEACON_VISIT_RADIUS_WU,
+  KELP_REALM_SPORE_BEACON_IDS,
+  KELP_REALM_SPORE_COUNT,
+  KELP_REALM_SPORE_FULL_MASK,
   kelpRealmCellCenterX,
   kelpRealmCellCenterZ,
   isKelpRealmCorridorCell,
@@ -156,8 +159,27 @@ describe('Kelp Forest realm layout invariants', () => {
       if (previousDirection !== null && direction !== previousDirection) turns++;
       previousDirection = direction;
     }
-    expect(turns).toBeGreaterThanOrEqual(3);
+    expect(entryToCenter.length).toBeGreaterThanOrEqual(60);
+    expect(turns).toBeGreaterThanOrEqual(20);
     expect(entryToCenter.some(([, col]) => col !== KELP_REALM_ENTRY_CELL.col)).toBe(true);
+
+    const beaconAdjacency = new Map<string, string[]>();
+    for (const node of KELP_REALM_BEACON_GRAPH.nodes) beaconAdjacency.set(node.id, []);
+    for (const edge of KELP_REALM_BEACON_GRAPH.edges) {
+      beaconAdjacency.get(edge.from)!.push(edge.to);
+      beaconAdjacency.get(edge.to)!.push(edge.from);
+    }
+    const beaconDepth = new Map<string, number>([['entry', 0]]);
+    const beaconQueue = ['entry'];
+    while (beaconQueue.length > 0) {
+      const id = beaconQueue.shift()!;
+      for (const next of beaconAdjacency.get(id) ?? []) {
+        if (beaconDepth.has(next)) continue;
+        beaconDepth.set(next, beaconDepth.get(id)! + 1);
+        beaconQueue.push(next);
+      }
+    }
+    expect(beaconDepth.get('center')).toBeGreaterThanOrEqual(7);
 
     const rawDeadEnds = corridors.filter(([row, col]) => {
       const cell = KELP_REALM_LAYOUT[row]![col];
@@ -189,6 +211,34 @@ describe('Kelp Forest realm layout invariants', () => {
     for (let index = 0; index < KELP_REALM_DEAD_END_DISCOVERIES.length; index++) {
       const discovery = KELP_REALM_DEAD_END_DISCOVERIES[index]!;
       expect(discovery.type).toBe(KELP_REALM_DISCOVERY_TYPES[index % 3]);
+    }
+  });
+
+  test('derives exactly the three deepest dead-end beacons as spores', () => {
+    const distances = new Map<string, number>([['entry', 0]]);
+    const queue = ['entry'];
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      for (const edge of KELP_REALM_BEACON_GRAPH.edges) {
+        const next = edge.from === id ? edge.to : edge.to === id ? edge.from : null;
+        if (next === null || distances.has(next)) continue;
+        distances.set(next, distances.get(id)! + edge.distanceWu);
+        queue.push(next);
+      }
+    }
+    const expected = KELP_REALM_BEACON_GRAPH.nodes
+      .filter((node) => node.kind === 'dead-end')
+      .map((node) => ({ id: node.id, distanceWu: distances.get(node.id)! }))
+      .sort((a, b) => b.distanceWu - a.distanceWu || a.id.localeCompare(b.id))
+      .slice(0, 3)
+      .map(({ id }) => id);
+
+    expect(KELP_REALM_SPORE_COUNT).toBe(3);
+    expect(KELP_REALM_SPORE_FULL_MASK).toBe(0b111);
+    expect(KELP_REALM_SPORE_BEACON_IDS).toEqual(expected);
+    expect(new Set(KELP_REALM_SPORE_BEACON_IDS).size).toBe(KELP_REALM_SPORE_COUNT);
+    for (const id of KELP_REALM_SPORE_BEACON_IDS) {
+      expect(KELP_REALM_BEACON_GRAPH.nodes.find((node) => node.id === id)?.kind).toBe('dead-end');
     }
   });
 

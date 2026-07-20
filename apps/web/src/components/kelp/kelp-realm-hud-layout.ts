@@ -9,6 +9,10 @@ export function shouldShowKelpGuestEntryBanner(
   return isGuest && !nearCenter;
 }
 
+export function shouldShowKelpSporeCounter(sporesTotal: number): boolean {
+  return Number.isFinite(sporesTotal) && sporesTotal > 0;
+}
+
 /** Mirrors the CSS lift for viewport regression tests. */
 export function calculateKelpMobileClaimPanelTop(
   viewportHeight: number,

@@ -294,7 +294,14 @@ import {
 // the center reward is an explicit claim whose final item is decided later by
 // updating one stable reward-only SKU row. The seven action verbs and all
 // partner registration/authentication wire shapes remain unchanged.
-export const PROTOCOL_VERSION = 29;
+// NOTE (2026-07-20, Kelp Forest upgrade Legs A+B): bumped 29 -> 30 ONCE. The
+// 21x21 realm now has a substantially longer winding route and deeper beacon
+// graph, returns adjacent beacons in a deterministic per-avatar/per-beacon
+// shuffle, and carries a three-spore discovery summary through the opaque token
+// chain. Claiming at center now requires all three spores and otherwise returns
+// 409 spores_missing. No [ACTION:] verb, partner register/PATCH/stats wire,
+// signing/auth shape, reward SKU, or successful grant semantics changed.
+export const PROTOCOL_VERSION = 30;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -1434,7 +1441,9 @@ Content-Type: application/json
 \`\`\`
 
 \`entry\` is the ONLY beacon id disclosed up front. A successful visit returns
-\`{ token, adjacent: [{ id, kind, bearingDeg, distanceWu }] }\`. It reveals only
+\`{ token, adjacent: [{ id, kind, bearingDeg, distanceWu }], spores: { found, total: 3 } }\`.
+When the visited beacon holds a spore, the same response additionally includes
+\`spore: true\`; its returned token carries that discovery forward. It reveals only
 that beacon's neighbors — never the full graph, coordinates, paths, or undiscovered
 ids. Bearings use 0° = realm north (-Z), increasing clockwise. To visit one of
 the returned neighbors, call \`POST /api/kelp/beacon/:beaconId/visit\` with
@@ -1442,6 +1451,12 @@ the returned neighbors, call \`POST /api/kelp/beacon/:beaconId/visit\` with
 header. Tokens bind to your server-resolved avatar, expire after 30 minutes, and
 prove adjacency. Moving faster than the realm's physical edge-distance floor
 returns \`429 { code: "too_fast", retryAfterMs }\`; wait, then retry that neighbor.
+
+The 21x21 maze is deliberately long and winding. The \`adjacent\` array is shuffled
+deterministically for your avatar at each beacon, so array position is never a
+hint toward the center. Use the honest bearing/distance data and explore branches.
+Exactly three glowing spores sit at deep dead ends; continue until every response
+reports \`spores: { found: 3, total: 3 }\`. Do not hardcode beacon ids or graph shape.
 
 When a returned neighbor has \`kind: "center"\`, visit it normally, then claim:
 
@@ -1452,6 +1467,11 @@ Content-Type: application/json
 
 { "centerToken": "<token returned by the center visit>" }
 \`\`\`
+
+The center token must carry all three spore discoveries. An incomplete hunt is a
+normal retryable gate, not a server failure: \`409 { code: "spores_missing", found,
+total: 3 }\`. Follow returned neighbors to find the missing glowing spores, revisit
+the center through the token chain, and submit the new complete center token.
 
 Claim is idempotent and binds the reward currently stored under the stable
 \`kelp-maze-collectible\` SKU to your bound avatar. Its placeholder name is

@@ -19,8 +19,13 @@ import { useGameStore, avatarPositionRef, type GameState } from '@/stores/game';
 import { useNpcStore } from '@/stores/npc';
 import type { NpcSpriteState } from '@/stores/npc';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
-import { findNearestCharacter, isCoveProximate } from '@/lib/three/character-positions';
+import {
+  findNearestCharacter,
+  isCoveProximate,
+  isKelpForestPortalProximate,
+} from '@/lib/three/character-positions';
 import { triggerCoveWalkIn } from '@/lib/three/arena-buildings';
+import { triggerKelpForestWalkIn } from '@/lib/three/kelp-forest-transition';
 import { NORI_WORLD_X, NORI_WORLD_Z, NORI_TALK_RADIUS_SQ } from '@/lib/three/town-guide';
 import { isEditable, jumpState } from '@/lib/three/jump-state';
 import { registerInputReset } from '@/lib/three/input-reset';
@@ -151,8 +156,10 @@ export default function NpcController() {
         return;
       }
       if (store.nearLocation) {
-        // Cove is a walk-in venue (SceneTransition), not a teacher chat.
+        // Cove and the Kelp Forest portal are walk-in venues (SceneTransition),
+        // not teacher chats.
         if (store.nearLocation === 'cove') triggerCoveWalkIn();
+        else if (store.nearLocation === 'kelp-forest-portal') triggerKelpForestWalkIn();
         else store.enterBuilding(store.nearLocation);
         _lastEState = eNow;
         return;
@@ -173,7 +180,13 @@ export default function NpcController() {
       const wx = npc.x - MAP_WIDTH  / 2;
       const wz = npc.y - MAP_HEIGHT / 2;
       const nearest = findNearestCharacter(wx, wz);
-      const nearId: string | null = nearest ? nearest.buildingId : (isCoveProximate(wx, wz) ? 'cove' : null);
+      const nearId: string | null = nearest
+        ? nearest.buildingId
+        : isCoveProximate(wx, wz)
+          ? 'cove'
+          : isKelpForestPortalProximate(wx, wz)
+            ? 'kelp-forest-portal'
+            : null;
       const nearName = nearest ? nearest.characterName : null;
       if (nearId !== store.nearLocation) store.setNearLocation(nearId);
       if (nearName !== store.nearCharacter) store.setNearCharacter(nearName);

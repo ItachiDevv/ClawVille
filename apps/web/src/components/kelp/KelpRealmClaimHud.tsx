@@ -2,18 +2,22 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { KELP_REALM_SPORE_COUNT } from '@clawville/shared';
+import { z } from 'zod';
 import { useIsGuest } from '@/hooks/use-is-guest';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { useGameStore } from '@/stores/game';
 import {
   KELP_MOBILE_CLAIM_PANEL_BOTTOM,
   shouldShowKelpGuestEntryBanner,
+  shouldShowKelpSporeCounter,
 } from './kelp-realm-hud-layout';
 import {
   KELP_COLLECTIBLE_CLAIM_SUCCESS,
   deriveKelpRealmClaimPrompt,
   describeKelpClaimFailure,
   getKelpRealmClaimSnapshot,
+  setKelpRealmSporeProgress,
   subscribeKelpRealmClaimState,
 } from '@/lib/three/kelp-realm-visit-state';
 
@@ -26,6 +30,29 @@ type ClaimPhase = 'idle' | 'claiming' | 'claimed';
 interface ClaimFeedback {
   readonly centerToken: string;
   readonly message: string;
+}
+
+interface KelpClaimErrorPayload {
+  readonly code?: string;
+  readonly found?: number;
+  readonly total?: number;
+}
+
+const kelpClaimErrorPayloadSchema = z.union([
+  z.object({
+    code: z.literal('spores_missing'),
+    found: z.number().int().min(0).max(KELP_REALM_SPORE_COUNT),
+    total: z.literal(KELP_REALM_SPORE_COUNT),
+  }).strict(),
+  z.object({
+    error: z.string().optional(),
+    code: z.string().refine((code) => code !== 'spores_missing').optional(),
+  }).strict(),
+]);
+
+export function parseKelpClaimErrorPayload(payload: unknown): KelpClaimErrorPayload {
+  const result = kelpClaimErrorPayloadSchema.safeParse(payload);
+  return result.success ? result.data : {};
 }
 
 export function KelpRealmClaimHud() {
@@ -81,14 +108,27 @@ export function KelpRealmClaimHud() {
         body: JSON.stringify({ centerToken: currentSnapshot.centerToken }),
         signal: controller.signal,
       });
-      const payload = await response.json().catch(() => ({})) as { code?: string };
+      const rawPayload = await response.json().catch(() => null) as unknown;
       if (!mountedRef.current || controller.signal.aborted) return;
       if (!response.ok) {
+        const payload = parseKelpClaimErrorPayload(rawPayload);
+        if (
+          payload.code === 'spores_missing' &&
+          typeof payload.found === 'number' &&
+          typeof payload.total === 'number'
+        ) {
+          setKelpRealmSporeProgress(payload.found, payload.total);
+        }
         phaseRef.current = 'idle';
         setPhase('idle');
         setClaimFeedback({
           centerToken: currentSnapshot.centerToken,
-          message: describeKelpClaimFailure(response.status, payload.code),
+          message: describeKelpClaimFailure(
+            response.status,
+            payload.code,
+            payload.found,
+            payload.total,
+          ),
         });
         return;
       }
@@ -144,6 +184,29 @@ export function KelpRealmClaimHud() {
 
   return (
     <>
+      {shouldShowKelpSporeCounter(snapshot.sporesTotal) && (
+        <div
+          role="status"
+          aria-live="polite"
+          aria-label={`Kelp Forest spores ${snapshot.sporesFound} of ${snapshot.sporesTotal}`}
+          style={{
+            position: 'fixed',
+            top: isMobile ? 126 : 16,
+            right: isMobile ? 16 : 20,
+            zIndex: 71,
+            padding: '8px 11px',
+            border: '1px solid rgba(112,255,226,0.62)',
+            borderRadius: 999,
+            background: 'rgba(1,18,17,0.92)',
+            boxShadow: '0 0 24px rgba(72,255,222,0.16)',
+            color: '#d9fff7',
+            font: '800 13px/1 monospace',
+            pointerEvents: 'none',
+          }}
+        >
+          Spores: {snapshot.sporesFound}/{snapshot.sporesTotal}
+        </div>
+      )}
       {shouldShowKelpGuestEntryBanner(isGuest, snapshot.nearCenter) && (
         <div
           role="status"
