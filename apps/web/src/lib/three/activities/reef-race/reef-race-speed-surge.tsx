@@ -180,7 +180,9 @@ export function ReefRaceSurgeDriver({ roomId }: { roomId: string }) {
       lastBoostPadEvent.at === seenBoostPadAt.current
     ) return;
     seenBoostPadAt.current = lastBoostPadEvent.at;
-    triggerReefRaceSurge('boost-pad', 0.82, 720);
+    // The camera/overlay envelope matches the authoritative 2.2s pad boost.
+    // A slightly lower peak keeps the longer FOV tail readable rather than harsh.
+    triggerReefRaceSurge('boost-pad', 0.7, 2_200);
   }, [lastBoostPadEvent, selfAvatarId]);
 
   useEffect(() => {
@@ -212,7 +214,7 @@ export function ReefRaceSurgeDriver({ roomId }: { roomId: string }) {
       // actual speed remain server-owned.
       turboBubbleActiveUntil = performance.now() +
         (selfRacingClass === 'intelligence' ? 3_000 : 2_500);
-      triggerReefRaceSurge('turbo-bubble', 0.78, 740);
+      triggerReefRaceSurge('turbo-bubble', 0.68, 2_500);
     }
   }, [powerUpInventory, selfRacingClass]);
 

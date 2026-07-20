@@ -12,7 +12,7 @@
  *   - <ReefRaceRibbonToast> — "BOOST +30%" (cyan). Visible for 800ms.
  *     (Optional — ribbon collection is already visible from the ribbon mesh
  *      flash but a text confirmation helps new players understand the mechanic.)
- *   - <ReefRaceBoostPadToast> — NEW (2026-07-10) — "BOOST PAD +30%" (cyan).
+ *   - <ReefRaceBoostPadToast> — "BOOST PAD +45%" (cyan).
  *     Visible for 800ms. Self-only (filters `lastBoostPadEvent.avatarId`
  *     against `selfAvatarId` — the store field is unfiltered/all-avatars so
  *     `ReefRacePlayer` can burst-FX any visible rider's pad hit).
@@ -261,7 +261,7 @@ function ReefRaceBoostPadToast() {
           fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
         }}
       >
-        BOOST PAD  +30%
+        BOOST PAD  +45%
       </span>
     </ToastBox>
   );
