@@ -37,6 +37,7 @@ import * as THREE from 'three';
 import type { VRM } from '@pixiv/three-vrm';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'meshoptimizer';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { useQuery } from '@tanstack/react-query';
 import { emitParticles } from '@/lib/three/particle-system';
 import { applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
@@ -130,6 +131,8 @@ export interface CosmeticLoaderProps {
    *  (RIG_HEAD_OVERRIDE in vrm-avatar-sizing). Derived from the avatar's
    *  animatorId. Omit/undefined → pure auto-fit (correct for well-rigged VRMs). */
   avatarRigKey?: string;
+  /** Optional scene budget/safety allowlist. Omitted means all equipped SKUs. */
+  allowedSkuSlugs?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -703,6 +706,94 @@ function AuraRenderer({
 }
 
 // ---------------------------------------------------------------------------
+// AssetMeta-declared orbiting-orbs aura — one merged draw, both backends
+// ---------------------------------------------------------------------------
+
+const ORBITING_ORBS_RENDERER = 'orbiting-orbs';
+
+function usesOrbitingOrbsRenderer(variant: OwnedCosmetic['variants'][0]): boolean {
+  return variant.assetMeta?.renderer === ORBITING_ORBS_RENDERER;
+}
+
+function finiteAuraMetaNumber(
+  value: unknown,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : fallback;
+}
+
+function OrbitingOrbsAuraRenderer({
+  parentObject,
+  variant,
+  worldScale = 1,
+}: {
+  parentObject: THREE.Object3D;
+  variant: OwnedCosmetic['variants'][0];
+  worldScale?: number;
+}) {
+  const groupRef = useRef<THREE.Group | null>(null);
+  const meta = variant.assetMeta ?? {};
+  const color = String(meta.color ?? '#d9fff7');
+  const orbitRadiusWu = finiteAuraMetaNumber(meta.orbitRadiusWu, 72, 0, 1000);
+  const orbRadiusWu = finiteAuraMetaNumber(meta.orbRadiusWu, 8, 0.1, 200);
+  const orbitHeightWu = finiteAuraMetaNumber(meta.orbitHeightWu, 112, -1000, 1000);
+  const orbitSpeed = finiteAuraMetaNumber(meta.orbitSpeed, 0.85, -10, 10);
+  const orbCount = Math.trunc(finiteAuraMetaNumber(meta.orbCount, 6, 1, 12));
+  const safeScale = finiteAuraMetaNumber(worldScale, 1, 0.001, 1000);
+
+  const resources = useMemo(() => {
+    const sources: THREE.BufferGeometry[] = [];
+    try {
+      for (let index = 0; index < orbCount; index++) {
+        const angle = index / orbCount * Math.PI * 2;
+        const orb = new THREE.IcosahedronGeometry(orbRadiusWu / safeScale, 1);
+        orb.translate(
+          Math.cos(angle) * orbitRadiusWu / safeScale,
+          Math.sin(angle * 2) * 10 / safeScale,
+          Math.sin(angle) * orbitRadiusWu / safeScale,
+        );
+        sources.push(orb);
+      }
+      const geometry = mergeGeometries(sources, false);
+      if (!geometry) throw new Error('Orbiting-orbs aura geometry merge failed');
+      const material = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.92,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        fog: false,
+      });
+      const group = new THREE.Group();
+      group.position.y = orbitHeightWu / safeScale;
+      group.add(new THREE.Mesh(geometry, material));
+      return { group, geometry, material };
+    } finally {
+      for (const source of sources) source.dispose();
+    }
+  }, [color, orbCount, orbRadiusWu, orbitHeightWu, orbitRadiusWu, safeScale]);
+
+  useEffect(() => {
+    groupRef.current = resources.group;
+    parentObject.add(resources.group);
+    return () => {
+      groupRef.current = null;
+      parentObject.remove(resources.group);
+      resources.geometry.dispose();
+      resources.material.dispose();
+    };
+  }, [parentObject, resources]);
+
+  useFrame((_, delta) => {
+    if (groupRef.current) groupRef.current.rotation.y += delta * orbitSpeed;
+  });
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // ParticleRenderer — wraps emitParticles() at a throttled rate
 // ---------------------------------------------------------------------------
 
@@ -952,8 +1043,13 @@ export function CosmeticLoader({
   vrm,
   vrmRenderScale,
   avatarRigKey,
+  allowedSkuSlugs,
 }: CosmeticLoaderProps) {
   const equipped = useEquippedCosmetics(avatarId, context, rigType);
+  const renderableEquipped = useMemo(() => {
+    if (!allowedSkuSlugs) return equipped;
+    return equipped.filter((item) => allowedSkuSlugs.includes(item.sku.slug));
+  }, [allowedSkuSlugs, equipped]);
 
   // Dispose registry: maps cosmetic skin id → cleanup fn
   // Populated by each per-category renderer via the onDispose callback.
@@ -964,7 +1060,7 @@ export function CosmeticLoader({
   const prevEquippedIds = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    const currentIds = new Set(equipped.map((e) => e.id));
+    const currentIds = new Set(renderableEquipped.map((e) => e.id));
 
     // Dispose cosmetics that were removed
     for (const [id, disposeFn] of disposeRegistry.current) {
@@ -975,7 +1071,7 @@ export function CosmeticLoader({
     }
 
     prevEquippedIds.current = currentIds;
-  }, [equipped]);
+  }, [renderableEquipped]);
 
   // Cleanup everything on unmount
   useEffect(() => {
@@ -1002,18 +1098,33 @@ export function CosmeticLoader({
     [],
   );
 
-  const hasAura = equipped.some((e) => e.sku.category === 'aura');
+  const hasShaderAura = renderableEquipped.some((item) => {
+    if (item.sku.category !== 'aura') return false;
+    const variant = pickVariant(item.variants, rigType);
+    return !!variant && !usesOrbitingOrbsRenderer(variant);
+  });
 
   return (
     <>
-      {hasAura && <AuraFrameUpdater parentObject={parentObject} />}
+      {hasShaderAura && <AuraFrameUpdater parentObject={parentObject} />}
 
-      {equipped.map((item) => {
+      {renderableEquipped.map((item) => {
         const variant = pickVariant(item.variants, rigType);
         if (!variant) return null;
 
         const cat = item.sku.category;
         const onDispose = makeOnDispose(item.id);
+
+        if (cat === 'aura' && usesOrbitingOrbsRenderer(variant)) {
+          return (
+            <OrbitingOrbsAuraRenderer
+              key={item.id}
+              parentObject={parentObject}
+              variant={variant}
+              worldScale={vrmRenderScale}
+            />
+          );
+        }
 
         if (cat === 'hat' || cat === 'glasses') {
           return (
