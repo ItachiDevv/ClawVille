@@ -5,7 +5,7 @@
  *   - Checkpoint sequence enforcement (out-of-order rejection)
  *   - Lap completion on full sequence
  *   - Min-lap discard + flag
- *   - Race-end on 3-lap completion
+ *   - Race-end on 2-lap completion
  *   - Deterministic pickup spawn for fixed seed
  */
 
@@ -254,7 +254,7 @@ describe('ReefRaceSim — min-lap discard', () => {
   });
 });
 
-// ─── Race end on 3 laps ─────────────────────────────────────────────────────
+// ─── Race end on configured 2 laps ──────────────────────────────────────────
 
 describe('ReefRaceSim — race-end on REEF_LAPS completion', () => {
   it('marks a body finished after REEF_LAPS and ends round when all done', () => {
@@ -422,7 +422,7 @@ function setIntent(body: any, partial: { dir?: { x: number; y: number }; thrust?
 describe('ReefRaceSim — drift state machine (Phase 1 T1–T10)', () => {
   it('T1 — starts charging when drift-bit + turning + speed threshold met', () => {
     captureBroadcasts();
-    const { body } = bootDriftRoom({ vx: 200, vy: 0 });
+    const { body } = bootDriftRoom({ vx: 400, vy: 0 });
     setIntent(body, { dir: { x: 0.5, y: 1 }, thrust: 0.85, actionBits: ACTION_BIT_DRIFT });
     reefRaceSim.__tickOnceForTest('room-drift');
     expect(body.drift.charging).toBe(true);
@@ -430,7 +430,7 @@ describe('ReefRaceSim — drift state machine (Phase 1 T1–T10)', () => {
 
   it('T2 — does NOT start when going straight', () => {
     captureBroadcasts();
-    const { body } = bootDriftRoom({ vx: 200, vy: 0 });
+    const { body } = bootDriftRoom({ vx: 400, vy: 0 });
     setIntent(body, { dir: { x: 0, y: 1 }, thrust: 0.85, actionBits: ACTION_BIT_DRIFT });
     reefRaceSim.__tickOnceForTest('room-drift');
     expect(body.drift.charging).toBe(false);
@@ -438,7 +438,7 @@ describe('ReefRaceSim — drift state machine (Phase 1 T1–T10)', () => {
 
   it('T3 — advances spark levels at correct tick counts', () => {
     captureBroadcasts();
-    const { body } = bootDriftRoom({ vx: 200, vy: 0 });
+    const { body } = bootDriftRoom({ vx: 400, vy: 0 });
     // Tick once to ENTER charging — that is the first justPressed edge.
     setIntent(body, { dir: { x: 0.5, y: 1 }, thrust: 0.85, actionBits: ACTION_BIT_DRIFT });
     reefRaceSim.__tickOnceForTest('room-drift');
@@ -474,7 +474,7 @@ describe('ReefRaceSim — drift state machine (Phase 1 T1–T10)', () => {
 
   it('T4 — cancels silently on early release (no spark, no boost broadcast)', () => {
     const { broadcasts } = captureBroadcasts();
-    const { body } = bootDriftRoom({ vx: 200, vy: 0 });
+    const { body } = bootDriftRoom({ vx: 400, vy: 0 });
     // Charge to JUST under tier 1.
     setIntent(body, { dir: { x: 0.5, y: 1 }, actionBits: ACTION_BIT_DRIFT });
     reefRaceSim.__tickOnceForTest('room-drift');
@@ -492,19 +492,19 @@ describe('ReefRaceSim — drift state machine (Phase 1 T1–T10)', () => {
 
   it('T5 — fires drift boost on release at spark ≥ 1', () => {
     const { broadcasts } = captureBroadcasts();
-    const { body } = bootDriftRoom({ vx: 200, vy: 0 });
+    const { body } = bootDriftRoom({ vx: 400, vy: 0 });
     // Drive to tier 1. Re-stamp velocity each tick so REEF_DRAG (0.97/tick)
     // doesn't pull us below DRIFT_MIN_SPEED_FOR_CHARGE while charging.
     setIntent(body, { dir: { x: 0.5, y: 1 }, thrust: 0, actionBits: ACTION_BIT_DRIFT });
     reefRaceSim.__tickOnceForTest('room-drift');
     for (let i = 0; i < DRIFT_SPARK_TICK_1; i++) {
-      body.vx = 200; body.vy = 0;
+      body.vx = 400; body.vy = 0;
       setIntent(body, { dir: { x: 0.5, y: 1 }, thrust: 0, actionBits: ACTION_BIT_DRIFT });
       reefRaceSim.__tickOnceForTest('room-drift');
     }
     expect(body.drift.sparkLevel).toBeGreaterThanOrEqual(1);
     // Release.
-    body.vx = 200; body.vy = 0;
+    body.vx = 400; body.vy = 0;
     setIntent(body, { dir: { x: 0.5, y: 1 }, thrust: 0, actionBits: 0 });
     reefRaceSim.__tickOnceForTest('room-drift');
     const evt = broadcasts.find((f) => f.type === 'event.drift_boost');
@@ -566,12 +566,12 @@ describe('ReefRaceSim — drift state machine (Phase 1 T1–T10)', () => {
 
   it('T8 — no double-fire on release (only one event.drift_boost)', () => {
     const { broadcasts } = captureBroadcasts();
-    const { body } = bootDriftRoom({ vx: 250, vy: 0 });
+    const { body } = bootDriftRoom({ vx: 500, vy: 0 });
     // Tier 2.
     setIntent(body, { dir: { x: 0.5, y: 1 }, thrust: 0, actionBits: ACTION_BIT_DRIFT });
     reefRaceSim.__tickOnceForTest('room-drift');
     for (let i = 0; i < DRIFT_SPARK_TICK_2 + 1; i++) {
-      body.vx = 250; body.vy = 0;
+      body.vx = 500; body.vy = 0;
       setIntent(body, { dir: { x: 0.5, y: 1 }, thrust: 0, actionBits: ACTION_BIT_DRIFT });
       reefRaceSim.__tickOnceForTest('room-drift');
     }
@@ -587,7 +587,7 @@ describe('ReefRaceSim — drift state machine (Phase 1 T1–T10)', () => {
 
   it('T9 — cancels when speed drops below DRIFT_MIN_SPEED_FOR_CHARGE', () => {
     const { broadcasts } = captureBroadcasts();
-    const { body } = bootDriftRoom({ vx: 200, vy: 0 });
+    const { body } = bootDriftRoom({ vx: 400, vy: 0 });
     setIntent(body, { dir: { x: 0.5, y: 1 }, actionBits: ACTION_BIT_DRIFT });
     reefRaceSim.__tickOnceForTest('room-drift');
     expect(body.drift.charging).toBe(true);
@@ -603,11 +603,11 @@ describe('ReefRaceSim — drift state machine (Phase 1 T1–T10)', () => {
 
   it('T10 — body.rot eases toward constant 15° drift bias (no accumulation)', () => {
     captureBroadcasts();
-    const { body } = bootDriftRoom({ vx: 200, vy: 0 });
+    const { body } = bootDriftRoom({ vx: 400, vy: 0 });
     // First tick = "press" tick. drift.charging starts FALSE on entry to
     // step 6 (the state-machine update happens AFTER step 6 — see §2.3
     // commentary). So the bias only appears starting on tick 2.
-    body.vx = 200; body.vy = 0;
+    body.vx = 400; body.vy = 0;
     setIntent(body, { dir: { x: 0.5, y: 0.866 }, thrust: 0, actionBits: ACTION_BIT_DRIFT });
     reefRaceSim.__tickOnceForTest('room-drift');
     expect(body.drift.charging).toBe(true);
@@ -616,14 +616,14 @@ describe('ReefRaceSim — drift state machine (Phase 1 T1–T10)', () => {
     const expected = baseRot - DRIFT_ANGULAR_BIAS_RAD;
     // Subsequent ticks ease toward the biased heading instead of snapping.
     for (let i = 0; i < 8; i++) {
-      body.vx = 200; body.vy = 0;
+      body.vx = 400; body.vy = 0;
       setIntent(body, { dir: { x: 0.5, y: 0.866 }, thrust: 0, actionBits: ACTION_BIT_DRIFT });
       reefRaceSim.__tickOnceForTest('room-drift');
     }
     expect(body.rot).toBeCloseTo(expected, 4);
 
     // Same dir remains anchored to the same biased target (not accumulating).
-    body.vx = 200; body.vy = 0;
+    body.vx = 400; body.vy = 0;
     setIntent(body, { dir: { x: 0.5, y: 0.866 }, thrust: 0, actionBits: ACTION_BIT_DRIFT });
     reefRaceSim.__tickOnceForTest('room-drift');
     expect(body.rot).toBeCloseTo(expected, 4);
@@ -631,13 +631,13 @@ describe('ReefRaceSim — drift state machine (Phase 1 T1–T10)', () => {
     // Release — drift.charging stays true through this tick (lingering
     // lean, see §2.3), then flips to false in tickDriftState. So the
     // release tick STILL has bias; the tick AFTER release is unbiased.
-    body.vx = 200; body.vy = 0;
+    body.vx = 400; body.vy = 0;
     setIntent(body, { dir: { x: 0.5, y: 0.866 }, thrust: 0, actionBits: 0 });
     reefRaceSim.__tickOnceForTest('room-drift');
     expect(body.drift.charging).toBe(false);
 
     for (let i = 0; i < 3; i++) {
-      body.vx = 200; body.vy = 0;
+      body.vx = 400; body.vy = 0;
       setIntent(body, { dir: { x: 0.5, y: 0.866 }, thrust: 0, actionBits: 0 });
       reefRaceSim.__tickOnceForTest('room-drift');
     }
@@ -646,7 +646,7 @@ describe('ReefRaceSim — drift state machine (Phase 1 T1–T10)', () => {
 
   it('T10b — gentle right turn under drift never flips, never freezes straight', () => {
     captureBroadcasts();
-    const { body } = bootDriftRoom({ vx: 200, vy: 0 });
+    const { body } = bootDriftRoom({ vx: 400, vy: 0 });
     // dir.x = 0.18 → atan2(0.18, ~0.984) ≈ 10.4° (below 15° drift bias).
     // Bug history at this gentle-input regime:
     //   v1 (constant 15° subtract):  desiredRot = 10.4° - 15° = -4.6° → visible LEFT turn
@@ -655,7 +655,7 @@ describe('ReefRaceSim — drift state machine (Phase 1 T1–T10)', () => {
     const dir = { x: 0.18, y: 0.984 };
     const baseRot = Math.atan2(dir.x, dir.y);
     for (let i = 0; i < 12; i++) {
-      body.vx = 200; body.vy = 0;
+      body.vx = 400; body.vy = 0;
       setIntent(body, { dir, thrust: 0, actionBits: ACTION_BIT_DRIFT });
       reefRaceSim.__tickOnceForTest('room-drift');
     }
@@ -702,7 +702,7 @@ describe('ReefRaceSim — launch boost (Phase 1 T11–T15)', () => {
       reefRaceSim.__tickOnceForTest('room-launch');
     }
     const speed = Math.hypot(body.vx, body.vy);
-    // Stall caps effective speed at REEF_MAX_SPEED * 0.5 * 0.30 = 75 wu/s.
+    // Stall caps effective speed at REEF_MAX_SPEED * 0.5 * 0.30 = 195 wu/s.
     // Allow 10% slack because integration converges asymptotically.
     expect(speed).toBeLessThan(REEF_MAX_SPEED * LAUNCH_STALL_THRUST_CAP * 0.55);
   });
@@ -775,7 +775,7 @@ describe('ReefRaceSim — speedMod stacking (Phase 1 T16)', () => {
       reefRaceSim.__tickOnceForTest('room-drift');
     }
     const speed = Math.hypot(body.vx, body.vy);
-    // Asymptote should approach 700 (1.4 × 500), allow 5% slack.
+    // Asymptote should approach 1820 (1.4 × 1300 @ 2× cap), allow 5% slack.
     expect(speed).toBeLessThan(REEF_MAX_SPEED * 1.55);
   });
 });
@@ -788,17 +788,17 @@ describe('ReefRaceSim — snapshot delta predicate (Phase 1 T17–T18)', () => {
     const state = reefRaceSim.__getState('room-snap')!;
     const body = state.bodies.get('p1')!;
     // Park the body, charge drift to tier 1.
-    body.vx = 200; body.vy = 0;
+    body.vx = 400; body.vy = 0;
     setIntent(body, { dir: { x: 0.5, y: 1 }, thrust: 0, actionBits: ACTION_BIT_DRIFT });
     reefRaceSim.__tickOnceForTest('room-snap');
     for (let i = 0; i < DRIFT_SPARK_TICK_1 + 5; i++) {
-      body.vx = 200; body.vy = 0;
+      body.vx = 400; body.vy = 0;
       setIntent(body, { dir: { x: 0.5, y: 1 }, thrust: 0, actionBits: ACTION_BIT_DRIFT });
       reefRaceSim.__tickOnceForTest('room-snap');
     }
     // Force a snapshot tick via the keyframe cadence (state.tick % 30 = 0).
     while (state.tick % 30 !== 0) {
-      body.vx = 200; body.vy = 0;
+      body.vx = 400; body.vy = 0;
       setIntent(body, { dir: { x: 0.5, y: 1 }, thrust: 0, actionBits: ACTION_BIT_DRIFT });
       reefRaceSim.__tickOnceForTest('room-snap');
     }
@@ -835,12 +835,12 @@ describe('ReefRaceSim — snapshot delta predicate (Phase 1 T17–T18)', () => {
 describe('ReefRaceSim — teardown safety (Phase 1 T19–T20)', () => {
   it('T19 — stopRoom mid-drift is safe (no post-stop boost)', () => {
     const { broadcasts } = captureBroadcasts();
-    const { body } = bootDriftRoom({ vx: 200, vy: 0 });
+    const { body } = bootDriftRoom({ vx: 400, vy: 0 });
     // Charge to tier 2.
     setIntent(body, { dir: { x: 0.5, y: 1 }, actionBits: ACTION_BIT_DRIFT });
     reefRaceSim.__tickOnceForTest('room-drift');
     for (let i = 0; i < DRIFT_SPARK_TICK_2 + 2; i++) {
-      body.vx = 200; body.vy = 0;
+      body.vx = 400; body.vy = 0;
       setIntent(body, { dir: { x: 0.5, y: 1 }, actionBits: ACTION_BIT_DRIFT });
       reefRaceSim.__tickOnceForTest('room-drift');
     }
@@ -855,12 +855,12 @@ describe('ReefRaceSim — teardown safety (Phase 1 T19–T20)', () => {
 
   it('T20 — forfeit mid-drift: no post-forfeit boost broadcast', () => {
     const { broadcasts } = captureBroadcasts();
-    const { body } = bootDriftRoom({ vx: 200, vy: 0 });
+    const { body } = bootDriftRoom({ vx: 400, vy: 0 });
     // Charge to tier 1.
     setIntent(body, { dir: { x: 0.5, y: 1 }, actionBits: ACTION_BIT_DRIFT });
     reefRaceSim.__tickOnceForTest('room-drift');
     for (let i = 0; i < DRIFT_SPARK_TICK_1 + 2; i++) {
-      body.vx = 200; body.vy = 0;
+      body.vx = 400; body.vy = 0;
       setIntent(body, { dir: { x: 0.5, y: 1 }, actionBits: ACTION_BIT_DRIFT });
       reefRaceSim.__tickOnceForTest('room-drift');
     }
@@ -944,13 +944,13 @@ describe('ReefRaceSim — Phase 2 slipstream (P2-T1..P2-T5)', () => {
     const p1 = state.bodies.get('p1')!;
     const p2 = state.bodies.get('p2')!;
     // p1 leads at origin moving +Y at 300; p2 trailing 40wu south, same vel.
-    p1.x = 0; p1.y = 0; p1.vx = 0; p1.vy = 300;
-    p2.x = 0; p2.y = -40; p2.vx = 0; p2.vy = 300;
+    p1.x = 0; p1.y = 0; p1.vx = 0; p1.vy = 600;
+    p2.x = 0; p2.y = -40; p2.vx = 0; p2.vy = 600;
     for (let i = 0; i < SLIPSTREAM_REQUIRED_TICKS + 5; i++) {
       // Re-stamp velocity each tick — sim integration / drag will erode it
       // and the slipstream alignment check requires both ≥ REEF_MAX_SPEED * 0.30.
-      p1.x = 0; p1.y = 0; p1.vx = 0; p1.vy = 300;
-      p2.x = 0; p2.y = -40; p2.vx = 0; p2.vy = 300;
+      p1.x = 0; p1.y = 0; p1.vx = 0; p1.vy = 600;
+      p2.x = 0; p2.y = -40; p2.vx = 0; p2.vy = 600;
       reefRaceSim.__tickOnceForTest('room-p2');
     }
     expect(p2.activeBoosts.has('slipstream-boost')).toBe(true);
@@ -971,7 +971,7 @@ describe('ReefRaceSim — Phase 2 slipstream (P2-T1..P2-T5)', () => {
     // p1 parked, p2 40wu behind moving +Y.
     for (let i = 0; i < SLIPSTREAM_REQUIRED_TICKS + 5; i++) {
       p1.x = 0; p1.y = 0; p1.vx = 0; p1.vy = 0;
-      p2.x = 0; p2.y = -40; p2.vx = 0; p2.vy = 300;
+      p2.x = 0; p2.y = -40; p2.vx = 0; p2.vy = 600;
       reefRaceSim.__tickOnceForTest('room-p2');
     }
     expect(p2.slipstreamConsecutiveTicks).toBe(0);
@@ -986,8 +986,8 @@ describe('ReefRaceSim — Phase 2 slipstream (P2-T1..P2-T5)', () => {
     // Plant 35wu apart — inside the 50wu max but greater than 33wu min, no
     // proximity push.
     for (let i = 0; i < 10; i++) {
-      p1.x = 0; p1.y = 0; p1.vx = 0; p1.vy = 300;
-      p2.x = 0; p2.y = -35; p2.vx = 0; p2.vy = 300;
+      p1.x = 0; p1.y = 0; p1.vx = 0; p1.vy = 600;
+      p2.x = 0; p2.y = -35; p2.vx = 0; p2.vy = 600;
       reefRaceSim.__tickOnceForTest('room-p2');
     }
     // Counter must monotonically increase OR reset cleanly to 1 (never NaN).
@@ -1002,8 +1002,8 @@ describe('ReefRaceSim — Phase 2 slipstream (P2-T1..P2-T5)', () => {
     const p2 = state.bodies.get('p2')!;
     for (let i = 0; i < 5; i++) {
       // Same position — distSq=0 fails the minSq early-out (33²=1089).
-      p1.x = 0; p1.y = 0; p1.vx = 0; p1.vy = 300;
-      p2.x = 0; p2.y = 0; p2.vx = 0; p2.vy = 300;
+      p1.x = 0; p1.y = 0; p1.vx = 0; p1.vy = 600;
+      p2.x = 0; p2.y = 0; p2.vx = 0; p2.vy = 600;
       reefRaceSim.__tickOnceForTest('room-p2');
     }
     expect(p2.activeBoosts.has('slipstream-boost')).toBe(false);
@@ -1147,11 +1147,15 @@ describe('ReefRaceSim — Phase 2 cornering apex (P2-T6..P2-T10)', () => {
         mult: APEX_BONUS_MULT,
       });
       body.currentDriftBoostSparks = 3;
+      // Re-pin to the mechanics-only frame each tick so the 2× speed cap can't
+      // drive the body off the legacy oval into the off-track velocity-reset
+      // (this test measures boost-stack asymptote, not wall behaviour).
+      body.x = 0; body.y = -REEF_TRACK_B * 1.2;
       setIntent(body, { dir: { x: 0, y: 1 }, thrust: 1.0 });
       reefRaceSim.__tickOnceForTest('room-drift');
     }
     const speed = Math.hypot(body.vx, body.vy);
-    // Asymptotes toward REEF_MAX_SPEED * (1 + 0.38 + 0.05) = 715. Allow slack.
+    // Asymptotes toward REEF_MAX_SPEED * (1 + 0.38 + 0.05) = 1859. Allow slack.
     expect(speed).toBeGreaterThan(REEF_MAX_SPEED * 1.30);
     expect(speed).toBeLessThanOrEqual(REEF_MAX_SPEED * 1.85 + 5);
   });
@@ -1302,11 +1306,15 @@ describe('ReefRaceSim — Phase 2 hazards (P2-T15..P2-T18)', () => {
         mult: HAZARD_SLOW_MULT,
       });
       body.currentDriftBoostSparks = 3;
+      // Re-pin to the mechanics-only frame each tick so the 2× speed cap can't
+      // drive the body off the legacy oval into the off-track velocity-reset
+      // (this test measures the drift-3+hazard speedMod, not wall behaviour).
+      body.x = 0; body.y = -REEF_TRACK_B * 1.2;
       setIntent(body, { dir: { x: 0, y: 1 }, thrust: 1.0 });
       reefRaceSim.__tickOnceForTest('room-drift');
     }
     const speed = Math.hypot(body.vx, body.vy);
-    // Asymptote target: REEF_MAX_SPEED * 0.98 = 490 wu/s.
+    // Asymptote target: REEF_MAX_SPEED * 0.98 = 1274 wu/s.
     // Allow generous slack for integration + drag.
     expect(speed).toBeGreaterThan(REEF_MAX_SPEED * 0.85);
     expect(speed).toBeLessThan(REEF_MAX_SPEED * 1.05);
@@ -1518,7 +1526,7 @@ describe('ReefRaceSim — Phase 2 anti-cheat / cap regression (P2-T27..P2-T29)',
       reefRaceSim.__tickOnceForTest('room-drift');
     }
     const speed = Math.hypot(body.vx, body.vy);
-    // Asymptote: REEF_MAX_SPEED * (1 - 0.45) = 275 wu/s.
+    // Asymptote: REEF_MAX_SPEED * (1 - 0.45) = 715 wu/s.
     expect(speed).toBeLessThan(REEF_MAX_SPEED * 0.65);
     // Now plant a hypothetical extra negative — confirm flooring.
     // We use a non-existent kind via direct mutation as the cap math reads
@@ -1543,9 +1551,9 @@ describe('ReefRaceSim — Phase 2 audit-gap tests (P2-T36..P2-T42)', () => {
     const B = state.bodies.get('B')!;
     const C = state.bodies.get('C')!;
     for (let i = 0; i < SLIPSTREAM_REQUIRED_TICKS + 10; i++) {
-      A.x = 0; A.y = 0;     A.vx = 0; A.vy = 300;
-      B.x = 0; B.y = -40;   B.vx = 0; B.vy = 300;
-      C.x = 0; C.y = -80;   C.vx = 0; C.vy = 300;
+      A.x = 0; A.y = 0;     A.vx = 0; A.vy = 600;
+      B.x = 0; B.y = -40;   B.vx = 0; B.vy = 600;
+      C.x = 0; C.y = -80;   C.vx = 0; C.vy = 600;
       reefRaceSim.__tickOnceForTest('room-p2');
     }
     expect(B.slipstreamSourceAvatarId).toBe('A');
@@ -1562,8 +1570,8 @@ describe('ReefRaceSim — Phase 2 audit-gap tests (P2-T36..P2-T42)', () => {
     const A = state.bodies.get('A')!;
     const B = state.bodies.get('B')!;
     for (let i = 0; i < SLIPSTREAM_REQUIRED_TICKS + 5; i++) {
-      A.x = 0; A.y = 0;   A.vx = 0; A.vy = 300;
-      B.x = 0; B.y = -40; B.vx = 0; B.vy = 300;
+      A.x = 0; A.y = 0;   A.vx = 0; A.vy = 600;
+      B.x = 0; B.y = -40; B.vx = 0; B.vy = 600;
       reefRaceSim.__tickOnceForTest('room-p2');
     }
     expect(B.activeBoosts.has('slipstream-boost')).toBe(true);
@@ -1572,7 +1580,7 @@ describe('ReefRaceSim — Phase 2 audit-gap tests (P2-T36..P2-T42)', () => {
     A.alive = false;
     // Tick past grace.
     for (let i = 0; i < SLIPSTREAM_GRACE_TICKS + 2; i++) {
-      B.x = 0; B.y = -40; B.vx = 0; B.vy = 300;
+      B.x = 0; B.y = -40; B.vx = 0; B.vy = 600;
       reefRaceSim.__tickOnceForTest('room-p2');
     }
     expect(B.activeBoosts.has('slipstream-boost')).toBe(false);
@@ -1629,9 +1637,9 @@ describe('ReefRaceSim — Phase 2 audit-gap tests (P2-T36..P2-T42)', () => {
     }
     const speed = Math.hypot(body.vx, body.vy);
     // Stall short-circuit: speedMod = 0.5, effectiveThrust ≤ 0.30.
-    // Asymptote: REEF_MAX_SPEED * 0.5 * 0.30 = 75 wu/s.
+    // Asymptote: REEF_MAX_SPEED * 0.5 * 0.30 = 195 wu/s.
     // Hazard's negative kineticMult is SKIPPED inside the stall branch,
-    // so the speed should NOT be lower than the stall floor — 75 wu/s.
+    // so the speed should NOT be lower than the stall floor — 195 wu/s.
     // Bound: stall floor + 10% slack for integration approach.
     expect(speed).toBeLessThanOrEqual(REEF_MAX_SPEED * 0.5 * LAUNCH_STALL_THRUST_CAP * 1.1);
   });
@@ -1670,6 +1678,9 @@ describe('ReefRaceSim — Phase 2 audit-gap tests (P2-T36..P2-T42)', () => {
         mult: HAZARD_SLOW_MULT,
       });
       body.currentDriftBoostSparks = 3;
+      // Re-pin to the mechanics-only frame each tick so the 2× speed cap can't
+      // drive the body off the legacy oval into the off-track velocity-reset.
+      body.x = 0; body.y = -REEF_TRACK_B * 1.2;
       setIntent(body, { dir: { x: 0, y: 1 }, thrust: 1.0 });
       reefRaceSim.__tickOnceForTest('room-drift');
     }
@@ -1682,6 +1693,11 @@ describe('ReefRaceSim — Phase 2 audit-gap tests (P2-T36..P2-T42)', () => {
 
     // Now add turbo — turbo +0.40 wins positive slot vs drift +0.38 via Math.max,
     // hazard -0.40 lives in negative slot, kineticDelta = 0.40 - 0.40 = 0.00 → 1.00×.
+    // Re-anchor this independent convergence leg: at the 1300 wu/s base cap,
+    // continuing from the first leg reaches the legacy oval wall and measures
+    // wall-clamp behavior instead of the boost-stack asymptote.
+    body.x = 0;
+    body.y = -REEF_TRACK_B * 1.2;
     body.activeEffects.set('rr-turbo-bubble', Date.now() + 30_000);
     for (let i = 0; i < 60; i++) {
       body.activeEffects.set('rr-turbo-bubble', Date.now() + 30_000);
@@ -1694,6 +1710,9 @@ describe('ReefRaceSim — Phase 2 audit-gap tests (P2-T36..P2-T42)', () => {
         mult: HAZARD_SLOW_MULT,
       });
       body.currentDriftBoostSparks = 3;
+      // Re-pin to the mechanics-only frame each tick so the 2× speed cap can't
+      // drive the body off the legacy oval into the off-track velocity-reset.
+      body.x = 0; body.y = -REEF_TRACK_B * 1.2;
       setIntent(body, { dir: { x: 0, y: 1 }, thrust: 1.0 });
       reefRaceSim.__tickOnceForTest('room-drift');
     }
@@ -1760,14 +1779,13 @@ describe('ReefRaceSim — Phase 2 audit-gap tests (P2-T36..P2-T42)', () => {
   // ribbon_collected, apex_verdict, hazard_hit) — the worry is that the
   // delta size growth is unbounded.
   //
-  // Budget rationale (updated 2026-04-28 for REEF_SNAPSHOT_HZ 10 → 20):
-  //   - 8 players × 20Hz snapshot rate = 160 entity deltas / sec
+  // Budget rationale (effective cadence audited 2026-07-13):
+  //   - configured 20Hz quantizes to 15Hz at the 30Hz integer tick divisor
+  //   - 8 players × 15Hz snapshot rate = 120 entity deltas / sec
   //   - target ~2KB / snapshot at 8 players (post-Phase-2)
-  //   - 20Hz × 2KB = 40KB / sec / room sustained
-  //   - 30s match → 1.2MB sustained payload upper bound (worst case)
-  //   - measured run at 20Hz lands ~300KB — still under the historical
-  //     600KB ceiling, but doubling the snap rate doubles the run too,
-  //     so the ceiling is bumped to 1.2MB to keep the 4× spike guard.
+  //   - 15Hz × 2KB = 30KB / sec / room sustained
+  //   - 30s match → 900KB sustained payload upper bound (worst case)
+  //   - expected frame count is ~450 deltas over 30s.
   //
   // Sized as JSON byte length of every broadcast frame to mirror the
   // wire-format cost the WebSocket actually pays.
@@ -1799,14 +1817,14 @@ describe('ReefRaceSim — Phase 2 audit-gap tests (P2-T36..P2-T42)', () => {
       if (frame.type === 'snapshot.delta') snapshotDeltas++;
       else if (frame.type.startsWith('event.')) eventFrames++;
     }
-    // Ceiling: 1.2MB / 30s / 8 players (post-20Hz, see budget rationale above).
-    const CEILING_BYTES = 1_200 * 1024;
+    // Ceiling: 900KB / 30s / 8 players at the effective 15Hz cadence.
+    const CEILING_BYTES = 900 * 1024;
     expect(totalBytes).toBeLessThan(CEILING_BYTES);
     // Lower bound — sanity: must have actually broadcast something. Prevents a
     // future regression where broadcasts are silently dropped (test would
     // otherwise pass trivially at 0 bytes).
     expect(totalBytes).toBeGreaterThan(10_000);
-    expect(snapshotDeltas).toBeGreaterThan(200); // 30s @ 20Hz ≈ 600
+    expect(snapshotDeltas).toBeGreaterThan(400); // 30s @ effective 15Hz ≈ 450
     void eventFrames;
   });
 });
@@ -2114,7 +2132,7 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
       avatarProfiles: profiles,
     });
     const body = state.bodies.get('str')!;
-    body.vx = 200;
+    body.vx = 400;
     body.vy = 0;
     setIntent(body, {
       dir: { x: 0.5, y: 1 },
@@ -2137,13 +2155,13 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
 
   // P3-T15 — velocity validator NOW actually fires (N1 fix). Direct
   // validator call — proves the validator clamps at REEF_MAX_ACCEL × dt ×
-  // 2.1 ≈ 140 wu/s, AND also asserts the applyIntentForTick call-site no
+  // 2.1 ≈ 364 wu/s, AND also asserts the applyIntentForTick call-site no
   // longer passes (prevV, prevV) — see C-IMPL-1 fix at
   // reef-race-sim.ts:~1132 (validator runs at end of applyIntentForTick).
-  it('P3-T15 — velocity validator clamps a synthetic 200 wu/s jump', () => {
+  it('P3-T15 — velocity validator clamps a synthetic 400 wu/s jump', () => {
     const dt = 1 / REEF_SIM_HZ;
     const prev = { x: 0, y: 200 };
-    const synthetic = { x: 0, y: 200 + 200 }; // +200 wu/s magnitude jump
+    const synthetic = { x: 0, y: 200 + 400 }; // +400 wu/s magnitude jump
     const verdict = validateReefVelocityDelta(
       prev,
       synthetic,
@@ -2152,9 +2170,9 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     );
     expect(verdict.ok).toBe(false);
     expect(verdict.flagged).toBe(true);
-    // And a legitimate 80 wu/s acceleration step (well under the
-    // REEF_MAX_ACCEL × dt × 2.1 ≈ 140 allowance) should NOT flag.
-    const legit = { x: 0, y: 200 + 80 };
+    // And a legitimate 160 wu/s acceleration step (well under the
+    // REEF_MAX_ACCEL × dt × 2.1 ≈ 364 allowance) should NOT flag.
+    const legit = { x: 0, y: 200 + 160 };
     const ok = validateReefVelocityDelta(
       prev,
       legit,
@@ -2168,7 +2186,7 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
   // P3-T15b — REAL wiring proof for C-IMPL-1. Drives the actual
   // applyIntentForTick → validator pipeline by poisoning body.mults.accelMult
   // to a value that produces a per-tick velocity delta well above the
-  // validator's REEF_MAX_ACCEL × dt × 2.1 ≈ 140 wu/s allowance. With the
+  // validator's REEF_MAX_ACCEL × dt × 2.1 ≈ 364 wu/s allowance. With the
   // pre-fix wiring (prev/curr both captured AFTER acceleration), no flag
   // would ever appear regardless of accel magnitude. With C-IMPL-1 fixed
   // (prev captured BEFORE acceleration, validator at end of
@@ -2184,7 +2202,7 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     });
     const body = state.bodies.get('p1')!;
     // Poison accelMult to 5.0 so a single applyIntentForTick step adds
-    // ~333 wu/s — well over the validator's ~140 wu/s allowance. This
+    // ~867 wu/s — well over the validator's ~364 wu/s allowance. This
     // simulates a future regression / cheat path that pumps the per-tick
     // delta past the legitimate ceiling. With C-IMPL-1 fixed the
     // validator catches it; without the fix it never sees a non-zero dv.
@@ -2194,7 +2212,7 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
     setIntent(body, { dir: { x: 0, y: 1 }, thrust: 1 });
     reefRaceSim.__tickOnceForTest('room-p3');
     // The body's velocity must have been clamped down toward the validator's
-    // allowance, not the poisoned 333 wu/s target. This is the load-bearing
+    // allowance, not the poisoned ~867 wu/s target. This is the load-bearing
     // assertion — clamp is what actually protects the sim from a cheat path.
     const speedAfterClamp = Math.hypot(body.vx, body.vy);
     expect(speedAfterClamp).toBeLessThanOrEqual(
@@ -2335,7 +2353,11 @@ describe('ReefRaceSim — Phase 3 stat-driven multipliers (P3-T1..P3-T18)', () =
   it('P3-T17b — agility outperforms balanced over sustained 60-tick corner (10-trial bound)', () => {
     captureBroadcasts();
     const N_TRIALS = 10;
-    const TICKS_PER_TRIAL = 60; // ~2s at 30Hz
+    // ~1s at 30Hz. Halved from 60 when the base cap doubled (650→1300, 2026-07-15):
+    // at 2× speed the karts cover a comparable on-track arc in half the ticks, so the
+    // agility turn-radius advantage still accumulates without either kart leaving the
+    // legacy oval into the off-track velocity-reset (which would zero both paths equally).
+    const TICKS_PER_TRIAL = 30;
     let agilityAdvantage = 0;
     for (let trial = 0; trial < N_TRIALS; trial++) {
       // Reset between trials so each room has fresh seeding/state.
@@ -2667,7 +2689,7 @@ describe('ReefRaceSim Phase 4 — streak counter', () => {
     expect(body.bestStreakThisMatch).toBe(2);
   });
 
-  // P4-T7 (S2 fix — milestones at 5/10/20/30/36)
+  // P4-T7 (milestones at 5/10/16/20/24 — re-spaced for the v4 24-checkpoint 2-lap race)
   it('P4-T7 (S2 fix) — event.streak_milestone fires at 5, 10, 20', () => {
     const { broadcasts } = captureBroadcasts();
     reefRaceSim.startRoom('room-a', 'reef-race', ['p1', 'p2', 'p3', 'p4'], { seed: 6 });

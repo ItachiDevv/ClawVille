@@ -448,3 +448,202 @@ describe('ReefSpline.closestPointOnSpline — performance', () => {
     expect(elapsed).toBeLessThan(50);
   });
 });
+
+// ─── Closed-loop (periodic) ReefSpline ────────────────────────────────────────
+//
+// 2026-06-22 closed-loop rebuild. These tests exercise the OPT-IN
+// `{ closed: true }` periodic path. The OPEN tests above MUST stay green
+// untouched — the closed path is purely additive.
+//
+// Synthetic closed ring fixture: a deformed circle (radius ~1000, halfWidth
+// modulated) so the seam, arc-closure, and modulo-Newton are all stressed.
+describe('ReefSpline — closed loop', () => {
+  /**
+   * 8-point deformed ring. Points sit on a circle of radius 1000 around the
+   * origin with a 3θ width ripple. Spaced ~765 wu apart (> 88 wu fold rule).
+   * Built with `{ closed: true }` so the closing chord CP[7]→CP[0] is a real
+   * segment and the loop is C1-continuous at the seam.
+   */
+  const RING_N = 8;
+  const ringCps: SplineControlPoint[] = [];
+  for (let i = 0; i < RING_N; i++) {
+    const a = (2 * Math.PI * i) / RING_N;
+    ringCps.push({
+      x: 1000 * Math.cos(a),
+      z: 1000 * Math.sin(a),
+      halfWidth: 100 + 20 * Math.sin(3 * a),
+    });
+  }
+  const ring = new ReefSpline(ringCps, { closed: true });
+
+  it('exposes closed=true (and OPEN splines stay closed=false)', () => {
+    expect(ring.closed).toBe(true);
+    expect(spline.closed).toBe(false);
+  });
+
+  it('throws with fewer than 3 control points in closed mode', () => {
+    expect(() => new ReefSpline([{ x: 0, z: 0, halfWidth: 1 }], { closed: true })).toThrow();
+    expect(
+      () => new ReefSpline(
+        [{ x: 0, z: 0, halfWidth: 1 }, { x: 100, z: 0, halfWidth: 1 }],
+        { closed: true },
+      ),
+    ).toThrow();
+  });
+
+  it('rejects an explicitly duplicated terminal CP in closed mode', () => {
+    // Authors must NOT append a copy of CP[0] — the wrap is internal. A literal
+    // duplicate would collapse the closing-chord knot span → seam cusp.
+    const dupTerminal = [
+      { x: 0, z: 0, halfWidth: 100 },
+      { x: 1000, z: 0, halfWidth: 100 },
+      { x: 1000, z: 1000, halfWidth: 100 },
+      { x: 0, z: 0, halfWidth: 100 }, // duplicate of CP[0]
+    ];
+    expect(() => new ReefSpline(dupTerminal, { closed: true })).toThrow();
+  });
+
+  it('OPEN path is bit-identical when passed empty options', () => {
+    // `new ReefSpline(cps)` and `new ReefSpline(cps, {})` must match exactly.
+    const a = new ReefSpline(TEST_CONTROL_POINTS);
+    const b = new ReefSpline(TEST_CONTROL_POINTS, {});
+    expect(b.closed).toBe(false);
+    expect(b.totalArcLength).toBe(a.totalArcLength);
+    for (const t of sampleT(50)) {
+      const pa = a.centerlineAt(t);
+      const pb = b.centerlineAt(t);
+      expect(pb.x).toBe(pa.x);
+      expect(pb.z).toBe(pa.z);
+    }
+  });
+
+  it('POSITION continuity at the seam: centerlineAt(0) ≈ centerlineAt(1)', () => {
+    const c0 = ring.centerlineAt(0);
+    const c1 = ring.centerlineAt(1);
+    expect(Math.abs(c0.x - c1.x)).toBeLessThan(1e-6);
+    expect(Math.abs(c0.z - c1.z)).toBeLessThan(1e-6);
+  });
+
+  it('C1 TANGENT continuity at the seam: tangentAt(0) ≈ tangentAt(1)', () => {
+    const t0 = ring.tangentAt(0);
+    const t1 = ring.tangentAt(1);
+    // Dot of two unit tangents ≈ 1 ⇒ same direction (no cusp at the seam).
+    const dot = t0.x * t1.x + t0.z * t1.z;
+    expect(dot).toBeGreaterThan(0.9999);
+  });
+
+  it('C1 continuity holds ACROSS the closing-chord/first-segment boundary', () => {
+    // Evaluate tangent just before the seam (t≈0.9999, end of closing chord)
+    // and just after (t≈0.0001, start of segment 0). The analytic derivative
+    // must be continuous — no cusp.
+    const before = ring.tangentAt(0.9999);
+    const after = ring.tangentAt(0.0001);
+    const dot = before.x * after.x + before.z * after.z;
+    expect(dot).toBeGreaterThan(0.9999);
+  });
+
+  it('WIDTH continuity at the seam: widthAt(0) ≈ widthAt(1)', () => {
+    expect(Math.abs(ring.widthAt(0) - ring.widthAt(1))).toBeLessThan(1e-6);
+  });
+
+  it('arclengthFromT(1) ≈ totalArcLength (INCLUDES the closing chord)', () => {
+    expect(ring.arclengthFromT(1)).toBeCloseTo(ring.totalArcLength, 3);
+    // Sanity: arc is near the circle circumference (centripetal under-estimates
+    // a perfect circle slightly via chords, so allow a band).
+    const circ = 2 * Math.PI * 1000;
+    expect(ring.totalArcLength).toBeGreaterThan(circ * 0.95);
+    expect(ring.totalArcLength).toBeLessThanOrEqual(circ + 1);
+  });
+
+  it('tFromArclength round-trips across the seam (incl. s just past the seam)', () => {
+    // Sample arc distances including the last 1% (just before the seam) and the
+    // first 1% (just after). Round-trip must hold across the wrap.
+    const L = ring.totalArcLength;
+    const sSamples = [
+      5, L * 0.01, L * 0.25, L * 0.5, L * 0.75, L * 0.99, L - 5,
+    ];
+    for (const s of sSamples) {
+      const t = ring.tFromArclength(s);
+      const sBack = ring.arclengthFromT(t);
+      expect(Math.abs(sBack - s)).toBeLessThan(0.5);
+    }
+  });
+
+  it('closestPointOnSpline for a point JUST PAST the seam returns t near 0 (NOT ≈1)', () => {
+    // A query point physically just past the seam (t≈0.003) must converge to a
+    // small t, NOT snap to t≈1 on the wrong side of the seam.
+    const justPast = ring.centerlineAt(0.003);
+    const r = ring.closestPointOnSpline(justPast);
+    expect(r.distance).toBeLessThan(1.0);
+    expect(r.t).toBeLessThan(0.05); // small t, not ≈1
+    expect(r.t).toBeGreaterThanOrEqual(0);
+  });
+
+  it('closestPointOnSpline returns t in [0,1) and stays accurate around the loop', () => {
+    for (const t of sampleT(40, 0.0, 0.98)) {
+      const p = ring.centerlineAt(t);
+      const r = ring.closestPointOnSpline(p);
+      expect(r.t).toBeGreaterThanOrEqual(0);
+      expect(r.t).toBeLessThan(1); // wrapped into [0,1)
+      expect(r.distance).toBeLessThan(1.0);
+    }
+  });
+
+  it('closestPointOnSpline distance/side correct for offset points around the loop', () => {
+    for (const t of sampleT(30, 0.02, 0.96)) {
+      const c = ring.centerlineAt(t);
+      const nm = ring.normalAt(t);
+      const pL: Vec2 = { x: c.x + 30 * nm.x, z: c.z + 30 * nm.z };
+      const rL = ring.closestPointOnSpline(pL);
+      expect(Math.abs(rL.distance - 30)).toBeLessThan(2.0);
+      expect(rL.side).toBe('L');
+    }
+  });
+
+  it('the closed ring does not self-intersect within its body radius', () => {
+    // Dense centerline sampling; min distance between non-adjacent samples must
+    // exceed 88 wu (4 × REEF_BODY_RADIUS=22). "Non-adjacent" = cyclic index gap
+    // beyond a small arc neighbourhood.
+    const M = 800;
+    const pts: Vec2[] = [];
+    for (let i = 0; i < M; i++) pts.push(ring.centerlineAt(i / M));
+    const skip = Math.ceil(M * (300 / ring.totalArcLength));
+    let minSelf = Infinity;
+    for (let i = 0; i < M; i++) {
+      for (let j = i + 1; j < M; j++) {
+        const cyc = Math.min(j - i, M - (j - i));
+        if (cyc <= skip) continue;
+        const d = dist2D(pts[i], pts[j]);
+        if (d < minSelf) minSelf = d;
+      }
+    }
+    // eslint-disable-next-line no-console
+    console.log(`  closed ring min non-adjacent self-distance = ${minSelf.toFixed(1)} wu`);
+    expect(minSelf).toBeGreaterThan(88);
+  });
+
+  it('heading sweeps a full ±2π around the loop', () => {
+    const N = 2000;
+    let prevAng = Math.atan2(ring.tangentAt(0).z, ring.tangentAt(0).x);
+    let sweep = 0;
+    for (let i = 1; i <= N; i++) {
+      const tg = ring.tangentAt(i / N);
+      const ang = Math.atan2(tg.z, tg.x);
+      let d = ang - prevAng;
+      while (d > Math.PI) d -= 2 * Math.PI;
+      while (d < -Math.PI) d += 2 * Math.PI;
+      sweep += d;
+      prevAng = ang;
+    }
+    expect(Math.abs(Math.abs(sweep) - 2 * Math.PI)).toBeLessThan(0.05);
+  });
+
+  it('closed closestPointOnSpline keeps the perf budget (1000 calls < 50ms)', () => {
+    const p = ring.centerlineAt(0.37);
+    const qPoint: Vec2 = { x: p.x + 15, z: p.z + 20 };
+    const t0 = performance.now();
+    for (let i = 0; i < 1000; i++) ring.closestPointOnSpline(qPoint);
+    const elapsed = performance.now() - t0;
+    expect(elapsed).toBeLessThan(50);
+  });
+});

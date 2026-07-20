@@ -107,8 +107,8 @@ describe('(2) dormant-inert fallback (real-gateway type, no credentials)', () =>
     expect(plan.restoredState).toEqual({ lastX: 1200, lastY: 1300 });
   });
 
-  it('every real-gateway identity type dorms without credentials (openclaw/ironclaw/custom)', () => {
-    for (const identityType of ['openclaw', 'ironclaw', 'custom']) {
+  it('every real-gateway identity type dorms without credentials (openclaw/custom)', () => {
+    for (const identityType of ['openclaw', 'custom']) {
       const plan = planReconnectSession({
         bot: botRow({ identityType }),
         provenUserId: 'user-1',
@@ -132,6 +132,21 @@ describe('(2) dormant-inert fallback (real-gateway type, no credentials)', () =>
     // tests, so hermes resolves to the fail-soft 'nanoclaw'.
     expect(plan.config.protocol).toBe('nanoclaw');
     expect(plan.config.autonomyMode).toBe('self-managed');
+  });
+
+  it('gateway-less OpenClaw is dormant when its host-it-for-me gate is off', () => {
+    const plan = planReconnectSession({
+      bot: botRow({ identityType: 'openclaw', gatewayUrl: null, protocol: 'nanoclaw' }),
+      provenUserId: 'user-1',
+      sessionId: NEW_SID,
+    });
+    if (!plan.mint) throw new Error('expected mint');
+    expect(plan.dormant).toBe(true);
+    // The local-host gate is off in tests. Public connect rejects this shape;
+    // a legacy row reconnects as dormant-inert rather than being mislabeled as
+    // a hosted cognition runtime.
+    expect(plan.config.protocol).toBe('nanoclaw');
+    expect(plan.config.authToken).toBe('');
   });
 });
 

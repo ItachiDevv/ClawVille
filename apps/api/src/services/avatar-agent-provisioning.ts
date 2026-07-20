@@ -620,3 +620,130 @@ export async function provisionAvatarAgentForSignup(
     skipIfAvatarExists: true,
   });
 }
+
+/**
+ * LAZY BACKFILL for legacy pre-P2 avatars — 2026-07-15, founder report ("two
+ * buttons: 'being set up — finish customizing' + 'Connect Your Agent'; first
+ * goes nowhere; nothing is left to customize").
+ *
+ * A legacy account can hold a FULLY-CUSTOMIZED avatar whose `platform_agents`
+ * row simply doesn't exist (`avatars.platformAgentId IS NULL` — created before
+ * P2 wired agent rows into avatar creation). Under "account ≡ agent" such an
+ * account is NOT pending anything the USER can act on: the only missing piece
+ * is a server-side row we can mint from the avatar's own stored fields. This
+ * is the D1 "Player tier → migration, not a rename" completion, done lazily at
+ * the `/me/agent-session` cold path instead of a batch script.
+ *
+ * Scope guards:
+ *  - Hosted harnesses only (milady/hermes/openclaw). A 'custom'-harness avatar
+ *    without an agent row keeps provisioning-pending — its gateway config is a
+ *    genuine /create-agent concern.
+ *  - NO `economy.genesis` covenant record: the avatar (and its vCLAW balance)
+ *    already exists and was reconciled by `scripts/covenant/backfill-genesis.ts`
+ *    — recording a second genesis would double-count the anchor.
+ *  - NO wallet mint, NO signup bonus, NO username init — those are creation
+ *    concerns; this only restores the missing agent row.
+ *  - Race-safe: the `platform_agent_id IS NULL` CAS update decides the winner;
+ *    a loser's freshly-inserted agent row rolls back with its transaction.
+ *
+ * Returns the linked platform agent id, or null when the avatar is missing,
+ * already linked (returns the existing link instead where possible), or not
+ * hosted-harness.
+ */
+export async function backfillPlatformAgentForAvatar(
+  userId: string,
+  avatarId: string,
+): Promise<string | null> {
+  try {
+    return await db.transaction(async (tx) => {
+      // SELECT ... FOR UPDATE (Codex BLOCKING, 2026-07-15): serialize ALL
+      // missing-link writers on the avatar row. Without the lock, this GET
+      // backfill and the PATCH /api/avatars/me mint-on-customize path could
+      // both observe platformAgentId NULL, each insert an agent row, and the
+      // PATCH's later unconditional link overwrite would orphan ours AFTER
+      // our CAS already committed. Holding the row lock from the first read
+      // means the concurrent writer blocks here until we commit, then sees
+      // the linked id and skips its own mint (the PATCH side re-reads under
+      // the same lock).
+      const [avatar] = await tx
+        .select()
+        .from(avatars)
+        .where(and(eq(avatars.id, avatarId), eq(avatars.userId, userId)))
+        .for('update');
+      if (!avatar) return null;
+      if (avatar.platformAgentId) return avatar.platformAgentId; // raced: already healed
+      if (!['milady', 'hermes', 'openclaw'].includes(avatar.harness ?? '')) return null;
+
+      // Reuse the avatar's persisted characterConfig verbatim when present
+      // (it already carries the user's actual customization); rebuild only
+      // for very old rows that predate the column. Those same rows can carry
+      // archetype ids that no longer exist in AVATAR_ARCHETYPES (live example:
+      // 'explorer' on a staging test account) — fall back to the signup
+      // default archetype rather than failing the whole backfill over a
+      // system-prompt flavor.
+      let characterConfig = avatar.characterConfig;
+      if (!characterConfig) {
+        const modelMeta = getAgentModel((avatar.modelKey ?? DEFAULT_AGENT_MODEL_KEY) as AgentModelKey);
+        const archetypeId = AVATAR_ARCHETYPES.some((a) => a.id === avatar.archetype)
+          ? (avatar.archetype as AvatarArchetypeId)
+          : (SIGNUP_PROVISION_ARCHETYPE as AvatarArchetypeId);
+        characterConfig = buildCharacterConfig(
+          archetypeId,
+          avatar.name,
+          modelMeta?.label ?? avatar.species,
+          avatar.learningFocus ?? null,
+        );
+      }
+
+      const [insertedAgent] = await tx
+        .insert(agents)
+        .values({
+          userId,
+          name: avatar.name,
+          type: 'avatar-agent',
+          status: 'pending',
+          config: {
+            species: avatar.species,
+            color: avatar.color,
+            archetypeId: avatar.archetype,
+            modelKey: avatar.modelKey,
+            agentCategory: avatar.agentCategory,
+            harness: avatar.harness,
+          },
+          // AvatarCharacterConfigJson has no index signature, so it isn't
+          // directly assignable to the column's Record<string, unknown>.
+          customization: characterConfig as unknown as Record<string, unknown>,
+        })
+        .returning();
+
+      const linked = await tx
+        .update(avatars)
+        .set({ platformAgentId: insertedAgent.id, updatedAt: new Date() })
+        .where(and(eq(avatars.id, avatarId), isNull(avatars.platformAgentId)))
+        .returning({ id: avatars.id });
+
+      if (linked.length === 0) {
+        // Lost the CAS race — roll back our orphan agent insert; the winner's
+        // link is authoritative and the caller's next read sees it.
+        throw new BackfillLostRaceError();
+      }
+      return insertedAgent.id;
+    });
+  } catch (err) {
+    if (err instanceof BackfillLostRaceError) {
+      const winner = await db.query.avatars.findFirst({
+        where: eq(avatars.id, avatarId),
+        columns: { platformAgentId: true },
+      });
+      return winner?.platformAgentId ?? null;
+    }
+    console.error('[avatar-provisioning] legacy agent-row backfill failed (fail-soft):', err);
+    return null;
+  }
+}
+
+class BackfillLostRaceError extends Error {
+  constructor() {
+    super('backfill lost platform_agent_id CAS race');
+  }
+}

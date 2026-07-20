@@ -27,7 +27,7 @@
  * Samples centerlineAt/normalAt/widthAt at 64 uniform-t points.
  * Sandy color 0xc8a572, roughness 0.85, fog=false.
  * Bank walls: vertical quads at river edges, grass green 0x7cb342 (blends with ground plane).
- * Finish-line gate at t=1.0 (gold pillar pair + crossbar).
+ * Finish-line gate + checkered surface strip at t=1.0/0.0.
  *
  * Iris Xe invariants (both paths):
  *   - Flat ribbon BufferGeometry: O(SEGMENTS × 2) vertices, 1 draw call.
@@ -37,16 +37,15 @@
  *   - fog=false on ALL track/wall materials (racing line always visible).
  *   - makeGeometryWebGPUSafe on all custom BufferGeometry instances.
  *
- * Draw calls v2: 1 (riverbed) + 2 (bank walls merged) + 2 (finish gate) = 5.
+ * Draw calls v2 in this component: 1 (finish gate) + 1 (checkered strip) = 2.
  * Draw calls v1: 1 (track ribbon) + 2 (guardrails merged) + 3 (coral) = 6.
  */
 
 import { useRef, useEffect, useMemo } from 'react';
-import { useGLTF } from '@react-three/drei';
+import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { makeGeometryWebGPUSafe } from '@/lib/three/webgpu-geometry';
-import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 import {
   TRACK_TUBE_SEGMENTS,
   TRACK_TUBE_RADIUS,
@@ -60,6 +59,7 @@ import {
   reefTangentAtClient,
 } from './reef-race-config';
 import { clientSpline } from './reef-race-spline-instance';
+import { bankAngleAtT, elevationAtT } from './reef-race-elevation';
 
 // ─── v2 feature flag ──────────────────────────────────────────────────────────
 const USE_SPLINE_TRACK = process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
@@ -366,28 +366,6 @@ function Guardrails() {
 // All fog=false — track surface is the navigation reference, must never fade.
 // MeshStandardMaterial only — no ShaderMaterial (silent WebGPU crash on Iris Xe).
 
-/** Sandy river-bed surface. */
-const _v2RiverMat = new THREE.MeshStandardMaterial({
-  color: 0xc8a572,
-  roughness: 0.85,
-  metalness: 0.0,
-  side: THREE.DoubleSide,
-  fog: false,
-});
-
-/**
- * Bank walls — recolored to grass green so they blend with the new GroundPlane
- * and SandRibbon in river-scene.tsx. The old dark-brown 0x6b5544 rendered as
- * an ugly dark stripe visible from the cinematic camera view.
- */
-const _v2BankMat = new THREE.MeshStandardMaterial({
-  color: 0x7cb342,  // grass green — matches GroundPlane in river-scene.tsx
-  roughness: 0.9,
-  metalness: 0.0,
-  side: THREE.DoubleSide,
-  fog: false,
-});
-
 /** Finish-line gate pillars (gold). */
 const _v2FinishMat = new THREE.MeshStandardMaterial({
   color: 0xffd600,
@@ -398,152 +376,59 @@ const _v2FinishMat = new THREE.MeshStandardMaterial({
   emissiveIntensity: 0.3,
 });
 
-// ─── v2 geometry builders ─────────────────────────────────────────────────────
+/** Start/finish surface marker: one thin box and one small repeated texture. */
+const START_FINISH_STRIP_DEPTH = 96;
+const START_FINISH_STRIP_HEIGHT = 4;
+const START_FINISH_STRIP_Y_OFFSET = 8;
+const START_FINISH_CHECKER_TEXTURE_SIZE = 64;
+const START_FINISH_CHECKER_CELLS = 8;
 
-const V2_RIBBON_SAMPLES = 64;
-const V2_RIVER_BED_Y = -2; // Local to TRACK_SURFACE_Y group; world Y renders at -202.
-const V2_BANK_HEIGHT = 80; // wu — river wall height
-const V2_BANK_THICKNESS = 10; // wu
+function makeStartFinishCheckerTexture(repeatAcross: number): THREE.CanvasTexture | null {
+  if (typeof document === 'undefined') return null;
 
-/**
- * Build the v2 river-bed ribbon from the centripetal Catmull-Rom spline.
- *
- * The spline's normalAt(t) returns 90° CCW of the tangent (= LEFT of travel).
- *   Left edge  = center + normal * halfWidth
- *   Right edge = center - normal * halfWidth
- * Width varies per-sample via clientSpline.widthAt(t) — the river naturally
- * narrows through chicanes (kelp/shipwreck/coral) and widens at lagoon/finish.
- */
-function buildSplineRibbonGeo(samples: number): THREE.BufferGeometry {
-  const positions: number[] = [];
-  const normals: number[]   = [];
-  const uvs: number[]       = [];
-  const indices: number[]   = [];
+  const canvas = document.createElement('canvas');
+  canvas.width = START_FINISH_CHECKER_TEXTURE_SIZE;
+  canvas.height = START_FINISH_CHECKER_TEXTURE_SIZE;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
 
-  for (let i = 0; i <= samples; i++) {
-    const t = i / samples;
-    const c = clientSpline.centerlineAt(t);
-    const n = clientSpline.normalAt(t); // 90° CCW = left of travel
-    const hw = clientSpline.widthAt(t);
-
-    // Left edge (normal points left)
-    positions.push(c.x + n.x * hw, 0, c.z + n.z * hw);
-    normals.push(0, 1, 0);
-    uvs.push(0, t);
-
-    // Right edge
-    positions.push(c.x - n.x * hw, 0, c.z - n.z * hw);
-    normals.push(0, 1, 0);
-    uvs.push(1, t);
-
-    if (i < samples) {
-      const base = i * 2;
-      indices.push(base, base + 1, base + 2);
-      indices.push(base + 1, base + 3, base + 2);
+  const cellSize = START_FINISH_CHECKER_TEXTURE_SIZE / START_FINISH_CHECKER_CELLS;
+  for (let row = 0; row < START_FINISH_CHECKER_CELLS; row++) {
+    for (let column = 0; column < START_FINISH_CHECKER_CELLS; column++) {
+      ctx.fillStyle = (row + column) % 2 === 0 ? '#f7fbff' : '#111827';
+      ctx.fillRect(column * cellSize, row * cellSize, cellSize, cellSize);
     }
   }
 
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geo.setAttribute('normal',   new THREE.Float32BufferAttribute(normals, 3));
-  geo.setAttribute('uv',       new THREE.Float32BufferAttribute(uvs, 2));
-  geo.setIndex(indices);
-  return makeGeometryWebGPUSafe(geo);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(repeatAcross, 1);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
 }
 
-/**
- * Build merged bank-wall geometry for left and right edges.
- * Each segment is a vertical quad (two triangles) connecting adjacent samples.
- */
-function buildSplineBankGeos(samples: number): { left: THREE.BufferGeometry; right: THREE.BufferGeometry } {
-  const leftGeos: THREE.BufferGeometry[]  = [];
-  const rightGeos: THREE.BufferGeometry[] = [];
-
-  for (let i = 0; i < samples; i++) {
-    const t0 = i / samples;
-    const t1 = (i + 1) / samples;
-
-    const c0 = clientSpline.centerlineAt(t0);
-    const n0 = clientSpline.normalAt(t0);
-    const hw0 = clientSpline.widthAt(t0);
-
-    const c1 = clientSpline.centerlineAt(t1);
-    const n1 = clientSpline.normalAt(t1);
-    const hw1 = clientSpline.widthAt(t1);
-
-    // Left bank segment
-    {
-      const lx0 = c0.x + n0.x * hw0;
-      const lz0 = c0.z + n0.z * hw0;
-      const lx1 = c1.x + n1.x * hw1;
-      const lz1 = c1.z + n1.z * hw1;
-
-      const geo = new THREE.BufferGeometry();
-      const pos = new Float32Array([
-        // bottom-left, top-left, bottom-right, top-right
-        lx0, 0,              lz0,
-        lx0, V2_BANK_HEIGHT, lz0,
-        lx1, 0,              lz1,
-        lx1, V2_BANK_HEIGHT, lz1,
-      ]);
-      const nrm = new Float32Array([
-        // outward normals (left side, pointing left = +normal direction)
-        n0.x, 0, n0.z,
-        n0.x, 0, n0.z,
-        n1.x, 0, n1.z,
-        n1.x, 0, n1.z,
-      ]);
-      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-      geo.setAttribute('normal',   new THREE.BufferAttribute(nrm, 3));
-      geo.setIndex([0, 1, 2, 1, 3, 2]);
-      leftGeos.push(geo);
-    }
-
-    // Right bank segment
-    {
-      const rx0 = c0.x - n0.x * hw0;
-      const rz0 = c0.z - n0.z * hw0;
-      const rx1 = c1.x - n1.x * hw1;
-      const rz1 = c1.z - n1.z * hw1;
-
-      const geo = new THREE.BufferGeometry();
-      const pos = new Float32Array([
-        rx0, 0,              rz0,
-        rx0, V2_BANK_HEIGHT, rz0,
-        rx1, 0,              rz1,
-        rx1, V2_BANK_HEIGHT, rz1,
-      ]);
-      const nrm = new Float32Array([
-        // inward normals (right side, pointing right = -normal direction)
-        -n0.x, 0, -n0.z,
-        -n0.x, 0, -n0.z,
-        -n1.x, 0, -n1.z,
-        -n1.x, 0, -n1.z,
-      ]);
-      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-      geo.setAttribute('normal',   new THREE.BufferAttribute(nrm, 3));
-      geo.setIndex([0, 2, 1, 1, 2, 3]);
-      rightGeos.push(geo);
-    }
-  }
-
-  const left  = makeGeometryWebGPUSafe(mergeGeometries(leftGeos)!);
-  const right = makeGeometryWebGPUSafe(mergeGeometries(rightGeos)!);
-  leftGeos.forEach(g => g.dispose());
-  rightGeos.forEach(g => g.dispose());
-  return { left, right };
-}
+// ─── v2 geometry builder (finish gate only — SURF ROAD) ──────────────────────
+//
+// SURF ROAD (2026-06-23): the riverbed ribbon + bank-wall builders
+// (buildSplineRibbonGeo / buildSplineBankGeos) and the _v2RiverMat / _v2BankMat
+// materials were REMOVED — <SurfRibbon /> (surf-ribbon.tsx) is now the track
+// surface (glowing floating water + neon rails, elevation-aware). Only the
+// start/finish gate remains here.
 
 /**
- * Build finish-line gate geometry at t=1.0 (which equals t=0 on the spline —
- * the start/finish line at z=18 000 wu).
- *
- * Two pillars (CylinderGeometry) + one crossbar (BoxGeometry).
+ * Build finish-line gate geometry at t=1.0 (== t=0 on the closed spline — the
+ * start/finish line). Two pillars (CylinderGeometry) + one crossbar
+ * (BoxGeometry), lifted to elevationAt(0) so it stands on the floating ribbon.
  */
 function buildFinishGateGeo(): THREE.BufferGeometry {
   const c = clientSpline.centerlineAt(1.0);
   const n = clientSpline.normalAt(1.0);
   const hw = clientSpline.widthAt(1.0);
+  // SURF ROAD (2026-06-23): lift the gate onto the floating ribbon at the
+  // start/finish elevation (was Y=0 on the old flat plane). The pillars stand on
+  // the ribbon surface and the crossbar arches above it.
+  const y0 = elevationAtT(0);
   const pillarR = 15;
   const pillarH = 200;
   const barH = 15;
@@ -557,10 +442,10 @@ function buildFinishGateGeo(): THREE.BufferGeometry {
   const rightPillar = new THREE.CylinderGeometry(pillarR, pillarR, pillarH, 8);
   const bar         = new THREE.BoxGeometry(hw * 2 + pillarR * 2, barH, pillarR);
 
-  // Translate each sub-geometry into world position before merging
-  const lMat = new THREE.Matrix4().makeTranslation(lx, pillarH / 2, lz);
-  const rMat = new THREE.Matrix4().makeTranslation(rx, pillarH / 2, rz);
-  const bMat = new THREE.Matrix4().makeTranslation(c.x, pillarH + barH / 2, c.z);
+  // Translate each sub-geometry into world position before merging (+ elevation)
+  const lMat = new THREE.Matrix4().makeTranslation(lx, y0 + pillarH / 2, lz);
+  const rMat = new THREE.Matrix4().makeTranslation(rx, y0 + pillarH / 2, rz);
+  const bMat = new THREE.Matrix4().makeTranslation(c.x, y0 + pillarH + barH / 2, c.z);
 
   leftPillar.applyMatrix4(lMat);
   rightPillar.applyMatrix4(rMat);
@@ -573,55 +458,92 @@ function buildFinishGateGeo(): THREE.BufferGeometry {
   return merged;
 }
 
+/**
+ * Build one bank-aware checkered strip across the ribbon at spline t=0.
+ * Geometry is baked into world space once; the rendered mesh stays at an
+ * identity transform with matrixAutoUpdate disabled.
+ */
+function buildStartFinishStripGeo(): THREE.BufferGeometry {
+  const t = 0;
+  const c = clientSpline.centerlineAt(t);
+  const tangent = clientSpline.tangentAt(t);
+  const normal = clientSpline.normalAt(t);
+  const halfWidth = clientSpline.widthAt(t);
+  const bank = bankAngleAtT(t);
+  const cosBank = Math.cos(bank);
+  const sinBank = Math.sin(bank);
+
+  // Local X spans the banked ribbon; local Z runs opposite the tangent so the
+  // resulting X/Y/Z basis remains right-handed with its Y axis facing up.
+  const xAxis = new THREE.Vector3(normal.x * cosBank, sinBank, normal.z * cosBank);
+  const zAxis = new THREE.Vector3(-tangent.x, 0, -tangent.z).normalize();
+  const yAxis = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
+  const center = new THREE.Vector3(c.x, elevationAtT(t), c.z)
+    .addScaledVector(yAxis, START_FINISH_STRIP_Y_OFFSET);
+  const transform = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
+  transform.setPosition(center);
+
+  const geo = new THREE.BoxGeometry(
+    halfWidth * 2,
+    START_FINISH_STRIP_HEIGHT,
+    START_FINISH_STRIP_DEPTH,
+  );
+  geo.applyMatrix4(transform);
+  return makeGeometryWebGPUSafe(geo);
+}
+
 // ─── v2 River-bed component ───────────────────────────────────────────────────
 
 function SplineTrack() {
-  const riverMeshRef  = useRef<THREE.Mesh>(null);
-  const bankGroupRef  = useRef<THREE.Group>(null);
   const finishMeshRef = useRef<THREE.Mesh>(null);
+  const startFinishStripRef = useRef<THREE.Mesh>(null);
 
-  const riverGeo  = useMemo(() => buildSplineRibbonGeo(V2_RIBBON_SAMPLES), []);
-  const bankGeos  = useMemo(() => buildSplineBankGeos(V2_RIBBON_SAMPLES), []);
+  // SURF ROAD (2026-06-23): the riverbed ribbon + bank walls are RETIRED — the
+  // glowing floating water ribbon + neon rails in <SurfRibbon /> (surf-ribbon.tsx,
+  // mounted by RiverScene) are now THE track surface, and they ride the
+  // elevation profile. ReefRaceTrack now renders only the spline-derived
+  // start/finish gate (lifted to elevationAt(0)). The buildSplineRibbonGeo /
+  // buildSplineBankGeos builders + _v2RiverMat / _v2BankMat are left in the file
+  // (used by the /preview page's own inline copies) but no longer drawn here.
   const finishGeo = useMemo(() => buildFinishGateGeo(), []);
+  const startFinishStripGeo = useMemo(() => buildStartFinishStripGeo(), []);
+  const startFinishStripMat = useMemo(() => {
+    const halfWidth = clientSpline.widthAt(0);
+    const repeatAcross = Math.max(1, Math.round((halfWidth * 2) / START_FINISH_STRIP_DEPTH));
+    const texture = makeStartFinishCheckerTexture(repeatAcross);
+    return new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      map: texture,
+      side: THREE.DoubleSide,
+      fog: false,
+      toneMapped: false,
+    });
+  }, []);
 
   useEffect(() => {
-    const meshes = [riverMeshRef.current, finishMeshRef.current];
-    meshes.forEach(m => {
-      if (m) {
-        m.matrixAutoUpdate = false;
-        m.updateMatrix();
-      }
-    });
-    const g = bankGroupRef.current;
-    if (g) {
-      g.traverse(o => {
-        if ((o as THREE.Mesh).isMesh) {
-          o.matrixAutoUpdate = false;
-          (o as THREE.Mesh).updateMatrix();
-        }
-      });
-    }
+    const m = finishMeshRef.current;
+    if (m) { m.matrixAutoUpdate = false; m.updateMatrix(); }
+    const strip = startFinishStripRef.current;
+    if (strip) { strip.matrixAutoUpdate = false; strip.updateMatrix(); }
     return () => {
-      riverGeo.dispose();
-      bankGeos.left.dispose();
-      bankGeos.right.dispose();
       finishGeo.dispose();
+      startFinishStripGeo.dispose();
+      startFinishStripMat.map?.dispose();
+      startFinishStripMat.dispose();
     };
-  }, [riverGeo, bankGeos, finishGeo]);
+  }, [finishGeo, startFinishStripGeo, startFinishStripMat]);
 
   return (
     <group>
-      {/* River bed — sandy flat ribbon, normals +Y, DoubleSide */}
-      <mesh ref={riverMeshRef} geometry={riverGeo} material={_v2RiverMat} position-y={V2_RIVER_BED_Y} receiveShadow matrixAutoUpdate={false} />
-
-      {/* Bank walls — vertical quads merged left + right */}
-      <group ref={bankGroupRef} visible={false}>
-        <mesh geometry={bankGeos.left}  material={_v2BankMat} castShadow receiveShadow matrixAutoUpdate={false} />
-        <mesh geometry={bankGeos.right} material={_v2BankMat} castShadow receiveShadow matrixAutoUpdate={false} />
-      </group>
-
-      {/* Finish-line gate — gold pillars + crossbar */}
-      <mesh ref={finishMeshRef} geometry={finishGeo} material={_v2FinishMat} castShadow matrixAutoUpdate={false} />
+      {/* Start/finish gate — gold pillars + crossbar, lifted onto the ribbon */}
+      <mesh ref={finishMeshRef} geometry={finishGeo} material={_v2FinishMat} matrixAutoUpdate={false} />
+      {/* One-draw checkered strip anchors the authoritative GO/finish seam. */}
+      <mesh
+        ref={startFinishStripRef}
+        geometry={startFinishStripGeo}
+        material={startFinishStripMat}
+        matrixAutoUpdate={false}
+      />
     </group>
   );
 }

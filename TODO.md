@@ -171,7 +171,7 @@ Phase 5 (magic-link) + Phase 5.1 (wallet identity + 'scape portal) are shipped +
 
 - **Hermes** — shipped locally at `C:/Users/newma/documents/crypto/hermes` branch `clawville-integration` (commit `1fc55d78`, not pushed). End-to-end test: `hermes clawville login` → `reconnect` → `wallet` all work.
 - **Milady** — `@clawville/app-clawville` on npm needs the new identity-keypair flow. Currently uses old Phase 5 string-based `identityKey`. Mirror of the Hermes plugin.
-- **OpenClaw / IronClaw** — same pattern, for any agent framework that wants `clawville:identity:<userId>` + signed-challenge reconnect as its own CLI command.
+- **OpenClaw / general custom gateway clients** — same pattern for OpenClaw or any other agent framework using the supported `custom` OpenAI-compatible-gateway path that wants `clawville:identity:<userId>` + signed-challenge reconnect as its own CLI command.
 - If bundled as "Phase 5.2", ships as one batch PR across the plugin repos.
 
 #### 'scape portal — external (BLOCKED on dex)
