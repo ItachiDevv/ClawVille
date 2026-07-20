@@ -77,7 +77,7 @@ export default function KelpRealmCanvas() {
       key="kelp-realm"
       frameloop="always"
       dpr={DPR_RANGE}
-      camera={{ fov: 60, near: 1, far: 8000, position: [0, 245, 1460] }}
+      camera={{ fov: 60, near: 1, far: 10000, position: [0, 610, 1460] }}
       gl={createRealmRenderer as any}
     >
       <KTX2LoaderSetup />
