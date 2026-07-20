@@ -173,6 +173,21 @@ describe('public agent identity input', () => {
     }
   });
 
+  test('actual /connect missing-signal 400 keeps its envelope and adds machine guidance', async () => {
+    const response = await buildAgentApp().request('/api/agent/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ identityType: 'custom' }),
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: 'Invalid request',
+      code: 'identity_signal_required',
+      detail: 'Add agentId, miladyAgentId, or connectionToken.',
+      details: expect.any(Object),
+    });
+  });
+
   test('gateway-less custom client is no-fetch fail-soft and its live session can move', async () => {
     const agentId = 'custom-pull-wire-test';
     const sessionId = 'ag-custom-pull-wire-test';
