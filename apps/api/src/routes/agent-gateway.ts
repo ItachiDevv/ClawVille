@@ -32,8 +32,7 @@ import {
   isSessionRestorable,
   hasRealDeclaredGateway,
   canonicalizePublicAgentIdentityType,
-  resolveDirectAgentIdentityType,
-  directAgentIdentityValidationError,
+  normalizeDirectAgentConnectRequest,
   resolveAutonomyMode,
   resolveIdentityForTicket,
   resolveConnectGatewayForPersistence,
@@ -78,7 +77,11 @@ import {
   type AgentStatusStats,
   type AgentStatusOwnership,
 } from '../services/agent-owner-binding';
-import { agentProtocolPointer, resolveApiBase } from '../services/skill-protocol';
+import {
+  agentProtocolPointer,
+  buildUniversalConnectBlock,
+  resolveApiBase,
+} from '../services/skill-protocol';
 // Cached public-board lookup (same score/rank the /leaderboard page shows;
 // precedent: partner-hatcher.ts stats endpoint imports this the same way).
 import { getAgentLeaderboardEntry } from './leaderboard';
@@ -335,11 +338,26 @@ agentGatewayRoutes.post('/connect', async (c) => {
   const body = await c.req.json();
   const parsed = connectSchema.safeParse(body);
   if (!parsed.success) {
+    const candidate = body && typeof body === 'object'
+      ? body as Record<string, unknown>
+      : null;
+    if (
+      candidate &&
+      !candidate.agentId &&
+      !candidate.miladyAgentId &&
+      !candidate.connectionToken
+    ) {
+      return c.json({
+        error: 'Invalid request',
+        details: parsed.error.flatten(),
+        code: 'identity_signal_required',
+        detail: 'Add agentId, miladyAgentId, or connectionToken.',
+      }, 400);
+    }
     return c.json({ error: 'Invalid request', details: parsed.error.flatten() }, 400);
   }
 
   const data = parsed.data;
-  let resolvedAgentId: string = data.agentId ?? '';
 
   // Captured once at Step 0 so every later read (userId/avatarId/learningFocus,
   // the claim block, the event payload) uses the SAME pending object — never a
@@ -378,37 +396,35 @@ agentGatewayRoutes.post('/connect', async (c) => {
     return c.json({ error: 'Invalid request' }, 400);
   }
 
+  // Universal tolerant normalization happens only AFTER both public Hatcher
+  // guards above. Every downstream path consumes this one decision object.
+  const normalized = normalizeDirectAgentConnectRequest({
+    agentId: data.agentId,
+    miladyAgentId: data.miladyAgentId,
+    explicitIdentityType: presentedIdentity?.identityType,
+    gatewayUrl: data.gatewayUrl,
+    authToken: data.authToken,
+    protocol: data.protocol,
+  });
+  const identityType = normalized.identityType;
+  let resolvedAgentId = normalized.agentId ?? '';
+  const hasDeclaredGateway = hasRealDeclaredGateway(normalized.gatewayUrl);
+
   // A connection token is a single-use human-issued capability. Requiring the
   // caller's stable agentId before we even look up/reserve the token prevents a
   // successful claim from consuming the user's one-shot identity issuance on a
   // throwaway auto-generated id the caller cannot reconnect as.
-  const tokenClaimError = connectionTokenClaimError(data);
+  const tokenClaimError = connectionTokenClaimError({
+    ...data,
+    agentId: normalized.agentId ?? undefined,
+  });
   if (tokenClaimError) {
-    return c.json({ error: tokenClaimError }, 400);
+    return c.json({
+      error: tokenClaimError,
+      code: 'agent_id_required',
+      detail: 'Add agentId to claim connectionToken.',
+    }, 400);
   }
-
-  // Resolve a supported identity BEFORE reserving a single-use connection token.
-  // A generic gateway-less caller proves no named runtime and is rejected rather
-  // than being falsely labeled as ClawVille-hosted Milady. Gateway-less Hermes
-  // declares itself explicitly; gateway-less OpenClaw additionally requires the
-  // server-owned local-runtime gate.
-  const hasDeclaredGateway = hasRealDeclaredGateway(data.gatewayUrl);
-  const explicitIdentityType = presentedIdentity?.identityType;
-  const identityType = resolveDirectAgentIdentityType({
-    explicitIdentityType,
-    hasMiladyRuntimeSignal: !!data.miladyAgentId,
-    hasDeclaredGateway,
-  });
-  const identityError = directAgentIdentityValidationError({
-    identityType,
-    hasMiladyRuntimeSignal: !!data.miladyAgentId,
-    hasDeclaredGateway,
-    declaredProtocol: data.protocol,
-  });
-  if (identityError) {
-    return c.json({ error: identityError }, 400);
-  }
-  if (!identityType) throw new Error('identity validation accepted a null identity');
 
   // Step 0: If connectionToken is present, validate and reserve it atomically.
   if (data.connectionToken) {
@@ -447,17 +463,10 @@ agentGatewayRoutes.post('/connect', async (c) => {
   // We key on `milady:{miladyAgentId}` so a returning Milady user gets their
   // old avatar, wallet, learned knowledge, and ClawToken balance across launches.
   // Matches how Babylon + Defense of the Agents trust the Milady runtime.
-  if (data.miladyAgentId) {
-    resolvedAgentId = `milady:${data.miladyAgentId}`;
-  }
-
-  // If still no agentId, generate a one-shot direct-agent id.
-  if (!resolvedAgentId) {
-    resolvedAgentId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  }
+  if (!resolvedAgentId) throw new Error('identity-signal validation accepted no stable handle');
 
   // `nanoclaw` remains an internal fail-soft WIRE protocol, not an identity.
-  const wireProtocol = data.protocol ?? 'openai-compat';
+  const wireProtocol = normalized.storedProtocol;
 
   // A caller selecting the fail-soft pull wire is self-managed; so is Hermes
   // (D7 — `hermes run` polls our REST when ClawVille is not hosting it).
@@ -533,10 +542,15 @@ agentGatewayRoutes.post('/connect', async (c) => {
   let identityKeyAvatarName: string | null = null;
   if (data.identityKey && tokenUserId === null) {
     try {
-      const identity = resolveIdentityForTicket(data, identityType);
+      const identity = resolveIdentityForTicket({
+        identityKey: data.identityKey,
+        miladyAgentId: normalized.ticketMiladyAgentId,
+        gatewayUrl: normalized.gatewayUrl,
+        authToken: normalized.authToken,
+      }, identityType);
       if (identity) {
         const coordinated = await resolvePublicOnboardingIdentity(
-          data.identityType ?? identity.identityType,
+          identity.identityType,
           identity.identityKey,
         );
         const user = coordinated.user;
@@ -654,10 +668,10 @@ agentGatewayRoutes.post('/connect', async (c) => {
         identityType,
         gatewayUrl: resolveConnectGatewayForPersistence({
           identityType,
-          requestGatewayUrl: data.gatewayUrl,
+          requestGatewayUrl: normalized.gatewayUrl,
           existingGatewayUrl: existing.gatewayUrl,
         }),
-        protocol: data.protocol ? wireProtocol : existing.protocol,
+        protocol: wireProtocol,
         mode: data.mode,
         name: preferredName,
         species: persistedSpecies,
@@ -696,7 +710,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
         identityType,
         gatewayUrl: resolveConnectGatewayForPersistence({
           identityType,
-          requestGatewayUrl: data.gatewayUrl,
+          requestGatewayUrl: normalized.gatewayUrl,
         }),
         protocol: wireProtocol,
         mode: data.mode,
@@ -798,8 +812,8 @@ agentGatewayRoutes.post('/connect', async (c) => {
         sessionId,
         identityType,
         storedProtocol: wireProtocol,
-        gatewayUrl: data.gatewayUrl,
-        authToken: data.authToken,
+        gatewayUrl: normalized.gatewayUrl,
+        authToken: normalized.authToken,
         autonomyMode,
         targetNpcId: data.targetNpcId,
         // Carries the proven-ownership decision into the in-memory session so
@@ -852,8 +866,8 @@ agentGatewayRoutes.post('/connect', async (c) => {
         sessionId,
         identityType,
         storedProtocol: wireProtocol,
-        gatewayUrl: data.gatewayUrl,
-        authToken: data.authToken,
+        gatewayUrl: normalized.gatewayUrl,
+        authToken: normalized.authToken,
         autonomyMode,
         name: spawnName,
         species: resolvedSpecies ?? DEFAULT_AGENT_MODEL_KEY,
@@ -932,7 +946,14 @@ agentGatewayRoutes.post('/connect', async (c) => {
   // so we can hang identity-keypair generation + avatar-wallet first-time
   // disclosure off the same resolution without a second DB lookup.
   const resolved = await mintSessionTicketFromConnect({
-    data,
+    data: {
+      identityType,
+      identityKey: data.identityKey,
+      miladyAgentId: normalized.ticketMiladyAgentId,
+      gatewayUrl: normalized.gatewayUrl,
+      authToken: normalized.authToken,
+      agentId: normalized.agentId ?? undefined,
+    },
     resolvedAgentId,
     identityType,
     sessionId,
@@ -1073,11 +1094,11 @@ agentGatewayRoutes.post('/connect', async (c) => {
     sessionId: sessionDigest(sessionId),
     payload: {
       identityType,
-      protocol: data.protocol ?? null,
+      protocol: wireProtocol,
       isReturning,
       totalSessions,
-      miladyAgentId: data.miladyAgentId ?? null,
-      hasGateway: Boolean(data.gatewayUrl),
+      miladyAgentId: normalized.ticketMiladyAgentId ?? null,
+      hasGateway: hasDeclaredGateway,
       autonomyMode,
     },
   });
@@ -1156,6 +1177,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
     protocol: agentProtocolPointer(resolveApiBase(), storedProtocolAck),
     identityType,
     autonomyMode,
+    cognition: normalized.cognition,
     walletAddress,
     // Pull-side expiry visibility (2026-06-12) — the ISO timestamp this
     // session's sliding 24h TTL currently expires at. Slides forward on every
@@ -1365,7 +1387,9 @@ agentGatewayRoutes.post('/reconnect', async (c) => {
           ...(plan.mint
             ? {
                 sessionKeyHash: plan.persist.sessionKeyHash,
-                ...(plan.persist.gatewayUrl ? { gatewayUrl: plan.persist.gatewayUrl } : {}),
+                ...(plan.persist.gatewayUrl !== undefined
+                  ? { gatewayUrl: plan.persist.gatewayUrl }
+                  : {}),
                 ...(plan.persist.protocol ? { protocol: plan.persist.protocol } : {}),
               }
             : {}),
@@ -1850,7 +1874,7 @@ async function mintSessionTicketFromConnect(args: {
       const ident = resolveIdentityForTicket(args.data, args.identityType);
       if (!ident) return { ticket: null, userId: null, avatarId: null, avatarName: null };
       const coordinated = await resolvePublicOnboardingIdentity(
-        args.data.identityType ?? ident.identityType,
+        ident.identityType,
         ident.identityKey,
       );
       const user = coordinated.user;
@@ -4064,89 +4088,9 @@ agentGatewayRoutes.get('/connect-skill', (c) => {
 
   const markdown = `# Connect to ClawVille
 
-You have been invited to join ClawVille — an underwater world where AI agents learn skills from 10 buildings. Before you call the connect endpoint, check the section below — the human may need to set up a local runtime first, and that instruction belongs in the human's chat BEFORE you relay the magic link.
+You have been invited to join ClawVille — an underwater world where AI agents learn skills from 10 buildings.
 
-## 0. First — does the human need to install a local runtime?
-
-ClawVille's cloud hosts the Eliza runtime for **Milady** agents end-to-end, but **Hermes / OpenClaw / custom ElizaOS** agents run on the human's machine. If this connection is for a non-Milady framework and the human has never set one up, the link you're about to issue will land them in the world, but their agent will have nowhere to actually live after they click it. Paste the matching setup block in chat FIRST, then do the connect:
-
-### If the human is running Milady AI
-No local install needed — ClawVille's cloud hosts Milady-harnessed avatars. The \`@clawville/app-clawville\` npm plugin is already listed in the Milady app grid; from any Milady chat surface they can type "open clawville" and it launches. When they eventually want to "take the agent home" (export), ClawVille emits a one-line \`curl\` command that POSTs to their local \`/api/plugins/install\` — that step requires Milady running locally (port 2138), which is a separate install:
-- Windows / macOS / Linux: \`npm create milady@latest\` (bundles Eliza)
-- Start with \`milady dev\` — the plugin install endpoint is at \`http://localhost:2138/api/plugins/install\`
-
-### If the human is running Hermes
-- Install: \`npm i -g @hermes-ai/cli\` · then \`hermes init\` in a project directory
-- Local Eliza + Postgres: Hermes ships its own runtime, so only Postgres is an extra dep (Docker: \`docker run -p 5432:5432 -e POSTGRES_PASSWORD=hermes -d postgres:16\`)
-- Bind to ClawVille: \`hermes clawville login\` (uses the magic link we're about to issue)
-- Keep running: \`hermes run\` in a terminal, or \`pm2 start "hermes run" --name hermes\` for persistence
-
-### If the human is running OpenClaw
-- Install: \`npm i -g @openclaw/cli\` · then \`openclaw init\`
-- Local Eliza + Postgres: \`openclaw bootstrap\` seeds both
-- Bind to ClawVille: \`openclaw connect clawville\` and paste the magic link we'll generate below
-
-### If the human is running raw ElizaOS / a custom build
-- \`npm create elizaos@latest\` · point \`DATABASE_URL\` at a local Postgres
-- Install the \`@clawville/agent-runtime\` plugin in the ElizaOS project
-- Pull the character JSON from \`POST ${apiBase}/api/agent/export-character\` (after first connect) and drop it at \`characters/<name>.json\`
-- Start with \`npm run dev\` or \`pm2 start "npm run start" --name eliza\` for persistence
-
-### "Take my agent home" (all non-Milady)
-After the first session, the agent can ask ClawVille to bundle its learned skills into a portable character file. Endpoint: \`POST ${apiBase}/api/agent/export-character\`. Response includes a full ElizaOS-compatible character + a \`skillPack\` array that Milady's plugin (or any Eliza host) can RAG-embed on install. Teach the human this exists — it's why they're training the agent in the first place.
-
-## 1. Connect endpoint
-
-Once the human confirms their local runtime is ready (or they're on Milady), call:
-
-\`\`\`
-POST ${apiBase}/api/agent/connect
-Content-Type: application/json
-
-{
-  "connectionToken": "${token}",
-  "agentId": "your-agent-id",
-  "identityType": "custom",
-  "name": "YourAgentName",
-  "protocol": "openai-compat",
-  "gatewayUrl": "https://your-agent.example/v1",
-  "authToken": "your-gateway-token"
-}
-\`\`\`
-
-**Required fields:**
-- \`connectionToken\`: \`${token}\` (already filled in above)
-- \`agentId\`: Your unique agent identifier (any string)
-
-This token manual describes \`/connect\`. The separate \`/join\` bootstrap route
-uses the same identity canonicalization; it permits Milady without
-\`miladyAgentId\` and has no gateway fields.
-
-**Optional fields:**
-- \`identityType\`: choose \`milady\`, \`hermes\`, \`openclaw\`, or \`custom\`,
-  or present your own bounded framework name; every other name is treated as the
-  canonical general \`custom\` configuration. \`hatcher\` is partner-signed only
-  and is not accepted here. For this
-  \`/connect\` request, if omitted,
-  \`miladyAgentId\` infers Milady and a declared gateway infers custom; without
-  either signal the request fails closed. A Milady runtime signal cannot be
-  combined with an explicit Hermes, OpenClaw, or custom identity, and an explicit
-  Milady identity requires \`miladyAgentId\`.
-- \`name\`: Display name in the world (max 24 chars)
-- \`species\`: \`lobster\` (default)
-- \`color\`: Hex color as integer (e.g. \`4367861\` for blue)
-- \`protocol\`: the wire transport, not an identity label. Hermes self-managed
-  pull may use \`nanoclaw\`; declared gateways use \`openai-compat\`.
-- \`gatewayUrl\`: Optional for \`custom\`. With a reachable declared gateway,
-  ClawVille routes cognition to that API exactly as declared; without one,
-  canonical custom is a self-managed pull agent on the fail-soft in-world wire.
-  Milady and Hermes reject it because those paths are hosted/self-managed.
-  Declared-gateway routing is available to OpenClaw/custom only, and a declared
-  gateway cannot use the pull-only \`nanoclaw\` wire; it must use a gateway-posting
-  wire (\`openai-compat\` is the general/default path).
-  Gateway-less OpenClaw is accepted only when the operator has enabled the
-  ClawVille-hosted local OpenClaw runtime; otherwise it fails closed.
-- \`authToken\`: Credential for the declared gateway; never logged or persisted.
+${buildUniversalConnectBlock(apiBase, { connectionToken: token })}
 
 ## IMPORTANT — relay the magic link back to the human
 

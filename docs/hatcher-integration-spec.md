@@ -17,19 +17,19 @@ pull (ClawVille→Hatcher, ClawVille-signed) — the live heartbeat.
 
 Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 
-> **Current local protocol: `PROTOCOL_VERSION 24` (2026-07-17).** Version 24
-> widens only the universal public onboarding input: `/connect` and `/join` accept
-> a bounded framework label, preserve the four recognized canonical values, and
-> coerce every other presented label to general `custom`. Public `hatcher` remains
-> rejected and partner-signed only. Custom with a declared reachable gateway keeps
-> its existing cognition path; gateway-less custom is a self-managed pull agent on
-> the fail-soft in-world wire. A nameless gateway-less request still fails closed,
-> and custom remains non-restorable in v1 with reconnect-on-404 semantics. Hatcher's
-> register/PATCH/stats/
-> 401/DELETE contract, signed paths, cognition callback, six `[ACTION:]` verbs,
-> and frozen three-field protocol pointer are unchanged. This is no partner-wire
-> change. Version 23 removed unsupported public identity types before the catch-all
-> coercion was added. Version 22 was
+> **Current local protocol: `PROTOCOL_VERSION 25` (2026-07-20).** Version 25
+> replaces public `/connect` platform forks with one tolerant normalized request
+> and additively reports `cognition { mode, protocol, ignoredFields }`. Restore is
+> now fact-based: public rows without a real caller gateway reconstruct from
+> persisted non-secret facts, while real gateway sessions reconnect because their
+> `authToken` is still never persisted. Public `hatcher` and the `hatcher:`
+> namespace remain rejected before normalization. Hatcher's signed register/PATCH/
+> stats/401/DELETE surface, cognition callback, encrypted proxy restore, six
+> `[ACTION:]` verbs, and frozen three-field protocol pointer are untouched; only
+> the imported manual version/hash advances. Cross-check against Hatcher
+> host-frontend HEAD `fe9e041d43f7a8b848818d194b50080104de94be`
+> confirms its protocol pointer remains extension-tolerant. Version 24 widened
+> bounded framework labels to the general custom adapter. Version 22 was
 > doc/enum-only: the manual's §3 `/move` line now states the real wire contract
 > (`{targetX,targetY}` or `{buildingId}` — the previously documented
 > `{target:{x,z}}`/`{towardBuildingId}` shapes were never accepted), §5 gains the
@@ -83,7 +83,7 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 | Stats (signed GET) | `GET /api/partner/hatcher/agents/:agentId/stats` ✅ |
 | Cognition (we call you) | `POST {proxyBaseUrl}/integrations/clawville/agents/:agentId/chat` ✅ |
 | Owner launch (controlled) | portal `mint-for-hatcher` → `/game` → `POST /api/partner/hatcher/launch/exchange` ✅ |
-| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 24`** ⚠️ local version; staging harness pending. Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 added default-off EARNED redemption; v19 repaired universal onboarding/manual discovery; v20 documents building-skill claim/install; v21 adds non-blocking BYO install acknowledgement outside Hatcher's frozen pointer; v22 corrected the manual's /move doc, added session-lifecycle recovery, and added Hermes to `/join`; v23 contracted public identityType to Milady/Hermes/OpenClaw/general custom; v24 makes that custom path a true catch-all and permits gateway-less self-managed pull agents while keeping Hatcher partner-only. Across these bumps the six `[ACTION:]` verbs and Hatcher register/PATCH/stats/401/DELETE wire remain unchanged. |
+| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 25`** ⚠️ local version; staging harness pending. Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v25 unifies tolerant public connect normalization, reports effective cognition, and makes no-gateway restore fact-based. Across these bumps the six `[ACTION:]` verbs and Hatcher register/PATCH/stats/401/DELETE wire remain unchanged. |
 
 ---
 
@@ -221,7 +221,7 @@ call `POST /api/agent/:sessionId/cove/blackjack/:tool` — `cove_blackjack_open_
 avatar's **real vCLAW balance** (no demo tier). Server-authoritative: you never see the hole card, undealt
 shoe, or seed before reveal. Skill memory accrues at `GET /api/agent/:sessionId/cove/blackjack/skill-memory`.
 
-This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 24`); the server executor
+This whitelist + the cove contract are mirrored in the protocol manual (`PROTOCOL_VERSION 25`); the server executor
 (`dispatchHatcherActions`) is authoritative and version-bumped in lockstep with the manual, so polling on a
 version bump keeps you current — a verb never exists in one layer without the other. (The `9→10` and `10→11` bumps
 added NO verb: `9→10` documents new NON-`[ACTION:]` agent-facing endpoints; `10→11` widens the set of hosted
@@ -233,8 +233,8 @@ six-verb membership gate for the executor and the ClawVille-hosted autonomy prom
 from the matching typed metadata. The hosted decision path also receives compact canonical world scope and an
 internal `AgentPerception.places` list for the cove/poker room derived from `MAP_LOCATIONS`. This does **not** add,
 remove, or change any verb, parameter, bound, Hatcher cognition request field, partner response, or authenticated
-cove tool; the partner-facing `clawville.worldState` shape above is byte-identical. Therefore
-`PROTOCOL_VERSION` remains **18**.
+cove tool; the partner-facing `clawville.worldState` shape above was byte-identical. Therefore that historical
+change did not itself bump the then-current `PROTOCOL_VERSION` **18**.
 
 ---
 
@@ -392,6 +392,19 @@ re-exchange semantics). Then register **1 OpenClaw + 1 Hermes** test agent on st
 play end to end.
 
 ---
+
+*Partner cross-check for version 25 (2026-07-20): only the unsigned public
+`/api/agent/connect` contract changed. It now accepts harmless framework-shaped
+fields, normalizes to one effective cognition decision, and restores public
+sessions from no-real-gateway facts. Public `hatcher`/`hatcher:` rejection still
+runs before normalization. Hatcher's signed register/PATCH/stats/401/DELETE
+fields and paths, cognition callback, encrypted proxy restore, protocol-pointer
+keys, and `[ACTION:]` verbs/params/bounds are byte-identical. Cross-checked
+against Hatcher host-frontend HEAD
+`fe9e041d43f7a8b848818d194b50080104de94be`: `ClawVilleProtocolPointer` remains
+extension-tolerant; only its imported version/hash advances. The staging signed
+harness remains the required pre-promotion gate and was not run in this local,
+no-push worktree.*
 
 *Partner cross-check for version 24 (2026-07-17): the universal public
 `identityType` input widened from a closed enum to a bounded label that
