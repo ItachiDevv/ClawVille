@@ -15,6 +15,8 @@
  */
 
 import { Hono } from 'hono';
+import { HTTPException } from 'hono/http-exception';
+import { z } from 'zod';
 import { gt, sql, sql as drizzleSql } from 'drizzle-orm';
 import {
   db,
@@ -31,6 +33,12 @@ import { sessionMiddleware } from '../middleware/auth';
 import { adminOnly } from '../middleware/admin-only';
 import { noStorePrivate } from '../middleware/no-store';
 import { alertError } from '../services/alert-error';
+import { agentAutonomyDriver } from '../services/agent-autonomy-driver';
+import {
+  armAutonomy,
+  enterStandby,
+  getStandbyState,
+} from '../services/autonomy-standby';
 import {
   deriveProtocolAckState,
   requiresByoSkillAck,
@@ -130,6 +138,47 @@ const MEASUREMENT_START = process.env.METRICS_MEASUREMENT_START ?? '2026-04-21';
 dashboardRoutes.use('*', sessionMiddleware);
 
 dashboardRoutes.get('/__check', adminOnly, (c) => c.json({ ok: true }));
+
+const autonomyArmSchema = z.object({
+  minutes: z.number().finite().optional(),
+}).strict();
+
+function autonomyDashboardSnapshot() {
+  const state = getStandbyState();
+  const house = agentAutonomyDriver.getHouseAgentIds().length;
+  const user = agentAutonomyDriver.userAgentCount();
+  return {
+    ...state,
+    counts: { house, user, total: house + user },
+  };
+}
+
+dashboardRoutes.get('/autonomy', adminOnly, noStorePrivate, (c) =>
+  c.json(autonomyDashboardSnapshot()),
+);
+
+dashboardRoutes.post('/autonomy/arm', adminOnly, noStorePrivate, async (c) => {
+  const rawBody = await c.req.text();
+  let body: unknown = {};
+  if (rawBody.trim()) {
+    try {
+      body = JSON.parse(rawBody);
+    } catch {
+      throw new HTTPException(400, { message: 'Invalid JSON body' });
+    }
+  }
+  const parsed = autonomyArmSchema.safeParse(body);
+  if (!parsed.success) {
+    throw new HTTPException(400, { message: 'Invalid autonomy arm request' });
+  }
+  armAutonomy(parsed.data.minutes);
+  return c.json(autonomyDashboardSnapshot());
+});
+
+dashboardRoutes.post('/autonomy/standby', adminOnly, noStorePrivate, (c) => {
+  enterStandby();
+  return c.json(autonomyDashboardSnapshot());
+});
 
 dashboardRoutes.get('/agent-skill-acks', adminOnly, noStorePrivate, async (c) => {
   const now = new Date();
