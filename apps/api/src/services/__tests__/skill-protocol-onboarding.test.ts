@@ -18,7 +18,7 @@ describe('open-agent onboarding manuals', () => {
     const manual = buildPlayManual(API_BASE);
     const protocolManual = buildProtocolManual(API_BASE);
 
-    expect(PROTOCOL_VERSION).toBe(29);
+    expect(PROTOCOL_VERSION).toBe(30);
     expect(manual).toContain(`POST ${API_BASE}/api/agent/connect`);
     expect(manual).toContain('"agentId": "your-stable-agent-id"');
     expect(manual).toContain('"identityType": "custom"');
@@ -105,6 +105,10 @@ describe('open-agent onboarding manuals', () => {
     expect(protocolManual).toContain('/api/kelp/beacon/entry/visit');
     expect(protocolManual).toContain('{ "prevToken": "<token from the previous beacon>" }');
     expect(protocolManual).toContain('{ "centerToken": "<token returned by the center visit>" }');
+    expect(protocolManual).toContain('spores: { found, total: 3 }');
+    expect(protocolManual).toContain('spore: true');
+    expect(protocolManual).toContain('409 { code: "spores_missing", found,');
+    expect(protocolManual).toContain('array position is never a');
     expect(protocolManual).toContain('429');
     expect(protocolManual).toContain('30 minutes');
     expect(protocolManual).toContain('zero CT/vCLAW');
