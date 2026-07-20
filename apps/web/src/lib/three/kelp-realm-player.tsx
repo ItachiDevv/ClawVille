@@ -33,13 +33,15 @@ import {
 
 const PLAYER_RADIUS = 34;
 const AVATAR_TARGET_HEIGHT = 270;
-const CAM_BEHIND = 460;
-const CAM_ABOVE = 245;
-const CAM_LOOK_Y = 115;
+const CAM_BEHIND = 520;
+const CAM_ABOVE = 610;
+const CAM_LOOK_Y = 135;
 const CAM_YAW_SPEED = 1.25;
 const CAM_PITCH_SPEED = 180;
-const CAM_PITCH_MIN = -70;
-const CAM_PITCH_MAX = 210;
+const CAM_PITCH_MIN = -35;
+const CAM_PITCH_MAX = 160;
+const CAM_WALL_CLEARANCE = 24;
+const CAM_WALL_PADDING = 18;
 const HALF_REALM = KELP_REALM_FOOTPRINT_WU / 2;
 const KELP_REALM_COSMETIC_SKU_ALLOWLIST = Object.freeze([KELP_MAZE_COLLECTIBLE_SLUG]);
 
@@ -139,6 +141,76 @@ const targetScratch = new THREE.Vector3();
 const movementScratch = { x: KELP_REALM_PLAYER_SPAWN.x, z: KELP_REALM_PLAYER_SPAWN.z };
 export const kelpRealmPlayerPositionRef = { x: KELP_REALM_PLAYER_SPAWN.x, z: KELP_REALM_PLAYER_SPAWN.z };
 
+function firstCameraWallHitT(
+  originX: number,
+  originZ: number,
+  targetX: number,
+  targetZ: number,
+): number {
+  const deltaX = targetX - originX;
+  const deltaZ = targetZ - originZ;
+  let firstHit = 1;
+
+  for (let index = 0; index < KELP_REALM_WALL_AABBS.length; index++) {
+    const wall = KELP_REALM_WALL_AABBS[index]!;
+    const minX = wall.centerX - wall.halfX - CAM_WALL_CLEARANCE;
+    const maxX = wall.centerX + wall.halfX + CAM_WALL_CLEARANCE;
+    const minZ = wall.centerZ - wall.halfZ - CAM_WALL_CLEARANCE;
+    const maxZ = wall.centerZ + wall.halfZ + CAM_WALL_CLEARANCE;
+    let nearT = 0;
+    let farT = firstHit;
+
+    if (Math.abs(deltaX) < 0.000001) {
+      if (originX <= minX || originX >= maxX) continue;
+    } else {
+      let axisNear = (minX - originX) / deltaX;
+      let axisFar = (maxX - originX) / deltaX;
+      if (axisNear > axisFar) {
+        const swap = axisNear;
+        axisNear = axisFar;
+        axisFar = swap;
+      }
+      nearT = Math.max(nearT, axisNear);
+      farT = Math.min(farT, axisFar);
+      if (nearT > farT) continue;
+    }
+
+    if (Math.abs(deltaZ) < 0.000001) {
+      if (originZ <= minZ || originZ >= maxZ) continue;
+    } else {
+      let axisNear = (minZ - originZ) / deltaZ;
+      let axisFar = (maxZ - originZ) / deltaZ;
+      if (axisNear > axisFar) {
+        const swap = axisNear;
+        axisNear = axisFar;
+        axisFar = swap;
+      }
+      nearT = Math.max(nearT, axisNear);
+      farT = Math.min(farT, axisFar);
+      if (nearT > farT) continue;
+    }
+
+    if (farT >= 0 && nearT >= 0 && nearT < firstHit) firstHit = nearT;
+  }
+
+  return firstHit;
+}
+
+function clampCameraToVisibleSegment(
+  originX: number,
+  originZ: number,
+  target: THREE.Vector3,
+): void {
+  const hitT = firstCameraWallHitT(originX, originZ, target.x, target.z);
+  if (hitT >= 1) return;
+  const deltaX = target.x - originX;
+  const deltaZ = target.z - originZ;
+  const segmentLength = Math.sqrt(deltaX * deltaX + deltaZ * deltaZ);
+  const safeT = Math.max(0, hitT - CAM_WALL_PADDING / Math.max(1, segmentLength));
+  target.x = originX + deltaX * safeT;
+  target.z = originZ + deltaZ * safeT;
+}
+
 interface MotionProps {
   readonly children: ReactNode;
   readonly baseY?: number;
@@ -209,7 +281,9 @@ function KelpRealmAvatarMotion({ children, baseY = 0, updateAnimation }: MotionP
     const behindX = -Math.sin(cameraYaw.current) * CAM_BEHIND;
     const behindZ = Math.cos(cameraYaw.current) * CAM_BEHIND;
     cameraScratch.set(posX.current + behindX, CAM_ABOVE + cameraPitch.current, posZ.current + behindZ);
+    clampCameraToVisibleSegment(posX.current, posZ.current, cameraScratch);
     camera.position.lerp(cameraScratch, 1 - Math.exp(-7 * safeDelta));
+    clampCameraToVisibleSegment(posX.current, posZ.current, camera.position);
     targetScratch.set(posX.current, CAM_LOOK_Y, posZ.current);
     camera.lookAt(targetScratch);
     updateAnimation(safeDelta, clock.elapsedTime, moving);
