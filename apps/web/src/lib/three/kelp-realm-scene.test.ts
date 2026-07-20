@@ -10,6 +10,7 @@ import {
   KELP_REALM_SCENE_BUDGET,
   markKelpRealmSporeGeometryVisited,
 } from './kelp-realm-scene';
+import { parseKelpRealmBeaconVisitResponse } from './kelp-realm-player';
 
 describe('Kelp Forest realm discoveries', () => {
   test('constructs one deterministic merged animated geometry per discovery type', () => {
@@ -99,5 +100,18 @@ describe('Kelp Forest realm discoveries', () => {
     } finally {
       for (const material of materials) material.dispose();
     }
+  });
+
+  test('rejects malformed beacon progress before it can enter the token chain', () => {
+    const valid = {
+      token: 'signed-token',
+      adjacent: [{ id: 'junction-1', kind: 'junction', bearingDeg: 90, distanceWu: 400 }],
+      spores: { found: 1, total: 3 },
+      spore: true,
+    } as const;
+    expect(parseKelpRealmBeaconVisitResponse(valid)).toEqual(valid);
+    expect(parseKelpRealmBeaconVisitResponse({ ...valid, spores: { found: 1 } })).toBeNull();
+    expect(parseKelpRealmBeaconVisitResponse({ ...valid, spores: { found: 4, total: 3 } })).toBeNull();
+    expect(parseKelpRealmBeaconVisitResponse({ ...valid, unexpected: true })).toBeNull();
   });
 });

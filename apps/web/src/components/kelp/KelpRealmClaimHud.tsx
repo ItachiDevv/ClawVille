@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { KELP_REALM_SPORE_COUNT } from '@clawville/shared';
+import { z } from 'zod';
 import { useIsGuest } from '@/hooks/use-is-guest';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { useGameStore } from '@/stores/game';
@@ -28,6 +30,29 @@ type ClaimPhase = 'idle' | 'claiming' | 'claimed';
 interface ClaimFeedback {
   readonly centerToken: string;
   readonly message: string;
+}
+
+interface KelpClaimErrorPayload {
+  readonly code?: string;
+  readonly found?: number;
+  readonly total?: number;
+}
+
+const kelpClaimErrorPayloadSchema = z.union([
+  z.object({
+    code: z.literal('spores_missing'),
+    found: z.number().int().min(0).max(KELP_REALM_SPORE_COUNT),
+    total: z.literal(KELP_REALM_SPORE_COUNT),
+  }).strict(),
+  z.object({
+    error: z.string().optional(),
+    code: z.string().refine((code) => code !== 'spores_missing').optional(),
+  }).strict(),
+]);
+
+export function parseKelpClaimErrorPayload(payload: unknown): KelpClaimErrorPayload {
+  const result = kelpClaimErrorPayloadSchema.safeParse(payload);
+  return result.success ? result.data : {};
 }
 
 export function KelpRealmClaimHud() {
@@ -83,13 +108,10 @@ export function KelpRealmClaimHud() {
         body: JSON.stringify({ centerToken: currentSnapshot.centerToken }),
         signal: controller.signal,
       });
-      const payload = await response.json().catch(() => ({})) as {
-        code?: string;
-        found?: number;
-        total?: number;
-      };
+      const rawPayload = await response.json().catch(() => null) as unknown;
       if (!mountedRef.current || controller.signal.aborted) return;
       if (!response.ok) {
+        const payload = parseKelpClaimErrorPayload(rawPayload);
         if (
           payload.code === 'spores_missing' &&
           typeof payload.found === 'number' &&
