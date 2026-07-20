@@ -83,6 +83,7 @@ import {
 import { queryDurableAgentEventsNewest } from './agent-event-query';
 import { recordCovenantAction } from './covenant-action-recorder';
 import { resolveBuildingId } from './building-center';
+import { armAutonomy, isAutonomyActive } from './autonomy-standby';
 
 /** Per-agent phase in the perceive→decide→act loop. */
 type DrivePhase = 'deciding' | 'walking' | 'arrived' | 'talking';
@@ -333,6 +334,10 @@ class AgentAutonomyDriver {
   private warming = new Map<string, number>(); // agentId -> warmingSince ms (overlap guard + R2 watchdog)
   private interval: ReturnType<typeof setInterval> | null = null;
   private tickCount = 0;
+  /** Edge-trigger the standby skip log instead of emitting it every 30s. */
+  private wasActive = true;
+  /** Lazy loader kept as an instance seam for deterministic standby-race tests. */
+  private loadReconcileModule = () => import('./agent-autonomy-reconcile');
   // Slice 4: `${agentId}:${buildingId}` -> epoch-ms until which conducted
   // teacher turns at that building are suppressed (LLM-spend bound).
   private talkCooldownUntil = new Map<string, number>();
@@ -663,6 +668,28 @@ class AgentAutonomyDriver {
   }
 
   /**
+   * Human-triggered enrollment/directive kick. Unlike the generic drive seam,
+   * this explicitly arms a bounded staging window before starting the cycle.
+   */
+  kickAgentNow(agentId: string, options: { autoArm?: boolean } = {}): boolean {
+    if (!this.houseAgents.has(agentId) && !this.userAgents.has(agentId)) return false;
+    if (!isAutonomyActive()) {
+      // Human enrollment/directive kicks intentionally wake staging. Durable
+      // reconcile uses autoArm:false so an operator's emergency brake always
+      // wins even when it lands during an already-running reconcile pass.
+      if (options.autoArm === false) return false;
+      armAutonomy(30, 'kick auto-arm');
+    }
+    void this.driveAgentNow(agentId).catch((err) =>
+      console.error(
+        `[AutonomyDriver] kick failed for ${sessionDigest(agentId)}:`,
+        err instanceof Error ? err.message : err,
+      ),
+    );
+    return true;
+  }
+
+  /**
    * Kick the actively-enrolled agent for an owner after a new directive lands.
    * The expected platform id prevents a stale/rebound enrollment from consuming
    * a directive written to a different agent row.
@@ -672,13 +699,7 @@ class AgentAutonomyDriver {
     const entry = agentId ? this.userAgents.get(agentId) : null;
     if (!agentId || !entry || entry.platformAgentId !== expectedPlatformAgentId) return false;
     entry.directivePending = true;
-    void this.driveAgentNow(agentId).catch((err) =>
-      console.error(
-        `[AutonomyDriver] directive kick failed for ${sessionDigest(agentId)}:`,
-        err instanceof Error ? err.message : err,
-      ),
-    );
-    return true;
+    return this.kickAgentNow(agentId);
   }
 
   /**
@@ -762,8 +783,15 @@ class AgentAutonomyDriver {
    * throws into the tick loop.
    */
   private async runReconcile(): Promise<void> {
+    // Re-check here as well as in tick(): an operator may apply standby between
+    // scheduling this fire-and-forget pass and its dynamic import executing.
+    if (!isAutonomyActive()) return;
     try {
-      const { reconcileDurableAutonomy } = await import('./agent-autonomy-reconcile');
+      const { reconcileDurableAutonomy } = await this.loadReconcileModule();
+      // The lazy import is an await boundary. A manual emergency brake applied
+      // while it resolves must still win; otherwise reconcile may enroll an
+      // agent whose kick immediately auto-arms autonomy again.
+      if (!isAutonomyActive()) return;
       await reconcileDurableAutonomy();
     } catch (err) {
       console.warn(
@@ -779,6 +807,14 @@ class AgentAutonomyDriver {
    * in-flight guard skips an agent whose previous decision is still running.
    */
   private tick(): void {
+    if (!isAutonomyActive()) {
+      if (this.wasActive) {
+        console.log('[AutonomyDriver] standby — skipping autonomy tick and reconcile');
+      }
+      this.wasActive = false;
+      return;
+    }
+    this.wasActive = true;
     this.tickCount++;
     // §B.1 durable autonomy: re-enroll persisted-flag agents with NO client.
     // Tick 1 (~30s after start) covers the "on driver start" case (a deploy
@@ -788,6 +824,8 @@ class AgentAutonomyDriver {
     if (this.tickCount % RECONCILE_EVERY_N_TICKS === 1) {
       void this.runReconcile();
     }
+    // Standby returned above; this human-presence-independent cadence applies
+    // only while the operator switch is ACTIVE.
     // Human-presence INDEPENDENT cadence: the agent runs the SAME decision loop
     // whether or not a human is in the world. ClawVille's premise is that hosted
     // agents ARE the living economy — they must act continuously with ZERO

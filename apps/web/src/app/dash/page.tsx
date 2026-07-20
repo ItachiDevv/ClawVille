@@ -28,6 +28,8 @@ import TokenEconomyTab from './tabs/token-economy';
 import QuestsTab from './tabs/quests';
 import CosmeticsTab from './tabs/cosmetics';
 import PhasesTab from './tabs/phases';
+import { AutonomyStatus } from './AutonomyStatus';
+import type { AutonomyDashboardState } from './AutonomyStatus';
 
 export const dynamic = 'force-dynamic';
 
@@ -75,6 +77,39 @@ async function ensureDashAuthOrRedirect(): Promise<void> {
   }
 }
 
+async function fetchAutonomyState(): Promise<{
+  state: AutonomyDashboardState | null;
+  error: string | null;
+}> {
+  const apiBase = process.env.NEXT_PUBLIC_API_URL ?? '';
+  if (!apiBase) {
+    return { state: null, error: 'NEXT_PUBLIC_API_URL is not configured.' };
+  }
+
+  const cookieStore = await cookies();
+  try {
+    const response = await fetch(`${apiBase}/api/dashboard/autonomy`, {
+      headers: { cookie: cookieStore.toString() },
+      cache: 'no-store',
+    });
+    if (response.status === 401) {
+      return { state: null, error: 'Not authenticated. Sign in as an admin first.' };
+    }
+    if (response.status === 403) {
+      return { state: null, error: 'Your account is not in ADMIN_USER_IDS.' };
+    }
+    if (!response.ok) {
+      return { state: null, error: `Autonomy status returned ${response.status}.` };
+    }
+    return { state: (await response.json()) as AutonomyDashboardState, error: null };
+  } catch (caught) {
+    return {
+      state: null,
+      error: `Autonomy status fetch failed: ${caught instanceof Error ? caught.message : String(caught)}`,
+    };
+  }
+}
+
 const TABS = [
   { id: 'overview',  label: 'Overview',       hint: 'DAU · funnel · collab' },
   { id: 'tokens',    label: 'Token Economy',  hint: 'weights · caps · bundles' },
@@ -100,6 +135,8 @@ export default async function DashPage({
   // authenticated callers.
   await ensureDashAuthOrRedirect();
 
+  const autonomy = await fetchAutonomyState();
+
   const { tab: rawTab } = await searchParams;
   const tab: TabId = isValidTab(rawTab) ? rawTab : 'overview';
 
@@ -113,6 +150,8 @@ export default async function DashPage({
             Q3 plan: <code>.claude/plans/gamification-economy-and-shop-q3.md</code>
           </span>
         </header>
+
+        <AutonomyStatus initialState={autonomy.state} initialError={autonomy.error} />
 
         {/* Brand Identity priorities — equal-weight, co-load-bearing.
             Source: CLAUDE.md §"TOP PROJECT PRIORITIES". Every design
