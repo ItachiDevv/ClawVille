@@ -54,9 +54,9 @@ describe('NPC emote snapshot transport', () => {
   });
 
   it('guards the frame edge against omitted optional sequences', async () => {
-    const source = await Bun.file(
-      new URL('../lib/three/arena-npcs.tsx', import.meta.url),
-    ).text();
+    const source = (
+      await Bun.file(new URL('../lib/three/arena-npcs.tsx', import.meta.url)).text()
+    ).replace(/\r\n/g, '\n'); // git autocrlf may materialize CRLF on Windows checkouts
     expect(source).toContain(
       'serverEmoteSeq !== undefined &&\n        serverEmoteSeq !== serverEmoteSeqRef.current',
     );
