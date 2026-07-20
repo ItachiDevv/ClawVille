@@ -45,9 +45,9 @@
  *     agent's OWN ElizaOS runtime — P3 slice 3), both proximity-gated
  *     fail-closed and idempotent per (avatar, building, reason, UTC-day).
  *   - LLM-spend bound: a per-(agentId, buildingId) 60-min talk cooldown gates
- *     the conducted teacher turn (each turn is a gpt-4o call carrying the
- *     teacher's full skill corpus; the once-per-day CT probe does NOT bound
- *     LLM cost by itself).
+ *     the conducted teacher turn (each turn is a model call with bounded top-5
+ *     retrieval from the teacher's embedded skill corpus; the once-per-day CT
+ *     probe does NOT bound LLM cost by itself).
  *   - Memory is behaviorally LIVE, not inert: the ~3 most relevant earned-skill
  *     lessons plus book/building-visit knowledge (semantic RAG from the agent's
  *     OWN ElizaOS runtime, authoritative-store fallbacks when cold) are folded
@@ -201,11 +201,12 @@ const WARM_GUARD_EVICT_MS = 10 * 60 * 1000;
 // empty (OpenAI 429 / quota exhausted / bad key) otherwise spins the deciding phase
 // silently, since withTimeout maps a timeout/error to '' by contract.
 const EMPTY_DECIDE_WARN_THRESHOLD = 3;
-// Slice 4 LLM-spend bound: a conducted teacher turn is a gpt-4o call carrying the
-// teacher's FULL skill corpus, and the once-per-day CT probe does NOT bound LLM
-// cost by itself — so each (agentId, buildingId) pair may conduct at most one
-// turn per hour. In-memory (resets on restart — acceptable; the daily CT probe
-// is the money bound), bounded by TALK_COOLDOWN_MAP_MAX with expired-first eviction.
+// Slice 4 LLM-spend bound: a conducted teacher turn is a model call with bounded
+// top-5 retrieval from the teacher's embedded skill corpus, and the once-per-day
+// CT probe does NOT bound LLM cost by itself — so each (agentId, buildingId) pair
+// may conduct at most one turn per hour. In-memory (resets on restart — acceptable;
+// the daily CT probe is the money bound), bounded by TALK_COOLDOWN_MAP_MAX with
+// expired-first eviction.
 const TALK_BUILDING_COOLDOWN_MS = 60 * 60 * 1000;
 // §B.1: sized for BOTH registries — (house + user caps) × ~12 buildings of
 // headroom, floored at the pre-§B.1 1024 so a small user cap can never SHRINK

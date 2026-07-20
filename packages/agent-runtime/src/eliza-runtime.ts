@@ -16,6 +16,7 @@ import {
   type Content,
   type IAgentRuntime,
 } from '@elizaos/core';
+import { createHash } from 'node:crypto';
 import { v5 as uuidv5 } from 'uuid';
 import type { LocationTemplate } from '@clawville/agent-templates';
 import { loadLocationTemplate } from './character-loader';
@@ -205,6 +206,11 @@ const CONCISE_CHAT_DIRECTIVE =
 // strengthened CONCISE_CHAT_DIRECTIVE does the real shaping; this just bounds runaway.
 const CHAT_RESPONSE_MAX_TOKENS = 200;
 
+// ElizaOS includes every example conversation in every composed prompt. Three
+// preserves persona-shaping few shots without carrying a template's entire
+// example corpus on every teacher/Nori turn.
+const MAX_MESSAGE_EXAMPLES = 3;
+
 function convertToElizaCharacter(
   template: LocationTemplate,
   config: ElizaRuntimeConfig
@@ -257,7 +263,7 @@ function convertToElizaCharacter(
     customization?.messageExamples && customization.messageExamples.length
       ? customization.messageExamples
       : template.messageExamples;
-  const messageExamples = rawExamples?.map((conversation: any) =>
+  const messageExamples = rawExamples?.slice(0, MAX_MESSAGE_EXAMPLES).map((conversation: any) =>
     conversation.map((msg: any) => ({
       name: msg.user?.startsWith('{{')
         ? 'User'
@@ -270,12 +276,8 @@ function convertToElizaCharacter(
     }))
   );
 
-  // Customization-first knowledge / adjectives / style (same bug class — these
-  // were pulled from the wrong fallback template before).
-  const characterKnowledge =
-    customization?.knowledge && customization.knowledge.length
-      ? customization.knowledge
-      : template.knowledge || [];
+  // Customization-first adjectives / style (same bug class — these were pulled
+  // from the wrong fallback template before).
   const characterAdjectives =
     customization?.adjectives && customization.adjectives.length
       ? customization.adjectives
@@ -304,12 +306,10 @@ function convertToElizaCharacter(
     name,
     username: name.toLowerCase().replace(/\s+/g, '-'),
     system,
-    // v2 Character uses bio: string[] — split multi-line strings, or wrap single string
-    // Merge knowledge into bio — ElizaOS v2 treats knowledge[] strings as file paths
-    bio: [
-      ...(typeof bio === 'string' ? [bio] : bio),
-      ...characterKnowledge,
-    ],
+    // v2 Character uses bio: string[]: keep only the selected persona bio.
+    // `knowledge` stays empty because ElizaOS v2 treats its strings as file paths;
+    // runtime-start embedding makes the corpus available through bounded RAG.
+    bio: typeof bio === 'string' ? [bio] : bio,
     messageExamples: messageExamples as any,
     postExamples: [],
     topics: customization?.topics || template.topics || [],
@@ -331,6 +331,7 @@ export class ElizaRuntime {
   private runtime: ElizaAgentRuntime | null = null;
   private state: ElizaRuntimeState = 'idle';
   private character: Character;
+  private teacherCorpus: string[] = [];
   private loadedPlugins: Plugin[] = [];
   private lightweightMode = false;
 
@@ -338,12 +339,15 @@ export class ElizaRuntime {
     this.config = config;
 
     if (config.agentType === 'openclaw-bot') {
+      this.teacherCorpus = config.customization?.knowledge ?? [];
       // OpenClaw bots reuse avatar character builder with gateway-specific defaults
       this.character = this.buildAvatarCharacter(config);
     } else if (config.agentType === 'avatar-agent') {
+      this.teacherCorpus = config.customization?.knowledge ?? [];
       // Avatar agents use customization directly, no template
       this.character = this.buildAvatarCharacter(config);
     } else if (config.character) {
+      this.teacherCorpus = config.customization?.knowledge ?? [];
       // Caller provided a pre-built character (escape hatch for simulation
       // runtime, collaboration broker, etc.) — skip template loading entirely
       this.character = config.character;
@@ -359,6 +363,7 @@ export class ElizaRuntime {
       // "Shop Keeper" fallback, which customization then overrides field-by-field.
       const locationId = (config.agentConfig?.locationId as string) || '';
       const template = loadLocationTemplate(locationId);
+      this.teacherCorpus = config.customization?.knowledge ?? template.knowledge ?? [];
       this.character = convertToElizaCharacter(template, config);
     }
   }
@@ -562,6 +567,11 @@ export class ElizaRuntime {
       // the acquire-timeout path rejects without ever holding the lock.
       if (acquired) initMutex.release();
     }
+
+    // Populate teacher/Nori RAG before start resolves and the first chat can run.
+    // This stays outside the init-mutex region so first-boot embeddings do not
+    // convoy unrelated agent initialization. The injector is always fail-soft.
+    await this.injectTeacherCorpusKnowledge();
   }
 
   private async loadPlugins(): Promise<void> {
@@ -887,6 +897,152 @@ export class ElizaRuntime {
         (err as Error)?.message,
       );
       return [];
+    }
+  }
+
+  /**
+   * Version and embed the configured teacher/Nori corpus in the raw per-agent
+   * knowledge room consumed by KnowledgeProvider's bounded top-5 search.
+   * Idempotent and fail-soft; never lazy-starts a stopped runtime.
+   */
+  async injectTeacherCorpusKnowledge(): Promise<boolean> {
+    if (this.state !== 'running' || !this.runtime) return false;
+    if (this.teacherCorpus.length === 0) return false;
+
+    const agentId = this.config.agentId as UUID;
+    const corpusHash = createHash('sha256')
+      .update(this.teacherCorpus.join('\n'))
+      .digest('hex');
+
+    try {
+      const existing = await this.runtime.getMemories({
+        tableName: 'knowledge',
+        agentId,
+        roomId: agentId,
+        entityId: agentId,
+        count: 10_000,
+      });
+      const teacherRows = existing.filter((memory) => {
+        const metadata = (memory.metadata ?? {}) as Record<string, unknown>;
+        return metadata.subtype === 'teacher-corpus';
+      });
+      const staleIds = teacherRows
+        .filter((memory) => {
+          const metadata = (memory.metadata ?? {}) as Record<string, unknown>;
+          return metadata.corpusHash !== corpusHash;
+        })
+        .map((memory) => memory.id)
+        .filter((id): id is UUID => typeof id === 'string');
+
+      if (
+        teacherRows.some((memory) => {
+          const metadata = (memory.metadata ?? {}) as Record<string, unknown>;
+          return metadata.corpusHash === corpusHash;
+        })
+      ) {
+        // A previous stale cleanup may have failed after the current set landed.
+        // Retry deletion without re-embedding or rewriting the current version.
+        if (staleIds.length > 0) {
+          try {
+            await this.runtime.deleteManyMemories(staleIds);
+          } catch (error) {
+            console.warn(
+              '[ElizaRuntime] injectTeacherCorpusKnowledge stale cleanup retry failed (non-fatal):',
+              (error as Error)?.message,
+            );
+          }
+        }
+        return false;
+      }
+
+      // Embed the full replacement before writing its first row. An embedding
+      // outage therefore cannot leave a partial current-hash set behind.
+      const prepared: Array<{
+        index: number;
+        text: string;
+        embedding: number[];
+        id: UUID;
+      }> = [];
+      for (let index = 0; index < this.teacherCorpus.length; index++) {
+        const text = this.teacherCorpus[index]!;
+        try {
+          prepared.push({
+            index,
+            text,
+            embedding: await embedText(text),
+            id: uuidv5(
+              `teacher-corpus:${this.config.agentId}:${corpusHash}:${index}`,
+              ROOM_NAMESPACE,
+            ) as UUID,
+          });
+        } catch (error) {
+          console.warn(
+            '[ElizaRuntime] injectTeacherCorpusKnowledge embed failed (non-fatal):',
+            (error as Error)?.message,
+          );
+          return false;
+        }
+      }
+
+      const attemptedIds: UUID[] = [];
+      try {
+        for (const entry of prepared) {
+          attemptedIds.push(entry.id);
+          await this.runtime.createMemory(
+            {
+              id: entry.id,
+              agentId,
+              entityId: agentId,
+              roomId: agentId,
+              content: { text: entry.text, source: 'teacher-corpus' } as Content,
+              embedding: entry.embedding,
+              createdAt: Date.now(),
+              metadata: {
+                subtype: 'teacher-corpus',
+                corpusHash,
+                index: entry.index,
+              },
+            } as any,
+            'knowledge',
+            true,
+          );
+        }
+      } catch (error) {
+        console.warn(
+          '[ElizaRuntime] injectTeacherCorpusKnowledge write failed (non-fatal):',
+          (error as Error)?.message,
+        );
+        try {
+          await this.runtime.deleteManyMemories(attemptedIds);
+        } catch (rollbackError) {
+          console.warn(
+            '[ElizaRuntime] injectTeacherCorpusKnowledge rollback failed (non-fatal):',
+            (rollbackError as Error)?.message,
+          );
+        }
+        return false;
+      }
+
+      // The adapter exposes bulk deletion. Retire old versions only after the
+      // entire replacement set lands, preserving the old usable set on failure.
+      if (staleIds.length > 0) {
+        try {
+          await this.runtime.deleteManyMemories(staleIds);
+        } catch (error) {
+          console.warn(
+            '[ElizaRuntime] injectTeacherCorpusKnowledge stale cleanup failed (non-fatal):',
+            (error as Error)?.message,
+          );
+        }
+      }
+
+      return true;
+    } catch (error) {
+      console.warn(
+        '[ElizaRuntime] injectTeacherCorpusKnowledge failed (non-fatal):',
+        (error as Error)?.message,
+      );
+      return false;
     }
   }
 
@@ -1254,8 +1410,8 @@ export class ElizaRuntime {
        * Per-turn text-model override (agent-metaverse P1 slice 4). Absent ⇒ the
        * runtime's default text model (unchanged behaviour). The autonomous house
        * teacher turn passes 'TEXT_SMALL' so a hosted teacher reply runs on
-       * gpt-4o-mini instead of the default TEXT_LARGE (gpt-4o) while carrying the
-       * teacher's full merged SKILL.md corpus — a verified-safe cost win. Kept a
+       * gpt-4o-mini instead of the default TEXT_LARGE (gpt-4o) while the knowledge
+       * provider adds only top-5 relevant teacher-corpus memories. Kept a
        * plain string union (NOT the core `ModelType` enum) so apps/api callers
        * don't have to import @elizaos/core; it is assignable to `generateText`'s
        * `modelType` (TextGenerationModelType).
