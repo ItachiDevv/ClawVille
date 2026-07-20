@@ -17,11 +17,19 @@ pull (ClawVille→Hatcher, ClawVille-signed) — the live heartbeat.
 
 Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 
-> **Current local protocol: `PROTOCOL_VERSION 30` (2026-07-20).** Version 30
-> deepens the same 21x21 Kelp realm into a substantially longer winding route,
-> shuffles each beacon's adjacency per avatar/beacon, and gates the center claim
-> on three spores carried by the opaque token chain. It adds no action verb and
-> changes no Hatcher register/PATCH/stats/signing/auth wire. (The five
+> **Current local protocol: `PROTOCOL_VERSION 31` (2026-07-20).** Version 31
+> replaces public `/connect` platform forks with one tolerant normalized request
+> and additively reports `cognition { mode, protocol, ignoredFields }`. Restore is
+> now fact-based: public rows without a real caller gateway reconstruct from
+> persisted non-secret facts, while real gateway sessions reconnect because their
+> `authToken` is still never persisted. Public `hatcher` and the `hatcher:`
+> namespace remain rejected before normalization. Hatcher's signed register/PATCH/
+> stats/401/DELETE surface, cognition callback, encrypted proxy restore, seven
+> `[ACTION:]` verbs, and frozen three-field protocol pointer are untouched; only
+> the imported manual version/hash advances. Cross-check against Hatcher
+> host-frontend HEAD `fe9e041d43f7a8b848818d194b50080104de94be`
+> confirms its protocol pointer remains extension-tolerant. Version 30 deepens the same 21x21 Kelp realm (longer route, per-subject shuffled adjacency, three-spore center gate) with no verb or Hatcher-wire change. Version 24 widened
+> bounded framework labels to the general custom adapter. (The five
 > kelp-series notes were authored on a parallel branch as 23–27 while
 > identity-type work shipped 23–24; they renumber to 25–29 at merge.) Version 29
 > is the one re-pull signal for the complete Kelp founder iteration: the portal
@@ -111,7 +119,7 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 | Stats (signed GET) | `GET /api/partner/hatcher/agents/:agentId/stats` ✅ |
 | Cognition (we call you) | `POST {proxyBaseUrl}/integrations/clawville/agents/:agentId/chat` ✅ |
 | Owner launch (controlled) | portal `mint-for-hatcher` → `/game` → `POST /api/partner/hatcher/launch/exchange` ✅ |
-| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 30`** ⚠️ local version; staging harness pending. Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 added default-off EARNED redemption; v19 repaired universal onboarding/manual discovery; v20 documents building-skill claim/install; v21 adds non-blocking BYO install acknowledgement outside Hatcher's frozen pointer; v22 corrected the manual's /move doc, added session-lifecycle recovery, and added Hermes to `/join`; v23 contracted public identityType to Milady/Hermes/OpenClaw/general custom; v24 makes that custom path a true catch-all and permits gateway-less self-managed pull agents while keeping Hatcher partner-only; v25 added the northeast kelp-maze world destination and existing-move target; v26 widened the existing emote parameter domain to owned+equipped cosmetic keys and documented cosmetics REST; v27 withdraws the rejected inline maze; v28 adds `enter_kelp_forest()` (the seventh verb) and the session-authenticated realm traversal contract; v29 covers the town-center portal, 21x21 discovery maze, and stable generic explicit collectible claim; v30 deepens the maze, shuffles adjacency per subject, and requires all three spores before center claim. Hatcher register/PATCH/stats/401/DELETE wire remains unchanged. |
+| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 31`** ⚠️ local version; staging harness pending. Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 added default-off EARNED redemption; v19 repaired universal onboarding/manual discovery; v20 documents building-skill claim/install; v21 adds non-blocking BYO install acknowledgement outside Hatcher's frozen pointer; v22 corrected the manual's /move doc, added session-lifecycle recovery, and added Hermes to `/join`; v23 contracted public identityType to Milady/Hermes/OpenClaw/general custom; v24 makes that custom path a true catch-all and permits gateway-less self-managed pull agents while keeping Hatcher partner-only; v25 added the northeast kelp-maze world destination and existing-move target; v26 widened the existing emote parameter domain to owned+equipped cosmetic keys and documented cosmetics REST; v27 withdraws the rejected inline maze; v28 adds `enter_kelp_forest()` (the seventh verb) and the session-authenticated realm traversal contract; v29 covers the town-center portal, 21x21 discovery maze, and stable generic explicit collectible claim; v30 deepens the maze, shuffles adjacency per subject, and requires all three spores before center claim; v31 unifies tolerant public connect normalization, reports effective cognition, and makes no-gateway restore fact-based. Hatcher register/PATCH/stats/401/DELETE wire remains unchanged. |
 
 ---
 
@@ -457,6 +465,19 @@ re-exchange semantics). Then register **1 OpenClaw + 1 Hermes** test agent on st
 play end to end.
 
 ---
+
+*Partner cross-check for version 25 (2026-07-20): only the unsigned public
+`/api/agent/connect` contract changed. It now accepts harmless framework-shaped
+fields, normalizes to one effective cognition decision, and restores public
+sessions from no-real-gateway facts. Public `hatcher`/`hatcher:` rejection still
+runs before normalization. Hatcher's signed register/PATCH/stats/401/DELETE
+fields and paths, cognition callback, encrypted proxy restore, protocol-pointer
+keys, and `[ACTION:]` verbs/params/bounds are byte-identical. Cross-checked
+against Hatcher host-frontend HEAD
+`fe9e041d43f7a8b848818d194b50080104de94be`: `ClawVilleProtocolPointer` remains
+extension-tolerant; only its imported version/hash advances. The staging signed
+harness remains the required pre-promotion gate and was not run in this local,
+no-push worktree.*
 
 *Partner cross-check for version 24 (2026-07-17): the universal public
 `identityType` input widened from a closed enum to a bounded label that

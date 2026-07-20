@@ -90,11 +90,17 @@ describe('resolveInWorldProtocol — openclaw host-it-for-me gate', () => {
   });
 
   test('GATEWAY-LESS openclaw, gate ON → openclaw-local (the hosted path)', () => {
-    for (const stored of ['openai-compat', 'anthropic', 'custom-webhook', 'nanoclaw', null, undefined] as const) {
+    for (const stored of ['openai-compat', 'anthropic', 'custom-webhook', null, undefined] as const) {
       expect(
         resolveInWorldProtocol('openclaw', stored, false, { enabled: true, hasDeclaredGateway: false }),
       ).toBe('openclaw-local');
     }
+    expect(resolveInWorldProtocol(
+      'openclaw',
+      'nanoclaw',
+      false,
+      { enabled: true, hasDeclaredGateway: false },
+    )).toBe('nanoclaw');
   });
 
   test('BYO openclaw WITH a declared gateway → declared protocol under BOTH gate states (the precedence pin)', () => {
@@ -143,17 +149,19 @@ describe('resolveInWorldProtocol — openclaw host-it-for-me gate', () => {
 // 2. Restorability — OpenClaw follows its per-row declared-gateway fact.
 // ---------------------------------------------------------------------------
 describe('openclaw restorability — fact-based', () => {
-  test('declared-gateway BYO is not restorable; gateway-less requires the host gate', () => {
-    expect(isRowRestorableFromFacts('openclaw', BYO_GATEWAY)).toBe(false);
+  test('declared-gateway BYO is not restorable; gateway-less restores under either gate', () => {
+    expect(isRowRestorableFromFacts('openclaw', BYO_GATEWAY, undefined, 'openai-compat')).toBe(false);
+    expect(isRowRestorableFromFacts('openclaw', BYO_GATEWAY, undefined, 'nanoclaw')).toBe(true);
     expect(isRowRestorableFromFacts('openclaw', null, true)).toBe(true);
     expect(isRowRestorableFromFacts('openclaw', DUMMY_GATEWAY, true)).toBe(true);
-    expect(isRowRestorableFromFacts('openclaw', null, false)).toBe(false);
+    expect(isRowRestorableFromFacts('openclaw', null, false)).toBe(true);
   });
 
   test('session-status uses the same gateway fact', () => {
     expect(isSessionRestorable('openclaw', 'openai-compat', undefined, BYO_GATEWAY)).toBe(false);
+    expect(isSessionRestorable('openclaw', 'nanoclaw', undefined, BYO_GATEWAY)).toBe(true);
     expect(isSessionRestorable('openclaw', 'openai-compat', undefined, null, true)).toBe(true);
-    expect(isSessionRestorable('openclaw', 'openai-compat', undefined, null, false)).toBe(false);
+    expect(isSessionRestorable('openclaw', 'openai-compat', undefined, null, false)).toBe(true);
   });
 });
 
