@@ -1217,8 +1217,14 @@ export class ElizaRuntime {
   private async getConversationHistory(roomId: UUID, limit = 20): Promise<Memory[]> {
     if (!this.runtime) return [];
     try {
-      // v2: `count` is deprecated in favor of `limit` on getMemories params
-      const memories = await this.runtime.getMemories({ roomId, limit, tableName: 'messages' } as any);
+      // v2 core getMemories reads `count` (defaulting to the WHOLE room when
+      // absent) and has NO `limit` param — passing `limit` fetched the entire
+      // conversation history every turn, which on long-lived autonomous
+      // teacher rooms composed 20-35k input tokens per reply (found 2026-07-20
+      // while verifying the teacher context diet on prod). plugin-sql orders
+      // desc(createdAt), so `count: limit` returns the newest N; the ascending
+      // re-sort below restores chronological order for the prompt.
+      const memories = await this.runtime.getMemories({ roomId, count: limit, tableName: 'messages' } as any);
       return memories.sort((a, b) => {
         const aTime = typeof a.createdAt === 'number' ? a.createdAt : Date.parse(String(a.createdAt || 0));
         const bTime = typeof b.createdAt === 'number' ? b.createdAt : Date.parse(String(b.createdAt || 0));
