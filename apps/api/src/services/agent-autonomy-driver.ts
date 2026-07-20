@@ -58,6 +58,7 @@
 import {
   BUILDING_INTERACTION_RADIUS,
   BUILDING_OPENCLAW_THEMES,
+  AUTONOMY_ENTERABLE_PLACES,
   DECISION_SCOPE,
   HATCHER_ACTION_MENU,
   MAP_LOCATIONS,
@@ -262,6 +263,8 @@ function parseDriverAction(reply: string): ParsedDriverAction | null {
 function destinationLabel(destination: string | null): string | null {
   if (!destination) return null;
   if (destination === 'cove') return 'the Cove';
+  const place = AUTONOMY_ENTERABLE_PLACES.find((candidate) => candidate.destinationId === destination);
+  if (place) return place.label;
   const canonical = resolveBuildingId(destination) ?? destination;
   return BUILDING_OPENCLAW_THEMES[canonical]?.label
     ?? MAP_LOCATIONS.find((location) => location.id === canonical)?.name
@@ -273,6 +276,8 @@ function decisionThought(action: ParsedDriverAction): string {
     case 'enter_cove':
     case 'enter_poker_room':
       return 'Heading to the Cove';
+    case 'enter_kelp_forest':
+      return 'Heading to the Kelp Forest';
     case 'enter_building':
       return `Heading to ${destinationLabel(action.params.buildingId) ?? 'a building'}`;
     case 'move': {
@@ -1046,7 +1051,7 @@ class AgentAutonomyDriver {
     npcSimulation.clearDestinationBuilding(entry.bodyId);
     npcSimulation.dispatchHatcherActions(entry.bodyId, reply);
     // Learn the CHOSEN destination from the body itself. enter_building stamps a
-    // teacher id; enter_cove/enter_poker_room stamp `cove`. move/emote/talk do
+    // teacher id; gateway verbs stamp their shared place destination. move/emote/talk do
     // not stamp a destination and deliberately leave the phase at `deciding`
     // for the next steady tick after their visible one-shot effect.
     const body = npcSimulation.getNpcById(entry.bodyId);
@@ -1081,8 +1086,8 @@ class AgentAutonomyDriver {
       // forever (then WALK_TIMEOUT replans) and never reach 'arrived'/'talking'.
       return building.edgeDistance <= BUILDING_INTERACTION_RADIUS;
     }
-    // Cove and poker share destinationId=`cove`; either place entry supplies the
-    // same center-derived distance. Their executor path lands within ~40 wu.
+    // Shared places (Cove, poker, Kelp portal) resolve through the same
+    // destinationId + center-derived distance contract.
     const place = perception.places.find(
       (candidate) => candidate.destinationId === entry.targetBuildingId,
     );

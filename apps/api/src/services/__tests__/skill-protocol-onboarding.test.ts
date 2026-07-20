@@ -10,6 +10,7 @@ import {
   protocolPointer,
   requiresByoSkillAck,
 } from '../skill-protocol';
+import { KELP_REALM_BEACON_GRAPH } from '@clawville/shared';
 
 const API_BASE = 'https://api.example.test';
 
@@ -18,7 +19,7 @@ describe('open-agent onboarding manuals', () => {
     const manual = buildPlayManual(API_BASE);
     const protocolManual = buildProtocolManual(API_BASE);
 
-    expect(PROTOCOL_VERSION).toBe(25);
+    expect(PROTOCOL_VERSION).toBe(30);
     expect(manual).toContain(`POST ${API_BASE}/api/agent/connect`);
     expect(manual).toContain('"agentId": "your-stable-agent-id"');
     expect(manual).toContain('"identityType": "your-framework"');
@@ -47,11 +48,35 @@ describe('open-agent onboarding manuals', () => {
     expect(protocolManual).toContain('/api/agent/session/ack');
     expect(protocolManual).toContain('informational only');
     expect(protocolManual).toContain('Hosted agents skip this step');
+    expect(protocolManual).toContain('/api/cosmetics/catalog');
+    expect(protocolManual).toContain('/api/cosmetics/:skuId/buy');
+    expect(protocolManual).toContain('owned AND equipped');
+    expect(protocolManual).toContain('[ACTION: emote(name=<assetMeta.animationKey>)]');
+    expect(protocolManual).toContain('also a shop animation key');
+    expect(protocolManual).toContain('[ACTION: enter_poker_room()]');
+    expect(protocolManual).toContain('[ACTION: enter_kelp_forest()]');
+    expect(protocolManual).toContain('/api/kelp/beacon/entry/visit');
+    expect(protocolManual).toContain('{ "prevToken": "<token from the previous beacon>" }');
+    expect(protocolManual).toContain('{ "centerToken": "<token returned by the center visit>" }');
+    expect(protocolManual).toContain('429');
+    expect(protocolManual).toContain('30 minutes');
+    expect(protocolManual).toContain('zero CT/vCLAW');
+    expect(protocolManual).toContain('kelp-maze-collectible');
+    expect(protocolManual).toContain('Unrevealed Depths Collectible');
+    expect(protocolManual).toContain('center E/button');
+    expect(protocolManual).not.toContain('Pearl of the Depths');
+    for (const node of KELP_REALM_BEACON_GRAPH.nodes) {
+      if (node.id === 'entry') continue;
+      expect(protocolManual).not.toContain(`/beacon/${node.id}/visit`);
+      if (node.id.startsWith('junction-') || node.id.startsWith('dead-end-')) {
+        expect(protocolManual).not.toContain(node.id);
+      }
+    }
     expect(manual).toContain('knowledge_added');
     expect(manual).not.toMatch(/\b(?:CT|ClawTokens?|casino|pet)\b/i);
   });
 
-  test('all served manuals share the protocol-25 universal connect contract', () => {
+  test('all served manuals share the protocol-30 universal connect contract', () => {
     const block = buildUniversalConnectBlock(API_BASE);
     const invited = buildUniversalConnectBlock(API_BASE, { connectionToken: 'ct-test' });
     const play = buildPlayManual(API_BASE);
@@ -65,7 +90,7 @@ describe('open-agent onboarding manuals', () => {
       'custom remains non-restorable',
     ];
 
-    expect(PROTOCOL_VERSION).toBe(25);
+    expect(PROTOCOL_VERSION).toBe(30);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');

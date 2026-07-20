@@ -100,6 +100,7 @@ import { warnIfTestPartnerPubkeyEnabled } from './services/partner-signature';
 import { fingerprintMiddleware } from './middleware/fingerprint';
 import { jsonBodyGuard } from './middleware/json-body-guard';
 import { cosmeticsRoutes } from './routes/cosmetics';
+import { kelpRoutes } from './routes/kelp';
 import { dashAuthRoutes } from './routes/dash-auth';
 import { wagerRoutes } from './routes/wager';
 // SAP Option C — on-chain agent identity + USDC escrow rail (gated OFF + devnet +
@@ -308,6 +309,7 @@ app.route('/api/chat/transient', transientChatRoutes);
 app.route('/api/i18n', i18nRoutes);
 app.route('/api/items', itemRoutes);
 app.route('/api/cosmetics', cosmeticsRoutes);
+app.route('/api/kelp', kelpRoutes);
 app.route('/api/dash-auth', dashAuthRoutes);
 app.route('/api/npc', npcRoutes);
 // Multiplayer Phase 1 — room registry + per-room snapshot SSE.

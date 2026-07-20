@@ -100,17 +100,20 @@ import {
   SURF_HEAVE_DAMPING,
   SURF_TILT_DAMPING,
   SURF_BANK_LEAN_DAMPING,
+  buildSplineBoostPadsClient,
 } from './reef-race-config';
 
 /** Degrees→radians for the surf nose-up trim. */
 const SURF_DEG2RAD = 0.0174532925;
 import {
+  computeReefBoostPadKick,
   integrateSurfStep,
   type SurfBodyState,
   type SurfParams,
 } from '@clawville/shared';
 import { selfInputBus, selfPoseBus, resetSelfPoseBus } from './reef-race-self-bus';
 import { tAtXZ, bankedDatumYAtT, forgetTKey } from './reef-race-elevation';
+import { clientSpline } from './reef-race-spline-instance';
 import { surfWaveHeightAt } from './reef-wave-height';
 
 // ─── v2 feature flag ──────────────────────────────────────────────────────────
@@ -464,6 +467,32 @@ const RAMP_NOSE_UP_RAD = 0.28;
 const RAMP_TILT_HOLD_S = 0.35;
 /** Per-avatarId ramp-launch hold timer (seconds remaining). Module scope, no per-frame alloc. */
 const _rampLaunchHold: Record<string, number> = {};
+/** Shared event-time burst scratch; triggerBurst copies it synchronously. */
+const _itemBurstPosition = new THREE.Vector3();
+
+interface PredictedBoostPadVolume {
+  id: string;
+  x: number;
+  z: number;
+  fwdX: number;
+  fwdZ: number;
+  normalX: number;
+  normalZ: number;
+  halfLength: number;
+  halfWidth: number;
+}
+
+function itemUseBurstColor(kind: string): string {
+  switch (kind) {
+    case 'rr-turbo-bubble': return '#7df9ff';
+    case 'rr-bubble-shield': return '#72f6d1';
+    case 'rr-ink-slick': return '#9b6cff';
+    case 'rr-seeker-jelly': return '#ff5ec4';
+    case 'rr-tide-wave': return '#4ddcff';
+    case 'rr-whirlpool': return '#2f7cff';
+    default: return '#ffffff';
+  }
+}
 /** Duration of landing squash effect (seconds). */
 const SQUASH_DURATION  = 0.18;
 /** Squash factor at peak (scale Y multiplier — slightly compressed). */
@@ -1008,6 +1037,50 @@ function ReefRacePlayerInner({
   const predictionTimeRef = useRef(0);
   const lastAuthorityArrivalRef = useRef(0);
   const authorityIntervalEwmaRef = useRef(1000 / 15);
+  const serverBoostPads = useActivityStore(
+    (s) => s.room?.reefSplineZones?.boostPads,
+  );
+  const predictedBoostPads = useMemo<PredictedBoostPadVolume[]>(() => {
+    if (serverBoostPads && serverBoostPads.length > 0) {
+      return serverBoostPads.map((pad) => {
+        const fwdX = Math.sin(pad.rot);
+        const fwdZ = Math.cos(pad.rot);
+        return {
+          id: pad.id,
+          x: pad.position.x,
+          z: pad.position.y,
+          fwdX,
+          fwdZ,
+          normalX: -fwdZ,
+          normalZ: fwdX,
+          halfLength: pad.halfLength,
+          halfWidth: pad.halfWidth,
+        };
+      });
+    }
+
+    return buildSplineBoostPadsClient().map((pad) => {
+      const point = clientSpline.centerlineAt(pad.t);
+      const tangent = clientSpline.tangentAt(pad.t);
+      const normalX = -tangent.z;
+      const normalZ = tangent.x;
+      return {
+        id: pad.id,
+        x: point.x + normalX * pad.lateralOffset,
+        z: point.z + normalZ * pad.lateralOffset,
+        fwdX: tangent.x,
+        fwdZ: tangent.z,
+        normalX,
+        normalZ,
+        halfLength: pad.halfLength,
+        halfWidth: pad.halfWidth,
+      };
+    });
+  }, [serverBoostPads]);
+  const predictedBoostPadInsideRef = useRef<Set<string> | null>(null);
+  if (predictedBoostPadInsideRef.current === null) {
+    predictedBoostPadInsideRef.current = new Set<string>();
+  }
   // True only after the self kart has a real live authority pose. Countdown
   // staging keeps the same keyed instance but gates prediction + pose-bus writes.
   const predictsSelf = USE_SPLINE_PLAYER && isSelf && predictionEnabled;
@@ -1245,6 +1318,7 @@ function ReefRacePlayerInner({
       rebaseRenderOffsetRef.current.x = 0;
       rebaseRenderOffsetRef.current.z = 0;
       rebaseRenderOffsetRef.current.rot = 0;
+      predictedBoostPadInsideRef.current!.clear();
       clearPredictionHistory(predictionHistoryRef.current!);
       resetSelfPoseBus();
     };
@@ -1446,6 +1520,49 @@ function ReefRacePlayerInner({
     }
   }, [lastMiniTurboFireEvent, entity.avatarId, isSelf, triggerScreenShake]);
   // The burst position is "good enough" at the moment the event lands.
+
+  // Self-only item confirmation from the EXISTING inventory snapshots. The
+  // wire has no item-used event or activeEffects field: empty->filled is a
+  // confirmed collect, and filled->empty is a confirmed successful use. This
+  // deliberately adds no protocol/store shape. Turbo's server `boosting`
+  // snapshot continues to drive the existing speed-cone/trail in the scene.
+  const powerUpInventory = useActivityStore((s) => s.powerUpInventory);
+  const lastPowerUpInventoryRef = useRef<typeof powerUpInventory | null>(null);
+
+  useEffect(() => {
+    const previous = lastPowerUpInventoryRef.current;
+    lastPowerUpInventoryRef.current = powerUpInventory;
+    if (!isSelf || previous === null) return;
+
+    const slotCount = Math.max(previous.length, powerUpInventory.length);
+    for (let slot = 0; slot < slotCount; slot++) {
+      const previousKind = previous[slot]?.kind ?? null;
+      const currentKind = powerUpInventory[slot]?.kind ?? null;
+      if (previousKind === currentKind) continue;
+
+      const group = groupRef.current;
+      if (!group) continue;
+      _itemBurstPosition.set(
+        group.position.x,
+        group.position.y + 28,
+        group.position.z,
+      );
+
+      if (previousKind === null && currentKind !== null) {
+        triggerBurst(_itemBurstPosition, '#ffd24a', 90);
+        triggerScreenShake?.(0.035);
+      } else if (previousKind !== null && currentKind === null) {
+        triggerBurst(
+          _itemBurstPosition,
+          itemUseBurstColor(previousKind),
+          previousKind === 'rr-turbo-bubble' ? 125 : 105,
+        );
+        triggerScreenShake?.(
+          previousKind === 'rr-turbo-bubble' ? 0.09 : 0.05,
+        );
+      }
+    }
+  }, [powerUpInventory, isSelf, triggerScreenShake]);
 
   useFrame((state, delta) => {
     const group      = groupRef.current;
@@ -1818,6 +1935,37 @@ function ReefRacePlayerInner({
         pred.vx = next.vx;
         pred.vz = next.vz;
         pred.rot = next.rot;
+
+        // Mirror authority's post-integrate boost-pad pass. Static volumes are
+        // resolved once above; this hot path performs only scalar math and Set
+        // membership checks. Grounded entry fires once, grounded exit clears,
+        // and airborne ticks neither fire nor clear the latch.
+        const padInside = predictedBoostPadInsideRef.current!;
+        for (let padIndex = 0; padIndex < predictedBoostPads.length; padIndex++) {
+          const pad = predictedBoostPads[padIndex];
+          const dx = pred.x - pad.x;
+          const dz = pred.z - pad.z;
+          const along = dx * pad.fwdX + dz * pad.fwdZ;
+          const perpendicular = dx * pad.normalX + dz * pad.normalZ;
+          const withinXZ =
+            Math.abs(along) <= pad.halfLength
+            && Math.abs(perpendicular) <= pad.halfWidth;
+          const wasInside = padInside.has(pad.id);
+
+          if (!airborne && withinXZ && !wasInside) {
+            padInside.add(pad.id);
+            computeReefBoostPadKick(
+              pred.vx,
+              pred.vz,
+              pred.rot,
+              clientSurfParams.maxSpeed,
+              pred,
+            );
+          } else if (!airborne && !withinXZ && wasInside) {
+            padInside.delete(pad.id);
+          }
+        }
+
         predictionTimeRef.current += CLIENT_SURF_TICK_DT * 1000;
         pushPredictionSample(
           predictionHistoryRef.current!,
