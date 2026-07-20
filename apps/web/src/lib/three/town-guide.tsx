@@ -49,8 +49,7 @@ import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.j
 import { useGameStore } from '@/stores/game';
 import { applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 
-// ?v=2 — 2026-07-20 inner-breast dent fix (Cloudflare edge cache can't be purged; URL query is the only invalidator)
-useGLTF.preload('/models/guide-rigged.glb?v=2');
+useGLTF.preload('/models/guide-rigged.glb');
 
 const GROUND_Y    = -2;
 // 2026-05-21 — moved Nori south by 160 wu (240→400) to give the bigger
@@ -95,7 +94,7 @@ const BREATH_FREQ = 1.8;
 const BREATH_AMP  = 0.008;
 
 const TownGuideInner = memo(function TownGuideInner() {
-  const { scene: gltfScene, animations } = useGLTF('/models/guide-rigged.glb?v=2');
+  const { scene: gltfScene, animations } = useGLTF('/models/guide-rigged.glb');
 
   // Clone per-mount so each instance gets its own bone tree.
   // SkeletonUtils.clone rebinds SkinnedMesh.skeleton correctly — plain clone(true) shares bones.
