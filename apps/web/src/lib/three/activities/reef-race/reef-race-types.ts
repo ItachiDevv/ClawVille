@@ -88,15 +88,11 @@ export interface ReefRaceEntity {
   speedMod?: number;
   /**
    * v2 mechanics — true while ANY positive boost is active for this body
-   * (boost pad / mini-turbo / launch / slipstream). Drives the trail/speed-
+   * (boost pad / launch / slipstream). Drives the trail/speed-
    * cone FX via `ReefRaceBoostFX` (OR'd into the existing item-boost
    * `boostActive` computation in `ReefRaceScene.tsx`).
    */
   boosting?: boolean;
-  /** v2 mechanics — surf-carve mini-turbo charge, normalized 0..1 vs the tier-2 threshold. */
-  miniTurboCharge?: number;
-  /** v2 mechanics — mini-turbo tier reached so far (0 = none, 1, 2). */
-  miniTurboLevel?: 0 | 1 | 2;
 }
 
 // ─── Ghost replay frame ───────────────────────────────────────────────────────

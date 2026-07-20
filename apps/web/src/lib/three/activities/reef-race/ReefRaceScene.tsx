@@ -587,7 +587,7 @@ function SceneContents({
   }, []);
 
   // v2 mechanics (2026-07-10) — REUSE the existing trail/speed-cone FX for
-  // ANY positive kinetic stack. `boosting` covers pad/mini/launch/slipstream;
+  // ANY positive kinetic stack. `boosting` covers pad/launch/slipstream;
   // `speedMod > 1` plus the promotion-safe local effect deadline covers
   // rr-turbo-bubble even when an equal slow makes the net multiplier 1.
   const boostActive = useActivityStore(

@@ -156,17 +156,16 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
   // Reset store on mount and whenever roomId changes (room teardown safety).
   useEffect(() => {
     useActivityStore.getState().reset(roomId);
-    if (avatarId) useActivityStore.getState().setSelfAvatarId(avatarId);
     return () => {
       useActivityStore.getState().reset(null);
     };
-  }, [roomId, avatarId]);
+  }, [roomId]);
 
   // Push selfAvatarId into the store the moment we know it (might land after
   // the WS opens; the store re-renders the scene then for self-highlight).
   useEffect(() => {
     if (avatarId) useActivityStore.getState().setSelfAvatarId(avatarId);
-  }, [avatarId]);
+  }, [avatarId, roomId]);
 
   // If the lobby didn't pass shortCode, fetch room state to recover it.
   // This also acts as the participant gate — `/state` returns 403 if the

@@ -7,7 +7,6 @@ import { useActivityStore } from '@/stores/activity';
 
 export type ReefRaceSurgeSource =
   | 'boost-pad'
-  | 'mini-turbo'
   | 'turbo-bubble'
   | 'launch-boost'
   | 'slipstream';
@@ -36,7 +35,6 @@ const surgeListeners = new Set<() => void>();
 
 const SOURCE_COLOR: Record<ReefRaceSurgeSource, string> = {
   'boost-pad': '#55eeff',
-  'mini-turbo': '#ffb13b',
   'turbo-bubble': '#ffe45e',
   'launch-boost': '#7cffcb',
   slipstream: '#b78cff',
@@ -156,14 +154,12 @@ export function findCollectedReefRaceItemKind(
 export function ReefRaceSurgeDriver({ roomId }: { roomId: string }) {
   const selfAvatarId = useActivityStore((state) => state.selfAvatarId);
   const lastBoostPadEvent = useActivityStore((state) => state.lastBoostPadEvent);
-  const lastMiniTurboFireEvent = useActivityStore((state) => state.lastMiniTurboFireEvent);
   const lastLaunchEvent = useActivityStore((state) => state.lastLaunchEvent);
   const slipstreamActive = useActivityStore((state) => state.slipstreamActive);
   const powerUpInventory = useActivityStore((state) => state.powerUpInventory);
   const selfRacingClass = useActivityStore((state) => state.selfRacingClass);
 
   const seenBoostPadAt = useRef(0);
-  const seenMiniTurboAt = useRef(0);
   const seenLaunchAt = useRef(0);
   const slipstreamWasActive = useRef(false);
   const previousInventory = useRef<readonly PowerUpSlot[] | null>(null);
@@ -171,7 +167,6 @@ export function ReefRaceSurgeDriver({ roomId }: { roomId: string }) {
   useEffect(() => {
     resetReefRaceSurge();
     seenBoostPadAt.current = 0;
-    seenMiniTurboAt.current = 0;
     seenLaunchAt.current = 0;
     slipstreamWasActive.current = false;
     previousInventory.current = null;
@@ -187,17 +182,6 @@ export function ReefRaceSurgeDriver({ roomId }: { roomId: string }) {
     seenBoostPadAt.current = lastBoostPadEvent.at;
     triggerReefRaceSurge('boost-pad', 0.82, 720);
   }, [lastBoostPadEvent, selfAvatarId]);
-
-  useEffect(() => {
-    if (
-      !lastMiniTurboFireEvent ||
-      lastMiniTurboFireEvent.avatarId !== selfAvatarId ||
-      lastMiniTurboFireEvent.at === seenMiniTurboAt.current
-    ) return;
-    seenMiniTurboAt.current = lastMiniTurboFireEvent.at;
-    const tier2 = lastMiniTurboFireEvent.level === 2;
-    triggerReefRaceSurge('mini-turbo', tier2 ? 1 : 0.68, tier2 ? 800 : 660);
-  }, [lastMiniTurboFireEvent, selfAvatarId]);
 
   useEffect(() => {
     if (

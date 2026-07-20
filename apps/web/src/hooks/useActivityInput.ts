@@ -40,10 +40,8 @@ import {
 
 export const ACTION_BIT_BOOST = 1 << 0;
 export const ACTION_BIT_USE_POWERUP = 1 << 1;
-/** Bit 2 — jump. Reef maps Shift here; Bumper Shells is unchanged. */
+/** Bit 2 — jump. Reef maps both Space and Shift here; Bumper Shells is unchanged. */
 export const ACTION_BIT_JUMP = 1 << 2;
-/** Reef-only bit 4 — held Space commits a drift; release asks authority to discharge it. */
-export const REEF_ACTION_BIT_DRIFT_HOLD = 1 << 4;
 
 const SEND_INTERVAL_MS = 1000 / 30;
 // Founder knob: raise for a larger held-A/D steering lead; 0.12 stays limiter-bound without twitch.
@@ -360,7 +358,7 @@ export function useActivityInput({
         case 'Space':
           spaceHeldRef.current = true;
           if (isReefRaceRef.current) {
-            actionBitsRef.current |= REEF_ACTION_BIT_DRIFT_HOLD;
+            actionBitsRef.current |= ACTION_BIT_JUMP;
           } else {
             actionBitsRef.current |= ACTION_BIT_BOOST;
             // Capture immediately so even short taps register on the next send.
@@ -429,7 +427,7 @@ export function useActivityInput({
         case 'Space':
           spaceHeldRef.current = false;
           if (isReefRaceRef.current) {
-            actionBitsRef.current &= ~REEF_ACTION_BIT_DRIFT_HOLD;
+            if (!shiftHeldRef.current) actionBitsRef.current &= ~ACTION_BIT_JUMP;
           } else {
             actionBitsRef.current &= ~ACTION_BIT_BOOST;
           }
@@ -437,7 +435,9 @@ export function useActivityInput({
         case 'ShiftLeft':
         case 'ShiftRight':
           shiftHeldRef.current = false;
-          actionBitsRef.current &= ~ACTION_BIT_JUMP;
+          if (!isReefRaceRef.current || !spaceHeldRef.current) {
+            actionBitsRef.current &= ~ACTION_BIT_JUMP;
+          }
           break;
         default:
           break;
@@ -464,8 +464,7 @@ export function useActivityInput({
       keysRef.current.arrowRight = false;
       actionBitsRef.current &= ~(
         ACTION_BIT_BOOST |
-        ACTION_BIT_JUMP |
-        REEF_ACTION_BIT_DRIFT_HOLD
+        ACTION_BIT_JUMP
       );
       spaceHeldRef.current = false;
       shiftHeldRef.current = false;
@@ -569,7 +568,7 @@ export function useActivityInput({
       const frameDt = dt > 0 && dt < 0.2 ? dt : SEND_INTERVAL_MS / 1000;
 
       // Combine held bits with one-shot bits. Bumper holds bit-0 boost; Reef
-      // holds Shift/jump bit 2 or Space/drift bit 4 and fires bit-0 item use
+      // holds Space/Shift jump bit 2 and fires bit-0 item use
       // for a single send tick.
       const rawBits = actionBitsRef.current | oneShotBitsRef.current;
       // Reef bit 1 is reserved. Mask it defensively even if a future custom

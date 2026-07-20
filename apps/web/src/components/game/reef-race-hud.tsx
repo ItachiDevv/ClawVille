@@ -18,9 +18,6 @@
  *   - <ProgressBar> replaces <LapCounter> (top-left). Linear river layout
  *     has no laps; we show the local avatar's `entity.progress` (0..1 fraction
  *     of spline arclength) as "RACE 47%".
- *   - <ReefRaceDriftSparks /> remains hidden on v2 because it reads the legacy
- *     ellipse-only spark field. The v2 committed-drift meter below instead
- *     reads server-authoritative `miniTurboCharge` / `miniTurboLevel` fields.
  *   - <WaitAtFinishOverlay> is rendered once the local avatar crosses the
  *     finish line. Server emits `event.crossed_finish` (single racer) and
  *     `event.finish_wait_started` (per-match countdown). Both are wired in
@@ -30,7 +27,7 @@
  *     so it disappears the moment the results modal arrives.
  *   - <PowerUpBar> is unchanged — power-ups are Phase 1 carry-over.
  *
- * The chip strip in <PowerUpBar> documents Space drift, Shift jump, and Q item.
+ * The chip strip in <PowerUpBar> documents Space/Shift jump and Q item.
  */
 
 import { useEffect, useRef, useState, useMemo } from 'react';
@@ -48,12 +45,10 @@ import { TOTAL_LAPS } from '@/lib/three/activities/reef-race/reef-race-config';
 import ActivityResultsModal from './activity-results-modal';
 import ReefRaceInstructions from './reef-race-instructions';
 import { RoundCountdown } from './activity';
-import ReefRaceDriftSparks   from './reef-race-drift-sparks';
 import ReefRaceDraftBadge    from './reef-race-draft-badge';
 import ReefRaceEventToasts   from './reef-race-event-toasts';
 import ReefRaceBuildSummary  from './reef-race-build-summary';
 import ReefRaceStreakCounter from './reef-race-streak-counter';
-import ReefRaceMiniTurboMeter from './reef-race-miniturbo-meter';
 import {
   isReefRaceTurboBubbleActive,
   useReefRaceSurgeSnapshot,
@@ -674,8 +669,6 @@ function PowerUpBar({ selfAvatarId: _selfAvatarId }: { selfAvatarId: string | nu
             />
           ))}
         </div>
-        {/* Controls hint strip: v2 Reef uses a dedicated held-drift bit while
-            Shift remains the stable jump binding. */}
         <div
           style={{
             display: 'flex',
@@ -687,9 +680,7 @@ function PowerUpBar({ selfAvatarId: _selfAvatarId }: { selfAvatarId: string | nu
             paddingTop: 2,
           }}
         >
-          <span><b style={{ color: '#5ce1ff' }}>SPACE</b> · HOLD DRIFT / RELEASE BOOST</span>
-          <span style={{ color: '#ffffff22' }}>·</span>
-          <span><b style={{ color: '#ffd24a' }}>SHIFT</b> · JUMP</span>
+          <span><b style={{ color: '#ffd24a' }}>SPACE / SHIFT</b> · JUMP</span>
           <span style={{ color: '#ffffff22' }}>·</span>
           <span><b style={{ color: '#ffffff99' }}>S</b> · BRAKE</span>
           <span style={{ color: '#ffffff22' }}>·</span>
@@ -1134,20 +1125,7 @@ export default function ReefRaceHud({
       {/* Center: Apex verdict + hazard hit + ribbon boost toasts — Phase 2 */}
       <ReefRaceEventToasts />
 
-      {/* Bottom-center: Drift charge sparks (above PowerUpBar).
-          TODO(reef-race-v2): DELETE <ReefRaceDriftSparks /> + its import +
-          the entire `apps/web/src/components/game/reef-race-drift-sparks.tsx`
-          file once `NEXT_PUBLIC_REEF_RACE_USE_SPLINE` graduates from gated
-          to default-on — drift mechanic is replaced by JUMP in v2 and the
-          sparks bar becomes dead UI. Tracked in `.claude/plans/reef-race-v2.md`
-          "Drift Mechanic — RETIRED". Live ellipse sim still drives sparks
-          while the flag is off. */}
-      {!USE_SPLINE && <ReefRaceDriftSparks />}
-
-      {/* Bottom-center: committed-drift meter (self-only, hidden until the
-          server sends authoritative charge data) stacked
-          directly above the power-up bar, both centered together so neither
-          hardcodes a `bottom` offset that could drift out of sync. */}
+      {/* Bottom-center: queued items. */}
       <div
         style={{
           position: 'absolute',
@@ -1160,7 +1138,6 @@ export default function ReefRaceHud({
           gap: 10,
         }}
       >
-        <ReefRaceMiniTurboMeter />
         <PowerUpBar selfAvatarId={selfAvatarId} />
       </div>
 

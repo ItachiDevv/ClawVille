@@ -183,7 +183,7 @@ export const REEF_SKIP_PATTERN_THRESHOLD = 3;
  * the additive boost stack remains bounded at 1.85× (→ 2405 wu/s boosted cap).
  * Speed AND accel scale by the same 2× factor (REEF_MAX_ACCEL is derived), so
  * the 0.25s-to-cap impulse feel and every REEF_MAX_SPEED-relative threshold
- * (drift charge, boost-pad kick, mini-turbo, whirlpool, bot lookahead, carve
+ * (boost-pad kick, whirlpool, bot lookahead, carve
  * floor, segment-time floors) track the new cap automatically.
  */
 export const REEF_MAX_SPEED = 1300;
@@ -395,8 +395,12 @@ export const REEF_POWERUP_BOX_COUNT = 8;
 /** Cooldown before a collected box respawns (ms). */
 export const REEF_POWERUP_RESPAWN_MS = 6_000;
 
-/** Pickup contact radius (wu). */
-export const REEF_POWERUP_RADIUS = 70;
+/**
+ * Pickup contact radius (wu). Combined with REEF_BODY_RADIUS=22 this gives a
+ * 142wu center-to-center catch distance, matching the 60wu-wide box visual and
+ * making visually adjacent arcade passes collect reliably.
+ */
+export const REEF_POWERUP_RADIUS = 120;
 
 /** Sim tick rate (Hz). 30Hz per task spec (race kinematics tolerate lower rate). */
 export const REEF_TICK_HZ = 30;
@@ -429,8 +433,7 @@ export type ReefBoostKind =
   | 'apex-bonus'        // Phase 2 — positive (+0.05)
   | 'apex-penalty'      // Phase 2 — negative (-0.05)
   | 'hazard-slow'       // Phase 2 — negative (-0.40)
-  | 'pad-boost'         // v2 mechanics — positive (boost pad, timed + decays)
-  | 'mini-turbo-boost'; // v2 committed-drift release (wire/presentation name retained)
+  | 'pad-boost';        // v2 mechanics — positive (boost pad, timed + decays)
 
 // Drift spark tier thresholds (in sim ticks).
 //   Tier 0->1: ~0.27s = 8 ticks   -> readable in ordinary corner entries
@@ -519,8 +522,8 @@ export const REEF_KINEMATIC_TOLERANCE = 2.1;
 // Reef actionBit assignments. Bit 0 is the single queued-item USE verb;
 // bit 1 stays reserved on the wire and is deliberately ignored by both sims;
 // bit 2 remains legacy drift in the ellipse sim but is JUMP in spline v2;
-// bit 3 is launch; NEW bit 4 is spline-v2 committed DRIFT HOLD. Keeping drift
-// hold on bit 4 preserves jump, launch, Bumper Shells, and item-use semantics.
+// bit 3 is launch; bit 4 is RESERVED — RETIRED (was drift 2026-07-18,
+// removed 2026-07-19; never reuse for a different verb). Spline v2 ignores it.
 // The inventory remains two slots: consuming slot 0 promotes slot 1 forward.
 export const ACTION_BIT_POWERUP_0 = 0b0001;
 export const ACTION_BIT_POWERUP_1 = 0b0010;
@@ -1094,13 +1097,11 @@ export function buildBodyMultipliers(
 // Architecture: `.claude/plans/reef-race-v2-spline-architecture.md` §4 + §8.
 
 /**
- * Manual jump impulse (player presses Shift). Calibrated so manual airtime
- * is ~0.6s with REEF_GRAVITY: vyAxis_initial = 480 wu/s → peak height
- * 480²/(2*1200) = 96 wu, total airtime 2*480/1200 = 0.8s.
- * Target spec from plan: ~60 wu peak, ~0.6s airtime.
- * Tune after first playtest.
+ * Manual jump impulse (player presses Space or Shift). With REEF_GRAVITY,
+ * peak height is v²/(2g) = 550²/(2×1200) ≈126wu and total airtime is
+ * 2v/g ≈0.92s: visibly above wave heave while still below the ramp launch.
  */
-export const REEF_JUMP_IMPULSE_MANUAL = 380; // → ~60 wu peak, ~0.63s airtime
+export const REEF_JUMP_IMPULSE_MANUAL = 550;
 
 /**
  * Ramp jump impulse (server-injected on ramp AABB entry, regardless of input).
@@ -1297,57 +1298,6 @@ export function buildSplineBoostPads(): SplineBoostPad[] {
     { id: 'pad-canyon',  t: 0.925, lateralOffset: -90, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
   ];
 }
-
-// ─── Committed drift (v2; mini-turbo delivery plumbing) ─────────────────────
-//
-// Spline v2 committed drift uses ACTION_BIT_DRIFT_HOLD (bit 4). Starting
-// requires speed plus active local steering, then the turn direction latches.
-// Charge accrues only while the button remains held AND the kart actually turns
-// in that direction. A valid release reuses the `mini-turbo-boost` timed
-// speedMod/event so Round 9 SpeedSurge stays wire-compatible. Ordinary carving
-// with bit 4 clear never charges; the old passive carve trigger is gone.
-
-/**
- * Minimum per-tick heading change (rad) to count as actually turning during an
- * already-committed drift. Below this the held state remains committed but the
- * meter does not build.
- */
-export const COMMITTED_DRIFT_MIN_TURN_PER_TICK = 0.035;
-/** Minimum forward speed (wu/s) to start or maintain committed drift. */
-export const COMMITTED_DRIFT_MIN_SPEED = REEF_MAX_SPEED * 0.35; // 455 wu/s @ cap 1300
-/**
- * Minimum local desired-heading error required to initiate a drift. 0.10 rad
- * admits the normal keyboard A/D bias (~0.1194 rad) while rejecting tiny aim
- * noise. Countersteer uses the same dead zone.
- */
-export const COMMITTED_DRIFT_MIN_STEER_RAD = 0.10;
-/** Maximum non-accumulating outward heading bias (actual bias is up to 15°). */
-export const COMMITTED_DRIFT_ANGULAR_BIAS_RAD = DRIFT_ANGULAR_BIAS_RAD;
-/** Forward target-speed cost while committed: 0.92 = about eight percent. */
-export const COMMITTED_DRIFT_FORWARD_SPEED_MULT = 0.92;
-/**
- * Committed-turn time (ms) to reach tier 1. Charge accumulates real elapsed
- * time (dt), so this is tick-rate independent.
- */
-export const COMMITTED_DRIFT_TIER1_MS = 480;
-/** Committed-turn time (ms) to reach tier 2 (big boost). */
-export const COMMITTED_DRIFT_TIER2_MS = 1_100;
-/** Hard ceiling on accumulated charge (ms) so the meter can't overfill. */
-export const COMMITTED_DRIFT_MAX_CHARGE_MS = COMMITTED_DRIFT_TIER2_MS;
-/** Additive speedMod for a tier-1 mini-turbo release (folds into positive stack). */
-export const COMMITTED_DRIFT_TIER1_MULT = 0.22;
-/** Additive speedMod for a tier-2 mini-turbo release. */
-export const COMMITTED_DRIFT_TIER2_MULT = 0.38;
-/** Duration (ms) of the tier-1 mini-turbo speedMod before it decays. */
-export const COMMITTED_DRIFT_TIER1_DURATION_MS = 900;
-/** Duration (ms) of the tier-2 mini-turbo speedMod before it decays. */
-export const COMMITTED_DRIFT_TIER2_DURATION_MS = 1_300;
-/**
- * Anti-farm cooldown (ms) after a real drift boost FIRES. Sub-tier releases do
- * not start it. A countersteer/speed-floor cancel additionally latches until
- * the drift button is released, preventing held-button instant rearming.
- */
-export const COMMITTED_DRIFT_COOLDOWN_MS = 600;
 
 // ─── Ink-slick (rival slow) + whirlpool (rival knock) tunables ───────────────
 
