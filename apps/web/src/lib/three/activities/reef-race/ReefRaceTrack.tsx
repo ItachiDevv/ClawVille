@@ -27,7 +27,7 @@
  * Samples centerlineAt/normalAt/widthAt at 64 uniform-t points.
  * Sandy color 0xc8a572, roughness 0.85, fog=false.
  * Bank walls: vertical quads at river edges, grass green 0x7cb342 (blends with ground plane).
- * Finish-line gate at t=1.0 (gold pillar pair + crossbar).
+ * Finish-line gate + checkered surface strip at t=1.0/0.0.
  *
  * Iris Xe invariants (both paths):
  *   - Flat ribbon BufferGeometry: O(SEGMENTS × 2) vertices, 1 draw call.
@@ -37,7 +37,7 @@
  *   - fog=false on ALL track/wall materials (racing line always visible).
  *   - makeGeometryWebGPUSafe on all custom BufferGeometry instances.
  *
- * Draw calls v2: 1 (riverbed) + 2 (bank walls merged) + 2 (finish gate) = 5.
+ * Draw calls v2 in this component: 1 (finish gate) + 1 (checkered strip) = 2.
  * Draw calls v1: 1 (track ribbon) + 2 (guardrails merged) + 3 (coral) = 6.
  */
 
@@ -59,7 +59,7 @@ import {
   reefTangentAtClient,
 } from './reef-race-config';
 import { clientSpline } from './reef-race-spline-instance';
-import { elevationAtT } from './reef-race-elevation';
+import { bankAngleAtT, elevationAtT } from './reef-race-elevation';
 
 // ─── v2 feature flag ──────────────────────────────────────────────────────────
 const USE_SPLINE_TRACK = process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
@@ -376,6 +376,38 @@ const _v2FinishMat = new THREE.MeshStandardMaterial({
   emissiveIntensity: 0.3,
 });
 
+/** Start/finish surface marker: one thin box and one small repeated texture. */
+const START_FINISH_STRIP_DEPTH = 96;
+const START_FINISH_STRIP_HEIGHT = 4;
+const START_FINISH_STRIP_Y_OFFSET = 8;
+const START_FINISH_CHECKER_TEXTURE_SIZE = 64;
+const START_FINISH_CHECKER_CELLS = 8;
+
+function makeStartFinishCheckerTexture(repeatAcross: number): THREE.CanvasTexture | null {
+  if (typeof document === 'undefined') return null;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = START_FINISH_CHECKER_TEXTURE_SIZE;
+  canvas.height = START_FINISH_CHECKER_TEXTURE_SIZE;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  const cellSize = START_FINISH_CHECKER_TEXTURE_SIZE / START_FINISH_CHECKER_CELLS;
+  for (let row = 0; row < START_FINISH_CHECKER_CELLS; row++) {
+    for (let column = 0; column < START_FINISH_CHECKER_CELLS; column++) {
+      ctx.fillStyle = (row + column) % 2 === 0 ? '#f7fbff' : '#111827';
+      ctx.fillRect(column * cellSize, row * cellSize, cellSize, cellSize);
+    }
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(repeatAcross, 1);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
 // ─── v2 geometry builder (finish gate only — SURF ROAD) ──────────────────────
 //
 // SURF ROAD (2026-06-23): the riverbed ribbon + bank-wall builders
@@ -426,10 +458,45 @@ function buildFinishGateGeo(): THREE.BufferGeometry {
   return merged;
 }
 
+/**
+ * Build one bank-aware checkered strip across the ribbon at spline t=0.
+ * Geometry is baked into world space once; the rendered mesh stays at an
+ * identity transform with matrixAutoUpdate disabled.
+ */
+function buildStartFinishStripGeo(): THREE.BufferGeometry {
+  const t = 0;
+  const c = clientSpline.centerlineAt(t);
+  const tangent = clientSpline.tangentAt(t);
+  const normal = clientSpline.normalAt(t);
+  const halfWidth = clientSpline.widthAt(t);
+  const bank = bankAngleAtT(t);
+  const cosBank = Math.cos(bank);
+  const sinBank = Math.sin(bank);
+
+  // Local X spans the banked ribbon; local Z runs opposite the tangent so the
+  // resulting X/Y/Z basis remains right-handed with its Y axis facing up.
+  const xAxis = new THREE.Vector3(normal.x * cosBank, sinBank, normal.z * cosBank);
+  const zAxis = new THREE.Vector3(-tangent.x, 0, -tangent.z).normalize();
+  const yAxis = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
+  const center = new THREE.Vector3(c.x, elevationAtT(t), c.z)
+    .addScaledVector(yAxis, START_FINISH_STRIP_Y_OFFSET);
+  const transform = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
+  transform.setPosition(center);
+
+  const geo = new THREE.BoxGeometry(
+    halfWidth * 2,
+    START_FINISH_STRIP_HEIGHT,
+    START_FINISH_STRIP_DEPTH,
+  );
+  geo.applyMatrix4(transform);
+  return makeGeometryWebGPUSafe(geo);
+}
+
 // ─── v2 River-bed component ───────────────────────────────────────────────────
 
 function SplineTrack() {
   const finishMeshRef = useRef<THREE.Mesh>(null);
+  const startFinishStripRef = useRef<THREE.Mesh>(null);
 
   // SURF ROAD (2026-06-23): the riverbed ribbon + bank walls are RETIRED — the
   // glowing floating water ribbon + neon rails in <SurfRibbon /> (surf-ribbon.tsx,
@@ -439,17 +506,44 @@ function SplineTrack() {
   // buildSplineBankGeos builders + _v2RiverMat / _v2BankMat are left in the file
   // (used by the /preview page's own inline copies) but no longer drawn here.
   const finishGeo = useMemo(() => buildFinishGateGeo(), []);
+  const startFinishStripGeo = useMemo(() => buildStartFinishStripGeo(), []);
+  const startFinishStripMat = useMemo(() => {
+    const halfWidth = clientSpline.widthAt(0);
+    const repeatAcross = Math.max(1, Math.round((halfWidth * 2) / START_FINISH_STRIP_DEPTH));
+    const texture = makeStartFinishCheckerTexture(repeatAcross);
+    return new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      map: texture,
+      side: THREE.DoubleSide,
+      fog: false,
+      toneMapped: false,
+    });
+  }, []);
 
   useEffect(() => {
     const m = finishMeshRef.current;
     if (m) { m.matrixAutoUpdate = false; m.updateMatrix(); }
-    return () => { finishGeo.dispose(); };
-  }, [finishGeo]);
+    const strip = startFinishStripRef.current;
+    if (strip) { strip.matrixAutoUpdate = false; strip.updateMatrix(); }
+    return () => {
+      finishGeo.dispose();
+      startFinishStripGeo.dispose();
+      startFinishStripMat.map?.dispose();
+      startFinishStripMat.dispose();
+    };
+  }, [finishGeo, startFinishStripGeo, startFinishStripMat]);
 
   return (
     <group>
       {/* Start/finish gate — gold pillars + crossbar, lifted onto the ribbon */}
       <mesh ref={finishMeshRef} geometry={finishGeo} material={_v2FinishMat} matrixAutoUpdate={false} />
+      {/* One-draw checkered strip anchors the authoritative GO/finish seam. */}
+      <mesh
+        ref={startFinishStripRef}
+        geometry={startFinishStripGeo}
+        material={startFinishStripMat}
+        matrixAutoUpdate={false}
+      />
     </group>
   );
 }

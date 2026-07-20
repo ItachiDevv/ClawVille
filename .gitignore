@@ -135,3 +135,6 @@ apps/web/public/.assets-backup/
 .x402-*.json
 apps/api/scripts/x402/.x402-*.json
 apps/api/scripts/sap/.smoke*.json
+
+# Meshy animation donor sources — 20MB each, regenerable via manifest.json task ids; never commit
+scripts/anim-sources/**/*.glb

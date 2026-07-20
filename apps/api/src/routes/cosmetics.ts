@@ -27,7 +27,8 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
-import { eq, and, or, isNull, gt, lt, lte, inArray, sql } from 'drizzle-orm';
+import { eq, and, or, isNull, gt, lt, lte, inArray, ne, sql } from 'drizzle-orm';
+import { REWARD_ONLY_COSMETIC_CURRENCY } from '@clawville/shared';
 import {
   db,
   cosmeticSkus,
@@ -95,6 +96,9 @@ export async function checkSkuPurchasable(skuId: string): Promise<SkuPurchasabil
   if (!skuIdSchema.safeParse(skuId).success) return { ok: false, code: 'not_found' };
   const sku = await db.query.cosmeticSkus.findFirst({ where: eq(cosmeticSkus.id, skuId) });
   if (!sku) return { ok: false, code: 'not_found' };
+  if (sku.exclusiveCurrency === REWARD_ONLY_COSMETIC_CURRENCY) {
+    return { ok: false, code: 'wrong_currency', requiredCurrency: REWARD_ONLY_COSMETIC_CURRENCY };
+  }
   const now = new Date();
   if (sku.availableFrom && sku.availableFrom > now) {
     return { ok: false, code: 'not_yet_available' };
@@ -242,6 +246,7 @@ cosmeticsRoutes.get('/catalog', async (c) => {
     or(isNull(cosmeticSkus.availableFrom), lte(cosmeticSkus.availableFrom, now)),
     or(isNull(cosmeticSkus.availableUntil), gt(cosmeticSkus.availableUntil, now)),
     or(isNull(cosmeticSkus.supplyCap), lt(effectiveSoldCount, cosmeticSkus.supplyCap)),
+    or(isNull(cosmeticSkus.exclusiveCurrency), ne(cosmeticSkus.exclusiveCurrency, REWARD_ONLY_COSMETIC_CURRENCY)),
   ];
   if (scope) conditions.push(eq(cosmeticSkus.scope, scope));
 

@@ -40,7 +40,21 @@ function getDb(): PostgresJsDatabase<typeof schema> {
   // transaction). `prepare: false` disables named prepared statements — Supabase's
   // documented fix — making transactions durable on the pooler. (node-pg, used by
   // ElizaOS plugin-sql, is unaffected: it uses UNNAMED statements by default.)
-  const client = postgres(connectionString, { prepare: false });
+  // Pool sizing: local dev DATABASE_URLs use the Supavisor SESSION pooler (:5432),
+  // which hard-caps CLIENT connections at pool_size (15). postgres.js defaults to
+  // max:10 per process with NO idle timeout, and both apps/api AND apps/web open a
+  // pool — so a few concurrent/leaked local dev servers exhaust the whole session
+  // pool (EMAXCONNSESSION on every query, 2026-07-18). Cap via DB_POOL_MAX in
+  // .env.local (dev boxes set 4) and release idle connections after 30s so stray
+  // processes can't pin slots. Deployed staging/prod (:6543 txn pooler) keep the
+  // default max:10; idle_timeout is safe there (Supabase-recommended).
+  const poolMax = Number(process.env.DB_POOL_MAX) > 0 ? Number(process.env.DB_POOL_MAX) : 10;
+  const client = postgres(connectionString, {
+    prepare: false,
+    max: poolMax,
+    idle_timeout: 30,
+    max_lifetime: 60 * 60,
+  });
   _db = drizzle(client, { schema });
   return _db;
 }

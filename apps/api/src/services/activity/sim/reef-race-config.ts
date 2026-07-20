@@ -32,7 +32,10 @@
  * (see CLAUDE.md "Documentation Update Policy").
  */
 
-import type { Vec2 } from '@clawville/shared';
+import {
+  REEF_BOOST_PAD_KICK_RATIO,
+  type Vec2,
+} from '@clawville/shared';
 
 // ─── Race rules (founder-tunable) ───────────────────────────────────────────
 
@@ -394,7 +397,7 @@ export const REEF_POWERUP_BOX_COUNT = 8;
 export const REEF_POWERUP_RESPAWN_MS = 6_000;
 
 /** Pickup contact radius (wu). */
-export const REEF_POWERUP_RADIUS = 28;
+export const REEF_POWERUP_RADIUS = 70;
 
 /** Sim tick rate (Hz). 30Hz per task spec (race kinematics tolerate lower rate). */
 export const REEF_TICK_HZ = 30;
@@ -1264,7 +1267,7 @@ export const BOOST_PAD_HALF_WIDTH = 170;
  * (REEF_MAX_SPEED * 1.85 = 2405 wu/s), so it can never exceed the boost ceiling.
  * 32% of MAX_SPEED — a noticeable pad "pop" without a teleport.
  */
-export const BOOST_PAD_KICK = REEF_MAX_SPEED * 0.32; // 416 wu/s @ cap 1300
+export const BOOST_PAD_KICK = REEF_MAX_SPEED * REEF_BOOST_PAD_KICK_RATIO; // 416 wu/s @ cap 1300
 /**
  * Additive speedMod contribution while `pad-boost` is active (folds into the
  * positive kinetic stack, capped by KINEMATIC_BOOST_CAP). +0.30 → target cruise

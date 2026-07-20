@@ -51,6 +51,7 @@ import ActivityTutorialCard, {
   shouldShowActivityTutorial,
   type ActivityTutorialActivityId,
 } from '@/components/game/activity/ActivityTutorialCard';
+import ReefRaceInstructions from '@/components/game/reef-race-instructions';
 import {
   preloadActivitySounds,
   primeActivitySounds,
@@ -480,6 +481,10 @@ function QueuingBody({
       }}
     >
       <RuneSpinner size={64} tier="epic" label="Searching for a match…" />
+
+      {activity.id === 'reef-race' && (
+        <ReefRaceInstructions variant="lobby" />
+      )}
 
       <div
         style={{

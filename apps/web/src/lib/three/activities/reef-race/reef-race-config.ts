@@ -631,7 +631,15 @@ export interface SplineBoostPadClient {
   t: number;
   /** Lateral offset from centerline in wu (0 = centerline, matches server sign). */
   lateralOffset: number;
+  /** Trigger half-length along the spline tangent (wu). */
+  halfLength: number;
+  /** Trigger half-width perpendicular to the spline tangent (wu). */
+  halfWidth: number;
 }
+
+/** Client prediction mirrors the server boost-pad trigger AABB exactly. */
+export const BOOST_PAD_TRIGGER_HALF_LENGTH = 130;
+export const BOOST_PAD_TRIGGER_HALF_WIDTH = 170;
 
 /** Visual boost-pad marker footprint (wu). Smaller than the server's AABB
  *  (BOOST_PAD_HALF_LENGTH=130/HALF_WIDTH=170) so the glowing pad reads as a
@@ -647,10 +655,10 @@ export const MAX_BOOST_PADS = 10;
 
 export function buildSplineBoostPadsClient(): SplineBoostPadClient[] {
   return [
-    { id: 'pad-lagoon', t: 0.15, lateralOffset:  90 },
-    { id: 'pad-kelp',   t: 0.42, lateralOffset: -90 },
-    { id: 'pad-wreck',  t: 0.58, lateralOffset:  90 },
-    { id: 'pad-canyon', t: 0.85, lateralOffset: -90 },
+    { id: 'pad-lagoon', t: 0.15, lateralOffset:  90, halfLength: BOOST_PAD_TRIGGER_HALF_LENGTH, halfWidth: BOOST_PAD_TRIGGER_HALF_WIDTH },
+    { id: 'pad-kelp',   t: 0.42, lateralOffset: -90, halfLength: BOOST_PAD_TRIGGER_HALF_LENGTH, halfWidth: BOOST_PAD_TRIGGER_HALF_WIDTH },
+    { id: 'pad-wreck',  t: 0.58, lateralOffset:  90, halfLength: BOOST_PAD_TRIGGER_HALF_LENGTH, halfWidth: BOOST_PAD_TRIGGER_HALF_WIDTH },
+    { id: 'pad-canyon', t: 0.85, lateralOffset: -90, halfLength: BOOST_PAD_TRIGGER_HALF_LENGTH, halfWidth: BOOST_PAD_TRIGGER_HALF_WIDTH },
   ];
 }
 

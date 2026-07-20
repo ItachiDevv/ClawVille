@@ -30,6 +30,7 @@ mock.module('../../activity-replay-log', () => ({
 
 const { reefRaceSplineSim } = await import('../reef-race-spline-sim');
 const {
+  computeReefBoostPadKick,
   integrateSurfStep,
   parabolicRefineOffset,
   ReefSpline,
@@ -46,6 +47,8 @@ const {
   REEF_FORWARD_DRAG,
   REEF_LATERAL_GRIP,
   ACTION_BIT_POWERUP_0,
+  BOOST_PAD_KICK,
+  REEF_POWERUP_RESPAWN_MS,
   buildSplineBoostPads,
 } = await import('../reef-race-config');
 
@@ -160,6 +163,37 @@ describe('ReefRaceSplineSim — race mechanics (v7)', () => {
   // ── Boost pads ────────────────────────────────────────────────────────────
 
   describe('boost pads', () => {
+    it('keeps client/server pad-kick parity (same inputs -> same velocity result)', () => {
+      reefRaceSplineSim.setBroadcastFn(() => {});
+      reefRaceSplineSim.startRoom('r-pad-parity', 'reef-race', [A]);
+      const state = reefRaceSplineSim.__getState('r-pad-parity')!;
+      const body = state.bodies.get(A)!;
+      const pad = padWorldCenter(state, 0);
+
+      body.x = pad.x;
+      body.z = pad.z;
+      body.vx = 0;
+      body.vz = 0;
+      body.rot = 0.37;
+      body.heightOffset = 0;
+      body.airborneTicks = 0;
+
+      const expected = { vx: body.vx, vz: body.vz };
+      computeReefBoostPadKick(
+        expected.vx,
+        expected.vz,
+        body.rot,
+        REEF_MAX_SPEED,
+        expected,
+      );
+
+      reefRaceSplineSim.__tickOnceForTest('r-pad-parity');
+
+      expect(BOOST_PAD_KICK).toBe(416);
+      expect(body.vx).toBeCloseTo(expected.vx, 12);
+      expect(body.vz).toBeCloseTo(expected.vz, 12);
+    });
+
     it('fires on ENTRY and does NOT re-fire while the body sits inside', () => {
       const events: Array<{ type: string; padId?: string }> = [];
       reefRaceSplineSim.setBroadcastFn((_id, f) =>
@@ -217,6 +251,62 @@ describe('ReefRaceSplineSim — race mechanics (v7)', () => {
   });
 
   // ── Item fixes ──────────────────────────────────────────────────────────────
+
+  describe('pickup collection reach', () => {
+    function arrangePass(roomId: string, bodyLateralOffset: number) {
+      reefRaceSplineSim.setBroadcastFn(() => {});
+      reefRaceSplineSim.startRoom(roomId, 'reef-race', [A]);
+      const state = reefRaceSplineSim.__getState(roomId)!;
+      const body = state.bodies.get(A)!;
+      const pickup = state.pickups[0]!;
+      const pickupT = 0.5 / 8;
+      const center = state.spline.centerlineAt(pickupT);
+      const tangent = state.spline.tangentAt(pickupT);
+      const normal = state.spline.normalAt(pickupT);
+
+      for (const candidate of state.pickups) {
+        candidate.active = false;
+        candidate.respawnAt = Number.MAX_SAFE_INTEGER;
+      }
+      pickup.active = true;
+      pickup.collectedAt = null;
+      pickup.respawnAt = 0;
+
+      // One authority tick carries the kart through the box's longitudinal
+      // plane. The spawned box itself remains 40wu off the centerline.
+      body.x = center.x + normal.x * bodyLateralOffset - tangent.x * 30;
+      body.z = center.z + normal.z * bodyLateralOffset - tangent.z * 30;
+      body.vx = tangent.x * 900;
+      body.vz = tangent.z * 900;
+      body.rot = Math.atan2(tangent.x, tangent.z);
+      body.heightOffset = 0;
+      body.airborneTicks = 0;
+
+      reefRaceSplineSim.__tickOnceForTest(roomId);
+      return { body, pickup };
+    }
+
+    it('collects a box 40wu off a centerline pass and starts its respawn timer', () => {
+      const { body, pickup } = arrangePass('r-pickup-centerline', 0);
+
+      expect(body.inventory[0].kind).not.toBeNull();
+      expect(body.inventory[0].charges).toBe(1);
+      expect(pickup.active).toBe(false);
+      expect(pickup.collectedAt).not.toBeNull();
+      expect(pickup.respawnAt).toBe(
+        pickup.collectedAt! + REEF_POWERUP_RESPAWN_MS,
+      );
+    });
+
+    it('does not collect that box from a 150wu lateral racing line', () => {
+      const { body, pickup } = arrangePass('r-pickup-far', 150);
+
+      expect(body.inventory.every((slot) => slot.kind === null)).toBe(true);
+      expect(pickup.active).toBe(true);
+      expect(pickup.collectedAt).toBeNull();
+      expect(pickup.respawnAt).toBe(0);
+    });
+  });
 
   describe('rr-ink-slick', () => {
     it('slows a RIVAL behind the dropper, never the user', () => {

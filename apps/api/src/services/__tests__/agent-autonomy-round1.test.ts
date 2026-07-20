@@ -112,7 +112,7 @@ afterEach(() => {
 });
 
 describe('round 1 perception + decision prompt', () => {
-  it('derives cove and poker places from MAP_LOCATIONS with exact executor syntax', () => {
+  it('derives map venues with exact executor syntax', () => {
     const id = 'places-agent';
     registerHouse(id);
     const perception = npcSimulation.buildPerception(id)!;
@@ -136,6 +136,12 @@ describe('round 1 perception + decision prompt', () => {
         destinationId: 'cove',
         centerX,
         centerY,
+      }),
+      expect.objectContaining({
+        placeId: 'kelp-forest',
+        actionVerb: 'enter_kelp_forest',
+        actionSyntax: 'enter_kelp_forest()',
+        destinationId: 'kelp-forest-portal',
       }),
     ]));
   });

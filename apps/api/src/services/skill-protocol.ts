@@ -48,7 +48,7 @@ import {
 // cumulative session-lifecycle surface, so the version moves.
 //
 // NOTE (2026-06-13, FIX-5/FIX-10 — folded into the SAME v5): added §3a, the
-// proxy-cognition action channel, documenting ALL SIX [ACTION:] whitelist verbs
+// proxy-cognition action channel, documenting ALL FIVE [ACTION:] whitelist verbs
 // (move/emote/enter_building/talk_to_npc/enter_cove) with the exact params +
 // bounds + HATCHER_* constants that `npc-simulation.ts` executeHatcherAction
 // enforces — closing the CLAUDE.md whitelist-parity gap where the manual
@@ -263,7 +263,38 @@ import {
 // is a self-managed pull agent on the fail-soft in-world wire. Custom rows remain
 // non-restorable in v1 and reconnect on an action-surface 404. Hatcher's signed
 // wire, frozen pointer shape, and six [ACTION:] verbs are unchanged.
-export const PROTOCOL_VERSION = 24;
+// NOTE (2026-07-18, merge renumber): the five kelp-series notes below were
+// authored on a parallel branch as 22->27 while identity-type work shipped
+// 22->24 on staging; they renumber to 24->29 at merge. Content is unchanged.
+// NOTE (2026-07-17, northeast Kelp Forest + maze): bumped 24 -> 25. The
+// orientation/manual and autonomous Places menu now expose the south-entry
+// switchback maze, glowing pearl clearing, and photo spot. This is a world
+// addition only: no wire-shape change, no new verb, and the six [ACTION:]
+// verbs/params/bounds remain byte-identical.
+// NOTE (2026-07-17, agent emote parity): bumped 25 -> 26. The existing
+// emote verb now additionally accepts a shape-safe animation key when that
+// exact emote SKU is owned AND equipped by the acting agent's bound avatar,
+// and the manual documents the already-agent-capable cosmetics REST surface.
+// Additive payload fields broadcast the one-shot; no new verb or auth shape.
+// Collision reconciliation: `think` remains an always-available synchronous
+// legacy activity; an attributed owner with its equipped SKU additionally
+// receives the actual Meshy clip broadcast.
+// NOTE (2026-07-18, inline Kelp maze withdrawal): bumped 26 -> 27. The rejected
+// open-world maze is removed ahead of its replacement by a portal and dedicated
+// Kelp Forest realm. This is a world-content removal only: no wire-shape change,
+// no verb change, and the six [ACTION:] verbs/params/bounds remain byte-identical.
+// NOTE (2026-07-18, Kelp Forest realm parity): bumped 27 -> 28. The executor
+// adds the seventh verb `enter_kelp_forest()` and §16 documents the same
+// neighbor-reveal beacon REST traversal used by humans, including time floors,
+// the one-time collectible claim, and zero vCLAW/CT movement. Partner register,
+// PATCH, stats, signing, and authentication wire shapes are unchanged.
+// NOTE (2026-07-18, Kelp founder iteration): bumped 28 -> 29 ONCE for the
+// complete visible series: the portal now sits at its derived town-center
+// clearing, the realm is a larger 21x21 maze with dead-end discoveries, and
+// the center reward is an explicit claim whose final item is decided later by
+// updating one stable reward-only SKU row. The seven action verbs and all
+// partner registration/authentication wire shapes remain unchanged.
+export const PROTOCOL_VERSION = 29;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -510,7 +541,7 @@ versioned protocol manual you pulled in step 2.
  * universal protocol.
  *
  * WHITELIST-PARITY NOTE (CLAUDE.md "Hatcher action whitelist parity", FIX-5):
- * §3a below documents the SIX `[ACTION:]` verbs the server executes. The
+ * §3a below documents the SEVEN `[ACTION:]` verbs the server executes. The
  * authoritative gate is `npc-simulation.ts` `executeHatcherAction`; the bounds
  * quoted in §3a are HARD-MIRRORED literals of its module-private constants
  * (those constants are not exported, and this service must not import the sim to
@@ -518,7 +549,8 @@ versioned protocol manual you pulled in step 2.
  *   - move x/y range  32..22496   ← HATCHER_MOVE_MIN .. HATCHER_MOVE_MAX (MAP_WIDTH-32, 22528-world)
  *   - talk message    ≤ 500 chars ← HATCHER_TALK_MESSAGE_MAX
  *   - actions/reply   ≤ 4         ← MAX_HATCHER_ACTIONS_PER_REPLY
- *   - emote names     wave|dance|think|scan|work|celebrate|alert ← HATCHER_EMOTE_MAP keys
+ *   - emote names     legacy wave|dance|think|scan|work|celebrate|alert synchronously;
+ *                     otherwise a shape-safe owned+equipped emote animationKey
  *   - enter_building  the 10 NPC_BUILDING_CENTERS ids
  * If any of those change in `npc-simulation.ts`, update §3a HERE in the same diff
  * and bump PROTOCOL_VERSION — the executor and this manual MUST stay in parity.
@@ -729,8 +761,16 @@ The whitelist (exact params/bounds mirror the server executor):
   **32..22496** (the 22528-px world inset by 32).
   Town center is (11264, 11264). Off-bounds or unreachable targets are dropped.
 - \`[ACTION: emote(name=<emote>)]\` — play a visible emote/activity. \`name\` MUST be
-  one of: \`wave\`, \`dance\`, \`think\`, \`scan\`, \`work\`, \`celebrate\`, \`alert\`.
-  Any other name is dropped.
+  one of the legacy names \`wave\`, \`dance\`, \`think\`, \`scan\`, \`work\`,
+  \`celebrate\`, \`alert\`, OR the exact \`assetMeta.animationKey\` of an emote
+  SKU your bound avatar owns AND currently has equipped. Dynamic keys are
+  lowercase letters/digits/underscore only (1..40 chars); invalid, inherited
+  prototype, unowned, and unequipped names are dropped. The partner backend
+  manages ownership/equip through the authenticated cosmetics REST surface in
+  §15; a successful dynamic key broadcasts the one-shot on your in-world body.
+  All seven legacy activities stay available without ownership. \`think\` is
+  also a shop animation key: it always performs the immediate legacy thinking
+  activity, and ownership+equip additionally broadcasts the actual Meshy clip.
 - \`[ACTION: enter_building(buildingId=<id>)]\` — walk to one of the 10 teaching
   buildings. \`buildingId\` MUST be one of the 10 building ids:
   \`cron-automation\`, \`api-integrations\`, \`memory-rag\`, \`code-development\`,
@@ -746,6 +786,11 @@ The whitelist (exact params/bounds mirror the server executor):
   dropped. The visible effect is your own chat bubble.
 - \`[ACTION: enter_cove()]\` — walk your body to the Cove card-room gateway. No params.
   See §7 for how the partner backend then plays real-vCLAW blackjack on your behalf.
+- \`[ACTION: enter_poker_room()]\` — walk your body to the Cove poker tables. No params.
+  See §8 for the authenticated tournament-poker tools.
+- \`[ACTION: enter_kelp_forest()]\` — walk your body to the Kelp Forest portal just west of town center
+  (world \`(-600, 250)\`; safe public approach \`(-600, 490)\`). No params.
+  The partner backend then traverses the authenticated neighbor-reveal API in §16.
 
 The \`:sessionId\` REST endpoints in §2–§3 and the cove tools in §7 are how the
 **partner backend** drives the authenticated, economy-bearing side of play
@@ -1338,6 +1383,86 @@ or delivery becomes \`reconcile\` and is never blindly retried. The route and
 worker are default-OFF and may return typed 503 \`redeem_disabled\` until both
 the funded wash-arbitrage gate and founder legal/MSB/money-transmitter/KYC/
 sanctions clearance are satisfied.
+
+## 15. Cosmetic shop + equipped emotes
+
+The first-party cosmetic shop is under \`${apiBase}/api/cosmetics\`. Browse the
+public catalog without auth:
+
+- \`GET ${apiBase}/api/cosmetics/catalog\`
+
+For ownership operations, send your live agent session in the named header
+(not Authorization Bearer). These routes resolve the agent's bound avatar; a
+purchase debits that avatar's real vCLAW:
+
+- \`GET ${apiBase}/api/cosmetics/owned\`
+- \`POST ${apiBase}/api/cosmetics/:skuId/buy\`
+- \`POST ${apiBase}/api/cosmetics/:skuId/equip\`
+- \`POST ${apiBase}/api/cosmetics/:skuId/unequip\`
+
+\`X-Clawville-Agent-Session: <sessionId>\`
+
+Emotes are a catalog category. The Meshy fun-pack prices are common 200, rare
+400, and epic 600 vCLAW. Humans equip up to four and play them from the wardrobe
+hotbar; that human playback is self-visible today. Agents use the SAME REST
+surface to buy/equip, then emit
+\`[ACTION: emote(name=<assetMeta.animationKey>)]\`. Only an owned AND equipped
+key plays; successful agent playback is broadcast on the in-world body so
+everyone nearby sees it. The colliding \`think\` key preserves its always-available
+legacy thinking activity; when its SKU is owned+equipped, the same action also
+broadcasts the Meshy \`think\` clip.
+
+## 16. Kelp Forest realm — beacon traversal + unrevealed collectible
+
+The realm uses the same two-part parity model as the Cove. Its portal is just
+west of town center at world \`(-600, 250)\`, with the safe public approach at
+\`(-600, 490)\`. First, your brain walks the visible body to that portal:
+
+\`\`\`text
+[ACTION: enter_kelp_forest()]
+\`\`\`
+
+Then the partner backend traverses the SAME maze contract a human client uses,
+with the live session bearer in the named header (never Authorization):
+
+\`\`\`http
+POST ${apiBase}/api/kelp/beacon/entry/visit
+X-Clawville-Agent-Session: <sessionId>
+Content-Type: application/json
+
+{}
+\`\`\`
+
+\`entry\` is the ONLY beacon id disclosed up front. A successful visit returns
+\`{ token, adjacent: [{ id, kind, bearingDeg, distanceWu }] }\`. It reveals only
+that beacon's neighbors — never the full graph, coordinates, paths, or undiscovered
+ids. Bearings use 0° = realm north (-Z), increasing clockwise. To visit one of
+the returned neighbors, call \`POST /api/kelp/beacon/:beaconId/visit\` with
+\`{ "prevToken": "<token from the previous beacon>" }\` and the same session
+header. Tokens bind to your server-resolved avatar, expire after 30 minutes, and
+prove adjacency. Moving faster than the realm's physical edge-distance floor
+returns \`429 { code: "too_fast", retryAfterMs }\`; wait, then retry that neighbor.
+
+When a returned neighbor has \`kind: "center"\`, visit it normally, then claim:
+
+\`\`\`http
+POST ${apiBase}/api/kelp/claim
+X-Clawville-Agent-Session: <sessionId>
+Content-Type: application/json
+
+{ "centerToken": "<token returned by the center visit>" }
+\`\`\`
+
+Claim is idempotent and binds the reward currently stored under the stable
+\`kelp-maze-collectible\` SKU to your bound avatar. Its placeholder name is
+**Unrevealed Depths Collectible**; its final name, category, and assets will be
+decided later by updating that SAME database row, so existing grants follow the
+reveal through their \`skuId\`. It is reward-only, supply-uncapped, absent from the
+public catalog, and rejected by every purchase currency path. The claim moves
+zero CT/vCLAW and creates no faucet surface. Humans claim explicitly with the
+center E/button; agents already claim explicitly by calling this same endpoint.
+Guests may traverse but must create a free account to claim; unbound, non-ledger,
+and guest-owned agent identities are refused rather than demoted to demo settlement.
 `;
 }
 
