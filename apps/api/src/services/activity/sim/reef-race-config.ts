@@ -1265,7 +1265,7 @@ export interface SplineBoostPad {
 }
 
 /** AABB half-length of a boost-pad trigger volume along tangent (wu). */
-export const BOOST_PAD_HALF_LENGTH = 130;
+export const BOOST_PAD_HALF_LENGTH = 220;
 /** AABB half-width of a boost-pad trigger volume perpendicular to tangent (wu). */
 export const BOOST_PAD_HALF_WIDTH = 170;
 /**
@@ -1277,25 +1277,28 @@ export const BOOST_PAD_HALF_WIDTH = 170;
 export const BOOST_PAD_KICK = REEF_MAX_SPEED * REEF_BOOST_PAD_KICK_RATIO; // 416 wu/s @ cap 1300
 /**
  * Additive speedMod contribution while `pad-boost` is active (folds into the
- * positive kinetic stack, capped by KINEMATIC_BOOST_CAP). +0.30 → target cruise
- * rises to 1.30× for the duration, then decays when the timer expires.
+ * positive kinetic stack, capped by KINEMATIC_BOOST_CAP). +0.45 raises target
+ * cruise to 1.45× for the duration, then decays when the timer expires.
  */
-export const BOOST_PAD_BOOST_MULT = 0.30;
+export const BOOST_PAD_BOOST_MULT = 0.45;
 /** How long the timed `pad-boost` speedMod lasts before it decays (ms). */
-export const BOOST_PAD_DURATION_MS = 1_500;
+export const BOOST_PAD_DURATION_MS = 2_200;
 
 /**
- * Boost-pad placements — 4 pads on straighter mid-segment sections, offset to
- * one side so taking the pad line is a real choice (not free on every racing
- * line). t-values avoid ramps (which share the jump axis) and the start/finish
- * seam. All extents from the constants above.
+ * Eight pads spread around the lap on the natural racing line. Small alternating
+ * offsets keep visual variety while the 220wu along-window and 170wu half-width
+ * make them reliably reachable at full race speed. All extents use constants.
  */
 export function buildSplineBoostPads(): SplineBoostPad[] {
   return [
-    { id: 'pad-lagoon',  t: 0.115, lateralOffset:  90, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
-    { id: 'pad-kelp',    t: 0.400, lateralOffset: -90, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
-    { id: 'pad-wreck',   t: 0.805, lateralOffset:  90, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
-    { id: 'pad-canyon',  t: 0.925, lateralOffset: -90, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
+    { id: 'pad-lagoon',       t: 0.055, lateralOffset:   0, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
+    { id: 'pad-kelp-entry',   t: 0.165, lateralOffset:  45, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
+    { id: 'pad-kelp-exit',    t: 0.285, lateralOffset: -45, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
+    { id: 'pad-wreck-entry',  t: 0.405, lateralOffset:   0, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
+    { id: 'pad-wreck-core',   t: 0.535, lateralOffset:  45, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
+    { id: 'pad-wreck-exit',   t: 0.655, lateralOffset: -45, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
+    { id: 'pad-canyon',       t: 0.785, lateralOffset:   0, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
+    { id: 'pad-home-stretch', t: 0.915, lateralOffset:  35, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
   ];
 }
 

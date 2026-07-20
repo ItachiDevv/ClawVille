@@ -54,6 +54,7 @@ import {
   useReefRaceSurgeSnapshot,
 } from '@/lib/three/activities/reef-race/reef-race-speed-surge';
 import type { ReefRaceEntity } from '@/lib/three/activities/reef-race/reef-race-types';
+import { useIsMobile } from '@/hooks/use-is-mobile';
 
 // ─── v2 spline-sim feature flag ──────────────────────────────────────────────
 //
@@ -131,40 +132,79 @@ function ReefRaceSpeedometer({ selfAvatarId }: { selfAvatarId: string | null }) 
       : undefined,
   );
   const surge = useReefRaceSurgeSnapshot();
-  const speed = entity ? Math.hypot(entity.vx, entity.vy) : 0;
+  const rawSpeed = entity ? Math.hypot(entity.vx, entity.vy) : 0;
+  const smoothedSpeedRef = useRef(0);
+  const smoothingInitializedRef = useRef(false);
+  const smoothedAvatarIdRef = useRef<string | null>(null);
+  const [smoothedSpeed, setSmoothedSpeed] = useState(0);
+
+  useEffect(() => {
+    if (!entity) {
+      smoothingInitializedRef.current = false;
+      smoothedAvatarIdRef.current = selfAvatarId;
+      smoothedSpeedRef.current = 0;
+      setSmoothedSpeed(0);
+      return;
+    }
+
+    if (
+      !smoothingInitializedRef.current ||
+      smoothedAvatarIdRef.current !== selfAvatarId
+    ) {
+      smoothingInitializedRef.current = true;
+      smoothedAvatarIdRef.current = selfAvatarId;
+      smoothedSpeedRef.current = rawSpeed;
+    } else {
+      // The 15Hz wire arrives in visible steps. This EWMA keeps the readout
+      // stable while retaining a clear, fast response to an actual boost.
+      smoothedSpeedRef.current += (rawSpeed - smoothedSpeedRef.current) * 0.24;
+    }
+    setSmoothedSpeed(Math.round(smoothedSpeedRef.current));
+  }, [entity, rawSpeed, selfAvatarId]);
+
+  const turboActive = isReefRaceTurboBubbleActive(performance.now());
   const kineticActive = Boolean(
     entity?.boosting ||
     (entity?.speedMod ?? 1) > 1.001 ||
-    isReefRaceTurboBubbleActive(performance.now()),
+    turboActive,
   );
-  const bandColor = kineticActive ? surge.color : '#7df9ff';
+  const bandColor = turboActive
+    ? '#ffe45e'
+    : surge.source === 'boost-pad'
+      ? '#55eeff'
+      : surge.color;
 
   return (
     <div
-      key={`${surge.sequence}-${kineticActive ? 1 : 0}`}
       style={{
-        minWidth: 100,
-        padding: '7px 12px',
+        minWidth: 108,
+        padding: '8px 13px',
         borderRadius: 8,
         border: `1px solid ${kineticActive ? bandColor : '#00e5ff44'}`,
         background: kineticActive
           ? `linear-gradient(110deg, ${bandColor}33, rgba(0,0,0,.76) 72%)`
           : 'rgba(0, 0, 0, 0.65)',
         boxShadow: kineticActive ? `0 0 20px ${bandColor}55` : 'none',
-        animation: kineticActive ? 'reef-speed-surge-flash 520ms ease-out' : 'none',
-        transition: 'border-color 160ms ease, background 160ms ease, box-shadow 160ms ease',
+        transform: kineticActive ? 'scale(1.07)' : 'scale(1)',
+        transformOrigin: 'left bottom',
+        transition: 'transform 180ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease',
       }}
-      aria-label={`Speed ${Math.round(speed)} world units per second${kineticActive ? ', surge active' : ''}`}
+      aria-label={`Speed ${smoothedSpeed}${kineticActive ? ', surge active' : ''}`}
     >
-      <style>{`@keyframes reef-speed-surge-flash { 0% { transform: scale(1.08); filter: brightness(1.9); } 100% { transform: scale(1); filter: brightness(1); } }`}</style>
-      <div style={{ fontSize: 9, letterSpacing: '0.16em', color: kineticActive ? bandColor : '#7df9ff99' }}>
-        {kineticActive ? 'SURGE' : 'SPEED'}
+      <div style={{ fontSize: 9, letterSpacing: '0.18em', color: kineticActive ? bandColor : '#7df9ff99' }}>
+        SPEED
       </div>
-      <div style={{ fontSize: 18, lineHeight: 1.05, fontWeight: 800, color: '#fff' }}>
-        {Math.round(speed)}
-        <span style={{ marginLeft: 4, fontSize: 8, letterSpacing: '0.1em', color: '#ffffff88' }}>
-          WU/S
-        </span>
+      <div
+        style={{
+          fontSize: 26,
+          lineHeight: 1,
+          fontWeight: 850,
+          color: kineticActive ? bandColor : '#ffffff',
+          fontVariantNumeric: 'tabular-nums',
+          transition: 'color 160ms ease',
+        }}
+      >
+        {smoothedSpeed}
       </div>
     </div>
   );
@@ -1022,6 +1062,7 @@ export default function ReefRaceHud({
   roomId,
 }: ReefRaceHudProps) {
   const selfAvatarId  = useActivityStore((s) => s.selfAvatarId);
+  const isMobile = useIsMobile();
   const matchPhase = useActivityStore((s) => s.matchPhase);
   const countdownSecondsRemaining = useActivityStore(
     (s) => s.countdownSecondsRemaining,
@@ -1108,7 +1149,6 @@ export default function ReefRaceHud({
             displays lap+1) and `e.totalLaps` from the server delta. */}
         <LapCounter selfAvatarId={selfAvatarId} />
         <PlacementTile selfAvatarId={selfAvatarId} />
-        <ReefRaceSpeedometer selfAvatarId={selfAvatarId} />
         {/* Phase 4 — clean-checkpoint streak chip (C-IMPL-3 fix). Only
             renders mid-match; auto-dismisses on streak=0. Tier glow tracks
             the shared `streakMilestoneKind` enum so it stays in lock-step
@@ -1117,6 +1157,17 @@ export default function ReefRaceHud({
         <BestLapTile selfAvatarId={selfAvatarId} />
         {/* Phase 3 — racing-class build summary chip */}
         <ReefRaceBuildSummary />
+      </div>
+
+      {/* Desktop bottom meter; touch layouts lift it above both 220px joystick zones. */}
+      <div
+        style={{
+          position: 'absolute',
+          left: isMobile ? 12 : 20,
+          bottom: isMobile ? 232 : 24,
+        }}
+      >
+        <ReefRaceSpeedometer selfAvatarId={selfAvatarId} />
       </div>
 
       {/* Top-center: Draft (slipstream) badge — Phase 2 */}

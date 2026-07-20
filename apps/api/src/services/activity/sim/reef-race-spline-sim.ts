@@ -151,6 +151,9 @@ const REEF_TICKS_PER_KEYFRAME = REEF_SIM_HZ;
  * before calling endRound. Gives trailing racers a window to finish.
  */
 const REEF_FINISH_WAIT_MS = 30_000;
+const BOT_STUCK_WINDOW_MS = 4_000;
+const BOT_STUCK_MIN_PROGRESS = 0.002;
+const BOT_RECOVERY_SPEED = REEF_MAX_SPEED * 0.12;
 
 /** Wall tangential friction after clamp. */
 const WALL_TANGENT_FRICTION = 0.98;
@@ -360,6 +363,12 @@ interface SplineSnapshot {
   }>;
 }
 
+interface BotProgressWatch {
+  lastProgress: number;
+  forwardAdvance: number;
+  lastAdvanceAt: number;
+}
+
 interface SplineRoomState {
   roomId: string;
   activityId: string;
@@ -405,6 +414,8 @@ interface SplineRoomState {
 
   botControllers: Map<string, BotController>;
   botSeqs: Map<string, number>;
+  /** Seam-safe progress windows used to recover wedged live-room bots. */
+  botProgressWatches: Map<string, BotProgressWatch>;
 
   /** SPEC 3 — ramp trigger volumes (built once per room). */
   ramps: SplineRampPatch[];
@@ -578,6 +589,7 @@ export class ReefRaceSplineSim {
       lastPlacementMap: new Map(),
       botControllers,
       botSeqs: new Map(),
+      botProgressWatches: new Map(),
       // SPEC 3 — ramp trigger volumes, built once per room.
       ramps: buildSplineRamps(),
       rampCooldowns: new Map(),
@@ -1060,6 +1072,9 @@ export class ReefRaceSplineSim {
     // 7. Update race progress (arclength fraction) + finish-line detection.
     this.resolveProgress(state, now);
 
+    // 7a. Recover bots that have failed to gain 0.2% of a lap for ~4s.
+    this.recoverStuckBots(state, now);
+
     // 8. Round-end conditions.
     if (this.shouldEndRound(state, now)) {
       this.applyTimeouts(state, now);
@@ -1148,10 +1163,11 @@ export class ReefRaceSplineSim {
       // The old `Math.max(speedMod, 1+pickupAdd)` DISCARDED any active negative
       // (a whirlpool-slowed victim on turbo kept full turbo speed). Folding it
       // in additively — and capping the whole stack by KINEMATIC_BOOST_CAP —
-      // makes turbo COMBINE with a slow (turbo +0.35 + whirlpool −0.35 ⇒ 1.0×,
-      // the documented "turbo buys back the hazard" model) while still bounding
-      // the total ≤ 1.85×. v2 has no drift-boost or ribbon-boost (oval-only).
-      const pickupBoostAdd = powerBoosted ? 0.35 : 0; // rr-turbo-bubble
+      // makes turbo COMBINE with a slow (turbo +0.40 + whirlpool −0.35 ⇒ 1.05×)
+      // while still bounding the total ≤ 1.85×. v2 has no drift/ribbon boost.
+      // Pad (+0.45) + turbo (+0.40) exactly fills KINEMATIC_BOOST_CAP (+0.85):
+      // speedMod stays <=1.85x, below REEF_KINEMATIC_TOLERANCE's 2.1x ceiling.
+      const pickupBoostAdd = powerBoosted ? 0.40 : 0; // rr-turbo-bubble
       const positiveKineticStack = Math.min(
         launchAdd + slipAdd + padAdd + pickupBoostAdd,
         KINEMATIC_BOOST_CAP,
@@ -2566,6 +2582,70 @@ export class ReefRaceSplineSim {
 
   // ─── Bot support ───────────────────────────────────────────────────────────
 
+  private recoverStuckBots(state: SplineRoomState, now: number): void {
+    for (const avatarId of state.botControllers.keys()) {
+      const body = state.bodies.get(avatarId);
+      if (!body || !body.alive || body.forfeited || body.finishedAt !== null) {
+        state.botProgressWatches.delete(avatarId);
+        continue;
+      }
+
+      const watch = state.botProgressWatches.get(avatarId);
+      if (!watch) {
+        state.botProgressWatches.set(avatarId, {
+          lastProgress: body.progress,
+          forwardAdvance: 0,
+          lastAdvanceAt: now,
+        });
+        continue;
+      }
+
+      const rawDelta = body.progress - watch.lastProgress;
+      const signedDelta = rawDelta < -0.5
+        ? rawDelta + 1
+        : rawDelta > 0.5
+          ? rawDelta - 1
+          : rawDelta;
+      watch.lastProgress = body.progress;
+      watch.forwardAdvance += signedDelta;
+
+      if (watch.forwardAdvance >= BOT_STUCK_MIN_PROGRESS) {
+        watch.forwardAdvance = 0;
+        watch.lastAdvanceAt = now;
+        continue;
+      }
+      if (now - watch.lastAdvanceAt < BOT_STUCK_WINDOW_MS) continue;
+
+      // body.progress is arclength-normalized; convert to raw t before sampling.
+      const t = state.spline.tFromArclength(
+        body.progress * state.spline.totalArcLength,
+      );
+      const center = state.spline.centerlineAt(t);
+      const tangent = state.spline.tangentAt(t);
+      body.x = center.x;
+      body.z = center.z;
+      body.rot = Math.atan2(tangent.x, tangent.z);
+      body.vx = tangent.x * BOT_RECOVERY_SPEED;
+      body.vz = tangent.z * BOT_RECOVERY_SPEED;
+      body.heightOffset = 0;
+      body.vyAxis = 0;
+      body.airborneTicks = 0;
+      body.pendingPowerUpSlots.length = 0;
+      body.slipstreamSourceAvatarId = null;
+      body.slipstreamConsecutiveTicks = 0;
+      body.slipstreamGraceTicksLeft = 0;
+      body.activeBoosts.delete('slipstream-boost');
+      body.intent.dir = { x: tangent.x, z: tangent.z };
+      body.intent.thrust = 0.4;
+      body.intent.actionBits = 0;
+      state.boostPadInside.delete(avatarId);
+      state.rampCooldowns.delete(avatarId);
+
+      watch.forwardAdvance = 0;
+      watch.lastAdvanceAt = now;
+    }
+  }
+
   private runBotControllers(
     state: SplineRoomState,
     dt: number,
@@ -2610,6 +2690,7 @@ export class ReefRaceSplineSim {
       alive: boolean;
       inventory: Array<{ kind: ReefPowerUpKind | null; charges: number; cooldownUntil: number }>;
       lap: number;
+      progress: number;
       nextCheckpoint: number;
       currentPlacement: number | null;
       finishedAt: number | null;
@@ -2637,6 +2718,7 @@ export class ReefRaceSplineSim {
       // (12 phantom checkpoints around one loop) for the v1 bot's steering
       // heuristics. `b.progress` is the within-lap fraction 0..1.
       lap: b.lap,
+      progress: b.progress,
       nextCheckpoint: Math.round(b.progress * 12) % 12,
       currentPlacement: placementMap.get(b.avatarId) ?? null,
       finishedAt: b.finishedAt,
@@ -2646,7 +2728,7 @@ export class ReefRaceSplineSim {
       selfAvatarId,
       bodies,
       arenaRadius: Math.round(state.spline.totalArcLength),  // loop arc length as "radius" boundary heuristic (closed-loop)
-      now: Date.now(),
+      now: state.simTimeMs,
       matchStartedAt: state.startedAt,
     };
   }

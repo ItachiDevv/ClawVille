@@ -473,6 +473,7 @@ const RAMP_TILT_HOLD_S = 0.35;
 const _rampLaunchHold: Record<string, number> = {};
 /** Shared event-time burst scratch; triggerBurst copies it synchronously. */
 const _itemBurstPosition = new THREE.Vector3();
+const _boostPadBurstPosition = new THREE.Vector3();
 
 interface PredictedBoostPadVolume {
   id: string;
@@ -1489,11 +1490,8 @@ function ReefRacePlayerInner({
     lastSeenBoostPadRef.current = { avatarId: lastBoostPadEvent.avatarId, at: lastBoostPadEvent.at };
 
     const height = (entity as ReefRaceEntity & { height?: number }).height ?? 0;
-    triggerBurst(
-      new THREE.Vector3(entity.x, height, entity.y),
-      '#00e5ff', // cyan — matches the boost-pad marker color
-      110,
-    );
+    _boostPadBurstPosition.set(entity.x, height, entity.y);
+    triggerBurst(_boostPadBurstPosition, '#55eeff', 110);
   }, [lastBoostPadEvent, entity.avatarId]);
 
   // Self-only item confirmation from the EXISTING inventory snapshots. The

@@ -638,7 +638,7 @@ export interface SplineBoostPadClient {
 }
 
 /** Client prediction mirrors the server boost-pad trigger AABB exactly. */
-export const BOOST_PAD_TRIGGER_HALF_LENGTH = 130;
+export const BOOST_PAD_TRIGGER_HALF_LENGTH = 220;
 export const BOOST_PAD_TRIGGER_HALF_WIDTH = 170;
 
 /** Visual boost-pad marker footprint (wu). Smaller than the server's AABB
@@ -649,16 +649,20 @@ export const BOOST_PAD_VISUAL_WIDTH  = 110;
 /** Marker height above the ribbon surface (wu) — same order as PICKUP_Y_ABOVE_TRACK. */
 export const BOOST_PAD_Y_ABOVE_TRACK = 6;
 /** Max instances the ReefRaceBoostPads InstancedMesh allocates — headroom above
- *  the current 4-pad list so a server-side pad-count bump doesn't need a client
+ *  the current 8-pad list so a server-side pad-count bump doesn't need a client
  *  code change (only a data change), matching MAX_PICKUPS-style over-allocation. */
 export const MAX_BOOST_PADS = 10;
 
 export function buildSplineBoostPadsClient(): SplineBoostPadClient[] {
   return [
-    { id: 'pad-lagoon', t: 0.115, lateralOffset:  90, halfLength: BOOST_PAD_TRIGGER_HALF_LENGTH, halfWidth: BOOST_PAD_TRIGGER_HALF_WIDTH },
-    { id: 'pad-kelp',   t: 0.400, lateralOffset: -90, halfLength: BOOST_PAD_TRIGGER_HALF_LENGTH, halfWidth: BOOST_PAD_TRIGGER_HALF_WIDTH },
-    { id: 'pad-wreck',  t: 0.805, lateralOffset:  90, halfLength: BOOST_PAD_TRIGGER_HALF_LENGTH, halfWidth: BOOST_PAD_TRIGGER_HALF_WIDTH },
-    { id: 'pad-canyon', t: 0.925, lateralOffset: -90, halfLength: BOOST_PAD_TRIGGER_HALF_LENGTH, halfWidth: BOOST_PAD_TRIGGER_HALF_WIDTH },
+    { id: 'pad-lagoon',      t: 0.055, lateralOffset:   0, halfLength: BOOST_PAD_TRIGGER_HALF_LENGTH, halfWidth: BOOST_PAD_TRIGGER_HALF_WIDTH },
+    { id: 'pad-kelp-entry',  t: 0.165, lateralOffset:  45, halfLength: BOOST_PAD_TRIGGER_HALF_LENGTH, halfWidth: BOOST_PAD_TRIGGER_HALF_WIDTH },
+    { id: 'pad-kelp-exit',   t: 0.285, lateralOffset: -45, halfLength: BOOST_PAD_TRIGGER_HALF_LENGTH, halfWidth: BOOST_PAD_TRIGGER_HALF_WIDTH },
+    { id: 'pad-wreck-entry', t: 0.405, lateralOffset:   0, halfLength: BOOST_PAD_TRIGGER_HALF_LENGTH, halfWidth: BOOST_PAD_TRIGGER_HALF_WIDTH },
+    { id: 'pad-wreck-core',  t: 0.535, lateralOffset:  45, halfLength: BOOST_PAD_TRIGGER_HALF_LENGTH, halfWidth: BOOST_PAD_TRIGGER_HALF_WIDTH },
+    { id: 'pad-wreck-exit',  t: 0.655, lateralOffset: -45, halfLength: BOOST_PAD_TRIGGER_HALF_LENGTH, halfWidth: BOOST_PAD_TRIGGER_HALF_WIDTH },
+    { id: 'pad-canyon',      t: 0.785, lateralOffset:   0, halfLength: BOOST_PAD_TRIGGER_HALF_LENGTH, halfWidth: BOOST_PAD_TRIGGER_HALF_WIDTH },
+    { id: 'pad-home-stretch', t: 0.915, lateralOffset: 35, halfLength: BOOST_PAD_TRIGGER_HALF_LENGTH, halfWidth: BOOST_PAD_TRIGGER_HALF_WIDTH },
   ];
 }
 

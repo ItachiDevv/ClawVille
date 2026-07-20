@@ -35,7 +35,11 @@ import {
   SPEED_CONE_SPREAD,
 } from './reef-race-config';
 import { triggerBurst } from '@/lib/three/activities/shared/activity-particles';
-import { getReefRaceSurgeSnapshot } from './reef-race-speed-surge';
+import {
+  getReefRaceSurgeSnapshot,
+  isReefRaceTurboBubbleActive,
+  type ReefRaceSurgeSource,
+} from './reef-race-speed-surge';
 
 // ─── Module-scope scratch ─────────────────────────────────────────────────────
 const _m4     = new THREE.Matrix4();
@@ -45,6 +49,12 @@ const _quat   = new THREE.Quaternion();
 const _scl    = new THREE.Vector3(1, 1, 1);
 const _fwd    = new THREE.Vector3();
 const _right  = new THREE.Vector3();
+const _surgeColors: Record<ReefRaceSurgeSource, THREE.Color> = {
+  'boost-pad': new THREE.Color('#55eeff'),
+  'turbo-bubble': new THREE.Color('#ffe45e'),
+  'launch-boost': new THREE.Color('#7cffcb'),
+  slipstream: new THREE.Color('#b78cff'),
+};
 
 // ─── Trail geometry (pre-allocated) ──────────────────────────────────────────
 // Simple line strip — 2 vertices per segment (left+right edge of trail ribbon).
@@ -112,6 +122,7 @@ function writeCenterToRibbon(
   geo: THREE.BufferGeometry,
   playerPos: THREE.Vector3,
   cameraRight: THREE.Vector3,
+  widthScale: number,
 ): void {
   const { positions, head, count } = trailState;
 
@@ -133,7 +144,7 @@ function writeCenterToRibbon(
     const cy  = positions[idx * 3 + 1];
     const cz  = positions[idx * 3 + 2];
     const t   = i / Math.max(1, validCount - 1); // 0=newest, 1=oldest
-    const w   = TRAIL_WIDTH * (1 - t * 0.8); // taper toward tail
+    const w   = TRAIL_WIDTH * widthScale * (1 - t * 0.8); // taper toward tail
 
     // Left/right vertices.
     const vi = i * 2;
@@ -163,7 +174,6 @@ interface ReefRaceBoostFXProps {
 export default function ReefRaceBoostFX({ playerPos, boostActive }: ReefRaceBoostFXProps) {
   const trailRef  = useRef<THREE.Mesh>(null);
   const conesRef  = useRef<THREE.InstancedMesh>(null);
-  const trailGeoRef = useRef<THREE.BufferGeometry | null>(null);
   const lastSpraySequenceRef = useRef(0);
 
   // Ring buffer state (module-scope-like, per-instance via ref).
@@ -176,9 +186,7 @@ export default function ReefRaceBoostFX({ playerPos, boostActive }: ReefRaceBoos
   const { camera } = useThree();
 
   const trailGeo = useMemo(() => {
-    const g = makeTrailGeo();
-    trailGeoRef.current = g;
-    return g;
+    return makeTrailGeo();
   }, []);
 
   const trailMat  = useMemo(() => makeTrailMaterial(), []);
@@ -218,23 +226,36 @@ export default function ReefRaceBoostFX({ playerPos, boostActive }: ReefRaceBoos
     };
   }, [trailGeo, trailMat, coneGeo, coneMat]);
 
-  useFrame((_, delta) => {
+  useFrame(({ clock }) => {
     const trail = trailRef.current;
     const cones = conesRef.current;
     const surge = getReefRaceSurgeSnapshot();
+    const turboActive = isReefRaceTurboBubbleActive(performance.now());
+    const activeColor = turboActive
+      ? _surgeColors['turbo-bubble']
+      : _surgeColors[surge.source];
 
     // Surge-start water spray reuses the scene's existing bounded Points pool:
-    // no new mesh/material pair, draw call, or per-frame allocation here.
+    // no new mesh/material pair, draw call, or per-frame allocation here. Pad
+    // spray is emitted per visible rider in ReefRacePlayer, so skip it here to
+    // avoid double-bursting the self kart.
     if (surge.sequence !== lastSpraySequenceRef.current) {
       lastSpraySequenceRef.current = surge.sequence;
-      if (surge.magnitude > 0 && playerPos) {
+      if (surge.magnitude > 0 && surge.source !== 'boost-pad' && playerPos) {
         triggerBurst(playerPos, '#c8fbff', 72 + surge.magnitude * 58);
       }
     }
 
-    // Show/hide cones based on boost.
+    // Source-aware material mutation keeps both effects in one draw each. The
+    // cone strobe uses the existing frame clock and allocates nothing.
     if (cones) {
       cones.visible = boostActive;
+      if (boostActive) {
+        coneMat.color.copy(activeColor);
+        coneMat.opacity = 0.38 + 0.48 * (
+          0.5 + 0.5 * Math.sin(clock.elapsedTime * Math.PI * 7)
+        );
+      }
     }
 
     if (!trail || !playerPos) {
@@ -245,6 +266,8 @@ export default function ReefRaceBoostFX({ playerPos, boostActive }: ReefRaceBoos
     // Trail — only during boost.
     if (boostActive) {
       trail.visible = true;
+      trailMat.color.copy(activeColor);
+      trailMat.opacity = turboActive ? 0.9 : 0.82;
 
       // Advance ring buffer head.
       const ts = trailState.current;
@@ -255,7 +278,13 @@ export default function ReefRaceBoostFX({ playerPos, boostActive }: ReefRaceBoos
       camera.getWorldDirection(_fwd);
       _right.crossVectors(_fwd, camera.up).normalize();
 
-      writeCenterToRibbon(ts, trailGeo, playerPos, _right);
+      writeCenterToRibbon(
+        ts,
+        trailGeo,
+        playerPos,
+        _right,
+        turboActive ? 1.95 : 1.7,
+      );
     } else {
       // Fade out: reset trail.
       if (trailState.current.count > 0) {

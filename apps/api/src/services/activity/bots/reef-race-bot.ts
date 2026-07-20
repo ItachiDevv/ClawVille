@@ -40,11 +40,7 @@ import {
   type ReefBoostRibbon,
   type ReefHazardPatch,
 } from '../sim/reef-race-config';
-import { ReefSpline } from '../sim/reef-race-spline';
-import {
-  REEF_RACE_DEFAULT_TRACK,
-  REEF_RACE_TECHNICAL_ZONES,
-} from '../sim/reef-race-track-layout';
+import { ReefSpline, REEF_RACE_DEFAULT_TRACK } from '@clawville/shared';
 
 const POWERUP_USE_CHANCE = 0.3;
 const JITTER_MAGNITUDE = 0.08;
@@ -82,6 +78,8 @@ interface ReefBotBody {
   currentPlacement?: number | null;
   finishedAt?: number | null;
   dnf?: boolean;
+  /** Authoritative within-lap ARCLENGTH fraction (not raw spline t). */
+  progress?: number;
 }
 
 /**
@@ -119,27 +117,22 @@ interface ReefBotRoomView extends Omit<BotRoomView, 'bodies'> {
 // flag-gated inside computeInput so production stays bit-identical until the
 // flag flips. Spline v2 keeps jump on bit 2 and ignores retired bit 4.
 
-/** Lookahead for race-line target in spline t-space (NOT arclength). */
-const V2_LOOKAHEAD_T = 0.03;
+/** Speed-scaled lookahead in normalized arclength, never raw spline t. */
+const V2_LOOKAHEAD_PROGRESS_MIN = 0.010;
+const V2_LOOKAHEAD_PROGRESS_MAX = 0.020;
 
 /**
- * Curvature delta sample distance (t-space). The bot samples the tangent at
- * `t` and at `t + V2_CURVATURE_SAMPLE_DT`, then computes the angular delta to
+ * Curvature sample distance in normalized arclength. The bot converts both
+ * samples to raw t before reading their tangents, then computes angular delta to
  * estimate curvature. Spec: §5.
  */
-const V2_CURVATURE_SAMPLE_DT = 0.02;
+const V2_MAX_LATERAL_OFFSET_WU = 120;
 
 /** Threshold (radians) for "the curve is sharp enough to bias toward inside". */
+const V2_MAX_LATERAL_FRACTION = 0.25;
+const V2_CURVATURE_SAMPLE_PROGRESS = 0.008;
 const V2_CURVATURE_THRESHOLD_RAD = 0.05;
-
-/**
- * Lateral offset magnitude per radian of curvature. Capped against a fraction
- * of widthAt(t) so the bot stays inside the corridor on extreme curvatures.
- */
-const V2_OFFSET_PER_RAD = 200;
-
-/** Inside-offset fraction of the corridor halfWidth. */
-const V2_OFFSET_FRACTION_OF_HALF_WIDTH = 0.3;
+const V2_CURVE_OFFSET_PER_RAD = 100;
 
 /** Pickup detection radius multiplier. Spec: 3 * REEF_POWERUP_PICKUP_RADIUS. */
 const V2_PICKUP_LOOKAHEAD_MULT = 3;
@@ -150,21 +143,16 @@ const V2_PICKUP_LOOKAHEAD_MULT = 3;
  */
 const V2_PICKUP_DEVIATION_FRACTION = 0.4;
 
-/**
- * Lazy-built spline singleton — same control points as the sim's spline so
- * the math is identical. Built once on first bot tick (boot-time
- * construction would inflate cold-start cost on the API; first-tick lazy
- * mirrors how the sim itself constructs per-room).
- */
-let _splineSingleton: ReefSpline | null = null;
-function getSpline(): ReefSpline {
-  if (!_splineSingleton) {
-    // CLOSED-LOOP (2026-06-22): match the server sim's periodic ring so the
-    // bot's closestPointOnSpline / lookahead t wraps across the seam (no stall
-    // at the start/finish line each lap).
-    _splineSingleton = new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true });
+/** Module-scope spline built from the exact same shared v7 track as the sim. */
+const BOT_SPLINE = new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true });
+
+function stableLaneOffset(avatarId: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < avatarId.length; i += 1) {
+    hash ^= avatarId.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
   }
-  return _splineSingleton;
+  return (hash >>> 0) % (V2_MAX_LATERAL_OFFSET_WU * 2 + 1) - V2_MAX_LATERAL_OFFSET_WU;
 }
 
 /**
@@ -245,7 +233,15 @@ class ReefRaceBot implements BotController {
   private lineMode: 'inside' | 'mid' = 'mid';
   private lineModeForCheckpoint: number = -1;
 
-  constructor(public readonly avatarId: string) {}
+  private readonly splineLaneOffset: number;
+  private readonly itemUseDelayMs: number;
+  private bankedItemKind: string | null = null;
+  private bankedItemAtMs = 0;
+
+  constructor(public readonly avatarId: string) {
+    this.splineLaneOffset = stableLaneOffset(avatarId);
+    this.itemUseDelayMs = 2_000 + Math.abs(this.splineLaneOffset) * 12;
+  }
 
   computeInput(roomState: BotRoomView, dt: number): BotInput {
     const view = roomState as ReefBotRoomView;
@@ -672,23 +668,33 @@ class ReefRaceBot implements BotController {
     self: ReefBotBody,
     _dt: number,
   ): BotInput {
-    const spline = getSpline();
+    const spline = BOT_SPLINE;
 
     // ── Find current t on the spline ──────────────────────────────────────
     // self.x is sim X; self.y is sim Z (per buildBotRoomView's protocol map).
-    const closest = spline.closestPointOnSpline({ x: self.x, z: self.y });
-    const tSelf = closest.t;
+    const fallbackClosest = self.progress === undefined
+      ? spline.closestPointOnSpline({ x: self.x, z: self.y })
+      : null;
+    const progress = self.progress ??
+      spline.arclengthFromT(fallbackClosest!.t) / spline.totalArcLength;
+    const tSelf = spline.tFromArclength(progress * spline.totalArcLength);
 
     // ── Lookahead target on centerline + curvature-based inside offset ────
-    // CLOSED-LOOP (2026-06-22): the lookahead t WRAPS modulo 1 (was clamped to
-    // 1, which collapsed the lookahead onto the seam at t≈0.99 and stalled the
-    // bot at the start/finish line every lap). `% 1` keeps the target a true
-    // V2_LOOKAHEAD_T ahead around the ring.
-    const tLook = (tSelf + V2_LOOKAHEAD_T) % 1;
+    // Wrap normalized arclength modulo one before inverse-LUT conversion.
+    const speedRatio = Math.max(
+      0,
+      Math.min(1, Math.hypot(self.vx, self.vy) / REEF_MAX_SPEED),
+    );
+    const lookaheadProgress =
+      V2_LOOKAHEAD_PROGRESS_MIN +
+      (V2_LOOKAHEAD_PROGRESS_MAX - V2_LOOKAHEAD_PROGRESS_MIN) * speedRatio;
+    const progressLook = (progress + lookaheadProgress) % 1;
+    const tLook = spline.tFromArclength(progressLook * spline.totalArcLength);
     const lookCenter = spline.centerlineAt(tLook);
     const tg0 = spline.tangentAt(tSelf);
+    const curveProgress = (progress + V2_CURVATURE_SAMPLE_PROGRESS) % 1;
     const tg1 = spline.tangentAt(
-      (tSelf + V2_CURVATURE_SAMPLE_DT) % 1,
+      spline.tFromArclength(curveProgress * spline.totalArcLength),
     );
     // Signed angular delta in XZ: positive = curve LEFT (CCW), negative = curve RIGHT.
     // dot = tg0·tg1, cross = tg0.x*tg1.z - tg0.z*tg1.x (2D cross product in XZ).
@@ -697,18 +703,25 @@ class ReefRaceBot implements BotController {
     const delta = Math.atan2(crossT, dotT);
 
     const halfW = spline.widthAt(tLook);
-    let lateralOffset = 0;
+    let curveOffset = 0;
     if (Math.abs(delta) > V2_CURVATURE_THRESHOLD_RAD) {
-      // Magnitude bound: min(0.3 * halfW, |delta| * 200 wu)
       const mag = Math.min(
-        halfW * V2_OFFSET_FRACTION_OF_HALF_WIDTH,
-        Math.abs(delta) * V2_OFFSET_PER_RAD,
+        V2_MAX_LATERAL_OFFSET_WU,
+        Math.abs(delta) * V2_CURVE_OFFSET_PER_RAD,
       );
       // Sign: positive delta = curve LEFT → offset toward LEFT (+normal),
       // negative = curve RIGHT → offset toward RIGHT (-normal). normalAt is
       // 90° CCW of tangent (= LEFT of travel).
-      lateralOffset = delta > 0 ? mag : -mag;
+      curveOffset = delta > 0 ? mag : -mag;
     }
+    const lateralLimit = Math.min(
+      V2_MAX_LATERAL_OFFSET_WU,
+      halfW * V2_MAX_LATERAL_FRACTION,
+    );
+    const lateralOffset = Math.max(
+      -lateralLimit,
+      Math.min(lateralLimit, this.splineLaneOffset + curveOffset),
+    );
 
     const normalLook = spline.normalAt(tLook);
     let targetX = lookCenter.x + normalLook.x * lateralOffset;
@@ -757,15 +770,6 @@ class ReefRaceBot implements BotController {
       dz = tg0.z;
     }
 
-    // Per-tick jitter for human-feeling tracking error.
-    dx += (Math.random() - 0.5) * 2 * JITTER_MAGNITUDE;
-    dz += (Math.random() - 0.5) * 2 * JITTER_MAGNITUDE;
-    const dmag = Math.hypot(dx, dz);
-    if (dmag > 0) {
-      dx /= dmag;
-      dz /= dmag;
-    }
-
     // Thrust — drop on big heading mismatch (let the body swing).
     let thrust = 0.85;
     let dot = 1;
@@ -779,7 +783,9 @@ class ReefRaceBot implements BotController {
     void dot; // currently informational; reserved for tighter cornering tuning
 
     // Off-track recovery — perpendicular distance from spline centerline.
-    if (closest.distance > halfW * 1.5) {
+    const distanceFromCenterline = fallbackClosest?.distance ??
+      spline.closestPointOnSpline({ x: self.x, z: self.y }).distance;
+    if (distanceFromCenterline > halfW * 1.5) {
       thrust = 1.0;
     }
 
@@ -803,8 +809,19 @@ class ReefRaceBot implements BotController {
       }
     }
 
-    // Power-up usage — same probabilistic policy as v1, gated past grace.
-    if (!inGrace) {
+    // Banked items remain visible for a few deterministic sim-seconds first.
+    const queuedItem = self.inventory[0];
+    if (queuedItem?.kind == null) {
+      this.bankedItemKind = null;
+      this.bankedItemAtMs = 0;
+    } else if (queuedItem.kind !== this.bankedItemKind) {
+      this.bankedItemKind = queuedItem.kind;
+      this.bankedItemAtMs = view.now;
+    } else if (
+      !inGrace &&
+      queuedItem.cooldownUntil <= view.now &&
+      view.now - this.bankedItemAtMs >= this.itemUseDelayMs
+    ) {
       const ownPlacement = this.getOwnPlacement(view);
       const useChance =
         ownPlacement === null
@@ -814,13 +831,9 @@ class ReefRaceBot implements BotController {
             : ownPlacement >= 8
               ? 0.45
               : 0.30 + (ownPlacement - 1) * (0.15 / 7);
-      const queuedItem = self.inventory[0];
-      if (
-        queuedItem?.kind !== null &&
-        queuedItem.cooldownUntil <= view.now &&
-        Math.random() < useChance
-      ) {
+      if (Math.random() < useChance) {
         actionBits |= ACTION_BIT_POWERUP_0;
+        this.bankedItemAtMs = view.now;
       }
     }
 
