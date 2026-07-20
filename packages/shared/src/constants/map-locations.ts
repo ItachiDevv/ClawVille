@@ -1,4 +1,6 @@
 import type { MapLocation } from '../types/location';
+import { KELP_FOREST_PORTAL_APPROACH_GAME } from './kelp-realm';
+import { KELP_FOREST_PORTAL_ID } from './world-colliders-data';
 
 // 12-building TRUE CIRCULAR ring layout — recentered land-builder-economics (2026-06-24).
 // Ring R=130 tiles (4160wu). Grid grew 576→704 tiles; ring footprint unchanged,
@@ -177,10 +179,22 @@ export const LOCATION_IDS = MAP_LOCATIONS.map((l) => l.id);
 
 /**
  * Non-teaching destinations the autonomous decision path can enter through the
- * strict in-world action executor. Coordinates are deliberately NOT duplicated
- * here: perception resolves each `mapLocationId` through MAP_LOCATIONS.
+ * strict in-world action executor. Built venues resolve through MAP_LOCATIONS;
+ * world destinations without a map row carry a shared-constant-derived center.
  */
-export const AUTONOMY_ENTERABLE_PLACES = [
+export type AutonomyEnterablePlace = Readonly<{
+  placeId: string;
+  label: string;
+  description: string;
+  actionVerb: 'enter_cove' | 'enter_poker_room' | 'enter_kelp_forest' | 'move';
+  actionSyntax: 'enter_cove()' | 'enter_poker_room()' | 'enter_kelp_forest()' | `move(x=${number}, y=${number})`;
+  destinationId: string;
+} & (
+  | { mapLocationId: string; center?: never }
+  | { mapLocationId?: never; center: Readonly<{ x: number; y: number }> }
+)>;
+
+export const AUTONOMY_ENTERABLE_PLACES: readonly AutonomyEnterablePlace[] = [
   {
     placeId: 'cove',
     mapLocationId: 'cove',
@@ -198,5 +212,14 @@ export const AUTONOMY_ENTERABLE_PLACES = [
     actionVerb: 'enter_poker_room',
     actionSyntax: 'enter_poker_room()',
     destinationId: 'cove',
+  },
+  {
+    placeId: 'kelp-forest',
+    center: KELP_FOREST_PORTAL_APPROACH_GAME,
+    label: 'Kelp Forest',
+    description: 'A route-isolated kelp maze whose beacons reveal only adjacent paths.',
+    actionVerb: 'enter_kelp_forest',
+    actionSyntax: 'enter_kelp_forest()',
+    destinationId: KELP_FOREST_PORTAL_ID,
   },
 ] as const;

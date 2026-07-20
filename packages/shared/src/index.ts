@@ -36,6 +36,7 @@ export type {
 export { ReefSpline, parabolicRefineOffset } from './reef-race/spline';
 export * from './reef-race/track-layout';
 export * from './reef-race/start-grid';
+export * from './reef-race/boost-pad';
 // Reef Race v2 — pure surf-carving integrate step (server sim + client predict
 // share this function so the physics is identical on both sides).
 export * from './reef-race/surf-physics';
@@ -95,6 +96,9 @@ export * from './activities';
 export * from './types/world';
 // Server-usable AABB collision data (buildings + town-center props).
 export * from './constants/world-colliders-data';
+// Dedicated Kelp Forest realm: one authored maze layout derives client wall
+// collision and the render-only beacon graph used by the isolated scene.
+export * from './constants/kelp-realm';
 // World dimensions + canonical spawn/center coords (S3, 2026-06-16) — the
 // single source of truth the web client, API, and DB schema all align on so a
 // world re-center (5120→18432→22528, latest the 576→704 land-builder grow) can

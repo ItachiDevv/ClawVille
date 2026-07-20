@@ -2,16 +2,18 @@
 /**
  * build-anim-bundles.mjs
  *
- * Merges the 19 single-clip emote GLBs under apps/web/public/avatars/animations/emotes/
- * + the 3 surf clips (skateboarding/wipeout/cheering) into ONE multi-clip GLB
- * named _emotes.glb. Locomotion (idle/walk/run) stays as separate single-clip
+ * Builds two animation bundles without crossing rig families:
+ *   - _emotes.glb: 19 Mixamo-family single-clip emotes.
+ *   - _emotes2.glb: 15 Meshy-family clips sourced from
+ *     scripts/anim-sources/meshy-fun-pack/ outside the production public tree.
+ * Locomotion (idle/walk/run) stays as separate single-clip
  * GLBs — they're already SW-precached and need to load eagerly with no
  * dependence on the emote bundle.
  *
  * Strategy:
  *   - Read all source GLBs.
- *   - Pick the FIRST source as the base document (keeps one Mixamo rig + scene
- *     in the output).
+ *   - Pick the FIRST source as the base document (keeps one source-family rig
+ *     and rest-pose scene in the output).
  *   - For each subsequent source, copy ONLY its animations into the base doc
  *     and re-target each AnimationChannel's target node to the base doc's
  *     matching-named node. The base doc already has a full Mixamo skeleton
@@ -27,14 +29,23 @@
  * source rigs share the rest pose, picking one of them is fine for ALL
  * animations targeting node names that exist in that scene.
  *
+ * _emotes2.glb uses one Meshy donor as its base document, preserving that
+ * family's rest-pose scene. Rebinding animation channels by canonicalized node
+ * name is safe only within the shared Meshy rig/rest-pose family. Never merge
+ * Meshy clips into the Mixamo-base _emotes.glb (or cross any rig families).
+ * Meshy donor meshes, skins, materials, textures, and duplicate scenes are
+ * stripped before pruning and compression; only one rest-pose skeleton and the
+ * 15 animations ship.
+ *
  * Run:   node scripts/build-anim-bundles.mjs
  * Output: apps/web/public/avatars/animations/_emotes.glb
+ *         apps/web/public/avatars/animations/_emotes2.glb
  *         (plus per-character bundles if their override emote dirs exist)
  */
 
 import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS, EXTMeshoptCompression } from '@gltf-transform/extensions';
-import { mergeDocuments, prune, dedup } from '@gltf-transform/functions';
+import { mergeDocuments, prune, dedup, meshopt } from '@gltf-transform/functions';
 import { resolve, dirname, basename, join } from 'node:path';
 import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -74,6 +85,29 @@ const EMOTE_CLIPS = [
 // Mixamo bakes use EXT_meshopt_compression — register encoder + decoder so
 // we can read the inputs AND write the merged bundle with compression
 // preserved. Without these the script bails on `Missing required extension`.
+// Meshy exports in this pack all use the same canonicalized mixamorig* node
+// names and, critically, the same Meshy rest pose. Keep this as a separate
+// rig-family bundle: animation channels may be rebound by node name within the
+// family, but must never be merged into the Mixamo-rest-pose _emotes.glb base.
+const MESHY_SOURCE_ROOT = resolve(__dirname, 'anim-sources/meshy-fun-pack');
+const MESHY_EMOTE_CLIPS = [
+  ['sit_ground', 'sit_ground.glb'],
+  ['shrug', 'shrug.glb'],
+  ['think', 'think.glb'],
+  ['stomp', 'stomp.glb'],
+  ['backflip_2', 'backflip.glb'],
+  ['breakdance', 'breakdance.glb'],
+  ['handstand', 'handstand.glb'],
+  ['dance_funny', 'dance_funny.glb'],
+  ['pushup', 'pushup.glb'],
+  ['kick_ball', 'kick_ball.glb'],
+  ['clap', 'clap.glb'],
+  ['wave_one', 'wave_one.glb'],
+  ['idle_var_a', 'idle_var_a.glb'],
+  ['idle_var_b', 'idle_var_b.glb'],
+  ['doze', 'doze.glb'],
+];
+
 const io = new NodeIO()
   .registerExtensions(ALL_EXTENSIONS)
   .registerDependencies({
@@ -86,16 +120,29 @@ const io = new NodeIO()
  * existing source as the base doc, then folds each subsequent clip's
  * animation into it. Returns the number of clips merged.
  */
-async function buildBundle(sources, outPath) {
+async function buildBundle(
+  sources,
+  outPath,
+  {
+    sourceRoot = ANIM_ROOT,
+    stripRenderPayload = false,
+    requireExactRig = false,
+    meshoptCompress = false,
+  } = {},
+) {
   // Filter to sources that exist on disk.
   const real = [];
   for (const [name, rel] of sources) {
-    const p = resolve(ANIM_ROOT, rel);
+    const p = resolve(sourceRoot, rel);
     if (!existsSync(p)) {
+      if (requireExactRig) throw new Error(`[fatal] missing required source: ${p}`);
       console.warn(`[skip] missing source: ${p}`);
       continue;
     }
     real.push({ name, path: p });
+  }
+  if (requireExactRig && real.length !== sources.length) {
+    throw new Error(`[fatal] expected ${sources.length} sources, found ${real.length}`);
   }
   if (real.length === 0) {
     console.warn(`[skip] no sources found for ${outPath}`);
@@ -109,6 +156,10 @@ async function buildBundle(sources, outPath) {
   if (baseAnims.length === 0) {
     throw new Error(`[fatal] base source ${real[0].path} has no animations`);
   }
+  if (requireExactRig && baseAnims.length !== 1) {
+    throw new Error(`[fatal] ${real[0].path} has ${baseAnims.length} animations; expected exactly 1`);
+  }
+  const baseScene = baseDoc.getRoot().listScenes()[0];
   baseAnims[0].setName(real[0].name);
   // Discard any extra animations in the base.
   for (let i = 1; i < baseAnims.length; i++) baseAnims[i].dispose();
@@ -124,10 +175,14 @@ async function buildBundle(sources, outPath) {
   for (let i = 1; i < real.length; i++) {
     const { name, path } = real[i];
     const otherDoc = await io.read(path);
-    const otherAnim = otherDoc.getRoot().listAnimations()[0];
+    const otherAnims = otherDoc.getRoot().listAnimations();
+    const otherAnim = otherAnims[0];
     if (!otherAnim) {
       console.warn(`[skip] no animation in ${path}`);
       continue;
+    }
+    if (requireExactRig && otherAnims.length !== 1) {
+      throw new Error(`[fatal] ${path} has ${otherAnims.length} animations; expected exactly 1`);
     }
 
     // Move otherDoc's bin data into base via mergeDocuments. This brings
@@ -146,10 +201,19 @@ async function buildBundle(sources, outPath) {
     // the duplicates and shrink the file.
     for (const channel of moved.listChannels()) {
       const targetNode = channel.getTargetNode();
-      if (!targetNode) continue;
+      if (!targetNode) {
+        if (requireExactRig) throw new Error(`[fatal] ${name} channel has no target node`);
+        continue;
+      }
       const targetName = targetNode.getName();
-      if (!targetName) continue;
+      if (!targetName) {
+        if (requireExactRig) throw new Error(`[fatal] ${name} channel target node has no name`);
+        continue;
+      }
       const baseNode = baseNodesByName.get(targetName);
+      if (requireExactRig && !baseNode) {
+        throw new Error(`[fatal] ${name} channel targets unknown rig node: ${targetName}`);
+      }
       if (baseNode && baseNode !== targetNode) {
         channel.setTargetNode(baseNode);
       }
@@ -159,7 +223,68 @@ async function buildBundle(sources, outPath) {
 
   // Prune duplicate scenes/nodes/skins introduced by merge (orphans now that
   // channels point at base nodes), then dedup accessors/bufferViews.
-  await baseDoc.transform(prune(), dedup());
+  if (requireExactRig && merged !== sources.length) {
+    throw new Error(`[fatal] expected ${sources.length} merged clips, got ${merged}`);
+  }
+
+  // Meshy donors contain a full 19-20 MB skinned character. Animation bundles
+  // retain the base scene's rest-pose node hierarchy only; render payload and
+  // duplicate imported scenes must not survive into the production asset.
+  if (stripRenderPayload) {
+    for (const node of baseDoc.getRoot().listNodes()) {
+      if (node.getMesh()) node.setMesh(null);
+      if (node.getSkin()) node.setSkin(null);
+      if (node.getCamera()) node.setCamera(null);
+    }
+    for (const scene of baseDoc.getRoot().listScenes()) {
+      if (scene !== baseScene) scene.dispose();
+    }
+  }
+
+  if (meshoptCompress) {
+    await MeshoptEncoder.ready;
+    await baseDoc.transform(prune(), dedup(), meshopt({ encoder: MeshoptEncoder, level: 'medium' }));
+  } else {
+    await baseDoc.transform(prune(), dedup());
+  }
+
+  if (stripRenderPayload) {
+    // prune() spares nodes it considers referenced, which leaves the Meshy
+    // donors' detached doc-level node graphs (~350 nodes) in the JSON after
+    // their scenes were disposed above. A node that is neither reachable from
+    // the surviving scene nor targeted by a kept animation channel is dead
+    // weight; a TARGETED-but-unreachable node means a channel rebind failed —
+    // that must fail loud, never ship.
+    const reachable = new Set();
+    const walk = (node) => {
+      if (reachable.has(node)) return;
+      reachable.add(node);
+      for (const child of node.listChildren()) walk(child);
+    };
+    for (const scene of baseDoc.getRoot().listScenes()) {
+      for (const node of scene.listChildren()) walk(node);
+    }
+    const targeted = new Set();
+    for (const animation of baseDoc.getRoot().listAnimations()) {
+      for (const channel of animation.listChannels()) {
+        const targetNode = channel.getTargetNode();
+        if (targetNode) targeted.add(targetNode);
+      }
+    }
+    let orphans = 0;
+    for (const node of baseDoc.getRoot().listNodes()) {
+      if (reachable.has(node)) continue;
+      if (targeted.has(node)) {
+        if (requireExactRig) {
+          throw new Error(`[fatal] animation targets unreachable node: ${node.getName()}`);
+        }
+        continue;
+      }
+      node.dispose();
+      orphans++;
+    }
+    if (orphans > 0) console.log(`[strip] removed ${orphans} orphan doc-level nodes`);
+  }
 
   // Consolidate buffers — GLB format requires 0 or 1 buffer. After merging
   // N source docs we have N buffers. Move everything into the first one
@@ -176,6 +301,56 @@ async function buildBundle(sources, outPath) {
   mkdirSync(dirname(outPath), { recursive: true });
   await io.write(outPath, baseDoc);
 
+  if (requireExactRig) {
+    const checkDoc = await io.read(outPath);
+    const root = checkDoc.getRoot();
+    const expectedNames = real.map(({ name }) => name);
+    const actualNames = root.listAnimations().map((animation) => animation.getName());
+    if (actualNames.length !== expectedNames.length
+      || actualNames.some((name, index) => name !== expectedNames[index])) {
+      throw new Error(
+        `[fatal] output clips mismatch: expected ${expectedNames.join(', ')}, got ${actualNames.join(', ')}`,
+      );
+    }
+    if (new Set(actualNames).size !== actualNames.length) {
+      throw new Error(`[fatal] output contains duplicate animation names: ${actualNames.join(', ')}`);
+    }
+    const renderCounts = {
+      meshes: root.listMeshes().length,
+      materials: root.listMaterials().length,
+      textures: root.listTextures().length,
+      skins: root.listSkins().length,
+      cameras: root.listCameras().length,
+    };
+    if (Object.values(renderCounts).some((count) => count !== 0)) {
+      throw new Error(`[fatal] render payload survived bundle build: ${JSON.stringify(renderCounts)}`);
+    }
+    if (root.listScenes().length !== 1 || root.listNodes().length === 0) {
+      throw new Error(
+        `[fatal] expected one non-empty rest-pose scene, got ${root.listScenes().length} scenes and ${root.listNodes().length} nodes`,
+      );
+    }
+    // Orphan gate: every surviving doc node must be reachable from the single
+    // rest-pose scene (the strip pass above enforces this at build time; this
+    // re-verifies it on the actual written bytes).
+    const checkReachable = new Set();
+    const checkWalk = (node) => {
+      if (checkReachable.has(node)) return;
+      checkReachable.add(node);
+      for (const child of node.listChildren()) checkWalk(child);
+    };
+    for (const node of root.listScenes()[0].listChildren()) checkWalk(node);
+    if (checkReachable.size !== root.listNodes().length) {
+      throw new Error(
+        `[fatal] orphan doc-level nodes survived: ${root.listNodes().length - checkReachable.size} unreachable of ${root.listNodes().length}`,
+      );
+    }
+    const outputBytes = statSync(outPath).size;
+    if (outputBytes >= 10 * 1024 * 1024) {
+      throw new Error(`[fatal] animation-only bundle is unexpectedly large: ${outputBytes} bytes`);
+    }
+  }
+
   const sizeBytes = statSync(outPath).size;
   const sizeKB = (sizeBytes / 1024).toFixed(0);
   console.log(`[ok] ${outPath}  (${merged} clips, ${sizeKB} KB)`);
@@ -188,6 +363,14 @@ async function main() {
   // Generic emotes bundle.
   const emotesOut = resolve(ANIM_ROOT, '_emotes.glb');
   await buildBundle(EMOTE_CLIPS, emotesOut);
+
+  const meshyEmotesOut = resolve(ANIM_ROOT, '_emotes2.glb');
+  await buildBundle(MESHY_EMOTE_CLIPS, meshyEmotesOut, {
+    sourceRoot: MESHY_SOURCE_ROOT,
+    stripRenderPayload: true,
+    requireExactRig: true,
+    meshoptCompress: true,
+  });
 
   // Per-character emote bundles — only build if the override dir has any
   // emote-named files. Today none of the character override dirs contain

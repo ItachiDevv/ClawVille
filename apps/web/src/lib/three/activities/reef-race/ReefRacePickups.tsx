@@ -10,8 +10,8 @@
  * Iris Xe invariants:
  *   - InstancedMesh + MeshStandardMaterial (safe on WebGPU — no ShaderMaterial crash).
  *   - Canvas-generated '?' texture created once at module scope.
- *   - Slow rotation applied to ENTIRE InstancedMesh rotation.y per frame (1 mutation, not per instance).
- *   - No per-frame allocations — module-scope scratch matrix.
+ *   - Active instances spin around their own cached world-space centers.
+ *   - No per-frame allocations — module-scope transform scratch + fixed slot cache.
  *   - matrixAutoUpdate=false on static instances.
  *
  * Draw calls: 1 (InstancedMesh).
@@ -43,6 +43,7 @@ const _zeroM4   = new THREE.Matrix4().makeScale(0, 0, 0);
 const _pos      = new THREE.Vector3();
 const _quat     = new THREE.Quaternion();
 const _scl      = new THREE.Vector3(1, 1, 1);
+const _up       = new THREE.Vector3(0, 1, 0);
 let _spinAngle  = 0;
 
 // ─── Canvas texture (module scope) ───────────────────────────────────────────
@@ -89,6 +90,18 @@ export default function ReefRacePickups() {
 
   // Track which spawnId occupies which instance slot.
   const slotMap = useRef<Map<string, number>>(new Map());
+  // Fixed xyz cache indexed by instance slot. Elevation is resolved only when
+  // a spawn first becomes active; the per-frame spin reuses these world coords.
+  const slotPositionsRef = useRef<Float32Array | null>(null);
+  const occupiedSlotsRef = useRef<Uint8Array | null>(null);
+  if (slotPositionsRef.current === null) {
+    slotPositionsRef.current = new Float32Array(MAX_PICKUPS * 3);
+  }
+  if (occupiedSlotsRef.current === null) {
+    occupiedSlotsRef.current = new Uint8Array(MAX_PICKUPS);
+  }
+  const slotPositions = slotPositionsRef.current;
+  const occupiedSlots = occupiedSlotsRef.current;
   const nextSlot = useRef(0);
 
   const geo = useMemo(
@@ -117,7 +130,9 @@ export default function ReefRacePickups() {
       mesh.setMatrixAt(i, _zeroM4);
     }
     mesh.instanceMatrix.needsUpdate = true;
+    mesh.rotation.y = 0;
     mesh.matrixAutoUpdate = false;
+    mesh.updateMatrix();
     return () => {
       geo.dispose();
       mat.dispose();
@@ -128,9 +143,12 @@ export default function ReefRacePickups() {
     const mesh = meshRef.current;
     if (!mesh) return;
 
-    // Spin the entire InstancedMesh — 1 mutation, not per-instance.
+    // The container MUST stay at identity: its instance translations are
+    // already world-space track coordinates. Rotating the container would make
+    // every box orbit the world origin instead of spinning in place.
     _spinAngle += delta * PICKUP_SPIN_SPEED;
-    mesh.rotation.y = _spinAngle;
+    mesh.rotation.y = 0;
+    _quat.setFromAxisAngle(_up, _spinAngle);
 
     // Sync pickup positions from store.
     const pickups = useActivityStore.getState().pickups;
@@ -139,19 +157,27 @@ export default function ReefRacePickups() {
     // Add/show newly spawned pickups.
     pickups.forEach((pickup, spawnId) => {
       if (!slotMap.current.has(spawnId)) {
-        const slot = nextSlot.current % MAX_PICKUPS;
-        nextSlot.current++;
+        let slot = -1;
+        for (let attempt = 0; attempt < MAX_PICKUPS; attempt++) {
+          const candidate = (nextSlot.current + attempt) % MAX_PICKUPS;
+          if (occupiedSlots[candidate] === 0) {
+            slot = candidate;
+            break;
+          }
+        }
+        if (slot < 0) return;
+
+        occupiedSlots[slot] = 1;
+        nextSlot.current = (slot + 1) % MAX_PICKUPS;
         slotMap.current.set(spawnId, slot);
 
         const pickupY = USE_SPLINE
           ? elevationAtXZ(pickup.x, pickup.y, 'pickup-' + spawnId) + PICKUP_Y_ABOVE_TRACK
           : PICKUP_Y_ABOVE_TRACK;
-        _pos.set(pickup.x, pickupY, pickup.y);
-        _quat.identity();
-        _scl.set(1, 1, 1);
-        _m4.compose(_pos, _quat, _scl);
-        mesh.setMatrixAt(slot, _m4);
-        needsUpdate = true;
+        const offset = slot * 3;
+        slotPositions[offset] = pickup.x;
+        slotPositions[offset + 1] = pickupY;
+        slotPositions[offset + 2] = pickup.y;
       }
     });
 
@@ -159,9 +185,24 @@ export default function ReefRacePickups() {
     slotMap.current.forEach((slot, spawnId) => {
       if (!pickups.has(spawnId)) {
         mesh.setMatrixAt(slot, _zeroM4);
+        occupiedSlots[slot] = 0;
         slotMap.current.delete(spawnId);
         needsUpdate = true;
       }
+    });
+
+    // Recompose only active slots so each box spins about its own center. At
+    // most MAX_PICKUPS (16) matrix writes/frame; scratch objects are reused.
+    slotMap.current.forEach((slot) => {
+      const offset = slot * 3;
+      _pos.set(
+        slotPositions[offset],
+        slotPositions[offset + 1],
+        slotPositions[offset + 2],
+      );
+      _m4.compose(_pos, _quat, _scl);
+      mesh.setMatrixAt(slot, _m4);
+      needsUpdate = true;
     });
 
     if (needsUpdate) {

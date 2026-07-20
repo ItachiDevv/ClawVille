@@ -88,9 +88,35 @@ function buildWalkabilityGrid(): boolean[][] {
     const col = colliders[i]!;
     if (col.walkable) continue;
 
-    // Convert centered world-space → tile-index. Per-axis tile half-extents
-    // = ceil(halfX / TILE) so we never under-cover a real AABB pixel. Add
-    // COLLIDER_SAFETY_TILES for the buffer-zone fix to RCA gap #2.
+    if (col.pathfindingRaster?.mode === 'cell-center-expanded-aabb') {
+      // Mark a cell iff its CENTER intersects the collider expanded by the
+      // typed per-collider padding. This is the exact Minkowski raster needed
+      // by 128-wu maze lanes: +50 wu for the widest live body class
+      // (humanoid), without the legacy +128 wu safety halo that would erase
+      // every passage.
+      const padding = col.pathfindingRaster.paddingWu;
+      const minWorldX = col.centerX - col.halfX - padding;
+      const maxWorldX = col.centerX + col.halfX + padding;
+      const minWorldZ = col.centerZ - col.halfZ - padding;
+      const maxWorldZ = col.centerZ + col.halfZ + padding;
+      const c0 = Math.ceil((minWorldX + WORLD_COLLIDER_MAP_HALF - TILE / 2) / TILE);
+      const c1 = Math.floor((maxWorldX + WORLD_COLLIDER_MAP_HALF - TILE / 2) / TILE);
+      const r0 = Math.ceil((minWorldZ + WORLD_COLLIDER_MAP_HALF - TILE / 2) / TILE);
+      const r1 = Math.floor((maxWorldZ + WORLD_COLLIDER_MAP_HALF - TILE / 2) / TILE);
+
+      for (let r = r0; r <= r1; r++) {
+        if (r < 0 || r >= ROWS) continue;
+        const rowArr = grid[r]!;
+        for (let c = c0; c <= c1; c++) {
+          if (c < 0 || c >= COLS) continue;
+          rowArr[c] = false;
+        }
+      }
+      continue;
+    }
+
+    // Legacy path, intentionally byte-for-byte unchanged for every existing
+    // building/prop: center tile plus ceil(real half-extent) and 4 safety tiles.
     const cTileX = worldToTile(col.centerX);
     const cTileZ = worldToTile(col.centerZ);
     const halfTileX = Math.ceil(col.halfX / TILE) + COLLIDER_SAFETY_TILES;

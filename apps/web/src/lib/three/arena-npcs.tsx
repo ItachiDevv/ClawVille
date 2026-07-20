@@ -26,7 +26,13 @@ import { jumpState } from '@/lib/three/jump-state';
 import { clampMovement2D, ENTITY_HALF_HUMANOID, ENTITY_HALF_CHIBI } from '@/lib/three/collision/world-colliders';
 import { avatarPositionRef } from '@/stores/game';
 import { useVRMInstance, disposeVRMInstance, retainVRMInstance, preloadVRMBytes, applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
-import { VRMCharacterAnimator, preloadMixamoClips, type AnimName } from '@/lib/three/vrm-character-animator';
+import {
+  AMBIENT_ANIM_NAMES,
+  isEmoteAnimName,
+  VRMCharacterAnimator,
+  preloadMixamoClips,
+  type AnimName,
+} from '@/lib/three/vrm-character-animator';
 import { MODEL_REGISTRY, getAnimatorIdByPath } from '@/lib/three/agent-model-registry';
 import {
   computeVRMAvatarFit,
@@ -162,6 +168,34 @@ const MOVE_DEADBAND = 14;
 const WALK_SPEED_SCALE_MAX = 1.6;
 // Low-pass response for smoothing rendered-speed based locomotion gating.
 const WALK_SPEED_SMOOTHING = 8;
+
+// Wandering-VRM ambient one-shots. Allocated once at module load, never in
+// useFrame. The three Meshy ambient clips are system-only; `think` is also a
+// player emote but is peaceful enough for the NPC idle pool.
+const NPC_AMBIENT_ONE_SHOTS = [
+  AMBIENT_ANIM_NAMES[0],
+  AMBIENT_ANIM_NAMES[1],
+  'think',
+  AMBIENT_ANIM_NAMES[2],
+] as const satisfies readonly AnimName[];
+// Tuned 2026-07-17 (review, twice): idle time ACCUMULATES across walk
+// segments (paused while moving, not reset) — the original continuous-idle
+// 25-60s window practically never completed. Second tune: accrual only runs
+// while an NPC is NEAR (LOD gate, ~3 NPCs at a time, rotating cast), so
+// per-NPC idle-seconds collect slowly; 6-16s cumulative at 50% keeps a
+// lingering nearby NPC firing within a couple of idle windows, verified
+// live (fires + bundle fetch observed) rather than assumed.
+const NPC_AMBIENT_MIN_DELAY_SECONDS = 6;
+const NPC_AMBIENT_DELAY_RANGE_SECONDS = 10;
+const NPC_AMBIENT_PLAY_CHANCE = 0.5;
+
+/** Deterministic per-NPC/cycle random in [0, 1), with no object allocation. */
+function npcAmbientRandom(seed: number, cycle: number, salt: number): number {
+  let value = (seed ^ Math.imul(cycle + 1, 0x9e3779b1) ^ salt) >>> 0;
+  value = Math.imul(value ^ (value >>> 16), 0x7feb352d) >>> 0;
+  value = Math.imul(value ^ (value >>> 15), 0x846ca68b) >>> 0;
+  return ((value ^ (value >>> 16)) >>> 0) / 0x100000000;
+}
 
 // Preload deferred to after SPECIES_MODEL declaration — see below.
 
@@ -983,6 +1017,19 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
 
   // idToSeed returns float — round to int so (frame + seed) % 3 uses integer arithmetic.
   const seed = useMemo(() => Math.round(idToSeed(npc.id)), [npc.id]);
+  const ambientInitialDelay = useMemo(
+    () => NPC_AMBIENT_MIN_DELAY_SECONDS
+      + npcAmbientRandom(seed, 0, 0x51f15e) * NPC_AMBIENT_DELAY_RANGE_SECONDS,
+    [seed],
+  );
+  const ambientElapsedRef = useRef(0);
+  const ambientDelayRef = useRef(ambientInitialDelay);
+  const ambientCycleRef = useRef(0);
+  const ambientOneShotOwnedRef = useRef(false);
+  // Keep-last server payloads trigger only on a sequence CHANGE. Seed from the
+  // mount snapshot so remounting an existing body never replays stale history.
+  const serverEmoteSeqRef = useRef(npc.emoteSeq);
+  const serverOneShotOwnedRef = useRef(false);
 
   // WorldLabelsOverlay label — same parameters as GLBNpcMesh except for the
   // Y offset: VRM humanoids are ~270wu tall (vs ~45wu for GLB crustaceans),
@@ -1320,6 +1367,35 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
 
     const animator = vrmAnimatorRef.current;
     if (animator) {
+      // Server-broadcast owned emotes are edge-triggered, not state-held. The
+      // store mutates this NPC object in place between SSE ticks, so this check
+      // belongs in useFrame rather than a React effect. Consume every changed
+      // sequence (including invalid/moving cases) to prevent delayed replay.
+      const serverEmoteSeq = d.emoteSeq;
+      if (
+        serverEmoteSeq !== undefined &&
+        serverEmoteSeq !== serverEmoteSeqRef.current
+      ) {
+        serverEmoteSeqRef.current = serverEmoteSeq;
+        const serverEmoteClip = d.emoteClip;
+        if (
+          !animationMoving &&
+          !d.isDead &&
+          serverEmoteClip !== undefined &&
+          isEmoteAnimName(serverEmoteClip)
+        ) {
+          // playOneShot supersedes any ambient clip; transfer ownership so the
+          // ambient cancellation block below cannot cancel this server event.
+          ambientOneShotOwnedRef.current = false;
+          serverOneShotOwnedRef.current = true;
+          void animator.playOneShot(serverEmoteClip);
+        }
+      }
+      if (serverOneShotOwnedRef.current && animationMoving) {
+        animator.cancelOneShot(animationMoving, d.isRunning ?? false);
+        serverOneShotOwnedRef.current = false;
+      }
+
       // Squat / swim / fly pipeline for the possessed-player NPC.
       // Mirrors the VRM player-avatar branch — surfaceClip is selected
       // every frame from jumpState.phase + airborne and only re-set
@@ -1392,6 +1468,50 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
       const isFarNpc = _springDistSq > NPC_LOD_FAR_DIST_SQ;
 
       if (!isFarNpc) {
+        // Ambient one-shots accrue only during a continuous, visually idle
+        // interval. Remote/possessed/autonomous bodies are player/agent
+        // presences rather than wandering NPCs and never enter this system.
+        // All state is numeric/ref-backed; no arrays, objects, timers, or
+        // promises are allocated on the per-frame path unless a one-shot
+        // actually fires (at most one attempt per 25-60 idle seconds).
+        const ambientEligible =
+          !isPossessedPlayerNpc &&
+          !d.isRemotePlayer &&
+          !d.id.startsWith('autonomous-') &&
+          !d.id.startsWith('oc-') &&
+          !d.id.startsWith('ocb-') &&
+          !d.isOpenClaw &&
+          !animationMoving &&
+          d.direction === 'idle' &&
+          !d.inConversation &&
+          !d.inCombat &&
+          !d.isDead;
+        if (!ambientEligible) {
+          // Pause (do NOT reset) the idle accumulator — idle time accrues
+          // across walk segments so one-shots actually fire in a live town.
+          // Only the in-flight one-shot is cancelled when movement resumes.
+          if (ambientOneShotOwnedRef.current) {
+            animator.cancelOneShot(animationMoving, d.isRunning ?? false);
+            ambientOneShotOwnedRef.current = false;
+          }
+        } else {
+          ambientElapsedRef.current += dt;
+          if (ambientElapsedRef.current >= ambientDelayRef.current) {
+            ambientElapsedRef.current = 0;
+            const cycle = ++ambientCycleRef.current;
+            ambientDelayRef.current = NPC_AMBIENT_MIN_DELAY_SECONDS
+              + npcAmbientRandom(seed, cycle, 0x51f15e)
+                * NPC_AMBIENT_DELAY_RANGE_SECONDS;
+            if (npcAmbientRandom(seed, cycle, 0xa11ce) < NPC_AMBIENT_PLAY_CHANCE) {
+              const candidateIndex = Math.floor(
+                npcAmbientRandom(seed, cycle, 0xc1a0) * NPC_AMBIENT_ONE_SHOTS.length,
+              );
+              ambientOneShotOwnedRef.current = true;
+              void animator.playOneShot(NPC_AMBIENT_ONE_SHOTS[candidateIndex]!);
+            }
+          }
+        }
+
         // isRunning: only the possessed player NPC sets d.isRunning (via moveNpc
         // when sprinting). Wandering NPCs leave it undefined → walk. Gated to
         // false while charging/airborne so a held sprint mid-leap doesn't run.

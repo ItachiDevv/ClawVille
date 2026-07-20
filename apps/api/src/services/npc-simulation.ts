@@ -5,6 +5,7 @@ import {
   buildingEdgeDistanceGamePx,
   MAP_LOCATIONS,
   AUTONOMY_ENTERABLE_PLACES,
+  type AutonomyEnterablePlace,
   HATCHER_ACTION_VERBS,
   type HatcherActionVerb,
   BUILDING_OPENCLAW_THEMES,
@@ -57,6 +58,15 @@ import { resolveBuildingId } from './building-center';
 import { canBindAgentOwner } from './agent-owner-binding';
 import { roomRegistry, FREE_ROAMER_NPC_IDS, derivePublicId } from './room-registry';
 import type { PlayerSnapshot } from '@clawville/shared';
+import {
+  and,
+  avatarSkins,
+  cosmeticSkus,
+  cosmeticVariants,
+  db,
+  eq,
+  sql,
+} from '@clawville/database';
 import { createHash } from 'crypto';
 import { recordCovenantAction } from './covenant-action-recorder';
 
@@ -131,6 +141,23 @@ const HATCHER_EMOTE_MAP: Record<string, { activity: NpcActivity; emoji: string }
   celebrate: { activity: 'socializing', emoji: '🎉' },
   alert: { activity: 'training', emoji: '⚠️' },
 };
+const OWNED_EMOTE_NAME_PATTERN = /^[a-z0-9_]{1,40}$/;
+
+async function ownsEquippedEmote(avatarId: string, animationKey: string): Promise<boolean> {
+  const rows = await db
+    .select({ id: avatarSkins.id })
+    .from(avatarSkins)
+    .innerJoin(cosmeticSkus, eq(cosmeticSkus.id, avatarSkins.skuId))
+    .innerJoin(cosmeticVariants, eq(cosmeticVariants.skuId, cosmeticSkus.id))
+    .where(and(
+      eq(avatarSkins.avatarId, avatarId),
+      eq(avatarSkins.equipped, true),
+      eq(cosmeticSkus.category, 'emote'),
+      sql`${cosmeticVariants.assetMeta} ->> 'animationKey' = ${animationKey}`,
+    ))
+    .limit(1);
+  return rows.length > 0;
+}
 
 // Parse pattern shared with eliza-runtime.ts (parseActionInvocations) so the
 // hatcher-proxy reply and the Eliza action path stay consistent.
@@ -149,8 +176,8 @@ function isHatcherActionVerb(name: string): name is HatcherActionVerb {
 // client. NpcSimulation is a SHARED singleton, so an unbounded action count
 // from a single (hostile / prompt-injected) Hatcher reply would block the
 // single-threaded event loop and stall the sim tick for ALL co-present users.
-// Cap matches the 4-verb MVP whitelist — one of each is the realistic ceiling
-// for one cognition turn. Tags beyond the cap are STILL stripped from speech,
+// Four visible actions are already more than one plausible cognition turn;
+// the cap stays fixed as the whitelist grows. Tags beyond it are STILL stripped,
 // just never executed.
 const MAX_HATCHER_ACTIONS_PER_REPLY = 4;
 const MISSING_ACTION_ATTRIBUTION_WARN_MAX = 1_024;
@@ -160,11 +187,18 @@ interface AgentActionAttribution {
   actorKind: 'agent';
 }
 
-// Non-teaching place centers in world pixel coords. Every coordinate is derived
-// from MAP_LOCATIONS; AUTONOMY_ENTERABLE_PLACES only maps prompt ids/actions to
-// an existing location, so perception and execution cannot acquire independent
-// magic coordinates.
-const AUTONOMY_PLACE_CENTERS = AUTONOMY_ENTERABLE_PLACES.flatMap((place) => {
+// Non-teaching place centers in town-pixel coords. Built venues resolve from
+// MAP_LOCATIONS; world POIs without a map row provide an inline center derived
+// from their canonical shared geometry constants.
+type AutonomyPlaceCenter = AutonomyEnterablePlace & {
+  centerX: number;
+  centerY: number;
+};
+
+const AUTONOMY_PLACE_CENTERS = AUTONOMY_ENTERABLE_PLACES.flatMap<AutonomyPlaceCenter>((place) => {
+  if (place.center) {
+    return [{ ...place, centerX: place.center.x, centerY: place.center.y }];
+  }
   const location = MAP_LOCATIONS.find((candidate) => candidate.id === place.mapLocationId);
   if (!location) return [];
   return [{
@@ -177,6 +211,11 @@ const AUTONOMY_PLACE_CENTERS = AUTONOMY_ENTERABLE_PLACES.flatMap((place) => {
 const COVE_CENTER: { x: number; y: number } | null = (() => {
   const cove = AUTONOMY_PLACE_CENTERS.find((place) => place.placeId === 'cove');
   return cove ? { x: cove.centerX, y: cove.centerY } : null;
+})();
+
+const KELP_FOREST_CENTER: { x: number; y: number } | null = (() => {
+  const kelp = AUTONOMY_PLACE_CENTERS.find((place) => place.placeId === 'kelp-forest');
+  return kelp ? { x: kelp.centerX, y: kelp.centerY } : null;
 })();
 
 // Town-center anchor and the annulus (ring) free-roaming wanderers stay inside.
@@ -224,6 +263,10 @@ export interface NpcRuntimeState {
   // Activity system
   activity: NpcActivity;
   activityEmoji: string;
+  /** Last server-broadcast owned emote clip. Clients trigger only on seq change. */
+  emoteClip?: string;
+  /** Monotonic per-body trigger sequence for the keep-last emote payload. */
+  emoteSeq?: number;
   destinationBuildingId: string | null;
   path: PathNode[];
   pathIndex: number;
@@ -444,6 +487,8 @@ class NpcSimulation {
   public avatarAutonomyManager = new AvatarSimulationBridge();
   /** Test seam; production remains the canonical covenant recorder. */
   covenantRecord: typeof recordCovenantAction = recordCovenantAction;
+  /** Test seam; production performs the canonical equipped-emote ownership query. */
+  emoteOwnershipQuery: (avatarId: string, animationKey: string) => Promise<boolean> = ownsEquippedEmote;
   private arenaSettings: ArenaSettings = { ...DEFAULT_ARENA_SETTINGS };
   private arenaRound: ArenaRoundState | null = null;
 
@@ -1640,6 +1685,7 @@ class NpcSimulation {
    *   enter_building(buildingId in the 10 MAP_LOCATIONS ids)      -> walk to building
    *   enter_cove()                                        -> walk to the Cove (casino gateway)
    *   enter_poker_room()                                  -> walk to the Cove poker tables
+   *   enter_kelp_forest()                                 -> walk to the Kelp Forest portal
    *   talk_to_npc(npcId|buildingId, message<=500)         -> injectAgentChat bubble
    *
    * Unknown names / bad params are DROPPED (never executed, never throw). Only
@@ -1789,11 +1835,20 @@ class NpcSimulation {
         // truthy bracket-access guard would treat `HATCHER_EMOTE_MAP['constructor']`
         // (the Object ctor fn) as a valid emote and corrupt NPC activity state.
         if (!Object.hasOwn(HATCHER_EMOTE_MAP, params.name)) {
+          if (this.dispatchOwnedEmote(npcId, npc, params.name, attribution)) return;
           console.warn(`[Hatcher] emote dropped — unknown name "${params.name}"`);
           return;
         }
         const emote = HATCHER_EMOTE_MAP[params.name];
         this.setNpcActivity(npcId, emote.activity, emote.emoji);
+        // `think` is both a frozen legacy activity name and a Meshy shop SKU
+        // animationKey. Preserve the immediate legacy behavior above for every
+        // caller; an attributed owner with the equipped SKU additionally gets
+        // the real one-shot broadcast. An ownership miss is not an unknown
+        // legacy action, so it stays silent and leaves the activity intact.
+        if (params.name === 'think') {
+          this.dispatchOwnedEmote(npcId, npc, params.name, attribution, false);
+        }
         return;
       }
       case 'enter_building': {
@@ -1886,6 +1941,28 @@ class NpcSimulation {
         });
         return;
       }
+      case 'enter_kelp_forest': {
+        // Gateway-only parity verb: walk the visible body to the safe approach
+        // outside the solid portal collider. The agent's brain then traverses
+        // the SAME neighbor-reveal beacon REST API as a human; reward settlement
+        // never occurs in this unauthenticated action parser.
+        if (!KELP_FOREST_CENTER) {
+          console.warn('[Hatcher] enter_kelp_forest dropped — shared portal approach missing');
+          return;
+        }
+        const path = findPath(npc.x, npc.y, KELP_FOREST_CENTER.x, KELP_FOREST_CENTER.y);
+        if (path.length === 0) {
+          console.warn('[Hatcher] enter_kelp_forest dropped — no path to the portal approach');
+          return;
+        }
+        this.setNpcPath(npcId, path, 'kelp-forest-portal');
+        this.setNpcActivity(npcId, 'exploring', '🫧');
+        this.recordAgentWorldAction(attribution, 'agent.move', {
+          destination: 'kelp-forest-portal',
+          venue: 'kelp-forest',
+        });
+        return;
+      }
       case 'talk_to_npc': {
         // Target is a public npcId OR a buildingId; message is the speech. The
         // visible effect is the agent's own chat bubble (mirror of /chat's
@@ -1970,6 +2047,48 @@ class NpcSimulation {
     }
     const exhaustive: never = name;
     return exhaustive;
+  }
+
+  /**
+   * Start an additive owned-emote lookup without making the synchronous action
+   * executor async. Invalid/prototype names and unattributed bodies fail before
+   * any database work. The body identity fence after the await prevents a stale
+   * result from mutating a despawned/replaced body with the same id.
+   */
+  private dispatchOwnedEmote(
+    npcId: string,
+    npc: NpcRuntimeState,
+    name: string,
+    attribution: AgentActionAttribution | null,
+    warnOnMiss = true,
+  ): boolean {
+    if (
+      typeof name !== 'string' ||
+      !OWNED_EMOTE_NAME_PATTERN.test(name) ||
+      Object.hasOwn(Object.prototype, name) ||
+      !attribution
+    ) {
+      return false;
+    }
+
+    void this.emoteOwnershipQuery(attribution.avatarId, name)
+      .then((owned) => {
+        if (!owned) {
+          if (!warnOnMiss) return;
+          console.warn(`[Hatcher] emote dropped — unknown name "${name}"`);
+          return;
+        }
+        if (this.npcs.get(npcId) !== npc) return;
+        npc.emoteClip = name;
+        npc.emoteSeq = (npc.emoteSeq ?? 0) + 1;
+      })
+      .catch((err: unknown) => {
+        console.error(
+          `[Hatcher] emote ownership check failed for ${npcId} — dropped:`,
+          err instanceof Error ? err.message : err,
+        );
+      });
+    return true;
   }
 
   /**

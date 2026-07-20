@@ -16,6 +16,10 @@ import {
   MAP_WIDTH,
   MAP_HEIGHT,
 } from '@/lib/pixi/tilemap-data';
+import {
+  KELP_FOREST_CENTER,
+  KELP_FOREST_PORTAL_PROMPT_RADIUS_WU,
+} from './kelp-forest-location';
 
 // ---------------------------------------------------------------------------
 // Shared constants (imported by arena-location-npcs.tsx — single source of truth)
@@ -176,6 +180,21 @@ const COVE_TUNNEL_PROMPT_Z_HALF = 150;
  *  collision wall (-3586) so it is always reachable on foot. */
 export const COVE_AUTO_ENTER_MAX_X = -3450;
 const COVE_AUTO_ENTER_Z_HALF = 120;
+
+// Kelp Forest realm portal — world-side human prompt only. The connected-agent
+// action and reward path land in the next commit (PV26), not in Run A.
+const KELP_PORTAL_PROMPT_RADIUS_SQ =
+  KELP_FOREST_PORTAL_PROMPT_RADIUS_WU * KELP_FOREST_PORTAL_PROMPT_RADIUS_WU;
+
+/** Zero-allocation world-space proximity check for the Kelp Forest portal. */
+export function isKelpForestPortalProximate(
+  playerWorldX: number,
+  playerWorldZ: number,
+): boolean {
+  const dx = playerWorldX - KELP_FOREST_CENTER.x;
+  const dz = playerWorldZ - KELP_FOREST_CENTER.z;
+  return dx * dx + dz * dz < KELP_PORTAL_PROMPT_RADIUS_SQ;
+}
 
 /**
  * isCoveProximate — true when the player is within the cove entry-prompt range:
