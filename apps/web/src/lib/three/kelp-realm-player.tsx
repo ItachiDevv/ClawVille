@@ -318,6 +318,8 @@ function KelpRealmGLBPlayerInner({ reg }: { readonly reg: ModelRegistryEntry }) 
 interface BeaconVisitResponse {
   token: string;
   adjacent: readonly { id: string; kind: string; bearingDeg: number; distanceWu: number }[];
+  spores: { found: number; total: number };
+  spore?: true;
 }
 
 const KELP_API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
@@ -400,6 +402,7 @@ function KelpRealmBeaconController() {
         beaconId,
         payload.token,
         KELP_REALM_BEACON_GRAPH.nodes.length,
+        payload.spores,
       );
     } catch (error) {
       if (!activeRef.current || controller.signal.aborted) return;
