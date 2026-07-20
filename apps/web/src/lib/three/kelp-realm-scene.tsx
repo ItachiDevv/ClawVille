@@ -1020,7 +1020,7 @@ export default function KelpRealmScene({ forceWebGL }: { forceWebGL: boolean }) 
     const previousBackground = scene.background;
     const previousFog = scene.fog;
     scene.background = FOG_COLOR;
-    scene.fog = new THREE.Fog(FOG_COLOR, 500, 1700);
+    scene.fog = new THREE.Fog(FOG_COLOR, 450, 1250);
     return () => {
       scene.background = previousBackground;
       scene.fog = previousFog;
