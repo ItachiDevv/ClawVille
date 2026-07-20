@@ -470,6 +470,7 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
             const target = store.clickPathTarget;
             store.clearClickPath();
             if (target === 'cove') { triggerCoveWalkIn(); return; }
+            if (target === 'kelp-forest-portal') { triggerKelpForestWalkIn(); return; }
             if (target && store.nearLocation === target) { store.enterBuilding(target); return; }
           } else { store.advanceClickPath(); }
         } else { vx = dx / dist; vy = dy / dist; }
@@ -965,6 +966,7 @@ function PlayerAvatarGLBInner() {
             const target = store.clickPathTarget;
             store.clearClickPath();
             if (target === 'cove') { triggerCoveWalkIn(); return; }
+            if (target === 'kelp-forest-portal') { triggerKelpForestWalkIn(); return; }
             if (target && store.nearLocation === target) { store.enterBuilding(target); return; }
           } else { store.advanceClickPath(); }
         } else { vx = dx / dist; vy = dy / dist; }

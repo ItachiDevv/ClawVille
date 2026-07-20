@@ -17,8 +17,8 @@ import {
   MAP_HEIGHT,
 } from '@/lib/pixi/tilemap-data';
 import {
-  KELP_FOREST_CENTER,
   KELP_FOREST_PORTAL_PROMPT_RADIUS_WU,
+  KELP_FOREST_PORTAL_WORLD_CENTER,
 } from './kelp-forest-location';
 
 // ---------------------------------------------------------------------------
@@ -191,9 +191,12 @@ export function isKelpForestPortalProximate(
   playerWorldX: number,
   playerWorldZ: number,
 ): boolean {
-  const dx = playerWorldX - KELP_FOREST_CENTER.x;
-  const dz = playerWorldZ - KELP_FOREST_CENTER.z;
-  return dx * dx + dz * dz < KELP_PORTAL_PROMPT_RADIUS_SQ;
+  // MUST key off the PORTAL center, not KELP_FOREST_CENTER — that alias is the
+  // NE GROVE (scenery) and silently kept the prompt there when the portal moved
+  // to the town center (founder-reported walk-in failure, 2026-07-20).
+  const dx = playerWorldX - KELP_FOREST_PORTAL_WORLD_CENTER.x;
+  const dz = playerWorldZ - KELP_FOREST_PORTAL_WORLD_CENTER.z;
+  return dx * dx + dz * dz <= KELP_PORTAL_PROMPT_RADIUS_SQ;
 }
 
 /**
