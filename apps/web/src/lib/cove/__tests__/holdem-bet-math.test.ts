@@ -71,10 +71,10 @@ describe('computeAllIn', () => {
 });
 
 describe('computeRaisePresets', () => {
-  test('builds total-commitment Min / 3BB / half-pot / pot sizes', () => {
+  test('builds total-commitment Min / third-pot / half-pot / pot sizes', () => {
     expect(computeRaisePresets({ min: 12, max: 100 }, '30', '2', '4')).toEqual([
       { label: 'Min', value: 12 },
-      { label: '3BB', value: 12 },
+      { label: '⅓ Pot', value: 14 },
       { label: '½ Pot', value: 19 },
       { label: 'Pot', value: 34 },
     ]);
@@ -83,7 +83,7 @@ describe('computeRaisePresets', () => {
   test('clamps every preset to the legal slider window', () => {
     expect(computeRaisePresets({ min: 20, max: 25 }, '1000', '2', '0')).toEqual([
       { label: 'Min', value: 20 },
-      { label: '3BB', value: 20 },
+      { label: '⅓ Pot', value: 25 },
       { label: '½ Pot', value: 25 },
       { label: 'Pot', value: 25 },
     ]);

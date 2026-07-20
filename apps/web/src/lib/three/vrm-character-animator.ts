@@ -127,7 +127,7 @@ if (VRM_METRICS_ENABLED && typeof window !== 'undefined') {
 // entry on the full URL incl. query string, giving us cheap manual purges.
 const EMOTE_BUNDLE_VERSION = 1;
 const EMOTE_BUNDLE = `/avatars/animations/_emotes.glb?v=${EMOTE_BUNDLE_VERSION}`;
-const COVE_SIT_BUNDLE = '/avatars/animations/_cove_sit.glb?v=3';
+const COVE_SIT_BUNDLE = '/avatars/animations/_cove_sit.glb?v=4';
 
 const ANIM_PATHS = {
   // Locomotion — separate GLBs (precached by SW).

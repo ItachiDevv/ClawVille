@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useHoldemController, type HoldemPhase } from '@/lib/cove/holdem-controller';
 import type {
@@ -10,6 +11,10 @@ import type {
   SeatState,
 } from '@/lib/cove/holdem-types';
 import { useCoveStore } from '@/stores/cove';
+import {
+  getHoldemSettledRevealHandId,
+  subscribeHoldemSettledReveal,
+} from '@/lib/cove/holdem-table-view';
 
 const ATLAS_CELL_WIDTH = 192;
 const ATLAS_CELL_HEIGHT = 256;
@@ -328,13 +333,24 @@ export function TableCards3D({
   suppressSeatIndices = [],
 }: TableCards3DProps) {
   const meshRef = useRef<THREE.Mesh>(null);
+  const muckMeshRef = useRef<THREE.Mesh>(null);
+  const muckFadeRef = useRef({ active: false, elapsed: 0 });
   const geometry = useMemo(() => new THREE.BufferGeometry(), []);
+  const muckGeometry = useMemo(() => new THREE.BufferGeometry(), []);
   const material = useMemo(() => new THREE.MeshBasicMaterial({
     map: null,
     toneMapped: false,
     side: THREE.FrontSide,
     transparent: false,
     depthWrite: true,
+  }), []);
+  const muckMaterial = useMemo(() => new THREE.MeshBasicMaterial({
+    map: null,
+    toneMapped: false,
+    side: THREE.FrontSide,
+    transparent: true,
+    opacity: 1,
+    depthWrite: false,
   }), []);
 
   const phase = useHoldemController((state) => state.phase);
@@ -343,19 +359,30 @@ export function TableCards3D({
   const seats = useHoldemController((state) => state.seats);
   const live = useHoldemController((state) => state.live);
   const settled = useHoldemController((state) => state.settled);
+  const revealHandId = useSyncExternalStore(
+    subscribeHoldemSettledReveal,
+    getHoldemSettledRevealHandId,
+    getHoldemSettledRevealHandId,
+  );
   const seatedTable = useCoveStore((state) => state.seatedTable);
   const hasHandState = phase !== 'idle' && (live !== null || settled !== null);
   const isVisible = seatedTable?.tableId === 'T1' && hasHandState;
+  const settleCueReady = phase === 'settled' && settled?.handId === revealHandId;
+  const revealShowdown = settleCueReady && settled?.outcome.endedAt === 'showdown';
   const cardStateSignature = handSignature(phase, playerHoleCards, communityCards, seats);
   const suppressedSeatSignature = suppressSeatIndices.join(',');
 
   useLayoutEffect(() => {
     const mesh = meshRef.current;
-    if (!mesh) return;
+    const muckMesh = muckMeshRef.current;
+    if (!mesh || !muckMesh) return;
 
     if (!isVisible) {
       geometry.setDrawRange(0, 0);
+      muckGeometry.setDrawRange(0, 0);
       mesh.visible = false;
+      muckMesh.visible = false;
+      muckFadeRef.current.active = false;
       return;
     }
 
@@ -363,11 +390,18 @@ export function TableCards3D({
       material.map = getCardAtlas();
       material.needsUpdate = true;
     }
+    if (!muckMaterial.map) {
+      muckMaterial.map = getCardAtlas();
+      muckMaterial.needsUpdate = true;
+    }
 
     const controller = useHoldemController.getState();
     const positions: number[] = [];
     const uvs: number[] = [];
     const indices: number[] = [];
+    const muckPositions: number[] = [];
+    const muckUvs: number[] = [];
+    const muckIndices: number[] = [];
     const cardY = feltTopY + layout.surfaceLift;
 
     for (const tableSeat of tableSeats) {
@@ -376,9 +410,11 @@ export function TableCards3D({
       const holeCards = seatState?.holeCards ?? [];
       if (holeCards.length === 0) continue;
 
-      const faceDown = (
-        controller.phase !== 'settled' || seatState?.status === 'folded'
-      );
+      const foldedAtSettle = controller.phase === 'settled' && seatState?.status === 'folded';
+      const faceDown = !revealShowdown;
+      const targetPositions = settleCueReady && foldedAtSettle ? muckPositions : positions;
+      const targetUvs = settleCueReady && foldedAtSettle ? muckUvs : uvs;
+      const targetIndices = settleCueReady && foldedAtSettle ? muckIndices : indices;
       const cardWidth = layout.botCardWidth;
       const cardHeight = layout.botCardHeight;
       const anchorScale = layout.botAnchorScale;
@@ -392,16 +428,16 @@ export function TableCards3D({
         const card = holeCards[cardIndex]!;
         const across = (cardIndex - 0.5) * pairCenterSpacing;
         appendCardQuad(
-          positions,
-          uvs,
-          indices,
+          targetPositions,
+          targetUvs,
+          targetIndices,
           anchorX + across * cosine,
           cardY,
           anchorZ - across * sine,
           tableSeat.faceYaw,
           cardWidth,
           cardHeight,
-          faceDown ? ATLAS_BACK_CELL : atlasCellForCard(card),
+          faceDown || foldedAtSettle ? ATLAS_BACK_CELL : atlasCellForCard(card),
           0,
         );
       }
@@ -463,6 +499,20 @@ export function TableCards3D({
     geometry.setDrawRange(0, indices.length);
     geometry.computeBoundingSphere();
     mesh.visible = indices.length > 0;
+
+    const muckPositionAttribute = new THREE.Float32BufferAttribute(muckPositions, 3);
+    const muckUvAttribute = new THREE.Float32BufferAttribute(muckUvs, 2);
+    muckPositionAttribute.needsUpdate = true;
+    muckUvAttribute.needsUpdate = true;
+    muckGeometry.setAttribute('position', muckPositionAttribute);
+    muckGeometry.setAttribute('uv', muckUvAttribute);
+    muckGeometry.setIndex(muckIndices);
+    muckGeometry.setDrawRange(0, muckIndices.length);
+    muckGeometry.computeBoundingSphere();
+    muckMaterial.opacity = 1;
+    muckMesh.visible = muckIndices.length > 0;
+    muckFadeRef.current.elapsed = 0;
+    muckFadeRef.current.active = muckIndices.length > 0;
   }, [
     cardStateSignature,
     centerX,
@@ -472,23 +522,53 @@ export function TableCards3D({
     isVisible,
     layout,
     material,
+    muckGeometry,
+    muckMaterial,
+    revealShowdown,
+    settleCueReady,
     suppressedSeatSignature,
     tableSeats,
   ]);
 
+  useFrame((_, delta) => {
+    const fade = muckFadeRef.current;
+    const mesh = muckMeshRef.current;
+    if (!fade.active || !mesh) return;
+    fade.elapsed += Math.min(delta, 0.05);
+    const progress = Math.min(1, fade.elapsed / 0.65);
+    muckMaterial.opacity = 1 - progress * progress;
+    if (progress >= 1) {
+      fade.active = false;
+      mesh.visible = false;
+    }
+  });
+
   useEffect(() => () => {
     geometry.dispose();
     material.dispose();
-  }, [geometry, material]);
+    muckGeometry.dispose();
+    muckMaterial.dispose();
+  }, [geometry, material, muckGeometry, muckMaterial]);
 
   return (
-    <mesh
-      ref={meshRef}
-      geometry={geometry}
-      material={material}
-      matrixAutoUpdate={false}
-      visible={false}
-      dispose={null}
-    />
+    <>
+      <mesh
+        ref={meshRef}
+        geometry={geometry}
+        material={material}
+        matrixAutoUpdate={false}
+        visible={false}
+        dispose={null}
+      />
+      <mesh
+        ref={muckMeshRef}
+        geometry={muckGeometry}
+        material={muckMaterial}
+        matrixAutoUpdate={false}
+        visible={false}
+        renderOrder={1}
+        dispose={null}
+      />
+    </>
   );
 }

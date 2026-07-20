@@ -18,7 +18,7 @@ export type RaiseOpenResult =
   | { kind: 'slider'; min: number; max: number; verb: 'bet' | 'raise' };
 
 export interface RaisePreset {
-  label: 'Min' | '3BB' | '½ Pot' | 'Pot';
+  label: 'Min' | '⅓ Pot' | '½ Pot' | 'Pot';
   value: number;
 }
 
@@ -44,20 +44,19 @@ function safeBigInt(value: string | null | undefined): bigint {
 export function computeRaisePresets(
   config: { min: number; max: number },
   pot: string,
-  bigBlind: string,
+  _bigBlind: string,
   humanCommitted: string,
 ): RaisePreset[] {
   const min = BigInt(config.min);
   const max = BigInt(config.max);
   const committed = safeBigInt(humanCommitted);
   const potBig = safeBigInt(pot);
-  const bb = safeBigInt(bigBlind);
   const clamp = (candidate: bigint): number => Number(
     candidate < min ? min : candidate > max ? max : candidate,
   );
   return [
     { label: 'Min', value: config.min },
-    { label: '3BB', value: clamp(committed + (3n * bb)) },
+    { label: '⅓ Pot', value: clamp(committed + (potBig / 3n)) },
     { label: '½ Pot', value: clamp(committed + (potBig / 2n)) },
     { label: 'Pot', value: clamp(committed + potBig) },
   ];

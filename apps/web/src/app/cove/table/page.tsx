@@ -5,6 +5,8 @@ import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
 import { HoldemControllerRuntime } from '@/lib/cove/holdem-controller';
 import { SeatedHoldemHud } from '@/components/cove/holdem/SeatedHoldemHud';
+import AvatarChatBar from '@/components/game/avatar-chat-bar';
+import { useAuthMe } from '@/hooks/use-auth-me';
 import { useCoveStore } from '@/stores/cove';
 import styles from '@/components/cove/holdem/SeatedHoldemHud.module.css';
 
@@ -26,8 +28,10 @@ const HoldemTableRoomCanvas = dynamic(
 
 export default function HoldemTableRoomPage() {
   const router = useRouter();
+  const { data: authData } = useAuthMe();
   const seatedTable = useCoveStore((state) => state.seatedTable);
   const wasSeatedRef = useRef(false);
+  const isLoggedIn = Boolean(authData?.user && !authData.user.isGuest);
 
   useEffect(() => {
     useCoveStore.getState().sitAtTable('T1', 0);
@@ -76,6 +80,7 @@ export default function HoldemTableRoomPage() {
 
       <HoldemControllerRuntime />
       <SeatedHoldemHud />
+      {isLoggedIn && <AvatarChatBar surface="table" />}
     </main>
   );
 }

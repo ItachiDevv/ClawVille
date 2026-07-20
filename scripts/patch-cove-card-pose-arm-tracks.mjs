@@ -10,6 +10,7 @@ import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
 import { Matrix4, Quaternion, Vector3 } from '../apps/web/node_modules/three/build/three.module.js';
 import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
 
 const ROOT = resolve(process.argv[2] ?? '.cardpose-authoring');
 const SOURCE_PATH = resolve(
@@ -26,6 +27,9 @@ function sampleSampler(sampler, time) {
   const values = output?.getArray();
   if (!input || !output || !values) throw new Error('animation sampler is incomplete');
   const size = output.getElementSize();
+  const cubic = sampler.getInterpolation() === 'CUBICSPLINE';
+  const stride = cubic ? size * 3 : size;
+  const valueOffset = cubic ? size : 0;
   let upper = 1;
   while (upper < input.length && input[upper] < time) upper += 1;
   upper = Math.min(upper, input.length - 1);
@@ -33,14 +37,14 @@ function sampleSampler(sampler, time) {
   const span = input[upper] - input[lower];
   const alpha = span > 1e-8 ? (time - input[lower]) / span : 0;
   if (size === 4) {
-    const a = new Quaternion().fromArray(values, lower * size);
-    const b = new Quaternion().fromArray(values, upper * size);
+    const a = new Quaternion().fromArray(values, lower * stride + valueOffset);
+    const b = new Quaternion().fromArray(values, upper * stride + valueOffset);
     return a.slerp(b, Math.max(0, Math.min(1, alpha))).toArray();
   }
   const sampled = [];
   for (let component = 0; component < size; component += 1) {
-    const a = values[lower * size + component];
-    const b = values[upper * size + component];
+    const a = values[lower * stride + valueOffset + component];
+    const b = values[upper * stride + valueOffset + component];
     sampled.push(a + (b - a) * Math.max(0, Math.min(1, alpha)));
   }
   return sampled;
@@ -55,6 +59,17 @@ for (const channel of sourceAnimation.listChannels()) {
     sampleSampler(channel.getSampler(), 0.20),
   );
 }
+
+// The selected lap phase is a good seated lower-body base, but live joint
+// positions prove its hips→head line is already ~35deg reclined. The previous
+// 8–25deg authored Spine corrections could not cancel it (peek/rest landed at
+// ~47deg). Rebuild Spine from the sampled base plus one absolute, idempotent
+// 67deg forward correction; this preserves hips/legs and places the upper
+// torso just forward of vertical on the VRM0 reference.
+const BASE_SPINE_SAMPLE = sourceSamples.get('Spine.rotation');
+if (!BASE_SPINE_SAMPLE) throw new Error(`${SOURCE_PATH}: missing Spine.rotation sample`);
+const UPRIGHT_SPINE_CORRECTION = new Quaternion()
+  .setFromAxisAngle(new Vector3(1, 0, 0), -67 * Math.PI / 180);
 
 const REST = {
   LeftShoulder: [-0.0050132170, 0.2036849482, -0.1032045445, -0.9735687606],
@@ -106,7 +121,8 @@ const translation = new Vector3();
 const scale = new Vector3();
 
 for (const [poseName, rotations] of Object.entries(POSES)) {
-  const path = resolve(ROOT, `clyt-${poseName}.glb`);
+  const authoredPath = resolve(ROOT, `clyt-${poseName}.glb`);
+  const path = existsSync(authoredPath) ? authoredPath : resolve(ROOT, `${poseName}.glb`);
   const document = await io.read(path);
   const animation = document.getRoot().listAnimations()[0];
   if (!animation) throw new Error(`${path}: missing animation`);
@@ -120,8 +136,39 @@ for (const [poseName, rotations] of Object.entries(POSES)) {
     const sampled = sourceSamples.get(`${node.getName()}.${pathName}`);
     const output = channel.getSampler().getOutput();
     if (!sampled || !output) continue;
+    // Blender exports these two-key frozen actions as CUBICSPLINE. Replacing
+    // the output with two values while leaving that interpolation intact is
+    // malformed glTF: CUBICSPLINE requires in-tangent/value/out-tangent for
+    // EACH key (six values total). Three's cubic interpolant then consumed
+    // the constant values as tangents and collapsed the torso chain onto the
+    // hips. Every rewritten constant channel must be linear.
+    channel.getSampler().setInterpolation('LINEAR');
     output.setArray(new Float32Array([...sampled, ...sampled]));
     restored += 1;
+  }
+
+  // Spine/Head are authored by Blender and intentionally preserved rather
+  // than restored from the source clip, but they are frozen too. Normalize
+  // their cubic tangent/value layout before the runtime retargeter copies the
+  // track into a standard QuaternionKeyframeTrack (which is linear and cannot
+  // consume glTF cubic tangent triplets).
+  for (const channel of animation.listChannels()) {
+    const node = channel.getTargetNode();
+    if (
+      channel.getTargetPath() !== 'rotation'
+      || !node
+      || (node.getName() !== 'Spine' && node.getName() !== 'Head')
+    ) continue;
+    const sampled = node.getName() === 'Spine'
+      ? UPRIGHT_SPINE_CORRECTION.clone()
+          .multiply(new Quaternion().fromArray(BASE_SPINE_SAMPLE))
+          .normalize()
+          .toArray()
+      : sampleSampler(channel.getSampler(), 0.02);
+    const output = channel.getSampler().getOutput();
+    if (!output) throw new Error(`${path}: ${node.getName()} has no sampler output`);
+    channel.getSampler().setInterpolation('LINEAR');
+    output.setArray(new Float32Array([...sampled, ...sampled]));
   }
 
   let replaced = 0;
@@ -143,6 +190,7 @@ for (const [poseName, rotations] of Object.entries(POSES)) {
 
     const output = channel.getSampler().getOutput();
     if (!output) throw new Error(`${path}: ${node.getName()} has no sampler output`);
+    channel.getSampler().setInterpolation('LINEAR');
     output.setArray(new Float32Array([
       trackValue.x, trackValue.y, trackValue.z, trackValue.w,
       trackValue.x, trackValue.y, trackValue.z, trackValue.w,

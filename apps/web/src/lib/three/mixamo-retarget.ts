@@ -558,11 +558,25 @@ function buildRetargetedClip(
       const isMeshyArmChain =
         vrm0Quaternion === 'meshy-arm-chain-target-handed' &&
         MESHY_TARGET_HANDED_ARM_BONES.has(vrmBoneName);
+      // The four `cove_*` frozen poses author Spine/Head explicitly in the
+      // normalized human frame, just like their arm chains. Reflecting X/Z a
+      // second time on VRM0 targets reverses the authored forward pitch
+      // (cove_watch -19deg source delta became +19deg backward live). Legacy
+      // Meshy library clips keep the established all-non-arm VRM0 reflection;
+      // this exception is narrowly keyed to our authored clips + torso bones.
+      const isAuthoredCoveTorso =
+        vrm0Quaternion === 'meshy-arm-chain-target-handed' &&
+        clipName?.startsWith('cove_') === true &&
+        (vrmBoneName === 'spine' || vrmBoneName === 'head');
       // Clean Meshy targets keep their already-target-handed arm channels.
       // The scale-100 vertical-arm family needs the opposite arm-only basis;
       // non-arm tracks retain the existing VRM0 rule, and Mixamo never enters
       // this source-specific branch.
-      const reflectXZ = isMeshyArmChain ? meshyScaledVerticalArmBasis : vrm0;
+      const reflectXZ = isMeshyArmChain
+        ? meshyScaledVerticalArmBasis
+        : isAuthoredCoveTorso
+          ? false
+          : vrm0;
 
       tracks.push(
         new THREE.QuaternionKeyframeTrack(

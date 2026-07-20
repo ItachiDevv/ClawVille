@@ -23,28 +23,31 @@ from mathutils import Euler, Quaternion, Vector
 
 POSES = {
     "cove_peek": {
-        "lean": 8.0,
+        # The sampled lap base is already ~35deg reclined on the live target.
+        # A 67deg local Spine correction brings the upper torso just forward
+        # of vertical without rotating the seated hips/legs out of the chair.
+        "lean": 67.0,
         "head_pitch": 20.0,
         "head_roll": 0.0,
         "left_arm_blend": 0.48,
         "right_arm_blend": 0.48,
     },
     "cove_think": {
-        "lean": 10.0,
+        "lean": 67.0,
         "head_pitch": 8.0,
         "head_roll": -6.0,
         "left_arm_blend": 0.06,
         "right_arm_blend": 0.68,
     },
     "cove_watch": {
-        "lean": 25.0,
+        "lean": 67.0,
         "head_pitch": -17.0,
         "head_roll": 0.0,
         "left_arm_blend": 0.0,
         "right_arm_blend": 0.0,
     },
     "cove_rest": {
-        "lean": 2.0,
+        "lean": 67.0,
         "head_pitch": 0.0,
         "head_roll": 0.0,
         "left_arm_blend": 0.0,

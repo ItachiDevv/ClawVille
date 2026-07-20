@@ -83,10 +83,10 @@ interface RoomSeat extends TableCardSeat {
 // sits at the ARC APEX at -Z; bots take arc seats toward the flat corners;
 // the DEALER stands at the +Z flat edge. Basis coords x S as before.
 const BOT_SEATS: readonly RoomSeat[] = [
-  { engineSeatIndex: 1, x: -46 * S, z: -40 * S, faceYaw: Math.atan2(46, 40), chairX: -53 * S, chairZ: -50 * S },
+  { engineSeatIndex: 1, x: -64 * S, z: -34 * S, faceYaw: Math.atan2(64, 34), chairX: -72 * S, chairZ: -44 * S },
   { engineSeatIndex: 2, x: -86 * S, z: -12 * S, faceYaw: Math.atan2(86, 12), chairX: -98 * S, chairZ: -15 * S },
   { engineSeatIndex: 3, x: -94 * S, z: 32 * S, faceYaw: Math.atan2(94, -32), chairX: -106 * S, chairZ: 39 * S },
-  { engineSeatIndex: 4, x: 86 * S, z: -12 * S, faceYaw: Math.atan2(-86, 12), chairX: 98 * S, chairZ: -15 * S },
+  { engineSeatIndex: 4, x: 64 * S, z: -34 * S, faceYaw: Math.atan2(-64, 34), chairX: 72 * S, chairZ: -44 * S },
   { engineSeatIndex: 5, x: 94 * S, z: 32 * S, faceYaw: Math.atan2(-94, -32), chairX: 106 * S, chairZ: 39 * S },
 ] as const;
 
@@ -137,6 +137,15 @@ type HandSampleHandler = (engineSeatIndex: number, sample: HandPoseSample | null
 
 const HAND_SAMPLE_LEFT = new THREE.Vector3();
 const HAND_SAMPLE_RIGHT = new THREE.Vector3();
+// The native Hermes watch clip is close to upright numerically but its long
+// coat still reads backward from a true side view. Rotate the pelvis 15deg
+// forward, then counter-rotate both thighs so the accepted seated leg pose is
+// unchanged. Applied once after the frozen sample; never touched per frame.
+const HERMES_HIPS_UPRIGHT = new THREE.Quaternion().setFromAxisAngle(
+  new THREE.Vector3(1, 0, 0),
+  THREE.MathUtils.degToRad(15),
+);
+const HERMES_THIGH_COMPENSATION = HERMES_HIPS_UPRIGHT.clone().invert();
 
 function sampleHands(
   leftHand: THREE.Object3D | null | undefined,
@@ -296,8 +305,44 @@ function FrozenFigure({
 // 160wu body, just behind the near rail, gazing slightly down across the
 // felt at the standing dealer. Neighbors appear at the frame edges the way
 // they do from a real seat.
-const CAM_EYE: readonly [number, number, number] = [0, 150, -49.6 * S - 46];
-const CAM_LOOK: readonly [number, number, number] = [0, 66, 78 * S];
+interface PoseAuditView {
+  seat: number;
+  eye: readonly [number, number, number];
+  look: readonly [number, number, number];
+}
+
+/** Query-gated verification camera used only for the mandatory front+side
+ * evidence set (`?poseSeat=1..5&poseView=front|side`). It reuses the real
+ * SeatedLookCamera and room lighting while isolating one figure. */
+const POSE_AUDIT_VIEW: PoseAuditView | null = (() => {
+  if (typeof window === 'undefined') return null;
+  const params = new URLSearchParams(window.location.search);
+  const seatIndex = Number(params.get('poseSeat'));
+  const view = params.get('poseView');
+  const seat = BOT_SEATS.find((candidate) => candidate.engineSeatIndex === seatIndex);
+  if (!seat || (view !== 'front' && view !== 'side')) return null;
+  const distance = view === 'front' ? 180 : 145;
+  const forwardX = Math.sin(seat.faceYaw);
+  const forwardZ = Math.cos(seat.faceYaw);
+  const eyeX = view === 'front'
+    ? seat.chairX + forwardX * distance
+    : seat.chairX + Math.cos(seat.faceYaw) * distance;
+  const eyeZ = view === 'front'
+    ? seat.chairZ + forwardZ * distance
+    : seat.chairZ - Math.sin(seat.faceYaw) * distance;
+  return {
+    seat: seat.engineSeatIndex,
+    eye: [eyeX, 128, eyeZ],
+    look: [seat.chairX, 82, seat.chairZ],
+  };
+})();
+
+// Round 6 pulls the seated eye 27wu back and widens the lens modestly. The
+// symmetric near seats now remain ~132wu from the lens (above the known
+// ~100wu giant-head failure zone) while both enter the default frame edges.
+const CAM_EYE: readonly [number, number, number] = POSE_AUDIT_VIEW?.eye ?? [0, 150, -145];
+const CAM_LOOK: readonly [number, number, number] = POSE_AUDIT_VIEW?.look ?? [0, 66, 78 * S];
+const CAMERA_FOV = POSE_AUDIT_VIEW ? 48 : 68;
 
 const LOOK_YAW_LIMIT = THREE.MathUtils.degToRad(75);
 const LOOK_YAW_SPEED = THREE.MathUtils.degToRad(92);
@@ -421,6 +466,9 @@ function FrozenGlbFigure({
     action.setLoop(THREE.LoopRepeat, Infinity);
     action.play();
     mixer.update(sampleAt);
+    gltf.scene.getObjectByName('Hips')?.quaternion.premultiply(HERMES_HIPS_UPRIGHT);
+    gltf.scene.getObjectByName('LeftUpLeg')?.quaternion.premultiply(HERMES_THIGH_COMPENSATION);
+    gltf.scene.getObjectByName('RightUpLeg')?.quaternion.premultiply(HERMES_THIGH_COMPENSATION);
     group.updateMatrixWorld(true);
     // Ground the POSED figure: feet exactly on the floor.
     const bbox = new THREE.Box3().setFromObject(gltf.scene);
@@ -501,6 +549,8 @@ function SeatedLookCamera() {
     camera.lookAt(...CAM_LOOK);
     camera.updateProjectionMatrix();
 
+    if (POSE_AUDIT_VIEW) return;
+
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target;
       if (target instanceof HTMLInputElement || target instanceof HTMLButtonElement) return;
@@ -536,6 +586,7 @@ function SeatedLookCamera() {
   }, [camera]);
 
   useFrame((_, delta) => {
+    if (POSE_AUDIT_VIEW) return;
     const view = viewRef.current;
     const held = heldRef.current;
     const recenterEpoch = getHoldemTableRecenterEpoch();
@@ -677,7 +728,7 @@ function HoldemTableRoomScene() {
       {/* Table unrotated: its baked dealer-station cutout faces -Z — which
           is where the dealer now STANDS (first-person restage). Betting
           spots face +Z, in front of the player camera and the near seats. */}
-      <primitive object={table} />
+      <primitive object={table} visible={!POSE_AUDIT_VIEW} />
 
       {/* Stools deliberately NOT rendered (2026-07-16 framing pass 4): the
           wire-frame stool GLB read as floating white baskets at the table
@@ -685,7 +736,10 @@ function HoldemTableRoomScene() {
           camera anyway — seated bodies alone read cleaner. Keep the loaded
           asset + anchors for a later camera that shows under-table space. */}
       {BOT_SEATS.map((seat, index) => (
-        <group key={`holdem-seat-${seat.engineSeatIndex}`}>
+        <group
+          key={`holdem-seat-${seat.engineSeatIndex}`}
+          visible={!POSE_AUDIT_VIEW || POSE_AUDIT_VIEW.seat === seat.engineSeatIndex}
+        >
           <group position={[seat.chairX, 0, seat.chairZ]} rotation={[0, seat.faceYaw, 0]} visible={false}>
             <primitive object={chairs[index]!} />
           </group>
@@ -724,15 +778,17 @@ function HoldemTableRoomScene() {
 
       {/* Dealer STANDS at the MEASURED flat edge (+Z, the 251wu straight
           side), facing the player at the arc (-Z ⇒ yaw π). */}
-      <FrozenFigure
-        reg={MODEL_REGISTRY[DEALER_MODEL_KEY] as ModelRegistryEntry}
-        instanceId="holdem-room-dealer"
-        pose="idle"
-        position={[0, 0, 78 * S]}
-        yaw={Math.PI}
-        targetHeight={DEALER_TARGET_HEIGHT}
-      />
-      <DealerPlate position={[0, DEALER_TARGET_HEIGHT + 18, 78 * S]} />
+      <group visible={!POSE_AUDIT_VIEW}>
+        <FrozenFigure
+          reg={MODEL_REGISTRY[DEALER_MODEL_KEY] as ModelRegistryEntry}
+          instanceId="holdem-room-dealer"
+          pose="idle"
+          position={[0, 0, 78 * S]}
+          yaw={Math.PI}
+          targetHeight={DEALER_TARGET_HEIGHT}
+        />
+        <DealerPlate position={[0, DEALER_TARGET_HEIGHT + 18, 78 * S]} />
+      </group>
 
       <TableCards3D
         centerX={0}
@@ -753,7 +809,7 @@ export default function HoldemTableRoomCanvas() {
       key="holdem-table-room"
       dpr={[0.65, 1]}
       frameloop="always"
-      camera={{ fov: 62, near: 0.5, far: 900, position: [CAM_EYE[0], CAM_EYE[1], CAM_EYE[2]] }}
+      camera={{ fov: CAMERA_FOV, near: 0.5, far: 900, position: [CAM_EYE[0], CAM_EYE[1], CAM_EYE[2]] }}
       gl={{ antialias: false, powerPreference: 'low-power' }}
       onCreated={({ scene }) => { scene.background = new THREE.Color(0x100b16); }}
     >

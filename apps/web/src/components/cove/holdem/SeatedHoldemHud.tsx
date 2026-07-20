@@ -4,18 +4,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useCoveStore } from '@/stores/cove';
 import { useAvatar } from '@/hooks/use-avatar';
 import '@/styles/cove-tokens.css';
-import type { RaiseConfig } from '@/lib/cove/holdem-types';
 import {
   computeAllIn,
   computeRaiseOpen,
   useHoldemController,
 } from '@/lib/cove/holdem-controller';
-import { RaiseSlider } from './RaiseSlider';
+import { computeRaisePresets } from '@/lib/cove/holdem-bet-math';
 import PokerCard from './PokerCard';
 import CommunityCardRow from './CommunityCardRow';
 import styles from './SeatedHoldemHud.module.css';
 import {
   registerHoldemSeatBadge,
+  publishHoldemSettledReveal,
   requestHoldemTableRecenter,
 } from '@/lib/cove/holdem-table-view';
 import {
@@ -37,7 +37,7 @@ const BOT_NAMES: Record<number, string> = {
 
 /** Display-only decision duration. A future enforcement round may reuse this
  * constant; this HUD never auto-acts, folds, or calls when it reaches zero. */
-export const HOLDEM_DECISION_SECONDS = 12;
+export const HOLDEM_DECISION_SECONDS = 20;
 const HOLDEM_DECISION_MS = HOLDEM_DECISION_SECONDS * 1_000;
 
 /**
@@ -150,8 +150,7 @@ export function SeatedHoldemHud() {
     resetHand, handleDeal, runAction, handleWalkAway,
   } = useHoldemController();
 
-  const [showRaise, setShowRaise] = useState(false);
-  const [raiseConfig, setRaiseConfig] = useState<RaiseConfig>({ min: 0, max: 0, value: 0, verb: 'bet' });
+  const [betAmount, setBetAmount] = useState(0);
   const [renderedLog, setRenderedLog] = useState<SerializedHoldemLogEntry[]>([]);
   const [revealedBoardCount, setRevealedBoardCount] = useState(0);
   const [replayBusy, setReplayBusy] = useState(false);
@@ -264,15 +263,7 @@ export function SeatedHoldemHud() {
     if (streetTimerRef.current) clearTimeout(streetTimerRef.current);
   }, []);
 
-  // The HUD renders null while unseated but stays MOUNTED, so slider state
-  // would otherwise survive standing, modal play, and hand changes (P3.1,
-  // Codex finding: a stale-but-legal raise could submit into a later hand).
-  // Close it on any hand identity or phase transition.
   const liveHandId = live?.handId ?? null;
-  useEffect(() => {
-    setShowRaise(false);
-  }, [liveHandId, phase, replayBusy]);
-
   const isAuthed = Boolean(avatar);
   const playoutPending = Boolean(handKey) && (
     playbackHandRef.current !== handKey
@@ -283,6 +274,30 @@ export function SeatedHoldemHud() {
   const actionsDisabled = inFlight || agentMode === 'autonomous' || playoutPending;
   const decisionActive = phase === 'player-turn' && !actionsDisabled;
   const decisionKey = `${live?.handId ?? ''}:${live?.publicActionLog.length ?? 0}:${toCallNum}`;
+  const raiseOpen = useMemo(
+    () => live && phase === 'player-turn' ? computeRaiseOpen(live) : null,
+    [live, phase],
+  );
+  const raisePresets = useMemo(
+    () => raiseOpen?.kind === 'slider'
+      ? computeRaisePresets(
+          raiseOpen,
+          publicPot,
+          live?.bigBlind ?? table?.bigBlind ?? '2',
+          humanCommitted,
+        )
+      : [],
+    [humanCommitted, live?.bigBlind, publicPot, raiseOpen, table?.bigBlind],
+  );
+
+  useEffect(() => {
+    if (raiseOpen?.kind === 'slider') setBetAmount(raiseOpen.min);
+  }, [decisionKey, liveHandId, raiseOpen]);
+
+  useEffect(() => {
+    publishHoldemSettledReveal(settled && !playoutPending ? settled.handId : null);
+    return () => publishHoldemSettledReveal(null);
+  }, [playoutPending, settled]);
 
   useEffect(() => {
     if (!decisionActive) {
@@ -301,19 +316,7 @@ export function SeatedHoldemHud() {
     return () => window.clearInterval(timer);
   }, [decisionActive, decisionKey]);
 
-  const handleOpenRaise = useCallback(() => {
-    if (!live || phase !== 'player-turn' || actionsDisabled) return;
-    const open = computeRaiseOpen(live);
-    if (open.kind === 'call') {
-      void runAction('call');
-      return;
-    }
-    setRaiseConfig({ min: open.min, max: open.max, value: open.min, verb: open.verb });
-    setShowRaise(true);
-  }, [actionsDisabled, live, phase, runAction]);
-
-  const handleConfirmRaise = useCallback(() => {
-    setShowRaise(false);
+  const handleSubmitRaise = useCallback((requestedAmount?: number) => {
     if (!live || phase !== 'player-turn' || actionsDisabled) return;
     // Re-derive against CURRENT live state at submit time — the hand can have
     // advanced (resync) since the slider opened. Clamp into today's legal
@@ -321,21 +324,20 @@ export function SeatedHoldemHud() {
     // row re-renders with the legal options).
     const open = computeRaiseOpen(live);
     if (open.kind !== 'slider') return;
-    const value = Math.min(Math.max(raiseConfig.value, open.min), open.max);
+    const value = Math.min(Math.max(requestedAmount ?? betAmount, open.min), open.max);
+    setBetAmount(value);
     void runAction(open.verb, value);
-  }, [actionsDisabled, live, phase, raiseConfig, runAction]);
+  }, [actionsDisabled, betAmount, live, phase, runAction]);
 
   const handleAllIn = useCallback(() => {
     if (!live || phase !== 'player-turn' || actionsDisabled) return;
     const shove = computeAllIn(live);
-    setShowRaise(false);
     if (shove.action === 'call') void runAction('call');
     else void runAction(shove.action, shove.amount);
   }, [actionsDisabled, live, phase, runAction]);
 
   const handleNextHand = useCallback(() => {
     if (playoutPending) return;
-    setShowRaise(false);
     resetHand();
   }, [playoutPending, resetHand]);
 
@@ -354,9 +356,9 @@ export function SeatedHoldemHud() {
       : revealedBoardCount >= 3 ? 'flop' : 'preflop';
   const renderedStreet = renderedLog.at(-1)?.street ?? 'preflop';
   const decisionSeconds = Math.ceil(decisionRemainingMs / 1_000);
-  const timerTone = decisionRemainingMs < 3_000
+  const timerTone = decisionRemainingMs < 4_000
     ? styles.timerDanger
-    : decisionRemainingMs < 5_000
+    : decisionRemainingMs < 8_000
       ? styles.timerWarn
       : '';
   const timerZero = decisionRemainingMs === 0 ? styles.timerZero : '';
@@ -518,18 +520,6 @@ export function SeatedHoldemHud() {
             </div>
           )}
 
-          {showRaise && phase === 'player-turn' && (
-            <RaiseSlider
-              config={raiseConfig}
-              pot={publicPot}
-              bigBlind={live?.bigBlind ?? table?.bigBlind ?? '2'}
-              humanCommitted={humanCommitted}
-              onChange={(value) => setRaiseConfig((current) => ({ ...current, value }))}
-              onConfirm={handleConfirmRaise}
-              onCancel={() => setShowRaise(false)}
-            />
-          )}
-
           <div className={styles.actionRow}>
             {phase === 'idle' && (
               <>
@@ -554,8 +544,9 @@ export function SeatedHoldemHud() {
               </>
             )}
 
-            {phase === 'player-turn' && !showRaise && (
-              <>
+            {phase === 'player-turn' && (
+              <div className={styles.turnControls} data-testid="holdem-inline-betting">
+                <div className={styles.coreActionRow}>
                 <button
                   type="button"
                   onClick={() => { void runAction('fold'); }}
@@ -583,23 +574,77 @@ export function SeatedHoldemHud() {
                     {'Call' + (toCallNum > 0 ? ' ' + toCallNum + ' vCLAW' : '')}
                   </button>
                 )}
-                <button
-                  type="button"
-                  onClick={handleOpenRaise}
-                  disabled={actionsDisabled}
-                  className={styles.actionButton}
-                >
-                  {facingBet ? 'Raise' : 'Bet'}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleAllIn}
-                  disabled={actionsDisabled}
-                  className={styles.actionButton + ' ' + styles.allInButton}
-                >
-                  All In
-                </button>
-              </>
+                </div>
+
+                {raiseOpen?.kind === 'slider' && (
+                  <div className={styles.inlineBetPanel}>
+                    <div className={styles.inlinePresetRow} aria-label="One-tap bet sizes">
+                      {raisePresets.map((preset) => (
+                        <button
+                          key={preset.label}
+                          type="button"
+                          onClick={() => handleSubmitRaise(preset.value)}
+                          disabled={actionsDisabled}
+                          className={styles.actionButton + ' ' + styles.presetButton}
+                        >
+                          {preset.label}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={handleAllIn}
+                        disabled={actionsDisabled}
+                        className={styles.actionButton + ' ' + styles.allInButton + ' ' + styles.presetButton}
+                      >
+                        All In
+                      </button>
+                    </div>
+
+                    <div className={styles.inlineAmountRow}>
+                      <label className={styles.amountLabel} htmlFor="holdem-bet-amount">
+                        Amount
+                      </label>
+                      <input
+                        type="range"
+                        min={raiseOpen.min}
+                        max={raiseOpen.max}
+                        step={1}
+                        value={betAmount}
+                        onChange={(event) => setBetAmount(Number(event.target.value))}
+                        className={styles.inlineRange}
+                        aria-label={`${raiseOpen.verb} amount`}
+                      />
+                      <input
+                        id="holdem-bet-amount"
+                        type="number"
+                        inputMode="numeric"
+                        min={raiseOpen.min}
+                        max={raiseOpen.max}
+                        step={1}
+                        value={betAmount}
+                        onChange={(event) => {
+                          const next = Number(event.target.value);
+                          setBetAmount(Math.min(Math.max(Number.isFinite(next) ? next : raiseOpen.min, raiseOpen.min), raiseOpen.max));
+                        }}
+                        className={styles.amountInput}
+                        aria-label={`${raiseOpen.verb} amount in vCLAW`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleSubmitRaise()}
+                        disabled={actionsDisabled}
+                        className={styles.actionButton + ' ' + styles.betSubmitButton}
+                      >
+                        {raiseOpen.verb === 'bet' ? 'Bet' : 'Raise'} {betAmount}
+                      </button>
+                    </div>
+                    <div className={styles.raiseLimits}>
+                      <span>Min {raiseOpen.min}</span>
+                      <span>Max {raiseOpen.max}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
 
             {phase === 'settled' && (

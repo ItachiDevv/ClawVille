@@ -162,7 +162,7 @@
   bottom: max(12px, env(safe-area-inset-bottom));
   z-index: 40;
   display: flex;
-  width: min(680px, calc(100vw - 24px));
+  width: min(940px, calc(100vw - 24px));
   flex-direction: column;
   align-items: center;
   gap: 8px;
@@ -321,6 +321,94 @@
   justify-content: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.turnControls {
+  display: grid;
+  width: 100%;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+}
+
+.coreActionRow,
+.inlinePresetRow,
+.inlineAmountRow {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.inlineBetPanel {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(270px, 0.92fr) minmax(300px, 1.08fr);
+  column-gap: 8px;
+  row-gap: 2px;
+}
+
+.inlinePresetRow {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.inlinePresetRow .actionButton {
+  min-width: 0;
+  padding-inline: 7px;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+}
+
+.inlineAmountRow {
+  min-width: 0;
+}
+
+.amountLabel {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  color: var(--hm-cream-muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.inlineRange {
+  min-width: 72px;
+  min-height: 44px;
+  flex: 1;
+  accent-color: var(--hm-gold);
+  cursor: pointer;
+}
+
+.amountInput {
+  width: 78px;
+  min-height: 44px;
+  border: 1px solid rgba(212, 175, 55, 0.62);
+  border-radius: var(--hm-radius);
+  background: rgba(13, 9, 15, 0.86);
+  color: var(--hm-gold-bright);
+  font: 900 12px/1 var(--pt-data), ui-monospace, monospace;
+  text-align: center;
+}
+
+.amountInput:focus-visible,
+.inlineRange:focus-visible {
+  outline: 2px solid var(--hm-cream);
+  outline-offset: 2px;
+}
+
+.betSubmitButton {
+  min-width: 112px;
+  border-color: var(--hm-gold-bright);
+  background: linear-gradient(180deg, #dec15f, #c9a227);
+  color: #1b1420;
+}
+
+.inlineBetPanel > .raiseLimits {
+  grid-column: 2;
+  margin-top: -1px;
 }
 
 .actionButton {
@@ -509,7 +597,7 @@
   50% { opacity: 1; }
 }
 
-@media (max-width: 560px) {
+@media (max-width: 800px) {
   .hud {
     bottom: max(8px, env(safe-area-inset-bottom));
     width: calc(100vw - 16px);
@@ -527,6 +615,13 @@
   .statusRow { gap: 8px; }
   .actionRow { gap: 6px; }
   .actionButton { min-width: 70px; padding-inline: 11px; }
+  .turnControls { grid-template-columns: 1fr; gap: 6px; }
+  .coreActionRow .actionButton { flex: 1; }
+  .inlineBetPanel { grid-template-columns: 1fr; row-gap: 6px; }
+  .inlineBetPanel > .raiseLimits { grid-column: 1; }
+  .amountLabel { display: none; }
+  .amountInput { width: 72px; }
+  .betSubmitButton { min-width: 96px; padding-inline: 8px; }
   .seatBadge { min-width: 94px; padding: 6px 8px; }
   .legendRow { gap: 6px; font-size: 8px; }
   .settlement { top: 48%; }

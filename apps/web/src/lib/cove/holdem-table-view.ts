@@ -7,6 +7,8 @@ const badgeElements: Array<HTMLDivElement | null> = Array.from(
 
 let badgeRegistryVersion = 0;
 let recenterEpoch = 0;
+let settledRevealHandId: string | null = null;
+const settledRevealListeners = new Set<() => void>();
 
 /**
  * Tiny render-only bridge between the DOM HUD and the R3F table camera.
@@ -37,4 +39,22 @@ export function requestHoldemTableRecenter(): void {
 
 export function getHoldemTableRecenterEpoch(): number {
   return recenterEpoch;
+}
+
+/** Display-only settle cue shared by the narration HUD and felt renderer.
+ * The HUD publishes only after its action/street playback has caught up, so
+ * opponent faces appear on the same beat as the settlement narration. */
+export function publishHoldemSettledReveal(handId: string | null): void {
+  if (settledRevealHandId === handId) return;
+  settledRevealHandId = handId;
+  for (const listener of settledRevealListeners) listener();
+}
+
+export function subscribeHoldemSettledReveal(listener: () => void): () => void {
+  settledRevealListeners.add(listener);
+  return () => settledRevealListeners.delete(listener);
+}
+
+export function getHoldemSettledRevealHandId(): string | null {
+  return settledRevealHandId;
 }
