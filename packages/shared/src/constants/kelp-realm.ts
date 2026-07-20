@@ -60,23 +60,23 @@ export type KelpRealmCell = '#' | '.' | 'E' | 'C';
 export const KELP_REALM_LAYOUT = Object.freeze([
   '#####################',
   '#####################',
-  '##.....#...#...#...##',
-  '##.###.#.#.#.#.###.##',
-  '##.#.....#...#.#...##',
-  '##.#.#########.#.#.##',
-  '##.#.#...#...#...#.##',
-  '##.###.#.#.#.#####.##',
-  '##.....#.#.#.....#.##',
-  '##.#####.#.#####.####',
-  '##.#.#...#C....#...##',
-  '##.#.#.#######.###.##',
-  '##.#.#.......#.#...##',
-  '##.#.#####.###.#.####',
+  '##.................##',
+  '##.###.#######.######',
+  '##...#.#.....#.#...##',
+  '####.#.#.###.###.#.##',
+  '##...#.#...#.....#.##',
+  '##.###.###.#######.##',
+  '##.#.#.....#.....#.##',
+  '##.#.#######.###.#.##',
+  '##.....#..C#...#.#.##',
+  '######.#.###.#.###.##',
+  '##...#.#.....#.#...##',
+  '##.###.#.#####.#.####',
   '##.....#.#.....#...##',
-  '######.#.#########.##',
-  '##...#...#.....#...##',
-  '##.#.###.#.###.#.#.##',
-  '##.#.....#.#.....#.##',
+  '##.#######.###.###.##',
+  '##.#.......#.....#.##',
+  '##.#.###.#########.##',
+  '##...#...#.........##',
   '##########.##########',
   '##########E##########',
 ] as const);
@@ -306,6 +306,49 @@ function derivePlayerSpawn(entry: KelpRealmCellCoord): Readonly<{ x: number; z: 
   });
 }
 
+function deriveSporeBeaconIds(graph: KelpRealmBeaconGraph): readonly string[] {
+  const distances = new Map<string, number>([['entry', 0]]);
+  const unvisited = new Set(graph.nodes.map((node) => node.id));
+
+  while (unvisited.size > 0) {
+    let currentId: string | null = null;
+    let currentDistance = Number.POSITIVE_INFINITY;
+    for (const id of unvisited) {
+      const distance = distances.get(id) ?? Number.POSITIVE_INFINITY;
+      if (distance < currentDistance) {
+        currentId = id;
+        currentDistance = distance;
+      }
+    }
+    if (currentId === null) break;
+    unvisited.delete(currentId);
+
+    for (const edge of graph.edges) {
+      const adjacentId = edge.from === currentId
+        ? edge.to
+        : edge.to === currentId
+          ? edge.from
+          : null;
+      if (adjacentId === null || !unvisited.has(adjacentId)) continue;
+      const candidateDistance = currentDistance + edge.distanceWu;
+      if (candidateDistance < (distances.get(adjacentId) ?? Number.POSITIVE_INFINITY)) {
+        distances.set(adjacentId, candidateDistance);
+      }
+    }
+  }
+
+  const deepest = graph.nodes
+    .filter((node) => node.kind === 'dead-end')
+    .map((node) => ({ id: node.id, distanceWu: distances.get(node.id) ?? -1 }))
+    .sort((a, b) => b.distanceWu - a.distanceWu || a.id.localeCompare(b.id))
+    .slice(0, KELP_REALM_SPORE_COUNT)
+    .map(({ id }) => id);
+  if (deepest.length !== KELP_REALM_SPORE_COUNT) {
+    throw new Error(`Kelp realm needs ${KELP_REALM_SPORE_COUNT} spore dead ends`);
+  }
+  return Object.freeze(deepest);
+}
+
 export const KELP_REALM_ENTRY_CELL = findCell('E');
 export const KELP_REALM_CENTER_CELL = findCell('C');
 export const KELP_REALM_PLAYER_SPAWN = derivePlayerSpawn(KELP_REALM_ENTRY_CELL);
@@ -315,6 +358,9 @@ export const KELP_REALM_CENTER = Object.freeze({
 });
 export const KELP_REALM_WALL_AABBS = buildWallAabbs();
 export const KELP_REALM_BEACON_GRAPH = buildBeaconGraph();
+export const KELP_REALM_SPORE_COUNT = 3;
+export const KELP_REALM_SPORE_FULL_MASK = (1 << KELP_REALM_SPORE_COUNT) - 1;
+export const KELP_REALM_SPORE_BEACON_IDS = deriveSporeBeaconIds(KELP_REALM_BEACON_GRAPH);
 export const KELP_REALM_DEAD_END_DISCOVERIES = Object.freeze(
   KELP_REALM_BEACON_GRAPH.nodes
     .filter((node) => node.kind === 'dead-end')

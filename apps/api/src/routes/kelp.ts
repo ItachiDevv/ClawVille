@@ -6,6 +6,9 @@ import {
   KELP_REALM_BEACON_GRAPH,
   KELP_REALM_PLAYER_SPEED_WU_PER_SEC,
   KELP_REALM_SPEED_GRACE_MULTIPLIER,
+  KELP_REALM_SPORE_BEACON_IDS,
+  KELP_REALM_SPORE_COUNT,
+  KELP_REALM_SPORE_FULL_MASK,
   KELP_REALM_TOKEN_TTL_MS,
   KELP_MAZE_COLLECTIBLE_SLUG,
   REWARD_ONLY_COSMETIC_CURRENCY,
@@ -25,10 +28,15 @@ import { logEventFromContext } from '../services/event-logger';
 const beaconIdSchema = z.string().min(1).max(64).regex(/^[a-z0-9-]+$/);
 const visitBodySchema = z.object({ prevToken: z.string().min(20).max(512).optional() }).strict();
 const claimBodySchema = z.object({ centerToken: z.string().min(20).max(512) }).strict();
+const sporeMaskSchema = z.number().int().min(0).max(KELP_REALM_SPORE_FULL_MASK);
+const sporeMaskTokenSchema = z.string().regex(/^[0-7]$/).transform(Number);
 const TOKEN_DOMAIN = ':kelp-realm-v1';
 const CLOCK_SKEW_MS = 0;
 
 const nodeById = new Map(KELP_REALM_BEACON_GRAPH.nodes.map((node) => [node.id, node]));
+const sporeIndexByBeaconId = new Map(
+  KELP_REALM_SPORE_BEACON_IDS.map((beaconId, index) => [beaconId, index]),
+);
 const edgesByNode = new Map<string, typeof KELP_REALM_BEACON_GRAPH.edges>();
 for (const node of KELP_REALM_BEACON_GRAPH.nodes) {
   edgesByNode.set(
@@ -38,7 +46,7 @@ for (const node of KELP_REALM_BEACON_GRAPH.nodes) {
 }
 
 type TokenVerdict =
-  | { ok: true; beaconId: string; issuedAtMs: number }
+  | { ok: true; beaconId: string; issuedAtMs: number; sporeMask: number }
   | { ok: false; code: 'invalid_token' | 'expired_token' };
 
 function hmacKey(secret: string): Buffer {
@@ -50,11 +58,13 @@ export function issueKelpBeaconToken(
   beaconId: string,
   issuedAtMs: number,
   secret: string,
+  sporeMask = 0,
 ): string {
+  const parsedSporeMask = sporeMaskSchema.parse(sporeMask);
   const signature = createHmac('sha256', hmacKey(secret))
-    .update(`${subject}|${beaconId}|${issuedAtMs}`)
+    .update(`${subject}|${beaconId}|${issuedAtMs}|${parsedSporeMask}`)
     .digest('base64url');
-  return `${beaconId}.${issuedAtMs}.${signature}`;
+  return `${beaconId}.${issuedAtMs}.${parsedSporeMask}.${signature}`;
 }
 
 export function verifyKelpBeaconToken(
@@ -64,11 +74,14 @@ export function verifyKelpBeaconToken(
   secret: string,
 ): TokenVerdict {
   const parts = token.split('.');
-  if (parts.length !== 3) return { ok: false, code: 'invalid_token' };
-  const [beaconId, issuedRaw, signatureRaw] = parts;
+  if (parts.length !== 4) return { ok: false, code: 'invalid_token' };
+  const [beaconId, issuedRaw, sporeMaskRaw, signatureRaw] = parts;
   if (!beaconIdSchema.safeParse(beaconId).success || !nodeById.has(beaconId)) {
     return { ok: false, code: 'invalid_token' };
   }
+  const sporeMaskResult = sporeMaskTokenSchema.safeParse(sporeMaskRaw);
+  if (!sporeMaskResult.success) return { ok: false, code: 'invalid_token' };
+  const sporeMask = sporeMaskResult.data;
   const issuedAtMs = Number(issuedRaw);
   if (!Number.isSafeInteger(issuedAtMs) || issuedAtMs > nowMs + CLOCK_SKEW_MS) {
     return { ok: false, code: 'invalid_token' };
@@ -83,12 +96,12 @@ export function verifyKelpBeaconToken(
     return { ok: false, code: 'invalid_token' };
   }
   const expected = createHmac('sha256', hmacKey(secret))
-    .update(`${subject}|${beaconId}|${issuedAtMs}`)
+    .update(`${subject}|${beaconId}|${issuedAtMs}|${sporeMask}`)
     .digest();
   if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
     return { ok: false, code: 'invalid_token' };
   }
-  return { ok: true, beaconId, issuedAtMs };
+  return { ok: true, beaconId, issuedAtMs, sporeMask };
 }
 
 function secretOrNull(): string | null {
@@ -106,19 +119,38 @@ async function readJsonBody(c: { req: { text(): Promise<string> } }): Promise<un
   }
 }
 
-function adjacentFor(beaconId: string) {
+function countFoundSpores(sporeMask: number): number {
+  let found = 0;
+  for (let index = 0; index < KELP_REALM_SPORE_COUNT; index++) {
+    if ((sporeMask & (1 << index)) !== 0) found++;
+  }
+  return found;
+}
+
+function collectSporeAtBeacon(sporeMask: number, beaconId: string): number {
+  const sporeIndex = sporeIndexByBeaconId.get(beaconId);
+  return sporeIndex === undefined ? sporeMask : sporeMask | (1 << sporeIndex);
+}
+
+function adjacentFor(beaconId: string, subject: string) {
   const node = nodeById.get(beaconId)!;
+  const seed = createHash('sha256').update(`${subject}:${beaconId}`).digest();
   return (edgesByNode.get(beaconId) ?? []).map((edge) => {
     const adjacentId = edge.from === beaconId ? edge.to : edge.from;
     const adjacent = nodeById.get(adjacentId)!;
     const bearingDeg = (Math.atan2(adjacent.x - node.x, -(adjacent.z - node.z)) * 180 / Math.PI + 360) % 360;
     return {
-      id: adjacent.id,
-      kind: adjacent.kind,
-      bearingDeg: Math.round(bearingDeg * 10) / 10,
-      distanceWu: edge.distanceWu,
+      descriptor: {
+        id: adjacent.id,
+        kind: adjacent.kind,
+        bearingDeg: Math.round(bearingDeg * 10) / 10,
+        distanceWu: edge.distanceWu,
+      },
+      shuffleKey: createHash('sha256').update(seed).update(adjacent.id).digest('hex'),
     };
-  });
+  })
+    .sort((a, b) => a.shuffleKey.localeCompare(b.shuffleKey) || a.descriptor.id.localeCompare(b.descriptor.id))
+    .map(({ descriptor }) => descriptor);
 }
 
 export type RewardGrantResult =
@@ -224,6 +256,7 @@ export function createKelpRoutes(
   const secret = dependencies.secret();
   if (!secret) return c.json({ error: 'token_service_unavailable', code: 'token_service_unavailable' }, 503);
   const nowMs = dependencies.nowMs();
+  let sporeMask = 0;
 
   if (node.kind !== 'entry') {
     if (!bodyResult.data.prevToken) {
@@ -231,6 +264,7 @@ export function createKelpRoutes(
     }
     const previous = verifyKelpBeaconToken(bodyResult.data.prevToken, identity.avatarId, nowMs, secret);
     if (!previous.ok) return c.json({ error: previous.code, code: previous.code }, 400);
+    sporeMask = previous.sporeMask;
     const edge = (edgesByNode.get(node.id) ?? []).find(
       (candidate) => candidate.from === previous.beaconId || candidate.to === previous.beaconId,
     );
@@ -248,9 +282,14 @@ export function createKelpRoutes(
     }
   }
 
+  sporeMask = collectSporeAtBeacon(sporeMask, node.id);
+  const sporeIndex = sporeIndexByBeaconId.get(node.id);
+
   return c.json({
-    token: issueKelpBeaconToken(identity.avatarId, node.id, nowMs, secret),
-    adjacent: adjacentFor(node.id),
+    token: issueKelpBeaconToken(identity.avatarId, node.id, nowMs, secret, sporeMask),
+    adjacent: adjacentFor(node.id, identity.avatarId),
+    spores: { found: countFoundSpores(sporeMask), total: KELP_REALM_SPORE_COUNT },
+    ...(sporeIndex === undefined ? {} : { spore: true as const }),
   });
   });
 
@@ -271,6 +310,13 @@ export function createKelpRoutes(
     if (!token.ok) return c.json({ error: token.code, code: token.code }, 400);
     if (nodeById.get(token.beaconId)?.kind !== 'center') {
       return c.json({ error: 'center_token_required', code: 'center_token_required' }, 400);
+    }
+    if (token.sporeMask !== KELP_REALM_SPORE_FULL_MASK) {
+      return c.json({
+        code: 'spores_missing',
+        found: countFoundSpores(token.sporeMask),
+        total: KELP_REALM_SPORE_COUNT,
+      }, 409);
     }
 
     const result = await dependencies.grantReward(identity.avatarId, nowMs);
