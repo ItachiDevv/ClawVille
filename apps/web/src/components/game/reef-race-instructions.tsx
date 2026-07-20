@@ -51,8 +51,7 @@ export default function ReefRaceInstructions({
         aria-label="Reef Race controls"
       >
         <ControlHint glyph={isMobile ? '◉' : 'WASD'} label="STEER" />
-        {!isMobile && <ControlHint glyph="SPACE" label="DRIFT" />}
-        <ControlHint glyph={isMobile ? 'A' : 'SHIFT'} label="JUMP" />
+        <ControlHint glyph={isMobile ? 'A' : 'SPACE / SHIFT'} label="JUMP" />
         <ControlHint glyph={isMobile ? 'B' : 'Q'} label="ITEM" />
       </div>
     );
@@ -103,16 +102,9 @@ export default function ReefRaceInstructions({
           label={isMobile ? 'Left joystick' : 'WASD or Arrows'}
           desc="Steer your kart"
         />
-        {!isMobile && (
-          <Row
-            glyph="⎵"
-            label="Hold Space + steer"
-            desc="Commit a drift; release at blue or orange charge for a boost"
-          />
-        )}
         <Row
-          glyph={isMobile ? 'A' : '⇧'}
-          label={isMobile ? 'Right A button' : 'Shift'}
+          glyph={isMobile ? 'A' : '⎵ / ⇧'}
+          label={isMobile ? 'Right A button' : 'Space / Shift'}
           desc="Jump"
         />
         <Row

@@ -52,14 +52,6 @@ const {
   BOOST_PAD_KICK,
   REEF_POWERUP_RESPAWN_MS,
   buildSplineBoostPads,
-  COMMITTED_DRIFT_MIN_SPEED,
-  COMMITTED_DRIFT_TIER1_MS,
-  COMMITTED_DRIFT_TIER2_MS,
-  COMMITTED_DRIFT_TIER1_MULT,
-  COMMITTED_DRIFT_TIER2_MULT,
-  COMMITTED_DRIFT_TIER1_DURATION_MS,
-  COMMITTED_DRIFT_TIER2_DURATION_MS,
-  COMMITTED_DRIFT_COOLDOWN_MS,
 } = await import('../reef-race-config');
 
 const DT = 1 / REEF_TICK_HZ;
@@ -167,229 +159,6 @@ describe('parabolic closest-sample refinement', () => {
   });
 });
 
-describe('ReefRaceSplineSim — committed drift (Round 10b)', () => {
-  beforeEach(() => reefRaceSplineSim.__resetForTest());
-
-  function boot(roomId: string, events: any[] = []) {
-    reefRaceSplineSim.setBroadcastFn((_id, frame) => events.push(frame));
-    reefRaceSplineSim.startRoom(roomId, 'reef-race', [A], {
-      startedAt: 1_000_000,
-      seed: 10,
-    });
-    const state = reefRaceSplineSim.__getState(roomId)!;
-    const body = state.bodies.get(A)!;
-    const center = state.spline.centerlineAt(0.05);
-    const tangent = state.spline.tangentAt(0.05);
-    body.x = center.x;
-    body.z = center.z;
-    body.rot = Math.atan2(tangent.x, tangent.z);
-    body.vx = tangent.x * 700;
-    body.vz = tangent.z * 700;
-    return { state, body, events };
-  }
-
-  function stepRelative(
-    roomId: string,
-    body: any,
-    steerSign: 1 | -1,
-    actionBits = ACTION_BIT_DRIFT_HOLD,
-    steerMagnitude = 0.8,
-  ) {
-    const desired = body.rot + steerSign * steerMagnitude;
-    reefRaceSplineSim.applyInput(
-      roomId,
-      A,
-      body.intent.seq + 1,
-      DT,
-      input(1, Math.sin(desired), Math.cos(desired), actionBits),
-    );
-    reefRaceSplineSim.__tickOnceForTest(roomId);
-  }
-
-  function charge(roomId: string, body: any, ticks: number, sign: 1 | -1 = 1) {
-    for (let i = 0; i < ticks; i++) stepRelative(roomId, body, sign);
-  }
-
-  function driftEvents(events: any[]) {
-    return events.filter((event) => event.type === 'event.mini_turbo_fire');
-  }
-
-  it('charges only with bit 4 held while actually turning, without stale-input false cancel', () => {
-    const { body } = boot('r-drift-held-turn');
-
-    // Held but straight cannot initiate.
-    reefRaceSplineSim.applyInput(
-      'r-drift-held-turn',
-      A,
-      1,
-      DT,
-      input(1, Math.sin(body.rot), Math.cos(body.rot), ACTION_BIT_DRIFT_HOLD),
-    );
-    reefRaceSplineSim.__tickOnceForTest('r-drift-held-turn');
-    expect(body.miniTurboCarveSign).toBe(0);
-    expect(body.miniTurboChargeMs).toBe(0);
-
-    // Normal keyboard A/D is only ~0.1194 rad. Keep that RAW desired heading
-    // intentionally stale for several server ticks: outward bias must never
-    // rotate past it or false-cancel the held drift.
-    const staleDesired = body.rot + 0.119428926;
-    for (let i = 0; i < 6; i++) {
-      reefRaceSplineSim.applyInput(
-        'r-drift-held-turn',
-        A,
-        body.intent.seq + 1,
-        DT,
-        input(
-          1,
-          Math.sin(staleDesired),
-          Math.cos(staleDesired),
-          ACTION_BIT_DRIFT_HOLD,
-        ),
-      );
-      reefRaceSplineSim.__tickOnceForTest('r-drift-held-turn');
-    }
-    expect(body.miniTurboCarveSign).toBe(1);
-    expect(body.miniTurboMustRelease).toBe(false);
-    expect(body.miniTurboChargeMs).toBeGreaterThan(0);
-    const settledCharge = body.miniTurboChargeMs;
-    for (let i = 0; i < 5; i++) {
-      reefRaceSplineSim.applyInput(
-        'r-drift-held-turn',
-        A,
-        body.intent.seq + 1,
-        DT,
-        input(
-          1,
-          Math.sin(staleDesired),
-          Math.cos(staleDesired),
-          ACTION_BIT_DRIFT_HOLD,
-        ),
-      );
-      reefRaceSplineSim.__tickOnceForTest('r-drift-held-turn');
-    }
-    expect(body.miniTurboCarveSign).toBe(1);
-    expect(body.miniTurboChargeMs).toBe(settledCharge);
-  });
-
-  it('plain carving without drift hold never charges or boosts', () => {
-    const { body, events } = boot('r-drift-passive-gone');
-    for (let i = 0; i < 45; i++) {
-      stepRelative('r-drift-passive-gone', body, 1, 0);
-    }
-    expect(body.miniTurboChargeMs).toBe(0);
-    expect(body.miniTurboLevel).toBe(0);
-    expect(body.activeBoosts.has('mini-turbo-boost')).toBe(false);
-    expect(driftEvents(events)).toHaveLength(0);
-  });
-
-  it('fires exact tier-1 and tier-2 magnitudes, durations, and one event on release', () => {
-    const tiers = [
-      {
-        roomId: 'r-drift-tier-1',
-        ticks: Math.ceil(COMMITTED_DRIFT_TIER1_MS / (DT * 1000)),
-        level: 1,
-        mult: COMMITTED_DRIFT_TIER1_MULT,
-        duration: COMMITTED_DRIFT_TIER1_DURATION_MS,
-      },
-      {
-        roomId: 'r-drift-tier-2',
-        ticks: Math.ceil(COMMITTED_DRIFT_TIER2_MS / (DT * 1000)) + 1,
-        level: 2,
-        mult: COMMITTED_DRIFT_TIER2_MULT,
-        duration: COMMITTED_DRIFT_TIER2_DURATION_MS,
-      },
-    ] as const;
-
-    for (const tier of tiers) {
-      const { state, body, events } = boot(tier.roomId);
-      charge(tier.roomId, body, tier.ticks);
-      expect(body.miniTurboLevel).toBe(tier.level);
-
-      stepRelative(tier.roomId, body, 1, 0);
-      const boost = body.activeBoosts.get('mini-turbo-boost');
-      expect(boost?.mult).toBe(tier.mult);
-      expect(boost!.expiresAt - state.simTimeMs).toBeCloseTo(tier.duration, 8);
-      expect(driftEvents(events)).toEqual([
-        expect.objectContaining({
-          type: 'event.mini_turbo_fire',
-          avatarId: A,
-          level: tier.level,
-        }),
-      ]);
-      expect(body.miniTurboChargeMs).toBe(0);
-      expect(body.miniTurboLevel).toBe(0);
-    }
-  });
-
-  it('countersteer or speed-floor cancellation gives no boost and requires release to rearm', () => {
-    const counter = boot('r-drift-counter');
-    charge(
-      'r-drift-counter',
-      counter.body,
-      Math.ceil(COMMITTED_DRIFT_TIER1_MS / (DT * 1000)),
-    );
-    expect(counter.body.miniTurboLevel).toBe(1);
-
-    // Gradual analog countersteer: first stay inside the dead zone, then cross.
-    stepRelative('r-drift-counter', counter.body, -1, ACTION_BIT_DRIFT_HOLD, 0.05);
-    expect(counter.body.miniTurboCarveSign).toBe(1);
-    stepRelative('r-drift-counter', counter.body, -1, ACTION_BIT_DRIFT_HOLD, 0.11);
-    expect(counter.body.miniTurboCarveSign).toBe(0);
-    expect(counter.body.miniTurboChargeMs).toBe(0);
-    expect(counter.body.miniTurboMustRelease).toBe(true);
-    expect(counter.body.activeBoosts.has('mini-turbo-boost')).toBe(false);
-    expect(driftEvents(counter.events)).toHaveLength(0);
-
-    // Held button cannot rearm after cancel.
-    for (let i = 0; i < 3; i++) stepRelative('r-drift-counter', counter.body, 1);
-    expect(counter.body.miniTurboCarveSign).toBe(0);
-    stepRelative('r-drift-counter', counter.body, 1, 0);
-    expect(counter.body.miniTurboMustRelease).toBe(false);
-    stepRelative('r-drift-counter', counter.body, 1);
-    expect(counter.body.miniTurboCarveSign).toBe(1);
-
-    const floor = boot('r-drift-speed-floor');
-    charge(
-      'r-drift-speed-floor',
-      floor.body,
-      Math.ceil(COMMITTED_DRIFT_TIER1_MS / (DT * 1000)),
-    );
-    floor.body.vx = 0;
-    floor.body.vz = COMMITTED_DRIFT_MIN_SPEED - 1;
-    stepRelative('r-drift-speed-floor', floor.body, 1);
-    expect(floor.body.miniTurboCarveSign).toBe(0);
-    expect(floor.body.miniTurboChargeMs).toBe(0);
-    expect(floor.body.activeBoosts.has('mini-turbo-boost')).toBe(false);
-    expect(driftEvents(floor.events)).toHaveLength(0);
-  });
-
-  it('enforces the deterministic post-fire cooldown before charge can restart', () => {
-    const { state, body, events } = boot('r-drift-cooldown');
-    charge(
-      'r-drift-cooldown',
-      body,
-      Math.ceil(COMMITTED_DRIFT_TIER1_MS / (DT * 1000)),
-    );
-    stepRelative('r-drift-cooldown', body, 1, 0);
-    expect(driftEvents(events)).toHaveLength(1);
-    expect(body.miniTurboCooldownUntil - state.simTimeMs).toBeCloseTo(
-      COMMITTED_DRIFT_COOLDOWN_MS,
-      8,
-    );
-
-    while (state.simTimeMs + DT * 1000 < body.miniTurboCooldownUntil - 0.001) {
-      stepRelative('r-drift-cooldown', body, 1);
-      expect(body.miniTurboCarveSign).toBe(0);
-      expect(body.miniTurboChargeMs).toBe(0);
-    }
-
-    // The first tick at/after the deterministic expiry may rearm.
-    stepRelative('r-drift-cooldown', body, 1);
-    expect(state.simTimeMs).toBeGreaterThanOrEqual(body.miniTurboCooldownUntil);
-    expect(body.miniTurboCarveSign).toBe(1);
-    expect(driftEvents(events)).toHaveLength(1);
-  });
-});
 
 describe('ReefRaceSplineSim — race mechanics (v7)', () => {
   beforeEach(() => reefRaceSplineSim.__resetForTest());
@@ -486,17 +255,107 @@ describe('ReefRaceSplineSim — race mechanics (v7)', () => {
 
   // ── Item fixes ──────────────────────────────────────────────────────────────
 
+  it('ignores retired action bit 4 without changing simulation behavior', () => {
+    reefRaceSplineSim.startRoom('r-bit4-control', 'reef-race', [A], {
+      startedAt: 1_000_000,
+      seed: 13,
+    });
+    reefRaceSplineSim.startRoom('r-bit4-retired', 'reef-race', [A], {
+      startedAt: 1_000_000,
+      seed: 13,
+    });
+    const control = reefRaceSplineSim.__getState('r-bit4-control')!.bodies.get(A)!;
+    const retired = reefRaceSplineSim.__getState('r-bit4-retired')!.bodies.get(A)!;
+
+    reefRaceSplineSim.applyInput('r-bit4-control', A, 1, DT, input(1, 0.4, 0.9, 0));
+    reefRaceSplineSim.applyInput(
+      'r-bit4-retired',
+      A,
+      1,
+      DT,
+      input(1, 0.4, 0.9, ACTION_BIT_DRIFT_HOLD),
+    );
+    reefRaceSplineSim.__tickOnceForTest('r-bit4-control');
+    reefRaceSplineSim.__tickOnceForTest('r-bit4-retired');
+
+    expect({
+      x: retired.x,
+      z: retired.z,
+      vx: retired.vx,
+      vz: retired.vz,
+      rot: retired.rot,
+      heightOffset: retired.heightOffset,
+      speedMod: retired.speedMod,
+      boosts: [...retired.activeBoosts],
+    }).toEqual({
+      x: control.x,
+      z: control.z,
+      vx: control.vx,
+      vz: control.vz,
+      rot: control.rot,
+      heightOffset: control.heightOffset,
+      speedMod: control.speedMod,
+      boosts: [...control.activeBoosts],
+    });
+  });
+
+  describe('authoritative inventory wire state', () => {
+    it('includes every body inventory in keyframe entities', () => {
+      const frames: any[] = [];
+      reefRaceSplineSim.setBroadcastFn((_id, frame) => frames.push(frame));
+      reefRaceSplineSim.startRoom('r-inventory-keyframe', 'reef-race', [A]);
+      const state = reefRaceSplineSim.__getState('r-inventory-keyframe')!;
+      state.bodies.get(A)!.inventory[0] = {
+        kind: 'rr-turbo-bubble',
+        charges: 1,
+        cooldownUntil: 0,
+      };
+
+      (reefRaceSplineSim as any).broadcastKeyframe(state);
+
+      const frame = frames.at(-1);
+      expect(frame.type).toBe('snapshot.keyframe');
+      expect(frame.world.entities[0].inventory).toEqual([
+        { kind: 'rr-turbo-bubble', charges: 1, cooldownUntil: 0 },
+        { kind: null, charges: 0, cooldownUntil: 0 },
+      ]);
+    });
+
+    it('emits inventory in entity deltas only when slot kind or charges change', () => {
+      const frames: any[] = [];
+      reefRaceSplineSim.setBroadcastFn((_id, frame) => frames.push(frame));
+      reefRaceSplineSim.startRoom('r-inventory-delta', 'reef-race', [A]);
+      const state = reefRaceSplineSim.__getState('r-inventory-delta')!;
+      const body = state.bodies.get(A)!;
+      (reefRaceSplineSim as any).broadcastKeyframe(state);
+      frames.length = 0;
+
+      body.inventory[0] = { kind: 'rr-turbo-bubble', charges: 1, cooldownUntil: 0 };
+      (reefRaceSplineSim as any).broadcastDelta(state);
+      const changed = frames.at(-1).entities.find((entity: any) => entity.avatarId === A);
+      expect(changed.changed.inventory).toEqual(body.inventory);
+
+      frames.length = 0;
+      body.inventory[0].cooldownUntil = 99_999;
+      (reefRaceSplineSim as any).broadcastDelta(state);
+      const cooldownOnly = frames.at(-1).entities.find((entity: any) => entity.avatarId === A);
+      expect(cooldownOnly?.changed.inventory).toBeUndefined();
+
+      frames.length = 0;
+      body.inventory[0].charges = 0;
+      (reefRaceSplineSim as any).broadcastDelta(state);
+      const chargeChanged = frames.at(-1).entities.find((entity: any) => entity.avatarId === A);
+      expect(chargeChanged.changed.inventory).toEqual(body.inventory);
+    });
+  });
+
   describe('pickup collection reach', () => {
-    function arrangePass(roomId: string, bodyLateralOffset: number) {
-      reefRaceSplineSim.setBroadcastFn(() => {});
+    function arrangePass(roomId: string, centerDistance: number, events: any[] = []) {
+      reefRaceSplineSim.setBroadcastFn((_id, frame) => events.push(frame));
       reefRaceSplineSim.startRoom(roomId, 'reef-race', [A]);
       const state = reefRaceSplineSim.__getState(roomId)!;
       const body = state.bodies.get(A)!;
       const pickup = state.pickups[0]!;
-      const pickupT = 0.5 / 8;
-      const center = state.spline.centerlineAt(pickupT);
-      const tangent = state.spline.tangentAt(pickupT);
-      const normal = state.spline.normalAt(pickupT);
 
       for (const candidate of state.pickups) {
         candidate.active = false;
@@ -504,24 +363,22 @@ describe('ReefRaceSplineSim — race mechanics (v7)', () => {
       }
       pickup.active = true;
       pickup.collectedAt = null;
+      pickup.collectorAvatarId = null;
       pickup.respawnAt = 0;
 
-      // One authority tick carries the kart through the box's longitudinal
-      // plane. The spawned box itself remains 40wu off the centerline.
-      body.x = center.x + normal.x * bodyLateralOffset - tangent.x * 30;
-      body.z = center.z + normal.z * bodyLateralOffset - tangent.z * 30;
-      body.vx = tangent.x * 900;
-      body.vz = tangent.z * 900;
-      body.rot = Math.atan2(tangent.x, tangent.z);
+      body.x = pickup.position.x + centerDistance;
+      body.z = pickup.position.z;
+      body.vx = 0;
+      body.vz = 0;
       body.heightOffset = 0;
       body.airborneTicks = 0;
 
-      reefRaceSplineSim.__tickOnceForTest(roomId);
-      return { body, pickup };
+      (reefRaceSplineSim as any).resolvePickups(state, state.simTimeMs);
+      return { state, body, pickup, events };
     }
 
-    it('collects a box 40wu off a centerline pass and starts its respawn timer', () => {
-      const { body, pickup } = arrangePass('r-pickup-centerline', 0);
+    it('collects at 141wu center distance and starts its respawn timer', () => {
+      const { body, pickup } = arrangePass('r-pickup-inside', 141);
 
       expect(body.inventory[0].kind).not.toBeNull();
       expect(body.inventory[0].charges).toBe(1);
@@ -532,13 +389,36 @@ describe('ReefRaceSplineSim — race mechanics (v7)', () => {
       );
     });
 
-    it('does not collect that box from a 150wu lateral racing line', () => {
-      const { body, pickup } = arrangePass('r-pickup-far', 150);
+    it('does not collect at 143wu center distance', () => {
+      const { body, pickup } = arrangePass('r-pickup-outside', 143);
 
       expect(body.inventory.every((slot) => slot.kind === null)).toBe(true);
       expect(pickup.active).toBe(true);
       expect(pickup.collectedAt).toBeNull();
       expect(pickup.respawnAt).toBe(0);
+    });
+
+    it('announces the collector in the inactive pickup delta', () => {
+      const frames: any[] = [];
+      reefRaceSplineSim.setBroadcastFn((_id, frame) => frames.push(frame));
+      reefRaceSplineSim.startRoom('r-pickup-delta', 'reef-race', [A]);
+      const state = reefRaceSplineSim.__getState('r-pickup-delta')!;
+      (reefRaceSplineSim as any).broadcastKeyframe(state);
+      frames.length = 0;
+
+      const pickup = state.pickups[0]!;
+      const body = state.bodies.get(A)!;
+      body.x = pickup.position.x;
+      body.z = pickup.position.z;
+      (reefRaceSplineSim as any).resolvePickups(state, state.simTimeMs);
+      (reefRaceSplineSim as any).broadcastDelta(state);
+
+      const delta = frames.find((frame) => frame.type === 'snapshot.delta');
+      expect(delta.powerUps).toContainEqual({
+        spawnId: pickup.spawnId,
+        kind: pickup.kind,
+        collectorAvatarId: A,
+      });
     });
   });
 

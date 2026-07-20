@@ -1496,35 +1496,6 @@ function ReefRacePlayerInner({
     );
   }, [lastBoostPadEvent, entity.avatarId]);
 
-  // ─── v2 mechanics: mini-turbo release event subscription ─────────────────────
-  // Same fan-out as ramp-launch: burst for ANY avatar, self additionally gets
-  // screen shake (brief: "release burst + screen shake for self"). Tier 2
-  // (big) gets a stronger shake + a distinct color from tier 1 (small).
-  const lastMiniTurboFireEvent = useActivityStore((s) => s.lastMiniTurboFireEvent);
-  const lastSeenMiniTurboRef = useRef<{ avatarId: string; at: number } | null>(null);
-
-  useEffect(() => {
-    if (!lastMiniTurboFireEvent) return;
-    const prev = lastSeenMiniTurboRef.current;
-    if (prev && prev.avatarId === lastMiniTurboFireEvent.avatarId && prev.at === lastMiniTurboFireEvent.at) return;
-    if (lastMiniTurboFireEvent.avatarId !== entity.avatarId) return;
-
-    lastSeenMiniTurboRef.current = { avatarId: lastMiniTurboFireEvent.avatarId, at: lastMiniTurboFireEvent.at };
-
-    const height = (entity as ReefRaceEntity & { height?: number }).height ?? 0;
-    const isTier2 = lastMiniTurboFireEvent.level === 2;
-    triggerBurst(
-      new THREE.Vector3(entity.x, height, entity.y),
-      isTier2 ? '#ff5e2b' : '#5ce1ff', // tier 2 = hot orange, tier 1 = cyan
-      isTier2 ? 140 : 100,
-    );
-
-    if (isSelf) {
-      triggerScreenShake?.(isTier2 ? 0.16 : 0.08);
-    }
-  }, [lastMiniTurboFireEvent, entity.avatarId, isSelf, triggerScreenShake]);
-  // The burst position is "good enough" at the moment the event lands.
-
   // Self-only item confirmation from the EXISTING inventory snapshots. The
   // wire has no item-used event or activeEffects field, so whole-inventory
   // charge deltas confirm collect/use. This remains correct when slot 1 is

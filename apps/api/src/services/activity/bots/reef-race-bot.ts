@@ -27,11 +27,9 @@ import {
   DRIFT_SPARK_TICK_2,
   DRIFT_SPARK_TICK_3,
   ACTION_BIT_DRIFT,
-  ACTION_BIT_DRIFT_HOLD,
   ACTION_BIT_JUMP,
   ACTION_BIT_LAUNCH,
   ACTION_BIT_POWERUP_0,
-  COMMITTED_DRIFT_MIN_SPEED,
   // Phase 2 — bot heuristics
   APEX_HAIRPIN_CHECKPOINT_INDICES,
   APEX_INSIDE_OFFSET,
@@ -119,7 +117,7 @@ interface ReefBotRoomView extends Omit<BotRoomView, 'bodies'> {
 //
 // The v2 path is fully separate from the legacy ellipse heuristics above —
 // flag-gated inside computeInput so production stays bit-identical until the
-// flag flips. Spline v2 keeps jump on bit 2 and uses bit 4 for committed drift.
+// flag flips. Spline v2 keeps jump on bit 2 and ignores retired bit 4.
 
 /** Lookahead for race-line target in spline t-space (NOT arclength). */
 const V2_LOOKAHEAD_T = 0.03;
@@ -257,9 +255,7 @@ class ReefRaceBot implements BotController {
     }
 
     // ─── v2 spline path — fully separate from ellipse heuristics ─────────
-    // Active when REEF_RACE_USE_SPLINE is true. Bit 2 remains jump; bit 4 is
-    // committed drift. The bot models drift only in canonical technical zones,
-    // where sharper curvature can repay its 8% forward-speed cost.
+    // Active when REEF_RACE_USE_SPLINE is true. Bit 2 remains jump.
     if (REEF_RACE_USE_SPLINE) {
       return this.computeInputSpline(view, self, dt);
     }
@@ -667,7 +663,6 @@ class ReefRaceBot implements BotController {
   //   - Race-line: lookahead at t+0.03 with curvature-based inside offset
   //   - Pickup deviation: only if pickup within budget
   //   - Always emit ACTION_BIT_JUMP on ramp AABB entry (Phase 2 placeholder)
-  //   - Hold committed drift bit 4 through sharp canonical technical zones
   //
   // The bot reads `self.x` (sim X) + `self.y` (sim Z, mapped from body.z by
   // the sim's buildBotRoomView). It builds a Vec2 {x, z} for the spline math.
@@ -806,22 +801,6 @@ class ReefRaceBot implements BotController {
           break;
         }
       }
-    }
-
-    // Deterministic committed-drift heuristic. All spline bots use it because
-    // the current bot contract carries no skill tier. Restricting the hold to
-    // v7's technical zones keeps broad-section lap pace sane; the authoritative
-    // sim still enforces speed, steer direction, release, and cooldown.
-    const inTechnicalZone = REEF_RACE_TECHNICAL_ZONES.some(
-      (zone) => tSelf >= zone.tStart && tSelf <= zone.tEnd,
-    );
-    if (
-      !inGrace &&
-      inTechnicalZone &&
-      Math.abs(delta) > V2_CURVATURE_THRESHOLD_RAD &&
-      speed >= COMMITTED_DRIFT_MIN_SPEED
-    ) {
-      actionBits |= ACTION_BIT_DRIFT_HOLD;
     }
 
     // Power-up usage — same probabilistic policy as v1, gated past grace.

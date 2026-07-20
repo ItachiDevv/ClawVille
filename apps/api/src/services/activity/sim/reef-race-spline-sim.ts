@@ -26,8 +26,7 @@
  *   - body.rot = Math.atan2(tangent.x, tangent.z)  (Three.js Y-rotation, XZ)
  *
  * Spline-v2 wire controls: bit 0 = queued-item use, bit 1 = reserved, bit 2 =
- * jump, bit 3 = launch, bit 4 = committed drift hold. Drift is authoritative:
- * the client only holds/releases bit 4; charge, cancel, and boost live here.
+ * jump, bit 3 = launch, bit 4 = retired and ignored.
  *
  * v2-specific additions to each body vs v1 ellipse:
  *   heightOffset  : number   — metres above track surface (0 = on ground)
@@ -40,7 +39,7 @@
  *   - Apex zones and ribbons (track-geometry-specific to the ellipse)
  *   - Off-track reset (spline corridor wall clamp replaces it)
  *   - Lap counter + checkpoint AABB system (progress replaces)
- *   - Oval apex/ribbon drift variant (spline owns committed drift instead)
+ *   - Oval apex/ribbon drift variant
  *   - Ghost frame capture (TODO Phase 2)
  *   - Streak counter (TODO Phase 2)
  */
@@ -79,7 +78,6 @@ import {
   LAUNCH_STALL_DURATION_MS,
   LAUNCH_STALL_THRUST_CAP,
   ACTION_BIT_JUMP,
-  ACTION_BIT_DRIFT_HOLD,
   REEF_KINEMATIC_TOLERANCE,
   KINEMATIC_BOOST_CAP,
   NEGATIVE_KINETIC_FLOOR,
@@ -117,20 +115,6 @@ import {
   type SplineBoostPad,
   BOOST_PAD_BOOST_MULT,
   BOOST_PAD_DURATION_MS,
-  // v2 committed drift (release reuses mini-turbo wire/presentation plumbing)
-  COMMITTED_DRIFT_MIN_TURN_PER_TICK,
-  COMMITTED_DRIFT_MIN_SPEED,
-  COMMITTED_DRIFT_MIN_STEER_RAD,
-  COMMITTED_DRIFT_ANGULAR_BIAS_RAD,
-  COMMITTED_DRIFT_FORWARD_SPEED_MULT,
-  COMMITTED_DRIFT_TIER1_MS,
-  COMMITTED_DRIFT_TIER2_MS,
-  COMMITTED_DRIFT_MAX_CHARGE_MS,
-  COMMITTED_DRIFT_TIER1_MULT,
-  COMMITTED_DRIFT_TIER2_MULT,
-  COMMITTED_DRIFT_TIER1_DURATION_MS,
-  COMMITTED_DRIFT_TIER2_DURATION_MS,
-  COMMITTED_DRIFT_COOLDOWN_MS,
   // v2 mechanics — item fixes (ink-slick rival slow, whirlpool rival knock)
   INK_SLICK_RADIUS,
   WHIRLPOOL_RADIUS,
@@ -240,7 +224,6 @@ interface SplineBodyIntent {
  *   - vx, vz instead of vx, vy
  *   - heightOffset / vyAxis / airborneTicks — vertical axis (v2 new)
  *   - progress / prevProgress — arclength fraction 0..1 (replaces lap/nextCheckpoint)
- *   - committed drift reuses the miniTurbo snapshot/delivery fields
  */
 interface SplineBody {
   avatarId: string;
@@ -327,22 +310,6 @@ interface SplineBody {
    */
   pendingPowerUpSlots: number[];
 
-  // ── Committed drift (mini-turbo wire/presentation fields) ────────────────
-  /** Accumulated held-drift turning time (ms). */
-  miniTurboChargeMs: number;
-  /** Tier the charge has reached (0 = none, 1, 2). Snapshot HUD reads this. */
-  miniTurboLevel: 0 | 1 | 2;
-  /** Latched local turn direction (+1 / -1 / 0 inactive). */
-  miniTurboCarveSign: number;
-  /** Cancel latch: countersteer/speed-floor cancel must see button-up to rearm. */
-  miniTurboMustRelease: boolean;
-  /**
-   * Sim-time (ms) until which charging is SUPPRESSED after a mini-turbo fires
-   * (anti-farm — blocks the rhythmic flick-carve reseed from producing
-   * continuous boost). 0 = not on cooldown.
-   */
-  miniTurboCooldownUntil: number;
-
   // ── Bot flag ─────────────────────────────────────────────────────────────
   isBot: boolean;
 }
@@ -365,11 +332,8 @@ interface SplineBodySnap {
   finishedAt: number | null;
   dnf: boolean;
   placement: number | null;
-  /** Mini-turbo charge normalized 0..1 (against tier-2 full charge). */
-  miniTurboCharge: number;
-  /** Mini-turbo tier reached so far (0|1|2). */
-  miniTurboLevel: 0 | 1 | 2;
-  /** True while any positive boost is active (pad/mini-turbo/launch/slipstream). */
+  inventory: PowerUpInventorySlot[];
+  /** True while any positive boost is active (pad/launch/slipstream). */
   boosting: boolean;
 }
 
@@ -379,6 +343,7 @@ interface SplinePickup {
   kind: ReefPowerUpKind;
   active: boolean;
   collectedAt: number | null;
+  collectorAvatarId: string | null;
   respawnAt: number;
 }
 
@@ -391,6 +356,7 @@ interface SplineSnapshot {
     x: number;
     z: number;
     active: boolean;
+    collectorAvatarId: string | null;
   }>;
 }
 
@@ -465,6 +431,19 @@ function emptyInventory(): PowerUpInventorySlot[] {
     out.push({ kind: null, charges: 0, cooldownUntil: 0 });
   }
   return out;
+}
+
+function inventoriesMatch(
+  a: readonly PowerUpInventorySlot[],
+  b: readonly PowerUpInventorySlot[],
+): boolean {
+  return (
+    a.length === b.length &&
+    a.every((slot, index) => {
+      const other = b[index];
+      return other !== undefined && slot.kind === other.kind && slot.charges === other.charges;
+    })
+  );
 }
 
 function deriveSeedFromRoomId(roomId: string): number {
@@ -694,11 +673,6 @@ export class ReefRaceSplineSim {
         slipstreamGraceTicksLeft: 0,
         mults,
         pendingPowerUpSlots: [],
-        miniTurboChargeMs: 0,
-        miniTurboLevel: 0,
-        miniTurboCarveSign: 0,
-        miniTurboMustRelease: false,
-        miniTurboCooldownUntil: 0,
         isBot: opts?.isBot?.(avatarId) ?? botControllers.has(avatarId),
       });
     });
@@ -725,6 +699,7 @@ export class ReefRaceSplineSim {
         kind: this.rollPowerUpKind(state),
         active: true,
         collectedAt: null,
+        collectorAvatarId: null,
         respawnAt: 0,
       });
     }
@@ -1141,13 +1116,7 @@ export class ReefRaceSplineSim {
     }
     // Bit 1 is reserved and intentionally ignored.
 
-    // 2b. Committed drift button state. This transition runs before the speed
-    // stack so a valid falling-edge release can contribute its timed boost on
-    // this same authoritative tick. Countersteer/speed-floor cancels never fire.
     const dir = intent.dir; // Vec2 {x,z} or null
-    const driftHeld = (actionBits & ACTION_BIT_DRIFT_HOLD) !== 0;
-    this.updateCommittedDriftInputState(state, body, dir, driftHeld, now);
-    const driftActive = body.miniTurboCarveSign !== 0;
 
     // 3. Speed modifier (same four-stage model as ellipse sim).
     const slicked      = body.activeEffects.has('rr-ink-slick');
@@ -1170,15 +1139,10 @@ export class ReefRaceSplineSim {
       const slipAdd = body.activeBoosts.has('slipstream-boost')
         ? SLIPSTREAM_BOOST_MULT
         : 0;
-      // v2 mechanics — boost pad + committed-drift release. Both are timed
-      // speedMod additives that DECAY. They fold into the SAME positive stack,
-      // bounded by KINEMATIC_BOOST_CAP, so pad+mini-turbo+launch+slip can never
-      // exceed the 1.85× ceiling (adversary chaining is capped here).
+      // v2 mechanics — boost-pad speed is a timed additive that decays through
+      // the same bounded positive stack as launch, slipstream, and item boosts.
       const padAdd = body.activeBoosts.has('pad-boost')
         ? (body.activeBoosts.get('pad-boost')!.mult ?? 0)
-        : 0;
-      const miniTurboAdd = body.activeBoosts.has('mini-turbo-boost')
-        ? (body.activeBoosts.get('mini-turbo-boost')!.mult ?? 0)
         : 0;
       // rr-turbo-bubble is ADDITIVE into the positive stack (Codex finding 4b).
       // The old `Math.max(speedMod, 1+pickupAdd)` DISCARDED any active negative
@@ -1189,7 +1153,7 @@ export class ReefRaceSplineSim {
       // the total ≤ 1.85×. v2 has no drift-boost or ribbon-boost (oval-only).
       const pickupBoostAdd = powerBoosted ? 0.35 : 0; // rr-turbo-bubble
       const positiveKineticStack = Math.min(
-        launchAdd + slipAdd + padAdd + miniTurboAdd + pickupBoostAdd,
+        launchAdd + slipAdd + padAdd + pickupBoostAdd,
         KINEMATIC_BOOST_CAP,
       );
 
@@ -1210,20 +1174,13 @@ export class ReefRaceSplineSim {
       }
     }
 
-    // Committed drift trades about 8% forward target speed for the angular
-    // bias/risk window. Multiplying the target (rather than velocity every tick)
-    // avoids exponential braking and lets the existing forward drag settle it.
-    const surfSpeedMod = driftActive
-      ? speedMod * COMMITTED_DRIFT_FORWARD_SPEED_MULT
-      : speedMod;
-
     // Presentation parity: persist the exact effective multiplier consumed by
     // this authoritative surf step so snapshots can drive self prediction.
-    body.speedMod = surfSpeedMod;
+    body.speedMod = speedMod;
 
     // 4. Jump-trigger (heading + velocity integrate happen below via the
     //    shared surf-carving step).
-    // v2: bit 2 is jump; committed drift uses independent bit 4.
+    // v2: bit 2 is jump. Retired bit 4 is intentionally ignored.
     const jumpBit = (actionBits & ACTION_BIT_JUMP) !== 0;
     if (jumpBit && body.airborneTicks === 0 && body.heightOffset === 0) {
       body.vyAxis += REEF_JUMP_IMPULSE_MANUAL;
@@ -1251,35 +1208,15 @@ export class ReefRaceSplineSim {
       airborneSteerMult: REEF_AIRBORNE_STEER_MULT,
       forwardDrag: REEF_FORWARD_DRAG,
       lateralGrip: REEF_LATERAL_GRIP,
-      speedMod: surfSpeedMod,
+      speedMod,
       accelMult: body.mults.accelMult,
     };
 
     const prevX = body.x;
     const prevZ = body.z;
-    const preRot = body.rot;
-
-    // Apply the legacy drift tune as an outward slide angle of UP TO 15°.
-    // Bias is capped to half the raw steer error, preserving at least half of
-    // the player's same-sign steering and never overshooting/reversing it. It
-    // is never added to body.rot, so holding drift cannot accumulate spin.
-    let surfDir = dir;
-    if (driftActive && dir && (dir.x !== 0 || dir.z !== 0)) {
-      const desiredHeading = Math.atan2(dir.x, dir.z);
-      const rawDelta = desiredHeading - body.rot;
-      const rawSteerError = Math.atan2(Math.sin(rawDelta), Math.cos(rawDelta));
-      const biasMagnitude = Math.min(
-        COMMITTED_DRIFT_ANGULAR_BIAS_RAD,
-        Math.abs(rawSteerError) * 0.5,
-      );
-      const biasedHeading =
-        desiredHeading - body.miniTurboCarveSign * biasMagnitude;
-      surfDir = { x: Math.sin(biasedHeading), z: Math.cos(biasedHeading) };
-    }
-
     const next = integrateSurfStep(
       { x: body.x, z: body.z, vx: body.vx, vz: body.vz, rot: body.rot },
-      { dir: surfDir ?? null, thrust: effectiveThrust, airborne },
+      { dir, thrust: effectiveThrust, airborne },
       surfParams,
       dt,
     );
@@ -1330,8 +1267,7 @@ export class ReefRaceSplineSim {
     const isPositiveBoostActive =
       body.activeBoosts.has('launch-boost') ||
       body.activeBoosts.has('slipstream-boost') ||
-      body.activeBoosts.has('pad-boost') ||
-      body.activeBoosts.has('mini-turbo-boost');
+      body.activeBoosts.has('pad-boost');
     if (isPositiveBoostActive) {
       const speed = Math.hypot(body.vx, body.vz);
       const hardCap = REEF_MAX_SPEED * 1.85;
@@ -1354,149 +1290,6 @@ export class ReefRaceSplineSim {
       }
     }
 
-    // 10. Committed drift charge reads the ACTUAL heading delta after the pure
-    // integrate. Plain carving can never reach this path with an active latch.
-    this.accrueCommittedDriftCharge(body, preRot, dt);
-  }
-
-  // ─── Committed drift ──────────────────────────────────────────────────────
-
-  /**
-   * Latch drift from held bit 4 + speed + local steer. Charge is measured from
-   * actual same-direction heading change after integration. Only button release
-   * may fire; countersteer/speed-floor cancellation explicitly clears charge.
-   *
-   * Anti-cheat: the fire is a TIMED speedMod additive folded into the same
-   * positive kinetic stack (KINEMATIC_BOOST_CAP) + the 1.85× hard cap, so it
-   * cannot be chained into infinite speed. It never touches integrateSurfStep,
-   * never compounds a per-tick multiplier, and never mutates velocity directly.
-   */
-  private updateCommittedDriftInputState(
-    state: SplineRoomState,
-    body: SplineBody,
-    dir: Vec2 | null,
-    driftHeld: boolean,
-    now: number,
-  ): void {
-    const activeSign = body.miniTurboCarveSign;
-    const speed = Math.hypot(body.vx, body.vz);
-    const airborne = body.airborneTicks > 0 || body.heightOffset > 0;
-
-    // Button-up clears a prior cancel latch. If a committed drift is active,
-    // this is its ONLY boost-producing transition (a real falling edge).
-    if (!driftHeld) {
-      body.miniTurboMustRelease = false;
-      if (activeSign !== 0) this.releaseMiniTurbo(state, body, now);
-      this.clearCommittedDrift(body, false);
-      return;
-    }
-
-    // Countersteer/speed-floor cancels require a release before rearming, so a
-    // held button cannot immediately seed a fresh drift on the next tick.
-    if (body.miniTurboMustRelease) return;
-
-    let desiredHeading: number | null = null;
-    let steerError = 0;
-    if (dir && (dir.x !== 0 || dir.z !== 0)) {
-      desiredHeading = Math.atan2(dir.x, dir.z);
-      const delta = desiredHeading - body.rot;
-      steerError = Math.atan2(Math.sin(delta), Math.cos(delta));
-    }
-    const steerSign =
-      Math.abs(steerError) >= COMMITTED_DRIFT_MIN_STEER_RAD
-        ? steerError > 0 ? 1 : -1
-        : 0;
-
-    if (activeSign !== 0) {
-      // The outward bias never crosses the raw desired heading, so local steer
-      // sign remains stable for unchanged/stale input. This direct check also
-      // catches gradual analog/agent countersteer once it crosses the dead zone.
-      const countersteering = steerSign !== 0 && steerSign !== activeSign;
-      if (countersteering || speed < COMMITTED_DRIFT_MIN_SPEED || airborne) {
-        this.clearCommittedDrift(body, true);
-      }
-      return;
-    }
-
-    // Initiation is deliberate: held bit + speed + active local steering.
-    // Cooldown only follows a real tiered boost (sub-tier release leaves 0).
-    if (
-      now >= body.miniTurboCooldownUntil &&
-      !airborne &&
-      speed >= COMMITTED_DRIFT_MIN_SPEED &&
-      steerSign !== 0
-    ) {
-      body.miniTurboCarveSign = steerSign;
-    }
-  }
-
-  private accrueCommittedDriftCharge(
-    body: SplineBody,
-    preRot: number,
-    dt: number,
-  ): void {
-    const activeSign = body.miniTurboCarveSign;
-    if (activeSign === 0) return;
-
-    const delta = body.rot - preRot;
-    const actualTurn = Math.atan2(Math.sin(delta), Math.cos(delta));
-    const actualSign = actualTurn > 0 ? 1 : actualTurn < 0 ? -1 : 0;
-    if (
-      actualSign !== activeSign ||
-      Math.abs(actualTurn) < COMMITTED_DRIFT_MIN_TURN_PER_TICK
-    ) {
-      return;
-    }
-
-    body.miniTurboChargeMs = Math.min(
-      body.miniTurboChargeMs + dt * 1000,
-      COMMITTED_DRIFT_MAX_CHARGE_MS,
-    );
-    body.miniTurboLevel =
-      body.miniTurboChargeMs >= COMMITTED_DRIFT_TIER2_MS
-        ? 2
-        : body.miniTurboChargeMs >= COMMITTED_DRIFT_TIER1_MS
-          ? 1
-          : 0;
-  }
-
-  private clearCommittedDrift(body: SplineBody, mustRelease: boolean): void {
-    body.miniTurboChargeMs = 0;
-    body.miniTurboLevel = 0;
-    body.miniTurboCarveSign = 0;
-    body.miniTurboMustRelease = mustRelease;
-  }
-
-  /**
-   * Fire the mini-turbo if the current charge reached at least tier 1. Sets a
-   * timed `mini-turbo-boost` speedMod and broadcasts `event.mini_turbo_fire`.
-   * No-op when the charge never reached tier 1 (level 0).
-   */
-  private releaseMiniTurbo(
-    state: SplineRoomState,
-    body: SplineBody,
-    now: number,
-  ): void {
-    const lvl = body.miniTurboLevel;
-    if (lvl <= 0) return;
-    const mult =
-      lvl === 2 ? COMMITTED_DRIFT_TIER2_MULT : COMMITTED_DRIFT_TIER1_MULT;
-    const dur =
-      lvl === 2
-        ? COMMITTED_DRIFT_TIER2_DURATION_MS
-        : COMMITTED_DRIFT_TIER1_DURATION_MS;
-    // Overwrite (not stack): a fresh release replaces any lingering one so
-    // duration/mult never compound beyond a single tier's values.
-    body.activeBoosts.set('mini-turbo-boost', { expiresAt: now + dur, mult });
-    // Anti-farm cooldown (sim-time): suppress recharging briefly so rhythmic
-    // flick-carving can't hold a continuous boost.
-    body.miniTurboCooldownUntil = now + COMMITTED_DRIFT_COOLDOWN_MS;
-    this.broadcastFn(state.roomId, {
-      type: 'event.mini_turbo_fire',
-      avatarId: body.avatarId,
-      level: lvl as 1 | 2,
-    });
-    // Level is reset by the caller after this returns.
   }
 
   // ─── Wall clamp ────────────────────────────────────────────────────────────
@@ -2018,8 +1811,10 @@ export class ReefRaceSplineSim {
               charges: 1,
               cooldownUntil: 0,
             };
+            pk.kind = finalKind;
             pk.active = false;
             pk.collectedAt = now;
+            pk.collectorAvatarId = body.avatarId;
             pk.respawnAt = now + REEF_POWERUP_RESPAWN_MS;
             this.broadcastFn(state.roomId, {
               type: 'event.power_up_collected',
@@ -2041,6 +1836,7 @@ export class ReefRaceSplineSim {
         pk.spawnId = `${state.roomId.slice(0, 8)}-pk-${state.tick}-${lcgNext(state).toString(36)}`;
         pk.active = true;
         pk.collectedAt = null;
+        pk.collectorAvatarId = null;
         pk.respawnAt = 0;
         this.broadcastFn(state.roomId, {
           type: 'event.power_up_spawned',
@@ -2534,16 +2330,11 @@ export class ReefRaceSplineSim {
         finishedAt: b.finishedAt,
         dnf: b.dnf,
         placement: state.lastPlacementMap.get(b.avatarId) ?? null,
-        miniTurboCharge: quant(
-          Math.min(1, b.miniTurboChargeMs / COMMITTED_DRIFT_TIER2_MS),
-          100,
-        ),
-        miniTurboLevel: b.miniTurboLevel,
+        inventory: b.inventory.map((slot) => ({ ...slot })),
         boosting:
           b.activeBoosts.has('launch-boost') ||
           b.activeBoosts.has('slipstream-boost') ||
-          b.activeBoosts.has('pad-boost') ||
-          b.activeBoosts.has('mini-turbo-boost'),
+          b.activeBoosts.has('pad-boost'),
       })),
       pickups: state.pickups.map((pk) => ({
         spawnId: pk.spawnId,
@@ -2551,6 +2342,7 @@ export class ReefRaceSplineSim {
         x: quant(pk.position.x, POS_QUANT),
         z: quant(pk.position.z, POS_QUANT),
         active: pk.active,
+        collectorAvatarId: pk.collectorAvatarId,
       })),
     };
   }
@@ -2578,9 +2370,8 @@ export class ReefRaceSplineSim {
       // delta). The delta path already carries them; this keeps keyframes whole.
       height: b.height !== 0 ? b.height : undefined,
       speedMod: b.speedMod,
-      miniTurboCharge: b.miniTurboCharge,
-      miniTurboLevel: b.miniTurboLevel,
       boosting: b.boosting,
+      inventory: b.inventory.map((slot) => ({ ...slot })),
     };
   }
 
@@ -2640,15 +2431,18 @@ export class ReefRaceSplineSim {
           p.finishedAt !== b.finishedAt ||
           p.dnf !== b.dnf ||
           p.placement !== b.placement ||
-          p.miniTurboCharge !== b.miniTurboCharge ||
-          p.miniTurboLevel !== b.miniTurboLevel ||
+          !inventoriesMatch(p.inventory, b.inventory) ||
           p.boosting !== b.boosting
         );
       })
-      .map((b) => ({
-        avatarId: b.avatarId,
-        seq: snap.tick,
-        changed: {
+      .map((b) => {
+        const previousBody = prev?.bodies.find((p) => p.avatarId === b.avatarId);
+        const inventoryChanged =
+          previousBody === undefined || !inventoriesMatch(previousBody.inventory, b.inventory);
+        return {
+          avatarId: b.avatarId,
+          seq: snap.tick,
+          changed: {
           x: b.x,
           y: b.z,      // protocol y = scene Z
           vx: b.vx,
@@ -2672,12 +2466,14 @@ export class ReefRaceSplineSim {
               ? ('finished' as const)
               : ('racing' as const),
           placement: b.placement,
-          // v2 mechanics — mini-turbo meter + boost FX flag for the HUD/render.
-          miniTurboCharge: b.miniTurboCharge,
-          miniTurboLevel: b.miniTurboLevel,
+          // Positive boost flag for the render trail.
           boosting: b.boosting,
-        },
-      }));
+          ...(inventoryChanged
+            ? { inventory: b.inventory.map((slot) => ({ ...slot })) }
+            : {}),
+          },
+        };
+      });
 
     const pickups = snap.pickups
       .filter((p) => {
@@ -2685,11 +2481,19 @@ export class ReefRaceSplineSim {
         const q = prev.pickups.find((pp) => pp.spawnId === p.spawnId);
         return !q || q.active !== p.active;
       })
-      .map((p) => ({
-        spawnId: p.spawnId,
-        kind: p.kind,
-        position: { x: p.x, y: p.z },
-      }));
+      .map((p) =>
+        p.active
+          ? {
+              spawnId: p.spawnId,
+              kind: p.kind,
+              position: { x: p.x, y: p.z },
+            }
+          : {
+              spawnId: p.spawnId,
+              kind: p.kind,
+              collectorAvatarId: p.collectorAvatarId ?? undefined,
+            },
+      );
 
     state.lastSnapshot = snap;
     this.broadcastFn(state.roomId, {

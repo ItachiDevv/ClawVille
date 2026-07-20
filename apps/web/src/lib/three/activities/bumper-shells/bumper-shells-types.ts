@@ -90,10 +90,6 @@ export interface BumperShellEntity {
   speedMod?: number;
   /** Reef Race v2 — true while any positive boost source is active. */
   boosting?: boolean;
-  /** Reef Race v2 — surf-carve mini-turbo charge, normalized 0..1. */
-  miniTurboCharge?: number;
-  /** Reef Race v2 — mini-turbo tier reached (0 = none, 1, 2). */
-  miniTurboLevel?: 0 | 1 | 2;
 }
 
 // ─── Pickup state ─────────────────────────────────────────────────────────────
