@@ -31,6 +31,7 @@ import { z } from 'zod';
 import type { AgentSubstrateClient } from '../agent-substrate-client';
 import { npcSimulation } from '../npc-simulation';
 import { sha256Hex } from '../session-digest';
+import { isRowRestorableFromFacts } from '../agent-session-config';
 import {
   gatewayCredentialZodFields,
   planReconnectSession,
@@ -134,19 +135,116 @@ describe('(2) dormant-inert fallback (real-gateway type, no credentials)', () =>
     expect(plan.config.autonomyMode).toBe('self-managed');
   });
 
-  it('gateway-less OpenClaw is dormant when its host-it-for-me gate is off', () => {
+  it('native Milady/Hermes rows ignore and heal stale caller gateways', () => {
+    for (const identityType of ['milady', 'hermes']) {
+      const staleGateway = 'https://stale-native.example/v1';
+      expect(
+        isRowRestorableFromFacts(
+          identityType,
+          staleGateway,
+          undefined,
+          'openai-compat',
+        ),
+      ).toBe(true);
+
+      const plan = planReconnectSession({
+        bot: botRow({ identityType, gatewayUrl: staleGateway }),
+        provenUserId: 'user-1',
+        sessionId: NEW_SID,
+      });
+      if (!plan.mint) throw new Error(`expected mint for ${identityType}`);
+      expect(plan.dormant).toBe(false);
+      expect(plan.config.protocol).toBeDefined();
+      expect(['nanoclaw', 'hermes-local']).toContain(plan.config.protocol!);
+      expect(plan.config.gatewayUrl).toBe('http://localhost:0');
+      expect(plan.config.authToken).toBe('');
+      expect(plan.persist.gatewayUrl).toBeNull();
+    }
+  });
+
+  it('native Milady/Hermes ignore caller gateway credentials and do not persist them', () => {
+    for (const identityType of ['milady', 'hermes']) {
+      const plan = planReconnectSession({
+        bot: botRow({ identityType, gatewayUrl: 'https://stale-native.example/v1' }),
+        provenUserId: 'user-1',
+        sessionId: NEW_SID,
+        credentials: {
+          gatewayUrl: 'https://ignored-native.example/v1',
+          authToken: 'ignored-native-secret',
+          protocol: 'anthropic',
+        },
+      });
+      if (!plan.mint) throw new Error(`expected mint for ${identityType}`);
+      expect(plan.dormant).toBe(false);
+      expect(plan.config.protocol).toBeDefined();
+      expect(['nanoclaw', 'hermes-local']).toContain(plan.config.protocol!);
+      expect(plan.config.gatewayUrl).toBe('http://localhost:0');
+      expect(plan.config.authToken).toBe('');
+      expect(plan.persist.gatewayUrl).toBeNull();
+      expect(plan.persist.protocol).toBeUndefined();
+      expect(JSON.stringify(plan)).not.toContain('ignored-native');
+    }
+  });
+
+  it('stored explicit pull ignores stale gateway facts and heals them', () => {
+    for (const identityType of ['openclaw', 'custom']) {
+      const staleGateway = 'https://stale-pull.example/v1';
+      expect(
+        isRowRestorableFromFacts(identityType, staleGateway, undefined, 'nanoclaw'),
+      ).toBe(true);
+
+      const plan = planReconnectSession({
+        bot: botRow({ identityType, gatewayUrl: staleGateway, protocol: 'nanoclaw' }),
+        provenUserId: 'user-1',
+        sessionId: NEW_SID,
+      });
+      if (!plan.mint) throw new Error(`expected mint for ${identityType}`);
+      expect(plan.dormant).toBe(false);
+      expect(plan.config.protocol).toBe('nanoclaw');
+      expect(plan.config.gatewayUrl).toBe('http://localhost:0');
+      expect(plan.config.authToken).toBe('');
+      expect(plan.persist.gatewayUrl).toBeNull();
+    }
+  });
+
+  it('requested explicit pull ignores supplied gateway credentials and persists only pull facts', () => {
+    for (const identityType of ['openclaw', 'custom']) {
+      const plan = planReconnectSession({
+        bot: botRow({ identityType, gatewayUrl: 'https://stale-pull.example/v1' }),
+        provenUserId: 'user-1',
+        sessionId: NEW_SID,
+        credentials: {
+          gatewayUrl: 'https://ignored-pull.example/v1',
+          authToken: 'ignored-pull-secret',
+          protocol: 'nanoclaw',
+        },
+      });
+      if (!plan.mint) throw new Error(`expected mint for ${identityType}`);
+      expect(plan.dormant).toBe(false);
+      expect(plan.config.protocol).toBe('nanoclaw');
+      expect(plan.config.gatewayUrl).toBe('http://localhost:0');
+      expect(plan.config.authToken).toBe('');
+      expect(plan.persist.gatewayUrl).toBeNull();
+      expect(plan.persist.protocol).toBe('nanoclaw');
+      expect(JSON.stringify(plan)).not.toContain('ignored-pull');
+    }
+  });
+
+  it('gateway-less OpenClaw is a non-dormant safe pull session when its local gate is off', () => {
     const plan = planReconnectSession({
       bot: botRow({ identityType: 'openclaw', gatewayUrl: null, protocol: 'nanoclaw' }),
       provenUserId: 'user-1',
       sessionId: NEW_SID,
     });
     if (!plan.mint) throw new Error('expected mint');
-    expect(plan.dormant).toBe(true);
-    // The local-host gate is off in tests. Public connect rejects this shape;
-    // a legacy row reconnects as dormant-inert rather than being mislabeled as
-    // a hosted cognition runtime.
+    expect(plan.dormant).toBe(false);
+    // Protocol 25 accepts this shape and falls back to self-managed pull. The
+    // dummy URL is never contacted by the fail-soft nanoclaw client.
     expect(plan.config.protocol).toBe('nanoclaw');
+    expect(plan.config.gatewayUrl).toBe('http://localhost:0');
     expect(plan.config.authToken).toBe('');
+    expect(plan.persist.gatewayUrl).toBeUndefined();
+    expect(plan.persist.protocol).toBeUndefined();
   });
 });
 
@@ -191,7 +289,7 @@ describe('(3) full outbound rebuild when credentials are re-supplied', () => {
     expect(JSON.stringify(plan.persist)).not.toContain('rearmed-token');
   });
 
-  it('authToken alone against a dummy/absent row gateway stays DORMANT (never a broken localhost:0 client)', () => {
+  it('authToken alone with no real row gateway becomes safe pull without persisting the credential', () => {
     for (const gatewayUrl of [null, 'http://localhost:0']) {
       const plan = planReconnectSession({
         bot: botRow({ gatewayUrl }),
@@ -200,9 +298,13 @@ describe('(3) full outbound rebuild when credentials are re-supplied', () => {
         credentials: { authToken: 'token-without-a-target' },
       });
       if (!plan.mint) throw new Error('expected mint');
-      expect(plan.dormant).toBe(true);
+      expect(plan.dormant).toBe(false);
       expect(plan.config.protocol).toBe('nanoclaw');
+      expect(plan.config.gatewayUrl).toBe('http://localhost:0');
       expect(plan.config.authToken).toBe('');
+      expect(plan.persist.gatewayUrl).toBeUndefined();
+      expect(plan.persist.protocol).toBeUndefined();
+      expect(JSON.stringify(plan.persist)).not.toContain('token-without-a-target');
     }
   });
 });
