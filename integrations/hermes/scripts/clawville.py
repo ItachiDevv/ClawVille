@@ -32,6 +32,7 @@ import http.cookiejar
 import json
 import os
 import os.path
+import secrets
 import sys
 import time
 import urllib.error
@@ -46,6 +47,7 @@ STATE_DIR = os.path.join(HERMES_HOME, "clawville")
 STATE_FILE = os.path.join(STATE_DIR, "state.json")
 COOKIE_FILE = os.path.join(STATE_DIR, "cookies.txt")
 DAEMON_LOG = os.path.join(STATE_DIR, "daemon.log")
+INSTALL_AGENT_ID_FILE = os.path.join(STATE_DIR, "install-agent-id")
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -81,6 +83,58 @@ def save_state(state: dict) -> None:
         os.chmod(STATE_FILE, 0o600)
     except Exception:
         pass
+
+
+def _stable_hermes_agent_id() -> str:
+    """Return one stable public agent id for this Hermes installation."""
+    state_agent_id = load_state().get("agentId")
+    if state_agent_id:
+        return str(state_agent_id)
+    configured = os.environ.get("CLAWVILLE_AGENT_ID", "").strip()
+    if configured:
+        if len(configured) > 200:
+            die("agent_id_too_long", "CLAWVILLE_AGENT_ID must be at most 200 characters.")
+        return configured
+
+    _ensure_state_dir()
+    try:
+        with open(INSTALL_AGENT_ID_FILE, "r", encoding="utf-8") as f:
+            persisted = f.read().strip()
+        if persisted and len(persisted) <= 200:
+            return persisted
+    except FileNotFoundError:
+        pass
+
+    generated = f"hermes-{secrets.token_hex(16)}"
+    try:
+        fd = os.open(
+            INSTALL_AGENT_ID_FILE,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+    except FileExistsError:
+        # Another process won first-install creation. Give its exclusive writer
+        # a moment to flush, then consume the one canonical install id.
+        for _ in range(5):
+            try:
+                with open(INSTALL_AGENT_ID_FILE, "r", encoding="utf-8") as f:
+                    persisted = f.read().strip()
+                if persisted and len(persisted) <= 200:
+                    return persisted
+            except FileNotFoundError:
+                pass
+            time.sleep(0.01)
+        die("install_agent_id_invalid", "Hermes install agent-id file is empty or invalid.")
+
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(generated + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    try:
+        os.chmod(INSTALL_AGENT_ID_FILE, 0o600)
+    except Exception:
+        pass
+    return generated
 
 
 def _cookie_jar() -> http.cookiejar.MozillaCookieJar:
@@ -266,7 +320,11 @@ def cmd_pair(args):
             "/api/agent/connect",
             body={
                 "connectionToken": connect_token,
-                "identity": {"type": "nanoclaw", "name": "hermes"},
+                "agentId": _stable_hermes_agent_id(),
+                "identityType": "hermes",
+                # Internal self-managed pull wire; not an identity type.
+                "protocol": "nanoclaw",
+                "name": "hermes",
             },
         )
         if conn["status"] != 200:
@@ -344,7 +402,11 @@ def cmd_pair(args):
     conn = _request_json("POST", "/api/agent/connect",
                         body={
                             "connectionToken": tok["body"]["token"],
-                            "identity": {"type": "nanoclaw", "name": "hermes"},
+                            "agentId": _stable_hermes_agent_id(),
+                            "identityType": "hermes",
+                            # Internal self-managed pull wire; not an identity type.
+                            "protocol": "nanoclaw",
+                            "name": "hermes",
                         })
     if conn["status"] != 200:
         die("connect_failed", json.dumps(conn["body"]))

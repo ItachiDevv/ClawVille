@@ -30,7 +30,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { useVisibleFrameloop } from '@/lib/use-visible-frameloop';
-import { useVRMInstance, disposeVRMInstance } from '@/lib/three/vrm-loader';
+import { useVRMInstance, disposeVRMInstance, retainVRMInstance } from '@/lib/three/vrm-loader';
 import { VRMCharacterAnimator } from '@/lib/three/vrm-character-animator';
 import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
 
@@ -324,6 +324,7 @@ function VignetteAvatarInner({ def }: VignetteAvatarInnerProps) {
   // Dispose on unmount — each avatar disposes its own instance
   const { path, instanceId } = def;
   useEffect(() => {
+    retainVRMInstance(path, instanceId); // cancel deferred dispose on StrictMode re-setup
     return () => disposeVRMInstance(path, instanceId);
   }, [path, instanceId]);
 

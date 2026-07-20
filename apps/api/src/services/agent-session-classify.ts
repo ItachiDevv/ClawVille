@@ -75,17 +75,17 @@ export type AgentSessionClassification =
  *   1. the row's `agentId` equals the user's avatar-agent's `platform_agents.id`
  *      (`avatars.platformAgentId` — a UUID WE generate);
  *   2. the row's `identityType` is exactly what the §B.2 mint writes
- *      (`HOSTED_AVATAR_IDENTITY_TYPE` = 'nanoclaw'); AND
+ *      (`HOSTED_AVATAR_IDENTITY_TYPE` = 'milady'); AND
  *   3. the avatar's harness is ClawVille-hosted (HOSTED_HARNESSES).
  *
  * Conjunct 2 was added after a Codex adversarial pass (2026-07-08): `agentId` is
  * caller-supplied at `POST /api/agent/connect` and `identityType` is a public enum
- * that INCLUDES 'nanoclaw', so a HARNESS-only + agentId-match discriminator could
+ * that includes `milady`, so a HARNESS-only + agentId-match discriminator could
  * mislabel a same-user BYO agent (one that deliberately connected with
- * `agentId == its owner's platformAgentId` and a non-nanoclaw identity) as
- * 'hosted' AND mask its dead/expired state. Requiring identityType 'nanoclaw'
- * closes the realistic gap: a BYO agent connecting as openclaw/hermes/milady/
- * custom/hatcher no longer matches. (Cross-user is already impossible — the
+ * `agentId == its owner's platformAgentId` and a non-Milady identity) as
+ * 'hosted' AND mask its dead/expired state. Requiring the exact hosted identity
+ * closes the realistic gap: a BYO agent connecting as openclaw/hermes/custom/
+ * hatcher no longer matches. (Cross-user is already impossible — the
  * `/me/agent-session` bot query is keyed by the AUTHED user's own id; the sole
  * residual is a user maximally self-spoofing all three conjuncts of their OWN
  * account label, which carries zero security/economy impact and points at their
@@ -136,6 +136,35 @@ export function classifyAgentSessionHot(input: {
     const idle = now - lastSeenMs > externalActiveWindowMs;
 
     if (expired) {
+      // EXPIRED external row + HOSTED avatar ⇒ report 'hosted', not
+      // 'external-expired' (2026-07-14, founder report). A hosted signup
+      // avatar's cognition runtime is ALWAYS alive server-side; a long-dead
+      // BYO/external credential (e.g. a prewarm/test connect from days ago)
+      // is not the account's durable truth, and letting it shadow the hosted
+      // classification made the UI demand "Connect Your Agent" from accounts
+      // that are connected by definition. A LIVE or merely-idle external
+      // session still wins below — the user deliberately connected it and
+      // its state is actionable. Genuinely-external accounts (non-hosted
+      // harness / no platformAgentId) keep the external-expired label.
+      if (
+        avatar?.platformAgentId &&
+        HOSTED_HARNESSES.has(avatar.harness ?? '')
+      ) {
+        return {
+          kind: 'response',
+          body: hostedAgentSessionResponse(avatar.platformAgentId, avatar.harness ?? null),
+        };
+      }
+      // Same principle for a NOT-YET-PROVISIONED avatar (platformAgentId null
+      // — agent rows don't exist, e.g. a legacy pre-P2 account): the dead
+      // credential must not shadow the provisioning-pending classification
+      // either. Fall through to the route's cold path (lazy is_guest read →
+      // 'provisioning-pending' for an authed non-guest, 'none' otherwise).
+      // Avatars WITH agent rows but a non-hosted harness keep the
+      // external-expired label below — the reconnect hint is their truth.
+      if (avatar && !avatar.platformAgentId) {
+        return { kind: 'cold-fallthrough' };
+      }
       return {
         kind: 'response',
         body: {
@@ -178,18 +207,29 @@ export function classifyAgentSessionHot(input: {
   }
 
   // No external bot — dismissal flag suppresses the banner (server runtime is
-  // always alive; purely a UI preference).
+  // always alive; purely a UI preference). EXCEPTION (Codex BLOCKING,
+  // 2026-07-15): a presentation preference must never suppress the account-
+  // DATA migration — an UNPROVISIONED hosted-harness avatar (legacy
+  // `platformAgentId` null) falls through to the cold path so the route's
+  // lazy backfill can heal it; the route re-honors the dismissal preference
+  // in its response after a successful backfill, and once the row is linked
+  // this branch returns 'dismissed' exactly as before.
   const flags = avatar?.flags ?? {};
   if (flags.agentBannerDismissed === true) {
-    return {
-      kind: 'response',
-      body: {
-        connected: false,
-        reason: 'dismissed',
-        mode: 'dismissed',
-        harness: avatar?.harness ?? null,
-      },
-    };
+    const unprovisionedHosted =
+      !!avatar && !avatar.platformAgentId && HOSTED_HARNESSES.has(avatar.harness ?? '');
+    if (!unprovisionedHosted) {
+      return {
+        kind: 'response',
+        body: {
+          connected: false,
+          reason: 'dismissed',
+          mode: 'dismissed',
+          harness: avatar?.harness ?? null,
+        },
+      };
+    }
+    return { kind: 'cold-fallthrough' };
   }
 
   // No-bot hosted-harness carve-out (pre-mint hosted case; fix 30352e60).

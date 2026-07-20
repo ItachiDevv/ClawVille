@@ -35,6 +35,7 @@ mock.module('../../activity-replay-log', () => ({
 const { reefRaceSplineSim } = await import('../reef-race-spline-sim');
 const {
   REEF_TICK_HZ,
+  REEF_RACE_LAPS,
   ACTION_BIT_DRIFT,
   REEF_GRAVITY,
   REEF_JUMP_IMPULSE_MANUAL,
@@ -43,7 +44,11 @@ const {
   REEF_TURN_RATE,
   REEF_KINEMATIC_TOLERANCE,
 } = await import('../reef-race-config');
-const { integrateSurfStep, turnToward } = await import('@clawville/shared');
+const {
+  integrateSurfStep,
+  reefRaceStartGridPose,
+  turnToward,
+} = await import('@clawville/shared');
 
 const ROOM_ID   = 'test-spline-room';
 const ROOM_ID_2 = 'test-spline-room-2';
@@ -79,12 +84,51 @@ describe('ReefRaceSplineSim', () => {
 
       const bodyA = state!.bodies.get(AVATAR_A)!;
       expect(bodyA).toBeTruthy();
-      // Should be near start line (z ≈ 0 ± spawn offset)
-      expect(Math.abs(bodyA.z)).toBeLessThan(200);
+      // CLOSED-LOOP: bodies spawn ON the loop, just behind the start/finish line
+      // (anchored at centerlineAt(0)), inside the corridor. Assert the spawn
+      // sits inside the corridor near the start line (t≈0.99) — NOT at a fixed z.
+      const spawnClosest = state!.spline.closestPointOnSpline({ x: bodyA.x, z: bodyA.z });
+      expect(spawnClosest.distance).toBeLessThanOrEqual(
+        state!.spline.widthAt(spawnClosest.t) + 5,
+      );
+      // Just before the seam (finish straight) — the grid is behind the line.
+      expect(spawnClosest.t).toBeGreaterThan(0.9);
       expect(bodyA.heightOffset).toBe(0);
       expect(bodyA.progress).toBe(0);
+      expect(bodyA.lap).toBe(0);
+      expect(bodyA.startCrossed).toBe(false);
       expect(bodyA.alive).toBe(true);
       expect(bodyA.finishedAt).toBeNull();
+    });
+
+    it('uses the shared exact 2-column / 4-row formation for all 8 racers', () => {
+      const avatarIds = Array.from({ length: 8 }, (_, i) => `grid-avatar-${i}`);
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', avatarIds);
+      const state = reefRaceSplineSim.__getState(ROOM_ID)!;
+      const frame = {
+        center: state.spline.centerlineAt(0),
+        tangent: state.spline.tangentAt(0),
+        normal: state.spline.normalAt(0),
+      };
+
+      avatarIds.forEach((avatarId, i) => {
+        const body = state.bodies.get(avatarId)!;
+        const expected = reefRaceStartGridPose(frame, i);
+        expect(body.x).toBe(expected.x);
+        expect(body.z).toBe(expected.z);
+        expect(body.rot).toBe(expected.heading);
+
+        // Independent projections pin insertion order: left/right, then 176wu back
+        // (151wu boards + ~25wu nose-to-tail clearance; deliberately a literal
+        // so a silent helper drift fails here). The +40 front-row backoff is an
+        // independent constant, not spacing/4.
+        const dx = body.x - frame.center.x;
+        const dz = body.z - frame.center.z;
+        const back = -(dx * frame.tangent.x + dz * frame.tangent.z);
+        const lateral = dx * frame.normal.x + dz * frame.normal.z;
+        expect(back).toBeCloseTo(Math.floor(i / 2) * 176 + 40, 8);
+        expect(lateral).toBeCloseTo((i % 2 === 0 ? -1 : 1) * 320, 8);
+      });
     });
 
     it('emits event.match_started', () => {
@@ -147,22 +191,30 @@ describe('ReefRaceSplineSim', () => {
   // ── tickRoom — progress advances ──────────────────────────────────────────
 
   describe('progress', () => {
-    it('advances when body moves with full thrust', () => {
+    it('advances along the loop when body drives with full thrust', () => {
       reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
-      const body = reefRaceSplineSim.__getState(ROOM_ID)!.bodies.get(AVATAR_A)!;
+      const state = reefRaceSplineSim.__getState(ROOM_ID)!;
+      const body = state.bodies.get(AVATAR_A)!;
 
-      // Apply full-thrust input pointing straight down-track (+Z direction).
-      reefRaceSplineSim.applyInput(
-        ROOM_ID, AVATAR_A, 1, DT, makeInput(1, 0, 1),
-      );
-      // Tick 100 frames (~3.3 seconds).
-      for (let i = 0; i < 100; i++) {
+      const spawnX = body.x;
+      const spawnZ = body.z;
+
+      // Drive in the START TANGENT direction (down-track) each tick. On the
+      // closed loop the start straight heads ~ -21° (mostly +X), so steer along
+      // the tangent rather than a fixed world axis.
+      const tg = state.spline.tangentAt(0);
+      for (let i = 0; i < 120; i++) {
+        reefRaceSplineSim.applyInput(
+          ROOM_ID, AVATAR_A, 10 + i, DT, makeInput(1, tg.x, tg.z),
+        );
         reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
       }
 
-      // Body should have moved forward on the track.
-      expect(body.progress).toBeGreaterThan(0.0001);
-      expect(body.z).toBeGreaterThan(0); // moved in +Z direction
+      // Body moved off the spawn point and crossed the start/finish line (the
+      // grid spawns just behind it), so the start gun has fired.
+      const moved = Math.hypot(body.x - spawnX, body.z - spawnZ);
+      expect(moved).toBeGreaterThan(50);
+      expect(body.startCrossed).toBe(true);
     });
   });
 
@@ -193,21 +245,27 @@ describe('ReefRaceSplineSim', () => {
 
     it('EASE OFF = COAST (thrust release keeps most forward speed)', () => {
       reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
-      const body = reefRaceSplineSim.__getState(ROOM_ID)!.bodies.get(AVATAR_A)!;
+      const state = reefRaceSplineSim.__getState(ROOM_ID)!;
+      const body = state.bodies.get(AVATAR_A)!;
 
-      // Cruise up to speed with full thrust down-track.
-      reefRaceSplineSim.applyInput(ROOM_ID, AVATAR_A, 1, DT, makeInput(1, 0, 1));
-      for (let i = 0; i < 60; i++) reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
+      // CLOSED-LOOP: steer along the body's actual spawn heading (the start
+      // tangent ~ -21°, mostly +X), NOT a fixed +Z — otherwise the demanded
+      // turn bleeds the speed we're trying to build (geometry-independent test).
+      const tg = state.spline.tangentAt(0);
+      // Cruise up to speed with full thrust down the start tangent.
+      for (let i = 0; i < 60; i++) {
+        reefRaceSplineSim.applyInput(ROOM_ID, AVATAR_A, 1 + i, DT, makeInput(1, tg.x, tg.z));
+        reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
+      }
       const cruiseSpeed = Math.hypot(body.vx, body.vz);
       expect(cruiseSpeed).toBeGreaterThan(REEF_MAX_SPEED * 0.5);
 
       // Release thrust (thrust 0, keep heading). After ~0.5s of coasting the
       // body must retain the MAJORITY of its speed — NOT dead-stop like the old
       // global-drag model (0.97^15 ≈ 0.63, but surf forwardDrag 0.992^15 ≈ 0.89).
-      reefRaceSplineSim.applyInput(ROOM_ID, AVATAR_A, 2, DT, makeInput(0, 0, 1));
       for (let i = 0; i < 15; i++) {
         // Re-apply a fresh seq so intent keeps being consumed (thrust stays 0).
-        reefRaceSplineSim.applyInput(ROOM_ID, AVATAR_A, 100 + i, DT, makeInput(0, 0, 1));
+        reefRaceSplineSim.applyInput(ROOM_ID, AVATAR_A, 100 + i, DT, makeInput(0, tg.x, tg.z));
         reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
       }
       const coastSpeed = Math.hypot(body.vx, body.vz);
@@ -306,52 +364,110 @@ describe('ReefRaceSplineSim', () => {
     });
   });
 
-  // ── Finish-line detection ──────────────────────────────────────────────────
+  // ── CLOSED-LOOP lap / finish detection (2026-06-22) ─────────────────────────
 
-  describe('finish-line crossing', () => {
-    it('emits event.crossed_finish when progress reaches 1', () => {
-      const events: Array<{ type: string; avatarId?: string }> = [];
-      reefRaceSplineSim.setBroadcastFn((_id, f) =>
-        events.push(f as { type: string; avatarId?: string }),
-      );
+  describe('closed-loop laps + finish', () => {
+    // Helper: teleport a body to the centerline at a given within-lap t, then
+    // run one tick so resolveProgress samples that position. (Teleport bypasses
+    // the position validator's interest — we're testing the lap state machine,
+    // not anti-cheat — and __tickOnceForTest re-projects via closestPointOnSpline.)
+    function placeAtT(roomId: string, avatarId: string, t: number): void {
+      const state = reefRaceSplineSim.__getState(roomId)!;
+      const body = state.bodies.get(avatarId)!;
+      const c = state.spline.centerlineAt(t);
+      body.x = c.x;
+      body.z = c.z;
+      body.vx = 0;
+      body.vz = 0;
+      reefRaceSplineSim.__tickOnceForTest(roomId);
+    }
+
+    it('a forward seam crossing increments the completed-lap count', () => {
       reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
-
       const state = reefRaceSplineSim.__getState(ROOM_ID)!;
       const body = state.bodies.get(AVATAR_A)!;
 
-      // Force the body to just before the finish line.
-      body.prevProgress = 0.96;
-      body.progress = 0.96;
-      body.x = 0;
-      body.z = 27900; // near CP21 at z=28000
+      // Tick once to seed progress from the spawn (behind the line, t≈0.99).
+      reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
+      expect(body.lap).toBe(0);
+      expect(body.startCrossed).toBe(false);
 
-      // Apply forward thrust so body gets close to finish.
-      reefRaceSplineSim.applyInput(
-        ROOM_ID, AVATAR_A, 1, DT, makeInput(1, 0, 1),
+      // Drive forward across the seam → START GUN (lap stays 0, startCrossed set).
+      placeAtT(ROOM_ID, AVATAR_A, 0.05);
+      expect(body.startCrossed).toBe(true);
+      expect(body.lap).toBe(0);
+
+      // Lap 1: go round (mid-loop) then cross the seam again → lap 1.
+      placeAtT(ROOM_ID, AVATAR_A, 0.5);
+      placeAtT(ROOM_ID, AVATAR_A, 0.9);
+      placeAtT(ROOM_ID, AVATAR_A, 0.05); // wrap → lap completion
+      expect(body.lap).toBe(1);
+    });
+
+    it('finishes only after completing lap N and crossing the line', () => {
+      const events: Array<{ type: string; avatarId?: string; lap?: number }> = [];
+      reefRaceSplineSim.setBroadcastFn((_id, f) =>
+        events.push(f as { type: string; avatarId?: string; lap?: number }),
       );
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
+      const body = reefRaceSplineSim.__getState(ROOM_ID)!.bodies.get(AVATAR_A)!;
 
-      // Tick until finish crossed (max 60 extra ticks ≈ 2 seconds).
-      let crossed = false;
-      for (let i = 0; i < 60; i++) {
-        reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
-        if (events.some((e) => e.type === 'event.crossed_finish')) {
-          crossed = true;
-          break;
+      reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
+      // Start gun.
+      placeAtT(ROOM_ID, AVATAR_A, 0.05);
+
+      // REEF_RACE_LAPS laps. Each lap = round the loop + seam cross.
+      for (let lap = 1; lap <= REEF_RACE_LAPS; lap++) {
+        placeAtT(ROOM_ID, AVATAR_A, 0.5);
+        placeAtT(ROOM_ID, AVATAR_A, 0.9);
+        // Before the FINAL seam cross the body must NOT be finished yet.
+        if (lap < REEF_RACE_LAPS) {
+          expect(body.finishedAt).toBeNull();
         }
+        placeAtT(ROOM_ID, AVATAR_A, 0.05); // seam cross → lap completion
       }
 
-      if (!crossed) {
-        // Manually set progress ≥ 1 to simulate the finish crossing
-        // (avoids test dependency on exact track geometry).
-        body.prevProgress = 0.97;
-        body.z = 18100; // past finish
-        reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
-      }
-
-      // Body should be frozen.
+      // After REEF_RACE_LAPS completions the body is FINISHED + frozen.
+      expect(body.lap).toBe(REEF_RACE_LAPS);
       expect(body.finishedAt).not.toBeNull();
       expect(body.vx).toBe(0);
       expect(body.vz).toBe(0);
+      expect(events.some((e) => e.type === 'event.crossed_finish')).toBe(true);
+      // Non-final laps emit event.lap_completed (REEF_RACE_LAPS - 1 of them).
+      const lapEvents = events.filter((e) => e.type === 'event.lap_completed');
+      expect(lapEvents.length).toBe(REEF_RACE_LAPS - 1);
+    });
+
+    it('does NOT count the start-gun cross as a completed lap', () => {
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
+      const body = reefRaceSplineSim.__getState(ROOM_ID)!.bodies.get(AVATAR_A)!;
+      reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
+      // The very first forward cross is the start gun.
+      placeAtT(ROOM_ID, AVATAR_A, 0.05);
+      expect(body.startCrossed).toBe(true);
+      expect(body.lap).toBe(0);
+      expect(body.finishedAt).toBeNull();
+    });
+  });
+
+  // ── Live placement ordering by (lap, within-lap progress) ──────────────────
+
+  describe('live placement order (lap, then progress)', () => {
+    it('a lap-2 racer at progress 0.1 outranks a lap-1 racer at progress 0.9', () => {
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A, AVATAR_B]);
+      const state = reefRaceSplineSim.__getState(ROOM_ID)!;
+      const a = state.bodies.get(AVATAR_A)!;
+      const b = state.bodies.get(AVATAR_B)!;
+
+      // A is on lap 2 but only 10% through it; B is on lap 1 but 90% through.
+      a.lap = 2; a.progress = 0.1; a.startCrossed = true; a.progressInitialized = true;
+      b.lap = 1; b.progress = 0.9; b.startCrossed = true; b.progressInitialized = true;
+
+      // computeLivePlacements runs at the top of each tick → refreshes the map.
+      reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
+      const placements = state.lastPlacementMap;
+      expect(placements.get(AVATAR_A)).toBe(1); // further along the race
+      expect(placements.get(AVATAR_B)).toBe(2);
     });
   });
 
@@ -421,37 +537,53 @@ describe('ReefRaceSplineSim', () => {
   // ── Wall clamp ────────────────────────────────────────────────────────────
 
   describe('wall clamp', () => {
-    // 2026-06-01 surf rebuild: corridor tightened (lagoon halfWidth 3300→600)
-    // AND wall corrections now SPREAD over a few ticks (capped per tick) instead
-    // of a single hard snap-back. The clamp must (a) never yank more than the
-    // per-tick cap on a deep overshoot, and (b) converge the body INTO the
-    // corridor over several ticks.
+    // CLOSED-LOOP (2026-06-22): place the body well outside the lagoon corridor
+    // at the start straight (t≈0.05, halfWidth ~540) and assert the clamp (a)
+    // never yanks more than the per-tick cap on a deep overshoot, and (b)
+    // converges the body INTO the corridor over several ticks. Coordinates are
+    // derived from the live spline so they track future track edits.
     it('walks a body outside the corridor back inside over several ticks (no one-tick yank)', () => {
       reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
       const state = reefRaceSplineSim.__getState(ROOM_ID)!;
       const body = state.bodies.get(AVATAR_A)!;
 
-      // Place body far outside the tightened lagoon corridor (halfWidth=600 at
-      // z=1500, centerline x=0). x=4000 is ~3400 wu past the wall.
-      body.x = 4000;
-      body.z = 1500;
-      body.vx = 200; // moving outward
-      body.vz = 0;
+      // Centerline + outward normal at the start straight; push ~2500 wu past
+      // the wall along the normal.
+      const T = 0.05;
+      const center = state.spline.centerlineAt(T);
+      const normal = state.spline.normalAt(T);
+      const halfW = state.spline.widthAt(T);
+      const OVERSHOOT = 2500;
+      body.x = center.x + normal.x * (halfW + OVERSHOOT);
+      body.z = center.z + normal.z * (halfW + OVERSHOOT);
+      body.vx = normal.x * 200; // moving outward
+      body.vz = normal.z * 200;
 
-      // First tick must NOT snap all the way back — the per-tick correction is
-      // capped (no teleport-grade yank). Expect a modest inward step only.
-      const before = body.x;
+      const distFromCenter = (): number =>
+        Math.hypot(body.x - center.x, body.z - center.z);
+
+      // First tick must NOT snap all the way back — per-tick correction is capped.
+      const before = distFromCenter();
       reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
-      const firstStep = before - body.x; // positive = moved inward
-      expect(firstStep).toBeGreaterThan(0);      // moved inward
-      expect(firstStep).toBeLessThan(200);       // but not a hard snap-back
+      const firstStep = before - distFromCenter(); // positive = moved inward
+      expect(firstStep).toBeGreaterThan(0);   // moved inward
+      // Not a hard snap-back: the per-tick inward walk is bounded by
+      // WALL_MAX_CORRECTION_WU, doubled 60→120 alongside the 2× speed cap
+      // (2026-07-15), so the first step is ~234 wu (was <200). 400 stays well
+      // under a hard yank of the full 2500 wu overshoot while tracking the cap.
+      expect(firstStep).toBeLessThan(400);
 
-      // Over many ticks the spring + outward-velocity scrub converge the body
-      // into the corridor (halfWidth 600 + body radius + inset tolerance).
-      for (let i = 0; i < 200; i++) {
+      // Over many ticks the spring + outward scrub converge the body into the
+      // corridor (halfWidth + body radius + inset tolerance).
+      for (let i = 0; i < 300; i++) {
         reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
       }
-      expect(Math.abs(body.x)).toBeLessThan(700);
+      // The body re-enters near the (possibly moved) closest centerline; assert
+      // it is inside the corridor at its final t (not the original T).
+      const finalClosest = state.spline.closestPointOnSpline({ x: body.x, z: body.z });
+      expect(finalClosest.distance).toBeLessThanOrEqual(
+        state.spline.widthAt(finalClosest.t) + 5,
+      );
     });
   });
 
@@ -548,6 +680,27 @@ describe('ReefRaceSplineSim', () => {
       expect(snap).toBeTruthy();
       expect(snap!.bodies).toHaveLength(1);
       expect(snap!.bodies[0].avatarId).toBe(AVATAR_A);
+    });
+
+    it('emits the authoritative effective speedMod on wire entity deltas', () => {
+      const frames: unknown[] = [];
+      reefRaceSplineSim.setBroadcastFn((_id, frame) => frames.push(frame));
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
+      const body = reefRaceSplineSim.__getState(ROOM_ID)!.bodies.get(AVATAR_A)!;
+      body.activeEffects.set('rr-turbo-bubble', Date.now() + 60_000);
+
+      reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
+      reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
+
+      const delta = frames.find(
+        (frame) => (frame as { type?: string }).type === 'snapshot.delta',
+      ) as
+        | { entities: Array<{ avatarId: string; changed: { speedMod?: number } }> }
+        | undefined;
+      expect(delta).toBeTruthy();
+      expect(
+        delta!.entities.find((e) => e.avatarId === AVATAR_A)?.changed.speedMod,
+      ).toBe(1.35);
     });
   });
 });

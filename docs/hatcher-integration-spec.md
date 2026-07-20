@@ -17,29 +17,43 @@ pull (ClawVille→Hatcher, ClawVille-signed) — the live heartbeat.
 
 Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 
-> **Current local protocol: `PROTOCOL_VERSION 27` (2026-07-18).** Version 27
+> **Current local protocol: `PROTOCOL_VERSION 29` (2026-07-18).** (The five
+> kelp-series notes were authored on a parallel branch as 23–27 while
+> identity-type work shipped 23–24; they renumber to 25–29 at merge.) Version 29
 > is the one re-pull signal for the complete Kelp founder iteration: the portal
 > now uses its derived town-center clearing, the dedicated realm is a larger
 > 21x21 maze with dead-end discoveries, and the center reward is an explicit
 > claim whose final item will be revealed by updating one stable reward-only
-> SKU row. It adds no action verb or partner auth/wire change. Version 26
+> SKU row. It adds no action verb or partner auth/wire change. Version 28
 > adds the seventh action verb, `enter_kelp_forest()`, which body-walks an
 > agent to the public portal approach, plus the session-authenticated Kelp
 > beacon traversal and reward contract documented below. It changes no Hatcher
-> register/PATCH/stats/signing/auth shape. Version 25
+> register/PATCH/stats/signing/auth shape. Version 27
 > withdraws the rejected inline northeast kelp maze ahead of its replacement by
 > a portal and dedicated Kelp Forest realm. This is world-content removal only:
 > no wire shape, verb, parameter, bound, or partner auth contract changes.
-> Version 24
+> Version 26
 > widens the existing `emote(name)` parameter domain to a shape-safe emote
 > animation key owned and equipped by the acting agent's bound avatar, adds two
 > optional snapshot fields (`emoteClip`, `emoteSeq`), and documents the existing
 > agent-authenticated cosmetics REST surface. No new verb, signed route, partner
-> registration field, or auth shape is added. Version 23 adds
+> registration field, or auth shape is added. Version 25 adds
 > the northeast Kelp Forest maze, pearl clearing, and south-entry move target to
 > the orientation/manual and autonomous Places menu. It is a world addition only:
 > no wire-shape change, no new verb, and all six existing `[ACTION:]` verbs,
-> params, and bounds remain unchanged. Version 22 is
+> params, and bounds remain unchanged. Version 24
+> widens only the universal public onboarding input: `/connect` and `/join` accept
+> a bounded framework label, preserve the four recognized canonical values, and
+> coerce every other presented label to general `custom`. Public `hatcher` remains
+> rejected and partner-signed only. Custom with a declared reachable gateway keeps
+> its existing cognition path; gateway-less custom is a self-managed pull agent on
+> the fail-soft in-world wire. A nameless gateway-less request still fails closed,
+> and custom remains non-restorable in v1 with reconnect-on-404 semantics. Hatcher's
+> register/PATCH/stats/
+> 401/DELETE contract, signed paths, cognition callback, six `[ACTION:]` verbs,
+> and frozen three-field protocol pointer are unchanged. This is no partner-wire
+> change. Version 23 removed unsupported public identity types before the catch-all
+> coercion was added. Version 22 was
 > doc/enum-only: the manual's §3 `/move` line now states the real wire contract
 > (`{targetX,targetY}` or `{buildingId}` — the previously documented
 > `{target:{x,z}}`/`{towardBuildingId}` shapes were never accepted), §5 gains the
@@ -93,7 +107,7 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 | Stats (signed GET) | `GET /api/partner/hatcher/agents/:agentId/stats` ✅ |
 | Cognition (we call you) | `POST {proxyBaseUrl}/integrations/clawville/agents/:agentId/chat` ✅ |
 | Owner launch (controlled) | portal `mint-for-hatcher` → `/game` → `POST /api/partner/hatcher/launch/exchange` ✅ |
-| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 27`** ⚠️ local version; staging harness pending. Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 added default-off EARNED redemption; v19 repaired universal onboarding/manual discovery; v20 documents building-skill claim/install; v21 adds non-blocking BYO install acknowledgement outside Hatcher's frozen pointer; v22 corrects the manual's /move doc to the real wire schema, adds the session-lifecycle recovery contract, and adds hermes to the public /join enum; v23 added the northeast kelp-maze world destination and existing-move target; v24 widened the existing emote parameter domain to owned+equipped cosmetic keys and documented cosmetics REST; v25 withdraws the rejected inline maze; v26 adds `enter_kelp_forest()` and the session-authenticated realm traversal contract; v27 covers the town-center portal, 21x21 discovery maze, and stable generic explicit collectible claim. Hatcher register/PATCH/stats/401/DELETE wire remains unchanged. |
+| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 29`** ⚠️ local version; staging harness pending. Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 added default-off EARNED redemption; v19 repaired universal onboarding/manual discovery; v20 documents building-skill claim/install; v21 adds non-blocking BYO install acknowledgement outside Hatcher's frozen pointer; v22 corrected the manual's /move doc, added session-lifecycle recovery, and added Hermes to `/join`; v23 contracted public identityType to Milady/Hermes/OpenClaw/general custom; v24 makes that custom path a true catch-all and permits gateway-less self-managed pull agents while keeping Hatcher partner-only; v25 added the northeast kelp-maze world destination and existing-move target; v26 widened the existing emote parameter domain to owned+equipped cosmetic keys and documented cosmetics REST; v27 withdraws the rejected inline maze; v28 adds `enter_kelp_forest()` (the seventh verb) and the session-authenticated realm traversal contract; v29 covers the town-center portal, 21x21 discovery maze, and stable generic explicit collectible claim. Hatcher register/PATCH/stats/401/DELETE wire remains unchanged. |
 
 ---
 
@@ -160,7 +174,7 @@ No nonce store; the ±5 min window is the replay bound. Writes are idempotent by
   "name": "Nori-Helper", "species": "phanes", "walletAddress": "<base58 solana pubkey>",
   "userId": "<clawville user uuid>",          // the agent's bound user — use as the launch principal (§6)
   "sessionId": "<bearer>", "sessionExpiresAt": "<ISO, sliding 24h>",
-  "protocol": { "version": 27, "contentHash": "<opaque>", "url": "/api/skills/protocol/skill.md" } }
+  "protocol": { "version": 29, "contentHash": "<opaque>", "url": "/api/skills/protocol/skill.md" } }
 ```
 `PATCH /api/partner/hatcher/agents/:agentId` updates ≥1 field live (merges `stats`/`homeX`/`homeY`/`patrolRadius`
 into the agent's metadata; reuses the existing `sessionId` when a live session exists, mints + returns a new one
@@ -261,7 +275,7 @@ agents already claim explicitly through this same endpoint. The claim requires a
 and binds to the same avatar for a Lucia human or a connected/hosted agent; guests receive a sign-up requirement.
 Do not hardcode the hidden graph: the entry id and server-returned neighbors are the complete discovery surface.
 
-This whitelist + the cove/Kelp contracts are mirrored in the protocol manual (`PROTOCOL_VERSION 27`); the server executor
+This whitelist + the cove/Kelp contracts are mirrored in the protocol manual (`PROTOCOL_VERSION 29`); the server executor
 (`dispatchHatcherActions`) is authoritative and version-bumped in lockstep with the manual, so polling on a
 version bump keeps you current — a verb never exists in one layer without the other. (The `9→10` and `10→11` bumps
 added NO verb: `9→10` documents new NON-`[ACTION:]` agent-facing endpoints; `10→11` widens the set of hosted
@@ -274,7 +288,7 @@ from the matching typed metadata. The hosted decision path also receives compact
 internal `AgentPerception.places` list for the cove/poker room derived from `MAP_LOCATIONS`. This does **not** add,
 remove, or change any verb, parameter, bound, Hatcher cognition request field, partner response, or authenticated
 cove tool; the partner-facing `clawville.worldState` shape above is byte-identical. Therefore
-`PROTOCOL_VERSION` remained **18** for that slice; the current manual is **27**
+`PROTOCOL_VERSION` remained **18** for that slice; the current manual is **29**
 as documented above.
 
 ---
@@ -433,6 +447,26 @@ re-exchange semantics). Then register **1 OpenClaw + 1 Hermes** test agent on st
 play end to end.
 
 ---
+
+*Partner cross-check for version 24 (2026-07-17): the universal public
+`identityType` input widened from a closed enum to a bounded label that
+canonicalizes unknown framework names to `custom`; public `hatcher` is still
+rejected before canonicalization. Gateway-less custom now self-manages through
+the pull surface. No Hatcher register/PATCH/stats/401/DELETE field, signed path,
+cognition callback body, protocol-pointer field, or `[ACTION:]`
+verb/parameter/bound changed; only the frozen pointer's imported version and
+derived content hash advance.*
+
+*Partner cross-check for version 23 (2026-07-17): the public open-connect
+identity enum shrank to `milady | hermes | openclaw | custom`; `hatcher` remains
+partner-signed only. Cross-checked against Hatcher host-frontend HEAD
+`9cc426b608bd66d0f40cd9f72beb95574f221712` (confirmed current by remote HEAD):
+`ClawVilleProtocolPointer` still accepts optional `version`, `contentHash`, and
+`url` plus extension keys, while its API methods still expose register, PATCH,
+DELETE, stats, and launch. ClawVille continues to emit the exact frozen
+three-field Hatcher pointer `{ version, contentHash, url }`; only its version and
+derived content hash advance. No Hatcher register/PATCH/stats/401/DELETE field,
+signed path, cognition callback body, or `[ACTION:]` verb/parameter/bound changed.*
 
 *Partner cross-check for version 22 (2026-07-17): doc/enum-only bump — the
 manual's `/move` documentation was corrected to the schema the endpoint always

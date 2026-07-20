@@ -44,8 +44,12 @@ const { REEF_RACE_DEFAULT_TRACK } = await import('../reef-race-track-layout');
 const ROOM_ID = 'ramp-test-room';
 const AVATAR_A   = 'ramp-avatar-A';
 
-// Build a shared spline instance for test position computation.
-const _testSpline = new ReefSpline(REEF_RACE_DEFAULT_TRACK);
+// Build a shared spline instance for test position computation. MUST be CLOSED
+// (2026-06-22) to match the sim's `new ReefSpline(..., { closed: true })` — the
+// ramp world positions are derived from centerlineAt(ramp.t), which differs
+// between the OPEN and CLOSED splines, so an OPEN test spline would place the
+// body at the wrong spot and the ramp would never trigger.
+const _testSpline = new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true });
 
 /**
  * Returns the world (x, z) center of ramp with given id.

@@ -62,6 +62,8 @@ export interface BumperShellEntity {
   vx: number;
   vy: number;
   alive: boolean;
+  /** Authoritative sample time mapped onto the client's performance clock. */
+  snapshotAtMs?: number;
   /** Optional hex string tint applied to the shell material. */
   color?: string;
   /** 'lobster' | 'crayfish' — determines which GLB clone is used. */
@@ -75,6 +77,23 @@ export interface BumperShellEntity {
    * with a non-zero value still surfaces correctly to consumers.
    */
   driftSparks?: 0 | 1 | 2 | 3;
+  /**
+   * Reef Race v2 (spline sim) — within-lap arclength progress (0..1) and
+   * total lap count. Optional — Bumper Shells never sets these. Mirrored
+   * from `EntityDelta.changed.progress`/`.totalLaps` by `applyEntityDelta`.
+   */
+  progress?: number;
+  totalLaps?: number;
+  /** Reef Race v2 — body height above the river bed in wu. */
+  height?: number;
+  /** Reef Race v2 — latest server-authoritative effective speed multiplier. */
+  speedMod?: number;
+  /** Reef Race v2 — true while any positive boost source is active. */
+  boosting?: boolean;
+  /** Reef Race v2 — surf-carve mini-turbo charge, normalized 0..1. */
+  miniTurboCharge?: number;
+  /** Reef Race v2 — mini-turbo tier reached (0 = none, 1, 2). */
+  miniTurboLevel?: 0 | 1 | 2;
 }
 
 // ─── Pickup state ─────────────────────────────────────────────────────────────

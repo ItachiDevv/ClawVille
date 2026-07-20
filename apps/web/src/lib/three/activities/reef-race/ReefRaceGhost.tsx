@@ -52,6 +52,12 @@ import {
   GLIDER_LENGTH,
 } from './reef-race-config';
 import type { GhostFrame } from './reef-race-types';
+import { elevationAtXZ } from './reef-race-elevation';
+
+// SURF ROAD (2026-06-23): the ghost rides the floating ribbon, so its Y is the
+// render-only ribbon elevation at its XZ (cheap cached lookup under the 'ghost'
+// key) — NOT a flat plane. v1 ellipse path stays flat at y=0.
+const USE_SPLINE_GHOST = process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
 
 // ─── Settings gate ─────────────────────────────────────────────────────────────
 
@@ -209,9 +215,13 @@ function GhostInner({ path, raceStartMs }: GhostInnerProps) {
     // Apply interpolated world XZ position on the OUTER group.
     // groupRef is at scene root (identity parent), so position.x/z are world coords.
     // KART_SCALE only applies to children inside the inner scaled group.
-    group.position.x = a.x + (b.x - a.x) * alpha;
-    // Y stays at 0 — elevation carried by the inner scaled group's local Y (GHOST_LOCAL_Y).
-    group.position.z = a.z + (b.z - a.z) * alpha;
+    const gx = a.x + (b.x - a.x) * alpha;
+    const gz = a.z + (b.z - a.z) * alpha;
+    group.position.x = gx;
+    // SURF ROAD: lift onto the floating ribbon (render-only elevation at XZ).
+    // The inner scaled group still adds GHOST_LOCAL_Y (board-above-track) on top.
+    group.position.y = USE_SPLINE_GHOST ? elevationAtXZ(gx, gz, 'ghost') : 0;
+    group.position.z = gz;
 
     // Lerp rotation via shortest arc.
     let dr = b.rot - a.rot;

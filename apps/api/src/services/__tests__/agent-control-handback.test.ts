@@ -57,7 +57,7 @@ function registerAvatarBody(agentId: string, sessionId: string, boundUserId: str
     mode: 'avatar',
     agentId,
     sessionId,
-    identityType: 'nanoclaw',
+    identityType: 'milady',
     storedProtocol: 'nanoclaw',
     autonomyMode: 'self-managed',
     name: 'Handback',
@@ -209,7 +209,7 @@ describe('(d) status shape — E5 honesty + read-side ledger predicate', () => {
   it('UNBOUND session: stats/ownership forced null even when values were passed', () => {
     const res = buildAgentStatusResponse({
       agentId: 'a-1',
-      identityType: 'nanoclaw',
+      identityType: 'milady',
       expiresAt: '2026-07-03T00:00:00.000Z',
       humanControlled: false,
       botUserId: null,
@@ -224,7 +224,7 @@ describe('(d) status shape — E5 honesty + read-side ledger predicate', () => {
     expect(res.session.boundUser).toBe(false);
     expect(res.session.ledgerCapable).toBe(false);
     expect(res.agentId).toBe('a-1');
-    expect(res.identityType).toBe('nanoclaw');
+    expect(res.identityType).toBe('milady');
   });
 
   it('BOUND session: stats/ownership pass through; ledgerCapable mirrors the spend gate', () => {

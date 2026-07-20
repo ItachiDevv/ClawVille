@@ -8,6 +8,7 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useAuthMe } from '@/hooks/use-auth-me';
 import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
+import { AgentConnectInstructions } from '@/components/agent-connect-instructions';
 
 export default function AgentConnectModal() {
   const router = useRouter();
@@ -283,7 +284,8 @@ export default function AgentConnectModal() {
               <p className="text-white/70 text-sm leading-relaxed">
                 Before you can connect an external AI agent, you need an{' '}
                 <span className="text-cyan-300 font-bold">in-game agent character</span>{' '}
-                for it to control. Your external bot (Hermes, OpenClaw, ElizaOS, custom)
+                for it to control. Your external bot (OpenClaw, Hermes, Milady, or a BYO
+                gateway using an OpenAI-compatible API)
                 will pilot this character — moving around the world, visiting buildings,
                 buying skills, and talking to teachers.
               </p>
@@ -321,14 +323,7 @@ export default function AgentConnectModal() {
 
               {/* ─── Quick Connect (single surface) ─── */}
               <div className="space-y-3">
-                <div className="bg-cyan-500/5 border border-cyan-500/15 rounded-lg px-3 py-2">
-                  <p className="text-cyan-300/70 font-bold text-xs mb-1">How it works:</p>
-                  <ol className="text-[11px] text-white/40 space-y-1 list-decimal list-inside">
-                    <li>Click &ldquo;Generate Connect Link&rdquo; below</li>
-                    <li>Copy the link and paste it into your agent&apos;s chat</li>
-                    <li>Your agent reads the instructions and connects automatically</li>
-                  </ol>
-                </div>
+                <AgentConnectInstructions context="in-game" />
 
                 {!connectToken ? (
                   <>
@@ -436,8 +431,7 @@ export default function AgentConnectModal() {
 
           <div className="pt-2 border-t border-white/10">
             <p className="text-white/30 text-xs">
-              Works with any AI agent — OpenClaw, Hermes, ElizaOS, custom bots, and{' '}
-              <a href="https://github.com/machinae/awesome-claws" target="_blank" rel="noopener" className="underline hover:text-white/50">28+ more</a>.
+              Works with OpenClaw, Hermes, Milady, and BYO gateways using an OpenAI-compatible API.
             </p>
           </div>
         </div>

@@ -822,7 +822,7 @@ export default function ActivityResultsModal({
             />
           )}
           {/* Phase 4 (C-IMPL-1) — perfect-lap bonus row. Only renders for
-              Reef Race matches with a non-zero bonus credited (streak ≥ 36
+              Reef Race matches with a non-zero bonus credited (streak ≥ 24
               cleared the entire race). The +25 is server-authoritative. */}
           {isReefRace && lastMatchPerfectBonus !== null && lastMatchPerfectBonus > 0 && (
             <RewardRow
@@ -907,9 +907,9 @@ export default function ActivityResultsModal({
                 )}
               </div>
             )}
-            {/* Streak best block — "🌟 PERFECT LAP × 36" or "⚡ PERFECT
+            {/* Streak best block — "🌟 PERFECT LAP × 24" or "⚡ PERFECT
                 LINE STREAK: N checkpoints" depending on whether the player
-                cleared every checkpoint in the match (streak ≥ 36). */}
+                cleared every checkpoint in the match (streak ≥ 24). */}
             {lastMatchStreakBest !== null && lastMatchStreakBest > 0 && (
               <div
                 className={phases.callout ? 'arm-phase-on arm-callout' : 'arm-phase-off'}

@@ -31,6 +31,7 @@ type DriverInternals = {
   driveOnce: (agentId: string, decide: (prompt: string) => Promise<string>) => Promise<void>;
   readDirectiveBounded: (platformAgentId: string) => Promise<null>;
   readRecentLessons: () => Promise<string[]>;
+  readRecentKnowledge: () => Promise<string[]>;
 };
 
 type SimInternals = {
@@ -90,6 +91,7 @@ const originalEnsureRuntime = agentOrchestrator.ensureAgentRuntime;
 const originalDriveOnce = driver.driveOnce;
 const originalDirectiveRead = driver.readDirectiveBounded;
 const originalLessonRead = driver.readRecentLessons;
+const originalKnowledgeRead = driver.readRecentKnowledge;
 
 beforeEach(() => {
   npcSimulation.stop();
@@ -104,6 +106,7 @@ afterEach(() => {
   driver.driveOnce = originalDriveOnce;
   driver.readDirectiveBounded = originalDirectiveRead;
   driver.readRecentLessons = originalLessonRead;
+  driver.readRecentKnowledge = originalKnowledgeRead;
   for (const id of agentAutonomyDriver.getHouseAgentIds()) agentAutonomyDriver.unregisterHouseAgent(id);
   for (const id of agentAutonomyDriver.getUserAgentIds()) agentAutonomyDriver.unregisterUserAgent(id);
 });
@@ -166,12 +169,58 @@ describe('round 1 perception + decision prompt', () => {
     for (const verb of HATCHER_ACTION_VERBS) expect(prompt).toContain(verb);
   });
 
+  it('renders at most three ordered, bounded book and visit knowledge snippets', () => {
+    const id = 'knowledge-prompt-agent';
+    const entry = registerHouse(id);
+    const perception = npcSimulation.buildPerception(id)!;
+    const prompt = agentAutonomyDriver.buildDecisionPrompt(
+      perception,
+      entry as never,
+      [],
+      null,
+      ['first   fact\ncontinued', 'second fact', 'x'.repeat(220), 'fourth omitted'],
+    );
+
+    const heading = 'Knowledge you already hold (from books and visits — apply it; prefer learning what you do NOT know):';
+    expect(prompt).toContain(heading);
+    expect(prompt.indexOf('- first fact continued')).toBeLessThan(
+      prompt.indexOf('- second fact'),
+    );
+    expect(prompt.indexOf('- second fact')).toBeLessThan(
+      prompt.indexOf(`- ${'x'.repeat(200)}`),
+    );
+    expect(prompt).not.toContain('fourth omitted');
+    expect(prompt).not.toContain('x'.repeat(201));
+  });
+
+  it('keeps the prompt byte-identical when knowledge is omitted or empty', () => {
+    const id = 'empty-knowledge-prompt-agent';
+    const entry = registerHouse(id);
+    const perception = npcSimulation.buildPerception(id)!;
+    const omitted = agentAutonomyDriver.buildDecisionPrompt(
+      perception,
+      entry as never,
+      [],
+      null,
+    );
+    const empty = agentAutonomyDriver.buildDecisionPrompt(
+      perception,
+      entry as never,
+      [],
+      null,
+      [],
+    );
+
+    expect(empty).toBe(omitted);
+  });
+
   it('dispatches a cove destination but keeps one-shot emote in deciding', async () => {
     const id = 'dispatch-agent';
     const entry = registerHouse(id);
     entry.cursorSeeded = true;
     driver.readDirectiveBounded = async () => null;
     driver.readRecentLessons = async () => [];
+    driver.readRecentKnowledge = async () => [];
 
     await agentAutonomyDriver.driveOnce(
       id,

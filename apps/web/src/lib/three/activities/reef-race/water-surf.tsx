@@ -349,7 +349,10 @@ function buildWaterRibbonGeo(): THREE.BufferGeometry {
   const uvs:       number[] = [];
   const indices:   number[] = [];
 
-  for (let i = 0; i <= RIBBON_SAMPLES; i++) {
+  // CLOSED-LOOP: emit `samples` vertex pairs only (t=0..t=(samples-1)/samples).
+  // The closing quad connects the last pair back to vertices 0/1 — no gap at
+  // start/finish on the closed circuit.
+  for (let i = 0; i < RIBBON_SAMPLES; i++) {
     const t  = i / RIBBON_SAMPLES;
     const c  = clientSpline.centerlineAt(t);
     const n  = clientSpline.normalAt(t);
@@ -365,12 +368,11 @@ function buildWaterRibbonGeo(): THREE.BufferGeometry {
     normals.push(0, 1, 0);
     uvs.push(1, t);
 
-    if (i < RIBBON_SAMPLES) {
-      const base = i * 2;
-      // Two triangles per quad (consistent winding for +Y normals)
-      indices.push(base, base + 1, base + 2);
-      indices.push(base + 1, base + 3, base + 2);
-    }
+    const base  = i * 2;
+    const nextL = (i + 1 < RIBBON_SAMPLES) ? base + 2 : 0; // wrap to vertex 0
+    const nextR = (i + 1 < RIBBON_SAMPLES) ? base + 3 : 1; // wrap to vertex 1
+    indices.push(base, base + 1, nextL);
+    indices.push(base + 1, nextR, nextL);
   }
 
   const geo = new THREE.BufferGeometry();

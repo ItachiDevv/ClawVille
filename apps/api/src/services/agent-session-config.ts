@@ -9,19 +9,20 @@
  *   2. mint:    POST /api/partner/hatcher/agents  (partner-hatcher.ts)
  *   3. restore: restoreAgentSessionFromRow        (agent-session-restore.ts)
  * When (3) diverged from (1)/(2) — restore read the row's stored `protocol`
- * (`'openai-compat'` for a no-gateway anonymous/milady agent) and built an
+ * (`'openai-compat'` for a no-gateway Milady agent) and built an
  * OpenAI-compat client that POSTs to the dummy `http://localhost:0` gateway,
  * 502ing on every autonomous NPC conversation tick — a real partner agent came
  * back mute after an API restart. The mint path had the SAME latent flaw: an
- * anonymous/milady avatar bot is given an `'openai-compat'` client too, so the
+ * Milady avatar bot is given an `'openai-compat'` client too, so the
  * first autonomous conversation it is pulled into throws "Chat failed".
  *
  * THE FIX (structural, not spot): the IN-WORLD wire protocol is derived from the
  * AUTHORITATIVE `identityType`, not the stored `protocol` column — so a
- * no-outbound-gateway identity (anonymous / milady / nanoclaw) ALWAYS gets the
+ * no-outbound-gateway Milady identity ALWAYS gets the
  * fail-soft `'nanoclaw'` client (its `.chat()` returns '' with NO network call),
- * a hatcher agent ALWAYS gets `'hatcher-proxy'`, and only a real-gateway identity
- * (openclaw / ironclaw / custom) speaks its declared HTTP protocol. Both the mint
+ * a hatcher agent ALWAYS gets `'hatcher-proxy'`, and a real-gateway OpenClaw or
+ * custom identity speaks its declared HTTP protocol. Gateway-less custom joins
+ * the fail-soft pull path. Both the mint
  * paths and the restore path call THESE builders, so they cannot drift again —
  * the regression test asserts deep-equality of the spawn-relevant fields built
  * from a row vs. built fresh, for every identity type.
@@ -42,6 +43,7 @@ import {
   DEFAULT_HATCHER_MODEL_KEY,
   getAgentModel,
   type AgentWireProtocol,
+  type AgentIdentityType,
   type AgentAutonomyMode,
   type AgentSubstrateRegistration,
   type AgentAvatarConfig,
@@ -60,15 +62,15 @@ type BodyStats = AgentAvatarConfig['stats'];
  * resolvers read from (P3 slice 6, 2026-07-06). Promotes what used to be
  * scattered `if (identityType === …)` branches PLUS the old
  * `NO_GATEWAY_IDENTITY_TYPES` set into ONE record per harness, so the resolvers
- * (`resolveInWorldProtocol` / `isRowRestorableFromIdentity` / `resolveAutonomyMode`
+ * (`resolveInWorldProtocol` / `isRowRestorableFromFacts` / `resolveAutonomyMode`
  * / `resolveAgentSpecies`, and `isSessionRestorable` via the first) cannot drift
  * on how a given identity is treated. STRICTLY BEHAVIOR-PRESERVING: every field
  * reproduces the exact prior branch — the mint↔restore drift regression test pins
  * this for every identity type.
  *
  * The NO-OUTBOUND-GATEWAY identities (`protocolKind:'fail-soft'` or
- * `'hermes-gated'`, `restorableFromRow:true`) — anonymous / milady / nanoclaw /
- * hermes — must NEVER be given an HTTP-POSTing client (openai-compat / anthropic
+ * `'hermes-gated'`, `restorableFromRow:true`) — milady / hermes — must NEVER
+ * be given an HTTP-POSTing client (openai-compat / anthropic
  * / custom-webhook); it would POST to the dummy `http://localhost:0` gateway and
  * 502. They speak the fail-soft `'nanoclaw'` in-world (`.chat()` → '' with no
  * network) — except hermes, which the host-it-for-me gate can upgrade to the
@@ -83,16 +85,20 @@ interface IdentityAdapter {
    *   - 'hermes-gated'     → 'hermes-local' when the host-it-for-me gate is on,
    *                          else the fail-soft 'nanoclaw' stub.
    *   - 'openclaw-gated'   → 'openclaw-local' ONLY for a GATEWAY-LESS openclaw
-   *                          connect when the host-it-for-me gate is on; a BYO
+   *                          connect when the host-it-for-me gate is on, otherwise
+   *                          the internal fail-soft wire; a BYO
    *                          openclaw that declared its own gateway keeps the
    *                          declared HTTP protocol under BOTH gate states (the
    *                          hosted path never captures a real-gateway agent).
-   *                          openclaw ONLY — ironclaw/custom stay 'declared-gateway'.
+   *                          openclaw ONLY; custom uses its separate optional-
+   *                          gateway decision.
    *   - 'fail-soft'        → always 'nanoclaw' (no outbound gateway, no network).
+   *   - 'optional-gateway' → declared HTTP protocol when a REAL gateway is
+   *                          present, otherwise the fail-soft 'nanoclaw' stub.
    *   - 'declared-gateway' → the row's declared HTTP protocol (default
    *                          'openai-compat') — a REAL reachable gateway.
    */
-  protocolKind: 'hatcher-proxy' | 'hermes-gated' | 'openclaw-gated' | 'fail-soft' | 'declared-gateway';
+  protocolKind: 'hatcher-proxy' | 'hermes-gated' | 'openclaw-gated' | 'fail-soft' | 'optional-gateway' | 'declared-gateway';
   /**
    * Can the in-world body be rebuilt purely from the persisted openclaw_bots row
    * after an API restart? TRUE only for the no-outbound-gateway types (they
@@ -103,7 +109,7 @@ interface IdentityAdapter {
   restorableFromRow: boolean;
   /**
    * This identity pull-drives itself (always self-managed) regardless of the
-   * requested mode — the nanoclaw/hermes REST-poll agents. Every other identity
+   * requested mode — the Hermes REST-poll agent. Every other identity
    * honors the requested mode, defaulting to server-managed. (An orthogonal
    * `storedProtocol==='nanoclaw'` override still forces self-managed for ANY
    * identity — preserved in `resolveAutonomyMode`, deliberately NOT encoded here.)
@@ -144,10 +150,6 @@ const IDENTITY_ADAPTERS: Readonly<Record<string, IdentityAdapter>> = {
   hatcher:   { protocolKind: 'hatcher-proxy',    restorableFromRow: false, selfManaged: false, speciesFallback: 'hatcher', hosted: 'never' },
   // No-outbound-gateway, ClawVille-hosted Eliza runtime: milady is genuinely hosted.
   milady:    { protocolKind: 'fail-soft',        restorableFromRow: true,  selfManaged: false, speciesFallback: 'default', hosted: 'always' },
-  // No-outbound-gateway one-off test agent, no brain.
-  anonymous: { protocolKind: 'fail-soft',        restorableFromRow: true,  selfManaged: false, speciesFallback: 'default', hosted: 'never' },
-  // Self-managed pull agent; already speaks 'nanoclaw' by design.
-  nanoclaw:  { protocolKind: 'fail-soft',        restorableFromRow: true,  selfManaged: true,  speciesFallback: 'default', hosted: 'never' },
   // Self-managed pull agent; host-it-for-me gate upgrades its reactive cognition
   // to the server-hosted 'hermes-local' runtime (D7, 2026-07-02).
   hermes:    { protocolKind: 'hermes-gated',     restorableFromRow: true,  selfManaged: true,  speciesFallback: 'default', hosted: 'hermes-gated' },
@@ -157,17 +159,20 @@ const IDENTITY_ADAPTERS: Readonly<Record<string, IdentityAdapter>> = {
   // ENABLED it routes to the fail-soft 'openclaw-local' local runtime (D-openclaw,
   // 2026-07-08). The gating is on the DECLARED GATEWAY (see resolveInWorldProtocol),
   // NOT the identity alone, so a BYO openclaw with its own gateway is byte-identical
-  // under both gate states. `restorableFromRow` STAYS false: the adapter can't tell
-  // a gateway-less hosted openclaw from a BYO one (both are identityType 'openclaw'),
-  // so a hosted openclaw reconnects after a restart rather than risk restoring a BYO
-  // row into a mute body — fail-safe, and byte-identical to today's openclaw restore.
+  // under both gate states. `restorableFromRow` stays false because the coarse
+  // adapter cannot see the row's gateway fact. `isRowRestorableFromFacts` handles
+  // the supported exception: gateway-less OpenClaw restores only while the local
+  // runtime gate is enabled; BYO and gate-off rows fail closed.
   // `hosted` STAYS 'never': isHostedHarness sees only the identity, not the gateway
   // state, so it cannot answer "hosted?" for openclaw without falsely claiming a BYO
   // openclaw is hosted — the gated WIRE resolution (gateway-aware) is the real
   // hosting mechanism, not this coarse per-identity flag.
   openclaw:  { protocolKind: 'openclaw-gated',   restorableFromRow: false, selfManaged: false, speciesFallback: 'default', hosted: 'never' },
-  ironclaw:  { protocolKind: 'declared-gateway', restorableFromRow: false, selfManaged: false, speciesFallback: 'default', hosted: 'never' },
-  custom:    { protocolKind: 'declared-gateway', restorableFromRow: false, selfManaged: false, speciesFallback: 'default', hosted: 'never' },
+  // General catch-all. A declared gateway preserves the existing outbound
+  // cognition path; without one the agent pull-drives itself over REST/SSE and
+  // receives the silent fail-soft wire. It remains non-restorable because the
+  // adapter is per-type and declared-gateway credentials are not persisted.
+  custom:    { protocolKind: 'optional-gateway', restorableFromRow: false, selfManaged: false, speciesFallback: 'default', hosted: 'never' },
 };
 
 /**
@@ -193,6 +198,130 @@ function getIdentityAdapter(identityType: string): IdentityAdapter {
   return Object.hasOwn(IDENTITY_ADAPTERS, identityType)
     ? IDENTITY_ADAPTERS[identityType]
     : DEFAULT_IDENTITY_ADAPTER;
+}
+
+const CANONICAL_PUBLIC_IDENTITY_TYPES = new Set<AgentIdentityType>([
+  'milady',
+  'hermes',
+  'openclaw',
+  'custom',
+]);
+
+/**
+ * Canonicalize a PRESENT, schema-validated, non-reserved public framework name.
+ * Public routes MUST reject reserved partner values (currently `hatcher`)
+ * before calling this function. That ordering prevents a partner namespace from
+ * ever being softened into general `custom` while keeping every other novel
+ * framework on the catch-all identity/fingerprint/config path.
+ */
+export function canonicalizePublicAgentIdentityType(
+  presentedIdentityType: string,
+): AgentIdentityType {
+  return CANONICAL_PUBLIC_IDENTITY_TYPES.has(presentedIdentityType as AgentIdentityType)
+    ? presentedIdentityType as AgentIdentityType
+    : 'custom';
+}
+
+/**
+ * Resolve the public identity label only when the request proves one. A named
+ * runtime must be explicit, except the Milady plugin's dedicated runtime signal;
+ * a generic declared gateway is the `custom` general-config path. A generic
+ * gateway-less caller proves neither a named runtime nor hosted cognition and is
+ * rejected by `/connect` instead of being falsely labeled Milady.
+ */
+export function resolveDirectAgentIdentityType(input: {
+  explicitIdentityType?: AgentIdentityType;
+  hasMiladyRuntimeSignal: boolean;
+  hasDeclaredGateway: boolean;
+}): AgentIdentityType | null {
+  if (input.explicitIdentityType) return input.explicitIdentityType;
+  if (input.hasMiladyRuntimeSignal) return 'milady';
+  if (input.hasDeclaredGateway) return 'custom';
+  return null;
+}
+
+/** Deterministic `/connect` validation paired with the resolver above. */
+export function directAgentIdentityValidationError(input: {
+  identityType: AgentIdentityType | null;
+  hasMiladyRuntimeSignal: boolean;
+  hasDeclaredGateway: boolean;
+  declaredProtocol?: AgentWireProtocol;
+  openclawLocalGatewayEnabled?: boolean;
+}): string | null {
+  if (!input.identityType) {
+    return 'identityType is required when no Milady runtime or gateway is declared';
+  }
+  if (input.hasMiladyRuntimeSignal && input.identityType !== 'milady') {
+    return 'miladyAgentId requires milady identityType';
+  }
+  if (input.identityType === 'milady' && !input.hasMiladyRuntimeSignal) {
+    return 'milady identity requires miladyAgentId';
+  }
+  if (
+    input.identityType === 'openclaw' &&
+    !input.hasDeclaredGateway &&
+    !(input.openclawLocalGatewayEnabled ?? OPENCLAW_LOCAL_GATEWAY_ENABLED)
+  ) {
+    return 'gateway-less openclaw identity requires OPENCLAW_LOCAL_GATEWAY_ENABLED';
+  }
+  if (
+    input.hasDeclaredGateway &&
+    (input.identityType === 'milady' || input.identityType === 'hermes')
+  ) {
+    return `${input.identityType} identity does not accept gatewayUrl`;
+  }
+  if (input.hasDeclaredGateway && input.declaredProtocol === 'nanoclaw') {
+    return 'gatewayUrl does not accept nanoclaw protocol';
+  }
+  return null;
+}
+
+/**
+ * Resolve the stable identity used by the direct-connect ticket/fingerprint
+ * path. The already-validated identity is authoritative: an omitted public
+ * identity plus a gateway resolves to `custom`, while an explicit OpenClaw
+ * gateway remains `openclaw`. Routing and ownership must never independently
+ * infer different labels from the same request.
+ */
+export function resolveIdentityForTicket(
+  data: {
+    identityKey?: string;
+    miladyAgentId?: string;
+    gatewayUrl?: string;
+    authToken?: string;
+  },
+  resolvedIdentityType: AgentIdentityType,
+): { identityType: AgentIdentityType; identityKey: string } | null {
+  if (data.identityKey) {
+    return { identityType: resolvedIdentityType, identityKey: data.identityKey };
+  }
+  if (data.miladyAgentId) {
+    return { identityType: resolvedIdentityType, identityKey: data.miladyAgentId };
+  }
+  if (hasRealDeclaredGateway(data.gatewayUrl) && data.authToken) {
+    return {
+      identityType: resolvedIdentityType,
+      identityKey: `${data.gatewayUrl}#${data.authToken.slice(0, 8)}`,
+    };
+  }
+  return null;
+}
+
+/**
+ * Normalize the row's routing fact for `/connect`. Once validation succeeds,
+ * the current request is authoritative: a real declared URL is persisted and
+ * its absence persists NULL. This clears stale BYO URLs when a returning row is
+ * intentionally relabeled Milady/Hermes or enters hosted OpenClaw mode.
+ */
+export function resolveConnectGatewayForPersistence(input: {
+  identityType: AgentIdentityType;
+  requestGatewayUrl?: string | null;
+  /** Prior row fact is accepted only so its deliberate replacement is explicit. */
+  existingGatewayUrl?: string | null;
+}): string | null {
+  return hasRealDeclaredGateway(input.requestGatewayUrl)
+    ? input.requestGatewayUrl!
+    : null;
 }
 
 /**
@@ -373,11 +502,12 @@ export function resolveAgentSpecies(
  *                                        silent stub). Derived from identity on
  *                                        mint AND restore — never from the
  *                                        stored column.
- *   - anonymous / milady / nanoclaw   → 'nanoclaw'       (fail-soft, no network)
- *   - openclaw / ironclaw / custom    → the agent's declared HTTP protocol
- *                                        (storedProtocol), defaulting to
- *                                        'openai-compat' — these have a REAL
- *                                        reachable gateway.
+ *   - milady                          → 'nanoclaw'       (fail-soft tool-surface body;
+ *                                        cognition stays in-process)
+ *   - openclaw                        → the agent's declared HTTP protocol, or
+ *                                        its gated local/fail-soft no-gateway wire
+ *   - custom                          → declared HTTP protocol with a gateway;
+ *                                        otherwise fail-soft 'nanoclaw'
  *
  * Note: a real-gateway type whose gateway/auth can't be rebuilt from the row
  * (restore drops auth_token) is filtered out by the CALLER (restore returns null
@@ -387,21 +517,23 @@ export function resolveAgentSpecies(
  *   boot-time `HERMES_LOCAL_GATEWAY_ENABLED` env read. Consulted ONLY on the
  *   'hermes' branch; every other identity type derives identically regardless
  *   (the hatcher-inertness test pins this).
- * @param openclawLocal test seam for the D-openclaw gate (2026-07-08). Consulted
- *   ONLY on the 'openclaw' branch. `{ enabled }` defaults to the boot-time
+ * @param routingFacts gateway-aware routing facts. `{ enabled }` is consulted
+ *   ONLY on the 'openclaw' branch and defaults to the boot-time
  *   `OPENCLAW_LOCAL_GATEWAY_ENABLED` env read; `{ hasDeclaredGateway }` is the
  *   load-bearing precedence signal — a BYO openclaw with its own gateway is
  *   NEVER captured by the hosted path. FAIL-SAFE: when the bag is passed without
  *   `hasDeclaredGateway`, it is treated as `true` (declared-gateway → the legacy
  *   BYO behaviour), so only an EXPLICIT gateway-less signal routes to the hosted
- *   runtime. When the whole bag is omitted (legacy callers / the hermes+hatcher
+ *   runtime; when the gate is off, that same explicit no-gateway fact resolves
+ *   fail-soft instead of POSTing to a dummy URL. When the whole bag is omitted
+ *   (legacy callers / the hermes+hatcher
  *   tests), the openclaw branch is byte-identical to a declared-gateway harness.
  */
 export function resolveInWorldProtocol(
   identityType: string,
   storedProtocol: string | null | undefined,
   hermesLocalEnabled: boolean = HERMES_LOCAL_GATEWAY_ENABLED,
-  openclawLocal?: { enabled?: boolean; hasDeclaredGateway?: boolean },
+  routingFacts?: { enabled?: boolean; hasDeclaredGateway?: boolean },
 ): InWorldWireProtocol {
   const kind = getIdentityAdapter(identityType).protocolKind;
   if (kind === 'hatcher-proxy') return 'hatcher-proxy';
@@ -413,20 +545,28 @@ export function resolveInWorldProtocol(
   // connect to the fail-soft local runtime. A BYO openclaw that declared its own
   // gateway keeps its declared protocol under BOTH gate states (the precedence
   // the directive pins) — the hosted path never captures a real-gateway agent.
-  // ironclaw/custom are 'declared-gateway', never 'openclaw-gated', so they are
-  // unaffected.
+  // Custom is optional-gateway, never openclaw-gated, so the host gate cannot
+  // affect it; only the shared declared-gateway fact below does.
   if (kind === 'openclaw-gated') {
-    if (openclawLocal) {
-      const enabled = openclawLocal.enabled ?? OPENCLAW_LOCAL_GATEWAY_ENABLED;
+    if (routingFacts) {
+      const enabled = routingFacts.enabled ?? OPENCLAW_LOCAL_GATEWAY_ENABLED;
       // FAIL-SAFE default: an absent gateway signal means "assume a declared
       // gateway" (legacy BYO behaviour), so a caller that opts into the openclaw
       // path but omits the signal can never mis-route a BYO agent to hosted.
-      const hasDeclaredGateway = openclawLocal.hasDeclaredGateway ?? true;
+      const hasDeclaredGateway = routingFacts.hasDeclaredGateway ?? true;
       if (enabled && !hasDeclaredGateway) return 'openclaw-local';
+      if (!hasDeclaredGateway) return 'nanoclaw';
     }
     return (storedProtocol as AgentWireProtocol) ?? 'openai-compat';
   }
   if (kind === 'fail-soft') return 'nanoclaw';
+  if (kind === 'optional-gateway') {
+    // FAIL-SAFE for legacy callers that do not provide the row/request fact:
+    // assume the historical declared-gateway path. Builders always supply the
+    // explicit fact, so a real gateway-less custom connect resolves nanoclaw.
+    const hasDeclaredGateway = routingFacts?.hasDeclaredGateway ?? true;
+    if (!hasDeclaredGateway) return 'nanoclaw';
+  }
   // 'declared-gateway' — a REAL reachable gateway: honor its declared protocol,
   // default openai-compat.
   return (storedProtocol as AgentWireProtocol) ?? 'openai-compat';
@@ -437,18 +577,18 @@ export function resolveInWorldProtocol(
  * openclaw_bots row after an API restart (the restore path), or must instead
  * degrade to "reconnect" (return null).
  *
- * RESTORABLE: only the NO-OUTBOUND-GATEWAY identity types (anonymous / milady /
- * nanoclaw / hermes). They speak a fail-soft protocol in-world ('nanoclaw', or
+ * RESTORABLE: the no-outbound-gateway Milady/Hermes identities plus an OpenClaw
+ * row whose gateway fact is explicitly absent/dummy. They speak a fail-soft
+ * protocol in-world ('nanoclaw', or
  * for hermes the equally fail-soft env-gated 'hermes-local' whose target is a
  * server-side constant — no secrets on the row either way), so the row carries
  * everything needed to rebuild them faithfully.
  *
- * NOT RESTORABLE: every REAL-GATEWAY identity type (openclaw / ironclaw /
- * custom). The row never persists `auth_token` (the outbound bearer to the
+ * NOT RESTORABLE: declared-gateway OpenClaw and every custom identity. The row
+ * never persists `auth_token` (the outbound bearer to the
  * agent's own gateway), so a rebuilt body would silently 401 (a real gateway is
- * configured) or 502 against the dummy `http://localhost:0` (a legacy/malformed
- * row whose `gateway_url` is null/dummy). EITHER way the body is mute, so restore
- * returns null and the agent reconnects.
+ * configured). Custom is never server-hosted; a gateway-less legacy custom row
+ * therefore reconnects dormant rather than being mistaken for a hosted runtime.
  *
  * NOTE: `hatcher` is handled by a SEPARATE branch in restore (keyed on the
  * `protocol === 'hatcher-proxy'` column + the namespaced `hatcher:` agentId, not
@@ -456,15 +596,26 @@ export function resolveInWorldProtocol(
  * proxy token on the row. This predicate is consulted only for the NON-hatcher
  * identity types, so it deliberately does not special-case 'hatcher'.
  *
- * AUDITOR FIX (#6, 2026-06-12): the decision gates on the IDENTITY TYPE, not on
- * the `gateway_url` column shape. The prior restore guard refused real-gateway
- * rows ONLY when `gateway_url` was present + non-dummy, so a malformed legacy
- * `openclaw`/`custom` row with a null/dummy `gateway_url` fell through and built
- * a mute body (the restored-mute-body class). Keying on identity type closes
- * that fall-through.
+ * 2026-07-17 FACT COLLAPSE: OpenClaw is the one identity whose hosting posture
+ * depends on its per-row gateway fact. Declared gateway means BYO/unrestorable;
+ * explicit no gateway is reconstructable only while the local runtime gate is
+ * enabled. Custom remains fail-closed regardless of a malformed missing gateway.
  */
-export function isRowRestorableFromIdentity(identityType: string): boolean {
-  return getIdentityAdapter(identityType).restorableFromRow;
+export function isRowRestorableFromFacts(
+  identityType: string,
+  gatewayUrl?: string | null,
+  openclawLocalGatewayEnabled = OPENCLAW_LOCAL_GATEWAY_ENABLED,
+): boolean {
+  const adapter = getIdentityAdapter(identityType);
+  if (adapter.protocolKind === 'openclaw-gated') {
+    // Undefined means the caller did not supply the row fact: fail closed to the
+    // historical BYO assumption. Explicit null/dummy proves gateway-less and is
+    // reconstructable only through the enabled server-owned local runtime.
+    return gatewayUrl !== undefined &&
+      !hasRealDeclaredGateway(gatewayUrl) &&
+      openclawLocalGatewayEnabled;
+  }
+  return adapter.restorableFromRow;
 }
 
 /**
@@ -474,18 +625,18 @@ export function isRowRestorableFromIdentity(identityType: string): boolean {
  * implements, so `session-status` can't drift from restore:
  *   - hatcher (`protocol === 'hatcher-proxy'`): cognition rebuilt from the encrypted
  *     proxy token on the row (restore's hatcher branch — keyed on protocol, which is
- *     why `isRowRestorableFromIdentity('hatcher')` alone is FALSE and insufficient).
- *   - anonymous / milady / nanoclaw / hermes (`isRowRestorableFromIdentity`):
- *     rebuilt as a fail-soft body.
- * NOT restorable: the real-gateway identity types (openclaw / ironclaw / custom) —
+ *     why `isRowRestorableFromFacts('hatcher')` alone is FALSE and insufficient).
+ *   - milady / hermes plus gateway-less OpenClaw while its local-runtime gate is
+ *     enabled (`isRowRestorableFromFacts`): rebuilt through their hosted body.
+ * NOT restorable: declared-gateway OpenClaw and custom —
  * the outbound `auth_token` is never persisted, so restore returns null and the
  * agent must `/reconnect`. So `session-status` reports needs-reconnect for a live-TTL
  * row with an empty RAM Map (post-restart) ONLY for these real-gateway types; every
  * self-healing type stays `connected:true` (no needless reconnect — preserves the
  * Hatcher partner's transparent post-restart recovery).
  *
- * MOSTLY TYPE-LEVEL by design (session-status ruling, 2026-07-01), with ONE cheap
- * row-level refinement (Codex P0 gate). The optional `hatcherProxyConfigPresent`
+ * TYPE + ROW-FACT by design. Gateway presence distinguishes BYO from hosted
+ * OpenClaw; the optional `hatcherProxyConfigPresent`
  * lets a caller that already has the row (session-status) reject a hatcher-proxy
  * row whose proxy config is STRUCTURALLY ABSENT (`proxyUrl`/`proxyTokenEnc`/`Iv`/
  * `Tag` null) — restore fail-closes on exactly that (`restoreAgentSessionFromRow`),
@@ -511,6 +662,8 @@ export function isSessionRestorable(
   identityType: string,
   protocol: string | null | undefined,
   hatcherProxyConfigPresent?: boolean,
+  gatewayUrl?: string | null,
+  openclawLocalGatewayEnabled = OPENCLAW_LOCAL_GATEWAY_ENABLED,
 ): boolean {
   if (protocol === 'hatcher-proxy') {
     // Self-heals via restore ONLY if the proxy config is present. Omitted param
@@ -518,13 +671,17 @@ export function isSessionRestorable(
     // row can't rebuild cognition, so tell the agent to reconnect.
     return hatcherProxyConfigPresent !== false;
   }
-  return isRowRestorableFromIdentity(identityType);
+  return isRowRestorableFromFacts(
+    identityType,
+    gatewayUrl,
+    openclawLocalGatewayEnabled,
+  );
 }
 
 /**
  * The autonomy mode an agent's body runs in, derived from identity + the
- * declared protocol. nanoclaw + hermes agents are always self-managed (they
- * pull-drive via our REST — for hermes that holds in BOTH gate states, since
+ * declared protocol. Hermes agents are always self-managed (they pull-drive via
+ * our REST — that holds in BOTH gate states, since
  * 'hermes-local' only serves reactive/ambient cognition, never self-drive);
  * every other type is server-managed. Mirrors the mint-path resolution so
  * restore (and the regression test) agree.
@@ -533,11 +690,16 @@ export function resolveAutonomyMode(
   identityType: string,
   storedProtocol: string | null | undefined,
   requested?: AgentAutonomyMode | null,
+  hasDeclaredGateway?: boolean,
 ): AgentAutonomyMode {
-  // The identity's own self-managed flag (nanoclaw/hermes) OR the orthogonal
+  // The identity's own self-managed flag (hermes) OR the orthogonal
   // row-level override (a stored 'nanoclaw' protocol on ANY identity) both force
   // self-managed — the exact prior disjunction.
-  if (getIdentityAdapter(identityType).selfManaged || storedProtocol === 'nanoclaw') {
+  if (
+    getIdentityAdapter(identityType).selfManaged ||
+    storedProtocol === 'nanoclaw' ||
+    (identityType === 'custom' && hasDeclaredGateway === false)
+  ) {
     return 'self-managed';
   }
   return requested ?? 'server-managed';
@@ -675,7 +837,7 @@ export interface AgentConfigBase {
   identityType: string;
   /** The protocol persisted on the row (or the request's wireProtocol on mint). */
   storedProtocol?: string | null;
-  /** Real outbound gateway URL (openclaw/ironclaw/custom). Dummy for the rest. */
+  /** Real outbound gateway URL (openclaw/custom). Dummy for the rest. */
   gatewayUrl?: string | null;
   /** Outbound auth token — only the real-gateway mint path has it; '' elsewhere. */
   authToken?: string | null;
@@ -716,7 +878,7 @@ export interface OverrideConfigInputs extends AgentConfigBase {
  * openclaw connect is the ClawVille-hosted case; a BYO openclaw that declared its
  * own gateway must stay byte-identical under both gate states.
  */
-function hasRealDeclaredGateway(gatewayUrl?: string | null): boolean {
+export function hasRealDeclaredGateway(gatewayUrl?: string | null): boolean {
   return gatewayUrl != null && gatewayUrl !== '' && gatewayUrl !== 'http://localhost:0';
 }
 
@@ -758,6 +920,7 @@ export function buildAvatarSessionConfig(
       inputs.identityType,
       inputs.storedProtocol,
       inputs.autonomyMode,
+      hasRealDeclaredGateway(inputs.gatewayUrl),
     ),
     name: inputs.name,
     species: resolveAgentSpecies(inputs.identityType, inputs.species),
@@ -796,6 +959,7 @@ export function buildOverrideSessionConfig(
       inputs.identityType,
       inputs.storedProtocol,
       inputs.autonomyMode,
+      hasRealDeclaredGateway(inputs.gatewayUrl),
     ),
     targetNpcId: inputs.targetNpcId,
     ledgerCapable: inputs.ledgerCapable,

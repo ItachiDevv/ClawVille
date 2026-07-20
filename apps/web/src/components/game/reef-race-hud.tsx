@@ -43,7 +43,10 @@ import {
   selectSelfAlive,
   type ActivityState,
 } from '@/stores/activity';
-import type { ReefPowerUpKind } from '@clawville/shared';
+import {
+  REEF_RACE_COUNTDOWN_DURATION_MS,
+  type ReefPowerUpKind,
+} from '@clawville/shared';
 import { TOTAL_LAPS } from '@/lib/three/activities/reef-race/reef-race-config';
 import ActivityResultsModal from './activity-results-modal';
 import ReefRaceInstructions from './reef-race-instructions';
@@ -53,6 +56,7 @@ import ReefRaceDraftBadge    from './reef-race-draft-badge';
 import ReefRaceEventToasts   from './reef-race-event-toasts';
 import ReefRaceBuildSummary  from './reef-race-build-summary';
 import ReefRaceStreakCounter from './reef-race-streak-counter';
+import ReefRaceMiniTurboMeter from './reef-race-miniturbo-meter';
 
 // ─── v2 spline-sim feature flag ──────────────────────────────────────────────
 //
@@ -90,10 +94,16 @@ function ordinal(n: number): string {
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 function LapCounter({ selfAvatarId }: { selfAvatarId: string | null }) {
-  const lap = useActivityStore((s) => {
-    if (!selfAvatarId) return 1;
+  // `e.lap` is 0-based (completed laps). Display = lap+1 (current lap number).
+  // `e.totalLaps` from server delta; fall back to TOTAL_LAPS constant.
+  const { lapDisplay, totalLaps } = useActivityStore((s) => {
+    if (!selfAvatarId) return { lapDisplay: 1, totalLaps: TOTAL_LAPS };
     const e = s.entities.get(selfAvatarId) as any;
-    return e?.lap ?? 1;
+    const rawLap    = typeof e?.lap       === 'number' ? e.lap       : 0;
+    const rawTotal  = typeof e?.totalLaps === 'number' ? e.totalLaps : TOTAL_LAPS;
+    // Clamp display: lap 0 = "1/2", lap 1 = "2/2"; never exceed totalLaps.
+    const display = Math.min(rawLap + 1, rawTotal);
+    return { lapDisplay: display, totalLaps: rawTotal };
   });
 
   return (
@@ -111,7 +121,7 @@ function LapCounter({ selfAvatarId }: { selfAvatarId: string | null }) {
         LAP
       </div>
       <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: '0.05em', color: '#ffffff' }}>
-        {Math.min(lap, TOTAL_LAPS)}/{TOTAL_LAPS}
+        {lapDisplay}/{totalLaps}
       </div>
     </div>
   );
@@ -347,9 +357,10 @@ function PowerUpSlotCard({
   useKey: string;
   slotIndex: number;
 }) {
-  // Track previous slot state so we can detect pickup vs use transitions and
-  // run a local-only effect timer (server doesn't broadcast active duration).
+  // The inventory mutation written by self event.power_up_collected identifies
+  // the exact filled slot. Charge gains flash too, not just empty → filled.
   const prevKindRef = useRef<string | null>(null);
+  const prevChargesRef = useRef(0);
   const [pickupFlash, setPickupFlash] = useState(false);
   const [activeEffect, setActiveEffect] = useState<{
     kind: string;
@@ -359,14 +370,16 @@ function PowerUpSlotCard({
   useEffect(() => {
     const cur = slot?.kind ?? null;
     const prev = prevKindRef.current;
+    const charges = slot?.charges ?? 0;
 
-    // empty → filled = pickup
-    if (!prev && cur) {
+    const gainedItem = !!cur && (!prev || cur !== prev || charges > prevChargesRef.current);
+    if (gainedItem) {
       setPickupFlash(true);
       const t = window.setTimeout(() => setPickupFlash(false), 600);
       // also clear any lingering "active" pip from prior round
       setActiveEffect(null);
       prevKindRef.current = cur;
+      prevChargesRef.current = charges;
       return () => window.clearTimeout(t);
     }
     // filled → empty = use (or wipeout consume — close enough for HUD)
@@ -376,10 +389,12 @@ function PowerUpSlotCard({
         setActiveEffect({ kind: prev, until: performance.now() + meta.effectMs });
       }
       prevKindRef.current = null;
+      prevChargesRef.current = 0;
       return;
     }
     prevKindRef.current = cur;
-  }, [slot?.kind]);
+    prevChargesRef.current = charges;
+  }, [slot?.charges, slot?.kind]);
 
   // Tick the active-effect timer at 30 Hz so the countdown bar animates.
   const [, force] = useState(0);
@@ -575,6 +590,8 @@ function PowerUpBar({ selfAvatarId: _selfAvatarId }: { selfAvatarId: string | nu
         >
           <span><b style={{ color: '#ffd24a' }}>SHIFT</b> · JUMP</span>
           <span style={{ color: '#ffffff22' }}>·</span>
+          <span><b style={{ color: '#ffffff99' }}>S</b> · BRAKE</span>
+          <span style={{ color: '#ffffff22' }}>·</span>
           <span><b style={{ color: '#ffffff99' }}>SPACE/Q</b> · USE ITEM</span>
         </div>
       </div>
@@ -606,6 +623,19 @@ function WaitAtFinishOverlay() {
   const finishedRacers = useActivityStore((s) => s.finishedRacers);
   const scores = useActivityStore((s) => s.scores);
   const selfAvatarId = useActivityStore((s) => s.selfAvatarId);
+  const [showPlacementSplash, setShowPlacementSplash] = useState(true);
+
+  // The overlay remains mounted for the whole race. Starting true ensures the
+  // first render after crossed_finish is the placement moment, then the
+  // detailed wait card takes over after 2.5 seconds.
+  useEffect(() => {
+    if (!selfFinished || matchPhase !== 'live') {
+      setShowPlacementSplash(true);
+      return;
+    }
+    const id = window.setTimeout(() => setShowPlacementSplash(false), 2_500);
+    return () => window.clearTimeout(id);
+  }, [selfFinished, matchPhase]);
 
   // Render-time deadline recompute — cheap, drift-proof, no interval cleanup.
   // Bump a tick counter at 5Hz so the displayed countdown updates.
@@ -618,6 +648,46 @@ function WaitAtFinishOverlay() {
 
   if (!selfFinished || matchPhase !== 'live' || selfPlacement == null) {
     return null;
+  }
+
+  if (showPlacementSplash) {
+    return (
+      <div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          pointerEvents: 'none',
+        }}
+        aria-live="assertive"
+      >
+        <div
+          style={{
+            color: '#ffd600',
+            fontSize: 'clamp(42px, 8vw, 88px)',
+            fontWeight: 950,
+            lineHeight: 1,
+            letterSpacing: '0.05em',
+            textAlign: 'center',
+            textShadow:
+              '0 0 16px rgba(255, 214, 0, 0.9), 0 6px 0 rgba(0, 0, 0, 0.65), 0 12px 36px rgba(0, 0, 0, 0.85)',
+            animation: 'reefFinishPlacement 2.5s ease-out both',
+          }}
+        >
+          {ordinal(selfPlacement).toUpperCase()} PLACE
+        </div>
+        <style jsx>{`
+          @keyframes reefFinishPlacement {
+            0% { transform: scale(0.62); opacity: 0; }
+            12% { transform: scale(1.1); opacity: 1; }
+            22%, 78% { transform: scale(1); opacity: 1; }
+            100% { transform: scale(1.05); opacity: 0; }
+          }
+        `}</style>
+      </div>
+    );
   }
 
   const remainingMs =
@@ -871,17 +941,52 @@ export default function ReefRaceHud({
   const countdownStartedAt = useActivityStore(
     (s) => s.room?.countdownStartedAt ?? null,
   );
-  const [localSecondsRemaining, setLocalSecondsRemaining] = useState(5);
+  const serverClockOffsetMs = useActivityStore((s) => s.serverClockOffsetMs);
+  const [localSecondsRemaining, setLocalSecondsRemaining] = useState(
+    REEF_RACE_COUNTDOWN_DURATION_MS / 1000,
+  );
+  const previousMatchPhaseRef = useRef(matchPhase);
+  const [showGoFlash, setShowGoFlash] = useState(false);
+  // The local deadline may reach zero before event.match_started arrives over
+  // the wire. Hold visually at 1 until LIVE so GO is the authority start gun,
+  // never an optimistic client prediction of it.
+  const displayedCountdownSeconds = matchPhase === 'pregame-countdown'
+    ? Math.max(1, localSecondsRemaining)
+    : 0;
+
   useEffect(() => {
-    if (!countdownStartedAt) return;
+    if (matchPhase !== 'pregame-countdown') return;
+    const fallbackSeconds = countdownSecondsRemaining > 0
+      ? countdownSecondsRemaining
+      : REEF_RACE_COUNTDOWN_DURATION_MS / 1000;
+    const deadline = countdownStartedAt != null && serverClockOffsetMs != null
+      ? countdownStartedAt + REEF_RACE_COUNTDOWN_DURATION_MS + serverClockOffsetMs
+      : Date.now() + fallbackSeconds * 1000;
     const tick = () => {
-      const elapsed = (Date.now() - countdownStartedAt) / 1000;
-      setLocalSecondsRemaining(Math.max(0, Math.ceil(5 - elapsed)));
+      setLocalSecondsRemaining(Math.max(0, Math.ceil((deadline - Date.now()) / 1000)));
     };
     tick();
-    const id = setInterval(tick, 200); // 5Hz is plenty for a 1s countdown
+    const id = setInterval(tick, 100);
     return () => clearInterval(id);
-  }, [countdownStartedAt]);
+  }, [
+    countdownSecondsRemaining,
+    countdownStartedAt,
+    matchPhase,
+    serverClockOffsetMs,
+  ]);
+
+  useEffect(() => {
+    const previous = previousMatchPhaseRef.current;
+    previousMatchPhaseRef.current = matchPhase;
+    if (matchPhase === 'pregame-countdown') {
+      setShowGoFlash(false);
+      return;
+    }
+    if (previous !== 'pregame-countdown' || matchPhase !== 'live') return;
+    setShowGoFlash(true);
+    const id = window.setTimeout(() => setShowGoFlash(false), 800);
+    return () => window.clearTimeout(id);
+  }, [matchPhase]);
 
   const baseStyle: React.CSSProperties = {
     position: 'absolute',
@@ -904,11 +1009,11 @@ export default function ReefRaceHud({
           gap: 8,
         }}
       >
-        {USE_SPLINE ? (
-          <ProgressBar selfAvatarId={selfAvatarId} />
-        ) : (
-          <LapCounter selfAvatarId={selfAvatarId} />
-        )}
+        {/* Closed-loop lap circuit (v2 spline + v1 ellipse): both show lap counter.
+            The old ProgressBar showed "RACE 47%" which made no sense for a lap
+            circuit — replaced by the lap counter that reads `e.lap` (0-based,
+            displays lap+1) and `e.totalLaps` from the server delta. */}
+        <LapCounter selfAvatarId={selfAvatarId} />
         <PlacementTile selfAvatarId={selfAvatarId} />
         {/* Phase 4 — clean-checkpoint streak chip (C-IMPL-3 fix). Only
             renders mid-match; auto-dismisses on streak=0. Tier glow tracks
@@ -936,15 +1041,23 @@ export default function ReefRaceHud({
           while the flag is off. */}
       {!USE_SPLINE && <ReefRaceDriftSparks />}
 
-      {/* Bottom-center: Power-up bar */}
+      {/* Bottom-center: mini-turbo meter (self-only, hidden until the server
+          sends charge data — see reef-race-miniturbo-meter.tsx) stacked
+          directly above the power-up bar, both centered together so neither
+          hardcodes a `bottom` offset that could drift out of sync. */}
       <div
         style={{
           position: 'absolute',
           bottom: 24,
           left: '50%',
           transform: 'translateX(-50%)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 10,
         }}
       >
+        <ReefRaceMiniTurboMeter />
         <PowerUpBar selfAvatarId={selfAvatarId} />
       </div>
 
@@ -960,21 +1073,21 @@ export default function ReefRaceHud({
         <LeaveButton onLeave={onLeave} />
       </div>
 
-      {/* Pregame countdown overlay + how-to-play card. Both auto-dismiss
-          when the match goes live (parent conditional). */}
-      {matchPhase === 'pregame-countdown' && countdownSecondsRemaining > 0 && (
-        <>
-          <RoundCountdown secondsRemaining={countdownSecondsRemaining} />
-          <ReefRaceInstructions
-            countdownSecondsRemaining={countdownSecondsRemaining}
-          />
-        </>
+      {/* The full reading card lives in the matchmaking lobby. Countdown keeps
+          only a compact control strip so the staged track and start gun lead. */}
+      {(matchPhase === 'pregame-countdown' || showGoFlash) && (
+        <RoundCountdown
+          secondsRemaining={showGoFlash ? 0 : displayedCountdownSeconds}
+        />
+      )}
+      {matchPhase === 'pregame-countdown' && (
+        <ReefRaceInstructions variant="countdown" />
       )}
 
       {/* Phase 1 launch-glow ring — overlaid at the very last second of the
           countdown so a player priming a launch press sees a clear "go now"
           cue. Local-countdown-driven (audit S9). */}
-      {matchPhase === 'pregame-countdown' && localSecondsRemaining === 1 && (
+      {matchPhase === 'pregame-countdown' && displayedCountdownSeconds === 1 && (
         <div
           style={{
             position: 'absolute',

@@ -479,7 +479,11 @@ app.route('/api/oracle', oracleRouter);
 // prove control (sign the nonce) + persist the pubkey pointer; GET
 // /api/wallet/link → linked wallet + its (cached, mainnet) CLV balance. The
 // non-custodial balance-read link backing the hold-tier / seller-license checks.
-app.route('/api/wallet', walletLinkRoutes);
+// MOUNT FIX (2026-07-14): walletLinkRoutes defines '/challenge' + '/' — the
+// original '/api/wallet' mount served GET/POST /api/wallet + /api/wallet/challenge
+// while EVERY client call targets /api/wallet/link{,/challenge} (api.ts:526/532/552),
+// so the whole link surface 404'd on prod since ship. Mount under /api/wallet/link.
+app.route('/api/wallet/link', walletLinkRoutes);
 // Custodial wallet WITHDRAW (2026-07-08, DARK behind default-OFF
 // WALLET_WITHDRAW_ENABLED): POST /api/wallet/withdraw (E5 human+agent, guest/
 // non-ledger 403; Idempotency-Key REQUIRED; capture-before-send exactly-once
