@@ -470,9 +470,11 @@ export function normalizeDirectAgentConnectRequest(input: {
     hasMiladyRuntimeSignal: !!input.miladyAgentId,
     hasDeclaredGateway: hasRealDeclaredGateway(input.gatewayUrl),
   });
-  const agentId = input.agentId ?? (
-    input.miladyAgentId ? `milady:${input.miladyAgentId}` : null
-  );
+  const agentId = identityType === 'milady' && input.miladyAgentId
+    ? `milady:${input.miladyAgentId}`
+    : input.agentId ?? (
+      input.miladyAgentId ? `milady:${input.miladyAgentId}` : null
+    );
   const ignoredFields: string[] = [];
   if (
     input.miladyAgentId &&
@@ -546,6 +548,17 @@ export function normalizeDirectAgentConnectRequest(input: {
       storedProtocol,
     ),
   };
+}
+
+/** Preserve an existing row's wire when a returning caller omitted protocol. */
+export function resolveExistingAgentConnectProtocol(input: {
+  requestProtocol: AgentWireProtocol | undefined;
+  normalizedProtocol: AgentWireProtocol;
+  existingProtocol: string;
+}): string {
+  return input.requestProtocol !== undefined
+    ? input.normalizedProtocol
+    : input.existingProtocol;
 }
 
 /**

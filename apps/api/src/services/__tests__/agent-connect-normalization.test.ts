@@ -3,6 +3,7 @@ import {
   canonicalizePublicAgentIdentityType,
   isSessionRestorable,
   normalizeDirectAgentConnectRequest,
+  resolveExistingAgentConnectProtocol,
 } from '../agent-session-config';
 
 const GATEWAY = 'https://agent.example/v1';
@@ -19,7 +20,7 @@ describe('universal /connect tolerant normalization matrix', () => {
     });
   });
 
-  test('explicit Milady needs no legacy field and agentId wins when both exist', () => {
+  test('explicit Milady needs no legacy field and legacy handle wins when both exist', () => {
     expect(normalizeDirectAgentConnectRequest({
       agentId: 'stable-milady',
       explicitIdentityType: 'milady',
@@ -33,7 +34,18 @@ describe('universal /connect tolerant normalization matrix', () => {
       agentId: 'preferred',
       miladyAgentId: 'legacy',
       explicitIdentityType: 'milady',
-    }).agentId).toBe('preferred');
+    }).agentId).toBe('milady:legacy');
+  });
+
+  test('legacy Milady continuity keeps the plugin handle and ownership ticket', () => {
+    const result = normalizeDirectAgentConnectRequest({
+      agentId: 'chosen',
+      miladyAgentId: 'plugin-1',
+      explicitIdentityType: 'milady',
+    });
+
+    expect(result.agentId).toBe('milady:plugin-1');
+    expect(result.ticketMiladyAgentId).toBe('plugin-1');
   });
 
   test('Milady accepts and deterministically reports every unused gateway field', () => {
@@ -98,6 +110,21 @@ describe('universal /connect tolerant normalization matrix', () => {
       cognition: { mode: 'gateway', protocol: 'anthropic', ignoredFields: [] },
       restorableFromRow: false,
     });
+  });
+
+  test('existing declared-gateway row keeps its stored protocol when reconnect omits it', () => {
+    const normalized = normalizeDirectAgentConnectRequest({
+      agentId: 'returning-gateway',
+      explicitIdentityType: 'custom',
+      gatewayUrl: GATEWAY,
+    });
+
+    expect(normalized.storedProtocol).toBe('openai-compat');
+    expect(resolveExistingAgentConnectProtocol({
+      requestProtocol: undefined,
+      normalizedProtocol: normalized.storedProtocol,
+      existingProtocol: 'anthropic',
+    })).toBe('anthropic');
   });
 
   test('gateway-less OpenClaw accepts and restores under both gate states', () => {
