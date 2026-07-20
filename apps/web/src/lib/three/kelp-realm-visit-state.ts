@@ -6,6 +6,8 @@ export interface KelpRealmClaimSnapshot {
   readonly centerToken: string | null;
   readonly visitedCount: number;
   readonly totalCount: number;
+  readonly sporesFound: number;
+  readonly sporesTotal: number;
   readonly notice: string | null;
 }
 
@@ -19,13 +21,20 @@ const INITIAL_CLAIM_SNAPSHOT: KelpRealmClaimSnapshot = Object.freeze({
   centerToken: null,
   visitedCount: 0,
   totalCount: 0,
+  sporesFound: 0,
+  sporesTotal: 0,
   notice: null,
 });
 
 const visited = new Set<string>();
 const beaconListeners = new Set<(beaconId: string) => void>();
+const beaconResetListeners = new Set<() => void>();
 const claimListeners = new Set<() => void>();
 let claimSnapshot = INITIAL_CLAIM_SNAPSHOT;
+
+function sanitizeCount(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+}
 
 function replaceClaimSnapshot(next: KelpRealmClaimSnapshot): void {
   if (
@@ -33,6 +42,8 @@ function replaceClaimSnapshot(next: KelpRealmClaimSnapshot): void {
     next.centerToken === claimSnapshot.centerToken &&
     next.visitedCount === claimSnapshot.visitedCount &&
     next.totalCount === claimSnapshot.totalCount &&
+    next.sporesFound === claimSnapshot.sporesFound &&
+    next.sporesTotal === claimSnapshot.sporesTotal &&
     next.notice === claimSnapshot.notice
   ) return;
   claimSnapshot = Object.freeze(next);
@@ -65,10 +76,25 @@ export function setKelpRealmBeaconTotalCount(totalCount: number): void {
   replaceClaimSnapshot({ ...claimSnapshot, totalCount: safeTotal });
 }
 
+export function setKelpRealmSporeProgress(found: number, total: number): void {
+  const safeTotal = sanitizeCount(total);
+  const safeFound = Math.min(safeTotal, sanitizeCount(found));
+  if (
+    claimSnapshot.sporesFound === safeFound &&
+    claimSnapshot.sporesTotal === safeTotal
+  ) return;
+  replaceClaimSnapshot({
+    ...claimSnapshot,
+    sporesFound: safeFound,
+    sporesTotal: safeTotal,
+  });
+}
+
 export function markKelpRealmBeaconVisited(
   beaconId: string,
   token?: string,
   totalCount = claimSnapshot.totalCount,
+  spores?: { readonly found: number; readonly total: number },
 ): void {
   const isNewVisit = !visited.has(beaconId);
   if (isNewVisit) {
@@ -80,18 +106,30 @@ export function markKelpRealmBeaconVisited(
     centerToken: beaconId === 'center' && token ? token : claimSnapshot.centerToken,
     visitedCount: visited.size,
     totalCount,
+    sporesFound: spores
+      ? Math.min(sanitizeCount(spores.total), sanitizeCount(spores.found))
+      : claimSnapshot.sporesFound,
+    sporesTotal: spores ? sanitizeCount(spores.total) : claimSnapshot.sporesTotal,
     notice: null,
   });
 }
 
-export function subscribeKelpRealmBeaconVisits(listener: (beaconId: string) => void): () => void {
+export function subscribeKelpRealmBeaconVisits(
+  listener: (beaconId: string) => void,
+  onReset?: () => void,
+): () => void {
   beaconListeners.add(listener);
+  if (onReset) beaconResetListeners.add(onReset);
   for (const beaconId of visited) listener(beaconId);
-  return () => beaconListeners.delete(listener);
+  return () => {
+    beaconListeners.delete(listener);
+    if (onReset) beaconResetListeners.delete(onReset);
+  };
 }
 
 export function resetKelpRealmBeaconVisits(): void {
   visited.clear();
+  for (const listener of beaconResetListeners) listener();
   replaceClaimSnapshot(INITIAL_CLAIM_SNAPSHOT);
 }
 
@@ -142,7 +180,12 @@ export function describeKelpVisitFailure(
   return `The beacon could not be lit (${code ?? `HTTP ${status}`}). Step away and try this path again.`;
 }
 
-export function describeKelpClaimFailure(status: number, code?: string): string {
+export function describeKelpClaimFailure(
+  status: number,
+  code?: string,
+  found?: number,
+  total?: number,
+): string {
   if (status === 401 || status === 403 || code === 'guest_not_allowed') {
     return 'Sign in to claim the collectible at the center.';
   }
@@ -151,6 +194,11 @@ export function describeKelpClaimFailure(status: number, code?: string): string 
   }
   if (code === 'center_token_required') {
     return 'The pearl resists — light more beacons on the way in.';
+  }
+  if (status === 409 && code === 'spores_missing') {
+    const safeTotal = sanitizeCount(total ?? 3);
+    const safeFound = Math.min(safeTotal, sanitizeCount(found ?? 0));
+    return `The pearl resists - find the glowing spores (${safeFound}/${safeTotal})`;
   }
   if (code === 'collectible_sku_unavailable') {
     return 'The collectible is not ready to reveal yet. The team has been alerted.';

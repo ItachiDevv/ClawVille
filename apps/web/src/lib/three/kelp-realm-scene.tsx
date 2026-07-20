@@ -16,6 +16,7 @@ import {
   KELP_REALM_MAX_BLADE_HALF_WIDTH_WU,
   KELP_REALM_MAX_SWAY_WU,
   KELP_REALM_ONE_SIDED_SWAY_WU,
+  KELP_REALM_SPORE_BEACON_IDS,
   KELP_REALM_WALL_ROOT_SETBACK_WU,
   KELP_REALM_WALL_AABBS,
   KELP_REALM_WALL_HEIGHT_WU,
@@ -642,6 +643,9 @@ const beaconVertexRanges = new Map<string, { start: number; count: number }>();
 const beaconIdleColor = new THREE.Color(0x72ffe0);
 const beaconCenterColor = new THREE.Color(0xb9fff1);
 const beaconVisitedColor = new THREE.Color(0xffefb0);
+const sporeVertexRanges = new Map<string, { start: number; count: number }>();
+const sporeActiveColor = new THREE.Color(0x8fffd7);
+const sporeCollectedColor = new THREE.Color(0x183f39);
 
 function createBeaconGeometry(): THREE.BufferGeometry {
   beaconVertexRanges.clear();
@@ -677,6 +681,104 @@ function markBeaconGeometryVisited(geometry: THREE.BufferGeometry, beaconId: str
   color.needsUpdate = true;
 }
 
+function resetBeaconGeometryColors(geometry: THREE.BufferGeometry): void {
+  const color = geometry.getAttribute('color') as THREE.BufferAttribute | undefined;
+  if (!color) return;
+  for (const node of KELP_REALM_BEACON_GRAPH.nodes) {
+    const range = beaconVertexRanges.get(node.id);
+    if (!range) continue;
+    const base = node.kind === 'center' ? beaconCenterColor : beaconIdleColor;
+    for (let index = range.start; index < range.start + range.count; index++) {
+      color.setXYZ(index, base.r, base.g, base.b);
+    }
+  }
+  color.needsUpdate = true;
+}
+
+export function createKelpRealmSporeGeometry(): THREE.BufferGeometry {
+  sporeVertexRanges.clear();
+  const sources: THREE.BufferGeometry[] = [];
+  let vertexOffset = 0;
+  try {
+    for (let sporeIndex = 0; sporeIndex < KELP_REALM_SPORE_BEACON_IDS.length; sporeIndex++) {
+      const beaconId = KELP_REALM_SPORE_BEACON_IDS[sporeIndex]!;
+      const node = KELP_REALM_BEACON_GRAPH.nodes.find((candidate) => candidate.id === beaconId);
+      if (!node) throw new Error(`Kelp realm spore beacon ${beaconId} is missing`);
+      const rng = seededRandom(0x53504f52 + sporeIndex * 977);
+      const rangeStart = vertexOffset;
+      for (let bulbIndex = 0; bulbIndex < 7; bulbIndex++) {
+        const angle = bulbIndex / 7 * Math.PI * 2 + rng() * 0.35;
+        const ringRadius = bulbIndex === 0 ? 0 : 18 + rng() * 18;
+        const radius = bulbIndex === 0 ? 14 : 7 + rng() * 5;
+        const bulb = new THREE.SphereGeometry(radius, 8, 6);
+        const count = bulb.getAttribute('position').count;
+        const colors = new Float32Array(count * 3);
+        for (let vertex = 0; vertex < count; vertex++) {
+          sporeActiveColor.toArray(colors, vertex * 3);
+        }
+        bulb.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        bulb.translate(
+          node.x + Math.cos(angle) * ringRadius,
+          26 + radius + (bulbIndex % 3) * 10,
+          node.z + Math.sin(angle) * ringRadius,
+        );
+        sources.push(bulb);
+        vertexOffset += count;
+      }
+      sporeVertexRanges.set(beaconId, {
+        start: rangeStart,
+        count: vertexOffset - rangeStart,
+      });
+    }
+    const merged = mergeGeometries(sources, false);
+    if (!merged) throw new Error('Kelp realm spores could not be merged');
+    merged.computeBoundingBox();
+    merged.computeBoundingSphere();
+    return merged;
+  } finally {
+    for (const geometry of sources) geometry.dispose();
+  }
+}
+
+export function createKelpRealmSporeMaterial(): THREE.MeshBasicMaterial {
+  return new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.86,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    fog: false,
+  });
+}
+
+function setSporeGeometryColor(
+  geometry: THREE.BufferGeometry,
+  beaconId: string,
+  nextColor: THREE.Color,
+): void {
+  const range = sporeVertexRanges.get(beaconId);
+  const color = geometry.getAttribute('color') as THREE.BufferAttribute | undefined;
+  if (!range || !color) return;
+  for (let index = range.start; index < range.start + range.count; index++) {
+    color.setXYZ(index, nextColor.r, nextColor.g, nextColor.b);
+  }
+  color.needsUpdate = true;
+}
+
+export function markKelpRealmSporeGeometryVisited(
+  geometry: THREE.BufferGeometry,
+  beaconId: string,
+): void {
+  setSporeGeometryColor(geometry, beaconId, sporeCollectedColor);
+}
+
+function resetSporeGeometryColors(geometry: THREE.BufferGeometry): void {
+  for (const beaconId of KELP_REALM_SPORE_BEACON_IDS) {
+    setSporeGeometryColor(geometry, beaconId, sporeActiveColor);
+  }
+}
+
 function RealmEnvironment({ forceWebGL }: { forceWebGL: boolean }) {
   const kelp = useKelpResources(forceWebGL);
   const discoveries = useDiscoveryResources(forceWebGL);
@@ -691,6 +793,8 @@ function RealmEnvironment({ forceWebGL }: { forceWebGL: boolean }) {
     const moteMaterial = new THREE.PointsMaterial({ color: 0x8fffe3, size: 5, transparent: true, opacity: 0.42, depthWrite: false, sizeAttenuation: true });
     const beaconGeometry = createBeaconGeometry();
     const beaconMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true, transparent: true, opacity: 0.82, fog: false });
+    const sporeGeometry = createKelpRealmSporeGeometry();
+    const sporeMaterial = createKelpRealmSporeMaterial();
     const shellGeometry = new THREE.SphereGeometry(180, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.58);
     shellGeometry.scale(1.25, 0.55, 0.9);
     shellGeometry.rotateX(Math.PI);
@@ -701,7 +805,7 @@ function RealmEnvironment({ forceWebGL }: { forceWebGL: boolean }) {
     const pearlMaterial = new THREE.MeshBasicMaterial({ color: 0xb9fff1, transparent: true, opacity: 0.9, fog: false });
     const orbitGeometry = createPointGeometry(96, 180, 90, 0x50454152);
     const orbitMaterial = new THREE.PointsMaterial({ color: 0xd2fff4, size: 7, transparent: true, opacity: 0.62, depthWrite: false });
-    return { floorGeometry, floorMaterial, rayGeometry, rayMaterial, moteGeometry, moteMaterial, beaconGeometry, beaconMaterial, shellGeometry, shellMaterial, pearlGeometry, pearlMaterial, orbitGeometry, orbitMaterial };
+    return { floorGeometry, floorMaterial, rayGeometry, rayMaterial, moteGeometry, moteMaterial, beaconGeometry, beaconMaterial, sporeGeometry, sporeMaterial, shellGeometry, shellMaterial, pearlGeometry, pearlMaterial, orbitGeometry, orbitMaterial };
   }, []);
 
   useEffect(() => () => {
@@ -710,8 +814,17 @@ function RealmEnvironment({ forceWebGL }: { forceWebGL: boolean }) {
   }, [resources]);
 
   useEffect(
-    () => subscribeKelpRealmBeaconVisits((beaconId) => markBeaconGeometryVisited(resources.beaconGeometry, beaconId)),
-    [resources.beaconGeometry],
+    () => subscribeKelpRealmBeaconVisits(
+      (beaconId) => {
+        markBeaconGeometryVisited(resources.beaconGeometry, beaconId);
+        markKelpRealmSporeGeometryVisited(resources.sporeGeometry, beaconId);
+      },
+      () => {
+        resetBeaconGeometryColors(resources.beaconGeometry);
+        resetSporeGeometryColors(resources.sporeGeometry);
+      },
+    ),
+    [resources.beaconGeometry, resources.sporeGeometry],
   );
 
   useFrame(({ clock }, delta) => {
@@ -739,6 +852,7 @@ function RealmEnvironment({ forceWebGL }: { forceWebGL: boolean }) {
       {kelp.map((resource, index) => <mesh key={index} geometry={resource.geometry} material={resource.material} matrixAutoUpdate={false} />)}
       {discoveries.map((resource) => <mesh key={resource.type} geometry={resource.geometry} material={resource.material} matrixAutoUpdate={false} />)}
       <mesh geometry={resources.beaconGeometry} material={resources.beaconMaterial} matrixAutoUpdate={false} />
+      <mesh geometry={resources.sporeGeometry} material={resources.sporeMaterial} matrixAutoUpdate={false} />
       <mesh geometry={resources.shellGeometry} material={resources.shellMaterial} matrixAutoUpdate={false} />
       <mesh geometry={resources.pearlGeometry} material={resources.pearlMaterial} matrixAutoUpdate={false} />
       <points ref={orbitRef} geometry={resources.orbitGeometry} material={resources.orbitMaterial} position={[KELP_REALM_CENTER.x, 80, KELP_REALM_CENTER.z]} />
@@ -773,9 +887,10 @@ export const KELP_REALM_SCENE_BUDGET = Object.freeze({
   bladeCount: BLADE_COUNT,
   kelpDrawCalls: VARIANTS.length,
   discoveryDrawCalls: KELP_REALM_DISCOVERY_TYPES.length,
-  environmentDrawCalls: 13,
+  sporeDrawCalls: 1,
+  environmentDrawCalls: 14,
   maxAvatarDrawCalls: 14,
-  maxTotalDrawCallsIncludingAvatar: 27,
+  maxTotalDrawCallsIncludingAvatar: 28,
   hardTotalDrawCallCeiling: 32,
   wallHeightWu: KELP_REALM_WALL_HEIGHT_WU,
 });
