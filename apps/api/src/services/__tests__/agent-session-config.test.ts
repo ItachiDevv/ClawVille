@@ -78,17 +78,17 @@ describe('resolveDirectAgentIdentityType — supported-only request inference', 
     })).toBe('custom');
   });
 
-  test('omitted identity + no runtime/gateway fact fails closed', () => {
+  test('omitted identity + no runtime/gateway fact defaults to custom', () => {
     const identityType = resolveDirectAgentIdentityType({
       hasMiladyRuntimeSignal: false,
       hasDeclaredGateway: false,
     });
-    expect(identityType).toBeNull();
+    expect(identityType).toBe('custom');
     expect(directAgentIdentityValidationError({
       identityType,
       hasMiladyRuntimeSignal: false,
       hasDeclaredGateway: false,
-    })).toBe('identityType is required when no Milady runtime or gateway is declared');
+    })).toBeNull();
   });
 
   test('gateway-less custom, proven Milady, and Hermes remain valid', () => {
@@ -109,7 +109,7 @@ describe('resolveDirectAgentIdentityType — supported-only request inference', 
       hasMiladyRuntimeSignal: false,
       hasDeclaredGateway: false,
       openclawLocalGatewayEnabled: false,
-    })).toBe('gateway-less openclaw identity requires OPENCLAW_LOCAL_GATEWAY_ENABLED');
+    })).toBeNull();
     expect(directAgentIdentityValidationError({
       identityType: 'openclaw',
       hasMiladyRuntimeSignal: false,
@@ -118,12 +118,12 @@ describe('resolveDirectAgentIdentityType — supported-only request inference', 
     })).toBeNull();
   });
 
-  test('Milady requires its runtime signal and rejects conflicting named identities', () => {
+  test('explicit Milady and conflicting legacy signals normalize tolerantly', () => {
     expect(directAgentIdentityValidationError({
       identityType: 'milady',
       hasMiladyRuntimeSignal: false,
       hasDeclaredGateway: false,
-    })).toBe('milady identity requires miladyAgentId');
+    })).toBeNull();
     expect(directAgentIdentityValidationError({
       identityType: 'milady',
       hasMiladyRuntimeSignal: true,
@@ -135,17 +135,17 @@ describe('resolveDirectAgentIdentityType — supported-only request inference', 
         identityType,
         hasMiladyRuntimeSignal: true,
         hasDeclaredGateway: identityType === 'custom',
-      })).toBe('miladyAgentId requires milady identityType');
+      })).toBeNull();
     }
   });
 
-  test('gateway declarations reject no-POST and named no-gateway combinations', () => {
+  test('gateway declarations are accepted for tolerant downstream normalization', () => {
     for (const identityType of ['milady', 'hermes'] as const) {
       expect(directAgentIdentityValidationError({
         identityType,
         hasMiladyRuntimeSignal: identityType === 'milady',
         hasDeclaredGateway: true,
-      })).toBe(`${identityType} identity does not accept gatewayUrl`);
+      })).toBeNull();
     }
 
     for (const identityType of ['openclaw', 'custom'] as const) {
@@ -154,7 +154,7 @@ describe('resolveDirectAgentIdentityType — supported-only request inference', 
         hasMiladyRuntimeSignal: false,
         hasDeclaredGateway: true,
         declaredProtocol: 'nanoclaw',
-      })).toBe('gatewayUrl does not accept nanoclaw protocol');
+      })).toBeNull();
       expect(directAgentIdentityValidationError({
         identityType,
         hasMiladyRuntimeSignal: false,
@@ -349,7 +349,7 @@ describe('resolveInWorldProtocol — derives from identity, not stored column', 
   });
 });
 
-describe('isRowRestorableFromFacts — restore follows the declared-gateway fact', () => {
+describe('isRowRestorableFromFacts — restore follows effective transport facts', () => {
   test('no-gateway types ARE restorable from the row alone', () => {
     for (const t of ['milady', 'hermes']) {
       expect(isRowRestorableFromFacts(t, null)).toBe(true);
@@ -357,17 +357,24 @@ describe('isRowRestorableFromFacts — restore follows the declared-gateway fact
   });
 
   test('declared-gateway OpenClaw/custom are NOT restorable (auth_token never persisted)', () => {
-    expect(isRowRestorableFromFacts('openclaw', 'https://agent.example/gateway')).toBe(false);
-    expect(isRowRestorableFromFacts('custom', 'https://agent.example/gateway')).toBe(false);
+    expect(isRowRestorableFromFacts('openclaw', 'https://agent.example/gateway', undefined, 'openai-compat')).toBe(false);
+    expect(isRowRestorableFromFacts('custom', 'https://agent.example/gateway', undefined, 'custom-webhook')).toBe(false);
   });
 
-  test('gateway-less OpenClaw requires its host gate; missing fact/custom fail closed', () => {
+  test('ignored stale gateways do not block native or explicit-pull restore', () => {
+    const staleGateway = 'https://stale.example/gateway';
+    expect(isRowRestorableFromFacts('milady', staleGateway, undefined, 'openai-compat')).toBe(true);
+    expect(isRowRestorableFromFacts('hermes', staleGateway, undefined, 'openai-compat')).toBe(true);
+    expect(isRowRestorableFromFacts('openclaw', staleGateway, undefined, 'nanoclaw')).toBe(true);
+    expect(isRowRestorableFromFacts('custom', staleGateway, undefined, 'nanoclaw')).toBe(true);
+  });
+
+  test('every canonical no-real-gateway public row restores regardless of host gate', () => {
     expect(isRowRestorableFromFacts('openclaw', null, true)).toBe(true);
     expect(isRowRestorableFromFacts('openclaw', 'http://localhost:0', true)).toBe(true);
-    expect(isRowRestorableFromFacts('openclaw', null, false)).toBe(false);
-    expect(isRowRestorableFromFacts('openclaw')).toBe(false);
-    expect(isRowRestorableFromFacts('custom', null)).toBe(false);
-    // An unknown/future identity type also fails closed (not in the no-gateway set).
+    expect(isRowRestorableFromFacts('openclaw', null, false)).toBe(true);
+    expect(isRowRestorableFromFacts('openclaw')).toBe(true);
+    expect(isRowRestorableFromFacts('custom', null)).toBe(true);
     expect(isRowRestorableFromFacts('some-future-framework', null)).toBe(false);
   });
 
@@ -466,9 +473,9 @@ describe('gateway-less custom config builders', () => {
     expect(config.autonomyMode).toBe('self-managed');
   });
 
-  test('custom remains non-restorable even when gateway-less or stored as nanoclaw', () => {
-    expect(isRowRestorableFromFacts('custom', null)).toBe(false);
-    expect(isSessionRestorable('custom', 'nanoclaw', undefined, null)).toBe(false);
+  test('custom becomes restorable when gateway-less or stored as nanoclaw', () => {
+    expect(isRowRestorableFromFacts('custom', null)).toBe(true);
+    expect(isSessionRestorable('custom', 'nanoclaw', undefined, null)).toBe(true);
   });
 });
 
@@ -677,7 +684,15 @@ describe('isSessionRestorable — restore-aware session-status (D-2) + hatcher-p
       expect(isSessionRestorable(t, 'openai-compat', undefined, 'https://agent.example/gateway')).toBe(false);
     }
     expect(isSessionRestorable('openclaw', 'openai-compat', undefined, null, true)).toBe(true);
-    expect(isSessionRestorable('openclaw', 'openai-compat', undefined, null, false)).toBe(false);
+    expect(isSessionRestorable('openclaw', 'openai-compat', undefined, null, false)).toBe(true);
+  });
+
+  test('session-status classifies ignored stale gateways by the effective wire', () => {
+    const staleGateway = 'https://stale.example/gateway';
+    expect(isSessionRestorable('milady', 'openai-compat', undefined, staleGateway)).toBe(true);
+    expect(isSessionRestorable('hermes', 'openai-compat', undefined, staleGateway)).toBe(true);
+    expect(isSessionRestorable('openclaw', 'nanoclaw', undefined, staleGateway)).toBe(true);
+    expect(isSessionRestorable('custom', 'nanoclaw', undefined, staleGateway)).toBe(true);
   });
 
   test('hatcher-proxy presence refinement: false ⇒ NOT restorable; true/omitted ⇒ restorable', () => {
@@ -712,7 +727,7 @@ describe('slice 6 — hermes host-it-for-me gate (deterministic via explicit par
   });
   test('gate ON → hermes-local server-hosted runtime', () => {
     expect(resolveInWorldProtocol('hermes', 'openai-compat', true)).toBe('hermes-local');
-    expect(resolveInWorldProtocol('hermes', 'nanoclaw', true)).toBe('hermes-local');
+    expect(resolveInWorldProtocol('hermes', 'nanoclaw', true)).toBe('nanoclaw');
   });
   test('the gate is consulted ONLY on hermes — every other identity is gate-inert', () => {
     for (const enabled of [true, false]) {
@@ -733,17 +748,21 @@ describe('slice 6 — hermes host-it-for-me gate (deterministic via explicit par
 });
 
 describe('slice 6 — registry fail-closed for unknown / prototype-key identity types', () => {
-  test('unknown identity → declared-gateway protocol, NOT restorable, server-managed, default species', () => {
+  test('unknown legacy identity fails restore unless its stored wire explicitly proves pull', () => {
     expect(resolveInWorldProtocol('some-future-framework', 'openai-compat')).toBe('openai-compat');
     expect(resolveInWorldProtocol('some-future-framework', null)).toBe('openai-compat');
-    expect(isRowRestorableFromFacts('some-future-framework', null)).toBe(false);
+    expect(isRowRestorableFromFacts('some-future-framework', null, undefined, 'openai-compat')).toBe(false);
+    expect(isRowRestorableFromFacts('some-future-framework', null, undefined, 'nanoclaw')).toBe(true);
+    expect(resolveInWorldProtocol('some-future-framework', 'nanoclaw')).toBe('nanoclaw');
     expect(resolveAutonomyMode('some-future-framework', 'openai-compat')).toBe('server-managed');
     expect(resolveAgentSpecies('some-future-framework', null)).toBe(DEFAULT_AGENT_MODEL_KEY);
   });
   test('a prototype-key identity string cannot bypass into an inherited adapter', () => {
     for (const key of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf']) {
-      expect(isRowRestorableFromFacts(key, null)).toBe(false);
+      expect(isRowRestorableFromFacts(key, null, undefined, 'openai-compat')).toBe(false);
+      expect(isRowRestorableFromFacts(key, null, undefined, 'nanoclaw')).toBe(true);
       expect(resolveInWorldProtocol(key, 'openai-compat')).toBe('openai-compat');
+      expect(resolveInWorldProtocol(key, 'nanoclaw')).toBe('nanoclaw');
       expect(resolveAgentSpecies(key, null)).toBe(DEFAULT_AGENT_MODEL_KEY);
       expect(resolveAutonomyMode(key, 'openai-compat')).toBe('server-managed');
     }
