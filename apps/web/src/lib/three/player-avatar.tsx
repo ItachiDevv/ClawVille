@@ -10,6 +10,7 @@ import {
   MAP_HEIGHT,
 } from '@/lib/pixi/tilemap-data';
 import {
+  didCrossKelpForestPortal,
   findNearestCharacter,
   isCoveProximate,
   isKelpForestPortalProximate,
@@ -29,7 +30,12 @@ import {
 } from '@/lib/three/character-animations';
 import { jumpState, isEditable, type ChargeMode } from '@/lib/three/jump-state';
 import { triggerCoveWalkIn } from './arena-buildings';
-import { triggerKelpForestWalkIn } from './kelp-forest-transition';
+import {
+  armKelpForestWalkIn,
+  isKelpForestWalkInArmed,
+  resetKelpForestWalkInLatch,
+  triggerKelpForestWalkIn,
+} from './kelp-forest-transition';
 import { registerInputReset } from '@/lib/three/input-reset';
 import { useVRMInstance, disposeVRMInstance, retainVRMInstance, applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 import {
@@ -257,6 +263,9 @@ function getTerrainY(x: number, z: number, _scene: THREE.Scene): number {
 function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
   const groupRef = useRef<THREE.Group>(null);
   const rotRef = useRef(VRM_DIR_ROTATION.idle);
+  const kelpPortalPrevXRef = useRef(0);
+  const kelpPortalPrevZRef = useRef(0);
+  const kelpPortalPrevInitializedRef = useRef(false);
   /**
    * Pitch (X-axis rotation, radians) for the avatar — drives the
    * "swimming upward" tilt while ascending. Lerped each frame toward
@@ -344,6 +353,24 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
 
   useFrame((state, delta) => {
     const store = useGameStore.getState();
+    const frameStartWorldX = avatarPositionRef.x - HALF_W;
+    const frameStartWorldZ = avatarPositionRef.y - HALF_H;
+    const ownsKelpPortalMovement =
+      store.controlMode === 'player' || store.controlMode === 'autonomous';
+    if (ownsKelpPortalMovement) {
+      // Arm from the segment origin, never its destination. A disarmed mover
+      // that starts inside the jitter zone cannot arm and fire in one long
+      // frame merely because it landed beyond the hysteresis distance.
+      armKelpForestWalkIn(frameStartWorldZ);
+    }
+    if (ownsKelpPortalMovement && kelpPortalPrevInitializedRef.current) {
+      // Re-seed from the authoritative frame-start position so an external
+      // spawn/teleport can never masquerade as a portal crossing.
+      kelpPortalPrevXRef.current = frameStartWorldX;
+      kelpPortalPrevZRef.current = frameStartWorldZ;
+    } else if (!ownsKelpPortalMovement) {
+      kelpPortalPrevInitializedRef.current = false;
+    }
     if (store.movementFrozen) {
       if (store.controlMode !== 'autonomous') {
         const escNow = keyState.escape;
@@ -555,6 +582,33 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
       store.setAvatarPosition(clamped.x + HALF_W, clamped.z + HALF_H);
     }
 
+    // Test the actual collision-clamped movement segment, not a proximity
+    // band. The first frame only seeds the segment origin, preventing a spawn
+    // or avatar-model mount from synthesizing a crossing.
+    if (ownsKelpPortalMovement) {
+      const currentWorldX = avatarPositionRef.x - HALF_W;
+      const currentWorldZ = avatarPositionRef.y - HALF_H;
+      if (!kelpPortalPrevInitializedRef.current) {
+        kelpPortalPrevXRef.current = currentWorldX;
+        kelpPortalPrevZRef.current = currentWorldZ;
+        kelpPortalPrevInitializedRef.current = true;
+      } else {
+        if (
+          isKelpForestWalkInArmed() &&
+          didCrossKelpForestPortal(
+            kelpPortalPrevXRef.current,
+            kelpPortalPrevZRef.current,
+            currentWorldX,
+            currentWorldZ,
+          )
+        ) {
+          triggerKelpForestWalkIn();
+        }
+        kelpPortalPrevXRef.current = currentWorldX;
+        kelpPortalPrevZRef.current = currentWorldZ;
+      }
+    }
+
     {
       const wx = avatarPositionRef.x - HALF_W;
       const wz = avatarPositionRef.y - HALF_H;
@@ -733,6 +787,9 @@ function PlayerAvatarGLBInner() {
   const groupRef = useRef<THREE.Group>(null);
   const animGroupRef = useRef<THREE.Group>(null);
   const rotRef = useRef(0);
+  const kelpPortalPrevXRef = useRef(0);
+  const kelpPortalPrevZRef = useRef(0);
+  const kelpPortalPrevInitializedRef = useRef(false);
   const terrainYRef = useRef(-2); // -2 matches sand floor Y so avatar spawns flush with terrain
   // walkableYRef: tracks the walkable-surface Y returned by clampMovement2D.
   // When the GLB avatar enters a walkable collider zone (e.g. shisha-oasis stairs),
@@ -827,6 +884,24 @@ function PlayerAvatarGLBInner() {
 
   useFrame((state, delta) => {
     const store = useGameStore.getState();
+    const frameStartWorldX = avatarPositionRef.x - HALF_W;
+    const frameStartWorldZ = avatarPositionRef.y - HALF_H;
+    const ownsKelpPortalMovement =
+      store.controlMode === 'player' || store.controlMode === 'autonomous';
+    if (ownsKelpPortalMovement) {
+      // Arm from the segment origin, never its destination. A disarmed mover
+      // that starts inside the jitter zone cannot arm and fire in one long
+      // frame merely because it landed beyond the hysteresis distance.
+      armKelpForestWalkIn(frameStartWorldZ);
+    }
+    if (ownsKelpPortalMovement && kelpPortalPrevInitializedRef.current) {
+      // Re-seed from the authoritative frame-start position so an external
+      // spawn/teleport can never masquerade as a portal crossing.
+      kelpPortalPrevXRef.current = frameStartWorldX;
+      kelpPortalPrevZRef.current = frameStartWorldZ;
+    } else if (!ownsKelpPortalMovement) {
+      kelpPortalPrevInitializedRef.current = false;
+    }
     if (store.movementFrozen) {
       // In autonomous mode, don't let Escape exit buildings — the autonomy tick handles timing
       if (store.controlMode !== 'autonomous') {
@@ -1014,6 +1089,33 @@ function PlayerAvatarGLBInner() {
       store.setAvatarPosition(clamped.x + HALF_W, clamped.z + HALF_H);
     }
 
+    // Test the actual collision-clamped movement segment, not a proximity
+    // band. The first frame only seeds the segment origin, preventing a spawn
+    // or avatar-model mount from synthesizing a crossing.
+    if (ownsKelpPortalMovement) {
+      const currentWorldX = avatarPositionRef.x - HALF_W;
+      const currentWorldZ = avatarPositionRef.y - HALF_H;
+      if (!kelpPortalPrevInitializedRef.current) {
+        kelpPortalPrevXRef.current = currentWorldX;
+        kelpPortalPrevZRef.current = currentWorldZ;
+        kelpPortalPrevInitializedRef.current = true;
+      } else {
+        if (
+          isKelpForestWalkInArmed() &&
+          didCrossKelpForestPortal(
+            kelpPortalPrevXRef.current,
+            kelpPortalPrevZRef.current,
+            currentWorldX,
+            currentWorldZ,
+          )
+        ) {
+          triggerKelpForestWalkIn();
+        }
+        kelpPortalPrevXRef.current = currentWorldX;
+        kelpPortalPrevZRef.current = currentWorldZ;
+      }
+    }
+
     // Character proximity check — replaces building-zone area check.
     // Runs every frame so nearLocation / nearCharacter stay accurate even when
     // the avatar stops or is repositioned externally (clickPath, setAvatarPosition).
@@ -1166,10 +1268,19 @@ function PlayerAvatarRouter() {
 }
 
 export default function PlayerAvatar() {
+  const kelpPortalMountResetRef = useRef(false);
+
   // Locomotion clips are shared by every VRM avatar. The selected VRM itself is
   // loaded on demand by useVRMInstance; avatar-picker choices are warmed only
   // when the picker opens so /game does not fetch the full avatar catalog.
   useEffect(() => {
+    // PlayerAvatar owns the stable 3D world-scene lifecycle. Reset here once,
+    // not in the swappable VRM/GLB inners or the simultaneously mounted NPC
+    // controller, so a model/control-mode change cannot re-disarm the portal.
+    if (!kelpPortalMountResetRef.current) {
+      resetKelpForestWalkInLatch();
+      kelpPortalMountResetRef.current = true;
+    }
     preloadMixamoClips();
   }, []);
 
