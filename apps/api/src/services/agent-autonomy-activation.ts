@@ -129,13 +129,8 @@ export const activationSeams = {
       .then((row) => row ?? null),
   ensureSession: ensureHostedAvatarAgentSession,
   /** Fire-and-forget immediate drive after a successful new enrollment. */
-  kickDriver: (agentId: string): void => {
-    void agentAutonomyDriver.driveAgentNow(agentId).catch((err) =>
-      console.error(
-        `[AutonomyActivation] immediate drive failed for ${sessionDigest(agentId)}:`,
-        err instanceof Error ? err.message : err,
-      ),
-    );
+  kickDriver: (agentId: string, options: { autoArm?: boolean } = {}): void => {
+    agentAutonomyDriver.kickAgentNow(agentId, options);
   },
   /**
    * PERSIST the durable "intends to run autonomous" flag on the hosted-avatar
@@ -174,6 +169,7 @@ export const activationSeams = {
  */
 export async function activateAutonomyForOwner(
   ownerUserId: string,
+  options: { reconcileOrigin?: boolean } = {},
 ): Promise<ActivateAutonomyResult> {
   const avatar = await activationSeams.resolveActiveAvatar(ownerUserId);
   if (!avatar) return { ok: false, code: 'no_avatar' };
@@ -229,7 +225,13 @@ export async function activateAutonomyForOwner(
   // NEW enrollment perceives/decides/dispatches immediately instead of waiting
   // up to 30 seconds for the steady tick. Idempotent keepalive re-activations do
   // not spend another decision; a newly minted/rotated body still gets a kick.
-  if (!registered.reused || !session.reused) activationSeams.kickDriver(session.agentId);
+  if (!registered.reused || !session.reused) {
+    if (options.reconcileOrigin) {
+      activationSeams.kickDriver(session.agentId, { autoArm: false });
+    } else {
+      activationSeams.kickDriver(session.agentId);
+    }
+  }
 
   // DURABLE AUTONOMY — persist the enrollment intent AFTER a successful enroll so
   // the server-side reconcile re-enrolls this agent across a restart/deploy with
@@ -247,6 +249,13 @@ export async function activateAutonomyForOwner(
     `[AutonomyActivation] owner enrolled agent ${sessionDigest(session.agentId)} body:${session.bodyId} (reused=${registered.reused})`,
   );
   return { ok: true, reused: registered.reused, bodyId: session.bodyId };
+}
+
+/** Durable reconcile enrollment never wakes a manually-standby process. */
+export function activateAutonomyForReconcile(
+  ownerUserId: string,
+): Promise<ActivateAutonomyResult> {
+  return activateAutonomyForOwner(ownerUserId, { reconcileOrigin: true });
 }
 
 /**
