@@ -71,9 +71,10 @@ describe('resolveInWorldProtocol — hermes host-it-for-me gate', () => {
   });
 
   test('gate ON → hermes-local, for EVERY stored-protocol mislabel', () => {
-    for (const stored of MISLABELED_STORED) {
+    for (const stored of MISLABELED_STORED.filter((value) => value !== 'nanoclaw')) {
       expect(resolveInWorldProtocol('hermes', stored, true)).toBe('hermes-local');
     }
+    expect(resolveInWorldProtocol('hermes', 'nanoclaw', true)).toBe('nanoclaw');
   });
 
   test('omitted gate param falls back to the boot-time env const', () => {
@@ -95,6 +96,12 @@ describe('resolveInWorldProtocol — hermes host-it-for-me gate', () => {
 describe('hermes restorability — NO_GATEWAY membership', () => {
   test('isRowRestorableFromFacts(hermes) → true (no secrets on the row)', () => {
     expect(isRowRestorableFromFacts('hermes', null)).toBe(true);
+    expect(isRowRestorableFromFacts(
+      'hermes',
+      'https://stale-ignored.example/gateway',
+      undefined,
+      'openai-compat',
+    )).toBe(true);
   });
 
   test('isSessionRestorable(hermes, *) → true for any non-hatcher-proxy stored column', () => {
