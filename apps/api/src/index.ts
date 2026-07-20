@@ -833,6 +833,17 @@ process.on('uncaughtException', (err) => {
     console.error('[API] Body idle sweeper failed to start:', err);
   }
 
+  // 2026-07-20 — prune transient ElizaOS conversation transcripts after the
+  // boot settle window, then daily. Knowledge memories are never touched.
+  try {
+    const { startMessageMemorySweeper } = await import(
+      './services/message-memory-sweeper'
+    );
+    startMessageMemorySweeper();
+  } catch (err) {
+    console.error('[API] Message memory sweeper failed to start:', err);
+  }
+
   // 2026-07-13 — start the COVENANT CHAIN SEALER. Every 60s it assigns the
   // gapless hash chain (chain_position + prev/record hashes) over the
   // covenant action-record stream that the ledger/quest/bounty choke points
@@ -1519,6 +1530,14 @@ async function gracefulShutdown(signal: string) {
         './services/agent-session-sweeper'
       );
       stopSessionSweeper();
+    } catch {
+      // If the sweeper module failed to load earlier, there's nothing to stop.
+    }
+    try {
+      const { stopMessageMemorySweeper } = await import(
+        './services/message-memory-sweeper'
+      );
+      stopMessageMemorySweeper();
     } catch {
       // If the sweeper module failed to load earlier, there's nothing to stop.
     }
