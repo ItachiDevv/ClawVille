@@ -44,6 +44,46 @@ const state = {
 };
 
 describe('knowledgeProvider protocol manual retrieval', () => {
+  it('returns teacher-corpus memories from the main agent-scoped search', async () => {
+    const teacherCorpusText =
+      'Use a cron expression to schedule recurring autonomous work.';
+    const searchMemories = mock(async (input: Record<string, unknown>) => {
+      if (input.roomId === PLATFORM_AGENT_ID) {
+        return [
+          {
+            content: { text: teacherCorpusText },
+            metadata: {
+              subtype: 'teacher-corpus',
+              corpusHash: 'current-corpus-hash',
+              index: 2,
+            },
+          },
+        ];
+      }
+      return [];
+    });
+
+    const result = await knowledgeProvider.get(
+      { searchMemories },
+      { content: { text: state.userMessage } },
+      state,
+    );
+
+    expect(searchMemories.mock.calls[0]![0]).toMatchObject({
+      tableName: 'knowledge',
+      count: 5,
+      roomId: PLATFORM_AGENT_ID,
+      entityId: PLATFORM_AGENT_ID,
+      unique: true,
+    });
+    expect(result.text).toContain(teacherCorpusText);
+    expect(result.data?.knowledgeEntries).toEqual([teacherCorpusText]);
+    expect(result.values).toMatchObject({
+      relevantCount: 1,
+      retrievalMode: 'vector',
+    });
+  });
+
   it('uses the verified platform agent for both rooms without requiring an avatar id', async () => {
     const searchMemories = mock(async () => []);
 

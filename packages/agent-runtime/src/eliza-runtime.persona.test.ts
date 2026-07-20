@@ -81,6 +81,25 @@ const nori = {
 };
 
 describe('location/system-agent character is customization-first (F1 regression)', () => {
+  it('keeps knowledge out of bio and caps examples to the first three', () => {
+    const knowledge = ['corpus one', 'corpus two', 'corpus three'];
+    const messageExamples = Array.from({ length: 5 }, (_, index) => [
+      { user: '{{user1}}', content: { text: `question ${index}` } },
+      { user: 'assistant', content: { text: `answer ${index}` } },
+    ]);
+    const ch = buildCharacter({
+      name: 'Diet Test Teacher',
+      bio: ['Persona bio only.'],
+      knowledge,
+      messageExamples,
+    });
+
+    expect(ch.bio).toEqual(['Persona bio only.']);
+    expect(ch.messageExamples).toHaveLength(3);
+    expect(JSON.stringify(ch.bio)).not.toContain('corpus one');
+    expect(ch.knowledge).toEqual([]);
+  });
+
   it('Mr. Krabs (mcp-tool-use) keeps his own persona — never Pearl', () => {
     const ch = buildCharacter(mrKrabs);
     const blob = JSON.stringify(ch).toLowerCase();
