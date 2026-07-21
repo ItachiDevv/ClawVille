@@ -111,6 +111,26 @@ export interface EndpointStats {
   lastError?: string;
 }
 
+export interface InferenceUsageRow {
+  route: InferenceRoute;
+  endpointId: string;
+  model: string;
+  calls: number;
+  inTokens: number;
+  outTokens: number;
+}
+
+export interface InferenceUsageSnapshot {
+  rows: InferenceUsageRow[];
+  blackouts: Record<string, number>;
+}
+
+interface InferenceUsageAccumulator {
+  calls: number;
+  inTokens: number;
+  outTokens: number;
+}
+
 interface EndpointState {
   consecutiveFailures: number;
   /** ms epoch the breaker stays open until; 0 = closed. */
@@ -184,6 +204,8 @@ export class InferenceRouter {
   private readonly routes: RouteTable;
   private readonly breaker: BreakerConfig;
   private readonly state = new Map<string, EndpointState>();
+  private readonly usage = new Map<string, InferenceUsageAccumulator>();
+  private readonly blackouts: Partial<Record<InferenceRoute, number>> = {};
   // Saturation cap for the primary-preferred-overflow policy (see generate()).
   private readonly primaryMaxInflight: number;
   private readonly fetchImpl: typeof fetch;
@@ -387,6 +409,12 @@ export class InferenceRouter {
         // per call: `grep "\[InferenceRouter\] served"` = the full inference
         // ledger; sum in=/out= per by=openai for spend.
         const model = args.size === 'large' ? ep.largeModel : ep.smallModel;
+        const usageKey = `${args.route}|${id}|${model}`;
+        const accumulated = this.usage.get(usageKey) ?? { calls: 0, inTokens: 0, outTokens: 0 };
+        accumulated.calls += 1;
+        accumulated.inTokens += usage.inTokens ?? 0;
+        accumulated.outTokens += usage.outTokens ?? 0;
+        this.usage.set(usageKey, accumulated);
         console.log(
           `[InferenceRouter] served route=${args.route} by=${id} model=${model} in=${usage.inTokens ?? '?'} out=${usage.outTokens ?? '?'} inflight=${st.inflight - 1} ${this.now() - start}ms`,
         );
@@ -406,7 +434,18 @@ export class InferenceRouter {
       }
     }
 
+    this.blackouts[args.route] = (this.blackouts[args.route] ?? 0) + 1;
     throw lastErr ?? new Error(`[InferenceRouter] all endpoints failed for route "${args.route}"`);
+  }
+
+  /** Cumulative served usage and all-endpoint failures since process start. */
+  usageSnapshot(): InferenceUsageSnapshot {
+    const rows: InferenceUsageRow[] = [];
+    for (const [key, totals] of this.usage) {
+      const [route, endpointId, model] = key.split('|') as [InferenceRoute, string, string];
+      rows.push({ route, endpointId, model, ...totals });
+    }
+    return { rows, blackouts: { ...this.blackouts } };
   }
 
   /** Snapshot of per-endpoint health + counters (for /dash or boot logging). */
