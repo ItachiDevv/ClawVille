@@ -9,7 +9,8 @@ export type ReefRaceSurgeSource =
   | 'boost-pad'
   | 'turbo-bubble'
   | 'launch-boost'
-  | 'slipstream';
+  | 'slipstream'
+  | 'wall-slam';
 
 interface ReefRaceSurgeSnapshot {
   sequence: number;
@@ -38,6 +39,7 @@ const SOURCE_COLOR: Record<ReefRaceSurgeSource, string> = {
   'turbo-bubble': '#ffe45e',
   'launch-boost': '#7cffcb',
   slipstream: '#b78cff',
+  'wall-slam': '#ff6b6b',
 };
 
 function clamp01(value: number): number {
@@ -155,12 +157,14 @@ export function ReefRaceSurgeDriver({ roomId }: { roomId: string }) {
   const selfAvatarId = useActivityStore((state) => state.selfAvatarId);
   const lastBoostPadEvent = useActivityStore((state) => state.lastBoostPadEvent);
   const lastLaunchEvent = useActivityStore((state) => state.lastLaunchEvent);
+  const lastWallSlamEvent = useActivityStore((state) => state.lastWallSlamEvent);
   const slipstreamActive = useActivityStore((state) => state.slipstreamActive);
   const powerUpInventory = useActivityStore((state) => state.powerUpInventory);
   const selfRacingClass = useActivityStore((state) => state.selfRacingClass);
 
   const seenBoostPadAt = useRef(0);
   const seenLaunchAt = useRef(0);
+  const seenWallSlamAt = useRef(0);
   const slipstreamWasActive = useRef(false);
   const previousInventory = useRef<readonly PowerUpSlot[] | null>(null);
 
@@ -168,6 +172,7 @@ export function ReefRaceSurgeDriver({ roomId }: { roomId: string }) {
     resetReefRaceSurge();
     seenBoostPadAt.current = 0;
     seenLaunchAt.current = 0;
+    seenWallSlamAt.current = 0;
     slipstreamWasActive.current = false;
     previousInventory.current = null;
     return resetReefRaceSurge;
@@ -195,6 +200,19 @@ export function ReefRaceSurgeDriver({ roomId }: { roomId: string }) {
     seenLaunchAt.current = lastLaunchEvent.at;
     triggerReefRaceSurge('launch-boost', 1, 800);
   }, [lastLaunchEvent, selfAvatarId]);
+
+  useEffect(() => {
+    if (
+      !lastWallSlamEvent ||
+      lastWallSlamEvent.avatarId !== selfAvatarId ||
+      lastWallSlamEvent.at === seenWallSlamAt.current
+    ) return;
+    seenWallSlamAt.current = lastWallSlamEvent.at;
+    // `power` is outward speed / REEF_MAX_SPEED (tier-1 spans 0.28..0.62).
+    // Keep the punch readable across that band without letting it overpower a wipeout.
+    const magnitude = Math.min(0.9, 0.45 + lastWallSlamEvent.power * 0.65);
+    triggerReefRaceSurge('wall-slam', magnitude, 500);
+  }, [lastWallSlamEvent, selfAvatarId]);
 
   useEffect(() => {
     if (slipstreamActive && !slipstreamWasActive.current) {

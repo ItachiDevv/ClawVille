@@ -1,18 +1,14 @@
 /**
  * Q2 Activity Portals — Reef Race bot controller (chunk #5).
  *
- * Heuristic policy (intentionally beatable — humans should win
- * sometimes; spec §8.4 calls them "simple heuristic controllers"):
+ * Competitive rubber-band controllers; humans win through pads, items, and
+ * clean lines. The legacy ellipse path remains byte-identical; spline policy:
  *
- *   1. Aim toward the next checkpoint center, with small per-tick jitter.
- *   2. Hold thrust at 0.85 (high cruise) — boost only via power-ups.
- *   3. If a power-up is held + off cooldown, fire it ~30% of ticks.
- *   4. Don't sprint into a corner blind: when the angle between the
- *      current heading and the next-checkpoint direction is large,
- *      drop thrust to 0.6 to allow the velocity to swing.
- *   5. If somehow off the track (perpendicular distance from centerline
- *      > REEF_TRACK_HALF_WIDTH * 1.5), aim back toward the next
- *      checkpoint center directly with full thrust.
+ *   1. Track a stable spline lane and bias toward nearby boost pads.
+ *   2. Rubber-band cruise thrust against the whole-race leader.
+ *   3. Spread the pack with stable per-avatar skill tiers.
+ *   4. Spend banked items more aggressively while trailing.
+ *   5. Preserve the centerline recovery safety net for a wedged bot.
  *
  * Stateless beyond avatarId — chunk #10 pattern.
  */
@@ -36,6 +32,7 @@ import {
   SLIPSTREAM_MAX_DISTANCE,
   REEF_POWERUP_RADIUS,
   REEF_RACE_USE_SPLINE,
+  buildSplineBoostPads,
   type ReefCheckpointAabb,
   type ReefBoostRibbon,
   type ReefHazardPatch,
@@ -145,14 +142,31 @@ const V2_PICKUP_DEVIATION_FRACTION = 0.4;
 
 /** Module-scope spline built from the exact same shared v7 track as the sim. */
 const BOT_SPLINE = new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true });
+const BOT_SPLINE_BOOST_PADS = buildSplineBoostPads().map((pad) => ({
+  lateralOffset: pad.lateralOffset,
+  progress: BOT_SPLINE.arclengthFromT(pad.t) / BOT_SPLINE.totalArcLength,
+}));
 
-function stableLaneOffset(avatarId: string): number {
+const V2_SKILL_MULTIPLIERS = [0.95, 0.98, 1.0] as const;
+
+function fnv1a(avatarId: string, salt = ''): number {
   let hash = 0x811c9dc5;
-  for (let i = 0; i < avatarId.length; i += 1) {
-    hash ^= avatarId.charCodeAt(i);
+  const value = avatarId + salt;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
     hash = Math.imul(hash, 0x01000193);
   }
-  return (hash >>> 0) % (V2_MAX_LATERAL_OFFSET_WU * 2 + 1) - V2_MAX_LATERAL_OFFSET_WU;
+  return hash >>> 0;
+}
+
+function stableLaneOffset(avatarId: string): number {
+  return fnv1a(avatarId) % (V2_MAX_LATERAL_OFFSET_WU * 2 + 1) - V2_MAX_LATERAL_OFFSET_WU;
+}
+
+function stableSkillMultiplier(avatarId: string): number {
+  return V2_SKILL_MULTIPLIERS[
+    fnv1a(avatarId, '#reef-skill') % V2_SKILL_MULTIPLIERS.length
+  ];
 }
 
 /**
@@ -234,12 +248,14 @@ class ReefRaceBot implements BotController {
   private lineModeForCheckpoint: number = -1;
 
   private readonly splineLaneOffset: number;
+  private readonly skillMultiplier: number;
   private readonly itemUseDelayMs: number;
   private bankedItemKind: string | null = null;
   private bankedItemAtMs = 0;
 
   constructor(public readonly avatarId: string) {
     this.splineLaneOffset = stableLaneOffset(avatarId);
+    this.skillMultiplier = stableSkillMultiplier(avatarId);
     this.itemUseDelayMs = 2_000 + Math.abs(this.splineLaneOffset) * 12;
   }
 
@@ -718,10 +734,26 @@ class ReefRaceBot implements BotController {
       V2_MAX_LATERAL_OFFSET_WU,
       halfW * V2_MAX_LATERAL_FRACTION,
     );
-    const lateralOffset = Math.max(
+    let lateralOffset = Math.max(
       -lateralLimit,
       Math.min(lateralLimit, this.splineLaneOffset + curveOffset),
     );
+
+    // Pads expose raw spline t; compare only after the module-scope arclength
+    // conversion, using a seam-safe forward progress delta. Full snap
+    // guarantees line-up through the 170wu-half-width catch zone regardless
+    // of lane.
+    let seekingBoostPad = false;
+    for (const pad of BOT_SPLINE_BOOST_PADS) {
+      const forwardProgress = (pad.progress - progress + 1) % 1;
+      if (forwardProgress < 0.004 || forwardProgress > lookaheadProgress) continue;
+      lateralOffset = Math.max(
+        -lateralLimit,
+        Math.min(lateralLimit, pad.lateralOffset),
+      );
+      seekingBoostPad = true;
+      break;
+    }
 
     const normalLook = spline.normalAt(tLook);
     let targetX = lookCenter.x + normalLook.x * lateralOffset;
@@ -732,7 +764,7 @@ class ReefRaceBot implements BotController {
     // within 40% of widthAt(t). When `view.pickups` is absent (Wave 2 sim
     // hasn't populated it yet), this branch no-ops gracefully.
     const pickups = view.pickups;
-    if (pickups && pickups.length > 0) {
+    if (!seekingBoostPad && pickups && pickups.length > 0) {
       const lookRadius = REEF_POWERUP_RADIUS * V2_PICKUP_LOOKAHEAD_MULT;
       const lookRadiusSq = lookRadius * lookRadius;
       const deviationBudget = halfW * V2_PICKUP_DEVIATION_FRACTION;
@@ -770,15 +802,32 @@ class ReefRaceBot implements BotController {
       dz = tg0.z;
     }
 
-    // Thrust — drop on big heading mismatch (let the body swing).
-    let thrust = 0.85;
+    const selfTotalProgress = (self.lap ?? 0) + progress;
+    const liveProgress = view.bodies
+      .filter((body) => body.alive)
+      .map((body) => (body.lap ?? 0) + (body.progress ?? 0))
+      .sort((a, b) => b - a);
+    const leaderProgress = liveProgress[0] ?? selfTotalProgress;
+    const secondProgress = liveProgress[1] ?? leaderProgress;
+    const behindGap = Math.max(0, leaderProgress - selfTotalProgress);
+
+    // Rubber-band cruise: trailers close the gap while a runaway leader eases.
+    let thrust = behindGap > 0.010
+      ? 0.92 + Math.min(1, (behindGap - 0.010) / 0.020) * 0.08
+      : 0.92;
+    if (
+      selfTotalProgress >= leaderProgress &&
+      leaderProgress - secondProgress > 0.020
+    ) {
+      thrust = 0.86;
+    }
     let dot = 1;
     const speed = Math.hypot(self.vx, self.vy);
     if (speed > 1) {
       const headingX = self.vx / speed;
       const headingZ = self.vy / speed;
       dot = dx * headingX + dz * headingZ;
-      if (dot < 0.3) thrust = 0.6;
+      if (dot < 0.3) thrust = 0.72;
     }
     void dot; // currently informational; reserved for tighter cornering tuning
 
@@ -823,7 +872,7 @@ class ReefRaceBot implements BotController {
       view.now - this.bankedItemAtMs >= this.itemUseDelayMs
     ) {
       const ownPlacement = this.getOwnPlacement(view);
-      const useChance =
+      const placementUseChance =
         ownPlacement === null
           ? POWERUP_USE_CHANCE
           : ownPlacement <= 1
@@ -831,7 +880,13 @@ class ReefRaceBot implements BotController {
             : ownPlacement >= 8
               ? 0.45
               : 0.30 + (ownPlacement - 1) * (0.15 / 7);
-      if (Math.random() < useChance) {
+      const useChance = Math.min(
+        1,
+        placementUseChance + (behindGap > 0.015 ? 0.30 : 0),
+      );
+      const aggressiveTurbo =
+        behindGap > 0.015 && queuedItem.kind === 'rr-turbo-bubble';
+      if (aggressiveTurbo || Math.random() < useChance) {
         actionBits |= ACTION_BIT_POWERUP_0;
         this.bankedItemAtMs = view.now;
       }
@@ -839,7 +894,9 @@ class ReefRaceBot implements BotController {
 
     return {
       dir: { x: dx, y: dz }, // protocol y = sim z
-      thrust: inGrace ? 0.4 : thrust,
+      thrust: inGrace
+        ? 0.4
+        : Math.max(0, Math.min(1, thrust * this.skillMultiplier)),
       actionBits,
     };
   }

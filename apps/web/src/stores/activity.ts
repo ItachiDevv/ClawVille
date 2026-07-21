@@ -281,6 +281,20 @@ export interface ActivityState {
   lastBoostPadEvent: { avatarId: string; padId: string; at: number } | null;
   /** Last Reef Race countdown launch verdict (self-filtered by consumers). */
   lastLaunchEvent: { avatarId: string; kind: 'boost' | 'stall'; at: number } | null;
+  /** Last self Reef Race wall-slam event. */
+  lastWallSlamEvent: {
+    avatarId: string;
+    position: { x: number; y: number };
+    power: number;
+    at: number;
+  } | null;
+  /** Last self Reef Race wipeout start. */
+  lastWipeoutEvent: {
+    avatarId: string;
+    position: { x: number; y: number };
+    respawnAtMs: number;
+    at: number;
+  } | null;
 
   // ── Reef Race Phase 3 — self avatar's racing class + level (HUD chip) ─────
   /**
@@ -490,6 +504,7 @@ function applyEntityDelta(
       ...(typeof c.totalLaps === 'number' ? { totalLaps: c.totalLaps } : {}),
       // Boost state is forwarded for all avatars so visible riders can show FX.
       ...(typeof c.boosting === 'boolean' ? { boosting: c.boosting } : {}),
+      ...(typeof c.wipedOut === 'boolean' ? { wipedOut: c.wipedOut } : {}),
     });
     return;
   }
@@ -516,6 +531,7 @@ function applyEntityDelta(
     ...(typeof c.lap === 'number' ? { lap: c.lap } : {}),
     ...(typeof c.totalLaps === 'number' ? { totalLaps: c.totalLaps } : {}),
     ...(typeof c.boosting === 'boolean' ? { boosting: c.boosting } : {}),
+    ...(typeof c.wipedOut === 'boolean' ? { wipedOut: c.wipedOut } : {}),
   });
 }
 
@@ -544,6 +560,7 @@ function hydrateFromWorld(world: WorldState, snapshotAtMs: number | undefined): 
       ...(typeof e.height === 'number' ? { height: e.height } : {}),
       ...(typeof e.speedMod === 'number' ? { speedMod: e.speedMod } : {}),
       ...(typeof e.boosting === 'boolean' ? { boosting: e.boosting } : {}),
+      ...(typeof e.wipedOut === 'boolean' ? { wipedOut: e.wipedOut } : {}),
     });
   }
   const pickups = new Map<string, BumperPickup>();
@@ -602,6 +619,8 @@ function emptyState(): Pick<
   | 'lastRampLaunchEvent'
   | 'lastBoostPadEvent'
   | 'lastLaunchEvent'
+  | 'lastWallSlamEvent'
+  | 'lastWipeoutEvent'
   | 'selfRacingClass'
   | 'selfLevel'
   | 'selfStreak'
@@ -647,6 +666,8 @@ function emptyState(): Pick<
     lastRampLaunchEvent: null,
     lastBoostPadEvent: null,
     lastLaunchEvent: null,
+    lastWallSlamEvent: null,
+    lastWipeoutEvent: null,
     // Phase 3 — Reef Race self-avatar build summary (populated on snapshot.init)
     selfRacingClass: null,
     selfLevel: 1,
@@ -1207,6 +1228,34 @@ export const useActivityStore = create<ActivityState>()(
         // self-only itself.
         case 'event.boost_pad': {
           set({ lastBoostPadEvent: { avatarId: frame.avatarId, padId: frame.padId, at: Date.now() } });
+          break;
+        }
+
+        case 'event.wall_slam': {
+          if (state.selfAvatarId && frame.avatarId === state.selfAvatarId) {
+            set({
+              lastWallSlamEvent: {
+                avatarId: frame.avatarId,
+                position: frame.position,
+                power: frame.power,
+                at: Date.now(),
+              },
+            });
+          }
+          break;
+        }
+
+        case 'event.wipeout': {
+          if (state.selfAvatarId && frame.avatarId === state.selfAvatarId) {
+            set({
+              lastWipeoutEvent: {
+                avatarId: frame.avatarId,
+                position: frame.position,
+                respawnAtMs: frame.respawnAtMs,
+                at: Date.now(),
+              },
+            });
+          }
           break;
         }
 

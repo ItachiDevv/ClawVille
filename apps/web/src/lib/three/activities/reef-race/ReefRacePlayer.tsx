@@ -281,17 +281,12 @@ function resolveRegistryEntry(species: string): ModelRegistryEntry | undefined {
   return (MODEL_REGISTRY as Record<string, ModelRegistryEntry>)[species];
 }
 
-/**
- * Maximum squared position delta used to identify a respawn teleport. At the
- * 2405wu/s legitimate boost cap and effective 15Hz snapshot cadence, normal
- * travel is ≈160.3wu/snapshot. 1000wu is >6× above that, leaving ample margin
- * without false positives from high-speed straight-line movement.
- */
-const WIPEOUT_TELEPORT_THRESHOLD_SQ = 1000 * 1000;
-
-/** Per-avatarId last known XZ (for wipeout teleport detection). Module scope,
- * no per-frame allocations. Cleaned up on component unmount. */
-const _lastXZ: Record<string, { x: number; z: number }> = {};
+/** Server wipeout duration and allocation-free child-transform presentation. */
+const WIPEOUT_PRESENTATION_DURATION_S = 3.2;
+const WIPEOUT_TUMBLE_RADIANS = Math.PI * 4;
+const WIPEOUT_SINK_LOCAL = 30 / KART_SCALE;
+const RESPAWN_POP_DURATION_S = 0.3;
+const RESPAWN_POP_AMOUNT = 0.15;
 
 /** Deduplicated warn set — log each unique unrecognized species key only once. */
 const _warnedUnknownSpeciesKeys = new Set<string>();
@@ -975,6 +970,9 @@ function ReefRacePlayerInner({
 
   // Fade state for finish (not elimination — racers don't vanish on finish).
   const finishedRef = useRef(false);
+  const wasWipedOutRef = useRef(false);
+  const wipeoutStartedAtRef = useRef(0);
+  const respawnPopRemainingRef = useRef(0);
 
   // ─── Interpolation state ────────────────────────────────────────────────────
   // Ring buffer of received snapshots.
@@ -1277,17 +1275,12 @@ function ReefRacePlayerInner({
       // keyed by avatarId across ALL its callers (reef + bumper-shells + the
       // avatar preview), so this defensively clears any stale entry.
       resetTransformSwimState(entity.avatarId);
-      // _lastXZ cleanup is handled by the dedicated useEffect below (covers VRM path too).
     };
   }, [clonedScene, entity.avatarId, speciesKey]);
 
-  // Dedicated cleanup for _lastXZ: runs for BOTH GLB and VRM paths.
-  // The clonedScene effect above has an early-return guard (`if (!mount || !clonedScene)`)
-  // so VRM riders (clonedScene=null) never reach the delete there, leaking a stale
-  // XZ entry across unmount/remount and triggering a spurious wipeout on rejoin.
+  // Per-avatar render/elevation cache cleanup for both GLB and VRM paths.
   useEffect(() => {
     return () => {
-      delete _lastXZ[entity.avatarId];
       delete _surfPoseDamping[entity.avatarId];
       // SURF ROAD: drop the per-kart elevation XZ→t cache key so the Map in
       // reef-race-elevation doesn't accrete dead avatarIds across remounts.
@@ -1625,7 +1618,30 @@ function ReefRacePlayerInner({
         }
         lastAuthorityArrivalRef.current = arrivedAtMs;
 
-        if (!predictInitRef.current) {
+        if (entity.wipedOut) {
+          // Wipeout is fully server-authoritative. Snap the prediction anchors
+          // to each received body pose, clear local time/history, and let the
+          // normal snapshot interpolation below render between those poses.
+          pred.x = sx;
+          pred.z = sz;
+          pred.vx = svx;
+          pred.vz = svz;
+          pred.rot = srot;
+          prevTickRef.current.x = sx;
+          prevTickRef.current.z = sz;
+          prevTickRef.current.vx = svx;
+          prevTickRef.current.vz = svz;
+          prevTickRef.current.rot = srot;
+          rebaseRenderOffsetRef.current.x = 0;
+          rebaseRenderOffsetRef.current.z = 0;
+          rebaseRenderOffsetRef.current.rot = 0;
+          predictInitRef.current = true;
+          predictAccumRef.current = 0;
+          predictionTimeRef.current = arrivedAtMs;
+          predictedBoostPadInsideRef.current!.clear();
+          clearPredictionHistory(predictionHistory);
+          pushPredictionSample(predictionHistory, predictionTimeRef.current, pred);
+        } else if (!predictInitRef.current) {
           // First snapshot — initialise predicted state directly from authority.
           pred.x = sx;
           pred.z = sz;
@@ -1744,25 +1760,19 @@ function ReefRacePlayerInner({
         }
       }
 
-      // Respawn detection for render-filter reset + SPEC 2 VRM wipeout.
-      // Server doesn't surface respawnAt to the client yet (see §C.2 in the plan).
-      // Heuristic: detect XZ teleport > 1000wu in one snapshot interval. That
-      // remains >6× the 160.3wu legitimate boosted travel at effective 15Hz.
-      // Fires once per new snapshot, inside this guard, not per frame.
-      const prev = _lastXZ[entity.avatarId];
-      if (prev) {
-        const dx = entity.x - prev.x;
-        const dz = entity.y - prev.z; // entity.y = sim-Y = Three.js Z
-        const distSq = dx * dx + dz * dz;
-        if (distSq > WIPEOUT_TELEPORT_THRESHOLD_SQ) {
-          // Never ease old wave state across a server respawn/teleport.
-          surfPoseDamping.initialized = false;
-          if (isVRM && vrmAnimatorRef.current) {
-            void vrmAnimatorRef.current.playOneShot('wipeout');
-          }
+      // Authoritative wipeout/respawn edge; never infer this from teleport distance.
+      const wipedOut = entity.wipedOut === true;
+      if (wipedOut && !wasWipedOutRef.current) {
+        wipeoutStartedAtRef.current = surfTime;
+        respawnPopRemainingRef.current = 0;
+        if (isVRM && vrmAnimatorRef.current) {
+          void vrmAnimatorRef.current.playOneShot('wipeout');
         }
+      } else if (!wipedOut && wasWipedOutRef.current) {
+        surfPoseDamping.initialized = false;
+        respawnPopRemainingRef.current = RESPAWN_POP_DURATION_S;
       }
-      _lastXZ[entity.avatarId] = { x: entity.x, z: entity.y };
+      wasWipedOutRef.current = wipedOut;
     }
 
     // ─── Interpolation (BUG FIX Bug 1) ───────────────────────────────────────
@@ -1824,7 +1834,7 @@ function ReefRacePlayerInner({
       interpRot = lerpAngle(rotA, rotB, t);
 
       const latest = snapshotAtIndex(history, history.size - 1);
-      if (renderTime > latest.t) {
+      if (renderTime > latest.t && !entity.wipedOut) {
         const extrapMs = Math.min(INTERP_EXTRAP_MAX_MS, renderTime - latest.t);
         interpX = latest.x + latest.vx * extrapMs * 0.001;
         interpZ = latest.z + latest.vz * extrapMs * 0.001;
@@ -1867,7 +1877,7 @@ function ReefRacePlayerInner({
     // also comes from prediction so the lean matches the rendered heading.
     // Remote karts use the adaptive interpolation/recovery path above; v1 does
     // not enable self prediction.
-    if (predictsSelf && predictInitRef.current) {
+    if (predictsSelf && !entity.wipedOut && predictInitRef.current) {
       const pred = predictedRef.current;
       const dirInput = selfInputBus.valid ? selfInputBus.dir : null;
       const thrustInput = selfInputBus.valid ? selfInputBus.thrust : 0;
@@ -1977,6 +1987,14 @@ function ReefRacePlayerInner({
       selfPoseBus.valid = true;
       selfPoseBus.updatedAt = performance.now();
 
+    } else if (predictsSelf && entity.wipedOut) {
+      // Keep ChaseCamera on the same authoritative/interpolated pose as the
+      // wiped-out body while local prediction is suspended.
+      selfPoseBus.x = interpX;
+      selfPoseBus.z = interpZ;
+      selfPoseBus.rot = interpRot;
+      selfPoseBus.valid = true;
+      selfPoseBus.updatedAt = performance.now();
     }
 
     // ─── Apply interpolated/predicted XZ transform to groupRef ────────────────
@@ -2121,6 +2139,26 @@ function ReefRacePlayerInner({
     // Bank uses render-interpolated velocity relative to render-interpolated
     // facing, then damps the applied slip lean so 30 Hz state never steps.
     // MOVES HERE from meshRootRef — now the BOARD tilts; the rider stays level.
+    // Authoritative wipeout presentation composes on the glider child so it
+    // never fights groupRef's server XZ/yaw or the shared wave/bank datum.
+    if (entity.wipedOut) {
+      const elapsed = Math.max(0, surfTime - wipeoutStartedAtRef.current);
+      const progress = Math.min(1, elapsed / WIPEOUT_PRESENTATION_DURATION_S);
+      const sinkProgress = 1 - (1 - progress) * (1 - progress);
+      glider.rotation.y = progress * WIPEOUT_TUMBLE_RADIANS;
+      glider.position.y = GLIDER_LOCAL_Y - sinkProgress * WIPEOUT_SINK_LOCAL;
+    } else {
+      glider.rotation.y = 0;
+      glider.position.y = GLIDER_LOCAL_Y;
+      const popRemaining = respawnPopRemainingRef.current;
+      if (popRemaining > 0) {
+        const popProgress = 1 - popRemaining / RESPAWN_POP_DURATION_S;
+        const popScale = 1 + Math.sin(popProgress * Math.PI) * RESPAWN_POP_AMOUNT;
+        glider.scale.multiplyScalar(popScale);
+        respawnPopRemainingRef.current = Math.max(0, popRemaining - dt);
+      }
+    }
+
     glider.rotation.z = -surfPoseDamping.bankLean * 0.15;
 
     // Dev-only render-pose probe — lets the headless harness measure
@@ -2181,9 +2219,7 @@ function ReefRacePlayerInner({
       //   finishedAt → victory   (one-shot, holds last frame)
       //   speed > 50 → swim      (loop)
       //   else        → idle     (loop)
-      // Note: 'wipeout' (respawnAt) and 'hit' (knockback) are not derivable from
-      // ReefRaceEntity yet — server doesn't surface respawnAt to the client.
-      // Ship them in a follow-up after the wire-format adds the fields.
+      // Wipeout is driven separately by the authoritative entity boolean above.
       animator.tick(dt);
       const desiredState: SeaCreatureAnimState = entity.finishedAt
         ? 'victory'

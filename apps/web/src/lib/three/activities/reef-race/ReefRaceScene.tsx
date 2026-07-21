@@ -310,9 +310,16 @@ function ChaseCamera({ selfEntity, selfIsStaged, shakeRef }: ChaseCamProps) {
     const surgeEnvelope = surgeSnapshot.magnitude > 0
       ? surgeStrength / surgeSnapshot.magnitude
       : 0;
-    const surgeFov = CAMERA_BASE_FOV +
-      (10 + 4 * surgeSnapshot.magnitude) * surgeEnvelope;
-    const surgePullback = 1 + CAMERA_SURGE_PULLBACK * surgeStrength;
+    const wallSlamSurge = surgeSnapshot.source === 'wall-slam';
+    const surgeFov = CAMERA_BASE_FOV + (
+      wallSlamSurge
+        ? -(5 + 3 * surgeSnapshot.magnitude) * surgeEnvelope
+        : (10 + 4 * surgeSnapshot.magnitude) * surgeEnvelope
+    );
+    // Positive surges pull back to reveal more speed; a slam punches inward.
+    const surgePullback = 1 + (
+      wallSlamSurge ? -0.05 : CAMERA_SURGE_PULLBACK
+    ) * surgeStrength;
     const activeCamera = camera as THREE.PerspectiveCamera;
     if (
       Math.abs(activeCamera.fov - surgeFov) > 0.02 ||
@@ -501,17 +508,23 @@ function ChaseCamera({ selfEntity, selfIsStaged, shakeRef }: ChaseCamProps) {
 
     // Screen shake — decay and apply camera position offset.
     // shakeRef.current holds magnitude in wu. Decays at 2.5×/second.
+    let shakeMagnitude = 0;
     if (shakeRef.current > 0.01) {
       shakeRef.current = Math.max(0, shakeRef.current - delta * 2.5 * shakeRef.current);
-      const mag = shakeRef.current;
-      _shakeOffset.set(
-        (Math.random() * 2 - 1) * mag,
-        (Math.random() * 2 - 1) * mag * 0.5,
-        (Math.random() * 2 - 1) * mag * 0.5,
-      );
-      cam.position.add(_shakeOffset);
+      shakeMagnitude = shakeRef.current;
     } else {
       shakeRef.current = 0;
+    }
+    if (wallSlamSurge) {
+      shakeMagnitude = Math.max(shakeMagnitude, surgeStrength * 10);
+    }
+    if (shakeMagnitude > 0.01) {
+      _shakeOffset.set(
+        (Math.random() * 2 - 1) * shakeMagnitude,
+        (Math.random() * 2 - 1) * shakeMagnitude * 0.5,
+        (Math.random() * 2 - 1) * shakeMagnitude * 0.5,
+      );
+      cam.position.add(_shakeOffset);
     }
   // ReefRacePlayer publishes selfPoseBus at -2. Reading at -1 guarantees this
   // frame's rendered pose while negative priority preserves automatic render;

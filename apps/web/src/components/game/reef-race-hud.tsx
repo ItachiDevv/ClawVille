@@ -72,6 +72,7 @@ import { useIsMobile } from '@/hooks/use-is-mobile';
 // and revert to lap-counter-only HUD.
 // Reference: .claude/plans/reef-race-v2.md
 const USE_SPLINE = process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
+const WIPEOUT_DURATION_MS = 3_200;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -210,14 +211,81 @@ function ReefRaceSpeedometer({ selfAvatarId }: { selfAvatarId: string | null }) 
   );
 }
 
-/**
- * v2 — horizontal arclength progress bar. Replaces <LapCounter> when the
- * spline sim is enabled. Reads `entity.progress` (0..1 fraction of the
- * river spline arclength) emitted on every snapshot.delta tick.
- *
- * Sits in the same top-left slot the lap counter used (200×14 wu wide /
- * tall) so the surrounding HUD column doesn't reflow when the flag flips.
- */
+/** Server-authoritative wipeout vignette and respawn countdown. */
+function ReefRaceWipeoutOverlay({ selfAvatarId }: { selfAvatarId: string | null }) {
+  const wipedOut = useActivityStore((state) =>
+    selfAvatarId
+      ? (state.entities.get(selfAvatarId) as ReefRaceEntity | undefined)?.wipedOut === true
+      : false,
+  );
+  const wipeoutEvent = useActivityStore((state) => state.lastWipeoutEvent);
+  const serverClockOffsetMs = useActivityStore((state) => state.serverClockOffsetMs);
+  const [remainingSeconds, setRemainingSeconds] = useState(0);
+
+  useEffect(() => {
+    if (!wipedOut) {
+      setRemainingSeconds(0);
+      return;
+    }
+    const selfEvent = wipeoutEvent?.avatarId === selfAvatarId ? wipeoutEvent : null;
+    const deadline = selfEvent
+      ? serverClockOffsetMs != null
+        ? selfEvent.respawnAtMs + serverClockOffsetMs
+        : selfEvent.at + WIPEOUT_DURATION_MS
+      : Date.now() + WIPEOUT_DURATION_MS;
+    const tick = () => {
+      setRemainingSeconds(Math.max(0, Math.ceil((deadline - Date.now()) / 1000)));
+    };
+    tick();
+    const id = window.setInterval(tick, 100);
+    return () => window.clearInterval(id);
+  }, [selfAvatarId, serverClockOffsetMs, wipedOut, wipeoutEvent]);
+
+  if (!wipedOut) return null;
+
+  return (
+    <div
+      aria-live="polite"
+      aria-label={`Wiped out. Respawning in ${remainingSeconds} seconds.`}
+      style={{
+        position: 'absolute',
+        inset: 0,
+        // Above the sibling HUD tiles (item dock renders later in DOM order):
+        // the vignette dims the whole HUD during a wipeout and the countdown
+        // pill must not hide behind the bottom-center item dock.
+        zIndex: 20,
+        pointerEvents: 'none',
+        background:
+          'radial-gradient(circle at center, transparent 22%, rgba(4,6,12,.42) 64%, rgba(0,0,0,.88) 100%)',
+      }}
+    >
+      <div
+        style={{
+          position: 'absolute',
+          left: '50%',
+          // Clear of the bottom-center item dock (~25% of viewport height).
+          bottom: '31%',
+          transform: 'translateX(-50%)',
+          padding: '8px 14px',
+          borderRadius: 999,
+          border: '1px solid #ff6b6b88',
+          background: 'rgba(0,0,0,.68)',
+          color: '#ffd1d1',
+          fontSize: 12,
+          fontWeight: 800,
+          letterSpacing: '0.12em',
+          textTransform: 'uppercase',
+          fontVariantNumeric: 'tabular-nums',
+          boxShadow: '0 0 20px rgba(255,107,107,.25)',
+        }}
+      >
+        respawning… {remainingSeconds}
+      </div>
+    </div>
+  );
+}
+
+/** v2 horizontal arclength progress bar, kept for the legacy linear layout. */
 function ProgressBar({ selfAvatarId }: { selfAvatarId: string | null }) {
   const progress = useActivityStore((s) => {
     if (!selfAvatarId) return 0;
@@ -1175,6 +1243,7 @@ export default function ReefRaceHud({
 
       {/* Center: Apex verdict + hazard hit + ribbon boost toasts — Phase 2 */}
       <ReefRaceEventToasts />
+      <ReefRaceWipeoutOverlay selfAvatarId={selfAvatarId} />
 
       {/* Bottom-center: queued items. */}
       <div

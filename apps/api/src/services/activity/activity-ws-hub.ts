@@ -742,6 +742,7 @@ class ActivityWsHub {
             height?: number;
             speedMod?: number;
             boosting?: boolean;
+            wipedOut?: boolean;
             inventory?: Array<{
               kind: string | null;
               charges: number;
@@ -766,6 +767,7 @@ class ActivityWsHub {
             ...(bb.height && bb.height !== 0 ? { height: bb.height } : {}),
             speedMod: bb.speedMod,
             boosting: bb.boosting,
+            wipedOut: bb.wipedOut,
             inventory: bb.inventory,
           });
         }
