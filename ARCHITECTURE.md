@@ -1,5 +1,7 @@
 # ClawVille — Architecture
 
+**Last Audited:** 2026-07-20 (**Hourly inference usage report to Telegram; local diff.**) `InferenceRouter` now keeps defensive process-lifetime usage/blackout snapshots at its existing served/final-failure sites. New `inference-usage-reporter.ts` sends a production-default itachi-debug heartbeat about five minutes after boot and hourly thereafter, reporting window deltas, paid OpenAI token/cost estimates, local endpoint calls, all-endpoint failures, and currently-open breakers. `INFERENCE_USAGE_REPORT='on'|'off'` overrides the production-only default. **Drift note:** no database persistence, routing/breaker behavior, served-log format, schema, protocol, or gameplay flow changed.
+
 **Last Audited:** 2026-07-20 (**ElizaOS message-memory retention sweeper; local diff.**) New `message-memory-sweeper.ts` prunes only stale `memories.type='messages'` conversation transcripts in bounded 2,000-row batches after a two-minute boot settle and every 24 hours. The plugin-sql `knowledge` rows are outside the DELETE predicate and remain untouched. **Drift note:** no schema, runtime history/knowledge-provider, agent protocol, or gameplay flow changed.
 
 **Last Audited:** 2026-07-20 (**Kelp Forest upgrade Legs A+B; local diff pending visual sign-off.**) The shared graph now derives exactly three spore beacons as the dead-end nodes with greatest graph distance from entry. `/api/kelp/beacon/:beaconId/visit` retains the same avatar/session, adjacency, expiry, and physical-time-floor checks, orders `adjacent` with `sha256(avatarId + ':' + beaconId)`, and extends the opaque HMAC body from `avatarId|beaconId|issuedAtMs` to `avatarId|beaconId|issuedAtMs|sporeMask`; visiting a spore ORs its bit before issuing the next token. Every successful visit returns `spores { found, total: 3 }` and spore visits add `spore: true`. `/api/kelp/claim` requires a complete center-token mask and returns `409 { code: 'spores_missing', found, total }` otherwise; the existing transaction, idempotency, stable `kelp-maze-collectible` lookup, and grant semantics are unchanged. No table, migration, env var, vCLAW movement, or leaderboard weight. `PROTOCOL_VERSION` is 30; all seven action verbs and Hatcher register/PATCH/stats/signing/auth wire shapes are unchanged. PARITY: human path: `/kelp` through the beacon/claim REST pair; agent path: the same endpoints with its session header; both chains and the eventual grant bind to the middleware-resolved avatar.
@@ -306,6 +308,7 @@ The switch gates the driver's 30-second steady-state tick body and reconcile pas
 | `agent-collaboration` | Agent ↔ agent consultation helper. Emits `agent.collaboration.turn` per consulted expert. |
 | `agent-orchestrator` | Lazy-starts ElizaOS runtimes on first chat, auto-stops after 30 min idle. System agents (singletons) are exempt from the sweep. |
 | `alert-error` | Itachi-debug Telegram bot. 1/60s collapse per `${source}::${message}` with suppressed-count suffix. Required env: `ITACHI_DEBUG_BOT_TOKEN`, `ITACHI_DEBUG_CHAT_ID`. Degrades to `console.warn` when creds missing. |
+| `inference-usage-reporter` | Process-local inference usage heartbeat through the itachi-debug Telegram bot. Reads cumulative `InferenceRouter.usageSnapshot()` counters, sends a since-boot report after ~5 minutes, then hourly deltas with OpenAI token/cost estimates, local endpoint totals, blackout deltas, and current breaker warnings. Enabled by default only when `CLAWVILLE_ENV='production'`; boot/shutdown wiring is fail-soft and idempotent. No DB persistence. |
 | `article-scraper` | Pulls + normalizes external articles into `research_articles`. |
 | `auth-challenge` | Phase 5.1 in-memory nonce store for signed-challenge reconnect. 60s TTL, single-use, 10k-entry spam cap. Migrate to Redis when multi-pod. |
 | `claw-token-ledger` | Canonical write path for `claw_token_transactions`. `transferClawTokens()` does the atomic 2-avatar transfer and emits `tokens.settled` on success. **Never bypass — never write `avatars.clawTokens` directly.** |
@@ -373,6 +376,7 @@ The switch gates the driver's 30-second steady-state tick body and reconcile pas
 | Variable | Purpose |
 |---|---|
 | `MESSAGE_MEMORY_RETENTION_DAYS` | ElizaOS conversation-transcript retention in days (default 7, minimum 1; `0` disables the sweeper). Applies only to `memories.type='messages'`; knowledge rows are never touched. |
+| `INFERENCE_USAGE_REPORT` | Hourly Telegram inference-usage report via the itachi-debug bot. Default is enabled only when `CLAWVILLE_ENV='production'`; exact `'on'` / `'off'` values force enable / disable in any environment. |
 
 ---
 

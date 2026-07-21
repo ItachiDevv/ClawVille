@@ -41,6 +41,30 @@ export interface AlertErrorParams {
   context?: Record<string, unknown>;
 }
 
+/** Send raw text through the itachi-debug Telegram bot. Never throws. */
+export async function sendTelegramText(text: string): Promise<void> {
+  if (!TOKEN || !CHAT_ID) {
+    console.warn('[alert-error] Telegram credentials not configured, skipping send', {
+      text,
+    });
+    return;
+  }
+
+  try {
+    await fetch(`https://api.telegram.org/bot${TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: CHAT_ID,
+        text,
+        parse_mode: 'Markdown',
+      }),
+    });
+  } catch (err) {
+    console.warn('[alert-error] Telegram send failed', err);
+  }
+}
+
 export async function alertError(params: AlertErrorParams): Promise<void> {
   const { severity, source, context } = params;
   // Redact any agent bearer sessionId from the message at the TOP — covers ALL
@@ -82,17 +106,5 @@ export async function alertError(params: AlertErrorParams): Promise<void> {
     lines.push(`_(+${suppressedCount} more in last 60s)_`);
   }
 
-  try {
-    await fetch(`https://api.telegram.org/bot${TOKEN}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: CHAT_ID,
-        text: lines.join('\n'),
-        parse_mode: 'Markdown',
-      }),
-    });
-  } catch (err) {
-    console.warn('[alert-error] Telegram send failed', err);
-  }
+  await sendTelegramText(lines.join('\n'));
 }

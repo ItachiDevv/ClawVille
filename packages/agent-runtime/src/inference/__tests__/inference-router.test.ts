@@ -394,6 +394,130 @@ describe('InferenceRouter routing', () => {
   });
 });
 
+describe('InferenceRouter usage snapshot', () => {
+  it('accumulates served calls and provider token counts per route, endpoint, and model', async () => {
+    let openaiCall = 0;
+    const r = new InferenceRouter({
+      endpoints: [OPENAI, { ...PRIMARY, provider: 'ollama' }],
+      routes: {
+        teacher: ['openai'],
+        fleet: ['local-primary', 'openai'],
+        'hosted-user': ['openai'],
+        default: ['openai'],
+      },
+      fetchImpl: (async (url: string | URL | Request) => {
+        if (String(url).endsWith('/api/chat')) {
+          return {
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            text: async () => '',
+            json: async () => ({
+              message: { content: 'local' },
+              prompt_eval_count: 30,
+              eval_count: 12,
+            }),
+          } as unknown as Response;
+        }
+        openaiCall += 1;
+        return {
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          text: async () => '',
+          json: async () => ({
+            choices: [{ message: { content: 'cloud' } }],
+            ...(openaiCall === 1
+              ? { usage: { prompt_tokens: 100, completion_tokens: 25 } }
+              : {}),
+          }),
+        } as unknown as Response;
+      }) as typeof fetch,
+    });
+
+    await r.generateText({ route: 'teacher', size: 'small', messages: [{ role: 'user', content: 'a' }] });
+    await r.generateText({ route: 'teacher', size: 'small', messages: [{ role: 'user', content: 'b' }] });
+    await r.generateText({ route: 'fleet', size: 'small', messages: [{ role: 'user', content: 'c' }] });
+
+    expect(r.usageSnapshot()).toEqual({
+      rows: [
+        {
+          route: 'teacher',
+          endpointId: 'openai',
+          model: 'gpt-4o-mini',
+          calls: 2,
+          inTokens: 100,
+          outTokens: 25,
+        },
+        {
+          route: 'fleet',
+          endpointId: 'local-primary',
+          model: 'qwen3:14b',
+          calls: 1,
+          inTokens: 30,
+          outTokens: 12,
+        },
+      ],
+      blackouts: {},
+    });
+  });
+
+  it('counts calls where all endpoints fail by route', async () => {
+    const { r } = router({
+      'api.openai.com': fail(),
+      'prim.local': fail(),
+      'sec.local': fail(),
+    });
+
+    await expect(
+      r.generateText({ route: 'fleet', size: 'small', messages: [{ role: 'user', content: 'a' }] }),
+    ).rejects.toThrow();
+    await expect(
+      r.generateText({ route: 'teacher', size: 'small', messages: [{ role: 'user', content: 'b' }] }),
+    ).rejects.toThrow();
+    await expect(
+      r.generateText({ route: 'teacher', size: 'small', messages: [{ role: 'user', content: 'c' }] }),
+    ).rejects.toThrow();
+
+    expect(r.usageSnapshot()).toEqual({
+      rows: [],
+      blackouts: { fleet: 1, teacher: 2 },
+    });
+  });
+
+  it('returns defensive copies rather than live usage references', async () => {
+    const { r } = router({
+      'api.openai.com': ok('cloud'),
+      'prim.local': ok('local'),
+      'sec.local': ok('secondary'),
+    });
+    await r.generateText({ route: 'teacher', size: 'small', messages: [{ role: 'user', content: 'ok' }] });
+    const first = r.usageSnapshot();
+    first.rows[0].calls = 999;
+    first.rows.push({
+      route: 'default',
+      endpointId: 'fake',
+      model: 'fake',
+      calls: 999,
+      inTokens: 999,
+      outTokens: 999,
+    });
+    first.blackouts.teacher = 999;
+
+    expect(r.usageSnapshot()).toEqual({
+      rows: [{
+        route: 'teacher',
+        endpointId: 'openai',
+        model: 'gpt-4o-mini',
+        calls: 1,
+        inTokens: 0,
+        outTokens: 0,
+      }],
+      blackouts: {},
+    });
+  });
+});
+
 describe('inference-config env parsing', () => {
   it('unset env ⇒ pure OpenAI (safe default, no local endpoint)', () => {
     const eps = buildEndpointsFromEnv({});
