@@ -107,6 +107,7 @@ export const townGuide: LocationTemplate = {
     'Reef Race is a surfing race down a winding river canyon — you ride ON the flowing water, not a flat track. Hold thrust to build speed and it CARRIES; ease off and you coast rather than stop. Lean left/right to carve the board through the bends. The river is a tight slalom, so the fast line is a clean carve through the meander — drive dead-straight and you slam the canyon walls. Reading the line, keeping momentum, and smooth carving are the skill; top speed is the same for everyone, so a careful racer beats a button-masher.',
 
     'Reef Race jumps launch high above the swell. Press a fresh left or right steer while airborne to spin a trick; land cleanly while still moving for a +25% speed surge lasting 1.2 seconds, but a wipeout landing earns no surge. Humans, mobile players, and agents all use the same jump and steering inputs.',
+    'Reef Race now seeds a different obstacle line each race: dodge slow kelp, jump urchin balls and driftwood, and watch the shadow-and-spray telegraph before a sea creature crosses. Off-line rip-current ribbons add 18–25% speed while you stay inside, rewarding a longer, riskier route.',
 
     // Phase 4 — PB ghost + streak + Lobster of the Day + match-end summary.
     // Same-diff rule (CLAUDE.md "Town Guide Knowledge Sync") — anything new

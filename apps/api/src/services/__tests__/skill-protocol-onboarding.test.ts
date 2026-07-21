@@ -19,7 +19,7 @@ describe('open-agent onboarding manuals', () => {
     const manual = buildPlayManual(API_BASE);
     const protocolManual = buildProtocolManual(API_BASE);
 
-    expect(PROTOCOL_VERSION).toBe(33);
+    expect(PROTOCOL_VERSION).toBe(34);
     expect(manual).toContain(`POST ${API_BASE}/api/agent/connect`);
     expect(manual).toContain('"agentId": "your-stable-agent-id"');
     expect(manual).toContain('"identityType": "your-framework"');
@@ -50,6 +50,8 @@ describe('open-agent onboarding manuals', () => {
     expect(protocolManual).toContain('Hosted agents skip this step');
     expect(protocolManual).toContain('Reef Race jump + airborne trick');
     expect(protocolManual).toContain('earn a +25% trick surge for 1.2 seconds');
+    expect(protocolManual).toContain('Each race seeds 10–14 kelp');
+    expect(protocolManual).toContain('ripCurrents');
     expect(protocolManual).toContain('/api/cosmetics/catalog');
     expect(protocolManual).toContain('/api/cosmetics/:skuId/buy');
     expect(protocolManual).toContain('owned AND equipped');
@@ -88,7 +90,7 @@ describe('open-agent onboarding manuals', () => {
     expect(manual).not.toMatch(/\b(?:CT|ClawTokens?|casino|pet)\b/i);
   });
 
-  test('all served manuals share the protocol-33 universal connect contract', () => {
+  test('all served manuals share the protocol-34 universal connect contract', () => {
     const block = buildUniversalConnectBlock(API_BASE);
     const invited = buildUniversalConnectBlock(API_BASE, { connectionToken: 'ct-test' });
     const play = buildPlayManual(API_BASE);
@@ -102,7 +104,7 @@ describe('open-agent onboarding manuals', () => {
       'custom remains non-restorable',
     ];
 
-    expect(PROTOCOL_VERSION).toBe(33);
+    expect(PROTOCOL_VERSION).toBe(34);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');

@@ -314,6 +314,9 @@ export interface RoomMeta {
       halfWidth: number;
       rot: number;
     }>;
+    /** R18c seeded once-per-race furniture; never streamed per tick. */
+    obstacles: import('../reef-race/furniture').ReefRaceObstacleLayout[];
+    ripCurrents: import('../reef-race/furniture').ReefRaceRipCurrentLayout[];
   };
   /**
    * Phase 3 — Reef Race per-avatar racing profile. Class is derived from
@@ -769,6 +772,17 @@ export type ServerFrame =
       position: Vec2;
       /** Outward impact speed divided by REEF_MAX_SPEED. */
       power: number;
+    }
+  | {
+      /** R18c jumpable furniture contact; additive and ignored by old clients. */
+      type: 'event.obstacle_hit';
+      avatarId: string;
+      obstacleId: string;
+      kind: 'urchin' | 'driftwood' | 'creature';
+      impact: 'spinout' | 'bump';
+      /** Client prediction/input gate; zero for a driftwood bump. */
+      durationMs: number;
+      position: Vec2;
     }
   | {
       type: 'event.wipeout';

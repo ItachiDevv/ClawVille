@@ -311,6 +311,18 @@ export interface ActivityState {
     power: number;
     at: number;
   } | null;
+  /** R18c self obstacle contact; also feeds the existing wall-slam surge path. */
+  lastObstacleHitEvent: {
+    avatarId: string;
+    obstacleId: string;
+    kind: 'urchin' | 'driftwood' | 'creature';
+    impact: 'spinout' | 'bump';
+    durationMs: number;
+    position: { x: number; y: number };
+    at: number;
+  } | null;
+  /** Local epoch deadline used to suspend Reef self input/prediction on spinout. */
+  selfObstacleControlLockedUntil: number;
   /** Last self Reef Race wipeout start. */
   lastWipeoutEvent: {
     avatarId: string;
@@ -645,6 +657,8 @@ function emptyState(): Pick<
   | 'lastSelfTrickLandingEvent'
   | 'lastLaunchEvent'
   | 'lastWallSlamEvent'
+  | 'lastObstacleHitEvent'
+  | 'selfObstacleControlLockedUntil'
   | 'lastWipeoutEvent'
   | 'selfRacingClass'
   | 'selfLevel'
@@ -694,6 +708,8 @@ function emptyState(): Pick<
     lastSelfTrickLandingEvent: null,
     lastLaunchEvent: null,
     lastWallSlamEvent: null,
+    lastObstacleHitEvent: null,
+    selfObstacleControlLockedUntil: 0,
     lastWipeoutEvent: null,
     // Phase 3 — Reef Race self-avatar build summary (populated on snapshot.init)
     selfRacingClass: null,
@@ -1293,6 +1309,34 @@ export const useActivityStore = create<ActivityState>()(
                 position: frame.position,
                 power: frame.power,
                 at: Date.now(),
+              },
+            });
+          }
+          break;
+        }
+
+        case 'event.obstacle_hit': {
+          if (state.selfAvatarId && frame.avatarId === state.selfAvatarId) {
+            const at = Date.now();
+            set({
+              lastObstacleHitEvent: {
+                avatarId: frame.avatarId,
+                obstacleId: frame.obstacleId,
+                kind: frame.kind,
+                impact: frame.impact,
+                durationMs: frame.durationMs,
+                position: frame.position,
+                at,
+              },
+              selfObstacleControlLockedUntil:
+                frame.impact === 'spinout' ? at + frame.durationMs : 0,
+              // Reuse the proven wall-SLAM surge/camera treatment. A bump is
+              // intentionally milder than an urchin/creature spinout.
+              lastWallSlamEvent: {
+                avatarId: frame.avatarId,
+                position: frame.position,
+                power: frame.impact === 'spinout' ? .72 : .38,
+                at,
               },
             });
           }

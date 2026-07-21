@@ -433,6 +433,7 @@ export type ReefBoostKind =
   | 'apex-bonus'        // Phase 2 — positive (+0.05)
   | 'apex-penalty'      // Phase 2 — negative (-0.05)
   | 'hazard-slow'       // Phase 2 — negative (-0.40)
+  | 'rip-current'       // R18c — sustained seeded fast-water lane (+18–25%)
   | 'pad-boost'         // v2 mechanics — positive (boost pad, timed + decays)
   | 'trick-surge';      // R18b — positive (+25% after a clean trick landing)
 

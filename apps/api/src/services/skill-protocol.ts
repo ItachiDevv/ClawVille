@@ -319,7 +319,11 @@ import {
 // now teaches the existing activity WS jump bit + analog-steer trick contract.
 // This is additive gameplay knowledge only: no [ACTION:] verb, executor bound,
 // auth, settlement, partner-signed route, or frozen connect-pointer shape changed.
-export const PROTOCOL_VERSION = 33;
+// NOTE (2026-07-21, Reef Race seeded furniture): bumped 33 -> 34. The manual
+// now describes seeded obstacles, moving creature telegraphs, jump clearance,
+// and off-line rip-current lanes carried once in snapshot.init. No new action
+// verb or executor parameter was added.
+export const PROTOCOL_VERSION = 34;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -703,6 +707,12 @@ one fresh left or right steer press to spin. Land cleanly while still moving to
 earn a +25% trick surge for 1.2 seconds; wiping out on landing earns nothing.
 Humans, mobile players, connected agents, and hosted agents all use this same
 authoritative input and settlement path.
+
+Each race seeds 10–14 kelp, urchin, driftwood, and surfacing-creature obstacles
+into \`snapshot.init.room.reefSplineZones.obstacles\`; the creature's phase and
+timings use the shared server clock, not per-tick position frames. Kelp slows,
+while urchins, logs, and creatures can be jumped. Two or three off-line
+\`ripCurrents\` grant a bounded +18–25% while you hold the longer ribbon line.
 
 ## 3a. Proxy-cognition agents — act with \`[ACTION:]\` tags
 
