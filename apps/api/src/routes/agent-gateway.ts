@@ -134,8 +134,24 @@ import nacl from 'tweetnacl';
 import bs58 from 'bs58';
 import { randomBytes } from 'crypto';
 import { agentSessionAckRoutes } from './agent-session-ack';
+import {
+  agentHumanControlConflictResponse,
+  HUMAN_CONTROLLED_MUTATING_AGENT_ROUTE_PATTERNS,
+  isMutatingCovePokerForward,
+} from '../services/agent-human-control-guard';
 
 const agentGatewayRoutes = new Hono();
+
+const [
+  AGENT_MOVE_ROUTE,
+  AGENT_CHAT_ROUTE,
+  AGENT_VISIT_BUILDING_ROUTE,
+  AGENT_BUILDING_CHAT_ROUTE,
+  AGENT_COMBAT_ACTION_ROUTE,
+  AGENT_EMOTE_ROUTE,
+  AGENT_COVE_BLACKJACK_ROUTE,
+  AGENT_COVE_POKER_ROUTE,
+] = HUMAN_CONTROLLED_MUTATING_AGENT_ROUTE_PATTERNS;
 
 agentGatewayRoutes.route('/session', agentSessionAckRoutes);
 
@@ -2294,10 +2310,12 @@ const moveSchema = z.object({
   { message: 'Provide either targetX+targetY or buildingId' }
 );
 
-agentGatewayRoutes.post('/:sessionId/move', async (c) => {
+agentGatewayRoutes.post(AGENT_MOVE_ROUTE, async (c) => {
   const sessionId = c.req.param('sessionId');
   const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+  const controlConflict = agentHumanControlConflictResponse(c, npcSimulation);
+  if (controlConflict) return controlConflict;
 
   const body = await c.req.json();
   const parsed = moveSchema.safeParse(body);
@@ -2341,10 +2359,12 @@ const chatSchema = z.object({
   targetNpcId: z.string().optional(),
 });
 
-agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
+agentGatewayRoutes.post(AGENT_CHAT_ROUTE, async (c) => {
   const sessionId = c.req.param('sessionId');
   const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+  const controlConflict = agentHumanControlConflictResponse(c, npcSimulation);
+  if (controlConflict) return controlConflict;
 
   const body = await c.req.json();
   const parsed = chatSchema.safeParse(body);
@@ -2457,10 +2477,12 @@ const visitSchema = z.object({
   buildingId: z.string().min(1),
 });
 
-agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
+agentGatewayRoutes.post(AGENT_VISIT_BUILDING_ROUTE, async (c) => {
   const sessionId = c.req.param('sessionId');
   const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+  const controlConflict = agentHumanControlConflictResponse(c, npcSimulation);
+  if (controlConflict) return controlConflict;
 
   const body = await c.req.json();
   const parsed = visitSchema.safeParse(body);
@@ -2646,11 +2668,13 @@ const buildingChatSchema = z.object({
   message: z.string().min(1).max(4000),
 });
 
-agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
+agentGatewayRoutes.post(AGENT_BUILDING_CHAT_ROUTE, async (c) => {
   const sessionId = c.req.param('sessionId');
   const buildingId = c.req.param('buildingId');
   const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+  const controlConflict = agentHumanControlConflictResponse(c, npcSimulation);
+  if (controlConflict) return controlConflict;
 
   const body = await c.req.json().catch(() => null);
   const parsed = buildingChatSchema.safeParse(body);
@@ -2880,10 +2904,12 @@ const combatActionSchema = z.object({
   action: z.enum(['attack', 'heavy', 'block', 'dodge', 'combo']),
 });
 
-agentGatewayRoutes.post('/:sessionId/combat-action', async (c) => {
+agentGatewayRoutes.post(AGENT_COMBAT_ACTION_ROUTE, async (c) => {
   const sessionId = c.req.param('sessionId');
   const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+  const controlConflict = agentHumanControlConflictResponse(c, npcSimulation);
+  if (controlConflict) return controlConflict;
 
   const body = await c.req.json();
   const parsed = combatActionSchema.safeParse(body);
@@ -2906,10 +2932,12 @@ const emoteSchema = z.object({
   ] as const),
 });
 
-agentGatewayRoutes.post('/:sessionId/emote', async (c) => {
+agentGatewayRoutes.post(AGENT_EMOTE_ROUTE, async (c) => {
   const sessionId = c.req.param('sessionId');
   const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+  const controlConflict = agentHumanControlConflictResponse(c, npcSimulation);
+  if (controlConflict) return controlConflict;
 
   const body = await c.req.json();
   const parsed = emoteSchema.safeParse(body);
@@ -4540,7 +4568,7 @@ agentGatewayRoutes.get('/:sessionId/cove/blackjack/skill-memory', async (c) => {
 // userId/agentId identity (the agent is bound to a real avatar/user), and the
 // fp_hash anti-farm signal targets anonymous/guest abuse, which an agent is not.
 // ---------------------------------------------------------------------------
-agentGatewayRoutes.post('/:sessionId/cove/blackjack/:tool', async (c) => {
+agentGatewayRoutes.post(AGENT_COVE_BLACKJACK_ROUTE, async (c) => {
   const sessionId = c.req.param('sessionId');
   const tool = c.req.param('tool');
 
@@ -4565,6 +4593,8 @@ agentGatewayRoutes.post('/:sessionId/cove/blackjack/:tool', async (c) => {
     );
   }
   const route = COVE_BJ_TOOL_ROUTES[tool]!;
+  const controlConflict = agentHumanControlConflictResponse(c, npcSimulation);
+  if (controlConflict) return controlConflict;
 
   // Read the agent's body (may be empty for the no-arg open tool). We re-stringify
   // so the forwarded sub-request carries a clean JSON body the cove Zod schema
@@ -4844,7 +4874,7 @@ agentGatewayRoutes.get('/:sessionId/cove/poker/tools.json', async (c) => {
 // All tools are invoked via POST (the uniform agent-tool transport), but a tool
 // may forward to a GET or POST on the underlying router per COVE_POKER_TOOL_ROUTES.
 // ---------------------------------------------------------------------------
-agentGatewayRoutes.post('/:sessionId/cove/poker/:tool', async (c) => {
+agentGatewayRoutes.post(AGENT_COVE_POKER_ROUTE, async (c) => {
   const sessionId = c.req.param('sessionId');
   const tool = c.req.param('tool');
 
@@ -4862,6 +4892,10 @@ agentGatewayRoutes.post('/:sessionId/cove/poker/:tool', async (c) => {
     );
   }
   const forward = COVE_POKER_TOOL_ROUTES[tool]!;
+  if (isMutatingCovePokerForward(forward)) {
+    const controlConflict = agentHumanControlConflictResponse(c, npcSimulation);
+    if (controlConflict) return controlConflict;
+  }
 
   // Read the agent's tool args.
   let args: Record<string, unknown> = {};
