@@ -25,6 +25,7 @@
 
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { useGameStore } from '@/stores/game';
 
 export interface GuestUpsellModalProps {
   open: boolean;
@@ -45,6 +46,9 @@ export function GuestUpsellModal({
   ctaLabel = 'Create free account',
 }: GuestUpsellModalProps) {
   const router = useRouter();
+  const setAgentConnectModalOpen = useGameStore(
+    (state) => state.setAgentConnectModalOpen,
+  );
 
   // Own Escape handler — capture-phase + stopPropagation so it dismisses THIS
   // modal without the underlying RpgModal's window-level Escape listener also
@@ -111,7 +115,10 @@ export function GuestUpsellModal({
             </button>
             <button
               type="button"
-              onClick={() => router.push('/login')}
+              onClick={() => {
+                onClose();
+                setAgentConnectModalOpen(true, 'login');
+              }}
               className="w-full rounded-lg bg-transparent hover:bg-cyan-500/10 text-cyan-200 font-semibold text-sm py-2 border border-cyan-500/25 transition-colors"
             >
               I already have an account

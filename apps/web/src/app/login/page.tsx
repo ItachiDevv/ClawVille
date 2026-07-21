@@ -6,8 +6,11 @@ import { useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { api } from '@/lib/api';
-import { clearIdentityState } from '@/lib/clear-identity-state';
-import { AUTH_ME_QUERY_KEY, type AuthMe } from '@/hooks/use-auth-me';
+import {
+  prepareForAccountLogin,
+  refreshIdentityAfterAuth,
+} from '@/lib/auth-transition';
+import { resolvePublicEnterDestination } from '@/lib/public-enter-destination';
 import { FIRST_TIME_DISCLOSURE_STORAGE_KEY } from '@/components/game/first-time-backup-modal';
 import { AgentConnectInstructions } from '@/components/agent-connect-instructions';
 
@@ -15,40 +18,9 @@ const LandingScene = dynamic(() => import('@/components/three/LandingScene'), { 
 
 type LoginMode = 'connect' | 'login' | 'signup';
 
-const CONNECT_TICKET_PATTERN = /^sess-[1-9A-HJ-NP-Za-km-z]{16,22}$/;
-
 function resolveLoginMode(value: string | null): LoginMode {
   if (value === 'connect' || value === 'signup') return value;
   return 'login';
-}
-
-function resolvePublicEnterDestination(
-  enterUrl: string,
-  origin: string,
-): string | null {
-  try {
-    const url = new URL(enterUrl, origin);
-    const queryKeys = Array.from(url.searchParams.keys());
-    const ticketValues = url.searchParams.getAll('t');
-
-    if (
-      url.origin !== origin ||
-      url.username !== '' ||
-      url.password !== '' ||
-      url.pathname !== '/enter' ||
-      url.hash !== '' ||
-      queryKeys.length !== 1 ||
-      queryKeys[0] !== 't' ||
-      ticketValues.length !== 1 ||
-      !CONNECT_TICKET_PATTERN.test(ticketValues[0])
-    ) {
-      return null;
-    }
-
-    return `/enter?t=${encodeURIComponent(ticketValues[0])}`;
-  } catch {
-    return null;
-  }
 }
 
 function FrontDoorConnect() {
@@ -287,7 +259,7 @@ function LoginForm() {
   // Evict identity-bearing client state around the auth swap (balance-cache
   // fix 2026-07-12; ordering reshaped by Codex review BLOCKING 2+4):
   //
-  // preLoginSweep runs BEFORE api.login()/api.signup(), while the OLD
+  // prepareForAccountLogin runs BEFORE api.login()/api.signup(), while the OLD
   // session cookie is still in the jar — the sweep's resetStore() fires the
   // Autonomous server-deactivate POST, and running it post-login would aim
   // that deactivate at the NEW account's freshly installed cookie (a direct
@@ -296,22 +268,11 @@ function LoginForm() {
   // guest — the "sign up to claim what you earned as a guest" designed flow.
   // A real account (non-guest) logging into another account must NOT hand
   // its local progress to the next identity.
-  function preLoginSweep() {
-    const prior = queryClient.getQueryData<AuthMe>(AUTH_ME_QUERY_KEY);
-    const priorWasAccountUser = !!prior?.user && !prior.user.isGuest;
-    clearIdentityState(queryClient, { preserveQuestProgress: !priorWasAccountUser });
-  }
-
-  // postAuthReset runs AFTER the cookie swap: the pre-login sweep's
+  // refreshIdentityAfterAuth runs AFTER the cookie swap: the pre-login sweep's
   // refetches raced the login POST and may have re-cached the OLD identity,
   // so reset once more — data empties and active queries refetch as the
   // just-authed user (never clear(): see clearIdentityState on why clear()
   // breaks active subscribers).
-  function postAuthReset() {
-    void queryClient.cancelQueries();
-    void queryClient.resetQueries();
-  }
-
   // Phase 6.7.5 + 2026-06-21 hotfix — migrate any guest-mode Cove history rows
   // from this browser's fingerprint to the now-authed user. Idempotent
   // server-side (UPDATE filtered by the caller's own fp_hash where user_id IS
@@ -343,9 +304,9 @@ function LoginForm() {
     try {
       // Sweep BEFORE the auth call — old cookie still valid, so the
       // autonomous-deactivate side effect targets the OLD identity (see
-      // preLoginSweep). A failed login leaves the user swept-but-anonymous,
+      // shared transition helper). A failed login leaves the user swept-but-anonymous,
       // which is the safe direction.
-      preLoginSweep();
+      prepareForAccountLogin(queryClient);
       if (isSignup) {
         const res = await api.signup({ email, password, name: name || undefined, harness });
         // P2 Path-B (2026-07-04) — signup now auto-provisions the hosted
@@ -378,7 +339,7 @@ function LoginForm() {
         await claimGuestCoveHistory();
         // Drop anything the pre-login sweep's refetches re-cached under the
         // old identity so the destination refetches as the new user.
-        postAuthReset();
+        await refreshIdentityAfterAuth(queryClient);
         // /create-agent detects the freshly-provisioned avatar and runs in
         // customize mode (prefill + PATCH) — it never dead-ends on the
         // one-avatar-per-user constraint.
@@ -395,9 +356,9 @@ function LoginForm() {
         // refetches racing the login POST) — fresh for `staleTime` (60s).
         // Without this, the soft-nav into /game reads that stale value and
         // renders LOGGED-OUT until a focus-triggered refetch (the "logged in
-        // but shows logged-out for ~3 min" bug). postAuthReset empties +
+        // but shows logged-out for ~3 min" bug). The shared refresh empties +
         // refetches so /game mounts clean (brief loading, never wrong).
-        postAuthReset();
+        await refreshIdentityAfterAuth(queryClient);
         router.push('/game');
       }
     } catch (err: any) {
