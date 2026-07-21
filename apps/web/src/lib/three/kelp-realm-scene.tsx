@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three/webgpu';
 import { attribute, cos, float, fract, positionLocal, sin, time, vec3 } from 'three/tsl';
@@ -33,7 +33,7 @@ import { subscribeKelpRealmBeaconVisits } from './kelp-realm-visit-state';
 const BLADE_COUNT = 15_000;
 const BLADES_PER_VARIANT = BLADE_COUNT / 3;
 const BLADE_ROWS = 8;
-const FOG_COLOR = new THREE.Color(0x031b20);
+const FOG_COLOR = new THREE.Color(0x0d4552);
 const REALM_WIND = Object.freeze({
   primaryZRateScale: 0.76,
   primaryZPhaseScale: 1.31,
@@ -67,9 +67,9 @@ interface RealmKelpVariant {
 }
 
 const VARIANTS: readonly RealmKelpVariant[] = Object.freeze([
-  { minHeight: 400, maxHeight: 475, minWidth: 36, maxWidth: 48, root: new THREE.Color(0x042923), tip: new THREE.Color(0x20a47b), amplitude: MAX_PRIMARY_AMPLITUDE_WU * 0.82, rate: Math.PI * 2 / 4.4, microAmplitude: 10, microRate: Math.PI * 2 / 1.55 },
-  { minHeight: 420, maxHeight: 500, minWidth: 42, maxWidth: KELP_REALM_MAX_BLADE_HALF_WIDTH_WU * 2, root: new THREE.Color(0x06362c), tip: new THREE.Color(0x39c98b), amplitude: MAX_PRIMARY_AMPLITUDE_WU * 0.91, rate: Math.PI * 2 / 4, microAmplitude: 13, microRate: Math.PI * 2 / 1.35 },
-  { minHeight: 390, maxHeight: 485, minWidth: 34, maxWidth: 50, root: new THREE.Color(0x032c32), tip: new THREE.Color(0x20b5a4), amplitude: MAX_PRIMARY_AMPLITUDE_WU, rate: Math.PI * 2 / 3.6, microAmplitude: MAX_MICRO_AMPLITUDE_WU, microRate: Math.PI * 2 / 1.15 },
+  { minHeight: 330, maxHeight: 395, minWidth: 36, maxWidth: 48, root: new THREE.Color(0x0b4f42), tip: new THREE.Color(0x3fd9a4), amplitude: MAX_PRIMARY_AMPLITUDE_WU * 0.82, rate: Math.PI * 2 / 4.4, microAmplitude: 10, microRate: Math.PI * 2 / 1.55 },
+  { minHeight: 350, maxHeight: 420, minWidth: 42, maxWidth: KELP_REALM_MAX_BLADE_HALF_WIDTH_WU * 2, root: new THREE.Color(0x0d5a48), tip: new THREE.Color(0x5cebbb), amplitude: MAX_PRIMARY_AMPLITUDE_WU * 0.91, rate: Math.PI * 2 / 4, microAmplitude: 13, microRate: Math.PI * 2 / 1.35 },
+  { minHeight: 320, maxHeight: 405, minWidth: 34, maxWidth: 50, root: new THREE.Color(0x0a4a56), tip: new THREE.Color(0x3fd4cd), amplitude: MAX_PRIMARY_AMPLITUDE_WU, rate: Math.PI * 2 / 3.6, microAmplitude: MAX_MICRO_AMPLITUDE_WU, microRate: Math.PI * 2 / 1.15 },
 ]);
 
 interface WindUniform { value: number }
@@ -286,23 +286,35 @@ function variantIndexKey(variant: RealmKelpVariant): string {
   return `${variant.amplitude}-${variant.rate}-${variant.microAmplitude}-${variant.microRate}`;
 }
 
-function useKelpResources(forceWebGL: boolean): readonly KelpResource[] {
-  const resources = useMemo(() => VARIANTS.map((variant, index) => {
-    const geometry = createRealmKelpGeometry(index);
-    try {
-      return { geometry, ...createKelpMaterial(variant, forceWebGL) };
-    } catch (error) {
-      geometry.dispose();
-      throw error;
-    }
-  }), [forceWebGL]);
+/**
+ * GPU-backed resources are created inside effects (not useMemo) so a
+ * cleanup+setup cycle — StrictMode in dev, any remount in prod — recreates
+ * them instead of leaving disposed buffers referenced by live meshes, which
+ * on the WebGPU backend turns into per-frame "buffer used in submit while
+ * destroyed" validation errors and a permanently blank scene.
+ */
+function useKelpResources(forceWebGL: boolean): readonly KelpResource[] | null {
+  const [resources, setResources] = useState<readonly KelpResource[] | null>(null);
 
-  useEffect(() => () => {
-    for (const resource of resources) {
-      resource.geometry.dispose();
-      resource.material.dispose();
-    }
-  }, [resources]);
+  useEffect(() => {
+    const created = VARIANTS.map((variant, index) => {
+      const geometry = createRealmKelpGeometry(index);
+      try {
+        return { geometry, ...createKelpMaterial(variant, forceWebGL) };
+      } catch (error) {
+        geometry.dispose();
+        throw error;
+      }
+    });
+    setResources(created);
+    return () => {
+      setResources(null);
+      for (const resource of created) {
+        resource.geometry.dispose();
+        resource.material.dispose();
+      }
+    };
+  }, [forceWebGL]);
   return resources;
 }
 
@@ -319,9 +331,9 @@ function createFloorGeometry(): THREE.PlaneGeometry {
     const shade = 0.72 + hash * 0.08;
     const centerDistance = Math.hypot(x - KELP_REALM_CENTER.x, z - KELP_REALM_CENTER.z);
     const centerGlow = Math.max(0, 1 - centerDistance / (KELP_REALM_CELL_WU * 1.45));
-    colors[index * 3] = 0.08 * shade + centerGlow * 0.1;
-    colors[index * 3 + 1] = 0.20 * shade + centerGlow * 0.24;
-    colors[index * 3 + 2] = 0.18 * shade + centerGlow * 0.21;
+    colors[index * 3] = 0.14 * shade + centerGlow * 0.1;
+    colors[index * 3 + 1] = 0.30 * shade + centerGlow * 0.24;
+    colors[index * 3 + 2] = 0.30 * shade + centerGlow * 0.21;
   }
   geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   geometry.computeVertexNormals();
@@ -352,7 +364,7 @@ export function createKelpRealmRayMaterial(): THREE.MeshBasicMaterial {
   const material = new THREE.MeshBasicMaterial({
     color: 0x7effd8,
     transparent: true,
-    opacity: 0.045,
+    opacity: 0.1,
     side: THREE.DoubleSide,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
@@ -638,22 +650,27 @@ export function createKelpRealmDiscoveryMaterial(
   return { material, timeUniform };
 }
 
-function useDiscoveryResources(forceWebGL: boolean): readonly DiscoveryResource[] {
-  const resources = useMemo(() => KELP_REALM_DISCOVERY_TYPES.map((type) => {
-    const geometry = createKelpRealmDiscoveryGeometry(type);
-    try {
-      return { type, geometry, ...createKelpRealmDiscoveryMaterial(type, forceWebGL) };
-    } catch (error) {
-      geometry.dispose();
-      throw error;
-    }
-  }), [forceWebGL]);
-  useEffect(() => () => {
-    for (const resource of resources) {
-      resource.geometry.dispose();
-      resource.material.dispose();
-    }
-  }, [resources]);
+function useDiscoveryResources(forceWebGL: boolean): readonly DiscoveryResource[] | null {
+  const [resources, setResources] = useState<readonly DiscoveryResource[] | null>(null);
+  useEffect(() => {
+    const created = KELP_REALM_DISCOVERY_TYPES.map((type) => {
+      const geometry = createKelpRealmDiscoveryGeometry(type);
+      try {
+        return { type, geometry, ...createKelpRealmDiscoveryMaterial(type, forceWebGL) };
+      } catch (error) {
+        geometry.dispose();
+        throw error;
+      }
+    });
+    setResources(created);
+    return () => {
+      setResources(null);
+      for (const resource of created) {
+        resource.geometry.dispose();
+        resource.material.dispose();
+      }
+    };
+  }, [forceWebGL]);
   return resources;
 }
 
@@ -921,14 +938,8 @@ function resetSporeGeometryColors(geometry: THREE.BufferGeometry): void {
   }
 }
 
-function RealmEnvironment({ forceWebGL }: { forceWebGL: boolean }) {
-  const kelp = useKelpResources(forceWebGL);
-  const discoveries = useDiscoveryResources(forceWebGL);
-  const motesRef = useRef<THREE.Points>(null);
-  const orbitRef = useRef<THREE.Points>(null);
-  const centerRingsRef = useRef<THREE.Mesh>(null);
-  const resources = useMemo(() => {
-    const floorGeometry = createFloorGeometry();
+function createEnvironmentResources() {
+  const floorGeometry = createFloorGeometry();
     const floorMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0 });
     const rayGeometry = createRayGeometry();
     const rayMaterial = createKelpRealmRayMaterial();
@@ -951,15 +962,31 @@ function RealmEnvironment({ forceWebGL }: { forceWebGL: boolean }) {
     const corridorDecorGeometry = createCorridorDecorGeometry();
     const corridorDecorMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true, transparent: true, opacity: 0.7, depthWrite: false, blending: THREE.AdditiveBlending });
     return { floorGeometry, floorMaterial, rayGeometry, rayMaterial, moteGeometry, moteMaterial, beaconGeometry, beaconMaterial, sporeGeometry, sporeMaterial, shellGeometry, shellMaterial, pearlGeometry, pearlMaterial, orbitGeometry, orbitMaterial, centerRingGeometry, centerRingMaterial, corridorDecorGeometry, corridorDecorMaterial };
+}
+
+type EnvironmentResources = ReturnType<typeof createEnvironmentResources>;
+
+function RealmEnvironment({ forceWebGL }: { forceWebGL: boolean }) {
+  const kelp = useKelpResources(forceWebGL);
+  const discoveries = useDiscoveryResources(forceWebGL);
+  const motesRef = useRef<THREE.Points>(null);
+  const orbitRef = useRef<THREE.Points>(null);
+  const centerRingsRef = useRef<THREE.Mesh>(null);
+  const [resources, setResources] = useState<EnvironmentResources | null>(null);
+
+  useEffect(() => {
+    const created = createEnvironmentResources();
+    setResources(created);
+    return () => {
+      setResources(null);
+      const disposable = Object.values(created);
+      for (let index = 0; index < disposable.length; index++) disposable[index]!.dispose();
+    };
   }, []);
 
-  useEffect(() => () => {
-    const disposable = Object.values(resources);
-    for (let index = 0; index < disposable.length; index++) disposable[index]!.dispose();
-  }, [resources]);
-
-  useEffect(
-    () => subscribeKelpRealmBeaconVisits(
+  useEffect(() => {
+    if (!resources) return;
+    return subscribeKelpRealmBeaconVisits(
       (beaconId) => {
         markBeaconGeometryVisited(resources.beaconGeometry, beaconId);
         markKelpRealmSporeGeometryVisited(resources.sporeGeometry, beaconId);
@@ -968,11 +995,11 @@ function RealmEnvironment({ forceWebGL }: { forceWebGL: boolean }) {
         resetBeaconGeometryColors(resources.beaconGeometry);
         resetSporeGeometryColors(resources.sporeGeometry);
       },
-    ),
-    [resources.beaconGeometry, resources.sporeGeometry],
-  );
+    );
+  }, [resources]);
 
   useFrame(({ clock }, delta) => {
+    if (!kelp || !discoveries || !resources) return;
     for (let index = 0; index < kelp.length; index++) {
       const uniform = kelp[index]!.windUniform;
       if (uniform) uniform.value = clock.elapsedTime;
@@ -995,6 +1022,8 @@ function RealmEnvironment({ forceWebGL }: { forceWebGL: boolean }) {
     }
     resources.pearlMaterial.opacity = 0.78 + Math.sin(clock.elapsedTime * 1.1) * 0.16;
   });
+
+  if (!kelp || !discoveries || !resources) return null;
 
   return (
     <>
@@ -1020,7 +1049,7 @@ export default function KelpRealmScene({ forceWebGL }: { forceWebGL: boolean }) 
     const previousBackground = scene.background;
     const previousFog = scene.fog;
     scene.background = FOG_COLOR;
-    scene.fog = new THREE.Fog(FOG_COLOR, 450, 1200);
+    scene.fog = new THREE.Fog(FOG_COLOR, 650, 1750);
     return () => {
       scene.background = previousBackground;
       scene.fog = previousFog;
@@ -1029,8 +1058,8 @@ export default function KelpRealmScene({ forceWebGL }: { forceWebGL: boolean }) 
 
   return (
     <>
-      <ambientLight intensity={0.72} color={0x78c8ae} />
-      <directionalLight position={[500, 1300, 300]} intensity={1.2} color={0xb9ffe4} />
+      <ambientLight intensity={0.95} color={0x9fdcd4} />
+      <directionalLight position={[500, 1300, 300]} intensity={1.4} color={0xecfff6} />
       <RealmEnvironment forceWebGL={forceWebGL} />
       <KelpRealmPlayer />
     </>
