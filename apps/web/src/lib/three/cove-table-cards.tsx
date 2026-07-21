@@ -322,6 +322,18 @@ export interface TableCards3DProps {
   seats: readonly TableCardSeat[];
   layout: Readonly<TableCardLayout>;
   suppressSeatIndices?: readonly number[];
+  /** Cash-ring-table projection. When present, this public-only state replaces
+   * the legacy practice controller as the felt source. Opponent cards are
+   * represented only by a count and therefore can never render face-up. */
+  externalState?: Readonly<{
+    active: boolean;
+    board: readonly HoldemCard[];
+    seats: readonly Readonly<{
+      seatIndex: number;
+      status: 'active' | 'folded' | 'allin' | 'sitting_out' | 'busted';
+      holeCardCount: number;
+    }>[];
+  }>;
 }
 
 export function TableCards3D({
@@ -331,6 +343,7 @@ export function TableCards3D({
   seats: tableSeats,
   layout,
   suppressSeatIndices = [],
+  externalState,
 }: TableCards3DProps) {
   const meshRef = useRef<THREE.Mesh>(null);
   const muckMeshRef = useRef<THREE.Mesh>(null);
@@ -365,11 +378,17 @@ export function TableCards3D({
     getHoldemSettledRevealHandId,
   );
   const seatedTable = useCoveStore((state) => state.seatedTable);
-  const hasHandState = phase !== 'idle' && (live !== null || settled !== null);
-  const isVisible = seatedTable?.tableId === 'T1' && hasHandState;
+  const hasHandState = externalState
+    ? externalState.active
+    : phase !== 'idle' && (live !== null || settled !== null);
+  const isVisible = externalState
+    ? externalState.active
+    : seatedTable?.tableId === 'T1' && hasHandState;
   const settleCueReady = phase === 'settled' && settled?.handId === revealHandId;
   const revealShowdown = settleCueReady && settled?.outcome.endedAt === 'showdown';
-  const cardStateSignature = handSignature(phase, playerHoleCards, communityCards, seats);
+  const cardStateSignature = externalState
+    ? `cash:${externalState.active ? 'live' : 'idle'};b=${externalState.board.map(cardSignature).join(',')};s=${externalState.seats.map((seat) => `${seat.seatIndex}:${seat.status}:${seat.holeCardCount}`).join('|')}`
+    : handSignature(phase, playerHoleCards, communityCards, seats);
   const suppressedSeatSignature = suppressSeatIndices.join(',');
 
   useLayoutEffect(() => {
@@ -406,12 +425,21 @@ export function TableCards3D({
 
     for (const tableSeat of tableSeats) {
       if (suppressSeatIndices.includes(tableSeat.engineSeatIndex)) continue;
-      const seatState = controller.seats.find((seat) => seat.seatIndex === tableSeat.engineSeatIndex);
-      const holeCards = seatState?.holeCards ?? [];
-      if (holeCards.length === 0) continue;
+      const externalSeat = externalState?.seats.find(
+        (seat) => seat.seatIndex === tableSeat.engineSeatIndex,
+      );
+      const seatState = externalState
+        ? null
+        : controller.seats.find((seat) => seat.seatIndex === tableSeat.engineSeatIndex);
+      const holeCardCount = externalState
+        ? externalSeat?.holeCardCount ?? 0
+        : seatState?.holeCards?.length ?? 0;
+      if (holeCardCount === 0) continue;
 
-      const foldedAtSettle = controller.phase === 'settled' && seatState?.status === 'folded';
-      const faceDown = !revealShowdown;
+      const foldedAtSettle = !externalState
+        && controller.phase === 'settled'
+        && seatState?.status === 'folded';
+      const faceDown = externalState ? true : !revealShowdown;
       const targetPositions = settleCueReady && foldedAtSettle ? muckPositions : positions;
       const targetUvs = settleCueReady && foldedAtSettle ? muckUvs : uvs;
       const targetIndices = settleCueReady && foldedAtSettle ? muckIndices : indices;
@@ -424,8 +452,8 @@ export function TableCards3D({
       const cosine = Math.cos(tableSeat.faceYaw);
       const sine = Math.sin(tableSeat.faceYaw);
 
-      for (let cardIndex = 0; cardIndex < holeCards.length && cardIndex < 2; cardIndex += 1) {
-        const card = holeCards[cardIndex]!;
+      for (let cardIndex = 0; cardIndex < holeCardCount && cardIndex < 2; cardIndex += 1) {
+        const card = seatState?.holeCards?.[cardIndex];
         const across = (cardIndex - 0.5) * pairCenterSpacing;
         appendCardQuad(
           targetPositions,
@@ -437,7 +465,7 @@ export function TableCards3D({
           tableSeat.faceYaw,
           cardWidth,
           cardHeight,
-          faceDown || foldedAtSettle ? ATLAS_BACK_CELL : atlasCellForCard(card),
+          faceDown || foldedAtSettle || !card ? ATLAS_BACK_CELL : atlasCellForCard(card),
           0,
         );
       }
@@ -447,8 +475,9 @@ export function TableCards3D({
     // are code-owned. Player hole cards intentionally have no 3D path.
     const boardRightX = Math.cos(layout.boardYaw);
     const boardRightZ = -Math.sin(layout.boardYaw);
-    for (let slotIndex = 0; slotIndex < controller.communityCards.length && slotIndex < 5; slotIndex += 1) {
-      const card = controller.communityCards[slotIndex];
+    const renderedBoard = externalState?.board ?? controller.communityCards;
+    for (let slotIndex = 0; slotIndex < renderedBoard.length && slotIndex < 5; slotIndex += 1) {
+      const card = renderedBoard[slotIndex];
       if (!card) continue;
       const alongRow = (slotIndex - 2) * layout.boardSpacing;
       appendCardQuad(
@@ -519,6 +548,7 @@ export function TableCards3D({
     centerZ,
     feltTopY,
     geometry,
+    externalState,
     isVisible,
     layout,
     material,

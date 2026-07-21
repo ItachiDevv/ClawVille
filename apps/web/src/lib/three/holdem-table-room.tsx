@@ -13,6 +13,10 @@ import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
 import { MODEL_REGISTRY, type ModelKey, type ModelRegistryEntry } from '@/lib/three/agent-model-registry';
 import { TableCards3D, type TableCardLayout, type TableCardSeat } from '@/lib/three/cove-table-cards';
 import { useHoldemController } from '@/lib/cove/holdem-controller';
+import type {
+  CashPublicSeat,
+  PublicTableStateResponse,
+} from '@/lib/cove/cash-poker';
 import {
   getHoldemBadgeRegistryVersion,
   getHoldemSeatBadgeElement,
@@ -145,6 +149,18 @@ function getSeatModelKeys(): readonly ModelKey[] {
 }
 
 const BOT_MODEL_KEYS = getSeatModelKeys();
+const CASH_AVATAR_MODEL_KEYS = (Object.keys(MODEL_REGISTRY) as ModelKey[])
+  .filter((key) => !(MODEL_REGISTRY[key] as ModelRegistryEntry).pickerHidden);
+
+function stableAvatarModelKey(avatarId: string): ModelKey {
+  let hash = 2166136261;
+  for (let index = 0; index < avatarId.length; index += 1) {
+    hash ^= avatarId.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return CASH_AVATAR_MODEL_KEYS[Math.abs(hash) % CASH_AVATAR_MODEL_KEYS.length]
+    ?? DEFAULT_BOT_MODEL_KEYS[0];
+}
 const FORCE_PEEK_CARDS = (() => {
   if (typeof window === 'undefined') return false;
   const isLocalhost = window.location.hostname === 'localhost'
@@ -797,7 +813,13 @@ function Precompile() {
   return null;
 }
 
-function HoldemTableRoomScene() {
+export interface LiveTableRoomState {
+  table: PublicTableStateResponse | null;
+  /** The server seat placed at the six-o'clock POV. Spectators use seat 0. */
+  povSeatIndex: number;
+}
+
+function HoldemTableRoomScene({ liveTable }: { liveTable?: LiveTableRoomState }) {
   const roomGltf = useGLTF(ROOM_PATH);
   const tableGltf = useGLTF(TABLE_PATH);
   const stoolGltf = useGLTF(STOOL_PATH);
@@ -813,13 +835,32 @@ function HoldemTableRoomScene() {
   const phase = useHoldemController((state) => state.phase);
   const live = useHoldemController((state) => state.live);
   const publicSeats = useHoldemController((state) => state.seats);
+  const cashLive = liveTable?.table?.live ?? null;
+  const roomSeats = useMemo<readonly RoomSeat[]>(() => {
+    if (!liveTable) return BOT_SEATS;
+    return BOT_SEATS.map((seat, index) => ({
+      ...seat,
+      engineSeatIndex: (liveTable.povSeatIndex + index + 1) % 6,
+    }));
+  }, [liveTable]);
   const [handSamples, setHandSamples] = useState<Readonly<Record<number, HandPoseSample | null>>>({});
   const onHandSample = useCallback<HandSampleHandler>((engineSeatIndex, sample) => {
     setHandSamples((current) => ({ ...current, [engineSeatIndex]: sample }));
   }, []);
   const inHandPeekSeats = useMemo(() => {
+    const peekSeatIndices = roomSeats
+      .filter((_, index) => index === 0 || index === 3)
+      .map((seat) => seat.engineSeatIndex);
     if (FORCE_PEEK_CARDS) {
-      return PEEK_ENGINE_SEATS.filter((engineSeatIndex) => handSamples[engineSeatIndex] != null);
+      return peekSeatIndices.filter((engineSeatIndex) => handSamples[engineSeatIndex] != null);
+    }
+    if (liveTable) {
+      if (!cashLive) return [];
+      return peekSeatIndices.filter((engineSeatIndex) => {
+        const seat = cashLive.seats.find((candidate) => candidate.seatIndex === engineSeatIndex);
+        return handSamples[engineSeatIndex] != null
+          && (seat?.status === 'active' || seat?.status === 'allin');
+      });
     }
     if (!live || phase === 'idle' || phase === 'settled') return [];
     return PEEK_ENGINE_SEATS.filter((engineSeatIndex) => {
@@ -828,7 +869,7 @@ function HoldemTableRoomScene() {
         && seat?.status !== 'folded'
         && (seat?.holeCards?.length ?? 0) > 0;
     });
-  }, [handSamples, live, phase, publicSeats]);
+  }, [cashLive, handSamples, live, liveTable, phase, publicSeats, roomSeats]);
 
   return (
     <>
@@ -864,8 +905,13 @@ function HoldemTableRoomScene() {
 
       {/* Scale-1.45 stools are the physical seat plane: disc top y=52 aligns
           to the frozen humanoid hips and anchors rigless perch avatars. */}
-      {BOT_SEATS.map((seat, index) => {
-        const modelKey = BOT_MODEL_KEYS[index]!;
+      {roomSeats.map((seat, index) => {
+        const cashSeat: CashPublicSeat | undefined = cashLive?.seats.find(
+          (candidate) => candidate.seatIndex === seat.engineSeatIndex,
+        );
+        const modelKey = cashSeat
+          ? stableAvatarModelKey(cashSeat.avatarId)
+          : BOT_MODEL_KEYS[index]!;
         const reg = MODEL_REGISTRY[modelKey] as ModelRegistryEntry;
         const usesScale100SitFallback = reg.animatorId === 'hermes-female'
           || reg.animatorId === 'hermes-male'
@@ -873,9 +919,10 @@ function HoldemTableRoomScene() {
           || reg.animatorId === 'adinero';
         const usesChibiSitFallback = reg.animatorId === 'chibi';
         const usesManualSit = usesScale100SitFallback || usesChibiSitFallback;
-        const handSampleSeat = PEEK_ENGINE_SEATS.some((value) => value === seat.engineSeatIndex)
+        const handSampleSeat = index === 0 || index === 3
           ? seat.engineSeatIndex
           : undefined;
+        const figureVisible = !liveTable || Boolean(cashSeat);
         return (
           <group
             key={`holdem-seat-${seat.engineSeatIndex}`}
@@ -885,7 +932,7 @@ function HoldemTableRoomScene() {
             <group position={[seat.chairX, 0, seat.chairZ]} rotation={[0, seat.faceYaw, 0]}>
               <primitive object={chairs[index]!} />
             </group>
-            {reg.avatar_type === 'glb' ? (
+            {figureVisible && (reg.avatar_type === 'glb' ? (
               <RiglessPerchFigure
                 reg={reg}
                 modelKey={modelKey}
@@ -895,7 +942,7 @@ function HoldemTableRoomScene() {
             ) : (
               <FrozenFigure
                 reg={reg}
-                instanceId={`holdem-room-seat-${seat.engineSeatIndex}-${modelKey}`}
+                instanceId={`holdem-room-seat-${seat.engineSeatIndex}-${cashSeat?.avatarId ?? modelKey}`}
                 pose={usesChibiSitFallback
                   ? 'idle'
                   : usesScale100SitFallback ? 'sit_idle_m' : TABLE_POSE_BY_BOT[index]!}
@@ -908,13 +955,13 @@ function HoldemTableRoomScene() {
                 handSampleSeat={handSampleSeat}
                 onHandSample={onHandSample}
               />
-            )}
+            ))}
           </group>
         );
       })}
 
       {inHandPeekSeats.map((engineSeatIndex) => {
-        const seat = BOT_SEATS.find((candidate) => candidate.engineSeatIndex === engineSeatIndex);
+        const seat = roomSeats.find((candidate) => candidate.engineSeatIndex === engineSeatIndex);
         const sample = handSamples[engineSeatIndex];
         return seat && sample
           ? <PeekHandCards key={`peek-hand-${engineSeatIndex}`} seat={seat} sample={sample} />
@@ -939,16 +986,25 @@ function HoldemTableRoomScene() {
         centerX={0}
         centerZ={0}
         feltTopY={TABLE_TOP_Y}
-        seats={BOT_SEATS}
+        seats={roomSeats}
         layout={CARD_LAYOUT}
         suppressSeatIndices={inHandPeekSeats}
+        externalState={liveTable ? {
+          active: cashLive !== null,
+          board: cashLive?.board ?? [],
+          seats: cashLive?.seats.map((seat) => ({
+            seatIndex: seat.seatIndex,
+            status: seat.status,
+            holeCardCount: seat.status === 'active' || seat.status === 'allin' ? 2 : 0,
+          })) ?? [],
+        } : undefined}
       />
       <Precompile />
     </>
   );
 }
 
-export default function HoldemTableRoomCanvas() {
+export default function HoldemTableRoomCanvas({ liveTable }: { liveTable?: LiveTableRoomState }) {
   return (
     <Canvas
       key="holdem-table-room"
@@ -960,7 +1016,7 @@ export default function HoldemTableRoomCanvas() {
     >
       <KTX2LoaderSetup />
       <Suspense fallback={null}>
-        <HoldemTableRoomScene />
+        <HoldemTableRoomScene liveTable={liveTable} />
       </Suspense>
     </Canvas>
   );

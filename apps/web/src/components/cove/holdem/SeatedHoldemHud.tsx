@@ -25,6 +25,7 @@ import {
   type SerializedHoldemHand,
   type SerializedHoldemLogEntry,
 } from '@clawville/shared';
+import type { PublicTableStateResponse } from '@/lib/cove/cash-poker';
 
 const EMPTY_LOG: readonly SerializedHoldemLogEntry[] = [];
 const BOT_NAMES: Record<number, string> = {
@@ -58,6 +59,110 @@ const TABLE_ROOM_SEAT_REFS: readonly ((element: HTMLDivElement | null) => void)[
   TABLE_ROOM_SEAT_ANCHORS.map((_, seat) => (
     (element: HTMLDivElement | null) => registerHoldemSeatBadge(seat, element)
   ));
+
+const CASH_ROOM_BADGE_REFS: readonly ((element: HTMLDivElement | null) => void)[] =
+  Array.from({ length: 5 }, (_, physicalIndex) => (
+    (element: HTMLDivElement | null) => registerHoldemSeatBadge(physicalIndex, element)
+  ));
+
+function secondsUntil(deadlineMs: number | null): number | null {
+  return deadlineMs == null ? null : Math.max(0, Math.ceil((deadlineMs - Date.now()) / 1_000));
+}
+
+/** Public-only live cash-table overlay. The server snapshot intentionally has
+ * no private cards; this component cannot leak them. Physical badge slot N
+ * maps to server seat `(pov + N + 1) % 6`, matching the 3D chair rotation. */
+export function CashTableSpectateHud({
+  state,
+  povSeatIndex,
+  pollNotice,
+}: {
+  state: PublicTableStateResponse | null;
+  povSeatIndex: number;
+  pollNotice?: string | null;
+}) {
+  const live = state?.live ?? null;
+  const [countdown, setCountdown] = useState<number | null>(
+    secondsUntil(live?.toActDeadlineMs ?? null),
+  );
+
+  useEffect(() => {
+    const deadline = live?.toActDeadlineMs ?? null;
+    setCountdown(secondsUntil(deadline));
+    if (deadline == null) return;
+    const timer = window.setInterval(() => setCountdown(secondsUntil(deadline)), 250);
+    return () => window.clearInterval(timer);
+  }, [live?.handNumber, live?.toActDeadlineMs]);
+
+  const physicalSeats = useMemo(() => Array.from({ length: 5 }, (_, index) => {
+    const serverSeatIndex = (povSeatIndex + index + 1) % 6;
+    return live?.seats.find((seat) => seat.seatIndex === serverSeatIndex) ?? null;
+  }), [live, povSeatIndex]);
+  const povSeat = live?.seats.find((seat) => seat.seatIndex === povSeatIndex) ?? null;
+
+  return (
+    <div className={styles.surface} data-testid="cash-table-room-hud">
+      {physicalSeats.map((seat, physicalIndex) => seat ? (
+        <div
+          key={seat.avatarId}
+          ref={CASH_ROOM_BADGE_REFS[physicalIndex]}
+          className={styles.seatBadge
+            + (seat.status === 'folded' ? ' ' + styles.seatBadgeFolded : '')
+            + (seat.isActing ? ' ' + styles.seatBadgeThinking : '')}
+          style={{
+            left: TABLE_ROOM_SEAT_ANCHORS[physicalIndex + 1]!.left + '%',
+            top: TABLE_ROOM_SEAT_ANCHORS[physicalIndex + 1]!.top + '%',
+          }}
+        >
+          <div className={styles.seatNameRow + ' ' + styles.smallCaps}>
+            <span>{seat.name}</span>
+            {seat.isButton && <span className={styles.positionChip + ' ' + styles.dealerChip}>D</span>}
+            {seat.isSB && <span className={styles.positionChip}>SB</span>}
+            {seat.isBB && <span className={styles.positionChip}>BB</span>}
+          </div>
+          <div className={styles.seatAction}>
+            {seat.chipStack.toLocaleString()} vCLAW
+            {' · '}
+            {seat.status === 'allin' ? 'All in' : seat.status === 'folded' ? 'Folded' : seat.isActing ? `${countdown ?? 0}s` : 'In hand'}
+          </div>
+        </div>
+      ) : null)}
+
+      {!live && (
+        <div className={styles.settlement} data-testid="cash-table-waiting">
+          <div className={styles.settlementHeadline}>Waiting for players</div>
+          <div className={styles.settlementDetail}>Sit down to start the game.</div>
+        </div>
+      )}
+
+      <div className={styles.hud}>
+        <div className={styles.panel + ' ' + styles.actionPanel}>
+          <div className={styles.statusRow}>
+            {live && <span className={styles.metric}>Pot <strong>{live.pot.toLocaleString()}</strong> vCLAW</span>}
+            <span className={styles.blindPill}>
+              Blinds {state?.table.smallBlindCt ?? '—'}/{state?.table.bigBlindCt ?? '—'} vCLAW
+            </span>
+            {live && <span className={styles.metric}>{live.street.toUpperCase()} · Hand {live.handNumber}</span>}
+            {live?.toActSeatIndex != null && (
+              <span className={styles.metric}>
+                Acting <strong>{live.seats.find((seat) => seat.seatIndex === live.toActSeatIndex)?.name ?? `Seat ${live.toActSeatIndex + 1}`}</strong>
+                {countdown != null ? ` · ${countdown}s` : ''}
+              </span>
+            )}
+            {povSeat && <span className={styles.metric}>{povSeat.name} · <strong>{povSeat.chipStack.toLocaleString()}</strong> vCLAW</span>}
+          </div>
+          {pollNotice && <div className={styles.toast + ' ' + styles.toastWarn}>{pollNotice}</div>}
+          <div className={styles.legendRow}>
+            <span><span className={styles.positionChip + ' ' + styles.dealerChip}>D</span> Dealer</span>
+            <span><span className={styles.positionChip}>SB</span> Small blind</span>
+            <span><span className={styles.positionChip}>BB</span> Big blind</span>
+            <span className={styles.controlHint}>←/→ Look around · Home center</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 type PlaybackEvent =
   | { kind: 'action'; entry: SerializedHoldemLogEntry }
