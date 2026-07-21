@@ -657,10 +657,10 @@ export default function CreateAgentPage() {
                   </div>
 
                   <div>
-                    <label className="block text-white/45 text-[10px] font-mono uppercase tracking-[0.25em] mb-1.5">
+                    <div id="forge-gender-label" className="block text-white/45 text-[10px] font-mono uppercase tracking-[0.25em] mb-1.5">
                       Gender
-                    </label>
-                    <div className="grid grid-cols-2 gap-2">
+                    </div>
+                    <div role="group" aria-labelledby="forge-gender-label" className="grid grid-cols-2 gap-2">
                       {(['male', 'female'] as const).map((g) => (
                         <button
                           key={g}

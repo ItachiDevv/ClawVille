@@ -508,8 +508,8 @@ function LoginForm() {
               <form onSubmit={handleSubmit} className="space-y-4">
               {isSignup && (
                 <div>
-                  <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1.5">Agent Runtime</label>
-                  <div className="grid grid-cols-3 gap-2">
+                  <div id="signup-runtime-label" className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1.5">Agent Runtime</div>
+                  <div role="group" aria-labelledby="signup-runtime-label" className="grid grid-cols-3 gap-2">
                     {RUNTIME_OPTIONS.map((opt) => (
                       <button
                         key={opt.id}
@@ -611,10 +611,11 @@ export default function LoginPage() {
       <LandingScene />
       {/* Water-column atmosphere layered over the 3D vista: marine snow and
           god rays only (the scene supplies the base), so the page reads as
-          the surface of the descent whether or not WebGL is available. */}
-      <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden>
+          the surface of the descent whether or not WebGL is available.
+          Viewport-fixed so the snow layers stay bounded (Codex BLOCKING 1). */}
+      <div className="pointer-events-none fixed inset-0 overflow-hidden" aria-hidden>
         <div className="descent-ray" style={{ left: '16%', transform: 'rotate(16deg)' }} />
-        <div className="descent-ray" style={{ left: '62%', width: 170, transform: 'rotate(12deg)', animationDelay: '-4.5s', opacity: 0.6 }} />
+        <div className="descent-ray" style={{ left: '62%', width: 170, transform: 'rotate(12deg)', animationDelay: '-4.5s', ['--ray-max' as string]: 0.6 } as React.CSSProperties} />
         <div className="descent-snow" style={{ opacity: 0.55 }} />
         <div className="descent-snow descent-snow--near" style={{ opacity: 0.35 }} />
         <div
@@ -629,7 +630,7 @@ export default function LoginPage() {
         <DescentRail stage={1} />
         <Suspense fallback={
           <div className="bg-[#0a1628]/90 border border-cyan-500/20 rounded-2xl max-w-md w-full mx-auto p-8 text-center backdrop-blur-xl">
-            <p className="font-clawville text-xl text-cyan-400/60 animate-pulse">Diving in...</p>
+            <p className="font-clawville text-xl text-cyan-400/60 animate-pulse motion-reduce:animate-none">Diving in...</p>
           </div>
         }>
           <LoginForm />
