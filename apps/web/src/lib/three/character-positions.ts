@@ -20,6 +20,7 @@ import {
   KELP_FOREST_PORTAL_PROMPT_RADIUS_WU,
   KELP_FOREST_PORTAL_WORLD_CENTER,
 } from './kelp-forest-location';
+import { KELP_FOREST_PORTAL_HALF_X_WU } from '@clawville/shared';
 
 // ---------------------------------------------------------------------------
 // Shared constants (imported by arena-location-npcs.tsx — single source of truth)
@@ -197,6 +198,36 @@ export function isKelpForestPortalProximate(
   const dx = playerWorldX - KELP_FOREST_PORTAL_WORLD_CENTER.x;
   const dz = playerWorldZ - KELP_FOREST_PORTAL_WORLD_CENTER.z;
   return dx * dx + dz * dz <= KELP_PORTAL_PROMPT_RADIUS_SQ;
+}
+
+/**
+ * True when a movement segment crosses the thin Kelp portal plane through its
+ * visible X opening. X is interpolated at the plane so diagonal movement past
+ * the arch edge is rejected. Pure primitives and zero allocation.
+ */
+export function didCrossKelpForestPortal(
+  prevX: number,
+  prevZ: number,
+  newX: number,
+  newZ: number,
+): boolean {
+  if (prevZ === newZ) return false;
+
+  const portalZ = KELP_FOREST_PORTAL_WORLD_CENTER.z;
+  const prevSide = prevZ - portalZ;
+  const newSide = newZ - portalZ;
+  if (
+    prevSide !== 0
+    && newSide !== 0
+    && ((prevSide < 0) === (newSide < 0))
+  ) {
+    return false;
+  }
+
+  const crossingT = (portalZ - prevZ) / (newZ - prevZ);
+  const crossingX = prevX + (newX - prevX) * crossingT;
+  return Math.abs(crossingX - KELP_FOREST_PORTAL_WORLD_CENTER.x)
+    <= KELP_FOREST_PORTAL_HALF_X_WU;
 }
 
 /**

@@ -64,7 +64,7 @@ export default function LocationHUD() {
       ? characterName!
       : (theme?.label ?? location!.name);
   const ctaLine = isKelpForest
-    ? 'Enter the Kelp Forest'
+    ? 'Walk through to enter the Kelp Forest'
     : isCove
       ? 'Enter the Cove'
     : showTalk
