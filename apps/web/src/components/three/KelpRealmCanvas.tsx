@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect } from 'react';
+import { Suspense, useEffect, useRef } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import * as THREE from 'three/webgpu';
 import { detectLowEndGpuClass } from '@/lib/three/gpu-tier';
@@ -57,15 +57,29 @@ async function waitForCanvasSize(canvas: HTMLCanvasElement): Promise<readonly [n
 
 function withInitTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = window.setTimeout(
-      () => reject(new Error(`renderer init did not complete within ${ms}ms`)),
-      ms,
-    );
+    let settled = false;
+    const timer = window.setTimeout(() => {
+      settled = true;
+      // The abandoned init may still settle later; swallow it so a late
+      // rejection never surfaces as an unhandled promise rejection.
+      promise.catch(() => undefined);
+      reject(new Error(`renderer init did not complete within ${ms}ms`));
+    }, ms);
     promise.then(
-      (value) => { window.clearTimeout(timer); resolve(value); },
-      (error: unknown) => { window.clearTimeout(timer); reject(error); },
+      (value) => { if (!settled) { window.clearTimeout(timer); resolve(value); } },
+      (error: unknown) => { if (!settled) { window.clearTimeout(timer); reject(error); } },
     );
   });
+}
+
+function markWebGPUUnhealthyAndReload(): void {
+  try {
+    window.sessionStorage?.setItem(WEBGPU_UNHEALTHY_KEY, '1');
+  } catch {
+    // Storage blocked (privacy mode) — still reload; the WebGPU retry next
+    // load is better than staying on a dead canvas.
+  }
+  window.location.reload();
 }
 
 /**
@@ -89,57 +103,89 @@ function watchWebGPUHealth(renderer: THREE.WebGPURenderer): void {
       '[KelpRealm] WebGPU device is erroring every frame; falling back to WebGL:',
       (event as { error?: { message?: string } }).error?.message,
     );
-    try {
-      window.sessionStorage?.setItem(WEBGPU_UNHEALTHY_KEY, '1');
-      window.location.reload();
-    } catch {
-      // sessionStorage unavailable — nothing more we can do silently.
-    }
+    markWebGPUUnhealthyAndReload();
   });
 }
 
-/**
- * Mirrors the proven World3DCanvas factory: ONE renderer bound to the R3F
- * canvas, no canvas swapping. R3F can double-invoke this async factory; both
- * renderers then bind the SAME DOM canvas so whichever wins, the visible
- * canvas renders (the canvas-swap approach we shipped first left the DOM
- * canvas orphaned at 300x150 while two renderers drew to detached clones —
- * the reproduced prod "silent void"). three r185's init() already falls back
- * from WebGPU to WebGL2 internally, so no second lane is needed; the timeout
- * catches the adapter-hang class where init() never settles at all.
- */
-async function createRealmRenderer(props: { canvas: HTMLCanvasElement }): Promise<THREE.WebGPURenderer> {
-  const canvas = props.canvas;
-  const [width, height] = await waitForCanvasSize(canvas);
-  const dpr = Math.max(DPR_RANGE[0], Math.min(window.devicePixelRatio || 1, DPR_RANGE[1]));
-  canvas.width = Math.round(width * dpr);
-  canvas.height = Math.round(height * dpr);
-  const renderer = new THREE.WebGPURenderer({ canvas, antialias: false, forceWebGL: FORCE_WEBGL });
+async function initializeRealmRenderer(
+  canvas: HTMLCanvasElement,
+  forceWebGL: boolean,
+  width: number,
+  height: number,
+  dpr: number,
+): Promise<THREE.WebGPURenderer> {
+  const renderer = new THREE.WebGPURenderer({ canvas, antialias: false, forceWebGL });
   renderer.setPixelRatio(dpr);
   try {
     await withInitTimeout(renderer.init(), 8000);
   } catch (error) {
     renderer.dispose();
-    console.error('[KelpRealm] renderer init failed:', { forceWebGL: FORCE_WEBGL, error });
-    reportKelpRealmRendererFailure(FORCE_WEBGL ? null : error, FORCE_WEBGL ? error : null);
     throw error;
   }
   renderer.setSize(width, height, false);
-  clearKelpRealmRendererFailure();
-  if (!FORCE_WEBGL) watchWebGPUHealth(renderer);
-  try {
-    const device = (renderer as unknown as { backend?: { device?: GPUDevice } }).backend?.device;
-    device?.lost?.then((info) => {
-      console.error('[KelpRealm] GPU device lost:', info.reason, info.message);
-      if (info.reason !== 'destroyed') {
-        window.sessionStorage?.setItem(WEBGPU_UNHEALTHY_KEY, '1');
-        window.location.reload();
-      }
-    });
-  } catch {
-    // WebGL backend has no device-loss promise — nothing to watch.
-  }
   return renderer;
+}
+
+/**
+ * Mirrors the proven World3DCanvas factory: renderers bind ONLY the R3F
+ * canvas, never a clone (the canvas-swap approach we shipped first left the
+ * DOM canvas orphaned at 300x150 while renderers drew to detached clones —
+ * the reproduced prod "silent void"). R3F can double-invoke this async
+ * factory, so creation is serialized through a per-canvas in-flight promise:
+ * both invocations receive the same renderer, and only that single winner
+ * touches the shared failure store. On the WebGPU lane an init failure or
+ * hang gets ONE explicit force-WebGL second attempt on the same canvas (a
+ * failed adapter/device negotiation does not claim the canvas context).
+ */
+const inflightRenderers = new WeakMap<HTMLCanvasElement, Promise<THREE.WebGPURenderer>>();
+
+function createRealmRenderer(props: { canvas: HTMLCanvasElement }): Promise<THREE.WebGPURenderer> {
+  const existing = inflightRenderers.get(props.canvas);
+  if (existing) return existing;
+  const creation = (async () => {
+    const canvas = props.canvas;
+    const [width, height] = await waitForCanvasSize(canvas);
+    const dpr = Math.max(DPR_RANGE[0], Math.min(window.devicePixelRatio || 1, DPR_RANGE[1]));
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+
+    let renderer: THREE.WebGPURenderer;
+    let usedWebGL = FORCE_WEBGL;
+    try {
+      renderer = await initializeRealmRenderer(canvas, FORCE_WEBGL, width, height, dpr);
+    } catch (firstError) {
+      if (FORCE_WEBGL) {
+        console.error('[KelpRealm] renderer init failed:', { webGPUError: null, webGLError: firstError });
+        reportKelpRealmRendererFailure(null, firstError);
+        throw firstError;
+      }
+      console.warn('[KelpRealm] WebGPU init failed; retrying force-WebGL on the same canvas:', firstError);
+      try {
+        renderer = await initializeRealmRenderer(canvas, true, width, height, dpr);
+        usedWebGL = true;
+      } catch (webGLError) {
+        console.error('[KelpRealm] renderer init failed:', { webGPUError: firstError, webGLError });
+        reportKelpRealmRendererFailure(firstError, webGLError);
+        throw webGLError;
+      }
+    }
+
+    clearKelpRealmRendererFailure();
+    if (!usedWebGL) watchWebGPUHealth(renderer);
+    try {
+      const device = (renderer as unknown as { backend?: { device?: GPUDevice } }).backend?.device;
+      device?.lost?.then((info) => {
+        console.error('[KelpRealm] GPU device lost:', info.reason, info.message);
+        if (info.reason !== 'destroyed') markWebGPUUnhealthyAndReload();
+      });
+    } catch {
+      // WebGL backend has no device-loss promise — nothing to watch.
+    }
+    return renderer;
+  })();
+  inflightRenderers.set(props.canvas, creation);
+  creation.catch(() => inflightRenderers.delete(props.canvas));
+  return creation;
 }
 
 function PrecompileRealm() {
@@ -154,18 +200,49 @@ function PrecompileRealm() {
   return null;
 }
 
+/**
+ * Canvas-adoption watchdog. When the async WebGPU factory is slow (SwiftShader
+ * ~500ms adapter negotiation, struggling drivers), R3F can recreate its canvas
+ * while the factory is in flight — every renderer then drives a detached
+ * canvas and the DOM canvas keeps its default 300x150 attributes forever: an
+ * eternal silent void with ZERO errors (reproduced against the prod bundle;
+ * also affects /game in the same environments). The signature is precise
+ * (default-attrs canvas with a large layout box after grace), and the WebGL
+ * lane inits fast enough to never lose this race — so detect once and reload
+ * into it. FORCE_WEBGL sessions skip the check entirely, so no reload loop.
+ */
+function useCanvasAdoptionWatchdog(containerRef: { current: HTMLDivElement | null }): void {
+  useEffect(() => {
+    if (FORCE_WEBGL) return;
+    const timer = window.setTimeout(() => {
+      const canvas = containerRef.current?.querySelector('canvas');
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      if (canvas.width === 300 && canvas.height === 150 && rect.width > 320 && rect.height > 170) {
+        console.error('[KelpRealm] renderer never adopted the visible canvas; reloading into WebGL');
+        markWebGPUUnhealthyAndReload();
+      }
+    }, 6000);
+    return () => window.clearTimeout(timer);
+  }, [containerRef]);
+}
+
 export default function KelpRealmCanvas() {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  useCanvasAdoptionWatchdog(containerRef);
   return (
-    <Canvas
-      key="kelp-realm"
-      frameloop="always"
-      dpr={DPR_RANGE}
-      camera={{ fov: 60, near: 1, far: 10000, position: [0, 610, 1460] }}
-      gl={createRealmRenderer as any}
-    >
-      <KTX2LoaderSetup />
-      <PrecompileRealm />
-      <Suspense fallback={null}><KelpRealmScene forceWebGL={FORCE_WEBGL} /></Suspense>
-    </Canvas>
+    <div ref={containerRef} style={{ position: 'absolute', inset: 0 }}>
+      <Canvas
+        key="kelp-realm"
+        frameloop="always"
+        dpr={DPR_RANGE}
+        camera={{ fov: 60, near: 1, far: 10000, position: [0, 470, 1460] }}
+        gl={createRealmRenderer as any}
+      >
+        <KTX2LoaderSetup />
+        <PrecompileRealm />
+        <Suspense fallback={null}><KelpRealmScene forceWebGL={FORCE_WEBGL} /></Suspense>
+      </Canvas>
+    </div>
   );
 }
