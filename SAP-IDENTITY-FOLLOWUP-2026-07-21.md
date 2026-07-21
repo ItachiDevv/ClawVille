@@ -75,8 +75,9 @@ that step in the same provisioning flow so verifiers can walk asset → URL → 
   AgentIdentity attachment through a hand-built 1DREG `RegisterIdentityV1` ix matching the
   landed genesis devnet shape. The derived identity registration PDA is persisted with the
   prepared asset before broadcast and on success; ambiguous sends retain both, discarded
-  assets clear both. Immutable production metadata/EIP URLs, broadcast-safe reconciliation,
-  and read-only `verifyLink` still gate terminal attachment.
+  assets clear both. The immutable metadata/EIP base URL is selected per environment at
+  mint time (staging uses `api-staging`); reconciliation and read-only `verifyLink` still
+  gate terminal attachment.
 
 ### 5. Reputation writes (the meaty one)
 SAP feedback + attestation instructions are BUILT and devnet-proven (create_attestation /
