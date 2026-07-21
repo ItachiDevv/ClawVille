@@ -31,8 +31,6 @@ import {
 import { jumpState, isEditable, type ChargeMode } from '@/lib/three/jump-state';
 import { triggerCoveWalkIn } from './arena-buildings';
 import {
-  armKelpForestWalkIn,
-  isKelpForestWalkInArmed,
   resetKelpForestWalkInLatch,
   triggerKelpForestWalkIn,
 } from './kelp-forest-transition';
@@ -357,12 +355,6 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
     const frameStartWorldZ = avatarPositionRef.y - HALF_H;
     const ownsKelpPortalMovement =
       store.controlMode === 'player' || store.controlMode === 'autonomous';
-    if (ownsKelpPortalMovement) {
-      // Arm from the segment origin, never its destination. A disarmed mover
-      // that starts inside the jitter zone cannot arm and fire in one long
-      // frame merely because it landed beyond the hysteresis distance.
-      armKelpForestWalkIn(frameStartWorldZ);
-    }
     if (ownsKelpPortalMovement && kelpPortalPrevInitializedRef.current) {
       // Re-seed from the authoritative frame-start position so an external
       // spawn/teleport can never masquerade as a portal crossing.
@@ -594,7 +586,6 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
         kelpPortalPrevInitializedRef.current = true;
       } else {
         if (
-          isKelpForestWalkInArmed() &&
           didCrossKelpForestPortal(
             kelpPortalPrevXRef.current,
             kelpPortalPrevZRef.current,
@@ -888,12 +879,6 @@ function PlayerAvatarGLBInner() {
     const frameStartWorldZ = avatarPositionRef.y - HALF_H;
     const ownsKelpPortalMovement =
       store.controlMode === 'player' || store.controlMode === 'autonomous';
-    if (ownsKelpPortalMovement) {
-      // Arm from the segment origin, never its destination. A disarmed mover
-      // that starts inside the jitter zone cannot arm and fire in one long
-      // frame merely because it landed beyond the hysteresis distance.
-      armKelpForestWalkIn(frameStartWorldZ);
-    }
     if (ownsKelpPortalMovement && kelpPortalPrevInitializedRef.current) {
       // Re-seed from the authoritative frame-start position so an external
       // spawn/teleport can never masquerade as a portal crossing.
@@ -1101,7 +1086,6 @@ function PlayerAvatarGLBInner() {
         kelpPortalPrevInitializedRef.current = true;
       } else {
         if (
-          isKelpForestWalkInArmed() &&
           didCrossKelpForestPortal(
             kelpPortalPrevXRef.current,
             kelpPortalPrevZRef.current,
@@ -1276,7 +1260,7 @@ export default function PlayerAvatar() {
   useEffect(() => {
     // PlayerAvatar owns the stable 3D world-scene lifecycle. Reset here once,
     // not in the swappable VRM/GLB inners or the simultaneously mounted NPC
-    // controller, so a model/control-mode change cannot re-disarm the portal.
+    // controller, so a model/control-mode change cannot clear the in-flight guard.
     if (!kelpPortalMountResetRef.current) {
       resetKelpForestWalkInLatch();
       kelpPortalMountResetRef.current = true;

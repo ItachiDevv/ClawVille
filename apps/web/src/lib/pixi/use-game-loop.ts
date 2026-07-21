@@ -5,8 +5,6 @@ import {
   isKelpForestPortalProximate,
 } from '@/lib/three/character-positions';
 import {
-  armKelpForestWalkIn,
-  isKelpForestWalkInArmed,
   resetKelpForestWalkInLatch,
   triggerKelpForestWalkIn,
 } from '@/lib/three/kelp-forest-transition';
@@ -170,7 +168,6 @@ export function useGameLoop({ mapWidth, mapHeight, buildingZones, isSpectator = 
       if (vx === 0 && vy === 0) {
         const worldX = avatarPositionRef.x - mapWidth / 2;
         const worldZ = avatarPositionRef.y - mapHeight / 2;
-        armKelpForestWalkIn(worldZ);
         previousWorldXRef.current = worldX;
         previousWorldZRef.current = worldZ;
         return;
@@ -189,10 +186,8 @@ export function useGameLoop({ mapWidth, mapHeight, buildingZones, isSpectator = 
 
       const newWorldX = newX - mapWidth / 2;
       const newWorldZ = newY - mapHeight / 2;
-      armKelpForestWalkIn(previousWorldZRef.current);
       if (
-        isKelpForestWalkInArmed()
-        && didCrossKelpForestPortal(
+        didCrossKelpForestPortal(
           previousWorldXRef.current,
           previousWorldZRef.current,
           newWorldX,

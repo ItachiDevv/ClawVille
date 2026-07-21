@@ -27,8 +27,6 @@ import {
 } from '@/lib/three/character-positions';
 import { triggerCoveWalkIn } from '@/lib/three/arena-buildings';
 import {
-  armKelpForestWalkIn,
-  isKelpForestWalkInArmed,
   resetKelpForestWalkInLatch,
   triggerKelpForestWalkIn,
 } from '@/lib/three/kelp-forest-transition';
@@ -153,7 +151,8 @@ export default function NpcController() {
       // PlayerAvatar is unmounted in NPC mode, so this controller owns the
       // fresh-world reset when it acquires a possessed body. Acquisition is
       // edge-triggered by the owner id: inactive player-mode frames never
-      // reset the shared latch, and steady NPC movement never resets per frame.
+      // reset the shared in-flight guard, and steady NPC movement never resets
+      // per frame.
       resetKelpForestWalkInLatch();
       kelpPortalOwnerNpcIdRef.current = possessedNpcId;
       kelpPortalPrevNpcIdRef.current = null;
@@ -209,7 +208,6 @@ export default function NpcController() {
     kelpPortalPrevXRef.current = frameStartWorldX;
     kelpPortalPrevZRef.current = frameStartWorldZ;
     kelpPortalPrevNpcIdRef.current = possessedNpcId;
-    armKelpForestWalkIn(frameStartWorldZ);
 
     // Character proximity check — replaces building-zone area check.
     // findNearestCharacter takes world-space primitives — zero allocation.
@@ -328,7 +326,6 @@ export default function NpcController() {
 
     if (
       samePortalMover &&
-      isKelpForestWalkInArmed() &&
       didCrossKelpForestPortal(
         kelpPortalPrevXRef.current,
         kelpPortalPrevZRef.current,
