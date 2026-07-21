@@ -80,6 +80,7 @@ import { moonpayRoutes } from './routes/moonpay';
 // fulfillers (cosmetic-purchase + rent-prepay + marketplace-purchase register
 // themselves) — the registry is populated before any request runs.
 import { x402CheckoutRoutes } from './routes/x402-checkout';
+import { x402StatsRoutes } from './routes/x402-stats';
 // Tokenomics C4 (2026-07-07): P2P marketplace v1 — list/browse/cancel with the
 // CLV seller license + deed escrow-lock. SETTLEMENT flag-gated OFF
 // (MARKETPLACE_SETTLE_ENABLED); the buyer path is the x402 checkout above.
@@ -371,6 +372,8 @@ app.route('/api/moonpay', moonpayRoutes);
 // sessions 403). GATED like ct-topup: 503 until the merchant wallet is set;
 // devnet-first. See routes/x402-checkout.ts + services/x402-checkout.ts.
 app.route('/api/x402/checkout', x402CheckoutRoutes);
+// Public read-only total volume over x402_settlement_receipts; cached for 60s.
+app.route('/api/x402/stats', x402StatsRoutes);
 // Tokenomics C4 (2026-07-07) — P2P marketplace v1: sellers list (CLV Resident
 // license ≥ 50k uiAmount, fail-soft REFUSE; land_deed only — earned_bundle
 // refused; deed escrow-locked in market_deed_locks), buyers settle via the
