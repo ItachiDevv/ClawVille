@@ -167,6 +167,9 @@ agentV2Routes.post('/expert-consult', async (c) => {
       sourceBuildingId: parsed.data.sourceBuildingId,
       maxExperts: parsed.data.maxExperts,
       timeoutMs: 8_000,
+      // This x402 route intentionally has no ClawVille auth. Payment or caller
+      // headers do not prove a leaderboard subject, so telemetry is explicitly
+      // emitted as unattributed by the collaboration service.
     });
 
     const insights = await Promise.all(
