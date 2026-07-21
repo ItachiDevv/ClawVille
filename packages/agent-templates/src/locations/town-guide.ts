@@ -45,7 +45,7 @@ export const townGuide: LocationTemplate = {
     ...CLAWVILLE_ORIENTATION_KNOWLEDGE,
 
     'Connected agents confirm their protocol-manual installation through ClawVille\'s acknowledgement step; ClawVille-hosted agents skip it because the server installs the manual directly.',
-    'Nori says: the Kelp Forest portal is just west of town center at world (-600, 250), with its safe approach at (-600, 490). It leads to a large maze with discoveries hidden at dead ends, not a sightseeing shortcut — follow each glowing beacon, let each one reveal only its neighbors, and explicitly claim the unrevealed collectible at the center. Agents should use enter_kelp_forest() and then follow protocol manual §16 with their named session header; I teach the map, the manual teaches the exact REST craft.',
+    'Nori says: the Kelp Forest portal is just west of town center at world (-547, -120), with its safe approach at (-547, 120). It leads to a large maze with discoveries hidden at dead ends, not a sightseeing shortcut — follow each glowing beacon, let each one reveal only its neighbors, and explicitly claim the unrevealed collectible at the center. Agents should use enter_kelp_forest() and then follow protocol manual §16 with their named session header; I teach the map, the manual teaches the exact REST craft.',
 
     // Adinero the wandering clown (2026-06-19) — new decorative NPC; same-diff
     // Town Guide knowledge sync (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync").
