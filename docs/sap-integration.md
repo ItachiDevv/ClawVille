@@ -1,6 +1,6 @@
 # SAP (Synapse Agent Protocol) — on-chain integration + flip-to-live runbook
 
-**Status:** FULLY built, gated OFF + devnet-first + dry-run by default. **Set 2026-06-20. Last audited 2026-07-09 (rev 5) — the deployed program's V2 stake/max-obligation checks were derived from upstream source at commit `55d29edeafebf5fd11ee6c7a63935625cfe98b1b`, validated against the live devnet escrow, and mirrored as fail-open UX preflights. Prior rev 4: workers can publish the required caller-named Escrow-mode USDC pricing tier through the authenticated, avatar-bound `POST /api/sap/agent/pricing` route; prior rev 3: SAP V2 DisputeWindow release was routed through the escrow-gate ledger; prior rev 2: adopted the official SDK `@oobe-protocol-labs/synapse-sap-sdk@1.0.0`; prior rev 1: 0.18→0.25 migration.**
+**Status:** Existing SAP rail live posture unchanged; automatic identity pipeline implemented locally and awaiting staging smoke + founder sign-off. **Set 2026-06-20. Last audited 2026-07-21 — additive `sap_agent_identities` durable registry, first-economic-action self-funded registrar, SDK direct Metaplex AgentIdentity attach/verify stage, genesis-first DB-backed public EIP-8004 documents, and the default-on rollback-only `SAP_IDENTITY_AUTOREG_ENABLED` gate. Registration/attach reuse the avatar's own custodial wallet; no escrow/settle/withdraw wire changed. Prior audit 2026-07-09 (rev 5): deployed-program V2 stake/max-obligation preflights and SDK 1.0.0 adoption.**
 **Plan:** `.claude/plans/sap-onchain-agents/PLAN.md` · **Owner:** orchestrator (Claude)
 **FEATURE_GATE:** `sap_onchain_agents` (review deadline 2026-09-20 — see `routes/sap.ts`).
 
@@ -137,6 +137,72 @@ Other env:
 | `SAP_CLUSTER` | `devnet` | `devnet` or `mainnet`. Same program id both. `mainnet` THROWS at config-load unless the `SAP_ALLOW_MAINNET` code constant is flipped. |
 | `SAP_PROGRAM_ID` | `SAPpU…FETZ` | Override only to point at a fork. |
 | `SAP_RPC_URL` | public devnet/mainnet RPC | Override with a paid endpoint (Helius/Triton) before any real traffic. NEVER surfaced in API responses (may carry an API key). |
+| `SAP_IDENTITY_AUTOREG_ENABLED` | `true` | Emergency rollback lever for first-economic-action identity registration. Effective only while master `SAP_ENABLED=true`; this is not a dark-launch flag. |
+| `SAP_IDENTITY_REGISTRAR_POLL_MS` | `300000` (5 min) | Durable identity worker cadence. Rows, not the timer, are the source of truth across restarts. |
+
+### Automatic identity pipeline (local implementation; staging smoke + founder sign-off pending)
+
+Policy is **first real economic action, self-funded**. Agent creation alone spends
+nothing, and ClawVille never drips treasury SOL into a user wallet. A ledger-capable
+human-driven or connected/hosted agent reaches the same economic route; a best-effort
+`ensureSapIdentityQueued(avatarId, triggerSource)` call inserts one durable row with
+`ON CONFLICT (avatar_id) DO NOTHING`. It is fire-and-forget and can never fail the
+economic response. SAP-disabled, autoreg-disabled, wallet-less, non-ledger-capable,
+guest, and demo subjects do not enqueue.
+
+The idempotent migration `packages/database/migrations/0042_sap_agent_identities.sql`
+creates `sap_agent_identities` (also modeled by `schema/sap-identity.ts`). It stores the
+avatar's public owner wallet, deterministic SAP PDA, cluster, non-empty registration
+name/description, JSONB capabilities, trigger provenance, attempts/error, real register
+signature, and optional Metaplex asset/registration/attach signature. One avatar and one
+PDA each have a UNIQUE row. Lifecycle:
+
+`pending_funding → registering → registered → attaching_identity → identity_attached`
+
+`failed` is the terminal retry-budget outcome. A transient registration failure returns
+to `pending_funding`; insufficient SOL is normal parked state (no attempts increment).
+Per-avatar in-process serialization plus a Postgres advisory lock prevents concurrent
+workers from signing twice. Registration is idempotent-adoptable: every retry probes the
+on-chain profile first, and a broadcast-unknown send is re-probed before any retry. An
+adoption is not allowed to invent a tx-signature sentinel: the public document stays 404
+until a real historical registration signature is resolved.
+
+`SAP_REGISTER_BALANCE_FLOOR_LAMPORTS = 60_000_000` (0.06 SOL) is a conservative
+preflight covering today's register rent (~0.056 SOL) and the much smaller Core
+mint/attach cost (~0.004 SOL). It gates only a **new register or mint/attach send**;
+once an asset is persisted, read-only existence reconciliation and `verifyLink` run
+even below the floor so a wallet whose successful writes consumed its SOL cannot be
+stranded. It is **not a quoted fee** and never overrules the chain.
+OOBE's source carries a future, currently undeployed 0.1 SOL protocol fee; an upgrade
+could therefore park identities back at `pending_funding` until wallets are funded above
+the real new requirement. Never hardcode today's rent as a permanent protocol cost.
+
+After a confirmed registration, the same worker uses SDK 1.0.0
+`MetaplexBridge.buildMintAndAttachIxs` with the avatar's own custodial wallet plus the
+ephemeral Core asset signer. The AgentIdentity URI is asserted to be exactly
+`https://api.clawville.world/agents/<agentPda>/eip-8004.json`; the sibling
+`metadata.json` URL is immutable too. This is the SDK's direct MPL Core external-plugin
+adapter path, so `identity_registration` is legitimately nullable (the historical
+genesis asset used 1DREG and has a registration PDA). The row becomes
+`identity_attached` only after read-only `verifyLink` succeeds; verification failure
+stays retryable at `attaching_identity`. If the RPC outcome becomes ambiguous after
+the transaction is signed, the worker retains the deterministic signed transaction
+signature and prepared asset, then reconciles that exact asset; it never blindly
+remints. A crash-before-send asset is cleared for a fresh mint only after the stale
+blockhash window and a read-only account-absence proof.
+
+The public route checks the hand-audited genesis entry first, then the database. It
+serves only `registered|attaching_identity|identity_attached` rows with a real 64-byte
+Solana `register_tx_sig`, includes real proof fields in `extra`, derives the wallet
+CAIP-2 entry from the row's cluster, and imports no SAP write gate—public identity
+documents remain readable while writes are disabled.
+
+**Staging verification constraint:** the immutable asset URI deliberately names
+`api.clawville.world`, never `api-staging`. Staging now has an isolated database, so a
+devnet identity created only in staging will make SDK `verifyLink` fetch the production
+registry and receive 404. A staging attach e2e therefore requires deliberate
+production-registry coordination for that test row (or a read-only equivalent proxy);
+do not change the minted URI to staging to make the smoke pass.
 
 ### The mainnet CODE gate (not an env flip)
 
@@ -165,7 +231,10 @@ is a code-review event, not an ops toggle.
 | `sap-pdas.ts` | Pure PDA derivation for every account + `u64LE`, `toolNameHash` (sha256), `serviceHash`. `findReceiptPda` is NOT wired into settle (deployed settle takes no `settlement_receipt`; the pending PDA rides in SPL remaining). |
 | `sap-escrow-v2.ts` | The HAND-ROLLED escrow-V2 money builders (create/settle/finalize/withdraw/dispute + close) built to the devnet-verified 0.25-family shapes, PLUS `assembleV2SplRemaining()` — the SINGLE source of truth for the SPL `remaining_accounts` wire order. Pure; byte-tested in `__tests__/sap-escrow-v2.test.ts`. |
 | `sap-client.ts` | Loads the **future-0.25 IDL** + `Program` (Anchor identity/stake/pricing) + calls the hand-rolled escrow-V2 builders; custodial in-memory signing via `keypair-vault` (FIX-F); honest dry-run program-reached classification (FIX-B); live-send mainnet genesis-hash guard (FIX-D); structured errors; worker-owned `updateAgentPricingUsdc` provisioning; the `deposit>obligation` money pre-flight + `sap_agent_stake_provisioning` FEATURE_GATE. |
+| `sap-identity-registrar.ts` | Durable first-economic-action identity queue + poll worker: resolve a ledger-capable avatar/wallet/name, register idempotently after the 0.06 SOL preflight, then mint/attach/verify the SDK Metaplex AgentIdentity. Per-avatar mutex + advisory lock, bounded retries, alerting, and broadcast-unknown re-probe discipline. |
+| `packages/database/src/schema/sap-identity.ts` + migration `0042_sap_agent_identities.sql` | One durable `sap_agent_identities` row per avatar; registration/attachment state, proof signatures/pubkeys, trigger provenance, and retry diagnostics. Additive idempotent CI migration; never `db:push`. |
 | `routes/sap.ts` | `requireAuthOrAgentSession`-gated Hono routes; `requireLedgerCapable` on agent-session writes (FIX-C); Zod on every body; gate → 503 before chain work; FEATURE_GATE block. |
+| `routes/agent-eip8004.ts` | Public genesis-first, DB-backed EIP-8004 + Core metadata documents at the immutable `/agents/:sapAgentPda/{eip-8004,metadata}.json` paths. Opaque 404 unless DB registration proof is honest; no SAP write-gate import. |
 | `apps/api/scripts/sap/dry-run-e2e.ts` | The 0.18 conformance harness — now STALE (version-pins `0.18.0` + asserts the OLD account sets). Must be re-pinned/re-vendored to the 0.25-family shapes before it can gate again; out of scope for the 2026-07-09 migration diff. |
 
 ---

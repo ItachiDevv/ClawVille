@@ -98,6 +98,7 @@ import {
   type EscrowGateResult,
   type EscrowGateFailure,
 } from '../services/sap/escrow-gate';
+import { ensureSapIdentityQueued } from '../services/sap/sap-identity-registrar';
 
 type DualContext = AppContext & ActivityAuthContext;
 
@@ -242,6 +243,7 @@ sapRoutes.get('/status', (c) => {
   const cfg = sapConfigSnapshot();
   return c.json({
     enabled: cfg.enabled,
+    identityAutoregEnabled: cfg.identityAutoregEnabled,
     escrowEnabled: cfg.escrowEnabled,
     dryRun: cfg.dryRun,
     cluster: cfg.cluster,
@@ -585,6 +587,7 @@ sapRoutes.post('/agent/pricing', requireAuthOrAgentSession, requireNonGuestIdent
   const identity = c.get('identity');
   const notLedger = requireLedgerCapable(c, identity);
   if (notLedger) return notLedger;
+  ensureSapIdentityQueued(identity.avatarId, 'sap.agent.pricing');
   const result = await updateAgentPricingUsdc({
     workerAvatarId: identity.avatarId,
     tierId: parsed.data.tierId,
@@ -786,6 +789,7 @@ sapRoutes.post('/escrow/v2/open', requireAuthOrAgentSession, requireNonGuestIden
   const identity = c.get('identity');
   const notLedger = requireLedgerCapable(c, identity);
   if (notLedger) return notLedger;
+  ensureSapIdentityQueued(identity.avatarId, 'sap.escrow.v2.open');
   const result = await openEscrowV2({
     depositorAvatarId: identity.avatarId,
     workerAvatarId: parsed.data.workerAvatarId,

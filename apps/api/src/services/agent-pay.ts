@@ -20,6 +20,7 @@ import {
   users,
   type AgentPayment,
 } from '@clawville/database';
+import { ensureSapIdentityQueued } from './sap/sap-identity-registrar';
 import { decryptWalletRow } from './keypair-vault';
 import { readSplTokenBalance } from './solana-token-balance';
 import { mintEarned, type LedgerTx } from './claw-token-ledger';
@@ -849,6 +850,8 @@ async function payAgentLocked(
   if (admission.kind === 'existing') {
     return dispatchExisting(admission.row, input, d);
   }
+  ensureSapIdentityQueued(input.senderAvatarId, 'agent-pay.sender');
+  ensureSapIdentityQueued(recipient.avatarId, 'agent-pay.recipient');
   return executePending(admission.row, d);
 }
 

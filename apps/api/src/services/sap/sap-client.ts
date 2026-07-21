@@ -45,6 +45,7 @@ import {
   type Commitment,
   type SimulatedTransactionResponse,
 } from '@solana/web3.js';
+import bs58 from 'bs58';
 import { AnchorProvider, BN, Program } from '@coral-xyz/anchor';
 import { db, eq, and, wallets } from '@clawville/database';
 import { decryptWalletRow } from '../keypair-vault';
@@ -278,9 +279,23 @@ function getProgram(): Program {
   return cachedProgram;
 }
 
+/**
+ * Narrow accessors for the automatic identity registrar. They reuse this
+ * module's cached, cluster-guarded provider plumbing; transaction execution
+ * still goes through the proven executors below.
+ */
+export function getSapConnectionForIdentityRegistrar(): Connection {
+  return getConnection();
+}
+
+export function getSapProgramForIdentityBridge(): Program {
+  return getProgram();
+}
+
 /** Public, side-effect-free config read for the route layer's gate checks. */
 export function sapConfigSnapshot(): {
   enabled: boolean;
+  identityAutoregEnabled: boolean;
   escrowEnabled: boolean;
   usdcEscrowEnabled: boolean;
   /** PayAI x402 settlement rail gate (SAP_PAYAI_SETTLEMENT_ENABLED). */
@@ -293,6 +308,7 @@ export function sapConfigSnapshot(): {
   const cfg = getConfig();
   return {
     enabled: cfg.enabled,
+    identityAutoregEnabled: cfg.identityAutoregEnabled,
     escrowEnabled: cfg.escrowEnabled,
     usdcEscrowEnabled: cfg.usdcEscrowEnabled,
     payaiSettlementEnabled: cfg.payaiSettlementEnabled,
@@ -397,7 +413,7 @@ function extractCustomErrorNumber(input: unknown): number | null {
   return null;
 }
 
-function classifyChainError(label: string, err: unknown): SapFailure {
+export function classifyChainError(label: string, err: unknown): SapFailure {
   const msg = err instanceof Error ? err.message : String(err);
   if (
     msg.includes('ETIMEDOUT') ||
@@ -522,6 +538,97 @@ async function executeTx(
       return { ...failure, broadcast: true, signature };
     }
     return { ok: true, dryRun: false, signature, accounts };
+  } catch (err) {
+    return classifyChainError(label, err);
+  }
+}
+
+/**
+ * Narrow two-signer sibling of `executeTx` for the SDK Metaplex identity mint.
+ *
+ * `MetaplexBridge.buildMintAndAttachIxs` generates an ephemeral Core-asset
+ * keypair, so this transaction must be signed by BOTH the avatar's custodial
+ * owner wallet and that short-lived asset keypair. Pre-signing and then calling
+ * `executeTx` is unsafe because `Transaction.sign(owner)` resets signatures and
+ * would discard the asset signature. This helper deliberately preserves the
+ * exact dry-run, mainnet-genesis, broadcast/confirm, and structured-failure
+ * discipline of `executeTx` while leaving that byte-pinned executor untouched.
+ */
+export async function executeSapIdentityAttachTx(input: {
+  transaction: Transaction;
+  ownerSigner: Keypair;
+  assetSigner: Keypair;
+  accounts: Record<string, string>;
+}): Promise<SapWriteResult> {
+  const cfg = getConfig();
+  if (!cfg.enabled) {
+    return { ok: false, code: 'sap_disabled', message: 'SAP layer is disabled.' };
+  }
+  const connection = getConnection();
+  const label = 'attachAgentIdentity';
+  const tx = input.transaction;
+  try {
+    const firstProgramId = tx.instructions[0]?.programId.toBase58();
+    if (!firstProgramId) {
+      return { ok: false, code: 'internal', message: 'SAP identity attach built no instructions.' };
+    }
+    const { blockhash, lastValidBlockHeight } =
+      await connection.getLatestBlockhash(COMMITMENT);
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = input.ownerSigner.publicKey;
+
+    if (cfg.dryRun) {
+      tx.sign(input.ownerSigner, input.assetSigner);
+      const sim = await connection.simulateTransaction(tx);
+      const programReached = classifyProgramReached(firstProgramId, sim.value);
+      return {
+        ok: true,
+        dryRun: true,
+        simulation: sim.value,
+        accepted: programReached === 'yes',
+        programReached,
+        accounts: input.accounts,
+      };
+    }
+
+    const mainnetGateOn = cfg.cluster === 'mainnet' && SAP_ALLOW_MAINNET;
+    if (!mainnetGateOn) {
+      const genesisGuard = await assertNotMainnetGenesis(connection, label);
+      if (genesisGuard) return genesisGuard;
+    }
+
+    tx.sign(input.ownerSigner, input.assetSigner);
+    const signedSignature = tx.signature ? bs58.encode(tx.signature) : null;
+    let signature: string;
+    try {
+      signature = await connection.sendRawTransaction(tx.serialize());
+    } catch (sendErr) {
+      const failure = classifyChainError(`${label}:send`, sendErr);
+      // A transport timeout/connection loss can happen after the RPC accepted
+      // the bytes. The signed transaction's deterministic signature lets the
+      // registrar retain and reconcile the prepared asset instead of blindly
+      // minting another one. Deterministic on-chain/send validation failures
+      // remain pre-broadcast and retryable.
+      if (failure.code === 'rpc_unreachable' && signedSignature) {
+        return { ...failure, broadcast: true, signature: signedSignature };
+      }
+      return failure;
+    }
+    let confirmed;
+    try {
+      confirmed = await connection.confirmTransaction(
+        { signature, blockhash, lastValidBlockHeight },
+        COMMITMENT,
+      );
+    } catch (confirmErr) {
+      const failure = classifyChainError(`${label}:confirm`, confirmErr);
+      return { ...failure, broadcast: true, signature };
+    }
+    if (confirmed.value?.err) {
+      const failure = classifyChainError(`${label}:reverted`, confirmed.value.err as unknown);
+      return { ...failure, broadcast: true, signature };
+    }
+    return { ok: true, dryRun: false, signature, accounts: input.accounts };
   } catch (err) {
     return classifyChainError(label, err);
   }
@@ -1052,6 +1159,85 @@ export async function fetchAgentProfile(
  * AgentAccount discriminator memcmp automatically via `.all()`). Read-only;
  * never signs. `limit` trims client-side after fetch.
  */
+/**
+ * Recover the REAL transaction signature that created an already-existing SAP
+ * AgentAccount. The PDA participates in many later writes, so every candidate
+ * is decoded and must contain the SDK-IDL register discriminator, the configured
+ * program, wallet + agent accounts, and the owner wallet as a signer. History is
+ * bounded to 1,000 signatures; an outlier remains non-public instead of getting
+ * a fabricated proof value.
+ */
+export async function findAgentRegistrationSignature(
+  walletPubkey: string,
+): Promise<SapReadResult<string | null> | SapFailure> {
+  const cfg = getConfig();
+  if (!cfg.enabled) {
+    return { ok: false, code: 'sap_disabled', message: 'SAP layer is disabled.' };
+  }
+  let wallet: PublicKey;
+  try {
+    wallet = new PublicKey(walletPubkey);
+  } catch {
+    return { ok: false, code: 'invalid_pubkey', message: 'wallet is not a valid pubkey.' };
+  }
+  const [agentPda] = findAgentPda(cfg.programId, wallet);
+  const registerIx = (idlJson as { instructions?: Array<{ name: string; discriminator?: number[] }> })
+    .instructions?.find((ix) => ix.name === 'register_agent');
+  const discriminator = Buffer.from(registerIx?.discriminator ?? []);
+  if (discriminator.length !== 8) {
+    return { ok: false, code: 'internal', message: 'SAP register discriminator unavailable.' };
+  }
+
+  const connection = getConnection();
+  let before: string | undefined;
+  try {
+    for (let page = 0; page < 10; page += 1) {
+      const signatures = await connection.getSignaturesForAddress(
+        agentPda,
+        { limit: 100, ...(before ? { before } : {}) },
+        'confirmed',
+      );
+      if (signatures.length === 0) break;
+      const successful = signatures.filter((item) => item.err == null);
+      if (successful.length > 0) {
+        const parsed = await connection.getParsedTransactions(
+          successful.map((item) => item.signature),
+          { commitment: 'confirmed', maxSupportedTransactionVersion: 0 },
+        );
+        for (let index = 0; index < parsed.length; index += 1) {
+          const tx = parsed[index];
+          const signature = successful[index]?.signature;
+          if (!tx || !signature || tx.meta?.err) continue;
+          const ownerSigned = tx.transaction.message.accountKeys.some(
+            (key) => key.signer && key.pubkey.equals(wallet),
+          );
+          if (!ownerSigned) continue;
+          const found = tx.transaction.message.instructions.some((ix) => {
+            if (!('data' in ix) || !('accounts' in ix)) return false;
+            if (!ix.programId.equals(cfg.programId)) return false;
+            let data: Uint8Array;
+            try {
+              data = bs58.decode(ix.data);
+            } catch {
+              return false;
+            }
+            if (!Buffer.from(data).subarray(0, 8).equals(discriminator)) return false;
+            const accounts = ix.accounts.map((account) => account.toBase58());
+            return accounts.includes(wallet.toBase58()) && accounts.includes(agentPda.toBase58());
+          });
+          if (found) return { ok: true, data: signature };
+        }
+      }
+      before = signatures.at(-1)?.signature;
+      if (signatures.length < 100 || !before) break;
+    }
+    return { ok: true, data: null };
+  } catch (err) {
+    return classifyChainError('findAgentRegistrationSignature', err);
+  }
+}
+
+/** List registered AgentAccounts, ordered by reputation and trimmed to `limit`. */
 export async function discoverAgents(
   limit = 100,
 ): Promise<SapReadResult<AgentProfile[]> | SapFailure> {
