@@ -702,7 +702,7 @@ describe('ReefRaceSplineSim', () => {
       expect(delta).toBeTruthy();
       expect(
         delta!.entities.find((e) => e.avatarId === AVATAR_A)?.changed.speedMod,
-      ).toBe(1.35);
+      ).toBe(1.4);
     });
   });
 });
