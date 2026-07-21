@@ -21,6 +21,7 @@ import type { ServerFrame, ClientFrame, WorldState } from '@clawville/shared';
 import {
   clientFrameSchema,
   ACTIVITY_WS_CLOSE_CODES,
+  deriveReefRaceSeed,
   REEF_RACE_COUNTDOWN_DURATION_MS,
 } from '@clawville/shared';
 import {
@@ -807,7 +808,7 @@ class ActivityWsHub {
     // room exists) — no permanent client fallback to reconstructed pads.
     const reefSplineZones =
       room.activityId === 'reef-race' && REEF_RACE_USE_SPLINE
-        ? reefRaceSplineSim.getSplineStaticZones()
+        ? reefRaceSplineSim.getSplineStaticZones(room.id)
         : undefined;
     // Phase 3 — pull per-avatar racing profile (class + level) for reef-race
     // rooms so the HUD's archetype tile can show the player WHY they have
@@ -899,7 +900,7 @@ class ActivityWsHub {
         powerUps,
         scores: [],
       },
-      seed: 0,
+      seed: room.activityId === 'reef-race' ? deriveReefRaceSeed(room.id) : 0,
     });
   }
 

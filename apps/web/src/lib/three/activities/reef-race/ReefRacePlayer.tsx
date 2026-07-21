@@ -1025,6 +1025,7 @@ function ReefRacePlayerInner({
   // Fade state for finish (not elimination — racers don't vanish on finish).
   const finishedRef = useRef(false);
   const wasWipedOutRef = useRef(false);
+  const wasObstacleControlLockedRef = useRef(false);
   const wipeoutStartedAtRef = useRef(0);
   const respawnPopRemainingRef = useRef(0);
 
@@ -1782,7 +1783,9 @@ function ReefRacePlayerInner({
         }
         lastAuthorityArrivalRef.current = arrivedAtMs;
 
-        if (entity.wipedOut) {
+        const obstacleAuthorityLocked = predictsSelf &&
+          Date.now() < useActivityStore.getState().selfObstacleControlLockedUntil;
+        if (entity.wipedOut || obstacleAuthorityLocked) {
           // Wipeout is fully server-authoritative. Snap the prediction anchors
           // to each received body pose, clear local time/history, and let the
           // normal snapshot interpolation below render between those poses.
@@ -2146,7 +2149,26 @@ function ReefRacePlayerInner({
     // also comes from prediction so the lean matches the rendered heading.
     // Remote karts use the fixed-delay interpolation/recovery path above; v1 does
     // not enable self prediction.
-    if (predictsSelf && !entity.wipedOut && predictInitRef.current) {
+    const obstacleControlLocked = predictsSelf &&
+      Date.now() < useActivityStore.getState().selfObstacleControlLockedUntil;
+    if (obstacleControlLocked) {
+      // Consume DOM jump edges while authority rejects input so they cannot
+      // replay as a client-only R18b launch on the first unlocked frame.
+      lastJumpPressSeqRef.current = selfInputBus.jumpPressSeq;
+    }
+    if (!obstacleControlLocked && wasObstacleControlLockedRef.current) {
+      // The last locked authority sample is the only safe unlock anchor. Wait
+      // for the next snapshot's normal first-seed branch instead of resuming a
+      // pre-spin prediction timeline.
+      predictInitRef.current = false;
+      predictAccumRef.current = 0;
+      rebaseRenderOffsetRef.current.x = 0;
+      rebaseRenderOffsetRef.current.z = 0;
+      rebaseRenderOffsetRef.current.rot = 0;
+      clearPredictionHistory(predictionHistoryRef.current!);
+    }
+    wasObstacleControlLockedRef.current = obstacleControlLocked;
+    if (predictsSelf && !entity.wipedOut && !obstacleControlLocked && predictInitRef.current) {
       const pred = predictedRef.current;
       const vertical = predictedVerticalRef.current;
       const prevVertical = prevVerticalTickRef.current;

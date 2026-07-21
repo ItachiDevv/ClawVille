@@ -28,14 +28,16 @@
  *   - <RacingKarts /> — 5 decorative spline karts (preview only; hidden in
  *                       gameplay where server karts render via ReefRacePlayer).
  *   - <Ramps />       — jump-ramp wedge meshes at the 6 spline ramp volumes.
- *   - <ReefRaceBoostPads /> — NEW (2026-07-10). Boost-pad glowing floor
- *                       markers at the 4 spline boost-pad volumes.
+ *   - <ReefRaceTrackFurniture /> — R18c seeded obstacle/creature/rip layout,
+ *                       exactly 6 built-in-material instanced draws.
+ *   - <ReefRaceBoostPads /> — boost portals at the authoritative spline zones.
  *
  * Iris Xe invariants (unchanged): ShaderMaterial only on plain Mesh; no
  * InstancedMesh+ShaderMaterial; no drei <Text>/<Billboard>; import 'three' (not
  * 'three/webgpu'); module-scope geo/mat; frustumCulled=false on swept meshes;
  * ≤ 3 lights (parent owns lighting). Draw calls: void 4 + ribbon 2 + canyon 1
- * + shoulder 1 + ramps 1 (+ karts ≤5 in preview) = ~9–14.
+ * + shoulder 1 + ramps 2 + furniture 6 + boost portals 2
+ * (+ karts ≤5 in preview). Furniture's incremental ledger is exactly 6.
  *
  * REMOVED (2026-06-23 SURF ROAD): GroundShader + buildGroundRibbonGeo + the two
  * ground ribbons, SkyDome + makeDomeGeo, ScenerySpawner + PropInstances +
@@ -51,6 +53,7 @@ import { CanyonRiver } from './canyon-river';
 import { RacingKarts } from './racing-karts';
 import { Ramps } from './ramps';
 import ReefRaceBoostPads from './ReefRaceBoostPads';
+import ReefRaceTrackFurniture from './ReefRaceTrackFurniture';
 
 // ─── Public composite component ───────────────────────────────────────────────
 
@@ -96,6 +99,10 @@ export function RiverScene({
 
       {/* Jump-ramp wedge meshes at the 6 spline ramp volumes */}
       <Ramps />
+
+      {/* R18c: authoritative seeded obstacles, moving creature telegraphs, and
+          off-line rip-current streaks. Six instanced built-in-material draws. */}
+      <ReefRaceTrackFurniture />
 
       {/* v2 mechanics — boost-pad glowing floor markers at the 4 spline
           boost-pad volumes. Server-positioned when `reefSplineZones` is

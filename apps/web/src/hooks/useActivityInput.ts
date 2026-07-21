@@ -579,6 +579,8 @@ export function useActivityInput({
         recomputeDirFromKeysRef.current();
       }
       const now = Date.now();
+      const obstacleControlLocked = isReefRaceRef.current &&
+        now < useActivityStore.getState().selfObstacleControlLockedUntil;
       const dt = lastSendAtRef.current ? (now - lastSendAtRef.current) / 1000 : 0;
       lastSendAtRef.current = now;
       const frameDt = dt > 0 && dt < 0.2 ? dt : SEND_INTERVAL_MS / 1000;
@@ -589,7 +591,9 @@ export function useActivityInput({
       const rawBits = actionBitsRef.current | oneShotBitsRef.current;
       // Reef bit 1 is reserved. Mask it defensively even if a future custom
       // action source dispatches raw bits instead of semantic A/B values.
-      const bits = isReefRaceRef.current
+      const bits = obstacleControlLocked
+        ? 0
+        : isReefRaceRef.current
         ? rawBits & ~ACTION_BIT_USE_POWERUP
         : rawBits;
       oneShotBitsRef.current = 0;
@@ -622,7 +626,7 @@ export function useActivityInput({
 
       const dir = dirRef.current;
       const dirMag = Math.hypot(dir.x, dir.y);
-      const moving = dirMag > 0.015;
+      const moving = !obstacleControlLocked && dirMag > 0.015;
 
       seqRef.current = (seqRef.current + 1) >>> 0;
 

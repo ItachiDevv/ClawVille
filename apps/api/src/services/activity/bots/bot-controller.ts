@@ -48,7 +48,7 @@ export type AnyActivityPowerUpKind = BumperPowerUpKind | ReefPowerUpKind;
 export interface BotInput {
   /** Direction unit vector — `null` ≡ no input (idle). */
   dir?: { x: number; y: number };
-  /** 0..1 thrust. Defaults 0 if dir is null. */
+  /** 0..1 normally; a sim may opt into a bounded server-only bot catch-up band. Defaults 0. */
   thrust?: number;
   /** Bitfield: bit 0 = use slot 0, bit 1 = use slot 1. */
   actionBits?: number;

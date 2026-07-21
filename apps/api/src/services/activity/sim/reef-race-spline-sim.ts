@@ -48,7 +48,7 @@ import {
   validateInputBounds,
   type InputBounds,
 } from '../anti-cheat/shared';
-import type { ServerFrame } from '@clawville/shared';
+import type { RoomMeta, ServerFrame } from '@clawville/shared';
 import {
   logEvent,
   ACTIVITY_EVENT_TYPES,
@@ -126,9 +126,15 @@ import {
   WHIRLPOOL_SLOW_MULT,
 } from './reef-race-config';
 import {
+  buildReefRaceFurniture,
   computeReefBoostPadKick,
+  deriveReefRaceSeed,
   integrateSurfStep,
+  reefRaceCreatureMotionAt,
   reefRaceStartGridPose,
+  type ReefRaceFurnitureLayout,
+  type ReefRaceObstacleLayout,
+  type ReefRaceCreatureMotion,
   type ReefRaceStartFrame,
   type SurfParams,
 } from '@clawville/shared';
@@ -197,6 +203,13 @@ const WALL_SLAM_COOLDOWN_MS = 1_500;
 const WALL_WIPEOUT_MS = 3_200;
 const WALL_WIPEOUT_DAMPING = 0.75;
 const WALL_RESPAWN_SPEED = REEF_MAX_SPEED * 0.10;
+const OBSTACLE_SPINOUT_MS = 900;
+const OBSTACLE_SPIN_RATE = Math.PI * 3.5;
+const OBSTACLE_CONTACT_COOLDOWN_MS = 1_500;
+const OBSTACLE_SLOW_MS = 1_200;
+const RIP_CURRENT_REFRESH_MS = 200;
+const DRIFTWOOD_BUMP_DAMPING = 0.58;
+const DRIFTWOOD_STAGGER_IMPULSE = 320;
 
 /**
  * Cap on a single body's per-tick kart-vs-kart positional push (wu). Spreads a
@@ -207,6 +220,13 @@ const PROXIMITY_MAX_PUSH_WU = 30;
 /** Quantisation factors for snapshot encoding. */
 const POS_QUANT = 10;
 const ROT_QUANT = 1000;
+
+const CREATURE_MOTION_SCRATCH: ReefRaceCreatureMotion = {
+  position: { x: 0, y: 0 },
+  telegraph: false,
+  crossing: false,
+  crossingProgress: 0,
+};
 
 // ─── Local progress anti-cheat stub ──────────────────────────────────────────
 // Phase 2: the anti-cheat module will own this. Local stub for Phase 1.
@@ -312,6 +332,11 @@ interface SplineBody {
   wipeoutUntil: number | null;
   /** Sim-clock edge-trigger guard for tier-1 wall slams. */
   wallSlamCooldownUntil: number;
+  /** R18c brief obstacle control-loss, deliberately not a full wipeout. */
+  spinoutUntil: number;
+  spinoutDirection: -1 | 1;
+  /** Server-internal bot catch-up multiplier; never accepted from WS input. */
+  botOverdrive: number;
 
   // ── Input intent ─────────────────────────────────────────────────────────
   intent: SplineBodyIntent;
@@ -457,6 +482,10 @@ interface SplineRoomState {
    * sits/coasts inside the volume (Codex finding 2).
    */
   boostPadInside: Map<string, Set<string>>;
+  /** R18c pure seed-derived obstacles + rip-current lanes. */
+  furniture: ReefRaceFurnitureLayout;
+  obstacleInside: Map<string, Set<string>>;
+  obstacleCooldowns: Map<string, Map<string, number>>;
 }
 
 type SimBroadcastFn = (roomId: string, frame: ServerFrame) => void;
@@ -482,14 +511,6 @@ function inventoriesMatch(
       return other !== undefined && slot.kind === other.kind && slot.charges === other.charges;
     })
   );
-}
-
-function deriveSeedFromRoomId(roomId: string): number {
-  let h = 5381;
-  for (let i = 0; i < roomId.length; i++) {
-    h = ((h << 5) + h + roomId.charCodeAt(i)) >>> 0;
-  }
-  return h || 1;
 }
 
 function lcgNext(state: SplineRoomState): number {
@@ -534,6 +555,8 @@ export class ReefRaceSplineSim {
   private rooms = new Map<string, SplineRoomState>();
   private broadcastFn: SimBroadcastFn = () => {};
   private endedFn: ((roomId: string) => void) | null = null;
+  /** Creature motion alone follows the epoch clock shared with render clients. */
+  private creatureClock: () => number = () => Date.now();
   private integrityForfeitFn:
     | ((roomId: string, avatarId: string) => void)
     | null = null;
@@ -569,7 +592,7 @@ export class ReefRaceSplineSim {
       return this.rooms.get(roomId)!;
     }
 
-    const seed = opts?.seed ?? deriveSeedFromRoomId(roomId);
+    const seed = opts?.seed ?? deriveReefRaceSeed(roomId);
     const startedAt = opts?.startedAt ?? Date.now();
 
     // Build the spline once — shared across all tick iterations.
@@ -623,6 +646,9 @@ export class ReefRaceSplineSim {
       // v2 mechanics — boost pads, built once per room.
       boostPads: buildSplineBoostPads(),
       boostPadInside: new Map(),
+      furniture: buildReefRaceFurniture(seed),
+      obstacleInside: new Map(),
+      obstacleCooldowns: new Map(),
     };
 
     // ── Spawn bodies on the start/finish line (t=0) ───────────────────────
@@ -703,6 +729,9 @@ export class ReefRaceSplineSim {
         forfeited: false,
         wipeoutUntil: null,
         wallSlamCooldownUntil: 0,
+        spinoutUntil: 0,
+        spinoutDirection: 1,
+        botOverdrive: 1,
         intent: {
           dir: null,
           thrust: 0,
@@ -754,7 +783,7 @@ export class ReefRaceSplineSim {
 
     // ── Bot spawn hooks ───────────────────────────────────────────────────
     if (state.botControllers.size > 0) {
-      const view = this.buildBotRoomView(state, '');
+      const view = this.buildBotRoomView(state, '', this.creatureClock());
       for (const [avatarId, ctrl] of state.botControllers) {
         if (!ctrl.onSpawn) continue;
         try {
@@ -820,22 +849,9 @@ export class ReefRaceSplineSim {
    * down-track. Returns null for an unknown room. The ws-hub calls this under
    * REEF_RACE_USE_SPLINE and drops it into `RoomMeta.reefSplineZones`.
    */
-  getSplineStaticZones(): {
-    boostPads: Array<{
-      id: string;
-      position: { x: number; y: number };
-      halfLength: number;
-      halfWidth: number;
-      rot: number;
-    }>;
-    ramps: Array<{
-      id: string;
-      position: { x: number; y: number };
-      halfLength: number;
-      halfWidth: number;
-      rot: number;
-    }>;
-  } {
+  getSplineStaticZones(
+    roomIdOrSeed: string | number,
+  ): NonNullable<RoomMeta['reefSplineZones']> {
     // ROOM-INDEPENDENT (Codex finding 8): boost pads + ramps are STATIC track
     // features, identical for every reef-race room. `snapshot.init` is sent
     // during COUNTDOWN — before the sim room exists — so this must NOT require a
@@ -854,6 +870,10 @@ export class ReefRaceSplineSim {
         rot: Math.atan2(tang.x, tang.z),
       };
     };
+    const seed = typeof roomIdOrSeed === 'number'
+      ? roomIdOrSeed
+      : deriveReefRaceSeed(roomIdOrSeed);
+    const furniture = buildReefRaceFurniture(seed);
     return {
       boostPads: buildSplineBoostPads().map((p) => {
         const w = toWorld(p.t, p.lateralOffset);
@@ -875,6 +895,8 @@ export class ReefRaceSplineSim {
           rot: w.rot,
         };
       }),
+      obstacles: furniture.obstacles,
+      ripCurrents: furniture.ripCurrents,
     };
   }
 
@@ -1014,6 +1036,7 @@ export class ReefRaceSplineSim {
       if (state.intervalHandle) clearInterval(state.intervalHandle);
     }
     this.rooms.clear();
+    this.creatureClock = () => Date.now();
   }
 
   __tickOnceForTest(roomId: string): void {
@@ -1024,6 +1047,10 @@ export class ReefRaceSplineSim {
 
   __getState(roomId: string): SplineRoomState | undefined {
     return this.rooms.get(roomId);
+  }
+
+  __setCreatureClockForTest(clock?: () => number): void {
+    this.creatureClock = clock ?? (() => Date.now());
   }
 
   // ─── Internal — tick loop ──────────────────────────────────────────────────
@@ -1038,6 +1065,7 @@ export class ReefRaceSplineSim {
     // driven by tick count, not Date.now().
     state.simTimeMs += REEF_TICK_MS;
     const now = state.simTimeMs;
+    const creatureNowMs = this.creatureClock();
     const dt = 1 / REEF_SIM_HZ;
 
     // 0. Refresh placement cache once per tick.
@@ -1045,7 +1073,7 @@ export class ReefRaceSplineSim {
 
     // 0a. Bot intent scheduling.
     if (state.botControllers.size > 0) {
-      this.runBotControllers(state, dt, now);
+      this.runBotControllers(state, dt, now, creatureNowMs);
     }
 
     // 1. Apply intents → integrate velocity + position + vertical axis.
@@ -1087,6 +1115,11 @@ export class ReefRaceSplineSim {
       if (!body.alive || body.forfeited || body.finishedAt !== null) continue;
       this.enforceSplineWallClamp(state, body, /*reflectVelocity*/ false);
     }
+
+    // 4a. Seeded track furniture. Jumpable contacts height-gate before they
+    // can cancel a pending trick landing; rip-current bonuses refresh only
+    // while a body remains inside a ribbon segment.
+    this.resolveTrackFurniture(state, now, creatureNowMs);
 
     // 4aa. Award clean trick landings only AFTER collision/wall consequences.
     // A body that landed into a same-tick wipeout must receive no event/surge.
@@ -1166,6 +1199,24 @@ export class ReefRaceSplineSim {
       return;
     }
 
+    if (body.spinoutUntil > now) {
+      // Brief obstacle stagger: authority ignores control/action input but keeps
+      // the racer moving. This is intentionally much lighter than wipeout.
+      body.pendingPowerUpSlots.length = 0;
+      body.speedMod = 0.60;
+      body.rot = Math.atan2(
+        Math.sin(body.rot + body.spinoutDirection * OBSTACLE_SPIN_RATE * dt),
+        Math.cos(body.rot + body.spinoutDirection * OBSTACLE_SPIN_RATE * dt),
+      );
+      const spinDamping = Math.exp(-1.0 * dt);
+      body.vx *= spinDamping;
+      body.vz *= spinDamping;
+      body.x += body.vx * dt;
+      body.z += body.vz * dt;
+      return;
+    }
+    if (body.spinoutUntil !== 0) body.spinoutUntil = 0;
+
     const intent = body.intent;
 
     // 1. Consume seq.
@@ -1220,6 +1271,12 @@ export class ReefRaceSplineSim {
       const trickAdd = body.activeBoosts.has('trick-surge')
         ? (body.activeBoosts.get('trick-surge')!.mult ?? 0)
         : 0;
+      const ripAdd = body.activeBoosts.has('rip-current')
+        ? (body.activeBoosts.get('rip-current')!.mult ?? 0)
+        : 0;
+      const botOverdriveAdd = body.isBot
+        ? Math.max(0, Math.min(.05, body.botOverdrive - 1))
+        : 0;
       // rr-turbo-bubble is ADDITIVE into the positive stack (Codex finding 4b).
       // The old `Math.max(speedMod, 1+pickupAdd)` DISCARDED any active negative
       // (a whirlpool-slowed victim on turbo kept full turbo speed). Folding it
@@ -1230,7 +1287,7 @@ export class ReefRaceSplineSim {
       // speedMod stays <=1.85x, below REEF_KINEMATIC_TOLERANCE's 2.1x ceiling.
       const pickupBoostAdd = powerBoosted ? 0.40 : 0; // rr-turbo-bubble
       const positiveKineticStack = Math.min(
-        launchAdd + slipAdd + padAdd + trickAdd + pickupBoostAdd,
+        launchAdd + slipAdd + padAdd + trickAdd + ripAdd + botOverdriveAdd + pickupBoostAdd,
         KINEMATIC_BOOST_CAP,
       );
 
@@ -1381,9 +1438,11 @@ export class ReefRaceSplineSim {
     const isPositiveBoostActive =
       body.activeBoosts.has('launch-boost') ||
       body.activeBoosts.has('slipstream-boost') ||
+      body.activeBoosts.has('rip-current') ||
       body.activeBoosts.has('pad-boost') ||
       body.activeBoosts.has('trick-surge');
-    if (isPositiveBoostActive) {
+    const hasBotOverdrive = body.isBot && body.botOverdrive > 1;
+    if (isPositiveBoostActive || hasBotOverdrive) {
       const speed = Math.hypot(body.vx, body.vz);
       const hardCap = REEF_MAX_SPEED * 1.85;
       if (speed > hardCap) {
@@ -1438,6 +1497,174 @@ export class ReefRaceSplineSim {
       }
       body.trickDirection = null;
     }
+  }
+
+  private resolveTrackFurniture(
+    state: SplineRoomState,
+    now: number,
+    creatureNowMs = this.creatureClock(),
+  ): void {
+    for (const body of state.bodies.values()) {
+      if (
+        !body.alive || body.forfeited || body.finishedAt !== null ||
+        body.wipeoutUntil !== null
+      ) continue;
+
+      let inside = state.obstacleInside.get(body.avatarId);
+      if (!inside) {
+        inside = new Set();
+        state.obstacleInside.set(body.avatarId, inside);
+      }
+      let cooldowns = state.obstacleCooldowns.get(body.avatarId);
+      if (!cooldowns) {
+        cooldowns = new Map();
+        state.obstacleCooldowns.set(body.avatarId, cooldowns);
+      }
+
+      for (const obstacle of state.furniture.obstacles) {
+        const overlap = this.bodyOverlapsObstacle(body, obstacle, creatureNowMs);
+        if (!overlap) {
+          inside.delete(obstacle.id);
+          continue;
+        }
+
+        if (obstacle.kind === 'kelp') {
+          const existing = body.activeBoosts.get('hazard-slow');
+          body.activeBoosts.set('hazard-slow', {
+            expiresAt: Math.max(existing?.expiresAt ?? 0, now + HAZARD_TICK_DURATION_MS),
+            mult: 1 + HAZARD_SLOW_MULT,
+          });
+          if (!inside.has(obstacle.id)) {
+            this.broadcastFn(state.roomId, {
+              type: 'event.hazard_hit',
+              avatarId: body.avatarId,
+              hazardId: obstacle.id,
+            });
+          }
+          inside.add(obstacle.id);
+          continue;
+        }
+
+        // Airborne racers pass cleanly over every contact obstacle.
+        if (body.heightOffset > obstacle.params.clearanceHeight) continue;
+        inside.add(obstacle.id);
+        if ((cooldowns.get(obstacle.id) ?? 0) > now) continue;
+        cooldowns.set(obstacle.id, now + OBSTACLE_CONTACT_COOLDOWN_MS);
+
+        if (obstacle.kind === 'driftwood') {
+          body.vx *= DRIFTWOOD_BUMP_DAMPING;
+          body.vz *= DRIFTWOOD_BUMP_DAMPING;
+          body.vyAxis = Math.max(body.vyAxis, DRIFTWOOD_STAGGER_IMPULSE);
+          body.airborneTicks = Math.max(1, body.airborneTicks);
+          body.trickArmed = false;
+          body.trickDirection = null;
+          body.trickLandingPending = false;
+          this.broadcastFn(state.roomId, {
+            type: 'event.obstacle_hit',
+            avatarId: body.avatarId,
+            obstacleId: obstacle.id,
+            kind: obstacle.kind,
+            impact: 'bump',
+            durationMs: 0,
+            position: { x: body.x, y: body.z },
+          });
+          continue;
+        }
+
+        const existingSlow = body.activeBoosts.get('hazard-slow');
+        body.activeBoosts.set('hazard-slow', {
+          expiresAt: Math.max(existingSlow?.expiresAt ?? 0, now + OBSTACLE_SLOW_MS),
+          mult: 1 + HAZARD_SLOW_MULT,
+        });
+        body.spinoutUntil = now + OBSTACLE_SPINOUT_MS;
+        body.spinoutDirection = ((body.avatarId.length + obstacle.id.length) & 1) === 0 ? -1 : 1;
+        body.vx *= 0.72;
+        body.vz *= 0.72;
+        body.trickArmed = false;
+        body.trickDirection = null;
+        body.trickLandingPending = false;
+        this.broadcastFn(state.roomId, {
+          type: 'event.obstacle_hit',
+          avatarId: body.avatarId,
+          obstacleId: obstacle.id,
+          kind: obstacle.kind,
+          impact: 'spinout',
+          durationMs: OBSTACLE_SPINOUT_MS,
+          position: { x: body.x, y: body.z },
+        });
+      }
+
+      let ripBonus = 0;
+      for (const rip of state.furniture.ripCurrents) {
+        for (const segment of rip.segments) {
+          if (!this.bodyInsideOrientedRect(
+            body,
+            segment.position.x,
+            segment.position.y,
+            segment.rot,
+            segment.halfLength,
+            segment.halfWidth,
+          )) continue;
+          ripBonus = Math.max(ripBonus, rip.speedBonus);
+          break;
+        }
+      }
+      if (ripBonus > 0) {
+        body.activeBoosts.set('rip-current', {
+          expiresAt: now + RIP_CURRENT_REFRESH_MS,
+          mult: ripBonus,
+        });
+      }
+    }
+  }
+
+  private bodyOverlapsObstacle(
+    body: SplineBody,
+    obstacle: ReefRaceObstacleLayout,
+    creatureNowMs: number,
+  ): boolean {
+    if (obstacle.kind === 'driftwood') {
+      return this.bodyInsideOrientedRect(
+        body,
+        obstacle.position.x,
+        obstacle.position.y,
+        obstacle.rot,
+        obstacle.params.halfLength,
+        obstacle.params.halfWidth,
+      );
+    }
+    let centerX = obstacle.position.x;
+    let centerZ = obstacle.position.y;
+    if (obstacle.kind === 'creature') {
+      const motion = reefRaceCreatureMotionAt(obstacle, creatureNowMs, CREATURE_MOTION_SCRATCH);
+      if (!motion.crossing) return false;
+      centerX = motion.position.x;
+      centerZ = motion.position.y;
+    }
+    const dx = body.x - centerX;
+    const dz = body.z - centerZ;
+    const radius = obstacle.params.radius + REEF_BODY_RADIUS;
+    return dx * dx + dz * dz <= radius * radius;
+  }
+
+  private bodyInsideOrientedRect(
+    body: SplineBody,
+    centerX: number,
+    centerZ: number,
+    rot: number,
+    halfLength: number,
+    halfWidth: number,
+  ): boolean {
+    const dx = body.x - centerX;
+    const dz = body.z - centerZ;
+    const axisX = Math.sin(rot);
+    const axisZ = Math.cos(rot);
+    const along = dx * axisX + dz * axisZ;
+    const across = dx * -axisZ + dz * axisX;
+    return (
+      Math.abs(along) <= halfLength + REEF_BODY_RADIUS &&
+      Math.abs(across) <= halfWidth + REEF_BODY_RADIUS
+    );
   }
 
   // ─── Wall clamp ────────────────────────────────────────────────────────────
@@ -2548,6 +2775,7 @@ export class ReefRaceSplineSim {
         boosting:
           b.activeBoosts.has('launch-boost') ||
           b.activeBoosts.has('slipstream-boost') ||
+          b.activeBoosts.has('rip-current') ||
           b.activeBoosts.has('pad-boost') ||
           b.activeBoosts.has('trick-surge'),
         wipedOut: b.wipeoutUntil !== null,
@@ -2848,11 +3076,15 @@ export class ReefRaceSplineSim {
       body.slipstreamConsecutiveTicks = 0;
       body.slipstreamGraceTicksLeft = 0;
       body.activeBoosts.delete('slipstream-boost');
+      body.activeBoosts.delete('rip-current');
+      body.spinoutUntil = 0;
       body.intent.dir = { x: tangent.x, z: tangent.z };
       body.intent.thrust = 0.4;
       body.intent.actionBits = 0;
       state.boostPadInside.delete(avatarId);
       state.rampCooldowns.delete(avatarId);
+      state.obstacleInside.delete(avatarId);
+      state.obstacleCooldowns.delete(avatarId);
 
       watch.forwardAdvance = 0;
       watch.lastAdvanceAt = now;
@@ -2873,10 +3105,14 @@ export class ReefRaceSplineSim {
     body.slipstreamConsecutiveTicks = 0;
     body.slipstreamGraceTicksLeft = 0;
     body.activeBoosts.delete('slipstream-boost');
+    body.activeBoosts.delete('rip-current');
     body.activeBoosts.delete('trick-surge');
     body.trickArmed = false;
     body.trickDirection = null;
     body.trickLandingPending = false;
+    body.spinoutUntil = 0;
+    state.obstacleInside.delete(body.avatarId);
+    state.obstacleCooldowns.delete(body.avatarId);
     this.broadcastFn(state.roomId, {
       type: 'event.wipeout',
       avatarId: body.avatarId,
@@ -2919,6 +3155,7 @@ export class ReefRaceSplineSim {
       body.activeBoosts.delete('apex-penalty');
       body.activeBoosts.delete('launch-stall');
       body.activeBoosts.delete('slipstream-boost');
+      body.activeBoosts.delete('rip-current');
       body.activeBoosts.delete('pad-boost');
       body.activeBoosts.delete('trick-surge');
       body.intent.dir = { x: tangent.x, z: tangent.z };
@@ -2927,8 +3164,11 @@ export class ReefRaceSplineSim {
       body.intent.consumedSeq = body.intent.seq;
       body.wipeoutUntil = null;
       body.wallSlamCooldownUntil = 0;
+      body.spinoutUntil = 0;
       state.boostPadInside.delete(body.avatarId);
       state.rampCooldowns.delete(body.avatarId);
+      state.obstacleInside.delete(body.avatarId);
+      state.obstacleCooldowns.delete(body.avatarId);
       state.botProgressWatches.delete(body.avatarId);
     }
   }
@@ -2937,9 +3177,10 @@ export class ReefRaceSplineSim {
     state: SplineRoomState,
     dt: number,
     now: number,
+    creatureNowMs: number,
   ): void {
     if (state.botControllers.size === 0) return;
-    const sharedView = this.buildBotRoomView(state, '');
+    const sharedView = this.buildBotRoomView(state, '', creatureNowMs);
     for (const [avatarId, ctrl] of state.botControllers) {
       const body = state.bodies.get(avatarId);
       if (
@@ -2957,9 +3198,11 @@ export class ReefRaceSplineSim {
       }
       const seq = (state.botSeqs.get(avatarId) ?? 0) + 1;
       state.botSeqs.set(avatarId, seq);
+      const botThrust = intent.thrust ?? 0;
+      body.botOverdrive = Math.max(1, Math.min(1.05, botThrust));
       this.applyInput(state.roomId, avatarId, seq, dt, {
         dir: intent.dir,
-        thrust: intent.thrust,
+        thrust: Math.min(1, botThrust),
         actionBits: intent.actionBits,
       });
     }
@@ -2968,6 +3211,7 @@ export class ReefRaceSplineSim {
   private buildBotRoomView(
     state: SplineRoomState,
     selfAvatarId: string,
+    creatureNowMs: number,
   ): {
     selfAvatarId: string;
     bodies: Array<{
@@ -2990,6 +3234,9 @@ export class ReefRaceSplineSim {
     arenaRadius: number;
     now: number;
     matchStartedAt: number;
+    obstacles: ReefRaceFurnitureLayout['obstacles'];
+    ripCurrents: ReefRaceFurnitureLayout['ripCurrents'];
+    creatureNowMs: number;
   } {
     const placementMap = state.lastPlacementMap;
     const bodies = Array.from(state.bodies.values()).map((b) => ({
@@ -3024,6 +3271,9 @@ export class ReefRaceSplineSim {
       arenaRadius: Math.round(state.spline.totalArcLength),  // loop arc length as "radius" boundary heuristic (closed-loop)
       now: state.simTimeMs,
       matchStartedAt: state.startedAt,
+      obstacles: state.furniture.obstacles,
+      ripCurrents: state.furniture.ripCurrents,
+      creatureNowMs,
     };
   }
 

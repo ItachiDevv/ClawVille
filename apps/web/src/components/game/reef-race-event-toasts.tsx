@@ -35,7 +35,12 @@
  *   - pointerEvents: none — click-through to 3D canvas.
  */
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
+import {
+  reefRaceCreatureMotionAt,
+  type ReefRaceCreatureMotion,
+  type ReefRaceCreatureObstacle,
+} from '@clawville/shared';
 import { useActivityStore } from '@/stores/activity';
 
 // ─── Durations ────────────────────────────────────────────────────────────────
@@ -45,6 +50,13 @@ const HAZARD_DURATION_MS = 1_000;
 const RIBBON_DURATION_MS = 800;
 const WALL_SLAM_DURATION_MS = 1_000;
 const WIPEOUT_DURATION_MS = 1_200;
+
+const CREATURE_RADAR_MOTION: ReefRaceCreatureMotion = {
+  position: { x: 0, y: 0 },
+  telegraph: false,
+  crossing: false,
+  crossingProgress: 0,
+};
 
 // ─── Shared toast wrapper ─────────────────────────────────────────────────────
 
@@ -304,10 +316,19 @@ function ReefRaceTrickToast() {
 
 function ReefRaceWallSlamToast() {
   const event = useActivityStore((s) => s.lastWallSlamEvent);
+  const obstacleEvent = useActivityStore((s) => s.lastObstacleHitEvent);
   const selfAvatarId = useActivityStore((s) => s.selfAvatarId);
   const matchPhase = useActivityStore((s) => s.matchPhase);
   const [visible, setVisible] = useState(false);
   const isSelfEvent = event?.avatarId === selfAvatarId && selfAvatarId !== null;
+  const matchingObstacle = obstacleEvent?.at === event?.at ? obstacleEvent : null;
+  const label = matchingObstacle
+    ? matchingObstacle.kind === 'driftwood'
+      ? 'DRIFTWOOD BUMP'
+      : matchingObstacle.kind === 'creature'
+        ? 'CREATURE SPINOUT  -40%'
+        : 'URCHIN SPINOUT  -40%'
+    : 'REEF SLAM  -40%';
 
   useEffect(() => {
     if (!isSelfEvent || matchPhase !== 'live') {
@@ -330,7 +351,7 @@ function ReefRaceWallSlamToast() {
           fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
         }}
       >
-        REEF SLAM  -40%
+        {label}
       </span>
     </ToastBox>
   );
@@ -367,6 +388,84 @@ function ReefRaceWipeoutToast() {
         WIPED OUT!
       </span>
     </ToastBox>
+  );
+}
+
+function ReefRaceCreatureRadar() {
+  const room = useActivityStore((state) => state.room);
+  const selfAvatarId = useActivityStore((state) => state.selfAvatarId);
+  const selfProgress = useActivityStore((state) =>
+    state.selfAvatarId
+      ? state.entities.get(state.selfAvatarId)?.progress ?? 0
+      : 0,
+  );
+  const serverClockOffsetMs = useActivityStore((state) => state.serverClockOffsetMs);
+  const matchPhase = useActivityStore((state) => state.matchPhase);
+  const creatures = useMemo(
+    () => (room?.reefSplineZones?.obstacles ?? []).filter(
+      (obstacle): obstacle is ReefRaceCreatureObstacle => obstacle.kind === 'creature',
+    ),
+    [room],
+  );
+  const [activeCreatureProgress, setActiveCreatureProgress] = useState<number[]>([]);
+
+  useEffect(() => {
+    if (!selfAvatarId || matchPhase !== 'live' || creatures.length === 0) {
+      setActiveCreatureProgress([]);
+      return;
+    }
+    const update = () => {
+      const serverNowMs = Date.now() - (serverClockOffsetMs ?? 0);
+      const next: number[] = [];
+      for (const creature of creatures) {
+        const motion = reefRaceCreatureMotionAt(creature, serverNowMs, CREATURE_RADAR_MOTION);
+        if (motion.telegraph || motion.crossing) next.push(creature.progress);
+      }
+      setActiveCreatureProgress((previous) => (
+        previous.length === next.length &&
+        previous.every((value, index) => value === next[index])
+          ? previous
+          : next
+      ));
+    };
+    update();
+    const id = window.setInterval(update, 100);
+    return () => window.clearInterval(id);
+  }, [creatures, matchPhase, selfAvatarId, serverClockOffsetMs]);
+
+  if (!selfAvatarId || matchPhase !== 'live') return null;
+  return (
+    <div
+      role="img"
+      aria-label="Reef Race course radar"
+      style={{
+        position: 'absolute', top: 62, left: '50%', transform: 'translateX(-50%)',
+        width: 230, height: 18, borderRadius: 9, pointerEvents: 'none',
+        border: '1px solid rgba(114,229,255,.7)', background: 'rgba(0,20,34,.72)',
+        boxShadow: '0 0 10px rgba(0,229,255,.22)',
+      }}
+    >
+      <div style={{ position: 'absolute', left: 8, right: 8, top: 8, height: 2, background: 'rgba(114,229,255,.35)' }} />
+      <div
+        title="Your lap position"
+        style={{
+          position: 'absolute', left: `calc(4px + ${Math.max(0, Math.min(1, selfProgress)) * 218}px)`,
+          top: 4, width: 9, height: 9, borderRadius: '50%', background: '#ffffff',
+          boxShadow: '0 0 7px #72e5ff', transform: 'translateX(-50%)',
+        }}
+      />
+      {activeCreatureProgress.map((progress) => (
+        <div
+          key={progress}
+          title="Surfacing creature"
+          style={{
+            position: 'absolute', left: `calc(4px + ${progress * 218}px)`, top: 5,
+            width: 7, height: 7, transform: 'translateX(-50%) rotate(45deg)',
+            background: '#ffb74d', boxShadow: '0 0 8px #ff6d00',
+          }}
+        />
+      ))}
+    </div>
   );
 }
 
@@ -497,6 +596,7 @@ export default function ReefRaceEventToasts() {
       <ReefRaceTrickToast />
       <ReefRaceWallSlamToast />
       <ReefRaceWipeoutToast />
+      <ReefRaceCreatureRadar />
       <ReefRacePowerUpToast />
     </>
   );
