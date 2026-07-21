@@ -35,6 +35,7 @@ import {
   usdcRailGateOpen,
 } from '../services/bounty-escrow-link';
 import { alertError } from '../services/alert-error';
+import { ensureSapIdentityQueued } from '../services/sap/sap-identity-registrar';
 // R-team-lead ruling: the →paid booking (completed flip + composition_state='paid' +
 // the once-only completion/reputation bump) is the ONE transition reached by BOTH this
 // route (instant approve→paid, prior 'vault_held') AND the finalize/payout crank
@@ -865,6 +866,7 @@ bountyRoutes.post('/create', requireAuthOrAgentSession, requireNonGuestIdentity,
         updatedAt: new Date(),
       })
       .where(eq(bounties.id, bounty.id));
+    ensureSapIdentityQueued(avatar.id, 'bounty.composed.create');
   }
 
   // Update reputation: increment totalPosted
@@ -2155,6 +2157,10 @@ bountyRoutes.post('/:id/claim', requireAuthOrAgentSession, requireNonGuestIdenti
 
     return newAttempt;
   });
+
+  if (!agentNotLedgerCapable(c.get('identity'))) {
+    ensureSapIdentityQueued(avatar.id, 'bounty.claim');
+  }
 
   return c.json({
     success: true,

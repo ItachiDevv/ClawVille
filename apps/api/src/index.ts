@@ -822,6 +822,18 @@ process.on('uncaughtException', (err) => {
     console.error('[API] Agent-pay resume worker failed to start:', err);
   }
 
+  // Automatic SAP identity registration/Metaplex attachment. The worker
+  // self-gates on SAP_ENABLED + SAP_IDENTITY_AUTOREG_ENABLED and resumes its
+  // durable DB state after restarts; starting it while dark is a safe no-op.
+  try {
+    const { startSapIdentityRegistrarWorker } = await import(
+      './services/sap/sap-identity-registrar'
+    );
+    startSapIdentityRegistrarWorker();
+  } catch (err) {
+    console.error('[API] SAP identity registrar worker failed to start:', err);
+  }
+
   // P0 lifecycle-truth — NO eager boot-rehydration. v7 already survives a restart
   // via LAZY restore (`agent-session-restore.ts`, wired into
   // `validateLiveAgentSession`): on the first post-restart bearer use it rebuilds
@@ -1597,6 +1609,14 @@ async function gracefulShutdown(signal: string) {
       stopAgentPayResumeWorker();
     } catch {
       // If the resume worker module failed to load earlier, there's nothing to stop.
+    }
+    try {
+      const { stopSapIdentityRegistrarWorker } = await import(
+        './services/sap/sap-identity-registrar'
+      );
+      stopSapIdentityRegistrarWorker();
+    } catch {
+      // If the registrar module failed to load earlier, there's nothing to stop.
     }
     try {
       const { stopWagerIntentReconciler } = await import(

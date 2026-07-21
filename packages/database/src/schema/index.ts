@@ -124,6 +124,9 @@ export * from './land';
 // ADDITIVE — two net-new tables + one enum, db:push is a clean CREATE (apply by
 // hand, NOT db:push). Gated OFF at route/service layer. See `sap-escrow.ts`.
 export * from './sap-escrow';
+// Automatic SAP identity registration + Metaplex AgentIdentity attachment
+// registry. Additive migration 0042; one durable state-machine row per avatar.
+export * from './sap-identity';
 // Tokenomics C3 (2026-07-07) — CLV buy-queue seam (clv_buy_queue +
 // clv_buy_status). Records swap INTENT only; the executor is DRY-RUN gated
 // (CLV_SWAP_EXECUTE=true refuses to boot). Migration 0014 (idempotent, by hand).
