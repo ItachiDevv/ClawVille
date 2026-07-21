@@ -296,6 +296,7 @@ export function getSapProgramForIdentityBridge(): Program {
 export function sapConfigSnapshot(): {
   enabled: boolean;
   identityAutoregEnabled: boolean;
+  reputationWritesEnabled: boolean;
   escrowEnabled: boolean;
   usdcEscrowEnabled: boolean;
   /** PayAI x402 settlement rail gate (SAP_PAYAI_SETTLEMENT_ENABLED). */
@@ -309,6 +310,7 @@ export function sapConfigSnapshot(): {
   return {
     enabled: cfg.enabled,
     identityAutoregEnabled: cfg.identityAutoregEnabled,
+    reputationWritesEnabled: cfg.reputationWritesEnabled,
     escrowEnabled: cfg.escrowEnabled,
     usdcEscrowEnabled: cfg.usdcEscrowEnabled,
     payaiSettlementEnabled: cfg.payaiSettlementEnabled,
@@ -1234,6 +1236,57 @@ export async function findAgentRegistrationSignature(
     return { ok: true, data: null };
   } catch (err) {
     return classifyChainError('findAgentRegistrationSignature', err);
+  }
+}
+
+/**
+ * update_feedback — replace the standing feedback for the same
+ * (target AgentAccount, reviewer wallet) pair.
+ *
+ * SDK 1.0.0 bundled IDL account context, verified 2026-07-21:
+ *   [reviewer(signer), feedback(writable), agent(writable)]
+ * There is deliberately NO global-registry or system-program account here.
+ */
+export async function updateFeedback(input: GiveFeedbackInput): Promise<SapWriteResult> {
+  const cfg = getConfig();
+  if (!cfg.enabled) {
+    return { ok: false, code: 'sap_disabled', message: 'SAP layer is disabled.' };
+  }
+  if (!Number.isInteger(input.score) || input.score < 0 || input.score > 1000) {
+    return { ok: false, code: 'invalid_amount', message: 'score must be an integer 0..1000.' };
+  }
+  let targetAgent: PublicKey;
+  try {
+    targetAgent = new PublicKey(input.targetAgentPda);
+  } catch {
+    return { ok: false, code: 'invalid_pubkey', message: 'targetAgentPda is not a valid pubkey.' };
+  }
+
+  const handle = await loadAvatarWallet(input.reviewerAvatarId);
+  if ('ok' in handle && handle.ok === false) return handle;
+  const { keypair, publicKey: reviewer } = handle as AvatarWalletHandle;
+
+  const program = getProgram();
+  const [feedback] = findFeedbackPda(cfg.programId, targetAgent, reviewer);
+  const commentHash = input.comment ? Array.from(toolNameHash(input.comment)) : null;
+
+  try {
+    const tx: Transaction = await program.methods
+      .updateFeedback(input.score, input.tag, commentHash)
+      .accountsStrict({
+        reviewer,
+        feedback,
+        agent: targetAgent,
+      })
+      .transaction();
+
+    return executeTx(cfg, 'updateFeedback', tx, keypair, {
+      reviewer: reviewer.toBase58(),
+      feedback: feedback.toBase58(),
+      agent: targetAgent.toBase58(),
+    });
+  } catch (err) {
+    return classifyChainError('updateFeedback:build', err);
   }
 }
 

@@ -122,6 +122,8 @@ anything that moves real funds without two explicit gates flipped by a human.
 
 ---
 
+**Last audited 2026-07-21 (Slice D):** verified composed-bounty PAID commits now enqueue a durable, house-signed SAP reputation write. Coralia creates/adopts one standing `clawville-verified` attestation and gives/updates one standing `bounty` feedback pair per hunter. Additive `sap_reputation_jobs` DDL, exact feedback probes, per-hunter serialization, bounded retries, and the default-on rollback lever `SAP_REPUTATION_WRITES_ENABLED` are local and awaiting staging/founder sign-off. No escrow/settle/withdraw wire changed.
+
 ## 1. The three gates (all default-safe)
 
 | Gate | Env | Default | Controls |
@@ -139,6 +141,8 @@ Other env:
 | `SAP_RPC_URL` | public devnet/mainnet RPC | Override with a paid endpoint (Helius/Triton) before any real traffic. NEVER surfaced in API responses (may carry an API key). |
 | `SAP_IDENTITY_AUTOREG_ENABLED` | `true` | Emergency rollback lever for first-economic-action identity registration. Effective only while master `SAP_ENABLED=true`; this is not a dark-launch flag. |
 | `SAP_IDENTITY_REGISTRAR_POLL_MS` | `300000` (5 min) | Durable identity worker cadence. Rows, not the timer, are the source of truth across restarts. |
+| `SAP_REPUTATION_WRITES_ENABLED` | `true` | Emergency rollback lever for verified-bounty SAP reputation writes beneath `SAP_ENABLED`; dry-run consumes no jobs. |
+| `SAP_REPUTATION_WRITER_POLL_MS` | `300000` (5 min) | Durable reputation writer cadence (minimum 1 minute). |
 
 ### Automatic identity pipeline (local implementation; staging smoke + founder sign-off pending)
 
@@ -204,6 +208,31 @@ registry and receive 404. A staging attach e2e therefore requires deliberate
 production-registry coordination for that test row (or a read-only equivalent proxy);
 do not change the minted URI to staging to make the smoke pass.
 
+### Verified bounty reputation writes
+
+The shared `bookComposedBountyPaid` compare-and-swap is the single admission seam
+for both instant approval and deferred resume. Only `booked:true` enqueues, after
+the money transaction commits, using `ON CONFLICT (bounty_id) DO NOTHING`.
+Migration `0043_sap_reputation_jobs.sql` and `schema/sap-reputation.ts` store
+`waiting_identity → writing → written` with terminal `skipped|failed`, partial
+transaction signatures, attempts, errors, and timestamps.
+
+The worker accepts only a cluster-matching hunter identity with a real registration
+signature. A failed/absent identity waits up to 14 days; Coralia resolves through
+`resolveHouseAvatarId` and her pre-registrar live SAP profile. Self-attestation is
+refused by avatar and wallet. Oldest-per-hunter ordering plus an in-process mutex
+and Postgres advisory lock span probe/write/reprobe so unique pair writes cannot
+interleave.
+
+The standing attestation uses type `clawville-verified`, metadata = the canonical
+production EIP-8004 URL, and expiry zero; an existing pair PDA is success. Feedback
+score is `min(1000, 600 + 25 × distinct PAID composed bounties)`. The first write
+uses `give_feedback`; later writes use `update_feedback` with SDK-IDL accounts
+exactly `[reviewer, feedback, agent]`, tag `bounty`, and sha256(raw bounty UUID).
+Decoded pair/non-revoked/intended state is probed before every feedback send, so an
+ambiguous landed write is adopted without blind resend. Ten transient failures end
+in `failed` + `alertError`; `SAP_DRY_RUN=true` leaves queued work untouched.
+
 ### The mainnet CODE gate (not an env flip)
 
 `SAP_ALLOW_MAINNET` is a **constant in `apps/api/src/services/sap/sap-config.ts`**,
@@ -224,6 +253,8 @@ is a code-review event, not an ops toggle.
 
 | File | Role |
 |---|---|
+| `sap-reputation-writer.ts` | Post-PAID durable worker for Coralia-signed standing attestation/feedback, exact PDA probes, give-vs-update score ramp, oldest-per-hunter serialization, bounded retry/alerting, and broadcast-unknown adoption. |
+| `packages/database/src/schema/sap-reputation.ts` + migration `0043_sap_reputation_jobs.sql` | One `bounty_id UNIQUE` job with hunter, lifecycle, partial tx signatures, attempts/errors, and timestamps. Additive/idempotent; never `db:push`. |
 | `apps/api/src/services/sap/synapse_agent_sap.idl.future-0.25.json` | The **0.25.0 IDL** (MIT, `IDL-LICENSE-MIT.txt`) — the client LOADS THIS for the Anchor-driven identity/stake/pricing instructions (register / init_stake / deposit_stake / request_unstake / complete_unstake / update_agent), whose account contexts (incl. `pricing_menu`) match the deployed 0.25-family binary. ⚠️ Its `settle_calls_v2` (6-acct) + `create_pending_settlement` are WRONG for the deployed program — the escrow-V2 money family is hand-rolled instead (see below). |
 | `apps/api/src/services/sap/synapse_agent_sap.onchain.idl.json` | The **0.18.0 IDL** fetched from the OLD devnet deployment — now STALE (4-acct create, no `pricing_menu`). Kept FOR REFERENCE / diffing only. NOT loaded. |
 | `apps/api/scripts/sap/fetch-onchain-idl.ts` | Throwaway: re-fetch the deployed IDL from devnet → re-vendor. Run after any OOBE redeploy (⚠️ the fetched IDL is NOT authoritative for the escrow-V2 money family — see the warning block above). |

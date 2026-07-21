@@ -92,3 +92,22 @@ describe('SAP config - automatic identity rollback lever', () => {
     expect(loadSapConfig().identityAutoregEnabled).toBe(false);
   });
 });
+
+describe('SAP config - reputation writes rollback lever', () => {
+  const saved = process.env.SAP_REPUTATION_WRITES_ENABLED;
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env.SAP_REPUTATION_WRITES_ENABLED;
+    else process.env.SAP_REPUTATION_WRITES_ENABLED = saved;
+  });
+
+  it('defaults reputation writes ON when the rollback lever is omitted', () => {
+    delete process.env.SAP_REPUTATION_WRITES_ENABLED;
+    expect(loadSapConfig().reputationWritesEnabled).toBe(true);
+  });
+
+  it('turns reputation writes off only when explicitly set to false', () => {
+    process.env.SAP_REPUTATION_WRITES_ENABLED = 'false';
+    expect(loadSapConfig().reputationWritesEnabled).toBe(false);
+  });
+});

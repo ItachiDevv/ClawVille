@@ -79,6 +79,14 @@ attestation/feedback against the hunter agent. This is what turns identity into
 identity + reputation. Founder framing (2026-07-21): reputation lives on the SAP network;
 Covenant verifies the actions that feed it.
 
+- [x] **Local implementation + unit verification landed; staging/founder sign-off pending.**
+  The shared composed-bounty PAID CAS now admits one durable job per bounty after commit.
+  Coralia creates/adopts the hunter's standing verified attestation and gives/updates the
+  unique feedback pair using the paid-completion score ramp. Pair probes, per-hunter locks,
+  oldest-job ordering, exact ambiguous-broadcast adoption, bounded retry/alerting, and the
+  default-on `SAP_REPUTATION_WRITES_ENABLED` rollback lever protect the write path. No money
+  executor, escrow builder, or settlement gate changed.
+
 ## Suggested order for the parallel session
 1. Task 0 (MCP eval, quick) → 3 (DB-backed doc) → 1 (auto-register hook + queue) with the
    task-2 decision made inline with founder.
