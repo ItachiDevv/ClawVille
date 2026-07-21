@@ -340,6 +340,30 @@ describe('inference box status watcher', () => {
     ]);
   });
 
+  it('names the surviving local box when only one box goes offline', async () => {
+    const messages: string[] = [];
+    let stats = [
+      endpointStats('local-primary', false),
+      endpointStats('local-secondary', false),
+    ];
+    inferenceUsageReporterSeams.statsProvider = () => stats;
+    inferenceUsageReporterSeams.sender = async (message) => {
+      messages.push(message);
+    };
+
+    await runBoxStatusCheckOnce();
+    stats = [
+      endpointStats('local-primary', true),
+      endpointStats('local-secondary', false),
+    ];
+    await runBoxStatusCheckOnce();
+    await runBoxStatusCheckOnce();
+
+    expect(messages).toEqual([
+      '🔴 Local inference box OFFLINE: local-primary — traffic is failing over to local-secondary (still local, free).',
+    ]);
+  });
+
   it('appends the all-boxes escalation only when the last local is confirmed offline', async () => {
     const messages: string[] = [];
     let stats = [
