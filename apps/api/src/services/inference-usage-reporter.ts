@@ -15,7 +15,14 @@ import { sendTelegramText } from './alert-error';
 
 const FIRST_REPORT_DELAY_MS = 5 * 60 * 1000;
 const REPORT_PERIOD_MS = 60 * 60 * 1000;
-const ROUTE_ORDER: InferenceRoute[] = ['teacher', 'fleet', 'hosted-user', 'default'];
+const BOX_STATUS_CHECK_PERIOD_MS = 60 * 1000;
+const OFFLINE_DEBOUNCE_CHECKS = 2;
+const ROUTE_ORDER: InferenceRoute[] = [
+  'teacher',
+  'fleet',
+  'hosted-user',
+  'default',
+];
 const OPENAI_PRICES_PER_MILLION: Record<
   string,
   { input: number; output: number }
@@ -45,7 +52,13 @@ export const inferenceUsageReporterSeams = {
 let started = false;
 let firstReportTimeout: ReturnType<typeof setTimeout> | null = null;
 let reportInterval: ReturnType<typeof setInterval> | null = null;
+let boxStatusInterval: ReturnType<typeof setInterval> | null = null;
 let previousSnapshot: InferenceUsageSnapshot | null = null;
+type EndpointStatusState = {
+  offline: boolean;
+  consecutiveOpenChecks: number;
+};
+const endpointStatusStates = new Map<string, EndpointStatusState>();
 
 export function resolveInferenceUsageReportGate(
   env: InferenceUsageReportEnv = {
@@ -189,6 +202,22 @@ function formatReport(
     }
   }
 
+  const localStats = stats
+    .filter((entry) => entry.kind === 'local')
+    .sort((a, b) => a.id.localeCompare(b.id));
+  lines.push('', 'Boxes:');
+  if (localStats.length === 0) {
+    lines.push('  ⚠️ no local inference boxes configured');
+  } else {
+    for (const entry of localStats) {
+      lines.push(
+        entry.breakerOpen
+          ? `  ❌ ${entry.id} OFFLINE`
+          : `  ✅ ${entry.id} online`,
+      );
+    }
+  }
+
   const warnings: string[] = [];
   for (const [route, count] of Object.entries(snapshot.blackouts).sort(
     ([a], [b]) => routeRank(a) - routeRank(b) || a.localeCompare(b),
@@ -197,9 +226,13 @@ function formatReport(
       warnings.push(`⚠️ ${count} calls failed on ALL endpoints (${route})`);
     }
   }
-  const openBreakers = [...new Set(
-    stats.filter((entry) => entry.breakerOpen).map((entry) => entry.id),
-  )].sort();
+  const openBreakers = [
+    ...new Set(
+      stats
+        .filter((entry) => entry.kind !== 'local' && entry.breakerOpen)
+        .map((entry) => entry.id),
+    ),
+  ].sort();
   for (const endpointId of openBreakers) {
     warnings.push(`⚠️ breaker open: ${endpointId}`);
   }
@@ -224,6 +257,119 @@ export async function runInferenceUsageReportOnce(): Promise<void> {
   }
 }
 
+function watchesEndpoint(entry: EndpointStats): boolean {
+  return (
+    entry.kind === 'local' || (entry.kind === 'cloud' && entry.id === 'openai')
+  );
+}
+
+function offlineMessage(
+  entry: EndpointStats,
+  allLocalBoxesOffline: boolean,
+): string {
+  if (entry.kind === 'cloud') {
+    return '🔴 OpenAI endpoint failing (breaker open) — teacher/cloud inference degraded.';
+  }
+  const message = `🔴 Local inference box OFFLINE: ${entry.id} — traffic is failing over to OpenAI (paid).`;
+  return allLocalBoxesOffline
+    ? `${message}\n🚨 ALL local boxes offline — every fleet/hosted call is now on OpenAI.`
+    : message;
+}
+
+function recoveryMessage(entry: EndpointStats): string {
+  return entry.kind === 'cloud'
+    ? '🟢 OpenAI endpoint recovered.'
+    : `🟢 Local inference box back online: ${entry.id}.`;
+}
+
+function wouldConfirmAllLocalBoxesOffline(
+  stats: EndpointStats[],
+  transitioningEndpointId: string,
+): boolean {
+  const localStats = stats.filter((entry) => entry.kind === 'local');
+  return (
+    localStats.length > 0 &&
+    localStats.every(
+      (entry) =>
+        entry.breakerOpen &&
+        (entry.id === transitioningEndpointId ||
+          endpointStatusStates.get(entry.id)?.offline === true),
+    )
+  );
+}
+
+/** Evaluate router health once and alert on debounced endpoint transitions. */
+export async function runBoxStatusCheckOnce(): Promise<void> {
+  if (!resolveInferenceUsageReportGate().enabled) return;
+
+  try {
+    const stats = inferenceUsageReporterSeams.statsProvider();
+    const watchedStats = stats.filter(watchesEndpoint);
+    const watchedIds = new Set(watchedStats.map((entry) => entry.id));
+    for (const endpointId of endpointStatusStates.keys()) {
+      if (!watchedIds.has(endpointId)) endpointStatusStates.delete(endpointId);
+    }
+
+    for (const entry of watchedStats) {
+      const state = endpointStatusStates.get(entry.id);
+      if (!state) {
+        endpointStatusStates.set(entry.id, {
+          offline: false,
+          consecutiveOpenChecks: entry.breakerOpen ? 1 : 0,
+        });
+        continue;
+      }
+
+      if (!entry.breakerOpen) {
+        if (!state.offline) {
+          state.consecutiveOpenChecks = 0;
+          continue;
+        }
+        try {
+          await inferenceUsageReporterSeams.sender(recoveryMessage(entry));
+          endpointStatusStates.set(entry.id, {
+            offline: false,
+            consecutiveOpenChecks: 0,
+          });
+        } catch (err) {
+          console.error(
+            `[InferenceUsageReporter] recovery alert failed (${entry.id}):`,
+            err,
+          );
+        }
+        continue;
+      }
+
+      if (state.offline) continue;
+      const consecutiveOpenChecks = state.consecutiveOpenChecks + 1;
+      if (consecutiveOpenChecks < OFFLINE_DEBOUNCE_CHECKS) {
+        state.consecutiveOpenChecks = consecutiveOpenChecks;
+        continue;
+      }
+
+      const allLocalBoxesOffline =
+        entry.kind === 'local' &&
+        wouldConfirmAllLocalBoxesOffline(stats, entry.id);
+      try {
+        await inferenceUsageReporterSeams.sender(
+          offlineMessage(entry, allLocalBoxesOffline),
+        );
+        endpointStatusStates.set(entry.id, {
+          offline: true,
+          consecutiveOpenChecks,
+        });
+      } catch (err) {
+        console.error(
+          `[InferenceUsageReporter] offline alert failed (${entry.id}):`,
+          err,
+        );
+      }
+    }
+  } catch (err) {
+    console.error('[InferenceUsageReporter] box status check failed:', err);
+  }
+}
+
 /** Start ~5 minutes after boot, then report once per hour. Idempotent. */
 export function startInferenceUsageReporter(): void {
   if (started) return;
@@ -244,12 +390,18 @@ export function startInferenceUsageReporter(): void {
     (reportInterval as unknown as { unref?: () => void }).unref?.();
   }, FIRST_REPORT_DELAY_MS);
   (firstReportTimeout as unknown as { unref?: () => void }).unref?.();
+
+  boxStatusInterval = setInterval(() => {
+    void runBoxStatusCheckOnce();
+  }, BOX_STATUS_CHECK_PERIOD_MS);
+  (boxStatusInterval as unknown as { unref?: () => void }).unref?.();
 }
 
 /** Stop pending/recurring timers and reset the report window. Idempotent. */
 export function stopInferenceUsageReporter(): void {
   started = false;
   previousSnapshot = null;
+  endpointStatusStates.clear();
   if (firstReportTimeout) {
     clearTimeout(firstReportTimeout);
     firstReportTimeout = null;
@@ -257,5 +409,9 @@ export function stopInferenceUsageReporter(): void {
   if (reportInterval) {
     clearInterval(reportInterval);
     reportInterval = null;
+  }
+  if (boxStatusInterval) {
+    clearInterval(boxStatusInterval);
+    boxStatusInterval = null;
   }
 }
