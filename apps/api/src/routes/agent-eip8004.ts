@@ -7,8 +7,8 @@
  * This URL shape is LOAD-BEARING and immutable once minted: each agent's
  * MPL Core identity asset carries an `AgentIdentity` external plugin whose
  * `uri` points at exactly `https://api.clawville.world/agents/<sapAgentPda>/eip-8004.json`
- * (attached via the 1DREG registry program `RegisterIdentityV1`, which is
- * the only path the deployed mpl-core accepts for that plugin). Verifiers —
+ * (both the historical genesis asset and automatic DB-backed identities use
+ * the 1DREG `RegisterIdentityV1` registry path). Verifiers —
  * Covenant's covenantd, the SAP SDK's `MetaplexBridge.verifyLink` /
  * `tripleCheckLink`, directory UIs — fetch this document and require:
  *
@@ -20,13 +20,11 @@
  * synapseAgent, authority, capabilities[], services[], executives[],
  * updatedAt, extra.
  *
- * HONESTY CONTRACT (CLAUDE.md "no scaffolding theater"): entries are a
- * column-pinned in-code registry of agents we ACTUALLY registered on-chain,
- * with verifiable tx signatures in `extra`. No live-DB or live-RPC
- * enrichment is claimed — `updatedAt` is the timestamp the entry was last
- * hand-audited, not a liveness signal. When ClawVille agents get SAP
- * identities at scale this becomes a DB lookup; until then a fabricated
- * "dynamic" doc would be scaffolding theater.
+ * HONESTY CONTRACT (CLAUDE.md "no scaffolding theater"): the hand-audited
+ * genesis entry below is authoritative and checked first. Every other entry
+ * comes from `sap_agent_identities` only when its lifecycle proves an on-chain
+ * registration and carries a real Solana registration signature. Pending,
+ * failed, or signature-less rows stay opaque 404s.
  *
  * SECURITY — PUBLIC document, public values only (pubkeys, PDAs, tx sigs).
  * Never add secret material here.
@@ -34,12 +32,29 @@
 
 import { Hono } from 'hono';
 import bs58 from 'bs58';
+import {
+  and,
+  db,
+  eq,
+  inArray,
+  isNotNull,
+  sapAgentIdentities,
+  type SapAgentIdentity,
+} from '@clawville/database';
 import { signPayload } from '../services/service-issuer';
 
 export const agentEip8004Routes = new Hono();
 
 /** Solana mainnet CAIP-2 reference — matches agent-registration.ts. */
 const SOLANA_MAINNET_CAIP2 = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
+/** Solana devnet CAIP-2 reference. */
+const SOLANA_DEVNET_CAIP2 = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
+const CLAWVILLE_AGENT_IMAGE = 'https://clawville.world/press/brand/clawlogo-itachi.jpg';
+const PROVABLY_REGISTERED_STATUSES = [
+  'registered',
+  'attaching_identity',
+  'identity_attached',
+] as const;
 
 interface Eip8004Registration {
   version: string;
@@ -115,7 +130,103 @@ const SAP_AGENT_REGISTRY: Record<string, Eip8004Registration> = {
   },
 };
 
-/** Base58 32-byte pubkey check — reject malformed probes before the map read. */
+/** Normalize persisted SDK capability objects into the public EIP string list. */
+function dbCapabilities(value: SapAgentIdentity['capabilities']): string[] {
+  if (!Array.isArray(value)) return [];
+  const capabilities: unknown[] = value;
+  return capabilities.flatMap((capability) => {
+    if (typeof capability === 'string') return capability.length > 0 ? [capability] : [];
+    if (
+      capability &&
+      typeof capability === 'object' &&
+      typeof (capability as { id?: unknown }).id === 'string'
+    ) {
+      const id = (capability as { id: string }).id.trim();
+      return id.length > 0 ? [id] : [];
+    }
+    return [];
+  });
+}
+
+function isProvablyRegistered(row: SapAgentIdentity): boolean {
+  return (
+    (PROVABLY_REGISTERED_STATUSES as readonly string[]).includes(row.status) &&
+    typeof row.registerTxSig === 'string' &&
+    isBase58Signature(row.registerTxSig)
+  );
+}
+
+function registrationFromDb(row: SapAgentIdentity): Eip8004Registration {
+  const caip2 = row.cluster === 'mainnet' ? SOLANA_MAINNET_CAIP2 : SOLANA_DEVNET_CAIP2;
+  const extra: Record<string, unknown> = {
+    cluster: row.cluster,
+    registerTxSig: row.registerTxSig,
+  };
+  if (row.metaplexAsset) {
+    extra.metaplexAsset = row.metaplexAsset;
+    extra.metaplexIdentityAsset = { [row.cluster]: row.metaplexAsset };
+  }
+  if (row.identityRegistration) {
+    extra.identityRegistration = row.identityRegistration;
+    extra.agentIdentityRegistration = {
+      registry: 'mpl-agent-014',
+      program: '1DREGFgysWYxLnRnKQnwrxnJQeSMk2HmGaC6whw2B2p',
+      [row.cluster]: row.identityRegistration,
+    };
+  }
+  if (row.metaplexTxSig) extra.metaplexTxSig = row.metaplexTxSig;
+
+  return {
+    version: '0.1',
+    name: row.name,
+    description: row.description,
+    image: CLAWVILLE_AGENT_IMAGE,
+    synapseAgent: row.agentPda,
+    authority: row.wallet,
+    capabilities: dbCapabilities(row.capabilities),
+    services: [
+      { name: 'web', endpoint: 'https://clawville.world' },
+      { name: 'wallet', endpoint: `${caip2}:${row.wallet}` },
+    ],
+    executives: [],
+    updatedAt: row.updatedAt.toISOString(),
+    extra,
+  };
+}
+
+/** Genesis is authoritative; all other identities must satisfy the DB proof predicate. */
+async function resolveRegistration(
+  sapAgentPda: string,
+): Promise<Eip8004Registration | null> {
+  const genesis = SAP_AGENT_REGISTRY[sapAgentPda];
+  if (genesis) return genesis;
+
+  try {
+    const row = await db.query.sapAgentIdentities.findFirst({
+      where: and(
+        eq(sapAgentIdentities.agentPda, sapAgentPda),
+        inArray(sapAgentIdentities.status, [...PROVABLY_REGISTERED_STATUSES]),
+        isNotNull(sapAgentIdentities.registerTxSig),
+      ),
+    });
+    // Defense in depth for alternative DB adapters/test doubles: never trust a
+    // row that does not itself satisfy the public-document honesty contract.
+    return row && isProvablyRegistered(row) ? registrationFromDb(row) : null;
+  } catch {
+    console.warn('[agent-eip8004] identity registry lookup failed; serving opaque not_found');
+    return null;
+  }
+}
+
+function isBase58Signature(value: string): boolean {
+  try {
+    return bs58.decode(value).length === 64;
+  } catch {
+    return false;
+  }
+}
+
+/** Base58 32-byte pubkey check; reject malformed probes before any DB read. */
 function isBase58Pubkey(value: string): boolean {
   if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value)) return false;
   try {
@@ -131,12 +242,12 @@ function isBase58Pubkey(value: string): boolean {
  * eip-8004.json above; wallets/directories read THIS doc for name + image).
  * Derived from the same registry entry so brand + link docs can't drift.
  */
-agentEip8004Routes.get('/:sapAgentPda/metadata.json', (c) => {
+agentEip8004Routes.get('/:sapAgentPda/metadata.json', async (c) => {
   const sapAgentPda = c.req.param('sapAgentPda').trim();
   if (!isBase58Pubkey(sapAgentPda)) {
     return c.json({ error: 'not_found' }, 404);
   }
-  const registration = SAP_AGENT_REGISTRY[sapAgentPda];
+  const registration = await resolveRegistration(sapAgentPda);
   if (!registration) {
     return c.json({ error: 'not_found' }, 404);
   }
@@ -155,13 +266,13 @@ agentEip8004Routes.get('/:sapAgentPda/metadata.json', (c) => {
   });
 });
 
-agentEip8004Routes.get('/:sapAgentPda/eip-8004.json', (c) => {
+agentEip8004Routes.get('/:sapAgentPda/eip-8004.json', async (c) => {
   const sapAgentPda = c.req.param('sapAgentPda').trim();
   if (!isBase58Pubkey(sapAgentPda)) {
     return c.json({ error: 'not_found' }, 404);
   }
 
-  const registration = SAP_AGENT_REGISTRY[sapAgentPda];
+  const registration = await resolveRegistration(sapAgentPda);
   if (!registration) {
     return c.json({ error: 'not_found' }, 404);
   }
