@@ -6,10 +6,10 @@
  * REBUILT 2026-04-24 — Three bugs fixed (port from BumperShellsPlayer pattern):
  *
  *   Bug 1 — No interpolation: direct entity.x/y assignment on every frame
- *   produced positional jumps at 60fps render rate. Fixed with a preallocated
- *   8-snapshot history ring, adaptive 100–220ms arrival-time render delay, and
- *   bounded underrun extrapolation. The configured 20Hz target quantizes to
- *   an effective 15Hz cadence in the 30Hz sim.
+ *   produced positional jumps at 60fps render rate. The current path uses a
+ *   preallocated 8-snapshot ring, one-time server-clock mapping, fixed 225ms
+ *   remote delay, 500ms bounded remote extrapolation, and velocity-fed output
+ *   correction. Self staging/wipeout snapshots retain 100ms/80ms delay/coverage.
  *
  *   Bug 2 — Velocity-derived facing: atan2(vx,vy) snaps on every knockback
  *   impulse. Fixed: facing now comes from entity.rot (server-authoritative, only
@@ -97,8 +97,11 @@ import {
   SURF_ROLL_HALF_WIDTH,
   SURF_PITCH_CLAMP,
   SURF_ROLL_CLAMP,
+  SURF_CONFORM_PLANING_START_SPEED,
+  SURF_CONFORM_PLANING_FULL_SPEED,
   SURF_HEAVE_DAMPING,
-  SURF_TILT_DAMPING,
+  SURF_TILT_DAMPING_LOW_SPEED,
+  SURF_TILT_DAMPING_HIGH_SPEED,
   SURF_BANK_LEAN_DAMPING,
   buildSplineBoostPadsClient,
 } from './reef-race-config';
@@ -114,7 +117,7 @@ import {
 import { selfInputBus, selfPoseBus, resetSelfPoseBus } from './reef-race-self-bus';
 import { tAtXZ, bankedDatumYAtT, forgetTKey } from './reef-race-elevation';
 import { clientSpline } from './reef-race-spline-instance';
-import { surfWaveHeightAt } from './reef-wave-height';
+import { surfConformHeightAt } from './reef-wave-height';
 
 // ─── v2 feature flag ──────────────────────────────────────────────────────────
 const USE_SPLINE_PLAYER = process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
@@ -448,7 +451,7 @@ const _prevHeight: Record<string, number> = {};
 const _squashTime: Record<string, number> = {};
 
 interface SurfPoseDampingState {
-  heave: number;
+  surfaceY: number;
   wavePitch: number;
   waveRoll: number;
   bankLean: number;
@@ -501,26 +504,17 @@ const SQUASH_Y_MIN     = 0.7;
 const SQUASH_XZ_MAX    = 1.2;
 
 // ─── Interpolation constants ──────────────────────────────────────────────────
+/** Preserve the existing self staging/wipeout snapshot delay exactly. */
+const SELF_INTERP_DELAY_MS = 100;
+/** Remote mapped interval p95 measured 223ms; 225ms keeps a stable bracket. */
+const REMOTE_INTERP_DELAY_MS = 225;
+/** Preserve the existing bounded projection for self staging/wipeout snapshots. */
+const SELF_INTERP_EXTRAP_MAX_MS = 80;
 /**
- * Minimum remote render delay. The spline sim's configured 20Hz target uses
- * round(30/20)=2 ticks, so effective delivery is currently 15Hz (~66.7ms).
- * Runtime delay grows from observed arrival mean+jitter, capped at 220ms.
- *
- * Earlier values that failed:
- *   - 100 ms (initial) — assumed 15 Hz; server was 5 Hz; freeze for ~100 ms.
- *   - 250 ms — covered avg interval not jitter; user reported jumps.
- *   - 350 ms — covered jitter but each segment was 200 ms long, so a single
- *     delayed snap looked like "feet in one jump" when the next snap arrived
- *     and the bracket interp scrubbed 400 ms of motion in 1-2 render frames.
- *   - 200 ms (with 10 Hz snaps) — perceptually smoother than 350, but rotation
- *     seam at the 100ms bracket boundary still picked up by users on tight
- *     curves ("left-right movement still choppy"). Halved alongside snap rate.
+ * Remote arrival p95 measured 451ms (server p95 452ms); cover that authentic
+ * cadence with 500ms before freezing/recovery instead of stopping after 80ms.
  */
-const INTERP_DELAY_MS = 100;
-const INTERP_MAX_DELAY_MS = 220;
-const INTERP_JITTER_GAIN = 2;
-/** Smooth only a short underrun; long gaps freeze at a bounded projection. */
-const INTERP_EXTRAP_MAX_MS = 80;
+const REMOTE_INTERP_EXTRAP_MAX_MS = 500;
 
 /**
  * Maximum snapshot history kept per entity.
@@ -733,6 +727,11 @@ function createSnapshotHistory(): SnapshotHistory {
     records.push({ t: 0, x: 0, z: 0, rot: Number.NaN, vx: 0, vz: 0 });
   }
   return { records, head: 0, size: 0 };
+}
+
+function clearSnapshotHistory(history: SnapshotHistory): void {
+  history.head = 0;
+  history.size = 0;
 }
 
 function snapshotAtIndex(history: SnapshotHistory, chronologicalIndex: number): SnapRecord {
@@ -978,10 +977,18 @@ function ReefRacePlayerInner({
   // Ring buffer of received snapshots.
   const historyRef = useRef<SnapshotHistory | null>(null);
   if (historyRef.current === null) historyRef.current = createSnapshotHistory();
-  const arrivalTimingRef = useRef({
-    lastAtMs: 0,
-    meanIntervalMs: 1000 / 15,
-    meanJitterMs: 0,
+  const arrivalTimingRef = useRef({ lastAtMs: 0 });
+  const remoteTimelineRef = useRef({
+    mapped: false,
+    offsetMs: 0,
+    timebaseTransitionActive: false,
+  });
+  const remoteOutputPoseRef = useRef({
+    initialized: false,
+    x: 0,
+    z: 0,
+    rot: 0,
+    wipedOut: false,
   });
   const remoteRecoveryRef = useRef({
     remainingMs: 0,
@@ -1088,7 +1095,7 @@ function ReefRacePlayerInner({
   // staging keeps the same keyed instance but gates prediction + pose-bus writes.
   const predictsSelf = USE_SPLINE_PLAYER && isSelf && predictionEnabled;
   const surfPoseDamping = _surfPoseDamping[entity.avatarId] ??=
-    { heave: 0, wavePitch: 0, waveRoll: 0, bankLean: 0, initialized: false };
+    { surfaceY: 0, wavePitch: 0, waveRoll: 0, bankLean: 0, initialized: false };
 
   const clonedScene = useMemo(() => {
     // When isVRM=true, effectiveSrcScene=null — return null so the GLB mount
@@ -1538,6 +1545,10 @@ function ReefRacePlayerInner({
 
     // Cap delta to prevent spiral-of-death on stall frames.
     const dt = Math.min(delta, 0.1);
+    const interpDelayMs = isSelf ? SELF_INTERP_DELAY_MS : REMOTE_INTERP_DELAY_MS;
+    const interpExtrapMaxMs = isSelf
+      ? SELF_INTERP_EXTRAP_MAX_MS
+      : REMOTE_INTERP_EXTRAP_MAX_MS;
 
     // Decay the prior self-only render correction BEFORE ingesting this frame's
     // snapshot. A new inverse correction therefore cancels its prediction rebase
@@ -1562,36 +1573,50 @@ function ReefRacePlayerInner({
       const hasVelocity = entity.vx !== 0 || entity.vy !== 0;
       const rot = (entity.rot !== 0 || hasVelocity) ? entity.rot : NaN;
 
-      const arrivedAtMs = performance.now();
-      // Remote interpolation stays on arrival time so its adaptive delay does
-      // not also need to absorb absolute one-way transit. Self reconciliation
-      // independently consumes entity.snapshotAtMs below.
-      const snapAtMs = arrivedAtMs;
       const h = historyRef.current!;
+      const arrivedAtMs = performance.now();
+      let snapAtMs = arrivedAtMs;
+      if (!isSelf) {
+        const remoteTimeline = remoteTimelineRef.current;
+        const snapshotAtMs = entity.snapshotAtMs;
+        if (typeof snapshotAtMs === 'number' && Number.isFinite(snapshotAtMs)) {
+          if (!remoteTimeline.mapped) {
+            // Keep the server snapshot cadence, but map it once into the local
+            // performance clock used by renderTime. Never let arrival jitter
+            // rewrite the timestamp of each individual remote snapshot.
+            remoteTimeline.mapped = true;
+            remoteTimeline.offsetMs = arrivedAtMs - snapshotAtMs;
+            remoteTimeline.timebaseTransitionActive = true;
+            clearSnapshotHistory(h);
+            remoteRecoveryRef.current.remainingMs = 0;
+            // Preserve the final output pose: its k=10 filter absorbs the new
+            // single-sample target without exposing a startup position step.
+          }
+          snapAtMs = snapshotAtMs + remoteTimeline.offsetMs;
+        } else if (remoteTimeline.mapped) {
+          // Compatibility fallback for a source that stops supplying its clock.
+          // A clean ring reset prevents mapped and arrival timestamps mixing.
+          remoteTimeline.mapped = false;
+          remoteTimeline.offsetMs = 0;
+          remoteTimeline.timebaseTransitionActive = true;
+          clearSnapshotHistory(h);
+          remoteRecoveryRef.current.remainingMs = 0;
+          // Keep the same output continuity when falling back to arrival time.
+        }
+      }
       pushSnapshot(h, snapAtMs, entity.x, entity.y, rot, entity.vx, entity.vy);
 
       const arrivalTiming = arrivalTimingRef.current;
       if (arrivalTiming.lastAtMs > 0) {
         const intervalMs = arrivedAtMs - arrivalTiming.lastAtMs;
-        const previousMean = arrivalTiming.meanIntervalMs;
-        const previousDelay = Math.max(
-          INTERP_DELAY_MS,
-          Math.min(
-            INTERP_MAX_DELAY_MS,
-            previousMean + arrivalTiming.meanJitterMs * INTERP_JITTER_GAIN,
-          ),
-        );
-        if (!predictsSelf && intervalMs > previousDelay + INTERP_EXTRAP_MAX_MS) {
+        if (!predictsSelf && intervalMs > interpDelayMs + interpExtrapMaxMs) {
           const recovery = remoteRecoveryRef.current;
-          recovery.durationMs = Math.min(200, Math.max(100, intervalMs - previousDelay));
+          recovery.durationMs = Math.min(200, Math.max(100, intervalMs - interpDelayMs));
           recovery.remainingMs = recovery.durationMs;
           recovery.fromX = group.position.x;
           recovery.fromZ = group.position.z;
           recovery.fromRot = group.rotation.y;
         }
-        arrivalTiming.meanIntervalMs += (intervalMs - previousMean) * 0.15;
-        arrivalTiming.meanJitterMs +=
-          (Math.abs(intervalMs - previousMean) - arrivalTiming.meanJitterMs) * 0.15;
       }
       arrivalTiming.lastAtMs = arrivedAtMs;
 
@@ -1776,7 +1801,7 @@ function ReefRacePlayerInner({
     }
 
     // ─── Interpolation (BUG FIX Bug 1) ───────────────────────────────────────
-    // Remote delay derives from observed arrivals (effective cadence is ~15Hz).
+    // Remote history renders at the measured fixed 225ms delay; self retains 100ms.
     const history = historyRef.current!;
     let interpX   = entity.x;
     let interpZ   = entity.y;
@@ -1795,15 +1820,7 @@ function ReefRacePlayerInner({
         interpRot = only.rot;
       }
     } else if (history.size >= 2) {
-      const arrivalTiming = arrivalTimingRef.current;
-      const adaptiveDelayMs = Math.max(
-        INTERP_DELAY_MS,
-        Math.min(
-          INTERP_MAX_DELAY_MS,
-          arrivalTiming.meanIntervalMs + arrivalTiming.meanJitterMs * INTERP_JITTER_GAIN,
-        ),
-      );
-      const renderTime = performance.now() - adaptiveDelayMs;
+      const renderTime = performance.now() - interpDelayMs;
 
       // Find the pair of snapshots that bracket renderTime.
       // history is sorted ascending by t (push-only, no reorder needed).
@@ -1835,7 +1852,7 @@ function ReefRacePlayerInner({
 
       const latest = snapshotAtIndex(history, history.size - 1);
       if (renderTime > latest.t && !entity.wipedOut) {
-        const extrapMs = Math.min(INTERP_EXTRAP_MAX_MS, renderTime - latest.t);
+        const extrapMs = Math.min(interpExtrapMaxMs, renderTime - latest.t);
         interpX = latest.x + latest.vx * extrapMs * 0.001;
         interpZ = latest.z + latest.vz * extrapMs * 0.001;
         interpVx = latest.vx;
@@ -1857,6 +1874,55 @@ function ReefRacePlayerInner({
       interpRot = lerpAngle(recovery.fromRot, interpRot, eased);
     }
 
+    // Snapshot corrections can still move the bracket output even on a stable
+    // mapped clock. Filter only the final remote pose; self prediction and its
+    // pose bus never pass through this state.
+    if (!isSelf) {
+      const outputPose = remoteOutputPoseRef.current;
+      const wipedOut = entity.wipedOut === true;
+      const rawDx = interpX - outputPose.x;
+      const rawDz = interpZ - outputPose.z;
+      const timebaseTransitionActive =
+        remoteTimelineRef.current.timebaseTransitionActive;
+      const hardSeedOutput =
+        !predictionEnabled
+        || !outputPose.initialized
+        || wipedOut !== outputPose.wipedOut
+        || (!timebaseTransitionActive
+          && rawDx * rawDx + rawDz * rawDz
+            > CLIENT_REBASE_SNAP_DIST * CLIENT_REBASE_SNAP_DIST);
+
+      if (hardSeedOutput) {
+        outputPose.x = interpX;
+        outputPose.z = interpZ;
+        outputPose.rot = interpRot;
+        outputPose.initialized = true;
+      } else {
+        const outputFactor = 1 - Math.exp(-SURF_REBASE_RENDER_DAMPING * dt);
+        // Targeted harsh-window probe: 109–119 render spikes landed beside
+        // snapshot edges while authoritative velocity had zero spikes. Advance
+        // from that clean velocity first (sim Y maps to world Z), then let the
+        // existing k=10 position correction trim accumulated prediction drift.
+        outputPose.x += entity.vx * dt;
+        outputPose.z += entity.vy * dt;
+        outputPose.x += (interpX - outputPose.x) * outputFactor;
+        outputPose.z += (interpZ - outputPose.z) * outputFactor;
+        outputPose.rot = lerpAngle(outputPose.rot, interpRot, outputFactor);
+      }
+      outputPose.wipedOut = wipedOut;
+      if (timebaseTransitionActive) {
+        const remainingDx = interpX - outputPose.x;
+        const remainingDz = interpZ - outputPose.z;
+        if (remainingDx * remainingDx + remainingDz * remainingDz
+          <= CLIENT_REBASE_SNAP_DIST * CLIENT_REBASE_SNAP_DIST) {
+          remoteTimelineRef.current.timebaseTransitionActive = false;
+        }
+      }
+      interpX = outputPose.x;
+      interpZ = outputPose.z;
+      interpRot = outputPose.rot;
+    }
+
     // Persist the interpolated rotation for the next zero-velocity spawn frame.
     lastRotRef.current = interpRot;
 
@@ -1875,7 +1941,7 @@ function ReefRacePlayerInner({
     // is left in the accumulator for next frame — no extrapolation (avoids
     // jitter). Renders from the latest predicted state; the bank-tilt velocity
     // also comes from prediction so the lean matches the rendered heading.
-    // Remote karts use the adaptive interpolation/recovery path above; v1 does
+    // Remote karts use the fixed-delay interpolation/recovery path above; v1 does
     // not enable self prediction.
     if (predictsSelf && !entity.wipedOut && predictInitRef.current) {
       const pred = predictedRef.current;
@@ -1979,22 +2045,6 @@ function ReefRacePlayerInner({
       interpRot += renderOffset.rot;
       lastRotRef.current = interpRot;
 
-      // Publish the RENDERED (blended) pose for the chase camera — camera and
-      // body must share one timebase or the kart vibrates against the camera.
-      selfPoseBus.x = interpX;
-      selfPoseBus.z = interpZ;
-      selfPoseBus.rot = interpRot;
-      selfPoseBus.valid = true;
-      selfPoseBus.updatedAt = performance.now();
-
-    } else if (predictsSelf && entity.wipedOut) {
-      // Keep ChaseCamera on the same authoritative/interpolated pose as the
-      // wiped-out body while local prediction is suspended.
-      selfPoseBus.x = interpX;
-      selfPoseBus.z = interpZ;
-      selfPoseBus.rot = interpRot;
-      selfPoseBus.valid = true;
-      selfPoseBus.updatedAt = performance.now();
     }
 
     // ─── Apply interpolated/predicted XZ transform to groupRef ────────────────
@@ -2019,33 +2069,36 @@ function ReefRacePlayerInner({
     let bankDelta = velAngle - interpRot;
     bankDelta = ((bankDelta % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2) - Math.PI;
     const hardSeedSurfPose = !predictionEnabled || !surfPoseDamping.initialized;
+    let renderedSurfaceY = 0;
     if (USE_SPLINE_PLAYER) {
       const tHere = tAtXZ(interpX, interpZ, entity.avatarId);
       // SURF RIDE (baked from the founder-signed-off sandbox 2026-06-27): the kart
       // sits ON the BANKED + WAVE water surface (not the flat centerline datum, which
-      // floated it above the low side of banked turns + ignored the swell). Y =
-      // banked-datum + DAMPED Gerstner wave heave + a small ride-height, plus
-      // the sim's raw airborne heightOffset. Banking/jumps remain immediate.
+      // floated it above the low side of banked turns + ignored the swell). The
+      // composite banked-datum + Gerstner heave is damped together so small remote
+      // XZ corrections cannot resample the datum into Y reversals. Ride height and
+      // the sim's raw airborne heightOffset remain immediate outside this follower.
       const bankedDatum = bankedDatumYAtT(interpX, interpZ, tHere);
-      const centerWave = surfWaveHeightAt(interpX, interpZ, surfTime);
+      const centerWave = surfConformHeightAt(interpX, interpZ, surfTime);
 
       // SURF TILT — pitch (nose-up trim + wave fore-aft slope) + roll (CONFORM to the
       // surface's lateral slope so the board lies flat on the banked/waved water).
       // Mirrors the sandbox surfTilt; signs verified there against the rendered mesh.
       const fX = Math.sin(interpRot), fZ = Math.cos(interpRot);   // forward
       const rX = Math.cos(interpRot), rZ = -Math.sin(interpRot);  // right
-      const hNose = surfWaveHeightAt(interpX + fX * SURF_PITCH_HALF_LEN, interpZ + fZ * SURF_PITCH_HALF_LEN, surfTime);
-      const hTail = surfWaveHeightAt(interpX - fX * SURF_PITCH_HALF_LEN, interpZ - fZ * SURF_PITCH_HALF_LEN, surfTime);
+      const hNose = surfConformHeightAt(interpX + fX * SURF_PITCH_HALF_LEN, interpZ + fZ * SURF_PITCH_HALF_LEN, surfTime);
+      const hTail = surfConformHeightAt(interpX - fX * SURF_PITCH_HALF_LEN, interpZ - fZ * SURF_PITCH_HALF_LEN, surfTime);
       const rawWavePitch = -Math.atan2(hNose - hTail, 2 * SURF_PITCH_HALF_LEN) * SURF_PITCH_WAVE_GAIN;
       const rxR = interpX + rX * SURF_ROLL_HALF_WIDTH, rzR = interpZ + rZ * SURF_ROLL_HALF_WIDTH;
       const rxL = interpX - rX * SURF_ROLL_HALF_WIDTH, rzL = interpZ - rZ * SURF_ROLL_HALF_WIDTH;
       const bankR = bankedDatumYAtT(rxR, rzR, tHere);
       const bankL = bankedDatumYAtT(rxL, rzL, tHere);
-      const waveR = surfWaveHeightAt(rxR, rzR, surfTime);
-      const waveL = surfWaveHeightAt(rxL, rzL, surfTime);
+      const waveR = surfConformHeightAt(rxR, rzR, surfTime);
+      const waveL = surfConformHeightAt(rxL, rzL, surfTime);
       // Board-footprint heave box filter: the ~151wu board bridges chop shorter
       // than itself. Pitch/roll inputs remain the same board-span differences.
       const rawWaveHeave = (centerWave + hNose + hTail + waveL + waveR) / 5;
+      const rawSurfaceY = bankedDatum + rawWaveHeave;
       const rollSampleWidth = 2 * SURF_ROLL_HALF_WIDTH;
       const bankRoll = Math.atan2(bankR - bankL, rollSampleWidth);
       const rawSurfaceRoll = Math.atan2((bankR + waveR) - (bankL + waveL), rollSampleWidth);
@@ -2054,24 +2107,32 @@ function ReefRacePlayerInner({
       if (hardSeedSurfPose) {
         // Pregame/first frame/respawn is a hard seed, matching ChaseCamera's
         // staged reset: never ease stale wave state into a new race pose.
-        surfPoseDamping.heave = rawWaveHeave;
+        surfPoseDamping.surfaceY = rawSurfaceY;
         surfPoseDamping.wavePitch = rawWavePitch;
         surfPoseDamping.waveRoll = rawWaveRoll;
         surfPoseDamping.bankLean = bankDelta;
         surfPoseDamping.initialized = true;
       } else {
-        const heaveFactor = 1 - Math.exp(-SURF_HEAVE_DAMPING * dt);
-        const tiltFactor = 1 - Math.exp(-SURF_TILT_DAMPING * dt);
+        const planarSpeed = Math.sqrt(interpVx * interpVx + interpVz * interpVz);
+        let speedRatio = (planarSpeed - SURF_CONFORM_PLANING_START_SPEED)
+          / (SURF_CONFORM_PLANING_FULL_SPEED - SURF_CONFORM_PLANING_START_SPEED);
+        if (speedRatio < 0) speedRatio = 0;
+        else if (speedRatio > 1) speedRatio = 1;
+        const tiltDamping = SURF_TILT_DAMPING_LOW_SPEED
+          + (SURF_TILT_DAMPING_HIGH_SPEED - SURF_TILT_DAMPING_LOW_SPEED) * speedRatio;
+        const surfaceFactor = 1 - Math.exp(-SURF_HEAVE_DAMPING * dt);
+        const tiltFactor = 1 - Math.exp(-tiltDamping * dt);
         const bankLeanFactor = 1 - Math.exp(-SURF_BANK_LEAN_DAMPING * dt);
-        surfPoseDamping.heave += (rawWaveHeave - surfPoseDamping.heave) * heaveFactor;
+        surfPoseDamping.surfaceY +=
+          (rawSurfaceY - surfPoseDamping.surfaceY) * surfaceFactor;
         surfPoseDamping.wavePitch += (rawWavePitch - surfPoseDamping.wavePitch) * tiltFactor;
         surfPoseDamping.waveRoll += (rawWaveRoll - surfPoseDamping.waveRoll) * tiltFactor;
         surfPoseDamping.bankLean +=
           (bankDelta - surfPoseDamping.bankLean) * bankLeanFactor;
       }
 
-      group.position.y =
-        bankedDatum + surfPoseDamping.heave + SURF_RIDE_HEIGHT + entityHeight;
+      renderedSurfaceY = surfPoseDamping.surfaceY;
+      group.position.y = renderedSurfaceY + SURF_RIDE_HEIGHT + entityHeight;
 
       let surfPitch = surfPoseDamping.wavePitch - SURF_PITCH_TRIM_DEG * SURF_DEG2RAD;
       if (surfPitch < -SURF_PITCH_CLAMP) surfPitch = -SURF_PITCH_CLAMP; else if (surfPitch > SURF_PITCH_CLAMP) surfPitch = SURF_PITCH_CLAMP;
@@ -2097,6 +2158,17 @@ function ReefRacePlayerInner({
     }
 
     // ─── Jump nose-up tilt (v2 only) ─────────────────────────────────────────
+    if (predictsSelf) {
+      // Publish after surface damping resolves at priority -2. ChaseCamera reads
+      // at -1, sharing this exact long-swell datum without inheriting jump Y.
+      selfPoseBus.x = interpX;
+      selfPoseBus.z = interpZ;
+      selfPoseBus.rot = interpRot;
+      selfPoseBus.surfaceY = renderedSurfaceY;
+      selfPoseBus.valid = true;
+      selfPoseBus.updatedAt = performance.now();
+    }
+
     // When airborne (height > 0): pitch glider nose up by ~8°.
     // On landing (height was > 0, now 0): trigger squash animation.
     if (USE_SPLINE_PLAYER) {
