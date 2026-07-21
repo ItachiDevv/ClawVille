@@ -41,20 +41,23 @@ preloadClips([...TABLE_POSE_BY_BOT, 'sit_idle_m']);
 // the SAME world-standard height the walkable cove uses for the player's
 // own avatar (COVE_VRM_TARGET_HEIGHT = 160) — the earlier 108-bot/118-dealer
 // mix read as "the dealer milady is a giant" and none of them matched the
-// movable agent's scale. `S` converts layout constants authored at the
-// original scale-2 basis; Round 7 lowers only the table's visual Y relation.
+// movable agent's scale. `S` converts avatar/stool constants authored at the
+// original scale-2 basis. Round 8 grows only the table's XZ footprint.
 const WORLD_AVATAR_HEIGHT = 160;
 const CHIBI_TARGET_HEIGHT = 120;
 const FURNITURE_SCALE = 2.9;
 const S = FURNITURE_SCALE / 2;
+const TABLE_FOOTPRINT_MULTIPLIER = 1.34;
+const TABLE_FOOTPRINT_SCALE = S * TABLE_FOOTPRINT_MULTIPLIER;
+const TABLE_XZ_SCALE = FURNITURE_SCALE * TABLE_FOOTPRINT_MULTIPLIER;
 // The stool is authored on the S=1.45 layout basis. At this scale its seat
 // disc top is y=52, matching the frozen-pose humanoid hips at y≈51.
 const STOOL_SCALE = S;
 const STOOL_SEAT_TOP_Y = 52;
 // Room shell scaled with the furniture so wall/ceiling proportions track.
 const ROOM_SCALE = 1.45;
-// Preserve the 2.9x table footprint but translate its visual top down from
-// 91.6 to elbow-height 70. All felt-relative consumers use TABLE_TOP_Y.
+// Preserve the approved Y scale and translate the visual top from 91.6 to
+// elbow-height 70. Round 8's XZ-only growth cannot change this relationship.
 const TABLE_SOURCE_TOP_Y = 63.2 * S;
 const TABLE_TOP_Y = 70;
 const TABLE_VISUAL_Y = TABLE_TOP_Y - TABLE_SOURCE_TOP_Y;
@@ -66,34 +69,31 @@ interface RoomSeat extends TableCardSeat {
   chairZ: number;
 }
 
-// PLAYER-SEAT STAGING (2026-07-17 founder correction): the previous framing
-// put the camera at the table's FLAT side — the DEALER's position. The felt
-// betting-spot arc marks the players' curve; the camera now sits AT that
-// curve's apex (a real player seat among the bots), the bots occupy the
-// other curve seats flanking left/right, and the dealer stands across at
-// the flat side. All coordinates authored at the scale-2 basis × S.
+// PLAYER-SEAT STAGING (Round 8): the POV remains at 6 o'clock and all five
+// opponents move onto the enlarged table's far arc at 8/10/~12/2/4 o'clock.
 // The arc apex bulges toward -Z; the flat edge runs along +Z.
 // MEASURED ORIENTATION (2026-07-17, vertex-profile ground truth): the
 // table's FLAT full-width edge is at +Z (251wu straight edge at the zMax
 // extreme) and the players' arc tapers to -Z (72wu at zMin) — every prior
 // round had the player parked on the flat/dealer side. Player (camera) now
 // sits at the ARC APEX at -Z; bots take arc seats toward the flat corners;
-// the DEALER stands at the +Z flat edge. Basis coords x S as before.
+// the DEALER stands at the +Z flat edge. Basis coords use the XZ footprint.
 function roomSeat(engineSeatIndex: number, xBasis: number, zBasis: number): RoomSeat {
-  const x = xBasis * S;
-  const z = zBasis * S;
+  const x = xBasis * TABLE_FOOTPRINT_SCALE;
+  const z = zBasis * TABLE_FOOTPRINT_SCALE;
   return { engineSeatIndex, x, z, faceYaw: Math.atan2(-x, -z), chairX: x, chairZ: z };
 }
 
-// One authoritative center per body/stool/card anchor. The repaired arc has
-// 80.8wu minimum adjacent spacing (seats 2↔3); the former split anchors hid
-// 45-56wu body spacing and let seat-facing consumers drift apart.
+// One authoritative center per body/stool/card/badge anchor. Seat 3 is biased
+// 20 basis-wu left of exact 12 o'clock so the standing dealer stays readable.
+// Adjacent gaps are >=128wu; default-eye bearings are -47.6/-31.7/-6.2/
+// +31.7/+47.6 degrees, for a minimum angular separation of 15.9 degrees.
 const BOT_SEATS: readonly RoomSeat[] = [
-  roomSeat(1, -58, -42),
-  roomSeat(2, -103, -4),
-  roomSeat(3, -87, 50),
-  roomSeat(4, 58, -42),
-  roomSeat(5, 103, -4),
+  roomSeat(1, -93.53, -33),
+  roomSeat(2, -93.53, 33),
+  roomSeat(3, -20, 66),
+  roomSeat(4, 93.53, 33),
+  roomSeat(5, 93.53, -33),
 ] as const;
 
 // boardYaw π: the board row sits toward the dealer's flat side (+Z) and its
@@ -107,7 +107,7 @@ const CARD_LAYOUT: Readonly<TableCardLayout> = Object.freeze({
   boardYaw: Math.PI,
   boardCardWidth: 8 * S,
   boardCardHeight: 11.2 * S,
-  boardSpacing: 10 * S,
+  boardSpacing: 10 * TABLE_FOOTPRINT_SCALE,
   botCardWidth: 6.5 * S,
   botCardHeight: 9.1 * S,
   botPairGap: 1.2 * S,
@@ -173,6 +173,25 @@ const SCALE100_SEATED_KNEE_QUAT = new THREE.Quaternion().setFromAxisAngle(
   new THREE.Vector3(1, 0, 0),
   THREE.MathUtils.degToRad(90),
 );
+const MANUAL_SEATED_SPINE_FORWARD_QUAT = new THREE.Quaternion().setFromEuler(
+  new THREE.Euler(THREE.MathUtils.degToRad(8), 0, 0),
+);
+const MANUAL_SEATED_HEAD_LEVEL_QUAT = new THREE.Quaternion().setFromEuler(
+  new THREE.Euler(THREE.MathUtils.degToRad(-5), 0, 0),
+);
+const MANUAL_SEATED_LEFT_UPPER_ARM_QUAT = new THREE.Quaternion().setFromEuler(
+  new THREE.Euler(0, THREE.MathUtils.degToRad(-18), THREE.MathUtils.degToRad(-64)),
+);
+const MANUAL_SEATED_RIGHT_UPPER_ARM_QUAT = new THREE.Quaternion().setFromEuler(
+  new THREE.Euler(0, THREE.MathUtils.degToRad(18), THREE.MathUtils.degToRad(64)),
+);
+const MANUAL_SEATED_LEFT_LOWER_ARM_QUAT = new THREE.Quaternion().setFromEuler(
+  new THREE.Euler(0, THREE.MathUtils.degToRad(-78), 0),
+);
+const MANUAL_SEATED_RIGHT_LOWER_ARM_QUAT = new THREE.Quaternion().setFromEuler(
+  new THREE.Euler(0, THREE.MathUtils.degToRad(78), 0),
+);
+const MANUAL_SEATED_NEUTRAL_HAND_QUAT = new THREE.Quaternion();
 
 interface PerchProfile {
   baselineMultiplier: number;
@@ -219,12 +238,16 @@ function sampleHands(
   };
 }
 
-function preparedClone(source: THREE.Group, scale: number): THREE.Group {
+function preparedClone(
+  source: THREE.Group,
+  scale: number | readonly [number, number, number],
+): THREE.Group {
   const clone = source.clone(true);
   const bounds = new THREE.Box3().setFromObject(clone);
   const center = bounds.getCenter(new THREE.Vector3());
-  clone.scale.setScalar(scale);
-  clone.position.set(-center.x * scale, -bounds.min.y * scale, -center.z * scale);
+  const [scaleX, scaleY, scaleZ] = typeof scale === 'number' ? [scale, scale, scale] : scale;
+  clone.scale.set(scaleX, scaleY, scaleZ);
+  clone.position.set(-center.x * scaleX, -bounds.min.y * scaleY, -center.z * scaleZ);
   clone.updateMatrixWorld(true);
   return clone;
 }
@@ -262,6 +285,7 @@ function FrozenFigure({
   sampleAt = 0.0001,
   freezeVia = 'sample',
   manualSeat = false,
+  relaxManualUpperBody = false,
   handSampleSeat,
   onHandSample,
 }: {
@@ -280,6 +304,9 @@ function FrozenFigure({
   /** Scale-100 Hermes-family fallback: keep the calm upper-body sample, then
    * apply the verified normalized-bone seated legs and pin hips to the stool. */
   manualSeat?: boolean;
+  /** Polish the scale-100 sampled fallback toward a natural table posture.
+   * Chibi idle and rigless perch paths deliberately do not use this. */
+  relaxManualUpperBody?: boolean;
   handSampleSeat?: number;
   onHandSample?: HandSampleHandler;
 }) {
@@ -311,6 +338,16 @@ function FrozenFigure({
         rightUpperLeg.quaternion.copy(SCALE100_SEATED_THIGH_QUAT);
         leftLowerLeg.quaternion.copy(SCALE100_SEATED_KNEE_QUAT);
         rightLowerLeg.quaternion.copy(SCALE100_SEATED_KNEE_QUAT);
+        if (relaxManualUpperBody) {
+          humanoid.getNormalizedBoneNode('spine')?.quaternion.multiply(MANUAL_SEATED_SPINE_FORWARD_QUAT);
+          humanoid.getNormalizedBoneNode('head')?.quaternion.multiply(MANUAL_SEATED_HEAD_LEVEL_QUAT);
+          humanoid.getNormalizedBoneNode('leftUpperArm')?.quaternion.slerp(MANUAL_SEATED_LEFT_UPPER_ARM_QUAT, 0.88);
+          humanoid.getNormalizedBoneNode('rightUpperArm')?.quaternion.slerp(MANUAL_SEATED_RIGHT_UPPER_ARM_QUAT, 0.88);
+          humanoid.getNormalizedBoneNode('leftLowerArm')?.quaternion.copy(MANUAL_SEATED_LEFT_LOWER_ARM_QUAT);
+          humanoid.getNormalizedBoneNode('rightLowerArm')?.quaternion.copy(MANUAL_SEATED_RIGHT_LOWER_ARM_QUAT);
+          humanoid.getNormalizedBoneNode('leftHand')?.quaternion.slerp(MANUAL_SEATED_NEUTRAL_HAND_QUAT, 0.72);
+          humanoid.getNormalizedBoneNode('rightHand')?.quaternion.slerp(MANUAL_SEATED_NEUTRAL_HAND_QUAT, 0.72);
+        }
         humanoid.update();
         vrm.scene.updateMatrixWorld(true);
         animator.flushSkeletonUpdates();
@@ -389,7 +426,7 @@ function FrozenFigure({
       cancelled = true;
       animator.dispose();
     };
-  }, [cushionY, freezeVia, handSampleSeat, instanceId, invalidate, manualSeat, onHandSample, pose, reg.animatorId, sampleAt, vrm]);
+  }, [cushionY, freezeVia, handSampleSeat, instanceId, invalidate, manualSeat, onHandSample, pose, reg.animatorId, relaxManualUpperBody, sampleAt, vrm]);
 
   useEffect(() => () => disposeVRMInstance(reg.path, instanceId), [instanceId, reg.path]);
 
@@ -441,12 +478,12 @@ const POSE_AUDIT_VIEW: PoseAuditView | null = (() => {
   };
 })();
 
-// Round 6 pulls the seated eye 27wu back and widens the lens modestly. The
-// symmetric near seats now remain ~132wu from the lens (above the known
-// ~100wu giant-head failure zone) while both enter the default frame edges.
-const CAM_EYE: readonly [number, number, number] = POSE_AUDIT_VIEW?.eye ?? [0, TABLE_TOP_Y + 58, -150];
-const CAM_LOOK: readonly [number, number, number] = POSE_AUDIT_VIEW?.look ?? [0, TABLE_TOP_Y + 12, 78 * S];
-const CAMERA_FOV = POSE_AUDIT_VIEW ? 48 : 68;
+// Round 8 raises and pulls back the seated eye. The 66-degree lens contains
+// both extreme shoulders without fisheye looming while the low aim preserves
+// the felt-level first-person read.
+const CAM_EYE: readonly [number, number, number] = POSE_AUDIT_VIEW?.eye ?? [0, TABLE_TOP_Y + 78, -230];
+const CAM_LOOK: readonly [number, number, number] = POSE_AUDIT_VIEW?.look ?? [0, TABLE_TOP_Y + 16, 36 * TABLE_FOOTPRINT_SCALE];
+const CAMERA_FOV = POSE_AUDIT_VIEW ? 48 : 66;
 
 const LOOK_YAW_LIMIT = THREE.MathUtils.degToRad(75);
 const LOOK_YAW_SPEED = THREE.MathUtils.degToRad(92);
@@ -461,16 +498,29 @@ const BASE_LOOK_PITCH = Math.atan2(BASE_LOOK_DY, BASE_LOOK_HORIZONTAL);
 const BASE_LOOK_COS_PITCH = Math.cos(BASE_LOOK_PITCH);
 const BASE_LOOK_SIN_PITCH = Math.sin(BASE_LOOK_PITCH);
 
-/** Six static world anchors. Seat 0 is the viewer's own near-edge marker;
- * its registered DOM label remains inside the screen-fixed private tray.
- * Opponent anchors sit outside each torso so the badge never masks a face. */
+const BADGE_TABLEWARD_OFFSET = 52 * S;
+function tablewardBadgeAnchor(
+  seat: RoomSeat,
+  y: number,
+): readonly [number, number, number] {
+  const distance = Math.hypot(seat.x, seat.z);
+  return [
+    seat.x - (seat.x / distance) * BADGE_TABLEWARD_OFFSET,
+    y,
+    seat.z - (seat.z / distance) * BADGE_TABLEWARD_OFFSET,
+  ];
+}
+
+/** Six static world anchors. Seat 0 stays in the screen-fixed private tray.
+ * Opponent labels sit between torso and table, with a symmetric fixed height
+ * stagger so projected neighbors cannot collapse into one stack. */
 const SEAT_BADGE_WORLD_ANCHORS: readonly (readonly [number, number, number])[] = [
-  [0, TABLE_TOP_Y + 14, -45 * S],
-  [BOT_SEATS[0]!.x - 14 * S, TABLE_TOP_Y + 35, BOT_SEATS[0]!.z],
-  [BOT_SEATS[1]!.x - 12 * S, TABLE_TOP_Y + 35, BOT_SEATS[1]!.z],
-  [BOT_SEATS[2]!.x - 10 * S, TABLE_TOP_Y + 35, BOT_SEATS[2]!.z],
-  [BOT_SEATS[3]!.x + 12 * S, TABLE_TOP_Y + 35, BOT_SEATS[3]!.z],
-  [BOT_SEATS[4]!.x + 10 * S, TABLE_TOP_Y + 35, BOT_SEATS[4]!.z],
+  [0, TABLE_TOP_Y + 14, -45 * TABLE_FOOTPRINT_SCALE],
+  tablewardBadgeAnchor(BOT_SEATS[0]!, TABLE_TOP_Y + 25),
+  tablewardBadgeAnchor(BOT_SEATS[1]!, TABLE_TOP_Y + 34),
+  tablewardBadgeAnchor(BOT_SEATS[2]!, TABLE_TOP_Y + 5),
+  tablewardBadgeAnchor(BOT_SEATS[3]!, TABLE_TOP_Y + 34),
+  tablewardBadgeAnchor(BOT_SEATS[4]!, TABLE_TOP_Y + 25),
 ] as const;
 
 // Module-scope scratch only: the yaw loop never allocates Three.js objects.
@@ -716,8 +766,7 @@ function SeatedLookCamera() {
       if (!element) continue;
       const anchor = SEAT_BADGE_WORLD_ANCHORS[seat]!;
       BADGE_PROJECT_SCRATCH.set(anchor[0], anchor[1], anchor[2]).applyMatrix4(BADGE_VIEW_PROJECTION);
-      const outwardNudge = seat === 0 ? 0 : (BADGE_PROJECT_SCRATCH.x < 0 ? -42 : 42);
-      const left = (BADGE_PROJECT_SCRATCH.x * 0.5 + 0.5) * size.width + outwardNudge;
+      const left = (BADGE_PROJECT_SCRATCH.x * 0.5 + 0.5) * size.width;
       const top = (-BADGE_PROJECT_SCRATCH.y * 0.5 + 0.5) * size.height + 10;
       const visible = BADGE_PROJECT_SCRATCH.z > -1
         && BADGE_PROJECT_SCRATCH.z < 1
@@ -753,7 +802,10 @@ function HoldemTableRoomScene() {
   const tableGltf = useGLTF(TABLE_PATH);
   const stoolGltf = useGLTF(STOOL_PATH);
   const room = useMemo(() => preparedClone(roomGltf.scene, ROOM_SCALE), [roomGltf.scene]);
-  const table = useMemo(() => preparedClone(tableGltf.scene, FURNITURE_SCALE), [tableGltf.scene]);
+  const table = useMemo(
+    () => preparedClone(tableGltf.scene, [TABLE_XZ_SCALE, FURNITURE_SCALE, TABLE_XZ_SCALE]),
+    [tableGltf.scene],
+  );
   const chairs = useMemo(
     () => BOT_SEATS.map(() => preparedClone(stoolGltf.scene, STOOL_SCALE)),
     [stoolGltf.scene],
@@ -852,6 +904,7 @@ function HoldemTableRoomScene() {
                 targetHeight={usesChibiSitFallback ? CHIBI_TARGET_HEIGHT : BOT_TARGET_HEIGHT}
                 sampleAt={usesManualSit ? 0.2 : TABLE_POSE_SAMPLE_AT}
                 manualSeat={usesManualSit}
+                relaxManualUpperBody={usesScale100SitFallback}
                 handSampleSeat={handSampleSeat}
                 onHandSample={onHandSample}
               />
@@ -875,11 +928,11 @@ function HoldemTableRoomScene() {
           reg={MODEL_REGISTRY[DEALER_MODEL_KEY] as ModelRegistryEntry}
           instanceId="holdem-room-dealer"
           pose="idle"
-          position={[0, 0, 78 * S]}
+          position={[0, 0, 78 * TABLE_FOOTPRINT_SCALE]}
           yaw={Math.PI}
           targetHeight={DEALER_TARGET_HEIGHT}
         />
-        <DealerPlate position={[0, DEALER_TARGET_HEIGHT + 18, 78 * S]} />
+        <DealerPlate position={[0, DEALER_TARGET_HEIGHT + 18, 78 * TABLE_FOOTPRINT_SCALE]} />
       </group>
 
       <TableCards3D
