@@ -22,37 +22,240 @@ function resolveLoginMode(value: string | null): LoginMode {
   return 'login';
 }
 
-function normalizeConnectDestination(value: string, origin: string): string | null {
-  const candidate = value.trim();
-  let ticket: string | null = CONNECT_TICKET_PATTERN.test(candidate) ? candidate : null;
+function resolvePublicEnterDestination(
+  enterUrl: string,
+  origin: string,
+): string | null {
+  try {
+    const url = new URL(enterUrl, origin);
+    const queryKeys = Array.from(url.searchParams.keys());
+    const ticketValues = url.searchParams.getAll('t');
 
-  if (!ticket) {
-    try {
-      const url = new URL(candidate, origin);
-      const queryKeys = Array.from(url.searchParams.keys());
-      const ticketValues = url.searchParams.getAll('t');
-
-      if (
-        url.origin !== origin ||
-        url.username !== '' ||
-        url.password !== '' ||
-        url.pathname !== '/enter' ||
-        candidate.includes('#') ||
-        queryKeys.length !== 1 ||
-        queryKeys[0] !== 't' ||
-        ticketValues.length !== 1 ||
-        !CONNECT_TICKET_PATTERN.test(ticketValues[0])
-      ) {
-        return null;
-      }
-
-      ticket = ticketValues[0];
-    } catch {
+    if (
+      url.origin !== origin ||
+      url.username !== '' ||
+      url.password !== '' ||
+      url.pathname !== '/enter' ||
+      url.hash !== '' ||
+      queryKeys.length !== 1 ||
+      queryKeys[0] !== 't' ||
+      ticketValues.length !== 1 ||
+      !CONNECT_TICKET_PATTERN.test(ticketValues[0])
+    ) {
       return null;
+    }
+
+    return `/enter?t=${encodeURIComponent(ticketValues[0])}`;
+  } catch {
+    return null;
+  }
+}
+
+function FrontDoorConnect() {
+  const [learningFocus, setLearningFocus] = useState('');
+  const [connectToken, setConnectToken] = useState<string | null>(null);
+  const [connectUrl, setConnectUrl] = useState<string | null>(null);
+  const [pollSecret, setPollSecret] = useState<string | null>(null);
+  const [expiresIn, setExpiresIn] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [connectError, setConnectError] = useState('');
+
+  useEffect(() => {
+    if (!connectToken || !pollSecret) return;
+
+    let cancelled = false;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const poll = async () => {
+      try {
+        const status = await api.pollPublicConnectStatus(
+          connectToken,
+          pollSecret,
+        );
+        if (cancelled) return;
+
+        setExpiresIn(status.expiresIn);
+        if (status.connected) {
+          const destination = status.enterUrl
+            ? resolvePublicEnterDestination(
+                status.enterUrl,
+                window.location.origin,
+              )
+            : null;
+          if (!destination) {
+            setConnectToken(null);
+            setConnectUrl(null);
+            setPollSecret(null);
+            setExpiresIn(0);
+            setConnectError(
+              'Your agent connected, but the secure login handoff was invalid. Generate a new link.',
+            );
+            return;
+          }
+
+          window.location.assign(destination);
+          return;
+        }
+
+        pollTimer = setTimeout(() => void poll(), 2000);
+      } catch (err: unknown) {
+        if (cancelled) return;
+        setConnectToken(null);
+        setConnectUrl(null);
+        setPollSecret(null);
+        setExpiresIn(0);
+        setConnectError(
+          err instanceof Error
+            ? err.message
+            : 'This connect link expired. Generate a new one.',
+        );
+      }
+    };
+
+    pollTimer = setTimeout(() => void poll(), 2000);
+    return () => {
+      cancelled = true;
+      if (pollTimer) clearTimeout(pollTimer);
+    };
+  }, [connectToken, pollSecret]);
+
+  async function handleGenerateToken() {
+    if (loading) return;
+    setConnectError('');
+    setCopied(false);
+    setLoading(true);
+    try {
+      const focus = learningFocus.trim();
+      const result = await api.generatePublicConnectToken({
+        ...(focus ? { learningFocus: focus } : {}),
+      });
+      setConnectToken(result.token);
+      setConnectUrl(result.connectUrl);
+      setPollSecret(result.pollSecret);
+      setExpiresIn(result.expiresIn);
+    } catch (err: unknown) {
+      setConnectError(
+        err instanceof Error
+          ? err.message
+          : 'Failed to generate a connect link.',
+      );
+    } finally {
+      setLoading(false);
     }
   }
 
-  return `/enter?t=${encodeURIComponent(ticket)}`;
+  async function handleCopyInstruction() {
+    if (!connectUrl) return;
+    try {
+      await navigator.clipboard.writeText(
+        `Read this URL and follow the instructions: ${connectUrl}`,
+      );
+      setCopied(true);
+    } catch {
+      setConnectError(
+        'Copy failed. Select the one-line instruction and copy it manually.',
+      );
+    }
+  }
+
+  function resetConnectLink() {
+    setConnectToken(null);
+    setConnectUrl(null);
+    setPollSecret(null);
+    setExpiresIn(0);
+    setCopied(false);
+    setConnectError('');
+  }
+
+  return (
+    <div className="space-y-4">
+      <AgentConnectInstructions />
+
+      <div className="space-y-1.5">
+        <label
+          htmlFor="front-door-learning-focus"
+          className="block text-white/50 text-[11px] font-mono uppercase tracking-[0.2em]"
+        >
+          Learning focus (optional)
+        </label>
+        <input
+          id="front-door-learning-focus"
+          type="text"
+          value={learningFocus}
+          onChange={(event) =>
+            setLearningFocus(event.target.value.slice(0, 120))
+          }
+          maxLength={120}
+          disabled={!!connectToken}
+          placeholder="e.g. cron jobs, solana signing, discord bots"
+          className="w-full px-3 py-2 rounded-lg bg-white/[0.04] border border-white/10 text-white placeholder:text-white/25 focus:outline-none focus:border-cyan-400/60 transition-all text-sm disabled:opacity-60"
+        />
+        <p className="text-[10px] text-white/30 font-mono">
+          Leave blank for free exploration.
+        </p>
+      </div>
+
+      {!connectToken || !connectUrl ? (
+        <button
+          type="button"
+          onClick={() => void handleGenerateToken()}
+          disabled={loading}
+          className="w-full py-3 rounded-lg font-clawville text-sm uppercase tracking-wider transition-all disabled:opacity-50 bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-white shadow-[0_0_20px_rgba(0,229,255,0.2)] hover:shadow-[0_0_28px_rgba(0,229,255,0.35)]"
+        >
+          {loading ? 'Generating...' : 'Generate Connect Link'}
+        </button>
+      ) : (
+        <div className="space-y-3">
+          <div>
+            <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1">
+              Paste this into your agent&apos;s chat
+            </label>
+            <div className="flex gap-1">
+              <div className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-[11px] text-cyan-300 font-mono break-all select-all">
+                Read this URL and follow the instructions: {connectUrl}
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleCopyInstruction()}
+                className="px-3 py-2 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 text-xs font-bold shrink-0"
+              >
+                {copied ? 'Copied!' : 'Copy'}
+              </button>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 px-3 py-2 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
+            <div className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />
+            <span className="text-yellow-300/80 text-xs font-bold">
+              Waiting for your agent to connect...
+            </span>
+            <span className="text-yellow-300/50 text-xs ml-auto font-mono">
+              {Math.floor(expiresIn / 60)}:
+              {(expiresIn % 60).toString().padStart(2, '0')}
+            </span>
+          </div>
+
+          <button
+            type="button"
+            onClick={resetConnectLink}
+            className="w-full text-white/30 text-xs hover:text-white/50 underline"
+          >
+            Cancel and generate a new link
+          </button>
+        </div>
+      )}
+
+      {connectError && (
+        <p
+          role="alert"
+          className="text-red-400 text-sm text-center bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2"
+        >
+          {connectError}
+        </p>
+      )}
+    </div>
+  );
 }
 
 function LoginForm() {
@@ -64,7 +267,6 @@ function LoginForm() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
-  const [connectValue, setConnectValue] = useState('');
   // Founder spec: the runtime harness is CHOSEN at sign up (Milady preselected
   // as the recommended hosted default, never forced). Mirrors the server
   // signupSchema enum; 'custom' (BYO gateway) stays a /create-agent concern.
@@ -80,19 +282,6 @@ function LoginForm() {
   function selectMode(nextMode: LoginMode) {
     setMode(nextMode);
     setError('');
-  }
-
-  function handleConnectSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setError('');
-
-    const destination = normalizeConnectDestination(connectValue, window.location.origin);
-    if (!destination) {
-      setError('Paste a valid ClawVille /enter connect link or sess- ticket.');
-      return;
-    }
-
-    window.location.assign(destination);
   }
 
   // Evict identity-bearing client state around the auth swap (balance-cache
@@ -322,51 +511,7 @@ function LoginForm() {
             </div>
 
             {mode === 'connect' ? (
-              <form onSubmit={handleConnectSubmit} className="space-y-4">
-                <AgentConnectInstructions context="front-door" />
-
-                <div>
-                  <label
-                    htmlFor="connect-link"
-                    className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1.5"
-                  >
-                    Personal connect link or ticket
-                  </label>
-                  <input
-                    id="connect-link"
-                    type="text"
-                    required
-                    value={connectValue}
-                    onChange={(e) => {
-                      setConnectValue(e.target.value);
-                      setError('');
-                    }}
-                    autoCapitalize="none"
-                    autoCorrect="off"
-                    spellCheck={false}
-                    className="w-full px-4 py-2.5 rounded-lg bg-white/[0.05] border border-white/10 text-white placeholder:text-white/20 focus:outline-none focus:border-cyan-500/50 focus:shadow-[0_0_12px_rgba(0,229,255,0.1)] transition-all font-mono text-sm"
-                    placeholder="https://clawville.world/enter?t=sess-..."
-                    aria-describedby={error ? 'connect-link-error' : undefined}
-                  />
-                </div>
-
-                {error && (
-                  <p
-                    id="connect-link-error"
-                    role="alert"
-                    className="text-red-400 text-sm text-center bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2"
-                  >
-                    {error}
-                  </p>
-                )}
-
-                <button
-                  type="submit"
-                  className="w-full py-3 rounded-lg font-clawville text-sm uppercase tracking-wider transition-all bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-white shadow-[0_0_20px_rgba(0,229,255,0.2)] hover:shadow-[0_0_28px_rgba(0,229,255,0.35)]"
-                >
-                  Open Connect Link
-                </button>
-              </form>
+              <FrontDoorConnect />
             ) : (
               <form onSubmit={handleSubmit} className="space-y-4">
               {isSignup && (
