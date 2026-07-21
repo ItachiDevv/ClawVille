@@ -7,7 +7,10 @@ import {
   mock,
   setSystemTime,
 } from 'bun:test';
-import { agentAutonomyDriver } from '../agent-autonomy-driver';
+import {
+  agentAutonomyDriver,
+  getDriverLivenessSnapshot,
+} from '../agent-autonomy-driver';
 import {
   reconcileDurableAutonomy,
   reconcileSeams,
@@ -23,6 +26,7 @@ import {
 
 const NOW = new Date('2026-07-19T12:00:00.000Z');
 const AGENT_ID = 'standby-house-agent';
+const USER_AGENT_ID = 'standby-user-agent';
 
 type DriverInternals = {
   tick: () => void;
@@ -32,6 +36,7 @@ type DriverInternals = {
   }>;
   tickCount: number;
   wasActive: boolean;
+  lastTickAt: number | null;
 };
 
 const driver = agentAutonomyDriver as unknown as DriverInternals;
@@ -56,6 +61,7 @@ beforeEach(() => {
   setSystemTime(NOW);
   enterStandby();
   agentAutonomyDriver.unregisterHouseAgent(AGENT_ID);
+  agentAutonomyDriver.unregisterUserAgent(USER_AGENT_ID);
   agentAutonomyDriver.driveAgentNow = originalDriveAgentNow;
   driver.runReconcile = originalRunReconcile;
   driver.loadReconcileModule = originalLoadReconcileModule;
@@ -63,10 +69,12 @@ beforeEach(() => {
   reconcileSeams.activate = originalReconcileActivate;
   driver.tickCount = 1;
   driver.wasActive = true;
+  driver.lastTickAt = null;
 });
 
 afterEach(() => {
   agentAutonomyDriver.unregisterHouseAgent(AGENT_ID);
+  agentAutonomyDriver.unregisterUserAgent(USER_AGENT_ID);
   agentAutonomyDriver.driveAgentNow = originalDriveAgentNow;
   driver.runReconcile = originalRunReconcile;
   driver.loadReconcileModule = originalLoadReconcileModule;
@@ -139,6 +147,28 @@ describe('autonomy standby state', () => {
 });
 
 describe('autonomy driver standby gate', () => {
+  it('heartbeats in standby and counts both house and user enrollments', () => {
+    registerAgent();
+    expect(
+      agentAutonomyDriver.registerUserAgent({
+        agentId: USER_AGENT_ID,
+        bodyId: 'standby-user-body',
+        platformAgentId: 'standby-user-platform-agent',
+        systemUserId: 'standby-user-owner',
+        houseUserId: 'standby-user-owner',
+        avatarId: 'standby-user-avatar',
+      }),
+    ).toMatchObject({ ok: true });
+
+    driver.tick();
+
+    expect(getDriverLivenessSnapshot()).toEqual({
+      enrolledCount: 2,
+      lastTickAt: NOW.getTime(),
+    });
+    expect(driver.tickCount).toBe(1);
+  });
+
   it('skips the entire tick and reconcile in standby, then runs when armed', () => {
     registerAgent();
     const drive = mock(async () => true);
