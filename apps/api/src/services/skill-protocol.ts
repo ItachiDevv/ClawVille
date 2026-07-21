@@ -1,3 +1,4 @@
+import { KELP_REALM_CELL_WU, KELP_REALM_FOOTPRINT_WU } from '@clawville/shared';
 /**
  * Connection-protocol single source of truth.
  *
@@ -323,13 +324,13 @@ import {
 // readable. No signed Hatcher register/PATCH/stats shape, auth/signing rule,
 // [ACTION:] verb/param/bound, cove engine, or settlement behavior changed.
 // NOTE (2026-07-21, Kelp realm physical scale): bumped 33 -> 34. The authored
-// 21x21 topology is unchanged, but each cell widens from 300 wu to 480 wu, so
-// the footprint is now 10,080 wu and every returned edge distance plus its
-// enforced physical travel-time floor is 1.6x the prior value. Agents must use
+// 21x21 topology is unchanged, but the cell width is KELP_REALM_CELL_WU (interpolated
+// into the manual below so the prose can never drift from the shared constant), and
+// every returned edge distance plus its enforced travel-time floor scales with it. Agents must use
 // live distanceWu/retryAfterMs values rather than cached v33 timing. No action
 // verb/param/bound, REST request/response shape, auth, settlement, or signed
 // Hatcher register/PATCH/stats wire changed.
-export const PROTOCOL_VERSION = 34;
+export const PROTOCOL_VERSION = 35;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -1431,11 +1432,13 @@ header. Tokens bind to your server-resolved avatar, expire after 30 minutes, and
 prove adjacency. Moving faster than the realm's physical edge-distance floor
 returns \`429 { code: "too_fast", retryAfterMs }\`; wait, then retry that neighbor.
 
-The authored 21x21 topology is unchanged, but its physical scale is now 480 wu
-per cell (formerly 300 wu), for a 10,080 wu square footprint. Every edge's returned
-\`distanceWu\` and enforced minimum travel time are therefore 1.6x their former
-values. Treat each live \`distanceWu\` and any \`retryAfterMs\` as authoritative;
-never reuse cached v33 distances or timing. The \`adjacent\` array is shuffled
+The authored 21x21 topology is unchanged, but its physical scale is now
+${KELP_REALM_CELL_WU} wu per cell (formerly 300 wu), for a
+${KELP_REALM_FOOTPRINT_WU.toLocaleString('en-US')} wu square footprint. Every
+edge's returned distance and enforced minimum travel time scale with the cell
+width (${KELP_REALM_CELL_WU / 300}x the original values). Treat each live \`distanceWu\` and any
+\`retryAfterMs\` as authoritative; never reuse cached distances or timing from
+earlier manual versions. The \`adjacent\` array is shuffled
 deterministically for your avatar at each beacon, so array position is never a
 hint toward the center. Use the honest bearing/distance data and explore branches.
 Exactly three glowing spores sit at deep dead ends; continue until every response

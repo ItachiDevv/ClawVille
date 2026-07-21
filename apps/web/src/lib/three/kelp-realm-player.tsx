@@ -33,6 +33,15 @@ import {
 
 const PLAYER_RADIUS = 34;
 const AVATAR_TARGET_HEIGHT = 270;
+/**
+ * Non-humanoid GLB avatars (lobster, crab-class bodies) are LOW and LONG:
+ * normalizing them to AVATAR_TARGET_HEIGHT by height alone explodes their
+ * horizontal extent to corridor-filling size (founder repro: the lobster
+ * spanned nearly the whole walkway with the camera inside its shell). Cap
+ * the visual footprint so the widest axis never exceeds this, and let the
+ * SMALLER of the height-fit and footprint-fit scales win.
+ */
+const AVATAR_MAX_FOOTPRINT = 150;
 const CAM_BEHIND = 660;
 const CAM_ABOVE = 470;
 const CAM_LOOK_Y = 170;
@@ -363,7 +372,15 @@ function KelpRealmGLBPlayerInner({ reg }: { readonly reg: ModelRegistryEntry }) 
     next.updateMatrixWorld(true);
     glbBoundsScratch.setFromObject(next);
     const nativeHeight = Math.max(0.001, glbBoundsScratch.max.y - glbBoundsScratch.min.y);
-    const renderScale = AVATAR_TARGET_HEIGHT / nativeHeight;
+    const nativeFootprint = Math.max(
+      0.001,
+      glbBoundsScratch.max.x - glbBoundsScratch.min.x,
+      glbBoundsScratch.max.z - glbBoundsScratch.min.z,
+    );
+    const renderScale = Math.min(
+      AVATAR_TARGET_HEIGHT / nativeHeight,
+      AVATAR_MAX_FOOTPRINT / nativeFootprint,
+    );
     return {
       cloned: next,
       scale: renderScale,
