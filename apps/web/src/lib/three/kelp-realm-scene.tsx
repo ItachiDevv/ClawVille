@@ -292,27 +292,52 @@ function variantIndexKey(variant: RealmKelpVariant): string {
  * them instead of leaving disposed buffers referenced by live meshes, which
  * on the WebGPU backend turns into per-frame "buffer used in submit while
  * destroyed" validation errors and a permanently blank scene.
+ *
+ * Disposal is DEFERRED two animation frames: StrictMode replays effects
+ * while the meshes stay committed, so an immediate dispose would destroy
+ * buffers the very frame still submits. After two rAFs the null-resource
+ * commit has landed and the meshes are detached.
  */
+function disposeAfterCommit(dispose: () => void): void {
+  if (typeof window === 'undefined') {
+    dispose();
+    return;
+  }
+  window.requestAnimationFrame(() => window.requestAnimationFrame(dispose));
+}
+
+function disposePartialCreate(
+  created: readonly { geometry: THREE.BufferGeometry; material: THREE.Material }[],
+): void {
+  for (const resource of created) {
+    resource.geometry.dispose();
+    resource.material.dispose();
+  }
+}
+
 function useKelpResources(forceWebGL: boolean): readonly KelpResource[] | null {
   const [resources, setResources] = useState<readonly KelpResource[] | null>(null);
 
   useEffect(() => {
-    const created = VARIANTS.map((variant, index) => {
-      const geometry = createRealmKelpGeometry(index);
-      try {
-        return { geometry, ...createKelpMaterial(variant, forceWebGL) };
-      } catch (error) {
-        geometry.dispose();
-        throw error;
+    const created: KelpResource[] = [];
+    try {
+      for (let index = 0; index < VARIANTS.length; index++) {
+        const geometry = createRealmKelpGeometry(index);
+        try {
+          created.push({ geometry, ...createKelpMaterial(VARIANTS[index]!, forceWebGL) });
+        } catch (error) {
+          geometry.dispose();
+          throw error;
+        }
       }
-    });
+    } catch (error) {
+      disposePartialCreate(created);
+      throw error;
+    }
     setResources(created);
     return () => {
       setResources(null);
-      for (const resource of created) {
-        resource.geometry.dispose();
-        resource.material.dispose();
-      }
+      disposeAfterCommit(() => disposePartialCreate(created));
     };
   }, [forceWebGL]);
   return resources;
@@ -653,22 +678,25 @@ export function createKelpRealmDiscoveryMaterial(
 function useDiscoveryResources(forceWebGL: boolean): readonly DiscoveryResource[] | null {
   const [resources, setResources] = useState<readonly DiscoveryResource[] | null>(null);
   useEffect(() => {
-    const created = KELP_REALM_DISCOVERY_TYPES.map((type) => {
-      const geometry = createKelpRealmDiscoveryGeometry(type);
-      try {
-        return { type, geometry, ...createKelpRealmDiscoveryMaterial(type, forceWebGL) };
-      } catch (error) {
-        geometry.dispose();
-        throw error;
+    const created: DiscoveryResource[] = [];
+    try {
+      for (const type of KELP_REALM_DISCOVERY_TYPES) {
+        const geometry = createKelpRealmDiscoveryGeometry(type);
+        try {
+          created.push({ type, geometry, ...createKelpRealmDiscoveryMaterial(type, forceWebGL) });
+        } catch (error) {
+          geometry.dispose();
+          throw error;
+        }
       }
-    });
+    } catch (error) {
+      disposePartialCreate(created);
+      throw error;
+    }
     setResources(created);
     return () => {
       setResources(null);
-      for (const resource of created) {
-        resource.geometry.dispose();
-        resource.material.dispose();
-      }
+      disposeAfterCommit(() => disposePartialCreate(created));
     };
   }, [forceWebGL]);
   return resources;
@@ -979,8 +1007,10 @@ function RealmEnvironment({ forceWebGL }: { forceWebGL: boolean }) {
     setResources(created);
     return () => {
       setResources(null);
-      const disposable = Object.values(created);
-      for (let index = 0; index < disposable.length; index++) disposable[index]!.dispose();
+      disposeAfterCommit(() => {
+        const disposable = Object.values(created);
+        for (let index = 0; index < disposable.length; index++) disposable[index]!.dispose();
+      });
     };
   }, []);
 
