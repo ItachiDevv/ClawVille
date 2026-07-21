@@ -111,6 +111,10 @@ class KelpRealmCanvasErrorBoundary extends Component<
     return { failed: true };
   }
 
+  componentDidCatch(error: unknown, info: { componentStack?: string | null }) {
+    console.error('[KelpRealm] canvas subtree crashed:', error, info.componentStack ?? '');
+  }
+
   render() {
     return this.state.failed ? <KelpRealmChunkFailure /> : this.props.children;
   }
