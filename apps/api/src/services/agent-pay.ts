@@ -9,6 +9,7 @@ import {
   sql,
   eq,
   and,
+  isNull,
   agentPayments,
   wallets,
   avatars,
@@ -125,7 +126,8 @@ export interface AgentPayDb {
     settlingId: string | null,
     reason: string,
     observedSignature?: string | null,
-  ): Promise<void>;
+    expectedTxSignature?: string | null,
+  ): Promise<boolean | void>;
   fulfillCaptured(
     id: string,
     mint: typeof mintEarned,
@@ -242,14 +244,26 @@ const defaultDb: AgentPayDb = {
       eq(agentPayments.settlingId, settlingId),
     ));
   },
-  async markReconcile(id, settlingId, reason, observedSignature = null) {
+  async markReconcile(
+    id,
+    settlingId,
+    reason,
+    observedSignature = null,
+    expectedTxSignature,
+  ) {
     const conditions = [eq(agentPayments.id, id), eq(agentPayments.status, 'settling')];
     if (settlingId) conditions.push(eq(agentPayments.settlingId, settlingId));
-    await db.update(agentPayments).set({
+    if (expectedTxSignature !== undefined) {
+      conditions.push(expectedTxSignature === null
+        ? isNull(agentPayments.txSignature)
+        : eq(agentPayments.txSignature, expectedTxSignature));
+    }
+    const rows = await db.update(agentPayments).set({
       status: 'reconcile', failureReason: reason,
       reconcileTxSignature: observedSignature, settlingId: null,
       settlingStartedAt: null, updatedAt: new Date(),
-    }).where(and(...conditions));
+    }).where(and(...conditions)).returning({ id: agentPayments.id });
+    return rows.length === 1;
   },
   async fulfillCaptured(id, mint) {
     return db.transaction(async (tx) => {
@@ -308,7 +322,14 @@ const defaultDb: AgentPayDb = {
   },
 };
 
-function defaultResolveRail(): { network: X402Network; rpcUrl: string; allowed: boolean } {
+export interface AgentPayRail {
+  network: X402Network;
+  rpcUrl: string;
+  allowed: boolean;
+}
+
+/** Resolve the exact network/RPC used by the agent-pay rail. */
+export function resolveAgentPayRail(): AgentPayRail {
   const cfg = loadX402Config();
   const network: X402Network | null =
     cfg.network === SOLANA_MAINNET_CAIP2 ? 'mainnet'
@@ -325,7 +346,7 @@ function deps(input?: AgentPayDeps) {
   return {
     db: input?.db ?? defaultDb,
     readUsdcBalance: input?.readUsdcBalance ?? (async (network: X402Network, owner: string) => {
-      const rail = (input?.resolveRail ?? defaultResolveRail)();
+      const rail = (input?.resolveRail ?? resolveAgentPayRail)();
       const balance = await readSplTokenBalance(
         new Connection(rail.rpcUrl, 'confirmed'), usdcMintForNetwork(network), owner,
       );
@@ -345,7 +366,7 @@ function deps(input?: AgentPayDeps) {
     execute: input?.execute ?? ((prep: PreparedCustodialExactPayment) => executePreparedExactPayment(prep)),
     mintEarned: input?.mintEarned ?? mintEarned,
     resolveFeePayer: input?.resolveFeePayer ?? resolveFacilitatorFeePayer,
-    resolveRail: input?.resolveRail ?? defaultResolveRail,
+    resolveRail: input?.resolveRail ?? resolveAgentPayRail,
     randomId: input?.randomId ?? randomUUID,
   };
 }
@@ -411,6 +432,26 @@ export async function fulfillReconciledAgentPayment(
   injected?: Pick<AgentPayDeps, 'db' | 'mintEarned'>,
 ): Promise<AgentPayResult> {
   return fulfill(paymentId, deps(injected));
+}
+
+/**
+ * Forward-only quarantine seam for recovery workers. The underlying DB method
+ * re-asserts `status='settling'` and, when present, the original settling id.
+ */
+export async function markAgentPaymentReconcile(
+  paymentId: string,
+  settlingId: string | null,
+  reason: string,
+  observedSignature?: string | null,
+  expectedTxSignature?: string | null,
+): Promise<boolean> {
+  return (await defaultDb.markReconcile(
+    paymentId,
+    settlingId,
+    reason,
+    observedSignature,
+    expectedTxSignature,
+  )) !== false;
 }
 
 async function dispatchExisting(
