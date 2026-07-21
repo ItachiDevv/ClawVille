@@ -754,6 +754,16 @@ export type ServerFrame =
       padId: string;
     }
   | {
+      /** R18b airborne trick lifecycle; additive and ignored by old clients. */
+      type: 'event.trick';
+      phase: 'armed' | 'landed';
+      avatarId: string;
+      direction: 'left' | 'right';
+      /** Additive speed multiplier granted only on a clean moving landing. */
+      boostMult: number;
+      durationMs: number;
+    }
+  | {
       type: 'event.wall_slam';
       avatarId: string;
       position: Vec2;

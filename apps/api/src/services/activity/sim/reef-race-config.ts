@@ -433,7 +433,8 @@ export type ReefBoostKind =
   | 'apex-bonus'        // Phase 2 — positive (+0.05)
   | 'apex-penalty'      // Phase 2 — negative (-0.05)
   | 'hazard-slow'       // Phase 2 — negative (-0.40)
-  | 'pad-boost';        // v2 mechanics — positive (boost pad, timed + decays)
+  | 'pad-boost'         // v2 mechanics — positive (boost pad, timed + decays)
+  | 'trick-surge';      // R18b — positive (+25% after a clean trick landing)
 
 // Drift spark tier thresholds (in sim ticks).
 //   Tier 0->1: ~0.27s = 8 ticks   -> readable in ordinary corner entries
@@ -1101,16 +1102,17 @@ export function buildBodyMultipliers(
 
 /**
  * Manual jump impulse (player presses Space or Shift). With REEF_GRAVITY,
- * peak height is v²/(2g) = 550²/(2×1200) ≈126wu and total airtime is
- * 2v/g ≈0.92s: visibly above wave heave while still below the ramp launch.
+ * continuous peak is 720²/(2×1200) =216wu; the live semi-implicit 30Hz
+ * integrator measures ≈204wu with ≈1.17s of airborne samples.
  */
-export const REEF_JUMP_IMPULSE_MANUAL = 550;
+export const REEF_JUMP_IMPULSE_MANUAL = 720;
 
 /**
  * Ramp jump impulse (server-injected on ramp AABB entry, regardless of input).
- * ~2.5× manual per spec. Target: ~150 wu peak, ~1.2s airtime.
+ * Clearly larger than manual: the live 30Hz integrator measures ≈337wu peak
+ * from a 920wu/s impulse, with ~1.5s of airborne samples.
  */
-export const REEF_JUMP_IMPULSE_RAMP = 600; // → ~150 wu peak, ~1.0s airtime
+export const REEF_JUMP_IMPULSE_RAMP = 920;
 
 /**
  * Gravity for v2 vertical axis. Pulls vyAxis down each tick:
@@ -1128,6 +1130,14 @@ export const REEF_GRAVITY = 1200; // wu/s²
  * Forward momentum is preserved/coasts through the air.
  */
 export const REEF_AIRBORNE_STEER_MULT = 0.30;
+
+/** R18b clean trick-landing surge: additive +25% for 1.2 seconds. */
+export const REEF_TRICK_SURGE_MULT = 0.25;
+export const REEF_TRICK_SURGE_DURATION_MS = 1_200;
+/** A nearly-stopped landing cannot mint a surge. */
+export const REEF_TRICK_MIN_LANDING_SPEED = REEF_MAX_SPEED * 0.15;
+/** Signed desired-heading delta required to count as a left/right press. */
+export const REEF_TRICK_STEER_DEADZONE_RAD = 0.035;
 
 // ─── Reef Race v2 — surf-carving kinematics (2026-06-01) ────────────────────
 //

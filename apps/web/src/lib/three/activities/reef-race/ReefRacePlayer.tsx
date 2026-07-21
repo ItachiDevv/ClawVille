@@ -84,12 +84,19 @@ import {
   CLIENT_SURF_MAX_DT,
   CLIENT_SURF_TICK_DT,
   CLIENT_SURF_MAX_ACCUM,
+  CLIENT_REEF_JUMP_IMPULSE_MANUAL,
+  CLIENT_REEF_JUMP_IMPULSE_RAMP,
+  CLIENT_REEF_GRAVITY,
+  CLIENT_REEF_TRICK_STEER_DEADZONE_RAD,
+  CLIENT_REBASE_HEIGHT,
+  CLIENT_REBASE_HEIGHT_SNAP,
   CLIENT_REBASE_POS,
   CLIENT_REBASE_VEL,
   CLIENT_REBASE_ROT,
   CLIENT_REBASE_SNAP_DIST,
   SURF_REBASE_RENDER_DAMPING,
   SURF_REBASE_RENDER_OFFSET_MAX,
+  SURF_REBASE_HEIGHT_OFFSET_MAX,
   SURF_RIDE_HEIGHT,
   SURF_PITCH_TRIM_DEG,
   SURF_PITCH_WAVE_GAIN,
@@ -467,6 +474,9 @@ const JUMP_NOSE_UP_RAD = 0.14;
 const RAMP_NOSE_UP_RAD = 0.28;
 /** How long the extended ramp tilt holds (seconds). */
 const RAMP_TILT_HOLD_S = 0.35;
+const TRICK_SPIN_DURATION_S = 0.5;
+const TRICK_SPIN_RADIANS = Math.PI * 2;
+const AIRBORNE_SURFACE_RELEASE_HEIGHT = 20;
 /** Per-avatarId ramp-launch hold timer (seconds remaining). Module scope, no per-frame alloc. */
 const _rampLaunchHold: Record<string, number> = {};
 /** Shared event-time burst scratch; triggerBurst copies it synchronously. */
@@ -558,6 +568,8 @@ interface PredictionHistory {
   vx: Float64Array;
   vz: Float64Array;
   rot: Float64Array;
+  height: Float64Array;
+  verticalVelocity: Float64Array;
   head: number;
   size: number;
 }
@@ -568,6 +580,13 @@ interface PredictionSample {
   vx: number;
   vz: number;
   rot: number;
+  height: number;
+  verticalVelocity: number;
+}
+
+interface PredictedVerticalState {
+  height: number;
+  velocity: number;
 }
 
 function createPredictionHistory(): PredictionHistory {
@@ -578,6 +597,8 @@ function createPredictionHistory(): PredictionHistory {
     vx: new Float64Array(PRED_HISTORY_SIZE),
     vz: new Float64Array(PRED_HISTORY_SIZE),
     rot: new Float64Array(PRED_HISTORY_SIZE),
+    height: new Float64Array(PRED_HISTORY_SIZE),
+    verticalVelocity: new Float64Array(PRED_HISTORY_SIZE),
     head: 0,
     size: 0,
   };
@@ -592,6 +613,7 @@ function pushPredictionSample(
   history: PredictionHistory,
   atMs: number,
   state: SurfBodyState,
+  vertical: PredictedVerticalState,
 ): void {
   const latest = (history.head - 1 + PRED_HISTORY_SIZE) % PRED_HISTORY_SIZE;
   const replaceLatest = history.size > 0 && atMs <= history.t[latest];
@@ -602,6 +624,8 @@ function pushPredictionSample(
   history.vx[i] = state.vx;
   history.vz[i] = state.vz;
   history.rot[i] = state.rot;
+  history.height[i] = vertical.height;
+  history.verticalVelocity[i] = vertical.velocity;
   if (!replaceLatest) {
     history.head = (history.head + 1) % PRED_HISTORY_SIZE;
     history.size = Math.min(PRED_HISTORY_SIZE, history.size + 1);
@@ -626,6 +650,13 @@ function samplePredictionAt(
     out.vx = history.vx[newest];
     out.vz = history.vz[newest];
     out.rot = history.rot[newest];
+    out.height = history.height[newest]
+      + history.verticalVelocity[newest] * aheadSeconds
+      - 0.5 * CLIENT_REEF_GRAVITY * aheadSeconds * aheadSeconds;
+    if (out.height < 0) out.height = 0;
+    out.verticalVelocity = out.height > 0
+      ? history.verticalVelocity[newest] - CLIENT_REEF_GRAVITY * aheadSeconds
+      : 0;
     return true;
   }
 
@@ -647,6 +678,9 @@ function samplePredictionAt(
   out.vx = history.vx[a] + (history.vx[b] - history.vx[a]) * alpha;
   out.vz = history.vz[a] + (history.vz[b] - history.vz[a]) * alpha;
   out.rot = lerpAngle(history.rot[a], history.rot[b], alpha);
+  out.height = history.height[a] + (history.height[b] - history.height[a]) * alpha;
+  out.verticalVelocity = history.verticalVelocity[a]
+    + (history.verticalVelocity[b] - history.verticalVelocity[a]) * alpha;
   return true;
 }
 
@@ -709,6 +743,8 @@ interface SnapRecord {
   rot: number;
   vx: number;
   vz: number; // sim-space vy → Three.js vz
+  height: number;
+  verticalVelocity: number;
 }
 
 // ─── SPEC 2: VRM rider inner component ────────────────────────────────────────
@@ -724,7 +760,16 @@ interface SnapshotHistory {
 function createSnapshotHistory(): SnapshotHistory {
   const records: SnapRecord[] = [];
   for (let i = 0; i < INTERP_HISTORY_SIZE; i++) {
-    records.push({ t: 0, x: 0, z: 0, rot: Number.NaN, vx: 0, vz: 0 });
+    records.push({
+      t: 0,
+      x: 0,
+      z: 0,
+      rot: Number.NaN,
+      vx: 0,
+      vz: 0,
+      height: 0,
+      verticalVelocity: 0,
+    });
   }
   return { records, head: 0, size: 0 };
 }
@@ -748,6 +793,7 @@ function pushSnapshot(
   rot: number,
   vx: number,
   vz: number,
+  height: number,
 ): void {
   if (history.size > 0) {
     const latest = snapshotAtIndex(history, history.size - 1);
@@ -757,6 +803,7 @@ function pushSnapshot(
       latest.rot = rot;
       latest.vx = vx;
       latest.vz = vz;
+      latest.height = height;
       return;
     }
   }
@@ -767,6 +814,14 @@ function pushSnapshot(
   target.rot = rot;
   target.vx = vx;
   target.vz = vz;
+  const previous = history.size > 0
+    ? snapshotAtIndex(history, history.size - 1)
+    : null;
+  const intervalSeconds = previous ? (t - previous.t) * 0.001 : 0;
+  target.height = height;
+  target.verticalVelocity = previous && intervalSeconds > 0
+    ? (height - previous.height) / intervalSeconds
+    : 0;
   history.head = (history.head + 1) % INTERP_HISTORY_SIZE;
   history.size = Math.min(INTERP_HISTORY_SIZE, history.size + 1);
 }
@@ -988,6 +1043,7 @@ function ReefRacePlayerInner({
     x: 0,
     z: 0,
     rot: 0,
+    height: 0,
     wipedOut: false,
   });
   const remoteRecoveryRef = useRef({
@@ -996,6 +1052,7 @@ function ReefRacePlayerInner({
     fromX: 0,
     fromZ: 0,
     fromRot: 0,
+    fromHeight: 0,
   });
   // Identity compare to detect new snapshot (store builds new object per delta).
   const lastEntityRef = useRef<ReefRaceEntity | null>(null);
@@ -1008,6 +1065,21 @@ function ReefRacePlayerInner({
   // server snapshot, advanced each frame by integrateSurfStep against the
   // self-input bus, and re-baselined toward authority on every new snapshot.
   const predictedRef = useRef<SurfBodyState>({ x: 0, z: 0, vx: 0, vz: 0, rot: 0 });
+  const predictedVerticalRef = useRef<PredictedVerticalState>({ height: 0, velocity: 0 });
+  const prevVerticalTickRef = useRef<PredictedVerticalState>({ height: 0, velocity: 0 });
+  const rebaseHeightOffsetRef = useRef(0);
+  const lastJumpPressSeqRef = useRef(selfInputBus.jumpPressSeq);
+  const pendingRampImpulseRef = useRef(0);
+  const lastAuthorityVerticalRef = useRef({ height: 0, atMs: 0, velocity: 0 });
+  const lastRenderedHeightRef = useRef(0);
+  const localTrickSteerSideRef = useRef<-1 | 0 | 1>(0);
+  const trickAnimationRef = useRef({
+    active: false,
+    queued: false,
+    performedThisFlight: false,
+    direction: 1,
+    elapsed: 0,
+  });
   // Allocated once: only speedMod is refreshed from authority; accelMult stays 1.
   const clientSurfParamsRef = useRef<SurfParams | null>(null);
   if (clientSurfParamsRef.current === null) {
@@ -1043,7 +1115,15 @@ function ReefRacePlayerInner({
   if (predictionHistoryRef.current === null) {
     predictionHistoryRef.current = createPredictionHistory();
   }
-  const predictionSampleRef = useRef<PredictionSample>({ x: 0, z: 0, vx: 0, vz: 0, rot: 0 });
+  const predictionSampleRef = useRef<PredictionSample>({
+    x: 0,
+    z: 0,
+    vx: 0,
+    vz: 0,
+    rot: 0,
+    height: 0,
+    verticalVelocity: 0,
+  });
   const predictionTimeRef = useRef(0);
   const lastAuthorityArrivalRef = useRef(0);
   const authorityIntervalEwmaRef = useRef(1000 / 15);
@@ -1289,6 +1369,9 @@ function ReefRacePlayerInner({
   useEffect(() => {
     return () => {
       delete _surfPoseDamping[entity.avatarId];
+      delete _prevHeight[entity.avatarId];
+      delete _squashTime[entity.avatarId];
+      delete _rampLaunchHold[entity.avatarId];
       // SURF ROAD: drop the per-kart elevation XZ→t cache key so the Map in
       // reef-race-elevation doesn't accrete dead avatarIds across remounts.
       forgetTKey(entity.avatarId);
@@ -1439,6 +1522,7 @@ function ReefRacePlayerInner({
   // that produce NO React state updates (zero re-renders).
   const lastRampLaunchEvent = useActivityStore((s) => s.lastRampLaunchEvent);
   const lastSeenRampRef = useRef<{ avatarId: string; at: number } | null>(null);
+  const pendingRampVisualRef = useRef(false);
 
   useEffect(() => {
     if (!lastRampLaunchEvent) return;
@@ -1450,11 +1534,14 @@ function ReefRacePlayerInner({
 
     lastSeenRampRef.current = { avatarId: lastRampLaunchEvent.avatarId, at: lastRampLaunchEvent.at };
 
-    // Extended nose-up tilt for ALL instances of this avatarId.
-    _rampLaunchHold[entity.avatarId] = RAMP_TILT_HOLD_S;
+    // The event can arrive before the delayed remote pose reaches liftoff.
+    // Queue presentation until rendered height actually leaves the surface.
+    pendingRampVisualRef.current = true;
 
     // Self-player-only: screen shake + burst.
     if (isSelf) {
+      pendingRampImpulseRef.current = lastRampLaunchEvent.launchVel
+        || CLIENT_REEF_JUMP_IMPULSE_RAMP;
       triggerScreenShake?.(0.12);
       // Compute world position from current entity snapshot.
       // entity.x / entity.y are the latest received sim-space coords (not interpolated),
@@ -1471,6 +1558,30 @@ function ReefRacePlayerInner({
   }, [lastRampLaunchEvent, entity.avatarId, isSelf, triggerScreenShake]);
   // NOTE: entity.x / entity.y / entity.height are intentionally NOT deps —
   // they change every snapshot and we only want to fire once per ramp event.
+
+  const lastTrickEvent = useActivityStore((s) => s.lastTrickEvent);
+  const lastSeenTrickRef = useRef<{ phase: 'armed' | 'landed'; at: number } | null>(null);
+
+  useEffect(() => {
+    if (!lastTrickEvent || lastTrickEvent.avatarId !== entity.avatarId) return;
+    const previous = lastSeenTrickRef.current;
+    if (previous?.phase === lastTrickEvent.phase && previous.at === lastTrickEvent.at) return;
+    lastSeenTrickRef.current = { phase: lastTrickEvent.phase, at: lastTrickEvent.at };
+    if (lastTrickEvent.phase !== 'armed') return;
+
+    const trick = trickAnimationRef.current;
+    trick.direction = lastTrickEvent.direction === 'left' ? 1 : -1;
+    if (!trick.active && !trick.performedThisFlight) {
+      // Remote events precede their 225ms delayed pose. Self may already be
+      // spinning from the immediate local steer edge, so only queue if idle.
+      trick.queued = !isSelf;
+      if (isSelf) {
+        trick.active = true;
+        trick.performedThisFlight = true;
+        trick.elapsed = 0;
+      }
+    }
+  }, [lastTrickEvent, entity.avatarId, isSelf]);
 
   // ─── v2 mechanics: boost-pad hit event subscription ──────────────────────────
   // Mirrors the ramp-launch block above exactly. Fired for ANY avatar (WORLD↔
@@ -1559,6 +1670,7 @@ function ReefRacePlayerInner({
       renderOffset.x *= decay;
       renderOffset.z *= decay;
       renderOffset.rot *= decay;
+      rebaseHeightOffsetRef.current *= decay;
     }
 
     // ─── Snapshot ingestion (BUG FIX Bug 1 + Bug 2) ──────────────────────────
@@ -1604,7 +1716,17 @@ function ReefRacePlayerInner({
           // Keep the same output continuity when falling back to arrival time.
         }
       }
-      pushSnapshot(h, snapAtMs, entity.x, entity.y, rot, entity.vx, entity.vy);
+      const authorityHeight = (entity as ReefRaceEntity & { height?: number }).height ?? 0;
+      pushSnapshot(
+        h,
+        snapAtMs,
+        entity.x,
+        entity.y,
+        rot,
+        entity.vx,
+        entity.vy,
+        authorityHeight,
+      );
 
       const arrivalTiming = arrivalTimingRef.current;
       if (arrivalTiming.lastAtMs > 0) {
@@ -1616,6 +1738,7 @@ function ReefRacePlayerInner({
           recovery.fromX = group.position.x;
           recovery.fromZ = group.position.z;
           recovery.fromRot = group.rotation.y;
+          recovery.fromHeight = lastRenderedHeightRef.current;
         }
       }
       arrivalTiming.lastAtMs = arrivedAtMs;
@@ -1633,6 +1756,22 @@ function ReefRacePlayerInner({
         const sz = entity.y;
         const svx = entity.vx;
         const svz = entity.vy;
+        const vertical = predictedVerticalRef.current;
+        const prevVertical = prevVerticalTickRef.current;
+        const priorAuthorityVertical = lastAuthorityVerticalRef.current;
+        const authoritySampleAtMs = typeof entity.snapshotAtMs === 'number'
+          && Number.isFinite(entity.snapshotAtMs)
+          ? entity.snapshotAtMs
+          : arrivedAtMs;
+        const authorityDt = priorAuthorityVertical.atMs > 0
+          ? (authoritySampleAtMs - priorAuthorityVertical.atMs) * 0.001
+          : 0;
+        const authorityVerticalVelocity = authorityHeight > 0 && authorityDt > 0
+          ? (authorityHeight - priorAuthorityVertical.height) / authorityDt
+          : 0;
+        priorAuthorityVertical.height = authorityHeight;
+        priorAuthorityVertical.atMs = authoritySampleAtMs;
+        priorAuthorityVertical.velocity = authorityVerticalVelocity;
         // Server rot, with the same spawn-frame fallback the snapshot used.
         const srot = isNaN(rot) ? pred.rot : rot;
 
@@ -1657,6 +1796,11 @@ function ReefRacePlayerInner({
           prevTickRef.current.vx = svx;
           prevTickRef.current.vz = svz;
           prevTickRef.current.rot = srot;
+          vertical.height = authorityHeight;
+          vertical.velocity = 0;
+          prevVertical.height = authorityHeight;
+          prevVertical.velocity = 0;
+          rebaseHeightOffsetRef.current = 0;
           rebaseRenderOffsetRef.current.x = 0;
           rebaseRenderOffsetRef.current.z = 0;
           rebaseRenderOffsetRef.current.rot = 0;
@@ -1665,7 +1809,7 @@ function ReefRacePlayerInner({
           predictionTimeRef.current = arrivedAtMs;
           predictedBoostPadInsideRef.current!.clear();
           clearPredictionHistory(predictionHistory);
-          pushPredictionSample(predictionHistory, predictionTimeRef.current, pred);
+          pushPredictionSample(predictionHistory, predictionTimeRef.current, pred, vertical);
         } else if (!predictInitRef.current) {
           // First snapshot — initialise predicted state directly from authority.
           pred.x = sx;
@@ -1678,6 +1822,11 @@ function ReefRacePlayerInner({
           prevTickRef.current.vx = svx;
           prevTickRef.current.vz = svz;
           prevTickRef.current.rot = srot;
+          vertical.height = authorityHeight;
+          vertical.velocity = authorityVerticalVelocity;
+          prevVertical.height = authorityHeight;
+          prevVertical.velocity = authorityVerticalVelocity;
+          rebaseHeightOffsetRef.current = 0;
           rebaseRenderOffsetRef.current.x = 0;
           rebaseRenderOffsetRef.current.z = 0;
           rebaseRenderOffsetRef.current.rot = 0;
@@ -1686,7 +1835,7 @@ function ReefRacePlayerInner({
           predictAccumRef.current = 0;
           predictionTimeRef.current = arrivedAtMs;
           clearPredictionHistory(predictionHistory);
-          pushPredictionSample(predictionHistory, predictionTimeRef.current, pred);
+          pushPredictionSample(predictionHistory, predictionTimeRef.current, pred, vertical);
         } else {
           const rawDx = sx - pred.x;
           const rawDz = sz - pred.z;
@@ -1704,6 +1853,11 @@ function ReefRacePlayerInner({
             prevTickRef.current.vx = svx;
             prevTickRef.current.vz = svz;
             prevTickRef.current.rot = srot;
+            vertical.height = authorityHeight;
+            vertical.velocity = authorityVerticalVelocity;
+            prevVertical.height = authorityHeight;
+            prevVertical.velocity = authorityVerticalVelocity;
+            rebaseHeightOffsetRef.current = 0;
             rebaseRenderOffsetRef.current.x = 0;
             rebaseRenderOffsetRef.current.z = 0;
             rebaseRenderOffsetRef.current.rot = 0;
@@ -1712,7 +1866,7 @@ function ReefRacePlayerInner({
             predictAccumRef.current = 0;
             predictionTimeRef.current = arrivedAtMs;
             clearPredictionHistory(predictionHistory);
-            pushPredictionSample(predictionHistory, predictionTimeRef.current, pred);
+            pushPredictionSample(predictionHistory, predictionTimeRef.current, pred, vertical);
             recordReconStats(rawErrDist, rawErrDist, 'hard-snap');
           } else {
             // Blend predicted toward authority. Position slower (smoothness),
@@ -1726,12 +1880,17 @@ function ReefRacePlayerInner({
             let velErrorX: number;
             let velErrorZ: number;
             let rotError: number;
+            let heightError: number;
+            let verticalVelocityError: number;
             if (matched) {
               posErrorX = sx - matchedSample.x;
               posErrorZ = sz - matchedSample.z;
               velErrorX = svx - matchedSample.vx;
               velErrorZ = svz - matchedSample.vz;
               rotError = shortestAngleDelta(matchedSample.rot, srot);
+              heightError = authorityHeight - matchedSample.height;
+              verticalVelocityError = authorityVerticalVelocity
+                - matchedSample.verticalVelocity;
             } else {
               const lagMs = Math.min(
                 REBASE_FALLBACK_MAX_MS,
@@ -1745,6 +1904,17 @@ function ReefRacePlayerInner({
               velErrorX = svx - pred.vx;
               velErrorZ = svz - pred.vz;
               rotError = shortestAngleDelta(pred.rot, srot);
+              const authorityProjectedHeight = Math.max(
+                0,
+                authorityHeight
+                  + authorityVerticalVelocity * lagSeconds
+                  - 0.5 * CLIENT_REEF_GRAVITY * lagSeconds * lagSeconds,
+              );
+              heightError = authorityProjectedHeight - vertical.height;
+              verticalVelocityError = authorityProjectedHeight > 0
+                ? authorityVerticalVelocity - CLIENT_REEF_GRAVITY * lagSeconds
+                  - vertical.velocity
+                : -vertical.velocity;
             }
             const errDist = Math.hypot(posErrorX, posErrorZ);
             const appliedX = posErrorX * CLIENT_REBASE_POS;
@@ -1755,6 +1925,25 @@ function ReefRacePlayerInner({
             pred.vx += velErrorX * CLIENT_REBASE_VEL;
             pred.vz += velErrorZ * CLIENT_REBASE_VEL;
             pred.rot += appliedRot;
+            if (Math.abs(heightError) > CLIENT_REBASE_HEIGHT_SNAP) {
+              vertical.height = authorityHeight;
+              vertical.velocity = authorityVerticalVelocity;
+              prevVertical.height = authorityHeight;
+              prevVertical.velocity = authorityVerticalVelocity;
+              rebaseHeightOffsetRef.current = 0;
+            } else {
+              const appliedHeight = heightError * CLIENT_REBASE_HEIGHT;
+              vertical.height = Math.max(0, vertical.height + appliedHeight);
+              vertical.velocity += verticalVelocityError * CLIENT_REBASE_VEL;
+              prevVertical.height = Math.max(0, prevVertical.height + appliedHeight);
+              prevVertical.velocity += verticalVelocityError * CLIENT_REBASE_VEL;
+              rebaseHeightOffsetRef.current -= appliedHeight;
+              if (rebaseHeightOffsetRef.current > SURF_REBASE_HEIGHT_OFFSET_MAX) {
+                rebaseHeightOffsetRef.current = SURF_REBASE_HEIGHT_OFFSET_MAX;
+              } else if (rebaseHeightOffsetRef.current < -SURF_REBASE_HEIGHT_OFFSET_MAX) {
+                rebaseHeightOffsetRef.current = -SURF_REBASE_HEIGHT_OFFSET_MAX;
+              }
+            }
             // Shift the render-interp anchor by the same correction so the
             // rebase applies uniformly across the blend (no partial-alpha kink).
             prevTickRef.current.x += appliedX;
@@ -1775,7 +1964,7 @@ function ReefRacePlayerInner({
             }
             // Velocity reconciliation applies directly to `pred`; unlike the
             // position/yaw anchors it needs no matching previous-tick shift.
-            pushPredictionSample(predictionHistory, predictionTimeRef.current, pred);
+            pushPredictionSample(predictionHistory, predictionTimeRef.current, pred, vertical);
             recordReconStats(
               errDist,
               Math.hypot(appliedX, appliedZ),
@@ -1808,6 +1997,7 @@ function ReefRacePlayerInner({
     let interpRot = lastRotRef.current;
     let interpVx  = entity.vx;
     let interpVz  = entity.vy;
+    let renderedHeight = (entity as ReefRaceEntity & { height?: number }).height ?? 0;
 
     if (history.size === 1) {
       // Only one snapshot — snap directly (startup case, no bracket yet).
@@ -1816,6 +2006,7 @@ function ReefRacePlayerInner({
       interpZ   = only.z;
       interpVx  = only.vx;
       interpVz  = only.vz;
+      renderedHeight = only.height;
       if (!isNaN(only.rot)) {
         interpRot = only.rot;
       }
@@ -1844,6 +2035,7 @@ function ReefRacePlayerInner({
       interpZ  = a.z  + (b.z  - a.z)  * t;
       interpVx = a.vx + (b.vx - a.vx) * t;
       interpVz = a.vz + (b.vz - a.vz) * t;
+      renderedHeight = a.height + (b.height - a.height) * t;
 
       // BUG FIX (Bug 2): lerp entity.rot angles via shortest arc. Skip NaN frames.
       const rotA = isNaN(a.rot) ? lastRotRef.current : a.rot;
@@ -1857,6 +2049,13 @@ function ReefRacePlayerInner({
         interpZ = latest.z + latest.vz * extrapMs * 0.001;
         interpVx = latest.vx;
         interpVz = latest.vz;
+        const extrapSeconds = extrapMs * 0.001;
+        renderedHeight = Math.max(
+          0,
+          latest.height
+            + latest.verticalVelocity * extrapSeconds
+            - 0.5 * CLIENT_REEF_GRAVITY * extrapSeconds * extrapSeconds,
+        );
         if (!isNaN(latest.rot)) interpRot = latest.rot;
       }
     }
@@ -1872,6 +2071,8 @@ function ReefRacePlayerInner({
       interpX = recovery.fromX + (interpX - recovery.fromX) * eased;
       interpZ = recovery.fromZ + (interpZ - recovery.fromZ) * eased;
       interpRot = lerpAngle(recovery.fromRot, interpRot, eased);
+      renderedHeight = recovery.fromHeight
+        + (renderedHeight - recovery.fromHeight) * eased;
     }
 
     // Snapshot corrections can still move the bracket output even on a stable
@@ -1896,6 +2097,7 @@ function ReefRacePlayerInner({
         outputPose.x = interpX;
         outputPose.z = interpZ;
         outputPose.rot = interpRot;
+        outputPose.height = renderedHeight;
         outputPose.initialized = true;
       } else {
         const outputFactor = 1 - Math.exp(-SURF_REBASE_RENDER_DAMPING * dt);
@@ -1908,6 +2110,10 @@ function ReefRacePlayerInner({
         outputPose.x += (interpX - outputPose.x) * outputFactor;
         outputPose.z += (interpZ - outputPose.z) * outputFactor;
         outputPose.rot = lerpAngle(outputPose.rot, interpRot, outputFactor);
+        outputPose.height += (renderedHeight - outputPose.height) * outputFactor;
+        if (renderedHeight === 0 && outputPose.height < 0.5) {
+          outputPose.height = 0;
+        }
       }
       outputPose.wipedOut = wipedOut;
       if (timebaseTransitionActive) {
@@ -1921,14 +2127,11 @@ function ReefRacePlayerInner({
       interpX = outputPose.x;
       interpZ = outputPose.z;
       interpRot = outputPose.rot;
+      renderedHeight = outputPose.height;
     }
 
     // Persist the interpolated rotation for the next zero-velocity spawn frame.
     lastRotRef.current = interpRot;
-
-    // Y elevation: v2 spline path reads entity.height (race-layer local jump
-    // height, default 0 = track surface). v1 ellipse path stays at y=0.
-    const entityHeight = (entity as ReefRaceEntity & { height?: number }).height ?? 0;
 
     // ─── v2 self prediction — fixed-timestep integrate + override interp pose ─
     // Only the self kart on the spline path. Reads the smoothed dir/thrust the
@@ -1945,9 +2148,32 @@ function ReefRacePlayerInner({
     // not enable self prediction.
     if (predictsSelf && !entity.wipedOut && predictInitRef.current) {
       const pred = predictedRef.current;
+      const vertical = predictedVerticalRef.current;
+      const prevVertical = prevVerticalTickRef.current;
       const dirInput = selfInputBus.valid ? selfInputBus.dir : null;
       const thrustInput = selfInputBus.valid ? selfInputBus.thrust : 0;
-      const airborne = entityHeight > 0;
+      const jumpPressSeq = selfInputBus.jumpPressSeq;
+      if (jumpPressSeq !== lastJumpPressSeqRef.current) {
+        lastJumpPressSeqRef.current = jumpPressSeq;
+        if (!entity.finishedAt && vertical.height <= 0 && vertical.velocity <= 0) {
+          vertical.height = 0;
+          vertical.velocity = CLIENT_REEF_JUMP_IMPULSE_MANUAL;
+          prevVertical.height = 0;
+          prevVertical.velocity = CLIENT_REEF_JUMP_IMPULSE_MANUAL;
+        }
+      }
+      const pendingRampImpulse = pendingRampImpulseRef.current;
+      pendingRampImpulseRef.current = 0;
+      if (
+        pendingRampImpulse > 0
+        && vertical.height <= 0
+        && vertical.velocity <= 0
+      ) {
+        vertical.height = 0;
+        vertical.velocity = pendingRampImpulse;
+        prevVertical.height = 0;
+        prevVertical.velocity = pendingRampImpulse;
+      }
       // Presentation parity only: authority remains server-owned. Reuse the
       // allocated params object so the fixed-step loop creates no frame garbage.
       const clientSurfParams = clientSurfParamsRef.current!;
@@ -1970,6 +2196,9 @@ function ReefRacePlayerInner({
         prevTickRef.current.vx = pred.vx;
         prevTickRef.current.vz = pred.vz;
         prevTickRef.current.rot = pred.rot;
+        prevVertical.height = vertical.height;
+        prevVertical.velocity = vertical.velocity;
+        const airborne = vertical.height > 0 || vertical.velocity > 0;
         const next = integrateSurfStep(
           pred,
           { dir: dirInput, thrust: thrustInput, airborne },
@@ -1981,6 +2210,16 @@ function ReefRacePlayerInner({
         pred.vx = next.vx;
         pred.vz = next.vz;
         pred.rot = next.rot;
+        if (airborne) {
+          vertical.velocity -= CLIENT_REEF_GRAVITY * CLIENT_SURF_TICK_DT;
+          vertical.height = Math.max(
+            0,
+            vertical.height + vertical.velocity * CLIENT_SURF_TICK_DT,
+          );
+          if (vertical.height === 0 && vertical.velocity < 0) {
+            vertical.velocity = 0;
+          }
+        }
 
         // Mirror authority's post-integrate boost-pad pass. Static volumes are
         // resolved once above; this hot path performs only scalar math and Set
@@ -2017,6 +2256,7 @@ function ReefRacePlayerInner({
           predictionHistoryRef.current!,
           predictionTimeRef.current,
           pred,
+          vertical,
         );
         predictAccumRef.current -= CLIENT_SURF_TICK_DT;
       }
@@ -2035,6 +2275,23 @@ function ReefRacePlayerInner({
       interpRot = lerpAngle(prevTick.rot, pred.rot, renderAlpha);
       interpVx = prevTick.vx + (pred.vx - prevTick.vx) * renderAlpha;
       interpVz = prevTick.vz + (pred.vz - prevTick.vz) * renderAlpha;
+
+      // Vertical presentation extrapolates the latest fixed state across the
+      // accumulator remainder. Unlike a raw 30Hz tick blend, this moves on the
+      // very first rAF after Space and on every rAF throughout the arc.
+      const verticalRenderSeconds = predictAccumRef.current;
+      renderedHeight = Math.max(
+        0,
+        vertical.height
+          + vertical.velocity * verticalRenderSeconds
+          - 0.5 * CLIENT_REEF_GRAVITY
+            * verticalRenderSeconds * verticalRenderSeconds,
+      );
+      renderedHeight = Math.max(0, renderedHeight + rebaseHeightOffsetRef.current);
+      if (vertical.height === 0 && vertical.velocity === 0 && renderedHeight < 0.5) {
+        renderedHeight = 0;
+        rebaseHeightOffsetRef.current = 0;
+      }
 
       // Authority rebases prediction/history immediately, but reaches the
       // screen through this exponentially decaying inverse offset. Camera,
@@ -2132,7 +2389,7 @@ function ReefRacePlayerInner({
       }
 
       renderedSurfaceY = surfPoseDamping.surfaceY;
-      group.position.y = renderedSurfaceY + SURF_RIDE_HEIGHT + entityHeight;
+      group.position.y = renderedSurfaceY + SURF_RIDE_HEIGHT + renderedHeight;
 
       let surfPitch = surfPoseDamping.wavePitch - SURF_PITCH_TRIM_DEG * SURF_DEG2RAD;
       if (surfPitch < -SURF_PITCH_CLAMP) surfPitch = -SURF_PITCH_CLAMP; else if (surfPitch > SURF_PITCH_CLAMP) surfPitch = SURF_PITCH_CLAMP;
@@ -2143,7 +2400,14 @@ function ReefRacePlayerInner({
       // verified against. The glider child adds the airborne jump nose-up (rotation.x)
       // + a small velocity bank (rotation.z) on top.
       group.rotation.order = 'YXZ';
-      group.rotation.set(surfPitch, interpRot, surfRoll);
+      let surfaceContact = 1 - renderedHeight / AIRBORNE_SURFACE_RELEASE_HEIGHT;
+      if (surfaceContact < 0) surfaceContact = 0;
+      else if (surfaceContact > 1) surfaceContact = 1;
+      group.rotation.set(
+        surfPitch * surfaceContact,
+        interpRot,
+        surfRoll * surfaceContact,
+      );
     } else {
       group.position.y = 0;
       group.rotation.y = interpRot;
@@ -2165,21 +2429,78 @@ function ReefRacePlayerInner({
       selfPoseBus.z = interpZ;
       selfPoseBus.rot = interpRot;
       selfPoseBus.surfaceY = renderedSurfaceY;
+      selfPoseBus.renderedHeight = renderedHeight;
       selfPoseBus.valid = true;
       selfPoseBus.updatedAt = performance.now();
     }
 
     // When airborne (height > 0): pitch glider nose up by ~8°.
     // On landing (height was > 0, now 0): trigger squash animation.
+    const isRenderedAirborne = renderedHeight > 0;
+    if (pendingRampVisualRef.current && isRenderedAirborne) {
+      pendingRampVisualRef.current = false;
+      _rampLaunchHold[entity.avatarId] = RAMP_TILT_HOLD_S;
+    }
+
+    const trick = trickAnimationRef.current;
+    if (trick.queued && isRenderedAirborne) {
+      trick.queued = false;
+      trick.active = true;
+      trick.performedThisFlight = true;
+      trick.elapsed = 0;
+    }
+    if (predictsSelf) {
+      let steerSide: -1 | 0 | 1 = 0;
+      const steerDir = selfInputBus.valid ? selfInputBus.dir : null;
+      if (steerDir && (steerDir.x !== 0 || steerDir.z !== 0)) {
+        const desiredHeading = Math.atan2(steerDir.x, steerDir.z);
+        const steerDelta = Math.atan2(
+          Math.sin(desiredHeading - interpRot),
+          Math.cos(desiredHeading - interpRot),
+        );
+        if (Math.abs(steerDelta) >= CLIENT_REEF_TRICK_STEER_DEADZONE_RAD) {
+          steerSide = steerDelta > 0 ? 1 : -1;
+        }
+      }
+      if (
+        isRenderedAirborne
+        && !trick.active
+        && !trick.queued
+        && !trick.performedThisFlight
+        && steerSide !== 0
+        && steerSide !== localTrickSteerSideRef.current
+      ) {
+        trick.active = true;
+        trick.performedThisFlight = true;
+        trick.direction = steerSide > 0 ? 1 : -1;
+        trick.elapsed = 0;
+      }
+      localTrickSteerSideRef.current = steerSide;
+    }
+
+    let trickYaw = 0;
+    if (trick.active) {
+      trick.elapsed += dt;
+      const trickProgress = Math.min(1, trick.elapsed / TRICK_SPIN_DURATION_S);
+      trickYaw = trick.direction * TRICK_SPIN_RADIANS * trickProgress;
+      if (trickProgress >= 1) {
+        trick.active = false;
+        trickYaw = 0;
+      }
+    }
+
     if (USE_SPLINE_PLAYER) {
       const prevH = _prevHeight[entity.avatarId] ?? 0;
-      const isAirborne = entityHeight > 0;
+      const isAirborne = isRenderedAirborne;
 
       if (!isAirborne && prevH > 0) {
         // Just landed — start squash.
         _squashTime[entity.avatarId] = SQUASH_DURATION;
+        trick.performedThisFlight = false;
+        trick.active = false;
+        trick.queued = false;
       }
-      _prevHeight[entity.avatarId] = entityHeight;
+      _prevHeight[entity.avatarId] = renderedHeight;
 
       // Apply nose-up pitch on glider when airborne.
       // Ramp launches hold extended 16° tilt for RAMP_TILT_HOLD_S seconds.
@@ -2214,13 +2535,16 @@ function ReefRacePlayerInner({
     // Authoritative wipeout presentation composes on the glider child so it
     // never fights groupRef's server XZ/yaw or the shared wave/bank datum.
     if (entity.wipedOut) {
+      trick.active = false;
+      trick.queued = false;
+      trick.performedThisFlight = false;
       const elapsed = Math.max(0, surfTime - wipeoutStartedAtRef.current);
       const progress = Math.min(1, elapsed / WIPEOUT_PRESENTATION_DURATION_S);
       const sinkProgress = 1 - (1 - progress) * (1 - progress);
       glider.rotation.y = progress * WIPEOUT_TUMBLE_RADIANS;
       glider.position.y = GLIDER_LOCAL_Y - sinkProgress * WIPEOUT_SINK_LOCAL;
     } else {
-      glider.rotation.y = 0;
+      glider.rotation.y = trickYaw;
       glider.position.y = GLIDER_LOCAL_Y;
       const popRemaining = respawnPopRemainingRef.current;
       if (popRemaining > 0) {
@@ -2232,6 +2556,12 @@ function ReefRacePlayerInner({
     }
 
     glider.rotation.z = -surfPoseDamping.bankLean * 0.15;
+    lastRenderedHeightRef.current = renderedHeight;
+    group.userData.reefRenderedHeight = renderedHeight;
+    group.userData.reefSurfaceY = renderedSurfaceY;
+    group.userData.reefTrickYaw = glider.rotation.y;
+    group.userData.reefAvatarId = entity.avatarId;
+    group.userData.reefIsSelf = isSelf;
 
     // Dev-only render-pose probe — lets the headless harness measure
     // per-frame motion and applied-bank deltas, not just reconciliation error.
@@ -2335,7 +2665,11 @@ function ReefRacePlayerInner({
      *           └── riderMountRef  — X/Z [0,·,-0.3], Y=STATIC deck-top plane; rotation.z=0
      *                 └── clonedScene  (avatar GLB, color-tinted)
      */
-    <group ref={groupRef} scale={[KART_SCALE, KART_SCALE, KART_SCALE]}>
+    <group
+      ref={groupRef}
+      name={`reef-racer-${entity.avatarId}`}
+      scale={[KART_SCALE, KART_SCALE, KART_SCALE]}
+    >
       <group ref={gliderRef} position={[0, GLIDER_LOCAL_Y, 0]}>
         {/*
          * Glider board:

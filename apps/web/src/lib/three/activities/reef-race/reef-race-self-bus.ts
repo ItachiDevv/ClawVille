@@ -32,6 +32,8 @@ export interface SelfInputBus {
   dir: { x: number; z: number } | null;
   /** Thrust 0..1 (0 when not moving). */
   thrust: number;
+  /** Monotonic local jump-press edge, incremented in the DOM/touch handler. */
+  jumpPressSeq: number;
   /** True once the reef-race input loop has written at least once this session. */
   valid: boolean;
 }
@@ -46,6 +48,8 @@ export interface SelfPoseBus {
   rot: number;
   /** Banked ribbon datum + the board's exact damped conform heave (no ride/jump Y). */
   surfaceY: number;
+  /** Rendered self jump/ramp height, separate from the shared water datum. */
+  renderedHeight: number;
   /** True while the self player is actively writing this each frame. */
   valid: boolean;
   /** performance.now() of the last write — consumers stale-guard on this. */
@@ -56,6 +60,7 @@ export interface SelfPoseBus {
 export const selfInputBus: SelfInputBus = {
   dir: null,
   thrust: 0,
+  jumpPressSeq: 0,
   valid: false,
 };
 
@@ -65,6 +70,7 @@ export const selfPoseBus: SelfPoseBus = {
   z: 0,
   rot: 0,
   surfaceY: 0,
+  renderedHeight: 0,
   valid: false,
   updatedAt: 0,
 };
@@ -90,6 +96,7 @@ export function resetSelfPoseBus(): void {
   selfPoseBus.z = 0;
   selfPoseBus.rot = 0;
   selfPoseBus.surfaceY = 0;
+  selfPoseBus.renderedHeight = 0;
   selfPoseBus.valid = false;
   selfPoseBus.updatedAt = 0;
 }

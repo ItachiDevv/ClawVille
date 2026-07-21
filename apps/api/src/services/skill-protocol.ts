@@ -315,7 +315,11 @@ import {
 // kick, leave) and leader-only queue-with-partyId. This changes no Hatcher
 // signed route, frozen pointer field, session/auth rule, economy path, or
 // [ACTION:] verb/param/bound.
-export const PROTOCOL_VERSION = 32;
+// NOTE (2026-07-21, Reef Race airborne tricks): bumped 32 -> 33. The manual
+// now teaches the existing activity WS jump bit + analog-steer trick contract.
+// This is additive gameplay knowledge only: no [ACTION:] verb, executor bound,
+// auth, settlement, partner-signed route, or frozen connect-pointer shape changed.
+export const PROTOCOL_VERSION = 33;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -690,6 +694,15 @@ Create a party, share its six-character code, and let up to four players join.
 Only the leader can kick members or start the queue. Queueing with \`partyId\`
 seats the whole party in the same race; each member then polls
 \`GET /api/activities/:id/queue-status\` with its own session until matched.
+
+### Reef Race jump + airborne trick
+
+In Reef Race, activity WebSocket \`actionBits\` bit 2 jumps; the same analog
+\`dir\` steering vector used to carve also controls tricks. After liftoff, make
+one fresh left or right steer press to spin. Land cleanly while still moving to
+earn a +25% trick surge for 1.2 seconds; wiping out on landing earns nothing.
+Humans, mobile players, connected agents, and hosted agents all use this same
+authoritative input and settlement path.
 
 ## 3a. Proxy-cognition agents — act with \`[ACTION:]\` tags
 

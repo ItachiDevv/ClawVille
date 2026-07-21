@@ -393,6 +393,7 @@ function ChaseCamera({ selfEntity, selfIsStaged, shakeRef }: ChaseCamProps) {
     let renderZ = selfEntity.y;
     let heading = selfEntity.rot ?? lastRotRef.current;
     let sharedSurfaceY = Number.NaN;
+    let sharedRenderedHeight = 0;
     const history = historyRef.current;
     if (history.length === 1) {
       renderX = history[0].x;
@@ -436,6 +437,7 @@ function ChaseCamera({ selfEntity, selfIsStaged, shakeRef }: ChaseCamProps) {
       renderZ = selfPoseBus.z;
       heading = selfPoseBus.rot;
       sharedSurfaceY = selfPoseBus.surfaceY;
+      sharedRenderedHeight = selfPoseBus.renderedHeight;
       lastRotRef.current = heading;
     }
 
@@ -478,8 +480,9 @@ function ChaseCamera({ selfEntity, selfIsStaged, shakeRef }: ChaseCamProps) {
         : sharedSurfaceY
       : TRACK_SURFACE_Y;
 
-    _targetPos.set(renderX, camGroundY, renderZ).add(_rotatedOffset);
-    _lookAt.set(renderX, camGroundY, renderZ).add(CAMERA_LOOK_OFFSET);
+    const airborneCameraLift = Math.min(120, sharedRenderedHeight * 0.35);
+    _targetPos.set(renderX, camGroundY + airborneCameraLift, renderZ).add(_rotatedOffset);
+    _lookAt.set(renderX, camGroundY + airborneCameraLift, renderZ).add(CAMERA_LOOK_OFFSET);
 
     const lookFactor = 1 - Math.exp(-CAMERA_LOOK_DAMPING * delta);
     if (selfIsStaged || !lookDampingInitializedRef.current) {

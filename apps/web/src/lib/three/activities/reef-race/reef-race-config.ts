@@ -762,6 +762,17 @@ export const CLIENT_SURF_TICK_DT = 1 / 30;
  */
 export const CLIENT_SURF_MAX_ACCUM = 0.1;
 
+/** R18b vertical prediction mirrors the authoritative 30Hz spline sim. */
+export const CLIENT_REEF_JUMP_IMPULSE_MANUAL = 720;
+export const CLIENT_REEF_JUMP_IMPULSE_RAMP = 920;
+export const CLIENT_REEF_GRAVITY = 1200;
+export const CLIENT_REEF_TRICK_STEER_DEADZONE_RAD = 0.035;
+/** Per-snapshot soft vertical correction and true-divergence hard snap. */
+export const CLIENT_REBASE_HEIGHT = 0.35;
+export const CLIENT_REBASE_HEIGHT_SNAP = 140;
+/** Presentation-only inverse correction cap; decays with the XZ rebase offset. */
+export const SURF_REBASE_HEIGHT_OFFSET_MAX = 90;
+
 /**
  * Re-baseline blend factors applied per NEW server snapshot for the self kart.
  * Predicted state is pulled toward authority so server wall-clamp / collision
