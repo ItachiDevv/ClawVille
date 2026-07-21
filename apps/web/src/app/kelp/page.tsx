@@ -39,7 +39,7 @@ function KelpRealmLoading() {
         alignItems: 'center',
         justifyContent: 'center',
         gap: 16,
-        background: '#031b20',
+        background: '#0d4552',
         color: '#70ffe2',
         font: '700 15px monospace',
       }}
@@ -74,7 +74,7 @@ function KelpRealmChunkFailure() {
         alignItems: 'center',
         justifyContent: 'center',
         padding: 24,
-        background: '#031b20',
+        background: '#0d4552',
       }}
     >
       <div style={{ maxWidth: 440, textAlign: 'center' }}>
@@ -149,7 +149,7 @@ export default function KelpPage() {
 
   return (
     <main
-      style={{ position: 'fixed', inset: 0, overflow: 'hidden', background: '#031b20', color: '#c7fff4', fontFamily: 'monospace' }}
+      style={{ position: 'fixed', inset: 0, overflow: 'hidden', background: '#0d4552', color: '#c7fff4', fontFamily: 'monospace' }}
     >
       <div style={{ position: 'absolute', inset: 0 }}>
         <KelpRealmCanvasErrorBoundary>
@@ -187,7 +187,7 @@ export default function KelpPage() {
             alignItems: 'center',
             justifyContent: 'center',
             padding: 24,
-            background: '#031b20',
+            background: '#0d4552',
           }}
         >
           <div style={{ maxWidth: 560, textAlign: 'center' }}>
