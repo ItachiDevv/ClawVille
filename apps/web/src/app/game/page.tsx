@@ -151,11 +151,7 @@ function NanoClawBanner({
   // Banner has five states keyed on (isAuthenticated, showPaired,
   // provisioningPending, hasAvatar):
   //   showPaired=true                           → green "Bot Training Active" pill
-  //   !isAuthenticated || guest user            → "Log In" + "Sign Up" (agent CTAs hidden:
-  //                                                connecting an agent requires an account,
-  //                                                so showing them to a logged-out visitor
-  //                                                just routes them through the connect
-  //                                                modal which then bounces them to /login)
+  //   !isAuthenticated || guest user            → in-game Connect + Log In; Sign Up exits
   //   provisioningPending (non-guest only —
   //     evaluated AFTER the guest branch)       → single amber CTA → /create-agent
   //                                                (founder 2026-07-15: no second
@@ -193,12 +189,20 @@ function NanoClawBanner({
   if (!isAuthenticated || isGuest) {
     return (
       <div className="fixed left-1/2 -translate-x-1/2 z-50 top-3 flex items-center gap-2">
-        <Link
-          href="/login"
+        <button
+          type="button"
+          onClick={() => setAgentConnectModalOpen(true, 'connect')}
+          className="flex items-center gap-2 px-4 py-2 rounded-full bg-yellow-500/15 backdrop-blur-sm border border-yellow-400/40 shadow-lg hover:bg-yellow-500/25 hover:border-yellow-300/60 transition-all"
+        >
+          <span className="text-yellow-200 font-bold text-sm">Connect Agent</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setAgentConnectModalOpen(true, 'login')}
           className="flex items-center gap-2 px-4 py-2 rounded-full bg-black/60 backdrop-blur-sm border border-cyan-400/40 shadow-lg hover:bg-black/80 hover:border-cyan-300/60 transition-all"
         >
           <span className="text-cyan-200 font-bold text-sm">Log In</span>
-        </Link>
+        </button>
         <Link
           href="/login?mode=signup"
           className="flex items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-pink-600 to-pink-500 shadow-[0_0_18px_rgba(236,72,153,0.3)] hover:shadow-[0_0_24px_rgba(236,72,153,0.45)] transition-all"

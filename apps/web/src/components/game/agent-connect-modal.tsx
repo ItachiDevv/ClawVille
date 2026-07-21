@@ -9,12 +9,25 @@ import { api } from '@/lib/api';
 import { useAuthMe } from '@/hooks/use-auth-me';
 import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 import { AgentConnectInstructions } from '@/components/agent-connect-instructions';
+import { InGameLoginForm } from '@/components/game/in-game-login-form';
+import { resolvePublicEnterDestination } from '@/lib/public-enter-destination';
 
 export default function AgentConnectModal() {
   const router = useRouter();
   const { agentConnectModalOpen, agentConnectModalIntent, setAgentConnectModalOpen, agentConnected, agentSessionId, setAgentConnection, addToast, setSkillBuilderOpen } = useGameStore();
   const { data: avatar } = useAvatar();
-  const { data: authData } = useAuthMe();
+  const {
+    data: authData,
+    isLoading: authLoading,
+    isFetched: authFetched,
+    isError: authError,
+    refetch: refetchAuth,
+  } = useAuthMe();
+  const isGuest = authData?.user?.isGuest === true;
+  const isPublicConnectViewer = authData === null || isGuest;
+  const isAuthenticatedNonGuest = !!authData?.user && !isGuest;
+  const authUnresolved =
+    authLoading || !authFetched || authError || authData === undefined;
   // Same query the game page uses to hydrate the banner — TanStack dedupes
   // so this is essentially free. `mode` tells us whether the "connected"
   // state comes from a server-hosted avatar (no real disconnect possible,
@@ -23,7 +36,7 @@ export default function AgentConnectModal() {
   const { data: agentSession } = useQuery({
     queryKey: ['agent-session'],
     queryFn: api.getAgentSession,
-    enabled: !!authData?.user?.id,
+    enabled: isAuthenticatedNonGuest,
     staleTime: 30_000,
     refetchOnWindowFocus: true,
     retry: false,
@@ -40,89 +53,221 @@ export default function AgentConnectModal() {
   // --- Connect link state ---
   const [connectToken, setConnectToken] = useState<string | null>(null);
   const [connectUrl, setConnectUrl] = useState<string | null>(null);
-  const [, setPolling] = useState(false);
+  const [publicPollSecret, setPublicPollSecret] = useState<string | null>(null);
   const [expiresIn, setExpiresIn] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [activeSurface, setActiveSurface] = useState<'connect' | 'login'>('connect');
+  const generationEpochRef = useRef(0);
+  const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const connectSurfaceActive =
+    agentConnectModalOpen
+    && agentConnectModalIntent === 'connect'
+    && activeSurface === 'connect';
+  const connectSurfaceActiveRef = useRef(connectSurfaceActive);
+  connectSurfaceActiveRef.current = connectSurfaceActive;
   // Phase 6.1 — learning focus the human picks before the magic link is
   // issued. Flows through `/api/agent/connect-token` → pending connection
   // → avatar.learning_focus on /connect claim → system prompt injection.
   const [learningFocus, setLearningFocus] = useState('');
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // Cleanup polling on unmount or close
   useEffect(() => {
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
+    if (!agentConnectModalOpen) return;
+    setActiveSurface(agentConnectModalIntent === 'login' ? 'login' : 'connect');
+  }, [agentConnectModalIntent, agentConnectModalOpen]);
+
+  const resetConnectLink = useCallback((message = '') => {
+    generationEpochRef.current += 1;
+    if (copiedTimeoutRef.current) {
+      clearTimeout(copiedTimeoutRef.current);
+      copiedTimeoutRef.current = null;
+    }
+    setConnectToken(null);
+    setConnectUrl(null);
+    setPublicPollSecret(null);
+    setExpiresIn(0);
+    setCopied(false);
+    setLoading(false);
+    setError(message);
   }, []);
 
-  // Stop polling when modal closes
-  useEffect(() => {
-    if (!agentConnectModalOpen && pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-      setPolling(false);
+  useEffect(() => () => {
+    generationEpochRef.current += 1;
+    if (copiedTimeoutRef.current) {
+      clearTimeout(copiedTimeoutRef.current);
+      copiedTimeoutRef.current = null;
     }
-  }, [agentConnectModalOpen]);
+  }, []);
+
+  useEffect(() => {
+    if (!agentConnectModalOpen || agentConnectModalIntent !== 'connect') {
+      resetConnectLink();
+    }
+  }, [agentConnectModalIntent, agentConnectModalOpen, resetConnectLink]);
 
   const handleGenerateToken = useCallback(async () => {
-    // Avatar-gate is enforced upstream by the render branch (the "create your
-    // agent" block replaces this button when no avatar exists), so this path
-    // shouldn't be reachable without an avatar. Guard remains as a defense-in-
-    // depth check — but the message is short because the user never sees it.
-    if (!avatar?.id || !authData?.user?.id) {
-      setError('Avatar required — close this modal and click Create Your Agent.');
+    if (authUnresolved) {
+      setError('Still checking your session. Try again in a moment.');
       return;
     }
-    setError('');
+    resetConnectLink();
+    const requestEpoch = generationEpochRef.current;
     setLoading(true);
     try {
-      const res = await api.generateConnectToken({
-        avatarId: avatar.id,
-        avatarName: avatar.name ?? 'MyBot',
-        userId: authData.user.id,
-        ...(learningFocus.trim() ? { learningFocus: learningFocus.trim() } : {}),
-      });
+      const focus = learningFocus.trim();
+      const res = isPublicConnectViewer
+        ? await api.generatePublicConnectToken({
+            ...(focus ? { learningFocus: focus } : {}),
+          })
+        : avatar?.id && authData?.user?.id
+          ? await api.generateConnectToken({
+              avatarId: avatar.id,
+              avatarName: avatar.name ?? 'MyBot',
+              userId: authData.user.id,
+              ...(focus ? { learningFocus: focus } : {}),
+            })
+          : null;
+
+      if (!res) {
+        if (generationEpochRef.current === requestEpoch) {
+          setError('Create your in-game agent before connecting an external one.');
+        }
+        return;
+      }
+      if (
+        generationEpochRef.current !== requestEpoch
+        || !connectSurfaceActiveRef.current
+      ) return;
       setConnectToken(res.token);
       setConnectUrl(res.connectUrl);
       setExpiresIn(res.expiresIn);
-      setPolling(true);
+      setPublicPollSecret(
+        'pollSecret' in res && typeof res.pollSecret === 'string'
+          ? res.pollSecret
+          : null,
+      );
+    } catch (err: unknown) {
+      if (
+        generationEpochRef.current !== requestEpoch
+        || !connectSurfaceActiveRef.current
+      ) return;
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Failed to generate a connection token.',
+      );
+    } finally {
+      if (generationEpochRef.current === requestEpoch) {
+        setLoading(false);
+      }
+    }
+  }, [
+    authData,
+    authUnresolved,
+    avatar,
+    isPublicConnectViewer,
+    learningFocus,
+    resetConnectLink,
+  ]);
 
-      // Start polling for connection
-      if (pollRef.current) clearInterval(pollRef.current);
-      pollRef.current = setInterval(async () => {
-        try {
-          const status = await api.pollConnectStatus(res.token);
+  useEffect(() => {
+    if (
+      !agentConnectModalOpen
+      || !connectToken
+      || agentConnectModalIntent !== 'connect'
+      || activeSurface !== 'connect'
+    ) return;
+
+    let cancelled = false;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const poll = async () => {
+      try {
+        if (publicPollSecret) {
+          const status = await api.pollPublicConnectStatus(
+            connectToken,
+            publicPollSecret,
+          );
+          if (cancelled) return;
+          setExpiresIn(status.expiresIn);
+          if (status.connected) {
+            const destination = status.enterUrl
+              ? resolvePublicEnterDestination(
+                  status.enterUrl,
+                  window.location.origin,
+                )
+              : null;
+            if (!destination) {
+              resetConnectLink(
+                'Your agent connected, but the secure login handoff was invalid. Generate a new link.',
+              );
+              return;
+            }
+            window.location.assign(destination);
+            return;
+          }
+        } else {
+          const status = await api.pollConnectStatus(connectToken);
+          if (cancelled) return;
           setExpiresIn(status.expiresIn);
           if (status.connected && status.sessionId) {
-            // Agent connected!
-            clearInterval(pollRef.current!);
-            pollRef.current = null;
-            setPolling(false);
+            resetConnectLink();
             setAgentConnection(status.sessionId);
             addToast('🔌', 'Agent connected to ClawVille!');
+            return;
           }
-        } catch {
-          // Token expired or error — stop polling
-          clearInterval(pollRef.current!);
-          pollRef.current = null;
-          setPolling(false);
-          setConnectToken(null);
-          setError('Connection token expired. Generate a new one.');
         }
-      }, 2000);
-    } catch (err: any) {
-      setError(err.message || 'Failed to generate connection token');
-    } finally {
-      setLoading(false);
-    }
-  }, [avatar, authData, addToast, setAgentConnection, learningFocus]);
 
-  const handleCopyUrl = () => {
+        pollTimer = setTimeout(() => void poll(), 2000);
+      } catch (err: unknown) {
+        if (cancelled) return;
+        resetConnectLink(
+          err instanceof Error
+            ? err.message
+            : 'This connect link expired. Generate a new one.',
+        );
+      }
+    };
+
+    pollTimer = setTimeout(() => void poll(), 2000);
+    return () => {
+      cancelled = true;
+      if (pollTimer) clearTimeout(pollTimer);
+    };
+  }, [
+    addToast,
+    agentConnectModalOpen,
+    agentConnectModalIntent,
+    activeSurface,
+    connectToken,
+    publicPollSecret,
+    resetConnectLink,
+    setAgentConnection,
+  ]);
+
+  const handleCopyUrl = async () => {
     if (!connectUrl) return;
-    navigator.clipboard.writeText(`Read this URL and follow the instructions: ${connectUrl}`);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    const copyEpoch = generationEpochRef.current;
+    try {
+      await navigator.clipboard.writeText(
+        `Read this URL and follow the instructions: ${connectUrl}`,
+      );
+      if (
+        generationEpochRef.current !== copyEpoch
+        || !connectSurfaceActiveRef.current
+      ) return;
+      if (copiedTimeoutRef.current) clearTimeout(copiedTimeoutRef.current);
+      setCopied(true);
+      copiedTimeoutRef.current = setTimeout(() => {
+        copiedTimeoutRef.current = null;
+        if (generationEpochRef.current === copyEpoch) setCopied(false);
+      }, 2000);
+    } catch {
+      if (
+        generationEpochRef.current === copyEpoch
+        && connectSurfaceActiveRef.current
+      ) {
+        setError('Copy failed. Select the one-line instruction and copy it manually.');
+      }
+    }
   };
 
   // Manual gateway-form connect flow removed 2026-04-16 — Quick Connect
@@ -181,24 +326,59 @@ export default function AgentConnectModal() {
     URL.revokeObjectURL(url);
   };
 
+  const handleCloseModal = () => {
+    resetConnectLink();
+    setAgentConnectModalOpen(false);
+  };
+
   if (!agentConnectModalOpen) return null;
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setAgentConnectModalOpen(false)} />
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={handleCloseModal} />
       <div className="relative w-full max-w-md max-h-[90vh] overflow-y-auto">
         <div className="bg-[rgba(8,20,40,0.95)] border border-cyan-500/20 rounded-2xl shadow-[0_0_40px_rgba(0,229,255,0.08)] p-5 space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="text-lg font-bold text-white">Connect Agent</h2>
+            <h2 className="text-lg font-bold text-white">
+              {activeSurface === 'login' ? 'Log In' : 'Connect Agent'}
+            </h2>
             <button
-              onClick={() => setAgentConnectModalOpen(false)}
+              type="button"
+              aria-label="Close connect modal"
+              onClick={handleCloseModal}
               className="text-white/40 hover:text-white/80 text-lg"
             >
               ×
             </button>
           </div>
 
-          {agentConnected ? (
+          {activeSurface === 'login' ? (
+            <InGameLoginForm
+              onSuccess={() => {
+                resetConnectLink();
+                addToast('🔓', 'Logged in. Welcome back!');
+                setAgentConnectModalOpen(false);
+              }}
+              onCancel={() => setAgentConnectModalOpen(true, 'connect')}
+            />
+          ) : authUnresolved ? (
+            <div className="space-y-3 text-center">
+              <p className="text-white/60 text-sm">
+                {authError
+                  ? 'We could not confirm your session.'
+                  : 'Checking your session...'}
+              </p>
+              {authError && (
+                <button
+                  type="button"
+                  onClick={() => void refetchAuth()}
+                  className="w-full px-4 py-2.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-200 text-sm font-bold"
+                >
+                  Retry
+                </button>
+              )}
+            </div>
+          ) : agentConnected && isAuthenticatedNonGuest ? (
             /* ─── Connected state ─── */
             <div className="space-y-3">
               <div className="flex items-center gap-2">
@@ -268,13 +448,16 @@ export default function AgentConnectModal() {
                 Build Skill
               </button>
             </div>
-          ) : (agentConnectModalIntent === 'create' || !avatar?.id) ? (
+          ) : (
+            agentConnectModalIntent === 'create'
+            || (isAuthenticatedNonGuest && !avatar?.id)
+          ) ? (
             /* ─── Create-Agent explainer ────────────────────────────────
                 Shown when:
                   - user clicked "Create Agent" in the banner (intent='create')
-                  - OR they clicked "Connect Your Agent" but have no avatar yet,
-                    in which case connect can't proceed and we route them
-                    through avatar creation first.
+                  - OR a logged-in user clicked "Connect Your Agent" but has no avatar yet,
+                    while logged-out/guest users use public claim provisioning;
+                    authenticated users still finish avatar setup first.
                 User flow split intentionally so the two banner CTAs feel
                 distinct: Create Agent always lands here; Connect Your Agent
                 only lands here as a fallback. */
@@ -348,6 +531,18 @@ export default function AgentConnectModal() {
                     >
                       {loading ? 'Generating...' : 'Generate Connect Link'}
                     </button>
+                    {isPublicConnectViewer && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          resetConnectLink();
+                          setActiveSurface('login');
+                        }}
+                        className="w-full text-cyan-200/70 text-xs hover:text-cyan-100 underline underline-offset-2"
+                      >
+                        Already have an account? Log in here
+                      </button>
+                    )}
                   </>
                 ) : (
                   <div className="space-y-3">
@@ -361,7 +556,7 @@ export default function AgentConnectModal() {
                           Read this URL and follow the instructions: {connectUrl}
                         </div>
                         <button
-                          onClick={handleCopyUrl}
+                          onClick={() => void handleCopyUrl()}
                           className="px-3 py-2 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 text-xs font-bold shrink-0"
                         >
                           {copied ? 'Copied!' : 'Copy'}
@@ -381,13 +576,7 @@ export default function AgentConnectModal() {
                     </div>
 
                     <button
-                      onClick={() => {
-                        if (pollRef.current) clearInterval(pollRef.current);
-                        pollRef.current = null;
-                        setPolling(false);
-                        setConnectToken(null);
-                        setConnectUrl(null);
-                      }}
+                      onClick={() => resetConnectLink()}
                       className="w-full text-white/30 text-xs hover:text-white/50 underline"
                     >
                       Cancel and generate a new link
