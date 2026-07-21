@@ -40,7 +40,6 @@ export default function AgentConnectModal() {
   // --- Connect link state ---
   const [connectToken, setConnectToken] = useState<string | null>(null);
   const [connectUrl, setConnectUrl] = useState<string | null>(null);
-  const [instruction, setInstruction] = useState<string | null>(null);
   const [, setPolling] = useState(false);
   const [expiresIn, setExpiresIn] = useState(0);
   const [copied, setCopied] = useState(false);
@@ -86,7 +85,6 @@ export default function AgentConnectModal() {
       });
       setConnectToken(res.token);
       setConnectUrl(res.connectUrl);
-      setInstruction(res.instruction);
       setExpiresIn(res.expiresIn);
       setPolling(true);
 
@@ -122,7 +120,7 @@ export default function AgentConnectModal() {
 
   const handleCopyUrl = () => {
     if (!connectUrl) return;
-    navigator.clipboard.writeText(connectUrl);
+    navigator.clipboard.writeText(`Read this URL and follow the instructions: ${connectUrl}`);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -323,7 +321,7 @@ export default function AgentConnectModal() {
 
               {/* ─── Quick Connect (single surface) ─── */}
               <div className="space-y-3">
-                <AgentConnectInstructions context="in-game" />
+                <AgentConnectInstructions />
 
                 {!connectToken ? (
                   <>
