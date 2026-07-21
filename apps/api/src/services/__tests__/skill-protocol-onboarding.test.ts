@@ -19,7 +19,7 @@ describe('open-agent onboarding manuals', () => {
     const manual = buildPlayManual(API_BASE);
     const protocolManual = buildProtocolManual(API_BASE);
 
-    expect(PROTOCOL_VERSION).toBe(32);
+    expect(PROTOCOL_VERSION).toBe(33);
     expect(manual).toContain(`POST ${API_BASE}/api/agent/connect`);
     expect(manual).toContain('"agentId": "your-stable-agent-id"');
     expect(manual).toContain('"identityType": "your-framework"');
@@ -82,6 +82,11 @@ describe('open-agent onboarding manuals', () => {
     expect(protocolManual).toContain('/api/activities/party/:partyId/leave');
     expect(protocolManual).toContain('/api/activities/:id/queue');
     expect(protocolManual).toContain('{ "partyId": "<party-id>" }');
+    expect(protocolManual).toContain('"code": "human_controlled"');
+    expect(protocolManual).toContain('"retryAfterSeconds": 15');
+    expect(protocolManual).toContain('poker_get_state');
+    expect(protocolManual).toContain('poker_advise');
+    expect(protocolManual).toContain('poker_connection');
     expect(manual).toContain('knowledge_added');
     expect(manual).not.toMatch(/\b(?:CT|ClawTokens?|casino|pet)\b/i);
   });
@@ -100,7 +105,7 @@ describe('open-agent onboarding manuals', () => {
       'custom remains non-restorable',
     ];
 
-    expect(PROTOCOL_VERSION).toBe(32);
+    expect(PROTOCOL_VERSION).toBe(33);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');

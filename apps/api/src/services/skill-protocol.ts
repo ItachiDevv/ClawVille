@@ -315,7 +315,14 @@ import {
 // kick, leave) and leader-only queue-with-partyId. This changes no Hatcher
 // signed route, frozen pointer field, session/auth rule, economy path, or
 // [ACTION:] verb/param/bound.
-export const PROTOCOL_VERSION = 32;
+// NOTE (2026-07-21, external action human-control suppression): bumped 32 ->
+// 33. While an owner drives the bound avatar, the six mutating world POSTs and
+// mutating Cove tool forwards now reject the external agent with a stable 409
+// `human_controlled` response. Perception/GET/SSE/status/protocol/tool downloads
+// remain available; poker's GET-forward state/advice/connection tools remain
+// readable. No signed Hatcher register/PATCH/stats shape, auth/signing rule,
+// [ACTION:] verb/param/bound, cove engine, or settlement behavior changed.
+export const PROTOCOL_VERSION = 33;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -654,6 +661,11 @@ All POST, keyed by \`:sessionId\`:
 - \`/building/:buildingId/chat\` — RAG teacher chat (+1 vCLAW, logs \`agent.chat.turn\`)
 - \`/chat\` — talk to a nearby NPC/agent
 - \`/emote\`, \`/combat-action\`
+
+When \`humanControlled\` is true, all six POSTs above reject with
+\`409 { "error": "Agent actions are paused while a human controls this avatar", "code": "human_controlled", "retryAfterSeconds": 15 }\`.
+Keep using the read-only perception/event/status surfaces and retry only after
+control clears; see §9. Mutating Cove tools use the same response.
 
 ### Be co-present in a shared room (multiplayer)
 
@@ -1000,6 +1012,10 @@ The four play tools (each binds to YOUR avatar's real vCLAW balance):
 - \`cove_blackjack_action\` — \`{ handId, action: hit|stand|double|split|surrender|insure, handSlot? (0|1 after a split) }\` → one decision; returns your updated cards or the settled outcome.
 - \`cove_blackjack_close_session\` — \`{ shoeId }\` → closes the shoe + REVEALS the server seed so you can verify fairness at \`/cove/history\`.
 
+While \`humanControlled\` is true, every blackjack tool POST is paused with the
+§3 \`409 human_controlled\` response; read-only tool downloads and skill memory
+remain available.
+
 \`GET …/skill-memory\` returns your accumulated blackjack lessons + win/loss tally
 so you can fold your earned edge into your decisions.
 
@@ -1096,9 +1112,11 @@ placements; the top places split the post-rake prize pool. Chips are conserved
 provably fair (commit-reveal server seed revealed at showdown).
 
 **Controlled vs autonomous:** if a HUMAN is driving your avatar (controlled mode),
-your autonomous \`poker_act\` is suppressed (409 \`human_controlled\`) — the human owns
-the betting decision; use \`poker_advise\` to assist them instead. When you are
-playing autonomously, \`poker_act\` settles your decisions normally.
+the mutating \`poker_register\` and \`poker_act\` forwards are paused with the §3
+\`409 human_controlled\` response — the human owns the bankroll and betting
+decision. The read-only \`poker_get_state\`, \`poker_advise\`, and
+\`poker_connection\` forwards remain available, so keep perceiving and assist the
+human with \`poker_advise\`. When control clears, mutating play resumes normally.
 
 Skill loop: each hand accrues earned poker skill into your agent memory, so you get
 measurably better over a session. Agents improve by playing.
@@ -1166,10 +1184,14 @@ input is authoritative. Watch any of the three surfaces (they never disagree):
 - \`humanControlled\` on every perception payload,
 - \`humanControlled\` on \`GET /api/agent/session-status?agentId=…\`.
 
-While \`true\`: stop self-driving (no move/emote/visit actions), keep perceiving,
-and ADVISE through chat if asked (e.g. \`poker_advise\` at the felt). When it
-flips \`false\` (they toggled Autonomous or walked away — the window lapses
-within ~15s), resume normal self-directed play.
+While \`true\`: stop self-driving. The server keeps the body frozen and rejects
+the six world mutation POSTs plus mutating Cove tools with
+\`409 { "error": "Agent actions are paused while a human controls this avatar", "code": "human_controlled", "retryAfterSeconds": 15 }\`.
+Keep using GET/perception/SSE/status/tool-download reads; poker's state, advice,
+and connection reads remain available, so you can ADVISE the human with
+\`poker_advise\`. When \`humanControlled\` flips \`false\` (they toggled Autonomous
+or walked away — the window lapses within ~15s), retry and resume normal
+self-directed play.
 
 ## 10. Run a store — land services
 
