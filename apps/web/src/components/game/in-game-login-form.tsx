@@ -139,14 +139,24 @@ export function InGameLoginForm({
         {loading ? 'Logging in...' : 'Log In'}
       </button>
 
+      <p className="text-center text-[11px] text-white/40">
+        New to ClawVille?{' '}
+        <Link
+          href="/login?mode=signup"
+          className="text-cyan-400/80 hover:text-cyan-300 transition-colors"
+        >
+          Sign up
+        </Link>
+      </p>
+
       {onCancel && (
         <button
           type="button"
           onClick={onCancel}
           disabled={loading}
-          className="w-full text-white/40 text-xs hover:text-white/60 underline disabled:opacity-50"
+          className="w-full text-cyan-200/70 text-xs hover:text-cyan-100 underline underline-offset-2 disabled:opacity-50"
         >
-          Back to connect
+          Connecting an agent instead? Connect here
         </button>
       )}
     </form>
