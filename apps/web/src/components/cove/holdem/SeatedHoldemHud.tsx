@@ -43,7 +43,7 @@ const BOT_NAMES: Record<number, string> = {
 
 /** Display-only decision duration. A future enforcement round may reuse this
  * constant; this HUD never auto-acts, folds, or calls when it reaches zero. */
-export const HOLDEM_DECISION_SECONDS = 20;
+export const HOLDEM_DECISION_SECONDS = 10;
 const HOLDEM_DECISION_MS = HOLDEM_DECISION_SECONDS * 1_000;
 
 /**

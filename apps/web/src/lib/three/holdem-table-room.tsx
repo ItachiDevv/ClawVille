@@ -25,11 +25,7 @@ import {
 
 const ROOM_PATH = '/models/cove-room-only.glb';
 const TABLE_PATH = '/models/cove-table-clean.glb';
-// Stools, not tall-backed chairs (2026-07-16 headed verify): the chair
-// model's high back is a solid black slab at this camera height — near-side
-// chairs walled off the frame corners and the far-center chair completely
-// hid the dealer. Stools keep every sight line open.
-const STOOL_PATH = '/models/cove-stool.glb';
+const CHAIR_PATH = '/models/cove-chair-clean.glb';
 const TABLE_POSE_SAMPLE_AT = 0.02;
 const TABLE_POSE_BY_BOT = [
   'cove_peek',
@@ -45,7 +41,7 @@ preloadClips([...TABLE_POSE_BY_BOT, 'sit_idle_m']);
 // the SAME world-standard height the walkable cove uses for the player's
 // own avatar (COVE_VRM_TARGET_HEIGHT = 160) — the earlier 108-bot/118-dealer
 // mix read as "the dealer milady is a giant" and none of them matched the
-// movable agent's scale. `S` converts avatar/stool constants authored at the
+// movable agent's scale. `S` converts avatar/seat constants authored at the
 // original scale-2 basis. Round 8 grows only the table's XZ footprint.
 const WORLD_AVATAR_HEIGHT = 160;
 const CHIBI_TARGET_HEIGHT = 120;
@@ -54,10 +50,15 @@ const S = FURNITURE_SCALE / 2;
 const TABLE_FOOTPRINT_MULTIPLIER = 1.34;
 const TABLE_FOOTPRINT_SCALE = S * TABLE_FOOTPRINT_MULTIPLIER;
 const TABLE_XZ_SCALE = FURNITURE_SCALE * TABLE_FOOTPRINT_MULTIPLIER;
-// The stool is authored on the S=1.45 layout basis. At this scale its seat
-// disc top is y=52, matching the frozen-pose humanoid hips at y≈51.
-const STOOL_SCALE = S;
-const STOOL_SEAT_TOP_Y = 52;
+// Round 10 restores the table's own chair at the table-matched 2.9× scale.
+// A 0.05wu downward ray/bounds sweep measured source minY=-20.38519 and the
+// flat cushion at y=-3.035, so its grounded world surface is y=50.32. The
+// cushion spans local z=-6.30..+7.85; z=+3.13 is its front-third pelvis point.
+const CHAIR_SCALE = FURNITURE_SCALE;
+const CHAIR_SOURCE_MIN_Y = -20.38519;
+const CHAIR_SOURCE_CUSHION_Y = -3.035;
+const CHAIR_CUSHION_Y = (CHAIR_SOURCE_CUSHION_Y - CHAIR_SOURCE_MIN_Y) * CHAIR_SCALE;
+const CHAIR_PELVIS_FORWARD_OFFSET = 3.13 * CHAIR_SCALE;
 // Room shell scaled with the furniture so wall/ceiling proportions track.
 const ROOM_SCALE = 1.45;
 // Preserve the approved Y scale and translate the visual top from 91.6 to
@@ -85,10 +86,21 @@ interface RoomSeat extends TableCardSeat {
 function roomSeat(engineSeatIndex: number, xBasis: number, zBasis: number): RoomSeat {
   const x = xBasis * TABLE_FOOTPRINT_SCALE;
   const z = zBasis * TABLE_FOOTPRINT_SCALE;
-  return { engineSeatIndex, x, z, faceYaw: Math.atan2(-x, -z), chairX: x, chairZ: z };
+  const faceYaw = Math.atan2(-x, -z);
+  return {
+    engineSeatIndex,
+    x,
+    z,
+    faceYaw,
+    // Keep the approved body/card/badge center at (x,z), while setting the
+    // pelvis on the measured front third and pulling the backrest away.
+    chairX: x - Math.sin(faceYaw) * CHAIR_PELVIS_FORWARD_OFFSET,
+    chairZ: z - Math.cos(faceYaw) * CHAIR_PELVIS_FORWARD_OFFSET,
+  };
 }
 
-// One authoritative center per body/stool/card/badge anchor. Seat 3 is biased
+// One authoritative body/card/badge center per seat; each chair derives its
+// measured front-third offset from that center. Seat 3 is biased
 // 20 basis-wu left of exact 12 o'clock so the standing dealer stays readable.
 // Adjacent gaps are >=128wu; default-eye bearings are -47.6/-31.7/-6.2/
 // +31.7/+47.6 degrees, for a minimum angular separation of 15.9 degrees.
@@ -318,7 +330,7 @@ function FrozenFigure({
    *  for seated flows that need the complete stand-to-sit sequence. */
   freezeVia?: 'sample' | 'transition';
   /** Scale-100 Hermes-family fallback: keep the calm upper-body sample, then
-   * apply the verified normalized-bone seated legs and pin hips to the stool. */
+   * apply the verified normalized-bone seated legs and pin hips to the chair. */
   manualSeat?: boolean;
   /** Polish the scale-100 sampled fallback toward a natural table posture.
    * Chibi idle and rigless perch paths deliberately do not use this. */
@@ -392,18 +404,13 @@ function FrozenFigure({
       if (cancelled || !ok) return;
       group.updateMatrixWorld(true);
 
-      // Ground the POSED figure by its real bounding box. The first cut
-      // anchored hips to a cushion constant, but the retargeted clip's own
-      // hip translation made that shift wildly over-drop: the headed verify
-      // (2026-07-16) measured all five bots 26wu below the floor and the
-      // dealer buried to the waist (-44). Feet-on-floor is the one invariant
-      // every figure shares; the chair is then aligned to the body, not the
-      // body to the chair.
-      if (manualSeat) {
+      // Every seated humanoid path pins its sampled/authored raw hips to the
+      // measured cushion surface. Only the standing dealer is bbox-grounded.
+      if (cushionY !== undefined) {
         const hips = vrm.humanoid?.getRawBoneNode('hips');
         if (!hips) return;
         hips.getWorldPosition(HIP_SAMPLE);
-        vrm.scene.position.y += STOOL_SEAT_TOP_Y - HIP_SAMPLE.y;
+        vrm.scene.position.y += cushionY - HIP_SAMPLE.y;
       } else {
         const bbox = new THREE.Box3().setFromObject(vrm.scene);
         vrm.scene.position.y += -bbox.min.y;
@@ -625,7 +632,7 @@ function RiglessPerchFigure({
       name={`holdem-avatar-${modelKey}`}
       position={[
         position[0] - outwardX,
-        position[1] + STOOL_SEAT_TOP_Y + profile.seatOffsetY,
+        position[1] + CHAIR_CUSHION_Y + profile.seatOffsetY,
         position[2] - outwardZ,
       ]}
       rotation={[0, yaw, 0]}
@@ -822,15 +829,15 @@ export interface LiveTableRoomState {
 function HoldemTableRoomScene({ liveTable }: { liveTable?: LiveTableRoomState }) {
   const roomGltf = useGLTF(ROOM_PATH);
   const tableGltf = useGLTF(TABLE_PATH);
-  const stoolGltf = useGLTF(STOOL_PATH);
+  const chairGltf = useGLTF(CHAIR_PATH);
   const room = useMemo(() => preparedClone(roomGltf.scene, ROOM_SCALE), [roomGltf.scene]);
   const table = useMemo(
     () => preparedClone(tableGltf.scene, [TABLE_XZ_SCALE, FURNITURE_SCALE, TABLE_XZ_SCALE]),
     [tableGltf.scene],
   );
   const chairs = useMemo(
-    () => BOT_SEATS.map(() => preparedClone(stoolGltf.scene, STOOL_SCALE)),
-    [stoolGltf.scene],
+    () => BOT_SEATS.map(() => preparedClone(chairGltf.scene, CHAIR_SCALE)),
+    [chairGltf.scene],
   );
   const phase = useHoldemController((state) => state.phase);
   const live = useHoldemController((state) => state.live);
@@ -903,8 +910,8 @@ function HoldemTableRoomScene({ liveTable }: { liveTable?: LiveTableRoomState })
         <primitive object={table} />
       </group>
 
-      {/* Scale-1.45 stools are the physical seat plane: disc top y=52 aligns
-          to the frozen humanoid hips and anchors rigless perch avatars. */}
+      {/* Round-10 table chairs share each body's faceYaw. Their measured
+          y=50.32 cushion pins every humanoid hip and rigless perch profile. */}
       {roomSeats.map((seat, index) => {
         const cashSeat: CashPublicSeat | undefined = cashLive?.seats.find(
           (candidate) => candidate.seatIndex === seat.engineSeatIndex,
@@ -936,7 +943,7 @@ function HoldemTableRoomScene({ liveTable }: { liveTable?: LiveTableRoomState })
               <RiglessPerchFigure
                 reg={reg}
                 modelKey={modelKey}
-                position={[seat.chairX, 0, seat.chairZ]}
+                position={[seat.x, 0, seat.z]}
                 yaw={seat.faceYaw}
               />
             ) : (
@@ -946,9 +953,10 @@ function HoldemTableRoomScene({ liveTable }: { liveTable?: LiveTableRoomState })
                 pose={usesChibiSitFallback
                   ? 'idle'
                   : usesScale100SitFallback ? 'sit_idle_m' : TABLE_POSE_BY_BOT[index]!}
-                position={[seat.chairX, 0, seat.chairZ]}
+                position={[seat.x, 0, seat.z]}
                 yaw={seat.faceYaw}
                 targetHeight={usesChibiSitFallback ? CHIBI_TARGET_HEIGHT : BOT_TARGET_HEIGHT}
+                cushionY={CHAIR_CUSHION_Y}
                 sampleAt={usesManualSit ? 0.2 : TABLE_POSE_SAMPLE_AT}
                 manualSeat={usesManualSit}
                 relaxManualUpperBody={usesScale100SitFallback}
@@ -1024,4 +1032,4 @@ export default function HoldemTableRoomCanvas({ liveTable }: { liveTable?: LiveT
 
 useGLTF.preload(ROOM_PATH);
 useGLTF.preload(TABLE_PATH);
-useGLTF.preload(STOOL_PATH);
+useGLTF.preload(CHAIR_PATH);
