@@ -73,12 +73,16 @@ import { readEarnedSkillLessons } from './earned-skill-memory';
 import { readHostedAgentKnowledge } from './hosted-agent-knowledge';
 import { conductTeacherTurn, settleBuildingArrival } from './world-teacher-chat';
 import {
-  getAgentDirective,
+  clearAgentDirective,
+  claimLastActedDirectiveSha,
+  getAgentDirectiveState,
   getAutonomyCursor,
   setAutonomyCursor,
   formatDirectiveContext,
   summarizeAutonomyEvents,
+  type AgentDirectiveState,
   type CurrentDirective,
+  type DirectiveActedClaim,
 } from './agent-autonomy-state';
 import { queryDurableAgentEventsNewest } from './agent-event-query';
 import { recordCovenantAction } from './covenant-action-recorder';
@@ -150,10 +154,16 @@ interface HouseAgentEntry {
   recentEventSummary: string | null;
   /** Public-safe, bounded driver narration used by the owner HUD. */
   recentThoughts: AutonomyStatusThought[];
-  /** Last directive content hash observed (text itself never enters a record). */
+  /** Last directive issuance hash observed (text itself never enters a record). */
   lastDirectiveSha: string | null;
   /** Last directive hash for which a parsed action was recorded. */
   lastActedDirectiveSha: string | null;
+  /**
+   * False after a fresh/re-seat registration until the first bounded directive
+   * snapshot hydrates the durable acted marker. UNKNOWN must stay distinct from
+   * a known-null marker so a DB timeout cannot duplicate directive events.
+   */
+  directiveShaHydrated: boolean;
   /** A new human directive landed and has not yet been consumed by a decide. */
   directivePending: boolean;
 }
@@ -232,6 +242,39 @@ const DEFAULT_LESSON_QUERY =
 // P3 slice 2: bound the directive + wake-up-seed reads (same fail-soft rationale
 // as the lesson fetch — a slow/absent DB must never stall a decide tick).
 const DIRECTIVE_FETCH_TIMEOUT_MS = 1_500;
+export const DEFAULT_DIRECTIVE_TTL_MS = 6 * 60 * 60 * 1_000;
+export const MIN_DIRECTIVE_TTL_MS = 15 * 60 * 1_000;
+
+/** Strict env parsing: malformed values use the default; valid small values clamp. */
+export function resolveDirectiveTtlMs(raw: string | undefined): number {
+  if (!raw || !/^\d+$/.test(raw)) return DEFAULT_DIRECTIVE_TTL_MS;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) return DEFAULT_DIRECTIVE_TTL_MS;
+  return Math.max(MIN_DIRECTIVE_TTL_MS, parsed);
+}
+
+const DIRECTIVE_TTL_MS = resolveDirectiveTtlMs(process.env.AGENT_DIRECTIVE_TTL_MS);
+
+/** Invalid timestamps fail stale; a directive expires only once older than TTL. */
+export function isDirectiveExpired(
+  directive: CurrentDirective,
+  nowMs: number = Date.now(),
+  ttlMs: number = DIRECTIVE_TTL_MS,
+): boolean {
+  const setAtMs = Date.parse(directive.setAt);
+  if (!Number.isFinite(setAtMs)) return true;
+  return nowMs - setAtMs > ttlMs;
+}
+
+/** Hash the issuance, not text alone, so the same instruction can be reissued. */
+export function directiveInstanceSha(directive: CurrentDirective): string {
+  return createHash('sha256')
+    .update(directive.setAt, 'utf8')
+    .update('\0', 'utf8')
+    .update(directive.text, 'utf8')
+    .digest('hex');
+}
+
 const SEED_FETCH_TIMEOUT_MS = 1_500;
 // Cap the durable events replayed once on wake to seed "since I last acted"
 // context — this is prompt seasoning, not a transcript.
@@ -349,6 +392,11 @@ class AgentAutonomyDriver {
   teacherTurn: typeof conductTeacherTurn = conductTeacherTurn;
   arrivalSettle: typeof settleBuildingArrival = settleBuildingArrival;
   covenantRecord: typeof recordCovenantAction = recordCovenantAction;
+  // D4 seams: one coherent config snapshot, compare-and-clear expiry cleanup,
+  // and persist-before-event acted dedupe. Kept swappable for DB-free tests.
+  directiveStateRead: typeof getAgentDirectiveState = getAgentDirectiveState;
+  directiveClear: typeof clearAgentDirective = clearAgentDirective;
+  directiveActedShaClaim: typeof claimLastActedDirectiveSha = claimLastActedDirectiveSha;
 
   /**
    * Register a boot-seeded house agent for autonomous driving. Bounded: past
@@ -393,6 +441,7 @@ class AgentAutonomyDriver {
       recentThoughts: [],
       lastDirectiveSha: null,
       lastActedDirectiveSha: null,
+      directiveShaHydrated: false,
       directivePending: false,
     });
     console.log(
@@ -519,6 +568,11 @@ class AgentAutonomyDriver {
       recentThoughts: [],
       lastDirectiveSha: null,
       lastActedDirectiveSha: null,
+      // Registration remains synchronous. The first deciding tick hydrates this
+      // marker before any event comparison, preserving sync callers while making
+      // deploy/body/avatar re-seats durable. Mode flips intentionally do NOT
+      // clear currentDirective: a fresh instruction survives a quick handback.
+      directiveShaHydrated: false,
       directivePending: false,
     });
     this.enrolledOwners.set(entry.houseUserId, entry.agentId);
@@ -1029,24 +1083,21 @@ class AgentAutonomyDriver {
     // P3 slice 3: read the directive FIRST so it can bias the semantic-RAG lesson
     // retrieval (lessons relevant to what the human asked surface first); both
     // reads are bounded + fail-soft so a slow store never stalls the tick.
-    const directive = await this.readDirectiveBounded(entry.platformAgentId);
+    const directive = await this.readDirectiveBounded(entry.platformAgentId, entry);
     entry.directivePending = false;
     let directiveSha: string | null = null;
+    let directiveWasNew = false;
     if (directive?.text) {
-      directiveSha = createHash('sha256').update(directive.text, 'utf8').digest('hex');
-      if (directiveSha !== entry.lastDirectiveSha) {
-        // Stamp before the best-effort write: an outage must not cause repeated
-        // record attempts on every tick or block decision-making.
-        entry.lastDirectiveSha = directiveSha;
+      directiveSha = directiveInstanceSha(directive);
+      if (entry.directiveShaHydrated && directiveSha !== entry.lastDirectiveSha) {
+        // Defer the seen stamp until the received event is actually recorded (or
+        // a durable claimant says it was already recorded elsewhere).
+        directiveWasNew = true;
         this.pushThought(
           entry,
           'directive',
           `Directive: "${directive.text.slice(0, 80)}"`,
         );
-        await this.recordDriverAction(entry, 'agent.directive.received', {
-          directiveSha256: directiveSha,
-          len: directive.text.length,
-        });
       }
     }
     const [lessons, knowledge] = await Promise.all([
@@ -1086,13 +1137,53 @@ class AgentAutonomyDriver {
     const parsedAction = parseDriverAction(reply);
     if (parsedAction) {
       this.pushThought(entry, 'decision', decisionThought(parsedAction), now);
-      if (directiveSha && entry.lastActedDirectiveSha !== directiveSha) {
-        entry.lastActedDirectiveSha = directiveSha;
-        await this.recordDriverAction(entry, 'agent.directive.acted', {
-          directiveSha256: directiveSha,
-          action: parsedAction.verb,
-        });
+      if (
+        directiveSha &&
+        directive &&
+        entry.directiveShaHydrated &&
+        entry.lastActedDirectiveSha !== directiveSha
+      ) {
+        // The durable marker MUST succeed before the acted event/in-memory stamp.
+        // On timeout/error the action still dispatches, but the marker/event retry
+        // on a later tick rather than falsely claiming durable dedupe.
+        const claim = await this.claimActedDirectiveShaBounded(entry, directiveSha, directive);
+        if (claim === 'claimed') {
+          entry.lastActedDirectiveSha = directiveSha;
+          if (directiveWasNew) {
+            await this.recordDriverAction(entry, 'agent.directive.received', {
+              directiveSha256: directiveSha,
+              len: directive.text.length,
+            });
+            entry.lastDirectiveSha = directiveSha;
+          }
+          await this.recordDriverAction(entry, 'agent.directive.acted', {
+            directiveSha256: directiveSha,
+            action: parsedAction.verb,
+          });
+        } else if (claim === 'superseded') {
+          // The human replaced this issuance while the model was deciding.
+          // Never dispatch an action biased by the stale directive.
+          return;
+        } else if (claim === 'already_recorded') {
+          // Durable SHA dedupes EVENTS, not standing-directive behavior. Stamp
+          // the process cache and continue the baseline action dispatch.
+          entry.lastDirectiveSha = directiveSha;
+          entry.lastActedDirectiveSha = directiveSha;
+        } else {
+          // Marker durability is UNKNOWN. Preserve the driver's established
+          // fail-soft action behavior, but emit/mark nothing. A previously
+          // recorded received event stays stamped; a first observation remains
+          // null and retries the received+acted pair after a successful claim.
+        }
       }
+    } else if (directiveSha && directiveWasNew) {
+      // A directive can be observed even when the model returns no parseable
+      // action. There is no acted marker to claim yet, so record only received.
+      await this.recordDriverAction(entry, 'agent.directive.received', {
+        directiveSha256: directiveSha,
+        len: directive?.text.length ?? 0,
+      });
+      entry.lastDirectiveSha = directiveSha;
     }
     // N3: clear any STALE destination from a PRIOR turn BEFORE dispatching, so
     // post-dispatch destinationBuildingId is non-null ONLY if THIS turn's
@@ -1331,17 +1422,85 @@ class AgentAutonomyDriver {
    * raced against DIRECTIVE_FETCH_TIMEOUT_MS. Null on timeout/error so a slow or
    * absent DB never stalls or breaks a decide tick.
    */
-  private readDirectiveBounded(platformAgentId: string): Promise<CurrentDirective | null> {
+  private readDirectiveBounded(
+    platformAgentId: string,
+    entry?: HouseAgentEntry,
+  ): Promise<CurrentDirective | null> {
     return new Promise<CurrentDirective | null>((resolve) => {
-      const timer = setTimeout(() => resolve(null), DIRECTIVE_FETCH_TIMEOUT_MS);
-      getAgentDirective(platformAgentId)
-        .then((d) => {
-          clearTimeout(timer);
-          resolve(d);
+      let settled = false;
+      const finish = (directive: CurrentDirective | null) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(directive);
+      };
+      const timer = setTimeout(() => finish(null), DIRECTIVE_FETCH_TIMEOUT_MS);
+      this.directiveStateRead(platformAgentId)
+        .then((state: AgentDirectiveState) => {
+          if (settled) return;
+          const currentDirectiveSha = state.directive
+            ? directiveInstanceSha(state.directive)
+            : null;
+          if (entry && !entry.directiveShaHydrated) {
+            entry.lastActedDirectiveSha = state.lastActedDirectiveSha;
+            // An already-acted directive must suppress BOTH received and acted
+            // after a deploy/re-seat, not just the acted half of the pair.
+            entry.lastDirectiveSha = state.lastActedDirectiveSha;
+            entry.directiveShaHydrated = true;
+          } else if (
+            entry &&
+            currentDirectiveSha !== null &&
+            state.lastActedDirectiveSha === currentDirectiveSha
+          ) {
+            // Another process may have claimed between our ticks. Reconcile the
+            // coherent snapshot every successful read, not only on first seat.
+            entry.lastDirectiveSha = currentDirectiveSha;
+            entry.lastActedDirectiveSha = currentDirectiveSha;
+          }
+          const directive = state.directive;
+          if (directive && isDirectiveExpired(directive)) {
+            // Compare-and-clear the exact issuance. A newer chat-bar write that
+            // races this fire-and-forget cleanup is preserved.
+            void this.directiveClear(platformAgentId, directive).catch((err: unknown) => {
+              console.warn(
+                `[AutonomyDriver] expired directive cleanup failed for ${sessionDigest(platformAgentId)}:`,
+                err instanceof Error ? err.message : err,
+              );
+            });
+            finish(null);
+            return;
+          }
+          finish(directive);
         })
         .catch(() => {
-          clearTimeout(timer);
-          resolve(null);
+          finish(null);
+        });
+    });
+  }
+
+  /** Persist the acted issuance under the same fail-soft deadline as its read. */
+  private claimActedDirectiveShaBounded(
+    entry: HouseAgentEntry,
+    directiveSha: string,
+    directive: CurrentDirective,
+  ): Promise<DirectiveActedClaim | 'unknown'> {
+    return new Promise<DirectiveActedClaim | 'unknown'>((resolve) => {
+      let settled = false;
+      const finish = (result: DirectiveActedClaim | 'unknown') => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(result);
+      };
+      const timer = setTimeout(() => finish('unknown'), DIRECTIVE_FETCH_TIMEOUT_MS);
+      this.directiveActedShaClaim(entry.platformAgentId, directiveSha, directive)
+        .then((result) => finish(result))
+        .catch((err: unknown) => {
+          console.warn(
+            `[AutonomyDriver] directive acted marker failed for ${sessionDigest(entry.agentId)}:`,
+            err instanceof Error ? err.message : err,
+          );
+          finish('unknown');
         });
     });
   }
