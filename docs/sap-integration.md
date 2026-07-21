@@ -140,6 +140,7 @@ Other env:
 | `SAP_PROGRAM_ID` | `SAPpU…FETZ` | Override only to point at a fork. |
 | `SAP_RPC_URL` | public devnet/mainnet RPC | Override with a paid endpoint (Helius/Triton) before any real traffic. NEVER surfaced in API responses (may carry an API key). |
 | `SAP_IDENTITY_AUTOREG_ENABLED` | `true` | Emergency rollback lever for first-economic-action identity registration. Effective only while master `SAP_ENABLED=true`; this is not a dark-launch flag. |
+| `SAP_IDENTITY_REGISTRATION_BASE_URL` | `https://api.clawville.world` | Immutable EIP-8004/metadata URI host chosen at mint time; staging uses `https://api-staging.clawville.world`. |
 | `SAP_IDENTITY_REGISTRAR_POLL_MS` | `300000` (5 min) | Durable identity worker cadence. Rows, not the timer, are the source of truth across restarts. |
 | `SAP_REPUTATION_WRITES_ENABLED` | `true` | Emergency rollback lever for verified-bounty SAP reputation writes beneath `SAP_ENABLED`; dry-run consumes no jobs. |
 | `SAP_REPUTATION_WRITER_POLL_MS` | `300000` (5 min) | Durable reputation writer cadence (minimum 1 minute). |
@@ -187,9 +188,10 @@ custodial wallet plus the ephemeral Core asset signer. It deliberately replaces 
 ix1 direct `addExternalPluginAdapterV1` with a hand-built mpl-agent-014
 `RegisterIdentityV1` instruction to `1DREGFgysWYxLnRnKQnwrxnJQeSMk2HmGaC6whw2B2p`.
 The deployed MPL Core accepts this AgentIdentity adapter only through the registry's CPI;
-the SDK direct-adapter builder is ahead of that deployment. The AgentIdentity URI is asserted to be exactly
-`https://api.clawville.world/agents/<agentPda>/eip-8004.json`; the sibling
-`metadata.json` URL is immutable too. The derived `["agent_identity", asset]` 1DREG PDA is
+the SDK direct-adapter builder is ahead of that deployment. The immutable AgentIdentity
+and metadata URI host is selected at mint time by `SAP_IDENTITY_REGISTRATION_BASE_URL`;
+staging identities therefore verify against `api-staging.clawville.world`. The derived
+`["agent_identity", asset]` 1DREG PDA is
 persisted in `identity_registration` before broadcast and retained with the prepared asset
 for exact reconciliation. The row becomes
 `identity_attached` only after read-only `verifyLink` succeeds; verification failure
@@ -205,12 +207,9 @@ Solana `register_tx_sig`, includes real proof fields in `extra`, derives the wal
 CAIP-2 entry from the row's cluster, and imports no SAP write gate—public identity
 documents remain readable while writes are disabled.
 
-**Staging verification constraint:** the immutable asset URI deliberately names
-`api.clawville.world`, never `api-staging`. Staging now has an isolated database, so a
-devnet identity created only in staging will make SDK `verifyLink` fetch the production
-registry and receive 404. A staging attach e2e therefore requires deliberate
-production-registry coordination for that test row (or a read-only equivalent proxy);
-do not change the minted URI to staging to make the smoke pass.
+**Immutable URI constraint:** the base URL is a mint-time environment decision; staging
+must use `https://api-staging.clawville.world` so staging identities verify against the
+isolated staging registry, while production keeps the default production API host.
 
 ### Verified bounty reputation writes
 

@@ -17,6 +17,7 @@ import {
   buildSapIdentityMetadataUrl,
   buildSapIdentityRegistrationUrl,
   processSapIdentityRow,
+  resolveSapIdentityRegistrationBaseUrl,
   type SapIdentityRegistrarDeps,
 } from '../sap-identity-registrar';
 
@@ -236,6 +237,57 @@ describe('SAP identity registrar state machine', () => {
     expect(buildSapIdentityMetadataUrl(AGENT_PDA)).toBe(
       `https://api.clawville.world/agents/${AGENT_PDA}/metadata.json`,
     );
+  });
+
+  it('resolves and normalizes the environment-specific registration base URL', () => {
+    const original = process.env.SAP_IDENTITY_REGISTRATION_BASE_URL;
+    try {
+      process.env.SAP_IDENTITY_REGISTRATION_BASE_URL =
+        '  https://api-staging.clawville.world///  ';
+      expect(resolveSapIdentityRegistrationBaseUrl()).toBe(
+        'https://api-staging.clawville.world',
+      );
+      process.env.SAP_IDENTITY_REGISTRATION_BASE_URL = 'http://api-staging.clawville.world';
+      expect(resolveSapIdentityRegistrationBaseUrl()).toBe('https://api.clawville.world');
+    } finally {
+      if (original === undefined) delete process.env.SAP_IDENTITY_REGISTRATION_BASE_URL;
+      else process.env.SAP_IDENTITY_REGISTRATION_BASE_URL = original;
+    }
+  });
+
+  it('applies the environment override to the module-load const and immutable URLs', () => {
+    const child = Bun.spawnSync({
+      cmd: [
+        process.execPath,
+        '--eval',
+        `const registrar = await import('./src/services/sap/sap-identity-registrar.ts');
+console.log('SAP_IDENTITY_ENV_TEST=' + JSON.stringify({
+  base: registrar.SAP_IDENTITY_REGISTRATION_BASE_URL,
+  registration: registrar.buildSapIdentityRegistrationUrl('${AGENT_PDA}'),
+  metadata: registrar.buildSapIdentityMetadataUrl('${AGENT_PDA}'),
+}));`,
+      ],
+      cwd: `${import.meta.dir}/../../../..`,
+      env: {
+        ...process.env,
+        DATABASE_URL: '',
+        SAP_IDENTITY_REGISTRATION_BASE_URL: '  https://api-staging.clawville.world///  ',
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    expect(child.exitCode).toBe(0);
+    const output = new TextDecoder().decode(child.stdout);
+    const payload = output
+      .split(/\r?\n/)
+      .find((line) => line.startsWith('SAP_IDENTITY_ENV_TEST='));
+    if (!payload) throw new Error(`Child module probe returned no payload: ${output}`);
+    expect(JSON.parse(payload.slice('SAP_IDENTITY_ENV_TEST='.length))).toEqual({
+      base: 'https://api-staging.clawville.world',
+      registration: `https://api-staging.clawville.world/agents/${AGENT_PDA}/eip-8004.json`,
+      metadata: `https://api-staging.clawville.world/agents/${AGENT_PDA}/metadata.json`,
+    });
   });
 
   it('retains the prepared asset and stays attaching when verifyLink is false', async () => {

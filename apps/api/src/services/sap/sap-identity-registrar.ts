@@ -54,7 +54,18 @@ import {
 import { buildRegisterIdentityV1Instruction } from './sap-dreg-identity';
 
 export const SAP_REGISTER_BALANCE_FLOOR_LAMPORTS = 60_000_000;
-export const SAP_IDENTITY_REGISTRATION_BASE_URL = 'https://api.clawville.world';
+const DEFAULT_SAP_IDENTITY_REGISTRATION_BASE_URL = 'https://api.clawville.world';
+
+export function resolveSapIdentityRegistrationBaseUrl(
+  value = process.env.SAP_IDENTITY_REGISTRATION_BASE_URL,
+): string {
+  const resolved = value?.trim().replace(/\/+$/, '');
+  return resolved?.startsWith('https://')
+    ? resolved
+    : DEFAULT_SAP_IDENTITY_REGISTRATION_BASE_URL;
+}
+
+export const SAP_IDENTITY_REGISTRATION_BASE_URL = resolveSapIdentityRegistrationBaseUrl();
 const MAX_ATTEMPTS = 10;
 const WORKER_BATCH = 50;
 const POLL_MS_DEFAULT = 300_000;
