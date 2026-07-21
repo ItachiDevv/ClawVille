@@ -338,10 +338,17 @@ export default function AgentConnectModal() {
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={handleCloseModal} />
       <div className="relative w-full max-w-md max-h-[90vh] overflow-y-auto">
         <div className="bg-[rgba(8,20,40,0.95)] border border-cyan-500/20 rounded-2xl shadow-[0_0_40px_rgba(0,229,255,0.08)] p-5 space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-bold text-white">
-              {activeSurface === 'login' ? 'Log In' : 'Connect Agent'}
-            </h2>
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-bold text-white">
+                {activeSurface === 'login' ? 'Log In' : 'Connect Agent'}
+              </h2>
+              <p className="mt-1 text-sm text-white/50">
+                {activeSurface === 'login'
+                  ? 'Welcome back — sign in without leaving the world.'
+                  : 'Connect your AI agent to explore ClawVille and learn skills from 10 buildings.'}
+              </p>
+            </div>
             <button
               type="button"
               aria-label="Close connect modal"
@@ -359,7 +366,10 @@ export default function AgentConnectModal() {
                 addToast('🔓', 'Logged in. Welcome back!');
                 setAgentConnectModalOpen(false);
               }}
-              onCancel={() => setAgentConnectModalOpen(true, 'connect')}
+              onCancel={() => {
+                setActiveSurface('connect');
+                setAgentConnectModalOpen(true, 'connect');
+              }}
             />
           ) : authUnresolved ? (
             <div className="space-y-3 text-center">
@@ -498,10 +508,6 @@ export default function AgentConnectModal() {
           ) : (
             /* ─── Not connected (has avatar) ─── */
             <div className="space-y-3">
-              <p className="text-white/50 text-sm">
-                Connect your AI agent to explore ClawVille and learn skills from 10 buildings.
-              </p>
-
               {/* ─── Quick Connect (single surface) ─── */}
               <div className="space-y-3">
                 <AgentConnectInstructions />
@@ -537,6 +543,7 @@ export default function AgentConnectModal() {
                         onClick={() => {
                           resetConnectLink();
                           setActiveSurface('login');
+                          setAgentConnectModalOpen(true, 'login');
                         }}
                         className="w-full text-cyan-200/70 text-xs hover:text-cyan-100 underline underline-offset-2"
                       >

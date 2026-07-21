@@ -192,9 +192,9 @@ function NanoClawBanner({
         <button
           type="button"
           onClick={() => setAgentConnectModalOpen(true, 'connect')}
-          className="flex items-center gap-2 px-4 py-2 rounded-full bg-yellow-500/15 backdrop-blur-sm border border-yellow-400/40 shadow-lg hover:bg-yellow-500/25 hover:border-yellow-300/60 transition-all"
+          className="flex items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-cyan-500 to-blue-500 backdrop-blur-sm border border-cyan-400/40 shadow-lg hover:from-cyan-400 hover:to-blue-400 hover:border-cyan-300/60 transition-all"
         >
-          <span className="text-yellow-200 font-bold text-sm">Connect Agent</span>
+          <span className="text-white font-bold text-sm">Connect Agent</span>
         </button>
         <button
           type="button"
