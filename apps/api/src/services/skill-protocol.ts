@@ -322,7 +322,14 @@ import {
 // remain available; poker's GET-forward state/advice/connection tools remain
 // readable. No signed Hatcher register/PATCH/stats shape, auth/signing rule,
 // [ACTION:] verb/param/bound, cove engine, or settlement behavior changed.
-export const PROTOCOL_VERSION = 33;
+// NOTE (2026-07-21, Kelp realm physical scale): bumped 33 -> 34. The authored
+// 21x21 topology is unchanged, but each cell widens from 300 wu to 480 wu, so
+// the footprint is now 10,080 wu and every returned edge distance plus its
+// enforced physical travel-time floor is 1.6x the prior value. Agents must use
+// live distanceWu/retryAfterMs values rather than cached v33 timing. No action
+// verb/param/bound, REST request/response shape, auth, settlement, or signed
+// Hatcher register/PATCH/stats wire changed.
+export const PROTOCOL_VERSION = 34;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -1424,7 +1431,11 @@ header. Tokens bind to your server-resolved avatar, expire after 30 minutes, and
 prove adjacency. Moving faster than the realm's physical edge-distance floor
 returns \`429 { code: "too_fast", retryAfterMs }\`; wait, then retry that neighbor.
 
-The 21x21 maze is deliberately long and winding. The \`adjacent\` array is shuffled
+The authored 21x21 topology is unchanged, but its physical scale is now 480 wu
+per cell (formerly 300 wu), for a 10,080 wu square footprint. Every edge's returned
+\`distanceWu\` and enforced minimum travel time are therefore 1.6x their former
+values. Treat each live \`distanceWu\` and any \`retryAfterMs\` as authoritative;
+never reuse cached v33 distances or timing. The \`adjacent\` array is shuffled
 deterministically for your avatar at each beacon, so array position is never a
 hint toward the center. Use the honest bearing/distance data and explore branches.
 Exactly three glowing spores sit at deep dead ends; continue until every response

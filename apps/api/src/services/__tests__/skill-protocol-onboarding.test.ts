@@ -19,7 +19,7 @@ describe('open-agent onboarding manuals', () => {
     const manual = buildPlayManual(API_BASE);
     const protocolManual = buildProtocolManual(API_BASE);
 
-    expect(PROTOCOL_VERSION).toBe(33);
+    expect(PROTOCOL_VERSION).toBe(34);
     expect(manual).toContain(`POST ${API_BASE}/api/agent/connect`);
     expect(manual).toContain('"agentId": "your-stable-agent-id"');
     expect(manual).toContain('"identityType": "your-framework"');
@@ -67,6 +67,12 @@ describe('open-agent onboarding manuals', () => {
     expect(protocolManual).toContain('zero CT/vCLAW');
     expect(protocolManual).toContain('kelp-maze-collectible');
     expect(protocolManual).toContain('Unrevealed Depths Collectible');
+    expect(protocolManual).toContain('480 wu');
+    expect(protocolManual).toContain('10,080 wu');
+    expect(protocolManual).toContain('1.6x');
+    expect(protocolManual).toContain('live `distanceWu`');
+    expect(protocolManual).toContain('`retryAfterMs` as authoritative');
+    expect(protocolManual).toContain('never reuse cached v33 distances or timing');
     expect(protocolManual).toContain('center E/button');
     expect(protocolManual).not.toContain('Pearl of the Depths');
     for (const node of KELP_REALM_BEACON_GRAPH.nodes) {
@@ -105,7 +111,7 @@ describe('open-agent onboarding manuals', () => {
       'custom remains non-restorable',
     ];
 
-    expect(PROTOCOL_VERSION).toBe(33);
+    expect(PROTOCOL_VERSION).toBe(34);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');
