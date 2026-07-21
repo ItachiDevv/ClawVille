@@ -343,6 +343,24 @@ export default function PersonalityPage() {
           // FirstTimeBackupModal) and the server never re-emits — these PATCH
           // responses carry no secrets to stash.
 
+          // But DO refresh the stash's display name (Codex review MINOR 1):
+          // signup wrote it with the provisional email-derived avatar name,
+          // and since the forge is now the single naming step, the backup
+          // modal on /game would otherwise announce the stale name. Secrets
+          // are untouched — only the label updates.
+          try {
+            const rawStash = sessionStorage.getItem(FIRST_TIME_DISCLOSURE_STORAGE_KEY);
+            if (rawStash && step1.name) {
+              const stash = JSON.parse(rawStash) as { avatarName?: string } | null;
+              if (stash && typeof stash === 'object') {
+                stash.avatarName = step1.name;
+                sessionStorage.setItem(FIRST_TIME_DISCLOSURE_STORAGE_KEY, JSON.stringify(stash));
+              }
+            }
+          } catch {
+            // Non-load-bearing — the modal falls back to the provisional name.
+          }
+
           sessionStorage.removeItem('createAvatarStep1');
 
           // BEARER DISCIPLINE (P2 slice C): never fabricate an agent-session
@@ -474,7 +492,7 @@ export default function PersonalityPage() {
     return (
       <div className="relative min-h-screen bg-[#030b14] flex items-center justify-center">
         <DescentAtmosphere depth="soul" />
-        <p className="relative text-white font-clawville text-xl animate-pulse">Descending...</p>
+        <p className="relative text-white font-clawville text-xl animate-pulse motion-reduce:animate-none">Descending...</p>
       </div>
     );
   }
@@ -632,10 +650,10 @@ export default function PersonalityPage() {
               value: greetingStyle,
               set: setGreetingStyle,
             },
-          ].map((q) => (
+          ].map((q, qi) => (
             <div key={q.label}>
-              <label className="block text-white/70 text-sm font-medium mb-2">{q.label}</label>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              <div id={`temperament-q-${qi}`} className="block text-white/70 text-sm font-medium mb-2">{q.label}</div>
+              <div role="group" aria-labelledby={`temperament-q-${qi}`} className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                 {q.options.map((opt) => {
                   const active = q.value === opt.value;
                   return (

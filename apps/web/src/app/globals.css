@@ -213,10 +213,13 @@
   animation-duration: 52s;
 }
 
-/* God rays: slow opacity breathe only — no layout, no paint churn. */
+/* God rays: slow opacity breathe only — no layout, no paint churn. The
+   breathe is scaled by --ray-max so per-depth brightness (set inline by
+   DescentAtmosphere) survives the animation instead of being clobbered by
+   absolute keyframe values (Codex review MINOR 2). */
 @keyframes descent-ray {
-  0%, 100% { opacity: 0.35; }
-  50%      { opacity: 1; }
+  0%, 100% { opacity: calc(var(--ray-max, 1) * 0.35); }
+  50%      { opacity: var(--ray-max, 1); }
 }
 .descent-ray {
   position: absolute;
@@ -231,6 +234,7 @@
     transparent 100%
   );
   filter: blur(6px);
+  opacity: calc(var(--ray-max, 1) * 0.6);
   will-change: opacity;
   animation: descent-ray 9s ease-in-out infinite;
 }
@@ -252,6 +256,7 @@
   .descent-ray,
   .descent-lure {
     animation: none;
+    will-change: auto;
   }
 }
 

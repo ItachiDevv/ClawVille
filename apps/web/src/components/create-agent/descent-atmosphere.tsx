@@ -36,7 +36,12 @@ const RAY_OPACITY: Record<DescentDepth, number> = {
 export function DescentAtmosphere({ depth }: { depth: DescentDepth }) {
   const rayOpacity = RAY_OPACITY[depth];
   return (
-    <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden>
+    // FIXED to the viewport, not absolute over the document: the Soul page is
+    // several viewports tall, and a document-spanning snow layer at 300%
+    // height + will-change promoted a huge GPU layer (Codex review BLOCKING
+    // 1). Viewport-fixed bounds every layer to ~3 screen heights max and
+    // gives the backdrop a gentle parallax feel for free.
+    <div className="pointer-events-none fixed inset-0 overflow-hidden" aria-hidden>
       {/* Depth gradient */}
       <div className="absolute inset-0" style={{ background: DEPTH_GRADIENT[depth] }} />
 
@@ -49,18 +54,20 @@ export function DescentAtmosphere({ depth }: { depth: DescentDepth }) {
         }}
       />
 
-      {/* God rays, angled from upper left like sun through water */}
+      {/* God rays, angled from upper left like sun through water. Brightness
+          rides --ray-max (consumed by the keyframes) so depth dimming holds
+          while the breathe animation runs. */}
       <div
         className="descent-ray"
-        style={{ left: '14%', transform: 'rotate(16deg)', opacity: rayOpacity, animationDelay: '0s' }}
+        style={{ left: '14%', transform: 'rotate(16deg)', ['--ray-max' as string]: rayOpacity, animationDelay: '0s' } as React.CSSProperties}
       />
       <div
         className="descent-ray"
-        style={{ left: '34%', width: 90, transform: 'rotate(20deg)', opacity: rayOpacity * 0.7, animationDelay: '-3.5s' }}
+        style={{ left: '34%', width: 90, transform: 'rotate(20deg)', ['--ray-max' as string]: rayOpacity * 0.7, animationDelay: '-3.5s' } as React.CSSProperties}
       />
       <div
         className="descent-ray"
-        style={{ left: '58%', width: 170, transform: 'rotate(13deg)', opacity: rayOpacity * 0.5, animationDelay: '-6.5s' }}
+        style={{ left: '58%', width: 170, transform: 'rotate(13deg)', ['--ray-max' as string]: rayOpacity * 0.5, animationDelay: '-6.5s' } as React.CSSProperties}
       />
 
       {/* Marine snow — far and near layers drifting upward as we sink */}
