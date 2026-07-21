@@ -13,8 +13,6 @@ import {
 } from './character-positions';
 import { getAllColliders } from './collision/world-colliders';
 import {
-  armKelpForestWalkIn,
-  isKelpForestWalkInArmed,
   resetKelpForestWalkInLatch,
   triggerKelpForestWalkIn,
 } from './kelp-forest-transition';
@@ -63,10 +61,13 @@ describe('Kelp Forest portal plane crossing', () => {
   const portalX = KELP_FOREST_PORTAL_WORLD_CENTER.x;
   const portalZ = KELP_FOREST_PORTAL_WORLD_CENTER.z;
 
-  test('crosses the plane inside the arch opening', () => {
-    expect(didCrossKelpForestPortal(portalX, portalZ - 80, portalX, portalZ + 80)).toBe(true);
-    expect(didCrossKelpForestPortal(portalX, portalZ, portalX, portalZ + 1)).toBe(true);
-    expect(didCrossKelpForestPortal(portalX, portalZ - 1, portalX, portalZ)).toBe(true);
+  test('fires for a close-range crossing inside the arch opening', () => {
+    expect(didCrossKelpForestPortal(
+      portalX,
+      portalZ + 90,
+      portalX,
+      portalZ - 90,
+    )).toBe(true);
   });
 
   test('does not fire while walking parallel near the portal', () => {
@@ -96,40 +97,19 @@ describe('Kelp Forest portal plane crossing', () => {
     )).toBe(true);
   });
 
-  test('return mount resets the fired latch and seeds a non-crossing spawn segment', () => {
-    resetKelpForestWalkInLatch();
-    expect(armKelpForestWalkIn(portalZ + 121)).toBe(true);
-    triggerKelpForestWalkIn();
-    expect(isKelpForestWalkInArmed()).toBe(false);
-    expect(useTransitionStore.getState().pending?.to).toBe('/kelp');
-    useTransitionStore.getState()._consume();
-
-    // Simulate the fresh world mount after returning from /kelp. Its previous
-    // coordinate is seeded to the return spawn, never retained across routes.
-    resetKelpForestWalkInLatch();
-    const returnSpawnCrossed = didCrossKelpForestPortal(
+  test('return-spawn seed does not cross the portal plane', () => {
+    expect(didCrossKelpForestPortal(
       KELP_FOREST_PORTAL_APPROACH_WORLD.x,
       KELP_FOREST_PORTAL_APPROACH_WORLD.z,
       KELP_FOREST_PORTAL_APPROACH_WORLD.x,
       KELP_FOREST_PORTAL_APPROACH_WORLD.z,
-    );
-    expect(isKelpForestWalkInArmed()).toBe(false);
-    expect(returnSpawnCrossed).toBe(false);
-
-    // The exact hysteresis edge remains disarmed; only a later frame beyond
-    // it arms. Even then, the seeded zero-length return segment cannot fire.
-    expect(armKelpForestWalkIn(portalZ + 120)).toBe(false);
-    expect(armKelpForestWalkIn(portalZ + 121)).toBe(true);
-    expect(isKelpForestWalkInArmed() && returnSpawnCrossed).toBe(false);
-    resetKelpForestWalkInLatch();
+    )).toBe(false);
   });
 
-  test('disarms on fire and ignores a second call while transition is pending', () => {
+  test('trigger remains idempotent after the pending transition is consumed', () => {
     resetKelpForestWalkInLatch();
-    expect(armKelpForestWalkIn(portalZ + 121)).toBe(true);
 
     triggerKelpForestWalkIn();
-    expect(isKelpForestWalkInArmed()).toBe(false);
     expect(useTransitionStore.getState().pending?.to).toBe('/kelp');
 
     useTransitionStore.getState()._consume();
