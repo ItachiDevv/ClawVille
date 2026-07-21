@@ -13,10 +13,19 @@ import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 
 const LOW_END_GPU = detectLowEndGpuClass();
 const WEBGPU_UNHEALTHY_KEY = 'kelp-realm-webgpu-unhealthy';
+
+function readWebGPUUnhealthyFlag(): boolean {
+  try {
+    return window.sessionStorage?.getItem(WEBGPU_UNHEALTHY_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
 const FORCE_WEBGL = typeof window !== 'undefined' && (
   LOW_END_GPU
   || new URLSearchParams(window.location.search).get('webgl') === '1'
-  || window.sessionStorage?.getItem(WEBGPU_UNHEALTHY_KEY) === '1'
+  || readWebGPUUnhealthyFlag()
 );
 
 const DPR_RANGE: [number, number] = LOW_END_GPU ? [0.55, 0.7] : [0.75, 1];
