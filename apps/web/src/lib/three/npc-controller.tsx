@@ -20,12 +20,16 @@ import { useNpcStore } from '@/stores/npc';
 import type { NpcSpriteState } from '@/stores/npc';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 import {
+  didCrossKelpForestPortal,
   findNearestCharacter,
   isCoveProximate,
   isKelpForestPortalProximate,
 } from '@/lib/three/character-positions';
 import { triggerCoveWalkIn } from '@/lib/three/arena-buildings';
-import { triggerKelpForestWalkIn } from '@/lib/three/kelp-forest-transition';
+import {
+  resetKelpForestWalkInLatch,
+  triggerKelpForestWalkIn,
+} from '@/lib/three/kelp-forest-transition';
 import { NORI_WORLD_X, NORI_WORLD_Z, NORI_TALK_RADIUS_SQ } from '@/lib/three/town-guide';
 import { isEditable, jumpState } from '@/lib/three/jump-state';
 import { registerInputReset } from '@/lib/three/input-reset';
@@ -119,6 +123,10 @@ function directionFromVelocity(vx: number, vy: number): NpcSpriteState['directio
 
 export default function NpcController() {
   const attachedRef = useRef(false);
+  const kelpPortalPrevXRef = useRef(0);
+  const kelpPortalPrevZRef = useRef(0);
+  const kelpPortalPrevNpcIdRef = useRef<string | null>(null);
+  const kelpPortalOwnerNpcIdRef = useRef<string | null>(null);
   const { camera } = useThree();
 
   useEffect(() => {
@@ -133,7 +141,22 @@ export default function NpcController() {
     const { controlMode, possessedNpcId } = store;
 
     // Only active in npc mode with a possessed target
-    if (controlMode !== 'npc' || !possessedNpcId) return;
+    if (controlMode !== 'npc' || !possessedNpcId) {
+      kelpPortalPrevNpcIdRef.current = null;
+      kelpPortalOwnerNpcIdRef.current = null;
+      return;
+    }
+
+    if (kelpPortalOwnerNpcIdRef.current !== possessedNpcId) {
+      // PlayerAvatar is unmounted in NPC mode, so this controller owns the
+      // fresh-world reset when it acquires a possessed body. Acquisition is
+      // edge-triggered by the owner id: inactive player-mode frames never
+      // reset the shared in-flight guard, and steady NPC movement never resets
+      // per frame.
+      resetKelpForestWalkInLatch();
+      kelpPortalOwnerNpcIdRef.current = possessedNpcId;
+      kelpPortalPrevNpcIdRef.current = null;
+    }
 
     // Handle Escape to exit building OR close guide chat
     const escNow = _keys.escape;
@@ -171,7 +194,20 @@ export default function NpcController() {
     // npcs is a flat array; a single .find() at the top avoids 2 redundant scans/frame.
     const npcStore = useNpcStore.getState();
     const npc = npcStore.npcs.find((n) => n.id === possessedNpcId);
-    if (!npc) return;
+    if (!npc) {
+      kelpPortalPrevNpcIdRef.current = null;
+      return;
+    }
+
+    const frameStartWorldX = npc.x - MAP_WIDTH / 2;
+    const frameStartWorldZ = npc.y - MAP_HEIGHT / 2;
+    const samePortalMover = kelpPortalPrevNpcIdRef.current === possessedNpcId;
+    // Possession changes and fresh mounts seed at the controlled body's current
+    // position. Existing movers re-seed from the authoritative frame start so
+    // an external NPC correction cannot synthesize a portal crossing.
+    kelpPortalPrevXRef.current = frameStartWorldX;
+    kelpPortalPrevZRef.current = frameStartWorldZ;
+    kelpPortalPrevNpcIdRef.current = possessedNpcId;
 
     // Character proximity check — replaces building-zone area check.
     // findNearestCharacter takes world-space primitives — zero allocation.
@@ -287,6 +323,20 @@ export default function NpcController() {
     );
     const newX = Math.max(X_MIN, Math.min(X_MAX, clamped.x + MAP_WIDTH / 2));
     const newY = Math.max(Y_MIN, Math.min(Y_MAX, clamped.z + MAP_HEIGHT / 2));
+
+    if (
+      samePortalMover &&
+      didCrossKelpForestPortal(
+        kelpPortalPrevXRef.current,
+        kelpPortalPrevZRef.current,
+        clamped.x,
+        clamped.z,
+      )
+    ) {
+      triggerKelpForestWalkIn();
+    }
+    kelpPortalPrevXRef.current = clamped.x;
+    kelpPortalPrevZRef.current = clamped.z;
 
     // speedMult>1 means shift/joystick-sprint is engaged → tell the animator to
     // play the run clip (gated by isMoving in updateMixerOnly, so a held shift

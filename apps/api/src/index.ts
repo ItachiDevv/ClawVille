@@ -796,6 +796,29 @@ process.on('uncaughtException', (err) => {
     console.error('[API] House agent activation failed (non-fatal):', err);
   }
 
+  // Database watchdog — distinguishes a wedged shared postgres.js pool from a
+  // real DB outage, alerts both, and crash-recovers only the pool-wedge case.
+  try {
+    const { startDbCanary } = await import('./services/db-canary');
+    startDbCanary();
+  } catch (err) {
+    console.error('[API] DB canary failed to start:', err);
+  }
+
+  // 2026-07-21 — agent-pay STUCK-SETTLING resume worker, always-on (agent-pay is
+  // live on prod). Forward-only recovery for payments stranded mid-settle by a
+  // process death or pool wedge: a captured signature is chain-checked read-only
+  // and fulfilled through the existing idempotent machine (never re-signed, never
+  // re-sent, facilitator never re-called); ambiguous rows quarantine to
+  // 'reconcile' + alert. Cadence AGENT_PAY_RESUME_POLL_MS (default 5 min, floor
+  // 60s). See services/agent-pay-resume.ts.
+  try {
+    const { startAgentPayResumeWorker } = await import('./services/agent-pay-resume');
+    startAgentPayResumeWorker();
+  } catch (err) {
+    console.error('[API] Agent-pay resume worker failed to start:', err);
+  }
+
   // P0 lifecycle-truth — NO eager boot-rehydration. v7 already survives a restart
   // via LAZY restore (`agent-session-restore.ts`, wired into
   // `validateLiveAgentSession`): on the first post-restart bearer use it rebuilds
@@ -1559,6 +1582,18 @@ async function gracefulShutdown(signal: string) {
       stopInferenceUsageReporter();
     } catch {
       // If the reporter module failed to load earlier, there's nothing to stop.
+    }
+    try {
+      const { stopDbCanary } = await import('./services/db-canary');
+      stopDbCanary();
+    } catch {
+      // If the canary module failed to load earlier, there's nothing to stop.
+    }
+    try {
+      const { stopAgentPayResumeWorker } = await import('./services/agent-pay-resume');
+      stopAgentPayResumeWorker();
+    } catch {
+      // If the resume worker module failed to load earlier, there's nothing to stop.
     }
     try {
       const { stopWagerIntentReconciler } = await import(

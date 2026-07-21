@@ -16,11 +16,15 @@ import {
   KELP_REALM_MAX_BLADE_HALF_WIDTH_WU,
   KELP_REALM_MAX_SWAY_WU,
   KELP_REALM_ONE_SIDED_SWAY_WU,
+  KELP_REALM_COLS,
+  KELP_REALM_ROWS,
   KELP_REALM_SPORE_BEACON_IDS,
   KELP_REALM_WALL_ROOT_SETBACK_WU,
   KELP_REALM_WALL_AABBS,
   KELP_REALM_WALL_HEIGHT_WU,
   isKelpRealmCorridorCell,
+  kelpRealmCellCenterX,
+  kelpRealmCellCenterZ,
   type KelpRealmDiscoveryType,
 } from '@clawville/shared';
 import KelpRealmPlayer from './kelp-realm-player';
@@ -31,18 +35,23 @@ const BLADES_PER_VARIANT = BLADE_COUNT / 3;
 const BLADE_ROWS = 8;
 const FOG_COLOR = new THREE.Color(0x031b20);
 const REALM_WIND = Object.freeze({
-  primaryZRateScale: 0.71,
-  primaryZPhaseScale: 1.27,
-  primaryZAmplitudeScale: 0.42,
-  currentXRate: 0.041,
-  currentXPhaseScale: 0.43,
-  currentXAmplitudeScale: 0.16,
-  currentZRate: 0.037,
-  currentZPhaseScale: 0.59,
-  currentZAmplitudeScale: 0.12,
+  primaryZRateScale: 0.76,
+  primaryZPhaseScale: 1.31,
+  primaryZAmplitudeScale: 0.38,
+  currentXRate: 0.48,
+  currentXPhaseScale: 0.47,
+  currentXAmplitudeScale: 0.14,
+  currentZRate: 0.39,
+  currentZPhaseScale: 0.63,
+  currentZAmplitudeScale: 0.1,
+  microZRateScale: 0.83,
+  microZPhaseScale: 1.73,
+  microZAmplitudeScale: 0.52,
 });
+const MAX_MICRO_AMPLITUDE_WU = 16;
 const MAX_PRIMARY_AMPLITUDE_WU =
-  KELP_REALM_ONE_SIDED_SWAY_WU / (1 + REALM_WIND.currentXAmplitudeScale);
+  (KELP_REALM_ONE_SIDED_SWAY_WU - MAX_MICRO_AMPLITUDE_WU)
+  / (1 + REALM_WIND.currentXAmplitudeScale);
 
 interface RealmKelpVariant {
   readonly minHeight: number;
@@ -53,12 +62,14 @@ interface RealmKelpVariant {
   readonly tip: THREE.Color;
   readonly amplitude: number;
   readonly rate: number;
+  readonly microAmplitude: number;
+  readonly microRate: number;
 }
 
 const VARIANTS: readonly RealmKelpVariant[] = Object.freeze([
-  { minHeight: 650, maxHeight: 780, minWidth: 22, maxWidth: 34, root: new THREE.Color(0x052d27), tip: new THREE.Color(0x16886d), amplitude: MAX_PRIMARY_AMPLITUDE_WU * 0.78, rate: Math.PI * 2 / 5.8 },
-  { minHeight: 600, maxHeight: 750, minWidth: 25, maxWidth: KELP_REALM_MAX_BLADE_HALF_WIDTH_WU * 2, root: new THREE.Color(0x07372d), tip: new THREE.Color(0x24a16e), amplitude: MAX_PRIMARY_AMPLITUDE_WU * 0.86, rate: Math.PI * 2 / 5.2 },
-  { minHeight: 680, maxHeight: 800, minWidth: 19, maxWidth: 31, root: new THREE.Color(0x042d34), tip: new THREE.Color(0x138b83), amplitude: MAX_PRIMARY_AMPLITUDE_WU, rate: Math.PI * 2 / 4.6 },
+  { minHeight: 400, maxHeight: 475, minWidth: 36, maxWidth: 48, root: new THREE.Color(0x042923), tip: new THREE.Color(0x20a47b), amplitude: MAX_PRIMARY_AMPLITUDE_WU * 0.82, rate: Math.PI * 2 / 4.4, microAmplitude: 10, microRate: Math.PI * 2 / 1.55 },
+  { minHeight: 420, maxHeight: 500, minWidth: 42, maxWidth: KELP_REALM_MAX_BLADE_HALF_WIDTH_WU * 2, root: new THREE.Color(0x06362c), tip: new THREE.Color(0x39c98b), amplitude: MAX_PRIMARY_AMPLITUDE_WU * 0.91, rate: Math.PI * 2 / 4, microAmplitude: 13, microRate: Math.PI * 2 / 1.35 },
+  { minHeight: 390, maxHeight: 485, minWidth: 34, maxWidth: 50, root: new THREE.Color(0x032c32), tip: new THREE.Color(0x20b5a4), amplitude: MAX_PRIMARY_AMPLITUDE_WU, rate: Math.PI * 2 / 3.6, microAmplitude: MAX_MICRO_AMPLITUDE_WU, microRate: Math.PI * 2 / 1.15 },
 ]);
 
 interface WindUniform { value: number }
@@ -130,8 +141,12 @@ function applyRealmWind(
     .mul(height).mul(float(variant.amplitude * REALM_WIND.currentXAmplitudeScale));
   const currentZ = sin(time.mul(float(REALM_WIND.currentZRate)).add(phase.mul(float(REALM_WIND.currentZPhaseScale))))
     .mul(height).mul(float(variant.amplitude * REALM_WIND.currentZAmplitudeScale));
+  const microX = sin(time.mul(float(variant.microRate)).add(phase.mul(float(2.17))))
+    .mul(height.mul(height)).mul(float(variant.microAmplitude));
+  const microZ = cos(time.mul(float(variant.microRate * REALM_WIND.microZRateScale)).add(phase.mul(float(REALM_WIND.microZPhaseScale))))
+    .mul(height.mul(height)).mul(float(variant.microAmplitude * REALM_WIND.microZAmplitudeScale));
   material.positionNode = positionLocal.add(
-    vec3(primaryX.add(currentX), float(0), primaryZ.add(currentZ)),
+    vec3(primaryX.add(currentX).add(microX), float(0), primaryZ.add(currentZ).add(microZ)),
   );
 }
 
@@ -146,18 +161,26 @@ function createRealmKelpGeometry(variantIndex: number): THREE.BufferGeometry {
   const heights = new Float32Array(BLADES_PER_VARIANT * verticesPerBlade);
   const indices = new Uint32Array(BLADES_PER_VARIANT * trianglesPerBlade * 3);
   const color = new THREE.Color();
+  let clusterCenterX = 0;
+  let clusterCenterZ = 0;
 
   for (let blade = 0; blade < BLADES_PER_VARIANT; blade++) {
-    const wall = KELP_REALM_WALL_AABBS[(blade * 37 + variantIndex * 17) % KELP_REALM_WALL_AABBS.length]!;
-    // Keep roots 60 wu back from every corridor-facing cell edge. The shared
-    // sway + authored-radius budget leaves 66.9 wu between opposing tips.
+    const cluster = Math.floor(blade / 5);
+    const wall = KELP_REALM_WALL_AABBS[(cluster * 37 + variantIndex * 17) % KELP_REALM_WALL_AABBS.length]!;
+    // Keep roots behind every corridor-facing cell edge while grouping five
+    // neighboring ribbons into one organic base cluster.
     const corridorRootLimit = KELP_REALM_CELL_WU / 2 - KELP_REALM_WALL_ROOT_SETBACK_WU;
-    const minX = isKelpRealmCorridorCell(wall.row, wall.col - 1) ? -corridorRootLimit : -96;
-    const maxX = isKelpRealmCorridorCell(wall.row, wall.col + 1) ? corridorRootLimit : 96;
-    const minZ = isKelpRealmCorridorCell(wall.row - 1, wall.col) ? -corridorRootLimit : -96;
-    const maxZ = isKelpRealmCorridorCell(wall.row + 1, wall.col) ? corridorRootLimit : 96;
-    const x = wall.centerX + minX + rng() * (maxX - minX);
-    const z = wall.centerZ + minZ + rng() * (maxZ - minZ);
+    const cellRootLimit = KELP_REALM_CELL_WU / 2 - 4;
+    const minX = isKelpRealmCorridorCell(wall.row, wall.col - 1) ? -corridorRootLimit : -cellRootLimit;
+    const maxX = isKelpRealmCorridorCell(wall.row, wall.col + 1) ? corridorRootLimit : cellRootLimit;
+    const minZ = isKelpRealmCorridorCell(wall.row - 1, wall.col) ? -corridorRootLimit : -cellRootLimit;
+    const maxZ = isKelpRealmCorridorCell(wall.row + 1, wall.col) ? corridorRootLimit : cellRootLimit;
+    if (blade % 5 === 0) {
+      clusterCenterX = wall.centerX + minX + rng() * (maxX - minX);
+      clusterCenterZ = wall.centerZ + minZ + rng() * (maxZ - minZ);
+    }
+    const x = Math.max(wall.centerX + minX, Math.min(wall.centerX + maxX, clusterCenterX + (rng() + rng() - 1) * 34));
+    const z = Math.max(wall.centerZ + minZ, Math.min(wall.centerZ + maxZ, clusterCenterZ + (rng() + rng() - 1) * 34));
     const bladeHeight = variant.minHeight + rng() * (variant.maxHeight - variant.minHeight);
     const width = variant.minWidth + rng() * (variant.maxWidth - variant.minWidth);
     const bend = 10 + rng() * (KELP_REALM_MAX_AUTHORED_BEND_WU - 10);
@@ -168,8 +191,9 @@ function createRealmKelpGeometry(variantIndex: number): THREE.BufferGeometry {
 
     for (let row = 0; row < BLADE_ROWS; row++) {
       const normalizedHeight = Math.min(1, Math.max(0, row / (BLADE_ROWS - 1)));
-      const taper = 1 - Math.pow(normalizedHeight, 1.45) * 0.86;
-      const curve = Math.sin(normalizedHeight * Math.PI * 0.72) * bend;
+      const taper = 1 - Math.pow(normalizedHeight, 1.32) * 0.88;
+      const curve = Math.sin(normalizedHeight * Math.PI * 0.82) * bend
+        + Math.sin(normalizedHeight * Math.PI * 1.45) * bend * 0.18;
       color.lerpColors(variant.root, variant.tip, normalizedHeight);
       for (let side = 0; side < 2; side++) {
         const vertex = blade * verticesPerBlade + row * 2 + side;
@@ -246,7 +270,9 @@ float h2 = aHeight * aHeight;
 transformed.x += sin(uKelpTime * ${variant.rate.toFixed(6)} + aPhase) * h2 * ${variant.amplitude.toFixed(6)};
 transformed.z += cos(uKelpTime * ${(variant.rate * REALM_WIND.primaryZRateScale).toFixed(6)} + aPhase * ${REALM_WIND.primaryZPhaseScale.toFixed(6)}) * h2 * ${(variant.amplitude * REALM_WIND.primaryZAmplitudeScale).toFixed(6)};
 transformed.x += cos(uKelpTime * ${REALM_WIND.currentXRate.toFixed(6)} + aPhase * ${REALM_WIND.currentXPhaseScale.toFixed(6)}) * aHeight * ${(variant.amplitude * REALM_WIND.currentXAmplitudeScale).toFixed(6)};
-transformed.z += sin(uKelpTime * ${REALM_WIND.currentZRate.toFixed(6)} + aPhase * ${REALM_WIND.currentZPhaseScale.toFixed(6)}) * aHeight * ${(variant.amplitude * REALM_WIND.currentZAmplitudeScale).toFixed(6)};`);
+transformed.z += sin(uKelpTime * ${REALM_WIND.currentZRate.toFixed(6)} + aPhase * ${REALM_WIND.currentZPhaseScale.toFixed(6)}) * aHeight * ${(variant.amplitude * REALM_WIND.currentZAmplitudeScale).toFixed(6)};
+transformed.x += sin(uKelpTime * ${variant.microRate.toFixed(6)} + aPhase * 2.170000) * h2 * ${variant.microAmplitude.toFixed(6)};
+transformed.z += cos(uKelpTime * ${(variant.microRate * REALM_WIND.microZRateScale).toFixed(6)} + aPhase * ${REALM_WIND.microZPhaseScale.toFixed(6)}) * h2 * ${(variant.microAmplitude * REALM_WIND.microZAmplitudeScale).toFixed(6)};`);
   };
   material.customProgramCacheKey = () => `kelp-realm-wind-v1-${variantIndexKey(variant)}`;
   // WebGPURenderer(forceWebGL) converts this standard material to a node
@@ -257,7 +283,7 @@ transformed.z += sin(uKelpTime * ${REALM_WIND.currentZRate.toFixed(6)} + aPhase 
 }
 
 function variantIndexKey(variant: RealmKelpVariant): string {
-  return `${variant.amplitude}-${variant.rate}`;
+  return `${variant.amplitude}-${variant.rate}-${variant.microAmplitude}-${variant.microRate}`;
 }
 
 function useKelpResources(forceWebGL: boolean): readonly KelpResource[] {
@@ -291,9 +317,11 @@ function createFloorGeometry(): THREE.PlaneGeometry {
     const z = position.getZ(index);
     const hash = Math.sin(x * 0.017 + z * 0.011) * 0.5 + Math.sin(x * 0.006 - z * 0.019) * 0.5;
     const shade = 0.72 + hash * 0.08;
-    colors[index * 3] = 0.08 * shade;
-    colors[index * 3 + 1] = 0.20 * shade;
-    colors[index * 3 + 2] = 0.18 * shade;
+    const centerDistance = Math.hypot(x - KELP_REALM_CENTER.x, z - KELP_REALM_CENTER.z);
+    const centerGlow = Math.max(0, 1 - centerDistance / (KELP_REALM_CELL_WU * 1.45));
+    colors[index * 3] = 0.08 * shade + centerGlow * 0.1;
+    colors[index * 3 + 1] = 0.20 * shade + centerGlow * 0.24;
+    colors[index * 3 + 2] = 0.18 * shade + centerGlow * 0.21;
   }
   geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   geometry.computeVertexNormals();
@@ -306,9 +334,12 @@ function createRayGeometry(): THREE.BufferGeometry {
     for (let index = 0; index < 5; index++) {
       const geometry = new THREE.ConeGeometry(85 + index * 13, 1450, 5, 1, true);
       geometry.rotateZ((index - 2) * 0.055);
-      geometry.translate((index - 2) * 390, 620, -180 + (index % 2) * 330);
+      geometry.translate((index - 2) * 720, 620, -520 + (index % 2) * 1040);
       sources.push(geometry);
     }
+    const centerShaft = new THREE.CylinderGeometry(92, 240, 1350, 10, 1, true);
+    centerShaft.translate(KELP_REALM_CENTER.x, 680, KELP_REALM_CENTER.z);
+    sources.push(centerShaft);
     const merged = mergeGeometries(sources, false);
     if (!merged) throw new Error('Kelp realm rays could not be merged');
     return merged;
@@ -639,6 +670,117 @@ function createPointGeometry(count: number, radius: number, height: number, seed
   return geometry;
 }
 
+function createCenterMoteColumnGeometry(): THREE.BufferGeometry {
+  const rng = seededRandom(0x43454e54);
+  const positions = new Float32Array(180 * 3);
+  for (let index = 0; index < 180; index++) {
+    const angle = rng() * Math.PI * 2;
+    const radius = 24 + Math.sqrt(rng()) * 105;
+    positions[index * 3] = Math.cos(angle) * radius;
+    positions[index * 3 + 1] = rng() * 480;
+    positions[index * 3 + 2] = Math.sin(angle) * radius;
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
+function createCenterPedestalGeometry(): THREE.BufferGeometry {
+  const sources: THREE.BufferGeometry[] = [];
+  try {
+    const base = new THREE.CylinderGeometry(135, 160, 34, 16);
+    base.translate(0, 17, 0);
+    sources.push(base);
+    const lip = new THREE.TorusGeometry(125, 11, 6, 20);
+    lip.rotateX(Math.PI / 2);
+    lip.translate(0, 38, 0);
+    sources.push(lip);
+    const shell = new THREE.SphereGeometry(150, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.58);
+    shell.scale(1.28, 0.52, 0.92);
+    shell.rotateX(Math.PI);
+    shell.translate(0, 46, 0);
+    sources.push(shell);
+    const merged = mergeGeometries(sources, false);
+    if (!merged) throw new Error('Kelp realm center pedestal could not be merged');
+    return merged;
+  } finally {
+    for (const source of sources) source.dispose();
+  }
+}
+
+function createCenterRingGeometry(): THREE.BufferGeometry {
+  const sources: THREE.BufferGeometry[] = [];
+  try {
+    const lower = new THREE.TorusGeometry(118, 5, 6, 32);
+    lower.rotateX(Math.PI / 2.8);
+    lower.rotateZ(0.34);
+    sources.push(lower);
+    const upper = new THREE.TorusGeometry(148, 4, 6, 32);
+    upper.rotateX(Math.PI / 1.7);
+    upper.rotateY(-0.48);
+    sources.push(upper);
+    const merged = mergeGeometries(sources, false);
+    if (!merged) throw new Error('Kelp realm center rings could not be merged');
+    return merged;
+  } finally {
+    for (const source of sources) source.dispose();
+  }
+}
+
+function setGeometryColor(geometry: THREE.BufferGeometry, color: THREE.Color): void {
+  const count = geometry.getAttribute('position').count;
+  const colors = new Float32Array(count * 3);
+  for (let index = 0; index < count; index++) color.toArray(colors, index * 3);
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+}
+
+function createCorridorDecorGeometry(): THREE.BufferGeometry {
+  const sources: THREE.BufferGeometry[] = [];
+  const aqua = new THREE.Color(0x78ffe1);
+  const violet = new THREE.Color(0xbba4ff);
+  try {
+    for (let row = 0; row < KELP_REALM_ROWS; row++) {
+      for (let col = 0; col < KELP_REALM_COLS; col++) {
+        if (!isKelpRealmCorridorCell(row, col)) continue;
+        if ((row * 31 + col * 17) % 9 !== 0) continue;
+        const x = kelpRealmCellCenterX(col);
+        const z = kelpRealmCellCenterZ(row);
+        if (Math.hypot(x - KELP_REALM_CENTER.x, z - KELP_REALM_CENTER.z) < KELP_REALM_CELL_WU * 1.7) continue;
+        if (KELP_REALM_DEAD_END_DISCOVERIES.some(
+          (discovery) => Math.hypot(x - discovery.x, z - discovery.z) < KELP_REALM_CELL_WU * 1.1,
+        )) continue;
+        if (KELP_REALM_BEACON_GRAPH.nodes.some(
+          (node) => Math.hypot(x - node.x, z - node.z) < KELP_REALM_CELL_WU * 0.6,
+        )) continue;
+        const rng = seededRandom(0x434f5252 + row * 977 + col * 37);
+        for (let accent = 0; accent < 3; accent++) {
+          const bulb = new THREE.SphereGeometry(5 + rng() * 4, 6, 4);
+          setGeometryColor(bulb, accent === 1 ? violet : aqua);
+          bulb.translate(
+            x + (rng() - 0.5) * 92,
+            9 + accent * 7 + rng() * 8,
+            z + (rng() - 0.5) * 92,
+          );
+          sources.push(bulb);
+        }
+        const frond = new THREE.ConeGeometry(8 + rng() * 4, 30 + rng() * 18, 5);
+        setGeometryColor(frond, violet);
+        frond.translate(x + (rng() - 0.5) * 78, 15, z + (rng() - 0.5) * 78);
+        sources.push(frond);
+      }
+    }
+    const merged = mergeGeometries(sources, false);
+    if (!merged) throw new Error('Kelp realm corridor decor could not be merged');
+    merged.computeBoundingBox();
+    merged.computeBoundingSphere();
+    return merged;
+  } finally {
+    for (const source of sources) source.dispose();
+  }
+}
+
 const beaconVertexRanges = new Map<string, { start: number; count: number }>();
 const beaconIdleColor = new THREE.Color(0x72ffe0);
 const beaconCenterColor = new THREE.Color(0xb9fff1);
@@ -784,28 +926,31 @@ function RealmEnvironment({ forceWebGL }: { forceWebGL: boolean }) {
   const discoveries = useDiscoveryResources(forceWebGL);
   const motesRef = useRef<THREE.Points>(null);
   const orbitRef = useRef<THREE.Points>(null);
+  const centerRingsRef = useRef<THREE.Mesh>(null);
   const resources = useMemo(() => {
     const floorGeometry = createFloorGeometry();
     const floorMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0 });
     const rayGeometry = createRayGeometry();
     const rayMaterial = createKelpRealmRayMaterial();
-    const moteGeometry = createPointGeometry(700, KELP_REALM_FOOTPRINT_WU * 0.7, 760, 0x4d4f5445);
+    const moteGeometry = createPointGeometry(900, KELP_REALM_FOOTPRINT_WU * 0.52, 720, 0x4d4f5445);
     const moteMaterial = new THREE.PointsMaterial({ color: 0x8fffe3, size: 5, transparent: true, opacity: 0.42, depthWrite: false, sizeAttenuation: true });
     const beaconGeometry = createBeaconGeometry();
     const beaconMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true, transparent: true, opacity: 0.82, fog: false });
     const sporeGeometry = createKelpRealmSporeGeometry();
     const sporeMaterial = createKelpRealmSporeMaterial();
-    const shellGeometry = new THREE.SphereGeometry(180, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.58);
-    shellGeometry.scale(1.25, 0.55, 0.9);
-    shellGeometry.rotateX(Math.PI);
-    shellGeometry.translate(KELP_REALM_CENTER.x, 20, KELP_REALM_CENTER.z);
-    const shellMaterial = new THREE.MeshStandardMaterial({ color: 0x315f56, roughness: 0.72, metalness: 0.08, side: THREE.DoubleSide });
-    const pearlGeometry = new THREE.SphereGeometry(58, 16, 12);
-    pearlGeometry.translate(KELP_REALM_CENTER.x, 98, KELP_REALM_CENTER.z);
-    const pearlMaterial = new THREE.MeshBasicMaterial({ color: 0xb9fff1, transparent: true, opacity: 0.9, fog: false });
-    const orbitGeometry = createPointGeometry(96, 180, 90, 0x50454152);
-    const orbitMaterial = new THREE.PointsMaterial({ color: 0xd2fff4, size: 7, transparent: true, opacity: 0.62, depthWrite: false });
-    return { floorGeometry, floorMaterial, rayGeometry, rayMaterial, moteGeometry, moteMaterial, beaconGeometry, beaconMaterial, sporeGeometry, sporeMaterial, shellGeometry, shellMaterial, pearlGeometry, pearlMaterial, orbitGeometry, orbitMaterial };
+    const shellGeometry = createCenterPedestalGeometry();
+    shellGeometry.translate(KELP_REALM_CENTER.x, 0, KELP_REALM_CENTER.z);
+    const shellMaterial = new THREE.MeshStandardMaterial({ color: 0x42786d, roughness: 0.66, metalness: 0.14, side: THREE.DoubleSide });
+    const pearlGeometry = new THREE.SphereGeometry(78, 20, 14);
+    pearlGeometry.translate(KELP_REALM_CENTER.x, 168, KELP_REALM_CENTER.z);
+    const pearlMaterial = new THREE.MeshBasicMaterial({ color: 0xd7fff6, transparent: true, opacity: 0.94, fog: false });
+    const orbitGeometry = createCenterMoteColumnGeometry();
+    const orbitMaterial = new THREE.PointsMaterial({ color: 0xe0fff8, size: 8, transparent: true, opacity: 0.68, depthWrite: false, fog: false });
+    const centerRingGeometry = createCenterRingGeometry();
+    const centerRingMaterial = new THREE.MeshBasicMaterial({ color: 0x9ffff0, transparent: true, opacity: 0.64, depthWrite: false, blending: THREE.AdditiveBlending, fog: false });
+    const corridorDecorGeometry = createCorridorDecorGeometry();
+    const corridorDecorMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true, transparent: true, opacity: 0.7, depthWrite: false, blending: THREE.AdditiveBlending });
+    return { floorGeometry, floorMaterial, rayGeometry, rayMaterial, moteGeometry, moteMaterial, beaconGeometry, beaconMaterial, sporeGeometry, sporeMaterial, shellGeometry, shellMaterial, pearlGeometry, pearlMaterial, orbitGeometry, orbitMaterial, centerRingGeometry, centerRingMaterial, corridorDecorGeometry, corridorDecorMaterial };
   }, []);
 
   useEffect(() => () => {
@@ -840,7 +985,14 @@ function RealmEnvironment({ forceWebGL }: { forceWebGL: boolean }) {
       motesRef.current.rotation.y += delta * 0.008;
       motesRef.current.position.y = Math.sin(clock.elapsedTime * 0.12) * 18;
     }
-    if (orbitRef.current) orbitRef.current.rotation.y += delta * 0.16;
+    if (orbitRef.current) {
+      orbitRef.current.rotation.y += delta * 0.12;
+      orbitRef.current.position.y = 28 + Math.sin(clock.elapsedTime * 0.42) * 10;
+    }
+    if (centerRingsRef.current) {
+      centerRingsRef.current.rotation.y += delta * 0.22;
+      centerRingsRef.current.rotation.z = Math.sin(clock.elapsedTime * 0.3) * 0.08;
+    }
     resources.pearlMaterial.opacity = 0.78 + Math.sin(clock.elapsedTime * 1.1) * 0.16;
   });
 
@@ -855,7 +1007,9 @@ function RealmEnvironment({ forceWebGL }: { forceWebGL: boolean }) {
       <mesh geometry={resources.sporeGeometry} material={resources.sporeMaterial} matrixAutoUpdate={false} />
       <mesh geometry={resources.shellGeometry} material={resources.shellMaterial} matrixAutoUpdate={false} />
       <mesh geometry={resources.pearlGeometry} material={resources.pearlMaterial} matrixAutoUpdate={false} />
-      <points ref={orbitRef} geometry={resources.orbitGeometry} material={resources.orbitMaterial} position={[KELP_REALM_CENTER.x, 80, KELP_REALM_CENTER.z]} />
+      <points ref={orbitRef} geometry={resources.orbitGeometry} material={resources.orbitMaterial} position={[KELP_REALM_CENTER.x, 28, KELP_REALM_CENTER.z]} />
+      <mesh ref={centerRingsRef} geometry={resources.centerRingGeometry} material={resources.centerRingMaterial} position={[KELP_REALM_CENTER.x, 168, KELP_REALM_CENTER.z]} />
+      <mesh geometry={resources.corridorDecorGeometry} material={resources.corridorDecorMaterial} matrixAutoUpdate={false} />
     </>
   );
 }
@@ -866,7 +1020,7 @@ export default function KelpRealmScene({ forceWebGL }: { forceWebGL: boolean }) 
     const previousBackground = scene.background;
     const previousFog = scene.fog;
     scene.background = FOG_COLOR;
-    scene.fog = new THREE.Fog(FOG_COLOR, 450, 4200);
+    scene.fog = new THREE.Fog(FOG_COLOR, 450, 1200);
     return () => {
       scene.background = previousBackground;
       scene.fog = previousFog;
@@ -888,9 +1042,11 @@ export const KELP_REALM_SCENE_BUDGET = Object.freeze({
   kelpDrawCalls: VARIANTS.length,
   discoveryDrawCalls: KELP_REALM_DISCOVERY_TYPES.length,
   sporeDrawCalls: 1,
-  environmentDrawCalls: 14,
+  centerShowpieceAddedDrawCalls: 1,
+  corridorDecorDrawCalls: 1,
+  environmentDrawCalls: 16,
   maxAvatarDrawCalls: 14,
-  maxTotalDrawCallsIncludingAvatar: 28,
+  maxTotalDrawCallsIncludingAvatar: 30,
   hardTotalDrawCallCeiling: 32,
   wallHeightWu: KELP_REALM_WALL_HEIGHT_WU,
 });

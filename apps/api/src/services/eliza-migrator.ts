@@ -117,7 +117,11 @@ export async function assertAgentsTableExists(): Promise<{
 
   try {
     const { default: postgres } = await import('postgres');
-    const sql = postgres(postgresUrl, { max: 1, prepare: false });
+    const sql = postgres(postgresUrl, {
+      max: 1,
+      prepare: false,
+      connect_timeout: 10,
+    });
     try {
       // Any query against the `agents` table will throw
       //   "relation \"agents\" does not exist"

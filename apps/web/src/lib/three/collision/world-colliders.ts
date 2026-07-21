@@ -34,11 +34,6 @@
 // ---------------------------------------------------------------------------
 
 import { buildingZones, TILE_SIZE, MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
-import {
-  KELP_FOREST_PORTAL_HALF_X_WU,
-  KELP_FOREST_PORTAL_HALF_Z_WU,
-  KELP_FOREST_PORTAL_WORLD_CENTER,
-} from '@clawville/shared';
 
 const HALF_W = MAP_WIDTH / 2;  // 11264 (704 × 32 / 2)
 const HALF_H = MAP_HEIGHT / 2; // 11264 (704 × 32 / 2)
@@ -334,15 +329,8 @@ function buildColliders(): Collider2D[] {
     { id: 'quest-npc',            centerX:  -110, centerZ:   -60, halfX:  40, halfZ:  40, kind: 'prop' },
     { id: 'town-guide',           centerX:     0, centerZ:   240, halfX:  40, halfZ:  40, kind: 'prop' },
     // Kelp Forest portal arch plane — position/extents come from the shared
-    // constants (single source with the server registration + clearance test),
-    // so a portal move can never leave this client AABB behind. The return
-    // spawn is 240 wu south, outside this AABB + the 25-wu chibi expansion.
-    { id: 'kelp-forest-portal',
-      centerX: KELP_FOREST_PORTAL_WORLD_CENTER.x,
-      centerZ: KELP_FOREST_PORTAL_WORLD_CENTER.z,
-      halfX: KELP_FOREST_PORTAL_HALF_X_WU,
-      halfZ: KELP_FOREST_PORTAL_HALF_Z_WU,
-      kind: 'prop' },
+    // constants, which remain authoritative for rendering and clearance against
+    // OTHER colliders. No client collider exists by design; the arch is passable.
   ];
   colliders.push(...PROPS);
 
