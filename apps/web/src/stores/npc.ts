@@ -92,6 +92,10 @@ export interface NpcSpriteState {
    * identical, so the clamp is benign.
    */
   isRemotePlayer?: boolean;
+  /** Last server-broadcast owned emote clip; consumed only when emoteSeq changes. */
+  emoteClip?: string;
+  /** Monotonic per-body server emote trigger sequence. */
+  emoteSeq?: number;
 }
 
 export interface NpcChatBubble {
@@ -158,6 +162,8 @@ interface ServerSnapshot {
     isOpenClaw?: boolean;
     activity?: string;
     activityEmoji?: string;
+    emoteClip?: string;
+    emoteSeq?: number;
     intentDescription?: string;
     combatAction?: string | null;
     combatActionAt?: number;
@@ -497,6 +503,8 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
         facingAngle: prev?.facingAngle ?? null,
         // Preserve client-side seed value — server snapshots never carry defaultIdleClip.
         defaultIdleClip: prev?.defaultIdleClip,
+        emoteClip: n.emoteClip,
+        emoteSeq: n.emoteSeq,
       };
       // 2026-05-11 — Position mutation pattern.
       // React-rendered NPC components subscribe via useShallow(s => s.npcs),
@@ -542,6 +550,10 @@ export const useNpcStore = create<NpcStoreState>((set, get) => ({
         prev.combatAction = candidate.combatAction;
         prev.combatActionAt = candidate.combatActionAt;
         prev.inventory = candidate.inventory;
+        // Broadcast emotes are deliberately excluded from npcFieldsEqual:
+        // useFrame observes these through the preserved object identity.
+        prev.emoteClip = candidate.emoteClip;
+        prev.emoteSeq = candidate.emoteSeq;
         // facingAngle stays on prev — never overwritten by SSE.
         return prev;
       }

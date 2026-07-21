@@ -100,6 +100,7 @@ import { warnIfTestPartnerPubkeyEnabled } from './services/partner-signature';
 import { fingerprintMiddleware } from './middleware/fingerprint';
 import { jsonBodyGuard } from './middleware/json-body-guard';
 import { cosmeticsRoutes } from './routes/cosmetics';
+import { kelpRoutes } from './routes/kelp';
 import { dashAuthRoutes } from './routes/dash-auth';
 import { wagerRoutes } from './routes/wager';
 // SAP Option C — on-chain agent identity + USDC escrow rail (gated OFF + devnet +
@@ -308,6 +309,7 @@ app.route('/api/chat/transient', transientChatRoutes);
 app.route('/api/i18n', i18nRoutes);
 app.route('/api/items', itemRoutes);
 app.route('/api/cosmetics', cosmeticsRoutes);
+app.route('/api/kelp', kelpRoutes);
 app.route('/api/dash-auth', dashAuthRoutes);
 app.route('/api/npc', npcRoutes);
 // Multiplayer Phase 1 — room registry + per-room snapshot SSE.
@@ -829,6 +831,28 @@ process.on('uncaughtException', (err) => {
     startBodyIdleSweeper();
   } catch (err) {
     console.error('[API] Body idle sweeper failed to start:', err);
+  }
+
+  // 2026-07-20 — prune transient ElizaOS conversation transcripts after the
+  // boot settle window, then daily. Knowledge memories are never touched.
+  try {
+    const { startMessageMemorySweeper } = await import(
+      './services/message-memory-sweeper'
+    );
+    startMessageMemorySweeper();
+  } catch (err) {
+    console.error('[API] Message memory sweeper failed to start:', err);
+  }
+
+  // 2026-07-20 — send the process-local inference usage heartbeat to Telegram:
+  // first after the boot settle window, then hourly. Production-default, fail-soft.
+  try {
+    const { startInferenceUsageReporter } = await import(
+      './services/inference-usage-reporter'
+    );
+    startInferenceUsageReporter();
+  } catch (err) {
+    console.error('[API] Inference usage reporter failed to start:', err);
   }
 
   // 2026-07-13 — start the COVENANT CHAIN SEALER. Every 60s it assigns the
@@ -1519,6 +1543,22 @@ async function gracefulShutdown(signal: string) {
       stopSessionSweeper();
     } catch {
       // If the sweeper module failed to load earlier, there's nothing to stop.
+    }
+    try {
+      const { stopMessageMemorySweeper } = await import(
+        './services/message-memory-sweeper'
+      );
+      stopMessageMemorySweeper();
+    } catch {
+      // If the sweeper module failed to load earlier, there's nothing to stop.
+    }
+    try {
+      const { stopInferenceUsageReporter } = await import(
+        './services/inference-usage-reporter'
+      );
+      stopInferenceUsageReporter();
+    } catch {
+      // If the reporter module failed to load earlier, there's nothing to stop.
     }
     try {
       const { stopWagerIntentReconciler } = await import(

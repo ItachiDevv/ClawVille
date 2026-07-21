@@ -253,10 +253,10 @@ export async function conductTeacherTurn(
           platformAgentId: system.locationAgent.platformAgentId,
         },
         conversational: true,
-        // Cost win (P1 slice 4): a house teacher turn carries the teacher's full
-        // merged SKILL.md corpus — run it on TEXT_SMALL (gpt-4o-mini) rather than
-        // the default TEXT_LARGE (gpt-4o). Verified-safe: the reply is short,
-        // teachable text, not a reasoning-heavy generation.
+        // Context diet (2026-07-19): a house teacher turn retrieves at most five
+        // relevant chunks from the teacher's embedded SKILL.md corpus. Keep it on
+        // TEXT_SMALL (gpt-4o-mini): the reply is short, teachable text, not a
+        // reasoning-heavy generation.
         modelType: 'TEXT_SMALL',
       });
       reply = (response.content ?? '').trim();

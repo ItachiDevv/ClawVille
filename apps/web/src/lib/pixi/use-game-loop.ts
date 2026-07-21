@@ -1,5 +1,13 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useGameStore, avatarPositionRef, type MovementDirection } from '@/stores/game';
+import {
+  didCrossKelpForestPortal,
+  isKelpForestPortalProximate,
+} from '@/lib/three/character-positions';
+import {
+  resetKelpForestWalkInLatch,
+  triggerKelpForestWalkIn,
+} from '@/lib/three/kelp-forest-transition';
 import { useKeyboard } from './use-keyboard';
 
 const SPEED = 200; // pixels per second
@@ -25,6 +33,18 @@ interface GameLoopOptions {
  */
 export function useGameLoop({ mapWidth, mapHeight, buildingZones, isSpectator = false }: GameLoopOptions) {
   const keyboard = useKeyboard();
+  const previousWorldXRef = useRef(avatarPositionRef.x - mapWidth / 2);
+  const previousWorldZRef = useRef(avatarPositionRef.y - mapHeight / 2);
+  const kelpPortalMountResetRef = useRef(false);
+
+  useEffect(() => {
+    if (!kelpPortalMountResetRef.current) {
+      resetKelpForestWalkInLatch();
+      kelpPortalMountResetRef.current = true;
+    }
+    previousWorldXRef.current = avatarPositionRef.x - mapWidth / 2;
+    previousWorldZRef.current = avatarPositionRef.y - mapHeight / 2;
+  }, [mapWidth, mapHeight]);
 
   const tick = useCallback(
     (delta: number) => {
@@ -53,6 +73,8 @@ export function useGameLoop({ mapWidth, mapHeight, buildingZones, isSpectator = 
 
         if (vx === 0 && vy === 0) {
           store.setMovementDirection('idle');
+          previousWorldXRef.current = avatarPositionRef.x - mapWidth / 2;
+          previousWorldZRef.current = avatarPositionRef.y - mapHeight / 2;
           return;
         }
 
@@ -71,23 +93,43 @@ export function useGameLoop({ mapWidth, mapHeight, buildingZones, isSpectator = 
         newX = Math.max(16, Math.min(mapWidth - 16, newX));
         newY = Math.max(16, Math.min(mapHeight - 16, newY));
         store.setAvatarPosition(newX, newY);
+        previousWorldXRef.current = newX - mapWidth / 2;
+        previousWorldZRef.current = newY - mapHeight / 2;
         return;
       }
 
       // ---- Normal (non-spectator) mode ----
 
+      // Seed the segment from the authoritative frame-start position. An
+      // external spawn/teleport between ticks must never look like a portal
+      // crossing, even when movement input is already held.
+      previousWorldXRef.current = avatarPositionRef.x - mapWidth / 2;
+      previousWorldZRef.current = avatarPositionRef.y - mapHeight / 2;
+
       // Handle Escape to exit building
       if (keyboard.wasJustPressed('escape') && store.chatOpen) {
         store.exitBuilding();
+        previousWorldXRef.current = avatarPositionRef.x - mapWidth / 2;
+        previousWorldZRef.current = avatarPositionRef.y - mapHeight / 2;
         return;
       }
 
       // Skip movement when frozen
-      if (store.movementFrozen) return;
+      if (store.movementFrozen) {
+        previousWorldXRef.current = avatarPositionRef.x - mapWidth / 2;
+        previousWorldZRef.current = avatarPositionRef.y - mapHeight / 2;
+        return;
+      }
 
-      // Handle E to enter building
+      // Handle E to enter a building or walk-in venue.
       if (keyboard.wasJustPressed('e') && store.nearLocation) {
-        store.enterBuilding(store.nearLocation);
+        if (store.nearLocation === 'kelp-forest-portal') {
+          triggerKelpForestWalkIn();
+        } else {
+          store.enterBuilding(store.nearLocation);
+        }
+        previousWorldXRef.current = avatarPositionRef.x - mapWidth / 2;
+        previousWorldZRef.current = avatarPositionRef.y - mapHeight / 2;
         return;
       }
 
@@ -123,7 +165,13 @@ export function useGameLoop({ mapWidth, mapHeight, buildingZones, isSpectator = 
       }
       store.setMovementDirection(dir);
 
-      if (vx === 0 && vy === 0) return;
+      if (vx === 0 && vy === 0) {
+        const worldX = avatarPositionRef.x - mapWidth / 2;
+        const worldZ = avatarPositionRef.y - mapHeight / 2;
+        previousWorldXRef.current = worldX;
+        previousWorldZRef.current = worldZ;
+        return;
+      }
 
       // Apply velocity (delta is in frames at 60fps, so delta/60 gives seconds)
       const dt = delta / 60;
@@ -135,6 +183,21 @@ export function useGameLoop({ mapWidth, mapHeight, buildingZones, isSpectator = 
       newY = Math.max(16, Math.min(mapHeight - 16, newY));
 
       store.setAvatarPosition(newX, newY);
+
+      const newWorldX = newX - mapWidth / 2;
+      const newWorldZ = newY - mapHeight / 2;
+      if (
+        didCrossKelpForestPortal(
+          previousWorldXRef.current,
+          previousWorldZRef.current,
+          newWorldX,
+          newWorldZ,
+        )
+      ) {
+        triggerKelpForestWalkIn();
+      }
+      previousWorldXRef.current = newWorldX;
+      previousWorldZRef.current = newWorldZ;
 
       // Zone overlap detection
       let nearZone: string | null = null;
@@ -148,6 +211,12 @@ export function useGameLoop({ mapWidth, mapHeight, buildingZones, isSpectator = 
           nearZone = zone.id;
           break;
         }
+      }
+      if (
+        nearZone === null
+        && isKelpForestPortalProximate(newWorldX, newWorldZ)
+      ) {
+        nearZone = 'kelp-forest-portal';
       }
       if (nearZone !== store.nearLocation) {
         store.setNearLocation(nearZone);

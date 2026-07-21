@@ -898,6 +898,26 @@ describe('cosmetic_purchase fulfiller — conservation', () => {
     expect(owned).toEqual({ ok: false, code: 'already_owned' });
   });
 
+  it('refuses the reward-only Kelp collectible on every purchasable checkout rail', async () => {
+    const q = fakeDb.query as Record<string, { findFirst: (o: unknown) => Promise<unknown> }>;
+    const skuId = 'b6e7c1de-0000-4000-8000-000000000099';
+    q.cosmeticSkus = {
+      findFirst: async () => ({
+        id: skuId,
+        slug: 'kelp-maze-collectible',
+        priceCt: 0,
+        exclusiveCurrency: 'REWARD_ONLY',
+        availableFrom: null,
+        availableUntil: null,
+        supplyCap: null,
+        soldCount: 0,
+      }),
+    };
+
+    const rewardOnly = await cosmeticFulfillerModule.resolveCosmeticCheckoutItem('avatar-1', skuId);
+    expect(rewardOnly).toEqual({ ok: false, code: 'wrong_currency' });
+  });
+
   it('quote resolver refuses a sold-out SKU for a non-owner', async () => {
     const q = fakeDb.query as Record<string, { findFirst: (o: unknown) => Promise<unknown> }>;
     const skuId = 'b6e7c1de-0000-4000-8000-000000000003';

@@ -16,6 +16,11 @@ import {
   MAP_WIDTH,
   MAP_HEIGHT,
 } from '@/lib/pixi/tilemap-data';
+import {
+  KELP_FOREST_PORTAL_PROMPT_RADIUS_WU,
+  KELP_FOREST_PORTAL_WORLD_CENTER,
+} from './kelp-forest-location';
+import { KELP_FOREST_PORTAL_HALF_X_WU } from '@clawville/shared';
 
 // ---------------------------------------------------------------------------
 // Shared constants (imported by arena-location-npcs.tsx — single source of truth)
@@ -176,6 +181,54 @@ const COVE_TUNNEL_PROMPT_Z_HALF = 150;
  *  collision wall (-3586) so it is always reachable on foot. */
 export const COVE_AUTO_ENTER_MAX_X = -3450;
 const COVE_AUTO_ENTER_Z_HALF = 120;
+
+// Kelp Forest realm portal — world-side human prompt only. The connected-agent
+// action and reward path land in the next commit (PV26), not in Run A.
+const KELP_PORTAL_PROMPT_RADIUS_SQ =
+  KELP_FOREST_PORTAL_PROMPT_RADIUS_WU * KELP_FOREST_PORTAL_PROMPT_RADIUS_WU;
+
+/** Zero-allocation world-space proximity check for the Kelp Forest portal. */
+export function isKelpForestPortalProximate(
+  playerWorldX: number,
+  playerWorldZ: number,
+): boolean {
+  // MUST key off the PORTAL center, not KELP_FOREST_CENTER — that alias is the
+  // NE GROVE (scenery) and silently kept the prompt there when the portal moved
+  // to the town center (founder-reported walk-in failure, 2026-07-20).
+  const dx = playerWorldX - KELP_FOREST_PORTAL_WORLD_CENTER.x;
+  const dz = playerWorldZ - KELP_FOREST_PORTAL_WORLD_CENTER.z;
+  return dx * dx + dz * dz <= KELP_PORTAL_PROMPT_RADIUS_SQ;
+}
+
+/**
+ * True when a movement segment crosses the thin Kelp portal plane through its
+ * visible X opening. X is interpolated at the plane so diagonal movement past
+ * the arch edge is rejected. Pure primitives and zero allocation.
+ */
+export function didCrossKelpForestPortal(
+  prevX: number,
+  prevZ: number,
+  newX: number,
+  newZ: number,
+): boolean {
+  if (prevZ === newZ) return false;
+
+  const portalZ = KELP_FOREST_PORTAL_WORLD_CENTER.z;
+  const prevSide = prevZ - portalZ;
+  const newSide = newZ - portalZ;
+  if (
+    prevSide !== 0
+    && newSide !== 0
+    && ((prevSide < 0) === (newSide < 0))
+  ) {
+    return false;
+  }
+
+  const crossingT = (portalZ - prevZ) / (newZ - prevZ);
+  const crossingX = prevX + (newX - prevX) * crossingT;
+  return Math.abs(crossingX - KELP_FOREST_PORTAL_WORLD_CENTER.x)
+    <= KELP_FOREST_PORTAL_HALF_X_WU;
+}
 
 /**
  * isCoveProximate — true when the player is within the cove entry-prompt range:

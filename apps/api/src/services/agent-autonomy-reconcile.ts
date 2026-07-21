@@ -40,7 +40,8 @@ import { and, eq, gt, sql } from 'drizzle-orm';
 import { db, agentBots } from '@clawville/database';
 import { agentAutonomyDriver } from './agent-autonomy-driver';
 import { npcSimulation } from './npc-simulation';
-import { activateAutonomyForOwner } from './agent-autonomy-activation';
+import { activateAutonomyForReconcile } from './agent-autonomy-activation';
+import { isAutonomyActive } from './autonomy-standby';
 import { sessionDigest } from './session-digest';
 
 export interface ReconcileResult {
@@ -84,7 +85,7 @@ export const reconcileSeams = {
       .filter((r): r is { agentId: string; userId: string } => !!r.userId)
       .map((r) => ({ agentId: r.agentId, userId: r.userId }));
   },
-  activate: activateAutonomyForOwner,
+  activate: activateAutonomyForReconcile,
 };
 
 let reconcileInFlight = false;
@@ -106,6 +107,7 @@ export async function reconcileDurableAutonomy(): Promise<ReconcileResult> {
   reconcileInFlight = true;
   try {
     const owners = await reconcileSeams.listFlaggedLiveOwners();
+    if (!isAutonomyActive()) return result;
     result.candidates = owners.length;
     for (const { agentId, userId } of owners) {
       // Already driving in THIS process — nothing to re-enroll.
@@ -120,7 +122,13 @@ export async function reconcileDurableAutonomy(): Promise<ReconcileResult> {
         continue;
       }
       try {
+        if (!isAutonomyActive()) break;
         const r = await reconcileSeams.activate(userId);
+        // Activation awaits avatar/session work. If manual standby lands inside
+        // it, cancel the rest of the pass before classifying this result or
+        // advancing to another owner. Its reconcile-origin kick is also
+        // non-auto-arming, closing the final check-to-kick race.
+        if (!isAutonomyActive()) break;
         if (r.ok) {
           result.enrolled++;
         } else if (r.code === 'autonomy_capacity') {

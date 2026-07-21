@@ -60,6 +60,7 @@ import type { AgentWireProtocol, AgentSubstrateRegistration } from '@clawville/s
 import {
   buildAvatarSessionConfig,
   buildOverrideSessionConfig,
+  hasRealDeclaredGateway,
   isRowRestorableFromFacts,
 } from './agent-session-config';
 import { isReservedPartnerIdentityType } from './reserved-agent-namespaces';
@@ -154,8 +155,11 @@ export type ReconnectSessionPlan =
          * present-and-mismatched-hash check.
          */
         sessionKeyHash: string;
-        /** Persisted only when the caller re-supplied it (mirrors /connect). */
-        gatewayUrl?: string;
+        /**
+         * A selected caller gateway, or null to heal a stale URL ignored by a
+         * native/pull transport. Undefined means leave the row fact unchanged.
+         */
+        gatewayUrl?: string | null;
         /** Persisted only when the caller re-supplied it (mirrors /connect). */
         protocol?: AgentWireProtocol;
       };
@@ -205,38 +209,55 @@ export function planReconnectSession(input: {
   const ledgerCapable = bot.userId !== null && bot.userId === provenUserId;
   const boundUserId = bot.userId ?? null;
 
-  // Credential resolution. A row that is not restorable from its persisted
-  // identity+gateway facts can only get a WORKING outbound
-  // client when we have a REAL gateway URL to point it at: either re-supplied
-  // now, or persisted on the row (in which case a re-supplied authToken alone
-  // is enough to re-arm it). Anything less → rule 2, DORMANT-INERT.
-  const isRealGatewayType = !isRowRestorableFromFacts(bot.identityType, bot.gatewayUrl);
-  const effectiveGatewayUrl = credentials.gatewayUrl
-    ?? (rowHasRealGateway(bot) ? bot.gatewayUrl! : null);
-  const credentialsSupplied = !!(
+  // Protocol-25 transport normalization. Milady/Hermes use native adapters and
+  // explicit nanoclaw is authoritative pull, so neither may select a caller URL
+  // or token even when a stale row/request carries them. OpenClaw/custom retain
+  // their real-gateway behavior.
+  const selectedProtocol = credentials.protocol ?? bot.protocol;
+  const nativeNoCallerGateway = bot.identityType === 'milady' || bot.identityType === 'hermes';
+  const explicitPull = selectedProtocol === 'nanoclaw';
+  const ignoresCallerGateway = nativeNoCallerGateway || explicitPull;
+  const requestGatewaySupplied = credentials.gatewayUrl !== undefined;
+  const requestHasRealGateway = hasRealDeclaredGateway(credentials.gatewayUrl);
+  const effectiveGatewayUrl = ignoresCallerGateway
+    ? null
+    : requestGatewaySupplied
+      ? requestHasRealGateway ? credentials.gatewayUrl! : null
+      : rowHasRealGateway(bot) ? bot.gatewayUrl! : null;
+  const usesCallerGateway = effectiveGatewayUrl !== null;
+  const credentialsSupplied = !ignoresCallerGateway && !!(
     credentials.gatewayUrl || credentials.authToken || credentials.protocol
   );
-  const canRebuildOutbound = credentialsSupplied && effectiveGatewayUrl !== null;
-  const dormant = isRealGatewayType && !canRebuildOutbound;
+  const canRebuildOutbound = credentialsSupplied && usesCallerGateway;
+  const selectedTransportRestorable = isRowRestorableFromFacts(
+    bot.identityType,
+    effectiveGatewayUrl,
+    undefined,
+    selectedProtocol,
+  );
+  const dormant = !selectedTransportRestorable && !canRebuildOutbound;
 
   const meta = bot.metadata ?? {};
   const stats = meta.stats ?? { ...DEFAULT_STATS };
-  const storedProtocol = credentials.protocol ?? bot.protocol;
+  const storedProtocol = explicitPull
+    ? 'nanoclaw'
+    : nativeNoCallerGateway
+      ? bot.protocol
+      : credentials.protocol ?? bot.protocol;
 
   const base = {
     agentId: bot.agentId,
     sessionId,
     identityType: bot.identityType,
     storedProtocol,
-    // Dormant bodies carry the row's gatewayUrl for fidelity but NEVER POST to
-    // it (the 'nanoclaw' override below is fail-soft, no network). No-gateway
-    // identity types ignore it entirely (builder derives their protocol from
-    // identityType — the D1 rule).
-    gatewayUrl: effectiveGatewayUrl ?? bot.gatewayUrl,
+    // Dormant real-gateway bodies retain their URL for fidelity but NEVER POST
+    // because the nanoclaw override below is fail-soft. Native/pull bodies get
+    // null so builders install only the inert dummy URL.
+    gatewayUrl: effectiveGatewayUrl,
     // The outbound bearer to the agent's OWN gateway — request-scoped only,
     // NEVER persisted (that non-persistence is exactly why real-gateway types
     // are non-restorable and need this proof-carrying path).
-    authToken: dormant ? '' : credentials.authToken ?? '',
+    authToken: usesCallerGateway && !dormant ? credentials.authToken ?? '' : '',
     // autonomyMode deliberately OMITTED — same derivation as restore's
     // non-hatcher branch: resolveAutonomyMode handles Hermes and the internal
     // fail-soft wire as self-managed; everything else is server-managed.
@@ -282,10 +303,18 @@ export function planReconnectSession(input: {
         : undefined,
     persist: {
       sessionKeyHash: sha256Hex(sessionId),
-      // Mirror /connect's returning-row persistence: gatewayUrl only when the
-      // caller supplied one; protocol only when the caller supplied one.
-      ...(credentials.gatewayUrl ? { gatewayUrl: credentials.gatewayUrl } : {}),
-      ...(credentials.protocol ? { protocol: credentials.protocol } : {}),
+      // Native/pull transports actively clear ignored legacy URLs so the row's
+      // persisted fact stays restorable. Selected real gateways retain /connect
+      // behavior. Auth tokens are request-scoped and are NEVER included.
+      ...((ignoresCallerGateway && (rowHasRealGateway(bot) || requestGatewaySupplied)) ||
+      (requestGatewaySupplied && !requestHasRealGateway)
+        ? { gatewayUrl: null }
+        : requestHasRealGateway
+          ? { gatewayUrl: credentials.gatewayUrl }
+          : {}),
+      ...(credentials.protocol && (!nativeNoCallerGateway || explicitPull)
+        ? { protocol: credentials.protocol }
+        : {}),
     },
   };
 }

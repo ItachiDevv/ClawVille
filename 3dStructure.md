@@ -14,6 +14,37 @@
 
 **Prior Last edit:** 2026-07-17 (Reef Race items + race structure round 8): pickup instances now spin about their cached server positions instead of rotating the world-space InstancedMesh around world origin; the self predictor applies the same boost-pad entry-edge kick as server authority for immediate visible pop; a one-draw-call checkered strip anchors spline t=0; and the DOM HUD presents a 2.5s placement splash before the existing finish-wait card. The lobby owns the full reading card while countdown keeps only a compact control strip. No ChaseCamera structure, reconciliation, wire/protocol, anti-cheat, or settlement path changed. See §10b.
 
+**Last Audited:** 2026-07-20 (**Kelp portal founder placement; local implementation pending founder sign-off.**) The portal moved from `(-600, 250)` to the founder-chosen town-center plaza midpoint `(-547, -120)`, exactly between the bazaar east edge and the town-directory sign on the shop/sign row. `KELP_FOREST_PORTAL_WORLD_CENTER` is now founder-authoritative and boot-validated at `>=200 wu` footprint clearance from every structure plus `>=250 wu` point distance from the sign and spawn, while the former 350-wu origin-nearest derivation remains an advisory suggester only. The shared approach and `/kelp` return spawn auto-move to `(-547, 120)` on the positive-Z side; the server collider, human crossing/prompt, visual arch, and agent/map destinations continue to derive from the shared pin. No client portal collider, crossing/latch logic, route, action verb, wire contract, SKU, or protocol version changed.
+
+**Last Audited:** 2026-07-20 (**Kelp portal close-range walk-through repair; local implementation pending founder browser sign-off.**) The client-only solid `kelp-forest-portal` AABB remains removed, so the arch at the live `KELP_FOREST_PORTAL_WORLD_CENTER` (`-547, -120`) is physically passable. The walk-through entry gate is an allocation-free segment crossing of the portal Z plane, with X interpolated at the crossing and bounded by the 170-wu arch half-width, so diagonal edge misses and single-frame tunnelling are handled correctly. A fresh-mount seed suppresses the first-frame crossing test, every movement path re-seeds the segment origin from its authoritative frame-start position before applying movement so an external spawn or teleport cannot synthesize a crossing, and the transition trigger rejects in-flight, active, or pending duplicates. The former 120-wu arm-hysteresis latch was removed because a live walk-through showed that it swallowed legitimate crossings whose final approach began within 120 wu of the plane; it also did not protect the +240-wu return spawn, which was already beyond its arm distance. Prompt proximity remains deliberately separate from automatic entry because that return spawn is inside the 360-wu prompt radius. Both player render paths, possessed-NPC mode, and the 2D Pixi fallback use the crossing; desktop E and the tappable HUD remain shortcuts. The server route, agent action/executor/manual, protocol version, portal placement, realm, and northeast grove are unchanged.
+
+**Last Audited:** 2026-07-20 (**Kelp realm serenity round; local implementation pending founder visual sign-off.**) The authored 21x21 layout is unchanged while its derived cell scale grows from 200 to 300 wu (4,200 to 6,300 wu footprint) and realm-only kelp walls drop from 800 to 500 wu. Three clustered, color-graded ribbon variants now span 390-500 wu with a bounded 100-wu tip envelope, clearly readable 3.6-4.4 second primary sway, and 1.15-1.55 second micro-ripple through identical native-WebGPU, force-WebGL node, and classic-WebGL bridge math. The chase eye sits 610 wu above the player before pitch (575-wu minimum) and uses an allocation-free player-to-camera slab test against `KELP_REALM_WALL_AABBS`, pulling before the first occluder and re-clamping after smoothing. Camera far is 10,000; dense linear fog at 450/1,200 wu hides the expanded maze beyond roughly two readable corridor runs. The center reuses the floor, ray, pedestal, pearl, and mote draws, then adds one merged rotating-ring draw; all sparse corridor accents merge into one further draw and stay clear of beacon/dead-end/spore vignettes. Honest worst case is 16 environment + at most 14 avatar/cosmetic = 30 draws, within the <=32 Iris Xe ceiling. No layout, beacon, spore, token, route, protocol, portal, SKU, partner, or main-world grove behavior changed.
+
+**Last Audited:** 2026-07-20 (**Kelp Forest portal walk-in repair; local implementation pending visual sign-off.**) The allocation-free prompt-radius primitive now measures from `KELP_FOREST_PORTAL_WORLD_CENTER` at the town center, never the `KELP_FOREST_CENTER` northeast-grove scenery alias. Both VRM/GLB player frame loops, possessed-NPC mode, programmatic path arrival, and the 2D Pixi fallback converge on the same Kelp transition; the shared DOM prompt remains the tap surface. This changes no portal placement, collider, sway, draw call, material, protocol verb, executor, route, or wire contract, and adds no per-frame allocation.
+
+**Last Audited:** 2026-07-20 (**Kelp Forest upgrade Legs A+B; local implementation pending visual sign-off.**) The same 21x21 / 4,200-wu realm now derives a longer winding corridor tree and three spore locations from the shared deepest-dead-end beacon set. All three glowing bulb clusters merge into ONE additive `BufferGeometry` draw, render through the backend-compatible material path on native WebGPU and forced WebGL, and dim collected clusters through transition-only vertex-range recolor with no per-spore meshes or per-frame allocations. Existing sway constants are untouched. The honest worst-case ceiling rises by one draw from 27 to 28 total (14 environment + at most 14 avatar/cosmetic), remaining below the <=32 realm budget and preserving the Iris Xe kill-list.
+
+**Last Audited:** 2026-07-18 (Kelp Forest founder iteration commit 8, local implementation pending visual sign-off): the route allowlists stable slug `kelp-maze-collectible`; its optional placeholder aura renders only when the DB variant declares generic `assetMeta.renderer='orbiting-orbs'`, never from a Pearl-specific slug, name, or asset URL. The renderer merges 1–12 metadata-driven low-poly orbs into one additive/fog-independent geometry, clamps every numeric metadata field against NaN/Infinity, and rotates the retained group with zero per-frame allocation on native WebGPU and forced WebGL. The dedicated DOM HUD—not the Canvas—owns the explicit E/touch claim UI and accessible live status, so no Drei Text/Html/Billboard or extra 3D draw enters the scene. With commit 7, the honest ceiling remains 13 environment + at most 14 avatar/cosmetic draws = 27, below ≤32.
+
+**Last Audited:** 2026-07-18 (Kelp Forest founder iteration commit 7, local implementation pending visual sign-off): the realm's sole authored ASCII source is now a winding 21×21 / 4,200-wu connected corridor tree with exactly one boundary entry, a reachable center, and nine substantial raw dead ends; the 43-cell entry-to-center route turns 16 times and has no direct spawn-center sightline. Every dead-end beacon deterministically derives one discovery, rotating evenly through jellyfish clusters, glowing anemone beds, and giant clams with bubble streams. Each type is merged across all of its vignettes for exactly three new additive, fog-independent, forced-single-pass draws; stable per-vertex phase/weight/bubble attributes drive allocation-free animation through one coefficient source on native WebGPU TSL, force-WebGL node conversion, and classic-WebGL bridge shaders. The honest ledger is 13 environment + at most 14 avatar draws = 27, below the raised ≤32 realm ceiling.
+
+**Last Audited:** 2026-07-18 (Kelp Forest founder iteration commit 6, local implementation pending visual sign-off): realm blades now have a 100-wu one-sided tip envelope (12.5% of the 800-wu wall height), per-blade phase variance, height-squared tip weighting, and 4.6–5.8 second full oscillation periods. The 60-wu corridor-edge root setback plus the widest blade's 26.54-wu authored width/bend radius leaves a conservative 66.9-wu visible gap under opposing maximum sway, above the required 60-wu floor. The northeast grove uses the same 12.5% height fraction and periods. Native WebGPU TSL and force-WebGL/classic-WebGL bridge paths consume one coefficient source for identical four-term displacement math and retain the root-row NaN clamp, with no new per-frame CPU work.
+
+**Realm-budget enforcement:** `/kelp` passes the stable Kelp-collectible SKU allowlist to the shared cosmetic loader. Multi-primitive hats/glasses and unrelated raw-GLSL auras cannot enter the route-isolated scene; with the merged spore-cluster draw its worst case is 14 environment draws + at most 14 avatar/cosmetic draws = 28, below the <=32 ceiling.
+
+**Last Audited:** 2026-07-18 (Kelp Forest realm Run B commit 4, local implementation pending visual sign-off): beacon visits now recolor per-node vertex ranges inside the existing single merged beacon draw; no beacon mesh split occurs. The reward-only Pearl of the Depths renders as six orbiting low-poly pearls merged into one geometry with one additive `MeshBasicMaterial`, so both native WebGPU and forced-WebGL use the same allocation-free rotation path. The real selected avatar plus aura remains within the realm's **≤24 total draw** ceiling. Human proximity uses the shared 72-wu radius and 430-wu/s movement constant; the player spawns at the entry beacon so the chain starts without overlapping the next node. This is compiled/rendering work that still needs founder eyes; no visual sign-off is claimed.
+
+**Last Audited:** 2026-07-18 (Kelp Forest realm Run B commit 3, local implementation pending visual sign-off): the northeast grove retains its deterministic 5,400-blade, governor-gated ambient geometry while an unconditional two-draw portal at world `(7808, -9900)` opens the route-isolated `/kelp` Canvas. The realm derives collision walls and beacon markers from one tested 13×13 shared layout, renders 15,000 merged blades in three wind draws on both renderer backends, and now renders the selected real VRM through the cove-proven per-canvas instance, fit, locomotion, and disposal lifecycle. The complete realm budget is raised to **≤24 total draws** to accommodate the real avatar. Camera near/far is `1/8000`, fog fully hides the realm by 4,200 wu, movement and camera loops allocate nothing per frame, and every memoized realm geometry/material has explicit unmount disposal. This is local work awaiting founder eyes; reward and agent entry are the next commit.
+
+**Last Audited:** 2026-07-18 (inline northeast kelp maze withdrawn): the rejected corner maze, landmark, unconditional render group, and nine shared client/server colliders are removed because the feature was undersized, non-immersive, and collided with the tier-c land ring. The ambient northeast grove remains unchanged at exactly 5,400 deterministic blades and three draws, now filling its complete footprint without a maze carve. The maze is superseded by a portal and dedicated Kelp Forest realm in a separate build; that replacement is not claimed live here.
+
+**Last Audited:** 2026-07-17 (server-broadcast agent emotes, local diff pending visual sign-off): optional `emoteClip`/`emoteSeq` NPC snapshot fields now survive the client store's identity-preserving mutation path. `VRMNpcMesh` consumes sequence changes inside its allocation-free frame loop, validates against the purchasable emote whitelist, suppresses stale mount replay, and cancels a server-owned one-shot when movement resumes. Drift note: this adds an edge-triggered VRM one-shot consumer to the existing snapshot/interpolation path; it adds no binary, preload, draw call, material, light, or asset-cache mutation. See §6f rule 11.
+
+**Last edit:** 2026-07-17 (Meshy fun animation pack, local diff pending visual sign-off): added the 15-clip Meshy-rig `_emotes2.glb` family (12 shop emotes + 3 ambient-only clips), bundle version 1, targeted runtime loading, and idle-only wandering-NPC one-shots. Meshy and Mixamo clips keep separate base scenes because their rest poses differ; donor GLBs live outside `public/`. See §6f.
+
+**Last edit:** 2026-07-16 (pre-existing web strict-TypeScript cleanup; no runtime behavior change): the VRM cosmetic head-fit boundary now uses the upstream `Pick<VRM, 'humanoid' | 'scene'>` surface, preserving the library's `VRMHumanBoneName` parameter contract while accepting loaded VRMs in the preview and player render paths. The deferred resident-preload fallback uses `globalThis.setTimeout` so DOM typings no longer narrow the unsupported-window branch to `never`. Render behavior, avatar/cosmetic fit math, assets, draw calls, and per-frame work are unchanged.
+**Last edit:** 2026-07-17 (Reef Race items + race structure round 8): pickup instances now spin about their cached server positions instead of rotating the world-space InstancedMesh around world origin; the self predictor applies the same boost-pad entry-edge kick as server authority for immediate visible pop; a one-draw-call checkered strip anchors spline t=0; and the DOM HUD presents a 2.5s placement splash before the existing finish-wait card. The lobby owns the full reading card while countdown keeps only a compact control strip. No ChaseCamera structure, reconciliation, wire/protocol, anti-cheat, or settlement path changed. See §10b.
+
 **Prior Last edit:** 2026-07-17 (Reef Race measured render-smoothness round 7): the measured all-kart Y staircase (~29–35wu cliffs at 7–10/s) came from the warm spline query returning a discrete 0.001-LUT `t`; its local minimum now receives allocation-free parabolic sub-sample refinement, which also reaches ChaseCamera automatically through its existing `cam` cache key. Self soft reconciliation still rebases prediction/history immediately, but the screen receives the correction through an inverse render offset damped at `SURF_REBASE_RENDER_DAMPING=10` and capped to 120wu XZ. Wave heave now uses the five-tap board-footprint mean while pitch/roll finite differences and temporal damping remain unchanged. See §10b.
 
 **Prior Last edit:** 2026-07-16 (Reef Race founder playtest round 6): held keyboard steering now recomputes every 30 Hz send tick from the fresh rendered self heading (≤250ms, authority fallback), so it continuously leads the kart instead of waiting for OS key repeat. Self velocity joins fix-your-timestep render blending, and all kart slip-bank lean is exponentially damped at `SURF_BANK_LEAN_DAMPING=8`; the dev pose probe now exposes applied `bank`. Wave-conform glide retunes heave k=10→7 and pitch/roll k=6→3.5; `SURF_RIDE_HEIGHT` is unchanged. ChaseCamera, sim physics, wire protocol, and anti-cheat are unchanged. See §10b.
@@ -187,18 +218,18 @@ Source: `apps/web/src/lib/pixi/tilemap-data.ts:6-10`
 | Constant | Value |
 |---|---|
 | `TILE_SIZE` | 32 px |
-| `MAP_COLS`, `MAP_ROWS` | 576 (Phase 0 land 2026-06-15: 360→576; Phase 6.2: 240→360; Phase 6.1: 160→240) |
-| `MAP_WIDTH`, `MAP_HEIGHT` | 18432 wu (= 576 × 32) |
-| `CENTER_TILE` | 288 (= MAP_COLS / 2) |
-| `HALF_W`, `HALF_H` | 9216 wu |
+| `MAP_COLS`, `MAP_ROWS` | 704 (Phase 1 land: 576→704; Phase 0 land: 360→576) |
+| `MAP_WIDTH`, `MAP_HEIGHT` | 22528 wu (= 704 × 32) |
+| `CENTER_TILE` | 352 (= MAP_COLS / 2) |
+| `HALF_W`, `HALF_H` | 11264 wu |
 
 **Game-space → 3D world:**
-- Game-space (2D pixel plane): `(0..18432, 0..18432)` — origin top-left, +x right, +y down.
-- Three.js world (XZ plane): `(-9216..+9216, -9216..+9216)` — origin center.
+- Game-space (2D pixel plane): `(0..22528, 0..22528)` — origin top-left, +x right, +y down.
+- Three.js world (XZ plane): `(-11264..+11264, -11264..+11264)` — origin center.
 - Conversion: `worldX = gameX - HALF_W; worldZ = gameY - HALF_H` (`World3DCanvas.tsx`, `player-avatar.tsx`, `arena-npcs.tsx`).
-- Village center tile `(288, 288)` → world `(0, 0)`.
+- Village center tile `(352, 352)` → world `(0, 0)`.
 
-**Player spawn (game-px) — SINGLE SOURCE OF TRUTH (S3, 2026-06-16):** `SPAWN_PX = { x: 9216, y: 9756 }` = world center X, 540 wu SOUTH of center (world Z = +540 — ~140 wu south of Nori at world Z = +400, clear of the town-directory sign at world Z = −120). The CLIENT computes this from `MAP_WIDTH/2` + offset (`apps/web/src/stores/game.ts`); the SERVER + DB read the SAME numbers from `@clawville/shared` `world-dimensions.ts` (`SPAWN_PX`, `WORLD_PX_WIDTH/HEIGHT`, `WORLD_CENTER_PX`). `apps/api/src/routes/world.ts` `TOWN_CENTER_X/Y` = `SPAWN_PX`; `avatars.position_x/y` default to `9216, 9756` (literals pinned by comment; migration `0002_avatar_spawn_recenter.sql` resets old rows). A dev-only assertion in `game.ts` fails loud if the tilemap and the shared constants ever drift. **Why this exists:** Land Phase 0 re-centered the client world 5120→18432 (center 2560→9216) but left the server/DB at 2560, so logged-in players' broadcast bodies seated at a corner-ward diagonal; aligning all three layers on one shared constant is the fix. **NPC mode:** the dedicated "You" body (`apps/web/src/stores/npc.ts` `spawnPlayerNpc`) also reads shared `SPAWN_PX` — it previously hardcoded the **11520-era** center `(5760, 6300)`, which the 18432 grow left as the user-visible NPC-mode diagonal spawn.
+**Player spawn (game-px) — SINGLE SOURCE OF TRUTH (S3, 2026-06-16; Phase 1 grow 2026-06-24):** `SPAWN_PX = { x: 11264, y: 11804 }` = world center X, 540 wu SOUTH of center (world Z = +540 — ~140 wu south of Nori at world Z = +400, clear of the town-directory sign at world Z = −120). The CLIENT computes this from `MAP_WIDTH/2` + offset (`apps/web/src/stores/game.ts`); the SERVER + DB read the SAME numbers from `@clawville/shared` `world-dimensions.ts` (`SPAWN_PX`, `WORLD_PX_WIDTH/HEIGHT`, `WORLD_CENTER_PX`). `apps/api/src/routes/world.ts` `TOWN_CENTER_X/Y` = `SPAWN_PX`; `avatars.position_x/y` default to `11264, 11804`. A dev-only assertion in `game.ts` fails loud if the tilemap and shared constants ever drift. **NPC mode:** the dedicated "You" body (`apps/web/src/stores/npc.ts` `spawnPlayerNpc`) also reads shared `SPAWN_PX`.
 
 | Axis | Meaning |
 |---|---|
@@ -209,7 +240,7 @@ Source: `apps/web/src/lib/pixi/tilemap-data.ts:6-10`
 
 Sand floor sits at `y = -2` (`arena-terrain.tsx:203`). Buildings, NPCs, and decorations ground to this plane.
 
-**Phase 1 land grow note (2026-06-24 — pending orchestrator constants freeze):** world will expand 576→704 tiles (18432→22528wu, half 9216→11264wu). The new tier-`c` outer land-parcel ring sits at half-side ~9760wu from origin — within the fog zone (`fog.near=5000, far=10500`). From spawn the ring reads at ~86% fog and materializes on approach; this is intended (see §4 fog note). All 3D render layers already read `MAP_WIDTH` dynamically and scale automatically. The three cove world-position literals (cove-beacon.tsx, cove-entrance.tsx, character-positions.ts) have been fixed to world-absolute constants (`-4160, 0`) so the cove stays at its current position regardless of grid size.
+**Phase 1 land grow (live 2026-06-24):** world expanded 576→704 tiles (18432→22528wu, half 9216→11264wu). The tier-`c` outer land-parcel ring sits at half-side ~9760wu from origin — within the fog zone (`fog.near=5000, far=10500`). From spawn the ring reads at ~86% fog and materializes on approach; this is intended (see §4 fog note). All 3D render layers read `MAP_WIDTH` dynamically. The three cove world-position literals (cove-beacon.tsx, cove-entrance.tsx, character-positions.ts) are world-absolute constants (`-4160, 0`) so the cove stays at its current position regardless of grid size.
 
 ---
 
@@ -219,39 +250,39 @@ Source: `arena-buildings.tsx`. See `WorldContent.md §2` for the building roster
 
 **Ring geometry — Phase 6.2.1 (2026-05-18):**
 
-Ring tuned R=160→130 tiles (5120→4160wu — R=160 was too spaced out from player spawn at (0,0,1300)). Arc spacing ≈ 2178wu (was 2680wu at R=160). 43-tile border clearance on all sides. Grid stays at 360×360.
+Ring tuned R=160→130 tiles (5120→4160wu — R=160 was too spaced out from player spawn at (0,0,1300)). Arc spacing ≈ 2178wu (was 2680wu at R=160). The live 704×704 grid leaves 215 tiles from the ring centerline to a 14×14 zone edge (`352 - 130 - 7`).
 
 **Phase 6.2 history (2026-05-18):** Grid 240→360, ring R=100→160. **Phase 6.1 history (2026-05-18):** Grid 160→240, ring R=72→100. Casino + Patrick's Rock swap to entertainment district. claw-arcade at WSW (2 slots from casino, NOT adjacent — preserved in Phase 6.2/6.2.1).
 
 | Dimension | Value |
 |---|---|
 | Layout | 12 buildings at 30° angular spacing (true circle) |
-| Radius | 130 tiles = 4160 wu from center (180,180) / world (0,0,0) |
+| Radius | 130 tiles = 4160 wu from center (352,352) / world (0,0,0) |
 | Angular spacing | 30° (π/6 rad) per slot |
 | Starting angle | −π/2 (North), clockwise |
 | Zone footprint | 14×14 tiles = 448×448 wu |
 | Zone upper-left | `(round(cx) − 7, round(cy) − 7)` |
-| cx formula | `180 + 130 * cos(−π/2 + slot * π/6)` |
-| cy formula | `180 + 130 * sin(−π/2 + slot * π/6)` |
+| cx formula | `352 + 130 * cos(−π/2 + slot * π/6)` |
+| cy formula | `352 + 130 * sin(−π/2 + slot * π/6)` |
 
 Slot table (clockwise from North, cx/cy in tile coords, Phase 6.2.1):
 
 | Slot | Angle | cx | cy | Building | rotY | targetMaxDim | Notes |
 |---|---|---|---|---|---|---|---|
-| 0 | N (0°) | 180 | 50 | visual-creation | 0.000 | 1100 | |
-| 1 | NNE (30°) | 245 | 67 | code-development | −0.522 | 1400 | 1000→1400; max-dim normalization |
-| 2 | ENE (60°) | 293 | 115 | mcp-tool-use | −1.049 | 1400 | childScaleOverrides: "The Krusty Krab" ×1.5; bodyAnchorChild: "The Krusty Krab" (node name literal — no underscore sanitization) |
-| 3 | E (90°) | 310 | 180 | messaging-channels | −1.571 | 2500 | 1000→2500; dome square XZ≈25.87wu, MAX_FOOTPRINT=2000 cap → effective 820wu height; rotYOffset +π; DoubleSide fix |
-| 4 | ESE (120°) | 293 | 245 | api-integrations | −2.093 | 2500 | 1300→2500; km-scale GLB, after flat-base strip effective 1209wu; rotYOffset −π/2 |
-| 5 | SSE (150°) | 245 | 293 | app-publishing | −2.620 | 1000 | rotYOffset +π/2 |
-| 6 | S (180°) | 180 | 310 | cron-automation | 3.142 | 2200 | 1300→2200; Patty Building flat hierarchy (Object_N nodes), effective 1513wu; MAX_FOOTPRINT=2000 cap active |
-| 7 | SSW (210°) | 115 | 293 | deployment-ops | 2.620 | 1400 | tallest landmark |
-| 8 | WSW (240°) | 67 | 245 | claw-arcade | 2.093 | 1100 | 2 slots (60°) from casino — NOT adjacent |
-| 9 | W (270°) | 50 | 180 | casino | 1.571 | 1300 | entertainment district; box3Recenter=true |
-| 10 | WNW (300°) | 67 | 115 | agent-security | 1.049 | 1100 | adjacent to casino (slot 9) |
-| 11 | NNW (330°) | 115 | 67 | memory-rag | 0.522 | 1700 | 1400→1700; childScaleOverrides: "Squidward's_House" ×1.7 (straight U+0027 + underscore — CDP-verified node name); bodyAnchorChild: "Squidward's_House"; pivotZBias removed |
+| 0 | N (0°) | 352 | 222 | visual-creation | 0.000 | 1100 | |
+| 1 | NNE (30°) | 417 | 239 | code-development | −0.522 | 1400 | 1000→1400; max-dim normalization |
+| 2 | ENE (60°) | 465 | 287 | mcp-tool-use | −1.049 | 1400 | childScaleOverrides: "The Krusty Krab" ×1.5; bodyAnchorChild: "The Krusty Krab" (node name literal — no underscore sanitization) |
+| 3 | E (90°) | 482 | 352 | messaging-channels | −1.571 | 2500 | 1000→2500; dome square XZ≈25.87wu, MAX_FOOTPRINT=2000 cap → effective 820wu height; rotYOffset +π; DoubleSide fix |
+| 4 | ESE (120°) | 465 | 417 | api-integrations | −2.093 | 2500 | 1300→2500; km-scale GLB, after flat-base strip effective 1209wu; rotYOffset −π/2 |
+| 5 | SSE (150°) | 417 | 465 | app-publishing | −2.620 | 1000 | rotYOffset +π/2 |
+| 6 | S (180°) | 352 | 482 | cron-automation | 3.142 | 2200 | 1300→2200; Patty Building flat hierarchy (Object_N nodes), effective 1513wu; MAX_FOOTPRINT=2000 cap active |
+| 7 | SSW (210°) | 287 | 465 | deployment-ops | 2.620 | 1400 | tallest landmark |
+| 8 | WSW (240°) | 239 | 417 | claw-arcade | 2.093 | 1100 | 2 slots (60°) from cove — NOT adjacent |
+| 9 | W (270°) | 222 | 352 | cove | 1.571 | 1300 | entertainment district; box3Recenter=true |
+| 10 | WNW (300°) | 239 | 287 | agent-security | 1.049 | 1100 | adjacent to cove (slot 9) |
+| 11 | NNW (330°) | 287 | 239 | memory-rag | 0.522 | 1700 | 1400→1700; childScaleOverrides: "Squidward's_House" ×1.7 (straight U+0027 + underscore — CDP-verified node name); bodyAnchorChild: "Squidward's_House"; pivotZBias removed |
 
-**rotY formula:** `atan2(180 − cx, 180 − cy)` — each building's +Z axis points toward plaza center (world 0, 0). Values are identical across all ring expansions because atan2 depends only on direction, not magnitude. Model-authored `rotYOffset` values are additive and stay with the building regardless of slot.
+**rotY formula:** `atan2(352 − cx, 352 − cy)` — each building's +Z axis points toward plaza center (world 0, 0). Values are identical across all ring expansions because atan2 depends only on direction, not magnitude. Model-authored `rotYOffset` values are additive and stay with the building regardless of slot.
 
 **Building scale normalization — Phase 6.2:** `computeBuildingScale` now normalizes to `max(X,Y,Z)` of the bounding box (`targetMaxDim` parameter). Prior `targetHeight` normalized Y-only, causing wide/squat buildings (Chum Bucket, Patrick's Rock) to balloon in XZ while tall/narrow buildings stayed small. Max-dim normalization gives consistent visual cube size across all GLB aspect ratios. `BUILDING_TARGET_HEIGHT = 800 wu` remains as default fallback; per-building `targetMaxDim` in `BUILDING_MODELS` overrides it via `computeBuildingScale(c, config.targetMaxDim ?? BUILDING_TARGET_HEIGHT)`.
 
@@ -354,7 +385,7 @@ Pure XZ-plane AABB (axis-aligned bounding box) collision — no physics engine, 
 | Kind | Count | Half-extents | Source |
 |---|---|---|---|
 | Building (ring) | 12 | Per-building (303–850 wu) | `BUILDING_EXTENTS` table in `world-colliders.ts` (GLB-measured 2026-05-22) |
-| Prop (town center) | 7 | 40–420 wu (anisotropic) | Hardcoded from each prop's TSX constants |
+| Prop (world + town center) | 7 | 40–420 wu (anisotropic) | Hardcoded from each prop's TSX constants |
 | **Total** | **19** | | |
 
 **Building half-extent derivation (2026-05-22 — per-building GLB measurement):**
@@ -396,13 +427,13 @@ Fallback `BUILDING_HALF ≈ 206 wu` (0.92 × 224) retained in code for any unkno
 
 | ID | World XZ | halfX × halfZ | Kind | Notes |
 |---|---|---|---|---|
-| auction-podium | (0, −1000) | 160 × 160 wu | solid | |
 | town-directory-sign | (0, −120) | 70 × 40 wu | solid | |
 | bazaar-stall | (−1273, −120) | 180 × 140 wu | solid | |
 | **marketplace-stall** | **(1178, −240)** | **420 × 410 wu** | **solid** | **shisha-oasis full footprint; ROUND 1 walkable zone reverted — see below** |
 | quest-bounty-pavilion | (0, −1220) | 280 × 280 wu | solid | |
 | quest-npc | (−110, −60) | 40 × 40 wu | solid | |
 | town-guide | (0, 240) | 40 × 40 wu | solid | |
+| kelp-forest-portal | (-547, -120) | 170 x 42 wu | server solid / client passable | Gameplay entrance; shared server collider derives from the founder pin; client AABB intentionally removed for walk-through |
 
 **Shisha-oasis GLB bbox math (2026-05-22, verified via Node.js binary parse):**
 ```
@@ -708,8 +739,10 @@ Lobster / crayfish GLB avatars don't participate (no swim/fly clip in their proc
 
 **Every animation change MUST follow this checklist.** Hard-won across an evening of iteration on emote loading, NPC stutter, and jump pipeline. Skipping any of these reintroduces a class of bug we've already paid for. Same standing as the same-diff doc rule.
 
+**Animation bundle inventory (2026-07-17).** `_emotes.glb` contains 19 legacy Mixamo-family clips and is cache-versioned by `EMOTE_BUNDLE_VERSION`. `_emotes2.glb` contains 15 Meshy-family clips (12 player/shop emotes plus 3 ambient-only system clips) and is cache-versioned by `EMOTE2_BUNDLE_VERSION` (both currently version 1). Each bundle owns exactly one source rig/rest-pose scene; channel rebinding is safe only within that family. Never merge clips across rig families with different rest poses.
+
 **1. Asset delivery — bundle, don't fan out.**
-- New emote / one-shot clips go INTO `apps/web/public/avatars/animations/_emotes.glb` via `scripts/build-anim-bundles.mjs`. Single multi-clip GLB per group; runtime picks by name via the `bundle.glb#clipName` syntax in `ANIM_PATHS`.
+- New emote / one-shot clips go into the correct rig-family multi-clip bundle via `scripts/build-anim-bundles.mjs`: `_emotes.glb` for the legacy Mixamo family and `_emotes2.glb` for the Meshy family. Never merge different source rest poses into one base document. Runtime picks by name via the `bundle.glb#clipName` syntax in `ANIM_PATHS`.
 - Never add 19 individual `.glb` files to the manifest. The hosting cost is fine; the **request count** at mount is what kills cold-load (visible in network panel as the `injected.js` fanout pattern). gltf-transform `dedup()` shrinks the bundle 11 % below the sum of singles anyway.
 - Locomotion (idle/walk/run) stays separate per-character — they're SW-precached and must load eagerly, and bundling them would force the 2.2 MB emote payload to load alongside.
 
@@ -773,6 +806,12 @@ Lobster / crayfish GLB avatars don't participate (no swim/fly clip in their proc
 - **Never write `obj.frustumCulled = false` in a clone/attach path.** That pattern was the root cause of 41 SkinnedMeshes rendering without any culling (CDP probe 2026-05-22). It saves zero GPU on the current frame and permanently disables culling for the mesh's lifetime.
 - **Exceptions (document them when you add one):** `THREE.Group` containers may keep `frustumCulled = false` — Three.js derives the Group's AABB from its children, but the children's culling flags are what matter. Module-scope shared geometry (e.g. the aura sphere in `cosmetic-loader.tsx`) must not be tagged because the tag would affect every consumer of that geometry.
 
+**11. Server-broadcast emotes are sequence edges, never held state.**
+- The NPC snapshot may carry optional `emoteClip` + monotonic `emoteSeq`. The server keeps the last pair; clients trigger only when a DEFINED `emoteSeq` CHANGES. Omission never resets the consumed-sequence ref (otherwise the same keep-last sequence would replay when it returned). A renderer ref MUST seed from the mount snapshot so a remount never replays stale history.
+- `stores/npc.ts` must copy both fields into the candidate AND explicitly mutate them onto the preserved prior object. Do NOT add them to `npcFieldsEqual`: the VRM frame loop observes the same live object without forcing a 5 Hz React reconciliation storm.
+- Validate `emoteClip` through `isEmoteAnimName` before `playOneShot`; the ambient-only `idle_var_a`/`idle_var_b`/`doze` clips remain ineligible. Consume invalid or moving sequence changes so they cannot replay later. A server-owned ref is separate from the ambient-owned ref, and movement cancels the server one-shot through `cancelOneShot`. Agent-controlled bodies (including resident-ID overrides) are excluded from ambient scheduling through `isOpenClaw`; never use the server-owned ref as a permanent ambient gate because natural one-shot completion does not clear that caller-side ref.
+- Process the sequence edge before the far-NPC/ambient gates. Keep all sequence state scalar/ref-backed: no per-frame arrays, objects, promises, `Vector3`, preload fanout, or new render primitive.
+
 ---
 
 ## 7. Terrain shader
@@ -781,7 +820,7 @@ Lobster / crayfish GLB avatars don't participate (no swim/fly clip in their proc
 
 | Spec | Value |
 |---|---|
-| Plane size | `MAP_WIDTH × 3` × `MAP_HEIGHT × 3` = 34560 × 34560 wu (Phase 6.2: MAP_WIDTH=11520) |
+| Plane size | `MAP_WIDTH × 3` × `MAP_HEIGHT × 3` = 67584 × 67584 wu (live `MAP_WIDTH=22528`) |
 | Segments | 120 × 120 |
 | Material | `MeshStandardNodeMaterial` (TSL) |
 | Render Y | -2 |
@@ -818,13 +857,48 @@ TSL fragment shader (`createSandMaterial()`):
 
 | Spec | Value |
 |---|---|
-| Blade count | 3 000 (was 1 200 before merge sweep) |
+| Blade count | 18,000 ambient blades (214,316 vertices; was 6,500 before Kelp Revival B1) |
 | Variants | 3 height tiers, color-graded |
-| Geometry | One `BufferGeometry` per variant via `mergeGeometries` — all blades baked into vertex positions |
-| Material | `MeshStandardNodeMaterial` with TSL wind |
-| Wind | Time-varying sin sway driven by `timerLocal()` × position offset per blade |
+| Geometry | One merged `BufferGeometry` for all three variants; blade transforms and per-vertex wind/color attributes are baked at mount |
+| Material | One `MeshBasicNodeMaterial` draw call with TSL `positionNode` wind |
+| Wind | Two time-varying TSL waves driven by `time`, seeded per-blade phase, normalized height, and variant amplitude |
+| Distribution | Seeded clustered scatter across the 704×704-tile / 22,528×22,528-wu world; canonical building and land-parcel exclusion zones remain clear |
 
 No `InstancedMesh + ShaderMaterial` — known WebGPU silent crash on Iris Xe. Merged geometry is the only safe path for high-count animated foliage.
+
+### 8a. Northeast Kelp Forest (`apps/web/src/lib/three/kelp-forest.tsx`)
+
+| Spec | Value |
+|---|---|
+| Center / footprint | `(7808, -9900)` in the northeast parcel gap; 48×48 tiles = 1,536×1,536 wu |
+| Blade count | 5,400 deterministic blades: exactly 1,800 per variant |
+| Height variants | 135–148 wu, 150–164 wu, and 166–180 wu (3–4× the ambient kelp's 45-wu unscaled maximum) |
+| Geometry / draws | Per variant: 1,800 blades, 32,400 vertices, 28,800 triangles, 1 merged indexed `BufferGeometry`, and 1 mesh draw; total: 97,200 vertices, 86,400 triangles, 3 draws. Source planes are disposed after merge |
+| Material | WebGPU: three `MeshStandardNodeMaterial` instances. Force-WebGL: three plain `MeshStandardMaterial` instances patched with `onBeforeCompile`. Because the live fallback is `WebGPURenderer(forceWebGL)` (which converts standard materials and skips classic `onBeforeCompile`), each plain material also carries the identical `positionNode` for `GLSLNodeBuilder`; a classic `WebGLRenderer` uses the injected hook. Both use the same baked palettes and lighting |
+| Wind | Identical four-term heavy-current displacement on both backends from time, normalized height, and seeded per-blade phase. TSL/GLSLNodeBuilder use `positionNode`; classic WebGL injects GLSL at `<begin_vertex>`. The tip envelope uses the realm's shared 12.5% height fraction with 4.6–5.8 second primary periods; `MAX_WIND_DISPLACEMENT_WU = 23` bounds the tallest blade and merged bounds include it |
+| Runtime gate | `KelpForestAmbient`: `showWaterFogParticles && showGroundCover` on both backends; wrapper `perf:kelp-forest`. The adaptive governor may still hide ambient cover under pressure |
+
+The forest adds no light, postprocessing pass, instancing, or per-frame allocation. A single `useFrame` loop updates only the three stable GLSL time-uniform scalars on force-WebGL; the TSL path remains entirely GPU-time-driven. Ambient blades fill the complete forest footprint while preserving the exact 5,400-blade budget.
+
+### 8c. Kelp Forest realm portal (Run A commit 1, 2026-07-18)
+
+The world-side entrance is anchored at `(7808, -9900)` inside the northeast grove. Its kelp-shaped arch is five procedural source pieces merged into one `BufferGeometry`; its visible swirl is one asymmetric spiral-ribbon `BufferGeometry`, for exactly two portal draw calls. WebGPU uses `MeshStandardNodeMaterial.emissiveNode`; force-WebGL uses a plain `MeshStandardMaterial` with a stable time uniform injected at `<emissivemap_fragment>` plus the identical enumerable `emissiveNode` needed by the live renderer's standard-to-node conversion. Both share the same `1.5 + 0.5*sin(time*1.8)` envelope. The arch and static parent transforms are frozen after R3F applies them; only the in-place spiral rotation and WebGL uniform advance in `useFrame`, with no allocation.
+
+The portal is gameplay-critical and mounts outside `showGroundCover`/`showWaterFogParticles`; the ambient grove retains those governor gates. Human proximity sets `nearLocation='kelp-forest-portal'`, rendering the existing DOM action pill as **Enter the Kelp Forest** (`Press E` on desktop, tap on mobile), then `SceneTransition` pushes `/kelp`. The route owns `fadeInOnMount` and returns through the same transition, restoring both the avatar ref and Zustand position to world `(7808, -9660)`. Agent entry and reward remain explicitly out of Run A.
+
+Spatial parity follows §2h: both `world-colliders.ts` and shared `world-colliders-data.ts` register `kelp-forest-portal` at `(7808, -9900)` with half-extents `(170, 42)` as a prop. The return spawn is outside that AABB plus the 25-wu chibi expansion.
+
+### 8d. Route-isolated Kelp Forest realm (Run A commit 2, 2026-07-18)
+
+`/kelp` dynamically mounts a Canvas keyed `kelp-realm`; it uses the same static `three/webgpu` module instance for R3F elements, node materials, and the async `WebGPURenderer` factory. WebGPU is primary; low-end/unsupported clients use `forceWebGL`, and an initialization failure disposes the failed renderer before one force-WebGL retry. Camera is `fov=60`, `near=1`, `far=8000`; linear fog runs from 450 to 4,200 wu across the 4,200-wu realm footprint without exceeding the far plane. Route exit restores the world avatar outside the portal collider. Desktop uses camera-relative WASD plus arrow orbit; the two mobile joysticks drive the identical scalar input bridge. There is deliberately no minimap.
+
+The single authored source is `packages/shared/src/constants/kelp-realm.ts`: a winding 21×21 corridor tree with one outer entry, one reachable center, and nine substantial raw dead ends. Wall AABBs, entry/center/spawn, connected beacon graph, and the deterministic dead-end discovery rotation are all derived from that grid. The focused test locks both markers and dimensions, the sole boundary opening, at least 60 wu of visible corridor under opposing maximum sway plus the widest blade's authored width/bend radius (66.9 wu retained), full-raster connectivity and tree uniqueness, an entry-to-center path with at least three turns and no direct sightline, 8–10 raw dead ends with branch edges at least two cells long, center reachability, traversable beacon edges, and one three-type discovery per dead end. Client movement uses those derived AABBs only; no server NPC pathfinding exists in this route.
+
+Render ledger: three merged kelp variants (5,000 blades each across 278 wall cells), one baked-color sand floor, one merged five-shaft additive god-ray mesh, one mote point cloud, one merged beacon-pearl mesh, two center landmark meshes (shell + pearl), one orbiting point cloud, and exactly three merged discovery-type meshes = **13 environment draws**. The discovery meshes are: translucent jellyfish domes with attached ribbon tentacles that share their group phase while bobbing and drifting; glowing anemone beds with weighted tip sway; and giant clams whose merged bubble spheres rise and wrap. Additive `fog=false`, `depthWrite=false` materials keep them legible through the realm fog; `forceSinglePass=true` on the transparent double-sided rays and all discovery materials makes each merged mesh exactly one draw on both backends. Each backend uses the same animation coefficient source, merged animated bounds are expanded, and only three stable classic-WebGL time scalars join the existing allocation-free frame loop. The player is the actual selected model: VRMs use a route-local `useVRMInstance`, normalize to 270 wu with `computeVRMAvatarFit`, and run the cove-proven `VRMCharacterAnimator` idle/walk lifecycle; legacy GLBs use a route-local, material-isolated clone of the selected registry asset with equivalent 270-wu bounding-box fit. Instances, animators, cloned materials, discovery sources, merged geometry, and materials dispose on route teardown. The honest maximum is 13 environment + 14 avatar = **27 total draws**, below the raised **≤32** realm ceiling. Kelp geometry is constructed directly into typed buffers; both TSL and GLSL paths use the same `aHeight`/`aPhase` displacement with `normalizedHeight` clamped before `pow`; their tallest variant has a 100-wu one-sided tip envelope (12.5% of wall height) over a 4.6-second full period. Roots stay 60 wu behind corridor-facing wall edges; after the widest blade's 26.54-wu authored width/bend radius, 66.9 wu remains visible under opposing maximum sway. Bounds expand by the conservative full 200-wu oscillation envelope. No postprocessing, shadows, `Text`, `Billboard`, instancing, `ShaderMaterial`, or per-frame object creation is used.
+
+### 8b. Withdrawn inline maze (2026-07-18)
+
+The corner maze and pearl landmark are no longer part of the open world. Their render geometry, WebGL fallback materials, collision/pathfinding data, and agent destination were removed together. A portal and dedicated Kelp Forest realm supersede this concept in a separate build; until that realm ships, the northeast grove is ambient portal dressing only.
 
 ---
 
@@ -906,7 +980,7 @@ Each activity ID (`bumper-shells`, `reef-race`) has a dedicated 3D scene compone
 
 **Round 16 wall-consequence presentation (2026-07-20; local only, not deployed or signed off):** the authoritative `wipedOut` boolean is carried through client hydration and every delta transition, including `false` on respawn. While true, the self fixed-step predictor and boost-pad mirror stop entirely; the rendered body and `selfPoseBus` follow server interpolation, and the route-level gate suppresses the shared desktop/mobile movement and action dispatcher. The existing glider child composes a `4π` Y tumble and an eased 30wu sink over the 3.2s server window without fighting authority XZ/yaw, bank, or wave transforms; the true→false respawn edge restores deck height, hard-resets surface damping, and adds a 1.0→1.15→1.0 scale pop over 300ms. `event.wall_slam` triggers the shared surge controller with coral `#ff6b6b`; ChaseCamera interprets that source as a short inward FOV/pull-in plus bounded shake rather than a positive speed pullback. `event.wipeout.respawnAtMs` feeds a DOM-only dark vignette/countdown using the existing server clock-offset estimate. There are no new materials, geometries, assets, scene objects, draw calls, shaders, or per-frame allocations.
 
-**Round 15 boost portals (2026-07-20; local only, not deployed or signed off):** `ReefRaceBoostPads` no longer renders flat rectangles on top of the moving water. The visual is a vertical gate that racers surf through: a shared `TorusGeometry(160, 12, 12, 48)` ring in cyan `#55eeff` / emissive `#00e5ff`, filled by a shared `CircleGeometry(148, 48)` `MeshBasicMaterial` energy film with additive blending, 0.105–0.155 pulse opacity, `depthWrite=false`, and two-sided single-pass visibility. Both XY-plane geometries use the pad's Y-axis heading `rot=atan2(tangent.x,tangent.z)`, which rotates their +Z normal onto the track tangent so the portal plane is perpendicular to travel. The server `snapshot.init.reefSplineZones.boostPads` positions/headings remain preferred; `buildSplineBoostPadsClient()` remains the fallback. Static X/Z/t resolution precomputes the banked ribbon datum once, while each frame reuses `surfWaveHeightAt(x,z,clock.elapsedTime)` and scalar 0.20 EWMA smoothing; the center rides 96wu (60% of the 160wu radius) above the surface, so the lower arc pierces the swell. Exactly **2 InstancedMesh draw calls** render all rings and films, with one shared ring emissive mutation and one shared film-opacity mutation per frame; no new texture, asset, shader/TSL path, label, or per-frame object allocation is introduced. **PARITY: render-only change; server trigger/protocol untouched; PROTOCOL_VERSION stays 24.**
+**Round 15 boost portals (2026-07-20; local only, not deployed or signed off):** `ReefRaceBoostPads` no longer renders flat rectangles on top of the moving water. The visual is a vertical gate that racers surf through: a shared `TorusGeometry(160, 12, 12, 48)` ring in cyan `#55eeff` / emissive `#00e5ff`, filled by a shared `CircleGeometry(148, 48)` `MeshBasicMaterial` energy film with additive blending, 0.105–0.155 pulse opacity, `depthWrite=false`, and two-sided single-pass visibility. Both XY-plane geometries use the pad's Y-axis heading `rot=atan2(tangent.x,tangent.z)`, which rotates their +Z normal onto the track tangent so the portal plane is perpendicular to travel. The server `snapshot.init.reefSplineZones.boostPads` positions/headings remain preferred; `buildSplineBoostPadsClient()` remains the fallback. Static X/Z/t resolution precomputes the banked ribbon datum once, while each frame reuses `surfWaveHeightAt(x,z,clock.elapsedTime)` and scalar 0.20 EWMA smoothing; the center rides 96wu (60% of the 160wu radius) above the surface, so the lower arc pierces the swell. Exactly **2 InstancedMesh draw calls** render all rings and films, with one shared ring emissive mutation and one shared film-opacity mutation per frame; no new texture, asset, shader/TSL path, label, or per-frame object allocation is introduced. **PARITY: render-only change; server trigger/protocol untouched; no protocol bump in this round.**
 
 **Round 14 boost visibility (2026-07-20; local only, not deployed or signed off):** the server-authoritative eight-pad list is rendered preferentially from `snapshot.init.reefSplineZones.boostPads`; the fallback mirror uses the same IDs, raw `t`, offsets within ±45wu, 220wu half-length, and 170wu half-width. Pad and Turbo Bubble presentation now hold for 2.2s and 2.5s respectively with lower long-tail FOV peaks. `ReefRaceBoostFX` mutates its existing plain `MeshBasicMaterial` trail/cone pair: the active trail widens/brightens, pad cyan `#55eeff` and turbo gold `#ffe45e` identify the source, and the existing frame clock strobes cone opacity. `ReefRacePlayer` sends any visible rider's pad hit through the existing bounded `ActivityBursts` Points pool using module-scope scratch. The DOM-only EWMA speed number sits above the 220px mobile control zones. No new scene object, draw call, shader, static asset, stable URL, or per-frame allocation was introduced.
 

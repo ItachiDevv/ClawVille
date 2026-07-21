@@ -22,6 +22,7 @@
 // ---------------------------------------------------------------------------
 
 import { BUILDING_TILE_ZONES } from './npc-definitions';
+import { SPAWN_PX, WORLD_CENTER_PX } from './world-dimensions';
 
 // ---------------------------------------------------------------------------
 // Constants — must match tilemap-data.ts values
@@ -34,6 +35,11 @@ const TILE_SIZE = 32;
 // (+64 tile) shift in BUILDING_TILE_ZONES is exactly cancelled by the +2048 MAP_HALF bump
 // (centerX = gamePxX − MAP_HALF), so each building's WORLD position is unchanged.
 const MAP_HALF = 11264;
+
+// Server-side entity-half constants. KEEP IN SYNC with the client exports in
+// apps/web/src/lib/three/collision/world-colliders.ts.
+export const ENTITY_HALF_CHIBI = 25;    // chibi VRM (135 wu height)
+export const ENTITY_HALF_HUMANOID = 50; // adult humanoid (270 wu height)
 
 /**
  * Per-building AABB half-extents — mirrors BUILDING_EXTENTS in world-colliders.ts.
@@ -74,6 +80,10 @@ const BUILDING_COLLISION_BUFFER = 28; // wu
 // Collider type
 // ---------------------------------------------------------------------------
 
+export type PathfindingRasterPolicy =
+  | { readonly mode: 'legacy-safety-tiles' }
+  | { readonly mode: 'cell-center-expanded-aabb'; readonly paddingWu: number };
+
 export interface ServerCollider2D {
   id: string;
   /** Three.js world-space center X (NOT game-pixel X). Conversion: worldX = gameX - MAP_HALF */
@@ -95,13 +105,134 @@ export interface ServerCollider2D {
    * Not currently consumed server-side (NPC Y is set by terrain raycast on the client).
    */
   topY?: number;
+  /**
+   * Optional A* raster policy. Undefined preserves the legacy 4-tile safety
+   * expansion byte-for-byte. Narrow structures may opt into exact tile-center
+   * intersection against the AABB expanded by the moving entity half-width.
+   */
+  pathfindingRaster?: PathfindingRasterPolicy;
+}
+
+export const KELP_FOREST_PORTAL_ID = 'kelp-forest-portal';
+export const KELP_FOREST_PORTAL_HALF_X_WU = 170;
+export const KELP_FOREST_PORTAL_HALF_Z_WU = 42;
+export const KELP_FOREST_PORTAL_SEARCH_STEP_WU = 50;
+export const KELP_FOREST_PORTAL_MAX_ORIGIN_DISTANCE_WU = 1_200;
+/**
+ * Advisory auto-search margin. The founder-authoritative pin is validated by
+ * KELP_FOREST_PORTAL_MIN_VALIDATION_CLEARANCE_WU instead.
+ */
+export const KELP_FOREST_PORTAL_MIN_COLLIDER_CLEARANCE_WU = 350;
+/**
+ * Portal footprint must stay this far from any structure. This is lower than
+ * the 350-wu auto-search margin because the founder-chosen town-center spot is
+ * deliberately closer to the small sign and NPC props.
+ */
+export const KELP_FOREST_PORTAL_MIN_VALIDATION_CLEARANCE_WU = 200;
+export const KELP_FOREST_PORTAL_MIN_LANDMARK_DISTANCE_WU = 250;
+
+/** Founder-authoritative town-center plaza midpoint between the bazaar and sign. */
+export const KELP_FOREST_PORTAL_WORLD_CENTER = Object.freeze({ x: -547, z: -120 });
+
+const KELP_PORTAL_SPAWN_WORLD_X = SPAWN_PX.x - WORLD_CENTER_PX.x;
+const KELP_PORTAL_SPAWN_WORLD_Z = SPAWN_PX.y - WORLD_CENTER_PX.y;
+
+function pointDistance(x: number, z: number, targetX: number, targetZ: number): number {
+  return Math.hypot(x - targetX, z - targetZ);
+}
+
+/** Edge-to-edge distance from the complete portal footprint to an AABB. */
+export function kelpForestPortalClearanceFromCollider(
+  x: number,
+  z: number,
+  collider: ServerCollider2D,
+): number {
+  const dx = Math.max(
+    0,
+    Math.abs(x - collider.centerX) - KELP_FOREST_PORTAL_HALF_X_WU - collider.halfX,
+  );
+  const dz = Math.max(
+    0,
+    Math.abs(z - collider.centerZ) - KELP_FOREST_PORTAL_HALF_Z_WU - collider.halfZ,
+  );
+  return Math.hypot(dx, dz);
+}
+
+function portalCandidateIsBetter(
+  x: number,
+  z: number,
+  bestX: number,
+  bestZ: number,
+): boolean {
+  const distanceSq = x * x + z * z;
+  const bestDistanceSq = bestX * bestX + bestZ * bestZ;
+  if (distanceSq !== bestDistanceSq) return distanceSq < bestDistanceSq;
+  if (Math.abs(z) !== Math.abs(bestZ)) return Math.abs(z) < Math.abs(bestZ);
+  if (z !== bestZ) return z < bestZ;
+  return x < bestX;
+}
+
+/**
+ * Advisory search of the 50-wu town-center lattice for the closest portal
+ * footprint that satisfies the conservative auto-placement invariants. The
+ * founder-authoritative pin is validated separately and is not derived here.
+ * The portal's own collider is excluded so callers may pass getServerColliders().
+ */
+export function deriveKelpForestPortalWorldCenter(
+  colliders: readonly ServerCollider2D[],
+): Readonly<{ x: number; z: number }> {
+  const townDirectory = colliders.find((collider) => collider.id === 'town-directory-sign');
+  if (!townDirectory) throw new Error('Kelp portal derivation requires the town-directory-sign collider');
+
+  let bestX = Number.POSITIVE_INFINITY;
+  let bestZ = Number.POSITIVE_INFINITY;
+  const max = KELP_FOREST_PORTAL_MAX_ORIGIN_DISTANCE_WU;
+  const step = KELP_FOREST_PORTAL_SEARCH_STEP_WU;
+
+  for (let x = -max; x <= max; x += step) {
+    // Spawn and Nori share x=0. Never place the portal on their direct axis.
+    if (x === KELP_PORTAL_SPAWN_WORLD_X) continue;
+    for (let z = -max; z <= max; z += step) {
+      if (Math.hypot(x, z) > max) continue;
+      if (
+        pointDistance(x, z, KELP_PORTAL_SPAWN_WORLD_X, KELP_PORTAL_SPAWN_WORLD_Z)
+          < KELP_FOREST_PORTAL_MIN_LANDMARK_DISTANCE_WU
+      ) continue;
+      if (
+        pointDistance(x, z, townDirectory.centerX, townDirectory.centerZ)
+          < KELP_FOREST_PORTAL_MIN_LANDMARK_DISTANCE_WU
+      ) continue;
+
+      let clear = true;
+      for (const collider of colliders) {
+        if (collider.id === KELP_FOREST_PORTAL_ID) continue;
+        if (
+          kelpForestPortalClearanceFromCollider(x, z, collider)
+            < KELP_FOREST_PORTAL_MIN_COLLIDER_CLEARANCE_WU
+        ) {
+          clear = false;
+          break;
+        }
+      }
+      if (!clear) continue;
+      if (!Number.isFinite(bestX) || portalCandidateIsBetter(x, z, bestX, bestZ)) {
+        bestX = x;
+        bestZ = z;
+      }
+    }
+  }
+
+  if (!Number.isFinite(bestX)) {
+    throw new Error('No Kelp Forest portal position satisfies the town-center clearance invariants');
+  }
+  return Object.freeze({ x: bestX, z: bestZ });
 }
 
 // ---------------------------------------------------------------------------
 // Collider list — built once at module load
 // ---------------------------------------------------------------------------
 
-function buildServerColliders(): ServerCollider2D[] {
+function buildServerCollidersWithoutKelpPortal(): ServerCollider2D[] {
   const list: ServerCollider2D[] = [];
 
   // 1. Building colliders — derived from BUILDING_TILE_ZONES (shared constant).
@@ -137,7 +268,6 @@ function buildServerColliders(): ServerCollider2D[] {
   const SHISHA_SERVER_CENTER_Z = -240;
 
   const PROP_COLLIDERS: ServerCollider2D[] = [
-    { id: 'auction-podium',        centerX:     0, centerZ: -1000, halfX: 160, halfZ: 160 },
     { id: 'town-directory-sign',   centerX:     0, centerZ:  -120, halfX:  70, halfZ:  40 },
     { id: 'bazaar-stall',          centerX: -1273, centerZ:  -120, halfX: 180, halfZ: 140 },
     // Shisha-oasis — solid blocker covering the visible structure footprint.
@@ -153,7 +283,63 @@ function buildServerColliders(): ServerCollider2D[] {
 }
 
 // Eagerly built — module is loaded once at NPC simulation startup.
-const SERVER_COLLIDERS: readonly ServerCollider2D[] = buildServerColliders();
+const SERVER_COLLIDERS_WITHOUT_KELP_PORTAL: readonly ServerCollider2D[] =
+  buildServerCollidersWithoutKelpPortal();
+const KELP_PORTAL_TOWN_DIRECTORY = SERVER_COLLIDERS_WITHOUT_KELP_PORTAL.find(
+  (collider) => collider.id === 'town-directory-sign',
+);
+if (!KELP_PORTAL_TOWN_DIRECTORY) {
+  throw new Error('Pinned Kelp Forest portal validation requires the town-directory-sign collider');
+}
+for (const collider of SERVER_COLLIDERS_WITHOUT_KELP_PORTAL) {
+  const clearance = kelpForestPortalClearanceFromCollider(
+    KELP_FOREST_PORTAL_WORLD_CENTER.x,
+    KELP_FOREST_PORTAL_WORLD_CENTER.z,
+    collider,
+  );
+  if (clearance < KELP_FOREST_PORTAL_MIN_VALIDATION_CLEARANCE_WU) {
+    throw new Error(
+      `Pinned Kelp Forest portal (${KELP_FOREST_PORTAL_WORLD_CENTER.x}, ${KELP_FOREST_PORTAL_WORLD_CENTER.z}) has ${clearance} wu clearance from collider "${collider.id}"; minimum is ${KELP_FOREST_PORTAL_MIN_VALIDATION_CLEARANCE_WU} wu`,
+    );
+  }
+}
+const KELP_PORTAL_TOWN_DIRECTORY_DISTANCE_WU = pointDistance(
+  KELP_FOREST_PORTAL_WORLD_CENTER.x,
+  KELP_FOREST_PORTAL_WORLD_CENTER.z,
+  KELP_PORTAL_TOWN_DIRECTORY.centerX,
+  KELP_PORTAL_TOWN_DIRECTORY.centerZ,
+);
+if (KELP_PORTAL_TOWN_DIRECTORY_DISTANCE_WU < KELP_FOREST_PORTAL_MIN_LANDMARK_DISTANCE_WU) {
+  throw new Error(
+    `Pinned Kelp Forest portal is ${KELP_PORTAL_TOWN_DIRECTORY_DISTANCE_WU} wu from town-directory-sign center; minimum is ${KELP_FOREST_PORTAL_MIN_LANDMARK_DISTANCE_WU} wu`,
+  );
+}
+const KELP_PORTAL_SPAWN_DISTANCE_WU = pointDistance(
+  KELP_FOREST_PORTAL_WORLD_CENTER.x,
+  KELP_FOREST_PORTAL_WORLD_CENTER.z,
+  KELP_PORTAL_SPAWN_WORLD_X,
+  KELP_PORTAL_SPAWN_WORLD_Z,
+);
+if (KELP_PORTAL_SPAWN_DISTANCE_WU < KELP_FOREST_PORTAL_MIN_LANDMARK_DISTANCE_WU) {
+  throw new Error(
+    `Pinned Kelp Forest portal is ${KELP_PORTAL_SPAWN_DISTANCE_WU} wu from spawn; minimum is ${KELP_FOREST_PORTAL_MIN_LANDMARK_DISTANCE_WU} wu`,
+  );
+}
+if (KELP_FOREST_PORTAL_WORLD_CENTER.x === KELP_PORTAL_SPAWN_WORLD_X) {
+  throw new Error(
+    `Pinned Kelp Forest portal x=${KELP_FOREST_PORTAL_WORLD_CENTER.x} must not share the spawn axis x=${KELP_PORTAL_SPAWN_WORLD_X}`,
+  );
+}
+const SERVER_COLLIDERS: readonly ServerCollider2D[] = Object.freeze([
+  ...SERVER_COLLIDERS_WITHOUT_KELP_PORTAL,
+  Object.freeze({
+    id: KELP_FOREST_PORTAL_ID,
+    centerX: KELP_FOREST_PORTAL_WORLD_CENTER.x,
+    centerZ: KELP_FOREST_PORTAL_WORLD_CENTER.z,
+    halfX: KELP_FOREST_PORTAL_HALF_X_WU,
+    halfZ: KELP_FOREST_PORTAL_HALF_Z_WU,
+  }),
+]);
 
 export function getServerColliders(): readonly ServerCollider2D[] {
   return SERVER_COLLIDERS;
@@ -252,11 +438,3 @@ export const WORLD_COLLIDER_MAP_HALF = MAP_HALF;
 
 /** TILE_SIZE for game-px → tile conversions. Mirrors tilemap-data.ts. */
 export const WORLD_COLLIDER_TILE_SIZE = TILE_SIZE;
-
-// ---------------------------------------------------------------------------
-// Server-side entity-half constants (duplicated from
-// apps/web/src/lib/three/collision/world-colliders.ts so server code that
-// cannot import from apps/web has access). KEEP IN SYNC with that file.
-// ---------------------------------------------------------------------------
-export const ENTITY_HALF_CHIBI = 25;    // chibi VRM (135 wu height)
-export const ENTITY_HALF_HUMANOID = 50; // adult humanoid (270 wu height)

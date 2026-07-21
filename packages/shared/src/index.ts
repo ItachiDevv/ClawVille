@@ -96,6 +96,9 @@ export * from './activities';
 export * from './types/world';
 // Server-usable AABB collision data (buildings + town-center props).
 export * from './constants/world-colliders-data';
+// Dedicated Kelp Forest realm: one authored maze layout derives client wall
+// collision and the render-only beacon graph used by the isolated scene.
+export * from './constants/kelp-realm';
 // World dimensions + canonical spawn/center coords (S3, 2026-06-16) — the
 // single source of truth the web client, API, and DB schema all align on so a
 // world re-center (5120→18432→22528, latest the 576→704 land-builder grow) can

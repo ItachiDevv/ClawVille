@@ -45,19 +45,20 @@
  *     agent's OWN ElizaOS runtime — P3 slice 3), both proximity-gated
  *     fail-closed and idempotent per (avatar, building, reason, UTC-day).
  *   - LLM-spend bound: a per-(agentId, buildingId) 60-min talk cooldown gates
- *     the conducted teacher turn (each turn is a gpt-4o call carrying the
- *     teacher's full skill corpus; the once-per-day CT probe does NOT bound
- *     LLM cost by itself).
+ *     the conducted teacher turn (each turn is a model call with bounded top-5
+ *     retrieval from the teacher's embedded skill corpus; the once-per-day CT
+ *     probe does NOT bound LLM cost by itself).
  *   - Memory is behaviorally LIVE, not inert: the ~3 most relevant earned-skill
- *     lessons (P3 slice 3 — semantic RAG from the agent's OWN ElizaOS runtime,
- *     keyword-store fallback when cold) are folded into the decide prompt, and
- *     the teacher's latest reply feeds the next decision context.
+ *     lessons plus book/building-visit knowledge (semantic RAG from the agent's
+ *     OWN ElizaOS runtime, authoritative-store fallbacks when cold) are folded
+ *     into the decide prompt; the teacher's latest reply feeds the next context.
  *   - Leak: logs use `sessionDigest(agentId)` — NEVER the raw agentId/sessionId.
  */
 
 import {
   BUILDING_INTERACTION_RADIUS,
   BUILDING_OPENCLAW_THEMES,
+  AUTONOMY_ENTERABLE_PLACES,
   DECISION_SCOPE,
   HATCHER_ACTION_MENU,
   MAP_LOCATIONS,
@@ -69,6 +70,7 @@ import { npcSimulation } from './npc-simulation';
 import { agentOrchestrator } from './agent-orchestrator';
 import { sessionDigest } from './session-digest';
 import { readEarnedSkillLessons } from './earned-skill-memory';
+import { readHostedAgentKnowledge } from './hosted-agent-knowledge';
 import { conductTeacherTurn, settleBuildingArrival } from './world-teacher-chat';
 import {
   getAgentDirective,
@@ -81,6 +83,7 @@ import {
 import { queryDurableAgentEventsNewest } from './agent-event-query';
 import { recordCovenantAction } from './covenant-action-recorder';
 import { resolveBuildingId } from './building-center';
+import { armAutonomy, isAutonomyActive } from './autonomy-standby';
 
 /** Per-agent phase in the perceive→decide→act loop. */
 type DrivePhase = 'deciding' | 'walking' | 'arrived' | 'talking';
@@ -199,11 +202,12 @@ const WARM_GUARD_EVICT_MS = 10 * 60 * 1000;
 // empty (OpenAI 429 / quota exhausted / bad key) otherwise spins the deciding phase
 // silently, since withTimeout maps a timeout/error to '' by contract.
 const EMPTY_DECIDE_WARN_THRESHOLD = 3;
-// Slice 4 LLM-spend bound: a conducted teacher turn is a gpt-4o call carrying the
-// teacher's FULL skill corpus, and the once-per-day CT probe does NOT bound LLM
-// cost by itself — so each (agentId, buildingId) pair may conduct at most one
-// turn per hour. In-memory (resets on restart — acceptable; the daily CT probe
-// is the money bound), bounded by TALK_COOLDOWN_MAP_MAX with expired-first eviction.
+// Slice 4 LLM-spend bound: a conducted teacher turn is a model call with bounded
+// top-5 retrieval from the teacher's embedded skill corpus, and the once-per-day
+// CT probe does NOT bound LLM cost by itself — so each (agentId, buildingId) pair
+// may conduct at most one turn per hour. In-memory (resets on restart — acceptable;
+// the daily CT probe is the money bound), bounded by TALK_COOLDOWN_MAP_MAX with
+// expired-first eviction.
 const TALK_BUILDING_COOLDOWN_MS = 60 * 60 * 1000;
 // §B.1: sized for BOTH registries — (house + user caps) × ~12 buildings of
 // headroom, floored at the pre-§B.1 1024 so a small user cap can never SHRINK
@@ -261,6 +265,8 @@ function parseDriverAction(reply: string): ParsedDriverAction | null {
 function destinationLabel(destination: string | null): string | null {
   if (!destination) return null;
   if (destination === 'cove') return 'the Cove';
+  const place = AUTONOMY_ENTERABLE_PLACES.find((candidate) => candidate.destinationId === destination);
+  if (place) return place.label;
   const canonical = resolveBuildingId(destination) ?? destination;
   return BUILDING_OPENCLAW_THEMES[canonical]?.label
     ?? MAP_LOCATIONS.find((location) => location.id === canonical)?.name
@@ -272,6 +278,8 @@ function decisionThought(action: ParsedDriverAction): string {
     case 'enter_cove':
     case 'enter_poker_room':
       return 'Heading to the Cove';
+    case 'enter_kelp_forest':
+      return 'Heading to the Kelp Forest';
     case 'enter_building':
       return `Heading to ${destinationLabel(action.params.buildingId) ?? 'a building'}`;
     case 'move': {
@@ -326,6 +334,10 @@ class AgentAutonomyDriver {
   private warming = new Map<string, number>(); // agentId -> warmingSince ms (overlap guard + R2 watchdog)
   private interval: ReturnType<typeof setInterval> | null = null;
   private tickCount = 0;
+  /** Edge-trigger the standby skip log instead of emitting it every 30s. */
+  private wasActive = true;
+  /** Lazy loader kept as an instance seam for deterministic standby-race tests. */
+  private loadReconcileModule = () => import('./agent-autonomy-reconcile');
   // Slice 4: `${agentId}:${buildingId}` -> epoch-ms until which conducted
   // teacher turns at that building are suppressed (LLM-spend bound).
   private talkCooldownUntil = new Map<string, number>();
@@ -656,6 +668,28 @@ class AgentAutonomyDriver {
   }
 
   /**
+   * Human-triggered enrollment/directive kick. Unlike the generic drive seam,
+   * this explicitly arms a bounded staging window before starting the cycle.
+   */
+  kickAgentNow(agentId: string, options: { autoArm?: boolean } = {}): boolean {
+    if (!this.houseAgents.has(agentId) && !this.userAgents.has(agentId)) return false;
+    if (!isAutonomyActive()) {
+      // Human enrollment/directive kicks intentionally wake staging. Durable
+      // reconcile uses autoArm:false so an operator's emergency brake always
+      // wins even when it lands during an already-running reconcile pass.
+      if (options.autoArm === false) return false;
+      armAutonomy(30, 'kick auto-arm');
+    }
+    void this.driveAgentNow(agentId).catch((err) =>
+      console.error(
+        `[AutonomyDriver] kick failed for ${sessionDigest(agentId)}:`,
+        err instanceof Error ? err.message : err,
+      ),
+    );
+    return true;
+  }
+
+  /**
    * Kick the actively-enrolled agent for an owner after a new directive lands.
    * The expected platform id prevents a stale/rebound enrollment from consuming
    * a directive written to a different agent row.
@@ -665,13 +699,7 @@ class AgentAutonomyDriver {
     const entry = agentId ? this.userAgents.get(agentId) : null;
     if (!agentId || !entry || entry.platformAgentId !== expectedPlatformAgentId) return false;
     entry.directivePending = true;
-    void this.driveAgentNow(agentId).catch((err) =>
-      console.error(
-        `[AutonomyDriver] directive kick failed for ${sessionDigest(agentId)}:`,
-        err instanceof Error ? err.message : err,
-      ),
-    );
-    return true;
+    return this.kickAgentNow(agentId);
   }
 
   /**
@@ -755,8 +783,15 @@ class AgentAutonomyDriver {
    * throws into the tick loop.
    */
   private async runReconcile(): Promise<void> {
+    // Re-check here as well as in tick(): an operator may apply standby between
+    // scheduling this fire-and-forget pass and its dynamic import executing.
+    if (!isAutonomyActive()) return;
     try {
-      const { reconcileDurableAutonomy } = await import('./agent-autonomy-reconcile');
+      const { reconcileDurableAutonomy } = await this.loadReconcileModule();
+      // The lazy import is an await boundary. A manual emergency brake applied
+      // while it resolves must still win; otherwise reconcile may enroll an
+      // agent whose kick immediately auto-arms autonomy again.
+      if (!isAutonomyActive()) return;
       await reconcileDurableAutonomy();
     } catch (err) {
       console.warn(
@@ -772,6 +807,14 @@ class AgentAutonomyDriver {
    * in-flight guard skips an agent whose previous decision is still running.
    */
   private tick(): void {
+    if (!isAutonomyActive()) {
+      if (this.wasActive) {
+        console.log('[AutonomyDriver] standby — skipping autonomy tick and reconcile');
+      }
+      this.wasActive = false;
+      return;
+    }
+    this.wasActive = true;
     this.tickCount++;
     // §B.1 durable autonomy: re-enroll persisted-flag agents with NO client.
     // Tick 1 (~30s after start) covers the "on driver start" case (a deploy
@@ -781,6 +824,8 @@ class AgentAutonomyDriver {
     if (this.tickCount % RECONCILE_EVERY_N_TICKS === 1) {
       void this.runReconcile();
     }
+    // Standby returned above; this human-presence-independent cadence applies
+    // only while the operator switch is ACTIVE.
     // Human-presence INDEPENDENT cadence: the agent runs the SAME decision loop
     // whether or not a human is in the world. ClawVille's premise is that hosted
     // agents ARE the living economy — they must act continuously with ZERO
@@ -990,8 +1035,17 @@ class AgentAutonomyDriver {
         });
       }
     }
-    const lessons = await this.readRecentLessons(entry, directive?.text ?? null);
-    const prompt = this.buildDecisionPrompt(perception, entry, lessons, directive?.text ?? null);
+    const [lessons, knowledge] = await Promise.all([
+      this.readRecentLessons(entry, directive?.text ?? null),
+      this.readRecentKnowledge(entry, directive?.text ?? null),
+    ]);
+    const prompt = this.buildDecisionPrompt(
+      perception,
+      entry,
+      lessons,
+      directive?.text ?? null,
+      knowledge,
+    );
     const reply = await decide(prompt);
     // TEMP DEBUG (see tick()): the RAW decision reply — the smoking gun for
     // candidate (a). If this has content but no [ACTION: enter_building(...)] the
@@ -1036,7 +1090,7 @@ class AgentAutonomyDriver {
     npcSimulation.clearDestinationBuilding(entry.bodyId);
     npcSimulation.dispatchHatcherActions(entry.bodyId, reply);
     // Learn the CHOSEN destination from the body itself. enter_building stamps a
-    // teacher id; enter_cove/enter_poker_room stamp `cove`. move/emote/talk do
+    // teacher id; gateway verbs stamp their shared place destination. move/emote/talk do
     // not stamp a destination and deliberately leave the phase at `deciding`
     // for the next steady tick after their visible one-shot effect.
     const body = npcSimulation.getNpcById(entry.bodyId);
@@ -1071,8 +1125,8 @@ class AgentAutonomyDriver {
       // forever (then WALK_TIMEOUT replans) and never reach 'arrived'/'talking'.
       return building.edgeDistance <= BUILDING_INTERACTION_RADIUS;
     }
-    // Cove and poker share destinationId=`cove`; either place entry supplies the
-    // same center-derived distance. Their executor path lands within ~40 wu.
+    // Shared places (Cove, poker, Kelp portal) resolve through the same
+    // destinationId + center-derived distance contract.
     const place = perception.places.find(
       (candidate) => candidate.destinationId === entry.targetBuildingId,
     );
@@ -1089,6 +1143,7 @@ class AgentAutonomyDriver {
     entry: HouseAgentEntry,
     recentLessons: string[] = [],
     directiveText: string | null = null,
+    recentKnowledge: string[] = [],
   ): string {
     const now = Date.now();
     const options = perception.nearbyBuildings
@@ -1120,6 +1175,16 @@ class AgentAutonomyDriver {
       lessonLines.length > 0
         ? `\nWhat you learned recently (avoid repeating — build on it or learn something NEW):\n${lessonLines.join('\n')}\n`
         : '';
+    const knowledgeLines = recentKnowledge
+      .slice(0, 3)
+      .map(
+        (knowledge) =>
+          `- ${knowledge.replace(/\s+/g, ' ').slice(0, LESSON_SNIPPET_MAX)}`,
+      );
+    const knowledgeHeld =
+      knowledgeLines.length > 0
+        ? `\nKnowledge you already hold (from books and visits — apply it; prefer learning what you do NOT know):\n${knowledgeLines.join('\n')}\n`
+        : '';
     // P3 slice 2: the human's directive (top priority) + the wake-up event seed.
     // Both are conditional spreads so the prompt is byte-identical to pre-slice-2
     // when neither is present.
@@ -1139,6 +1204,7 @@ class AgentAutonomyDriver {
       options,
       avoid,
       learned,
+      ...(knowledgeHeld ? [knowledgeHeld] : []),
       'Places (placeId: name — purpose — exact action — distance):',
       places,
       '',
@@ -1203,6 +1269,38 @@ class AgentAutonomyDriver {
           .then((lessons) => {
             clearTimeout(timer);
             resolve(lessons);
+          })
+          .catch(() => {
+            clearTimeout(timer);
+            resolve([]);
+          });
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Fetch book/building-visit knowledge without lazy-starting a runtime. The
+   * service owns warm-RAG versus authoritative JSONB fallback selection; this
+   * driver adds the same per-read soft timeout used for earned-skill lessons.
+   */
+  private async readRecentKnowledge(
+    entry: HouseAgentEntry,
+    queryHint: string | null,
+  ): Promise<string[]> {
+    const query = queryHint && queryHint.trim().length > 0 ? queryHint : DEFAULT_LESSON_QUERY;
+    try {
+      return await new Promise<string[]>((resolve) => {
+        const timer = setTimeout(() => resolve([]), LESSON_RAG_TIMEOUT_MS);
+        readHostedAgentKnowledge({
+          platformAgentId: entry.platformAgentId,
+          query,
+          limit: 3,
+        })
+          .then((knowledge) => {
+            clearTimeout(timer);
+            resolve(knowledge);
           })
           .catch(() => {
             clearTimeout(timer);

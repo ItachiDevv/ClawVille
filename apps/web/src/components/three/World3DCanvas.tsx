@@ -24,6 +24,8 @@ import { VRM_METRICS_ENABLED, registerBulkVRMIdleCallback } from '@/lib/three/vr
 import PlayerAvatar from '@/lib/three/player-avatar';
 import NpcController from '@/lib/three/npc-controller';
 import MergedSeaweed from '@/lib/three/merged-seaweed';
+import { KelpForestAmbient } from '@/lib/three/kelp-forest';
+import { KelpForestPortal } from '@/lib/three/kelp-forest-portal';
 import QuestNpc from '@/lib/three/quest-npc';
 import TownGuide from '@/lib/three/town-guide';
 import BazaarStall from '@/lib/three/bazaar-stall';
@@ -1967,7 +1969,7 @@ const SceneContents = memo(function SceneContents({
       )}
 
       {/* Seaweed ground cover — merged geometry + TSL GPU animation (no InstancedMesh).
-          Skipped on iOS/forceWebGL: 4500 blades with per-vertex TSL positionNode wind
+          Skipped on iOS/forceWebGL: 18,000 blades with per-vertex TSL positionNode wind
           animation compile to GLSL loops on WebGL2 backend and spike frame time past
           the A-series GPU budget on first draw. Plain WebGL path has no equivalent
           GPU-side procedural animation so the cost isn't recoverable. */}
@@ -1976,6 +1978,20 @@ const SceneContents = memo(function SceneContents({
           <MergedSeaweed />
         </group>
       )}
+
+      {/* Northeast Kelp Forest — three merged tall-blade variants with heavy TSL wind.
+          Ambient blades keep the water-fog and ground-cover governor gates;
+          their TSL/GLSL wind now runs on both renderer backends. */}
+      {showWaterFogParticles && showGroundCover && (
+        <group name="perf:kelp-forest" userData={{ perfChunk: 'kelp-forest' }}>
+          <KelpForestAmbient forceWebGL={FORCE_WEBGL} />
+        </group>
+      )}
+
+      {/* Realm entrance stays mounted when the adaptive governor hides ground cover. */}
+      <group name="perf:kelp-forest-portal" userData={{ perfChunk: 'kelp-forest-portal' }}>
+        <KelpForestPortal forceWebGL={FORCE_WEBGL} />
+      </group>
 
       {/* NPC possession controller — active when controlMode === 'npc' */}
       {showNpcs && <NpcController />}
