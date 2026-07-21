@@ -25,7 +25,12 @@ import {
   type SerializedHoldemHand,
   type SerializedHoldemLogEntry,
 } from '@clawville/shared';
-import type { PublicTableStateResponse } from '@/lib/cove/cash-poker';
+import type {
+  CashAction,
+  CashActionKind,
+  CashAgentView,
+  PublicTableStateResponse,
+} from '@/lib/cove/cash-poker';
 
 const EMPTY_LOG: readonly SerializedHoldemLogEntry[] = [];
 const BOT_NAMES: Record<number, string> = {
@@ -69,36 +74,100 @@ function secondsUntil(deadlineMs: number | null): number | null {
   return deadlineMs == null ? null : Math.max(0, Math.ceil((deadlineMs - Date.now()) / 1_000));
 }
 
-/** Public-only live cash-table overlay. The server snapshot intentionally has
- * no private cards; this component cannot leak them. Physical badge slot N
- * maps to server seat `(pov + N + 1) % 6`, matching the 3D chair rotation. */
-export function CashTableSpectateHud({
-  state,
-  povSeatIndex,
-  pollNotice,
-}: {
+interface CashTableRoomHudProps {
   state: PublicTableStateResponse | null;
+  selfView: CashAgentView | null;
   povSeatIndex: number;
+  amSeated: boolean;
+  sitting: boolean;
+  leaving: boolean;
+  leaveQueued: boolean;
+  actionBusy: boolean;
   pollNotice?: string | null;
-}) {
+  actionNotice?: string | null;
+  cashedOutCt?: number | null;
+  onSit: () => void;
+  onLeave: () => void;
+  onAction: (action: CashAction) => void;
+}
+
+/** Live cash-table overlay. Public badges/board come only from the public
+ * snapshot; the private fan/actions come only from the own-seat poll after a
+ * hand-number freshness check. Physical badge slot N maps to server seat
+ * `(pov + N + 1) % 6`, matching the 3D chair rotation. */
+export function CashTableRoomHud({
+  state,
+  selfView,
+  povSeatIndex,
+  amSeated,
+  sitting,
+  leaving,
+  leaveQueued,
+  actionBusy,
+  pollNotice,
+  actionNotice,
+  cashedOutCt,
+  onSit,
+  onLeave,
+  onAction,
+}: CashTableRoomHudProps) {
   const live = state?.live ?? null;
+  const freshSelf = live && selfView?.handNumber === live.handNumber ? selfView : null;
+  const ownDeadline = freshSelf?.isYourTurn ? freshSelf.deadlineMs : null;
   const [countdown, setCountdown] = useState<number | null>(
-    secondsUntil(live?.toActDeadlineMs ?? null),
+    secondsUntil(ownDeadline ?? live?.toActDeadlineMs ?? null),
   );
+  const [confirmingSit, setConfirmingSit] = useState(false);
+  const [raiseTo, setRaiseTo] = useState(0);
 
   useEffect(() => {
-    const deadline = live?.toActDeadlineMs ?? null;
+    const deadline = ownDeadline ?? live?.toActDeadlineMs ?? null;
     setCountdown(secondsUntil(deadline));
     if (deadline == null) return;
     const timer = window.setInterval(() => setCountdown(secondsUntil(deadline)), 250);
     return () => window.clearInterval(timer);
-  }, [live?.handNumber, live?.toActDeadlineMs]);
+  }, [live?.handNumber, live?.toActDeadlineMs, ownDeadline]);
+
+  useEffect(() => {
+    if (!freshSelf) return;
+    setRaiseTo(freshSelf.minRaiseTo);
+    if (freshSelf.isYourTurn) requestHoldemTableRecenter();
+  }, [freshSelf?.deadlineMs, freshSelf?.handNumber, freshSelf?.isYourTurn, freshSelf?.minRaiseTo]);
+
+  useEffect(() => {
+    if (amSeated) setConfirmingSit(false);
+  }, [amSeated]);
 
   const physicalSeats = useMemo(() => Array.from({ length: 5 }, (_, index) => {
     const serverSeatIndex = (povSeatIndex + index + 1) % 6;
     return live?.seats.find((seat) => seat.seatIndex === serverSeatIndex) ?? null;
   }), [live, povSeatIndex]);
   const povSeat = live?.seats.find((seat) => seat.seatIndex === povSeatIndex) ?? null;
+  const legal: readonly CashActionKind[] = freshSelf?.legalActions ?? [];
+  const canFold = legal.includes('fold');
+  const canCheck = legal.includes('check');
+  const canCall = legal.includes('call');
+  const canBet = legal.includes('bet');
+  const canRaise = legal.includes('raise');
+  const canSize = canBet || canRaise;
+  const actionExpired = countdown === 0;
+  const actionsDisabled = actionBusy || actionExpired || !freshSelf?.isYourTurn;
+  const clampedRaiseTo = freshSelf
+    ? Math.min(Math.max(raiseTo, freshSelf.minRaiseTo), freshSelf.maxRaiseTo)
+    : 0;
+  const raisePresets = useMemo(() => {
+    if (!freshSelf || !live || !canSize) return [];
+    const min = freshSelf.minRaiseTo;
+    const max = freshSelf.maxRaiseTo;
+    const clamp = (value: number) => Math.min(Math.max(Math.round(value), min), max);
+    return [
+      { label: 'Min', value: min },
+      { label: '½ Pot', value: clamp(freshSelf.toCall + live.pot * 0.5) },
+      { label: 'Pot', value: clamp(freshSelf.toCall + live.pot) },
+      { label: 'All In', value: max },
+    ].filter((preset, index, all) => all.findIndex((item) => item.value === preset.value) === index);
+  }, [canSize, freshSelf, live]);
+  const hasOpenSeat = Boolean(state && state.seats.length < state.table.maxSeats);
 
   return (
     <div className={styles.surface} data-testid="cash-table-room-hud">
@@ -128,14 +197,38 @@ export function CashTableSpectateHud({
         </div>
       ) : null)}
 
-      {!live && (
+      {!live && cashedOutCt == null && (
         <div className={styles.settlement} data-testid="cash-table-waiting">
           <div className={styles.settlementHeadline}>Waiting for players</div>
           <div className={styles.settlementDetail}>Sit down to start the game.</div>
         </div>
       )}
 
+      {cashedOutCt != null && (
+        <div className={styles.settlement} data-testid="cash-table-cashed-out">
+          <div className={styles.settlementHeadline}>Cashed out</div>
+          <div className={styles.settlementDetail}>{cashedOutCt.toLocaleString()} vCLAW returned to your avatar.</div>
+        </div>
+      )}
+
       <div className={styles.hud}>
+        {freshSelf && (
+          <div className={styles.cardTray} data-testid="cash-private-card-tray">
+            <div className={styles.privateCards}>
+              <div className={styles.trayLabel + ' ' + styles.smallCaps}>Your hand</div>
+              <div aria-label="Your private hole cards" className={styles.cardPair}>
+                {freshSelf.holeCards.map((card, index) => (
+                  <PokerCard key={`${card.suit}-${card.rank}-${index}`} card={card} compact />
+                ))}
+              </div>
+            </div>
+            <div className={styles.trayDivider} aria-hidden />
+            <div className={styles.boardCards}>
+              <div className={styles.trayLabel + ' ' + styles.smallCaps}>Table</div>
+              <CommunityCardRow cards={live?.board ?? []} />
+            </div>
+          </div>
+        )}
         <div className={styles.panel + ' ' + styles.actionPanel}>
           <div className={styles.statusRow}>
             {live && <span className={styles.metric}>Pot <strong>{live.pot.toLocaleString()}</strong> vCLAW</span>}
@@ -152,6 +245,137 @@ export function CashTableSpectateHud({
             {povSeat && <span className={styles.metric}>{povSeat.name} · <strong>{povSeat.chipStack.toLocaleString()}</strong> vCLAW</span>}
           </div>
           {pollNotice && <div className={styles.toast + ' ' + styles.toastWarn}>{pollNotice}</div>}
+          {actionNotice && <div className={styles.toast + ' ' + styles.toastError}>{actionNotice}</div>}
+          {leaveQueued && <div className={styles.toast + ' ' + styles.toastWarn}>Cashing out after this hand…</div>}
+
+          {freshSelf?.isYourTurn && (
+            <div
+              className={styles.decisionTimer + (actionExpired ? ' ' + styles.timerZero : '')}
+              role="timer"
+              aria-label={`${countdown ?? 0} seconds left to act`}
+              data-testid="cash-server-deadline"
+            >
+              <span className={styles.smallCaps}>{actionExpired ? 'Server resolving turn' : 'Your turn'}</span>
+              <div className={styles.timerTrack} aria-hidden>
+                <div
+                  className={styles.timerFill}
+                  style={{ width: `${Math.min(100, Math.max(0, ((countdown ?? 0) / 25) * 100))}%` }}
+                />
+              </div>
+              <span className={styles.timerNumber}>{countdown ?? 0}s</span>
+            </div>
+          )}
+
+          {canSize && freshSelf && (
+            <div className={styles.inlineBetPanel}>
+              <div className={styles.inlinePresetRow} aria-label="One-tap raise-to sizes">
+                {raisePresets.map((preset) => (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    onClick={() => setRaiseTo(preset.value)}
+                    disabled={actionsDisabled}
+                    className={styles.actionButton + ' ' + styles.presetButton}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+              <div className={styles.inlineAmountRow}>
+                <label className={styles.amountLabel} htmlFor="cash-raise-to">{canRaise ? 'Raise to' : 'Bet to'}</label>
+                <input
+                  type="range"
+                  min={freshSelf.minRaiseTo}
+                  max={freshSelf.maxRaiseTo}
+                  step={1}
+                  value={clampedRaiseTo}
+                  onChange={(event) => setRaiseTo(Number(event.target.value))}
+                  disabled={actionsDisabled}
+                  className={styles.inlineRange}
+                  aria-label="Total raise-to amount"
+                />
+                <input
+                  id="cash-raise-to"
+                  type="number"
+                  inputMode="numeric"
+                  min={freshSelf.minRaiseTo}
+                  max={freshSelf.maxRaiseTo}
+                  value={clampedRaiseTo}
+                  onChange={(event) => setRaiseTo(Number(event.target.value))}
+                  disabled={actionsDisabled}
+                  className={styles.amountInput}
+                  aria-label="Total raise-to amount in vCLAW"
+                />
+              </div>
+              <div className={styles.raiseLimits}>
+                <span>Min {freshSelf.minRaiseTo}</span>
+                <span>Max {freshSelf.maxRaiseTo}</span>
+              </div>
+            </div>
+          )}
+
+          <div className={styles.actionRow}>
+            {!amSeated && cashedOutCt == null && !confirmingSit && (
+              <button
+                type="button"
+                onClick={() => setConfirmingSit(true)}
+                disabled={!state || !hasOpenSeat}
+                className={styles.actionButton + ' ' + styles.primaryButton}
+              >
+                {hasOpenSeat ? 'Sit down' : 'Table full'}
+              </button>
+            )}
+            {!amSeated && confirmingSit && state && (
+              <>
+                <span className={styles.metric}>Buy in for <strong>{Number(state.table.buyInCt).toLocaleString()}</strong> vCLAW?</span>
+                <button
+                  type="button"
+                  onClick={onSit}
+                  disabled={sitting}
+                  className={styles.actionButton + ' ' + styles.primaryButton}
+                >
+                  {sitting ? 'Taking seat…' : 'Confirm buy-in'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmingSit(false)}
+                  disabled={sitting}
+                  className={styles.actionButton}
+                >
+                  Cancel
+                </button>
+              </>
+            )}
+            {amSeated && freshSelf?.isYourTurn && (
+              <div className={styles.turnControls} data-testid="cash-inline-betting">
+                <div className={styles.coreActionRow}>
+                  {canFold && <button type="button" onClick={() => onAction({ kind: 'fold' })} disabled={actionsDisabled} className={styles.actionButton + ' ' + styles.foldButton}>Fold</button>}
+                  {canCheck && <button type="button" onClick={() => onAction({ kind: 'check' })} disabled={actionsDisabled} className={styles.actionButton + ' ' + styles.primaryButton}>Check</button>}
+                  {canCall && <button type="button" onClick={() => onAction({ kind: 'call' })} disabled={actionsDisabled} className={styles.actionButton + ' ' + styles.primaryButton}>Call {freshSelf.toCall} vCLAW</button>}
+                  {canSize && (
+                    <button
+                      type="button"
+                      onClick={() => onAction(canRaise ? { kind: 'raise', amount: clampedRaiseTo } : { kind: 'bet', amount: clampedRaiseTo })}
+                      disabled={actionsDisabled}
+                      className={styles.actionButton + ' ' + styles.betSubmitButton}
+                    >
+                      {canRaise ? 'Raise to' : 'Bet to'} {clampedRaiseTo}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+            {amSeated && (
+              <button
+                type="button"
+                onClick={onLeave}
+                disabled={leaving || leaveQueued}
+                className={styles.actionButton + ' ' + styles.walkButton}
+              >
+                {leaveQueued ? 'Cashing out…' : leaving ? 'Standing…' : 'Stand / cash out'}
+              </button>
+            )}
+          </div>
           <div className={styles.legendRow}>
             <span><span className={styles.positionChip + ' ' + styles.dealerChip}>D</span> Dealer</span>
             <span><span className={styles.positionChip}>SB</span> Small blind</span>
@@ -248,7 +472,7 @@ export function SeatedHoldemHud() {
   const { data: avatar } = useAvatar();
 
   const {
-    table, live, settled, revealedSeed, toast, phase, agentMode, inFlight,
+    table, live, settled, toast, phase, agentMode, inFlight,
     walkAwayLocked, pot, publicPot, toCallNum, facingBet, canCheck, humanStack,
     humanCommitted,
     playerHoleCards, communityCards,
@@ -446,6 +670,19 @@ export function SeatedHoldemHud() {
     resetHand();
   }, [playoutPending, resetHand]);
 
+  // Demo/practice follows the same live cadence as the cash room: the server
+  // practice hand starts without a player-owned Deal button, then the next
+  // hand begins about three seconds after settlement playback catches up.
+  useEffect(() => {
+    if (!seatedActive || inFlight || playoutPending) return;
+    if (phase !== 'idle' && phase !== 'settled') return;
+    const timer = window.setTimeout(() => {
+      if (phase === 'settled') handleNextHand();
+      void handleDeal();
+    }, 3000);
+    return () => window.clearTimeout(timer);
+  }, [handleDeal, handleNextHand, inFlight, phase, playoutPending, seatedActive]);
+
   const narration = useMemo(
     () => settled ? settlementNarration(settled) : null,
     [settled],
@@ -627,26 +864,16 @@ export function SeatedHoldemHud() {
 
           <div className={styles.actionRow}>
             {phase === 'idle' && (
-              <>
+              table ? (
                 <button
                   type="button"
-                  onClick={() => { void handleDeal(); }}
-                  disabled={actionsDisabled}
-                  className={styles.actionButton + ' ' + styles.primaryButton}
+                  onClick={() => { void handleWalkAway(); }}
+                  disabled={walkAwayLocked || playoutPending}
+                  className={styles.actionButton + ' ' + styles.walkButton}
                 >
-                  {inFlight ? 'Dealing…' : 'Deal'}
+                  {isAuthed ? 'Walk Away' : 'Close'}
                 </button>
-                {table && (
-                  <button
-                    type="button"
-                    onClick={() => { void handleWalkAway(); }}
-                    disabled={walkAwayLocked || playoutPending}
-                    className={styles.actionButton + ' ' + styles.walkButton}
-                  >
-                    {isAuthed ? 'Walk Away' : 'Close'}
-                  </button>
-                )}
-              </>
+              ) : <span className={styles.playout}>Next practice hand starts automatically…</span>
             )}
 
             {phase === 'player-turn' && (
@@ -754,14 +981,7 @@ export function SeatedHoldemHud() {
 
             {phase === 'settled' && (
               <>
-                <button
-                  type="button"
-                  onClick={handleNextHand}
-                  disabled={inFlight || Boolean(revealedSeed) || playoutPending}
-                  className={styles.actionButton + ' ' + styles.primaryButton}
-                >
-                  Next Hand
-                </button>
+                <span className={styles.playout}>Next hand starts automatically…</span>
                 <button
                   type="button"
                   onClick={() => { void handleWalkAway(); }}
