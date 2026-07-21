@@ -8,6 +8,8 @@ import { useAvatar, useCreateAvatar } from '@/hooks/use-avatar';
 import { useGameStore } from '@/stores/game';
 import { api } from '@/lib/api';
 import { FIRST_TIME_DISCLOSURE_STORAGE_KEY } from '@/components/game/first-time-backup-modal';
+import { DescentAtmosphere } from '@/components/create-agent/descent-atmosphere';
+import { DescentRail } from '@/components/create-agent/descent-rail';
 import {
   AVATAR_ARCHETYPES,
   AGENT_CATEGORIES,
@@ -341,6 +343,24 @@ export default function PersonalityPage() {
           // FirstTimeBackupModal) and the server never re-emits — these PATCH
           // responses carry no secrets to stash.
 
+          // But DO refresh the stash's display name (Codex review MINOR 1):
+          // signup wrote it with the provisional email-derived avatar name,
+          // and since the forge is now the single naming step, the backup
+          // modal on /game would otherwise announce the stale name. Secrets
+          // are untouched — only the label updates.
+          try {
+            const rawStash = sessionStorage.getItem(FIRST_TIME_DISCLOSURE_STORAGE_KEY);
+            if (rawStash && step1.name) {
+              const stash = JSON.parse(rawStash) as { avatarName?: string } | null;
+              if (stash && typeof stash === 'object') {
+                stash.avatarName = step1.name;
+                sessionStorage.setItem(FIRST_TIME_DISCLOSURE_STORAGE_KEY, JSON.stringify(stash));
+              }
+            }
+          } catch {
+            // Non-load-bearing — the modal falls back to the provisional name.
+          }
+
           sessionStorage.removeItem('createAvatarStep1');
 
           // BEARER DISCIPLINE (P2 slice C): never fabricate an agent-session
@@ -470,257 +490,249 @@ export default function PersonalityPage() {
 
   if (!step1) {
     return (
-      <div className="relative min-h-screen bg-[#061520] flex items-center justify-center">
-        <p className="text-white font-clawville text-xl">Loading...</p>
+      <div className="relative min-h-screen bg-[#030b14] flex items-center justify-center">
+        <DescentAtmosphere depth="soul" />
+        <p className="relative text-white font-clawville text-xl animate-pulse motion-reduce:animate-none">Descending...</p>
       </div>
     );
   }
 
   const colorHex = COLOR_HEX[step1.color] || '#30ff70';
+  // Tint only applies to GLB sea creatures — VRM avatars keep native MToon
+  // shading, so a "Colour" chip for them would be misinformation.
+  const isVrmCategory = ['milady', 'chibi', 'hermes', 'hatcher'].includes(step1.category ?? '');
+  const modelLabel =
+    (step1.modelKey ?? step1.species).charAt(0).toUpperCase() +
+    (step1.modelKey ?? step1.species).slice(1).replace(/_/g, ' ');
 
   return (
-    <div className="relative min-h-screen bg-[#061520] flex flex-col items-center px-4 py-6">
-      {/* Back-to-avatar link — sessionStorage persists so step 1 re-hydrates. */}
-      <div className="w-full max-w-xl mb-3">
+    <div className="relative min-h-screen bg-[#030b14] px-4 py-8 overflow-x-hidden">
+      <DescentAtmosphere depth="soul" />
+
+      <div className="relative max-w-xl mx-auto">
+        <DescentRail stage={3} />
+
+        {/* ── Header ──────────────────────────────────────────────────── */}
+        <div className="flex flex-col items-center mb-5">
+          <div className="font-mono text-[10px] uppercase tracking-[0.4em] text-white/35 mb-2">
+            The Soul <span className="text-white/15">//</span> <span className="text-[#ffcf94]/70">-400m</span>
+          </div>
+          <h1 className="font-clawville text-3xl md:text-4xl text-white drop-shadow-[0_0_20px_rgba(0,229,255,0.25)] tracking-widest">
+            GIVE IT A SOUL
+          </h1>
+          <p className="mt-2 text-[11px] text-white/45 font-mono uppercase tracking-wider text-center">
+            How {step1.name} thinks, speaks, and carries itself.
+          </p>
+        </div>
+
+        {/* Back-to-forge link — sessionStorage persists so step 1 re-hydrates. */}
         <button
           type="button"
           onClick={() => router.push('/create-agent')}
-          className="text-white/40 hover:text-cyan-300 text-xs font-mono uppercase tracking-wider transition-colors"
+          className="text-white/40 hover:text-cyan-300 text-xs font-mono uppercase tracking-wider transition-colors mb-3"
         >
-          &larr; Edit Avatar
+          &larr; Back to the Forge
         </button>
-      </div>
-      {/* Agent preview + info */}
-      <div className="w-full max-w-xl flex flex-col sm:flex-row items-center gap-4 mb-6">
-        {/* 3D thumbnail captured from SelectAgentCanvas on step 1 */}
-        <div
-          className="w-48 h-48 rounded-xl overflow-hidden border border-white/10 shrink-0 flex items-center justify-center"
-          style={{ backgroundColor: colorHex + '22' }}
-        >
-          {step1.thumb ? (
-            <img
-              src={step1.thumb}
-              alt={`${step1.name} preview`}
-              className="w-full h-full object-cover"
-            />
-          ) : (
-            <div className="w-full h-full flex flex-col items-center justify-center gap-1.5 text-white/30 text-xs font-mono text-center px-2">
-              <span>Preview unavailable</span>
+
+        {/* ── Identity strip ──────────────────────────────────────────── */}
+        <div className="flex items-center gap-4 rounded-2xl border border-white/10 bg-[#071626]/85 backdrop-blur-xl p-4 mb-6 shadow-[0_0_40px_rgba(0,0,0,0.35)]">
+          {/* 3D thumbnail captured from SelectAgentCanvas on step 1 */}
+          <div
+            className="w-20 h-20 sm:w-24 sm:h-24 rounded-xl overflow-hidden border border-cyan-300/20 shrink-0 flex items-center justify-center shadow-[0_0_18px_rgba(0,229,255,0.12)]"
+            style={{ backgroundColor: isVrmCategory ? 'rgba(53,224,255,0.08)' : colorHex + '22' }}
+          >
+            {step1.thumb ? (
+              <img
+                src={step1.thumb}
+                alt={`${step1.name} preview`}
+                className="w-full h-full object-cover"
+              />
+            ) : (
               <button
                 type="button"
                 onClick={() => router.push('/create-agent')}
-                className="text-cyan-400/70 hover:text-cyan-300 underline text-[11px]"
+                className="w-full h-full flex flex-col items-center justify-center gap-1 text-white/30 text-[10px] font-mono text-center px-1"
               >
-                Re-render
+                <span>No preview</span>
+                <span className="text-cyan-400/70 underline">Re-render</span>
               </button>
+            )}
+          </div>
+
+          <div className="min-w-0">
+            <div className="font-clawville text-xl sm:text-2xl text-cyan-100 tracking-[0.15em] truncate" style={{ textShadow: '0 0 12px rgba(0,229,255,0.35)' }}>
+              {step1.name}
             </div>
-          )}
-        </div>
-
-        {/* Info display */}
-        <div className="text-white text-lg space-y-1 text-center sm:text-left">
-          <p>
-            <span className="font-bold">Name:</span> {step1.name}
-          </p>
-          <p>
-            <span className="font-bold">Gender:</span> {step1.gender}
-          </p>
-          <p>
-            <span className="font-bold">Model:</span>{' '}
-            {(step1.modelKey ?? step1.species).charAt(0).toUpperCase() + (step1.modelKey ?? step1.species).slice(1).replace(/_/g, ' ')}
-          </p>
-          <p>
-            <span className="font-bold">Colour:</span>{' '}
-            {step1.color.charAt(0).toUpperCase() + step1.color.slice(1)}
-          </p>
-        </div>
-      </div>
-
-      {/* ARCHETYPE section */}
-      <div className="w-full max-w-xl mb-4">
-        <div className="flex justify-end mb-1">
-          <span className="claw-panel px-4 py-1 font-bold text-white uppercase tracking-wide text-sm">
-            Choose Archetype
-          </span>
-        </div>
-        <div className="claw-panel">
-          <p className="text-white/60 text-sm mb-3">
-            Your agent's archetype determines their AI personality, knowledge, and speaking style.
-          </p>
-          <div className="grid grid-cols-2 gap-2">
-            {AVATAR_ARCHETYPES.map((archetype) => {
-              const isSelected = selectedArchetype === archetype.id;
-              const accentColor = ARCHETYPE_COLORS[archetype.id] || '#6B7280';
-              return (
-                <button
-                  key={archetype.id}
-                  type="button"
-                  onClick={() => setSelectedArchetype(archetype.id)}
-                  className={`text-left p-3 rounded-lg border-3 transition-all duration-200 ${
-                    isSelected
-                      ? 'border-cyan-500 bg-cyan-500/10 ring-1 ring-cyan-500/50'
-                      : 'border-white/10 bg-white/5 hover:border-white/10 hover:bg-cyan-500/5'
-                  }`}
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              <span className="font-mono text-[9px] uppercase tracking-wider px-2 py-0.5 rounded-full border border-white/15 text-white/55">
+                {modelLabel}
+              </span>
+              <span className="font-mono text-[9px] uppercase tracking-wider px-2 py-0.5 rounded-full border border-white/15 text-white/55">
+                {step1.gender}
+              </span>
+              {!isVrmCategory && (
+                <span
+                  className="font-mono text-[9px] uppercase tracking-wider px-2 py-0.5 rounded-full border"
+                  style={{ borderColor: colorHex + '66', color: colorHex }}
                 >
-                  <div className="flex items-center gap-2 mb-1">
-                    <div
-                      className="w-3 h-3 rounded-full shrink-0"
-                      style={{ backgroundColor: accentColor }}
-                    />
-                    <span className="font-bold text-white text-sm leading-tight">
-                      {archetype.label}
-                    </span>
-                  </div>
-                  <p className="text-xs text-white/50 leading-tight">
-                    {archetype.description}
-                  </p>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-
-      {/* PERSONALITY section (stats) */}
-      <div className="w-full max-w-xl mb-4">
-        <div className="flex justify-end mb-1">
-          <span className="claw-panel px-4 py-1 font-bold text-white uppercase tracking-wide text-sm">
-            Personality
-          </span>
-        </div>
-        <div className="claw-panel space-y-4">
-          {/* Habitat */}
-          <div>
-            <label className="block font-bold text-white/80 mb-1">
-              Where does your agent prefer to operate?
-            </label>
-            <select
-              value={habitat}
-              onChange={(e) => setHabitat(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border-3 border-white/10 bg-[#0a1628] text-white focus:outline-none focus:ring-2 focus:ring-claw-green"
-            >
-              {HABITAT_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Hobby */}
-          <div>
-            <label className="block font-bold text-white/80 mb-1">
-              What does your agent specialize in?
-            </label>
-            <select
-              value={hobby}
-              onChange={(e) => setHobby(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border-3 border-white/10 bg-[#0a1628] text-white focus:outline-none focus:ring-2 focus:ring-claw-green"
-            >
-              {HOBBY_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Greeting Style */}
-          <div>
-            <label className="block font-bold text-white/80 mb-1">
-              How does your agent introduce itself?
-            </label>
-            <select
-              value={greetingStyle}
-              onChange={(e) => setGreetingStyle(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border-3 border-white/10 bg-[#0a1628] text-white focus:outline-none focus:ring-2 focus:ring-claw-green"
-            >
-              {GREETING_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-      </div>
-
-      {/* STATS section */}
-      <div className="w-full max-w-xl mb-6">
-        <div className="flex justify-end mb-1">
-          <span className="claw-panel px-4 py-1 font-bold text-white uppercase tracking-wide text-sm">
-            Stats
-          </span>
-        </div>
-        <div className="claw-panel">
-          {/* Stat bars */}
-          <div className="space-y-3">
-            {/* Strength */}
-            <div className="flex items-center gap-3">
-              <span className="font-bold text-white/80 w-6 text-right">S:</span>
-              <div className="flex-1 bg-white/10 rounded-full h-5 overflow-hidden border-2 border-white/10">
-                <div
-                  className="h-full bg-cyan-400 rounded-full transition-all duration-500"
-                  style={{ width: `${(stats.strength / maxStat) * 100}%` }}
-                />
-              </div>
-              <span className="font-bold text-white/60 w-8 text-sm">
-                {stats.strength}
-              </span>
-            </div>
-
-            {/* Defence */}
-            <div className="flex items-center gap-3">
-              <span className="font-bold text-white/80 w-6 text-right">D:</span>
-              <div className="flex-1 bg-white/10 rounded-full h-5 overflow-hidden border-2 border-white/10">
-                <div
-                  className="h-full bg-cyan-400 rounded-full transition-all duration-500"
-                  style={{ width: `${(stats.defence / maxStat) * 100}%` }}
-                />
-              </div>
-              <span className="font-bold text-white/60 w-8 text-sm">
-                {stats.defence}
-              </span>
-            </div>
-
-            {/* Movement */}
-            <div className="flex items-center gap-3">
-              <span className="font-bold text-white/80 w-6 text-right">M:</span>
-              <div className="flex-1 bg-white/10 rounded-full h-5 overflow-hidden border-2 border-white/10">
-                <div
-                  className="h-full bg-cyan-400 rounded-full transition-all duration-500"
-                  style={{ width: `${(stats.movement / maxStat) * 100}%` }}
-                />
-              </div>
-              <span className="font-bold text-white/60 w-8 text-sm">
-                {stats.movement}
-              </span>
+                  {step1.color}
+                </span>
+              )}
             </div>
           </div>
         </div>
-      </div>
+
+      {/* ── Archetype ───────────────────────────────────────────────── */}
+      <section className="mb-6">
+        <div className="flex items-baseline justify-between mb-1.5">
+          <div className="font-mono text-[10px] uppercase tracking-[0.25em] text-cyan-300/80">
+            ⟐ archetype
+          </div>
+          <div className="font-mono text-[9px] text-white/30">{AVATAR_ARCHETYPES.length} paths</div>
+        </div>
+        <p className="text-white/50 text-xs mb-3">
+          The archetype sets your agent&apos;s personality, knowledge, and speaking style.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {AVATAR_ARCHETYPES.map((archetype) => {
+            const isSelected = selectedArchetype === archetype.id;
+            const accentColor = ARCHETYPE_COLORS[archetype.id] || '#6B7280';
+            return (
+              <button
+                key={archetype.id}
+                type="button"
+                onClick={() => setSelectedArchetype(archetype.id)}
+                aria-pressed={isSelected}
+                className={`relative text-left p-3 pl-4 rounded-xl border overflow-hidden transition-all duration-200 ${
+                  isSelected
+                    ? 'border-cyan-400/70 bg-cyan-500/10 shadow-[0_0_18px_rgba(0,229,255,0.15)]'
+                    : 'border-white/10 bg-white/[0.03] hover:border-white/25 hover:bg-cyan-500/5'
+                }`}
+              >
+                <div
+                  className="absolute left-0 top-0 bottom-0 w-[3px] transition-opacity"
+                  style={{ backgroundColor: accentColor, opacity: isSelected ? 1 : 0.35 }}
+                />
+                <span className={`block font-bold text-sm leading-tight mb-1 ${isSelected ? 'text-cyan-100' : 'text-white'}`}>
+                  {archetype.label}
+                </span>
+                <p className="text-xs text-white/50 leading-tight">
+                  {archetype.description}
+                </p>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* ── Temperament ─────────────────────────────────────────────── */}
+      <section className="mb-6">
+        <div className="font-mono text-[10px] uppercase tracking-[0.25em] text-cyan-300/80 mb-3">
+          ⟐ temperament
+        </div>
+        <div className="rounded-2xl border border-white/10 bg-[#071626]/85 backdrop-blur-xl p-4 space-y-5 shadow-[0_0_40px_rgba(0,0,0,0.35)]">
+          {[
+            {
+              label: 'Where does your agent prefer to operate?',
+              options: HABITAT_OPTIONS,
+              value: habitat,
+              set: setHabitat,
+            },
+            {
+              label: 'What does your agent specialize in?',
+              options: HOBBY_OPTIONS,
+              value: hobby,
+              set: setHobby,
+            },
+            {
+              label: 'How does your agent introduce itself?',
+              options: GREETING_OPTIONS,
+              value: greetingStyle,
+              set: setGreetingStyle,
+            },
+          ].map((q, qi) => (
+            <div key={q.label}>
+              <div id={`temperament-q-${qi}`} className="block text-white/70 text-sm font-medium mb-2">{q.label}</div>
+              <div role="group" aria-labelledby={`temperament-q-${qi}`} className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {q.options.map((opt) => {
+                  const active = q.value === opt.value;
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => q.set(opt.value)}
+                      aria-pressed={active}
+                      className={`py-2 px-2 rounded-lg border text-xs transition-all ${
+                        active
+                          ? 'border-cyan-400/60 bg-cyan-500/15 text-cyan-100 shadow-[0_0_12px_rgba(0,229,255,0.12)]'
+                          : 'border-white/10 bg-white/[0.03] text-white/50 hover:border-white/25 hover:text-white/75'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* ── Aptitude ────────────────────────────────────────────────── */}
+      <section className="mb-6">
+        <div className="flex items-baseline justify-between mb-3">
+          <div className="font-mono text-[10px] uppercase tracking-[0.25em] text-cyan-300/80">
+            ⟐ aptitude
+          </div>
+          <div className="font-mono text-[9px] text-white/30">shifts with temperament</div>
+        </div>
+        <div className="rounded-2xl border border-white/10 bg-[#071626]/85 backdrop-blur-xl p-4 space-y-3 shadow-[0_0_40px_rgba(0,0,0,0.35)]">
+          {[
+            { label: 'Strength', value: stats.strength },
+            { label: 'Defence', value: stats.defence },
+            { label: 'Movement', value: stats.movement },
+          ].map((s) => (
+            <div key={s.label} className="flex items-center gap-3">
+              <span className="font-mono text-[10px] uppercase tracking-wider text-white/55 w-20 shrink-0">
+                {s.label}
+              </span>
+              <div className="flex-1 bg-white/[0.07] rounded-full h-2 overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all duration-500 bg-gradient-to-r from-cyan-500 to-cyan-300 shadow-[0_0_8px_rgba(0,229,255,0.5)]"
+                  style={{ width: `${(s.value / maxStat) * 100}%` }}
+                />
+              </div>
+              <span className="font-mono text-white/60 w-6 text-right text-xs">{s.value}</span>
+            </div>
+          ))}
+        </div>
+      </section>
 
       {/* Error */}
       {error && (
-        <p className="text-red-300 font-bold text-sm mb-4 text-center">
+        <p role="alert" className="text-red-400 text-sm text-center bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 mb-4">
           {error}
         </p>
       )}
 
-      {/* Create button */}
+      {/* Create / save button */}
       <button
         onClick={handleCreate}
         disabled={createAvatarMutation.isPending || isSaving || avatarLoading}
-        className="w-full max-w-xl py-3 rounded-lg font-clawville text-sm uppercase tracking-wider bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-white shadow-[0_0_20px_rgba(0,229,255,0.2)] text-xl disabled:opacity-50 disabled:cursor-not-allowed"
+        className="w-full py-3.5 rounded-lg font-clawville text-sm uppercase tracking-[0.25em] bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-white shadow-[0_0_20px_rgba(0,229,255,0.2)] hover:shadow-[0_0_28px_rgba(0,229,255,0.35)] disabled:opacity-50 disabled:cursor-not-allowed transition-all"
       >
         {customizeMode
           ? isSaving
             ? 'Saving...'
-            : 'SAVE'
+            : 'Save Changes'
           : createAvatarMutation.isPending
-            ? 'Creating...'
-            : 'CREATE'}
+            ? 'Waking...'
+            : `Wake ${step1.name}`}
       </button>
+      <p className="text-center font-mono text-[9px] uppercase tracking-[0.25em] text-white/25 mt-3">
+        you enter the reef together
+      </p>
+      </div>
     </div>
   );
 }
