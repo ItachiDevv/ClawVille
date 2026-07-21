@@ -7,11 +7,17 @@ import type {
   PreparedCustodialExactPayment,
 } from '../custodial-x402';
 
-const { payAgent } = await import('../agent-pay');
+const {
+  payAgent,
+  resolveAgentPayDailySendUsdCents,
+  resolveAgentPayDailyReceiveUsdCents,
+} = await import('../agent-pay');
 
 const SENDER = '11111111-1111-4111-8111-111111111111';
+const SENDER_TWO = '33333333-3333-4333-8333-333333333333';
 const RECIPIENT = '22222222-2222-4222-8222-222222222222';
 const SENDER_WALLET = '11111111111111111111111111111111';
+const SENDER_TWO_WALLET = '33333333333333333333333333333333';
 const RECIPIENT_WALLET = '22222222222222222222222222222222';
 const TX = 'tx-agent-pay-1';
 
@@ -78,6 +84,7 @@ function harness(options: {
   failFirstFulfillment?: boolean;
   executeThrows?: boolean;
   captureReturnsLostAfterWriting?: boolean;
+  now?: Date;
 } = {}) {
   const rows = new Map<string, AgentPayment>();
   let ids = 0;
@@ -87,6 +94,31 @@ function harness(options: {
   let failFulfillment = options.failFirstFulfillment ?? false;
   let fulfillmentBarrier = Promise.resolve();
 
+  function seedRow(overrides: Partial<AgentPayment> = {}): AgentPayment {
+    const now = options.now ?? new Date();
+    const row = {
+      id: `00000000-0000-4000-8000-${String(++ids).padStart(12, '0')}`,
+      senderAvatarId: SENDER,
+      recipientAvatarId: RECIPIENT,
+      recipientKind: 'avatar',
+      recipientRef: RECIPIENT,
+      senderWallet: SENDER_WALLET,
+      recipientWallet: RECIPIENT_WALLET,
+      usdCents: 100,
+      usdcAtomic: '1000000',
+      network: 'devnet',
+      idempotencyKey: `seed-${ids}`,
+      status: 'pending', settlingId: null, settlingStartedAt: null,
+      txSignature: null, reconcileTxSignature: null, settlePayer: null,
+      earnedVclaw: 0, earnedUsdBasis: null, earnedLedgerId: null,
+      fulfilledAt: null, failureReason: null, createdAt: now, updatedAt: now,
+      metadata: {},
+      ...overrides,
+    } as AgentPayment;
+    rows.set(row.id, row);
+    return row;
+  }
+
   const db: AgentPayDb = {
     async findByIdempotency(sender, key) {
       return [...rows.values()].find(
@@ -95,34 +127,47 @@ function harness(options: {
     },
     async resolveRecipient(recipient: AgentPayRecipient) {
       if (recipient.kind === 'avatar'
-        && (recipient.avatarId === RECIPIENT || recipient.avatarId === SENDER)) {
+        && [RECIPIENT, SENDER, SENDER_TWO].includes(recipient.avatarId)) {
         return { avatarId: recipient.avatarId };
       }
       return { error: 'not_found' };
     },
     async findAvatarWallet(avatarId) {
       if (avatarId === SENDER) return { publicKey: SENDER_WALLET };
+      if (avatarId === SENDER_TWO) return { publicKey: SENDER_TWO_WALLET };
       if (avatarId === RECIPIENT) return { publicKey: RECIPIENT_WALLET };
       return null;
     },
-    async insertPending(input) {
+    async admitPending(input, limits, dayStart) {
       const prior = [...rows.values()].find(
         (r) => r.senderAvatarId === input.senderAvatarId
           && r.idempotencyKey === input.idempotencyKey,
       );
-      if (prior) return null;
-      const now = new Date();
-      const row = {
-        id: `00000000-0000-4000-8000-${String(++ids).padStart(12, '0')}`,
-        status: 'pending', settlingId: null, settlingStartedAt: null,
-        txSignature: null, reconcileTxSignature: null, settlePayer: null,
-        earnedVclaw: 0, earnedUsdBasis: null, earnedLedgerId: null,
-        fulfilledAt: null, failureReason: null, createdAt: now, updatedAt: now,
-        metadata: {},
-        ...input,
-      } as AgentPayment;
-      rows.set(row.id, row);
-      return row;
+      if (prior) return { kind: 'existing', row: prior };
+      const counted = [...rows.values()].filter(
+        (row) => row.status !== 'failed' && row.createdAt >= dayStart,
+      );
+      const sent = counted
+        .filter((row) => row.senderAvatarId === input.senderAvatarId)
+        .reduce((sum, row) => sum + row.usdCents, 0);
+      const received = counted
+        .filter((row) => row.recipientAvatarId === input.recipientAvatarId)
+        .reduce((sum, row) => sum + row.usdCents, 0);
+      if (sent > limits.sendUsdCents - input.usdCents) {
+        return {
+          kind: 'daily_cap_exceeded',
+          cap: limits.sendUsdCents,
+          usedTodayUsdCents: sent,
+        };
+      }
+      if (received > limits.receiveUsdCents - input.usdCents) {
+        return {
+          kind: 'daily_cap_exceeded',
+          cap: limits.receiveUsdCents,
+          usedTodayUsdCents: received,
+        };
+      }
+      return { kind: 'inserted', row: seedRow({ ...input, createdAt: options.now ?? new Date() }) };
     },
     async getById(id) { return rows.get(id) ?? null; },
     async claimPending(id, settlingId) {
@@ -198,7 +243,10 @@ function harness(options: {
   const deps: AgentPayDeps = {
     db,
     readUsdcBalance: async () => options.balance ?? 10_000_000n,
-    loadSigningWallet: async () => ({ publicKey: SENDER_WALLET, secretKey: new Uint8Array(64) }),
+    loadSigningWallet: async (avatarId) => ({
+      publicKey: avatarId === SENDER_TWO ? SENDER_TWO_WALLET : SENDER_WALLET,
+      secretKey: new Uint8Array(64),
+    }),
     prepare: async () => prepared,
     execute: async () => {
       executeCalls += 1;
@@ -213,6 +261,7 @@ function harness(options: {
     resolveFeePayer: async () => '33333333333333333333333333333333',
     resolveRail: () => ({ network: 'devnet', rpcUrl: 'http://rpc.test', allowed: true }),
     randomId: () => `00000000-0000-4000-9000-${String(ids).padStart(12, '0')}`,
+    now: () => options.now ?? new Date(),
   };
   return {
     deps,
@@ -220,6 +269,7 @@ function harness(options: {
     executeCalls: () => executeCalls,
     mintCalls: () => mintCalls,
     mintBackings,
+    seedRow,
   };
 }
 
@@ -235,6 +285,8 @@ describe('agent-pay durable x402 machine', () => {
   beforeEach(() => {
     delete process.env.AGENT_PAY_MAX_USD_CENTS;
     delete process.env.AGENT_PAY_STALE_MS;
+    delete process.env.AGENT_PAY_DAILY_SEND_USD_CENTS;
+    delete process.env.AGENT_PAY_DAILY_RECEIVE_USD_CENTS;
   });
 
   it('settles, mints full-basis EARNED once, and replays without a second settle/mint', async () => {
@@ -343,5 +395,119 @@ describe('agent-pay durable x402 machine', () => {
     expect(resumed).toMatchObject({ ok: true, earnedVclaw: 100 });
     expect(h.executeCalls()).toBe(1);
     expect(h.mintCalls()).toBe(1);
+  });
+
+  it('strictly parses daily-cap env values with defaults and a 100-cent floor', () => {
+    expect(resolveAgentPayDailySendUsdCents()).toBe(2_000);
+    expect(resolveAgentPayDailyReceiveUsdCents()).toBe(2_000);
+
+    process.env.AGENT_PAY_DAILY_SEND_USD_CENTS = '2000suffix';
+    process.env.AGENT_PAY_DAILY_RECEIVE_USD_CENTS = '99';
+    expect(resolveAgentPayDailySendUsdCents()).toBe(2_000);
+    expect(resolveAgentPayDailyReceiveUsdCents()).toBe(2_000);
+
+    process.env.AGENT_PAY_DAILY_SEND_USD_CENTS = '2500';
+    process.env.AGENT_PAY_DAILY_RECEIVE_USD_CENTS = '100';
+    expect(resolveAgentPayDailySendUsdCents()).toBe(2_500);
+    expect(resolveAgentPayDailyReceiveUsdCents()).toBe(100);
+  });
+
+  it('admits a payment whose cumulative sender and recipient usage equals each cap', async () => {
+    process.env.AGENT_PAY_DAILY_SEND_USD_CENTS = '200';
+    process.env.AGENT_PAY_DAILY_RECEIVE_USD_CENTS = '200';
+    const h = harness({ now: new Date('2026-07-21T12:00:00.000Z') });
+    h.seedRow({ usdCents: 100, idempotencyKey: 'prior-equality' });
+
+    const result = await payAgent(request({ idempotencyKey: 'at-equality' }), h.deps);
+
+    expect(result).toMatchObject({ ok: true, usdCents: 100 });
+    expect([...h.rows.values()].reduce((sum, row) => sum + row.usdCents, 0)).toBe(200);
+  });
+
+  it('blocks a sender already at cap before creating a pending row', async () => {
+    const h = harness({ now: new Date('2026-07-21T12:00:00.000Z') });
+    h.seedRow({ usdCents: 2_000, idempotencyKey: 'sender-at-cap' });
+
+    const result = await payAgent(request({ usdCents: 1, idempotencyKey: 'blocked-sender' }), h.deps);
+
+    expect(result).toEqual({
+      ok: false,
+      code: 'daily_cap_exceeded',
+      detail: { cap: 2_000, usedTodayUsdCents: 2_000 },
+    });
+    expect(h.rows.size).toBe(1);
+    expect(h.executeCalls()).toBe(0);
+  });
+
+  it('blocks the recipient cap independently of unused sender capacity', async () => {
+    const h = harness({ now: new Date('2026-07-21T12:00:00.000Z') });
+    h.seedRow({
+      senderAvatarId: SENDER_TWO,
+      senderWallet: SENDER_TWO_WALLET,
+      usdCents: 1_950,
+      idempotencyKey: 'recipient-prior',
+    });
+
+    const result = await payAgent(request({ usdCents: 51, idempotencyKey: 'blocked-recipient' }), h.deps);
+
+    expect(result).toEqual({
+      ok: false,
+      code: 'daily_cap_exceeded',
+      detail: { cap: 2_000, usedTodayUsdCents: 1_950 },
+    });
+    expect(h.rows.size).toBe(1);
+    expect(h.executeCalls()).toBe(0);
+  });
+
+  it('excludes failed payments from daily usage', async () => {
+    const h = harness({ now: new Date('2026-07-21T12:00:00.000Z') });
+    h.seedRow({
+      status: 'failed',
+      failureReason: 'definitive_failure',
+      usdCents: 2_000,
+      idempotencyKey: 'failed-prior',
+    });
+
+    const result = await payAgent(request({ idempotencyKey: 'after-failure' }), h.deps);
+
+    expect(result).toMatchObject({ ok: true, usdCents: 100 });
+    expect(h.rows.size).toBe(2);
+  });
+
+  it('does not count payments created before the current UTC day', async () => {
+    const h = harness({ now: new Date('2026-07-21T00:00:01.000Z') });
+    h.seedRow({
+      usdCents: 2_000,
+      createdAt: new Date('2026-07-20T23:59:59.999Z'),
+      idempotencyKey: 'yesterday',
+    });
+
+    const result = await payAgent(request({ idempotencyKey: 'today' }), h.deps);
+
+    expect(result).toMatchObject({ ok: true, usdCents: 100 });
+  });
+
+  it('serializes distinct senders near one recipient cap and admits at most the cap', async () => {
+    process.env.AGENT_PAY_DAILY_RECEIVE_USD_CENTS = '100';
+    const h = harness({ balance: 0n, now: new Date('2026-07-21T12:00:00.000Z') });
+
+    const results = await Promise.all([
+      payAgent(request({ usdCents: 60, idempotencyKey: 'race-one' }), h.deps),
+      payAgent(request({
+        senderAvatarId: SENDER_TWO,
+        usdCents: 60,
+        idempotencyKey: 'race-two',
+      }), h.deps),
+    ]);
+
+    const admitted = [...h.rows.values()].filter(
+      (row) => row.recipientAvatarId === RECIPIENT && row.status !== 'failed',
+    );
+    expect(admitted.reduce((sum, row) => sum + row.usdCents, 0)).toBeLessThanOrEqual(100);
+    expect(admitted).toHaveLength(1);
+    expect(results.filter(
+      (result) => !result.ok && result.code === 'daily_cap_exceeded',
+    )).toHaveLength(1);
+    expect(h.executeCalls()).toBe(0);
   });
 });
