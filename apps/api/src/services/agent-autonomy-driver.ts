@@ -334,6 +334,7 @@ class AgentAutonomyDriver {
   private warming = new Map<string, number>(); // agentId -> warmingSince ms (overlap guard + R2 watchdog)
   private interval: ReturnType<typeof setInterval> | null = null;
   private tickCount = 0;
+  private lastTickAt: number | null = null;
   /** Edge-trigger the standby skip log instead of emitting it every 30s. */
   private wasActive = true;
   /** Lazy loader kept as an instance seam for deterministic standby-race tests. */
@@ -763,6 +764,9 @@ class AgentAutonomyDriver {
 
   start(): void {
     if (this.interval) return;
+    // Seed the watchdog heartbeat at start so the first 30s interval is not
+    // mistaken for a stalled driver during boot.
+    this.lastTickAt = Date.now();
     this.interval = setInterval(() => this.tick(), TICK_MS);
     console.log(`[AutonomyDriver] started — driving every ${TICK_MS}ms`);
   }
@@ -807,6 +811,9 @@ class AgentAutonomyDriver {
    * in-flight guard skips an agent whose previous decision is still running.
    */
   private tick(): void {
+    // Heartbeat before the standby gate: standby is intentional liveness, not a
+    // stalled interval. The canary separately checks whether agents are enrolled.
+    this.lastTickAt = Date.now();
     if (!isAutonomyActive()) {
       if (this.wasActive) {
         console.log('[AutonomyDriver] standby — skipping autonomy tick and reconcile');
@@ -847,6 +854,13 @@ class AgentAutonomyDriver {
           ),
         );
     }
+  }
+
+  getLivenessSnapshot(): { enrolledCount: number; lastTickAt: number | null } {
+    return {
+      enrolledCount: this.houseAgents.size + this.userAgents.size,
+      lastTickAt: this.lastTickAt,
+    };
   }
 
   /**
@@ -1452,3 +1466,11 @@ class AgentAutonomyDriver {
 }
 
 export const agentAutonomyDriver = new AgentAutonomyDriver();
+
+/** Minimal read-only seam consumed by the DB canary watchdog. */
+export function getDriverLivenessSnapshot(): {
+  enrolledCount: number;
+  lastTickAt: number | null;
+} {
+  return agentAutonomyDriver.getLivenessSnapshot();
+}
