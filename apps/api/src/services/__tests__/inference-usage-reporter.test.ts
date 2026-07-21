@@ -6,6 +6,7 @@ import type {
 import {
   inferenceUsageReporterSeams,
   resolveInferenceUsageReportGate,
+  runBoxStatusCheckOnce,
   runInferenceUsageReportOnce,
   stopInferenceUsageReporter,
 } from '../inference-usage-reporter';
@@ -23,10 +24,14 @@ function snapshot(
   return { rows, blackouts };
 }
 
-function endpointStats(id: string, breakerOpen: boolean): EndpointStats {
+function endpointStats(
+  id: string,
+  breakerOpen: boolean,
+  kind: EndpointStats['kind'] = id === 'openai' ? 'cloud' : 'local',
+): EndpointStats {
   return {
     id,
-    kind: id === 'openai' ? 'cloud' : 'local',
+    kind,
     requests: 0,
     successes: 0,
     failures: 0,
@@ -53,7 +58,8 @@ afterEach(() => {
   inferenceUsageReporterSeams.sender = originalSender;
   if (originalClawvilleEnv === undefined) delete process.env.CLAWVILLE_ENV;
   else process.env.CLAWVILLE_ENV = originalClawvilleEnv;
-  if (originalReportEnv === undefined) delete process.env.INFERENCE_USAGE_REPORT;
+  if (originalReportEnv === undefined)
+    delete process.env.INFERENCE_USAGE_REPORT;
   else process.env.INFERENCE_USAGE_REPORT = originalReportEnv;
 });
 
@@ -161,8 +167,26 @@ describe('inference usage report tick', () => {
 
     expect(sender).toHaveBeenCalledTimes(1);
     expect(sender.mock.calls[0][0]).toBe(
-      '📊 ClawVille inference — since boot (production)\n\n0 inference calls this hour.',
+      '📊 ClawVille inference — since boot (production)\n\n0 inference calls this hour.\n\nBoxes:\n  ⚠️ no local inference boxes configured',
     );
+  });
+
+  it('always shows current local box reachability independent of traffic', async () => {
+    const messages: string[] = [];
+    inferenceUsageReporterSeams.sender = async (message) => {
+      messages.push(message);
+    };
+    inferenceUsageReporterSeams.statsProvider = () => [
+      endpointStats('local-secondary', true),
+      endpointStats('local-primary', false),
+    ];
+
+    await runInferenceUsageReportOnce();
+
+    expect(messages[0]).toContain(
+      'Boxes:\n  ✅ local-primary online\n  ❌ local-secondary OFFLINE',
+    );
+    expect(messages[0]).not.toContain('breaker open: local-secondary');
   });
 
   it('estimates known OpenAI models and leaves unknown-model tokens unpriced', async () => {
@@ -209,7 +233,7 @@ describe('inference usage report tick', () => {
     inferenceUsageReporterSeams.snapshotProvider = () =>
       snapshot([], { teacher: 0, fleet: 2 });
     inferenceUsageReporterSeams.statsProvider = () => [
-      endpointStats('openai', false),
+      endpointStats('openai', true),
       endpointStats('johns-pc', true),
     ];
     inferenceUsageReporterSeams.sender = async (message) => {
@@ -219,10 +243,10 @@ describe('inference usage report tick', () => {
     await runInferenceUsageReportOnce();
 
     expect(messages[0]).toContain('Warnings:');
-    expect(messages[0]).toContain(
-      '⚠️ 2 calls failed on ALL endpoints (fleet)',
-    );
-    expect(messages[0]).toContain('⚠️ breaker open: johns-pc');
+    expect(messages[0]).toContain('⚠️ 2 calls failed on ALL endpoints (fleet)');
+    expect(messages[0]).toContain('  ❌ johns-pc OFFLINE');
+    expect(messages[0]).not.toContain('⚠️ breaker open: johns-pc');
+    expect(messages[0]).toContain('⚠️ breaker open: openai');
     expect(messages[0]).not.toContain('ALL endpoints (teacher)');
 
     stopInferenceUsageReporter();
@@ -265,5 +289,156 @@ describe('inference usage report tick', () => {
 
     expect(messages[0]).toContain('since boot (production)');
     expect(messages[0]).toContain('7900xtx-desktop: 2 calls');
+  });
+});
+
+describe('inference box status watcher', () => {
+  it('requires two consecutive open checks before alerting', async () => {
+    const messages: string[] = [];
+    let stats = [endpointStats('local-primary', false)];
+    inferenceUsageReporterSeams.statsProvider = () => stats;
+    inferenceUsageReporterSeams.sender = async (message) => {
+      messages.push(message);
+    };
+
+    await runBoxStatusCheckOnce();
+    stats = [endpointStats('local-primary', true)];
+    await runBoxStatusCheckOnce();
+    expect(messages).toHaveLength(0);
+
+    await runBoxStatusCheckOnce();
+    expect(messages).toEqual([
+      '🔴 Local inference box OFFLINE: local-primary — traffic is failing over to OpenAI (paid).\n🚨 ALL local boxes offline — every fleet/hosted call is now on OpenAI.',
+    ]);
+  });
+
+  it('recovers immediately only after an offline alert was confirmed', async () => {
+    const messages: string[] = [];
+    let stats = [endpointStats('local-primary', false)];
+    inferenceUsageReporterSeams.statsProvider = () => stats;
+    inferenceUsageReporterSeams.sender = async (message) => {
+      messages.push(message);
+    };
+
+    await runBoxStatusCheckOnce();
+    stats = [endpointStats('local-primary', true)];
+    await runBoxStatusCheckOnce();
+    stats = [endpointStats('local-primary', false)];
+    await runBoxStatusCheckOnce();
+    expect(messages).toHaveLength(0);
+
+    stats = [endpointStats('local-primary', true)];
+    await runBoxStatusCheckOnce();
+    await runBoxStatusCheckOnce();
+    stats = [endpointStats('local-primary', false)];
+    await runBoxStatusCheckOnce();
+    await runBoxStatusCheckOnce();
+
+    expect(messages).toEqual([
+      '🔴 Local inference box OFFLINE: local-primary — traffic is failing over to OpenAI (paid).\n🚨 ALL local boxes offline — every fleet/hosted call is now on OpenAI.',
+      '🟢 Local inference box back online: local-primary.',
+    ]);
+  });
+
+  it('appends the all-boxes escalation only when the last local is confirmed offline', async () => {
+    const messages: string[] = [];
+    let stats = [
+      endpointStats('local-primary', false),
+      endpointStats('local-secondary', false),
+    ];
+    inferenceUsageReporterSeams.statsProvider = () => stats;
+    inferenceUsageReporterSeams.sender = async (message) => {
+      messages.push(message);
+    };
+
+    await runBoxStatusCheckOnce();
+    stats = [
+      endpointStats('local-primary', true),
+      endpointStats('local-secondary', true),
+    ];
+    await runBoxStatusCheckOnce();
+    await runBoxStatusCheckOnce();
+
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).not.toContain('ALL local boxes offline');
+    expect(messages[1]).toContain(
+      '🚨 ALL local boxes offline — every fleet/hosted call is now on OpenAI.',
+    );
+  });
+
+  it('alerts after two checks when a box is already offline at boot', async () => {
+    const messages: string[] = [];
+    inferenceUsageReporterSeams.statsProvider = () => [
+      endpointStats('local-primary', true),
+    ];
+    inferenceUsageReporterSeams.sender = async (message) => {
+      messages.push(message);
+    };
+
+    await runBoxStatusCheckOnce();
+    expect(messages).toHaveLength(0);
+    await runBoxStatusCheckOnce();
+    expect(messages).toHaveLength(1);
+  });
+
+  it('retries an offline transition on the next check when sending throws', async () => {
+    let stats = [endpointStats('local-primary', false)];
+    let attempts = 0;
+    const messages: string[] = [];
+    inferenceUsageReporterSeams.statsProvider = () => stats;
+    inferenceUsageReporterSeams.sender = async (message) => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('telegram unavailable');
+      messages.push(message);
+    };
+    await runBoxStatusCheckOnce();
+    stats = [endpointStats('local-primary', true)];
+    await runBoxStatusCheckOnce();
+
+    const originalError = console.error;
+    console.error = () => {};
+    try {
+      await expect(runBoxStatusCheckOnce()).resolves.toBeUndefined();
+      await expect(runBoxStatusCheckOnce()).resolves.toBeUndefined();
+    } finally {
+      console.error = originalError;
+    }
+
+    expect(attempts).toBe(2);
+    expect(messages).toHaveLength(1);
+  });
+
+  it('watches OpenAI with the same debounce and recovery transitions', async () => {
+    const messages: string[] = [];
+    let stats = [endpointStats('openai', false)];
+    inferenceUsageReporterSeams.statsProvider = () => stats;
+    inferenceUsageReporterSeams.sender = async (message) => {
+      messages.push(message);
+    };
+
+    await runBoxStatusCheckOnce();
+    stats = [endpointStats('openai', true)];
+    await runBoxStatusCheckOnce();
+    await runBoxStatusCheckOnce();
+    stats = [endpointStats('openai', false)];
+    await runBoxStatusCheckOnce();
+
+    expect(messages).toEqual([
+      '🔴 OpenAI endpoint failing (breaker open) — teacher/cloud inference degraded.',
+      '🟢 OpenAI endpoint recovered.',
+    ]);
+  });
+
+  it('does not evaluate stats or send when the shared gate is off', async () => {
+    process.env.INFERENCE_USAGE_REPORT = 'off';
+    const statsProvider = mock(() => [endpointStats('local-primary', true)]);
+    const sender = mock(async (_message: string) => {});
+    inferenceUsageReporterSeams.statsProvider = statsProvider;
+    inferenceUsageReporterSeams.sender = sender;
+
+    await runBoxStatusCheckOnce();
+
+    expect(statsProvider).not.toHaveBeenCalled();
+    expect(sender).not.toHaveBeenCalled();
   });
 });
