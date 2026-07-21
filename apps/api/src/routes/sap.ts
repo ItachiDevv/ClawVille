@@ -244,6 +244,7 @@ sapRoutes.get('/status', (c) => {
   return c.json({
     enabled: cfg.enabled,
     identityAutoregEnabled: cfg.identityAutoregEnabled,
+    reputationWritesEnabled: cfg.reputationWritesEnabled,
     escrowEnabled: cfg.escrowEnabled,
     dryRun: cfg.dryRun,
     cluster: cfg.cluster,

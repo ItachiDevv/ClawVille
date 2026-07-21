@@ -834,6 +834,17 @@ process.on('uncaughtException', (err) => {
     console.error('[API] SAP identity registrar worker failed to start:', err);
   }
 
+  // Verified composed-bounty completion -> house-signed SAP reputation. The
+  // durable worker self-gates on SAP_ENABLED + SAP_REPUTATION_WRITES_ENABLED.
+  try {
+    const { startSapReputationWriter } = await import(
+      './services/sap/sap-reputation-writer'
+    );
+    startSapReputationWriter();
+  } catch (err) {
+    console.error('[API] SAP reputation writer failed to start:', err);
+  }
+
   // P0 lifecycle-truth — NO eager boot-rehydration. v7 already survives a restart
   // via LAZY restore (`agent-session-restore.ts`, wired into
   // `validateLiveAgentSession`): on the first post-restart bearer use it rebuilds
@@ -1617,6 +1628,14 @@ async function gracefulShutdown(signal: string) {
       stopSapIdentityRegistrarWorker();
     } catch {
       // If the registrar module failed to load earlier, there's nothing to stop.
+    }
+    try {
+      const { stopSapReputationWriter } = await import(
+        './services/sap/sap-reputation-writer'
+      );
+      stopSapReputationWriter();
+    } catch {
+      // If the writer module failed to load earlier, there's nothing to stop.
     }
     try {
       const { stopWagerIntentReconciler } = await import(
