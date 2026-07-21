@@ -266,11 +266,21 @@ function watchesEndpoint(entry: EndpointStats): boolean {
 function offlineMessage(
   entry: EndpointStats,
   allLocalBoxesOffline: boolean,
+  stats: EndpointStats[],
 ): string {
   if (entry.kind === 'cloud') {
     return '🔴 OpenAI endpoint failing (breaker open) — teacher/cloud inference degraded.';
   }
-  const message = `🔴 Local inference box OFFLINE: ${entry.id} — traffic is failing over to OpenAI (paid).`;
+  // Route lists put every local box before openai, so as long as ANOTHER local
+  // box is reachable, failover lands there (still free) — only when no local
+  // survives does traffic actually spill to paid OpenAI.
+  const survivors = stats
+    .filter((e) => e.kind === 'local' && e.id !== entry.id && !e.breakerOpen)
+    .map((e) => e.id);
+  const message =
+    survivors.length > 0
+      ? `🔴 Local inference box OFFLINE: ${entry.id} — traffic is failing over to ${survivors.join(', ')} (still local, free).`
+      : `🔴 Local inference box OFFLINE: ${entry.id} — traffic is failing over to OpenAI (paid).`;
   return allLocalBoxesOffline
     ? `${message}\n🚨 ALL local boxes offline — every fleet/hosted call is now on OpenAI.`
     : message;
@@ -352,7 +362,7 @@ export async function runBoxStatusCheckOnce(): Promise<void> {
         wouldConfirmAllLocalBoxesOffline(stats, entry.id);
       try {
         await inferenceUsageReporterSeams.sender(
-          offlineMessage(entry, allLocalBoxesOffline),
+          offlineMessage(entry, allLocalBoxesOffline, stats),
         );
         endpointStatusStates.set(entry.id, {
           offline: true,
