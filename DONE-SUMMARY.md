@@ -120,3 +120,26 @@ Mechanism (b) is unsafe for this route chain. The same-origin web `/enter` page 
 - Final adversarial/React review — approved after fixing stale auth navigation, login-form unmount, background poll, late mint-response, and clipboard-timer races.
 - Protected-surface audit — zero `apps/api/**` diff; `/api/agent/connect`, authenticated guest 403, protocol/version, and partner contract are unchanged.
 - No `bun install`, push, deployment, or live-browser sign-off was performed.
+
+---
+
+# Round 3 — on-theme connect and complete auth paths
+
+## Files changed
+
+- `apps/web/src/app/game/page.tsx`
+- `apps/web/src/components/game/in-game-login-form.tsx`
+- `apps/web/src/components/game/agent-connect-modal.tsx`
+- `GameFeatures.md`
+- `DONE-SUMMARY.md`
+
+## Visual changes
+
+- Restyled the top-bar **Connect Agent** pill from yellow to the cyan/blue gradient accent while preserving **Log In** and **Sign Up**.
+- Added **New to ClawVille? Sign up** to the in-game login form without removing **Forgot password?**.
+- Added distinct Login and Connect subtitles plus reciprocal **Log in here** / **Connect here** surface links with synchronized modal intent.
+- Confirmed the logged-out sidebar and guest upsell already expose both in-game **Log In** and `/login?mode=signup`; no restoration edit was needed there.
+
+## Verification
+
+- `apps/web`: `bunx tsc --noEmit` — exit 0, no output.
