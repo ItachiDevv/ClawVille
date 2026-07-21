@@ -8,8 +8,9 @@
  */
 
 import { describe, expect, it } from 'bun:test';
-import { Keypair } from '@solana/web3.js';
+import { Keypair, PublicKey } from '@solana/web3.js';
 import type { SapAgentIdentity } from '@clawville/database';
+import { findDregIdentityPda } from '../sap-dreg-identity';
 import {
   SAP_IDENTITY_REGISTRATION_BASE_URL,
   SAP_REGISTER_BALANCE_FLOOR_LAMPORTS,
@@ -22,6 +23,7 @@ import {
 const WALLET = Keypair.generate().publicKey.toBase58();
 const AGENT_PDA = Keypair.generate().publicKey.toBase58();
 const ASSET = Keypair.generate().publicKey.toBase58();
+const IDENTITY_REGISTRATION = findDregIdentityPda(new PublicKey(ASSET)).toBase58();
 const REGISTER_SIG = '1'.repeat(64);
 const ATTACH_SIG = `${'1'.repeat(63)}2`;
 
@@ -81,12 +83,13 @@ function harness(
     },
     mintAndAttach: async (_row, persistPreparedAsset) => {
       mintCalls += 1;
-      await persistPreparedAsset(ASSET);
+      await persistPreparedAsset(ASSET, IDENTITY_REGISTRATION);
       return {
         ok: true,
         dryRun: false,
         signature: ATTACH_SIG,
         asset: ASSET,
+        identityRegistration: IDENTITY_REGISTRATION,
         registrationUrl: buildSapIdentityRegistrationUrl(AGENT_PDA),
       };
     },
@@ -129,11 +132,12 @@ describe('SAP identity registrar state machine', () => {
     const row = identityRow();
     const h = harness(row, {
       mintAndAttach: async (_identity, persistPreparedAsset) => {
-        await persistPreparedAsset(ASSET);
+        await persistPreparedAsset(ASSET, IDENTITY_REGISTRATION);
         return {
           ok: true,
           dryRun: true,
           asset: ASSET,
+          identityRegistration: IDENTITY_REGISTRATION,
           registrationUrl: buildSapIdentityRegistrationUrl(AGENT_PDA),
         };
       },
@@ -144,6 +148,7 @@ describe('SAP identity registrar state machine', () => {
     expect(result.status).toBe('registered');
     expect(result.registerTxSig).toBe(REGISTER_SIG);
     expect(result.metaplexAsset).toBeNull();
+    expect(result.identityRegistration).toBeNull();
     expect(result.metaplexTxSig).toBeNull();
     expect(h.registerCalls()).toBe(1);
   });
@@ -245,6 +250,7 @@ describe('SAP identity registrar state machine', () => {
     expect(result.status).toBe('attaching_identity');
     expect(result.attempts).toBe(1);
     expect(result.metaplexAsset).toBe(ASSET);
+    expect(result.identityRegistration).toBe(IDENTITY_REGISTRATION);
     expect(result.metaplexTxSig).toBe(ATTACH_SIG);
     expect(result.lastError).toContain('not yet verifiable');
   });
@@ -253,7 +259,7 @@ describe('SAP identity registrar state machine', () => {
     const row = identityRow({ status: 'registered', registerTxSig: REGISTER_SIG });
     const h = harness(row, {
       mintAndAttach: async (_identity, persistPreparedAsset) => {
-        await persistPreparedAsset(ASSET);
+        await persistPreparedAsset(ASSET, IDENTITY_REGISTRATION);
         return {
           ok: false,
           code: 'rpc_unreachable',
@@ -261,6 +267,7 @@ describe('SAP identity registrar state machine', () => {
           broadcast: true,
           signature: ATTACH_SIG,
           asset: ASSET,
+          identityRegistration: IDENTITY_REGISTRATION,
           registrationUrl: buildSapIdentityRegistrationUrl(AGENT_PDA),
         };
       },
@@ -270,6 +277,7 @@ describe('SAP identity registrar state machine', () => {
 
     expect(result.status).toBe('attaching_identity');
     expect(result.metaplexAsset).toBe(ASSET);
+    expect(result.identityRegistration).toBe(IDENTITY_REGISTRATION);
     expect(result.metaplexTxSig).toBe(ATTACH_SIG);
     expect(result.attempts).toBe(1);
     expect(h.mintCalls()).toBe(0);
@@ -287,7 +295,18 @@ describe('SAP identity registrar state machine', () => {
     expect(result.status).toBe('identity_attached');
     expect(result.metaplexAsset).toBe(ASSET);
     expect(result.metaplexTxSig).toBe(ATTACH_SIG);
-    expect(result.identityRegistration).toBeNull();
+    expect(result.identityRegistration).toBe(IDENTITY_REGISTRATION);
+    expect(h.patches[0]).toMatchObject({
+      status: 'attaching_identity',
+      metaplexAsset: ASSET,
+      identityRegistration: IDENTITY_REGISTRATION,
+    });
+    expect(h.patches).toContainEqual(expect.objectContaining({
+      status: 'attaching_identity',
+      metaplexAsset: ASSET,
+      identityRegistration: IDENTITY_REGISTRATION,
+      metaplexTxSig: ATTACH_SIG,
+    }));
   });
 
   it('reconciles a prepared/broadcast asset before ever minting another one', async () => {
@@ -328,6 +347,7 @@ describe('SAP identity registrar state machine', () => {
       status: 'attaching_identity',
       registerTxSig: REGISTER_SIG,
       metaplexAsset: ASSET,
+      identityRegistration: IDENTITY_REGISTRATION,
       metaplexTxSig: null,
       attempts: 4,
       updatedAt: new Date(Date.now() - 11 * 60_000),
@@ -338,6 +358,7 @@ describe('SAP identity registrar state machine', () => {
 
     expect(result.status).toBe('registered');
     expect(result.metaplexAsset).toBeNull();
+    expect(result.identityRegistration).toBeNull();
     expect(result.metaplexTxSig).toBeNull();
     expect(result.attempts).toBe(4);
     expect(h.mintCalls()).toBe(0);
@@ -349,6 +370,7 @@ describe('SAP identity registrar state machine', () => {
       status: 'attaching_identity',
       registerTxSig: REGISTER_SIG,
       metaplexAsset: ASSET,
+      identityRegistration: IDENTITY_REGISTRATION,
       metaplexTxSig: ATTACH_SIG,
       attempts: 1,
       updatedAt: new Date(Date.now() - 11 * 60_000),
@@ -365,6 +387,7 @@ describe('SAP identity registrar state machine', () => {
 
     expect(result.status).toBe('registered');
     expect(result.metaplexAsset).toBeNull();
+    expect(result.identityRegistration).toBeNull();
     expect(result.metaplexTxSig).toBeNull();
     expect(result.attempts).toBe(1);
     expect(verifyCalls).toBe(0);

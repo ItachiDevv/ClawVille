@@ -16,11 +16,15 @@ The old blockers are DEAD:
   x402 payout, conservation-exact, on prod MAINNET (composed bounty rail live on prod since
   2026-07-12; house agent Coralia registered + staked on mainnet).
 
-Two remaining upstream SDK bugs, BOTH worked around (forward to the OOBE dev, but nothing blocks):
+Three remaining upstream SDK/deployed divergences, ALL worked around (forward to the OOBE dev, but nothing blocks):
 1. SDK `/pdas` module (plural) derives WRONG addresses (escrow drops depositor seed + nonce;
    stake uses wallet not agentPda). We import `/pda` (singular) only. NEVER touch `/pdas`.
 2. SDK `deposit()` builds SPL remaining-accounts WITH the token mint but the DEPLOYED program
    wants the no-mint shape on all 4 ops. We build deposits empirically (proven vs landed txs).
+3. SDK `MetaplexBridge.buildMintAndAttachIxs` emits a direct Core external-adapter ix1, but
+   deployed MPL Core requires AgentIdentity attachment through the 1DREG registry CPI. We keep
+   the SDK's Core `CreateV2` ix0 and replace only ix1 with empirically pinned
+   `RegisterIdentityV1` bytes/accounts.
 
 ## What's missing for "every agent has an on-chain identity" — all OUR side now
 
@@ -67,9 +71,12 @@ identity at its eip-8004.json URL was minted ONCE, by hand, for the genesis agen
 that step in the same provisioning flow so verifiers can walk asset → URL → PDA for every agent.
 
 - [x] **Local implementation + unit verification landed; staging/founder sign-off pending.**
-  The registrar now uses the SDK Metaplex Core bridge, the avatar's own custodial signer,
-  immutable production metadata/EIP URLs, broadcast-safe asset reconciliation, and
-  read-only `verifyLink` before recording terminal attachment.
+  The registrar keeps the SDK's Core `CreateV2` ix0 and ephemeral asset signer, but routes
+  AgentIdentity attachment through a hand-built 1DREG `RegisterIdentityV1` ix matching the
+  landed genesis devnet shape. The derived identity registration PDA is persisted with the
+  prepared asset before broadcast and on success; ambiguous sends retain both, discarded
+  assets clear both. Immutable production metadata/EIP URLs, broadcast-safe reconciliation,
+  and read-only `verifyLink` still gate terminal attachment.
 
 ### 5. Reputation writes (the meaty one)
 SAP feedback + attestation instructions are BUILT and devnet-proven (create_attestation /
