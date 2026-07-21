@@ -41,6 +41,42 @@ export interface AlertErrorParams {
   context?: Record<string, unknown>;
 }
 
+/** Send raw text through the itachi-debug Telegram bot. Never throws.
+ * Defaults to PLAIN text: legacy-Markdown parse mode makes Telegram reject the
+ * WHOLE message (400) on any unpaired `*`/`_`/backtick, which would silently
+ * drop periodic reports. Only the alertError path opts into Markdown — its
+ * message shape is fixed and pairs its markers. */
+export async function sendTelegramText(
+  text: string,
+  opts?: { parseMode?: 'Markdown' },
+): Promise<void> {
+  if (!TOKEN || !CHAT_ID) {
+    console.warn('[alert-error] Telegram credentials not configured, skipping send', {
+      text,
+    });
+    return;
+  }
+
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: CHAT_ID,
+        text,
+        ...(opts?.parseMode ? { parse_mode: opts.parseMode } : {}),
+      }),
+    });
+    if (!res.ok) {
+      console.warn(
+        `[alert-error] Telegram send rejected (${res.status}): ${(await res.text()).slice(0, 200)}`,
+      );
+    }
+  } catch (err) {
+    console.warn('[alert-error] Telegram send failed', err);
+  }
+}
+
 export async function alertError(params: AlertErrorParams): Promise<void> {
   const { severity, source, context } = params;
   // Redact any agent bearer sessionId from the message at the TOP — covers ALL
@@ -82,17 +118,5 @@ export async function alertError(params: AlertErrorParams): Promise<void> {
     lines.push(`_(+${suppressedCount} more in last 60s)_`);
   }
 
-  try {
-    await fetch(`https://api.telegram.org/bot${TOKEN}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: CHAT_ID,
-        text: lines.join('\n'),
-        parse_mode: 'Markdown',
-      }),
-    });
-  } catch (err) {
-    console.warn('[alert-error] Telegram send failed', err);
-  }
+  await sendTelegramText(lines.join('\n'), { parseMode: 'Markdown' });
 }
