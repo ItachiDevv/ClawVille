@@ -32,20 +32,17 @@
  *     capability that wasn't already implied by the row. Restore re-binds an
  *     EXISTING live bearer to its surviving row; it is not a new connection.
  *
- * RESTORE MATRIX (which identity types can be rebuilt purely from the row):
+ * RESTORE MATRIX (which connection facts can be rebuilt purely from the row):
  *   - hatcher (protocol 'hatcher-proxy'): row carries proxy_url + encrypted
  *     proxy_token_* → decrypt in-memory → buildHatcherClient. FULLY RESTORABLE
  *     including cognition. This is the live partner path, so it is the one that
  *     most needs to survive a restart.
- *   - milady: no outbound gateway (chat routes via the server-side Eliza
- *     runtime). RESTORABLE as a body — its
- *     cove/leaderboard binding (the thing the human cares about) is intact.
- *   - hermes: self-managed pull agent, no caller-supplied gateway and no secrets
- *     on the row (D7, 2026-07-02). RESTORABLE via the same generic no-gateway
- *     path; the in-world protocol is RE-derived from the identityType at rebuild
- *     time ('hermes-local' when the host-it-for-me gate is on, else the fail-soft
- *     'nanoclaw'), NEVER read from the stored `protocol` column — the D1-fix
- *     pattern below applies to it verbatim.
+ *   - public session with NO real caller gateway: no caller credential is needed,
+ *     so the body is RESTORABLE. This includes hosted/local/pull wires and is
+ *     intentionally fact-based rather than framework-based. The in-world wire is
+ *     RE-derived from the persisted identity + current local-runtime gates, NEVER
+ *     trusted from the stored `protocol` column — the D1-fix pattern below
+ *     applies verbatim.
  *
  *   D1 FIX (2026-06-12): the IN-WORLD wire protocol for these no-gateway types
  *   is derived from the AUTHORITATIVE `identity_type` via
@@ -59,15 +56,10 @@
  *   MINT paths, so the rebuilt config is byte-identical to the original per
  *   identity type and cannot drift again (enforced by a deep-equality
  *   regression test).
- *   - declared-gateway openclaw / every custom identity: the row never persists
- *     `auth_token`, so we cannot rebuild working outbound cognition and return
- *     null. Gateway-less OpenClaw is different only while the server-owned local
- *     runtime gate is enabled: then its row proves there is no caller bearer to
- *     recover and it rebuilds through openclaw-local. Gate-off rows are refused.
- *
- *   D2 + 2026-07-17 FACT FIX: custom remains refused even with a malformed null
- *     gateway, while OpenClaw uses gateway presence plus the local-runtime gate
- *     as its authoritative BYO-vs-hosted discriminator.
+ *   - public session with a REAL caller gateway: the row deliberately never
+ *     persists `auth_token`, so working outbound cognition cannot be rebuilt and
+ *     restore returns null. The caller must reconnect and present the credential
+ *     again; public gateway credentials are never widened into stored secrets.
  *
  * CONCURRENCY: two simultaneous post-restart chat calls for the same agent both
  * Map-miss and both reach restore. registerAgentBot is effectively idempotent by
@@ -112,6 +104,70 @@ const inFlightRestores = new Map<string, Promise<LiveAgentSession | null>>();
 
 type BotRow = typeof agentBots.$inferSelect;
 
+type HatcherProxyConfigFields = Pick<
+  BotRow,
+  'proxyUrl' | 'proxyTokenEnc' | 'proxyTokenIv' | 'proxyTokenTag'
+>;
+type CompleteHatcherProxyConfigFields = {
+  [K in keyof HatcherProxyConfigFields]-?: NonNullable<HatcherProxyConfigFields[K]>;
+};
+
+/**
+ * Structural half of the protected Hatcher restore gate. URL allowlisting and
+ * decryption remain mandatory immediately after this check; this helper exists
+ * so the complete encrypted-envelope requirement is pinned without weakening it.
+ */
+export function hasCompleteHatcherProxyConfig(
+  bot: HatcherProxyConfigFields,
+): bot is CompleteHatcherProxyConfigFields {
+  return !!(
+    bot.proxyUrl &&
+    bot.proxyTokenEnc &&
+    bot.proxyTokenIv &&
+    bot.proxyTokenTag
+  );
+}
+
+export interface RestoredSessionAuthorization {
+  ledgerCapable: boolean;
+  boundUserId: string | null;
+}
+
+/**
+ * Restore rehydrates an existing bearer; it never grants new ledger authority.
+ * The signed Hatcher proxy path preserves its historical user-bound grant, while
+ * every public session is restored non-ledger even when its surviving row still
+ * carries a userId. resolveAgentSession keeps the live-row rebind backstop.
+ */
+export function resolveRestoredSessionAuthorization(
+  protocol: string | null | undefined,
+  userId: string | null | undefined,
+): RestoredSessionAuthorization {
+  const boundUserId = userId ?? null;
+  return {
+    ledgerCapable: protocol === 'hatcher-proxy' && boundUserId !== null,
+    boundUserId,
+  };
+}
+
+export interface PublicRestoreTransportFacts {
+  identityType: string;
+  gatewayUrl: string | null;
+  protocol: string | null;
+}
+
+/** Production-used seam for the persisted facts that control public lazy restore. */
+export function isPublicRestoreRowRestorable(
+  bot: PublicRestoreTransportFacts,
+): boolean {
+  return isRowRestorableFromFacts(
+    bot.identityType,
+    bot.gatewayUrl,
+    undefined,
+    bot.protocol,
+  );
+}
+
 interface RestoreAvatarAttributionDeps {
   findActiveAvatarId(userId: string): Promise<{ id: string } | null | undefined>;
   warn(message: string): void;
@@ -148,7 +204,7 @@ export async function resolveRestoreAvatarIdFailOpen(
 /**
  * Rebuild the in-memory `{config, client}` for a surviving row and register it
  * under the incoming (hash-matched) sessionId. Returns the live session, or null
- * for an identity type that cannot be rebuilt purely from the row (the caller
+ * when the row facts cannot rebuild cognition without a missing secret (the caller
  * then degrades to "reconnect", the pre-fix behaviour). Pure of TTL logic — the
  * caller already proved the row is live before calling this.
  */
@@ -172,7 +228,7 @@ function rebuildAndRegister(
 
   // ── hatcher-proxy: rebuild cognition from the encrypted token on the row ──
   if (protocol === 'hatcher-proxy') {
-    if (!bot.proxyUrl || !bot.proxyTokenEnc || !bot.proxyTokenIv || !bot.proxyTokenTag) {
+    if (!hasCompleteHatcherProxyConfig(bot)) {
       // A hatcher row missing its proxy config can't speak — don't spawn a
       // mute body. Degrade to reconnect.
       return null;
@@ -195,7 +251,8 @@ function rebuildAndRegister(
     // a user (the same rule the register path uses: boundUserId = row.userId).
     // resolveAgentSession re-validates boundUserId === liveBot.userId at spend
     // time, so a null userId here keeps the restored session non-ledger.
-    const boundUserId = bot.userId ?? null;
+    const authorization = resolveRestoredSessionAuthorization(protocol, bot.userId);
+    const { boundUserId } = authorization;
     const rawId = rawHatcherAgentId(bot.agentId);
 
     // An override row with no target NPC can't be re-seated — degrade to
@@ -218,7 +275,7 @@ function rebuildAndRegister(
             storedProtocol: bot.protocol,
             autonomyMode: 'server-managed',
             targetNpcId: bot.targetNpcId!,
-            ledgerCapable: boundUserId !== null,
+            ledgerCapable: authorization.ledgerCapable,
             boundUserId,
             avatarId,
             protocolOverride: 'hatcher-proxy',
@@ -243,7 +300,7 @@ function rebuildAndRegister(
             homeY: meta.homeY ?? DEFAULT_HATCHER_HOME_Y,
             patrolRadius: meta.patrolRadius ?? 100,
             personality: meta.personality ?? '',
-            ledgerCapable: boundUserId !== null,
+            ledgerCapable: authorization.ledgerCapable,
             boundUserId,
             avatarId,
             protocolOverride: 'hatcher-proxy',
@@ -266,27 +323,25 @@ function rebuildAndRegister(
     return { config, bot };
   }
 
-  // ── milady / hermes: no outbound gateway (fail-soft or local runtime) ──
+  // ── public no-real-gateway rows (hosted/local/pull) ──
   // The IN-WORLD wire protocol is decided by `resolveInWorldProtocol` from the
-  // AUTHORITATIVE identityType, NOT the stored `protocol` column. For these types
-  // it resolves to 'nanoclaw' whose `.chat()` returns '' with NO network call —
+  // AUTHORITATIVE identityType, NOT the stored `protocol` column. Pull types
+  // resolve to 'nanoclaw' whose `.chat()` returns '' with NO network call —
   // this is the D1 FIX: the old code passed the row's stored 'openai-compat'
   // straight through, so a restored no-gateway body POSTed to the dummy
   // `http://localhost:0` gateway and 502'd on every autonomous NPC conversation.
-  // (hermes re-derives to the equally fail-soft 'hermes-local' instead when the
-  // host-it-for-me gate is on — same authoritative-identity rule, so a restored
-  // hermes body tracks the CURRENT gate state, not whatever the row was minted
-  // under.)
+  // Local adapters likewise track the CURRENT gate state, not whatever the row
+  // was minted under.
   //
-  // ── openclaw / custom (every REAL-GATEWAY identity type): the row
-  // never persists `auth_token`, so a rebuilt body would 401/502 (mute). The
+  // ── public REAL-GATEWAY rows: the row never persists `auth_token`, so a
+  // rebuilt body would 401/502 (mute). The
   // restorability decision is delegated to the SHARED pure predicate
   // `isRowRestorableFromFacts` (agent-session-config.ts) so the rule is unit-
-  // tested, NOT mirrored. A declared-gateway OpenClaw/custom row is refused
-  // because its auth token is absent; gateway-less OpenClaw is reconstructable
-  // only while the server-owned local runtime gate is enabled. (The hatcher
-  // branch already returned.)
-  if (!isRowRestorableFromFacts(bot.identityType, bot.gatewayUrl)) {
+  // tested, NOT mirrored. A declared-gateway row is refused because its auth
+  // token is absent; any canonical public row without a real caller gateway,
+  // or an explicit-pull row, is safe to rebuild. (The hatcher branch already
+  // returned.)
+  if (!isPublicRestoreRowRestorable(bot)) {
     return null;
   }
 
@@ -294,12 +349,12 @@ function rebuildAndRegister(
   // reconnect (matches the hatcher branch + the original).
   if (mode === 'override' && !bot.targetNpcId) return null;
 
-  const boundUserId = bot.userId ?? null;
-  // These paths were never ledger-capable on a bare reconnect (the /connect
-  // ledger rule requires a proven owned-token or first-contact; a restart-
-  // restore is neither), so we restore them NON-ledger. They keep perceiving/
-  // chatting; real-CT play requires a fresh owned reconnect. boundUserId is
-  // still carried so resolveAgentSession's rebind backstop stays consistent.
+  const authorization = resolveRestoredSessionAuthorization(protocol, bot.userId);
+  const { boundUserId } = authorization;
+  // Public lazy restore never infers or grants ledger capability from a row's
+  // userId. They keep perceiving/chatting; real-CT play requires a fresh owned
+  // reconnect. boundUserId is still carried so resolveAgentSession's rebind
+  // backstop stays consistent.
   //
   // Built via the SHARED config-builder so the protocol/species/autonomy
   // resolution is byte-identical to the /connect MINT path for this identity
@@ -314,7 +369,7 @@ function rebuildAndRegister(
           storedProtocol: bot.protocol,
           gatewayUrl: bot.gatewayUrl,
           targetNpcId: bot.targetNpcId!,
-          ledgerCapable: false,
+          ledgerCapable: authorization.ledgerCapable,
           boundUserId,
           avatarId,
         })
@@ -333,7 +388,7 @@ function rebuildAndRegister(
           homeY: meta.homeY ?? 2560,
           patrolRadius: meta.patrolRadius ?? 100,
           personality: meta.personality ?? '',
-          ledgerCapable: false,
+          ledgerCapable: authorization.ledgerCapable,
           boundUserId,
           avatarId,
         });
@@ -363,7 +418,7 @@ function restoredPos(
  *   - We hash it, find the surviving row by `session_key_hash`, re-validate the
  *     TTL fail-closed (NULL or past = expired → null), and rebuild the session.
  *   - Returns the live `{config, bot}` on success, or null when the row is
- *     missing/expired OR the identity type can't be rebuilt from the row alone.
+ *     missing/expired OR its connection facts can't rebuild from the row alone.
  *
  * The returned session is registered under the INCOMING sessionId, so the very
  * next `validateLiveAgentSession` call (or the same request's downstream lookup)

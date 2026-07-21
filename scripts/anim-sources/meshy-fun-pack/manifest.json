@@ -1,0 +1,81 @@
+{
+  "rig": "019f6e37-a25a-77f2-9e1a-4487887f5eac",
+  "generated": {
+    "shrug": {
+      "task": "019f6e3b-088a-79eb-b22e-ed8c093cf446",
+      "action_id": 317,
+      "mb": 19.23
+    },
+    "stomp": {
+      "task": "019f6e3b-18f5-787f-a8f3-7f5e73ef595b",
+      "action_id": 255,
+      "mb": 19.22
+    },
+    "backflip": {
+      "task": "019f6e3b-2140-7610-937f-d85d1ff00fc3",
+      "action_id": 462,
+      "mb": 19.25
+    },
+    "breakdance": {
+      "task": "019f6e3b-2967-7d74-9de9-aa3090cbaaf8",
+      "action_id": 395,
+      "mb": 19.21
+    },
+    "pushup": {
+      "task": "019f6e3b-4369-7612-b5d5-4764edf1f93e",
+      "action_id": 324,
+      "mb": 19.24
+    },
+    "kick_ball": {
+      "task": "019f6e3b-4b78-7a00-81f3-01f96dfaa451",
+      "action_id": 410,
+      "mb": 19.22
+    },
+    "sit_ground": {
+      "task": "019f6e3a-fe21-79e9-bb3e-9bf9a70405c7",
+      "action_id": 362,
+      "mb": 19.31
+    },
+    "handstand": {
+      "task": "019f6e3b-3162-7883-8d76-cffb6251b4b2",
+      "action_id": 375,
+      "mb": 19.24
+    },
+    "clap": {
+      "task": "019f6e3b-53a7-7890-8573-d5623d5945ee",
+      "action_id": 299,
+      "mb": 19.26
+    },
+    "wave_one": {
+      "task": "019f6e3b-5c1b-7613-b0aa-a445ef481328",
+      "action_id": 290,
+      "mb": 19.25
+    },
+    "idle_var_a": {
+      "task": "019f6e3b-6455-7614-a3c4-cb3dc89acf95",
+      "action_id": 11,
+      "mb": 19.23
+    },
+    "think": {
+      "task": "019f6e3b-10c1-79f2-91ea-499351a81db0",
+      "action_id": 36,
+      "mb": 19.35
+    },
+    "dance_funny": {
+      "task": "019f6e3b-3a62-7888-b23f-6e3762e308a4",
+      "action_id": 22,
+      "mb": 19.3
+    },
+    "idle_var_b": {
+      "task": "019f6e3b-6c9c-7892-941a-d85b5cf3fa8e",
+      "action_id": 12,
+      "mb": 19.27
+    },
+    "doze": {
+      "task": "019f6e3b-74cf-7893-aa6b-77bdfe20da5a",
+      "action_id": 38,
+      "mb": 19.32
+    }
+  },
+  "failed": {}
+}

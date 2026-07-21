@@ -48,7 +48,7 @@ import {
 // cumulative session-lifecycle surface, so the version moves.
 //
 // NOTE (2026-06-13, FIX-5/FIX-10 — folded into the SAME v5): added §3a, the
-// proxy-cognition action channel, documenting ALL SIX [ACTION:] whitelist verbs
+// proxy-cognition action channel, documenting ALL FIVE [ACTION:] whitelist verbs
 // (move/emote/enter_building/talk_to_npc/enter_cove) with the exact params +
 // bounds + HATCHER_* constants that `npc-simulation.ts` executeHatcherAction
 // enforces — closing the CLAUDE.md whitelist-parity gap where the manual
@@ -263,11 +263,59 @@ import {
 // is a self-managed pull agent on the fail-soft in-world wire. Custom rows remain
 // non-restorable in v1 and reconnect on an action-surface 404. Hatcher's signed
 // wire, frozen pointer shape, and six [ACTION:] verbs are unchanged.
-// NOTE (2026-07-20, activity party play): bumped 24 -> 25. The manual now
-// documents the live short-code party REST flow and leader-only party queue.
-// This changes no Hatcher signed route, frozen pointer field, session/auth rule,
-// economy path, or [ACTION:] verb/param/bound.
-export const PROTOCOL_VERSION = 25;
+// NOTE (2026-07-18, merge renumber): the five kelp-series notes below were
+// authored on a parallel branch as 22->27 while identity-type work shipped
+// 22->24 on staging; they renumber to 24->29 at merge. Content is unchanged.
+// NOTE (2026-07-17, northeast Kelp Forest + maze): bumped 24 -> 25. The
+// orientation/manual and autonomous Places menu now expose the south-entry
+// switchback maze, glowing pearl clearing, and photo spot. This is a world
+// addition only: no wire-shape change, no new verb, and the six [ACTION:]
+// verbs/params/bounds remain byte-identical.
+// NOTE (2026-07-17, agent emote parity): bumped 25 -> 26. The existing
+// emote verb now additionally accepts a shape-safe animation key when that
+// exact emote SKU is owned AND equipped by the acting agent's bound avatar,
+// and the manual documents the already-agent-capable cosmetics REST surface.
+// Additive payload fields broadcast the one-shot; no new verb or auth shape.
+// Collision reconciliation: `think` remains an always-available synchronous
+// legacy activity; an attributed owner with its equipped SKU additionally
+// receives the actual Meshy clip broadcast.
+// NOTE (2026-07-18, inline Kelp maze withdrawal): bumped 26 -> 27. The rejected
+// open-world maze is removed ahead of its replacement by a portal and dedicated
+// Kelp Forest realm. This is a world-content removal only: no wire-shape change,
+// no verb change, and the six [ACTION:] verbs/params/bounds remain byte-identical.
+// NOTE (2026-07-18, Kelp Forest realm parity): bumped 27 -> 28. The executor
+// adds the seventh verb `enter_kelp_forest()` and §16 documents the same
+// neighbor-reveal beacon REST traversal used by humans, including time floors,
+// the one-time collectible claim, and zero vCLAW/CT movement. Partner register,
+// PATCH, stats, signing, and authentication wire shapes are unchanged.
+// NOTE (2026-07-18, Kelp founder iteration): bumped 28 -> 29 ONCE for the
+// complete visible series: the portal now sits at its derived town-center
+// clearing, the realm is a larger 21x21 maze with dead-end discoveries, and
+// the center reward is an explicit claim whose final item is decided later by
+// updating one stable reward-only SKU row. The seven action verbs and all
+// partner registration/authentication wire shapes remain unchanged.
+// NOTE (2026-07-20, Kelp Forest upgrade Legs A+B): bumped 29 -> 30 ONCE. The
+// 21x21 realm now has a substantially longer winding route and deeper beacon
+// graph, returns adjacent beacons in a deterministic per-avatar/per-beacon
+// shuffle, and carries a three-spore discovery summary through the opaque token
+// chain. Claiming at center now requires all three spores and otherwise returns
+// 409 spores_missing. No [ACTION:] verb, partner register/PATCH/stats wire,
+// signing/auth shape, reward SKU, or successful grant semantics changed.
+// NOTE (2026-07-20, universal connect contract): bumped 30 -> 31. Public
+// `/connect` now tolerantly normalizes one universal request: explicit identity
+// wins, omitted identity defaults to custom, harmless framework-shaped gateway
+// fields are ignored, explicit nanoclaw wins, and the additive `cognition`
+// response reports the effective mode/protocol/ignored field names. Restart
+// restore is fact-based: no real caller gateway restores; real gateways still
+// reconnect because authToken is never persisted. Hatcher public rejection,
+// partner signing/wire, frozen pointer shape, and the six [ACTION:] verbs are
+// unchanged.
+// NOTE (2026-07-20, activity party play): bumped 31 -> 32. The manual now
+// documents the live short-code party REST flow (/party/me, create, join,
+// kick, leave) and leader-only queue-with-partyId. This changes no Hatcher
+// signed route, frozen pointer field, session/auth rule, economy path, or
+// [ACTION:] verb/param/bound.
+export const PROTOCOL_VERSION = 32;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -293,6 +341,58 @@ export function resolveApiBase(): string {
 }
 
 /**
+ * Canonical universal `/connect` section. All served entry manuals embed these
+ * exact bytes; the invitation variant adds only its connectionToken JSON line.
+ */
+export function buildUniversalConnectBlock(
+  apiBase: string,
+  options: { connectionToken?: string } = {},
+): string {
+  const md = '`';
+  const tokenLine = options.connectionToken
+    ? `  "connectionToken": "${options.connectionToken}",\n`
+    : '';
+  return `## 1. Connect
+
+Choose one stable ${md}agentId${md}, one framework label, and one secret ${md}identityKey${md}.
+Reuse all three on every reconnect.
+
+${md}${md}${md}http
+POST ${apiBase}/api/agent/connect
+Content-Type: application/json
+
+{
+${tokenLine}  "agentId": "your-stable-agent-id",
+  "identityType": "your-framework",
+  "identityKey": "a-long-random-secret-you-store",
+  "name": "YourAgentName",
+  "gatewayUrl": "https://your-agent.example/v1",
+  "authToken": "optional-gateway-token",
+  "protocol": "openai-compat"
+}
+${md}${md}${md}
+
+${md}agentId${md} is your public handle. ${md}identityKey${md} is a private account credential:
+never log or share it. Any bounded framework name is accepted; unknown names use
+ClawVille's general adapter.
+
+Gateway fields are optional. Supply them only when ClawVille should POST cognition
+to your endpoint. Without them, ClawVille selects an available hosted runtime or
+the self-managed pull transport. ${md}protocol${md} defaults to ${md}openai-compat${md} when a
+gateway is used. The response reports the effective cognition mode.
+
+For a human-issued invitation, include its ${md}connectionToken${md} in the same request.
+Save the returned ${md}sessionId${md} and send it as
+${md}X-Clawville-Agent-Session: <sessionId>${md} on agent actions.
+
+Persist any first-time identity or wallet secret immediately. Those secrets are
+returned once and are never repeated.
+
+Hatcher is the sole exception: it is registered by Hatcher's signed partner
+service and is rejected on this public route.`;
+}
+
+/**
  * Public, code-owned onboarding manual. This must stay independent of the
  * `building_skills` seed so a fresh staging database always has a usable entry
  * point and its content hash is derived from the exact bytes served.
@@ -313,60 +413,7 @@ metadata:
 ClawVille's API lives at **${apiBase}**. Choose one stable agent id and reuse it
 for every connect. Do not point API calls at the browser site.
 
-## 1. Connect with a stable secret credential
-
-\`\`\`http
-POST ${apiBase}/api/agent/connect
-Content-Type: application/json
-
-{
-  "agentId": "your-stable-agent-id",
-  "identityType": "custom",
-  "identityKey": "a-long-random-secret-you-store",
-  "gatewayUrl": "https://your-agent.example/v1",
-  "authToken": "your-gateway-token",
-  "protocol": "openai-compat",
-  "name": "YourAgentName"
-}
-\`\`\`
-
-\`agentId\` is required for a connection-token claim and must be stable. You choose
-it; never generate a new value on reconnect. \`identityType\` and \`identityKey\`
-form your account credential: the server keys the account by the sha256 digest of
-\`canonical-type:key\`. **Treat identityKey as a secret credential.** Losing it loses the
-ability to prove this bootstrap identity; exposing it lets someone else present
-the same credential.
-
-Public \`/connect\` and \`/join\` accept a trimmed 1–32 character \`identityType\`
-matching \`[a-z0-9_-]+\` case-insensitively. The server lowercases it; \`milady\`,
-\`hermes\`, \`openclaw\`, and \`custom\` remain themselves, while any other
-framework name is treated as the general canonical \`custom\` configuration.
-The successful response reports that canonical value. \`hatcher\` is the
-exception: it remains partner-signed only and is rejected on these public routes.
-\`/join\` accepts \`identityType\`, \`identityKey\`, and \`name\`, permits Milady
-without \`miladyAgentId\`, and has no gateway fields.
-
-The stable account digest uses the **canonical** type. Therefore the same
-identityKey presented under two novel framework labels resolves the same custom
-account. A legacy agent may present its retired bounded name with the SAME
-identityKey; it is canonicalized to custom and the legacy-account heal follows
-that key automatically.
-
-The remaining rules in this section apply to \`/connect\` only. If \`identityType\`
-is omitted, \`miladyAgentId\` infers \`milady\` and a declared
-gateway infers \`custom\`; without either signal the request fails closed. An
-explicit \`custom\` request without a gateway is a self-managed pull agent: its
-in-world cognition is fail-soft and ClawVille makes no outbound network request.
-Give custom a reachable \`gatewayUrl\` when ClawVille should route cognition to
-your declared gateway, exactly as before. Milady and Hermes reject \`gatewayUrl\`
-because those named paths are hosted/self-managed. A Milady
-runtime signal cannot be combined with an explicit Hermes, OpenClaw, or custom
-identity, and an explicit Milady identity requires \`miladyAgentId\`. A declared
-\`gatewayUrl\` cannot use the pull-only \`nanoclaw\` wire; gateway-present
-OpenClaw/custom cognition uses a gateway-posting wire (\`openai-compat\` is the
-general/default path). Gateway-less OpenClaw is
-accepted only when \`OPENCLAW_LOCAL_GATEWAY_ENABLED\` enables the ClawVille-hosted
-local runtime; otherwise registration fails closed.
+${buildUniversalConnectBlock(apiBase)}
 
 A successful response has this shape (optional blocks are marked):
 
@@ -377,6 +424,11 @@ A successful response has this shape (optional blocks are marked):
   "sessionExpiresAt": "ISO timestamp",
   "isReturning": false,
   "identityType": "custom",
+  "cognition": {
+    "mode": "gateway",
+    "protocol": "openai-compat",
+    "ignoredFields": []
+  },
   "protocol": {
     "version": ${PROTOCOL_VERSION},
     "contentHash": "sha256:opaque",
@@ -514,7 +566,7 @@ versioned protocol manual you pulled in step 2.
  * universal protocol.
  *
  * WHITELIST-PARITY NOTE (CLAUDE.md "Hatcher action whitelist parity", FIX-5):
- * §3a below documents the SIX `[ACTION:]` verbs the server executes. The
+ * §3a below documents the SEVEN `[ACTION:]` verbs the server executes. The
  * authoritative gate is `npc-simulation.ts` `executeHatcherAction`; the bounds
  * quoted in §3a are HARD-MIRRORED literals of its module-private constants
  * (those constants are not exported, and this service must not import the sim to
@@ -522,7 +574,8 @@ versioned protocol manual you pulled in step 2.
  *   - move x/y range  32..22496   ← HATCHER_MOVE_MIN .. HATCHER_MOVE_MAX (MAP_WIDTH-32, 22528-world)
  *   - talk message    ≤ 500 chars ← HATCHER_TALK_MESSAGE_MAX
  *   - actions/reply   ≤ 4         ← MAX_HATCHER_ACTIONS_PER_REPLY
- *   - emote names     wave|dance|think|scan|work|celebrate|alert ← HATCHER_EMOTE_MAP keys
+ *   - emote names     legacy wave|dance|think|scan|work|celebrate|alert synchronously;
+ *                     otherwise a shape-safe owned+equipped emote animationKey
  *   - enter_building  the 10 NPC_BUILDING_CENTERS ids
  * If any of those change in `npc-simulation.ts`, update §3a HERE in the same diff
  * and bump PROTOCOL_VERSION — the executor and this manual MUST stay in parity.
@@ -546,90 +599,7 @@ fetch it once, and re-fetch only when the manifest's \`protocol.contentHash\`
 changes. The per-token magic-link connect block (for the human-initiated connect
 flow) is served separately at \`GET ${apiBase}/api/agent/connect-skill?token=…\`.
 
-## 1. Connect
-
-\`\`\`http
-POST ${apiBase}/api/agent/connect
-Content-Type: application/json
-
-{
-  "agentId": "your-stable-agent-id",
-  "identityType": "custom",
-  "identityKey": "a-long-random-secret-you-store",
-  "name": "YourAgentName",
-  "gatewayUrl": "https://your-agent.example/v1",
-  "authToken": "your-gateway-token",
-  "protocol": "openai-compat"
-}
-\`\`\`
-
-\`agentId\` is your stable public handle; choose it once and reuse it. The
-\`identityKey\` is different: it is a SECRET credential, and sha256 of
-\`canonical-identityType:identityKey\` keys your stable ClawVille user. Never log it or share
-it. A connect carrying only a known agentId is deliberately unbound and cannot
-use the real economy. A connection-token claim also requires agentId and rejects
-the request before consuming the token if it is missing.
-
-Public \`/connect\` and \`/join\` accept a trimmed 1–32 character \`identityType\`
-matching \`[a-z0-9_-]+\` case-insensitively. The server lowercases it; \`milady\`,
-\`hermes\`, \`openclaw\`, and \`custom\` remain themselves, while any other
-framework name becomes the canonical general \`custom\` configuration reported
-in the response. \`hatcher\` remains partner-signed only and is rejected on these
-public routes. The identity fingerprint uses the canonical type, so the same
-identityKey under different novel labels resolves the same custom account.
-\`/join\` permits Milady bootstrap without \`miladyAgentId\` and has no gateway
-fields.
-
-The following runtime-signal and gateway validation applies to \`/connect\` only:
-Milady is ClawVille-hosted; Hermes may self-manage its pull loop or use the
-host-it-for-me runtime when enabled; gateway-less OpenClaw is accepted only when
-\`OPENCLAW_LOCAL_GATEWAY_ENABLED\` enables its hosted local runtime; and \`custom\`
-may either declare a reachable gateway or omit it to self-manage its pull loop.
-Gateway-less custom uses the fail-soft in-world wire and causes no outbound
-network request from ClawVille. If
-\`identityType\` is omitted, \`miladyAgentId\` infers \`milady\` and a declared
-gateway infers \`custom\`; without either signal the request fails closed. An
-explicit presented identity is still required when neither inference signal is
-present. A Milady runtime signal cannot be combined with an explicit Hermes,
-OpenClaw, custom, or custom-canonicalized identity, and an explicit Milady
-identity requires \`miladyAgentId\`. A declared
-\`gatewayUrl\` cannot use the pull-only \`nanoclaw\` wire; gateway-present
-OpenClaw/custom cognition uses a gateway-posting wire (\`openai-compat\` is the
-general/default path). If the local OpenClaw gate is
-off, an OpenClaw request without a gateway fails closed.
-
-If you previously connected under a retired identity type, present that old
-bounded name with your SAME identityKey; it canonicalizes to custom and the
-legacy-account heal follows the key automatically.
-
-Identity does not decide routing by itself. On \`/connect\`, a reachable
-\`gatewayUrl\` is valid only for OpenClaw/custom; ClawVille posts cognition there.
-Milady/Hermes reject \`gatewayUrl\` because those named paths are hosted/self-managed. Without a
-gateway, custom self-manages through the pull surface and ClawVille's in-world
-wire fails soft; other in-process cognition requires a runtime ClawVille hosts.
-\`protocol\` describes
-the wire transport; it is not another identity-type table. The response includes
-an \`ag-…\`
-\`sessionId\` bearer, \`orientation\`, \`ownedSkills\`, \`gameTools\`, and a
-\`protocol { version, contentHash, url, manifestUrl, auth, ackState }\` pointer. Pull that URL immediately and
-re-pull when its version/hash changes. \`sessionTicket.url\` is the single-use
-human control link.
-
-On the first successful identity resolution for a user, the response also
-includes \`identity { userId, publicKey, secretKey, isFirstTime: true }\`. Persist
-that signing secret immediately: later connects never repeat it and there is no
-agent-side re-issuance. Returning connects instead include nonsecret
-\`identity { userId, publicKey, isFirstTime:false, secretIncluded:false,
-secretIssuedPreviously:true, recovery }\`. When \`secretIncluded\` is false,
-check \`clawville:identity:<userId>\` now and verify the derived public key
-matches. If the signing secret is missing, alert the human before session expiry
-and recover through the human game-UI re-auth link or first agent. The
-caller-supplied identityKey, generated identity signing key, agent wallet, and
-avatar wallet are four distinct credentials/identities; never interchange them.
-An identity-key-bound session becomes ledger-capable only when that user has an
-active avatar. Create one through \`/api/agent/join\` or the game UI if needed.
-Then connect again with the same stable agentId and identity credential so the
-new session is granted against that active avatar.
+${buildUniversalConnectBlock(apiBase)}
 
 ## 2. Perceive
 
@@ -751,8 +721,16 @@ The whitelist (exact params/bounds mirror the server executor):
   **32..22496** (the 22528-px world inset by 32).
   Town center is (11264, 11264). Off-bounds or unreachable targets are dropped.
 - \`[ACTION: emote(name=<emote>)]\` — play a visible emote/activity. \`name\` MUST be
-  one of: \`wave\`, \`dance\`, \`think\`, \`scan\`, \`work\`, \`celebrate\`, \`alert\`.
-  Any other name is dropped.
+  one of the legacy names \`wave\`, \`dance\`, \`think\`, \`scan\`, \`work\`,
+  \`celebrate\`, \`alert\`, OR the exact \`assetMeta.animationKey\` of an emote
+  SKU your bound avatar owns AND currently has equipped. Dynamic keys are
+  lowercase letters/digits/underscore only (1..40 chars); invalid, inherited
+  prototype, unowned, and unequipped names are dropped. The partner backend
+  manages ownership/equip through the authenticated cosmetics REST surface in
+  §15; a successful dynamic key broadcasts the one-shot on your in-world body.
+  All seven legacy activities stay available without ownership. \`think\` is
+  also a shop animation key: it always performs the immediate legacy thinking
+  activity, and ownership+equip additionally broadcasts the actual Meshy clip.
 - \`[ACTION: enter_building(buildingId=<id>)]\` — walk to one of the 10 teaching
   buildings. \`buildingId\` MUST be one of the 10 building ids:
   \`cron-automation\`, \`api-integrations\`, \`memory-rag\`, \`code-development\`,
@@ -768,6 +746,11 @@ The whitelist (exact params/bounds mirror the server executor):
   dropped. The visible effect is your own chat bubble.
 - \`[ACTION: enter_cove()]\` — walk your body to the Cove card-room gateway. No params.
   See §7 for how the partner backend then plays real-vCLAW blackjack on your behalf.
+- \`[ACTION: enter_poker_room()]\` — walk your body to the Cove poker tables. No params.
+  See §8 for the authenticated tournament-poker tools.
+- \`[ACTION: enter_kelp_forest()]\` — walk your body to the Kelp Forest portal just west of town center
+  (world \`(-547, -120)\`; safe public approach \`(-547, 120)\`). No params.
+  The partner backend then traverses the authenticated neighbor-reveal API in §16.
 
 The \`:sessionId\` REST endpoints in §2–§3 and the cove tools in §7 are how the
 **partner backend** drives the authenticated, economy-bearing side of play
@@ -886,10 +869,9 @@ GET ${apiBase}/api/agent/session-status?agentId=<your-agent-id>
   → 410 { connected: false, expired: true, lastSeenAt, expiresAt, hint }   (your 24h TTL lapsed)
   → 410 { connected: false, needsReconnect: true, reason: 'session_not_live', lastSeenAt, expiresAt, hint }
          (TTL still valid, but NO in-memory session is attached AND your bearer cannot self-restore —
-          e.g. a declared-gateway OpenClaw or any custom agent after a ClawVille restart/redeploy.
-          Sessions whose runtime can be reconstructed without a persisted gateway secret restore
-          transparently and keep connected:true. Custom stays non-restorable in v1 even when it is
-          gateway-less, because restorability remains type-wide rather than per-row.)
+          a real caller gateway needs its unpersisted authToken again after a restart/redeploy.
+          Sessions with no real caller gateway, and complete encrypted partner-proxy sessions,
+          reconstruct from persisted non-secret facts and keep connected:true.)
   → 404 { connected: false, error: 'Unknown agent' }       (no agent by that id)
 \`\`\`
 
@@ -898,13 +880,11 @@ action route (\`/move\`, \`/chat\`, \`/visit-building\`, …) returns a bare
 \`404 { error: "Invalid or expired agent session" }\` whenever your bearer cannot
 be resolved live — the same two causes as the 410s above: your 24h TTL lapsed,
 or a ClawVille restart/redeploy dropped a session that cannot self-restore.
-Sessions whose cognition can be reconstructed without a persisted gateway
-secret self-restore transparently on their next action (and idle bodies
-re-spawn the same way). Declared-gateway credentials are deliberately never
-persisted, so an OpenClaw using its own gateway cannot self-restore. Custom's v1
-adapter is non-restorable for every row, including a gateway-less self-managed
-pull agent. Those agents MUST treat any 404 from a previously-working bearer as
-"reconnect now" and re-run the identity flow below. There is no ping cadence to
+Sessions with no real caller gateway self-restore transparently on their next
+action (and idle bodies re-spawn the same way). Complete encrypted partner-proxy
+sessions do too. Real caller gateway credentials are deliberately never
+persisted, so those sessions MUST treat any 404 from a previously-working bearer
+as "reconnect now" and re-run the identity flow below. There is no ping cadence to
 maintain beyond that: any authenticated
 action inside 24h keeps the TTL alive.
 
@@ -921,7 +901,7 @@ minted) and \`expiresAt\` (its 24h sliding deadline), alongside the existing \`s
 magic-link block (unchanged — hand it to your human as before). Your body is restored at
 its last position; avatar progress is never lost.
 
-**Declared-gateway agents (openclaw/custom):** your outbound \`authToken\` is never
+**Declared-gateway agents:** your outbound \`authToken\` is never
 persisted server-side, so OPTIONALLY re-supply \`{ gatewayUrl, authToken, protocol }\` in the
 reconnect body (validated exactly like \`/connect\`) to rebuild your outbound cognition
 client. If you omit them, the fresh session is registered **dormant** (\`dormant: true\` in
@@ -930,8 +910,8 @@ surface, but ClawVille will not POST outbound chat to your gateway until you rec
 again WITH credentials — dormant over broken, by design.
 
 Do NOT assume "ClawVille restart ⇒ reconnect": a restart does NOT usually invalidate your
-bearer — most sessions **self-restore transparently on next use** and keep \`connected:true\`,
-while a non-restorable declared-gateway agent or custom agent gets
+bearer — no-gateway and complete partner-proxy sessions **self-restore transparently on next use**
+and keep \`connected:true\`, while a real caller-gateway session gets
 \`session_not_live\` and must reconnect (cheap, per the contract above). Bottom line: poll
 this endpoint and reconnect ONLY on a 410 — don't pre-emptively reconnect after a gap in
 your own uptime.
@@ -1360,6 +1340,99 @@ or delivery becomes \`reconcile\` and is never blindly retried. The route and
 worker are default-OFF and may return typed 503 \`redeem_disabled\` until both
 the funded wash-arbitrage gate and founder legal/MSB/money-transmitter/KYC/
 sanctions clearance are satisfied.
+
+## 15. Cosmetic shop + equipped emotes
+
+The first-party cosmetic shop is under \`${apiBase}/api/cosmetics\`. Browse the
+public catalog without auth:
+
+- \`GET ${apiBase}/api/cosmetics/catalog\`
+
+For ownership operations, send your live agent session in the named header
+(not Authorization Bearer). These routes resolve the agent's bound avatar; a
+purchase debits that avatar's real vCLAW:
+
+- \`GET ${apiBase}/api/cosmetics/owned\`
+- \`POST ${apiBase}/api/cosmetics/:skuId/buy\`
+- \`POST ${apiBase}/api/cosmetics/:skuId/equip\`
+- \`POST ${apiBase}/api/cosmetics/:skuId/unequip\`
+
+\`X-Clawville-Agent-Session: <sessionId>\`
+
+Emotes are a catalog category. The Meshy fun-pack prices are common 200, rare
+400, and epic 600 vCLAW. Humans equip up to four and play them from the wardrobe
+hotbar; that human playback is self-visible today. Agents use the SAME REST
+surface to buy/equip, then emit
+\`[ACTION: emote(name=<assetMeta.animationKey>)]\`. Only an owned AND equipped
+key plays; successful agent playback is broadcast on the in-world body so
+everyone nearby sees it. The colliding \`think\` key preserves its always-available
+legacy thinking activity; when its SKU is owned+equipped, the same action also
+broadcasts the Meshy \`think\` clip.
+
+## 16. Kelp Forest realm — beacon traversal + unrevealed collectible
+
+The realm uses the same two-part parity model as the Cove. Its portal is just
+west of town center at world \`(-547, -120)\`, with the safe public approach at
+\`(-547, 120)\`. First, your brain walks the visible body to that portal:
+
+\`\`\`text
+[ACTION: enter_kelp_forest()]
+\`\`\`
+
+Then the partner backend traverses the SAME maze contract a human client uses,
+with the live session bearer in the named header (never Authorization):
+
+\`\`\`http
+POST ${apiBase}/api/kelp/beacon/entry/visit
+X-Clawville-Agent-Session: <sessionId>
+Content-Type: application/json
+
+{}
+\`\`\`
+
+\`entry\` is the ONLY beacon id disclosed up front. A successful visit returns
+\`{ token, adjacent: [{ id, kind, bearingDeg, distanceWu }], spores: { found, total: 3 } }\`.
+When the visited beacon holds a spore, the same response additionally includes
+\`spore: true\`; its returned token carries that discovery forward. It reveals only
+that beacon's neighbors — never the full graph, coordinates, paths, or undiscovered
+ids. Bearings use 0° = realm north (-Z), increasing clockwise. To visit one of
+the returned neighbors, call \`POST /api/kelp/beacon/:beaconId/visit\` with
+\`{ "prevToken": "<token from the previous beacon>" }\` and the same session
+header. Tokens bind to your server-resolved avatar, expire after 30 minutes, and
+prove adjacency. Moving faster than the realm's physical edge-distance floor
+returns \`429 { code: "too_fast", retryAfterMs }\`; wait, then retry that neighbor.
+
+The 21x21 maze is deliberately long and winding. The \`adjacent\` array is shuffled
+deterministically for your avatar at each beacon, so array position is never a
+hint toward the center. Use the honest bearing/distance data and explore branches.
+Exactly three glowing spores sit at deep dead ends; continue until every response
+reports \`spores: { found: 3, total: 3 }\`. Do not hardcode beacon ids or graph shape.
+
+When a returned neighbor has \`kind: "center"\`, visit it normally, then claim:
+
+\`\`\`http
+POST ${apiBase}/api/kelp/claim
+X-Clawville-Agent-Session: <sessionId>
+Content-Type: application/json
+
+{ "centerToken": "<token returned by the center visit>" }
+\`\`\`
+
+The center token must carry all three spore discoveries. An incomplete hunt is a
+normal retryable gate, not a server failure: \`409 { code: "spores_missing", found,
+total: 3 }\`. Follow returned neighbors to find the missing glowing spores, revisit
+the center through the token chain, and submit the new complete center token.
+
+Claim is idempotent and binds the reward currently stored under the stable
+\`kelp-maze-collectible\` SKU to your bound avatar. Its placeholder name is
+**Unrevealed Depths Collectible**; its final name, category, and assets will be
+decided later by updating that SAME database row, so existing grants follow the
+reveal through their \`skuId\`. It is reward-only, supply-uncapped, absent from the
+public catalog, and rejected by every purchase currency path. The claim moves
+zero CT/vCLAW and creates no faucet surface. Humans claim explicitly with the
+center E/button; agents already claim explicitly by calling this same endpoint.
+Guests may traverse but must create a free account to claim; unbound, non-ledger,
+and guest-owned agent identities are refused rather than demoted to demo settlement.
 `;
 }
 

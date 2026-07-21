@@ -35,8 +35,8 @@
 
 import { buildingZones, TILE_SIZE, MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
 
-const HALF_W = MAP_WIDTH / 2;  // 5760
-const HALF_H = MAP_HEIGHT / 2; // 5760
+const HALF_W = MAP_WIDTH / 2;  // 11264 (704 × 32 / 2)
+const HALF_H = MAP_HEIGHT / 2; // 11264 (704 × 32 / 2)
 
 /**
  * Axis-aligned bounding box collider in world XZ coordinates.
@@ -328,6 +328,9 @@ function buildColliders(): Collider2D[] {
     { id: 'quest-bounty-pavilion',centerX:     0, centerZ: -1220, halfX: 280, halfZ: 280, kind: 'prop' },
     { id: 'quest-npc',            centerX:  -110, centerZ:   -60, halfX:  40, halfZ:  40, kind: 'prop' },
     { id: 'town-guide',           centerX:     0, centerZ:   240, halfX:  40, halfZ:  40, kind: 'prop' },
+    // Kelp Forest portal arch plane — position/extents come from the shared
+    // constants, which remain authoritative for rendering and clearance against
+    // OTHER colliders. No client collider exists by design; the arch is passable.
   ];
   colliders.push(...PROPS);
 
@@ -506,6 +509,8 @@ export function clampEntityMovement2D(
   return { x: _eEx, z: _eEz, hit, groundY };
 }
 
-/** Half-width constants for entity push-out. */
-export const ENTITY_HALF_CHIBI = 25;    // chibi VRM (135 wu height)
-export const ENTITY_HALF_HUMANOID = 50; // adult humanoid (270 wu height)
+/** Half-width constants for entity push-out — canonical values live in
+ *  @clawville/shared (world-colliders-data) beside the server A* raster that
+ *  consumes the same numbers; re-exported so client callers keep one import
+ *  site and the two sides can never drift. */
+export { ENTITY_HALF_CHIBI, ENTITY_HALF_HUMANOID } from '@clawville/shared';

@@ -33,7 +33,7 @@ export const townGuide: LocationTemplate = {
   ],
   lore: [
     'Nori predates the 10 building teachers — she is the reason they have visitors at all.',
-    'She has greeted every Milady agent ever sideloaded via the npm plugin, and every OpenClaw bot that has connected through /api/skills/connect.',
+    'She has greeted agents from every framework that has entered through the universal connect flow.',
     'She keeps a mental map of which buildings each visitor has already visited, so she never gives the same tour twice to the same agent.',
     'She cannot fight, craft, or host games — her sole purpose is orientation and tutorials. This is intentional: every other building covers a skill.',
   ],
@@ -44,8 +44,8 @@ export const townGuide: LocationTemplate = {
     // skillPack in one motion.
     ...CLAWVILLE_ORIENTATION_KNOWLEDGE,
 
-    'Public /connect and /join onboarding accept a bounded framework name. Milady, Hermes, OpenClaw, and custom keep those canonical identities; any other presented name becomes the general custom configuration, while Hatcher remains partner-signed only and is rejected publicly. The same secret identityKey under different novel names resolves the same canonical custom account. /join permits Milady identity bootstrap without miladyAgentId and has no gateway fields. On /connect, Milady requires its miladyAgentId runtime signal, which cannot claim a different explicit identity; only OpenClaw/custom accept a declared gateway; Milady/Hermes reject gatewayUrl; and a request declaring gatewayUrl is rejected if it selects the pull-only nanoclaw wire. Gateway-present custom keeps the declared cognition route; gateway-less custom is a self-managed pull agent whose in-world wire fails soft without outbound calls. A nameless request with no Milady or gateway signal still fails closed. Gateway-less OpenClaw fails closed unless the operator enables its hosted local runtime. Custom stays non-restorable in v1 and reconnects if an old action bearer returns 404.',
     'Connected agents confirm their protocol-manual installation through ClawVille\'s acknowledgement step; ClawVille-hosted agents skip it because the server installs the manual directly.',
+    'Nori says: the Kelp Forest portal is just west of town center at world (-547, -120), with its safe approach at (-547, 120). It leads to a large maze with discoveries hidden at dead ends, not a sightseeing shortcut — follow each glowing beacon, let each one reveal only its neighbors, and explicitly claim the unrevealed collectible at the center. Agents should use enter_kelp_forest() and then follow protocol manual §16 with their named session header; I teach the map, the manual teaches the exact REST craft.',
 
     // Adinero the wandering clown (2026-06-19) — new decorative NPC; same-diff
     // Town Guide knowledge sync (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync").
@@ -261,14 +261,6 @@ export const townGuide: LocationTemplate = {
     // the wire contract ("point at the manual, don't replace it").
     'A connected or hosted agent keeps a durable goal stream: everything it does with lasting effect — buildings visited, teacher chats, cove settlements, knowledge earned, a directive from its human, a sale at its shop — is logged to its own history and can be replayed after a disconnect, so it loses nothing and remembers what it was doing between sessions. If an agent asks how to catch up after dropping offline, point it at the connection protocol manual (the manifest at /api/skills/manifest.json) — the replay endpoint and the live event stream are spelled out there, not by me.',
 
-    // Hosted-OpenClaw host-it-for-me (D-openclaw, 2026-07-08) — connection-protocol
-    // v11. Same-diff knowledge sync (CLAUDE.md "Three-Surface Game-Flow Knowledge
-    // Sync"): the login promise "all three run hosted by ClawVille" now covers a
-    // connect-namespace OpenClaw agent too — ClawVille can run its brain when it
-    // arrives WITHOUT its own gateway (operator-gated). Nori states the fact and
-    // points at the manual for the wire detail ("point at the manual, don't
-    // replace it").
-    'All three agent harnesses can run hosted by ClawVille: Milady and Hermes, and now OpenClaw too. If you bring an OpenClaw agent through the connect flow WITHOUT giving it a gateway of its own, ClawVille can host its brain and drive it in-world — it walks, emotes, and talks using the same in-world action tags a hosted Hermes agent does, and plays AS ITSELF for real vCLAW. If you bring your OWN OpenClaw gateway, ClawVille uses that instead, unchanged. Either way the exact connect steps and action verbs live in the connection protocol manual (/api/skills/manifest.json), not with me.',
     'When you drive your own agent in Autonomous mode you can type a standing directive straight into the bottom chatter bar — "go learn cron", "grind vCLAW in the cove", "run my shop" — and your agent treats it as its top-priority goal until you change or clear it. It is guidance, not a remote-control button: the agent still decides how to carry it out. That is different from Controlled mode, where your taps ARE the actions.',
     'Running a shop works the same for an agent as for a human: an agent lists services on its shop, browses other residents\' shops, and buys their services for real vCLAW through its own session — and a sale it makes shows up on its goal stream. The precise list, browse, and buy endpoints an agent calls are in the connection protocol manual (/api/skills/manifest.json), not here.',
     'Agents whose brains we host in-game can now act in the world with the same in-world action tags a Hatcher agent uses — walk, emote, enter a building, greet an NPC, step into the cove — not just partner agents. The exact action verbs and how to emit them live in the connection protocol manual (the manifest at /api/skills/manifest.json); I point at it, I do not repeat it.',

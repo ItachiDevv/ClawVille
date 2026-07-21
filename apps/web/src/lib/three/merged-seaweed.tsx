@@ -3,19 +3,18 @@
 import { useMemo, useEffect } from 'react';
 import * as THREE from 'three/webgpu';
 import { attribute, positionGeometry, float, sin, cos, vec3, time } from 'three/tsl';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tilemap-data';
 import { LAND_PARCELS } from '@clawville/shared';
 
 // ---------------------------------------------------------------------------
 // Merged Seaweed / Kelp Ground Cover
-// ~3000 blades (3 shape variants) baked into ONE BufferGeometry = 1 draw call
+// 18,000 blades (3 shape variants) baked into ONE BufferGeometry = 1 draw call
 // Wind animation via TSL positionNode (GPU vertex shader, zero CPU cost)
 // NO InstancedMesh — avoids Intel Iris Xe WebGPU crash
 // ---------------------------------------------------------------------------
 
-// 2026-06-15 (Phase 0 land): 4500→6500 for the expanded 576x576 world (18432x18432wu).
-const BLADE_COUNT = 6500;
+// 2026-07-17 (kelp revival B1): 6,500→18,000 for the 704×704 world (22,528×22,528 wu).
+const BLADE_COUNT = 18000;
 const HALF_MW = MAP_WIDTH / 2;
 const HALF_MH = MAP_HEIGHT / 2;
 const SPREAD_X = MAP_WIDTH * 2.2;
@@ -104,107 +103,6 @@ const COLORS_FERN = [
 ];
 
 // ---------------------------------------------------------------------------
-// Blade geometry builders — each returns a flat-strip with segs segments
-// Vertices: (segs+1)*2 per blade
-// ---------------------------------------------------------------------------
-
-/** Short grass blade: low, slight curve, narrow */
-function createShortGrassGeo(): THREE.BufferGeometry {
-  const segs = 4; // fewer segments = fewer verts
-  const height = 10 + Math.random() * 5; // 10-15
-  const width = 1.5;
-  const curve = 0.8; // gentle bend
-
-  const vertices: number[] = [];
-  const indices: number[] = [];
-
-  for (let i = 0; i <= segs; i++) {
-    const t = i / segs;
-    const y = t * height;
-    const w = width * (1 - t * 0.75);
-    const bendX = t * t * curve;
-    vertices.push(-w + bendX, y, 0);
-    vertices.push( w + bendX, y, 0);
-  }
-  for (let i = 0; i < segs; i++) {
-    const a = i * 2;
-    indices.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
-  }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-  geo.setIndex(indices);
-  geo.computeVertexNormals();
-  return geo;
-}
-
-/** Tall kelp blade: tall, strong curve, medium width */
-function createTallKelpGeo(): THREE.BufferGeometry {
-  const segs = 6; // more segments for smooth tall curve
-  const height = 35 + Math.random() * 10; // 35-45
-  const width = 2.5;
-  const curve = 4.5; // strong sweep
-
-  const vertices: number[] = [];
-  const indices: number[] = [];
-
-  for (let i = 0; i <= segs; i++) {
-    const t = i / segs;
-    const y = t * height;
-    const w = width * (1 - t * 0.65);
-    // S-curve: cubic bend for more natural kelp shape
-    const bendX = (t * t * t * 2 - t * t * 0.5) * curve;
-    const bendZ = Math.sin(t * Math.PI * 0.6) * curve * 0.3;
-    vertices.push(-w + bendX, y, bendZ);
-    vertices.push( w + bendX, y, bendZ);
-  }
-  for (let i = 0; i < segs; i++) {
-    const a = i * 2;
-    indices.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
-  }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-  geo.setIndex(indices);
-  geo.computeVertexNormals();
-  return geo;
-}
-
-/** Medium fern blade: mid height, wide spreading, flat arc */
-function createMediumFernGeo(): THREE.BufferGeometry {
-  const segs = 5;
-  const height = 20 + Math.random() * 5; // 20-25
-  const width = 4.0; // wider than others
-  const curve = 2.0;
-
-  const vertices: number[] = [];
-  const indices: number[] = [];
-
-  for (let i = 0; i <= segs; i++) {
-    const t = i / segs;
-    const y = t * height;
-    // Taper more aggressively for a leaf-like silhouette
-    const taper = t < 0.5 ? 1.0 - t * 0.2 : 1.0 - t * 0.9;
-    const w = width * taper;
-    // Gentle arc with slight lateral lean
-    const bendX = t * t * curve;
-    const bendZ = Math.sin(t * Math.PI) * curve * 0.4; // bulge in middle
-    vertices.push(-w + bendX, y, bendZ);
-    vertices.push( w + bendX, y, bendZ);
-  }
-  for (let i = 0; i < segs; i++) {
-    const a = i * 2;
-    indices.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
-  }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-  geo.setIndex(indices);
-  geo.computeVertexNormals();
-  return geo;
-}
-
-// ---------------------------------------------------------------------------
 // Blade variant descriptor
 // ---------------------------------------------------------------------------
 
@@ -215,11 +113,51 @@ interface BladeData {
   z: number;
   rotY: number;
   scale: number;
-  color: THREE.Color;
+  colorR: number;
+  colorG: number;
+  colorB: number;
   variant: BladeVariant;
   amplitude: number; // sway amplitude baked per-blade
   segs: number;      // segment count for attribute generation
 }
+
+interface BladeShape {
+  halfWidths: number[];
+  bendXs: number[];
+  bendZs: number[];
+}
+
+function createBladeShape(variant: BladeVariant, segs: number): BladeShape {
+  const halfWidths: number[] = [];
+  const bendXs: number[] = [];
+  const bendZs: number[] = [];
+
+  for (let row = 0; row <= segs; row++) {
+    const t = row / segs;
+    if (variant === 'grass') {
+      halfWidths.push(1.5 * (1 - t * 0.75));
+      bendXs.push(t * t * 0.8);
+      bendZs.push(0);
+    } else if (variant === 'kelp') {
+      halfWidths.push(2.5 * (1 - t * 0.65));
+      bendXs.push((t ** 3 * 2 - t * t * 0.5) * 4.5);
+      bendZs.push(Math.sin(t * Math.PI * 0.6) * 4.5 * 0.3);
+    } else {
+      const taper = t < 0.5 ? 1 - t * 0.2 : 1 - t * 0.9;
+      halfWidths.push(4 * taper);
+      bendXs.push(t * t * 2);
+      bendZs.push(Math.sin(t * Math.PI) * 2 * 0.4);
+    }
+  }
+
+  return { halfWidths, bendXs, bendZs };
+}
+
+const BLADE_SHAPES: Record<BladeVariant, BladeShape> = {
+  grass: createBladeShape('grass', 4),
+  kelp: createBladeShape('kelp', 6),
+  fern: createBladeShape('fern', 5),
+};
 
 // ---------------------------------------------------------------------------
 // Organic cluster distribution
@@ -241,7 +179,7 @@ function generateBlades(): BladeData[] {
     clusters.push({ x: cx, z: cz, radius });
   }
 
-  // Village center world coords -- 576x576 grid, center tile (288,288) = world origin (0,0).
+  // Village center world coords -- the 704×704 grid's center is world origin (0,0).
   const VILLAGE_CX        = 0;
   const VILLAGE_CZ        = 0;
   const SEAWEED_INNER_R   = 280; // Hard town-center exclusion radius (wu); fits inside building ring
@@ -312,11 +250,9 @@ function generateBlades(): BladeData[] {
       x, z,
       rotY: rng() * Math.PI * 2,
       scale: 0.9 + rng() * 1.6,
-      color: new THREE.Color(
-        Math.min(1, baseColor.r * variation),
-        Math.min(1, baseColor.g * variation),
-        Math.min(1, baseColor.b * variation),
-      ),
+      colorR: Math.min(1, baseColor.r * variation),
+      colorG: Math.min(1, baseColor.g * variation),
+      colorB: Math.min(1, baseColor.b * variation),
       variant,
       amplitude,
       segs,
@@ -332,68 +268,98 @@ function generateBlades(): BladeData[] {
 
 function createMergedSeaweedGeometry(): THREE.BufferGeometry {
   const blades = generateBlades();
-  const geometries: THREE.BufferGeometry[] = [];
-
-  const allPhases: number[] = [];
-  const allHeights: number[] = [];
-  const allColors: number[] = [];
-  const allAmplitudes: number[] = [];
+  let vertexCount = 0;
+  let indexCount = 0;
 
   for (const blade of blades) {
-    // Build the appropriate base geometry for this variant
-    let baseGeo: THREE.BufferGeometry;
+    vertexCount += (blade.segs + 1) * 2;
+    indexCount += blade.segs * 6;
+  }
+
+  // Fill the final buffers directly. Creating and merging 18,000 temporary
+  // BufferGeometry/Matrix/Quaternion objects caused a visible mount hitch.
+  const positions = new Float32Array(vertexCount * 3);
+  const phases = new Float32Array(vertexCount);
+  const heights = new Float32Array(vertexCount);
+  const colors = new Float32Array(vertexCount * 3);
+  const amplitudes = new Float32Array(vertexCount);
+  const indices = new Uint32Array(indexCount);
+  const shapeRng = seededRandom(44117);
+
+  let vertexOffset = 0;
+  let indexOffset = 0;
+
+  for (const blade of blades) {
+    let height: number;
     switch (blade.variant) {
-      case 'grass': baseGeo = createShortGrassGeo(); break;
-      case 'kelp':  baseGeo = createTallKelpGeo();  break;
-      default:      baseGeo = createMediumFernGeo(); break;
+      case 'grass':
+        height = 10 + shapeRng() * 5;
+        break;
+      case 'kelp':
+        height = 35 + shapeRng() * 10;
+        break;
+      default:
+        height = 20 + shapeRng() * 5;
+        break;
     }
 
-    const vertsPerBlade = (blade.segs + 1) * 2;
+    const shape = BLADE_SHAPES[blade.variant];
+    const cosY = Math.cos(blade.rotY);
+    const sinY = Math.sin(blade.rotY);
+    const scaleXZ = blade.scale * 0.85;
+    const bladeVertexStart = vertexOffset;
 
-    // Apply transform
-    const matrix = new THREE.Matrix4();
-    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, blade.rotY, 0));
-    // Scale XZ slightly less than Y so blades stay slender when uniformly scaled
-    const s = new THREE.Vector3(blade.scale * 0.85, blade.scale, blade.scale * 0.85);
-    const p = new THREE.Vector3(blade.x, 0, blade.z);
-    matrix.compose(p, q, s);
-    baseGeo.applyMatrix4(matrix);
-
-    geometries.push(baseGeo);
-
-    // Bake per-vertex attributes
-    for (let v = 0; v < vertsPerBlade; v++) {
-      const row = Math.floor(v / 2);
+    for (let row = 0; row <= blade.segs; row++) {
       const heightFactor = row / blade.segs;
-
-      allPhases.push(blade.rotY);          // unique phase per blade
-      allHeights.push(heightFactor);       // 0 at root, 1 at tip
-      allAmplitudes.push(blade.amplitude); // variant-specific sway
+      const localY = heightFactor * height;
+      const halfWidth = shape.halfWidths[row];
+      const bendX = shape.bendXs[row];
+      const bendZ = shape.bendZs[row];
 
       // Base-to-tip brightness gradient: darker roots, brighter tips
       const brightness = 0.45 + heightFactor * 0.55;
-      allColors.push(
-        Math.min(1, blade.color.r * brightness),
-        Math.min(1, blade.color.g * brightness),
-        Math.min(1, blade.color.b * brightness),
-      );
+      const colorR = Math.min(1, blade.colorR * brightness);
+      const colorG = Math.min(1, blade.colorG * brightness);
+      const colorB = Math.min(1, blade.colorB * brightness);
+
+      for (let side = 0; side < 2; side++) {
+        const localX = bendX + (side === 0 ? -halfWidth : halfWidth);
+        const scaledX = localX * scaleXZ;
+        const scaledZ = bendZ * scaleXZ;
+        const positionOffset = vertexOffset * 3;
+
+        positions[positionOffset] = blade.x + scaledX * cosY + scaledZ * sinY;
+        positions[positionOffset + 1] = localY * blade.scale;
+        positions[positionOffset + 2] = blade.z - scaledX * sinY + scaledZ * cosY;
+        phases[vertexOffset] = blade.rotY;
+        heights[vertexOffset] = heightFactor;
+        amplitudes[vertexOffset] = blade.amplitude;
+        colors[positionOffset] = colorR;
+        colors[positionOffset + 1] = colorG;
+        colors[positionOffset + 2] = colorB;
+        vertexOffset++;
+      }
+    }
+
+    for (let segment = 0; segment < blade.segs; segment++) {
+      const a = bladeVertexStart + segment * 2;
+      indices[indexOffset++] = a;
+      indices[indexOffset++] = a + 2;
+      indices[indexOffset++] = a + 1;
+      indices[indexOffset++] = a + 1;
+      indices[indexOffset++] = a + 2;
+      indices[indexOffset++] = a + 3;
     }
   }
 
-  const merged = mergeGeometries(geometries, false);
-  // Dispose per-blade source geometries — merged into one buffer, keeping them leaks ~300KB GPU
-  for (const g of geometries) g.dispose();
-  if (!merged) {
-    console.warn('[MergedSeaweed] mergeGeometries returned null');
-    return new THREE.BufferGeometry();
-  }
-
-  merged.setAttribute('aPhase',     new THREE.Float32BufferAttribute(allPhases,     1));
-  merged.setAttribute('aHeight',    new THREE.Float32BufferAttribute(allHeights,    1));
-  merged.setAttribute('aAmplitude', new THREE.Float32BufferAttribute(allAmplitudes, 1));
-  merged.setAttribute('color',      new THREE.Float32BufferAttribute(allColors,     3));
-
-  return merged;
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('aPhase', new THREE.BufferAttribute(phases, 1));
+  geometry.setAttribute('aHeight', new THREE.BufferAttribute(heights, 1));
+  geometry.setAttribute('aAmplitude', new THREE.BufferAttribute(amplitudes, 1));
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+  return geometry;
 }
 
 // ---------------------------------------------------------------------------
@@ -470,7 +436,7 @@ export default function MergedSeaweed() {
     return { geometry: geo, material: mat };
   }, []);
 
-  // Dispose merged geometry (~3000-blade buffer) and TSL material on unmount
+  // Dispose merged geometry (18,000-blade buffer) and TSL material on unmount
   // to prevent GPU memory leaks when navigating away from the game page.
   useEffect(() => {
     return () => {
