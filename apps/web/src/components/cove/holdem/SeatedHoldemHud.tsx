@@ -10,6 +10,10 @@ import {
   useHoldemController,
 } from '@/lib/cove/holdem-controller';
 import { computeRaisePresets } from '@/lib/cove/holdem-bet-math';
+import {
+  holdemSeatName,
+  settlementNarration,
+} from '@/lib/cove/holdem-settlement-narration';
 import PokerCard from './PokerCard';
 import CommunityCardRow from './CommunityCardRow';
 import styles from './SeatedHoldemHud.module.css';
@@ -21,8 +25,6 @@ import {
 import {
   deriveHoldemPublicSeats,
   type HoldemStreet,
-  type HoldemSettledResponse,
-  type SerializedHoldemHand,
   type SerializedHoldemLogEntry,
 } from '@clawville/shared';
 import type {
@@ -33,14 +35,6 @@ import type {
 } from '@/lib/cove/cash-poker';
 
 const EMPTY_LOG: readonly SerializedHoldemLogEntry[] = [];
-const BOT_NAMES: Record<number, string> = {
-  1: 'Tess',
-  2: 'Vex',
-  3: 'Pip',
-  4: 'Cal',
-  5: 'Nita',
-};
-
 /** Display-only decision duration. A future enforcement round may reuse this
  * constant; this HUD never auto-acts, folds, or calls when it reaches zero. */
 export const HOLDEM_DECISION_SECONDS = 10;
@@ -117,12 +111,17 @@ export function CashTableRoomHud({
   const [countdown, setCountdown] = useState<number | null>(
     secondsUntil(ownDeadline ?? live?.toActDeadlineMs ?? null),
   );
+  const countdownBudgetRef = useRef<number | null>(
+    secondsUntil(ownDeadline ?? live?.toActDeadlineMs ?? null),
+  );
   const [confirmingSit, setConfirmingSit] = useState(false);
   const [raiseTo, setRaiseTo] = useState(0);
 
   useEffect(() => {
     const deadline = ownDeadline ?? live?.toActDeadlineMs ?? null;
-    setCountdown(secondsUntil(deadline));
+    const initial = secondsUntil(deadline);
+    countdownBudgetRef.current = initial;
+    setCountdown(initial);
     if (deadline == null) return;
     const timer = window.setInterval(() => setCountdown(secondsUntil(deadline)), 250);
     return () => window.clearInterval(timer);
@@ -259,7 +258,11 @@ export function CashTableRoomHud({
               <div className={styles.timerTrack} aria-hidden>
                 <div
                   className={styles.timerFill}
-                  style={{ width: `${Math.min(100, Math.max(0, ((countdown ?? 0) / 25) * 100))}%` }}
+                  style={{
+                    width: `${countdownBudgetRef.current && countdown != null
+                      ? Math.min(100, Math.max(0, (countdown / countdownBudgetRef.current) * 100))
+                      : 0}%`,
+                  }}
                 />
               </div>
               <span className={styles.timerNumber}>{countdown ?? 0}s</span>
@@ -372,7 +375,7 @@ export function CashTableRoomHud({
                 disabled={leaving || leaveQueued}
                 className={styles.actionButton + ' ' + styles.walkButton}
               >
-                {leaveQueued ? 'Cashing out…' : leaving ? 'Standing…' : 'Stand / cash out'}
+                {leaveQueued ? 'Cashing out…' : leaving ? 'Standing…' : 'Walk Away'}
               </button>
             )}
           </div>
@@ -409,54 +412,11 @@ function sameLogEntry(a: SerializedHoldemLogEntry, b: SerializedHoldemLogEntry):
     && a.amount === b.amount && a.isHuman === b.isHuman;
 }
 
-function seatName(seat: number): string {
-  return seat === 0 ? 'YOU' : (BOT_NAMES[seat] ?? `BOT ${seat}`);
-}
-
 function actionLabel(entry: SerializedHoldemLogEntry): string {
   if (entry.type === 'post-sb') return `POST SB ${entry.amount}`;
   if (entry.type === 'post-bb') return `POST BB ${entry.amount}`;
   if (entry.type === 'check' || entry.type === 'fold') return entry.type.toUpperCase();
   return `${entry.type.toUpperCase()} ${entry.amount}`;
-}
-
-function settlementNarration(
-  settled: HoldemSettledResponse,
-): { headline: string; detail: string } {
-  const outcome: SerializedHoldemHand = settled.outcome;
-  const winners = outcome.seats.filter((seat) => seat.isWinner);
-  const humanWinner = winners.find((seat) => seat.isHuman);
-  const oneSurvivor = outcome.seats.filter((seat) => seat.status !== 'folded').length === 1;
-  const net = BigInt(settled.net);
-  const netText = `${net >= 0n ? '+' : ''}${net.toString()} vCLAW`;
-
-  if (oneSurvivor && humanWinner) {
-    return {
-      headline: `Everyone folded — you take the pot: +${settled.payout} vCLAW`,
-      detail: `Your net: ${netText}`,
-    };
-  }
-  if (oneSurvivor && winners[0]) {
-    return {
-      headline: `Everyone else folded — ${seatName(winners[0].seat)} takes ${winners[0].won} vCLAW`,
-      detail: `Your net: ${netText}`,
-    };
-  }
-
-  const winnerText = winners.map((winner) => {
-    const category = winner.handCategoryName ? ` with ${winner.handCategoryName}` : '';
-    return `${seatName(winner.seat)} wins ${winner.won} vCLAW${category}`;
-  }).join(' · ');
-  const splitDetail = outcome.pots.length > 1 || outcome.pots.some((pot) => pot.winners.length > 1)
-    ? outcome.pots.map((pot, index) => {
-        const names = pot.winners.map(seatName).join(' + ');
-        return `${outcome.pots.length > 1 ? `Pot ${index + 1}` : 'Split pot'}: ${names} (${pot.amount} vCLAW)`;
-      }).join(' · ')
-    : '';
-  return {
-    headline: `Showdown — ${winnerText || 'pot awarded'}`,
-    detail: [splitDetail, `Your net: ${netText}`].filter(Boolean).join(' · '),
-  };
 }
 
 /** P3 — seated in-world action HUD (2026-07-15). While the player is seated
@@ -732,7 +692,7 @@ export function SeatedHoldemHud() {
             data-testid={'holdem-seat-badge-' + seat}
           >
             <div className={styles.seatNameRow + ' ' + styles.smallCaps}>
-              <span>{seatName(seat)}</span>
+              <span>{holdemSeatName(seat)}</span>
               {livePositions.buttonSeat === seat && (
                 <span className={styles.positionChip + ' ' + styles.dealerChip} title="Dealer button">D</span>
               )}

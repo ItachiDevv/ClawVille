@@ -144,7 +144,7 @@ export interface CreateCashTableConfig {
   joinCode?: string | null;
 }
 
-const DEFAULT_TURN_CLOCK_MS = 25_000;
+const DEFAULT_TURN_CLOCK_MS = 20_000;
 const DEFAULT_AGENT_TURN_GRACE_MS = 5_000;
 /** provable-rng requires a hex clientSeed. 'clawville-cash' → base16 'c1a4ca54'. */
 const DEFAULT_CLIENT_SEED = 'c1a4ca54';

@@ -241,9 +241,9 @@ const DEFAULT_PERCH_PROFILE: Readonly<PerchProfile> = Object.freeze({
   seatOffsetY: 0,
 });
 const PERCH_PROFILE_BY_MODEL: Readonly<Partial<Record<ModelKey, Readonly<PerchProfile>>>> = Object.freeze({
-  lobster: { baselineMultiplier: 3, minDimension: 44, maxDimension: 50, outwardOffset: 6, seatOffsetY: 0 },
+  lobster: { baselineMultiplier: 3, minDimension: 44, maxDimension: 50, outwardOffset: -10, seatOffsetY: 0 },
   sweet_crab: { baselineMultiplier: 3, minDimension: 42, maxDimension: 46, outwardOffset: 7, seatOffsetY: 0 },
-  lobster_plush: { baselineMultiplier: 3, minDimension: 42, maxDimension: 46, outwardOffset: 7, seatOffsetY: 0 },
+  lobster_plush: { baselineMultiplier: 3, minDimension: 42, maxDimension: 46, outwardOffset: -9, seatOffsetY: 0 },
   hermitcrab: { baselineMultiplier: 3, minDimension: 42, maxDimension: 46, outwardOffset: 6, seatOffsetY: 0 },
   jellyfish: { baselineMultiplier: 3, minDimension: 42, maxDimension: 48, outwardOffset: 2, seatOffsetY: -18 },
   octopus: { baselineMultiplier: 3, minDimension: 44, maxDimension: 50, outwardOffset: 4, seatOffsetY: 0 },
@@ -522,13 +522,15 @@ const BASE_LOOK_COS_PITCH = Math.cos(BASE_LOOK_PITCH);
 const BASE_LOOK_SIN_PITCH = Math.sin(BASE_LOOK_PITCH);
 
 const BADGE_TABLEWARD_OFFSET = 52 * S;
+const CENTER_BADGE_LATERAL_OFFSET = -26 * S;
 function tablewardBadgeAnchor(
   seat: RoomSeat,
   y: number,
+  lateralX = 0,
 ): readonly [number, number, number] {
   const distance = Math.hypot(seat.x, seat.z);
   return [
-    seat.x - (seat.x / distance) * BADGE_TABLEWARD_OFFSET,
+    seat.x - (seat.x / distance) * BADGE_TABLEWARD_OFFSET + lateralX,
     y,
     seat.z - (seat.z / distance) * BADGE_TABLEWARD_OFFSET,
   ];
@@ -541,7 +543,7 @@ const SEAT_BADGE_WORLD_ANCHORS: readonly (readonly [number, number, number])[] =
   [0, TABLE_TOP_Y + 14, -45 * TABLE_FOOTPRINT_SCALE],
   tablewardBadgeAnchor(BOT_SEATS[0]!, TABLE_TOP_Y + 25),
   tablewardBadgeAnchor(BOT_SEATS[1]!, TABLE_TOP_Y + 34),
-  tablewardBadgeAnchor(BOT_SEATS[2]!, TABLE_TOP_Y + 5),
+  tablewardBadgeAnchor(BOT_SEATS[2]!, TABLE_TOP_Y + 9, CENTER_BADGE_LATERAL_OFFSET),
   tablewardBadgeAnchor(BOT_SEATS[3]!, TABLE_TOP_Y + 34),
   tablewardBadgeAnchor(BOT_SEATS[4]!, TABLE_TOP_Y + 25),
 ] as const;

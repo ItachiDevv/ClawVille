@@ -292,7 +292,7 @@ function CashTableRoom({ tableId }: { tableId: string }) {
   return (
     <RoomShell
       onBack={handleStandOrBack}
-      backLabel={amSeated ? (leaveQueued ? 'Cashing out…' : 'Stand / cash out') : 'Back to Cove'}
+      backLabel={amSeated ? (leaveQueued ? 'Cashing out…' : leaving ? 'Standing…' : 'Walk Away') : 'Back to Cove'}
       backDisabled={leaveQueued || leaving}
     >
       <HoldemTableRoomCanvas liveTable={liveTable} />
