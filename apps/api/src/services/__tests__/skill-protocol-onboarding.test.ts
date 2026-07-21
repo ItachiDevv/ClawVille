@@ -17,7 +17,7 @@ describe('open-agent onboarding manuals', () => {
     const manual = buildPlayManual(API_BASE);
     const protocolManual = buildProtocolManual(API_BASE);
 
-    expect(PROTOCOL_VERSION).toBe(24);
+    expect(PROTOCOL_VERSION).toBe(25);
     expect(manual).toContain(`POST ${API_BASE}/api/agent/connect`);
     expect(manual).toContain('"agentId": "your-stable-agent-id"');
     expect(manual).toContain('"identityType": "custom"');
@@ -94,6 +94,12 @@ describe('open-agent onboarding manuals', () => {
     expect(protocolManual).toContain('/api/agent/session/ack');
     expect(protocolManual).toContain('informational only');
     expect(protocolManual).toContain('Hosted agents skip this step');
+    expect(protocolManual).toContain('/api/activities/party/me');
+    expect(protocolManual).toContain('/api/activities/party/:shortCode/join');
+    expect(protocolManual).toContain('/api/activities/party/:partyId/kick');
+    expect(protocolManual).toContain('/api/activities/party/:partyId/leave');
+    expect(protocolManual).toContain('/api/activities/:id/queue');
+    expect(protocolManual).toContain('{ "partyId": "<party-id>" }');
     expect(manual).toContain('knowledge_added');
     expect(manual).not.toMatch(/\b(?:CT|ClawTokens?|casino|pet)\b/i);
   });

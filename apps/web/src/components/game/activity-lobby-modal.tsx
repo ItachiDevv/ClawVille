@@ -16,14 +16,20 @@
  *   - queuing: poll /queue-status every 2s for matchedRoomId
  *
  * Party UI is rendered with 4 slots (locked Q2 cap = MAX_PARTY_SIZE on
- * the server). Slot 1 is self; slots 2–4 are invite stubs (Friend +
- * Agent variants — both gated as "Coming Soon" for chunk #8 because
- * the server endpoints aren't lit up yet — see InviteSearchPopover).
+ * the server). Authenticated players create a party, share its six-character
+ * short code, and the leader queues every member into the same room.
  *
  * Spec: `.claude/plans/q2-research/frontend-spec.md` §2.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  type FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import {
@@ -39,14 +45,16 @@ import {
 } from '@/components/rpg';
 import { useGameStore } from '@/stores/game';
 import { useAvatar } from '@/hooks/use-avatar';
+import { useAuthMe } from '@/hooks/use-auth-me';
 import ActivityThumbnail from '@/components/game/activity/ActivityThumbnail';
 import QueueStatusBar from '@/components/game/activity/QueueStatusBar';
 import PartySlot, {
   type PartySlotMember,
 } from '@/components/game/activity/PartySlot';
-import InviteSearchPopover, {
-  type InviteFilter,
-} from '@/components/game/activity/InviteSearchPopover';
+import {
+  type ActivityParty,
+  useParty,
+} from '@/components/game/activity/use-party';
 import ActivityTutorialCard, {
   shouldShowActivityTutorial,
   type ActivityTutorialActivityId,
@@ -68,7 +76,7 @@ type LobbyPhase = 'idle' | 'queuing';
 // ─── Server response shapes (kept narrow — lobby only needs these fields) ───
 
 interface QueueStatusResponse {
-  inQueue?: number;
+  playersInQueue?: number;
   position?: number;
   estimatedWaitSec?: number | null;
   roomsActive?: number;
@@ -93,21 +101,25 @@ interface LeaderboardResponse {
 function useQueueStatus(activityId: string | null, phase: LobbyPhase) {
   const [status, setStatus] = useState<QueueStatusResponse>({});
   const [error, setError] = useState<string | null>(null);
-  const aliveRef = useRef(true);
 
   useEffect(() => {
-    if (!activityId) return;
-    aliveRef.current = true;
+    if (!activityId) {
+      setStatus({});
+      setError(null);
+      return;
+    }
     const interval = phase === 'queuing' ? POLL_QUEUEING_MS : POLL_IDLE_MS;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+    const controller = new AbortController();
 
     const tick = async () => {
       try {
         const res = await fetch(
           `${API_BASE}/api/activities/${encodeURIComponent(activityId)}/queue-status`,
-          { credentials: 'include' },
+          { credentials: 'include', signal: controller.signal },
         );
-        if (!aliveRef.current) return;
+        if (cancelled) return;
         if (!res.ok) {
           // 401 / 403 — stay quiet; user just needs auth. Other errors
           // surface to the UI banner.
@@ -116,23 +128,27 @@ function useQueueStatus(activityId: string | null, phase: LobbyPhase) {
           }
         } else {
           const data = (await res.json()) as QueueStatusResponse;
-          if (aliveRef.current) {
+          if (!cancelled) {
             setStatus(data);
             setError(null);
           }
         }
       } catch (e) {
-        if (aliveRef.current) {
+        if (
+          !cancelled &&
+          !(e instanceof DOMException && e.name === 'AbortError')
+        ) {
           setError(e instanceof Error ? e.message : 'fetch failed');
         }
       }
-      if (aliveRef.current) {
+      if (!cancelled) {
         timer = setTimeout(tick, interval);
       }
     };
-    tick();
+    void tick();
     return () => {
-      aliveRef.current = false;
+      cancelled = true;
+      controller.abort();
       if (timer) clearTimeout(timer);
     };
   }, [activityId, phase]);
@@ -272,24 +288,54 @@ function TopWeeklyPreview({ activityId }: { activityId: string }) {
 function IdleBody({
   activity,
   selfMember,
-  onQueue,
+  party,
+  partyEligible,
+  partyStateReady,
+  partyError,
+  partyBusy,
+  onCreateParty,
+  onJoinParty,
+  onKickMember,
+  onLeaveParty,
+  onQueueSolo,
+  onQueueParty,
   queueing,
   status,
 }: {
   activity: ActivityDefinition;
   selfMember: PartySlotMember | null;
-  onQueue: () => void;
+  party: ActivityParty | null;
+  partyEligible: boolean;
+  partyStateReady: boolean;
+  partyError: string | null;
+  partyBusy: boolean;
+  onCreateParty: () => Promise<ActivityParty | null>;
+  onJoinParty: (shortCode: string) => Promise<ActivityParty | null>;
+  onKickMember: (avatarId: string) => Promise<ActivityParty | null>;
+  onLeaveParty: () => Promise<ActivityParty | null>;
+  onQueueSolo: () => void;
+  onQueueParty: () => void;
   queueing: boolean;
   status: QueueStatusResponse;
 }) {
-  const [openInvite, setOpenInvite] = useState<InviteFilter | null>(null);
+  const [joinCode, setJoinCode] = useState('');
+  const [localPartyError, setLocalPartyError] = useState<string | null>(null);
+  const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  const codeRef = useRef<HTMLSpanElement>(null);
   // Tutorial card visibility — initialised once per mount so a re-render
   // (after dismiss) doesn't immediately re-show the card.
   const [showTutorial, setShowTutorial] = useState(false);
   useEffect(() => {
     setShowTutorial(shouldShowActivityTutorial(activity.id));
   }, [activity.id]);
-  const partySize = selfMember ? 1 : 0;
+  const partySize = party?.members.length ?? (selfMember ? 1 : 0);
+  const isLeader = !!(
+    party &&
+    selfMember &&
+    party.leaderAvatarId === selfMember.avatarId
+  );
+  const partyCanQueue = !!party && partySize >= 2 && isLeader;
+  const soloDisabled = !selfMember || (!!party && partySize >= 2);
   const playerRange =
     activity.minPlayers === activity.maxPlayers
       ? `${activity.minPlayers} players`
@@ -301,6 +347,35 @@ function IdleBody({
     activity.id === 'bumper-shells' || activity.id === 'reef-race'
       ? activity.id
       : null;
+
+  const copyPartyCode = async () => {
+    if (!party) return;
+    try {
+      if (!navigator.clipboard) throw new Error('Clipboard unavailable');
+      await navigator.clipboard.writeText(party.shortCode);
+      setCopyStatus('Copied!');
+    } catch {
+      const selection = window.getSelection();
+      if (selection && codeRef.current) {
+        const range = document.createRange();
+        range.selectNodeContents(codeRef.current);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      setCopyStatus('Code selected — press Ctrl+C to copy');
+    }
+  };
+
+  const submitJoin = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (joinCode.length !== 6) {
+      setLocalPartyError('Enter the full 6-character party code');
+      return;
+    }
+    setLocalPartyError(null);
+    const joined = await onJoinParty(joinCode);
+    if (joined) setJoinCode('');
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -340,7 +415,7 @@ function IdleBody({
       </div>
 
       <QueueStatusBar
-        inQueue={status.inQueue ?? 0}
+        inQueue={status.playersInQueue ?? 0}
         estimatedSec={status.estimatedWaitSec ?? null}
         roomsActive={status.roomsActive ?? 0}
       />
@@ -382,36 +457,194 @@ function IdleBody({
           />
         </div>
 
-        {/* Slot 1 — self (or sign-in CTA when there's no avatar) */}
-        <PartySlot
-          member={selfMember ?? undefined}
-          ctaLabel="Sign in to join a party"
-          ctaDisabled
-          ctaDisabledReason="Connect an avatar first"
-        />
-
-        {/* Slots 2..PARTY_CAP — Friend + Agent invite stubs.
-            Wire each invite to a popover anchor (same row, right-aligned). */}
-        {Array.from({ length: PARTY_CAP - 1 }).map((_, i) => {
-          // Stagger Friend / Agent — slot 2 = Friend, slot 3 = Agent, slot 4 = Friend
-          const filter: InviteFilter = i === 1 ? 'agents' : 'avatars';
-          const label =
-            filter === 'agents' ? '+ Invite Agent' : '+ Invite Friend';
-          return (
-            <div key={i} style={{ position: 'relative' }}>
+        {!partyEligible ? (
+          <PartySlot
+            ctaLabel="Sign in to join a party"
+            ctaDisabled
+            ctaDisabledReason="Connect an avatar first"
+          />
+        ) : party ? (
+          <>
+            {party.members.map((member) => (
               <PartySlot
-                ctaLabel={label}
-                onClick={() => setOpenInvite(filter)}
+                key={member.avatarId}
+                member={{
+                  ...member,
+                  ready: true,
+                  isSelf: member.avatarId === selfMember?.avatarId,
+                }}
+                footer={
+                  member.avatarId === party.leaderAvatarId
+                    ? '👑 Party leader'
+                    : undefined
+                }
+                onKick={
+                  isLeader &&
+                  !partyBusy &&
+                  member.avatarId !== selfMember?.avatarId
+                    ? () => void onKickMember(member.avatarId)
+                    : undefined
+                }
               />
-              {openInvite === filter && (
-                <InviteSearchPopover
-                  filter={filter}
-                  onClose={() => setOpenInvite(null)}
-                />
-              )}
+            ))}
+            {Array.from({ length: Math.max(0, PARTY_CAP - partySize) }).map(
+              (_, index) => (
+                <div key={index} style={{ opacity: 0.68 }}>
+                  <PartySlot
+                    ctaLabel="Share code to invite"
+                    onClick={() => void copyPartyCode()}
+                  />
+                </div>
+              ),
+            )}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 10,
+                flexWrap: 'wrap',
+                paddingTop: 4,
+              }}
+            >
+              <div
+                style={{
+                  color: '#7dd3fc',
+                  fontFamily: 'var(--font-space-mono, monospace)',
+                  fontSize: 13,
+                  fontWeight: 800,
+                  letterSpacing: '0.08em',
+                }}
+              >
+                PARTY CODE:{' '}
+                <span
+                  ref={codeRef}
+                  style={{ userSelect: 'text', color: '#e2f2fc' }}
+                >
+                  {party.shortCode}
+                </span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <RpgButton
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void copyPartyCode()}
+                >
+                  Copy
+                </RpgButton>
+                <button
+                  type="button"
+                  disabled={partyBusy}
+                  onClick={() => void onLeaveParty()}
+                  style={{
+                    border: 0,
+                    background: 'transparent',
+                    color: '#fca5a5',
+                    cursor: partyBusy ? 'wait' : 'pointer',
+                    fontSize: 11,
+                    textDecoration: 'underline',
+                  }}
+                >
+                  Leave Party
+                </button>
+              </div>
             </div>
-          );
-        })}
+            {copyStatus && (
+              <div
+                role="status"
+                style={{ color: 'rgba(125, 211, 252, 0.8)', fontSize: 10 }}
+              >
+                {copyStatus}
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <PartySlot member={selfMember ?? undefined} />
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                flexWrap: 'wrap',
+              }}
+            >
+              <RpgButton
+                variant="secondary"
+                size="sm"
+                loading={partyBusy}
+                disabled={!partyStateReady}
+                onClick={() => void onCreateParty()}
+              >
+                Create Party
+              </RpgButton>
+              <form
+                onSubmit={(event) => void submitJoin(event)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  flex: 1,
+                  minWidth: 250,
+                }}
+              >
+                <label
+                  htmlFor={`party-code-${activity.id}`}
+                  style={{ color: '#cbd5e1', fontSize: 11 }}
+                >
+                  Have a code?
+                </label>
+                <input
+                  id={`party-code-${activity.id}`}
+                  value={joinCode}
+                  disabled={!partyStateReady}
+                  onChange={(event) => {
+                    setJoinCode(
+                      event.target.value
+                        .toUpperCase()
+                        .replace(/[^0-9A-HJKMNP-TV-Z]/g, '')
+                        .slice(0, 6),
+                    );
+                    setLocalPartyError(null);
+                  }}
+                  inputMode="text"
+                  autoComplete="off"
+                  minLength={6}
+                  maxLength={6}
+                  pattern="[0-9A-HJKMNP-TV-Z]{6}"
+                  aria-label="Six-character party code"
+                  placeholder="ABC123"
+                  style={{
+                    minWidth: 92,
+                    flex: 1,
+                    padding: '6px 8px',
+                    borderRadius: 4,
+                    border: '1px solid rgba(56, 189, 248, 0.35)',
+                    background: 'rgba(10, 22, 40, 0.7)',
+                    color: '#e2f2fc',
+                    fontFamily: 'var(--font-space-mono, monospace)',
+                    letterSpacing: '0.12em',
+                    textTransform: 'uppercase',
+                  }}
+                />
+                <RpgButton
+                  type="submit"
+                  variant="ghost"
+                  size="sm"
+                  disabled={!partyStateReady || joinCode.length !== 6}
+                  loading={partyBusy}
+                >
+                  Join a party
+                </RpgButton>
+              </form>
+            </div>
+          </>
+        )}
+        {(localPartyError || partyError) && (
+          <div role="alert" style={{ color: '#fca5a5', fontSize: 11 }}>
+            {localPartyError || partyError}
+          </div>
+        )}
       </div>
 
       <TopWeeklyPreview activityId={activity.id} />
@@ -426,15 +659,30 @@ function IdleBody({
         <RpgButton
           variant="primary"
           loading={queueing}
-          onClick={onQueue}
-          disabled={!selfMember}
+          onClick={onQueueSolo}
+          disabled={!partyStateReady || soloDisabled}
+          title={
+            party && partySize >= 2
+              ? 'Leave your party to queue solo'
+              : undefined
+          }
         >
           Queue Solo
         </RpgButton>
         <RpgButton
-          variant="secondary"
-          disabled
-          title="Party invites ship after the friends panel"
+          variant={partyCanQueue ? 'primary' : 'secondary'}
+          loading={queueing}
+          onClick={onQueueParty}
+          disabled={!partyStateReady || !partyCanQueue}
+          title={
+            party && !isLeader
+              ? 'Only the party leader can start the queue'
+              : party && partySize < 2
+                ? 'Invite at least one member — or queue solo'
+                : !party
+                  ? 'Create or join a party first'
+                  : undefined
+          }
         >
           Queue with Party
         </RpgButton>
@@ -460,15 +708,18 @@ function QueuingBody({
   status,
   onLeave,
   selfMember,
+  party,
 }: {
   activity: ActivityDefinition;
   status: QueueStatusResponse;
   onLeave: () => void;
   selfMember: PartySlotMember | null;
+  party: ActivityParty | null;
 }) {
   const position = status.position ?? null;
-  const inQueue = status.inQueue ?? 0;
+  const inQueue = status.playersInQueue ?? 0;
   const eta = status.estimatedWaitSec ?? null;
+  const knownMembers = party?.members ?? (selfMember ? [selfMember] : []);
 
   return (
     <div
@@ -524,9 +775,8 @@ function QueuingBody({
             : `~${Math.floor(eta / 60)}m ${eta % 60}s`}
       </div>
 
-      {/* Players-in-queue list — only the local player is identifiable to us;
-          the rest stay anonymous (server doesn't expose roster pre-match by
-          design — the lobby is queue-only, not the match). */}
+      {/* Known party members are named from /party/me. Unrelated queued
+          players remain anonymous until the match exposes its roster. */}
       <div
         style={{
           width: '100%',
@@ -551,27 +801,33 @@ function QueuingBody({
         >
           Players in Queue
         </div>
-        {selfMember && (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '4px 6px',
-              fontSize: 12,
-              color: '#e2f2fc',
-              background: 'rgba(56, 189, 248, 0.12)',
-              borderRadius: 4,
-            }}
-          >
-            <span aria-hidden>🦞</span>
-            <span style={{ flex: 1, fontWeight: 700 }}>
-              {selfMember.displayName} (you)
-            </span>
-            <StatusChip tone="positive" size="sm" label="Ready ✓" />
-          </div>
-        )}
-        {Array.from({ length: Math.max(0, inQueue - (selfMember ? 1 : 0)) }).map(
+        {knownMembers.map((member) => {
+          const isSelf = member.avatarId === selfMember?.avatarId;
+          return (
+            <div
+              key={member.avatarId}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '4px 6px',
+                fontSize: 12,
+                color: '#e2f2fc',
+                background: isSelf
+                  ? 'rgba(56, 189, 248, 0.12)'
+                  : 'transparent',
+                borderRadius: 4,
+              }}
+            >
+              <span aria-hidden>🦞</span>
+              <span style={{ flex: 1, fontWeight: isSelf ? 700 : 600 }}>
+                {member.displayName}{isSelf ? ' (you)' : ''}
+              </span>
+              <StatusChip tone="positive" size="sm" label="Ready ✓" />
+            </div>
+          );
+        })}
+        {Array.from({ length: Math.max(0, inQueue - knownMembers.length) }).map(
           (_, i) => (
             <div
               key={i}
@@ -605,7 +861,7 @@ function QueuingBody({
 
 export interface ActivityLobbyModalProps {
   /** When set, an external trigger (e.g. quickQueue deep-link) wants the
-   *  lobby to auto-fire Queue Solo as soon as it mounts. The modal calls
+   *  lobby to auto-fire Queue Solo immediately after mount. The modal calls
    *  `onAutoQueueConsumed` once it has fired (idempotent guard). */
   autoQueue?: boolean;
   onAutoQueueConsumed?: () => void;
@@ -621,6 +877,7 @@ export default function ActivityLobbyModal({
   const addToast = useGameStore((s) => s.addToast);
   const queryClient = useQueryClient();
   const { data: avatar } = useAvatar();
+  const { data: authData } = useAuthMe();
 
   const [phase, setPhase] = useState<LobbyPhase>('idle');
   const [queueing, setQueueing] = useState(false);
@@ -633,6 +890,25 @@ export default function ActivityLobbyModal({
         : null,
     [activityLobbyId],
   );
+  // Party UX is fail-closed until auth resolves. A cached guest avatar can
+  // outlive the auth query briefly, and party routes accept Lucia sessions,
+  // so avatar existence alone is not a sufficient non-guest check.
+  const partyEligible = !!avatar && !!authData?.user && !authData.user.isGuest;
+  const {
+    party,
+    error: partyError,
+    busy: partyBusy,
+    loaded: partyLoaded,
+    createParty,
+    joinByCode,
+    kick,
+    leave,
+  } = useParty(partyEligible ? activityLobbyId : null);
+  const authResolved = authData !== undefined;
+  const partyStateReady =
+    !avatar ||
+    (authResolved &&
+      (!partyEligible || (partyLoaded && partyError === null)));
 
   // Reset phase whenever the lobby is opened on a new activity.
   useEffect(() => {
@@ -646,6 +922,16 @@ export default function ActivityLobbyModal({
   }, [activityLobbyId]);
 
   const { status, error: statusError } = useQueueStatus(activityLobbyId, phase);
+
+  // Party members do not need to click Queue. The leader's atomic enqueue is
+  // visible through each member's own status poll; matchedRoomId is included
+  // because a fast match can remove the intermediate queue position first.
+  useEffect(() => {
+    if (phase !== 'idle' || !party) return;
+    if (status.position != null || status.matchedRoomId != null) {
+      setPhase('queuing');
+    }
+  }, [party, phase, status.matchedRoomId, status.position]);
 
   // Match-found navigation — fires only while queuing.
   useEffect(() => {
@@ -669,7 +955,7 @@ export default function ActivityLobbyModal({
     router,
   ]);
 
-  const handleQueue = useCallback(async () => {
+  const handleQueue = useCallback(async (partyId?: string) => {
     if (!activityLobbyId || queueing) return;
     // The click that triggers `handleQueue` is the AudioContext unlock
     // gesture — prime the audio bus here so SFX work in the match.
@@ -686,7 +972,7 @@ export default function ActivityLobbyModal({
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({}),
+          body: JSON.stringify(partyId ? { partyId } : {}),
         },
       );
     try {
@@ -696,7 +982,7 @@ export default function ActivityLobbyModal({
       // through NPC mode (e.g. deep-link, quick-queue) get an automatic
       // guest avatar here. This mirrors the NPC-mode bootstrap so the
       // visitor never sees the raw 401.
-      if (res.status === 401) {
+      if (res.status === 401 && !partyId) {
         const guest = await ensureGuestAvatar();
         if (guest) {
           await queryClient.invalidateQueries({ queryKey: ['avatar'] });
@@ -752,10 +1038,25 @@ export default function ActivityLobbyModal({
     if (!autoQueue) return;
     if (autoQueueFiredRef.current) return;
     if (!activity || !avatar) return;
+    if (avatar && !partyStateReady) return;
     autoQueueFiredRef.current = true;
     onAutoQueueConsumed?.();
+    if (party && party.members.length >= 2) {
+      addToast('⚠️', 'Leave your party to queue solo.', 3500);
+      return;
+    }
     void handleQueue();
-  }, [autoQueue, activity, avatar, handleQueue, onAutoQueueConsumed]);
+  }, [
+    autoQueue,
+    activity,
+    avatar,
+    party,
+    partyEligible,
+    partyStateReady,
+    handleQueue,
+    onAutoQueueConsumed,
+    addToast,
+  ]);
 
   if (!activity) return null;
 
@@ -806,7 +1107,19 @@ export default function ActivityLobbyModal({
         <IdleBody
           activity={activity}
           selfMember={selfMember}
-          onQueue={handleQueue}
+          party={party}
+          partyEligible={partyEligible}
+          partyStateReady={partyStateReady}
+          partyError={partyError}
+          partyBusy={partyBusy}
+          onCreateParty={createParty}
+          onJoinParty={joinByCode}
+          onKickMember={kick}
+          onLeaveParty={leave}
+          onQueueSolo={() => void handleQueue()}
+          onQueueParty={() => {
+            if (party) void handleQueue(party.id);
+          }}
           queueing={queueing}
           status={status}
         />
@@ -816,6 +1129,7 @@ export default function ActivityLobbyModal({
           status={status}
           onLeave={handleLeaveQueue}
           selfMember={selfMember}
+          party={party}
         />
       )}
     </RpgModal>

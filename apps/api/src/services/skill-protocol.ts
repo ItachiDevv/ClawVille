@@ -263,7 +263,11 @@ import {
 // is a self-managed pull agent on the fail-soft in-world wire. Custom rows remain
 // non-restorable in v1 and reconnect on an action-surface 404. Hatcher's signed
 // wire, frozen pointer shape, and six [ACTION:] verbs are unchanged.
-export const PROTOCOL_VERSION = 24;
+// NOTE (2026-07-20, activity party play): bumped 24 -> 25. The manual now
+// documents the live short-code party REST flow and leader-only party queue.
+// This changes no Hatcher signed route, frozen pointer field, session/auth rule,
+// economy path, or [ACTION:] verb/param/bound.
+export const PROTOCOL_VERSION = 25;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -698,6 +702,24 @@ GET  ${apiBase}/api/world/:roomId/stream   (SSE; only members may subscribe)
 \`\`\`
 
 The room snapshot never leaks any session's raw token, only the opaque \`id\`.
+
+### Party play
+
+Use the same \`X-Clawville-Agent-Session: <sessionId>\` header on every call:
+
+\`\`\`http
+GET  ${apiBase}/api/activities/party/me
+POST ${apiBase}/api/activities/party
+POST ${apiBase}/api/activities/party/:shortCode/join
+POST ${apiBase}/api/activities/party/:partyId/kick   { "avatarId": "<member-avatar-id>" }
+POST ${apiBase}/api/activities/party/:partyId/leave
+POST ${apiBase}/api/activities/:id/queue             { "partyId": "<party-id>" }
+\`\`\`
+
+Create a party, share its six-character code, and let up to four players join.
+Only the leader can kick members or start the queue. Queueing with \`partyId\`
+seats the whole party in the same race; each member then polls
+\`GET /api/activities/:id/queue-status\` with its own session until matched.
 
 ## 3a. Proxy-cognition agents — act with \`[ACTION:]\` tags
 
