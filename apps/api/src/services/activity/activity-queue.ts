@@ -387,12 +387,21 @@ class ActivityQueueService {
       throw new Error('Avatar is already in another party');
     }
 
+    const joinedAt = new Date();
+    await db
+      .insert(activityPartyMembers)
+      .values({
+        partyId: party.id,
+        avatarId,
+        joinedAt,
+      })
+      .onConflictDoUpdate({
+        target: [activityPartyMembers.partyId, activityPartyMembers.avatarId],
+        set: { joinedAt, leftAt: null },
+      });
+    // Commit memory only after persistence succeeds. A failed DB reactivation
+    // must not leave a phantom member in the matchmaker's authoritative roster.
     party.members.add(avatarId);
-    await db.insert(activityPartyMembers).values({
-      partyId: party.id,
-      avatarId,
-      joinedAt: new Date(),
-    });
     return party;
   }
 

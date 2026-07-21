@@ -314,6 +314,21 @@ describe('Party fill atomicity', () => {
     expect(second.members.size).toBe(2);
   });
 
+  it('reactivates a kicked or departed membership when the avatar rejoins', async () => {
+    const party = await activityQueueService.createParty(pid(0));
+    await activityQueueService.joinParty(party.shortCode, pid(1));
+
+    await activityQueueService.kickMember(party.id, pid(0), pid(1));
+    expect(party.members.has(pid(1))).toBe(false);
+    await activityQueueService.joinParty(party.shortCode, pid(1));
+    expect(party.members.has(pid(1))).toBe(true);
+
+    await activityQueueService.leaveParty(party.id, pid(1));
+    expect(party.members.has(pid(1))).toBe(false);
+    await activityQueueService.joinParty(party.shortCode, pid(1));
+    expect(party.members.has(pid(1))).toBe(true);
+  });
+
   it('leaveParty disbands when last member leaves', async () => {
     const party = await activityQueueService.createParty(pid(0));
     await activityQueueService.leaveParty(party.id, pid(0));
@@ -418,6 +433,9 @@ function makeDbMock(queueRows: Array<Record<string, unknown>>) {
       set() {
         return thenable(value);
       },
+      onConflictDoUpdate() {
+        return thenable(value);
+      },
       where() {
         return thenable(value);
       },
@@ -430,6 +448,7 @@ function makeDbMock(queueRows: Array<Record<string, unknown>>) {
     } as unknown as Promise<T> & {
       values: (...a: unknown[]) => unknown;
       set: (...a: unknown[]) => unknown;
+      onConflictDoUpdate: (...a: unknown[]) => unknown;
       where: (...a: unknown[]) => unknown;
       from: (...a: unknown[]) => unknown;
       catch: (h: (e: unknown) => unknown) => Promise<T>;

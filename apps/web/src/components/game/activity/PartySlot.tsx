@@ -5,12 +5,12 @@
  *
  * Two visual variants:
  *   - `filled`: shows a member (icon + name + ready chip + optional kick)
- *   - `empty`:  shows an "Invite" CTA stub (Friend or Agent)
+ *   - `empty`:  shows an invite/share CTA
  *
  * Per locked Q2 decision the party cap is 4 (mirrored from the server's
  * `MAX_PARTY_SIZE = 4` constant in `apps/api/src/services/activity/
- * activity-queue.ts`). The lobby renders 4 slots — one for self + 3
- * invite stubs at idle.
+ * activity-queue.ts`). The lobby renders the current roster plus share-code
+ * rows up to that cap.
  *
  * Spec: `.claude/plans/q2-research/frontend-spec.md` §2.2 / §13.2.
  */
@@ -38,7 +38,7 @@ export interface PartySlotProps {
   ctaLabel?: string;
   /** Disable the empty-slot CTA — used when the system is gated. */
   ctaDisabled?: boolean;
-  /** Tooltip explaining why CTA is disabled (e.g. "Coming soon"). */
+  /** Tooltip explaining why the empty-slot CTA is disabled. */
   ctaDisabledReason?: string;
   /** Click handler for empty-slot CTAs. */
   onClick?: () => void;
@@ -94,11 +94,6 @@ export default function PartySlot({
         }}
       >
         {ctaLabel}
-        {ctaDisabled && (
-          <span style={{ marginLeft: 8 }}>
-            <StatusChip tone="neutral" size="sm" label="Soon" />
-          </span>
-        )}
       </button>
     );
   }
