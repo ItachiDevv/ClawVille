@@ -100,6 +100,10 @@ import {
   REEF_JUMP_IMPULSE_MANUAL,
   REEF_JUMP_IMPULSE_RAMP,
   REEF_GRAVITY,
+  REEF_TRICK_SURGE_MULT,
+  REEF_TRICK_SURGE_DURATION_MS,
+  REEF_TRICK_MIN_LANDING_SPEED,
+  REEF_TRICK_STEER_DEADZONE_RAD,
   // SPEC 3 — ramps
   buildSplineRamps,
   type SplineRampPatch,
@@ -253,6 +257,14 @@ interface SplineBody {
   heightOffset: number;  // metres above track surface (0 = grounded)
   vyAxis: number;        // vertical velocity (wu/s, +up)
   airborneTicks: number; // 0 = grounded, >0 = airborne
+  /** Rising-edge latch for manual jump; prevents held Space from bunny-hopping. */
+  jumpHeld: boolean;
+  /** First airborne steer-edge state for the R18b trick mechanic. */
+  trickArmed: boolean;
+  trickDirection: 'left' | 'right' | null;
+  trickSteerSide: -1 | 0 | 1;
+  /** Deferred until post-wall/proximity passes so wipeout landings grant nothing. */
+  trickLandingPending: boolean;
 
   // ── Race progress (CLOSED-LOOP lap model, 2026-06-22) ─────────────────────
   /**
@@ -672,6 +684,11 @@ export class ReefRaceSplineSim {
         heightOffset: 0,
         vyAxis: 0,
         airborneTicks: 0,
+        jumpHeld: false,
+        trickArmed: false,
+        trickDirection: null,
+        trickSteerSide: 0,
+        trickLandingPending: false,
         progress: 0,
         prevProgress: 0,
         lap: 0,
@@ -1071,6 +1088,10 @@ export class ReefRaceSplineSim {
       this.enforceSplineWallClamp(state, body, /*reflectVelocity*/ false);
     }
 
+    // 4aa. Award clean trick landings only AFTER collision/wall consequences.
+    // A body that landed into a same-tick wipeout must receive no event/surge.
+    this.resolveTrickLandings(state, now);
+
     // 4b. Resolve power-up USES (deferred from the integrate loop). Positions
     // are now final for this tick, so rival-hazard outcomes are order-
     // independent; shields resolve before offensive items (Codex finding 4a).
@@ -1196,6 +1217,9 @@ export class ReefRaceSplineSim {
       const padAdd = body.activeBoosts.has('pad-boost')
         ? (body.activeBoosts.get('pad-boost')!.mult ?? 0)
         : 0;
+      const trickAdd = body.activeBoosts.has('trick-surge')
+        ? (body.activeBoosts.get('trick-surge')!.mult ?? 0)
+        : 0;
       // rr-turbo-bubble is ADDITIVE into the positive stack (Codex finding 4b).
       // The old `Math.max(speedMod, 1+pickupAdd)` DISCARDED any active negative
       // (a whirlpool-slowed victim on turbo kept full turbo speed). Folding it
@@ -1206,7 +1230,7 @@ export class ReefRaceSplineSim {
       // speedMod stays <=1.85x, below REEF_KINEMATIC_TOLERANCE's 2.1x ceiling.
       const pickupBoostAdd = powerBoosted ? 0.40 : 0; // rr-turbo-bubble
       const positiveKineticStack = Math.min(
-        launchAdd + slipAdd + padAdd + pickupBoostAdd,
+        launchAdd + slipAdd + padAdd + trickAdd + pickupBoostAdd,
         KINEMATIC_BOOST_CAP,
       );
 
@@ -1235,10 +1259,47 @@ export class ReefRaceSplineSim {
     //    shared surf-carving step).
     // v2: bit 2 is jump. Retired bit 4 is intentionally ignored.
     const jumpBit = (actionBits & ACTION_BIT_JUMP) !== 0;
-    if (jumpBit && body.airborneTicks === 0 && body.heightOffset === 0) {
+    const jumpPressed = jumpBit && !body.jumpHeld;
+    body.jumpHeld = jumpBit;
+    if (jumpPressed && body.airborneTicks === 0 && body.heightOffset === 0) {
       body.vyAxis += REEF_JUMP_IMPULSE_MANUAL;
       body.airborneTicks = 1;
     }
+
+    // R18b trick input uses the existing analog steering intent. A signed
+    // desired-heading delta gives a stable left/right edge for keyboard,
+    // joystick, agents, and bots without allocating a new wire bit.
+    let trickSteerSide: -1 | 0 | 1 = 0;
+    if (dir && (dir.x !== 0 || dir.z !== 0)) {
+      const desiredHeading = Math.atan2(dir.x, dir.z);
+      const steerDelta = Math.atan2(
+        Math.sin(desiredHeading - body.rot),
+        Math.cos(desiredHeading - body.rot),
+      );
+      if (Math.abs(steerDelta) >= REEF_TRICK_STEER_DEADZONE_RAD) {
+        trickSteerSide = steerDelta > 0 ? 1 : -1;
+      }
+    }
+    if (
+      body.airborneTicks > 0 &&
+      !body.trickArmed &&
+      trickSteerSide !== 0 &&
+      trickSteerSide !== body.trickSteerSide
+    ) {
+      body.trickArmed = true;
+      // Reef's screen-relative controls intentionally map positive heading
+      // bias to the player's LEFT (see useActivityInput.ts).
+      body.trickDirection = trickSteerSide > 0 ? 'left' : 'right';
+      this.broadcastFn(state.roomId, {
+        type: 'event.trick',
+        phase: 'armed',
+        avatarId: body.avatarId,
+        direction: body.trickDirection,
+        boostMult: REEF_TRICK_SURGE_MULT,
+        durationMs: REEF_TRICK_SURGE_DURATION_MS,
+      });
+    }
+    body.trickSteerSide = trickSteerSide;
 
     // 5+6+8. Surf-carving integrate — heading-rate + lateral-grip + carried
     // momentum, all in the PURE shared `integrateSurfStep` so the web client
@@ -1320,7 +1381,8 @@ export class ReefRaceSplineSim {
     const isPositiveBoostActive =
       body.activeBoosts.has('launch-boost') ||
       body.activeBoosts.has('slipstream-boost') ||
-      body.activeBoosts.has('pad-boost');
+      body.activeBoosts.has('pad-boost') ||
+      body.activeBoosts.has('trick-surge');
     if (isPositiveBoostActive) {
       const speed = Math.hypot(body.vx, body.vz);
       const hardCap = REEF_MAX_SPEED * 1.85;
@@ -1338,11 +1400,44 @@ export class ReefRaceSplineSim {
         // Landed.
         body.vyAxis = 0;
         body.airborneTicks = 0;
+        const landedMoving =
+          Math.hypot(body.vx, body.vz) >= REEF_TRICK_MIN_LANDING_SPEED;
+        body.trickLandingPending = body.trickArmed && landedMoving;
+        body.trickArmed = false;
       } else if (body.heightOffset > 0) {
         body.airborneTicks++;
       }
     }
 
+  }
+
+  /** Post-collision R18b landing settlement. */
+  private resolveTrickLandings(state: SplineRoomState, now: number): void {
+    for (const body of state.bodies.values()) {
+      if (!body.trickLandingPending) continue;
+      body.trickLandingPending = false;
+      if (
+        body.wipeoutUntil === null &&
+        body.alive &&
+        !body.forfeited &&
+        body.finishedAt === null &&
+        Math.hypot(body.vx, body.vz) >= REEF_TRICK_MIN_LANDING_SPEED
+      ) {
+        body.activeBoosts.set('trick-surge', {
+          expiresAt: now + REEF_TRICK_SURGE_DURATION_MS,
+          mult: REEF_TRICK_SURGE_MULT,
+        });
+        this.broadcastFn(state.roomId, {
+          type: 'event.trick',
+          phase: 'landed',
+          avatarId: body.avatarId,
+          direction: body.trickDirection ?? 'left',
+          boostMult: REEF_TRICK_SURGE_MULT,
+          durationMs: REEF_TRICK_SURGE_DURATION_MS,
+        });
+      }
+      body.trickDirection = null;
+    }
   }
 
   // ─── Wall clamp ────────────────────────────────────────────────────────────
@@ -2453,7 +2548,8 @@ export class ReefRaceSplineSim {
         boosting:
           b.activeBoosts.has('launch-boost') ||
           b.activeBoosts.has('slipstream-boost') ||
-          b.activeBoosts.has('pad-boost'),
+          b.activeBoosts.has('pad-boost') ||
+          b.activeBoosts.has('trick-surge'),
         wipedOut: b.wipeoutUntil !== null,
       })),
       pickups: state.pickups.map((pk) => ({
@@ -2742,6 +2838,11 @@ export class ReefRaceSplineSim {
       body.heightOffset = 0;
       body.vyAxis = 0;
       body.airborneTicks = 0;
+      body.jumpHeld = false;
+      body.trickArmed = false;
+      body.trickDirection = null;
+      body.trickSteerSide = 0;
+      body.trickLandingPending = false;
       body.pendingPowerUpSlots.length = 0;
       body.slipstreamSourceAvatarId = null;
       body.slipstreamConsecutiveTicks = 0;
@@ -2772,6 +2873,10 @@ export class ReefRaceSplineSim {
     body.slipstreamConsecutiveTicks = 0;
     body.slipstreamGraceTicksLeft = 0;
     body.activeBoosts.delete('slipstream-boost');
+    body.activeBoosts.delete('trick-surge');
+    body.trickArmed = false;
+    body.trickDirection = null;
+    body.trickLandingPending = false;
     this.broadcastFn(state.roomId, {
       type: 'event.wipeout',
       avatarId: body.avatarId,
@@ -2800,6 +2905,11 @@ export class ReefRaceSplineSim {
       body.heightOffset = 0;
       body.vyAxis = 0;
       body.airborneTicks = 0;
+      body.jumpHeld = false;
+      body.trickArmed = false;
+      body.trickDirection = null;
+      body.trickSteerSide = 0;
+      body.trickLandingPending = false;
       body.pendingPowerUpSlots.length = 0;
       body.slipstreamSourceAvatarId = null;
       body.slipstreamConsecutiveTicks = 0;
@@ -2810,6 +2920,7 @@ export class ReefRaceSplineSim {
       body.activeBoosts.delete('launch-stall');
       body.activeBoosts.delete('slipstream-boost');
       body.activeBoosts.delete('pad-boost');
+      body.activeBoosts.delete('trick-surge');
       body.intent.dir = { x: tangent.x, z: tangent.z };
       body.intent.thrust = 0;
       body.intent.actionBits = 0;
@@ -2874,6 +2985,7 @@ export class ReefRaceSplineSim {
       currentPlacement: number | null;
       finishedAt: number | null;
       dnf: boolean;
+      airborne: boolean;
     }>;
     arenaRadius: number;
     now: number;
@@ -2904,6 +3016,7 @@ export class ReefRaceSplineSim {
       currentPlacement: placementMap.get(b.avatarId) ?? null,
       finishedAt: b.finishedAt,
       dnf: b.dnf,
+      airborne: b.airborneTicks > 0 || b.heightOffset > 0,
     }));
     return {
       selfAvatarId,

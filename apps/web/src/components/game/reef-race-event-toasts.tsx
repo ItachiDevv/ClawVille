@@ -269,6 +269,39 @@ function ReefRaceBoostPadToast() {
   );
 }
 
+function ReefRaceTrickToast() {
+  const event = useActivityStore((s) => s.lastSelfTrickLandingEvent);
+  const matchPhase = useActivityStore((s) => s.matchPhase);
+  const [visible, setVisible] = useState(false);
+  const isSelfLanding = event !== null;
+
+  useEffect(() => {
+    if (!isSelfLanding || matchPhase !== 'live') {
+      setVisible(false);
+      return;
+    }
+    setVisible(true);
+    const id = window.setTimeout(() => setVisible(false), 1_000);
+    return () => window.clearTimeout(id);
+  }, [event, isSelfLanding, matchPhase]);
+
+  return (
+    <ToastBox visible={visible} color="#ff72e1" glowColor="#ff72e166" topOffset="29%">
+      <span
+        style={{
+          fontSize: 15,
+          fontWeight: 850,
+          letterSpacing: '0.14em',
+          color: '#ff9bea',
+          fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
+        }}
+      >
+        TRICK! +25%
+      </span>
+    </ToastBox>
+  );
+}
+
 function ReefRaceWallSlamToast() {
   const event = useActivityStore((s) => s.lastWallSlamEvent);
   const selfAvatarId = useActivityStore((s) => s.selfAvatarId);
@@ -461,6 +494,7 @@ export default function ReefRaceEventToasts() {
       <ReefRaceHazardToast />
       <ReefRaceRibbonToast />
       <ReefRaceBoostPadToast />
+      <ReefRaceTrickToast />
       <ReefRaceWallSlamToast />
       <ReefRaceWipeoutToast />
       <ReefRacePowerUpToast />

@@ -77,6 +77,8 @@ interface ReefBotBody {
   dnf?: boolean;
   /** Authoritative within-lap ARCLENGTH fraction (not raw spline t). */
   progress?: number;
+  /** Spline vertical state, used only for the two-tick trick pulse. */
+  airborne?: boolean;
 }
 
 /**
@@ -252,6 +254,10 @@ class ReefRaceBot implements BotController {
   private readonly itemUseDelayMs: number;
   private bankedItemKind: string | null = null;
   private bankedItemAtMs = 0;
+  private splineWasAirborne = false;
+  private splineTrickPhase: 0 | 1 | 2 | 3 = 0;
+  private splineLaunchCount = 0;
+  private splineTrickSide: -1 | 1 = 1;
 
   constructor(public readonly avatarId: string) {
     this.splineLaneOffset = stableLaneOffset(avatarId);
@@ -685,6 +691,18 @@ class ReefRaceBot implements BotController {
     _dt: number,
   ): BotInput {
     const spline = BOT_SPLINE;
+    const airborne = self.airborne === true;
+    if (airborne && !this.splineWasAirborne) {
+      this.splineLaunchCount += 1;
+      const roll = fnv1a(this.avatarId, `#reef-trick-${this.splineLaunchCount}`);
+      // 60% of launches: neutral for one tick, then emit a deliberate steer
+      // edge. The sim still decides whether the later landing earns a surge.
+      this.splineTrickPhase = roll % 100 < 60 ? 1 : 0;
+      this.splineTrickSide = (roll >>> 8) % 2 === 0 ? 1 : -1;
+    } else if (!airborne) {
+      this.splineTrickPhase = 0;
+    }
+    this.splineWasAirborne = airborne;
 
     // ── Find current t on the spline ──────────────────────────────────────
     // self.x is sim X; self.y is sim Z (per buildBotRoomView's protocol map).
@@ -841,6 +859,19 @@ class ReefRaceBot implements BotController {
     // Opening-grace gate (mirrors v1 behavior).
     const matchAge = view.now - view.matchStartedAt;
     const inGrace = matchAge < BOT_OPENING_GRACE_MS;
+
+    // Existing analog steering is the trick input. A neutral tick guarantees
+    // a real press edge even if the bot was already carving onto the ramp.
+    if (this.splineTrickPhase === 1) {
+      dx = Math.sin(self.rot);
+      dz = Math.cos(self.rot);
+      this.splineTrickPhase = 2;
+    } else if (this.splineTrickPhase === 2) {
+      const trickHeading = self.rot + this.splineTrickSide * 0.24;
+      dx = Math.sin(trickHeading);
+      dz = Math.cos(trickHeading);
+      this.splineTrickPhase = 3;
+    }
 
     // ── Action bits: jump + powerups (no drift) ──────────────────────────
     let actionBits = 0;

@@ -270,7 +270,12 @@ export interface ActivityState {
    * `ReefRacePlayer` subscribes to drive extended nose-up tilt, particle
    * burst, and screen shake for the self avatar. null until first ramp launch.
    */
-  lastRampLaunchEvent: { avatarId: string; rampId: string; at: number } | null;
+  lastRampLaunchEvent: {
+    avatarId: string;
+    rampId: string;
+    launchVel: number;
+    at: number;
+  } | null;
 
   /**
    * v2 mechanics — last `event.boost_pad` received (any avatar, not just
@@ -279,6 +284,24 @@ export interface ActivityState {
    * the HUD toast filters to self-only. null until the first pad hit.
    */
   lastBoostPadEvent: { avatarId: string; padId: string; at: number } | null;
+  /** R18b arm/landing event for render spin + self surge/HUD feedback. */
+  lastTrickEvent: {
+    avatarId: string;
+    phase: 'armed' | 'landed';
+    direction: 'left' | 'right';
+    boostMult: number;
+    durationMs: number;
+    at: number;
+  } | null;
+  /** Self-only landed trick edge; cannot be overwritten by another racer. */
+  lastSelfTrickLandingEvent: {
+    avatarId: string;
+    phase: 'landed';
+    direction: 'left' | 'right';
+    boostMult: number;
+    durationMs: number;
+    at: number;
+  } | null;
   /** Last Reef Race countdown launch verdict (self-filtered by consumers). */
   lastLaunchEvent: { avatarId: string; kind: 'boost' | 'stall'; at: number } | null;
   /** Last self Reef Race wall-slam event. */
@@ -618,6 +641,8 @@ function emptyState(): Pick<
   | 'lastHazardHitAt'
   | 'lastRampLaunchEvent'
   | 'lastBoostPadEvent'
+  | 'lastTrickEvent'
+  | 'lastSelfTrickLandingEvent'
   | 'lastLaunchEvent'
   | 'lastWallSlamEvent'
   | 'lastWipeoutEvent'
@@ -665,6 +690,8 @@ function emptyState(): Pick<
     lastHazardHitAt: 0,
     lastRampLaunchEvent: null,
     lastBoostPadEvent: null,
+    lastTrickEvent: null,
+    lastSelfTrickLandingEvent: null,
     lastLaunchEvent: null,
     lastWallSlamEvent: null,
     lastWipeoutEvent: null,
@@ -1218,7 +1245,14 @@ export const useActivityStore = create<ActivityState>()(
         // apply extended tilt to other visible riders, and so the self-avatar
         // handler can fire particles + screen shake.
         case 'event.ramp_launch': {
-          set({ lastRampLaunchEvent: { avatarId: frame.avatarId, rampId: frame.rampId, at: Date.now() } });
+          set({
+            lastRampLaunchEvent: {
+              avatarId: frame.avatarId,
+              rampId: frame.rampId,
+              launchVel: frame.launchVel,
+              at: Date.now(),
+            },
+          });
           break;
         }
 
@@ -1228,6 +1262,26 @@ export const useActivityStore = create<ActivityState>()(
         // self-only itself.
         case 'event.boost_pad': {
           set({ lastBoostPadEvent: { avatarId: frame.avatarId, padId: frame.padId, at: Date.now() } });
+          break;
+        }
+
+        case 'event.trick': {
+          const trickEvent = {
+            avatarId: frame.avatarId,
+            phase: frame.phase,
+            direction: frame.direction,
+            boostMult: frame.boostMult,
+            durationMs: frame.durationMs,
+            at: Date.now(),
+          };
+          if (frame.phase === 'landed' && frame.avatarId === state.selfAvatarId) {
+            set({
+              lastTrickEvent: trickEvent,
+              lastSelfTrickLandingEvent: { ...trickEvent, phase: 'landed' },
+            });
+          } else {
+            set({ lastTrickEvent: trickEvent });
+          }
           break;
         }
 

@@ -39,6 +39,9 @@ const {
   ACTION_BIT_JUMP,
   REEF_GRAVITY,
   REEF_JUMP_IMPULSE_MANUAL,
+  REEF_JUMP_IMPULSE_RAMP,
+  REEF_TRICK_SURGE_MULT,
+  REEF_TRICK_SURGE_DURATION_MS,
   REEF_MAX_SPEED,
   REEF_MAX_ACCEL,
   REEF_TURN_RATE,
@@ -526,13 +529,112 @@ describe('ReefRaceSplineSim', () => {
         if (body.heightOffset === 0 && i > 5) break;
       }
 
-      // Theoretical peak: v²/(2g) = 550²/(2×1200) ≈ 126 wu. The fixed-step
+      // Theoretical peak: v²/(2g) = 720²/(2×1200) = 216 wu. The fixed-step
       // semi-implicit integrator lands slightly below the continuous solution.
       const theoreticalPeak = (REEF_JUMP_IMPULSE_MANUAL * REEF_JUMP_IMPULSE_MANUAL) /
         (2 * REEF_GRAVITY);
-      expect(theoreticalPeak).toBeCloseTo(126, 0);
-      expect(peakHeight).toBeGreaterThan(theoreticalPeak * 0.9);
+      expect(theoreticalPeak).toBeCloseTo(216, 0);
+      expect(peakHeight).toBeGreaterThanOrEqual(200);
       expect(peakHeight).toBeLessThanOrEqual(theoreticalPeak);
+    });
+
+    it('holds jump as one edge and does not bunny-hop on landing', () => {
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
+      const body = reefRaceSplineSim.__getState(ROOM_ID)!.bodies.get(AVATAR_A)!;
+      reefRaceSplineSim.applyInput(
+        ROOM_ID, AVATAR_A, 1, DT, makeInput(0, 0, 1, ACTION_BIT_JUMP),
+      );
+      for (let i = 0; i < 80; i++) reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
+      expect(body.heightOffset).toBe(0);
+      expect(body.airborneTicks).toBe(0);
+      expect(body.jumpHeld).toBe(true);
+    });
+
+    it('measures the ramp impulse as the clearly larger arc', () => {
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
+      const body = reefRaceSplineSim.__getState(ROOM_ID)!.bodies.get(AVATAR_A)!;
+      body.vyAxis = REEF_JUMP_IMPULSE_RAMP;
+      body.airborneTicks = 1;
+
+      let peakHeight = 0;
+      let airborneTicks = 0;
+      for (let i = 0; i < 200; i++) {
+        reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
+        if (body.heightOffset > peakHeight) peakHeight = body.heightOffset;
+        if (body.heightOffset > 0) airborneTicks += 1;
+        if (body.heightOffset === 0 && i > 5) break;
+      }
+
+      expect(peakHeight).toBeGreaterThanOrEqual(330);
+      expect(peakHeight).toBeLessThan(345);
+      expect(airborneTicks / REEF_TICK_HZ).toBeGreaterThan(1.4);
+    });
+  });
+
+  describe('airborne trick surge', () => {
+    it('arms on the first fresh steer edge and grants one clean-landing surge', () => {
+      const events: any[] = [];
+      reefRaceSplineSim.setBroadcastFn((_roomId, frame) => events.push(frame));
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
+      const state = reefRaceSplineSim.__getState(ROOM_ID)!;
+      const body = state.bodies.get(AVATAR_A)!;
+      body.vx = Math.sin(body.rot) * 800;
+      body.vz = Math.cos(body.rot) * 800;
+
+      reefRaceSplineSim.applyInput(
+        ROOM_ID, AVATAR_A, 1, DT, makeInput(0, 0, 1, ACTION_BIT_JUMP),
+      );
+      reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
+      const trickHeading = body.rot + 0.2;
+      reefRaceSplineSim.applyInput(
+        ROOM_ID,
+        AVATAR_A,
+        2,
+        DT,
+        makeInput(0, Math.sin(trickHeading), Math.cos(trickHeading), 0),
+      );
+
+      for (let i = 0; i < 100 && body.heightOffset > 0; i++) {
+        reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
+      }
+
+      const trickEvents = events.filter((event) => event.type === 'event.trick');
+      expect(trickEvents.map((event) => event.phase)).toEqual(['armed', 'landed']);
+      expect(body.activeBoosts.get('trick-surge')).toEqual({
+        expiresAt: state.simTimeMs + REEF_TRICK_SURGE_DURATION_MS,
+        mult: REEF_TRICK_SURGE_MULT,
+      });
+    });
+
+    it('grants nothing when the landing tick also wipes out at a wall', () => {
+      const events: any[] = [];
+      reefRaceSplineSim.setBroadcastFn((_roomId, frame) => events.push(frame));
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
+      const state = reefRaceSplineSim.__getState(ROOM_ID)!;
+      const body = state.bodies.get(AVATAR_A)!;
+      const t = 0.2;
+      const center = state.spline.centerlineAt(t);
+      const normal = state.spline.normalAt(t);
+      const tangent = state.spline.tangentAt(t);
+      const halfWidth = state.spline.widthAt(t);
+      body.x = center.x + normal.x * (halfWidth + 20);
+      body.z = center.z + normal.z * (halfWidth + 20);
+      body.rot = Math.atan2(tangent.x, tangent.z);
+      body.vx = normal.x * (REEF_MAX_SPEED * 0.8) + tangent.x * 400;
+      body.vz = normal.z * (REEF_MAX_SPEED * 0.8) + tangent.z * 400;
+      body.heightOffset = 1;
+      body.vyAxis = -200;
+      body.airborneTicks = 10;
+      body.trickArmed = true;
+      body.trickDirection = 'left';
+
+      reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
+
+      expect(body.wipeoutUntil).not.toBeNull();
+      expect(body.activeBoosts.has('trick-surge')).toBe(false);
+      expect(
+        events.some((event) => event.type === 'event.trick' && event.phase === 'landed'),
+      ).toBe(false);
     });
   });
 
