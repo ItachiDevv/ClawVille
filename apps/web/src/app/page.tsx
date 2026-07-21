@@ -10,6 +10,7 @@ import { LiveDemoStrip } from '@/components/landing/live-demo-strip';
 import { GameplayShowcase } from '@/components/landing/gameplay-showcase';
 import { PressRelease } from '@/components/landing/press-release';
 import { QwertiBuyWidget, openQwertiBuy } from '@/components/landing/qwerti-buy-widget';
+import { X402VolumeStat } from '@/components/landing/x402-volume-stat';
 
 const LandingScene = dynamic(() => import('@/components/three/LandingScene'), {
   ssr: false,
@@ -245,6 +246,7 @@ export default function HomePage() {
 
         {/* Stats strip */}
         <div className="anim-up relative z-10 mt-10 flex flex-wrap justify-center gap-x-8 gap-y-3 text-center" style={{ animationDelay: '0.7s' }}>
+          <X402VolumeStat />
           {[
             { label: 'Total Supply', value: '1B', hint: '$CLAWVILLE' },
             { label: 'Skill Buildings', value: '10', hint: 'Live now' },
