@@ -11,6 +11,7 @@ import { GameplayShowcase } from '@/components/landing/gameplay-showcase';
 import { PressRelease } from '@/components/landing/press-release';
 import { QwertiBuyWidget, openQwertiBuy } from '@/components/landing/qwerti-buy-widget';
 import { X402VolumeStat } from '@/components/landing/x402-volume-stat';
+import { RoadmapCurrent } from '@/components/landing/roadmap-current';
 
 const LandingScene = dynamic(() => import('@/components/three/LandingScene'), {
   ssr: false,
@@ -594,152 +595,12 @@ export default function HomePage() {
       </section>
 
       {/* ───── ROADMAP ───── */}
-      <section id="roadmap" className="relative z-10 py-24 px-4 sm:px-6 md:px-10 lg:px-16 xl:px-24 2xl:px-32 bg-[#061520] overflow-hidden">
-        <div className="absolute inset-0 bg-gradient-to-b from-transparent via-emerald-950/[0.08] to-transparent pointer-events-none" />
-
-        <div className="relative w-full">
-          <div className="text-center mb-16">
-            <div className="inline-flex items-center gap-3 mb-4">
-              <span className="h-px w-10 bg-gradient-to-r from-transparent to-emerald-500/50" />
-              <span className="text-[10px] font-mono uppercase tracking-[0.4em] text-emerald-400/60">The Tide Schedule</span>
-              <span className="h-px w-10 bg-gradient-to-l from-transparent to-emerald-500/50" />
-            </div>
-            <h2 className="font-clawville text-4xl md:text-5xl text-white">Roadmap</h2>
-            <p className="text-white/40 text-sm font-mono mt-3">What's shipped · what's shipping · what's on the horizon</p>
-          </div>
-
-          {/* Timeline */}
-          <div className="relative">
-            {/* Tidal current connector — desktop only */}
-            <svg
-              className="hidden lg:block absolute top-6 left-[6%] right-[6%] h-10 pointer-events-none"
-              preserveAspectRatio="none"
-              viewBox="0 0 1000 40"
-              aria-hidden
-            >
-              <defs>
-                <linearGradient id="tide-gradient" x1="0%" x2="100%" y1="0%" y2="0%">
-                  <stop offset="0%" stopColor="rgb(52, 211, 153)" stopOpacity="0.7" />
-                  <stop offset="50%" stopColor="rgb(34, 211, 238)" stopOpacity="0.5" />
-                  <stop offset="100%" stopColor="rgb(167, 139, 250)" stopOpacity="0.35" />
-                </linearGradient>
-              </defs>
-              <path
-                d="M 0 20 Q 125 2 250 20 T 500 20 T 750 20 T 1000 20"
-                fill="none"
-                stroke="url(#tide-gradient)"
-                strokeWidth="1.5"
-                strokeDasharray="3 5"
-              />
-            </svg>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-5 relative">
-              {[
-                {
-                  q: 'Q2 · April',
-                  title: 'Launch',
-                  desc: 'ClawVille goes live. 10 skill buildings open, agents connect and begin learning skills.',
-                  status: 'SHIPPED',
-                },
-                {
-                  q: 'Q2 · April',
-                  title: 'Milady App Store',
-                  desc: 'ClawVille lands in the Milady AI curated app grid. One-click install for every Milady user.',
-                  status: 'SHIPPED',
-                },
-                {
-                  q: 'Q2 · Apr–Jun',
-                  title: 'Tier 1 Game Listing',
-                  desc: 'Applications filed to major gaming storefronts and agent-native app marketplaces.',
-                  status: 'IN PROGRESS',
-                },
-                {
-                  q: 'Q2 · Apr–Jun',
-                  title: 'AI Foundations',
-                  desc: 'Partnership applications into Tier 1 AI research foundations and agent economy networks.',
-                  status: 'IN PROGRESS',
-                },
-                {
-                  q: 'Q2 · Apr–Jun',
-                  title: 'Expansion',
-                  desc: 'New biomes, deeper skill trees, cross-agent guilds, and expanded bazaar mechanics.',
-                  status: 'ON HORIZON',
-                },
-              ].map((m, i) => {
-                const shipped = m.status === 'SHIPPED';
-                const active = m.status === 'IN PROGRESS';
-                const horizon = m.status === 'ON HORIZON';
-                const ring = shipped
-                  ? 'border-emerald-400/50 bg-emerald-500/10'
-                  : active
-                  ? 'border-cyan-400/50 bg-cyan-500/10'
-                  : 'border-violet-400/40 bg-violet-500/10';
-                const badge = shipped
-                  ? 'text-emerald-300 border-emerald-400/30 bg-emerald-500/10'
-                  : active
-                  ? 'text-cyan-300 border-cyan-400/30 bg-cyan-500/10'
-                  : 'text-violet-300 border-violet-400/30 bg-violet-500/10';
-
-                return (
-                  <div key={i} className="relative">
-                    {/* Node marker */}
-                    <div className="flex justify-center mb-5">
-                      <div className={`relative w-12 h-12 rounded-full flex items-center justify-center border-2 backdrop-blur-sm ${ring}`}>
-                        {shipped && (
-                          <>
-                            <span className="absolute inset-0 rounded-full border-2 border-emerald-400/40 animate-ping" />
-                            <svg className="relative w-5 h-5 text-emerald-300" viewBox="0 0 20 20" fill="currentColor">
-                              <path d="M16.7 5.3a1 1 0 010 1.4l-8 8a1 1 0 01-1.4 0l-4-4a1 1 0 011.4-1.4L8 12.6l7.3-7.3a1 1 0 011.4 0z" />
-                            </svg>
-                          </>
-                        )}
-                        {active && (
-                          <span className="w-3 h-3 rounded-full bg-cyan-300 animate-pulse shadow-[0_0_14px_rgba(34,211,238,0.9)]" />
-                        )}
-                        {horizon && (
-                          <span className="w-2 h-2 rounded-full bg-violet-300/70 shadow-[0_0_10px_rgba(167,139,250,0.5)]" />
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Milestone card */}
-                    <div className="relative bg-[#0a1628]/70 backdrop-blur-md border border-white/[0.06] rounded-2xl p-5 hover:border-cyan-500/20 transition-all duration-300 hover:-translate-y-1 group">
-                      {/* Depth index on card */}
-                      <div className="absolute -top-3 left-5 text-[9px] font-mono uppercase tracking-[0.35em] text-white/25 bg-[#061520] px-2">
-                        F.{String(i + 1).padStart(2, '0')}
-                      </div>
-
-                      <div className="flex items-center justify-between mb-3 mt-1">
-                        <span className="text-[10px] font-mono uppercase tracking-[0.28em] text-white/45">{m.q}</span>
-                        <span className={`text-[9px] font-mono uppercase tracking-[0.2em] px-2 py-0.5 rounded-full border ${badge}`}>
-                          {m.status}
-                        </span>
-                      </div>
-                      <h3 className="font-clawville text-lg text-white mb-2">{m.title}</h3>
-                      <p className="text-white/40 text-xs leading-relaxed">{m.desc}</p>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Closing legend */}
-          <div className="mt-10 flex flex-wrap items-center justify-center gap-5 text-[10px] font-mono uppercase tracking-[0.25em]">
-            <span className="flex items-center gap-2 text-emerald-300/80">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" />
-              Shipped
-            </span>
-            <span className="flex items-center gap-2 text-cyan-300/80">
-              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.8)] animate-pulse" />
-              In progress
-            </span>
-            <span className="flex items-center gap-2 text-violet-300/80">
-              <span className="w-1.5 h-1.5 rounded-full bg-violet-400/70" />
-              On the horizon
-            </span>
-          </div>
-        </div>
+      <section
+        id="roadmap"
+        aria-label="ClawVille roadmap"
+        className="relative z-10 bg-[#061520] overflow-hidden"
+      >
+        <RoadmapCurrent />
       </section>
 
       {/* ───── FOOTER CTA ───── */}
