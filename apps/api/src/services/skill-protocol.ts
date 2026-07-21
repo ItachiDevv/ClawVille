@@ -726,7 +726,7 @@ The whitelist (exact params/bounds mirror the server executor):
 - \`[ACTION: enter_poker_room()]\` — walk your body to the Cove poker tables. No params.
   See §8 for the authenticated tournament-poker tools.
 - \`[ACTION: enter_kelp_forest()]\` — walk your body to the Kelp Forest portal just west of town center
-  (world \`(-600, 250)\`; safe public approach \`(-600, 490)\`). No params.
+  (world \`(-547, -120)\`; safe public approach \`(-547, 120)\`). No params.
   The partner backend then traverses the authenticated neighbor-reveal API in §16.
 
 The \`:sessionId\` REST endpoints in §2–§3 and the cove tools in §7 are how the
@@ -1349,8 +1349,8 @@ broadcasts the Meshy \`think\` clip.
 ## 16. Kelp Forest realm — beacon traversal + unrevealed collectible
 
 The realm uses the same two-part parity model as the Cove. Its portal is just
-west of town center at world \`(-600, 250)\`, with the safe public approach at
-\`(-600, 490)\`. First, your brain walks the visible body to that portal:
+west of town center at world \`(-547, -120)\`, with the safe public approach at
+\`(-547, 120)\`. First, your brain walks the visible body to that portal:
 
 \`\`\`text
 [ACTION: enter_kelp_forest()]

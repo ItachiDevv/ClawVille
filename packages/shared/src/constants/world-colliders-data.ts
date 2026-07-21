@@ -118,11 +118,21 @@ export const KELP_FOREST_PORTAL_HALF_X_WU = 170;
 export const KELP_FOREST_PORTAL_HALF_Z_WU = 42;
 export const KELP_FOREST_PORTAL_SEARCH_STEP_WU = 50;
 export const KELP_FOREST_PORTAL_MAX_ORIGIN_DISTANCE_WU = 1_200;
+/**
+ * Advisory auto-search margin. The founder-authoritative pin is validated by
+ * KELP_FOREST_PORTAL_MIN_VALIDATION_CLEARANCE_WU instead.
+ */
 export const KELP_FOREST_PORTAL_MIN_COLLIDER_CLEARANCE_WU = 350;
+/**
+ * Portal footprint must stay this far from any structure. This is lower than
+ * the 350-wu auto-search margin because the founder-chosen town-center spot is
+ * deliberately closer to the small sign and NPC props.
+ */
+export const KELP_FOREST_PORTAL_MIN_VALIDATION_CLEARANCE_WU = 200;
 export const KELP_FOREST_PORTAL_MIN_LANDMARK_DISTANCE_WU = 250;
 
-/** Founder-pinned result of the deterministic town-center clearance search. */
-export const KELP_FOREST_PORTAL_WORLD_CENTER = Object.freeze({ x: -600, z: 250 });
+/** Founder-authoritative town-center plaza midpoint between the bazaar and sign. */
+export const KELP_FOREST_PORTAL_WORLD_CENTER = Object.freeze({ x: -547, z: -120 });
 
 const KELP_PORTAL_SPAWN_WORLD_X = SPAWN_PX.x - WORLD_CENTER_PX.x;
 const KELP_PORTAL_SPAWN_WORLD_Z = SPAWN_PX.y - WORLD_CENTER_PX.y;
@@ -163,9 +173,10 @@ function portalCandidateIsBetter(
 }
 
 /**
- * Search the 50-wu town-center lattice for the closest portal footprint that
- * satisfies every founder clearance invariant. The portal's own collider is
- * excluded so this can safely validate `getServerColliders()`.
+ * Advisory search of the 50-wu town-center lattice for the closest portal
+ * footprint that satisfies the conservative auto-placement invariants. The
+ * founder-authoritative pin is validated separately and is not derived here.
+ * The portal's own collider is excluded so callers may pass getServerColliders().
  */
 export function deriveKelpForestPortalWorldCenter(
   colliders: readonly ServerCollider2D[],
@@ -274,15 +285,49 @@ function buildServerCollidersWithoutKelpPortal(): ServerCollider2D[] {
 // Eagerly built — module is loaded once at NPC simulation startup.
 const SERVER_COLLIDERS_WITHOUT_KELP_PORTAL: readonly ServerCollider2D[] =
   buildServerCollidersWithoutKelpPortal();
-const DERIVED_KELP_FOREST_PORTAL_WORLD_CENTER = deriveKelpForestPortalWorldCenter(
-  SERVER_COLLIDERS_WITHOUT_KELP_PORTAL,
+const KELP_PORTAL_TOWN_DIRECTORY = SERVER_COLLIDERS_WITHOUT_KELP_PORTAL.find(
+  (collider) => collider.id === 'town-directory-sign',
 );
-if (
-  DERIVED_KELP_FOREST_PORTAL_WORLD_CENTER.x !== KELP_FOREST_PORTAL_WORLD_CENTER.x
-  || DERIVED_KELP_FOREST_PORTAL_WORLD_CENTER.z !== KELP_FOREST_PORTAL_WORLD_CENTER.z
-) {
+if (!KELP_PORTAL_TOWN_DIRECTORY) {
+  throw new Error('Pinned Kelp Forest portal validation requires the town-directory-sign collider');
+}
+for (const collider of SERVER_COLLIDERS_WITHOUT_KELP_PORTAL) {
+  const clearance = kelpForestPortalClearanceFromCollider(
+    KELP_FOREST_PORTAL_WORLD_CENTER.x,
+    KELP_FOREST_PORTAL_WORLD_CENTER.z,
+    collider,
+  );
+  if (clearance < KELP_FOREST_PORTAL_MIN_VALIDATION_CLEARANCE_WU) {
+    throw new Error(
+      `Pinned Kelp Forest portal (${KELP_FOREST_PORTAL_WORLD_CENTER.x}, ${KELP_FOREST_PORTAL_WORLD_CENTER.z}) has ${clearance} wu clearance from collider "${collider.id}"; minimum is ${KELP_FOREST_PORTAL_MIN_VALIDATION_CLEARANCE_WU} wu`,
+    );
+  }
+}
+const KELP_PORTAL_TOWN_DIRECTORY_DISTANCE_WU = pointDistance(
+  KELP_FOREST_PORTAL_WORLD_CENTER.x,
+  KELP_FOREST_PORTAL_WORLD_CENTER.z,
+  KELP_PORTAL_TOWN_DIRECTORY.centerX,
+  KELP_PORTAL_TOWN_DIRECTORY.centerZ,
+);
+if (KELP_PORTAL_TOWN_DIRECTORY_DISTANCE_WU < KELP_FOREST_PORTAL_MIN_LANDMARK_DISTANCE_WU) {
   throw new Error(
-    `Pinned Kelp Forest portal (${KELP_FOREST_PORTAL_WORLD_CENTER.x}, ${KELP_FOREST_PORTAL_WORLD_CENTER.z}) no longer matches derived clear position (${DERIVED_KELP_FOREST_PORTAL_WORLD_CENTER.x}, ${DERIVED_KELP_FOREST_PORTAL_WORLD_CENTER.z})`,
+    `Pinned Kelp Forest portal is ${KELP_PORTAL_TOWN_DIRECTORY_DISTANCE_WU} wu from town-directory-sign center; minimum is ${KELP_FOREST_PORTAL_MIN_LANDMARK_DISTANCE_WU} wu`,
+  );
+}
+const KELP_PORTAL_SPAWN_DISTANCE_WU = pointDistance(
+  KELP_FOREST_PORTAL_WORLD_CENTER.x,
+  KELP_FOREST_PORTAL_WORLD_CENTER.z,
+  KELP_PORTAL_SPAWN_WORLD_X,
+  KELP_PORTAL_SPAWN_WORLD_Z,
+);
+if (KELP_PORTAL_SPAWN_DISTANCE_WU < KELP_FOREST_PORTAL_MIN_LANDMARK_DISTANCE_WU) {
+  throw new Error(
+    `Pinned Kelp Forest portal is ${KELP_PORTAL_SPAWN_DISTANCE_WU} wu from spawn; minimum is ${KELP_FOREST_PORTAL_MIN_LANDMARK_DISTANCE_WU} wu`,
+  );
+}
+if (KELP_FOREST_PORTAL_WORLD_CENTER.x === KELP_PORTAL_SPAWN_WORLD_X) {
+  throw new Error(
+    `Pinned Kelp Forest portal x=${KELP_FOREST_PORTAL_WORLD_CENTER.x} must not share the spawn axis x=${KELP_PORTAL_SPAWN_WORLD_X}`,
   );
 }
 const SERVER_COLLIDERS: readonly ServerCollider2D[] = Object.freeze([
