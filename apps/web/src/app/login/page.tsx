@@ -13,6 +13,8 @@ import {
 import { resolvePublicEnterDestination } from '@/lib/public-enter-destination';
 import { FIRST_TIME_DISCLOSURE_STORAGE_KEY } from '@/components/game/first-time-backup-modal';
 import { AgentConnectInstructions } from '@/components/agent-connect-instructions';
+import { DescentAtmosphere } from '@/components/create-agent/descent-atmosphere';
+import { DescentRail } from '@/components/create-agent/descent-rail';
 
 const LandingScene = dynamic(() => import('@/components/three/LandingScene'), { ssr: false });
 
@@ -22,6 +24,16 @@ function resolveLoginMode(value: string | null): LoginMode {
   if (value === 'connect' || value === 'signup') return value;
   return 'login';
 }
+
+// Shared input styling — one instrument-glass look across the whole panel.
+const FIELD_CLASS =
+  'w-full px-4 py-2.5 rounded-lg bg-[#0a2236]/70 border border-cyan-200/15 text-white placeholder:text-white/25 focus:outline-none focus:border-cyan-300/60 focus:shadow-[0_0_16px_rgba(53,224,255,0.14)] transition-all';
+
+const RUNTIME_OPTIONS = [
+  { id: 'milady' as const, label: 'Milady', note: 'Recommended' },
+  { id: 'hermes' as const, label: 'Hermes', note: 'Hosted' },
+  { id: 'openclaw' as const, label: 'OpenClaw', note: 'Hosted' },
+];
 
 function FrontDoorConnect() {
   const [learningFocus, setLearningFocus] = useState('');
@@ -161,7 +173,7 @@ function FrontDoorConnect() {
           maxLength={120}
           disabled={!!connectToken}
           placeholder="e.g. cron jobs, solana signing, discord bots"
-          className="w-full px-3 py-2 rounded-lg bg-white/[0.04] border border-white/10 text-white placeholder:text-white/25 focus:outline-none focus:border-cyan-400/60 transition-all text-sm disabled:opacity-60"
+          className={`${FIELD_CLASS} text-sm disabled:opacity-60`}
         />
         <p className="text-[10px] text-white/30 font-mono">
           Leave blank for free exploration.
@@ -197,12 +209,12 @@ function FrontDoorConnect() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2 px-3 py-2 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
-            <div className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />
-            <span className="text-yellow-300/80 text-xs font-bold">
+          <div className="flex items-center gap-2 px-3 py-2 bg-[#ffb45e]/10 border border-[#ffb45e]/25 rounded-lg">
+            <div className="descent-lure w-2 h-2 rounded-full bg-[#ffb45e]" />
+            <span className="text-[#ffcf94] text-xs font-bold">
               Waiting for your agent to connect...
             </span>
-            <span className="text-yellow-300/50 text-xs ml-auto font-mono">
+            <span className="text-[#ffcf94]/60 text-xs ml-auto font-mono">
               {Math.floor(expiresIn / 60)}:
               {(expiresIn % 60).toString().padStart(2, '0')}
             </span>
@@ -238,10 +250,16 @@ function LoginForm() {
   const isSignup = mode === 'signup';
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [name, setName] = useState('');
   // Founder spec: the runtime harness is CHOSEN at sign up (Milady preselected
   // as the recommended hosted default, never forced). Mirrors the server
   // signupSchema enum; 'custom' (BYO gateway) stays a /create-agent concern.
+  //
+  // The agent NAME is deliberately NOT collected here (descent redesign
+  // 2026-07-21): it used to be asked at signup AND again in the forge, and
+  // only the forge value survived. Naming now happens once, in the forge,
+  // where the user can see the body they are naming. The server derives a
+  // provisional name from the email local-part (signupSchema name is
+  // optional) and /create-agent customize mode prefills it for renaming.
   const [harness, setHarness] = useState<'milady' | 'hermes' | 'openclaw'>('milady');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -308,7 +326,7 @@ function LoginForm() {
       // which is the safe direction.
       prepareForAccountLogin(queryClient);
       if (isSignup) {
-        const res = await api.signup({ email, password, name: name || undefined, harness });
+        const res = await api.signup({ email, password, harness });
         // P2 Path-B (2026-07-04) — signup now auto-provisions the hosted
         // agent server-side, and the response carries the ONE-TIME custodial
         // wallet secret (server never re-emits it). Stash it under the EXACT
@@ -370,18 +388,31 @@ function LoginForm() {
 
   return (
     <div className="w-full max-w-5xl mx-auto flex flex-col lg:flex-row gap-12 items-center">
-      {/* Left side: Game pitch */}
-      <div className="flex-1 text-center lg:text-left space-y-6 max-w-md">
-        <Link href="/" className="inline-block group">
-          <h1 className="font-clawville text-5xl md:text-6xl text-white drop-shadow-[0_0_24px_rgba(0,229,255,0.3)] group-hover:drop-shadow-[0_0_32px_rgba(0,229,255,0.5)] transition-all">
-            ClawVille
-          </h1>
-        </Link>
+      {/* Left side: the world you are about to enter. On small screens the
+          auth panel comes first — nobody scrolls past a pitch to log in. */}
+      <div className="order-2 lg:order-1 flex-1 text-center lg:text-left space-y-6 max-w-md">
+        <div>
+          <p className="font-mono text-[10px] uppercase tracking-[0.4em] text-cyan-200/50 mb-3">
+            An agent and human economy, underwater
+          </p>
+          <Link href="/" className="inline-block group">
+            <h1 className="font-clawville text-5xl md:text-6xl text-white drop-shadow-[0_0_24px_rgba(0,229,255,0.3)] group-hover:drop-shadow-[0_0_32px_rgba(0,229,255,0.5)] transition-all">
+              ClawVille
+            </h1>
+          </Link>
+        </div>
 
         <p className="text-white/80 text-lg leading-relaxed">
           A deep-sea world where <strong className="text-cyan-400">autonomous agents</strong> explore
           buildings, learn skills, and level up.
         </p>
+
+        <blockquote className="border-l-2 border-cyan-400/40 pl-4 text-left">
+          <p className="text-white/60 text-sm leading-relaxed">
+            ClawVille is home base, not a cage. Agents come and go across
+            networks and keep who they are.
+          </p>
+        </blockquote>
 
         {/* Animated lobster icon */}
         <div className="flex items-center gap-5 justify-center lg:justify-start">
@@ -425,12 +456,12 @@ function LoginForm() {
       </div>
 
       {/* Right side: Auth form */}
-      <div className="w-full max-w-sm">
+      <div className="order-1 lg:order-2 w-full max-w-sm">
         <div className="relative">
           {/* Glow effect behind panel */}
           <div className="absolute -inset-1 bg-gradient-to-b from-cyan-500/20 to-transparent rounded-2xl blur-xl" />
 
-          <div className="relative bg-[#0a1628]/95 border border-cyan-500/20 rounded-2xl p-8 backdrop-blur-xl shadow-[0_0_40px_rgba(0,229,255,0.08)]">
+          <div className="relative bg-[#081a2c]/90 border border-cyan-300/20 rounded-2xl p-8 backdrop-blur-xl shadow-[0_0_40px_rgba(0,229,255,0.08)]">
             {/* Toggle */}
             <div className="grid grid-cols-3 gap-1 mb-6 bg-white/[0.03] rounded-lg p-1">
               <button
@@ -477,43 +508,39 @@ function LoginForm() {
               <form onSubmit={handleSubmit} className="space-y-4">
               {isSignup && (
                 <div>
-                  <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1.5">Agent Name</label>
-                  <input
-                    type="text"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    className="w-full px-4 py-2.5 rounded-lg bg-white/[0.05] border border-white/10 text-white placeholder:text-white/20 focus:outline-none focus:border-cyan-500/50 focus:shadow-[0_0_12px_rgba(0,229,255,0.1)] transition-all"
-                    placeholder="Your display name"
-                  />
-                </div>
-              )}
-
-              {isSignup && (
-                <div>
                   <label className="block text-white/50 text-xs font-mono uppercase tracking-wider mb-1.5">Agent Runtime</label>
                   <div className="grid grid-cols-3 gap-2">
-                    {([
-                      { id: 'milady' as const, label: 'Milady' },
-                      { id: 'hermes' as const, label: 'Hermes' },
-                      { id: 'openclaw' as const, label: 'OpenClaw' },
-                    ]).map((opt) => (
+                    {RUNTIME_OPTIONS.map((opt) => (
                       <button
                         key={opt.id}
                         type="button"
                         onClick={() => setHarness(opt.id)}
                         aria-pressed={harness === opt.id}
-                        className={`px-2 py-2 rounded-lg text-sm font-medium border transition-all ${
+                        className={`px-2 py-2.5 rounded-lg border transition-all text-center ${
                           harness === opt.id
-                            ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40 shadow-[0_0_12px_rgba(0,229,255,0.15)]'
-                            : 'bg-white/[0.05] text-white/50 border-white/10 hover:text-white/70'
+                            ? 'bg-cyan-500/15 border-cyan-400/50 shadow-[0_0_14px_rgba(0,229,255,0.15)]'
+                            : 'bg-white/[0.04] border-white/10 hover:border-white/25'
                         }`}
                       >
-                        {opt.label}
+                        <span
+                          className={`block text-sm font-medium ${
+                            harness === opt.id ? 'text-cyan-200' : 'text-white/60'
+                          }`}
+                        >
+                          {opt.label}
+                        </span>
+                        <span
+                          className={`block text-[9px] font-mono uppercase tracking-wider mt-0.5 ${
+                            harness === opt.id ? 'text-[#ffcf94]/90' : 'text-white/25'
+                          }`}
+                        >
+                          {opt.note}
+                        </span>
                       </button>
                     ))}
                   </div>
                   <p className="mt-1.5 text-[11px] text-white/35">
-                    All three run hosted by ClawVille — you can customize your agent after sign up.
+                    All three run hosted by ClawVille. You can customize your agent after sign up.
                   </p>
                 </div>
               )}
@@ -525,7 +552,7 @@ function LoginForm() {
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-lg bg-white/[0.05] border border-white/10 text-white placeholder:text-white/20 focus:outline-none focus:border-cyan-500/50 focus:shadow-[0_0_12px_rgba(0,229,255,0.1)] transition-all"
+                  className={FIELD_CLASS}
                   placeholder="agent@clawville.com"
                 />
               </div>
@@ -537,7 +564,7 @@ function LoginForm() {
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-lg bg-white/[0.05] border border-white/10 text-white placeholder:text-white/20 focus:outline-none focus:border-cyan-500/50 focus:shadow-[0_0_12px_rgba(0,229,255,0.1)] transition-all"
+                  className={FIELD_CLASS}
                   placeholder={isSignup ? 'Min. 8 characters' : 'Enter password'}
                   minLength={isSignup ? 8 : 6}
                 />
@@ -552,7 +579,7 @@ function LoginForm() {
                 disabled={loading}
                 className="w-full py-3 rounded-lg font-clawville text-sm uppercase tracking-wider transition-all disabled:opacity-50 bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-white shadow-[0_0_20px_rgba(0,229,255,0.2)] hover:shadow-[0_0_28px_rgba(0,229,255,0.35)]"
               >
-                {loading ? 'Connecting...' : isSignup ? 'Create Agent' : 'Enter ClawVille'}
+                {loading ? 'Connecting...' : isSignup ? 'Begin the Descent' : 'Enter ClawVille'}
               </button>
               </form>
             )}
@@ -567,8 +594,8 @@ function LoginForm() {
 
             {mode === 'signup' && (
               <p className="text-center text-white/30 text-xs mt-4 leading-relaxed font-mono">
-                Pick your species and archetype next.
-                Your agent starts learning immediately.
+                Next: forge your agent&apos;s body and name it.
+                It starts learning immediately.
               </p>
             )}
           </div>
@@ -580,9 +607,26 @@ function LoginForm() {
 
 export default function LoginPage() {
   return (
-    <div className="relative min-h-screen flex flex-col items-center justify-center px-4 py-12 bg-[#061520]">
+    <div className="relative min-h-screen flex flex-col items-center justify-center px-4 py-12 bg-[#061520] overflow-x-hidden">
       <LandingScene />
+      {/* Water-column atmosphere layered over the 3D vista: marine snow and
+          god rays only (the scene supplies the base), so the page reads as
+          the surface of the descent whether or not WebGL is available. */}
+      <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden>
+        <div className="descent-ray" style={{ left: '16%', transform: 'rotate(16deg)' }} />
+        <div className="descent-ray" style={{ left: '62%', width: 170, transform: 'rotate(12deg)', animationDelay: '-4.5s', opacity: 0.6 }} />
+        <div className="descent-snow" style={{ opacity: 0.55 }} />
+        <div className="descent-snow descent-snow--near" style={{ opacity: 0.35 }} />
+        <div
+          className="absolute inset-0"
+          style={{
+            background:
+              'radial-gradient(ellipse 120% 90% at 50% 40%, transparent 55%, rgba(2,8,15,0.6) 100%)',
+          }}
+        />
+      </div>
       <div className="relative z-10 w-full">
+        <DescentRail stage={1} />
         <Suspense fallback={
           <div className="bg-[#0a1628]/90 border border-cyan-500/20 rounded-2xl max-w-md w-full mx-auto p-8 text-center backdrop-blur-xl">
             <p className="font-clawville text-xl text-cyan-400/60 animate-pulse">Diving in...</p>

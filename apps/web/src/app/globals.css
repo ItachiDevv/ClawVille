@@ -178,6 +178,83 @@
   animation: glowPulse 2s ease-in-out infinite;
 }
 
+/* ─── The Descent (sign-up flow atmosphere) ───────────────────────────────
+   Shared by /login, /create-agent, /create-agent/personality via
+   components/create-agent/descent-atmosphere.tsx. All layers animate
+   transform or opacity ONLY (compositor-safe on Iris Xe) and freeze under
+   prefers-reduced-motion. */
+
+/* Marine snow: the tile drifts upward — the viewer is sinking. Each layer is
+   300% tall and loops seamlessly at -33.333% (one full tile height). */
+@keyframes descent-snow {
+  from { transform: translateY(0); }
+  to   { transform: translateY(-33.333%); }
+}
+.descent-snow {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 300%;
+  pointer-events: none;
+  background-image:
+    radial-gradient(circle, rgba(180, 230, 255, 0.35) 1px, transparent 1.5px),
+    radial-gradient(circle, rgba(120, 200, 255, 0.22) 1px, transparent 2px);
+  background-size: 190px 260px, 310px 420px;
+  background-position: 30px 40px, 140px 200px;
+  will-change: transform;
+  animation: descent-snow 90s linear infinite;
+}
+.descent-snow--near {
+  background-image:
+    radial-gradient(circle, rgba(210, 240, 255, 0.5) 1.5px, transparent 2.5px);
+  background-size: 460px 560px;
+  background-position: 90px 120px;
+  animation-duration: 52s;
+}
+
+/* God rays: slow opacity breathe only — no layout, no paint churn. */
+@keyframes descent-ray {
+  0%, 100% { opacity: 0.35; }
+  50%      { opacity: 1; }
+}
+.descent-ray {
+  position: absolute;
+  top: -12%;
+  height: 85%;
+  width: 130px;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    rgba(140, 220, 255, 0.13) 0%,
+    rgba(140, 220, 255, 0.05) 45%,
+    transparent 100%
+  );
+  filter: blur(6px);
+  will-change: opacity;
+  animation: descent-ray 9s ease-in-out infinite;
+}
+
+/* Lure: the current-depth marker on the descent rail. Amber, tiny, alive. */
+@keyframes descent-lure {
+  0%, 100% { opacity: 0.55; transform: scale(0.9); }
+  50%      { opacity: 1;    transform: scale(1.15); }
+}
+.descent-lure {
+  will-change: transform, opacity;
+  animation: descent-lure 2.6s ease-in-out infinite;
+  box-shadow: 0 0 10px rgba(255, 180, 94, 0.8), 0 0 22px rgba(255, 180, 94, 0.35);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .descent-snow,
+  .descent-snow--near,
+  .descent-ray,
+  .descent-lure {
+    animation: none;
+  }
+}
+
 /* ─── Game canvas ─────────────────────────────────────────────────────── */
 .game-container {
   width: 100vw;
