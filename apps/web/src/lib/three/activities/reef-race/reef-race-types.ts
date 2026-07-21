@@ -93,6 +93,8 @@ export interface ReefRaceEntity {
    * `boostActive` computation in `ReefRaceScene.tsx`).
    */
   boosting?: boolean;
+  /** v2 wall consequence — authoritative wipeout/respawn gate. */
+  wipedOut?: boolean;
 }
 
 // ─── Ghost replay frame ───────────────────────────────────────────────────────

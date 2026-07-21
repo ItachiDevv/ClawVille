@@ -90,6 +90,8 @@ export interface BumperShellEntity {
   speedMod?: number;
   /** Reef Race v2 — true while any positive boost source is active. */
   boosting?: boolean;
+  /** Reef Race v2 — true while server authority has the racer wiped out. */
+  wipedOut?: boolean;
 }
 
 // ─── Pickup state ─────────────────────────────────────────────────────────────

@@ -214,8 +214,15 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
   // Gate input: only when scene is in play AND self is alive AND WS is open.
   const matchPhase = useActivityStore((s) => s.matchPhase);
   const selfAlive = useActivityStore(selectSelfAlive);
+  const selfWipedOut = useActivityStore((s) =>
+    avatarId ? s.entities.get(avatarId)?.wipedOut === true : false,
+  );
   const inputEnabled =
-    wsEnabled && status === 'connected' && matchPhase === 'live' && selfAlive;
+    wsEnabled &&
+    status === 'connected' &&
+    matchPhase === 'live' &&
+    selfAlive &&
+    !selfWipedOut;
 
   useActivityInput({ send, enabled: inputEnabled, activityId });
 

@@ -781,9 +781,9 @@ export function buildReefApexZones(cps: ReefCheckpointAabb[]): ReefApexZone[] {
  * Placement-keyed power-up roll table. Replaces the global `rollPowerUpKind`
  * draw at COLLECT time (`resolvePickups`) when a placement is supplied.
  *
- * Mario Kart rubber band — leaders get defensive items only, trailers get
- * aggressive items more often. Mid-pack rolls a neutral distribution that
- * mirrors REEF_POWERUP_DEFS.
+ * Mario Kart rubber band — leaders exclude the forward-only seeker but still
+ * receive five useful kinds; trailers get aggressive items more often.
+ * Mid-pack rolls a broad neutral distribution.
  *
  * Weights are RELATIVE within each placement bucket (don't need to sum to 100).
  * The roll is sum-then-LCG-mod-then-walk, identical to existing rollPowerUpKind.
@@ -792,45 +792,47 @@ export const PLACEMENT_ITEM_TABLE: Record<
   number,
   ReadonlyArray<{ kind: ReefPowerUpKind; weight: number }>
 > = {
-  // 1st place — defensive only
+  // 1st place — no forward-only seeker; five useful leader items
   1: [
-    { kind: 'rr-bubble-shield', weight: 50 },
-    { kind: 'rr-ink-slick',     weight: 30 },
+    { kind: 'rr-bubble-shield', weight: 28 },
+    { kind: 'rr-ink-slick',     weight: 22 },
     { kind: 'rr-turbo-bubble',  weight: 20 },
+    { kind: 'rr-tide-wave',     weight: 16 },
+    { kind: 'rr-whirlpool',     weight: 14 },
   ],
   // 2nd–3rd — defensive-leaning
   2: [
-    { kind: 'rr-turbo-bubble',  weight: 35 },
-    { kind: 'rr-bubble-shield', weight: 25 },
-    { kind: 'rr-ink-slick',     weight: 20 },
-    { kind: 'rr-tide-wave',     weight: 10 },
-    { kind: 'rr-seeker-jelly',  weight:  7 },
-    { kind: 'rr-whirlpool',     weight:  3 },
+    { kind: 'rr-turbo-bubble',  weight: 24 },
+    { kind: 'rr-bubble-shield', weight: 18 },
+    { kind: 'rr-ink-slick',     weight: 16 },
+    { kind: 'rr-tide-wave',     weight: 16 },
+    { kind: 'rr-seeker-jelly',  weight: 14 },
+    { kind: 'rr-whirlpool',     weight: 12 },
   ],
   3: [
-    { kind: 'rr-turbo-bubble',  weight: 35 },
-    { kind: 'rr-bubble-shield', weight: 25 },
-    { kind: 'rr-ink-slick',     weight: 20 },
-    { kind: 'rr-tide-wave',     weight: 10 },
-    { kind: 'rr-seeker-jelly',  weight:  7 },
-    { kind: 'rr-whirlpool',     weight:  3 },
+    { kind: 'rr-turbo-bubble',  weight: 24 },
+    { kind: 'rr-bubble-shield', weight: 18 },
+    { kind: 'rr-ink-slick',     weight: 16 },
+    { kind: 'rr-tide-wave',     weight: 16 },
+    { kind: 'rr-seeker-jelly',  weight: 14 },
+    { kind: 'rr-whirlpool',     weight: 12 },
   ],
   // 4th–5th — neutral (matches REEF_POWERUP_DEFS distribution)
   4: [
-    { kind: 'rr-turbo-bubble',  weight: 50 },
-    { kind: 'rr-bubble-shield', weight: 12 },
-    { kind: 'rr-ink-slick',     weight: 10 },
-    { kind: 'rr-seeker-jelly',  weight: 10 },
-    { kind: 'rr-tide-wave',     weight:  8 },
-    { kind: 'rr-whirlpool',     weight: 10 },
+    { kind: 'rr-turbo-bubble',  weight: 35 },
+    { kind: 'rr-bubble-shield', weight:  8 },
+    { kind: 'rr-ink-slick',     weight:  7 },
+    { kind: 'rr-seeker-jelly',  weight:  7 },
+    { kind: 'rr-tide-wave',     weight:  6 },
+    { kind: 'rr-whirlpool',     weight:  7 },
   ],
   5: [
-    { kind: 'rr-turbo-bubble',  weight: 50 },
-    { kind: 'rr-bubble-shield', weight: 12 },
-    { kind: 'rr-ink-slick',     weight: 10 },
-    { kind: 'rr-seeker-jelly',  weight: 10 },
-    { kind: 'rr-tide-wave',     weight:  8 },
-    { kind: 'rr-whirlpool',     weight: 10 },
+    { kind: 'rr-turbo-bubble',  weight: 35 },
+    { kind: 'rr-bubble-shield', weight:  8 },
+    { kind: 'rr-ink-slick',     weight:  7 },
+    { kind: 'rr-seeker-jelly',  weight:  7 },
+    { kind: 'rr-tide-wave',     weight:  6 },
+    { kind: 'rr-whirlpool',     weight:  7 },
   ],
   // 6th–7th — aggressive-leaning
   6: [
@@ -849,12 +851,13 @@ export const PLACEMENT_ITEM_TABLE: Record<
     { kind: 'rr-ink-slick',     weight: 10 },
     { kind: 'rr-bubble-shield', weight:  5 },
   ],
-  // 8th — aggressive only
+  // 8th — aggressive catch-up mix with five distinct kinds
   8: [
-    { kind: 'rr-whirlpool',    weight: 35 },
-    { kind: 'rr-seeker-jelly', weight: 30 },
-    { kind: 'rr-tide-wave',    weight: 25 },
-    { kind: 'rr-turbo-bubble', weight: 10 },
+    { kind: 'rr-whirlpool',    weight: 30 },
+    { kind: 'rr-seeker-jelly', weight: 26 },
+    { kind: 'rr-tide-wave',    weight: 22 },
+    { kind: 'rr-turbo-bubble', weight: 14 },
+    { kind: 'rr-ink-slick',    weight:  8 },
   ],
 };
 

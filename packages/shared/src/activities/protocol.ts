@@ -420,6 +420,8 @@ export interface EntityDelta {
      * pad / item / launch / slipstream). Drives kart trail/FX. Optional.
      */
     boosting?: boolean;
+    /** Reef Race Round 16 — authoritative wall-wipeout presentation gate. */
+    wipedOut?: boolean;
     /** Reef Race v2 — public held-item slots, emitted only when changed. */
     inventory?: Array<{
       kind: string | null;
@@ -482,6 +484,8 @@ export interface WorldState {
     miniTurboLevel?: 0 | 1 | 2;
     /** Reef Race v2 mechanics — any positive boost active (kart trail/FX). */
     boosting?: boolean;
+    /** Reef Race Round 16 — true during the server-owned wipeout freeze. */
+    wipedOut?: boolean;
     /** Reef Race v2 — public held-item slots for keyframe self-healing. */
     inventory?: Array<{
       kind: string | null;
@@ -748,6 +752,20 @@ export type ServerFrame =
       type: 'event.boost_pad';
       avatarId: string;
       padId: string;
+    }
+  | {
+      type: 'event.wall_slam';
+      avatarId: string;
+      position: Vec2;
+      /** Outward impact speed divided by REEF_MAX_SPEED. */
+      power: number;
+    }
+  | {
+      type: 'event.wipeout';
+      avatarId: string;
+      position: Vec2;
+      /** Deterministic sim-clock time when the authoritative respawn occurs. */
+      respawnAtMs: number;
     }
   | {
       /**

@@ -43,6 +43,8 @@ import { useActivityStore } from '@/stores/activity';
 const APEX_DURATION_MS   = 1_500;
 const HAZARD_DURATION_MS = 1_000;
 const RIBBON_DURATION_MS = 800;
+const WALL_SLAM_DURATION_MS = 1_000;
+const WIPEOUT_DURATION_MS = 1_200;
 
 // ─── Shared toast wrapper ─────────────────────────────────────────────────────
 
@@ -267,6 +269,74 @@ function ReefRaceBoostPadToast() {
   );
 }
 
+function ReefRaceWallSlamToast() {
+  const event = useActivityStore((s) => s.lastWallSlamEvent);
+  const selfAvatarId = useActivityStore((s) => s.selfAvatarId);
+  const matchPhase = useActivityStore((s) => s.matchPhase);
+  const [visible, setVisible] = useState(false);
+  const isSelfEvent = event?.avatarId === selfAvatarId && selfAvatarId !== null;
+
+  useEffect(() => {
+    if (!isSelfEvent || matchPhase !== 'live') {
+      setVisible(false);
+      return;
+    }
+    setVisible(true);
+    const id = window.setTimeout(() => setVisible(false), WALL_SLAM_DURATION_MS);
+    return () => window.clearTimeout(id);
+  }, [event, isSelfEvent, matchPhase]);
+
+  return (
+    <ToastBox visible={visible} color="#ff6b6b" glowColor="#ff6b6b66" topOffset="42%">
+      <span
+        style={{
+          fontSize: 13,
+          fontWeight: 800,
+          letterSpacing: '0.12em',
+          color: '#ff6b6b',
+          fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
+        }}
+      >
+        REEF SLAM  -40%
+      </span>
+    </ToastBox>
+  );
+}
+
+function ReefRaceWipeoutToast() {
+  const event = useActivityStore((s) => s.lastWipeoutEvent);
+  const selfAvatarId = useActivityStore((s) => s.selfAvatarId);
+  const matchPhase = useActivityStore((s) => s.matchPhase);
+  const [visible, setVisible] = useState(false);
+  const isSelfEvent = event?.avatarId === selfAvatarId && selfAvatarId !== null;
+
+  useEffect(() => {
+    if (!isSelfEvent || matchPhase !== 'live') {
+      setVisible(false);
+      return;
+    }
+    setVisible(true);
+    const id = window.setTimeout(() => setVisible(false), WIPEOUT_DURATION_MS);
+    return () => window.clearTimeout(id);
+  }, [event, isSelfEvent, matchPhase]);
+
+  return (
+    <ToastBox visible={visible} color="#ff5252" glowColor="#ff174466" topOffset="34%">
+      <span
+        style={{
+          fontSize: 18,
+          fontWeight: 900,
+          letterSpacing: '0.14em',
+          color: '#ff8a80',
+          fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
+        }}
+      >
+        WIPED OUT!
+      </span>
+    </ToastBox>
+  );
+}
+
 // ─── Power-up collect/use confirmation (self inventory, Round 8) ─────────────
 
 const POWER_UP_TOAST_DURATION_MS = 900;
@@ -391,6 +461,8 @@ export default function ReefRaceEventToasts() {
       <ReefRaceHazardToast />
       <ReefRaceRibbonToast />
       <ReefRaceBoostPadToast />
+      <ReefRaceWallSlamToast />
+      <ReefRaceWipeoutToast />
       <ReefRacePowerUpToast />
     </>
   );
