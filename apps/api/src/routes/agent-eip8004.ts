@@ -7,9 +7,8 @@
  * This URL shape is LOAD-BEARING and immutable once minted: each agent's
  * MPL Core identity asset carries an `AgentIdentity` external plugin whose
  * `uri` points at exactly `https://api.clawville.world/agents/<sapAgentPda>/eip-8004.json`
- * (the historical genesis asset used 1DREG `RegisterIdentityV1`; automatic
- * DB-backed identities use the SDK 1.0.0 direct MPL Core external-plugin
- * adapter). Verifiers —
+ * (both the historical genesis asset and automatic DB-backed identities use
+ * the 1DREG `RegisterIdentityV1` registry path). Verifiers —
  * Covenant's covenantd, the SAP SDK's `MetaplexBridge.verifyLink` /
  * `tripleCheckLink`, directory UIs — fetch this document and require:
  *

@@ -51,6 +51,7 @@ import {
   type SapFailure,
   type SapWriteResult,
 } from './sap-client';
+import { buildRegisterIdentityV1Instruction } from './sap-dreg-identity';
 
 export const SAP_REGISTER_BALANCE_FLOOR_LAMPORTS = 60_000_000;
 export const SAP_IDENTITY_REGISTRATION_BASE_URL = 'https://api.clawville.world';
@@ -81,6 +82,7 @@ export interface SapIdentityAttachResult {
   broadcast?: boolean;
   signature?: string;
   asset: string;
+  identityRegistration?: string;
   registrationUrl: string;
   code?: string;
   message?: string;
@@ -94,7 +96,7 @@ export interface SapIdentityRegistrarDeps {
   persistPatch(id: string, patch: IdentityPatch): Promise<SapAgentIdentity>;
   mintAndAttach(
     row: SapAgentIdentity,
-    persistPreparedAsset: (asset: string) => Promise<void>,
+    persistPreparedAsset: (asset: string, identityRegistration: string) => Promise<void>,
   ): Promise<SapIdentityAttachResult>;
   assetExists(asset: string): Promise<boolean>;
   findMetaplexTxSignature(asset: string, wallet: string): Promise<string | null>;
@@ -138,7 +140,7 @@ async function persistPatch(id: string, patch: IdentityPatch): Promise<SapAgentI
 
 async function mintAndAttach(
   row: SapAgentIdentity,
-  persistPreparedAsset: (asset: string) => Promise<void>,
+  persistPreparedAsset: (asset: string, identityRegistration: string) => Promise<void>,
 ): Promise<SapIdentityAttachResult> {
   try {
     const owner = await loadAvatarWalletForSigning(row.avatarId);
@@ -182,10 +184,23 @@ async function mintAndAttach(
     if (built.registrationUrl !== expectedUrl) {
       throw new Error(`Metaplex builder registration URL drift: ${built.registrationUrl}`);
     }
+    const createAssetInstruction = built.instructions[0];
+    if (!createAssetInstruction) {
+      throw new Error('Metaplex builder returned no CreateV2 instruction.');
+    }
 
     const asset = built.assetAddress.toBase58();
-    await persistPreparedAsset(asset);
-    const transaction = new Transaction().add(...built.instructions);
+    const registerIdentity = buildRegisterIdentityV1Instruction({
+      asset: built.assetAddress,
+      owner: owner.publicKey,
+      registrationUrl: expectedUrl,
+    });
+    const identityRegistration = registerIdentity.identityPda.toBase58();
+    await persistPreparedAsset(asset, identityRegistration);
+    const transaction = new Transaction().add(
+      createAssetInstruction,
+      registerIdentity.instruction,
+    );
     const sent = await executeSapIdentityAttachTx({
       transaction,
       ownerSigner: owner.keypair,
@@ -200,6 +215,7 @@ async function mintAndAttach(
       return {
         ok: false,
         asset,
+        identityRegistration,
         registrationUrl: expectedUrl,
         code: sent.code,
         message: sent.message,
@@ -208,13 +224,20 @@ async function mintAndAttach(
       };
     }
     if (sent.dryRun) {
-      return { ok: true, dryRun: true, asset, registrationUrl: expectedUrl };
+      return {
+        ok: true,
+        dryRun: true,
+        asset,
+        identityRegistration,
+        registrationUrl: expectedUrl,
+      };
     }
     return {
       ok: true,
       dryRun: false,
       signature: sent.signature,
       asset,
+      identityRegistration,
       registrationUrl: expectedUrl,
     };
   } catch (err) {
@@ -484,6 +507,7 @@ async function attachStage(
         return deps.persistPatch(row.id, {
           status: 'registered',
           metaplexAsset: null,
+          identityRegistration: null,
           metaplexTxSig: null,
           lastError: 'Prepared Metaplex asset was absent after the stale window; mint will retry.',
         });
@@ -529,10 +553,11 @@ async function attachStage(
   }
 
   let working = row;
-  const attached = await deps.mintAndAttach(row, async (asset) => {
+  const attached = await deps.mintAndAttach(row, async (asset, identityRegistration) => {
     working = await deps.persistPatch(row.id, {
       status: 'attaching_identity',
       metaplexAsset: asset,
+      identityRegistration,
       lastError: null,
     });
   });
@@ -546,6 +571,9 @@ async function attachStage(
       deps,
       {
         metaplexAsset: attached.broadcast ? attached.asset : null,
+        identityRegistration: attached.broadcast
+          ? attached.identityRegistration ?? working.identityRegistration
+          : null,
         metaplexTxSig: attached.broadcast ? attached.signature ?? null : null,
       },
     );
@@ -554,6 +582,7 @@ async function attachStage(
     return deps.persistPatch(row.id, {
       status: 'registered',
       metaplexAsset: null,
+      identityRegistration: null,
       metaplexTxSig: null,
       lastError: 'SAP_DRY_RUN simulated Metaplex attach; no asset was minted.',
     });
@@ -570,9 +599,8 @@ async function attachStage(
   working = await deps.persistPatch(row.id, {
     status: 'attaching_identity',
     metaplexAsset: attached.asset,
+    identityRegistration: attached.identityRegistration ?? working.identityRegistration,
     metaplexTxSig: attached.signature ?? null,
-    // The SDK external adapter has a URI, not a separate registration pubkey.
-    identityRegistration: null,
   });
   try {
     if (await deps.verifyLink(working)) {
