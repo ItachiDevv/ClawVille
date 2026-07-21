@@ -100,6 +100,8 @@ export type {
   BreakerConfig,
   RouteTable,
   EndpointStats,
+  InferenceUsageRow,
+  InferenceUsageSnapshot,
 } from './inference/inference-router';
 export {
   getInferenceRouter,
