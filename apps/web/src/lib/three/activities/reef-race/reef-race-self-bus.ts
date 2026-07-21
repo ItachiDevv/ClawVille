@@ -20,10 +20,10 @@
  *
  * ─── selfPoseBus ──────────────────────────────────────────────────────────────
  * Written by `ReefRacePlayer` (self) each frame with the RENDERED predicted XZ +
- * heading. Read by `ChaseCamera` so the camera follows the exact same pose the
- * body renders at (one timebase) — killing the 100 ms-body / 200 ms-camera
- * rubber-band. Stale-guarded via `updatedAt` so the camera reverts to its own
- * interp the instant the self body stops writing (spectator, v1, no-self).
+ * heading and its damped banked-water surface datum. Read by `ChaseCamera` so
+ * camera and body share one horizontal timebase and one long-swell vertical datum.
+ * Stale-guarded via `updatedAt` so the camera reverts to its own interp the instant
+ * the self body stops writing (spectator, v1, no-self).
  */
 
 /** Steering intent for client prediction. `dir` is XZ sim-space (z = forward). */
@@ -44,6 +44,8 @@ export interface SelfPoseBus {
   z: number;
   /** Heading (rad), Three.js group.rotation.y. */
   rot: number;
+  /** Banked ribbon datum + the board's exact damped conform heave (no ride/jump Y). */
+  surfaceY: number;
   /** True while the self player is actively writing this each frame. */
   valid: boolean;
   /** performance.now() of the last write — consumers stale-guard on this. */
@@ -62,6 +64,7 @@ export const selfPoseBus: SelfPoseBus = {
   x: 0,
   z: 0,
   rot: 0,
+  surfaceY: 0,
   valid: false,
   updatedAt: 0,
 };
@@ -86,6 +89,7 @@ export function resetSelfPoseBus(): void {
   selfPoseBus.x = 0;
   selfPoseBus.z = 0;
   selfPoseBus.rot = 0;
+  selfPoseBus.surfaceY = 0;
   selfPoseBus.valid = false;
   selfPoseBus.updatedAt = 0;
 }

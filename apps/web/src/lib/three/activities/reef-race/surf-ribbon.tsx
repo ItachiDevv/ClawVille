@@ -192,6 +192,10 @@ const _waterVert = /* glsl */`
   //
   // We accumulate displacement (dispX/Y/Z) AND the analytic Jacobian partials
   // (∂P/∂x, ∂P/∂z) so the fragment shader gets an exact normal + crest foam.
+  // CONSTANTS-IN-SYNC / DELIBERATE DIVERGENCE (R18a): reef-wave-height.ts mirrors
+  // this full bank exactly. The render and surfWaveHeightAt use all 7 octaves;
+  // surfConformHeightAt still inverts all 7 horizontal displacements for phase
+  // lock, but returns vertical octaves 0..2 so rider poses plane over short chop.
   #define NWAVES 7.0
   const vec2 WDIR[7] = vec2[7](
     vec2( 0.242536,  0.970143),  // (0.25, 1.00) normalized — primary swell

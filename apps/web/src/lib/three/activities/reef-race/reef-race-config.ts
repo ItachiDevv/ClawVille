@@ -684,10 +684,19 @@ export const SURF_PITCH_HALF_LEN  = 120;  // wu — sample the wave at nose & ta
 export const SURF_ROLL_HALF_WIDTH = 36;   // wu — sample the surface at left & right rail
 export const SURF_PITCH_CLAMP     = 0.6;  // ±34°
 export const SURF_ROLL_CLAMP      = 0.8;  // ±46°
-// Founder knob: k=7 lets heave glide through chop; lower increases transient water overlap.
-export const SURF_HEAVE_DAMPING   = 7;
-// Founder knob: k=3.5 lets pitch/roll cut through small chop instead of tracking it tightly.
-export const SURF_TILT_DAMPING    = 3.5;
+// Speed-aware tilt response endpoints. The long-swell octave set stays fixed;
+// only the tilt follower rate blends with planar speed.
+// The 290–356wu/s run passed with the low-speed tilt rate; the 823–873wu/s run
+// showed maxSpeed normalization reached the high-speed tilt rate too late.
+export const SURF_CONFORM_PLANING_START_SPEED = 350;
+export const SURF_CONFORM_PLANING_FULL_SPEED  = 800;
+// k3.5 produced 3.2–3.4 Y flips/s with tiny median deltas but visible phase lag;
+// constant k10 is the least-lag rate and follows the composite surface datum.
+export const SURF_HEAVE_DAMPING = 10;
+export const SURF_TILT_DAMPING_LOW_SPEED   = 6;  // Prior low-speed run was responsive and passed.
+// Latest racing pass at k1.2: pitch RMS 0.58/1.05/0.84°, frequency 0.3/0.6/0.4Hz,
+// flips 0.7/1.6/1.2 per second (one bot remains 0.1/s above the flip target).
+export const SURF_TILT_DAMPING_HIGH_SPEED  = 1.2;
 // Founder knob: higher values follow velocity-slip bank faster; k=8 smooths 30 Hz lean steps.
 export const SURF_BANK_LEAN_DAMPING = 8;
 

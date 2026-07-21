@@ -392,6 +392,7 @@ function ChaseCamera({ selfEntity, selfIsStaged, shakeRef }: ChaseCamProps) {
     let renderX = selfEntity.x;
     let renderZ = selfEntity.y;
     let heading = selfEntity.rot ?? lastRotRef.current;
+    let sharedSurfaceY = Number.NaN;
     const history = historyRef.current;
     if (history.length === 1) {
       renderX = history[0].x;
@@ -434,6 +435,7 @@ function ChaseCamera({ selfEntity, selfIsStaged, shakeRef }: ChaseCamProps) {
       renderX = selfPoseBus.x;
       renderZ = selfPoseBus.z;
       heading = selfPoseBus.rot;
+      sharedSurfaceY = selfPoseBus.surfaceY;
       lastRotRef.current = heading;
     }
 
@@ -471,7 +473,9 @@ function ChaseCamera({ selfEntity, selfIsStaged, shakeRef }: ChaseCamProps) {
     // climb/drop and never clips into the ribbon or loses the rider over a
     // crest. TRACK_SURFACE_Y is now 0 (the datum is the elevation function).
     const camGroundY = USE_SPLINE_CAMERA
-      ? TRACK_SURFACE_Y + elevationAtXZ(renderX, renderZ, 'cam')
+      ? Number.isNaN(sharedSurfaceY)
+        ? TRACK_SURFACE_Y + elevationAtXZ(renderX, renderZ, 'cam')
+        : sharedSurfaceY
       : TRACK_SURFACE_Y;
 
     _targetPos.set(renderX, camGroundY, renderZ).add(_rotatedOffset);
