@@ -48,11 +48,15 @@ function getDb(): PostgresJsDatabase<typeof schema> {
   // .env.local (dev boxes set 4) and release idle connections after 30s so stray
   // processes can't pin slots. Deployed staging/prod (:6543 txn pooler) keep the
   // default max:10; idle_timeout is safe there (Supabase-recommended).
+  // Fail new connections after 10s, and probe established TCP flows after 30s,
+  // so a dead pooler cannot leave the shared postgres.js pool silent forever.
   const poolMax = Number(process.env.DB_POOL_MAX) > 0 ? Number(process.env.DB_POOL_MAX) : 10;
   const client = postgres(connectionString, {
     prepare: false,
     max: poolMax,
     idle_timeout: 30,
+    connect_timeout: 10,
+    keep_alive: 30,
     max_lifetime: 60 * 60,
   });
   _db = drizzle(client, { schema });
