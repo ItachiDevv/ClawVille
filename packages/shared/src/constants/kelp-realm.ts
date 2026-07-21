@@ -1,8 +1,8 @@
 import { WORLD_CENTER_PX } from './world-dimensions';
 import { KELP_FOREST_PORTAL_WORLD_CENTER } from './world-colliders-data';
 
-export const KELP_REALM_CELL_WU = 300;
-export const KELP_REALM_WALL_HEIGHT_WU = 500;
+export const KELP_REALM_CELL_WU = 480;
+export const KELP_REALM_WALL_HEIGHT_WU = 420;
 export const KELP_REALM_PLAYER_SPEED_WU_PER_SEC = 430;
 export const KELP_REALM_BEACON_VISIT_RADIUS_WU = 72;
 export const KELP_REALM_TOKEN_TTL_MS = 30 * 60 * 1000;
@@ -28,7 +28,7 @@ export const KELP_REALM_ONE_SIDED_SWAY_WU = 100;
 export const KELP_REALM_SWAY_HEIGHT_FRACTION =
   KELP_REALM_ONE_SIDED_SWAY_WU / KELP_REALM_WALL_HEIGHT_WU;
 /** Realm blade roots stay this far behind a corridor-facing wall edge. */
-export const KELP_REALM_WALL_ROOT_SETBACK_WU = 60;
+export const KELP_REALM_WALL_ROOT_SETBACK_WU = 96;
 export const KELP_REALM_MAX_BLADE_HALF_WIDTH_WU = 28;
 export const KELP_REALM_MAX_AUTHORED_BEND_WU = 26;
 /** Conservative transverse radius of the widest, most-bent authored blade. */

@@ -33,9 +33,10 @@ import {
 
 const PLAYER_RADIUS = 34;
 const AVATAR_TARGET_HEIGHT = 270;
-const CAM_BEHIND = 520;
-const CAM_ABOVE = 610;
-const CAM_LOOK_Y = 135;
+const CAM_BEHIND = 660;
+const CAM_ABOVE = 470;
+const CAM_LOOK_Y = 170;
+const CAM_LOOK_AHEAD = 150;
 const CAM_YAW_SPEED = 1.25;
 const CAM_PITCH_SPEED = 180;
 const CAM_PITCH_MIN = -35;
@@ -196,19 +197,17 @@ function firstCameraWallHitT(
   return firstHit;
 }
 
-function clampCameraToVisibleSegment(
+function cameraVisibleSegmentSafeT(
   originX: number,
   originZ: number,
   target: THREE.Vector3,
-): void {
+): number {
   const hitT = firstCameraWallHitT(originX, originZ, target.x, target.z);
-  if (hitT >= 1) return;
+  if (hitT >= 1) return 1;
   const deltaX = target.x - originX;
   const deltaZ = target.z - originZ;
   const segmentLength = Math.sqrt(deltaX * deltaX + deltaZ * deltaZ);
-  const safeT = Math.max(0, hitT - CAM_WALL_PADDING / Math.max(1, segmentLength));
-  target.x = originX + deltaX * safeT;
-  target.z = originZ + deltaZ * safeT;
+  return Math.max(0, hitT - CAM_WALL_PADDING / Math.max(1, segmentLength));
 }
 
 interface MotionProps {
@@ -224,6 +223,7 @@ function KelpRealmAvatarMotion({ children, baseY = 0, updateAnimation }: MotionP
   const rotation = useRef(Math.PI);
   const cameraYaw = useRef(0);
   const cameraPitch = useRef(0);
+  const cameraClampT = useRef(1);
   const { camera } = useThree();
 
   useFrame(({ clock }, delta) => {
@@ -281,10 +281,18 @@ function KelpRealmAvatarMotion({ children, baseY = 0, updateAnimation }: MotionP
     const behindX = -Math.sin(cameraYaw.current) * CAM_BEHIND;
     const behindZ = Math.cos(cameraYaw.current) * CAM_BEHIND;
     cameraScratch.set(posX.current + behindX, CAM_ABOVE + cameraPitch.current, posZ.current + behindZ);
-    clampCameraToVisibleSegment(posX.current, posZ.current, cameraScratch);
+    const desiredClampT = cameraVisibleSegmentSafeT(posX.current, posZ.current, cameraScratch);
+    const clampRate = desiredClampT < cameraClampT.current ? 8 : 3;
+    cameraClampT.current += (desiredClampT - cameraClampT.current)
+      * (1 - Math.exp(-clampRate * safeDelta));
+    cameraScratch.x = posX.current + behindX * cameraClampT.current;
+    cameraScratch.z = posZ.current + behindZ * cameraClampT.current;
     camera.position.lerp(cameraScratch, 1 - Math.exp(-7 * safeDelta));
-    clampCameraToVisibleSegment(posX.current, posZ.current, camera.position);
-    targetScratch.set(posX.current, CAM_LOOK_Y, posZ.current);
+    targetScratch.set(
+      posX.current + forwardScratch.x * CAM_LOOK_AHEAD,
+      CAM_LOOK_Y,
+      posZ.current + forwardScratch.z * CAM_LOOK_AHEAD,
+    );
     camera.lookAt(targetScratch);
     updateAnimation(safeDelta, clock.elapsedTime, moving);
   });
