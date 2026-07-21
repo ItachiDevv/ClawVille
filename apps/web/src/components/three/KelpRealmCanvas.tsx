@@ -5,6 +5,10 @@ import { Canvas, useThree } from '@react-three/fiber';
 import * as THREE from 'three/webgpu';
 import { detectLowEndGpuClass } from '@/lib/three/gpu-tier';
 import KelpRealmScene from '@/lib/three/kelp-realm-scene';
+import {
+  clearKelpRealmRendererFailure,
+  reportKelpRealmRendererFailure,
+} from '@/lib/three/kelp-realm-renderer-status';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 
 const LOW_END_GPU = detectLowEndGpuClass();
@@ -41,20 +45,31 @@ async function initializeRenderer(canvas: HTMLCanvasElement, forceWebGL: boolean
 }
 
 async function createRealmRenderer(props: { canvas: HTMLCanvasElement }): Promise<THREE.WebGPURenderer> {
-  if (FORCE_WEBGL) return initializeRenderer(props.canvas, true);
+  clearKelpRealmRendererFailure();
+  if (FORCE_WEBGL) {
+    try {
+      return await initializeRenderer(props.canvas, true);
+    } catch (webGLError) {
+      console.error('[KelpRealm] renderer init failed:', { webGPUError: null, webGLError });
+      reportKelpRealmRendererFailure(null, webGLError);
+      throw webGLError;
+    }
+  }
   try {
     return await initializeRenderer(props.canvas, false);
-  } catch (error) {
-    console.warn('[KelpRealm] WebGPU init failed; retrying force-WebGL on a fresh canvas:', error);
+  } catch (webGPUError) {
+    console.warn('[KelpRealm] WebGPU init failed; retrying force-WebGL on a fresh canvas:', webGPUError);
     const fallbackCanvas = props.canvas.cloneNode(false) as HTMLCanvasElement;
     fallbackCanvas.className = props.canvas.className;
     fallbackCanvas.style.cssText = props.canvas.style.cssText;
     props.canvas.parentNode?.replaceChild(fallbackCanvas, props.canvas);
     try {
       return await initializeRenderer(fallbackCanvas, true);
-    } catch (fallbackError) {
+    } catch (webGLError) {
       fallbackCanvas.remove();
-      throw fallbackError;
+      console.error('[KelpRealm] renderer init failed:', { webGPUError, webGLError });
+      reportKelpRealmRendererFailure(webGPUError, webGLError);
+      throw webGLError;
     }
   }
 }
