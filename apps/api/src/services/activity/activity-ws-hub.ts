@@ -674,8 +674,8 @@ class ActivityWsHub {
   private async sendInit(ws: HubWs, room: Room): Promise<void> {
     // Build a WorldState snapshot from the current room members.
     // Explicitly typed as the protocol WorldState entity array so the reef-race
-    // branch can push the v2 mechanics fields (miniTurboCharge/Level/boosting,
-    // height) — the inferred type from this initial participant map omits them,
+    // branch can push the v2 mechanics fields (boosting, height, inventory) —
+    // the inferred type from this initial participant map omits them,
     // which broke the Codex-finding-7 keyframe/init wire fix (TS2353).
     const entities: WorldState['entities'] = Array.from(room.participants.values()).map((p) => ({
       avatarId: p.avatarId,
@@ -741,9 +741,13 @@ class ActivityWsHub {
             vz?: number;
             height?: number;
             speedMod?: number;
-            miniTurboCharge?: number;
-            miniTurboLevel?: 0 | 1 | 2;
             boosting?: boolean;
+            wipedOut?: boolean;
+            inventory?: Array<{
+              kind: string | null;
+              charges: number;
+              cooldownUntil?: number;
+            }>;
           };
           const yScene = bb.y ?? bb.z ?? 0;
           const vyScene = bb.vy ?? bb.vz ?? 0;
@@ -762,9 +766,9 @@ class ActivityWsHub {
             // Ellipse-sim snapshots omit these fields (undefined → dropped).
             ...(bb.height && bb.height !== 0 ? { height: bb.height } : {}),
             speedMod: bb.speedMod,
-            miniTurboCharge: bb.miniTurboCharge,
-            miniTurboLevel: bb.miniTurboLevel,
             boosting: bb.boosting,
+            wipedOut: bb.wipedOut,
+            inventory: bb.inventory,
           });
         }
         powerUps = reefState.pickups

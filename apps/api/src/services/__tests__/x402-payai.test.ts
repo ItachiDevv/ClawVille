@@ -18,10 +18,57 @@ import {
   usdCentsToUsdcAtomic,
   buildTopupQuote,
   buildPartnerPurchaseQuote,
+  isFacilitatorLevelFailure,
   resolveFacilitatorFeePayer,
   settlePartnerPurchase,
 } from '../x402-payai';
 import { buildMockFacilitator } from '../x402-mock-facilitator';
+
+describe('x402-payai facilitator-level failure classification', () => {
+  it('counts exact quota, HTTP 5xx, and transport failures', () => {
+    const quota = Object.assign(new Error('free_tier_exhausted'), {
+      name: 'SettleError',
+      statusCode: 402,
+      errorReason: 'free_tier_exhausted',
+    });
+    expect(isFacilitatorLevelFailure(quota)).toBe(true);
+    expect(isFacilitatorLevelFailure({
+      statusCode: 200,
+      invalidReason: 'free_tier_exhausted',
+    })).toBe(true);
+    expect(isFacilitatorLevelFailure(Object.assign(new Error('upstream'), {
+      name: 'VerifyError',
+      statusCode: 503,
+      invalidReason: 'upstream_error',
+    }))).toBe(true);
+    expect(isFacilitatorLevelFailure(new TypeError('fetch failed'))).toBe(true);
+    expect(isFacilitatorLevelFailure(Object.assign(new Error('timed out'), {
+      name: 'TimeoutError',
+    }))).toBe(true);
+    expect(isFacilitatorLevelFailure(
+      new Error('Facilitator verify failed (503): upstream unavailable'),
+    )).toBe(true);
+    expect(isFacilitatorLevelFailure(
+      new Error('Facilitator settle failed (503): upstream unavailable'),
+    )).toBe(true);
+  });
+
+  it('does not count payment-specific rejections', () => {
+    expect(isFacilitatorLevelFailure(Object.assign(new Error('invalid signature'), {
+      name: 'VerifyError',
+      statusCode: 400,
+      invalidReason: 'invalid_signature',
+    }))).toBe(false);
+    expect(isFacilitatorLevelFailure(Object.assign(new Error('insufficient funds'), {
+      name: 'SettleError',
+      statusCode: 402,
+      errorReason: 'insufficient_funds',
+    }))).toBe(false);
+    expect(isFacilitatorLevelFailure(
+      new Error('Facilitator settle failed (400): invalid signature'),
+    )).toBe(false);
+  });
+});
 
 describe('x402-payai — A3 ¢-peg store buy-price ($0.01/coin)', () => {
   it('CT_PER_USDC is 100 (the A3 ¢-peg rate, was 10 at the F2 $0.10/coin rate)', () => {

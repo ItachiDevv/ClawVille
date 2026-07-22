@@ -900,6 +900,18 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
+  generatePublicConnectToken: (data: { learningFocus?: string }) =>
+    honoRequest<{
+      token: string;
+      connectUrl: string;
+      instruction: string;
+      expiresIn: number;
+      pollSecret: string;
+    }>('/api/agent/connect-token/public', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
   pollConnectStatus: (token: string) =>
     honoRequest<{
       connected: boolean;
@@ -907,6 +919,16 @@ export const api = {
       agentId: string | null;
       expiresIn: number;
     }>(`/api/agent/connect-status/${token}`),
+
+  pollPublicConnectStatus: (token: string, pollSecret: string) =>
+    honoRequest<{
+      connected: boolean;
+      enterUrl: string | null;
+      expiresIn: number;
+    }>(`/api/agent/connect-status/public/${token}`, {
+      method: 'POST',
+      body: JSON.stringify({ pollSecret }),
+    }),
 
   // Hatcher launch-exchange — consumes the `hatcher_agent=&hatcher_launch=`
   // grant that Hatcher's dashboard appends to the /game launch URL. FIX-1: the

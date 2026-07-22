@@ -117,9 +117,9 @@ const partyIdParamSchema = z.string().uuid();
 
 const partyShortCodeParamSchema = z
   .string()
-  .min(4)
-  .max(10)
-  .regex(/^[0-9A-Za-z]+$/);
+  .trim()
+  .transform((value) => value.toUpperCase())
+  .pipe(z.string().length(6).regex(/^[0-9A-HJKMNP-TV-Z]{6}$/));
 
 const kickBodySchema = z.object({
   avatarId: z.string().uuid(),
@@ -424,6 +424,12 @@ activitiesV2Routes.get('/:id/queue-status', requireAuthOrAgentSession, async (c)
 
 // ─── Party routes ──────────────────────────────────────────────────────────
 
+activitiesV2Routes.get('/party/me', requireAuthOrAgentSession, async (c) => {
+  const identity = c.get('identity');
+  const party = activityQueueService.partyForAvatar(identity.avatarId);
+  return c.json({ ok: true, party: await serializeParty(party) });
+});
+
 activitiesV2Routes.post('/party', requireAuthOrAgentSession, async (c) => {
   const identity = c.get('identity');
 
@@ -438,13 +444,13 @@ activitiesV2Routes.post('/party', requireAuthOrAgentSession, async (c) => {
   if (existing) {
     return c.json({
       ok: true,
-      party: serializeParty(existing),
+      party: await serializeParty(existing),
       alreadyInParty: true,
     });
   }
 
   const party = await activityQueueService.createParty(identity.avatarId);
-  return c.json({ ok: true, party: serializeParty(party) });
+  return c.json({ ok: true, party: await serializeParty(party) });
 });
 
 activitiesV2Routes.post('/party/:shortCode/join', requireAuthOrAgentSession, async (c) => {
@@ -456,8 +462,11 @@ activitiesV2Routes.post('/party/:shortCode/join', requireAuthOrAgentSession, asy
 
   try {
     const party = await activityQueueService.joinParty(shortCodeParse.data, identity.avatarId);
-    return c.json({ ok: true, party: serializeParty(party) });
+    return c.json({ ok: true, party: await serializeParty(party) });
   } catch (err) {
+    if (err instanceof Error && err.message === 'Party not found') {
+      throw asHttpException(err, 404);
+    }
     throw asHttpException(err, 409);
   }
 });
@@ -480,7 +489,7 @@ activitiesV2Routes.post('/party/:partyId/kick', requireAuthOrAgentSession, async
       identity.avatarId,
       bodyParse.data.avatarId,
     );
-    return c.json({ ok: true, party: serializeParty(party) });
+    return c.json({ ok: true, party: await serializeParty(party) });
   } catch (err) {
     throw asHttpException(err, 403);
   }
@@ -900,13 +909,28 @@ activitiesV2Routes.get('/:id/replays/:replayId', (c) => {
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
-function serializeParty(party: ReturnType<typeof activityQueueService.getParty>): unknown {
+async function serializeParty(
+  party: ReturnType<typeof activityQueueService.getParty>,
+) {
   if (!party) return null;
+  const memberAvatarIds = Array.from(party.members);
+  const namesById = new Map<string, string>();
+  if (memberAvatarIds.length > 0) {
+    const avatarRows = await db
+      .select({ id: avatars.id, name: avatars.name })
+      .from(avatars)
+      .where(avatarInList(memberAvatarIds));
+    for (const avatar of avatarRows) namesById.set(avatar.id, avatar.name);
+  }
+
   return {
     id: party.id,
     shortCode: party.shortCode,
     leaderAvatarId: party.leaderAvatarId,
-    members: Array.from(party.members),
+    members: memberAvatarIds.map((avatarId) => ({
+      avatarId,
+      displayName: namesById.get(avatarId) ?? avatarId.slice(0, 8),
+    })),
     createdAt: party.createdAt,
     cap: MAX_PARTY_SIZE,
   };

@@ -299,6 +299,11 @@ chatRoutes.post('/:id/chat', requireAuth, async (c) => {
         sourceBuildingId: locationId,
         maxExperts: 2,
         timeoutMs: 4000,
+        // The authenticated human owns this active avatar. Keep both fields so
+        // event guest-resolution and the avatar-keyed scoring leg agree.
+        ...(avatar
+          ? { initiator: { kind: 'human' as const, userId: user.id, avatarId: avatar.id } }
+          : {}),
       });
       if (collab.combinedContext) {
         extraContextParts.push(collab.combinedContext);

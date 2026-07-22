@@ -23,6 +23,8 @@ import {
 } from '../middleware/require-auth-or-agent';
 import { requireNonGuestIdentity } from '../middleware/require-non-guest';
 import { noStorePrivate } from '../middleware/no-store';
+import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
+import { alertError } from '../services/alert-error';
 import { logEventFromContext } from '../services/event-logger';
 
 const beaconIdSchema = z.string().min(1).max(64).regex(/^[a-z0-9-]+$/);
@@ -337,6 +339,52 @@ export function createKelpRoutes(
     return c.json({ ok: true, alreadyOwned: result.alreadyOwned });
   },
   );
+
+  // -------------------------------------------------------------------------
+  // POST /api/kelp/render-failure — anonymous field-diagnostics beacon.
+  //
+  // A production end user reported the realm as a pure black void with zero
+  // signal about WHICH silent failure lane they hit (chunk load, renderer
+  // init, WebGPU per-frame errors, canvas adoption, device loss). The client
+  // now reports the lane + GPU string here right before it shows recovery UI
+  // or reloads, and this fans out to the itachi-debug Telegram alert pipe so
+  // field failures name themselves instead of arriving as screenshots.
+  // Anonymous by design (guests hit this), tightly rate-limited, nothing
+  // stored — alert-only.
+  // -------------------------------------------------------------------------
+  const renderFailureLimiter = createRateLimiter({ maxPerWindow: 3, windowMs: 60_000 });
+  const renderFailureSchema = z.object({
+    lane: z.enum([
+      'chunk-load-failed',
+      'renderer-init-failed',
+      'webgpu-unhealthy',
+      'canvas-not-adopted',
+      'device-lost',
+    ]),
+    detail: z.string().max(600).optional(),
+    gpu: z.string().max(240).optional(),
+    backend: z.enum(['webgpu', 'webgl', 'unknown']).optional(),
+  }).strict();
+
+  routes.post('/render-failure', async (c) => {
+    const ip = getClientIp({ get: (name) => c.req.header(name) ?? null });
+    if (!renderFailureLimiter.check(ip)) return c.json({ ok: false }, 429);
+    const parsed = renderFailureSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ ok: false }, 400);
+    void alertError({
+      severity: 'warning',
+      source: 'kelp-render-failure',
+      message: `Kelp realm render failure in the field: ${parsed.data.lane}`,
+      context: {
+        lane: parsed.data.lane,
+        detail: parsed.data.detail,
+        gpu: parsed.data.gpu,
+        backend: parsed.data.backend,
+        userAgent: c.req.header('user-agent')?.slice(0, 200),
+      },
+    });
+    return c.json({ ok: true });
+  });
 
   return routes;
 }

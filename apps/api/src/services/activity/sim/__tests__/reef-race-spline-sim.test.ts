@@ -36,7 +36,7 @@ const { reefRaceSplineSim } = await import('../reef-race-spline-sim');
 const {
   REEF_TICK_HZ,
   REEF_RACE_LAPS,
-  ACTION_BIT_DRIFT,
+  ACTION_BIT_JUMP,
   REEF_GRAVITY,
   REEF_JUMP_IMPULSE_MANUAL,
   REEF_MAX_SPEED,
@@ -478,9 +478,9 @@ describe('ReefRaceSplineSim', () => {
       reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
       const body = reefRaceSplineSim.__getState(ROOM_ID)!.bodies.get(AVATAR_A)!;
 
-      // Trigger jump via ACTION_BIT_DRIFT (= ACTION_BIT_JUMP in v2).
+      // Trigger the manual jump on bit 2.
       reefRaceSplineSim.applyInput(
-        ROOM_ID, AVATAR_A, 1, DT, makeInput(0, 0, 1, ACTION_BIT_DRIFT),
+        ROOM_ID, AVATAR_A, 1, DT, makeInput(0, 0, 1, ACTION_BIT_JUMP),
       );
       reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
 
@@ -495,7 +495,7 @@ describe('ReefRaceSplineSim', () => {
 
       // Trigger jump.
       reefRaceSplineSim.applyInput(
-        ROOM_ID, AVATAR_A, 1, DT, makeInput(0, 0, 1, ACTION_BIT_DRIFT),
+        ROOM_ID, AVATAR_A, 1, DT, makeInput(0, 0, 1, ACTION_BIT_JUMP),
       );
 
       // Tick until the body lands.
@@ -516,7 +516,7 @@ describe('ReefRaceSplineSim', () => {
       const body = reefRaceSplineSim.__getState(ROOM_ID)!.bodies.get(AVATAR_A)!;
 
       reefRaceSplineSim.applyInput(
-        ROOM_ID, AVATAR_A, 1, DT, makeInput(0, 0, 1, ACTION_BIT_DRIFT),
+        ROOM_ID, AVATAR_A, 1, DT, makeInput(0, 0, 1, ACTION_BIT_JUMP),
       );
 
       let peakHeight = 0;
@@ -526,11 +526,13 @@ describe('ReefRaceSplineSim', () => {
         if (body.heightOffset === 0 && i > 5) break;
       }
 
-      // Theoretical peak: v²/(2g) = (380²)/(2×1200) ≈ 60 wu. Allow ±20%.
+      // Theoretical peak: v²/(2g) = 550²/(2×1200) ≈ 126 wu. The fixed-step
+      // semi-implicit integrator lands slightly below the continuous solution.
       const theoreticalPeak = (REEF_JUMP_IMPULSE_MANUAL * REEF_JUMP_IMPULSE_MANUAL) /
         (2 * REEF_GRAVITY);
-      expect(peakHeight).toBeGreaterThan(theoreticalPeak * 0.5);
-      expect(peakHeight).toBeLessThan(theoreticalPeak * 2.0);
+      expect(theoreticalPeak).toBeCloseTo(126, 0);
+      expect(peakHeight).toBeGreaterThan(theoreticalPeak * 0.9);
+      expect(peakHeight).toBeLessThanOrEqual(theoreticalPeak);
     });
   });
 
@@ -700,7 +702,7 @@ describe('ReefRaceSplineSim', () => {
       expect(delta).toBeTruthy();
       expect(
         delta!.entities.find((e) => e.avatarId === AVATAR_A)?.changed.speedMod,
-      ).toBe(1.35);
+      ).toBe(1.4);
     });
   });
 });

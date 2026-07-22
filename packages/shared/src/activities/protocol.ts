@@ -408,21 +408,26 @@ export interface EntityDelta {
      */
     totalLaps?: number;
     /**
-     * Reef Race v2 mechanics — surf-carve mini-turbo charge, normalized 0..1
-     * against the tier-2 full-charge threshold (HUD meter fill). 0 when not
-     * charging. Optional; ellipse sim omits it.
+     * @deprecated Reef Race drift was retired; retained for old-wire tolerance.
      */
     miniTurboCharge?: number;
     /**
-     * Reef Race v2 mechanics — mini-turbo tier the charge has reached so far
-     * (0 = none, 1, 2). Drives the HUD meter color. Optional.
+     * @deprecated Reef Race drift was retired; retained for old-wire tolerance.
      */
     miniTurboLevel?: 0 | 1 | 2;
     /**
      * Reef Race v2 mechanics — true while ANY positive boost is active (boost
-     * pad / mini-turbo / launch / slipstream). Drives kart trail/FX. Optional.
+     * pad / item / launch / slipstream). Drives kart trail/FX. Optional.
      */
     boosting?: boolean;
+    /** Reef Race Round 16 — authoritative wall-wipeout presentation gate. */
+    wipedOut?: boolean;
+    /** Reef Race v2 — public held-item slots, emitted only when changed. */
+    inventory?: Array<{
+      kind: string | null;
+      charges: number;
+      cooldownUntil?: number;
+    }>;
     [k: string]: unknown;
   };
 }
@@ -472,14 +477,21 @@ export interface WorldState {
     /** Reef Race v2 — latest authoritative effective speed multiplier. */
     speedMod?: number;
     /**
-     * Reef Race v2 mechanics — surf-carve mini-turbo charge 0..1 (HUD meter),
-     * carried on keyframes so the 1 Hz keyframe doesn't blank the meter.
+     * @deprecated Reef Race drift was retired; retained for old-wire tolerance.
      */
     miniTurboCharge?: number;
-    /** Reef Race v2 mechanics — mini-turbo tier reached (0|1|2). */
+    /** @deprecated Reef Race drift was retired; retained for old-wire tolerance. */
     miniTurboLevel?: 0 | 1 | 2;
     /** Reef Race v2 mechanics — any positive boost active (kart trail/FX). */
     boosting?: boolean;
+    /** Reef Race Round 16 — true during the server-owned wipeout freeze. */
+    wipedOut?: boolean;
+    /** Reef Race v2 — public held-item slots for keyframe self-healing. */
+    inventory?: Array<{
+      kind: string | null;
+      charges: number;
+      cooldownUntil?: number;
+    }>;
   }>;
   powerUps: Array<{
     spawnId: string;
@@ -742,11 +754,22 @@ export type ServerFrame =
       padId: string;
     }
   | {
+      type: 'event.wall_slam';
+      avatarId: string;
+      position: Vec2;
+      /** Outward impact speed divided by REEF_MAX_SPEED. */
+      power: number;
+    }
+  | {
+      type: 'event.wipeout';
+      avatarId: string;
+      position: Vec2;
+      /** Deterministic sim-clock time when the authoritative respawn occurs. */
+      respawnAtMs: number;
+    }
+  | {
       /**
-       * Reef Race v2 mechanics — a sustained surf-carve discharged into a
-       * mini-turbo. `level` is the tier reached (1 = small, 2 = big). Fired on
-       * release for self, rivals, and bots. Client plays a spark/whoosh FX.
-       * Old clients ignore it (switch default → no-op).
+       * @deprecated Reef Race drift was retired; retained for old-wire tolerance.
        */
       type: 'event.mini_turbo_fire';
       avatarId: string;

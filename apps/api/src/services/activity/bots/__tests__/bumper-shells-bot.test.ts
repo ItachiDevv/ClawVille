@@ -46,10 +46,11 @@ function makeView(self: { x: number; y: number; inventory?: BotRoomView['bodies'
       ...opponents.map((o) => makeBody(o.avatarId, o.x, o.y, o.alive ?? true)),
     ],
     arenaRadius: 500,
-    now: 1000,
-    // matchStartedAt: 0 ⇒ matchAge = 1000ms, well past the 2.5s opening
-    // grace, so existing test expectations (chase nearest, edge avoid,
-    // power-up usage) all run in the post-grace branch as before.
+    now: 10_000,
+    // matchStartedAt: 0 ⇒ matchAge = 10s, past BOT_OPENING_GRACE_MS (2.5s),
+    // so test expectations (chase nearest, edge avoid, power-up usage) run
+    // in the post-grace branch. (now: 1000 was INSIDE grace — bots cruised
+    // to center with actionBits 0 and all three hunt assertions read zeros.)
     matchStartedAt: 0,
   };
 }

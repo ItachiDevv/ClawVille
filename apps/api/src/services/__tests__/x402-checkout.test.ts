@@ -243,11 +243,19 @@ const claimSettlement = async (
 ): Promise<realReceipts.ClaimX402SettlementResult> => {
   if (!intercept) return REAL_claimSettlement(input, tx);
   const existing = receiptOwners.get(input.txSignature);
+  const toRow = (src: realReceipts.ClaimX402SettlementInput) => ({
+    ...src,
+    createdAt: new Date(),
+    grossUsdcAtomic: src.grossUsdcAtomic ?? null,
+    platformFeeUsdcAtomic: src.platformFeeUsdcAtomic ?? null,
+    treasuryFeeUsdcAtomic: src.treasuryFeeUsdcAtomic ?? null,
+    netUsdcAtomic: src.netUsdcAtomic ?? null,
+  });
   if (!existing) {
     receiptOwners.set(input.txSignature, input);
-    return { kind: 'claimed', receipt: { ...input, createdAt: new Date() } };
+    return { kind: 'claimed', receipt: toRow(input) };
   }
-  const receipt = { ...existing, createdAt: new Date() };
+  const receipt = toRow(existing);
   return realReceipts.receiptMatchesOwner(receipt, input)
     ? { kind: 'same_owner', receipt }
     : { kind: 'foreign_owner', receipt };

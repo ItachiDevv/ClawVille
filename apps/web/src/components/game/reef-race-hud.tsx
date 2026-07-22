@@ -18,12 +18,6 @@
  *   - <ProgressBar> replaces <LapCounter> (top-left). Linear river layout
  *     has no laps; we show the local avatar's `entity.progress` (0..1 fraction
  *     of spline arclength) as "RACE 47%".
- *   - <ReefRaceDriftSparks /> is HIDDEN — drift mechanic retired in v2 (see
- *     `.claude/plans/reef-race-v2.md` "Drift Mechanic — RETIRED"). The
- *     sparks component remains in the tree under the OLD path so the live
- *     ellipse sim keeps its UX while the spline sim rolls out behind a flag.
- *     DELETE the sparks import + component entirely once the flag is removed
- *     post-Phase 1 graduation.
  *   - <WaitAtFinishOverlay> is rendered once the local avatar crosses the
  *     finish line. Server emits `event.crossed_finish` (single racer) and
  *     `event.finish_wait_started` (per-match countdown). Both are wired in
@@ -33,7 +27,7 @@
  *     so it disappears the moment the results modal arrives.
  *   - <PowerUpBar> is unchanged — power-ups are Phase 1 carry-over.
  *
- * The chip strip in <PowerUpBar> already says "SHIFT · JUMP" — no change here.
+ * The chip strip in <PowerUpBar> documents Space/Shift jump and Q item.
  */
 
 import { useEffect, useRef, useState, useMemo } from 'react';
@@ -51,12 +45,16 @@ import { TOTAL_LAPS } from '@/lib/three/activities/reef-race/reef-race-config';
 import ActivityResultsModal from './activity-results-modal';
 import ReefRaceInstructions from './reef-race-instructions';
 import { RoundCountdown } from './activity';
-import ReefRaceDriftSparks   from './reef-race-drift-sparks';
 import ReefRaceDraftBadge    from './reef-race-draft-badge';
 import ReefRaceEventToasts   from './reef-race-event-toasts';
 import ReefRaceBuildSummary  from './reef-race-build-summary';
 import ReefRaceStreakCounter from './reef-race-streak-counter';
-import ReefRaceMiniTurboMeter from './reef-race-miniturbo-meter';
+import {
+  isReefRaceTurboBubbleActive,
+  useReefRaceSurgeSnapshot,
+} from '@/lib/three/activities/reef-race/reef-race-speed-surge';
+import type { ReefRaceEntity } from '@/lib/three/activities/reef-race/reef-race-types';
+import { useIsMobile } from '@/hooks/use-is-mobile';
 
 // ─── v2 spline-sim feature flag ──────────────────────────────────────────────
 //
@@ -74,6 +72,7 @@ import ReefRaceMiniTurboMeter from './reef-race-miniturbo-meter';
 // and revert to lap-counter-only HUD.
 // Reference: .claude/plans/reef-race-v2.md
 const USE_SPLINE = process.env.NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true';
+const WIPEOUT_DURATION_MS = 3_200;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -127,14 +126,166 @@ function LapCounter({ selfAvatarId }: { selfAvatarId: string | null }) {
   );
 }
 
-/**
- * v2 — horizontal arclength progress bar. Replaces <LapCounter> when the
- * spline sim is enabled. Reads `entity.progress` (0..1 fraction of the
- * river spline arclength) emitted on every snapshot.delta tick.
- *
- * Sits in the same top-left slot the lap counter used (200×14 wu wide /
- * tall) so the surrounding HUD column doesn't reflow when the flag flips.
- */
+function ReefRaceSpeedometer({ selfAvatarId }: { selfAvatarId: string | null }) {
+  const entity = useActivityStore((state) =>
+    selfAvatarId
+      ? state.entities.get(selfAvatarId) as ReefRaceEntity | undefined
+      : undefined,
+  );
+  const surge = useReefRaceSurgeSnapshot();
+  const rawSpeed = entity ? Math.hypot(entity.vx, entity.vy) : 0;
+  const smoothedSpeedRef = useRef(0);
+  const smoothingInitializedRef = useRef(false);
+  const smoothedAvatarIdRef = useRef<string | null>(null);
+  const [smoothedSpeed, setSmoothedSpeed] = useState(0);
+
+  useEffect(() => {
+    if (!entity) {
+      smoothingInitializedRef.current = false;
+      smoothedAvatarIdRef.current = selfAvatarId;
+      smoothedSpeedRef.current = 0;
+      setSmoothedSpeed(0);
+      return;
+    }
+
+    if (
+      !smoothingInitializedRef.current ||
+      smoothedAvatarIdRef.current !== selfAvatarId
+    ) {
+      smoothingInitializedRef.current = true;
+      smoothedAvatarIdRef.current = selfAvatarId;
+      smoothedSpeedRef.current = rawSpeed;
+    } else {
+      // The 15Hz wire arrives in visible steps. This EWMA keeps the readout
+      // stable while retaining a clear, fast response to an actual boost.
+      smoothedSpeedRef.current += (rawSpeed - smoothedSpeedRef.current) * 0.24;
+    }
+    setSmoothedSpeed(Math.round(smoothedSpeedRef.current));
+  }, [entity, rawSpeed, selfAvatarId]);
+
+  const turboActive = isReefRaceTurboBubbleActive(performance.now());
+  const kineticActive = Boolean(
+    entity?.boosting ||
+    (entity?.speedMod ?? 1) > 1.001 ||
+    turboActive,
+  );
+  const bandColor = turboActive
+    ? '#ffe45e'
+    : surge.source === 'boost-pad'
+      ? '#55eeff'
+      : surge.color;
+
+  return (
+    <div
+      style={{
+        minWidth: 108,
+        padding: '8px 13px',
+        borderRadius: 8,
+        border: `1px solid ${kineticActive ? bandColor : '#00e5ff44'}`,
+        background: kineticActive
+          ? `linear-gradient(110deg, ${bandColor}33, rgba(0,0,0,.76) 72%)`
+          : 'rgba(0, 0, 0, 0.65)',
+        boxShadow: kineticActive ? `0 0 20px ${bandColor}55` : 'none',
+        transform: kineticActive ? 'scale(1.07)' : 'scale(1)',
+        transformOrigin: 'left bottom',
+        transition: 'transform 180ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease',
+      }}
+      aria-label={`Speed ${smoothedSpeed}${kineticActive ? ', surge active' : ''}`}
+    >
+      <div style={{ fontSize: 9, letterSpacing: '0.18em', color: kineticActive ? bandColor : '#7df9ff99' }}>
+        SPEED
+      </div>
+      <div
+        style={{
+          fontSize: 26,
+          lineHeight: 1,
+          fontWeight: 850,
+          color: kineticActive ? bandColor : '#ffffff',
+          fontVariantNumeric: 'tabular-nums',
+          transition: 'color 160ms ease',
+        }}
+      >
+        {smoothedSpeed}
+      </div>
+    </div>
+  );
+}
+
+/** Server-authoritative wipeout vignette and respawn countdown. */
+function ReefRaceWipeoutOverlay({ selfAvatarId }: { selfAvatarId: string | null }) {
+  const wipedOut = useActivityStore((state) =>
+    selfAvatarId
+      ? (state.entities.get(selfAvatarId) as ReefRaceEntity | undefined)?.wipedOut === true
+      : false,
+  );
+  const wipeoutEvent = useActivityStore((state) => state.lastWipeoutEvent);
+  const serverClockOffsetMs = useActivityStore((state) => state.serverClockOffsetMs);
+  const [remainingSeconds, setRemainingSeconds] = useState(0);
+
+  useEffect(() => {
+    if (!wipedOut) {
+      setRemainingSeconds(0);
+      return;
+    }
+    const selfEvent = wipeoutEvent?.avatarId === selfAvatarId ? wipeoutEvent : null;
+    const deadline = selfEvent
+      ? serverClockOffsetMs != null
+        ? selfEvent.respawnAtMs + serverClockOffsetMs
+        : selfEvent.at + WIPEOUT_DURATION_MS
+      : Date.now() + WIPEOUT_DURATION_MS;
+    const tick = () => {
+      setRemainingSeconds(Math.max(0, Math.ceil((deadline - Date.now()) / 1000)));
+    };
+    tick();
+    const id = window.setInterval(tick, 100);
+    return () => window.clearInterval(id);
+  }, [selfAvatarId, serverClockOffsetMs, wipedOut, wipeoutEvent]);
+
+  if (!wipedOut) return null;
+
+  return (
+    <div
+      aria-live="polite"
+      aria-label={`Wiped out. Respawning in ${remainingSeconds} seconds.`}
+      style={{
+        position: 'absolute',
+        inset: 0,
+        // Above the sibling HUD tiles (item dock renders later in DOM order):
+        // the vignette dims the whole HUD during a wipeout and the countdown
+        // pill must not hide behind the bottom-center item dock.
+        zIndex: 20,
+        pointerEvents: 'none',
+        background:
+          'radial-gradient(circle at center, transparent 22%, rgba(4,6,12,.42) 64%, rgba(0,0,0,.88) 100%)',
+      }}
+    >
+      <div
+        style={{
+          position: 'absolute',
+          left: '50%',
+          // Clear of the bottom-center item dock (~25% of viewport height).
+          bottom: '31%',
+          transform: 'translateX(-50%)',
+          padding: '8px 14px',
+          borderRadius: 999,
+          border: '1px solid #ff6b6b88',
+          background: 'rgba(0,0,0,.68)',
+          color: '#ffd1d1',
+          fontSize: 12,
+          fontWeight: 800,
+          letterSpacing: '0.12em',
+          textTransform: 'uppercase',
+          fontVariantNumeric: 'tabular-nums',
+          boxShadow: '0 0 20px rgba(255,107,107,.25)',
+        }}
+      >
+        respawning… {remainingSeconds}
+      </div>
+    </div>
+  );
+}
+
+/** v2 horizontal arclength progress bar, kept for the legacy linear layout. */
 function ProgressBar({ selfAvatarId }: { selfAvatarId: string | null }) {
   const progress = useActivityStore((s) => {
     if (!selfAvatarId) return 0;
@@ -352,10 +503,12 @@ function PowerUpSlotCard({
   slot,
   useKey,
   slotIndex,
+  consumedSignal,
 }: {
   slot: { kind: string; charges: number; cooldownUntil?: number } | null;
   useKey: string;
   slotIndex: number;
+  consumedSignal?: { kind: string; seq: number } | null;
 }) {
   // The inventory mutation written by self event.power_up_collected identifies
   // the exact filled slot. Charge gains flash too, not just empty → filled.
@@ -372,7 +525,11 @@ function PowerUpSlotCard({
     const prev = prevKindRef.current;
     const charges = slot?.charges ?? 0;
 
-    const gainedItem = !!cur && (!prev || cur !== prev || charges > prevChargesRef.current);
+    // A non-empty kind swap is slot-1 promotion, not a new pickup. Treat it as
+    // consumption of the previous slot-0 item and never flash the promoted
+    // queued item as newly collected.
+    const gainedItem =
+      !!cur && (!prev || (cur === prev && charges > prevChargesRef.current));
     if (gainedItem) {
       setPickupFlash(true);
       const t = window.setTimeout(() => setPickupFlash(false), 600);
@@ -382,19 +539,20 @@ function PowerUpSlotCard({
       prevChargesRef.current = charges;
       return () => window.clearTimeout(t);
     }
-    // filled → empty = use (or wipeout consume — close enough for HUD)
-    if (prev && !cur) {
-      const meta = getPowerUpMeta(prev);
-      if (meta.effectMs > 0) {
-        setActiveEffect({ kind: prev, until: performance.now() + meta.effectMs });
-      }
-      prevKindRef.current = null;
-      prevChargesRef.current = 0;
-      return;
-    }
     prevKindRef.current = cur;
     prevChargesRef.current = charges;
   }, [slot?.charges, slot?.kind]);
+
+  useEffect(() => {
+    if (!consumedSignal) return;
+    const meta = getPowerUpMeta(consumedSignal.kind);
+    if (meta.effectMs > 0) {
+      setActiveEffect({
+        kind: consumedSignal.kind,
+        until: performance.now() + meta.effectMs,
+      });
+    }
+  }, [consumedSignal]);
 
   // Tick the active-effect timer at 30 Hz so the countdown bar animates.
   const [, force] = useState(0);
@@ -542,6 +700,47 @@ function PowerUpSlotCard({
 
 function PowerUpBar({ selfAvatarId: _selfAvatarId }: { selfAvatarId: string | null }) {
   const inventory = useActivityStore((s) => s.powerUpInventory);
+  const previousInventoryRef = useRef<
+    Array<{ kind: string | null; charges: number }>
+  >([]);
+  const consumedSeqRef = useRef(0);
+  const [consumedSignal, setConsumedSignal] = useState<{
+    kind: string;
+    seq: number;
+  } | null>(null);
+
+  useEffect(() => {
+    const previous = previousInventoryRef.current;
+    previousInventoryRef.current = inventory.map((slot) => ({
+      kind: slot.kind,
+      charges: slot.charges,
+    }));
+    const beforeCharges = new Map<string, number>();
+    const afterCharges = new Map<string, number>();
+    for (const slot of previous) {
+      if (slot.kind) {
+        beforeCharges.set(
+          slot.kind,
+          (beforeCharges.get(slot.kind) ?? 0) + slot.charges,
+        );
+      }
+    }
+    for (const slot of inventory) {
+      if (slot.kind) {
+        afterCharges.set(
+          slot.kind,
+          (afterCharges.get(slot.kind) ?? 0) + slot.charges,
+        );
+      }
+    }
+    for (const [kind, charges] of beforeCharges) {
+      if ((afterCharges.get(kind) ?? 0) < charges) {
+        consumedSeqRef.current += 1;
+        setConsumedSignal({ kind, seq: consumedSeqRef.current });
+        break;
+      }
+    }
+  }, [inventory]);
   // Pad to REEF_MAX_POWER_UP_SLOTS (= 2) so empty slots stay visible — the
   // whole point of this HUD is "you can SEE you have nothing yet" instead of
   // wondering whether your pickup landed.
@@ -549,7 +748,7 @@ function PowerUpBar({ selfAvatarId: _selfAvatarId }: { selfAvatarId: string | nu
     inventory[0] ?? null,
     inventory[1] ?? null,
   ];
-  const useKeys = ['SPACE', 'Q'];
+  const useKeys = ['Q', 'NEXT'];
 
   return (
     <>
@@ -569,14 +768,15 @@ function PowerUpBar({ selfAvatarId: _selfAvatarId }: { selfAvatarId: string | nu
       >
         <div style={{ display: 'flex', gap: 14 }}>
           {slots.map((slot, i) => (
-            <PowerUpSlotCard key={i} slot={slot} useKey={useKeys[i]} slotIndex={i} />
+            <PowerUpSlotCard
+              key={i}
+              slot={slot}
+              useKey={useKeys[i]}
+              slotIndex={i}
+              consumedSignal={i === 0 ? consumedSignal : null}
+            />
           ))}
         </div>
-        {/* Controls hint strip — Mario-Kart-feel parity. Shift = JUMP in v2.
-            Live ellipse sim still consumes the same bit as DRIFT, but the
-            Shift binding doesn't change between sims — only the chip label
-            and the server-side semantic do. See
-            `.claude/plans/reef-race-v2.md` "Jump Mechanic — NEW". */}
         <div
           style={{
             display: 'flex',
@@ -588,11 +788,11 @@ function PowerUpBar({ selfAvatarId: _selfAvatarId }: { selfAvatarId: string | nu
             paddingTop: 2,
           }}
         >
-          <span><b style={{ color: '#ffd24a' }}>SHIFT</b> · JUMP</span>
+          <span><b style={{ color: '#ffd24a' }}>SPACE / SHIFT</b> · JUMP</span>
           <span style={{ color: '#ffffff22' }}>·</span>
           <span><b style={{ color: '#ffffff99' }}>S</b> · BRAKE</span>
           <span style={{ color: '#ffffff22' }}>·</span>
-          <span><b style={{ color: '#ffffff99' }}>SPACE/Q</b> · USE ITEM</span>
+          <span><b style={{ color: '#ffffff99' }}>Q</b> · USE ITEM</span>
         </div>
       </div>
     </>
@@ -930,6 +1130,7 @@ export default function ReefRaceHud({
   roomId,
 }: ReefRaceHudProps) {
   const selfAvatarId  = useActivityStore((s) => s.selfAvatarId);
+  const isMobile = useIsMobile();
   const matchPhase = useActivityStore((s) => s.matchPhase);
   const countdownSecondsRemaining = useActivityStore(
     (s) => s.countdownSecondsRemaining,
@@ -991,6 +1192,7 @@ export default function ReefRaceHud({
   const baseStyle: React.CSSProperties = {
     position: 'absolute',
     inset: 0,
+    zIndex: 10,
     pointerEvents: 'none',
     fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
     color: '#ffffff',
@@ -1025,26 +1227,25 @@ export default function ReefRaceHud({
         <ReefRaceBuildSummary />
       </div>
 
+      {/* Desktop bottom meter; touch layouts lift it above both 220px joystick zones. */}
+      <div
+        style={{
+          position: 'absolute',
+          left: isMobile ? 12 : 20,
+          bottom: isMobile ? 232 : 24,
+        }}
+      >
+        <ReefRaceSpeedometer selfAvatarId={selfAvatarId} />
+      </div>
+
       {/* Top-center: Draft (slipstream) badge — Phase 2 */}
       <ReefRaceDraftBadge />
 
       {/* Center: Apex verdict + hazard hit + ribbon boost toasts — Phase 2 */}
       <ReefRaceEventToasts />
+      <ReefRaceWipeoutOverlay selfAvatarId={selfAvatarId} />
 
-      {/* Bottom-center: Drift charge sparks (above PowerUpBar).
-          TODO(reef-race-v2): DELETE <ReefRaceDriftSparks /> + its import +
-          the entire `apps/web/src/components/game/reef-race-drift-sparks.tsx`
-          file once `NEXT_PUBLIC_REEF_RACE_USE_SPLINE` graduates from gated
-          to default-on — drift mechanic is replaced by JUMP in v2 and the
-          sparks bar becomes dead UI. Tracked in `.claude/plans/reef-race-v2.md`
-          "Drift Mechanic — RETIRED". Live ellipse sim still drives sparks
-          while the flag is off. */}
-      {!USE_SPLINE && <ReefRaceDriftSparks />}
-
-      {/* Bottom-center: mini-turbo meter (self-only, hidden until the server
-          sends charge data — see reef-race-miniturbo-meter.tsx) stacked
-          directly above the power-up bar, both centered together so neither
-          hardcodes a `bottom` offset that could drift out of sync. */}
+      {/* Bottom-center: queued items. */}
       <div
         style={{
           position: 'absolute',
@@ -1057,7 +1258,6 @@ export default function ReefRaceHud({
           gap: 10,
         }}
       >
-        <ReefRaceMiniTurboMeter />
         <PowerUpBar selfAvatarId={selfAvatarId} />
       </div>
 

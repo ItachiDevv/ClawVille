@@ -119,6 +119,31 @@ export interface PowerUpSlot {
   cooldownUntil?: number;
 }
 
+function normalizePowerUpInventory(
+  slots: readonly {
+    kind: string | null;
+    charges: number;
+    cooldownUntil?: number;
+  }[],
+): PowerUpSlot[] {
+  const inventory: PowerUpSlot[] = [];
+  for (const slot of slots) {
+    if (!slot.kind || slot.charges <= 0) continue;
+    inventory.push({
+      kind: slot.kind,
+      charges: slot.charges,
+      cooldownUntil: slot.cooldownUntil,
+    });
+  }
+  return inventory;
+}
+
+function bankPowerUp(inventory: readonly PowerUpSlot[], kind: string): PowerUpSlot[] {
+  const next = inventory.map((slot) => ({ ...slot }));
+  if (next.length < 2) next.push({ kind, charges: 1 });
+  return next;
+}
+
 // ─── Match-end winners (mirrors event.match_ended.winners) ──────────────────
 
 export interface MatchWinner {
@@ -254,13 +279,22 @@ export interface ActivityState {
    * the HUD toast filters to self-only. null until the first pad hit.
    */
   lastBoostPadEvent: { avatarId: string; padId: string; at: number } | null;
-  /**
-   * v2 mechanics — last `event.mini_turbo_fire` received (any avatar, not
-   * just self). Same fan-out pattern as `lastRampLaunchEvent`/
-   * `lastBoostPadEvent`: any visible rider gets a burst, self additionally
-   * gets screen shake + a tiered HUD toast. null until the first release.
-   */
-  lastMiniTurboFireEvent: { avatarId: string; level: 1 | 2; at: number } | null;
+  /** Last Reef Race countdown launch verdict (self-filtered by consumers). */
+  lastLaunchEvent: { avatarId: string; kind: 'boost' | 'stall'; at: number } | null;
+  /** Last self Reef Race wall-slam event. */
+  lastWallSlamEvent: {
+    avatarId: string;
+    position: { x: number; y: number };
+    power: number;
+    at: number;
+  } | null;
+  /** Last self Reef Race wipeout start. */
+  lastWipeoutEvent: {
+    avatarId: string;
+    position: { x: number; y: number };
+    respawnAtMs: number;
+    at: number;
+  } | null;
 
   // ── Reef Race Phase 3 — self avatar's racing class + level (HUD chip) ─────
   /**
@@ -468,15 +502,9 @@ function applyEntityDelta(
       ...(typeof c.progress === 'number' ? { progress: c.progress } : {}),
       ...(typeof c.lap === 'number' ? { lap: c.lap } : {}),
       ...(typeof c.totalLaps === 'number' ? { totalLaps: c.totalLaps } : {}),
-      // NEW — boost-pad/mini-turbo mechanics. Forwarded for ALL avatars
-      // (not just self) so any visible rider's board could show boost FX
-      // later, and so the self-only HUD meter can read
-      // `entities.get(selfAvatarId)` like every other HUD tile does.
+      // Boost state is forwarded for all avatars so visible riders can show FX.
       ...(typeof c.boosting === 'boolean' ? { boosting: c.boosting } : {}),
-      ...(typeof c.miniTurboCharge === 'number' ? { miniTurboCharge: c.miniTurboCharge } : {}),
-      ...((c.miniTurboLevel === 0 || c.miniTurboLevel === 1 || c.miniTurboLevel === 2)
-        ? { miniTurboLevel: c.miniTurboLevel }
-        : {}),
+      ...(typeof c.wipedOut === 'boolean' ? { wipedOut: c.wipedOut } : {}),
     });
     return;
   }
@@ -503,10 +531,7 @@ function applyEntityDelta(
     ...(typeof c.lap === 'number' ? { lap: c.lap } : {}),
     ...(typeof c.totalLaps === 'number' ? { totalLaps: c.totalLaps } : {}),
     ...(typeof c.boosting === 'boolean' ? { boosting: c.boosting } : {}),
-    ...(typeof c.miniTurboCharge === 'number' ? { miniTurboCharge: c.miniTurboCharge } : {}),
-    ...((c.miniTurboLevel === 0 || c.miniTurboLevel === 1 || c.miniTurboLevel === 2)
-      ? { miniTurboLevel: c.miniTurboLevel }
-      : {}),
+    ...(typeof c.wipedOut === 'boolean' ? { wipedOut: c.wipedOut } : {}),
   });
 }
 
@@ -535,14 +560,7 @@ function hydrateFromWorld(world: WorldState, snapshotAtMs: number | undefined): 
       ...(typeof e.height === 'number' ? { height: e.height } : {}),
       ...(typeof e.speedMod === 'number' ? { speedMod: e.speedMod } : {}),
       ...(typeof e.boosting === 'boolean' ? { boosting: e.boosting } : {}),
-      ...(typeof e.miniTurboCharge === 'number'
-        ? { miniTurboCharge: e.miniTurboCharge }
-        : {}),
-      ...(e.miniTurboLevel === 0 ||
-      e.miniTurboLevel === 1 ||
-      e.miniTurboLevel === 2
-        ? { miniTurboLevel: e.miniTurboLevel }
-        : {}),
+      ...(typeof e.wipedOut === 'boolean' ? { wipedOut: e.wipedOut } : {}),
     });
   }
   const pickups = new Map<string, BumperPickup>();
@@ -600,7 +618,9 @@ function emptyState(): Pick<
   | 'lastHazardHitAt'
   | 'lastRampLaunchEvent'
   | 'lastBoostPadEvent'
-  | 'lastMiniTurboFireEvent'
+  | 'lastLaunchEvent'
+  | 'lastWallSlamEvent'
+  | 'lastWipeoutEvent'
   | 'selfRacingClass'
   | 'selfLevel'
   | 'selfStreak'
@@ -645,7 +665,9 @@ function emptyState(): Pick<
     lastHazardHitAt: 0,
     lastRampLaunchEvent: null,
     lastBoostPadEvent: null,
-    lastMiniTurboFireEvent: null,
+    lastLaunchEvent: null,
+    lastWallSlamEvent: null,
+    lastWipeoutEvent: null,
     // Phase 3 — Reef Race self-avatar build summary (populated on snapshot.init)
     selfRacingClass: null,
     selfLevel: 1,
@@ -744,6 +766,9 @@ export const useActivityStore = create<ActivityState>()(
           // (S5 wire format). Falls back to (null, 1) so non-Reef rooms
           // and missing profiles render the chip as neutral / hidden.
           const selfAvatarId = state.selfAvatarId;
+          const selfEntityInventory = selfAvatarId
+            ? frame.world.entities.find((entity) => entity.avatarId === selfAvatarId)?.inventory
+            : undefined;
           const profileMap = frame.room.reefRacingProfiles;
           const myProfile =
             selfAvatarId && profileMap ? profileMap[selfAvatarId] : undefined;
@@ -791,6 +816,9 @@ export const useActivityStore = create<ActivityState>()(
             errorBanner: null,
             selfRacingClass: myProfile?.class ?? null,
             selfLevel: myProfile?.level ?? 1,
+            ...(selfEntityInventory
+              ? { powerUpInventory: normalizePowerUpInventory(selfEntityInventory) }
+              : {}),
             reefRace: nextReef,
             reefParticipantMeta: participantMeta,
             // v2 — clear finish-line state on a fresh room hydration so a
@@ -827,9 +855,15 @@ export const useActivityStore = create<ActivityState>()(
           // positional change. `applyEntityDelta` has no selfAvatarId access.
           let nextStreak: number = state.selfStreak;
           let nextBestStreak: number = state.selfBestStreakThisMatch;
+          let nextPowerUpInventory = state.powerUpInventory;
+          let receivedSelfInventory = false;
           for (const d of frame.entities) {
             applyEntityDelta(entities, d, snapshotAtMs);
             if (state.selfAvatarId && d.avatarId === state.selfAvatarId) {
+              if (d.changed.inventory) {
+                nextPowerUpInventory = normalizePowerUpInventory(d.changed.inventory);
+                receivedSelfInventory = true;
+              }
               if (typeof d.changed.driftSparks === 'number') {
                 nextDriftSparks = d.changed.driftSparks as 0 | 1 | 2 | 3;
               }
@@ -846,8 +880,14 @@ export const useActivityStore = create<ActivityState>()(
           const pickups = new Map(state.pickups);
           for (const p of frame.powerUps) {
             if (p.collectorAvatarId) {
-              // Collected — drop from world map.
               pickups.delete(p.spawnId);
+              if (
+                !receivedSelfInventory &&
+                p.collectorAvatarId === state.selfAvatarId &&
+                typeof p.kind === 'string'
+              ) {
+                nextPowerUpInventory = bankPowerUp(nextPowerUpInventory, p.kind);
+              }
             } else if (p.position) {
               pickups.set(p.spawnId, {
                 spawnId: p.spawnId,
@@ -859,13 +899,8 @@ export const useActivityStore = create<ActivityState>()(
             // PowerUpDelta.inventory targets the SELF — server only sends
             // the local avatar's inventory (or omits when unchanged).
             if (p.inventory && state.selfAvatarId) {
-              set({
-                powerUpInventory: p.inventory.map((slot) => ({
-                  kind: slot.kind,
-                  charges: slot.charges,
-                  cooldownUntil: slot.cooldownUntil,
-                })),
-              });
+              nextPowerUpInventory = normalizePowerUpInventory(p.inventory);
+              receivedSelfInventory = true;
             }
           }
 
@@ -910,6 +945,7 @@ export const useActivityStore = create<ActivityState>()(
             driftSparks: nextDriftSparks,
             selfStreak: nextStreak,
             selfBestStreakThisMatch: nextBestStreak,
+            powerUpInventory: nextPowerUpInventory,
           });
           break;
         }
@@ -948,12 +984,19 @@ export const useActivityStore = create<ActivityState>()(
             });
             keyframeEntities = injected;
           }
+          const selfEntityInventory = state.selfAvatarId
+            ? frame.world.entities.find((entity) => entity.avatarId === state.selfAvatarId)
+                ?.inventory
+            : undefined;
           set({
             entities: keyframeEntities,
             pickups: hydrated.pickups,
             scores: merged,
             alive: hydrated.alive,
             total: Math.max(state.total, hydrated.entities.size),
+            ...(selfEntityInventory
+              ? { powerUpInventory: normalizePowerUpInventory(selfEntityInventory) }
+              : {}),
           });
           break;
         }
@@ -1119,15 +1162,10 @@ export const useActivityStore = create<ActivityState>()(
             frame.collectorAvatarId === state.selfAvatarId &&
             typeof frame.kind === 'string'
           ) {
-            const next = [...state.powerUpInventory];
-            // Find first empty slot (kind === null) or last slot as fallback.
-            const slot = next.findIndex((s) => s.kind === null);
-            if (slot >= 0) {
-              next[slot] = { kind: frame.kind, charges: 1 };
-              set({ pickups, powerUpInventory: next });
-            } else {
-              set({ pickups });
-            }
+            set({
+              pickups,
+              powerUpInventory: bankPowerUp(state.powerUpInventory, frame.kind),
+            });
           } else {
             set({ pickups });
           }
@@ -1193,11 +1231,37 @@ export const useActivityStore = create<ActivityState>()(
           break;
         }
 
-        // v2 mechanics — mini-turbo release. Same fan-out pattern.
-        case 'event.mini_turbo_fire': {
-          set({ lastMiniTurboFireEvent: { avatarId: frame.avatarId, level: frame.level, at: Date.now() } });
+        case 'event.wall_slam': {
+          if (state.selfAvatarId && frame.avatarId === state.selfAvatarId) {
+            set({
+              lastWallSlamEvent: {
+                avatarId: frame.avatarId,
+                position: frame.position,
+                power: frame.power,
+                at: Date.now(),
+              },
+            });
+          }
           break;
         }
+
+        case 'event.wipeout': {
+          if (state.selfAvatarId && frame.avatarId === state.selfAvatarId) {
+            set({
+              lastWipeoutEvent: {
+                avatarId: frame.avatarId,
+                position: frame.position,
+                respawnAtMs: frame.respawnAtMs,
+                at: Date.now(),
+              },
+            });
+          }
+          break;
+        }
+
+        // Retired wire variant retained in the shared union for old-server tolerance.
+        case 'event.mini_turbo_fire':
+          break;
 
         // Reef Race-only event — recorded into the reefRace.laps slice.
         // Bumper Shells sessions never receive this frame type.
@@ -1258,9 +1322,16 @@ export const useActivityStore = create<ActivityState>()(
           break;
 
         // Reef Race Phase 1 — per-avatar launch verdict broadcast at LIVE.
-        // Phase 1 launch glow ring is countdown-driven (local computation
-        // from room.countdownStartedAt), so this is a no-op here today.
+        // Phase 1 launch glow ring remains countdown-driven. Retaining the
+        // verdict edge lets local presentation distinguish boost from stall.
         case 'event.launch':
+          set({
+            lastLaunchEvent: {
+              avatarId: frame.avatarId,
+              kind: frame.kind,
+              at: Date.now(),
+            },
+          });
           break;
 
         // Reef Race Phase 4 — streak milestone glow trigger. The per-tick

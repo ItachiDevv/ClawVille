@@ -47,6 +47,8 @@ const {
   REEF_FORWARD_DRAG,
   REEF_LATERAL_GRIP,
   ACTION_BIT_POWERUP_0,
+  ACTION_BIT_POWERUP_1,
+  ACTION_BIT_DRIFT_HOLD,
   BOOST_PAD_KICK,
   REEF_POWERUP_RESPAWN_MS,
   buildSplineBoostPads,
@@ -157,6 +159,7 @@ describe('parabolic closest-sample refinement', () => {
   });
 });
 
+
 describe('ReefRaceSplineSim — race mechanics (v7)', () => {
   beforeEach(() => reefRaceSplineSim.__resetForTest());
 
@@ -252,17 +255,107 @@ describe('ReefRaceSplineSim — race mechanics (v7)', () => {
 
   // ── Item fixes ──────────────────────────────────────────────────────────────
 
+  it('ignores retired action bit 4 without changing simulation behavior', () => {
+    reefRaceSplineSim.startRoom('r-bit4-control', 'reef-race', [A], {
+      startedAt: 1_000_000,
+      seed: 13,
+    });
+    reefRaceSplineSim.startRoom('r-bit4-retired', 'reef-race', [A], {
+      startedAt: 1_000_000,
+      seed: 13,
+    });
+    const control = reefRaceSplineSim.__getState('r-bit4-control')!.bodies.get(A)!;
+    const retired = reefRaceSplineSim.__getState('r-bit4-retired')!.bodies.get(A)!;
+
+    reefRaceSplineSim.applyInput('r-bit4-control', A, 1, DT, input(1, 0.4, 0.9, 0));
+    reefRaceSplineSim.applyInput(
+      'r-bit4-retired',
+      A,
+      1,
+      DT,
+      input(1, 0.4, 0.9, ACTION_BIT_DRIFT_HOLD),
+    );
+    reefRaceSplineSim.__tickOnceForTest('r-bit4-control');
+    reefRaceSplineSim.__tickOnceForTest('r-bit4-retired');
+
+    expect({
+      x: retired.x,
+      z: retired.z,
+      vx: retired.vx,
+      vz: retired.vz,
+      rot: retired.rot,
+      heightOffset: retired.heightOffset,
+      speedMod: retired.speedMod,
+      boosts: [...retired.activeBoosts],
+    }).toEqual({
+      x: control.x,
+      z: control.z,
+      vx: control.vx,
+      vz: control.vz,
+      rot: control.rot,
+      heightOffset: control.heightOffset,
+      speedMod: control.speedMod,
+      boosts: [...control.activeBoosts],
+    });
+  });
+
+  describe('authoritative inventory wire state', () => {
+    it('includes every body inventory in keyframe entities', () => {
+      const frames: any[] = [];
+      reefRaceSplineSim.setBroadcastFn((_id, frame) => frames.push(frame));
+      reefRaceSplineSim.startRoom('r-inventory-keyframe', 'reef-race', [A]);
+      const state = reefRaceSplineSim.__getState('r-inventory-keyframe')!;
+      state.bodies.get(A)!.inventory[0] = {
+        kind: 'rr-turbo-bubble',
+        charges: 1,
+        cooldownUntil: 0,
+      };
+
+      (reefRaceSplineSim as any).broadcastKeyframe(state);
+
+      const frame = frames.at(-1);
+      expect(frame.type).toBe('snapshot.keyframe');
+      expect(frame.world.entities[0].inventory).toEqual([
+        { kind: 'rr-turbo-bubble', charges: 1, cooldownUntil: 0 },
+        { kind: null, charges: 0, cooldownUntil: 0 },
+      ]);
+    });
+
+    it('emits inventory in entity deltas only when slot kind or charges change', () => {
+      const frames: any[] = [];
+      reefRaceSplineSim.setBroadcastFn((_id, frame) => frames.push(frame));
+      reefRaceSplineSim.startRoom('r-inventory-delta', 'reef-race', [A]);
+      const state = reefRaceSplineSim.__getState('r-inventory-delta')!;
+      const body = state.bodies.get(A)!;
+      (reefRaceSplineSim as any).broadcastKeyframe(state);
+      frames.length = 0;
+
+      body.inventory[0] = { kind: 'rr-turbo-bubble', charges: 1, cooldownUntil: 0 };
+      (reefRaceSplineSim as any).broadcastDelta(state);
+      const changed = frames.at(-1).entities.find((entity: any) => entity.avatarId === A);
+      expect(changed.changed.inventory).toEqual(body.inventory);
+
+      frames.length = 0;
+      body.inventory[0].cooldownUntil = 99_999;
+      (reefRaceSplineSim as any).broadcastDelta(state);
+      const cooldownOnly = frames.at(-1).entities.find((entity: any) => entity.avatarId === A);
+      expect(cooldownOnly?.changed.inventory).toBeUndefined();
+
+      frames.length = 0;
+      body.inventory[0].charges = 0;
+      (reefRaceSplineSim as any).broadcastDelta(state);
+      const chargeChanged = frames.at(-1).entities.find((entity: any) => entity.avatarId === A);
+      expect(chargeChanged.changed.inventory).toEqual(body.inventory);
+    });
+  });
+
   describe('pickup collection reach', () => {
-    function arrangePass(roomId: string, bodyLateralOffset: number) {
-      reefRaceSplineSim.setBroadcastFn(() => {});
+    function arrangePass(roomId: string, centerDistance: number, events: any[] = []) {
+      reefRaceSplineSim.setBroadcastFn((_id, frame) => events.push(frame));
       reefRaceSplineSim.startRoom(roomId, 'reef-race', [A]);
       const state = reefRaceSplineSim.__getState(roomId)!;
       const body = state.bodies.get(A)!;
       const pickup = state.pickups[0]!;
-      const pickupT = 0.5 / 8;
-      const center = state.spline.centerlineAt(pickupT);
-      const tangent = state.spline.tangentAt(pickupT);
-      const normal = state.spline.normalAt(pickupT);
 
       for (const candidate of state.pickups) {
         candidate.active = false;
@@ -270,24 +363,22 @@ describe('ReefRaceSplineSim — race mechanics (v7)', () => {
       }
       pickup.active = true;
       pickup.collectedAt = null;
+      pickup.collectorAvatarId = null;
       pickup.respawnAt = 0;
 
-      // One authority tick carries the kart through the box's longitudinal
-      // plane. The spawned box itself remains 40wu off the centerline.
-      body.x = center.x + normal.x * bodyLateralOffset - tangent.x * 30;
-      body.z = center.z + normal.z * bodyLateralOffset - tangent.z * 30;
-      body.vx = tangent.x * 900;
-      body.vz = tangent.z * 900;
-      body.rot = Math.atan2(tangent.x, tangent.z);
+      body.x = pickup.position.x + centerDistance;
+      body.z = pickup.position.z;
+      body.vx = 0;
+      body.vz = 0;
       body.heightOffset = 0;
       body.airborneTicks = 0;
 
-      reefRaceSplineSim.__tickOnceForTest(roomId);
-      return { body, pickup };
+      (reefRaceSplineSim as any).resolvePickups(state, state.simTimeMs);
+      return { state, body, pickup, events };
     }
 
-    it('collects a box 40wu off a centerline pass and starts its respawn timer', () => {
-      const { body, pickup } = arrangePass('r-pickup-centerline', 0);
+    it('collects at 141wu center distance and starts its respawn timer', () => {
+      const { body, pickup } = arrangePass('r-pickup-inside', 141);
 
       expect(body.inventory[0].kind).not.toBeNull();
       expect(body.inventory[0].charges).toBe(1);
@@ -298,13 +389,150 @@ describe('ReefRaceSplineSim — race mechanics (v7)', () => {
       );
     });
 
-    it('does not collect that box from a 150wu lateral racing line', () => {
-      const { body, pickup } = arrangePass('r-pickup-far', 150);
+    it('does not collect at 143wu center distance', () => {
+      const { body, pickup } = arrangePass('r-pickup-outside', 143);
 
       expect(body.inventory.every((slot) => slot.kind === null)).toBe(true);
       expect(pickup.active).toBe(true);
       expect(pickup.collectedAt).toBeNull();
       expect(pickup.respawnAt).toBe(0);
+    });
+
+    it('announces the collector in the inactive pickup delta', () => {
+      const frames: any[] = [];
+      reefRaceSplineSim.setBroadcastFn((_id, frame) => frames.push(frame));
+      reefRaceSplineSim.startRoom('r-pickup-delta', 'reef-race', [A]);
+      const state = reefRaceSplineSim.__getState('r-pickup-delta')!;
+      (reefRaceSplineSim as any).broadcastKeyframe(state);
+      frames.length = 0;
+
+      const pickup = state.pickups[0]!;
+      const body = state.bodies.get(A)!;
+      body.x = pickup.position.x;
+      body.z = pickup.position.z;
+      (reefRaceSplineSim as any).resolvePickups(state, state.simTimeMs);
+      (reefRaceSplineSim as any).broadcastDelta(state);
+
+      const delta = frames.find((frame) => frame.type === 'snapshot.delta');
+      expect(delta.powerUps).toContainEqual({
+        spawnId: pickup.spawnId,
+        kind: pickup.kind,
+        collectorAvatarId: A,
+      });
+    });
+  });
+
+  describe('queued item input contract', () => {
+    function collectPickup(roomId: string, pickupIndex: number) {
+      const state = reefRaceSplineSim.__getState(roomId)!;
+      const body = state.bodies.get(A)!;
+      const pickup = state.pickups[pickupIndex]!;
+
+      for (const candidate of state.pickups) {
+        candidate.active = false;
+        candidate.respawnAt = Number.MAX_SAFE_INTEGER;
+      }
+      pickup.active = true;
+      pickup.collectedAt = null;
+      pickup.respawnAt = 0;
+      body.x = pickup.position.x;
+      body.z = pickup.position.z;
+      body.vx = 0;
+      body.vz = 0;
+      body.heightOffset = 0;
+      body.airborneTicks = 0;
+
+      reefRaceSplineSim.__tickOnceForTest(roomId);
+      expect(pickup.active).toBe(false);
+      return body;
+    }
+
+    it('collects one item and consumes slot 0 on a bit-0 press', () => {
+      reefRaceSplineSim.setBroadcastFn(() => {});
+      reefRaceSplineSim.startRoom('r-item-one', 'reef-race', [A]);
+      const body = collectPickup('r-item-one', 0);
+
+      expect(body.inventory[0].kind).not.toBeNull();
+      expect(body.inventory[1].kind).toBeNull();
+
+      reefRaceSplineSim.applyInput(
+        'r-item-one',
+        A,
+        1,
+        DT,
+        input(0, 0, 1, ACTION_BIT_POWERUP_0),
+      );
+      reefRaceSplineSim.__tickOnceForTest('r-item-one');
+
+      expect(body.inventory[0].kind).toBeNull();
+      expect(body.inventory[1].kind).toBeNull();
+    });
+
+    it('promotes slot 1 so two bit-0 presses consume both items in order', () => {
+      reefRaceSplineSim.setBroadcastFn(() => {});
+      reefRaceSplineSim.startRoom('r-item-two', 'reef-race', [A]);
+      const body = collectPickup('r-item-two', 0);
+      const firstKind = body.inventory[0].kind;
+      collectPickup('r-item-two', 1);
+      const secondKind = body.inventory[1].kind;
+
+      expect(firstKind).not.toBeNull();
+      expect(secondKind).not.toBeNull();
+
+      reefRaceSplineSim.applyInput(
+        'r-item-two',
+        A,
+        1,
+        DT,
+        input(0, 0, 1, ACTION_BIT_POWERUP_0),
+      );
+      reefRaceSplineSim.__tickOnceForTest('r-item-two');
+
+      expect(body.inventory[0].kind).toBe(secondKind);
+      expect(body.inventory[1].kind).toBeNull();
+
+      // The last bit-0 frame remains latched in intent state between network
+      // inputs. A second authority tick with no fresh seq must NOT consume the
+      // promoted item.
+      reefRaceSplineSim.__tickOnceForTest('r-item-two');
+      expect(body.inventory[0].kind).toBe(secondKind);
+      expect(body.inventory[0].charges).toBe(1);
+      expect(body.inventory[1].kind).toBeNull();
+
+      // Release between one-shot presses, then use the promoted item.
+      reefRaceSplineSim.applyInput('r-item-two', A, 2, DT, input());
+      reefRaceSplineSim.__tickOnceForTest('r-item-two');
+      reefRaceSplineSim.applyInput(
+        'r-item-two',
+        A,
+        3,
+        DT,
+        input(0, 0, 1, ACTION_BIT_POWERUP_0),
+      );
+      reefRaceSplineSim.__tickOnceForTest('r-item-two');
+
+      expect(body.inventory[0].kind).toBeNull();
+      expect(body.inventory[1].kind).toBeNull();
+    });
+
+    it('ignores reserved bit 1 without consuming or promoting inventory', () => {
+      reefRaceSplineSim.setBroadcastFn(() => {});
+      reefRaceSplineSim.startRoom('r-item-reserved', 'reef-race', [A]);
+      const body = collectPickup('r-item-reserved', 0);
+      const heldKind = body.inventory[0].kind;
+
+      reefRaceSplineSim.applyInput(
+        'r-item-reserved',
+        A,
+        1,
+        DT,
+        input(0, 0, 1, ACTION_BIT_POWERUP_1),
+      );
+      reefRaceSplineSim.__tickOnceForTest('r-item-reserved');
+
+      expect(body.inventory[0].kind).toBe(heldKind);
+      expect(body.inventory[0].charges).toBe(1);
+      expect(body.inventory[1].kind).toBeNull();
     });
   });
 

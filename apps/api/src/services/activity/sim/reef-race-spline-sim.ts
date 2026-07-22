@@ -25,9 +25,8 @@
  *   - Protocol position: { x: body.x, y: body.z }  (legacy y = scene Z)
  *   - body.rot = Math.atan2(tangent.x, tangent.z)  (Three.js Y-rotation, XZ)
  *
- * Drift mechanic is RETIRED. ACTION_BIT_DRIFT (bit 2) is REUSED as
- * ACTION_BIT_JUMP — same wire bit, new semantic. Jump state machine replaces
- * the drift state machine in every tick step.
+ * Spline-v2 wire controls: bit 0 = queued-item use, bit 1 = reserved, bit 2 =
+ * jump, bit 3 = launch, bit 4 = retired and ignored.
  *
  * v2-specific additions to each body vs v1 ellipse:
  *   heightOffset  : number   — metres above track surface (0 = on ground)
@@ -40,7 +39,7 @@
  *   - Apex zones and ribbons (track-geometry-specific to the ellipse)
  *   - Off-track reset (spline corridor wall clamp replaces it)
  *   - Lap counter + checkpoint AABB system (progress replaces)
- *   - Drift charge sparks and drift-boost (drift retired for jump)
+ *   - Oval apex/ribbon drift variant
  *   - Ghost frame capture (TODO Phase 2)
  *   - Streak counter (TODO Phase 2)
  */
@@ -78,7 +77,7 @@ import {
   LAUNCH_BOOST_DURATION_MS,
   LAUNCH_STALL_DURATION_MS,
   LAUNCH_STALL_THRUST_CAP,
-  ACTION_BIT_DRIFT,        // reused as ACTION_BIT_JUMP — same wire bit
+  ACTION_BIT_JUMP,
   REEF_KINEMATIC_TOLERANCE,
   KINEMATIC_BOOST_CAP,
   NEGATIVE_KINETIC_FLOOR,
@@ -106,7 +105,6 @@ import {
   type SplineRampPatch,
   REEF_AIRBORNE_STEER_MULT,
   ACTION_BIT_POWERUP_0,
-  ACTION_BIT_POWERUP_1,
   // v2 surf-carving kinematics (2026-06-01)
   REEF_TURN_RATE,
   REEF_TURN_SPEED_FALLOFF,
@@ -117,17 +115,6 @@ import {
   type SplineBoostPad,
   BOOST_PAD_BOOST_MULT,
   BOOST_PAD_DURATION_MS,
-  // v2 mechanics — mini-turbo (surf-carve whip)
-  MINI_TURBO_MIN_TURN_PER_TICK,
-  MINI_TURBO_MIN_SPEED,
-  MINI_TURBO_TIER1_MS,
-  MINI_TURBO_TIER2_MS,
-  MINI_TURBO_MAX_CHARGE_MS,
-  MINI_TURBO_TIER1_MULT,
-  MINI_TURBO_TIER2_MULT,
-  MINI_TURBO_TIER1_DURATION_MS,
-  MINI_TURBO_TIER2_DURATION_MS,
-  MINI_TURBO_COOLDOWN_MS,
   // v2 mechanics — item fixes (ink-slick rival slow, whirlpool rival knock)
   INK_SLICK_RADIUS,
   WHIRLPOOL_RADIUS,
@@ -150,9 +137,6 @@ import type { PowerUpInventorySlot } from '../anti-cheat/reef-race';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-/** Same wire bit as ACTION_BIT_DRIFT, new semantic for v2. */
-const ACTION_BIT_JUMP = ACTION_BIT_DRIFT;
-
 /** Sim tick rate inherited from config. */
 const REEF_SIM_HZ = REEF_TICK_HZ;
 const REEF_TICK_MS = 1000 / REEF_SIM_HZ;
@@ -167,6 +151,9 @@ const REEF_TICKS_PER_KEYFRAME = REEF_SIM_HZ;
  * before calling endRound. Gives trailing racers a window to finish.
  */
 const REEF_FINISH_WAIT_MS = 30_000;
+const BOT_STUCK_WINDOW_MS = 4_000;
+const BOT_STUCK_MIN_PROGRESS = 0.002;
+const BOT_RECOVERY_SPEED = REEF_MAX_SPEED * 0.12;
 
 /** Wall tangential friction after clamp. */
 const WALL_TANGENT_FRICTION = 0.98;
@@ -197,6 +184,15 @@ const WALL_MAX_CORRECTION_WU = 120;
  * stopping dead — paired with WALL_TANGENT_FRICTION on the tangential part.
  */
 const WALL_OUTWARD_SCRUB = 0.55;
+const WALL_SLAM_THRESHOLD = REEF_MAX_SPEED * 0.28;
+const WALL_WIPEOUT_THRESHOLD = REEF_MAX_SPEED * 0.62;
+const WALL_SLAM_BOUNCE = 0.45;
+const WALL_SLAM_SLOW_MULT = 0.60;
+const WALL_SLAM_SLOW_MS = 1_200;
+const WALL_SLAM_COOLDOWN_MS = 1_500;
+const WALL_WIPEOUT_MS = 3_200;
+const WALL_WIPEOUT_DAMPING = 0.75;
+const WALL_RESPAWN_SPEED = REEF_MAX_SPEED * 0.10;
 
 /**
  * Cap on a single body's per-tick kart-vs-kart positional push (wu). Spreads a
@@ -240,7 +236,6 @@ interface SplineBodyIntent {
  *   - vx, vz instead of vx, vy
  *   - heightOffset / vyAxis / airborneTicks — vertical axis (v2 new)
  *   - progress / prevProgress — arclength fraction 0..1 (replaces lap/nextCheckpoint)
- *   - NO drift fields
  */
 interface SplineBody {
   avatarId: string;
@@ -301,6 +296,10 @@ interface SplineBody {
   alive: boolean;
   dnf: boolean;
   forfeited: boolean;
+  /** Sim-clock expiry, or null when the body is racing normally. */
+  wipeoutUntil: number | null;
+  /** Sim-clock edge-trigger guard for tier-1 wall slams. */
+  wallSlamCooldownUntil: number;
 
   // ── Input intent ─────────────────────────────────────────────────────────
   intent: SplineBodyIntent;
@@ -327,21 +326,6 @@ interface SplineBody {
    */
   pendingPowerUpSlots: number[];
 
-  // ── Mini-turbo (surf-carve whip, v2 mechanics) ───────────────────────────
-  /** Accumulated sustained-carve time (ms). Charges while carving hard in one
-   *  direction; discharges (fires) on release/flip. */
-  miniTurboChargeMs: number;
-  /** Tier the charge has reached (0 = none, 1, 2). Snapshot HUD reads this. */
-  miniTurboLevel: 0 | 1 | 2;
-  /** Sign of the current carve direction (+1 / -1 / 0). A flip resets charge. */
-  miniTurboCarveSign: number;
-  /**
-   * Sim-time (ms) until which charging is SUPPRESSED after a mini-turbo fires
-   * (anti-farm — blocks the rhythmic flick-carve reseed from producing
-   * continuous boost). 0 = not on cooldown.
-   */
-  miniTurboCooldownUntil: number;
-
   // ── Bot flag ─────────────────────────────────────────────────────────────
   isBot: boolean;
 }
@@ -364,12 +348,11 @@ interface SplineBodySnap {
   finishedAt: number | null;
   dnf: boolean;
   placement: number | null;
-  /** Mini-turbo charge normalized 0..1 (against tier-2 full charge). */
-  miniTurboCharge: number;
-  /** Mini-turbo tier reached so far (0|1|2). */
-  miniTurboLevel: 0 | 1 | 2;
-  /** True while any positive boost is active (pad/mini-turbo/launch/slipstream). */
+  inventory: PowerUpInventorySlot[];
+  /** True while any positive boost is active (pad/launch/slipstream). */
   boosting: boolean;
+  /** Always carried on the wire so false clears immediately after respawn. */
+  wipedOut: boolean;
 }
 
 interface SplinePickup {
@@ -378,6 +361,7 @@ interface SplinePickup {
   kind: ReefPowerUpKind;
   active: boolean;
   collectedAt: number | null;
+  collectorAvatarId: string | null;
   respawnAt: number;
 }
 
@@ -390,7 +374,14 @@ interface SplineSnapshot {
     x: number;
     z: number;
     active: boolean;
+    collectorAvatarId: string | null;
   }>;
+}
+
+interface BotProgressWatch {
+  lastProgress: number;
+  forwardAdvance: number;
+  lastAdvanceAt: number;
 }
 
 interface SplineRoomState {
@@ -438,6 +429,8 @@ interface SplineRoomState {
 
   botControllers: Map<string, BotController>;
   botSeqs: Map<string, number>;
+  /** Seam-safe progress windows used to recover wedged live-room bots. */
+  botProgressWatches: Map<string, BotProgressWatch>;
 
   /** SPEC 3 — ramp trigger volumes (built once per room). */
   ramps: SplineRampPatch[];
@@ -464,6 +457,19 @@ function emptyInventory(): PowerUpInventorySlot[] {
     out.push({ kind: null, charges: 0, cooldownUntil: 0 });
   }
   return out;
+}
+
+function inventoriesMatch(
+  a: readonly PowerUpInventorySlot[],
+  b: readonly PowerUpInventorySlot[],
+): boolean {
+  return (
+    a.length === b.length &&
+    a.every((slot, index) => {
+      const other = b[index];
+      return other !== undefined && slot.kind === other.kind && slot.charges === other.charges;
+    })
+  );
 }
 
 function deriveSeedFromRoomId(roomId: string): number {
@@ -598,6 +604,7 @@ export class ReefRaceSplineSim {
       lastPlacementMap: new Map(),
       botControllers,
       botSeqs: new Map(),
+      botProgressWatches: new Map(),
       // SPEC 3 — ramp trigger volumes, built once per room.
       ramps: buildSplineRamps(),
       rampCooldowns: new Map(),
@@ -677,6 +684,8 @@ export class ReefRaceSplineSim {
         alive: true,
         dnf: false,
         forfeited: false,
+        wipeoutUntil: null,
+        wallSlamCooldownUntil: 0,
         intent: {
           dir: null,
           thrust: 0,
@@ -693,10 +702,6 @@ export class ReefRaceSplineSim {
         slipstreamGraceTicksLeft: 0,
         mults,
         pendingPowerUpSlots: [],
-        miniTurboChargeMs: 0,
-        miniTurboLevel: 0,
-        miniTurboCarveSign: 0,
-        miniTurboCooldownUntil: 0,
         isBot: opts?.isBot?.(avatarId) ?? botControllers.has(avatarId),
       });
     });
@@ -723,6 +728,7 @@ export class ReefRaceSplineSim {
         kind: this.rollPowerUpKind(state),
         active: true,
         collectedAt: null,
+        collectorAvatarId: null,
         respawnAt: 0,
       });
     }
@@ -1034,7 +1040,11 @@ export class ReefRaceSplineSim {
     // 2. Wall clamp — project bodies back into the spline corridor.
     for (const body of state.bodies.values()) {
       if (!body.alive || body.forfeited || body.finishedAt !== null) continue;
-      this.enforceSplineWallClamp(state, body);
+      this.enforceSplineWallClamp(
+        state,
+        body,
+        body.wipeoutUntil === null,
+      );
     }
 
     // 3. Expire activeEffects + activeBoosts.
@@ -1083,6 +1093,13 @@ export class ReefRaceSplineSim {
     // 7. Update race progress (arclength fraction) + finish-line detection.
     this.resolveProgress(state, now);
 
+    // 7a. Recover bots that have failed to gain 0.2% of a lap for ~4s.
+    this.recoverStuckBots(state, now);
+
+    // 7b. Respawn after every interaction pass, preserving the exact
+    // centerline/tangent/10%-speed pose through this tick's outbound snapshot.
+    this.respawnExpiredWipeouts(state, now);
+
     // 8. Round-end conditions.
     if (this.shouldEndRound(state, now)) {
       this.applyTimeouts(state, now);
@@ -1116,31 +1133,42 @@ export class ReefRaceSplineSim {
     const prevVx = body.vx;
     const prevVz = body.vz;
 
+    if (body.wipeoutUntil !== null) {
+      // Wipeout owns the body: ignore thrust/steer/actions and bleed momentum
+      // hard while allowing the already-committed motion to settle naturally.
+      body.pendingPowerUpSlots.length = 0;
+      body.speedMod = 0;
+      body.vx *= WALL_WIPEOUT_DAMPING;
+      body.vz *= WALL_WIPEOUT_DAMPING;
+      body.x += body.vx * dt;
+      body.z += body.vz * dt;
+      return;
+    }
+
     const intent = body.intent;
 
     // 1. Consume seq.
-    if (intent.seq > intent.consumedSeq) {
+    const hasFreshIntent = intent.seq > intent.consumedSeq;
+    if (hasFreshIntent) {
       intent.consumedSeq = intent.seq;
     }
 
-    // 2. Power-up actionBits (bits 0 + 1). RECORD the press; resolution is
+    // 2. Queued-item USE (bit 0). RECORD the press; resolution is
     //    DEFERRED to the post-integrate `resolvePowerUpUses` pass so every
     //    rival-hazard read (ink/whirlpool/tide/seeker) sees ONE consistent
     //    post-integrate world (not a mid-integration mix), and shields resolve
     //    before offensive items — order-independent (Codex finding 4a).
     const actionBits = intent.actionBits;
     if (
+      hasFreshIntent &&
       actionBits & ACTION_BIT_POWERUP_0 &&
       !body.pendingPowerUpSlots.includes(0)
     ) {
       body.pendingPowerUpSlots.push(0);
     }
-    if (
-      actionBits & ACTION_BIT_POWERUP_1 &&
-      !body.pendingPowerUpSlots.includes(1)
-    ) {
-      body.pendingPowerUpSlots.push(1);
-    }
+    // Bit 1 is reserved and intentionally ignored.
+
+    const dir = intent.dir; // Vec2 {x,z} or null
 
     // 3. Speed modifier (same four-stage model as ellipse sim).
     const slicked      = body.activeEffects.has('rr-ink-slick');
@@ -1163,26 +1191,22 @@ export class ReefRaceSplineSim {
       const slipAdd = body.activeBoosts.has('slipstream-boost')
         ? SLIPSTREAM_BOOST_MULT
         : 0;
-      // v2 mechanics — boost pad + surf-carve mini-turbo. Both are timed
-      // speedMod additives that DECAY. They fold into the SAME positive stack,
-      // bounded by KINEMATIC_BOOST_CAP, so pad+mini-turbo+launch+slip can never
-      // exceed the 1.85× ceiling (adversary chaining is capped here).
+      // v2 mechanics — boost-pad speed is a timed additive that decays through
+      // the same bounded positive stack as launch, slipstream, and item boosts.
       const padAdd = body.activeBoosts.has('pad-boost')
         ? (body.activeBoosts.get('pad-boost')!.mult ?? 0)
-        : 0;
-      const miniTurboAdd = body.activeBoosts.has('mini-turbo-boost')
-        ? (body.activeBoosts.get('mini-turbo-boost')!.mult ?? 0)
         : 0;
       // rr-turbo-bubble is ADDITIVE into the positive stack (Codex finding 4b).
       // The old `Math.max(speedMod, 1+pickupAdd)` DISCARDED any active negative
       // (a whirlpool-slowed victim on turbo kept full turbo speed). Folding it
       // in additively — and capping the whole stack by KINEMATIC_BOOST_CAP —
-      // makes turbo COMBINE with a slow (turbo +0.35 + whirlpool −0.35 ⇒ 1.0×,
-      // the documented "turbo buys back the hazard" model) while still bounding
-      // the total ≤ 1.85×. v2 has no drift-boost or ribbon-boost (oval-only).
-      const pickupBoostAdd = powerBoosted ? 0.35 : 0; // rr-turbo-bubble
+      // makes turbo COMBINE with a slow (turbo +0.40 + whirlpool −0.35 ⇒ 1.05×)
+      // while still bounding the total ≤ 1.85×. v2 has no drift/ribbon boost.
+      // Pad (+0.45) + turbo (+0.40) exactly fills KINEMATIC_BOOST_CAP (+0.85):
+      // speedMod stays <=1.85x, below REEF_KINEMATIC_TOLERANCE's 2.1x ceiling.
+      const pickupBoostAdd = powerBoosted ? 0.40 : 0; // rr-turbo-bubble
       const positiveKineticStack = Math.min(
-        launchAdd + slipAdd + padAdd + miniTurboAdd + pickupBoostAdd,
+        launchAdd + slipAdd + padAdd + pickupBoostAdd,
         KINEMATIC_BOOST_CAP,
       );
 
@@ -1209,9 +1233,7 @@ export class ReefRaceSplineSim {
 
     // 4. Jump-trigger (heading + velocity integrate happen below via the
     //    shared surf-carving step).
-    const dir = intent.dir;  // Vec2 {x,z} or null
-
-    // v2: jump trigger replaces drift charge. Bit 2 = ACTION_BIT_JUMP.
+    // v2: bit 2 is jump. Retired bit 4 is intentionally ignored.
     const jumpBit = (actionBits & ACTION_BIT_JUMP) !== 0;
     if (jumpBit && body.airborneTicks === 0 && body.heightOffset === 0) {
       body.vyAxis += REEF_JUMP_IMPULSE_MANUAL;
@@ -1245,11 +1267,9 @@ export class ReefRaceSplineSim {
 
     const prevX = body.x;
     const prevZ = body.z;
-    const preRot = body.rot;
-
     const next = integrateSurfStep(
       { x: body.x, z: body.z, vx: body.vx, vz: body.vz, rot: body.rot },
-      { dir: dir ?? null, thrust: effectiveThrust, airborne },
+      { dir, thrust: effectiveThrust, airborne },
       surfParams,
       dt,
     );
@@ -1300,8 +1320,7 @@ export class ReefRaceSplineSim {
     const isPositiveBoostActive =
       body.activeBoosts.has('launch-boost') ||
       body.activeBoosts.has('slipstream-boost') ||
-      body.activeBoosts.has('pad-boost') ||
-      body.activeBoosts.has('mini-turbo-boost');
+      body.activeBoosts.has('pad-boost');
     if (isPositiveBoostActive) {
       const speed = Math.hypot(body.vx, body.vz);
       const hardCap = REEF_MAX_SPEED * 1.85;
@@ -1324,111 +1343,6 @@ export class ReefRaceSplineSim {
       }
     }
 
-    // 10. Mini-turbo (surf-carve whip) — update the charge meter from the
-    //     heading change this tick. integrateSurfStep stays pure; the stateful
-    //     charge lives on the body and is derived here per-tick (fixed 30Hz).
-    this.updateMiniTurbo(state, body, preRot, effectiveThrust, dt, now);
-  }
-
-  // ─── Mini-turbo (surf-carve whip) ──────────────────────────────────────────
-
-  /**
-   * Charge/fire the mini-turbo from a SUSTAINED hard carve. Called once per tick
-   * per body at the END of applyIntentForTick (after the surf integrate) so it
-   * reads the actual heading change this tick.
-   *
-   * Charge builds while the body turns hard (|Δheading| ≥ threshold) in ONE
-   * direction, fast enough, under thrust, and grounded. It DISCHARGES (fires a
-   * short boost) the moment the carve breaks — the player straightens out, eases
-   * off, slows, or flips steer direction (the Mario-Kart "release the drift"
-   * beat, mapped onto surf carving since the drift button is retired for jump).
-   *
-   * Anti-cheat: the fire is a TIMED speedMod additive folded into the same
-   * positive kinetic stack (KINEMATIC_BOOST_CAP) + the 1.85× hard cap, so it
-   * cannot be chained into infinite speed. It never touches integrateSurfStep,
-   * never compounds a per-tick multiplier, and never mutates velocity directly.
-   */
-  private updateMiniTurbo(
-    state: SplineRoomState,
-    body: SplineBody,
-    preRot: number,
-    effectiveThrust: number,
-    dt: number,
-    now: number,
-  ): void {
-    // Signed shortest heading change this tick.
-    const d = body.rot - preRot;
-    const carveTurn = Math.atan2(Math.sin(d), Math.cos(d));
-    const speed = Math.hypot(body.vx, body.vz);
-    const airborne = body.airborneTicks > 0 || body.heightOffset > 0;
-
-    // Anti-farm: no charge builds during the post-fire cooldown (blocks the
-    // flick-carve reseed farm from producing continuous boost).
-    const onCooldown = now < body.miniTurboCooldownUntil;
-
-    const carving =
-      !onCooldown &&
-      !airborne &&
-      Math.abs(carveTurn) >= MINI_TURBO_MIN_TURN_PER_TICK &&
-      speed >= MINI_TURBO_MIN_SPEED &&
-      effectiveThrust > 0;
-
-    if (carving) {
-      const sign = carveTurn > 0 ? 1 : -1;
-      if (body.miniTurboCarveSign !== 0 && sign !== body.miniTurboCarveSign) {
-        // Steer flipped direction mid-charge — that's a counter-carve, not a
-        // sustained hold. Discharge whatever was earned, then start fresh in
-        // the new direction (this tick seeds the new charge).
-        this.releaseMiniTurbo(state, body, now);
-        body.miniTurboChargeMs = 0;
-      }
-      body.miniTurboCarveSign = sign;
-      body.miniTurboChargeMs = Math.min(
-        body.miniTurboChargeMs + dt * 1000,
-        MINI_TURBO_MAX_CHARGE_MS,
-      );
-      body.miniTurboLevel =
-        body.miniTurboChargeMs >= MINI_TURBO_TIER2_MS
-          ? 2
-          : body.miniTurboChargeMs >= MINI_TURBO_TIER1_MS
-            ? 1
-            : 0;
-    } else {
-      // Carve broke → release. releaseMiniTurbo no-ops if nothing was charged.
-      this.releaseMiniTurbo(state, body, now);
-      body.miniTurboChargeMs = 0;
-      body.miniTurboLevel = 0;
-      body.miniTurboCarveSign = 0;
-    }
-  }
-
-  /**
-   * Fire the mini-turbo if the current charge reached at least tier 1. Sets a
-   * timed `mini-turbo-boost` speedMod and broadcasts `event.mini_turbo_fire`.
-   * No-op when the charge never reached tier 1 (level 0).
-   */
-  private releaseMiniTurbo(
-    state: SplineRoomState,
-    body: SplineBody,
-    now: number,
-  ): void {
-    const lvl = body.miniTurboLevel;
-    if (lvl <= 0) return;
-    const mult = lvl === 2 ? MINI_TURBO_TIER2_MULT : MINI_TURBO_TIER1_MULT;
-    const dur =
-      lvl === 2 ? MINI_TURBO_TIER2_DURATION_MS : MINI_TURBO_TIER1_DURATION_MS;
-    // Overwrite (not stack): a fresh release replaces any lingering one so
-    // duration/mult never compound beyond a single tier's values.
-    body.activeBoosts.set('mini-turbo-boost', { expiresAt: now + dur, mult });
-    // Anti-farm cooldown (sim-time): suppress recharging briefly so rhythmic
-    // flick-carving can't hold a continuous boost.
-    body.miniTurboCooldownUntil = now + MINI_TURBO_COOLDOWN_MS;
-    this.broadcastFn(state.roomId, {
-      type: 'event.mini_turbo_fire',
-      avatarId: body.avatarId,
-      level: lvl as 1 | 2,
-    });
-    // Level is reset by the caller after this returns.
   }
 
   // ─── Wall clamp ────────────────────────────────────────────────────────────
@@ -1495,6 +1409,37 @@ export class ReefRaceSplineSim {
     const outwardZ = -inwardZ;
     const vN = body.vx * outwardX + body.vz * outwardZ;
     if (vN > 0) {
+      if (vN >= WALL_WIPEOUT_THRESHOLD) {
+        this.startWipeout(state, body);
+        return;
+      }
+      if (
+        vN >= WALL_SLAM_THRESHOLD &&
+        state.simTimeMs >= body.wallSlamCooldownUntil
+      ) {
+        const vTx = body.vx - vN * outwardX;
+        const vTz = body.vz - vN * outwardZ;
+        body.vx =
+          vTx * WALL_TANGENT_FRICTION - vN * WALL_SLAM_BOUNCE * outwardX;
+        body.vz =
+          vTz * WALL_TANGENT_FRICTION - vN * WALL_SLAM_BOUNCE * outwardZ;
+        const existingSlow = body.activeBoosts.get('hazard-slow');
+        body.activeBoosts.set('hazard-slow', {
+          expiresAt: Math.max(
+            existingSlow?.expiresAt ?? 0,
+            state.simTimeMs + WALL_SLAM_SLOW_MS,
+          ),
+          mult: Math.min(existingSlow?.mult ?? 1, WALL_SLAM_SLOW_MULT),
+        });
+        body.wallSlamCooldownUntil = state.simTimeMs + WALL_SLAM_COOLDOWN_MS;
+        this.broadcastFn(state.roomId, {
+          type: 'event.wall_slam',
+          avatarId: body.avatarId,
+          position: { x: body.x, y: body.z },
+          power: vN / REEF_MAX_SPEED,
+        });
+        return;
+      }
       // Decompose into outward + tangential, scrub each independently.
       const vTx = body.vx - vN * outwardX;
       const vTz = body.vz - vN * outwardZ;
@@ -1528,7 +1473,10 @@ export class ReefRaceSplineSim {
    */
   private resolveProgress(state: SplineRoomState, now: number): void {
     for (const body of state.bodies.values()) {
-      if (!body.alive || body.forfeited || body.finishedAt !== null) continue;
+      if (
+        !body.alive || body.forfeited || body.finishedAt !== null ||
+        body.wipeoutUntil !== null
+      ) continue;
 
       const closest = state.spline.closestPointOnSpline({ x: body.x, z: body.z });
       const total = state.spline.totalArcLength;
@@ -1659,7 +1607,10 @@ export class ReefRaceSplineSim {
   private resolveSlipstream(state: SplineRoomState, now: number): void {
     const bodies: SplineBody[] = [];
     for (const b of state.bodies.values()) {
-      if (b.alive && !b.dnf && b.finishedAt === null && !b.forfeited) {
+      if (
+        b.alive && !b.dnf && b.finishedAt === null && !b.forfeited &&
+        b.wipeoutUntil === null
+      ) {
         bodies.push(b);
       }
     }
@@ -1740,7 +1691,9 @@ export class ReefRaceSplineSim {
 
   private resolveProximity(state: SplineRoomState): void {
     const bodies = Array.from(state.bodies.values()).filter(
-      (b) => b.alive && !b.dnf && b.finishedAt === null,
+      (b) =>
+        b.alive && !b.dnf && b.finishedAt === null &&
+        b.wipeoutUntil === null,
     );
     for (let i = 0; i < bodies.length; i++) {
       for (let j = i + 1; j < bodies.length; j++) {
@@ -1789,7 +1742,10 @@ export class ReefRaceSplineSim {
   private resolveRamps(state: SplineRoomState, now: number): void {
     for (const body of state.bodies.values()) {
       // Skip non-participants and already-airborne bodies.
-      if (!body.alive || body.forfeited || body.finishedAt !== null) continue;
+      if (
+        !body.alive || body.forfeited || body.finishedAt !== null ||
+        body.wipeoutUntil !== null
+      ) continue;
       if (body.airborneTicks !== 0 || body.heightOffset > 0) continue;
 
       // Lazy-init per-body cooldown map.
@@ -1854,7 +1810,10 @@ export class ReefRaceSplineSim {
    */
   private resolveBoostPads(state: SplineRoomState, now: number): void {
     for (const body of state.bodies.values()) {
-      if (!body.alive || body.forfeited || body.finishedAt !== null) continue;
+      if (
+        !body.alive || body.forfeited || body.finishedAt !== null ||
+        body.wipeoutUntil !== null
+      ) continue;
 
       // Floor pads have no vertical reach — an AIRBORNE body passing overhead
       // must NOT trigger them (Codex finding 2b; mirrors the ramp grounded gate).
@@ -1932,7 +1891,10 @@ export class ReefRaceSplineSim {
     for (const pk of state.pickups) {
       if (!pk.active) continue;
       for (const body of state.bodies.values()) {
-        if (!body.alive || body.dnf || body.finishedAt !== null) continue;
+        if (
+          !body.alive || body.dnf || body.finishedAt !== null ||
+          body.wipeoutUntil !== null
+        ) continue;
         const dx = body.x - pk.position.x;
         const dz = body.z - pk.position.z;
         const dist = Math.hypot(dx, dz);
@@ -1950,8 +1912,10 @@ export class ReefRaceSplineSim {
               charges: 1,
               cooldownUntil: 0,
             };
+            pk.kind = finalKind;
             pk.active = false;
             pk.collectedAt = now;
+            pk.collectorAvatarId = body.avatarId;
             pk.respawnAt = now + REEF_POWERUP_RESPAWN_MS;
             this.broadcastFn(state.roomId, {
               type: 'event.power_up_collected',
@@ -1973,6 +1937,7 @@ export class ReefRaceSplineSim {
         pk.spawnId = `${state.roomId.slice(0, 8)}-pk-${state.tick}-${lcgNext(state).toString(36)}`;
         pk.active = true;
         pk.collectedAt = null;
+        pk.collectorAvatarId = null;
         pk.respawnAt = 0;
         this.broadcastFn(state.roomId, {
           type: 'event.power_up_spawned',
@@ -2001,11 +1966,26 @@ export class ReefRaceSplineSim {
   private resolvePowerUpUses(state: SplineRoomState, now: number): void {
     const isSelfBuff = (k: ReefPowerUpKind | null | undefined) =>
       k === 'rr-turbo-bubble' || k === 'rr-bubble-shield';
+    // Promotion is deferred until BOTH phases finish. Promoting inside
+    // consumeSlot would let one pending slot-0 press consume the promoted
+    // slot-1 item again in Phase 2 when the first item was a self-buff.
+    const slotZeroWasOccupied = new Set<string>();
+    for (const body of state.bodies.values()) {
+      if (
+        body.pendingPowerUpSlots.includes(0) &&
+        body.inventory[0]?.kind !== null
+      ) {
+        slotZeroWasOccupied.add(body.avatarId);
+      }
+    }
 
     // Phase 1 — SELF buffs (turbo, shield). A shield used this tick is up BEFORE
     // any offensive item resolves, regardless of body-map order.
     for (const body of state.bodies.values()) {
-      if (!body.alive || body.forfeited || body.finishedAt !== null) continue;
+      if (
+        !body.alive || body.forfeited || body.finishedAt !== null ||
+        body.wipeoutUntil !== null
+      ) continue;
       for (const slot of body.pendingPowerUpSlots) {
         if (isSelfBuff(body.inventory[slot]?.kind as ReefPowerUpKind | null)) {
           this.tryUsePowerUp(state, body, slot, now);
@@ -2038,7 +2018,10 @@ export class ReefRaceSplineSim {
     };
 
     for (const body of state.bodies.values()) {
-      if (!body.alive || body.forfeited || body.finishedAt !== null) {
+      if (
+        !body.alive || body.forfeited || body.finishedAt !== null ||
+        body.wipeoutUntil !== null
+      ) {
         body.pendingPowerUpSlots.length = 0;
         continue;
       }
@@ -2064,6 +2047,14 @@ export class ReefRaceSplineSim {
             break;
         }
         this.consumeSlot(body, slot, def, now);
+      }
+      if (
+        slotZeroWasOccupied.has(body.avatarId) &&
+        body.inventory[0]?.kind === null &&
+        body.inventory[1]?.kind !== null
+      ) {
+        body.inventory[0] = body.inventory[1];
+        body.inventory[1] = { kind: null, charges: 0, cooldownUntil: 0 };
       }
       body.pendingPowerUpSlots.length = 0;
     }
@@ -2144,7 +2135,10 @@ export class ReefRaceSplineSim {
     const radius = 250;
     for (const target of state.bodies.values()) {
       if (target.avatarId === src.avatarId) continue;
-      if (!target.alive || target.dnf || target.finishedAt !== null) continue;
+      if (
+        !target.alive || target.dnf || target.finishedAt !== null ||
+        target.wipeoutUntil !== null
+      ) continue;
       if (target.activeEffects.has('rr-bubble-shield')) continue;
       const dx = target.x - src.x;
       const dz = target.z - src.z;
@@ -2179,7 +2173,10 @@ export class ReefRaceSplineSim {
     const sv = Math.hypot(src.vx, src.vz);
     for (const t of state.bodies.values()) {
       if (t.avatarId === src.avatarId) continue;
-      if (!t.alive || t.dnf || t.finishedAt !== null) continue;
+      if (
+        !t.alive || t.dnf || t.finishedAt !== null ||
+        t.wipeoutUntil !== null
+      ) continue;
       if (t.activeEffects.has('rr-bubble-shield')) continue;
       const dx = t.x - src.x;
       const dz = t.z - src.z;
@@ -2228,7 +2225,10 @@ export class ReefRaceSplineSim {
     const fwdZ = Math.cos(src.rot);
     for (const target of state.bodies.values()) {
       if (target.avatarId === src.avatarId) continue;
-      if (!target.alive || target.dnf || target.finishedAt !== null) continue;
+      if (
+        !target.alive || target.dnf || target.finishedAt !== null ||
+        target.wipeoutUntil !== null
+      ) continue;
       if (target.activeEffects.has('rr-bubble-shield')) continue;
       const dx = target.x - src.x;
       const dz = target.z - src.z;
@@ -2279,7 +2279,10 @@ export class ReefRaceSplineSim {
     const def = getReefPowerUpDef('rr-whirlpool');
     for (const target of state.bodies.values()) {
       if (target.avatarId === src.avatarId) continue;
-      if (!target.alive || target.dnf || target.finishedAt !== null) continue;
+      if (
+        !target.alive || target.dnf || target.finishedAt !== null ||
+        target.wipeoutUntil !== null
+      ) continue;
       if (target.activeEffects.has('rr-bubble-shield')) continue;
       // Vector points FROM the rival TOWARD the whirlpool center (pull inward).
       const dx = src.x - target.x;
@@ -2446,16 +2449,12 @@ export class ReefRaceSplineSim {
         finishedAt: b.finishedAt,
         dnf: b.dnf,
         placement: state.lastPlacementMap.get(b.avatarId) ?? null,
-        miniTurboCharge: quant(
-          Math.min(1, b.miniTurboChargeMs / MINI_TURBO_TIER2_MS),
-          100,
-        ),
-        miniTurboLevel: b.miniTurboLevel,
+        inventory: b.inventory.map((slot) => ({ ...slot })),
         boosting:
           b.activeBoosts.has('launch-boost') ||
           b.activeBoosts.has('slipstream-boost') ||
-          b.activeBoosts.has('pad-boost') ||
-          b.activeBoosts.has('mini-turbo-boost'),
+          b.activeBoosts.has('pad-boost'),
+        wipedOut: b.wipeoutUntil !== null,
       })),
       pickups: state.pickups.map((pk) => ({
         spawnId: pk.spawnId,
@@ -2463,6 +2462,7 @@ export class ReefRaceSplineSim {
         x: quant(pk.position.x, POS_QUANT),
         z: quant(pk.position.z, POS_QUANT),
         active: pk.active,
+        collectorAvatarId: pk.collectorAvatarId,
       })),
     };
   }
@@ -2490,9 +2490,9 @@ export class ReefRaceSplineSim {
       // delta). The delta path already carries them; this keeps keyframes whole.
       height: b.height !== 0 ? b.height : undefined,
       speedMod: b.speedMod,
-      miniTurboCharge: b.miniTurboCharge,
-      miniTurboLevel: b.miniTurboLevel,
       boosting: b.boosting,
+      wipedOut: b.wipedOut,
+      inventory: b.inventory.map((slot) => ({ ...slot })),
     };
   }
 
@@ -2552,15 +2552,19 @@ export class ReefRaceSplineSim {
           p.finishedAt !== b.finishedAt ||
           p.dnf !== b.dnf ||
           p.placement !== b.placement ||
-          p.miniTurboCharge !== b.miniTurboCharge ||
-          p.miniTurboLevel !== b.miniTurboLevel ||
-          p.boosting !== b.boosting
+          !inventoriesMatch(p.inventory, b.inventory) ||
+          p.boosting !== b.boosting ||
+          p.wipedOut !== b.wipedOut
         );
       })
-      .map((b) => ({
-        avatarId: b.avatarId,
-        seq: snap.tick,
-        changed: {
+      .map((b) => {
+        const previousBody = prev?.bodies.find((p) => p.avatarId === b.avatarId);
+        const inventoryChanged =
+          previousBody === undefined || !inventoriesMatch(previousBody.inventory, b.inventory);
+        return {
+          avatarId: b.avatarId,
+          seq: snap.tick,
+          changed: {
           x: b.x,
           y: b.z,      // protocol y = scene Z
           vx: b.vx,
@@ -2584,12 +2588,16 @@ export class ReefRaceSplineSim {
               ? ('finished' as const)
               : ('racing' as const),
           placement: b.placement,
-          // v2 mechanics — mini-turbo meter + boost FX flag for the HUD/render.
-          miniTurboCharge: b.miniTurboCharge,
-          miniTurboLevel: b.miniTurboLevel,
+          // Positive boost flag for the render trail.
           boosting: b.boosting,
-        },
-      }));
+          // Always carry both true and false so respawn clears immediately.
+          wipedOut: b.wipedOut,
+          ...(inventoryChanged
+            ? { inventory: b.inventory.map((slot) => ({ ...slot })) }
+            : {}),
+          },
+        };
+      });
 
     const pickups = snap.pickups
       .filter((p) => {
@@ -2597,11 +2605,19 @@ export class ReefRaceSplineSim {
         const q = prev.pickups.find((pp) => pp.spawnId === p.spawnId);
         return !q || q.active !== p.active;
       })
-      .map((p) => ({
-        spawnId: p.spawnId,
-        kind: p.kind,
-        position: { x: p.x, y: p.z },
-      }));
+      .map((p) =>
+        p.active
+          ? {
+              spawnId: p.spawnId,
+              kind: p.kind,
+              position: { x: p.x, y: p.z },
+            }
+          : {
+              spawnId: p.spawnId,
+              kind: p.kind,
+              collectorAvatarId: p.collectorAvatarId ?? undefined,
+            },
+      );
 
     state.lastSnapshot = snap;
     this.broadcastFn(state.roomId, {
@@ -2674,6 +2690,138 @@ export class ReefRaceSplineSim {
 
   // ─── Bot support ───────────────────────────────────────────────────────────
 
+  private recoverStuckBots(state: SplineRoomState, now: number): void {
+    for (const avatarId of state.botControllers.keys()) {
+      const body = state.bodies.get(avatarId);
+      if (!body || !body.alive || body.forfeited || body.finishedAt !== null) {
+        state.botProgressWatches.delete(avatarId);
+        continue;
+      }
+      if (body.wipeoutUntil !== null) {
+        state.botProgressWatches.delete(avatarId);
+        continue;
+      }
+
+      const watch = state.botProgressWatches.get(avatarId);
+      if (!watch) {
+        state.botProgressWatches.set(avatarId, {
+          lastProgress: body.progress,
+          forwardAdvance: 0,
+          lastAdvanceAt: now,
+        });
+        continue;
+      }
+
+      const rawDelta = body.progress - watch.lastProgress;
+      const signedDelta = rawDelta < -0.5
+        ? rawDelta + 1
+        : rawDelta > 0.5
+          ? rawDelta - 1
+          : rawDelta;
+      watch.lastProgress = body.progress;
+      watch.forwardAdvance += signedDelta;
+
+      if (watch.forwardAdvance >= BOT_STUCK_MIN_PROGRESS) {
+        watch.forwardAdvance = 0;
+        watch.lastAdvanceAt = now;
+        continue;
+      }
+      if (now - watch.lastAdvanceAt < BOT_STUCK_WINDOW_MS) continue;
+
+      // body.progress is arclength-normalized; convert to raw t before sampling.
+      const t = state.spline.tFromArclength(
+        body.progress * state.spline.totalArcLength,
+      );
+      const center = state.spline.centerlineAt(t);
+      const tangent = state.spline.tangentAt(t);
+      body.x = center.x;
+      body.z = center.z;
+      body.rot = Math.atan2(tangent.x, tangent.z);
+      body.vx = tangent.x * BOT_RECOVERY_SPEED;
+      body.vz = tangent.z * BOT_RECOVERY_SPEED;
+      body.heightOffset = 0;
+      body.vyAxis = 0;
+      body.airborneTicks = 0;
+      body.pendingPowerUpSlots.length = 0;
+      body.slipstreamSourceAvatarId = null;
+      body.slipstreamConsecutiveTicks = 0;
+      body.slipstreamGraceTicksLeft = 0;
+      body.activeBoosts.delete('slipstream-boost');
+      body.intent.dir = { x: tangent.x, z: tangent.z };
+      body.intent.thrust = 0.4;
+      body.intent.actionBits = 0;
+      state.boostPadInside.delete(avatarId);
+      state.rampCooldowns.delete(avatarId);
+
+      watch.forwardAdvance = 0;
+      watch.lastAdvanceAt = now;
+    }
+  }
+
+  private startWipeout(
+    state: SplineRoomState,
+    body: SplineBody,
+  ): void {
+    if (body.wipeoutUntil !== null) return;
+    const respawnAtMs = state.simTimeMs + WALL_WIPEOUT_MS;
+    body.wipeoutUntil = respawnAtMs;
+    body.pendingPowerUpSlots.length = 0;
+    body.vx *= WALL_WIPEOUT_DAMPING;
+    body.vz *= WALL_WIPEOUT_DAMPING;
+    body.slipstreamSourceAvatarId = null;
+    body.slipstreamConsecutiveTicks = 0;
+    body.slipstreamGraceTicksLeft = 0;
+    body.activeBoosts.delete('slipstream-boost');
+    this.broadcastFn(state.roomId, {
+      type: 'event.wipeout',
+      avatarId: body.avatarId,
+      position: { x: body.x, y: body.z },
+      respawnAtMs,
+    });
+  }
+
+  private respawnExpiredWipeouts(
+    state: SplineRoomState,
+    now: number,
+  ): void {
+    for (const body of state.bodies.values()) {
+      if (body.wipeoutUntil === null || now < body.wipeoutUntil) continue;
+      const t = state.spline.tFromArclength(
+        body.progress * state.spline.totalArcLength,
+      );
+      const center = state.spline.centerlineAt(t);
+      const tangent = state.spline.tangentAt(t);
+      body.x = center.x;
+      body.z = center.z;
+      body.rot = Math.atan2(tangent.x, tangent.z);
+      body.vx = tangent.x * WALL_RESPAWN_SPEED;
+      body.vz = tangent.z * WALL_RESPAWN_SPEED;
+      body.speedMod = 1;
+      body.heightOffset = 0;
+      body.vyAxis = 0;
+      body.airborneTicks = 0;
+      body.pendingPowerUpSlots.length = 0;
+      body.slipstreamSourceAvatarId = null;
+      body.slipstreamConsecutiveTicks = 0;
+      body.slipstreamGraceTicksLeft = 0;
+      body.activeEffects.delete('rr-ink-slick');
+      body.activeBoosts.delete('hazard-slow');
+      body.activeBoosts.delete('apex-penalty');
+      body.activeBoosts.delete('launch-stall');
+      body.activeBoosts.delete('slipstream-boost');
+      body.activeBoosts.delete('pad-boost');
+      body.intent.dir = { x: tangent.x, z: tangent.z };
+      body.intent.thrust = 0;
+      body.intent.actionBits = 0;
+      body.intent.consumedSeq = body.intent.seq;
+      body.wipeoutUntil = null;
+      body.wallSlamCooldownUntil = 0;
+      state.boostPadInside.delete(body.avatarId);
+      state.rampCooldowns.delete(body.avatarId);
+      state.botProgressWatches.delete(body.avatarId);
+    }
+  }
+
   private runBotControllers(
     state: SplineRoomState,
     dt: number,
@@ -2683,7 +2831,10 @@ export class ReefRaceSplineSim {
     const sharedView = this.buildBotRoomView(state, '');
     for (const [avatarId, ctrl] of state.botControllers) {
       const body = state.bodies.get(avatarId);
-      if (!body || !body.alive || body.forfeited || body.finishedAt !== null) continue;
+      if (
+        !body || !body.alive || body.forfeited || body.finishedAt !== null ||
+        body.wipeoutUntil !== null
+      ) continue;
       sharedView.selfAvatarId = avatarId;
       sharedView.now = now;
       let intent;
@@ -2718,6 +2869,7 @@ export class ReefRaceSplineSim {
       alive: boolean;
       inventory: Array<{ kind: ReefPowerUpKind | null; charges: number; cooldownUntil: number }>;
       lap: number;
+      progress: number;
       nextCheckpoint: number;
       currentPlacement: number | null;
       finishedAt: number | null;
@@ -2735,7 +2887,9 @@ export class ReefRaceSplineSim {
       vx: b.vx,
       vy: b.vz,
       rot: b.rot,
-      alive: b.alive && !b.dnf && b.finishedAt === null,
+      alive:
+        b.alive && !b.dnf && b.finishedAt === null &&
+        b.wipeoutUntil === null,
       inventory: b.inventory.map((slot) => ({
         kind: slot.kind as ReefPowerUpKind | null,
         charges: slot.charges,
@@ -2745,6 +2899,7 @@ export class ReefRaceSplineSim {
       // (12 phantom checkpoints around one loop) for the v1 bot's steering
       // heuristics. `b.progress` is the within-lap fraction 0..1.
       lap: b.lap,
+      progress: b.progress,
       nextCheckpoint: Math.round(b.progress * 12) % 12,
       currentPlacement: placementMap.get(b.avatarId) ?? null,
       finishedAt: b.finishedAt,
@@ -2754,7 +2909,7 @@ export class ReefRaceSplineSim {
       selfAvatarId,
       bodies,
       arenaRadius: Math.round(state.spline.totalArcLength),  // loop arc length as "radius" boundary heuristic (closed-loop)
-      now: Date.now(),
+      now: state.simTimeMs,
       matchStartedAt: state.startedAt,
     };
   }
