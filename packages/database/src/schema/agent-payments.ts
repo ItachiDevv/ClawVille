@@ -58,6 +58,21 @@ export const agentPayments = pgTable(
     reconcileTxSignature: text('reconcile_tx_signature'),
     settlePayer: varchar('settle_payer', { length: 64 }),
     network: varchar('network', { length: 100 }).notNull(),
+    /** Durable facilitator + atomic fee split captured before fulfillment. */
+    facilitator: varchar('facilitator', { length: 32 }),
+    grossUsdcAtomic: numeric('gross_usdc_atomic', {
+      precision: 20,
+      scale: 0,
+    }),
+    platformFeeUsdcAtomic: numeric('platform_fee_usdc_atomic', {
+      precision: 20,
+      scale: 0,
+    }),
+    treasuryFeeUsdcAtomic: numeric('treasury_fee_usdc_atomic', {
+      precision: 20,
+      scale: 0,
+    }),
+    netUsdcAtomic: numeric('net_usdc_atomic', { precision: 20, scale: 0 }),
     earnedVclaw: integer('earned_vclaw').notNull().default(0),
     earnedUsdBasis: numeric('earned_usd_basis', { precision: 20, scale: 6 }),
     earnedLedgerId: uuid('earned_ledger_id').references(() => clawTokenTransactions.id, {
@@ -89,6 +104,23 @@ export const agentPayments = pgTable(
     atomicMatchesCents: check(
       'agent_payments_atomic_matches_cents',
       sql`${t.usdcAtomic} = ${t.usdCents} * 10000`,
+    ),
+    feeConservation: check(
+      'agent_payments_x402_fee_conservation',
+      sql`(
+          ${t.grossUsdcAtomic} IS NULL
+          AND ${t.platformFeeUsdcAtomic} IS NULL
+          AND ${t.treasuryFeeUsdcAtomic} IS NULL
+          AND ${t.netUsdcAtomic} IS NULL
+        ) OR (
+          ${t.grossUsdcAtomic} > 0
+          AND ${t.platformFeeUsdcAtomic} >= 0
+          AND ${t.treasuryFeeUsdcAtomic} >= 0
+          AND ${t.netUsdcAtomic} > 0
+          AND ${t.grossUsdcAtomic} = ${t.netUsdcAtomic}
+            + ${t.platformFeeUsdcAtomic}
+            + ${t.treasuryFeeUsdcAtomic}
+        )`,
     ),
     earnedNonnegative: check('agent_payments_earned_nonnegative', sql`${t.earnedVclaw} >= 0`),
     settledComplete: check(

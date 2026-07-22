@@ -353,6 +353,26 @@ export interface VerifyAndSettleInput {
   expectedPayer?: string;
   /** Test seam only; production callers use the default independent RPC proof. */
   independentVerifier?: IndependentSettlementVerifier;
+  /**
+   * Optional behavior-neutral telemetry seam for callers that must distinguish
+   * provider outage from payment rejection. Callback failures are swallowed.
+   */
+  onFacilitatorError?: (
+    stage: 'verify' | 'settle',
+    error: unknown,
+  ) => void;
+}
+
+function reportFacilitatorError(
+  input: VerifyAndSettleInput,
+  stage: 'verify' | 'settle',
+  error: unknown,
+): void {
+  try {
+    input.onFacilitatorError?.(stage, error);
+  } catch {
+    // Observability must never alter the established never-throw contract.
+  }
 }
 
 export interface IndependentSettlementVerificationInput {
@@ -609,6 +629,7 @@ export async function verifyAndSettle(
     verify = await client.verify(payload, requirements);
   } catch (err) {
     // Facilitator 4xx/5xx or network error during verify. Clean fail — NO settle.
+    reportFacilitatorError(input, 'verify', err);
     console.warn('[x402-payai] verify threw (treated as invalid):', (err as Error).message);
     return failed('facilitator_verify_error');
   }
@@ -639,6 +660,7 @@ export async function verifyAndSettle(
     settle = await client.settle(payload, requirements);
   } catch (err) {
     // Verify passed but settle errored — NOT settled, no signature ⇒ no credit.
+    reportFacilitatorError(input, 'settle', err);
     console.warn('[x402-payai] settle threw (treated as unsettled):', (err as Error).message);
     return failed('facilitator_settle_error', {
       isValid: true,
@@ -788,5 +810,6 @@ export async function settlePartnerPurchase(
     verifyOnly: input.verifyOnly,
     expectedPayer: input.expectedPayer,
     independentVerifier: input.independentVerifier,
+    onFacilitatorError: input.onFacilitatorError,
   });
 }
