@@ -130,6 +130,13 @@ import {
 import { logEventFromContext, logEventFromContextReturningId } from '../services/event-logger';
 import { publishCoveSettlement } from '../services/agent-settlement-publish';
 import {
+  autonomousCoveDailyAdvisoryKey,
+  autonomousCoveDailyCapMessage,
+  autonomousCoveDailyUsageQuery,
+  parseAutonomousCoveDailyUsage,
+  resolveAgentCovePlayDailyWagerVclaw,
+} from '../services/autonomous-cove-wager-cap';
+import {
   serializeSpinResult,
   serializeWildMultiplier,
   serializeWinningLine,
@@ -155,17 +162,7 @@ const IDEMPOTENCY_KEY_MAX_LEN = 64;
 const AUTONOMOUS_COVE_HEADER = 'X-Clawville-Internal-Autonomous-Cove';
 const AUTONOMOUS_COVE_ACTION_HEADER = 'X-Clawville-Internal-Autonomous-Cove-Action';
 const autonomousCoveToken = randomBytes(32).toString('hex');
-const DEFAULT_AGENT_COVE_PLAY_DAILY_WAGER_VCLAW = 1_000;
-
-/** Environment-backed hard ceiling for autonomous cove wagering per avatar/UTC day. */
-export function resolveAgentCovePlayDailyWagerVclaw(): number {
-  const raw = process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW?.trim();
-  if (!raw || !/^\d+$/.test(raw)) return DEFAULT_AGENT_COVE_PLAY_DAILY_WAGER_VCLAW;
-  const parsed = Number(raw);
-  return Number.isSafeInteger(parsed) && parsed >= COVE_SLOTS_MIN_BET
-    ? parsed
-    : DEFAULT_AGENT_COVE_PLAY_DAILY_WAGER_VCLAW;
-}
+export { resolveAgentCovePlayDailyWagerVclaw } from '../services/autonomous-cove-wager-cap';
 
 /** Default + max page size on /session/:id/spins. */
 const SPIN_HISTORY_DEFAULT_LIMIT = 50;
@@ -1209,7 +1206,7 @@ coveSlotsRouter.post('/spin', async (c) => {
       if (autonomousActionId && avatar && !isFreeSpinSpin) {
         await tx.execute(sql`
           SELECT pg_advisory_xact_lock(
-            hashtextextended(${`agent-cove-play-daily:${avatar.id}`}, 0)
+            hashtextextended(${autonomousCoveDailyAdvisoryKey(avatar.id)}, 0)
           )
         `);
         const usageRows = await tx.execute<{ used_vclaw: string }>(
@@ -1643,39 +1640,6 @@ export interface AutonomousCoveSlotsDependencies {
   findOpenSession: (userId: string) => Promise<SlotSession | undefined>;
   readDailyWagerUsed: (avatarId: string) => Promise<number>;
   request: (path: string, init: RequestInit) => Promise<Response>;
-}
-
-function autonomousCoveUtcDayStart(now = new Date()): Date {
-  const dayStart = new Date(now);
-  dayStart.setUTCHours(0, 0, 0, 0);
-  return dayStart;
-}
-
-function autonomousCoveDailyUsageQuery(avatarId: string, now = new Date()) {
-  const dayStart = autonomousCoveUtcDayStart(now);
-  return sql`
-    SELECT COALESCE(SUM(-amount), 0)::text AS used_vclaw
-    FROM claw_token_transactions
-    WHERE avatar_id = ${avatarId}
-      AND amount < 0
-      AND created_at >= ${dayStart.toISOString()}::timestamptz
-      AND metadata ->> 'autonomousCove' = 'true'
-  `;
-}
-
-function parseAutonomousCoveDailyUsage(rows: Array<{ used_vclaw: string }>): number {
-  const usedToday = Number(rows[0]?.used_vclaw ?? '0');
-  if (!Number.isSafeInteger(usedToday) || usedToday < 0) {
-    throw new Error('autonomous cove daily wager usage is outside safe integer range');
-  }
-  return usedToday;
-}
-
-function autonomousCoveDailyCapMessage(usedToday: number, requested: number): string | null {
-  const dailyCap = resolveAgentCovePlayDailyWagerVclaw();
-  return usedToday > dailyCap - requested
-    ? `agent_cove_daily_wager_cap_exceeded: cap=${dailyCap}, used=${usedToday}, requested=${requested}`
-    : null;
 }
 
 async function readAutonomousCoveDailyWagerUsed(avatarId: string): Promise<number> {

@@ -29,6 +29,9 @@ interface SimInternals {
   autonomousCovePlayLastAdmittedAt: Map<string, number>;
   emoteOwnershipQuery: (avatarId: string, animationKey: string) => Promise<boolean>;
   autonomousCoveSlotsPlay: (input: { agentSessionId: string; actionId: string; wager: number }) => Promise<unknown>;
+  autonomousCoveBlackjackPlay: (input: {
+    agentSessionId: string; expectedAgentId: string; expectedAvatarId: string; actionId: string; wager: number;
+  }) => Promise<unknown>;
   autonomousCoveAgentResolve: (sessionId: string) => Promise<{
     agentId: string; userId: string | null; avatarId: string | null; ledgerCapable: boolean;
   } | null>;
@@ -46,6 +49,7 @@ const sim = npcSimulation as unknown as SimInternals;
 const originalCovenantRecord = npcSimulation.covenantRecord;
 const originalEmoteOwnershipQuery = npcSimulation.emoteOwnershipQuery;
 const originalAutonomousCoveSlotsPlay = npcSimulation.autonomousCoveSlotsPlay;
+const originalAutonomousCoveBlackjackPlay = npcSimulation.autonomousCoveBlackjackPlay;
 const originalAutonomousCoveAgentResolve = npcSimulation.autonomousCoveAgentResolve;
 const AVATAR = 'executor-avatar';
 
@@ -119,6 +123,7 @@ afterEach(() => {
   npcSimulation.covenantRecord = originalCovenantRecord;
   npcSimulation.emoteOwnershipQuery = originalEmoteOwnershipQuery;
   npcSimulation.autonomousCoveSlotsPlay = originalAutonomousCoveSlotsPlay;
+  npcSimulation.autonomousCoveBlackjackPlay = originalAutonomousCoveBlackjackPlay;
   npcSimulation.autonomousCoveAgentResolve = originalAutonomousCoveAgentResolve;
 });
 
@@ -210,6 +215,42 @@ describe('in-world executor covenant hooks', () => {
     npcSimulation.dispatchHatcherActions(npc.id, '[ACTION: play_cove_game(game=slots, wager=20)]');
     await flushAutonomousCovePlay();
     expect(attempts).toBe(1);
+  });
+
+  it('settles one blackjack action with the exact live agent/avatar binding', async () => {
+    const cove = MAP_LOCATIONS.find((location) => location.id === 'cove')!;
+    const npc = body(
+      'cove-blackjack-body',
+      cove.positionX + cove.width / 2,
+      cove.positionY + cove.height / 2,
+    );
+    sim.npcs.set(npc.id, npc);
+    sim.agentBotSessions.set('cove-blackjack-session', {
+      config: { agentId: npc.id, mode: 'avatar', avatarId: AVATAR },
+      client: { getProtocol: () => 'hatcher-proxy' },
+    });
+    sim.npcOverrides.set(npc.id, 'cove-blackjack-session');
+    npcSimulation.autonomousCoveAgentResolve = async () => ({
+      agentId: npc.id, userId: 'executor-user', avatarId: AVATAR, ledgerCapable: true,
+    });
+    const calls: Array<{
+      agentSessionId: string; expectedAgentId: string; expectedAvatarId: string; actionId: string; wager: number;
+    }> = [];
+    npcSimulation.autonomousCoveBlackjackPlay = async (input) => { calls.push(input); };
+
+    npcSimulation.dispatchHatcherActions(npc.id, '[ACTION: play_cove_game(game=blackjack, wager=4)]');
+    npcSimulation.dispatchHatcherActions(npc.id, '[ACTION: play_cove_game(game=blackjack, wager=5)]');
+    await flushAutonomousCovePlay();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      agentSessionId: 'cove-blackjack-session',
+      expectedAgentId: npc.id,
+      expectedAvatarId: AVATAR,
+      wager: 5,
+    });
+    expect(calls[0]!.actionId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(npc.intentDescription).toContain('playing blackjack at the cove');
   });
 
   it('broadcasts an owned+equipped emote and serializes its monotonic sequence', async () => {

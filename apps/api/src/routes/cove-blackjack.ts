@@ -100,6 +100,10 @@ import {
   serializeHandResult,
   computeBlackjackRake,
   buildShoe,
+  handTotal,
+  CARDS_PER_SHOE,
+  BLACKJACK_MIN_BET,
+  BLACKJACK_MAX_BET,
   RESHUFFLE_CARD_THRESHOLD,
   BLACKJACK_ENGINE_VERSION,
   type HandScript,
@@ -108,15 +112,26 @@ import {
   type BlackjackActionType,
   type Card,
 } from '../services/blackjack-engine';
+import { chooseBlackjackBasicStrategyAction } from '../services/blackjack-basic-strategy';
 import {
   creditClawTokens,
   debitClawTokens,
   InsufficientTokensError,
 } from '../services/claw-token-ledger';
 import { getHouseTreasuryAvatarId } from '../services/house-treasury-seeder';
-import { logEventFromContext, logEventFromContextReturningId } from '../services/event-logger';
+import {
+  logEventFromContext,
+  logEventFromContextReturningId,
+  logEventReturningId,
+} from '../services/event-logger';
 import { publishCoveSettlement } from '../services/agent-settlement-publish';
 import { recordBlackjackSkillMemory } from '../services/game-skill-memory';
+import {
+  autonomousCoveDailyAdvisoryKey,
+  autonomousCoveDailyCapMessage,
+  autonomousCoveDailyUsageQuery,
+  parseAutonomousCoveDailyUsage,
+} from '../services/autonomous-cove-wager-cap';
 import type { AppContext } from '../types';
 
 export const coveBlackjackRouter = new Hono<AppContext>();
@@ -125,8 +140,7 @@ coveBlackjackRouter.use('*', sessionMiddleware);
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 /** Bet bounds (LOCKED rule): 5–500 CT. Engine only asserts bet > 0n. */
-export const BLACKJACK_MIN_BET = 5;
-export const BLACKJACK_MAX_BET = 500;
+export { BLACKJACK_MIN_BET, BLACKJACK_MAX_BET } from '../services/blackjack-engine';
 
 /** Currency seam — ClawTokens live; SOL/USDC return 501 (later tier). */
 const SUPPORTED_CURRENCIES = ['clawtoken', 'sol', 'usdc'] as const;
@@ -572,6 +586,82 @@ async function reconstructShoeState(
     dealt = stepped.dealtAfter;
   }
   return { remaining, cursor, dealt };
+}
+
+/** Build one complete basic-strategy script using only visible player cards/upcard. */
+export function buildBlackjackBasicStrategyHand(args: {
+  serverSeed: string;
+  clientSeed: string;
+  nonce: number;
+  cursor: number;
+  bet: bigint;
+  dealtBefore: number;
+  remainingShoe?: Card[];
+}): { script: HandScript; result: HandResult } {
+  const run = (script: HandScript) => playHand({ ...args, script });
+  const opening = run({ hands: [['stand']], didSplit: false, tookInsurance: false });
+  if (opening.playerHands[0]?.isBlackjack || opening.dealer.isBlackjack) {
+    const script: HandScript = { hands: [['stand']], didSplit: false, tookInsurance: false };
+    return { script, result: run(script) };
+  }
+
+  const dealerUpcard = opening.dealer.cards[0]!;
+  const openingCards = opening.playerHands[0]!.cards.slice(0, 2);
+  const first = chooseBlackjackBasicStrategyAction(openingCards, dealerUpcard, {
+    canDouble: true,
+    canSplit: true,
+    canSurrender: true,
+  });
+
+  if (first === 'split') {
+    const script: HandScript = { hands: [[], []], didSplit: true, tookInsurance: false };
+    let peek = run(script);
+    const splitAces = peek.playerHands.every((hand) => hand.cards[0]?.rank === 'A');
+    if (splitAces) return { script, result: peek };
+
+    for (let slot = 0; slot < 2; slot++) {
+      let resolved = false;
+      for (let guard = 0; guard < CARDS_PER_SHOE; guard++) {
+        peek = run(script);
+        const cards = peek.playerHands[slot]!.cards;
+        if (handTotal(cards).total > 21) {
+          resolved = true;
+          break;
+        }
+        const actions = script.hands[slot]!;
+        const decision = chooseBlackjackBasicStrategyAction(cards, dealerUpcard, {
+          canDouble: actions.length === 0 && cards.length === 2,
+          canSplit: false,
+          canSurrender: false,
+        });
+        actions.push(decision);
+        if (decision !== 'hit') {
+          resolved = true;
+          break;
+        }
+      }
+      if (!resolved) throw new Error('basic_strategy_failed_to_resolve_split_hand');
+    }
+    return { script, result: run(script) };
+  }
+
+  const script: HandScript = { hands: [[]], didSplit: false, tookInsurance: false };
+  for (let guard = 0; guard < CARDS_PER_SHOE; guard++) {
+    const peek = run(script);
+    const cards = peek.playerHands[0]!.cards;
+    if (handTotal(cards).total > 21) return { script, result: peek };
+    const actions = script.hands[0]!;
+    const decision = actions.length === 0
+      ? first
+      : chooseBlackjackBasicStrategyAction(cards, dealerUpcard, {
+          canDouble: false,
+          canSplit: false,
+          canSurrender: false,
+        });
+    actions.push(decision);
+    if (decision !== 'hit') return { script, result: run(script) };
+  }
+  throw new Error('basic_strategy_failed_to_resolve_hand');
 }
 
 /** The player's recorded script + the persisted insurance flag, as one object. */
@@ -1644,6 +1734,544 @@ class IdempotencyReplayError extends Error {
   }
 }
 
+type BlackjackTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+interface AutonomousBlackjackSettleContext {
+  actionId: string;
+}
+
+/** Shared money/persistence tail for REST and one-shot autonomous settlement. */
+async function settleComputedBlackjackHand(
+  tx: BlackjackTransaction,
+  args: {
+    shoeLock: ShoeLockRow;
+    hand: BlackjackHand;
+    subject: BjSubject;
+    avatar: { id: string; clawTokens: number } | null;
+    result: HandResult;
+    cursorBefore: number;
+    dealtBefore: number;
+    idempotencyKey: string | undefined;
+    autonomous?: AutonomousBlackjackSettleContext;
+  },
+): Promise<{ hand: BlackjackHand; balanceAfter: number }> {
+  const { shoeLock, hand, subject, avatar, result: r, cursorBefore, dealtBefore } = args;
+  const shoeId = shoeLock.id;
+  const handId = hand.id;
+  const handIndex = hand.handIndex;
+
+  if (r.totalPayout > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new HTTPException(500, { message: 'payout_exceeds_supported_range' });
+  }
+  if (r.totalBet > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new HTTPException(400, { message: 'bet_exceeds_supported_range' });
+  }
+
+  const raked = computeBlackjackRake(r);
+  const stakedAmount = BigInt(hand.stakedAmount);
+  const incrementalBet = r.totalBet - stakedAmount;
+  if (incrementalBet < 0n) {
+    throw new HTTPException(500, {
+      message: `blackjack_stake_underflow: totalBet=${r.totalBet} < staked=${stakedAmount}`,
+    });
+  }
+
+  const autonomousMetadata = args.autonomous
+    ? {
+        autonomousCove: true,
+        autonomousGame: 'blackjack',
+        autonomousActionId: args.autonomous.actionId,
+      }
+    : {};
+
+  let balanceAfter: number;
+  if (isLedgerSubject(subject) && avatar) {
+    const balRows = await tx.execute<{ claw_tokens: number }>(
+      sql`SELECT claw_tokens FROM avatars WHERE id = ${avatar.id}`,
+    );
+    balanceAfter = Number(balRows[0]?.claw_tokens ?? avatar.clawTokens);
+
+    const incrementalNumber = Number(incrementalBet);
+    if (incrementalNumber > 0) {
+      try {
+        const debit = await debitClawTokens(
+          {
+            avatarId: avatar.id,
+            amount: incrementalNumber,
+            reason: args.autonomous ? 'cove_blackjack_autonomous_stake' : 'cove_blackjack_stake_delta',
+            source: 'api',
+            metadata: {
+              shoeId,
+              handId,
+              handIndex,
+              kind: args.autonomous ? 'autonomous_full_hand' : 'double_split_delta',
+              ...autonomousMetadata,
+            },
+            actorKind: subject.kind === 'user' ? 'human' : 'agent',
+          },
+          tx,
+        );
+        balanceAfter = debit.balanceAfter;
+      } catch (err) {
+        if (err instanceof InsufficientTokensError) {
+          throw new HTTPException(400, {
+            message: `insufficient_clawtokens_for_hand: need ${incrementalNumber}, have ${err.available}`,
+          });
+        }
+        throw err;
+      }
+    }
+
+    const payoutNumber = Number(raked.rakedPayout);
+    if (payoutNumber > 0) {
+      const credit = await creditClawTokens(
+        {
+          avatarId: avatar.id,
+          amount: payoutNumber,
+          reason: 'cove_blackjack_payout',
+          source: 'api',
+          metadata: { shoeId, handId, handIndex, rake: raked.rake.toString(), ...autonomousMetadata },
+          actorKind: subject.kind === 'user' ? 'human' : 'agent',
+        },
+        tx,
+      );
+      balanceAfter = credit.balanceAfter;
+    }
+
+    const rakeNumber = Number(raked.rake);
+    if (Number.isInteger(rakeNumber) && rakeNumber > 0) {
+      const treasuryId = await getHouseTreasuryAvatarId();
+      if (treasuryId) {
+        await creditClawTokens(
+          {
+            avatarId: treasuryId,
+            amount: rakeNumber,
+            reason: 'house_fee_blackjack_rake',
+            source: 'system',
+            metadata: { shoeId, handId, handIndex, ...autonomousMetadata },
+            actorKind: 'system',
+          },
+          tx,
+        );
+      } else {
+        console.error(
+          `[cove-blackjack] house treasury unavailable — rake ${rakeNumber} CT burned (pre-T0 behavior) for hand ${handId}`,
+        );
+      }
+    }
+  } else {
+    const newTotalBetGuest = BigInt(shoeLock.total_bet) + incrementalBet;
+    const newTotalPayoutGuest = BigInt(shoeLock.total_payout) + raked.rakedPayout;
+    const newDemo = BigInt(shoeLock.starting_balance) + newTotalPayoutGuest - newTotalBetGuest;
+    if (newDemo < 0n) {
+      throw new HTTPException(400, { message: 'insufficient_guest_demo_balance_at_settle' });
+    }
+    balanceAfter = Number(newDemo);
+  }
+
+  const baseSerialized = serializeHandResult(r, { cursorBefore, dealtBefore, nonce: handIndex });
+  const serialized: SerializedHandResult = args.autonomous
+    ? ({ ...baseSerialized, autonomous: true, autonomousActionId: args.autonomous.actionId } as SerializedHandResult)
+    : baseSerialized;
+  let settledHand: BlackjackHand | undefined;
+  try {
+    const updated = await tx
+      .update(blackjackHands)
+      .set({
+        status: 'settled',
+        cursorAfter: r.cursorAfter,
+        dealtAfter: r.dealtAfter,
+        outcomeJson: serialized,
+        payout: raked.rakedPayout.toString(),
+        net: raked.rakedNet.toString(),
+        idempotencyKey: args.idempotencyKey ?? null,
+        settledAt: new Date(),
+      })
+      .where(and(eq(blackjackHands.id, handId), eq(blackjackHands.status, 'in_progress')))
+      .returning();
+    settledHand = updated[0];
+  } catch (err) {
+    const pgCode = (err as { code?: string } | undefined)?.code;
+    if (pgCode === '23505' && args.idempotencyKey) {
+      throw new IdempotencyReplayError(shoeId, args.idempotencyKey);
+    }
+    throw err;
+  }
+  if (!settledHand) {
+    const fresh = await tx.query.blackjackHands.findFirst({ where: eq(blackjackHands.id, handId) });
+    if (fresh?.status === 'settled') return { hand: fresh, balanceAfter };
+    throw new HTTPException(500, { message: 'hand_settle_failed' });
+  }
+
+  await tx.insert(coveGameEvents).values({
+    userId: subject.userId,
+    guestFpHash: subject.guestFpHash,
+    gameType: 'blackjack',
+    sessionId: shoeId,
+    shoeId,
+    betAmount: r.totalBet.toString(),
+    payout: raked.rakedPayout.toString(),
+    outcomeJson: serialized,
+    serverSeedHash: shoeLock.server_seed_hash,
+    revealedServerSeed: null,
+    clientSeed: shoeLock.client_seed,
+    nonce: handIndex,
+    txSignature: null,
+    engineVersion: `blackjack-engine-${BLACKJACK_ENGINE_VERSION}`,
+  });
+
+  const newTotalBet = (BigInt(shoeLock.total_bet) + incrementalBet).toString();
+  const newTotalPayout = (BigInt(shoeLock.total_payout) + raked.rakedPayout).toString();
+  await tx
+    .update(blackjackShoes)
+    .set({
+      cursorCounter: r.cursorAfter,
+      dealtCount: r.dealtAfter,
+      totalBet: newTotalBet,
+      totalPayout: newTotalPayout,
+      currentBalance: (BigInt(newTotalPayout) - BigInt(newTotalBet)).toString(),
+      handsPlayed: sql`${blackjackShoes.handsPlayed} + 1`,
+      lastHandAt: new Date(),
+    })
+    .where(eq(blackjackShoes.id, shoeId));
+
+  return { hand: settledHand, balanceAfter };
+}
+
+export class AutonomousCoveBlackjackError extends Error {
+  constructor(readonly code: string, readonly status: number, message: string) {
+    super(message);
+    this.name = 'AutonomousCoveBlackjackError';
+  }
+}
+
+interface AutonomousShoeLockRow extends ShoeLockRow {
+  hand_counter: number | string;
+  hands_played: number | string;
+}
+
+/** One action, one transaction, one fully-settled basic-strategy hand. */
+export async function playAutonomousCoveBlackjack(input: {
+  agentSessionId: string;
+  expectedAgentId: string;
+  expectedAvatarId: string;
+  actionId: string;
+  wager: number;
+}): Promise<SettledResponse> {
+  if (!Number.isSafeInteger(input.wager) || input.wager < BLACKJACK_MIN_BET || input.wager > BLACKJACK_MAX_BET) {
+    throw new AutonomousCoveBlackjackError('invalid_wager', 400, 'invalid_wager');
+  }
+  if (!z.string().uuid().safeParse(input.actionId).success) {
+    throw new AutonomousCoveBlackjackError('invalid_action_id', 400, 'invalid_action_id');
+  }
+  const resolved = await resolveAgentSession(input.agentSessionId);
+  if (!resolved) throw new AutonomousCoveBlackjackError('invalid_or_expired_agent_session', 401, 'invalid_or_expired_agent_session');
+  if (!resolved.ledgerCapable) throw new AutonomousCoveBlackjackError('agent_session_not_ledger_authorized', 403, 'agent_session_not_ledger_authorized');
+  if (!resolved.userId || !resolved.avatarId) {
+    throw new AutonomousCoveBlackjackError('agent_session_has_no_active_avatar', 403, 'agent_session_has_no_active_avatar');
+  }
+  if (resolved.agentId !== input.expectedAgentId || resolved.avatarId !== input.expectedAvatarId) {
+    throw new AutonomousCoveBlackjackError('live_agent_avatar_binding_changed', 403, 'live_agent_avatar_binding_changed');
+  }
+  const userId = resolved.userId;
+  const avatarId = resolved.avatarId;
+
+  const subject: BjSubject = {
+    kind: 'agent',
+    userId,
+    avatarId,
+    agentId: resolved.agentId,
+    sessionId: input.agentSessionId,
+    guestFpHash: null,
+  };
+  const idempotencyKey = `auto:${input.actionId}`;
+  const freshSeed = createServerSeed();
+  const freshClientSeed = randomBytes(8).toString('hex');
+
+  const txResult = await db.transaction(async (tx) => {
+    // Same-action concurrency must serialize before choosing/rotating a shoe.
+    await tx.execute(sql`
+      SELECT pg_advisory_xact_lock(
+        hashtextextended(${`autonomous-blackjack-action:${input.actionId}`}, 0)
+      )
+    `);
+
+    // Cross-shoe replay lookup is owner-bound. Rotation cannot hide a prior
+    // result, and another owner's coincident key is never replayed.
+    const replayRows = await tx.execute<{ hand_id: string; shoe_id: string }>(sql`
+      SELECT h.id AS hand_id, h.shoe_id
+      FROM blackjack_hands h
+      JOIN blackjack_shoes s ON s.id = h.shoe_id
+      WHERE h.idempotency_key = ${idempotencyKey}
+        AND h.status = 'settled'
+        AND s.user_id = ${userId}
+      LIMIT 1
+    `);
+    const replay = replayRows[0];
+    if (replay) return { kind: 'replay' as const, handId: replay.hand_id, shoeId: replay.shoe_id };
+
+    const shoeRows = await tx.execute<AutonomousShoeLockRow>(sql`
+      SELECT id, server_seed, server_seed_hash, client_seed, hand_counter,
+             cursor_counter, dealt_count, total_bet, total_payout,
+             starting_balance, hands_played, status, user_id, guest_fp_hash
+      FROM blackjack_shoes
+      WHERE user_id = ${userId} AND status = 'open'
+      FOR UPDATE
+    `);
+    const priorShoe = shoeRows[0] ?? null;
+    if (priorShoe) {
+      const liveHandRows = await tx.execute<{ id: string }>(sql`
+        SELECT id FROM blackjack_hands
+        WHERE shoe_id = ${priorShoe.id} AND status = 'in_progress'
+        LIMIT 1
+      `);
+      if (liveHandRows[0]) {
+        throw new AutonomousCoveBlackjackError(
+          'hand_in_progress', 409, 'hand_in_progress: finish the current hand first',
+        );
+      }
+    }
+
+    // Shared daily lock is acquired before any card-derived work and held
+    // through exact settlement. Slots uses this identical key.
+    await tx.execute(sql`
+      SELECT pg_advisory_xact_lock(
+        hashtextextended(${autonomousCoveDailyAdvisoryKey(avatarId)}, 0)
+      )
+    `);
+
+    // Exact resolved active-avatar row lock: the card-independent 4x balance
+    // gate cannot go stale before the exact debit later in this transaction.
+    const avatarRows = await tx.execute<{
+      id: string;
+      user_id: string;
+      claw_tokens: number | string;
+      is_active: boolean;
+    }>(sql`
+      SELECT id, user_id, claw_tokens, is_active
+      FROM avatars
+      WHERE id = ${avatarId}
+      FOR UPDATE
+    `);
+    const avatarLock = avatarRows[0];
+    if (!avatarLock || avatarLock.user_id !== userId || avatarLock.is_active !== true) {
+      throw new AutonomousCoveBlackjackError('active_avatar_binding_changed', 403, 'active_avatar_binding_changed');
+    }
+
+    // A split followed by doubles on both sub-hands commits at most 4x base.
+    // Gate this worst case BEFORE computing cards so rejection reveals nothing
+    // about whether the unseen hand would split/double. Charge only exact later.
+    const worstCaseExposure = input.wager * 4;
+    const usageRows = await tx.execute<{ used_vclaw: string }>(
+      autonomousCoveDailyUsageQuery(avatarId),
+    );
+    const usedToday = parseAutonomousCoveDailyUsage(usageRows);
+    const capMessage = autonomousCoveDailyCapMessage(usedToday, worstCaseExposure);
+    if (capMessage) throw new AutonomousCoveBlackjackError('daily_cap_exceeded', 429, capMessage);
+    const liveBalance = Number(avatarLock.claw_tokens);
+    if (!Number.isSafeInteger(liveBalance) || liveBalance < worstCaseExposure) {
+      throw new AutonomousCoveBlackjackError(
+        'insufficient_worst_case_balance',
+        400,
+        `insufficient_clawtokens_for_worst_case_hand: need ${worstCaseExposure}, have ${liveBalance}`,
+      );
+    }
+
+    const rotateShoe = priorShoe !== null && Number(priorShoe.dealt_count) >= RESHUFFLE_CARD_THRESHOLD;
+    const useFreshShoe = priorShoe === null || rotateShoe;
+    const handIndex = useFreshShoe ? 0 : Number(priorShoe!.hand_counter);
+    const seedState: ShoeSeedState = useFreshShoe
+      ? { id: 'pending-autonomous-shoe', serverSeed: freshSeed.serverSeed, clientSeed: freshClientSeed }
+      : {
+          id: priorShoe!.id,
+          serverSeed: priorShoe!.server_seed,
+          clientSeed: priorShoe!.client_seed,
+        };
+    const state = useFreshShoe
+      ? { remaining: buildShoe(), cursor: 0, dealt: 0 }
+      : await reconstructShoeState(seedState, handIndex, tx);
+    if (
+      !useFreshShoe &&
+      (state.cursor !== Number(priorShoe!.cursor_counter) ||
+        state.dealt !== Number(priorShoe!.dealt_count))
+    ) {
+      throw new AutonomousCoveBlackjackError(
+        'shoe_counter_drift',
+        500,
+        `shoe_counter_drift: reconstructed cursor=${state.cursor}/dealt=${state.dealt} ` +
+          `!= shoe cursor=${priorShoe!.cursor_counter}/dealt=${priorShoe!.dealt_count}`,
+      );
+    }
+    const played = buildBlackjackBasicStrategyHand({
+      serverSeed: seedState.serverSeed,
+      clientSeed: seedState.clientSeed,
+      nonce: handIndex,
+      cursor: state.cursor,
+      bet: BigInt(input.wager),
+      dealtBefore: state.dealt,
+      remainingShoe: state.dealt === 0 ? undefined : state.remaining,
+    });
+    if (played.result.totalBet > BigInt(worstCaseExposure)) {
+      throw new Error(`autonomous_blackjack_exposure_invariant: ${played.result.totalBet} > ${worstCaseExposure}`);
+    }
+
+    // Only now—after card-independent cap/balance admission and successful
+    // engine completion—may shoe/session state mutate.
+    if (rotateShoe && priorShoe) {
+      await tx
+        .update(blackjackShoes)
+        .set({ status: 'closed', closedAt: new Date() })
+        .where(eq(blackjackShoes.id, priorShoe.id));
+      await tx
+        .update(coveGameEvents)
+        .set({ revealedServerSeed: priorShoe.server_seed })
+        .where(and(eq(coveGameEvents.sessionId, priorShoe.id), eq(coveGameEvents.gameType, 'blackjack')));
+    }
+
+    let shoeLock: AutonomousShoeLockRow;
+    if (useFreshShoe) {
+      const [inserted] = await tx
+        .insert(blackjackShoes)
+        .values({
+          userId,
+          guestFpHash: null,
+          currency: 'clawtoken',
+          serverSeed: freshSeed.serverSeed,
+          serverSeedHash: freshSeed.serverSeedHash,
+          clientSeed: freshClientSeed,
+          startingBalance: '0',
+          engineVersion: BLACKJACK_ENGINE_VERSION,
+        })
+        .returning();
+      if (!inserted) throw new AutonomousCoveBlackjackError('shoe_insert_failed', 500, 'shoe_insert_failed');
+      shoeLock = {
+        id: inserted.id,
+        server_seed: inserted.serverSeed,
+        server_seed_hash: inserted.serverSeedHash,
+        client_seed: inserted.clientSeed,
+        hand_counter: inserted.handCounter,
+        cursor_counter: inserted.cursorCounter,
+        dealt_count: inserted.dealtCount,
+        total_bet: inserted.totalBet,
+        total_payout: inserted.totalPayout,
+        starting_balance: inserted.startingBalance,
+        hands_played: inserted.handsPlayed,
+        status: inserted.status,
+        user_id: inserted.userId,
+        guest_fp_hash: inserted.guestFpHash,
+      };
+    } else {
+      shoeLock = priorShoe!;
+    }
+
+    const [hand] = await tx
+      .insert(blackjackHands)
+      .values({
+        shoeId: shoeLock.id,
+        handIndex,
+        cursorBefore: state.cursor,
+        dealtBefore: state.dealt,
+        bet: String(input.wager),
+        stakedAmount: '0',
+        script: played.script,
+        tookInsurance: false,
+        status: 'in_progress',
+      })
+      .returning();
+    if (!hand) throw new AutonomousCoveBlackjackError('hand_insert_failed', 500, 'hand_insert_failed');
+
+    const shared = await settleComputedBlackjackHand(tx, {
+      shoeLock,
+      hand,
+      subject,
+      avatar: { id: avatarId, clawTokens: liveBalance },
+      result: played.result,
+      cursorBefore: state.cursor,
+      dealtBefore: state.dealt,
+      idempotencyKey,
+      autonomous: { actionId: input.actionId },
+    });
+    await tx
+      .update(blackjackShoes)
+      .set({ handCounter: handIndex + 1 })
+      .where(eq(blackjackShoes.id, shoeLock.id));
+    return {
+      kind: 'fresh' as const,
+      hand: shared.hand,
+      shoeId: shoeLock.id,
+      balanceAfter: shared.balanceAfter,
+    };
+  });
+
+  if (txResult.kind === 'replay') {
+    const replayHand = await db.query.blackjackHands.findFirst({ where: eq(blackjackHands.id, txResult.handId) });
+    const replayShoe = await db.query.blackjackShoes.findFirst({ where: eq(blackjackShoes.id, txResult.shoeId) });
+    if (!replayHand || !replayShoe || replayShoe.userId !== userId) {
+      throw new AutonomousCoveBlackjackError('idempotency_replay_missing', 409, 'idempotency_replay_missing');
+    }
+    return buildSettledResponse(replayHand, replayShoe, subject);
+  }
+
+  const hand = txResult.hand;
+  const outcome = hand.outcomeJson as SerializedHandResult;
+  const eventIdPromise = logEventReturningId({
+    eventType: 'cove.blackjack.hand.settled',
+    userId,
+    avatarId,
+    agentId: resolved.agentId,
+    sessionId: input.agentSessionId,
+    payload: {
+      shoeId: txResult.shoeId,
+      handId: hand.id,
+      handIndex: hand.handIndex,
+      bet: hand.bet,
+      payout: hand.payout,
+      net: hand.net,
+      autonomous: true,
+      actionId: input.actionId,
+      replay: false,
+    },
+  });
+  publishCoveSettlement({
+    agentId: resolved.agentId,
+    game: 'blackjack',
+    eventIdPromise,
+    payload: {
+      handId: hand.id,
+      shoeId: txResult.shoeId,
+      handIndex: hand.handIndex,
+      bet: hand.bet,
+      payout: hand.payout,
+      net: hand.net,
+    },
+  });
+  void recordBlackjackSkillMemory({
+    avatarId,
+    agentId: resolved.agentId,
+    shoeId: txResult.shoeId,
+    hand,
+    outcome,
+  }).catch((err) => {
+    console.error('[cove-blackjack] autonomous skill-memory write failed (non-fatal):', err);
+  });
+
+  return {
+    handId: hand.id,
+    shoeId: txResult.shoeId,
+    handIndex: hand.handIndex,
+    status: 'settled',
+    outcome,
+    balance: txResult.balanceAfter,
+    totalBet: outcome.totalBet,
+    totalPayout: outcome.totalPayout,
+    net: outcome.net,
+    rake: outcome.rake ?? '0',
+    dealtCount: hand.dealtAfter ?? 0,
+    reshuffleSuggested: (hand.dealtAfter ?? 0) >= RESHUFFLE_CARD_THRESHOLD,
+    idempotencyReplay: false,
+  };
+}
+
 /**
  * Settle a hand. ALL balance mutations + the cove_game_events insert + the
  * shoe counter advance run in ONE transaction with the engine recompute UNDER
@@ -1791,227 +2419,21 @@ async function settleHand(
       throw new HTTPException(400, { message: `blackjack_engine_error: ${(err as Error).message}` });
     }
 
-    // Money safety: refuse payout/stake exceeding int4 / JS-number range.
-    if (r.totalPayout > BigInt(Number.MAX_SAFE_INTEGER)) {
-      throw new HTTPException(500, { message: 'payout_exceeds_supported_range' });
-    }
-    if (r.totalBet > BigInt(Number.MAX_SAFE_INTEGER)) {
-      throw new HTTPException(400, { message: 'bet_exceeds_supported_range' });
-    }
-
-    // ── Rake the NET WINNINGS (economy fix 2026-05-29) ─────────────────────
-    // Blackjack is a skill game (countable) → a skilled agent goes +EV. A small
-    // rake on the player's NET WINNINGS (winners only) keeps the house whole
-    // without changing the strategy surface. rake = floor(max(0, payout-bet)*5/100);
-    // a push or loss is NOT raked. The credited payout is reduced by the rake →
-    // net CT burn. Computed once here under the shoe lock; the stored
-    // outcomeJson carries `rake`/`rakedPayout` so a settled-replay never re-rakes.
-    const raked = computeBlackjackRake(r);
-
-    // ── Ledger debit/credit (authed) OR demo accounting (guest) ────────────
-    //
-    // The base stake (+ deal-time insurance) was ALREADY committed at /hand/deal
-    // (finding #3). At settle we:
-    //   - debit only the INCREMENTAL stake delta `r.totalBet - stakedAmount`
-    //     (the extra stake a double or each split sub-hand adds);
-    //   - credit the RAKED payout `raked.rakedPayout` (gross payout minus the
-    //     net-winnings rake; includes the returned base stake on wins/pushes +
-    //     any insurance return).
-    // `r.totalBet` MUST be >= stakedAmount (engine can only ADD stake via
-    // double/split; it never reduces below the opening bet + insurance).
-    const incrementalBet = r.totalBet - stakedAmount;
-    if (incrementalBet < 0n) {
-      // Defensive: a negative delta would mean stakedAmount exceeded the engine
-      // total — impossible unless a row was tampered with. Fail loudly.
-      throw new HTTPException(500, {
-        message: `blackjack_stake_underflow: totalBet=${r.totalBet} < staked=${stakedAmount}`,
-      });
-    }
-    let balanceAfter: number;
-    if (isLedgerSubject(subject) && avatar) {
-      // Default to the live balance; only debit/credit when there is a delta.
-      const balRows = await tx.execute<{ claw_tokens: number }>(
-        sql`SELECT claw_tokens FROM avatars WHERE id = ${avatar.id}`,
-      );
-      balanceAfter = Number(balRows[0]?.claw_tokens ?? avatar.clawTokens);
-
-      const incrementalNumber = Number(incrementalBet);
-      if (incrementalNumber > 0) {
-        try {
-          const debit = await debitClawTokens(
-            {
-              avatarId: avatar.id,
-              amount: incrementalNumber,
-              reason: 'cove_blackjack_stake_delta',
-              source: 'api',
-              metadata: { shoeId, handId, handIndex, kind: 'double_split_delta' },
-              actorKind: subject.kind === 'user' ? 'human' : 'agent',
-            },
-            tx,
-          );
-          balanceAfter = debit.balanceAfter;
-        } catch (err) {
-          if (err instanceof InsufficientTokensError) {
-            throw new HTTPException(400, {
-              message: `insufficient_clawtokens_for_hand: need ${incrementalNumber}, have ${err.available}`,
-            });
-          }
-          throw err;
-        }
-      }
-      // Credit the RAKED payout (gross minus the net-winnings rake). The raked
-      // CT is never credited → the house keeps it.
-      const payoutNumber = Number(raked.rakedPayout);
-      if (payoutNumber > 0) {
-        const credit = await creditClawTokens(
-          {
-            avatarId: avatar.id,
-            amount: payoutNumber,
-            reason: 'cove_blackjack_payout',
-            source: 'api',
-            metadata: { shoeId, handId, handIndex, rake: raked.rake.toString() },
-            actorKind: subject.kind === 'user' ? 'human' : 'agent',
-          },
-          tx,
-        );
-        balanceAfter = credit.balanceAfter;
-      }
-      // ── T0 fee routing (2026-07-07): materialize the rake as house revenue ──
-      // The rake was previously a silent reduced-mint burn (withheld from the
-      // player's credit and never landing anywhere). Route it to the named
-      // house-treasury subject IN THIS SAME settle tx — first-settle branch
-      // only (the settled/idempotency replays return before this point, so a
-      // replay can never re-credit), ledger-subject branch only (guest demo
-      // rake stays demo — crediting it would MINT real CT from demo chips).
-      // PLAYER-SIDE UNCHANGED: the player still receives exactly
-      // `raked.rakedPayout` above. rake ≤ totalPayout ≤ MAX_SAFE (checked).
-      const rakeNumber = Number(raked.rake);
-      if (Number.isInteger(rakeNumber) && rakeNumber > 0) {
-        const treasuryId = await getHouseTreasuryAvatarId();
-        if (treasuryId) {
-          await creditClawTokens(
-            {
-              avatarId: treasuryId,
-              amount: rakeNumber,
-              reason: 'house_fee_blackjack_rake',
-              source: 'system',
-              metadata: { shoeId, handId, handIndex },
-              actorKind: 'system',
-            },
-            tx,
-          );
-        } else {
-          console.error(
-            `[cove-blackjack] house treasury unavailable — rake ${rakeNumber} CT burned (pre-T0 behavior) for hand ${handId}`,
-          );
-        }
-      }
-    } else {
-      // Guest demo accounting — no ledger writes. The base stake already folded
-      // into shoeLock.total_bet at deal; here we add only the incremental stake
-      // delta + the RAKED payout. Balance = starting + total_payout - total_bet.
-      const newTotalBetGuest = BigInt(shoeLock.total_bet) + incrementalBet;
-      const newTotalPayoutGuest = BigInt(shoeLock.total_payout) + raked.rakedPayout;
-      const newDemo =
-        BigInt(shoeLock.starting_balance) + newTotalPayoutGuest - newTotalBetGuest;
-      if (newDemo < 0n) {
-        throw new HTTPException(400, { message: 'insufficient_guest_demo_balance_at_settle' });
-      }
-      balanceAfter = Number(newDemo);
-    }
-
-    // ── Persist the settled hand row ───────────────────────────────────────
-    // A unique (shoeId, idempotencyKey) collision (23505) here means a client
-    // reused one Idempotency-Key across two terminal actions. The violation
-    // aborts the WHOLE settle transaction (Postgres marks it failed) — so the
-    // ledger debit/credit done earlier in THIS tx is rolled back too: no
-    // double-credit, no partial write. We convert it to an IdempotencyReplay
-    // signal and replay the colliding (already-settled) row in a fresh read
-    // OUTSIDE the aborted tx, instead of letting it surface as an uncaught 500
-    // + critical Telegram alert.
-    const serialized = serializeHandResult(r, { cursorBefore, dealtBefore, nonce: handIndex });
-    let settledHand: BlackjackHand | undefined;
-    try {
-      const updated = await tx
-        .update(blackjackHands)
-        .set({
-          status: 'settled',
-          cursorAfter: r.cursorAfter,
-          dealtAfter: r.dealtAfter,
-          // outcomeJson carries the GROSS figures + rake + raked figures
-          // (serializeHandResult). The flat payout/net columns store the RAKED
-          // (credited) figures — what actually moved on the balance.
-          outcomeJson: serialized,
-          payout: raked.rakedPayout.toString(),
-          net: raked.rakedNet.toString(),
-          idempotencyKey: idempotencyKey ?? null,
-          settledAt: new Date(),
-        })
-        .where(and(eq(blackjackHands.id, handId), eq(blackjackHands.status, 'in_progress')))
-        .returning();
-      settledHand = updated[0];
-    } catch (err) {
-      const pgCode = (err as { code?: string } | undefined)?.code;
-      if (pgCode === '23505' && idempotencyKey) {
-        // Reused Idempotency-Key collided with an already-settled row for this
-        // shoe. Surface a clean replay, not a 500. Re-read OUTSIDE this aborted
-        // tx (the transaction is now in a failed state).
-        throw new IdempotencyReplayError(shoeId, idempotencyKey);
-      }
-      throw err;
-    }
-    if (!settledHand) {
-      // Concurrent settle won — re-read + replay.
-      const fresh = await tx.query.blackjackHands.findFirst({ where: eq(blackjackHands.id, handId) });
-      if (fresh?.status === 'settled') {
-        return { hand: fresh, replay: true as const, balanceAfter: undefined as number | undefined };
-      }
-      throw new HTTPException(500, { message: 'hand_settle_failed' });
-    }
-
-    // ── One cove_game_events row PER HAND ──────────────────────────────────
-    // serverSeedHash committed at open; revealedServerSeed NULL until shoe
-    // close (commit-reveal). nonce = handIndex; sessionId = shoeId.
-    await tx.insert(coveGameEvents).values({
-      userId: subject.userId,
-      guestFpHash: subject.guestFpHash,
-      gameType: 'blackjack',
-      sessionId: shoeId,
-      shoeId,
-      betAmount: r.totalBet.toString(),
-      // RAKED payout so the cross-game economy monitor's burn = bet - payout
-      // includes the rake; outcomeJson keeps the gross figures + explicit `rake`.
-      payout: raked.rakedPayout.toString(),
-      outcomeJson: serialized,
-      serverSeedHash: shoeLock.server_seed_hash,
-      revealedServerSeed: null,
-      clientSeed: shoeLock.client_seed,
-      nonce: handIndex,
-      txSignature: null,
-      engineVersion: `blackjack-engine-${BLACKJACK_ENGINE_VERSION}`,
+    const shared = await settleComputedBlackjackHand(tx, {
+      shoeLock,
+      hand,
+      subject,
+      avatar,
+      result: r,
+      cursorBefore,
+      dealtBefore,
+      idempotencyKey,
     });
-
-    // ── Advance shoe counters (cursor + dealt reflect committed cards) ─────
-    // total_bet already includes the base stake (committed at deal); add only
-    // the incremental double/split delta here so it isn't double-counted.
-    const newTotalBet = (BigInt(shoeLock.total_bet) + incrementalBet).toString();
-    // totalPayout uses the RAKED payout so session P&L reflects the rake kept.
-    const newTotalPayout = (BigInt(shoeLock.total_payout) + raked.rakedPayout).toString();
-    const newCurrentBalance = (BigInt(newTotalPayout) - BigInt(newTotalBet)).toString();
-    await tx
-      .update(blackjackShoes)
-      .set({
-        cursorCounter: r.cursorAfter,
-        dealtCount: r.dealtAfter,
-        totalBet: newTotalBet,
-        totalPayout: newTotalPayout,
-        currentBalance: newCurrentBalance,
-        handsPlayed: sql`${blackjackShoes.handsPlayed} + 1`,
-        lastHandAt: new Date(),
-      })
-      .where(eq(blackjackShoes.id, shoeId));
-
-    return { hand: settledHand, replay: false as const, balanceAfter };
+    return {
+      hand: shared.hand,
+      replay: false as const,
+      balanceAfter: shared.balanceAfter,
+    };
   });
   }
 
