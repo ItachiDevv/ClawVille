@@ -5,15 +5,13 @@ import type { PaymentRequirements } from '@x402/core/types';
 import { ExactSvmScheme } from '@x402/svm/exact/client';
 import {
   caip2ForNetwork,
+  isFacilitatorLevelFailure,
   usdcMintForNetwork,
   verifyAndSettle,
   type VerifyAndSettleResult,
   type X402Network,
 } from './x402-payai';
-import {
-  isFacilitatorOutageError,
-  shouldFallbackToMeridian,
-} from './x402-facilitator-selection';
+import { shouldFallbackToMeridian } from './x402-facilitator-selection';
 import {
   isMeridianEnabled,
   prepareMeridianPayment,
@@ -78,38 +76,11 @@ export async function prepareCustodialExactPayment(
     resource: input.resource,
     accepts: [requirements],
   });
-  let meridian: PreparedMeridianPayment | undefined;
-  if (
-    shouldFallbackToMeridian({
-      meridianEnabled: isMeridianEnabled(),
-      payAiOutage: true,
-      direction: 'outbound',
-      grossUsdcAtomic: input.amountBaseUnits,
-    })
-  ) {
-    try {
-      const platformOwner = loadX402Config().merchantWalletPubkey;
-      const candidate = await prepareMeridianPayment({
-        payerSecretKey: input.payerSecretKey,
-        payerPubkey: input.payerPubkey,
-        payTo: input.payTo,
-        grossAmountBaseUnits: input.amountBaseUnits,
-        network: input.network,
-        rpcUrl: input.rpcUrl,
-        resource: input.resource,
-        maxTimeoutSeconds: input.maxTimeoutSeconds,
-        platformOwner,
-      });
-      if (candidate.amounts.netUsdcAtomic >= 10_000n) {
-        meridian = candidate;
-      }
-    } catch {
-      // PayAI stays primary. A bad/unavailable optional config removes only
-      // the fallback and cannot change the established exact-scheme path.
-    }
-  }
   return {
-    ...(meridian ? { meridian } : {}),
+    // Meridian's Solana recipient is organization-pinned (the org's dashboard
+    // wallet). This generic primitive is used by outbound agent-pay/SAP flows
+    // with arbitrary recipients, so it must never attach a Meridian candidate.
+    // Keep the optional API field for the explicit merchant-bound inbound seam.
     paymentHeader: Buffer.from(JSON.stringify(payload), 'utf8').toString('base64'),
     requirements,
     payerPubkey: input.payerPubkey,
@@ -118,9 +89,88 @@ export async function prepareCustodialExactPayment(
   };
 }
 
+/**
+ * Merchant-bound custodial preparation for inbound top-up/checkout payments.
+ * PayAI remains primary. When Meridian is enabled, attach its independently
+ * signed candidate for verify-stage provider failover; inbound availability is
+ * intentionally not capped by the outbound fee crossover.
+ */
+export async function prepareInboundCustodialExactPayment(
+  input: PrepareCustodialExactPaymentInput,
+): Promise<PreparedCustodialExactPayment> {
+  const merchantWalletPubkey = loadX402Config().merchantWalletPubkey;
+  if (!merchantWalletPubkey || input.payTo !== merchantWalletPubkey) {
+    throw new Error('inbound custodial x402 payTo must match the merchant wallet');
+  }
+
+  const payAi = await prepareCustodialExactPayment(input);
+  const meridian = await prepareInboundMeridianPayment(input);
+  return meridian ? { ...payAi, meridian } : payAi;
+}
+
+export type PrepareInboundMeridianPaymentInput = Omit<
+  PrepareCustodialExactPaymentInput,
+  'feePayer'
+>;
+
+/**
+ * Build only the merchant-bound Meridian candidate. This deliberately does not
+ * need PayAI's `/supported` fee payer, so an open PayAI circuit can still route
+ * straight to the fallback without spending a probe.
+ */
+export async function prepareInboundMeridianPayment(
+  input: PrepareInboundMeridianPaymentInput,
+): Promise<PreparedMeridianPayment | undefined> {
+  // Disabled means a strict no-op, including when the rest of x402 is not
+  // configured. Do not introduce a merchant-config assertion on the off path.
+  if (!isMeridianEnabled()) return undefined;
+
+  const merchantWalletPubkey = loadX402Config().merchantWalletPubkey;
+  if (!merchantWalletPubkey || input.payTo !== merchantWalletPubkey) {
+    throw new Error('inbound custodial x402 payTo must match the merchant wallet');
+  }
+  if (!shouldFallbackToMeridian({
+    meridianEnabled: true,
+    payAiOutage: true,
+    direction: 'inbound',
+    grossUsdcAtomic: input.amountBaseUnits,
+  })) {
+    return undefined;
+  }
+
+  try {
+    return await prepareMeridianPayment({
+      payerSecretKey: input.payerSecretKey,
+      payerPubkey: input.payerPubkey,
+      payTo: merchantWalletPubkey,
+      grossAmountBaseUnits: input.amountBaseUnits,
+      network: input.network,
+      rpcUrl: input.rpcUrl,
+      resource: input.resource,
+      maxTimeoutSeconds: input.maxTimeoutSeconds,
+      platformOwner: merchantWalletPubkey,
+    });
+  } catch {
+    // Optional fallback preparation is fail-soft. The established PayAI leg is
+    // still independently signed and remains usable.
+    return undefined;
+  }
+}
+
+export interface PayAiExecutionObservation {
+  /** Whether this execution actually called PayAI verify. */
+  attempted: boolean;
+  /** Whether that attempted leg produced a provider-wide failure. */
+  providerFailure: boolean;
+}
+
 type PayAiExecutePreparedExactPaymentOutcome =
   | { kind: 'settled'; signature: string; payer: string | null; result: VerifyAndSettleResult }
-  | { kind: 'verify_only'; payer: string | null; result: VerifyAndSettleResult }
+  | {
+      kind: 'verify_only';
+      payer: string | null;
+      result: VerifyAndSettleResult | MeridianVerifyAndSettleResult;
+    }
   | {
       kind: 'definitive_failure';
       stage: 'verify' | 'settle';
@@ -141,7 +191,7 @@ type PayAiExecutePreparedExactPaymentOutcome =
     };
 
 export type ExecutePreparedExactPaymentOutcome =
-  | PayAiExecutePreparedExactPaymentOutcome
+  (PayAiExecutePreparedExactPaymentOutcome
   | {
       kind: 'meridian_settled';
       signature: string;
@@ -157,77 +207,152 @@ export type ExecutePreparedExactPaymentOutcome =
       payer: string | null;
       signature: string | null;
       result: MeridianVerifyAndSettleResult;
+    }) & { payAi: PayAiExecutionObservation };
+
+async function executeMeridianCandidate(
+  meridian: PreparedMeridianPayment,
+  payAi: PayAiExecutionObservation,
+  verifyOnly = false,
+): Promise<ExecutePreparedExactPaymentOutcome> {
+  const meridianResult = await verifyAndSettleMeridian({
+    paymentHeader: meridian.paymentHeader,
+    requirements: meridian.requirements,
+    expectedPayer: meridian.payerPubkey,
+    verifyOnly,
+  });
+  if (verifyOnly && meridianResult.isValid) {
+    return {
+      kind: 'verify_only',
+      payer: meridianResult.payer,
+      result: meridianResult,
+      payAi,
     };
+  }
+  if (meridianResult.settled && meridianResult.txSignature) {
+    return {
+      kind: 'meridian_settled',
+      signature: meridianResult.txSignature,
+      payer: meridianResult.payer,
+      amounts: meridian.amounts,
+      result: meridianResult,
+      payAi,
+    };
+  }
+  const reason = meridianResult.failureReason ?? 'meridian_settlement_failed';
+  if (!meridianResult.isValid) {
+    return {
+      kind: 'meridian_failure',
+      stage: 'verify',
+      ambiguous: false,
+      reason,
+      payer: meridianResult.payer,
+      signature: meridianResult.txSignature,
+      result: meridianResult,
+      payAi,
+    };
+  }
+  return {
+    kind: 'meridian_failure',
+    stage: 'settle',
+    ambiguous: meridianResult.raw.settle?.success !== false,
+    reason,
+    payer: meridianResult.payer,
+    signature: meridianResult.txSignature,
+    result: meridianResult,
+    payAi,
+  };
+}
 
 export async function executePreparedExactPayment(
-  prep: Pick<
-    PreparedCustodialExactPayment,
-    'paymentHeader' | 'requirements' | 'payerPubkey' | 'meridian'
-  >,
-  opts: { verifyOnly?: boolean } = {},
+  prep:
+    | Pick<
+        PreparedCustodialExactPayment,
+        'paymentHeader' | 'requirements' | 'payerPubkey' | 'meridian'
+      >
+    | { payerPubkey: string; meridian: PreparedMeridianPayment },
+  opts: { verifyOnly?: boolean; skipPayAi?: boolean } = {},
 ): Promise<ExecutePreparedExactPaymentOutcome> {
-  let verifyOutage = false;
+  if (opts.skipPayAi === true) {
+    if (prep.meridian) {
+      return executeMeridianCandidate(
+        prep.meridian,
+        { attempted: false, providerFailure: false },
+        opts.verifyOnly === true,
+      );
+    }
+    return {
+      kind: 'definitive_failure',
+      stage: 'verify',
+      verifyPassed: false,
+      reason: 'payai_skipped_without_meridian',
+      payer: null,
+      result: {
+        settled: false,
+        isValid: false,
+        txSignature: null,
+        network: null,
+        payer: null,
+        failureReason: 'payai_skipped_without_meridian',
+        raw: {},
+      },
+      payAi: { attempted: false, providerFailure: false },
+    };
+  }
+
+  if (!('paymentHeader' in prep) || !('requirements' in prep)) {
+    return {
+      kind: 'definitive_failure',
+      stage: 'verify',
+      verifyPassed: false,
+      reason: 'payai_preparation_missing',
+      payer: null,
+      result: {
+        settled: false,
+        isValid: false,
+        txSignature: null,
+        network: null,
+        payer: null,
+        failureReason: 'payai_preparation_missing',
+        raw: {},
+      },
+      payAi: { attempted: false, providerFailure: false },
+    };
+  }
+
+  let verifyProviderFailure = false;
+  let payAiProviderFailure = false;
   const result = await verifyAndSettle({
     paymentHeader: prep.paymentHeader,
     requirements: prep.requirements,
     expectedPayer: prep.payerPubkey,
     verifyOnly: opts.verifyOnly,
     onFacilitatorError: (stage, error) => {
-      if (stage === 'verify' && isFacilitatorOutageError(error)) {
-        verifyOutage = true;
+      if (isFacilitatorLevelFailure(error)) {
+        payAiProviderFailure = true;
+        if (stage === 'verify') verifyProviderFailure = true;
       }
     },
   });
+  if (result.facilitatorFailure === 'unavailable') {
+    payAiProviderFailure = true;
+  }
+  const payAi = { attempted: true, providerFailure: payAiProviderFailure };
   if (
     opts.verifyOnly !== true &&
     !result.isValid &&
-    verifyOutage &&
+    verifyProviderFailure &&
     prep.meridian
   ) {
-    const meridianResult = await verifyAndSettleMeridian({
-      paymentHeader: prep.meridian.paymentHeader,
-      requirements: prep.meridian.requirements,
-      expectedPayer: prep.meridian.payerPubkey,
-    });
-    if (meridianResult.settled && meridianResult.txSignature) {
-      return {
-        kind: 'meridian_settled',
-        signature: meridianResult.txSignature,
-        payer: meridianResult.payer,
-        amounts: prep.meridian.amounts,
-        result: meridianResult,
-      };
-    }
-    const reason = meridianResult.failureReason ?? 'meridian_settlement_failed';
-    if (!meridianResult.isValid) {
-      return {
-        kind: 'meridian_failure',
-        stage: 'verify',
-        ambiguous: false,
-        reason,
-        payer: meridianResult.payer,
-        signature: meridianResult.txSignature,
-        result: meridianResult,
-      };
-    }
-    return {
-      kind: 'meridian_failure',
-      stage: 'settle',
-      ambiguous: meridianResult.raw.settle?.success !== false,
-      reason,
-      payer: meridianResult.payer,
-      signature: meridianResult.txSignature,
-      result: meridianResult,
-    };
+    return executeMeridianCandidate(prep.meridian, payAi);
   }
   if (opts.verifyOnly === true && result.isValid) {
-    return { kind: 'verify_only', payer: result.payer, result };
+    return { kind: 'verify_only', payer: result.payer, result, payAi };
   }
   if (result.settled && result.txSignature) {
-    return { kind: 'settled', signature: result.txSignature, payer: result.payer, result };
+    return { kind: 'settled', signature: result.txSignature, payer: result.payer, result, payAi };
   }
   const reason = result.failureReason ?? 'settlement_failed';
-  if (!result.isValid && verifyOutage) {
+  if (!result.isValid && verifyProviderFailure) {
     return {
       kind: 'definitive_failure',
       stage: 'verify',
@@ -236,18 +361,19 @@ export async function executePreparedExactPayment(
       payer: result.payer,
       result,
       facilitatorOutage: true,
+      payAi,
     };
   }
   if (!result.isValid) {
     return {
       kind: 'definitive_failure', stage: 'verify', verifyPassed: false,
-      reason, payer: result.payer, result,
+      reason, payer: result.payer, result, payAi,
     };
   }
   if (result.raw.settle?.success === false) {
     return {
       kind: 'definitive_failure', stage: 'settle', verifyPassed: true,
-      reason, payer: result.payer, result,
+      reason, payer: result.payer, result, payAi,
     };
   }
   return {
@@ -257,5 +383,6 @@ export async function executePreparedExactPayment(
     payer: result.payer,
     signature: result.txSignature,
     result,
+    payAi,
   };
 }
