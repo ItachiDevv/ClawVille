@@ -66,6 +66,10 @@ import type {
   RewardPreview,
   RoomMeta,
   WorldState,
+  ReefPowerUpBoxVariant,
+  ReefPowerUpKind,
+  ReefPufferMineState,
+  ReefWaveSweepState,
 } from '@clawville/shared';
 import type {
   BumperShellEntity,
@@ -118,6 +122,10 @@ export interface PowerUpSlot {
   charges: number;
   cooldownUntil?: number;
 }
+
+export type ActivityPickup = BumperPickup & {
+  variant?: ReefPowerUpBoxVariant;
+};
 
 function normalizePowerUpInventory(
   slots: readonly {
@@ -178,7 +186,7 @@ export interface ActivityState {
   // ── Scene contract (READ by 3da's BumperShellsScene) ────────────────────
   selfAvatarId: string | null;
   entities: Map<string, BumperShellEntity>;
-  pickups: Map<string, BumperPickup>;
+  pickups: Map<string, ActivityPickup>;
   events: {
     hits: BumperHitEvent[];
     eliminations: BumperEliminationEvent[];
@@ -330,6 +338,45 @@ export interface ActivityState {
     respawnAtMs: number;
     at: number;
   } | null;
+  /** R18d reconnect-safe dynamic puffer mines. */
+  reefMines: Map<string, ReefPufferMineState>;
+  /** Last authoritative item contact, retained for attacker + victim feedback. */
+  lastItemHitEvent: {
+    attackerAvatarId: string;
+    victimAvatarId: string;
+    itemKind: ReefPowerUpKind;
+    position: { x: number; y: number };
+    at: number;
+  } | null;
+  lastPowerUpCollectedEvent: {
+    collectorAvatarId: string;
+    kind?: ReefPowerUpKind;
+    variant: ReefPowerUpBoxVariant;
+    at: number;
+  } | null;
+  lastGambleDudEvent: { avatarId: string; durationMs: number; at: number } | null;
+  lastCurrentSwapEvent: {
+    phase: 'telegraph' | 'resolved' | 'dodged' | 'fizzled';
+    attackerAvatarId: string;
+    victimAvatarId: string;
+    resolvesAtMs: number;
+    position?: { x: number; y: number };
+    at: number;
+  } | null;
+  lastWaveSweepEvent: {
+    phase: 'telegraph' | 'active' | 'ended';
+    waveId: string;
+    sector: 1 | 2 | 3 | 4;
+    startProgress: number;
+    bandLengthWu: number;
+    sweepSpeedWuPerSec: number;
+    startsAtMs: number;
+    endsAtMs: number;
+    at: number;
+  } | null;
+  /** Reconnect/keyframe-safe active wave schedule. */
+  activeWave: ReefWaveSweepState | null;
+  lastFinalLapEvent: { avatarId: string; at: number } | null;
 
   // ── Reef Race Phase 3 — self avatar's racing class + level (HUD chip) ─────
   /**
@@ -540,6 +587,8 @@ function applyEntityDelta(
       // Boost state is forwarded for all avatars so visible riders can show FX.
       ...(typeof c.boosting === 'boolean' ? { boosting: c.boosting } : {}),
       ...(typeof c.wipedOut === 'boolean' ? { wipedOut: c.wipedOut } : {}),
+      ...(typeof c.bubbledUntilMs === 'number' ? { bubbledUntilMs: c.bubbledUntilMs } : {}),
+      ...(typeof c.remoraUntilMs === 'number' ? { remoraUntilMs: c.remoraUntilMs } : {}),
     });
     return;
   }
@@ -567,13 +616,16 @@ function applyEntityDelta(
     ...(typeof c.totalLaps === 'number' ? { totalLaps: c.totalLaps } : {}),
     ...(typeof c.boosting === 'boolean' ? { boosting: c.boosting } : {}),
     ...(typeof c.wipedOut === 'boolean' ? { wipedOut: c.wipedOut } : {}),
+    ...(typeof c.bubbledUntilMs === 'number' ? { bubbledUntilMs: c.bubbledUntilMs } : {}),
+    ...(typeof c.remoraUntilMs === 'number' ? { remoraUntilMs: c.remoraUntilMs } : {}),
   });
 }
 
 /** Hydrate from a full WorldState (snapshot.init / snapshot.keyframe). */
 function hydrateFromWorld(world: WorldState, snapshotAtMs: number | undefined): {
   entities: Map<string, BumperShellEntity>;
-  pickups: Map<string, BumperPickup>;
+  pickups: Map<string, ActivityPickup>;
+  reefMines: Map<string, ReefPufferMineState>;
   scores: Map<string, ActivityScoreEntry>;
   alive: number;
 } {
@@ -596,16 +648,23 @@ function hydrateFromWorld(world: WorldState, snapshotAtMs: number | undefined): 
       ...(typeof e.speedMod === 'number' ? { speedMod: e.speedMod } : {}),
       ...(typeof e.boosting === 'boolean' ? { boosting: e.boosting } : {}),
       ...(typeof e.wipedOut === 'boolean' ? { wipedOut: e.wipedOut } : {}),
+      ...(typeof e.bubbledUntilMs === 'number' ? { bubbledUntilMs: e.bubbledUntilMs } : {}),
+      ...(typeof e.remoraUntilMs === 'number' ? { remoraUntilMs: e.remoraUntilMs } : {}),
     });
   }
-  const pickups = new Map<string, BumperPickup>();
+  const pickups = new Map<string, ActivityPickup>();
   for (const p of world.powerUps) {
     pickups.set(p.spawnId, {
       spawnId: p.spawnId,
       kind: normalizePickupKind(p.kind),
       x: p.position.x,
       y: p.position.y,
+      variant: p.variant,
     });
+  }
+  const reefMines = new Map<string, ReefPufferMineState>();
+  for (const mine of world.reefMines ?? []) {
+    if (mine.active) reefMines.set(mine.mineId, mine);
   }
   const scores = new Map<string, ActivityScoreEntry>();
   for (const s of world.scores) {
@@ -619,7 +678,7 @@ function hydrateFromWorld(world: WorldState, snapshotAtMs: number | undefined): 
   entities.forEach((e) => {
     if (e.alive) alive++;
   });
-  return { entities, pickups, scores, alive };
+  return { entities, pickups, reefMines, scores, alive };
 }
 
 // ─── Empty-state factory (shared by initial state + reset) ──────────────────
@@ -660,6 +719,14 @@ function emptyState(): Pick<
   | 'lastObstacleHitEvent'
   | 'selfObstacleControlLockedUntil'
   | 'lastWipeoutEvent'
+  | 'reefMines'
+  | 'lastItemHitEvent'
+  | 'lastPowerUpCollectedEvent'
+  | 'lastGambleDudEvent'
+  | 'lastCurrentSwapEvent'
+  | 'lastWaveSweepEvent'
+  | 'activeWave'
+  | 'lastFinalLapEvent'
   | 'selfRacingClass'
   | 'selfLevel'
   | 'selfStreak'
@@ -711,6 +778,14 @@ function emptyState(): Pick<
     lastObstacleHitEvent: null,
     selfObstacleControlLockedUntil: 0,
     lastWipeoutEvent: null,
+    reefMines: new Map(),
+    lastItemHitEvent: null,
+    lastPowerUpCollectedEvent: null,
+    lastGambleDudEvent: null,
+    lastCurrentSwapEvent: null,
+    lastWaveSweepEvent: null,
+    activeWave: null,
+    lastFinalLapEvent: null,
     // Phase 3 — Reef Race self-avatar build summary (populated on snapshot.init)
     selfRacingClass: null,
     selfLevel: 1,
@@ -845,6 +920,8 @@ export const useActivityStore = create<ActivityState>()(
             room: frame.room,
             entities: finalEntities,
             pickups: hydrated.pickups,
+            reefMines: hydrated.reefMines,
+            activeWave: frame.world.activeWave ?? null,
             scores: hydrated.scores,
             alive: hydrated.alive,
             total: hydrated.entities.size,
@@ -920,13 +997,15 @@ export const useActivityStore = create<ActivityState>()(
             }
           }
 
-          const pickups = new Map(state.pickups);
+          let pickups = state.pickups;
+          if (frame.powerUps.length > 0) pickups = new Map(state.pickups);
           for (const p of frame.powerUps) {
             if (p.collectorAvatarId) {
               pickups.delete(p.spawnId);
               if (
                 !receivedSelfInventory &&
                 p.collectorAvatarId === state.selfAvatarId &&
+                p.variant !== 'double' &&
                 typeof p.kind === 'string'
               ) {
                 nextPowerUpInventory = bankPowerUp(nextPowerUpInventory, p.kind);
@@ -937,6 +1016,7 @@ export const useActivityStore = create<ActivityState>()(
                 kind: normalizePickupKind(p.kind),
                 x: p.position.x,
                 y: p.position.y,
+                variant: p.variant,
               });
             }
             // PowerUpDelta.inventory targets the SELF — server only sends
@@ -946,6 +1026,18 @@ export const useActivityStore = create<ActivityState>()(
               receivedSelfInventory = true;
             }
           }
+
+          let reefMines = state.reefMines;
+          if (frame.reefMines && frame.reefMines.length > 0) {
+            reefMines = new Map(state.reefMines);
+            for (const mine of frame.reefMines) {
+              if (mine.active) reefMines.set(mine.mineId, mine);
+              else reefMines.delete(mine.mineId);
+            }
+          }
+          const activeWave = frame.activeWave === undefined
+            ? state.activeWave
+            : frame.activeWave;
 
           // Score deltas — recompute placements + self placement.
           let scores = state.scores;
@@ -982,6 +1074,8 @@ export const useActivityStore = create<ActivityState>()(
           set({
             entities,
             pickups,
+            reefMines,
+            activeWave,
             scores,
             alive,
             placement,
@@ -1034,6 +1128,8 @@ export const useActivityStore = create<ActivityState>()(
           set({
             entities: keyframeEntities,
             pickups: hydrated.pickups,
+            reefMines: hydrated.reefMines,
+            activeWave: frame.world.activeWave ?? null,
             scores: merged,
             alive: hydrated.alive,
             total: Math.max(state.total, hydrated.entities.size),
@@ -1177,7 +1273,31 @@ export const useActivityStore = create<ActivityState>()(
             srcAvatarId: frame.srcAvatarId,
             dstAvatarId: frame.dstAvatarId,
           });
-          set({ events: { ...state.events, hits } });
+          const at = Date.now();
+          const itemHit = frame.itemKind
+            ? {
+                attackerAvatarId: frame.attackerAvatarId ?? frame.srcAvatarId,
+                victimAvatarId: frame.dstAvatarId,
+                itemKind: frame.itemKind,
+                position: frame.position,
+                at,
+              }
+            : null;
+          set({
+            events: { ...state.events, hits },
+            ...(itemHit ? { lastItemHitEvent: itemHit } : {}),
+            ...(itemHit && frame.dstAvatarId === state.selfAvatarId &&
+              (frame.itemKind === 'rr-tide-wave' || frame.itemKind === 'rr-whirlpool')
+              ? {
+                  lastWallSlamEvent: {
+                    avatarId: frame.dstAvatarId,
+                    position: frame.position,
+                    power: frame.itemKind === 'rr-whirlpool' ? 0.92 : 0.78,
+                    at,
+                  },
+                }
+              : {}),
+          });
           break;
         }
 
@@ -1188,6 +1308,7 @@ export const useActivityStore = create<ActivityState>()(
             kind: normalizePickupKind(frame.kind),
             x: frame.position.x,
             y: frame.position.y,
+            variant: frame.variant,
           });
           set({ pickups });
           break;
@@ -1203,17 +1324,95 @@ export const useActivityStore = create<ActivityState>()(
           if (
             state.selfAvatarId &&
             frame.collectorAvatarId === state.selfAvatarId &&
+            frame.variant !== 'double' &&
             typeof frame.kind === 'string'
           ) {
             set({
               pickups,
               powerUpInventory: bankPowerUp(state.powerUpInventory, frame.kind),
+              lastPowerUpCollectedEvent: {
+                collectorAvatarId: frame.collectorAvatarId,
+                kind: frame.kind,
+                variant: frame.variant ?? 'standard',
+                at: Date.now(),
+              },
             });
           } else {
-            set({ pickups });
+            set({
+              pickups,
+              lastPowerUpCollectedEvent: {
+                collectorAvatarId: frame.collectorAvatarId,
+                kind: frame.kind,
+                variant: frame.variant ?? 'standard',
+                at: Date.now(),
+              },
+            });
           }
           break;
         }
+
+        case 'event.gamble_dud':
+          set({
+            lastGambleDudEvent: {
+              avatarId: frame.avatarId,
+              durationMs: frame.durationMs,
+              at: Date.now(),
+            },
+          });
+          break;
+
+        case 'event.puffer_mine': {
+          const reefMines = new Map(state.reefMines);
+          if (frame.phase === 'placed' || frame.phase === 'armed') {
+            reefMines.set(frame.mineId, {
+              mineId: frame.mineId,
+              ownerAvatarId: frame.ownerAvatarId,
+              position: frame.position,
+              armedAtMs: frame.armedAtMs,
+              expiresAtMs: frame.expiresAtMs,
+              active: true,
+            });
+          } else {
+            reefMines.delete(frame.mineId);
+          }
+          set({ reefMines });
+          break;
+        }
+
+        case 'event.current_swap':
+          set({
+            lastCurrentSwapEvent: {
+              phase: frame.phase,
+              attackerAvatarId: frame.attackerAvatarId,
+              victimAvatarId: frame.victimAvatarId,
+              resolvesAtMs: frame.resolvesAtMs,
+              position: frame.position,
+              at: Date.now(),
+            },
+          });
+          break;
+
+        case 'event.wave_sweep':
+          set({
+            lastWaveSweepEvent: { ...frame, at: Date.now() },
+            activeWave: frame.phase === 'ended'
+              ? null
+              : {
+                  waveId: frame.waveId,
+                  phase: frame.phase,
+                  sector: frame.sector,
+                  startProgress: frame.startProgress,
+                  bandLengthWu: frame.bandLengthWu,
+                  sweepSpeedWuPerSec: frame.sweepSpeedWuPerSec,
+                  startsAtMs: frame.startsAtMs,
+                  endsAtMs: frame.endsAtMs,
+                },
+          });
+          break;
+
+        case 'event.final_lap':
+          set({ lastFinalLapEvent: { avatarId: frame.avatarId, at: Date.now() } });
+          break;
 
         // ── Reef Race Phase 2 events ────────────────────────────────────
 

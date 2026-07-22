@@ -85,6 +85,15 @@ export interface BotRoomView {
   }>;
   /** Arena radius in world units — bots use this to avoid the boundary */
   arenaRadius: number;
+  /** Active pickup targets. Reef adds stable row metadata for lane selection. */
+  pickups?: ReadonlyArray<{
+    x: number;
+    y: number;
+    active: boolean;
+    progress?: number;
+    stationIndex?: number;
+    lane?: -1 | 0 | 1;
+  }>;
   /** Wall-clock now (ms) so bots can compare against `cooldownUntil` */
   now: number;
   /**

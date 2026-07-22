@@ -48,7 +48,13 @@ import {
   validateInputBounds,
   type InputBounds,
 } from '../anti-cheat/shared';
-import type { RoomMeta, ServerFrame } from '@clawville/shared';
+import type {
+  ReefPowerUpBoxVariant,
+  ReefPufferMineState,
+  ReefWaveSweepState,
+  RoomMeta,
+  ServerFrame,
+} from '@clawville/shared';
 import {
   logEvent,
   ACTIVITY_EVENT_TYPES,
@@ -67,9 +73,10 @@ import {
   REEF_RACE_LOOP_SOFT_TIMEOUT_MS,
   REEF_RACE_LOOP_HARD_TIMEOUT_MS,
   REEF_MAX_POWER_UP_SLOTS,
+  REEF_POWERUP_BOX_COUNT,
   REEF_POWERUP_RESPAWN_MS,
   REEF_POWERUP_RADIUS,
-  REEF_POWERUP_DEFS,
+  REEF_SPLINE_POWERUP_DEFS,
   getReefPowerUpDef,
   type ReefPowerUpKind,
   type ReefBoostKind,
@@ -124,6 +131,19 @@ import {
   WHIRLPOOL_RADIUS,
   WHIRLPOOL_PULL_IMPULSE,
   WHIRLPOOL_SLOW_MULT,
+  REEF_PUFFER_ARM_MS,
+  REEF_PUFFER_LIFETIME_MS,
+  REEF_PUFFER_RADIUS,
+  REEF_BUBBLE_BEAM_RANGE,
+  REEF_BUBBLE_BEAM_HALF_ANGLE_RAD,
+  REEF_BUBBLE_LOCK_MS,
+  REEF_BUBBLE_FLOAT_HEIGHT,
+  REEF_REMORA_DURATION_MS,
+  REEF_CURRENT_SWAP_TELEGRAPH_MS,
+  REEF_WAVE_TELEGRAPH_MS,
+  REEF_WAVE_DURATION_MS,
+  REEF_WAVE_BAND_LENGTH_WU,
+  REEF_WAVE_SURGE_MULT,
 } from './reef-race-config';
 import {
   buildReefRaceFurniture,
@@ -210,6 +230,12 @@ const OBSTACLE_SLOW_MS = 1_200;
 const RIP_CURRENT_REFRESH_MS = 200;
 const DRIFTWOOD_BUMP_DAMPING = 0.58;
 const DRIFTWOOD_STAGGER_IMPULSE = 320;
+const PUFFER_SLOW_MS = 1_200;
+const PUFFER_CLEARANCE_HEIGHT = 72;
+const WAVE_INTERVAL_MIN_MS = 25_000;
+const WAVE_INTERVAL_SPAN_MS = 15_001;
+const WAVE_SWEEP_SPEED = REEF_MAX_SPEED * 1.5;
+const WAVE_STATIONARY_SPEED = REEF_MAX_SPEED * 0.12;
 
 /**
  * Cap on a single body's per-tick kart-vs-kart positional push (wu). Spreads a
@@ -285,6 +311,11 @@ interface SplineBody {
   trickSteerSide: -1 | 0 | 1;
   /** Deferred until post-wall/proximity passes so wipeout landings grant nothing. */
   trickLandingPending: boolean;
+  /** Last accepted jump edge, used by current-swap's telegraphed dodge. */
+  lastJumpAt: number;
+  bubbleStartedAtMs: number;
+  bubbledUntilMs: number;
+  remoraUntilMs: number;
 
   // ── Race progress (CLOSED-LOOP lap model, 2026-06-22) ─────────────────────
   /**
@@ -365,6 +396,8 @@ interface SplineBody {
 
   // ── Bot flag ─────────────────────────────────────────────────────────────
   isBot: boolean;
+  /** Immutable fixed-roster index used to spread bots across pickup rows. */
+  botRowRank: number;
 }
 
 /** Snapshot of a single body for delta encoding. */
@@ -390,12 +423,19 @@ interface SplineBodySnap {
   boosting: boolean;
   /** Always carried on the wire so false clears immediately after respawn. */
   wipedOut: boolean;
+  bubbledUntilMs: number;
+  remoraUntilMs: number;
 }
 
 interface SplinePickup {
   spawnId: string;
   position: Vec2;  // XZ centerline position
+  /** Authored row metadata used by bots without re-projecting 30 boxes per tick. */
+  progress: number;
+  stationIndex: number;
+  lane: -1 | 0 | 1;
   kind: ReefPowerUpKind;
+  variant: ReefPowerUpBoxVariant;
   active: boolean;
   collectedAt: number | null;
   collectorAvatarId: string | null;
@@ -412,7 +452,17 @@ interface SplineSnapshot {
     z: number;
     active: boolean;
     collectorAvatarId: string | null;
+    variant: ReefPowerUpBoxVariant;
   }>;
+  mines: ReefPufferMineState[];
+  activeWave: ReefWaveSweepState | null;
+}
+
+interface PendingCurrentSwap {
+  attackerAvatarId: string;
+  victimAvatarId: string;
+  startedAtMs: number;
+  resolvesAtMs: number;
 }
 
 interface BotProgressWatch {
@@ -445,6 +495,12 @@ interface SplineRoomState {
   tick: number;
   bodies: Map<string, SplineBody>;
   pickups: SplinePickup[];
+  mines: Map<string, ReefPufferMineState>;
+  mineCounter: number;
+  pendingSwaps: Map<string, PendingCurrentSwap>;
+  activeWave: ReefWaveSweepState | null;
+  nextWaveTelegraphAtMs: number;
+  waveCounter: number;
 
   rngState: number;
   flagCounter: ReefFlagCounter;
@@ -629,6 +685,12 @@ export class ReefRaceSplineSim {
       tick: 0,
       bodies: new Map(),
       pickups: [],
+      mines: new Map(),
+      mineCounter: 0,
+      pendingSwaps: new Map(),
+      activeWave: null,
+      nextWaveTelegraphAtMs: startedAt + 25_000 + (seed % WAVE_INTERVAL_SPAN_MS) - REEF_WAVE_TELEGRAPH_MS,
+      waveCounter: 0,
       rngState: seed >>> 0 || 1,
       flagCounter: new ReefFlagCounter(),
       lastSnapshot: null,
@@ -715,6 +777,10 @@ export class ReefRaceSplineSim {
         trickDirection: null,
         trickSteerSide: 0,
         trickLandingPending: false,
+        lastJumpAt: 0,
+        bubbleStartedAtMs: 0,
+        bubbledUntilMs: 0,
+        remoraUntilMs: 0,
         progress: 0,
         prevProgress: 0,
         lap: 0,
@@ -749,34 +815,87 @@ export class ReefRaceSplineSim {
         mults,
         pendingPowerUpSlots: [],
         isBot: opts?.isBot?.(avatarId) ?? botControllers.has(avatarId),
+        botRowRank: i,
       });
     });
 
     // ── Pickup boxes along the spline ─────────────────────────────────────
-    // Place REEF_POWERUP_BOX_COUNT boxes at evenly-spaced arc fractions,
-    // alternating left/right of centerline for visual variety.
-    const boxCount = 8; // Phase 1: fixed count, TODO: import REEF_POWERUP_BOX_COUNT
-    for (let i = 0; i < boxCount; i++) {
-      const t = (i + 0.5) / boxCount;
-      const center = spline.centerlineAt(t);
-      const normal  = spline.normalAt(t);
-      const halfW   = spline.widthAt(t);
-      const lateralSign = i % 2 === 0 ? 1 : -1;
-      const offsetMag = Math.min(halfW * 0.5, 40);
-      const rngState = state.rngState;
-      void rngState; // rollPowerUpKind uses state.rngState internally via lcgNext
-      state.pickups.push({
-        spawnId: `${roomId.slice(0, 8)}-pk-${i}`,
-        position: {
-          x: center.x + normal.x * lateralSign * offsetMag,
-          z: center.z + normal.z * lateralSign * offsetMag,
-        },
-        kind: this.rollPowerUpKind(state),
-        active: true,
-        collectedAt: null,
-        collectorAvatarId: null,
-        respawnAt: 0,
+    // R18d: ten contested rows of three. Each station searches a small seeded
+    // neighborhood around an evenly spread target and rejects the start clear,
+    // ramp-landing, and actual R18c furniture arclengths.
+    const rampArcs = state.ramps.map((ramp) => spline.arclengthFromT(ramp.t));
+    const obstacleArcs = state.furniture.obstacles.map(
+      (obstacle) => obstacle.progress * spline.totalArcLength,
+    );
+    const circularArcDistance = (a: number, b: number) => {
+      const direct = Math.abs(a - b);
+      return Math.min(direct, spline.totalArcLength - direct);
+    };
+    const positiveArcDelta = (a: number, b: number) =>
+      ((a - b) % spline.totalArcLength + spline.totalArcLength) % spline.totalArcLength;
+    const stationProgresses: number[] = [];
+    const searchOffsets = [0, .008, -.008, .016, -.016, .024, -.024, .032, -.032];
+    for (let station = 0; station < 10; station += 1) {
+      const jitter = ((lcgNext(state) % 2001) - 1000) / 100_000;
+      const target = .018 + station * .098 + jitter;
+      const chosen = searchOffsets.find((offset) => {
+        const progress = ((target + offset) % 1 + 1) % 1;
+        const arc = progress * spline.totalArcLength;
+        if (arc < 500) return false;
+        if (rampArcs.some((rampArc) => positiveArcDelta(arc, rampArc) <= 2_200)) return false;
+        if (obstacleArcs.some((obstacleArc) => circularArcDistance(arc, obstacleArc) <= 440)) return false;
+        return stationProgresses.every(
+          (other) => circularArcDistance(arc, other * spline.totalArcLength) >= 4_500,
+        );
       });
+      if (chosen === undefined) {
+        throw new Error(`Unable to place Reef item station ${station} for seed ${seed}`);
+      }
+      stationProgresses.push(((target + chosen) % 1 + 1) % 1);
+    }
+
+    const variants: ReefPowerUpBoxVariant[] = [
+      ...Array<ReefPowerUpBoxVariant>(21).fill('standard'),
+      ...Array<ReefPowerUpBoxVariant>(6).fill('double'),
+      ...Array<ReefPowerUpBoxVariant>(3).fill('gamble'),
+    ];
+    for (let i = variants.length - 1; i > 0; i -= 1) {
+      const j = lcgNext(state) % (i + 1);
+      const temp = variants[i]!;
+      variants[i] = variants[j]!;
+      variants[j] = temp;
+    }
+
+    let pickupIndex = 0;
+    for (let station = 0; station < stationProgresses.length; station += 1) {
+      const progress = stationProgresses[station]!;
+      const t = spline.tFromArclength(progress * spline.totalArcLength);
+      const center = spline.centerlineAt(t);
+      const normal = spline.normalAt(t);
+      const halfW = spline.widthAt(t);
+      const span = Math.min(halfW * .58, halfW - 170);
+      for (const lateralFraction of [-1, 0, 1] as const) {
+        const i = pickupIndex++;
+        state.pickups.push({
+          spawnId: `${roomId.slice(0, 8)}-pk-${station}-${i % 3}`,
+          position: {
+            x: center.x + normal.x * span * lateralFraction,
+            z: center.z + normal.z * span * lateralFraction,
+          },
+          progress,
+          stationIndex: station,
+          lane: lateralFraction,
+          kind: this.rollPowerUpKind(state),
+          variant: variants[i]!,
+          active: true,
+          collectedAt: null,
+          collectorAvatarId: null,
+          respawnAt: 0,
+        });
+      }
+    }
+    if (state.pickups.length !== REEF_POWERUP_BOX_COUNT) {
+      throw new Error(`Expected ${REEF_POWERUP_BOX_COUNT} Reef boxes, got ${state.pickups.length}`);
     }
 
     this.rooms.set(roomId, state);
@@ -807,6 +926,7 @@ export class ReefRaceSplineSim {
         spawnId: pk.spawnId,
         kind: pk.kind,
         position: { x: pk.position.x, y: pk.position.z },
+        variant: pk.variant,
       });
     }
 
@@ -1070,6 +1190,7 @@ export class ReefRaceSplineSim {
 
     // 0. Refresh placement cache once per tick.
     state.lastPlacementMap = this.computeLivePlacements(state);
+    this.resolveWaveSweep(state, now);
 
     // 0a. Bot intent scheduling.
     if (state.botControllers.size > 0) {
@@ -1129,6 +1250,8 @@ export class ReefRaceSplineSim {
     // are now final for this tick, so rival-hazard outcomes are order-
     // independent; shields resolve before offensive items (Codex finding 4a).
     this.resolvePowerUpUses(state, now);
+    this.resolvePendingCurrentSwaps(state, now);
+    this.resolvePufferMines(state, now);
 
     // 5. Power-up pickup collision.
     this.resolvePickups(state, now);
@@ -1197,6 +1320,53 @@ export class ReefRaceSplineSim {
       body.x += body.vx * dt;
       body.z += body.vz * dt;
       return;
+    }
+
+    if (body.remoraUntilMs > now) {
+      body.pendingPowerUpSlots.length = 0;
+      body.speedMod = 1.85;
+      const current = state.spline.closestPointOnSpline({ x: body.x, z: body.z });
+      const currentArc = state.spline.arclengthFromT(current.t);
+      const nextArc = (currentArc + REEF_MAX_SPEED * 1.85 * dt) % state.spline.totalArcLength;
+      const t = state.spline.tFromArclength(nextArc);
+      const center = state.spline.centerlineAt(t);
+      const tangent = state.spline.tangentAt(t);
+      body.x = center.x;
+      body.z = center.z;
+      body.vx = tangent.x * REEF_MAX_SPEED * 1.85;
+      body.vz = tangent.z * REEF_MAX_SPEED * 1.85;
+      body.rot = Math.atan2(tangent.x, tangent.z);
+      body.heightOffset = 0;
+      body.vyAxis = 0;
+      body.airborneTicks = 0;
+      return;
+    }
+    if (body.remoraUntilMs !== 0) {
+      body.remoraUntilMs = 0;
+      body.activeBoosts.delete('remora-rocket');
+    }
+
+    if (body.bubbledUntilMs > now) {
+      body.pendingPowerUpSlots.length = 0;
+      const phase = Math.max(0, Math.min(1,
+        (now - body.bubbleStartedAtMs) / Math.max(1, body.bubbledUntilMs - body.bubbleStartedAtMs),
+      ));
+      body.heightOffset = Math.sin(Math.PI * phase) * REEF_BUBBLE_FLOAT_HEIGHT;
+      body.vyAxis = 0;
+      body.airborneTicks = 1;
+      body.speedMod = 0.45;
+      body.vx *= Math.exp(-1.2 * dt);
+      body.vz *= Math.exp(-1.2 * dt);
+      body.x += body.vx * dt;
+      body.z += body.vz * dt;
+      return;
+    }
+    if (body.bubbledUntilMs !== 0) {
+      body.bubbledUntilMs = 0;
+      body.bubbleStartedAtMs = 0;
+      body.heightOffset = 0;
+      body.vyAxis = 0;
+      body.airborneTicks = 0;
     }
 
     if (body.spinoutUntil > now) {
@@ -1274,6 +1444,9 @@ export class ReefRaceSplineSim {
       const ripAdd = body.activeBoosts.has('rip-current')
         ? (body.activeBoosts.get('rip-current')!.mult ?? 0)
         : 0;
+      const waveAdd = body.activeBoosts.has('wave-surge')
+        ? (body.activeBoosts.get('wave-surge')!.mult ?? 0)
+        : 0;
       const botOverdriveAdd = body.isBot
         ? Math.max(0, Math.min(.05, body.botOverdrive - 1))
         : 0;
@@ -1287,7 +1460,7 @@ export class ReefRaceSplineSim {
       // speedMod stays <=1.85x, below REEF_KINEMATIC_TOLERANCE's 2.1x ceiling.
       const pickupBoostAdd = powerBoosted ? 0.40 : 0; // rr-turbo-bubble
       const positiveKineticStack = Math.min(
-        launchAdd + slipAdd + padAdd + trickAdd + ripAdd + botOverdriveAdd + pickupBoostAdd,
+        launchAdd + slipAdd + padAdd + trickAdd + ripAdd + waveAdd + botOverdriveAdd + pickupBoostAdd,
         KINEMATIC_BOOST_CAP,
       );
 
@@ -1321,6 +1494,7 @@ export class ReefRaceSplineSim {
     if (jumpPressed && body.airborneTicks === 0 && body.heightOffset === 0) {
       body.vyAxis += REEF_JUMP_IMPULSE_MANUAL;
       body.airborneTicks = 1;
+      body.lastJumpAt = now;
     }
 
     // R18b trick input uses the existing analog steering intent. A signed
@@ -1440,7 +1614,9 @@ export class ReefRaceSplineSim {
       body.activeBoosts.has('slipstream-boost') ||
       body.activeBoosts.has('rip-current') ||
       body.activeBoosts.has('pad-boost') ||
-      body.activeBoosts.has('trick-surge');
+      body.activeBoosts.has('trick-surge') ||
+      body.activeBoosts.has('wave-surge') ||
+      body.activeBoosts.has('remora-rocket');
     const hasBotOverdrive = body.isBot && body.botOverdrive > 1;
     if (isPositiveBoostActive || hasBotOverdrive) {
       const speed = Math.hypot(body.vx, body.vz);
@@ -1507,7 +1683,7 @@ export class ReefRaceSplineSim {
     for (const body of state.bodies.values()) {
       if (
         !body.alive || body.forfeited || body.finishedAt !== null ||
-        body.wipeoutUntil !== null
+        body.wipeoutUntil !== null || body.remoraUntilMs > now
       ) continue;
 
       let inside = state.obstacleInside.get(body.avatarId);
@@ -1906,6 +2082,12 @@ export class ReefRaceSplineSim {
         } as unknown as ServerFrame);
       } else {
         // Mid-race lap completion — emit a lap event so the HUD ticks the counter.
+        if (body.lap === REEF_RACE_LAPS - 1) {
+          this.broadcastFn(state.roomId, {
+            type: 'event.final_lap',
+            avatarId: body.avatarId,
+          });
+        }
         this.broadcastFn(state.roomId, {
           type: 'event.lap_completed',
           avatarId: body.avatarId,
@@ -2015,7 +2197,7 @@ export class ReefRaceSplineSim {
     const bodies = Array.from(state.bodies.values()).filter(
       (b) =>
         b.alive && !b.dnf && b.finishedAt === null &&
-        b.wipeoutUntil === null,
+        b.wipeoutUntil === null && b.remoraUntilMs <= state.simTimeMs,
     );
     for (let i = 0; i < bodies.length; i++) {
       for (let j = i + 1; j < bodies.length; j++) {
@@ -2068,7 +2250,7 @@ export class ReefRaceSplineSim {
         !body.alive || body.forfeited || body.finishedAt !== null ||
         body.wipeoutUntil !== null
       ) continue;
-      if (body.airborneTicks !== 0 || body.heightOffset > 0) continue;
+      if (body.airborneTicks !== 0 || body.heightOffset > 0 || body.remoraUntilMs > now) continue;
 
       // Lazy-init per-body cooldown map.
       let bodyRampCooldowns = state.rampCooldowns.get(body.avatarId);
@@ -2139,7 +2321,7 @@ export class ReefRaceSplineSim {
 
       // Floor pads have no vertical reach — an AIRBORNE body passing overhead
       // must NOT trigger them (Codex finding 2b; mirrors the ramp grounded gate).
-      const grounded = body.airborneTicks === 0 && body.heightOffset === 0;
+      const grounded = body.airborneTicks === 0 && body.heightOffset === 0 && body.remoraUntilMs <= now;
 
       let inside = state.boostPadInside.get(body.avatarId);
       if (!inside) {
@@ -2221,20 +2403,61 @@ export class ReefRaceSplineSim {
         const dz = body.z - pk.position.z;
         const dist = Math.hypot(dx, dz);
         if (dist <= REEF_BODY_RADIUS + REEF_POWERUP_RADIUS) {
-          const slot = body.inventory.findIndex((s) => s.kind === null);
-          if (slot >= 0) {
+          const emptySlots = body.inventory
+            .map((slot, index) => slot.kind === null ? index : -1)
+            .filter((index) => index >= 0);
+          const requiredSlots = pk.variant === 'double' ? 2 : 1;
+          if (emptySlots.length >= requiredSlots) {
             const collectorPlacement =
               state.lastPlacementMap.get(body.avatarId) ?? null;
-            const finalKind: ReefPowerUpKind =
-              collectorPlacement !== null
-                ? this.rollPowerUpKindForPlacement(state, collectorPlacement)
-                : pk.kind;
-            body.inventory[slot] = {
-              kind: finalKind,
-              charges: 1,
-              cooldownUntil: 0,
-            };
-            pk.kind = finalKind;
+            const livePlacements = Array.from(state.bodies.values())
+              .filter((racer) => racer.alive && !racer.dnf && !racer.forfeited && racer.finishedAt === null)
+              .map((racer) => state.lastPlacementMap.get(racer.avatarId) ?? 0);
+            const lastLivePlacement = Math.max(1, ...livePlacements);
+            const finalLap = body.lap >= REEF_RACE_LAPS - 1;
+            let collectedKind: ReefPowerUpKind | undefined;
+            if (pk.variant === 'gamble' && (lcgNext(state) & 1) === 0) {
+              body.activeBoosts.set('hazard-slow', {
+                expiresAt: now + 1_500,
+                mult: 1 + HAZARD_SLOW_MULT,
+              });
+              this.broadcastFn(state.roomId, {
+                type: 'event.gamble_dud',
+                avatarId: body.avatarId,
+                durationMs: 1_500,
+              });
+            } else {
+              const rolls = pk.variant === 'double' ? 2 : 1;
+              for (let rollIndex = 0; rollIndex < rolls; rollIndex += 1) {
+                let finalKind: ReefPowerUpKind;
+                if (pk.variant === 'gamble') {
+                  const isLast = collectorPlacement === lastLivePlacement;
+                  finalKind = isLast
+                    ? 'rr-remora-rocket'
+                    : collectorPlacement === 1
+                      ? 'rr-whirlpool'
+                      : (lcgNext(state) & 1) === 0
+                        ? 'rr-current-swap'
+                        : 'rr-whirlpool';
+                } else {
+                  finalKind = collectorPlacement !== null
+                    ? this.rollPowerUpKindForPlacement(
+                        state,
+                        collectorPlacement,
+                        lastLivePlacement,
+                        finalLap,
+                      )
+                    : pk.kind;
+                }
+                body.inventory[emptySlots[rollIndex]!] = {
+                  kind: finalKind,
+                  charges: 1,
+                  cooldownUntil: 0,
+                };
+                collectedKind ??= finalKind;
+              }
+            }
+            if (collectedKind) pk.kind = collectedKind;
             pk.active = false;
             pk.collectedAt = now;
             pk.collectorAvatarId = body.avatarId;
@@ -2243,10 +2466,13 @@ export class ReefRaceSplineSim {
               type: 'event.power_up_collected',
               spawnId: pk.spawnId,
               collectorAvatarId: body.avatarId,
-              kind: finalKind,
+              ...(pk.variant === 'double' || collectedKind === undefined
+                ? {}
+                : { kind: collectedKind }),
+              variant: pk.variant,
             });
+            break;
           }
-          break;
         }
       }
     }
@@ -2266,6 +2492,7 @@ export class ReefRaceSplineSim {
           spawnId: pk.spawnId,
           kind: pk.kind,
           position: { x: pk.position.x, y: pk.position.z },
+          variant: pk.variant,
         });
       }
     }
@@ -2366,6 +2593,18 @@ export class ReefRaceSplineSim {
             break;
           case 'rr-whirlpool':
             this.collectWhirlpool(state, body, now, addImpulse);
+            break;
+          case 'rr-puffer-mine':
+            this.placePufferMine(state, body, now);
+            break;
+          case 'rr-bubble-beam':
+            this.fireBubbleBeam(state, body, now);
+            break;
+          case 'rr-remora-rocket':
+            this.activateRemoraRocket(state, body, now);
+            break;
+          case 'rr-current-swap':
+            this.startCurrentSwap(state, body, now);
             break;
         }
         this.consumeSlot(body, slot, def, now);
@@ -2472,7 +2711,9 @@ export class ReefRaceSplineSim {
       this.broadcastFn(state.roomId, {
         type: 'event.hit',
         srcAvatarId: src.avatarId,
+        attackerAvatarId: src.avatarId,
         dstAvatarId: target.avatarId,
+        itemKind: 'rr-tide-wave',
         position: { x: target.x, y: target.z },
         power: 1 - dist / radius,
       });
@@ -2521,7 +2762,9 @@ export class ReefRaceSplineSim {
     this.broadcastFn(state.roomId, {
       type: 'event.hit',
       srcAvatarId: src.avatarId,
+      attackerAvatarId: src.avatarId,
       dstAvatarId: best.avatarId,
+      itemKind: 'rr-seeker-jelly',
       position: { x: best.x, y: best.z },
       power: 1,
     });
@@ -2568,7 +2811,9 @@ export class ReefRaceSplineSim {
       this.broadcastFn(state.roomId, {
         type: 'event.hit',
         srcAvatarId: src.avatarId,
+        attackerAvatarId: src.avatarId,
         dstAvatarId: target.avatarId,
+        itemKind: 'rr-ink-slick',
         position: { x: target.x, y: target.z },
         power: 1 - dist / INK_SLICK_RADIUS,
       });
@@ -2624,7 +2869,9 @@ export class ReefRaceSplineSim {
       this.broadcastFn(state.roomId, {
         type: 'event.hit',
         srcAvatarId: src.avatarId,
+        attackerAvatarId: src.avatarId,
         dstAvatarId: target.avatarId,
+        itemKind: 'rr-whirlpool',
         position: { x: target.x, y: target.z },
         power: falloff,
       });
@@ -2632,6 +2879,153 @@ export class ReefRaceSplineSim {
   }
 
   // ─── Round-end ─────────────────────────────────────────────────────────────
+
+  private resolvePufferMines(state: SplineRoomState, now: number): void {
+    for (const mine of state.mines.values()) {
+      if (!mine.active) continue;
+      if (now >= mine.expiresAtMs) {
+        mine.active = false;
+        this.broadcastFn(state.roomId, {
+          type: 'event.puffer_mine', phase: 'expired', mineId: mine.mineId,
+          ownerAvatarId: mine.ownerAvatarId, position: mine.position,
+          armedAtMs: mine.armedAtMs, expiresAtMs: mine.expiresAtMs,
+        });
+        continue;
+      }
+      if (now >= mine.armedAtMs && now - REEF_TICK_MS < mine.armedAtMs) {
+        this.broadcastFn(state.roomId, {
+          type: 'event.puffer_mine', phase: 'armed', mineId: mine.mineId,
+          ownerAvatarId: mine.ownerAvatarId, position: mine.position,
+          armedAtMs: mine.armedAtMs, expiresAtMs: mine.expiresAtMs,
+        });
+      }
+      if (now < mine.armedAtMs) continue;
+      for (const target of state.bodies.values()) {
+        if (target.avatarId === mine.ownerAvatarId) continue;
+        if (!target.alive || target.dnf || target.forfeited || target.finishedAt !== null || target.wipeoutUntil !== null) continue;
+        if (target.remoraUntilMs > now || target.heightOffset > PUFFER_CLEARANCE_HEIGHT) continue;
+        if (Math.hypot(target.x - mine.position.x, target.z - mine.position.y) > REEF_PUFFER_RADIUS + REEF_BODY_RADIUS) continue;
+        mine.active = false;
+        const blocked = target.activeEffects.has('rr-bubble-shield');
+        if (!blocked) {
+          target.spinoutUntil = now + OBSTACLE_SPINOUT_MS;
+          target.spinoutDirection = (lcgNext(state) & 1) === 0 ? -1 : 1;
+          const existing = target.activeBoosts.get('hazard-slow');
+          target.activeBoosts.set('hazard-slow', {
+            expiresAt: Math.max(existing?.expiresAt ?? 0, now + PUFFER_SLOW_MS),
+            mult: Math.min(existing?.mult ?? 1, 1 + HAZARD_SLOW_MULT),
+          });
+          this.broadcastFn(state.roomId, {
+            type: 'event.hit',
+            srcAvatarId: mine.ownerAvatarId,
+            attackerAvatarId: mine.ownerAvatarId,
+            dstAvatarId: target.avatarId,
+            itemKind: 'rr-puffer-mine',
+            position: { x: target.x, y: target.z },
+            power: 1,
+          });
+        }
+        this.broadcastFn(state.roomId, {
+          type: 'event.puffer_mine', phase: blocked ? 'blocked' : 'hit',
+          mineId: mine.mineId, ownerAvatarId: mine.ownerAvatarId,
+          victimAvatarId: target.avatarId, position: mine.position,
+          armedAtMs: mine.armedAtMs, expiresAtMs: mine.expiresAtMs,
+        });
+        break;
+      }
+    }
+  }
+
+  private resolvePendingCurrentSwaps(state: SplineRoomState, now: number): void {
+    for (const [attackerId, pending] of state.pendingSwaps) {
+      if (now < pending.resolvesAtMs) continue;
+      state.pendingSwaps.delete(attackerId);
+      const attacker = state.bodies.get(pending.attackerAvatarId);
+      const victim = state.bodies.get(pending.victimAvatarId);
+      if (!attacker || !victim || !attacker.alive || !victim.alive || attacker.dnf || victim.dnf ||
+        attacker.forfeited || victim.forfeited || attacker.finishedAt !== null || victim.finishedAt !== null ||
+        attacker.wipeoutUntil !== null || victim.wipeoutUntil !== null) {
+        this.broadcastFn(state.roomId, {
+          type: 'event.current_swap', phase: 'fizzled', attackerAvatarId: pending.attackerAvatarId,
+          victimAvatarId: pending.victimAvatarId, resolvesAtMs: pending.resolvesAtMs,
+        });
+        continue;
+      }
+      if (victim.lastJumpAt > pending.startedAtMs) {
+        this.broadcastFn(state.roomId, {
+          type: 'event.current_swap', phase: 'dodged', attackerAvatarId: attacker.avatarId,
+          victimAvatarId: victim.avatarId, resolvesAtMs: pending.resolvesAtMs,
+          position: { x: victim.x, y: victim.z },
+        });
+        continue;
+      }
+      const attackerPose = {
+        x: attacker.x, z: attacker.z, vx: attacker.vx, vz: attacker.vz, rot: attacker.rot,
+        progress: attacker.progress, lap: attacker.lap,
+        startCrossed: attacker.startCrossed, lastLapAt: attacker.lastLapAt,
+      };
+      attacker.x = victim.x; attacker.z = victim.z; attacker.vx = victim.vx; attacker.vz = victim.vz;
+      attacker.rot = victim.rot; attacker.progress = victim.progress; attacker.prevProgress = victim.progress;
+      attacker.lap = victim.lap; attacker.startCrossed = victim.startCrossed; attacker.lastLapAt = victim.lastLapAt;
+      victim.x = attackerPose.x; victim.z = attackerPose.z; victim.vx = attackerPose.vx; victim.vz = attackerPose.vz;
+      victim.rot = attackerPose.rot; victim.progress = attackerPose.progress; victim.prevProgress = attackerPose.progress;
+      victim.lap = attackerPose.lap; victim.startCrossed = attackerPose.startCrossed; victim.lastLapAt = attackerPose.lastLapAt;
+      this.broadcastFn(state.roomId, {
+        type: 'event.current_swap', phase: 'resolved', attackerAvatarId: attacker.avatarId,
+        victimAvatarId: victim.avatarId, resolvesAtMs: pending.resolvesAtMs,
+        position: { x: victim.x, y: victim.z },
+      });
+    }
+  }
+
+  private resolveWaveSweep(state: SplineRoomState, now: number): void {
+    if (!state.activeWave && now >= state.nextWaveTelegraphAtMs) {
+      const sector = ((lcgNext(state) % 4) + 1) as 1 | 2 | 3 | 4;
+      const startsAtMs = now + REEF_WAVE_TELEGRAPH_MS;
+      state.activeWave = {
+        waveId: `${state.roomId.slice(0, 8)}-wave-${++state.waveCounter}`,
+        phase: 'telegraph', sector, startProgress: (sector - 1) / 4,
+        bandLengthWu: REEF_WAVE_BAND_LENGTH_WU, sweepSpeedWuPerSec: WAVE_SWEEP_SPEED,
+        startsAtMs, endsAtMs: startsAtMs + REEF_WAVE_DURATION_MS,
+      };
+      this.broadcastFn(state.roomId, { type: 'event.wave_sweep', ...state.activeWave });
+    }
+    const wave = state.activeWave;
+    if (!wave) return;
+    if (wave.phase === 'telegraph' && now >= wave.startsAtMs) {
+      wave.phase = 'active';
+      this.broadcastFn(state.roomId, { type: 'event.wave_sweep', ...wave });
+    }
+    if (now >= wave.endsAtMs) {
+      this.broadcastFn(state.roomId, { type: 'event.wave_sweep', ...wave, phase: 'ended' });
+      state.activeWave = null;
+      state.nextWaveTelegraphAtMs = wave.startsAtMs + WAVE_INTERVAL_MIN_MS +
+        (lcgNext(state) % WAVE_INTERVAL_SPAN_MS) - REEF_WAVE_TELEGRAPH_MS;
+      return;
+    }
+    if (wave.phase !== 'active') return;
+    const headProgress = (wave.startProgress + ((now - wave.startsAtMs) / 1000) *
+      wave.sweepSpeedWuPerSec / state.spline.totalArcLength) % 1;
+    for (const body of state.bodies.values()) {
+      if (!body.alive || body.dnf || body.forfeited || body.finishedAt !== null || body.remoraUntilMs > now) continue;
+      const behindHead = ((headProgress - body.progress) % 1 + 1) % 1;
+      if (behindHead * state.spline.totalArcLength > wave.bandLengthWu) continue;
+      const t = state.spline.tFromArclength(body.progress * state.spline.totalArcLength);
+      const tangent = state.spline.tangentAt(t);
+      const speed = Math.hypot(body.vx, body.vz);
+      const withDirection = speed >= WAVE_STATIONARY_SPEED &&
+        body.vx * tangent.x + body.vz * tangent.z > speed * .25;
+      if (withDirection) {
+        body.activeBoosts.set('wave-surge', { expiresAt: now + 200, mult: REEF_WAVE_SURGE_MULT });
+      } else {
+        const existing = body.activeBoosts.get('hazard-slow');
+        body.activeBoosts.set('hazard-slow', {
+          expiresAt: Math.max(existing?.expiresAt ?? 0, now + 600),
+          mult: Math.min(existing?.mult ?? 1, 1 + HAZARD_SLOW_MULT),
+        });
+      }
+    }
+  }
 
   private shouldEndRound(state: SplineRoomState, now: number): boolean {
     let racing = 0;
@@ -2777,8 +3171,12 @@ export class ReefRaceSplineSim {
           b.activeBoosts.has('slipstream-boost') ||
           b.activeBoosts.has('rip-current') ||
           b.activeBoosts.has('pad-boost') ||
-          b.activeBoosts.has('trick-surge'),
+          b.activeBoosts.has('trick-surge') ||
+          b.activeBoosts.has('wave-surge') ||
+          b.activeBoosts.has('remora-rocket'),
         wipedOut: b.wipeoutUntil !== null,
+        bubbledUntilMs: b.bubbledUntilMs,
+        remoraUntilMs: b.remoraUntilMs,
       })),
       pickups: state.pickups.map((pk) => ({
         spawnId: pk.spawnId,
@@ -2787,7 +3185,10 @@ export class ReefRaceSplineSim {
         z: quant(pk.position.z, POS_QUANT),
         active: pk.active,
         collectorAvatarId: pk.collectorAvatarId,
+        variant: pk.variant,
       })),
+      mines: Array.from(state.mines.values()).map((mine) => ({ ...mine })),
+      activeWave: state.activeWave ? { ...state.activeWave } : null,
     };
   }
 
@@ -2816,6 +3217,8 @@ export class ReefRaceSplineSim {
       speedMod: b.speedMod,
       boosting: b.boosting,
       wipedOut: b.wipedOut,
+      bubbledUntilMs: b.bubbledUntilMs || undefined,
+      remoraUntilMs: b.remoraUntilMs || undefined,
       inventory: b.inventory.map((slot) => ({ ...slot })),
     };
   }
@@ -2840,7 +3243,10 @@ export class ReefRaceSplineSim {
             spawnId: p.spawnId,
             kind: p.kind,
             position: { x: p.x, y: p.z },
+            variant: p.variant,
           })),
+        reefMines: snap.mines.filter((mine) => mine.active),
+        activeWave: snap.activeWave ?? undefined,
         scores: snap.bodies.map((b) => ({
           avatarId: b.avatarId,
           // CLOSED-LOOP: score = whole-race progress (lap + within-lap fraction)
@@ -2878,7 +3284,9 @@ export class ReefRaceSplineSim {
           p.placement !== b.placement ||
           !inventoriesMatch(p.inventory, b.inventory) ||
           p.boosting !== b.boosting ||
-          p.wipedOut !== b.wipedOut
+          p.wipedOut !== b.wipedOut ||
+          p.bubbledUntilMs !== b.bubbledUntilMs ||
+          p.remoraUntilMs !== b.remoraUntilMs
         );
       })
       .map((b) => {
@@ -2916,6 +3324,8 @@ export class ReefRaceSplineSim {
           boosting: b.boosting,
           // Always carry both true and false so respawn clears immediately.
           wipedOut: b.wipedOut,
+          bubbledUntilMs: b.bubbledUntilMs,
+          remoraUntilMs: b.remoraUntilMs,
           ...(inventoryChanged
             ? { inventory: b.inventory.map((slot) => ({ ...slot })) }
             : {}),
@@ -2927,7 +3337,7 @@ export class ReefRaceSplineSim {
       .filter((p) => {
         if (!prev) return true;
         const q = prev.pickups.find((pp) => pp.spawnId === p.spawnId);
-        return !q || q.active !== p.active;
+        return !q || q.active !== p.active || q.variant !== p.variant;
       })
       .map((p) =>
         p.active
@@ -2935,13 +3345,23 @@ export class ReefRaceSplineSim {
               spawnId: p.spawnId,
               kind: p.kind,
               position: { x: p.x, y: p.z },
+              variant: p.variant,
             }
           : {
               spawnId: p.spawnId,
               kind: p.kind,
+              variant: p.variant,
               collectorAvatarId: p.collectorAvatarId ?? undefined,
             },
       );
+
+    const mines = snap.mines.filter((mine) => {
+      const previous = prev?.mines.find((candidate) => candidate.mineId === mine.mineId);
+      return !previous || previous.active !== mine.active;
+    });
+    const activeWaveChanged =
+      prev?.activeWave?.waveId !== snap.activeWave?.waveId ||
+      prev?.activeWave?.phase !== snap.activeWave?.phase;
 
     state.lastSnapshot = snap;
     this.broadcastFn(state.roomId, {
@@ -2950,6 +3370,8 @@ export class ReefRaceSplineSim {
       seq: snap.tick,
       entities,
       powerUps: pickups,
+      reefMines: mines,
+      ...(activeWaveChanged ? { activeWave: snap.activeWave } : {}),
     });
   }
 
@@ -3230,10 +3652,19 @@ export class ReefRaceSplineSim {
       finishedAt: number | null;
       dnf: boolean;
       airborne: boolean;
+      botRowRank: number;
     }>;
     arenaRadius: number;
     now: number;
     matchStartedAt: number;
+    pickups: Array<{
+      x: number;
+      y: number;
+      active: true;
+      progress: number;
+      stationIndex: number;
+      lane: -1 | 0 | 1;
+    }>;
     obstacles: ReefRaceFurnitureLayout['obstacles'];
     ripCurrents: ReefRaceFurnitureLayout['ripCurrents'];
     creatureNowMs: number;
@@ -3264,6 +3695,7 @@ export class ReefRaceSplineSim {
       finishedAt: b.finishedAt,
       dnf: b.dnf,
       airborne: b.airborneTicks > 0 || b.heightOffset > 0,
+      botRowRank: b.botRowRank,
     }));
     return {
       selfAvatarId,
@@ -3271,30 +3703,165 @@ export class ReefRaceSplineSim {
       arenaRadius: Math.round(state.spline.totalArcLength),  // loop arc length as "radius" boundary heuristic (closed-loop)
       now: state.simTimeMs,
       matchStartedAt: state.startedAt,
+      pickups: state.pickups
+        .filter((pickup) => pickup.active)
+        .map((pickup) => ({
+          x: pickup.position.x,
+          y: pickup.position.z,
+          active: true as const,
+          progress: pickup.progress,
+          stationIndex: pickup.stationIndex,
+          lane: pickup.lane,
+        })),
       obstacles: state.furniture.obstacles,
       ripCurrents: state.furniture.ripCurrents,
       creatureNowMs,
     };
   }
 
+  private broadcastItemHit(
+    state: SplineRoomState,
+    attacker: SplineBody,
+    victim: SplineBody,
+    itemKind: ReefPowerUpKind,
+    power = 1,
+  ): void {
+    this.broadcastFn(state.roomId, {
+      type: 'event.hit',
+      srcAvatarId: attacker.avatarId,
+      attackerAvatarId: attacker.avatarId,
+      dstAvatarId: victim.avatarId,
+      itemKind,
+      position: { x: victim.x, y: victim.z },
+      power,
+    });
+  }
+
+  private placePufferMine(state: SplineRoomState, owner: SplineBody, now: number): void {
+    const mine: ReefPufferMineState = {
+      mineId: `${state.roomId.slice(0, 8)}-mine-${++state.mineCounter}`,
+      ownerAvatarId: owner.avatarId,
+      position: { x: owner.x, y: owner.z },
+      armedAtMs: now + REEF_PUFFER_ARM_MS,
+      expiresAtMs: now + REEF_PUFFER_LIFETIME_MS,
+      active: true,
+    };
+    state.mines.set(mine.mineId, mine);
+    this.broadcastFn(state.roomId, {
+      type: 'event.puffer_mine',
+      phase: 'placed',
+      ...mine,
+    });
+  }
+
+  private fireBubbleBeam(state: SplineRoomState, attacker: SplineBody, now: number): void {
+    const forwardX = Math.sin(attacker.rot);
+    const forwardZ = Math.cos(attacker.rot);
+    let closest: SplineBody | null = null;
+    let closestDist = Infinity;
+    for (const target of state.bodies.values()) {
+      if (target.avatarId === attacker.avatarId) continue;
+      if (!target.alive || target.dnf || target.forfeited || target.finishedAt !== null || target.wipeoutUntil !== null) continue;
+      const dx = target.x - attacker.x;
+      const dz = target.z - attacker.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist <= 0 || dist > REEF_BUBBLE_BEAM_RANGE) continue;
+      const alignment = (dx * forwardX + dz * forwardZ) / dist;
+      if (alignment < Math.cos(REEF_BUBBLE_BEAM_HALF_ANGLE_RAD)) continue;
+      if (dist < closestDist) {
+        closest = target;
+        closestDist = dist;
+      }
+    }
+    if (
+      !closest || closest.activeEffects.has('rr-bubble-shield') ||
+      closest.bubbledUntilMs > now
+    ) return;
+    closest.bubbleStartedAtMs = now;
+    closest.bubbledUntilMs = now + REEF_BUBBLE_LOCK_MS;
+    closest.heightOffset = 0;
+    closest.vyAxis = 0;
+    closest.airborneTicks = 1;
+    closest.trickArmed = false;
+    closest.trickDirection = null;
+    this.broadcastItemHit(state, attacker, closest, 'rr-bubble-beam', 1 - closestDist / REEF_BUBBLE_BEAM_RANGE);
+  }
+
+  private activateRemoraRocket(state: SplineRoomState, body: SplineBody, now: number): void {
+    const placement = state.lastPlacementMap.get(body.avatarId) ?? 0;
+    const livePlacements = Array.from(state.bodies.values())
+      .filter((racer) => racer.alive && !racer.dnf && !racer.forfeited && racer.finishedAt === null)
+      .map((racer) => state.lastPlacementMap.get(racer.avatarId) ?? 0);
+    if (placement !== Math.max(1, ...livePlacements)) return;
+    body.remoraUntilMs = now + REEF_REMORA_DURATION_MS;
+    body.activeBoosts.set('remora-rocket', {
+      expiresAt: body.remoraUntilMs,
+      mult: .85,
+    });
+  }
+
+  private startCurrentSwap(state: SplineRoomState, attacker: SplineBody, now: number): void {
+    if (state.pendingSwaps.has(attacker.avatarId)) return;
+    const attackerProgress = totalProgress(attacker.lap, attacker.progress);
+    let victim: SplineBody | null = null;
+    let closestAhead = Infinity;
+    for (const target of state.bodies.values()) {
+      if (target.avatarId === attacker.avatarId) continue;
+      if (!target.alive || target.dnf || target.forfeited || target.finishedAt !== null || target.wipeoutUntil !== null) continue;
+      if (Array.from(state.pendingSwaps.values()).some((swap) => swap.victimAvatarId === target.avatarId)) continue;
+      const delta = totalProgress(target.lap, target.progress) - attackerProgress;
+      if (delta > 0 && delta < closestAhead) {
+        victim = target;
+        closestAhead = delta;
+      }
+    }
+    if (!victim) {
+      this.broadcastFn(state.roomId, {
+        type: 'event.current_swap',
+        phase: 'fizzled',
+        attackerAvatarId: attacker.avatarId,
+        victimAvatarId: attacker.avatarId,
+        resolvesAtMs: now,
+      });
+      return;
+    }
+    const pending: PendingCurrentSwap = {
+      attackerAvatarId: attacker.avatarId,
+      victimAvatarId: victim.avatarId,
+      startedAtMs: now,
+      resolvesAtMs: now + REEF_CURRENT_SWAP_TELEGRAPH_MS,
+    };
+    state.pendingSwaps.set(attacker.avatarId, pending);
+    this.broadcastFn(state.roomId, {
+      type: 'event.current_swap',
+      phase: 'telegraph',
+      attackerAvatarId: attacker.avatarId,
+      victimAvatarId: victim.avatarId,
+      resolvesAtMs: pending.resolvesAtMs,
+      position: { x: victim.x, y: victim.z },
+    });
+  }
+
   // ─── RNG + power-up roll ───────────────────────────────────────────────────
 
   private rollPowerUpKind(state: SplineRoomState): ReefPowerUpKind {
-    const total = REEF_POWERUP_DEFS.reduce((s, d) => s + d.weight, 0);
+    const total = REEF_SPLINE_POWERUP_DEFS.reduce((s, d) => s + d.weight, 0);
     const roll = lcgNext(state) % total;
     let acc = 0;
-    for (const def of REEF_POWERUP_DEFS) {
+    for (const def of REEF_SPLINE_POWERUP_DEFS) {
       acc += def.weight;
       if (roll < acc) return def.kind;
     }
-    return REEF_POWERUP_DEFS[0].kind;
+    return REEF_SPLINE_POWERUP_DEFS[0]!.kind;
   }
 
   private rollPowerUpKindForPlacement(
     state: SplineRoomState,
     placement: number,
+    racerCount: number,
+    finalLap: boolean,
   ): ReefPowerUpKind {
-    const table = getPlacementItemTable(placement);
+    const table = getPlacementItemTable(placement, racerCount, finalLap);
     if (!table || table.length === 0) return this.rollPowerUpKind(state);
     const total = table.reduce((s, e) => s + e.weight, 0);
     if (total <= 0) return this.rollPowerUpKind(state);

@@ -37,6 +37,7 @@ import ReefRacePlayer        from './ReefRacePlayer';
 import ReefRaceGhost         from './ReefRaceGhost';
 import ReefRacePickups       from './ReefRacePickups';
 import ReefRaceBoostFX       from './ReefRaceBoostFX';
+import ReefRaceHecticFX      from './ReefRaceHecticFX';
 // SURF ROAD (2026-06-23): ReefRaceCheckpoints / ReefRaceStartGrid /
 // ReefRaceBoostRibbons / ReefRaceHazards / ReefRaceApexMarkers are no longer
 // mounted — flat v1-coordinate overlays that float wrong against the elevated
@@ -645,6 +646,7 @@ function SceneContents({
           rides reefTrackElevationAt(t) + reefTrackBankAngleAt(t). Demo karts off
           in gameplay (server karts render via <ReefRacePlayer />). */}
       <RiverScene showDemoKarts={false} showDemoPickups={false} />
+      <ReefRaceHecticFX />
 
       {/* Lighting */}
       <ReefLight />
