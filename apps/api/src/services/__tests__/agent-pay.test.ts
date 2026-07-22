@@ -8,7 +8,11 @@ import type {
 } from '../custodial-x402';
 
 const {
+  fulfillReconciledAgentPayment,
   payAgent,
+  resetAgentPayFacilitatorCircuitForTests,
+  resolveAgentPayBreakerCooldownMs,
+  resolveAgentPayBreakerThreshold,
   resolveAgentPayDailySendUsdCents,
   resolveAgentPayDailyReceiveUsdCents,
 } = await import('../agent-pay');
@@ -78,6 +82,47 @@ function ambiguousOutcome(): ExecutePreparedExactPaymentOutcome {
   };
 }
 
+function unavailableOutcome(): ExecutePreparedExactPaymentOutcome {
+  return {
+    kind: 'definitive_failure',
+    stage: 'verify',
+    verifyPassed: false,
+    facilitatorOutage: true,
+    reason: 'facilitator_verify_error',
+    payer: SENDER_WALLET,
+    result: {
+      settled: false, isValid: false, txSignature: null, network: null,
+      payer: SENDER_WALLET, failureReason: 'facilitator_verify_error', raw: {},
+      facilitatorFailure: 'unavailable',
+    },
+  };
+}
+
+function meridianSettledOutcome(signature: string): ExecutePreparedExactPaymentOutcome {
+  return {
+    kind: 'meridian_settled',
+    signature,
+    payer: SENDER_WALLET,
+    amounts: {
+      grossUsdcAtomic: 1_000_000n,
+      platformFeeUsdcAtomic: 0n,
+      treasuryFeeUsdcAtomic: 0n,
+      netUsdcAtomic: 1_000_000n,
+    },
+    result: {
+      settled: true,
+      isValid: true,
+      txSignature: signature,
+      network: requirement().network,
+      payer: SENDER_WALLET,
+      failureReason: null,
+      outage: false,
+      httpStatus: 200,
+      raw: {},
+    },
+  };
+}
+
 function harness(options: {
   balance?: bigint;
   outcome?: ExecutePreparedExactPaymentOutcome;
@@ -85,11 +130,22 @@ function harness(options: {
   executeThrows?: boolean;
   captureReturnsLostAfterWriting?: boolean;
   now?: Date;
+  execute?: (call: number) => Promise<ExecutePreparedExactPaymentOutcome>;
+  feePayerAvailable?: boolean;
 } = {}) {
   const rows = new Map<string, AgentPayment>();
   let ids = 0;
   let executeCalls = 0;
   let mintCalls = 0;
+  let recipientCalls = 0;
+  let walletLookupCalls = 0;
+  let admissionCalls = 0;
+  let balanceCalls = 0;
+  let signingWalletCalls = 0;
+  let feePayerCalls = 0;
+  let prepareCalls = 0;
+  let alertCalls = 0;
+  let nowMs = (options.now ?? new Date()).getTime();
   const mintBackings: unknown[] = [];
   let failFulfillment = options.failFirstFulfillment ?? false;
   let fulfillmentBarrier = Promise.resolve();
@@ -126,6 +182,7 @@ function harness(options: {
       ) ?? null;
     },
     async resolveRecipient(recipient: AgentPayRecipient) {
+      recipientCalls += 1;
       if (recipient.kind === 'avatar'
         && [RECIPIENT, SENDER, SENDER_TWO].includes(recipient.avatarId)) {
         return { avatarId: recipient.avatarId };
@@ -133,12 +190,14 @@ function harness(options: {
       return { error: 'not_found' };
     },
     async findAvatarWallet(avatarId) {
+      walletLookupCalls += 1;
       if (avatarId === SENDER) return { publicKey: SENDER_WALLET };
       if (avatarId === SENDER_TWO) return { publicKey: SENDER_TWO_WALLET };
       if (avatarId === RECIPIENT) return { publicKey: RECIPIENT_WALLET };
       return null;
     },
     async admitPending(input, limits, dayStart) {
+      admissionCalls += 1;
       const prior = [...rows.values()].find(
         (r) => r.senderAvatarId === input.senderAvatarId
           && r.idempotencyKey === input.idempotencyKey,
@@ -242,15 +301,25 @@ function harness(options: {
   };
   const deps: AgentPayDeps = {
     db,
-    readUsdcBalance: async () => options.balance ?? 10_000_000n,
-    loadSigningWallet: async (avatarId) => ({
-      publicKey: avatarId === SENDER_TWO ? SENDER_TWO_WALLET : SENDER_WALLET,
-      secretKey: new Uint8Array(64),
-    }),
-    prepare: async () => prepared,
+    readUsdcBalance: async () => {
+      balanceCalls += 1;
+      return options.balance ?? 10_000_000n;
+    },
+    loadSigningWallet: async (avatarId) => {
+      signingWalletCalls += 1;
+      return {
+        publicKey: avatarId === SENDER_TWO ? SENDER_TWO_WALLET : SENDER_WALLET,
+        secretKey: new Uint8Array(64),
+      };
+    },
+    prepare: async () => {
+      prepareCalls += 1;
+      return prepared;
+    },
     execute: async () => {
       executeCalls += 1;
       if (options.executeThrows) throw new Error('synthetic ambiguous transport failure');
+      if (options.execute) return options.execute(executeCalls);
       return options.outcome ?? settledOutcome();
     },
     mintEarned: async (input) => {
@@ -258,16 +327,32 @@ function harness(options: {
       mintBackings.push(input.backing);
       return { ledgerId: `ledger-${mintCalls}`, balanceAfter: 0 };
     },
-    resolveFeePayer: async () => '33333333333333333333333333333333',
+    resolveFeePayer: async () => {
+      feePayerCalls += 1;
+      return options.feePayerAvailable === false
+        ? null
+        : '33333333333333333333333333333333';
+    },
     resolveRail: () => ({ network: 'devnet', rpcUrl: 'http://rpc.test', allowed: true }),
+    alert: async () => { alertCalls += 1; },
     randomId: () => `00000000-0000-4000-9000-${String(ids).padStart(12, '0')}`,
-    now: () => options.now ?? new Date(),
+    now: () => new Date(nowMs),
   };
   return {
     deps,
+    db,
     rows,
     executeCalls: () => executeCalls,
     mintCalls: () => mintCalls,
+    recipientCalls: () => recipientCalls,
+    walletLookupCalls: () => walletLookupCalls,
+    admissionCalls: () => admissionCalls,
+    balanceCalls: () => balanceCalls,
+    signingWalletCalls: () => signingWalletCalls,
+    feePayerCalls: () => feePayerCalls,
+    prepareCalls: () => prepareCalls,
+    alertCalls: () => alertCalls,
+    advanceMs: (ms: number) => { nowMs += ms; },
     mintBackings,
     seedRow,
   };
@@ -283,10 +368,13 @@ const request = (overrides: Partial<Parameters<typeof payAgent>[0]> = {}) => ({
 
 describe('agent-pay durable x402 machine', () => {
   beforeEach(() => {
+    resetAgentPayFacilitatorCircuitForTests();
     delete process.env.AGENT_PAY_MAX_USD_CENTS;
     delete process.env.AGENT_PAY_STALE_MS;
     delete process.env.AGENT_PAY_DAILY_SEND_USD_CENTS;
     delete process.env.AGENT_PAY_DAILY_RECEIVE_USD_CENTS;
+    delete process.env.AGENT_PAY_BREAKER_THRESHOLD;
+    delete process.env.AGENT_PAY_BREAKER_COOLDOWN_MS;
   });
 
   it('settles, mints full-basis EARNED once, and replays without a second settle/mint', async () => {
@@ -509,5 +597,215 @@ describe('agent-pay durable x402 machine', () => {
       (result) => !result.ok && result.code === 'daily_cap_exceeded',
     )).toHaveLength(1);
     expect(h.executeCalls()).toBe(0);
+  });
+
+  it('uses strict circuit-breaker defaults and floors', () => {
+    expect(resolveAgentPayBreakerThreshold()).toBe(5);
+    expect(resolveAgentPayBreakerCooldownMs()).toBe(600_000);
+
+    process.env.AGENT_PAY_BREAKER_THRESHOLD = '0';
+    process.env.AGENT_PAY_BREAKER_COOLDOWN_MS = '9999';
+    expect(resolveAgentPayBreakerThreshold()).toBe(5);
+    expect(resolveAgentPayBreakerCooldownMs()).toBe(600_000);
+
+    process.env.AGENT_PAY_BREAKER_THRESHOLD = '2';
+    process.env.AGENT_PAY_BREAKER_COOLDOWN_MS = '10000';
+    expect(resolveAgentPayBreakerThreshold()).toBe(2);
+    expect(resolveAgentPayBreakerCooldownMs()).toBe(10_000);
+  });
+
+  it('opens after consecutive facilitator failures and fails fast before wallets or admission', async () => {
+    process.env.AGENT_PAY_BREAKER_THRESHOLD = '2';
+    const h = harness({ outcome: unavailableOutcome() });
+
+    await payAgent(request({ idempotencyKey: 'breaker-failure-1' }), h.deps);
+    await payAgent(request({ idempotencyKey: 'breaker-failure-2' }), h.deps);
+    const beforeFastFail = {
+      recipients: h.recipientCalls(),
+      wallets: h.walletLookupCalls(),
+      admissions: h.admissionCalls(),
+      balances: h.balanceCalls(),
+      signingWallets: h.signingWalletCalls(),
+      feePayers: h.feePayerCalls(),
+      prepares: h.prepareCalls(),
+      rows: h.rows.size,
+    };
+    const blocked = await payAgent(
+      request({ idempotencyKey: 'breaker-blocked' }),
+      h.deps,
+    );
+    await Promise.resolve();
+
+    expect(blocked).toEqual({
+      ok: false,
+      code: 'payai_unavailable',
+      detail: 'facilitator_circuit_open',
+    });
+    expect(h.executeCalls()).toBe(2);
+    expect(h.recipientCalls()).toBe(beforeFastFail.recipients);
+    expect(h.walletLookupCalls()).toBe(beforeFastFail.wallets);
+    expect(h.admissionCalls()).toBe(beforeFastFail.admissions);
+    expect(h.balanceCalls()).toBe(beforeFastFail.balances);
+    expect(h.signingWalletCalls()).toBe(beforeFastFail.signingWallets);
+    expect(h.feePayerCalls()).toBe(beforeFastFail.feePayers);
+    expect(h.prepareCalls()).toBe(beforeFastFail.prepares);
+    expect(h.rows.size).toBe(beforeFastFail.rows);
+    expect(h.alertCalls()).toBe(1);
+  });
+
+  it('counts PayAI outages hidden by successful Meridian fallback settlements', async () => {
+    process.env.AGENT_PAY_BREAKER_THRESHOLD = '2';
+    const h = harness({
+      execute: async (call) => meridianSettledOutcome(`tx-meridian-${call}`),
+    });
+
+    expect(await payAgent(
+      request({ idempotencyKey: 'meridian-fallback-1' }),
+      h.deps,
+    )).toMatchObject({ ok: true, txSignature: 'tx-meridian-1' });
+    expect(await payAgent(
+      request({ idempotencyKey: 'meridian-fallback-2' }),
+      h.deps,
+    )).toMatchObject({ ok: true, txSignature: 'tx-meridian-2' });
+    expect(await payAgent(
+      request({ idempotencyKey: 'meridian-fallback-blocked' }),
+      h.deps,
+    )).toEqual({
+      ok: false,
+      code: 'payai_unavailable',
+      detail: 'facilitator_circuit_open',
+    });
+
+    expect(h.executeCalls()).toBe(2);
+    expect(h.mintCalls()).toBe(2);
+    expect(h.rows.size).toBe(2);
+    expect(h.alertCalls()).toBe(1);
+  });
+
+  it('allows exactly one half-open probe and closes on its success', async () => {
+    process.env.AGENT_PAY_BREAKER_THRESHOLD = '2';
+    process.env.AGENT_PAY_BREAKER_COOLDOWN_MS = '10000';
+    let startProbe!: () => void;
+    let releaseProbe!: () => void;
+    const probeStarted = new Promise<void>((resolve) => { startProbe = resolve; });
+    const probeGate = new Promise<void>((resolve) => { releaseProbe = resolve; });
+    const h = harness({
+      execute: async (call) => {
+        if (call <= 2) return unavailableOutcome();
+        if (call === 3) {
+          startProbe();
+          await probeGate;
+        }
+        return settledOutcome(`tx-agent-pay-${call}`);
+      },
+    });
+
+    await payAgent(request({ idempotencyKey: 'half-open-failure-1' }), h.deps);
+    await payAgent(request({ idempotencyKey: 'half-open-failure-2' }), h.deps);
+    h.advanceMs(10_000);
+
+    const probe = payAgent(request({ idempotencyKey: 'half-open-probe' }), h.deps);
+    await probeStarted;
+    const concurrent = await payAgent(
+      request({ idempotencyKey: 'half-open-concurrent' }),
+      h.deps,
+    );
+    expect(concurrent).toMatchObject({
+      ok: false,
+      code: 'payai_unavailable',
+      detail: 'facilitator_circuit_open',
+    });
+    expect(h.executeCalls()).toBe(3);
+
+    releaseProbe();
+    expect(await probe).toMatchObject({ ok: true });
+    expect(await payAgent(
+      request({ idempotencyKey: 'after-half-open-success' }),
+      h.deps,
+    )).toMatchObject({ ok: true });
+    expect(h.executeCalls()).toBe(4);
+  });
+
+  it('re-opens after a failed half-open probe without duplicate outage alerts', async () => {
+    process.env.AGENT_PAY_BREAKER_THRESHOLD = '1';
+    process.env.AGENT_PAY_BREAKER_COOLDOWN_MS = '10000';
+    const h = harness({ outcome: unavailableOutcome() });
+
+    await payAgent(request({ idempotencyKey: 'reopen-initial' }), h.deps);
+    h.advanceMs(10_000);
+    await payAgent(request({ idempotencyKey: 'reopen-probe' }), h.deps);
+    const blocked = await payAgent(request({ idempotencyKey: 'reopen-blocked' }), h.deps);
+    await Promise.resolve();
+
+    expect(blocked).toMatchObject({
+      ok: false,
+      code: 'payai_unavailable',
+      detail: 'facilitator_circuit_open',
+    });
+    expect(h.executeCalls()).toBe(2);
+    expect(h.alertCalls()).toBe(1);
+  });
+
+  it('does not count payment-specific facilitator rejections', async () => {
+    process.env.AGENT_PAY_BREAKER_THRESHOLD = '2';
+    const h = harness({ outcome: failedOutcome() });
+
+    for (let index = 1; index <= 3; index += 1) {
+      expect(await payAgent(
+        request({ idempotencyKey: `payment-specific-${index}` }),
+        h.deps,
+      )).toMatchObject({ ok: false, code: 'payment_failed' });
+    }
+
+    expect(h.executeCalls()).toBe(3);
+    expect(h.rows.size).toBe(3);
+    expect(h.alertCalls()).toBe(0);
+  });
+
+  it('counts facilitator fee-payer discovery failures without executing settlement', async () => {
+    process.env.AGENT_PAY_BREAKER_THRESHOLD = '1';
+    const h = harness({ feePayerAvailable: false });
+
+    expect(await payAgent(
+      request({ idempotencyKey: 'fee-payer-failure' }),
+      h.deps,
+    )).toMatchObject({
+      ok: false,
+      code: 'payai_unavailable',
+      detail: 'fee_payer_unavailable',
+    });
+    const blocked = await payAgent(
+      request({ idempotencyKey: 'fee-payer-blocked' }),
+      h.deps,
+    );
+
+    expect(blocked).toEqual({
+      ok: false,
+      code: 'payai_unavailable',
+      detail: 'facilitator_circuit_open',
+    });
+    expect(h.executeCalls()).toBe(0);
+    expect(h.rows.size).toBe(1);
+  });
+
+  it('never gates captured-payment fulfillment while the circuit is open', async () => {
+    process.env.AGENT_PAY_BREAKER_THRESHOLD = '1';
+    const h = harness({ outcome: unavailableOutcome() });
+    await payAgent(request({ idempotencyKey: 'open-before-fulfill' }), h.deps);
+    const captured = h.seedRow({
+      idempotencyKey: 'captured-existing',
+      status: 'settling',
+      settlingId: 'settling-captured',
+      settlingStartedAt: new Date(),
+      txSignature: 'captured-agent-pay-signature',
+    });
+
+    const fulfilled = await fulfillReconciledAgentPayment(captured.id, {
+      db: h.db,
+      mintEarned: h.deps.mintEarned,
+    });
+
+    expect(fulfilled).toMatchObject({ ok: true, status: 'settled' });
+    expect(h.executeCalls()).toBe(1);
   });
 });
