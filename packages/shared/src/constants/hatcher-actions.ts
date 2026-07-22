@@ -49,8 +49,8 @@ export const HATCHER_ACTION_MENU: readonly HatcherActionMenuItem[] = [
   },
   {
     verb: 'play_cove_game',
-    syntax: 'play_cove_game(game=<slots>, wager=<20..1000 vCLAW int, step 20>)',
-    whenToUse: 'play one settled game at the cove with your own vCLAW; enter the cove first',
+    syntax: 'play_cove_game(game=<slots|blackjack>, wager=<game bounds: slots 20..1000 step 20; blackjack 5..500 int>)',
+    whenToUse: 'play one fully settled cove game with your own vCLAW; blackjack uses basic strategy; enter the cove first',
   },
   {
     verb: 'enter_poker_room',

@@ -72,6 +72,7 @@ import {
 } from '@clawville/database';
 import { createHash, randomUUID } from 'crypto';
 import { recordCovenantAction } from './covenant-action-recorder';
+import { BLACKJACK_MIN_BET, BLACKJACK_MAX_BET } from './blackjack-engine';
 
 // Map dimensions — land-builder-economics (2026-06-24): 704×704 grid of 32px tiles = 22528×22528 world.
 // CROSS-PACKAGE INVARIANT: this MUST equal the client `MAP_WIDTH`/`MAP_HEIGHT` in
@@ -504,6 +505,17 @@ class NpcSimulation {
   }) => Promise<unknown> = async (input) => {
     const { playAutonomousCoveSlots } = await import('../routes/cove-slots');
     return playAutonomousCoveSlots(input);
+  };
+  /** Test seam; production lazily loads the atomic autonomous blackjack adapter. */
+  autonomousCoveBlackjackPlay: (input: {
+    agentSessionId: string;
+    expectedAgentId: string;
+    expectedAvatarId: string;
+    actionId: string;
+    wager: number;
+  }) => Promise<unknown> = async (input) => {
+    const { playAutonomousCoveBlackjack } = await import('../routes/cove-blackjack');
+    return playAutonomousCoveBlackjack(input);
   };
   /** Test seam; production re-resolves the live ledger-capable session. */
   autonomousCoveAgentResolve: (sessionId: string) => Promise<{
@@ -1712,7 +1724,7 @@ class NpcSimulation {
    *   emote(name in {wave,dance,think,scan,work,celebrate,alert}) -> setNpcActivity
    *   enter_building(buildingId in the 10 MAP_LOCATIONS ids)      -> walk to building
    *   enter_cove()                                        -> walk to the Cove
-   *   play_cove_game(game=slots, wager=20..1000 step 20) -> one bound-avatar spin
+   *   play_cove_game(game=slots|blackjack, wager=game bounds) -> one settled game
    *   enter_poker_room()                                  -> walk to the Cove poker tables
    *   enter_kelp_forest()                                 -> walk to the Kelp Forest portal
    *   talk_to_npc(npcId|buildingId, message<=500)         -> injectAgentChat bubble
@@ -1825,9 +1837,10 @@ class NpcSimulation {
     return replyText.replace(HATCHER_ACTION_REGEX, '').replace(/\s{2,}/g, ' ').trim();
   }
 
-  private async settleAutonomousCoveSlots(
+  private async settleAutonomousCoveGame(
     npcId: string,
     attribution: AgentActionAttribution,
+    game: 'slots' | 'blackjack',
     wager: number,
   ): Promise<void> {
     const resolved = await this.autonomousCoveAgentResolve(attribution.sessionId);
@@ -1868,16 +1881,26 @@ class NpcSimulation {
     this.autonomousCovePlayLastAdmittedAt.set(resolved.avatarId, admittedAt);
     const actionId = randomUUID();
     try {
-      await this.autonomousCoveSlotsPlay({
-        agentSessionId: attribution.sessionId,
-        actionId,
-        wager,
-      });
+      if (game === 'slots') {
+        await this.autonomousCoveSlotsPlay({
+          agentSessionId: attribution.sessionId,
+          actionId,
+          wager,
+        });
+      } else {
+        await this.autonomousCoveBlackjackPlay({
+          agentSessionId: attribution.sessionId,
+          expectedAgentId: resolved.agentId,
+          expectedAvatarId: resolved.avatarId,
+          actionId,
+          wager,
+        });
+      }
       const body = this.npcs.get(npcId);
       if (body) {
         this.setNpcActivity(npcId, 'trading', '🎰');
         body.destinationBuildingId = 'cove';
-        body.intentDescription = `playing slots at the cove (${wager} vCLAW)`;
+        body.intentDescription = `playing ${game} at the cove (${wager} vCLAW)`;
       }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
@@ -2010,7 +2033,7 @@ class NpcSimulation {
           console.warn('[Hatcher] play_cove_game dropped — unknown parameter');
           return;
         }
-        if (params.game !== 'slots') {
+        if (params.game !== 'slots' && params.game !== 'blackjack') {
           console.warn(`[Hatcher] play_cove_game dropped — unsupported game "${params.game}"`);
           return;
         }
@@ -2019,14 +2042,27 @@ class NpcSimulation {
           return;
         }
         const wager = Number(params.wager);
-        if (
+        if (params.game === 'slots' && (
           !Number.isSafeInteger(wager)
           || wager < COVE_SLOTS_MIN_BET
           || wager > COVE_SLOTS_MAX_BET
           || wager % COVE_SLOTS_BET_STEP !== 0
-        ) {
+        )) {
           console.warn(
             `[Hatcher] play_cove_game dropped — slots wager must be ${COVE_SLOTS_MIN_BET}..${COVE_SLOTS_MAX_BET} vCLAW in steps of ${COVE_SLOTS_BET_STEP}`,
+          );
+          return;
+        }
+        if (
+          params.game === 'blackjack'
+          && (
+            !Number.isSafeInteger(wager)
+            || wager < BLACKJACK_MIN_BET
+            || wager > BLACKJACK_MAX_BET
+          )
+        ) {
+          console.warn(
+            `[Hatcher] play_cove_game dropped — blackjack wager must be ${BLACKJACK_MIN_BET}..${BLACKJACK_MAX_BET} vCLAW`,
           );
           return;
         }
@@ -2045,7 +2081,7 @@ class NpcSimulation {
           console.warn('[Hatcher] play_cove_game dropped — no bound agent/avatar attribution');
           return;
         }
-        void this.settleAutonomousCoveSlots(npcId, attribution, wager).catch((err) => {
+        void this.settleAutonomousCoveGame(npcId, attribution, params.game, wager).catch((err) => {
           const reason = err instanceof Error ? err.message : String(err);
           console.warn(`[Hatcher] play_cove_game dropped — ${reason}`);
         });
