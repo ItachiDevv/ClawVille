@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 
-export const DEFAULT_AGENT_COVE_PLAY_DAILY_WAGER_VCLAW = 1_000;
+export const DEFAULT_AGENT_COVE_PLAY_DAILY_WAGER_VCLAW = 10_000;
 export const AGENT_COVE_PLAY_DAILY_WAGER_FLOOR_VCLAW = 20;
 
 export function resolveAgentCovePlayDailyWagerVclaw(): number {
