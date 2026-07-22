@@ -85,7 +85,7 @@ describe('open-agent onboarding manuals', () => {
     expect(protocolManual).toContain('array position is never a');
     expect(protocolManual).toContain('429');
     expect(protocolManual).toContain('30 minutes');
-    expect(protocolManual).toContain('zero vCLAW movement');
+    expect(protocolManual).toContain('zero vCLAW and creates no faucet surface');
     expect(protocolManual).toContain('kelp-maze-collectible');
     expect(protocolManual).toContain('Unrevealed Depths Collectible');
     expect(protocolManual).toContain(`${KELP_REALM_CELL_WU} wu`);
