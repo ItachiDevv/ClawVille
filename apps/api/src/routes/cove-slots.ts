@@ -95,6 +95,7 @@ import {
   slotSpins,
   coveGameEvents,
   type SlotSession,
+  type SlotSpin,
 } from '@clawville/database';
 import {
   BONUS_REEL_STRIPS,
@@ -607,6 +608,93 @@ export async function assertAutonomousCoveAvatarBindingInTx(
   }
 }
 
+interface AutonomousCoveSettledAction {
+  sessionId: string;
+  predict: string;
+}
+
+class AutonomousCoveSlotsReplaySignal extends Error {
+  constructor(readonly settled: AutonomousCoveSettledAction) {
+    super('autonomous_cove_slots_settled_action_replay');
+    this.name = 'AutonomousCoveSlotsReplaySignal';
+  }
+}
+
+/**
+ * Authoritative owner/action serialization inside the spin transaction.
+ * Lock order is session row → owner/action advisory → daily advisory → avatar.
+ * The action lookup takes no row lock, so it adds no reverse lock edge.
+ */
+export async function lockAndFindAutonomousCoveSlotsReplayInTx(
+  tx: Pick<LedgerTx, 'execute'>,
+  input: { userId: string; actionId: string; idempotencyKey: string; predict: string },
+): Promise<AutonomousCoveSettledAction | undefined> {
+  await tx.execute(sql`
+    SELECT pg_advisory_xact_lock(
+      hashtextextended(${`autonomous-slots-action:${input.userId}:${input.actionId}`}, 0)
+    )
+  `);
+  const rows = await tx.execute<{ session_id: string; predict: string }>(sql`
+    SELECT sp.session_id, sp.predict
+    FROM slot_spins sp
+    JOIN slot_sessions ss ON ss.id = sp.session_id
+    WHERE sp.idempotency_key = ${input.idempotencyKey}
+      AND ss.user_id = ${input.userId}
+    ORDER BY sp.created_at ASC, sp.id ASC
+    LIMIT 1
+  `);
+  const row = rows[0];
+  if (!row) return undefined;
+  if (row.predict !== input.predict) {
+    throw new HTTPException(409, {
+      message: `idempotency_key_reused_with_different_args: cached predict=${row.predict}, new predict=${input.predict}. Use a fresh actionId.`,
+    });
+  }
+  return { sessionId: row.session_id, predict: row.predict };
+}
+
+async function buildCachedSpinResponse(
+  cached: SlotSpin,
+  session: SlotSession,
+  subject: SlotSubject,
+  expectedAutonomousBinding: AutonomousCoveExpectedBinding | null,
+): Promise<SpinResponse> {
+  const fresh = await db.query.slotSessions.findFirst({
+    where: eq(slotSessions.id, session.id),
+  });
+  const balanceForResponse = isLedgerSubject(subject)
+    ? (expectedAutonomousBinding
+        ? (await loadExpectedAutonomousAvatar(expectedAutonomousBinding)).clawTokens
+        : (await loadAvatarForUser(subject.userId)).clawTokens)
+    : Number(
+        BigInt(fresh?.startingBalance ?? session.startingBalance) +
+          BigInt(fresh?.totalWon ?? session.totalWon) -
+          BigInt(fresh?.totalStaked ?? session.totalStaked),
+      );
+  return {
+    spinId: cached.id,
+    reels: cached.reels as SpinResult['reels'],
+    winningLines: cached.winningLines as SpinResponse['winningLines'],
+    winAmount: cached.winAmount,
+    freeSpinsAwarded: BigInt(cached.scatterPayout) > 0n
+      ? (cached.isFreeSpin ? FREE_SPIN_RULES.AWARD_RETRIGGER : FREE_SPIN_RULES.AWARD_BASE)
+      : 0,
+    isFreeSpin: cached.isFreeSpin,
+    wildMultipliers: cached.wildMultipliers as SerializedWildMultiplier[],
+    scatterPayout: cached.scatterPayout,
+    cursorAfter: cached.cursorAfter,
+    predict: cached.predict,
+    balance: balanceForResponse,
+    escrowRemaining: fresh?.escrowAmount ?? session.escrowAmount,
+    totalStaked: fresh?.totalStaked ?? session.totalStaked,
+    totalWon: fresh?.totalWon ?? session.totalWon,
+    spinCount: fresh?.spinCount ?? session.spinCount,
+    mode: (fresh?.mode ?? session.mode) as 'base' | 'free-spin',
+    freeSpinsRemaining: fresh?.freeSpinsRemaining ?? session.freeSpinsRemaining,
+    idempotencyReplay: true,
+  };
+}
+
 // ─── POST /session/open ───────────────────────────────────────────────────
 
 coveSlotsRouter.post('/session/open', async (c) => {
@@ -1060,55 +1148,12 @@ coveSlotsRouter.post('/spin', async (c) => {
       });
     }
     // Re-load the session so the response reflects post-cached-spin state.
-    const fresh = await db.query.slotSessions.findFirst({
-      where: eq(slotSessions.id, session.id),
-    });
-    // Ledger subject (human/agent): real avatar balance. Guest: demo balance
-    // derived from session counters (starting + totalWon - totalStaked).
-    const balanceForResponse = isLedgerSubject(subject)
-      ? (expectedAutonomousBinding
-          ? (await loadExpectedAutonomousAvatar(expectedAutonomousBinding as AutonomousCoveExpectedBinding)).clawTokens
-          : (await loadAvatarForUser(subject.userId)).clawTokens)
-      : Number(
-          BigInt(fresh?.startingBalance ?? session.startingBalance) +
-            BigInt(fresh?.totalWon ?? session.totalWon) -
-            BigInt(fresh?.totalStaked ?? session.totalStaked),
-        );
-    // winningLines was stored as the already-SERIALIZED shape (winAmount
-    // as string) by the spin txn below, so we pass it through verbatim.
-    // Cast through `unknown` because jsonb's typing on the way out is
-    // structurally `unknown` and we own the writer's shape.
-    const response: SpinResponse = {
-      spinId: cached.id,
-      reels: cached.reels as SpinResult['reels'],
-      winningLines: cached.winningLines as SpinResponse['winningLines'],
-      winAmount: cached.winAmount,
-      // Phase 6.1.5 — `freeSpinsAwarded` is the value that was emitted
-      // for this exact spin (not 0 unconditionally). The exact value
-      // is lost on cache (slotSpins schema doesn't persist it), but the
-      // SESSION state was already updated when the original spin landed
-      // — that's what matters for client UI. We derive a best-effort
-      // value: a non-zero `scatterPayout` implies a 3+ scatter trigger
-      // fired, so award was BASE (10) or RETRIGGER (5) depending on
-      // whether the spin itself was a free spin.
-      freeSpinsAwarded: BigInt(cached.scatterPayout) > 0n
-        ? (cached.isFreeSpin ? FREE_SPIN_RULES.AWARD_RETRIGGER : FREE_SPIN_RULES.AWARD_BASE)
-        : 0,
-      isFreeSpin: cached.isFreeSpin,
-      wildMultipliers: cached.wildMultipliers as SerializedWildMultiplier[],
-      scatterPayout: cached.scatterPayout,
-      cursorAfter: cached.cursorAfter,
-      predict: cached.predict,
-      balance: balanceForResponse,
-      escrowRemaining: fresh?.escrowAmount ?? session.escrowAmount,
-      totalStaked: fresh?.totalStaked ?? session.totalStaked,
-      totalWon: fresh?.totalWon ?? session.totalWon,
-      spinCount: fresh?.spinCount ?? session.spinCount,
-      mode: (fresh?.mode ?? session.mode) as 'base' | 'free-spin',
-      freeSpinsRemaining: fresh?.freeSpinsRemaining ?? session.freeSpinsRemaining,
-      idempotencyReplay: true,
-    };
-    return c.json(response, 200);
+    return c.json(await buildCachedSpinResponse(
+      cached,
+      session,
+      subject,
+      expectedAutonomousBinding as AutonomousCoveExpectedBinding | null,
+    ), 200);
   }
 
   // Cache miss — proceed with a fresh spin. Status + predict validation
@@ -1220,6 +1265,20 @@ coveSlotsRouter.post('/spin', async (c) => {
       const lockRow = lockRows[0];
       if (!lockRow) {
         throw new HTTPException(404, { message: 'session_not_found' });
+      }
+      if (expectedAutonomousBinding && autonomousActionId && subject.kind === 'agent') {
+        const settledAction = await lockAndFindAutonomousCoveSlotsReplayInTx(tx, {
+          userId: subject.userId,
+          actionId: autonomousActionId,
+          idempotencyKey,
+          predict: input.predict,
+        });
+        if (settledAction) {
+          // Abort this transaction before any cap/avatar/ledger mutation. The
+          // catch below returns the committed spin through the shared cache
+          // response builder after PostgreSQL releases both locks.
+          throw new AutonomousCoveSlotsReplaySignal(settledAction);
+        }
       }
       if (lockRow.status !== 'open') {
         throw new HTTPException(409, {
@@ -1585,6 +1644,33 @@ coveSlotsRouter.post('/spin', async (c) => {
     finalSession = result.session;
     balanceAfter = result.balanceAfter;
   } catch (err) {
+    if (err instanceof AutonomousCoveSlotsReplaySignal) {
+      const replaySession = await db.query.slotSessions.findFirst({
+        where: eq(slotSessions.id, err.settled.sessionId),
+      });
+      const replaySpin = await db.query.slotSpins.findFirst({
+        where: and(
+          eq(slotSpins.sessionId, err.settled.sessionId),
+          eq(slotSpins.idempotencyKey, idempotencyKey),
+        ),
+      });
+      if (!replaySession || !ownerMatches(replaySession, subject) || !replaySpin) {
+        throw new HTTPException(500, {
+          message: 'autonomous_slots_replay_row_disappeared_after_action_lock',
+        });
+      }
+      if (replaySpin.predict !== input.predict) {
+        throw new HTTPException(409, {
+          message: `idempotency_key_reused_with_different_args: cached predict=${replaySpin.predict}, new predict=${input.predict}. Use a fresh actionId.`,
+        });
+      }
+      return c.json(await buildCachedSpinResponse(
+        replaySpin,
+        replaySession,
+        subject,
+        expectedAutonomousBinding as AutonomousCoveExpectedBinding | null,
+      ), 200);
+    }
     // Race winner already inserted the same (sessionId, idempotencyKey)
     // — fall back to the cached path and return its result. Without
     // this, the loser bubbles a 500 to the client.
@@ -1605,42 +1691,12 @@ coveSlotsRouter.post('/spin', async (c) => {
             message: `idempotency_key_reused_with_different_args: cached predict=${cachedRetry.predict}, new predict=${input.predict}. Use a fresh Idempotency-Key.`,
           });
         }
-        const fresh = await db.query.slotSessions.findFirst({
-          where: eq(slotSessions.id, session.id),
-        });
-        const balanceAfter = isLedgerSubject(subject)
-          ? (await loadAvatarForUser(subject.userId)).clawTokens
-          : Number(
-              BigInt(fresh?.startingBalance ?? session.startingBalance) +
-                BigInt(fresh?.totalWon ?? session.totalWon) -
-                BigInt(fresh?.totalStaked ?? session.totalStaked),
-            );
-        const response: SpinResponse = {
-          spinId: cachedRetry.id,
-          reels: cachedRetry.reels as SpinResult['reels'],
-          // Stored already-serialized — pass through.
-          winningLines: cachedRetry.winningLines as SpinResponse['winningLines'],
-          winAmount: cachedRetry.winAmount,
-          freeSpinsAwarded: BigInt(cachedRetry.scatterPayout) > 0n
-            ? (cachedRetry.isFreeSpin
-              ? FREE_SPIN_RULES.AWARD_RETRIGGER
-              : FREE_SPIN_RULES.AWARD_BASE)
-            : 0,
-          isFreeSpin: cachedRetry.isFreeSpin,
-          wildMultipliers: cachedRetry.wildMultipliers as SerializedWildMultiplier[],
-          scatterPayout: cachedRetry.scatterPayout,
-          cursorAfter: cachedRetry.cursorAfter,
-          predict: cachedRetry.predict,
-          balance: balanceAfter,
-          escrowRemaining: fresh?.escrowAmount ?? session.escrowAmount,
-          totalStaked: fresh?.totalStaked ?? session.totalStaked,
-          totalWon: fresh?.totalWon ?? session.totalWon,
-          spinCount: fresh?.spinCount ?? session.spinCount,
-          mode: (fresh?.mode ?? session.mode) as 'base' | 'free-spin',
-          freeSpinsRemaining: fresh?.freeSpinsRemaining ?? session.freeSpinsRemaining,
-          idempotencyReplay: true,
-        };
-        return c.json(response, 200);
+        return c.json(await buildCachedSpinResponse(
+          cachedRetry,
+          session,
+          subject,
+          expectedAutonomousBinding as AutonomousCoveExpectedBinding | null,
+        ), 200);
       }
     }
     throw err;
@@ -1726,6 +1782,10 @@ type ResolvedAutonomousCoveAgent = NonNullable<Awaited<ReturnType<typeof resolve
 
 export interface AutonomousCoveSlotsDependencies {
   resolveAgent: (sessionId: string) => Promise<ResolvedAutonomousCoveAgent | null>;
+  findSettledActionForOwner: (
+    userId: string,
+    idempotencyKey: string,
+  ) => Promise<{ sessionId: string; predict: string } | undefined>;
   findOpenSession: (userId: string) => Promise<SlotSession | undefined>;
   readDailyWagerUsed: (avatarId: string) => Promise<number>;
   request: (path: string, init: RequestInit) => Promise<Response>;
@@ -1738,6 +1798,19 @@ async function readAutonomousCoveDailyWagerUsed(avatarId: string): Promise<numbe
 
 const DEFAULT_AUTONOMOUS_COVE_SLOTS_DEPS: AutonomousCoveSlotsDependencies = {
   resolveAgent: resolveAgentSession,
+  findSettledActionForOwner: async (userId, idempotencyKey) => {
+    const rows = await db.execute<{ session_id: string; predict: string }>(sql`
+      SELECT sp.session_id, sp.predict
+      FROM slot_spins sp
+      JOIN slot_sessions ss ON ss.id = sp.session_id
+      WHERE sp.idempotency_key = ${idempotencyKey}
+        AND ss.user_id = ${userId}
+      ORDER BY sp.created_at ASC, sp.id ASC
+      LIMIT 1
+    `);
+    const row = rows[0];
+    return row ? { sessionId: row.session_id, predict: row.predict } : undefined;
+  },
   findOpenSession: async (userId) => db.query.slotSessions.findFirst({
     where: and(eq(slotSessions.userId, userId), eq(slotSessions.status, 'open')),
   }),
@@ -1802,6 +1875,38 @@ export async function playAutonomousCoveSlots(input: {
     'Content-Type': 'application/json',
     [AGENT_SESSION_HEADER]: input.agentSessionId,
   };
+  const idempotencyKey = `auto:${input.actionId}`;
+  const autonomousHeaders: Record<string, string> = {
+    ...headers,
+    'Idempotency-Key': idempotencyKey,
+    [AUTONOMOUS_COVE_HEADER]: autonomousCoveToken,
+    [AUTONOMOUS_COVE_ACTION_HEADER]: input.actionId,
+    [AUTONOMOUS_COVE_AGENT_HEADER]: input.expectedAgentId,
+    [AUTONOMOUS_COVE_AVATAR_HEADER]: input.expectedAvatarId,
+    [AUTONOMOUS_COVE_USER_HEADER]: input.expectedUserId,
+  };
+
+  // Autonomous action identity belongs to the resolved owner, not whichever
+  // slots session happens to be open now. A rotation cannot hide a committed
+  // spin: replay it through the stored session so /spin's existing cache path
+  // returns the exact result before checking that old session's status.
+  const settledAction = await dependencies.findSettledActionForOwner(resolved.userId, idempotencyKey);
+  if (settledAction) {
+    if (settledAction.predict !== String(input.wager)) {
+      throw new AutonomousCoveSlotsError(
+        'idempotency_key_reused_with_different_args',
+        409,
+        `idempotency_key_reused_with_different_args: cached predict=${settledAction.predict}, new predict=${input.wager}. Use a fresh actionId.`,
+      );
+    }
+    const replayed = await dependencies.request('/spin', {
+      method: 'POST',
+      headers: autonomousHeaders,
+      body: JSON.stringify({ sessionId: settledAction.sessionId, predict: String(input.wager) }),
+    });
+    return readInternalCoveResponse<SpinResponse>(replayed);
+  }
+
   const existing = await dependencies.findOpenSession(resolved.userId);
 
   // Read-only fail-closed preflight BEFORE close/open can mutate the existing
@@ -1847,15 +1952,7 @@ export async function playAutonomousCoveSlots(input: {
 
   const spun = await dependencies.request('/spin', {
     method: 'POST',
-    headers: {
-      ...headers,
-      'Idempotency-Key': `auto:${input.actionId}`,
-      [AUTONOMOUS_COVE_HEADER]: autonomousCoveToken,
-      [AUTONOMOUS_COVE_ACTION_HEADER]: input.actionId,
-      [AUTONOMOUS_COVE_AGENT_HEADER]: input.expectedAgentId,
-      [AUTONOMOUS_COVE_AVATAR_HEADER]: input.expectedAvatarId,
-      [AUTONOMOUS_COVE_USER_HEADER]: input.expectedUserId,
-    },
+    headers: autonomousHeaders,
     body: JSON.stringify({ sessionId: open.sessionId, predict: String(input.wager) }),
   });
   return readInternalCoveResponse<SpinResponse>(spun);
