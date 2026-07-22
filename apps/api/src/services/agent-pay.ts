@@ -27,7 +27,6 @@ import { mintEarned, type LedgerTx } from './claw-token-ledger';
 import {
   resolveFacilitatorFeePayer,
   usdCentsToUsdcAtomic,
-  usdToCt,
   usdcMintForNetwork,
   SOLANA_DEVNET_CAIP2,
   SOLANA_MAINNET_CAIP2,
@@ -35,6 +34,11 @@ import {
 } from './x402-payai';
 import { isHostedPayAiFacilitatorUrl, loadX402Config } from './x402-config';
 import { claimX402Settlement } from './x402-settlement-receipts';
+import {
+  assertSettlementAmountsConserved,
+  legacySettlementAmounts,
+  type X402SettlementAmounts,
+} from './x402-settlement-accounting';
 import { withKeyedMutex } from './keyed-mutex';
 import {
   prepareCustodialExactPayment,
@@ -55,6 +59,21 @@ const COUNTED_DAILY_CAP_STATUSES = [
   'settled',
   'reconcile',
 ] as const satisfies readonly AgentPayment['status'][];
+
+function formatUsdcAtomic(amount: bigint): string {
+  if (amount < 0n) throw new Error('USDC atomic amount must be nonnegative');
+  const whole = amount / 1_000_000n;
+  const fractional = (amount % 1_000_000n).toString().padStart(6, '0');
+  return `${whole}.${fractional}`;
+}
+
+function netUsdcAtomicToVclaw(netUsdcAtomic: bigint): number {
+  const coins = netUsdcAtomic / 10_000n;
+  if (coins <= 0n || coins > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('net USDC produces an invalid vCLAW credit');
+  }
+  return Number(coins);
+}
 
 function resolveDailyUsdCents(name: string, fallback: number): number {
   const value = process.env[name]?.trim();
@@ -176,6 +195,9 @@ export interface AgentPayDb {
     settlingId: string,
     signature: string,
     payer: string | null,
+    accounting?: X402SettlementAmounts & {
+      facilitator: 'payai' | 'meridian';
+    },
   ): Promise<'captured' | 'lost' | 'signature_conflict'>;
   markFailed(id: string, settlingId: string, reason: string): Promise<void>;
   markReconcile(
@@ -356,11 +378,27 @@ const defaultDb: AgentPayDb = {
       .returning();
     return row ?? null;
   },
-  async captureSettled(id, settlingId, signature, payer) {
+  async captureSettled(id, settlingId, signature, payer, accounting) {
+    const existingAmounts = accounting ?? null;
     try {
       const rows = await db
         .update(agentPayments)
-        .set({ txSignature: signature, settlePayer: payer, updatedAt: new Date() })
+        .set({
+          txSignature: signature,
+          settlePayer: payer,
+          ...(existingAmounts
+            ? {
+                facilitator: existingAmounts.facilitator,
+                grossUsdcAtomic: existingAmounts.grossUsdcAtomic.toString(),
+                platformFeeUsdcAtomic:
+                  existingAmounts.platformFeeUsdcAtomic.toString(),
+                treasuryFeeUsdcAtomic:
+                  existingAmounts.treasuryFeeUsdcAtomic.toString(),
+                netUsdcAtomic: existingAmounts.netUsdcAtomic.toString(),
+              }
+            : {}),
+          updatedAt: new Date(),
+        })
         .where(and(
           eq(agentPayments.id, id),
           eq(agentPayments.status, 'settling'),
@@ -411,13 +449,27 @@ const defaultDb: AgentPayDb = {
       if (row.status === 'settled') return { kind: 'replay' as const, row };
       if (row.status !== 'settling' || !row.txSignature) return { kind: 'not_ready' as const };
 
+      const settlementAmounts: X402SettlementAmounts =
+        row.grossUsdcAtomic !== null &&
+        row.platformFeeUsdcAtomic !== null &&
+        row.treasuryFeeUsdcAtomic !== null &&
+        row.netUsdcAtomic !== null
+          ? {
+              grossUsdcAtomic: BigInt(row.grossUsdcAtomic),
+              platformFeeUsdcAtomic: BigInt(row.platformFeeUsdcAtomic),
+              treasuryFeeUsdcAtomic: BigInt(row.treasuryFeeUsdcAtomic),
+              netUsdcAtomic: BigInt(row.netUsdcAtomic),
+            }
+          : legacySettlementAmounts(BigInt(row.usdcAtomic));
+      assertSettlementAmountsConserved(settlementAmounts);
       const receipt = await claimX402Settlement({
         txSignature: row.txSignature,
         rail: 'agent_payment',
         kind: 'agent_payment',
         referenceId: row.id,
         subjectId: row.recipientAvatarId,
-        amountUsdcAtomic: BigInt(row.usdcAtomic),
+        amountUsdcAtomic: settlementAmounts.grossUsdcAtomic,
+        ...settlementAmounts,
       }, tx as LedgerTx);
       if (receipt.kind === 'foreign_owner') return { kind: 'already_settled' as const };
 
@@ -425,8 +477,10 @@ const defaultDb: AgentPayDb = {
       // to house custody. The EARNED is spendable but explicitly UNBACKED and
       // can never cross E3. A future cashable ④ must route the dollar through
       // purpose='earned-backing' and deliver only the EARNED receipt.
-      const usdBasis = (row.usdCents / 100).toFixed(6);
-      const earnedVclaw = usdToCt(row.usdCents);
+      const usdBasis = formatUsdcAtomic(settlementAmounts.netUsdcAtomic);
+      const earnedVclaw = netUsdcAtomicToVclaw(
+        settlementAmounts.netUsdcAtomic,
+      );
       const minted = await mint({
         avatarId: row.recipientAvatarId,
         amount: earnedVclaw,
@@ -716,11 +770,40 @@ async function executePending(row: AgentPayment, d: ReturnType<typeof deps>): Pr
       status: 'reconcile', detail: 'facilitator_execute_threw',
     };
   }
-  if (outcome.kind === 'definitive_failure') {
+    if (outcome.kind === 'meridian_failure') {
+      if (outcome.ambiguous) {
+        await d.db.markReconcile(
+          row.id,
+          settlingId,
+          `meridian:${outcome.reason}`,
+          outcome.signature,
+        );
+        return {
+          ok: false,
+          code: 'payment_reconcile',
+          paymentId: row.id,
+          status: 'reconcile',
+          detail: outcome.reason,
+        };
+      }
+      await d.db.markFailed(
+        row.id,
+        settlingId,
+        `meridian_${outcome.stage}:${outcome.reason}`,
+      );
+      return {
+        ok: false,
+        code: 'payment_failed',
+        paymentId: row.id,
+        status: 'failed',
+        detail: outcome.reason,
+      };
+    }
+    if (outcome.kind === 'definitive_failure') {
     await d.db.markFailed(row.id, settlingId, `${outcome.stage}:${outcome.reason}`);
     return { ok: false, code: 'payment_failed', paymentId: row.id, status: 'failed', detail: outcome.reason };
   }
-  if (outcome.kind !== 'settled') {
+    if (outcome.kind !== 'settled' && outcome.kind !== 'meridian_settled') {
     const reason = outcome.kind === 'ambiguous' ? outcome.reason : 'unexpected_verify_only';
     await d.db.markReconcile(
       row.id,
@@ -731,9 +814,22 @@ async function executePending(row: AgentPayment, d: ReturnType<typeof deps>): Pr
     return { ok: false, code: 'payment_reconcile', paymentId: row.id, status: 'reconcile', detail: reason };
   }
 
-  let captured: 'captured' | 'lost' | 'signature_conflict';
+    const capturedAccounting =
+      outcome.kind === 'meridian_settled'
+        ? { facilitator: 'meridian' as const, ...outcome.amounts }
+        : {
+            facilitator: 'payai' as const,
+            ...legacySettlementAmounts(required),
+          };
+    let captured: 'captured' | 'lost' | 'signature_conflict';
   try {
-    captured = await d.db.captureSettled(row.id, settlingId, outcome.signature, outcome.payer);
+      captured = await d.db.captureSettled(
+        row.id,
+        settlingId,
+        outcome.signature,
+        outcome.payer,
+        capturedAccounting,
+      );
   } catch {
     // Settlement succeeded but its signature could not be durably captured.
     // Preserve the observed signature for an operator and never send again.
