@@ -171,8 +171,28 @@ function EmberParticles() {
 // Rotating Platform
 // ---------------------------------------------------------------------------
 
-function RotatingPlatform({ children }: { children?: React.ReactNode }) {
+const PICKER_START_YAW: Record<ModelRegistryEntry['avatar_type'], number> = {
+  vrm: Math.PI,
+  glb: 0,
+};
+
+type ModelAttachedHandler = (
+  modelKey: string,
+  instance: THREE.Object3D,
+  startYaw: number,
+) => void;
+
+function RotatingPlatform({ modelKey, color }: { modelKey: string; color: string }) {
   const groupRef = useRef<THREE.Group>(null!);
+  const displayedModelRef = useRef<THREE.Object3D | null>(null);
+  const displayedModelKeyRef = useRef<string | null>(null);
+
+  const handleModelAttached = React.useCallback<ModelAttachedHandler>((attachedKey, instance, startYaw) => {
+    if (displayedModelKeyRef.current === attachedKey && displayedModelRef.current === instance) return;
+    displayedModelKeyRef.current = attachedKey;
+    displayedModelRef.current = instance;
+    if (groupRef.current) groupRef.current.rotation.y = startYaw;
+  }, []);
 
   useFrame((_, delta) => {
     if (groupRef.current) {
@@ -210,7 +230,7 @@ function RotatingPlatform({ children }: { children?: React.ReactNode }) {
       </mesh>
 
       {/* Model sits on top of the platform */}
-      {children}
+      <PlatformModel modelKey={modelKey} color={color} onModelAttached={handleModelAttached} />
     </group>
   );
 }
@@ -224,8 +244,10 @@ function RotatingPlatform({ children }: { children?: React.ReactNode }) {
 
 const PlatformModelVRM = memo(function PlatformModelVRM({
   modelKey,
+  onModelAttached,
 }: {
   modelKey: string;
+  onModelAttached: ModelAttachedHandler;
 }) {
   const reg: ModelRegistryEntry = MODEL_REGISTRY[modelKey as ModelKey] ?? MODEL_REGISTRY.milady_official_1;
   // Picker shows one VRM at a time — instanceId 'picker' is stable for the
@@ -238,6 +260,10 @@ const PlatformModelVRM = memo(function PlatformModelVRM({
     retainVRMInstance(reg.path, 'picker'); // cancel deferred dispose on StrictMode re-setup
     return () => disposeVRMInstance(reg.path, 'picker');
   }, [reg.path]);
+
+  React.useEffect(() => {
+    if (vrm) onModelAttached(modelKey, vrm.scene, PICKER_START_YAW[reg.avatar_type]);
+  }, [vrm, modelKey, onModelAttached, reg.avatar_type]);
 
   const vrmAnimatorRef = React.useRef<VRMCharacterAnimator | null>(null);
   const groupRef = React.useRef<THREE.Group>(null!);
@@ -289,13 +315,13 @@ const PlatformModelVRM = memo(function PlatformModelVRM({
     [vrm, reg.animatorId],
   );
 
-  // Facing: vrm-loader's rotateVRM0 leaves VRM 0.x rigs (Milady) at
-  // scene.rotation.y = pi and VRM 1.x rigs (Hermes/Tekk/chibi) at 0. Measured
-  // live, scene.rotation.y = pi renders BACKWARDS to the picker camera (at +Z)
-  // and 0 renders forwards, so countering the baked rotation on the parent group
-  // (net yaw 0 at spin start) faces every rig at the camera on load. Declarative
-  // on the group (no scene mutation) so it cannot accumulate under StrictMode
-  // double-invokes the way the old "vrm.scene.rotation.y += faceYaw" effect could.
+  // Facing normalization: vrm-loader's rotateVRM0 leaves VRM 0.x rigs (Milady)
+  // at scene.rotation.y = pi and VRM 1.x rigs (Hermes/Tekk/chibi) at 0. Counter
+  // that baked rotation here so every VRM has the same net yaw before the outer
+  // turntable applies PICKER_START_YAW.vrm. Fresh picker screenshots measured
+  // 2026-07-21 show normalized net yaw 0 presents the avatar's BACK to the +Z
+  // camera, while outer yaw pi presents its FRONT. Keeping normalization
+  // declarative (no scene mutation) prevents StrictMode accumulation.
   const facingY = vrm ? -vrm.scene.rotation.y : 0;
 
   useFrame((state, delta) => {
@@ -354,9 +380,11 @@ const PlatformModelVRM = memo(function PlatformModelVRM({
 const PlatformModelGLB = memo(function PlatformModelGLB({
   modelKey,
   color,
+  onModelAttached,
 }: {
   modelKey: string;
   color: string;
+  onModelAttached: ModelAttachedHandler;
 }) {
   // Cast to ModelKey for index safety; unknown keys fall back to lobster at runtime.
   const reg: ModelRegistryEntry = MODEL_REGISTRY[modelKey as ModelKey] ?? MODEL_REGISTRY[DEFAULT_AGENT_MODEL_KEY];
@@ -364,6 +392,10 @@ const PlatformModelGLB = memo(function PlatformModelGLB({
   const { scene } = useGLTFWithKTX2(reg.path);
   const groupRef     = useRef<THREE.Group>(null!);
   const animGroupRef = useRef<THREE.Group>(null!);
+
+  useEffect(() => {
+    onModelAttached(modelKey, scene, PICKER_START_YAW[reg.avatar_type]);
+  }, [scene, modelKey, onModelAttached, reg.avatar_type]);
 
   // Determine if this model uses the new universal animator or the old lobster system.
   // lobster + crayfish keep the LobsterAnimator which has full body-part discovery.
@@ -452,9 +484,11 @@ const PlatformModelGLB = memo(function PlatformModelGLB({
 const PlatformModel = memo(function PlatformModel({
   modelKey,
   color,
+  onModelAttached,
 }: {
   modelKey: string;
   color: string;
+  onModelAttached: ModelAttachedHandler;
 }) {
   const reg: ModelRegistryEntry = MODEL_REGISTRY[modelKey as ModelKey] ?? MODEL_REGISTRY[DEFAULT_AGENT_MODEL_KEY];
 
@@ -467,12 +501,18 @@ const PlatformModel = memo(function PlatformModel({
   if (reg.avatar_type === 'vrm') {
     return (
       <Suspense fallback={null}>
-        <PlatformModelVRM modelKey={modelKey} />
+        <PlatformModelVRM modelKey={modelKey} onModelAttached={onModelAttached} />
       </Suspense>
     );
   }
 
-  return <PlatformModelGLB modelKey={modelKey} color={color} />;
+  return (
+    <PlatformModelGLB
+      modelKey={modelKey}
+      color={color}
+      onModelAttached={onModelAttached}
+    />
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -550,9 +590,7 @@ const SceneContents = memo(function SceneContents({
 
       {/* Rotating platform with model */}
       <Suspense fallback={null}>
-        <RotatingPlatform>
-          <PlatformModel modelKey={modelKey} color={color} />
-        </RotatingPlatform>
+        <RotatingPlatform modelKey={modelKey} color={color} />
       </Suspense>
     </>
   );
