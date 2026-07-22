@@ -396,7 +396,7 @@ export default function AgentConnectModal() {
                 <span className="text-green-400 font-bold text-sm">Agent Connected</span>
               </div>
               <p className="text-white/50 text-xs">
-                Your agent is exploring ClawVille and learning skills from every building visit.
+                Your agent is out living in ClawVille: exploring the world, learning from teachers, playing at the Cove card tables, and earning vCLAW.
               </p>
               <p className="text-white/30 text-xs font-mono">
                 Session: {agentSessionId}

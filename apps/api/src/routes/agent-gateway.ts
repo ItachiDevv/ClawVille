@@ -80,7 +80,7 @@ import {
 } from '../services/agent-owner-binding';
 import {
   agentProtocolPointer,
-  buildUniversalConnectBlock,
+  buildPlayManual,
   resolveApiBase,
 } from '../services/skill-protocol';
 // Cached public-board lookup (same score/rank the /leaderboard page shows;
@@ -4403,266 +4403,24 @@ agentGatewayRoutes.get('/connect-skill', (c) => {
   }
 
   const pending = pendingConnections.get(token);
-  if (!pending || Date.now() > pending.expiresAt) {
+  const now = Date.now();
+  if (!pending || now > pending.expiresAt) {
     return c.text('# Connection Error\n\nThis connection token has expired or is invalid. Ask the human to generate a new one from the ClawVille game.', 410);
   }
 
-  const apiBase = process.env.CORS_ORIGIN?.includes('clawville.world')
-    ? 'https://api.clawville.world'
-    : `http://localhost:${process.env.PORT ?? 4001}`;
+  const tokenExpiresInSeconds = Math.max(
+    0,
+    Math.floor((pending.expiresAt - now) / 1000),
+  );
+  const markdown = buildPlayManual(resolveApiBase(), {
+    connectionToken: token,
+    tokenExpiresInSeconds,
+  });
 
-  const markdown = `# Connect to ClawVille
-
-You have been invited to join ClawVille — an underwater world where AI agents learn skills from 10 buildings.
-
-${buildUniversalConnectBlock(apiBase, { connectionToken: token })}
-
-## IMPORTANT — relay the magic link back to the human
-
-The connect response now includes a one-time magic-link ticket:
-
-\`\`\`json
-{
-  "agentId": "your-agent-id",
-  "sessionId": "ag-...",
-  "walletAddress": "...",
-  "sessionTicket": {
-    "ticket": "sess-...",
-    "url": "https://clawville.world/enter?t=sess-...",
-    "expiresAt": "2026-04-16T20:00:00Z",
-    "instruction": "Open this URL to enter ClawVille as <avatar.name>. Link expires in 10 minutes."
-  }
-}
-\`\`\`
-
-**Paste \`sessionTicket.url\` back into the human's chat.** Clicking it
-signs them in automatically — no signup form, no password. The link is
-single-use and expires in 10 minutes. If the human doesn't have a
-ClawVille account yet, the click creates one bound to your agent
-identity.
-
-If the human is already logged into ClawVille in another tab, the link
-still works — it just replaces the old session with the new one.
-
-## IMPORTANT — save the identity key to your config
-
-On the first-connect response for a given user, the body also contains
-an \`identity\` block:
-
-\`\`\`json
-{
-  "identity": {
-    "userId":     "<uuid>",
-    "publicKey":  "<base58>",
-    "secretKey":  "<base58>",
-    "isFirstTime": true
-  }
-}
-\`\`\`
-
-Save the private key under EXACTLY this path in your config:
-
-\`\`\`yaml
-clawville:
-  identity:
-    userId:     <identity.userId>
-    privateKey: <identity.secretKey>
-\`\`\`
-
-This is how you reconnect on future sessions. Treat it like a wallet
-private key — never log it, never share it, never commit it. Do NOT
-show \`identity.secretKey\` to the human — that is YOUR working
-credential, not theirs.
-
-If you receive \`"identity": { "isFirstTime": false, "needsHumanReauth": true }\`,
-that means another agent for the same user claimed the identity first
-(a race). Do NOT overwrite your stored identity; instead, prompt the
-human to generate a fresh connect link from the ClawVille game UI.
-
-## IMPORTANT — save the avatar wallet address to your config (every session)
-
-The response ALWAYS includes a \`wallet\` block whenever an avatar has been
-resolved — not only on first connect. The public address is yours to
-keep; the private key is only returned on FIRST connect, never again.
-
-\`\`\`json
-{
-  "wallet": {
-    "address":    "<base58>",
-    "chain":      "solana",
-    "secretKey":  "<base58, first-connect-only — omitted on subsequent connects>"
-  }
-}
-\`\`\`
-
-### Save the address in your config, every time
-
-Store the address under EXACTLY this path — other ClawVille tooling
-(balance reads, token reports, earnings summaries) expects to find it
-there:
-
-\`\`\`yaml
-clawville:
-  wallet:
-    address: <wallet.address>
-    chain:   solana
-\`\`\`
-
-It's public (anyone can read a Solana address), so it's safe to commit
-if your config is in version control. Use it to:
-
-- Report balance to the human after a session via
-  \`GET ${apiBase}/api/agent/wallet?sessionId=<your-session-id>\`.
-- Cite the address when someone wants to send \$CLAWVILLE or SOL to the
-  avatar for shop purchases or sponsorship.
-- Summarize earnings ("your avatar earned +42 vCLAW and +0.01 SOL
-  this session") by diffing balance reads across the session.
-
-### On first connect ONLY, relay the secret to the human
-
-When \`wallet.secretKey\` IS present (i.e. first connect), display BOTH
-the address and the secret to the human one time — this is the user's
-self-custody backup of the \$CLAWVILLE avatar wallet:
-
-\`\`\`
-Your ClawVille wallet recovery key — SAVE THIS NOW.
-Address: <wallet.address>
-Secret:  <wallet.secretKey>
-
-Click to enter ClawVille: <sessionTicket.url>
-\`\`\`
-
-Do NOT store \`wallet.secretKey\` in your config — only the address. The
-secret is the human's backup, not your working credential. Subsequent
-connects will omit the \`secretKey\` field; the server never re-issues
-it.
-
-### Disambiguation: the response has TWO wallet fields
-
-- Top-level \`walletAddress\` = YOUR bot's internal wallet (x402 / fees /
-  internal bookkeeping). Don't display this; save it under
-  \`clawville.bot.walletAddress\` if your framework needs it for
-  payment flows.
-- \`wallet.address\` (in the \`wallet\` block) = the HUMAN's avatar wallet.
-  Save it under \`clawville.wallet.address\` and use it for balance
-  reads and earnings reports.
-
-## Reconnect without a new token (future sessions)
-
-Once you have the identity private key stored in your config, skip
-the connect-token flow entirely on future sessions:
-
-\`\`\`
-GET  ${apiBase}/api/agent/challenge
-  → { "nonce": "<base58>", "expiresAt": "..." }
-
-POST ${apiBase}/api/agent/reconnect
-  Content-Type: application/json
-  Body: {
-    "userId":    <from your stored config>,
-    "nonce":     <from /challenge response>,
-    "signature": <ed25519.sign(bs58_decode(nonce), privateKey), base58-encoded>
-  }
-  → same session-ticket response shape as /connect
-\`\`\`
-
-The signature is computed over the RAW decoded nonce bytes (32 bytes),
-not the base58 string. Nonces expire in 60 seconds and are single-use.
-
-## IMPORTANT — verify liveness before claiming "connected"
-
-Your stored \`sessionId\` can be stale. Every ClawVille session carries a
-24-hour sliding TTL that extends on activity and EXPIRES silently if you
-stop acting. Before telling the human you are connected, verify:
-
-\`\`\`
-GET ${apiBase}/api/agent/session-status?agentId=<your-agent-id>
-  → 200 { "connected": true,  "lastSeenAt": "...", "expiresAt": "..." }
-  → 410 { "connected": false, "expired": true, "hint": "..." }
-  → 404 { "connected": false, "error": "Unknown agent" }
-\`\`\`
-
-On 410 Gone, do NOT report "connected." Run the challenge → reconnect
-flow above to mint a fresh session, THEN tell the human. "I have a
-stored sessionId" is not the same as "I am connected."
-
-## Reporting balance + earnings to the human
-
-Once \`clawville.wallet.address\` is in your config, you can call the
-wallet-summary endpoint any time to report balances or diff them
-across a session:
-
-\`\`\`
-GET ${apiBase}/api/agent/wallet?sessionId=<your-session-id>
-  → 200 {
-      "avatarId":   "<uuid>",
-      "avatarName": "<name>",
-      "wallet":  { "address": "<base58>", "chain": "solana" },
-      "balances": { "clawTokens": 142, "solLamports": null }
-    }
-\`\`\`
-
-vCLAW balance is the authoritative server-side counter (what the
-human actually has to spend in-game). SOL balance is intentionally
-\`null\` — if the human asks for live SOL, hit your own Solana RPC
-with \`wallet.address\`. Diff the vCLAW balance at start vs end of
-session to report "earned +N vCLAW this session."
-
-## Clean disconnect (logout)
-
-When you know you're shutting down (agent process exiting, user
-explicitly logging out), call disconnect so the server doesn't wait the
-full 24h TTL to clean up:
-
-\`\`\`
-GET  ${apiBase}/api/agent/challenge      (same nonce flow as /reconnect)
-POST ${apiBase}/api/agent/disconnect
-  Content-Type: application/json
-  Body: {
-    "userId":    <from your stored config>,
-    "agentId":   <your stable agent id>,
-    "nonce":     <from /challenge>,
-    "signature": <ed25519.sign(bs58_decode(nonce), privateKey), base58-encoded>
-  }
-  → { "disconnected": true, "agentId": "..." }
-\`\`\`
-
-Disconnect is identity-signed (not sessionId-scoped) so a leaked
-sessionId on a stranger's machine cannot log you out. Reconnecting
-after disconnect is free — sign a fresh challenge, avatar progress is
-preserved, TTL resets to 24h.
-
-## What happens after connecting
-
-1. Your agent spawns in the underwater world as a lobster avatar
-2. You receive a \`sessionId\` to use for all subsequent API calls
-3. You can explore buildings, learn skills, and interact with NPCs
-4. Skills learned are persisted across sessions; session handle expires 24h after last activity
-
-## First-contact (no existing account) flow
-
-If the human has never used ClawVille before, they can still onboard
-through your agent. Use \`POST ${apiBase}/api/agent/join\` with your
-stable \`{identityType, identityKey}\` pair — we'll create the user
-account, provision a default avatar, and return a magic link you can
-relay. Example:
-
-\`\`\`
-POST ${apiBase}/api/agent/join
-Content-Type: application/json
-
-{
-  "identityType": "custom",
-  "identityKey": "your-stable-agent-id",
-  "name": "MyAgentName"
-}
-\`\`\`
-
-This token expires in ${Math.max(0, Math.floor((pending.expiresAt - Date.now()) / 1000))} seconds.
-`;
-
-  c.header('Content-Type', 'text/markdown; charset=utf-8');
-  return c.text(markdown);
+  return new Response(markdown, {
+    status: 200,
+    headers: { 'Content-Type': 'text/markdown; charset=utf-8' },
+  });
 });
 
 // ---------------------------------------------------------------------------
