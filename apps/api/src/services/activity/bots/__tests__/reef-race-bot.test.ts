@@ -13,7 +13,9 @@ import type { BotRoomView } from '../bot-controller';
 import {
   buildReefCheckpoints,
   ACTION_BIT_DRIFT,
+  ACTION_BIT_JUMP,
   ACTION_BIT_LAUNCH,
+  ACTION_BIT_POWERUP_0,
   type ReefPowerUpKind,
 } from '../../sim/reef-race-config';
 
@@ -796,7 +798,11 @@ describe('ReefRaceBot — Phase 2 heuristics (P2-T30..P2-T34)', () => {
 // keep the test suite portable). Spec: `.claude/plans/reef-race-v2.md` and
 // architecture §5 of `.claude/plans/reef-race-v2-spline-architecture.md`.
 
-describe('ReefRaceBot — v2 spline path (V2-T1..V2-T4)', () => {
+describe('ReefRaceBot — v2 spline path (V2-T1..V2-T6)', () => {
+  type SplineTestBody = BotRoomView['bodies'][number] & {
+    progress?: number;
+  };
+
   // Helper: build a spline view shaped like the spline sim's buildBotRoomView.
   // self.x = sim X, self.y = sim Z (protocol convention).
   function makeSplineView(opts: {
@@ -804,9 +810,11 @@ describe('ReefRaceBot — v2 spline path (V2-T1..V2-T4)', () => {
     selfZ: number;
     selfVx?: number;
     selfVz?: number;
+    progress?: number;
     pickups?: ReadonlyArray<{ x: number; y: number; active: boolean }>;
     nowMs?: number;
-  }): BotRoomView & {
+  }): Omit<BotRoomView, 'bodies'> & {
+    bodies: SplineTestBody[];
     pickups?: ReadonlyArray<{ x: number; y: number; active: boolean }>;
   } {
     return {
@@ -820,6 +828,7 @@ describe('ReefRaceBot — v2 spline path (V2-T1..V2-T4)', () => {
           vy: opts.selfVz ?? 0,
           rot: 0,
           alive: true,
+          progress: opts.progress,
           inventory: [
             { kind: null, charges: 0, cooldownUntil: 0 },
             { kind: null, charges: 0, cooldownUntil: 0 },
@@ -872,33 +881,73 @@ describe('ReefRaceBot — v2 spline path (V2-T1..V2-T4)', () => {
     const { ReefSpline } = require('../../sim/reef-race-spline');
     const { REEF_RACE_DEFAULT_TRACK } = require('../../sim/reef-race-track-layout');
     const spline = new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true });
-    const onCurve = spline.centerlineAt(0.77); // hairpin tip region (curved)
-    const bot = createReefRaceBot('bot-self');
-    const view = makeSplineView({ selfX: onCurve.x, selfZ: onCurve.z });
-    // Sample many trials to dampen jitter, project onto the spline normal
-    // at the bot's current t to detect lateral pull.
-    const TRIALS = 60;
-    const closest = spline.closestPointOnSpline({ x: onCurve.x, z: onCurve.z });
-    const tg = spline.tangentAt(closest.t);
-    // 90° CCW normal of tangent in XZ.
-    const nx = -tg.z;
-    const nz = tg.x;
-    let sumLateralBias = 0;
-    for (let i = 0; i < TRIALS; i++) {
-      const intent = (bot as any).computeInputSpline(
-        view,
-        view.bodies[0],
-        1 / 30,
-      );
-      // Project dir onto the spline normal to measure lateral component.
-      sumLateralBias += intent.dir!.x * nx + intent.dir!.y * nz;
+    const curveT = 0.77;
+    const onCurve = spline.centerlineAt(curveT); // hairpin tip region (curved)
+    const progress = spline.arclengthFromT(curveT) / spline.totalArcLength;
+    // This avatar hashes to a zero stable lane offset, isolating the curve
+    // component without relying on a raw steering-angle threshold.
+    const avatarId = 'curve-12';
+    const bot = createReefRaceBot(avatarId);
+    const view = makeSplineView({
+      selfX: onCurve.x,
+      selfZ: onCurve.z,
+      progress,
+    });
+    view.selfAvatarId = avatarId;
+    view.bodies[0].avatarId = avatarId;
+    const intent = (bot as any).computeInputSpline(
+      view,
+      view.bodies[0],
+      1 / 30,
+    );
+
+    // Reconstruct the lateral coordinate of the bot's lookahead target from
+    // its returned direction. This separates curvature bias from the stable
+    // per-avatar lane offset; asserting the raw steering angle conflates them.
+    const tLook = spline.tFromArclength(
+      ((progress + 0.010) % 1) * spline.totalArcLength,
+    );
+    const lookCenter = spline.centerlineAt(tLook);
+    const tangentLook = spline.tangentAt(tLook);
+    const normalLook = spline.normalAt(tLook);
+    const alongToLook =
+      (lookCenter.x - onCurve.x) * tangentLook.x +
+      (lookCenter.z - onCurve.z) * tangentLook.z;
+    const alongDir =
+      intent.dir!.x * tangentLook.x + intent.dir!.y * tangentLook.z;
+    const rayDistance = alongToLook / alongDir;
+    const inferredOffset =
+      (onCurve.x + intent.dir!.x * rayDistance - lookCenter.x) * normalLook.x +
+      (onCurve.z + intent.dir!.y * rayDistance - lookCenter.z) * normalLook.z;
+
+    // Mirror stableLaneOffset's deterministic FNV-1a mapping for this avatar.
+    let laneHash = 0x811c9dc5;
+    for (const char of avatarId) {
+      laneHash ^= char.charCodeAt(0);
+      laneHash = Math.imul(laneHash, 0x01000193);
     }
-    const avgLateral = sumLateralBias / TRIALS;
-    // The slalom is curving → curvature delta crosses the threshold →
-    // lateralOffset is non-zero → dir has lateral component. Magnitude is
-    // dominated by direction toward the offset target, so we just assert
-    // non-zero with a generous bound (jitter would average near zero).
-    expect(Math.abs(avgLateral)).toBeGreaterThan(0.05);
+    const stableLane = (laneHash >>> 0) % 241 - 120;
+    expect(stableLane).toBe(0);
+    const lateralLimit = Math.min(120, spline.widthAt(tLook) * 0.25);
+    const laneOnlyOffset = Math.max(
+      -lateralLimit,
+      Math.min(lateralLimit, stableLane),
+    );
+
+    const tCurveSample = spline.tFromArclength(
+      ((progress + 0.008) % 1) * spline.totalArcLength,
+    );
+    const tangentSelf = spline.tangentAt(curveT);
+    const tangentCurve = spline.tangentAt(tCurveSample);
+    const turnDelta = Math.atan2(
+      tangentSelf.x * tangentCurve.z - tangentSelf.z * tangentCurve.x,
+      tangentSelf.x * tangentCurve.x + tangentSelf.z * tangentCurve.z,
+    );
+    const curveComponent = inferredOffset - laneOnlyOffset;
+
+    expect(Math.sign(curveComponent)).toBe(Math.sign(turnDelta));
+    expect(Math.abs(curveComponent)).toBeGreaterThan(1);
+    expect(Math.abs(inferredOffset)).toBeLessThanOrEqual(lateralLimit + 1e-6);
   });
 
   it('V2-T3 — deviates toward a pickup within deviation budget', () => {
@@ -921,7 +970,10 @@ describe('ReefRaceBot — v2 spline path (V2-T1..V2-T4)', () => {
     const startPt = spline.centerlineAt(0.2);
     const selfPos = { x: startPt.x, z: startPt.z };
     const c = spline.closestPointOnSpline(selfPos);
-    const tLook = (c.t + 0.03) % 1;
+    const progress = spline.arclengthFromT(c.t) / spline.totalArcLength;
+    const tLook = spline.tFromArclength(
+      ((progress + 0.010) % 1) * spline.totalArcLength,
+    );
     const lookCenter = spline.centerlineAt(tLook);
     const halfW = spline.widthAt(tLook);
     const normal = spline.normalAt(tLook);
@@ -958,13 +1010,14 @@ describe('ReefRaceBot — v2 spline path (V2-T1..V2-T4)', () => {
       const viewWith = makeSplineView({
         selfX: selfPos.x,
         selfZ: selfPos.z,
+        progress,
         pickups: [{ x: pickupX, y: pickupZ, active: true }],
       });
       const iWith = (botWith as any).computeInputSpline(viewWith, viewWith.bodies[0], 1 / 30);
       projWith = iWith.dir!.x * pdx + iWith.dir!.y * pdz;
 
       const botWithout = createReefRaceBot('bot-self');
-      const viewWithout = makeSplineView({ selfX: selfPos.x, selfZ: selfPos.z });
+      const viewWithout = makeSplineView({ selfX: selfPos.x, selfZ: selfPos.z, progress });
       const iWithout = (botWithout as any).computeInputSpline(
         viewWithout,
         viewWithout.bodies[0],
@@ -1034,10 +1087,7 @@ describe('ReefRaceBot — v2 spline path (V2-T1..V2-T4)', () => {
     expect(Math.abs(avgWith - avgWithout)).toBeLessThan(0.03);
   });
 
-  it('V2-T5 — drift bit is NEVER emitted on the v2 spline path', () => {
-    // Spec: drift logic is dropped on v2; ACTION_BIT_DRIFT (= ACTION_BIT_JUMP
-    // in v2) is only emitted on ramp AABB entry. Phase 1 has zero ramps, so
-    // the bot must NEVER set bit 2.
+  it('V2-T5 — jump bit 2 stays off outside ramp zones', () => {
     const bot = createReefRaceBot('bot-self');
     // Place the bot mid-curve so v1 hairpin-drift would have triggered.
     // Tick repeatedly — ACTION_BIT_DRIFT must stay 0.
@@ -1048,9 +1098,60 @@ describe('ReefRaceBot — v2 spline path (V2-T1..V2-T4)', () => {
         view.bodies[0],
         1 / 30,
       );
-      // Bit 2 = 0b0100 = ACTION_BIT_DRIFT (= ACTION_BIT_JUMP in v2). The bot
-      // should NOT emit it because REEF_RACE_RAMP_ZONES is empty in Phase 1.
-      expect((intent.actionBits ?? 0) & 0b0100).toBe(0);
+      expect((intent.actionBits ?? 0) & ACTION_BIT_JUMP).toBe(0);
     }
   });
+
+  it('V2-T6 — waits after banking, then keeps placement-weighted item odds', () => {
+    const { ReefSpline } = require('../../sim/reef-race-spline');
+    const { REEF_RACE_DEFAULT_TRACK } = require('../../sim/reef-race-track-layout');
+    const spline = new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true });
+    const point = spline.centerlineAt(0.05);
+    const progress = spline.arclengthFromT(0.05) / spline.totalArcLength;
+
+    const makeBanked = (avatarId: string, placement: number) => {
+      const bot = createReefRaceBot(avatarId);
+      const view = makeSplineView({
+        selfX: point.x,
+        selfZ: point.z,
+        progress,
+        nowMs: 5_000,
+      }) as any;
+      view.bodies[0].avatarId = avatarId;
+      view.bodies[0].currentPlacement = placement;
+      view.bodies[0].inventory[0] = {
+        kind: 'rr-turbo-bubble',
+        charges: 1,
+        cooldownUntil: 0,
+      };
+      (bot as any).computeInputSpline(view, view.bodies[0], 1 / 30);
+      view.now = 10_000;
+      return { bot, view };
+    };
+
+    const originalRandom = Math.random;
+    Math.random = () => 0.40;
+    try {
+      const leader = makeBanked('leader-bot', 1);
+      const leaderIntent = (leader.bot as any).computeInputSpline(
+        leader.view,
+        leader.view.bodies[0],
+        1 / 30,
+      );
+      expect((leaderIntent.actionBits ?? 0) & ACTION_BIT_POWERUP_0).toBe(0);
+
+      const eighth = makeBanked('eighth-bot', 8);
+      const eighthIntent = (eighth.bot as any).computeInputSpline(
+        eighth.view,
+        eighth.view.bodies[0],
+        1 / 30,
+      );
+      expect((eighthIntent.actionBits ?? 0) & ACTION_BIT_POWERUP_0).toBe(
+        ACTION_BIT_POWERUP_0,
+      );
+    } finally {
+      Math.random = originalRandom;
+    }
+  });
+
 });

@@ -15,7 +15,7 @@
  *
  * Track timing now has two distinct budgets:
  *   - Legacy ellipse (flag OFF): 90s soft timeout + 30s grace.
- *   - v2 closed spline: ~88 052 wu per lap with a dedicated 300s per-lap
+ *   - v2 closed spline: ~95 741 wu per lap with a dedicated 300s per-lap
  *     budget; the current 2-lap race therefore has a 600s soft timeout.
  *
  * Checkpoint sequence: 12 AABB volumes evenly spaced around the
@@ -133,16 +133,15 @@ export const REEF_STRAGGLER_GRACE_MS = 30_000;
 export const REEF_HARD_TIMEOUT_MS = REEF_SOFT_TIMEOUT_MS + REEF_STRAGGLER_GRACE_MS;
 
 /**
- * CLOSED-LOOP per-lap soft budget (ms) for the v6 "WIDE SURF ROAD" floating
- * ribbon.
+ * CLOSED-LOOP per-lap soft budget (ms) for the v7 technical surf-road ribbon.
  *
  * The 90s `REEF_SOFT_TIMEOUT_MS` was tuned for the small ~9 000–30 000 wu
- * tracks; the v6 wide ribbon is ~88 052 wu (was ~60 257 in v5). At the 1300
+ * tracks; the v7 ribbon is ~95 741 wu. At the 1300
  * wu/s tuning one loop takes ~83–103 s (humans ~1,066 wu/s avg;
- * heavy-cornering bots ~858 wu/s → ~102.6 s). The slow-pace safety need is:
+ * heavy-cornering bots ~858 wu/s → ~111.6 s). The slow-pace safety need is:
  *
  *   observed need = arc / slowPace × 1000 × safety
- *                 = 88052 / 858 × 1000 × 1.10 ≈ 113 s.
+ *                 = 95741 / 858 × 1000 × 1.10 ≈ 123 s.
  *
  * The existing 300 s budget remains intentionally conservative for stalls,
  * collisions and disconnected stragglers, matching the 2026-07-13 speed-pass
@@ -156,7 +155,7 @@ export const REEF_RACE_LOOP_LAP_BUDGET_MS = 300_000;
 
 /**
  * CLOSED-LOOP N-lap race soft timeout (ms) — the per-lap budget × lap count.
- * On the current ~88 052 wu-per-lap ring, the 2-lap configuration yields a
+ * On the current ~95 741 wu-per-lap ring, the 2-lap configuration yields a
  * 600s soft cap. This must cover the full race or racers DNF before finishing.
  * The spline sim uses these in `startRoom`; the ellipse sim keeps the unscaled
  * single-loop caps above.
@@ -184,7 +183,7 @@ export const REEF_SKIP_PATTERN_THRESHOLD = 3;
  * the additive boost stack remains bounded at 1.85× (→ 2405 wu/s boosted cap).
  * Speed AND accel scale by the same 2× factor (REEF_MAX_ACCEL is derived), so
  * the 0.25s-to-cap impulse feel and every REEF_MAX_SPEED-relative threshold
- * (drift charge, boost-pad kick, mini-turbo, whirlpool, bot lookahead, carve
+ * (boost-pad kick, whirlpool, bot lookahead, carve
  * floor, segment-time floors) track the new cap automatically.
  */
 export const REEF_MAX_SPEED = 1300;
@@ -396,8 +395,12 @@ export const REEF_POWERUP_BOX_COUNT = 8;
 /** Cooldown before a collected box respawns (ms). */
 export const REEF_POWERUP_RESPAWN_MS = 6_000;
 
-/** Pickup contact radius (wu). */
-export const REEF_POWERUP_RADIUS = 70;
+/**
+ * Pickup contact radius (wu). Combined with REEF_BODY_RADIUS=22 this gives a
+ * 142wu center-to-center catch distance, matching the 60wu-wide box visual and
+ * making visually adjacent arcade passes collect reliably.
+ */
+export const REEF_POWERUP_RADIUS = 120;
 
 /** Sim tick rate (Hz). 30Hz per task spec (race kinematics tolerate lower rate). */
 export const REEF_TICK_HZ = 30;
@@ -430,8 +433,7 @@ export type ReefBoostKind =
   | 'apex-bonus'        // Phase 2 — positive (+0.05)
   | 'apex-penalty'      // Phase 2 — negative (-0.05)
   | 'hazard-slow'       // Phase 2 — negative (-0.40)
-  | 'pad-boost'         // v2 mechanics — positive (boost pad, timed + decays)
-  | 'mini-turbo-boost'; // v2 mechanics — positive (surf-carve mini-turbo release)
+  | 'pad-boost';        // v2 mechanics — positive (boost pad, timed + decays)
 
 // Drift spark tier thresholds (in sim ticks).
 //   Tier 0->1: ~0.27s = 8 ticks   -> readable in ordinary corner entries
@@ -517,11 +519,18 @@ export const LAUNCH_STALL_THRUST_CAP  = 0.30;
  */
 export const REEF_KINEMATIC_TOLERANCE = 2.1;
 
-// actionBit assignments. Bits 0+1 are pre-existing power-up slot toggles.
+// Reef actionBit assignments. Bit 0 is the single queued-item USE verb;
+// bit 1 stays reserved on the wire and is deliberately ignored by both sims;
+// bit 2 remains legacy drift in the ellipse sim but is JUMP in spline v2;
+// bit 3 is launch; bit 4 is RESERVED — RETIRED (was drift 2026-07-18,
+// removed 2026-07-19; never reuse for a different verb). Spline v2 ignores it.
+// The inventory remains two slots: consuming slot 0 promotes slot 1 forward.
 export const ACTION_BIT_POWERUP_0 = 0b0001;
 export const ACTION_BIT_POWERUP_1 = 0b0010;
-export const ACTION_BIT_DRIFT     = 0b0100;
-export const ACTION_BIT_LAUNCH    = 0b1000;
+export const ACTION_BIT_DRIFT      = 0b00100;
+export const ACTION_BIT_JUMP       = 0b00100;
+export const ACTION_BIT_LAUNCH     = 0b01000;
+export const ACTION_BIT_DRIFT_HOLD = 0b10000;
 
 // ─── Phase 2 — combined kinematic cap + negatives floor ─────────────────────
 
@@ -772,9 +781,9 @@ export function buildReefApexZones(cps: ReefCheckpointAabb[]): ReefApexZone[] {
  * Placement-keyed power-up roll table. Replaces the global `rollPowerUpKind`
  * draw at COLLECT time (`resolvePickups`) when a placement is supplied.
  *
- * Mario Kart rubber band — leaders get defensive items only, trailers get
- * aggressive items more often. Mid-pack rolls a neutral distribution that
- * mirrors REEF_POWERUP_DEFS.
+ * Mario Kart rubber band — leaders exclude the forward-only seeker but still
+ * receive five useful kinds; trailers get aggressive items more often.
+ * Mid-pack rolls a broad neutral distribution.
  *
  * Weights are RELATIVE within each placement bucket (don't need to sum to 100).
  * The roll is sum-then-LCG-mod-then-walk, identical to existing rollPowerUpKind.
@@ -783,45 +792,47 @@ export const PLACEMENT_ITEM_TABLE: Record<
   number,
   ReadonlyArray<{ kind: ReefPowerUpKind; weight: number }>
 > = {
-  // 1st place — defensive only
+  // 1st place — no forward-only seeker; five useful leader items
   1: [
-    { kind: 'rr-bubble-shield', weight: 50 },
-    { kind: 'rr-ink-slick',     weight: 30 },
+    { kind: 'rr-bubble-shield', weight: 28 },
+    { kind: 'rr-ink-slick',     weight: 22 },
     { kind: 'rr-turbo-bubble',  weight: 20 },
+    { kind: 'rr-tide-wave',     weight: 16 },
+    { kind: 'rr-whirlpool',     weight: 14 },
   ],
   // 2nd–3rd — defensive-leaning
   2: [
-    { kind: 'rr-turbo-bubble',  weight: 35 },
-    { kind: 'rr-bubble-shield', weight: 25 },
-    { kind: 'rr-ink-slick',     weight: 20 },
-    { kind: 'rr-tide-wave',     weight: 10 },
-    { kind: 'rr-seeker-jelly',  weight:  7 },
-    { kind: 'rr-whirlpool',     weight:  3 },
+    { kind: 'rr-turbo-bubble',  weight: 24 },
+    { kind: 'rr-bubble-shield', weight: 18 },
+    { kind: 'rr-ink-slick',     weight: 16 },
+    { kind: 'rr-tide-wave',     weight: 16 },
+    { kind: 'rr-seeker-jelly',  weight: 14 },
+    { kind: 'rr-whirlpool',     weight: 12 },
   ],
   3: [
-    { kind: 'rr-turbo-bubble',  weight: 35 },
-    { kind: 'rr-bubble-shield', weight: 25 },
-    { kind: 'rr-ink-slick',     weight: 20 },
-    { kind: 'rr-tide-wave',     weight: 10 },
-    { kind: 'rr-seeker-jelly',  weight:  7 },
-    { kind: 'rr-whirlpool',     weight:  3 },
+    { kind: 'rr-turbo-bubble',  weight: 24 },
+    { kind: 'rr-bubble-shield', weight: 18 },
+    { kind: 'rr-ink-slick',     weight: 16 },
+    { kind: 'rr-tide-wave',     weight: 16 },
+    { kind: 'rr-seeker-jelly',  weight: 14 },
+    { kind: 'rr-whirlpool',     weight: 12 },
   ],
   // 4th–5th — neutral (matches REEF_POWERUP_DEFS distribution)
   4: [
-    { kind: 'rr-turbo-bubble',  weight: 50 },
-    { kind: 'rr-bubble-shield', weight: 12 },
-    { kind: 'rr-ink-slick',     weight: 10 },
-    { kind: 'rr-seeker-jelly',  weight: 10 },
-    { kind: 'rr-tide-wave',     weight:  8 },
-    { kind: 'rr-whirlpool',     weight: 10 },
+    { kind: 'rr-turbo-bubble',  weight: 35 },
+    { kind: 'rr-bubble-shield', weight:  8 },
+    { kind: 'rr-ink-slick',     weight:  7 },
+    { kind: 'rr-seeker-jelly',  weight:  7 },
+    { kind: 'rr-tide-wave',     weight:  6 },
+    { kind: 'rr-whirlpool',     weight:  7 },
   ],
   5: [
-    { kind: 'rr-turbo-bubble',  weight: 50 },
-    { kind: 'rr-bubble-shield', weight: 12 },
-    { kind: 'rr-ink-slick',     weight: 10 },
-    { kind: 'rr-seeker-jelly',  weight: 10 },
-    { kind: 'rr-tide-wave',     weight:  8 },
-    { kind: 'rr-whirlpool',     weight: 10 },
+    { kind: 'rr-turbo-bubble',  weight: 35 },
+    { kind: 'rr-bubble-shield', weight:  8 },
+    { kind: 'rr-ink-slick',     weight:  7 },
+    { kind: 'rr-seeker-jelly',  weight:  7 },
+    { kind: 'rr-tide-wave',     weight:  6 },
+    { kind: 'rr-whirlpool',     weight:  7 },
   ],
   // 6th–7th — aggressive-leaning
   6: [
@@ -840,12 +851,13 @@ export const PLACEMENT_ITEM_TABLE: Record<
     { kind: 'rr-ink-slick',     weight: 10 },
     { kind: 'rr-bubble-shield', weight:  5 },
   ],
-  // 8th — aggressive only
+  // 8th — aggressive catch-up mix with five distinct kinds
   8: [
-    { kind: 'rr-whirlpool',    weight: 35 },
-    { kind: 'rr-seeker-jelly', weight: 30 },
-    { kind: 'rr-tide-wave',    weight: 25 },
-    { kind: 'rr-turbo-bubble', weight: 10 },
+    { kind: 'rr-whirlpool',    weight: 30 },
+    { kind: 'rr-seeker-jelly', weight: 26 },
+    { kind: 'rr-tide-wave',    weight: 22 },
+    { kind: 'rr-turbo-bubble', weight: 14 },
+    { kind: 'rr-ink-slick',    weight:  8 },
   ],
 };
 
@@ -1088,13 +1100,11 @@ export function buildBodyMultipliers(
 // Architecture: `.claude/plans/reef-race-v2-spline-architecture.md` §4 + §8.
 
 /**
- * Manual jump impulse (player presses Shift). Calibrated so manual airtime
- * is ~0.6s with REEF_GRAVITY: vyAxis_initial = 480 wu/s → peak height
- * 480²/(2*1200) = 96 wu, total airtime 2*480/1200 = 0.8s.
- * Target spec from plan: ~60 wu peak, ~0.6s airtime.
- * Tune after first playtest.
+ * Manual jump impulse (player presses Space or Shift). With REEF_GRAVITY,
+ * peak height is v²/(2g) = 550²/(2×1200) ≈126wu and total airtime is
+ * 2v/g ≈0.92s: visibly above wave heave while still below the ramp launch.
  */
-export const REEF_JUMP_IMPULSE_MANUAL = 380; // → ~60 wu peak, ~0.63s airtime
+export const REEF_JUMP_IMPULSE_MANUAL = 550;
 
 /**
  * Ramp jump impulse (server-injected on ramp AABB entry, regardless of input).
@@ -1226,12 +1236,12 @@ export const RAMP_HALF_WIDTH = 200;
  */
 export function buildSplineRamps(): SplineRampPatch[] {
   return [
-    { id: 'ramp-lagoon',     t: 0.09, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
-    { id: 'ramp-kelp-1',    t: 0.22, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
-    { id: 'ramp-kelp-2',    t: 0.35, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
-    { id: 'ramp-shipwreck', t: 0.50, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
-    { id: 'ramp-canyon-1',  t: 0.65, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
-    { id: 'ramp-canyon-2',  t: 0.78, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
+    { id: 'ramp-lagoon',     t: 0.070, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
+    { id: 'ramp-kelp-1',    t: 0.135, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
+    { id: 'ramp-kelp-2',    t: 0.360, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
+    { id: 'ramp-shipwreck', t: 0.450, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
+    { id: 'ramp-canyon-1',  t: 0.775, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
+    { id: 'ramp-canyon-2',  t: 0.900, lateralOffset: 0, halfLength: RAMP_HALF_LENGTH, halfWidth: RAMP_HALF_WIDTH, launchImpulse: REEF_JUMP_IMPULSE_RAMP, cooldownMs: RAMP_COOLDOWN_MS },
   ];
 }
 
@@ -1258,7 +1268,7 @@ export interface SplineBoostPad {
 }
 
 /** AABB half-length of a boost-pad trigger volume along tangent (wu). */
-export const BOOST_PAD_HALF_LENGTH = 130;
+export const BOOST_PAD_HALF_LENGTH = 220;
 /** AABB half-width of a boost-pad trigger volume perpendicular to tangent (wu). */
 export const BOOST_PAD_HALF_WIDTH = 170;
 /**
@@ -1270,77 +1280,30 @@ export const BOOST_PAD_HALF_WIDTH = 170;
 export const BOOST_PAD_KICK = REEF_MAX_SPEED * REEF_BOOST_PAD_KICK_RATIO; // 416 wu/s @ cap 1300
 /**
  * Additive speedMod contribution while `pad-boost` is active (folds into the
- * positive kinetic stack, capped by KINEMATIC_BOOST_CAP). +0.30 → target cruise
- * rises to 1.30× for the duration, then decays when the timer expires.
+ * positive kinetic stack, capped by KINEMATIC_BOOST_CAP). +0.45 raises target
+ * cruise to 1.45× for the duration, then decays when the timer expires.
  */
-export const BOOST_PAD_BOOST_MULT = 0.30;
+export const BOOST_PAD_BOOST_MULT = 0.45;
 /** How long the timed `pad-boost` speedMod lasts before it decays (ms). */
-export const BOOST_PAD_DURATION_MS = 1_500;
+export const BOOST_PAD_DURATION_MS = 2_200;
 
 /**
- * Boost-pad placements — 4 pads on straighter mid-segment sections, offset to
- * one side so taking the pad line is a real choice (not free on every racing
- * line). t-values avoid ramps (which share the jump axis) and the start/finish
- * seam. All extents from the constants above.
+ * Eight pads spread around the lap on the natural racing line. Small alternating
+ * offsets keep visual variety while the 220wu along-window and 170wu half-width
+ * make them reliably reachable at full race speed. All extents use constants.
  */
 export function buildSplineBoostPads(): SplineBoostPad[] {
   return [
-    { id: 'pad-lagoon',  t: 0.15, lateralOffset:  90, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
-    { id: 'pad-kelp',    t: 0.42, lateralOffset: -90, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
-    { id: 'pad-wreck',   t: 0.58, lateralOffset:  90, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
-    { id: 'pad-canyon',  t: 0.85, lateralOffset: -90, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
+    { id: 'pad-lagoon',       t: 0.055, lateralOffset:   0, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
+    { id: 'pad-kelp-entry',   t: 0.165, lateralOffset:  45, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
+    { id: 'pad-kelp-exit',    t: 0.285, lateralOffset: -45, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
+    { id: 'pad-wreck-entry',  t: 0.405, lateralOffset:   0, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
+    { id: 'pad-wreck-core',   t: 0.535, lateralOffset:  45, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
+    { id: 'pad-wreck-exit',   t: 0.655, lateralOffset: -45, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
+    { id: 'pad-canyon',       t: 0.785, lateralOffset:   0, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
+    { id: 'pad-home-stretch', t: 0.915, lateralOffset:  35, halfLength: BOOST_PAD_HALF_LENGTH, halfWidth: BOOST_PAD_HALF_WIDTH },
   ];
 }
-
-// ─── Mini-turbo from surf-carve (net-new v2 mechanic) ────────────────────────
-//
-// The signature "surf whip" verb (drift retired for jump). Sustained hard
-// carving in ONE direction CHARGES a meter over ticks; on release (or when the
-// carve breaks) it FIRES a short forward boost, tiered by charge time. The
-// charge state lives on the ReefBody and is updated per-tick in
-// applyIntentForTick from the SAME heading-rate signal the surf step produces —
-// integrateSurfStep itself stays PURE (client-mirrorable). The fire is a timed
-// `mini-turbo-boost` speedMod that folds into the positive kinetic stack (capped
-// by KINEMATIC_BOOST_CAP) so it can't be chained into infinite speed.
-
-/**
- * Minimum per-tick heading change (rad) to count as "carving hard enough to
- * charge". 0.035 rad/tick ≈ 2.0°/tick ≈ 60°/s sustained at 30 Hz — a committed
- * corner, not a straight-line micro-correction. Below this the charge does not
- * build.
- */
-export const MINI_TURBO_MIN_TURN_PER_TICK = 0.035;
-/** Minimum forward speed (wu/s) to build charge — no charging from a near-stop. */
-export const MINI_TURBO_MIN_SPEED = REEF_MAX_SPEED * 0.35; // 455 wu/s @ cap 1300
-/**
- * Sustained-carve time (ms) to reach tier 1 (small boost). 480ms ≈ a solid
- * corner hold. Charge accumulates real elapsed time (dt), so this is tick-rate
- * independent.
- */
-export const MINI_TURBO_TIER1_MS = 480;
-/** Sustained-carve time (ms) to reach tier 2 (big boost). ~1.1s = a long sweeper. */
-export const MINI_TURBO_TIER2_MS = 1_100;
-/** Hard ceiling on accumulated charge (ms) so the meter can't overfill. */
-export const MINI_TURBO_MAX_CHARGE_MS = 1_100;
-/** Additive speedMod for a tier-1 mini-turbo release (folds into positive stack). */
-export const MINI_TURBO_TIER1_MULT = 0.22;
-/** Additive speedMod for a tier-2 mini-turbo release. */
-export const MINI_TURBO_TIER2_MULT = 0.38;
-/** Duration (ms) of the tier-1 mini-turbo speedMod before it decays. */
-export const MINI_TURBO_TIER1_DURATION_MS = 900;
-/** Duration (ms) of the tier-2 mini-turbo speedMod before it decays. */
-export const MINI_TURBO_TIER2_DURATION_MS = 1_300;
-/**
- * Anti-farm cooldown (ms) after a mini-turbo FIRES before the charge can build
- * again. Without it, rhythmic left-right flick-carving (counter-carve reseed)
- * could fire a fresh tier-1 every ~480 ms — and since the boost lasts 900 ms
- * (> the fire interval) that would give CONTINUOUS uptime from snaking. 600 ms
- * forces a gap: max snaking cadence becomes ~(600 cooldown + 480 recharge) ≈
- * 1080 ms > the 900 ms tier-1 duration, so the boost can no longer be held
- * continuously. Legit per-corner mini-turbos (corners spaced >600 ms apart) are
- * unaffected. Converted to TICKS at use (fixed-step deterministic).
- */
-export const MINI_TURBO_COOLDOWN_MS = 600;
 
 // ─── Ink-slick (rival slow) + whirlpool (rival knock) tunables ───────────────
 

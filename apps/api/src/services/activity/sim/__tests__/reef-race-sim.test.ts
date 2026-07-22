@@ -1337,23 +1337,27 @@ describe('ReefRaceSim — Phase 2 hazards (P2-T15..P2-T18)', () => {
 });
 
 describe('ReefRaceSim — Phase 2 placement-weighted items (P2-T19..P2-T26)', () => {
-  it('P2-T19 — getPlacementItemTable(1) returns defensive-only weights', () => {
+  it('P2-T19 — getPlacementItemTable(1) returns Round 16 leader weights without seeker', () => {
     const t = getPlacementItemTable(1);
-    expect(t).toBeDefined();
-    if (!t) return;
-    const kinds = t.map((e) => e.kind);
-    expect(kinds).not.toContain('rr-whirlpool');
-    expect(kinds).not.toContain('rr-seeker-jelly');
-    expect(kinds).not.toContain('rr-tide-wave');
+    expect(t).toEqual([
+      { kind: 'rr-bubble-shield', weight: 28 },
+      { kind: 'rr-ink-slick', weight: 22 },
+      { kind: 'rr-turbo-bubble', weight: 20 },
+      { kind: 'rr-tide-wave', weight: 16 },
+      { kind: 'rr-whirlpool', weight: 14 },
+    ]);
+    expect(t?.map((e) => e.kind)).not.toContain('rr-seeker-jelly');
   });
 
-  it('P2-T20 — getPlacementItemTable(8) returns aggressive-only weights', () => {
+  it('P2-T20 — getPlacementItemTable(8) returns Round 16 comeback weights', () => {
     const t = getPlacementItemTable(8);
-    expect(t).toBeDefined();
-    if (!t) return;
-    const kinds = t.map((e) => e.kind);
-    expect(kinds).not.toContain('rr-bubble-shield');
-    expect(kinds).not.toContain('rr-ink-slick');
+    expect(t).toEqual([
+      { kind: 'rr-whirlpool', weight: 30 },
+      { kind: 'rr-seeker-jelly', weight: 26 },
+      { kind: 'rr-tide-wave', weight: 22 },
+      { kind: 'rr-turbo-bubble', weight: 14 },
+      { kind: 'rr-ink-slick', weight: 8 },
+    ]);
   });
 
   it('P2-T21 — computeLivePlacements orders racing bodies by progress', () => {
@@ -1388,14 +1392,15 @@ describe('ReefRaceSim — Phase 2 placement-weighted items (P2-T19..P2-T26)', ()
   });
 
   it('P2-T23 — placement-table lookup returns kinds from the bucket only', () => {
-    expect(PLACEMENT_ITEM_TABLE[1].length).toBeGreaterThan(0);
-    expect(PLACEMENT_ITEM_TABLE[4].length).toBeGreaterThan(0);
-    expect(PLACEMENT_ITEM_TABLE[8].length).toBeGreaterThan(0);
-    // Spot-check a few buckets — confirm weights non-zero.
-    for (const placement of [1, 4, 8]) {
+    for (let placement = 1; placement <= 8; placement += 1) {
       const table = PLACEMENT_ITEM_TABLE[placement];
+      expect(new Set(table.map((entry) => entry.kind)).size).toBeGreaterThanOrEqual(5);
       expect(table.every((e) => e.weight > 0)).toBe(true);
+      expect(Math.max(...table.map((entry) => entry.weight))).toBeLessThanOrEqual(35);
     }
+    expect(PLACEMENT_ITEM_TABLE[1].map((entry) => entry.kind)).not.toContain(
+      'rr-seeker-jelly',
+    );
   });
 
   it('P2-T24 — placement-table fallback returns null for out-of-range', () => {

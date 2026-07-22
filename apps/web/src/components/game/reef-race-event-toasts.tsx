@@ -6,25 +6,22 @@
  * Brief on-screen flash indicators for apex verdict + hazard hit events.
  *
  * Components:
- *   - <ReefRaceApexToast> — "PERFECT LINE +5%" (green) or "DRIFT WIDE -5%"
+ *   - <ReefRaceApexToast> — "PERFECT LINE +5%" (green) or "WIDE LINE -5%"
  *     (amber) centered below the placement tile. Visible for 1 500ms.
  *   - <ReefRaceHazardToast> — "URCHIN FIELD -40%" (red). Visible for 1 000ms.
  *   - <ReefRaceRibbonToast> — "BOOST +30%" (cyan). Visible for 800ms.
  *     (Optional — ribbon collection is already visible from the ribbon mesh
  *      flash but a text confirmation helps new players understand the mechanic.)
- *   - <ReefRaceBoostPadToast> — NEW (2026-07-10) — "BOOST PAD +30%" (cyan).
+ *   - <ReefRaceBoostPadToast> — "BOOST PAD +45%" (cyan).
  *     Visible for 800ms. Self-only (filters `lastBoostPadEvent.avatarId`
  *     against `selfAvatarId` — the store field is unfiltered/all-avatars so
  *     `ReefRacePlayer` can burst-FX any visible rider's pad hit).
- *   - <ReefRaceMiniTurboToast> — NEW (2026-07-10) — "MINI-TURBO!" (cyan,
- *     tier 1) or "SUPER MINI-TURBO!!" (orange, tier 2). Visible for 900ms.
- *     Self-only, same filter pattern as the boost-pad toast.
  *
  * Subscriptions (all primitive):
  *   - `s.lastApexVerdict` — object reference (new ref on each event)
  *   - `s.lastHazardHitAt` — number (ms)
  *   - `s.lastRibbonCollectedAt` — number (ms)
- *   - `s.lastBoostPadEvent` / `s.lastMiniTurboFireEvent` — object reference,
+ *   - `s.lastBoostPadEvent` — object reference,
  *     unfiltered by avatarId (self-filter happens in this file)
  *   - `s.matchPhase` — string
  *
@@ -46,6 +43,8 @@ import { useActivityStore } from '@/stores/activity';
 const APEX_DURATION_MS   = 1_500;
 const HAZARD_DURATION_MS = 1_000;
 const RIBBON_DURATION_MS = 800;
+const WALL_SLAM_DURATION_MS = 1_000;
+const WIPEOUT_DURATION_MS = 1_200;
 
 // ─── Shared toast wrapper ─────────────────────────────────────────────────────
 
@@ -117,7 +116,7 @@ function ReefRaceApexToast() {
   const isClean = lastApexVerdict.kind === 'clean';
   const color     = isClean ? '#00e676' : '#ff9800';
   const glowColor = isClean ? '#00e67666' : '#ff980066';
-  const label     = isClean ? 'PERFECT LINE  +5%' : 'DRIFT WIDE  −5%';
+  const label     = isClean ? 'PERFECT LINE  +5%' : 'WIDE LINE  −5%';
 
   return (
     <ToastBox visible={visible} color={color} glowColor={glowColor} topOffset="36%">
@@ -264,62 +263,75 @@ function ReefRaceBoostPadToast() {
           fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
         }}
       >
-        BOOST PAD  +30%
+        BOOST PAD  +45%
       </span>
     </ToastBox>
   );
 }
 
-// ─── Mini-turbo toast (v2 mechanics, 2026-07-10) ──────────────────────────────
-
-const MINI_TURBO_DURATION_MS = 900;
-
-function ReefRaceMiniTurboToast() {
-  const lastMiniTurboFireEvent = useActivityStore((s) => s.lastMiniTurboFireEvent);
-  const selfAvatarId           = useActivityStore((s) => s.selfAvatarId);
-  const matchPhase             = useActivityStore((s) => s.matchPhase);
+function ReefRaceWallSlamToast() {
+  const event = useActivityStore((s) => s.lastWallSlamEvent);
+  const selfAvatarId = useActivityStore((s) => s.selfAvatarId);
+  const matchPhase = useActivityStore((s) => s.matchPhase);
   const [visible, setVisible] = useState(false);
-  const atRef = useRef<number>(0);
-
-  const isSelfEvent =
-    !!lastMiniTurboFireEvent && !!selfAvatarId && lastMiniTurboFireEvent.avatarId === selfAvatarId;
+  const isSelfEvent = event?.avatarId === selfAvatarId && selfAvatarId !== null;
 
   useEffect(() => {
     if (!isSelfEvent || matchPhase !== 'live') {
       setVisible(false);
       return;
     }
-    atRef.current = lastMiniTurboFireEvent!.at;
     setVisible(true);
-
-    const id = setInterval(() => {
-      if (Date.now() - atRef.current >= MINI_TURBO_DURATION_MS) {
-        setVisible(false);
-        clearInterval(id);
-      }
-    }, 200);
-    return () => clearInterval(id);
-  }, [isSelfEvent, lastMiniTurboFireEvent, matchPhase]);
-
-  if (!lastMiniTurboFireEvent) return null;
-
-  const isTier2 = lastMiniTurboFireEvent.level === 2;
-  const color     = isTier2 ? '#ff5e2b' : '#5ce1ff';
-  const glowColor = isTier2 ? '#ff5e2b66' : '#5ce1ff55';
-  const label     = isTier2 ? 'SUPER MINI-TURBO!!' : 'MINI-TURBO!';
+    const id = window.setTimeout(() => setVisible(false), WALL_SLAM_DURATION_MS);
+    return () => window.clearTimeout(id);
+  }, [event, isSelfEvent, matchPhase]);
 
   return (
-    <ToastBox visible={visible} color={color} glowColor={glowColor} topOffset="15%">
+    <ToastBox visible={visible} color="#ff6b6b" glowColor="#ff6b6b66" topOffset="42%">
       <span
         style={{
           fontSize: 13,
           fontWeight: 800,
-          letterSpacing: '0.1em',
-          color,
+          letterSpacing: '0.12em',
+          color: '#ff6b6b',
           fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
         }}
       >
-        {label}
+        REEF SLAM  -40%
+      </span>
+    </ToastBox>
+  );
+}
+
+function ReefRaceWipeoutToast() {
+  const event = useActivityStore((s) => s.lastWipeoutEvent);
+  const selfAvatarId = useActivityStore((s) => s.selfAvatarId);
+  const matchPhase = useActivityStore((s) => s.matchPhase);
+  const [visible, setVisible] = useState(false);
+  const isSelfEvent = event?.avatarId === selfAvatarId && selfAvatarId !== null;
+
+  useEffect(() => {
+    if (!isSelfEvent || matchPhase !== 'live') {
+      setVisible(false);
+      return;
+    }
+    setVisible(true);
+    const id = window.setTimeout(() => setVisible(false), WIPEOUT_DURATION_MS);
+    return () => window.clearTimeout(id);
+  }, [event, isSelfEvent, matchPhase]);
+
+  return (
+    <ToastBox visible={visible} color="#ff5252" glowColor="#ff174466" topOffset="34%">
+      <span
+        style={{
+          fontSize: 18,
+          fontWeight: 900,
+          letterSpacing: '0.14em',
+          color: '#ff8a80',
+          fontFamily: 'var(--font-orbitron, ui-sans-serif), sans-serif',
+        }}
+      >
+        WIPED OUT!
       </span>
     </ToastBox>
   );
@@ -360,33 +372,47 @@ function ReefRacePowerUpToast() {
       return;
     }
 
-    let nextToast: InventoryToastState | null = null;
-    const slotCount = Math.max(previous.length, inventory.length);
-    for (let index = 0; index < slotCount; index += 1) {
-      const before = previous[index];
-      const after = inventory[index];
-      const beforeKind = before?.kind ?? null;
-      const afterKind = after?.kind ?? null;
-      const collected =
-        !!afterKind &&
-        (!beforeKind || beforeKind !== afterKind || after!.charges > before!.charges);
-      if (collected && afterKind) {
-        nextToast = {
-          label: `+ ${POWER_UP_LABELS[afterKind] ?? afterKind.toUpperCase()}`,
-          color: '#6ee7b7',
-        };
-        break;
+    // Compare whole-inventory charge totals by kind. Slot-by-slot inference
+    // breaks when [used, queued] becomes [queued, empty]: that transition must
+    // report the used kind, not claim the queued item fired or was collected.
+    const beforeCharges = new Map<string, number>();
+    const afterCharges = new Map<string, number>();
+    for (const slot of previous) {
+      if (slot.kind) {
+        beforeCharges.set(
+          slot.kind,
+          (beforeCharges.get(slot.kind) ?? 0) + slot.charges,
+        );
       }
+    }
+    for (const slot of inventory) {
+      if (slot.kind) {
+        afterCharges.set(
+          slot.kind,
+          (afterCharges.get(slot.kind) ?? 0) + slot.charges,
+        );
+      }
+    }
 
-      const used =
-        !!beforeKind &&
-        (!afterKind || beforeKind !== afterKind || after!.charges < before!.charges);
-      if (used && beforeKind) {
+    let nextToast: InventoryToastState | null = null;
+    for (const [kind, charges] of beforeCharges) {
+      if ((afterCharges.get(kind) ?? 0) < charges) {
         nextToast = {
-          label: `${POWER_UP_LABELS[beforeKind] ?? beforeKind.toUpperCase()} FIRED`,
+          label: `${POWER_UP_LABELS[kind] ?? kind.toUpperCase()} FIRED`,
           color: '#ffd24a',
         };
         break;
+      }
+    }
+    if (!nextToast) {
+      for (const [kind, charges] of afterCharges) {
+        if ((beforeCharges.get(kind) ?? 0) < charges) {
+          nextToast = {
+            label: `+ ${POWER_UP_LABELS[kind] ?? kind.toUpperCase()}`,
+            color: '#6ee7b7',
+          };
+          break;
+        }
       }
     }
 
@@ -435,7 +461,8 @@ export default function ReefRaceEventToasts() {
       <ReefRaceHazardToast />
       <ReefRaceRibbonToast />
       <ReefRaceBoostPadToast />
-      <ReefRaceMiniTurboToast />
+      <ReefRaceWallSlamToast />
+      <ReefRaceWipeoutToast />
       <ReefRacePowerUpToast />
     </>
   );

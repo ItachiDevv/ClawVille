@@ -34,6 +34,10 @@ import LobbyLanding, {
 } from '@/components/game/lobby-landing';
 import { primeActivitySounds, preloadActivitySounds } from '@/lib/activity-audio';
 import type { SpectatorCamMode } from '@/components/game/activity';
+import {
+  ReefRaceSpeedLinesOverlay,
+  ReefRaceSurgeDriver,
+} from '@/lib/three/activities/reef-race/reef-race-speed-surge';
 
 // 3da-owned scenes — dynamic-imported so WebGPU context only initializes
 // after the page mounts (avoids bundling Three.js WebGPU into the entry
@@ -152,17 +156,16 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
   // Reset store on mount and whenever roomId changes (room teardown safety).
   useEffect(() => {
     useActivityStore.getState().reset(roomId);
-    if (avatarId) useActivityStore.getState().setSelfAvatarId(avatarId);
     return () => {
       useActivityStore.getState().reset(null);
     };
-  }, [roomId, avatarId]);
+  }, [roomId]);
 
   // Push selfAvatarId into the store the moment we know it (might land after
   // the WS opens; the store re-renders the scene then for self-highlight).
   useEffect(() => {
     if (avatarId) useActivityStore.getState().setSelfAvatarId(avatarId);
-  }, [avatarId]);
+  }, [avatarId, roomId]);
 
   // If the lobby didn't pass shortCode, fetch room state to recover it.
   // This also acts as the participant gate — `/state` returns 403 if the
@@ -211,10 +214,17 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
   // Gate input: only when scene is in play AND self is alive AND WS is open.
   const matchPhase = useActivityStore((s) => s.matchPhase);
   const selfAlive = useActivityStore(selectSelfAlive);
+  const selfWipedOut = useActivityStore((s) =>
+    avatarId ? s.entities.get(avatarId)?.wipedOut === true : false,
+  );
   const inputEnabled =
-    wsEnabled && status === 'connected' && matchPhase === 'live' && selfAlive;
+    wsEnabled &&
+    status === 'connected' &&
+    matchPhase === 'live' &&
+    selfAlive &&
+    !selfWipedOut;
 
-  useActivityInput({ send, enabled: inputEnabled });
+  useActivityInput({ send, enabled: inputEnabled, activityId });
 
   // ── Chunk #12 — spectator camera state lifted from HUD to page ─────────
   // The HUD owns the *picker* + *target cycle*; the page owns the *scene
@@ -389,15 +399,17 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
         <div style={{ position: 'absolute', inset: 0 }}>
           <ReefRaceScene roomId={roomId} selfAvatarId={avatarId} />
         </div>
+        <ReefRaceSurgeDriver roomId={roomId} />
+        <ReefRaceSpeedLinesOverlay />
         <ReefRaceHud
           onLeave={handleLeave}
           onPlayAgain={() => router.push('/game?quickQueue=reef-race')}
           activityId={activityId}
           roomId={roomId}
         />
-        {/* Mobile A (boost) + B (power-up) thumb buttons — same component
-            Bumper Shells uses; reef-race input also uses dir + actionBits. */}
-        <ActivityMobileControls active={inputEnabled} />
+        {/* Shared mobile A/B thumb buttons. Reef maps A=jump/B=item;
+            Bumper preserves A=boost/B=power-up. */}
+        <ActivityMobileControls active={inputEnabled} activityId={activityId} />
       </main>
     );
   }
@@ -429,10 +441,9 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
         sendEmote={handleSendEmote}
         onSpectatorStateChange={handleSpectatorStateChange}
       />
-      {/* Chunk #12 — mobile A (boost) + B (power-up) thumb buttons.
-          Only renders on touch devices; replaces the open-world E button
-          while we're on the activity route. */}
-      <ActivityMobileControls active={inputEnabled} />
+      {/* Chunk #12 — activity-specific mobile A/B actions. Only renders on
+          touch devices; replaces the open-world E button on this route. */}
+      <ActivityMobileControls active={inputEnabled} activityId={activityId} />
     </main>
   );
 }

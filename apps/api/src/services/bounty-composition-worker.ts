@@ -33,6 +33,7 @@ import {
 } from './bounty-escrow-link';
 import { alertError } from './alert-error';
 import { recordCovenantAction } from './covenant-action-recorder';
+import { enqueueBountyReputation } from './sap/sap-reputation-writer';
 
 /**
  * A DB transaction handle (mirrors `LedgerTx` in `claw-token-ledger.ts`). Lets
@@ -146,7 +147,7 @@ export async function bookComposedBountyPaid(
   // still fires at most once — only the single caller whose UPDATE returns a row books the
   // bump; a loser (already paid / state drift) returns booked:false and its (write-free)
   // transaction commits as a no-op. Return contract is unchanged.
-  return db.transaction(async (tx) => {
+  const booked = await db.transaction(async (tx): Promise<BookComposedBountyPaidResult> => {
     const claimed = await tx
       .update(bounties)
       .set({
@@ -195,6 +196,11 @@ export async function bookComposedBountyPaid(
     );
     return { booked: true };
   });
+  // Reputation admission is deliberately AFTER the PAID transaction commits.
+  // Both the approve route and resume worker call this shared CAS seam; only the
+  // winner enqueues, and enqueue failure can never roll back or change payment.
+  if (booked.booked) enqueueBountyReputation(input.bountyId, input.hunterAvatarId);
+  return booked;
 }
 
 /**

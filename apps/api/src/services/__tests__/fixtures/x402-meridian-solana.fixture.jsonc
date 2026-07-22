@@ -1,0 +1,37 @@
+// Source: docs/meridian-contract-capture-2026-07-22.md, captured from
+// https://api.mrdn.finance/v1/solana/facilitator?network=solana-devnet
+{
+  "facilitatorConfig": {
+    "network": "solana-devnet",
+    "facilitator": "DhFm5NhZN5wXGyCAAS64Ae3Tdj8z8YkZGztDFfCpvt7b",
+    "programId": "Ro6hz1smrm5zDh73849eDqKna9dE1EkPsWekAB5rBWm",
+    "configPda": "DwwoJ5qTsQAs97xwBBRcf7He5j2xWuTtch1HPfiqP5fY",
+    "usdcMint": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    "treasury": "2e5ykhhcXT1HiTX89uyhDPEwq3j3bjcKr4AmHxhuscxp",
+    "treasuryToken": "H67ehh1Uj7wv9LfZvdXpZqPDRJt7hR9TNHTZKtLdR57L",
+    "treasuryFeeBps": 100,
+    "paused": false
+  },
+  "instruction": {
+    "dataLength": 66,
+    "discriminator": [241, 208, 6, 43, 81, 61, 213, 10],
+    "grossAmount": "125000",
+    "validAfter": "0",
+    "validBefore": "1700000120",
+    "platformFeeBps": 1000,
+    "platformFeeAmount": "12500",
+    "treasuryFeeAmount": "1125",
+    "netAmount": "111375",
+    "accountRoles": [
+      "facilitator-fee-payer",
+      "payer-from",
+      "config",
+      "usdc-mint",
+      "payer-token",
+      "recipient-token",
+      "platform-token",
+      "treasury-token",
+      "token-program"
+    ]
+  }
+}

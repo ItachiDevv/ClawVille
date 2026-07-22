@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { MAP_LOCATIONS, type AutonomyStatusThought } from '@clawville/shared';
 import { agentAutonomyDriver } from '../agent-autonomy-driver';
 import { npcSimulation } from '../npc-simulation';
-import type { CurrentDirective } from '../agent-autonomy-state';
+import type {
+  AgentDirectiveState,
+  CurrentDirective,
+  DirectiveActedClaim,
+} from '../agent-autonomy-state';
 import type { CovenantActionInput } from '../covenant-action-recorder';
 
 interface TestEntry {
@@ -16,6 +20,8 @@ interface TestEntry {
 interface DriverInternals {
   userAgents: Map<string, TestEntry>;
   readDirectiveBounded: () => Promise<CurrentDirective | null>;
+  directiveStateRead: () => Promise<AgentDirectiveState>;
+  directiveActedShaClaim: () => Promise<DirectiveActedClaim>;
   readRecentLessons: () => Promise<string[]>;
 }
 
@@ -32,6 +38,8 @@ const BODY = 'round2-body';
 const AVATAR = 'round2-avatar';
 
 const originalDirectiveRead = driver.readDirectiveBounded;
+const originalDirectiveStateRead = driver.directiveStateRead;
+const originalDirectiveActedShaClaim = driver.directiveActedShaClaim;
 const originalLessonRead = driver.readRecentLessons;
 const originalCovenantRecord = agentAutonomyDriver.covenantRecord;
 
@@ -91,6 +99,8 @@ beforeEach(() => {
 
 afterEach(() => {
   driver.readDirectiveBounded = originalDirectiveRead;
+  driver.directiveStateRead = originalDirectiveStateRead;
+  driver.directiveActedShaClaim = originalDirectiveActedShaClaim;
   driver.readRecentLessons = originalLessonRead;
   agentAutonomyDriver.covenantRecord = originalCovenantRecord;
   for (const id of agentAutonomyDriver.getUserAgentIds()) agentAutonomyDriver.unregisterUserAgent(id);
@@ -118,10 +128,15 @@ describe('round 2 owner status and thought feed', () => {
     enroll();
     const directive: CurrentDirective = {
       text: 'go play cards',
-      setAt: new Date(0).toISOString(),
+      setAt: new Date().toISOString(),
       setBy: 'api',
     };
-    driver.readDirectiveBounded = async () => directive;
+    driver.readDirectiveBounded = originalDirectiveRead;
+    driver.directiveStateRead = async () => ({
+      directive,
+      lastActedDirectiveSha: null,
+    });
+    driver.directiveActedShaClaim = async () => 'claimed';
     const records: CovenantActionInput[] = [];
     agentAutonomyDriver.covenantRecord = async (input) => {
       records.push(input);

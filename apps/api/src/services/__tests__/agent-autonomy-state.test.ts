@@ -13,6 +13,8 @@ import {
   directiveBodySchema,
   buildDirectiveValue,
   parseStoredDirective,
+  parseLastActedDirectiveSha,
+  classifyDirectiveActedClaimLoss,
   formatDirectiveContext,
   summarizeAutonomyEvents,
   DIRECTIVE_MAX_LEN,
@@ -88,6 +90,69 @@ describe('parseStoredDirective', () => {
     const d = parseStoredDirective({ text: 'x', setBy: 'weird' });
     expect(d!.setBy).toBe('api');
     expect(d!.setAt).toBe(new Date(0).toISOString());
+  });
+});
+
+describe('parseLastActedDirectiveSha', () => {
+  it('accepts only a complete lowercase SHA-256 marker', () => {
+    const sha = 'a'.repeat(64);
+    expect(parseLastActedDirectiveSha(sha)).toBe(sha);
+    expect(parseLastActedDirectiveSha('A'.repeat(64))).toBeNull();
+    expect(parseLastActedDirectiveSha('a'.repeat(63))).toBeNull();
+    expect(parseLastActedDirectiveSha(null)).toBeNull();
+  });
+});
+
+describe('classifyDirectiveActedClaimLoss', () => {
+  const expected = {
+    text: 'visit the cove',
+    setAt: '2026-07-21T12:00:00.000Z',
+    setBy: 'api' as const,
+  };
+  const sha = 'b'.repeat(64);
+
+  it('distinguishes an already-recorded issuance from replaced/missing state', () => {
+    expect(
+      classifyDirectiveActedClaimLoss(
+        { directive: expected, lastActedDirectiveSha: sha },
+        sha,
+        expected,
+      ),
+    ).toBe('already_recorded');
+    expect(
+      classifyDirectiveActedClaimLoss(
+        {
+          directive: { ...expected, setAt: '2026-07-21T12:01:00.000Z' },
+          lastActedDirectiveSha: sha,
+        },
+        sha,
+        expected,
+      ),
+    ).toBe('superseded');
+    expect(
+      classifyDirectiveActedClaimLoss(
+        {
+          directive: { ...expected, text: 'visit memory rag' },
+          lastActedDirectiveSha: sha,
+        },
+        sha,
+        expected,
+      ),
+    ).toBe('superseded');
+    expect(
+      classifyDirectiveActedClaimLoss(
+        { directive: expected, lastActedDirectiveSha: 'c'.repeat(64) },
+        sha,
+        expected,
+      ),
+    ).toBe('superseded');
+    expect(
+      classifyDirectiveActedClaimLoss(
+        { directive: null, lastActedDirectiveSha: sha },
+        sha,
+        expected,
+      ),
+    ).toBe('superseded');
   });
 });
 

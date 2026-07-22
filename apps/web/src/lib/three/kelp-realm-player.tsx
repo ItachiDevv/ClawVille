@@ -12,6 +12,7 @@ import {
   KELP_REALM_PLAYER_SPEED_WU_PER_SEC,
   KELP_REALM_SPORE_COUNT,
   KELP_REALM_WALL_AABBS,
+  KELP_REALM_WALL_HEIGHT_WU,
   KELP_MAZE_COLLECTIBLE_SLUG,
 } from '@clawville/shared';
 import { useGameStore } from '@/stores/game';
@@ -33,9 +34,23 @@ import {
 
 const PLAYER_RADIUS = 34;
 const AVATAR_TARGET_HEIGHT = 270;
-const CAM_BEHIND = 520;
-const CAM_ABOVE = 610;
-const CAM_LOOK_Y = 135;
+/**
+ * Non-humanoid GLB avatars (lobster, crab-class bodies) are LOW and LONG:
+ * normalizing them to AVATAR_TARGET_HEIGHT by height alone explodes their
+ * horizontal extent to corridor-filling size (founder repro: the lobster
+ * spanned nearly the whole walkway with the camera inside its shell). Cap
+ * the visual footprint so the widest axis never exceeds this, and let the
+ * SMALLER of the height-fit and footprint-fit scales win.
+ */
+const AVATAR_MAX_FOOTPRINT = 150;
+const CAM_BEHIND = 560;
+const CAM_ABOVE = 470;
+const CAM_LOOK_Y = 170;
+const CAM_LOOK_AHEAD = 150;
+/** The camera never clamps closer to the player than this, no matter what. */
+const CAM_MIN_DISTANCE = 220;
+/** Sightline points above the kelp canopy (plus margin) can never be occluded. */
+const CAM_OCCLUSION_CEILING_WU = KELP_REALM_WALL_HEIGHT_WU + 24;
 const CAM_YAW_SPEED = 1.25;
 const CAM_PITCH_SPEED = 180;
 const CAM_PITCH_MIN = -35;
@@ -146,9 +161,12 @@ function firstCameraWallHitT(
   originZ: number,
   targetX: number,
   targetZ: number,
+  originY: number,
+  targetY: number,
 ): number {
   const deltaX = targetX - originX;
   const deltaZ = targetZ - originZ;
+  const deltaY = targetY - originY;
   let firstHit = 1;
 
   for (let index = 0; index < KELP_REALM_WALL_AABBS.length; index++) {
@@ -190,25 +208,31 @@ function firstCameraWallHitT(
       if (nearT > farT) continue;
     }
 
+    // Height-aware: the wall slab test is 2D, but kelp walls are only
+    // KELP_REALM_WALL_HEIGHT_WU tall. If the sightline crosses this wall at a
+    // height above the canopy, the camera sees clean over it — clamping there
+    // is what made the chase camera yank inward in every corridor.
+    if (originY + deltaY * nearT >= CAM_OCCLUSION_CEILING_WU) continue;
     if (farT >= 0 && nearT >= 0 && nearT < firstHit) firstHit = nearT;
   }
 
   return firstHit;
 }
 
-function clampCameraToVisibleSegment(
+function cameraVisibleSegmentSafeT(
   originX: number,
   originZ: number,
   target: THREE.Vector3,
-): void {
-  const hitT = firstCameraWallHitT(originX, originZ, target.x, target.z);
-  if (hitT >= 1) return;
+): number {
+  const hitT = firstCameraWallHitT(originX, originZ, target.x, target.z, CAM_LOOK_Y, target.y);
   const deltaX = target.x - originX;
   const deltaZ = target.z - originZ;
-  const segmentLength = Math.sqrt(deltaX * deltaX + deltaZ * deltaZ);
-  const safeT = Math.max(0, hitT - CAM_WALL_PADDING / Math.max(1, segmentLength));
-  target.x = originX + deltaX * safeT;
-  target.z = originZ + deltaZ * safeT;
+  const segmentLength = Math.max(1, Math.sqrt(deltaX * deltaX + deltaZ * deltaZ));
+  if (hitT >= 1) return 1;
+  const safeT = Math.max(0, hitT - CAM_WALL_PADDING / segmentLength);
+  // Distance floor: a fully clamped camera parked on the player's head is
+  // worse than briefly seeing through a blade. Never collapse below this.
+  return Math.max(safeT, Math.min(1, CAM_MIN_DISTANCE / segmentLength));
 }
 
 interface MotionProps {
@@ -224,6 +248,7 @@ function KelpRealmAvatarMotion({ children, baseY = 0, updateAnimation }: MotionP
   const rotation = useRef(Math.PI);
   const cameraYaw = useRef(0);
   const cameraPitch = useRef(0);
+  const cameraClampT = useRef(1);
   const { camera } = useThree();
 
   useFrame(({ clock }, delta) => {
@@ -281,10 +306,18 @@ function KelpRealmAvatarMotion({ children, baseY = 0, updateAnimation }: MotionP
     const behindX = -Math.sin(cameraYaw.current) * CAM_BEHIND;
     const behindZ = Math.cos(cameraYaw.current) * CAM_BEHIND;
     cameraScratch.set(posX.current + behindX, CAM_ABOVE + cameraPitch.current, posZ.current + behindZ);
-    clampCameraToVisibleSegment(posX.current, posZ.current, cameraScratch);
+    const desiredClampT = cameraVisibleSegmentSafeT(posX.current, posZ.current, cameraScratch);
+    const clampRate = desiredClampT < cameraClampT.current ? 8 : 3;
+    cameraClampT.current += (desiredClampT - cameraClampT.current)
+      * (1 - Math.exp(-clampRate * safeDelta));
+    cameraScratch.x = posX.current + behindX * cameraClampT.current;
+    cameraScratch.z = posZ.current + behindZ * cameraClampT.current;
     camera.position.lerp(cameraScratch, 1 - Math.exp(-7 * safeDelta));
-    clampCameraToVisibleSegment(posX.current, posZ.current, camera.position);
-    targetScratch.set(posX.current, CAM_LOOK_Y, posZ.current);
+    targetScratch.set(
+      posX.current + forwardScratch.x * CAM_LOOK_AHEAD,
+      CAM_LOOK_Y,
+      posZ.current + forwardScratch.z * CAM_LOOK_AHEAD,
+    );
     camera.lookAt(targetScratch);
     updateAnimation(safeDelta, clock.elapsedTime, moving);
   });
@@ -355,7 +388,15 @@ function KelpRealmGLBPlayerInner({ reg }: { readonly reg: ModelRegistryEntry }) 
     next.updateMatrixWorld(true);
     glbBoundsScratch.setFromObject(next);
     const nativeHeight = Math.max(0.001, glbBoundsScratch.max.y - glbBoundsScratch.min.y);
-    const renderScale = AVATAR_TARGET_HEIGHT / nativeHeight;
+    const nativeFootprint = Math.max(
+      0.001,
+      glbBoundsScratch.max.x - glbBoundsScratch.min.x,
+      glbBoundsScratch.max.z - glbBoundsScratch.min.z,
+    );
+    const renderScale = Math.min(
+      AVATAR_TARGET_HEIGHT / nativeHeight,
+      AVATAR_MAX_FOOTPRINT / nativeFootprint,
+    );
     return {
       cloned: next,
       scale: renderScale,

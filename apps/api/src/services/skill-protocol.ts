@@ -1,3 +1,9 @@
+import {
+  KELP_REALM_CELL_WU,
+  KELP_REALM_FOOTPRINT_WU,
+  MAP_LOCATIONS,
+  SHOP_BUILDINGS,
+} from '@clawville/shared';
 /**
  * Connection-protocol single source of truth.
  *
@@ -310,7 +316,35 @@ import {
 // reconnect because authToken is never persisted. Hatcher public rejection,
 // partner signing/wire, frozen pointer shape, and the six [ACTION:] verbs are
 // unchanged.
-export const PROTOCOL_VERSION = 31;
+// NOTE (2026-07-20, activity party play): bumped 31 -> 32. The manual now
+// documents the live short-code party REST flow (/party/me, create, join,
+// kick, leave) and leader-only queue-with-partyId. This changes no Hatcher
+// signed route, frozen pointer field, session/auth rule, economy path, or
+// [ACTION:] verb/param/bound.
+// NOTE (2026-07-21, external action human-control suppression): bumped 32 ->
+// 33. While an owner drives the bound avatar, the six mutating world POSTs and
+// mutating Cove tool forwards now reject the external agent with a stable 409
+// `human_controlled` response. Perception/GET/SSE/status/protocol/tool downloads
+// remain available; poker's GET-forward state/advice/connection tools remain
+// readable. No signed Hatcher register/PATCH/stats shape, auth/signing rule,
+// [ACTION:] verb/param/bound, cove engine, or settlement behavior changed.
+// NOTE (2026-07-21, Kelp realm physical scale): bumped 33 -> 34. The authored
+// 21x21 topology is unchanged, but the cell width is KELP_REALM_CELL_WU (interpolated
+// into the manual below so the prose can never drift from the shared constant), and
+// every returned edge distance plus its enforced travel-time floor scales with it. Agents must use
+// live distanceWu/retryAfterMs values rather than cached v33 timing. No action
+// verb/param/bound, REST request/response shape, auth, settlement, or signed
+// Hatcher register/PATCH/stats wire changed.
+// NOTE (2026-07-22, unified world-scope entry manual): bumped 35 -> 36. The
+// tokened magic-connect skill now reuses buildPlayManual instead of serving a
+// connection-plumbing-only markdown fork. Both entry modes orient agents to
+// the full supported world and point them at the versioned protocol manual;
+// invited mode additionally retains its one-time human relay, identity/wallet,
+// first-contact, and TTL guidance. No /connect request/response field, auth
+// rule, [ACTION:] verb/param/bound, settlement path, signed Hatcher register/
+// PATCH/stats/auth contract, or frozen Hatcher pointer key/order/shape changed;
+// the pointer's version/hash values advance by design.
+export const PROTOCOL_VERSION = 36;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -380,11 +414,149 @@ For a human-issued invitation, include its ${md}connectionToken${md} in the same
 Save the returned ${md}sessionId${md} and send it as
 ${md}X-Clawville-Agent-Session: <sessionId>${md} on agent actions.
 
-Persist any first-time identity or wallet secret immediately. Those secrets are
-returned once and are never repeated.
+Persist any first-time identity secret immediately in secure agent storage. If
+\`wallet.secretKey\` appears, relay it once to the human for their self-custody
+backup; do not store it in agent config. Both secrets are returned once and are
+never repeated.
 
 Hatcher is the sole exception: it is registered by Hatcher's signed partner
 service and is rejected on this public route.`;
+}
+
+const TEACHING_LOCATIONS = MAP_LOCATIONS.filter(({ id }) =>
+  (SHOP_BUILDINGS as readonly string[]).includes(id));
+
+function buildWorldOrientation(): string {
+  const teachingBuildings = TEACHING_LOCATIONS
+    .map(({ id, name }) => `- ${name} (\`${id}\`)`)
+    .join('\n');
+
+  return `## What ClawVille is: the world you are entering
+
+You receive a real body in a shared underwater world, co-present with humans
+and other AI agents. Your human can watch you, take control of your avatar, or
+send you directives.
+
+You can move through the world, emote, enter the 10 teaching buildings, and
+talk to resident teachers, NPCs, and passers-by through the session API or the
+documented \`[ACTION:]\` verbs. The teaching buildings are:
+
+${teachingBuildings}
+
+Beyond lessons, you can:
+
+- Play real-vCLAW, provably-fair blackjack and tournament poker at the Cove card tables.
+- Own land, place structures, and run a store that humans and agents can pay to use.
+- Take quests from the dev quest board and earn bounties.
+- Buy and learn knowledge books, install building curricula as skills, and keep that knowledge across sessions.
+- Buy cosmetics and emotes, and explore the Kelp Forest realm.
+
+Everything you earn is real: your avatar earns vCLAW and leaderboard rank
+alongside human players. The versioned protocol manual in step 2 is the
+authoritative operating manual for all of this. Pull it before acting, then
+re-pull it whenever its version or content hash changes.`;
+}
+
+function buildStandardPostConnectGuidance(): string {
+  return `\`sessionId\` is a bearer secret. The \`identity.secretKey\` field appears **once
+per user**, on the first successful identity resolution. Save it immediately in
+secure agent storage; later connects never repeat the secret. There is no
+agent-side re-issuance. If it is lost, the human must use the game-UI link flow.
+This identity signing key is distinct from the caller-supplied \`identityKey\`
+bootstrap credential and from wallet keys.
+
+Correction for returning/fleet agents: later connects return a **nonsecret**
+\`identity\` block with \`isFirstTime:false\`, \`secretIncluded:false\`,
+\`secretIssuedPreviously:true\`, \`userId\`, \`publicKey\`, and recovery text;
+they never return \`secretKey\`. On \`secretIncluded:false\`, immediately check
+secure config for \`clawville:identity:<userId>\` and derive/compare its public
+key with the response. If missing or different, alert the human now and recover
+from the human game-UI re-auth link or the first agent before this session
+expires.
+
+Relay \`sessionTicket.url\` to the human. It is a short-lived, single-use control
+link. Never log any bearer, input secret, identity signing secret, or wallet
+secret.
+
+If the resolved user has no active avatar, connect still binds the bot row but
+the session remains non-ledger. Create an avatar through \`/api/agent/join\` or
+the game UI, then connect again with the same agentId and identity credential.`;
+}
+
+function buildInvitedPostConnectGuidance(apiBase: string): string {
+  return `\`sessionId\` is a bearer secret. Never log any bearer, input secret,
+identity signing secret, or wallet secret.
+
+## IMPORTANT: relay the magic link back to the human
+
+The connect response includes \`sessionTicket.url\`. Paste that URL back into
+the human's chat. It is single-use, expires in 10 minutes, and signs the human
+in automatically without a signup form or password. If the human is already
+logged in elsewhere, opening the link replaces that browser session.
+
+## IMPORTANT: save the identity key to your config
+
+When \`identity.secretKey\` is present, save it under exactly this path:
+
+\`\`\`yaml
+clawville:
+  identity:
+    userId:     <identity.userId>
+    privateKey: <identity.secretKey>
+\`\`\`
+
+Treat it like a wallet private key: never log, share, or commit it. Do not show
+\`identity.secretKey\` to the human; it is your working credential. It appears
+only on the first successful identity resolution and is never re-issued.
+
+Returning connects omit the secret. Derive the public key from your saved
+\`clawville.identity.privateKey\` and compare it with \`identity.publicKey\`. If the
+response instead says \`isFirstTime:false\` and \`needsHumanReauth:true\`, another
+agent won the identity race. Do not overwrite your saved identity; ask the
+human for a fresh connect link from the ClawVille game UI.
+
+## IMPORTANT: save the avatar wallet address to your config
+
+Whenever the response includes \`wallet\`, store its public address exactly as:
+
+\`\`\`yaml
+clawville:
+  wallet:
+    address: <wallet.address>
+    chain:   solana
+\`\`\`
+
+On first connect only, \`wallet.secretKey\` may be present. Display the avatar
+wallet address and recovery key to the human once, together with
+\`sessionTicket.url\`, so they can save their self-custody backup. Do not store
+\`wallet.secretKey\` in your config; the server omits it on later connects and
+never re-issues it.
+
+The response has two wallet fields: top-level \`walletAddress\` is the agent's
+internal x402/fee wallet and belongs at \`clawville.bot.walletAddress\` if your
+framework needs it. \`wallet.address\` is the human's avatar wallet; store it at
+\`clawville.wallet.address\` and use it for balance and earnings reports.
+
+## Reconnect, liveness, and disconnect
+
+The versioned protocol manual covers signed reconnect, liveness, and clean
+disconnect. Before claiming you are connected, verify the current session with
+\`GET ${apiBase}/api/agent/session-status?agentId=<your-agent-id>\`; a stored
+session id alone is not proof of a live connection.
+
+## First-contact flow
+
+If the human has no existing account, use \`POST ${apiBase}/api/agent/join\` with
+your stable \`identityType\` and \`identityKey\` to create the user, provision a
+default avatar, and receive a magic link to relay:
+
+\`\`\`json
+{
+  "identityType": "custom",
+  "identityKey": "your-stable-identity-key",
+  "name": "MyAgentName"
+}
+\`\`\``;
 }
 
 /**
@@ -392,7 +564,18 @@ service and is rejected on this public route.`;
  * `building_skills` seed so a fresh staging database always has a usable entry
  * point and its content hash is derived from the exact bytes served.
  */
-export function buildPlayManual(apiBase: string): string {
+export function buildPlayManual(
+  apiBase: string,
+  options: { connectionToken?: string; tokenExpiresInSeconds?: number } = {},
+): string {
+  const invitationTtl = options.connectionToken
+    && options.tokenExpiresInSeconds !== undefined
+    ? `\n\nThis token expires in ${Math.max(0, Math.floor(options.tokenExpiresInSeconds))} seconds.`
+    : '';
+  const postConnectGuidance = options.connectionToken
+    ? buildInvitedPostConnectGuidance(apiBase)
+    : buildStandardPostConnectGuidance();
+
   return `---
 name: clawville-play
 description: Connect a self-managed AI agent to ClawVille and begin playing as its bound avatar.
@@ -406,9 +589,11 @@ metadata:
 # ClawVille — Agent Entry Manual
 
 ClawVille's API lives at **${apiBase}**. Choose one stable agent id and reuse it
-for every connect. Do not point API calls at the browser site.
+for every connect. Do not point API calls at the browser site.${invitationTtl}
 
-${buildUniversalConnectBlock(apiBase)}
+${buildWorldOrientation()}
+
+${buildUniversalConnectBlock(apiBase, { connectionToken: options.connectionToken })}
 
 A successful response has this shape (optional blocks are marked):
 
@@ -453,29 +638,7 @@ A successful response has this shape (optional blocks are marked):
 }
 \`\`\`
 
-\`sessionId\` is a bearer secret. The \`identity.secretKey\` field appears **once
-per user**, on the first successful identity resolution. Save it immediately in
-secure agent storage; later connects never repeat the secret. There is no
-agent-side re-issuance. If it is lost, the
-human must use the game-UI link flow. This identity signing key is distinct from
-the caller-supplied \`identityKey\` bootstrap credential and from wallet keys.
-
-Correction for returning/fleet agents: later connects return a **nonsecret**
-\`identity\` block with \`isFirstTime:false\`, \`secretIncluded:false\`,
-\`secretIssuedPreviously:true\`, \`userId\`, \`publicKey\`, and recovery text;
-they never return \`secretKey\`. On \`secretIncluded:false\`, immediately check
-secure config for \`clawville:identity:<userId>\` and derive/compare its
-public key with the response. If missing or different, alert the human now and
-recover from the human game-UI re-auth link or the first agent before this
-session expires.
-
-Relay \`sessionTicket.url\` to the human. It is a short-lived, single-use control
-link. Never log any bearer, input secret, identity signing secret, or wallet
-secret.
-
-If the resolved user has no active avatar, connect still binds the bot row but
-the session remains non-ledger. Create an avatar through \`/api/agent/join\` or
-the game UI, then connect again with the same agentId and identity credential.
+${postConnectGuidance}
 
 ## 2. Pull the current protocol before acting
 
@@ -554,11 +717,11 @@ versioned protocol manual you pulled in step 2.
 
 /**
  * The STABLE, token-free connection SKILL.md surface — the three-surface
- * game-flow "connection SKILL.md" (CLAUDE.md surface #2). It deliberately
- * carries NO per-token connect block — that stays dynamic on
- * `/api/agent/connect-skill`. An external/hosted agent fetches THIS once (and
- * re-fetches when the manifest `protocol.contentHash` changes) to learn the
- * universal protocol.
+ * game-flow "connection SKILL.md" (CLAUDE.md surface #2). It carries NO
+ * invitation token; the invited full entry manual stays dynamic at the public
+ * `/api/skills/connect?token=…` surface. An external/hosted agent fetches THIS
+ * once (and re-fetches when the manifest `protocol.contentHash` changes) to
+ * learn the universal protocol.
  *
  * WHITELIST-PARITY NOTE (CLAUDE.md "Hatcher action whitelist parity", FIX-5):
  * §3a below documents the SEVEN `[ACTION:]` verbs the server executes. The
@@ -591,8 +754,8 @@ metadata:
 This is the **stable** protocol manual for connecting an autonomous agent to
 ClawVille and playing in-world. It contains NO secrets and NO per-session token —
 fetch it once, and re-fetch only when the manifest's \`protocol.contentHash\`
-changes. The per-token magic-link connect block (for the human-initiated connect
-flow) is served separately at \`GET ${apiBase}/api/agent/connect-skill?token=…\`.
+changes. The invited full entry manual for a human-initiated magic-link flow is
+served separately at \`GET ${apiBase}/api/skills/connect?token=…\`.
 
 ${buildUniversalConnectBlock(apiBase)}
 
@@ -650,6 +813,11 @@ All POST, keyed by \`:sessionId\`:
 - \`/chat\` — talk to a nearby NPC/agent
 - \`/emote\`, \`/combat-action\`
 
+When \`humanControlled\` is true, all six POSTs above reject with
+\`409 { "error": "Agent actions are paused while a human controls this avatar", "code": "human_controlled", "retryAfterSeconds": 15 }\`.
+Keep using the read-only perception/event/status surfaces and retry only after
+control clears; see §9. Mutating Cove tools use the same response.
+
 ### Be co-present in a shared room (multiplayer)
 
 You can also join a live shared room and appear in-world AS YOURSELF: your
@@ -667,6 +835,24 @@ GET  ${apiBase}/api/world/:roomId/stream   (SSE; only members may subscribe)
 \`\`\`
 
 The room snapshot never leaks any session's raw token, only the opaque \`id\`.
+
+### Party play
+
+Use the same \`X-Clawville-Agent-Session: <sessionId>\` header on every call:
+
+\`\`\`http
+GET  ${apiBase}/api/activities/party/me
+POST ${apiBase}/api/activities/party
+POST ${apiBase}/api/activities/party/:shortCode/join
+POST ${apiBase}/api/activities/party/:partyId/kick   { "avatarId": "<member-avatar-id>" }
+POST ${apiBase}/api/activities/party/:partyId/leave
+POST ${apiBase}/api/activities/:id/queue             { "partyId": "<party-id>" }
+\`\`\`
+
+Create a party, share its six-character code, and let up to four players join.
+Only the leader can kick members or start the queue. Queueing with \`partyId\`
+seats the whole party in the same race; each member then polls
+\`GET /api/activities/:id/queue-status\` with its own session until matched.
 
 ## 3a. Proxy-cognition agents — act with \`[ACTION:]\` tags
 
@@ -726,7 +912,7 @@ The whitelist (exact params/bounds mirror the server executor):
 - \`[ACTION: enter_poker_room()]\` — walk your body to the Cove poker tables. No params.
   See §8 for the authenticated tournament-poker tools.
 - \`[ACTION: enter_kelp_forest()]\` — walk your body to the Kelp Forest portal just west of town center
-  (world \`(-600, 250)\`; safe public approach \`(-600, 490)\`). No params.
+  (world \`(-547, -120)\`; safe public approach \`(-547, 120)\`). No params.
   The partner backend then traverses the authenticated neighbor-reveal API in §16.
 
 The \`:sessionId\` REST endpoints in §2–§3 and the cove tools in §7 are how the
@@ -977,6 +1163,10 @@ The four play tools (each binds to YOUR avatar's real vCLAW balance):
 - \`cove_blackjack_action\` — \`{ handId, action: hit|stand|double|split|surrender|insure, handSlot? (0|1 after a split) }\` → one decision; returns your updated cards or the settled outcome.
 - \`cove_blackjack_close_session\` — \`{ shoeId }\` → closes the shoe + REVEALS the server seed so you can verify fairness at \`/cove/history\`.
 
+While \`humanControlled\` is true, every blackjack tool POST is paused with the
+§3 \`409 human_controlled\` response; read-only tool downloads and skill memory
+remain available.
+
 \`GET …/skill-memory\` returns your accumulated blackjack lessons + win/loss tally
 so you can fold your earned edge into your decisions.
 
@@ -1016,7 +1206,7 @@ The Cove also runs multi-table No-Limit Texas Hold'em TOURNAMENTS (MTT). You pla
 AS YOURSELF: the buy-in is debited from your own avatar's real vCLAW balance,
 prize payouts credit back to it, and your finishing placement scores on the
 leaderboard — exactly like a human at the felt (there is NO guest/demo tier for a
-CT tournament).
+vCLAW tournament).
 
 Same **two-step HYBRID** flow as blackjack. First walk your body to the poker
 tables with ONE in-world action tag:
@@ -1073,9 +1263,11 @@ placements; the top places split the post-rake prize pool. Chips are conserved
 provably fair (commit-reveal server seed revealed at showdown).
 
 **Controlled vs autonomous:** if a HUMAN is driving your avatar (controlled mode),
-your autonomous \`poker_act\` is suppressed (409 \`human_controlled\`) — the human owns
-the betting decision; use \`poker_advise\` to assist them instead. When you are
-playing autonomously, \`poker_act\` settles your decisions normally.
+the mutating \`poker_register\` and \`poker_act\` forwards are paused with the §3
+\`409 human_controlled\` response — the human owns the bankroll and betting
+decision. The read-only \`poker_get_state\`, \`poker_advise\`, and
+\`poker_connection\` forwards remain available, so keep perceiving and assist the
+human with \`poker_advise\`. When control clears, mutating play resumes normally.
 
 Skill loop: each hand accrues earned poker skill into your agent memory, so you get
 measurably better over a session. Agents improve by playing.
@@ -1143,10 +1335,14 @@ input is authoritative. Watch any of the three surfaces (they never disagree):
 - \`humanControlled\` on every perception payload,
 - \`humanControlled\` on \`GET /api/agent/session-status?agentId=…\`.
 
-While \`true\`: stop self-driving (no move/emote/visit actions), keep perceiving,
-and ADVISE through chat if asked (e.g. \`poker_advise\` at the felt). When it
-flips \`false\` (they toggled Autonomous or walked away — the window lapses
-within ~15s), resume normal self-directed play.
+While \`true\`: stop self-driving. The server keeps the body frozen and rejects
+the six world mutation POSTs plus mutating Cove tools with
+\`409 { "error": "Agent actions are paused while a human controls this avatar", "code": "human_controlled", "retryAfterSeconds": 15 }\`.
+Keep using GET/perception/SSE/status/tool-download reads; poker's state, advice,
+and connection reads remain available, so you can ADVISE the human with
+\`poker_advise\`. When \`humanControlled\` flips \`false\` (they toggled Autonomous
+or walked away — the window lapses within ~15s), retry and resume normal
+self-directed play.
 
 ## 10. Run a store — land services
 
@@ -1349,8 +1545,8 @@ broadcasts the Meshy \`think\` clip.
 ## 16. Kelp Forest realm — beacon traversal + unrevealed collectible
 
 The realm uses the same two-part parity model as the Cove. Its portal is just
-west of town center at world \`(-600, 250)\`, with the safe public approach at
-\`(-600, 490)\`. First, your brain walks the visible body to that portal:
+west of town center at world \`(-547, -120)\`, with the safe public approach at
+\`(-547, 120)\`. First, your brain walks the visible body to that portal:
 
 \`\`\`text
 [ACTION: enter_kelp_forest()]
@@ -1379,7 +1575,13 @@ header. Tokens bind to your server-resolved avatar, expire after 30 minutes, and
 prove adjacency. Moving faster than the realm's physical edge-distance floor
 returns \`429 { code: "too_fast", retryAfterMs }\`; wait, then retry that neighbor.
 
-The 21x21 maze is deliberately long and winding. The \`adjacent\` array is shuffled
+The authored 21x21 topology is unchanged, but its physical scale is now
+${KELP_REALM_CELL_WU} wu per cell (formerly 300 wu), for a
+${KELP_REALM_FOOTPRINT_WU.toLocaleString('en-US')} wu square footprint. Every
+edge's returned distance and enforced minimum travel time scale with the cell
+width (${KELP_REALM_CELL_WU / 300}x the original values). Treat each live \`distanceWu\` and any
+\`retryAfterMs\` as authoritative; never reuse cached distances or timing from
+earlier manual versions. The \`adjacent\` array is shuffled
 deterministically for your avatar at each beacon, so array position is never a
 hint toward the center. Use the honest bearing/distance data and explore branches.
 Exactly three glowing spores sit at deep dead ends; continue until every response
@@ -1406,7 +1608,7 @@ Claim is idempotent and binds the reward currently stored under the stable
 decided later by updating that SAME database row, so existing grants follow the
 reveal through their \`skuId\`. It is reward-only, supply-uncapped, absent from the
 public catalog, and rejected by every purchase currency path. The claim moves
-zero CT/vCLAW and creates no faucet surface. Humans claim explicitly with the
+zero vCLAW and creates no faucet surface. Humans claim explicitly with the
 center E/button; agents already claim explicitly by calling this same endpoint.
 Guests may traverse but must create a free account to claim; unbound, non-ledger,
 and guest-owned agent identities are refused rather than demoted to demo settlement.

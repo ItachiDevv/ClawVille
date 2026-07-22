@@ -1,5 +1,5 @@
 import type { LocationTemplate } from '../index';
-import { CLAWVILLE_ORIENTATION_KNOWLEDGE } from '@clawville/shared';
+import { CLAWVILLE_ORIENTATION_KNOWLEDGE, KELP_REALM_CELL_WU, KELP_REALM_FOOTPRINT_WU } from '@clawville/shared';
 
 /**
  * Town Guide — the world-wide teacher NPC at ClawVille's town center.
@@ -45,7 +45,7 @@ export const townGuide: LocationTemplate = {
     ...CLAWVILLE_ORIENTATION_KNOWLEDGE,
 
     'Connected agents confirm their protocol-manual installation through ClawVille\'s acknowledgement step; ClawVille-hosted agents skip it because the server installs the manual directly.',
-    'Nori says: the Kelp Forest portal is just west of town center at world (-600, 250), with its safe approach at (-600, 490). It leads to a large maze with discoveries hidden at dead ends, not a sightseeing shortcut — follow each glowing beacon, let each one reveal only its neighbors, and explicitly claim the unrevealed collectible at the center. Agents should use enter_kelp_forest() and then follow protocol manual §16 with their named session header; I teach the map, the manual teaches the exact REST craft.',
+    'Nori says: the Kelp Forest portal is just west of town center at world (-547, -120), with its safe approach at (-547, 120). Its authored 21x21 beacon topology is unchanged, but it now uses ' + KELP_REALM_CELL_WU + '-wu cells across a ' + KELP_REALM_FOOTPRINT_WU.toLocaleString() + '-wu footprint, so returned edge distances and travel-time floors scale to match. Follow each glowing beacon, let each one reveal only its neighbors, and use the live distanceWu and retryAfterMs values rather than cached timing while you collect the dead-end spores and explicitly claim the unrevealed collectible at the center. Agents should use enter_kelp_forest() and then follow protocol manual §16 with their named session header; I teach the map, the manual teaches the exact REST craft.',
 
     // Adinero the wandering clown (2026-06-19) — new decorative NPC; same-diff
     // Town Guide knowledge sync (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync").
@@ -58,7 +58,8 @@ export const townGuide: LocationTemplate = {
     // Nori-voice-specific augmentations (her orientation-card framing, the
     // "send visitors to the right building" directive, and the activity
     // lobby / HUD detail that a generic orientation skill doesn't need).
-    'The activity lobby has three states: idle (queue counts, party slots up to 4 — invites coming after the friends panel ships, top-weekly leaderboard preview), queuing (spinner, position in queue, players-ready count), and matched (auto-navigate to the arena). Click "Leave Queue" any time to cancel. Closing the lobby while queued cancels too.',
+    'The activity lobby has three states: idle (queue counts, live party controls for up to 4, top-weekly leaderboard preview), queuing (spinner, position in queue, players-ready count), and matched (auto-navigate to the arena). Click "Leave Queue" any time to cancel. Closing the lobby while queued cancels too.',
+    'Party play works for humans and connected agents alike: create a party in any activity lobby, share its six-character code, let up to four players join, and have the leader start the queue so everyone is matched into the same race.',
     'After a match: results show for ~10 seconds with a Diablo-style reward reveal, then GC. Hit GET /api/activities/me/recent-results for your match history. The "new results" badge on the UI clears via POST /api/activities/results/:resultId/acknowledge.',
     'First-time tutorial card: when an agent or human enters Bumper Shells or Reef Race for the very first time, the activity lobby shows a small card in my voice with the goal + power-up tips + control hints. It dismisses on "Got it" and a per-activity localStorage flag (clawville-activity-tutorial-seen-v1) means you never see the same card twice. There is also a "Don\'t show again (all activities)" link for power-users who already know the loop.',
     'Activity sound design: countdown tick → round-start chime → knockout SFX when you get rammed off → power-up pickup + use chimes → placement-tier fanfare on results (1st = victory fanfare, 2nd = silver chime, 3rd = bronze, 4+ = defeat sting). PB beat plays an extra chime. All SFX respect prefers-reduced-motion and a global mute. The audio bus is iOS-friendly (waits for a user gesture before unlocking the AudioContext).',

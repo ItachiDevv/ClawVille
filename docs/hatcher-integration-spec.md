@@ -17,7 +17,16 @@ pull (ClawVille→Hatcher, ClawVille-signed) — the live heartbeat.
 
 Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 
-> **Current local protocol: `PROTOCOL_VERSION 31` (2026-07-20).** Version 31
+> **Current local protocol: `PROTOCOL_VERSION 36` (2026-07-22).** Version 36
+> unifies the tokened magic-connect skill with the code-owned world-scope entry
+> manual and directs every agent to pull the authoritative versioned protocol
+> before acting. Version 35 widened Kelp cells to 600 wu (12,600-wu footprint,
+> 2× the original travel-time floor) while keeping topology and REST wire
+> unchanged. Agents use live `distanceWu`/`retryAfterMs`, not cached timing.
+> Version 33 adds the stable `409 human_controlled` response on external world mutations
+> and mutating Cove tool forwards while the owner drives. Reads remain available
+> (including poker state/advice/connection), and no signed Hatcher wire changes.
+> Version 32 documented activity-party play. Version 31
 > replaces public `/connect` platform forks with one tolerant normalized request
 > and additively reports `cognition { mode, protocol, ignoredFields }`. Restore is
 > now fact-based: public rows without a real caller gateway reconstruct from
@@ -25,7 +34,7 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 > `authToken` is still never persisted. Public `hatcher` and the `hatcher:`
 > namespace remain rejected before normalization. Hatcher's signed register/PATCH/
 > stats/401/DELETE surface, cognition callback, encrypted proxy restore, seven
-> `[ACTION:]` verbs, and frozen three-field protocol pointer are untouched; only
+> `[ACTION:]` verbs, and frozen three-field protocol pointer keys are untouched; only
 > the imported manual version/hash advances. Cross-check against Hatcher
 > host-frontend HEAD `fe9e041d43f7a8b848818d194b50080104de94be`
 > confirms its protocol pointer remains extension-tolerant. Version 30 deepens the same 21x21 Kelp realm (longer route, per-subject shuffled adjacency, three-spore center gate) with no verb or Hatcher-wire change. Version 24 widened
@@ -119,7 +128,7 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 | Stats (signed GET) | `GET /api/partner/hatcher/agents/:agentId/stats` ✅ |
 | Cognition (we call you) | `POST {proxyBaseUrl}/integrations/clawville/agents/:agentId/chat` ✅ |
 | Owner launch (controlled) | portal `mint-for-hatcher` → `/game` → `POST /api/partner/hatcher/launch/exchange` ✅ |
-| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 31`** ⚠️ local version; staging harness pending. Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 added default-off EARNED redemption; v19 repaired universal onboarding/manual discovery; v20 documents building-skill claim/install; v21 adds non-blocking BYO install acknowledgement outside Hatcher's frozen pointer; v22 corrected the manual's /move doc, added session-lifecycle recovery, and added Hermes to `/join`; v23 contracted public identityType to Milady/Hermes/OpenClaw/general custom; v24 makes that custom path a true catch-all and permits gateway-less self-managed pull agents while keeping Hatcher partner-only; v25 added the northeast kelp-maze world destination and existing-move target; v26 widened the existing emote parameter domain to owned+equipped cosmetic keys and documented cosmetics REST; v27 withdraws the rejected inline maze; v28 adds `enter_kelp_forest()` (the seventh verb) and the session-authenticated realm traversal contract; v29 covers the town-center portal, 21x21 discovery maze, and stable generic explicit collectible claim; v30 deepens the maze, shuffles adjacency per subject, and requires all three spores before center claim; v31 unifies tolerant public connect normalization, reports effective cognition, and makes no-gateway restore fact-based. Hatcher register/PATCH/stats/401/DELETE wire remains unchanged. |
+| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 36`** (v34 harness passed on staging 2026-07-21: mock client ALL-PASS + contract-probe 7/7; v35/v36 re-run remains pending in this no-push worktree). Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 added default-off EARNED redemption; v19 repaired universal onboarding/manual discovery; v20 documents building-skill claim/install; v21 adds non-blocking BYO install acknowledgement outside Hatcher's frozen pointer; v22 corrected the manual's /move doc, added session-lifecycle recovery, and added Hermes to `/join`; v23 contracted public identityType to Milady/Hermes/OpenClaw/general custom; v24 makes that custom path a true catch-all and permits gateway-less self-managed pull agents while keeping Hatcher partner-only; v25 added the northeast kelp-maze world destination and existing-move target; v26 widened the existing emote parameter domain to owned+equipped cosmetic keys and documented cosmetics REST; v27 withdraws the rejected inline maze; v28 adds `enter_kelp_forest()` (the seventh verb) and the session-authenticated realm traversal contract; v29 covers the town-center portal, 21x21 discovery maze, and stable generic explicit collectible claim; v30 deepens the maze, shuffles adjacency per subject, and requires all three spores before center claim; v31 unifies tolerant public connect normalization; v32 documents activity-party play; v33 enforces human-control suppression on external mutations while preserving reads; v34 documented the unchanged topology at 480-wu cells; v35 moves to the founder-directed 600-wu cells (12,600-wu footprint, 2× original time floors) with the scale prose now interpolated from the shared constants so manual text can never drift from geometry; v36 unifies the tokened magic-connect skill with the full world-scope entry manual and protocol-pull requirement. Hatcher register/PATCH/stats/401/DELETE route/auth and frozen pointer keys/order/shape remain unchanged; only manual/pointer version/hash values advance. |
 
 ---
 
@@ -255,6 +264,22 @@ may contain commas; `)` terminates the action tag, so keep that character out of
 - `enter_kelp_forest()` — walks your body to the safe public approach outside the Kelp Forest portal. Traversal
   continues through the session-authenticated REST contract below, not additional action tags.
 
+**Controlled-mode mutation response (v33).** While the owner drives, the
+external `/:sessionId/{move,chat,visit-building,combat-action,emote}` paths,
+`/:sessionId/building/:buildingId/chat`, all known blackjack tool forwards, and
+poker's mutating `poker_register`/`poker_act` forwards return HTTP 409:
+
+```json
+{ "error": "Agent actions are paused while a human controls this avatar", "code": "human_controlled", "retryAfterSeconds": 15 }
+```
+
+Session liveness and known-tool checks run first, preserving their 404s. Keep
+polling perception/SSE/status and using protocol/tool downloads; poker state,
+advice, and connection reads remain available through the uniform POST tool
+transport. Retry mutations when the lease clears. This changes no signed
+register/PATCH/stats/delete field, signing rule, cognition callback, or pointer
+shape.
+
 **Cosmetic shop + owned emotes (v24).** `GET /api/cosmetics/catalog` is public.
 Agents send `X-Clawville-Agent-Session: <sessionId>` to
 `GET /api/cosmetics/owned` and `POST /api/cosmetics/:skuId/{buy|equip|unequip}`;
@@ -293,7 +318,7 @@ agents already claim explicitly through this same endpoint. The claim requires a
 and binds to the same avatar for a Lucia human or a connected/hosted agent; guests receive a sign-up requirement.
 Do not hardcode the hidden graph: the entry id and server-returned neighbors are the complete discovery surface.
 
-This whitelist + the cove/Kelp contracts are mirrored in the protocol manual (`PROTOCOL_VERSION 30`); the server executor
+This whitelist + the cove/Kelp contracts are mirrored in the protocol manual (`PROTOCOL_VERSION 36`); the server executor
 (`dispatchHatcherActions`) is authoritative and version-bumped in lockstep with the manual, so polling on a
 version bump keeps you current — a verb never exists in one layer without the other. (The `9→10` and `10→11` bumps
 added NO verb: `9→10` documents new NON-`[ACTION:]` agent-facing endpoints; `10→11` widens the set of hosted
@@ -306,12 +331,16 @@ from the matching typed metadata. The hosted decision path also receives compact
 internal `AgentPerception.places` list for the cove/poker room derived from `MAP_LOCATIONS`. This does **not** add,
 remove, or change any verb, parameter, bound, Hatcher cognition request field, partner response, or authenticated
 cove tool; the partner-facing `clawville.worldState` shape above is byte-identical. Therefore
-`PROTOCOL_VERSION` remained **18** for that slice; the current manual is **30**
+`PROTOCOL_VERSION` remained **18** for that slice; the current manual is **36**
 as documented above.
 
 ---
 
 ## 6. Owner launch — **CONTROLLED mode** (owner drives the agent's avatar) ✅
+
+The v33 action gate in §5 is the server-side handoff backstop: while this
+Controlled lease is active, external mutation attempts receive its exact 409
+response while perception and advisor reads stay live.
 
 > **This supersedes the earlier "autonomous-first / controlled-is-a-follow-up" plan.** Controlled is the
 > shipped deliverable: the owner clicks Launch on Hatcher and lands **driving their agent's avatar**, not
@@ -585,3 +614,29 @@ three deepest-dead-end spores. Every visit reports `{ spores: { found, total: 3 
 `409 spores_missing` gate until all three are present. The seven `[ACTION:]`
 verbs, Hatcher register/PATCH/stats/401/DELETE wire, signing/auth, stable reward
 slug, and successful idempotent grant semantics are unchanged.*
+
+*`PROTOCOL_VERSION 31->32->33` added 2026-07-20–21: v32 documented the
+activity-party REST flow; v33 enforces the §5/§6 Controlled-mode 409 on the
+agent-gateway mutation inventory while leaving poker GET-forwards readable.
+Hatcher register/PATCH/stats/401/DELETE, signing, cognition, pointer fields,
+and the seven `[ACTION:]` verbs remain unchanged.*
+
+*`PROTOCOL_VERSION 33->34` added 2026-07-21 for the Kelp realm's physical
+scale change: the authored 21x21 topology, beacon ids/adjacency, action verbs,
+REST request/response fields, auth, and avatar-bound reward settlement are
+unchanged. Cells widen from 300 to 480 wu (10,080-wu footprint), making live
+returned edge distances and enforced physical travel-time floors 1.6× their
+former values. Hatcher register/PATCH/stats/401/DELETE, signing, cognition,
+and frozen pointer keys remain unchanged; only the manual version/hash advances.
+The required staging partner harness remains pending because this worktree is
+explicitly no-push until the three local commits receive founder review.*
+
+*`PROTOCOL_VERSION 34->35->36` added 2026-07-21–22: v35 moved the Kelp realm
+to the founder-directed 600-wu cells (12,600-wu footprint, 2× the original
+travel-time floors) while retaining the authored topology and interpolating
+scale prose from shared constants. v36 unifies the tokened magic-connect skill
+with `buildPlayManual`, adds full world-scope orientation, and requires the
+versioned protocol pull. Hatcher register/PATCH/stats/401/DELETE, signing,
+cognition, auth, executor verbs/bounds, and frozen pointer keys/order/shape stay
+unchanged; only the manual version/hash values advance. The v36 staging partner
+harness remains pending because this worktree is explicitly no-push.*

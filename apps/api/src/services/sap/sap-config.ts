@@ -142,6 +142,10 @@ export const SAP_MIN_STAKE_LAMPORTS = SDK_MIN_AGENT_STAKE_LAMPORTS; // 0.1 SOL (
 export interface SapConfig {
   /** Master gate — the whole SAP layer (identity/feedback/tool/discovery). */
   enabled: boolean;
+  /** Emergency rollback lever for first-economic-action identity registration. */
+  identityAutoregEnabled: boolean;
+  /** Emergency rollback lever for house-signed bounty reputation writes. */
+  reputationWritesEnabled: boolean;
   /** Money/stake rail gate — escrow + staking. Independent of `enabled`. */
   escrowEnabled: boolean;
   /** When true, build + simulate ONLY; NEVER broadcast. */
@@ -220,6 +224,10 @@ export interface SapConfig {
  */
 export function loadSapConfig(): SapConfig {
   const enabled = process.env.SAP_ENABLED === 'true';
+  // Founder no-dark-flags ruling: ON unless explicitly rolled back. The master
+  // SAP_ENABLED gate must still be open before any enqueue or worker poll.
+  const identityAutoregEnabled = process.env.SAP_IDENTITY_AUTOREG_ENABLED !== 'false';
+  const reputationWritesEnabled = process.env.SAP_REPUTATION_WRITES_ENABLED !== 'false';
   const escrowEnabled = process.env.SAP_ESCROW_ENABLED === 'true';
   // Option C USDC escrow gate — default OFF; requires BOTH escrowEnabled AND this.
   const usdcEscrowEnabled = process.env.SAP_USDC_ESCROW_ENABLED === 'true';
@@ -345,6 +353,8 @@ export function loadSapConfig(): SapConfig {
 
   return {
     enabled,
+    identityAutoregEnabled,
+    reputationWritesEnabled,
     escrowEnabled,
     dryRun,
     cluster,

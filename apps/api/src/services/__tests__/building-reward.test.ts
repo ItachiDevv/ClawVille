@@ -355,7 +355,7 @@ describe('creditBuildingChatRewardOncePerDay (shared durable claim)', () => {
       'utf8',
     );
     const routeStart = gatewaySource.indexOf(
-      "agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat'",
+      'agentGatewayRoutes.post(AGENT_BUILDING_CHAT_ROUTE',
     );
     const routeEnd = gatewaySource.indexOf(
       "agentGatewayRoutes.get('/:sessionId/skills/:buildingId/skill-memory'",
@@ -387,10 +387,10 @@ describe('creditBuildingChatRewardOncePerDay (shared durable claim)', () => {
       'utf8',
     );
     const routeStart = gatewaySource.indexOf(
-      "agentGatewayRoutes.post('/:sessionId/visit-building'",
+      'agentGatewayRoutes.post(AGENT_VISIT_BUILDING_ROUTE',
     );
     const routeEnd = gatewaySource.indexOf(
-      "agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat'",
+      'agentGatewayRoutes.post(AGENT_BUILDING_CHAT_ROUTE',
       routeStart,
     );
     const routeSource = gatewaySource.slice(routeStart, routeEnd);

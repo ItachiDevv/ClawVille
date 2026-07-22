@@ -44,8 +44,3 @@ export { default as QueueStatusBar } from './QueueStatusBar';
 export type { QueueStatusBarProps } from './QueueStatusBar';
 export { default as PartySlot } from './PartySlot';
 export type { PartySlotProps, PartySlotMember } from './PartySlot';
-export { default as InviteSearchPopover } from './InviteSearchPopover';
-export type {
-  InviteSearchPopoverProps,
-  InviteFilter,
-} from './InviteSearchPopover';

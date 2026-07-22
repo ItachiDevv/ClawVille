@@ -73,3 +73,41 @@ describe('SAP config — two-lock mainnet gate', () => {
     expect(cfg.usdcMint.toBase58()).toBe(CANONICAL_USDC_MINT_DEVNET);
   });
 });
+
+describe('SAP config - automatic identity rollback lever', () => {
+  const saved = process.env.SAP_IDENTITY_AUTOREG_ENABLED;
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env.SAP_IDENTITY_AUTOREG_ENABLED;
+    else process.env.SAP_IDENTITY_AUTOREG_ENABLED = saved;
+  });
+
+  it('defaults automatic registration ON when the rollback lever is omitted', () => {
+    delete process.env.SAP_IDENTITY_AUTOREG_ENABLED;
+    expect(loadSapConfig().identityAutoregEnabled).toBe(true);
+  });
+
+  it('turns automatic registration off only when explicitly set to false', () => {
+    process.env.SAP_IDENTITY_AUTOREG_ENABLED = 'false';
+    expect(loadSapConfig().identityAutoregEnabled).toBe(false);
+  });
+});
+
+describe('SAP config - reputation writes rollback lever', () => {
+  const saved = process.env.SAP_REPUTATION_WRITES_ENABLED;
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env.SAP_REPUTATION_WRITES_ENABLED;
+    else process.env.SAP_REPUTATION_WRITES_ENABLED = saved;
+  });
+
+  it('defaults reputation writes ON when the rollback lever is omitted', () => {
+    delete process.env.SAP_REPUTATION_WRITES_ENABLED;
+    expect(loadSapConfig().reputationWritesEnabled).toBe(true);
+  });
+
+  it('turns reputation writes off only when explicitly set to false', () => {
+    process.env.SAP_REPUTATION_WRITES_ENABLED = 'false';
+    expect(loadSapConfig().reputationWritesEnabled).toBe(false);
+  });
+});
