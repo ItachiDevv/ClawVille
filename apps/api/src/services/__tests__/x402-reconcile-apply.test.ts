@@ -150,6 +150,8 @@ function harness(
         facilitatorPreset: 'payai',
         facilitatorUrlExplicit: false,
         facilitatorUrl: 'https://facilitator.payai.network',
+        payaiApiKeyId: '',
+        payaiApiKeySecret: '',
         merchantWalletPubkey: MERCHANT,
         network: 'devnet',
       };
