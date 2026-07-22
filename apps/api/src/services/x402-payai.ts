@@ -44,7 +44,7 @@ import type {
 import { Connection } from '@solana/web3.js';
 import { z } from 'zod';
 import { decodeTransactionFromPayload, getTokenPayerFromTransaction } from '@x402/svm';
-import { loadX402Config } from './x402-config';
+import { isHostedPayAiFacilitatorUrl, loadX402Config } from './x402-config';
 import { isFacilitatorOutageError } from './x402-facilitator-selection';
 
 // ---------------------------------------------------------------------------
@@ -585,17 +585,74 @@ export function isFacilitatorLevelFailure(error: unknown): boolean {
   return error instanceof Error && FREE_TIER_EXHAUSTED_RE.test(error.message);
 }
 
-/** Lazily-built facilitator client, memoized by resolved URL (so a URL change
- *  in tests / between presets rebuilds it). The HTTPFacilitatorClient is a thin
- *  HTTP wrapper — cheap to construct, but we avoid per-call allocation. */
-let _cachedClient: { url: string; client: HTTPFacilitatorClient } | null = null;
-function facilitatorClient(): HTTPFacilitatorClient {
-  const { facilitatorUrl } = loadX402Config();
+/** Lazily-built facilitator client, memoized by resolved URL + non-secret auth
+ *  shape (so URL/preset/auth env changes in tests rebuild it). The API key is
+ *  deliberately absent from the cache key and every diagnostic. */
+let _cachedClient: {
+  cacheKey: string;
+  /** Compared only in memory so key rotation rebuilds; never logged or serialized. */
+  apiKey: string;
+  client: HTTPFacilitatorClient;
+} | null = null;
+export function facilitatorClient(): HTTPFacilitatorClient {
+  const {
+    facilitatorUrl,
+    payaiApiKey,
+    payaiAuthHeader,
+    payaiAuthScheme,
+  } = loadX402Config();
   if (!facilitatorUrl) {
     throw new Error('[x402-payai] facilitator URL is empty — check X402_FACILITATOR_* env');
   }
-  if (!_cachedClient || _cachedClient.url !== facilitatorUrl) {
-    _cachedClient = { url: facilitatorUrl, client: new HTTPFacilitatorClient({ url: facilitatorUrl }) };
+
+  const hasKey = payaiApiKey.length > 0;
+  const cacheKey = JSON.stringify({
+    facilitatorUrl,
+    payaiAuthHeader,
+    payaiAuthScheme,
+    hasKey,
+  });
+  if (
+    !_cachedClient
+    || _cachedClient.cacheKey !== cacheKey
+    || _cachedClient.apiKey !== payaiApiKey
+  ) {
+    if (!hasKey) {
+      // Preserve the historical anonymous constructor exactly when auth is unset.
+      _cachedClient = {
+        cacheKey,
+        apiKey: '',
+        client: new HTTPFacilitatorClient({ url: facilitatorUrl }),
+      };
+    } else {
+      const headerValue = payaiAuthScheme
+        ? `${payaiAuthScheme} ${payaiApiKey}`
+        : payaiApiKey;
+      const headers = { [payaiAuthHeader]: headerValue };
+
+      console.info(
+        `[x402-payai] facilitator auth enabled (header=${payaiAuthHeader}, `
+          + `scheme=${payaiAuthScheme || 'none'})`,
+      );
+      if (!isHostedPayAiFacilitatorUrl(facilitatorUrl)) {
+        console.warn(
+          '[x402-payai] facilitator auth is being sent to a non-PayAI facilitator URL',
+        );
+      }
+
+      _cachedClient = {
+        cacheKey,
+        apiKey: payaiApiKey,
+        client: new HTTPFacilitatorClient({
+          url: facilitatorUrl,
+          createAuthHeaders: async () => ({
+            verify: headers,
+            settle: headers,
+            supported: headers,
+          }),
+        }),
+      };
+    }
   }
   return _cachedClient.client;
 }

@@ -308,6 +308,9 @@ Required in `.env.local`:
 - `VANITY_ENCRYPTION_KEY` — 64-char hex. AES-256-GCM master key for `treasury_wallets` + `vanity_keypairs`. Must match on every decrypting machine.
 - `FINGERPRINT_SECRET` — 64-char hex (32+ bytes). **Hard-required** — `apps/api/src/middleware/fingerprint.ts` throws at module load if missing or short, crashing API boot. `openssl rand -hex 32`. Salts the sha256 hash of `X-CV-Fingerprint` + IP /24 prefix on every event row. Server-only. Rotating invalidates every existing fp_hash.
 - `CLAWVILLE_MERCHANT_WALLET_PUBKEY` — base58 pubkey of Phase 4 x402 merchant wallet.
+- `PAYAI_API_KEY` — optional PayAI facilitator merchant API key. **Unset/empty => anonymous free tier (current behavior).** When set, facilitator verify/settle/supported calls are billed to the credited merchant account identified by this key; never log or expose it.
+- `PAYAI_AUTH_HEADER` — optional PayAI facilitator auth header name (default `Authorization`). The exact header format is env-configurable because PayAI's public docs do not specify it.
+- `PAYAI_AUTH_SCHEME` — optional PayAI facilitator auth value scheme (default `Bearer`). Set to the empty string to send the raw key with no prefix (for example, an `x-api-key` header).
 - `CORS_ORIGIN` — frontend URL(s) (prod `https://clawville.world`).
 - `NEXT_PUBLIC_API_URL` — backend URL (prod `https://api.clawville.world`).
 - `ADMIN_USER_IDS` — comma-separated UUIDs allowed on `/api/dashboard/*` + `/dash`. Parsed at module load; changes require redeploy. See `middleware/admin-only.ts`.

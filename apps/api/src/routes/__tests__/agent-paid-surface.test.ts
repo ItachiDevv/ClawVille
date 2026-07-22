@@ -9,6 +9,9 @@ const config: X402Config = {
   facilitatorPreset: 'payai',
   facilitatorUrlExplicit: false,
   facilitatorUrl: 'https://facilitator.payai.network',
+  payaiApiKey: '',
+  payaiAuthHeader: 'Authorization',
+  payaiAuthScheme: 'Bearer',
   merchantWalletPubkey: '79sH9jtT7EpWLCemadFZQb7sD1b6rCqkwTtSxDCViLLE',
   network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
 };
