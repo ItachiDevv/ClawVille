@@ -45,6 +45,7 @@ import { Connection } from '@solana/web3.js';
 import { z } from 'zod';
 import { decodeTransactionFromPayload, getTokenPayerFromTransaction } from '@x402/svm';
 import { loadX402Config } from './x402-config';
+import { isFacilitatorOutageError } from './x402-facilitator-selection';
 
 // ---------------------------------------------------------------------------
 // Network + asset constants (CAIP-2 + USDC SPL mints)
@@ -535,8 +536,53 @@ export interface VerifyAndSettleResult {
   payer: string | null;
   /** A short machine reason when NOT settled (for the route's clean 4xx body). */
   failureReason: string | null;
+  /**
+   * Internal availability signal for circuit breakers. Present only when the
+   * original facilitator error proves a provider-wide condition rather than a
+   * rejection of this payment.
+   */
+  facilitatorFailure?: 'unavailable';
   /** Raw verify/settle responses for logging — never surfaced to the agent. */
   raw: { verify?: VerifyResponse; settle?: SettleResponse };
+}
+
+const FREE_TIER_EXHAUSTED_RE =
+  /(?:^|[^a-z0-9])free_tier_exhausted(?:[^a-z0-9]|$)/i;
+
+/**
+ * Provider-wide failures safe to count toward an outbound circuit breaker.
+ * Payment-specific 4xx rejections deliberately remain false.
+ */
+export function isFacilitatorLevelFailure(error: unknown): boolean {
+  if (isFacilitatorOutageError(error)) return true;
+  if (typeof error !== 'object' || error === null) return false;
+  const candidate = error as {
+    statusCode?: unknown;
+    invalidReason?: unknown;
+    errorReason?: unknown;
+  };
+  if (
+    typeof candidate.statusCode === 'number'
+    && candidate.statusCode >= 500
+    && candidate.statusCode <= 599
+  ) {
+    return true;
+  }
+  if (
+    candidate.invalidReason === 'free_tier_exhausted'
+    || candidate.errorReason === 'free_tier_exhausted'
+  ) {
+    return true;
+  }
+  if (error instanceof Error) {
+    const plainStatus =
+      /^Facilitator (?:verify|settle) failed \((\d{3})\):/.exec(error.message);
+    if (plainStatus) {
+      const status = Number(plainStatus[1]);
+      return status >= 500 && status <= 599;
+    }
+  }
+  return error instanceof Error && FREE_TIER_EXHAUSTED_RE.test(error.message);
 }
 
 /** Lazily-built facilitator client, memoized by resolved URL (so a URL change
@@ -631,7 +677,11 @@ export async function verifyAndSettle(
     // Facilitator 4xx/5xx or network error during verify. Clean fail — NO settle.
     reportFacilitatorError(input, 'verify', err);
     console.warn('[x402-payai] verify threw (treated as invalid):', (err as Error).message);
-    return failed('facilitator_verify_error');
+    return failed('facilitator_verify_error', {
+      ...(isFacilitatorLevelFailure(err)
+        ? { facilitatorFailure: 'unavailable' as const }
+        : {}),
+    });
   }
 
   if (!verify || verify.isValid !== true) {
@@ -639,6 +689,9 @@ export async function verifyAndSettle(
       isValid: false,
       payer: verify?.payer ?? null,
       raw: { verify },
+      ...(verify?.invalidReason === 'free_tier_exhausted'
+        ? { facilitatorFailure: 'unavailable' as const }
+        : {}),
     });
   }
 
@@ -666,6 +719,9 @@ export async function verifyAndSettle(
       isValid: true,
       payer: verify.payer ?? null,
       raw: { verify },
+      ...(isFacilitatorLevelFailure(err)
+        ? { facilitatorFailure: 'unavailable' as const }
+        : {}),
     });
   }
 
@@ -683,6 +739,9 @@ export async function verifyAndSettle(
       payer: settle?.payer ?? verify.payer ?? null,
       network: settle?.network ?? null,
       raw: { verify, settle },
+      ...(settle?.errorReason === 'free_tier_exhausted'
+        ? { facilitatorFailure: 'unavailable' as const }
+        : {}),
     });
   }
 
