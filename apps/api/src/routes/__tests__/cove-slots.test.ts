@@ -87,17 +87,17 @@ function buildApp() {
 describe('Cove Slots — paytable + verify (no DB)', () => {
   const app = buildApp();
 
-  it('resolves the autonomous daily wager cap with a 1000 default and 20 hard floor', () => {
+  it('resolves the autonomous daily wager cap with a 10000 default and 20 hard floor', () => {
     const previous = process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW;
     try {
       delete process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW;
-      expect(resolveAgentCovePlayDailyWagerVclaw()).toBe(1_000);
+      expect(resolveAgentCovePlayDailyWagerVclaw()).toBe(10_000);
       process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW = '19';
-      expect(resolveAgentCovePlayDailyWagerVclaw()).toBe(1_000);
+      expect(resolveAgentCovePlayDailyWagerVclaw()).toBe(10_000);
       process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW = '2500';
       expect(resolveAgentCovePlayDailyWagerVclaw()).toBe(2_500);
       process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW = '2000suffix';
-      expect(resolveAgentCovePlayDailyWagerVclaw()).toBe(1_000);
+      expect(resolveAgentCovePlayDailyWagerVclaw()).toBe(10_000);
     } finally {
       if (previous === undefined) delete process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW;
       else process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW = previous;

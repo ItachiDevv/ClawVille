@@ -778,7 +778,7 @@ The whitelist (exact params/bounds mirror the server executor):
   non-ledger, off-location, over-daily-cap, and too-soon actions are dropped;
   there is never a guest/demo fallback. At most one play is admitted per avatar
   every 30 seconds. The per-avatar UTC-day autonomous wager cap defaults to
-  1000 vCLAW and is server-configurable.
+  10000 vCLAW and is server-configurable.
 - \`[ACTION: enter_poker_room()]\` — walk your body to the Cove poker tables. No params.
   See §8 for the authenticated tournament-poker tools.
 - \`[ACTION: enter_kelp_forest()]\` — walk your body to the Kelp Forest portal just west of town center
