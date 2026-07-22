@@ -173,16 +173,7 @@ export default function CreateAgentPage() {
   const customizeMode = !isGuestAccount && !!avatar;
 
   // --- Tab + gate state ---------------------------------------------------
-  const [selectedTab, setSelectedTab] = useState<TabId>(() => {
-    const s = readSessionStep1();
-    const fromSession = mapCategoryToTab(s?.category) ?? null;
-    if (fromSession) return fromSession;
-    // Default to whichever harness matches the persisted value, else Milady.
-    if (s?.harness && (TABS as ReadonlyArray<TabMeta>).some((t) => t.id === s.harness)) {
-      return s.harness as TabId;
-    }
-    return 'milady';
-  });
+  const [selectedTab, setSelectedTab] = useState<TabId>('milady');
 
   const [hasAgentByTab, setHasAgentByTab] = useState<Record<TabId, boolean | null>>(() => ({
     milady:   true,   // Hosted — picker renders unconditionally
@@ -196,21 +187,10 @@ export default function CreateAgentPage() {
   }));
 
   // --- Avatar / color / identity state -----------------------------------
-  const [selectedModel, setSelectedModel] = useState<ModelKey>(() => {
-    const s = readSessionStep1();
-    if (s?.modelKey && s.modelKey in MODEL_REGISTRY) return s.modelKey as ModelKey;
-    return 'lobster';
-  });
-  const [selectedColor, setSelectedColor] = useState<PickerColorId>(() => {
-    const s = readSessionStep1();
-    if (s?.color && VALID_COLOR_IDS.has(s.color)) return s.color as PickerColorId;
-    return 'green';
-  });
-  const [agentName, setAgentName] = useState<string>(() => readSessionStep1()?.name ?? '');
-  const [gender, setGender] = useState<'male' | 'female'>(() => {
-    const s = readSessionStep1();
-    return s?.gender === 'female' ? 'female' : 'male';
-  });
+  const [selectedModel, setSelectedModel] = useState<ModelKey>('lobster');
+  const [selectedColor, setSelectedColor] = useState<PickerColorId>('green');
+  const [agentName, setAgentName] = useState<string>('');
+  const [gender, setGender] = useState<'male' | 'female'>('male');
   const [nameStatus, setNameStatus] = useState<{ available: boolean; reason?: string } | null>(null);
 
   const submittingRef = useRef(false);
@@ -232,10 +212,6 @@ export default function CreateAgentPage() {
         ? (avatar!.harness as TabId)
         : 'milady'))
     : null;
-  useEffect(() => {
-    if (lockedTab && selectedTab !== lockedTab) setSelectedTab(lockedTab);
-  }, [lockedTab, selectedTab]);
-
   const currentTabMeta = TABS.find((t) => t.id === selectedTab)!;
   const harness: HarnessId = selectedTab; // 1:1 with the tab id
   // Customize mode bypasses the SetupGate — the avatar (and its harness
@@ -276,10 +252,35 @@ export default function CreateAgentPage() {
     }
   }, [selectedTab, selectedModel]);
 
+  // Restore the draft after mount so SSR and the first client render match.
+  // Running after the initial pool repair lets the draft win that mount batch.
+  useEffect(() => {
+    const s = readSessionStep1();
+    if (!s) return;
+    const fromSession = mapCategoryToTab(s.category);
+    const validHarness = s.harness &&
+      (TABS as ReadonlyArray<TabMeta>).some((t) => t.id === s.harness);
+    setSelectedTab(fromSession ?? (validHarness ? s.harness as TabId : 'milady'));
+    setSelectedModel(
+      s.modelKey && s.modelKey in MODEL_REGISTRY ? s.modelKey as ModelKey : 'lobster',
+    );
+    setSelectedColor(
+      s.color && VALID_COLOR_IDS.has(s.color) ? s.color as PickerColorId : 'green',
+    );
+    setAgentName(s.name ?? '');
+    setGender(s.gender === 'female' ? 'female' : 'male');
+  }, []);
+
+  // Customize mode's immutable harness wins after draft hydration.
+  useEffect(() => {
+    if (lockedTab && selectedTab !== lockedTab) setSelectedTab(lockedTab);
+  }, [lockedTab, selectedTab]);
+
   // --- Customize-mode prefill (P2) ----------------------------------------
   // When the provisioned avatar resolves, hydrate the form from it — ONCE.
   // An in-progress step-1 draft in sessionStorage wins (back-nav from step 2
   // or a tab reload mid-edit: the user was already editing, don't clobber).
+  // The direct storage check keeps that precedence within the mount batch.
   const prefilledFromAvatarRef = useRef(false);
   useEffect(() => {
     if (!avatar || prefilledFromAvatarRef.current) return;
