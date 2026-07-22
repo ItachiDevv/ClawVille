@@ -16,20 +16,13 @@ export function autonomousCoveDailyAdvisoryKey(avatarId: string): string {
   return `agent-cove-play-daily:${avatarId}`;
 }
 
-export function autonomousCoveUtcDayStart(now = new Date()): Date {
-  const dayStart = new Date(now);
-  dayStart.setUTCHours(0, 0, 0, 0);
-  return dayStart;
-}
-
-export function autonomousCoveDailyUsageQuery(avatarId: string, now = new Date()) {
-  const dayStart = autonomousCoveUtcDayStart(now);
+export function autonomousCoveDailyUsageQuery(avatarId: string) {
   return sql`
     SELECT COALESCE(SUM(-amount), 0)::text AS used_vclaw
     FROM claw_token_transactions
     WHERE avatar_id = ${avatarId}
       AND amount < 0
-      AND created_at >= ${dayStart.toISOString()}::timestamptz
+      AND created_at >= date_trunc('day', now() AT TIME ZONE 'utc') AT TIME ZONE 'utc'
       AND metadata ->> 'autonomousCove' = 'true'
   `;
 }
