@@ -80,6 +80,11 @@
 // PR touching this file (or the engine) and fails if RTP ∉ [95%, 97%].
 // Local acceptance: `bun scripts/cove/rtp-sim.ts --spins 1000000`.
 // ---------------------------------------------------------------------------
+/** Canonical total-stake bounds for one Cove slots spin. */
+export const COVE_SLOTS_BET_STEP = 20;
+export const COVE_SLOTS_MIN_BET = COVE_SLOTS_BET_STEP;
+export const COVE_SLOTS_MAX_BET = 1_000;
+
 export const CLASSIC_REEL_STRIPS: number[][] = [
   // Reel 0 (leftmost, len=84): C=22 L=22 O=14 P=14 B=7, +1 each BAR/Seven/WILD/BAR×2/BAR×3
   [0,0,4,2,0,3,1,1,5,2,1,3,1,2,0,2,1,0,3,2,1,3,3,2,0,6,2,1,0,0,1,0,1,0,1,0,0,4,2,0,2,4,7,1,1,2,4,1,3,1,1,4,0,1,3,3,4,2,8,0,1,0,4,2,3,3,3,0,1,2,1,1,3,3,3,9,0,1,0,1,0,2,0,0],

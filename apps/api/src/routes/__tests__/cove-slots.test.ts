@@ -38,8 +38,14 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
+import type { SlotSession } from '@clawville/database';
 
-import { coveSlotsRouter, __resetSpinRateLimit } from '../cove-slots';
+import {
+  coveSlotsRouter,
+  __resetSpinRateLimit,
+  playAutonomousCoveSlots,
+  resolveAgentCovePlayDailyWagerVclaw,
+} from '../cove-slots';
 import { authRoutes } from '../auth';
 import { avatarRoutes } from '../avatars';
 import { sha256Hex } from '../../services/provable-rng';
@@ -78,6 +84,72 @@ function buildApp() {
 
 describe('Cove Slots — paytable + verify (no DB)', () => {
   const app = buildApp();
+
+  it('resolves the autonomous daily wager cap with a 1000 default and 20 hard floor', () => {
+    const previous = process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW;
+    try {
+      delete process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW;
+      expect(resolveAgentCovePlayDailyWagerVclaw()).toBe(1_000);
+      process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW = '19';
+      expect(resolveAgentCovePlayDailyWagerVclaw()).toBe(1_000);
+      process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW = '2500';
+      expect(resolveAgentCovePlayDailyWagerVclaw()).toBe(2_500);
+      process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW = '2000suffix';
+      expect(resolveAgentCovePlayDailyWagerVclaw()).toBe(1_000);
+    } finally {
+      if (previous === undefined) delete process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW;
+      else process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW = previous;
+    }
+  });
+
+  it('refuses an already-over-cap mismatched session before close/open mutation', async () => {
+    const previous = process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW;
+    const requests: string[] = [];
+    let openSessionReads = 0;
+    try {
+      process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW = '1000';
+      const play = playAutonomousCoveSlots({
+        agentSessionId: 'agent-session-test',
+        actionId: '123e4567-e89b-42d3-a456-426614174000',
+        wager: 20,
+      }, {
+        resolveAgent: async () => ({
+          userId: 'user-test',
+          avatarId: 'avatar-test',
+          agentId: 'agent-test',
+          ledgerCapable: true,
+        }),
+        findOpenSession: async () => {
+          openSessionReads++;
+          return {
+            id: 'mismatched-open-session',
+            startingBalance: '40',
+            paytableId: 'classic-3x5',
+            mode: 'base',
+            freeSpinsRemaining: 0,
+          } as unknown as SlotSession;
+        },
+        readDailyWagerUsed: async (avatarId) => {
+          expect(avatarId).toBe('avatar-test');
+          return 1_000;
+        },
+        request: async (path) => {
+          requests.push(path);
+          throw new Error('session mutation must not run after cap refusal');
+        },
+      });
+
+      await expect(play).rejects.toMatchObject({
+        code: 'daily_cap_exceeded',
+        status: 429,
+      });
+      expect(openSessionReads).toBe(1);
+      expect(requests).toEqual([]);
+    } finally {
+      if (previous === undefined) delete process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW;
+      else process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW = previous;
+    }
+  });
 
   it('GET /paytables/classic-3x5 returns the public bundle', async () => {
     const res = await app.request('/api/cove/slots/paytables/classic-3x5');

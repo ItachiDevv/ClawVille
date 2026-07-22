@@ -105,6 +105,9 @@ import {
   CLASSIC_PAYTABLE,
   CLASSIC_BONUS_PAYTABLE,
   FREE_SPIN_RULES,
+  COVE_SLOTS_BET_STEP,
+  COVE_SLOTS_MAX_BET,
+  COVE_SLOTS_MIN_BET,
 } from '@clawville/shared';
 import { sessionMiddleware } from '../middleware/auth';
 import { resolveAgentSession } from '../middleware/require-auth-or-agent';
@@ -148,6 +151,21 @@ const SUPPORTED_CURRENCIES = ['clawtokens', 'sol', 'usdc'] as const;
 
 /** Max length on the `Idempotency-Key` header (matches Stripe convention). */
 const IDEMPOTENCY_KEY_MAX_LEN = 64;
+
+const AUTONOMOUS_COVE_HEADER = 'X-Clawville-Internal-Autonomous-Cove';
+const AUTONOMOUS_COVE_ACTION_HEADER = 'X-Clawville-Internal-Autonomous-Cove-Action';
+const autonomousCoveToken = randomBytes(32).toString('hex');
+const DEFAULT_AGENT_COVE_PLAY_DAILY_WAGER_VCLAW = 1_000;
+
+/** Environment-backed hard ceiling for autonomous cove wagering per avatar/UTC day. */
+export function resolveAgentCovePlayDailyWagerVclaw(): number {
+  const raw = process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return DEFAULT_AGENT_COVE_PLAY_DAILY_WAGER_VCLAW;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed >= COVE_SLOTS_MIN_BET
+    ? parsed
+    : DEFAULT_AGENT_COVE_PLAY_DAILY_WAGER_VCLAW;
+}
 
 /** Default + max page size on /session/:id/spins. */
 const SPIN_HISTORY_DEFAULT_LIMIT = 50;
@@ -913,6 +931,18 @@ coveSlotsRouter.post('/spin', async (c) => {
   const input = parsed.data;
   const subject = await getSubject(c);
 
+  const isInternalAutonomousPlay = c.req.header(AUTONOMOUS_COVE_HEADER) === autonomousCoveToken;
+  const autonomousActionId = isInternalAutonomousPlay
+    ? c.req.header(AUTONOMOUS_COVE_ACTION_HEADER)
+    : undefined;
+  if (isInternalAutonomousPlay && (
+    subject.kind !== 'agent'
+    || !autonomousActionId
+    || !z.string().uuid().safeParse(autonomousActionId).success
+  )) {
+    throw new HTTPException(403, { message: 'invalid_internal_autonomous_cove_context' });
+  }
+
   // Rate limit keyed on user/agent (by userId) OR fp_hash (guest); we want guests
   // bounded too (a guest fp shouldn't be able to spin > 60/min). Same 60/min
   // ceiling either way. An agent and its bound human share the userId bucket.
@@ -1171,6 +1201,29 @@ coveSlotsRouter.post('/spin', async (c) => {
         (session as { freeSpinsRemaining: number }).freeSpinsRemaining = lockFreeSpinsRemaining;
       }
 
+      // Autonomous wagering is admitted under the SAME transaction as the
+      // actual slots debit and spin/history writes. The advisory lock makes the
+      // UTC-day aggregate race-safe across API processes. Accounting reads the
+      // canonical ledger debit rows by avatar (not cove history betAmount), so
+      // free spins consume zero cap and provenance-split debits sum exactly.
+      if (autonomousActionId && avatar && !isFreeSpinSpin) {
+        await tx.execute(sql`
+          SELECT pg_advisory_xact_lock(
+            hashtextextended(${`agent-cove-play-daily:${avatar.id}`}, 0)
+          )
+        `);
+        const usageRows = await tx.execute<{ used_vclaw: string }>(
+          autonomousCoveDailyUsageQuery(avatar.id),
+        );
+        const usedToday = parseAutonomousCoveDailyUsage(usageRows);
+        const capMessage = autonomousCoveDailyCapMessage(usedToday, predictNumber);
+        if (capMessage) {
+          throw new HTTPException(429, {
+            message: capMessage,
+          });
+        }
+      }
+
       // Phase 6.1.5 — debit only on BASE spins. Free spins consume no
       // predict (FREE in name and in money), but still credit any win.
       // Phase 6.7.5 — for GUEST sessions, debit/credit never touch the
@@ -1226,6 +1279,13 @@ coveSlotsRouter.post('/spin', async (c) => {
                 sessionId: session.id,
                 paytableId: session.paytableId,
                 nonce: session.nonceCounter,
+                ...(autonomousActionId
+                  ? {
+                      autonomousCove: true,
+                      autonomousGame: 'slots',
+                      autonomousActionId,
+                    }
+                  : {}),
               },
               actorKind: subject.kind === 'user' ? 'human' : 'agent',
             },
@@ -1315,6 +1375,9 @@ coveSlotsRouter.post('/spin', async (c) => {
           predict: predictBig.toString(),
           nonce: session.nonceCounter,
           paytableVersion: spinRow.paytableVersion,
+          ...(autonomousActionId
+            ? { autonomous: true, autonomousActionId }
+            : {}),
         },
         serverSeedHash: session.serverSeedHash,
         revealedServerSeed: null,
@@ -1565,6 +1628,168 @@ coveSlotsRouter.post('/spin', async (c) => {
 // guests here, so we keep that exclusion (403) rather than widening it.
 // Ownership is enforced via ownerMatches (userId for a ledger subject), so an
 // agent can only ever close its own bound avatar's session.
+
+export class AutonomousCoveSlotsError extends Error {
+  constructor(readonly code: string, readonly status: number, message: string) {
+    super(message);
+    this.name = 'AutonomousCoveSlotsError';
+  }
+}
+
+type ResolvedAutonomousCoveAgent = NonNullable<Awaited<ReturnType<typeof resolveAgentSession>>>;
+
+export interface AutonomousCoveSlotsDependencies {
+  resolveAgent: (sessionId: string) => Promise<ResolvedAutonomousCoveAgent | null>;
+  findOpenSession: (userId: string) => Promise<SlotSession | undefined>;
+  readDailyWagerUsed: (avatarId: string) => Promise<number>;
+  request: (path: string, init: RequestInit) => Promise<Response>;
+}
+
+function autonomousCoveUtcDayStart(now = new Date()): Date {
+  const dayStart = new Date(now);
+  dayStart.setUTCHours(0, 0, 0, 0);
+  return dayStart;
+}
+
+function autonomousCoveDailyUsageQuery(avatarId: string, now = new Date()) {
+  const dayStart = autonomousCoveUtcDayStart(now);
+  return sql`
+    SELECT COALESCE(SUM(-amount), 0)::text AS used_vclaw
+    FROM claw_token_transactions
+    WHERE avatar_id = ${avatarId}
+      AND amount < 0
+      AND created_at >= ${dayStart.toISOString()}::timestamptz
+      AND metadata ->> 'autonomousCove' = 'true'
+  `;
+}
+
+function parseAutonomousCoveDailyUsage(rows: Array<{ used_vclaw: string }>): number {
+  const usedToday = Number(rows[0]?.used_vclaw ?? '0');
+  if (!Number.isSafeInteger(usedToday) || usedToday < 0) {
+    throw new Error('autonomous cove daily wager usage is outside safe integer range');
+  }
+  return usedToday;
+}
+
+function autonomousCoveDailyCapMessage(usedToday: number, requested: number): string | null {
+  const dailyCap = resolveAgentCovePlayDailyWagerVclaw();
+  return usedToday > dailyCap - requested
+    ? `agent_cove_daily_wager_cap_exceeded: cap=${dailyCap}, used=${usedToday}, requested=${requested}`
+    : null;
+}
+
+async function readAutonomousCoveDailyWagerUsed(avatarId: string): Promise<number> {
+  const rows = await db.execute<{ used_vclaw: string }>(autonomousCoveDailyUsageQuery(avatarId));
+  return parseAutonomousCoveDailyUsage(rows);
+}
+
+const DEFAULT_AUTONOMOUS_COVE_SLOTS_DEPS: AutonomousCoveSlotsDependencies = {
+  resolveAgent: resolveAgentSession,
+  findOpenSession: async (userId) => db.query.slotSessions.findFirst({
+    where: and(eq(slotSessions.userId, userId), eq(slotSessions.status, 'open')),
+  }),
+  readDailyWagerUsed: readAutonomousCoveDailyWagerUsed,
+  request: async (path, init) => coveSlotsRouter.request(path, init),
+};
+
+async function readInternalCoveResponse<T>(response: Response): Promise<T> {
+  const text = await response.text();
+  let payload: unknown = {};
+  try { payload = text ? JSON.parse(text) : {}; }
+  catch { payload = { message: text }; }
+  if (!response.ok) {
+    const detail = payload as { message?: string; error?: string };
+    const message = detail.message ?? detail.error ?? `cove_slots_http_${response.status}`;
+    const code = message.startsWith('agent_cove_daily_wager_cap_exceeded')
+      ? 'daily_cap_exceeded'
+      : message.split(':', 1)[0] || 'cove_play_failed';
+    throw new AutonomousCoveSlotsError(code, response.status, message);
+  }
+  return payload as T;
+}
+
+/** In-process adapter around the audited human/agent slots route core. */
+export async function playAutonomousCoveSlots(input: {
+  agentSessionId: string;
+  actionId: string;
+  wager: number;
+}, dependencyOverrides: Partial<AutonomousCoveSlotsDependencies> = {}): Promise<SpinResponse> {
+  const dependencies = { ...DEFAULT_AUTONOMOUS_COVE_SLOTS_DEPS, ...dependencyOverrides };
+  if (
+    !Number.isSafeInteger(input.wager)
+    || input.wager < COVE_SLOTS_MIN_BET
+    || input.wager > COVE_SLOTS_MAX_BET
+    || input.wager % COVE_SLOTS_BET_STEP !== 0
+  ) {
+    throw new AutonomousCoveSlotsError('invalid_wager', 400, 'invalid_wager');
+  }
+  const resolved = await dependencies.resolveAgent(input.agentSessionId);
+  if (!resolved) throw new AutonomousCoveSlotsError('invalid_or_expired_agent_session', 401, 'invalid_or_expired_agent_session');
+  if (!resolved.ledgerCapable) throw new AutonomousCoveSlotsError('agent_session_not_ledger_authorized', 403, 'agent_session_not_ledger_authorized');
+  if (!resolved.userId || !resolved.avatarId) throw new AutonomousCoveSlotsError('agent_session_has_no_active_avatar', 403, 'agent_session_has_no_active_avatar');
+  if (!z.string().uuid().safeParse(input.actionId).success) {
+    throw new AutonomousCoveSlotsError('invalid_action_id', 400, 'invalid_action_id');
+  }
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    [AGENT_SESSION_HEADER]: input.agentSessionId,
+  };
+  const existing = await dependencies.findOpenSession(resolved.userId);
+
+  // Read-only fail-closed preflight BEFORE close/open can mutate the existing
+  // session. The advisory-locked check in /spin remains authoritative against
+  // races. A matching free-spin session has no debit and therefore consumes no
+  // daily wager capacity; a mismatched session will be replaced by a base spin.
+  const nextSpinConsumesWager = !(
+    existing
+    && existing.startingBalance === String(input.wager)
+    && existing.mode === 'free-spin'
+    && existing.freeSpinsRemaining > 0
+  );
+  if (nextSpinConsumesWager) {
+    const usedToday = await dependencies.readDailyWagerUsed(resolved.avatarId);
+    const capMessage = autonomousCoveDailyCapMessage(usedToday, input.wager);
+    if (capMessage) {
+      throw new AutonomousCoveSlotsError('daily_cap_exceeded', 429, capMessage);
+    }
+  }
+  if (existing && existing.startingBalance !== String(input.wager)) {
+    const closed = await dependencies.request('/session/close', {
+      method: 'POST', headers, body: JSON.stringify({ sessionId: existing.id }),
+    });
+    await readInternalCoveResponse<CloseSessionResponse>(closed);
+  }
+
+  const opened = await dependencies.request('/session/open', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      paytableId: existing?.startingBalance === String(input.wager)
+        ? existing.paytableId
+        : 'classic-3x5',
+      currency: 'clawtokens',
+      predict: String(input.wager),
+    }),
+  });
+  const open = await readInternalCoveResponse<OpenSessionResponse>(opened);
+  if (open.startingBalance !== String(input.wager)) {
+    throw new AutonomousCoveSlotsError('session_wager_mismatch', 409,
+      `session_wager_mismatch: expected=${input.wager}, actual=${open.startingBalance}`);
+  }
+
+  const spun = await dependencies.request('/spin', {
+    method: 'POST',
+    headers: {
+      ...headers,
+      'Idempotency-Key': `auto:${input.actionId}`,
+      [AUTONOMOUS_COVE_HEADER]: autonomousCoveToken,
+      [AUTONOMOUS_COVE_ACTION_HEADER]: input.actionId,
+    },
+    body: JSON.stringify({ sessionId: open.sessionId, predict: String(input.wager) }),
+  });
+  return readInternalCoveResponse<SpinResponse>(spun);
+}
 
 coveSlotsRouter.post('/session/close', async (c) => {
   const body = await c.req.json().catch(() => null);
