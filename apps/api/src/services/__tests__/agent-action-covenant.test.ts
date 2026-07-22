@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { createHash } from 'crypto';
 import {
+  BUILDING_INTERACTION_RADIUS,
+  MAP_LOCATIONS,
   NPC_BUILDING_CENTERS,
 } from '@clawville/shared';
 import { npcSimulation } from '../npc-simulation';
@@ -24,7 +26,12 @@ interface SimInternals {
   npcOverrides: Map<string, string>;
   pendingEvents: Array<{ type: string; data: { message: string } }>;
   missingActionAttributionWarned: Set<string>;
+  autonomousCovePlayLastAdmittedAt: Map<string, number>;
   emoteOwnershipQuery: (avatarId: string, animationKey: string) => Promise<boolean>;
+  autonomousCoveSlotsPlay: (input: { agentSessionId: string; actionId: string; wager: number }) => Promise<unknown>;
+  autonomousCoveAgentResolve: (sessionId: string) => Promise<{
+    agentId: string; userId: string | null; avatarId: string | null; ledgerCapable: boolean;
+  } | null>;
   initNpcs: () => void;
   executeHatcherAction: (
     npcId: string,
@@ -38,6 +45,8 @@ interface SimInternals {
 const sim = npcSimulation as unknown as SimInternals;
 const originalCovenantRecord = npcSimulation.covenantRecord;
 const originalEmoteOwnershipQuery = npcSimulation.emoteOwnershipQuery;
+const originalAutonomousCoveSlotsPlay = npcSimulation.autonomousCoveSlotsPlay;
+const originalAutonomousCoveAgentResolve = npcSimulation.autonomousCoveAgentResolve;
 const AVATAR = 'executor-avatar';
 
 function body(id: string, x = 11264, y = 11264): TestNpc {
@@ -103,11 +112,14 @@ beforeEach(() => {
   sim.npcOverrides.clear();
   sim.pendingEvents = [];
   sim.missingActionAttributionWarned.clear();
+  sim.autonomousCovePlayLastAdmittedAt.clear();
 });
 
 afterEach(() => {
   npcSimulation.covenantRecord = originalCovenantRecord;
   npcSimulation.emoteOwnershipQuery = originalEmoteOwnershipQuery;
+  npcSimulation.autonomousCoveSlotsPlay = originalAutonomousCoveSlotsPlay;
+  npcSimulation.autonomousCoveAgentResolve = originalAutonomousCoveAgentResolve;
 });
 
 async function flushEmoteLookup(): Promise<void> {
@@ -115,7 +127,91 @@ async function flushEmoteLookup(): Promise<void> {
   await Promise.resolve();
 }
 
+async function flushAutonomousCovePlay(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 describe('in-world executor covenant hooks', () => {
+  it('settles one validated slots action at the cove and reserves the elapsed-time limiter', async () => {
+    const cove = MAP_LOCATIONS.find((location) => location.id === 'cove')!;
+    const npc = body(
+      'cove-slots-body',
+      cove.positionX + cove.width / 2,
+      cove.positionY + cove.height / 2,
+    );
+    sim.npcs.set(npc.id, npc);
+    sim.agentBotSessions.set('cove-slots-session', {
+      config: { agentId: npc.id, mode: 'avatar', avatarId: AVATAR },
+      client: { getProtocol: () => 'hatcher-proxy' },
+    });
+    sim.npcOverrides.set(npc.id, 'cove-slots-session');
+    npcSimulation.autonomousCoveAgentResolve = async () => ({
+      agentId: npc.id,
+      userId: 'executor-user',
+      avatarId: AVATAR,
+      ledgerCapable: true,
+    });
+    const calls: Array<{ agentSessionId: string; actionId: string; wager: number }> = [];
+    npcSimulation.autonomousCoveSlotsPlay = async (input) => { calls.push(input); };
+
+    const speech = npcSimulation.dispatchHatcherActions(
+      npc.id,
+      'One spin. [ACTION: play_cove_game(game=slots, wager=20)]',
+    );
+    npcSimulation.dispatchHatcherActions(
+      npc.id,
+      '[ACTION: play_cove_game(game=slots, wager=20)]',
+    );
+    await flushAutonomousCovePlay();
+
+    expect(speech).toBe('One spin.');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ agentSessionId: 'cove-slots-session', wager: 20 });
+    expect(calls[0]!.actionId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(npc.destinationBuildingId).toBe('cove');
+    expect(npc.intentDescription).toContain('playing slots at the cove');
+  });
+
+  it('drops invalid/off-location play without consuming rate and rate-limits after a cap refusal', async () => {
+    const cove = MAP_LOCATIONS.find((location) => location.id === 'cove')!;
+    const npc = body(
+      'cove-drop-body',
+      cove.positionX + cove.width / 2 + BUILDING_INTERACTION_RADIUS + 1,
+      cove.positionY + cove.height / 2,
+    );
+    sim.npcs.set(npc.id, npc);
+    sim.agentBotSessions.set('cove-drop-session', {
+      config: { agentId: npc.id, mode: 'avatar', avatarId: AVATAR },
+      client: { getProtocol: () => 'hatcher-proxy' },
+    });
+    sim.npcOverrides.set(npc.id, 'cove-drop-session');
+    npcSimulation.autonomousCoveAgentResolve = async () => ({
+      agentId: npc.id, userId: 'executor-user', avatarId: AVATAR, ledgerCapable: true,
+    });
+    let attempts = 0;
+    npcSimulation.autonomousCoveSlotsPlay = async () => {
+      attempts++;
+      if (attempts === 1) {
+        const error = new Error('agent_cove_daily_wager_cap_exceeded');
+        Object.assign(error, { code: 'daily_cap_exceeded' });
+        throw error;
+      }
+    };
+
+    npcSimulation.dispatchHatcherActions(npc.id, '[ACTION: play_cove_game(game=slots, wager=21)]');
+    npcSimulation.dispatchHatcherActions(npc.id, '[ACTION: play_cove_game(game=slots, wager=20)]');
+    await flushAutonomousCovePlay();
+    expect(attempts).toBe(0);
+
+    npc.x = cove.positionX + cove.width / 2;
+    npc.y = cove.positionY + cove.height / 2;
+    npcSimulation.dispatchHatcherActions(npc.id, '[ACTION: play_cove_game(game=slots, wager=20)]');
+    await flushAutonomousCovePlay();
+    npcSimulation.dispatchHatcherActions(npc.id, '[ACTION: play_cove_game(game=slots, wager=20)]');
+    await flushAutonomousCovePlay();
+    expect(attempts).toBe(1);
+  });
+
   it('broadcasts an owned+equipped emote and serializes its monotonic sequence', async () => {
     const lookups: Array<{ avatarId: string; animationKey: string }> = [];
     npcSimulation.emoteOwnershipQuery = async (avatarId, animationKey) => {
@@ -301,7 +397,7 @@ describe('in-world executor covenant hooks', () => {
     expect(responseAt).toBeGreaterThan(bindAt);
   });
 
-  it('dispatches enter_kelp_forest through the public seven-verb whitelist', () => {
+  it('dispatches enter_kelp_forest through the public eight-verb whitelist', () => {
     const records: CovenantActionInput[] = [];
     npcSimulation.covenantRecord = async (input) => {
       records.push(input);
