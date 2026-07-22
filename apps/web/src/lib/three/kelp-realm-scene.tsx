@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three/webgpu';
 import { attribute, cos, float, fract, positionLocal, sin, time, vec3 } from 'three/tsl';
@@ -28,6 +28,7 @@ import {
   type KelpRealmDiscoveryType,
 } from '@clawville/shared';
 import KelpRealmPlayer from './kelp-realm-player';
+import { useGLTFWithKTX2 } from './use-gltf-ktx2';
 import { subscribeKelpRealmBeaconVisits } from './kelp-realm-visit-state';
 
 const BLADE_COUNT = 15_000;
@@ -791,85 +792,145 @@ function setGeometryColor(geometry: THREE.BufferGeometry, color: THREE.Color): v
  */
 const CORAL_PALETTE = [0xff7f6e, 0xffa45c, 0xe86ac4, 0xffd166, 0x9b5de5, 0x5de5c8] as const;
 
-function createCorridorDecorGeometry(): THREE.BufferGeometry {
-  const sources: THREE.BufferGeometry[] = [];
-  const color = new THREE.Color();
-  const tuftColor = new THREE.Color();
-  const white = new THREE.Color(0xffffff);
-  try {
-    for (let row = 0; row < KELP_REALM_ROWS; row++) {
-      for (let col = 0; col < KELP_REALM_COLS; col++) {
-        if (!isKelpRealmCorridorCell(row, col)) continue;
-        if ((row * 31 + col * 17) % 2 !== 0) continue;
-        const x = kelpRealmCellCenterX(col);
-        const z = kelpRealmCellCenterZ(row);
-        if (Math.hypot(x - KELP_REALM_CENTER.x, z - KELP_REALM_CENTER.z) < KELP_REALM_CELL_WU * 1.7) continue;
-        if (KELP_REALM_DEAD_END_DISCOVERIES.some(
-          (discovery) => Math.hypot(x - discovery.x, z - discovery.z) < KELP_REALM_CELL_WU * 1.1,
-        )) continue;
-        if (KELP_REALM_BEACON_GRAPH.nodes.some(
-          (node) => Math.hypot(x - node.x, z - node.z) < KELP_REALM_CELL_WU * 0.6,
-        )) continue;
-        const rng = seededRandom(0x434f5252 + row * 977 + col * 37);
-        // Only hug sides that are REAL walls — an "edge" that opens into a
-        // neighboring corridor cell is walkway, and corals there read as
-        // floating obstacles (first-iteration bug caught on the drive test).
-        const wallSides: readonly (readonly [number, number])[] = ([
-          [-1, 0], [1, 0], [0, -1], [0, 1],
-        ] as const).filter(([dc, dr]) => !isKelpRealmCorridorCell(row + dr, col + dc));
-        if (wallSides.length === 0) continue;
-        const clusters = 3 + Math.floor(rng() * 2);
-        for (let clusterIndex = 0; clusterIndex < clusters; clusterIndex++) {
-          const side = wallSides[Math.floor(rng() * wallSides.length)]!;
-          const edgeBand = KELP_REALM_CELL_WU / 2 - 88 - rng() * 70;
-          const alongWall = (rng() - 0.5) * (KELP_REALM_CELL_WU - 220);
-          const cx = x + side[0] * edgeBand + (side[0] === 0 ? alongWall : 0);
-          const cz = z + side[1] * edgeBand + (side[1] === 0 ? alongWall : 0);
-          color.setHex(CORAL_PALETTE[Math.floor(rng() * CORAL_PALETTE.length)]!);
-          const kind = rng();
-          if (kind < 0.45) {
-            const baseRadius = 27 + rng() * 17;
-            const base = new THREE.SphereGeometry(baseRadius, 6, 4);
-            setGeometryColor(base, color);
-            base.translate(cx, baseRadius * 0.5, cz);
-            sources.push(base);
-            const branches = 4 + Math.floor(rng() * 3);
-            for (let branch = 0; branch < branches; branch++) {
-              const branchHeight = 58 + rng() * 68;
-              const cone = new THREE.ConeGeometry(10 + rng() * 7, branchHeight, 5);
-              cone.translate(0, branchHeight / 2, 0);
-              cone.rotateZ(0.35 + rng() * 0.55);
-              cone.rotateY((branch / branches) * Math.PI * 2 + rng() * 0.4);
-              cone.translate(cx, baseRadius * 0.4, cz);
-              setGeometryColor(cone, color);
-              sources.push(cone);
-            }
-          } else if (kind < 0.75) {
-            const fan = new THREE.SphereGeometry(44 + rng() * 27, 8, 5, 0, Math.PI);
-            fan.scale(1, 1.15, 0.22);
-            fan.rotateY(rng() * Math.PI * 2);
-            setGeometryColor(fan, color);
-            fan.translate(cx, 6, cz);
-            sources.push(fan);
-          } else {
-            tuftColor.copy(color).lerp(white, 0.25);
-            const tufts = 6 + Math.floor(rng() * 4);
-            for (let tuft = 0; tuft < tufts; tuft++) {
-              const tuftHeight = 27 + rng() * 27;
-              const cone = new THREE.ConeGeometry(5.5 + rng() * 3.5, tuftHeight, 4);
-              const angle = (tuft / tufts) * Math.PI * 2;
-              const ringRadius = 10 + rng() * 16;
-              setGeometryColor(cone, tuftColor);
-              cone.translate(cx + Math.cos(angle) * ringRadius, tuftHeight / 2 + 2, cz + Math.sin(angle) * ringRadius);
-              sources.push(cone);
-            }
-          }
-        }
+export const KELP_CORAL_MODEL_URLS = Object.freeze([
+  '/models/kelp-corals/coral-staghorn.glb?v=1',
+  '/models/kelp-corals/coral-fan.glb?v=1',
+  '/models/kelp-corals/coral-brain.glb?v=1',
+  '/models/kelp-corals/coral-tubes.glb?v=1',
+]);
+
+interface CoralPlacement {
+  readonly x: number;
+  readonly z: number;
+  readonly modelIndex: number;
+  readonly colorHex: number;
+  readonly scale: number;
+  readonly rotationY: number;
+}
+
+/**
+ * Deterministic coral placements along verified REAL wall bases (an "edge"
+ * opening into a neighboring corridor cell is walkway — corals there float
+ * mid-path). Same seed per cell as every prior decor round.
+ */
+function computeCoralPlacements(): readonly CoralPlacement[] {
+  const placements: CoralPlacement[] = [];
+  for (let row = 0; row < KELP_REALM_ROWS; row++) {
+    for (let col = 0; col < KELP_REALM_COLS; col++) {
+      if (!isKelpRealmCorridorCell(row, col)) continue;
+      if ((row * 31 + col * 17) % 3 !== 0) continue;
+      const x = kelpRealmCellCenterX(col);
+      const z = kelpRealmCellCenterZ(row);
+      if (Math.hypot(x - KELP_REALM_CENTER.x, z - KELP_REALM_CENTER.z) < KELP_REALM_CELL_WU * 1.7) continue;
+      if (KELP_REALM_DEAD_END_DISCOVERIES.some(
+        (discovery) => Math.hypot(x - discovery.x, z - discovery.z) < KELP_REALM_CELL_WU * 1.1,
+      )) continue;
+      if (KELP_REALM_BEACON_GRAPH.nodes.some(
+        (node) => Math.hypot(x - node.x, z - node.z) < KELP_REALM_CELL_WU * 0.6,
+      )) continue;
+      const rng = seededRandom(0x434f5252 + row * 977 + col * 37);
+      const wallSides: readonly (readonly [number, number])[] = ([
+        [-1, 0], [1, 0], [0, -1], [0, 1],
+      ] as const).filter(([dc, dr]) => !isKelpRealmCorridorCell(row + dr, col + dc));
+      if (wallSides.length === 0) continue;
+      const clusters = 2 + Math.floor(rng() * 2);
+      for (let clusterIndex = 0; clusterIndex < clusters; clusterIndex++) {
+        const side = wallSides[Math.floor(rng() * wallSides.length)]!;
+        const edgeBand = KELP_REALM_CELL_WU / 2 - 88 - rng() * 70;
+        const alongWall = (rng() - 0.5) * (KELP_REALM_CELL_WU - 220);
+        placements.push({
+          x: x + side[0] * edgeBand + (side[0] === 0 ? alongWall : 0),
+          z: z + side[1] * edgeBand + (side[1] === 0 ? alongWall : 0),
+          modelIndex: Math.floor(rng() * KELP_CORAL_MODEL_URLS.length),
+          colorHex: CORAL_PALETTE[Math.floor(rng() * CORAL_PALETTE.length)]!,
+          scale: 0.85 + rng() * 0.5,
+          rotationY: rng() * Math.PI * 2,
+        });
       }
+    }
+  }
+  return placements;
+}
+
+const CORAL_TARGET_FOOTPRINT_WU = 105;
+const coralStampMatrix = new THREE.Matrix4();
+const coralStampBox = new THREE.Box3();
+const coralStampVec = new THREE.Vector3();
+
+/**
+ * Normalize one loaded Meshy coral (arbitrary authored scale/origin) into a
+ * ground-planted template: uniform footprint, base at y=0, no UVs (the decor
+ * draw is vertex-colored only).
+ */
+export function normalizeKelpCoralTemplate(source: THREE.BufferGeometry): THREE.BufferGeometry {
+  const template = (source.index ? source.toNonIndexed() : source.clone());
+  for (const name of Object.keys(template.attributes)) {
+    if (name !== 'position' && name !== 'normal') template.deleteAttribute(name);
+  }
+  template.computeBoundingBox();
+  const box = template.boundingBox!;
+  coralStampBox.copy(box);
+  coralStampBox.getSize(coralStampVec);
+  const footprint = Math.max(0.001, coralStampVec.x, coralStampVec.z);
+  const fit = CORAL_TARGET_FOOTPRINT_WU / footprint;
+  const centerX = (box.min.x + box.max.x) / 2;
+  const centerZ = (box.min.z + box.max.z) / 2;
+  template.translate(-centerX, -box.min.y, -centerZ);
+  template.scale(fit, fit, fit);
+  // Force flat-faceted normals: Meshy previews ship smooth normals, which
+  // turn low-poly domes (brain coral) into featureless balls. Faceting
+  // matches the realm's low-poly look and makes the grooves read.
+  template.deleteAttribute('normal');
+  template.computeVertexNormals();
+  return template;
+}
+
+const coralGradientRoot = new THREE.Color();
+const coralGradientTip = new THREE.Color();
+const coralGradientBlend = new THREE.Color();
+
+/** Root-darkened, tip-lightened tint — same depth trick as the kelp blades. */
+function applyCoralHeightGradient(geometry: THREE.BufferGeometry, base: THREE.Color): void {
+  geometry.computeBoundingBox();
+  const box = geometry.boundingBox!;
+  const spanY = Math.max(0.001, box.max.y - box.min.y);
+  const position = geometry.getAttribute('position');
+  const colors = new Float32Array(position.count * 3);
+  coralGradientRoot.copy(base).multiplyScalar(0.62);
+  coralGradientTip.copy(base).lerp(coralGradientBlend.setRGB(1, 1, 1), 0.18);
+  for (let index = 0; index < position.count; index++) {
+    const t = Math.min(1, Math.max(0, (position.getY(index) - box.min.y) / spanY));
+    coralGradientBlend.lerpColors(coralGradientRoot, coralGradientTip, t);
+    colors[index * 3] = coralGradientBlend.r;
+    colors[index * 3 + 1] = coralGradientBlend.g;
+    colors[index * 3 + 2] = coralGradientBlend.b;
+  }
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+}
+
+/** Stamp every placement with its template and tint, merged to ONE geometry. */
+export function buildKelpCoralGardens(
+  templates: readonly THREE.BufferGeometry[],
+): THREE.BufferGeometry {
+  const placements = computeCoralPlacements();
+  const color = new THREE.Color();
+  const sources: THREE.BufferGeometry[] = [];
+  try {
+    for (const placement of placements) {
+      const template = templates[placement.modelIndex % templates.length];
+      if (!template) continue;
+      const stamp = template.clone();
+      coralStampMatrix.makeRotationY(placement.rotationY);
+      coralStampMatrix.scale(coralStampVec.set(placement.scale, placement.scale, placement.scale));
+      // Sink slightly so thin stems/bases always read planted, never floating.
+      coralStampMatrix.setPosition(placement.x, -8, placement.z);
+      stamp.applyMatrix4(coralStampMatrix);
+      color.setHex(placement.colorHex);
+      applyCoralHeightGradient(stamp, color);
+      sources.push(stamp);
     }
     const merged = mergeGeometries(sources, false);
     if (!merged) throw new Error('Kelp realm coral gardens could not be merged');
-    merged.computeVertexNormals();
     merged.computeBoundingBox();
     merged.computeBoundingSphere();
     return merged;
@@ -1077,15 +1138,49 @@ function createEnvironmentResources() {
     const orbitMaterial = new THREE.PointsMaterial({ color: 0xe0fff8, size: 8, transparent: true, opacity: 0.68, depthWrite: false, fog: false });
     const centerRingGeometry = createCenterRingGeometry();
     const centerRingMaterial = new THREE.MeshBasicMaterial({ color: 0x9ffff0, transparent: true, opacity: 0.64, depthWrite: false, blending: THREE.AdditiveBlending, fog: false });
-    const corridorDecorGeometry = createCorridorDecorGeometry();
     const corridorDecorMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0 });
     const waterDomeGeometry = createWaterDomeGeometry();
     const waterDomeTexture = createWaterDomeTexture();
     const waterDomeMaterial = new THREE.MeshBasicMaterial({ map: waterDomeTexture, side: THREE.BackSide, fog: false, depthWrite: false });
-    return { floorGeometry, floorMaterial, rayGeometry, rayMaterial, moteGeometry, moteMaterial, beaconGeometry, beaconMaterial, sporeGeometry, sporeMaterial, shellGeometry, shellMaterial, pearlGeometry, pearlMaterial, orbitGeometry, orbitMaterial, centerRingGeometry, centerRingMaterial, corridorDecorGeometry, corridorDecorMaterial, waterDomeGeometry, waterDomeTexture, waterDomeMaterial };
+    return { floorGeometry, floorMaterial, rayGeometry, rayMaterial, moteGeometry, moteMaterial, beaconGeometry, beaconMaterial, sporeGeometry, sporeMaterial, shellGeometry, shellMaterial, pearlGeometry, pearlMaterial, orbitGeometry, orbitMaterial, centerRingGeometry, centerRingMaterial, corridorDecorMaterial, waterDomeGeometry, waterDomeTexture, waterDomeMaterial };
 }
 
 type EnvironmentResources = ReturnType<typeof createEnvironmentResources>;
+
+function CoralGardens({ material }: { readonly material: THREE.Material }) {
+  const gltfA = useGLTFWithKTX2(KELP_CORAL_MODEL_URLS[0]!);
+  const gltfB = useGLTFWithKTX2(KELP_CORAL_MODEL_URLS[1]!);
+  const gltfC = useGLTFWithKTX2(KELP_CORAL_MODEL_URLS[2]!);
+  const gltfD = useGLTFWithKTX2(KELP_CORAL_MODEL_URLS[3]!);
+  const [geometry, setGeometry] = useState<THREE.BufferGeometry | null>(null);
+
+  useEffect(() => {
+    const templates: THREE.BufferGeometry[] = [];
+    for (const gltf of [gltfA, gltfB, gltfC, gltfD]) {
+      let extracted: THREE.BufferGeometry | null = null;
+      gltf.scene.updateMatrixWorld(true);
+      gltf.scene.traverse((object) => {
+        const mesh = object as THREE.Mesh;
+        if (extracted || !mesh.isMesh || !mesh.geometry) return;
+        const world = mesh.geometry.clone();
+        world.applyMatrix4(mesh.matrixWorld);
+        extracted = world;
+      });
+      if (extracted) templates.push(normalizeKelpCoralTemplate(extracted));
+    }
+    if (templates.length === 0) return;
+    const built = buildKelpCoralGardens(templates);
+    for (const template of templates) template.dispose();
+    setGeometry(built);
+    return () => {
+      setGeometry(null);
+      disposeAfterCommit(() => built.dispose());
+    };
+  }, [gltfA, gltfB, gltfC, gltfD]);
+
+  if (!geometry) return null;
+  return <mesh geometry={geometry} material={material} matrixAutoUpdate={false} />;
+}
 
 function RealmEnvironment({ forceWebGL }: { forceWebGL: boolean }) {
   const kelp = useKelpResources(forceWebGL);
@@ -1163,7 +1258,7 @@ function RealmEnvironment({ forceWebGL }: { forceWebGL: boolean }) {
       <mesh geometry={resources.pearlGeometry} material={resources.pearlMaterial} matrixAutoUpdate={false} />
       <points ref={orbitRef} geometry={resources.orbitGeometry} material={resources.orbitMaterial} position={[KELP_REALM_CENTER.x, 28, KELP_REALM_CENTER.z]} />
       <mesh ref={centerRingsRef} geometry={resources.centerRingGeometry} material={resources.centerRingMaterial} position={[KELP_REALM_CENTER.x, 168, KELP_REALM_CENTER.z]} />
-      <mesh geometry={resources.corridorDecorGeometry} material={resources.corridorDecorMaterial} matrixAutoUpdate={false} />
+      <Suspense fallback={null}><CoralGardens material={resources.corridorDecorMaterial} /></Suspense>
       <mesh ref={domeRef} geometry={resources.waterDomeGeometry} material={resources.waterDomeMaterial} renderOrder={-2} frustumCulled={false} />
     </>
   );
