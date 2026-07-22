@@ -126,6 +126,7 @@ import {
   creditClawTokens,
   debitClawTokens,
   InsufficientTokensError,
+  type LedgerTx,
 } from '../services/claw-token-ledger';
 import { logEventFromContext, logEventFromContextReturningId } from '../services/event-logger';
 import { publishCoveSettlement } from '../services/agent-settlement-publish';
@@ -161,6 +162,9 @@ const IDEMPOTENCY_KEY_MAX_LEN = 64;
 
 const AUTONOMOUS_COVE_HEADER = 'X-Clawville-Internal-Autonomous-Cove';
 const AUTONOMOUS_COVE_ACTION_HEADER = 'X-Clawville-Internal-Autonomous-Cove-Action';
+const AUTONOMOUS_COVE_AGENT_HEADER = 'X-Clawville-Internal-Autonomous-Cove-Agent';
+const AUTONOMOUS_COVE_AVATAR_HEADER = 'X-Clawville-Internal-Autonomous-Cove-Avatar';
+const AUTONOMOUS_COVE_USER_HEADER = 'X-Clawville-Internal-Autonomous-Cove-User';
 const autonomousCoveToken = randomBytes(32).toString('hex');
 export { resolveAgentCovePlayDailyWagerVclaw } from '../services/autonomous-cove-wager-cap';
 
@@ -555,6 +559,54 @@ async function loadAvatarForUser(userId: string): Promise<{
   return row;
 }
 
+interface AutonomousCoveExpectedBinding {
+  agentId: string;
+  avatarId: string;
+  userId: string;
+}
+
+async function loadExpectedAutonomousAvatar(
+  expected: AutonomousCoveExpectedBinding,
+): Promise<{ id: string; clawTokens: number }> {
+  const row = await db.query.avatars.findFirst({
+    where: and(
+      eq(avatars.id, expected.avatarId),
+      eq(avatars.userId, expected.userId),
+    ),
+    columns: { id: true, clawTokens: true },
+  });
+  if (!row) {
+    throw new HTTPException(403, { message: 'live_agent_avatar_binding_changed' });
+  }
+  return row;
+}
+
+/** Internal-autonomy money gate: pin and lock the exact pre-admission avatar. */
+export async function assertAutonomousCoveAvatarBindingInTx(
+  tx: Pick<LedgerTx, 'execute'>,
+  expected: Pick<AutonomousCoveExpectedBinding, 'avatarId' | 'userId'>,
+): Promise<void> {
+  const rows = await tx.execute<{
+    id: string;
+    user_id: string;
+    is_active: boolean;
+  }>(sql`
+    SELECT id, user_id, is_active
+    FROM avatars
+    WHERE id = ${expected.avatarId}
+    FOR UPDATE
+  `);
+  const row = rows[0];
+  if (
+    !row
+    || row.id !== expected.avatarId
+    || row.user_id !== expected.userId
+    || row.is_active !== true
+  ) {
+    throw new HTTPException(403, { message: 'active_avatar_binding_changed' });
+  }
+}
+
 // ─── POST /session/open ───────────────────────────────────────────────────
 
 coveSlotsRouter.post('/session/open', async (c) => {
@@ -932,12 +984,33 @@ coveSlotsRouter.post('/spin', async (c) => {
   const autonomousActionId = isInternalAutonomousPlay
     ? c.req.header(AUTONOMOUS_COVE_ACTION_HEADER)
     : undefined;
+  const expectedAutonomousBinding = isInternalAutonomousPlay
+    ? {
+        agentId: c.req.header(AUTONOMOUS_COVE_AGENT_HEADER),
+        avatarId: c.req.header(AUTONOMOUS_COVE_AVATAR_HEADER),
+        userId: c.req.header(AUTONOMOUS_COVE_USER_HEADER),
+      }
+    : null;
   if (isInternalAutonomousPlay && (
     subject.kind !== 'agent'
     || !autonomousActionId
     || !z.string().uuid().safeParse(autonomousActionId).success
+    || !expectedAutonomousBinding?.agentId
+    || !expectedAutonomousBinding.avatarId
+    || !expectedAutonomousBinding.userId
   )) {
     throw new HTTPException(403, { message: 'invalid_internal_autonomous_cove_context' });
+  }
+  if (
+    expectedAutonomousBinding
+    && subject.kind === 'agent'
+    && (
+      subject.agentId !== expectedAutonomousBinding.agentId
+      || subject.avatarId !== expectedAutonomousBinding.avatarId
+      || subject.userId !== expectedAutonomousBinding.userId
+    )
+  ) {
+    throw new HTTPException(403, { message: 'live_agent_avatar_binding_changed' });
   }
 
   // Rate limit keyed on user/agent (by userId) OR fp_hash (guest); we want guests
@@ -993,7 +1066,9 @@ coveSlotsRouter.post('/spin', async (c) => {
     // Ledger subject (human/agent): real avatar balance. Guest: demo balance
     // derived from session counters (starting + totalWon - totalStaked).
     const balanceForResponse = isLedgerSubject(subject)
-      ? (await loadAvatarForUser(subject.userId)).clawTokens
+      ? (expectedAutonomousBinding
+          ? (await loadExpectedAutonomousAvatar(expectedAutonomousBinding as AutonomousCoveExpectedBinding)).clawTokens
+          : (await loadAvatarForUser(subject.userId)).clawTokens)
       : Number(
           BigInt(fresh?.startingBalance ?? session.startingBalance) +
             BigInt(fresh?.totalWon ?? session.totalWon) -
@@ -1068,7 +1143,9 @@ coveSlotsRouter.post('/spin', async (c) => {
   // Ledger subject (human/agent): load avatar for the ClawTokens ledger.
   // Guest: avatar=null, demo wallet accounting lives entirely in slot_sessions row.
   const avatar = isLedgerSubject(subject)
-    ? await loadAvatarForUser(subject.userId)
+    ? (expectedAutonomousBinding
+        ? await loadExpectedAutonomousAvatar(expectedAutonomousBinding as AutonomousCoveExpectedBinding)
+        : await loadAvatarForUser(subject.userId))
     : null;
 
   // Phase 6.1.5 — derive free-spin mode from the session row read above.
@@ -1203,21 +1280,33 @@ coveSlotsRouter.post('/spin', async (c) => {
       // UTC-day aggregate race-safe across API processes. Accounting reads the
       // canonical ledger debit rows by avatar (not cove history betAmount), so
       // free spins consume zero cap and provenance-split debits sum exactly.
-      if (autonomousActionId && avatar && !isFreeSpinSpin) {
-        await tx.execute(sql`
-          SELECT pg_advisory_xact_lock(
-            hashtextextended(${autonomousCoveDailyAdvisoryKey(avatar.id)}, 0)
-          )
-        `);
-        const usageRows = await tx.execute<{ used_vclaw: string }>(
-          autonomousCoveDailyUsageQuery(avatar.id),
+      if (expectedAutonomousBinding && avatar) {
+        if (!isFreeSpinSpin) {
+          await tx.execute(sql`
+            SELECT pg_advisory_xact_lock(
+              hashtextextended(${autonomousCoveDailyAdvisoryKey(avatar.id)}, 0)
+            )
+          `);
+        }
+        // The session header was re-resolved before entering the transaction,
+        // but an active-avatar switch can race that read. Lock the originally
+        // admitted avatar and assert owner + active status before any cap read,
+        // debit, or free-spin credit. Never follow the owner to another avatar.
+        await assertAutonomousCoveAvatarBindingInTx(
+          tx,
+          expectedAutonomousBinding as AutonomousCoveExpectedBinding,
         );
-        const usedToday = parseAutonomousCoveDailyUsage(usageRows);
-        const capMessage = autonomousCoveDailyCapMessage(usedToday, predictNumber);
-        if (capMessage) {
-          throw new HTTPException(429, {
-            message: capMessage,
-          });
+        if (!isFreeSpinSpin) {
+          const usageRows = await tx.execute<{ used_vclaw: string }>(
+            autonomousCoveDailyUsageQuery(avatar.id),
+          );
+          const usedToday = parseAutonomousCoveDailyUsage(usageRows);
+          const capMessage = autonomousCoveDailyCapMessage(usedToday, predictNumber);
+          if (capMessage) {
+            throw new HTTPException(429, {
+              message: capMessage,
+            });
+          }
         }
       }
 
@@ -1675,6 +1764,9 @@ async function readInternalCoveResponse<T>(response: Response): Promise<T> {
 /** In-process adapter around the audited human/agent slots route core. */
 export async function playAutonomousCoveSlots(input: {
   agentSessionId: string;
+  expectedAgentId: string;
+  expectedAvatarId: string;
+  expectedUserId: string;
   actionId: string;
   wager: number;
 }, dependencyOverrides: Partial<AutonomousCoveSlotsDependencies> = {}): Promise<SpinResponse> {
@@ -1691,6 +1783,17 @@ export async function playAutonomousCoveSlots(input: {
   if (!resolved) throw new AutonomousCoveSlotsError('invalid_or_expired_agent_session', 401, 'invalid_or_expired_agent_session');
   if (!resolved.ledgerCapable) throw new AutonomousCoveSlotsError('agent_session_not_ledger_authorized', 403, 'agent_session_not_ledger_authorized');
   if (!resolved.userId || !resolved.avatarId) throw new AutonomousCoveSlotsError('agent_session_has_no_active_avatar', 403, 'agent_session_has_no_active_avatar');
+  if (
+    resolved.agentId !== input.expectedAgentId
+    || resolved.avatarId !== input.expectedAvatarId
+    || resolved.userId !== input.expectedUserId
+  ) {
+    throw new AutonomousCoveSlotsError(
+      'live_agent_avatar_binding_changed',
+      403,
+      'live_agent_avatar_binding_changed',
+    );
+  }
   if (!z.string().uuid().safeParse(input.actionId).success) {
     throw new AutonomousCoveSlotsError('invalid_action_id', 400, 'invalid_action_id');
   }
@@ -1749,6 +1852,9 @@ export async function playAutonomousCoveSlots(input: {
       'Idempotency-Key': `auto:${input.actionId}`,
       [AUTONOMOUS_COVE_HEADER]: autonomousCoveToken,
       [AUTONOMOUS_COVE_ACTION_HEADER]: input.actionId,
+      [AUTONOMOUS_COVE_AGENT_HEADER]: input.expectedAgentId,
+      [AUTONOMOUS_COVE_AVATAR_HEADER]: input.expectedAvatarId,
+      [AUTONOMOUS_COVE_USER_HEADER]: input.expectedUserId,
     },
     body: JSON.stringify({ sessionId: open.sessionId, predict: String(input.wager) }),
   });

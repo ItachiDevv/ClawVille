@@ -28,7 +28,10 @@ interface SimInternals {
   missingActionAttributionWarned: Set<string>;
   autonomousCovePlayLastAdmittedAt: Map<string, number>;
   emoteOwnershipQuery: (avatarId: string, animationKey: string) => Promise<boolean>;
-  autonomousCoveSlotsPlay: (input: { agentSessionId: string; actionId: string; wager: number }) => Promise<unknown>;
+  autonomousCoveSlotsPlay: (input: {
+    agentSessionId: string; expectedAgentId: string; expectedAvatarId: string; expectedUserId: string;
+    actionId: string; wager: number;
+  }) => Promise<unknown>;
   autonomousCoveBlackjackPlay: (input: {
     agentSessionId: string; expectedAgentId: string; expectedAvatarId: string; actionId: string; wager: number;
   }) => Promise<unknown>;
@@ -156,7 +159,10 @@ describe('in-world executor covenant hooks', () => {
       avatarId: AVATAR,
       ledgerCapable: true,
     });
-    const calls: Array<{ agentSessionId: string; actionId: string; wager: number }> = [];
+    const calls: Array<{
+      agentSessionId: string; expectedAgentId: string; expectedAvatarId: string; expectedUserId: string;
+      actionId: string; wager: number;
+    }> = [];
     npcSimulation.autonomousCoveSlotsPlay = async (input) => { calls.push(input); };
 
     const speech = npcSimulation.dispatchHatcherActions(
@@ -171,7 +177,13 @@ describe('in-world executor covenant hooks', () => {
 
     expect(speech).toBe('One spin.');
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({ agentSessionId: 'cove-slots-session', wager: 20 });
+    expect(calls[0]).toMatchObject({
+      agentSessionId: 'cove-slots-session',
+      expectedAgentId: npc.id,
+      expectedAvatarId: AVATAR,
+      expectedUserId: 'executor-user',
+      wager: 20,
+    });
     expect(calls[0]!.actionId).toMatch(/^[0-9a-f-]{36}$/);
     expect(npc.destinationBuildingId).toBe('cove');
     expect(npc.intentDescription).toContain('playing slots at the cove');

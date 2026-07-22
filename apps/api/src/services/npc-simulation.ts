@@ -500,6 +500,9 @@ class NpcSimulation {
   /** Test seam; production lazily loads the zero-network audited slots adapter. */
   autonomousCoveSlotsPlay: (input: {
     agentSessionId: string;
+    expectedAgentId: string;
+    expectedAvatarId: string;
+    expectedUserId: string;
     actionId: string;
     wager: number;
   }) => Promise<unknown> = async (input) => {
@@ -1884,6 +1887,9 @@ class NpcSimulation {
       if (game === 'slots') {
         await this.autonomousCoveSlotsPlay({
           agentSessionId: attribution.sessionId,
+          expectedAgentId: resolved.agentId,
+          expectedAvatarId: resolved.avatarId,
+          expectedUserId: resolved.userId,
           actionId,
           wager,
         });
