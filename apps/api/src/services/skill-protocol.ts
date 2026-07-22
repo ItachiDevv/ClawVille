@@ -323,7 +323,11 @@ import {
 // now describes seeded obstacles, moving creature telegraphs, jump clearance,
 // and off-line rip-current lanes carried once in snapshot.init. No new action
 // verb or executor parameter was added.
-export const PROTOCOL_VERSION = 34;
+// NOTE (2026-07-21, Reef Race hectic round): bumped 34 -> 35. The activity
+// wire adds four typed items, seeded box variants, persistent mines, scripted
+// bubble/remora state, swap/wave/final-lap events, and attacker hit confirms.
+// Hatcher's signed routes, frozen pointer, and [ACTION:] whitelist are unchanged.
+export const PROTOCOL_VERSION = 35;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -713,6 +717,17 @@ into \`snapshot.init.room.reefSplineZones.obstacles\`; the creature's phase and
 timings use the shared server clock, not per-tick position frames. Kelp slows,
 while urchins, logs, and creatures can be jumped. Two or three off-line
 \`ripCurrents\` grant a bounded +18–25% while you hold the longer ribbon line.
+
+Ten contested rows now carry 30 item boxes. Standard boxes fill one empty slot;
+double boxes require and fill both empty slots; gamble boxes either grant a
+legendary item or apply a 1.5-second DUD slow. New items are a one-second-arm,
+jumpable puffer mine; an 800wu forward bubble beam that floats/control-locks its
+first rival for 1.5 seconds; a last-place-only four-second Remora centerline
+autopilot; and a 1.5-second telegraphed current swap that the victim cancels by
+jumping during the warning. Moving wave bands telegraph three seconds ahead:
+travel with the sweep for +30%, while stationary/against-band racers are slowed.
+On the final lap, each placement roll shifts one table more aggressive. All
+effects remain server-authoritative through the same activity WebSocket.
 
 ## 3a. Proxy-cognition agents — act with \`[ACTION:]\` tags
 

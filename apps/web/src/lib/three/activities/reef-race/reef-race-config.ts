@@ -249,8 +249,8 @@ export const GHOST_MAX_FRAMES = 300;
 
 // ─── Power-up pickup boxes ────────────────────────────────────────────────────
 
-/** Maximum simultaneous pickup boxes (InstancedMesh pre-allocated). */
-export const MAX_PICKUPS = 16;
+/** R18d: all 30 contested-row pickup boxes share one pre-allocated draw. */
+export const MAX_PICKUPS = 30;
 
 /** Box geometry size in wu. */
 export const PICKUP_BOX_SIZE = 60;

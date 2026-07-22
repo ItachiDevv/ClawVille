@@ -108,6 +108,7 @@ export const townGuide: LocationTemplate = {
 
     'Reef Race jumps launch high above the swell. Press a fresh left or right steer while airborne to spin a trick; land cleanly while still moving for a +25% speed surge lasting 1.2 seconds, but a wipeout landing earns no surge. Humans, mobile players, and agents all use the same jump and steering inputs.',
     'Reef Race now seeds a different obstacle line each race: dodge slow kelp, jump urchin balls and driftwood, and watch the shadow-and-spray telegraph before a sea creature crosses. Off-line rip-current ribbons add 18–25% speed while you stay inside, rewarding a longer, riskier route.',
+    'Reef Race hectic round: ten contested rows hold 30 item boxes, including double and gamble variants. New items are jumpable puffer mines, a short cone bubble beam, a last-place Remora autopilot, and a telegraphed current swap that the victim cancels by jumping. Seeded wave bands telegraph, then reward riding with the sweep and slow racers caught stationary or against it; final-lap rolls get more aggressive.',
 
     // Phase 4 — PB ghost + streak + Lobster of the Day + match-end summary.
     // Same-diff rule (CLAUDE.md "Town Guide Knowledge Sync") — anything new
@@ -191,7 +192,7 @@ export const townGuide: LocationTemplate = {
 
     // Poker MTT agent play surface (P5) — Same-diff rule (CLAUDE.md "Three-Surface
     // Game-Flow Knowledge Sync"). Orientation only ("point at the teacher"); the
-    // HOW-TO contract is in the connection protocol manual (protocol_version 3).
+    // HOW-TO contract/version is sourced from the connection protocol manual.
     "Connected and hosted agents don't need a live socket to play tournament poker — they can play entirely over request/response, autonomously, as their own avatar. They walk to the poker tables with the in-world enter_poker_room() action, then use their session-bound poker tools: register for a tournament, poll their own table view (which shows their hole cards, the legal actions, and whether it's their turn — never anyone else's cards), submit one betting action when it's their turn, and optionally ask for a non-staking advisory recommendation. Betting always goes through those authenticated tools, never the free-text action parser. There's a turn clock: if an agent doesn't act before its deadline the server auto-checks (if nothing is owed) or auto-folds, so agents must poll often enough to act in time. There are two ways an agent participates: autonomous, where the agent makes and stakes its own decisions; and advisor/controlled, where a human is driving the agent's avatar — then the agent's autonomous bets are suppressed (the human's input is authoritative) and the agent only advises. The full step-by-step protocol is in the connection SKILL.md manual that agents fetch on connect.",
 
     // Special Events — Same-diff rule (CLAUDE.md "Three-Surface Game-Flow Knowledge

@@ -19,7 +19,7 @@ describe('open-agent onboarding manuals', () => {
     const manual = buildPlayManual(API_BASE);
     const protocolManual = buildProtocolManual(API_BASE);
 
-    expect(PROTOCOL_VERSION).toBe(34);
+    expect(PROTOCOL_VERSION).toBe(35);
     expect(manual).toContain(`POST ${API_BASE}/api/agent/connect`);
     expect(manual).toContain('"agentId": "your-stable-agent-id"');
     expect(manual).toContain('"identityType": "your-framework"');
@@ -90,7 +90,7 @@ describe('open-agent onboarding manuals', () => {
     expect(manual).not.toMatch(/\b(?:CT|ClawTokens?|casino|pet)\b/i);
   });
 
-  test('all served manuals share the protocol-34 universal connect contract', () => {
+  test('all served manuals share the protocol-35 universal connect contract', () => {
     const block = buildUniversalConnectBlock(API_BASE);
     const invited = buildUniversalConnectBlock(API_BASE, { connectionToken: 'ct-test' });
     const play = buildPlayManual(API_BASE);
@@ -104,7 +104,7 @@ describe('open-agent onboarding manuals', () => {
       'custom remains non-restorable',
     ];
 
-    expect(PROTOCOL_VERSION).toBe(34);
+    expect(PROTOCOL_VERSION).toBe(35);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');

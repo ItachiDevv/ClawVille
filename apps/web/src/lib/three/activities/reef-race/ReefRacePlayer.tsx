@@ -483,6 +483,22 @@ const _rampLaunchHold: Record<string, number> = {};
 const _itemBurstPosition = new THREE.Vector3();
 const _boostPadBurstPosition = new THREE.Vector3();
 
+/** Interpolated world pose consumed by the one-draw R18d item-FX batch. */
+export interface ReefRaceRenderedPose {
+  x: number;
+  y: number;
+  z: number;
+  rot: number;
+}
+
+const _renderedPoseByAvatar = new Map<string, ReefRaceRenderedPose>();
+
+export function getReefRaceRenderedPose(
+  avatarId: string,
+): ReefRaceRenderedPose | undefined {
+  return _renderedPoseByAvatar.get(avatarId);
+}
+
 interface PredictedBoostPadVolume {
   id: string;
   x: number;
@@ -503,6 +519,10 @@ function itemUseBurstColor(kind: string): string {
     case 'rr-seeker-jelly': return '#ff5ec4';
     case 'rr-tide-wave': return '#4ddcff';
     case 'rr-whirlpool': return '#2f7cff';
+    case 'rr-puffer-mine': return '#ff5f9d';
+    case 'rr-bubble-beam': return '#59efff';
+    case 'rr-remora-rocket': return '#ffb64d';
+    case 'rr-current-swap': return '#ff4fec';
     default: return '#ffffff';
   }
 }
@@ -1014,6 +1034,22 @@ function ReefRacePlayerInner({
   const groupRef      = useRef<THREE.Group>(null);
   const gliderRef     = useRef<THREE.Group>(null);
   const riderMountRef = useRef<THREE.Group>(null);
+  const sharedRenderedPoseRef = useRef<ReefRaceRenderedPose>({
+    x: entity.x,
+    y: 0,
+    z: entity.y,
+    rot: entity.rot,
+  });
+
+  useEffect(() => {
+    const pose = sharedRenderedPoseRef.current;
+    _renderedPoseByAvatar.set(entity.avatarId, pose);
+    return () => {
+      if (_renderedPoseByAvatar.get(entity.avatarId) === pose) {
+        _renderedPoseByAvatar.delete(entity.avatarId);
+      }
+    };
+  }, [entity.avatarId]);
 
   // SPEC 2 — VRM animator ref. Set by onVrmAnimatorReady callback once
   // ReefRaceVRMRiderInner's init() resolves. Used for wipeout/victory one-shots.
@@ -1025,9 +1061,10 @@ function ReefRacePlayerInner({
   // Fade state for finish (not elimination — racers don't vanish on finish).
   const finishedRef = useRef(false);
   const wasWipedOutRef = useRef(false);
-  const wasObstacleControlLockedRef = useRef(false);
+  const wasAuthorityControlLockedRef = useRef(false);
   const wipeoutStartedAtRef = useRef(0);
   const respawnPopRemainingRef = useRef(0);
+  const forceSwapSnapRef = useRef(false);
 
   // ─── Interpolation state ────────────────────────────────────────────────────
   // Ring buffer of received snapshots.
@@ -1646,6 +1683,60 @@ function ReefRacePlayerInner({
     }
   }, [powerUpInventory, isSelf, triggerScreenShake]);
 
+  const lastCurrentSwapEvent = useActivityStore((s) => s.lastCurrentSwapEvent);
+  const lastSeenSwapRef = useRef(0);
+  useEffect(() => {
+    if (
+      !lastCurrentSwapEvent ||
+      lastCurrentSwapEvent.phase !== 'resolved' ||
+      lastSeenSwapRef.current === lastCurrentSwapEvent.at
+    ) {
+      return;
+    }
+    lastSeenSwapRef.current = lastCurrentSwapEvent.at;
+    if (
+      lastCurrentSwapEvent.attackerAvatarId === entity.avatarId ||
+      lastCurrentSwapEvent.victimAvatarId === entity.avatarId
+    ) {
+      // Queue against the NEXT authority entity object. The resolved event may
+      // arrive just before or just after its pose delta; either ordering must
+      // discard the pre-swap interpolation ring instead of drawing a flyover.
+      forceSwapSnapRef.current = true;
+    }
+  }, [entity.avatarId, lastCurrentSwapEvent]);
+
+  const lastItemHitEvent = useActivityStore((s) => s.lastItemHitEvent);
+  const lastSeenItemHitRef = useRef(0);
+  useEffect(() => {
+    if (
+      !lastItemHitEvent ||
+      lastItemHitEvent.victimAvatarId !== entity.avatarId ||
+      lastSeenItemHitRef.current === lastItemHitEvent.at
+    ) return;
+    lastSeenItemHitRef.current = lastItemHitEvent.at;
+    const group = groupRef.current;
+    if (group) {
+      _itemBurstPosition.set(group.position.x, group.position.y + 34, group.position.z);
+      triggerBurst(
+        _itemBurstPosition,
+        itemUseBurstColor(lastItemHitEvent.itemKind),
+        lastItemHitEvent.itemKind === 'rr-whirlpool' || lastItemHitEvent.itemKind === 'rr-tide-wave'
+          ? 145
+          : 115,
+      );
+    }
+    if (isSelf) {
+      const intensity = lastItemHitEvent.itemKind === 'rr-whirlpool'
+        ? .42
+        : lastItemHitEvent.itemKind === 'rr-tide-wave'
+          ? .34
+          : lastItemHitEvent.itemKind === 'rr-bubble-beam'
+            ? .28
+            : .22;
+      triggerScreenShake?.(intensity);
+    }
+  }, [entity.avatarId, isSelf, lastItemHitEvent, triggerScreenShake]);
+
   useFrame((state, delta) => {
     const group      = groupRef.current;
     const glider     = gliderRef.current;
@@ -1688,6 +1779,13 @@ function ReefRacePlayerInner({
 
       const h = historyRef.current!;
       const arrivedAtMs = performance.now();
+      const forceSwapSnap = forceSwapSnapRef.current;
+      if (forceSwapSnap) {
+        clearSnapshotHistory(h);
+        remoteOutputPoseRef.current.initialized = false;
+        remoteRecoveryRef.current.remainingMs = 0;
+        surfPoseDamping.initialized = false;
+      }
       let snapAtMs = arrivedAtMs;
       if (!isSelf) {
         const remoteTimeline = remoteTimelineRef.current;
@@ -1783,12 +1881,19 @@ function ReefRacePlayerInner({
         }
         lastAuthorityArrivalRef.current = arrivedAtMs;
 
-        const obstacleAuthorityLocked = predictsSelf &&
-          Date.now() < useActivityStore.getState().selfObstacleControlLockedUntil;
-        if (entity.wipedOut || obstacleAuthorityLocked) {
-          // Wipeout is fully server-authoritative. Snap the prediction anchors
-          // to each received body pose, clear local time/history, and let the
-          // normal snapshot interpolation below render between those poses.
+        const activityState = useActivityStore.getState();
+        const authorityNowMs = Date.now();
+        const serverNowMs = authorityNowMs - (activityState.serverClockOffsetMs ?? 0);
+        const authorityControlLocked = predictsSelf && (
+          authorityNowMs < activityState.selfObstacleControlLockedUntil
+          || serverNowMs < (entity.bubbledUntilMs ?? 0)
+          || serverNowMs < (entity.remoraUntilMs ?? 0)
+        );
+        if (entity.wipedOut || authorityControlLocked) {
+          // Wipeout, Bubble Beam and Remora Rocket are fully server-authoritative.
+          // Snap prediction anchors to each received body pose, clear local
+          // time/history, and let normal snapshot interpolation render between
+          // those poses without local steer/thrust fighting the scripted motion.
           pred.x = sx;
           pred.z = sz;
           pred.vx = svx;
@@ -1843,7 +1948,7 @@ function ReefRacePlayerInner({
           const rawDx = sx - pred.x;
           const rawDz = sz - pred.z;
           const rawErrDist = Math.hypot(rawDx, rawDz);
-          if (rawErrDist > CLIENT_REBASE_SNAP_DIST) {
+          if (forceSwapSnap || rawErrDist > CLIENT_REBASE_SNAP_DIST) {
             // Respawn / teleport / catastrophic desync — snap, don't slide.
             surfPoseDamping.initialized = false;
             pred.x = sx;
@@ -1990,6 +2095,7 @@ function ReefRacePlayerInner({
         respawnPopRemainingRef.current = RESPAWN_POP_DURATION_S;
       }
       wasWipedOutRef.current = wipedOut;
+      if (forceSwapSnap) forceSwapSnapRef.current = false;
     }
 
     // ─── Interpolation (BUG FIX Bug 1) ───────────────────────────────────────
@@ -2149,17 +2255,31 @@ function ReefRacePlayerInner({
     // also comes from prediction so the lean matches the rendered heading.
     // Remote karts use the fixed-delay interpolation/recovery path above; v1 does
     // not enable self prediction.
-    const obstacleControlLocked = predictsSelf &&
-      Date.now() < useActivityStore.getState().selfObstacleControlLockedUntil;
-    if (obstacleControlLocked) {
+    const activityState = useActivityStore.getState();
+    const authorityNowMs = Date.now();
+    const serverNowMs = authorityNowMs - (activityState.serverClockOffsetMs ?? 0);
+    const authorityControlLocked = predictsSelf && (
+      authorityNowMs < activityState.selfObstacleControlLockedUntil
+      || serverNowMs < (entity.bubbledUntilMs ?? 0)
+      || serverNowMs < (entity.remoraUntilMs ?? 0)
+    );
+    if (authorityControlLocked) {
       // Consume DOM jump edges while authority rejects input so they cannot
       // replay as a client-only R18b launch on the first unlocked frame.
       lastJumpPressSeqRef.current = selfInputBus.jumpPressSeq;
+      pendingRampImpulseRef.current = 0;
+      pendingRampVisualRef.current = false;
+      const trick = trickAnimationRef.current;
+      trick.active = false;
+      trick.queued = false;
+      trick.performedThisFlight = false;
+      trick.elapsed = 0;
+      localTrickSteerSideRef.current = 0;
     }
-    if (!obstacleControlLocked && wasObstacleControlLockedRef.current) {
+    if (!authorityControlLocked && wasAuthorityControlLockedRef.current) {
       // The last locked authority sample is the only safe unlock anchor. Wait
       // for the next snapshot's normal first-seed branch instead of resuming a
-      // pre-spin prediction timeline.
+      // pre-spin/bubble/Remora prediction timeline.
       predictInitRef.current = false;
       predictAccumRef.current = 0;
       rebaseRenderOffsetRef.current.x = 0;
@@ -2167,8 +2287,8 @@ function ReefRacePlayerInner({
       rebaseRenderOffsetRef.current.rot = 0;
       clearPredictionHistory(predictionHistoryRef.current!);
     }
-    wasObstacleControlLockedRef.current = obstacleControlLocked;
-    if (predictsSelf && !entity.wipedOut && !obstacleControlLocked && predictInitRef.current) {
+    wasAuthorityControlLockedRef.current = authorityControlLocked;
+    if (predictsSelf && !entity.wipedOut && !authorityControlLocked && predictInitRef.current) {
       const pred = predictedRef.current;
       const vertical = predictedVerticalRef.current;
       const prevVertical = prevVerticalTickRef.current;
@@ -2442,6 +2562,12 @@ function ReefRacePlayerInner({
           (bankDelta - surfPoseDamping.bankLean) * bankLeanFactor;
       }
     }
+
+    const sharedRenderedPose = sharedRenderedPoseRef.current;
+    sharedRenderedPose.x = group.position.x;
+    sharedRenderedPose.y = group.position.y;
+    sharedRenderedPose.z = group.position.z;
+    sharedRenderedPose.rot = group.rotation.y;
 
     // ─── Jump nose-up tilt (v2 only) ─────────────────────────────────────────
     if (predictsSelf) {

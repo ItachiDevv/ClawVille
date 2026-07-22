@@ -686,7 +686,9 @@ class ActivityWsHub {
       state: p.connected ? 'alive' : 'disconnected',
     }));
     let tick = 0;
-    let powerUps: Array<{ spawnId: string; kind: string; position: { x: number; y: number } }> = [];
+    let powerUps: WorldState['powerUps'] = [];
+    let reefMines: WorldState['reefMines'];
+    let activeWave: WorldState['activeWave'];
     if (room.activityId === 'bumper-shells') {
       const bumperState = bumperShellsSim.getStateSnapshot(room.id);
       if (bumperState) {
@@ -744,6 +746,8 @@ class ActivityWsHub {
             speedMod?: number;
             boosting?: boolean;
             wipedOut?: boolean;
+            bubbledUntilMs?: number;
+            remoraUntilMs?: number;
             inventory?: Array<{
               kind: string | null;
               charges: number;
@@ -769,19 +773,28 @@ class ActivityWsHub {
             speedMod: bb.speedMod,
             boosting: bb.boosting,
             wipedOut: bb.wipedOut,
+            bubbledUntilMs: bb.bubbledUntilMs,
+            remoraUntilMs: bb.remoraUntilMs,
             inventory: bb.inventory,
           });
         }
         powerUps = reefState.pickups
           .filter((p) => p.active)
           .map((p) => {
-            const pp = p as { y?: number; z?: number };
+            const pp = p as { y?: number; z?: number; variant?: WorldState['powerUps'][number]['variant'] };
             return {
               spawnId: p.spawnId,
               kind: p.kind,
               position: { x: p.x, y: pp.y ?? pp.z ?? 0 },
+              variant: pp.variant,
             };
           });
+        const dynamic = reefState as unknown as {
+          mines?: NonNullable<WorldState['reefMines']>;
+          activeWave?: NonNullable<WorldState['activeWave']> | null;
+        };
+        reefMines = dynamic.mines?.filter((mine) => mine.active);
+        activeWave = dynamic.activeWave ?? undefined;
       }
     }
     // Capture immediately after the sim pose snapshot, before the async PB-
@@ -898,6 +911,8 @@ class ActivityWsHub {
         tick,
         entities,
         powerUps,
+        reefMines,
+        activeWave,
         scores: [],
       },
       seed: room.activityId === 'reef-race' ? deriveReefRaceSeed(room.id) : 0,

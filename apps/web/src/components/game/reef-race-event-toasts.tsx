@@ -42,6 +42,8 @@ import {
   type ReefRaceCreatureObstacle,
 } from '@clawville/shared';
 import { useActivityStore } from '@/stores/activity';
+import { playActivitySynthCue } from '@/lib/activity-audio';
+import { clientSpline } from '@/lib/three/activities/reef-race/reef-race-spline-instance';
 
 // ─── Durations ────────────────────────────────────────────────────────────────
 
@@ -72,6 +74,9 @@ interface ToastBoxProps {
 function ToastBox({ visible, color, glowColor, children, topOffset = '38%' }: ToastBoxProps) {
   return (
     <div
+      role="status"
+      aria-live="polite"
+      aria-hidden={!visible}
       style={{
         position: 'absolute',
         top: topOffset,
@@ -317,12 +322,18 @@ function ReefRaceTrickToast() {
 function ReefRaceWallSlamToast() {
   const event = useActivityStore((s) => s.lastWallSlamEvent);
   const obstacleEvent = useActivityStore((s) => s.lastObstacleHitEvent);
+  const itemEvent = useActivityStore((s) => s.lastItemHitEvent);
   const selfAvatarId = useActivityStore((s) => s.selfAvatarId);
   const matchPhase = useActivityStore((s) => s.matchPhase);
   const [visible, setVisible] = useState(false);
   const isSelfEvent = event?.avatarId === selfAvatarId && selfAvatarId !== null;
   const matchingObstacle = obstacleEvent?.at === event?.at ? obstacleEvent : null;
-  const label = matchingObstacle
+  const matchingItem = itemEvent?.at === event?.at ? itemEvent : null;
+  const label = matchingItem
+    ? matchingItem.itemKind === 'rr-whirlpool'
+      ? 'WHIRLPOOL SPINOUT!'
+      : 'TIDE WAVE SLAM!'
+    : matchingObstacle
     ? matchingObstacle.kind === 'driftwood'
       ? 'DRIFTWOOD BUMP'
       : matchingObstacle.kind === 'creature'
@@ -401,6 +412,8 @@ function ReefRaceCreatureRadar() {
   );
   const serverClockOffsetMs = useActivityStore((state) => state.serverClockOffsetMs);
   const matchPhase = useActivityStore((state) => state.matchPhase);
+  const activeWave = useActivityStore((state) => state.activeWave);
+  const itemHit = useActivityStore((state) => state.lastItemHitEvent);
   const creatures = useMemo(
     () => (room?.reefSplineZones?.obstacles ?? []).filter(
       (obstacle): obstacle is ReefRaceCreatureObstacle => obstacle.kind === 'creature',
@@ -408,10 +421,28 @@ function ReefRaceCreatureRadar() {
     [room],
   );
   const [activeCreatureProgress, setActiveCreatureProgress] = useState<number[]>([]);
+  const [waveProgress, setWaveProgress] = useState<number | null>(null);
+  const [hitPingVisible, setHitPingVisible] = useState(false);
+  const hitProgress = useMemo(() => {
+    if (!itemHit || itemHit.attackerAvatarId !== selfAvatarId) return null;
+    const closest = clientSpline.closestPointOnSpline({
+      x: itemHit.position.x,
+      z: itemHit.position.y,
+    });
+    return clientSpline.arclengthFromT(closest.t) / clientSpline.totalArcLength;
+  }, [itemHit, selfAvatarId]);
 
   useEffect(() => {
-    if (!selfAvatarId || matchPhase !== 'live' || creatures.length === 0) {
+    if (!itemHit || itemHit.attackerAvatarId !== selfAvatarId) return;
+    setHitPingVisible(true);
+    const id = window.setTimeout(() => setHitPingVisible(false), 1_400);
+    return () => window.clearTimeout(id);
+  }, [itemHit, selfAvatarId]);
+
+  useEffect(() => {
+    if (!selfAvatarId || matchPhase !== 'live') {
       setActiveCreatureProgress([]);
+      setWaveProgress(null);
       return;
     }
     const update = () => {
@@ -427,11 +458,21 @@ function ReefRaceCreatureRadar() {
           ? previous
           : next
       ));
+      if (!activeWave || serverNowMs >= activeWave.endsAtMs) {
+        setWaveProgress(null);
+      } else {
+        const elapsedMs = Math.max(0, serverNowMs - activeWave.startsAtMs);
+        const progress = activeWave.phase === 'active'
+          ? activeWave.startProgress
+            + elapsedMs * .001 * activeWave.sweepSpeedWuPerSec / clientSpline.totalArcLength
+          : activeWave.startProgress;
+        setWaveProgress(progress - Math.floor(progress));
+      }
     };
     update();
     const id = window.setInterval(update, 100);
     return () => window.clearInterval(id);
-  }, [creatures, matchPhase, selfAvatarId, serverClockOffsetMs]);
+  }, [activeWave, creatures, matchPhase, selfAvatarId, serverClockOffsetMs]);
 
   if (!selfAvatarId || matchPhase !== 'live') return null;
   return (
@@ -465,6 +506,28 @@ function ReefRaceCreatureRadar() {
           }}
         />
       ))}
+      {waveProgress !== null && (
+        <div
+          title="Wave sweep"
+          style={{
+            position: 'absolute', left: `calc(4px + ${waveProgress * 218}px)`,
+            top: 2, width: 13, height: 14, borderRadius: 7,
+            transform: 'translateX(-50%)', background: 'rgba(121,246,255,.7)',
+            boxShadow: '0 0 10px 3px #6ff7ff',
+          }}
+        />
+      )}
+      {hitPingVisible && hitProgress !== null && (
+        <div
+          title="Item hit"
+          style={{
+            position: 'absolute', left: `calc(4px + ${hitProgress * 218}px)`,
+            top: 3, width: 11, height: 11, borderRadius: '50%',
+            transform: 'translateX(-50%)', border: '2px solid #ffeb3b',
+            boxShadow: '0 0 12px 3px #ff5f36',
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -479,6 +542,10 @@ const POWER_UP_LABELS: Readonly<Record<string, string>> = {
   'rr-seeker-jelly': 'SEEKER JELLY',
   'rr-tide-wave': 'TIDE WAVE',
   'rr-whirlpool': 'WHIRLPOOL',
+  'rr-puffer-mine': 'PUFFER MINE',
+  'rr-bubble-beam': 'BUBBLE BEAM',
+  'rr-remora-rocket': 'REMORA ROCKET',
+  'rr-current-swap': 'CURRENT SWAP',
 };
 
 interface InventoryToastState {
@@ -580,6 +647,194 @@ function ReefRacePowerUpToast() {
   );
 }
 
+function ReefRaceHitConfirmToast() {
+  const event = useActivityStore((s) => s.lastItemHitEvent);
+  const selfAvatarId = useActivityStore((s) => s.selfAvatarId);
+  const victimName = useActivityStore((s) => event
+    ? s.scores.get(event.victimAvatarId)?.displayName ?? event.victimAvatarId.slice(-8)
+    : 'rival');
+  const [visible, setVisible] = useState(false);
+  const lastSoundAtRef = useRef(0);
+  const isSelfHit = !!event && event.attackerAvatarId === selfAvatarId;
+  useEffect(() => {
+    if (!isSelfHit) {
+      setVisible(false);
+      return;
+    }
+    if (
+      event
+      && event.at !== lastSoundAtRef.current
+      && Date.now() - event.at <= 2_000
+    ) {
+      lastSoundAtRef.current = event.at;
+      playActivitySynthCue('item-hit');
+    }
+    setVisible(true);
+    const id = window.setTimeout(() => setVisible(false), 1_650);
+    return () => window.clearTimeout(id);
+  }, [event, isSelfHit]);
+  return (
+    <ToastBox visible={visible} color="#ffeb3b" glowColor="#ff572266" topOffset="18%">
+      <span style={{ fontSize: 14, fontWeight: 900, color: '#fff59d', letterSpacing: '.06em' }}>
+        💥 {event ? (POWER_UP_LABELS[event.itemKind] ?? event.itemKind) : 'ITEM'} got {victimName}!
+      </span>
+    </ToastBox>
+  );
+}
+
+function ReefRaceBoxDramaToast() {
+  const collected = useActivityStore((s) => s.lastPowerUpCollectedEvent);
+  const dud = useActivityStore((s) => s.lastGambleDudEvent);
+  const selfAvatarId = useActivityStore((s) => s.selfAvatarId);
+  const [message, setMessage] = useState<string | null>(null);
+  useEffect(() => {
+    if (
+      !collected ||
+      collected.collectorAvatarId !== selfAvatarId ||
+      collected.variant === 'standard' ||
+      (collected.variant === 'gamble' && !collected.kind)
+    ) return;
+    setMessage(collected.variant === 'double' ? 'DOUBLE BOX!  TWO ITEMS' : 'GAMBLE BOX!  LEGENDARY');
+    const id = window.setTimeout(() => setMessage(null), 1_250);
+    return () => window.clearTimeout(id);
+  }, [collected, selfAvatarId]);
+  useEffect(() => {
+    if (!dud || dud.avatarId !== selfAvatarId) return;
+    setMessage('DUD!  -SPEED');
+    const id = window.setTimeout(() => setMessage(null), Math.max(1_000, dud.durationMs));
+    return () => window.clearTimeout(id);
+  }, [dud, selfAvatarId]);
+  const isDud = message?.startsWith('DUD');
+  return (
+    <ToastBox visible={message !== null} color={isDud ? '#ff5252' : '#ffd740'} glowColor={isDud ? '#ff174466' : '#ffea0066'} topOffset="31%">
+      <span style={{ fontSize: 17, fontWeight: 950, color: isDud ? '#ff8a80' : '#fff59d', letterSpacing: '.12em' }}>
+        {message ?? ''}
+      </span>
+    </ToastBox>
+  );
+}
+
+function ReefRaceWaveBanner() {
+  const wave = useActivityStore((s) => s.activeWave);
+  if (!wave || wave.phase !== 'telegraph') return null;
+  return (
+    <div role="alert" aria-live="assertive" style={{
+      position: 'absolute', top: '14%', left: '50%', transform: 'translateX(-50%)',
+      pointerEvents: 'none', padding: '10px 24px', borderRadius: 10,
+      color: '#d8ffff', background: 'rgba(0,45,67,.86)', border: '2px solid #72f6ff',
+      boxShadow: '0 0 28px #31ddff88', fontSize: 18, fontWeight: 950,
+      letterSpacing: '.1em', whiteSpace: 'nowrap',
+    }}>
+      WAVE INCOMING ▶ SECTOR {wave.sector}
+    </div>
+  );
+}
+
+function ReefRaceFinalLapBanner() {
+  const event = useActivityStore((s) => s.lastFinalLapEvent);
+  const selfAvatarId = useActivityStore((s) => s.selfAvatarId);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    if (!event || event.avatarId !== selfAvatarId) return;
+    setVisible(true);
+    const id = window.setTimeout(() => setVisible(false), 2_200);
+    return () => window.clearTimeout(id);
+  }, [event, selfAvatarId]);
+  return (
+    <ToastBox visible={visible} color="#ff3d71" glowColor="#ff174488" topOffset="11%">
+      <span style={{ fontSize: 24, fontWeight: 1000, color: '#fff', letterSpacing: '.16em' }}>FINAL LAP — CHAOS UP!</span>
+    </ToastBox>
+  );
+}
+
+function ReefRaceOvertakeTicker() {
+  const placement = useActivityStore((s) => s.placement);
+  const phase = useActivityStore((s) => s.matchPhase);
+  const previousRef = useRef<number | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  useEffect(() => {
+    if (phase !== 'live' || placement === null) {
+      previousRef.current = placement;
+      setMessage(null);
+      return;
+    }
+    const previous = previousRef.current;
+    previousRef.current = placement;
+    if (previous === null || previous === placement) return;
+    setMessage(`${placement < previous ? '▲' : '▼'} P${placement}`);
+    const id = window.setTimeout(() => setMessage(null), 1_050);
+    return () => window.clearTimeout(id);
+  }, [phase, placement]);
+  return (
+    <ToastBox visible={message !== null} color={message?.startsWith('▲') ? '#69f0ae' : '#ff8a80'} glowColor="#00e67655" topOffset="23%">
+      <span style={{ fontSize: 19, fontWeight: 950, color: message?.startsWith('▲') ? '#69f0ae' : '#ff8a80' }}>{message ?? ''}</span>
+    </ToastBox>
+  );
+}
+
+function ReefRaceCurrentSwapWarning() {
+  const event = useActivityStore((s) => s.lastCurrentSwapEvent);
+  const selfAvatarId = useActivityStore((s) => s.selfAvatarId);
+  const lastSoundAtRef = useRef(0);
+  const active = event?.phase === 'telegraph'
+    && event.victimAvatarId === selfAvatarId;
+  useEffect(() => {
+    if (
+      !active
+      || !event
+      || event.at === lastSoundAtRef.current
+      || Date.now() - event.at > 2_000
+    ) return;
+    lastSoundAtRef.current = event.at;
+    playActivitySynthCue('swap-warning');
+  }, [active, event]);
+  if (!active) return null;
+  return (
+    <div role="alert" aria-live="assertive" style={{
+      position: 'absolute', inset: 0, pointerEvents: 'none',
+      border: '12px solid rgba(255,47,226,.78)',
+      boxShadow: 'inset 0 0 100px 25px rgba(255,0,204,.58)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }}>
+      <div style={{ padding: '12px 22px', borderRadius: 10, background: 'rgba(35,0,40,.86)', color: '#ffb3f6', fontSize: 22, fontWeight: 1000, letterSpacing: '.12em' }}>
+        CURRENT SWAP LOCK — JUMP!
+      </div>
+    </div>
+  );
+}
+
+function ReefRaceVictimItemOverlay() {
+  const event = useActivityStore((s) => s.lastItemHitEvent);
+  const selfAvatarId = useActivityStore((s) => s.selfAvatarId);
+  const [visible, setVisible] = useState(false);
+  const isVictim = !!event && event.victimAvatarId === selfAvatarId;
+  useEffect(() => {
+    if (!isVictim || !event) {
+      setVisible(false);
+      return;
+    }
+    setVisible(true);
+    const duration = event.itemKind === 'rr-ink-slick' ? 2_100 : 950;
+    const id = window.setTimeout(() => setVisible(false), duration);
+    return () => window.clearTimeout(id);
+  }, [event, isVictim]);
+  if (!visible || !event) return null;
+  const ink = event.itemKind === 'rr-ink-slick';
+  const whirl = event.itemKind === 'rr-whirlpool';
+  return (
+    <div aria-hidden style={{
+      position: 'absolute', inset: 0, pointerEvents: 'none',
+      background: ink
+        ? 'radial-gradient(circle at 18% 24%, #1a0025 0 7%, transparent 15%), radial-gradient(circle at 72% 35%, #4b1267 0 11%, transparent 20%), radial-gradient(circle at 45% 78%, #120019 0 13%, transparent 24%), rgba(31,0,43,.55)'
+        : whirl
+          ? 'repeating-conic-gradient(from 0deg at 50% 50%, rgba(255,45,147,.28) 0 12deg, transparent 12deg 34deg)'
+          : 'radial-gradient(circle, transparent 35%, rgba(47,220,255,.55) 100%)',
+      boxShadow: ink ? 'inset 0 0 90px #08000d' : 'inset 0 0 90px rgba(39,218,255,.75)',
+      opacity: ink ? .92 : .78,
+    }} />
+  );
+}
+
 // ─── Public composite component ───────────────────────────────────────────────
 
 /**
@@ -598,6 +853,13 @@ export default function ReefRaceEventToasts() {
       <ReefRaceWipeoutToast />
       <ReefRaceCreatureRadar />
       <ReefRacePowerUpToast />
+      <ReefRaceHitConfirmToast />
+      <ReefRaceBoxDramaToast />
+      <ReefRaceWaveBanner />
+      <ReefRaceFinalLapBanner />
+      <ReefRaceOvertakeTicker />
+      <ReefRaceCurrentSwapWarning />
+      <ReefRaceVictimItemOverlay />
     </>
   );
 }
