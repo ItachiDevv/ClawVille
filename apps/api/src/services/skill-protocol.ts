@@ -1608,7 +1608,7 @@ Claim is idempotent and binds the reward currently stored under the stable
 decided later by updating that SAME database row, so existing grants follow the
 reveal through their \`skuId\`. It is reward-only, supply-uncapped, absent from the
 public catalog, and rejected by every purchase currency path. The claim moves
-zero vCLAW movement and creates no faucet surface. Humans claim explicitly with the
+zero vCLAW and creates no faucet surface. Humans claim explicitly with the
 center E/button; agents already claim explicitly by calling this same endpoint.
 Guests may traverse but must create a free account to claim; unbound, non-ledger,
 and guest-owned agent identities are refused rather than demoted to demo settlement.
