@@ -47,7 +47,20 @@ import {
   type PreparedCustodialExactPayment,
   type ExecutePreparedExactPaymentOutcome,
 } from './custodial-x402';
-import { alertError, type AlertErrorParams } from './alert-error';
+import { alertError } from './alert-error';
+import {
+  acquirePayAiCircuitPermit,
+  recordPayAiCircuitAvailable,
+  recordPayAiCircuitFailure,
+  releasePayAiCircuitPermitWithoutObservation,
+  resetPayAiFacilitatorCircuitForTests,
+  type PayAiCircuitPermit,
+} from './x402-facilitator-circuit';
+
+export {
+  resolveAgentPayBreakerCooldownMs,
+  resolveAgentPayBreakerThreshold,
+} from './x402-facilitator-circuit';
 
 const IDEMPOTENCY_RE = /^[A-Za-z0-9._:-]{1,64}$/;
 const MAX_SAFE_AGENT_PAY_CENTS = 100_000_000;
@@ -55,11 +68,6 @@ const MIN_STALE_MS = 180_000;
 const DEFAULT_DAILY_SEND_USD_CENTS = 2_000;
 const DEFAULT_DAILY_RECEIVE_USD_CENTS = 2_000;
 const MIN_DAILY_CAP_USD_CENTS = 100;
-const DEFAULT_BREAKER_THRESHOLD = 5;
-const MIN_BREAKER_THRESHOLD = 1;
-const DEFAULT_BREAKER_COOLDOWN_MS = 600_000;
-const MIN_BREAKER_COOLDOWN_MS = 10_000;
-const PAYAI_BREAKER_KEY = 'payai';
 const COUNTED_DAILY_CAP_STATUSES = [
   'pending',
   'settling',
@@ -67,163 +75,9 @@ const COUNTED_DAILY_CAP_STATUSES = [
   'reconcile',
 ] as const satisfies readonly AgentPayment['status'][];
 
-type CircuitPhase = 'closed' | 'open' | 'half_open';
-
-interface FacilitatorCircuitState {
-  phase: CircuitPhase;
-  consecutiveFailures: number;
-  openedAtMs: number | null;
-  alertedForOutage: boolean;
-}
-
-interface FacilitatorCircuitPermit {
-  key: string;
-  probe: boolean;
-  active: boolean;
-}
-
-const facilitatorCircuits = new Map<string, FacilitatorCircuitState>();
-
-function resolveBreakerInt(
-  raw: string | undefined,
-  fallback: number,
-  floor: number,
-): number {
-  const parsed = Number(raw);
-  return Number.isSafeInteger(parsed) && parsed >= floor ? parsed : fallback;
-}
-
-export function resolveAgentPayBreakerThreshold(
-  raw: string | undefined = process.env.AGENT_PAY_BREAKER_THRESHOLD,
-): number {
-  return resolveBreakerInt(raw, DEFAULT_BREAKER_THRESHOLD, MIN_BREAKER_THRESHOLD);
-}
-
-export function resolveAgentPayBreakerCooldownMs(
-  raw: string | undefined = process.env.AGENT_PAY_BREAKER_COOLDOWN_MS,
-): number {
-  return resolveBreakerInt(raw, DEFAULT_BREAKER_COOLDOWN_MS, MIN_BREAKER_COOLDOWN_MS);
-}
-
 /** Test seam: production state intentionally lives for the process lifetime. */
 export function resetAgentPayFacilitatorCircuitForTests(): void {
-  facilitatorCircuits.clear();
-}
-
-function circuitState(key: string): FacilitatorCircuitState {
-  let state = facilitatorCircuits.get(key);
-  if (!state) {
-    state = {
-      phase: 'closed',
-      consecutiveFailures: 0,
-      openedAtMs: null,
-      alertedForOutage: false,
-    };
-    facilitatorCircuits.set(key, state);
-  }
-  return state;
-}
-
-function logCircuitTransition(
-  from: CircuitPhase,
-  to: CircuitPhase,
-  state: FacilitatorCircuitState,
-): void {
-  console.warn(`[agent-pay-breaker] ${from} -> ${to}`, {
-    facilitator: PAYAI_BREAKER_KEY,
-    consecutiveFailures: state.consecutiveFailures,
-  });
-}
-
-function sendCircuitAlert(
-  state: FacilitatorCircuitState,
-  alert: (params: AlertErrorParams) => Promise<void>,
-): void {
-  if (state.alertedForOutage) return;
-  state.alertedForOutage = true;
-  void Promise.resolve()
-    .then(() => alert({
-      severity: 'critical',
-      source: 'agent-pay-breaker',
-      message: 'PayAI facilitator circuit opened for new agent payments',
-      context: {
-        consecutiveFailures: state.consecutiveFailures,
-        cooldownMs: resolveAgentPayBreakerCooldownMs(),
-      },
-    }))
-    .catch(() => {});
-}
-
-function acquireCircuitPermit(nowMs: number): FacilitatorCircuitPermit | null {
-  const state = circuitState(PAYAI_BREAKER_KEY);
-  if (state.phase === 'closed') {
-    return { key: PAYAI_BREAKER_KEY, probe: false, active: true };
-  }
-  if (state.phase === 'half_open') return null;
-
-  const openedAtMs = state.openedAtMs ?? nowMs;
-  if (nowMs - openedAtMs < resolveAgentPayBreakerCooldownMs()) return null;
-
-  const from = state.phase;
-  state.phase = 'half_open';
-  logCircuitTransition(from, state.phase, state);
-  return { key: PAYAI_BREAKER_KEY, probe: true, active: true };
-}
-
-function recordCircuitAvailable(permit: FacilitatorCircuitPermit): void {
-  if (!permit.active) return;
-  permit.active = false;
-  const state = circuitState(permit.key);
-  const from = state.phase;
-  state.phase = 'closed';
-  state.consecutiveFailures = 0;
-  state.openedAtMs = null;
-  state.alertedForOutage = false;
-  if (from !== state.phase) logCircuitTransition(from, state.phase, state);
-}
-
-function recordCircuitFailure(
-  permit: FacilitatorCircuitPermit,
-  nowMs: number,
-  alert: (params: AlertErrorParams) => Promise<void>,
-): void {
-  if (!permit.active) return;
-  permit.active = false;
-  const state = circuitState(permit.key);
-  state.consecutiveFailures += 1;
-
-  if (state.phase === 'half_open') {
-    const from = state.phase;
-    state.phase = 'open';
-    state.openedAtMs = nowMs;
-    logCircuitTransition(from, state.phase, state);
-    sendCircuitAlert(state, alert);
-    return;
-  }
-
-  if (
-    state.phase === 'closed'
-    && state.consecutiveFailures >= resolveAgentPayBreakerThreshold()
-  ) {
-    const from = state.phase;
-    state.phase = 'open';
-    state.openedAtMs = nowMs;
-    logCircuitTransition(from, state.phase, state);
-    sendCircuitAlert(state, alert);
-  }
-}
-
-function releaseCircuitPermitWithoutObservation(
-  permit: FacilitatorCircuitPermit,
-): void {
-  if (!permit.active) return;
-  permit.active = false;
-  if (!permit.probe) return;
-  const state = circuitState(permit.key);
-  if (state.phase !== 'half_open') return;
-  const from = state.phase;
-  state.phase = 'open';
-  logCircuitTransition(from, state.phase, state);
+  resetPayAiFacilitatorCircuitForTests();
 }
 
 function formatUsdcAtomic(amount: bigint): string {
@@ -341,6 +195,10 @@ export type AgentPayResult =
 type ResolvedRecipient = { avatarId: string } | { error: 'not_found' | 'not_eligible' };
 type SigningWallet = { publicKey: string; secretKey: Uint8Array };
 
+export type AgentPaySettlementAccounting = X402SettlementAmounts & {
+  facilitator: 'payai' | 'meridian';
+};
+
 export interface AgentPayDb {
   findByIdempotency(senderAvatarId: string, key: string): Promise<AgentPayment | null>;
   resolveRecipient(recipient: AgentPayRecipient): Promise<ResolvedRecipient>;
@@ -361,9 +219,7 @@ export interface AgentPayDb {
     settlingId: string,
     signature: string,
     payer: string | null,
-    accounting?: X402SettlementAmounts & {
-      facilitator: 'payai' | 'meridian';
-    },
+    accounting?: AgentPaySettlementAccounting,
   ): Promise<'captured' | 'lost' | 'signature_conflict'>;
   markFailed(id: string, settlingId: string, reason: string): Promise<void>;
   markReconcile(
@@ -372,6 +228,7 @@ export interface AgentPayDb {
     reason: string,
     observedSignature?: string | null,
     expectedTxSignature?: string | null,
+    accounting?: AgentPaySettlementAccounting,
   ): Promise<boolean | void>;
   fulfillCaptured(
     id: string,
@@ -593,6 +450,7 @@ const defaultDb: AgentPayDb = {
     reason,
     observedSignature = null,
     expectedTxSignature,
+    accounting,
   ) {
     const conditions = [eq(agentPayments.id, id), eq(agentPayments.status, 'settling')];
     if (settlingId) conditions.push(eq(agentPayments.settlingId, settlingId));
@@ -601,10 +459,26 @@ const defaultDb: AgentPayDb = {
         ? isNull(agentPayments.txSignature)
         : eq(agentPayments.txSignature, expectedTxSignature));
     }
+    const x402SettlementAccounting = accounting
+      ? {
+          facilitator: accounting.facilitator,
+          grossUsdcAtomic: accounting.grossUsdcAtomic.toString(),
+          platformFeeUsdcAtomic: accounting.platformFeeUsdcAtomic.toString(),
+          treasuryFeeUsdcAtomic: accounting.treasuryFeeUsdcAtomic.toString(),
+          netUsdcAtomic: accounting.netUsdcAtomic.toString(),
+        }
+      : null;
     const rows = await db.update(agentPayments).set({
       status: 'reconcile', failureReason: reason,
       reconcileTxSignature: observedSignature, settlingId: null,
       settlingStartedAt: null, updatedAt: new Date(),
+      ...(x402SettlementAccounting
+        ? {
+            metadata: sql`COALESCE(${agentPayments.metadata}, '{}'::jsonb) || ${JSON.stringify({
+              x402SettlementAccounting,
+            })}::jsonb`,
+          }
+        : {}),
     }).where(and(...conditions)).returning({ id: agentPayments.id });
     return rows.length === 1;
   },
@@ -837,7 +711,7 @@ async function dispatchExisting(
   row: AgentPayment,
   input: AgentPayInput,
   d: ReturnType<typeof deps>,
-  permit?: FacilitatorCircuitPermit,
+  permit?: PayAiCircuitPermit,
 ): Promise<AgentPayResult> {
   if (!requestMatches(row, input)) {
     return { ok: false, code: 'idempotency_conflict', paymentId: row.id, status: row.status };
@@ -876,21 +750,21 @@ function circuitOpenResult(row?: AgentPayment): AgentPayResult {
 async function executePending(
   row: AgentPayment,
   d: ReturnType<typeof deps>,
-  acquiredPermit?: FacilitatorCircuitPermit,
+  acquiredPermit?: PayAiCircuitPermit,
 ): Promise<AgentPayResult> {
-  const permit = acquiredPermit ?? acquireCircuitPermit(d.now().getTime());
+  const permit = acquiredPermit ?? acquirePayAiCircuitPermit(d.now().getTime());
   if (!permit) return circuitOpenResult(row);
   try {
     return await executePendingWithPermit(row, d, permit);
   } finally {
-    releaseCircuitPermitWithoutObservation(permit);
+    releasePayAiCircuitPermitWithoutObservation(permit, d.now().getTime());
   }
 }
 
 async function executePendingWithPermit(
   row: AgentPayment,
   d: ReturnType<typeof deps>,
-  permit: FacilitatorCircuitPermit,
+  permit: PayAiCircuitPermit,
 ): Promise<AgentPayResult> {
   const rail = d.resolveRail();
   if (!rail.allowed || !rail.rpcUrl || row.network !== rail.network) {
@@ -916,7 +790,7 @@ async function executePendingWithPermit(
     if (!feePayer) {
       // `/supported` is facilitator-wide and independent of this payment. Its
       // resolver deliberately returns null for network/5xx/malformed responses.
-      recordCircuitFailure(permit, d.now().getTime(), d.alert);
+      recordPayAiCircuitFailure(permit, d.now().getTime(), d.alert);
       return { ok: false, code: 'payai_unavailable', paymentId: row.id, status: 'pending', detail: 'fee_payer_unavailable' };
     }
     prep = await d.prepare({
@@ -957,7 +831,7 @@ async function executePendingWithPermit(
     outcome = await d.execute(prep);
   } catch (err) {
     if (isFacilitatorLevelFailure(err)) {
-      recordCircuitFailure(permit, d.now().getTime(), d.alert);
+      recordPayAiCircuitFailure(permit, d.now().getTime(), d.alert);
     }
     // The claim is already held and the facilitator may have accepted the
     // transaction. Never retry an exception after send; require reconciliation.
@@ -972,26 +846,16 @@ async function executePendingWithPermit(
       status: 'reconcile', detail: 'facilitator_execute_threw',
     };
   }
-  // The custodial executor can return either Meridian outcome only after a
-  // proven PayAI verify-stage outage. Preserve that primary outage signal even
-  // when the fallback itself settles successfully. KNOWN TENSION (moot while
-  // Meridian is keyless/disabled): once Meridian goes live, an open PayAI
-  // breaker also blocks attempts Meridian could settle — throughput drops to
-  // one half-open probe per cooldown. The Meridian track owns the fix: gate
-  // only the PayAI leg and let the executor route straight to the fallback.
-  if (
-    outcome.kind === 'meridian_settled'
-    || outcome.kind === 'meridian_failure'
-    || (
-      'facilitatorFailure' in outcome.result
-      && outcome.result.facilitatorFailure === 'unavailable'
-    )
-  ) {
-    recordCircuitFailure(permit, d.now().getTime(), d.alert);
-  } else {
-    // A successful settlement or payment-specific rejection proves the
-    // facilitator is responsive and breaks the consecutive-failure streak.
-    recordCircuitAvailable(permit);
+  // Observe only the PayAI leg. A direct Meridian settlement has no bearing on
+  // provider health and must leave the shared circuit unchanged.
+  if (outcome.payAi.attempted) {
+    if (outcome.payAi.providerFailure) {
+      recordPayAiCircuitFailure(permit, d.now().getTime(), d.alert);
+    } else {
+      // A successful settlement or payment-specific rejection proves the
+      // facilitator is responsive and breaks the consecutive-failure streak.
+      recordPayAiCircuitAvailable(permit);
+    }
   }
     if (outcome.kind === 'meridian_failure') {
       if (outcome.ambiguous) {
@@ -1058,7 +922,12 @@ async function executePendingWithPermit(
     // Preserve the observed signature for an operator and never send again.
     try {
       await d.db.markReconcile(
-        row.id, settlingId, 'settlement_capture_failed', outcome.signature,
+        row.id,
+        settlingId,
+        'settlement_capture_failed',
+        outcome.signature,
+        undefined,
+        capturedAccounting,
       );
     } catch {
       // See the stale-settling note above; retry remains prevented by the claim.
@@ -1090,7 +959,7 @@ async function executePendingWithPermit(
     }
     await d.db.markReconcile(
       row.id, settlingId,
-      captured, outcome.signature,
+      captured, outcome.signature, undefined, capturedAccounting,
     );
     return { ok: false, code: 'payment_reconcile', paymentId: row.id, status: 'reconcile', detail: captured };
   }
@@ -1119,7 +988,7 @@ async function payAgentLocked(
     return dispatchExisting(existing, input, d);
   }
 
-  const permit = acquireCircuitPermit(d.now().getTime());
+  const permit = acquirePayAiCircuitPermit(d.now().getTime());
   if (!permit) return circuitOpenResult(existing ?? undefined);
   try {
     if (existing) return await dispatchExisting(existing, input, d, permit);
@@ -1180,7 +1049,7 @@ async function payAgentLocked(
     ensureSapIdentityQueued(recipient.avatarId, 'agent-pay.recipient');
     return await executePending(admission.row, d, permit);
   } finally {
-    releaseCircuitPermitWithoutObservation(permit);
+    releasePayAiCircuitPermitWithoutObservation(permit, d.now().getTime());
   }
 }
 

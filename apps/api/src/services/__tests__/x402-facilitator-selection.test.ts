@@ -83,6 +83,8 @@ describe("x402 facilitator selection", () => {
   it("classifies only structured transport/timeout/5xx failures as outages", () => {
     expect(isFacilitatorOutageError({ status: 500 })).toBe(true);
     expect(isFacilitatorOutageError({ status: 503 })).toBe(true);
+    expect(isFacilitatorOutageError({ statusCode: 503 })).toBe(true);
+    expect(isFacilitatorOutageError({ statusCode: 400 })).toBe(false);
     expect(isFacilitatorOutageError({ status: 400 })).toBe(false);
     expect(isFacilitatorOutageError({ status: 429 })).toBe(false);
     expect(
@@ -158,5 +160,14 @@ describe("x402 Meridian settlement accounting", () => {
       treasuryFeeUsdcAtomic: 0n,
       netUsdcAtomic: 250_000n,
     });
+  });
+
+  it("rejects a conserved settlement whose recipient net is zero", () => {
+    expect(() => assertSettlementAmountsConserved({
+      grossUsdcAtomic: 1n,
+      platformFeeUsdcAtomic: 1n,
+      treasuryFeeUsdcAtomic: 0n,
+      netUsdcAtomic: 0n,
+    })).toThrow("x402 settlement amounts do not conserve gross USDC");
   });
 });

@@ -224,6 +224,8 @@ x402CheckoutRoutes.post('/quote', requireAuthOrAgentSession, requireNonGuestIden
 
 const settleSchema = z.object({
   checkoutId: z.string().uuid(),
+  /** Explicit opt-in to spend the caller's bound avatar custodial wallet. */
+  custodial: z.literal(true).optional(),
 });
 
 x402CheckoutRoutes.post('/settle', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
@@ -245,9 +247,6 @@ x402CheckoutRoutes.post('/settle', requireAuthOrAgentSession, requireNonGuestIde
   // Payment header (PAYMENT-SIGNATURE preferred, X-PAYMENT fallback — the
   // @x402/hono read order). Missing ⇒ 402 (pay first).
   const paymentHeader = c.req.header('PAYMENT-SIGNATURE') ?? c.req.header('X-PAYMENT');
-  if (!paymentHeader) {
-    return c.json({ error: 'payment_header_required', code: 'payment_required' }, 402);
-  }
 
   let body: unknown;
   try {
@@ -262,11 +261,18 @@ x402CheckoutRoutes.post('/settle', requireAuthOrAgentSession, requireNonGuestIde
       400,
     );
   }
+  if (paymentHeader && parsed.data.custodial) {
+    return c.json({ error: 'payment_mode_conflict', code: 'payment_mode_conflict' }, 400);
+  }
+  if (!paymentHeader && !parsed.data.custodial) {
+    return c.json({ error: 'payment_header_required', code: 'payment_required' }, 402);
+  }
 
   const result = await settleCheckout({
     checkoutId: parsed.data.checkoutId,
     subject,
-    paymentHeader,
+    ...(paymentHeader ? { paymentHeader } : {}),
+    ...(parsed.data.custodial ? { custodial: true as const } : {}),
     idempotencyKey,
   });
 
