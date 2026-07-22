@@ -44,6 +44,7 @@ import {
   coveSlotsRouter,
   __resetSpinRateLimit,
   assertAutonomousCoveAvatarBindingInTx,
+  lockAndFindAutonomousCoveSlotsReplayInTx,
   playAutonomousCoveSlots,
   resolveAgentCovePlayDailyWagerVclaw,
 } from '../cove-slots';
@@ -123,6 +124,7 @@ describe('Cove Slots — paytable + verify (no DB)', () => {
           agentId: 'agent-test',
           ledgerCapable: true,
         }),
+        findSettledActionForOwner: async () => undefined,
         findOpenSession: async () => {
           openSessionReads++;
           return {
@@ -156,6 +158,7 @@ describe('Cove Slots — paytable + verify (no DB)', () => {
   });
 
   it('fails a changed autonomous agent/avatar/user binding before session or cap reads', async () => {
+    let settledActionReads = 0;
     let sessionReads = 0;
     let capReads = 0;
     let requests = 0;
@@ -174,6 +177,10 @@ describe('Cove Slots — paytable + verify (no DB)', () => {
         wager: 20,
       }, {
         resolveAgent: async () => ({ ...resolvedBinding, ledgerCapable: true }),
+        findSettledActionForOwner: async () => {
+          settledActionReads++;
+          return undefined;
+        },
         findOpenSession: async () => {
           sessionReads++;
           return undefined;
@@ -194,9 +201,218 @@ describe('Cove Slots — paytable + verify (no DB)', () => {
         message: 'live_agent_avatar_binding_changed',
       });
     }
+    expect(settledActionReads).toBe(0);
     expect(sessionReads).toBe(0);
     expect(capReads).toBe(0);
     expect(requests).toBe(0);
+  });
+
+  it('replays the owner-scoped settled action from S1 before reading or mutating S2', async () => {
+    const requests: Array<{ path: string; init: RequestInit }> = [];
+    let openSessionReads = 0;
+    let capReads = 0;
+    const actionId = '123e4567-e89b-42d3-a456-426614174002';
+    const play = playAutonomousCoveSlots({
+      agentSessionId: 'agent-session-test',
+      expectedAgentId: 'agent-test',
+      expectedAvatarId: 'avatar-test',
+      expectedUserId: 'user-test',
+      actionId,
+      wager: 20,
+    }, {
+      resolveAgent: async () => ({
+        userId: 'user-test', avatarId: 'avatar-test', agentId: 'agent-test', ledgerCapable: true,
+      }),
+      findSettledActionForOwner: async (userId, idempotencyKey) => {
+        expect(userId).toBe('user-test');
+        expect(idempotencyKey).toBe(`auto:${actionId}`);
+        return { sessionId: '00000000-0000-4000-8000-0000000000a1', predict: '20' };
+      },
+      findOpenSession: async () => {
+        openSessionReads++;
+        throw new Error('S2 must not be selected on an S1 replay');
+      },
+      readDailyWagerUsed: async () => {
+        capReads++;
+        throw new Error('a settled replay must not consume cap admission');
+      },
+      request: async (path, init) => {
+        requests.push({ path, init });
+        return new Response(JSON.stringify({
+          spinId: 'spin-s1', predict: '20', idempotencyReplay: true,
+        }), { status: 200 });
+      },
+    });
+
+    const result = await play;
+    expect(result).toMatchObject({ spinId: 'spin-s1', idempotencyReplay: true });
+    expect(openSessionReads).toBe(0);
+    expect(capReads).toBe(0);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.path).toBe('/spin');
+    expect(new Headers(requests[0]!.init.headers).get('Idempotency-Key')).toBe(`auto:${actionId}`);
+    expect(JSON.parse(String(requests[0]!.init.body))).toEqual({
+      sessionId: '00000000-0000-4000-8000-0000000000a1',
+      predict: '20',
+    });
+  });
+
+  it('does not replay another owner\'s coincident action key', async () => {
+    const stored = {
+      userId: 'other-user',
+      actionKey: 'auto:123e4567-e89b-42d3-a456-426614174003',
+      sessionId: '00000000-0000-4000-8000-0000000000b1',
+      predict: '20',
+    };
+    const requests: string[] = [];
+    let capReads = 0;
+    const result = await playAutonomousCoveSlots({
+      agentSessionId: 'agent-session-test',
+      expectedAgentId: 'agent-test',
+      expectedAvatarId: 'avatar-test',
+      expectedUserId: 'user-test',
+      actionId: '123e4567-e89b-42d3-a456-426614174003',
+      wager: 20,
+    }, {
+      resolveAgent: async () => ({
+        userId: 'user-test', avatarId: 'avatar-test', agentId: 'agent-test', ledgerCapable: true,
+      }),
+      findSettledActionForOwner: async (userId, idempotencyKey) => (
+        stored.userId === userId && stored.actionKey === idempotencyKey
+          ? { sessionId: stored.sessionId, predict: stored.predict }
+          : undefined
+      ),
+      findOpenSession: async () => undefined,
+      readDailyWagerUsed: async () => {
+        capReads++;
+        return 0;
+      },
+      request: async (path) => {
+        requests.push(path);
+        if (path === '/session/open') {
+          return new Response(JSON.stringify({
+            sessionId: '00000000-0000-4000-8000-0000000000b2', startingBalance: '20',
+          }), { status: 200 });
+        }
+        return new Response(JSON.stringify({
+          spinId: 'spin-new-owner', predict: '20', idempotencyReplay: false,
+        }), { status: 200 });
+      },
+    });
+
+    expect(result).toMatchObject({ spinId: 'spin-new-owner', idempotencyReplay: false });
+    expect(capReads).toBe(1);
+    expect(requests).toEqual(['/session/open', '/spin']);
+  });
+
+  it('rejects a same-owner action replay with a different wager before mutation', async () => {
+    let openSessionReads = 0;
+    let capReads = 0;
+    let requests = 0;
+    const play = playAutonomousCoveSlots({
+      agentSessionId: 'agent-session-test',
+      expectedAgentId: 'agent-test',
+      expectedAvatarId: 'avatar-test',
+      expectedUserId: 'user-test',
+      actionId: '123e4567-e89b-42d3-a456-426614174004',
+      wager: 20,
+    }, {
+      resolveAgent: async () => ({
+        userId: 'user-test', avatarId: 'avatar-test', agentId: 'agent-test', ledgerCapable: true,
+      }),
+      findSettledActionForOwner: async () => ({
+        sessionId: '00000000-0000-4000-8000-0000000000c1', predict: '40',
+      }),
+      findOpenSession: async () => {
+        openSessionReads++;
+        return undefined;
+      },
+      readDailyWagerUsed: async () => {
+        capReads++;
+        return 0;
+      },
+      request: async () => {
+        requests++;
+        return new Response('{}');
+      },
+    });
+
+    await expect(play).rejects.toMatchObject({
+      code: 'idempotency_key_reused_with_different_args',
+      status: 409,
+    });
+    expect(openSessionReads).toBe(0);
+    expect(capReads).toBe(0);
+    expect(requests).toBe(0);
+  });
+
+  it('authoritatively catches a cross-session replay after a stale adapter miss', async () => {
+    const adapterPrelookup = undefined;
+    expect(adapterPrelookup).toBeUndefined();
+    const queries: unknown[] = [];
+    const tx = {
+      execute: async (query: unknown) => {
+        queries.push(query);
+        return queries.length === 1
+          ? []
+          : [{
+              session_id: '00000000-0000-4000-8000-0000000000d1',
+              predict: '20',
+            }];
+      },
+    } as unknown as Parameters<typeof lockAndFindAutonomousCoveSlotsReplayInTx>[0];
+
+    const replay = await lockAndFindAutonomousCoveSlotsReplayInTx(tx, {
+      userId: 'user-test',
+      actionId: '123e4567-e89b-42d3-a456-426614174005',
+      idempotencyKey: 'auto:123e4567-e89b-42d3-a456-426614174005',
+      predict: '20',
+    });
+
+    expect(replay).toEqual({
+      sessionId: '00000000-0000-4000-8000-0000000000d1',
+      predict: '20',
+    });
+    expect(queries).toHaveLength(2);
+    const textOf = (query: unknown) => (
+      ((query as { queryChunks?: unknown[] }).queryChunks ?? []).map((chunk) => {
+        const candidate = chunk as { constructor?: { name?: string }; value?: unknown };
+        if (candidate.constructor?.name !== 'StringChunk') return ' ? ';
+        return Array.isArray(candidate.value) ? candidate.value.join('') : String(candidate.value ?? '');
+      }).join('')
+    );
+    expect(textOf(queries[0])).toContain('pg_advisory_xact_lock');
+    expect(textOf(queries[1])).toContain('JOIN slot_sessions');
+    expect(textOf(queries[1])).toContain('ss.user_id');
+    expect(queries.map(textOf).join(' ')).not.toContain('claw_token_transactions');
+    expect(queries.map(textOf).join(' ')).not.toContain('FROM avatars');
+    expect(queries.map(textOf).join(' ')).not.toContain('INSERT');
+  });
+
+  it('transaction recheck rejects a cross-session wager conflict before money work', async () => {
+    const queries: unknown[] = [];
+    const tx = {
+      execute: async (query: unknown) => {
+        queries.push(query);
+        return queries.length === 1
+          ? []
+          : [{
+              session_id: '00000000-0000-4000-8000-0000000000e1',
+              predict: '40',
+            }];
+      },
+    } as unknown as Parameters<typeof lockAndFindAutonomousCoveSlotsReplayInTx>[0];
+
+    await expect(lockAndFindAutonomousCoveSlotsReplayInTx(tx, {
+      userId: 'user-test',
+      actionId: '123e4567-e89b-42d3-a456-426614174006',
+      idempotencyKey: 'auto:123e4567-e89b-42d3-a456-426614174006',
+      predict: '20',
+    })).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining('cached predict=40, new predict=20'),
+    });
+    expect(queries).toHaveLength(2);
   });
 
   it('locks the exact autonomous avatar and rejects inactive or wrong-owner rows', async () => {
