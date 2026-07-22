@@ -27,12 +27,10 @@
  *                                        /verify, /settle, /supported to it.
  *   X402_MOCK_FACILITATOR_URL          — Base URL used by the "mock" preset.
  *                                        Default: http://localhost:4000/api/x402-mock.
- *   PAYAI_API_KEY                      — Optional PayAI merchant API key. Empty
- *                                        or unset preserves anonymous behavior.
- *   PAYAI_AUTH_HEADER                  — Header carrying PAYAI_API_KEY.
- *                                        Default: Authorization.
- *   PAYAI_AUTH_SCHEME                  — Header-value scheme. Default: Bearer.
- *                                        Explicitly empty sends the raw key.
+ *   PAYAI_API_KEY_ID                   — Optional PayAI merchant API key ID.
+ *   PAYAI_API_KEY_SECRET               — Optional PayAI merchant API key secret.
+ *                                        Both are required to enable JWT auth;
+ *                                        otherwise behavior remains anonymous.
  *   CLAWVILLE_MERCHANT_WALLET_PUBKEY   — Base58 Solana public key that receives
  *                                        USDC settlements. Pulled from
  *                                        treasury_wallets via
@@ -101,11 +99,10 @@ export interface X402Config {
   /** Whether facilitatorUrl came from an explicit X402_FACILITATOR_URL override. */
   facilitatorUrlExplicit: boolean;
   facilitatorUrl: string;
-  /** Empty means facilitator authentication is disabled. */
-  payaiApiKey: string;
-  payaiAuthHeader: string;
-  /** Empty is meaningful: send the API key without a scheme prefix. */
-  payaiAuthScheme: string;
+  /** PayAI merchant key ID; auth is enabled only when this and the secret are non-empty. */
+  payaiApiKeyId: string;
+  /** PayAI merchant key secret; auth is enabled only when this and the ID are non-empty. */
+  payaiApiKeySecret: string;
   merchantWalletPubkey: string;
   network: string;
 }
@@ -228,11 +225,8 @@ export function loadX402Config(): X402Config {
   assertProductionFacilitatorAllowed(facilitatorUrl);
   const merchantWalletPubkey = process.env.CLAWVILLE_MERCHANT_WALLET_PUBKEY ?? '';
   const network = process.env.X402_NETWORK ?? 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
-  const payaiApiKey = process.env.PAYAI_API_KEY?.trim() || '';
-  const payaiAuthHeader = process.env.PAYAI_AUTH_HEADER?.trim() || 'Authorization';
-  const payaiAuthScheme = process.env.PAYAI_AUTH_SCHEME === undefined
-    ? 'Bearer'
-    : process.env.PAYAI_AUTH_SCHEME.trim();
+  const payaiApiKeyId = process.env.PAYAI_API_KEY_ID?.trim() || '';
+  const payaiApiKeySecret = process.env.PAYAI_API_KEY_SECRET?.trim() || '';
 
   if (enabled && !merchantWalletPubkey) {
     throw new Error(
@@ -246,9 +240,8 @@ export function loadX402Config(): X402Config {
     facilitatorPreset,
     facilitatorUrlExplicit,
     facilitatorUrl,
-    payaiApiKey,
-    payaiAuthHeader,
-    payaiAuthScheme,
+    payaiApiKeyId,
+    payaiApiKeySecret,
     merchantWalletPubkey,
     network,
   };

@@ -19,8 +19,8 @@
  * USDC settlement (Phase D — partner payoutPubkey). We never sign or custody on
  * our side: the facilitator (PayAI in prod, the mock in tests) performs the
  * on-chain verify+settle; we only orchestrate the two HTTP calls through the
- * official `@x402/core` `HTTPFacilitatorClient` (permissive Apache-2.0 — we do
- * NOT import the Proprietary `@payai/*` SDK; the facilitator is plain HTTP).
+ * official `@x402/core` `HTTPFacilitatorClient`, with PayAI's official
+ * `@payai/facilitator` helper providing signed-JWT transport authentication.
  *
  * SAFETY CONTRACT (money path — every caller depends on these):
  *   1. `verifyAndSettle` NEVER throws on a facilitator 4xx/5xx or a malformed
@@ -35,6 +35,7 @@
  */
 
 import { HTTPFacilitatorClient } from '@x402/core/server';
+import { clearJwtCache, createPayAIAuthHeaders } from '@payai/facilitator';
 import type {
   PaymentPayload,
   PaymentRequirements,
@@ -586,53 +587,52 @@ export function isFacilitatorLevelFailure(error: unknown): boolean {
 }
 
 /** Lazily-built facilitator client, memoized by resolved URL + non-secret auth
- *  shape (so URL/preset/auth env changes in tests rebuild it). The API key is
+ *  shape (so URL/auth env changes in tests rebuild it). The API key secret is
  *  deliberately absent from the cache key and every diagnostic. */
 let _cachedClient: {
   cacheKey: string;
-  /** Compared only in memory so key rotation rebuilds; never logged or serialized. */
-  apiKey: string;
+  apiKeyId: string;
+  /** Compared only in memory so secret rotation rebuilds; never logged or serialized. */
+  apiKeySecret: string;
   client: HTTPFacilitatorClient;
 } | null = null;
 export function facilitatorClient(): HTTPFacilitatorClient {
   const {
     facilitatorUrl,
-    payaiApiKey,
-    payaiAuthHeader,
-    payaiAuthScheme,
+    payaiApiKeyId,
+    payaiApiKeySecret,
   } = loadX402Config();
   if (!facilitatorUrl) {
     throw new Error('[x402-payai] facilitator URL is empty — check X402_FACILITATOR_* env');
   }
 
-  const hasKey = payaiApiKey.length > 0;
+  const hasAuth = payaiApiKeyId.length > 0 && payaiApiKeySecret.length > 0;
   const cacheKey = JSON.stringify({
     facilitatorUrl,
-    payaiAuthHeader,
-    payaiAuthScheme,
-    hasKey,
+    hasAuth,
+    apiKeyId: payaiApiKeyId,
   });
   if (
     !_cachedClient
     || _cachedClient.cacheKey !== cacheKey
-    || _cachedClient.apiKey !== payaiApiKey
+    || _cachedClient.apiKeySecret !== payaiApiKeySecret
   ) {
-    if (!hasKey) {
+    if (!hasAuth) {
       // Preserve the historical anonymous constructor exactly when auth is unset.
       _cachedClient = {
         cacheKey,
-        apiKey: '',
+        apiKeyId: payaiApiKeyId,
+        apiKeySecret: payaiApiKeySecret,
         client: new HTTPFacilitatorClient({ url: facilitatorUrl }),
       };
     } else {
-      const headerValue = payaiAuthScheme
-        ? `${payaiAuthScheme} ${payaiApiKey}`
-        : payaiApiKey;
-      const headers = { [payaiAuthHeader]: headerValue };
+      // The package cache is keyed only by key ID. Clear on every authenticated
+      // rebuild so returning to an earlier ID with a rotated secret cannot reuse
+      // a JWT signed by that ID's previous secret.
+      clearJwtCache(payaiApiKeyId);
 
       console.info(
-        `[x402-payai] facilitator auth enabled (header=${payaiAuthHeader}, `
-          + `scheme=${payaiAuthScheme || 'none'})`,
+        `[x402-payai] facilitator auth enabled (PayAI JWT, keyId=${payaiApiKeyId})`,
       );
       if (!isHostedPayAiFacilitatorUrl(facilitatorUrl)) {
         console.warn(
@@ -642,14 +642,11 @@ export function facilitatorClient(): HTTPFacilitatorClient {
 
       _cachedClient = {
         cacheKey,
-        apiKey: payaiApiKey,
+        apiKeyId: payaiApiKeyId,
+        apiKeySecret: payaiApiKeySecret,
         client: new HTTPFacilitatorClient({
           url: facilitatorUrl,
-          createAuthHeaders: async () => ({
-            verify: headers,
-            settle: headers,
-            supported: headers,
-          }),
+          createAuthHeaders: createPayAIAuthHeaders(payaiApiKeyId, payaiApiKeySecret),
         }),
       };
     }
