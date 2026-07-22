@@ -1,0 +1,24 @@
+// Sources (captured 2026-07-22):
+// https://docs.payai.network/x402/reference#52-payment-proof-payment-signature-header
+// https://docs.payai.network/x402/reference#62-exact-scheme-on-solana-svm
+// PayAI documents the selected exact-SVM requirement under `accepted`. That is
+// the conformance point asserted here; unlike a naive reading of older core
+// types/examples, scheme and network are not expected as top-level v2 fields.
+{
+  "x402Version": 2,
+  "accepted": {
+    "scheme": "exact",
+    "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+    "amount": "125000",
+    "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    "payTo": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+    "maxTimeoutSeconds": 120,
+    "extra": {
+      "feePayer": "GyGKxMyg1p9SsHfm15MkNUu1u9TN2JtTspcdmrtGUdse",
+      "purpose": "payai-conformance"
+    }
+  },
+  "payload": {
+    "transaction": "<base64-partially-signed-svm-transaction>"
+  }
+}

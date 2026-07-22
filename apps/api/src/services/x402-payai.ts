@@ -785,6 +785,7 @@ export async function settlePartnerPurchase(
   return verifyAndSettle({
     paymentHeader: input.paymentHeader,
     requirements: input.requirements,
+    verifyOnly: input.verifyOnly,
     expectedPayer: input.expectedPayer,
     independentVerifier: input.independentVerifier,
   });
