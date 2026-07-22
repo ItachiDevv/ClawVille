@@ -43,6 +43,7 @@ import type { SlotSession } from '@clawville/database';
 import {
   coveSlotsRouter,
   __resetSpinRateLimit,
+  assertAutonomousCoveAvatarBindingInTx,
   playAutonomousCoveSlots,
   resolveAgentCovePlayDailyWagerVclaw,
 } from '../cove-slots';
@@ -110,6 +111,9 @@ describe('Cove Slots — paytable + verify (no DB)', () => {
       process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW = '1000';
       const play = playAutonomousCoveSlots({
         agentSessionId: 'agent-session-test',
+        expectedAgentId: 'agent-test',
+        expectedAvatarId: 'avatar-test',
+        expectedUserId: 'user-test',
         actionId: '123e4567-e89b-42d3-a456-426614174000',
         wager: 20,
       }, {
@@ -149,6 +153,87 @@ describe('Cove Slots — paytable + verify (no DB)', () => {
       if (previous === undefined) delete process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW;
       else process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW = previous;
     }
+  });
+
+  it('fails a changed autonomous agent/avatar/user binding before session or cap reads', async () => {
+    let sessionReads = 0;
+    let capReads = 0;
+    let requests = 0;
+    const mismatches = [
+      { agentId: 'agent-switched', avatarId: 'avatar-original', userId: 'user-original' },
+      { agentId: 'agent-original', avatarId: 'avatar-switched', userId: 'user-original' },
+      { agentId: 'agent-original', avatarId: 'avatar-original', userId: 'user-switched' },
+    ];
+    for (const resolvedBinding of mismatches) {
+      const play = playAutonomousCoveSlots({
+        agentSessionId: 'agent-session-test',
+        expectedAgentId: 'agent-original',
+        expectedAvatarId: 'avatar-original',
+        expectedUserId: 'user-original',
+        actionId: '123e4567-e89b-42d3-a456-426614174001',
+        wager: 20,
+      }, {
+        resolveAgent: async () => ({ ...resolvedBinding, ledgerCapable: true }),
+        findOpenSession: async () => {
+          sessionReads++;
+          return undefined;
+        },
+        readDailyWagerUsed: async () => {
+          capReads++;
+          return 0;
+        },
+        request: async () => {
+          requests++;
+          return new Response('{}');
+        },
+      });
+
+      await expect(play).rejects.toMatchObject({
+        code: 'live_agent_avatar_binding_changed',
+        status: 403,
+        message: 'live_agent_avatar_binding_changed',
+      });
+    }
+    expect(sessionReads).toBe(0);
+    expect(capReads).toBe(0);
+    expect(requests).toBe(0);
+  });
+
+  it('locks the exact autonomous avatar and rejects inactive or wrong-owner rows', async () => {
+    const queries: unknown[] = [];
+    const txFor = (rows: unknown[]) => ({
+      execute: async (query: unknown) => {
+        queries.push(query);
+        return rows;
+      },
+    }) as unknown as Parameters<typeof assertAutonomousCoveAvatarBindingInTx>[0];
+
+    await assertAutonomousCoveAvatarBindingInTx(txFor([{
+      id: 'avatar-test', user_id: 'user-test', is_active: true,
+    }]), { avatarId: 'avatar-test', userId: 'user-test' });
+
+    const queryChunks = (queries[0] as { queryChunks?: unknown[] }).queryChunks ?? [];
+    const queryText = queryChunks.map((chunk) => {
+      const candidate = chunk as { constructor?: { name?: string }; value?: unknown };
+      if (candidate.constructor?.name !== 'StringChunk') return ' ? ';
+      return Array.isArray(candidate.value) ? candidate.value.join('') : String(candidate.value ?? '');
+    }).join('');
+    expect(queryText).toContain('FROM avatars');
+    expect(queryText).toContain('WHERE id =');
+    expect(queryText).toContain('FOR UPDATE');
+
+    await expect(assertAutonomousCoveAvatarBindingInTx(txFor([{
+      id: 'avatar-test', user_id: 'other-user', is_active: true,
+    }]), { avatarId: 'avatar-test', userId: 'user-test' })).rejects.toMatchObject({
+      status: 403,
+      message: 'active_avatar_binding_changed',
+    });
+    await expect(assertAutonomousCoveAvatarBindingInTx(txFor([{
+      id: 'avatar-test', user_id: 'user-test', is_active: false,
+    }]), { avatarId: 'avatar-test', userId: 'user-test' })).rejects.toMatchObject({
+      status: 403,
+      message: 'active_avatar_binding_changed',
+    });
   });
 
   it('GET /paytables/classic-3x5 returns the public bundle', async () => {
