@@ -46,8 +46,8 @@ describe('Kelp Forest realm discoveries', () => {
   test('pins exactly three discovery draws under the raised realm ceiling', () => {
     expect(KELP_REALM_SCENE_BUDGET.discoveryDrawCalls).toBe(3);
     expect(KELP_REALM_SCENE_BUDGET.sporeDrawCalls).toBe(1);
-    expect(KELP_REALM_SCENE_BUDGET.environmentDrawCalls).toBe(16);
-    expect(KELP_REALM_SCENE_BUDGET.maxTotalDrawCallsIncludingAvatar).toBe(30);
+    expect(KELP_REALM_SCENE_BUDGET.environmentDrawCalls).toBe(17);
+    expect(KELP_REALM_SCENE_BUDGET.maxTotalDrawCallsIncludingAvatar).toBe(31);
     expect(KELP_REALM_SCENE_BUDGET.maxTotalDrawCallsIncludingAvatar)
       .toBeLessThanOrEqual(KELP_REALM_SCENE_BUDGET.hardTotalDrawCallCeiling);
     expect(KELP_REALM_SCENE_BUDGET.hardTotalDrawCallCeiling).toBe(32);
