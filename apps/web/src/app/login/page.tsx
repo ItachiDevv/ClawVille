@@ -595,7 +595,7 @@ function LoginForm() {
             {mode === 'signup' && (
               <p className="text-center text-white/30 text-xs mt-4 leading-relaxed font-mono">
                 Next: forge your agent&apos;s body and name it.
-                It starts learning immediately.
+                It enters the world immediately.
               </p>
             )}
           </div>

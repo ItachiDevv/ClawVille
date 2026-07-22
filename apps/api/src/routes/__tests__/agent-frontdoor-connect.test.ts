@@ -215,7 +215,8 @@ describe('logged-out front-door agent connect', () => {
   });
 
   test('mints without Lucia, remains unbound, and stores only poll-secret digest', async () => {
-    const { response, body } = await mint();
+    const app = buildApp();
+    const { response, body } = await mint(app);
     expect(response.status).toBe(200);
     expect(body.connectUrl).toMatch(
       /^https:\/\/api-staging\.clawville\.world\/api\/skills\/connect\?token=ct-/,
@@ -236,6 +237,16 @@ describe('logged-out front-door agent connect', () => {
       },
     });
     expect(pending?.publicHandoff?.pollSecretHash).not.toBe(body.pollSecret);
+
+    const skillResponse = await app.request(
+      `/api/agent/connect-skill?token=${String(body.token)}`,
+    );
+    expect(skillResponse.status).toBe(200);
+    expect(skillResponse.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
+    const skill = await skillResponse.text();
+    expect(skill).toContain('https://api-staging.clawville.world/api/agent/connect');
+    expect(skill).not.toContain('https://api.clawville.world/api/agent/connect');
+    expect(skill).toContain('## What ClawVille is: the world you are entering');
   });
 
   test('hard-limits public mint to five requests per minute per trusted IP', async () => {
