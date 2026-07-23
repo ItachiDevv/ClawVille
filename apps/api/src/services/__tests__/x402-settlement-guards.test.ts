@@ -43,7 +43,14 @@ describe('global receipt owner identity', () => {
     subjectId: '00000000-0000-4000-8000-000000000001',
     amountUsdcAtomic: 1_000_000n,
   };
-  const receipt = { ...input, createdAt: new Date('2026-07-15T00:00:00Z') };
+  const receipt = {
+    ...input,
+    createdAt: new Date('2026-07-15T00:00:00Z'),
+    grossUsdcAtomic: null,
+    platformFeeUsdcAtomic: null,
+    treasuryFeeUsdcAtomic: null,
+    netUsdcAtomic: null,
+  };
 
   it('resumes only the exact same immutable owner', () => {
     expect(receiptMatchesOwner(receipt, input)).toBe(true);

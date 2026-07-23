@@ -25,10 +25,11 @@
  */
 
 import { platformAgents } from '@clawville/database';
+import { toSupabaseSessionModeUrl } from '@clawville/agent-runtime';
 
 /** Bootstrap agent UUID — used only so createDatabaseAdapter has something to
- *  scope its adapter against. Never written to the `agents` table; this is
- *  just a key for the per-agent adapter map inside plugin-sql. */
+ *  scope its adapter instance against. Never written to the `agents` table;
+ *  plugin-sql shares the underlying pool process-wide. */
 const BOOTSTRAP_AGENT_ID = '00000000-0000-0000-0000-000000000001';
 
 export async function ensureElizaMigrated(): Promise<{
@@ -36,10 +37,13 @@ export async function ensureElizaMigrated(): Promise<{
   skipped?: boolean;
   error?: string;
 }> {
-  const postgresUrl = process.env.DATABASE_URL;
-  if (!postgresUrl) {
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
     return { ok: false, error: 'DATABASE_URL not set' };
   }
+  // plugin-sql's first adapter owns its process-global pool. Keep that boot
+  // pool on Supabase SESSION mode so its session advisory lock cannot orphan.
+  const postgresUrl = toSupabaseSessionModeUrl(databaseUrl);
 
   try {
     const sqlMod: any = await import('@elizaos/plugin-sql');

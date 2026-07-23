@@ -27,14 +27,19 @@ import { mintEarned, type LedgerTx } from './claw-token-ledger';
 import {
   resolveFacilitatorFeePayer,
   usdCentsToUsdcAtomic,
-  usdToCt,
   usdcMintForNetwork,
   SOLANA_DEVNET_CAIP2,
   SOLANA_MAINNET_CAIP2,
+  isFacilitatorLevelFailure,
   type X402Network,
 } from './x402-payai';
 import { isHostedPayAiFacilitatorUrl, loadX402Config } from './x402-config';
 import { claimX402Settlement } from './x402-settlement-receipts';
+import {
+  assertSettlementAmountsConserved,
+  legacySettlementAmounts,
+  type X402SettlementAmounts,
+} from './x402-settlement-accounting';
 import { withKeyedMutex } from './keyed-mutex';
 import {
   prepareCustodialExactPayment,
@@ -42,6 +47,20 @@ import {
   type PreparedCustodialExactPayment,
   type ExecutePreparedExactPaymentOutcome,
 } from './custodial-x402';
+import { alertError } from './alert-error';
+import {
+  acquirePayAiCircuitPermit,
+  recordPayAiCircuitAvailable,
+  recordPayAiCircuitFailure,
+  releasePayAiCircuitPermitWithoutObservation,
+  resetPayAiFacilitatorCircuitForTests,
+  type PayAiCircuitPermit,
+} from './x402-facilitator-circuit';
+
+export {
+  resolveAgentPayBreakerCooldownMs,
+  resolveAgentPayBreakerThreshold,
+} from './x402-facilitator-circuit';
 
 const IDEMPOTENCY_RE = /^[A-Za-z0-9._:-]{1,64}$/;
 const MAX_SAFE_AGENT_PAY_CENTS = 100_000_000;
@@ -55,6 +74,26 @@ const COUNTED_DAILY_CAP_STATUSES = [
   'settled',
   'reconcile',
 ] as const satisfies readonly AgentPayment['status'][];
+
+/** Test seam: production state intentionally lives for the process lifetime. */
+export function resetAgentPayFacilitatorCircuitForTests(): void {
+  resetPayAiFacilitatorCircuitForTests();
+}
+
+function formatUsdcAtomic(amount: bigint): string {
+  if (amount < 0n) throw new Error('USDC atomic amount must be nonnegative');
+  const whole = amount / 1_000_000n;
+  const fractional = (amount % 1_000_000n).toString().padStart(6, '0');
+  return `${whole}.${fractional}`;
+}
+
+function netUsdcAtomicToVclaw(netUsdcAtomic: bigint): number {
+  const coins = netUsdcAtomic / 10_000n;
+  if (coins <= 0n || coins > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('net USDC produces an invalid vCLAW credit');
+  }
+  return Number(coins);
+}
 
 function resolveDailyUsdCents(name: string, fallback: number): number {
   const value = process.env[name]?.trim();
@@ -156,6 +195,10 @@ export type AgentPayResult =
 type ResolvedRecipient = { avatarId: string } | { error: 'not_found' | 'not_eligible' };
 type SigningWallet = { publicKey: string; secretKey: Uint8Array };
 
+export type AgentPaySettlementAccounting = X402SettlementAmounts & {
+  facilitator: 'payai' | 'meridian';
+};
+
 export interface AgentPayDb {
   findByIdempotency(senderAvatarId: string, key: string): Promise<AgentPayment | null>;
   resolveRecipient(recipient: AgentPayRecipient): Promise<ResolvedRecipient>;
@@ -176,6 +219,7 @@ export interface AgentPayDb {
     settlingId: string,
     signature: string,
     payer: string | null,
+    accounting?: AgentPaySettlementAccounting,
   ): Promise<'captured' | 'lost' | 'signature_conflict'>;
   markFailed(id: string, settlingId: string, reason: string): Promise<void>;
   markReconcile(
@@ -184,6 +228,7 @@ export interface AgentPayDb {
     reason: string,
     observedSignature?: string | null,
     expectedTxSignature?: string | null,
+    accounting?: AgentPaySettlementAccounting,
   ): Promise<boolean | void>;
   fulfillCaptured(
     id: string,
@@ -210,6 +255,7 @@ export interface AgentPayDeps {
     rpcUrl: string;
     allowed: boolean;
   };
+  alert?: typeof alertError;
   randomId?: () => string;
   now?: () => Date;
 }
@@ -356,11 +402,27 @@ const defaultDb: AgentPayDb = {
       .returning();
     return row ?? null;
   },
-  async captureSettled(id, settlingId, signature, payer) {
+  async captureSettled(id, settlingId, signature, payer, accounting) {
+    const existingAmounts = accounting ?? null;
     try {
       const rows = await db
         .update(agentPayments)
-        .set({ txSignature: signature, settlePayer: payer, updatedAt: new Date() })
+        .set({
+          txSignature: signature,
+          settlePayer: payer,
+          ...(existingAmounts
+            ? {
+                facilitator: existingAmounts.facilitator,
+                grossUsdcAtomic: existingAmounts.grossUsdcAtomic.toString(),
+                platformFeeUsdcAtomic:
+                  existingAmounts.platformFeeUsdcAtomic.toString(),
+                treasuryFeeUsdcAtomic:
+                  existingAmounts.treasuryFeeUsdcAtomic.toString(),
+                netUsdcAtomic: existingAmounts.netUsdcAtomic.toString(),
+              }
+            : {}),
+          updatedAt: new Date(),
+        })
         .where(and(
           eq(agentPayments.id, id),
           eq(agentPayments.status, 'settling'),
@@ -388,6 +450,7 @@ const defaultDb: AgentPayDb = {
     reason,
     observedSignature = null,
     expectedTxSignature,
+    accounting,
   ) {
     const conditions = [eq(agentPayments.id, id), eq(agentPayments.status, 'settling')];
     if (settlingId) conditions.push(eq(agentPayments.settlingId, settlingId));
@@ -396,10 +459,26 @@ const defaultDb: AgentPayDb = {
         ? isNull(agentPayments.txSignature)
         : eq(agentPayments.txSignature, expectedTxSignature));
     }
+    const x402SettlementAccounting = accounting
+      ? {
+          facilitator: accounting.facilitator,
+          grossUsdcAtomic: accounting.grossUsdcAtomic.toString(),
+          platformFeeUsdcAtomic: accounting.platformFeeUsdcAtomic.toString(),
+          treasuryFeeUsdcAtomic: accounting.treasuryFeeUsdcAtomic.toString(),
+          netUsdcAtomic: accounting.netUsdcAtomic.toString(),
+        }
+      : null;
     const rows = await db.update(agentPayments).set({
       status: 'reconcile', failureReason: reason,
       reconcileTxSignature: observedSignature, settlingId: null,
       settlingStartedAt: null, updatedAt: new Date(),
+      ...(x402SettlementAccounting
+        ? {
+            metadata: sql`COALESCE(${agentPayments.metadata}, '{}'::jsonb) || ${JSON.stringify({
+              x402SettlementAccounting,
+            })}::jsonb`,
+          }
+        : {}),
     }).where(and(...conditions)).returning({ id: agentPayments.id });
     return rows.length === 1;
   },
@@ -411,13 +490,27 @@ const defaultDb: AgentPayDb = {
       if (row.status === 'settled') return { kind: 'replay' as const, row };
       if (row.status !== 'settling' || !row.txSignature) return { kind: 'not_ready' as const };
 
+      const settlementAmounts: X402SettlementAmounts =
+        row.grossUsdcAtomic !== null &&
+        row.platformFeeUsdcAtomic !== null &&
+        row.treasuryFeeUsdcAtomic !== null &&
+        row.netUsdcAtomic !== null
+          ? {
+              grossUsdcAtomic: BigInt(row.grossUsdcAtomic),
+              platformFeeUsdcAtomic: BigInt(row.platformFeeUsdcAtomic),
+              treasuryFeeUsdcAtomic: BigInt(row.treasuryFeeUsdcAtomic),
+              netUsdcAtomic: BigInt(row.netUsdcAtomic),
+            }
+          : legacySettlementAmounts(BigInt(row.usdcAtomic));
+      assertSettlementAmountsConserved(settlementAmounts);
       const receipt = await claimX402Settlement({
         txSignature: row.txSignature,
         rail: 'agent_payment',
         kind: 'agent_payment',
         referenceId: row.id,
         subjectId: row.recipientAvatarId,
-        amountUsdcAtomic: BigInt(row.usdcAtomic),
+        amountUsdcAtomic: settlementAmounts.grossUsdcAtomic,
+        ...settlementAmounts,
       }, tx as LedgerTx);
       if (receipt.kind === 'foreign_owner') return { kind: 'already_settled' as const };
 
@@ -425,8 +518,10 @@ const defaultDb: AgentPayDb = {
       // to house custody. The EARNED is spendable but explicitly UNBACKED and
       // can never cross E3. A future cashable ④ must route the dollar through
       // purpose='earned-backing' and deliver only the EARNED receipt.
-      const usdBasis = (row.usdCents / 100).toFixed(6);
-      const earnedVclaw = usdToCt(row.usdCents);
+      const usdBasis = formatUsdcAtomic(settlementAmounts.netUsdcAtomic);
+      const earnedVclaw = netUsdcAtomicToVclaw(
+        settlementAmounts.netUsdcAtomic,
+      );
       const minted = await mint({
         avatarId: row.recipientAvatarId,
         amount: earnedVclaw,
@@ -505,6 +600,7 @@ function deps(input?: AgentPayDeps) {
     mintEarned: input?.mintEarned ?? mintEarned,
     resolveFeePayer: input?.resolveFeePayer ?? resolveFacilitatorFeePayer,
     resolveRail: input?.resolveRail ?? resolveAgentPayRail,
+    alert: input?.alert ?? alertError,
     randomId: input?.randomId ?? randomUUID,
     now: input?.now ?? (() => new Date()),
   };
@@ -615,6 +711,7 @@ async function dispatchExisting(
   row: AgentPayment,
   input: AgentPayInput,
   d: ReturnType<typeof deps>,
+  permit?: PayAiCircuitPermit,
 ): Promise<AgentPayResult> {
   if (!requestMatches(row, input)) {
     return { ok: false, code: 'idempotency_conflict', paymentId: row.id, status: row.status };
@@ -638,10 +735,37 @@ async function dispatchExisting(
     }
     return { ok: false, code: 'payment_in_flight', paymentId: row.id, status: row.status };
   }
-  return executePending(row, d);
+  return executePending(row, d, permit);
 }
 
-async function executePending(row: AgentPayment, d: ReturnType<typeof deps>): Promise<AgentPayResult> {
+function circuitOpenResult(row?: AgentPayment): AgentPayResult {
+  return {
+    ok: false,
+    code: 'payai_unavailable',
+    ...(row ? { paymentId: row.id, status: row.status } : {}),
+    detail: 'facilitator_circuit_open',
+  };
+}
+
+async function executePending(
+  row: AgentPayment,
+  d: ReturnType<typeof deps>,
+  acquiredPermit?: PayAiCircuitPermit,
+): Promise<AgentPayResult> {
+  const permit = acquiredPermit ?? acquirePayAiCircuitPermit(d.now().getTime());
+  if (!permit) return circuitOpenResult(row);
+  try {
+    return await executePendingWithPermit(row, d, permit);
+  } finally {
+    releasePayAiCircuitPermitWithoutObservation(permit, d.now().getTime());
+  }
+}
+
+async function executePendingWithPermit(
+  row: AgentPayment,
+  d: ReturnType<typeof deps>,
+  permit: PayAiCircuitPermit,
+): Promise<AgentPayResult> {
   const rail = d.resolveRail();
   if (!rail.allowed || !rail.rpcUrl || row.network !== rail.network) {
     return { ok: false, code: 'payai_unavailable', paymentId: row.id, status: row.status };
@@ -664,6 +788,9 @@ async function executePending(row: AgentPayment, d: ReturnType<typeof deps>): Pr
       return { ok: false, code: 'sender_wallet_missing', paymentId: row.id, status: 'pending' };
     }
     if (!feePayer) {
+      // `/supported` is facilitator-wide and independent of this payment. Its
+      // resolver deliberately returns null for network/5xx/malformed responses.
+      recordPayAiCircuitFailure(permit, d.now().getTime(), d.alert);
       return { ok: false, code: 'payai_unavailable', paymentId: row.id, status: 'pending', detail: 'fee_payer_unavailable' };
     }
     prep = await d.prepare({
@@ -695,14 +822,17 @@ async function executePending(row: AgentPayment, d: ReturnType<typeof deps>): Pr
             ? { kind: 'avatar', avatarId: row.recipientRef }
             : { kind: 'agent', agentId: row.recipientRef },
           usdCents: row.usdCents, idempotencyKey: row.idempotencyKey,
-        }, d)
+        }, d, permit)
       : { ok: false, code: 'internal', paymentId: row.id };
   }
 
   let outcome: ExecutePreparedExactPaymentOutcome;
   try {
     outcome = await d.execute(prep);
-  } catch {
+  } catch (err) {
+    if (isFacilitatorLevelFailure(err)) {
+      recordPayAiCircuitFailure(permit, d.now().getTime(), d.alert);
+    }
     // The claim is already held and the facilitator may have accepted the
     // transaction. Never retry an exception after send; require reconciliation.
     try {
@@ -716,11 +846,51 @@ async function executePending(row: AgentPayment, d: ReturnType<typeof deps>): Pr
       status: 'reconcile', detail: 'facilitator_execute_threw',
     };
   }
-  if (outcome.kind === 'definitive_failure') {
+  // Observe only the PayAI leg. A direct Meridian settlement has no bearing on
+  // provider health and must leave the shared circuit unchanged.
+  if (outcome.payAi.attempted) {
+    if (outcome.payAi.providerFailure) {
+      recordPayAiCircuitFailure(permit, d.now().getTime(), d.alert);
+    } else {
+      // A successful settlement or payment-specific rejection proves the
+      // facilitator is responsive and breaks the consecutive-failure streak.
+      recordPayAiCircuitAvailable(permit);
+    }
+  }
+    if (outcome.kind === 'meridian_failure') {
+      if (outcome.ambiguous) {
+        await d.db.markReconcile(
+          row.id,
+          settlingId,
+          `meridian:${outcome.reason}`,
+          outcome.signature,
+        );
+        return {
+          ok: false,
+          code: 'payment_reconcile',
+          paymentId: row.id,
+          status: 'reconcile',
+          detail: outcome.reason,
+        };
+      }
+      await d.db.markFailed(
+        row.id,
+        settlingId,
+        `meridian_${outcome.stage}:${outcome.reason}`,
+      );
+      return {
+        ok: false,
+        code: 'payment_failed',
+        paymentId: row.id,
+        status: 'failed',
+        detail: outcome.reason,
+      };
+    }
+    if (outcome.kind === 'definitive_failure') {
     await d.db.markFailed(row.id, settlingId, `${outcome.stage}:${outcome.reason}`);
     return { ok: false, code: 'payment_failed', paymentId: row.id, status: 'failed', detail: outcome.reason };
   }
-  if (outcome.kind !== 'settled') {
+    if (outcome.kind !== 'settled' && outcome.kind !== 'meridian_settled') {
     const reason = outcome.kind === 'ambiguous' ? outcome.reason : 'unexpected_verify_only';
     await d.db.markReconcile(
       row.id,
@@ -731,15 +901,33 @@ async function executePending(row: AgentPayment, d: ReturnType<typeof deps>): Pr
     return { ok: false, code: 'payment_reconcile', paymentId: row.id, status: 'reconcile', detail: reason };
   }
 
-  let captured: 'captured' | 'lost' | 'signature_conflict';
+    const capturedAccounting =
+      outcome.kind === 'meridian_settled'
+        ? { facilitator: 'meridian' as const, ...outcome.amounts }
+        : {
+            facilitator: 'payai' as const,
+            ...legacySettlementAmounts(required),
+          };
+    let captured: 'captured' | 'lost' | 'signature_conflict';
   try {
-    captured = await d.db.captureSettled(row.id, settlingId, outcome.signature, outcome.payer);
+      captured = await d.db.captureSettled(
+        row.id,
+        settlingId,
+        outcome.signature,
+        outcome.payer,
+        capturedAccounting,
+      );
   } catch {
     // Settlement succeeded but its signature could not be durably captured.
     // Preserve the observed signature for an operator and never send again.
     try {
       await d.db.markReconcile(
-        row.id, settlingId, 'settlement_capture_failed', outcome.signature,
+        row.id,
+        settlingId,
+        'settlement_capture_failed',
+        outcome.signature,
+        undefined,
+        capturedAccounting,
       );
     } catch {
       // See the stale-settling note above; retry remains prevented by the claim.
@@ -771,7 +959,7 @@ async function executePending(row: AgentPayment, d: ReturnType<typeof deps>): Pr
     }
     await d.db.markReconcile(
       row.id, settlingId,
-      captured, outcome.signature,
+      captured, outcome.signature, undefined, capturedAccounting,
     );
     return { ok: false, code: 'payment_reconcile', paymentId: row.id, status: 'reconcile', detail: captured };
   }
@@ -796,63 +984,73 @@ async function payAgentLocked(
   if (!target.ref) return { ok: false, code: 'invalid_request' };
 
   const existing = await d.db.findByIdempotency(input.senderAvatarId, input.idempotencyKey);
-  if (existing) return dispatchExisting(existing, input, d);
+  if (existing && existing.status !== 'pending') {
+    return dispatchExisting(existing, input, d);
+  }
 
-  const recipient = await d.db.resolveRecipient(input.recipient);
-  if ('error' in recipient) {
-    return { ok: false, code: recipient.error === 'not_found' ? 'recipient_not_found' : 'recipient_not_eligible' };
-  }
-  if (recipient.avatarId === input.senderAvatarId) {
-    return { ok: false, code: 'self_pay_forbidden' };
-  }
-  const [senderWallet, recipientWallet] = await Promise.all([
-    d.db.findAvatarWallet(input.senderAvatarId), d.db.findAvatarWallet(recipient.avatarId),
-  ]);
-  if (!senderWallet) return { ok: false, code: 'sender_wallet_missing' };
-  if (!recipientWallet) return { ok: false, code: 'recipient_wallet_missing' };
-  if (senderWallet.publicKey === recipientWallet.publicKey) {
-    return { ok: false, code: 'self_pay_forbidden' };
-  }
-  const rail = d.resolveRail();
-  if (!rail.allowed || !rail.rpcUrl) return { ok: false, code: 'payai_unavailable' };
+  const permit = acquirePayAiCircuitPermit(d.now().getTime());
+  if (!permit) return circuitOpenResult(existing ?? undefined);
+  try {
+    if (existing) return await dispatchExisting(existing, input, d, permit);
 
-  const atomic = usdCentsToUsdcAtomic(input.usdCents);
-  const admission = await withAdmissionMutexes(
-    input.senderAvatarId,
-    recipient.avatarId,
-    () => d.db.admitPending({
-      senderAvatarId: input.senderAvatarId,
-      recipientAvatarId: recipient.avatarId,
-      recipientKind: target.kind,
-      recipientRef: target.ref,
-      senderWallet: senderWallet.publicKey,
-      recipientWallet: recipientWallet.publicKey,
-      usdCents: input.usdCents,
-      usdcAtomic: atomic,
-      network: rail.network,
-      idempotencyKey: input.idempotencyKey,
-      metadata: { trustedInternalPayaiEligibility: true },
-    }, {
-      sendUsdCents: resolveAgentPayDailySendUsdCents(),
-      receiveUsdCents: resolveAgentPayDailyReceiveUsdCents(),
-    }, utcMidnight(d.now())),
-  );
-  if (admission.kind === 'daily_cap_exceeded') {
-    return {
-      ok: false,
-      code: 'daily_cap_exceeded',
-      detail: {
-        cap: admission.cap,
-        usedTodayUsdCents: admission.usedTodayUsdCents,
-      },
-    };
+    const recipient = await d.db.resolveRecipient(input.recipient);
+    if ('error' in recipient) {
+      return { ok: false, code: recipient.error === 'not_found' ? 'recipient_not_found' : 'recipient_not_eligible' };
+    }
+    if (recipient.avatarId === input.senderAvatarId) {
+      return { ok: false, code: 'self_pay_forbidden' };
+    }
+    const [senderWallet, recipientWallet] = await Promise.all([
+      d.db.findAvatarWallet(input.senderAvatarId), d.db.findAvatarWallet(recipient.avatarId),
+    ]);
+    if (!senderWallet) return { ok: false, code: 'sender_wallet_missing' };
+    if (!recipientWallet) return { ok: false, code: 'recipient_wallet_missing' };
+    if (senderWallet.publicKey === recipientWallet.publicKey) {
+      return { ok: false, code: 'self_pay_forbidden' };
+    }
+    const rail = d.resolveRail();
+    if (!rail.allowed || !rail.rpcUrl) return { ok: false, code: 'payai_unavailable' };
+
+    const atomic = usdCentsToUsdcAtomic(input.usdCents);
+    const admission = await withAdmissionMutexes(
+      input.senderAvatarId,
+      recipient.avatarId,
+      () => d.db.admitPending({
+        senderAvatarId: input.senderAvatarId,
+        recipientAvatarId: recipient.avatarId,
+        recipientKind: target.kind,
+        recipientRef: target.ref,
+        senderWallet: senderWallet.publicKey,
+        recipientWallet: recipientWallet.publicKey,
+        usdCents: input.usdCents,
+        usdcAtomic: atomic,
+        network: rail.network,
+        idempotencyKey: input.idempotencyKey,
+        metadata: { trustedInternalPayaiEligibility: true },
+      }, {
+        sendUsdCents: resolveAgentPayDailySendUsdCents(),
+        receiveUsdCents: resolveAgentPayDailyReceiveUsdCents(),
+      }, utcMidnight(d.now())),
+    );
+    if (admission.kind === 'daily_cap_exceeded') {
+      return {
+        ok: false,
+        code: 'daily_cap_exceeded',
+        detail: {
+          cap: admission.cap,
+          usedTodayUsdCents: admission.usedTodayUsdCents,
+        },
+      };
+    }
+    if (admission.kind === 'existing') {
+      return await dispatchExisting(admission.row, input, d, permit);
+    }
+    ensureSapIdentityQueued(input.senderAvatarId, 'agent-pay.sender');
+    ensureSapIdentityQueued(recipient.avatarId, 'agent-pay.recipient');
+    return await executePending(admission.row, d, permit);
+  } finally {
+    releasePayAiCircuitPermitWithoutObservation(permit, d.now().getTime());
   }
-  if (admission.kind === 'existing') {
-    return dispatchExisting(admission.row, input, d);
-  }
-  ensureSapIdentityQueued(input.senderAvatarId, 'agent-pay.sender');
-  ensureSapIdentityQueued(recipient.avatarId, 'agent-pay.recipient');
-  return executePending(admission.row, d);
 }
 
 export async function payAgent(

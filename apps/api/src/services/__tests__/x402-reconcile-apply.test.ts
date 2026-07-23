@@ -6,6 +6,7 @@ import type {
   RefundEvidence,
 } from '../x402-reconcile';
 import {
+  buildAgentReconcileAccountingPatch,
   normalizeAgentReconcileReason,
   resolveReconcileNoMoneyGraceMs,
   runReconcileScan,
@@ -150,6 +151,8 @@ function harness(
         facilitatorPreset: 'payai',
         facilitatorUrlExplicit: false,
         facilitatorUrl: 'https://facilitator.payai.network',
+        payaiApiKeyId: '',
+        payaiApiKeySecret: '',
         merchantWalletPubkey: MERCHANT,
         network: 'devnet',
       };
@@ -321,6 +324,57 @@ describe('x402 reconcile apply orchestration', () => {
       network: 'devnet',
       destinationOwner: 'agent-recipient-wallet',
     });
+  });
+
+  it('F6 restores exact Meridian fee columns from durable reconcile evidence before fulfillment', () => {
+    const patch = buildAgentReconcileAccountingPatch(row('agent_payments', {
+      usdCents: 100,
+      metadata: {
+        reconcileReason: 'capture_lost',
+        spentTxSignature: SIGNATURE,
+        x402SettlementAccounting: {
+          facilitator: 'meridian',
+          grossUsdcAtomic: '1000000',
+          platformFeeUsdcAtomic: '100000',
+          treasuryFeeUsdcAtomic: '9000',
+          netUsdcAtomic: '891000',
+        },
+      },
+    }));
+    expect(patch).toEqual({
+      facilitator: 'meridian',
+      grossUsdcAtomic: '1000000',
+      platformFeeUsdcAtomic: '100000',
+      treasuryFeeUsdcAtomic: '9000',
+      netUsdcAtomic: '891000',
+    });
+  });
+
+  it('F6 refuses to infer Meridian when durable reconcile accounting is incomplete or non-conserving', () => {
+    const incomplete = row('agent_payments', {
+      metadata: {
+        reconcileReason: 'capture_lost',
+        x402SettlementAccounting: {
+          facilitator: 'meridian',
+          grossUsdcAtomic: '1000000',
+        },
+      },
+    });
+    expect(() => buildAgentReconcileAccountingPatch(incomplete)).toThrow(/invalid durable/);
+
+    const nonConserving = row('agent_payments', {
+      metadata: {
+        reconcileReason: 'capture_lost',
+        x402SettlementAccounting: {
+          facilitator: 'meridian',
+          grossUsdcAtomic: '1000000',
+          platformFeeUsdcAtomic: '0',
+          treasuryFeeUsdcAtomic: '10000',
+          netUsdcAtomic: '1000000',
+        },
+      },
+    });
+    expect(() => buildAgentReconcileAccountingPatch(nonConserving)).toThrow(/do not conserve/);
   });
 
   it('normalizes observed agent reconcile signatures to capture_lost and unknown no-signature failures to ambiguous', () => {
