@@ -67,6 +67,10 @@ export const SHOE_DECKS = 6;
 /** Cards in a 6-deck shoe. */
 export const CARDS_PER_SHOE = SHOE_DECKS * 52; // 312
 
+/** Locked vCLAW bounds shared by REST and autonomous executor surfaces. */
+export const BLACKJACK_MIN_BET = 5;
+export const BLACKJACK_MAX_BET = 500;
+
 /**
  * Reshuffle penetration — reshuffle once 75% of the shoe has been dealt.
  * The route compares `dealtCount >= RESHUFFLE_CARD_THRESHOLD` AT HAND

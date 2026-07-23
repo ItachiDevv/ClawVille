@@ -35,6 +35,8 @@ export interface MeridianFallbackPolicyInput {
 interface ErrorWithTransportMetadata {
   name?: unknown;
   status?: unknown;
+  /** The pinned @x402/core VerifyError/SettleError HTTP status field. */
+  statusCode?: unknown;
 }
 
 /**
@@ -50,6 +52,9 @@ export function isFacilitatorOutageError(error: unknown): boolean {
   const candidate = error as ErrorWithTransportMetadata;
   if (typeof candidate.status === "number") {
     return candidate.status >= 500 && candidate.status <= 599;
+  }
+  if (typeof candidate.statusCode === "number") {
+    return candidate.statusCode >= 500 && candidate.statusCode <= 599;
   }
 
   if (error instanceof Error) {

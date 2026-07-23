@@ -8,6 +8,9 @@ import {
   type AutonomyEnterablePlace,
   HATCHER_ACTION_VERBS,
   type HatcherActionVerb,
+  COVE_SLOTS_BET_STEP,
+  COVE_SLOTS_MIN_BET,
+  COVE_SLOTS_MAX_BET,
   BUILDING_OPENCLAW_THEMES,
   type NpcDefinition,
   type AgentSubstrateRegistration,
@@ -67,8 +70,9 @@ import {
   eq,
   sql,
 } from '@clawville/database';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { recordCovenantAction } from './covenant-action-recorder';
+import { BLACKJACK_MIN_BET, BLACKJACK_MAX_BET } from './blackjack-engine';
 
 // Map dimensions — land-builder-economics (2026-06-24): 704×704 grid of 32px tiles = 22528×22528 world.
 // CROSS-PACKAGE INVARIANT: this MUST equal the client `MAP_WIDTH`/`MAP_HEIGHT` in
@@ -184,8 +188,12 @@ const MISSING_ACTION_ATTRIBUTION_WARN_MAX = 1_024;
 
 interface AgentActionAttribution {
   avatarId: string;
+  agentId: string;
+  sessionId: string;
   actorKind: 'agent';
 }
+
+const AUTONOMOUS_COVE_PLAY_INTERVAL_MS = 30_000;
 
 // Non-teaching place centers in town-pixel coords. Built venues resolve from
 // MAP_LOCATIONS; world POIs without a map row provide an inline center derived
@@ -489,6 +497,39 @@ class NpcSimulation {
   covenantRecord: typeof recordCovenantAction = recordCovenantAction;
   /** Test seam; production performs the canonical equipped-emote ownership query. */
   emoteOwnershipQuery: (avatarId: string, animationKey: string) => Promise<boolean> = ownsEquippedEmote;
+  /** Test seam; production lazily loads the zero-network audited slots adapter. */
+  autonomousCoveSlotsPlay: (input: {
+    agentSessionId: string;
+    expectedAgentId: string;
+    expectedAvatarId: string;
+    expectedUserId: string;
+    actionId: string;
+    wager: number;
+  }) => Promise<unknown> = async (input) => {
+    const { playAutonomousCoveSlots } = await import('../routes/cove-slots');
+    return playAutonomousCoveSlots(input);
+  };
+  /** Test seam; production lazily loads the atomic autonomous blackjack adapter. */
+  autonomousCoveBlackjackPlay: (input: {
+    agentSessionId: string;
+    expectedAgentId: string;
+    expectedAvatarId: string;
+    actionId: string;
+    wager: number;
+  }) => Promise<unknown> = async (input) => {
+    const { playAutonomousCoveBlackjack } = await import('../routes/cove-blackjack');
+    return playAutonomousCoveBlackjack(input);
+  };
+  /** Test seam; production re-resolves the live ledger-capable session. */
+  autonomousCoveAgentResolve: (sessionId: string) => Promise<{
+    agentId: string;
+    userId: string | null;
+    avatarId: string | null;
+    ledgerCapable: boolean;
+  } | null> = async (sessionId) => {
+    const { resolveAgentSession } = await import('../middleware/require-auth-or-agent');
+    return resolveAgentSession(sessionId);
+  };
   private arenaSettings: ArenaSettings = { ...DEFAULT_ARENA_SETTINGS };
   private arenaRound: ArenaRoundState | null = null;
 
@@ -496,6 +537,8 @@ class NpcSimulation {
   private agentBotSessions: Map<string, { config: AgentSubstrateRegistration; client: AgentSubstrateClient }> = new Map();
   private npcOverrides: Map<string, string> = new Map(); // npcId → sessionId
   /** Bounded warn-once keys for bodies whose action attribution is unavailable. */
+  /** Elapsed-time limiter reservation; set before async settle to close tag races. */
+  private autonomousCovePlayLastAdmittedAt = new Map<string, number>();
   private missingActionAttributionWarned: Set<string> = new Set();
   // Magic-link onboarding D3 (2026-07-02): direct npcId → agentId for AVATAR-mode
   // (`ocb-`) bodies, written at registerAgentBot and cleared with the ownership-
@@ -1683,7 +1726,8 @@ class NpcSimulation {
    *   move(x:int 32..22496, y:int 32..22496)             -> setNpcPath (findPath)
    *   emote(name in {wave,dance,think,scan,work,celebrate,alert}) -> setNpcActivity
    *   enter_building(buildingId in the 10 MAP_LOCATIONS ids)      -> walk to building
-   *   enter_cove()                                        -> walk to the Cove (casino gateway)
+   *   enter_cove()                                        -> walk to the Cove
+   *   play_cove_game(game=slots|blackjack, wager=game bounds) -> one settled game
    *   enter_poker_room()                                  -> walk to the Cove poker tables
    *   enter_kelp_forest()                                 -> walk to the Kelp Forest portal
    *   talk_to_npc(npcId|buildingId, message<=500)         -> injectAgentChat bubble
@@ -1691,11 +1735,11 @@ class NpcSimulation {
    * Unknown names / bad params are DROPPED (never executed, never throw). Only
    * applies to a body that is in the world; otherwise tags are still stripped.
    *
-   * NOTE (honest scope): this dispatches the VISIBLE in-world effect via sim
-   * methods. The DB-side rewards the authenticated REST handlers add — CT
-   * credit, event logging, RAG teacher reply, knowledge persistence — are NOT
-   * driven from this autonomous cognition path (no request/auth context here).
-   * Those remain available via the authenticated /api/agent/:sid/* endpoints.
+   * NOTE (honest scope): non-economic verbs dispatch only their visible
+   * in-world effects; their REST-side CT/event/RAG/knowledge effects remain on
+   * the authenticated /api/agent/:sid/* endpoints. play_cove_game is the one
+   * economic exception: it re-resolves the live ledger session and delegates to
+   * the existing atomic slots handlers before tagging the visible body.
    */
   dispatchHatcherActions(npcId: string, replyText: string): string {
     if (!replyText) return replyText;
@@ -1706,16 +1750,21 @@ class NpcSimulation {
       return replyText.replace(HATCHER_ACTION_REGEX, '').replace(/\s{2,}/g, ' ').trim();
     }
     const npc = this.npcs.get(npcId);
-    // Resolve covenant attribution ONCE per cognition reply. The in-memory
-    // body/session config is authoritative at this executor boundary; never
-    // re-resolve authentication per action. Missing attribution deliberately
-    // leaves visible world actions unchanged.
+    // Resolve covenant attribution ONCE per cognition reply for non-economic
+    // world records. Money-bearing actions use it only as a claimed binding and
+    // re-resolve the live ledger-capable session before any admission/settle.
+    // Missing attribution deliberately leaves non-economic effects unchanged.
     const sessionId = this.npcOverrides.get(npcId);
-    const avatarId = sessionId
-      ? this.agentBotSessions.get(sessionId)?.config.avatarId
+    const actionConfig = sessionId
+      ? this.agentBotSessions.get(sessionId)?.config
       : undefined;
-    const attribution: AgentActionAttribution | null = avatarId
-      ? { avatarId, actorKind: 'agent' }
+    const attribution: AgentActionAttribution | null = sessionId && actionConfig?.avatarId
+      ? {
+          avatarId: actionConfig.avatarId,
+          agentId: actionConfig.agentId,
+          sessionId,
+          actorKind: 'agent',
+        }
       : null;
     if (!attribution && !this.missingActionAttributionWarned.has(npcId)) {
       if (this.missingActionAttributionWarned.size >= MISSING_ACTION_ATTRIBUTION_WARN_MAX) {
@@ -1789,6 +1838,80 @@ class NpcSimulation {
     // Strip ALL [ACTION:...] tags (including any dropped/unknown ones) so the
     // remainder is clean agent speech. Collapse whitespace left behind.
     return replyText.replace(HATCHER_ACTION_REGEX, '').replace(/\s{2,}/g, ' ').trim();
+  }
+
+  private async settleAutonomousCoveGame(
+    npcId: string,
+    attribution: AgentActionAttribution,
+    game: 'slots' | 'blackjack',
+    wager: number,
+  ): Promise<void> {
+    const resolved = await this.autonomousCoveAgentResolve(attribution.sessionId);
+    if (!resolved) {
+      console.warn('[Hatcher] play_cove_game dropped — invalid or expired agent session');
+      return;
+    }
+    if (!resolved.ledgerCapable) {
+      console.warn('[Hatcher] play_cove_game dropped — agent session is not ledger-authorized');
+      return;
+    }
+    if (!resolved.avatarId || !resolved.userId) {
+      console.warn('[Hatcher] play_cove_game dropped — agent has no bound active avatar');
+      return;
+    }
+    if (resolved.avatarId !== attribution.avatarId || resolved.agentId !== attribution.agentId) {
+      console.warn('[Hatcher] play_cove_game dropped — live agent/avatar binding changed');
+      return;
+    }
+
+    const admittedAt = Date.now();
+    if (this.autonomousCovePlayLastAdmittedAt.size > 5_000) {
+      for (const [avatarId, lastAt] of this.autonomousCovePlayLastAdmittedAt) {
+        if (admittedAt - lastAt >= AUTONOMOUS_COVE_PLAY_INTERVAL_MS) {
+          this.autonomousCovePlayLastAdmittedAt.delete(avatarId);
+        }
+      }
+    }
+    const prior = this.autonomousCovePlayLastAdmittedAt.get(resolved.avatarId);
+    if (prior !== undefined && admittedAt - prior < AUTONOMOUS_COVE_PLAY_INTERVAL_MS) {
+      console.warn('[Hatcher] play_cove_game dropped — rate limit (one play per 30 seconds)');
+      return;
+    }
+    // Reserve before the first async settle await so two tags cannot pass the
+    // elapsed-time check concurrently. Every valid admitted action consumes
+    // the interval even when the money preflight refuses it, preventing a
+    // cognition loop from churning over-cap requests or session reads.
+    this.autonomousCovePlayLastAdmittedAt.set(resolved.avatarId, admittedAt);
+    const actionId = randomUUID();
+    try {
+      if (game === 'slots') {
+        await this.autonomousCoveSlotsPlay({
+          agentSessionId: attribution.sessionId,
+          expectedAgentId: resolved.agentId,
+          expectedAvatarId: resolved.avatarId,
+          expectedUserId: resolved.userId,
+          actionId,
+          wager,
+        });
+      } else {
+        await this.autonomousCoveBlackjackPlay({
+          agentSessionId: attribution.sessionId,
+          expectedAgentId: resolved.agentId,
+          expectedAvatarId: resolved.avatarId,
+          actionId,
+          wager,
+        });
+      }
+      const body = this.npcs.get(npcId);
+      if (body) {
+        this.setNpcActivity(npcId, 'trading', '🎰');
+        body.destinationBuildingId = 'cove';
+        body.intentDescription = `playing ${game} at the cove (${wager} vCLAW)`;
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      console.warn(`[Hatcher] play_cove_game dropped — ${reason}`);
+    }
   }
 
   /** Validate + execute ONE whitelisted Hatcher action. Invalid params drop. */
@@ -1907,6 +2030,66 @@ class NpcSimulation {
         this.recordAgentWorldAction(attribution, 'agent.move', {
           destination: 'cove',
           venue: 'cove',
+        });
+        return;
+      }
+      case 'play_cove_game': {
+        const keys = Object.keys(params);
+        if (keys.some((key) => key !== 'game' && key !== 'wager')) {
+          console.warn('[Hatcher] play_cove_game dropped — unknown parameter');
+          return;
+        }
+        if (params.game !== 'slots' && params.game !== 'blackjack') {
+          console.warn(`[Hatcher] play_cove_game dropped — unsupported game "${params.game}"`);
+          return;
+        }
+        if (!/^\d+$/.test(params.wager ?? '')) {
+          console.warn(`[Hatcher] play_cove_game dropped — wager must be an integer (got "${params.wager}")`);
+          return;
+        }
+        const wager = Number(params.wager);
+        if (params.game === 'slots' && (
+          !Number.isSafeInteger(wager)
+          || wager < COVE_SLOTS_MIN_BET
+          || wager > COVE_SLOTS_MAX_BET
+          || wager % COVE_SLOTS_BET_STEP !== 0
+        )) {
+          console.warn(
+            `[Hatcher] play_cove_game dropped — slots wager must be ${COVE_SLOTS_MIN_BET}..${COVE_SLOTS_MAX_BET} vCLAW in steps of ${COVE_SLOTS_BET_STEP}`,
+          );
+          return;
+        }
+        if (
+          params.game === 'blackjack'
+          && (
+            !Number.isSafeInteger(wager)
+            || wager < BLACKJACK_MIN_BET
+            || wager > BLACKJACK_MAX_BET
+          )
+        ) {
+          console.warn(
+            `[Hatcher] play_cove_game dropped — blackjack wager must be ${BLACKJACK_MIN_BET}..${BLACKJACK_MAX_BET} vCLAW`,
+          );
+          return;
+        }
+        if (!COVE_CENTER) {
+          console.warn('[Hatcher] play_cove_game dropped — cove location missing from MAP_LOCATIONS');
+          return;
+        }
+        const distanceFromCove = Math.hypot(npc.x - COVE_CENTER.x, npc.y - COVE_CENTER.y);
+        if (distanceFromCove > BUILDING_INTERACTION_RADIUS) {
+          console.warn(
+            `[Hatcher] play_cove_game dropped — body is ${Math.round(distanceFromCove)}wu from the cove (need <=${BUILDING_INTERACTION_RADIUS}wu; use enter_cove first)`,
+          );
+          return;
+        }
+        if (!attribution) {
+          console.warn('[Hatcher] play_cove_game dropped — no bound agent/avatar attribution');
+          return;
+        }
+        void this.settleAutonomousCoveGame(npcId, attribution, params.game, wager).catch((err) => {
+          const reason = err instanceof Error ? err.message : String(err);
+          console.warn(`[Hatcher] play_cove_game dropped — ${reason}`);
         });
         return;
       }

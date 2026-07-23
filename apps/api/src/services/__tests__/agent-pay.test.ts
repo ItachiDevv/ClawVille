@@ -42,6 +42,7 @@ function settledOutcome(signature = TX): ExecutePreparedExactPaymentOutcome {
     kind: 'settled',
     signature,
     payer: SENDER_WALLET,
+    payAi: { attempted: true, providerFailure: false },
     result: {
       settled: true,
       isValid: true,
@@ -59,6 +60,7 @@ function failedOutcome(): ExecutePreparedExactPaymentOutcome {
     kind: 'definitive_failure',
     stage: 'verify',
     verifyPassed: false,
+    payAi: { attempted: true, providerFailure: false },
     reason: 'insufficient_funds',
     payer: SENDER_WALLET,
     result: {
@@ -72,6 +74,7 @@ function ambiguousOutcome(): ExecutePreparedExactPaymentOutcome {
   return {
     kind: 'ambiguous',
     verifyPassed: true,
+    payAi: { attempted: true, providerFailure: false },
     reason: 'facilitator_settle_error',
     payer: SENDER_WALLET,
     signature: null,
@@ -88,6 +91,7 @@ function unavailableOutcome(): ExecutePreparedExactPaymentOutcome {
     stage: 'verify',
     verifyPassed: false,
     facilitatorOutage: true,
+    payAi: { attempted: true, providerFailure: true },
     reason: 'facilitator_verify_error',
     payer: SENDER_WALLET,
     result: {
@@ -103,6 +107,7 @@ function meridianSettledOutcome(signature: string): ExecutePreparedExactPaymentO
     kind: 'meridian_settled',
     signature,
     payer: SENDER_WALLET,
+    payAi: { attempted: true, providerFailure: true },
     amounts: {
       grossUsdcAtomic: 1_000_000n,
       platformFeeUsdcAtomic: 0n,

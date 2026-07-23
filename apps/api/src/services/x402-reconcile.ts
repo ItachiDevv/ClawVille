@@ -51,6 +51,11 @@ import {
   type X402Network,
 } from './x402-payai';
 import {
+  assertSettlementAmountsConserved,
+  legacySettlementAmounts,
+  type X402SettlementAmounts,
+} from './x402-settlement-accounting';
+import {
   createConnectionReconcileChainDeps,
   probeUsdcTransfers,
   resolveReconcileNetwork,
@@ -79,12 +84,122 @@ export interface ReconcileRow {
   settlingStartedAt: string | null;
   /** Agent payments settle directly to the recipient; other rows use merchant config. */
   destinationOwner?: string;
+  /** Existing durable agent-payment accounting columns, when populated. */
+  facilitator?: string | null;
+  grossUsdcAtomic?: string | null;
+  platformFeeUsdcAtomic?: string | null;
+  treasuryFeeUsdcAtomic?: string | null;
+  netUsdcAtomic?: string | null;
   metadata: {
     reconcileReason?: string;
     spentTxSignature?: string;
     expectedPayer?: string;
     settleNetwork?: string;
     [k: string]: unknown;
+  };
+}
+
+export interface AgentReconcileSettlementAccounting extends X402SettlementAmounts {
+  facilitator: 'payai' | 'meridian';
+}
+
+function parseAtomicAmount(value: unknown, field: string): bigint {
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) {
+    throw new Error(`invalid durable ${field} accounting`);
+  }
+  return BigInt(value);
+}
+
+/**
+ * Resolve the exact accounting a reconciled agent payment must restore before
+ * fulfillment. Meridian is NEVER inferred from a signature or failure string:
+ * either the complete captured columns or the pre-reconcile durable metadata
+ * evidence must name it and conserve exactly. Old rows with neither marker are
+ * the pre-Meridian PayAI shape and retain legacy gross==net behavior.
+ */
+export function resolveAgentReconcileSettlementAccounting(
+  row: ReconcileRow,
+): AgentReconcileSettlementAccounting {
+  if (row.table !== 'agent_payments') {
+    throw new Error('agent reconcile accounting requested for a non-agent row');
+  }
+  const expectedGross = BigInt(usdCentsToUsdcAtomic(row.usdCents));
+  const columnValues = [
+    row.grossUsdcAtomic,
+    row.platformFeeUsdcAtomic,
+    row.treasuryFeeUsdcAtomic,
+    row.netUsdcAtomic,
+  ];
+  const hasAnyColumn = columnValues.some((value) => value != null);
+  const hasAllColumns = columnValues.every((value) => value != null);
+
+  let facilitator: unknown = row.facilitator;
+  let amounts: X402SettlementAmounts;
+  if (hasAnyColumn || row.facilitator != null) {
+    if (!hasAllColumns || (facilitator !== 'payai' && facilitator !== 'meridian')) {
+      throw new Error('incomplete durable agent x402 accounting columns');
+    }
+    amounts = {
+      grossUsdcAtomic: parseAtomicAmount(row.grossUsdcAtomic, 'grossUsdcAtomic'),
+      platformFeeUsdcAtomic: parseAtomicAmount(
+        row.platformFeeUsdcAtomic,
+        'platformFeeUsdcAtomic',
+      ),
+      treasuryFeeUsdcAtomic: parseAtomicAmount(
+        row.treasuryFeeUsdcAtomic,
+        'treasuryFeeUsdcAtomic',
+      ),
+      netUsdcAtomic: parseAtomicAmount(row.netUsdcAtomic, 'netUsdcAtomic'),
+    };
+  } else {
+    const evidence = row.metadata.x402SettlementAccounting;
+    if (evidence == null) {
+      return { facilitator: 'payai', ...legacySettlementAmounts(expectedGross) };
+    }
+    if (typeof evidence !== 'object') {
+      throw new Error('invalid durable agent x402 accounting evidence');
+    }
+    const durable = evidence as Record<string, unknown>;
+    facilitator = durable.facilitator;
+    if (facilitator !== 'payai' && facilitator !== 'meridian') {
+      throw new Error('invalid durable agent x402 facilitator evidence');
+    }
+    amounts = {
+      grossUsdcAtomic: parseAtomicAmount(durable.grossUsdcAtomic, 'grossUsdcAtomic'),
+      platformFeeUsdcAtomic: parseAtomicAmount(
+        durable.platformFeeUsdcAtomic,
+        'platformFeeUsdcAtomic',
+      ),
+      treasuryFeeUsdcAtomic: parseAtomicAmount(
+        durable.treasuryFeeUsdcAtomic,
+        'treasuryFeeUsdcAtomic',
+      ),
+      netUsdcAtomic: parseAtomicAmount(durable.netUsdcAtomic, 'netUsdcAtomic'),
+    };
+  }
+  assertSettlementAmountsConserved(amounts);
+  if (amounts.grossUsdcAtomic !== expectedGross) {
+    throw new Error('durable agent x402 gross does not match the payment row');
+  }
+  return { facilitator: facilitator as 'payai' | 'meridian', ...amounts };
+}
+
+export function buildAgentReconcileAccountingPatch(
+  row: ReconcileRow,
+): {
+  facilitator: 'payai' | 'meridian';
+  grossUsdcAtomic: string;
+  platformFeeUsdcAtomic: string;
+  treasuryFeeUsdcAtomic: string;
+  netUsdcAtomic: string;
+} {
+  const accounting = resolveAgentReconcileSettlementAccounting(row);
+  return {
+    facilitator: accounting.facilitator,
+    grossUsdcAtomic: accounting.grossUsdcAtomic.toString(),
+    platformFeeUsdcAtomic: accounting.platformFeeUsdcAtomic.toString(),
+    treasuryFeeUsdcAtomic: accounting.treasuryFeeUsdcAtomic.toString(),
+    netUsdcAtomic: accounting.netUsdcAtomic.toString(),
   };
 }
 
@@ -215,6 +330,11 @@ export async function readReconcileRows(): Promise<ReconcileRow[]> {
       recipientWallet: agentPayments.recipientWallet,
       network: agentPayments.network,
       metadata: agentPayments.metadata,
+      facilitator: agentPayments.facilitator,
+      grossUsdcAtomic: agentPayments.grossUsdcAtomic,
+      platformFeeUsdcAtomic: agentPayments.platformFeeUsdcAtomic,
+      treasuryFeeUsdcAtomic: agentPayments.treasuryFeeUsdcAtomic,
+      netUsdcAtomic: agentPayments.netUsdcAtomic,
     })
     .from(agentPayments)
     .where(eq(agentPayments.status, 'reconcile'));
@@ -264,6 +384,11 @@ export async function readReconcileRows(): Promise<ReconcileRow[]> {
         },
       }),
       destinationOwner: r.recipientWallet,
+      facilitator: r.facilitator,
+      grossUsdcAtomic: r.grossUsdcAtomic,
+      platformFeeUsdcAtomic: r.platformFeeUsdcAtomic,
+      treasuryFeeUsdcAtomic: r.treasuryFeeUsdcAtomic,
+      netUsdcAtomic: r.netUsdcAtomic,
     })),
   ];
 }
@@ -413,6 +538,7 @@ const defaultApplyStore: ReconcileApplyStore = {
             .returning({ id: ctTopups.id });
           return claimed.length === 1 ? 'captured' as const : 'lost' as const;
         }
+        const accounting = buildAgentReconcileAccountingPatch(row);
         const claimed = await tx
           .update(agentPayments)
           .set({
@@ -422,6 +548,11 @@ const defaultApplyStore: ReconcileApplyStore = {
             settlingId,
             settlingStartedAt: now,
             failureReason: null,
+            facilitator: accounting.facilitator,
+            grossUsdcAtomic: accounting.grossUsdcAtomic,
+            platformFeeUsdcAtomic: accounting.platformFeeUsdcAtomic,
+            treasuryFeeUsdcAtomic: accounting.treasuryFeeUsdcAtomic,
+            netUsdcAtomic: accounting.netUsdcAtomic,
             metadata: sql`${agentPayments.metadata} || ${JSON.stringify(metadataPatch)}::jsonb`,
             updatedAt: now,
           })

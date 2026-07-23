@@ -50,6 +50,7 @@ function prepared(
     payTo: PAY_TO,
     maxAmountRequired: '20000',
     resource: 'clawville://meridian-fallback-test',
+    description: 'Meridian fallback test',
     mimeType: 'application/json',
     maxTimeoutSeconds: 120,
     extra: {
@@ -144,6 +145,7 @@ describe('PayAI-primary Meridian fallback execution seam', () => {
     const result = await executePreparedExactPayment(prepared('verify-error'));
     expect(result).toMatchObject({
       kind: 'meridian_settled',
+      payAi: { attempted: true, providerFailure: true },
     });
     if (result.kind === 'meridian_settled') {
       expect(result.signature.length).toBeGreaterThan(0);
@@ -160,5 +162,31 @@ describe('PayAI-primary Meridian fallback execution seam', () => {
     });
     expect(payAiPaths).toEqual(['/verify']);
     expect(meridianPaths).toEqual([]);
+  });
+
+  it('skips PayAI entirely for a direct Meridian settlement', async () => {
+    const result = await executePreparedExactPayment(
+      prepared('verify-error'),
+      { skipPayAi: true },
+    );
+    expect(result).toMatchObject({
+      kind: 'meridian_settled',
+      payAi: { attempted: false, providerFailure: false },
+    });
+    expect(payAiPaths).toEqual([]);
+    expect(meridianPaths).toEqual(['/v1/verify', '/v1/settle']);
+  });
+
+  it('direct Meridian verify-only is non-ambiguous and never settles', async () => {
+    const result = await executePreparedExactPayment(
+      prepared('verify-error'),
+      { skipPayAi: true, verifyOnly: true },
+    );
+    expect(result).toMatchObject({
+      kind: 'verify_only',
+      payAi: { attempted: false, providerFailure: false },
+    });
+    expect(payAiPaths).toEqual([]);
+    expect(meridianPaths).toEqual(['/v1/verify']);
   });
 });
