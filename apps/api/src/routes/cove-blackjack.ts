@@ -1957,14 +1957,16 @@ export async function playAutonomousCoveBlackjack(input: {
   expectedAvatarId: string;
   actionId: string;
   wager: number;
-}): Promise<SettledResponse> {
+}, resolveAgent: typeof resolveAgentSession = resolveAgentSession): Promise<SettledResponse> {
   if (!Number.isSafeInteger(input.wager) || input.wager < BLACKJACK_MIN_BET || input.wager > BLACKJACK_MAX_BET) {
     throw new AutonomousCoveBlackjackError('invalid_wager', 400, 'invalid_wager');
   }
   if (!z.string().uuid().safeParse(input.actionId).success) {
     throw new AutonomousCoveBlackjackError('invalid_action_id', 400, 'invalid_action_id');
   }
-  const resolved = await resolveAgentSession(input.agentSessionId);
+  // Test seam only: production callers omit this argument, so the live resolver
+  // and every production behavior remain exactly unchanged.
+  const resolved = await resolveAgent(input.agentSessionId);
   if (!resolved) throw new AutonomousCoveBlackjackError('invalid_or_expired_agent_session', 401, 'invalid_or_expired_agent_session');
   if (!resolved.ledgerCapable) throw new AutonomousCoveBlackjackError('agent_session_not_ledger_authorized', 403, 'agent_session_not_ledger_authorized');
   if (!resolved.userId || !resolved.avatarId) {
