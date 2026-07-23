@@ -43,7 +43,7 @@ export type ActivitySoundName =
   | 'placement-silver'
   | 'placement-bronze';
 
-export type ActivitySynthCueName = 'item-hit' | 'swap-warning';
+export type ActivitySynthCueName = 'item-hit' | 'swap-warning' | 'wrong-way';
 
 const ALL_SOUND_NAMES: readonly ActivitySoundName[] = Object.freeze([
   'countdown-tick',
@@ -299,17 +299,30 @@ export function playActivitySynthCue(name: ActivitySynthCueName): void {
     const gain = ctx.createGain();
     const startAt = ctx.currentTime;
     const isSwapWarning = name === 'swap-warning';
-    const durationSeconds = isSwapWarning ? .72 : .16;
-    const peakGain = isSwapWarning ? .78 : .42;
+    const isWrongWay = name === 'wrong-way';
+    const durationSeconds = isSwapWarning ? .72 : isWrongWay ? .36 : .16;
+    const peakGain = isSwapWarning ? .78 : isWrongWay ? .18 : .42;
 
-    oscillator.type = isSwapWarning ? 'sawtooth' : 'triangle';
-    oscillator.frequency.setValueAtTime(isSwapWarning ? 220 : 920, startAt);
-    oscillator.frequency.exponentialRampToValueAtTime(
-      isSwapWarning ? 72 : 310,
-      startAt + durationSeconds,
+    oscillator.type = isSwapWarning ? 'sawtooth' : isWrongWay ? 'sine' : 'triangle';
+    oscillator.frequency.setValueAtTime(
+      isSwapWarning ? 220 : isWrongWay ? 196 : 920,
+      startAt,
     );
+    if (isWrongWay) {
+      oscillator.frequency.setValueAtTime(196, startAt + .15);
+      oscillator.frequency.setValueAtTime(147, startAt + .18);
+    } else {
+      oscillator.frequency.exponentialRampToValueAtTime(
+        isSwapWarning ? 72 : 310,
+        startAt + durationSeconds,
+      );
+    }
     gain.gain.setValueAtTime(.0001, startAt);
     gain.gain.exponentialRampToValueAtTime(peakGain, startAt + .018);
+    if (isWrongWay) {
+      gain.gain.exponentialRampToValueAtTime(.0001, startAt + .15);
+      gain.gain.exponentialRampToValueAtTime(peakGain * .82, startAt + .19);
+    }
     gain.gain.exponentialRampToValueAtTime(.0001, startAt + durationSeconds);
 
     oscillator.connect(gain);
