@@ -91,6 +91,27 @@ export interface ReefRaceState {
   selfBestGhostPath: GhostFrame[] | null;
 }
 
+/**
+ * Client-only, bounded presentation edges for Reef Race spectacle.
+ *
+ * The wire remains authoritative and unchanged. This ring preserves every
+ * already-received contact edge long enough for the render layer to show it;
+ * singleton "last event" fields can be overwritten when one AoE item hits
+ * several racers in the same React batch.
+ */
+export interface ReefPresentationVfxEvent {
+  seq: number;
+  type: 'item-hit' | 'puffer-detonation' | 'current-swap';
+  position: { x: number; y: number };
+  at: number;
+  itemKind?: ReefPowerUpKind;
+  attackerAvatarId?: string;
+  victimAvatarId?: string;
+  mineId?: string;
+  blocked?: boolean;
+  swapPhase?: 'telegraph' | 'resolved' | 'dodged' | 'fizzled';
+}
+
 const EMPTY_REEF_RACE: ReefRaceState = {
   laps: new Map(),
   selfBestGhostPath: null,
@@ -348,6 +369,16 @@ export interface ActivityState {
     position: { x: number; y: number };
     at: number;
   } | null;
+  /** Latest hit on self, immune to later same-tick hits on other racers. */
+  lastSelfItemHitEvent: {
+    attackerAvatarId: string;
+    victimAvatarId: string;
+    itemKind: ReefPowerUpKind;
+    position: { x: number; y: number };
+    at: number;
+  } | null;
+  /** Bounded client-only event ring consumed by world-space item VFX. */
+  reefPresentationVfxEvents: ReefPresentationVfxEvent[];
   lastPowerUpCollectedEvent: {
     collectorAvatarId: string;
     kind?: ReefPowerUpKind;
@@ -683,6 +714,20 @@ function hydrateFromWorld(world: WorldState, snapshotAtMs: number | undefined): 
 
 // ─── Empty-state factory (shared by initial state + reset) ──────────────────
 
+const REEF_PRESENTATION_VFX_CAPACITY = 128;
+let reefPresentationVfxSeq = 0;
+
+function appendReefPresentationVfxEvent(
+  events: ReefPresentationVfxEvent[],
+  event: Omit<ReefPresentationVfxEvent, 'seq'>,
+): ReefPresentationVfxEvent[] {
+  const next = events.length >= REEF_PRESENTATION_VFX_CAPACITY
+    ? events.slice(events.length - REEF_PRESENTATION_VFX_CAPACITY + 1)
+    : events.slice();
+  next.push({ ...event, seq: ++reefPresentationVfxSeq });
+  return next;
+}
+
 function emptyState(): Pick<
   ActivityState,
   | 'entities'
@@ -721,6 +766,8 @@ function emptyState(): Pick<
   | 'lastWipeoutEvent'
   | 'reefMines'
   | 'lastItemHitEvent'
+  | 'lastSelfItemHitEvent'
+  | 'reefPresentationVfxEvents'
   | 'lastPowerUpCollectedEvent'
   | 'lastGambleDudEvent'
   | 'lastCurrentSwapEvent'
@@ -780,6 +827,8 @@ function emptyState(): Pick<
     lastWipeoutEvent: null,
     reefMines: new Map(),
     lastItemHitEvent: null,
+    lastSelfItemHitEvent: null,
+    reefPresentationVfxEvents: [],
     lastPowerUpCollectedEvent: null,
     lastGambleDudEvent: null,
     lastCurrentSwapEvent: null,
@@ -1283,9 +1332,23 @@ export const useActivityStore = create<ActivityState>()(
                 at,
               }
             : null;
+          const reefPresentationVfxEvents = itemHit
+            ? appendReefPresentationVfxEvent(state.reefPresentationVfxEvents, {
+                type: 'item-hit',
+                position: frame.position,
+                itemKind: frame.itemKind,
+                attackerAvatarId: itemHit.attackerAvatarId,
+                victimAvatarId: frame.dstAvatarId,
+                at,
+              })
+            : state.reefPresentationVfxEvents;
           set({
             events: { ...state.events, hits },
             ...(itemHit ? { lastItemHitEvent: itemHit } : {}),
+            ...(itemHit && frame.dstAvatarId === state.selfAvatarId
+              ? { lastSelfItemHitEvent: itemHit }
+              : {}),
+            ...(itemHit ? { reefPresentationVfxEvents } : {}),
             ...(itemHit && frame.dstAvatarId === state.selfAvatarId &&
               (frame.itemKind === 'rr-tide-wave' || frame.itemKind === 'rr-whirlpool')
               ? {
@@ -1375,11 +1438,32 @@ export const useActivityStore = create<ActivityState>()(
           } else {
             reefMines.delete(frame.mineId);
           }
-          set({ reefMines });
+          const isDetonation = frame.phase === 'hit' || frame.phase === 'blocked';
+          set({
+            reefMines,
+            ...(isDetonation
+              ? {
+                  reefPresentationVfxEvents: appendReefPresentationVfxEvent(
+                    state.reefPresentationVfxEvents,
+                    {
+                      type: 'puffer-detonation',
+                      position: frame.position,
+                      mineId: frame.mineId,
+                      victimAvatarId: frame.victimAvatarId,
+                      blocked: frame.phase === 'blocked',
+                      at: Date.now(),
+                    },
+                  ),
+                }
+              : {}),
+          });
           break;
         }
 
         case 'event.current_swap':
+          {
+            const at = Date.now();
+            const position = frame.position ?? { x: 0, y: 0 };
           set({
             lastCurrentSwapEvent: {
               phase: frame.phase,
@@ -1387,9 +1471,21 @@ export const useActivityStore = create<ActivityState>()(
               victimAvatarId: frame.victimAvatarId,
               resolvesAtMs: frame.resolvesAtMs,
               position: frame.position,
-              at: Date.now(),
+              at,
             },
+            reefPresentationVfxEvents: appendReefPresentationVfxEvent(
+              state.reefPresentationVfxEvents,
+              {
+                type: 'current-swap',
+                position,
+                attackerAvatarId: frame.attackerAvatarId,
+                victimAvatarId: frame.victimAvatarId,
+                swapPhase: frame.phase,
+                at,
+              },
+            ),
           });
+          }
           break;
 
         case 'event.wave_sweep':
