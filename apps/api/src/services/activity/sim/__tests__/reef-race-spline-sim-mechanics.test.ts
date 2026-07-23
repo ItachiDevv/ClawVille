@@ -417,6 +417,7 @@ describe('ReefRaceSplineSim — race mechanics (v7)', () => {
       expect(delta.powerUps).toContainEqual({
         spawnId: pickup.spawnId,
         kind: pickup.kind,
+        variant: pickup.variant,
         collectorAvatarId: A,
       });
     });

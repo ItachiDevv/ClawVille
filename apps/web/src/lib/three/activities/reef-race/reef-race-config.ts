@@ -249,8 +249,8 @@ export const GHOST_MAX_FRAMES = 300;
 
 // ─── Power-up pickup boxes ────────────────────────────────────────────────────
 
-/** Maximum simultaneous pickup boxes (InstancedMesh pre-allocated). */
-export const MAX_PICKUPS = 16;
+/** R18d: all 30 contested-row pickup boxes share one pre-allocated draw. */
+export const MAX_PICKUPS = 30;
 
 /** Box geometry size in wu. */
 export const PICKUP_BOX_SIZE = 60;
@@ -684,10 +684,19 @@ export const SURF_PITCH_HALF_LEN  = 120;  // wu — sample the wave at nose & ta
 export const SURF_ROLL_HALF_WIDTH = 36;   // wu — sample the surface at left & right rail
 export const SURF_PITCH_CLAMP     = 0.6;  // ±34°
 export const SURF_ROLL_CLAMP      = 0.8;  // ±46°
-// Founder knob: k=7 lets heave glide through chop; lower increases transient water overlap.
-export const SURF_HEAVE_DAMPING   = 7;
-// Founder knob: k=3.5 lets pitch/roll cut through small chop instead of tracking it tightly.
-export const SURF_TILT_DAMPING    = 3.5;
+// Speed-aware tilt response endpoints. The long-swell octave set stays fixed;
+// only the tilt follower rate blends with planar speed.
+// The 290–356wu/s run passed with the low-speed tilt rate; the 823–873wu/s run
+// showed maxSpeed normalization reached the high-speed tilt rate too late.
+export const SURF_CONFORM_PLANING_START_SPEED = 350;
+export const SURF_CONFORM_PLANING_FULL_SPEED  = 800;
+// k3.5 produced 3.2–3.4 Y flips/s with tiny median deltas but visible phase lag;
+// constant k10 is the least-lag rate and follows the composite surface datum.
+export const SURF_HEAVE_DAMPING = 10;
+export const SURF_TILT_DAMPING_LOW_SPEED   = 6;  // Prior low-speed run was responsive and passed.
+// Latest racing pass at k1.2: pitch RMS 0.58/1.05/0.84°, frequency 0.3/0.6/0.4Hz,
+// flips 0.7/1.6/1.2 per second (one bot remains 0.1/s above the flip target).
+export const SURF_TILT_DAMPING_HIGH_SPEED  = 1.2;
 // Founder knob: higher values follow velocity-slip bank faster; k=8 smooths 30 Hz lean steps.
 export const SURF_BANK_LEAN_DAMPING = 8;
 
@@ -752,6 +761,17 @@ export const CLIENT_SURF_TICK_DT = 1 / 30;
  * fixed steps per frame.
  */
 export const CLIENT_SURF_MAX_ACCUM = 0.1;
+
+/** R18b vertical prediction mirrors the authoritative 30Hz spline sim. */
+export const CLIENT_REEF_JUMP_IMPULSE_MANUAL = 720;
+export const CLIENT_REEF_JUMP_IMPULSE_RAMP = 920;
+export const CLIENT_REEF_GRAVITY = 1200;
+export const CLIENT_REEF_TRICK_STEER_DEADZONE_RAD = 0.035;
+/** Per-snapshot soft vertical correction and true-divergence hard snap. */
+export const CLIENT_REBASE_HEIGHT = 0.35;
+export const CLIENT_REBASE_HEIGHT_SNAP = 140;
+/** Presentation-only inverse correction cap; decays with the XZ rebase offset. */
+export const SURF_REBASE_HEIGHT_OFFSET_MAX = 90;
 
 /**
  * Re-baseline blend factors applied per NEW server snapshot for the self kart.

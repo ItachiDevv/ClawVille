@@ -54,6 +54,7 @@ const _surgeColors: Record<ReefRaceSurgeSource, THREE.Color> = {
   'turbo-bubble': new THREE.Color('#ffe45e'),
   'launch-boost': new THREE.Color('#7cffcb'),
   slipstream: new THREE.Color('#b78cff'),
+  'trick-surge': new THREE.Color('#ff72e1'),
   'wall-slam': new THREE.Color('#ff6b6b'),
 };
 

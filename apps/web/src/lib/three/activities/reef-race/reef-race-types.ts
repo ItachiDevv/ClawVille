@@ -95,6 +95,10 @@ export interface ReefRaceEntity {
   boosting?: boolean;
   /** v2 wall consequence — authoritative wipeout/respawn gate. */
   wipedOut?: boolean;
+  /** R18d Bubble Beam float/control-lock deadline (server epoch ms). */
+  bubbledUntilMs?: number;
+  /** R18d Remora Rocket autopilot deadline (server epoch ms). */
+  remoraUntilMs?: number;
 }
 
 // ─── Ghost replay frame ───────────────────────────────────────────────────────

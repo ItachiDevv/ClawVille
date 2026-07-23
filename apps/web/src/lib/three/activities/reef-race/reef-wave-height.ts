@@ -23,6 +23,11 @@
  * `.setStrength` so it matches whatever the water is currently rendering (committed defaults
  * in prod; live values under the water tuner).
  *
+ * DELIBERATE POSE/RENDER SPLIT (R18a): the shader and `surfWaveHeightAt` retain all seven
+ * octaves. `surfConformHeightAt` inverts that SAME full horizontal map, then returns only the
+ * long-swell vertical octaves 0..2. Boards therefore ride the rendered groundswell while
+ * planing over 300–640wu chop; boost portals keep the full-detail sampler and continue bobbing.
+ *
  * NOT applied: the bank edge-taper `mask` (uv.x → 0 at the ribbon edges). The board rides
  * near the channel centre where mask≈1; if a board parks against a bank the height will read
  * slightly high there (acceptable for the sandbox; add the lateral-fraction mask if needed).
@@ -32,6 +37,7 @@ import { WATER_TUNING } from './reef-water-tuning';
 
 const TWO_PI = 6.28318530718;
 const NWAVES = 7;
+const CONFORM_WAVES = 3;
 
 // Mirror of surf-ribbon.tsx WDIR (pre-normalized), WLEN, WAMP, WSPD, WSTEEP (7 octaves).
 const WDIR: ReadonlyArray<readonly [number, number]> = [
@@ -52,8 +58,18 @@ const WSTEEP = [0.92, 0.90, 0.86, 0.80, 0.66, 0.52, 0.42];
 // reentrant), so a shared module scratch avoids per-call allocation.
 const _disp = [0, 0, 0];
 
-/** Full 7-octave Gerstner displacement at grid point (bx,bz), time tSec. Writes _disp. */
-function gerstnerDisp(bx: number, bz: number, tSec: number, waveAmp: number, setStrength: number): void {
+/**
+ * Full 7-octave horizontal Gerstner displacement at grid point (bx,bz), time tSec.
+ * Vertical displacement includes only the first `heightWaveCount` octaves. Writes _disp.
+ */
+function gerstnerDisp(
+  bx: number,
+  bz: number,
+  tSec: number,
+  waveAmp: number,
+  setStrength: number,
+  heightWaveCount: number,
+): void {
   // Traveling "set" envelope on the two long swells (mirror surf-ribbon.tsx); negative-safe.
   const setSwing = 0.28 * Math.min(setStrength, 1) + 0.4 * Math.max(setStrength - 1, 0);
   const setFreq = 0.00075 * (1 + 0.6 * Math.max(setStrength - 1, 0));
@@ -69,10 +85,9 @@ function gerstnerDisp(bx: number, bz: number, tSec: number, waveAmp: number, set
     const q = WSTEEP[k] / (w * Math.max(a, 1e-3) * NWAVES); // matches shader Q normalisation
     const ph = w * (WDIR[k][0] * bx + WDIR[k][1] * bz) + WSPD[k] * w * tSec;
     const cc = Math.cos(ph);
-    const ss = Math.sin(ph);
     dispX += q * a * WDIR[k][0] * cc;
     dispZ += q * a * WDIR[k][1] * cc;
-    dispY += a * ss;
+    if (k < heightWaveCount) dispY += a * Math.sin(ph);
   }
   _disp[0] = dispX; _disp[1] = dispZ; _disp[2] = dispY;
 }
@@ -83,7 +98,12 @@ function gerstnerDisp(bx: number, bz: number, tSec: number, waveAmp: number, set
  * placed at `elevationAtT + this + rideHeight` sits ON the rendered surface through crests
  * and troughs (no float / submerge). Add to the centerline datum (`elevationAtT`).
  */
-export function surfWaveHeightAt(x: number, z: number, tSec: number): number {
+function invertedWaveHeightAt(
+  x: number,
+  z: number,
+  tSec: number,
+  heightWaveCount: number,
+): number {
   const waveAmp = WATER_TUNING.waveAmp;
   const setStrength = WATER_TUNING.setStrength;
 
@@ -92,10 +112,24 @@ export function surfWaveHeightAt(x: number, z: number, tSec: number): number {
   let bx = x;
   let bz = z;
   for (let i = 0; i < 8; i++) {
-    gerstnerDisp(bx, bz, tSec, waveAmp, setStrength);
+    // Height is unused while finding the base point; skip those sine evaluations.
+    gerstnerDisp(bx, bz, tSec, waveAmp, setStrength, 0);
     bx = x - _disp[0];
     bz = z - _disp[1];
   }
-  gerstnerDisp(bx, bz, tSec, waveAmp, setStrength);
+  gerstnerDisp(bx, bz, tSec, waveAmp, setStrength, heightWaveCount);
   return _disp[2];
+}
+
+export function surfWaveHeightAt(x: number, z: number, tSec: number): number {
+  return invertedWaveHeightAt(x, z, tSec, NWAVES);
+}
+
+/**
+ * Board-pose conform datum at world (x,z): full rendered horizontal-map inversion,
+ * but vertical height from only the 2300/1500/980wu long swells. The rendered water
+ * and boost portals deliberately retain all seven vertical octaves.
+ */
+export function surfConformHeightAt(x: number, z: number, tSec: number): number {
+  return invertedWaveHeightAt(x, z, tSec, CONFORM_WAVES);
 }
