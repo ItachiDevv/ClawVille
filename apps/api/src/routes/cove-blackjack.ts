@@ -93,6 +93,10 @@ import { resolveAgentSession } from '../middleware/require-auth-or-agent';
 import { isGuestUser } from '../middleware/require-non-guest';
 import { noStorePrivate } from '../middleware/no-store';
 import { npcSimulation } from '../services/npc-simulation';
+import {
+  resolveAutonomousCoveAgentBinding,
+  type ResolvedAutonomousCoveAgent,
+} from '../services/autonomous-cove-agent-binding';
 import { createServerSeed } from '../services/provable-rng';
 import {
   playHand,
@@ -1950,6 +1954,11 @@ interface AutonomousShoeLockRow extends ShoeLockRow {
   hands_played: number | string;
 }
 
+type AutonomousCoveBlackjackAgentResolver = (
+  sessionId: string,
+  expectedAgentId: string,
+) => Promise<ResolvedAutonomousCoveAgent | null>;
+
 /** One action, one transaction, one fully-settled basic-strategy hand. */
 export async function playAutonomousCoveBlackjack(input: {
   agentSessionId: string;
@@ -1957,7 +1966,13 @@ export async function playAutonomousCoveBlackjack(input: {
   expectedAvatarId: string;
   actionId: string;
   wager: number;
-}, resolveAgent: typeof resolveAgentSession = resolveAgentSession): Promise<SettledResponse> {
+}, resolveAgent: AutonomousCoveBlackjackAgentResolver = (
+  sessionId,
+  expectedAgentId,
+) => resolveAutonomousCoveAgentBinding(
+  { sessionId, expectedAgentId },
+  resolveAgentSession,
+)): Promise<SettledResponse> {
   if (!Number.isSafeInteger(input.wager) || input.wager < BLACKJACK_MIN_BET || input.wager > BLACKJACK_MAX_BET) {
     throw new AutonomousCoveBlackjackError('invalid_wager', 400, 'invalid_wager');
   }
@@ -1966,7 +1981,10 @@ export async function playAutonomousCoveBlackjack(input: {
   }
   // Test seam only: production callers omit this argument, so the live resolver
   // and every production behavior remain exactly unchanged.
-  const resolved = await resolveAgent(input.agentSessionId);
+  const resolved = await resolveAgent(
+    input.agentSessionId,
+    input.expectedAgentId,
+  );
   if (!resolved) throw new AutonomousCoveBlackjackError('invalid_or_expired_agent_session', 401, 'invalid_or_expired_agent_session');
   if (!resolved.ledgerCapable) throw new AutonomousCoveBlackjackError('agent_session_not_ledger_authorized', 403, 'agent_session_not_ledger_authorized');
   if (!resolved.userId || !resolved.avatarId) {
@@ -2056,8 +2074,27 @@ export async function playAutonomousCoveBlackjack(input: {
       FOR UPDATE
     `);
     const avatarLock = avatarRows[0];
-    if (!avatarLock || avatarLock.user_id !== userId || avatarLock.is_active !== true) {
+    if (!avatarLock || avatarLock.user_id !== userId) {
       throw new AutonomousCoveBlackjackError('active_avatar_binding_changed', 403, 'active_avatar_binding_changed');
+    }
+    if (avatarLock.is_active !== true) {
+      const houseRows = await tx.execute<{ authorized: boolean }>(sql`
+        SELECT true AS authorized
+        FROM openclaw_bots b
+        JOIN users u ON u.id = b.user_id
+        WHERE b.agent_id = ${input.expectedAgentId}
+          AND b.user_id = ${userId}
+          AND b.is_house = true
+          AND u.is_guest = false
+        LIMIT 1
+      `);
+      if (houseRows[0]?.authorized !== true) {
+        throw new AutonomousCoveBlackjackError(
+          'active_avatar_binding_changed',
+          403,
+          'active_avatar_binding_changed',
+        );
+      }
     }
 
     // A split followed by doubles on both sub-hands commits at most 4x base.

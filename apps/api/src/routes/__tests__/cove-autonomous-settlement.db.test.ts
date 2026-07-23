@@ -52,14 +52,23 @@ describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => 
   const avatarName = `CoveDb${Date.now().toString(36)}${Math.floor(Math.random() * 10_000)}`;
   const agentId = `cove-db-agent-${suffix}`;
   const bearer = `cove-db-bearer-${suffix}`;
+  const houseEmail = `cove-house-db-${suffix}@clawville-test.invalid`;
+  const houseAvatarName = `CoveHouse${Date.now().toString(36)}${Math.floor(Math.random() * 10_000)}`;
+  const houseAgentId = `cove-house-agent-${suffix}`;
+  const houseSessionId = `oc-${Buffer.from(randomUUID()).toString('base64url')}`;
   const originalCap = process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW;
 
   let userId = '';
   let avatarId = '';
   let botId = '';
+  let houseUserId = '';
+  let houseAvatarId = '';
+  let houseBotId = '';
   let treasuryAvatarId = '';
   const freshSlotSpinIds = new Set<string>();
   const freshBlackjackHandIds = new Set<string>();
+  const houseSlotSpinIds = new Set<string>();
+  const houseBlackjackHandIds = new Set<string>();
   const blackjackActionIds = new Set<string>();
 
   const boundResolution = () => Promise.resolve({
@@ -189,6 +198,41 @@ describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => 
     }
   }
 
+  async function drainHousePostCommitSideEffects() {
+    for (const spinId of houseSlotSpinIds) {
+      for (let attempt = 0; attempt < 200; attempt++) {
+        const rows = await dbMod.db.execute(sql`
+          SELECT id FROM events
+          WHERE user_id = ${houseUserId}
+            AND event_type = 'cove.slots.spin.executed'
+            AND payload ->> 'spinId' = ${spinId}
+          LIMIT 1
+        `);
+        if (rows[0]) break;
+        await delay(25);
+      }
+    }
+    for (const handId of houseBlackjackHandIds) {
+      for (let attempt = 0; attempt < 200; attempt++) {
+        const events = await dbMod.db.execute(sql`
+          SELECT id FROM events
+          WHERE user_id = ${houseUserId}
+            AND event_type = 'cove.blackjack.hand.settled'
+            AND payload ->> 'handId' = ${handId}
+          LIMIT 1
+        `);
+        const memories = await dbMod.db.execute(sql`
+          SELECT id FROM npc_memories
+          WHERE entity_id = ${houseAvatarId}
+            AND metadata ->> 'handId' = ${handId}
+          LIMIT 1
+        `);
+        if (events[0] && memories[0]) break;
+        await delay(25);
+      }
+    }
+  }
+
   async function removeTrackedTreasuryCredits() {
     if (!treasuryAvatarId || blackjackActionIds.size === 0) return;
     await dbMod.db.transaction(async (tx: any) => {
@@ -282,6 +326,47 @@ describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => 
       .where(eq(dbMod.avatars.id, avatarId));
   }
 
+  async function clearHouseMoneyPathRows() {
+    if (!houseUserId) return;
+    await delay(25);
+    await dbMod.db.delete(dbMod.npcMemories).where(eq(dbMod.npcMemories.entityId, houseAvatarId));
+    await dbMod.db.delete(dbMod.events).where(eq(dbMod.events.userId, houseUserId));
+    await dbMod.db.delete(dbMod.coveGameEvents).where(eq(dbMod.coveGameEvents.userId, houseUserId));
+
+    const slotRows = await dbMod.db
+      .select({ id: dbMod.slotSessions.id })
+      .from(dbMod.slotSessions)
+      .where(eq(dbMod.slotSessions.userId, houseUserId));
+    for (const row of slotRows) {
+      await dbMod.db.delete(dbMod.slotSpins).where(eq(dbMod.slotSpins.sessionId, row.id));
+    }
+    await dbMod.db.delete(dbMod.slotSessions).where(eq(dbMod.slotSessions.userId, houseUserId));
+
+    const shoeRows = await dbMod.db
+      .select({ id: dbMod.blackjackShoes.id })
+      .from(dbMod.blackjackShoes)
+      .where(eq(dbMod.blackjackShoes.userId, houseUserId));
+    for (const row of shoeRows) {
+      await dbMod.db.delete(dbMod.blackjackHands).where(eq(dbMod.blackjackHands.shoeId, row.id));
+    }
+    await dbMod.db.delete(dbMod.blackjackShoes).where(eq(dbMod.blackjackShoes.userId, houseUserId));
+    await dbMod.db
+      .delete(dbMod.clawTokenTransactions)
+      .where(eq(dbMod.clawTokenTransactions.avatarId, houseAvatarId));
+    await dbMod.db
+      .update(dbMod.avatars)
+      .set({
+        clawTokens: 100_000,
+        softBalance: 100_000,
+        boughtBalance: 0,
+        earnedBalance: 0,
+        // Production house-agent-seeder intentionally keeps this false so the
+        // ledger avatar never duplicates the hosted `ocb-*` world body.
+        isActive: false,
+      })
+      .where(eq(dbMod.avatars.id, houseAvatarId));
+  }
+
   async function expectCode(promise: Promise<unknown>, code: string, status?: number) {
     try {
       await promise;
@@ -342,6 +427,58 @@ describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => 
       .returning({ id: dbMod.agentBots.id });
     botId = bot.id;
 
+    const [houseUser] = await dbMod.db
+      .insert(dbMod.users)
+      .values({
+        email: houseEmail,
+        passwordHash: `$test$disabled$house$${suffix}`,
+        emailVerified: true,
+        name: 'Autonomous Cove House DB Test',
+        isGuest: false,
+      })
+      .returning({ id: dbMod.users.id });
+    houseUserId = houseUser.id;
+
+    const [houseAvatar] = await dbMod.db
+      .insert(dbMod.avatars)
+      .values({
+        userId: houseUserId,
+        name: houseAvatarName,
+        species: 'cat',
+        color: 'blue',
+        gender: 'female',
+        archetype: 'brave-adventurer',
+        personality: { habitat: 'reef', hobby: 'testing', greeting: 'hello' },
+        stats: { strength: 5, defence: 5, movement: 5 },
+        clawTokens: 100_000,
+        softBalance: 100_000,
+        boughtBalance: 0,
+        earnedBalance: 0,
+        isActive: false,
+        isGuest: false,
+      })
+      .returning({ id: dbMod.avatars.id });
+    houseAvatarId = houseAvatar.id;
+
+    const [houseBot] = await dbMod.db
+      .insert(dbMod.agentBots)
+      .values({
+        agentId: houseAgentId,
+        identityType: 'custom',
+        protocol: 'nanoclaw',
+        mode: 'avatar',
+        name: houseAvatarName,
+        species: 'lobster',
+        userId: houseUserId,
+        isHouse: true,
+        // Mirrors the hosted fleet: this local session is intentionally absent
+        // from resolveAgentSession and cannot authorize ledger writes.
+        sessionExpiresAt: null,
+        sessionKeyHash: null,
+      })
+      .returning({ id: dbMod.agentBots.id });
+    houseBotId = houseBot.id;
+
     const config = buildHostedAvatarAgentConfig({
       agentId,
       sessionId: bearer,
@@ -366,10 +503,15 @@ describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => 
     __resetSpinRateLimit();
     __resetBlackjackRateLimits();
     await drainPostCommitSideEffects();
+    await drainHousePostCommitSideEffects();
     await removeTrackedTreasuryCredits();
     await clearPlayerMoneyPathRows();
+    await clearHouseMoneyPathRows();
+    (npcSimulation as any).autonomousCovePlayLastAdmittedAt.delete(houseAvatarId);
     freshSlotSpinIds.clear();
     freshBlackjackHandIds.clear();
+    houseSlotSpinIds.clear();
+    houseBlackjackHandIds.clear();
   }, DB_HOOK_TIMEOUT_MS);
 
   afterAll(async () => {
@@ -377,12 +519,17 @@ describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => 
     else process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW = originalCap;
     npcSimulation.unregisterAgentBot(bearer);
     await drainPostCommitSideEffects();
+    await drainHousePostCommitSideEffects();
     await removeTrackedTreasuryCredits();
     await clearPlayerMoneyPathRows();
+    await clearHouseMoneyPathRows();
     // covenant_action_records are intentionally append-only; full-schema
     // migration 0029 forbids DELETE. The reviewer disposes this throwaway DB,
     // while every mutable fixture/ledger/balance row is reversed above.
     if (botId) await dbMod.db.delete(dbMod.agentBots).where(eq(dbMod.agentBots.id, botId));
+    if (houseBotId) await dbMod.db.delete(dbMod.agentBots).where(eq(dbMod.agentBots.id, houseBotId));
+    if (houseAvatarId) await dbMod.db.delete(dbMod.avatars).where(eq(dbMod.avatars.id, houseAvatarId));
+    if (houseUserId) await dbMod.db.delete(dbMod.users).where(eq(dbMod.users.id, houseUserId));
     if (avatarId) await dbMod.db.delete(dbMod.avatars).where(eq(dbMod.avatars.id, avatarId));
     if (userId) await dbMod.db.delete(dbMod.users).where(eq(dbMod.users.id, userId));
   }, DB_HOOK_TIMEOUT_MS);
@@ -409,6 +556,199 @@ describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => 
     const after = await avatarBalance();
     expect(after.clawTokens - before.clawTokens).toBe(Number(result.winAmount) - 20);
     expect(after.clawTokens).toBe(after.softBalance + after.boughtBalance + after.earnedBalance);
+  }, DB_TEST_TIMEOUT_MS);
+
+  it('house/hosted: an inactive bound house avatar settles real slots and blackjack through the world action', async () => {
+    const worldSettle = (
+      npcSimulation as unknown as {
+        settleAutonomousCoveGame: (
+          npcId: string,
+          attribution: {
+            avatarId: string;
+            agentId: string;
+            sessionId: string;
+            actorKind: 'agent';
+          },
+          game: 'slots' | 'blackjack',
+          wager: number,
+        ) => Promise<void>;
+      }
+    ).settleAutonomousCoveGame.bind(npcSimulation);
+    const attribution = {
+      avatarId: houseAvatarId,
+      agentId: houseAgentId,
+      sessionId: houseSessionId,
+      actorKind: 'agent' as const,
+    };
+
+    const [houseBeforeSlots] = await dbMod.db
+      .select()
+      .from(dbMod.avatars)
+      .where(eq(dbMod.avatars.id, houseAvatarId));
+    await worldSettle('test-house-body', attribution, 'slots', 20);
+    const houseSlotRows = await dbMod.db
+      .select()
+      .from(dbMod.clawTokenTransactions)
+      .where(eq(dbMod.clawTokenTransactions.avatarId, houseAvatarId));
+    const houseSlotDebits = houseSlotRows.filter(
+      (row: any) => row.amount < 0 && row.metadata?.autonomousGame === 'slots',
+    );
+    expect(houseSlotDebits).toHaveLength(1);
+    expect(houseSlotDebits[0].amount).toBe(-20);
+    expect(houseSlotDebits[0].metadata?.autonomousCove).toBe(true);
+    const slotActionId = houseSlotDebits[0].metadata?.autonomousActionId;
+    expect(typeof slotActionId).toBe('string');
+    const [houseAfterSlots] = await dbMod.db
+      .select()
+      .from(dbMod.avatars)
+      .where(eq(dbMod.avatars.id, houseAvatarId));
+    const slotSession = await dbMod.db.query.slotSessions.findFirst({
+      where: eq(dbMod.slotSessions.userId, houseUserId),
+    });
+    expect(slotSession).toBeTruthy();
+    const [slotSpin] = await dbMod.db
+      .select()
+      .from(dbMod.slotSpins)
+      .where(eq(dbMod.slotSpins.sessionId, slotSession.id));
+    expect(slotSpin).toBeTruthy();
+    houseSlotSpinIds.add(slotSpin.id);
+    expect(houseAfterSlots.clawTokens - houseBeforeSlots.clawTokens)
+      .toBe(Number(slotSpin.winAmount) - 20);
+    expect(houseAfterSlots.isActive).toBe(false);
+    expect(await dbMod.db
+      .select()
+      .from(dbMod.clawTokenTransactions)
+      .where(and(
+        eq(dbMod.clawTokenTransactions.avatarId, avatarId),
+        sql`${dbMod.clawTokenTransactions.metadata} ->> 'autonomousActionId' = ${slotActionId}`,
+      ))).toHaveLength(0);
+
+    const clientSeed = 'db7e57a1ed4a0d00';
+    let serverSeed = '';
+    for (let attempt = 0; attempt < 1_000; attempt++) {
+      const candidate = createHash('sha256').update(`cove-house-db-raked-${attempt}`).digest('hex');
+      const predicted = buildBlackjackBasicStrategyHand({
+        serverSeed: candidate,
+        clientSeed,
+        nonce: 0,
+        cursor: 0,
+        bet: 100n,
+        dealtBefore: 0,
+      });
+      if (predicted.result.totalPayout > predicted.result.totalBet) {
+        serverSeed = candidate;
+        break;
+      }
+    }
+    expect(serverSeed).not.toBe('');
+    await dbMod.db.insert(dbMod.blackjackShoes).values({
+      userId: houseUserId,
+      guestFpHash: null,
+      currency: 'clawtoken',
+      serverSeed,
+      serverSeedHash: createHash('sha256').update(serverSeed).digest('hex'),
+      clientSeed,
+      startingBalance: '0',
+    });
+
+    (npcSimulation as any).autonomousCovePlayLastAdmittedAt.delete(houseAvatarId);
+    const houseBeforeBlackjack = houseAfterSlots.clawTokens;
+    await worldSettle('test-house-body', attribution, 'blackjack', 100);
+    const blackjackDebitRows = (await dbMod.db
+      .select()
+      .from(dbMod.clawTokenTransactions)
+      .where(eq(dbMod.clawTokenTransactions.avatarId, houseAvatarId)))
+      .filter((row: any) => (
+        row.amount < 0
+        && row.metadata?.autonomousGame === 'blackjack'
+      ));
+    expect(blackjackDebitRows.length).toBeGreaterThan(0);
+    const blackjackActionId = blackjackDebitRows[0].metadata?.autonomousActionId;
+    expect(typeof blackjackActionId).toBe('string');
+    blackjackActionIds.add(blackjackActionId);
+
+    const blackjackRows = await rowsForAction(blackjackActionId);
+    const houseBlackjackRows = blackjackRows.filter((row: any) => row.avatarId === houseAvatarId);
+    const treasuryRows = blackjackRows.filter((row: any) => row.avatarId === treasuryAvatarId);
+    const stakeRows = houseBlackjackRows.filter((row: any) => row.amount < 0);
+    const payoutRows = houseBlackjackRows.filter((row: any) => row.amount > 0);
+    expect(stakeRows.length).toBeGreaterThan(0);
+    expect(payoutRows.length).toBeGreaterThan(0);
+    expect(treasuryRows.length).toBeGreaterThan(0);
+    for (const row of [...stakeRows, ...payoutRows, ...treasuryRows]) {
+      expect(row.metadata?.autonomousCove).toBe(true);
+      expect(row.metadata?.autonomousGame).toBe('blackjack');
+      expect(row.metadata?.autonomousActionId).toBe(blackjackActionId);
+    }
+    expect(blackjackRows
+      .filter((row: any) => row.amount > 0)
+      .every((row: any) => (
+        row.avatarId === houseAvatarId || row.avatarId === treasuryAvatarId
+      ))).toBe(true);
+
+    const handId = stakeRows[0].metadata?.handId;
+    expect(typeof handId).toBe('string');
+    houseBlackjackHandIds.add(handId);
+    const hand = await dbMod.db.query.blackjackHands.findFirst({
+      where: eq(dbMod.blackjackHands.id, handId),
+    });
+    expect(hand?.status).toBe('settled');
+    const outcome = hand?.outcomeJson as { totalPayout?: string } | null;
+    const debit = -stakeRows.reduce((sum: number, row: any) => sum + row.amount, 0);
+    const payoutCredit = payoutRows.reduce((sum: number, row: any) => sum + row.amount, 0);
+    const rakeCredit = treasuryRows.reduce((sum: number, row: any) => sum + row.amount, 0);
+    expect(payoutCredit).toBe(Number(hand?.payout));
+    expect(payoutCredit + rakeCredit).toBe(Number(outcome?.totalPayout));
+    const [houseAfterBlackjack] = await dbMod.db
+      .select()
+      .from(dbMod.avatars)
+      .where(eq(dbMod.avatars.id, houseAvatarId));
+    expect(houseAfterBlackjack.clawTokens - houseBeforeBlackjack).toBe(payoutCredit - debit);
+    expect(houseAfterBlackjack.clawTokens).toBe(
+      houseAfterBlackjack.softBalance
+      + houseAfterBlackjack.boughtBalance
+      + houseAfterBlackjack.earnedBalance,
+    );
+    expect(houseAfterBlackjack.isActive).toBe(false);
+  }, DB_TEST_TIMEOUT_MS);
+
+  it('house resolver: a non-house agent with an invalid session still drops before settlement', async () => {
+    const before = await blackjackSnapshot();
+    const ledgerRowsBefore = await dbMod.db
+      .select({ id: dbMod.clawTokenTransactions.id })
+      .from(dbMod.clawTokenTransactions)
+      .where(eq(dbMod.clawTokenTransactions.avatarId, avatarId));
+    await (
+      npcSimulation as unknown as {
+        settleAutonomousCoveGame: (
+          npcId: string,
+          attribution: {
+            avatarId: string;
+            agentId: string;
+            sessionId: string;
+            actorKind: 'agent';
+          },
+          game: 'slots' | 'blackjack',
+          wager: number,
+        ) => Promise<void>;
+      }
+    ).settleAutonomousCoveGame(
+      'test-non-house-body',
+      {
+        avatarId,
+        agentId,
+        sessionId: `invalid-${randomUUID()}`,
+        actorKind: 'agent',
+      },
+      'blackjack',
+      20,
+    );
+    expect(await blackjackSnapshot()).toEqual(before);
+    expect(await dbMod.db
+      .select({ id: dbMod.clawTokenTransactions.id })
+      .from(dbMod.clawTokenTransactions)
+      .where(eq(dbMod.clawTokenTransactions.avatarId, avatarId)))
+      .toHaveLength(ledgerRowsBefore.length);
   }, DB_TEST_TIMEOUT_MS);
 
   it('slots: daily cap consumes gross tagged debits and a refused second play writes no debit', async () => {

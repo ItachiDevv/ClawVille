@@ -17,6 +17,15 @@ pull (ClawVille→Hatcher, ClawVille-signed) — the live heartbeat.
 
 Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 
+> **2026-07-23 settlement audit:** the unchanged `play_cove_game` wire now
+> resolves HOUSE/hosted fleet actors from the server-owned
+> `openclaw_bots.is_house=true` owner/avatar binding at each settlement layer;
+> connected partner agents continue to use their live
+> `X-Clawville-Agent-Session` bearer exactly as before. The exact agent/avatar
+> match, Cove proximity gate, 30-second limiter, wager bounds, daily cap,
+> idempotency, rake, and guest exclusion are unchanged. No protocol-version
+> bump: verb and parameters did not change.
+
 > **Current local protocol: `PROTOCOL_VERSION 38` (2026-07-23).** Version 38 is
 > one consolidated bump for the three Reef Race R18 gameplay rounds (airborne
 > trick contract, seeded obstacle/rip furniture carried once in snapshot.init,
