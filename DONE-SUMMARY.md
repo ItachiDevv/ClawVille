@@ -143,3 +143,69 @@ Mechanism (b) is unsafe for this route chain. The same-origin web `/enter` page 
 ## Verification
 
 - `apps/web`: `bunx tsc --noEmit` — exit 0, no output.
+
+---
+
+# Round 4 — magic-connect full world scope
+
+Implementation commit: `a8eca7c7` (`fix(connect): serve full world-scope entry manual`)
+
+## Files changed
+
+- `apps/api/src/services/skill-protocol.ts`
+  - Advances `PROTOCOL_VERSION` from 35 to 36.
+  - Extends `buildPlayManual` with optional invitation token/TTL inputs, full world orientation, and invited-only human-ticket, identity, wallet, lifecycle, and first-contact guidance.
+  - Derives the 10 teaching-building names and ids from `SHOP_BUILDINGS` plus `MAP_LOCATIONS` and keeps the versioned protocol manual authoritative.
+  - Makes secret custody explicit: the agent securely stores the identity secret; it relays the avatar wallet recovery secret once for the human to save and never stores that wallet secret in agent config.
+- `apps/api/src/routes/agent-gateway.ts`
+  - Deletes the bespoke connection-plumbing-only Markdown literal.
+  - Serves `buildPlayManual(resolveApiBase(), { connectionToken, tokenExpiresInSeconds })` from the existing token lookup while preserving the 400/410 behavior.
+  - Returns the successful manual as exact `text/markdown; charset=utf-8` and computes TTL from one current-time snapshot.
+- `apps/api/src/services/__tests__/skill-protocol-onboarding.test.ts`
+  - Covers public versus invited composition, exact token/TTL behavior, world-scope markers, all 10 teacher locations, protocol pull, ticket relay, identity/wallet custody, lifecycle guidance, and forbidden outward terminology.
+- `apps/api/src/routes/__tests__/agent-frontdoor-connect.test.ts`
+  - Locks the live invited route to the staging-safe API base, full world manual, remaining TTL, and Markdown content type while keeping all 9 front-door tests green.
+- `apps/api/src/routes/__tests__/agent-paid-surface.test.ts`
+  - Updates the protected paid-surface protocol assertion to v36.
+- `apps/web/src/components/game/agent-connect-modal.tsx`
+  - Reframes the connected state around living in the world, learning from teachers, playing at the Cove card tables, and earning vCLAW.
+- `apps/web/src/app/login/page.tsx`
+  - Reframes signup completion from starting to learn to entering the world immediately.
+- `GameFeatures.md`
+  - Updates both checked-in section-2 copies with the unified v36 world-scope magic-connect path and PARITY note.
+- `ARCHITECTURE.md`
+  - Documents the public alias/internal renderer, staging-safe base resolution, invited-only layers, and unchanged protected wire shapes.
+- `docs/hatcher-integration-spec.md`
+  - Records protocol v36, corrects the v35 Kelp history, and distinguishes advancing version/hash values from unchanged signed routes/auth and frozen pointer keys/order/shape.
+
+## New served Markdown section headers
+
+```text
+## What ClawVille is: the world you are entering
+## 1. Connect
+## IMPORTANT: relay the magic link back to the human
+## IMPORTANT: save the identity key to your config
+## IMPORTANT: save the avatar wallet address to your config
+## Reconnect, liveness, and disconnect
+## First-contact flow
+## 2. Pull the current protocol before acting
+## 3. Run the live play loop
+## 4. Buy and learn knowledge books
+## 5. Install and resync skills
+```
+
+The public token-free manual includes the world, connect, protocol, play, books, and skills sections. The tokened manual additionally includes the invitation-only relay, identity, wallet, lifecycle, first-contact, and remaining-TTL guidance.
+
+## Verification
+
+- `packages/shared`: `bun run build` — exit 0 (`tsc`).
+- `packages/database`: `bun run build` — exit 0 (`tsc`); this refreshed stale local `dist` exports required by the API typecheck and changed no source files.
+- `apps/api`: `bun test src/services/__tests__/skill-protocol-onboarding.test.ts src/routes/__tests__/agent-frontdoor-connect.test.ts src/routes/__tests__/agent-paid-surface.test.ts` — 21 passed, 0 failed, 342 assertions across 3 files; the front-door suite remains exactly 9 passed.
+- `apps/api`: `bunx tsc --noEmit` — exit 0, no output.
+- `apps/web`: `bunx tsc --noEmit` — exit 0, no output.
+- Generated-manual probe — tokened manual contains the token once, floors the remaining TTL, contains the full world/protocol/invited headers, uses the staging API base, and has no outward `casino`, `CT`, or `ClawTokens` wording; token-free mode has no token JSON line or TTL.
+- Live route probe — 200 response with exact `text/markdown; charset=utf-8`; old skills-only introduction absent.
+- `git diff --check` — exit 0; only the worktree's normal LF-to-CRLF warnings were emitted.
+- Independent spec and adversarial reviews — both approved after the Markdown content-type and identity-versus-wallet custody blockers were fixed and re-tested.
+- Protected-surface audit — `/api/agent/connect` schema/handler and response bytes, partner signing/auth routes, executor verbs/bounds, settlement paths, and frozen Hatcher pointer keys/order/shape are unchanged; only served manual content and protocol version/hash values advance.
+- No `bun install`, push, deployment, or live founder browser sign-off was performed.
