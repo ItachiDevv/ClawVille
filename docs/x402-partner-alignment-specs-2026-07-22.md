@@ -254,14 +254,19 @@ log); (b) the 6,315-row outage backlog CANNOT be cleared by the per-row `probe_m
 apply (merchant signature history exceeds per-row lookback ⇒ "probe indeterminate",
 ~1 row/5min) — Spec 4 below is the replacement; backlog parked safely in `reconcile`.
 
-**SPEC 4 (QUEUED) — bulk outage reconciler + recurring auto-sweep.** One
+**SPEC 4 (IMPLEMENTED LOCALLY 2026-07-23 — pending Fable/operator review) — bulk
+outage reconciler + recurring auto-sweep.** One
 merchant-wallet `getSignaturesForAddress` sweep over the outage window (paginated,
 anchored), parse txs in batch, match reconcile rows in memory by (payer, amount,
 window), then: matched → existing `claimVerifiedCapture` path; unmatched past grace →
 no-money terminal. Plus a bounded recurring auto-sweep (cron ~15min, per-run cap,
 auto-applies ONLY on-chain-verified capture + grace-elapsed no-money, Telegram summary
-via itachi-debug) so a backlog can never silently build again. Codex implements, Fable
-reviews, same worktree flow.
+via itachi-debug) so a backlog can never silently build again. Local evidence:
+`bun test bulk-reconcile x402-auto-reconcile x402-reconcile agent-pay-resume` =
+43 pass / 0 fail; workspace `bun run typecheck` = pass. The operator CLI remains
+dry-run unless both `RECONCILE_APPLY=true` and `--apply` are present; the recurring
+worker remains OFF unless `X402_AUTO_RECONCILE=true`. Fable review and the production
+operator dry-run/apply remain outstanding.
 
 AUDIT FIXES QUEUED for the same B.1 round (interaction audit 2026-07-22): (i)
 free_tier_exhausted must trigger the Meridian fallback (it trips the breaker but not

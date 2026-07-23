@@ -139,6 +139,15 @@ async function warnReconcile(
   row: AgentPayment,
   reason: string,
 ): Promise<void> {
+  if (process.env.X402_AUTO_RECONCILE === 'true') {
+    const createdMs = new Date(row.createdAt).getTime();
+    // The enabled sweep is the response to ordinary staleness. Do not page on
+    // transition; only a row already surviving beyond 24h merits the legacy
+    // warning (manual/indeterminate survivors are also summarized by the sweep).
+    if (Number.isFinite(createdMs) && d.now() - createdMs <= STALE_PENDING_AGE_MS) {
+      return;
+    }
+  }
   try {
     await d.alert({
       severity: 'warning',
