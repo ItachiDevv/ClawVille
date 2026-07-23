@@ -15,6 +15,7 @@ import {
   getHoldemSettledRevealHandId,
   subscribeHoldemSettledReveal,
 } from '@/lib/cove/holdem-table-view';
+import type { SlotStatus } from '@/lib/cove/card-parity-mirror';
 
 const ATLAS_CELL_WIDTH = 192;
 const ATLAS_CELL_HEIGHT = 256;
@@ -313,6 +314,9 @@ export interface TableCardLayout {
   botPairGap: number;
   botAnchorScale: number;
   surfaceLift: number;
+  /** Conservative card-layer audit envelope in table-local world units. */
+  feltHalfX: number;
+  feltHalfZ: number;
 }
 
 export interface TableCards3DProps {
@@ -334,6 +338,42 @@ export interface TableCards3DProps {
       holeCardCount: number;
     }>[];
   }>;
+  /** Exact card decisions consumed by the geometry build. The room remains
+   * the sole publisher because it also owns the separate PeekHandCards. */
+  onResolvedSlots?: (resolved: ResolvedTableCardSlots) => void;
+  onMuckFadeStart?: (resolved: ResolvedTableCardSlots) => number;
+  onMuckFadeComplete?: (spanToken: number) => void;
+}
+
+export interface ResolvedTableCardOpponent {
+  seatIndex: number;
+  status: SlotStatus;
+  holeCardCount: number;
+  cards: [HoldemCard, HoldemCard] | null;
+  faceDown: boolean;
+}
+
+export interface ResolvedTableCardSlots {
+  board: readonly (HoldemCard | null)[];
+  opponents: readonly ResolvedTableCardOpponent[];
+  onFelt: boolean;
+}
+
+function practiceSlotStatus(status: SeatState['status'] | undefined): SlotStatus {
+  if (status === 'folded') return 'folded';
+  if (status === 'allin') return 'allin';
+  if (status === 'out') return 'busted';
+  return 'active';
+}
+
+function cashSlotStatus(
+  status: NonNullable<TableCards3DProps['externalState']>['seats'][number]['status'] | undefined,
+): SlotStatus {
+  if (status === 'folded') return 'folded';
+  if (status === 'allin') return 'allin';
+  if (status === 'busted') return 'busted';
+  if (status === 'sitting_out') return 'resolved';
+  return 'active';
 }
 
 export function TableCards3D({
@@ -344,10 +384,20 @@ export function TableCards3D({
   layout,
   suppressSeatIndices = [],
   externalState,
+  onResolvedSlots,
+  onMuckFadeStart,
+  onMuckFadeComplete,
 }: TableCards3DProps) {
   const meshRef = useRef<THREE.Mesh>(null);
   const muckMeshRef = useRef<THREE.Mesh>(null);
   const muckFadeRef = useRef({ active: false, elapsed: 0 });
+  const muckSpanTokenRef = useRef<number | null>(null);
+  const resolvedCallbackRef = useRef(onResolvedSlots);
+  const muckStartCallbackRef = useRef(onMuckFadeStart);
+  const muckCompleteCallbackRef = useRef(onMuckFadeComplete);
+  resolvedCallbackRef.current = onResolvedSlots;
+  muckStartCallbackRef.current = onMuckFadeStart;
+  muckCompleteCallbackRef.current = onMuckFadeComplete;
   const geometry = useMemo(() => new THREE.BufferGeometry(), []);
   const muckGeometry = useMemo(() => new THREE.BufferGeometry(), []);
   const material = useMemo(() => new THREE.MeshBasicMaterial({
@@ -396,12 +446,26 @@ export function TableCards3D({
     const muckMesh = muckMeshRef.current;
     if (!mesh || !muckMesh) return;
 
+    // A card-state rebuild interrupts the currently rendered fade. Detach its
+    // token now; once the new geometry is resolved below, either a new fade
+    // supersedes it or the token-guarded completion closes it.
+    const interruptedSpanToken = muckSpanTokenRef.current;
+    muckSpanTokenRef.current = null;
+
     if (!isVisible) {
       geometry.setDrawRange(0, 0);
       muckGeometry.setDrawRange(0, 0);
       mesh.visible = false;
       muckMesh.visible = false;
       muckFadeRef.current.active = false;
+      if (interruptedSpanToken !== null) {
+        muckCompleteCallbackRef.current?.(interruptedSpanToken);
+      }
+      resolvedCallbackRef.current?.({
+        board: [null, null, null, null, null],
+        opponents: [],
+        onFelt: true,
+      });
       return;
     }
 
@@ -421,6 +485,7 @@ export function TableCards3D({
     const muckPositions: number[] = [];
     const muckUvs: number[] = [];
     const muckIndices: number[] = [];
+    const resolvedOpponents: ResolvedTableCardOpponent[] = [];
     const cardY = feltTopY + layout.surfaceLift;
 
     for (const tableSeat of tableSeats) {
@@ -434,12 +499,26 @@ export function TableCards3D({
       const holeCardCount = externalState
         ? externalSeat?.holeCardCount ?? 0
         : seatState?.holeCards?.length ?? 0;
-      if (holeCardCount === 0) continue;
-
       const foldedAtSettle = !externalState
         && controller.phase === 'settled'
         && seatState?.status === 'folded';
       const faceDown = externalState ? true : !revealShowdown;
+      const resolvedFaceDown = faceDown || foldedAtSettle;
+      const resolvedCards = !resolvedFaceDown
+        && seatState?.holeCards?.length === 2
+        ? [seatState.holeCards[0], seatState.holeCards[1]] as [HoldemCard, HoldemCard]
+        : null;
+      resolvedOpponents.push({
+        seatIndex: tableSeat.engineSeatIndex,
+        status: externalState
+          ? cashSlotStatus(externalSeat?.status)
+          : practiceSlotStatus(seatState?.status),
+        holeCardCount,
+        cards: resolvedCards,
+        faceDown: resolvedFaceDown || resolvedCards === null,
+      });
+      if (holeCardCount === 0) continue;
+
       const targetPositions = settleCueReady && foldedAtSettle ? muckPositions : positions;
       const targetUvs = settleCueReady && foldedAtSettle ? muckUvs : uvs;
       const targetIndices = settleCueReady && foldedAtSettle ? muckIndices : indices;
@@ -496,26 +575,31 @@ export function TableCards3D({
     }
 
     if (process.env.NODE_ENV !== 'production') {
-      // Conservative on-felt bound: every vertex within ±140 x / ±80 z of the
-      // table centre (green felt measured 182wu on the short axis), in the
-      // layout's reference units. Anchored on surfaceLift (a fixed 1.5
-      // ref-wu physical constant) rather than boardSpacing — spacing is a
-      // TUNING knob (34→24 in the 2026-07-16 resize), and deriving the
-      // bounds from it silently shrank them below legitimately-placed
-      // vertices (Codex review nit).
-      const refUnitWu = layout.surfaceLift / 1.5;
-      const feltHalfX = 140 * refUnitWu;
-      const feltHalfZ = 80 * refUnitWu;
+      // The layout owns this conservative XZ envelope. surfaceLift is only a
+      // Y offset, and card-spacing tuning must not silently resize the gate.
       for (let i = 0; i < positions.length; i += 3) {
         const dx = positions[i]! - centerX;
         const dz = positions[i + 2]! - centerZ;
-        if (Math.abs(dx) > feltHalfX || Math.abs(dz) > feltHalfZ) {
+        if (Math.abs(dx) > layout.feltHalfX || Math.abs(dz) > layout.feltHalfZ) {
           console.warn(
-            `[TableCards3D] card vertex off felt: dx=${dx.toFixed(1)} dz=${dz.toFixed(1)} (bounds ±${feltHalfX.toFixed(0)}/±${feltHalfZ.toFixed(0)})`,
+            `[TableCards3D] card vertex off felt: dx=${dx.toFixed(1)} dz=${dz.toFixed(1)} (bounds ±${layout.feltHalfX.toFixed(0)}/±${layout.feltHalfZ.toFixed(0)})`,
           );
           break;
         }
       }
+    }
+
+    let onFelt = true;
+    for (const vertexPositions of [positions, muckPositions]) {
+      for (let index = 0; index < vertexPositions.length; index += 3) {
+        const dx = vertexPositions[index]! - centerX;
+        const dz = vertexPositions[index + 2]! - centerZ;
+        if (Math.abs(dx) > layout.feltHalfX || Math.abs(dz) > layout.feltHalfZ) {
+          onFelt = false;
+          break;
+        }
+      }
+      if (!onFelt) break;
     }
 
     const positionAttribute = new THREE.Float32BufferAttribute(positions, 3);
@@ -542,6 +626,20 @@ export function TableCards3D({
     muckMesh.visible = muckIndices.length > 0;
     muckFadeRef.current.elapsed = 0;
     muckFadeRef.current.active = muckIndices.length > 0;
+    const resolved: ResolvedTableCardSlots = {
+      board: Array.from({ length: 5 }, (_, index) => renderedBoard[index] ?? null),
+      opponents: resolvedOpponents,
+      onFelt,
+    };
+    if (muckIndices.length > 0) {
+      muckSpanTokenRef.current = muckStartCallbackRef.current?.(resolved) ?? null;
+      if (muckSpanTokenRef.current === null && interruptedSpanToken !== null) {
+        muckCompleteCallbackRef.current?.(interruptedSpanToken);
+      }
+    } else if (interruptedSpanToken !== null) {
+      muckCompleteCallbackRef.current?.(interruptedSpanToken);
+    }
+    resolvedCallbackRef.current?.(resolved);
   }, [
     cardStateSignature,
     centerX,
@@ -570,6 +668,9 @@ export function TableCards3D({
     if (progress >= 1) {
       fade.active = false;
       mesh.visible = false;
+      const spanToken = muckSpanTokenRef.current;
+      muckSpanTokenRef.current = null;
+      if (spanToken !== null) muckCompleteCallbackRef.current?.(spanToken);
     }
   });
 

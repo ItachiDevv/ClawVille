@@ -11,8 +11,24 @@ import { useVRMInstance, disposeVRMInstance } from '@/lib/three/vrm-loader';
 import { preloadClips, VRMCharacterAnimator, type AnimName } from '@/lib/three/vrm-character-animator';
 import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
 import { MODEL_REGISTRY, type ModelKey, type ModelRegistryEntry } from '@/lib/three/agent-model-registry';
-import { TableCards3D, type TableCardLayout, type TableCardSeat } from '@/lib/three/cove-table-cards';
+import {
+  TableCards3D,
+  type ResolvedTableCardSlots,
+  type TableCardLayout,
+  type TableCardSeat,
+} from '@/lib/three/cove-table-cards';
 import { useHoldemController } from '@/lib/cove/holdem-controller';
+import {
+  beginTransition,
+  buildHoldemFeltParity,
+  completeTransition,
+  publishFeltParity,
+  type CardParityPayload,
+  type HoldemFeltInput,
+  type SlotStatus,
+  type Surface,
+} from '@/lib/cove/card-parity-mirror';
+import type { CashSettledHandSnapshot } from '@clawville/shared';
 import type {
   CashPublicSeat,
   PublicTableStateResponse,
@@ -129,6 +145,10 @@ const CARD_LAYOUT: Readonly<TableCardLayout> = Object.freeze({
   botPairGap: 1.2 * S,
   botAnchorScale: 0.72,
   surfaceLift: 0.7 * S,
+  // W0 parity envelope around the approved room's exact quad extrema
+  // (|x|max=140.49, |z|max=101.63), with a small regression margin.
+  feltHalfX: 145,
+  feltHalfZ: 105,
 });
 
 // Card-player rotations are authored once on the clyt Meshy reference rig
@@ -826,9 +846,16 @@ export interface LiveTableRoomState {
   table: PublicTableStateResponse | null;
   /** The server seat placed at the six-o'clock POV. Spectators use seat 0. */
   povSeatIndex: number;
+  settled: CashSettledHandSnapshot | null;
 }
 
-function HoldemTableRoomScene({ liveTable }: { liveTable?: LiveTableRoomState }) {
+function HoldemTableRoomScene({
+  instanceId,
+  liveTable,
+}: {
+  instanceId: string;
+  liveTable?: LiveTableRoomState;
+}) {
   const roomGltf = useGLTF(ROOM_PATH);
   const tableGltf = useGLTF(TABLE_PATH);
   const chairGltf = useGLTF(CHAIR_PATH);
@@ -879,6 +906,118 @@ function HoldemTableRoomScene({ liveTable }: { liveTable?: LiveTableRoomState })
         && (seat?.holeCards?.length ?? 0) > 0;
     });
   }, [cashLive, handSamples, live, liveTable, phase, publicSeats, roomSeats]);
+  const lastResolvedSlotsRef = useRef<ResolvedTableCardSlots | null>(null);
+  const paritySurface: Surface = liveTable ? 'holdem-felt-3d' : 'holdem-felt-practice';
+  const publishResolvedFelt = useCallback((resolved: ResolvedTableCardSlots) => {
+    const peekOpponents = inHandPeekSeats.map((seatIndex) => {
+      const cashSeat = cashLive?.seats.find((seat) => seat.seatIndex === seatIndex);
+      const practiceSeat = publicSeats.find((seat) => seat.seatIndex === seatIndex);
+      const status: SlotStatus = cashSeat
+        ? cashSeat.status === 'folded'
+          ? 'folded'
+          : cashSeat.status === 'allin'
+            ? 'allin'
+            : cashSeat.status === 'busted'
+              ? 'busted'
+              : cashSeat.status === 'sitting_out'
+                ? 'resolved'
+                : 'active'
+        : practiceSeat?.status === 'folded'
+          ? 'folded'
+          : practiceSeat?.status === 'allin'
+            ? 'allin'
+            : practiceSeat?.status === 'out'
+              ? 'busted'
+              : 'active';
+      return {
+        seatIndex,
+        status,
+        count: 2,
+        peek: true,
+      };
+    });
+    const boardCount = resolved.board.filter((card) => card !== null).length;
+    const dealStep = phase === 'settled'
+      ? 'showdown'
+      : boardCount >= 5
+        ? 'river'
+        : boardCount >= 4
+          ? 'turn'
+          : boardCount >= 3
+            ? 'flop'
+            : 'hole';
+    let input: HoldemFeltInput;
+    if (liveTable) {
+      const handNumber = cashLive?.handNumber ?? liveTable.settled?.handNumber ?? null;
+      input = {
+        kind: 'cash',
+        board: resolved.board.filter((card): card is NonNullable<typeof card> => card !== null),
+        opponents: [
+          ...resolved.opponents.map((opponent) => ({
+            seatIndex: opponent.seatIndex,
+            status: opponent.status,
+            count: opponent.holeCardCount,
+            peek: false,
+          })),
+          ...peekOpponents,
+        ],
+        // Cash mesh stays public/down in W0. BA-1 is consumed by the tray;
+        // passing it here would expose cards the unchanged mesh does not draw.
+        settled: null,
+        correlation: {
+          hand: handNumber == null ? '' : `${liveTable.table?.table.id ?? ''}:${handNumber}`,
+          handNumber,
+        },
+        dealStep,
+        phase: cashLive?.street ?? (liveTable.settled ? 'settled' : 'idle'),
+        transition: 'idle',
+      };
+    } else {
+      const controllerHand = live ?? useHoldemController.getState().settled;
+      input = {
+        kind: 'practice',
+        board: [...resolved.board],
+        opponents: [
+          ...resolved.opponents.map((opponent) => ({
+            seatIndex: opponent.seatIndex,
+            status: opponent.status,
+            cards: opponent.faceDown ? null : opponent.cards,
+            count: opponent.holeCardCount,
+            peek: false,
+          })),
+          ...peekOpponents.map((opponent) => ({ ...opponent, cards: null })),
+        ],
+        correlation: {
+          hand: controllerHand?.handId ?? '',
+          handNumber: controllerHand?.handIndex ?? null,
+        },
+        dealStep,
+        phase,
+        transition: 'idle',
+      };
+    }
+    const built = buildHoldemFeltParity(input);
+    const payload: CardParityPayload = {
+      ...built,
+      meta: { ...built.meta, 'on-felt': String(resolved.onFelt) },
+    };
+    publishFeltParity(instanceId, payload);
+  }, [cashLive, inHandPeekSeats, instanceId, live, liveTable, phase, publicSeats]);
+  const onResolvedSlots = useCallback((resolved: ResolvedTableCardSlots) => {
+    lastResolvedSlotsRef.current = resolved;
+    publishResolvedFelt(resolved);
+  }, [publishResolvedFelt]);
+  const onMuckFadeStart = useCallback((_resolved: ResolvedTableCardSlots) => {
+    return beginTransition(instanceId, paritySurface, 'muck-fading');
+  }, [instanceId, paritySurface]);
+  const onMuckFadeComplete = useCallback((spanToken: number) => {
+    completeTransition(instanceId, paritySurface, spanToken);
+  }, [instanceId, paritySurface]);
+
+  useEffect(() => {
+    const resolved = lastResolvedSlotsRef.current;
+    if (resolved) publishResolvedFelt(resolved);
+  }, [publishResolvedFelt]);
 
   return (
     <>
@@ -1008,13 +1147,22 @@ function HoldemTableRoomScene({ liveTable }: { liveTable?: LiveTableRoomState })
             holeCardCount: seat.status === 'active' || seat.status === 'allin' ? 2 : 0,
           })) ?? [],
         } : undefined}
+        onResolvedSlots={onResolvedSlots}
+        onMuckFadeStart={onMuckFadeStart}
+        onMuckFadeComplete={onMuckFadeComplete}
       />
       <Precompile />
     </>
   );
 }
 
-export default function HoldemTableRoomCanvas({ liveTable }: { liveTable?: LiveTableRoomState }) {
+export default function HoldemTableRoomCanvas({
+  instanceId,
+  liveTable,
+}: {
+  instanceId: string;
+  liveTable?: LiveTableRoomState;
+}) {
   return (
     <Canvas
       key="holdem-table-room"
@@ -1026,7 +1174,7 @@ export default function HoldemTableRoomCanvas({ liveTable }: { liveTable?: LiveT
     >
       <KTX2LoaderSetup />
       <Suspense fallback={null}>
-        <HoldemTableRoomScene liveTable={liveTable} />
+        <HoldemTableRoomScene instanceId={instanceId} liveTable={liveTable} />
       </Suspense>
     </Canvas>
   );

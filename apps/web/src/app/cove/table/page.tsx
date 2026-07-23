@@ -8,6 +8,7 @@ import {
   CashTableRoomHud,
   SeatedHoldemHud,
 } from '@/components/cove/holdem/SeatedHoldemHud';
+import { ParityMirror } from '@/components/cove/CardParityMirror';
 import AvatarChatBar from '@/components/game/avatar-chat-bar';
 import { useAuthMe } from '@/hooks/use-auth-me';
 import { useAvatar } from '@/hooks/use-avatar';
@@ -23,6 +24,8 @@ import {
   type PublicTableStateResponse,
 } from '@/lib/cove/cash-poker';
 import type { LiveTableRoomState } from '@/lib/three/holdem-table-room';
+import { clearFeltParity } from '@/lib/cove/card-parity-mirror';
+import type { CashSettledHandSnapshot } from '@clawville/shared';
 import styles from '@/components/cove/holdem/SeatedHoldemHud.module.css';
 
 const PUBLIC_POLL_MS = 3000;
@@ -65,22 +68,31 @@ export default function HoldemTableRoomPage({
 }
 
 function RoomLoading() {
+  const instanceId = useRef(crypto.randomUUID()).current;
+  useEffect(() => () => clearFeltParity(instanceId), [instanceId]);
   return (
     <main style={{ position: 'fixed', inset: 0, overflow: 'hidden', background: '#100b16' }}>
-      <HoldemTableRoomCanvas liveTable={{ table: null, povSeatIndex: 0 }} />
+      <HoldemTableRoomCanvas
+        instanceId={instanceId}
+        liveTable={{ table: null, povSeatIndex: 0, settled: null }}
+      />
     </main>
   );
 }
 
 function PracticeDemoRoom() {
   const router = useRouter();
+  const instanceId = useRef(crypto.randomUUID()).current;
   const seatedTable = useCoveStore((state) => state.seatedTable);
   const wasSeatedRef = useRef(false);
 
   useEffect(() => {
     useCoveStore.getState().sitAtTable('T1', 0);
-    return () => { useCoveStore.getState().standFromTable(); };
-  }, []);
+    return () => {
+      useCoveStore.getState().standFromTable();
+      clearFeltParity(instanceId);
+    };
+  }, [instanceId]);
 
   useEffect(() => {
     if (seatedTable?.tableId === 'T1') {
@@ -99,17 +111,20 @@ function PracticeDemoRoom() {
 
   return (
     <RoomShell onBack={handleBack}>
-      <HoldemTableRoomCanvas />
+      <HoldemTableRoomCanvas instanceId={instanceId} />
+      <ParityMirror surface="holdem-felt-practice" instanceId={instanceId} />
       <HoldemControllerRuntime />
-      <SeatedHoldemHud />
+      <SeatedHoldemHud instanceId={instanceId} />
     </RoomShell>
   );
 }
 
 function CashTableRoom({ tableId }: { tableId: string }) {
   const router = useRouter();
+  const instanceId = useRef(crypto.randomUUID()).current;
   const { data: avatar } = useAvatar();
   const [state, setState] = useState<PublicTableStateResponse | null>(null);
+  const [settled, setSettled] = useState<CashSettledHandSnapshot | null>(null);
   const [pollNotice, setPollNotice] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [selfView, setSelfView] = useState<CashAgentView | null>(null);
@@ -121,7 +136,14 @@ function CashTableRoom({ tableId }: { tableId: string }) {
   const [seatedSeatIndex, setSeatedSeatIndex] = useState<number | null>(null);
   const actionSeqRef = useRef(0);
   const lastKnownStackRef = useRef(0);
+  const lastSettledHandRef = useRef(0);
   const wasSeatedRef = useRef(false);
+
+  useEffect(() => () => clearFeltParity(instanceId), [instanceId]);
+  useEffect(() => {
+    lastSettledHandRef.current = 0;
+    setSettled(null);
+  }, [tableId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -150,6 +172,41 @@ function CashTableRoom({ tableId }: { tableId: string }) {
     () => Boolean(avatar?.id && state?.seats.some((seat) => seat.avatarId === avatar.id)),
     [avatar?.id, state?.seats],
   );
+
+  useEffect(() => {
+    if (!amSeated) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const tick = async () => {
+      try {
+        const snapshot = await cashPokerApi.lastSettled(tableId, lastSettledHandRef.current);
+        if (!cancelled && snapshot) {
+          lastSettledHandRef.current = snapshot.handNumber;
+          setSettled(Date.now() < snapshot.displayExpiresAtMs ? snapshot : null);
+        }
+      } catch (error) {
+        if (!cancelled) setPollNotice(`${describeCashPokerError(error)} Retrying…`);
+      } finally {
+        if (!cancelled) timer = setTimeout(tick, PUBLIC_POLL_MS);
+      }
+    };
+    void tick();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [amSeated, tableId]);
+
+  useEffect(() => {
+    if (!settled) return;
+    const remainingMs = settled.displayExpiresAtMs - Date.now();
+    if (remainingMs <= 0) {
+      setSettled(null);
+      return;
+    }
+    const timer = window.setTimeout(() => setSettled(null), remainingMs);
+    return () => window.clearTimeout(timer);
+  }, [settled]);
 
   useEffect(() => {
     if (!amSeated) {
@@ -205,8 +262,8 @@ function CashTableRoom({ tableId }: { tableId: string }) {
     return state.seats.find((seat) => seat.avatarId === avatar.id)?.seatIndex ?? 0;
   }, [avatar?.id, seatedSeatIndex, state]);
   const liveTable = useMemo<LiveTableRoomState>(
-    () => ({ table: state, povSeatIndex }),
-    [povSeatIndex, state],
+    () => ({ table: state, povSeatIndex, settled }),
+    [povSeatIndex, settled, state],
   );
   const handleBack = useCallback(() => router.push('/cove'), [router]);
   const handleSit = useCallback(async () => {
@@ -295,10 +352,13 @@ function CashTableRoom({ tableId }: { tableId: string }) {
       backLabel={amSeated ? (leaveQueued ? 'Cashing out…' : leaving ? 'Standing…' : 'Walk Away') : 'Back to Cove'}
       backDisabled={leaveQueued || leaving}
     >
-      <HoldemTableRoomCanvas liveTable={liveTable} />
+      <HoldemTableRoomCanvas instanceId={instanceId} liveTable={liveTable} />
+      <ParityMirror surface="holdem-felt-3d" instanceId={instanceId} />
       <CashTableRoomHud
+        instanceId={instanceId}
         state={state}
         selfView={selfView}
+        settled={settled}
         povSeatIndex={povSeatIndex}
         amSeated={amSeated}
         sitting={sitting}
@@ -319,6 +379,7 @@ function CashTableRoom({ tableId }: { tableId: string }) {
 
 function CashTablePicker() {
   const router = useRouter();
+  const instanceId = useRef(crypto.randomUUID()).current;
   const [tables, setTables] = useState<CashTableListItem[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -344,13 +405,17 @@ function CashTablePicker() {
       if (timer) clearTimeout(timer);
     };
   }, []);
+  useEffect(() => () => clearFeltParity(instanceId), [instanceId]);
 
   const handleBack = useCallback(() => router.push('/cove'), [router]);
   useStandKey(handleBack);
 
   return (
     <RoomShell onBack={handleBack}>
-      <HoldemTableRoomCanvas liveTable={{ table: null, povSeatIndex: 0 }} />
+      <HoldemTableRoomCanvas
+        instanceId={instanceId}
+        liveTable={{ table: null, povSeatIndex: 0, settled: null }}
+      />
       <div className={styles.settlement} style={{ width: 'min(680px, calc(100vw - 32px))' }}>
         <div className={styles.settlementHeadline}>Choose a live table</div>
         <div className={styles.settlementDetail}>Cash tables deal automatically while a real player is seated.</div>

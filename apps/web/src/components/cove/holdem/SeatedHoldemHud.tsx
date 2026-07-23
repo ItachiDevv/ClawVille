@@ -24,9 +24,15 @@ import {
 } from '@/lib/cove/holdem-table-view';
 import {
   deriveHoldemPublicSeats,
+  type CashSettledHandSnapshot,
   type HoldemStreet,
   type SerializedHoldemLogEntry,
 } from '@clawville/shared';
+import { ParityMirror } from '@/components/cove/CardParityMirror';
+import {
+  buildHoldemTrayParity,
+  publishFeltParity,
+} from '@/lib/cove/card-parity-mirror';
 import type {
   CashAction,
   CashActionKind,
@@ -69,8 +75,10 @@ function secondsUntil(deadlineMs: number | null): number | null {
 }
 
 interface CashTableRoomHudProps {
+  instanceId: string;
   state: PublicTableStateResponse | null;
   selfView: CashAgentView | null;
+  settled: CashSettledHandSnapshot | null;
   povSeatIndex: number;
   amSeated: boolean;
   sitting: boolean;
@@ -90,8 +98,10 @@ interface CashTableRoomHudProps {
  * hand-number freshness check. Physical badge slot N maps to server seat
  * `(pov + N + 1) % 6`, matching the 3D chair rotation. */
 export function CashTableRoomHud({
+  instanceId,
   state,
   selfView,
+  settled,
   povSeatIndex,
   amSeated,
   sitting,
@@ -167,9 +177,47 @@ export function CashTableRoomHud({
     ].filter((preset, index, all) => all.findIndex((item) => item.value === preset.value) === index);
   }, [canSize, freshSelf, live]);
   const hasOpenSeat = Boolean(state && state.seats.length < state.table.maxSeats);
+  const settledSelf = settled?.seats.find((seat) => seat.seatIndex === povSeatIndex) ?? null;
+  const settledPot = settled?.pots
+    .reduce((total, item) => total + BigInt(item.amount), 0n)
+    .toString() ?? null;
+  const trayPot = live ? String(live.pot) : null;
+  const settlementHeadline = settled
+    ? settled.endedAt === 'showdown' ? 'Showdown' : 'Hand won without showdown'
+    : null;
+  const matchingSettled = settled && live?.handNumber === settled.handNumber ? settled : null;
+
+  useEffect(() => {
+    const handNumber = live?.handNumber ?? null;
+    const dealStep = live?.street === 'preflop' ? 'hole' : live?.street ?? 'hole';
+    publishFeltParity(instanceId, buildHoldemTrayParity({
+      kind: 'cash',
+      hole: freshSelf?.holeCards ?? [],
+      board: live?.board ?? [],
+      settled: matchingSettled,
+      correlation: {
+        hand: handNumber == null ? `${state?.table.id ?? 'cash'}:idle` : `${state?.table.id ?? 'cash'}:${handNumber}`,
+        handNumber,
+      },
+      dealStep,
+      phase: live?.street ?? 'idle',
+      transition: 'idle',
+      ...(matchingSettled && settlementHeadline ? { bannerText: settlementHeadline } : {}),
+      ...(trayPot === null ? {} : { pot: trayPot }),
+    }));
+  }, [
+    freshSelf,
+    instanceId,
+    live,
+    matchingSettled,
+    settlementHeadline,
+    state?.table.id,
+    trayPot,
+  ]);
 
   return (
     <div className={styles.surface} data-testid="cash-table-room-hud">
+      <ParityMirror surface="holdem-tray-3d" instanceId={instanceId} />
       {physicalSeats.map((seat, physicalIndex) => seat ? (
         <div
           key={seat.avatarId}
@@ -210,6 +258,27 @@ export function CashTableRoomHud({
         </div>
       )}
 
+      {settled && settlementHeadline && (
+        <div className={styles.settlement} data-testid="holdem-settlement-narration">
+          <div className={styles.settlementHeadline}>{settlementHeadline}</div>
+          <div className={styles.settlementDetail}>
+            Hand {settled.handNumber}
+            {settledPot != null && (
+              <> · <span data-testid="holdem-pot-amount">Pot {Number(settledPot).toLocaleString()} vCLAW</span></>
+            )}
+            {settledSelf && (
+              <>
+                {' · '}
+                <span data-testid="holdem-self-stack">
+                  Stack {Number(settledSelf.endStack).toLocaleString()} vCLAW
+                </span>
+                {` · ${Number(settledSelf.net) >= 0 ? '+' : ''}${settledSelf.net} vCLAW net`}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className={styles.hud}>
         {freshSelf && (
           <div className={styles.cardTray} data-testid="cash-private-card-tray">
@@ -230,7 +299,14 @@ export function CashTableRoomHud({
         )}
         <div className={styles.panel + ' ' + styles.actionPanel}>
           <div className={styles.statusRow}>
-            {live && <span className={styles.metric}>Pot <strong>{live.pot.toLocaleString()}</strong> vCLAW</span>}
+            {live && (
+              <span
+                className={styles.metric}
+                data-testid={settled ? undefined : 'holdem-pot-amount'}
+              >
+                Pot <strong>{live.pot.toLocaleString()}</strong> vCLAW
+              </span>
+            )}
             <span className={styles.blindPill}>
               Blinds {state?.table.smallBlindCt ?? '—'}/{state?.table.bigBlindCt ?? '—'} vCLAW
             </span>
@@ -241,7 +317,14 @@ export function CashTableRoomHud({
                 {countdown != null ? ` · ${countdown}s` : ''}
               </span>
             )}
-            {povSeat && <span className={styles.metric}>{povSeat.name} · <strong>{povSeat.chipStack.toLocaleString()}</strong> vCLAW</span>}
+            {povSeat && (
+              <span
+                className={styles.metric}
+                data-testid={settled ? undefined : 'holdem-self-stack'}
+              >
+                {povSeat.name} · <strong>{povSeat.chipStack.toLocaleString()}</strong> vCLAW
+              </span>
+            )}
           </div>
           {pollNotice && <div className={styles.toast + ' ' + styles.toastWarn}>{pollNotice}</div>}
           {actionNotice && <div className={styles.toast + ' ' + styles.toastError}>{actionNotice}</div>}
@@ -426,7 +509,7 @@ function actionLabel(entry: SerializedHoldemLogEntry): string {
  * runAction / handleWalkAway mutation path the modal uses; it never issues
  * its own requests. It owns the private hole-card/public-board DOM overlay;
  * TableCards3D renders only public board cards and opponent pairs on felt. */
-export function SeatedHoldemHud() {
+export function SeatedHoldemHud({ instanceId }: { instanceId?: string }) {
   const seatedTable = useCoveStore((state) => state.seatedTable);
   const holdemModalOpen = useCoveStore((state) => state.holdemModalOpen);
   const { data: avatar } = useAvatar();
@@ -652,6 +735,48 @@ export function SeatedHoldemHud() {
     () => communityCards.map((card, index) => index < revealedBoardCount ? card : null),
     [communityCards, revealedBoardCount],
   );
+  const parityDealStep = settled && !playoutPending
+    ? 'showdown'
+    : revealedBoardCount >= 5 ? 'river'
+      : revealedBoardCount >= 4 ? 'turn'
+        : revealedBoardCount >= 3 ? 'flop' : 'hole';
+  const paritySettled = settled && !playoutPending ? settled : null;
+  useEffect(() => {
+    if (!instanceId) return;
+    publishFeltParity(instanceId, buildHoldemTrayParity({
+      kind: 'practice',
+      hole: phase === 'idle' ? [] : playerHoleCards,
+      narratedBoard: phase === 'idle' ? [] : narratedCards,
+      publicSeats: Array.from({ length: 6 }, (_, seat) => ({
+        folded: publicSeats[seat]?.folded ?? false,
+      })),
+      settled: paritySettled,
+      correlation: {
+        hand: handKey ?? 'practice:idle',
+        handNumber: live?.handIndex ?? settled?.handIndex ?? table?.handsPlayed ?? null,
+      },
+      dealStep: parityDealStep,
+      phase,
+      transition: playoutPending ? 'revealing' : 'idle',
+      ...(paritySettled && narration ? { bannerText: narration.headline } : {}),
+      ...(phase === 'idle' ? {} : { pot: String(pot) }),
+    }));
+  }, [
+    handKey,
+    instanceId,
+    live?.handIndex,
+    narratedCards,
+    narration,
+    parityDealStep,
+    paritySettled,
+    phase,
+    playerHoleCards,
+    playoutPending,
+    pot,
+    publicSeats,
+    settled?.handIndex,
+    table?.handsPlayed,
+  ]);
   const livePositions = live ?? settled?.outcome ?? null;
   const visibleStreet = revealedBoardCount >= 5 ? 'river'
     : revealedBoardCount >= 4 ? 'turn'
@@ -673,6 +798,9 @@ export function SeatedHoldemHud() {
 
   return (
     <div className={styles.surface}>
+      {instanceId && (
+        <ParityMirror surface="holdem-tray-practice" instanceId={instanceId} />
+      )}
       {livePositions && TABLE_ROOM_SEAT_ANCHORS.map((anchor, seat) => {
         if (seat === 0) return null;
         const publicSeat = publicSeats[seat];
@@ -788,14 +916,16 @@ export function SeatedHoldemHud() {
         <div className={styles.panel + ' ' + styles.actionPanel}>
           <div className={styles.statusRow}>
             {phase !== 'idle' && (
-              <span className={styles.metric}>Pot <strong>{pot}</strong></span>
+              <span className={styles.metric} data-testid="holdem-pot-amount">
+                Pot <strong>{pot}</strong>
+              </span>
             )}
             <span className={styles.blindPill}>
               Blinds {live?.smallBlind ?? table?.smallBlind ?? '1'}/
               {live?.bigBlind ?? table?.bigBlind ?? '2'} vCLAW
             </span>
             {table && (
-              <span className={styles.metric}>
+              <span className={styles.metric} data-testid="holdem-self-stack">
                 Stack <strong>{Number(humanStack).toLocaleString()}</strong>
               </span>
             )}
