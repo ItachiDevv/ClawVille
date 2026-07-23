@@ -41,6 +41,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useCoveStore } from '@/stores/cove';
 import { useGameStore } from '@/stores/game';
 import { useAvatar } from '@/hooks/use-avatar';
+import { useIsGuest } from '@/hooks/use-is-guest';
 import BlackjackCard from './BlackjackCard';
 import '@/styles/cove-tokens.css';
 import {
@@ -437,7 +438,7 @@ export default function BlackjackModal() {
   const shoeRef = useRef<BlackjackShoeWire | null>(null);
   shoeRef.current = shoe;
 
-  const isAuthed = Boolean(avatar);
+  const isRealTier = Boolean(avatar) && !useIsGuest();
   const phase: 'idle' | 'player-turn' | 'settled' =
     settled ? 'settled' : hand ? 'player-turn' : 'idle';
 
@@ -631,11 +632,11 @@ export default function BlackjackModal() {
     // endpoint). Skip if a hand is in progress (server would 409) or a request
     // is in flight (avoid racing the settle lock).
     const s = shoeRef.current;
-    if (s && s.status === 'open' && isAuthed && !hand && !busyRef.current && !revealedSeed) {
+    if (s && s.status === 'open' && isRealTier && !hand && !busyRef.current && !revealedSeed) {
       closeShoe.mutate({ shoeId: s.id });
     }
     closeBlackjackTable();
-  }, [isAuthed, hand, revealedSeed, closeShoe, closeBlackjackTable]);
+  }, [isRealTier, hand, revealedSeed, closeShoe, closeBlackjackTable]);
 
   // ── Keyboard ────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1031,7 +1032,7 @@ export default function BlackjackModal() {
   // ── WALK AWAY (close shoe → reveal seed, authed) ───────────────────────────
   const handleWalkAway = useCallback(async () => {
     const s = shoeRef.current;
-    if (!s || !isAuthed) { handleClose(); return; }
+    if (!s || !isRealTier) { handleClose(); return; }
     if (hand) { showToast('Finish the current hand first.', 'warn'); return; }
     busyRef.current = true;
     try {
@@ -1045,7 +1046,7 @@ export default function BlackjackModal() {
     } finally {
       busyRef.current = false;
     }
-  }, [isAuthed, hand, closeShoe, showToast, handleClose]);
+  }, [isRealTier, hand, closeShoe, showToast, handleClose]);
 
   // ── Derived button legality (server is final validator; this gates UI) ─────
   const activeHand = hand?.playerHands[activeSlot] ?? hand?.playerHands[0] ?? null;
@@ -1414,7 +1415,7 @@ export default function BlackjackModal() {
               background: 'rgba(150,110,30,0.15)', border: '1px solid rgba(150,110,30,0.3)',
               borderRadius: 6, padding: '3px 10px',
             }}>
-              {balance.toLocaleString()} vCLAW{!isAuthed ? ' demo' : ''}
+              {balance.toLocaleString()} vCLAW{!isRealTier ? ' demo' : ''}
             </div>
             <button
               type="button" onClick={handleClose} aria-label="Close blackjack table"
@@ -1638,7 +1639,7 @@ export default function BlackjackModal() {
                   }}
                   onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#b91c1c'; }}
                   onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#dc2626'; }}>
-                  {isAuthed ? 'Walk Away' : 'Close'}
+                  {isRealTier ? 'Walk Away' : 'Close'}
                 </button>
               </>
             )}

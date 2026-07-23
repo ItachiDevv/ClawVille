@@ -153,6 +153,10 @@ export interface CoveStore {
   enterTableRoom: boolean;
   requestEnterTableRoom: () => void;
   clearEnterTableRoom: () => void;
+  /** One-shot navigation intent emitted by the blackjack-table hotspot. */
+  enterBlackjackRoom: boolean;
+  requestEnterBlackjackRoom: () => void;
+  clearEnterBlackjackRoom: () => void;
 }
 
 export const useCoveStore = create<CoveStore>((set, get) => ({
@@ -328,6 +332,9 @@ export const useCoveStore = create<CoveStore>((set, get) => ({
   enterTableRoom: false,
   requestEnterTableRoom: () => set({ enterTableRoom: true }),
   clearEnterTableRoom: () => set({ enterTableRoom: false }),
+  enterBlackjackRoom: false,
+  requestEnterBlackjackRoom: () => set({ enterBlackjackRoom: true }),
+  clearEnterBlackjackRoom: () => set({ enterBlackjackRoom: false }),
 }));
 
 // E2E-harness handle (P4, 2026-07-16). Client Zustand state is already fully

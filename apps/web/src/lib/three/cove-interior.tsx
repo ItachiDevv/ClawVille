@@ -1271,8 +1271,6 @@ const _HOLDEM_HOTSPOT_SIZE: [number, number, number] = [200, 200, 150];
 // physical geometry and deliberately unmoved.
 function BlackjackTableHotspot() {
   const meshRef = useRef<THREE.Mesh>(null);
-  const openBlackjackTable = useCoveStore((s) => s.openBlackjackTable);
-  const { data: avatar } = useAvatar();
 
   useEffect(() => {
     const mesh = meshRef.current;
@@ -1287,11 +1285,10 @@ function BlackjackTableHotspot() {
     // the whole session is meant to render in-world on the felt, never an
     // overlay. Founder explicitly rejected the modal-still-opens-while-
     // seated behavior as "the exact failure we're replacing." Walk-around
-    // click still opens the modal as before (other games keep this path
-    // until they get their own in-world slice).
+    // click enters blackjack's dedicated room. The explicit
+    // `/cove?table=blackjack` deep link remains the 2D-modal fallback.
     if (useCoveStore.getState().seatedTable !== null) return;
-    const balance = avatar?.clawTokens ?? 0;
-    openBlackjackTable(balance);
+    useCoveStore.getState().requestEnterBlackjackRoom();
   };
 
   return (
