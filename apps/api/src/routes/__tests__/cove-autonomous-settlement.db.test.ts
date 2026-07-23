@@ -10,13 +10,17 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
 import { createHash, randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
+import { Hono } from 'hono';
+import type { AppContext } from '../../types';
 import type { AgentSubstrateClient } from '../../services/agent-substrate-client';
 import {
   __resetSpinRateLimit,
+  coveSlotsRouter,
   playAutonomousCoveSlots,
 } from '../cove-slots';
 import {
   __resetBlackjackRateLimits,
+  buildBlackjackBasicStrategyHand,
   playAutonomousCoveBlackjack,
 } from '../cove-blackjack';
 import { autonomousCoveDailyUsageQuery } from '../../services/autonomous-cove-wager-cap';
@@ -28,6 +32,19 @@ const describeIfDb = process.env.DATABASE_URL ? describe : describe.skip;
 const dbMod = process.env.DATABASE_URL ? ((await import('@clawville/database')) as any) : null;
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const DB_TEST_TIMEOUT_MS = 60_000;
+const DB_HOOK_TIMEOUT_MS = 120_000;
+
+function buildSpinRateProbe(fpHash: string) {
+  const app = new Hono<AppContext>();
+  app.use('*', async (c, next) => {
+    c.set('fpHash', fpHash);
+    c.set('ipPrefixHash', 'cove-autonomous-db-rate-probe-ip');
+    await next();
+  });
+  app.route('/', coveSlotsRouter);
+  return app;
+}
 
 describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => {
   const suffix = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
@@ -342,7 +359,7 @@ describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => 
     // using the production direct-DB seeder (never the avatar HTTP route).
     await houseTreasurySeeder.ensure();
     treasuryAvatarId = houseTreasurySeeder.houseTreasuryAvatarId();
-  });
+  }, DB_HOOK_TIMEOUT_MS);
 
   beforeEach(async () => {
     process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW = '1000000';
@@ -353,7 +370,7 @@ describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => 
     await clearPlayerMoneyPathRows();
     freshSlotSpinIds.clear();
     freshBlackjackHandIds.clear();
-  });
+  }, DB_HOOK_TIMEOUT_MS);
 
   afterAll(async () => {
     if (originalCap === undefined) delete process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW;
@@ -368,7 +385,7 @@ describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => 
     if (botId) await dbMod.db.delete(dbMod.agentBots).where(eq(dbMod.agentBots.id, botId));
     if (avatarId) await dbMod.db.delete(dbMod.avatars).where(eq(dbMod.avatars.id, avatarId));
     if (userId) await dbMod.db.delete(dbMod.users).where(eq(dbMod.users.id, userId));
-  });
+  }, DB_HOOK_TIMEOUT_MS);
 
   it('slots: one autonomous spin writes the gross stake debit and exact net avatar delta', async () => {
     const before = await avatarBalance();
@@ -392,7 +409,7 @@ describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => 
     const after = await avatarBalance();
     expect(after.clawTokens - before.clawTokens).toBe(Number(result.winAmount) - 20);
     expect(after.clawTokens).toBe(after.softBalance + after.boughtBalance + after.earnedBalance);
-  });
+  }, DB_TEST_TIMEOUT_MS);
 
   it('slots: daily cap consumes gross tagged debits and a refused second play writes no debit', async () => {
     process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW = '40';
@@ -422,7 +439,7 @@ describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => 
         sql`${dbMod.clawTokenTransactions.metadata} ->> 'autonomousCove' = 'true'`,
       ))).length;
     expect(debitsAfter).toBe(debitsBefore);
-  });
+  }, DB_TEST_TIMEOUT_MS);
 
   it('slots: changed live binding is rejected before any ledger write', async () => {
     const actionId = randomUUID();
@@ -439,10 +456,10 @@ describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => 
       403,
     );
     expect(await rowsForAction(actionId)).toHaveLength(0);
-  });
+  }, DB_TEST_TIMEOUT_MS);
 
   it('slots: an avatar deactivated after inner resolution is rejected by the transaction binding lock', async () => {
-    const [session] = await dbMod.db.insert(dbMod.slotSessions).values({
+    await dbMod.db.insert(dbMod.slotSessions).values({
       userId,
       guestFpHash: null,
       paytableId: 'classic-3x5',
@@ -452,16 +469,22 @@ describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => 
       clientSeed: '0123456789abcdef',
       startingBalance: '20',
       currentBalance: '0',
-    }).returning({ id: dbMod.slotSessions.id });
+    });
 
-    let release!: () => void;
+    let deactivate!: () => void;
     let locked!: () => void;
-    const releasePromise = new Promise<void>((resolve) => { release = resolve; });
+    const deactivatePromise = new Promise<void>((resolve) => { deactivate = resolve; });
     const lockedPromise = new Promise<void>((resolve) => { locked = resolve; });
     const locker = dbMod.db.transaction(async (tx: any) => {
-      await tx.execute(sql`SELECT id FROM slot_sessions WHERE id = ${session.id} FOR UPDATE`);
+      // Hold the exact avatar row while every pre-transaction resolver still
+      // sees the last committed active=true snapshot. The settlement then
+      // blocks specifically on its authoritative avatar FOR UPDATE guard.
+      await tx.execute(sql`SELECT id FROM avatars WHERE id = ${avatarId} FOR UPDATE`);
       locked();
-      await releasePromise;
+      await deactivatePromise;
+      await tx.update(dbMod.avatars)
+        .set({ isActive: false })
+        .where(eq(dbMod.avatars.id, avatarId));
     });
     await lockedPromise;
 
@@ -476,7 +499,8 @@ describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => 
           WHERE datname = current_database()
             AND pid <> pg_backend_pid()
             AND wait_event_type = 'Lock'
-            AND query ILIKE '%slot_sessions%'
+            AND query ILIKE '%FROM avatars%'
+            AND query ILIKE '%FOR UPDATE%'
         `);
         if (Number(waiting[0]?.waiting ?? 0) > 0) {
           observedWait = true;
@@ -485,14 +509,13 @@ describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => 
         await delay(10);
       }
       expect(observedWait).toBe(true);
-      await dbMod.db.update(dbMod.avatars).set({ isActive: false }).where(eq(dbMod.avatars.id, avatarId));
     } finally {
-      release();
+      deactivate();
       await locker;
     }
     await expectCode(play, 'active_avatar_binding_changed', 403);
     expect(await rowsForAction(actionId)).toHaveLength(0);
-  });
+  }, DB_TEST_TIMEOUT_MS);
 
   it('slots: owner-scoped action replay survives session rotation and mismatched args return 409', async () => {
     const actionId = randomUUID();
@@ -501,10 +524,14 @@ describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => 
       .select({ sessionId: dbMod.slotSpins.sessionId })
       .from(dbMod.slotSpins)
       .where(eq(dbMod.slotSpins.id, first.spinId));
-    await dbMod.db
+    const [closedPriorSession] = await dbMod.db
       .update(dbMod.slotSessions)
       .set({ status: 'closed', closedAt: new Date() })
-      .where(eq(dbMod.slotSessions.id, spin.sessionId));
+      .where(eq(dbMod.slotSessions.id, spin.sessionId))
+      .returning({ id: dbMod.slotSessions.id, status: dbMod.slotSessions.status });
+    // Production rotation closes the old row in place. Keeping it is what
+    // lets the owner-scoped slot_spins JOIN find an action after rotation.
+    expect(closedPriorSession).toEqual({ id: spin.sessionId, status: 'closed' });
     await dbMod.db.insert(dbMod.slotSessions).values({
       userId,
       guestFpHash: null,
@@ -528,7 +555,7 @@ describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => 
       409,
     );
     expect((await rowsForAction(actionId)).filter((row: any) => row.amount < 0)).toHaveLength(debitCount);
-  });
+  }, DB_TEST_TIMEOUT_MS);
 
   it('slots: invalid, non-ledger, and unbound resolution never reaches settlement', async () => {
     for (const resolution of [
@@ -548,39 +575,75 @@ describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => 
       await expectCode(promise, code);
       expect(await rowsForAction(actionId)).toHaveLength(0);
     }
-  });
+  }, DB_TEST_TIMEOUT_MS);
 
-  it('slots: the real internal spin rate gate refuses play 61 with no settlement write', async () => {
-    process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW = '1000000';
-    for (let spin = 0; spin < 60; spin++) {
-      await playSlots(slotsInput(randomUUID(), 20), { resolveAgent: boundResolution });
-    }
-    const refusedAction = randomUUID();
-    await expectCode(
-      playSlots(slotsInput(refusedAction, 20), { resolveAgent: boundResolution }),
-      'cove_slots_rate_limit',
-      429,
-    );
-    expect(await rowsForAction(refusedAction)).toHaveLength(0);
-  });
+  it('slots: the real internal spin rate gate refuses request 61 with no settlement write', async () => {
+    const ledgerRowsBefore = (await dbMod.db
+      .select({ id: dbMod.clawTokenTransactions.id })
+      .from(dbMod.clawTokenTransactions)
+      .where(eq(dbMod.clawTokenTransactions.avatarId, avatarId))).length;
+    const app = buildSpinRateProbe(`cove-autonomous-rate-${suffix}`);
+    const unknownSessionId = randomUUID();
+    const request = (attempt: number) => app.request('/spin', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': `rate-probe-${attempt}`,
+      },
+      body: JSON.stringify({ sessionId: unknownSessionId, predict: '20' }),
+    });
+
+    // The rate check runs before session lookup. Drive the real in-memory gate
+    // concurrently with cheap 404 probes instead of committing 60 real spins.
+    const admitted = await Promise.all(Array.from({ length: 60 }, (_, index) => request(index)));
+    expect(admitted.every((response) => response.status === 404)).toBe(true);
+    const refused = await request(60);
+    expect(refused.status).toBe(429);
+    expect((await refused.text()).startsWith('cove_slots_rate_limit')).toBe(true);
+    const ledgerRowsAfter = (await dbMod.db
+      .select({ id: dbMod.clawTokenTransactions.id })
+      .from(dbMod.clawTokenTransactions)
+      .where(eq(dbMod.clawTokenTransactions.avatarId, avatarId))).length;
+    expect(ledgerRowsAfter).toBe(ledgerRowsBefore);
+  }, DB_TEST_TIMEOUT_MS);
 
   it('blackjack: a raked autonomous hand settles stake, payout, treasury, history, and balance invariants', async () => {
-    let selected: any = null;
-    let actionId = '';
-    let before: any = null;
-    for (let attempt = 0; attempt < 60; attempt++) {
-      actionId = randomUUID();
-      before = await avatarBalance();
-      const result = await playBlackjack(
-        blackjackInput(actionId, 100),
-        boundResolution,
-      );
-      if (Number(result.rake) > 0) {
-        selected = result;
+    const clientSeed = 'db7e57a1ed4a0d00';
+    let serverSeed = '';
+    for (let attempt = 0; attempt < 1_000; attempt++) {
+      const candidate = createHash('sha256').update(`cove-db-raked-${attempt}`).digest('hex');
+      const predicted = buildBlackjackBasicStrategyHand({
+        serverSeed: candidate,
+        clientSeed,
+        nonce: 0,
+        cursor: 0,
+        bet: 100n,
+        dealtBefore: 0,
+      });
+      if (predicted.result.totalPayout > predicted.result.totalBet) {
+        serverSeed = candidate;
         break;
       }
     }
-    expect(selected).toBeTruthy();
+    expect(serverSeed).not.toBe('');
+    await dbMod.db.insert(dbMod.blackjackShoes).values({
+      userId,
+      guestFpHash: null,
+      currency: 'clawtoken',
+      serverSeed,
+      serverSeedHash: createHash('sha256').update(serverSeed).digest('hex'),
+      clientSeed,
+      startingBalance: '0',
+    });
+
+    const actionId = randomUUID();
+    const before = await avatarBalance();
+    const selected = await playBlackjack(
+      blackjackInput(actionId, 100),
+      boundResolution,
+    );
+    const after = await avatarBalance();
+    expect(Number(selected.rake)).toBeGreaterThan(0);
 
     const rows = await rowsForAction(actionId);
     const playerRows = rows.filter((row: any) => row.avatarId === avatarId);
@@ -610,8 +673,10 @@ describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => 
     // exactly between the player's raked credit and the named treasury rake.
     expect(payoutCredit + rakeCredit).toBe(Number(selected.totalPayout));
 
-    const after = await avatarBalance();
-    expect(after.clawTokens - before.clawTokens).toBe(payoutCredit - debit);
+    const playerActionDelta = playerRows
+      .reduce((sum: number, row: any) => sum + row.amount, 0);
+    expect(after.clawTokens - before.clawTokens).toBe(playerActionDelta);
+    expect(playerActionDelta).toBe(payoutCredit - debit);
     expect(after.clawTokens).toBe(after.softBalance + after.boughtBalance + after.earnedBalance);
     const hand = await dbMod.db.query.blackjackHands.findFirst({
       where: eq(dbMod.blackjackHands.id, selected.handId),
@@ -627,7 +692,7 @@ describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => 
     });
     expect(event?.betAmount).toBe(selected.totalBet);
     expect(event?.payout).toBe(String(payoutCredit));
-  });
+  }, DB_TEST_TIMEOUT_MS);
 
   it('blackjack: 4x worst-case cap rejects before shoe, cards, history, or ledger mutation', async () => {
     process.env.AGENT_COVE_PLAY_DAILY_WAGER_VCLAW = '40';
@@ -655,7 +720,7 @@ describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => 
     );
     expect(await blackjackSnapshot()).toEqual(before);
     expect(await rowsForAction(actionId)).toHaveLength(0);
-  });
+  }, DB_TEST_TIMEOUT_MS);
 
   it('blackjack: action replay is owner-scoped across shoe rotation and never settles twice', async () => {
     const actionId = randomUUID();
@@ -712,7 +777,7 @@ describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => 
       expect(durableRows).toHaveLength(before.publishedEvents);
       await delay(25);
     }
-  });
+  }, DB_TEST_TIMEOUT_MS);
 
   it('blackjack: daily usage is counted by DB UTC date_trunc(now()), including midnight and excluding the prior second', async () => {
     await dbMod.db.transaction(async (tx: any) => {
@@ -738,7 +803,7 @@ describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => 
         .set({ clawTokens: 99_969, softBalance: 99_969 })
         .where(eq(dbMod.avatars.id, avatarId));
     });
-  });
+  }, DB_TEST_TIMEOUT_MS);
 
   it('blackjack: binding, active-avatar, non-ledger, and unbound failures write no hand or debit', async () => {
     const cases: Array<{ code: string; resolution: any; deactivate?: boolean }> = [
@@ -779,5 +844,5 @@ describeIfDb('autonomous Cove settlement — real PostgreSQL money path', () => 
         await dbMod.db.update(dbMod.avatars).set({ isActive: true }).where(eq(dbMod.avatars.id, avatarId));
       }
     }
-  });
+  }, DB_TEST_TIMEOUT_MS);
 });

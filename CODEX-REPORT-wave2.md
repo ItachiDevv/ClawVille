@@ -151,3 +151,23 @@ Local evidence:
 
 - `apps/api: bunx tsc --noEmit` → exit 0.
 - `bun test src/routes/__tests__/cove-autonomous-settlement.db.test.ts` → 0 failed, 14 skipped because `DATABASE_URL` is absent.
+
+## DB test green pass — test-side remediation
+
+Date: 2026-07-22
+
+Scope: `cove-autonomous-settlement.db.test.ts` only; production settlement and economy code remained unchanged.
+
+- All 12 DB-backed cases now have a 60-second timeout; `beforeAll`, `beforeEach`, and `afterAll` each have 120 seconds for the high-latency PostgreSQL link.
+- The slots rate-gate case drives the real in-memory limiter with 60 concurrent, valid-shape requests that intentionally stop at the pre-settlement `session_not_found` lookup, then proves request 61 returns `cove_slots_rate_limit` and the fixture avatar gains no ledger row. It no longer performs 61 real settlements.
+- The blackjack rake case selects a winning shoe locally with the production pure basic-strategy engine, inserts that deterministic open shoe, and performs exactly one real settlement. Its balance bracket is immediately around that call, and the expected delta is the sum of the same action's player ledger rows. It deliberately does not assert false system-level zero-sum conservation.
+- The slots deactivation case holds the avatar row while both resolution layers observe committed `is_active=true`, commits `is_active=false`, and verifies the authoritative in-transaction avatar `FOR UPDATE` guard returns `active_avatar_binding_changed` with no action ledger row.
+- The slots rotation fixture explicitly closes the prior session in place and verifies the row remains available to the owner-scoped replay join.
+
+Verification:
+
+- `apps/api: bunx tsc --noEmit` → exit 0.
+- `bun test src/routes/__tests__/cove-autonomous-settlement.db.test.ts` → exit 0, 0 failed, 14 skipped because this worktree has no `DATABASE_URL`; the reviewer live-PostgreSQL rerun remains the final environment-backed confirmation.
+- `git diff --check` → exit 0 (Git emitted only the existing LF-to-CRLF advisory).
+- Independent combined spec/regression review → APPROVED after correcting the bare-Hono 429 assertion to read its plain-text body.
+- No push, schema change, production-code edit, or external environment mutation was performed.

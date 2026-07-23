@@ -1,0 +1,6 @@
+CODEX DB TEST FIX — Agentic Wave 2
+Report: CODEX-REPORT-wave2.md#db-test-green-pass--test-side-remediation
+Status: TEST FIXES READY FOR REVIEWER LIVE-POSTGRES RERUN
+TypeScript: PASS
+Local DB suite: 0 failed, 14 skipped (DATABASE_URL absent)
+Date: 2026-07-22
