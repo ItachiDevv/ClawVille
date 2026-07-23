@@ -221,7 +221,12 @@ export interface AgentPayDb {
     payer: string | null,
     accounting?: AgentPaySettlementAccounting,
   ): Promise<'captured' | 'lost' | 'signature_conflict'>;
-  markFailed(id: string, settlingId: string, reason: string): Promise<void>;
+  markFailed(
+    id: string,
+    settlingId: string,
+    reason: string,
+    capExempt?: true,
+  ): Promise<void>;
   markReconcile(
     id: string,
     settlingId: string | null,
@@ -229,6 +234,7 @@ export interface AgentPayDb {
     observedSignature?: string | null,
     expectedTxSignature?: string | null,
     accounting?: AgentPaySettlementAccounting,
+    capExempt?: true,
   ): Promise<boolean | void>;
   fulfillCaptured(
     id: string,
@@ -340,6 +346,7 @@ const defaultDb: AgentPayDb = {
         .where(and(
           gte(agentPayments.createdAt, dayStart),
           inArray(agentPayments.status, [...COUNTED_DAILY_CAP_STATUSES]),
+          sql`${agentPayments.capExempt} IS NOT TRUE`,
           or(
             eq(agentPayments.senderAvatarId, input.senderAvatarId),
             eq(agentPayments.recipientAvatarId, input.recipientAvatarId),
@@ -435,10 +442,11 @@ const defaultDb: AgentPayDb = {
       throw err;
     }
   },
-  async markFailed(id, settlingId, reason) {
+  async markFailed(id, settlingId, reason, capExempt) {
     await db.update(agentPayments).set({
       status: 'failed', failureReason: reason, settlingId: null,
       settlingStartedAt: null, updatedAt: new Date(),
+      ...(capExempt ? { capExempt: true } : {}),
     }).where(and(
       eq(agentPayments.id, id), eq(agentPayments.status, 'settling'),
       eq(agentPayments.settlingId, settlingId),
@@ -451,6 +459,7 @@ const defaultDb: AgentPayDb = {
     observedSignature = null,
     expectedTxSignature,
     accounting,
+    capExempt,
   ) {
     const conditions = [eq(agentPayments.id, id), eq(agentPayments.status, 'settling')];
     if (settlingId) conditions.push(eq(agentPayments.settlingId, settlingId));
@@ -472,6 +481,7 @@ const defaultDb: AgentPayDb = {
       status: 'reconcile', failureReason: reason,
       reconcileTxSignature: observedSignature, settlingId: null,
       settlingStartedAt: null, updatedAt: new Date(),
+      ...(capExempt ? { capExempt: true } : {}),
       ...(x402SettlementAccounting
         ? {
             metadata: sql`COALESCE(${agentPayments.metadata}, '{}'::jsonb) || ${JSON.stringify({
@@ -886,8 +896,13 @@ async function executePendingWithPermit(
         detail: outcome.reason,
       };
     }
-    if (outcome.kind === 'definitive_failure') {
-    await d.db.markFailed(row.id, settlingId, `${outcome.stage}:${outcome.reason}`);
+  if (outcome.kind === 'definitive_failure') {
+    await d.db.markFailed(
+      row.id,
+      settlingId,
+      `${outcome.stage}:${outcome.reason}`,
+      outcome.noBroadcast,
+    );
     return { ok: false, code: 'payment_failed', paymentId: row.id, status: 'failed', detail: outcome.reason };
   }
     if (outcome.kind !== 'settled' && outcome.kind !== 'meridian_settled') {
@@ -897,6 +912,9 @@ async function executePendingWithPermit(
       settlingId,
       reason,
       outcome.kind === 'ambiguous' ? outcome.signature : null,
+      undefined,
+      undefined,
+      outcome.kind === 'verify_only' ? true : undefined,
     );
     return { ok: false, code: 'payment_reconcile', paymentId: row.id, status: 'reconcile', detail: reason };
   }
