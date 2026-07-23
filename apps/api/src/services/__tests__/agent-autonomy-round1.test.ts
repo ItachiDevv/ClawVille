@@ -169,6 +169,61 @@ describe('round 1 perception + decision prompt', () => {
     for (const verb of HATCHER_ACTION_VERBS) expect(prompt).toContain(verb);
   });
 
+  it('surfaces the terminal cove action when the agent is already in range', () => {
+    const id = 'in-range-prompt-agent';
+    const entry = registerHouse(id);
+    const cove = npcSimulation.buildPerception(id)!.places.find(
+      (place) => place.placeId === 'cove',
+    )!;
+    const npc = sim.npcs.get(id);
+    npc.x = cove.centerX;
+    npc.y = cove.centerY;
+    const perception = npcSimulation.buildPerception(id)!;
+    expect(
+      perception.places.find((place) => place.placeId === 'cove')!.distance,
+    ).toBeLessThanOrEqual(BUILDING_INTERACTION_RADIUS);
+    const prompt = agentAutonomyDriver.buildDecisionPrompt(
+      perception,
+      entry as never,
+      [],
+      'go play cards',
+    );
+
+    expect(prompt).toContain(
+      'You are HERE now (within range — act directly; do NOT enter again):',
+    );
+    expect(
+      prompt.split('\n').find((line) => line.startsWith('- The Cove:')),
+    ).toContain('you can play right now — [ACTION: play_cove_game(');
+    expect(
+      prompt.split('\n').find((line) => line.startsWith('- cove:')),
+    ).toContain('(you are HERE — no need to enter again)');
+  });
+
+  it('keeps the proximity block absent when every place is out of range', () => {
+    const id = 'out-of-range-prompt-agent';
+    const entry = registerHouse(id);
+    const npc = sim.npcs.get(id);
+    npc.x = 32;
+    npc.y = 32;
+    const perception = npcSimulation.buildPerception(id)!;
+
+    expect(
+      perception.places.every(
+        (place) => place.distance > BUILDING_INTERACTION_RADIUS,
+      ),
+    ).toBe(true);
+    const prompt = agentAutonomyDriver.buildDecisionPrompt(
+      perception,
+      entry as never,
+      [],
+      'go play cards',
+    );
+
+    expect(prompt).not.toContain('You are HERE now');
+    expect(prompt).not.toContain('(you are HERE — no need to enter again)');
+  });
+
   it('renders at most three ordered, bounded book and visit knowledge snippets', () => {
     const id = 'knowledge-prompt-agent';
     const entry = registerHouse(id);
