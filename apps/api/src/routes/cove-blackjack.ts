@@ -92,7 +92,15 @@ import { sessionMiddleware, requireAuth } from '../middleware/auth';
 import { resolveAgentSession } from '../middleware/require-auth-or-agent';
 import { isGuestUser } from '../middleware/require-non-guest';
 import { npcSimulation } from '../services/npc-simulation';
-import { createServerSeed } from '../services/provable-rng';
+import { createServerSeed, sha256Hex } from '../services/provable-rng';
+import {
+  COVE_TEST_FIXTURE_HEADER,
+  assertFixtureResourceHeader,
+  chargeFixtureExposure,
+  consumeFixtureArm,
+  resolveFixtureOwnerAvatarId,
+  validateLinkedFixtureArmAccess,
+} from '../services/cove-test-fixture';
 import {
   playHand,
   playHandWithState,
@@ -521,6 +529,7 @@ interface ShoeLockRow {
   status: string;
   user_id: string | null;
   guest_fp_hash: string | null;
+  fixture_run_id: string | null;
   // Index signature so the row type satisfies Drizzle's
   // `tx.execute<T extends Record<string, unknown>>` constraint.
   [key: string]: unknown;
@@ -823,6 +832,7 @@ coveBlackjackRouter.post('/session/open', async (c) => {
   }
   const input = parsed.data;
   const subject = await getSubject(c);
+  const fixtureHeader = c.req.header(COVE_TEST_FIXTURE_HEADER);
 
   // Currency seam — SOL/USDC custody is a later tier. Same 501 shape as slots.
   if (input.currency !== 'clawtoken') {
@@ -849,6 +859,11 @@ coveBlackjackRouter.post('/session/open', async (c) => {
     checkGuestShoeOpenRate(subject.guestFpHash);
     guestStartingBalance = GUEST_STARTING_BALANCE;
   }
+  const fixtureOwnerAvatarId = await resolveFixtureOwnerAvatarId({
+    header: fixtureHeader,
+    luciaUserId: c.get('user')?.id,
+    agentAvatarId: subject.kind === 'agent' ? subject.avatarId : null,
+  });
 
   // Idempotent open: resume the subject's existing open shoe. Lock the row so
   // we never return data another request is mid-mutating (mirrors cove-slots).
@@ -934,6 +949,9 @@ coveBlackjackRouter.post('/session/open', async (c) => {
     });
     // fall through to fresh-shoe open below
   } else if (resumed.kind === 'resume') {
+    if (fixtureHeader) {
+      throw new HTTPException(409, { message: 'fixture_requires_fresh_shoe' });
+    }
     return c.json(
       {
         shoe: publicShoe(resumed.shoe),
@@ -943,15 +961,30 @@ coveBlackjackRouter.post('/session/open', async (c) => {
     );
   }
 
-  const { serverSeed, serverSeedHash } = createServerSeed();
-  const clientSeed = randomBytes(8).toString('hex');
+  const randomSeed = createServerSeed();
+  const randomClientSeed = randomBytes(8).toString('hex');
 
   let inserted: BlackjackShoe;
   try {
-    inserted = await db.transaction(async (tx) => {
+    const createResult = await db.transaction(async (tx) => {
+      const consumption = fixtureOwnerAvatarId
+        ? await consumeFixtureArm(tx, {
+            header: fixtureHeader,
+            ownerAvatarId: fixtureOwnerAvatarId,
+            arm: 'blackjack-shoe',
+          })
+        : null;
+      if (consumption && !consumption.ok) {
+        return { kind: 'fixture-exhausted' as const };
+      }
+      const fixture = consumption?.fixture ?? null;
+      const serverSeed = fixture?.serverSeed ?? randomSeed.serverSeed;
+      const serverSeedHash = fixture ? sha256Hex(fixture.serverSeed) : randomSeed.serverSeedHash;
+      const clientSeed = fixture?.clientSeed ?? randomClientSeed;
       const [row] = await tx
         .insert(blackjackShoes)
         .values({
+          fixtureRunId: fixture?.runId,
           userId: subject.userId,
           guestFpHash: subject.guestFpHash,
           currency: 'clawtoken',
@@ -963,12 +996,19 @@ coveBlackjackRouter.post('/session/open', async (c) => {
         })
         .returning();
       if (!row) throw new HTTPException(500, { message: 'shoe_insert_failed' });
-      return row;
+      return { kind: 'created' as const, row };
     });
+    if (createResult.kind === 'fixture-exhausted') {
+      throw new HTTPException(402, { message: 'fixture_budget_exhausted' });
+    }
+    inserted = createResult.row;
   } catch (err) {
     // Race against a concurrent open on the same subject — re-read + serve.
     const pgCode = (err as { code?: string } | undefined)?.code;
     if (pgCode === '23505') {
+      if (fixtureHeader) {
+        throw new HTTPException(409, { message: 'fixture_requires_fresh_shoe' });
+      }
       const raceWhere =
         isLedgerSubject(subject)
           ? and(eq(blackjackShoes.userId, subject.userId), eq(blackjackShoes.status, 'open'))
@@ -1033,6 +1073,12 @@ coveBlackjackRouter.post('/hand/deal', async (c) => {
   }
   const input = parsed.data;
   const subject = await getSubject(c);
+  const fixtureHeader = c.req.header(COVE_TEST_FIXTURE_HEADER);
+  const fixtureOwnerAvatarId = await resolveFixtureOwnerAvatarId({
+    header: fixtureHeader,
+    luciaUserId: c.get('user')?.id,
+    agentAvatarId: subject.kind === 'agent' ? subject.avatarId : null,
+  });
   checkActionRate(subjectKey(subject));
 
   const shoe = await db.query.blackjackShoes.findFirst({
@@ -1078,6 +1124,10 @@ coveBlackjackRouter.post('/hand/deal', async (c) => {
       });
     }
   }
+  if (fixtureHeader && !shoe.fixtureRunId) {
+    throw new HTTPException(409, { message: 'fixture_resource_mismatch' });
+  }
+  assertFixtureResourceHeader(shoe.fixtureRunId, fixtureHeader);
 
   // Insert the in_progress hand under the shoe lock so handIndex/cursorBefore/
   // dealtBefore come from authoritative counters. The empty script means "no
@@ -1102,8 +1152,9 @@ coveBlackjackRouter.post('/hand/deal', async (c) => {
       cursor_counter: number | string;
       dealt_count: number | string;
       status: string;
+      fixture_run_id: string | null;
     }>(
-      sql`SELECT hand_counter, cursor_counter, dealt_count, status
+      sql`SELECT hand_counter, cursor_counter, dealt_count, status, fixture_run_id
           FROM blackjack_shoes WHERE id = ${shoe.id} FOR UPDATE`,
     );
     const lock = lockRows[0];
@@ -1189,6 +1240,18 @@ coveBlackjackRouter.post('/hand/deal', async (c) => {
     // settle (engine totalPayout already includes the insurance return).
     const insuranceStake = tookInsurance ? betBig / 2n : 0n;
     const stakeNow = betBig + insuranceStake;
+    if (lock.fixture_run_id) {
+      if (!fixtureOwnerAvatarId) {
+        throw new HTTPException(401, { message: 'invalid_test_fixture' });
+      }
+      const charge = await chargeFixtureExposure(tx, {
+        header: fixtureHeader,
+        ownerAvatarId: fixtureOwnerAvatarId,
+        arm: 'blackjack-shoe',
+        legStakeCt: Number(stakeNow),
+      });
+      if (!charge?.ok) return { fixtureExhausted: true as const };
+    }
     let balanceAfterDeal: number | undefined;
     if (isLedgerSubject(subject)) {
       const dealAvatar = avatar ?? (await loadAvatarForUser(subject.userId));
@@ -1272,6 +1335,9 @@ coveBlackjackRouter.post('/hand/deal', async (c) => {
       balanceAfterDeal,
     };
   });
+  if ('fixtureExhausted' in dealResult) {
+    throw new HTTPException(402, { message: 'fixture_budget_exhausted' });
+  }
 
   // Natural (player or dealer BJ) → settle immediately (no player decisions).
   if (dealResult.playerNatural || dealResult.dealerNatural) {
@@ -1331,6 +1397,33 @@ coveBlackjackRouter.post('/action', async (c) => {
   if (!shoe) throw new HTTPException(404, { message: 'shoe_not_found' });
   if (!ownerMatch(shoe, subject)) throw new HTTPException(403, { message: 'hand_not_owned' });
 
+  const fixtureHeader = c.req.header(COVE_TEST_FIXTURE_HEADER);
+  if (fixtureHeader && !shoe.fixtureRunId) {
+    throw new HTTPException(409, { message: 'fixture_resource_mismatch' });
+  }
+  assertFixtureResourceHeader(shoe.fixtureRunId, fixtureHeader);
+  const fixtureOwnerAvatarId = shoe.fixtureRunId
+    ? await resolveFixtureOwnerAvatarId({
+        header: fixtureHeader,
+        luciaUserId: c.get('user')?.id,
+        agentAvatarId: subject.kind === 'agent' ? subject.avatarId : null,
+      })
+    : null;
+  if (shoe.fixtureRunId && !fixtureOwnerAvatarId) {
+    throw new HTTPException(401, { message: 'invalid_test_fixture' });
+  }
+  if (shoe.fixtureRunId) {
+    const fixture = await validateLinkedFixtureArmAccess({
+      header: fixtureHeader,
+      ownerAvatarId: fixtureOwnerAvatarId!,
+      arm: 'blackjack-shoe',
+      fixtureRunId: shoe.fixtureRunId,
+    });
+    if (fixture?.runId !== shoe.fixtureRunId) {
+      throw new HTTPException(401, { message: 'invalid_test_fixture' });
+    }
+  }
+
   // Idempotent: a re-POST to a settled hand replays the stored outcome.
   if (hand.status === 'settled') {
     return c.json(await buildSettledResponse(hand, shoe, subject), 200);
@@ -1338,7 +1431,6 @@ coveBlackjackRouter.post('/action', async (c) => {
   if (shoe.status !== 'open') {
     throw new HTTPException(409, { message: `shoe_not_open: status=${shoe.status}` });
   }
-
   const seedState: ShoeSeedState = {
     id: shoe.id,
     serverSeed: shoe.serverSeed,
@@ -1441,6 +1533,15 @@ coveBlackjackRouter.post('/action', async (c) => {
         if (shoeLock.status !== 'open') {
           throw new HTTPException(409, { message: `shoe_not_open: status=${shoeLock.status}` });
         }
+        if (shoe.fixtureRunId) {
+          const charge = await chargeFixtureExposure(tx, {
+            header: fixtureHeader,
+            ownerAvatarId: fixtureOwnerAvatarId!,
+            arm: 'blackjack-shoe',
+            legStakeCt: Number(insBet),
+          });
+          if (!charge?.ok) return { fixtureExhausted: true as const, settledReplay: null };
+        }
 
         if (isLedgerSubject(subject)) {
           const insAvatar = await loadAvatarForUser(subject.userId);
@@ -1496,6 +1597,9 @@ coveBlackjackRouter.post('/action', async (c) => {
       if (!updated[0]) throw new HTTPException(409, { message: 'hand_not_in_progress' });
       return { settledReplay: null };
     });
+    if ('fixtureExhausted' in result) {
+      throw new HTTPException(402, { message: 'fixture_budget_exhausted' });
+    }
 
     if (result.settledReplay) {
       return c.json(await buildSettledResponse(result.settledReplay, shoe, subject), 200);
@@ -1552,6 +1656,23 @@ coveBlackjackRouter.post('/action', async (c) => {
       ? splitAceSlotsFromPeek(lockedScript, await dryRunHand(seedState, locked, lockedScript, tx))
       : new Set<number>();
     const nextScript = applyDecision(lockedScript, action, handSlot, aceSlots);
+    if (shoe.fixtureRunId) {
+      const legStakeCt = action === 'double' || action === 'split' ? Number(locked.bet) : 0;
+      const charge = await chargeFixtureExposure(tx, {
+        header: fixtureHeader,
+        ownerAvatarId: fixtureOwnerAvatarId!,
+        arm: 'blackjack-shoe',
+        legStakeCt,
+      });
+      if (!charge?.ok) {
+        return {
+          fixtureExhausted: true as const,
+          settledReplay: null,
+          updatedHand: null,
+          newScript: null,
+        };
+      }
+    }
 
     const persisted = await tx
       .update(blackjackHands)
@@ -1561,6 +1682,9 @@ coveBlackjackRouter.post('/action', async (c) => {
     if (!persisted[0]) throw new HTTPException(409, { message: 'hand_not_in_progress' });
     return { settledReplay: null, updatedHand: persisted[0], newScript: nextScript };
   });
+  if ('fixtureExhausted' in mutation) {
+    throw new HTTPException(402, { message: 'fixture_budget_exhausted' });
+  }
 
   // Lost the race to a concurrent settle → replay the stored outcome.
   if (mutation.settledReplay) {
@@ -1690,7 +1814,7 @@ async function settleHand(
     const shoeRows = await tx.execute<ShoeLockRow>(
       sql`SELECT id, server_seed, server_seed_hash, client_seed, cursor_counter,
                  dealt_count, total_bet, total_payout, starting_balance, status,
-                 user_id, guest_fp_hash
+                 user_id, guest_fp_hash, fixture_run_id
           FROM blackjack_shoes WHERE id = ${shoeId} FOR UPDATE`,
     );
     const shoeLock = shoeRows[0];
@@ -1967,6 +2091,7 @@ async function settleHand(
     // serverSeedHash committed at open; revealedServerSeed NULL until shoe
     // close (commit-reveal). nonce = handIndex; sessionId = shoeId.
     await tx.insert(coveGameEvents).values({
+      fixtureRunId: shoeLock.fixture_run_id,
       userId: subject.userId,
       guestFpHash: subject.guestFpHash,
       gameType: 'blackjack',

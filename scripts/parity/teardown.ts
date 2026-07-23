@@ -1,0 +1,197 @@
+import type { Driver } from './driver';
+
+export interface FixtureRunHandle {
+  runId: string;
+}
+
+async function clickButtonByText(
+  driver: Driver,
+  labels: readonly string[],
+): Promise<boolean> {
+  return driver.evalJson<boolean>(`(() => {
+    const labels = ${JSON.stringify(labels)};
+    const button = [...document.querySelectorAll('button')].find((candidate) =>
+      labels.some((label) => candidate.textContent?.trim().startsWith(label))
+      && !candidate.disabled
+    );
+    if (!button) return false;
+    button.click();
+    return true;
+  })()`);
+}
+
+async function currentStatus(
+  driver: Driver,
+  game: 'blackjack' | 'baccarat',
+  apiBase: string,
+): Promise<number> {
+  return driver.evalJson<number>(`(async () => {
+    const response = await fetch(
+      ${JSON.stringify(apiBase.replace(/\/$/, ''))} + '/api/cove/${game}/session/current',
+      { credentials: 'include' },
+    );
+    return response.status;
+  })()`);
+}
+
+export async function teardownGame(
+  driver: Driver,
+  game: 'holdem' | 'blackjack' | 'baccarat',
+  apiBase: string,
+): Promise<void> {
+  if (game === 'blackjack') {
+    for (let attempts = 0; attempts < 8; attempts += 1) {
+      const settled = await driver.evalJson<boolean>(
+        `window.__CV_READ_PARITY?.('blackjack-3d')?.dealStep === 'settled'`,
+      );
+      if (settled) break;
+      if (!await clickButtonByText(driver, ['Stand', 'Surrender'])) break;
+      await new Promise((resolveWait) => setTimeout(resolveWait, 150));
+    }
+    await driver.waitFn(
+      `!window.__CV_READ_PARITY?.('blackjack-3d')
+        || window.__CV_READ_PARITY?.('blackjack-3d')?.dealStep === 'settled'`,
+      20_000,
+    );
+    if (!await clickButtonByText(driver, ['Walk Away', 'Close'])) {
+      throw new Error('blackjack teardown could not find Walk Away/Close');
+    }
+    await driver.waitFn(
+      `!window.__CV_READ_PARITY?.('blackjack-3d')`,
+      10_000,
+    );
+    const status = await currentStatus(driver, 'blackjack', apiBase);
+    if (![403, 404].includes(status)) {
+      throw new Error(`blackjack teardown verification returned ${status}`);
+    }
+    return;
+  }
+  if (game === 'baccarat') {
+    await driver.waitFn(
+      `!window.__CV_READ_PARITY?.('baccarat-3d')
+        || window.__CV_READ_PARITY?.('baccarat-3d')?.transition === 'idle'`,
+      15_000,
+    );
+    if (!await clickButtonByText(driver, ['Walk Away', 'Close'])) {
+      throw new Error('baccarat teardown could not find Walk Away/Close');
+    }
+    await driver.waitFn(
+      `!window.__CV_READ_PARITY?.('baccarat-3d')`,
+      10_000,
+    );
+    const status = await currentStatus(driver, 'baccarat', apiBase);
+    if (![403, 404].includes(status)) {
+      throw new Error(`baccarat teardown verification returned ${status}`);
+    }
+    return;
+  }
+  const cashHud = await driver.evalJson<boolean>(
+    `Boolean(document.querySelector('[data-testid="cash-table-room-hud"]'))`,
+  );
+  if (!cashHud) {
+    await driver.evalJson(`(() => { location.href = '/cove'; return true; })()`);
+    return;
+  }
+  const before = await driver.evalJson<{
+    tableId: string;
+    avatarId: string;
+    wallet: number;
+  }>(`(async () => {
+    const tableId = new URL(location.href).searchParams.get('tableId') ?? '';
+    const response = await fetch(
+      ${JSON.stringify(apiBase.replace(/\/$/, ''))} + '/api/avatars/me',
+      { credentials: 'include' },
+    );
+    const body = await response.json();
+    return {
+      tableId,
+      avatarId: String(body.avatar?.id ?? ''),
+      wallet: Number(body.avatar?.clawTokens),
+    };
+  })()`);
+  if (!before.tableId || !before.avatarId || !Number.isSafeInteger(before.wallet)) {
+    throw new Error('cash holdem teardown could not resolve table/avatar/wallet');
+  }
+  if (!await clickButtonByText(driver, ['Leave', 'Walk Away'])) {
+    throw new Error('cash holdem teardown could not find Leave/Walk Away');
+  }
+  await driver.waitFn(
+    `!document.querySelector('[data-testid="cash-table-room-hud"]')`,
+    30_000,
+  );
+  const proof = await driver.evalJson<{
+    queued: boolean;
+    cashedOutCt: number;
+    cashOutLedgerTxnId: string | null;
+    seatAbsent: boolean;
+    walletDelta: number;
+  }>(`(async () => {
+    const records = window.__CV_WIRE_ALL?.() ?? [];
+    const leave = [...records].reverse().find((record) =>
+      record.method === 'POST'
+      && record.urlSuffix === 'poker/cash/tables/${before.tableId}/leave'
+    );
+    const leaveBody = leave?.responseBody ?? {};
+    const [tableResponse, avatarResponse] = await Promise.all([
+      fetch(
+        ${JSON.stringify(apiBase.replace(/\/$/, ''))} + '/api/cove/poker/cash/tables/${before.tableId}',
+        { credentials: 'include' },
+      ),
+      fetch(
+        ${JSON.stringify(apiBase.replace(/\/$/, ''))} + '/api/avatars/me',
+        { credentials: 'include' },
+      ),
+    ]);
+    const tableBody = await tableResponse.json();
+    const avatarBody = await avatarResponse.json();
+    return {
+      queued: leaveBody.queued === true,
+      cashedOutCt: Number(leaveBody.cashedOutCt),
+      cashOutLedgerTxnId:
+        typeof leaveBody.cashOutLedgerTxnId === 'string'
+          ? leaveBody.cashOutLedgerTxnId
+          : null,
+      seatAbsent: !tableBody.seats?.some(
+        (seat) => seat.avatarId === ${JSON.stringify(before.avatarId)}
+      ),
+      walletDelta: Number(avatarBody.avatar?.clawTokens) - ${before.wallet},
+    };
+  })()`);
+  if (proof.queued) {
+    throw new Error(
+      'cash holdem teardown queued leave lacks an observable final cashOutLedgerTxnId; rerun from a between-hands boundary',
+    );
+  }
+  if (
+    !Number.isSafeInteger(proof.cashedOutCt)
+    || proof.cashedOutCt < 0
+    || (proof.cashedOutCt > 0 && !proof.cashOutLedgerTxnId)
+    || !proof.seatAbsent
+    || proof.walletDelta !== proof.cashedOutCt
+  ) {
+    throw new Error(
+      `cash holdem teardown proof failed (amount=${proof.cashedOutCt}, ledger=${Boolean(
+        proof.cashOutLedgerTxnId,
+      )}, absent=${proof.seatAbsent}, walletDelta=${proof.walletDelta})`,
+    );
+  }
+}
+
+export async function closeFixtureRun(
+  driver: Driver,
+  fixture: FixtureRunHandle | null,
+  apiBase: string,
+): Promise<void> {
+  if (!fixture) return;
+  const closed = await driver.evalJson<boolean>(`(async () => {
+    const response = await fetch(
+      ${JSON.stringify(apiBase.replace(/\/$/, ''))} + '/api/cove/test-fixture/run/' + ${JSON.stringify(fixture.runId)},
+      { method: 'DELETE', credentials: 'include' },
+    );
+    window.__CV_TEST_FIXTURE_HEADER = undefined;
+    return response.ok || response.status === 404;
+  })()`);
+  if (!closed) {
+    throw new Error(`fixture teardown failed for run ${fixture.runId}`);
+  }
+}

@@ -47,6 +47,7 @@ import { and, desc, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import {
   db,
   coveGameEvents,
+  baccaratShoes,
   slotSessions,
   type CoveGameEvent,
 } from '@clawville/database';
@@ -594,6 +595,13 @@ coveHistoryRouter.get('/:eventId/verify', async (c) => {
           and(eq(baccaratCoups.shoeId, event.sessionId), eq(baccaratCoups.status, 'settled')),
         )
         .orderBy(baccaratCoups.coupIndex);
+      const shoe = await db.query.baccaratShoes.findFirst({
+        where: eq(baccaratShoes.id, event.sessionId),
+        columns: { fixtureInitialDealtCount: true },
+      });
+      if (!shoe) {
+        throw new Error(`baccarat_shoe_missing_for_replay: shoeId=${event.sessionId}`);
+      }
 
       const coups: Array<{ bet: BaccaratBet; stake: bigint }> = [];
       for (let n = 0; n <= event.nonce; n++) {
@@ -611,6 +619,7 @@ coveHistoryRouter.get('/:eventId/verify', async (c) => {
         clientSeed: event.clientSeed,
         targetNonce: event.nonce,
         coups,
+        initialDealtCount: shoe.fixtureInitialDealtCount,
       });
       const targetRow = coupRows.find((coup) => coup.coupIndex === event.nonce)!;
       expectedSerialized = serializeCoupResult(replayed, {

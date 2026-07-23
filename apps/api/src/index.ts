@@ -130,6 +130,7 @@ import { wirePokerMttToHub } from './services/poker/poker-mtt-ws-bridge';
 // Phase 6.6.1 — cove Baccarat (Punto Banco) AUTHORITATIVE route (8-deck shoe,
 // fixed tableau, commit-reveal provably-fair engine, ClawToken ledger; SOL/USDC seam 501).
 import { coveBaccaratRouter } from './routes/cove-baccarat';
+import { coveTestFixtureRouter } from './routes/cove-test-fixture';
 // Phase 6.7.0 — cove cross-game history + per-event provable-fair verifier.
 import { coveHistoryRouter } from './routes/cove-history';
 // Lean in-product support tickets — POST /api/support/tickets (user/agent/guest).
@@ -439,6 +440,7 @@ app.route('/api/events', specialEventsRouter);
 // fixed third-card tableau, commit-reveal provably-fair; ClawToken ledger;
 // SOL/USDC seam returns 501).
 app.route('/api/cove/baccarat', coveBaccaratRouter);
+app.route('/api/cove/test-fixture', coveTestFixtureRouter);
 // Phase 6.7.0 — cross-game history (owner-only list + owner|admin verify).
 // Slots integration ships in-line with this mount (see cove-slots.ts spin txn).
 app.route('/api/cove/history', coveHistoryRouter);

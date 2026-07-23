@@ -1,0 +1,405 @@
+import type { Driver } from '../driver';
+import { teardownGame } from '../teardown';
+import type {
+  ParityCheckpoint,
+  ParityGame,
+  Surface,
+} from '../types';
+
+type UnknownRecord = Record<string, unknown>;
+const rec = (value: unknown): UnknownRecord | null => (
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? value as UnknownRecord
+    : null
+);
+const arr = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
+const outcomeOf = (wire: unknown): UnknownRecord => {
+  const body = rec(wire) ?? {};
+  return rec(rec(body.lastCoup)?.outcome ?? body.outcome) ?? body;
+};
+
+export function reachedFor(
+  game: ParityGame,
+  row: string,
+): (wire: unknown) => boolean {
+  return (wire) => {
+    const body = rec(wire) ?? {};
+    const outcome = outcomeOf(wire);
+    if (game === 'blackjack') {
+      const hands = arr(outcome.playerHands ?? body.playerHands);
+      const cards = arr(rec(hands[0])?.cards ?? body.playerHand);
+      if (row === 'B2') return cards.length >= 3;
+      if (row === 'B3') return cards.length >= 3;
+      if (row === 'B5') return hands.some((hand) => rec(hand)?.isBust === true);
+      if (row === 'B6') return hands.some((hand) => rec(hand)?.outcome === 'blackjack');
+      if (row === 'B7') return hands.some((hand) => rec(hand)?.outcome === 'push');
+      if (row === 'B8') return hands.length === 2 || body.didSplit === true;
+      if (row === 'B9') {
+        return body.insuranceOffered === true
+          && (body.tookInsurance === true || rec(outcome.insurance) !== null);
+      }
+      if (row === 'B1') return cards.length === 2;
+      if (row === 'B-neg') {
+        const dealer = arr(outcome.dealerHand ?? body.dealerHand);
+        const directUpcard = rec(body.dealerUpcard);
+        const directHole = rec(body.dealerHoleCard);
+        return (body.status === 'in_progress' || outcome.status === 'in_progress')
+          && (
+            (dealer.length >= 1 && dealer.slice(1).every((card) => (
+              card == null
+              || rec(card)?.hidden === true
+              || Object.keys(rec(card) ?? {}).length === 0
+            )))
+            || (directUpcard !== null && directHole === null)
+          );
+      }
+      return false;
+    }
+    if (game === 'baccarat') {
+      const player = rec(outcome.player) ?? {};
+      const banker = rec(outcome.banker) ?? {};
+      if (row === 'C1') return player.isNatural === true;
+      if (row === 'C2') return banker.isNatural === true;
+      if (row === 'C3') return arr(player.cards).length === 3;
+      if (row === 'C4') return arr(banker.cards).length === 3;
+      if (row === 'C5') return outcome.winner === 'tie';
+      if (row === 'C7') return BigInt(String(outcome.commission ?? '0')) > 0n;
+      return Boolean(outcome.winner);
+    }
+    const terminal = rec(body.outcome) ?? body;
+    const board = arr(terminal.board ?? body.board);
+    const ownHole = arr(body.humanHole ?? rec(body.view)?.holeCards ?? terminal.humanHole);
+    if (row === 'H5' || row === 'H10') return terminal.endedAt === 'showdown';
+    if (row === 'H6') return Boolean(terminal.endedAt && terminal.endedAt !== 'showdown');
+    if (row === 'H2') return board.length >= 3;
+    if (row === 'H3') return board.length >= 4;
+    if (row === 'H4' || row === 'H9') return board.length >= 5;
+    if (row === 'H1' || row === 'H8') return ownHole.length === 2;
+    if (row === 'H7') {
+      const log = arr(body.publicActionLog);
+      return ownHole.length === 2
+        && (body.pot !== undefined || log.some((entry) => (
+          ['small_blind', 'big_blind', 'post_blind'].includes(String(rec(entry)?.type))
+        )));
+    }
+    if (row === 'H-neg') {
+      const publicSeats = arr(
+        rec(body.live)?.seats
+        ?? rec(rec(body.view)?.table)?.seats
+        ?? body.seats,
+      );
+      const practicePublicShape = Array.isArray(body.humanHole)
+        && Array.isArray(body.publicActionLog)
+        && !('opponentHoleCards' in body);
+      return ownHole.length === 2
+        && (publicSeats.length > 0 || practicePublicShape)
+        && publicSeats.every((rawSeat) => {
+          const seat = rec(rawSeat);
+          return !seat || !('holeCards' in seat) || arr(seat.holeCards).length === 0;
+        });
+    }
+    return false;
+  };
+}
+
+async function clickText(driver: Driver, labels: readonly string[]): Promise<boolean> {
+  return driver.evalJson<boolean>(`(() => {
+    const labels = ${JSON.stringify(labels)};
+    const button = [...document.querySelectorAll('button')].find((candidate) =>
+      labels.some((label) => candidate.textContent?.trim().startsWith(label))
+      && !candidate.disabled
+    );
+    if (!button) return false;
+    button.click();
+    return true;
+  })()`);
+}
+
+async function waitAndClick(
+  driver: Driver,
+  labels: readonly string[],
+  timeoutMs = 20_000,
+): Promise<void> {
+  await driver.waitFn(`(() => {
+    const labels = ${JSON.stringify(labels)};
+    return [...document.querySelectorAll('button')].some((candidate) =>
+      labels.some((label) => candidate.textContent?.trim().startsWith(label))
+      && !candidate.disabled
+    );
+  })()`, timeoutMs);
+  if (!await clickText(driver, labels)) {
+    throw new Error(`Action disappeared before click: ${labels.join('/')}`);
+  }
+}
+
+async function advanceHoldemToShowdown(
+  driver: Driver,
+  surface: Surface,
+): Promise<void> {
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    const step = await driver.evalJson<string | null>(
+      `window.__CV_READ_PARITY?.(${JSON.stringify(surface)})?.dealStep ?? null`,
+    );
+    if (step === 'showdown') return;
+    if (!await clickText(driver, ['Check', 'Call'])) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 150));
+      continue;
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 150));
+  }
+  throw new Error(`Hold'em driver did not reach showdown on ${surface}`);
+}
+
+interface JournalStep {
+  revision: number;
+  dealStep: string;
+}
+
+export async function nextJournalStep(
+  driver: Driver,
+  surface: Surface,
+  afterRevision: number,
+  correlationHand: string,
+): Promise<JournalStep | null> {
+  return driver.evalJson<JournalStep | null>(`(() => {
+    const entries = (window.__CV_PARITY_JOURNAL?.(${JSON.stringify(surface)}) ?? [])
+      .filter((entry) => {
+        if (
+          entry.surface !== ${JSON.stringify(surface)}
+          || entry.revision <= ${afterRevision}
+        ) return false;
+        try {
+          return JSON.parse(entry.signature)[2] === ${JSON.stringify(correlationHand)};
+        } catch {
+          return false;
+        }
+      })
+      .sort((left, right) => left.revision - right.revision);
+    const entry = entries[0];
+    return entry
+      ? { revision: entry.revision, dealStep: entry.dealStep }
+      : null;
+  })()`);
+}
+
+function checkpointFor(
+  surface: Surface,
+  token: string,
+  index: number,
+  finalIndex: number,
+): ParityCheckpoint {
+  const transitionToken = token === 'muck-fading' || token === 'idle';
+  const generic = token.startsWith('every-');
+  return {
+    label: `${token}-${index + 1}`,
+    surface,
+    expectRevisionAdvance: true,
+    ...(generic ? {} : { expectDealStep: transitionToken ? 'showdown' : token }),
+    ...(token === 'muck-fading' ? { expectTransition: 'muck-fading' as const } : {}),
+    ...(token === 'idle' ? { expectTransition: 'idle' as const } : {}),
+    final: index === finalIndex && (
+      token === 'settled' || token === 'showdown' || token === 'idle'
+    ),
+  };
+}
+
+export async function* driveScenario(
+  game: ParityGame,
+  row: string,
+  surface: Surface,
+  phases: readonly string[],
+  driver: Driver,
+): AsyncGenerator<ParityCheckpoint> {
+  if (game === 'blackjack') {
+    await waitAndClick(driver, ['Deal']);
+    if (row === 'B-neg') {
+      await driver.waitFn(
+        `Boolean(window.__CV_READ_PARITY?.(${JSON.stringify(surface)}))`,
+        20_000,
+      );
+      const initial = await driver.evalJson<{
+        renderRevision: number;
+        correlation: { hand: string };
+        firstRevision: number;
+      }>(`(() => {
+        const root = window.__CV_READ_PARITY(${JSON.stringify(surface)});
+        const revisions = (window.__CV_PARITY_JOURNAL?.(${JSON.stringify(surface)}) ?? [])
+          .filter((entry) => {
+            if (entry.surface !== ${JSON.stringify(surface)}) return false;
+            try { return JSON.parse(entry.signature)[2] === root.correlation.hand; }
+            catch { return false; }
+          })
+          .map((entry) => entry.revision);
+        return {
+          ...root,
+          firstRevision: Math.min(root.renderRevision, ...revisions),
+        };
+      })()`);
+      let cursor = initial.firstRevision;
+      yield {
+        ...checkpointFor(surface, phases[0]!, 0, 0),
+        expectCorrelationHand: initial.correlation.hand,
+      };
+      const deadline = Date.now() + 60_000;
+      let read = 2;
+      while (Date.now() < deadline) {
+        const next = await nextJournalStep(
+          driver,
+          surface,
+          cursor,
+          initial.correlation.hand,
+        );
+        if (next) {
+          cursor = next.revision;
+          if (next.dealStep === 'settled') return;
+          yield {
+            label: `every-in-progress-read-${read}`,
+            surface,
+            expectRevisionAdvance: true,
+          };
+          read += 1;
+          continue;
+        }
+        const current = await driver.evalJson<{ dealStep: string } | null>(
+          `window.__CV_READ_PARITY?.(${JSON.stringify(surface)}) ?? null`,
+        );
+        if (!current || current.dealStep === 'settled') return;
+        if (!await clickText(driver, ['Hit'])) return;
+        await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+      }
+      throw new Error('Blackjack negative traversal exceeded 60s');
+    }
+    if (['B4', 'B7'].includes(row)) await waitAndClick(driver, ['Stand']);
+    for (let index = 0; index < phases.length; index += 1) {
+      const phase = phases[index]!;
+      yield checkpointFor(surface, phase, index, phases.length - 1);
+      if (row === 'B2' && phase === 'hole') await waitAndClick(driver, ['Hit']);
+      if (row === 'B3' && phase === 'player-turn') await waitAndClick(driver, ['Double']);
+      if (row === 'B5' && phase === 'player-turn') {
+        for (let hits = 0; hits < 10; hits += 1) {
+          if (!await clickText(driver, ['Hit'])) break;
+          await new Promise((resolveWait) => setTimeout(resolveWait, 120));
+        }
+      }
+      if (row === 'B8' && phase === 'player-turn' && index === 1) {
+        await waitAndClick(driver, ['Split']);
+      } else if (row === 'B8' && phase === 'player-turn' && index > 2) {
+        // Both split subhands must resolve before dealer reveal. A single Stand
+        // only advances from subhand 0 to subhand 1.
+        await waitAndClick(driver, ['Stand']);
+        await waitAndClick(driver, ['Stand']);
+      }
+      if (row === 'B9' && phase === 'hole') await waitAndClick(driver, ['Insure']);
+    }
+    return;
+  }
+
+  if (game === 'baccarat') {
+    if (row === 'C6') {
+      const bets = ['Player', 'Banker', 'Tie'] as const;
+      for (let index = 0; index < bets.length; index += 1) {
+        await clickText(driver, [bets[index]!]);
+        await waitAndClick(driver, ['Deal']);
+        yield {
+          label: `settled-${bets[index]!.toLowerCase()}`,
+          surface,
+          expectRevisionAdvance: true,
+          expectDealStep: 'settled',
+          final: index === bets.length - 1,
+        };
+        if (index < bets.length - 1) await waitAndClick(driver, ['Next Coup']);
+      }
+      return;
+    }
+    const bet = row === 'C5' ? 'Tie' : row === 'C7' ? 'Banker' : 'Player';
+    await clickText(driver, [bet]);
+    await waitAndClick(driver, ['Deal']);
+    for (let index = 0; index < phases.length; index += 1) {
+      yield checkpointFor(surface, phases[index]!, index, phases.length - 1);
+    }
+    return;
+  }
+
+  // Practice starts on the room cadence; cash starts once the orchestrator has
+  // supplied/sat the table. Advance human turns through landed action labels.
+  if (surface.endsWith('-3d')) await clickText(driver, ['Sit', 'SIT']);
+  if (row === 'H-neg') {
+    await driver.waitFn(
+      `Boolean(window.__CV_READ_PARITY?.(${JSON.stringify(surface)}))`,
+      30_000,
+    );
+    const initial = await driver.evalJson<{
+      renderRevision: number;
+      correlation: { hand: string };
+      firstRevision: number;
+    }>(`(() => {
+      const root = window.__CV_READ_PARITY(${JSON.stringify(surface)});
+      const revisions = (window.__CV_PARITY_JOURNAL?.(${JSON.stringify(surface)}) ?? [])
+        .filter((entry) => {
+          if (entry.surface !== ${JSON.stringify(surface)}) return false;
+          try { return JSON.parse(entry.signature)[2] === root.correlation.hand; }
+          catch { return false; }
+        })
+        .map((entry) => entry.revision);
+      return {
+        ...root,
+        firstRevision: Math.min(root.renderRevision, ...revisions),
+      };
+    })()`);
+    let cursor = initial.firstRevision;
+    yield {
+      ...checkpointFor(surface, phases[0]!, 0, 0),
+      expectCorrelationHand: initial.correlation.hand,
+    };
+    const deadline = Date.now() + 90_000;
+    let read = 2;
+    while (Date.now() < deadline) {
+      const next = await nextJournalStep(
+        driver,
+        surface,
+        cursor,
+        initial.correlation.hand,
+      );
+      if (next) {
+        cursor = next.revision;
+        yield {
+          label: `every-step-${read}`,
+          surface,
+          expectRevisionAdvance: true,
+        };
+        read += 1;
+        if (next.dealStep === 'showdown') return;
+        continue;
+      }
+      const current = await driver.evalJson<{ dealStep: string } | null>(
+        `window.__CV_READ_PARITY?.(${JSON.stringify(surface)}) ?? null`,
+      );
+      if (!current || current.dealStep === 'showdown') return;
+      await clickText(driver, ['Check', 'Call']);
+      await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    }
+    throw new Error(`Hold'em negative traversal exceeded 90s`);
+  }
+  if (row === 'H6') await waitAndClick(driver, ['Fold'], 30_000);
+  if (['H5', 'H10'].includes(row)) {
+    await advanceHoldemToShowdown(driver, surface);
+  }
+  for (let index = 0; index < phases.length; index += 1) {
+    const phase = phases[index]!;
+    yield checkpointFor(surface, phase, index, phases.length - 1);
+    if (
+      !phase.startsWith('every-')
+      && !['showdown', 'muck-fading', 'idle'].includes(phase)
+      && index < phases.length - 1
+    ) {
+      await waitAndClick(driver, ['Check', 'Call', 'Fold'], 30_000);
+    }
+  }
+}
+
+export function teardownFor(
+  game: ParityGame,
+): (driver: Driver, apiBase: string) => Promise<void> {
+  return (driver, apiBase) => teardownGame(driver, game, apiBase);
+}

@@ -53,11 +53,15 @@ import {
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { users } from './users';
+import { coveTestFixtureRuns } from './cove-test-fixture';
 
 export const coveGameEvents = pgTable(
   'cove_game_events',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    fixtureRunId: uuid('fixture_run_id').references(() => coveTestFixtureRuns.runId, {
+      onDelete: 'restrict',
+    }),
     /**
      * Phase 6.7.5 — nullable for guest plays. Exactly one of (`userId`,
      * `guestFpHash`) is set per row; a DB check constraint

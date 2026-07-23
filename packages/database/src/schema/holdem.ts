@@ -61,11 +61,15 @@ import {
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { users } from './users';
+import { coveTestFixtureRuns } from './cove-test-fixture';
 
 export const holdemTables = pgTable(
   'holdem_tables',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    fixtureRunId: uuid('fixture_run_id').references(() => coveTestFixtureRuns.runId, {
+      onDelete: 'restrict',
+    }),
     /** Exactly one of (userId, guestFpHash) is set (XOR check below). */
     userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
     guestFpHash: text('guest_fp_hash'),
@@ -121,6 +125,9 @@ export const holdemHands = pgTable(
   'holdem_hands',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    fixtureRunId: uuid('fixture_run_id').references(() => coveTestFixtureRuns.runId, {
+      onDelete: 'restrict',
+    }),
     tableId: uuid('table_id')
       .notNull()
       .references(() => holdemTables.id, { onDelete: 'cascade' }),

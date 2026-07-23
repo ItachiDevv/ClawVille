@@ -89,7 +89,16 @@ import type { BaccaratLastCoupSnapshot } from '@clawville/shared';
 import { sessionMiddleware } from '../middleware/auth';
 import { resolveAgentSession } from '../middleware/require-auth-or-agent';
 import { isGuestUser } from '../middleware/require-non-guest';
-import { createServerSeed } from '../services/provable-rng';
+import { createServerSeed, sha256Hex } from '../services/provable-rng';
+import {
+  COVE_TEST_FIXTURE_HEADER,
+  assertFixtureResourceHeader,
+  chargeFixtureExposure,
+  consumeFixtureArm,
+  resolveFixtureOwnerAvatarId,
+  validateLinkedFixtureArmAccessInTransaction,
+  validateFixtureArmAccess,
+} from '../services/cove-test-fixture';
 import {
   playCoup,
   playCoupWithState,
@@ -541,13 +550,22 @@ export async function rotateGuestBaccaratShoe<TFreshShoe>(args: {
  * blackjack's reconstructShoeState. Exported for the cross-game verifier's reuse.
  */
 export async function reconstructShoeState(
-  shoe: { serverSeed: string; clientSeed: string },
+  shoe: {
+    serverSeed: string;
+    clientSeed: string;
+    fixtureInitialDealtCount?: number;
+  },
   shoeId: string,
   targetCoupIndex: number,
   reader: { select: typeof db.select },
 ): Promise<{ remaining: Card[]; cursor: number; dealt: number }> {
+  const initialDealtCount = shoe.fixtureInitialDealtCount ?? 0;
   if (targetCoupIndex === 0) {
-    return { remaining: buildShoe(), cursor: 0, dealt: 0 };
+    return {
+      remaining: buildShoe().slice(initialDealtCount),
+      cursor: 0,
+      dealt: initialDealtCount,
+    };
   }
   const priorCoups = await reader
     .select()
@@ -555,9 +573,9 @@ export async function reconstructShoeState(
     .where(and(eq(baccaratCoups.shoeId, shoeId), eq(baccaratCoups.status, 'settled')))
     .orderBy(baccaratCoups.coupIndex);
 
-  let remaining = buildShoe();
+  let remaining = buildShoe().slice(initialDealtCount);
   let cursor = 0;
-  let dealt = 0;
+  let dealt = initialDealtCount;
   for (const coup of priorCoups) {
     if (coup.coupIndex >= targetCoupIndex) break;
     const stepped = playCoupWithState({
@@ -568,7 +586,7 @@ export async function reconstructShoeState(
       bet: coup.bet as BaccaratBet,
       stake: BigInt(coup.stake),
       dealtBefore: dealt,
-      remainingShoe: dealt === 0 ? undefined : remaining,
+      remainingShoe: remaining,
     });
     remaining = stepped.remainingAfter;
     cursor = stepped.cursorAfter;
@@ -587,6 +605,7 @@ coveBaccaratRouter.post('/session/open', async (c) => {
   }
   const input = parsed.data;
   const subject = await getSubject(c);
+  const fixtureHeader = c.req.header(COVE_TEST_FIXTURE_HEADER);
 
   // Currency seam — SOL/USDC custody is a later tier. Same 501 shape as blackjack.
   if (input.currency !== 'clawtoken') {
@@ -613,6 +632,11 @@ coveBaccaratRouter.post('/session/open', async (c) => {
     checkGuestShoeOpenRate(subject.guestFpHash);
     guestStartingBalance = GUEST_STARTING_BALANCE;
   }
+  const fixtureOwnerAvatarId = await resolveFixtureOwnerAvatarId({
+    header: fixtureHeader,
+    luciaUserId: c.get('user')?.id,
+    agentAvatarId: subject.kind === 'agent' ? subject.avatarId : null,
+  });
 
   // Idempotent open: resume the subject's existing open shoe. Guests whose shoe
   // reached the penetration threshold rotate atomically: close + reveal the old
@@ -631,6 +655,66 @@ coveBaccaratRouter.post('/session/open', async (c) => {
       where: eq(baccaratShoes.id, id),
     });
     if (!row) return null;
+    if (row.fixtureRunId) {
+      if (!fixtureOwnerAvatarId) {
+        throw new HTTPException(401, { message: 'invalid_test_fixture' });
+      }
+      await validateLinkedFixtureArmAccessInTransaction(tx, {
+        header: fixtureHeader,
+        ownerAvatarId: fixtureOwnerAvatarId,
+        arm: 'baccarat-shoe',
+        fixtureRunId: row.fixtureRunId,
+      });
+      if (row.dealtCount < RESHUFFLE_CARD_THRESHOLD) {
+        return { kind: 'fixture-stale' as const, shoe: row };
+      }
+
+      const [closed] = await tx
+        .update(baccaratShoes)
+        .set({ status: 'closed', closedAt: new Date() })
+        .where(and(eq(baccaratShoes.id, row.id), eq(baccaratShoes.status, 'open')))
+        .returning();
+      if (!closed) {
+        throw new HTTPException(409, { message: 'fixture_shoe_rotation_conflict' });
+      }
+      await tx
+        .update(coveGameEvents)
+        .set({ revealedServerSeed: closed.serverSeed })
+        .where(
+          and(
+            eq(coveGameEvents.sessionId, row.id),
+            eq(coveGameEvents.gameType, 'baccarat'),
+          ),
+        );
+      const freshSeed = createServerSeed();
+      const carriedBalance = isLedgerSubject(subject) ? 0n : guestDemoBalance(row);
+      const [fresh] = await tx
+        .insert(baccaratShoes)
+        .values({
+          userId: isLedgerSubject(subject) ? subject.userId : null,
+          guestFpHash: subject.kind === 'guest' ? subject.guestFpHash : null,
+          currency: 'clawtoken',
+          startingBalance: carriedBalance.toString(),
+          serverSeed: freshSeed.serverSeed,
+          serverSeedHash: freshSeed.serverSeedHash,
+          clientSeed: randomBytes(8).toString('hex'),
+          engineVersion: BACCARAT_ENGINE_VERSION,
+        })
+        .returning();
+      if (!fresh) throw new HTTPException(500, { message: 'shoe_insert_failed' });
+      return {
+        kind: 'fixture-rotated' as const,
+        shoe: publicShoe(fresh),
+        walletBalance: isLedgerSubject(subject)
+          ? (avatar?.clawTokens ?? 0)
+          : Number(carriedBalance),
+        rotatedFrom: {
+          serverSeed: closed.serverSeed,
+          serverSeedHash: closed.serverSeedHash,
+          clientSeed: closed.clientSeed,
+        },
+      };
+    }
     if (subject.kind !== 'guest' || row.dealtCount < RESHUFFLE_CARD_THRESHOLD) {
       return { kind: 'resumed' as const, shoe: row };
     }
@@ -686,7 +770,10 @@ coveBaccaratRouter.post('/session/open', async (c) => {
   });
 
   if (resumed) {
-    if (resumed.kind === 'rotated') {
+    if (fixtureHeader && resumed.kind !== 'fixture-rotated') {
+      throw new HTTPException(409, { message: 'fixture_requires_fresh_shoe' });
+    }
+    if (resumed.kind === 'rotated' || resumed.kind === 'fixture-rotated') {
       return c.json(
         {
           shoe: resumed.shoe,
@@ -705,32 +792,56 @@ coveBaccaratRouter.post('/session/open', async (c) => {
     );
   }
 
-  const { serverSeed, serverSeedHash } = createServerSeed();
-  const clientSeed = randomBytes(8).toString('hex');
+  const randomSeed = createServerSeed();
+  const randomClientSeed = randomBytes(8).toString('hex');
 
   let inserted: BaccaratShoe;
   try {
-    inserted = await db.transaction(async (tx) => {
+    const createResult = await db.transaction(async (tx) => {
+      const consumption = fixtureOwnerAvatarId
+        ? await consumeFixtureArm(tx, {
+            header: fixtureHeader,
+            ownerAvatarId: fixtureOwnerAvatarId,
+            arm: 'baccarat-shoe',
+          })
+        : null;
+      if (consumption && !consumption.ok) {
+        return { kind: 'fixture-exhausted' as const };
+      }
+      const fixture = consumption?.fixture ?? null;
+      const serverSeed = fixture?.serverSeed ?? randomSeed.serverSeed;
+      const serverSeedHash = fixture ? sha256Hex(fixture.serverSeed) : randomSeed.serverSeedHash;
+      const clientSeed = fixture?.clientSeed ?? randomClientSeed;
       const [row] = await tx
         .insert(baccaratShoes)
         .values({
+          fixtureRunId: fixture?.runId,
           userId: subject.userId,
           guestFpHash: subject.guestFpHash,
           currency: 'clawtoken',
           serverSeed,
           serverSeedHash,
           clientSeed,
+          dealtCount: fixture?.initialDealtCount ?? 0,
+          fixtureInitialDealtCount: fixture?.initialDealtCount ?? 0,
           startingBalance: isLedgerSubject(subject) ? '0' : guestStartingBalance.toString(),
           engineVersion: BACCARAT_ENGINE_VERSION,
         })
         .returning();
       if (!row) throw new HTTPException(500, { message: 'shoe_insert_failed' });
-      return row;
+      return { kind: 'created' as const, row };
     });
+    if (createResult.kind === 'fixture-exhausted') {
+      throw new HTTPException(402, { message: 'fixture_budget_exhausted' });
+    }
+    inserted = createResult.row;
   } catch (err) {
     // Race against a concurrent open on the same subject — re-read + serve.
     const pgCode = (err as { code?: string } | undefined)?.code;
     if (pgCode === '23505') {
+      if (fixtureHeader) {
+        throw new HTTPException(409, { message: 'fixture_requires_fresh_shoe' });
+      }
       const raceWhere =
         isLedgerSubject(subject)
           ? and(eq(baccaratShoes.userId, subject.userId), eq(baccaratShoes.status, 'open'))
@@ -899,6 +1010,12 @@ coveBaccaratRouter.post('/coup', async (c) => {
   }
   const input = parsed.data;
   const subject = await getSubject(c);
+  const fixtureHeader = c.req.header(COVE_TEST_FIXTURE_HEADER);
+  const fixtureOwnerAvatarId = await resolveFixtureOwnerAvatarId({
+    header: fixtureHeader,
+    luciaUserId: c.get('user')?.id,
+    agentAvatarId: subject.kind === 'agent' ? subject.avatarId : null,
+  });
   const stakeBig = BigInt(input.stake);
   const bet = input.bet as BaccaratBet;
 
@@ -954,12 +1071,31 @@ coveBaccaratRouter.post('/coup', async (c) => {
     },
   });
   const shoe = preflight.shoe;
+  if (fixtureHeader && !shoe.fixtureRunId) {
+    throw new HTTPException(409, { message: 'fixture_resource_mismatch' });
+  }
+  assertFixtureResourceHeader(shoe.fixtureRunId, fixtureHeader);
+  if (shoe.fixtureRunId) {
+    if (!fixtureOwnerAvatarId) {
+      throw new HTTPException(401, { message: 'invalid_test_fixture' });
+    }
+    const fixture = await validateFixtureArmAccess({
+      header: fixtureHeader,
+      ownerAvatarId: fixtureOwnerAvatarId,
+      arm: 'baccarat-shoe',
+    });
+    if (fixture?.runId !== shoe.fixtureRunId) {
+      throw new HTTPException(401, { message: 'invalid_test_fixture' });
+    }
+  }
   if (preflight.replay) {
     return c.json(await buildCoupResponse(preflight.replay, shoe, subject), 200);
   }
   const avatar = preflightState.avatar;
 
-  let txResult: { coup: BaccaratCoup; replay: boolean; balanceAfter: number | undefined };
+  let txResult:
+    | { kind: 'ok'; coup: BaccaratCoup; replay: boolean; balanceAfter: number | undefined }
+    | { kind: 'fixture-exhausted' };
   try {
     txResult = await coupTransaction();
   } catch (err) {
@@ -984,12 +1120,14 @@ coveBaccaratRouter.post('/coup', async (c) => {
     }
     throw err;
   }
+  if (txResult.kind === 'fixture-exhausted') {
+    throw new HTTPException(402, { message: 'fixture_budget_exhausted' });
+  }
 
-  async function coupTransaction(): Promise<{
-    coup: BaccaratCoup;
-    replay: boolean;
-    balanceAfter: number | undefined;
-  }> {
+  async function coupTransaction(): Promise<
+    | { kind: 'ok'; coup: BaccaratCoup; replay: boolean; balanceAfter: number | undefined }
+    | { kind: 'fixture-exhausted' }
+  > {
     return db.transaction(async (tx) => {
       // Lock the SHOE — serializes this coup against concurrent coups/closes and
       // gives authoritative counters for the engine recompute.
@@ -1001,15 +1139,17 @@ coveBaccaratRouter.post('/coup', async (c) => {
         coup_counter: number | string;
         cursor_counter: number | string;
         dealt_count: number | string;
+        fixture_initial_dealt_count: number | string;
         total_bet: string;
         total_payout: string;
         starting_balance: string;
         status: string;
+        fixture_run_id: string | null;
         [key: string]: unknown;
       }>(
         sql`SELECT id, server_seed, server_seed_hash, client_seed, coup_counter,
-                   cursor_counter, dealt_count, total_bet, total_payout,
-                   starting_balance, status
+                   cursor_counter, dealt_count, fixture_initial_dealt_count, total_bet, total_payout,
+                   starting_balance, status, fixture_run_id
             FROM baccarat_shoes WHERE id = ${input.shoeId} FOR UPDATE`,
       );
       const shoeLock = shoeRows[0];
@@ -1041,7 +1181,19 @@ coveBaccaratRouter.post('/coup', async (c) => {
         },
       });
       if (lockedReplay) {
-        return { coup: lockedReplay, replay: true as const, balanceAfter: undefined };
+        return { kind: 'ok' as const, coup: lockedReplay, replay: true as const, balanceAfter: undefined };
+      }
+      if (shoeLock.fixture_run_id) {
+        if (!fixtureOwnerAvatarId) {
+          throw new HTTPException(401, { message: 'invalid_test_fixture' });
+        }
+        const charge = await chargeFixtureExposure(tx, {
+          header: fixtureHeader,
+          ownerAvatarId: fixtureOwnerAvatarId,
+          arm: 'baccarat-shoe',
+          legStakeCt: input.stake,
+        });
+        if (!charge?.ok) return { kind: 'fixture-exhausted' as const };
       }
 
       const coupIndex = Number(shoeLock.coup_counter);
@@ -1052,6 +1204,7 @@ coveBaccaratRouter.post('/coup', async (c) => {
       let r: CoupResult;
       try {
         if (coupIndex === 0) {
+          const fixtureDealtBefore = shoeLock.fixture_run_id ? dealtBefore : 0;
           r = playCoup({
             serverSeed: shoeLock.server_seed,
             clientSeed: shoeLock.client_seed,
@@ -1059,10 +1212,17 @@ coveBaccaratRouter.post('/coup', async (c) => {
             cursor: 0,
             bet,
             stake: stakeBig,
+            dealtBefore: fixtureDealtBefore,
+            remainingShoe:
+              fixtureDealtBefore > 0 ? buildShoe().slice(fixtureDealtBefore) : undefined,
           });
         } else {
           const state = await reconstructShoeState(
-            { serverSeed: shoeLock.server_seed, clientSeed: shoeLock.client_seed },
+            {
+              serverSeed: shoeLock.server_seed,
+              clientSeed: shoeLock.client_seed,
+              fixtureInitialDealtCount: Number(shoeLock.fixture_initial_dealt_count),
+            },
             input.shoeId,
             coupIndex,
             tx,
@@ -1230,6 +1390,7 @@ coveBaccaratRouter.post('/coup', async (c) => {
       // serverSeedHash committed at open; revealedServerSeed NULL until shoe close
       // (commit-reveal). nonce = coupIndex; sessionId = shoeId.
       await tx.insert(coveGameEvents).values({
+        fixtureRunId: shoeLock.fixture_run_id,
         userId: subject.userId,
         guestFpHash: subject.guestFpHash,
         gameType: 'baccarat',
@@ -1264,7 +1425,7 @@ coveBaccaratRouter.post('/coup', async (c) => {
         })
         .where(eq(baccaratShoes.id, input.shoeId));
 
-      return { coup: settledCoup, replay: false as const, balanceAfter };
+      return { kind: 'ok' as const, coup: settledCoup, replay: false as const, balanceAfter };
     });
   }
 

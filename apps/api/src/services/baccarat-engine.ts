@@ -577,6 +577,7 @@ export function replayShoeUpToCoup(args: {
   targetNonce: number;
   coups: Array<{ bet: BaccaratBet; stake: bigint }>;
   startCursor?: number;
+  initialDealtCount?: number;
 }): CoupResult {
   if (!Number.isInteger(args.targetNonce) || args.targetNonce < 0) {
     throw new Error('baccarat-engine: targetNonce must be a non-negative integer');
@@ -588,9 +589,17 @@ export function replayShoeUpToCoup(args: {
     );
   }
 
-  let remaining = buildShoe();
+  const initialDealtCount = args.initialDealtCount ?? 0;
+  if (
+    !Number.isInteger(initialDealtCount) ||
+    initialDealtCount < 0 ||
+    initialDealtCount > buildShoe().length
+  ) {
+    throw new Error('baccarat-engine: initialDealtCount must be within the shoe');
+  }
+  let remaining = buildShoe().slice(initialDealtCount);
   let cursor = args.startCursor ?? 0;
-  let dealt = 0;
+  let dealt = initialDealtCount;
   let result: CoupResult | null = null;
 
   for (let n = 0; n <= args.targetNonce; n++) {
@@ -603,7 +612,7 @@ export function replayShoeUpToCoup(args: {
       bet,
       stake,
       dealtBefore: dealt,
-      remainingShoe: dealt === 0 ? undefined : remaining,
+      remainingShoe: remaining,
     });
     remaining = internal.remainingAfter;
     cursor = internal.cursorAfter;

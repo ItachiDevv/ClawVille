@@ -1,0 +1,12 @@
+{
+  "webBase": "http://127.0.0.1:3003",
+  "apiBase": "http://127.0.0.1:4002",
+  "viewport": [1280, 800],
+  "repeatBudget": {
+    "default": 1,
+    "optionalRare": 8
+  },
+  "maxLossPerRun": 500,
+  "maxDurationMs": 600000,
+  "screenshotDir": "scripts/parity/out/screenshots"
+}

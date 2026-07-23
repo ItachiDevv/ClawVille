@@ -35,7 +35,7 @@ import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
-import { db, avatars } from '@clawville/database';
+import { db, avatars, pokerCashHands } from '@clawville/database';
 import { sessionMiddleware } from '../middleware/auth';
 import { requireNonGuestUser } from '../middleware/require-non-guest';
 import { fingerprintMiddleware } from '../middleware/fingerprint';
@@ -51,6 +51,11 @@ import { HOUSE_TIER_STAKES } from '../services/poker/cash-house-config';
 import { InsufficientTokensError } from '../services/claw-token-ledger';
 import type { AppContext } from '../types';
 import { createLastSettledHandler } from './cove-cash-last-settled-handler';
+import {
+  COVE_TEST_FIXTURE_HEADER,
+  assertFixtureResourceHeader,
+  validateLinkedFixtureArmAccess,
+} from '../services/cove-test-fixture';
 
 export const coveCashPokerRouter = new Hono<AppContext>();
 coveCashPokerRouter.use('*', fingerprintMiddleware);
@@ -301,8 +306,17 @@ coveCashPokerRouter.post('/tables/:id/sit', requireNonGuestUser, async (c) => {
     throw new HTTPException(400, { message: 'invalid_sit_body' });
   }
   const subject = await resolveSubject(c);
+  const fixtureHeader = c.req.header(COVE_TEST_FIXTURE_HEADER);
   try {
-    const res = await cashTableManager.sitDown(parsed.data.id, subject, body.buyInCt);
+    const res = await cashTableManager.sitDown(
+      parsed.data.id,
+      subject,
+      body.buyInCt,
+      false,
+      fixtureHeader
+        ? { header: fixtureHeader, ownerAvatarId: subject.avatarId }
+        : undefined,
+    );
     return c.json({ ok: true, ...res }, res.alreadySeated ? 200 : 201);
   } catch (err) {
     mapError(err);
@@ -335,6 +349,28 @@ coveCashPokerRouter.post('/tables/:id/action', requireNonGuestUser, async (c) =>
     throw new HTTPException(400, { message: 'invalid_action_body' });
   }
   const subject = await resolveSubject(c);
+  const fixtureHeader = c.req.header(COVE_TEST_FIXTURE_HEADER);
+  const hand = await db.query.pokerCashHands.findFirst({
+    where: and(
+      eq(pokerCashHands.tableId, parsed.data.id),
+      eq(pokerCashHands.handNumber, body.handNumber),
+    ),
+  });
+  if (fixtureHeader && !hand?.fixtureRunId) {
+    throw new HTTPException(409, { message: 'fixture_resource_mismatch' });
+  }
+  assertFixtureResourceHeader(hand?.fixtureRunId, fixtureHeader);
+  if (hand?.fixtureRunId) {
+    const fixture = await validateLinkedFixtureArmAccess({
+      header: fixtureHeader,
+      ownerAvatarId: subject.avatarId,
+      arm: 'holdem-cash',
+      fixtureRunId: hand.fixtureRunId,
+    });
+    if (fixture?.runId !== hand.fixtureRunId) {
+      throw new HTTPException(401, { message: 'invalid_test_fixture' });
+    }
+  }
   try {
     const result = await cashTableManager.submitAction({
       tableId: parsed.data.id,
@@ -350,6 +386,7 @@ coveCashPokerRouter.post('/tables/:id/action', requireNonGuestUser, async (c) =>
         'not_your_turn',
         'hand_over',
         'not_seated',
+        'stale_hand_number',
       ]);
       throw new HTTPException((status409.has(reason) ? 409 : 422) as 409, { message: reason });
     }

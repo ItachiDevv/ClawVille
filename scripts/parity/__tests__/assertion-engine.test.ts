@@ -1,0 +1,209 @@
+import { describe, expect, test } from 'bun:test';
+import { assertParityCheckpoint, assertOrderedDealSteps } from '../assertion-engine';
+import { diffParity } from '../diff';
+import { expectedFromWire } from '../expected-from-wire';
+import { RECORDED_CASES } from '../fixtures/recorded';
+import type { CardParityRoot, WireRecord } from '../types';
+
+describe('recorded-wire parity assertions', () => {
+  for (const recorded of RECORDED_CASES) {
+    test(`${recorded.id} matches exact recorded wire`, () => {
+      const result = assertParityCheckpoint({
+        game: recorded.game,
+        checkpoint: {
+          label: recorded.id,
+          surface: recorded.root.surface,
+          expectRevisionAdvance: true,
+          expectDealStep: recorded.expectedDealStep,
+          expectCorrelationHand: recorded.root.correlation.hand,
+          final: recorded.final,
+        },
+        root: recorded.root,
+        records: recorded.records,
+      });
+      expect(result.mismatches).toEqual([]);
+      expect(result.pass).toBe(true);
+    });
+  }
+
+  test('wrong, missing, extra, duplicate, and facing lies fail set equality', () => {
+    const root = structuredClone(RECORDED_CASES[0]!.root);
+    const expected = {
+      slots: Object.fromEntries(root.slots.map((slot) => [
+        slot.slot,
+        {
+          card: slot.card,
+          facing: slot.facing,
+          ...(slot.status ? { status: slot.status } : {}),
+        },
+      ])),
+      meta: { ...root.meta },
+    };
+    const lied = structuredClone(root);
+    const first = lied.slots[0]!;
+    first.card = 'As' as typeof first.card;
+    first.facing = 'down';
+    lied.slots.splice(1, 1);
+    lied.slots.push(
+      { slot: 'extra-slot', facing: 'empty', card: '' },
+      structuredClone(lied.slots[0]!),
+    );
+    const result = diffParity(expected, lied);
+    expect(result.pass).toBe(false);
+    expect(result.mismatches.some((item) => item.actual === '<duplicate>')).toBe(true);
+    expect(result.mismatches.some((item) => item.actual === '<absent>')).toBe(true);
+    expect(result.mismatches.some((item) => item.expected === '<absent>')).toBe(true);
+    expect(result.mismatches.some((item) => item.field === 'facing')).toBe(true);
+  });
+
+  test('ordered checkpoint selector tolerates repeated semantic revisions', () => {
+    const base = RECORDED_CASES[2]!.root;
+    const roots = [
+      { ...base, renderRevision: 1, dealStep: 'hole', transition: 'idle' },
+      { ...base, renderRevision: 2, dealStep: 'flop', transition: 'revealing' },
+      { ...base, renderRevision: 3, dealStep: 'flop', transition: 'revealing' },
+      { ...base, renderRevision: 4, dealStep: 'turn', transition: 'revealing' },
+      { ...base, renderRevision: 5, dealStep: 'river', transition: 'revealing' },
+      { ...base, renderRevision: 6, dealStep: 'showdown', transition: 'revealing' },
+      { ...base, renderRevision: 7, dealStep: 'showdown', transition: 'idle' },
+    ] as CardParityRoot[];
+    expect(assertOrderedDealSteps(
+      roots,
+      ['hole', 'flop', 'turn', 'river', 'showdown'],
+    )).toMatchObject({ pass: true });
+  });
+
+  test('felt opponent universe and on-felt gate come from wire, not mirror slots', () => {
+    const record: WireRecord = {
+      seq: 41,
+      method: 'GET',
+      url: '/api/cove/holdem/session/current',
+      urlSuffix: 'holdem/session/current',
+      status: 200,
+      requestBody: null,
+      responseBody: {
+        handId: 'practice-independent-slots',
+        humanHole: [
+          { suit: 'hearts', rank: 'A' },
+          { suit: 'clubs', rank: 'K' },
+        ],
+        seats: Array.from({ length: 6 }, (_, seat) => ({
+          seat,
+          status: 'active',
+        })),
+        board: [],
+      },
+      handId: 'practice-independent-slots',
+      handNumber: 1,
+      coupId: null,
+      shoeId: null,
+      idempotencyKey: null,
+    };
+    const shell: CardParityRoot = {
+      surface: 'holdem-felt-practice',
+      version: 2,
+      instanceId: 'recorded-felt',
+      renderRevision: 5,
+      correlation: { hand: 'practice-independent-slots', handNumber: 1 },
+      dealStep: 'hole',
+      phase: 'preflop',
+      transition: 'idle',
+      slots: [],
+      meta: { 'on-felt': 'true' },
+    };
+    const expected = expectedFromWire(
+      'holdem',
+      shell.surface,
+      record,
+      undefined,
+      { root: shell, records: [record] },
+    );
+    const complete: CardParityRoot = {
+      ...shell,
+      slots: Object.entries(expected.slots).map(([slot, value]) => ({
+        slot,
+        ...value,
+      })),
+    };
+    const pass = assertParityCheckpoint({
+      game: 'holdem',
+      checkpoint: {
+        label: 'felt-complete',
+        surface: complete.surface,
+        expectRevisionAdvance: true,
+        expectDealStep: 'hole',
+      },
+      root: complete,
+      records: [record],
+    });
+    expect(pass.pass).toBe(true);
+    const missingOpponent = structuredClone(complete);
+    missingOpponent.slots = missingOpponent.slots.filter(
+      (slot) => slot.slot !== 'opp-5-2',
+    );
+    const fail = assertParityCheckpoint({
+      game: 'holdem',
+      checkpoint: {
+        label: 'felt-missing-opponent',
+        surface: missingOpponent.surface,
+        expectRevisionAdvance: true,
+        expectDealStep: 'hole',
+      },
+      root: missingOpponent,
+      records: [record],
+    });
+    expect(fail.pass).toBe(false);
+    expect(fail.mismatches).toContainEqual({
+      slot: 'opp-5-2',
+      field: 'card',
+      expected: '',
+      actual: '<absent>',
+    });
+    const offFelt = structuredClone(complete);
+    offFelt.meta['on-felt'] = 'false';
+    expect(assertParityCheckpoint({
+      game: 'holdem',
+      checkpoint: {
+        label: 'felt-off-felt',
+        surface: offFelt.surface,
+        expectRevisionAdvance: true,
+        expectDealStep: 'hole',
+      },
+      root: offFelt,
+      records: [record],
+    }).pass).toBe(false);
+  });
+
+  test('a later negative-row revision leak fails even when the first is clean', () => {
+    const recorded = RECORDED_CASES[0]!;
+    const first = structuredClone(recorded.root);
+    const laterLeak = structuredClone(recorded.root);
+    laterLeak.renderRevision += 1;
+    const hidden = laterLeak.slots.find((slot) => slot.facing === 'down');
+    if (!hidden) throw new Error('recorded blackjack fixture lacks dealer hole');
+    hidden.facing = 'up';
+    hidden.card = 'As';
+    const results = [first, laterLeak].map((root, index) =>
+      assertParityCheckpoint({
+        game: 'blackjack',
+        checkpoint: {
+          label: `negative-read-${index + 1}`,
+          surface: root.surface,
+          expectRevisionAdvance: true,
+          expectDealStep: recorded.expectedDealStep,
+        },
+        root,
+        records: recorded.records,
+        previousRevision: index === 0 ? 0 : first.renderRevision,
+      }));
+    expect(results[0]?.pass).toBe(true);
+    expect(results[1]?.pass).toBe(false);
+    expect(results.every((result) => result.pass)).toBe(false);
+    expect(results[1]?.mismatches).toContainEqual({
+      slot: hidden.slot,
+      field: 'card',
+      expected: '',
+      actual: 'As',
+    });
+  });
+});

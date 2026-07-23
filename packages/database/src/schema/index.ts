@@ -68,6 +68,10 @@ export * from './cove';
 // write to per-game tables (slot_spins etc.); one row per atomic gameplay
 // unit. Verifier replay surface for slots / blackjack / Hold'em / baccarat.
 export * from './cove-events';
+// BA-2 deterministic parity fixtures. Staging-only at the service/route layer;
+// hash-only run credentials and bounded exposure persist here for restart-safe
+// one-shot consumption.
+export * from './cove-test-fixture';
 // Phase 6.4.1 — cove blackjack shoes + hands. Two-table commit-reveal
 // pattern mirroring cove (slot_sessions/slot_spins). One shoe = one
 // commit-reveal seed pair (75% penetration reshuffle = new shoe row);

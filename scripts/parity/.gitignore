@@ -1,0 +1,3 @@
+out/
+*.state.json
+auth.json

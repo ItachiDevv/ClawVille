@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "../..",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "paths": {
+      "@clawville/shared": ["packages/shared/src"]
+    }
+  },
+  "include": [
+    "./**/*.ts",
+    "../../apps/web/src/lib/cove/card-parity-mirror.ts"
+  ],
+  "exclude": [
+    "./__tests__/**"
+  ]
+}

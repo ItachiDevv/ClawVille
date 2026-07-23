@@ -55,6 +55,7 @@ import type {
   SettledPotResult,
 } from '@clawville/shared';
 import { avatars } from './avatars';
+import { coveTestFixtureRuns } from './cove-test-fixture';
 
 export const pokerCashTables = pgTable(
   'poker_cash_tables',
@@ -216,6 +217,9 @@ export const pokerCashHands = pgTable(
   'poker_cash_hands',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    fixtureRunId: uuid('fixture_run_id').references(() => coveTestFixtureRuns.runId, {
+      onDelete: 'restrict',
+    }),
     tableId: uuid('table_id')
       .notNull()
       .references(() => pokerCashTables.id, { onDelete: 'cascade' }),
@@ -245,6 +249,8 @@ export const pokerCashHands = pgTable(
     endedAt: text('ended_at'),
     /** Idempotency anchor: a settled hand replays instead of re-applying chip deltas. */
     settledAt: timestamp('settled_at', { withTimezone: true }),
+    /** Fixture-only hard-death tombstone; keeps the commitment/reveal audit row. */
+    fixtureVoidedAt: timestamp('fixture_voided_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
