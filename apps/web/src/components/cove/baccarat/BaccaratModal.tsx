@@ -22,13 +22,6 @@
  * that press (mirrors blackjack/holdem). A synchronous `busyRef` lock blocks
  * double-fire before the first await.
  *
- * Agent modes (Phase 6.6.1 UI seam only):
- *   - Control     — the human taps the bet + DEAL buttons. A connected agent
- *                   acts as an ADVISOR (read-only hint panel) and NEVER submits
- *                   a bet. (Advisor wiring is a clean seam for the protocol.)
- *   - Autonomous  — a connected agent makes the bets. Disabled until the
- *                   connected-agent WebSocket protocol ships (FEATURE_GATE).
- *
  * Iris Xe safe: pure React/CSS DOM, zero Three.js. No drei Text/Billboard, no
  * InstancedMesh. No-dark-text-on-dark-panel: light tokens only on the dark
  * felt/velvet (cream / amber / explicit hex; never gray/slate-700+).
@@ -320,12 +313,6 @@ type ToastTone = 'info' | 'warn' | 'error';
 interface ToastState { message: string; tone: ToastTone; id: number; }
 
 // ---------------------------------------------------------------------------
-// Agent mode (UI seam — see AgentModeBar; no WS protocol yet)
-// ---------------------------------------------------------------------------
-type AgentMode = 'control' | 'autonomous';
-interface AdvisorMessage { id: number; text: string; }
-
-// ---------------------------------------------------------------------------
 // Main modal
 // ---------------------------------------------------------------------------
 export default function BaccaratModal() {
@@ -349,10 +336,6 @@ export default function BaccaratModal() {
   const [revealedSeed, setRevealedSeed] = useState<string | null>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
   const [fairnessOpen, setFairnessOpen] = useState(false);
-
-  // ── Agent mode + advisor surface (seam) ─────────────────────────────────
-  const [agentMode, setAgentMode] = useState<AgentMode>('control');
-  const [advisorMessages] = useState<AdvisorMessage[]>([]);
 
   // ── API hooks ─────────────────────────────────────────────────────────────
   const openShoe = useOpenBaccaratShoe();
@@ -472,7 +455,6 @@ export default function BaccaratModal() {
   // ── DEAL THE COUP ────────────────────────────────────────────────────────────
   const handleDeal = useCallback(async () => {
     if (busyRef.current || phase !== 'idle') return;
-    if (agentMode === 'autonomous') return; // gated — no connected-agent driver yet
     busyRef.current = true;
     try {
       const s = await ensureShoe();
@@ -512,7 +494,7 @@ export default function BaccaratModal() {
       coupKeyRef.current = null;
       busyRef.current = false;
     }
-  }, [phase, agentMode, ensureShoe, playCoup, betType, baccaratBet, applySettled, showToast]);
+  }, [phase, ensureShoe, playCoup, betType, baccaratBet, applySettled, showToast]);
 
   // ── NEXT COUP ────────────────────────────────────────────────────────────────
   const handleNextCoup = useCallback(() => {
@@ -639,9 +621,6 @@ export default function BaccaratModal() {
           </div>
         </header>
 
-        {/* ── Agent mode toggle + advisor surface ──────────────────────── */}
-        <AgentModeBar mode={agentMode} onMode={setAgentMode} advisorMessages={advisorMessages} />
-
         {/* ── Felt ─────────────────────────────────────────────────────── */}
         <div style={{
           flex: 1, position: 'relative',
@@ -706,7 +685,7 @@ export default function BaccaratModal() {
             <>
               <BetTypeSelector
                 value={betType}
-                disabled={inFlight || agentMode === 'autonomous'}
+                disabled={inFlight}
                 onChange={setBetType}
               />
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -721,7 +700,7 @@ export default function BaccaratModal() {
                     key={step}
                     value={step}
                     selected={baccaratBet === step}
-                    disabled={inFlight || agentMode === 'autonomous'}
+                    disabled={inFlight}
                     onClick={() => setBaccaratBet(step)}
                   />
                 ))}
@@ -735,7 +714,7 @@ export default function BaccaratModal() {
               <button
                 type="button"
                 onClick={() => { void handleDeal(); }}
-                disabled={inFlight || agentMode === 'autonomous'}
+                disabled={inFlight}
                 className="pt-btn pt-btn-primary"
                 style={{ minWidth: 130, height: 40, fontSize: 13, fontWeight: 700 }}
               >
@@ -775,7 +754,7 @@ export default function BaccaratModal() {
             fontSize: 9, color: 'rgba(100,180,130,0.45)', fontFamily: 'var(--pt-data)',
             letterSpacing: '0.12em', textAlign: 'right',
           }}>
-            PHASE 6.6.1 · SERVER-AUTHORITATIVE · {agentMode.toUpperCase()} MODE
+            PHASE 6.6.1 · SERVER-AUTHORITATIVE
           </div>
         </div>
       </div>
@@ -865,103 +844,6 @@ export default function BaccaratModal() {
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// AgentModeBar — Control vs Autonomous toggle + read-only advisor surface.
-//
-// FEATURE_GATE: baccarat_autonomous_agent_mode
-// Status: UI seam only — the Control/Autonomous toggle + advisor display panel
-//   are rendered, but the connected-agent WebSocket protocol that would drive
-//   Autonomous mode (or feed Control-mode advisor hints) does NOT exist yet.
-//   Autonomous is rendered disabled; the advisor panel shows a placeholder.
-// Metric to graduate: ≥ 1 connected agent completing a baccarat coup via the
-//   WS protocol in a 7-day window (event: cove.baccarat.agent.coup.settled).
-// Current reading: 0 (protocol not shipped — connected-agent protocol drop).
-// Review deadline: 2026-07-15
-// On deadline: if the WS protocol has not shipped, DELETE the Autonomous radio
-//   + advisor panel and keep Control-only until the protocol lands.
-// Reference: GameFeatures.md §18a.j (baccarat agent modes) + CLAUDE.md three-surface rule.
-//
-// SEAM: a connected-agent WS client would, in Control mode, push odds/edge hints
-//   into `advisorMessages` WITHOUT ever submitting a bet — the human's buttons
-//   stay the only decision channel. In Autonomous mode the same WS client would
-//   submit /coup calls on the agent's behalf. Neither path is wired here.
-// ---------------------------------------------------------------------------
-function AgentModeBar({ mode, onMode, advisorMessages }: {
-  mode: AgentMode;
-  onMode: (m: AgentMode) => void;
-  advisorMessages: AdvisorMessage[];
-}) {
-  return (
-    <div style={{
-      flexShrink: 0, background: 'rgba(0,0,0,0.28)',
-      borderBottom: '1px solid rgba(60,180,120,0.18)', padding: '8px 16px',
-      display: 'flex', flexDirection: 'column', gap: 6,
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <span style={{
-          fontSize: 9, fontFamily: 'var(--pt-data)', color: 'var(--pt-mute)',
-          letterSpacing: '0.16em', textTransform: 'uppercase',
-        }}>
-          Mode
-        </span>
-        <div role="radiogroup" aria-label="Agent mode" style={{ display: 'flex', gap: 6 }}>
-          <button
-            type="button" role="radio" aria-checked={mode === 'control'}
-            onClick={() => onMode('control')}
-            style={{
-              padding: '4px 12px', borderRadius: 6, fontSize: 11, fontFamily: 'var(--pt-data)',
-              fontWeight: mode === 'control' ? 700 : 400, cursor: 'pointer',
-              border: mode === 'control' ? '1.5px solid var(--pt-amber)' : '1.5px solid rgba(160,140,100,0.3)',
-              background: mode === 'control' ? 'rgba(200,150,50,0.18)' : 'rgba(10,30,20,0.5)',
-              color: mode === 'control' ? 'var(--pt-amber)' : 'var(--pt-cream-soft)',
-            }}
-          >
-            Control
-          </button>
-          <button
-            type="button" role="radio" aria-checked={mode === 'autonomous'}
-            disabled
-            title="Autonomous agent mode arrives with the connected-agent protocol"
-            style={{
-              padding: '4px 12px', borderRadius: 6, fontSize: 11, fontFamily: 'var(--pt-data)',
-              cursor: 'not-allowed', opacity: 0.5,
-              border: '1.5px solid rgba(160,140,100,0.3)',
-              background: 'rgba(10,30,20,0.5)', color: 'var(--pt-cream-soft)',
-            }}
-          >
-            Autonomous (soon)
-          </button>
-        </div>
-        <span style={{
-          marginLeft: 'auto', fontSize: 9, fontFamily: 'var(--pt-data)',
-          color: 'var(--pt-mute)', letterSpacing: '0.06em',
-        }}>
-          {mode === 'control' ? 'You decide · agent advises' : 'Agent decides'}
-        </span>
-      </div>
-
-      {/* Advisor surface — read-only display channel, NEVER a decision input. */}
-      <div style={{
-        background: 'rgba(10,22,40,0.55)', border: '1px solid rgba(60,180,180,0.18)',
-        borderRadius: 6, padding: '6px 10px', minHeight: 26, maxHeight: 64,
-        overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 3,
-      }}>
-        {advisorMessages.length === 0 ? (
-          <span style={{ fontSize: 10, color: 'var(--pt-cream-soft)', fontFamily: 'var(--pt-data)', fontStyle: 'italic' }}>
-            Advisor: connect an agent to get house-edge + bet hints here (read-only — your taps stay the decision). Coming with the connected-agent protocol.
-          </span>
-        ) : (
-          advisorMessages.map((m) => (
-            <span key={m.id} style={{ fontSize: 10, color: 'var(--pt-cream)', fontFamily: 'var(--pt-data)' }}>
-              <span style={{ color: 'var(--pt-cyan, #6fe6ff)' }}>Advisor:</span> {m.text}
-            </span>
-          ))
-        )}
-      </div>
     </div>
   );
 }
