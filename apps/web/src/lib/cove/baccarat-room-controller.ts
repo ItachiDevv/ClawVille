@@ -5,9 +5,12 @@ import { create } from 'zustand';
 import type {
   BaccaratBet,
   BaccaratCoupResponse,
+  BaccaratLastCoupSnapshot,
   BaccaratShoeWire,
   CloseBaccaratShoeResponse,
+  CurrentBaccaratSessionResponse,
   OpenBaccaratShoeResponse,
+  RotatedBaccaratShoeResponse,
   SerializedBaccaratCoup,
 } from '@clawville/shared';
 import { COVE_BACCARAT_GUEST_STACK } from '@clawville/shared';
@@ -43,32 +46,6 @@ export interface PendingCoup {
   bet: BaccaratBet;
   stake: number;
   idempotencyKey: string;
-}
-
-/**
- * Wave W-D adds this shape to @clawville/shared. W-B deliberately accepts the
- * structural response now so the room degrades to an open-shoe-only restore
- * against the landed server without editing shared or API money surfaces.
- */
-export interface BaccaratLastCoupSnapshot {
-  coupId: string;
-  coupIndex: number;
-  outcome: SerializedBaccaratCoup;
-  dealtCount: number;
-}
-
-interface CurrentBaccaratSessionCompat {
-  shoe: BaccaratShoeWire;
-  walletBalance: number;
-  lastCoup?: BaccaratLastCoupSnapshot | null;
-}
-
-interface RotatedBaccaratShoeResponseCompat extends OpenBaccaratShoeResponse {
-  rotatedFrom?: {
-    serverSeed: string;
-    serverSeedHash: string;
-    clientSeed: string;
-  };
 }
 
 export interface BaccaratRoomState {
@@ -189,7 +166,7 @@ async function requestJson<T>(path: string, init: RequestInit): Promise<T> {
   return await response.json() as T;
 }
 
-function openShoe(): Promise<RotatedBaccaratShoeResponseCompat> {
+function openShoe(): Promise<OpenBaccaratShoeResponse | RotatedBaccaratShoeResponse> {
   return requestJson('/api/cove/baccarat/session/open', {
     method: 'POST',
     body: JSON.stringify({ currency: 'clawtoken' }),
@@ -278,7 +255,7 @@ async function ensureOpenShoe(
   const opened = await openShoe();
   if (!isCurrent(epoch, token)) return null;
   if (
-    opened.rotatedFrom
+    'rotatedFrom' in opened
     && !(await verifySeed(
       opened.rotatedFrom.serverSeed,
       opened.rotatedFrom.serverSeedHash,
@@ -734,7 +711,7 @@ export function BaccaratControllerRuntime({
     void (async () => {
       try {
         const current = await fetchCurrentBaccaratShoe() as
-          | CurrentBaccaratSessionCompat
+          | CurrentBaccaratSessionResponse
           | null;
         if (!isCurrent(hydrationEpoch, token)) return;
         applyHydration({

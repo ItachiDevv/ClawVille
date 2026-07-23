@@ -132,7 +132,30 @@ export interface OpenBaccaratShoeResponse {
   walletBalance: number;
 }
 
-export type CurrentBaccaratShoeResponse = OpenBaccaratShoeResponse;
+export interface BaccaratLastCoupSnapshot {
+  coupId: string;
+  coupIndex: number;
+  outcome: SerializedBaccaratCoup;
+  dealtCount: number;
+}
+
+export interface CurrentBaccaratSessionResponse {
+  shoe: BaccaratShoeWire;
+  /** Current-at-read wallet balance; this is not a historical coup balance. */
+  walletBalance: number;
+  lastCoup: BaccaratLastCoupSnapshot | null;
+}
+
+/** @deprecated Use CurrentBaccaratSessionResponse. */
+export type CurrentBaccaratShoeResponse = CurrentBaccaratSessionResponse;
+
+export interface RotatedBaccaratShoeResponse extends OpenBaccaratShoeResponse {
+  rotatedFrom: {
+    serverSeed: string;
+    serverSeedHash: string;
+    clientSeed: string;
+  };
+}
 
 export interface BaccaratShoeDetailResponse {
   shoe: BaccaratShoeWire;

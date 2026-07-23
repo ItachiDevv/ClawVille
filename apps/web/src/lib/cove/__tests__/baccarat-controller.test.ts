@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import type {
   BaccaratCoupResponse,
+  BaccaratLastCoupSnapshot,
   BaccaratShoeWire,
   SerializedBaccaratCoup,
 } from '@clawville/shared';
@@ -8,7 +9,6 @@ import {
   advanceBaccaratReveal,
   buildDealSteps,
   mountBaccaratRuntime,
-  type BaccaratLastCoupSnapshot,
   type BaccaratRuntimeToken,
   unmountBaccaratRuntime,
   useBaccaratRoomController,
