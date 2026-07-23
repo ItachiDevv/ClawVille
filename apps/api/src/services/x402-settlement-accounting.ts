@@ -67,7 +67,7 @@ export function assertSettlementAmountsConserved(
     grossUsdcAtomic <= 0n ||
     platformFeeUsdcAtomic < 0n ||
     treasuryFeeUsdcAtomic < 0n ||
-    netUsdcAtomic < 0n ||
+    netUsdcAtomic <= 0n ||
     grossUsdcAtomic !==
       netUsdcAtomic + platformFeeUsdcAtomic + treasuryFeeUsdcAtomic
   ) {

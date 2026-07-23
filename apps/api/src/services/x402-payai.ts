@@ -739,11 +739,19 @@ export async function verifyAndSettle(
   }
 
   if (!verify || verify.isValid !== true) {
+    const facilitatorFailure = isFacilitatorLevelFailure(verify);
+    if (facilitatorFailure) {
+      // The official client can return a schema-valid provider rejection
+      // instead of throwing (notably free_tier_exhausted). Feed the exact same
+      // classifier/observation seam used for thrown failures so fallback and
+      // circuit-breaker policy cannot diverge by response shape.
+      reportFacilitatorError(input, 'verify', verify);
+    }
     return failed(verify?.invalidReason ?? 'payment_invalid', {
       isValid: false,
       payer: verify?.payer ?? null,
       raw: { verify },
-      ...(verify?.invalidReason === 'free_tier_exhausted'
+      ...(facilitatorFailure
         ? { facilitatorFailure: 'unavailable' as const }
         : {}),
     });
@@ -785,6 +793,10 @@ export async function verifyAndSettle(
       : null;
 
   if (settle?.success !== true || !txSignature) {
+    const facilitatorFailure = isFacilitatorLevelFailure(settle);
+    if (facilitatorFailure) {
+      reportFacilitatorError(input, 'settle', settle);
+    }
     // Facilitator reported a settlement failure OR an empty signature. The
     // empty-signature guard matters: the route's double-credit guard keys on
     // the signature, so a blank one must NEVER be allowed to credit.
@@ -793,7 +805,7 @@ export async function verifyAndSettle(
       payer: settle?.payer ?? verify.payer ?? null,
       network: settle?.network ?? null,
       raw: { verify, settle },
-      ...(settle?.errorReason === 'free_tier_exhausted'
+      ...(facilitatorFailure
         ? { facilitatorFailure: 'unavailable' as const }
         : {}),
     });

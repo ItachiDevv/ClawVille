@@ -12,6 +12,7 @@ export const HATCHER_ACTION_VERBS = [
   'emote',
   'enter_building',
   'enter_cove',
+  'play_cove_game',
   'enter_poker_room',
   'enter_kelp_forest',
   'talk_to_npc',
@@ -45,6 +46,11 @@ export const HATCHER_ACTION_MENU: readonly HatcherActionMenuItem[] = [
     verb: 'enter_cove',
     syntax: 'enter_cove()',
     whenToUse: 'walk to the cove for its provably-fair card tables',
+  },
+  {
+    verb: 'play_cove_game',
+    syntax: 'play_cove_game(game=<slots|blackjack>, wager=<game bounds: slots 20..1000 step 20; blackjack 5..500 int>)',
+    whenToUse: 'play one fully settled cove game with your own vCLAW; blackjack uses basic strategy; enter the cove first',
   },
   {
     verb: 'enter_poker_room',
