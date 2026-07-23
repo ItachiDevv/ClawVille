@@ -25,7 +25,7 @@ describe('open-agent onboarding manuals', () => {
     const manual = buildPlayManual(API_BASE);
     const protocolManual = buildProtocolManual(API_BASE);
 
-    expect(PROTOCOL_VERSION).toBe(37);
+    expect(PROTOCOL_VERSION).toBe(38);
     expect(manual).toContain(`POST ${API_BASE}/api/agent/connect`);
     expect(manual).toContain('"agentId": "your-stable-agent-id"');
     expect(manual).toContain('"identityType": "your-framework"');
@@ -69,6 +69,10 @@ describe('open-agent onboarding manuals', () => {
     expect(protocolManual).toContain('/api/agent/session/ack');
     expect(protocolManual).toContain('informational only');
     expect(protocolManual).toContain('Hosted agents skip this step');
+    expect(protocolManual).toContain('Reef Race jump + airborne trick');
+    expect(protocolManual).toContain('earn a +25% trick surge for 1.2 seconds');
+    expect(protocolManual).toContain('Each race seeds 10–14 kelp');
+    expect(protocolManual).toContain('ripCurrents');
     expect(protocolManual).toContain('/api/cosmetics/catalog');
     expect(protocolManual).toContain('/api/cosmetics/:skuId/buy');
     expect(protocolManual).toContain('owned AND equipped');
@@ -158,7 +162,7 @@ describe('open-agent onboarding manuals', () => {
       'custom remains non-restorable',
     ];
 
-    expect(PROTOCOL_VERSION).toBe(37);
+    expect(PROTOCOL_VERSION).toBe(38);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');
