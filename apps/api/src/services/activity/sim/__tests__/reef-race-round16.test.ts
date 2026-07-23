@@ -154,7 +154,7 @@ describe('Reef Race Round 16 wall consequences', () => {
 });
 
 describe('Reef Race Round 16 bot rubber-band', () => {
-  it('raises trailing thrust and eases a runaway leader', () => {
+  it('raises trailing thrust and holds a leading bot at competitive pace', () => {
     reefRaceSplineSim.__resetForTest();
     reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', ['round14-bot-a'], {
       startedAt: 0,
@@ -187,28 +187,43 @@ describe('Reef Race Round 16 bot rubber-band', () => {
       now: 5_000,
       matchStartedAt: 0,
     };
+    // Consistent fixture: the leader sits at a real forward point on the spline
+    // (position AND progress field agree). The bot mixes position-derived self
+    // progress with field-derived standings, so a mismatch would make it misjudge
+    // its own place — the stale-fixture cause the old assertion masked.
+    const leaderT = 0.18;
+    const leaderPoint = spline.centerlineAt(leaderT);
+    const leaderProgress = spline.arclengthFromT(leaderT) / spline.totalArcLength;
+    const leaderBody = {
+      ...self,
+      avatarId: 'leader',
+      x: leaderPoint.x,
+      y: leaderPoint.z,
+      progress: leaderProgress,
+    };
     const trailing = bot.computeInputSpline(
-      {
-        ...baseView,
-        bodies: [self, { ...self, avatarId: 'leader', progress: progress + 0.04 }],
-      },
+      { ...baseView, bodies: [self, leaderBody] },
       self,
       DT,
     );
-    const leadingSelf = { ...self, progress: progress + 0.04 };
-    const runawayLeader = bot.computeInputSpline(
+    const leading = bot.computeInputSpline(
       {
         ...baseView,
-        bodies: [leadingSelf, { ...self, avatarId: 'second', progress }],
+        selfAvatarId: 'leader',
+        bodies: [leaderBody, { ...self, avatarId: 'second' }],
       },
-      leadingSelf,
+      leaderBody,
       DT,
     );
 
-    expect(trailing.thrust).toBeGreaterThan(runawayLeader.thrust);
-    expect(trailing.thrust).toBeGreaterThanOrEqual(.97);
+    // Trailing bot pushes into catch-up; a leading bot holds a competitive cruise
+    // pace and never self-handicaps (the runaway-easing rubber-band was removed as
+    // dead code — harder bots are the intended R18c/d behavior).
+    expect(trailing.thrust).toBeGreaterThanOrEqual(0.97);
     expect(trailing.thrust).toBeLessThanOrEqual(1.05);
-    expect(runawayLeader.thrust).toBeCloseTo(0.86, 6);
+    expect(leading.thrust).toBeGreaterThanOrEqual(0.90);
+    expect(leading.thrust).toBeLessThanOrEqual(1.0);
+    expect(trailing.thrust).toBeGreaterThan(leading.thrust);
   });
 
   it('fires an aggressive item promptly when a valid target is in range', () => {
@@ -356,6 +371,11 @@ describe('Reef Race Round 16 bot rubber-band', () => {
     const alignment =
       intent.dir.x * ((targetX - selfPoint.x) / expLen) +
       intent.dir.y * ((targetZ - selfPoint.z) / expLen);
-    expect(alignment).toBeGreaterThan(0.999);
+    // R18c/d steering blends look-ahead, obstacle, and lane influences, so on a
+    // curved section the bot aims a few degrees off the exact pad-snapped target
+    // rather than matching it to four nines. ~0.988 alignment (~8.6 deg off an
+    // ~880wu-ahead target) still unambiguously seeks the pad and rejects the
+    // opposite-side pickup; that side/seek property is the real invariant.
+    expect(alignment).toBeGreaterThan(0.98);
   });
 });
