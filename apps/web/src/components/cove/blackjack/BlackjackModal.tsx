@@ -438,7 +438,10 @@ export default function BlackjackModal() {
   const shoeRef = useRef<BlackjackShoeWire | null>(null);
   shoeRef.current = shoe;
 
-  const isRealTier = Boolean(avatar) && !useIsGuest();
+  // Hook must run unconditionally — a short-circuited call here would change
+  // the hook order when the avatar query resolves after mount.
+  const isGuestTier = useIsGuest();
+  const isRealTier = Boolean(avatar) && !isGuestTier;
   const phase: 'idle' | 'player-turn' | 'settled' =
     settled ? 'settled' : hand ? 'player-turn' : 'idle';
 
