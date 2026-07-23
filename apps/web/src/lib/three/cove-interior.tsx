@@ -1366,8 +1366,8 @@ function HoldemTableHotspot() {
 // the [BJ-POS] probe (was a sign-only placeholder in Phase 6.6.0). Same invisible
 // hit-box pattern as the blackjack/holdem hotspots: no draw call
 // (meshBasicMaterial visible={false}), matrixAutoUpdate=false after the first
-// updateMatrix() (Iris Xe rule — zero matrix recomputes). Click opens the
-// BaccaratModal with the current avatar's ClawToken balance as the header seed.
+// updateMatrix() (Iris Xe rule — zero matrix recomputes). Click emits the
+// one-shot intent that routes the page to the dedicated `/cove/baccarat` room.
 // ---------------------------------------------------------------------------
 
 // Room-scale-knob refactor (2026-07-11): round-tripped into GLB-space, same
@@ -1385,8 +1385,6 @@ const _BACCARAT_HOTSPOT_SIZE: [number, number, number] = [200, 200, 150];
 
 function BaccaratTableHotspot() {
   const meshRef = useRef<THREE.Mesh>(null);
-  const openBaccaratTable = useCoveStore((s) => s.openBaccaratTable);
-  const { data: avatar } = useAvatar();
 
   useEffect(() => {
     const mesh = meshRef.current;
@@ -1399,8 +1397,7 @@ function BaccaratTableHotspot() {
     // See BlackjackTableHotspot's identical guard above — same founder
     // correction, same rationale (2026-07-10).
     if (useCoveStore.getState().seatedTable !== null) return;
-    const balance = avatar?.clawTokens ?? 0;
-    openBaccaratTable(balance);
+    useCoveStore.getState().requestEnterBaccaratRoom();
   };
 
   return (
@@ -3278,9 +3275,8 @@ export default function CoveInteriorScene({ onSceneEmpty }: CoveInteriorScenePro
         position={[_BJ_HOTSPOT_POS[0], 280, _BJ_HOTSPOT_POS[2]]}
       />
 
-      {/* Phase 6.6.1 — Baccarat (Punto Banco) table click hotspot at the
-          open-floor position (X=285, Z=584). Invisible hit-box (same pattern
-          as the blackjack/holdem hotspots); opens BaccaratModal. */}
+      {/* Baccarat table click hotspot at the open-floor position
+          (X=285, Z=584). Its invisible hit-box routes to the dedicated room. */}
       <BaccaratTableHotspot />
 
       {/* Baccarat table label — rendered above the baccarat station. */}

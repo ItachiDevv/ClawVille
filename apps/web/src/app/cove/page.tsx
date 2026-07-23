@@ -101,6 +101,7 @@ export default function CovePage() {
   const isMobile = useIsMobile();
   const enterTableRoom = useCoveStore((state) => state.enterTableRoom);
   const enterBlackjackRoom = useCoveStore((state) => state.enterBlackjackRoom);
+  const enterBaccaratRoom = useCoveStore((state) => state.enterBaccaratRoom);
 
   useEffect(() => {
     if (!enterTableRoom) return;
@@ -113,6 +114,12 @@ export default function CovePage() {
     useCoveStore.getState().clearEnterBlackjackRoom();
     router.push('/cove/blackjack');
   }, [enterBlackjackRoom, router]);
+
+  useEffect(() => {
+    if (!enterBaccaratRoom) return;
+    useCoveStore.getState().clearEnterBaccaratRoom();
+    router.push('/cove/baccarat');
+  }, [enterBaccaratRoom, router]);
 
   // Phase 6.1.20 — sync the user's authenticated avatar into the gameStore
   // every time this page mounts. Mirrors the same effect on /game (line 346)

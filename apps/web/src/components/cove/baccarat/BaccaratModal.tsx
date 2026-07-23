@@ -37,6 +37,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useCoveStore } from '@/stores/cove';
 import { useAvatar } from '@/hooks/use-avatar';
+import { useIsGuest } from '@/hooks/use-is-guest';
 import BaccaratCard from './BaccaratCard';
 import '@/styles/cove-tokens.css';
 import {
@@ -336,6 +337,7 @@ export default function BaccaratModal() {
   } = useCoveStore();
 
   const { data: avatar } = useAvatar();
+  const isGuest = useIsGuest();
 
   // ── Local bet-type selection (the only pre-deal choice; stake lives in store) ─
   const [betType, setBetType] = useState<BaccaratBet>('player');
@@ -364,7 +366,7 @@ export default function BaccaratModal() {
   const shoeRef = useRef<BaccaratShoeWire | null>(null);
   shoeRef.current = shoe;
 
-  const isAuthed = Boolean(avatar);
+  const isRealTier = Boolean(avatar) && !isGuest;
   const phase: 'idle' | 'settled' = settled ? 'settled' : 'idle';
 
   // ── Toast helpers ──────────────────────────────────────────────────────────
@@ -422,11 +424,11 @@ export default function BaccaratModal() {
     // Fire-and-forget close any open shoe (authed only — guests have no close
     // endpoint). Skip if a request is in flight or the seed already revealed.
     const s = shoeRef.current;
-    if (s && s.status === 'open' && isAuthed && !busyRef.current && !revealedSeed) {
+    if (s && s.status === 'open' && isRealTier && !busyRef.current && !revealedSeed) {
       closeShoe.mutate({ shoeId: s.id });
     }
     closeBaccaratTable();
-  }, [isAuthed, revealedSeed, closeShoe, closeBaccaratTable]);
+  }, [isRealTier, revealedSeed, closeShoe, closeBaccaratTable]);
 
   // ── Keyboard ────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -520,7 +522,7 @@ export default function BaccaratModal() {
   // ── WALK AWAY (close shoe → reveal seed, authed) ───────────────────────────
   const handleWalkAway = useCallback(async () => {
     const s = shoeRef.current;
-    if (!s || !isAuthed) { handleClose(); return; }
+    if (!s || !isRealTier) { handleClose(); return; }
     busyRef.current = true;
     try {
       const res = await closeShoe.mutateAsync({ shoeId: s.id });
@@ -533,7 +535,7 @@ export default function BaccaratModal() {
     } finally {
       busyRef.current = false;
     }
-  }, [isAuthed, closeShoe, showToast, handleClose]);
+  }, [isRealTier, closeShoe, showToast, handleClose]);
 
   const inFlight = openShoe.isPending || playCoup.isPending || closeShoe.isPending;
 
@@ -595,7 +597,7 @@ export default function BaccaratModal() {
           <button
             type="button"
             onClick={() => setFairnessOpen(true)}
-            aria-label={`Provably fair: ${fairnessSummary}`}
+            aria-label={`${isRealTier ? 'Provably fair' : 'Shoe commitment'}: ${fairnessSummary}`}
             title={fairnessSummary}
             style={{
               background: 'none', border: 'none', color: 'var(--pt-cream-soft)',
@@ -620,7 +622,7 @@ export default function BaccaratModal() {
               background: 'rgba(150,110,30,0.15)', border: '1px solid rgba(150,110,30,0.3)',
               borderRadius: 6, padding: '3px 10px',
             }}>
-              {balance.toLocaleString()} vCLAW{!isAuthed ? ' demo' : ''}
+              {balance.toLocaleString()} vCLAW{!isRealTier ? ' demo' : ''}
             </div>
             <button
               type="button" onClick={handleClose} aria-label="Close baccarat table"
@@ -762,7 +764,7 @@ export default function BaccaratModal() {
                   }}
                   onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#b91c1c'; }}
                   onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = '#dc2626'; }}>
-                  {isAuthed ? 'Walk Away' : 'Close'}
+                  {isRealTier ? 'Walk Away' : 'Close'}
                 </button>
               </>
             )}
@@ -773,7 +775,7 @@ export default function BaccaratModal() {
             fontSize: 9, color: 'rgba(100,180,130,0.45)', fontFamily: 'var(--pt-data)',
             letterSpacing: '0.12em', textAlign: 'right',
           }}>
-            PHASE 6.6.1 · SERVER-AUTHORITATIVE · PROVABLY FAIR · {agentMode.toUpperCase()} MODE
+            PHASE 6.6.1 · SERVER-AUTHORITATIVE · {agentMode.toUpperCase()} MODE
           </div>
         </div>
       </div>
@@ -788,7 +790,8 @@ export default function BaccaratModal() {
       {/* Fairness tooltip */}
       {fairnessOpen && (
         <div
-          role="dialog" aria-modal="true" aria-label="Provably fair commitment"
+          role="dialog" aria-modal="true"
+          aria-label={isRealTier ? 'Provably fair commitment' : 'Baccarat shoe commitment'}
           onClick={() => setFairnessOpen(false)}
           style={{
             position: 'fixed', inset: 0, zIndex: 10001,
@@ -797,16 +800,26 @@ export default function BaccaratModal() {
           }}
         >
           <div onClick={(e) => e.stopPropagation()} className="pt-fairness-modal">
-            <div className="pt-fairness-eyebrow">Provably Fair</div>
-            <div className="pt-fairness-title">Commitment &amp; Reveal</div>
-            <p style={{ margin: '0 0 14px 0', color: 'var(--pt-cream-soft)' }}>
-              Before any card is dealt, the server publishes <code>sha256(serverSeed)</code> as a
-              commitment. Every card in the 8-deck shoe is derived from
-              <code> (serverSeed, clientSeed, coupIndex, cursor)</code> — Punto Banco has no
-              player decisions, so the entire coup (deal + fixed third-card tableau + winner) is
-              determined by the seed and cannot be changed after you bet. The seed is revealed when
-              you walk away so you can replay every coup.
-            </p>
+            <div className="pt-fairness-eyebrow">
+              {isRealTier ? 'Provably Fair' : 'Shoe Commitment'}
+            </div>
+            <div className="pt-fairness-title">
+              {isRealTier ? 'Commitment & Reveal' : 'Commitment Visible · Demo Reveal Unavailable'}
+            </div>
+            {isRealTier ? (
+              <p style={{ margin: '0 0 14px 0', color: 'var(--pt-cream-soft)' }}>
+                Before any card is dealt, the server publishes <code>sha256(serverSeed)</code> as a
+                commitment. Every card in the 8-deck shoe is derived from
+                <code> (serverSeed, clientSeed, coupIndex, cursor)</code>. The seed is revealed when
+                you walk away so you can replay every coup.
+              </p>
+            ) : (
+              <p style={{ margin: '0 0 14px 0', color: 'var(--pt-cream-soft)' }}>
+                The landed demo surface exposes the pre-deal commitment, but not yet the retired
+                shoe seed required for client verification. Demo reveal verification arrives with
+                the server rotation surface; no verification is claimed here.
+              </p>
+            )}
             <div style={{ display: 'grid', gap: 8, fontSize: 12, fontFamily: 'var(--pt-data)' }}>
               <div>
                 <span style={{ color: 'var(--pt-brass)' }}>Server seed hash: </span>
@@ -825,9 +838,13 @@ export default function BaccaratModal() {
                   <span style={{ color: 'var(--pt-amber)' }}>Revealed server seed: </span>
                   <span style={{ wordBreak: 'break-all', color: 'var(--pt-cream)' }}>{revealedSeed}</span>
                 </div>
-              ) : (
+              ) : isRealTier ? (
                 <div style={{ color: 'var(--pt-cream-soft)' }}>
                   Server seed reveals when you walk away — then replay any coup at /cove/history.
+                </div>
+              ) : (
+                <div style={{ color: 'var(--pt-cream-soft)' }}>
+                  Demo seed reveal and verification are not available on the landed endpoint.
                 </div>
               )}
             </div>

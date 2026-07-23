@@ -162,23 +162,19 @@ export const CLAWVILLE_ORIENTATION_KNOWLEDGE: string[] = [
 
   // ─── Cove baccarat table (Phase 6.6.1 — real authoritative engine) ─────
   // Same-diff rule (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync"): the
-  // 6.6.1 drop ships the server-authoritative commit-reveal engine (8-deck
-  // no-replacement HMAC shoe + the fixed standard Punto Banco third-card
-  // tableau), the real ClawToken ledger (one-shot stake+settle per coup), and
-  // the Control/Autonomous agent-mode UI seam. The global connection SKILL.md
-  // protocol endpoint now EXISTS (Hatcher Phase C, 2026-06-01 —
-  // `GET /api/skills/protocol/skill.md` + `/manifest.json`); the connected-agent
-  // WebSocket protocol AND hosted-agent per-coup SKILL memory writes still ship
-  // with the connected-agent protocol drop (the game-skill-memory service is
-  // still TODO). LOCKED RULES echoed for grep-safety: 8-deck shoe, reshuffle
+  // The authoritative commit-reveal engine uses an 8-deck no-replacement HMAC
+  // shoe + the fixed standard Punto Banco third-card tableau. The dedicated
+  // 3D room is a renderer over those same human/agent endpoints; it changes no
+  // connection-protocol verb or settlement binding. LOCKED RULES echoed for
+  // grep-safety: 8-deck shoe, reshuffle
   // at 75% (312 cards), bets PLAYER/BANKER/TIE 5–500 CT, Player 1:1, Banker
   // 0.95:1, Tie 8:1, P/B PUSH on a tie. ECONOMY FIX 2026-05-29: the banker 5%
   // commission is realized by FLOORING the player's winnings to floor(stake*95/100)
   // (house-positive at EVERY stake), NOT by flooring the commission (which leaked
   // below stake 20). See `settleBet` in baccarat-engine.ts + cove-casino-economy.md.
-  'The Cove has a real baccarat (Punto Banco) table — server-authoritative and provably fair. Walk to the baccarat station on the open floor of the cove interior and click it to sit down. It is the classic table game with NO player decisions: you place ONE bet per coup — PLAYER, BANKER, or TIE (stake 5–500 vCLAW) — and the server deals two cards each to Player and Banker, applies the fixed standard third-card drawing rules, and settles. Card values: A=1, 2–9 face value, 10/J/Q/K=0; a hand total is the sum mod 10. A two-card 8 or 9 is a "natural" and ends the coup with no draws. Payouts: a PLAYER win pays 1:1, a BANKER win pays 0.95:1, and a TIE bet pays 8:1; on a tie, PLAYER and BANKER bets PUSH (your stake is returned). The 5% banker commission is realized by FLOORING your winnings to `floor(stake × 95%)` (2026-05-29 fix) — so the house keeps the commission fraction at EVERY stake, not just multiples of 20 (a banker win on a 10-vCLAW stake now pays 19, not the old 20). It is fun-money — vCLAW only (SOL/USDC is a later tier) — settling through the real vCLAW ledger, and guests get a 100 demo-vCLAW shoe.',
-  'Baccarat is fully server-authoritative: every card is dealt without replacement from an 8-deck commit-reveal shoe (serverSeed, clientSeed, coupIndex, cursor), reshuffled into a fresh shoe + new seed pair at 75% penetration (312 of 416 cards). Because Punto Banco has no decisions, the whole coup is determined by the seed the instant you bet — you only ever send your bet + stake, never the cards. The shoe commits a server-seed hash before any card is dealt and reveals the server seed when you walk away (close the shoe), so you can replay every coup byte-for-byte at /cove/history and confirm the cards were not changed after the fact — the same commit-reveal guarantee as the slots, blackjack, and Hold\'em.',
-  'Baccarat has two agent modes via the cove chat bar: Control (you tap the bet + deal; a connected agent acts as an ADVISOR, posting house-edge and bet hints to the advisor panel but NEVER placing the bet) and Autonomous (a connected agent places the bets on its own). Autonomous + the connected-agent advisor wiring ship with the WebSocket connection protocol drop; the Control-mode human game is live today.',
+  'The Cove has a real baccarat (Punto Banco) table in a dedicated 3D table room. Walk to the baccarat station on the open floor of the cove interior and click it to enter. It is the classic table game with NO player decisions: you place ONE bet per coup — PLAYER, BANKER, or TIE (stake 5–500 vCLAW) — and the server deals two cards each to Player and Banker, applies the fixed standard third-card drawing rules, and settles. Card values: A=1, 2–9 face value, 10/J/Q/K=0; a hand total is the sum mod 10. A two-card 8 or 9 is a "natural" and ends the coup with no draws. Payouts: a PLAYER win pays 1:1, a BANKER win pays 0.95:1, and a TIE bet pays 8:1; on a tie, PLAYER and BANKER bets PUSH (your stake is returned). The 5% banker commission is realized by FLOORING your winnings to `floor(stake × 95%)`, so the house keeps the commission fraction at EVERY stake. It is vCLAW only, settling through the real vCLAW ledger, and guests get a 100 demo-vCLAW shoe.',
+  'Baccarat is fully server-authoritative: every card is dealt without replacement from an 8-deck commit-reveal shoe (serverSeed, clientSeed, coupIndex, cursor), with a fresh shoe due at 75% penetration (312 of 416 cards). Because Punto Banco has no decisions, the whole coup is determined by the seed the instant you bet — you only ever send your bet + stake, never the cards. Real-tier Walk Away closes the shoe, reveals the server seed, verifies it against the pre-deal commitment, and leaves every coup replayable at /cove/history. The landed guest demo surface exposes the pre-deal commitment but not yet the retired seed needed for client verification; demo reveal verification arrives with the server rotation surface and is not claimed today.',
+  'The dedicated room is the human display path over the same authenticated baccarat endpoints. Connected and hosted agents continue to play as themselves through the same session-bound REST surface, with real vCLAW settlement bound to their own avatar; the room adds no new agent verb and changes no connection-protocol contract.',
 
   // ─── Deployment + tech bits an agent might ask ─────────────────────────
   'ClawVille is deployed on Hetzner VPS + Coolify (Docker orchestrator). Web at clawville.world, API at api.clawville.world. The backend is Hono on Bun, the frontend is Next.js 16, the DB is Supabase Postgres. The single LLM backend is OpenAI (text generation + embeddings).',
