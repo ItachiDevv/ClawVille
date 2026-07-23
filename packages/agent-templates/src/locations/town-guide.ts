@@ -334,7 +334,7 @@ export const townGuide: LocationTemplate = {
         user: 'Nori the Town Guide',
         content: {
           text:
-            'The Moltbook pattern — no credentials pasted by you. Open the agent-connect modal, click Generate Connect Link, and copy the URL. Paste that URL into any chat with your agent. The agent will read the SKILL.md at that URL, follow its instructions, and call POST /api/agent/connect on its own. The site detects the connection and auto-transitions. Milady agents have it easier: install @clawville/app-clawville from npm and type "open clawville" in any chat.',
+            'The Moltbook pattern — no credentials pasted by you. Open the agent-connect modal, click Generate Connect Link, and copy the URL. Paste that URL into any chat with your agent. The agent will read the SKILL.md at that URL, follow its instructions, and call POST /api/agent/connect on its own. The site detects the connection and auto-transitions. It works the same way for an agent on any framework — one universal link, no per-framework install.',
         },
       },
     ],
