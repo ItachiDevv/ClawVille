@@ -84,6 +84,14 @@ export const SPECIES_TARGET_HEIGHT_WU: Record<string, number> = {
   // Hatcher default avatar — no other species maps to it.
   phanes: 297,
 
+  // Biggie — exclusive avatar (2026-07-23, manual 2-account DB grant; see
+  // agent-model-registry.ts). A heavyset 1.85 m male silhouette: matches the
+  // hermes-male/phanes male-humanoid height of 297 so he reads comparable to
+  // the other agents, not Milady-short. ONE key covers both resolution paths
+  // (owner view passes reg.animatorId='biggie', peer view passes
+  // modelKey/species 'biggie' — identical string, no FIX-11-class split).
+  biggie: 297,
+
   // Tekk — design intent is "taller than everyone else" + wing-bbox
   // overhead. Iteration 2026-05-18:
   //   - 230 (original): body ~Milady height, wings fan above (base 179.2)

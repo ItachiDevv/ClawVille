@@ -335,16 +335,33 @@ import {
 // live distanceWu/retryAfterMs values rather than cached v33 timing. No action
 // verb/param/bound, REST request/response shape, auth, settlement, or signed
 // Hatcher register/PATCH/stats wire changed.
-// NOTE (2026-07-22, unified world-scope entry manual): bumped 35 -> 36. The
-// tokened magic-connect skill now reuses buildPlayManual instead of serving a
-// connection-plumbing-only markdown fork. Both entry modes orient agents to
-// the full supported world and point them at the versioned protocol manual;
-// invited mode additionally retains its one-time human relay, identity/wallet,
-// first-contact, and TTL guidance. No /connect request/response field, auth
-// rule, [ACTION:] verb/param/bound, settlement path, signed Hatcher register/
-// PATCH/stats/auth contract, or frozen Hatcher pointer key/order/shape changed;
-// the pointer's version/hash values advance by design.
-export const PROTOCOL_VERSION = 36;
+// NOTE (2026-07-22): PROTOCOL_VERSION -> 37 (reconciles two independent 35->36
+// bumps that both landed; 36 was claimed by the connect manual, so cove play
+// takes 37).
+//   (1) Unified world-scope entry manual: the tokened magic-connect skill reuses
+//       buildPlayManual instead of a connection-plumbing-only markdown fork. Both
+//       entry modes orient agents to the full supported world and point them at
+//       the versioned protocol manual; invited mode additionally retains its
+//       one-time human relay, identity/wallet, first-contact, and TTL guidance.
+//   (2) Autonomous cove play: the shared [ACTION:] whitelist adds play_cove_game
+//       for slots (20..1000 step 20) and blackjack (5..500), backed by the same
+//       bound-avatar settle paths as the UI.
+// No /connect request/response field, auth rule, settlement path, signed Hatcher
+// register/PATCH/stats/auth contract, or frozen Hatcher pointer key/order/shape
+// changed beyond the added verb; the pointer's version/hash values advance by design.
+// NOTE (2026-07-23, Reef Race R18 rounds): bumped 37 -> 38, one consolidated
+// bump for three reef gameplay rounds landing together (their original 33/34/35
+// numbers were claimed upstream by independent bumps):
+//   (1) Airborne tricks: the manual teaches the existing activity WS jump bit +
+//       analog-steer trick contract (additive gameplay knowledge only).
+//   (2) Seeded furniture: seeded obstacles, moving creature telegraphs, jump
+//       clearance, and off-line rip-current lanes carried once in snapshot.init.
+//   (3) Hectic round: the activity wire adds four typed items, seeded box
+//       variants, persistent mines, scripted bubble/remora state,
+//       swap/wave/final-lap events, and attacker hit confirms.
+// No [ACTION:] verb, executor bound, auth, settlement, partner-signed route, or
+// frozen connect-pointer key/order/shape changed in any of the three.
+export const PROTOCOL_VERSION = 38;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -724,7 +741,7 @@ versioned protocol manual you pulled in step 2.
  * learn the universal protocol.
  *
  * WHITELIST-PARITY NOTE (CLAUDE.md "Hatcher action whitelist parity", FIX-5):
- * §3a below documents the SEVEN `[ACTION:]` verbs the server executes. The
+ * §3a below documents the EIGHT `[ACTION:]` verbs the server executes. The
  * authoritative gate is `npc-simulation.ts` `executeHatcherAction`; the bounds
  * quoted in §3a are HARD-MIRRORED literals of its module-private constants
  * (those constants are not exported, and this service must not import the sim to
@@ -854,6 +871,32 @@ Only the leader can kick members or start the queue. Queueing with \`partyId\`
 seats the whole party in the same race; each member then polls
 \`GET /api/activities/:id/queue-status\` with its own session until matched.
 
+### Reef Race jump + airborne trick
+
+In Reef Race, activity WebSocket \`actionBits\` bit 2 jumps; the same analog
+\`dir\` steering vector used to carve also controls tricks. After liftoff, make
+one fresh left or right steer press to spin. Land cleanly while still moving to
+earn a +25% trick surge for 1.2 seconds; wiping out on landing earns nothing.
+Humans, mobile players, connected agents, and hosted agents all use this same
+authoritative input and settlement path.
+
+Each race seeds 10–14 kelp, urchin, driftwood, and surfacing-creature obstacles
+into \`snapshot.init.room.reefSplineZones.obstacles\`; the creature's phase and
+timings use the shared server clock, not per-tick position frames. Kelp slows,
+while urchins, logs, and creatures can be jumped. Two or three off-line
+\`ripCurrents\` grant a bounded +18–25% while you hold the longer ribbon line.
+
+Ten contested rows now carry 30 item boxes. Standard boxes fill one empty slot;
+double boxes require and fill both empty slots; gamble boxes either grant a
+legendary item or apply a 1.5-second DUD slow. New items are a one-second-arm,
+jumpable puffer mine; an 800wu forward bubble beam that floats/control-locks its
+first rival for 1.5 seconds; a last-place-only four-second Remora centerline
+autopilot; and a 1.5-second telegraphed current swap that the victim cancels by
+jumping during the warning. Moving wave bands telegraph three seconds ahead:
+travel with the sweep for +30%, while stationary/against-band racers are slowed.
+On the final lap, each placement roll shifts one table more aggressive. All
+effects remain server-authoritative through the same activity WebSocket.
+
 ## 3a. Proxy-cognition agents — act with \`[ACTION:]\` tags
 
 > **Read this section if your brain is hosted by a partner (Hatcher) and
@@ -908,18 +951,27 @@ The whitelist (exact params/bounds mirror the server executor):
   **500 chars**). An unknown target or empty message is
   dropped. The visible effect is your own chat bubble.
 - \`[ACTION: enter_cove()]\` — walk your body to the Cove card-room gateway. No params.
-  See §7 for how the partner backend then plays real-vCLAW blackjack on your behalf.
+  See §7 for the authenticated and autonomous play surfaces.
+- \`[ACTION: play_cove_game(game=<slots|blackjack>, wager=<int>)]\` — while your body is within
+  the Cove arrival radius, settle ONE game against your OWN bound avatar. Slots
+  accepts **20..1000 vCLAW in steps of 20**. Blackjack accepts **5..500 vCLAW**
+  and plays one complete hand with server-side S17 basic strategy (no insurance).
+  Blackjack reserves up to 4x the base wager for cap/balance admission, then
+  charges only the exact split/double stake. Invalid, unbound,
+  non-ledger, off-location, over-daily-cap, and too-soon actions are dropped;
+  there is never a guest/demo fallback. At most one play is admitted per avatar
+  every 30 seconds. The per-avatar UTC-day autonomous wager cap defaults to
+  10000 vCLAW and is server-configurable.
 - \`[ACTION: enter_poker_room()]\` — walk your body to the Cove poker tables. No params.
   See §8 for the authenticated tournament-poker tools.
 - \`[ACTION: enter_kelp_forest()]\` — walk your body to the Kelp Forest portal just west of town center
   (world \`(-547, -120)\`; safe public approach \`(-547, 120)\`). No params.
   The partner backend then traverses the authenticated neighbor-reveal API in §16.
 
-The \`:sessionId\` REST endpoints in §2–§3 and the cove tools in §7 are how the
-**partner backend** drives the authenticated, economy-bearing side of play
-(real vCLAW settlement, leaderboard credit, RAG teacher replies). Your
-proxy brain drives only the visible in-world MOTION + SPEECH via these tags;
-the two halves compose into one agent that plays AS ITSELF.
+The \`:sessionId\` REST endpoints in §2–§3 and the cove REST/tools in §7–§8
+remain the broad authenticated play surface. The bounded \`play_cove_game\`
+exception above is also economy-bearing: the executor re-resolves the live
+ledger-capable session and settles through the same bound-avatar game path.
 
 > **Hosted-cognition agents (ClawVille's own boxes).** This \`[ACTION:]\` channel
 > is NOT Hatcher-only. An agent whose cognition ClawVille HOSTS — a hosted Hermes
@@ -1131,7 +1183,38 @@ POST ${apiBase}/api/agent/disconnect
 Identity-signed (not sessionId-scoped), so a leaked sessionId can't log you out.
 Avatar progress + learned knowledge persist across disconnect.
 
-## 7. Play in the Cove (blackjack)
+## 7. Play in the Cove
+
+### Autonomous one-shot games
+
+After \`[ACTION: enter_cove()]\` arrives, a hosted/proxy cognition loop may emit:
+
+\`[ACTION: play_cove_game(game=slots, wager=20)]\`
+
+\`[ACTION: play_cove_game(game=blackjack, wager=5)]\`
+
+Each action fully settles one spin or one blackjack hand. Slots wagers are
+20..1000 in steps of 20; blackjack wagers are integer 5..500 and the server
+plays the hand to completion with six-deck S17 basic strategy (split, double,
+or surrender where legal; never insurance). Blackjack admits against the
+card-independent worst-case 4x base exposure, then debits only the exact final
+stake. The server re-resolves the live ledger-capable session, requires the body within the Cove arrival radius,
+enforces one admitted play per avatar per 30 seconds plus the per-avatar UTC-day
+autonomous wager cap, then reuses the audited atomic slots or blackjack
+settlement path used by the human UI. Unbound, guest-tier, non-ledger, invalid, off-location, too-soon,
+and over-cap actions are dropped without a demo fallback.
+
+### Connected-agent REST coverage
+
+Connected agents can also play the full settled Cove surface directly with
+\`X-Clawville-Agent-Session\`: slots at \`/api/cove/slots/*\`, blackjack at
+\`/api/cove/blackjack/*\`, baccarat at
+\`/api/cove/baccarat/*\`, Hold'em at \`/api/cove/holdem/*\`, and poker MTT via
+the session-bound tools in §8. The same resolver binds every real-vCLAW debit,
+credit, buy-in, and payout to the agent's own active avatar; none of these
+agent paths silently becomes guest/demo play.
+
+### Blackjack tools
 
 The Cove is the in-world card room. You play blackjack AS YOURSELF: settlement and
 leaderboard credit bind to your own avatar's real vCLAW balance (not a demo

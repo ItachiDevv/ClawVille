@@ -21,6 +21,7 @@ import type { ServerFrame, ClientFrame, WorldState } from '@clawville/shared';
 import {
   clientFrameSchema,
   ACTIVITY_WS_CLOSE_CODES,
+  deriveReefRaceSeed,
   REEF_RACE_COUNTDOWN_DURATION_MS,
 } from '@clawville/shared';
 import {
@@ -685,7 +686,9 @@ class ActivityWsHub {
       state: p.connected ? 'alive' : 'disconnected',
     }));
     let tick = 0;
-    let powerUps: Array<{ spawnId: string; kind: string; position: { x: number; y: number } }> = [];
+    let powerUps: WorldState['powerUps'] = [];
+    let reefMines: WorldState['reefMines'];
+    let activeWave: WorldState['activeWave'];
     if (room.activityId === 'bumper-shells') {
       const bumperState = bumperShellsSim.getStateSnapshot(room.id);
       if (bumperState) {
@@ -743,6 +746,8 @@ class ActivityWsHub {
             speedMod?: number;
             boosting?: boolean;
             wipedOut?: boolean;
+            bubbledUntilMs?: number;
+            remoraUntilMs?: number;
             inventory?: Array<{
               kind: string | null;
               charges: number;
@@ -768,19 +773,28 @@ class ActivityWsHub {
             speedMod: bb.speedMod,
             boosting: bb.boosting,
             wipedOut: bb.wipedOut,
+            bubbledUntilMs: bb.bubbledUntilMs,
+            remoraUntilMs: bb.remoraUntilMs,
             inventory: bb.inventory,
           });
         }
         powerUps = reefState.pickups
           .filter((p) => p.active)
           .map((p) => {
-            const pp = p as { y?: number; z?: number };
+            const pp = p as { y?: number; z?: number; variant?: WorldState['powerUps'][number]['variant'] };
             return {
               spawnId: p.spawnId,
               kind: p.kind,
               position: { x: p.x, y: pp.y ?? pp.z ?? 0 },
+              variant: pp.variant,
             };
           });
+        const dynamic = reefState as unknown as {
+          mines?: NonNullable<WorldState['reefMines']>;
+          activeWave?: NonNullable<WorldState['activeWave']> | null;
+        };
+        reefMines = dynamic.mines?.filter((mine) => mine.active);
+        activeWave = dynamic.activeWave ?? undefined;
       }
     }
     // Capture immediately after the sim pose snapshot, before the async PB-
@@ -807,7 +821,7 @@ class ActivityWsHub {
     // room exists) — no permanent client fallback to reconstructed pads.
     const reefSplineZones =
       room.activityId === 'reef-race' && REEF_RACE_USE_SPLINE
-        ? reefRaceSplineSim.getSplineStaticZones()
+        ? reefRaceSplineSim.getSplineStaticZones(room.id)
         : undefined;
     // Phase 3 — pull per-avatar racing profile (class + level) for reef-race
     // rooms so the HUD's archetype tile can show the player WHY they have
@@ -897,9 +911,11 @@ class ActivityWsHub {
         tick,
         entities,
         powerUps,
+        reefMines,
+        activeWave,
         scores: [],
       },
-      seed: 0,
+      seed: room.activityId === 'reef-race' ? deriveReefRaceSeed(room.id) : 0,
     });
   }
 

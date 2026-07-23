@@ -380,8 +380,21 @@ export const REEF_POWERUP_DEFS: readonly ReefPowerUpDef[] = [
   { kind: 'rr-whirlpool', rarity: 'legendary', effectMs: 3_000, cooldownMs: 12_000, weight: 10 },
 ];
 
+/** Spline-only R18d additions; legacy ellipse rolls remain on the original six. */
+export const REEF_R18D_POWERUP_DEFS: readonly ReefPowerUpDef[] = [
+  { kind: 'rr-puffer-mine', rarity: 'uncommon', effectMs: 20_000, cooldownMs: 0, weight: 18 },
+  { kind: 'rr-bubble-beam', rarity: 'rare', effectMs: 1_500, cooldownMs: 0, weight: 14 },
+  { kind: 'rr-remora-rocket', rarity: 'legendary', effectMs: 4_000, cooldownMs: 0, weight: 1 },
+  { kind: 'rr-current-swap', rarity: 'legendary', effectMs: 1_500, cooldownMs: 0, weight: 4 },
+];
+
+export const REEF_SPLINE_POWERUP_DEFS: readonly ReefPowerUpDef[] = [
+  ...REEF_POWERUP_DEFS,
+  ...REEF_R18D_POWERUP_DEFS,
+];
+
 export function getReefPowerUpDef(kind: ReefPowerUpKind): ReefPowerUpDef {
-  const def = REEF_POWERUP_DEFS.find((d) => d.kind === kind);
+  const def = REEF_SPLINE_POWERUP_DEFS.find((d) => d.kind === kind);
   if (!def) throw new Error(`Unknown Reef power-up kind: ${kind}`);
   return def;
 }
@@ -389,11 +402,25 @@ export function getReefPowerUpDef(kind: ReefPowerUpKind): ReefPowerUpDef {
 /** Number of pickup slots per kart (mirrors Bumper's 2-slot inventory). */
 export const REEF_MAX_POWER_UP_SLOTS = 2;
 
-/** Number of power-up boxes spawned on the track simultaneously (3d-spec §2.6 caps at 16). */
-export const REEF_POWERUP_BOX_COUNT = 8;
+/** R18d contested station rows total 30 boxes; one InstancedMesh draw on client. */
+export const REEF_POWERUP_BOX_COUNT = 30;
 
 /** Cooldown before a collected box respawns (ms). */
-export const REEF_POWERUP_RESPAWN_MS = 6_000;
+export const REEF_POWERUP_RESPAWN_MS = 4_000;
+
+export const REEF_PUFFER_ARM_MS = 1_000;
+export const REEF_PUFFER_LIFETIME_MS = 20_000;
+export const REEF_PUFFER_RADIUS = 64;
+export const REEF_BUBBLE_BEAM_RANGE = 800;
+export const REEF_BUBBLE_BEAM_HALF_ANGLE_RAD = Math.PI / 7;
+export const REEF_BUBBLE_LOCK_MS = 1_500;
+export const REEF_BUBBLE_FLOAT_HEIGHT = 60;
+export const REEF_REMORA_DURATION_MS = 4_000;
+export const REEF_CURRENT_SWAP_TELEGRAPH_MS = 1_500;
+export const REEF_WAVE_TELEGRAPH_MS = 3_000;
+export const REEF_WAVE_DURATION_MS = 8_000;
+export const REEF_WAVE_BAND_LENGTH_WU = 2_500;
+export const REEF_WAVE_SURGE_MULT = 0.30;
 
 /**
  * Pickup contact radius (wu). Combined with REEF_BODY_RADIUS=22 this gives a
@@ -425,6 +452,8 @@ export const REEF_TICK_MS = 1000 / REEF_TICK_HZ;
  * `ReefKineticEffectKind`.
  */
 export type ReefBoostKind =
+  | 'remora-rocket'
+  | 'wave-surge'
   | 'launch-boost'      // Phase 1 — positive
   | 'launch-stall'      // Phase 1 — pseudo-effect, gates thrust
   | 'drift-boost'       // Phase 1 — positive
@@ -433,7 +462,9 @@ export type ReefBoostKind =
   | 'apex-bonus'        // Phase 2 — positive (+0.05)
   | 'apex-penalty'      // Phase 2 — negative (-0.05)
   | 'hazard-slow'       // Phase 2 — negative (-0.40)
-  | 'pad-boost';        // v2 mechanics — positive (boost pad, timed + decays)
+  | 'rip-current'       // R18c — sustained seeded fast-water lane (+18–25%)
+  | 'pad-boost'         // v2 mechanics — positive (boost pad, timed + decays)
+  | 'trick-surge';      // R18b — positive (+25% after a clean trick landing)
 
 // Drift spark tier thresholds (in sim ticks).
 //   Tier 0->1: ~0.27s = 8 ticks   -> readable in ordinary corner entries
@@ -792,66 +823,86 @@ export const PLACEMENT_ITEM_TABLE: Record<
   number,
   ReadonlyArray<{ kind: ReefPowerUpKind; weight: number }>
 > = {
-  // 1st place — no forward-only seeker; five useful leader items
+  // 1st place — no seeker; mine-led fun drop/attack mix plus trimmed shield
   1: [
-    { kind: 'rr-bubble-shield', weight: 28 },
-    { kind: 'rr-ink-slick',     weight: 22 },
-    { kind: 'rr-turbo-bubble',  weight: 20 },
-    { kind: 'rr-tide-wave',     weight: 16 },
-    { kind: 'rr-whirlpool',     weight: 14 },
+    { kind: 'rr-puffer-mine',   weight: 22 },
+    { kind: 'rr-bubble-shield', weight: 18 },
+    { kind: 'rr-ink-slick',     weight: 16 },
+    { kind: 'rr-turbo-bubble',  weight: 14 },
+    { kind: 'rr-bubble-beam',   weight: 12 },
+    { kind: 'rr-tide-wave',     weight: 10 },
+    { kind: 'rr-whirlpool',     weight:  8 },
   ],
   // 2nd–3rd — defensive-leaning
   2: [
-    { kind: 'rr-turbo-bubble',  weight: 24 },
-    { kind: 'rr-bubble-shield', weight: 18 },
-    { kind: 'rr-ink-slick',     weight: 16 },
-    { kind: 'rr-tide-wave',     weight: 16 },
-    { kind: 'rr-seeker-jelly',  weight: 14 },
-    { kind: 'rr-whirlpool',     weight: 12 },
+    { kind: 'rr-turbo-bubble',  weight: 16 },
+    { kind: 'rr-bubble-shield', weight: 12 },
+    { kind: 'rr-ink-slick',     weight: 12 },
+    { kind: 'rr-tide-wave',     weight: 12 },
+    { kind: 'rr-seeker-jelly',  weight: 10 },
+    { kind: 'rr-whirlpool',     weight:  8 },
+    { kind: 'rr-puffer-mine',   weight: 12 },
+    { kind: 'rr-bubble-beam',   weight: 10 },
+    { kind: 'rr-current-swap',  weight:  8 },
   ],
   3: [
-    { kind: 'rr-turbo-bubble',  weight: 24 },
-    { kind: 'rr-bubble-shield', weight: 18 },
-    { kind: 'rr-ink-slick',     weight: 16 },
-    { kind: 'rr-tide-wave',     weight: 16 },
-    { kind: 'rr-seeker-jelly',  weight: 14 },
-    { kind: 'rr-whirlpool',     weight: 12 },
+    { kind: 'rr-turbo-bubble',  weight: 14 },
+    { kind: 'rr-bubble-shield', weight: 10 },
+    { kind: 'rr-ink-slick',     weight: 11 },
+    { kind: 'rr-tide-wave',     weight: 12 },
+    { kind: 'rr-seeker-jelly',  weight: 11 },
+    { kind: 'rr-whirlpool',     weight:  9 },
+    { kind: 'rr-puffer-mine',   weight: 12 },
+    { kind: 'rr-bubble-beam',   weight: 12 },
+    { kind: 'rr-current-swap',  weight:  9 },
   ],
   // 4th–5th — neutral (matches REEF_POWERUP_DEFS distribution)
   4: [
-    { kind: 'rr-turbo-bubble',  weight: 35 },
-    { kind: 'rr-bubble-shield', weight:  8 },
-    { kind: 'rr-ink-slick',     weight:  7 },
-    { kind: 'rr-seeker-jelly',  weight:  7 },
-    { kind: 'rr-tide-wave',     weight:  6 },
-    { kind: 'rr-whirlpool',     weight:  7 },
+    { kind: 'rr-turbo-bubble',  weight: 18 },
+    { kind: 'rr-bubble-shield', weight: 10 },
+    { kind: 'rr-ink-slick',     weight: 10 },
+    { kind: 'rr-seeker-jelly',  weight: 10 },
+    { kind: 'rr-tide-wave',     weight: 10 },
+    { kind: 'rr-whirlpool',     weight:  8 },
+    { kind: 'rr-puffer-mine',   weight: 12 },
+    { kind: 'rr-bubble-beam',   weight: 12 },
+    { kind: 'rr-current-swap',  weight: 10 },
   ],
   5: [
-    { kind: 'rr-turbo-bubble',  weight: 35 },
+    { kind: 'rr-turbo-bubble',  weight: 16 },
     { kind: 'rr-bubble-shield', weight:  8 },
-    { kind: 'rr-ink-slick',     weight:  7 },
-    { kind: 'rr-seeker-jelly',  weight:  7 },
-    { kind: 'rr-tide-wave',     weight:  6 },
-    { kind: 'rr-whirlpool',     weight:  7 },
+    { kind: 'rr-ink-slick',     weight: 10 },
+    { kind: 'rr-seeker-jelly',  weight: 12 },
+    { kind: 'rr-tide-wave',     weight: 11 },
+    { kind: 'rr-whirlpool',     weight:  9 },
+    { kind: 'rr-puffer-mine',   weight: 10 },
+    { kind: 'rr-bubble-beam',   weight: 14 },
+    { kind: 'rr-current-swap',  weight: 10 },
   ],
   // 6th–7th — aggressive-leaning
   6: [
-    { kind: 'rr-seeker-jelly',  weight: 25 },
-    { kind: 'rr-tide-wave',     weight: 22 },
-    { kind: 'rr-turbo-bubble',  weight: 20 },
-    { kind: 'rr-whirlpool',     weight: 18 },
-    { kind: 'rr-ink-slick',     weight: 10 },
+    { kind: 'rr-seeker-jelly',  weight: 18 },
+    { kind: 'rr-tide-wave',     weight: 14 },
+    { kind: 'rr-turbo-bubble',  weight: 10 },
+    { kind: 'rr-whirlpool',     weight: 12 },
+    { kind: 'rr-ink-slick',     weight:  8 },
     { kind: 'rr-bubble-shield', weight:  5 },
+    { kind: 'rr-puffer-mine',   weight: 10 },
+    { kind: 'rr-bubble-beam',   weight: 14 },
+    { kind: 'rr-current-swap',  weight:  9 },
   ],
   7: [
-    { kind: 'rr-seeker-jelly',  weight: 25 },
-    { kind: 'rr-tide-wave',     weight: 22 },
-    { kind: 'rr-turbo-bubble',  weight: 20 },
-    { kind: 'rr-whirlpool',     weight: 18 },
-    { kind: 'rr-ink-slick',     weight: 10 },
-    { kind: 'rr-bubble-shield', weight:  5 },
+    { kind: 'rr-seeker-jelly',  weight: 18 },
+    { kind: 'rr-tide-wave',     weight: 14 },
+    { kind: 'rr-turbo-bubble',  weight:  8 },
+    { kind: 'rr-whirlpool',     weight: 14 },
+    { kind: 'rr-ink-slick',     weight:  7 },
+    { kind: 'rr-bubble-shield', weight:  4 },
+    { kind: 'rr-puffer-mine',   weight: 10 },
+    { kind: 'rr-bubble-beam',   weight: 15 },
+    { kind: 'rr-current-swap',  weight: 10 },
   ],
-  // 8th — aggressive catch-up mix with five distinct kinds
+  // Legacy P8 fallback; dynamic last-place selection uses LAST_PLACE_ITEM_TABLE.
   8: [
     { kind: 'rr-whirlpool',    weight: 30 },
     { kind: 'rr-seeker-jelly', weight: 26 },
@@ -861,6 +912,18 @@ export const PLACEMENT_ITEM_TABLE: Record<
   ],
 };
 
+/** Dynamic last-place table (P4 in a four-kart race, P8 in an eight-kart race). */
+export const LAST_PLACE_ITEM_TABLE: ReadonlyArray<{
+  kind: ReefPowerUpKind;
+  weight: number;
+}> = [
+  { kind: 'rr-remora-rocket', weight: 30 },
+  { kind: 'rr-whirlpool', weight: 24 },
+  { kind: 'rr-seeker-jelly', weight: 22 },
+  { kind: 'rr-tide-wave', weight: 14 },
+  { kind: 'rr-bubble-beam', weight: 10 },
+];
+
 /**
  * Look up the weighted item table for a given placement. Out-of-range
  * placements (placement < 1 OR placement > 8) return `null` so the caller
@@ -868,8 +931,16 @@ export const PLACEMENT_ITEM_TABLE: Record<
  */
 export function getPlacementItemTable(
   placement: number,
+  racerCount = 8,
+  finalLap = false,
 ): ReadonlyArray<{ kind: ReefPowerUpKind; weight: number }> | null {
-  return PLACEMENT_ITEM_TABLE[placement] ?? null;
+  const isLast = placement === racerCount;
+  const shiftedPlacement = finalLap && !isLast
+    ? Math.min(placement + 1, Math.max(1, racerCount - 1))
+    : placement;
+  return isLast
+    ? LAST_PLACE_ITEM_TABLE
+    : PLACEMENT_ITEM_TABLE[shiftedPlacement] ?? null;
 }
 
 // ─── Phase 3 — stat-driven body multipliers ─────────────────────────────────
@@ -1101,16 +1172,17 @@ export function buildBodyMultipliers(
 
 /**
  * Manual jump impulse (player presses Space or Shift). With REEF_GRAVITY,
- * peak height is v²/(2g) = 550²/(2×1200) ≈126wu and total airtime is
- * 2v/g ≈0.92s: visibly above wave heave while still below the ramp launch.
+ * continuous peak is 720²/(2×1200) =216wu; the live semi-implicit 30Hz
+ * integrator measures ≈204wu with ≈1.17s of airborne samples.
  */
-export const REEF_JUMP_IMPULSE_MANUAL = 550;
+export const REEF_JUMP_IMPULSE_MANUAL = 720;
 
 /**
  * Ramp jump impulse (server-injected on ramp AABB entry, regardless of input).
- * ~2.5× manual per spec. Target: ~150 wu peak, ~1.2s airtime.
+ * Clearly larger than manual: the live 30Hz integrator measures ≈337wu peak
+ * from a 920wu/s impulse, with ~1.5s of airborne samples.
  */
-export const REEF_JUMP_IMPULSE_RAMP = 600; // → ~150 wu peak, ~1.0s airtime
+export const REEF_JUMP_IMPULSE_RAMP = 920;
 
 /**
  * Gravity for v2 vertical axis. Pulls vyAxis down each tick:
@@ -1128,6 +1200,14 @@ export const REEF_GRAVITY = 1200; // wu/s²
  * Forward momentum is preserved/coasts through the air.
  */
 export const REEF_AIRBORNE_STEER_MULT = 0.30;
+
+/** R18b clean trick-landing surge: additive +25% for 1.2 seconds. */
+export const REEF_TRICK_SURGE_MULT = 0.25;
+export const REEF_TRICK_SURGE_DURATION_MS = 1_200;
+/** A nearly-stopped landing cannot mint a surge. */
+export const REEF_TRICK_MIN_LANDING_SPEED = REEF_MAX_SPEED * 0.15;
+/** Signed desired-heading delta required to count as a left/right press. */
+export const REEF_TRICK_STEER_DEADZONE_RAD = 0.035;
 
 // ─── Reef Race v2 — surf-carving kinematics (2026-06-01) ────────────────────
 //

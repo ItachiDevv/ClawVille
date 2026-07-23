@@ -170,6 +170,8 @@ export const AGENT_MODELS = [
   { key: 'cronus',       label: 'Cronus',       category: 'hatcher' },
   { key: 'helen',        label: 'Helen',        category: 'hatcher' },
   { key: 'clytemnestra', label: 'Clytemnestra', category: 'hatcher' },
+  // NOTE: 'biggie' (wandering NPC, 2026-07-22) is deliberately NOT listed here —
+  // NPC-only decorative wanderer, never user/agent-assignable (adinero precedent).
 
   // NOTE: `crayfish` entry removed 2026-04-16 — the GLB renders visually
   // close to `lobster` but with a larger silhouette that clipped the
