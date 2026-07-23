@@ -127,3 +127,27 @@ Scope: reviewer-triaged Wave 2 findings only; no push performed.
 - Finding 6: transactional live agent-session row re-lock.
 - Finding 7: settlement outbox / exactly-once publication.
 - No schema migration, protocol version bump, push, or staging/production mutation was performed.
+
+## DB test pass
+
+Status: authored and TypeScript-checked locally; the suite is gated only on `DATABASE_URL` and skips in this worktree because no database URL is available. The reviewer must run it against the full-schema throwaway PostgreSQL before confirming green. No push was performed.
+
+Test file: `apps/api/src/routes/__tests__/cove-autonomous-settlement.db.test.ts`
+
+1. Slots stake/payout ledger, net avatar delta, and vCLAW balance-sum CHECK → `slots: one autonomous spin writes the gross stake debit and exact net avatar delta`.
+2. Slots gross-wager daily cap and refused-play no-debit guarantee → `slots: daily cap consumes gross tagged debits and a refused second play writes no debit`.
+3. Slots live binding and mid-play inactive-avatar rejection → `slots: changed live binding is rejected before any ledger write` and `slots: an avatar deactivated after inner resolution is rejected by the transaction binding lock`.
+4. Slots owner-scoped cross-session idempotency and different-wager 409 → `slots: owner-scoped action replay survives session rotation and mismatched args return 409`.
+5. Slots invalid/non-ledger/unbound and real internal rate-limit rejection → `slots: invalid, non-ledger, and unbound resolution never reaches settlement` and `slots: the real internal spin rate gate refuses play 61 with no settlement write`.
+6. Blackjack real settle transaction, tagged stake/payout/rake rows, settled hand/history, provenance sum, and conservation → `blackjack: a raked autonomous hand settles stake, payout, treasury, history, and balance invariants`. The behavior-preserving ledger identities asserted are player payout credit + treasury rake = gross engine payout, player avatar delta = raked payout − total stake, and the avatar provenance sum remains exact; the current burn/mint economy has no house-bank stake row.
+7. Blackjack card-independent 4× admission before shoe/card/history/debit mutation → `blackjack: 4x worst-case cap rejects before shoe, cards, history, or ledger mutation`.
+8. Blackjack owner-scoped cross-shoe replay with no second settle or durable publish trigger → `blackjack: action replay is owner-scoped across shoe rotation and never settles twice`.
+9. PostgreSQL transaction-clock UTC-day boundary semantics → `blackjack: daily usage is counted by DB UTC date_trunc(now()), including midnight and excluding the prior second`.
+10. Blackjack live binding, `is_active`, non-ledger, and unbound rejection → `blackjack: binding, active-avatar, non-ledger, and unbound failures write no hand or debit`.
+
+Fixture discipline: the suite direct-inserts a constraint-valid non-guest user, active avatar (`100000 = 100000 + 0 + 0`), and bound live agent row; it never calls `/api/avatars` or requires wallet/KEK infrastructure. Mutable fixture rows are removed in reverse-FK order. Test-tagged treasury rake credits are transactionally removed and the treasury provenance balances are reversed without deleting the shared singleton. Append-only `covenant_action_records` cannot be deleted under the full-schema tamper trigger and are left for disposal with the throwaway database.
+
+Local evidence:
+
+- `apps/api: bunx tsc --noEmit` → exit 0.
+- `bun test src/routes/__tests__/cove-autonomous-settlement.db.test.ts` → 0 failed, 14 skipped because `DATABASE_URL` is absent.
