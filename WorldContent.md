@@ -85,6 +85,8 @@ Slot geometry: cx=180+130×cos(θ), cy=180+130×sin(θ), θ=−π/2+slot×(π/6)
 | Chibi VRM | 2 | `eliza-chibi.vrm?v=2` (Eliza), `milady-chibi.vrm?v=2` (Mila) |
 | Lobster GLB | 1 | `models/lobster.glb` (Driftwood) — homeX 3348, homeY 5112, W inner (Phase 6.2 scaled ×1.5 from Phase 6.1) |
 
+> Table drift note (2026-07-22): counts/rows above predate the 8-Milady restore and Adinero (both live in `npc-definitions.ts` but missing here). Full reconciliation pending — `npc-definitions.ts` is authoritative. (Also 2026-07-22: `biggie` is a registry-only EXCLUSIVE avatar — manual per-account DB grant, deliberately NOT a wanderer and NOT in `AGENT_MODELS`; see `3dStructure.md` Last-edit entry.)
+
 ### 3b. Building residents — 10 total
 
 One per building, named after the SpongeBob cast. Code: `lib/three/arena-location-npcs.tsx`. Models live under `apps/web/public/models/characters/`.
