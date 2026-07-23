@@ -40,8 +40,13 @@ import {
   reefRaceCreatureMotionAt,
   type ReefRaceCreatureMotion,
   type ReefRaceCreatureObstacle,
+  type ReefPowerUpKind,
 } from '@clawville/shared';
-import { useActivityStore } from '@/stores/activity';
+import {
+  useActivityStore,
+  type ActivityState,
+  type ReefPresentationVfxEvent,
+} from '@/stores/activity';
 import { playActivitySynthCue } from '@/lib/activity-audio';
 import { clientSpline } from '@/lib/three/activities/reef-race/reef-race-spline-instance';
 
@@ -59,6 +64,30 @@ const CREATURE_RADAR_MOTION: ReefRaceCreatureMotion = {
   crossing: false,
   crossingProgress: 0,
 };
+
+type ReefItemHitVfxEvent = ReefPresentationVfxEvent & {
+  type: 'item-hit';
+  itemKind: ReefPowerUpKind;
+  attackerAvatarId: string;
+  victimAvatarId: string;
+};
+
+function latestSelfAttackEvent(state: ActivityState): ReefItemHitVfxEvent | null {
+  const selfAvatarId = state.selfAvatarId;
+  if (!selfAvatarId) return null;
+  for (let i = state.reefPresentationVfxEvents.length - 1; i >= 0; i--) {
+    const candidate = state.reefPresentationVfxEvents[i];
+    if (
+      candidate.type === 'item-hit'
+      && candidate.itemKind
+      && candidate.attackerAvatarId === selfAvatarId
+      && candidate.victimAvatarId
+    ) {
+      return candidate as ReefItemHitVfxEvent;
+    }
+  }
+  return null;
+}
 
 // ─── Shared toast wrapper ─────────────────────────────────────────────────────
 
@@ -322,7 +351,7 @@ function ReefRaceTrickToast() {
 function ReefRaceWallSlamToast() {
   const event = useActivityStore((s) => s.lastWallSlamEvent);
   const obstacleEvent = useActivityStore((s) => s.lastObstacleHitEvent);
-  const itemEvent = useActivityStore((s) => s.lastItemHitEvent);
+  const itemEvent = useActivityStore((s) => s.lastSelfItemHitEvent);
   const selfAvatarId = useActivityStore((s) => s.selfAvatarId);
   const matchPhase = useActivityStore((s) => s.matchPhase);
   const [visible, setVisible] = useState(false);
@@ -413,7 +442,7 @@ function ReefRaceCreatureRadar() {
   const serverClockOffsetMs = useActivityStore((state) => state.serverClockOffsetMs);
   const matchPhase = useActivityStore((state) => state.matchPhase);
   const activeWave = useActivityStore((state) => state.activeWave);
-  const itemHit = useActivityStore((state) => state.lastItemHitEvent);
+  const itemHit = useActivityStore(latestSelfAttackEvent);
   const creatures = useMemo(
     () => (room?.reefSplineZones?.obstacles ?? []).filter(
       (obstacle): obstacle is ReefRaceCreatureObstacle => obstacle.kind === 'creature',
@@ -648,14 +677,13 @@ function ReefRacePowerUpToast() {
 }
 
 function ReefRaceHitConfirmToast() {
-  const event = useActivityStore((s) => s.lastItemHitEvent);
-  const selfAvatarId = useActivityStore((s) => s.selfAvatarId);
+  const event = useActivityStore(latestSelfAttackEvent);
   const victimName = useActivityStore((s) => event
     ? s.scores.get(event.victimAvatarId)?.displayName ?? event.victimAvatarId.slice(-8)
     : 'rival');
   const [visible, setVisible] = useState(false);
-  const lastSoundAtRef = useRef(0);
-  const isSelfHit = !!event && event.attackerAvatarId === selfAvatarId;
+  const lastSoundSeqRef = useRef(0);
+  const isSelfHit = !!event;
   useEffect(() => {
     if (!isSelfHit) {
       setVisible(false);
@@ -663,10 +691,10 @@ function ReefRaceHitConfirmToast() {
     }
     if (
       event
-      && event.at !== lastSoundAtRef.current
+      && event.seq !== lastSoundSeqRef.current
       && Date.now() - event.at <= 2_000
     ) {
-      lastSoundAtRef.current = event.at;
+      lastSoundSeqRef.current = event.seq;
       playActivitySynthCue('item-hit');
     }
     setVisible(true);
@@ -804,20 +832,23 @@ function ReefRaceCurrentSwapWarning() {
 }
 
 function ReefRaceVictimItemOverlay() {
-  const event = useActivityStore((s) => s.lastItemHitEvent);
-  const selfAvatarId = useActivityStore((s) => s.selfAvatarId);
+  const event = useActivityStore((s) => s.lastSelfItemHitEvent);
   const [visible, setVisible] = useState(false);
-  const isVictim = !!event && event.victimAvatarId === selfAvatarId;
   useEffect(() => {
-    if (!isVictim || !event) {
+    if (!event) {
+      setVisible(false);
+      return;
+    }
+    const duration = event.itemKind === 'rr-ink-slick' ? 2_600 : 950;
+    const remaining = duration - (Date.now() - event.at);
+    if (remaining <= 0) {
       setVisible(false);
       return;
     }
     setVisible(true);
-    const duration = event.itemKind === 'rr-ink-slick' ? 2_100 : 950;
-    const id = window.setTimeout(() => setVisible(false), duration);
+    const id = window.setTimeout(() => setVisible(false), remaining);
     return () => window.clearTimeout(id);
-  }, [event, isVictim]);
+  }, [event]);
   if (!visible || !event) return null;
   const ink = event.itemKind === 'rr-ink-slick';
   const whirl = event.itemKind === 'rr-whirlpool';
@@ -825,12 +856,12 @@ function ReefRaceVictimItemOverlay() {
     <div aria-hidden style={{
       position: 'absolute', inset: 0, pointerEvents: 'none',
       background: ink
-        ? 'radial-gradient(circle at 18% 24%, #1a0025 0 7%, transparent 15%), radial-gradient(circle at 72% 35%, #4b1267 0 11%, transparent 20%), radial-gradient(circle at 45% 78%, #120019 0 13%, transparent 24%), rgba(31,0,43,.55)'
+        ? 'radial-gradient(circle at 8% 18%, #08000d 0 8%, transparent 16%), radial-gradient(circle at 24% 30%, #27003b 0 13%, transparent 23%), radial-gradient(circle at 77% 22%, #4b1267 0 12%, transparent 22%), radial-gradient(circle at 92% 66%, #13001d 0 10%, transparent 20%), radial-gradient(circle at 52% 82%, #08000d 0 17%, transparent 29%), radial-gradient(circle at 47% 48%, rgba(37,0,54,.82) 0 19%, transparent 46%), rgba(16,0,24,.64)'
         : whirl
           ? 'repeating-conic-gradient(from 0deg at 50% 50%, rgba(255,45,147,.28) 0 12deg, transparent 12deg 34deg)'
           : 'radial-gradient(circle, transparent 35%, rgba(47,220,255,.55) 100%)',
-      boxShadow: ink ? 'inset 0 0 90px #08000d' : 'inset 0 0 90px rgba(39,218,255,.75)',
-      opacity: ink ? .92 : .78,
+      boxShadow: ink ? 'inset 0 0 150px 35px #050009' : 'inset 0 0 90px rgba(39,218,255,.75)',
+      opacity: ink ? .96 : .78,
     }} />
   );
 }
