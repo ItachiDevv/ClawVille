@@ -9,6 +9,7 @@
         "@clawville/shared": "workspace:*",
         "@clawville/wager-program": "workspace:*",
         "@coral-xyz/anchor": "^0.31.1",
+        "@payai/facilitator": "2.4.4",
         "@solana/web3.js": "^1.95.0",
         "bs58": "^6.0.0",
         "pg": "^8.17.2",
@@ -54,9 +55,9 @@
         "@oobe-protocol-labs/synapse-sap-sdk": "1.0.0",
         "@solana/kit": "^6.8.0",
         "@solana/web3.js": "^1.95.0",
-        "@x402/core": "^2.9.0",
-        "@x402/hono": "^2.9.0",
-        "@x402/svm": "^2.9.0",
+        "@x402/core": "2.9.0",
+        "@x402/hono": "2.9.0",
+        "@x402/svm": "2.9.0",
         "bs58": "^6.0.0",
         "cheerio": "^1.2.0",
         "cron-parser": "^5.5.0",
@@ -580,6 +581,8 @@
     "@oslojs/crypto": ["@oslojs/crypto@1.0.1", "", { "dependencies": { "@oslojs/asn1": "1.0.0", "@oslojs/binary": "1.0.0" } }, "sha512-7n08G8nWjAr/Yu3vu9zzrd0L9XnrJfpMioQcvCMxBIiF5orECHe5/3J0jmXRVvgfqMm/+4oxlQ+Sq39COYLcNQ=="],
 
     "@oslojs/encoding": ["@oslojs/encoding@1.1.0", "", {}, "sha512-70wQhgYmndg4GCPxPPxPGevRKqTIJ2Nh4OkiMWmDAVYsTQ+Ta7Sq+rPevXyXGdzr30/qZBnyOalCszoMxlyldQ=="],
+
+    "@payai/facilitator": ["@payai/facilitator@2.4.4", "", { "peerDependencies": { "@x402/core": ">=2.2.0" }, "optionalPeers": ["@x402/core"] }, "sha512-AtZs2l/ziqk2J+Pas1nTchig2HJFh+xDMdyj28gp0AU6gZ6rhqxrX578oaQkuevrwa4ZQsbj6zASnDT5YXuWhw=="],
 
     "@pixi/colord": ["@pixi/colord@2.9.6", "", {}, "sha512-nezytU2pw587fQstUu1AsJZDVEynjskwOL+kibwcdxsMBFqPsFFNA7xl0ii/gXuDi6M0xj3mfRJj8pBSc2jCfA=="],
 

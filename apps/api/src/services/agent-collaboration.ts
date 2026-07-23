@@ -27,6 +27,19 @@ import {
 } from '@clawville/shared';
 import { logEvent } from './event-logger';
 
+export type CollaborationInitiator =
+  | { kind: 'agent'; agentId: string }
+  | { kind: 'human'; userId: string; avatarId: string };
+
+/**
+ * Attribution belongs to the API call path, not the shared broker contract.
+ * Agent and human subjects are deliberately disjoint because the leaderboard
+ * scores them through separate agent_id and avatar_id legs.
+ */
+export type AttributedCollaborationRequest = CollaborationRequest & {
+  initiator?: CollaborationInitiator;
+};
+
 /**
  * Detect which buildings have expertise relevant to the user's message.
  * Counts keyword matches per building, excludes the source, returns top N.
@@ -72,7 +85,7 @@ export function shouldCollaborate(
  * and return combined context for the source agent to incorporate.
  */
 export async function collaborateOnQuery(
-  request: CollaborationRequest,
+  request: AttributedCollaborationRequest,
 ): Promise<CollaborationResult> {
   const start = Date.now();
   const {
@@ -81,6 +94,7 @@ export async function collaborateOnQuery(
     dynamicContext = '',
     maxExperts = 2,
     timeoutMs = 6000,
+    initiator,
   } = request;
 
   const experts = detectRelevantExperts(message, sourceBuildingId, maxExperts);
@@ -111,8 +125,15 @@ export async function collaborateOnQuery(
   // One event per consulted expert so the dashboard can surface both the
   // source→target pairs and the raw collaboration volume.
   for (const insight of result.insights) {
+    const subject = initiator?.kind === 'agent'
+      ? { agentId: initiator.agentId, avatarId: null, userId: null }
+      : initiator?.kind === 'human'
+        ? { agentId: null, avatarId: initiator.avatarId, userId: initiator.userId }
+        : { agentId: null, avatarId: null, userId: null };
+
     void logEvent({
       eventType: 'agent.collaboration.turn',
+      ...subject,
       buildingId: sourceBuildingId,
       payload: {
         sourceBuildingId,
@@ -121,6 +142,7 @@ export async function collaborateOnQuery(
         questionLength: message.length,
         answered: Boolean(insight.response),
         kind: 'cross-building-consultation',
+        ...(!initiator ? { unattributed: true } : {}),
       },
     });
   }

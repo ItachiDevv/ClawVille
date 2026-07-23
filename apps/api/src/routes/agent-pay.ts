@@ -15,6 +15,7 @@ import {
   type ActivityAuthContext,
 } from '../middleware/require-auth-or-agent';
 import { requireNonGuestIdentity } from '../middleware/require-non-guest';
+import { consumeAgentPayRateLimit } from './agent-pay-rate-limit';
 import {
   payAgent,
   resolveAgentPayMaxUsdCents,
@@ -33,7 +34,7 @@ const agentPayBodySchema = z
   })
   .strict();
 
-function failureStatus(code: AgentPayErrorCode): 400 | 403 | 404 | 409 | 500 | 502 | 503 {
+function failureStatus(code: AgentPayErrorCode): 400 | 403 | 404 | 409 | 429 | 500 | 502 | 503 {
   switch (code) {
     case 'invalid_request':
     case 'amount_below_min':
@@ -52,6 +53,8 @@ function failureStatus(code: AgentPayErrorCode): 400 | 403 | 404 | 409 | 500 | 5
     case 'payment_reconcile':
     case 'fulfillment_pending':
       return 409;
+    case 'daily_cap_exceeded':
+      return 429;
     case 'payment_failed':
       return 502;
     case 'payai_unavailable':
@@ -84,6 +87,14 @@ agentPayRoutes.post(
         },
         403,
       );
+    }
+
+    // Humans and connected agents bound to the same avatar intentionally share
+    // one best-effort process-local bucket. The durable daily admission caps in
+    // the service remain the hard cross-pod economic boundary.
+    const rateLimit = consumeAgentPayRateLimit(identity.avatarId);
+    if (!rateLimit.ok) {
+      return c.json(rateLimit.body, rateLimit.status);
     }
 
     const idempotencyKey = idempotencyKeySchema.safeParse(

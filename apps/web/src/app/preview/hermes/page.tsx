@@ -38,7 +38,7 @@ const SCENE_BG = new THREE.Color(0xffffff); // white backdrop for video capture
 // Target visual height — camera at y=8 looking at y=7 frames a 6.5u-tall avatar.
 const TARGET_HEIGHT = 6.5;
 
-type Character = 'female' | 'male' | 'tekk';
+type Character = 'female' | 'male' | 'tekk' | 'biggie';
 type Mode = 'idle' | 'walk' | 'run' | 'swim' | 'fly' | 'pray';
 
 // VRM URL + animator characterId per selectable character. Tekk is a
@@ -50,6 +50,10 @@ const CHARACTER_META: Record<Character, { path: string; animatorId: string }> = 
   female: { path: '/avatars/hermes-female.vrm?v=2', animatorId: 'hermes-female' },
   male:   { path: '/avatars/hermes-male.vrm?v=2',   animatorId: 'hermes-male' },
   tekk:   { path: '/avatars/tekk.vrm?v=2',          animatorId: 'tekk' },
+  // Biggie — bespoke Meshy VRM exclusive avatar (2026-07-23); dedicated animatorId
+  // with idle/walk/run position tracks stripped (adinero-pattern underground guard).
+  // ?v=2 — arms-rest-pose T-pose fix (fix-rig-tpose.mjs) re-baked the same path.
+  biggie: { path: '/avatars/biggie.vrm?v=2',        animatorId: 'biggie' },
 };
 
 function HermesAvatar({ character, mode }: { character: Character; mode: Mode }) {
@@ -159,19 +163,26 @@ function PreviewHermesInner() {
   const initial: Character =
     c === 'male' ? 'male' :
     c === 'tekk' ? 'tekk' :
+    c === 'biggie' ? 'biggie' :
     'female';
   const [character, setCharacter] = useState<Character>(initial);
   const [mode, setMode] = useState<Mode>('idle');
+  // ?az=<degrees> — initial camera azimuth for scripted QC screenshots (0 = +Z).
+  const az = ((Number(searchParams.get('az')) || 0) * Math.PI) / 180;
+  // Frame the avatar's torso (TARGET_HEIGHT=6.5 → mid-body ≈ 3.2), camera level
+  // with it, so OrbitControls zoom converges on the BODY, not empty air above
+  // the head (old target y=7 pushed the model to the bottom half when zooming).
+  const camPos: [number, number, number] = [Math.sin(az) * 16, 4.2, Math.cos(az) * 16];
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: '#ffffff' }}>
       <Canvas
-        camera={{ position: [0, 8, 25], fov: 35 }}
+        camera={{ position: camPos, fov: 35 }}
         gl={{ antialias: true, powerPreference: 'high-performance' }}
         scene={{ background: SCENE_BG }}
       >
         <HermesScene character={character} mode={mode} />
-        <OrbitControls target={[0, 7, 0]} enablePan={true} maxDistance={80} minDistance={5} />
+        <OrbitControls target={[0, 3.2, 0]} enablePan={true} maxDistance={80} minDistance={1.5} />
       </Canvas>
 
       <div style={{
@@ -187,6 +198,8 @@ function PreviewHermesInner() {
             style={btn(character === 'male')}>Male</button>
           <button onClick={() => setCharacter('tekk')}
             style={btn(character === 'tekk')}>Tekk</button>
+          <button onClick={() => setCharacter('biggie')}
+            style={btn(character === 'biggie')}>Biggie</button>
         </div>
         <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
           <button onClick={() => setMode('idle')} style={btn(mode === 'idle')}>Idle</button>

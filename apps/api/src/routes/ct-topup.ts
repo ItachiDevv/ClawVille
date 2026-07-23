@@ -49,7 +49,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
-import { db, ctTopups, avatars, and, eq, isNull, inArray, sql } from '@clawville/database';
+import { db, ctTopups, avatars, wallets, and, eq, isNull, inArray, sql } from '@clawville/database';
 import { sessionMiddleware } from '../middleware/auth';
 import {
   requireAuthOrAgentSession,
@@ -69,6 +69,28 @@ import {
 import { creditClawTokens } from '../services/claw-token-ledger';
 import { withKeyedMutex } from '../services/keyed-mutex';
 import { claimX402Settlement } from '../services/x402-settlement-receipts';
+import { decryptWalletRow } from '../services/keypair-vault';
+import {
+  executePreparedExactPayment,
+  prepareInboundCustodialExactPayment,
+  prepareInboundMeridianPayment,
+  type ExecutePreparedExactPaymentOutcome,
+  type PreparedCustodialExactPayment,
+  type PrepareInboundMeridianPaymentInput,
+} from '../services/custodial-x402';
+import {
+  acquirePayAiCircuitPermit,
+  recordPayAiCircuitAvailable,
+  recordPayAiCircuitFailure,
+  releasePayAiCircuitPermitWithoutObservation,
+  type PayAiCircuitPermit,
+} from '../services/x402-facilitator-circuit';
+import { alertError } from '../services/alert-error';
+import {
+  assertSettlementAmountsConserved,
+  legacySettlementAmounts,
+  type X402SettlementAmounts,
+} from '../services/x402-settlement-accounting';
 
 export const ctTopupRoutes = new Hono<ActivityAuthContext>();
 
@@ -99,6 +121,170 @@ export function resolveTopupNetwork(): X402Network {
   // Unset ⇒ devnet-first. We deliberately do NOT inherit the x402-config mainnet
   // default for the money on-ramp; mainnet must be turned on intentionally.
   return 'devnet';
+}
+
+/** RPC used only to build the explicitly requested server-signed payment. */
+export function resolveTopupRpcUrl(network: X402Network): string {
+  return network === 'mainnet'
+    ? process.env.SOLANA_MAINNET_RPC_URL?.trim() || 'https://api.mainnet-beta.solana.com'
+    : process.env.SOLANA_RPC_URL?.trim() || 'https://api.devnet.solana.com';
+}
+
+export interface BoundAvatarCustodialPayer {
+  publicKey: string;
+  secretKey: Uint8Array;
+}
+
+/** Load only the middleware-bound avatar's custodial key, sign-scoped. */
+export async function loadBoundAvatarCustodialPayer(
+  avatarId: string,
+): Promise<BoundAvatarCustodialPayer | null> {
+  const [row] = await db
+    .select()
+    .from(wallets)
+    .where(and(eq(wallets.subjectType, 'avatar'), eq(wallets.subjectId, avatarId)))
+    .limit(1);
+  if (!row) return null;
+  const keypair = await decryptWalletRow(row);
+  const publicKey = keypair.publicKey.toBase58();
+  if (publicKey !== row.publicKey) {
+    throw new Error('bound avatar custodial wallet pubkey mismatch');
+  }
+  return { publicKey, secretKey: keypair.secretKey };
+}
+
+export interface PreparedInboundCustodialAttempt {
+  permit: PayAiCircuitPermit | null;
+  prepared:
+    | PreparedCustodialExactPayment
+    | {
+        payerPubkey: string;
+        meridian: NonNullable<PreparedCustodialExactPayment['meridian']>;
+      };
+  skipPayAi: boolean;
+}
+
+/**
+ * Prepare an explicit merchant-bound custodial payment without moving money.
+ * An OPEN PayAI circuit skips `/supported` and PayAI payload construction and
+ * builds only Meridian. Disabled/unavailable Meridian returns null, preserving
+ * the historical transient no-op.
+ */
+export async function prepareInboundCustodialAttempt(
+  input: PrepareInboundMeridianPaymentInput,
+): Promise<PreparedInboundCustodialAttempt | null> {
+  const nowMs = Date.now();
+  const permit = acquirePayAiCircuitPermit(nowMs);
+  try {
+    if (!permit) {
+      const meridian = await prepareInboundMeridianPayment(input);
+      return meridian
+        ? { permit: null, prepared: { payerPubkey: input.payerPubkey, meridian }, skipPayAi: true }
+        : null;
+    }
+
+    const feePayer = await resolveFacilitatorFeePayer(input.network);
+    if (feePayer) {
+      const prepared = await prepareInboundCustodialExactPayment({ ...input, feePayer });
+      return { permit, prepared, skipPayAi: false };
+    }
+
+    // `/supported` was unavailable. Do not burn/observe the permit as a verify
+    // failure; direct Meridian is still allowed and the finally path releases
+    // an unobserved half-open probe with a refreshed cooldown.
+    const meridian = await prepareInboundMeridianPayment(input);
+    if (!meridian) {
+      releasePayAiCircuitPermitWithoutObservation(permit, Date.now());
+      return null;
+    }
+    return {
+      permit,
+      prepared: { payerPubkey: input.payerPubkey, meridian },
+      skipPayAi: true,
+    };
+  } catch (err) {
+    if (permit) releasePayAiCircuitPermitWithoutObservation(permit, Date.now());
+    throw err;
+  }
+}
+
+/** Execute a prepared attempt and update the provider-wide circuit exactly once. */
+export async function executeInboundCustodialAttempt(
+  attempt: PreparedInboundCustodialAttempt,
+): Promise<ExecutePreparedExactPaymentOutcome> {
+  try {
+    const outcome = await executePreparedExactPayment(attempt.prepared, {
+      skipPayAi: attempt.skipPayAi,
+    });
+    if (attempt.permit && outcome.payAi.attempted) {
+      if (outcome.payAi.providerFailure) {
+        recordPayAiCircuitFailure(attempt.permit, Date.now(), alertError);
+      } else {
+        recordPayAiCircuitAvailable(attempt.permit);
+      }
+    }
+    return outcome;
+  } finally {
+    if (attempt.permit) {
+      releasePayAiCircuitPermitWithoutObservation(attempt.permit, Date.now());
+    }
+  }
+}
+
+/** Release a prepared attempt that lost/never reached the durable DB claim. */
+export function releaseInboundCustodialAttempt(
+  attempt: PreparedInboundCustodialAttempt | null,
+): void {
+  if (attempt?.permit) {
+    releasePayAiCircuitPermitWithoutObservation(attempt.permit, Date.now());
+  }
+}
+
+export interface CapturedSettlementAccounting extends X402SettlementAmounts {
+  facilitator: 'payai' | 'meridian';
+}
+
+export function accountingMetadata(accounting: CapturedSettlementAccounting): Record<string, unknown> {
+  return {
+    facilitator: accounting.facilitator,
+    grossUsdcAtomic: accounting.grossUsdcAtomic.toString(),
+    platformFeeUsdcAtomic: accounting.platformFeeUsdcAtomic.toString(),
+    treasuryFeeUsdcAtomic: accounting.treasuryFeeUsdcAtomic.toString(),
+    netUsdcAtomic: accounting.netUsdcAtomic.toString(),
+  };
+}
+
+export function settlementAccountingFromMetadata(
+  meta: Record<string, unknown>,
+  grossUsdcAtomic: bigint,
+): CapturedSettlementAccounting {
+  const raw = meta.x402SettlementAccounting;
+  if (typeof raw !== 'object' || raw === null) {
+    return { facilitator: 'payai', ...legacySettlementAmounts(grossUsdcAtomic) };
+  }
+  const evidence = raw as Record<string, unknown>;
+  if (evidence.facilitator !== 'payai' && evidence.facilitator !== 'meridian') {
+    throw new Error('invalid captured x402 facilitator accounting');
+  }
+  const read = (name: string): bigint => {
+    const value = evidence[name];
+    if (typeof value !== 'string' || !/^\d+$/.test(value)) {
+      throw new Error(`invalid captured x402 ${name} accounting`);
+    }
+    return BigInt(value);
+  };
+  const accounting: CapturedSettlementAccounting = {
+    facilitator: evidence.facilitator,
+    grossUsdcAtomic: read('grossUsdcAtomic'),
+    platformFeeUsdcAtomic: read('platformFeeUsdcAtomic'),
+    treasuryFeeUsdcAtomic: read('treasuryFeeUsdcAtomic'),
+    netUsdcAtomic: read('netUsdcAtomic'),
+  };
+  assertSettlementAmountsConserved(accounting);
+  if (accounting.grossUsdcAtomic !== grossUsdcAtomic) {
+    throw new Error('captured x402 gross does not match the top-up row');
+  }
+  return accounting;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +419,8 @@ const settleSchema = z.object({
   // USDC-ONLY (see quoteSchema): reject `sol` until native-SOL settlement exists.
   asset: z.enum(['usdc']),
   usdCents: z.number().int().positive().max(1_000_000),
+  /** Explicit opt-in to spend the caller's bound custodial wallet server-side. */
+  custodial: z.literal(true).optional(),
 });
 
 /** Thrown inside the credit tx when the settling→settled flip matches no row (a
@@ -290,9 +478,6 @@ ctTopupRoutes.post('/settle', requireAuthOrAgentSession, requireNonGuestIdentity
   // 2) Payment header (PAYMENT-SIGNATURE preferred, X-PAYMENT fallback — same
   //    order @x402/hono reads). Missing ⇒ 402 (pay first).
   const paymentHeader = c.req.header('PAYMENT-SIGNATURE') ?? c.req.header('X-PAYMENT');
-  if (!paymentHeader) {
-    return c.json({ error: 'payment_header_required', code: 'payment_required' }, 402);
-  }
 
   let body: unknown;
   try {
@@ -307,11 +492,18 @@ ctTopupRoutes.post('/settle', requireAuthOrAgentSession, requireNonGuestIdentity
       400,
     );
   }
-  const { topupId, asset, usdCents } = parsed.data as {
+  const { topupId, asset, usdCents, custodial } = parsed.data as {
     topupId: string;
     asset: X402Asset;
     usdCents: number;
+    custodial?: true;
   };
+  if (paymentHeader && custodial) {
+    return c.json({ error: 'payment_mode_conflict', code: 'payment_mode_conflict' }, 400);
+  }
+  if (!paymentHeader && !custodial) {
+    return c.json({ error: 'payment_header_required', code: 'payment_required' }, 402);
+  }
 
   // SERIALIZE per-topupId (FIX-5, payer-loss). Without this, two concurrent
   // settles of the SAME topupId carrying DIFFERENT valid payments could BOTH pass
@@ -369,6 +561,45 @@ ctTopupRoutes.post('/settle', requireAuthOrAgentSession, requireNonGuestIdentity
     //    'settling' and never double-calls verify→settle. The claim stakes the
     //    idempotency key — a reuse on a DIFFERENT top-up 23505s to a clean
     //    conflict BEFORE any money moves.
+    // Explicit custodial preparation happens BEFORE the durable claim. It
+    // decrypts only this caller's bound avatar key and moves no money yet.
+    let custodialAttempt: PreparedInboundCustodialAttempt | null = null;
+    if (custodial) {
+      let payer: BoundAvatarCustodialPayer | null;
+      try {
+        payer = await loadBoundAvatarCustodialPayer(identity.avatarId);
+      } catch {
+        return c.json({ error: 'custodial_wallet_unavailable', code: 'custodial_wallet_unavailable' }, 503);
+      }
+      if (!payer) {
+        return c.json({ error: 'custodial_wallet_missing', code: 'custodial_wallet_missing' }, 409);
+      }
+      const custodialNetwork = (meta.network === 'mainnet' || meta.network === 'devnet'
+        ? meta.network
+        : resolveTopupNetwork()) as X402Network;
+      try {
+        custodialAttempt = await prepareInboundCustodialAttempt({
+          payerSecretKey: payer.secretKey,
+          payerPubkey: payer.publicKey,
+          payTo: config.merchantWalletPubkey,
+          amountBaseUnits: BigInt(usdCentsToUsdcAtomic(rowUsdCents)),
+          network: custodialNetwork,
+          rpcUrl: resolveTopupRpcUrl(custodialNetwork),
+          resource: {
+            url: `/api/ct/topup/${topupId}`,
+            description: `Buy ${row.amountCt} vCLAW ($${(rowUsdCents / 100).toFixed(2)} USDC)`,
+          },
+          purpose: 'clawville-ct-topup',
+          extra: { topupId, avatarId: identity.avatarId },
+        });
+      } catch {
+        return c.json({ error: 'payment_not_settled', code: 'payment_not_settled', transient: true }, 503);
+      }
+      if (!custodialAttempt) {
+        return c.json({ error: 'payment_not_settled', code: 'payment_not_settled', transient: true }, 503);
+      }
+    }
+
     const settlingId = randomUUID();
     let claimed: { id: string }[];
     try {
@@ -379,11 +610,14 @@ ctTopupRoutes.post('/settle', requireAuthOrAgentSession, requireNonGuestIdentity
         .returning({ id: ctTopups.id });
     } catch (err) {
       if ((err as { code?: string } | undefined)?.code === '23505') {
+        releaseInboundCustodialAttempt(custodialAttempt);
         return c.json({ error: 'idempotency_key_conflict', code: 'idempotency_key_conflict' }, 409);
       }
+      releaseInboundCustodialAttempt(custodialAttempt);
       throw err;
     }
     if (claimed.length === 0) {
+      releaseInboundCustodialAttempt(custodialAttempt);
       const reread = await db.query.ctTopups.findFirst({
         where: and(eq(ctTopups.id, topupId), eq(ctTopups.avatarId, identity.avatarId)),
       });
@@ -396,22 +630,89 @@ ctTopupRoutes.post('/settle', requireAuthOrAgentSession, requireNonGuestIdentity
     const network = (meta.network === 'mainnet' || meta.network === 'devnet'
       ? meta.network
       : resolveTopupNetwork()) as X402Network;
-    const settleFeePayer = await resolveFacilitatorFeePayer(network);
-    const quote = buildTopupQuote({
-      payTo: config.merchantWalletPubkey,
-      asset,
-      usdCents: rowUsdCents,
-      network,
-      feePayer: settleFeePayer ?? undefined,
-    });
-    const requirements = quote.accepts[0];
+    const settleFeePayer = custodial ? null : await resolveFacilitatorFeePayer(network);
+    const requirements = custodial
+      ? null
+      : buildTopupQuote({
+          payTo: config.merchantWalletPubkey,
+          asset,
+          usdCents: rowUsdCents,
+          network,
+          feePayer: settleFeePayer ?? undefined,
+        }).accepts[0];
 
     // 6) Verify → (only on valid) settle. MONEY MAY MOVE HERE. Failure
     //    classification is money-state-critical (Codex round-2 BLOCKING): a
     //    SETTLE-phase error is AMBIGUOUS (the /settle call was attempted and
     //    threw — it MAY have landed on-chain) and must NEVER release to pending;
     //    a VERIFY-phase error happened before /settle was ever called (no money).
-    const result = await verifyAndSettle({ paymentHeader, requirements });
+    let accounting: CapturedSettlementAccounting = {
+      facilitator: 'payai',
+      ...legacySettlementAmounts(BigInt(usdCentsToUsdcAtomic(rowUsdCents))),
+    };
+    const result = custodialAttempt
+      ? await (async () => {
+          let outcome: ExecutePreparedExactPaymentOutcome;
+          try {
+            outcome = await executeInboundCustodialAttempt(custodialAttempt);
+          } catch {
+            await markTopupReconcile(topupId, settlingId, 'custodial_execute_threw', null, null);
+            return null;
+          }
+          if (outcome.kind === 'settled') return outcome.result;
+          if (outcome.kind === 'meridian_settled') {
+            accounting = { facilitator: 'meridian', ...outcome.amounts };
+            return outcome.result;
+          }
+          if (
+            outcome.kind === 'ambiguous'
+            || (outcome.kind === 'meridian_failure' && outcome.ambiguous)
+          ) {
+            if (outcome.kind === 'meridian_failure') {
+              const meridianAmounts = custodialAttempt.prepared.meridian?.amounts;
+              if (meridianAmounts) {
+                accounting = { facilitator: 'meridian', ...meridianAmounts };
+              }
+            }
+            await markTopupReconcile(
+              topupId,
+              settlingId,
+              outcome.reason,
+              'signature' in outcome ? outcome.signature : null,
+              outcome.result,
+              { accounting },
+            );
+            return null;
+          }
+          if (
+            (outcome.kind === 'definitive_failure' && outcome.stage === 'verify')
+            || (outcome.kind === 'meridian_failure' && outcome.stage === 'verify')
+          ) {
+            await releaseTopupClaim(topupId, settlingId);
+            return null;
+          }
+          await db
+            .update(ctTopups)
+            .set({
+              status: 'failed',
+              settlingId: null,
+              settlingStartedAt: null,
+              metadata: { ...meta, failureReason: 'reason' in outcome ? outcome.reason : outcome.kind },
+            })
+            .where(and(eq(ctTopups.id, topupId), eq(ctTopups.status, 'settling'), eq(ctTopups.settlingId, settlingId)));
+          return null;
+        })()
+      : await verifyAndSettle({ paymentHeader: paymentHeader!, requirements: requirements! });
+    if (!result) {
+      const current = await db.query.ctTopups.findFirst({ where: eq(ctTopups.id, topupId) });
+      if (current?.status === 'reconcile') {
+        return c.json({ error: 'topup_reconciliation', code: 'topup_reconciliation', status: 'reconcile' }, 409);
+      }
+      return c.json(
+        { error: 'payment_not_settled', code: 'payment_not_settled', transient: current?.status === 'pending' },
+        402,
+      );
+    }
     if (!result.settled || !result.txSignature) {
       const reason = result.failureReason ?? 'unsettled';
       if (reason.startsWith('independent_chain_') && result.txSignature) {
@@ -469,6 +770,7 @@ ctTopupRoutes.post('/settle', requireAuthOrAgentSession, requireNonGuestIdentity
       usdCents: rowUsdCents,
       settlePayer: result.payer ?? undefined,
       settleNetwork: result.network ?? undefined,
+      x402SettlementAccounting: accountingMetadata(accounting),
     };
     let captured: { id: string }[];
     try {
@@ -495,6 +797,7 @@ ctTopupRoutes.post('/settle', requireAuthOrAgentSession, requireNonGuestIdentity
         );
         await markTopupReconcile(topupId, settlingId, 'signature_conflict', txSignature, result, {
           allowExistingReconcile: true,
+          accounting,
         });
         return c.json({ error: 'signature_conflict', code: 'signature_conflict', status: 'reconcile' }, 409);
       }
@@ -526,6 +829,7 @@ ctTopupRoutes.post('/settle', requireAuthOrAgentSession, requireNonGuestIdentity
       );
       await markTopupReconcile(topupId, settlingId, 'capture_lost', txSignature, result, {
         allowExistingReconcile: true,
+        accounting,
       });
       return c.json({ error: 'topup_reconciliation', code: 'topup_reconciliation', status: 'reconcile' }, 409);
     }
@@ -628,6 +932,10 @@ async function runTopupCredit(row: TopupRow, avatarId: string): Promise<TopupOut
       if (rowUsdCents === null) {
         throw new Error('captured top-up has no persisted usdCents');
       }
+      const capturedAccounting = settlementAccountingFromMetadata(
+        meta as Record<string, unknown>,
+        BigInt(usdCentsToUsdcAtomic(rowUsdCents)),
+      );
       const receipt = await claimX402Settlement({
         txSignature,
         rail: 'ct_topup',
@@ -635,6 +943,10 @@ async function runTopupCredit(row: TopupRow, avatarId: string): Promise<TopupOut
         referenceId: topupId,
         subjectId: avatarId,
         amountUsdcAtomic: BigInt(usdCentsToUsdcAtomic(rowUsdCents)),
+        grossUsdcAtomic: capturedAccounting.grossUsdcAtomic,
+        platformFeeUsdcAtomic: capturedAccounting.platformFeeUsdcAtomic,
+        treasuryFeeUsdcAtomic: capturedAccounting.treasuryFeeUsdcAtomic,
+        netUsdcAtomic: capturedAccounting.netUsdcAtomic,
       }, tx);
       if (receipt.kind === 'foreign_owner') {
         throw new TopupSignatureAlreadySettled();
@@ -758,9 +1070,16 @@ async function markTopupReconcile(
   reason: string,
   spentTxSignature: string | null,
   result: { payer?: string | null; network?: string | null } | null,
-  opts: { requireNullSignature?: boolean; allowExistingReconcile?: boolean } = {},
+  opts: {
+    requireNullSignature?: boolean;
+    allowExistingReconcile?: boolean;
+    accounting?: CapturedSettlementAccounting;
+  } = {},
 ): Promise<void> {
   const patch: Record<string, unknown> = { reconcileReason: reason };
+  if (opts.accounting) {
+    patch.x402SettlementAccounting = accountingMetadata(opts.accounting);
+  }
   // Chain-poll anchors for the reconciler (spent signature, or payer + amount +
   // window for the ambiguous/stale cases).
   if (result?.payer) patch.expectedPayer = result.payer;

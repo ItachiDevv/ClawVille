@@ -1,7 +1,7 @@
 import { WORLD_CENTER_PX } from './world-dimensions';
 import { KELP_FOREST_PORTAL_WORLD_CENTER } from './world-colliders-data';
 
-export const KELP_REALM_CELL_WU = 480;
+export const KELP_REALM_CELL_WU = 600;
 export const KELP_REALM_WALL_HEIGHT_WU = 420;
 export const KELP_REALM_PLAYER_SPEED_WU_PER_SEC = 430;
 export const KELP_REALM_BEACON_VISIT_RADIUS_WU = 72;

@@ -1,3 +1,9 @@
+import {
+  KELP_REALM_CELL_WU,
+  KELP_REALM_FOOTPRINT_WU,
+  MAP_LOCATIONS,
+  SHOP_BUILDINGS,
+} from '@clawville/shared';
 import { describe, expect, test } from 'bun:test';
 import {
   PROTOCOL_VERSION,
@@ -19,7 +25,7 @@ describe('open-agent onboarding manuals', () => {
     const manual = buildPlayManual(API_BASE);
     const protocolManual = buildProtocolManual(API_BASE);
 
-    expect(PROTOCOL_VERSION).toBe(35);
+    expect(PROTOCOL_VERSION).toBe(38);
     expect(manual).toContain(`POST ${API_BASE}/api/agent/connect`);
     expect(manual).toContain('"agentId": "your-stable-agent-id"');
     expect(manual).toContain('"identityType": "your-framework"');
@@ -41,7 +47,22 @@ describe('open-agent onboarding manuals', () => {
     expect(manual).toContain('/api/agent/:sessionId/pending-installs');
     expect(manual).toContain('/api/agent/:sessionId/owned-skills');
     expect(manual).toContain('/api/skills/:buildingId/claim');
+    expect(manual).toContain('## What ClawVille is: the world you are entering');
+    expect(manual).toContain('Cove card tables');
+    expect(manual).toContain('Own land');
+    expect(manual).toContain('Take quests');
+    expect(manual).toContain('Kelp Forest');
+    expect(manual).toContain('/api/skills/protocol/skill.md');
+    expect(manual).not.toContain('"connectionToken":');
+    expect(manual).not.toContain('This token expires in');
+    for (const buildingId of SHOP_BUILDINGS) {
+      const location = MAP_LOCATIONS.find(({ id }) => id === buildingId);
+      expect(location).toBeDefined();
+      expect(manual).toContain(`- ${location!.name} (\`${buildingId}\`)`);
+    }
     expect(protocolManual).toContain('/api/skills/:buildingId/claim');
+    expect(protocolManual).toContain('/api/skills/connect?token=…');
+    expect(protocolManual).not.toContain('/api/agent/connect-skill?token=');
     expect(protocolManual).toContain('"runtime" | "marker" | "already"');
     expect(protocolManual).toContain('partner read key alone cannot claim');
     expect(protocolManual).toContain('Acknowledge your install');
@@ -68,9 +89,15 @@ describe('open-agent onboarding manuals', () => {
     expect(protocolManual).toContain('array position is never a');
     expect(protocolManual).toContain('429');
     expect(protocolManual).toContain('30 minutes');
-    expect(protocolManual).toContain('zero CT/vCLAW');
+    expect(protocolManual).toContain('zero vCLAW and creates no faucet surface');
     expect(protocolManual).toContain('kelp-maze-collectible');
     expect(protocolManual).toContain('Unrevealed Depths Collectible');
+    expect(protocolManual).toContain(`${KELP_REALM_CELL_WU} wu`);
+    expect(protocolManual).toContain(`${KELP_REALM_FOOTPRINT_WU.toLocaleString('en-US')} wu`);
+    expect(protocolManual).toContain(`${KELP_REALM_CELL_WU / 300}x`);
+    expect(protocolManual).toContain('live `distanceWu`');
+    expect(protocolManual).toContain('`retryAfterMs` as authoritative');
+    expect(protocolManual).toContain('never reuse cached distances or timing');
     expect(protocolManual).toContain('center E/button');
     expect(protocolManual).not.toContain('Pearl of the Depths');
     for (const node of KELP_REALM_BEACON_GRAPH.nodes) {
@@ -86,11 +113,42 @@ describe('open-agent onboarding manuals', () => {
     expect(protocolManual).toContain('/api/activities/party/:partyId/leave');
     expect(protocolManual).toContain('/api/activities/:id/queue');
     expect(protocolManual).toContain('{ "partyId": "<party-id>" }');
+    expect(protocolManual).toContain('"code": "human_controlled"');
+    expect(protocolManual).toContain('"retryAfterSeconds": 15');
+    expect(protocolManual).toContain('poker_get_state');
+    expect(protocolManual).toContain('poker_advise');
+    expect(protocolManual).toContain('poker_connection');
     expect(manual).toContain('knowledge_added');
     expect(manual).not.toMatch(/\b(?:CT|ClawTokens?|casino|pet)\b/i);
   });
 
-  test('all served manuals share the protocol-35 universal connect contract', () => {
+  test('invited entry manual retains magic-link details within the full world manual', () => {
+    const manual = buildPlayManual(API_BASE, {
+      connectionToken: 'invited-test-token',
+      tokenExpiresInSeconds: 124.9,
+    });
+
+    expect(manual).toContain('"connectionToken": "invited-test-token",');
+    expect(manual).toContain('This token expires in 124 seconds.');
+    expect(manual).toContain('## What ClawVille is: the world you are entering');
+    expect(manual).toContain('Cove card tables');
+    expect(manual).toContain('Own land');
+    expect(manual).toContain('Take quests');
+    expect(manual).toContain('Kelp Forest');
+    expect(manual).toContain('/api/skills/protocol/skill.md');
+    expect(manual).toContain('## IMPORTANT: relay the magic link back to the human');
+    expect(manual).toContain('sessionTicket.url');
+    expect(manual).toContain('single-use, expires in 10 minutes');
+    expect(manual).toContain('privateKey: <identity.secretKey>');
+    expect(manual).toContain('needsHumanReauth:true');
+    expect(manual).toContain('address: <wallet.address>');
+    expect(manual).toContain('Do not store\n\`wallet.secretKey\` in your config');
+    expect(manual).toContain(`/api/agent/session-status?agentId=<your-agent-id>`);
+    expect(manual).toContain(`POST ${API_BASE}/api/agent/join`);
+    expect(manual).not.toMatch(/\b(?:CT|ClawTokens?|casino|pet)\b/i);
+  });
+
+  test('all served manuals share the universal connect contract', () => {
     const block = buildUniversalConnectBlock(API_BASE);
     const invited = buildUniversalConnectBlock(API_BASE, { connectionToken: 'ct-test' });
     const play = buildPlayManual(API_BASE);
@@ -104,7 +162,7 @@ describe('open-agent onboarding manuals', () => {
       'custom remains non-restorable',
     ];
 
-    expect(PROTOCOL_VERSION).toBe(35);
+    expect(PROTOCOL_VERSION).toBe(38);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');
@@ -112,7 +170,12 @@ describe('open-agent onboarding manuals', () => {
     for (const manual of [block, play, protocol, invited]) {
       expect(manual).toContain('Any bounded framework name is accepted; unknown names use');
       expect(manual).toContain('The response reports the effective cognition mode.');
-      expect(manual).toContain('returned once and are never repeated.');
+      expect(manual).toContain('Persist any first-time identity secret immediately in secure agent storage.');
+      expect(manual).toContain('`wallet.secretKey` appears');
+      expect(manual).toContain('relay it once to the human for their self-custody');
+      expect(manual).toContain('backup; do not store it in agent config.');
+      expect(manual).toContain('Both secrets are returned once and are');
+      expect(manual).toContain('never repeated.');
       for (const phrase of removedMatrixPhrases) expect(manual).not.toContain(phrase);
     }
     expect(block.split(hatcherSentence)).toHaveLength(2);

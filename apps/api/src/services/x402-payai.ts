@@ -19,8 +19,8 @@
  * USDC settlement (Phase D — partner payoutPubkey). We never sign or custody on
  * our side: the facilitator (PayAI in prod, the mock in tests) performs the
  * on-chain verify+settle; we only orchestrate the two HTTP calls through the
- * official `@x402/core` `HTTPFacilitatorClient` (permissive Apache-2.0 — we do
- * NOT import the Proprietary `@payai/*` SDK; the facilitator is plain HTTP).
+ * official `@x402/core` `HTTPFacilitatorClient`, with PayAI's official
+ * `@payai/facilitator` helper providing signed-JWT transport authentication.
  *
  * SAFETY CONTRACT (money path — every caller depends on these):
  *   1. `verifyAndSettle` NEVER throws on a facilitator 4xx/5xx or a malformed
@@ -35,6 +35,7 @@
  */
 
 import { HTTPFacilitatorClient } from '@x402/core/server';
+import { clearJwtCache, createPayAIAuthHeaders } from '@payai/facilitator';
 import type {
   PaymentPayload,
   PaymentRequirements,
@@ -44,7 +45,8 @@ import type {
 import { Connection } from '@solana/web3.js';
 import { z } from 'zod';
 import { decodeTransactionFromPayload, getTokenPayerFromTransaction } from '@x402/svm';
-import { loadX402Config } from './x402-config';
+import { isHostedPayAiFacilitatorUrl, loadX402Config } from './x402-config';
+import { isFacilitatorOutageError } from './x402-facilitator-selection';
 
 // ---------------------------------------------------------------------------
 // Network + asset constants (CAIP-2 + USDC SPL mints)
@@ -353,6 +355,26 @@ export interface VerifyAndSettleInput {
   expectedPayer?: string;
   /** Test seam only; production callers use the default independent RPC proof. */
   independentVerifier?: IndependentSettlementVerifier;
+  /**
+   * Optional behavior-neutral telemetry seam for callers that must distinguish
+   * provider outage from payment rejection. Callback failures are swallowed.
+   */
+  onFacilitatorError?: (
+    stage: 'verify' | 'settle',
+    error: unknown,
+  ) => void;
+}
+
+function reportFacilitatorError(
+  input: VerifyAndSettleInput,
+  stage: 'verify' | 'settle',
+  error: unknown,
+): void {
+  try {
+    input.onFacilitatorError?.(stage, error);
+  } catch {
+    // Observability must never alter the established never-throw contract.
+  }
 }
 
 export interface IndependentSettlementVerificationInput {
@@ -515,21 +537,119 @@ export interface VerifyAndSettleResult {
   payer: string | null;
   /** A short machine reason when NOT settled (for the route's clean 4xx body). */
   failureReason: string | null;
+  /**
+   * Internal availability signal for circuit breakers. Present only when the
+   * original facilitator error proves a provider-wide condition rather than a
+   * rejection of this payment.
+   */
+  facilitatorFailure?: 'unavailable';
   /** Raw verify/settle responses for logging — never surfaced to the agent. */
   raw: { verify?: VerifyResponse; settle?: SettleResponse };
 }
 
-/** Lazily-built facilitator client, memoized by resolved URL (so a URL change
- *  in tests / between presets rebuilds it). The HTTPFacilitatorClient is a thin
- *  HTTP wrapper — cheap to construct, but we avoid per-call allocation. */
-let _cachedClient: { url: string; client: HTTPFacilitatorClient } | null = null;
-function facilitatorClient(): HTTPFacilitatorClient {
-  const { facilitatorUrl } = loadX402Config();
+const FREE_TIER_EXHAUSTED_RE =
+  /(?:^|[^a-z0-9])free_tier_exhausted(?:[^a-z0-9]|$)/i;
+
+/**
+ * Provider-wide failures safe to count toward an outbound circuit breaker.
+ * Payment-specific 4xx rejections deliberately remain false.
+ */
+export function isFacilitatorLevelFailure(error: unknown): boolean {
+  if (isFacilitatorOutageError(error)) return true;
+  if (typeof error !== 'object' || error === null) return false;
+  const candidate = error as {
+    statusCode?: unknown;
+    invalidReason?: unknown;
+    errorReason?: unknown;
+  };
+  if (
+    typeof candidate.statusCode === 'number'
+    && candidate.statusCode >= 500
+    && candidate.statusCode <= 599
+  ) {
+    return true;
+  }
+  if (
+    candidate.invalidReason === 'free_tier_exhausted'
+    || candidate.errorReason === 'free_tier_exhausted'
+  ) {
+    return true;
+  }
+  if (error instanceof Error) {
+    const plainStatus =
+      /^Facilitator (?:verify|settle) failed \((\d{3})\):/.exec(error.message);
+    if (plainStatus) {
+      const status = Number(plainStatus[1]);
+      return status >= 500 && status <= 599;
+    }
+  }
+  return error instanceof Error && FREE_TIER_EXHAUSTED_RE.test(error.message);
+}
+
+/** Lazily-built facilitator client, memoized by resolved URL + non-secret auth
+ *  shape (so URL/auth env changes in tests rebuild it). The API key secret is
+ *  deliberately absent from the cache key and every diagnostic. */
+let _cachedClient: {
+  cacheKey: string;
+  apiKeyId: string;
+  /** Compared only in memory so secret rotation rebuilds; never logged or serialized. */
+  apiKeySecret: string;
+  client: HTTPFacilitatorClient;
+} | null = null;
+export function facilitatorClient(): HTTPFacilitatorClient {
+  const {
+    facilitatorUrl,
+    payaiApiKeyId,
+    payaiApiKeySecret,
+  } = loadX402Config();
   if (!facilitatorUrl) {
     throw new Error('[x402-payai] facilitator URL is empty — check X402_FACILITATOR_* env');
   }
-  if (!_cachedClient || _cachedClient.url !== facilitatorUrl) {
-    _cachedClient = { url: facilitatorUrl, client: new HTTPFacilitatorClient({ url: facilitatorUrl }) };
+
+  const hasAuth = payaiApiKeyId.length > 0 && payaiApiKeySecret.length > 0;
+  const cacheKey = JSON.stringify({
+    facilitatorUrl,
+    hasAuth,
+    apiKeyId: payaiApiKeyId,
+  });
+  if (
+    !_cachedClient
+    || _cachedClient.cacheKey !== cacheKey
+    || _cachedClient.apiKeySecret !== payaiApiKeySecret
+  ) {
+    if (!hasAuth) {
+      // Preserve the historical anonymous constructor exactly when auth is unset.
+      _cachedClient = {
+        cacheKey,
+        apiKeyId: payaiApiKeyId,
+        apiKeySecret: payaiApiKeySecret,
+        client: new HTTPFacilitatorClient({ url: facilitatorUrl }),
+      };
+    } else {
+      // The package cache is keyed only by key ID. Clear on every authenticated
+      // rebuild so returning to an earlier ID with a rotated secret cannot reuse
+      // a JWT signed by that ID's previous secret.
+      clearJwtCache(payaiApiKeyId);
+
+      console.info(
+        `[x402-payai] facilitator auth enabled (PayAI JWT, keyId=${payaiApiKeyId})`,
+      );
+      if (!isHostedPayAiFacilitatorUrl(facilitatorUrl)) {
+        console.warn(
+          '[x402-payai] facilitator auth is being sent to a non-PayAI facilitator URL',
+        );
+      }
+
+      _cachedClient = {
+        cacheKey,
+        apiKeyId: payaiApiKeyId,
+        apiKeySecret: payaiApiKeySecret,
+        client: new HTTPFacilitatorClient({
+          url: facilitatorUrl,
+          createAuthHeaders: createPayAIAuthHeaders(payaiApiKeyId, payaiApiKeySecret),
+        }),
+      };
+    }
   }
   return _cachedClient.client;
 }
@@ -609,15 +729,31 @@ export async function verifyAndSettle(
     verify = await client.verify(payload, requirements);
   } catch (err) {
     // Facilitator 4xx/5xx or network error during verify. Clean fail — NO settle.
+    reportFacilitatorError(input, 'verify', err);
     console.warn('[x402-payai] verify threw (treated as invalid):', (err as Error).message);
-    return failed('facilitator_verify_error');
+    return failed('facilitator_verify_error', {
+      ...(isFacilitatorLevelFailure(err)
+        ? { facilitatorFailure: 'unavailable' as const }
+        : {}),
+    });
   }
 
   if (!verify || verify.isValid !== true) {
+    const facilitatorFailure = isFacilitatorLevelFailure(verify);
+    if (facilitatorFailure) {
+      // The official client can return a schema-valid provider rejection
+      // instead of throwing (notably free_tier_exhausted). Feed the exact same
+      // classifier/observation seam used for thrown failures so fallback and
+      // circuit-breaker policy cannot diverge by response shape.
+      reportFacilitatorError(input, 'verify', verify);
+    }
     return failed(verify?.invalidReason ?? 'payment_invalid', {
       isValid: false,
       payer: verify?.payer ?? null,
       raw: { verify },
+      ...(facilitatorFailure
+        ? { facilitatorFailure: 'unavailable' as const }
+        : {}),
     });
   }
 
@@ -639,11 +775,15 @@ export async function verifyAndSettle(
     settle = await client.settle(payload, requirements);
   } catch (err) {
     // Verify passed but settle errored — NOT settled, no signature ⇒ no credit.
+    reportFacilitatorError(input, 'settle', err);
     console.warn('[x402-payai] settle threw (treated as unsettled):', (err as Error).message);
     return failed('facilitator_settle_error', {
       isValid: true,
       payer: verify.payer ?? null,
       raw: { verify },
+      ...(isFacilitatorLevelFailure(err)
+        ? { facilitatorFailure: 'unavailable' as const }
+        : {}),
     });
   }
 
@@ -653,6 +793,10 @@ export async function verifyAndSettle(
       : null;
 
   if (settle?.success !== true || !txSignature) {
+    const facilitatorFailure = isFacilitatorLevelFailure(settle);
+    if (facilitatorFailure) {
+      reportFacilitatorError(input, 'settle', settle);
+    }
     // Facilitator reported a settlement failure OR an empty signature. The
     // empty-signature guard matters: the route's double-credit guard keys on
     // the signature, so a blank one must NEVER be allowed to credit.
@@ -661,6 +805,9 @@ export async function verifyAndSettle(
       payer: settle?.payer ?? verify.payer ?? null,
       network: settle?.network ?? null,
       raw: { verify, settle },
+      ...(facilitatorFailure
+        ? { facilitatorFailure: 'unavailable' as const }
+        : {}),
     });
   }
 
@@ -785,7 +932,9 @@ export async function settlePartnerPurchase(
   return verifyAndSettle({
     paymentHeader: input.paymentHeader,
     requirements: input.requirements,
+    verifyOnly: input.verifyOnly,
     expectedPayer: input.expectedPayer,
     independentVerifier: input.independentVerifier,
+    onFacilitatorError: input.onFacilitatorError,
   });
 }

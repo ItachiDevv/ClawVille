@@ -80,6 +80,7 @@ import { moonpayRoutes } from './routes/moonpay';
 // fulfillers (cosmetic-purchase + rent-prepay + marketplace-purchase register
 // themselves) — the registry is populated before any request runs.
 import { x402CheckoutRoutes } from './routes/x402-checkout';
+import { x402StatsRoutes } from './routes/x402-stats';
 // Tokenomics C4 (2026-07-07): P2P marketplace v1 — list/browse/cancel with the
 // CLV seller license + deed escrow-lock. SETTLEMENT flag-gated OFF
 // (MARKETPLACE_SETTLE_ENABLED); the buyer path is the x402 checkout above.
@@ -371,6 +372,8 @@ app.route('/api/moonpay', moonpayRoutes);
 // sessions 403). GATED like ct-topup: 503 until the merchant wallet is set;
 // devnet-first. See routes/x402-checkout.ts + services/x402-checkout.ts.
 app.route('/api/x402/checkout', x402CheckoutRoutes);
+// Public read-only total volume over x402_settlement_receipts; cached for 60s.
+app.route('/api/x402/stats', x402StatsRoutes);
 // Tokenomics C4 (2026-07-07) — P2P marketplace v1: sellers list (CLV Resident
 // license ≥ 50k uiAmount, fail-soft REFUSE; land_deed only — earned_bundle
 // refused; deed escrow-locked in market_deed_locks), buyers settle via the
@@ -817,6 +820,29 @@ process.on('uncaughtException', (err) => {
     startAgentPayResumeWorker();
   } catch (err) {
     console.error('[API] Agent-pay resume worker failed to start:', err);
+  }
+
+  // Automatic SAP identity registration/Metaplex attachment. The worker
+  // self-gates on SAP_ENABLED + SAP_IDENTITY_AUTOREG_ENABLED and resumes its
+  // durable DB state after restarts; starting it while dark is a safe no-op.
+  try {
+    const { startSapIdentityRegistrarWorker } = await import(
+      './services/sap/sap-identity-registrar'
+    );
+    startSapIdentityRegistrarWorker();
+  } catch (err) {
+    console.error('[API] SAP identity registrar worker failed to start:', err);
+  }
+
+  // Verified composed-bounty completion -> house-signed SAP reputation. The
+  // durable worker self-gates on SAP_ENABLED + SAP_REPUTATION_WRITES_ENABLED.
+  try {
+    const { startSapReputationWriter } = await import(
+      './services/sap/sap-reputation-writer'
+    );
+    startSapReputationWriter();
+  } catch (err) {
+    console.error('[API] SAP reputation writer failed to start:', err);
   }
 
   // P0 lifecycle-truth — NO eager boot-rehydration. v7 already survives a restart
@@ -1594,6 +1620,22 @@ async function gracefulShutdown(signal: string) {
       stopAgentPayResumeWorker();
     } catch {
       // If the resume worker module failed to load earlier, there's nothing to stop.
+    }
+    try {
+      const { stopSapIdentityRegistrarWorker } = await import(
+        './services/sap/sap-identity-registrar'
+      );
+      stopSapIdentityRegistrarWorker();
+    } catch {
+      // If the registrar module failed to load earlier, there's nothing to stop.
+    }
+    try {
+      const { stopSapReputationWriter } = await import(
+        './services/sap/sap-reputation-writer'
+      );
+      stopSapReputationWriter();
+    } catch {
+      // If the writer module failed to load earlier, there's nothing to stop.
     }
     try {
       const { stopWagerIntentReconciler } = await import(

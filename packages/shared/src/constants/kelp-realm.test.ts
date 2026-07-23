@@ -55,9 +55,9 @@ describe('Kelp Forest realm layout invariants', () => {
   test('is a 21x21 origin-centered maze with one outer entry gap', () => {
     expect(KELP_REALM_ROWS).toBe(21);
     expect(KELP_REALM_COLS).toBe(21);
-    expect(KELP_REALM_CELL_WU).toBe(480);
+    expect(KELP_REALM_CELL_WU).toBe(600);
     expect(KELP_REALM_FOOTPRINT_WU).toBe(KELP_REALM_COLS * KELP_REALM_CELL_WU);
-    expect(KELP_REALM_FOOTPRINT_WU).toBe(10_080);
+    expect(KELP_REALM_FOOTPRINT_WU).toBe(12_600);
     expect(KELP_REALM_WALL_AABBS).toHaveLength(278);
     expect(KELP_REALM_LAYOUT.every((row) => row.length === KELP_REALM_COLS)).toBe(true);
     expect(KELP_REALM_LAYOUT.flatMap((row) => [...row]).filter((cell) => cell === 'E')).toHaveLength(1);
@@ -78,7 +78,7 @@ describe('Kelp Forest realm layout invariants', () => {
 
   test('keeps at least 60wu visible between opposing 100wu sways', () => {
     expect(KELP_REALM_CORRIDOR_WIDTH_WU).toBe(KELP_REALM_CELL_WU);
-    expect(KELP_REALM_CORRIDOR_WIDTH_WU).toBe(480);
+    expect(KELP_REALM_CORRIDOR_WIDTH_WU).toBe(600);
     expect(KELP_REALM_WALL_HEIGHT_WU).toBe(420);
     expect(KELP_REALM_WALL_ROOT_SETBACK_WU).toBe(96);
     expect(KELP_REALM_ONE_SIDED_SWAY_WU).toBe(100);
@@ -97,8 +97,8 @@ describe('Kelp Forest realm layout invariants', () => {
     expect(
       KELP_REALM_CORRIDOR_WIDTH_WU - KELP_REALM_MAX_CORRIDOR_INTRUSION_WU * 2,
     ).toBeGreaterThanOrEqual(60);
-    expect(KELP_REALM_VISIBLE_CORRIDOR_MIN_WU).toBeCloseTo(395.580, 3);
-    expect(KELP_REALM_LAYOUT_INVARIANTS.visibleCorridorMinWu).toBeCloseTo(395.580, 3);
+    expect(KELP_REALM_VISIBLE_CORRIDOR_MIN_WU).toBeCloseTo(515.580, 3);
+    expect(KELP_REALM_LAYOUT_INVARIANTS.visibleCorridorMinWu).toBeCloseTo(515.580, 3);
   });
 
   test('shares the real movement speed, proximity radius, and entry spawn with the server', () => {
