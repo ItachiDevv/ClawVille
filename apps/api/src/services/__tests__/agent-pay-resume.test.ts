@@ -49,6 +49,7 @@ function payment(overrides: Partial<AgentPayment> = {}): AgentPayment {
     earnedLedgerId: null,
     fulfilledAt: null,
     failureReason: null,
+    capExempt: null,
     metadata: {},
     createdAt: now,
     updatedAt: now,

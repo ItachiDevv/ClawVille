@@ -60,12 +60,31 @@ function failedOutcome(): ExecutePreparedExactPaymentOutcome {
     kind: 'definitive_failure',
     stage: 'verify',
     verifyPassed: false,
+    noBroadcast: true,
     payAi: { attempted: true, providerFailure: false },
     reason: 'insufficient_funds',
     payer: SENDER_WALLET,
     result: {
       settled: false, isValid: false, txSignature: null, network: null,
       payer: SENDER_WALLET, failureReason: 'insufficient_funds', raw: {},
+    },
+  };
+}
+
+function settleRejectedOutcome(): ExecutePreparedExactPaymentOutcome {
+  return {
+    kind: 'definitive_failure',
+    stage: 'settle',
+    verifyPassed: true,
+    noBroadcast: true,
+    payAi: { attempted: true, providerFailure: true },
+    reason: 'facilitator_settle_error',
+    payer: SENDER_WALLET,
+    result: {
+      settled: false, isValid: true, txSignature: null, network: null,
+      payer: SENDER_WALLET, failureReason: 'facilitator_settle_error', raw: {},
+      noBroadcast: true,
+      facilitatorFailure: 'unavailable',
     },
   };
 }
@@ -85,11 +104,25 @@ function ambiguousOutcome(): ExecutePreparedExactPaymentOutcome {
   };
 }
 
+function verifyOnlyOutcome(): ExecutePreparedExactPaymentOutcome {
+  return {
+    kind: 'verify_only',
+    payer: SENDER_WALLET,
+    payAi: { attempted: true, providerFailure: false },
+    result: {
+      settled: false, isValid: true, txSignature: null, network: null,
+      payer: SENDER_WALLET, failureReason: 'verify_only_mode', raw: {},
+      noBroadcast: true,
+    },
+  };
+}
+
 function unavailableOutcome(): ExecutePreparedExactPaymentOutcome {
   return {
     kind: 'definitive_failure',
     stage: 'verify',
     verifyPassed: false,
+    noBroadcast: true,
     facilitatorOutage: true,
     payAi: { attempted: true, providerFailure: true },
     reason: 'facilitator_verify_error',
@@ -173,6 +206,7 @@ function harness(options: {
       txSignature: null, reconcileTxSignature: null, settlePayer: null,
       earnedVclaw: 0, earnedUsdBasis: null, earnedLedgerId: null,
       fulfilledAt: null, failureReason: null, createdAt: now, updatedAt: now,
+      capExempt: null,
       metadata: {},
       ...overrides,
     } as AgentPayment;
@@ -209,7 +243,9 @@ function harness(options: {
       );
       if (prior) return { kind: 'existing', row: prior };
       const counted = [...rows.values()].filter(
-        (row) => row.status !== 'failed' && row.createdAt >= dayStart,
+        (row) => ['pending', 'settling', 'settled', 'reconcile'].includes(row.status)
+          && row.capExempt !== true
+          && row.createdAt >= dayStart,
       );
       const sent = counted
         .filter((row) => row.senderAvatarId === input.senderAvatarId)
@@ -250,16 +286,32 @@ function harness(options: {
       if (options.captureReturnsLostAfterWriting) return 'lost';
       return 'captured';
     },
-    async markFailed(id, settlingId, reason) {
+    async markFailed(id, settlingId, reason, capExempt) {
       const row = rows.get(id);
-      if (row?.settlingId === settlingId) Object.assign(row, { status: 'failed', failureReason: reason, settlingId: null });
+      if (row?.settlingId === settlingId) {
+        Object.assign(row, {
+          status: 'failed',
+          failureReason: reason,
+          settlingId: null,
+          ...(capExempt ? { capExempt: true } : {}),
+        });
+      }
     },
-    async markReconcile(id, settlingId, reason, signature = null) {
+    async markReconcile(
+      id,
+      settlingId,
+      reason,
+      signature = null,
+      _expectedTxSignature,
+      _accounting,
+      capExempt,
+    ) {
       const row = rows.get(id);
       if (row && (!settlingId || row.settlingId === settlingId)) {
         Object.assign(row, {
           status: 'reconcile', failureReason: reason, reconcileTxSignature: signature,
           settlingId: null,
+          ...(capExempt ? { capExempt: true } : {}),
         });
       }
     },
@@ -434,6 +486,36 @@ describe('agent-pay durable x402 machine', () => {
     const h = harness({ outcome: failedOutcome() });
     const result = await payAgent(request(), h.deps);
     expect(result).toMatchObject({ ok: false, code: 'payment_failed', status: 'failed' });
+    expect([...h.rows.values()][0]).toMatchObject({
+      status: 'failed',
+      capExempt: true,
+    });
+    expect(h.mintCalls()).toBe(0);
+  });
+
+  it('persists a definitive settle rejection as cap-exempt and replays without execution', async () => {
+    const h = harness({ outcome: settleRejectedOutcome() });
+    const first = await payAgent(request(), h.deps);
+    const replay = await payAgent(request(), h.deps);
+
+    expect(first).toMatchObject({
+      ok: false,
+      code: 'payment_failed',
+      status: 'failed',
+      detail: 'facilitator_settle_error',
+    });
+    expect(replay).toMatchObject({
+      ok: false,
+      code: 'payment_failed',
+      status: 'failed',
+      detail: 'settle:facilitator_settle_error',
+    });
+    expect([...h.rows.values()][0]).toMatchObject({
+      status: 'failed',
+      failureReason: 'settle:facilitator_settle_error',
+      capExempt: true,
+    });
+    expect(h.executeCalls()).toBe(1);
     expect(h.mintCalls()).toBe(0);
   });
 
@@ -441,7 +523,27 @@ describe('agent-pay durable x402 machine', () => {
     const h = harness({ outcome: ambiguousOutcome() });
     const result = await payAgent(request(), h.deps);
     expect(result).toMatchObject({ ok: false, code: 'payment_reconcile', status: 'reconcile' });
+    expect([...h.rows.values()][0]).toMatchObject({
+      status: 'reconcile',
+      capExempt: null,
+    });
     expect(h.mintCalls()).toBe(0);
+  });
+
+  it('marks an unexpected verify-only reconcile as cap-exempt', async () => {
+    const h = harness({ outcome: verifyOnlyOutcome() });
+    const result = await payAgent(request(), h.deps);
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'payment_reconcile',
+      status: 'reconcile',
+      detail: 'unexpected_verify_only',
+    });
+    expect([...h.rows.values()][0]).toMatchObject({
+      status: 'reconcile',
+      failureReason: 'unexpected_verify_only',
+      capExempt: true,
+    });
   });
 
   it('a thrown post-claim facilitator call becomes reconcile and never retries', async () => {
@@ -565,6 +667,113 @@ describe('agent-pay durable x402 machine', () => {
 
     expect(result).toMatchObject({ ok: true, usdCents: 100 });
     expect(h.rows.size).toBe(2);
+  });
+
+  it('excludes a durable cap-exempt reconcile row from daily usage', async () => {
+    const h = harness({ now: new Date('2026-07-21T12:00:00.000Z') });
+    h.seedRow({
+      status: 'reconcile',
+      failureReason: 'facilitator_settle_error',
+      capExempt: true,
+      usdCents: 2_000,
+      idempotencyKey: 'proven-no-broadcast',
+    });
+
+    const result = await payAgent(request({ idempotencyKey: 'after-exempt' }), h.deps);
+
+    expect(result).toMatchObject({ ok: true, usdCents: 100 });
+    expect(h.rows.size).toBe(2);
+  });
+
+  it('counts an ambiguous reconcile row even when its failure reason matches an exempt row', async () => {
+    process.env.AGENT_PAY_DAILY_SEND_USD_CENTS = '100';
+    const h = harness({ now: new Date('2026-07-21T12:00:00.000Z') });
+    h.seedRow({
+      status: 'reconcile',
+      failureReason: 'facilitator_settle_error',
+      capExempt: null,
+      usdCents: 100,
+      idempotencyKey: 'ambiguous-same-reason',
+    });
+
+    const result = await payAgent(request({
+      usdCents: 1,
+      idempotencyKey: 'after-ambiguous',
+    }), h.deps);
+
+    expect(result).toEqual({
+      ok: false,
+      code: 'daily_cap_exceeded',
+      detail: { cap: 100, usedTodayUsdCents: 100 },
+    });
+  });
+
+  it('counts pending, settling, and settled rows toward daily usage', async () => {
+    process.env.AGENT_PAY_DAILY_SEND_USD_CENTS = '100';
+    for (const status of ['pending', 'settling', 'settled'] as const) {
+      const h = harness({ now: new Date('2026-07-21T12:00:00.000Z') });
+      h.seedRow({
+        status,
+        capExempt: null,
+        usdCents: 100,
+        idempotencyKey: `counted-${status}`,
+      });
+
+      const result = await payAgent(request({
+        usdCents: 1,
+        idempotencyKey: `after-${status}`,
+      }), h.deps);
+
+      expect(result).toEqual({
+        ok: false,
+        code: 'daily_cap_exceeded',
+        detail: { cap: 100, usedTodayUsdCents: 100 },
+      });
+    }
+  });
+
+  it('does not let 5,295 proven no-broadcast reconciles consume the daily cap', async () => {
+    const h = harness({ now: new Date('2026-07-21T12:00:00.000Z') });
+    for (let i = 0; i < 5_295; i += 1) {
+      h.seedRow({
+        status: 'reconcile',
+        failureReason: 'facilitator_settle_error',
+        capExempt: true,
+        usdCents: 100,
+        idempotencyKey: `free-tier-refusal-${i}`,
+      });
+    }
+
+    const result = await payAgent(request({
+      idempotencyKey: 'after-free-tier-storm',
+    }), h.deps);
+
+    expect(result).toMatchObject({ ok: true, usdCents: 100 });
+    expect(h.rows.size).toBe(5_296);
+  });
+
+  it('replays an existing cap-exempt reconcile without re-running admission', async () => {
+    const h = harness({ now: new Date('2026-07-21T12:00:00.000Z') });
+    h.seedRow({
+      status: 'reconcile',
+      failureReason: 'facilitator_settle_error',
+      capExempt: true,
+      idempotencyKey: 'pay-1',
+    });
+    h.seedRow({
+      usdCents: 2_000,
+      idempotencyKey: 'sender-at-cap-behind-replay',
+    });
+
+    const result = await payAgent(request(), h.deps);
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'payment_reconcile',
+      status: 'reconcile',
+    });
+    expect(h.admissionCalls()).toBe(0);
+    expect(h.executeCalls()).toBe(0);
   });
 
   it('does not count payments created before the current UTC day', async () => {

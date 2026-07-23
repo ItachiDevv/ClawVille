@@ -181,6 +181,24 @@ export function buildMockFacilitator(opts: MockFacilitatorOptions = {}): Hono {
       say(`POST /settle → HTTP 400 (forced) network=${network}`);
       return c.json({ error: 'mock_forced_settlement_client_error' }, 400);
     }
+    if (
+      directive === 'settle-rejected-structured'
+      || directive === 'settle-rejected-with-signature'
+    ) {
+      const transaction =
+        directive === 'settle-rejected-with-signature'
+          ? 'MockObservedSignature111111111111111111111111111111111111111111'
+          : '';
+      say(`POST /settle → structured HTTP 402 rejection network=${network}`);
+      return c.json({
+        success: false,
+        errorReason: 'free_tier_exhausted',
+        errorMessage: 'Mock facilitator quota exhausted.',
+        payer,
+        transaction,
+        network,
+      }, 402);
+    }
     if (directive === 'settle-error') {
       say(`POST /settle → HTTP 500 (forced) network=${network}`);
       return c.json({ error: 'mock_forced_settlement_error' }, 500);

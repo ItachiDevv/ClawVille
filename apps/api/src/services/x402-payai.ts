@@ -35,6 +35,7 @@
  */
 
 import { HTTPFacilitatorClient } from '@x402/core/server';
+import { SettleError } from '@x402/core/types';
 import { clearJwtCache, createPayAIAuthHeaders } from '@payai/facilitator';
 import type {
   PaymentPayload,
@@ -537,6 +538,8 @@ export interface VerifyAndSettleResult {
   payer: string | null;
   /** A short machine reason when NOT settled (for the route's clean 4xx body). */
   failureReason: string | null;
+  /** Present only when the payment is proven never to have been broadcast. */
+  noBroadcast?: true;
   /**
    * Internal availability signal for circuit breakers. Present only when the
    * original facilitator error proves a provider-wide condition rather than a
@@ -705,7 +708,7 @@ export async function verifyAndSettle(
 
   const payload = decodePaymentHeader(paymentHeader);
   if (!payload) {
-    return failed('malformed_payment_header');
+    return failed('malformed_payment_header', { noBroadcast: true });
   }
 
   // Build the facilitator client INSIDE the never-throw contract. `facilitatorClient()`
@@ -720,7 +723,7 @@ export async function verifyAndSettle(
     client = facilitatorClient();
   } catch (err) {
     console.warn('[x402-payai] facilitatorClient() threw (config error, treated as fail):', (err as Error).message);
-    return failed('facilitator_config_error');
+    return failed('facilitator_config_error', { noBroadcast: true });
   }
 
   // --- 1) verify -----------------------------------------------------------
@@ -732,6 +735,7 @@ export async function verifyAndSettle(
     reportFacilitatorError(input, 'verify', err);
     console.warn('[x402-payai] verify threw (treated as invalid):', (err as Error).message);
     return failed('facilitator_verify_error', {
+      noBroadcast: true,
       ...(isFacilitatorLevelFailure(err)
         ? { facilitatorFailure: 'unavailable' as const }
         : {}),
@@ -751,6 +755,7 @@ export async function verifyAndSettle(
       isValid: false,
       payer: verify?.payer ?? null,
       raw: { verify },
+      noBroadcast: true,
       ...(facilitatorFailure
         ? { facilitatorFailure: 'unavailable' as const }
         : {}),
@@ -766,6 +771,7 @@ export async function verifyAndSettle(
       isValid: true,
       payer: verify.payer ?? null,
       raw: { verify },
+      noBroadcast: true,
     });
   }
 
@@ -774,13 +780,24 @@ export async function verifyAndSettle(
   try {
     settle = await client.settle(payload, requirements);
   } catch (err) {
-    // Verify passed but settle errored — NOT settled, no signature ⇒ no credit.
+    // A typed SettleError proves the facilitator returned an explicit rejection.
+    // Transport/generic errors remain ambiguous because /settle may have reached
+    // the facilitator. Even a typed rejection stays ambiguous when it carries a
+    // transaction signature.
+    const rejected = err instanceof SettleError;
+    const txSignature =
+      rejected && typeof err.transaction === 'string' && err.transaction.length > 0
+        ? err.transaction
+        : null;
     reportFacilitatorError(input, 'settle', err);
     console.warn('[x402-payai] settle threw (treated as unsettled):', (err as Error).message);
     return failed('facilitator_settle_error', {
       isValid: true,
-      payer: verify.payer ?? null,
+      txSignature,
+      network: rejected ? err.network ?? null : null,
+      payer: rejected ? err.payer ?? verify.payer ?? null : verify.payer ?? null,
       raw: { verify },
+      ...(rejected && txSignature === null ? { noBroadcast: true as const } : {}),
       ...(isFacilitatorLevelFailure(err)
         ? { facilitatorFailure: 'unavailable' as const }
         : {}),
@@ -802,9 +819,13 @@ export async function verifyAndSettle(
     // the signature, so a blank one must NEVER be allowed to credit.
     return failed(settle?.errorReason ?? 'settlement_failed', {
       isValid: true,
+      txSignature,
       payer: settle?.payer ?? verify.payer ?? null,
       network: settle?.network ?? null,
       raw: { verify, settle },
+      ...(settle?.success === false && txSignature === null
+        ? { noBroadcast: true as const }
+        : {}),
       ...(facilitatorFailure
         ? { facilitatorFailure: 'unavailable' as const }
         : {}),
