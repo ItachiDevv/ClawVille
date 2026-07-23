@@ -34,6 +34,9 @@ import { useAvatar } from '@/hooks/use-avatar';
 import { useActivityStore } from '@/stores/activity';
 import { useQuestStore, triggerQuestCheck } from '@/stores/quest';
 import { playActivitySound } from '@/lib/activity-audio';
+import StaleClientVersionBanner, {
+  useStaleClientVersionCheck,
+} from '@/components/game/stale-client-version-banner';
 import { TOTAL_CHECKPOINTS_PER_RACE } from '@clawville/shared';
 
 // ─── API types (mirror of `GET /api/activities/:id/rooms/:roomId/results`) ──
@@ -234,6 +237,7 @@ export default function ActivityResultsModal({
   const [skipped, setSkipped] = useState(false);
   const phases = useRevealPhases(reduced, skipped);
   const sounds = useRevealSounds(reduced);
+  const staleClient = useStaleClientVersionCheck(roomId);
 
   // Avatar info for portrait
   const { data: avatar } = useAvatar();
@@ -602,6 +606,8 @@ export default function ActivityResultsModal({
         >
           {phases.ctas ? 'ESC TO LEAVE' : 'TAP/ESC TO SKIP'}
         </button>
+
+        <StaleClientVersionBanner stale={staleClient.stale} autoReload />
 
         {/* PHASE 1 — Placement banner */}
         <div
