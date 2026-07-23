@@ -48,23 +48,41 @@ export function serializeAgentBrowserEval(js: string): string {
 }
 
 function parseAgentBrowserValue<T>(stdout: string): T {
-  const parsed = JSON.parse(stdout) as AgentBrowserJson | unknown;
-  if (parsed && typeof parsed === 'object' && 'success' in parsed) {
-    const envelope = parsed as AgentBrowserJson;
-    if (envelope.success === false) {
-      throw new Error(envelope.error ?? 'agent-browser command failed');
-    }
-    const value = envelope.data ?? envelope.result;
-    if (typeof value === 'string') {
+  // agent-browser responses can nest: a {success, data|result} daemon envelope
+  // whose payload is the stringified {lifecycle, origin, result} eval envelope,
+  // whose `result` is the JSON.stringify'd eval value. A leaked envelope
+  // poisons every consumer (truthy waits pass vacuously; snapshot reads
+  // compare envelope fields), so unwrap until a plain value remains.
+  let value: unknown = JSON.parse(stdout);
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (value && typeof value === 'object' && 'success' in value) {
+      const envelope = value as AgentBrowserJson;
+      if (envelope.success === false) {
+        throw new Error(envelope.error ?? 'agent-browser command failed');
+      }
+      value = envelope.data ?? envelope.result;
+    } else if (
+      value && typeof value === 'object'
+      && 'result' in value && 'lifecycle' in value
+    ) {
+      value = (value as { result: unknown }).result;
+    } else if (typeof value === 'string') {
       try {
-        return JSON.parse(value) as T;
+        const reparsed: unknown = JSON.parse(value);
+        if (reparsed && typeof reparsed === 'object'
+          && ('success' in reparsed || ('result' in reparsed && 'lifecycle' in reparsed))) {
+          value = reparsed;
+          continue;
+        }
+        return reparsed as T;
       } catch {
         return value as T;
       }
+    } else {
+      break;
     }
-    return value as T;
   }
-  return parsed as T;
+  return value as T;
 }
 
 export class AgentBrowserDriver implements Driver {
@@ -79,7 +97,7 @@ export class AgentBrowserDriver implements Driver {
     this.statePath = statePath;
   }
 
-  private async run(args: readonly string[], json = false): Promise<string> {
+  private async run(args: readonly string[], json = false, timeoutMs = 90_000): Promise<string> {
     const command = agentBrowserExecutable();
     const commandArgs = [
       '--session',
@@ -100,16 +118,31 @@ export class AgentBrowserDriver implements Driver {
       });
       let stdout = '';
       let stderr = '';
+      // A wedged agent-browser daemon can leave a CLI call hanging forever,
+      // which silently freezes the whole runner; bound every call.
+      const killTimer = setTimeout(() => {
+        proc.kill();
+        reject(new Error(
+          `agent-browser call timed out after ${Math.round(timeoutMs / 1000)}s: ${commandArgs.filter((a) => !a.startsWith('{')).join(' ').slice(0, 160)}`,
+        ));
+      }, timeoutMs);
       proc.stdout.setEncoding('utf8');
       proc.stderr.setEncoding('utf8');
       proc.stdout.on('data', (chunk: string) => { stdout += chunk; });
       proc.stderr.on('data', (chunk: string) => { stderr += chunk; });
-      proc.once('error', reject);
-      proc.once('close', (code) => resolveResult({
-        stdout,
-        stderr,
-        exitCode: code ?? 1,
-      }));
+      proc.once('error', (error) => { clearTimeout(killTimer); reject(error); });
+      // Resolve on 'exit', NOT 'close': the first open per daemon spawns a
+      // browser/daemon grandchild that inherits the stdout pipe, so the pipe
+      // never reaches EOF and 'close' never fires even though the CLI printed
+      // its result and terminated. A short grace lets trailing output flush.
+      proc.once('exit', (code) => {
+        clearTimeout(killTimer);
+        setTimeout(() => resolveResult({
+          stdout,
+          stderr,
+          exitCode: code ?? 1,
+        }), 400);
+      });
     });
     if (result.exitCode !== 0) {
       throw new Error(
@@ -120,12 +153,23 @@ export class AgentBrowserDriver implements Driver {
   }
 
   async openWithInitScript(url: string, initScript: string): Promise<void> {
+    // Launch on about:blank with the init script staged, then navigate via
+    // location.assign and wait only for the pathname to commit. `open <url>`
+    // waits for a page-quiescence signal that a live game page (constant
+    // polling/SSE) can never reach — it hangs unboundedly on healthy pages.
     await this.run([
       'open',
       '--init-script',
       resolve(initScript),
-      url,
-    ]);
+    ], false, 240_000);
+    const target = new URL(url);
+    await this.evalJson(
+      `(() => { location.assign(${JSON.stringify(url)}); return true; })()`,
+    );
+    await this.waitFn(
+      `location.pathname === ${JSON.stringify(target.pathname)}`,
+      90_000,
+    );
   }
 
   async evalJson<T>(js: string): Promise<T> {

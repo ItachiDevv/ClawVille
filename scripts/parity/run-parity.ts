@@ -119,7 +119,12 @@ async function runLiveScenario(): Promise<void> {
   }
   const config = await loadConfig();
   const { statePath, cashTableId } = resolveScenarioState(scenario);
-  const driver = new AgentBrowserDriver(`cove-parity-${scenario.id}`, statePath);
+  // Unique per-run session: a crashed prior attempt leaves a wedged daemon
+  // squatting the session name, and the next open() hangs on it forever.
+  const driver = new AgentBrowserDriver(
+    `cove-parity-${scenario.id}-${Date.now().toString(36)}`,
+    statePath,
+  );
   const route = `${
       scenario.game === 'blackjack'
         ? '/cove/blackjack'
@@ -175,7 +180,9 @@ async function runLiveScenario(): Promise<void> {
       );
     }
   };
+  let primaryError: unknown = null;
   try {
+    console.log(`[row ${scenario.id}] opening ${config.webBase}/cove`);
     await driver.openWithInitScript(
       `${config.webBase}/cove`,
       'scripts/parity/capture-hook.js',
@@ -184,6 +191,7 @@ async function runLiveScenario(): Promise<void> {
       `(() => { window.__CV_RELEASE_FIXTURE_GATE?.(); return true; })()`,
     );
     await driver.setViewport(config.viewport[0], config.viewport[1]);
+    console.log(`[row ${scenario.id}] page open, viewport set`);
     // Authenticated fixture owners can carry a hard-death run even into an
     // organic (fixtureName-less) row. Probe every stateful owner before the
     // ordinary game preflight by creating and immediately deleting a
@@ -213,6 +221,7 @@ async function runLiveScenario(): Promise<void> {
     if (!clean.clean) {
       throw new Error(`preflight refused: ${clean.notes.join('; ')}`);
     }
+    console.log(`[row ${scenario.id}] preflight clean, navigating ${route}`);
     await navigate(route, !scenario.fixtureName);
     if (scenario.fixtureName) {
       fixture = await issueFixtureWithRecovery(
@@ -221,18 +230,19 @@ async function runLiveScenario(): Promise<void> {
         config,
         cashTableId,
       );
+      console.log(`[row ${scenario.id}] fixture ${scenario.fixtureName} issued (${fixture.runId})`);
     }
 
     const previous = new Map<string, number>();
     for await (const checkpoint of scenario.run(driver)) {
       const after = previous.get(checkpoint.surface) ?? 0;
-      const root = await waitForParityCheckpoint(
+      console.log(`[row ${scenario.id}] awaiting checkpoint ${checkpoint.label} on ${checkpoint.surface} (after r${after})`);
+      let root = await waitForParityCheckpoint(
         driver,
         checkpoint,
         after,
         config.maxDurationMs,
       );
-      previous.set(checkpoint.surface, root.renderRevision);
       if (scenario.row === 'H10') {
         const tableId = root.correlation.hand.slice(
           0,
@@ -252,7 +262,7 @@ async function runLiveScenario(): Promise<void> {
         })()`);
       }
       allWires = await readCapturedWire(driver);
-      const result = assertParityCheckpoint({
+      let result = assertParityCheckpoint({
         game: scenario.game,
         checkpoint,
         root,
@@ -260,6 +270,37 @@ async function runLiveScenario(): Promise<void> {
         previousRevision: after,
         ba1Snapshot,
       });
+      // Eventual-consistency window: a pre-existing intermediate revision
+      // (e.g. the hole→player-turn transition published before an action's
+      // response lands) can satisfy "newer than the last checkpoint" while the
+      // matching revision is still milliseconds away. Re-assert on strictly
+      // newer revisions until the state matches or the window closes — the
+      // parity claim is that the render REACHES wire truth, and a final
+      // mismatch still fails loudly.
+      const settleDeadline = Date.now() + 45_000;
+      while (!result.pass && Date.now() < settleDeadline) {
+        console.log(`[row ${scenario.id}] checkpoint ${checkpoint.label} r${root.renderRevision} transient mismatch — awaiting newer revision`);
+        try {
+          root = await waitForParityCheckpoint(
+            driver,
+            checkpoint,
+            root.renderRevision,
+            Math.max(2_000, settleDeadline - Date.now()),
+          );
+        } catch {
+          break;
+        }
+        allWires = await readCapturedWire(driver);
+        result = assertParityCheckpoint({
+          game: scenario.game,
+          checkpoint,
+          root,
+          records: allWires,
+          previousRevision: after,
+          ba1Snapshot,
+        });
+      }
+      previous.set(checkpoint.surface, root.renderRevision);
       const screenshot = resolve(
         config.screenshotDir,
         `${scenario.id}-${checkpoint.label}-r${root.renderRevision}.png`,
@@ -270,6 +311,7 @@ async function runLiveScenario(): Promise<void> {
       checkpoints.push(result);
       screenshots.push(screenshot);
       finalRoot = root;
+      console.log(`[row ${scenario.id}] checkpoint ${checkpoint.label} r${root.renderRevision} pass=${result.pass}${result.pass ? '' : ` mismatches=${JSON.stringify(result.mismatches ?? []).slice(0, 400)}`}`);
       const wire = resolveWireForRoot(root, allWires);
       if (wire && ['settled', 'showdown'].includes(root.dealStep)) {
         const visible = await assertVisibleSurface(
@@ -355,8 +397,21 @@ async function runLiveScenario(): Promise<void> {
     console.log(JSON.stringify(result, null, 2));
     console.log(matrix.markdown.trimEnd());
     if (!pass || !matrix.pass) process.exitCode = 1;
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
-    await cleanup();
+    try {
+      await cleanup();
+    } catch (cleanupError) {
+      // Never let a teardown failure REPLACE the primary error — that masks
+      // the actual row failure (the exact bug this branch shipped with).
+      if (primaryError) {
+        console.error(`[row ${scenario.id}] cleanup also failed (non-masking; primary error follows): ${String(cleanupError)}`);
+      } else {
+        throw cleanupError;
+      }
+    }
   }
 }
 

@@ -16,14 +16,7 @@ import {
   BlackjackTableCards3D,
   type BlackjackCardLayout,
 } from '@/lib/three/blackjack-table-cards';
-import {
-  beginTransition,
-  buildBlackjackParity,
-  clearFeltParity,
-  completeTransition,
-  getParitySnapshot,
-  publishFeltParity,
-} from '@/lib/cove/card-parity-mirror';
+import { advanceBlackjackRoomParity } from '@/lib/cove/blackjack-room-parity';
 import type {
   BlackjackRoomHandlers,
   BlackjackRoomState,
@@ -338,45 +331,6 @@ function Precompile() {
   return null;
 }
 
-function buildRoomParity(
-  view: BlackjackRoomState,
-  dealStep = view.dealStep,
-  transition = view.transition,
-) {
-  const settled = (dealStep === 'dealer-reveal' || dealStep === 'settled') && view.settled
-    ? { outcome: view.settled.outcome }
-    : null;
-  return buildBlackjackParity({
-    hand: {
-      playerHands: view.playerHands.map((hand) => ({
-        cards: hand.cards,
-        total: hand.total,
-        isSoft: hand.isSoft,
-        isBust: hand.isBust,
-        isResolved: hand.isResolved,
-      })),
-      dealerUpcard: view.dealerCards[0] ?? null,
-      insuranceOffered: view.insuranceOffered,
-      tookInsurance: view.tookInsurance,
-      didSplit: view.didSplit,
-    },
-    settled,
-    activeSlot: view.activeSlot,
-    surface: 'blackjack-3d',
-    correlation: {
-      hand: view.handId ?? '',
-      handNumber: view.handIndex,
-      ...(view.shoe ? { shoe: view.shoe.id } : {}),
-    },
-    dealStep,
-    phase: view.phase,
-    transition,
-    ...(dealStep === 'settled' && view.bannerText !== null
-      ? { bannerText: view.bannerText }
-      : {}),
-  });
-}
-
 function BlackjackParityPublisher({
   instanceId,
   view,
@@ -387,57 +341,11 @@ function BlackjackParityPublisher({
   const revealSpanRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (view.handId === null) {
-      revealSpanRef.current = null;
-      clearFeltParity(instanceId);
-      return;
-    }
-
-    if (view.dealStep === 'dealer-reveal') {
-      if (revealSpanRef.current === null) {
-        const snapshot = getParitySnapshot('blackjack-3d');
-        if (!snapshot || snapshot.instanceId !== instanceId) {
-          // A natural may settle before this Canvas ever owned the surface.
-          // Seed the entitlement-safe hole state so landed beginTransition()
-          // can bind its span to this instance rather than no-oping.
-          publishFeltParity(instanceId, buildRoomParity(view, 'hole', 'idle'));
-        }
-        revealSpanRef.current = beginTransition(
-          instanceId,
-          'blackjack-3d',
-          'revealing',
-        );
-      }
-      publishFeltParity(
-        instanceId,
-        buildRoomParity(view, 'dealer-reveal', 'revealing'),
-      );
-      return;
-    }
-
-    if (view.dealStep === 'settled') {
-      if (revealSpanRef.current === null) {
-        const snapshot = getParitySnapshot('blackjack-3d');
-        if (!snapshot || snapshot.instanceId !== instanceId) {
-          publishFeltParity(instanceId, buildRoomParity(view, 'hole', 'idle'));
-        }
-        revealSpanRef.current = beginTransition(
-          instanceId,
-          'blackjack-3d',
-          'revealing',
-        );
-      }
-      publishFeltParity(
-        instanceId,
-        buildRoomParity(view, 'settled', 'revealing'),
-      );
-      const spanToken = revealSpanRef.current;
-      revealSpanRef.current = null;
-      completeTransition(instanceId, 'blackjack-3d', spanToken);
-      return;
-    }
-
-    publishFeltParity(instanceId, buildRoomParity(view));
+    revealSpanRef.current = advanceBlackjackRoomParity(
+      instanceId,
+      view,
+      revealSpanRef.current,
+    );
   }, [instanceId, view.dealStep, view.publishSeq]);
 
   return null;

@@ -43,6 +43,7 @@ const AGENT_KEYBOARD_WAIT_MS = 15_000;
 const KEYBOARD_ACTIVE_MS = 5_000;
 const NEXT_HAND_PAUSE_MS = 2_200;
 const SETTLE_REVEAL_MS = 280;
+const ACTION_SETTLED_STAGE_MS = 120;
 const HOLE_REVEAL_MS = 120;
 const MOVEMENT_KEYS = new Set([
   'w', 'a', 's', 'd', 'W', 'A', 'S', 'D',
@@ -691,7 +692,10 @@ export function useBlackjackRoomController(): BlackjackRoomState & {
     }
   }, [openShoe, showToast]);
 
-  const applySettled = useCallback((response: SettledHandResponse) => {
+  const applySettled = useCallback((
+    response: SettledHandResponse,
+    source: 'deal' | 'action',
+  ) => {
     concurrency.markSettled(response.handId);
     setSettledResponse(response);
     setInsuranceState({
@@ -702,21 +706,34 @@ export function useBlackjackRoomController(): BlackjackRoomState & {
     setHand(null);
     setShoe((current) => current ? { ...current, dealtCount: response.dealtCount } : current);
     setPhase('player-turn');
-    setDealStep('dealer-reveal');
-    setTransition('revealing');
     setBannerVisible(false);
-    bumpPublish();
     if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
-    revealTimerRef.current = setTimeout(() => {
-      setDealStep('settled');
-      setBannerVisible(true);
-      setPhase('settled');
+    const revealDealer = () => {
+      setDealStep('dealer-reveal');
+      setTransition('revealing');
       bumpPublish();
       revealTimerRef.current = setTimeout(() => {
-        setTransition('idle');
-        revealTimerRef.current = null;
-      }, 0);
-    }, SETTLE_REVEAL_MS);
+        setDealStep('settled');
+        setBannerVisible(true);
+        setPhase('settled');
+        bumpPublish();
+        revealTimerRef.current = setTimeout(() => {
+          setTransition('idle');
+          revealTimerRef.current = null;
+        }, 0);
+      }, SETTLE_REVEAL_MS);
+    };
+    if (source === 'action') {
+      // Publish the terminal player result in its own render before dealer
+      // entitlement advances. This preserves the action-response cadence for
+      // bust/stand while naturals continue directly into dealer reveal.
+      setDealStep('player-turn');
+      setTransition('idle');
+      bumpPublish();
+      revealTimerRef.current = setTimeout(revealDealer, ACTION_SETTLED_STAGE_MS);
+    } else {
+      revealDealer();
+    }
   }, [bumpPublish]);
 
   const handFromDeal = useCallback((
@@ -812,7 +829,7 @@ export function useBlackjackRoomController(): BlackjackRoomState & {
       insureLatchRef.current.clear();
       setSettledResponse(null);
       if (isSettled(response)) {
-        applySettled(response);
+        applySettled(response, 'deal');
       } else {
         setHand(handFromDeal(response));
         setInsuranceState({
@@ -886,7 +903,7 @@ export function useBlackjackRoomController(): BlackjackRoomState & {
       });
       actionKeyRef.current = null;
       concurrency.clearInsuranceForHand(currentHand.handId);
-      if (isSettled(response)) applySettled(response);
+      if (isSettled(response)) applySettled(response, 'action');
       else if (isActionInProgress(response)) mergeAction(response);
     } catch (error) {
       const policy = actionErrorPolicy(error, { agentDriven, isRealTier });

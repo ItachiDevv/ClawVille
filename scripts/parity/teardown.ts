@@ -25,13 +25,23 @@ async function currentStatus(
   game: 'blackjack' | 'baccarat',
   apiBase: string,
 ): Promise<number> {
-  return driver.evalJson<number>(`(async () => {
-    const response = await fetch(
-      ${JSON.stringify(apiBase.replace(/\/$/, ''))} + '/api/cove/${game}/session/current',
-      { credentials: 'include' },
-    );
-    return response.status;
-  })()`);
+  // A busy agent-browser daemon can surface a retry envelope instead of the
+  // evaluated value; validate the shape and retry before failing loudly.
+  let lastValue: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    lastValue = await driver.evalJson<unknown>(`(async () => {
+      const response = await fetch(
+        ${JSON.stringify(apiBase.replace(/\/$/, ''))} + '/api/cove/${game}/session/current',
+        { credentials: 'include' },
+      );
+      return response.status;
+    })()`);
+    if (typeof lastValue === 'number') return lastValue;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 1_500 * (attempt + 1)));
+  }
+  throw new Error(
+    `${game} session/current probe returned a non-number after 3 attempts: ${JSON.stringify(lastValue)}`,
+  );
 }
 
 export async function teardownGame(
