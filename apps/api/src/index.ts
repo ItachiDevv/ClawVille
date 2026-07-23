@@ -771,7 +771,6 @@ process.on('uncaughtException', (err) => {
   // (re)register still gets driven.
   try {
     const { ensureHouseAgent } = await import('./services/house-agent-seeder');
-    const { agentAutonomyDriver } = await import('./services/agent-autonomy-driver');
     const house = await ensureHouseAgent();
     if (house) {
       console.log(
@@ -794,9 +793,20 @@ process.on('uncaughtException', (err) => {
     } catch (e) {
       console.warn('[API] Inference warmup skipped:', (e as Error)?.message);
     }
-    agentAutonomyDriver.start();
   } catch (err) {
     console.error('[API] House agent activation failed (non-fatal):', err);
+  }
+
+  // Start the autonomy driver in its OWN try/catch, AFTER (and decoupled from)
+  // house-agent seeding. A house-agent failure above must NOT prevent the driver
+  // from running — it also drives later-registered connected/hosted agents, so
+  // "starts regardless" has to be structurally true, not just a comment. (Fixes
+  // the coupling bug where a thrown ensureHouseAgent() skipped driver.start().)
+  try {
+    const { agentAutonomyDriver } = await import('./services/agent-autonomy-driver');
+    agentAutonomyDriver.start();
+  } catch (err) {
+    console.error('[API] Autonomy driver start failed (non-fatal):', err);
   }
 
   // Database watchdog — distinguishes a wedged shared postgres.js pool from a
