@@ -221,15 +221,56 @@ Results that bind Phase B/C:
   CCTP/Circle Gateway path documented). Phase C = EVM inbound requires an EVM recipient
   we own (new Base custody surface) ⇒ decision-memo path only, do NOT build by default.
 
-**PHASE B.1 CORRECTIONS (live devnet findings, 2026-07-22 — binding):**
-1. Meridian requires `description` on every payment requirement; omission returns `invalid_payment_requirements`.
-2. Meridian's validator accepts LEGACY Solana transactions only. The payer partial-signs; serialization uses `requireAllSignatures:false`. A v0 transaction is rejected as `invalid_exact_svm_payload_transaction`.
-3. **ORG-PINNED RECIPIENT:** `payTo` must equal the Solana recipient configured on the Meridian organization. Meridian is therefore a seller-side rail, not an arbitrary-recipient outbound rail. Generic outbound custodial preparation never attaches it. The runtime fallback is the explicitly requested, server-signed inbound `ct_topup` and `x402-checkout` paths, where `payTo` is the configured ClawVille merchant wallet. Client-signed/BYO 402 negotiation remains unchanged.
-4. Every payer, recipient, platform, and treasury USDC ATA must already exist; Meridian does not create them.
-5. PayAI verify-stage 5xx/timeout/`free_tier_exhausted` failures are provider-level and may fall back. Payment-invalid and settle-ambiguous failures never cross facilitators. The shared PayAI circuit gates only its own leg: OPEN goes directly to an eligible merchant-pinned Meridian candidate without a PayAI probe or a new PayAI circuit failure.
-6. Inbound availability is eligible for every positive gross amount; the outbound $0.10 crossover remains exported for reporting only. Captures and global receipts persist exact gross/platform/treasury/net accounting. Reconciliation may restore Meridian fee columns only from complete, conserved durable evidence — never from a signature/failure-string guess — before NET-based agent-payment fulfillment resumes.
+**PHASE B.1 CORRECTIONS (live devnet findings, 2026-07-22 — supersede parts of the
+capture doc; discovered by driving the REAL facilitator with the shipped builder):**
+1. `description` is REQUIRED in paymentRequirements (omission ⇒
+   `invalid_payment_requirements`). Builder fixed to always emit.
+2. Their validator parses **LEGACY transactions only** — a v0 VersionedTransaction is
+   rejected as `invalid_exact_svm_payload_transaction`. Builder fixed to legacy +
+   `partialSign(payer)` + `serialize({requireAllSignatures:false})`.
+3. **ORG-PINNED RECIPIENT (architectural):** llms-full.txt: `payTo` "must match the
+   Solana recipient on your Meridian organization" (dashboard-configured, no API).
+   ⇒ Meridian Solana is a SELLER-SIDE rail: it settles ONLY to the org's one
+   configured wallet. It CANNOT serve the OUTBOUND agent→agent fallback as shipped
+   (arbitrary recipients get "recipient token account does not match expected
+   recipient" — live-verified). RETARGET: Meridian fallback belongs on the INBOUND
+   rails (ct_topup / checkout / partner storefront, where payTo is ALWAYS our merchant
+   wallet = the org recipient), which is also where prod's live 100% PayAI settle
+   failures hurt. The outbound seam should be disabled/removed in B.1.
+4. All USDC ATAs (payer, recipient, platform, treasury) must PRE-EXIST — settlement
+   never creates accounts (their docs, confirmed).
+FOUNDER STEPS for the smoke + go-live: (a) mrdn.finance dashboard → configure the
+org's Solana recipient wallet (devnet smoke: our devnet test pubkey; prod: the
+ClawVille merchant wallet — likely wants a DEDICATED ClawVille org rather than the
+swarms org); (b) then the devnet smoke completes with no further code.
+**ACTIVATION RECORD (2026-07-23):** B.1 shipped (staging `42e5c037` → prod via PR #235);
+founder configured mrdn.finance org (Solana recipient = merchant wallet
+`79sH9jtT…ViLLE`, same address both envs) and delivered per-env keys (laptop file
+`C:\Users\newma\.clawville-meridian-keys.env`; `sk_` secrets never staged into runtime
+env). Ladder green: devnet settle `n4AoJr…P8r` + mainnet settle `5Z7SBwvU…iwnR` (~5¢,
+exact 1% split), both via the shipped service. `MERIDIAN_*` env live + container-verified
+on BOTH api apps. OPEN OPS: (a) rotate the STAGING `pk_` key (echoed once into a session
+log); (b) the 6,315-row outage backlog CANNOT be cleared by the per-row `probe_merchant`
+apply (merchant signature history exceeds per-row lookback ⇒ "probe indeterminate",
+~1 row/5min) — Spec 4 below is the replacement; backlog parked safely in `reconcile`.
 
-Founder activation prerequisite: configure the dedicated ClawVille Meridian organization's Solana recipient to the exact `CLAWVILLE_MERCHANT_WALLET_PUBKEY` for the target cluster, and pre-create every required USDC ATA. No `accepts[]` or `PROTOCOL_VERSION` change is part of B.1.
+**SPEC 4 (QUEUED) — bulk outage reconciler + recurring auto-sweep.** One
+merchant-wallet `getSignaturesForAddress` sweep over the outage window (paginated,
+anchored), parse txs in batch, match reconcile rows in memory by (payer, amount,
+window), then: matched → existing `claimVerifiedCapture` path; unmatched past grace →
+no-money terminal. Plus a bounded recurring auto-sweep (cron ~15min, per-run cap,
+auto-applies ONLY on-chain-verified capture + grace-elapsed no-money, Telegram summary
+via itachi-debug) so a backlog can never silently build again. Codex implements, Fable
+reviews, same worktree flow.
+
+AUDIT FIXES QUEUED for the same B.1 round (interaction audit 2026-07-22): (i)
+free_tier_exhausted must trigger the Meridian fallback (it trips the breaker but not
+the fallback predicate — the exact redundancy scenario, HIGH); (ii) the circuit
+breaker gates the whole executor including the Meridian leg — gate only the PayAI
+leg; (iii) tighten net>0 in assertSettlementAmountsConserved (DB CHECK is strict,
+JS assert allows 0); (iv) reconcile capture path must repopulate fee columns or a
+reconciled Meridian payment credits GROSS vCLAW for NET USDC received; (v) pin
+legacy-tx + required-description in the conformance fixtures.
 
 ### Phase A — original tasks (for reference; capture doc supersedes)
 Per the live-route READ-ONLY probe rule (project_finish_unfinished_money_paths):
