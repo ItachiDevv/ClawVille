@@ -11,12 +11,12 @@ import {
   Connection,
   Keypair,
   PublicKey,
+  Transaction,
   TransactionInstruction,
-  TransactionMessage,
-  VersionedTransaction,
 } from '@solana/web3.js';
 import { z } from 'zod';
 import { calculateMeridianSettlementAmounts } from './x402-settlement-accounting';
+import { loadX402Config } from './x402-config';
 
 export const MERIDIAN_PROGRAM_ID = 'Ro6hz1smrm5zDh73849eDqKna9dE1EkPsWekAB5rBWm';
 export const MERIDIAN_TRANSFER_WITH_AUTHORIZATION_DISCRIMINATOR = Uint8Array.from([
@@ -134,7 +134,7 @@ export interface MeridianPaymentRequirements {
   payTo: string;
   maxAmountRequired: string;
   resource: string;
-  description?: string;
+  description: string;
   mimeType: string;
   maxTimeoutSeconds: number;
   extra: {
@@ -161,7 +161,7 @@ const paymentRequirementsSchema = z.object({
   payTo: publicKeySchema,
   maxAmountRequired: z.string().regex(/^[1-9]\d*$/),
   resource: z.string().min(1),
-  description: z.string().optional(),
+  description: z.string().min(1),
   mimeType: z.string().min(1),
   maxTimeoutSeconds: z.number().int().positive(),
   extra: z.object({
@@ -312,6 +312,15 @@ export async function verifyAndSettle(
     const payload = decodePaymentHeader(input.paymentHeader);
     const requirements = paymentRequirementsSchema.safeParse(input.requirements);
     if (!payload || !requirements.success) return failed('malformed_payment_header');
+    const merchantWalletPubkey = loadX402Config().merchantWalletPubkey;
+    if (
+      !merchantWalletPubkey
+      || requirements.data.payTo !== merchantWalletPubkey
+    ) {
+      // Meridian Solana is seller-side: the dashboard pins one organization
+      // recipient, so arbitrary payTo values can never be settled safely.
+      return failed('merchant_recipient_mismatch');
+    }
     if (
       payload.network !== requirements.data.network
       || requirements.data.asset !== meridianUsdcMintForNetwork(requirements.data.network)
@@ -567,6 +576,12 @@ export async function prepareMeridianPayment(
   input: PrepareMeridianPaymentInput,
 ): Promise<PreparedMeridianPayment> {
   const runtime = loadMeridianConfig();
+  if (runtime.enabled) {
+    const merchantWalletPubkey = loadX402Config().merchantWalletPubkey;
+    if (!merchantWalletPubkey || input.payTo !== merchantWalletPubkey) {
+      throw new Error('Meridian payTo must match the configured merchant wallet');
+    }
+  }
   const network = meridianNetworkForCluster(input.network);
   const platformFeeBps = platformFeeBpsSchema.parse(
     input.platformFeeBps ?? runtime.platformFeeBps,
@@ -616,13 +631,14 @@ export async function prepareMeridianPayment(
     if (!input.rpcUrl) throw new Error('Meridian rpcUrl is required without a blockhash test seam');
     return (await new Connection(input.rpcUrl, 'confirmed').getLatestBlockhash('confirmed')).blockhash;
   })();
-  const message = new TransactionMessage({
-    payerKey: new PublicKey(facilitatorConfig.facilitator),
-    recentBlockhash,
-    instructions: [instruction],
-  }).compileToV0Message();
-  const transaction = new VersionedTransaction(message);
-  transaction.sign([payer]);
+  // Meridian's validator parses LEGACY transactions only — a v0
+  // VersionedTransaction is rejected as invalid_exact_svm_payload_transaction
+  // (proven against the live devnet facilitator, 2026-07-22).
+  const transaction = new Transaction();
+  transaction.add(instruction);
+  transaction.feePayer = new PublicKey(facilitatorConfig.facilitator);
+  transaction.recentBlockhash = recentBlockhash;
+  transaction.partialSign(payer);
 
   const requirements: MeridianPaymentRequirements = {
     scheme: 'exact',
@@ -631,7 +647,9 @@ export async function prepareMeridianPayment(
     payTo: input.payTo,
     maxAmountRequired: input.grossAmountBaseUnits.toString(),
     resource: input.resource.url,
-    ...(input.resource.description ? { description: input.resource.description } : {}),
+    // Required by Meridian's verify schema — omitting it is rejected as
+    // invalid_payment_requirements (proven live 2026-07-22).
+    description: input.resource.description ?? 'ClawVille x402 settlement',
     mimeType: input.resource.mimeType ?? 'application/json',
     maxTimeoutSeconds: timeoutSeconds,
     extra: {
@@ -646,7 +664,11 @@ export async function prepareMeridianPayment(
     x402Version: 1,
     scheme: 'exact',
     network,
-    payload: { transaction: Buffer.from(transaction.serialize()).toString('base64') },
+    payload: {
+      transaction: transaction
+        .serialize({ requireAllSignatures: false, verifySignatures: false })
+        .toString('base64'),
+    },
   };
   return {
     paymentHeader: Buffer.from(JSON.stringify(paymentPayload), 'utf8').toString('base64'),

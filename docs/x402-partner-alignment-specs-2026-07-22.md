@@ -221,6 +221,16 @@ Results that bind Phase B/C:
   CCTP/Circle Gateway path documented). Phase C = EVM inbound requires an EVM recipient
   we own (new Base custody surface) ⇒ decision-memo path only, do NOT build by default.
 
+**PHASE B.1 CORRECTIONS (live devnet findings, 2026-07-22 — binding):**
+1. Meridian requires `description` on every payment requirement; omission returns `invalid_payment_requirements`.
+2. Meridian's validator accepts LEGACY Solana transactions only. The payer partial-signs; serialization uses `requireAllSignatures:false`. A v0 transaction is rejected as `invalid_exact_svm_payload_transaction`.
+3. **ORG-PINNED RECIPIENT:** `payTo` must equal the Solana recipient configured on the Meridian organization. Meridian is therefore a seller-side rail, not an arbitrary-recipient outbound rail. Generic outbound custodial preparation never attaches it. The runtime fallback is the explicitly requested, server-signed inbound `ct_topup` and `x402-checkout` paths, where `payTo` is the configured ClawVille merchant wallet. Client-signed/BYO 402 negotiation remains unchanged.
+4. Every payer, recipient, platform, and treasury USDC ATA must already exist; Meridian does not create them.
+5. PayAI verify-stage 5xx/timeout/`free_tier_exhausted` failures are provider-level and may fall back. Payment-invalid and settle-ambiguous failures never cross facilitators. The shared PayAI circuit gates only its own leg: OPEN goes directly to an eligible merchant-pinned Meridian candidate without a PayAI probe or a new PayAI circuit failure.
+6. Inbound availability is eligible for every positive gross amount; the outbound $0.10 crossover remains exported for reporting only. Captures and global receipts persist exact gross/platform/treasury/net accounting. Reconciliation may restore Meridian fee columns only from complete, conserved durable evidence — never from a signature/failure-string guess — before NET-based agent-payment fulfillment resumes.
+
+Founder activation prerequisite: configure the dedicated ClawVille Meridian organization's Solana recipient to the exact `CLAWVILLE_MERCHANT_WALLET_PUBKEY` for the target cluster, and pre-create every required USDC ATA. No `accepts[]` or `PROTOCOL_VERSION` change is part of B.1.
+
 ### Phase A — original tasks (for reference; capture doc supersedes)
 Per the live-route READ-ONLY probe rule (project_finish_unfinished_money_paths):
 1. Probe Meridian's public API (docs.mrdn.finance/api-reference): `Get Supported Payment
