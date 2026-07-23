@@ -24,7 +24,11 @@
 
 import { describe, it, expect } from 'bun:test';
 import { randomUUID } from 'crypto';
-import { CashTableManager, type CashSubject } from '../cash-table-manager';
+import {
+  buildCashSettledHandSnapshot,
+  CashTableManager,
+  type CashSubject,
+} from '../cash-table-manager';
 import { PokerTableSim } from '../poker-table-sim';
 import type { HandResult, SimClock } from '../poker-table-types';
 
@@ -501,6 +505,163 @@ describe('CashTableManager — P1 lifecycle + conservation', () => {
     return { db, ledger, sim, mgr, seededAvatarId, completed };
   }
 
+  async function runReconstructionFidelityHand(
+    terminal: 'showdown' | 'fold-win',
+  ) {
+    const { db, ledger, sim, mgr, completed } = makeManager();
+    const table = await mgr.createTable(
+      {
+        source: 'player-public',
+        visibility: 'public',
+        tierKey: null,
+        buyInCt: 100,
+        smallBlindCt: 1,
+        bigBlindCt: 2,
+        maxSeats: 6,
+        seededAgentSlots: 0,
+      },
+      humanSubject('fidelity-creator'),
+    );
+    const tableId = table.id;
+    const sid = `cash:${tableId}`;
+    const handNumber = terminal === 'showdown' ? 37 : 38;
+    const serverSeed = terminal === 'showdown' ? '42'.repeat(32) : '24'.repeat(32);
+    // CashTableManager's production client seed (DEFAULT_CLIENT_SEED).
+    const clientSeed = 'c1a4ca54';
+    const fundedSeats = [
+      { seatIndex: 0, avatarId: 'fidelity-seat-0' },
+      { seatIndex: 2, avatarId: 'fidelity-seat-2' },
+      { seatIndex: 5, avatarId: 'fidelity-seat-5' },
+    ];
+
+    // Seat through the manager's real atomic debit→seat→escrow path, but call the
+    // private primitive directly so the normal "start as soon as seat #2 arrives"
+    // wrapper cannot deal before all three fixtures are present.
+    for (const seat of fundedSeats) {
+      ledger.setBalance(seat.avatarId, 100);
+      await mgr['seatSubject'](
+        table,
+        humanSubject(seat.avatarId),
+        seat.seatIndex,
+        100,
+        false,
+      );
+    }
+    // A zero-stack seat may remain durable after busting. It is active in the DB,
+    // but manager deal derivation excludes it, and result.perSeat persistence must
+    // exclude it too.
+    db.stores.get(pokerCashSeats)!.push({
+      id: randomUUID(),
+      table_id: tableId,
+      avatar_id: 'undealt-zero',
+      agent_id: null,
+      subject_type: 'human',
+      is_seeded: 'false',
+      seat_index: 4,
+      current_stack_ct: '0',
+      total_bought_in_ct: '100',
+      total_cashed_out_ct: '0',
+      status: 'sitting_in',
+    });
+
+    // This is the same PokerTableSim.startHand deal entry CashTableManager uses:
+    // only funded sitting-in seats, in seatIndex order, fixed seed + hand nonce.
+    sim.startHand({
+      tableId: sid,
+      handNumber,
+      seatAssignments: fundedSeats.map((seat) => ({
+        ...seat,
+        name: `Seat ${seat.seatIndex}`,
+        subjectType: 'human' as const,
+        chipStack: 100,
+      })),
+      blinds: { sb: 1, bb: 2, ante: 0 },
+      buttonSeatIndex: 0,
+      serverSeed,
+      clientSeed,
+      turnClockMs: 30_000,
+      agentTurnGraceMs: 0,
+    });
+
+    // Private sim views are the ground truth. Capture BEFORE any fold can muck a
+    // seat in the terminal HandResult.
+    const actualHoleBySeat = new Map(
+      fundedSeats.map((seat) => {
+        const view = sim.getSeatViewForAgent(sid, seat.avatarId);
+        expect(view).not.toBeNull();
+        return [seat.seatIndex, view!.holeCards] as const;
+      }),
+    );
+    let actionSeq = 0;
+    const act = (
+      avatarId: string,
+      action: { kind: 'fold' | 'call' | 'check' },
+    ) => {
+      const applied = sim.applyAction(sid, avatarId, action, {
+        idempotencyKey: `fidelity-${terminal}-${actionSeq++}`,
+      });
+      expect(applied.ok).toBe(true);
+      return applied;
+    };
+
+    // Three-way preflop: button folds. In the showdown case SB completes and the
+    // two surviving seats check every street; in fold-win SB also folds.
+    act('fidelity-seat-0', { kind: 'fold' });
+    if (terminal === 'showdown') {
+      act('fidelity-seat-2', { kind: 'call' });
+      act('fidelity-seat-5', { kind: 'check' });
+      for (let street = 0; street < 3; street++) {
+        act('fidelity-seat-2', { kind: 'check' });
+        act('fidelity-seat-5', { kind: 'check' });
+      }
+    } else {
+      const finalAction = act('fidelity-seat-2', { kind: 'fold' });
+      expect(finalAction.handComplete).toBe(true);
+    }
+
+    const result = completed.find((candidate) => candidate.handNumber === handNumber);
+    expect(result).toBeDefined();
+    expect(result!.endedAt).toBe(terminal === 'showdown' ? 'showdown' : 'preflop');
+
+    // Drain the manager-owned pending result through the real production
+    // settleHand path. This writes the exact seat_result_json shape BA-1 reads.
+    await mgr['settleIfComplete'](tableId);
+    const handRow = db.stores.get(pokerCashHands)!.find(
+      (row) => row.table_id === tableId && row.hand_number === handNumber,
+    );
+    expect(handRow).toBeDefined();
+
+    const persistedSeats = handRow!.seat_result_json as Array<{
+      seatIndex: number;
+      avatarId: string;
+      startStack: string;
+      endStack: string;
+      totalCommitted: string;
+      grossWon: string;
+      rakeAttributed: string;
+      net: string;
+      stackDelta: string;
+      status: 'active' | 'folded' | 'allin' | 'sitting_out' | 'busted';
+      mucked: boolean;
+    }>;
+    expect(persistedSeats.map((seat) => seat.seatIndex)).toEqual([0, 2, 5]);
+    expect(persistedSeats.some((seat) => seat.avatarId === 'undealt-zero')).toBe(false);
+
+    const snapshot = buildCashSettledHandSnapshot({
+      tableId: handRow!.table_id as string,
+      handNumber: handRow!.hand_number as number,
+      board: handRow!.board_json as HandResult['board'],
+      endedAt: handRow!.ended_at as HandResult['endedAt'],
+      pots: handRow!.pot_result_json as HandResult['settledPots'],
+      seats: persistedSeats,
+      serverSeed: handRow!.server_seed_reveal as string,
+      clientSeed: handRow!.client_seed as string,
+      settledAt: handRow!.settled_at as Date,
+    });
+
+    return { snapshot, actualHoleBySeat };
+  }
+
   it('creates a mid table, seats a human + a seeded agent, plays a full hand, conserves chips, writes a settled hand row, and a leave cashes out exactly the stack', async () => {
     const { db, ledger, mgr, seededAvatarId, completed } = makeManager();
     const human = 'human-1';
@@ -682,6 +843,29 @@ describe('CashTableManager — P1 lifecycle + conservation', () => {
     // The only non-house, non-human CT holder is the still-seated seeded agent's
     // escrowed chips. Human + house net + escrow-held-by-seeded == 0.
     expect(humanNet + houseNet + escrowNow).toBe(0);
+  });
+
+  it('BA-1 reconstructs every non-folded showdown hole exactly from the actual cash-sim deal', async () => {
+    const { snapshot, actualHoleBySeat } =
+      await runReconstructionFidelityHand('showdown');
+
+    const folded = snapshot.seats.filter((seat) => seat.status === 'folded');
+    const shownDown = snapshot.seats.filter((seat) => seat.status !== 'folded');
+    expect(folded).toHaveLength(1);
+    expect(shownDown).toHaveLength(2);
+    for (const seat of folded) expect(seat.shown).toBeNull();
+    for (const seat of shownDown) {
+      const actualHole = actualHoleBySeat.get(seat.seatIndex);
+      expect(actualHole).toBeDefined();
+      expect(seat.shown).toEqual(actualHole!);
+    }
+  });
+
+  it('BA-1 reveals no actual cash-sim hole cards when the hand ends by folds', async () => {
+    const { snapshot } = await runReconstructionFidelityHand('fold-win');
+
+    expect(snapshot.endedAt).not.toBe('showdown');
+    expect(snapshot.seats.every((seat) => seat.shown === null)).toBe(true);
   });
 
   it('rejects a direct /sit to a PRIVATE table UUID — join code is the only way in (concern f)', async () => {
