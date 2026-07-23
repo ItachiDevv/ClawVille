@@ -1,6 +1,6 @@
 /** Meridian v1/Solana program conformance locks from the 2026-07-22 capture. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
-import { Keypair, VersionedTransaction } from '@solana/web3.js';
+import { Keypair, Transaction } from '@solana/web3.js';
 import {
   MERIDIAN_PROGRAM_ID,
   buildMeridianTransferInstruction,
@@ -206,15 +206,25 @@ describe('Meridian v1 wire envelope', () => {
       asset: fixture.facilitatorConfig.usdcMint,
       payTo: RECIPIENT,
       maxAmountRequired: '125000',
+      description: 'ClawVille x402 settlement',
       extra: { platformFeeBps: 0, feePayer: fixture.facilitatorConfig.facilitator },
     });
-    const transaction = VersionedTransaction.deserialize(
+    const transaction = Transaction.from(
       Buffer.from(decoded.payload.transaction, 'base64'),
     );
-    expect(transaction.message.staticAccountKeys[0]?.toBase58()).toBe(
+    expect(transaction.feePayer?.toBase58()).toBe(
       fixture.facilitatorConfig.facilitator,
     );
-    expect(transaction.signatures.some((value) => value.some((byte) => byte !== 0))).toBe(true);
+    expect(
+      transaction.signatures.find(
+        ({ publicKey }) => publicKey.equals(PAYER.publicKey),
+      )?.signature,
+    ).not.toBeNull();
+    expect(
+      transaction.signatures.find(
+        ({ publicKey }) => publicKey.toBase58() === fixture.facilitatorConfig.facilitator,
+      )?.signature,
+    ).toBeNull();
   });
 
   it('derives the platform token account from a trusted owner when bps is nonzero', async () => {
@@ -239,6 +249,36 @@ describe('Meridian v1 wire envelope', () => {
     expect(prepared.instruction.keys[6]?.isWritable).toBe(true);
     expect(prepared.requirements.extra.platformFeeBps).toBe(100);
   });
+
+  it('refuses preparation for a non-merchant recipient when Meridian is enabled', async () => {
+    const fixture = await loadFixture();
+    const previous = new Map<string, string | undefined>();
+    for (const [key, value] of Object.entries({
+      MERIDIAN_FACILITATOR_URL: 'https://meridian.invalid',
+      MERIDIAN_API_KEY: 'test-only-key',
+      CLAWVILLE_MERCHANT_WALLET_PUBKEY: PLATFORM_OWNER,
+    })) {
+      previous.set(key, process.env[key]);
+      process.env[key] = value;
+    }
+    try {
+      await expect(prepareMeridianPayment({
+        payerSecretKey: PAYER.secretKey,
+        payerPubkey: PAYER.publicKey.toBase58(),
+        payTo: RECIPIENT,
+        grossAmountBaseUnits: 125_000n,
+        network: 'devnet',
+        resource: { url: 'https://api.clawville.world/meridian-pin-test' },
+        facilitatorConfig: fixture.facilitatorConfig,
+        recentBlockhash: '11111111111111111111111111111111',
+      })).rejects.toThrow('Meridian payTo must match the configured merchant wallet');
+    } finally {
+      for (const [key, value] of previous) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
 });
 
 const requirements: MeridianPaymentRequirements = {
@@ -248,6 +288,7 @@ const requirements: MeridianPaymentRequirements = {
   payTo: RECIPIENT,
   maxAmountRequired: '125000',
   resource: 'https://api.clawville.world/meridian-conformance',
+  description: 'Meridian conformance settlement',
   mimeType: 'application/json',
   maxTimeoutSeconds: 120,
   extra: {
@@ -292,6 +333,7 @@ describe('Meridian verify-to-settle sequencing', () => {
       MERIDIAN_FACILITATOR_URL: `http://127.0.0.1:${server.port}`,
       MERIDIAN_API_KEY: 'pk_test_conformance',
       MERIDIAN_PLATFORM_FEE_BPS: '0',
+      CLAWVILLE_MERCHANT_WALLET_PUBKEY: RECIPIENT,
     })) {
       priorEnv.set(key, process.env[key]);
       process.env[key] = value;
@@ -342,6 +384,28 @@ describe('Meridian verify-to-settle sequencing', () => {
       failureReason: 'mock_forced_invalid',
     });
     expect(requestPaths).toEqual(['/v1/verify']);
+  });
+
+  it('refuses a non-merchant payTo before calling Meridian', async () => {
+    const otherRecipient = Keypair.fromSeed(
+      new Uint8Array(32).fill(12),
+    ).publicKey.toBase58();
+    const result = await verifyAndSettle({
+      paymentHeader: header(),
+      requirements: {
+        ...requirements,
+        payTo: otherRecipient,
+        extra: {
+          ...requirements.extra,
+          creditedRecipient: otherRecipient,
+        },
+      },
+    });
+    expect(result).toMatchObject({
+      settled: false,
+      failureReason: 'merchant_recipient_mismatch',
+    });
+    expect(requestPaths).toEqual([]);
   });
 
   it('classifies only HTTP 5xx as an outage while never throwing', async () => {
