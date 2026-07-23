@@ -80,7 +80,7 @@ import {
 } from '../services/agent-owner-binding';
 import {
   agentProtocolPointer,
-  buildUniversalConnectBlock,
+  buildPlayManual,
   resolveApiBase,
 } from '../services/skill-protocol';
 // Cached public-board lookup (same score/rank the /leaderboard page shows;
@@ -134,8 +134,25 @@ import nacl from 'tweetnacl';
 import bs58 from 'bs58';
 import { randomBytes } from 'crypto';
 import { agentSessionAckRoutes } from './agent-session-ack';
+import {
+  agentHumanControlConflictResponse,
+  HUMAN_CONTROLLED_MUTATING_AGENT_ROUTE_PATTERNS,
+  isMutatingCovePokerForward,
+} from '../services/agent-human-control-guard';
+import type { AppContext } from '../types';
 
-const agentGatewayRoutes = new Hono();
+const agentGatewayRoutes = new Hono<AppContext>();
+
+const [
+  AGENT_MOVE_ROUTE,
+  AGENT_CHAT_ROUTE,
+  AGENT_VISIT_BUILDING_ROUTE,
+  AGENT_BUILDING_CHAT_ROUTE,
+  AGENT_COMBAT_ACTION_ROUTE,
+  AGENT_EMOTE_ROUTE,
+  AGENT_COVE_BLACKJACK_ROUTE,
+  AGENT_COVE_POKER_ROUTE,
+] = HUMAN_CONTROLLED_MUTATING_AGENT_ROUTE_PATTERNS;
 
 agentGatewayRoutes.route('/session', agentSessionAckRoutes);
 
@@ -198,6 +215,119 @@ const reconnectRateLimiter = createRateLimiter({
   maxPerWindow: 5,
   windowMs: 60_000,
 });
+
+// Logged-out front-door token minting is deliberately tighter than the agent
+// connect allowance: five successful attempts per trusted edge IP each minute,
+// with a bounded 25/day ceiling so a slow bot cannot create an unbounded stream
+// of anonymous account claims. Both checks run before token allocation or DB
+// work. ClawVille is a single persistent API service; these in-process buckets
+// match the existing /connect limiter's deployment model.
+const PUBLIC_CONNECT_TOKEN_DAILY_CAP = 25;
+const publicConnectTokenMinuteLimiter = createRateLimiter({
+  maxPerWindow: 5,
+  windowMs: 60_000,
+});
+const publicConnectTokenDailyLimiter = createRateLimiter({
+  maxPerWindow: PUBLIC_CONNECT_TOKEN_DAILY_CAP,
+  windowMs: 24 * 60 * 60 * 1000,
+});
+const PUBLIC_CONNECT_CLAIM_GRACE_MS = 60_000;
+
+// Default archetype for agent-led onboarding. Shared by `/join` and the public
+// front-door token claim so both entry paths create the exact same real avatar
+// (including its covenant genesis record) rather than drifting over time.
+const DEFAULT_JOIN_ARCHETYPE = 'curious-scholar';
+
+export async function resolveOrProvisionOnboardingAvatar(args: {
+  userId: string;
+  requestedName: string;
+  learningFocus?: string;
+}) {
+  let avatar = await db.query.avatars.findFirst({
+    where: eq(avatars.userId, args.userId),
+  });
+  let avatarCreated = false;
+
+  if (!avatar) {
+    const archetype = AVATAR_ARCHETYPES.find((candidate) => candidate.id === DEFAULT_JOIN_ARCHETYPE);
+    if (!archetype) {
+      throw new Error(`Default archetype '${DEFAULT_JOIN_ARCHETYPE}' missing from registry`);
+    }
+
+    // `avatars.name` is unique, so make the human-overridable placeholder
+    // deterministic for this account while retaining the agent-supplied label.
+    const baseName = args.requestedName.trim() || 'Unnamed Agent';
+    const suffix = args.userId.replace(/-/g, '').slice(0, 6);
+    const avatarName = `${baseName} ${suffix}`.slice(0, 100);
+
+    try {
+      avatar = await db.transaction(async (tx) => {
+        const [row] = await tx
+          .insert(avatars)
+          .values({
+            userId: args.userId,
+            name: avatarName,
+            species: 'turtle',
+            color: 'blue',
+            gender: 'male',
+            archetype: archetype.id,
+            personality: {
+              habitat: 'sea',
+              hobby: 'reading-and-learning',
+              greeting: 'wave-hello',
+            },
+            stats: { strength: 5, defence: 8, movement: 7 },
+            characterConfig: {
+              bio: archetype.bio,
+              greeting: archetype.greeting,
+              tone: archetype.tone,
+              topics: archetype.topics,
+              adjectives: archetype.adjectives,
+              rules: archetype.rules,
+              style: archetype.style,
+              messageExamples: archetype.messageExamples,
+              lore: archetype.lore,
+              knowledge: archetype.knowledge,
+              system: `You are ${baseName}, a Reef Lobster in the sea-themed world of ClawVille. Your archetype is "${archetype.label}". Stay in character.`,
+            },
+            modelKey: DEFAULT_AGENT_MODEL_KEY,
+            agentCategory: DEFAULT_AGENT_CATEGORY,
+            harness: DEFAULT_AGENT_HARNESS,
+            ...(args.learningFocus ? { learningFocus: args.learningFocus } : {}),
+          })
+          .returning();
+        await recordCovenantAction(
+          {
+            action: 'economy.genesis',
+            subjectType: 'avatar',
+            subjectId: row.id,
+            actorKind: 'agent',
+            dedupeKey: `avatar:${row.id}:genesis`,
+            payload: { amount: row.clawTokens, provenance: 'soft', reason: 'avatar_genesis' },
+          },
+          tx,
+        );
+        return row;
+      });
+      avatarCreated = true;
+    } catch (err: unknown) {
+      // Same-identity claims may race across API requests/pods. The UNIQUE
+      // users-to-avatar constraint elects one winner; every loser reuses it.
+      const code =
+        (err as { code?: string; cause?: { code?: string } } | null)?.code
+        ?? (err as { cause?: { code?: string } } | null)?.cause?.code;
+      if (code !== '23505') throw err;
+      avatar = await db.query.avatars.findFirst({
+        where: eq(avatars.userId, args.userId),
+      });
+      if (!avatar) {
+        throw new Error('Avatar uniqueness race completed without a readable winner');
+      }
+    }
+  }
+
+  return { avatar, avatarCreated };
+}
 
 // ---------------------------------------------------------------------------
 // Bot→avatar resolution + both reward policies live in dependency-light
@@ -433,9 +563,17 @@ agentGatewayRoutes.post('/connect', async (c) => {
     if (!pending) {
       return c.json({ error: 'Connection token not found or expired' }, 404);
     }
-    if (Date.now() > pending.expiresAt) {
+    if (Date.now() > pendingConnectionExpiresAt(pending)) {
       pendingConnections.delete(data.connectionToken);
       return c.json({ error: 'Connection token expired' }, 410);
+    }
+    // A public front-door token proves only that the human invited this claim;
+    // it does not itself define a durable agent identity. Require the existing
+    // /connect identityKey field before reservation so a malformed claim cannot
+    // create an account or burn the one-shot token. Authenticated owner tokens
+    // retain their byte-for-byte legacy behavior.
+    if (pending.publicHandoff && !data.identityKey) {
+      return c.json({ error: 'Invalid request' }, 400);
     }
     // Single-use guard (Codex auth-lens fix #6, 2026-06-03): the original code
     // only flipped `pending.connected` at the END of the handler, AFTER several
@@ -454,6 +592,13 @@ agentGatewayRoutes.post('/connect', async (c) => {
       return c.json({ error: 'Connection token already claimed' }, 409);
     }
     pending.connected = true;
+    if (pending.publicHandoff) {
+      // A claim that starts before the five-minute invitation cutoff gets one
+      // bounded minute to finish its awaited identity/avatar/ticket work. Poll
+      // and cleanup share this exact deadline; completion rechecks Map ownership
+      // before exposing a handoff, so an expired/deleted object cannot succeed.
+      pending.publicHandoff.claimDeadline = Date.now() + PUBLIC_CONNECT_CLAIM_GRACE_MS;
+    }
     pendingConn = pending;
   }
 
@@ -530,7 +675,13 @@ agentGatewayRoutes.post('/connect', async (c) => {
   // userId) can find this bot on every subsequent page load. Without it,
   // the connect succeeds server-side but agentConnected reverts to false
   // on the next reload — agent state evaporates between sessions.
-  const tokenUserId = pendingConn?.userId ?? null;
+  // An authenticated token is direct owner proof. A logged-out public token is
+  // intentionally different: its agent-supplied identityKey proves ownership,
+  // so it follows the never-clobber identity binding path instead of gaining
+  // the authenticated token path's legacy rebind precedence.
+  const tokenUserId = pendingConn?.publicHandoff
+    ? null
+    : pendingConn?.userId ?? null;
 
   // An explicit identityKey is a SECRET ownership credential, not a public
   // label. Resolve it before the bot upsert so a self-connecting agent can bind
@@ -556,16 +707,35 @@ agentGatewayRoutes.post('/connect', async (c) => {
         );
         const user = coordinated.user;
         identityKeyUserId = user.id;
-        const activeAvatar = await db.query.avatars.findFirst({
-          where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
-          columns: { id: true, name: true },
-        });
-        identityKeyAvatarId = activeAvatar?.id ?? null;
-        identityKeyAvatarName = activeAvatar?.name ?? null;
+        if (pendingConn?.publicHandoff) {
+          // Account creation happens at claim, never at anonymous mint. Reuse
+          // the `/join` default-avatar semantics before ownerBinding/session
+          // construction so every downstream attribution sees one real avatar.
+          const { avatar } = await resolveOrProvisionOnboardingAvatar({
+            userId: user.id,
+            requestedName:
+              data.name
+              ?? data.miladyCharacterName
+              ?? resolvedAgentId.slice(0, 24),
+            learningFocus: pendingConn.learningFocus,
+          });
+          identityKeyAvatarId = avatar.id;
+          identityKeyAvatarName = avatar.name;
+          pendingConn.userId = user.id;
+          pendingConn.avatarId = avatar.id;
+          pendingConn.avatarName = avatar.name;
+        } else {
+          const activeAvatar = await db.query.avatars.findFirst({
+            where: and(eq(avatars.userId, user.id), eq(avatars.isActive, true)),
+            columns: { id: true, name: true },
+          });
+          identityKeyAvatarId = activeAvatar?.id ?? null;
+          identityKeyAvatarName = activeAvatar?.name ?? null;
+        }
       }
     } catch (err) {
       console.error('[AgentConnect] explicit identity resolution failed:', err);
-      if (pendingConn) pendingConn.connected = false;
+      if (pendingConn) releasePendingConnectionClaim(pendingConn);
       return c.json({ error: 'Identity resolution failed' }, 500);
     }
   }
@@ -752,7 +922,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
     // Roll back the single-use token reservation (fix #6) — the session was
     // never registered, so the human should be able to retry with the SAME
     // token rather than being told it was "already claimed".
-    if (pendingConn) pendingConn.connected = false;
+    if (pendingConn) releasePendingConnectionClaim(pendingConn);
     return c.json({ error: 'Database error during agent registration' }, 500);
   }
 
@@ -840,7 +1010,7 @@ agentGatewayRoutes.post('/connect', async (c) => {
       // Override registration failed (e.g. NPC already taken) — no session was
       // registered, so roll back the single-use token reservation (fix #6) so the
       // caller can retry with the same token.
-      if (pendingConn) pendingConn.connected = false;
+      if (pendingConn) releasePendingConnectionClaim(pendingConn);
       return c.json({ error: msg }, 409);
     }
   } else {
@@ -967,6 +1137,46 @@ agentGatewayRoutes.post('/connect', async (c) => {
     existingAvatarName: pendingConn?.avatarName ?? identityKeyAvatarName,
   });
   const sessionTicket = resolved.ticket;
+  if (pendingConn?.publicHandoff) {
+    const claimDeadline = pendingConn.publicHandoff.claimDeadline;
+    const stillCurrent = data.connectionToken != null
+      && pendingConnections.get(data.connectionToken) === pendingConn;
+    if (!stillCurrent || claimDeadline == null || Date.now() > claimDeadline) {
+      releasePendingConnectionClaim(pendingConn);
+      npcSimulation.unregisterAgentBot(sessionId);
+      return c.json({ error: 'Connection token expired' }, 410);
+    }
+    const claimConflict =
+      ownerBinding.identityMismatch
+      || ownerBinding.boundUserId === null
+      || ownerBinding.boundUserId !== resolved.userId
+      || !ownerBinding.ledgerCapable
+      || resolved.avatarId === null
+      || resolved.avatarId !== pendingConn.avatarId;
+    if (claimConflict) {
+      // A public invitation can bind a new/unowned agent or reaffirm the same
+      // identity owner, but it can never turn an existing different owner's
+      // public agentId into a login for the claimant. Preserve the bot owner,
+      // release the invitation for a corrected retry, and expose no handoff.
+      releasePendingConnectionClaim(pendingConn);
+      npcSimulation.unregisterAgentBot(sessionId);
+      return c.json({ error: 'Connection token claim conflicted' }, 409);
+    }
+    if (!sessionTicket || !resolved.userId || !resolved.avatarId) {
+      // Public front-door success is atomic from the human's perspective: no
+      // `connected` state without a real account, avatar, and redeemable login
+      // handoff. Release the token for retry and tear down the unusable live
+      // body; no identity/wallet first-disclosure code has run yet.
+      releasePendingConnectionClaim(pendingConn);
+      npcSimulation.unregisterAgentBot(sessionId);
+      return c.json({ error: 'Failed to issue front-door login handoff' }, 500);
+    }
+    pendingConn.publicHandoff.enterUrl = sessionTicket.url;
+    const ticketExpiresAt = Date.parse(sessionTicket.expiresAt);
+    pendingConn.publicHandoff.handoffExpiresAt = Number.isFinite(ticketExpiresAt)
+      ? ticketExpiresAt
+      : Date.now() + TOKEN_TTL_MS;
+  }
   if (resolved.avatarId) {
     // IdentityKey/Milady first-contact can resolve/create the avatar only after
     // the body was registered above. Complete the INTERNAL attribution before
@@ -1091,6 +1301,11 @@ agentGatewayRoutes.post('/connect', async (c) => {
     userId: pendingForEvent?.userId ?? resolved.userId ?? null,
     avatarId: pendingForEvent?.avatarId ?? resolved.avatarId ?? null,
     agentId: resolvedAgentId,
+    // Preserve the logged-out human mint's anti-abuse provenance across the
+    // agent's separate claim request. Authenticated tokens keep the claimant
+    // request context exactly as before.
+    fpHash: pendingForEvent?.publicHandoff?.fpHash,
+    ipPrefixHash: pendingForEvent?.publicHandoff?.ipPrefixHash,
     // sessionDigest (deterministic per session), NOT raw bearer (Codex auth-lens
     // fix #4) and NOT null: leaderboard.ts does COUNT(DISTINCT session_id) FILTER
     // (event_type='agent.connected'), so the digest must be stable per session to
@@ -1956,12 +2171,6 @@ export const joinSchema = z.object({
   name: z.string().min(1).max(24).optional(),
 });
 
-// Default archetype for auto-provisioned avatars. `curious-scholar` matches
-// the "learning skills from buildings" flavor of the game better than
-// `brave-adventurer` — the avatar immediately reads like someone who
-// should be in a skill-building MMO.
-const DEFAULT_JOIN_ARCHETYPE = 'curious-scholar';
-
 agentGatewayRoutes.post('/join', async (c) => {
   // Rate limit BEFORE any DB work (audit Fix M1 pattern from Phase 3 —
   // don't let a scraper burn Lucia/Postgres round-trips on spam).
@@ -1998,104 +2207,18 @@ agentGatewayRoutes.post('/join', async (c) => {
     return c.json({ error: 'Identity bootstrap failed' }, 500);
   }
 
-  // 2. Look up existing avatar OR auto-provision a placeholder.
-  let avatar = await db.query.avatars.findFirst({ where: eq(avatars.userId, userId) });
-  let avatarCreated = false;
-
-  if (!avatar) {
-    // Auto-provision a default avatar so the user can click through and
-    // see a running agent immediately. They can rename / reconfigure
-    // at `/create-agent` (or `/settings`) once they're logged in.
-    const archetype = AVATAR_ARCHETYPES.find((a) => a.id === DEFAULT_JOIN_ARCHETYPE);
-    if (!archetype) {
-      // Unreachable unless the archetype registry was edited without
-      // updating the constant above — surface loudly rather than 500.
-      return c.json({ error: `Default archetype '${DEFAULT_JOIN_ARCHETYPE}' missing from registry` }, 500);
-    }
-
-    // Unique avatar name — append 6 hex chars of the user id so two
-    // first-contact agents don't collide on `avatars.name`'s UNIQUE
-    // constraint. Human-overridable later.
-    const requestedName = parsed.data.name?.trim() || 'Unnamed Agent';
-    const suffix = userId.replace(/-/g, '').slice(0, 6);
-    const avatarName = `${requestedName} ${suffix}`.slice(0, 100);
-
-    try {
-      const inserted = await db.transaction(async (tx) => {
-        const [row] = await tx
-          .insert(avatars)
-          .values({
-            userId,
-            name: avatarName,
-            // The legacy species/color/gender enums are still NOT NULL
-            // in the schema — pick the sea-world defaults that match
-            // the Phase 2 agent defaults (lobster == sea creature).
-            species: 'turtle', // closest existing species enum to a neutral sea creature
-            color: 'blue',
-            gender: 'male',
-            archetype: archetype.id,
-            personality: {
-              habitat: 'sea',
-              hobby: 'reading-and-learning',
-              greeting: 'wave-hello',
-            },
-            stats: { strength: 5, defence: 8, movement: 7 },
-            characterConfig: {
-              bio: archetype.bio,
-              greeting: archetype.greeting,
-              tone: archetype.tone,
-              topics: archetype.topics,
-              adjectives: archetype.adjectives,
-              rules: archetype.rules,
-              style: archetype.style,
-              messageExamples: archetype.messageExamples,
-              lore: archetype.lore,
-              knowledge: archetype.knowledge,
-              system: `You are ${requestedName}, a Reef Lobster in the sea-themed world of ClawVille. Your archetype is "${archetype.label}". Stay in character.`,
-            },
-            modelKey: DEFAULT_AGENT_MODEL_KEY,
-            agentCategory: DEFAULT_AGENT_CATEGORY,
-            harness: DEFAULT_AGENT_HARNESS,
-          })
-          .returning();
-        await recordCovenantAction(
-          {
-            action: 'economy.genesis',
-            subjectType: 'avatar',
-            subjectId: row.id,
-            actorKind: 'agent',
-            dedupeKey: `avatar:${row.id}:genesis`,
-            payload: { amount: row.clawTokens, provenance: 'soft', reason: 'avatar_genesis' },
-          },
-          tx,
-        );
-        return row;
-      });
-      avatar = inserted;
-      avatarCreated = true;
-    } catch (err: unknown) {
-      // Race-safe recovery: two concurrent /join calls with the same
-      // identity both resolve to the same user, both observe "no avatar",
-      // both try to INSERT. `avatars.user_id` is UNIQUE, so the loser
-      // catches 23505 and re-reads the avatar the winner just wrote.
-      // Without this, the second caller 500s on what should be a
-      // deterministic "use my existing avatar" path.
-      const code =
-        (err as { code?: string; cause?: { code?: string } } | null)?.code
-        ?? (err as { cause?: { code?: string } } | null)?.cause?.code;
-      if (code === '23505') {
-        const raced = await db.query.avatars.findFirst({ where: eq(avatars.userId, userId) });
-        if (raced) {
-          avatar = raced;
-        } else {
-          console.error('[AgentJoin] 23505 on avatar insert but no existing row found');
-          return c.json({ error: 'Failed to provision default avatar' }, 500);
-        }
-      } else {
-        console.error('[AgentJoin] default avatar insert failed:', err);
-        return c.json({ error: 'Failed to provision default avatar' }, 500);
-      }
-    }
+  // 2. Resolve the shared default avatar used by both `/join` and the public
+  // front-door token claim. One helper owns defaults, genesis, and race repair.
+  let avatar: Awaited<ReturnType<typeof resolveOrProvisionOnboardingAvatar>>['avatar'];
+  let avatarCreated: boolean;
+  try {
+    ({ avatar, avatarCreated } = await resolveOrProvisionOnboardingAvatar({
+      userId,
+      requestedName: parsed.data.name ?? 'Unnamed Agent',
+    }));
+  } catch (err) {
+    console.error('[AgentJoin] default avatar resolution failed:', err);
+    return c.json({ error: 'Failed to provision default avatar' }, 500);
   }
 
   // 3. Ensure the avatar has a wallet. Phase 5.1 gap-fill: /join previously
@@ -2294,10 +2417,12 @@ const moveSchema = z.object({
   { message: 'Provide either targetX+targetY or buildingId' }
 );
 
-agentGatewayRoutes.post('/:sessionId/move', async (c) => {
+agentGatewayRoutes.post(AGENT_MOVE_ROUTE, async (c) => {
   const sessionId = c.req.param('sessionId');
   const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+  const controlConflict = agentHumanControlConflictResponse(c, npcSimulation);
+  if (controlConflict) return controlConflict;
 
   const body = await c.req.json();
   const parsed = moveSchema.safeParse(body);
@@ -2341,10 +2466,12 @@ const chatSchema = z.object({
   targetNpcId: z.string().optional(),
 });
 
-agentGatewayRoutes.post('/:sessionId/chat', async (c) => {
+agentGatewayRoutes.post(AGENT_CHAT_ROUTE, async (c) => {
   const sessionId = c.req.param('sessionId');
   const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+  const controlConflict = agentHumanControlConflictResponse(c, npcSimulation);
+  if (controlConflict) return controlConflict;
 
   const body = await c.req.json();
   const parsed = chatSchema.safeParse(body);
@@ -2457,10 +2584,12 @@ const visitSchema = z.object({
   buildingId: z.string().min(1),
 });
 
-agentGatewayRoutes.post('/:sessionId/visit-building', async (c) => {
+agentGatewayRoutes.post(AGENT_VISIT_BUILDING_ROUTE, async (c) => {
   const sessionId = c.req.param('sessionId');
   const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+  const controlConflict = agentHumanControlConflictResponse(c, npcSimulation);
+  if (controlConflict) return controlConflict;
 
   const body = await c.req.json();
   const parsed = visitSchema.safeParse(body);
@@ -2646,11 +2775,13 @@ const buildingChatSchema = z.object({
   message: z.string().min(1).max(4000),
 });
 
-agentGatewayRoutes.post('/:sessionId/building/:buildingId/chat', async (c) => {
+agentGatewayRoutes.post(AGENT_BUILDING_CHAT_ROUTE, async (c) => {
   const sessionId = c.req.param('sessionId');
   const buildingId = c.req.param('buildingId');
   const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+  const controlConflict = agentHumanControlConflictResponse(c, npcSimulation);
+  if (controlConflict) return controlConflict;
 
   const body = await c.req.json().catch(() => null);
   const parsed = buildingChatSchema.safeParse(body);
@@ -2880,10 +3011,12 @@ const combatActionSchema = z.object({
   action: z.enum(['attack', 'heavy', 'block', 'dodge', 'combo']),
 });
 
-agentGatewayRoutes.post('/:sessionId/combat-action', async (c) => {
+agentGatewayRoutes.post(AGENT_COMBAT_ACTION_ROUTE, async (c) => {
   const sessionId = c.req.param('sessionId');
   const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+  const controlConflict = agentHumanControlConflictResponse(c, npcSimulation);
+  if (controlConflict) return controlConflict;
 
   const body = await c.req.json();
   const parsed = combatActionSchema.safeParse(body);
@@ -2906,10 +3039,12 @@ const emoteSchema = z.object({
   ] as const),
 });
 
-agentGatewayRoutes.post('/:sessionId/emote', async (c) => {
+agentGatewayRoutes.post(AGENT_EMOTE_ROUTE, async (c) => {
   const sessionId = c.req.param('sessionId');
   const resolved = await resolveSession(sessionId);
   if (!resolved) return c.json({ error: 'Invalid or expired agent session' }, 404);
+  const controlConflict = agentHumanControlConflictResponse(c, npcSimulation);
+  if (controlConflict) return controlConflict;
 
   const body = await c.req.json();
   const parsed = emoteSchema.safeParse(body);
@@ -3844,11 +3979,14 @@ agentGatewayRoutes.post('/:sessionId/control-link', async (c) => {
 // No credentials paste required.
 // ---------------------------------------------------------------------------
 
-interface PendingConnection {
+export interface PendingConnection {
   token: string;
-  avatarId: string;       // user's avatar that will be linked
-  avatarName: string;
-  userId: string;
+  // Authenticated tokens fill these at mint. Public front-door tokens start
+  // unbound and fill all three atomically at claim, after identity resolution
+  // and default-avatar provisioning.
+  avatarId: string | null;
+  avatarName: string | null;
+  userId: string | null;
   expiresAt: number;
   /**
    * Phase 6.1 — optional curriculum focus the human picked before
@@ -3861,20 +3999,59 @@ interface PendingConnection {
   sessionId?: string;
   agentId?: string;
   connected: boolean;
+  publicHandoff?: {
+    // The browser-only poll secret is never stored raw. The agent receives the
+    // connection token but never this separate capability.
+    pollSecretHash: string;
+    // Salted request provenance from the global fingerprint middleware. Public
+    // polling requires the same browser fingerprint in addition to the secret.
+    fpHash: string;
+    ipPrefixHash: string;
+    /** Bounded grace for a claim reserved before the original token cutoff. */
+    claimDeadline?: number;
+    // Filled only after claim-time account/avatar resolution and successful
+    // one-use session-ticket minting. Public poll never exposes sessionId.
+    enterUrl?: string;
+    /** The existing one-use session ticket's expiry, used by public polling. */
+    handoffExpiresAt?: number;
+  };
 }
 
 const pendingConnections = new Map<string, PendingConnection>();
 const TOKEN_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
+function releasePendingConnectionClaim(pending: PendingConnection): void {
+  pending.connected = false;
+  pending.sessionId = undefined;
+  pending.agentId = undefined;
+  if (pending.publicHandoff) {
+    pending.publicHandoff.claimDeadline = undefined;
+    pending.publicHandoff.enterUrl = undefined;
+    pending.publicHandoff.handoffExpiresAt = undefined;
+  }
+}
+
+function pendingConnectionExpiresAt(pending: PendingConnection): number {
+  const handoff = pending.publicHandoff;
+  if (!handoff) return pending.expiresAt;
+  if (handoff.enterUrl && handoff.handoffExpiresAt != null) {
+    return handoff.handoffExpiresAt;
+  }
+  if (pending.connected && handoff.claimDeadline != null) {
+    return handoff.claimDeadline;
+  }
+  return pending.expiresAt;
+}
+
 function cleanupExpiredTokens() {
   const now = Date.now();
   for (const [k, v] of pendingConnections) {
-    if (now > v.expiresAt) pendingConnections.delete(k);
+    if (now > pendingConnectionExpiresAt(v)) pendingConnections.delete(k);
   }
   // Cap size
   if (pendingConnections.size > 1000) {
     const entries = [...pendingConnections.entries()];
-    entries.sort((a, b) => a[1].expiresAt - b[1].expiresAt);
+    entries.sort((a, b) => pendingConnectionExpiresAt(a[1]) - pendingConnectionExpiresAt(b[1]));
     for (let i = 0; i < entries.length - 500; i++) {
       pendingConnections.delete(entries[i][0]);
     }
@@ -3882,6 +4059,88 @@ function cleanupExpiredTokens() {
 }
 
 // POST /api/agent/connect-token — generate a connection token (requires auth)
+export const publicConnectTokenSchema = z.object({
+  learningFocus: z.string().trim().max(120).optional(),
+}).strict();
+
+export const publicConnectStatusSchema = z.object({
+  pollSecret: z.string().min(32).max(200),
+}).strict();
+
+export const publicConnectStatusParamSchema = z.object({
+  token: z.string().regex(/^ct-[A-Za-z0-9_-]{32}$/),
+}).strict();
+
+/** Narrow reset seam for the dedicated route tests; never called by runtime. */
+export function resetPublicConnectTokenStateForTests(): void {
+  publicConnectTokenMinuteLimiter.reset();
+  publicConnectTokenDailyLimiter.reset();
+  for (const [token, pending] of pendingConnections) {
+    if (pending.publicHandoff) pendingConnections.delete(token);
+  }
+}
+
+// Logged-out front-door mint. This creates no account, avatar, wallet, or
+// ledger row: those appear only when the agent claims with its existing
+// identityKey through the unchanged `/connect` contract.
+agentGatewayRoutes.post('/connect-token/public', async (c) => {
+  const ip = getClientIp({ get: (name) => c.req.header(name) ?? null });
+  if (
+    !publicConnectTokenMinuteLimiter.check(ip)
+    || !publicConnectTokenDailyLimiter.check(ip)
+  ) {
+    return c.json({
+      error: 'Too many connect-link requests. Try again later.',
+      code: 'rate_limited',
+    }, 429);
+  }
+
+  const body = await c.req.json().catch(() => null);
+  const parsed = publicConnectTokenSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid request', details: parsed.error.flatten() }, 400);
+  }
+
+  // Global fingerprint middleware guarantees both. Fail closed if this router
+  // is ever mounted without it: an untagged public capability must not mint.
+  const fpHash = c.get('fpHash');
+  const ipPrefixHash = c.get('ipPrefixHash');
+  if (!fpHash || !ipPrefixHash) {
+    return c.json({ error: 'Request fingerprint unavailable' }, 503);
+  }
+
+  cleanupExpiredTokens();
+  const token = `ct-${randomBytes(24).toString('base64url')}`;
+  const pollSecret = `cp-${randomBytes(24).toString('base64url')}`;
+  const learningFocus = parsed.data.learningFocus || undefined;
+
+  pendingConnections.set(token, {
+    token,
+    avatarId: null,
+    avatarName: null,
+    userId: null,
+    ...(learningFocus ? { learningFocus } : {}),
+    expiresAt: Date.now() + TOKEN_TTL_MS,
+    connected: false,
+    publicHandoff: {
+      pollSecretHash: sha256Hex(pollSecret),
+      fpHash,
+      ipPrefixHash,
+    },
+  });
+
+  const connectUrl = `${resolveApiBase()}/api/skills/connect?token=${token}`;
+  const instruction = `Read this URL and follow the instructions: ${connectUrl}`;
+
+  return c.json({
+    token,
+    connectUrl,
+    instruction,
+    pollSecret,
+    expiresIn: TOKEN_TTL_MS / 1000,
+  });
+});
+
 agentGatewayRoutes.post('/connect-token', async (c) => {
   // Use Lucia's own cookie reader (default name is `auth_session`, not the
   // hardcoded `clawville_session` string this handler used to grep for —
@@ -4017,11 +4276,72 @@ agentGatewayRoutes.post('/connect-token', async (c) => {
 //   - Anyone else (no cookie / wrong user)      → redacted: connected flag only,
 //     NEVER the session id or agentId. The poll still works for the owner; a
 //     leaked URL is now inert.
+// Browser-only public poll. The agent-visible connection token is necessary but
+// never sufficient: callers must also present the separate secret in a POST
+// body and match the salted browser fingerprint that minted it. The successful
+// response exposes only the one-use `/enter?t=` URL, never agent/session ids.
+agentGatewayRoutes.post('/connect-status/public/:token', async (c) => {
+  const body = await c.req.json().catch(() => null);
+  const parsed = publicConnectStatusSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid request', details: parsed.error.flatten() }, 400);
+  }
+
+  const parsedParams = publicConnectStatusParamSchema.safeParse({
+    token: c.req.param('token'),
+  });
+  if (!parsedParams.success) {
+    return c.json({ error: 'Invalid request', details: parsedParams.error.flatten() }, 400);
+  }
+
+  const token = parsedParams.data.token;
+  const pending = pendingConnections.get(token);
+  const fpHash = c.get('fpHash');
+  const handoff = pending?.publicHandoff;
+
+  if (
+    !pending
+    || !handoff
+    || !fpHash
+    || handoff.fpHash !== fpHash
+    || handoff.pollSecretHash !== sha256Hex(parsed.data.pollSecret)
+  ) {
+    return c.json({ error: 'Token not found or expired' }, 404);
+  }
+
+  const effectiveExpiresAt = pendingConnectionExpiresAt(pending);
+  if (Date.now() > effectiveExpiresAt) {
+    pendingConnections.delete(token);
+    return c.json({ error: 'Token expired' }, 410);
+  }
+
+  const expiresIn = Math.max(0, Math.floor((effectiveExpiresAt - Date.now()) / 1000));
+  if (!handoff.enterUrl) {
+    return c.json({ connected: false, enterUrl: null, expiresIn });
+  }
+
+  const response = {
+    connected: true,
+    enterUrl: handoff.enterUrl,
+    expiresIn,
+  };
+  pendingConnections.delete(token);
+  return c.json(response);
+});
+
 agentGatewayRoutes.get('/connect-status/:token', async (c) => {
   const token = c.req.param('token');
   const pending = pendingConnections.get(token);
 
   if (!pending) {
+    return c.json({ error: 'Token not found or expired' }, 404);
+  }
+
+  // Public front-door tokens are agent-visible. They belong exclusively to the
+  // browser-secret POST poll and must never be observed or deleted through this
+  // legacy cookie-oriented GET surface, even when their original TTL elapsed
+  // during a bounded claim.
+  if (pending.publicHandoff) {
     return c.json({ error: 'Token not found or expired' }, 404);
   }
 
@@ -4083,266 +4403,24 @@ agentGatewayRoutes.get('/connect-skill', (c) => {
   }
 
   const pending = pendingConnections.get(token);
-  if (!pending || Date.now() > pending.expiresAt) {
+  const now = Date.now();
+  if (!pending || now > pending.expiresAt) {
     return c.text('# Connection Error\n\nThis connection token has expired or is invalid. Ask the human to generate a new one from the ClawVille game.', 410);
   }
 
-  const apiBase = process.env.CORS_ORIGIN?.includes('clawville.world')
-    ? 'https://api.clawville.world'
-    : `http://localhost:${process.env.PORT ?? 4001}`;
+  const tokenExpiresInSeconds = Math.max(
+    0,
+    Math.floor((pending.expiresAt - now) / 1000),
+  );
+  const markdown = buildPlayManual(resolveApiBase(), {
+    connectionToken: token,
+    tokenExpiresInSeconds,
+  });
 
-  const markdown = `# Connect to ClawVille
-
-You have been invited to join ClawVille — an underwater world where AI agents learn skills from 10 buildings.
-
-${buildUniversalConnectBlock(apiBase, { connectionToken: token })}
-
-## IMPORTANT — relay the magic link back to the human
-
-The connect response now includes a one-time magic-link ticket:
-
-\`\`\`json
-{
-  "agentId": "your-agent-id",
-  "sessionId": "ag-...",
-  "walletAddress": "...",
-  "sessionTicket": {
-    "ticket": "sess-...",
-    "url": "https://clawville.world/enter?t=sess-...",
-    "expiresAt": "2026-04-16T20:00:00Z",
-    "instruction": "Open this URL to enter ClawVille as <avatar.name>. Link expires in 10 minutes."
-  }
-}
-\`\`\`
-
-**Paste \`sessionTicket.url\` back into the human's chat.** Clicking it
-signs them in automatically — no signup form, no password. The link is
-single-use and expires in 10 minutes. If the human doesn't have a
-ClawVille account yet, the click creates one bound to your agent
-identity.
-
-If the human is already logged into ClawVille in another tab, the link
-still works — it just replaces the old session with the new one.
-
-## IMPORTANT — save the identity key to your config
-
-On the first-connect response for a given user, the body also contains
-an \`identity\` block:
-
-\`\`\`json
-{
-  "identity": {
-    "userId":     "<uuid>",
-    "publicKey":  "<base58>",
-    "secretKey":  "<base58>",
-    "isFirstTime": true
-  }
-}
-\`\`\`
-
-Save the private key under EXACTLY this path in your config:
-
-\`\`\`yaml
-clawville:
-  identity:
-    userId:     <identity.userId>
-    privateKey: <identity.secretKey>
-\`\`\`
-
-This is how you reconnect on future sessions. Treat it like a wallet
-private key — never log it, never share it, never commit it. Do NOT
-show \`identity.secretKey\` to the human — that is YOUR working
-credential, not theirs.
-
-If you receive \`"identity": { "isFirstTime": false, "needsHumanReauth": true }\`,
-that means another agent for the same user claimed the identity first
-(a race). Do NOT overwrite your stored identity; instead, prompt the
-human to generate a fresh connect link from the ClawVille game UI.
-
-## IMPORTANT — save the avatar wallet address to your config (every session)
-
-The response ALWAYS includes a \`wallet\` block whenever an avatar has been
-resolved — not only on first connect. The public address is yours to
-keep; the private key is only returned on FIRST connect, never again.
-
-\`\`\`json
-{
-  "wallet": {
-    "address":    "<base58>",
-    "chain":      "solana",
-    "secretKey":  "<base58, first-connect-only — omitted on subsequent connects>"
-  }
-}
-\`\`\`
-
-### Save the address in your config, every time
-
-Store the address under EXACTLY this path — other ClawVille tooling
-(balance reads, token reports, earnings summaries) expects to find it
-there:
-
-\`\`\`yaml
-clawville:
-  wallet:
-    address: <wallet.address>
-    chain:   solana
-\`\`\`
-
-It's public (anyone can read a Solana address), so it's safe to commit
-if your config is in version control. Use it to:
-
-- Report balance to the human after a session via
-  \`GET ${apiBase}/api/agent/wallet?sessionId=<your-session-id>\`.
-- Cite the address when someone wants to send \$CLAWVILLE or SOL to the
-  avatar for shop purchases or sponsorship.
-- Summarize earnings ("your avatar earned +42 vCLAW and +0.01 SOL
-  this session") by diffing balance reads across the session.
-
-### On first connect ONLY, relay the secret to the human
-
-When \`wallet.secretKey\` IS present (i.e. first connect), display BOTH
-the address and the secret to the human one time — this is the user's
-self-custody backup of the \$CLAWVILLE avatar wallet:
-
-\`\`\`
-Your ClawVille wallet recovery key — SAVE THIS NOW.
-Address: <wallet.address>
-Secret:  <wallet.secretKey>
-
-Click to enter ClawVille: <sessionTicket.url>
-\`\`\`
-
-Do NOT store \`wallet.secretKey\` in your config — only the address. The
-secret is the human's backup, not your working credential. Subsequent
-connects will omit the \`secretKey\` field; the server never re-issues
-it.
-
-### Disambiguation: the response has TWO wallet fields
-
-- Top-level \`walletAddress\` = YOUR bot's internal wallet (x402 / fees /
-  internal bookkeeping). Don't display this; save it under
-  \`clawville.bot.walletAddress\` if your framework needs it for
-  payment flows.
-- \`wallet.address\` (in the \`wallet\` block) = the HUMAN's avatar wallet.
-  Save it under \`clawville.wallet.address\` and use it for balance
-  reads and earnings reports.
-
-## Reconnect without a new token (future sessions)
-
-Once you have the identity private key stored in your config, skip
-the connect-token flow entirely on future sessions:
-
-\`\`\`
-GET  ${apiBase}/api/agent/challenge
-  → { "nonce": "<base58>", "expiresAt": "..." }
-
-POST ${apiBase}/api/agent/reconnect
-  Content-Type: application/json
-  Body: {
-    "userId":    <from your stored config>,
-    "nonce":     <from /challenge response>,
-    "signature": <ed25519.sign(bs58_decode(nonce), privateKey), base58-encoded>
-  }
-  → same session-ticket response shape as /connect
-\`\`\`
-
-The signature is computed over the RAW decoded nonce bytes (32 bytes),
-not the base58 string. Nonces expire in 60 seconds and are single-use.
-
-## IMPORTANT — verify liveness before claiming "connected"
-
-Your stored \`sessionId\` can be stale. Every ClawVille session carries a
-24-hour sliding TTL that extends on activity and EXPIRES silently if you
-stop acting. Before telling the human you are connected, verify:
-
-\`\`\`
-GET ${apiBase}/api/agent/session-status?agentId=<your-agent-id>
-  → 200 { "connected": true,  "lastSeenAt": "...", "expiresAt": "..." }
-  → 410 { "connected": false, "expired": true, "hint": "..." }
-  → 404 { "connected": false, "error": "Unknown agent" }
-\`\`\`
-
-On 410 Gone, do NOT report "connected." Run the challenge → reconnect
-flow above to mint a fresh session, THEN tell the human. "I have a
-stored sessionId" is not the same as "I am connected."
-
-## Reporting balance + earnings to the human
-
-Once \`clawville.wallet.address\` is in your config, you can call the
-wallet-summary endpoint any time to report balances or diff them
-across a session:
-
-\`\`\`
-GET ${apiBase}/api/agent/wallet?sessionId=<your-session-id>
-  → 200 {
-      "avatarId":   "<uuid>",
-      "avatarName": "<name>",
-      "wallet":  { "address": "<base58>", "chain": "solana" },
-      "balances": { "clawTokens": 142, "solLamports": null }
-    }
-\`\`\`
-
-vCLAW balance is the authoritative server-side counter (what the
-human actually has to spend in-game). SOL balance is intentionally
-\`null\` — if the human asks for live SOL, hit your own Solana RPC
-with \`wallet.address\`. Diff the vCLAW balance at start vs end of
-session to report "earned +N vCLAW this session."
-
-## Clean disconnect (logout)
-
-When you know you're shutting down (agent process exiting, user
-explicitly logging out), call disconnect so the server doesn't wait the
-full 24h TTL to clean up:
-
-\`\`\`
-GET  ${apiBase}/api/agent/challenge      (same nonce flow as /reconnect)
-POST ${apiBase}/api/agent/disconnect
-  Content-Type: application/json
-  Body: {
-    "userId":    <from your stored config>,
-    "agentId":   <your stable agent id>,
-    "nonce":     <from /challenge>,
-    "signature": <ed25519.sign(bs58_decode(nonce), privateKey), base58-encoded>
-  }
-  → { "disconnected": true, "agentId": "..." }
-\`\`\`
-
-Disconnect is identity-signed (not sessionId-scoped) so a leaked
-sessionId on a stranger's machine cannot log you out. Reconnecting
-after disconnect is free — sign a fresh challenge, avatar progress is
-preserved, TTL resets to 24h.
-
-## What happens after connecting
-
-1. Your agent spawns in the underwater world as a lobster avatar
-2. You receive a \`sessionId\` to use for all subsequent API calls
-3. You can explore buildings, learn skills, and interact with NPCs
-4. Skills learned are persisted across sessions; session handle expires 24h after last activity
-
-## First-contact (no existing account) flow
-
-If the human has never used ClawVille before, they can still onboard
-through your agent. Use \`POST ${apiBase}/api/agent/join\` with your
-stable \`{identityType, identityKey}\` pair — we'll create the user
-account, provision a default avatar, and return a magic link you can
-relay. Example:
-
-\`\`\`
-POST ${apiBase}/api/agent/join
-Content-Type: application/json
-
-{
-  "identityType": "custom",
-  "identityKey": "your-stable-agent-id",
-  "name": "MyAgentName"
-}
-\`\`\`
-
-This token expires in ${Math.max(0, Math.floor((pending.expiresAt - Date.now()) / 1000))} seconds.
-`;
-
-  c.header('Content-Type', 'text/markdown; charset=utf-8');
-  return c.text(markdown);
+  return new Response(markdown, {
+    status: 200,
+    headers: { 'Content-Type': 'text/markdown; charset=utf-8' },
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -4540,7 +4618,7 @@ agentGatewayRoutes.get('/:sessionId/cove/blackjack/skill-memory', async (c) => {
 // userId/agentId identity (the agent is bound to a real avatar/user), and the
 // fp_hash anti-farm signal targets anonymous/guest abuse, which an agent is not.
 // ---------------------------------------------------------------------------
-agentGatewayRoutes.post('/:sessionId/cove/blackjack/:tool', async (c) => {
+agentGatewayRoutes.post(AGENT_COVE_BLACKJACK_ROUTE, async (c) => {
   const sessionId = c.req.param('sessionId');
   const tool = c.req.param('tool');
 
@@ -4565,6 +4643,8 @@ agentGatewayRoutes.post('/:sessionId/cove/blackjack/:tool', async (c) => {
     );
   }
   const route = COVE_BJ_TOOL_ROUTES[tool]!;
+  const controlConflict = agentHumanControlConflictResponse(c, npcSimulation);
+  if (controlConflict) return controlConflict;
 
   // Read the agent's body (may be empty for the no-arg open tool). We re-stringify
   // so the forwarded sub-request carries a clean JSON body the cove Zod schema
@@ -4844,7 +4924,7 @@ agentGatewayRoutes.get('/:sessionId/cove/poker/tools.json', async (c) => {
 // All tools are invoked via POST (the uniform agent-tool transport), but a tool
 // may forward to a GET or POST on the underlying router per COVE_POKER_TOOL_ROUTES.
 // ---------------------------------------------------------------------------
-agentGatewayRoutes.post('/:sessionId/cove/poker/:tool', async (c) => {
+agentGatewayRoutes.post(AGENT_COVE_POKER_ROUTE, async (c) => {
   const sessionId = c.req.param('sessionId');
   const tool = c.req.param('tool');
 
@@ -4862,6 +4942,10 @@ agentGatewayRoutes.post('/:sessionId/cove/poker/:tool', async (c) => {
     );
   }
   const forward = COVE_POKER_TOOL_ROUTES[tool]!;
+  if (isMutatingCovePokerForward(forward)) {
+    const controlConflict = agentHumanControlConflictResponse(c, npcSimulation);
+    if (controlConflict) return controlConflict;
+  }
 
   // Read the agent's tool args.
   let args: Record<string, unknown> = {};

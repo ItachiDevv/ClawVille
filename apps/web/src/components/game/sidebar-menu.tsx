@@ -1092,7 +1092,7 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
               <SidebarRow
                 icon="🔑"
                 label="Log In"
-                onClick={runAction(() => router.push('/login'))}
+                onClick={runAction(() => setAgentConnectModalOpen(true, 'login'))}
               />
               <SidebarRow
                 icon="✨"

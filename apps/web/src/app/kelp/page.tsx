@@ -122,6 +122,10 @@ class KelpRealmCanvasErrorBoundary extends Component<
 
 const KelpRealmCanvas = dynamic(() => import('@/components/three/KelpRealmCanvas').catch((err: unknown) => {
   console.error('[KelpRealm] canvas chunk failed to load:', err);
+  void import('@/lib/three/kelp-render-failure-beacon')
+    .then(({ reportKelpRenderFailure, describeErrorForBeacon }) =>
+      reportKelpRenderFailure('chunk-load-failed', describeErrorForBeacon(err)))
+    .catch(() => undefined);
   throw err;
 }), {
   ssr: false,

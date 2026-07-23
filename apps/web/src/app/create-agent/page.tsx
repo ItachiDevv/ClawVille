@@ -17,6 +17,8 @@ import {
   type LegacySpecies,
 } from '@/lib/three/agent-model-registry';
 import { SetupGate } from '@/components/create-agent/setup-gate';
+import { DescentAtmosphere } from '@/components/create-agent/descent-atmosphere';
+import { DescentRail } from '@/components/create-agent/descent-rail';
 
 // ── Enum validation sets (audit Fix D) ──────────────────────────────────────
 const VALID_COLOR_IDS: ReadonlySet<string> = new Set(PICKER_COLORS.map((c) => c.id));
@@ -171,16 +173,7 @@ export default function CreateAgentPage() {
   const customizeMode = !isGuestAccount && !!avatar;
 
   // --- Tab + gate state ---------------------------------------------------
-  const [selectedTab, setSelectedTab] = useState<TabId>(() => {
-    const s = readSessionStep1();
-    const fromSession = mapCategoryToTab(s?.category) ?? null;
-    if (fromSession) return fromSession;
-    // Default to whichever harness matches the persisted value, else Milady.
-    if (s?.harness && (TABS as ReadonlyArray<TabMeta>).some((t) => t.id === s.harness)) {
-      return s.harness as TabId;
-    }
-    return 'milady';
-  });
+  const [selectedTab, setSelectedTab] = useState<TabId>('milady');
 
   const [hasAgentByTab, setHasAgentByTab] = useState<Record<TabId, boolean | null>>(() => ({
     milady:   true,   // Hosted — picker renders unconditionally
@@ -194,21 +187,10 @@ export default function CreateAgentPage() {
   }));
 
   // --- Avatar / color / identity state -----------------------------------
-  const [selectedModel, setSelectedModel] = useState<ModelKey>(() => {
-    const s = readSessionStep1();
-    if (s?.modelKey && s.modelKey in MODEL_REGISTRY) return s.modelKey as ModelKey;
-    return 'lobster';
-  });
-  const [selectedColor, setSelectedColor] = useState<PickerColorId>(() => {
-    const s = readSessionStep1();
-    if (s?.color && VALID_COLOR_IDS.has(s.color)) return s.color as PickerColorId;
-    return 'green';
-  });
-  const [agentName, setAgentName] = useState<string>(() => readSessionStep1()?.name ?? '');
-  const [gender, setGender] = useState<'male' | 'female'>(() => {
-    const s = readSessionStep1();
-    return s?.gender === 'female' ? 'female' : 'male';
-  });
+  const [selectedModel, setSelectedModel] = useState<ModelKey>('lobster');
+  const [selectedColor, setSelectedColor] = useState<PickerColorId>('green');
+  const [agentName, setAgentName] = useState<string>('');
+  const [gender, setGender] = useState<'male' | 'female'>('male');
   const [nameStatus, setNameStatus] = useState<{ available: boolean; reason?: string } | null>(null);
 
   const submittingRef = useRef(false);
@@ -230,10 +212,6 @@ export default function CreateAgentPage() {
         ? (avatar!.harness as TabId)
         : 'milady'))
     : null;
-  useEffect(() => {
-    if (lockedTab && selectedTab !== lockedTab) setSelectedTab(lockedTab);
-  }, [lockedTab, selectedTab]);
-
   const currentTabMeta = TABS.find((t) => t.id === selectedTab)!;
   const harness: HarnessId = selectedTab; // 1:1 with the tab id
   // Customize mode bypasses the SetupGate — the avatar (and its harness
@@ -274,10 +252,35 @@ export default function CreateAgentPage() {
     }
   }, [selectedTab, selectedModel]);
 
+  // Restore the draft after mount so SSR and the first client render match.
+  // Running after the initial pool repair lets the draft win that mount batch.
+  useEffect(() => {
+    const s = readSessionStep1();
+    if (!s) return;
+    const fromSession = mapCategoryToTab(s.category);
+    const validHarness = s.harness &&
+      (TABS as ReadonlyArray<TabMeta>).some((t) => t.id === s.harness);
+    setSelectedTab(fromSession ?? (validHarness ? s.harness as TabId : 'milady'));
+    setSelectedModel(
+      s.modelKey && s.modelKey in MODEL_REGISTRY ? s.modelKey as ModelKey : 'lobster',
+    );
+    setSelectedColor(
+      s.color && VALID_COLOR_IDS.has(s.color) ? s.color as PickerColorId : 'green',
+    );
+    setAgentName(s.name ?? '');
+    setGender(s.gender === 'female' ? 'female' : 'male');
+  }, []);
+
+  // Customize mode's immutable harness wins after draft hydration.
+  useEffect(() => {
+    if (lockedTab && selectedTab !== lockedTab) setSelectedTab(lockedTab);
+  }, [lockedTab, selectedTab]);
+
   // --- Customize-mode prefill (P2) ----------------------------------------
   // When the provisioned avatar resolves, hydrate the form from it — ONCE.
   // An in-progress step-1 draft in sessionStorage wins (back-nav from step 2
   // or a tab reload mid-edit: the user was already editing, don't clobber).
+  // The direct storage check keeps that precedence within the mount batch.
   const prefilledFromAvatarRef = useRef(false);
   useEffect(() => {
     if (!avatar || prefilledFromAvatarRef.current) return;
@@ -512,36 +515,24 @@ export default function CreateAgentPage() {
   // Render
   // ========================================================================
   return (
-    <div className="relative min-h-screen px-4 py-8 bg-[#050d17] overflow-x-hidden">
-      {/* Ambient atmosphere */}
-      <div
-        className="pointer-events-none absolute inset-0"
-        style={{
-          background:
-            'radial-gradient(ellipse at 20% 80%, rgba(0,220,255,0.08) 0%, transparent 50%), radial-gradient(ellipse at 80% 20%, rgba(0,140,220,0.06) 0%, transparent 55%)',
-        }}
-      />
-      <div
-        className="pointer-events-none absolute inset-0 opacity-[0.035] mix-blend-overlay"
-        style={{
-          backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")`,
-        }}
-      />
+    <div className="relative min-h-screen px-4 py-8 bg-[#04121f] overflow-x-hidden">
+      <DescentAtmosphere depth="forge" />
 
       <div className="relative max-w-6xl mx-auto">
+        <DescentRail stage={2} />
         {/* ── Header ──────────────────────────────────────────────────── */}
         <div className="flex flex-col items-center mb-6">
           <div className="font-mono text-[10px] uppercase tracking-[0.4em] text-white/35 mb-2">
-            ClawVille <span className="text-white/15">//</span> Agent Forge
+            The Forge <span className="text-white/15">//</span> <span className="text-[#ffcf94]/70">-120m</span>
           </div>
           <h1 className="font-clawville text-3xl md:text-4xl text-white drop-shadow-[0_0_20px_rgba(0,229,255,0.25)] tracking-widest">
             {customizeMode ? 'CUSTOMIZE YOUR AGENT' : 'CAST YOUR AGENT'}
           </h1>
-          {customizeMode && (
-            <p className="mt-2 text-[11px] text-white/50 font-mono uppercase tracking-wider text-center">
-              Your agent was provisioned at signup — fine-tune it here.
-            </p>
-          )}
+          <p className="mt-2 text-[11px] text-white/45 font-mono uppercase tracking-wider text-center">
+            {customizeMode
+              ? 'Your agent was provisioned at signup. Fine-tune it here.'
+              : 'Pick a body, name it, and it wakes up in the reef.'}
+          </p>
         </div>
 
         {/* ── Tab bar — customize mode locks it to the avatar's immutable
@@ -554,7 +545,7 @@ export default function CreateAgentPage() {
               <button
                 key={tab.id}
                 onClick={() => setSelectedTab(tab.id)}
-                className={`px-5 py-2.5 rounded-xl border transition-all text-left min-w-[150px] ${
+                className={`px-4 py-2 rounded-xl border transition-all text-left min-w-[130px] ${
                   isActive
                     ? (accent === 'pink'
                         ? 'border-pink-400/60 bg-pink-500/15 shadow-[0_0_14px_rgba(255,130,200,0.2)]'
@@ -597,8 +588,8 @@ export default function CreateAgentPage() {
           <>
             {/* Two-pane picker */}
             <div className="grid lg:grid-cols-[minmax(0,360px)_minmax(0,1fr)] gap-6 mb-6">
-              {/* ─── Left pane: filtered picker ─── */}
-              <div className="space-y-5">
+              {/* ─── Picker ─── */}
+              <div className="order-1 lg:col-start-1 lg:row-start-1">
                 <div>
                   <div className="flex items-baseline justify-between mb-2">
                     <div className={`font-mono text-[10px] uppercase tracking-[0.25em] ${
@@ -614,8 +605,100 @@ export default function CreateAgentPage() {
                 </div>
               </div>
 
-              {/* ─── Right pane: shrine preview ─── */}
-              <div className="flex flex-col min-w-0">
+              {/* ── Identity: name the body you just chose ─────────── */}
+              <div className="order-3 lg:order-none h-fit lg:col-start-1 lg:row-start-2 relative rounded-2xl border border-white/10 bg-[#071626]/85 backdrop-blur-xl p-5 space-y-4 shadow-[0_0_40px_rgba(0,0,0,0.35)]">
+                  <div className="flex items-center justify-between pb-2.5 border-b border-white/8">
+                    <div className="font-mono text-[9px] uppercase tracking-[0.3em] text-white/40">
+                      identity
+                    </div>
+                    <div className={`font-mono text-[9px] uppercase tracking-[0.3em] px-2 py-0.5 rounded-full border ${
+                      harness === 'milady'
+                        ? 'border-pink-300/40 bg-pink-500/10 text-pink-200'
+                        : 'border-cyan-300/40 bg-cyan-500/10 text-cyan-200'
+                    }`}>
+                      {harness}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-white/45 text-[10px] font-mono uppercase tracking-[0.25em] mb-1.5">
+                      Name
+                    </label>
+                    <input
+                      type="text"
+                      value={agentName}
+                      // Audit follow-up — strip non-alphanumeric on input so
+                      // the user can't type a name the server's Zod schema
+                      // (`/^[a-zA-Z0-9]+$/`) will silently reject. Without
+                      // this the check-name endpoint returned "available:
+                      // false" for a format violation and surfaced as
+                      // "name taken" — confusing.
+                      onChange={(e) => setAgentName(e.target.value.replace(/[^a-zA-Z0-9]/g, ''))}
+                      maxLength={20}
+                      className="w-full px-4 py-2.5 rounded-lg bg-[#0a2236]/70 border border-cyan-200/15 text-white placeholder:text-white/25 focus:outline-none focus:border-cyan-300/60 focus:shadow-[0_0_16px_rgba(53,224,255,0.14)] transition-all font-mono text-sm"
+                      placeholder="Name your agent"
+                    />
+                    {agentName.length >= 3 && nameStatus && (
+                      <p className={`text-[10px] mt-1.5 font-mono uppercase tracking-wider ${nameStatus.available ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {nameStatus.available
+                          ? `✓ ${agentName} is available`
+                          : `✗ ${nameStatus.reason || 'name taken'}`}
+                      </p>
+                    )}
+                    {agentName.length > 0 && agentName.length < 3 && (
+                      <p className="text-[10px] mt-1.5 text-white/30 font-mono uppercase tracking-wider">
+                        min 3 characters
+                      </p>
+                    )}
+                    {agentName.length === 0 && (
+                      <p className="text-[10px] mt-1.5 text-white/25 font-mono uppercase tracking-wider">
+                        letters + numbers only · max 20
+                      </p>
+                    )}
+                  </div>
+
+                  <div>
+                    <div id="forge-gender-label" className="block text-white/45 text-[10px] font-mono uppercase tracking-[0.25em] mb-1.5">
+                      Gender
+                    </div>
+                    <div role="group" aria-labelledby="forge-gender-label" className="grid grid-cols-2 gap-2">
+                      {(['male', 'female'] as const).map((g) => (
+                        <button
+                          key={g}
+                          type="button"
+                          onClick={() => setGender(g)}
+                          aria-pressed={gender === g}
+                          className={`py-2 rounded-lg border font-mono text-xs uppercase tracking-wider transition-all ${
+                            gender === g
+                              ? 'border-cyan-400/50 bg-cyan-500/15 text-cyan-200 shadow-[0_0_12px_rgba(0,229,255,0.12)]'
+                              : 'border-white/10 bg-white/[0.04] text-white/45 hover:border-white/25 hover:text-white/70'
+                          }`}
+                        >
+                          {g}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={handleNext}
+                    disabled={
+                      isSubmitting ||
+                      !agentName ||
+                      agentName.length < 3 ||
+                      nameStatus?.available !== true
+                    }
+                    className="w-full py-3.5 rounded-lg font-clawville text-sm uppercase tracking-[0.25em] transition-all disabled:opacity-25 disabled:cursor-not-allowed text-white bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 shadow-[0_0_20px_rgba(0,229,255,0.2)] hover:shadow-[0_0_28px_rgba(0,229,255,0.35)]"
+                  >
+                    {isSubmitting ? 'Descending...' : 'Give It a Soul'}
+                  </button>
+                  <p className="text-center font-mono text-[9px] uppercase tracking-[0.25em] text-white/25">
+                    next: archetype + personality · <span className="text-[#ffcf94]/60">-400m</span>
+                  </p>
+                </div>
+
+              {/* ─── Preview pane ─── */}
+              <div className="order-2 lg:order-none flex flex-col min-w-0 lg:col-start-2 lg:row-start-1 lg:row-span-2">
                 <div className="relative flex-1 min-h-[420px] lg:min-h-[560px] rounded-2xl overflow-hidden border border-white/8">
                   <div
                     className="absolute inset-0"
@@ -698,99 +781,6 @@ export default function CreateAgentPage() {
               </div>
             </div>
 
-            {/* ── Identity config card ───────────────────────────────── */}
-            <div className="relative w-full max-w-3xl mx-auto bg-[#08111d]/95 border border-white/10 rounded-2xl p-6 backdrop-blur-xl shadow-[0_0_40px_rgba(0,0,0,0.4)] space-y-5">
-              {/* Header strip */}
-              <div className="flex items-center justify-between pb-3 border-b border-white/8">
-                <div className="font-mono text-[9px] uppercase tracking-[0.3em] text-white/40">
-                  § identity
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="font-mono text-[9px] uppercase tracking-[0.3em] text-white/40">
-                    harness:
-                  </div>
-                  <div className={`font-mono text-[9px] uppercase tracking-[0.3em] px-2 py-0.5 rounded-full border ${
-                    harness === 'milady'
-                      ? 'border-pink-300/40 bg-pink-500/10 text-pink-200'
-                      : 'border-cyan-300/40 bg-cyan-500/10 text-cyan-200'
-                  }`}>
-                    {harness}
-                  </div>
-                </div>
-              </div>
-
-              {/* Name + Gender row */}
-              <div className="flex flex-col sm:flex-row gap-4">
-                <div className="flex-1">
-                  <label className="block text-white/45 text-[10px] font-mono uppercase tracking-[0.25em] mb-1.5">
-                    ⟐ agent_name
-                  </label>
-                  <input
-                    type="text"
-                    value={agentName}
-                    // Audit follow-up — strip non-alphanumeric on input so
-                    // the user can't type a name the server's Zod schema
-                    // (`/^[a-zA-Z0-9]+$/`) will silently reject. Without
-                    // this the check-name endpoint returned "available:
-                    // false" for a format violation and surfaced as
-                    // "name taken" — confusing.
-                    onChange={(e) => setAgentName(e.target.value.replace(/[^a-zA-Z0-9]/g, ''))}
-                    maxLength={20}
-                    className="w-full px-4 py-2.5 rounded-lg bg-white/[0.04] border border-white/10 text-white placeholder:text-white/20 focus:outline-none focus:border-cyan-400/60 focus:shadow-[0_0_14px_rgba(0,229,255,0.12)] transition-all font-mono text-sm"
-                    placeholder="name your agent…"
-                  />
-                  {agentName.length >= 3 && nameStatus && (
-                    <p className={`text-[10px] mt-1.5 font-mono uppercase tracking-wider ${nameStatus.available ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {nameStatus.available
-                        ? `✓ ${agentName} is available`
-                        : `✗ ${nameStatus.reason || 'name taken'}`}
-                    </p>
-                  )}
-                  {agentName.length > 0 && agentName.length < 3 && (
-                    <p className="text-[10px] mt-1.5 text-white/30 font-mono uppercase tracking-wider">
-                      min 3 characters
-                    </p>
-                  )}
-                  {agentName.length === 0 && (
-                    <p className="text-[10px] mt-1.5 text-white/25 font-mono uppercase tracking-wider">
-                      letters + numbers only · max 20
-                    </p>
-                  )}
-                </div>
-
-                <div className="sm:w-44">
-                  <label className="block text-white/45 text-[10px] font-mono uppercase tracking-[0.25em] mb-1.5">
-                    ⟐ gender
-                  </label>
-                  <select
-                    value={gender}
-                    onChange={(e) => setGender(e.target.value as 'male' | 'female')}
-                    className="w-full px-4 py-2.5 rounded-lg bg-white/[0.04] border border-white/10 text-white focus:outline-none focus:border-cyan-400/60 transition-all font-mono text-sm uppercase tracking-wider"
-                  >
-                    <option value="male" className="bg-[#0a1628]">MALE</option>
-                    <option value="female" className="bg-[#0a1628]">FEMALE</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* CTA */}
-              <button
-                onClick={handleNext}
-                disabled={
-                  isSubmitting ||
-                  !agentName ||
-                  agentName.length < 3 ||
-                  nameStatus?.available !== true
-                }
-                className="w-full py-3.5 rounded-lg font-clawville text-sm uppercase tracking-[0.25em] transition-all disabled:opacity-25 disabled:cursor-not-allowed text-white bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 shadow-[0_0_20px_rgba(0,229,255,0.2)] hover:shadow-[0_0_28px_rgba(0,229,255,0.35)]"
-              >
-                <span className="inline-flex items-center gap-2">
-                  <span className="opacity-60">→</span>
-                  <span>Choose Personality</span>
-                  <span className="opacity-60">→</span>
-                </span>
-              </button>
-            </div>
           </>
         )}
       </div>

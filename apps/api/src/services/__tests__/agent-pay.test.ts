@@ -7,11 +7,21 @@ import type {
   PreparedCustodialExactPayment,
 } from '../custodial-x402';
 
-const { payAgent } = await import('../agent-pay');
+const {
+  fulfillReconciledAgentPayment,
+  payAgent,
+  resetAgentPayFacilitatorCircuitForTests,
+  resolveAgentPayBreakerCooldownMs,
+  resolveAgentPayBreakerThreshold,
+  resolveAgentPayDailySendUsdCents,
+  resolveAgentPayDailyReceiveUsdCents,
+} = await import('../agent-pay');
 
 const SENDER = '11111111-1111-4111-8111-111111111111';
+const SENDER_TWO = '33333333-3333-4333-8333-333333333333';
 const RECIPIENT = '22222222-2222-4222-8222-222222222222';
 const SENDER_WALLET = '11111111111111111111111111111111';
+const SENDER_TWO_WALLET = '33333333333333333333333333333333';
 const RECIPIENT_WALLET = '22222222222222222222222222222222';
 const TX = 'tx-agent-pay-1';
 
@@ -32,6 +42,7 @@ function settledOutcome(signature = TX): ExecutePreparedExactPaymentOutcome {
     kind: 'settled',
     signature,
     payer: SENDER_WALLET,
+    payAi: { attempted: true, providerFailure: false },
     result: {
       settled: true,
       isValid: true,
@@ -49,6 +60,7 @@ function failedOutcome(): ExecutePreparedExactPaymentOutcome {
     kind: 'definitive_failure',
     stage: 'verify',
     verifyPassed: false,
+    payAi: { attempted: true, providerFailure: false },
     reason: 'insufficient_funds',
     payer: SENDER_WALLET,
     result: {
@@ -62,6 +74,7 @@ function ambiguousOutcome(): ExecutePreparedExactPaymentOutcome {
   return {
     kind: 'ambiguous',
     verifyPassed: true,
+    payAi: { attempted: true, providerFailure: false },
     reason: 'facilitator_settle_error',
     payer: SENDER_WALLET,
     signature: null,
@@ -72,20 +85,100 @@ function ambiguousOutcome(): ExecutePreparedExactPaymentOutcome {
   };
 }
 
+function unavailableOutcome(): ExecutePreparedExactPaymentOutcome {
+  return {
+    kind: 'definitive_failure',
+    stage: 'verify',
+    verifyPassed: false,
+    facilitatorOutage: true,
+    payAi: { attempted: true, providerFailure: true },
+    reason: 'facilitator_verify_error',
+    payer: SENDER_WALLET,
+    result: {
+      settled: false, isValid: false, txSignature: null, network: null,
+      payer: SENDER_WALLET, failureReason: 'facilitator_verify_error', raw: {},
+      facilitatorFailure: 'unavailable',
+    },
+  };
+}
+
+function meridianSettledOutcome(signature: string): ExecutePreparedExactPaymentOutcome {
+  return {
+    kind: 'meridian_settled',
+    signature,
+    payer: SENDER_WALLET,
+    payAi: { attempted: true, providerFailure: true },
+    amounts: {
+      grossUsdcAtomic: 1_000_000n,
+      platformFeeUsdcAtomic: 0n,
+      treasuryFeeUsdcAtomic: 0n,
+      netUsdcAtomic: 1_000_000n,
+    },
+    result: {
+      settled: true,
+      isValid: true,
+      txSignature: signature,
+      network: requirement().network,
+      payer: SENDER_WALLET,
+      failureReason: null,
+      outage: false,
+      httpStatus: 200,
+      raw: {},
+    },
+  };
+}
+
 function harness(options: {
   balance?: bigint;
   outcome?: ExecutePreparedExactPaymentOutcome;
   failFirstFulfillment?: boolean;
   executeThrows?: boolean;
   captureReturnsLostAfterWriting?: boolean;
+  now?: Date;
+  execute?: (call: number) => Promise<ExecutePreparedExactPaymentOutcome>;
+  feePayerAvailable?: boolean;
 } = {}) {
   const rows = new Map<string, AgentPayment>();
   let ids = 0;
   let executeCalls = 0;
   let mintCalls = 0;
+  let recipientCalls = 0;
+  let walletLookupCalls = 0;
+  let admissionCalls = 0;
+  let balanceCalls = 0;
+  let signingWalletCalls = 0;
+  let feePayerCalls = 0;
+  let prepareCalls = 0;
+  let alertCalls = 0;
+  let nowMs = (options.now ?? new Date()).getTime();
   const mintBackings: unknown[] = [];
   let failFulfillment = options.failFirstFulfillment ?? false;
   let fulfillmentBarrier = Promise.resolve();
+
+  function seedRow(overrides: Partial<AgentPayment> = {}): AgentPayment {
+    const now = options.now ?? new Date();
+    const row = {
+      id: `00000000-0000-4000-8000-${String(++ids).padStart(12, '0')}`,
+      senderAvatarId: SENDER,
+      recipientAvatarId: RECIPIENT,
+      recipientKind: 'avatar',
+      recipientRef: RECIPIENT,
+      senderWallet: SENDER_WALLET,
+      recipientWallet: RECIPIENT_WALLET,
+      usdCents: 100,
+      usdcAtomic: '1000000',
+      network: 'devnet',
+      idempotencyKey: `seed-${ids}`,
+      status: 'pending', settlingId: null, settlingStartedAt: null,
+      txSignature: null, reconcileTxSignature: null, settlePayer: null,
+      earnedVclaw: 0, earnedUsdBasis: null, earnedLedgerId: null,
+      fulfilledAt: null, failureReason: null, createdAt: now, updatedAt: now,
+      metadata: {},
+      ...overrides,
+    } as AgentPayment;
+    rows.set(row.id, row);
+    return row;
+  }
 
   const db: AgentPayDb = {
     async findByIdempotency(sender, key) {
@@ -94,35 +187,51 @@ function harness(options: {
       ) ?? null;
     },
     async resolveRecipient(recipient: AgentPayRecipient) {
+      recipientCalls += 1;
       if (recipient.kind === 'avatar'
-        && (recipient.avatarId === RECIPIENT || recipient.avatarId === SENDER)) {
+        && [RECIPIENT, SENDER, SENDER_TWO].includes(recipient.avatarId)) {
         return { avatarId: recipient.avatarId };
       }
       return { error: 'not_found' };
     },
     async findAvatarWallet(avatarId) {
+      walletLookupCalls += 1;
       if (avatarId === SENDER) return { publicKey: SENDER_WALLET };
+      if (avatarId === SENDER_TWO) return { publicKey: SENDER_TWO_WALLET };
       if (avatarId === RECIPIENT) return { publicKey: RECIPIENT_WALLET };
       return null;
     },
-    async insertPending(input) {
+    async admitPending(input, limits, dayStart) {
+      admissionCalls += 1;
       const prior = [...rows.values()].find(
         (r) => r.senderAvatarId === input.senderAvatarId
           && r.idempotencyKey === input.idempotencyKey,
       );
-      if (prior) return null;
-      const now = new Date();
-      const row = {
-        id: `00000000-0000-4000-8000-${String(++ids).padStart(12, '0')}`,
-        status: 'pending', settlingId: null, settlingStartedAt: null,
-        txSignature: null, reconcileTxSignature: null, settlePayer: null,
-        earnedVclaw: 0, earnedUsdBasis: null, earnedLedgerId: null,
-        fulfilledAt: null, failureReason: null, createdAt: now, updatedAt: now,
-        metadata: {},
-        ...input,
-      } as AgentPayment;
-      rows.set(row.id, row);
-      return row;
+      if (prior) return { kind: 'existing', row: prior };
+      const counted = [...rows.values()].filter(
+        (row) => row.status !== 'failed' && row.createdAt >= dayStart,
+      );
+      const sent = counted
+        .filter((row) => row.senderAvatarId === input.senderAvatarId)
+        .reduce((sum, row) => sum + row.usdCents, 0);
+      const received = counted
+        .filter((row) => row.recipientAvatarId === input.recipientAvatarId)
+        .reduce((sum, row) => sum + row.usdCents, 0);
+      if (sent > limits.sendUsdCents - input.usdCents) {
+        return {
+          kind: 'daily_cap_exceeded',
+          cap: limits.sendUsdCents,
+          usedTodayUsdCents: sent,
+        };
+      }
+      if (received > limits.receiveUsdCents - input.usdCents) {
+        return {
+          kind: 'daily_cap_exceeded',
+          cap: limits.receiveUsdCents,
+          usedTodayUsdCents: received,
+        };
+      }
+      return { kind: 'inserted', row: seedRow({ ...input, createdAt: options.now ?? new Date() }) };
     },
     async getById(id) { return rows.get(id) ?? null; },
     async claimPending(id, settlingId) {
@@ -197,12 +306,25 @@ function harness(options: {
   };
   const deps: AgentPayDeps = {
     db,
-    readUsdcBalance: async () => options.balance ?? 10_000_000n,
-    loadSigningWallet: async () => ({ publicKey: SENDER_WALLET, secretKey: new Uint8Array(64) }),
-    prepare: async () => prepared,
+    readUsdcBalance: async () => {
+      balanceCalls += 1;
+      return options.balance ?? 10_000_000n;
+    },
+    loadSigningWallet: async (avatarId) => {
+      signingWalletCalls += 1;
+      return {
+        publicKey: avatarId === SENDER_TWO ? SENDER_TWO_WALLET : SENDER_WALLET,
+        secretKey: new Uint8Array(64),
+      };
+    },
+    prepare: async () => {
+      prepareCalls += 1;
+      return prepared;
+    },
     execute: async () => {
       executeCalls += 1;
       if (options.executeThrows) throw new Error('synthetic ambiguous transport failure');
+      if (options.execute) return options.execute(executeCalls);
       return options.outcome ?? settledOutcome();
     },
     mintEarned: async (input) => {
@@ -210,16 +332,34 @@ function harness(options: {
       mintBackings.push(input.backing);
       return { ledgerId: `ledger-${mintCalls}`, balanceAfter: 0 };
     },
-    resolveFeePayer: async () => '33333333333333333333333333333333',
+    resolveFeePayer: async () => {
+      feePayerCalls += 1;
+      return options.feePayerAvailable === false
+        ? null
+        : '33333333333333333333333333333333';
+    },
     resolveRail: () => ({ network: 'devnet', rpcUrl: 'http://rpc.test', allowed: true }),
+    alert: async () => { alertCalls += 1; },
     randomId: () => `00000000-0000-4000-9000-${String(ids).padStart(12, '0')}`,
+    now: () => new Date(nowMs),
   };
   return {
     deps,
+    db,
     rows,
     executeCalls: () => executeCalls,
     mintCalls: () => mintCalls,
+    recipientCalls: () => recipientCalls,
+    walletLookupCalls: () => walletLookupCalls,
+    admissionCalls: () => admissionCalls,
+    balanceCalls: () => balanceCalls,
+    signingWalletCalls: () => signingWalletCalls,
+    feePayerCalls: () => feePayerCalls,
+    prepareCalls: () => prepareCalls,
+    alertCalls: () => alertCalls,
+    advanceMs: (ms: number) => { nowMs += ms; },
     mintBackings,
+    seedRow,
   };
 }
 
@@ -233,8 +373,13 @@ const request = (overrides: Partial<Parameters<typeof payAgent>[0]> = {}) => ({
 
 describe('agent-pay durable x402 machine', () => {
   beforeEach(() => {
+    resetAgentPayFacilitatorCircuitForTests();
     delete process.env.AGENT_PAY_MAX_USD_CENTS;
     delete process.env.AGENT_PAY_STALE_MS;
+    delete process.env.AGENT_PAY_DAILY_SEND_USD_CENTS;
+    delete process.env.AGENT_PAY_DAILY_RECEIVE_USD_CENTS;
+    delete process.env.AGENT_PAY_BREAKER_THRESHOLD;
+    delete process.env.AGENT_PAY_BREAKER_COOLDOWN_MS;
   });
 
   it('settles, mints full-basis EARNED once, and replays without a second settle/mint', async () => {
@@ -343,5 +488,329 @@ describe('agent-pay durable x402 machine', () => {
     expect(resumed).toMatchObject({ ok: true, earnedVclaw: 100 });
     expect(h.executeCalls()).toBe(1);
     expect(h.mintCalls()).toBe(1);
+  });
+
+  it('strictly parses daily-cap env values with defaults and a 100-cent floor', () => {
+    expect(resolveAgentPayDailySendUsdCents()).toBe(2_000);
+    expect(resolveAgentPayDailyReceiveUsdCents()).toBe(2_000);
+
+    process.env.AGENT_PAY_DAILY_SEND_USD_CENTS = '2000suffix';
+    process.env.AGENT_PAY_DAILY_RECEIVE_USD_CENTS = '99';
+    expect(resolveAgentPayDailySendUsdCents()).toBe(2_000);
+    expect(resolveAgentPayDailyReceiveUsdCents()).toBe(2_000);
+
+    process.env.AGENT_PAY_DAILY_SEND_USD_CENTS = '2500';
+    process.env.AGENT_PAY_DAILY_RECEIVE_USD_CENTS = '100';
+    expect(resolveAgentPayDailySendUsdCents()).toBe(2_500);
+    expect(resolveAgentPayDailyReceiveUsdCents()).toBe(100);
+  });
+
+  it('admits a payment whose cumulative sender and recipient usage equals each cap', async () => {
+    process.env.AGENT_PAY_DAILY_SEND_USD_CENTS = '200';
+    process.env.AGENT_PAY_DAILY_RECEIVE_USD_CENTS = '200';
+    const h = harness({ now: new Date('2026-07-21T12:00:00.000Z') });
+    h.seedRow({ usdCents: 100, idempotencyKey: 'prior-equality' });
+
+    const result = await payAgent(request({ idempotencyKey: 'at-equality' }), h.deps);
+
+    expect(result).toMatchObject({ ok: true, usdCents: 100 });
+    expect([...h.rows.values()].reduce((sum, row) => sum + row.usdCents, 0)).toBe(200);
+  });
+
+  it('blocks a sender already at cap before creating a pending row', async () => {
+    const h = harness({ now: new Date('2026-07-21T12:00:00.000Z') });
+    h.seedRow({ usdCents: 2_000, idempotencyKey: 'sender-at-cap' });
+
+    const result = await payAgent(request({ usdCents: 1, idempotencyKey: 'blocked-sender' }), h.deps);
+
+    expect(result).toEqual({
+      ok: false,
+      code: 'daily_cap_exceeded',
+      detail: { cap: 2_000, usedTodayUsdCents: 2_000 },
+    });
+    expect(h.rows.size).toBe(1);
+    expect(h.executeCalls()).toBe(0);
+  });
+
+  it('blocks the recipient cap independently of unused sender capacity', async () => {
+    const h = harness({ now: new Date('2026-07-21T12:00:00.000Z') });
+    h.seedRow({
+      senderAvatarId: SENDER_TWO,
+      senderWallet: SENDER_TWO_WALLET,
+      usdCents: 1_950,
+      idempotencyKey: 'recipient-prior',
+    });
+
+    const result = await payAgent(request({ usdCents: 51, idempotencyKey: 'blocked-recipient' }), h.deps);
+
+    expect(result).toEqual({
+      ok: false,
+      code: 'daily_cap_exceeded',
+      detail: { cap: 2_000, usedTodayUsdCents: 1_950 },
+    });
+    expect(h.rows.size).toBe(1);
+    expect(h.executeCalls()).toBe(0);
+  });
+
+  it('excludes failed payments from daily usage', async () => {
+    const h = harness({ now: new Date('2026-07-21T12:00:00.000Z') });
+    h.seedRow({
+      status: 'failed',
+      failureReason: 'definitive_failure',
+      usdCents: 2_000,
+      idempotencyKey: 'failed-prior',
+    });
+
+    const result = await payAgent(request({ idempotencyKey: 'after-failure' }), h.deps);
+
+    expect(result).toMatchObject({ ok: true, usdCents: 100 });
+    expect(h.rows.size).toBe(2);
+  });
+
+  it('does not count payments created before the current UTC day', async () => {
+    const h = harness({ now: new Date('2026-07-21T00:00:01.000Z') });
+    h.seedRow({
+      usdCents: 2_000,
+      createdAt: new Date('2026-07-20T23:59:59.999Z'),
+      idempotencyKey: 'yesterday',
+    });
+
+    const result = await payAgent(request({ idempotencyKey: 'today' }), h.deps);
+
+    expect(result).toMatchObject({ ok: true, usdCents: 100 });
+  });
+
+  it('serializes distinct senders near one recipient cap and admits at most the cap', async () => {
+    process.env.AGENT_PAY_DAILY_RECEIVE_USD_CENTS = '100';
+    const h = harness({ balance: 0n, now: new Date('2026-07-21T12:00:00.000Z') });
+
+    const results = await Promise.all([
+      payAgent(request({ usdCents: 60, idempotencyKey: 'race-one' }), h.deps),
+      payAgent(request({
+        senderAvatarId: SENDER_TWO,
+        usdCents: 60,
+        idempotencyKey: 'race-two',
+      }), h.deps),
+    ]);
+
+    const admitted = [...h.rows.values()].filter(
+      (row) => row.recipientAvatarId === RECIPIENT && row.status !== 'failed',
+    );
+    expect(admitted.reduce((sum, row) => sum + row.usdCents, 0)).toBeLessThanOrEqual(100);
+    expect(admitted).toHaveLength(1);
+    expect(results.filter(
+      (result) => !result.ok && result.code === 'daily_cap_exceeded',
+    )).toHaveLength(1);
+    expect(h.executeCalls()).toBe(0);
+  });
+
+  it('uses strict circuit-breaker defaults and floors', () => {
+    expect(resolveAgentPayBreakerThreshold()).toBe(5);
+    expect(resolveAgentPayBreakerCooldownMs()).toBe(600_000);
+
+    process.env.AGENT_PAY_BREAKER_THRESHOLD = '0';
+    process.env.AGENT_PAY_BREAKER_COOLDOWN_MS = '9999';
+    expect(resolveAgentPayBreakerThreshold()).toBe(5);
+    expect(resolveAgentPayBreakerCooldownMs()).toBe(600_000);
+
+    process.env.AGENT_PAY_BREAKER_THRESHOLD = '2';
+    process.env.AGENT_PAY_BREAKER_COOLDOWN_MS = '10000';
+    expect(resolveAgentPayBreakerThreshold()).toBe(2);
+    expect(resolveAgentPayBreakerCooldownMs()).toBe(10_000);
+  });
+
+  it('opens after consecutive facilitator failures and fails fast before wallets or admission', async () => {
+    process.env.AGENT_PAY_BREAKER_THRESHOLD = '2';
+    const h = harness({ outcome: unavailableOutcome() });
+
+    await payAgent(request({ idempotencyKey: 'breaker-failure-1' }), h.deps);
+    await payAgent(request({ idempotencyKey: 'breaker-failure-2' }), h.deps);
+    const beforeFastFail = {
+      recipients: h.recipientCalls(),
+      wallets: h.walletLookupCalls(),
+      admissions: h.admissionCalls(),
+      balances: h.balanceCalls(),
+      signingWallets: h.signingWalletCalls(),
+      feePayers: h.feePayerCalls(),
+      prepares: h.prepareCalls(),
+      rows: h.rows.size,
+    };
+    const blocked = await payAgent(
+      request({ idempotencyKey: 'breaker-blocked' }),
+      h.deps,
+    );
+    await Promise.resolve();
+
+    expect(blocked).toEqual({
+      ok: false,
+      code: 'payai_unavailable',
+      detail: 'facilitator_circuit_open',
+    });
+    expect(h.executeCalls()).toBe(2);
+    expect(h.recipientCalls()).toBe(beforeFastFail.recipients);
+    expect(h.walletLookupCalls()).toBe(beforeFastFail.wallets);
+    expect(h.admissionCalls()).toBe(beforeFastFail.admissions);
+    expect(h.balanceCalls()).toBe(beforeFastFail.balances);
+    expect(h.signingWalletCalls()).toBe(beforeFastFail.signingWallets);
+    expect(h.feePayerCalls()).toBe(beforeFastFail.feePayers);
+    expect(h.prepareCalls()).toBe(beforeFastFail.prepares);
+    expect(h.rows.size).toBe(beforeFastFail.rows);
+    expect(h.alertCalls()).toBe(1);
+  });
+
+  it('counts PayAI outages hidden by successful Meridian fallback settlements', async () => {
+    process.env.AGENT_PAY_BREAKER_THRESHOLD = '2';
+    const h = harness({
+      execute: async (call) => meridianSettledOutcome(`tx-meridian-${call}`),
+    });
+
+    expect(await payAgent(
+      request({ idempotencyKey: 'meridian-fallback-1' }),
+      h.deps,
+    )).toMatchObject({ ok: true, txSignature: 'tx-meridian-1' });
+    expect(await payAgent(
+      request({ idempotencyKey: 'meridian-fallback-2' }),
+      h.deps,
+    )).toMatchObject({ ok: true, txSignature: 'tx-meridian-2' });
+    expect(await payAgent(
+      request({ idempotencyKey: 'meridian-fallback-blocked' }),
+      h.deps,
+    )).toEqual({
+      ok: false,
+      code: 'payai_unavailable',
+      detail: 'facilitator_circuit_open',
+    });
+
+    expect(h.executeCalls()).toBe(2);
+    expect(h.mintCalls()).toBe(2);
+    expect(h.rows.size).toBe(2);
+    expect(h.alertCalls()).toBe(1);
+  });
+
+  it('allows exactly one half-open probe and closes on its success', async () => {
+    process.env.AGENT_PAY_BREAKER_THRESHOLD = '2';
+    process.env.AGENT_PAY_BREAKER_COOLDOWN_MS = '10000';
+    let startProbe!: () => void;
+    let releaseProbe!: () => void;
+    const probeStarted = new Promise<void>((resolve) => { startProbe = resolve; });
+    const probeGate = new Promise<void>((resolve) => { releaseProbe = resolve; });
+    const h = harness({
+      execute: async (call) => {
+        if (call <= 2) return unavailableOutcome();
+        if (call === 3) {
+          startProbe();
+          await probeGate;
+        }
+        return settledOutcome(`tx-agent-pay-${call}`);
+      },
+    });
+
+    await payAgent(request({ idempotencyKey: 'half-open-failure-1' }), h.deps);
+    await payAgent(request({ idempotencyKey: 'half-open-failure-2' }), h.deps);
+    h.advanceMs(10_000);
+
+    const probe = payAgent(request({ idempotencyKey: 'half-open-probe' }), h.deps);
+    await probeStarted;
+    const concurrent = await payAgent(
+      request({ idempotencyKey: 'half-open-concurrent' }),
+      h.deps,
+    );
+    expect(concurrent).toMatchObject({
+      ok: false,
+      code: 'payai_unavailable',
+      detail: 'facilitator_circuit_open',
+    });
+    expect(h.executeCalls()).toBe(3);
+
+    releaseProbe();
+    expect(await probe).toMatchObject({ ok: true });
+    expect(await payAgent(
+      request({ idempotencyKey: 'after-half-open-success' }),
+      h.deps,
+    )).toMatchObject({ ok: true });
+    expect(h.executeCalls()).toBe(4);
+  });
+
+  it('re-opens after a failed half-open probe without duplicate outage alerts', async () => {
+    process.env.AGENT_PAY_BREAKER_THRESHOLD = '1';
+    process.env.AGENT_PAY_BREAKER_COOLDOWN_MS = '10000';
+    const h = harness({ outcome: unavailableOutcome() });
+
+    await payAgent(request({ idempotencyKey: 'reopen-initial' }), h.deps);
+    h.advanceMs(10_000);
+    await payAgent(request({ idempotencyKey: 'reopen-probe' }), h.deps);
+    const blocked = await payAgent(request({ idempotencyKey: 'reopen-blocked' }), h.deps);
+    await Promise.resolve();
+
+    expect(blocked).toMatchObject({
+      ok: false,
+      code: 'payai_unavailable',
+      detail: 'facilitator_circuit_open',
+    });
+    expect(h.executeCalls()).toBe(2);
+    expect(h.alertCalls()).toBe(1);
+  });
+
+  it('does not count payment-specific facilitator rejections', async () => {
+    process.env.AGENT_PAY_BREAKER_THRESHOLD = '2';
+    const h = harness({ outcome: failedOutcome() });
+
+    for (let index = 1; index <= 3; index += 1) {
+      expect(await payAgent(
+        request({ idempotencyKey: `payment-specific-${index}` }),
+        h.deps,
+      )).toMatchObject({ ok: false, code: 'payment_failed' });
+    }
+
+    expect(h.executeCalls()).toBe(3);
+    expect(h.rows.size).toBe(3);
+    expect(h.alertCalls()).toBe(0);
+  });
+
+  it('counts facilitator fee-payer discovery failures without executing settlement', async () => {
+    process.env.AGENT_PAY_BREAKER_THRESHOLD = '1';
+    const h = harness({ feePayerAvailable: false });
+
+    expect(await payAgent(
+      request({ idempotencyKey: 'fee-payer-failure' }),
+      h.deps,
+    )).toMatchObject({
+      ok: false,
+      code: 'payai_unavailable',
+      detail: 'fee_payer_unavailable',
+    });
+    const blocked = await payAgent(
+      request({ idempotencyKey: 'fee-payer-blocked' }),
+      h.deps,
+    );
+
+    expect(blocked).toEqual({
+      ok: false,
+      code: 'payai_unavailable',
+      detail: 'facilitator_circuit_open',
+    });
+    expect(h.executeCalls()).toBe(0);
+    expect(h.rows.size).toBe(1);
+  });
+
+  it('never gates captured-payment fulfillment while the circuit is open', async () => {
+    process.env.AGENT_PAY_BREAKER_THRESHOLD = '1';
+    const h = harness({ outcome: unavailableOutcome() });
+    await payAgent(request({ idempotencyKey: 'open-before-fulfill' }), h.deps);
+    const captured = h.seedRow({
+      idempotencyKey: 'captured-existing',
+      status: 'settling',
+      settlingId: 'settling-captured',
+      settlingStartedAt: new Date(),
+      txSignature: 'captured-agent-pay-signature',
+    });
+
+    const fulfilled = await fulfillReconciledAgentPayment(captured.id, {
+      db: h.db,
+      mintEarned: h.deps.mintEarned,
+    });
+
+    expect(fulfilled).toMatchObject({ ok: true, status: 'settled' });
+    expect(h.executeCalls()).toBe(1);
   });
 });

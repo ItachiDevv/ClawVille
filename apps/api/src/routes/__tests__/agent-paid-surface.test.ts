@@ -9,6 +9,8 @@ const config: X402Config = {
   facilitatorPreset: 'payai',
   facilitatorUrlExplicit: false,
   facilitatorUrl: 'https://facilitator.payai.network',
+  payaiApiKeyId: '',
+  payaiApiKeySecret: '',
   merchantWalletPubkey: '79sH9jtT7EpWLCemadFZQb7sD1b6rCqkwTtSxDCViLLE',
   network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
 };
@@ -37,7 +39,7 @@ describe('agent paid surfaces', () => {
 
   it('publishes the additive commerce and default-off exit contract', () => {
     const manual = buildProtocolManual('https://api.example.test');
-    expect(PROTOCOL_VERSION).toBe(35);
+    expect(PROTOCOL_VERSION).toBe(38);
     expect(manual).toContain('POST https://api.example.test/api/agent-pay');
     expect(manual).toContain('Idempotency-Key');
     expect(manual).toContain('/api/v2/agent/expert-consult');

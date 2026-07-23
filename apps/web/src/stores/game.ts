@@ -342,10 +342,11 @@ export interface GameState {
    * explainer regardless of avatar state (the user clicked Create Agent and
    * wants the orientation copy); `'connect'` follows the avatar gate (has
    * avatar → connect-link flow, no avatar → fall back to explainer with
-   * the bot-onboarding framing).
+   * the bot-onboarding framing). `'login'` opens email/password auth inside
+   * the game instead of navigating Explore/NPC players to `/login`.
    */
-  agentConnectModalIntent: 'create' | 'connect';
-  setAgentConnectModalOpen: (open: boolean, intent?: 'create' | 'connect') => void;
+  agentConnectModalIntent: 'create' | 'connect' | 'login';
+  setAgentConnectModalOpen: (open: boolean, intent?: 'create' | 'connect' | 'login') => void;
   /**
    * Set or clear the connected-agent session.
    *

@@ -9,6 +9,11 @@ import {
   clearKelpRealmRendererFailure,
   reportKelpRealmRendererFailure,
 } from '@/lib/three/kelp-realm-renderer-status';
+import {
+  describeErrorForBeacon,
+  reportKelpRenderFailure,
+  type KelpRenderFailureLane,
+} from '@/lib/three/kelp-render-failure-beacon';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 
 const LOW_END_GPU = detectLowEndGpuClass();
@@ -72,7 +77,8 @@ function withInitTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-function markWebGPUUnhealthyAndReload(): void {
+function markWebGPUUnhealthyAndReload(lane: KelpRenderFailureLane, detail?: string): void {
+  reportKelpRenderFailure(lane, detail, 'webgpu');
   try {
     window.sessionStorage?.setItem(WEBGPU_UNHEALTHY_KEY, '1');
   } catch {
@@ -99,11 +105,12 @@ function watchWebGPUHealth(renderer: THREE.WebGPURenderer): void {
     errorCount += 1;
     if (tripped || errorCount < 8) return;
     tripped = true;
+    const message = (event as { error?: { message?: string } }).error?.message;
     console.error(
       '[KelpRealm] WebGPU device is erroring every frame; falling back to WebGL:',
-      (event as { error?: { message?: string } }).error?.message,
+      message,
     );
-    markWebGPUUnhealthyAndReload();
+    markWebGPUUnhealthyAndReload('webgpu-unhealthy', message?.slice(0, 300));
   });
 }
 
@@ -157,6 +164,7 @@ function createRealmRenderer(props: { canvas: HTMLCanvasElement }): Promise<THRE
       if (FORCE_WEBGL) {
         console.error('[KelpRealm] renderer init failed:', { webGPUError: null, webGLError: firstError });
         reportKelpRealmRendererFailure(null, firstError);
+        reportKelpRenderFailure('renderer-init-failed', describeErrorForBeacon(firstError), 'webgl');
         throw firstError;
       }
       console.warn('[KelpRealm] WebGPU init failed; retrying force-WebGL on the same canvas:', firstError);
@@ -166,6 +174,11 @@ function createRealmRenderer(props: { canvas: HTMLCanvasElement }): Promise<THRE
       } catch (webGLError) {
         console.error('[KelpRealm] renderer init failed:', { webGPUError: firstError, webGLError });
         reportKelpRealmRendererFailure(firstError, webGLError);
+        reportKelpRenderFailure(
+          'renderer-init-failed',
+          `webgpu: ${describeErrorForBeacon(firstError)} | webgl: ${describeErrorForBeacon(webGLError)}`,
+          'unknown',
+        );
         throw webGLError;
       }
     }
@@ -176,7 +189,9 @@ function createRealmRenderer(props: { canvas: HTMLCanvasElement }): Promise<THRE
       const device = (renderer as unknown as { backend?: { device?: GPUDevice } }).backend?.device;
       device?.lost?.then((info) => {
         console.error('[KelpRealm] GPU device lost:', info.reason, info.message);
-        if (info.reason !== 'destroyed') markWebGPUUnhealthyAndReload();
+        if (info.reason !== 'destroyed') {
+          markWebGPUUnhealthyAndReload('device-lost', `${info.reason}: ${info.message}`.slice(0, 300));
+        }
       });
     } catch {
       // WebGL backend has no device-loss promise — nothing to watch.
@@ -220,7 +235,7 @@ function useCanvasAdoptionWatchdog(containerRef: { current: HTMLDivElement | nul
       const rect = canvas.getBoundingClientRect();
       if (canvas.width === 300 && canvas.height === 150 && rect.width > 320 && rect.height > 170) {
         console.error('[KelpRealm] renderer never adopted the visible canvas; reloading into WebGL');
-        markWebGPUUnhealthyAndReload();
+        markWebGPUUnhealthyAndReload('canvas-not-adopted');
       }
     }, 6000);
     return () => window.clearTimeout(timer);

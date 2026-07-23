@@ -1,14 +1,14 @@
 /**
- * Per-agent autonomy state — durable directive + driver cursor (P3 slice 2, D7).
+ * Per-agent autonomy state — directive + acted marker + driver cursor (P3/D7).
  *
- * ZERO-DDL persistence: both the human's CURRENT directive and the autonomy
- * driver's last-consumed event cursor live inside the existing
- * `platform_agents.config` jsonb (NOT-NULL, default `{}`), keyed 1:1 with the
+ * ZERO-DDL persistence: the human's CURRENT directive, the autonomy driver's
+ * durable acted-directive marker, and its last-consumed event cursor live in
+ * the existing `platform_agents.config` jsonb (NOT-NULL, default `{}`), keyed 1:1 with the
  * avatar via `avatars.platformAgentId`. No new table, no migration — the config
- * column already exists and is written only at provisioning, so an atomic jsonb
+ * column already exists, so an atomic jsonb
  * merge (`|| jsonb_build_object(...)`) here never clobbers sibling keys.
  *
- * WHY config and not a new table: the two readers each already hold a natural
+ * WHY config and not a new table: the readers each already hold a natural
  * key — the autonomy driver has `platformAgentId`, and the avatar-simulation
  * bridge has `avatarId` (→ join). One current directive per avatar,
  * last-write-wins (a single field), clearable. See the P3 plan §1 slice 2.
@@ -18,7 +18,7 @@
  * exercised by the live staging e2e (plan §4 slice-2 row).
  */
 
-import { db, agents, avatars, eq, sql } from '@clawville/database';
+import { db, agents, avatars, and, eq, sql } from '@clawville/database';
 import { z } from 'zod';
 
 /** Directive text is untrusted user content — hard-cap length everywhere. */
@@ -52,6 +52,28 @@ export interface CurrentDirective {
   setBy: DirectiveSource;
 }
 
+/** Durable driver state read from one coherent platform_agents.config snapshot. */
+export interface AgentDirectiveState {
+  directive: CurrentDirective | null;
+  lastActedDirectiveSha: string | null;
+}
+
+export type DirectiveActedClaim = 'claimed' | 'already_recorded' | 'superseded';
+
+/** Classify a conditional-claim loss from its coherent follow-up snapshot. */
+export function classifyDirectiveActedClaimLoss(
+  state: AgentDirectiveState,
+  directiveSha: string,
+  expectedDirective: CurrentDirective,
+): Exclude<DirectiveActedClaim, 'claimed'> {
+  const currentStillMatches =
+    state.directive?.setAt === expectedDirective.setAt &&
+    state.directive.text === expectedDirective.text;
+  return currentStillMatches && state.lastActedDirectiveSha === directiveSha
+    ? 'already_recorded'
+    : 'superseded';
+}
+
 // ── Pure helpers (DB-free, unit-tested) ─────────────────────────────────────
 
 /** Build the stored directive value (text trimmed + hard-capped). */
@@ -75,6 +97,11 @@ export function parseStoredDirective(raw: unknown): CurrentDirective | null {
   const setBy: DirectiveSource = o.setBy === 'chat-bar' ? 'chat-bar' : 'api';
   const setAt = typeof o.setAt === 'string' ? o.setAt : new Date(0).toISOString();
   return { text: o.text.slice(0, DIRECTIVE_MAX_LEN), setAt, setBy };
+}
+
+/** Parse the driver's persisted SHA-256 marker, rejecting malformed config. */
+export function parseLastActedDirectiveSha(raw: unknown): string | null {
+  return typeof raw === 'string' && /^[a-f0-9]{64}$/.test(raw) ? raw : null;
 }
 
 /**
@@ -138,28 +165,92 @@ export async function setAgentDirective(
     .where(eq(agents.id, platformAgentId));
 }
 
-/** Clear the current directive (removes only the one key). */
-export async function clearAgentDirective(platformAgentId: string): Promise<void> {
+/**
+ * Clear the current directive (removes only the one key). Expiry cleanup passes
+ * the observed issuance, turning the lazy write into a compare-and-clear so it
+ * cannot erase a newer directive that landed after the read. Human-requested
+ * clear intentionally omits it and remains unconditional.
+ */
+export async function clearAgentDirective(
+  platformAgentId: string,
+  expectedDirective?: CurrentDirective,
+): Promise<void> {
   await db
     .update(agents)
     .set({
       config: sql`COALESCE(${agents.config}, '{}'::jsonb) - 'currentDirective'`,
       updatedAt: new Date(),
     })
-    .where(eq(agents.id, platformAgentId));
+    .where(
+      expectedDirective === undefined
+        ? eq(agents.id, platformAgentId)
+        : and(
+            eq(agents.id, platformAgentId),
+            sql`COALESCE(${agents.config}->'currentDirective'->>'setAt', ${new Date(0).toISOString()}) = ${expectedDirective.setAt}`,
+            sql`${agents.config}->'currentDirective'->>'text' = ${expectedDirective.text}`,
+          ),
+    );
 }
 
-/** Read the current directive by platform-agent id (the driver's key). */
-export async function getAgentDirective(
+/**
+ * Read the directive and durable acted marker from the SAME config snapshot.
+ * This prevents a re-seat from pairing a newer directive with an older marker.
+ */
+export async function getAgentDirectiveState(
   platformAgentId: string,
-): Promise<CurrentDirective | null> {
+): Promise<AgentDirectiveState> {
   const rows = await db
     .select({ config: agents.config })
     .from(agents)
     .where(eq(agents.id, platformAgentId))
     .limit(1);
   const cfg = rows[0]?.config as Record<string, unknown> | null | undefined;
-  return parseStoredDirective(cfg?.currentDirective);
+  return {
+    directive: parseStoredDirective(cfg?.currentDirective),
+    lastActedDirectiveSha: parseLastActedDirectiveSha(cfg?.lastActedDirectiveSha),
+  };
+}
+
+/** Read the current directive by platform-agent id (the driver's key). */
+export async function getAgentDirective(
+  platformAgentId: string,
+): Promise<CurrentDirective | null> {
+  return (await getAgentDirectiveState(platformAgentId)).directive;
+}
+
+/**
+ * Persist the directive issuance that produced a parsed action. Atomic merge
+ * preserves currentDirective, autonomyCursor, and every unrelated config key.
+ */
+export async function claimLastActedDirectiveSha(
+  platformAgentId: string,
+  directiveSha: string,
+  expectedDirective: CurrentDirective,
+): Promise<DirectiveActedClaim> {
+  const parsed = parseLastActedDirectiveSha(directiveSha);
+  if (!parsed) throw new Error('Invalid directive SHA-256');
+  const rows = await db
+    .update(agents)
+    .set({
+      config: sql`COALESCE(${agents.config}, '{}'::jsonb) || jsonb_build_object('lastActedDirectiveSha', ${parsed}::text)`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(agents.id, platformAgentId),
+        sql`COALESCE(${agents.config}->'currentDirective'->>'setAt', ${new Date(0).toISOString()}) = ${expectedDirective.setAt}`,
+        sql`${agents.config}->'currentDirective'->>'text' = ${expectedDirective.text}`,
+        sql`${agents.config}->>'lastActedDirectiveSha' IS DISTINCT FROM ${parsed}`,
+      ),
+    )
+    .returning({ id: agents.id });
+  if (rows.length > 0) return 'claimed';
+
+  // A zero-row conditional update is expected for a concurrent claimant or a
+  // directive replaced mid-decision. Re-read to distinguish those safe losses;
+  // absence/malformed state fails closed as superseded.
+  const state = await getAgentDirectiveState(platformAgentId);
+  return classifyDirectiveActedClaimLoss(state, parsed, expectedDirective);
 }
 
 /**

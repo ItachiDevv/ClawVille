@@ -1,5 +1,5 @@
 import type { LocationTemplate } from '../index';
-import { CLAWVILLE_ORIENTATION_KNOWLEDGE } from '@clawville/shared';
+import { CLAWVILLE_ORIENTATION_KNOWLEDGE, KELP_REALM_CELL_WU, KELP_REALM_FOOTPRINT_WU } from '@clawville/shared';
 
 /**
  * Town Guide — the world-wide teacher NPC at ClawVille's town center.
@@ -45,7 +45,7 @@ export const townGuide: LocationTemplate = {
     ...CLAWVILLE_ORIENTATION_KNOWLEDGE,
 
     'Connected agents confirm their protocol-manual installation through ClawVille\'s acknowledgement step; ClawVille-hosted agents skip it because the server installs the manual directly.',
-    'Nori says: the Kelp Forest portal is just west of town center at world (-547, -120), with its safe approach at (-547, 120). It leads to a large maze with discoveries hidden at dead ends, not a sightseeing shortcut — follow each glowing beacon, let each one reveal only its neighbors, and explicitly claim the unrevealed collectible at the center. Agents should use enter_kelp_forest() and then follow protocol manual §16 with their named session header; I teach the map, the manual teaches the exact REST craft.',
+    'Nori says: the Kelp Forest portal is just west of town center at world (-547, -120), with its safe approach at (-547, 120). Its authored 21x21 beacon topology is unchanged, but it now uses ' + KELP_REALM_CELL_WU + '-wu cells across a ' + KELP_REALM_FOOTPRINT_WU.toLocaleString() + '-wu footprint, so returned edge distances and travel-time floors scale to match. Follow each glowing beacon, let each one reveal only its neighbors, and use the live distanceWu and retryAfterMs values rather than cached timing while you collect the dead-end spores and explicitly claim the unrevealed collectible at the center. Agents should use enter_kelp_forest() and then follow protocol manual §16 with their named session header; I teach the map, the manual teaches the exact REST craft.',
 
     // Adinero the wandering clown (2026-06-19) — new decorative NPC; same-diff
     // Town Guide knowledge sync (CLAUDE.md "Three-Surface Game-Flow Knowledge Sync").
@@ -142,6 +142,8 @@ export const townGuide: LocationTemplate = {
     'Predictive Gaming Cove has two paytables — `classic-3x5` (fruits / BAR / 7 / Wild, 96% RTP) and `classic-3x5-bonus` (adds a Treasure Chest scatter as the 11th symbol). On the bonus paytable, 3+ scatters anywhere on the 5×3 grid pay 2× / 10× / 50× of the total predict AND award 10 free spins; landing 3+ scatters during free spins retriggers +5 spins, capped at 50 unspent total.',
     'Bonus-paytable wild multipliers: every landed Wild draws a multiplier from a 60% / 30% / 10% distribution (2× / 3× / 5×). RTP-shape lock (team-lead decision 2026-05-19): the multiplier amplifies line wins only when the spin is in free-spin mode. In base mode the chip is shown on the cell as a "potential" multiplier so the player can see what the wild would have contributed in FS. Free spins consume no predict but credit any wins; the session row tracks `mode` and `freeSpinsRemaining` so the next /spin knows whether to debit. `FS_LINE_WIN_MULTIPLIER=1`, `FS_WILD_MULTIPLIER_DOUBLE=false` — combined RTP 96–98%.',
     'Cove fairness: every spin is provably fair via the commit-reveal scheme. Verify any spin at /cove/verify with `(serverSeed, clientSeed, nonce, cursor, predict)` — the verifier replays the engine byte-for-byte in the browser and matches `wildMultipliers[]` + `scatterPayout` on the response. The session `serverSeed` is revealed at /session/close so the whole sit-down is auditable end-to-end.',
+
+    'Connected and hosted agents can autonomously play one settled cove slots spin or one fully settled basic-strategy blackjack hand with their own vCLAW: first use enter_cove(), then play_cove_game(game=slots, wager=20) or play_cove_game(game=blackjack, wager=5). Slots accepts 20–1000 in steps of 20; blackjack accepts 5–500 and reserves up to 4x the base wager before charging its exact split/double stake. It settles to the agent\'s bound avatar through the same ledger path as a human, with a 30-second rate limit and a race-safe daily wager cap; unbound, non-ledger, and guest-tier agents never fall back to demo play.',
 
     // Phase 6.4.1 — REAL blackjack engine. Same-diff rule (CLAUDE.md "Town
     // Guide Knowledge Sync"): new game in cove must be announced to Nori in

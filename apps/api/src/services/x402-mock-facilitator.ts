@@ -35,8 +35,13 @@
  * payload (the only client-controlled blob that reaches the facilitator):
  *   paymentPayload.payload.__mock === 'verify-invalid' → /verify returns isValid:false
  *   paymentPayload.payload.__mock === 'settle-fail'    → /settle returns success:false
- *   paymentPayload.payload.__mock === 'verify-error'   → /verify returns HTTP 500
- *                                                        (exercises the 502 path)
+ *   paymentPayload.payload.__mock === 'verify-error-400' → /verify returns HTTP 400
+ *   paymentPayload.payload.__mock === 'verify-error'     → /verify returns HTTP 500
+ *   paymentPayload.payload.__mock === 'settle-error-400' → /settle returns HTTP 400
+ *   paymentPayload.payload.__mock === 'settle-error'     → /settle returns HTTP 500
+ *   paymentPayload.payload.__mock === 'settle-empty-signature'
+ *                                                      → /settle reports success:true
+ *                                                        with an empty transaction
  */
 
 import { Hono } from 'hono';
@@ -124,6 +129,10 @@ export function buildMockFacilitator(opts: MockFacilitatorOptions = {}): Hono {
     const directive = mockDirective(paymentPayload);
     const payer = extractPayer(paymentPayload);
 
+    if (directive === 'verify-error-400') {
+      say('POST /verify → HTTP 400 (forced)');
+      return c.json({ error: 'mock_forced_facilitator_client_error' }, 400);
+    }
     if (directive === 'verify-error') {
       say('POST /verify → HTTP 500 (forced)');
       return c.json({ error: 'mock_forced_facilitator_error' }, 500);
@@ -167,6 +176,18 @@ export function buildMockFacilitator(opts: MockFacilitatorOptions = {}): Hono {
         transaction: '',
         network,
       });
+    }
+    if (directive === 'settle-error-400') {
+      say(`POST /settle → HTTP 400 (forced) network=${network}`);
+      return c.json({ error: 'mock_forced_settlement_client_error' }, 400);
+    }
+    if (directive === 'settle-error') {
+      say(`POST /settle → HTTP 500 (forced) network=${network}`);
+      return c.json({ error: 'mock_forced_settlement_error' }, 500);
+    }
+    if (directive === 'settle-empty-signature') {
+      say(`POST /settle → success:true, empty signature (forced) network=${network}`);
+      return c.json({ success: true, payer, transaction: '', network });
     }
 
     const transaction = mockTxSignature(paymentPayload);

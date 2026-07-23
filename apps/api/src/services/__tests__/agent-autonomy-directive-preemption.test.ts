@@ -1,8 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { AutonomyStatusThought } from "@clawville/shared";
-import { agentAutonomyDriver } from "../agent-autonomy-driver";
+import {
+  agentAutonomyDriver,
+  DEFAULT_DIRECTIVE_TTL_MS,
+  MIN_DIRECTIVE_TTL_MS,
+  directiveInstanceSha,
+  isDirectiveExpired,
+  resolveDirectiveTtlMs,
+} from "../agent-autonomy-driver";
 import { agentOrchestrator } from "../agent-orchestrator";
-import type { CurrentDirective } from "../agent-autonomy-state";
+import type {
+  AgentDirectiveState,
+  CurrentDirective,
+  DirectiveActedClaim,
+} from "../agent-autonomy-state";
 import { npcSimulation } from "../npc-simulation";
 
 type RuntimeState = ReturnType<typeof agentOrchestrator.getRunningAgentRuntime>;
@@ -13,12 +24,28 @@ interface TestEntry {
   targetBuildingId: string | null;
   cursorSeeded: boolean;
   recentThoughts: AutonomyStatusThought[];
+  lastDirectiveSha: string | null;
+  lastActedDirectiveSha: string | null;
+  directiveShaHydrated: boolean;
   directivePending: boolean;
 }
 
 interface DriverInternals {
   userAgents: Map<string, TestEntry>;
-  readDirectiveBounded: () => Promise<CurrentDirective | null>;
+  readDirectiveBounded: (
+    platformAgentId?: string,
+    entry?: TestEntry,
+  ) => Promise<CurrentDirective | null>;
+  directiveStateRead: (platformAgentId: string) => Promise<AgentDirectiveState>;
+  directiveClear: (
+    platformAgentId: string,
+    expectedDirective?: CurrentDirective,
+  ) => Promise<void>;
+  directiveActedShaClaim: (
+    platformAgentId: string,
+    sha: string,
+    directive: CurrentDirective,
+  ) => Promise<DirectiveActedClaim>;
   readRecentLessons: () => Promise<string[]>;
 }
 
@@ -35,6 +62,9 @@ const BODY = "directive-preemption-body";
 const PLATFORM = "directive-preemption-platform";
 
 const originalDirectiveRead = driver.readDirectiveBounded;
+const originalDirectiveStateRead = driver.directiveStateRead;
+const originalDirectiveClear = driver.directiveClear;
+const originalDirectiveActedShaClaim = driver.directiveActedShaClaim;
 const originalLessonRead = driver.readRecentLessons;
 const originalCovenantRecord = agentAutonomyDriver.covenantRecord;
 const originalGetRuntime = agentOrchestrator.getRunningAgentRuntime;
@@ -104,6 +134,9 @@ beforeEach(() => {
 
 afterEach(() => {
   driver.readDirectiveBounded = originalDirectiveRead;
+  driver.directiveStateRead = originalDirectiveStateRead;
+  driver.directiveClear = originalDirectiveClear;
+  driver.directiveActedShaClaim = originalDirectiveActedShaClaim;
   driver.readRecentLessons = originalLessonRead;
   agentAutonomyDriver.covenantRecord = originalCovenantRecord;
   agentOrchestrator.getRunningAgentRuntime = originalGetRuntime;
@@ -304,5 +337,308 @@ describe("human directive preemption", () => {
     } finally {
       agentAutonomyDriver.driveAgentNow = originalDriveNow;
     }
+  });
+});
+
+describe("directive expiry and durable acted issuance", () => {
+  it("parses the TTL config strictly and expires only after the boundary", () => {
+    expect(resolveDirectiveTtlMs(undefined)).toBe(DEFAULT_DIRECTIVE_TTL_MS);
+    expect(resolveDirectiveTtlMs("garbage")).toBe(DEFAULT_DIRECTIVE_TTL_MS);
+    expect(resolveDirectiveTtlMs("-1")).toBe(DEFAULT_DIRECTIVE_TTL_MS);
+    expect(resolveDirectiveTtlMs("900000junk")).toBe(DEFAULT_DIRECTIVE_TTL_MS);
+    expect(resolveDirectiveTtlMs("1")).toBe(MIN_DIRECTIVE_TTL_MS);
+    expect(resolveDirectiveTtlMs("1800000")).toBe(1_800_000);
+
+    const now = Date.now();
+    const exactBoundary: CurrentDirective = {
+      text: "visit the cove",
+      setAt: new Date(now - DEFAULT_DIRECTIVE_TTL_MS).toISOString(),
+      setBy: "chat-bar",
+    };
+    expect(isDirectiveExpired(exactBoundary, now, DEFAULT_DIRECTIVE_TTL_MS)).toBe(false);
+    expect(
+      isDirectiveExpired(
+        { ...exactBoundary, setAt: new Date(now - DEFAULT_DIRECTIVE_TTL_MS - 1).toISOString() },
+        now,
+        DEFAULT_DIRECTIVE_TTL_MS,
+      ),
+    ).toBe(true);
+    expect(isDirectiveExpired({ ...exactBoundary, setAt: "not-a-date" }, now)).toBe(true);
+  });
+
+  it("treats an expired directive as absent and compare-and-clears that issuance", async () => {
+    const entry = enroll();
+    const expired: CurrentDirective = {
+      text: "go play cards",
+      setAt: new Date(Date.now() - DEFAULT_DIRECTIVE_TTL_MS - 1_000).toISOString(),
+      setBy: "chat-bar",
+    };
+    const clears: Array<{ platformAgentId: string; expected?: CurrentDirective }> = [];
+    const events: string[] = [];
+    let writes = 0;
+    driver.readDirectiveBounded = originalDirectiveRead;
+    driver.directiveStateRead = async () => ({
+      directive: expired,
+      lastActedDirectiveSha: null,
+    });
+    driver.directiveClear = async (platformAgentId, expected) => {
+      clears.push({ platformAgentId, expected });
+    };
+    driver.directiveActedShaClaim = async () => {
+      writes++;
+      return "claimed";
+    };
+    agentAutonomyDriver.covenantRecord = async (record) => {
+      events.push(record.action);
+      return { id: "record", deduped: false };
+    };
+
+    let prompt = "";
+    await agentAutonomyDriver.driveOnce(AGENT, async (value) => {
+      prompt = value;
+      return "[ACTION: emote(name=wave)]";
+    });
+    await Promise.resolve();
+
+    expect(prompt).not.toContain(expired.text);
+    expect(clears).toEqual([{ platformAgentId: PLATFORM, expected: expired }]);
+    expect(events).not.toContain("agent.directive.received");
+    expect(events).not.toContain("agent.directive.acted");
+    expect(writes).toBe(0);
+    expect(entry.directiveShaHydrated).toBe(true);
+  });
+
+  it("hydrates a durable acted SHA on re-seat and fires neither event again", async () => {
+    enroll();
+    agentAutonomyDriver.unregisterUserAgent(AGENT);
+    const entry = enroll();
+    const directive: CurrentDirective = {
+      text: "visit the cron building",
+      setAt: new Date().toISOString(),
+      setBy: "api",
+    };
+    const sha = directiveInstanceSha(directive);
+    const events: string[] = [];
+    let writes = 0;
+    driver.readDirectiveBounded = originalDirectiveRead;
+    driver.directiveStateRead = async () => ({
+      directive,
+      lastActedDirectiveSha: sha,
+    });
+    driver.directiveActedShaClaim = async () => {
+      writes++;
+      return "claimed";
+    };
+    agentAutonomyDriver.covenantRecord = async (record) => {
+      events.push(record.action);
+      return { id: "record", deduped: false };
+    };
+
+    await agentAutonomyDriver.driveOnce(
+      AGENT,
+      async () => "[ACTION: emote(name=wave)]",
+    );
+
+    expect(entry.directiveShaHydrated).toBe(true);
+    expect(entry.lastDirectiveSha).toBe(sha);
+    expect(entry.lastActedDirectiveSha).toBe(sha);
+    expect(events).not.toContain("agent.directive.received");
+    expect(events).not.toContain("agent.directive.acted");
+    expect(writes).toBe(0);
+  });
+
+  it("fires normally for a new issuance after an expired directive", async () => {
+    const entry = enroll();
+    const expired: CurrentDirective = {
+      text: "visit the cove",
+      setAt: new Date(Date.now() - DEFAULT_DIRECTIVE_TTL_MS - 1_000).toISOString(),
+      setBy: "api",
+    };
+    const fresh: CurrentDirective = {
+      // Same text proves setAt is part of the issuance identity.
+      text: expired.text,
+      setAt: new Date().toISOString(),
+      setBy: "api",
+    };
+    let state: AgentDirectiveState = { directive: expired, lastActedDirectiveSha: null };
+    const events: string[] = [];
+    const writes: string[] = [];
+    driver.readDirectiveBounded = originalDirectiveRead;
+    driver.directiveStateRead = async () => state;
+    driver.directiveClear = async () => {};
+    driver.directiveActedShaClaim = async (_platformAgentId, sha) => {
+      writes.push(sha);
+      return "claimed";
+    };
+    agentAutonomyDriver.covenantRecord = async (record) => {
+      events.push(record.action);
+      return { id: "record", deduped: false };
+    };
+
+    await agentAutonomyDriver.driveOnce(AGENT, async () => "[ACTION: emote(name=wave)]");
+    state = { directive: fresh, lastActedDirectiveSha: null };
+    await agentAutonomyDriver.driveOnce(AGENT, async () => "[ACTION: emote(name=wave)]");
+
+    const freshSha = directiveInstanceSha(fresh);
+    expect(directiveInstanceSha(expired)).not.toBe(freshSha);
+    expect(events.filter((event) => event === "agent.directive.received")).toHaveLength(1);
+    expect(events.filter((event) => event === "agent.directive.acted")).toHaveLength(1);
+    expect(writes).toEqual([freshSha]);
+    expect(entry.lastActedDirectiveSha).toBe(freshSha);
+  });
+
+  it("keeps hydration unknown on read failure and persists before acted event", async () => {
+    const entry = enroll();
+    const directive: CurrentDirective = {
+      text: "visit memory rag",
+      setAt: new Date().toISOString(),
+      setBy: "api",
+    };
+    const order: string[] = [];
+    driver.readDirectiveBounded = originalDirectiveRead;
+    driver.directiveStateRead = async () => {
+      throw new Error("db unavailable");
+    };
+    agentAutonomyDriver.covenantRecord = async (record) => {
+      order.push(record.action);
+      return { id: "record", deduped: false };
+    };
+
+    await agentAutonomyDriver.driveOnce(AGENT, async () => "[ACTION: emote(name=wave)]");
+    expect(entry.directiveShaHydrated).toBe(false);
+    expect(order).not.toContain("agent.directive.received");
+    expect(order).not.toContain("agent.directive.acted");
+
+    driver.directiveStateRead = async () => ({ directive, lastActedDirectiveSha: null });
+    driver.directiveActedShaClaim = async () => {
+      order.push("persisted");
+      return "claimed";
+    };
+    await agentAutonomyDriver.driveOnce(AGENT, async () => "[ACTION: emote(name=wave)]");
+
+    expect(order).toEqual([
+      "persisted",
+      "agent.directive.received",
+      "agent.directive.acted",
+    ]);
+  });
+
+  it("lets only one overlapping claimant emit for a standing issuance", async () => {
+    const entry = enroll();
+    const directive: CurrentDirective = {
+      text: "visit the cove",
+      setAt: new Date().toISOString(),
+      setBy: "api",
+    };
+    const events: string[] = [];
+    let claims = 0;
+    let dispatches = 0;
+    driver.readDirectiveBounded = originalDirectiveRead;
+    // Model two process-local drivers that both read the pre-claim snapshot.
+    driver.directiveStateRead = async () => ({ directive, lastActedDirectiveSha: null });
+    driver.directiveActedShaClaim = async () => {
+      claims++;
+      return claims === 1 ? "claimed" : "already_recorded";
+    };
+    agentAutonomyDriver.covenantRecord = async (record) => {
+      events.push(record.action);
+      return { id: "record", deduped: false };
+    };
+    const originalDispatch = npcSimulation.dispatchHatcherActions;
+    npcSimulation.dispatchHatcherActions = (...args) => {
+      dispatches++;
+      return originalDispatch.apply(npcSimulation, args);
+    };
+
+    try {
+      await agentAutonomyDriver.driveOnce(AGENT, async () => "[ACTION: emote(name=wave)]");
+      // A second process has independent in-memory fields but the same stale DB
+      // read; the atomic claim reports the already-recorded loser.
+      entry.lastDirectiveSha = null;
+      entry.lastActedDirectiveSha = null;
+      entry.directiveShaHydrated = true;
+      await agentAutonomyDriver.driveOnce(AGENT, async () => "[ACTION: emote(name=wave)]");
+    } finally {
+      npcSimulation.dispatchHatcherActions = originalDispatch;
+    }
+
+    expect(claims).toBe(2);
+    expect(dispatches).toBe(2);
+    expect(events.filter((event) => event === "agent.directive.received")).toHaveLength(1);
+    expect(events.filter((event) => event === "agent.directive.acted")).toHaveLength(1);
+  });
+
+  it("keeps action dispatch fail-soft when the acted claim is unknown", async () => {
+    const entry = enroll();
+    const directive: CurrentDirective = {
+      text: "visit the cove",
+      setAt: new Date().toISOString(),
+      setBy: "api",
+    };
+    const events: string[] = [];
+    let claimAttempts = 0;
+    let dispatches = 0;
+    driver.readDirectiveBounded = originalDirectiveRead;
+    driver.directiveStateRead = async () => ({ directive, lastActedDirectiveSha: null });
+    driver.directiveActedShaClaim = async () => {
+      claimAttempts++;
+      if (claimAttempts === 1) throw new Error("write unavailable");
+      return "claimed";
+    };
+    agentAutonomyDriver.covenantRecord = async (record) => {
+      events.push(record.action);
+      return { id: "record", deduped: false };
+    };
+    const originalDispatch = npcSimulation.dispatchHatcherActions;
+    npcSimulation.dispatchHatcherActions = (...args) => {
+      dispatches++;
+      return originalDispatch.apply(npcSimulation, args);
+    };
+
+    try {
+      await agentAutonomyDriver.driveOnce(AGENT, async () => "[ACTION: emote(name=wave)]");
+      expect(entry.lastActedDirectiveSha).toBeNull();
+      expect(events).toEqual([]);
+      await agentAutonomyDriver.driveOnce(AGENT, async () => "[ACTION: emote(name=wave)]");
+    } finally {
+      npcSimulation.dispatchHatcherActions = originalDispatch;
+    }
+
+    expect(claimAttempts).toBe(2);
+    expect(dispatches).toBe(2);
+    expect(events).toEqual(["agent.directive.received", "agent.directive.acted"]);
+    expect(entry.lastActedDirectiveSha).toBe(directiveInstanceSha(directive));
+  });
+
+  it("does not emit or dispatch when the directive is superseded mid-decision", async () => {
+    enroll();
+    const directive: CurrentDirective = {
+      text: "visit the cove",
+      setAt: new Date().toISOString(),
+      setBy: "api",
+    };
+    const events: string[] = [];
+    let dispatches = 0;
+    driver.readDirectiveBounded = originalDirectiveRead;
+    driver.directiveStateRead = async () => ({ directive, lastActedDirectiveSha: null });
+    driver.directiveActedShaClaim = async () => "superseded";
+    agentAutonomyDriver.covenantRecord = async (record) => {
+      events.push(record.action);
+      return { id: "record", deduped: false };
+    };
+    const originalDispatch = npcSimulation.dispatchHatcherActions;
+    npcSimulation.dispatchHatcherActions = (...args) => {
+      dispatches++;
+      return originalDispatch.apply(npcSimulation, args);
+    };
+
+    try {
+      await agentAutonomyDriver.driveOnce(AGENT, async () => "[ACTION: emote(name=wave)]");
+    } finally {
+      npcSimulation.dispatchHatcherActions = originalDispatch;
+    }
+
+    expect(events).toEqual([]);
+    expect(dispatches).toBe(0);
   });
 });

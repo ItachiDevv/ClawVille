@@ -303,12 +303,12 @@ export function useWorldStream() {
       if (positionInterval) return;
       positionInterval = setInterval(() => {
         // Skip upload until we've joined a room — sessionId is the auth
-        // anchor server-side. Also skip if the user has no avatar (explore
-        // mode) — the spectator camera doesn't represent a player body.
+        // anchor server-side. Also skip modes where the client does not own
+        // the body: explore is spectator-only and autonomous is server-driven.
         const sid = sessionIdRef.current;
         if (!sid) return;
         const { controlMode } = useGameStore.getState();
-        if (controlMode === 'explore') return;
+        if (controlMode === 'explore' || controlMode === 'autonomous') return;
 
         const now = Date.now();
         const x = avatarPositionRef.x;

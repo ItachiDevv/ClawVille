@@ -64,10 +64,23 @@ import {
   type TopupQuote,
   type X402Network,
 } from './x402-payai';
-import { resolveTopupNetwork } from '../routes/ct-topup';
+import {
+  accountingMetadata,
+  executeInboundCustodialAttempt,
+  loadBoundAvatarCustodialPayer,
+  prepareInboundCustodialAttempt,
+  releaseInboundCustodialAttempt,
+  resolveTopupNetwork,
+  resolveTopupRpcUrl,
+  settlementAccountingFromMetadata,
+  type CapturedSettlementAccounting,
+  type PreparedInboundCustodialAttempt,
+} from '../routes/ct-topup';
 import { withKeyedMutex } from './keyed-mutex';
 import type { LedgerTx } from './claw-token-ledger';
 import { claimX402Settlement } from './x402-settlement-receipts';
+import { legacySettlementAmounts } from './x402-settlement-accounting';
+import type { ExecutePreparedExactPaymentOutcome } from './custodial-x402';
 
 // ---------------------------------------------------------------------------
 // ¢-PEG TRIPWIRE — the whole quote model assumes 1 vCLAW = $0.01
@@ -377,10 +390,15 @@ class CheckoutSignatureAlreadySettled extends Error {
 export async function settleCheckout(input: {
   checkoutId: string;
   subject: CheckoutSubject;
-  paymentHeader: string;
+  paymentHeader?: string;
+  /** Explicit opt-in to spend this subject's bound avatar custodial wallet. */
+  custodial?: true;
   idempotencyKey: string;
 }): Promise<CheckoutSettleResult> {
-  const { checkoutId, subject, paymentHeader, idempotencyKey } = input;
+  const { checkoutId, subject, paymentHeader, custodial, idempotencyKey } = input;
+  if ((paymentHeader && custodial) || (!paymentHeader && !custodial)) {
+    return { ok: false, code: 'payment_not_settled', reason: 'payment_mode_invalid', transient: false };
+  }
 
   // In-process serialization per checkoutId — an efficiency layer, NOT the
   // correctness guarantee. The DURABLE guarantees are the DB-backed CLAIM (only
@@ -457,6 +475,44 @@ export async function settleCheckout(input: {
     //    verify→settle. The claim also stakes the idempotency key: a reuse on a
     //    DIFFERENT checkout trips the (avatar,key) UNIQUE → a clean conflict
     //    BEFORE any money moves.
+    let custodialAttempt: PreparedInboundCustodialAttempt | null = null;
+    if (custodial) {
+      let payer: Awaited<ReturnType<typeof loadBoundAvatarCustodialPayer>>;
+      try {
+        payer = await loadBoundAvatarCustodialPayer(subject.avatarId);
+      } catch {
+        return { ok: false as const, code: 'settle_failed' as const, transient: true };
+      }
+      if (!payer) {
+        return { ok: false as const, code: 'settle_failed' as const, reason: 'custodial_wallet_missing', transient: false };
+      }
+      const custodialMeta = (row.metadata ?? {}) as Record<string, unknown>;
+      const custodialNetwork = (custodialMeta.network === 'mainnet' || custodialMeta.network === 'devnet'
+        ? custodialMeta.network
+        : resolveTopupNetwork()) as X402Network;
+      try {
+        custodialAttempt = await prepareInboundCustodialAttempt({
+          payerSecretKey: payer.secretKey,
+          payerPubkey: payer.publicKey,
+          payTo: config.merchantWalletPubkey,
+          amountBaseUnits: BigInt(usdCentsToUsdcAtomic(rowUsdCents)),
+          network: custodialNetwork,
+          rpcUrl: resolveTopupRpcUrl(custodialNetwork),
+          resource: {
+            url: `/api/x402/checkout/${checkoutId}`,
+            description: `ClawVille checkout ${itemKind} ${row.itemRef}`,
+          },
+          purpose: 'clawville-x402-checkout',
+          extra: { checkoutId, avatarId: subject.avatarId, itemKind },
+        });
+      } catch {
+        return { ok: false as const, code: 'payment_not_settled' as const, reason: 'custodial_prepare_failed', transient: true };
+      }
+      if (!custodialAttempt) {
+        return { ok: false as const, code: 'payment_not_settled' as const, reason: 'payai_unavailable', transient: true };
+      }
+    }
+
     const settlingId = randomUUID();
     let claimed: { id: string }[];
     try {
@@ -469,11 +525,14 @@ export async function settleCheckout(input: {
       if ((err as { code?: string } | undefined)?.code === '23505') {
         // (avatar, idempotency_key) UNIQUE tripped — this avatar used this key on
         // ANOTHER checkout. Refuse; NO money has moved.
+        releaseInboundCustodialAttempt(custodialAttempt);
         return { ok: false as const, code: 'idempotency_key_conflict' as const };
       }
+      releaseInboundCustodialAttempt(custodialAttempt);
       throw err;
     }
     if (claimed.length === 0) {
+      releaseInboundCustodialAttempt(custodialAttempt);
       // Someone else advanced this checkout between our read and here — re-read +
       // dispatch (resume / replay / in-flight / reconcile).
       const reread = await db.query.x402Checkouts.findFirst({
@@ -488,15 +547,16 @@ export async function settleCheckout(input: {
     const network = (meta.network === 'mainnet' || meta.network === 'devnet'
       ? meta.network
       : resolveTopupNetwork()) as X402Network;
-    const settleFeePayer = await resolveFacilitatorFeePayer(network);
-    const quote = buildTopupQuote({
-      payTo: config.merchantWalletPubkey,
-      asset: 'usdc',
-      usdCents: rowUsdCents,
-      network,
-      feePayer: settleFeePayer ?? undefined,
-    });
-    const requirements = quote.accepts[0];
+    const settleFeePayer = custodial ? null : await resolveFacilitatorFeePayer(network);
+    const requirements = custodial
+      ? null
+      : buildTopupQuote({
+          payTo: config.merchantWalletPubkey,
+          asset: 'usdc',
+          usdCents: rowUsdCents,
+          network,
+          feePayer: settleFeePayer ?? undefined,
+        }).accepts[0];
 
     // 8) Verify → (only on valid) settle. MONEY MAY MOVE HERE. The failure
     //    classification is money-state-critical (Codex round-2 BLOCKING):
@@ -505,7 +565,81 @@ export async function settleCheckout(input: {
     //    must NEVER release to pending (a retry would re-call the facilitator and
     //    could double-settle). A VERIFY-phase error happened BEFORE /settle was
     //    ever called, so no money moved and the claim can be released.
-    const result = await verifyAndSettle({ paymentHeader, requirements });
+    let accounting: CapturedSettlementAccounting = {
+      facilitator: 'payai',
+      ...legacySettlementAmounts(BigInt(usdCentsToUsdcAtomic(rowUsdCents))),
+    };
+    const result = custodialAttempt
+      ? await (async () => {
+          let outcome: ExecutePreparedExactPaymentOutcome;
+          try {
+            outcome = await executeInboundCustodialAttempt(custodialAttempt);
+          } catch {
+            await markReconcile(checkoutId, settlingId, 'custodial_execute_threw', null, null);
+            return null;
+          }
+          if (outcome.kind === 'settled') return outcome.result;
+          if (outcome.kind === 'meridian_settled') {
+            accounting = { facilitator: 'meridian', ...outcome.amounts };
+            return outcome.result;
+          }
+          if (
+            outcome.kind === 'ambiguous'
+            || (outcome.kind === 'meridian_failure' && outcome.ambiguous)
+          ) {
+            if (outcome.kind === 'meridian_failure') {
+              const meridianAmounts = custodialAttempt.prepared.meridian?.amounts;
+              if (meridianAmounts) {
+                accounting = { facilitator: 'meridian', ...meridianAmounts };
+              }
+            }
+            await markReconcile(
+              checkoutId,
+              settlingId,
+              outcome.reason,
+              'signature' in outcome ? outcome.signature : null,
+              outcome.result,
+              { accounting },
+            );
+            return null;
+          }
+          if (
+            (outcome.kind === 'definitive_failure' && outcome.stage === 'verify')
+            || (outcome.kind === 'meridian_failure' && outcome.stage === 'verify')
+          ) {
+            await releaseClaim(checkoutId, settlingId);
+            return null;
+          }
+          await db
+            .update(x402Checkouts)
+            .set({
+              status: 'failed',
+              settlingId: null,
+              settlingStartedAt: null,
+              metadata: { ...meta, failureReason: 'reason' in outcome ? outcome.reason : outcome.kind },
+            })
+            .where(and(
+              eq(x402Checkouts.id, checkoutId),
+              eq(x402Checkouts.status, 'settling'),
+              eq(x402Checkouts.settlingId, settlingId),
+            ));
+          return null;
+        })()
+      : await verifyAndSettle({ paymentHeader: paymentHeader!, requirements: requirements! });
+    if (!result) {
+      const current = await db.query.x402Checkouts.findFirst({
+        where: eq(x402Checkouts.id, checkoutId),
+      });
+      if (current?.status === 'reconcile') {
+        return { ok: false as const, code: 'checkout_reconciliation' as const, status: 'reconcile' };
+      }
+      return {
+        ok: false as const,
+        code: 'payment_not_settled' as const,
+        reason: current?.status === 'failed' ? 'settlement_failed' : 'payai_unavailable',
+        transient: current?.status === 'pending',
+      };
+    }
     if (!result.settled || !result.txSignature) {
       const reason = result.failureReason ?? 'unsettled';
       if (reason.startsWith('independent_chain_') && result.txSignature) {
@@ -569,6 +703,7 @@ export async function settleCheckout(input: {
       txSignature,
       settlePayer: result.payer ?? undefined,
       settleNetwork: result.network ?? undefined,
+      x402SettlementAccounting: accountingMetadata(accounting),
     };
     let captured: { id: string }[];
     try {
@@ -598,6 +733,10 @@ export async function settleCheckout(input: {
           referenceId: checkoutId,
           subjectId: subject.avatarId,
           amountUsdcAtomic: BigInt(usdCentsToUsdcAtomic(rowUsdCents)),
+          grossUsdcAtomic: accounting.grossUsdcAtomic,
+          platformFeeUsdcAtomic: accounting.platformFeeUsdcAtomic,
+          treasuryFeeUsdcAtomic: accounting.treasuryFeeUsdcAtomic,
+          netUsdcAtomic: accounting.netUsdcAtomic,
         }, tx);
         if (receipt.kind === 'foreign_owner') {
           throw new CheckoutSignatureAlreadySettled();
@@ -619,6 +758,7 @@ export async function settleCheckout(input: {
         );
         await markReconcile(checkoutId, settlingId, 'signature_conflict', txSignature, result, {
           allowExistingReconcile: true,
+          accounting,
         });
         return { ok: false as const, code: 'signature_conflict' as const, status: 'reconcile' };
       }
@@ -648,6 +788,7 @@ export async function settleCheckout(input: {
       );
       await markReconcile(checkoutId, settlingId, 'capture_lost', txSignature, result, {
         allowExistingReconcile: true,
+        accounting,
       });
       return { ok: false as const, code: 'checkout_reconciliation' as const, status: 'reconcile' };
     }
@@ -761,6 +902,10 @@ async function runFulfillment(
 
   try {
     const out = await db.transaction(async (tx) => {
+      const capturedAccounting = settlementAccountingFromMetadata(
+        meta,
+        BigInt(usdCentsToUsdcAtomic(rowUsdCents)),
+      );
       const receipt = await claimX402Settlement({
         txSignature,
         rail: 'x402_checkout',
@@ -768,6 +913,10 @@ async function runFulfillment(
         referenceId: checkoutId,
         subjectId: subject.avatarId,
         amountUsdcAtomic: BigInt(usdCentsToUsdcAtomic(rowUsdCents)),
+        grossUsdcAtomic: capturedAccounting.grossUsdcAtomic,
+        platformFeeUsdcAtomic: capturedAccounting.platformFeeUsdcAtomic,
+        treasuryFeeUsdcAtomic: capturedAccounting.treasuryFeeUsdcAtomic,
+        netUsdcAtomic: capturedAccounting.netUsdcAtomic,
       }, tx);
       if (receipt.kind === 'foreign_owner') {
         throw new CheckoutSignatureAlreadySettled();
@@ -957,9 +1106,16 @@ async function markReconcile(
   reason: string,
   spentTxSignature: string | null,
   result: { payer?: string | null; network?: string | null } | null,
-  opts: { requireNullSignature?: boolean; allowExistingReconcile?: boolean } = {},
+  opts: {
+    requireNullSignature?: boolean;
+    allowExistingReconcile?: boolean;
+    accounting?: CapturedSettlementAccounting;
+  } = {},
 ): Promise<void> {
   const patch: Record<string, unknown> = { reconcileReason: reason };
+  if (opts.accounting) {
+    patch.x402SettlementAccounting = accountingMetadata(opts.accounting);
+  }
   // The reconciler polls the chain by the spent signature (when we have it) OR by
   // the payer + amount + window (the ambiguous/stale cases). Record whatever the
   // facilitator told us so the reconciler has a chain-poll anchor.
