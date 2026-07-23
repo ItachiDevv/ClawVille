@@ -26,7 +26,7 @@ import { describe, it, expect } from 'bun:test';
 import { randomUUID } from 'crypto';
 import { CashTableManager, type CashSubject } from '../cash-table-manager';
 import { PokerTableSim } from '../poker-table-sim';
-import type { SimClock } from '../poker-table-types';
+import type { HandResult, SimClock } from '../poker-table-types';
 
 // ── Fake clock (manual; setTimer never auto-fires — turns are driven explicitly) ─
 class FakeClock implements SimClock {
@@ -389,6 +389,8 @@ class FakeDb {
     boardJson: ['boardJson', 'board_json'],
     potTotalCt: ['potTotalCt', 'pot_total_ct'],
     potResultJson: ['potResultJson', 'pot_result_json'],
+    seatResultJson: ['seatResultJson', 'seat_result_json'],
+    endedAt: ['endedAt', 'ended_at'],
     settledAt: ['settledAt', 'settled_at'],
     kind: ['kind', 'kind'],
     amountCt: ['amountCt', 'amount_ct'],
@@ -473,6 +475,14 @@ describe('CashTableManager — P1 lifecycle + conservation', () => {
     // (CT-supply conservation). Without this debit the seeded chips would be minted.
     ledger.setBalance(HOUSE_BANK_AVATAR, 1_000_000);
     const sim = new PokerTableSim(new FakeClock());
+    const completed: HandResult[] = [];
+    const installHandComplete = sim.setHandCompleteFn.bind(sim);
+    sim.setHandCompleteFn = (handler) => {
+      installHandComplete((tableId, result) => {
+        completed.push(result);
+        handler(tableId, result);
+      });
+    };
     let seedCounter = 0;
     const seededAvatarId = 'agent-seed-1';
     const mgr = new CashTableManager({
@@ -488,11 +498,11 @@ describe('CashTableManager — P1 lifecycle + conservation', () => {
       }),
       houseBankAvatarProvider: () => HOUSE_BANK_AVATAR,
     });
-    return { db, ledger, sim, mgr, seededAvatarId };
+    return { db, ledger, sim, mgr, seededAvatarId, completed };
   }
 
   it('creates a mid table, seats a human + a seeded agent, plays a full hand, conserves chips, writes a settled hand row, and a leave cashes out exactly the stack', async () => {
-    const { db, ledger, mgr, seededAvatarId } = makeManager();
+    const { db, ledger, mgr, seededAvatarId, completed } = makeManager();
     const human = 'human-1';
     ledger.setBalance(human, 1000);
 
@@ -518,6 +528,7 @@ describe('CashTableManager — P1 lifecycle + conservation', () => {
     // Human sits with the buy-in — this triggers seeded-agent fill + hand start.
     const sit = await mgr.sitDown(table.id, humanSubject(human), 100);
     expect(sit.alreadySeated).toBe(false);
+    expect(sit.buyInLedgerTxnId).toBeTruthy();
     expect(ledger.get(human)).toBe(900); // 100 debited from the human
     // The seeded agent's chips are REAL-CT-backed: the house bank was ALSO debited
     // 100 (not minted). Total debits = 100 (human) + 100 (house) = 200.
@@ -578,6 +589,19 @@ describe('CashTableManager — P1 lifecycle + conservation', () => {
     );
     expect(handRows.length).toBe(1);
     expect(handRows[0]!.settled_at).toBeTruthy();
+    expect(Array.isArray(handRows[0]!.pot_result_json)).toBe(true);
+    expect(Array.isArray(handRows[0]!.seat_result_json)).toBe(true);
+    expect(handRows[0]!.ended_at).toBeTruthy();
+    expect(handRows[0]!.pot_result_json).toEqual(
+      completed.find((result) => result.handNumber === 1)!.settledPots,
+    );
+    for (const pot of handRows[0]!.pot_result_json as Array<{
+      amount: string;
+      awards: Array<{ amount: string }>;
+    }>) {
+      expect(pot.awards.reduce((sum, award) => sum + BigInt(award.amount), 0n))
+        .toBe(BigInt(pot.amount));
+    }
 
     // CONSERVATION after settle: escrow unchanged at 200; sum of active seat
     // stacks still == 200 (chips only moved between the two seats, rake 0).

@@ -10,6 +10,7 @@
  *   POST /tables/:id/sit         (user OR agent) — sit down with the table buy-in (CT debit)
  *   POST /tables/:id/leave       (user OR agent) — cash out current stack (CT credit), between hands
  *   POST /tables/:id/action      (user OR agent) — submit ONE betting action
+ *   GET  /tables/:id/last-settled (user OR agent) — entitled terminal hand truth
  *   GET  /tables/:id/state-for-agent (user OR agent) — own view + hole cards (NO leak)
  *   GET  /tables/:id             (public)        — public table state (config + seats + live snapshot)
  *
@@ -49,6 +50,7 @@ import {
 import { HOUSE_TIER_STAKES } from '../services/poker/cash-house-config';
 import { InsufficientTokensError } from '../services/claw-token-ledger';
 import type { AppContext } from '../types';
+import { createLastSettledHandler } from './cove-cash-last-settled-handler';
 
 export const coveCashPokerRouter = new Hono<AppContext>();
 coveCashPokerRouter.use('*', fingerprintMiddleware);
@@ -361,6 +363,18 @@ coveCashPokerRouter.post('/tables/:id/action', requireNonGuestUser, async (c) =>
     mapError(err);
   }
 });
+
+// ── GET /tables/:id/last-settled (historical participant only) ─────────────
+const lastSettledHandler = createLastSettledHandler({
+  resolveRequestSubject: (c) => resolveSubject(c),
+  getLastSettledHand: (...args) => cashTableManager.getLastSettledHand(...args),
+});
+
+coveCashPokerRouter.get(
+  '/tables/:id/last-settled',
+  requireNonGuestUser,
+  lastSettledHandler,
+);
 
 // ── GET /tables/:id/state-for-agent (own view + hole cards; no leak) ──────────
 coveCashPokerRouter.get('/tables/:id/state-for-agent', async (c) => {

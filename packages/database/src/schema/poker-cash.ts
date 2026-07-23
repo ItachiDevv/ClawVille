@@ -50,6 +50,10 @@ import {
   check,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
+import type {
+  CashSettledSeat,
+  SettledPotResult,
+} from '@clawville/shared';
 import { avatars } from './avatars';
 
 export const pokerCashTables = pgTable(
@@ -229,11 +233,16 @@ export const pokerCashHands = pgTable(
     potTotalCt: text('pot_total_ct'),
     /** Rake taken off this hand's pot (atomic CT, stringified). 0 in P1. */
     rakeTakenCt: text('rake_taken_ct').notNull().default('0'),
+    /** Full-fidelity BA-1 pot awards. Shape = SettledPotResult[]. Null until settled. */
+    potResultJson: jsonb('pot_result_json').$type<SettledPotResult[]>(),
     /**
-     * Per-seat pot result. Shape mirrors HandResult.perSeat[]
-     * ({seatIndex, avatarId, totalCommitted, won, net, status, ...}). Null until settled.
+     * Immutable BA-1 per-seat accounting, excluding the entitlement-derived
+     * `shown` field. Null until settled.
      */
-    potResultJson: jsonb('pot_result_json'),
+    seatResultJson: jsonb('seat_result_json')
+      .$type<Array<Omit<CashSettledSeat, 'shown'>>>(),
+    /** Street on which the hand ended; needed to suppress every card on fold-wins. */
+    endedAt: text('ended_at'),
     /** Idempotency anchor: a settled hand replays instead of re-applying chip deltas. */
     settledAt: timestamp('settled_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

@@ -36,6 +36,61 @@ export interface HoldemCard {
   rank: HoldemRank;
 }
 
+// ---------------------------------------------------------------------------
+// Cash-table settled-hand wire truth (BA-1)
+// ---------------------------------------------------------------------------
+
+/** Serializable projection of the engine's best-five hand rank. */
+export interface TypedHandRank {
+  /** HandCategory, low-to-high (0..8). */
+  category: number;
+  /** Stable display key, e.g. "flush" or "two_pair". */
+  categoryName: string;
+  /** Category-specific rank values used to break ties, high-to-low. */
+  tiebreakers: number[];
+}
+
+/** One fully-attributed main/side-pot settlement. All amounts are bigint strings. */
+export interface SettledPotResult {
+  amount: string;
+  eligibleSeatIndices: number[];
+  awards: Array<{ seatIndex: number; amount: string }>;
+  /** Null when the pot was won without a showdown evaluation. */
+  winningRank: TypedHandRank | null;
+}
+
+/** One historical participant's immutable accounting for a settled cash hand. */
+export interface CashSettledSeat {
+  seatIndex: number;
+  avatarId: string;
+  startStack: string;
+  endStack: string;
+  totalCommitted: string;
+  grossWon: string;
+  rakeAttributed: string;
+  net: string;
+  stackDelta: string;
+  status: 'active' | 'folded' | 'allin' | 'busted' | 'sitting_out';
+  /** Folded seats are null for every requester, including the folded seat owner. */
+  shown: [HoldemCard, HoldemCard] | null;
+  /** True exactly when status is "folded"; no discretionary muck state exists. */
+  mucked: boolean;
+}
+
+/** Authoritative terminal snapshot retained while the next cash hand proceeds. */
+export interface CashSettledHandSnapshot {
+  /** Cash correlation key: `${tableId}:${handNumber}`. */
+  handId: string;
+  handNumber: number;
+  tableId: string;
+  board: HoldemCard[];
+  endedAt: 'preflop' | 'flop' | 'turn' | 'river' | 'showdown';
+  pots: SettledPotResult[];
+  seats: CashSettledSeat[];
+  settledAtMs: number;
+  displayExpiresAtMs: number;
+}
+
 /** 0–5 inclusive. Seat 0 = the human/agent player; 1..5 = house bots. */
 export type SeatIdx = 0 | 1 | 2 | 3 | 4 | 5;
 
