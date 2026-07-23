@@ -1257,9 +1257,27 @@ class AgentAutonomyDriver {
         return `- ${b.buildingId}: "${b.label}"${b.cryptoFocus ? ` — teaches ${b.cryptoFocus}` : ''}${cooled ? ' (you learned here very recently — pick somewhere else)' : ''}`;
       })
       .join('\n');
+    const inRangePlaces = perception.places.filter(
+      (place) => place.distance <= BUILDING_INTERACTION_RADIUS,
+    );
+    const covePlaySyntax = HATCHER_ACTION_MENU.find(
+      (action) => action.verb === 'play_cove_game',
+    )!.syntax;
+    const hereNow =
+      inRangePlaces.length > 0
+        ? [
+            'You are HERE now (within range — act directly; do NOT enter again):',
+            ...inRangePlaces.map((place) =>
+              place.placeId === 'cove'
+                ? `- ${place.label}: you can play right now — [ACTION: ${covePlaySyntax}]`
+                : `- ${place.label}: you have arrived — you may act here now`,
+            ),
+          ]
+        : [];
     const places = perception.places
-      .map((place) =>
-        `- ${place.placeId}: "${place.label}" — ${place.description} — ${place.actionSyntax} — ${place.distance}wu away`,
+      .map(
+        (place) =>
+          `- ${place.placeId}: "${place.label}" — ${place.description} — ${place.actionSyntax} — ${place.distance}wu away${place.distance <= BUILDING_INTERACTION_RADIUS ? ' (you are HERE — no need to enter again)' : ''}`,
       )
       .join('\n');
     const actionMenu = HATCHER_ACTION_MENU
@@ -1310,6 +1328,7 @@ class AgentAutonomyDriver {
       avoid,
       learned,
       ...(knowledgeHeld ? [knowledgeHeld] : []),
+      ...hereNow,
       'Places (placeId: name — purpose — exact action — distance):',
       places,
       '',
