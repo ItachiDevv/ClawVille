@@ -355,10 +355,18 @@ export function useActivityInput({
           recomputeDirFromKeys();
           e.preventDefault();
           break;
-        case 'Space':
+        case 'Space': {
+          const jumpWasHeld = spaceHeldRef.current || shiftHeldRef.current;
           spaceHeldRef.current = true;
           if (isReefRaceRef.current) {
             actionBitsRef.current |= ACTION_BIT_JUMP;
+            if (!jumpWasHeld && !e.repeat) {
+              selfInputBus.jumpPressSeq += 1;
+              // Preserve taps shorter than the 30Hz send interval. The held bit
+              // remains for normal key holds; this one-shot guarantees authority
+              // sees the same edge that started local prediction.
+              oneShotBitsRef.current |= ACTION_BIT_JUMP;
+            }
           } else {
             actionBitsRef.current |= ACTION_BIT_BOOST;
             // Capture immediately so even short taps register on the next send.
@@ -366,6 +374,7 @@ export function useActivityInput({
           }
           e.preventDefault();
           break;
+        }
         case 'KeyQ':
           if (isReefRaceRef.current && e.repeat) {
             e.preventDefault();
@@ -377,10 +386,16 @@ export function useActivityInput({
           e.preventDefault();
           break;
         case 'ShiftLeft':
-        case 'ShiftRight':
+        case 'ShiftRight': {
+          const jumpWasHeld = spaceHeldRef.current || shiftHeldRef.current;
           shiftHeldRef.current = true;
           actionBitsRef.current |= ACTION_BIT_JUMP;
+          if (isReefRaceRef.current && !jumpWasHeld && !e.repeat) {
+            selfInputBus.jumpPressSeq += 1;
+            oneShotBitsRef.current |= ACTION_BIT_JUMP;
+          }
           break;
+        }
         default:
           break;
       }
@@ -505,6 +520,7 @@ export function useActivityInput({
           // Translate at the Reef boundary so A jumps and B uses the item.
           if (detail.bit === ACTION_BIT_BOOST) {
             oneShotBitsRef.current |= ACTION_BIT_JUMP;
+            selfInputBus.jumpPressSeq += 1;
           } else if (detail.bit === ACTION_BIT_USE_POWERUP) {
             oneShotBitsRef.current |= ACTION_BIT_BOOST;
           }
@@ -563,6 +579,8 @@ export function useActivityInput({
         recomputeDirFromKeysRef.current();
       }
       const now = Date.now();
+      const obstacleControlLocked = isReefRaceRef.current &&
+        now < useActivityStore.getState().selfObstacleControlLockedUntil;
       const dt = lastSendAtRef.current ? (now - lastSendAtRef.current) / 1000 : 0;
       lastSendAtRef.current = now;
       const frameDt = dt > 0 && dt < 0.2 ? dt : SEND_INTERVAL_MS / 1000;
@@ -573,7 +591,9 @@ export function useActivityInput({
       const rawBits = actionBitsRef.current | oneShotBitsRef.current;
       // Reef bit 1 is reserved. Mask it defensively even if a future custom
       // action source dispatches raw bits instead of semantic A/B values.
-      const bits = isReefRaceRef.current
+      const bits = obstacleControlLocked
+        ? 0
+        : isReefRaceRef.current
         ? rawBits & ~ACTION_BIT_USE_POWERUP
         : rawBits;
       oneShotBitsRef.current = 0;
@@ -606,7 +626,7 @@ export function useActivityInput({
 
       const dir = dirRef.current;
       const dirMag = Math.hypot(dir.x, dir.y);
-      const moving = dirMag > 0.015;
+      const moving = !obstacleControlLocked && dirMag > 0.015;
 
       seqRef.current = (seqRef.current + 1) >>> 0;
 

@@ -17,6 +17,7 @@ import type { BotController, BotInput, BotRoomView } from './bot-controller';
 import {
   REEF_TRACK_HALF_WIDTH,
   REEF_MAX_SPEED,
+  REEF_RACE_LAPS,
   REEF_TICK_HZ,
   REEF_TICK_MS,
   DRIFT_SPARK_TICK_1,
@@ -37,7 +38,14 @@ import {
   type ReefBoostRibbon,
   type ReefHazardPatch,
 } from '../sim/reef-race-config';
-import { ReefSpline, REEF_RACE_DEFAULT_TRACK } from '@clawville/shared';
+import {
+  ReefSpline,
+  REEF_RACE_DEFAULT_TRACK,
+  reefRaceCreatureMotionAt,
+  type ReefRaceCreatureMotion,
+  type ReefRaceObstacleLayout,
+  type ReefRaceRipCurrentLayout,
+} from '@clawville/shared';
 
 const POWERUP_USE_CHANCE = 0.3;
 const JITTER_MAGNITUDE = 0.08;
@@ -77,6 +85,10 @@ interface ReefBotBody {
   dnf?: boolean;
   /** Authoritative within-lap ARCLENGTH fraction (not raw spline t). */
   progress?: number;
+  /** Spline vertical state, used only for the two-tick trick pulse. */
+  airborne?: boolean;
+  /** Fixed-roster row rank supplied by the authoritative spline room. */
+  botRowRank?: number;
 }
 
 /**
@@ -131,14 +143,17 @@ const V2_CURVATURE_SAMPLE_PROGRESS = 0.008;
 const V2_CURVATURE_THRESHOLD_RAD = 0.05;
 const V2_CURVE_OFFSET_PER_RAD = 100;
 
-/** Pickup detection radius multiplier. Spec: 3 * REEF_POWERUP_PICKUP_RADIUS. */
+/** Pickup detection radius multiplier for compatibility views without row metadata. */
 const V2_PICKUP_LOOKAHEAD_MULT = 3;
 
 /**
- * Pickup deviation budget. Spec: bot only redirects if pickup is within
- * 40% of widthAt(t) lateral deviation from the racing line.
+ * R18d rows span 58% of track half-width. Bots enter their assigned row lane
+ * early enough to contest it without cutting across the spline.
  */
-const V2_PICKUP_DEVIATION_FRACTION = 0.4;
+const V2_PICKUP_ROW_LOOKAHEAD_PROGRESS = 0.04;
+/** Final correction is ~239wu on the 95,741wu loop: local, never a corner chord. */
+const V2_PICKUP_DIRECT_INTERCEPT_PROGRESS = 0.0025;
+const V2_PICKUP_ROW_MAX_LATERAL_FRACTION = 0.62;
 
 /** Module-scope spline built from the exact same shared v7 track as the sim. */
 const BOT_SPLINE = new ReefSpline(REEF_RACE_DEFAULT_TRACK, { closed: true });
@@ -147,7 +162,12 @@ const BOT_SPLINE_BOOST_PADS = buildSplineBoostPads().map((pad) => ({
   progress: BOT_SPLINE.arclengthFromT(pad.t) / BOT_SPLINE.totalArcLength,
 }));
 
-const V2_SKILL_MULTIPLIERS = [0.95, 0.98, 1.0] as const;
+const V2_SKILL_TIERS = [
+  { name: 'low', cruiseMin: .90, cruiseMax: .97, catchupMax: 1.00, obstacleSuccess: .70 },
+  { name: 'mid', cruiseMin: .94, cruiseMax: 1.00, catchupMax: 1.03, obstacleSuccess: .80 },
+  { name: 'top', cruiseMin: .97, cruiseMax: 1.03, catchupMax: 1.05, obstacleSuccess: .90 },
+] as const;
+type V2SkillTier = (typeof V2_SKILL_TIERS)[number];
 
 function fnv1a(avatarId: string, salt = ''): number {
   let hash = 0x811c9dc5;
@@ -163,11 +183,18 @@ function stableLaneOffset(avatarId: string): number {
   return fnv1a(avatarId) % (V2_MAX_LATERAL_OFFSET_WU * 2 + 1) - V2_MAX_LATERAL_OFFSET_WU;
 }
 
-function stableSkillMultiplier(avatarId: string): number {
-  return V2_SKILL_MULTIPLIERS[
-    fnv1a(avatarId, '#reef-skill') % V2_SKILL_MULTIPLIERS.length
+function stableSkillTier(avatarId: string): V2SkillTier {
+  return V2_SKILL_TIERS[
+    fnv1a(avatarId, '#reef-skill') % V2_SKILL_TIERS.length
   ];
 }
+
+const BOT_CREATURE_MOTION: ReefRaceCreatureMotion = {
+  position: { x: 0, y: 0 },
+  telegraph: false,
+  crossing: false,
+  crossingProgress: 0,
+};
 
 /**
  * v2 — ramp AABB definitions (XZ corridor zones where the server injects
@@ -193,18 +220,13 @@ const REEF_RACE_RAMP_ZONES: ReadonlyArray<{
 // and emit ACTION_BIT_JUMP one tick before entry. Hooks would land here.
 
 /**
- * Optional v2 fields tacked onto the bot's room view by the spline sim's
- * buildBotRoomView. Phase 1 spline-sim does NOT populate `pickups` (Wave 2
- * follow-up) — the v2 bot's pickup-deviation branch no-ops gracefully when
- * the field is absent. Tests inject `pickups` directly to exercise the
- * branch.
+ * Optional v2 furniture fields tacked onto the bot's room view by the spline
+ * sim. Pickup targets now live on the shared BotRoomView contract.
  */
 interface ReefV2BotRoomView {
-  pickups?: ReadonlyArray<{
-    x: number; // protocol X (sim X)
-    y: number; // protocol Y (sim Z)
-    active: boolean;
-  }>;
+  obstacles?: ReadonlyArray<ReefRaceObstacleLayout>;
+  ripCurrents?: ReadonlyArray<ReefRaceRipCurrentLayout>;
+  creatureNowMs?: number;
 }
 
 /**
@@ -248,14 +270,23 @@ class ReefRaceBot implements BotController {
   private lineModeForCheckpoint: number = -1;
 
   private readonly splineLaneOffset: number;
-  private readonly skillMultiplier: number;
+  private readonly skillTier: V2SkillTier;
+  private readonly cruiseThrust: number;
   private readonly itemUseDelayMs: number;
   private bankedItemKind: string | null = null;
+  private bankedItemSlot = -1;
   private bankedItemAtMs = 0;
+  private splineWasAirborne = false;
+  private splineTrickPhase: 0 | 1 | 2 | 3 = 0;
+  private splineLaunchCount = 0;
+  private splineTrickSide: -1 | 1 = 1;
 
   constructor(public readonly avatarId: string) {
     this.splineLaneOffset = stableLaneOffset(avatarId);
-    this.skillMultiplier = stableSkillMultiplier(avatarId);
+    this.skillTier = stableSkillTier(avatarId);
+    const cruiseRoll = (fnv1a(avatarId, '#reef-cruise') % 10_001) / 10_000;
+    this.cruiseThrust = this.skillTier.cruiseMin +
+      (this.skillTier.cruiseMax - this.skillTier.cruiseMin) * cruiseRoll;
     this.itemUseDelayMs = 2_000 + Math.abs(this.splineLaneOffset) * 12;
   }
 
@@ -685,6 +716,18 @@ class ReefRaceBot implements BotController {
     _dt: number,
   ): BotInput {
     const spline = BOT_SPLINE;
+    const airborne = self.airborne === true;
+    if (airborne && !this.splineWasAirborne) {
+      this.splineLaunchCount += 1;
+      const roll = fnv1a(this.avatarId, `#reef-trick-${this.splineLaunchCount}`);
+      // 60% of launches: neutral for one tick, then emit a deliberate steer
+      // edge. The sim still decides whether the later landing earns a surge.
+      this.splineTrickPhase = roll % 100 < 60 ? 1 : 0;
+      this.splineTrickSide = (roll >>> 8) % 2 === 0 ? 1 : -1;
+    } else if (!airborne) {
+      this.splineTrickPhase = 0;
+    }
+    this.splineWasAirborne = airborne;
 
     // ── Find current t on the spline ──────────────────────────────────────
     // self.x is sim X; self.y is sim Z (per buildBotRoomView's protocol map).
@@ -739,11 +782,66 @@ class ReefRaceBot implements BotController {
       Math.min(lateralLimit, this.splineLaneOffset + curveOffset),
     );
 
+    let jumpForObstacle = false;
+    let furnitureTarget: { x: number; z: number } | null = null;
+    let nearestObstacleProgress = Number.POSITIVE_INFINITY;
+    for (const obstacle of view.obstacles ?? []) {
+      const forwardProgress = (obstacle.progress - progress + 1) % 1;
+      if (forwardProgress < .0015 || forwardProgress > .009) continue;
+      if (forwardProgress >= nearestObstacleProgress) continue;
+      if (obstacle.kind === 'creature') {
+        const motion = reefRaceCreatureMotionAt(
+          obstacle,
+          view.creatureNowMs ?? view.now,
+          BOT_CREATURE_MOTION,
+        );
+        if (!motion.telegraph && !motion.crossing) continue;
+      }
+      const successRoll = (
+        fnv1a(this.avatarId, `#reef-obstacle-${obstacle.id}-${self.lap ?? 0}`) % 10_000
+      ) / 10_000;
+      if (successRoll >= this.skillTier.obstacleSuccess) continue;
+      nearestObstacleProgress = forwardProgress;
+      if (obstacle.kind !== 'kelp') {
+        jumpForObstacle = true;
+        furnitureTarget = null;
+        continue;
+      }
+      const obstacleT = spline.tFromArclength(obstacle.progress * spline.totalArcLength);
+      const obstacleCenter = spline.centerlineAt(obstacleT);
+      const obstacleNormal = spline.normalAt(obstacleT);
+      const obstacleLateral =
+        (obstacle.position.x - obstacleCenter.x) * obstacleNormal.x +
+        (obstacle.position.y - obstacleCenter.z) * obstacleNormal.z;
+      const clearance = obstacle.params.radius + 150;
+      const avoidOffset = obstacleLateral >= 0
+        ? obstacleLateral - clearance
+        : obstacleLateral + clearance;
+      furnitureTarget = {
+        x: obstacleCenter.x + obstacleNormal.x * avoidOffset,
+        z: obstacleCenter.z + obstacleNormal.z * avoidOffset,
+      };
+    }
+
+    // Mid/top tiers commit to favorable off-line rip lanes; low tier holds the
+    // shorter conventional line. Obstacle plans always take priority.
+    if (!furnitureTarget && !jumpForObstacle && this.skillTier.name !== 'low') {
+      let nearestRip = Number.POSITIVE_INFINITY;
+      for (const rip of view.ripCurrents ?? []) {
+        if (this.skillTier.name === 'mid' && rip.speedBonus < .21) continue;
+        const forwardProgress = (rip.progress - progress + 1) % 1;
+        if (forwardProgress < .004 || forwardProgress > .035 || forwardProgress >= nearestRip) continue;
+        const entry = rip.segments[0];
+        if (!entry) continue;
+        nearestRip = forwardProgress;
+        furnitureTarget = { x: entry.position.x, z: entry.position.y };
+      }
+    }
+
     // Pads expose raw spline t; compare only after the module-scope arclength
     // conversion, using a seam-safe forward progress delta. Full snap
     // guarantees line-up through the 170wu-half-width catch zone regardless
     // of lane.
-    let seekingBoostPad = false;
     for (const pad of BOT_SPLINE_BOOST_PADS) {
       const forwardProgress = (pad.progress - progress + 1) % 1;
       if (forwardProgress < 0.004 || forwardProgress > lookaheadProgress) continue;
@@ -751,41 +849,108 @@ class ReefRaceBot implements BotController {
         -lateralLimit,
         Math.min(lateralLimit, pad.lateralOffset),
       );
-      seekingBoostPad = true;
       break;
     }
 
     const normalLook = spline.normalAt(tLook);
     let targetX = lookCenter.x + normalLook.x * lateralOffset;
     let targetZ = lookCenter.z + normalLook.z * lateralOffset;
+    if (furnitureTarget) {
+      targetX = furnitureTarget.x;
+      targetZ = furnitureTarget.z;
+    }
 
-    // ── Pickup deviation: scan within 3 * REEF_POWERUP_RADIUS of lookahead ─
-    // Only redirect if pickup's lateral deviation from the racing line is
-    // within 40% of widthAt(t). When `view.pickups` is absent (Wave 2 sim
-    // hasn't populated it yet), this branch no-ops gracefully.
+    // ── Pickup rows: stable rotating lane assignment ─────────────────────
+    // Choose the nearest authored station ahead, then rotate stable avatar
+    // order through its three lanes. Four racers therefore contest the row
+    // without all converging on one box. If the assigned box is gone, select
+    // the nearest remaining lane with an avatar-stable tie break.
     const pickups = view.pickups;
-    if (!seekingBoostPad && pickups && pickups.length > 0) {
-      const lookRadius = REEF_POWERUP_RADIUS * V2_PICKUP_LOOKAHEAD_MULT;
-      const lookRadiusSq = lookRadius * lookRadius;
-      const deviationBudget = halfW * V2_PICKUP_DEVIATION_FRACTION;
-      let bestPickup: { x: number; z: number; distSq: number } | null = null;
-      for (const pk of pickups) {
-        if (!pk.active) continue;
-        // pk.x = sim X; pk.y = sim Z (protocol convention from sim view).
-        const dx = pk.x - lookCenter.x;
-        const dz = pk.y - lookCenter.z;
-        const distSq = dx * dx + dz * dz;
-        if (distSq > lookRadiusSq) continue;
-        // Lateral deviation from racing line = |dot(offsetVec, normal)|.
-        const lateral = Math.abs(dx * normalLook.x + dz * normalLook.z);
-        if (lateral > deviationBudget) continue;
-        if (!bestPickup || distSq < bestPickup.distSq) {
-          bestPickup = { x: pk.x, z: pk.y, distSq };
-        }
+    if (
+      !furnitureTarget && !jumpForObstacle &&
+      pickups && pickups.length > 0
+    ) {
+      let nearestStation: number | null = null;
+      let nearestForward = Number.POSITIVE_INFINITY;
+      for (const pickup of pickups) {
+        if (
+          !pickup.active || pickup.progress === undefined ||
+          pickup.stationIndex === undefined
+        ) continue;
+        const forwardProgress = (pickup.progress - progress + 1) % 1;
+        if (
+          forwardProgress < .0001 ||
+          forwardProgress > V2_PICKUP_ROW_LOOKAHEAD_PROGRESS ||
+          forwardProgress >= nearestForward
+        ) continue;
+        nearestForward = forwardProgress;
+        nearestStation = pickup.stationIndex;
       }
-      if (bestPickup) {
-        targetX = bestPickup.x;
-        targetZ = bestPickup.z;
+
+      if (nearestStation !== null) {
+        const avatarRank = self.botRowRank ?? fnv1a(this.avatarId, '#reef-row-rank');
+        const lanes = [-1, 0, 1] as const;
+        const desiredLane = lanes[(avatarRank + nearestStation) % lanes.length]!;
+        const tieLane = (fnv1a(this.avatarId, `#reef-row-${nearestStation}`) & 1) === 0
+          ? -1
+          : 1;
+        let bestPickup: (typeof pickups)[number] | null = null;
+        let bestLanePenalty = Number.POSITIVE_INFINITY;
+        let bestTiePenalty = Number.POSITIVE_INFINITY;
+        for (const pickup of pickups) {
+          if (
+            !pickup.active || pickup.stationIndex !== nearestStation ||
+            pickup.lane === undefined
+          ) continue;
+          const lanePenalty = Math.abs(pickup.lane - desiredLane);
+          const tiePenalty = pickup.lane === tieLane ? 0 : 1;
+          if (
+            lanePenalty < bestLanePenalty ||
+            (lanePenalty === bestLanePenalty && tiePenalty < bestTiePenalty)
+          ) {
+            bestPickup = pickup;
+            bestLanePenalty = lanePenalty;
+            bestTiePenalty = tiePenalty;
+          }
+        }
+        if (bestPickup?.progress !== undefined) {
+          if (nearestForward <= V2_PICKUP_DIRECT_INTERCEPT_PROGRESS) {
+            targetX = bestPickup.x;
+            targetZ = bestPickup.y;
+          } else {
+            const pickupT = spline.tFromArclength(
+              bestPickup.progress * spline.totalArcLength,
+            );
+            const pickupCenter = spline.centerlineAt(pickupT);
+            const pickupNormal = spline.normalAt(pickupT);
+            const rowOffset =
+              (bestPickup.x - pickupCenter.x) * pickupNormal.x +
+              (bestPickup.y - pickupCenter.z) * pickupNormal.z;
+            const rowLimit = halfW * V2_PICKUP_ROW_MAX_LATERAL_FRACTION;
+            const rowLaneOffset = Math.max(-rowLimit, Math.min(rowLimit, rowOffset));
+            targetX = lookCenter.x + normalLook.x * rowLaneOffset;
+            targetZ = lookCenter.z + normalLook.z * rowLaneOffset;
+          }
+        }
+      } else {
+        // Compatibility path for older/unit-test views without row metadata.
+        const lookRadius = REEF_POWERUP_RADIUS * V2_PICKUP_LOOKAHEAD_MULT;
+        const lookRadiusSq = lookRadius * lookRadius;
+        let bestPickup: { x: number; z: number; distSq: number } | null = null;
+        for (const pickup of pickups) {
+          if (!pickup.active) continue;
+          const dx = pickup.x - lookCenter.x;
+          const dz = pickup.y - lookCenter.z;
+          const distSq = dx * dx + dz * dz;
+          if (distSq > lookRadiusSq) continue;
+          if (!bestPickup || distSq < bestPickup.distSq) {
+            bestPickup = { x: pickup.x, z: pickup.y, distSq };
+          }
+        }
+        if (bestPickup) {
+          targetX = bestPickup.x;
+          targetZ = bestPickup.z;
+        }
       }
     }
 
@@ -803,18 +968,31 @@ class ReefRaceBot implements BotController {
     }
 
     const selfTotalProgress = (self.lap ?? 0) + progress;
-    const liveProgress = view.bodies
-      .filter((body) => body.alive)
-      .map((body) => (body.lap ?? 0) + (body.progress ?? 0))
-      .sort((a, b) => b - a);
-    const leaderProgress = liveProgress[0] ?? selfTotalProgress;
-    const secondProgress = liveProgress[1] ?? leaderProgress;
+    let leaderProgress = selfTotalProgress;
+    let secondProgress = Number.NEGATIVE_INFINITY;
+    for (const body of view.bodies) {
+      if (!body.alive) continue;
+      const bodyProgress = (body.lap ?? 0) + (body.progress ?? 0);
+      if (bodyProgress > leaderProgress) {
+        secondProgress = leaderProgress;
+        leaderProgress = bodyProgress;
+      } else if (bodyProgress > secondProgress) {
+        secondProgress = bodyProgress;
+      }
+    }
+    if (!Number.isFinite(secondProgress)) secondProgress = leaderProgress;
     const behindGap = Math.max(0, leaderProgress - selfTotalProgress);
 
-    // Rubber-band cruise: trailers close the gap while a runaway leader eases.
-    let thrust = behindGap > 0.010
-      ? 0.92 + Math.min(1, (behindGap - 0.010) / 0.020) * 0.08
-      : 0.92;
+    // Tiered cruise + rubber band. Values above 1.00 are reachable only while
+    // genuinely behind; a tied/leading top bot is clamped to 1.00.
+    const finalLap = (self.lap ?? 0) >= REEF_RACE_LAPS - 1;
+    const catchupThreshold = finalLap ? .002 : .004;
+    const catchupRange = finalLap ? .018 : .026;
+    const catchupBlend = behindGap > catchupThreshold
+      ? Math.min(1, (behindGap - catchupThreshold) / catchupRange)
+      : 0;
+    let thrust = Math.min(1, this.cruiseThrust) +
+      (this.skillTier.catchupMax - Math.min(1, this.cruiseThrust)) * catchupBlend;
     if (
       selfTotalProgress >= leaderProgress &&
       leaderProgress - secondProgress > 0.020
@@ -827,7 +1005,7 @@ class ReefRaceBot implements BotController {
       const headingX = self.vx / speed;
       const headingZ = self.vy / speed;
       dot = dx * headingX + dz * headingZ;
-      if (dot < 0.3) thrust = 0.72;
+      if (dot < 0.3) thrust = 0.76;
     }
     void dot; // currently informational; reserved for tighter cornering tuning
 
@@ -842,8 +1020,23 @@ class ReefRaceBot implements BotController {
     const matchAge = view.now - view.matchStartedAt;
     const inGrace = matchAge < BOT_OPENING_GRACE_MS;
 
+    // Existing analog steering is the trick input. A neutral tick guarantees
+    // a real press edge even if the bot was already carving onto the ramp.
+    if (this.splineTrickPhase === 1) {
+      dx = Math.sin(self.rot);
+      dz = Math.cos(self.rot);
+      this.splineTrickPhase = 2;
+    } else if (this.splineTrickPhase === 2) {
+      const trickHeading = self.rot + this.splineTrickSide * 0.24;
+      dx = Math.sin(trickHeading);
+      dz = Math.cos(trickHeading);
+      this.splineTrickPhase = 3;
+    }
+
     // ── Action bits: jump + powerups (no drift) ──────────────────────────
     let actionBits = 0;
+
+    if (jumpForObstacle) actionBits |= ACTION_BIT_JUMP;
 
     // Ramp jump — bit 2 remains the stable jump verb.
     if (REEF_RACE_RAMP_ZONES.length > 0) {
@@ -859,36 +1052,56 @@ class ReefRaceBot implements BotController {
     }
 
     // Banked items remain visible for a few deterministic sim-seconds first.
-    const queuedItem = self.inventory[0];
+    const ownPlacement = this.getOwnPlacement(view);
+    const lastLivePlacement = this.getLastLivePlacement(view);
+    // Reef exposes one public item-use key, so the bot sees exactly the same
+    // queue head as humans and agents. Slot 1 becomes reachable only through
+    // the authority's normal post-consumption promotion of slot 1 into slot 0.
+    const queuedSlot = 0;
+    const queuedItem = self.inventory[queuedSlot];
     if (queuedItem?.kind == null) {
       this.bankedItemKind = null;
+      this.bankedItemSlot = -1;
       this.bankedItemAtMs = 0;
-    } else if (queuedItem.kind !== this.bankedItemKind) {
-      this.bankedItemKind = queuedItem.kind;
-      this.bankedItemAtMs = view.now;
     } else if (
-      !inGrace &&
-      queuedItem.cooldownUntil <= view.now &&
-      view.now - this.bankedItemAtMs >= this.itemUseDelayMs
+      queuedItem.kind !== this.bankedItemKind || queuedSlot !== this.bankedItemSlot
     ) {
-      const ownPlacement = this.getOwnPlacement(view);
+      this.bankedItemKind = queuedItem.kind;
+      this.bankedItemSlot = queuedSlot;
+      this.bankedItemAtMs = view.now;
+    } else if (!inGrace && queuedItem.cooldownUntil <= view.now) {
+      const targetInRange = this.hasAggressiveItemTarget(
+        view,
+        self,
+        queuedItem.kind,
+        lastLivePlacement,
+      );
+      const requiredBankMs = targetInRange ? 350 : this.itemUseDelayMs;
+      if (view.now - this.bankedItemAtMs < requiredBankMs) {
+        // Keep the item visible very briefly even on an immediate tactical use.
+      } else {
       const placementUseChance =
         ownPlacement === null
           ? POWERUP_USE_CHANCE
           : ownPlacement <= 1
             ? 0.30
-            : ownPlacement >= 8
+            : ownPlacement === lastLivePlacement
               ? 0.45
               : 0.30 + (ownPlacement - 1) * (0.15 / 7);
       const useChance = Math.min(
         1,
-        placementUseChance + (behindGap > 0.015 ? 0.30 : 0),
+        placementUseChance + (behindGap > 0.015 ? 0.30 : 0) + (finalLap ? .12 : 0),
       );
       const aggressiveTurbo =
         behindGap > 0.015 && queuedItem.kind === 'rr-turbo-bubble';
-      if (aggressiveTurbo || Math.random() < useChance) {
+      const remoraNow = queuedItem.kind === 'rr-remora-rocket' && ownPlacement === lastLivePlacement;
+      const remoraBlocked = queuedItem.kind === 'rr-remora-rocket' && !remoraNow;
+      if (!remoraBlocked && (targetInRange || aggressiveTurbo || remoraNow || Math.random() < useChance)) {
+        // One-key parity: bots emit only the same public bit 0 as humans and
+        // agents. Bit 1 stays reserved.
         actionBits |= ACTION_BIT_POWERUP_0;
         this.bankedItemAtMs = view.now;
+      }
       }
     }
 
@@ -896,9 +1109,56 @@ class ReefRaceBot implements BotController {
       dir: { x: dx, y: dz }, // protocol y = sim z
       thrust: inGrace
         ? 0.4
-        : Math.max(0, Math.min(1, thrust * this.skillMultiplier)),
+        : Math.max(0, Math.min(this.skillTier.catchupMax, thrust)),
       actionBits,
     };
+  }
+
+  private hasAggressiveItemTarget(
+    view: ReefBotRoomView,
+    self: ReefBotBody,
+    kind: string,
+    lastLivePlacement: number,
+  ): boolean {
+    if (
+      kind !== 'rr-seeker-jelly' && kind !== 'rr-tide-wave' &&
+      kind !== 'rr-whirlpool' && kind !== 'rr-ink-slick' &&
+      kind !== 'rr-puffer-mine' && kind !== 'rr-bubble-beam' &&
+      kind !== 'rr-current-swap' && kind !== 'rr-remora-rocket'
+    ) return false;
+    const forwardX = Math.sin(self.rot);
+    const forwardY = Math.cos(self.rot);
+    for (const target of view.bodies) {
+      if (
+        target.avatarId === self.avatarId || !target.alive || target.dnf === true ||
+        target.finishedAt != null
+      ) continue;
+      const dx = target.x - self.x;
+      const dy = target.y - self.y;
+      const distance = Math.hypot(dx, dy);
+      const ahead = dx * forwardX + dy * forwardY;
+      if (kind === 'rr-seeker-jelly' && ahead > 0 && distance <= 1_200) return true;
+      if (kind === 'rr-tide-wave' && distance <= 250) return true;
+      if (kind === 'rr-whirlpool' && distance <= 300) return true;
+      if (kind === 'rr-ink-slick' && ahead < 0 && distance <= 260) return true;
+      if (kind === 'rr-puffer-mine' && ahead < 0 && distance <= 420) return true;
+      if (kind === 'rr-bubble-beam' && ahead > 0 && distance <= 800) return true;
+      if (kind === 'rr-current-swap' && (target.currentPlacement ?? 99) < (self.currentPlacement ?? 99)) return true;
+    }
+    if (kind === 'rr-remora-rocket') {
+      const own = self.currentPlacement ?? null;
+      return own === lastLivePlacement;
+    }
+    return false;
+  }
+
+  private getLastLivePlacement(view: ReefBotRoomView): number {
+    let last = 1;
+    for (const body of view.bodies) {
+      if (!body.alive || body.dnf === true || body.finishedAt != null) continue;
+      last = Math.max(last, body.currentPlacement ?? 0);
+    }
+    return last;
   }
 }
 

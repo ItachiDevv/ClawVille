@@ -57,7 +57,33 @@ export type ReefPowerUpKind =
   | 'rr-bubble-shield'
   | 'rr-seeker-jelly'
   | 'rr-tide-wave'
-  | 'rr-whirlpool';
+  | 'rr-whirlpool'
+  | 'rr-puffer-mine'
+  | 'rr-bubble-beam'
+  | 'rr-remora-rocket'
+  | 'rr-current-swap';
+
+export type ReefPowerUpBoxVariant = 'standard' | 'double' | 'gamble';
+
+export interface ReefPufferMineState {
+  mineId: string;
+  ownerAvatarId: string;
+  position: Vec2;
+  armedAtMs: number;
+  expiresAtMs: number;
+  active: boolean;
+}
+
+export interface ReefWaveSweepState {
+  waveId: string;
+  phase: 'telegraph' | 'active';
+  sector: 1 | 2 | 3 | 4;
+  startProgress: number;
+  bandLengthWu: number;
+  sweepSpeedWuPerSec: number;
+  startsAtMs: number;
+  endsAtMs: number;
+}
 
 // ─── Client → Server ────────────────────────────────────────────────────────
 
@@ -314,6 +340,9 @@ export interface RoomMeta {
       halfWidth: number;
       rot: number;
     }>;
+    /** R18c seeded once-per-race furniture; never streamed per tick. */
+    obstacles: import('../reef-race/furniture').ReefRaceObstacleLayout[];
+    ripCurrents: import('../reef-race/furniture').ReefRaceRipCurrentLayout[];
   };
   /**
    * Phase 3 — Reef Race per-avatar racing profile. Class is derived from
@@ -422,6 +451,8 @@ export interface EntityDelta {
     boosting?: boolean;
     /** Reef Race Round 16 — authoritative wall-wipeout presentation gate. */
     wipedOut?: boolean;
+    bubbledUntilMs?: number;
+    remoraUntilMs?: number;
     /** Reef Race v2 — public held-item slots, emitted only when changed. */
     inventory?: Array<{
       kind: string | null;
@@ -435,6 +466,7 @@ export interface EntityDelta {
 export interface PowerUpDelta {
   spawnId: string;
   kind: string;
+  variant?: ReefPowerUpBoxVariant;
   position?: Vec2;
   collectorAvatarId?: string;
   /** Server-owned inventory — client mirrors this for HUD */
@@ -486,6 +518,8 @@ export interface WorldState {
     boosting?: boolean;
     /** Reef Race Round 16 — true during the server-owned wipeout freeze. */
     wipedOut?: boolean;
+    bubbledUntilMs?: number;
+    remoraUntilMs?: number;
     /** Reef Race v2 — public held-item slots for keyframe self-healing. */
     inventory?: Array<{
       kind: string | null;
@@ -497,7 +531,11 @@ export interface WorldState {
     spawnId: string;
     kind: string;
     position: Vec2;
+    variant?: ReefPowerUpBoxVariant;
   }>;
+  reefMines?: ReefPufferMineState[];
+  /** Present during telegraph/active; explicit null in delta clears it. */
+  activeWave?: ReefWaveSweepState;
   scores: Array<{
     avatarId: string;
     score: number;
@@ -529,6 +567,8 @@ export type ServerFrame =
       seq: number;
       entities: EntityDelta[];
       powerUps: PowerUpDelta[];
+      reefMines?: ReefPufferMineState[];
+      activeWave?: ReefWaveSweepState | null;
       scores?: ScoreDelta[];
     }
   | {
@@ -559,6 +599,8 @@ export type ServerFrame =
       dstAvatarId: string;
       position: Vec2;
       power: number;
+      itemKind?: ReefPowerUpKind;
+      attackerAvatarId?: string;
     }
   | {
       /**
@@ -603,6 +645,7 @@ export type ServerFrame =
       spawnId: string;
       kind: string;
       position: Vec2;
+      variant?: ReefPowerUpBoxVariant;
     }
   | {
       type: 'event.power_up_collected';
@@ -619,7 +662,39 @@ export type ServerFrame =
        * compat with the Phase 1 broadcast shape.
        */
       kind?: ReefPowerUpKind;
+      variant?: ReefPowerUpBoxVariant;
     }
+  | { type: 'event.gamble_dud'; avatarId: string; durationMs: number }
+  | {
+      type: 'event.puffer_mine';
+      phase: 'placed' | 'armed' | 'hit' | 'blocked' | 'expired';
+      mineId: string;
+      ownerAvatarId: string;
+      position: Vec2;
+      victimAvatarId?: string;
+      armedAtMs: number;
+      expiresAtMs: number;
+    }
+  | {
+      type: 'event.current_swap';
+      phase: 'telegraph' | 'resolved' | 'dodged' | 'fizzled';
+      attackerAvatarId: string;
+      victimAvatarId: string;
+      resolvesAtMs: number;
+      position?: Vec2;
+    }
+  | {
+      type: 'event.wave_sweep';
+      phase: 'telegraph' | 'active' | 'ended';
+      waveId: string;
+      sector: 1 | 2 | 3 | 4;
+      startProgress: number;
+      bandLengthWu: number;
+      sweepSpeedWuPerSec: number;
+      startsAtMs: number;
+      endsAtMs: number;
+    }
+  | { type: 'event.final_lap'; avatarId: string }
   | {
       /**
        * Phase 2 — slipstream verdict START. Fired once when `dstAvatarId` first
@@ -754,11 +829,32 @@ export type ServerFrame =
       padId: string;
     }
   | {
+      /** R18b airborne trick lifecycle; additive and ignored by old clients. */
+      type: 'event.trick';
+      phase: 'armed' | 'landed';
+      avatarId: string;
+      direction: 'left' | 'right';
+      /** Additive speed multiplier granted only on a clean moving landing. */
+      boostMult: number;
+      durationMs: number;
+    }
+  | {
       type: 'event.wall_slam';
       avatarId: string;
       position: Vec2;
       /** Outward impact speed divided by REEF_MAX_SPEED. */
       power: number;
+    }
+  | {
+      /** R18c jumpable furniture contact; additive and ignored by old clients. */
+      type: 'event.obstacle_hit';
+      avatarId: string;
+      obstacleId: string;
+      kind: 'urchin' | 'driftwood' | 'creature';
+      impact: 'spinout' | 'bump';
+      /** Client prediction/input gate; zero for a driftwood bump. */
+      durationMs: number;
+      position: Vec2;
     }
   | {
       type: 'event.wipeout';

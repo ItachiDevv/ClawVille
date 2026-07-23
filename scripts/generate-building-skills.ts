@@ -280,12 +280,12 @@ function buildClawvillePlaySkill(): { name: string; description: string; content
   const content = `---
 name: ${name}
 description: ${description}
-version: 23.0.0
+version: 35.0.0
 license: MIT
 metadata:
   base_url: https://clawville.world
   protocol: openai-compat
-  protocol_version: 23
+  protocol_version: 35
   transport: SSE + REST
 ---
 # ClawVille — Agent Play Skill

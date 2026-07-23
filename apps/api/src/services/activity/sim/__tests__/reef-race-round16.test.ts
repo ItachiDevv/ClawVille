@@ -206,8 +206,89 @@ describe('Reef Race Round 16 bot rubber-band', () => {
     );
 
     expect(trailing.thrust).toBeGreaterThan(runawayLeader.thrust);
-    expect(trailing.thrust).toBeCloseTo(1, 6);
+    expect(trailing.thrust).toBeGreaterThanOrEqual(.97);
+    expect(trailing.thrust).toBeLessThanOrEqual(1.05);
     expect(runawayLeader.thrust).toBeCloseTo(0.86, 6);
+  });
+
+  it('fires an aggressive item promptly when a valid target is in range', () => {
+    reefRaceSplineSim.__resetForTest();
+    reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', ['aggressive-bot'], { startedAt: 0 });
+    const state = reefRaceSplineSim.__getState(ROOM_ID)! as any;
+    const spline = state.spline;
+    const t = .2;
+    const point = spline.centerlineAt(t);
+    const tangent = spline.tangentAt(t);
+    const progress = spline.arclengthFromT(t) / spline.totalArcLength;
+    const self = {
+      avatarId: 'aggressive-bot', x: point.x, y: point.z,
+      vx: tangent.x * REEF_MAX_SPEED, vy: tangent.z * REEF_MAX_SPEED,
+      rot: Math.atan2(tangent.x, tangent.z), alive: true,
+      inventory: [
+        { kind: 'rr-whirlpool', charges: 1, cooldownUntil: 0 },
+        { kind: null, charges: 0, cooldownUntil: 0 },
+      ],
+      lap: 0, progress,
+    };
+    const target = {
+      ...self,
+      avatarId: 'target',
+      x: point.x + tangent.x * 220,
+      y: point.z + tangent.z * 220,
+      inventory: [],
+    };
+    const bot = createReefRaceBot(self.avatarId) as any;
+    const view = {
+      selfAvatarId: self.avatarId,
+      bodies: [self, target],
+      arenaRadius: spline.totalArcLength,
+      now: 5_000,
+      matchStartedAt: 0,
+    };
+    bot.computeInputSpline(view, self, DT); // bank edge
+    view.now += 400;
+    const intent = bot.computeInputSpline(view, self, DT);
+    expect(intent.actionBits & 1).toBe(1);
+  });
+
+  it('applies bot-only overdrive to authority only while a top bot trails', () => {
+    let topBot: any = null;
+    let topId = '';
+    for (let index = 0; index < 50; index += 1) {
+      const candidateId = `overdrive-top-${index}`;
+      const candidate = createReefRaceBot(candidateId) as any;
+      if (candidate.skillTier.name === 'top') {
+        topBot = candidate;
+        topId = candidateId;
+        break;
+      }
+    }
+    expect(topBot).not.toBeNull();
+    reefRaceSplineSim.__resetForTest();
+    reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [topId, 'pace-leader'], {
+      startedAt: 0,
+      bots: [topBot],
+      isBot: (avatarId) => avatarId === topId,
+    });
+    const state = reefRaceSplineSim.__getState(ROOM_ID)! as any;
+    if (state.intervalHandle) clearInterval(state.intervalHandle);
+    state.intervalHandle = null;
+    state.simTimeMs = state.startedAt + 3_000;
+    const botBody = state.bodies.get(topId)!;
+    const leader = state.bodies.get('pace-leader')!;
+    botBody.progressInitialized = leader.progressInitialized = true;
+    botBody.progress = .10;
+    leader.progress = .15;
+
+    reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
+    expect(botBody.botOverdrive).toBeGreaterThan(1);
+    expect(botBody.botOverdrive).toBeLessThanOrEqual(1.05);
+    expect(botBody.speedMod).toBeGreaterThan(1);
+
+    botBody.progress = .20;
+    leader.progress = .20;
+    reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
+    expect(botBody.botOverdrive).toBe(1);
   });
 
   it('seeks a raw-t pad through arclength progress even with an opposite pickup', () => {

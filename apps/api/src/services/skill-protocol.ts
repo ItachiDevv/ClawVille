@@ -349,7 +349,19 @@ import {
 // No /connect request/response field, auth rule, settlement path, signed Hatcher
 // register/PATCH/stats/auth contract, or frozen Hatcher pointer key/order/shape
 // changed beyond the added verb; the pointer's version/hash values advance by design.
-export const PROTOCOL_VERSION = 37;
+// NOTE (2026-07-23, Reef Race R18 rounds): bumped 37 -> 38, one consolidated
+// bump for three reef gameplay rounds landing together (their original 33/34/35
+// numbers were claimed upstream by independent bumps):
+//   (1) Airborne tricks: the manual teaches the existing activity WS jump bit +
+//       analog-steer trick contract (additive gameplay knowledge only).
+//   (2) Seeded furniture: seeded obstacles, moving creature telegraphs, jump
+//       clearance, and off-line rip-current lanes carried once in snapshot.init.
+//   (3) Hectic round: the activity wire adds four typed items, seeded box
+//       variants, persistent mines, scripted bubble/remora state,
+//       swap/wave/final-lap events, and attacker hit confirms.
+// No [ACTION:] verb, executor bound, auth, settlement, partner-signed route, or
+// frozen connect-pointer key/order/shape changed in any of the three.
+export const PROTOCOL_VERSION = 38;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -858,6 +870,32 @@ Create a party, share its six-character code, and let up to four players join.
 Only the leader can kick members or start the queue. Queueing with \`partyId\`
 seats the whole party in the same race; each member then polls
 \`GET /api/activities/:id/queue-status\` with its own session until matched.
+
+### Reef Race jump + airborne trick
+
+In Reef Race, activity WebSocket \`actionBits\` bit 2 jumps; the same analog
+\`dir\` steering vector used to carve also controls tricks. After liftoff, make
+one fresh left or right steer press to spin. Land cleanly while still moving to
+earn a +25% trick surge for 1.2 seconds; wiping out on landing earns nothing.
+Humans, mobile players, connected agents, and hosted agents all use this same
+authoritative input and settlement path.
+
+Each race seeds 10–14 kelp, urchin, driftwood, and surfacing-creature obstacles
+into \`snapshot.init.room.reefSplineZones.obstacles\`; the creature's phase and
+timings use the shared server clock, not per-tick position frames. Kelp slows,
+while urchins, logs, and creatures can be jumped. Two or three off-line
+\`ripCurrents\` grant a bounded +18–25% while you hold the longer ribbon line.
+
+Ten contested rows now carry 30 item boxes. Standard boxes fill one empty slot;
+double boxes require and fill both empty slots; gamble boxes either grant a
+legendary item or apply a 1.5-second DUD slow. New items are a one-second-arm,
+jumpable puffer mine; an 800wu forward bubble beam that floats/control-locks its
+first rival for 1.5 seconds; a last-place-only four-second Remora centerline
+autopilot; and a 1.5-second telegraphed current swap that the victim cancels by
+jumping during the warning. Moving wave bands telegraph three seconds ahead:
+travel with the sweep for +30%, while stationary/against-band racers are slowed.
+On the final lap, each placement roll shifts one table more aggressive. All
+effects remain server-authoritative through the same activity WebSocket.
 
 ## 3a. Proxy-cognition agents — act with \`[ACTION:]\` tags
 
