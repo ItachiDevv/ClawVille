@@ -35,7 +35,13 @@
  *   - pointerEvents: none — click-through to 3D canvas.
  */
 
-import { useState, useEffect, useMemo, useRef } from 'react';
+import {
+  useState,
+  useEffect,
+  useMemo,
+  useRef,
+  useSyncExternalStore,
+} from 'react';
 import {
   reefRaceCreatureMotionAt,
   type ReefRaceCreatureMotion,
@@ -49,6 +55,10 @@ import {
 } from '@/stores/activity';
 import { playActivitySynthCue } from '@/lib/activity-audio';
 import { clientSpline } from '@/lib/three/activities/reef-race/reef-race-spline-instance';
+import {
+  getSelfWrongWaySnapshot,
+  subscribeSelfWrongWay,
+} from '@/lib/three/activities/reef-race/reef-race-self-bus';
 
 // ─── Durations ────────────────────────────────────────────────────────────────
 
@@ -775,6 +785,137 @@ function ReefRaceFinalLapBanner() {
   );
 }
 
+function ReefRaceWrongWayBanner() {
+  const active = useSyncExternalStore(
+    subscribeSelfWrongWay,
+    getSelfWrongWaySnapshot,
+    () => false,
+  );
+  const wasActiveRef = useRef(active);
+
+  useEffect(() => {
+    if (active && !wasActiveRef.current) {
+      playActivitySynthCue('wrong-way');
+    }
+    wasActiveRef.current = active;
+  }, [active]);
+
+  return (
+    <>
+      <div
+        aria-hidden
+        className={`reefWrongWayEdge${active ? ' reefWrongWayEdgeActive' : ''}`}
+      />
+      <div
+        role="alert"
+        aria-live="assertive"
+        aria-hidden={!active}
+        data-reef-wrong-way={active ? 'active' : 'inactive'}
+        className={`reefWrongWayBanner${active ? ' reefWrongWayBannerActive' : ''}`}
+      >
+        <span className="reefWrongWayArrow" aria-hidden>↶</span>
+        <span>WRONG WAY</span>
+      </div>
+      <style jsx>{`
+        .reefWrongWayEdge {
+          position: absolute;
+          inset: 0;
+          pointer-events: none;
+          opacity: 0;
+          border: 7px solid rgba(255, 71, 43, 0.52);
+          box-shadow:
+            inset 0 0 54px 8px rgba(255, 38, 19, 0.26),
+            inset 0 0 108px 18px rgba(255, 174, 0, 0.12);
+        }
+        .reefWrongWayEdgeActive {
+          animation: reefWrongWayEdgePulse 0.82s ease-in-out infinite;
+        }
+        .reefWrongWayBanner {
+          position: absolute;
+          top: clamp(58px, 13vh, 132px);
+          left: 50%;
+          z-index: 2;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: clamp(8px, 2vw, 16px);
+          width: min(84vw, 470px);
+          box-sizing: border-box;
+          padding: clamp(8px, 1.6vh, 14px) clamp(16px, 4vw, 32px);
+          pointer-events: none;
+          opacity: 0;
+          visibility: hidden;
+          transform: translate(-50%, -8px) scale(0.97);
+          color: #fff;
+          background:
+            linear-gradient(100deg, rgba(114, 6, 0, 0.94), rgba(203, 39, 0, 0.96) 52%, rgba(128, 25, 0, 0.94));
+          border: 3px solid #ffbd2e;
+          border-radius: 12px;
+          box-shadow:
+            0 0 0 2px rgba(82, 0, 0, 0.74),
+            0 0 30px rgba(255, 66, 18, 0.8),
+            inset 0 0 18px rgba(255, 193, 35, 0.38);
+          font-family: var(--font-orbitron, ui-sans-serif), sans-serif;
+          font-size: clamp(21px, 5vw, 34px);
+          font-weight: 1000;
+          letter-spacing: clamp(0.1em, 1.8vw, 0.18em);
+          line-height: 1;
+          white-space: nowrap;
+          text-shadow: 0 2px 0 #730000, 0 0 12px rgba(255, 217, 86, 0.9);
+          user-select: none;
+        }
+        .reefWrongWayBannerActive {
+          visibility: visible;
+          animation: reefWrongWayBannerPulse 0.72s ease-in-out infinite;
+        }
+        .reefWrongWayArrow {
+          color: #ffd54f;
+          font-family: ui-sans-serif, sans-serif;
+          font-size: 1.35em;
+          line-height: 0.7;
+          letter-spacing: 0;
+        }
+        @keyframes reefWrongWayBannerPulse {
+          0%, 100% {
+            opacity: 0.9;
+            transform: translate(-50%, 0) scale(1);
+            filter: brightness(0.96);
+          }
+          50% {
+            opacity: 1;
+            transform: translate(-50%, 0) scale(1.035);
+            filter: brightness(1.22);
+          }
+        }
+        @keyframes reefWrongWayEdgePulse {
+          0%, 100% { opacity: 0.22; }
+          50% { opacity: 0.62; }
+        }
+        @media (max-height: 500px) {
+          .reefWrongWayBanner {
+            top: 56px;
+            padding-top: 8px;
+            padding-bottom: 8px;
+          }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .reefWrongWayBannerActive,
+          .reefWrongWayEdgeActive {
+            animation: none;
+          }
+          .reefWrongWayBannerActive {
+            opacity: 1;
+            transform: translate(-50%, 0);
+          }
+          .reefWrongWayEdgeActive {
+            opacity: 0.38;
+          }
+        }
+      `}</style>
+    </>
+  );
+}
+
 function ReefRaceOvertakeTicker() {
   const placement = useActivityStore((s) => s.placement);
   const phase = useActivityStore((s) => s.matchPhase);
@@ -888,6 +1029,7 @@ export default function ReefRaceEventToasts() {
       <ReefRaceBoxDramaToast />
       <ReefRaceWaveBanner />
       <ReefRaceFinalLapBanner />
+      <ReefRaceWrongWayBanner />
       <ReefRaceOvertakeTicker />
       <ReefRaceCurrentSwapWarning />
       <ReefRaceVictimItemOverlay />

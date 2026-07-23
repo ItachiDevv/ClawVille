@@ -215,9 +215,25 @@ export function elevationAtXZ(x: number, z: number, key: string): number {
  * is exactly the "board doesn't track the water" bug. Use this for anything riding the
  * water surface at a lateral offset. Bank is capped ±28° so tan stays well-behaved.
  */
-export function bankedDatumYAtT(x: number, z: number, t: number): number {
+export interface ReefSplineTangentSample {
+  x: number;
+  z: number;
+}
+
+export function bankedDatumYAtT(
+  x: number,
+  z: number,
+  t: number,
+  tangentOut?: ReefSplineTangentSample,
+): number {
   const c = clientSpline.centerlineAt(t);
   const n = clientSpline.normalAt(t);
+  if (tangentOut) {
+    // normalAt returns the track-left normal (-tangent.z, tangent.x).
+    // Recover the unit tangent without adding another allocating tangentAt call.
+    tangentOut.x = n.z;
+    tangentOut.z = -n.x;
+  }
   const offH = (x - c.x) * n.x + (z - c.z) * n.z;
   return reefTrackElevationAt(t) + Math.tan(bankAngleAtT(t)) * offH;
 }

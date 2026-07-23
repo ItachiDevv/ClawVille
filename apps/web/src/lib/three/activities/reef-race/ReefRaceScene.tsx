@@ -68,7 +68,11 @@ import {
   DIR_SHADOW_CAM_BOUNDS,
   TRACK_SURFACE_Y,
 } from './reef-race-config';
-import { selfPoseBus, SELF_POSE_BUS_STALE_MS } from './reef-race-self-bus';
+import {
+  selfPoseBus,
+  SELF_POSE_BUS_STALE_MS,
+  getSelfWrongWaySnapshot,
+} from './reef-race-self-bus';
 import { clientSpline } from './reef-race-spline-instance';
 import type { ReefRaceEntity } from './reef-race-types';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
@@ -92,6 +96,7 @@ declare global {
       gl: THREE.WebGLRenderer;
       scene: THREE.Scene;
       entities: Map<string, ReefRaceEntity>;
+      readonly wrongWayActive: boolean;
     };
   }
 }
@@ -554,7 +559,14 @@ function DebugExpose({ entities }: { entities: Map<string, ReefRaceEntity> }) {
 
   useEffect(() => {
     if (!isDebug) return;
-    window.__reefDebug = { gl: gl as THREE.WebGLRenderer, scene, entities };
+    window.__reefDebug = {
+      gl: gl as THREE.WebGLRenderer,
+      scene,
+      entities,
+      get wrongWayActive() {
+        return getSelfWrongWaySnapshot();
+      },
+    };
     return () => {
       window.__reefDebug = undefined;
     };
