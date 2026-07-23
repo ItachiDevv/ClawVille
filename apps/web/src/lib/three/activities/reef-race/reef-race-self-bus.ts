@@ -1,11 +1,11 @@
 /**
  * reef-race-self-bus.ts
  *
- * Two tiny module-scope singletons that let the SELF player's input + rendered
+ * Tiny module-scope buses that let the SELF player's input + rendered
  * pose flow between otherwise-decoupled subsystems without threading props or
- * incurring React re-renders. Both are read/written exclusively inside RAF /
- * 30 Hz timers — never during React render — so a plain mutable object is the
- * right primitive (no store, no allocation churn).
+ * incurring per-frame React re-renders. The pose/input objects stay inside RAF /
+ * 30 Hz timers; the WRONG WAY external store notifies DOM listeners only when
+ * its primitive boolean crosses an edge.
  *
  * Gated entirely behind `NEXT_PUBLIC_REEF_RACE_USE_SPLINE === 'true'` at the
  * call sites. When the v2 spline path is off (v1 ellipse), nothing writes the
@@ -82,6 +82,34 @@ export const selfPoseBus: SelfPoseBus = {
  * mid-corner, while still reverting within ~0.15 s once the self body unmounts.
  */
 export const SELF_POSE_BUS_STALE_MS = 150;
+
+// Self WRONG WAY external store. The frame loop may publish every frame, but
+// DOM subscribers are notified only when the primitive boolean crosses an edge.
+type SelfWrongWayListener = () => void;
+
+let selfWrongWay = false;
+const selfWrongWayListeners = new Set<SelfWrongWayListener>();
+
+export function getSelfWrongWaySnapshot(): boolean {
+  return selfWrongWay;
+}
+
+export function subscribeSelfWrongWay(listener: SelfWrongWayListener): () => void {
+  selfWrongWayListeners.add(listener);
+  return () => {
+    selfWrongWayListeners.delete(listener);
+  };
+}
+
+export function publishSelfWrongWay(next: boolean): void {
+  if (next === selfWrongWay) return;
+  selfWrongWay = next;
+  selfWrongWayListeners.forEach((listener) => listener());
+}
+
+export function resetSelfWrongWay(): void {
+  publishSelfWrongWay(false);
+}
 
 /** Reset the input bus to its neutral, invalid state (called on input teardown). */
 export function resetSelfInputBus(): void {

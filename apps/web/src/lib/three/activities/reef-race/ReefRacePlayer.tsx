@@ -121,7 +121,13 @@ import {
   type SurfBodyState,
   type SurfParams,
 } from '@clawville/shared';
-import { selfInputBus, selfPoseBus, resetSelfPoseBus } from './reef-race-self-bus';
+import {
+  selfInputBus,
+  selfPoseBus,
+  publishSelfWrongWay,
+  resetSelfPoseBus,
+  resetSelfWrongWay,
+} from './reef-race-self-bus';
 import { tAtXZ, bankedDatumYAtT, forgetTKey } from './reef-race-elevation';
 import { clientSpline } from './reef-race-spline-instance';
 import { surfConformHeightAt } from './reef-wave-height';
@@ -477,6 +483,12 @@ const RAMP_TILT_HOLD_S = 0.35;
 const TRICK_SPIN_DURATION_S = 0.5;
 const TRICK_SPIN_RADIANS = Math.PI * 2;
 const AIRBORNE_SURFACE_RELEASE_HEIGHT = 20;
+const WRONG_WAY_SPEED_FLOOR_WU_PER_S = 150;
+const WRONG_WAY_ENTER_DOT = -0.2;
+const WRONG_WAY_EXIT_DOT = 0.1;
+const WRONG_WAY_ENTER_HOLD_MS = 700;
+const WRONG_WAY_EXIT_HOLD_MS = 300;
+const WRONG_WAY_SWAP_GRACE_MS = 1_000;
 /** Per-avatarId ramp-launch hold timer (seconds remaining). Module scope, no per-frame alloc. */
 const _rampLaunchHold: Record<string, number> = {};
 /** Shared event-time burst scratch; triggerBurst copies it synchronously. */
@@ -1065,6 +1077,10 @@ function ReefRacePlayerInner({
   const wipeoutStartedAtRef = useRef(0);
   const respawnPopRemainingRef = useRef(0);
   const forceSwapSnapRef = useRef(false);
+  const wrongWayActiveRef = useRef(false);
+  const wrongWayHoldRef = useRef({ enterMs: 0, exitMs: 0 });
+  const wrongWayTangentRef = useRef({ x: 0, z: 1 });
+  const wrongWaySwapGraceUntilRef = useRef(0);
 
   // ─── Interpolation state ────────────────────────────────────────────────────
   // Ring buffer of received snapshots.
@@ -1421,7 +1437,11 @@ function ReefRacePlayerInner({
   // reconnect remount). Also resets the per-instance prediction-init flag so a
   // remount re-seeds predicted state from the first fresh snapshot.
   useEffect(() => {
-    if (!predictsSelf) return;
+    if (!isSelf) return;
+    if (!predictsSelf) {
+      resetSelfWrongWay();
+      return;
+    }
     if (process.env.NODE_ENV !== 'production') {
       const diagnosticWindow = window as typeof window & { __REEF_RECON_STATS?: ReefReconStats };
       diagnosticWindow.__REEF_RECON_STATS = {
@@ -1447,8 +1467,13 @@ function ReefRacePlayerInner({
       predictedBoostPadInsideRef.current!.clear();
       clearPredictionHistory(predictionHistoryRef.current!);
       resetSelfPoseBus();
+      wrongWayActiveRef.current = false;
+      wrongWayHoldRef.current.enterMs = 0;
+      wrongWayHoldRef.current.exitMs = 0;
+      wrongWaySwapGraceUntilRef.current = 0;
+      resetSelfWrongWay();
     };
-  }, [predictsSelf]);
+  }, [isSelf, predictsSelf]);
 
   // ─── Sea-creature animator (hot-swap when manifest enables this species) ───
   // CORRECTED 2026-07-12 (Codex adversarial review caught a stale premise in
@@ -1702,8 +1727,14 @@ function ReefRacePlayerInner({
       // arrive just before or just after its pose delta; either ordering must
       // discard the pre-swap interpolation ring instead of drawing a flyover.
       forceSwapSnapRef.current = true;
+      if (isSelf) {
+        wrongWaySwapGraceUntilRef.current =
+          lastCurrentSwapEvent.at + WRONG_WAY_SWAP_GRACE_MS;
+        wrongWayHoldRef.current.enterMs = 0;
+        wrongWayHoldRef.current.exitMs = 0;
+      }
     }
-  }, [entity.avatarId, lastCurrentSwapEvent]);
+  }, [entity.avatarId, isSelf, lastCurrentSwapEvent]);
 
   const lastItemHitEvent = useActivityStore((s) => s.lastItemHitEvent);
   const lastSeenItemHitRef = useRef(0);
@@ -2477,7 +2508,12 @@ function ReefRacePlayerInner({
       // composite banked-datum + Gerstner heave is damped together so small remote
       // XZ corrections cannot resample the datum into Y reversals. Ride height and
       // the sim's raw airborne heightOffset remain immediate outside this follower.
-      const bankedDatum = bankedDatumYAtT(interpX, interpZ, tHere);
+      const bankedDatum = bankedDatumYAtT(
+        interpX,
+        interpZ,
+        tHere,
+        predictsSelf ? wrongWayTangentRef.current : undefined,
+      );
       const centerWave = surfConformHeightAt(interpX, interpZ, surfTime);
 
       // SURF TILT — pitch (nose-up trim + wave fore-aft slope) + roll (CONFORM to the
@@ -2502,6 +2538,7 @@ function ReefRacePlayerInner({
       const bankRoll = Math.atan2(bankR - bankL, rollSampleWidth);
       const rawSurfaceRoll = Math.atan2((bankR + waveR) - (bankL + waveL), rollSampleWidth);
       const rawWaveRoll = rawSurfaceRoll - bankRoll;
+      const planarSpeed = Math.sqrt(interpVx * interpVx + interpVz * interpVz);
 
       if (hardSeedSurfPose) {
         // Pregame/first frame/respawn is a hard seed, matching ChaseCamera's
@@ -2512,7 +2549,6 @@ function ReefRacePlayerInner({
         surfPoseDamping.bankLean = bankDelta;
         surfPoseDamping.initialized = true;
       } else {
-        const planarSpeed = Math.sqrt(interpVx * interpVx + interpVz * interpVz);
         let speedRatio = (planarSpeed - SURF_CONFORM_PLANING_START_SPEED)
           / (SURF_CONFORM_PLANING_FULL_SPEED - SURF_CONFORM_PLANING_START_SPEED);
         if (speedRatio < 0) speedRatio = 0;
@@ -2550,6 +2586,67 @@ function ReefRacePlayerInner({
         interpRot,
         surfRoll * surfaceContact,
       );
+
+      // R18f self-only WRONG WAY detection. Reuse the exact tHere tangent
+      // recovered by the center banked-datum call above: no second spline
+      // lookup and no allocating tangentAt call. Only transition edges notify
+      // the DOM external-store subscribers.
+      if (predictsSelf) {
+        const hold = wrongWayHoldRef.current;
+        const suppressed =
+          activityState.matchPhase !== 'live'
+          || !predictionEnabled
+          || activityState.selfFinished
+          || !!entity.finishedAt
+          || !!entity.wipedOut
+          || authorityControlLocked
+          || forceSwapSnapRef.current
+          || authorityNowMs < wrongWaySwapGraceUntilRef.current;
+
+        if (suppressed) {
+          hold.enterMs = 0;
+          hold.exitMs = 0;
+          if (wrongWayActiveRef.current) {
+            wrongWayActiveRef.current = false;
+            publishSelfWrongWay(false);
+          }
+        } else if (planarSpeed < WRONG_WAY_SPEED_FLOOR_WU_PER_S) {
+          // Below the evaluation floor is neutral, not a forward-clear edge.
+          // Preserve the currently published state but never carry partial
+          // enter/exit dwell through a stop, spawn, or very slow coast.
+          hold.enterMs = 0;
+          hold.exitMs = 0;
+        } else {
+          const tangent = wrongWayTangentRef.current;
+          const directionDot =
+            (interpVx * tangent.x + interpVz * tangent.z) / planarSpeed;
+          if (!wrongWayActiveRef.current) {
+            hold.exitMs = 0;
+            if (directionDot < WRONG_WAY_ENTER_DOT) {
+              hold.enterMs += dt * 1_000;
+              if (hold.enterMs >= WRONG_WAY_ENTER_HOLD_MS) {
+                hold.enterMs = 0;
+                wrongWayActiveRef.current = true;
+                publishSelfWrongWay(true);
+              }
+            } else {
+              hold.enterMs = 0;
+            }
+          } else {
+            hold.enterMs = 0;
+            if (directionDot > WRONG_WAY_EXIT_DOT) {
+              hold.exitMs += dt * 1_000;
+              if (hold.exitMs >= WRONG_WAY_EXIT_HOLD_MS) {
+                hold.exitMs = 0;
+                wrongWayActiveRef.current = false;
+                publishSelfWrongWay(false);
+              }
+            } else {
+              hold.exitMs = 0;
+            }
+          }
+        }
+      }
     } else {
       group.position.y = 0;
       group.rotation.y = interpRot;
