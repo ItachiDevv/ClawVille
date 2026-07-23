@@ -969,18 +969,11 @@ class ReefRaceBot implements BotController {
 
     const selfTotalProgress = (self.lap ?? 0) + progress;
     let leaderProgress = selfTotalProgress;
-    let secondProgress = Number.NEGATIVE_INFINITY;
     for (const body of view.bodies) {
       if (!body.alive) continue;
       const bodyProgress = (body.lap ?? 0) + (body.progress ?? 0);
-      if (bodyProgress > leaderProgress) {
-        secondProgress = leaderProgress;
-        leaderProgress = bodyProgress;
-      } else if (bodyProgress > secondProgress) {
-        secondProgress = bodyProgress;
-      }
+      if (bodyProgress > leaderProgress) leaderProgress = bodyProgress;
     }
-    if (!Number.isFinite(secondProgress)) secondProgress = leaderProgress;
     const behindGap = Math.max(0, leaderProgress - selfTotalProgress);
 
     // Tiered cruise + rubber band. Values above 1.00 are reachable only while
@@ -991,14 +984,13 @@ class ReefRaceBot implements BotController {
     const catchupBlend = behindGap > catchupThreshold
       ? Math.min(1, (behindGap - catchupThreshold) / catchupRange)
       : 0;
+    // A leading bot holds its competitive cruise pace and does not self-handicap.
+    // The shared bot view includes every body (self among them), so the old
+    // runaway-easing rubber-band comparing the front-runner to second place could
+    // never fire — it was dead code. Harder bots are the intended R18c/d behavior,
+    // so the easing is removed rather than repaired.
     let thrust = Math.min(1, this.cruiseThrust) +
       (this.skillTier.catchupMax - Math.min(1, this.cruiseThrust)) * catchupBlend;
-    if (
-      selfTotalProgress >= leaderProgress &&
-      leaderProgress - secondProgress > 0.020
-    ) {
-      thrust = 0.86;
-    }
     let dot = 1;
     const speed = Math.hypot(self.vx, self.vy);
     if (speed > 1) {
