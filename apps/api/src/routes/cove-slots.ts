@@ -113,6 +113,10 @@ import {
 import { sessionMiddleware } from '../middleware/auth';
 import { resolveAgentSession } from '../middleware/require-auth-or-agent';
 import { isGuestUser } from '../middleware/require-non-guest';
+import {
+  resolveAutonomousCoveAgentBinding,
+  type ResolvedAutonomousCoveAgent,
+} from '../services/autonomous-cove-agent-binding';
 import { noStorePrivate } from '../middleware/no-store';
 import {
   CLIENT_SEED_MAX_LENGTH,
@@ -346,7 +350,16 @@ async function getSubject(c: {
 
   const agentSessionId = c.req.header(AGENT_SESSION_HEADER);
   if (agentSessionId) {
-    const resolved = await resolveAgentSession(agentSessionId);
+    const internalAutonomousBinding = readInternalAutonomousBinding(c);
+    const resolved = internalAutonomousBinding
+      ? await resolveAutonomousCoveAgentBinding(
+          {
+            sessionId: agentSessionId,
+            expectedAgentId: internalAutonomousBinding.agentId,
+          },
+          resolveAgentSession,
+        )
+      : await resolveAgentSession(agentSessionId);
     if (!resolved) {
       throw new HTTPException(401, { message: 'invalid_or_expired_agent_session' });
     }
@@ -368,6 +381,16 @@ async function getSubject(c: {
         message:
           'agent_session_has_no_active_avatar: connect an avatar before playing the Cove for real vCLAW',
       });
+    }
+    if (
+      internalAutonomousBinding
+      && (
+        resolved.agentId !== internalAutonomousBinding.agentId
+        || resolved.avatarId !== internalAutonomousBinding.avatarId
+        || resolved.userId !== internalAutonomousBinding.userId
+      )
+    ) {
+      throw new HTTPException(403, { message: 'live_agent_avatar_binding_changed' });
     }
     return {
       kind: 'agent',
@@ -566,6 +589,21 @@ interface AutonomousCoveExpectedBinding {
   userId: string;
 }
 
+function readInternalAutonomousBinding(c: {
+  req: { header(name: string): string | undefined };
+}): AutonomousCoveExpectedBinding | null {
+  if (c.req.header(AUTONOMOUS_COVE_HEADER) !== autonomousCoveToken) return null;
+  const binding = {
+    agentId: c.req.header(AUTONOMOUS_COVE_AGENT_HEADER),
+    avatarId: c.req.header(AUTONOMOUS_COVE_AVATAR_HEADER),
+    userId: c.req.header(AUTONOMOUS_COVE_USER_HEADER),
+  };
+  if (!binding.agentId || !binding.avatarId || !binding.userId) {
+    throw new HTTPException(403, { message: 'invalid_internal_autonomous_cove_context' });
+  }
+  return binding as AutonomousCoveExpectedBinding;
+}
+
 async function loadExpectedAutonomousAvatar(
   expected: AutonomousCoveExpectedBinding,
 ): Promise<{ id: string; clawTokens: number }> {
@@ -585,7 +623,7 @@ async function loadExpectedAutonomousAvatar(
 /** Internal-autonomy money gate: pin and lock the exact pre-admission avatar. */
 export async function assertAutonomousCoveAvatarBindingInTx(
   tx: Pick<LedgerTx, 'execute'>,
-  expected: Pick<AutonomousCoveExpectedBinding, 'avatarId' | 'userId'>,
+  expected: AutonomousCoveExpectedBinding,
 ): Promise<void> {
   const rows = await tx.execute<{
     id: string;
@@ -598,12 +636,26 @@ export async function assertAutonomousCoveAvatarBindingInTx(
     FOR UPDATE
   `);
   const row = rows[0];
-  if (
-    !row
-    || row.id !== expected.avatarId
-    || row.user_id !== expected.userId
-    || row.is_active !== true
-  ) {
+  if (!row || row.id !== expected.avatarId || row.user_id !== expected.userId) {
+    throw new HTTPException(403, { message: 'active_avatar_binding_changed' });
+  }
+  if (row.is_active === true) return;
+
+  // House avatars are deliberately inactive so they never duplicate their
+  // `ocb-*` world body in the ordinary avatar roster. Permit that one internal
+  // shape only while the live server-owned row still binds this exact
+  // agent→owner and the owner remains non-guest.
+  const houseRows = await tx.execute<{ authorized: boolean }>(sql`
+    SELECT true AS authorized
+    FROM openclaw_bots b
+    JOIN users u ON u.id = b.user_id
+    WHERE b.agent_id = ${expected.agentId}
+      AND b.user_id = ${expected.userId}
+      AND b.is_house = true
+      AND u.is_guest = false
+    LIMIT 1
+  `);
+  if (houseRows[0]?.authorized !== true) {
     throw new HTTPException(403, { message: 'active_avatar_binding_changed' });
   }
 }
@@ -706,6 +758,7 @@ coveSlotsRouter.post('/session/open', async (c) => {
     });
   }
   const input = parsed.data;
+  const expectedAutonomousBinding = readInternalAutonomousBinding(c);
   const subject = await getSubject(c);
 
   // 501 stub for SOL/USDC — Phase 6.2 custody not wired. Guests are also
@@ -741,7 +794,9 @@ coveSlotsRouter.post('/session/open', async (c) => {
   let avatar: { id: string; clawTokens: number } | null = null;
   let guestStartingBalance = 0n;
   if (isLedgerSubject(subject)) {
-    avatar = await loadAvatarForUser(subject.userId);
+    avatar = expectedAutonomousBinding
+      ? await loadExpectedAutonomousAvatar(expectedAutonomousBinding)
+      : await loadAvatarForUser(subject.userId);
     if (avatar.clawTokens < predictNumber) {
       throw new HTTPException(400, {
         message: `insufficient_clawtokens: need ${predictNumber}, have ${avatar.clawTokens}`,
@@ -1073,19 +1128,13 @@ coveSlotsRouter.post('/spin', async (c) => {
     ? c.req.header(AUTONOMOUS_COVE_ACTION_HEADER)
     : undefined;
   const expectedAutonomousBinding = isInternalAutonomousPlay
-    ? {
-        agentId: c.req.header(AUTONOMOUS_COVE_AGENT_HEADER),
-        avatarId: c.req.header(AUTONOMOUS_COVE_AVATAR_HEADER),
-        userId: c.req.header(AUTONOMOUS_COVE_USER_HEADER),
-      }
+    ? readInternalAutonomousBinding(c)
     : null;
   if (isInternalAutonomousPlay && (
     subject.kind !== 'agent'
     || !autonomousActionId
     || !z.string().uuid().safeParse(autonomousActionId).success
-    || !expectedAutonomousBinding?.agentId
-    || !expectedAutonomousBinding.avatarId
-    || !expectedAutonomousBinding.userId
+    || !expectedAutonomousBinding
   )) {
     throw new HTTPException(403, { message: 'invalid_internal_autonomous_cove_context' });
   }
@@ -1778,10 +1827,11 @@ export class AutonomousCoveSlotsError extends Error {
   }
 }
 
-type ResolvedAutonomousCoveAgent = NonNullable<Awaited<ReturnType<typeof resolveAgentSession>>>;
-
 export interface AutonomousCoveSlotsDependencies {
-  resolveAgent: (sessionId: string) => Promise<ResolvedAutonomousCoveAgent | null>;
+  resolveAgent: (
+    sessionId: string,
+    expectedAgentId: string,
+  ) => Promise<ResolvedAutonomousCoveAgent | null>;
   findSettledActionForOwner: (
     userId: string,
     idempotencyKey: string,
@@ -1797,7 +1847,10 @@ async function readAutonomousCoveDailyWagerUsed(avatarId: string): Promise<numbe
 }
 
 const DEFAULT_AUTONOMOUS_COVE_SLOTS_DEPS: AutonomousCoveSlotsDependencies = {
-  resolveAgent: resolveAgentSession,
+  resolveAgent: (sessionId, expectedAgentId) => resolveAutonomousCoveAgentBinding(
+    { sessionId, expectedAgentId },
+    resolveAgentSession,
+  ),
   findSettledActionForOwner: async (userId, idempotencyKey) => {
     const rows = await db.execute<{ session_id: string; predict: string }>(sql`
       SELECT sp.session_id, sp.predict
@@ -1852,7 +1905,10 @@ export async function playAutonomousCoveSlots(input: {
   ) {
     throw new AutonomousCoveSlotsError('invalid_wager', 400, 'invalid_wager');
   }
-  const resolved = await dependencies.resolveAgent(input.agentSessionId);
+  const resolved = await dependencies.resolveAgent(
+    input.agentSessionId,
+    input.expectedAgentId,
+  );
   if (!resolved) throw new AutonomousCoveSlotsError('invalid_or_expired_agent_session', 401, 'invalid_or_expired_agent_session');
   if (!resolved.ledgerCapable) throw new AutonomousCoveSlotsError('agent_session_not_ledger_authorized', 403, 'agent_session_not_ledger_authorized');
   if (!resolved.userId || !resolved.avatarId) throw new AutonomousCoveSlotsError('agent_session_has_no_active_avatar', 403, 'agent_session_has_no_active_avatar');
@@ -1928,14 +1984,14 @@ export async function playAutonomousCoveSlots(input: {
   }
   if (existing && existing.startingBalance !== String(input.wager)) {
     const closed = await dependencies.request('/session/close', {
-      method: 'POST', headers, body: JSON.stringify({ sessionId: existing.id }),
+      method: 'POST', headers: autonomousHeaders, body: JSON.stringify({ sessionId: existing.id }),
     });
     await readInternalCoveResponse<CloseSessionResponse>(closed);
   }
 
   const opened = await dependencies.request('/session/open', {
     method: 'POST',
-    headers,
+    headers: autonomousHeaders,
     body: JSON.stringify({
       paytableId: existing?.startingBalance === String(input.wager)
         ? existing.paytableId
@@ -1966,6 +2022,7 @@ coveSlotsRouter.post('/session/close', async (c) => {
       message: 'invalid_input: ' + parsed.error.message,
     });
   }
+  const expectedAutonomousBinding = readInternalAutonomousBinding(c);
   const subject = await getSubject(c);
   if (!isLedgerSubject(subject)) {
     throw new HTTPException(403, { message: 'guest_cannot_close_session: sign in or connect an agent' });
@@ -1986,7 +2043,9 @@ coveSlotsRouter.post('/session/close', async (c) => {
     });
   }
 
-  const avatar = await loadAvatarForUser(subject.userId);
+  const avatar = expectedAutonomousBinding
+    ? await loadExpectedAutonomousAvatar(expectedAutonomousBinding)
+    : await loadAvatarForUser(subject.userId);
 
   const { closedSession, finalBalance } = await db.transaction(async (tx) => {
     // Lock the session row so we don't race another /close (or a
