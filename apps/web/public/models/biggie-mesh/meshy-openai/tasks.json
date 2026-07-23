@@ -1,0 +1,14 @@
+{
+  "mesh": "019f8b7e-5ce5-7816-9658-1c43f0e2fb0c",
+  "rig": "019f8b97-8bd2-7829-86a5-2508da109288",
+  "anims": {
+    "idle": "019f8ba7-b2dc-7ed5-be5a-d7464592299d",
+    "swimming": "019f8ba7-b7cc-7c05-a007-bd4e8afc08fa",
+    "jump": "019f8ba7-bc4b-7ed8-b535-61db895f398f",
+    "cheering": "019f8ba7-bfff-7c07-b05f-6eac2bcb13ba",
+    "wipeout": "019f8ba7-c369-7c08-8c07-e7d79d07a393",
+    "wave": "019f8ba7-c73b-7ed8-ad85-9b7b24d171ef",
+    "talk": "019f8ba7-cb77-7a6c-bd54-e92ddc11a2df",
+    "dance": "019f8ba7-cf73-74a3-834e-d74fd6624b76"
+  }
+}

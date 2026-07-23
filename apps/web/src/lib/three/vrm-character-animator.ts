@@ -643,6 +643,10 @@ const PER_CHARACTER_IN_PLACE_CLIPS: Record<string, ReadonlySet<AnimName>> = {
   // rest-pose-differential is correct across Meshy rigs with Mixamo bone names.
   // Drift values measured 2026-06-20 via gltf-transform hips-Y analysis.
   adinero:         new Set(['idle', 'walk', 'run']),
+  // Biggie — same Meshy VRM 1.0 rig class as Adinero (armature scale 0.01,
+  // hips world-Y ≈ 0.9m on the 1.85m rig). Same underground-idle failure mode
+  // if position tracks survive retarget; strip all three like adinero.
+  biggie:          new Set(['idle', 'walk', 'run']),
 };
 
 function shouldStripPosition(name: AnimName, animatorId?: string): boolean {

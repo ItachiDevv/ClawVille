@@ -191,6 +191,14 @@ export const MODEL_REGISTRY = {
   helen:        { path: '/avatars/helen.vrm?v=2',        scale: 13, label: 'Helen',        category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-female', faceYaw: Math.PI, pickerHidden: true, preview: '/models/helen-turnaround/openai-v2/front.png?v=2' },
   clytemnestra: { path: '/avatars/clytemnestra.vrm?v=2', scale: 13, label: 'Clytemnestra', category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-female', faceYaw: Math.PI, pickerHidden: true, preview: '/models/clytemnestra-turnaround/openai-v2/front.png?v=2' },
 
+  // Biggie — EXCLUSIVE avatar, bespoke Meshy VRM (2026-07-23). NOT an NPC and NOT
+  // in shared AGENT_MODELS (API rejects self-assignment); granted manually via
+  // `UPDATE avatars SET model_key='biggie'` to exactly two accounts. Brand-new
+  // asset path (never previously cached at this URL) so no ?v= query is needed.
+  // animatorId 'biggie' strips idle/walk/run position tracks (adinero-pattern
+  // underground-idle guard for this Meshy rig class).
+  biggie:       { path: '/avatars/biggie.vrm?v=2',           scale: 13, label: 'Biggie',       category: 'hatcher', avatar_type: 'vrm', animatorId: 'biggie',        faceYaw: Math.PI, pickerHidden: true, preview: '/models/biggie-turnaround/openai/front.png' },
+
   // ── Adinero — wandering NPC clown comedian (Meshy pipeline 2026-06-19) ──
   // NPC-ONLY decorative wanderer (NOT a player/Hatcher avatar). Same OpenAI→Meshy-6
   // →rig→VRM pipeline as the Hatcher fleet (VRM 1.0, 22 humanoid bones, meshopt+WebP
@@ -344,6 +352,8 @@ export const MODEL_KEY_TO_LEGACY_SPECIES: Record<ModelKey, LegacySpecies> = {
   cronus:             'fox',
   helen:              'fox',
   clytemnestra:       'fox',
+  // Biggie (exclusive avatar, 2026-07-23) — humanoid → 'fox' 2D fallback like the rest.
+  biggie:             'fox',
   // Adinero (wandering NPC clown, 2026-06-19) — humanoid → 'fox' 2D fallback.
   adinero:            'fox',
 };
