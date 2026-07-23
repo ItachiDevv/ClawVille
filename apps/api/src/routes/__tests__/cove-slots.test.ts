@@ -426,7 +426,7 @@ describe('Cove Slots — paytable + verify (no DB)', () => {
 
     await assertAutonomousCoveAvatarBindingInTx(txFor([{
       id: 'avatar-test', user_id: 'user-test', is_active: true,
-    }]), { avatarId: 'avatar-test', userId: 'user-test' });
+    }]), { agentId: 'agent-test', avatarId: 'avatar-test', userId: 'user-test' });
 
     const queryChunks = (queries[0] as { queryChunks?: unknown[] }).queryChunks ?? [];
     const queryText = queryChunks.map((chunk) => {
@@ -440,16 +440,34 @@ describe('Cove Slots — paytable + verify (no DB)', () => {
 
     await expect(assertAutonomousCoveAvatarBindingInTx(txFor([{
       id: 'avatar-test', user_id: 'other-user', is_active: true,
-    }]), { avatarId: 'avatar-test', userId: 'user-test' })).rejects.toMatchObject({
+    }]), { agentId: 'agent-test', avatarId: 'avatar-test', userId: 'user-test' })).rejects.toMatchObject({
       status: 403,
       message: 'active_avatar_binding_changed',
     });
     await expect(assertAutonomousCoveAvatarBindingInTx(txFor([{
       id: 'avatar-test', user_id: 'user-test', is_active: false,
-    }]), { avatarId: 'avatar-test', userId: 'user-test' })).rejects.toMatchObject({
+    }]), { agentId: 'agent-test', avatarId: 'avatar-test', userId: 'user-test' })).rejects.toMatchObject({
       status: 403,
       message: 'active_avatar_binding_changed',
     });
+  });
+
+  it('permits an inactive autonomous avatar only with a live exact house binding', async () => {
+    const rows = [
+      [{ id: 'avatar-test', user_id: 'user-test', is_active: false }],
+      [{ authorized: true }],
+    ];
+    let call = 0;
+    const tx = {
+      execute: async () => rows[call++] ?? [],
+    } as unknown as Parameters<typeof assertAutonomousCoveAvatarBindingInTx>[0];
+
+    await assertAutonomousCoveAvatarBindingInTx(tx, {
+      agentId: 'house-agent-test',
+      avatarId: 'avatar-test',
+      userId: 'user-test',
+    });
+    expect(call).toBe(2);
   });
 
   it('GET /paytables/classic-3x5 returns the public bundle', async () => {

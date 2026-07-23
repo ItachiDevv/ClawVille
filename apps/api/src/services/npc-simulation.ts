@@ -73,6 +73,10 @@ import {
 import { createHash, randomUUID } from 'crypto';
 import { recordCovenantAction } from './covenant-action-recorder';
 import { BLACKJACK_MIN_BET, BLACKJACK_MAX_BET } from './blackjack-engine';
+import {
+  resolveAutonomousCoveAgentBinding,
+  type ResolvedAutonomousCoveAgent,
+} from './autonomous-cove-agent-binding';
 
 // Map dimensions — land-builder-economics (2026-06-24): 704×704 grid of 32px tiles = 22528×22528 world.
 // CROSS-PACKAGE INVARIANT: this MUST equal the client `MAP_WIDTH`/`MAP_HEIGHT` in
@@ -520,15 +524,16 @@ class NpcSimulation {
     const { playAutonomousCoveBlackjack } = await import('../routes/cove-blackjack');
     return playAutonomousCoveBlackjack(input);
   };
-  /** Test seam; production re-resolves the live ledger-capable session. */
-  autonomousCoveAgentResolve: (sessionId: string) => Promise<{
-    agentId: string;
-    userId: string | null;
-    avatarId: string | null;
-    ledgerCapable: boolean;
-  } | null> = async (sessionId) => {
+  /** Test seam; production re-resolves the live settlement binding. */
+  autonomousCoveAgentResolve: (
+    sessionId: string,
+    expectedAgentId: string,
+  ) => Promise<ResolvedAutonomousCoveAgent | null> = async (sessionId, expectedAgentId) => {
     const { resolveAgentSession } = await import('../middleware/require-auth-or-agent');
-    return resolveAgentSession(sessionId);
+    return resolveAutonomousCoveAgentBinding(
+      { sessionId, expectedAgentId },
+      resolveAgentSession,
+    );
   };
   private arenaSettings: ArenaSettings = { ...DEFAULT_ARENA_SETTINGS };
   private arenaRound: ArenaRoundState | null = null;
@@ -1846,7 +1851,10 @@ class NpcSimulation {
     game: 'slots' | 'blackjack',
     wager: number,
   ): Promise<void> {
-    const resolved = await this.autonomousCoveAgentResolve(attribution.sessionId);
+    const resolved = await this.autonomousCoveAgentResolve(
+      attribution.sessionId,
+      attribution.agentId,
+    );
     if (!resolved) {
       console.warn('[Hatcher] play_cove_game dropped — invalid or expired agent session');
       return;
