@@ -175,6 +175,7 @@ type PayAiExecutePreparedExactPaymentOutcome =
       kind: 'definitive_failure';
       stage: 'verify' | 'settle';
       verifyPassed: boolean;
+      noBroadcast: true;
       /** Present only for a proven verify-stage transport/timeout/5xx outage. */
       facilitatorOutage?: true;
       reason: string;
@@ -284,6 +285,7 @@ export async function executePreparedExactPayment(
       kind: 'definitive_failure',
       stage: 'verify',
       verifyPassed: false,
+      noBroadcast: true,
       reason: 'payai_skipped_without_meridian',
       payer: null,
       result: {
@@ -304,6 +306,7 @@ export async function executePreparedExactPayment(
       kind: 'definitive_failure',
       stage: 'verify',
       verifyPassed: false,
+      noBroadcast: true,
       reason: 'payai_preparation_missing',
       payer: null,
       result: {
@@ -357,6 +360,7 @@ export async function executePreparedExactPayment(
       kind: 'definitive_failure',
       stage: 'verify',
       verifyPassed: false,
+      noBroadcast: true,
       reason,
       payer: result.payer,
       result,
@@ -367,13 +371,13 @@ export async function executePreparedExactPayment(
   if (!result.isValid) {
     return {
       kind: 'definitive_failure', stage: 'verify', verifyPassed: false,
-      reason, payer: result.payer, result, payAi,
+      noBroadcast: true, reason, payer: result.payer, result, payAi,
     };
   }
-  if (result.raw.settle?.success === false) {
+  if (result.noBroadcast === true) {
     return {
       kind: 'definitive_failure', stage: 'settle', verifyPassed: true,
-      reason, payer: result.payer, result, payAi,
+      noBroadcast: true, reason, payer: result.payer, result, payAi,
     };
   }
   return {

@@ -5,6 +5,7 @@ import {
   varchar,
   text,
   integer,
+  boolean,
   numeric,
   jsonb,
   timestamp,
@@ -80,6 +81,8 @@ export const agentPayments = pgTable(
     }),
     fulfilledAt: timestamp('fulfilled_at', { withTimezone: true }),
     failureReason: text('failure_reason'),
+    /** True only when the payment is proven never to have been broadcast. */
+    capExempt: boolean('cap_exempt'),
     metadata: jsonb('metadata').$type<Record<string, unknown>>().default({}).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

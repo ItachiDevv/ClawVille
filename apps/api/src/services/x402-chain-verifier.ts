@@ -69,12 +69,22 @@ const signatureInfoSchema = z.object({
 }).passthrough();
 const signaturePageSchema = z.array(signatureInfoSchema);
 
+export interface ReconcileSignatureInfo {
+  signature: string;
+  blockTime: number | null;
+  err?: unknown | null;
+}
+
+export function parseReconcileSignaturePage(raw: unknown): ReconcileSignatureInfo[] {
+  return signaturePageSchema.parse(raw);
+}
+
 export interface ReconcileChainDeps {
   getParsedTransaction(network: X402Network, signature: string): Promise<unknown | null>;
   getSignaturesForAddress(
     network: X402Network,
     address: string,
-    options: { before?: string; limit: number },
+    options: { before?: string; until?: string; limit: number },
   ): Promise<unknown>;
   /** Must check tx_signature ownership across x402_checkouts, ct_topups, and
    * agent_payments. A rejected lookup aborts the probe; it never fails open. */
@@ -178,7 +188,7 @@ function transferMismatchReason(
   return 'wrong_amount';
 }
 
-function aggregatePayerTransfers(
+export function aggregatePayerTransfers(
   transfers: VerifiedUsdcTransfer[],
 ): Array<{ payer: string; total: bigint; transfers: VerifiedUsdcTransfer[] }> {
   const groups = new Map<string, { payer: string; total: bigint; transfers: VerifiedUsdcTransfer[] }>();
@@ -195,21 +205,26 @@ function aggregatePayerTransfers(
   return [...groups.values()];
 }
 
-/** Verify one signature against an exact USDC transfer. Malformed RPC payloads
- * throw so the reconciler skips the row rather than converting ambiguity into
- * a destructive no-money decision. */
-export async function verifyUsdcTransfer(
-  input: VerifyUsdcTransferInput,
-  deps: Pick<ReconcileChainDeps, 'getParsedTransaction'>,
-): Promise<ChainVerification> {
-  const signature = signatureSchema.parse(input.signature);
-  const expectedAtomic = atomicSchema.parse(input.expectedAtomic);
-  const expectedMint = addressSchema.parse(input.expectedMint);
-  const expectedPayer = input.expectedPayer == null
-    ? null
-    : addressSchema.parse(input.expectedPayer);
-  const destinationAta = deriveUsdcAta(input.destinationOwner, expectedMint);
-  const raw = await deps.getParsedTransaction(input.network, signature);
+export type ParsedUsdcTransaction =
+  | { kind: 'not_found'; signature: string }
+  | { kind: 'tx_failed'; signature: string; blockTime: number | null }
+  | {
+      kind: 'confirmed';
+      signature: string;
+      blockTime: number | null;
+      transfers: VerifiedUsdcTransfer[];
+    };
+
+/**
+ * Parse every SPL `transferChecked` instruction from one transaction. This is
+ * the single parser used by both per-row verification and the bulk outage
+ * indexer, so the two recovery paths cannot drift on instruction semantics.
+ */
+export function parseUsdcTransaction(
+  rawSignature: string,
+  raw: unknown | null,
+): ParsedUsdcTransaction {
+  const signature = signatureSchema.parse(rawSignature);
   if (raw === null) return { kind: 'not_found', signature };
 
   const tx = parsedTransactionSchema.parse(raw);
@@ -237,6 +252,33 @@ export async function verifyUsdcTransfer(
       blockTime: tx.blockTime,
     });
   }
+  return {
+    kind: 'confirmed',
+    signature,
+    blockTime: tx.blockTime,
+    transfers,
+  };
+}
+
+/** Verify one signature against an exact USDC transfer. Malformed RPC payloads
+ * throw so the reconciler skips the row rather than converting ambiguity into
+ * a destructive no-money decision. */
+export async function verifyUsdcTransfer(
+  input: VerifyUsdcTransferInput,
+  deps: Pick<ReconcileChainDeps, 'getParsedTransaction'>,
+): Promise<ChainVerification> {
+  const signature = signatureSchema.parse(input.signature);
+  const expectedAtomic = atomicSchema.parse(input.expectedAtomic);
+  const expectedMint = addressSchema.parse(input.expectedMint);
+  const expectedPayer = input.expectedPayer == null
+    ? null
+    : addressSchema.parse(input.expectedPayer);
+  const destinationAta = deriveUsdcAta(input.destinationOwner, expectedMint);
+  const raw = await deps.getParsedTransaction(input.network, signature);
+  const parsedTx = parseUsdcTransaction(signature, raw);
+  if (parsedTx.kind === 'not_found') return parsedTx;
+  if (parsedTx.kind === 'tx_failed') return parsedTx;
+  const transfers = parsedTx.transfers;
 
   const applicable = transfers.filter((transfer) =>
     transfer.destinationAta === destinationAta
@@ -260,7 +302,7 @@ export async function verifyUsdcTransfer(
   return {
     kind: 'confirmed_mismatch',
     signature,
-    blockTime: tx.blockTime,
+    blockTime: parsedTx.blockTime,
     reason: exactGroups.length > 1
       ? 'multiple_exact_matches'
       : transferMismatchReason(transfers, {

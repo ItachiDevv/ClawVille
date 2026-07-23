@@ -49,6 +49,7 @@ function payment(overrides: Partial<AgentPayment> = {}): AgentPayment {
     earnedLedgerId: null,
     fulfilledAt: null,
     failureReason: null,
+    capExempt: null,
     metadata: {},
     createdAt: now,
     updatedAt: now,
@@ -172,6 +173,7 @@ function harness(seed: AgentPayment[], options: HarnessOptions = {}) {
 afterEach(() => {
   stopAgentPayResumeWorker();
   delete process.env.AGENT_PAY_RESUME_POLL_MS;
+  delete process.env.X402_AUTO_RECONCILE;
 });
 
 describe('agent-pay resume worker', () => {
@@ -215,6 +217,26 @@ describe('agent-pay resume worker', () => {
     expect(h.transactionCalls).toEqual([]);
     expect(h.fulfillCalls).toEqual([]);
     expect(h.mintCalls()).toBe(0);
+  });
+
+  it('lets auto-reconcile own fresh stale alerts while preserving the >24h survivor alert', async () => {
+    process.env.X402_AUTO_RECONCILE = 'true';
+    const fresh = payment();
+    const old = payment({
+      createdAt: new Date(NOW - 24 * 60 * 60 * 1_000 - 1),
+      settlingStartedAt: new Date(NOW - 24 * 60 * 60 * 1_000 - 1),
+    });
+    const h = harness([fresh, old]);
+
+    const result = await runAgentPayResumeTick(h.deps);
+
+    expect(result.reconciled).toBe(2);
+    expect(h.alerts).toHaveLength(1);
+    expect(h.alerts[0]).toMatchObject({
+      severity: 'warning',
+      source: 'agent-pay-resume',
+      context: { paymentId: old.id, reason: 'stale_settling' },
+    });
   });
 
   it('re-asserts the expected signature at the reconcile mutation boundary', async () => {

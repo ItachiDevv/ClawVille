@@ -832,6 +832,18 @@ process.on('uncaughtException', (err) => {
     console.error('[API] Agent-pay resume worker failed to start:', err);
   }
 
+  // Default-off bulk x402 recovery. One shallow destination-history sweep
+  // reconciles the oldest bounded row set; verified captures and complete-window
+  // no-money outcomes are the only automatic mutations.
+  try {
+    const { startX402AutoReconcile } = await import(
+      './services/x402-auto-reconcile'
+    );
+    startX402AutoReconcile();
+  } catch (err) {
+    console.error('[API] x402 auto-reconcile worker failed to start:', err);
+  }
+
   // Automatic SAP identity registration/Metaplex attachment. The worker
   // self-gates on SAP_ENABLED + SAP_IDENTITY_AUTOREG_ENABLED and resumes its
   // durable DB state after restarts; starting it while dark is a safe no-op.
@@ -1630,6 +1642,14 @@ async function gracefulShutdown(signal: string) {
       stopAgentPayResumeWorker();
     } catch {
       // If the resume worker module failed to load earlier, there's nothing to stop.
+    }
+    try {
+      const { stopX402AutoReconcile } = await import(
+        './services/x402-auto-reconcile'
+      );
+      stopX402AutoReconcile();
+    } catch {
+      // If the worker module failed to load earlier, there's nothing to stop.
     }
     try {
       const { stopSapIdentityRegistrarWorker } = await import(

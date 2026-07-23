@@ -906,6 +906,58 @@ function kickRenderLoop(state: any): void {
           } as { calls: number; triangles: number; lines: number; points: number; programs: number };
         };
       }
+
+      // -----------------------------------------------------------------
+      // Canvas-ready self-heal watchdog (2026-07-23 hotfix:
+      // cove-exit-loading-freeze).
+      //
+      // __W3D_CANVAS_READY above is written exactly ONCE per Canvas mount,
+      // inside this one-shot RAF. SeaLoadingScreen re-zeroes every bridge
+      // flag (including this one) on every mount, so a stale prior session
+      // can never dismiss a fresh loader early (see sea-loading-screen.tsx).
+      // On a COLD load that ordering is safe: the World3DCanvas chunk has
+      // to download before this RAF can ever fire, so SeaLoadingScreen's
+      // mount effect always re-zeroes first. On an SPA route RETURN (e.g.
+      // cove -> game) the chunk is already loaded, so this RAF can win the
+      // race and fire BEFORE the remounting SeaLoadingScreen zeroes the
+      // flags back to false — stranding __W3D_CANVAS_READY at false
+      // forever, since the one-shot above never re-fires. With canvas-ready
+      // stuck false, markWorldReadyIfUploadsDone() can never flip
+      // __W3D_READY, so the bar sits at the ~85-90% "compiling" band until
+      // SeaLoadingScreen's 45s force-dismiss timer bails it out.
+      //
+      // Fix: keep re-asserting canvas-ready and re-running the ready combine
+      // on every frame until the world is actually ready, so a late re-zero
+      // heals on the very next frame instead of stranding forever. This has
+      // to be a standalone RAF loop, not useFrame — the R3F frameloop is
+      // legitimately paused ("never") for most of the WorldWarmup window, so
+      // useFrame would simply never fire while it's needed most.
+      //
+      // Cannot dismiss the loader any earlier than a clean boot does:
+      // __W3D_READY still requires __W3D_TEXTURES_READY, which this
+      // watchdog never touches — only the real StaggeredTextureUpload /
+      // WorldWarmupGate path sets that flag. This can only unstick
+      // canvas-ready; it can't manufacture texture-readiness.
+      //
+      // Two leak guards keep it from outliving its own mount: (1) it stops
+      // the instant __W3D_READY is true, or the instant this canvas leaves
+      // the DOM (the same isConnected bailout forceFirstPaintSizeSync uses
+      // above) — so a watchdog from an abandoned/superseded mount (user
+      // navigates away again mid-load) can never strand a LATER fresh
+      // mount's flags; (2) a hard 60s ceiling regardless, so a genuinely
+      // stuck world can never pin a rAF loop alive indefinitely.
+      const readyWatchdogCanvas: HTMLCanvasElement | undefined = state?.gl?.domElement;
+      const readyWatchdogStartedAt = performance.now();
+      const READY_WATCHDOG_CEILING_MS = 60_000;
+      const tickCanvasReadyWatchdog = () => {
+        if ((window as any).__W3D_READY === true) return;
+        if (readyWatchdogCanvas && !readyWatchdogCanvas.isConnected) return;
+        if (performance.now() - readyWatchdogStartedAt > READY_WATCHDOG_CEILING_MS) return;
+        (window as any).__W3D_CANVAS_READY = true;
+        markWorldReadyIfUploadsDone();
+        requestAnimationFrame(tickCanvasReadyWatchdog);
+      };
+      requestAnimationFrame(tickCanvasReadyWatchdog);
     });
   }
 }

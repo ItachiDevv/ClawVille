@@ -82,6 +82,8 @@ export interface ReconcileRow {
   usdCents: number;
   createdAt: string;
   settlingStartedAt: string | null;
+  /** Fallback upper anchor when the state machine clears settling_started_at. */
+  reconcileAnchorAt?: string;
   /** Agent payments settle directly to the recipient; other rows use merchant config. */
   destinationOwner?: string;
   /** Existing durable agent-payment accounting columns, when populated. */
@@ -329,6 +331,7 @@ export async function readReconcileRows(): Promise<ReconcileRow[]> {
       senderWallet: agentPayments.senderWallet,
       recipientWallet: agentPayments.recipientWallet,
       network: agentPayments.network,
+      updatedAt: agentPayments.updatedAt,
       metadata: agentPayments.metadata,
       facilitator: agentPayments.facilitator,
       grossUsdcAtomic: agentPayments.grossUsdcAtomic,
@@ -384,6 +387,8 @@ export async function readReconcileRows(): Promise<ReconcileRow[]> {
         },
       }),
       destinationOwner: r.recipientWallet,
+      reconcileAnchorAt:
+        r.updatedAt instanceof Date ? r.updatedAt.toISOString() : String(r.updatedAt),
       facilitator: r.facilitator,
       grossUsdcAtomic: r.grossUsdcAtomic,
       platformFeeUsdcAtomic: r.platformFeeUsdcAtomic,
@@ -451,7 +456,7 @@ async function defaultIsSignatureBound(signature: string): Promise<boolean> {
   return payment.length > 0;
 }
 
-const defaultApplyStore: ReconcileApplyStore = {
+export const defaultReconcileApplyStore: ReconcileApplyStore = {
   isSignatureBound: defaultIsSignatureBound,
 
   async claimVerifiedCapture(row, signature, payer, settlingId, now) {
@@ -737,7 +742,7 @@ export function assertNoReconcileApply(): void {
   // Mutation now requires explicit `runReconcileScan({ apply: true })` consent.
 }
 
-function assertApplyConsent(apply: boolean): void {
+export function assertReconcileApplyConsent(apply: boolean): void {
   if (apply && process.env.RECONCILE_APPLY !== 'true') {
     throw new Error('Apply requested but RECONCILE_APPLY=true is also required. Refusing mutation.');
   }
@@ -760,7 +765,9 @@ async function defaultConnectionForNetwork(network: X402Network): Promise<Connec
   return devnetConnection;
 }
 
-function createDefaultChainDeps(store: ReconcileApplyStore): ReconcileChainDeps {
+export function createDefaultReconcileChainDeps(
+  store: ReconcileApplyStore = defaultReconcileApplyStore,
+): ReconcileChainDeps {
   return {
     async getParsedTransaction(network, signature) {
       const connection = await defaultConnectionForNetwork(network);
@@ -821,7 +828,7 @@ function structuredActionLog(verdict: ReconcileRowVerdict): void {
   }));
 }
 
-function targetForRow(
+export function resolveReconcileTarget(
   row: ReconcileRow,
   loadConfig: typeof loadX402Config,
 ): { network: X402Network; mint: string; destinationOwner: string } | null {
@@ -892,6 +899,7 @@ async function captureAndFulfill(
   randomId: () => string,
   fulfillDeps: Required<Pick<ReconcileScanDeps, 'fulfillCheckout' | 'fulfillTopup' | 'fulfillAgentPayment'>>,
   alert: typeof alertError,
+  signatureConflictPolicy: 'record_refund' | 'manual' = 'record_refund',
 ): Promise<ReconcileRowVerdict> {
   const claimed = await store.claimVerifiedCapture(
     row,
@@ -901,6 +909,14 @@ async function captureAndFulfill(
     now,
   );
   if (claimed === 'signature_conflict') {
+    if (signatureConflictPolicy === 'manual') {
+      return {
+        ...recommendation,
+        action: 'manual_review',
+        detail: 'verified signature became bound concurrently; refusing a second mutation',
+        signature: transfer.signature,
+      };
+    }
     return recordRefundRequired(
       recommendation,
       row,
@@ -956,6 +972,65 @@ async function captureAndFulfill(
   }
 }
 
+export interface VerifiedCaptureApplyDeps {
+  store?: ReconcileApplyStore;
+  fulfillCheckout?: typeof fulfillReconciledCheckout;
+  fulfillTopup?: typeof fulfillReconciledTopup;
+  fulfillAgentPayment?: typeof fulfillReconciledAgentPayment;
+  alert?: typeof alertError;
+  now?: () => Date;
+  randomId?: () => string;
+}
+
+/**
+ * Shared verified-capture executor for per-row and bulk reconciliation.
+ * Receipt ownership, F6 accounting restoration, and native fulfillment remain
+ * owned by the existing reconciler primitives.
+ */
+export async function applyVerifiedReconcileCapture(
+  row: ReconcileRow,
+  transfer: Extract<ChainVerification, { kind: 'confirmed_match' }>['transfer'],
+  deps: VerifiedCaptureApplyDeps = {},
+): Promise<ReconcileRowVerdict> {
+  const resolution = classifyReconcile(row);
+  const reason = typeof row.metadata.reconcileReason === 'string'
+    ? row.metadata.reconcileReason
+    : 'unknown';
+  const recommendation: ReconcileRecommendation = {
+    table: row.table,
+    id: row.id,
+    reason,
+    resolution,
+  };
+  return captureAndFulfill(
+    recommendation,
+    row,
+    transfer,
+    deps.store ?? defaultReconcileApplyStore,
+    (deps.now ?? (() => new Date()))(),
+    deps.randomId ?? randomUUID,
+    {
+      fulfillCheckout: deps.fulfillCheckout ?? fulfillReconciledCheckout,
+      fulfillTopup: deps.fulfillTopup ?? fulfillReconciledTopup,
+      fulfillAgentPayment: deps.fulfillAgentPayment ?? fulfillReconciledAgentPayment,
+    },
+    deps.alert ?? alertError,
+    'manual',
+  );
+}
+
+/** Shared no-money terminal transition. The caller must establish a complete
+ * chain window and elapsed grace before invoking this CAS. */
+export async function applyReconcileNoMoney(
+  row: ReconcileRow,
+  deps: Pick<VerifiedCaptureApplyDeps, 'store' | 'now'> = {},
+): Promise<boolean> {
+  return (deps.store ?? defaultReconcileApplyStore).markNoMoneyFailed(
+    row,
+    (deps.now ?? (() => new Date()))(),
+  );
+}
+
 /** Parse the operator CLI's argv (lives here so tests + the scripts/ entry can
  *  share it without importing across the tsconfig rootDir boundary). */
 export function parseReconcileCliArgs(argv: string[]): ReconcileScanOptions {
@@ -986,18 +1061,18 @@ export function parseReconcileCliArgs(argv: string[]): ReconcileScanOptions {
 /** Dry-run by default; live apply requires both an explicit option and env consent. */
 export async function runReconcileScan(options: ReconcileScanOptions = {}): Promise<ReconcileScanResult> {
   const apply = options.apply === true;
-  assertApplyConsent(apply);
+  assertReconcileApplyConsent(apply);
   if (options.row) parseReconcileRowSelector(options.row);
 
   const injected = options.deps ?? {};
-  const store = injected.store ?? defaultApplyStore;
+  const store = injected.store ?? defaultReconcileApplyStore;
   const chain = injected.chain ?? (
     injected.connectionForNetwork
       ? createConnectionReconcileChainDeps(
           injected.connectionForNetwork,
           (signature) => store.isSignatureBound(signature),
         )
-      : createDefaultChainDeps(store)
+      : createDefaultReconcileChainDeps(store)
   );
   const verifyTransfer = injected.verifyTransfer ?? verifyUsdcTransfer;
   const probeTransfers = injected.probeTransfers ?? probeUsdcTransfers;
@@ -1031,7 +1106,7 @@ export async function runReconcileScan(options: ReconcileScanOptions = {}): Prom
       if (resolution.kind === 'manual_review') {
         verdict = { ...recommendation, action: 'manual_review', detail: resolution.note };
       } else {
-        const target = targetForRow(row, loadConfig);
+        const target = resolveReconcileTarget(row, loadConfig);
         if (!target) {
           verdict = {
             ...recommendation,

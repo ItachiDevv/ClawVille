@@ -214,9 +214,106 @@ describe('PayAI verify-to-settle sequencing against the in-repo mock facilitator
         txSignature: null,
         failureReason: 'facilitator_settle_error',
       });
+      expect(result.noBroadcast).toBeUndefined();
       expect(requestPaths).toEqual(['/verify', '/settle']);
     });
   }
+
+  it('marks the allowlisted free_tier_exhausted rejection as no-broadcast', async () => {
+    const result = await verifyAndSettle({
+      paymentHeader: paymentHeader('settle-rejected-structured'),
+      requirements,
+    });
+    expect(result).toMatchObject({
+      settled: false,
+      isValid: true,
+      txSignature: null,
+      failureReason: 'facilitator_settle_error',
+      noBroadcast: true,
+    });
+    expect(requestPaths).toEqual(['/verify', '/settle']);
+  });
+
+  it('matches an allowlisted typed rejection through its message when errorReason is absent', async () => {
+    const result = await verifyAndSettle({
+      paymentHeader: paymentHeader('settle-rejected-free-tier-message'),
+      requirements,
+    });
+    expect(result).toMatchObject({
+      settled: false,
+      isValid: true,
+      txSignature: null,
+      failureReason: 'facilitator_settle_error',
+      noBroadcast: true,
+    });
+    expect(requestPaths).toEqual(['/verify', '/settle']);
+  });
+
+  for (const directive of [
+    'settle-rejected-unknown',
+    'settle-rejected-suffixed',
+    'settle-rejected-no-reason',
+  ] as const) {
+    it(`keeps a signature-less typed ${directive} rejection ambiguous`, async () => {
+      const result = await verifyAndSettle({
+        paymentHeader: paymentHeader(directive),
+        requirements,
+      });
+      expect(result).toMatchObject({
+        settled: false,
+        isValid: true,
+        txSignature: null,
+        failureReason: 'facilitator_settle_error',
+      });
+      expect(result.noBroadcast).toBeUndefined();
+      expect(requestPaths).toEqual(['/verify', '/settle']);
+    });
+  }
+
+  it('keeps a signature-less success:false response with an unknown reason ambiguous', async () => {
+    const result = await verifyAndSettle({
+      paymentHeader: paymentHeader('settle-fail'),
+      requirements,
+    });
+    expect(result).toMatchObject({
+      settled: false,
+      isValid: true,
+      txSignature: null,
+      failureReason: 'mock_forced_settlement_failure',
+    });
+    expect(result.noBroadcast).toBeUndefined();
+    expect(requestPaths).toEqual(['/verify', '/settle']);
+  });
+
+  it('does not trust allowlist text from a generic post-settle HTTP error', async () => {
+    const result = await verifyAndSettle({
+      paymentHeader: paymentHeader('settle-error-free-tier-message'),
+      requirements,
+    });
+    expect(result).toMatchObject({
+      settled: false,
+      isValid: true,
+      txSignature: null,
+      failureReason: 'facilitator_settle_error',
+    });
+    expect(result.noBroadcast).toBeUndefined();
+    expect(requestPaths).toEqual(['/verify', '/settle']);
+  });
+
+  it('keeps a signature-bearing settle rejection ambiguous', async () => {
+    const result = await verifyAndSettle({
+      paymentHeader: paymentHeader('settle-rejected-with-signature'),
+      requirements,
+    });
+    expect(result).toMatchObject({
+      settled: false,
+      isValid: true,
+      txSignature: 'MockObservedSignature111111111111111111111111111111111111111111',
+      failureReason: 'facilitator_settle_error',
+    });
+    expect(result.noBroadcast).toBeUndefined();
+    expect(requestPaths).toEqual(['/verify', '/settle']);
+  });
 
   it('treats success:true with an empty transaction signature as unsettled', async () => {
     const result = await verifyAndSettle({
@@ -230,6 +327,7 @@ describe('PayAI verify-to-settle sequencing against the in-repo mock facilitator
       failureReason: 'settlement_failed',
     });
     expect(result.raw.settle?.success).toBe(true);
+    expect(result.noBroadcast).toBeUndefined();
     expect(requestPaths).toEqual(['/verify', '/settle']);
   });
 

@@ -42,6 +42,8 @@
  *   paymentPayload.payload.__mock === 'settle-empty-signature'
  *                                                      → /settle reports success:true
  *                                                        with an empty transaction
+ * Additional settle-rejection directives cover allowlisted, unknown, missing,
+ * compound, and generic-error reason shapes for cap-exemption conformance.
  */
 
 import { Hono } from 'hono';
@@ -180,6 +182,55 @@ export function buildMockFacilitator(opts: MockFacilitatorOptions = {}): Hono {
     if (directive === 'settle-error-400') {
       say(`POST /settle → HTTP 400 (forced) network=${network}`);
       return c.json({ error: 'mock_forced_settlement_client_error' }, 400);
+    }
+    if (
+      directive === 'settle-rejected-structured'
+      || directive === 'settle-rejected-with-signature'
+      || directive === 'settle-rejected-free-tier-message'
+    ) {
+      const transaction =
+        directive === 'settle-rejected-with-signature'
+          ? 'MockObservedSignature111111111111111111111111111111111111111111'
+          : '';
+      say(`POST /settle → structured HTTP 402 rejection network=${network}`);
+      return c.json({
+        success: false,
+        ...(directive === 'settle-rejected-free-tier-message'
+          ? { errorMessage: 'Mock rejection: FREE_TIER_EXHAUSTED.' }
+          : {
+              errorReason: 'free_tier_exhausted',
+              errorMessage: 'Mock facilitator quota exhausted.',
+            }),
+        payer,
+        transaction,
+        network,
+      }, 402);
+    }
+    if (
+      directive === 'settle-rejected-unknown'
+      || directive === 'settle-rejected-suffixed'
+      || directive === 'settle-rejected-no-reason'
+    ) {
+      say(`POST /settle → structured unknown HTTP 402 rejection network=${network}`);
+      return c.json({
+        success: false,
+        ...(directive === 'settle-rejected-unknown'
+          ? { errorReason: 'not_free_tier_exhausted' }
+          : directive === 'settle-rejected-suffixed'
+            ? { errorReason: 'free_tier_exhausted_maybe' }
+            : {}),
+        errorMessage:
+          directive === 'settle-rejected-unknown'
+            ? 'Incidental message mentions free_tier_exhausted.'
+            : 'Mock rejection has no proven pre-broadcast reason.',
+        payer,
+        transaction: '',
+        network,
+      }, 402);
+    }
+    if (directive === 'settle-error-free-tier-message') {
+      say(`POST /settle → generic HTTP 503 with quota text network=${network}`);
+      return c.json({ error: 'free_tier_exhausted' }, 503);
     }
     if (directive === 'settle-error') {
       say(`POST /settle → HTTP 500 (forced) network=${network}`);
