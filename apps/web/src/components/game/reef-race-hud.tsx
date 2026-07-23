@@ -367,7 +367,7 @@ function rarityChipForPlacement(
   placement: number,
 ): { glyph: string; tone: string; color: string; label: string } {
   if (placement <= 1) {
-    return { glyph: '\u{1F6E1} DEF', tone: 'def', color: '#5cd2ff', label: 'Defensive items only' };
+    return { glyph: '\u{1F4A5} CHAOS', tone: 'agg', color: '#ff7aa8', label: 'Leader chaos: mines, slicks, shields and gamble boxes' };
   }
   if (placement <= 3) {
     return { glyph: '\u{2696} BAL', tone: 'bal', color: '#cccccc', label: 'Balanced — slight defense bias' };
@@ -487,6 +487,10 @@ const POWER_UP_META: Record<
   'rr-seeker-jelly':  { icon: '🪼', name: 'Seeker Jelly', desc: 'Homing hit on rival', color: '#ff7aa8', effectMs: 0 },
   'rr-tide-wave':     { icon: '🌊', name: 'Tide Wave', desc: 'Push back nearby avatars', color: '#4dffea', effectMs: 0 },
   'rr-whirlpool':     { icon: '🌀', name: 'Whirlpool', desc: 'Spin nearby rivals · 3s', color: '#ff5e8a', effectMs: 3_000 },
+  'rr-puffer-mine':   { icon: '🐡', name: 'Puffer Mine', desc: 'Drop behind · jumpable', color: '#ff5f9d', effectMs: 0 },
+  'rr-bubble-beam':   { icon: '🫧', name: 'Bubble Beam', desc: 'Forward cone · float rival', color: '#59efff', effectMs: 0 },
+  'rr-remora-rocket': { icon: '🚀', name: 'Remora Rocket', desc: 'Last-place autopilot · 4s', color: '#ffb64d', effectMs: 4_000 },
+  'rr-current-swap':  { icon: '⇄', name: 'Current Swap', desc: 'Swap ahead · jump dodges', color: '#ff4fec', effectMs: 1_500 },
 };
 
 function getPowerUpMeta(kind: string) {
