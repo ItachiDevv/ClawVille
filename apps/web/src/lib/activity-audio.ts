@@ -19,6 +19,8 @@
  *                                    no-op when reduced-motion is set, the
  *                                    asset 404'd, the context is suspended,
  *                                    or the user muted via `setMuted(true)`
+ *   playActivitySynthCue(name)      — event-edge oscillator cue through the
+ *                                    same context/master/mute policy
  *   setMuted(b)                    — global mute toggle
  *   getMuted()                     — current mute state
  *   isReducedMotion()              — true when user prefers reduced motion
@@ -40,6 +42,8 @@ export type ActivitySoundName =
   | 'victory-fanfare'
   | 'placement-silver'
   | 'placement-bronze';
+
+export type ActivitySynthCueName = 'item-hit' | 'swap-warning';
 
 const ALL_SOUND_NAMES: readonly ActivitySoundName[] = Object.freeze([
   'countdown-tick',
@@ -273,6 +277,55 @@ export function playActivitySound(
     }, dur);
   } catch {
     /* swallow — SFX must never break the game */
+  }
+}
+
+/**
+ * Audible fallback cues for mechanics whose packaged WAV slots are still
+ * silent placeholders. This is part of the existing activity-audio bus: it
+ * reuses the primed AudioContext + master gain and obeys the same mute and
+ * reduced-motion policy. Each call owns one oscillator/gain pair and releases
+ * both from `onended`; callers must invoke it only on an event edge.
+ */
+export function playActivitySynthCue(name: ActivitySynthCueName): void {
+  if (typeof window === 'undefined') return;
+  if (state.muted || isReducedMotion()) return;
+
+  const ctx = state.ctx;
+  if (!ctx || ctx.state === 'suspended') return;
+
+  try {
+    const oscillator = ctx.createOscillator();
+    const gain = ctx.createGain();
+    const startAt = ctx.currentTime;
+    const isSwapWarning = name === 'swap-warning';
+    const durationSeconds = isSwapWarning ? .72 : .16;
+    const peakGain = isSwapWarning ? .78 : .42;
+
+    oscillator.type = isSwapWarning ? 'sawtooth' : 'triangle';
+    oscillator.frequency.setValueAtTime(isSwapWarning ? 220 : 920, startAt);
+    oscillator.frequency.exponentialRampToValueAtTime(
+      isSwapWarning ? 72 : 310,
+      startAt + durationSeconds,
+    );
+    gain.gain.setValueAtTime(.0001, startAt);
+    gain.gain.exponentialRampToValueAtTime(peakGain, startAt + .018);
+    gain.gain.exponentialRampToValueAtTime(.0001, startAt + durationSeconds);
+
+    oscillator.connect(gain);
+    gain.connect(state.master ?? ctx.destination);
+    oscillator.onended = () => {
+      try {
+        oscillator.disconnect();
+        gain.disconnect();
+      } catch {
+        /* already collected */
+      }
+    };
+    oscillator.start(startAt);
+    oscillator.stop(startAt + durationSeconds + .02);
+  } catch {
+    /* synthesized SFX must never break the game */
   }
 }
 

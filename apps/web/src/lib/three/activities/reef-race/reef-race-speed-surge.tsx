@@ -10,6 +10,7 @@ export type ReefRaceSurgeSource =
   | 'turbo-bubble'
   | 'launch-boost'
   | 'slipstream'
+  | 'trick-surge'
   | 'wall-slam';
 
 interface ReefRaceSurgeSnapshot {
@@ -39,6 +40,7 @@ const SOURCE_COLOR: Record<ReefRaceSurgeSource, string> = {
   'turbo-bubble': '#ffe45e',
   'launch-boost': '#7cffcb',
   slipstream: '#b78cff',
+  'trick-surge': '#ff72e1',
   'wall-slam': '#ff6b6b',
 };
 
@@ -158,6 +160,7 @@ export function ReefRaceSurgeDriver({ roomId }: { roomId: string }) {
   const lastBoostPadEvent = useActivityStore((state) => state.lastBoostPadEvent);
   const lastLaunchEvent = useActivityStore((state) => state.lastLaunchEvent);
   const lastWallSlamEvent = useActivityStore((state) => state.lastWallSlamEvent);
+  const lastTrickEvent = useActivityStore((state) => state.lastSelfTrickLandingEvent);
   const slipstreamActive = useActivityStore((state) => state.slipstreamActive);
   const powerUpInventory = useActivityStore((state) => state.powerUpInventory);
   const selfRacingClass = useActivityStore((state) => state.selfRacingClass);
@@ -165,6 +168,7 @@ export function ReefRaceSurgeDriver({ roomId }: { roomId: string }) {
   const seenBoostPadAt = useRef(0);
   const seenLaunchAt = useRef(0);
   const seenWallSlamAt = useRef(0);
+  const seenTrickAt = useRef(0);
   const slipstreamWasActive = useRef(false);
   const previousInventory = useRef<readonly PowerUpSlot[] | null>(null);
 
@@ -173,6 +177,7 @@ export function ReefRaceSurgeDriver({ roomId }: { roomId: string }) {
     seenBoostPadAt.current = 0;
     seenLaunchAt.current = 0;
     seenWallSlamAt.current = 0;
+    seenTrickAt.current = 0;
     slipstreamWasActive.current = false;
     previousInventory.current = null;
     return resetReefRaceSurge;
@@ -213,6 +218,15 @@ export function ReefRaceSurgeDriver({ roomId }: { roomId: string }) {
     const magnitude = Math.min(0.9, 0.45 + lastWallSlamEvent.power * 0.65);
     triggerReefRaceSurge('wall-slam', magnitude, 500);
   }, [lastWallSlamEvent, selfAvatarId]);
+
+  useEffect(() => {
+    if (
+      !lastTrickEvent ||
+      lastTrickEvent.at === seenTrickAt.current
+    ) return;
+    seenTrickAt.current = lastTrickEvent.at;
+    triggerReefRaceSurge('trick-surge', 0.5, lastTrickEvent.durationMs);
+  }, [lastTrickEvent, selfAvatarId]);
 
   useEffect(() => {
     if (slipstreamActive && !slipstreamWasActive.current) {
