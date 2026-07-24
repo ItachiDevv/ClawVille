@@ -12,6 +12,7 @@ import {
   asc,
   db,
   eq,
+  isNull,
   lt,
   sql,
   type AgentPayment,
@@ -33,6 +34,7 @@ const RESUME_POLL_MS_FLOOR = 60_000;
 
 export interface AgentPayResumeDb {
   listSettlingBefore(cutoff: Date): Promise<AgentPayment[]>;
+  expireStalePending(cutoff: Date): Promise<number>;
   countPendingBefore(cutoff: Date): Promise<number>;
   markReconcile(
     id: string,
@@ -66,6 +68,7 @@ export interface AgentPayResumeTickResult {
   fulfilled: number;
   reconciled: number;
   failed: number;
+  stalePendingExpired: number;
   stalePending: number;
 }
 
@@ -83,6 +86,34 @@ const defaultDb: AgentPayResumeDb = {
         lt(agentPayments.settlingStartedAt, cutoff),
       ))
       .orderBy(asc(agentPayments.settlingStartedAt), asc(agentPayments.id));
+  },
+  async expireStalePending(cutoff) {
+    const reconciledAt = new Date();
+    const rows = await db
+      .update(agentPayments)
+      .set({
+        status: 'failed',
+        failureReason: 'stale_pending_expired',
+        settlingId: null,
+        settlingStartedAt: null,
+        updatedAt: reconciledAt,
+        metadata: sql`COALESCE(${agentPayments.metadata}, '{}'::jsonb) || ${JSON.stringify({
+          reconcileResolution: 'no_money',
+          failureReason: 'stale_pending_expired',
+          reconciledAt: reconciledAt.toISOString(),
+          terminalClosedBy: 'agent-pay-resume-auto-expiry',
+        })}::jsonb`,
+      })
+      .where(and(
+        eq(agentPayments.status, 'pending'),
+        lt(agentPayments.createdAt, cutoff),
+        isNull(agentPayments.txSignature),
+        isNull(agentPayments.settlePayer),
+        isNull(agentPayments.settlingStartedAt),
+        isNull(agentPayments.reconcileTxSignature),
+      ))
+      .returning({ id: agentPayments.id });
+    return rows.length;
   },
   async countPendingBefore(cutoff) {
     const [row] = await db
@@ -119,7 +150,14 @@ function resolveDeps(input: AgentPayResumeDeps = {}) {
 }
 
 function emptyTickResult(): AgentPayResumeTickResult {
-  return { scanned: 0, fulfilled: 0, reconciled: 0, failed: 0, stalePending: 0 };
+  return {
+    scanned: 0,
+    fulfilled: 0,
+    reconciled: 0,
+    failed: 0,
+    stalePendingExpired: 0,
+    stalePending: 0,
+  };
 }
 
 function safeLog(
@@ -269,10 +307,16 @@ export async function runAgentPayResumeTick(
     }
   }
 
+  const stalePendingCutoff = new Date(nowMs - STALE_PENDING_AGE_MS);
   try {
-    result.stalePending = await d.db.countPendingBefore(
-      new Date(nowMs - STALE_PENDING_AGE_MS),
-    );
+    result.stalePendingExpired = await d.db.expireStalePending(stalePendingCutoff);
+  } catch (error) {
+    result.failed += 1;
+    safeLog(d.logError, '[agent-pay-resume] pending expiry failed (non-fatal):', error);
+  }
+
+  try {
+    result.stalePending = await d.db.countPendingBefore(stalePendingCutoff);
     if (result.stalePending === 0) {
       lastAlertedStalePendingCount = 0;
     } else if (result.stalePending !== lastAlertedStalePendingCount) {
