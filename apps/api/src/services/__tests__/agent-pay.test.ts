@@ -13,8 +13,10 @@ const {
   resetAgentPayFacilitatorCircuitForTests,
   resolveAgentPayBreakerCooldownMs,
   resolveAgentPayBreakerThreshold,
+  resolveAgentPayDailyCountCap,
   resolveAgentPayDailySendUsdCents,
   resolveAgentPayDailyReceiveUsdCents,
+  resolveAgentPayMinUsdCents,
 } = await import('../agent-pay');
 
 const SENDER = '11111111-1111-4111-8111-111111111111';
@@ -255,6 +257,12 @@ function harness(options: {
       const received = counted
         .filter((row) => row.recipientAvatarId === input.recipientAvatarId)
         .reduce((sum, row) => sum + row.usdCents, 0);
+      const sentCount = counted.filter(
+        (row) => row.senderAvatarId === input.senderAvatarId,
+      ).length;
+      if (sentCount >= limits.dailyCountCap) {
+        return { kind: 'daily_count_cap_exceeded' };
+      }
       if (sent > limits.sendUsdCents - input.usdCents) {
         return {
           kind: 'daily_cap_exceeded',
@@ -439,6 +447,8 @@ describe('agent-pay durable x402 machine', () => {
     delete process.env.AGENT_PAY_STALE_MS;
     delete process.env.AGENT_PAY_DAILY_SEND_USD_CENTS;
     delete process.env.AGENT_PAY_DAILY_RECEIVE_USD_CENTS;
+    delete process.env.AGENT_PAY_MIN_USD_CENTS;
+    delete process.env.AGENT_PAY_DAILY_COUNT_CAP;
     delete process.env.AGENT_PAY_BREAKER_THRESHOLD;
     delete process.env.AGENT_PAY_BREAKER_COOLDOWN_MS;
   });
@@ -590,7 +600,7 @@ describe('agent-pay durable x402 machine', () => {
     expect(h.mintCalls()).toBe(0);
 
     const afterAmbiguous = await payAgent(request({
-      usdCents: 1,
+      usdCents: 5,
       idempotencyKey: 'after-unknown-settle-rejection',
     }), h.deps);
     expect(afterAmbiguous).toEqual({
@@ -627,7 +637,7 @@ describe('agent-pay durable x402 machine', () => {
     expect(h.mintCalls()).toBe(0);
   });
 
-  it('enforces one-cent minimum and configured maximum', async () => {
+  it('enforces intrinsic positive-integer validation and the configured maximum', async () => {
     const h = harness();
     expect(await payAgent(request({ usdCents: 0 }), h.deps)).toMatchObject({ code: 'amount_below_min' });
     process.env.AGENT_PAY_MAX_USD_CENTS = '10';
@@ -635,11 +645,59 @@ describe('agent-pay durable x402 machine', () => {
     expect(h.executeCalls()).toBe(0);
   });
 
-  it('settles the one-cent minimum and mints one EARNED vCLAW', async () => {
+  it('refuses a new payment below the configured minimum before admission or PayAI', async () => {
     const h = harness();
-    const result = await payAgent(request({ usdCents: 1, idempotencyKey: 'one-cent' }), h.deps);
-    expect(result).toMatchObject({ ok: true, earnedVclaw: 1 });
-    expect([...h.rows.values()][0]).toMatchObject({ usdCents: 1, earnedUsdBasis: '0.010000' });
+    const result = await payAgent(
+      request({ usdCents: 4, idempotencyKey: 'below-minimum' }),
+      h.deps,
+    );
+
+    expect(result).toEqual({ ok: false, code: 'amount_below_min' });
+    expect(h.rows.size).toBe(0);
+    expect(h.recipientCalls()).toBe(0);
+    expect(h.walletLookupCalls()).toBe(0);
+    expect(h.admissionCalls()).toBe(0);
+    expect(h.balanceCalls()).toBe(0);
+    expect(h.recipientAtaCalls()).toBe(0);
+    expect(h.signingWalletCalls()).toBe(0);
+    expect(h.feePayerCalls()).toBe(0);
+    expect(h.prepareCalls()).toBe(0);
+    expect(h.executeCalls()).toBe(0);
+    expect(h.mintCalls()).toBe(0);
+  });
+
+  it('settles the exact five-cent default minimum', async () => {
+    const h = harness();
+    const result = await payAgent(request({
+      usdCents: 5,
+      idempotencyKey: 'five-cent-boundary',
+    }), h.deps);
+    expect(result).toMatchObject({ ok: true, earnedVclaw: 5 });
+    expect([...h.rows.values()][0]).toMatchObject({
+      usdCents: 5,
+      earnedUsdBasis: '0.050000',
+    });
+  });
+
+  it('dispatches a pre-existing two-cent pending replay despite the new minimum', async () => {
+    const h = harness();
+    h.seedRow({
+      usdCents: 2,
+      usdcAtomic: '20000',
+      idempotencyKey: 'legacy-two-cent',
+    });
+
+    const result = await payAgent(request({
+      usdCents: 2,
+      idempotencyKey: 'legacy-two-cent',
+    }), h.deps);
+
+    expect(result).toMatchObject({ ok: true, usdCents: 2, earnedVclaw: 2 });
+    expect(h.rows.size).toBe(1);
+    expect(h.recipientCalls()).toBe(0);
+    expect(h.walletLookupCalls()).toBe(0);
+    expect(h.admissionCalls()).toBe(0);
+    expect(h.executeCalls()).toBe(1);
   });
 
   it('refuses self-payment before looking up the wallet', async () => {
@@ -678,6 +736,85 @@ describe('agent-pay durable x402 machine', () => {
     expect(resolveAgentPayDailyReceiveUsdCents()).toBe(100);
   });
 
+  it('strictly parses minimum and daily-count env values with defaults and a floor of one', () => {
+    expect(resolveAgentPayMinUsdCents()).toBe(5);
+    expect(resolveAgentPayDailyCountCap()).toBe(50);
+
+    for (const invalid of ['0', '-1', '5suffix', '9007199254740992']) {
+      process.env.AGENT_PAY_MIN_USD_CENTS = invalid;
+      process.env.AGENT_PAY_DAILY_COUNT_CAP = invalid;
+      expect(resolveAgentPayMinUsdCents()).toBe(5);
+      expect(resolveAgentPayDailyCountCap()).toBe(50);
+    }
+
+    process.env.AGENT_PAY_MIN_USD_CENTS = '1';
+    process.env.AGENT_PAY_DAILY_COUNT_CAP = '1';
+    expect(resolveAgentPayMinUsdCents()).toBe(1);
+    expect(resolveAgentPayDailyCountCap()).toBe(1);
+  });
+
+  it('admits the 50th sender payment and refuses the 51st with the count detail', async () => {
+    const h = harness({ now: new Date('2026-07-21T12:00:00.000Z') });
+    for (let index = 0; index < 49; index += 1) {
+      h.seedRow({
+        usdCents: 5,
+        usdcAtomic: '50000',
+        idempotencyKey: `counted-payment-${index}`,
+      });
+    }
+
+    const fiftieth = await payAgent(request({
+      usdCents: 5,
+      idempotencyKey: 'counted-payment-50',
+    }), h.deps);
+    const fiftyFirst = await payAgent(request({
+      usdCents: 5,
+      idempotencyKey: 'counted-payment-51',
+    }), h.deps);
+
+    expect(fiftieth).toMatchObject({ ok: true, usdCents: 5 });
+    expect(fiftyFirst).toEqual({
+      ok: false,
+      code: 'daily_cap_exceeded',
+      detail: 'daily_count_cap',
+    });
+    expect(h.rows.size).toBe(50);
+    expect(h.executeCalls()).toBe(1);
+  });
+
+  it('excludes failed and cap-exempt rows from the sender payment count', async () => {
+    process.env.AGENT_PAY_DAILY_COUNT_CAP = '1';
+    const h = harness({ now: new Date('2026-07-21T12:00:00.000Z') });
+    h.seedRow({
+      status: 'failed',
+      usdCents: 100,
+      idempotencyKey: 'failed-count-exempt',
+    });
+    h.seedRow({
+      status: 'reconcile',
+      capExempt: true,
+      usdCents: 100,
+      idempotencyKey: 'durable-count-exempt',
+    });
+
+    const admitted = await payAgent(request({
+      usdCents: 5,
+      idempotencyKey: 'first-counted-payment',
+    }), h.deps);
+    const refused = await payAgent(request({
+      usdCents: 5,
+      idempotencyKey: 'second-counted-payment',
+    }), h.deps);
+
+    expect(admitted).toMatchObject({ ok: true, usdCents: 5 });
+    expect(refused).toEqual({
+      ok: false,
+      code: 'daily_cap_exceeded',
+      detail: 'daily_count_cap',
+    });
+    expect(h.rows.size).toBe(3);
+  });
+
   it('admits a payment whose cumulative sender and recipient usage equals each cap', async () => {
     process.env.AGENT_PAY_DAILY_SEND_USD_CENTS = '200';
     process.env.AGENT_PAY_DAILY_RECEIVE_USD_CENTS = '200';
@@ -694,7 +831,7 @@ describe('agent-pay durable x402 machine', () => {
     const h = harness({ now: new Date('2026-07-21T12:00:00.000Z') });
     h.seedRow({ usdCents: 2_000, idempotencyKey: 'sender-at-cap' });
 
-    const result = await payAgent(request({ usdCents: 1, idempotencyKey: 'blocked-sender' }), h.deps);
+    const result = await payAgent(request({ usdCents: 5, idempotencyKey: 'blocked-sender' }), h.deps);
 
     expect(result).toEqual({
       ok: false,
@@ -768,7 +905,7 @@ describe('agent-pay durable x402 machine', () => {
     });
 
     const result = await payAgent(request({
-      usdCents: 1,
+      usdCents: 5,
       idempotencyKey: 'after-ambiguous',
     }), h.deps);
 
@@ -791,7 +928,7 @@ describe('agent-pay durable x402 machine', () => {
       });
 
       const result = await payAgent(request({
-        usdCents: 1,
+        usdCents: 5,
         idempotencyKey: `after-${status}`,
       }), h.deps);
 
