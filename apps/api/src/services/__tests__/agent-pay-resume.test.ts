@@ -62,6 +62,7 @@ interface HarnessOptions {
     signature: string,
   ) => Promise<AgentPayChainTransaction | null>;
   alertThrows?: boolean;
+  expireThrows?: boolean;
 }
 
 function harness(seed: AgentPayment[], options: HarnessOptions = {}) {
@@ -70,6 +71,9 @@ function harness(seed: AgentPayment[], options: HarnessOptions = {}) {
   const alerts: AlertErrorParams[] = [];
   const transactionCalls: string[] = [];
   const fulfillCalls: string[] = [];
+  const pendingScanEvents: Array<'expire' | 'count'> = [];
+  const expireCutoffs: Date[] = [];
+  const countCutoffs: Date[] = [];
   let mintCalls = 0;
 
   const resumeDb: AgentPayResumeDb = {
@@ -79,7 +83,39 @@ function harness(seed: AgentPayment[], options: HarnessOptions = {}) {
         && row.settlingStartedAt !== null
         && new Date(row.settlingStartedAt).getTime() < cutoff.getTime());
     },
+    async expireStalePending(cutoff) {
+      pendingScanEvents.push('expire');
+      expireCutoffs.push(cutoff);
+      if (options.expireThrows) throw new Error('synthetic pending expiry outage');
+      const expired = [...rows.values()].filter((row) =>
+        row.status === 'pending'
+        && new Date(row.createdAt).getTime() < cutoff.getTime()
+        && row.txSignature === null
+        && row.settlePayer === null
+        && row.settlingStartedAt === null
+        && row.reconcileTxSignature === null);
+      const reconciledAt = new Date(NOW);
+      for (const row of expired) {
+        Object.assign(row, {
+          status: 'failed',
+          failureReason: 'stale_pending_expired',
+          settlingId: null,
+          settlingStartedAt: null,
+          updatedAt: reconciledAt,
+          metadata: {
+            ...row.metadata,
+            reconcileResolution: 'no_money',
+            failureReason: 'stale_pending_expired',
+            reconciledAt: reconciledAt.toISOString(),
+            terminalClosedBy: 'agent-pay-resume-auto-expiry',
+          },
+        });
+      }
+      return expired.length;
+    },
     async countPendingBefore(cutoff) {
+      pendingScanEvents.push('count');
+      countCutoffs.push(cutoff);
       return [...rows.values()].filter((row) =>
         row.status === 'pending'
         && new Date(row.createdAt).getTime() < cutoff.getTime()).length;
@@ -166,6 +202,9 @@ function harness(seed: AgentPayment[], options: HarnessOptions = {}) {
     alerts,
     transactionCalls,
     fulfillCalls,
+    pendingScanEvents,
+    expireCutoffs,
+    countCutoffs,
     mintCalls: () => mintCalls,
   };
 }
@@ -313,20 +352,32 @@ describe('agent-pay resume worker', () => {
     expect(h.markCalls.map((call) => call.id)).toEqual([recoverable.id]);
   });
 
-  it('never mutates pending rows and emits one stable batch warning with the count', async () => {
-    const oldPendingA = payment({
+  it('expires dead pending rows before counting and only pages signed survivors', async () => {
+    const deadPending = payment({
       status: 'pending', settlingId: null, settlingStartedAt: null,
       createdAt: new Date(NOW - 24 * 60 * 60 * 1_000 - 1),
+      metadata: { existing: 'preserved' },
     });
-    const oldPendingB = payment({
+    const signedSurvivor = payment({
       status: 'pending', settlingId: null, settlingStartedAt: null,
       createdAt: new Date(NOW - 24 * 60 * 60 * 1_000 - 2),
+      txSignature: 'ambiguous-pending-signature',
     });
-    const h = harness([oldPendingA, oldPendingB], { alertThrows: true });
+    const h = harness([deadPending, signedSurvivor]);
 
     const result = await runAgentPayResumeTick(h.deps);
 
-    expect(result).toMatchObject({ scanned: 0, reconciled: 0, failed: 0, stalePending: 2 });
+    const expectedCutoff = NOW - 24 * 60 * 60 * 1_000;
+    expect(h.pendingScanEvents).toEqual(['expire', 'count']);
+    expect(h.expireCutoffs.map((cutoff) => cutoff.getTime())).toEqual([expectedCutoff]);
+    expect(h.countCutoffs.map((cutoff) => cutoff.getTime())).toEqual([expectedCutoff]);
+    expect(result).toMatchObject({
+      scanned: 0,
+      reconciled: 0,
+      failed: 0,
+      stalePendingExpired: 1,
+      stalePending: 1,
+    });
     expect(h.markCalls).toEqual([]);
     expect(h.fulfillCalls).toEqual([]);
     expect(h.alerts).toHaveLength(1);
@@ -334,16 +385,53 @@ describe('agent-pay resume worker', () => {
       severity: 'warning',
       source: 'agent-pay-resume',
       message: 'Agent payments have remained pending for more than 24 hours',
-      context: { pendingCount: 2 },
+      context: { pendingCount: 1 },
     });
-    expect(h.rows.get(oldPendingA.id)?.status).toBe('pending');
-    expect(h.rows.get(oldPendingB.id)?.status).toBe('pending');
+    expect(h.rows.get(deadPending.id)).toMatchObject({
+      status: 'failed',
+      failureReason: 'stale_pending_expired',
+      settlingId: null,
+      settlingStartedAt: null,
+      metadata: {
+        existing: 'preserved',
+        reconcileResolution: 'no_money',
+        failureReason: 'stale_pending_expired',
+        reconciledAt: new Date(NOW).toISOString(),
+        terminalClosedBy: 'agent-pay-resume-auto-expiry',
+      },
+    });
+    expect(h.rows.get(signedSurvivor.id)).toMatchObject({
+      status: 'pending',
+      txSignature: 'ambiguous-pending-signature',
+    });
+  });
+
+  it('continues to count and alert survivors when pending expiry throws', async () => {
+    const signedSurvivor = payment({
+      status: 'pending', settlingId: null, settlingStartedAt: null,
+      createdAt: new Date(NOW - 24 * 60 * 60 * 1_000 - 1),
+      txSignature: 'signed-survivor-during-expiry-outage',
+    });
+    const h = harness([signedSurvivor], { expireThrows: true });
+
+    const result = await runAgentPayResumeTick(h.deps);
+
+    expect(h.pendingScanEvents).toEqual(['expire', 'count']);
+    expect(result).toMatchObject({
+      failed: 1,
+      stalePendingExpired: 0,
+      stalePending: 1,
+    });
+    expect(h.alerts).toHaveLength(1);
+    expect(h.alerts[0]).toMatchObject({ context: { pendingCount: 1 } });
+    expect(h.rows.get(signedSurvivor.id)?.status).toBe('pending');
   });
 
   it('pages a steady stale-pending backlog once, re-paging only when the count changes', async () => {
     const oldPending = payment({
       status: 'pending', settlingId: null, settlingStartedAt: null,
       createdAt: new Date(NOW - 24 * 60 * 60 * 1_000 - 1),
+      txSignature: 'steady-ambiguous-pending-signature',
     });
     const h = harness([oldPending]);
 
