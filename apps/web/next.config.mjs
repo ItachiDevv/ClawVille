@@ -25,8 +25,19 @@ const FRAME_ANCESTORS =
   'http://127.0.0.1:* https://127.0.0.1:* ' +
   'electrobun: capacitor: tauri: app: file:';
 
+const BUILD_SOURCE_COMMIT =
+  process.env.NEXT_PUBLIC_SOURCE_COMMIT?.trim() ||
+  process.env.SOURCE_COMMIT?.trim() ||
+  '';
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Coolify exposes SOURCE_COMMIT to the container build. Bake it into the
+  // browser bundle so an open activity tab can compare itself with /health.
+  // An explicit NEXT_PUBLIC_SOURCE_COMMIT remains useful for local skew tests.
+  env: {
+    NEXT_PUBLIC_SOURCE_COMMIT: BUILD_SOURCE_COMMIT,
+  },
   // Dev-only: allow the founder's laptop (tailnet) to load dev assets —
   // Next's dev server 403s _next/* requests from non-localhost hosts otherwise.
   // No effect on production builds. (Local worktree edit, not for PR.)

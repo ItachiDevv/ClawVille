@@ -64,6 +64,9 @@ import {
   preloadActivitySounds,
   primeActivitySounds,
 } from '@/lib/activity-audio';
+import StaleClientVersionBanner, {
+  useStaleClientVersionCheck,
+} from '@/components/game/stale-client-version-banner';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
 /** Locked Q2 decision — mirrors `MAX_PARTY_SIZE = 4` on the server. */
@@ -300,6 +303,7 @@ function IdleBody({
   onQueueSolo,
   onQueueParty,
   queueing,
+  versionCheckReady,
   status,
 }: {
   activity: ActivityDefinition;
@@ -316,6 +320,7 @@ function IdleBody({
   onQueueSolo: () => void;
   onQueueParty: () => void;
   queueing: boolean;
+  versionCheckReady: boolean;
   status: QueueStatusResponse;
 }) {
   const [joinCode, setJoinCode] = useState('');
@@ -660,11 +665,13 @@ function IdleBody({
           variant="primary"
           loading={queueing}
           onClick={onQueueSolo}
-          disabled={!partyStateReady || soloDisabled}
+          disabled={!versionCheckReady || !partyStateReady || soloDisabled}
           title={
-            party && partySize >= 2
-              ? 'Leave your party to queue solo'
-              : undefined
+            !versionCheckReady
+              ? 'Checking for a newer version…'
+              : party && partySize >= 2
+                ? 'Leave your party to queue solo'
+                : undefined
           }
         >
           Queue Solo
@@ -673,15 +680,17 @@ function IdleBody({
           variant={partyCanQueue ? 'primary' : 'secondary'}
           loading={queueing}
           onClick={onQueueParty}
-          disabled={!partyStateReady || !partyCanQueue}
+          disabled={!versionCheckReady || !partyStateReady || !partyCanQueue}
           title={
-            party && !isLeader
-              ? 'Only the party leader can start the queue'
-              : party && partySize < 2
-                ? 'Invite at least one member — or queue solo'
-                : !party
-                  ? 'Create or join a party first'
-                  : undefined
+            !versionCheckReady
+              ? 'Checking for a newer version…'
+              : party && !isLeader
+                ? 'Only the party leader can start the queue'
+                : party && partySize < 2
+                  ? 'Invite at least one member — or queue solo'
+                  : !party
+                    ? 'Create or join a party first'
+                    : undefined
           }
         >
           Queue with Party
@@ -882,6 +891,7 @@ export default function ActivityLobbyModal({
   const [phase, setPhase] = useState<LobbyPhase>('idle');
   const [queueing, setQueueing] = useState(false);
   const autoQueueFiredRef = useRef(false);
+  const staleClient = useStaleClientVersionCheck(activityLobbyId);
 
   const activity: ActivityDefinition | null = useMemo(
     () =>
@@ -956,7 +966,7 @@ export default function ActivityLobbyModal({
   ]);
 
   const handleQueue = useCallback(async (partyId?: string) => {
-    if (!activityLobbyId || queueing) return;
+    if (!activityLobbyId || queueing || !staleClient.checked) return;
     // The click that triggers `handleQueue` is the AudioContext unlock
     // gesture — prime the audio bus here so SFX work in the match.
     primeActivitySounds();
@@ -1009,7 +1019,13 @@ export default function ActivityLobbyModal({
     } finally {
       setQueueing(false);
     }
-  }, [activityLobbyId, queueing, addToast, queryClient]);
+  }, [
+    activityLobbyId,
+    queueing,
+    staleClient.checked,
+    addToast,
+    queryClient,
+  ]);
 
   const handleLeaveQueue = useCallback(async () => {
     if (!activityLobbyId) return;
@@ -1038,6 +1054,8 @@ export default function ActivityLobbyModal({
     if (!autoQueue) return;
     if (autoQueueFiredRef.current) return;
     if (!activity || !avatar) return;
+    if (!staleClient.checked) return;
+    if (staleClient.stale) return;
     if (avatar && !partyStateReady) return;
     autoQueueFiredRef.current = true;
     onAutoQueueConsumed?.();
@@ -1053,6 +1071,8 @@ export default function ActivityLobbyModal({
     party,
     partyEligible,
     partyStateReady,
+    staleClient.checked,
+    staleClient.stale,
     handleQueue,
     onAutoQueueConsumed,
     addToast,
@@ -1088,6 +1108,7 @@ export default function ActivityLobbyModal({
       headerIcon={<span>{phase === 'queuing' ? '⏳' : '⚔'}</span>}
       maxWidth={680}
     >
+      <StaleClientVersionBanner stale={staleClient.stale} />
       {statusError && (
         <div
           style={{
@@ -1121,6 +1142,7 @@ export default function ActivityLobbyModal({
             if (party) void handleQueue(party.id);
           }}
           queueing={queueing}
+          versionCheckReady={staleClient.checked}
           status={status}
         />
       ) : (
