@@ -50,11 +50,14 @@
  */
 
 import type { PaymentRequirements } from '@x402/core/types';
+import { Connection } from '@solana/web3.js';
 import {
   resolveFacilitatorFeePayer,
+  usdcMintForNetwork,
   type X402Network,
 } from '../x402-payai';
 import { loadX402Config } from '../x402-config';
+import { readAssociatedTokenAccountExists } from '../solana-token-balance';
 import {
   prepareCustodialExactPayment,
   executePreparedExactPayment,
@@ -172,6 +175,24 @@ export async function preparePayaiRelease(
 
   if (input.amountBaseUnits <= 0n) {
     return { ok: false, code: 'internal', message: 'release amount must be > 0.' };
+  }
+
+  let recipientAtaExists: boolean | null;
+  try {
+    recipientAtaExists = await readAssociatedTokenAccountExists(
+      new Connection(cfg.rpcUrl, 'confirmed'),
+      usdcMintForNetwork(network),
+      input.workerWalletPubkey,
+    );
+  } catch {
+    recipientAtaExists = null;
+  }
+  if (recipientAtaExists === false) {
+    return {
+      ok: false,
+      code: 'payai_unavailable',
+      message: 'recipient USDC associated token account does not exist.',
+    };
   }
 
   // Discover the facilitator's fee payer for this network — the SVM exact scheme

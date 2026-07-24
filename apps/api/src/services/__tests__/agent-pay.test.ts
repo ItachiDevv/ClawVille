@@ -163,6 +163,7 @@ function meridianSettledOutcome(signature: string): ExecutePreparedExactPaymentO
 
 function harness(options: {
   balance?: bigint;
+  recipientAtaExists?: boolean | null;
   outcome?: ExecutePreparedExactPaymentOutcome;
   failFirstFulfillment?: boolean;
   executeThrows?: boolean;
@@ -179,6 +180,7 @@ function harness(options: {
   let walletLookupCalls = 0;
   let admissionCalls = 0;
   let balanceCalls = 0;
+  let recipientAtaCalls = 0;
   let signingWalletCalls = 0;
   let feePayerCalls = 0;
   let prepareCalls = 0;
@@ -362,6 +364,12 @@ function harness(options: {
       balanceCalls += 1;
       return options.balance ?? 10_000_000n;
     },
+    readRecipientAtaExists: async () => {
+      recipientAtaCalls += 1;
+      return options.recipientAtaExists === undefined
+        ? true
+        : options.recipientAtaExists;
+    },
     loadSigningWallet: async (avatarId) => {
       signingWalletCalls += 1;
       return {
@@ -405,6 +413,7 @@ function harness(options: {
     walletLookupCalls: () => walletLookupCalls,
     admissionCalls: () => admissionCalls,
     balanceCalls: () => balanceCalls,
+    recipientAtaCalls: () => recipientAtaCalls,
     signingWalletCalls: () => signingWalletCalls,
     feePayerCalls: () => feePayerCalls,
     prepareCalls: () => prepareCalls,
@@ -480,6 +489,55 @@ describe('agent-pay durable x402 machine', () => {
     expect(result).toMatchObject({ ok: false, code: 'insufficient_usdc', status: 'pending' });
     expect(h.executeCalls()).toBe(0);
     expect(h.mintCalls()).toBe(0);
+  });
+
+  it('terminal-fails a missing recipient ATA before any PayAI interaction', async () => {
+    const h = harness({ recipientAtaExists: false });
+    const result = await payAgent(request(), h.deps);
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'payment_failed',
+      status: 'failed',
+      detail: 'recipient_ata_missing',
+    });
+    expect([...h.rows.values()][0]).toMatchObject({
+      status: 'failed',
+      failureReason: 'recipient_ata_missing',
+      capExempt: true,
+    });
+    expect(h.recipientAtaCalls()).toBe(1);
+    expect(h.signingWalletCalls()).toBe(0);
+    expect(h.feePayerCalls()).toBe(0);
+    expect(h.prepareCalls()).toBe(0);
+    expect(h.executeCalls()).toBe(0);
+    expect(h.alertCalls()).toBe(0);
+  });
+
+  it('fails open when the recipient ATA probe is indeterminate', async () => {
+    const h = harness({ recipientAtaExists: null });
+    const result = await payAgent(
+      request({ idempotencyKey: 'ata-probe-indeterminate' }),
+      h.deps,
+    );
+
+    expect(result).toMatchObject({ ok: true, status: 'settled' });
+    expect(h.recipientAtaCalls()).toBe(1);
+    expect(h.prepareCalls()).toBe(1);
+    expect(h.executeCalls()).toBe(1);
+  });
+
+  it('proceeds unchanged when the recipient ATA exists', async () => {
+    const h = harness({ recipientAtaExists: true });
+    const result = await payAgent(
+      request({ idempotencyKey: 'ata-probe-present' }),
+      h.deps,
+    );
+
+    expect(result).toMatchObject({ ok: true, status: 'settled' });
+    expect(h.recipientAtaCalls()).toBe(1);
+    expect(h.prepareCalls()).toBe(1);
+    expect(h.executeCalls()).toBe(1);
   });
 
   it('definitive facilitator failure becomes failed and mints nothing', async () => {
