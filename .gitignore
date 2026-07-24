@@ -44,6 +44,7 @@ coverage
 # checklists). Per-user state (settings.local.json, worktrees, memory,
 # plans, reports) stays local.
 .claude/
+CLAUDE.md
 
 # Misc
 .DS_Store
