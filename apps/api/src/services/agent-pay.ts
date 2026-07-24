@@ -68,6 +68,8 @@ export {
 const IDEMPOTENCY_RE = /^[A-Za-z0-9._:-]{1,64}$/;
 const MAX_SAFE_AGENT_PAY_CENTS = 100_000_000;
 const MIN_STALE_MS = 180_000;
+const DEFAULT_MIN_USD_CENTS = 5;
+const DEFAULT_DAILY_COUNT_CAP = 50;
 const DEFAULT_DAILY_SEND_USD_CENTS = 2_000;
 const DEFAULT_DAILY_RECEIVE_USD_CENTS = 2_000;
 const MIN_DAILY_CAP_USD_CENTS = 100;
@@ -118,6 +120,24 @@ export function resolveAgentPayDailyReceiveUsdCents(): number {
   return resolveDailyUsdCents(
     'AGENT_PAY_DAILY_RECEIVE_USD_CENTS',
     DEFAULT_DAILY_RECEIVE_USD_CENTS,
+  );
+}
+
+function resolvePositiveInteger(name: string, fallback: number): number {
+  const value = process.env[name]?.trim();
+  if (!value || !/^\d+$/.test(value)) return fallback;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : fallback;
+}
+
+export function resolveAgentPayMinUsdCents(): number {
+  return resolvePositiveInteger('AGENT_PAY_MIN_USD_CENTS', DEFAULT_MIN_USD_CENTS);
+}
+
+export function resolveAgentPayDailyCountCap(): number {
+  return resolvePositiveInteger(
+    'AGENT_PAY_DAILY_COUNT_CAP',
+    DEFAULT_DAILY_COUNT_CAP,
   );
 }
 
@@ -185,7 +205,7 @@ export type AgentPayResult =
       code: 'daily_cap_exceeded';
       paymentId?: string;
       status?: AgentPayment['status'];
-      detail: { cap: number; usedTodayUsdCents: number };
+      detail: { cap: number; usedTodayUsdCents: number } | 'daily_count_cap';
     }
   | {
       ok: false;
@@ -208,11 +228,16 @@ export interface AgentPayDb {
   findAvatarWallet(avatarId: string): Promise<{ publicKey: string } | null>;
   admitPending(
     input: typeof agentPayments.$inferInsert,
-    limits: { sendUsdCents: number; receiveUsdCents: number },
+    limits: {
+      sendUsdCents: number;
+      receiveUsdCents: number;
+      dailyCountCap: number;
+    },
     dayStart: Date,
   ): Promise<
     | { kind: 'inserted'; row: AgentPayment }
     | { kind: 'existing'; row: AgentPayment }
+    | { kind: 'daily_count_cap_exceeded' }
     | { kind: 'daily_cap_exceeded'; cap: number; usedTodayUsdCents: number }
   >;
   getById(id: string): Promise<AgentPayment | null>;
@@ -348,6 +373,9 @@ const defaultDb: AgentPayDb = {
           received: sql<string>`COALESCE(SUM(CASE
             WHEN ${agentPayments.recipientAvatarId} = ${input.recipientAvatarId}
             THEN ${agentPayments.usdCents} ELSE 0 END), 0)`,
+          sentCount: sql<string>`COALESCE(SUM(CASE
+            WHEN ${agentPayments.senderAvatarId} = ${input.senderAvatarId}
+            THEN 1 ELSE 0 END), 0)`,
         })
         .from(agentPayments)
         .where(and(
@@ -361,13 +389,18 @@ const defaultDb: AgentPayDb = {
         ));
       const sent = Number(usage?.sent ?? 0);
       const received = Number(usage?.received ?? 0);
+      const sentCount = Number(usage?.sentCount ?? 0);
       if (!Number.isSafeInteger(sent) || sent < 0
-        || !Number.isSafeInteger(received) || received < 0) {
+        || !Number.isSafeInteger(received) || received < 0
+        || !Number.isSafeInteger(sentCount) || sentCount < 0) {
         throw new Error('agent payment daily usage is outside safe integer range');
       }
       const usdCents = input.usdCents;
       if (typeof usdCents !== 'number') {
         throw new Error('agent payment admission requires integer usd cents');
+      }
+      if (sentCount >= limits.dailyCountCap) {
+        return { kind: 'daily_count_cap_exceeded' as const };
       }
       if (sent > limits.sendUsdCents - usdCents) {
         return {
@@ -1064,6 +1097,9 @@ async function payAgentLocked(
   if (existing && existing.status !== 'pending') {
     return dispatchExisting(existing, input, d);
   }
+  if (!existing && input.usdCents < resolveAgentPayMinUsdCents()) {
+    return { ok: false, code: 'amount_below_min' };
+  }
 
   const permit = acquirePayAiCircuitPermit(d.now().getTime());
   if (!permit) return circuitOpenResult(existing ?? undefined);
@@ -1107,8 +1143,16 @@ async function payAgentLocked(
       }, {
         sendUsdCents: resolveAgentPayDailySendUsdCents(),
         receiveUsdCents: resolveAgentPayDailyReceiveUsdCents(),
+        dailyCountCap: resolveAgentPayDailyCountCap(),
       }, utcMidnight(d.now())),
     );
+    if (admission.kind === 'daily_count_cap_exceeded') {
+      return {
+        ok: false,
+        code: 'daily_cap_exceeded',
+        detail: 'daily_count_cap',
+      };
+    }
     if (admission.kind === 'daily_cap_exceeded') {
       return {
         ok: false,

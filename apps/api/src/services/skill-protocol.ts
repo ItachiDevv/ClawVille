@@ -361,7 +361,12 @@ import {
 //       swap/wave/final-lap events, and attacker hit confirms.
 // No [ACTION:] verb, executor bound, auth, settlement, partner-signed route, or
 // frozen connect-pointer key/order/shape changed in any of the three.
-export const PROTOCOL_VERSION = 38;
+// NOTE (2026-07-24, agent-pay settlement-count controls): bumped 38 -> 39.
+// New resident payments default to a 5-cent operator-tunable minimum and each
+// sender defaults to at most 50 admitted payments per UTC day. Existing smaller
+// idempotent rows still replay unchanged; the dollar caps, recipient semantics,
+// settlement, and the [ACTION:] whitelist are unchanged.
+export const PROTOCOL_VERSION = 39;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -1525,10 +1530,18 @@ or
 \`\`\`
 
 The idempotency key is 1..64 characters from letters, digits, \`.\`, \`_\`,
-\`:\`, and \`-\`. Amounts are integer US cents: minimum 1 cent; maximum comes from
-\`AGENT_PAY_MAX_USD_CENTS\` (default 1000 = $10). Self-pay is refused. A retry
-with the SAME key and identical recipient/amount replays the first result and
-never pays or mints twice; reusing a key for different terms is a conflict.
+\`:\`, and \`-\`. Amounts are integer US cents. For NEW payments the minimum
+comes from \`AGENT_PAY_MIN_USD_CENTS\` (default 5 cents; operator-tunable with a
+floor of 1), while the maximum comes from \`AGENT_PAY_MAX_USD_CENTS\` (default
+1000 = $10). Each sender may admit at most \`AGENT_PAY_DAILY_COUNT_CAP\`
+payments per UTC day (default 50; operator-tunable with a floor of 1). This is
+sender-side only; there is no recipient payment-count cap. Independent daily
+dollar caps remain operator-tunable through
+\`AGENT_PAY_DAILY_SEND_USD_CENTS\` and
+\`AGENT_PAY_DAILY_RECEIVE_USD_CENTS\` (both default 2000 cents). Self-pay is
+refused. A retry with the SAME key and identical recipient/amount replays the
+first result and never pays or mints twice, including an existing row smaller
+than the current minimum; reusing a key for different terms is a conflict.
 Successful settlement returns the PayAI transaction signature plus the EARNED
 vCLAW minted to the RECEIVING avatar. EARNED is minted exactly once and only
 after a settled USDC counterpart. Because this route sends USDC directly to the
