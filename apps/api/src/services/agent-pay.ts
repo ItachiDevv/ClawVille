@@ -22,7 +22,10 @@ import {
 } from '@clawville/database';
 import { ensureSapIdentityQueued } from './sap/sap-identity-registrar';
 import { decryptWalletRow } from './keypair-vault';
-import { readSplTokenBalance } from './solana-token-balance';
+import {
+  readAssociatedTokenAccountExists,
+  readSplTokenBalance,
+} from './solana-token-balance';
 import { mintEarned, type LedgerTx } from './claw-token-ledger';
 import {
   resolveFacilitatorFeePayer,
@@ -249,6 +252,10 @@ export interface AgentPayDb {
 export interface AgentPayDeps {
   db?: AgentPayDb;
   readUsdcBalance?: (network: X402Network, owner: string) => Promise<bigint>;
+  readRecipientAtaExists?: (
+    network: X402Network,
+    owner: string,
+  ) => Promise<boolean | null>;
   loadSigningWallet?: (avatarId: string) => Promise<SigningWallet | null>;
   prepare?: typeof prepareCustodialExactPayment;
   execute?: (
@@ -595,6 +602,19 @@ function deps(input?: AgentPayDeps) {
       );
       return balance.amountAtomic;
     }),
+    readRecipientAtaExists: input?.readRecipientAtaExists
+      ?? (async (network: X402Network, owner: string) => {
+        try {
+          const rail = (input?.resolveRail ?? resolveAgentPayRail)();
+          return await readAssociatedTokenAccountExists(
+            new Connection(rail.rpcUrl, 'confirmed'),
+            usdcMintForNetwork(network),
+            owner,
+          );
+        } catch {
+          return null;
+        }
+      }),
     loadSigningWallet: input?.loadSigningWallet ?? (async (avatarId: string) => {
       const row = await db.query.wallets.findFirst({
         where: and(eq(wallets.subjectType, 'avatar'), eq(wallets.subjectId, avatarId)),
@@ -787,6 +807,45 @@ async function executePendingWithPermit(
     }
   } catch {
     return { ok: false, code: 'payai_unavailable', paymentId: row.id, status: 'pending', detail: 'balance_unavailable' };
+  }
+
+  let recipientAtaExists: boolean | null;
+  try {
+    recipientAtaExists = await d.readRecipientAtaExists(
+      rail.network,
+      row.recipientWallet,
+    );
+  } catch {
+    recipientAtaExists = null;
+  }
+  if (recipientAtaExists === false) {
+    const settlingId = d.randomId();
+    const claimed = await d.db.claimPending(row.id, settlingId);
+    if (!claimed) {
+      const current = await d.db.getById(row.id);
+      return current
+        ? dispatchExisting(current, {
+            senderAvatarId: row.senderAvatarId,
+            recipient: row.recipientKind === 'avatar'
+              ? { kind: 'avatar', avatarId: row.recipientRef }
+              : { kind: 'agent', agentId: row.recipientRef },
+            usdCents: row.usdCents, idempotencyKey: row.idempotencyKey,
+          }, d, permit)
+        : { ok: false, code: 'internal', paymentId: row.id };
+    }
+    await d.db.markFailed(
+      row.id,
+      settlingId,
+      'recipient_ata_missing',
+      true,
+    );
+    return {
+      ok: false,
+      code: 'payment_failed',
+      paymentId: row.id,
+      status: 'failed',
+      detail: 'recipient_ata_missing',
+    };
   }
 
   let prep: PreparedCustodialExactPayment;

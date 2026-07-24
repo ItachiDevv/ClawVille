@@ -1,11 +1,10 @@
 /**
  * SAP — SPL-token + ATA primitives, hand-rolled on `@solana/web3.js` only.
  *
- * `@solana/spl-token` is NOT a dependency of this app (and we do not add one for
- * a build-only, gated-OFF layer), so this module derives Associated Token
- * Accounts and builds the `createAssociatedTokenAccountIdempotent` instruction
- * from first principles. Every constant + layout here is a long-stable,
- * well-known SPL value (verified against the OOBE USDC spec
+ * This module keeps SAP's build-only, gated-OFF instruction primitives
+ * hand-rolled on web3.js even though `@solana/spl-token` is now used elsewhere
+ * for the shared read-only recipient-ATA preflight. Every constant + layout here
+ * is a long-stable, well-known SPL value (verified against the OOBE USDC spec
  * `oobe-usdc-selfreport-spec.md`).
  *
  * Pure + deterministic — no network, no DB, no secrets.

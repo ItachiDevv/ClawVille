@@ -21,7 +21,8 @@
  * error on 9-decimal balances.
  */
 
-import type { Connection } from '@solana/web3.js';
+import { getAssociatedTokenAddressSync } from '@solana/spl-token';
+import { PublicKey, type Connection } from '@solana/web3.js';
 
 export interface SplTokenBalance {
   /** Summed balance across the owner's token accounts for this mint, in atomic base units. */
@@ -32,6 +33,29 @@ export interface SplTokenBalance {
   uiAmount: number;
   /** RPC context used for this observation; proves minContextSlot ordering. */
   contextSlot: number;
+}
+
+/**
+ * Check whether the canonical associated token account exists for an owner.
+ * `null` means derivation or RPC failed, so callers can fail open on
+ * infrastructure without confusing an indeterminate probe with definite
+ * absence.
+ */
+export async function readAssociatedTokenAccountExists(
+  connection: Connection,
+  mint: string,
+  ownerPubkey: string,
+): Promise<boolean | null> {
+  try {
+    const ata = getAssociatedTokenAddressSync(
+      new PublicKey(mint),
+      new PublicKey(ownerPubkey),
+      true,
+    );
+    return (await connection.getAccountInfo(ata, 'confirmed')) !== null;
+  } catch {
+    return null;
+  }
 }
 
 export function assertMinimumContextSlot(actualSlot: number, minContextSlot?: number): void {
