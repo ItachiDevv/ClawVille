@@ -7,6 +7,23 @@ import { useStageStore } from './stage-store';
 type CallbackRef = { current: RenderCallback };
 
 const callbacksByScene = new Map<string, Map<symbol, CallbackRef>>();
+const frameInvocationsByScene = new Map<string, number>();
+let lastFrameSampleAt = 0;
+let clampNextFrameDelta = false;
+
+export function requestStageDeltaClamp(): void {
+  clampNextFrameDelta = true;
+}
+
+export function resetStageFrameDiagnostics(): void {
+  frameInvocationsByScene.clear();
+  lastFrameSampleAt = 0;
+  clampNextFrameDelta = false;
+}
+
+export function readStageFrameInvocations(): Record<string, number> {
+  return Object.fromEntries(frameInvocationsByScene);
+}
 
 export function useSceneFrame(
   sceneId: string,
@@ -38,6 +55,10 @@ export function StageFrameScheduler(): null {
   const queuedAckRef = useRef<string | null>(null);
 
   useFrame((state, delta, frame) => {
+    const controlledDelta = clampNextFrameDelta
+      ? Math.min(delta, 1 / 60)
+      : delta;
+    clampNextFrameDelta = false;
     const snapshot = useStageStore.getState();
     const sceneId = snapshot.activeScene;
     if (!sceneId) return;
@@ -45,14 +66,28 @@ export function StageFrameScheduler(): null {
     const callbacks = callbacksByScene.get(sceneId);
     if (callbacks) {
       for (const callbackRef of callbacks.values()) {
-        callbackRef.current(state, delta, frame);
-        useStageStore.getState().incrementFrameInvocation(sceneId);
+        callbackRef.current(state, controlledDelta, frame);
+        frameInvocationsByScene.set(
+          sceneId,
+          (frameInvocationsByScene.get(sceneId) ?? 0) + 1,
+        );
       }
     }
 
-    const request = useStageStore.getState().pendingRequest;
-    const cameraInstalled = useStageStore.getState().cameraInstalled;
-    const firstFrame = useStageStore.getState().firstControlledFrame;
+    const now = performance.now();
+    if (now - lastFrameSampleAt >= 250) {
+      lastFrameSampleAt = now;
+      useStageStore
+        .getState()
+        .sampleFrameInvocations({
+          [sceneId]: frameInvocationsByScene.get(sceneId) ?? 0,
+        });
+    }
+
+    const currentState = useStageStore.getState();
+    const request = currentState.pendingRequest;
+    const cameraInstalled = currentState.cameraInstalled;
+    const firstFrame = currentState.firstControlledFrame;
     if (
       !request ||
       request.sceneId !== sceneId ||
