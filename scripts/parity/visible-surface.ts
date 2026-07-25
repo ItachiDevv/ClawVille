@@ -38,7 +38,7 @@ export async function probeVisibleSurface(
   driver: Driver,
   probe: VisibleProbe,
 ): Promise<string | number | boolean | null> {
-  return driver.evalJson<string | number | boolean | null>(`(() => {
+  const raw = await driver.evalJson<string | boolean | null>(`(() => {
     const element = document.querySelector(${JSON.stringify(probe.selector)});
     if (!element) return null;
     const kind = ${JSON.stringify(probe.kind)};
@@ -50,12 +50,30 @@ export async function probeVisibleSurface(
         ?? element.textContent
         ?? ''
       : element.textContent ?? '';
-    if (kind === 'integer') {
-      const match = text.replaceAll(',', '').match(/-?\\d+/);
-      return match ? Number(match[0]) : null;
-    }
     return text.trim();
   })()`);
+  return probe.kind === 'integer' && typeof raw === 'string'
+    ? parseVisibleInteger(probe.name, raw)
+    : raw;
+}
+
+export function parseVisibleInteger(
+  probeName: string,
+  text: string,
+): number | null {
+  const normalized = text.replaceAll(',', '');
+  const match = probeName === 'stake'
+    ? normalized.match(/(-?\d+)\s*vCLAW\b/i)
+    : normalized.match(/-?\d+/);
+  return match ? Number(match[probeName === 'stake' ? 1 : 0]) : null;
+}
+
+export function normalizeVisibleProbeActual(
+  probeName: string,
+  actual: string | number | boolean | null,
+): string | number | boolean | null {
+  if (probeName !== 'bet-zone' || typeof actual !== 'string') return actual;
+  return actual.split('·', 1)[0]?.trim().toLowerCase() ?? '';
 }
 
 function nestedRecord(value: unknown): Record<string, unknown> | null {
@@ -160,9 +178,7 @@ export async function assertVisibleSurface(
       records,
     );
     const actual = await probeVisibleSurface(driver, probe);
-    const normalizedActual = probe.name === 'bet-zone' && typeof actual === 'string'
-      ? actual.trim().toLowerCase()
-      : actual;
+    const normalizedActual = normalizeVisibleProbeActual(probe.name, actual);
     results[probe.name] = {
       expected,
       actual: normalizedActual,

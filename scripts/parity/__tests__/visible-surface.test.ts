@@ -3,6 +3,8 @@ import { RECORDED_CASES } from '../fixtures/recorded';
 import type { WireRecord } from '../types';
 import {
   expectedProbeValue,
+  normalizeVisibleProbeActual,
+  parseVisibleInteger,
   VISIBLE_PROBES,
   visibleProbesFor,
 } from '../visible-surface';
@@ -65,5 +67,16 @@ describe('visible-surface probe scoping', () => {
       },
       [privateView],
     )).toBe(137);
+  });
+
+  test('baccarat probes separate the bet label, odds, and vCLAW stake', () => {
+    for (const [bet, label] of [
+      ['player', 'Player · 1:1 · 25 vCLAW'],
+      ['banker', 'Banker · 0.95:1 · 25 vCLAW'],
+      ['tie', 'Tie · 8:1 · 25 vCLAW'],
+    ] as const) {
+      expect(parseVisibleInteger('stake', label)).toBe(25);
+      expect(normalizeVisibleProbeActual('bet-zone', label)).toBe(bet);
+    }
   });
 });

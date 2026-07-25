@@ -45,8 +45,11 @@ function recordMatches(root: CardParityRoot, record: WireRecord): boolean {
     return hand === root.correlation.hand;
   }
   if (root.surface.startsWith('baccarat')) {
-    const coup = record.coupId
-      ?? stringValue(findDeep(body, new Set(['coupId', 'coup_id'])));
+    // Prefer the response body's coup correlation over the capture summary.
+    // A session/current response can carry lastCoup.coupId for the current
+    // checkpoint while an older capture-level value is still present.
+    const coup = stringValue(findDeep(body, new Set(['coupId', 'coup_id'])))
+      ?? record.coupId;
     return coup === root.correlation.hand;
   }
 
@@ -105,6 +108,26 @@ export function resolveWireForRoot(
     .filter((record) => recordMatches(root, record))
     .sort((a, b) => endpointWeight(root, b) - endpointWeight(root, a));
   return matches[0] ?? null;
+}
+
+/**
+ * Resolve a checkpoint only after its immutable application correlation has
+ * advanced from the prior checkpoint. Multi-coup rows can briefly republish a
+ * settled journal root from the preceding coup after "Next Coup"; accepting
+ * that root attributes the current visible UI to the preceding wire.
+ */
+export function resolveWireForCheckpoint(
+  root: CardParityRoot,
+  records: readonly WireRecord[],
+  previousCorrelation: string | null,
+): WireRecord | null {
+  if (
+    previousCorrelation !== null
+    && root.correlation.hand === previousCorrelation
+  ) {
+    return null;
+  }
+  return resolveWireForRoot(root, records);
 }
 
 export function immutableFieldsFromBodies(

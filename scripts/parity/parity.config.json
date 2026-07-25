@@ -7,6 +7,6 @@
     "optionalRare": 8
   },
   "maxLossPerRun": 500,
-  "maxDurationMs": 600000,
+  "maxDurationMs": 150000,
   "screenshotDir": "scripts/parity/out/screenshots"
 }

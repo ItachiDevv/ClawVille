@@ -20,7 +20,10 @@ import { runHarnessSelfTest } from './self-test';
 import { closeFixtureRun, type FixtureRunHandle } from './teardown';
 import type { ScenarioResult } from './types';
 import { assertVisibleSurface } from './visible-surface';
-import { resolveWireForRoot } from './wire-correlation';
+import {
+  resolveWireForCheckpoint,
+  resolveWireForRoot,
+} from './wire-correlation';
 import { resolveScenarioState } from './runner-env';
 
 interface Config {
@@ -95,7 +98,10 @@ async function emitEmptyMatrix(): Promise<boolean> {
 async function existingResults(): Promise<ScenarioResult[]> {
   const results: ScenarioResult[] = [];
   const names = await readdir('scripts/parity/out/results').catch(() => []);
-  for (const name of names.filter((candidate) => candidate.endsWith('.json'))) {
+  for (const name of names.filter(
+    (candidate) => candidate.endsWith('.json')
+      && !candidate.includes('.attempt-'),
+  )) {
     try {
       results.push(JSON.parse(
         await readFile(resolve('scripts/parity/out/results', name), 'utf8'),
@@ -105,6 +111,31 @@ async function existingResults(): Promise<ScenarioResult[]> {
     }
   }
   return results;
+}
+
+async function protectedResultPath(
+  scenarioId: string,
+  result: ScenarioResult,
+): Promise<string> {
+  const canonical = resolve(
+    'scripts/parity/out/results',
+    `${scenarioId}.json`,
+  );
+  if (result.status === 'PASS') return canonical;
+  try {
+    const existing = JSON.parse(
+      await readFile(canonical, 'utf8'),
+    ) as ScenarioResult;
+    if (existing.status === 'PASS') {
+      return resolve(
+        'scripts/parity/out/results',
+        `${scenarioId}.attempt-${Date.now()}.json`,
+      );
+    }
+  } catch {
+    // Missing, partial, or legacy evidence cannot protect the canonical path.
+  }
+  return canonical;
 }
 
 async function runLiveScenario(): Promise<void> {
@@ -234,6 +265,7 @@ async function runLiveScenario(): Promise<void> {
     }
 
     const previous = new Map<string, number>();
+    const previousSettlementCorrelation = new Map<string, string>();
     for await (const checkpoint of scenario.run(driver)) {
       const after = previous.get(checkpoint.surface) ?? 0;
       console.log(`[row ${scenario.id}] awaiting checkpoint ${checkpoint.label} on ${checkpoint.surface} (after r${after})`);
@@ -262,6 +294,34 @@ async function runLiveScenario(): Promise<void> {
         })()`);
       }
       allWires = await readCapturedWire(driver);
+      const priorSettlement = scenario.game === 'baccarat'
+        && checkpoint.expectDealStep === 'settled'
+        ? previousSettlementCorrelation.get(checkpoint.surface) ?? null
+        : null;
+      const correlationDeadline = Date.now() + config.maxDurationMs;
+      while (
+        priorSettlement !== null
+        && Date.now() < correlationDeadline
+        && resolveWireForCheckpoint(root, allWires, priorSettlement) === null
+        && root.correlation.hand === priorSettlement
+      ) {
+        console.log(`[row ${scenario.id}] checkpoint ${checkpoint.label} r${root.renderRevision} retained prior correlation ${priorSettlement} — awaiting current coup`);
+        root = await waitForParityCheckpoint(
+          driver,
+          checkpoint,
+          root.renderRevision,
+          Math.max(2_000, correlationDeadline - Date.now()),
+        );
+        allWires = await readCapturedWire(driver);
+      }
+      if (
+        priorSettlement !== null
+        && root.correlation.hand === priorSettlement
+      ) {
+        throw new Error(
+          `checkpoint ${checkpoint.label} retained prior settlement correlation ${priorSettlement} for ${config.maxDurationMs}ms`,
+        );
+      }
       let result = assertParityCheckpoint({
         game: scenario.game,
         checkpoint,
@@ -311,8 +371,21 @@ async function runLiveScenario(): Promise<void> {
       checkpoints.push(result);
       screenshots.push(screenshot);
       finalRoot = root;
+      if (
+        scenario.game === 'baccarat'
+        && checkpoint.expectDealStep === 'settled'
+      ) {
+        previousSettlementCorrelation.set(
+          checkpoint.surface,
+          root.correlation.hand,
+        );
+      }
       console.log(`[row ${scenario.id}] checkpoint ${checkpoint.label} r${root.renderRevision} pass=${result.pass}${result.pass ? '' : ` mismatches=${JSON.stringify(result.mismatches ?? []).slice(0, 400)}`}`);
-      const wire = resolveWireForRoot(root, allWires);
+      const wire = result.resolvedWireSeq === null
+        ? null
+        : allWires.find(
+          (candidate) => candidate.seq === result.resolvedWireSeq,
+        ) ?? null;
       if (wire && ['settled', 'showdown'].includes(root.dealStep)) {
         const visible = await assertVisibleSurface(
           driver,
@@ -384,19 +457,28 @@ async function runLiveScenario(): Promise<void> {
       money,
       screenshots,
     };
-    const resultPath = resolve(
+    const resultPath = await protectedResultPath(scenario.id, result);
+    await writeJsonReport(resultPath, result);
+    const canonicalResultPath = resolve(
       'scripts/parity/out/results',
       `${scenario.id}.json`,
     );
-    await writeJsonReport(resultPath, result);
-    const results = (await existingResults())
-      .filter((candidate) => candidate.scenario !== scenario.id);
-    results.push(result);
+    const results = await existingResults();
+    if (resultPath === canonicalResultPath) {
+      const previousIndex = results.findIndex(
+        (candidate) => candidate.scenario === scenario.id,
+      );
+      if (previousIndex >= 0) {
+        results.splice(previousIndex, 1, result);
+      } else {
+        results.push(result);
+      }
+    }
     const matrix = emitMatrix(SCENARIO_CATALOG, results);
     await writeTextReport('scripts/parity/out/matrix.md', matrix.markdown);
     console.log(JSON.stringify(result, null, 2));
     console.log(matrix.markdown.trimEnd());
-    if (!pass || !matrix.pass) process.exitCode = 1;
+    process.exitCode = result.status === 'PASS' ? 0 : 1;
   } catch (error) {
     primaryError = error;
     throw error;

@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import { RECORDED_CASES } from '../fixtures/recorded';
 import type { CardParityRoot, WireRecord } from '../types';
-import { resolveWireForRoot } from '../wire-correlation';
+import {
+  resolveWireForCheckpoint,
+  resolveWireForRoot,
+} from '../wire-correlation';
 
 function baseRecord(overrides: Partial<WireRecord>): WireRecord {
   return {
@@ -68,5 +71,33 @@ describe('immutable application correlation', () => {
       },
     });
     expect(resolveWireForRoot(root, [wrong])).toBeNull();
+  });
+
+  test('attributes two consecutive coups to each current checkpoint', () => {
+    const firstRoot = structuredClone(RECORDED_CASES[2]!.root);
+    firstRoot.correlation.hand = 'coup-1';
+    const secondRoot = structuredClone(firstRoot);
+    secondRoot.renderRevision += 10;
+    secondRoot.correlation.hand = 'coup-2';
+    const first = baseRecord({
+      seq: 10,
+      urlSuffix: 'baccarat/session/current',
+      coupId: 'stale-capture-summary',
+      responseBody: {
+        lastCoup: { coupId: 'coup-1', outcome: { bet: 'player' } },
+      },
+    });
+    const second = baseRecord({
+      seq: 20,
+      urlSuffix: 'baccarat/session/current',
+      coupId: 'stale-capture-summary',
+      responseBody: {
+        lastCoup: { coupId: 'coup-2', outcome: { bet: 'banker' } },
+      },
+    });
+
+    expect(resolveWireForCheckpoint(firstRoot, [first, second], null)).toBe(first);
+    expect(resolveWireForCheckpoint(firstRoot, [first, second], 'coup-1')).toBeNull();
+    expect(resolveWireForCheckpoint(secondRoot, [first, second], 'coup-1')).toBe(second);
   });
 });
