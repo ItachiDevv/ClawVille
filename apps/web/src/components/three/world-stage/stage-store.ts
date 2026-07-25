@@ -1,0 +1,405 @@
+'use client';
+
+import { create } from 'zustand';
+
+export type StageSceneStatus =
+  | 'unrequested'
+  | 'loading'
+  | 'warming'
+  | 'ready'
+  | 'resident'
+  | 'evicted'
+  | 'error';
+
+export type StageTransitionPhase =
+  | 'idle'
+  | 'fadingOut'
+  | 'awaiting'
+  | 'fadingIn'
+  | 'error';
+
+export interface StageSceneSlot {
+  status: StageSceneStatus;
+  generation: number;
+  frameInvocations: number;
+}
+
+export interface StageRequest {
+  sceneId: string;
+  generation: number;
+  requestId: number;
+}
+
+interface StageGenerationAck {
+  sceneId: string;
+  generation: number;
+}
+
+interface StageTransitionSnapshot extends StageRequest {
+  phase: StageTransitionPhase;
+  error: string | null;
+}
+
+interface StageStore {
+  scenes: Record<string, StageSceneSlot>;
+  activeScene: string | null;
+  requestSequence: number;
+  pendingRequest: StageRequest | null;
+  transition: StageTransitionSnapshot | null;
+  cameraInstalled: StageGenerationAck | null;
+  firstControlledFrame: StageGenerationAck | null;
+  canvasMountCount: number;
+  windowListenerCount: number;
+  renderPaused: boolean;
+  registerScenes: (sceneIds: readonly string[]) => void;
+  requestScene: (sceneId: string) => void;
+  setSceneWarming: (sceneId: string, generation: number) => void;
+  ackReady: (sceneId: string, generation: number) => void;
+  activateScene: (request: StageRequest) => void;
+  ackCameraInstalled: (sceneId: string, generation: number) => void;
+  ackFirstControlledFrame: (sceneId: string, generation: number) => void;
+  setTransitionPhase: (
+    requestId: number,
+    phase: StageTransitionPhase,
+  ) => void;
+  completeTransition: (request: StageRequest) => void;
+  failTransition: (request: StageRequest, message: string) => void;
+  incrementFrameInvocation: (sceneId: string) => void;
+  noteCanvasMount: () => void;
+  adjustWindowListenerCount: (delta: number) => void;
+  setRenderPaused: (paused: boolean) => void;
+  resetStage: () => void;
+}
+
+const createSceneSlot = (): StageSceneSlot => ({
+  status: 'unrequested',
+  generation: 0,
+  frameInvocations: 0,
+});
+
+const createInitialState = () => ({
+  scenes: {} as Record<string, StageSceneSlot>,
+  activeScene: null as string | null,
+  requestSequence: 0,
+  pendingRequest: null as StageRequest | null,
+  transition: null as StageTransitionSnapshot | null,
+  cameraInstalled: null as StageGenerationAck | null,
+  firstControlledFrame: null as StageGenerationAck | null,
+  canvasMountCount: 0,
+  windowListenerCount: 0,
+  renderPaused: false,
+});
+
+function isCurrentRequest(
+  pendingRequest: StageRequest | null,
+  request: StageRequest,
+): boolean {
+  return (
+    pendingRequest?.requestId === request.requestId &&
+    pendingRequest.sceneId === request.sceneId &&
+    pendingRequest.generation === request.generation
+  );
+}
+
+export const useStageStore = create<StageStore>((set, get) => ({
+  ...createInitialState(),
+
+  registerScenes: (sceneIds) => {
+    set((state) => {
+      let changed = false;
+      const scenes = { ...state.scenes };
+      for (const sceneId of sceneIds) {
+        if (scenes[sceneId]) continue;
+        scenes[sceneId] = createSceneSlot();
+        changed = true;
+      }
+      return changed ? { scenes } : state;
+    });
+  },
+
+  requestScene: (sceneId) => {
+    set((state) => {
+      const scenes = { ...state.scenes };
+      const abandonedRequest = state.pendingRequest;
+      if (
+        abandonedRequest &&
+        abandonedRequest.sceneId !== sceneId
+      ) {
+        const abandonedSlot = scenes[abandonedRequest.sceneId];
+        if (
+          abandonedSlot &&
+          abandonedSlot.generation === abandonedRequest.generation
+        ) {
+          scenes[abandonedRequest.sceneId] = {
+            ...abandonedSlot,
+            status:
+              state.activeScene === abandonedRequest.sceneId
+                ? 'resident'
+                : 'unrequested',
+            generation: abandonedSlot.generation + 1,
+          };
+        }
+      }
+
+      const previous = scenes[sceneId] ?? createSceneSlot();
+      const generation = previous.generation + 1;
+      const requestId = state.requestSequence + 1;
+      const request = { sceneId, generation, requestId };
+
+      return {
+        scenes: {
+          ...scenes,
+          [sceneId]: {
+            ...previous,
+            status: 'loading',
+            generation,
+          },
+        },
+        pendingRequest: request,
+        requestSequence: requestId,
+        transition: {
+          ...request,
+          phase: 'fadingOut',
+          error: null,
+        },
+        cameraInstalled: null,
+        firstControlledFrame: null,
+        renderPaused: false,
+      };
+    });
+  },
+
+  setSceneWarming: (sceneId, generation) => {
+    set((state) => {
+      const slot = state.scenes[sceneId];
+      const request = state.pendingRequest;
+      if (
+        !slot ||
+        slot.generation !== generation ||
+        request?.sceneId !== sceneId ||
+        request.generation !== generation
+      ) {
+        return state;
+      }
+      return {
+        scenes: {
+          ...state.scenes,
+          [sceneId]: {
+            ...slot,
+            status: 'warming',
+          },
+        },
+      };
+    });
+  },
+
+  ackReady: (sceneId, generation) => {
+    set((state) => {
+      const slot = state.scenes[sceneId];
+      const request = state.pendingRequest;
+      if (
+        !slot ||
+        slot.generation !== generation ||
+        request?.sceneId !== sceneId ||
+        request.generation !== generation
+      ) {
+        return state;
+      }
+      return {
+        scenes: {
+          ...state.scenes,
+          [sceneId]: {
+            ...slot,
+            status: 'ready',
+          },
+        },
+      };
+    });
+  },
+
+  activateScene: (request) => {
+    set((state) => {
+      if (!isCurrentRequest(state.pendingRequest, request)) return state;
+
+      const scenes = { ...state.scenes };
+      const previousActive = state.activeScene;
+      if (previousActive && previousActive !== request.sceneId) {
+        const previousSlot = scenes[previousActive];
+        if (previousSlot && previousSlot.status !== 'evicted') {
+          scenes[previousActive] = {
+            ...previousSlot,
+            status: 'resident',
+          };
+        }
+      }
+
+      return {
+        scenes,
+        activeScene: request.sceneId,
+      };
+    });
+  },
+
+  ackCameraInstalled: (sceneId, generation) => {
+    set((state) => {
+      const request = state.pendingRequest;
+      if (
+        request?.sceneId !== sceneId ||
+        request.generation !== generation
+      ) {
+        return state;
+      }
+      return { cameraInstalled: { sceneId, generation } };
+    });
+  },
+
+  ackFirstControlledFrame: (sceneId, generation) => {
+    set((state) => {
+      const request = state.pendingRequest;
+      if (
+        request?.sceneId !== sceneId ||
+        request.generation !== generation ||
+        state.cameraInstalled?.sceneId !== sceneId ||
+        state.cameraInstalled.generation !== generation
+      ) {
+        return state;
+      }
+      return { firstControlledFrame: { sceneId, generation } };
+    });
+  },
+
+  setTransitionPhase: (requestId, phase) => {
+    set((state) => {
+      if (!state.transition || state.transition.requestId !== requestId) {
+        return state;
+      }
+      return {
+        transition: {
+          ...state.transition,
+          phase,
+        },
+      };
+    });
+  },
+
+  completeTransition: (request) => {
+    set((state) => {
+      if (!isCurrentRequest(state.pendingRequest, request)) return state;
+      if (!state.transition || state.transition.requestId !== request.requestId) {
+        return state;
+      }
+      const slot = state.scenes[request.sceneId];
+      if (!slot || slot.generation !== request.generation) return state;
+      return {
+        scenes: {
+          ...state.scenes,
+          [request.sceneId]: {
+            ...slot,
+            status: 'resident',
+          },
+        },
+        pendingRequest: null,
+        transition: {
+          ...state.transition,
+          phase: 'idle',
+          error: null,
+        },
+      };
+    });
+  },
+
+  failTransition: (request, message) => {
+    set((state) => {
+      if (!isCurrentRequest(state.pendingRequest, request)) return state;
+      const slot = state.scenes[request.sceneId];
+      if (!slot || slot.generation !== request.generation) return state;
+
+      return {
+        scenes: {
+          ...state.scenes,
+          [request.sceneId]: {
+            ...slot,
+            status: 'error',
+          },
+        },
+        transition: {
+          ...request,
+          phase: 'error',
+          error: message,
+        },
+      };
+    });
+  },
+
+  incrementFrameInvocation: (sceneId) => {
+    set((state) => {
+      const slot = state.scenes[sceneId];
+      if (!slot) return state;
+      return {
+        scenes: {
+          ...state.scenes,
+          [sceneId]: {
+            ...slot,
+            frameInvocations: slot.frameInvocations + 1,
+          },
+        },
+      };
+    });
+  },
+
+  noteCanvasMount: () => {
+    set((state) => ({ canvasMountCount: state.canvasMountCount + 1 }));
+  },
+
+  adjustWindowListenerCount: (delta) => {
+    if (delta === 0) return;
+    set((state) => ({
+      windowListenerCount: Math.max(
+        0,
+        state.windowListenerCount + delta,
+      ),
+    }));
+  },
+
+  setRenderPaused: (paused) => {
+    if (get().renderPaused === paused) return;
+    set({ renderPaused: paused });
+  },
+
+  resetStage: () => {
+    set(createInitialState());
+  },
+}));
+
+export function requestStageScene(sceneId: string): void {
+  useStageStore.getState().requestScene(sceneId);
+}
+
+export function resetStageStore(): void {
+  useStageStore.getState().resetStage();
+}
+
+export function addStageWindowListener<K extends keyof WindowEventMap>(
+  type: K,
+  listener: (event: WindowEventMap[K]) => void,
+  options?: boolean | AddEventListenerOptions,
+): () => void {
+  window.addEventListener(
+    type,
+    listener as EventListener,
+    options,
+  );
+  useStageStore.getState().adjustWindowListenerCount(1);
+  let attached = true;
+
+  return () => {
+    if (!attached) return;
+    attached = false;
+    window.removeEventListener(
+      type,
+      listener as EventListener,
+      options,
+    );
+    useStageStore.getState().adjustWindowListenerCount(-1);
+  };
+}
