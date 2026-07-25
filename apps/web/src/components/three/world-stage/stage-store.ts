@@ -24,6 +24,11 @@ export interface StageSceneSlot {
   frameInvocations: number;
 }
 
+export interface StageRecoverySnapshot {
+  count: number;
+  lastReason: string | null;
+}
+
 export interface StageRequest {
   sceneId: string;
   generation: number;
@@ -50,6 +55,9 @@ interface StageStore {
   firstControlledFrame: StageGenerationAck | null;
   canvasMountCount: number;
   windowListenerCount: number;
+  listenerUnderflowCount: number;
+  transitionErrors: readonly string[];
+  recovery: StageRecoverySnapshot;
   renderPaused: boolean;
   registerScenes: (sceneIds: readonly string[]) => void;
   requestScene: (sceneId: string) => void;
@@ -64,9 +72,12 @@ interface StageStore {
   ) => void;
   completeTransition: (request: StageRequest) => void;
   failTransition: (request: StageRequest, message: string) => void;
-  incrementFrameInvocation: (sceneId: string) => void;
+  sampleFrameInvocations: (
+    samples: Readonly<Record<string, number>>,
+  ) => void;
   noteCanvasMount: () => void;
   adjustWindowListenerCount: (delta: number) => void;
+  noteRecovery: (reason: string) => void;
   setRenderPaused: (paused: boolean) => void;
   resetStage: () => void;
 }
@@ -87,6 +98,12 @@ const createInitialState = () => ({
   firstControlledFrame: null as StageGenerationAck | null,
   canvasMountCount: 0,
   windowListenerCount: 0,
+  listenerUnderflowCount: 0,
+  transitionErrors: [] as readonly string[],
+  recovery: {
+    count: 0,
+    lastReason: null,
+  } as StageRecoverySnapshot,
   renderPaused: false,
 });
 
@@ -327,22 +344,30 @@ export const useStageStore = create<StageStore>((set, get) => ({
           phase: 'error',
           error: message,
         },
+        transitionErrors: [
+          ...state.transitionErrors,
+          `${request.sceneId}@${request.generation}#${request.requestId}: ${message}`,
+        ],
       };
     });
   },
 
-  incrementFrameInvocation: (sceneId) => {
+  sampleFrameInvocations: (samples) => {
     set((state) => {
-      const slot = state.scenes[sceneId];
-      if (!slot) return state;
+      let changed = false;
+      const scenes = { ...state.scenes };
+      for (const [sceneId, frameInvocations] of Object.entries(samples)) {
+        const slot = scenes[sceneId];
+        if (!slot || slot.frameInvocations === frameInvocations) continue;
+        scenes[sceneId] = {
+          ...slot,
+          frameInvocations,
+        };
+        changed = true;
+      }
+      if (!changed) return state;
       return {
-        scenes: {
-          ...state.scenes,
-          [sceneId]: {
-            ...slot,
-            frameInvocations: slot.frameInvocations + 1,
-          },
-        },
+        scenes,
       };
     });
   },
@@ -353,11 +378,24 @@ export const useStageStore = create<StageStore>((set, get) => ({
 
   adjustWindowListenerCount: (delta) => {
     if (delta === 0) return;
+    set((state) => {
+      const windowListenerCount =
+        state.windowListenerCount + delta;
+      return {
+        windowListenerCount,
+        listenerUnderflowCount:
+          state.listenerUnderflowCount +
+          (windowListenerCount < 0 ? 1 : 0),
+      };
+    });
+  },
+
+  noteRecovery: (reason) => {
     set((state) => ({
-      windowListenerCount: Math.max(
-        0,
-        state.windowListenerCount + delta,
-      ),
+      recovery: {
+        count: state.recovery.count + 1,
+        lastReason: reason,
+      },
     }));
   },
 

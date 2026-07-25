@@ -2,23 +2,35 @@
 
 import {
   useEffect,
+  useRef,
   useState,
+  type RefObject,
   type ReactNode,
 } from 'react';
 import {
   Canvas,
   extend,
   useThree,
+  type RootState,
   type ThreeToJSXElements,
 } from '@react-three/fiber';
 import * as THREE from 'three/webgpu';
+import { detectLowEndGpuClass } from '@/lib/three/gpu-tier';
+import { resetAllHeldInputs } from '@/lib/three/input-reset';
+import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 import { StageTransition } from './StageTransition';
 import {
   StageCameraCoordinator,
   type StageCameraDefinition,
 } from './stage-camera';
 import { useStageStore } from './stage-store';
-import { StageFrameScheduler } from './use-scene-frame';
+import {
+  requestStageDeltaClamp,
+  StageFrameScheduler,
+} from './use-scene-frame';
+import {
+  registerStageSlotRoot,
+} from './resource-ledger';
 
 declare module '@react-three/fiber' {
   interface ThreeElements extends ThreeToJSXElements<typeof THREE> {}
@@ -26,45 +38,7 @@ declare module '@react-three/fiber' {
 
 extend(THREE as any);
 
-const LOW_END_PATTERNS = [
-  /\bintel\b/i,
-  /\biris\b/i,
-  /\buhd graphics\b/i,
-  /\bhd graphics\b/i,
-  /\bgma\b/i,
-  /adreno/i,
-  /mali/i,
-  /powervr/i,
-  /apple gpu/i,
-];
-
-function detectStageLowEndGpu(): boolean {
-  if (typeof window === 'undefined') return false;
-  try {
-    const probeCanvas = document.createElement('canvas');
-    const context = (probeCanvas.getContext('webgl2') ??
-      probeCanvas.getContext('webgl')) as WebGLRenderingContext | null;
-    if (!context) return true;
-    const extension = context.getExtension('WEBGL_debug_renderer_info');
-    const renderer = extension
-      ? String(
-          context.getParameter(extension.UNMASKED_RENDERER_WEBGL) ?? '',
-        )
-      : '';
-    const coarsePointer =
-      typeof window.matchMedia === 'function' &&
-      window.matchMedia('(pointer: coarse)').matches;
-    context.getExtension('WEBGL_lose_context')?.loseContext();
-    return (
-      coarsePointer ||
-      LOW_END_PATTERNS.some((pattern) => pattern.test(renderer))
-    );
-  } catch {
-    return false;
-  }
-}
-
-const LOW_END_GPU = detectStageLowEndGpu();
+const LOW_END_GPU = detectLowEndGpuClass();
 const DPR_RANGE: [number, number] = LOW_END_GPU
   ? [0.55, 0.7]
   : [0.75, 1];
@@ -75,12 +49,24 @@ const IOS_SAFARI =
   !/CriOS|FxiOS|OPiOS|mercury/i.test(navigator.userAgent);
 const WEBGPU_ABSENT =
   typeof navigator !== 'undefined' && !('gpu' in navigator);
+const WEBGPU_UNHEALTHY_KEY = 'world-stage-webgpu-unhealthy';
+function readWebGpuUnhealthyFlag(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return (
+      window.sessionStorage.getItem(WEBGPU_UNHEALTHY_KEY) === '1'
+    );
+  } catch {
+    return false;
+  }
+}
 const FORCE_WEBGPU =
   typeof window !== 'undefined' &&
   new URLSearchParams(window.location.search).get('webgpu') === '1';
 const FORCE_WEBGL =
   IOS_SAFARI ||
   WEBGPU_ABSENT ||
+  readWebGpuUnhealthyFlag() ||
   (!FORCE_WEBGPU && LOW_END_GPU) ||
   (typeof window !== 'undefined' &&
     new URLSearchParams(window.location.search).get('webgl') === '1');
@@ -176,10 +162,243 @@ async function initializeStageRenderer(
   return renderer;
 }
 
+type RendererBinding = {
+  install: (renderer: THREE.WebGPURenderer) => void;
+  resync: () => void;
+};
+
+type DeviceWithEvents = GPUDevice & {
+  addEventListener: (
+    type: 'uncapturederror',
+    listener: EventListener,
+  ) => void;
+  removeEventListener: (
+    type: 'uncapturederror',
+    listener: EventListener,
+  ) => void;
+};
+
+class StageRendererHealth {
+  private renderer: THREE.WebGPURenderer | null = null;
+  private binding: RendererBinding | null = null;
+  private forceWebGL = false;
+  private recovering = false;
+  private recreatedOnce = false;
+  private generation = 0;
+  private device: DeviceWithEvents | null = null;
+  private uncapturedErrors = 0;
+  private pendingRecoveryReason: string | null = null;
+  private readonly onUncapturedError = (event: Event): void => {
+    this.uncapturedErrors += 1;
+    if (this.uncapturedErrors < 8) return;
+    const detail = (event as { error?: { message?: string } }).error
+      ?.message;
+    this.requestRecovery(
+      `webgpu-uncaptured-error:${detail?.slice(0, 160) ?? 'unknown'}`,
+    );
+  };
+
+  constructor(private canvas: HTMLCanvasElement) {}
+
+  adoptVisibleCanvas(canvas: HTMLCanvasElement): void {
+    this.canvas = canvas;
+  }
+
+  setInitial(
+    renderer: THREE.WebGPURenderer,
+    forceWebGL: boolean,
+  ): void {
+    this.renderer = renderer;
+    this.forceWebGL = forceWebGL;
+    this.watchRenderer(renderer);
+  }
+
+  attach(binding: RendererBinding): () => void {
+    this.binding = binding;
+    if (this.renderer) this.watchRenderer(this.renderer);
+    const pendingReason = this.pendingRecoveryReason;
+    this.pendingRecoveryReason = null;
+    if (pendingReason) {
+      queueMicrotask(() => {
+        if (this.binding === binding) {
+          this.requestRecovery(pendingReason);
+        }
+      });
+    }
+    return () => {
+      if (this.binding === binding) {
+        this.binding = null;
+        this.unwatchRenderer();
+        this.generation += 1;
+      }
+    };
+  }
+
+  requestRecovery(reason: string): void {
+    if (!this.binding || this.recovering) {
+      this.pendingRecoveryReason = reason;
+      return;
+    }
+    void this.recover(reason);
+  }
+
+  private watchRenderer(renderer: THREE.WebGPURenderer): void {
+    this.unwatchRenderer();
+    if (this.forceWebGL) return;
+    const device = (
+      renderer as unknown as { backend?: { device?: DeviceWithEvents } }
+    ).backend?.device;
+    if (!device?.addEventListener) return;
+    this.device = device;
+    this.uncapturedErrors = 0;
+    device.addEventListener(
+      'uncapturederror',
+      this.onUncapturedError,
+    );
+    useStageStore.getState().adjustWindowListenerCount(1);
+    const generation = this.generation;
+    void device.lost.then((info) => {
+      if (
+        generation !== this.generation ||
+        info.reason === 'destroyed'
+      ) {
+        return;
+      }
+      this.requestRecovery(
+        `webgpu-device-lost:${info.reason}:${info.message}`.slice(
+          0,
+          240,
+        ),
+      );
+    });
+  }
+
+  private unwatchRenderer(): void {
+    if (!this.device) return;
+    this.device.removeEventListener(
+      'uncapturederror',
+      this.onUncapturedError,
+    );
+    this.device = null;
+    useStageStore.getState().adjustWindowListenerCount(-1);
+  }
+
+  private async recover(reason: string): Promise<void> {
+    if (this.recovering || !this.renderer || !this.binding) return;
+    const binding = this.binding;
+    this.recovering = true;
+    const generation = ++this.generation;
+    const isCurrent = (): boolean =>
+      this.generation === generation &&
+      this.binding === binding &&
+      this.canvas.isConnected;
+    try {
+      useStageStore.getState().noteRecovery(reason);
+      resetAllHeldInputs();
+      requestStageDeltaClamp();
+      this.unwatchRenderer();
+
+      const current = this.renderer;
+      const size = getCanvasCssSize(this.canvas) ?? [
+        Math.max(2, window.innerWidth),
+        Math.max(2, window.innerHeight),
+      ];
+      const dpr = Math.max(
+        DPR_RANGE[0],
+        Math.min(window.devicePixelRatio || 1, DPR_RANGE[1]),
+      );
+      current.dispose();
+
+      let replacement: THREE.WebGPURenderer | null = null;
+      if (!this.recreatedOnce) {
+        this.recreatedOnce = true;
+        try {
+          replacement = await initializeStageRenderer(
+            this.canvas,
+            this.forceWebGL,
+            size[0],
+            size[1],
+            dpr,
+          );
+        } catch (error) {
+          console.warn(
+            '[WorldStage] in-place renderer recreation failed:',
+            error,
+          );
+        }
+        if (!isCurrent()) {
+          replacement?.dispose();
+          return;
+        }
+      }
+
+      if (!replacement && !this.forceWebGL) {
+        this.forceWebGL = true;
+        try {
+          window.sessionStorage.setItem(
+            WEBGPU_UNHEALTHY_KEY,
+            '1',
+          );
+        } catch {
+          // Storage can be blocked; in-place force-WebGL still works.
+        }
+        try {
+          replacement = await initializeStageRenderer(
+            this.canvas,
+            true,
+            size[0],
+            size[1],
+            dpr,
+          );
+        } catch (error) {
+          console.error(
+            '[WorldStage] terminal force-WebGL recovery failure:',
+            error,
+          );
+          useStageStore
+            .getState()
+            .noteRecovery('terminal-force-webgl-recovery-failure');
+        }
+        if (!isCurrent()) {
+          replacement?.dispose();
+          return;
+        }
+      }
+
+      if (replacement) {
+        this.renderer = replacement;
+        binding.install(replacement);
+        if (!isCurrent()) {
+          replacement.dispose();
+          return;
+        }
+        this.watchRenderer(replacement);
+        binding.resync();
+      }
+    } finally {
+      this.recovering = false;
+      const pendingReason = this.pendingRecoveryReason;
+      this.pendingRecoveryReason = null;
+      if (pendingReason && this.binding) {
+        queueMicrotask(() => this.requestRecovery(pendingReason));
+      }
+    }
+  }
+}
+
 const inflightRenderers = new WeakMap<
   HTMLCanvasElement,
   Promise<THREE.WebGPURenderer>
 >();
+const rendererHealthByCanvas = new WeakMap<
+  HTMLCanvasElement,
+  StageRendererHealth
+>();
+let currentStageBackend: 'webgpu' | 'webgl' | 'unknown' = 'unknown';
+
+export function readStageBackend(): 'webgpu' | 'webgl' | 'unknown' {
+  return currentStageBackend;
+}
 
 function createStageRenderer(props: {
   canvas: HTMLCanvasElement;
@@ -197,8 +416,10 @@ function createStageRenderer(props: {
     canvas.width = Math.round(width * dpr);
     canvas.height = Math.round(height * dpr);
 
+    let renderer: THREE.WebGPURenderer;
+    let usedWebGL = FORCE_WEBGL;
     try {
-      return await initializeStageRenderer(
+      renderer = await initializeStageRenderer(
         canvas,
         FORCE_WEBGL,
         width,
@@ -211,8 +432,20 @@ function createStageRenderer(props: {
         '[WorldStage] WebGPU init failed; retrying force-WebGL on the same canvas:',
         webGpuError,
       );
-      return initializeStageRenderer(canvas, true, width, height, dpr);
+      renderer = await initializeStageRenderer(
+        canvas,
+        true,
+        width,
+        height,
+        dpr,
+      );
+      usedWebGL = true;
     }
+    currentStageBackend = usedWebGL ? 'webgl' : 'webgpu';
+    const health = new StageRendererHealth(canvas);
+    health.setInitial(renderer, usedWebGL);
+    rendererHealthByCanvas.set(canvas, health);
+    return renderer;
   })();
 
   inflightRenderers.set(props.canvas, creation);
@@ -222,6 +455,27 @@ function createStageRenderer(props: {
 
 export interface WorldStageScene extends StageCameraDefinition {
   content: ReactNode;
+}
+
+let diagnosticCameras:
+  | Map<string, THREE.PerspectiveCamera>
+  | null = null;
+
+export function readStageCameraPoses(): Record<string, number[]> {
+  const poses: Record<string, number[]> = {};
+  if (!diagnosticCameras) return poses;
+  for (const [sceneId, camera] of diagnosticCameras) {
+    poses[sceneId] = [
+      camera.position.x,
+      camera.position.y,
+      camera.position.z,
+      camera.quaternion.x,
+      camera.quaternion.y,
+      camera.quaternion.z,
+      camera.quaternion.w,
+    ];
+  }
+  return poses;
 }
 
 interface WorldStageCanvasProps {
@@ -266,6 +520,144 @@ function StageCanvasMountProbe(): null {
   return null;
 }
 
+function StageRendererHealthBridge({
+  containerRef,
+}: {
+  containerRef: RefObject<HTMLDivElement | null>;
+}): null {
+  const gl = useThree((state) => state.gl);
+  const set = useThree((state) => state.set);
+  const setSize = useThree((state) => state.setSize);
+  const invalidate = useThree((state) => state.invalidate);
+  const canvas = (
+    gl as unknown as { domElement: HTMLCanvasElement }
+  ).domElement;
+  const wakeQueued = useRef(false);
+
+  useEffect(() => {
+    const health = rendererHealthByCanvas.get(canvas);
+    if (!health) return;
+    const stageCanvas =
+      containerRef.current?.querySelector('canvas') ?? canvas;
+    health.adoptVisibleCanvas(stageCanvas);
+    rendererHealthByCanvas.set(stageCanvas, health);
+    const resync = (): void => {
+      const rect = stageCanvas.getBoundingClientRect();
+      if (rect.width >= 2 && rect.height >= 2) {
+        setSize(
+          Math.round(rect.width),
+          Math.round(rect.height),
+          0,
+          0,
+        );
+      }
+      invalidate(1);
+    };
+    const detachHealth = health.attach({
+      install: (renderer) => {
+        currentStageBackend = (
+          renderer as unknown as { backend?: { isWebGPUBackend?: boolean } }
+        ).backend?.isWebGPUBackend
+          ? 'webgpu'
+          : 'webgl';
+        set(
+          { gl: renderer } as unknown as Partial<RootState>,
+        );
+      },
+      resync,
+    });
+
+    const tracked = <
+      T extends EventTarget,
+      K extends string,
+    >(
+      target: T,
+      type: K,
+      listener: EventListener,
+    ): (() => void) => {
+      target.addEventListener(type, listener);
+      useStageStore.getState().adjustWindowListenerCount(1);
+      return () => {
+        target.removeEventListener(type, listener);
+        useStageStore.getState().adjustWindowListenerCount(-1);
+      };
+    };
+
+    let contextRestoreTimer = 0;
+    const onContextLost = (event: Event): void => {
+      event.preventDefault();
+      resetAllHeldInputs();
+      requestStageDeltaClamp();
+      useStageStore.getState().noteRecovery('webgl-context-lost');
+      window.clearTimeout(contextRestoreTimer);
+      contextRestoreTimer = window.setTimeout(() => {
+        health.requestRecovery('webgl-context-restore-timeout');
+      }, 2_000);
+    };
+    const onContextRestored = (): void => {
+      window.clearTimeout(contextRestoreTimer);
+      useStageStore.getState().noteRecovery('webgl-context-restored');
+      resync();
+    };
+    const onWake = (): void => {
+      if (document.hidden || wakeQueued.current) return;
+      wakeQueued.current = true;
+      queueMicrotask(() => {
+        wakeQueued.current = false;
+        resetAllHeldInputs();
+        requestStageDeltaClamp();
+        resync();
+      });
+    };
+    const onVisibility = (): void => {
+      resetAllHeldInputs();
+      if (!document.hidden) onWake();
+    };
+
+    const removers = [
+      tracked(stageCanvas, 'webglcontextlost', onContextLost),
+      tracked(stageCanvas, 'webglcontextrestored', onContextRestored),
+      tracked(document, 'visibilitychange', onVisibility),
+      tracked(window, 'pageshow', onWake),
+    ];
+    const adoptionTimer = window.setTimeout(() => {
+      const visibleCanvas =
+        containerRef.current?.querySelector('canvas');
+      if (!visibleCanvas) {
+        health.requestRecovery('visible-canvas-missing');
+        return;
+      }
+      if (
+        !canvas.isConnected ||
+        visibleCanvas !== canvas
+      ) {
+        health.adoptVisibleCanvas(visibleCanvas);
+        rendererHealthByCanvas.set(visibleCanvas, health);
+        health.requestRecovery('renderer-canvas-detached');
+        return;
+      }
+      const rect = visibleCanvas.getBoundingClientRect();
+      if (
+        visibleCanvas.width === 300 &&
+        visibleCanvas.height === 150 &&
+        rect.width > 320 &&
+        rect.height > 170
+      ) {
+        health.requestRecovery('canvas-not-adopted');
+      }
+    }, 6_000);
+
+    return () => {
+      window.clearTimeout(adoptionTimer);
+      window.clearTimeout(contextRestoreTimer);
+      for (const remove of removers) remove();
+      detachHealth();
+    };
+  }, [canvas, containerRef, invalidate, set, setSize]);
+
+  return null;
+}
+
 function StageLoopController(): null {
   const paused = useStageStore((state) => state.renderPaused);
   const setFrameloop = useThree((state) => state.setFrameloop);
@@ -288,7 +680,11 @@ function StageSceneSlot({
     (state) => state.activeScene === sceneId,
   );
   return (
-    <group name={`world-stage:${sceneId}`} visible={active}>
+    <group
+      ref={(root) => registerStageSlotRoot(sceneId, root)}
+      name={`world-stage:${sceneId}`}
+      visible={active}
+    >
       {children}
     </group>
   );
@@ -298,19 +694,27 @@ export function WorldStageCanvas({
   scenes,
   transitionTimeoutMs = 20_000,
 }: WorldStageCanvasProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
   const [cameras] = useState(() => createPersistentCameras(scenes));
   const initialCamera =
     cameras.get(scenes[0]?.sceneId ?? '') ??
     new THREE.PerspectiveCamera(50, 1, 0.1, 2_000);
 
   useEffect(() => {
+    diagnosticCameras = cameras;
     useStageStore
       .getState()
       .registerScenes(scenes.map((scene) => scene.sceneId));
-  }, [scenes]);
+    return () => {
+      if (diagnosticCameras === cameras) diagnosticCameras = null;
+    };
+  }, [cameras, scenes]);
 
   return (
-    <div className="relative h-full w-full overflow-hidden bg-[#07131d]">
+    <div
+      ref={containerRef}
+      className="relative h-full w-full overflow-hidden bg-[#07131d]"
+    >
       <Canvas
         frameloop="always"
         dpr={DPR_RANGE}
@@ -318,13 +722,9 @@ export function WorldStageCanvas({
         gl={createStageRenderer as any}
       >
         <color attach="background" args={[0x07131d]} />
-        <ambientLight intensity={0.65} />
-        <directionalLight
-          color={0xc8ffff}
-          intensity={2.2}
-          position={[5, 8, 4]}
-        />
+        <KTX2LoaderSetup />
         <StageCanvasMountProbe />
+        <StageRendererHealthBridge containerRef={containerRef} />
         <StageLoopController />
         <StageCameraCoordinator
           definitions={scenes}
