@@ -2,6 +2,9 @@
 
 import {
   useEffect,
+  useLayoutEffect,
+  useCallback,
+  useMemo,
   useRef,
   useState,
   type RefObject,
@@ -9,6 +12,7 @@ import {
 } from 'react';
 import {
   Canvas,
+  _roots,
   extend,
   useThree,
   type RootState,
@@ -39,9 +43,17 @@ declare module '@react-three/fiber' {
 extend(THREE as any);
 
 const LOW_END_GPU = detectLowEndGpuClass();
+// EXACT parity with the live World3DCanvas constants (LOW_END_DPR_RANGE /
+// STANDARD_DPR_RANGE at World3DCanvas.tsx:140-141). The P1a brief carried a
+// stale doc value ([0.5, 0.65]); live code wins — /game must not change
+// resolution on migration.
 const DPR_RANGE: [number, number] = LOW_END_GPU
   ? [0.55, 0.7]
   : [0.75, 1];
+const USE_MESHLET_BUILDINGS =
+  typeof window !== 'undefined' &&
+  new URLSearchParams(window.location.search).get('meshlets') === '1';
+const USE_REVERSED_DEPTH_BUFFER = !USE_MESHLET_BUILDINGS;
 const IOS_SAFARI =
   typeof navigator !== 'undefined' &&
   /iP(hone|ad|od)/i.test(navigator.userAgent) &&
@@ -62,7 +74,8 @@ function readWebGpuUnhealthyFlag(): boolean {
 }
 const FORCE_WEBGPU =
   typeof window !== 'undefined' &&
-  new URLSearchParams(window.location.search).get('webgpu') === '1';
+  (new URLSearchParams(window.location.search).get('webgpu') === '1' ||
+    USE_MESHLET_BUILDINGS);
 const FORCE_WEBGL =
   IOS_SAFARI ||
   WEBGPU_ABSENT ||
@@ -149,6 +162,7 @@ async function initializeStageRenderer(
     antialias: false,
     alpha: false,
     forceWebGL,
+    reversedDepthBuffer: USE_REVERSED_DEPTH_BUFFER,
   });
   renderer.setPixelRatio(dpr);
   try {
@@ -158,6 +172,7 @@ async function initializeStageRenderer(
     throw error;
   }
   renderer.setClearColor(0x07131d, 1);
+  renderer.setClearAlpha?.(1);
   renderer.setSize(width, height, false);
   return renderer;
 }
@@ -455,6 +470,15 @@ function createStageRenderer(props: {
 
 export interface WorldStageScene extends StageCameraDefinition {
   content: ReactNode;
+  appearance?: {
+    background: THREE.ColorRepresentation;
+    fog?: {
+      color: THREE.ColorRepresentation;
+      near: number;
+      far: number;
+    };
+    shadows?: boolean;
+  };
 }
 
 let diagnosticCameras:
@@ -481,6 +505,8 @@ export function readStageCameraPoses(): Record<string, number[]> {
 interface WorldStageCanvasProps {
   scenes: readonly WorldStageScene[];
   transitionTimeoutMs?: number;
+  pauseOnCreate?: boolean;
+  onStageCreated?: (state: RootState) => void;
 }
 
 function createPersistentCameras(
@@ -658,13 +684,23 @@ function StageRendererHealthBridge({
   return null;
 }
 
-function StageLoopController(): null {
+function StageLoopController({
+  rearmNativeRoot,
+}: {
+  rearmNativeRoot: () => void;
+}): null {
   const paused = useStageStore((state) => state.renderPaused);
   const setFrameloop = useThree((state) => state.setFrameloop);
 
-  useEffect(() => {
+  const invalidate = useThree((state) => state.invalidate);
+
+  useLayoutEffect(() => {
     setFrameloop(paused ? 'never' : 'always');
-  }, [paused, setFrameloop]);
+    if (!paused) {
+      rearmNativeRoot();
+      invalidate();
+    }
+  }, [invalidate, paused, rearmNativeRoot, setFrameloop]);
 
   return null;
 }
@@ -676,29 +712,115 @@ function StageSceneSlot({
   sceneId: string;
   children: ReactNode;
 }) {
-  const active = useStageStore(
-    (state) => state.activeScene === sceneId,
+  const visible = useStageStore(
+    (state) =>
+      state.activeScene === sceneId ||
+      (state.activeScene === null &&
+        state.pendingRequest?.sceneId === sceneId),
   );
+  const mounted = useStageStore((state) => {
+    const status = state.scenes[sceneId]?.status;
+    return status !== undefined && status !== 'unrequested' && status !== 'evicted';
+  });
   return (
     <group
       ref={(root) => registerStageSlotRoot(sceneId, root)}
       name={`world-stage:${sceneId}`}
-      visible={active}
+      visible={visible}
     >
-      {children}
+      {mounted ? children : null}
     </group>
   );
+}
+
+function StageSceneAppearance({
+  scene,
+}: {
+  scene: WorldStageScene;
+}): null {
+  const ownsAppearance = useStageStore(
+    (state) =>
+      state.activeScene === scene.sceneId ||
+      state.pendingRequest?.sceneId === scene.sceneId,
+  );
+  const rootScene = useThree((state) => state.scene);
+  const gl = useThree((state) => state.gl);
+  const background = useMemo(
+    () =>
+      scene.appearance
+        ? new THREE.Color(scene.appearance.background)
+        : null,
+    [scene.appearance],
+  );
+  const fog = useMemo(
+    () =>
+      scene.appearance?.fog
+        ? new THREE.Fog(
+            scene.appearance.fog.color,
+            scene.appearance.fog.near,
+            scene.appearance.fog.far,
+          )
+        : null,
+    [scene.appearance],
+  );
+
+  useEffect(() => {
+    if (!ownsAppearance || !scene.appearance || !background) return;
+    const { appearance } = scene;
+    const previousBackground = rootScene.background;
+    const previousFog = rootScene.fog;
+    const previousShadows = gl.shadowMap.enabled;
+    rootScene.background = background;
+    rootScene.fog = fog;
+    gl.setClearColor(background, 1);
+    gl.setClearAlpha?.(1);
+    gl.shadowMap.enabled = appearance.shadows ?? false;
+    return () => {
+      if (rootScene.background === background) {
+        rootScene.background = previousBackground;
+      }
+      if (rootScene.fog === fog) {
+        rootScene.fog = previousFog;
+      }
+      gl.shadowMap.enabled = previousShadows;
+    };
+  }, [background, fog, gl, ownsAppearance, rootScene, scene]);
+
+  return null;
 }
 
 export function WorldStageCanvas({
   scenes,
   transitionTimeoutMs = 20_000,
+  pauseOnCreate = false,
+  onStageCreated,
 }: WorldStageCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [cameras] = useState(() => createPersistentCameras(scenes));
   const initialCamera =
     cameras.get(scenes[0]?.sceneId ?? '') ??
     new THREE.PerspectiveCamera(50, 1, 0.1, 2_000);
+  const capturedR3FRootRef = useRef<{
+    canvas: HTMLCanvasElement;
+    entry: NonNullable<ReturnType<typeof _roots.get>>;
+  } | null>(null);
+  const glFactory = useCallback(
+    async (props: { canvas: HTMLCanvasElement }) => {
+      const entry = _roots.get(props.canvas);
+      if (entry) {
+        capturedR3FRootRef.current = { canvas: props.canvas, entry };
+      }
+      const renderer = await createStageRenderer(props);
+      return renderer;
+    },
+    [],
+  );
+  const rearmNativeRoot = useCallback(() => {
+    const captured = capturedR3FRootRef.current;
+    if (!captured || !captured.canvas.isConnected) return;
+    if (_roots.get(captured.canvas)) return;
+    _roots.set(captured.canvas, captured.entry);
+  }, []);
 
   useEffect(() => {
     diagnosticCameras = cameras;
@@ -719,22 +841,32 @@ export function WorldStageCanvas({
         frameloop="always"
         dpr={DPR_RANGE}
         camera={initialCamera}
-        gl={createStageRenderer as any}
+        gl={glFactory as any}
+        onCreated={(state) => {
+          if (pauseOnCreate) {
+            useStageStore.getState().setRenderPaused(true);
+            state.setFrameloop('never');
+          }
+          onStageCreated?.(state);
+        }}
       >
         <color attach="background" args={[0x07131d]} />
         <KTX2LoaderSetup />
         <StageCanvasMountProbe />
         <StageRendererHealthBridge containerRef={containerRef} />
-        <StageLoopController />
+        <StageLoopController rearmNativeRoot={rearmNativeRoot} />
         <StageCameraCoordinator
           definitions={scenes}
           cameras={cameras}
         />
         <StageFrameScheduler />
         {scenes.map((scene) => (
-          <StageSceneSlot key={scene.sceneId} sceneId={scene.sceneId}>
-            {scene.content}
-          </StageSceneSlot>
+          <group key={scene.sceneId}>
+            <StageSceneAppearance scene={scene} />
+            <StageSceneSlot sceneId={scene.sceneId}>
+              {scene.content}
+            </StageSceneSlot>
+          </group>
         ))}
       </Canvas>
       <StageTransition timeoutMs={transitionTimeoutMs} />

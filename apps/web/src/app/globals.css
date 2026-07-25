@@ -268,6 +268,22 @@
   position: relative;
 }
 
+/* The P1a persistent stage owns the full-viewport hit surface. The page shell
+   must not become an invisible pane over R3F, while each concrete HUD/modal
+   root keeps the same pointer behavior it had as a Canvas sibling. */
+.world-stage-page-layer,
+.world-stage-page-layer > .game-container {
+  pointer-events: none;
+}
+
+.world-stage-page-layer > .game-container > * {
+  pointer-events: auto;
+}
+
+.world-stage-page-layer > .game-container > .pointer-events-none {
+  pointer-events: none;
+}
+
 /* ─── Scrollbar ───────────────────────────────────────────────────────── */
 ::-webkit-scrollbar {
   width: 6px;

@@ -78,12 +78,6 @@ const DeferredNpcPreloads = dynamic(
   { ssr: false, loading: () => null },
 );
 
-const World3DCanvas = dynamic(() => import('@/components/three/World3DCanvas'), {
-  ssr: false,
-  // SeaLoadingScreen handles the loading state — no separate fallback needed here
-  loading: () => null,
-});
-
 const ChatPanel = dynamic(() => import('@/components/game/chat-panel'), {
   ssr: false,
 });
@@ -315,8 +309,9 @@ function NanoClawBanner({
 
 export default function GamePage() {
   // Mount gate — eliminates React #418 hydration mismatch at the source.
-  // The /game tree pulls state from Zustand, localStorage, TanStack Query,
-  // dynamic imports and a Three.js Canvas. Any of those returning a
+  // The /game HUD tree pulls state from Zustand, localStorage, TanStack Query,
+  // and dynamic imports (the Three.js stage belongs to the route-group
+  // layout). Any of those returning a
   // different value on SSR vs client first-render triggers React #418.
   // Rather than fighting individual mismatches one-by-one, render `null`
   // on the SSR pass AND on the first client render (which must match SSR
@@ -327,7 +322,7 @@ export default function GamePage() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => { setMounted(true); }, []);
   // Kick off ALL heavy world assets the moment the page mounts, in parallel
-  // with the dynamic() World3DCanvas chunk download. Without this, no asset
+  // with the group-owned stage mounting the shared world scene. Without this,
   // fetch starts until the canvas chunk resolves and React renders it — which
   // is why the loading screen used to feel idle. preloadWorldAssets() fires
   // useGLTF.preload() for every always-loaded GLB/VRM/KTX2 in the world
@@ -573,11 +568,11 @@ export default function GamePage() {
   // NOTE: do NOT conditionally return early here based on isLoading/authLoading.
   // An early-return swaps the whole React tree, which unmounts the first
   // SeaLoadingScreen and mounts a fresh second one — user sees the loading
-  // animation reset from 0% ("loaded twice" on iOS). The Canvas is safe to
-  // mount immediately; it renders nothing visible until the 3D scene is ready
-  // and the SeaLoadingScreen covers the viewport the whole time anyway.
+  // animation reset from 0% ("loaded twice" on iOS). The group-owned stage
+  // boots independently underneath and remains covered until the shared world
+  // scene and this one loader complete their legacy-ready handshake.
   // miladyEmbed.exchanging is similarly safe: exchange is an auth side-effect
-  // and the canvas starts booting in parallel while the cookie is set.
+  // and the stage starts booting in parallel while the cookie is set.
 
   // Mount gate (see top of component). SSR + first client render both
   // return null; React's hydration check sees identical "no children",
@@ -589,7 +584,6 @@ export default function GamePage() {
     <div className="game-container" suppressHydrationWarning>
       {/* Sea loading overlay — renders immediately, fades out once window.__W3D is set */}
       <SeaLoadingScreen />
-      <World3DCanvas mode="game" />
       <BuildingTooltip />
       <NanoClawBanner
         hasAvatar={hasAvatar}
