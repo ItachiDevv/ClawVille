@@ -206,7 +206,7 @@ consulted for stage/camera/scene-graph review points (Rule E3 collaboration).
 | Plan v2.1 | CONVERGED (Codex R1 REWORK → R2 APPROVE-WITH-CHANGES, edits applied) | this doc; codex-review logs in session scratchpad |
 | P0a — persistent stage, synthetic proof | DONE `6e95b9dc` | `docs/world-stage-p0a-{brief,notes}.md`; browser-verified: canvas mounts=1, hidden slot frozen, rapid-click storm clean |
 | P0b — cove spike + health policy + ledger + probe | DONE `3e01cac6` | `docs/world-stage-p0b-{brief,notes}.md`; cove VERDICT COMPATIBLE (0 material fixes); probe PASS both backends (100/100, 0 violations, ~1.2% heap); cove ledger 27.1 MiB |
-| P1a — world onto the stage behind `(world)` group (parity cutover) | IN PROGRESS | `docs/world-stage-p1a-brief.md` |
+| P1a — world onto the stage behind `(world)` group (parity cutover) | DONE — reviewer-verified locally; staging checkpoint next | `docs/world-stage-p1a-{brief,notes}.md`; build+tsc 0; probes 102/102 both backends (re-run post-review); `/game` no-store header; reviewer browser drive: world+NPCs+HUD live on stage, ~58 FPS dev box, pointer layering correct (HUD clicks + canvas hits), `/game`↔`/perf/stage` round trip clean, `/arena` legacy smoke OK; review fix: stage DPR corrected to live constants [0.55,0.7] (brief carried stale doc value) |
 | P1b — cove joins the stage; returns become fades | pending P1a | — |
 | P1c — streams/presence policy to layout + leak soak + staging promotion | pending P1b | — |
 | P2 arena / P3 kelp / P4 activities | pending | — |

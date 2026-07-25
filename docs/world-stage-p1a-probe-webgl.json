@@ -1,7 +1,7 @@
 {
   "pass": true,
-  "url": "http://localhost:3000/perf/stage?stage=1&webgpu=1",
-  "backend": "webgpu",
+  "url": "http://localhost:3000/perf/stage?stage=1&webgl=1",
+  "backend": "webgl",
   "requestedTransitions": 102,
   "completedTransitions": 102,
   "warmupTransitions": 3,
@@ -11,8 +11,8 @@
   "hiddenCameraViolations": [],
   "hiddenStoreViolations": [],
   "activeGrowthViolations": [],
-  "listenerBaseline": 5,
-  "listenerEnd": 5,
+  "listenerBaseline": 4,
+  "listenerEnd": 4,
   "listenerDelta": 0,
   "listenerUnderflowCount": 0,
   "transitionErrors": [],
@@ -22,17 +22,17 @@
   },
   "heap": {
     "available": true,
-    "baselineBytes": 68033199,
-    "endBytes": 68898267,
-    "growthRatio": 0.012715380324832293,
+    "baselineBytes": 67835377,
+    "endBytes": 68654569,
+    "growthRatio": 0.012076176712336986,
     "threshold": 0.15
   },
   "ledger": {
     "alpha": {
       "texturesBytes": 0,
-      "geometryBytes": 2736,
+      "geometryBytes": 2520,
       "renderTargetsBytes": 0,
-      "total": 2736,
+      "total": 2520,
       "counts": {
         "textures": 0,
         "geometries": 3,
@@ -48,9 +48,9 @@
     },
     "beta": {
       "texturesBytes": 0,
-      "geometryBytes": 66720,
+      "geometryBytes": 53760,
       "renderTargetsBytes": 0,
-      "total": 66720,
+      "total": 53760,
       "counts": {
         "textures": 0,
         "geometries": 3,
@@ -66,9 +66,9 @@
     },
     "cove-spike": {
       "texturesBytes": 10595302,
-      "geometryBytes": 17873160,
+      "geometryBytes": 17784432,
       "renderTargetsBytes": 0,
-      "total": 28468462,
+      "total": 28379734,
       "counts": {
         "textures": 12,
         "geometries": 14,
@@ -104,5 +104,5 @@
     "heapBelow15Percent": true
   },
   "failure": null,
-  "generatedAt": "2026-07-25T21:26:15.989Z"
+  "generatedAt": "2026-07-25T20:52:15.753Z"
 }

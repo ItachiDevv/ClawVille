@@ -22,9 +22,9 @@
   },
   "heap": {
     "available": true,
-    "baselineBytes": 68033199,
-    "endBytes": 68898267,
-    "growthRatio": 0.012715380324832293,
+    "baselineBytes": 67984842,
+    "endBytes": 69065202,
+    "growthRatio": 0.015891189391894153,
     "threshold": 0.15
   },
   "ledger": {
@@ -104,5 +104,5 @@
     "heapBelow15Percent": true
   },
   "failure": null,
-  "generatedAt": "2026-07-25T21:26:15.989Z"
+  "generatedAt": "2026-07-25T20:51:01.411Z"
 }
