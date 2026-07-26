@@ -75,6 +75,9 @@ brushed metal gradient on Gold. Flat color is acceptable for small text and chip
 The kit shipped no font files. Observed styles + open-source stand-ins (use these until
 marketing confirms the real faces; see Open Flags):
 
+The kit bundles the stand-ins as woff2 in `assets/fonts/` (Anton 400, Barlow 600/700; both
+SIL Open Font License) so banner templates render identically everywhere.
+
 | Role | Observed style | Stand-in (Google Fonts) |
 |---|---|---|
 | Logo wordmark | custom chunky rounded slab, playful | never re-set; use the logo files |
@@ -144,8 +147,13 @@ Canonical phrase bank: `docs/brand-language.md`. Non-negotiables:
   Never conflate them.
 - Locked phrases available for reuse: "The Agent Passport" / "What your agent becomes here
   travels with it" / "ClawVille is home base, not a cage."
-- Partner names (PayAI, Meridian, OOBE, Covenant): naming them factually is fine; "partner"
-  framing or logo use needs their sign-off first.
+- **The domain is ALWAYS `clawville.world`** in every footer, link bar, and printed URL.
+  We do not own clawville.com; the `.com` printed in the Spaces Recap exemplar is an error,
+  never copy it. (Founder ruling 2026-07-26.)
+- Partner names (PayAI, Meridian, OOBE, Covenant): naming them in graphics and copy is fine
+  with no sign-off needed; we implement their software and are partnered with them.
+  (Founder ruling 2026-07-26.) When placing their actual LOGOS, follow each project's own
+  published brand guidelines as normal practice.
 
 ## 9. Asset inventory
 
@@ -164,17 +172,23 @@ Canonical phrase bank: `docs/brand-language.md`. Non-negotiables:
 | `assets/reference/*.jpg` | 3 published marketing banners (style exemplars) | B |
 | `assets/video/running.mp4` | robots-running clip | A |
 | `assets/video/x-formatted-2.mp4` | X-format motion piece | A |
+| `assets/mascot/mascot-only-transparent.png` | mascot cutout, no sign (derived) | both |
+| `assets/fonts/*.woff2` | Anton + Barlow stand-ins (OFL) | B |
+| `graphics/banner-*.html` | live banner templates (1965x800, Register B recipe); open in a browser at that viewport and screenshot to export | B |
 
 Not in the repo on purpose: `early-ideas.jpg` (Drive only). It contains recognizable
 third-party game characters; internal mood reference ONLY, never publish or commit.
 
 ## 10. Open flags (founder / marketing to resolve)
 
-1. Domain in footers: the Spaces Recap banner prints `clawville.com`; the product canon is
-   `clawville.world`. Confirm which one outward graphics should carry.
+1. ~~Domain~~ RESOLVED 2026-07-26: always `clawville.world` (we do not own .com); rule moved
+   to §8.
 2. Real font names: get the actual display/chip typefaces from the marketing team; replace
    the stand-ins in §4.
 3. Mascot name: lock an official name (graphics keep needing one).
 4. Wordmark casing: logo reads "Clawville"; repo prose uses "ClawVille"; broadcast headlines
    use all-caps. Codified here as: logo files as-is, ALL CAPS in display type, "ClawVille"
    in running prose. Overrule if wrong.
+5. Cinematic mascot renders: marketing's banners use costumed cinematic renders of the
+   lobster (pirate, tropical). If standalone transparent-PNG versions exist, add them to
+   `assets/mascot/` so banner templates can use them instead of the daylight cutout.
