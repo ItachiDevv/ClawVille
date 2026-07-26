@@ -147,8 +147,13 @@ Canonical phrase bank: `docs/brand-language.md`. Non-negotiables:
   Never conflate them.
 - Locked phrases available for reuse: "The Agent Passport" / "What your agent becomes here
   travels with it" / "ClawVille is home base, not a cage."
-- Partner names (PayAI, Meridian, OOBE, Covenant): naming them factually is fine; "partner"
-  framing or logo use needs their sign-off first.
+- **The domain is ALWAYS `clawville.world`** in every footer, link bar, and printed URL.
+  We do not own clawville.com; the `.com` printed in the Spaces Recap exemplar is an error,
+  never copy it. (Founder ruling 2026-07-26.)
+- Partner names (PayAI, Meridian, OOBE, Covenant): naming them in graphics and copy is fine
+  with no sign-off needed; we implement their software and are partnered with them.
+  (Founder ruling 2026-07-26.) When placing their actual LOGOS, follow each project's own
+  published brand guidelines as normal practice.
 
 ## 9. Asset inventory
 
@@ -176,11 +181,14 @@ third-party game characters; internal mood reference ONLY, never publish or comm
 
 ## 10. Open flags (founder / marketing to resolve)
 
-1. Domain in footers: the Spaces Recap banner prints `clawville.com`; the product canon is
-   `clawville.world`. Confirm which one outward graphics should carry.
+1. ~~Domain~~ RESOLVED 2026-07-26: always `clawville.world` (we do not own .com); rule moved
+   to §8.
 2. Real font names: get the actual display/chip typefaces from the marketing team; replace
    the stand-ins in §4.
 3. Mascot name: lock an official name (graphics keep needing one).
 4. Wordmark casing: logo reads "Clawville"; repo prose uses "ClawVille"; broadcast headlines
    use all-caps. Codified here as: logo files as-is, ALL CAPS in display type, "ClawVille"
    in running prose. Overrule if wrong.
+5. Cinematic mascot renders: marketing's banners use costumed cinematic renders of the
+   lobster (pirate, tropical). If standalone transparent-PNG versions exist, add them to
+   `assets/mascot/` so banner templates can use them instead of the daylight cutout.
