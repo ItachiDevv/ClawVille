@@ -1911,7 +1911,6 @@ export const WorldSceneContents = memo(function WorldSceneContents({
   stageWarmup?: WorldStageWarmupProps;
   stageHosted?: boolean;
 }) {
-  const sceneActive = useSceneActive();
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
   const isGame = mode === 'game';
   const flags = { ...DEFAULT_WORLD_PERF_FLAGS, ...perfFlags };
@@ -2011,14 +2010,10 @@ export const WorldSceneContents = memo(function WorldSceneContents({
       {/* Underwater lighting — warm caustic tones with strong contrast.
           3 lights max for Intel Iris Xe budget: hemisphereLight already
           provides ambient sky/ground fill, so no separate ambientLight. */}
-      {sceneActive && (
-        <>
-          <hemisphereLight args={[0x66bbdd, 0x223344, 1.8]} />
-          <directionalLight position={[150, 350, 80]} intensity={2.0} color={0xffeedd} />
-          {/* Secondary fill from opposite side for depth */}
-          <directionalLight position={[-100, 200, -60]} intensity={0.5} color={0x88aacc} />
-        </>
-      )}
+      <hemisphereLight args={[0x66bbdd, 0x223344, 1.8]} />
+      <directionalLight position={[150, 350, 80]} intensity={2.0} color={0xffeedd} />
+      {/* Secondary fill from opposite side for depth */}
+      <directionalLight position={[-100, 200, -60]} intensity={0.5} color={0x88aacc} />
 
       {/* Underwater fog — scaled for 360x360 map (11520wu world) / R=130-tile ring.
           Phase 6.2.3 fog tuning (2026-05-19): near 4500→6000, far 9000→15000.

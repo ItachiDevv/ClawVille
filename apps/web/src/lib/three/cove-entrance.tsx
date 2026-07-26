@@ -47,10 +47,7 @@
  */
 
 import { useRef } from 'react';
-import {
-  useSceneActive,
-  useSceneFrame,
-} from '@/components/three/world-stage/use-scene-frame';
+import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import * as THREE from 'three';
 import { triggerCoveWalkIn } from './arena-buildings';
 import { avatarPositionRef, useGameStore } from '@/stores/game';
@@ -285,7 +282,6 @@ let _coveAutoArmed = true;
 // Component
 // ---------------------------------------------------------------------------
 export default function CoveEntrance() {
-  const sceneActive = useSceneActive();
   const labelRef = useRef<THREE.Mesh>(null);
   const glowRef  = useRef<THREE.Mesh>(null);
 
@@ -519,24 +515,20 @@ export default function CoveEntrance() {
            Light 2: at mouth opening — makes the opening glow from outside.
            Both at Y = ARCH_RADIUS = 90 (mid-height).
            Total scene point lights: beacon(3) + entrance(2) = 5. Under Iris Xe limit of 7. ✓ */}
-      {sceneActive && (
-        <>
-          <pointLight
-            color={0x00ccff}
-            intensity={2.2}
-            distance={400}
-            decay={2}
-            position={[-TUNNEL_HALF + 60, ARCH_RADIUS, 0]}
-          />
-          <pointLight
-            color={0x00ffcc}
-            intensity={1.8}
-            distance={500}
-            decay={2}
-            position={[TUNNEL_HALF + 40, ARCH_RADIUS, 0]}
-          />
-        </>
-      )}
+      <pointLight
+        color={0x00ccff}
+        intensity={2.2}
+        distance={400}
+        decay={2}
+        position={[-TUNNEL_HALF + 60, ARCH_RADIUS, 0]}
+      />
+      <pointLight
+        color={0x00ffcc}
+        intensity={1.8}
+        distance={500}
+        decay={2}
+        position={[TUNNEL_HALF + 40, ARCH_RADIUS, 0]}
+      />
     </group>
   );
 }
