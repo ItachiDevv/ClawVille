@@ -2,6 +2,7 @@
 
 import puppeteer from 'puppeteer-core';
 import { mkdir, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -137,6 +138,93 @@ const summary = {
 };
 
 let browser;
+let worldProbeServer;
+
+async function startWorldProbeServer() {
+  const streams = new Set();
+  const server = createServer((request, response) => {
+    const origin = request.headers.origin ?? 'http://localhost:3000';
+    const corsHeaders = {
+      'Access-Control-Allow-Credentials': 'true',
+      'Access-Control-Allow-Headers':
+        request.headers['access-control-request-headers'] ?? 'Content-Type',
+      'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+      'Access-Control-Allow-Origin': origin,
+      Vary: 'Origin',
+    };
+    if (request.method === 'OPTIONS') {
+      response.writeHead(204, corsHeaders);
+      response.end();
+      return;
+    }
+
+    const pathname = new URL(
+      request.url ?? '/',
+      'http://localhost:4000',
+    ).pathname;
+    if (request.method === 'POST' && pathname === '/api/world/join') {
+      response.writeHead(200, {
+        ...corsHeaders,
+        'Content-Type': 'application/json',
+      });
+      response.end(
+        JSON.stringify({
+          roomId: 'world-stage-probe',
+          id: 'world-stage-probe-session',
+          roomTicket: 'world-stage-probe-ticket',
+        }),
+      );
+      return;
+    }
+    if (
+      request.method === 'GET' &&
+      pathname === '/api/world/world-stage-probe/stream'
+    ) {
+      response.writeHead(200, {
+        ...corsHeaders,
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        'Content-Type': 'text/event-stream',
+      });
+      response.write(
+        'event: snapshot\ndata: {"npcs":[],"players":[]}\n\n',
+      );
+      streams.add(response);
+      request.on('close', () => streams.delete(response));
+      return;
+    }
+    if (
+      request.method === 'POST' &&
+      (pathname === '/api/world/position' ||
+        pathname === '/api/world/leave' ||
+        pathname === '/api/world/watch-heartbeat')
+    ) {
+      response.writeHead(204, corsHeaders);
+      response.end();
+      return;
+    }
+    response.writeHead(404, corsHeaders);
+    response.end();
+  });
+  await new Promise((resolveStart, rejectStart) => {
+    server.once('error', rejectStart);
+    server.listen(4000, () => {
+      server.off('error', rejectStart);
+      resolveStart();
+    });
+  });
+  return {
+    async close() {
+      for (const stream of streams) stream.end();
+      await new Promise((resolveClose, rejectClose) => {
+        server.close((error) => {
+          if (error) rejectClose(error);
+          else resolveClose();
+        });
+      });
+    },
+  };
+}
 
 async function snapshot(page) {
   const state = await page.evaluate(() =>
@@ -346,6 +434,9 @@ async function runColdInitProbe(browser, routeOrigin) {
 }
 
 try {
+  if (routeLane) {
+    worldProbeServer = await startWorldProbeServer();
+  }
   browser = await puppeteer.launch({
     executablePath: chromePath,
     headless: true,
@@ -879,6 +970,20 @@ try {
       summary.failure = summary.failure
         ? `${summary.failure} | browser close: ${closeFailure}`
         : `browser close: ${closeFailure}`;
+      summary.pass = false;
+    }
+  }
+  if (worldProbeServer) {
+    try {
+      await worldProbeServer.close();
+    } catch (error) {
+      const closeFailure =
+        error instanceof Error
+          ? `${error.name}: ${error.message}`
+          : String(error);
+      summary.failure = summary.failure
+        ? `${summary.failure} | world probe server close: ${closeFailure}`
+        : `world probe server close: ${closeFailure}`;
       summary.pass = false;
     }
   }
