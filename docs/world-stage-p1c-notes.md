@@ -174,6 +174,14 @@ The scanner currently uploads fresh textures without compiling their updated
 material variants. Its in-scope completion is one cooperative, all-world-slot
 compile after each non-empty fresh-texture batch.
 
+The next trace tied each 128 KiB texture step to exactly two additional draw
+calls, matching a two-sided Cove `BankBanner`. `compileAsync` initializes its
+pipeline and geometry but does not upload an off-frustum canvas texture. The
+all-slot helper was restoring culling before the controlled warm draw, so
+off-camera banners still paid their first texture upload later. The controlled
+loading-screen draw must remain inside the temporary no-frustum section; normal
+culling is restored immediately afterward.
+
 ## Serial verification record
 
 Pre-gate implementation checks already completed:
