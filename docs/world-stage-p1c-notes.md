@@ -116,6 +116,24 @@ heap without another growing mesh name. These eight lights are also persistent
 scene resources and must be governed by their already-hidden slot root rather
 than reconstructed at every crossing.
 
+### Secondary retention exposed after removing activation churn
+
+The first full 60-loop run with persistent Cove/world resources reduced total
+heap growth from +22.54% to +9.19% and held renderer counts at 283 textures /
+265 geometries from loop 20 through final. It narrowly missed only the
+second-half heap gate at +3.78%. Both late inventories were byte-for-byte flat,
+while `window.history.length` still grew from 4 to 122.
+
+The earlier history-only experiment did not materially change the old
+activation-dominated slope, so history was correctly rejected as the primary
+defect. Once that churn is removed, however, the remaining approximately
+0.5 MB/round-trip forced-GC slope correlates with the two retained App Router
+entries per round trip. History retention is therefore a secondary defect.
+The correction keeps the first `/game` and `/cove` pushes so browser
+back/forward adoption remains testable, then replaces subsequent stage-owned
+entries. This bounds retained route payloads without changing scene behavior
+or any soak threshold.
+
 ## Serial verification record
 
 Pre-gate implementation checks already completed:
