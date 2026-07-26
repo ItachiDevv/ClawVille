@@ -14,6 +14,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import {
   readStageBackend,
   readStageCameraPoses,
+  readStageRendererCounters,
   WorldStageCanvas,
   type WorldStageScene,
 } from './WorldStageCanvas';
@@ -69,6 +70,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
     requestId: number;
     navigation: WorldStageNavigationRequest;
   } | null>(null);
+  const coldInitIssuedRef = useRef(false);
 
   useEffect(() => {
     markWorldStageMounted();
@@ -115,6 +117,35 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
       requestStageScene(sceneId);
     }
   }, [children, pathname, stageReady]);
+
+  useEffect(() => {
+    if (!stageReady || coldInitIssuedRef.current) return;
+    const target = new URLSearchParams(window.location.search).get(
+      'stageColdInit',
+    );
+    if (target !== '/game' && target !== '/cove') return;
+    const navigationTarget: '/game' | '/cove' = target;
+    coldInitIssuedRef.current = true;
+    const probeWindow = window as typeof window & {
+      __WORLD_STAGE_COLD_INIT__?: {
+        accepted: boolean;
+        target: '/game' | '/cove';
+        midwayCount: number;
+      };
+    };
+    const coldInit = {
+      accepted: false,
+      target: navigationTarget,
+      midwayCount: 0,
+    };
+    probeWindow.__WORLD_STAGE_COLD_INIT__ = coldInit;
+    coldInit.accepted = requestWorldStageNavigation({
+      to: navigationTarget,
+      onMidway: () => {
+        coldInit.midwayCount += 1;
+      },
+    });
+  }, [stageReady]);
 
   useEffect(() => {
     if (!stageReady) return;
@@ -205,6 +236,13 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
           recoveryCount: state.recovery.count,
           lastRecoveryReason: state.recovery.lastReason,
           backend: readStageBackend(),
+          renderer: readStageRendererCounters(),
+          coldInit:
+            (
+              window as typeof window & {
+                __WORLD_STAGE_COLD_INIT__?: Record<string, unknown>;
+              }
+            ).__WORLD_STAGE_COLD_INIT__ ?? null,
           frames: readStageFrameInvocations(),
           cameras: readStageCameraPoses(),
           slots: state.scenes,

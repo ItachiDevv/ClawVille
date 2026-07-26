@@ -13,33 +13,45 @@ const argv = new Map(
   }),
 );
 const lane = argv.get('lane') ?? 'synthetic';
-if (lane !== 'synthetic' && lane !== 'routes') {
-  throw new Error(`Unsupported --lane=${lane}; expected synthetic or routes`);
+if (lane !== 'synthetic' && lane !== 'routes' && lane !== 'soak') {
+  throw new Error(
+    `Unsupported --lane=${lane}; expected synthetic, routes, or soak`,
+  );
 }
-const url =
+const routeLane = lane === 'routes' || lane === 'soak';
+const forceWebGL = argv.has('webgl');
+const requestedUrl =
   argv.get('url') ??
-  (lane === 'routes'
+  (routeLane
     ? 'http://localhost:3000/cove'
     : 'http://localhost:3000/perf/stage?stage=1&webgpu=1');
+const parsedUrl = new URL(requestedUrl);
+if (forceWebGL) {
+  parsedUrl.searchParams.delete('webgpu');
+  parsedUrl.searchParams.set('webgl', '1');
+}
+const url = parsedUrl.toString();
 const transitionCount =
-  lane === 'routes'
-    ? Number(argv.get('round-trips') ?? 30)
+  routeLane
+    ? Number(argv.get('loops') ?? (lane === 'soak' ? 60 : 30))
     : Math.max(100, Number(argv.get('transitions') ?? 102));
 if (
   !Number.isInteger(transitionCount) ||
   transitionCount <= 0 ||
-  (lane === 'routes' && transitionCount !== 30)
+  (lane === 'soak' && (transitionCount < 20 || transitionCount > 100))
 ) {
   throw new Error(
-    lane === 'routes'
-      ? 'The real-route release lane requires exactly --round-trips=30'
+    lane === 'soak'
+      ? 'The soak lane requires integer --loops between 20 and 100'
       : '--transitions must be a positive integer',
   );
 }
 const outputPath = resolve(
   argv.get('output') ??
-    (lane === 'routes'
-      ? `${SCRIPT_DIR}/world-stage-route-summary.json`
+    (routeLane
+      ? lane === 'soak'
+        ? `${SCRIPT_DIR}/world-stage-soak-summary.json`
+        : `${SCRIPT_DIR}/world-stage-route-summary.json`
       : `${SCRIPT_DIR}/world-stage-probe-summary.json`),
 );
 const chromePath =
@@ -55,8 +67,8 @@ const summary = {
   url,
   backend: 'unknown',
   requestedTransitions:
-    lane === 'routes' ? transitionCount * 2 : transitionCount,
-  requestedRoundTrips: lane === 'routes' ? transitionCount : null,
+    routeLane ? transitionCount * 2 : transitionCount,
+  requestedRoundTrips: routeLane ? transitionCount : null,
   completedRoundTrips: 0,
   completedTransitions: 0,
   warmupTransitions: 0,
@@ -78,6 +90,12 @@ const summary = {
     endBytes: null,
     growthRatio: null,
     threshold: 0.15,
+    midpointBytes: null,
+    secondHalfGrowthRatio: null,
+    secondHalfThreshold: 0.03,
+  },
+  renderer: {
+    samples: [],
   },
   ledger: null,
   routes: {
@@ -93,6 +111,21 @@ const summary = {
       back: false,
       forward: false,
     },
+    network: {
+      phase: 'cold-cove',
+      joins: {
+        coldCove: 0,
+        firstGame: 0,
+        afterFirstGame: 0,
+      },
+      streams: {
+        coldCove: 0,
+        firstGame: 0,
+        afterFirstGame: 0,
+      },
+      events: [],
+    },
+    coldInit: null,
   },
   console: {
     errors: [],
@@ -161,15 +194,20 @@ async function requestAndWait(page, sceneId) {
 }
 
 async function navigateAndWait(page, pathname, sceneId) {
-  await page.evaluate((target) => {
+  const accepted = await page.evaluate((target) => {
     const probe = window.__WORLD_STAGE_PROBE__;
     if (typeof probe?.navigate !== 'function') {
       throw new Error(
         'production stage probe bridge is missing navigate(pathname)',
       );
     }
-    probe.navigate(target);
+    return probe.navigate(target);
   }, pathname);
+  if (accepted !== true) {
+    throw new Error(
+      `production stage probe bridge declined navigation to ${pathname}`,
+    );
+  }
   await waitForSettled(page, sceneId);
   const state = await snapshot(page);
   if (state.pathname !== pathname) {
@@ -244,6 +282,69 @@ function cacheControlIsNonCacheable(value) {
   );
 }
 
+async function collectGarbage(page) {
+  try {
+    const client = await page.createCDPSession();
+    await client.send('HeapProfiler.collectGarbage');
+  } catch {
+    await page.evaluate(() => {
+      if (typeof globalThis.gc === 'function') globalThis.gc();
+    });
+  }
+  await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+}
+
+async function readHeapBytes(page) {
+  return page.evaluate(() => {
+    const memory = performance.memory;
+    return memory?.usedJSHeapSize ?? null;
+  });
+}
+
+function recordRendererSample(label, loop, state) {
+  summary.renderer.samples.push({
+    label,
+    loop,
+    ...(state.renderer ?? { backend: state.backend ?? 'unknown' }),
+  });
+}
+
+async function runColdInitProbe(browser, routeOrigin) {
+  const coldPage = await browser.newPage();
+  try {
+    await coldPage.setViewport({
+      width: 1280,
+      height: 720,
+      deviceScaleFactor: 1,
+    });
+    const coldUrl = new URL('/cove', routeOrigin);
+    coldUrl.searchParams.set('stageColdInit', '/game');
+    coldUrl.searchParams.set(forceWebGL ? 'webgl' : 'webgpu', '1');
+    await coldPage.goto(coldUrl.toString(), {
+      waitUntil: 'domcontentloaded',
+      timeout: 30_000,
+    });
+    await coldPage.waitForFunction(
+      () => Boolean(window.__WORLD_STAGE_PROBE__),
+      { timeout: 30_000 },
+    );
+    await waitForSettled(coldPage, 'world');
+    const state = await snapshot(coldPage);
+    return {
+      accepted: state.coldInit?.accepted === true,
+      midwayCount: state.coldInit?.midwayCount ?? null,
+      target: state.coldInit?.target ?? null,
+      pathname: state.pathname,
+      landedExactlyOnce:
+        state.coldInit?.accepted === true &&
+        state.coldInit?.midwayCount === 1 &&
+        state.pathname === '/game',
+    };
+  } finally {
+    await coldPage.close();
+  }
+}
+
 try {
   browser = await puppeteer.launch({
     executablePath: chromePath,
@@ -273,23 +374,58 @@ try {
     summary.console.errors.push(String(error).slice(0, 1_000));
   });
 
-  let collectingColdCoveAssets = lane === 'routes';
-  if (lane === 'routes') {
-    page.on('request', (request) => {
-      if (!collectingColdCoveAssets) return;
-      const requestUrl = request.url();
-      let pathname;
-      try {
-        pathname = new URL(requestUrl).pathname;
-      } catch {
-        return;
+  let collectingColdCoveAssets = routeLane;
+  page.on('request', (request) => {
+    const requestUrl = request.url();
+    let pathname;
+    try {
+      pathname = new URL(requestUrl).pathname;
+    } catch {
+      return;
+    }
+
+    if (routeLane) {
+      const phase = summary.routes.network.phase;
+      const phaseKey =
+        phase === 'cold-cove'
+          ? 'coldCove'
+          : phase === 'first-game'
+            ? 'firstGame'
+            : 'afterFirstGame';
+      const method = request.method();
+      let type = null;
+      if (method === 'POST' && pathname === '/api/world/join') {
+        summary.routes.network.joins[phaseKey] += 1;
+        type = 'join';
+      } else if (
+        method === 'GET' &&
+        /^\/api\/world\/[^/]+\/stream$/.test(pathname)
+      ) {
+        summary.routes.network.streams[phaseKey] += 1;
+        type = 'stream';
       }
-      if (!/\.(?:glb|gltf|ktx2|vrm)$/i.test(pathname)) return;
+      if (type) {
+        summary.routes.network.events.push({
+          type,
+          phase,
+          method,
+          url: requestUrl,
+        });
+      }
+    }
+
+    if (
+      collectingColdCoveAssets &&
+      /\.(?:glb|gltf|ktx2|vrm)$/i.test(pathname)
+    ) {
       summary.routes.coldCoveAssetRequests.push(requestUrl);
       if (WORLD_ONLY_ASSET_PATTERN.test(pathname)) {
         summary.routes.coldCoveWorldAssetRequests.push(requestUrl);
       }
-    });
+    }
+  });
+
+  if (routeLane) {
 
     const routeOrigin = new URL(url).origin;
     for (const [routeName, pathname] of [
@@ -327,26 +463,20 @@ try {
     // Warm both real slots before measuring retention. The first /game visit
     // is intentionally excluded because its SeaLoadingScreen is still the
     // required first-world-boot path.
+    summary.routes.network.phase = 'first-game';
     await navigateAndWait(page, '/game', 'world');
     summary.warmupTransitions += 1;
+    summary.routes.network.phase = 'after-first-game';
     await navigateAndWait(page, '/cove', 'cove');
     summary.warmupTransitions += 1;
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 750));
 
     const warmSnapshot = await snapshot(page);
     summary.backend = warmSnapshot.backend;
+    recordRendererSample('post-warmup', 0, warmSnapshot);
     summary.listenerBaseline = warmSnapshot.listenerCount;
-    try {
-      const client = await page.createCDPSession();
-      await client.send('HeapProfiler.collectGarbage');
-    } catch {
-      // Browser may not expose the HeapProfiler domain.
-    }
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
-    const baselineHeap = await page.evaluate(() => {
-      const memory = performance.memory;
-      return memory?.usedJSHeapSize ?? null;
-    });
+    await collectGarbage(page);
+    const baselineHeap = await readHeapBytes(page);
     if (typeof baselineHeap === 'number' && baselineHeap > 0) {
       summary.heap.available = true;
       summary.heap.baselineBytes = baselineHeap;
@@ -431,10 +561,25 @@ try {
       hiddenStarts.set('world', afterCove);
       hiddenStarts.delete('cove');
       summary.completedRoundTrips += 1;
+
+      if (lane === 'soak' && summary.completedRoundTrips === 20) {
+        recordRendererSample('loop-20', 20, afterCove);
+      }
+      if (
+        lane === 'soak' &&
+        summary.completedRoundTrips === Math.floor(transitionCount / 2)
+      ) {
+        await collectGarbage(page);
+        const midpointHeap = await readHeapBytes(page);
+        if (typeof midpointHeap === 'number' && midpointHeap > 0) {
+          summary.heap.midpointBytes = midpointHeap;
+        }
+      }
     }
 
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
     const end = await snapshot(page);
+    recordRendererSample('final', transitionCount, end);
     summary.canvasMountCount = end.canvasMountCount;
     summary.listenerEnd = end.listenerCount;
     summary.listenerDelta =
@@ -449,17 +594,8 @@ try {
         ? window.__WORLD_STAGE_LEDGER()
         : null,
     );
-    try {
-      const client = await page.createCDPSession();
-      await client.send('HeapProfiler.collectGarbage');
-    } catch {
-      // Preserve the ordinary performance.memory measurement.
-    }
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
-    const endHeap = await page.evaluate(() => {
-      const memory = performance.memory;
-      return memory?.usedJSHeapSize ?? null;
-    });
+    await collectGarbage(page);
+    const endHeap = await readHeapBytes(page);
     if (
       summary.heap.available &&
       typeof endHeap === 'number' &&
@@ -470,11 +606,46 @@ try {
         (endHeap - summary.heap.baselineBytes) /
         summary.heap.baselineBytes;
     }
+    if (
+      typeof summary.heap.midpointBytes === 'number' &&
+      summary.heap.midpointBytes > 0 &&
+      typeof endHeap === 'number'
+    ) {
+      summary.heap.secondHalfGrowthRatio =
+        (endHeap - summary.heap.midpointBytes) /
+        summary.heap.midpointBytes;
+    }
+
+    summary.routes.coldInit = await runColdInitProbe(
+      browser,
+      routeOrigin,
+    );
 
     const expectedRouteTransitions = transitionCount * 2;
+    const loop20Renderer = summary.renderer.samples.find(
+      (sample) => sample.label === 'loop-20',
+    );
+    const finalRenderer = summary.renderer.samples.find(
+      (sample) => sample.label === 'final',
+    );
+    const soakCountsPlateau =
+      lane !== 'soak' ||
+      (typeof loop20Renderer?.textures === 'number' &&
+        loop20Renderer.textures === finalRenderer?.textures &&
+        typeof loop20Renderer?.geometries === 'number' &&
+        loop20Renderer.geometries === finalRenderer?.geometries);
+    const soakBytesPlateau =
+      lane !== 'soak' ||
+      finalRenderer?.backend === 'webgl' ||
+      (typeof loop20Renderer?.texturesSizeBytes === 'number' &&
+        loop20Renderer.texturesSizeBytes ===
+          finalRenderer?.texturesSizeBytes &&
+        typeof loop20Renderer?.memoryTotalBytes === 'number' &&
+        loop20Renderer.memoryTotalBytes ===
+          finalRenderer?.memoryTotalBytes);
     summary.assertions = {
-      exactly30RoundTrips:
-        summary.completedRoundTrips === 30 &&
+      exactlyRequestedRoundTrips:
+        summary.completedRoundTrips === transitionCount &&
         summary.completedTransitions === expectedRouteTransitions,
       oneCanvas: summary.canvasMountCount === 1,
       hiddenFramesFrozen:
@@ -498,6 +669,19 @@ try {
         summary.routes.historyTraversal.forward,
       coldCoveSkipsWorldAssets:
         summary.routes.coldCoveWorldAssetRequests.length === 0,
+      coldCoveJoinsZero:
+        summary.routes.network.joins.coldCove === 0,
+      firstGameJoinsOnce:
+        summary.routes.network.joins.firstGame === 1,
+      joinsAfterFirstGameZero:
+        summary.routes.network.joins.afterFirstGame === 0,
+      oneInitialWorldStream:
+        summary.routes.network.streams.coldCove === 0 &&
+        summary.routes.network.streams.firstGame === 1,
+      noRouteCorrelatedStreamReopens:
+        summary.routes.network.streams.afterFirstGame === 0,
+      coldInitBridgeLandsExactlyOnce:
+        summary.routes.coldInit?.landedExactlyOnce === true,
       gameCacheControlNonCacheable:
         summary.routes.cacheControl.game?.status === 200 &&
         cacheControlIsNonCacheable(
@@ -512,6 +696,14 @@ try {
         !summary.heap.available ||
         (summary.heap.growthRatio !== null &&
           summary.heap.growthRatio < summary.heap.threshold),
+      soakRendererCountsPlateau: soakCountsPlateau,
+      soakRendererBytesPlateau: soakBytesPlateau,
+      soakSecondHalfHeapBelow3Percent:
+        lane !== 'soak' ||
+        !summary.heap.available ||
+        (summary.heap.secondHalfGrowthRatio !== null &&
+          summary.heap.secondHalfGrowthRatio <=
+            summary.heap.secondHalfThreshold),
     };
     summary.pass = Object.values(summary.assertions).every(Boolean);
   } else {
@@ -537,18 +729,10 @@ try {
 
   const warmSnapshot = await snapshot(page);
   summary.backend = warmSnapshot.backend;
+  recordRendererSample('post-warmup', 0, warmSnapshot);
   summary.listenerBaseline = warmSnapshot.listenerCount;
-  try {
-    const client = await page.createCDPSession();
-    await client.send('HeapProfiler.collectGarbage');
-  } catch {
-    // Browser may not expose the HeapProfiler domain.
-  }
-  await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
-  const baselineHeap = await page.evaluate(() => {
-    const memory = performance.memory;
-    return memory?.usedJSHeapSize ?? null;
-  });
+  await collectGarbage(page);
+  const baselineHeap = await readHeapBytes(page);
   if (typeof baselineHeap === 'number' && baselineHeap > 0) {
     summary.heap.available = true;
     summary.heap.baselineBytes = baselineHeap;
@@ -629,6 +813,7 @@ try {
 
   await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
   const end = await snapshot(page);
+  recordRendererSample('final', transitionCount, end);
   summary.canvasMountCount = end.canvasMountCount;
   summary.listenerEnd = end.listenerCount;
   summary.listenerDelta =
@@ -641,17 +826,8 @@ try {
   summary.ledger = await page.evaluate(() =>
     window.__WORLD_STAGE_LEDGER(),
   );
-  try {
-    const client = await page.createCDPSession();
-    await client.send('HeapProfiler.collectGarbage');
-  } catch {
-    // Preserve the ordinary performance.memory measurement.
-  }
-  await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
-  const endHeap = await page.evaluate(() => {
-    const memory = performance.memory;
-    return memory?.usedJSHeapSize ?? null;
-  });
+  await collectGarbage(page);
+  const endHeap = await readHeapBytes(page);
   if (
     summary.heap.available &&
     typeof endHeap === 'number' &&
