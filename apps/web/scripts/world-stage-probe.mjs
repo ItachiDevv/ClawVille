@@ -147,6 +147,7 @@ const summary = {
       baseline: null,
       final: null,
       delta: null,
+      maxAddedEntries: 2,
     },
     network: {
       phase: 'cold-cove',
@@ -1000,6 +1001,10 @@ try {
         Boolean(summary.inventory.early?.cove) &&
         Boolean(summary.inventory.late?.world) &&
         Boolean(summary.inventory.late?.cove),
+      stageHistoryBounded:
+        summary.routes.historyLength.delta !== null &&
+        summary.routes.historyLength.delta <=
+          summary.routes.historyLength.maxAddedEntries,
     };
     summary.assertions = dwellMode
       ? {
