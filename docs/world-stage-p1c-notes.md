@@ -134,6 +134,37 @@ back/forward adoption remains testable, then replaces subsequent stage-owned
 entries. This bounds retained route payloads without changing scene behavior
 or any soak threshold.
 
+### Late GPU allocation diagnosis (recorded before warmup fix)
+
+With activation churn and history retention corrected, the 60-loop heap gates
+both pass (+9.90% total / +1.86% second half), but one geometry and renderer
+bytes can still appear after loop 20 while both slot inventories remain
+exactly flat. Change-triggered inventory samples and the WebGPU memory
+breakdown identify this as first-render allocation for objects already in the
+world slot, not a new object subtree:
+
+- the late geometry adds 864 attribute bytes plus 192 index bytes (the WebGPU
+  accounting for the observed ~1.3 KB helper geometry);
+- another run adds one existing 128 KiB texture;
+- draw calls rise when the existing objects enter view, while inventory
+  identities do not change;
+- uniform buffers continue to appear after loop 20.
+
+**Exact defect:** `WorldWarmup` registers the bulk-VRM idle compile but
+explicitly permits that `compileAsync` to finish after `stageWarmup.onReady()`.
+Both that pass and the initial compile are camera-frustum-limited. Persistent
+world objects outside the initial camera frustum therefore allocate their
+geometry, textures, programs, and uniform buffers only when NPC/camera motion
+first makes them render during later crossings. The scene is structurally
+persistent but its GPU resource set is not actually warm at the readiness
+boundary.
+
+The fix is to wait for an already-started bulk VRM parse batch to drain,
+rescan its textures, and compile every object in the persistent world slot
+with frustum culling temporarily disabled before acknowledging stage ready.
+Culling is restored before the controlled warm draw, so runtime rendering and
+features are unchanged.
+
 ## Serial verification record
 
 Pre-gate implementation checks already completed:
