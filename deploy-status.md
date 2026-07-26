@@ -36,6 +36,12 @@
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-07-26 (repo-scrub session, push 2) — CLAWVILLE BRAND KIT added (`branding/`)
+- **What:** first-ever repo brand kit, built from the marketing team's Drive asset folders (founder-provided): `branding/BRAND.md` (canonical rules: the two visual registers, measured hex palettes, typography stand-ins, logo/mascot rules, the broadcast-banner recipe, copy rules) + `branding/brand-board.html` (visual one-pager, browser-verified) + 23 curated assets under `branding/assets/` (logos incl. mono SVG + PSD source, mascot art, beach banners, 9 stickers, 3 published marketing exemplars, 2 video clips). Also commits the previously untracked `docs/brand-language.md` (locked keeper phrases) which BRAND.md references. `early-ideas.jpg` deliberately NOT committed (contains third-party game characters; Drive-internal reference only).
+- **Who it's for:** every future session producing outward-facing graphics/copy; closes the "repo has zero exposure to marketing's style" gap (founder 2026-07-26).
+- **What broke:** nothing; assets-and-docs only, no app surface. ~21MB repo addition.
+- **SCHEMA:** `synced`. **PARITY:** n/a (no feature surface).
+
 ### 2026-07-26 (repo-scrub session) — GIT HISTORY PURGE + .gitignore guard pushed to staging
 - **What:** completed the founder's 2026-07-24 scrub directive: `git filter-repo` removed `CLAUDE.md`, `AGENTS.md`, `.claude/`, `*.itachi-bak` from ALL 5,872 commits on ALL refs, force-pushed (`--mirror`). GitHub API verified 0 commits touching any purged path. This push adds `.gitignore` entries (`AGENTS.md`, `*.itachi-bak`) so nothing re-commits them, plus this ledger entry. AGENTS.md working copies: restore from `<main-checkout>/.claude/backups/AGENTS.md.backup-2026-07-26`.
 - **What broke / caveats:** nothing deployed changed (trees byte-identical; no rebuild fired, none needed). KNOWN LIMITS: (1) pre-rewrite SHAs remain fetchable as orphaned objects until GitHub GC — complete erasure needs a GitHub Support request (founder account); (2) 2 public forks of ClawVille retain the old history independently; (3) the `ItachiDevv/milady` fork still carries our CLAUDE.md history — deletion needs `delete_repo` token scope or a founder click (repo settings → Delete).

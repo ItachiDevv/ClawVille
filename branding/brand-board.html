@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClawVille Brand Board</title>
+<style>
+  :root{
+    --abyss:#000010; --panel:#001858; --lime:#B8F800; --blue:#2890F8;
+    --gold:#E0C070; --parchment:#F8F0D8; --white:#F8F8F8; --alert:#E02020;
+    --yellow:#F8D038; --wood:#8A4A20; --woodlight:#A9622F; --red:#C8503C;
+    --belly:#D8A860; --sky:#D8E8E0; --teal:#80C0B8; --sand:#F8E0A8;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:"Segoe UI",system-ui,sans-serif;background:#0b0e14;color:#e8eaf0;padding:32px;max-width:1280px;margin:0 auto}
+  h1{font-size:34px;letter-spacing:.02em}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.25em;color:#8b93a7;margin:40px 0 14px;border-bottom:1px solid #232a3a;padding-bottom:8px}
+  .sub{color:#8b93a7;margin-top:6px;font-size:14px}
+  .grid{display:grid;gap:14px}
+  .g2{grid-template-columns:1fr 1fr}
+  .g4{grid-template-columns:repeat(4,1fr)}
+  .card{background:#121724;border:1px solid #232a3a;border-radius:12px;padding:16px}
+  .register{border-radius:14px;overflow:hidden;border:1px solid #232a3a}
+  .register .head{padding:14px 18px;font-weight:700;font-size:15px}
+  .register .body{padding:18px;font-size:13.5px;line-height:1.55;color:#c7cddd}
+  .regA .head{background:linear-gradient(90deg,var(--sky),var(--teal));color:#1c3a34}
+  .regB .head{background:linear-gradient(90deg,var(--panel),#000);color:var(--lime)}
+  .sw{border-radius:10px;overflow:hidden;border:1px solid #232a3a}
+  .sw .chip{height:64px}
+  .sw .meta{padding:8px 10px;background:#121724;font-size:11.5px}
+  .sw .meta b{display:block;font-size:12.5px}
+  .imgrow{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+  .imgrow figure{background:#121724;border:1px solid #232a3a;border-radius:10px;padding:10px;text-align:center}
+  .imgrow img{max-width:100%;height:110px;object-fit:contain}
+  .imgrow figcaption{font-size:11px;color:#8b93a7;margin-top:6px;word-break:break-all}
+  .wide img{width:100%;border-radius:10px;display:block}
+  .wide figcaption{font-size:12px;color:#8b93a7;margin-top:6px}
+  .type-demo{padding:22px;border-radius:12px;background:radial-gradient(120% 160% at 80% 10%,#001030 0%,var(--abyss) 60%)}
+  .headline{font-family:"Arial Narrow",Impact,sans-serif;font-weight:900;text-transform:uppercase;line-height:.95;letter-spacing:.01em}
+  .h-white{color:var(--white);font-size:54px}
+  .h-lime{color:var(--lime);font-size:54px;text-shadow:0 0 22px rgba(184,248,0,.45)}
+  .h-blue{color:var(--blue);font-size:54px;text-shadow:0 0 22px rgba(40,144,248,.5)}
+  .h-gold{background:linear-gradient(180deg,#f2dfa2,var(--gold) 55%,#a9834a);-webkit-background-clip:text;background-clip:text;color:transparent;font-size:54px}
+  .kicker{display:inline-block;border:1px solid var(--lime);color:var(--white);padding:4px 14px;border-radius:8px;font-size:14px;font-weight:700;letter-spacing:.1em;margin-bottom:12px}
+  .subline{color:var(--white);letter-spacing:.35em;font-size:13px;text-transform:uppercase;margin:14px 0;border-top:1px solid #2c3550;border-bottom:1px solid #2c3550;padding:8px 0;display:inline-block}
+  .pills{margin-top:10px;font-size:13px;color:#cfd6e6;font-weight:600}
+  .pills span{color:var(--gold)}
+  .hud{display:flex;gap:10px;margin-top:16px;flex-wrap:wrap}
+  .hud div{border:1px solid rgba(40,144,248,.55);background:rgba(0,24,88,.45);border-radius:9px;padding:9px 13px;font-size:12px;font-weight:700;color:#dfe9ff;box-shadow:0 0 14px rgba(40,144,248,.25)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  td,th{padding:7px 10px;border-bottom:1px solid #232a3a;text-align:left}
+  th{color:#8b93a7;font-weight:600}
+  .rules li{margin:7px 0 7px 18px;font-size:13.5px;line-height:1.5}
+  .flag{color:var(--gold)}
+  code{background:#1a2133;border-radius:5px;padding:1px 6px;font-size:12px}
+</style>
+</head>
+<body>
+  <h1>ClawVille Brand Board</h1>
+  <p class="sub">Built 2026-07-26 from the marketing Drive kit. Canonical rules: <code>branding/BRAND.md</code> · phrase bank: <code>docs/brand-language.md</code></p>
+
+  <h2>The two registers</h2>
+  <div class="grid g2">
+    <div class="register regA">
+      <div class="head">Register A · Daylight World</div>
+      <div class="body">Warm beach paradise. Pastel sky, lagoon teal, sand. Friendly mascot + robot agents.
+      Wood-sign logo. Use for game content, community, onboarding, stickers, cozy beats.</div>
+    </div>
+    <div class="register regB">
+      <div class="head">Register B · Neon Broadcast</div>
+      <div class="body">Near-black navy scenes, neon glow, HUD chips, waveforms, cinematic mascot in campaign outfits.
+      Huge textured condensed type. Use for announcements, protocol/economy news, partnerships, spaces.</div>
+    </div>
+  </div>
+
+  <h2>Palette · Daylight World</h2>
+  <div class="grid g4">
+    <div class="sw"><div class="chip" style="background:var(--yellow)"></div><div class="meta"><b>Logo Yellow</b>#F8D038</div></div>
+    <div class="sw"><div class="chip" style="background:var(--wood)"></div><div class="meta"><b>Plank Wood</b>#8A4A20</div></div>
+    <div class="sw"><div class="chip" style="background:var(--red)"></div><div class="meta"><b>Mascot Red</b>#C8503C</div></div>
+    <div class="sw"><div class="chip" style="background:var(--belly)"></div><div class="meta"><b>Mascot Belly</b>#D8A860</div></div>
+    <div class="sw"><div class="chip" style="background:var(--sky)"></div><div class="meta"><b>Sky Wash</b>#D8E8E0</div></div>
+    <div class="sw"><div class="chip" style="background:var(--teal)"></div><div class="meta"><b>Lagoon Teal</b>#80C0B8</div></div>
+    <div class="sw"><div class="chip" style="background:var(--sand)"></div><div class="meta"><b>Sand</b>#F8E0A8</div></div>
+    <div class="sw"><div class="chip" style="background:var(--woodlight)"></div><div class="meta"><b>Wood Light</b>#A9622F</div></div>
+  </div>
+
+  <h2>Palette · Neon Broadcast</h2>
+  <div class="grid g4">
+    <div class="sw"><div class="chip" style="background:var(--abyss)"></div><div class="meta"><b>Abyss</b>#000010</div></div>
+    <div class="sw"><div class="chip" style="background:var(--panel)"></div><div class="meta"><b>Panel Navy</b>#001858</div></div>
+    <div class="sw"><div class="chip" style="background:var(--lime)"></div><div class="meta"><b>Neon Lime</b>#B8F800</div></div>
+    <div class="sw"><div class="chip" style="background:var(--blue)"></div><div class="meta"><b>Electric Blue</b>#2890F8</div></div>
+    <div class="sw"><div class="chip" style="background:var(--gold)"></div><div class="meta"><b>Champagne Gold</b>#E0C070</div></div>
+    <div class="sw"><div class="chip" style="background:var(--parchment)"></div><div class="meta"><b>Parchment</b>#F8F0D8</div></div>
+    <div class="sw"><div class="chip" style="background:var(--white)"></div><div class="meta"><b>Signal White</b>#F8F8F8</div></div>
+    <div class="sw"><div class="chip" style="background:var(--alert)"></div><div class="meta"><b>Alert Red</b>#E02020</div></div>
+  </div>
+
+  <h2>Broadcast type stack (live demo of the recipe)</h2>
+  <div class="type-demo">
+    <span class="kicker">EP7</span>
+    <div class="headline h-white">Clawville</div>
+    <div class="headline h-lime">Joins</div>
+    <div class="headline h-white">Agent Network</div>
+    <div class="subline">Building the Agent Internet</div>
+    <div class="pills">x402 <span>&bull;</span> AI Agents <span>&bull;</span> Metaverse Economy</div>
+    <div class="hud"><div>MCP · Model Context Protocol</div><div>SAP · Agent Access</div><div>TRUST &amp; SECURITY</div><div>AI AGENT NODES</div></div>
+  </div>
+  <p class="sub">Stand-in fonts (Arial Narrow / Impact). Real faces from marketing pending: see BRAND.md Open Flags. Line fills alternate: white / accent / white. One accent family per piece.</p>
+
+  <h2>Logos</h2>
+  <div class="imgrow">
+    <figure><img src="assets/logos/clawville-logo-transparent.png" alt=""><figcaption>default · transparent</figcaption></figure>
+    <figure><img src="assets/logos/clawville-logo-wood-large.png" alt=""><figcaption>hi-res wood</figcaption></figure>
+    <figure style="background:#e8eaf0"><img src="assets/logos/clawville-wordmark-mono.svg" alt=""><figcaption style="color:#555">mono vector</figcaption></figure>
+    <figure><img src="assets/logos/clawville-logo-sky.jpg" alt=""><figcaption>sky header</figcaption></figure>
+  </div>
+
+  <h2>Mascot &amp; world</h2>
+  <div class="grid g2 wide">
+    <figure><img src="assets/world/beach-banner-wide.jpg" alt=""><figcaption>Register A: mascot + robot agents, beach</figcaption></figure>
+    <figure><img src="assets/world/beach-banner-logo.jpg" alt=""><figcaption>Register A: banner with logo lockup</figcaption></figure>
+  </div>
+  <div class="imgrow" style="margin-top:12px">
+    <figure><img src="assets/mascot/mascot-logo-lockup-transparent.png" alt=""><figcaption>mascot + logo (transparent)</figcaption></figure>
+    <figure><img src="assets/mascot/mascot-square.jpg" alt=""><figcaption>square avatar art</figcaption></figure>
+  </div>
+
+  <h2>Stickers (agents &amp; friends)</h2>
+  <div class="imgrow">
+    <figure><img src="assets/stickers/robot-1.png" alt=""><figcaption>robot-1</figcaption></figure>
+    <figure><img src="assets/stickers/robot-2.png" alt=""><figcaption>robot-2</figcaption></figure>
+    <figure><img src="assets/stickers/robot-3.png" alt=""><figcaption>robot-3</figcaption></figure>
+    <figure><img src="assets/stickers/crab.png" alt=""><figcaption>crab</figcaption></figure>
+    <figure><img src="assets/stickers/lobster.png" alt=""><figcaption>lobster</figcaption></figure>
+    <figure><img src="assets/stickers/mantis.png" alt=""><figcaption>mantis</figcaption></figure>
+    <figure><img src="assets/stickers/shrimp.png" alt=""><figcaption>shrimp</figcaption></figure>
+    <figure><img src="assets/stickers/claw-red.png" alt=""><figcaption>claw mark · red</figcaption></figure>
+    <figure><img src="assets/stickers/claw-yellow.png" alt=""><figcaption>claw mark · yellow</figcaption></figure>
+  </div>
+
+  <h2>Register B exemplars (published marketing)</h2>
+  <div class="grid wide">
+    <figure><img src="assets/reference/Agent Network EP7.jpg" alt=""><figcaption>Neon Lime treatment · episode card · underwater city</figcaption></figure>
+    <figure><img src="assets/reference/Clawville Space Recap.jpg" alt=""><figcaption>Champagne Gold treatment · recap · night harbor city</figcaption></figure>
+    <figure><img src="assets/reference/PAY AI Builder Banter.jpg" alt=""><figcaption>Electric Blue treatment · partner space · cyber city</figcaption></figure>
+  </div>
+
+  <h2>Copy rules (binding)</h2>
+  <ul class="rules">
+    <li>No em dashes in outward copy.</li>
+    <li>Never "casino": say "the cove", "card tables", "provably-fair games".</li>
+    <li>vCLAW = in-game dollar-tied currency (never "CT"). $CLAWVILLE = the deployed token. Never conflate.</li>
+    <li>Locked phrases: "The Agent Passport" · "What your agent becomes here travels with it" · "ClawVille is home base, not a cage."</li>
+    <li class="flag">Open flags: footer domain (.com vs .world) · real font names · mascot name (BRAND.md §10).</li>
+  </ul>
+</body>
+</html>
