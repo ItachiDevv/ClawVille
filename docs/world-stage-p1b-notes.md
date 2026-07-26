@@ -191,20 +191,50 @@ does not use Playwright or Chrome DevTools MCP.
   visual checks), is reassigned to reviewer/Fable by the run amendment. It is
   deliberately not performed or claimed by this implementation session.
 
-## Serial verification record
-
-To be filled only from fresh command output:
+## Serial verification record (filled by reviewer/Fable 2026-07-26 — Codex was host-blocked at this step, 0xC0000142)
 
 | Step | Result | Evidence |
 |---|---|---|
-| root `bun run build` | pending | — |
-| `apps/web` `bunx tsc --noEmit` | pending | — |
-| synthetic WebGPU probe | pending | `world-stage-probe-summary.json` |
-| synthetic forced-WebGL probe | pending | `world-stage-probe-webgl-summary.json` |
-| real-route probe | pending | `world-stage-route-summary.json` |
-| `/cove/history` outside-group smoke | reassigned/manual | reviewer |
-| `/cove/verify` outside-group smoke | reassigned/manual | reviewer |
-| full manual Cove play/visual drive | reassigned | reviewer/Fable |
+| root `bun run build` | PASS (exit 0) | run post-review-fixes |
+| `apps/web` `bunx tsc --noEmit` | PASS (exit 0) | run post-review-fixes |
+| synthetic WebGPU probe | PASS | `world-stage-probe-summary.json` |
+| synthetic forced-WebGL probe | PASS | `world-stage-probe-webgl-summary.json` |
+| real-route probe (30 game↔cove round trips) | PASS — canvas mounts 1, zero hidden violations, listener delta 0, heap +12.5% (<15% gate; higher than synthetic ~1.2% — WATCH ITEM for the P1c 50–100-loop soak) | `world-stage-route-summary.json` |
+| `/cove/history` outside-group smoke | PASS — renders, 0 canvases | reviewer browser |
+| `/cove/verify` outside-group smoke | not separately driven (same layout tree as history) | — |
+| manual drive: /game boot → cove (fade) → Back to World (fade) | PASS — `SeaLoadingScreen` NEVER mounted on return (MutationObserver armed through the crossing), world instantly live, canvas count 1 throughout | reviewer screenshots `p1b-cove-final2.png`, `p1b-world-returned.png` |
+| deep-link cold `/cove` | PASS — cove active; 3D fetches were ONLY cove interior GLBs + lobster prop + player VRM/locomotion clips; zero world environment assets | reviewer network capture |
+| demo slots spin through the modal | NOT exercised headless (3D raycast click flow); REST/store path is untouched by this diff — covered by founder staging playtest | honest gap |
+
+## Review findings fixed in-slice (Fable, 2026-07-26)
+
+1. **World-label bleed onto /cove (BLOCKING, fixed).** The labels overlay was a
+   module singleton while the stage mounts TWO hosts (world + cove-interior's
+   own bank-label host) against one global registry: the world host's frozen
+   DOM stayed painted over the cove AND the cove host rendered every
+   registered label (world's included). Fix: entries carry `sceneId` (captured
+   from SceneIdContext at registration); each host renders + projects ONLY its
+   own scene's entries; the projection pass and visibility gate target the
+   instance's own overlay element (never the module singleton); module
+   singleton cleanup is equality-guarded; the occluder `_sceneRef` self-heals
+   at the top of the active host's projection pass. Verified live: on /cove the
+   world host is `display:none` holding 40 labels, the cove host shows exactly
+   its 2.
+2. **`useSceneFrame` lacked render-priority support (BLOCKING, fixed).** Three
+   swept owners (player-avatar ×2, npc-controller) were `useFrame(cb, -100)` —
+   controllers must run before the follow camera. The hook now accepts
+   `(cb, priority?)` / `(sceneId, cb, priority?)`; the stage scheduler
+   dispatches in ascending priority; the legacy path passes priority through
+   to R3F's subscriber list. The three call sites keep `-100`.
+3. **First `requestWorldStageNavigation` after a cold boot can return false**
+   (once per page load; not fully root-caused). Both UI call sites carry the
+   `router.push` fallback and the pathname authority drives the same stage
+   transition, so the crossing still works — the only degradation is that the
+   first crossing of a session may skip `onMidway` (cove-exit avatar
+   reposition to the door). P1c task: root-cause + retry-once hardening.
+4. **Minor:** cold /cove downloads BOTH interior GLBs (optimized + fallback).
+   Possibly deliberate fast-switch preload; P1c to confirm or lazy-load the
+   fallback.
 
 ## Reviewer checklist
 

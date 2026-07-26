@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useMemo, useEffect, Suspense } from 'react';
-import { useThree } from '@react-three/fiber';
+import { useThree, type RootState } from '@react-three/fiber';
 import {
   useSceneActive,
   useSceneFrame,

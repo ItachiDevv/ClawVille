@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useThree } from '@react-three/fiber';
+import type { Camera, Scene } from 'three/webgpu';
 import CoveInteriorScene from '@/lib/three/cove-interior';
 import { useSceneActive } from './use-scene-frame';
 import { useStageStore } from './stage-store';
@@ -66,8 +67,8 @@ export default function StageHostedCoveScene({
             await (
               gl as unknown as {
                 compileAsync: (
-                  scene: typeof scene,
-                  camera: typeof camera,
+                  scene: Scene,
+                  camera: Camera,
                 ) => Promise<void>;
               }
             ).compileAsync(scene, camera);

@@ -13,7 +13,7 @@
  */
 
 import { useEffect, useRef } from 'react';
-import { useThree } from '@react-three/fiber';
+import { useThree, type RootState } from '@react-three/fiber';
 import {
   useSceneActive,
   useSceneFrame,
