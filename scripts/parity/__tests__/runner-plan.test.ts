@@ -446,6 +446,28 @@ describe('offline live-runner plans', () => {
     expect(reachedFor('holdem', 'H3')(wire)).toBe(false);
   });
 
+  test('H7 practice reach recognizes authoritative blind log types only', () => {
+    const dealtWithBlinds = {
+      humanHole: [
+        { rank: 'A', suit: 'spades' },
+        { rank: 'K', suit: 'hearts' },
+      ],
+      publicActionLog: [
+        { seat: 1, street: 'preflop', type: 'post-sb', amount: '1' },
+        { seat: 2, street: 'preflop', type: 'post-bb', amount: '2' },
+      ],
+    };
+    const dealtWithoutBlindOrPot = {
+      humanHole: dealtWithBlinds.humanHole,
+      publicActionLog: [
+        { seat: 1, street: 'preflop', type: 'check', amount: '0' },
+      ],
+    };
+
+    expect(reachedFor('holdem', 'H7')(dealtWithBlinds)).toBe(true);
+    expect(reachedFor('holdem', 'H7')(dealtWithoutBlindOrPot)).toBe(false);
+  });
+
   test('cash felt negative reach uses the public seat projection', () => {
     const wire = {
       live: {

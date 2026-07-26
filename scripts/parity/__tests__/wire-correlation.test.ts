@@ -1,8 +1,14 @@
 import { describe, expect, test } from 'bun:test';
 import { RECORDED_CASES } from '../fixtures/recorded';
-import type { CardParityRoot, WireRecord } from '../types';
+import { reachedFor } from '../scenarios/runtime';
+import type {
+  CardParityRoot,
+  CheckpointResult,
+  WireRecord,
+} from '../types';
 import {
   resolveWireForCheckpoint,
+  resolveWireForReachedPredicate,
   resolveWireForRoot,
 } from '../wire-correlation';
 
@@ -150,5 +156,52 @@ describe('immutable application correlation', () => {
     expect(resolveWireForCheckpoint(firstRoot, [first, second], null)).toBe(first);
     expect(resolveWireForCheckpoint(firstRoot, [first, second], 'coup-1')).toBeNull();
     expect(resolveWireForCheckpoint(secondRoot, [first, second], 'coup-1')).toBe(second);
+  });
+
+  test('reached uses the last passing checkpoint wire instead of teardown tail', () => {
+    const finalRoot = {
+      ...structuredClone(RECORDED_CASES[3]!.root),
+      correlation: { hand: 'closed', handNumber: null },
+    } as CardParityRoot;
+    const certified = baseRecord({
+      seq: 7,
+      handId: 'practice-hand',
+      responseBody: {
+        handId: 'practice-hand',
+        humanHole: [
+          { suit: 'spades', rank: 'A' },
+          { suit: 'hearts', rank: 'K' },
+        ],
+        pot: '30',
+      },
+    });
+    const teardown = baseRecord({
+      seq: 8,
+      handId: 'closed',
+      responseBody: { ok: true, closed: true },
+    });
+    const checkpoints: CheckpointResult[] = [{
+      label: 'hole-1',
+      revision: 3,
+      correlationHand: 'practice-hand',
+      surface: 'holdem-tray-practice',
+      pass: true,
+      mismatches: [],
+      resolvedWireSeq: certified.seq,
+    }];
+    const predicate = reachedFor(
+      'holdem',
+      'H7',
+      'holdem-tray-practice',
+    );
+    expect(predicate(certified.responseBody)).toBe(true);
+    expect(predicate(teardown.responseBody)).toBe(false);
+    const reachedWire = resolveWireForReachedPredicate(
+      finalRoot,
+      checkpoints,
+      [certified, teardown],
+    );
+    expect(reachedWire).toBe(certified);
+    expect(predicate(reachedWire?.responseBody)).toBe(true);
   });
 });

@@ -24,6 +24,7 @@ import { assertVisibleSurface } from './visible-surface';
 import {
   explainWireCorrelation,
   resolveWireForCheckpoint,
+  resolveWireForReachedPredicate,
   resolveWireForRoot,
 } from './wire-correlation';
 import {
@@ -99,8 +100,9 @@ function runRecordedCases(): { pass: boolean; output: string } {
   return { pass, output: output.join('\n') };
 }
 
-async function emitEmptyMatrix(): Promise<boolean> {
-  const matrix = emitMatrix(SCENARIO_CATALOG);
+async function emitExistingMatrix(): Promise<boolean> {
+  const results = await existingResults();
+  const matrix = emitMatrix(SCENARIO_CATALOG, results);
   const path = value('--matrix') ?? 'scripts/parity/out/matrix.md';
   await writeTextReport(path, matrix.markdown);
   console.log(matrix.markdown.trimEnd());
@@ -661,8 +663,17 @@ async function runLiveScenario(): Promise<void> {
       }
     }
     allWires = await readCapturedWire(driver);
-    const finalWire = finalRoot ? resolveWireForRoot(finalRoot, allWires) : null;
-    const reached = Boolean(finalWire && scenario.reachedPredicate(finalWire.responseBody));
+    const finalWire = resolveWireForReachedPredicate(
+      finalRoot,
+      checkpoints,
+      allWires,
+    );
+    const lastPassingCheckpoint = checkpoints
+      .slice()
+      .reverse()
+      .find((checkpoint) => checkpoint.pass);
+    const reached = lastPassingCheckpoint?.expectedResolvedWire === '<none>'
+      || Boolean(finalWire && scenario.reachedPredicate(finalWire.responseBody));
     const money = moneyAssertions.length > 0
       ? {
           equation: moneyAssertions.map((assertion) => assertion.equation).join('; '),
@@ -765,7 +776,7 @@ async function main(): Promise<void> {
     return;
   }
   if (has('--emit-matrix')) {
-    const pass = await emitEmptyMatrix();
+    const pass = await emitExistingMatrix();
     if (!pass) process.exitCode = 1;
     return;
   }

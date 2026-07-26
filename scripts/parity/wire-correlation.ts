@@ -1,4 +1,8 @@
-import type { CardParityRoot, WireRecord } from './types';
+import type {
+  CardParityRoot,
+  CheckpointResult,
+  WireRecord,
+} from './types';
 
 let activeRecords: readonly WireRecord[] = [];
 
@@ -206,6 +210,25 @@ export function resolveWireForCheckpoint(
     return null;
   }
   return resolveWireForRoot(root, records);
+}
+
+export function resolveWireForReachedPredicate(
+  finalRoot: CardParityRoot | null,
+  checkpoints: readonly CheckpointResult[],
+  records: readonly WireRecord[],
+): WireRecord | null {
+  const certifiedCheckpoint = checkpoints
+    .slice()
+    .reverse()
+    .find((checkpoint) => (
+      checkpoint.pass && checkpoint.resolvedWireSeq !== null
+    ));
+  if (certifiedCheckpoint) {
+    return records.find(
+      (record) => record.seq === certifiedCheckpoint.resolvedWireSeq,
+    ) ?? null;
+  }
+  return finalRoot ? resolveWireForRoot(finalRoot, records) : null;
 }
 
 export function immutableFieldsFromBodies(

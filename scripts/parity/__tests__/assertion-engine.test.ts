@@ -265,6 +265,65 @@ describe('recorded-wire parity assertions', () => {
     }).pass).toBe(false);
   });
 
+  test('felt practice initialization explicitly certifies no wire without allowing a leak', () => {
+    const root: CardParityRoot = {
+      surface: 'holdem-felt-practice',
+      version: 2,
+      instanceId: 'felt-initialization',
+      renderRevision: 2,
+      correlation: { hand: '', handNumber: null },
+      dealStep: 'hole',
+      phase: 'idle',
+      transition: 'idle',
+      slots: [
+        { slot: 'opp-1-1', facing: 'down', card: '', status: 'active' },
+        { slot: 'opp-1-2', facing: 'down', card: '', status: 'active' },
+      ],
+      meta: { 'on-felt': 'true' },
+    };
+    const checkpoint = {
+      label: 'every-step-1',
+      surface: root.surface,
+      expectRevisionAdvance: true,
+      expectCorrelationHand: '',
+      expectResolvedWire: '<none>',
+    } as const;
+    const result = assertParityCheckpoint({
+      game: 'holdem',
+      checkpoint,
+      root,
+      records: [],
+    });
+    expect(result).toMatchObject({
+      pass: true,
+      mismatches: [],
+      resolvedWireSeq: null,
+      expectedResolvedWire: '<none>',
+    });
+
+    const leaked = structuredClone(root);
+    leaked.slots[0] = {
+      slot: 'opp-1-1',
+      facing: 'up',
+      card: 'As' as CardParityRoot['slots'][number]['card'],
+      status: 'active',
+    };
+    expect(assertParityCheckpoint({
+      game: 'holdem',
+      checkpoint,
+      root: leaked,
+      records: [],
+    })).toMatchObject({
+      pass: false,
+      mismatches: [{
+        slot: 'opp-1-1',
+        field: 'facing',
+        expected: 'down|empty',
+        actual: 'up',
+      }],
+    });
+  });
+
   test('cash felt uses fixed POV opponent slots and empties non-card seats', () => {
     const wire: WireRecord = {
       seq: 42,

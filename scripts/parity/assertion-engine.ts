@@ -96,6 +96,36 @@ export function assertParityCheckpoint({
   }
 
   const wire = resolveWireForRoot(root, records);
+  if (checkpoint.expectResolvedWire === '<none>') {
+    if (wire) {
+      rootMismatches.push(rootMismatch(
+        'meta:resolved-wire',
+        '<none>',
+        String(wire.seq),
+      ));
+    }
+    for (const slot of root.slots.filter(
+      (candidate) => candidate.slot.startsWith('opp-')
+        && (candidate.facing === 'up' || candidate.card !== ''),
+    )) {
+      rootMismatches.push({
+        slot: slot.slot,
+        field: 'facing',
+        expected: 'down|empty',
+        actual: slot.facing,
+      });
+    }
+    return {
+      label: checkpoint.label,
+      revision: root.renderRevision,
+      correlationHand: root.correlation.hand,
+      surface: root.surface,
+      pass: rootMismatches.length === 0,
+      mismatches: rootMismatches,
+      resolvedWireSeq: wire?.seq ?? null,
+      expectedResolvedWire: '<none>',
+    };
+  }
   if (!wire) {
     rootMismatches.push(rootMismatch(
       'meta:resolved-wire',

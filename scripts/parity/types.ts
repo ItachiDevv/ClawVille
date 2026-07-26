@@ -57,6 +57,7 @@ export interface ParityCheckpoint {
   expectRenderRevision?: number;
   expectDealStep?: string;
   expectCorrelationHand?: string;
+  expectResolvedWire?: '<none>';
   expectTransition?: CardParityRoot['transition'];
   final?: boolean;
 }
@@ -86,6 +87,7 @@ export interface CheckpointResult {
   pass: boolean;
   mismatches: Mismatch[];
   resolvedWireSeq: number | null;
+  expectedResolvedWire?: '<none>';
   screenshot?: string;
 }
 

@@ -97,9 +97,11 @@ export function reachedFor(
     if (row === 'H1' || row === 'H8') return ownHole.length === 2;
     if (row === 'H7') {
       const log = arr(body.publicActionLog);
+      // Authoritative blind log types are 'post-sb'/'post-bb' (holdem-engine.ts
+      // postBlind, HoldemLogType in @clawville/shared cove-holdem.ts).
       return ownHole.length === 2
         && (body.pot !== undefined || log.some((entry) => (
-          ['small_blind', 'big_blind', 'post_blind'].includes(String(rec(entry)?.type))
+          ['post-sb', 'post-bb'].includes(String(rec(entry)?.type))
         )));
     }
     if (row === 'H-neg') {
@@ -817,11 +819,17 @@ export async function* driveScenario(
       };
     })()`);
     let cursor = initial.firstRevision;
+    const expectsNoWire = surface === 'holdem-felt-practice'
+      && initial.correlation.hand === '';
     yield {
       ...checkpointFor(surface, phases[0]!, 0, 0),
       expectRenderRevision: initial.firstRevision,
       expectCorrelationHand: initial.correlation.hand,
+      ...(expectsNoWire
+        ? { expectResolvedWire: '<none>' as const }
+        : {}),
     };
+    if (expectsNoWire) return;
     const deadline = Date.now() + 90_000;
     let read = 2;
     while (Date.now() < deadline) {
