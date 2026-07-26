@@ -29,10 +29,14 @@ import {
   resetStageFrameDiagnostics,
 } from './use-scene-frame';
 import {
+  advanceWorldStageRoute,
   installWorldStageNavigationHandler,
+  markWorldStageMounted,
+  markWorldStageUnmounted,
   requestWorldStageNavigation,
   type WorldStageNavigationRequest,
 } from './stage-navigation';
+import { decideStageNavigationOwnership } from './stage-navigation-ownership';
 
 const WORLD_SCENE_ID = 'world';
 const COVE_SCENE_ID = 'cove';
@@ -65,6 +69,15 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
     requestId: number;
     navigation: WorldStageNavigationRequest;
   } | null>(null);
+
+  useEffect(() => {
+    markWorldStageMounted();
+    return () => markWorldStageUnmounted();
+  }, []);
+
+  useEffect(() => {
+    advanceWorldStageRoute(pathname);
+  }, [pathname]);
 
   useEffect(() => {
     resetStageStore();
@@ -109,12 +122,26 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
       const sceneId = sceneIdForPathname(navigation.to);
       if (!sceneId) return false;
       const state = useStageStore.getState();
-      if (
-        state.pendingRequest !== null ||
-        state.transition?.phase === 'error'
-      ) {
+      const ownership = decideStageNavigationOwnership({
+        targetSceneId: sceneId,
+        pendingRequest: state.pendingRequest,
+        transitionPhase: state.transition?.phase ?? null,
+      });
+
+      if (ownership === 'EXECUTE_NOW') {
+        navigation.onMidway?.();
+        router.push(navigation.to);
         return true;
       }
+
+      if (ownership === 'ADOPT' && state.pendingRequest) {
+        navigationRef.current = {
+          requestId: state.pendingRequest.requestId,
+          navigation,
+        };
+        return true;
+      }
+
       requestStageScene(sceneId);
       const request = useStageStore.getState().pendingRequest;
       if (!request || request.sceneId !== sceneId) return false;
