@@ -15,6 +15,7 @@ import {
   _roots,
   events as createPointerEvents,
   extend,
+  useFrame,
   useThree,
   type RootState,
   type ThreeToJSXElements,
@@ -446,6 +447,8 @@ const rendererHealthByCanvas = new WeakMap<
 >();
 let currentStageBackend: 'webgpu' | 'webgl' | 'unknown' = 'unknown';
 let currentStageRenderer: THREE.WebGPURenderer | null = null;
+let previousStageRenderCalls: number | null = null;
+let currentStageDrawCallsFrame: number | null = null;
 
 export function readStageBackend(): 'webgpu' | 'webgl' | 'unknown' {
   return currentStageBackend;
@@ -492,7 +495,7 @@ export function readStageRendererCounters(): StageRendererCounters {
       texturesSizeBytes: numberOrNull(memory?.texturesSize),
       memoryTotalBytes: numberOrNull(memory?.total),
       renderCallsLifetime: numberOrNull(render?.calls),
-      drawCallsFrame: numberOrNull(render?.drawCalls),
+      drawCallsFrame: currentStageDrawCallsFrame,
     };
   }
   if (backend === 'webgl') {
@@ -503,7 +506,7 @@ export function readStageRendererCounters(): StageRendererCounters {
       texturesSizeBytes: null,
       memoryTotalBytes: null,
       renderCallsLifetime: null,
-      drawCallsFrame: numberOrNull(render?.calls),
+      drawCallsFrame: currentStageDrawCallsFrame,
     };
   }
   return {
@@ -515,6 +518,38 @@ export function readStageRendererCounters(): StageRendererCounters {
     renderCallsLifetime: null,
     drawCallsFrame: null,
   };
+}
+
+function StageRendererCounterSampler(): null {
+  const gl = useThree((state) => state.gl);
+  useFrame(() => {
+    const render = (
+      gl as unknown as {
+        info?: { render?: { calls?: number; drawCalls?: number } };
+      }
+    ).info?.render;
+    if (currentStageBackend === 'webgl') {
+      const calls = render?.calls;
+      if (typeof calls !== 'number' || !Number.isFinite(calls)) {
+        previousStageRenderCalls = null;
+        currentStageDrawCallsFrame = null;
+        return;
+      }
+      currentStageDrawCallsFrame =
+        previousStageRenderCalls === null || calls < previousStageRenderCalls
+          ? null
+          : calls - previousStageRenderCalls;
+      previousStageRenderCalls = calls;
+      return;
+    }
+    previousStageRenderCalls = null;
+    currentStageDrawCallsFrame =
+      typeof render?.drawCalls === 'number' &&
+      Number.isFinite(render.drawCalls)
+        ? render.drawCalls
+        : null;
+  });
+  return null;
 }
 
 function createStageRenderer(props: {
@@ -560,6 +595,8 @@ function createStageRenderer(props: {
     }
     currentStageBackend = usedWebGL ? 'webgl' : 'webgpu';
     currentStageRenderer = renderer;
+    previousStageRenderCalls = null;
+    currentStageDrawCallsFrame = null;
     const health = new StageRendererHealth(canvas);
     health.setInitial(renderer, usedWebGL);
     rendererHealthByCanvas.set(canvas, health);
@@ -973,6 +1010,7 @@ export function WorldStageCanvas({
           cameras={cameras}
         />
         <StageFrameScheduler />
+        <StageRendererCounterSampler />
         {scenes.map((scene) => (
           <group key={scene.sceneId}>
             <StageSceneAppearance scene={scene} />

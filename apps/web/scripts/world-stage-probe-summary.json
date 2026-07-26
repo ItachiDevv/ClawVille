@@ -1,8 +1,8 @@
 {
   "pass": true,
   "lane": "synthetic",
-  "url": "http://localhost:3000/perf/stage?stage=1&webgpu=1",
-  "backend": "webgpu",
+  "url": "http://localhost:3000/perf/stage?stage=1&webgl=1",
+  "backend": "webgl",
   "requestedTransitions": 102,
   "requestedRoundTrips": null,
   "completedRoundTrips": 0,
@@ -14,8 +14,8 @@
   "hiddenCameraViolations": [],
   "hiddenStoreViolations": [],
   "activeGrowthViolations": [],
-  "listenerBaseline": 5,
-  "listenerEnd": 5,
+  "listenerBaseline": 4,
+  "listenerEnd": 4,
   "listenerDelta": 0,
   "listenerUnderflowCount": 0,
   "transitionErrors": [],
@@ -25,9 +25,9 @@
   },
   "heap": {
     "available": true,
-    "baselineBytes": 68086189,
-    "endBytes": 68950949,
-    "growthRatio": 0.012700960542820218,
+    "baselineBytes": 67880470,
+    "endBytes": 68706165,
+    "growthRatio": 0.012163955258412323,
     "threshold": 0.15,
     "midpointBytes": null,
     "secondHalfGrowthRatio": null,
@@ -38,21 +38,33 @@
       {
         "label": "post-warmup",
         "loop": 0,
-        "backend": "webgpu"
+        "backend": "webgl",
+        "textures": 9,
+        "geometries": 15,
+        "texturesSizeBytes": null,
+        "memoryTotalBytes": null,
+        "renderCallsLifetime": null,
+        "drawCallsFrame": 622
       },
       {
         "label": "final",
         "loop": 102,
-        "backend": "webgpu"
+        "backend": "webgl",
+        "textures": 9,
+        "geometries": 15,
+        "texturesSizeBytes": null,
+        "memoryTotalBytes": null,
+        "renderCallsLifetime": null,
+        "drawCallsFrame": 7290
       }
     ]
   },
   "ledger": {
     "alpha": {
       "texturesBytes": 0,
-      "geometryBytes": 2736,
+      "geometryBytes": 2520,
       "renderTargetsBytes": 0,
-      "total": 2736,
+      "total": 2520,
       "counts": {
         "textures": 0,
         "geometries": 3,
@@ -68,9 +80,9 @@
     },
     "beta": {
       "texturesBytes": 0,
-      "geometryBytes": 66720,
+      "geometryBytes": 53760,
       "renderTargetsBytes": 0,
-      "total": 66720,
+      "total": 53760,
       "counts": {
         "textures": 0,
         "geometries": 3,
@@ -86,9 +98,9 @@
     },
     "cove-spike": {
       "texturesBytes": 10595302,
-      "geometryBytes": 17873160,
+      "geometryBytes": 17784432,
       "renderTargetsBytes": 0,
-      "total": 28468462,
+      "total": 28379734,
       "counts": {
         "textures": 12,
         "geometries": 14,
@@ -153,5 +165,5 @@
     "heapBelow15Percent": true
   },
   "failure": null,
-  "generatedAt": "2026-07-26T21:52:43.106Z"
+  "generatedAt": "2026-07-26T21:58:40.550Z"
 }
