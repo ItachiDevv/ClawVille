@@ -484,6 +484,30 @@ function diffSceneInventory(early, late) {
   ])) {
     const earlyScene = early?.[sceneId] ?? {};
     const lateScene = late?.[sceneId] ?? {};
+    const earlyIdentities = earlyScene.geometryIdentities ?? {};
+    const lateIdentities = lateScene.geometryIdentities ?? {};
+    const addedGeometryIdentities = {};
+    const removedGeometryIdentities = {};
+    for (const identity of Object.keys(lateIdentities)) {
+      if (!(identity in earlyIdentities)) {
+        const nameType = identity.replace(
+          /^[0-9a-f-]+ \/ /i,
+          '',
+        );
+        addedGeometryIdentities[nameType] =
+          (addedGeometryIdentities[nameType] ?? 0) + 1;
+      }
+    }
+    for (const identity of Object.keys(earlyIdentities)) {
+      if (!(identity in lateIdentities)) {
+        const nameType = identity.replace(
+          /^[0-9a-f-]+ \/ /i,
+          '',
+        );
+        removedGeometryIdentities[nameType] =
+          (removedGeometryIdentities[nameType] ?? 0) + 1;
+      }
+    }
     diff[sceneId] = {
       objects: (lateScene.objects ?? 0) - (earlyScene.objects ?? 0),
       meshes: (lateScene.meshes ?? 0) - (earlyScene.meshes ?? 0),
@@ -500,9 +524,17 @@ function diffSceneInventory(early, late) {
         earlyScene.geometriesByNameType,
         lateScene.geometriesByNameType,
       ),
+      addedGeometryIdentities,
+      removedGeometryIdentities,
     };
   }
   return diff;
+}
+
+function removeInventoryIdentities(inventory) {
+  for (const scene of Object.values(inventory ?? {})) {
+    delete scene.geometryIdentities;
+  }
 }
 
 async function recordSeriesSample(
@@ -894,6 +926,8 @@ try {
       summary.inventory.early,
       summary.inventory.late,
     );
+    removeInventoryIdentities(summary.inventory.early);
+    removeInventoryIdentities(summary.inventory.late);
 
     summary.routes.coldInit = await runColdInitProbe(browser, routeOrigin);
 

@@ -30,6 +30,7 @@ export interface StageSceneInventory {
   uniqueGeometries: number;
   meshesByNameType: Record<string, number>;
   geometriesByNameType: Record<string, number>;
+  geometryIdentities: Record<string, number>;
 }
 
 const rootsByScene = new Map<string, THREE.Object3D>();
@@ -57,6 +58,7 @@ export function readStageSceneInventory(): Record<string, StageSceneInventory> {
     const meshesByNameType = new Map<string, number>();
     const geometriesByNameType = new Map<string, number>();
     const geometries = new Set<THREE.BufferGeometry>();
+    const geometryIdentities = new Map<string, string>();
     let objects = 0;
     let meshes = 0;
     let geometryReferences = 0;
@@ -79,6 +81,9 @@ export function readStageSceneInventory(): Record<string, StageSceneInventory> {
         geometryKey,
         (geometriesByNameType.get(geometryKey) ?? 0) + 1,
       );
+      if (!geometryIdentities.has(geometry.uuid)) {
+        geometryIdentities.set(geometry.uuid, geometryKey);
+      }
     });
 
     inventory[sceneId] = {
@@ -88,6 +93,14 @@ export function readStageSceneInventory(): Record<string, StageSceneInventory> {
       uniqueGeometries: geometries.size,
       meshesByNameType: sortedCounts(meshesByNameType),
       geometriesByNameType: sortedCounts(geometriesByNameType),
+      geometryIdentities: sortedCounts(
+        new Map(
+          [...geometryIdentities.entries()].map(([uuid, key]) => [
+            `${uuid} / ${key}`,
+            1,
+          ]),
+        ),
+      ),
     };
   }
   return inventory;
