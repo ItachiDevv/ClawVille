@@ -1690,17 +1690,39 @@ function WorldWarmup({
     const startPostReadyScans = () => {
       if (cancelled || postScanStarted || !canInitTexture) return;
       postScanStarted = true;
-      const scan = () => {
+      const scan = async () => {
         if (cancelled) return;
         const fresh = scanForUnseenTextures();
         if (fresh.length > 0) {
           // Serialize with any still-finishing initial batch if the safety
           // watchdog resumed early. Nothing uploads concurrently with another batch.
-          void queueUpload(fresh, false, false);
+          await queueUpload(fresh, false, false);
+          if (
+            !cancelled &&
+            typeof (gl as any).compileAsync === 'function'
+          ) {
+            try {
+              await withStageSlotFrustumCullingDisabled(
+                'world',
+                () => (gl as any).compileAsync(scene, camera),
+              );
+            } catch (err) {
+              console.warn(
+                '[World3D] post-texture compileAsync failed:',
+                err,
+              );
+            }
+          }
         }
-        postScanTimer = window.setTimeout(scan, 2_000);
+        if (!cancelled) {
+          postScanTimer = window.setTimeout(() => {
+            void scan();
+          }, 2_000);
+        }
       };
-      postScanTimer = window.setTimeout(scan, 2_000);
+      postScanTimer = window.setTimeout(() => {
+        void scan();
+      }, 2_000);
       postStopTimer = window.setTimeout(() => {
         if (postScanTimer !== undefined) window.clearTimeout(postScanTimer);
         postScanTimer = undefined;
