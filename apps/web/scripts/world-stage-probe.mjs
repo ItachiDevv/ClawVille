@@ -20,6 +20,23 @@ if (lane !== 'synthetic' && lane !== 'routes' && lane !== 'soak') {
   );
 }
 const routeLane = lane === 'routes' || lane === 'soak';
+const dwellTarget = argv.get('dwell') ?? null;
+if (
+  dwellTarget !== null &&
+  (lane !== 'soak' || (dwellTarget !== 'game' && dwellTarget !== 'cove'))
+) {
+  throw new Error(
+    '--dwell is supported only for --lane=soak and must be game or cove',
+  );
+}
+const dwellSeconds = Number(argv.get('dwell-seconds') ?? 180);
+if (
+  dwellTarget !== null &&
+  (!Number.isFinite(dwellSeconds) || dwellSeconds < 10 || dwellSeconds > 600)
+) {
+  throw new Error('--dwell-seconds must be between 10 and 600');
+}
+const dwellMode = dwellTarget !== null;
 const forceWebGL = argv.has('webgl');
 const requestedUrl =
   argv.get('url') ??
@@ -32,14 +49,15 @@ if (forceWebGL) {
   parsedUrl.searchParams.set('webgl', '1');
 }
 const url = parsedUrl.toString();
-const transitionCount =
-  routeLane
-    ? Number(argv.get('loops') ?? (lane === 'soak' ? 60 : 30))
-    : Math.max(100, Number(argv.get('transitions') ?? 102));
+const transitionCount = routeLane
+  ? Number(argv.get('loops') ?? (lane === 'soak' ? 60 : 30))
+  : Math.max(100, Number(argv.get('transitions') ?? 102));
 if (
   !Number.isInteger(transitionCount) ||
   transitionCount <= 0 ||
-  (lane === 'soak' && (transitionCount < 20 || transitionCount > 100))
+  (lane === 'soak' &&
+    !dwellMode &&
+    (transitionCount < 20 || transitionCount > 100))
 ) {
   throw new Error(
     lane === 'soak'
@@ -56,8 +74,7 @@ const outputPath = resolve(
       : `${SCRIPT_DIR}/world-stage-probe-summary.json`),
 );
 const chromePath =
-  argv.get('chrome') ??
-  'C:/Program Files/Google/Chrome/Application/chrome.exe';
+  argv.get('chrome') ?? 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 const scenes = ['alpha', 'beta', 'cove-spike'];
 const WORLD_ONLY_ASSET_PATTERN =
   /\/models\/(?:characters\/|(?:pineapple-house|chum-bucket|krusty-krab|salty-spitoon|boating-school|patty-building|building-lighthouse|arcade\/claw-arcade-exterior|cove\/cove-exterior|patricks-rock|squidward-house|coral-reef|kelp\.glb|building-shell|building-seashell|building-anchor|building-barrel|building-chest|building-lantern|crayfish|building-tower2|quest-bounty-pavilion|bazaar-merchant-stand|shisha-oasis))/i;
@@ -67,9 +84,17 @@ const summary = {
   lane,
   url,
   backend: 'unknown',
-  requestedTransitions:
-    routeLane ? transitionCount * 2 : transitionCount,
-  requestedRoundTrips: routeLane ? transitionCount : null,
+  requestedTransitions: routeLane
+    ? dwellMode
+      ? 0
+      : transitionCount * 2
+    : transitionCount,
+  requestedRoundTrips: routeLane ? (dwellMode ? 0 : transitionCount) : null,
+  experiment: {
+    mode: dwellMode ? `dwell-${dwellTarget}` : 'crossings',
+    dwellSeconds: dwellMode ? dwellSeconds : null,
+    sampleIntervalSeconds: dwellMode ? 10 : null,
+  },
   completedRoundTrips: 0,
   completedTransitions: 0,
   warmupTransitions: 0,
@@ -97,6 +122,12 @@ const summary = {
   },
   renderer: {
     samples: [],
+  },
+  series: [],
+  inventory: {
+    early: null,
+    late: null,
+    diff: null,
   },
   ledger: null,
   routes: {
@@ -159,10 +190,8 @@ async function startWorldProbeServer() {
       return;
     }
 
-    const pathname = new URL(
-      request.url ?? '/',
-      'http://localhost:4000',
-    ).pathname;
+    const pathname = new URL(request.url ?? '/', 'http://localhost:4000')
+      .pathname;
     if (request.method === 'POST' && pathname === '/api/world/join') {
       response.writeHead(200, {
         ...corsHeaders,
@@ -187,17 +216,12 @@ async function startWorldProbeServer() {
         Connection: 'keep-alive',
         'Content-Type': 'text/event-stream',
       });
-      response.write(
-        'event: snapshot\ndata: {"npcs":[],"players":[]}\n\n',
-      );
+      response.write('event: snapshot\ndata: {"npcs":[],"players":[]}\n\n');
       streams.add(response);
       request.on('close', () => streams.delete(response));
       return;
     }
-    if (
-      request.method === 'GET' &&
-      pathname === '/api/research/stream'
-    ) {
+    if (request.method === 'GET' && pathname === '/api/research/stream') {
       response.writeHead(200, {
         ...corsHeaders,
         'Cache-Control': 'no-cache',
@@ -227,10 +251,7 @@ async function startWorldProbeServer() {
       );
       return;
     }
-    if (
-      request.method === 'GET' &&
-      pathname === '/api/land/parcels'
-    ) {
+    if (request.method === 'GET' && pathname === '/api/land/parcels') {
       response.writeHead(200, {
         ...corsHeaders,
         'Content-Type': 'application/json',
@@ -291,10 +312,7 @@ async function waitForSettled(page, expectedScene) {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     const state = await snapshot(page);
-    if (
-      state.transitionPhase === 'error' ||
-      state.transitionError
-    ) {
+    if (state.transitionPhase === 'error' || state.transitionError) {
       throw new Error(
         state.transitionError ??
           `transition entered error for ${expectedScene}`,
@@ -306,9 +324,7 @@ async function waitForSettled(page, expectedScene) {
     ) {
       return;
     }
-    await new Promise((resolveDelay) =>
-      setTimeout(resolveDelay, 25),
-    );
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
   }
   throw new Error(
     `transition to ${expectedScene} did not settle within 30000ms`,
@@ -317,10 +333,7 @@ async function waitForSettled(page, expectedScene) {
 
 function sameNumbers(a, b) {
   if (!Array.isArray(a) || !Array.isArray(b)) return false;
-  return (
-    a.length === b.length &&
-    a.every((value, index) => value === b[index])
-  );
+  return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
 async function requestAndWait(page, sceneId) {
@@ -356,12 +369,7 @@ async function navigateAndWait(page, pathname, sceneId) {
   return state;
 }
 
-async function traverseHistoryAndWait(
-  page,
-  direction,
-  pathname,
-  sceneId,
-) {
+async function traverseHistoryAndWait(page, direction, pathname, sceneId) {
   if (direction === 'back') {
     await page.goBack({ waitUntil: 'domcontentloaded', timeout: 30_000 });
   } else {
@@ -447,6 +455,85 @@ function recordRendererSample(label, loop, state) {
     loop,
     ...(state.renderer ?? { backend: state.backend ?? 'unknown' }),
   });
+}
+
+async function readSceneInventory(page) {
+  return page.evaluate(() => {
+    const probe = window.__WORLD_STAGE_PROBE__;
+    if (typeof probe?.sceneInventory !== 'function') {
+      throw new Error('production stage probe is missing sceneInventory()');
+    }
+    return probe.sceneInventory();
+  });
+}
+
+function diffCountRecord(early = {}, late = {}) {
+  const diff = {};
+  for (const key of new Set([...Object.keys(early), ...Object.keys(late)])) {
+    const delta = (late[key] ?? 0) - (early[key] ?? 0);
+    if (delta !== 0) diff[key] = delta;
+  }
+  return diff;
+}
+
+function diffSceneInventory(early, late) {
+  const diff = {};
+  for (const sceneId of new Set([
+    ...Object.keys(early ?? {}),
+    ...Object.keys(late ?? {}),
+  ])) {
+    const earlyScene = early?.[sceneId] ?? {};
+    const lateScene = late?.[sceneId] ?? {};
+    diff[sceneId] = {
+      objects: (lateScene.objects ?? 0) - (earlyScene.objects ?? 0),
+      meshes: (lateScene.meshes ?? 0) - (earlyScene.meshes ?? 0),
+      geometryReferences:
+        (lateScene.geometryReferences ?? 0) -
+        (earlyScene.geometryReferences ?? 0),
+      uniqueGeometries:
+        (lateScene.uniqueGeometries ?? 0) - (earlyScene.uniqueGeometries ?? 0),
+      meshesByNameType: diffCountRecord(
+        earlyScene.meshesByNameType,
+        lateScene.meshesByNameType,
+      ),
+      geometriesByNameType: diffCountRecord(
+        earlyScene.geometriesByNameType,
+        lateScene.geometriesByNameType,
+      ),
+    };
+  }
+  return diff;
+}
+
+async function recordSeriesSample(
+  page,
+  { kind, index, loop = null, elapsedMs, forceGc = false, state = null },
+) {
+  if (forceGc) await collectGarbage(page);
+  const sampledState = state ?? (await snapshot(page));
+  const heapBytes = await readHeapBytes(page);
+  const renderer = sampledState.renderer ?? {
+    backend: sampledState.backend ?? 'unknown',
+  };
+  const sample = {
+    kind,
+    index,
+    loop,
+    elapsedMs,
+    pathname: sampledState.pathname ?? null,
+    forcedGc: forceGc,
+    heapBytes,
+    heapMB: typeof heapBytes === 'number' ? heapBytes / (1024 * 1024) : null,
+    backend: renderer.backend ?? sampledState.backend ?? 'unknown',
+    textures: renderer.textures ?? null,
+    geometries: renderer.geometries ?? null,
+    drawCalls: renderer.drawCallsFrame ?? null,
+    texturesSizeBytes: renderer.texturesSizeBytes ?? null,
+    memoryTotalBytes: renderer.memoryTotalBytes ?? null,
+    renderCallsLifetime: renderer.renderCallsLifetime ?? null,
+  };
+  summary.series.push(sample);
+  return { sample, state: sampledState };
 }
 
 async function runColdInitProbe(browser, routeOrigin) {
@@ -569,7 +656,6 @@ try {
   });
 
   if (routeLane) {
-
     const routeOrigin = new URL(url).origin;
     for (const [routeName, pathname] of [
       ['cove', '/cove'],
@@ -588,10 +674,9 @@ try {
       waitUntil: 'domcontentloaded',
       timeout: 30_000,
     });
-    await page.waitForFunction(
-      () => Boolean(window.__WORLD_STAGE_PROBE__),
-      { timeout: 30_000 },
-    );
+    await page.waitForFunction(() => Boolean(window.__WORLD_STAGE_PROBE__), {
+      timeout: 30_000,
+    });
     await waitForSettled(page, 'cove');
     const coldCove = await snapshot(page);
     if (coldCove.pathname !== '/cove') {
@@ -614,119 +699,168 @@ try {
     summary.warmupTransitions += 1;
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 750));
 
-    const warmSnapshot = await snapshot(page);
+    if (dwellTarget === 'game') {
+      await navigateAndWait(page, '/game', 'world');
+      summary.warmupTransitions += 1;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 750));
+    }
+
+    const experimentStartedAt = Date.now();
+    const baseline = await recordSeriesSample(page, {
+      kind: 'baseline',
+      index: 0,
+      loop: 0,
+      elapsedMs: 0,
+      forceGc: true,
+    });
+    const warmSnapshot = baseline.state;
     summary.backend = warmSnapshot.backend;
     recordRendererSample('post-warmup', 0, warmSnapshot);
     summary.listenerBaseline = warmSnapshot.listenerCount;
-    await collectGarbage(page);
-    const baselineHeap = await readHeapBytes(page);
+    const baselineHeap = baseline.sample.heapBytes;
     if (typeof baselineHeap === 'number' && baselineHeap > 0) {
       summary.heap.available = true;
       summary.heap.baselineBytes = baselineHeap;
     }
+    summary.inventory.early = await readSceneInventory(page);
 
-    const hiddenStarts = new Map([
-      ['world', warmSnapshot],
-    ]);
-    let transitionIndex = 0;
-    for (let roundTrip = 0; roundTrip < transitionCount; roundTrip += 1) {
-      const beforeWorld = await snapshot(page);
-      const hiddenWorldStart = hiddenStarts.get('world');
-      if (hiddenWorldStart) {
-        recordHiddenWindow(
-          transitionIndex,
-          'world',
-          hiddenWorldStart,
-          beforeWorld,
-        );
-      }
-      const worldFramesBefore = beforeWorld.frames.world ?? 0;
-      const exerciseHistory = roundTrip === transitionCount - 1;
-      const afterWorld = exerciseHistory
-        ? await traverseHistoryAndWait(
-            page,
-            'back',
-            '/game',
-            'world',
-          )
-        : await navigateAndWait(page, '/game', 'world');
-      summary.completedTransitions += 1;
-      transitionIndex += 1;
-      if ((afterWorld.frames.world ?? 0) <= worldFramesBefore) {
-        summary.activeGrowthViolations.push({
-          index: transitionIndex,
-          sceneId: 'world',
-          before: worldFramesBefore,
-          after: afterWorld.frames.world ?? 0,
-        });
-      }
-      const loaderPresent = await page.evaluate(() =>
-        Boolean(document.querySelector('[aria-label="Loading ClawVille"]')),
-      );
-      if (loaderPresent) {
-        summary.routes.returnLoaderViolations.push({
-          roundTrip,
-          pathname: '/game',
-        });
-      }
-      hiddenStarts.set('cove', afterWorld);
-      hiddenStarts.delete('world');
-
-      const beforeCove = await snapshot(page);
-      const hiddenCoveStart = hiddenStarts.get('cove');
-      if (hiddenCoveStart) {
-        recordHiddenWindow(
-          transitionIndex,
-          'cove',
-          hiddenCoveStart,
-          beforeCove,
-        );
-      }
-      const coveFramesBefore = beforeCove.frames.cove ?? 0;
-      const afterCove = exerciseHistory
-        ? await traverseHistoryAndWait(
-            page,
-            'forward',
-            '/cove',
-            'cove',
-          )
-        : await navigateAndWait(page, '/cove', 'cove');
-      summary.completedTransitions += 1;
-      transitionIndex += 1;
-      if ((afterCove.frames.cove ?? 0) <= coveFramesBefore) {
-        summary.activeGrowthViolations.push({
-          index: transitionIndex,
-          sceneId: 'cove',
-          before: coveFramesBefore,
-          after: afterCove.frames.cove ?? 0,
-        });
-      }
-      hiddenStarts.set('world', afterCove);
-      hiddenStarts.delete('cove');
-      summary.completedRoundTrips += 1;
-
-      if (lane === 'soak' && summary.completedRoundTrips === 20) {
-        recordRendererSample('loop-20', 20, afterCove);
-      }
-      if (
-        lane === 'soak' &&
-        summary.completedRoundTrips === Math.floor(transitionCount / 2)
+    if (dwellMode) {
+      const dwellStartedAt = Date.now();
+      const dwellEndsAt = dwellStartedAt + dwellSeconds * 1_000;
+      const dwellSampleCount = Math.ceil(dwellSeconds / 10);
+      const midpointSample = Math.ceil(dwellSampleCount / 2);
+      for (
+        let sampleIndex = 1;
+        sampleIndex <= dwellSampleCount;
+        sampleIndex += 1
       ) {
-        await collectGarbage(page);
-        const midpointHeap = await readHeapBytes(page);
-        if (typeof midpointHeap === 'number' && midpointHeap > 0) {
-          summary.heap.midpointBytes = midpointHeap;
+        const sampleAt = Math.min(
+          dwellStartedAt + sampleIndex * 10_000,
+          dwellEndsAt,
+        );
+        const delayMs = Math.max(0, sampleAt - Date.now());
+        if (delayMs > 0) {
+          await new Promise((resolveDelay) =>
+            setTimeout(resolveDelay, delayMs),
+          );
+        }
+        const forceGc =
+          sampleIndex % 5 === 0 ||
+          sampleIndex === midpointSample ||
+          sampleIndex === dwellSampleCount;
+        const dwellSample = await recordSeriesSample(page, {
+          kind: 'dwell',
+          index: sampleIndex,
+          elapsedMs: Date.now() - experimentStartedAt,
+          forceGc,
+        });
+        if (sampleIndex === midpointSample) {
+          summary.heap.midpointBytes = dwellSample.sample.heapBytes;
+        }
+      }
+    } else {
+      const hiddenStarts = new Map([['world', warmSnapshot]]);
+      let transitionIndex = 0;
+      const midpointLoop = Math.floor(transitionCount / 2);
+      for (let roundTrip = 0; roundTrip < transitionCount; roundTrip += 1) {
+        const beforeWorld = await snapshot(page);
+        const hiddenWorldStart = hiddenStarts.get('world');
+        if (hiddenWorldStart) {
+          recordHiddenWindow(
+            transitionIndex,
+            'world',
+            hiddenWorldStart,
+            beforeWorld,
+          );
+        }
+        const worldFramesBefore = beforeWorld.frames.world ?? 0;
+        const exerciseHistory = roundTrip === transitionCount - 1;
+        const afterWorld = exerciseHistory
+          ? await traverseHistoryAndWait(page, 'back', '/game', 'world')
+          : await navigateAndWait(page, '/game', 'world');
+        summary.completedTransitions += 1;
+        transitionIndex += 1;
+        if ((afterWorld.frames.world ?? 0) <= worldFramesBefore) {
+          summary.activeGrowthViolations.push({
+            index: transitionIndex,
+            sceneId: 'world',
+            before: worldFramesBefore,
+            after: afterWorld.frames.world ?? 0,
+          });
+        }
+        const loaderPresent = await page.evaluate(() =>
+          Boolean(document.querySelector('[aria-label="Loading ClawVille"]')),
+        );
+        if (loaderPresent) {
+          summary.routes.returnLoaderViolations.push({
+            roundTrip,
+            pathname: '/game',
+          });
+        }
+        hiddenStarts.set('cove', afterWorld);
+        hiddenStarts.delete('world');
+
+        const beforeCove = await snapshot(page);
+        const hiddenCoveStart = hiddenStarts.get('cove');
+        if (hiddenCoveStart) {
+          recordHiddenWindow(
+            transitionIndex,
+            'cove',
+            hiddenCoveStart,
+            beforeCove,
+          );
+        }
+        const coveFramesBefore = beforeCove.frames.cove ?? 0;
+        const afterCove = exerciseHistory
+          ? await traverseHistoryAndWait(page, 'forward', '/cove', 'cove')
+          : await navigateAndWait(page, '/cove', 'cove');
+        summary.completedTransitions += 1;
+        transitionIndex += 1;
+        if ((afterCove.frames.cove ?? 0) <= coveFramesBefore) {
+          summary.activeGrowthViolations.push({
+            index: transitionIndex,
+            sceneId: 'cove',
+            before: coveFramesBefore,
+            after: afterCove.frames.cove ?? 0,
+          });
+        }
+        hiddenStarts.set('world', afterCove);
+        hiddenStarts.delete('cove');
+        summary.completedRoundTrips += 1;
+
+        const completedLoop = summary.completedRoundTrips;
+        const forceGc =
+          completedLoop % 5 === 0 || completedLoop === midpointLoop;
+        const loopSample = await recordSeriesSample(page, {
+          kind: 'round-trip',
+          index: completedLoop,
+          loop: completedLoop,
+          elapsedMs: Date.now() - experimentStartedAt,
+          forceGc,
+          state: forceGc ? null : afterCove,
+        });
+        if (lane === 'soak' && completedLoop === 20) {
+          recordRendererSample('loop-20', 20, loopSample.state);
+        }
+        if (lane === 'soak' && completedLoop === midpointLoop) {
+          summary.heap.midpointBytes = loopSample.sample.heapBytes;
         }
       }
     }
 
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
-    const end = await snapshot(page);
-    recordRendererSample('final', transitionCount, end);
+    const finalSeries = await recordSeriesSample(page, {
+      kind: 'final',
+      index: summary.series.length,
+      loop: dwellMode ? null : transitionCount,
+      elapsedMs: Date.now() - experimentStartedAt,
+      forceGc: true,
+    });
+    const end = finalSeries.state;
+    recordRendererSample('final', dwellMode ? null : transitionCount, end);
     summary.canvasMountCount = end.canvasMountCount;
     summary.listenerEnd = end.listenerCount;
-    summary.listenerDelta =
-      summary.listenerEnd - summary.listenerBaseline;
+    summary.listenerDelta = summary.listenerEnd - summary.listenerBaseline;
     summary.listenerUnderflowCount = end.listenerUnderflowCount;
     summary.recovery = {
       count: end.recoveryCount,
@@ -737,8 +871,7 @@ try {
         ? window.__WORLD_STAGE_LEDGER()
         : null,
     );
-    await collectGarbage(page);
-    const endHeap = await readHeapBytes(page);
+    const endHeap = finalSeries.sample.heapBytes;
     if (
       summary.heap.available &&
       typeof endHeap === 'number' &&
@@ -746,8 +879,7 @@ try {
     ) {
       summary.heap.endBytes = endHeap;
       summary.heap.growthRatio =
-        (endHeap - summary.heap.baselineBytes) /
-        summary.heap.baselineBytes;
+        (endHeap - summary.heap.baselineBytes) / summary.heap.baselineBytes;
     }
     if (
       typeof summary.heap.midpointBytes === 'number' &&
@@ -755,16 +887,17 @@ try {
       typeof endHeap === 'number'
     ) {
       summary.heap.secondHalfGrowthRatio =
-        (endHeap - summary.heap.midpointBytes) /
-        summary.heap.midpointBytes;
+        (endHeap - summary.heap.midpointBytes) / summary.heap.midpointBytes;
     }
-
-    summary.routes.coldInit = await runColdInitProbe(
-      browser,
-      routeOrigin,
+    summary.inventory.late = await readSceneInventory(page);
+    summary.inventory.diff = diffSceneInventory(
+      summary.inventory.early,
+      summary.inventory.late,
     );
 
-    const expectedRouteTransitions = transitionCount * 2;
+    summary.routes.coldInit = await runColdInitProbe(browser, routeOrigin);
+
+    const expectedRouteTransitions = dwellMode ? 0 : transitionCount * 2;
     const loop20Renderer = summary.renderer.samples.find(
       (sample) => sample.label === 'loop-20',
     );
@@ -773,49 +906,29 @@ try {
     );
     const soakCountsPlateau =
       lane !== 'soak' ||
+      dwellMode ||
       (typeof loop20Renderer?.textures === 'number' &&
         loop20Renderer.textures === finalRenderer?.textures &&
         typeof loop20Renderer?.geometries === 'number' &&
         loop20Renderer.geometries === finalRenderer?.geometries);
     const soakBytesPlateau =
       lane !== 'soak' ||
+      dwellMode ||
       finalRenderer?.backend === 'webgl' ||
       (typeof loop20Renderer?.texturesSizeBytes === 'number' &&
-        loop20Renderer.texturesSizeBytes ===
-          finalRenderer?.texturesSizeBytes &&
+        loop20Renderer.texturesSizeBytes === finalRenderer?.texturesSizeBytes &&
         typeof loop20Renderer?.memoryTotalBytes === 'number' &&
-        loop20Renderer.memoryTotalBytes ===
-          finalRenderer?.memoryTotalBytes);
-    summary.assertions = {
-      exactlyRequestedRoundTrips:
-        summary.completedRoundTrips === transitionCount &&
-        summary.completedTransitions === expectedRouteTransitions,
+        loop20Renderer.memoryTotalBytes === finalRenderer?.memoryTotalBytes);
+    const commonAssertions = {
       oneCanvas: summary.canvasMountCount === 1,
-      hiddenFramesFrozen:
-        summary.hiddenFrameViolations.length === 0 &&
-        summary.hiddenWindowsChecked >= expectedRouteTransitions,
-      hiddenCamerasFrozen:
-        summary.hiddenCameraViolations.length === 0,
-      hiddenStoresFrozen:
-        summary.hiddenStoreViolations.length === 0,
-      activeCallbacksAdvance:
-        summary.activeGrowthViolations.length === 0,
       listenerDeltaZero: summary.listenerDelta === 0,
-      listenerAccountingNeverUnderflowed:
-        summary.listenerUnderflowCount === 0,
+      listenerAccountingNeverUnderflowed: summary.listenerUnderflowCount === 0,
       zeroTransitionErrors: summary.transitionErrors.length === 0,
       zeroRecoveries: summary.recovery?.count === 0,
-      returnsSkipSeaLoadingScreen:
-        summary.routes.returnLoaderViolations.length === 0,
-      browserHistoryUsesStage:
-        summary.routes.historyTraversal.back &&
-        summary.routes.historyTraversal.forward,
       coldCoveSkipsWorldAssets:
         summary.routes.coldCoveWorldAssetRequests.length === 0,
-      coldCoveJoinsZero:
-        summary.routes.network.joins.coldCove === 0,
-      firstGameJoinsOnce:
-        summary.routes.network.joins.firstGame === 1,
+      coldCoveJoinsZero: summary.routes.network.joins.coldCove === 0,
+      firstGameJoinsOnce: summary.routes.network.joins.firstGame === 1,
       joinsAfterFirstGameZero:
         summary.routes.network.joins.afterFirstGame === 0,
       oneInitialWorldStream:
@@ -827,189 +940,197 @@ try {
         summary.routes.coldInit?.landedExactlyOnce === true,
       gameCacheControlNonCacheable:
         summary.routes.cacheControl.game?.status === 200 &&
-        cacheControlIsNonCacheable(
-          summary.routes.cacheControl.game?.value,
-        ),
+        cacheControlIsNonCacheable(summary.routes.cacheControl.game?.value),
       coveCacheControlNonCacheable:
         summary.routes.cacheControl.cove?.status === 200 &&
-        cacheControlIsNonCacheable(
-          summary.routes.cacheControl.cove?.value,
-        ),
+        cacheControlIsNonCacheable(summary.routes.cacheControl.cove?.value),
+      bothSlotInventoriesCaptured:
+        Boolean(summary.inventory.early?.world) &&
+        Boolean(summary.inventory.early?.cove) &&
+        Boolean(summary.inventory.late?.world) &&
+        Boolean(summary.inventory.late?.cove),
+    };
+    summary.assertions = dwellMode
+      ? {
+          ...commonAssertions,
+          dwellStayedOnTarget: end.pathname === `/${dwellTarget}`,
+          dwellSamplesComplete:
+            summary.series.filter((sample) => sample.kind === 'dwell')
+              .length === Math.ceil(dwellSeconds / 10),
+        }
+      : {
+          ...commonAssertions,
+          exactlyRequestedRoundTrips:
+            summary.completedRoundTrips === transitionCount &&
+            summary.completedTransitions === expectedRouteTransitions,
+          hiddenFramesFrozen:
+            summary.hiddenFrameViolations.length === 0 &&
+            summary.hiddenWindowsChecked >= expectedRouteTransitions,
+          hiddenCamerasFrozen: summary.hiddenCameraViolations.length === 0,
+          hiddenStoresFrozen: summary.hiddenStoreViolations.length === 0,
+          activeCallbacksAdvance: summary.activeGrowthViolations.length === 0,
+          returnsSkipSeaLoadingScreen:
+            summary.routes.returnLoaderViolations.length === 0,
+          browserHistoryUsesStage:
+            summary.routes.historyTraversal.back &&
+            summary.routes.historyTraversal.forward,
+          heapBelow15Percent:
+            !summary.heap.available ||
+            (summary.heap.growthRatio !== null &&
+              summary.heap.growthRatio < summary.heap.threshold),
+          soakRendererCountsPlateau: soakCountsPlateau,
+          soakRendererBytesPlateau: soakBytesPlateau,
+          soakSecondHalfHeapBelow3Percent:
+            lane !== 'soak' ||
+            !summary.heap.available ||
+            (summary.heap.secondHalfGrowthRatio !== null &&
+              summary.heap.secondHalfGrowthRatio <=
+                summary.heap.secondHalfThreshold),
+        };
+    summary.pass = Object.values(summary.assertions).every(Boolean);
+  } else {
+    await page.goto(url, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30_000,
+    });
+    await page.waitForFunction(() => Boolean(window.__WORLD_STAGE_PROBE__), {
+      timeout: 30_000,
+    });
+    await waitForSettled(page, 'alpha');
+
+    for (const sceneId of scenes) {
+      const current = await snapshot(page);
+      if (current.activeScene !== sceneId) {
+        await requestAndWait(page, sceneId);
+      }
+      summary.warmupTransitions += 1;
+    }
+    await requestAndWait(page, 'alpha');
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 750));
+
+    const warmSnapshot = await snapshot(page);
+    summary.backend = warmSnapshot.backend;
+    recordRendererSample('post-warmup', 0, warmSnapshot);
+    summary.listenerBaseline = warmSnapshot.listenerCount;
+    await collectGarbage(page);
+    const baselineHeap = await readHeapBytes(page);
+    if (typeof baselineHeap === 'number' && baselineHeap > 0) {
+      summary.heap.available = true;
+      summary.heap.baselineBytes = baselineHeap;
+    }
+
+    const hiddenStarts = new Map();
+    let prior = await snapshot(page);
+    for (const sceneId of scenes) {
+      if (sceneId !== prior.activeScene) {
+        hiddenStarts.set(sceneId, prior);
+      }
+    }
+
+    for (let index = 0; index < transitionCount; index += 1) {
+      const target = scenes[(index + 1) % scenes.length];
+      const before = await snapshot(page);
+      const hiddenStart = hiddenStarts.get(target);
+      if (hiddenStart) {
+        summary.hiddenWindowsChecked += 1;
+        if (
+          (hiddenStart.frames[target] ?? 0) !== (before.frames[target] ?? 0)
+        ) {
+          summary.hiddenFrameViolations.push({
+            index,
+            sceneId: target,
+            start: hiddenStart.frames[target] ?? 0,
+            end: before.frames[target] ?? 0,
+          });
+        }
+        if (!sameNumbers(hiddenStart.cameras[target], before.cameras[target])) {
+          summary.hiddenCameraViolations.push({
+            index,
+            sceneId: target,
+          });
+        }
+        const startSlot = hiddenStart.slots[target];
+        const endSlot = before.slots[target];
+        if (
+          startSlot?.status !== endSlot?.status ||
+          startSlot?.generation !== endSlot?.generation ||
+          startSlot?.frameInvocations !== endSlot?.frameInvocations
+        ) {
+          summary.hiddenStoreViolations.push({
+            index,
+            sceneId: target,
+            start: startSlot,
+            end: endSlot,
+          });
+        }
+      }
+
+      const previousActive = before.activeScene;
+      const targetFramesBefore = before.frames[target] ?? 0;
+      await requestAndWait(page, target);
+      const after = await snapshot(page);
+      summary.completedTransitions += 1;
+      if ((after.frames[target] ?? 0) <= targetFramesBefore) {
+        summary.activeGrowthViolations.push({
+          index,
+          sceneId: target,
+          before: targetFramesBefore,
+          after: after.frames[target] ?? 0,
+        });
+      }
+      if (previousActive && previousActive !== target) {
+        hiddenStarts.set(previousActive, after);
+      }
+      hiddenStarts.delete(target);
+      prior = after;
+    }
+
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
+    const end = await snapshot(page);
+    recordRendererSample('final', transitionCount, end);
+    summary.canvasMountCount = end.canvasMountCount;
+    summary.listenerEnd = end.listenerCount;
+    summary.listenerDelta = summary.listenerEnd - summary.listenerBaseline;
+    summary.listenerUnderflowCount = end.listenerUnderflowCount;
+    summary.recovery = {
+      count: end.recoveryCount,
+      lastReason: end.lastRecoveryReason,
+    };
+    summary.ledger = await page.evaluate(() => window.__WORLD_STAGE_LEDGER());
+    await collectGarbage(page);
+    const endHeap = await readHeapBytes(page);
+    if (
+      summary.heap.available &&
+      typeof endHeap === 'number' &&
+      summary.heap.baselineBytes > 0
+    ) {
+      summary.heap.endBytes = endHeap;
+      summary.heap.growthRatio =
+        (endHeap - summary.heap.baselineBytes) / summary.heap.baselineBytes;
+    }
+
+    summary.assertions = {
+      atLeast100Transitions: summary.completedTransitions >= 100,
+      oneCanvas: summary.canvasMountCount === 1,
+      hiddenFramesFrozen:
+        summary.hiddenFrameViolations.length === 0 &&
+        summary.hiddenWindowsChecked >= 100,
+      hiddenCamerasFrozen: summary.hiddenCameraViolations.length === 0,
+      hiddenStoresFrozen: summary.hiddenStoreViolations.length === 0,
+      activeCallbacksAdvance: summary.activeGrowthViolations.length === 0,
+      listenerDeltaZero: summary.listenerDelta === 0,
+      listenerAccountingNeverUnderflowed: summary.listenerUnderflowCount === 0,
+      zeroTransitionErrors: summary.transitionErrors.length === 0,
       heapBelow15Percent:
         !summary.heap.available ||
         (summary.heap.growthRatio !== null &&
           summary.heap.growthRatio < summary.heap.threshold),
-      soakRendererCountsPlateau: soakCountsPlateau,
-      soakRendererBytesPlateau: soakBytesPlateau,
-      soakSecondHalfHeapBelow3Percent:
-        lane !== 'soak' ||
-        !summary.heap.available ||
-        (summary.heap.secondHalfGrowthRatio !== null &&
-          summary.heap.secondHalfGrowthRatio <=
-            summary.heap.secondHalfThreshold),
     };
     summary.pass = Object.values(summary.assertions).every(Boolean);
-  } else {
-    await page.goto(url, {
-    waitUntil: 'domcontentloaded',
-    timeout: 30_000,
-  });
-  await page.waitForFunction(
-    () => Boolean(window.__WORLD_STAGE_PROBE__),
-    { timeout: 30_000 },
-  );
-  await waitForSettled(page, 'alpha');
-
-  for (const sceneId of scenes) {
-    const current = await snapshot(page);
-    if (current.activeScene !== sceneId) {
-      await requestAndWait(page, sceneId);
-    }
-    summary.warmupTransitions += 1;
-  }
-  await requestAndWait(page, 'alpha');
-  await new Promise((resolveDelay) => setTimeout(resolveDelay, 750));
-
-  const warmSnapshot = await snapshot(page);
-  summary.backend = warmSnapshot.backend;
-  recordRendererSample('post-warmup', 0, warmSnapshot);
-  summary.listenerBaseline = warmSnapshot.listenerCount;
-  await collectGarbage(page);
-  const baselineHeap = await readHeapBytes(page);
-  if (typeof baselineHeap === 'number' && baselineHeap > 0) {
-    summary.heap.available = true;
-    summary.heap.baselineBytes = baselineHeap;
-  }
-
-  const hiddenStarts = new Map();
-  let prior = await snapshot(page);
-  for (const sceneId of scenes) {
-    if (sceneId !== prior.activeScene) {
-      hiddenStarts.set(sceneId, prior);
-    }
-  }
-
-  for (let index = 0; index < transitionCount; index += 1) {
-    const target = scenes[(index + 1) % scenes.length];
-    const before = await snapshot(page);
-    const hiddenStart = hiddenStarts.get(target);
-    if (hiddenStart) {
-      summary.hiddenWindowsChecked += 1;
-      if (
-        (hiddenStart.frames[target] ?? 0) !==
-        (before.frames[target] ?? 0)
-      ) {
-        summary.hiddenFrameViolations.push({
-          index,
-          sceneId: target,
-          start: hiddenStart.frames[target] ?? 0,
-          end: before.frames[target] ?? 0,
-        });
-      }
-      if (
-        !sameNumbers(
-          hiddenStart.cameras[target],
-          before.cameras[target],
-        )
-      ) {
-        summary.hiddenCameraViolations.push({
-          index,
-          sceneId: target,
-        });
-      }
-      const startSlot = hiddenStart.slots[target];
-      const endSlot = before.slots[target];
-      if (
-        startSlot?.status !== endSlot?.status ||
-        startSlot?.generation !== endSlot?.generation ||
-        startSlot?.frameInvocations !==
-          endSlot?.frameInvocations
-      ) {
-        summary.hiddenStoreViolations.push({
-          index,
-          sceneId: target,
-          start: startSlot,
-          end: endSlot,
-        });
-      }
-    }
-
-    const previousActive = before.activeScene;
-    const targetFramesBefore = before.frames[target] ?? 0;
-    await requestAndWait(page, target);
-    const after = await snapshot(page);
-    summary.completedTransitions += 1;
-    if ((after.frames[target] ?? 0) <= targetFramesBefore) {
-      summary.activeGrowthViolations.push({
-        index,
-        sceneId: target,
-        before: targetFramesBefore,
-        after: after.frames[target] ?? 0,
-      });
-    }
-    if (previousActive && previousActive !== target) {
-      hiddenStarts.set(previousActive, after);
-    }
-    hiddenStarts.delete(target);
-    prior = after;
-  }
-
-  await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
-  const end = await snapshot(page);
-  recordRendererSample('final', transitionCount, end);
-  summary.canvasMountCount = end.canvasMountCount;
-  summary.listenerEnd = end.listenerCount;
-  summary.listenerDelta =
-    summary.listenerEnd - summary.listenerBaseline;
-  summary.listenerUnderflowCount = end.listenerUnderflowCount;
-  summary.recovery = {
-    count: end.recoveryCount,
-    lastReason: end.lastRecoveryReason,
-  };
-  summary.ledger = await page.evaluate(() =>
-    window.__WORLD_STAGE_LEDGER(),
-  );
-  await collectGarbage(page);
-  const endHeap = await readHeapBytes(page);
-  if (
-    summary.heap.available &&
-    typeof endHeap === 'number' &&
-    summary.heap.baselineBytes > 0
-  ) {
-    summary.heap.endBytes = endHeap;
-    summary.heap.growthRatio =
-      (endHeap - summary.heap.baselineBytes) /
-      summary.heap.baselineBytes;
-  }
-
-  summary.assertions = {
-    atLeast100Transitions: summary.completedTransitions >= 100,
-    oneCanvas: summary.canvasMountCount === 1,
-    hiddenFramesFrozen:
-      summary.hiddenFrameViolations.length === 0 &&
-      summary.hiddenWindowsChecked >= 100,
-    hiddenCamerasFrozen:
-      summary.hiddenCameraViolations.length === 0,
-    hiddenStoresFrozen:
-      summary.hiddenStoreViolations.length === 0,
-    activeCallbacksAdvance:
-      summary.activeGrowthViolations.length === 0,
-    listenerDeltaZero: summary.listenerDelta === 0,
-    listenerAccountingNeverUnderflowed:
-      summary.listenerUnderflowCount === 0,
-    zeroTransitionErrors: summary.transitionErrors.length === 0,
-    heapBelow15Percent:
-      !summary.heap.available ||
-      (summary.heap.growthRatio !== null &&
-        summary.heap.growthRatio < summary.heap.threshold),
-  };
-  summary.pass = Object.values(summary.assertions).every(Boolean);
   }
 } catch (error) {
   summary.failure =
-    error instanceof Error
-      ? `${error.name}: ${error.message}`
-      : String(error);
+    error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 } finally {
   if (browser) {
     try {
@@ -1041,11 +1162,7 @@ try {
   }
   summary.generatedAt = new Date().toISOString();
   await mkdir(dirname(outputPath), { recursive: true });
-  await writeFile(
-    outputPath,
-    `${JSON.stringify(summary, null, 2)}\n`,
-    'utf8',
-  );
+  await writeFile(outputPath, `${JSON.stringify(summary, null, 2)}\n`, 'utf8');
   process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
   process.exitCode = summary.pass ? 0 : 1;
 }

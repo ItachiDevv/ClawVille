@@ -23,6 +23,15 @@ export interface ResourceLedgerResult {
   };
 }
 
+export interface StageSceneInventory {
+  objects: number;
+  meshes: number;
+  geometryReferences: number;
+  uniqueGeometries: number;
+  meshesByNameType: Record<string, number>;
+  geometriesByNameType: Record<string, number>;
+}
+
 const rootsByScene = new Map<string, THREE.Object3D>();
 
 export function registerStageSlotRoot(
@@ -34,6 +43,54 @@ export function registerStageSlotRoot(
   } else {
     rootsByScene.delete(sceneId);
   }
+}
+
+function sortedCounts(counts: Map<string, number>): Record<string, number> {
+  return Object.fromEntries(
+    [...counts.entries()].sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
+export function readStageSceneInventory(): Record<string, StageSceneInventory> {
+  const inventory: Record<string, StageSceneInventory> = {};
+  for (const [sceneId, root] of rootsByScene) {
+    const meshesByNameType = new Map<string, number>();
+    const geometriesByNameType = new Map<string, number>();
+    const geometries = new Set<THREE.BufferGeometry>();
+    let objects = 0;
+    let meshes = 0;
+    let geometryReferences = 0;
+
+    root.traverse((object) => {
+      objects += 1;
+      const renderable = object as THREE.Mesh<THREE.BufferGeometry>;
+      if (!renderable.isMesh) return;
+      meshes += 1;
+      const objectName = object.name || '(unnamed)';
+      const meshKey = `${objectName} / ${object.type}`;
+      meshesByNameType.set(meshKey, (meshesByNameType.get(meshKey) ?? 0) + 1);
+
+      const geometry = renderable.geometry;
+      if (!geometry?.isBufferGeometry) return;
+      geometryReferences += 1;
+      geometries.add(geometry);
+      const geometryKey = `${objectName} / ${geometry.type}`;
+      geometriesByNameType.set(
+        geometryKey,
+        (geometriesByNameType.get(geometryKey) ?? 0) + 1,
+      );
+    });
+
+    inventory[sceneId] = {
+      objects,
+      meshes,
+      geometryReferences,
+      uniqueGeometries: geometries.size,
+      meshesByNameType: sortedCounts(meshesByNameType),
+      geometriesByNameType: sortedCounts(geometriesByNameType),
+    };
+  }
+  return inventory;
 }
 
 export function readStageResourceLedger(): Record<
@@ -151,9 +208,7 @@ function imageDimensions(
   return [width, height, depth];
 }
 
-function estimateTexture(
-  texture: TextureLike,
-): {
+function estimateTexture(texture: TextureLike): {
   bytes: number;
   exactCompressed: boolean;
   unknown: boolean;
@@ -192,10 +247,7 @@ function estimateTexture(
     const [width, height, depth] = dimensions;
     const baseBytes =
       image?.data?.byteLength ??
-      width *
-        height *
-        depth *
-        bytesPerTexel(texture.format, texture.type);
+      width * height * depth * bytesPerTexel(texture.format, texture.type);
 
     let suppliedMipBytes = 0;
     let suppliedIncludesBase = false;
@@ -235,8 +287,8 @@ function estimateTexture(
 function isTexture(value: unknown): value is TextureLike {
   return Boolean(
     value &&
-      typeof value === 'object' &&
-      (value as { isTexture?: boolean }).isTexture,
+    typeof value === 'object' &&
+    (value as { isTexture?: boolean }).isTexture,
   );
 }
 
@@ -339,11 +391,7 @@ export function estimateSceneSlotResources(
           | THREE.InterleavedBufferAttribute => Boolean(attribute),
       );
       for (const attribute of geometryAttributes) {
-        const estimate = attributeBytes(
-          attribute,
-          attributes,
-          interleaved,
-        );
+        const estimate = attributeBytes(attribute, attributes, interleaved);
         geometryBytes += estimate.bytes;
         if (estimate.counted) attributeCount += 1;
       }
@@ -354,18 +402,11 @@ export function estimateSceneSlotResources(
       const instanceAttributes = [
         instanced.instanceMatrix,
         instanced.instanceColor,
-      ].filter(
-        (
-          attribute,
-        ): attribute is THREE.InstancedBufferAttribute =>
-          Boolean(attribute),
+      ].filter((attribute): attribute is THREE.InstancedBufferAttribute =>
+        Boolean(attribute),
       );
       for (const attribute of instanceAttributes) {
-        const estimate = attributeBytes(
-          attribute,
-          attributes,
-          interleaved,
-        );
+        const estimate = attributeBytes(attribute, attributes, interleaved);
         geometryBytes += estimate.bytes;
         if (estimate.counted) attributeCount += 1;
       }
@@ -394,8 +435,7 @@ export function estimateSceneSlotResources(
 
   const renderTargetTextures = new Set<TextureLike>();
   for (const target of renderTargets) {
-    for (const texture of
-      target.textures ??
+    for (const texture of target.textures ??
       (target.texture ? [target.texture] : [])) {
       renderTargetTextures.add(texture as TextureLike);
     }
@@ -424,8 +464,7 @@ export function estimateSceneSlotResources(
   const countedRenderTargetTextures = new Set<TextureLike>();
   for (const target of renderTargets) {
     const colorTextures =
-      target.textures ??
-      (target.texture ? [target.texture] : []);
+      target.textures ?? (target.texture ? [target.texture] : []);
     for (const texture of colorTextures) {
       const textureLike = texture as TextureLike;
       if (countedRenderTargetTextures.has(textureLike)) continue;
@@ -436,12 +475,8 @@ export function estimateSceneSlotResources(
         Math.max(1, target.depth ?? 1) *
         bytesPerTexel(texture.format, texture.type);
       const samples = Math.max(0, target.samples ?? 0);
-      const resolveFactor = hasGeneratedMipChain(texture)
-        ? 4 / 3
-        : 1;
-      renderTargetsBytes += Math.ceil(
-        baseBytes * (samples + resolveFactor),
-      );
+      const resolveFactor = hasGeneratedMipChain(texture) ? 4 / 3 : 1;
+      renderTargetsBytes += Math.ceil(baseBytes * (samples + resolveFactor));
     }
     if (target.depthTexture) {
       const depthTexture = target.depthTexture as TextureLike;
@@ -452,10 +487,7 @@ export function estimateSceneSlotResources(
           target.width *
           target.height *
           Math.max(1, target.depth ?? 1) *
-          bytesPerTexel(
-            target.depthTexture.format,
-            target.depthTexture.type,
-          ) *
+          bytesPerTexel(target.depthTexture.format, target.depthTexture.type) *
           (samples + 1);
       }
     } else if (target.depthBuffer !== false) {

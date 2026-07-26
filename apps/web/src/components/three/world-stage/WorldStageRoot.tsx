@@ -38,6 +38,7 @@ import {
   type WorldStageNavigationRequest,
 } from './stage-navigation';
 import { decideStageNavigationOwnership } from './stage-navigation-ownership';
+import { readStageSceneInventory } from './resource-ledger';
 
 const WORLD_SCENE_ID = 'world';
 const COVE_SCENE_ID = 'cove';
@@ -215,6 +216,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
       __WORLD_STAGE_PROBE__?: {
         request: (sceneId: string) => void;
         navigate?: (to: '/game' | '/cove') => boolean;
+        sceneInventory: () => Record<string, unknown>;
         snapshot: () => Record<string, unknown>;
       };
     };
@@ -223,6 +225,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
       navigate: (to) => {
         return requestWorldStageNavigation({ to });
       },
+      sceneInventory: readStageSceneInventory,
       snapshot: () => {
         const state = useStageStore.getState();
         return {
