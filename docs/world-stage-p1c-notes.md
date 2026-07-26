@@ -105,6 +105,17 @@ slot and let the existing scene-activity scheduler, slot visibility, and input
 gate control behavior. Features remain enabled, event raycasting remains
 restricted to the active slot, and no plateau threshold changes.
 
+The first 20-loop confirmation after persisting the Cove resources improved
+forced-GC heap from +8.58% / +2.90% to +6.61% / +1.71%, and loop-20/final
+renderer counts were identical. A follow-up activation audit found the same
+lifetime defect in the world subtree: `WorldSceneContents` conditionally
+remounts three lights, `CoveBeacon` remounts three lights, and `CoveEntrance`
+remounts two lights whenever `useSceneActive()` changes. Lights do not appear
+in the mesh/geometry inventory, which explains the residual crossing-only
+heap without another growing mesh name. These eight lights are also persistent
+scene resources and must be governed by their already-hidden slot root rather
+than reconstructed at every crossing.
+
 ## Serial verification record
 
 Pre-gate implementation checks already completed:
