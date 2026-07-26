@@ -4,6 +4,7 @@ import { assertParityCheckpoint } from './assertion-engine';
 import {
   AgentBrowserDriver,
   readCapturedWire,
+  readParityRoot,
   waitForParityCheckpoint,
 } from './driver';
 import { RECORDED_CASES } from './fixtures/recorded';
@@ -21,10 +22,18 @@ import { closeFixtureRun, type FixtureRunHandle } from './teardown';
 import type { ScenarioResult } from './types';
 import { assertVisibleSurface } from './visible-surface';
 import {
+  explainWireCorrelation,
   resolveWireForCheckpoint,
   resolveWireForRoot,
 } from './wire-correlation';
-import { resolveScenarioState } from './runner-env';
+import {
+  requiresFixtureOwnerPreflight,
+  resolveScenarioState,
+} from './runner-env';
+import {
+  DEFAULT_CASH_TABLE_STATE_PATH,
+  readPersistedCashTableState,
+} from './pack-cash-table-state';
 
 interface Config {
   webBase: string;
@@ -150,6 +159,20 @@ async function runLiveScenario(): Promise<void> {
   }
   const config = await loadConfig();
   const { statePath, cashTableId } = resolveScenarioState(scenario);
+  const persistedCashTable =
+    scenario.game === 'holdem' && scenario.tier === 'live'
+      ? await readPersistedCashTableState(
+          process.env.CV_PARITY_CASH_TABLE_STATE
+            ?? DEFAULT_CASH_TABLE_STATE_PATH,
+        )
+      : null;
+  const cashTableJoinCode =
+    process.env.CV_PARITY_CASH_TABLE_JOIN_CODE
+      ?? (
+        persistedCashTable?.tableId === cashTableId
+          ? persistedCashTable.joinCode
+          : null
+      );
   // Unique per-run session: a crashed prior attempt leaves a wedged daemon
   // squatting the session name, and the next open() hangs on it forever.
   const driver = new AgentBrowserDriver(
@@ -223,17 +246,13 @@ async function runLiveScenario(): Promise<void> {
     );
     await driver.setViewport(config.viewport[0], config.viewport[1]);
     console.log(`[row ${scenario.id}] page open, viewport set`);
-    // Authenticated fixture owners can carry a hard-death run even into an
-    // organic (fixtureName-less) row. Probe every stateful owner before the
-    // ordinary game preflight by creating and immediately deleting a
-    // no-resource run; a 409 takes the same page-memory-only recovery path.
-    if (statePath) {
-      const probeScenario = scenario.fixtureName
-        ?? (scenario.game === 'blackjack'
-          ? 'bj-natural'
-          : scenario.game === 'baccarat'
-            ? 'bac-tie'
-            : 'holdem-fold-win');
+    // Fixture-owner recovery exercises the fixture issue API and therefore
+    // belongs only to fixture-backed rows. Organic live rows reconcile their
+    // actual game resource through the ordinary preflight below; coupling
+    // them to fixture schema availability stalls real-vCLAW certification
+    // before the game route is reached.
+    if (statePath && requiresFixtureOwnerPreflight(scenario)) {
+      const probeScenario = scenario.fixtureName;
       await preflightFixtureOwnerRecovery(
         driver,
         probeScenario,
@@ -252,6 +271,47 @@ async function runLiveScenario(): Promise<void> {
     if (!clean.clean) {
       throw new Error(`preflight refused: ${clean.notes.join('; ')}`);
     }
+    if (
+      scenario.game === 'holdem'
+      && scenario.tier === 'live'
+      && cashTableId
+      && cashTableJoinCode
+    ) {
+      const seat = await driver.evalJson<{
+        status: number;
+        tableId: string | null;
+      }>(`(async () => {
+        const response = await fetch(
+          ${JSON.stringify(config.apiBase.replace(/\/$/, ''))}
+            + '/api/cove/poker/cash/tables/join-by-code',
+          {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              joinCode: ${JSON.stringify(cashTableJoinCode)},
+            }),
+          },
+        );
+        const body = await response.json().catch(() => null);
+        return {
+          status: response.status,
+          tableId:
+            typeof body?.tableId === 'string' ? body.tableId : null,
+        };
+      })()`);
+      if (
+        ![200, 201].includes(seat.status)
+        || seat.tableId !== cashTableId
+      ) {
+        throw new Error(
+          `live holdem exact-seat open failed with HTTP ${seat.status}`,
+        );
+      }
+      console.log(
+        `[row ${scenario.id}] live cash seat opened for exact table`,
+      );
+    }
     console.log(`[row ${scenario.id}] preflight clean, navigating ${route}`);
     await navigate(route, !scenario.fixtureName);
     if (scenario.fixtureName) {
@@ -268,6 +328,58 @@ async function runLiveScenario(): Promise<void> {
     const previousSettlementCorrelation = new Map<string, string>();
     for await (const checkpoint of scenario.run(driver)) {
       const after = previous.get(checkpoint.surface) ?? 0;
+      const preferCurrentRoot = async (
+        candidate: Awaited<ReturnType<typeof waitForParityCheckpoint>>,
+      ): Promise<Awaited<ReturnType<typeof waitForParityCheckpoint>>> => {
+        const current = await readParityRoot(driver, checkpoint.surface);
+        if (
+          current
+          && current.renderRevision > after
+          && (
+            checkpoint.expectDealStep === undefined
+            || current.dealStep === checkpoint.expectDealStep
+          )
+          && (
+            checkpoint.expectTransition === undefined
+            || current.transition === checkpoint.expectTransition
+          )
+          && (
+            checkpoint.expectCorrelationHand === undefined
+            || current.correlation.hand === checkpoint.expectCorrelationHand
+          )
+          && (!checkpoint.final || current.transition === 'idle')
+        ) {
+          return current;
+        }
+        return candidate;
+      };
+      const captureCurrentCashWitness = async (
+        candidate: Awaited<ReturnType<typeof waitForParityCheckpoint>>,
+      ): Promise<void> => {
+        if (
+          scenario.game !== 'holdem'
+          || scenario.tier !== 'live'
+          || candidate.dealStep === 'showdown'
+          || candidate.correlation.handNumber === null
+        ) {
+          return;
+        }
+        const separator = candidate.correlation.hand.lastIndexOf(':');
+        const tableId = separator > 0
+          ? candidate.correlation.hand.slice(0, separator)
+          : '';
+        if (!tableId) return;
+        await driver.evalJson<number>(`(async () => {
+          const response = await fetch(
+            ${JSON.stringify(config.apiBase.replace(/\/$/, ''))}
+              + '/api/cove/poker/cash/tables/'
+              + ${JSON.stringify(tableId)}
+              + '/state-for-agent',
+            { credentials: 'include' },
+          );
+          return response.status;
+        })()`);
+      };
       console.log(`[row ${scenario.id}] awaiting checkpoint ${checkpoint.label} on ${checkpoint.surface} (after r${after})`);
       let root = await waitForParityCheckpoint(
         driver,
@@ -275,6 +387,8 @@ async function runLiveScenario(): Promise<void> {
         after,
         config.maxDurationMs,
       );
+      root = await preferCurrentRoot(root);
+      await captureCurrentCashWitness(root);
       if (scenario.row === 'H10') {
         const tableId = root.correlation.hand.slice(
           0,
@@ -339,7 +453,40 @@ async function runLiveScenario(): Promise<void> {
       // mismatch still fails loudly.
       const settleDeadline = Date.now() + 45_000;
       while (!result.pass && Date.now() < settleDeadline) {
+        const transientWire = result.resolvedWireSeq === null
+          ? null
+          : allWires.find(
+            (candidate) => candidate.seq === result.resolvedWireSeq,
+          ) ?? null;
+        console.log(
+          `[row ${scenario.id}] checkpoint ${checkpoint.label} r${root.renderRevision} transient wire=${
+            transientWire
+              ? `${transientWire.seq}:${transientWire.urlSuffix}`
+              : '<none>'
+          } detail=${JSON.stringify(result.mismatches ?? []).slice(0, 400)}`,
+        );
         console.log(`[row ${scenario.id}] checkpoint ${checkpoint.label} r${root.renderRevision} transient mismatch — awaiting newer revision`);
+        // The mirror can publish from application state just before the
+        // capture hook appends the matching fetch record. Re-check the same
+        // immutable journal root during a short wire-only grace window; a
+        // render revision is not expected merely because capture completed.
+        for (
+          let wireAttempt = 0;
+          wireAttempt < 8 && !result.pass && Date.now() < settleDeadline;
+          wireAttempt += 1
+        ) {
+          await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+          allWires = await readCapturedWire(driver);
+          result = assertParityCheckpoint({
+            game: scenario.game,
+            checkpoint,
+            root,
+            records: allWires,
+            previousRevision: after,
+            ba1Snapshot,
+          });
+        }
+        if (result.pass) break;
         try {
           root = await waitForParityCheckpoint(
             driver,
@@ -347,6 +494,8 @@ async function runLiveScenario(): Promise<void> {
             root.renderRevision,
             Math.max(2_000, settleDeadline - Date.now()),
           );
+          root = await preferCurrentRoot(root);
+          await captureCurrentCashWitness(root);
         } catch {
           break;
         }
@@ -378,6 +527,34 @@ async function runLiveScenario(): Promise<void> {
         previousSettlementCorrelation.set(
           checkpoint.surface,
           root.correlation.hand,
+        );
+      }
+      if (
+        scenario.game === 'holdem'
+        && result.resolvedWireSeq === null
+      ) {
+        const candidates = allWires
+          .filter((record) =>
+            record.urlSuffix.includes('poker/cash/tables/')
+          )
+          .slice(-12)
+          .map((record) => ({
+            seq: record.seq,
+            suffix: record.urlSuffix,
+            status: record.status,
+            handNumber: record.handNumber,
+            correlation: explainWireCorrelation(root, record),
+            responseKeys:
+              record.responseBody
+              && typeof record.responseBody === 'object'
+              && !Array.isArray(record.responseBody)
+                ? Object.keys(record.responseBody).slice(0, 8)
+                : [],
+          }));
+        console.log(
+          `[row ${scenario.id}] unresolved cash correlation=${JSON.stringify(
+            root.correlation,
+          )} candidates=${JSON.stringify(candidates)}`,
         );
       }
       console.log(`[row ${scenario.id}] checkpoint ${checkpoint.label} r${root.renderRevision} pass=${result.pass}${result.pass ? '' : ` mismatches=${JSON.stringify(result.mismatches ?? []).slice(0, 400)}`}`);

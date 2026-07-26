@@ -4,8 +4,9 @@ import { dirname } from 'node:path';
 export const DEFAULT_CASH_TABLE_STATE_PATH =
   'scripts/parity/out/pack-cash-table.json';
 
-interface PersistedCashTableState {
+export interface PersistedCashTableState {
   tableId: string;
+  joinCode: string | null;
 }
 
 export function parsePersistedCashTableState(
@@ -20,18 +21,25 @@ export function parsePersistedCashTableState(
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return null;
   }
-  const tableId = (parsed as Record<string, unknown>).tableId;
+  const record = parsed as Record<string, unknown>;
+  const tableId = record.tableId;
+  const joinCode = record.joinCode;
   return typeof tableId === 'string' && tableId.trim().length > 0
-    ? { tableId: tableId.trim() }
+    ? {
+        tableId: tableId.trim(),
+        joinCode:
+          typeof joinCode === 'string' && joinCode.trim().length > 0
+            ? joinCode.trim()
+            : null,
+      }
     : null;
 }
 
-export async function readPersistedCashTableId(
+export async function readPersistedCashTableState(
   path: string,
-): Promise<string | null> {
+): Promise<PersistedCashTableState | null> {
   try {
-    const state = parsePersistedCashTableState(await readFile(path, 'utf8'));
-    return state?.tableId ?? null;
+    return parsePersistedCashTableState(await readFile(path, 'utf8'));
   } catch (error) {
     if (
       error
@@ -45,14 +53,20 @@ export async function readPersistedCashTableId(
   }
 }
 
-export async function writePersistedCashTableId(
+export async function readPersistedCashTableId(
   path: string,
-  tableId: string,
+): Promise<string | null> {
+  return (await readPersistedCashTableState(path))?.tableId ?? null;
+}
+
+export async function writePersistedCashTableState(
+  path: string,
+  state: PersistedCashTableState,
 ): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(
     path,
-    `${JSON.stringify({ tableId }, null, 2)}\n`,
+    `${JSON.stringify(state, null, 2)}\n`,
     'utf8',
   );
 }

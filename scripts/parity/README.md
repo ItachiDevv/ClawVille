@@ -38,8 +38,9 @@ shoe/session/sit seed arm in memory. The runner issues the fixture against the
 absolute `apiBase`, releases that queued request with the raw header, and never
 writes the header to local/session storage, a state file, or disk. All direct
 harness requests use the configured absolute API origin with credentials.
-Before every stateful owner row (including fixtureName-less organic rows), the
-neutral `/cove` page performs a no-resource provisional issue/delete handshake.
+Before every fixture-backed owner row, the neutral `/cove` page performs a
+no-resource provisional issue/delete handshake. Organic live rows use their
+game-specific preflight/reconciliation without depending on fixture schema.
 A `fixture_recovery_required` response is reconciled in the same page closure:
 blackjack stands each active slot and closes its shoe, practice folds and
 closes, and cash uses the isolated table's Walk Away flow and proves the owner

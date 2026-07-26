@@ -60,10 +60,20 @@ function recordMatches(root: CardParityRoot, record: WireRecord): boolean {
   }
 
   if (root.correlation.handNumber !== null) {
+    if (
+      root.dealStep !== 'showdown'
+      && /last-settled/.test(record.urlSuffix)
+    ) {
+      return false;
+    }
     const handNumber = record.handNumber
       ?? numeric(findDeep(body, new Set(['handNumber', 'handIndex', 'hand_number'])));
-    const tableId = stringValue(findDeep(body, new Set(['tableId', 'table_id'])))
-      ?? /poker\/cash\/tables\/([^/?]+)/.exec(record.urlSuffix)?.[1]
+    // The live simulator intentionally namespaces its internal snapshot key as
+    // `cash:<persisted uuid>`, while both the route and parity root carry the
+    // persisted table UUID. The exact captured endpoint is therefore the
+    // immutable external table identity for cash-row correlation.
+    const tableId = /poker\/cash\/tables\/([^/?]+)/.exec(record.urlSuffix)?.[1]
+      ?? stringValue(findDeep(body, new Set(['tableId', 'table_id'])))
       ?? null;
     if (root.correlation.hand.includes(':')) {
       const expectedTable = root.correlation.hand.slice(
@@ -77,6 +87,39 @@ function recordMatches(root: CardParityRoot, record: WireRecord): boolean {
   return hand === root.correlation.hand;
 }
 
+export function explainWireCorrelation(
+  root: CardParityRoot,
+  record: WireRecord,
+): {
+  matches: boolean;
+  rootHandNumber: number | null;
+  wireHandNumber: number | null;
+  expectedTable: string | null;
+  wireTable: string | null;
+} {
+  const rootSeparator = root.correlation.hand.lastIndexOf(':');
+  return {
+    matches: recordMatches(root, record),
+    rootHandNumber: root.correlation.handNumber,
+    wireHandNumber: record.handNumber
+      ?? numeric(findDeep(
+        record.responseBody,
+        new Set(['handNumber', 'handIndex', 'hand_number']),
+      )),
+    expectedTable:
+      rootSeparator > 0
+        ? root.correlation.hand.slice(0, rootSeparator)
+        : null,
+    wireTable:
+      /poker\/cash\/tables\/([^/?]+)/.exec(record.urlSuffix)?.[1]
+      ?? stringValue(findDeep(
+        record.responseBody,
+        new Set(['tableId', 'table_id']),
+      ))
+      ?? null,
+  };
+}
+
 function endpointWeight(root: CardParityRoot, record: WireRecord): number {
   const suffix = record.urlSuffix;
   let weight = 0;
@@ -87,6 +130,15 @@ function endpointWeight(root: CardParityRoot, record: WireRecord): number {
   } else if (root.surface.startsWith('baccarat')) {
     if (/coup|current/.test(suffix)) weight += 10;
   } else if (/last-settled/.test(suffix) && root.dealStep === 'showdown') {
+    weight += 20;
+  } else if (
+    /state-for-agent/.test(suffix)
+    && root.dealStep !== 'showdown'
+  ) {
+    // Cash hand numbers intentionally identify the same hand from deal through
+    // settlement. A later last-settled poll can therefore correlate by number
+    // while describing terminal truth, but a nonterminal tray checkpoint must
+    // use the private live view that owns its hole cards and current pot.
     weight += 20;
   } else if (/hand|action|current|table/.test(suffix)) {
     weight += 5;

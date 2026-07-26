@@ -5,13 +5,21 @@ import { describe, expect, test } from 'bun:test';
 import {
   parsePersistedCashTableState,
   readPersistedCashTableId,
-  writePersistedCashTableId,
+  readPersistedCashTableState,
+  writePersistedCashTableState,
 } from '../pack-cash-table-state';
 
 describe('pack cash-table persistence', () => {
   test('accepts only a non-empty tableId', () => {
     expect(parsePersistedCashTableState('{"tableId":" table-1 "}')).toEqual({
       tableId: 'table-1',
+      joinCode: null,
+    });
+    expect(parsePersistedCashTableState(
+      '{"tableId":"table-1","joinCode":" CODE1 "}',
+    )).toEqual({
+      tableId: 'table-1',
+      joinCode: 'CODE1',
     });
     expect(parsePersistedCashTableState('{"tableId":""}')).toBeNull();
     expect(parsePersistedCashTableState('{"id":"table-1"}')).toBeNull();
@@ -23,10 +31,18 @@ describe('pack cash-table persistence', () => {
     const path = join(directory, 'nested', 'pack-cash-table.json');
     try {
       expect(await readPersistedCashTableId(path)).toBeNull();
-      await writePersistedCashTableId(path, 'table-2');
+      await writePersistedCashTableState(path, {
+        tableId: 'table-2',
+        joinCode: 'CODE2',
+      });
       expect(await readPersistedCashTableId(path)).toBe('table-2');
+      expect(await readPersistedCashTableState(path)).toEqual({
+        tableId: 'table-2',
+        joinCode: 'CODE2',
+      });
       expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({
         tableId: 'table-2',
+        joinCode: 'CODE2',
       });
     } finally {
       await rm(directory, { recursive: true, force: true });

@@ -26,6 +26,97 @@ describe('recorded-wire parity assertions', () => {
     });
   }
 
+  test('cash private view supplies tray cards and pot metadata', () => {
+    const wire: WireRecord = {
+      seq: 50,
+      method: 'GET',
+      url: '',
+      urlSuffix: 'poker/cash/tables/table-a/state-for-agent',
+      status: 200,
+      requestBody: null,
+      responseBody: {
+        ok: true,
+        view: {
+          handNumber: 14,
+          holeCards: [
+            { suit: 'spades', rank: 'A' },
+            { suit: 'diamonds', rank: '10' },
+          ],
+          table: {
+            tableId: 'table-a',
+            handNumber: 14,
+            board: [],
+            pot: 30,
+            seats: [],
+          },
+        },
+      },
+      handId: null,
+      handNumber: 14,
+      coupId: null,
+      shoeId: null,
+      idempotencyKey: null,
+    };
+    const root = {
+      surface: 'holdem-tray-3d',
+      correlation: { hand: 'table-a:14', handNumber: 14 },
+      dealStep: 'hole',
+    } as CardParityRoot;
+    expect(expectedFromWire(
+      'holdem',
+      root.surface,
+      wire,
+      undefined,
+      { root, records: [wire] },
+    )).toMatchObject({
+      slots: {
+        'hole-1': { card: 'As', facing: 'up' },
+        'hole-2': { card: 'Td', facing: 'up' },
+      },
+      meta: { pot: '30' },
+    });
+  });
+
+  test('cash public live hand supplies pot metadata', () => {
+    const wire: WireRecord = {
+      seq: 51,
+      method: 'GET',
+      url: '',
+      urlSuffix: 'poker/cash/tables/table-a/state-for-agent',
+      status: 200,
+      requestBody: null,
+      responseBody: {
+        ok: true,
+        table: { id: 'table-a' },
+        seats: [],
+        live: {
+          tableId: 'table-a',
+          handNumber: 15,
+          board: [],
+          pot: 30,
+          seats: [],
+        },
+      },
+      handId: null,
+      handNumber: 15,
+      coupId: null,
+      shoeId: null,
+      idempotencyKey: null,
+    };
+    const root = {
+      surface: 'holdem-tray-3d',
+      correlation: { hand: 'table-a:15', handNumber: 15 },
+      dealStep: 'hole',
+    } as CardParityRoot;
+    expect(expectedFromWire(
+      'holdem',
+      root.surface,
+      wire,
+      undefined,
+      { root, records: [wire] },
+    ).meta).toEqual({ pot: '30' });
+  });
+
   test('wrong, missing, extra, duplicate, and facing lies fail set equality', () => {
     const root = structuredClone(RECORDED_CASES[0]!.root);
     const expected = {

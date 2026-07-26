@@ -334,6 +334,7 @@ function holdemExpected(
   if (tray) {
     const self = record(first(hand.self, body.self));
     const hole = array(first(
+      directView?.holeCards,
       self?.holeCards,
       hand.humanHole,
       hand.playerHoleCards,
@@ -441,7 +442,11 @@ function holdemMeta(
   ownHole: readonly unknown[],
 ): Record<string, string> {
   if (!outcome && !snapshot) {
-    const hand = record(body.hand) ?? body;
+    const hand = record(first(
+      body.hand,
+      record(body.view)?.table,
+      body.live,
+    )) ?? body;
     const literalPot = first(body.pot, hand.pot);
     const log = array(hand.publicActionLog);
     const bySeatStreet = new Map<string, bigint>();

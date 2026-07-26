@@ -562,9 +562,24 @@ export async function* driveScenario(
     return;
   }
 
-  // Practice starts on the room cadence; cash starts once the orchestrator has
-  // supplied/sat the table. Advance human turns through landed action labels.
-  if (surface.endsWith('-3d')) await clickText(driver, ['Sit', 'SIT']);
+  // Cash tables require the landed two-step Sit down -> Confirm buy-in flow.
+  // Prove the seat hydrated before awaiting a correlated hand checkpoint.
+  if (surface.endsWith('-3d')) {
+    const alreadySeated = await driver.evalJson<boolean>(
+      `(() => [...document.querySelectorAll('button')].some(
+        (button) => button.textContent?.trim().startsWith('Walk Away')
+          && !button.disabled
+      ))()`,
+    );
+    if (!alreadySeated) {
+      await waitAndClick(driver, ['Sit down', 'Sit', 'SIT'], 30_000);
+      await waitAndClick(driver, ['Confirm buy-in'], 30_000);
+    }
+    await driver.waitFn(`(() => [...document.querySelectorAll('button')].some(
+      (button) => button.textContent?.trim().startsWith('Walk Away')
+        && !button.disabled
+    ))()`, 30_000);
+  }
   if (row === 'H-neg') {
     await driver.waitFn(
       `Boolean(window.__CV_READ_PARITY?.(${JSON.stringify(surface)}))`,

@@ -33,7 +33,7 @@
     if (Array.isArray(value)) return value.map(redactSecrets);
     if (!value || typeof value !== 'object') return value;
     return Object.fromEntries(Object.entries(value).map(([key, child]) => (
-      /^(token|secret|secretKey|authorization)$/i.test(key)
+      /^(token|secret|secretKey|authorization|joinCode)$/i.test(key)
         ? [key, '[REDACTED]']
         : [key, redactSecrets(child)]
     )));

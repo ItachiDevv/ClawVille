@@ -1,5 +1,12 @@
 import type { ScenarioDefinition } from './types';
 
+export function requiresFixtureOwnerPreflight(
+  scenario: Pick<ScenarioDefinition, 'fixtureName'>,
+): boolean {
+  return typeof scenario.fixtureName === 'string'
+    && scenario.fixtureName.length > 0;
+}
+
 export function resolveScenarioState(
   scenario: Pick<ScenarioDefinition, 'game' | 'tier' | 'fixtureName'>,
   env: NodeJS.ProcessEnv = process.env,

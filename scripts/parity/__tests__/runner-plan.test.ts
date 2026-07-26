@@ -6,7 +6,10 @@ import {
   type Driver,
   waitForParityCheckpoint,
 } from '../driver';
-import { resolveScenarioState } from '../runner-env';
+import {
+  requiresFixtureOwnerPreflight,
+  resolveScenarioState,
+} from '../runner-env';
 import {
   driveScenario,
   nextJournalStep,
@@ -67,6 +70,13 @@ class PracticePlanDriver extends PlanDriver {
         actions: ['Fold', 'Check'],
       } as T;
     }
+    return super.evalJson<T>(js);
+  }
+}
+
+class CashPlanDriver extends PlanDriver {
+  override async evalJson<T>(js: string): Promise<T> {
+    if (js.includes("startsWith('Walk Away')")) return false as T;
     return super.evalJson<T>(js);
   }
 }
@@ -155,6 +165,21 @@ describe('offline live-runner plans', () => {
     expect(h3.actions).not.toContain('Fold');
   });
 
+  test('H8 cash opens and hydrates the exact seat before its checkpoint', async () => {
+    const h8 = new CashPlanDriver();
+    await consume(driveScenario(
+      'holdem',
+      'H8',
+      'holdem-tray-3d',
+      ['hole'],
+      h8,
+    ));
+    expect(h8.actions.slice(0, 2)).toEqual([
+      'Sit down',
+      'Confirm buy-in',
+    ]);
+  });
+
   test('fixture guest, live identity, and cash table requirements stay distinct', () => {
     expect(resolveScenarioState(
       { game: 'blackjack', tier: 'guest', fixtureName: 'bj-split' },
@@ -174,15 +199,29 @@ describe('offline live-runner plans', () => {
     )).toThrow('CV_PARITY_CASH_TABLE_ID');
   });
 
+  test('fixture owner recovery is isolated from organic live rows', () => {
+    expect(requiresFixtureOwnerPreflight({
+      fixtureName: 'bac-player-third',
+    })).toBe(true);
+    expect(requiresFixtureOwnerPreflight({
+      fixtureName: undefined,
+    })).toBe(false);
+  });
+
   test('fixture teardown rejects a non-2xx delete result', async () => {
     const driver = new PlanDriver();
-    driver.evalJson = async <T>() => false as T;
+    driver.evalJson = async <T>() => ({
+      closed: false,
+      status: 500,
+      code: 'fixture_cleanup_failed',
+      message: 'recorded failure',
+    }) as T;
     expect(closeFixtureRun(
       driver,
       { runId: 'recorded-run' },
       'http://127.0.0.1:4002',
     )).rejects.toThrow(
-      'fixture teardown failed',
+      'HTTP 500, code=fixture_cleanup_failed, message=recorded failure',
     );
   });
 

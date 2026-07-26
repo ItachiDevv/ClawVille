@@ -60,6 +60,37 @@ describe('immutable application correlation', () => {
     expect(resolveWireForRoot(root, [wrong, right])).toBe(right);
   });
 
+  test('cash nonterminal checkpoint prefers private live view over later settlement', () => {
+    const root = {
+      ...RECORDED_CASES[3]!.root,
+      surface: 'holdem-tray-3d',
+      dealStep: 'hole',
+      correlation: { hand: 'table-a:14', handNumber: 14 },
+    } as CardParityRoot;
+    const live = baseRecord({
+      seq: 10,
+      urlSuffix: 'poker/cash/tables/table-a/state-for-agent',
+      handNumber: 14,
+      responseBody: {
+        view: {
+          handNumber: 14,
+          table: { tableId: 'cash:table-a', handNumber: 14, pot: 30 },
+          holeCards: [],
+        },
+      },
+    });
+    const settled = baseRecord({
+      seq: 20,
+      urlSuffix: 'poker/cash/tables/table-a/last-settled',
+      handNumber: 14,
+      responseBody: {
+        snapshot: { tableId: 'table-a', handNumber: 14, pot: 30 },
+      },
+    });
+    expect(resolveWireForRoot(root, [live, settled])).toBe(live);
+    expect(resolveWireForRoot(root, [settled])).toBeNull();
+  });
+
   test('practice does not match a different hand with the same index', () => {
     const root = RECORDED_CASES[3]!.root;
     const wrong = baseRecord({

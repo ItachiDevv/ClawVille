@@ -35,14 +35,22 @@ describe('pre-navigation fetch capture hook', () => {
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ stake: index, bet: 'player' }),
+          body: JSON.stringify({
+            stake: index,
+            bet: 'player',
+            joinCode: 'must-not-be-captured',
+          }),
         },
       );
     }
     const records = fakeWindow.__CV_WIRE_SINCE?.('baccarat/coup', 0) ?? [];
     expect(records).toHaveLength(256);
     expect(records[0]!.seq).toBe(5);
-    expect(records.at(-1)?.requestBody).toEqual({ stake: 259, bet: 'player' });
+    expect(records.at(-1)?.requestBody).toEqual({
+      stake: 259,
+      bet: 'player',
+      joinCode: '[REDACTED]',
+    });
     expect(records.at(-1)?.responseBody).toEqual({
       coupId: 'coup-260',
       token: '[REDACTED]',

@@ -37,9 +37,16 @@ page-context requests from the `9443` web origin:
   profile refuses the pack because refreshing it requires orchestrator
   credentials.
 - Read the live avatar balance and refuse below 500 vCLAW.
-- Create a fresh private cash table for the pack. If creation fails, use the
-  caller-provided `CV_PARITY_CASH_TABLE_ID` fallback and log that choice
-  loudly; without a fallback the pack refuses to start.
+- Select and verify an open low-tier house table with seeded opponents and a
+  free seat. This is required because landed cash-table code intentionally
+  limits seeded opponents to `source='house'`; private/player tables cannot
+  deal a solo harness hand. The chosen ID is persisted in ignored
+  `out/pack-cash-table.json`.
+- A legacy ignored state containing only `tableId` is recovered read-only from
+  the staging DB only when that open private table belongs to the authenticated
+  live avatar. The code is written to ignored state and never logged.
+- A persisted non-playable private table is retired only when it is that
+  avatar's table with zero seats, zero unsettled hands, and zero escrow.
 
 The pack snapshots agent-browser process PIDs before preflight. Between rows it
 only stops agent-browser-owned processes that are absent from that baseline

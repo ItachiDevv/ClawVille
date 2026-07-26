@@ -1,14 +1,15 @@
 import { mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
+import postgres from '../../apps/api/node_modules/postgres/src/index.js';
 import {
   AgentBrowserDriver,
   agentBrowserExecutable,
 } from './driver';
 import {
   DEFAULT_CASH_TABLE_STATE_PATH,
-  readPersistedCashTableId,
-  writePersistedCashTableId,
+  readPersistedCashTableState,
+  writePersistedCashTableState,
 } from './pack-cash-table-state';
 
 const DEFAULT_WEB_BASE = 'https://itachi222.tail06a01b.ts.net:9443';
@@ -24,17 +25,22 @@ interface AuthProbe {
 
 interface AvatarProbe {
   status: number;
-  balance: number | null;
-}
-
-interface TableProbe {
-  status: number;
   id: string | null;
+  balance: number | null;
 }
 
 interface ExistingTableProbe {
   status: number;
   isOpen: boolean;
+  playableHouse: boolean;
+}
+
+interface OwnedPrivateTableProbe {
+  joinCode: string | null;
+  seededAgentSlots: number;
+  activeSeats: number;
+  unsettledHands: number;
+  escrowCt: number;
 }
 
 function absoluteApiBase(): string {
@@ -90,13 +96,20 @@ async function probeAuth(driver: AgentBrowserDriver): Promise<AuthProbe> {
 }
 
 async function probeAvatar(driver: AgentBrowserDriver): Promise<AvatarProbe> {
-  const response = await pageRequest<{ avatar?: { clawTokens?: unknown } }>(
+  const response = await pageRequest<{
+    avatar?: { id?: unknown; clawTokens?: unknown };
+  }>(
     driver,
     '/api/avatars/me',
   );
   const value = response.body?.avatar?.clawTokens;
+  const id = response.body?.avatar?.id;
   return {
     status: response.status,
+    id:
+      response.status === 200 && typeof id === 'string' && id.length > 0
+        ? id
+        : null,
     balance:
       response.status === 200 && typeof value === 'number' && Number.isFinite(value)
         ? value
@@ -104,38 +117,148 @@ async function probeAvatar(driver: AgentBrowserDriver): Promise<AvatarProbe> {
   };
 }
 
-async function createPrivateCashTable(
+async function inspectOwnedPrivateTable(
+  tableId: string,
+  avatarId: string,
+): Promise<OwnedPrivateTableProbe | null> {
+  const databaseUrl = process.env.DATABASE_URL;
+  if (
+    !databaseUrl
+    || !databaseUrl.includes('mtpixvtclsjqjguouxes')
+  ) {
+    return null;
+  }
+  const sql = postgres(databaseUrl, {
+    max: 1,
+    idle_timeout: 5,
+    connect_timeout: 20,
+  });
+  try {
+    const rows = await sql`
+      SELECT
+        t.join_code,
+        t.seeded_agent_slots,
+        t.table_escrow_ct,
+        count(DISTINCT s.id) FILTER (
+          WHERE s.status <> 'left'
+        )::int AS active_seats,
+        count(DISTINCT h.id) FILTER (
+          WHERE h.settled_at IS NULL
+        )::int AS unsettled_hands
+      FROM poker_cash_tables t
+      LEFT JOIN poker_cash_seats s ON s.table_id = t.id
+      LEFT JOIN poker_cash_hands h ON h.table_id = t.id
+      WHERE t.id = ${tableId}
+        AND t.created_by = ${avatarId}
+        AND t.visibility = 'private'
+        AND t.status = 'open'
+      GROUP BY t.id
+    `;
+    if (rows.length !== 1) return null;
+    const row = rows[0]!;
+    const escrowCt = Number(row.table_escrow_ct);
+    if (
+      !Number.isSafeInteger(escrowCt)
+      || !Number.isSafeInteger(row.seeded_agent_slots)
+      || !Number.isSafeInteger(row.active_seats)
+      || !Number.isSafeInteger(row.unsettled_hands)
+    ) {
+      return null;
+    }
+    return {
+      joinCode:
+        typeof row.join_code === 'string' && row.join_code.length > 0
+          ? row.join_code
+          : null,
+      seededAgentSlots: row.seeded_agent_slots,
+      activeSeats: row.active_seats,
+      unsettledHands: row.unsettled_hands,
+      escrowCt,
+    };
+  } finally {
+    await sql.end();
+  }
+}
+
+async function retireOwnedEmptyLegacyTable(
+  tableId: string,
+  avatarId: string,
+): Promise<boolean> {
+  const databaseUrl = process.env.DATABASE_URL;
+  if (
+    !databaseUrl
+    || !databaseUrl.includes('mtpixvtclsjqjguouxes')
+  ) {
+    return false;
+  }
+  const sql = postgres(databaseUrl, {
+    max: 1,
+    idle_timeout: 5,
+    connect_timeout: 20,
+  });
+  try {
+    const rows = await sql`
+      UPDATE poker_cash_tables t
+      SET status = 'closed', updated_at = now()
+      WHERE t.id = ${tableId}
+        AND t.created_by = ${avatarId}
+        AND t.source = 'private'
+        AND t.visibility = 'private'
+        AND t.status = 'open'
+        AND t.table_escrow_ct = '0'
+        AND NOT EXISTS (
+          SELECT 1 FROM poker_cash_seats s
+          WHERE s.table_id = t.id AND s.status <> 'left'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM poker_cash_hands h
+          WHERE h.table_id = t.id AND h.settled_at IS NULL
+        )
+      RETURNING t.id
+    `;
+    return rows.length === 1;
+  } finally {
+    await sql.end();
+  }
+}
+
+async function selectPlayableHouseCashTable(
   driver: AgentBrowserDriver,
-): Promise<TableProbe> {
+): Promise<string | null> {
   const response = await pageRequest<{
-    ok?: unknown;
-    table?: { id?: unknown };
+    tables?: Array<{
+      id?: unknown;
+      source?: unknown;
+      tierKey?: unknown;
+      buyInCt?: unknown;
+      maxSeats?: unknown;
+      occupiedSeats?: unknown;
+      status?: unknown;
+    }>;
   }>(
     driver,
-    '/api/cove/poker/cash/tables',
-    {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        source: 'private',
-        buyInCt: 200,
-        smallBlindCt: 1,
-        bigBlindCt: 2,
-        maxSeats: 6,
-      }),
-    },
+    '/api/cove/poker/cash/tables?limit=50',
   );
-  const id = response.body?.table?.id;
-  return {
-    status: response.status,
-    id:
-      response.status === 201
-      && response.body?.ok === true
-      && typeof id === 'string'
-      && id.length > 0
-        ? id
-        : null,
-  };
+  if (response.status !== 200 || !Array.isArray(response.body?.tables)) {
+    return null;
+  }
+  const candidates = response.body.tables
+    .filter((table) =>
+      typeof table.id === 'string'
+      && table.source === 'house'
+      && table.tierKey === 'low'
+      && Number(table.buyInCt) === 200
+      && table.status === 'open'
+      && Number.isSafeInteger(table.maxSeats)
+      && Number.isSafeInteger(table.occupiedSeats)
+      && Number(table.occupiedSeats) >= 1
+      && Number(table.occupiedSeats) < Number(table.maxSeats)
+    )
+    .sort((left, right) =>
+      Number(right.occupiedSeats) - Number(left.occupiedSeats)
+      || String(left.id).localeCompare(String(right.id))
+    );
+  return candidates[0]?.id as string | undefined ?? null;
 }
 
 async function probeExistingCashTable(
@@ -144,7 +267,15 @@ async function probeExistingCashTable(
 ): Promise<ExistingTableProbe> {
   const response = await pageRequest<{
     ok?: unknown;
-    table?: { id?: unknown; status?: unknown };
+    table?: {
+      id?: unknown;
+      source?: unknown;
+      tierKey?: unknown;
+      buyInCt?: unknown;
+      maxSeats?: unknown;
+      status?: unknown;
+    };
+    seats?: unknown[];
   }>(
     driver,
     `/api/cove/poker/cash/tables/${encodeURIComponent(tableId)}`,
@@ -156,6 +287,16 @@ async function probeExistingCashTable(
       && response.body?.ok === true
       && response.body?.table?.id === tableId
       && response.body?.table?.status === 'open',
+    playableHouse:
+      response.status === 200
+      && response.body?.table?.id === tableId
+      && response.body?.table?.source === 'house'
+      && response.body?.table?.tierKey === 'low'
+      && Number(response.body?.table?.buyInCt) === 200
+      && response.body?.table?.status === 'open'
+      && Array.isArray(response.body?.seats)
+      && response.body.seats.length >= 1
+      && response.body.seats.length < Number(response.body.table.maxSeats),
   };
 }
 
@@ -365,23 +506,67 @@ async function verifyLiveProfileAndPrepareTable(): Promise<string> {
       );
     }
 
-    const persistedTableId = await readPersistedCashTableId(
+    let persistedState = await readPersistedCashTableState(
       cashTableStatePath(),
     );
-    if (persistedTableId) {
+    const ownedPrivateTable =
+      persistedState?.tableId && avatar.id
+        ? await inspectOwnedPrivateTable(
+            persistedState.tableId,
+            avatar.id,
+          )
+        : null;
+    if (persistedState?.tableId && ownedPrivateTable) {
+      if (!persistedState.joinCode && ownedPrivateTable.joinCode) {
+        persistedState = {
+          tableId: persistedState.tableId,
+          joinCode: ownedPrivateTable.joinCode,
+        };
+        await writePersistedCashTableState(
+          cashTableStatePath(),
+          persistedState,
+        );
+        console.log(
+          'PREFLIGHT cash table: recovered legacy owner access into ignored state',
+        );
+      }
+      if (
+        ownedPrivateTable.activeSeats === 0
+        && ownedPrivateTable.unsettledHands === 0
+        && ownedPrivateTable.escrowCt === 0
+      ) {
+        const retired = await retireOwnedEmptyLegacyTable(
+          persistedState.tableId,
+          avatar.id!,
+        );
+        if (retired) {
+          console.warn(
+            `PREFLIGHT cash table: retired verified-empty non-playable private table ${persistedState.tableId}`,
+          );
+          persistedState = null;
+        }
+      }
+    }
+    if (persistedState?.tableId) {
       try {
         const persisted = await probeExistingCashTable(
           driver,
-          persistedTableId,
+          persistedState.tableId,
         );
-        if (persisted.isOpen) {
+        if (
+          persisted.isOpen
+          && (
+            persisted.playableHouse
+            || Boolean(persistedState.joinCode)
+          )
+        ) {
           console.log(
-            `PREFLIGHT cash table: reused persisted open table ${persistedTableId}`,
+            `PREFLIGHT cash table: reused persisted open table ${persistedState.tableId}`,
           );
-          return persistedTableId;
+          return persistedState.tableId;
         }
         console.warn(
-          `PREFLIGHT cash table: persisted table unavailable (HTTP ${persisted.status} or not open); creating replacement`,
+          `PREFLIGHT cash table: persisted table unavailable or non-playable (HTTP ${persisted.status}); selecting house table`,
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : '';
@@ -392,60 +577,49 @@ async function verifyLiveProfileAndPrepareTable(): Promise<string> {
               ? 'browser command failed'
               : `request threw ${error instanceof Error ? error.name : 'unknown error'}`;
         console.warn(
-          `PREFLIGHT cash table: persisted table check failed (${failure}); creating replacement`,
+          `PREFLIGHT cash table: persisted table check failed (${failure}); selecting house table`,
         );
       }
     } else {
       console.log(
-        'PREFLIGHT cash table: no persisted table id; creating private table',
+        'PREFLIGHT cash table: no persisted playable table; selecting house table',
       );
     }
 
-    let createFailure: string;
-    try {
-      const table = await createPrivateCashTable(driver);
-      if (table.id) {
-        const created = await probeExistingCashTable(driver, table.id);
-        if (created.isOpen) {
-          await writePersistedCashTableId(cashTableStatePath(), table.id);
-          console.log(
-            `PREFLIGHT cash table: created, verified open, and persisted private table ${table.id}`,
-          );
-          return table.id;
-        }
-        createFailure =
-          `HTTP ${table.status}, but open-table verification returned HTTP ${created.status} or not open`;
-      } else {
-        createFailure = `HTTP ${table.status}`;
+    const selected = await selectPlayableHouseCashTable(driver);
+    if (selected) {
+      const selectedProbe = await probeExistingCashTable(driver, selected);
+      if (selectedProbe.playableHouse) {
+        await writePersistedCashTableState(cashTableStatePath(), {
+          tableId: selected,
+          joinCode: null,
+        });
+        console.log(
+          `PREFLIGHT cash table: selected and persisted playable low house table ${selected}`,
+        );
+        return selected;
       }
-    } catch (error) {
-      // Do not echo a browser error body: request/daemon messages can contain
-      // state paths or page details. The operational class is sufficient for
-      // a loud fallback while keeping auth material out of logs.
-      const message = error instanceof Error ? error.message : '';
-      createFailure =
-        /timed out/i.test(message)
-          ? 'request timed out'
-          : /agent-browser exited/i.test(message)
-            ? 'browser command failed'
-            : `request threw ${error instanceof Error ? error.name : 'unknown error'}`;
     }
 
     const fallback = process.env.CV_PARITY_CASH_TABLE_ID?.trim();
     if (!fallback) {
       throw new Error(
-        `PREFLIGHT REFUSED: fresh private cash table creation failed (${createFailure}) and CV_PARITY_CASH_TABLE_ID fallback is empty`,
+        'PREFLIGHT REFUSED: no playable low house cash table and CV_PARITY_CASH_TABLE_ID fallback is empty',
       );
     }
     const fallbackProbe = await probeExistingCashTable(driver, fallback);
-    if (!fallbackProbe.isOpen) {
+    if (!fallbackProbe.playableHouse) {
       throw new Error(
-        `PREFLIGHT REFUSED: reuse unavailable, creation failed (${createFailure}), and CV_PARITY_CASH_TABLE_ID fallback is not an open table (status=${fallbackProbe.status})`,
+        `PREFLIGHT REFUSED: CV_PARITY_CASH_TABLE_ID fallback is not a playable low house table (status=${fallbackProbe.status})`,
       );
     }
     console.warn(
-      `PREFLIGHT cash table: REUSE UNAVAILABLE and CREATION FAILED (${createFailure}); LOUD VERIFIED-OPEN FALLBACK to CV_PARITY_CASH_TABLE_ID=${fallback}`,
+      `PREFLIGHT cash table: LOUD VERIFIED-PLAYABLE FALLBACK to CV_PARITY_CASH_TABLE_ID=${fallback}`,
     );
+    await writePersistedCashTableState(cashTableStatePath(), {
+      tableId: fallback,
+      joinCode: null,
+    });
     return fallback;
   } finally {
     await driver.close().catch(() => undefined);
