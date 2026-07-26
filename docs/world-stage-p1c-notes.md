@@ -53,6 +53,38 @@ Founder-facing interpretation: body stays present and human-driven while the pla
 
 `cove-interior.tsx` intentionally preloads the optimized KTX2 interior and the 58 KB fallback at module scope. The live five-second FPS check can switch to that fallback when average FPS is below the threshold. This is deliberate resilience, not an accidental duplicate; no code change was made.
 
+## P1c leak hunt diagnosis (recorded before fix)
+
+Three serial, production-build experiments isolate the retained heap to route
+crossings rather than elapsed render time:
+
+| Experiment | Wall time | Forced-GC heap | Renderer start -> final | Slot inventory |
+|---|---:|---:|---:|---|
+| 20 round trips | 95.1 s | 311.89 -> 338.66 MB (+8.58% total; +2.90% second half) | 283 -> 295 textures; 271 -> 282 geometries | world exactly flat; Cove one-time fallback swap only |
+| DWELL-GAME | 101.6 s | 323.65 -> 315.92 MB (-2.39%) | 283 textures / 252 geometries, unchanged | world and Cove exactly flat |
+| DWELL-COVE | 101.3 s | 311.41 -> 311.62 MB (+0.07%) | 283 textures / 264 geometries, unchanged | world and Cove exactly flat |
+
+The identity-aware inventory rules out a generation-keyed scene remount:
+every world geometry UUID is identical early versus late. Cove replaces the
+optimized interior's 12 `Material* / BufferGeometry` identities with the
+fallback's 10 `Object_* / BufferGeometry` identities once, and its five
+active click-hotspot `BoxGeometry` identities churn when visibility changes.
+That is bounded and explains the early renderer step; it does not explain
+the forced-GC heap slope.
+
+**Exact defect:** `WorldStageRoot` calls `router.push()` at both navigation
+commit sites for every `/game` <-> `/cove` crossing. One round trip therefore
+appends two browser/App Router history entries. Those entries retain their
+route payload and page state for back/forward restoration, so the history
+retained by the soak grows linearly even though the persistent Three.js slot
+roots are stable. The dwell lanes append no entries and stay flat. This is
+crossing-correlated route-history retention, not a world/Cove scene-core leak.
+
+The in-scope correction is to preserve one `/game`/`/cove` back-forward pair,
+then use `router.replace()` for later stage-owned crossings so the stage
+history is bounded. The existing pathname-driven back/forward stage adoption
+remains exercised; thresholds and renderer/resource features remain unchanged.
+
 ## Serial verification record
 
 Pre-gate implementation checks already completed:
