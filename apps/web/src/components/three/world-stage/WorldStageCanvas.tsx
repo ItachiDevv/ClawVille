@@ -495,7 +495,7 @@ export function readStageRendererCounters(): StageRendererCounters {
       texturesSizeBytes: numberOrNull(memory?.texturesSize),
       memoryTotalBytes: numberOrNull(memory?.total),
       renderCallsLifetime: numberOrNull(render?.calls),
-      drawCallsFrame: currentStageDrawCallsFrame,
+      drawCallsFrame: numberOrNull(render?.drawCalls),
     };
   }
   if (backend === 'webgl') {
@@ -523,12 +523,17 @@ export function readStageRendererCounters(): StageRendererCounters {
 function StageRendererCounterSampler(): null {
   const gl = useThree((state) => state.gl);
   useFrame(() => {
-    const render = (
-      gl as unknown as {
-        info?: { render?: { calls?: number; drawCalls?: number } };
-      }
-    ).info?.render;
-    if (currentStageBackend === 'webgl') {
+    if (currentStageBackend !== 'webgl') {
+      previousStageRenderCalls = null;
+      currentStageDrawCallsFrame = null;
+      return;
+    }
+    queueMicrotask(() => {
+      const render = (
+        gl as unknown as {
+          info?: { render?: { calls?: number } };
+        }
+      ).info?.render;
       const calls = render?.calls;
       if (typeof calls !== 'number' || !Number.isFinite(calls)) {
         previousStageRenderCalls = null;
@@ -540,14 +545,7 @@ function StageRendererCounterSampler(): null {
           ? null
           : calls - previousStageRenderCalls;
       previousStageRenderCalls = calls;
-      return;
-    }
-    previousStageRenderCalls = null;
-    currentStageDrawCallsFrame =
-      typeof render?.drawCalls === 'number' &&
-      Number.isFinite(render.drawCalls)
-        ? render.drawCalls
-        : null;
+    });
   });
   return null;
 }
