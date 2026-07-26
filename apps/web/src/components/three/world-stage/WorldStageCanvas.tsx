@@ -13,6 +13,7 @@ import {
 import {
   Canvas,
   _roots,
+  events as createPointerEvents,
   extend,
   useThree,
   type RootState,
@@ -30,6 +31,7 @@ import {
 import { useStageStore } from './stage-store';
 import {
   requestStageDeltaClamp,
+  SceneIdProvider,
   StageFrameScheduler,
 } from './use-scene-frame';
 import {
@@ -62,6 +64,37 @@ const IOS_SAFARI =
 const WEBGPU_ABSENT =
   typeof navigator !== 'undefined' && !('gpu' in navigator);
 const WEBGPU_UNHEALTHY_KEY = 'world-stage-webgpu-unhealthy';
+
+function belongsToActiveStageSlot(
+  object: THREE.Object3D,
+  activeScene: string | null,
+): boolean {
+  let current: THREE.Object3D | null = object;
+  while (current) {
+    if (current.name.startsWith('world-stage:')) {
+      return current.name === `world-stage:${activeScene ?? ''}`;
+    }
+    current = current.parent;
+  }
+  return true;
+}
+
+function createStagePointerEvents(
+  store: Parameters<typeof createPointerEvents>[0],
+) {
+  const manager = createPointerEvents(store);
+  const defaultFilter = manager.filter;
+  manager.filter = (items, state) => {
+    const ordered = defaultFilter
+      ? defaultFilter(items, state)
+      : items;
+    const activeScene = useStageStore.getState().activeScene;
+    return ordered.filter((intersection) =>
+      belongsToActiveStageSlot(intersection.object, activeScene),
+    );
+  };
+  return manager;
+}
 function readWebGpuUnhealthyFlag(): boolean {
   if (typeof window === 'undefined') return false;
   try {
@@ -507,6 +540,8 @@ interface WorldStageCanvasProps {
   transitionTimeoutMs?: number;
   pauseOnCreate?: boolean;
   onStageCreated?: (state: RootState) => void;
+  renderTransitionOverlay?: boolean;
+  onTransitionOpaque?: (request: import('./stage-store').StageRequest) => void;
 }
 
 function createPersistentCameras(
@@ -728,7 +763,11 @@ function StageSceneSlot({
       name={`world-stage:${sceneId}`}
       visible={visible}
     >
-      {mounted ? children : null}
+      {mounted ? (
+        <SceneIdProvider sceneId={sceneId}>
+          {children}
+        </SceneIdProvider>
+      ) : null}
     </group>
   );
 }
@@ -741,7 +780,8 @@ function StageSceneAppearance({
   const ownsAppearance = useStageStore(
     (state) =>
       state.activeScene === scene.sceneId ||
-      state.pendingRequest?.sceneId === scene.sceneId,
+      (state.activeScene === null &&
+        state.pendingRequest?.sceneId === scene.sceneId),
   );
   const rootScene = useThree((state) => state.scene);
   const gl = useThree((state) => state.gl);
@@ -794,6 +834,8 @@ export function WorldStageCanvas({
   transitionTimeoutMs = 20_000,
   pauseOnCreate = false,
   onStageCreated,
+  renderTransitionOverlay = true,
+  onTransitionOpaque,
 }: WorldStageCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [cameras] = useState(() => createPersistentCameras(scenes));
@@ -838,6 +880,7 @@ export function WorldStageCanvas({
       className="relative h-full w-full overflow-hidden bg-[#07131d]"
     >
       <Canvas
+        events={createStagePointerEvents}
         frameloop="always"
         dpr={DPR_RANGE}
         camera={initialCamera}
@@ -869,7 +912,12 @@ export function WorldStageCanvas({
           </group>
         ))}
       </Canvas>
-      <StageTransition timeoutMs={transitionTimeoutMs} />
+      {renderTransitionOverlay && (
+        <StageTransition
+          timeoutMs={transitionTimeoutMs}
+          onOpaque={onTransitionOpaque}
+        />
+      )}
     </div>
   );
 }

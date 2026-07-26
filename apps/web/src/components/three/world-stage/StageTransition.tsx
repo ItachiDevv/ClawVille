@@ -6,6 +6,7 @@ import { useStageStore, type StageRequest } from './stage-store';
 interface StageTransitionProps {
   fadeDurationMs?: number;
   timeoutMs?: number;
+  onOpaque?: (request: StageRequest) => void;
 }
 
 function matchesRequest(
@@ -21,6 +22,7 @@ function matchesRequest(
 export function StageTransition({
   fadeDurationMs = 250,
   timeoutMs = 20_000,
+  onOpaque,
 }: StageTransitionProps) {
   const pendingRequest = useStageStore((state) => state.pendingRequest);
   const transition = useStageStore((state) => state.transition);
@@ -42,6 +44,7 @@ export function StageTransition({
     const activateTimer = window.setTimeout(() => {
       const state = useStageStore.getState();
       if (state.pendingRequest?.requestId !== request.requestId) return;
+      onOpaque?.(request);
       state.activateScene(request);
       state.setTransitionPhase(request.requestId, 'awaiting');
     }, fadeDurationMs);
@@ -59,7 +62,7 @@ export function StageTransition({
       window.clearTimeout(activateTimer);
       window.clearTimeout(timeoutTimer);
     };
-  }, [fadeDurationMs, pendingRequest, timeoutMs]);
+  }, [fadeDurationMs, onOpaque, pendingRequest, timeoutMs]);
 
   useEffect(() => {
     if (
@@ -109,7 +112,7 @@ export function StageTransition({
     <div
       aria-live="polite"
       data-stage-transition={phase}
-      className="absolute inset-0 z-20 flex items-center justify-center bg-[#02070d] px-6 text-center"
+      className="fixed inset-0 z-[9999] flex items-center justify-center bg-[#02070d] px-6 text-center"
       style={{
         opacity: opaque ? 1 : 0,
         pointerEvents: phase === 'idle' ? 'none' : 'auto',
@@ -122,6 +125,13 @@ export function StageTransition({
           <p className="mt-2 text-red-100/80">
             {transition?.error ?? 'The requested scene could not be shown.'}
           </p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="mt-4 rounded-lg border border-red-200/50 bg-red-100/10 px-4 py-2 font-semibold text-red-50 transition hover:bg-red-100/20"
+          >
+            Reload
+          </button>
         </div>
       ) : phase !== 'idle' && phase !== 'fadingIn' ? (
         <div className="text-sm font-medium tracking-[0.24em] text-cyan-100/80">

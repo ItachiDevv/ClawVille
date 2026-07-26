@@ -1,7 +1,10 @@
 'use client';
 
 import { memo, useMemo, useState, useEffect, useRef } from 'react';
-import { useFrame } from '@react-three/fiber';
+import {
+  useSceneActive,
+  useSceneFrame,
+} from '@/components/three/world-stage/use-scene-frame';
 import * as THREE from 'three';
 import { useWorldLabel, WorldLabel } from '@/lib/three/world-labels-overlay';
 import { useNpcStore, PLAYER_NPC_ID, type NpcChatBubble, type NpcSpriteState } from '@/stores/npc';
@@ -94,7 +97,7 @@ const SpeechBubble = memo(function SpeechBubble({ npc, bubble }: SpeechBubblePro
   // Update group world position each frame to track NPC movement.
   // Also keeps visibility in sync — the overlay's NDC z > 1 check replaces the
   // manual viewZ calculation from the previous drei <Html> implementation.
-  useFrame(() => {
+  useSceneFrame(() => {
     const g = groupRef.current;
     if (!g) return;
     g.position.x = worldXRef.current;
@@ -173,6 +176,7 @@ const SpeechBubble = memo(function SpeechBubble({ npc, bubble }: SpeechBubblePro
 // ---------------------------------------------------------------------------
 
 function NpcSpeechBubbles() {
+  const sceneActive = useSceneActive();
   // useShallow on both array selectors so that SSE ticks where chatBubbles or
   // npcs array content is unchanged (same element references) don't cause re-renders.
   // Combined with B7 (NPC object identity preservation), npcs stays stable when
@@ -186,9 +190,10 @@ function NpcSpeechBubbles() {
   // would stay on screen past their expiresAt timestamp until the next store update.
   const [tick, setTick] = useState(0);
   useEffect(() => {
+    if (!sceneActive) return;
     const id = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(id);
-  }, []);
+  }, [sceneActive]);
 
   const now = Date.now();
   // tick is read so the effect dependency is correct and eslint doesn't strip it

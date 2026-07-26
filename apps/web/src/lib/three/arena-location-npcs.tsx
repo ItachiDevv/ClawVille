@@ -1,7 +1,8 @@
 'use client';
 
 import { useRef, useMemo, memo, Suspense, useEffect, useState, type ReactElement } from 'react';
-import { useFrame, useThree } from '@react-three/fiber';
+import { useThree } from '@react-three/fiber';
+import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import { useGLTF } from '@react-three/drei';
 import { useWorldLabel, WorldLabel } from '@/lib/three/world-labels-overlay';
 import * as THREE from 'three';
@@ -547,7 +548,7 @@ const NpcMesh = memo(function NpcMesh({
     };
   }, [cloned, animations]);
 
-  useFrame(({ clock, camera }, delta) => {
+  useSceneFrame(({ clock, camera }, delta) => {
     if (!groupRef.current) return;
 
     // PHASE 1.5 — Far-location-NPC mixer gate (2026-05-22).
@@ -744,7 +745,7 @@ const LocationNpc = memo(function LocationNpc({
     setMounted(dx * dx + dz * dz <= RESIDENT_STREAM_IN_DIST_SQ);
   }, [camera, worldX, worldZ]);
 
-  useFrame(({ camera: frameCamera }) => {
+  useSceneFrame(({ camera: frameCamera }) => {
     frameCountRef.current += 1;
     const frame = frameCountRef.current;
     if ((frame + seed) % RESIDENT_STREAM_CHECK_FRAMES !== 0) return;

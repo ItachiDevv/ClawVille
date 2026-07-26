@@ -36,6 +36,7 @@ const EMPTY_SLOT: StageSceneSlot = {
   status: 'unrequested',
   generation: 0,
   frameInvocations: 0,
+  hasEverActivated: false,
 };
 
 function useSyntheticWarmup(sceneId: string): void {

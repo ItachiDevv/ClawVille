@@ -32,7 +32,8 @@ import {
   useCallback,
   useState,
 } from 'react';
-import { useFrame, useThree } from '@react-three/fiber';
+import { useThree } from '@react-three/fiber';
+import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import * as THREE from 'three';
 import type { VRM } from '@pixiv/three-vrm';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -787,7 +788,7 @@ function OrbitingOrbsAuraRenderer({
     };
   }, [parentObject, resources]);
 
-  useFrame((_, delta) => {
+  useSceneFrame((_, delta) => {
     if (groupRef.current) groupRef.current.rotation.y += delta * orbitSpeed;
   });
   return null;
@@ -814,7 +815,7 @@ function ParticleRenderer({
   // Scratch vector — reused every frame, zero alloc
   const scratchPos = useMemo(() => new THREE.Vector3(), []);
 
-  useFrame((_, delta) => {
+  useSceneFrame((_, delta) => {
     accRef.current += delta;
     const interval = 1 / emitRate;
     if (accRef.current < interval) return;
@@ -1003,7 +1004,7 @@ function OutfitRenderer({ variant }: { variant: OwnedCosmetic['variants'][0] }) 
 // ---------------------------------------------------------------------------
 
 function AuraFrameUpdater({ parentObject }: { parentObject: THREE.Object3D }) {
-  useFrame((_, delta) => {
+  useSceneFrame((_, delta) => {
     parentObject.traverse((child) => {
       const uniforms = child.userData?.cosmeticUniforms as
         | Record<string, THREE.IUniform>

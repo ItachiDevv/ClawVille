@@ -41,7 +41,7 @@
 import { useMemo, useEffect, useRef, Suspense, Component } from 'react';
 import type { ReactNode } from 'react';
 import * as THREE from 'three';
-import { useFrame } from '@react-three/fiber';
+import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import { useGLTF } from '@react-three/drei';
 import { LAND_PARCELS, LAND_SHOWROOM } from '@clawville/shared';
 import type { ParcelSlot } from '@clawville/shared';
@@ -286,7 +286,7 @@ function ShowroomSlot({
   // useFrame: distance cull + hide-when-owned, zero allocs.
   // getState() reads the Zustand store imperatively (safe inside useFrame —
   // no hook call, no re-render subscription here).
-  useFrame(({ camera }) => {
+  useSceneFrame(({ camera }) => {
     const g = outerRef.current;
     if (!g) return;
 

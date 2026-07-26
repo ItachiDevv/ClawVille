@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useMemo } from 'react';
-import { useFrame } from '@react-three/fiber';
+import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import * as THREE from 'three';
 import { useGameStore } from '@/stores/game';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
@@ -63,7 +63,7 @@ function PathDots() {
     []
   );
 
-  useFrame(() => {
+  useSceneFrame(() => {
     const mesh = dotsRef.current;
     if (!mesh) return;
 
@@ -116,7 +116,7 @@ function PathDots() {
 function DestinationMarker() {
   const ringRef = useRef<THREE.Mesh>(null);
 
-  useFrame((state) => {
+  useSceneFrame((state) => {
     const mesh = ringRef.current;
     if (!mesh) return;
 

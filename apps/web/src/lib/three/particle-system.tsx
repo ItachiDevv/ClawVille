@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useMemo, useCallback, useState, memo } from 'react';
-import { useFrame } from '@react-three/fiber';
+import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import * as THREE from 'three';
 
 // ---------------------------------------------------------------------------
@@ -202,7 +202,7 @@ function ParticleSystem() {
     return null;
   }, []);
 
-  useFrame((_, delta) => {
+  useSceneFrame((_, delta) => {
     const pool = poolRef.current as unknown as Particle[];
     const dt = Math.min(delta, 0.1);
 

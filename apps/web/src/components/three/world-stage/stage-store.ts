@@ -22,6 +22,7 @@ export interface StageSceneSlot {
   status: StageSceneStatus;
   generation: number;
   frameInvocations: number;
+  hasEverActivated: boolean;
 }
 
 export interface StageRecoverySnapshot {
@@ -86,6 +87,7 @@ const createSceneSlot = (): StageSceneSlot => ({
   status: 'unrequested',
   generation: 0,
   frameInvocations: 0,
+  hasEverActivated: false,
 });
 
 const createInitialState = () => ({
@@ -313,6 +315,7 @@ export const useStageStore = create<StageStore>((set, get) => ({
           [request.sceneId]: {
             ...slot,
             status: 'resident',
+            hasEverActivated: true,
           },
         },
         pendingRequest: null,
@@ -422,22 +425,28 @@ export function addStageWindowListener<K extends keyof WindowEventMap>(
   listener: (event: WindowEventMap[K]) => void,
   options?: boolean | AddEventListenerOptions,
 ): () => void {
-  window.addEventListener(
+  return addStageEventListener(
+    window,
     type,
     listener as EventListener,
     options,
   );
+}
+
+export function addStageEventListener(
+  target: EventTarget,
+  type: string,
+  listener: EventListener,
+  options?: boolean | AddEventListenerOptions,
+): () => void {
+  target.addEventListener(type, listener, options);
   useStageStore.getState().adjustWindowListenerCount(1);
   let attached = true;
 
   return () => {
     if (!attached) return;
     attached = false;
-    window.removeEventListener(
-      type,
-      listener as EventListener,
-      options,
-    );
+    target.removeEventListener(type, listener, options);
     useStageStore.getState().adjustWindowListenerCount(-1);
   };
 }

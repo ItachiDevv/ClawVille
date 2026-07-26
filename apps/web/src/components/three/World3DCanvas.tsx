@@ -1,11 +1,19 @@
 'use client';
 
 import { useRef, useState, useEffect, useCallback, memo, Suspense, type RefObject } from 'react';
-import { Canvas, _roots, useFrame, extend, useStore, useThree } from '@react-three/fiber';
+import { Canvas, _roots, extend, useStore, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import type { ThreeToJSXElements } from '@react-three/fiber';
+import {
+  useSceneActive,
+  useSceneFrame,
+} from './world-stage/use-scene-frame';
+import {
+  addStageEventListener,
+  addStageWindowListener,
+} from './world-stage/stage-store';
 
 // Register Three.js WebGPU elements with R3F 9
 declare module '@react-three/fiber' {
@@ -173,6 +181,7 @@ function applyQualityTier(flags: WorldPerfFlags, tier: number): WorldPerfFlags {
 }
 
 function useAdaptiveWorldPerfFlags(perfFlags?: Partial<WorldPerfFlags>): WorldPerfFlags {
+  const sceneActive = useSceneActive();
   const base = { ...DEFAULT_WORLD_PERF_FLAGS, ...perfFlags };
 
   // ?fast=1 is an explicit opt-in DEBUG flag — allowed to hide groundCover, activityFx,
@@ -194,7 +203,13 @@ function useAdaptiveWorldPerfFlags(perfFlags?: Partial<WorldPerfFlags>): WorldPe
   const [qualityTier, setQualityTier] = useState(initialTier);
 
   useEffect(() => {
-    if (!adaptiveEnabled || typeof window === 'undefined') return;
+    if (
+      !sceneActive ||
+      !adaptiveEnabled ||
+      typeof window === 'undefined'
+    ) {
+      return;
+    }
 
     let raf = 0;
     let frames = 0;
@@ -240,7 +255,7 @@ function useAdaptiveWorldPerfFlags(perfFlags?: Partial<WorldPerfFlags>): WorldPe
 
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [adaptiveEnabled, initialTier]);
+  }, [adaptiveEnabled, initialTier, sceneActive]);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -338,7 +353,12 @@ function ArrowKeyRotationController({
 }: {
   controlsRef: React.RefObject<OrbitControlsImpl | null>;
 }) {
+  const sceneActive = useSceneActive();
   useEffect(() => {
+    if (!sceneActive) {
+      resetArrowKeys();
+      return;
+    }
     const onKeyDown = (e: KeyboardEvent) => {
       switch (e.key) {
         case 'ArrowUp':    _arrowKeys.arrowup    = true; e.preventDefault(); break;
@@ -355,17 +375,18 @@ function ArrowKeyRotationController({
         case 'ArrowRight': _arrowKeys.arrowright = false; break;
       }
     };
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
+    const removeKeyDown = addStageWindowListener('keydown', onKeyDown);
+    const removeKeyUp = addStageWindowListener('keyup', onKeyUp);
     const unregisterReset = registerInputReset(resetArrowKeys);
     return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
+      removeKeyDown();
+      removeKeyUp();
       unregisterReset();
+      resetArrowKeys();
     };
-  }, []);
+  }, [sceneActive]);
 
-  useFrame((_, delta) => {
+  useSceneFrame((_, delta) => {
     const controls = controlsRef.current;
     if (!controls) return;
 
@@ -415,6 +436,7 @@ function WASDCameraController({
 }: {
   controlsRef: React.RefObject<OrbitControlsImpl | null>;
 }) {
+  const sceneActive = useSceneActive();
   const keysRef = useRef<Pick<KeyState, 'w' | 'a' | 's' | 'd'>>({
     w: false,
     a: false,
@@ -423,6 +445,14 @@ function WASDCameraController({
   });
 
   useEffect(() => {
+    const resetKeys = () => {
+      const k = keysRef.current;
+      k.w = false; k.a = false; k.s = false; k.d = false;
+    };
+    if (!sceneActive) {
+      resetKeys();
+      return;
+    }
     // e.key can be undefined on synthetic events (Chrome autofill fires
     // keydown/keyup with no key during password-manager fill) — guard or the
     // handler throws on every login.
@@ -435,22 +465,20 @@ function WASDCameraController({
       if (key in keysRef.current) keysRef.current[key] = false;
     };
 
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
+    const removeKeyDown = addStageWindowListener('keydown', onKeyDown);
+    const removeKeyUp = addStageWindowListener('keyup', onKeyUp);
     // S7 — clear held WASD pan keys on focus loss/regain so the explore-mode
     // camera doesn't keep panning after a window steals focus mid-hold.
-    const unregisterReset = registerInputReset(() => {
-      const k = keysRef.current;
-      k.w = false; k.a = false; k.s = false; k.d = false;
-    });
+    const unregisterReset = registerInputReset(resetKeys);
     return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
+      removeKeyDown();
+      removeKeyUp();
       unregisterReset();
+      resetKeys();
     };
-  }, []);
+  }, [sceneActive]);
 
-  useFrame((_, delta) => {
+  useSceneFrame((_, delta) => {
     const controls = controlsRef.current;
     if (!controls) return;
 
@@ -552,7 +580,7 @@ function FPSFollowCamera({
     y: 0,
   });
 
-  useFrame((_, delta) => {
+  useSceneFrame((_, delta) => {
     const controls = controlsRef.current;
     if (!controls) return;
 
@@ -1144,7 +1172,7 @@ function createWorldWarmupGate(
 function MinimapPositionTracker() {
   const { camera } = useThree();
   const lastWriteRef = useRef(0);
-  useFrame(({ clock }) => {
+  useSceneFrame(({ clock }) => {
     const now = clock.elapsedTime;
     // 5×/sec throttle
     if (now - lastWriteRef.current < 0.2) return;
@@ -1227,9 +1255,14 @@ const _covePushScratch = new THREE.Vector3();
 
 function CoveEntranceCameraPush() {
   const { camera } = useThree();
+  const sceneActive = useSceneActive();
   const pushRef = useRef<{ startTime: number; startX: number; startY: number; startZ: number } | null>(null);
 
   useEffect(() => {
+    if (!sceneActive) {
+      pushRef.current = null;
+      return;
+    }
     function onCoveWalkIn() {
       pushRef.current = {
         startTime: performance.now(),
@@ -1238,11 +1271,18 @@ function CoveEntranceCameraPush() {
         startZ: camera.position.z,
       };
     }
-    window.addEventListener('cove-walkin-start', onCoveWalkIn);
-    return () => window.removeEventListener('cove-walkin-start', onCoveWalkIn);
-  }, [camera]);
+    const remove = addStageEventListener(
+      window,
+      'cove-walkin-start',
+      onCoveWalkIn,
+    );
+    return () => {
+      pushRef.current = null;
+      remove();
+    };
+  }, [camera, sceneActive]);
 
-  useFrame(() => {
+  useSceneFrame(() => {
     const state = pushRef.current;
     if (!state) return;
     const elapsed = (performance.now() - state.startTime) / 1000;
@@ -1871,6 +1911,7 @@ export const WorldSceneContents = memo(function WorldSceneContents({
   stageWarmup?: WorldStageWarmupProps;
   stageHosted?: boolean;
 }) {
+  const sceneActive = useSceneActive();
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
   const isGame = mode === 'game';
   const flags = { ...DEFAULT_WORLD_PERF_FLAGS, ...perfFlags };
@@ -1970,10 +2011,14 @@ export const WorldSceneContents = memo(function WorldSceneContents({
       {/* Underwater lighting — warm caustic tones with strong contrast.
           3 lights max for Intel Iris Xe budget: hemisphereLight already
           provides ambient sky/ground fill, so no separate ambientLight. */}
-      <hemisphereLight args={[0x66bbdd, 0x223344, 1.8]} />
-      <directionalLight position={[150, 350, 80]} intensity={2.0} color={0xffeedd} />
-      {/* Secondary fill from opposite side for depth */}
-      <directionalLight position={[-100, 200, -60]} intensity={0.5} color={0x88aacc} />
+      {sceneActive && (
+        <>
+          <hemisphereLight args={[0x66bbdd, 0x223344, 1.8]} />
+          <directionalLight position={[150, 350, 80]} intensity={2.0} color={0xffeedd} />
+          {/* Secondary fill from opposite side for depth */}
+          <directionalLight position={[-100, 200, -60]} intensity={0.5} color={0x88aacc} />
+        </>
+      )}
 
       {/* Underwater fog — scaled for 360x360 map (11520wu world) / R=130-tile ring.
           Phase 6.2.3 fog tuning (2026-05-19): near 4500→6000, far 9000→15000.

@@ -1,7 +1,12 @@
 'use client';
 
 import { useRef, useMemo, useEffect, Suspense } from 'react';
-import { useFrame, useThree } from '@react-three/fiber';
+import { useThree, type RootState } from '@react-three/fiber';
+import {
+  useSceneActive,
+  useSceneFrame,
+} from '@/components/three/world-stage/use-scene-frame';
+import { addStageWindowListener } from '@/components/three/world-stage/stage-store';
 import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 import * as THREE from 'three';
 import { useGameStore, avatarPositionRef } from '@/stores/game';
@@ -148,7 +153,6 @@ const keyState: KeyState = {
   arrowup: false, arrowdown: false, arrowleft: false, arrowright: false,
   e: false, escape: false, shift: false,
 };
-let keyListenersAttached = false;
 let lastEState = false;
 let lastEscState = false;
 
@@ -156,9 +160,7 @@ function resetPlayerKeys() {
   (Object.keys(keyState) as Array<keyof KeyState>).forEach((k) => { keyState[k] = false; });
 }
 
-function attachKeyListeners() {
-  if (keyListenersAttached) return;
-  keyListenersAttached = true;
+function attachKeyListeners(): () => void {
   const onKeyDown = (e: KeyboardEvent) => {
     // Target guard: don't consume WASD/E/Escape when user is typing in a chat input.
     // Fixes pre-existing bug: typing W/A/S/D in avatar chat moved the avatar.
@@ -187,12 +189,18 @@ function attachKeyListeners() {
     const key = rawKey as keyof KeyState;
     if (key in keyState) keyState[key] = false;
   };
-  window.addEventListener('keydown', onKeyDown);
-  window.addEventListener('keyup', onKeyUp);
+  const removeKeyDown = addStageWindowListener('keydown', onKeyDown);
+  const removeKeyUp = addStageWindowListener('keyup', onKeyUp);
   // Release all held keys on focus loss/regain (browser skips keyup when focus
   // leaves the window). Centralized in input-reset.ts so every input vector
   // shares one listener set — see S7.
-  registerInputReset(resetPlayerKeys);
+  const unregisterReset = registerInputReset(resetPlayerKeys);
+  return () => {
+    removeKeyDown();
+    removeKeyUp();
+    unregisterReset();
+    resetPlayerKeys();
+  };
 }
 
 function mapToWorld(px: number, py: number): [number, number, number] {
@@ -349,7 +357,7 @@ function PlayerAvatarVRMInner({ reg }: { reg: ModelRegistryEntry }) {
     };
   }, [vrm]);
 
-  useFrame((state, delta) => {
+  useSceneFrame((state, delta) => {
     const store = useGameStore.getState();
     const frameStartWorldX = avatarPositionRef.x - HALF_W;
     const frameStartWorldZ = avatarPositionRef.y - HALF_H;
@@ -788,8 +796,6 @@ function PlayerAvatarGLBInner() {
   const walkableYRef = useRef(-2);
   const { scene: threeScene, camera } = useThree();
 
-  attachKeyListeners();
-
   // Phase 2: resolve which GLB to load from the model registry.
   // avatarModelKey is set by game/page.tsx via setAvatarAppearance when the avatar
   // loads from the API. Falls back to 'lobster' if null / unknown key.
@@ -873,7 +879,7 @@ function PlayerAvatarGLBInner() {
     };
   }, [cloned]);
 
-  useFrame((state, delta) => {
+  useSceneFrame((state, delta) => {
     const store = useGameStore.getState();
     const frameStartWorldX = avatarPositionRef.x - HALF_W;
     const frameStartWorldZ = avatarPositionRef.y - HALF_H;
@@ -1234,7 +1240,14 @@ function PlayerAvatarGLBInner() {
 // ---------------------------------------------------------------------------
 
 function PlayerAvatarRouter() {
-  attachKeyListeners();
+  const sceneActive = useSceneActive();
+  useEffect(() => {
+    if (!sceneActive) {
+      resetPlayerKeys();
+      return;
+    }
+    return attachKeyListeners();
+  }, [sceneActive]);
 
   const avatarModelKey = useGameStore((s) => s.avatarModelKey);
   const reg: ModelRegistryEntry =

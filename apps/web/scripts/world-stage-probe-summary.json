@@ -1,8 +1,11 @@
 {
   "pass": true,
+  "lane": "synthetic",
   "url": "http://localhost:3000/perf/stage?stage=1&webgpu=1",
   "backend": "webgpu",
   "requestedTransitions": 102,
+  "requestedRoundTrips": null,
+  "completedRoundTrips": 0,
   "completedTransitions": 102,
   "warmupTransitions": 3,
   "canvasMountCount": 1,
@@ -22,9 +25,9 @@
   },
   "heap": {
     "available": true,
-    "baselineBytes": 68033199,
-    "endBytes": 68898267,
-    "growthRatio": 0.012715380324832293,
+    "baselineBytes": 68078098,
+    "endBytes": 69111058,
+    "growthRatio": 0.015173161858899172,
     "threshold": 0.15
   },
   "ledger": {
@@ -83,6 +86,20 @@
       }
     }
   },
+  "routes": {
+    "cacheControl": {
+      "game": null,
+      "cove": null
+    },
+    "coldCoveAssetRequests": [],
+    "coldCoveWorldAssetRequests": [],
+    "pathSequence": [],
+    "returnLoaderViolations": [],
+    "historyTraversal": {
+      "back": false,
+      "forward": false
+    }
+  },
   "console": {
     "errors": [
       "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
@@ -104,5 +121,5 @@
     "heapBelow15Percent": true
   },
   "failure": null,
-  "generatedAt": "2026-07-25T21:26:15.989Z"
+  "generatedAt": "2026-07-26T04:50:19.074Z"
 }
