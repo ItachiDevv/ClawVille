@@ -462,6 +462,7 @@ export interface StageRendererCounters {
   memoryTotalBytes: number | null;
   renderCallsLifetime: number | null;
   drawCallsFrame: number | null;
+  memoryBreakdown: Record<string, number> | null;
 }
 
 export function readStageRendererCounters(): StageRendererCounters {
@@ -474,6 +475,7 @@ export function readStageRendererCounters(): StageRendererCounters {
           geometries?: number;
           texturesSize?: number;
           total?: number;
+          [key: string]: unknown;
         };
         render?: {
           calls?: number;
@@ -496,6 +498,14 @@ export function readStageRendererCounters(): StageRendererCounters {
       memoryTotalBytes: numberOrNull(memory?.total),
       renderCallsLifetime: numberOrNull(render?.calls),
       drawCallsFrame: numberOrNull(render?.drawCalls),
+      memoryBreakdown: memory
+        ? Object.fromEntries(
+            Object.entries(memory).filter(
+              (entry): entry is [string, number] =>
+                typeof entry[1] === 'number' && Number.isFinite(entry[1]),
+            ),
+          )
+        : null,
     };
   }
   if (backend === 'webgl') {
@@ -507,6 +517,7 @@ export function readStageRendererCounters(): StageRendererCounters {
       memoryTotalBytes: null,
       renderCallsLifetime: null,
       drawCallsFrame: currentStageDrawCallsFrame,
+      memoryBreakdown: null,
     };
   }
   return {
@@ -517,6 +528,7 @@ export function readStageRendererCounters(): StageRendererCounters {
     memoryTotalBytes: null,
     renderCallsLifetime: null,
     drawCallsFrame: null,
+    memoryBreakdown: null,
   };
 }
 

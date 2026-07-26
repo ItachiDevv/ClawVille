@@ -572,6 +572,7 @@ async function recordSeriesSample(
     texturesSizeBytes: renderer.texturesSizeBytes ?? null,
     memoryTotalBytes: renderer.memoryTotalBytes ?? null,
     renderCallsLifetime: renderer.renderCallsLifetime ?? null,
+    memoryBreakdown: renderer.memoryBreakdown ?? null,
   };
   summary.series.push(sample);
   return { sample, state: sampledState };
