@@ -25,10 +25,27 @@
   },
   "heap": {
     "available": true,
-    "baselineBytes": 68078098,
-    "endBytes": 69111058,
-    "growthRatio": 0.015173161858899172,
-    "threshold": 0.15
+    "baselineBytes": 68086189,
+    "endBytes": 68950949,
+    "growthRatio": 0.012700960542820218,
+    "threshold": 0.15,
+    "midpointBytes": null,
+    "secondHalfGrowthRatio": null,
+    "secondHalfThreshold": 0.03
+  },
+  "renderer": {
+    "samples": [
+      {
+        "label": "post-warmup",
+        "loop": 0,
+        "backend": "webgpu"
+      },
+      {
+        "label": "final",
+        "loop": 102,
+        "backend": "webgpu"
+      }
+    ]
   },
   "ledger": {
     "alpha": {
@@ -98,7 +115,22 @@
     "historyTraversal": {
       "back": false,
       "forward": false
-    }
+    },
+    "network": {
+      "phase": "cold-cove",
+      "joins": {
+        "coldCove": 0,
+        "firstGame": 0,
+        "afterFirstGame": 0
+      },
+      "streams": {
+        "coldCove": 0,
+        "firstGame": 0,
+        "afterFirstGame": 0
+      },
+      "events": []
+    },
+    "coldInit": null
   },
   "console": {
     "errors": [
@@ -121,5 +153,5 @@
     "heapBelow15Percent": true
   },
   "failure": null,
-  "generatedAt": "2026-07-26T04:50:19.074Z"
+  "generatedAt": "2026-07-26T21:52:43.106Z"
 }
