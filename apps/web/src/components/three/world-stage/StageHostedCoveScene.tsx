@@ -77,7 +77,12 @@ export default function StageHostedCoveScene({
             );
           }
           if (!isCurrent()) return;
-          gl.render(scene, camera);
+          await withStageSlotFrustumCullingDisabled(
+            'cove',
+            async () => {
+              gl.render(scene, camera);
+            },
+          );
           warmedOnceRef.current = true;
         } catch (error) {
           console.warn('[CoveStage] warmup failed; continuing:', error);

@@ -1890,7 +1890,12 @@ function WorldWarmup({
         noteWorldWarmupProgress();
         gl.setClearColor(SKY_COLOR, 1);
         gl.setClearAlpha?.(1);
-        gl.render(scene, camera);
+        await withStageSlotFrustumCullingDisabled(
+          'world',
+          async () => {
+            gl.render(scene, camera);
+          },
+        );
         const warmRenderMs = performance.now() - warmRenderStartedAt;
         bridge.__W3D_TEXTURES_READY = true;
         markWorldReadyIfUploadsDone();
