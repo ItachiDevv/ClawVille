@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { AT_COVE_ACTIVITY } from '@clawville/shared';
 import { LAND_PARCELS_QUERY_KEY } from '@/lib/land-query-keys';
 import { useNpcStore } from '@/stores/npc';
 import { usePlayerStore } from '@/stores/players';
@@ -9,13 +10,19 @@ import { useResearchStore } from '@/stores/research';
 import { useGameStore, avatarPositionRef } from '@/stores/game';
 import { measureSpike } from '@/lib/perf-tracker';
 import { useWatchHeartbeat } from '@/hooks/use-watch-heartbeat';
+import {
+  WORLD_STREAM_TICK_MS,
+  createWorldStreamMachineState,
+  decide,
+  type WorldPresencePolicy,
+  type WorldStreamMachineInput,
+} from '@/hooks/world-stream-machine';
 
 const WORLD_API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
 const MAX_RETRIES = 20;
 const RETRY_DELAY_BASE = 3000;
 const RETRY_DELAY_MAX = 60000;
 /** Position upload rate — matches the server NPC sim tick (5 Hz / 200 ms). */
-const POSITION_UPLOAD_INTERVAL_MS = 200;
 /** Minimum game-pixel movement that flips activity from 'idle' → 'walking'. */
 const ACTIVITY_MOTION_EPSILON_PX = 0.5;
 
@@ -49,10 +56,10 @@ interface JoinResponse {
  *   3. Open SSE to `/api/world/:roomId/stream`. Subscribe to `snapshot` events,
  *      route the unified payload through both `useNpcStore.updateFromSnapshot`
  *      AND `usePlayerStore.updateFromSnapshot`.
- *   4. Start a 5 Hz interval that POSTs the local `avatarPositionRef` +
- *      heading + activity to `/api/world/position`. The heading is computed
- *      from a 1-tick velocity tracker (atan2(vx, vy) matches the VRM facing
- *      convention used elsewhere in the renderer).
+ *   4. A mount-owned 5 Hz machine interval triggers bootstrap/recovery and
+ *      POSTs active movement or the 10 s remote `at-cove` heartbeat. The
+ *      heading is computed from a 1-tick velocity tracker (atan2(vx, vy)
+ *      matches the VRM facing convention used elsewhere in the renderer).
  *   5. On unmount: close SSE, clear position interval, call `/api/world/leave`
  *      best-effort (fire-and-forget — server GCs stale players after 30 s).
  *
@@ -60,10 +67,12 @@ interface JoinResponse {
  * attempts). Mirrors `useNpcStream`. The position interval keeps running
  * across reconnects — server is idempotent on `lastPositionUpdateAt`.
  */
-export function useWorldStream() {
+export function useWorldStream(policy: WorldPresencePolicy) {
+  const policyRef = useRef(policy);
+  policyRef.current = policy;
   // Ambient-banter watcher heartbeat — visible-tab-only "a human is watching"
   // signal for the server's banter inference gate. See use-watch-heartbeat.ts.
-  useWatchHeartbeat();
+  useWatchHeartbeat(policy === 'active');
   const updateNpcsFromSnapshot = useNpcStore((s) => s.updateFromSnapshot);
   const setNpcConnected = useNpcStore((s) => s.setConnected);
   const updatePlayersFromSnapshot = usePlayerStore((s) => s.updateFromSnapshot);
@@ -89,11 +98,15 @@ export function useWorldStream() {
   // interval callback doesn't reallocate.
   const lastPosRef = useRef<{ x: number; y: number; ts: number } | null>(null);
   const lastDirZRef = useRef<number>(0);
+  const frozenPositionRef = useRef<{ x: number; y: number; dirZ: number } | null>(
+    null,
+  );
 
   useEffect(() => {
     let es: EventSource | null = null;
     let retryTimeout: ReturnType<typeof setTimeout> | null = null;
-    let positionInterval: ReturnType<typeof setInterval> | null = null;
+    let machineInterval: ReturnType<typeof setInterval> | null = null;
+    let machineState = createWorldStreamMachineState();
     let cancelled = false;
 
     /**
@@ -152,13 +165,6 @@ export function useWorldStream() {
       }
     }
 
-    function stopPositionUpload() {
-      if (positionInterval) {
-        clearInterval(positionInterval);
-        positionInterval = null;
-      }
-    }
-
     /**
      * Terminal stop when the server reports `presence_superseded`: a newer
      * deliberate login (another tab/device) now owns this account's single
@@ -168,8 +174,15 @@ export function useWorldStream() {
      * which is correct, since they're intentionally active elsewhere.
      */
     function handleSuperseded() {
+      machineState = decide(machineState, {
+        type: 'SUPERSEDED',
+        now: Date.now(),
+      }).nextState;
       cancelled = true;
-      stopPositionUpload();
+      if (machineInterval) {
+        clearInterval(machineInterval);
+        machineInterval = null;
+      }
       es?.close();
       es = null;
       if (retryTimeout) {
@@ -240,9 +253,8 @@ export function useWorldStream() {
      * rejoin landed us in. Returns the rejoined room id on success, or null if
      * the rejoin failed (caller decides how to back off).
      *
-     * This is the single authoritative recovery primitive. `recoverFrom409`
-     * (player mode) and the SSE onerror handler (explore/spectate mode, where
-     * no /position upload ever runs to surface a 409) both delegate here so the
+     * This is the single authoritative recovery primitive. The machine's 409
+     * recovery and the SSE onerror handler both delegate here so the
      * ref/store/stream-repoint logic can never drift between the two paths.
      *
      * Always tears down + reopens the SSE against the rejoined room. Both
@@ -286,78 +298,116 @@ export function useWorldStream() {
       }
     }
 
-    async function recoverFrom409() {
-      if (cancelled || recoveryInFlight) return;
-      stopPositionUpload();
-      const roomId = await rejoinWithTicket();
-      if (cancelled) return;
-      if (roomId) {
-        startPositionUpload();
-      }
-      // If rejoin failed, the next position upload won't fire (interval stays
-      // stopped). The SSE downlink's onerror handler will eventually tear down
-      // + ticketed-rejoin the whole flow, restoring uploads.
+    function postPosition(body: string) {
+      fetch(`${WORLD_API_URL}/api/world/position`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        keepalive: true,
+      })
+        .then((res) => {
+          if (res.status === 409) {
+            transitionMachine({ type: 'POSITION_409', now: Date.now() });
+          }
+        })
+        .catch(() => {
+          /* network/abort — best-effort, GC handles stale */
+        });
     }
 
-    function startPositionUpload() {
-      if (positionInterval) return;
-      positionInterval = setInterval(() => {
-        // Skip upload until we've joined a room — sessionId is the auth
-        // anchor server-side. Also skip modes where the client does not own
-        // the body: explore is spectator-only and autonomous is server-driven.
-        const sid = sessionIdRef.current;
-        if (!sid) return;
-        const { controlMode } = useGameStore.getState();
-        if (controlMode === 'explore' || controlMode === 'autonomous') return;
-
-        const now = Date.now();
-        const x = avatarPositionRef.x;
-        const y = avatarPositionRef.y;
-        const prev = lastPosRef.current;
-        let activity = 'idle';
-        if (prev) {
-          const dx = x - prev.x;
-          const dy = y - prev.y;
-          const motionSq = dx * dx + dy * dy;
-          if (motionSq > ACTIVITY_MOTION_EPSILON_PX * ACTIVITY_MOTION_EPSILON_PX) {
-            activity = 'walking';
-            // Heading derived from sustained motion only — atan2(vx, vy)
-            // matches the VRM facing convention (see vrm-character-animator.ts
-            // and player-avatar.tsx). When idle the last computed dirZ is
-            // preserved so the remote avatar doesn't snap back to north.
-            lastDirZRef.current = Math.atan2(dx, dy);
-          }
+    function uploadActivePosition(now: number) {
+      const x = avatarPositionRef.x;
+      const y = avatarPositionRef.y;
+      const prev = lastPosRef.current;
+      let activity = 'idle';
+      if (prev) {
+        const dx = x - prev.x;
+        const dy = y - prev.y;
+        const motionSq = dx * dx + dy * dy;
+        if (motionSq > ACTIVITY_MOTION_EPSILON_PX * ACTIVITY_MOTION_EPSILON_PX) {
+          activity = 'walking';
+          lastDirZRef.current = Math.atan2(dx, dy);
         }
-        lastPosRef.current = { x, y, ts: now };
-
-        const body = JSON.stringify({
-          x,
-          y,
-          dirZ: lastDirZRef.current,
+      }
+      lastPosRef.current = { x, y, ts: now };
+      frozenPositionRef.current = { x, y, dirZ: lastDirZRef.current };
+      postPosition(
+        JSON.stringify({
+          ...frozenPositionRef.current,
           activity,
-        });
-        // keepalive=true lets the request survive page nav. We DO inspect
-        // status now — a 409 "Session is not in a room" means the server
-        // GC'd our session (30s no-position-update timeout) and we need to
-        // re-join. Other non-OK statuses are best-effort silent (server's
-        // 10 Hz throttle returns 200 with {throttled:true}, not an error).
-        fetch(`${WORLD_API_URL}/api/world/position`, {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body,
-          keepalive: true,
-        }).then((res) => {
-          if (res.status === 409) {
-            // Don't await — recovery runs async; this fetch handler returns
-            // immediately so the interval can continue (though recoverFrom409
-            // stops the interval almost immediately). Worst case: 1 more
-            // upload fires before stopPositionUpload runs, also gets 409,
-            // gets dropped by recoveryInFlight guard.
-            void recoverFrom409();
-          }
-        }).catch(() => { /* network/abort — best-effort, GC handles stale */ });
-      }, POSITION_UPLOAD_INTERVAL_MS);
+        }),
+      );
+    }
+
+    function uploadRemotePosition() {
+      const frozen = frozenPositionRef.current;
+      if (!frozen) return;
+      postPosition(
+        JSON.stringify({
+          ...frozen,
+          activity: AT_COVE_ACTIVITY,
+        }),
+      );
+    }
+
+    async function recoverWithTicket(): Promise<string | null> {
+      if (cancelled || recoveryInFlight) return null;
+      const roomId = await rejoinWithTicket();
+      if (cancelled) return null;
+      transitionMachine({
+        type: roomId ? 'RECOVERY_OK' : 'RECOVERY_FAILED',
+        now: Date.now(),
+      });
+      return roomId;
+    }
+
+    function runMachineAction(
+      action: ReturnType<typeof decide>['actions'][number],
+      now: number,
+    ) {
+      switch (action) {
+        case 'BOOTSTRAP':
+          void bootstrap();
+          break;
+        case 'RESET_ACTIVE_POSITION':
+          lastPosRef.current = {
+            x: avatarPositionRef.x,
+            y: avatarPositionRef.y,
+            ts: now,
+          };
+          break;
+        case 'UPLOAD_ACTIVE':
+          uploadActivePosition(now);
+          break;
+        case 'UPLOAD_REMOTE':
+          uploadRemotePosition();
+          break;
+        case 'RECOVER':
+          void recoverWithTicket();
+          break;
+      }
+    }
+
+    function transitionMachine(input: WorldStreamMachineInput) {
+      const decision = decide(machineState, input);
+      machineState = decision.nextState;
+      for (const action of decision.actions) {
+        runMachineAction(action, input.now);
+      }
+    }
+
+    function runMachineTick() {
+      const { controlMode } = useGameStore.getState();
+      transitionMachine({
+        type: 'TICK',
+        now: Date.now(),
+        policy: policyRef.current,
+        hasSession: sessionIdRef.current !== null,
+        canUpload: controlMode !== 'explore' && controlMode !== 'autonomous',
+        hasFrozenPosition: frozenPositionRef.current !== null,
+        recoveryInFlight,
+      });
     }
 
     function openStream(roomId: string) {
@@ -461,7 +511,7 @@ export function useWorldStream() {
           if (cancelled) return;
           if (shouldEscalate) {
             lastAttemptWasBareReopen = false;
-            void rejoinWithTicket().then((rejoinedRoomId) => {
+            void recoverWithTicket().then((rejoinedRoomId) => {
               // Rejoin failed (null) — API likely still restarting. Reopen the
               // last-known room (a bare reopen) to keep the exp-backoff loop
               // alive; the next onerror re-escalates to the ticketed rejoin.
@@ -492,27 +542,19 @@ export function useWorldStream() {
         return;
       }
       if (!joined) {
-        // Backoff + retry the whole join → stream flow.
-        retriesRef.current++;
-        if (retriesRef.current < MAX_RETRIES) {
-          const delay = Math.min(
-            RETRY_DELAY_BASE * Math.pow(2, retriesRef.current - 1),
-            RETRY_DELAY_MAX,
-          );
-          retryTimeout = setTimeout(bootstrap, delay);
-        }
+        transitionMachine({ type: 'BOOTSTRAP_FAILED', now: Date.now() });
         return;
       }
+      transitionMachine({ type: 'BOOTSTRAP_OK', now: Date.now() });
       sessionIdRef.current = joined.id;
       roomIdRef.current = joined.roomId;
       roomTicketRef.current = joined.roomTicket ?? null;
       setLocalSessionId(joined.id);
       setRoomId(joined.roomId);
       openStream(joined.roomId);
-      startPositionUpload();
     }
 
-    bootstrap();
+    machineInterval = setInterval(runMachineTick, WORLD_STREAM_TICK_MS);
 
     // pagehide fires on reload / tab-close / hard nav / bfcache-enter — the
     // cases where React unmount may not run before the page is gone. See
@@ -529,7 +571,7 @@ export function useWorldStream() {
       }
       es?.close();
       if (retryTimeout) clearTimeout(retryTimeout);
-      if (positionInterval) clearInterval(positionInterval);
+      if (machineInterval) clearInterval(machineInterval);
       setNpcConnected(false);
       // Best-effort leave — server GCs stale players via 30 s timeout.
       leaveBeacon();
