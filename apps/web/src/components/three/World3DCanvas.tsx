@@ -28,7 +28,12 @@ import MeshletBuildingsR3F from '@/lib/three/meshlet/meshlet-buildings-r3f';
 import ArenaNpcs from '@/lib/three/arena-npcs';
 import RemotePlayers from '@/lib/three/remote-players';
 import ArenaLocationNpcs from '@/lib/three/arena-location-npcs';
-import { VRM_METRICS_ENABLED, registerBulkVRMIdleCallback } from '@/lib/three/vrm-loader';
+import {
+  hasBulkVRMBatchStarted,
+  VRM_METRICS_ENABLED,
+  registerBulkVRMIdleCallback,
+} from '@/lib/three/vrm-loader';
+import { withStageSlotFrustumCullingDisabled } from '@/components/three/world-stage/resource-ledger';
 import PlayerAvatar from '@/lib/three/player-avatar';
 import NpcController from '@/lib/three/npc-controller';
 import MergedSeaweed from '@/lib/three/merged-seaweed';
@@ -1491,30 +1496,6 @@ function WorldWarmup({
         activeWorldWarmupProgressNotifier = undefined;
       }
     };
-    // Perf round-3 change A, retained by the 2026-07-14 warmup gate: the
-    // initial ordered compile can still precede the 14 asynchronously parsed NPC
-    // VRMs. Their skinned-MeshStandardMaterial variants are absent from that
-    // first scene walk and otherwise lazy-compile at reveal (7.5s main-thread
-    // smear in the pre-r185 baseline). The bulk-idle hook fires once the parse
-    // queue first drains, when those meshes are in the scene, so run one more
-    // cooperative r185 compileAsync pass. It may occur after resume; it yields
-    // between objects, performs no independent render, and is guarded against
-    // an unmounted/stale renderer.
-    registerBulkVRMIdleCallback(() => {
-      if (cancelled || typeof (gl as any).compileAsync !== 'function') return;
-      noteWorldWarmupProgress();
-      (gl as any).compileAsync(scene, camera)
-        .then(() => {
-          if (!cancelled) bridge.__W3D_VRM_COMPILE_DONE = performance.now();
-        })
-        .catch((err: unknown) => {
-          console.warn('[World3D] post-VRM compileAsync failed:', err);
-        })
-        .finally(() => {
-          noteWorldWarmupProgress();
-        });
-    });
-
     const uploadMetrics = createTextureUploadMetrics(hasIdle ? 'idle' : 'raf', discoveredTotal);
 
     const publishProgress = () => {
@@ -1802,6 +1783,41 @@ function WorldWarmup({
         const barrierMs = performance.now() - barrierStartedAt;
         if (cancelled || (stageWarmup ? stageResumed : livePendingGateResumed())) return;
 
+        // Initial avatar fetches are now accounted for by LoadingManager. If a
+        // bulk VRM parse batch started, do not publish stage readiness until it
+        // drains and every resulting world-slot object has been compiled once.
+        if (
+          hasBulkVRMBatchStarted() &&
+          typeof (gl as any).compileAsync === 'function'
+        ) {
+          await new Promise<void>((resolveBulkCompile) => {
+            registerBulkVRMIdleCallback(() => {
+              if (cancelled) {
+                resolveBulkCompile();
+                return;
+              }
+              noteWorldWarmupProgress();
+              void withStageSlotFrustumCullingDisabled(
+                'world',
+                () => (gl as any).compileAsync(scene, camera),
+              )
+                .then(() => {
+                  if (!cancelled) {
+                    bridge.__W3D_VRM_COMPILE_DONE = performance.now();
+                  }
+                })
+                .catch((err: unknown) => {
+                  console.warn('[World3D] bulk-VRM compileAsync failed:', err);
+                })
+                .finally(() => {
+                  noteWorldWarmupProgress();
+                  resolveBulkCompile();
+                });
+            });
+          });
+        }
+        if (cancelled || (stageWarmup ? stageResumed : livePendingGateResumed())) return;
+
         const scansStartedAt = performance.now();
         if (!canInitTexture) {
           console.warn('[World3D] WorldWarmup: renderer.initTexture() not available, skipping uploads');
@@ -1831,7 +1847,10 @@ function WorldWarmup({
           const compileStartedAt = performance.now();
           noteWorldWarmupProgress();
           try {
-            await (gl as any).compileAsync(scene, camera);
+            await withStageSlotFrustumCullingDisabled(
+              'world',
+              () => (gl as any).compileAsync(scene, camera),
+            );
           } catch (err) {
             console.warn('[World3D] compileAsync failed (continuing warmup):', err);
           } finally {

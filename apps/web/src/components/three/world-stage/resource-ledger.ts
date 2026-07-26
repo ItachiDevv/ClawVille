@@ -46,6 +46,25 @@ export function registerStageSlotRoot(
   }
 }
 
+export async function withStageSlotFrustumCullingDisabled<T>(
+  sceneId: string,
+  task: () => Promise<T>,
+): Promise<T> {
+  const root = rootsByScene.get(sceneId);
+  if (!root) return task();
+  const changed: THREE.Object3D[] = [];
+  root.traverse((object) => {
+    if (!object.frustumCulled) return;
+    object.frustumCulled = false;
+    changed.push(object);
+  });
+  try {
+    return await task();
+  } finally {
+    for (const object of changed) object.frustumCulled = true;
+  }
+}
+
 function sortedCounts(counts: Map<string, number>): Record<string, number> {
   return Object.fromEntries(
     [...counts.entries()].sort(([left], [right]) => left.localeCompare(right)),

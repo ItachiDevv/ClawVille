@@ -269,6 +269,10 @@ export function registerBulkVRMIdleCallback(cb: () => void): void {
   }
 }
 
+export function hasBulkVRMBatchStarted(): boolean {
+  return _bulkBatchStarted;
+}
+
 function _fireBulkIdleCb(): void {
   if (_bulkIdleFired || !_bulkIdleCb) return;
   _bulkIdleFired = true;
