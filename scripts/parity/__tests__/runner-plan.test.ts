@@ -7,6 +7,8 @@ import {
   waitForParityCheckpoint,
 } from '../driver';
 import {
+  fixtureTeardownRunsFirst,
+  requiresGuestShoeReset,
   requiresFixtureOwnerPreflight,
   resolveScenarioState,
 } from '../runner-env';
@@ -207,6 +209,52 @@ describe('offline live-runner plans', () => {
     })).toBe(true);
     expect(requiresFixtureOwnerPreflight({
       fixtureName: undefined,
+    })).toBe(false);
+  });
+
+  test('fixture shoes/practice close before document-replacing UI teardown', () => {
+    expect(fixtureTeardownRunsFirst({
+      game: 'baccarat',
+      tier: 'live',
+      fixtureName: 'bac-player-third',
+    })).toBe(true);
+    expect(fixtureTeardownRunsFirst({
+      game: 'blackjack',
+      tier: 'live',
+      fixtureName: 'bj-split',
+    })).toBe(true);
+    expect(fixtureTeardownRunsFirst({
+      game: 'holdem',
+      tier: 'guest',
+      fixtureName: 'holdem-fold-win',
+    })).toBe(true);
+    expect(fixtureTeardownRunsFirst({
+      game: 'holdem',
+      tier: 'live',
+      fixtureName: 'holdem-multiway-showdown',
+    })).toBe(false);
+  });
+
+  test('standalone guest shoe fixtures reset stale demo shoes before arming', () => {
+    expect(requiresGuestShoeReset({
+      game: 'baccarat',
+      tier: 'guest',
+      fixtureName: 'bac-player-natural',
+    })).toBe(true);
+    expect(requiresGuestShoeReset({
+      game: 'blackjack',
+      tier: 'guest',
+      fixtureName: 'bj-natural',
+    })).toBe(true);
+    expect(requiresGuestShoeReset({
+      game: 'holdem',
+      tier: 'guest',
+      fixtureName: 'holdem-fold-win',
+    })).toBe(false);
+    expect(requiresGuestShoeReset({
+      game: 'baccarat',
+      tier: 'live',
+      fixtureName: 'bac-player-third',
     })).toBe(false);
   });
 

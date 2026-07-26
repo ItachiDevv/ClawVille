@@ -41,6 +41,9 @@ harness requests use the configured absolute API origin with credentials.
 Before every fixture-backed owner row, the neutral `/cove` page performs a
 no-resource provisional issue/delete handshake. Organic live rows use their
 game-specific preflight/reconciliation without depending on fixture schema.
+A standalone guest blackjack/baccarat fixture row first runs the same
+staging-guarded guest demo-shoe reset as the full pack, so the header is
+consumed by a fresh exact `/session/open` arm instead of a resumable shoe.
 A `fixture_recovery_required` response is reconciled in the same page closure:
 blackjack stands each active slot and closes its shoe, practice folds and
 closes, and cash uses the isolated table's Walk Away flow and proves the owner

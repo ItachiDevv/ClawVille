@@ -37,10 +37,11 @@ page-context requests from the `9443` web origin:
   profile refuses the pack because refreshing it requires orchestrator
   credentials.
 - Read the live avatar balance and refuse below 500 vCLAW.
-- Select and verify an open low-tier house table with seeded opponents and a
-  free seat. This is required because landed cash-table code intentionally
-  limits seeded opponents to `source='house'`; private/player tables cannot
-  deal a solo harness hand. The chosen ID is persisted in ignored
+- Select and verify an open low-tier house table with at least two active
+  seeded opponents, no active non-seeded occupant, and a free seat. The
+  staging-only DB read is required because the public lobby count does not
+  expose whether an occupant is seeded; the H10 fixture intentionally refuses
+  a non-isolated table. The chosen ID is persisted in ignored
   `out/pack-cash-table.json`.
 - A legacy ignored state containing only `tableId` is recovered read-only from
   the staging DB only when that open private table belongs to the authenticated

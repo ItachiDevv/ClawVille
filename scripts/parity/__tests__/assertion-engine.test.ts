@@ -355,6 +355,72 @@ describe('recorded-wire parity assertions', () => {
     });
   });
 
+  test('practice settlement tray takes own hole cards from the terminal human seat', () => {
+    const record: WireRecord = {
+      seq: 42,
+      method: 'POST',
+      url: '/api/cove/holdem/action',
+      urlSuffix: 'holdem/action',
+      status: 200,
+      requestBody: { action: 'check' },
+      responseBody: {
+        handId: 'practice-settled',
+        status: 'settled',
+        outcome: {
+          endedAt: 'showdown',
+          board: [],
+          pots: [],
+          seats: [
+            {
+              seat: 0,
+              isHuman: true,
+              holeCards: [
+                { suit: 'diamonds', rank: '8' },
+                { suit: 'spades', rank: '4' },
+              ],
+              status: 'active',
+              net: '0',
+            },
+          ],
+        },
+      },
+      handId: 'practice-settled',
+      handNumber: 1,
+      coupId: null,
+      shoeId: null,
+      idempotencyKey: null,
+    };
+    const expected = expectedFromWire(
+      'holdem',
+      'holdem-tray-practice',
+      record,
+      undefined,
+      {
+        root: {
+          surface: 'holdem-tray-practice',
+          version: 2,
+          instanceId: 'practice-settled',
+          renderRevision: 9,
+          correlation: { hand: 'practice-settled', handNumber: 1 },
+          dealStep: 'showdown',
+          phase: 'showdown',
+          transition: 'idle',
+          slots: [],
+          meta: {},
+        },
+        records: [record],
+      },
+    );
+    expect(expected.slots['hole-1']).toEqual({
+      card: '8d',
+      facing: 'up',
+    });
+    expect(expected.slots['hole-2']).toEqual({
+      card: '4s',
+      facing: 'up',
+    });
+  });
+
   test('journal timestamps pin a root to its nearest same-endpoint wire', () => {
     const recorded = RECORDED_CASES[0]!;
     const root = {

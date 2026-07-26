@@ -258,7 +258,50 @@ async function selectPlayableHouseCashTable(
       Number(right.occupiedSeats) - Number(left.occupiedSeats)
       || String(left.id).localeCompare(String(right.id))
     );
-  return candidates[0]?.id as string | undefined ?? null;
+  const candidateIds = candidates.map((table) => String(table.id));
+  const fixtureCompatible = await fixtureCompatibleHouseTableIds(candidateIds);
+  return candidateIds.find((id) => fixtureCompatible.has(id)) ?? null;
+}
+
+async function fixtureCompatibleHouseTableIds(
+  tableIds: readonly string[],
+): Promise<ReadonlySet<string>> {
+  if (tableIds.length === 0) return new Set();
+  const databaseUrl = process.env.DATABASE_URL;
+  if (
+    !databaseUrl
+    || !databaseUrl.includes('mtpixvtclsjqjguouxes')
+  ) {
+    throw new Error(
+      'PREFLIGHT REFUSED: fixture-compatible house-table selection requires the staging DATABASE_URL',
+    );
+  }
+  const sql = postgres(databaseUrl, {
+    max: 1,
+    idle_timeout: 5,
+    connect_timeout: 20,
+  });
+  try {
+    const rows = await sql`
+      SELECT t.id
+      FROM poker_cash_tables t
+      LEFT JOIN poker_cash_seats s
+        ON s.table_id = t.id
+       AND s.status <> 'left'
+      WHERE t.id IN ${sql(tableIds)}
+        AND t.source = 'house'
+        AND t.tier_key = 'low'
+        AND t.buy_in_ct = '200'
+        AND t.status = 'open'
+      GROUP BY t.id
+      HAVING count(s.id) >= 2
+        AND count(s.id) < max(t.max_seats)
+        AND count(s.id) FILTER (WHERE s.is_seeded <> 'true') = 0
+    `;
+    return new Set(rows.map((row) => String(row.id)));
+  } finally {
+    await sql.end();
+  }
 }
 
 async function probeExistingCashTable(
@@ -553,20 +596,21 @@ async function verifyLiveProfileAndPrepareTable(): Promise<string> {
           driver,
           persistedState.tableId,
         );
+        const fixtureCompatible = persisted.playableHouse
+          && (
+            await fixtureCompatibleHouseTableIds([persistedState.tableId])
+          ).has(persistedState.tableId);
         if (
           persisted.isOpen
-          && (
-            persisted.playableHouse
-            || Boolean(persistedState.joinCode)
-          )
+          && fixtureCompatible
         ) {
           console.log(
-            `PREFLIGHT cash table: reused persisted open table ${persistedState.tableId}`,
+            `PREFLIGHT cash table: reused persisted fixture-compatible house table ${persistedState.tableId}`,
           );
           return persistedState.tableId;
         }
         console.warn(
-          `PREFLIGHT cash table: persisted table unavailable or non-playable (HTTP ${persisted.status}); selecting house table`,
+          `PREFLIGHT cash table: persisted table unavailable or not fixture-compatible (HTTP ${persisted.status}); selecting house table`,
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : '';
@@ -595,7 +639,7 @@ async function verifyLiveProfileAndPrepareTable(): Promise<string> {
           joinCode: null,
         });
         console.log(
-          `PREFLIGHT cash table: selected and persisted playable low house table ${selected}`,
+          `PREFLIGHT cash table: selected and persisted fixture-compatible low house table ${selected}`,
         );
         return selected;
       }
@@ -608,9 +652,12 @@ async function verifyLiveProfileAndPrepareTable(): Promise<string> {
       );
     }
     const fallbackProbe = await probeExistingCashTable(driver, fallback);
-    if (!fallbackProbe.playableHouse) {
+    const fallbackFixtureCompatible =
+      fallbackProbe.playableHouse
+      && (await fixtureCompatibleHouseTableIds([fallback])).has(fallback);
+    if (!fallbackFixtureCompatible) {
       throw new Error(
-        `PREFLIGHT REFUSED: CV_PARITY_CASH_TABLE_ID fallback is not a playable low house table (status=${fallbackProbe.status})`,
+        `PREFLIGHT REFUSED: CV_PARITY_CASH_TABLE_ID fallback is not a fixture-compatible low house table (status=${fallbackProbe.status})`,
       );
     }
     console.warn(

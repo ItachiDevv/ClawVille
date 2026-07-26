@@ -333,9 +333,13 @@ function holdemExpected(
   const tray = surface.includes('-tray-');
   if (tray) {
     const self = record(first(hand.self, body.self));
+    const terminalSelf = array(outcome?.seats)
+      .map(record)
+      .find((seat) => seat?.isHuman === true);
     const hole = array(first(
       directView?.holeCards,
       self?.holeCards,
+      terminalSelf?.holeCards,
       hand.humanHole,
       hand.playerHoleCards,
       hand.holeCards,

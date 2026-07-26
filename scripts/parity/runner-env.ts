@@ -7,6 +7,28 @@ export function requiresFixtureOwnerPreflight(
     && scenario.fixtureName.length > 0;
 }
 
+/**
+ * Shoe/practice fixture deletion is the authoritative resource teardown and
+ * must run while the page-local show-once credential still exists. Their
+ * ordinary Walk Away flows replace the document and intentionally erase that
+ * credential. Cash Hold'em is different: its normal leave/cash-out path must
+ * settle the real ledger before the fixture run can be closed.
+ */
+export function fixtureTeardownRunsFirst(
+  scenario: Pick<ScenarioDefinition, 'game' | 'tier' | 'fixtureName'>,
+): boolean {
+  return requiresFixtureOwnerPreflight(scenario)
+    && !(scenario.game === 'holdem' && scenario.tier === 'live');
+}
+
+export function requiresGuestShoeReset(
+  scenario: Pick<ScenarioDefinition, 'game' | 'tier' | 'fixtureName'>,
+): boolean {
+  return requiresFixtureOwnerPreflight(scenario)
+    && scenario.tier === 'guest'
+    && (scenario.game === 'blackjack' || scenario.game === 'baccarat');
+}
+
 export function resolveScenarioState(
   scenario: Pick<ScenarioDefinition, 'game' | 'tier' | 'fixtureName'>,
   env: NodeJS.ProcessEnv = process.env,

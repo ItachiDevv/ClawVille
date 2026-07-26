@@ -380,20 +380,137 @@ async function practiceHoldemCorrelation(
 async function advanceHoldemToShowdown(
   driver: Driver,
   surface: Surface,
-): Promise<void> {
+): Promise<string> {
+  await driver.waitFn(
+    `Boolean(window.__CV_READ_PARITY?.(${JSON.stringify(surface)})?.correlation?.hand)`,
+    30_000,
+  );
+  const correlationHand = await driver.evalJson<string>(
+    `window.__CV_READ_PARITY(${JSON.stringify(surface)}).correlation.hand`,
+  );
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
+    const reachedShowdown = await driver.evalJson<boolean>(`(() => {
+      return (window.__CV_PARITY_JOURNAL?.(${JSON.stringify(surface)}) ?? [])
+        .some((entry) => {
+          if (
+            entry.surface !== ${JSON.stringify(surface)}
+            || entry.dealStep !== 'showdown'
+          ) return false;
+          try {
+            return JSON.parse(entry.signature)[2] === ${JSON.stringify(correlationHand)};
+          } catch {
+            return false;
+          }
+        });
+    })()`);
+    if (reachedShowdown) return correlationHand;
+    const rejectedAction = await driver.evalJson<{
+      status: number;
+      message: string | null;
+      fixtureHeaderInjected: boolean;
+    } | null>(`(() => {
+      const records = (window.__CV_WIRE_ALL?.() ?? [])
+        .filter((entry) => entry.urlSuffix?.endsWith('/action'));
+      const record = records[records.length - 1];
+      if (!record || record.status < 400) return null;
+      return {
+        status: record.status,
+        message: typeof record.responseBody?.message === 'string'
+          ? record.responseBody.message
+          : typeof record.responseBody?.error === 'string'
+            ? record.responseBody.error
+            : null,
+        fixtureHeaderInjected: record.fixtureHeaderInjected === true,
+      };
+    })()`);
+    if (rejectedAction) {
+      const openArm = await driver.evalJson<{
+        status: number;
+        fixtureHeaderInjected: boolean;
+      } | null>(`(() => {
+        const records = (window.__CV_WIRE_ALL?.() ?? [])
+          .filter((entry) => (
+            entry.urlSuffix === 'holdem/session/open'
+            || entry.urlSuffix?.endsWith('/sit')
+          ));
+        const record = records[records.length - 1];
+        return record
+          ? {
+              status: record.status,
+              fixtureHeaderInjected: record.fixtureHeaderInjected === true,
+            }
+          : null;
+      })()`);
+      throw new Error(
+        `Hold'em driver action rejected HTTP ${rejectedAction.status}`
+        + ` (${rejectedAction.message ?? '<none>'}, fixtureHeaderInjected=${
+          rejectedAction.fixtureHeaderInjected
+        }, sessionOpen=${
+          openArm
+            ? `HTTP ${openArm.status}/fixtureHeaderInjected=${openArm.fixtureHeaderInjected}`
+            : '<not-captured>'
+        })`,
+      );
+    }
     const step = await driver.evalJson<string | null>(
       `window.__CV_READ_PARITY?.(${JSON.stringify(surface)})?.dealStep ?? null`,
     );
-    if (step === 'showdown') return;
+    if (step === 'showdown') return correlationHand;
     if (!await clickText(driver, ['Check', 'Call'])) {
       await new Promise((resolveWait) => setTimeout(resolveWait, 150));
       continue;
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 150));
   }
-  throw new Error(`Hold'em driver did not reach showdown on ${surface}`);
+  const diagnostic = await driver.evalJson<{
+    journalTail: Array<{
+      revision: number;
+      dealStep: string;
+      transition: string;
+    }>;
+    lastRejectedAction: {
+      status: number;
+      message: string | null;
+      fixtureHeaderInjected: boolean;
+    } | null;
+  }>(`(() => {
+    const journalTail = (window.__CV_PARITY_JOURNAL?.(${JSON.stringify(surface)}) ?? [])
+      .filter((entry) => {
+        try {
+          return JSON.parse(entry.signature)[2] === ${JSON.stringify(correlationHand)};
+        } catch {
+          return false;
+        }
+      })
+      .slice(-12)
+      .map(({ revision, dealStep, transition }) => ({
+        revision,
+        dealStep,
+        transition,
+      }));
+    const rejected = (window.__CV_WIRE_ALL?.() ?? [])
+      .filter((entry) => entry.urlSuffix?.endsWith('/action') && entry.status >= 400)
+      .at(-1);
+    return {
+      journalTail,
+      lastRejectedAction: rejected
+        ? {
+            status: rejected.status,
+            message: typeof rejected.responseBody?.message === 'string'
+              ? rejected.responseBody.message
+              : null,
+            fixtureHeaderInjected: rejected.fixtureHeaderInjected === true,
+          }
+        : null,
+    };
+  })()`);
+  throw new Error(
+    `Hold'em driver did not reach showdown on ${surface}`
+    + ` for correlation ${correlationHand}`
+    + ` (journalTail=${JSON.stringify(diagnostic.journalTail)},`
+    + ` lastRejectedAction=${JSON.stringify(diagnostic.lastRejectedAction)})`,
+  );
 }
 
 interface JournalStep {
@@ -763,8 +880,9 @@ export async function* driveScenario(
     throw new Error(`Hold'em negative traversal exceeded 90s`);
   }
   if (row === 'H6') await waitAndClick(driver, ['Fold'], 30_000);
+  let terminalCorrelation: string | null = null;
   if (['H5', 'H10'].includes(row)) {
-    await advanceHoldemToShowdown(driver, surface);
+    terminalCorrelation = await advanceHoldemToShowdown(driver, surface);
   }
   const practiceStreetCorrelation =
     ['H2', 'H3', 'H4'].includes(row)
@@ -784,7 +902,12 @@ export async function* driveScenario(
           ...checkpoint,
           expectCorrelationHand: practiceStreetCorrelation,
         }
-      : checkpoint;
+      : terminalCorrelation
+        ? {
+            ...checkpoint,
+            expectCorrelationHand: terminalCorrelation,
+          }
+        : checkpoint;
     if (
       !phase.startsWith('every-')
       && !['showdown', 'muck-fading', 'idle'].includes(phase)

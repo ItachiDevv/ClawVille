@@ -5,6 +5,8 @@ import type { WireRecord } from '../types';
 interface HookWindow {
   location: { href: string };
   fetch: typeof fetch;
+  __CV_CAPTURE_DOCUMENT_ID?: string;
+  __CV_REQUEST_FINGERPRINT?: string;
   __CV_WIRE_GET?: (suffix: string, seq?: number) => WireRecord | null;
   __CV_WIRE_SINCE?: (suffix: string, after: number) => WireRecord[];
   __CV_WIRE_ALL?: () => WireRecord[];
@@ -91,9 +93,44 @@ describe('pre-navigation fetch capture hook', () => {
     for (const path of armed) {
       expect(seen.get(`http://127.0.0.1:4002${path}`)).toBe('run.secret-token');
     }
+    expect(
+      fakeWindow.__CV_WIRE_GET?.('holdem/hand/deal')?.fixtureHeaderInjected,
+    ).toBe(true);
     expect(seen.get(
       'http://127.0.0.1:4002/api/cove/baccarat/session/current',
     )).toBeNull();
+    expect(
+      fakeWindow.__CV_WIRE_GET?.('baccarat/session/current')
+        ?.fixtureHeaderInjected,
+    ).toBe(false);
+  });
+
+  test('reuses the app-observed fingerprint in memory for harness preflight', async () => {
+    const source = await readFile('scripts/parity/capture-hook.js', 'utf8');
+    const seen: Array<string | null> = [];
+    const fakeWindow: HookWindow = {
+      location: { href: 'http://127.0.0.1:3003/cove/table' },
+      fetch: async (_input, init) => {
+        seen.push(new Headers(init?.headers).get('X-CV-Fingerprint'));
+        return Response.json({ ok: true });
+      },
+    };
+    new Function('window', source)(fakeWindow);
+    await fakeWindow.fetch(
+      'http://127.0.0.1:4002/api/cove/holdem/session/current',
+      { headers: { 'X-CV-Fingerprint': 'app-stable-fingerprint' } },
+    );
+    await fakeWindow.fetch(
+      'http://127.0.0.1:4002/api/cove/holdem/session/current',
+    );
+    expect(seen).toEqual([
+      'app-stable-fingerprint',
+      'app-stable-fingerprint',
+    ]);
+    expect(fakeWindow.__CV_REQUEST_FINGERPRINT)
+      .toBe('app-stable-fingerprint');
+    expect(JSON.stringify(fakeWindow.__CV_WIRE_ALL?.() ?? []))
+      .not.toContain('app-stable-fingerprint');
   });
 
   test('new-document seed arm waits for in-memory header without persistence', async () => {
@@ -107,6 +144,7 @@ describe('pre-navigation fetch capture hook', () => {
       },
     };
     new Function('window', source)(pageAfterNavigation);
+    expect(pageAfterNavigation.__CV_CAPTURE_DOCUMENT_ID).toBeString();
     let settled = false;
     const firstArm = pageAfterNavigation.fetch(
       'http://127.0.0.1:4002/api/cove/blackjack/session/open',

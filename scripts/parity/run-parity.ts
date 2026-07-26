@@ -27,9 +27,12 @@ import {
   resolveWireForRoot,
 } from './wire-correlation';
 import {
+  fixtureTeardownRunsFirst,
+  requiresGuestShoeReset,
   requiresFixtureOwnerPreflight,
   resolveScenarioState,
 } from './runner-env';
+import { resetGuestShoes } from './reset-guest-shoes';
 import {
   DEFAULT_CASH_TABLE_STATE_PATH,
   readPersistedCashTableState,
@@ -173,6 +176,13 @@ async function runLiveScenario(): Promise<void> {
           ? persistedCashTable.joinCode
           : null
       );
+  if (requiresGuestShoeReset(scenario)) {
+    const reset = await resetGuestShoes();
+    console.log(
+      `[row ${scenario.id}] guest shoes reset before fixture arm `
+        + `(blackjack=${reset.blackjack}, baccarat=${reset.baccarat})`,
+    );
+  }
   // Unique per-run session: a crashed prior attempt leaves a wedged daemon
   // squatting the session name, and the next open() hangs on it forever.
   const driver = new AgentBrowserDriver(
@@ -194,12 +204,21 @@ async function runLiveScenario(): Promise<void> {
     if (cleaning) return;
     cleaning = true;
     const errors: string[] = [];
-    await scenario.teardown(driver, config.apiBase).catch((error: unknown) => {
-      errors.push(`game: ${String(error)}`);
-    });
-    await closeFixtureRun(driver, fixture, config.apiBase).catch((error: unknown) => {
-      errors.push(`fixture: ${String(error)}`);
-    });
+    if (fixtureTeardownRunsFirst(scenario)) {
+      // DELETE closes and reveals every fixture-linked shoe/practice table in
+      // one server transaction. Running the ordinary UI close first replaces
+      // the document and destroys the page-local show-once credential.
+      await closeFixtureRun(driver, fixture, config.apiBase).catch((error: unknown) => {
+        errors.push(`fixture: ${String(error)}`);
+      });
+    } else {
+      await scenario.teardown(driver, config.apiBase).catch((error: unknown) => {
+        errors.push(`game: ${String(error)}`);
+      });
+      await closeFixtureRun(driver, fixture, config.apiBase).catch((error: unknown) => {
+        errors.push(`fixture: ${String(error)}`);
+      });
+    }
     await driver.close().catch((error: unknown) => {
       errors.push(`browser: ${String(error)}`);
     });
@@ -225,9 +244,16 @@ async function runLiveScenario(): Promise<void> {
     path: string,
     releaseFixtureGate = true,
   ): Promise<void> => {
+    const previousDocumentId = await driver.evalJson<string | null>(
+      `window.__CV_CAPTURE_DOCUMENT_ID ?? null`,
+    );
     await driver.evalJson(`(() => { location.assign(${JSON.stringify(path)}); return true; })()`);
     const pathname = new URL(path, config.webBase).pathname;
-    await driver.waitFn(`location.pathname === ${JSON.stringify(pathname)}`, 30_000);
+    await driver.waitFn(`(
+      location.pathname === ${JSON.stringify(pathname)}
+      && typeof window.__CV_CAPTURE_DOCUMENT_ID === 'string'
+      && window.__CV_CAPTURE_DOCUMENT_ID !== ${JSON.stringify(previousDocumentId)}
+    )`, 30_000);
     if (releaseFixtureGate) {
       await driver.evalJson(
         `(() => { window.__CV_RELEASE_FIXTURE_GATE?.(); return true; })()`,
@@ -263,8 +289,28 @@ async function runLiveScenario(): Promise<void> {
     // Reconcile on the actual game UI only when the neutral preflight finds
     // state. This preserves the fixture-before-seed-arm ordering.
     let clean = await preflight(driver, scenario.game, config.apiBase);
-    if (!clean.clean || (scenario.game === 'holdem' && scenario.tier === 'live')) {
-      await navigate(route);
+    if (
+      !clean.clean
+      || (
+        scenario.game === 'holdem'
+        && (
+          scenario.tier === 'live'
+          || (scenario.tier === 'guest' && Boolean(scenario.fixtureName))
+        )
+      )
+    ) {
+      // A fixture-backed route may have an eager seed arm queued while its
+      // stale resource is reconciled. Keep that arm gated in this disposable
+      // document; navigating away cancels it. The final route document is
+      // released only after the new fixture run has been issued.
+      await navigate(route, !scenario.fixtureName);
+      if (scenario.game === 'holdem' && scenario.tier === 'guest') {
+        await driver.waitFn(
+          `typeof window.__CV_REQUEST_FINGERPRINT === 'string'
+            && window.__CV_REQUEST_FINGERPRINT.length > 0`,
+          30_000,
+        );
+      }
       clean = await preflight(driver, scenario.game, config.apiBase);
       await navigate('/cove');
     }
@@ -382,12 +428,41 @@ async function runLiveScenario(): Promise<void> {
         })()`);
       };
       console.log(`[row ${scenario.id}] awaiting checkpoint ${checkpoint.label} on ${checkpoint.surface} (after r${after})`);
-      let root = await waitForParityCheckpoint(
-        driver,
-        checkpoint,
-        after,
-        config.maxDurationMs,
-      );
+      let root;
+      try {
+        root = await waitForParityCheckpoint(
+          driver,
+          checkpoint,
+          after,
+          config.maxDurationMs,
+        );
+      } catch (error) {
+        const journalTail = await driver.evalJson<Array<{
+          revision: number;
+          dealStep: string;
+          transition: string;
+          correlationHand: string | null;
+        }>>(`(() => (
+          (window.__CV_PARITY_JOURNAL?.(${JSON.stringify(checkpoint.surface)}) ?? [])
+            .slice(-12)
+            .map((entry) => {
+              let correlationHand = null;
+              try { correlationHand = JSON.parse(entry.signature)[2] ?? null; }
+              catch {}
+              return {
+                revision: entry.revision,
+                dealStep: entry.dealStep,
+                transition: entry.transition,
+                correlationHand,
+              };
+            })
+        ))()`).catch(() => []);
+        throw new Error(
+          `checkpoint ${checkpoint.label} wait failed: ${String(error)}; journalTail=${
+            JSON.stringify(journalTail)
+          }`,
+        );
+      }
       root = await preferCurrentRoot(root);
       await captureCurrentCashWitness(root);
       if (scenario.row === 'H10') {

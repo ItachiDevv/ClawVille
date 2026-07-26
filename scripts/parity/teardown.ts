@@ -397,7 +397,10 @@ export async function closeFixtureRun(
     status: number;
     code: string | null;
     message: string | null;
+    credentialPresent: boolean;
+    credentialRunMatches: boolean;
   }>(`(async () => {
+    const fixtureCredential = window.__CV_TEST_FIXTURE_HEADER;
     const response = await fetch(
       ${JSON.stringify(apiBase.replace(/\/$/, ''))} + '/api/cove/test-fixture/run/' + ${JSON.stringify(fixture.runId)},
       { method: 'DELETE', credentials: 'include' },
@@ -414,13 +417,20 @@ export async function closeFixtureRun(
         : typeof body?.message === 'string'
           ? body.message
           : null,
+      credentialPresent:
+        typeof fixtureCredential === 'string' && fixtureCredential.length > 0,
+      credentialRunMatches:
+        typeof fixtureCredential === 'string'
+          && fixtureCredential.startsWith(${JSON.stringify(`${fixture.runId}.`)}),
     };
   })()`);
   if (!result.closed) {
     throw new Error(
       `fixture teardown failed for run ${fixture.runId} (HTTP ${result.status}, code=${
         result.code ?? '<none>'
-      }, message=${result.message ?? '<none>'})`,
+      }, message=${result.message ?? '<none>'}, credentialPresent=${
+        result.credentialPresent
+      }, credentialRunMatches=${result.credentialRunMatches})`,
     );
   }
 }

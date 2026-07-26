@@ -29,6 +29,7 @@ export interface WireRecord {
   coupId: string | null;
   shoeId: string | null;
   idempotencyKey: string | null;
+  fixtureHeaderInjected?: boolean;
 }
 
 export interface ExpectedSlot {

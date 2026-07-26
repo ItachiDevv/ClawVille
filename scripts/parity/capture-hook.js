@@ -5,6 +5,8 @@
   const buckets = new Map();
   let nextSeq = 1;
   const nativeFetch = window.fetch.bind(window);
+  window.__CV_CAPTURE_DOCUMENT_ID =
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   let releaseFixtureGate;
   let fixtureGateReleased = false;
   const fixtureGate = new Promise((resolve) => {
@@ -153,13 +155,31 @@
     let effectiveInit = init;
     const fixtureArmedPath = /\/api\/cove\/(?:blackjack\/(?:session\/(?:open|close)|hand\/|action)|baccarat\/(?:session\/(?:open|close)|coup)|poker\/cash\/|holdem\/|test-fixture\/)/.test(rawUrl);
     const fixtureSeedArm = /\/api\/cove\/(?:blackjack\/session\/open|baccarat\/session\/open|holdem\/session\/open|poker\/cash\/tables\/[^/?]+\/sit)(?:[/?]|$)/.test(rawUrl);
+    const coveApiPath = /\/api\/cove\//.test(rawUrl);
     if (fixtureSeedArm && method !== 'GET') {
       await fixtureGate;
     }
     const fixtureHeader = window.__CV_TEST_FIXTURE_HEADER;
+    const headers = new Headers(init?.headers ?? request?.headers);
+    const incomingFingerprint = headers.get('X-CV-Fingerprint');
+    if (incomingFingerprint) {
+      window.__CV_REQUEST_FINGERPRINT = incomingFingerprint;
+    }
+    let headersChanged = false;
+    if (
+      coveApiPath
+      && !incomingFingerprint
+      && typeof window.__CV_REQUEST_FINGERPRINT === 'string'
+      && window.__CV_REQUEST_FINGERPRINT.length > 0
+    ) {
+      headers.set('X-CV-Fingerprint', window.__CV_REQUEST_FINGERPRINT);
+      headersChanged = true;
+    }
     if (fixtureHeader && fixtureArmedPath && method !== 'GET') {
-      const headers = new Headers(init?.headers ?? request?.headers);
       headers.set('X-CV-Test-Fixture', fixtureHeader);
+      headersChanged = true;
+    }
+    if (headersChanged) {
       if (request && !init) {
         effectiveInput = new Request(request, { headers });
       } else {
@@ -193,6 +213,9 @@
       coupId: asString(deepFind(both, new Set(['coupId', 'coup_id']))),
       shoeId: asString(deepFind(both, new Set(['shoeId', 'shoe_id']))),
       idempotencyKey: asString(idempotencyKey),
+      fixtureHeaderInjected: Boolean(
+        fixtureHeader && fixtureArmedPath && method !== 'GET'
+      ),
     });
     return response;
   };
