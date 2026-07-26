@@ -1,5 +1,8 @@
 import type { Driver } from './driver';
-import { teardownGame } from './teardown';
+import {
+  reconcilePracticeHoldemSession,
+  teardownGame,
+} from './teardown';
 
 export interface PreflightResult {
   clean: boolean;
@@ -25,8 +28,8 @@ async function browserRequest<T>(
 }
 
 /**
- * Read-only first pass. Mutating reconciliation is deliberately explicit in
- * teardown.ts; a surprising active identity state refuses the run.
+ * Reconcile only states with a bounded, proof-bearing normal close path.
+ * Anything else remains read-only and refuses the run with explicit notes.
  */
 export async function preflight(
   driver: Driver,
@@ -67,6 +70,7 @@ export async function preflight(
     }
   }
   if (game === 'holdem') {
+    await reconcilePracticeHoldemSession(driver, apiBase);
     const staleCashSeat = await driver.evalJson<boolean>(`(async () => {
       const tableId = new URL(location.href).searchParams.get('tableId');
       if (!tableId) {

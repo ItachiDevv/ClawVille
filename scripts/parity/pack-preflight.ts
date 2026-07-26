@@ -5,6 +5,11 @@ import {
   AgentBrowserDriver,
   agentBrowserExecutable,
 } from './driver';
+import {
+  DEFAULT_CASH_TABLE_STATE_PATH,
+  readPersistedCashTableId,
+  writePersistedCashTableId,
+} from './pack-cash-table-state';
 
 const DEFAULT_WEB_BASE = 'https://itachi222.tail06a01b.ts.net:9443';
 const DEFAULT_API_BASE = 'https://itachi222.tail06a01b.ts.net:9444';
@@ -27,6 +32,11 @@ interface TableProbe {
   id: string | null;
 }
 
+interface ExistingTableProbe {
+  status: number;
+  isOpen: boolean;
+}
+
 function absoluteApiBase(): string {
   return (process.env.CV_PARITY_API_BASE ?? DEFAULT_API_BASE).replace(/\/$/, '');
 }
@@ -41,6 +51,11 @@ function liveStatePath(): string {
 
 function guestStatePath(): string {
   return process.env.CV_PARITY_GUEST_AUTH_STATE ?? DEFAULT_GUEST_STATE;
+}
+
+function cashTableStatePath(): string {
+  return process.env.CV_PARITY_CASH_TABLE_STATE
+    ?? DEFAULT_CASH_TABLE_STATE_PATH;
 }
 
 async function pageRequest<T>(
@@ -120,6 +135,27 @@ async function createPrivateCashTable(
       && id.length > 0
         ? id
         : null,
+  };
+}
+
+async function probeExistingCashTable(
+  driver: AgentBrowserDriver,
+  tableId: string,
+): Promise<ExistingTableProbe> {
+  const response = await pageRequest<{
+    ok?: unknown;
+    table?: { id?: unknown; status?: unknown };
+  }>(
+    driver,
+    `/api/cove/poker/cash/tables/${encodeURIComponent(tableId)}`,
+  );
+  return {
+    status: response.status,
+    isOpen:
+      response.status === 200
+      && response.body?.ok === true
+      && response.body?.table?.id === tableId
+      && response.body?.table?.status === 'open',
   };
 }
 
@@ -329,16 +365,59 @@ async function verifyLiveProfileAndPrepareTable(): Promise<string> {
       );
     }
 
+    const persistedTableId = await readPersistedCashTableId(
+      cashTableStatePath(),
+    );
+    if (persistedTableId) {
+      try {
+        const persisted = await probeExistingCashTable(
+          driver,
+          persistedTableId,
+        );
+        if (persisted.isOpen) {
+          console.log(
+            `PREFLIGHT cash table: reused persisted open table ${persistedTableId}`,
+          );
+          return persistedTableId;
+        }
+        console.warn(
+          `PREFLIGHT cash table: persisted table unavailable (HTTP ${persisted.status} or not open); creating replacement`,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '';
+        const failure =
+          /timed out/i.test(message)
+            ? 'request timed out'
+            : /agent-browser exited/i.test(message)
+              ? 'browser command failed'
+              : `request threw ${error instanceof Error ? error.name : 'unknown error'}`;
+        console.warn(
+          `PREFLIGHT cash table: persisted table check failed (${failure}); creating replacement`,
+        );
+      }
+    } else {
+      console.log(
+        'PREFLIGHT cash table: no persisted table id; creating private table',
+      );
+    }
+
     let createFailure: string;
     try {
       const table = await createPrivateCashTable(driver);
       if (table.id) {
-        console.log(
-          `PREFLIGHT cash table: created fresh private table ${table.id}`,
-        );
-        return table.id;
+        const created = await probeExistingCashTable(driver, table.id);
+        if (created.isOpen) {
+          await writePersistedCashTableId(cashTableStatePath(), table.id);
+          console.log(
+            `PREFLIGHT cash table: created, verified open, and persisted private table ${table.id}`,
+          );
+          return table.id;
+        }
+        createFailure =
+          `HTTP ${table.status}, but open-table verification returned HTTP ${created.status} or not open`;
+      } else {
+        createFailure = `HTTP ${table.status}`;
       }
-      createFailure = `HTTP ${table.status}`;
     } catch (error) {
       // Do not echo a browser error body: request/daemon messages can contain
       // state paths or page details. The operational class is sufficient for
@@ -358,8 +437,14 @@ async function verifyLiveProfileAndPrepareTable(): Promise<string> {
         `PREFLIGHT REFUSED: fresh private cash table creation failed (${createFailure}) and CV_PARITY_CASH_TABLE_ID fallback is empty`,
       );
     }
+    const fallbackProbe = await probeExistingCashTable(driver, fallback);
+    if (!fallbackProbe.isOpen) {
+      throw new Error(
+        `PREFLIGHT REFUSED: reuse unavailable, creation failed (${createFailure}), and CV_PARITY_CASH_TABLE_ID fallback is not an open table (status=${fallbackProbe.status})`,
+      );
+    }
     console.warn(
-      `PREFLIGHT cash table: CREATION FAILED (${createFailure}); LOUD FALLBACK to CV_PARITY_CASH_TABLE_ID=${fallback}`,
+      `PREFLIGHT cash table: REUSE UNAVAILABLE and CREATION FAILED (${createFailure}); LOUD VERIFIED-OPEN FALLBACK to CV_PARITY_CASH_TABLE_ID=${fallback}`,
     );
     return fallback;
   } finally {

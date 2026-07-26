@@ -87,7 +87,8 @@ if ! timeout 30 agent-browser session list >/dev/null 2>&1; then
 fi
 
 # FIX-3/FIX-4 preflight: authenticate both profiles, re-mint anonymous guest
-# state when stale, enforce live vCLAW floor, and create one fresh cash table.
+# state when stale, enforce live vCLAW floor, and reuse or create an open cash
+# table.
 preflight_output="$(bun scripts/parity/pack-preflight.ts 2>&1)"
 preflight_code=$?
 printf '%s\n' "$preflight_output" | tee -a "$LOG"
@@ -95,16 +96,16 @@ if [ "$preflight_code" -ne 0 ]; then
   echo "[$(date +%H:%M:%S)] PACK PREFLIGHT REFUSED (exit $preflight_code)" | tee -a "$LOG"
   exit "$preflight_code"
 fi
-fresh_cash_table_id="$(
+cash_table_id="$(
   printf '%s\n' "$preflight_output" |
     sed -n 's/^PACK_CASH_TABLE_ID=//p' |
     tail -1
 )"
-if [ -z "$fresh_cash_table_id" ]; then
+if [ -z "$cash_table_id" ]; then
   echo "[$(date +%H:%M:%S)] PACK PREFLIGHT REFUSED: no cash table id emitted" | tee -a "$LOG"
   exit 1
 fi
-export CV_PARITY_CASH_TABLE_ID="$fresh_cash_table_id"
+export CV_PARITY_CASH_TABLE_ID="$cash_table_id"
 echo "[$(date +%H:%M:%S)] PACK CASH TABLE IN USE: $CV_PARITY_CASH_TABLE_ID" | tee -a "$LOG"
 
 # Catalog is the only row inventory. A hand-maintained id file can silently

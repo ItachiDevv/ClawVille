@@ -47,6 +47,17 @@ export function serializeAgentBrowserEval(js: string): string {
   return `Promise.resolve(${js}).then((value) => JSON.stringify(value))`;
 }
 
+export function createOneShotStatePath(
+  statePath: string | null,
+): () => string | null {
+  let pending = statePath;
+  return () => {
+    const value = pending;
+    pending = null;
+    return value;
+  };
+}
+
 function parseAgentBrowserValue<T>(stdout: string): T {
   // agent-browser responses can nest: a {success, data|result} daemon envelope
   // whose payload is the stringified {lifecycle, origin, result} eval envelope,
@@ -88,6 +99,7 @@ function parseAgentBrowserValue<T>(stdout: string): T {
 export class AgentBrowserDriver implements Driver {
   readonly session: string;
   readonly statePath: string | null;
+  private readonly consumeStatePath: () => string | null;
 
   constructor(
     session = `cove-parity-${process.pid}`,
@@ -95,14 +107,19 @@ export class AgentBrowserDriver implements Driver {
   ) {
     this.session = session;
     this.statePath = statePath;
+    this.consumeStatePath = createOneShotStatePath(statePath);
   }
 
   private async run(args: readonly string[], json = false, timeoutMs = 90_000): Promise<string> {
     const command = agentBrowserExecutable();
+    // --state is a launch-time seed, not an attachment option. Replaying it
+    // on eval/wait resets the daemon session before every command and makes
+    // authenticated rows wait forever for navigation that already happened.
+    const initialStatePath = this.consumeStatePath();
     const commandArgs = [
       '--session',
       this.session,
-      ...(this.statePath ? ['--state', resolve(this.statePath)] : []),
+      ...(initialStatePath ? ['--state', resolve(initialStatePath)] : []),
       ...(json ? ['--json'] : []),
       ...args,
     ];
@@ -266,6 +283,16 @@ export async function waitForParityCheckpoint(
     ${checkpoint.expectTransition
       ? `&& entry.transition === ${JSON.stringify(checkpoint.expectTransition)}`
       : ''}
+    ${checkpoint.expectCorrelationHand
+      ? `&& (() => {
+          try {
+            return JSON.parse(entry.signature)[2]
+              === ${JSON.stringify(checkpoint.expectCorrelationHand)};
+          } catch {
+            return false;
+          }
+        })()`
+      : ''}
     ${checkpoint.final ? "&& entry.transition === 'idle'" : ''}`;
   await driver.waitFn(`(() => {
     const entries = window.__CV_PARITY_JOURNAL?.(${JSON.stringify(checkpoint.surface)}) ?? [];
@@ -284,6 +311,15 @@ export async function waitForParityCheckpoint(
       checkpoint.expectTransition === undefined
       || candidate.transition === checkpoint.expectTransition
     ))
+    .filter((candidate) => {
+      if (checkpoint.expectCorrelationHand === undefined) return true;
+      try {
+        return JSON.parse(candidate.signature)[2]
+          === checkpoint.expectCorrelationHand;
+      } catch {
+        return false;
+      }
+    })
     .filter((candidate) => !checkpoint.final || candidate.transition === 'idle')
     .sort((left, right) => left.revision - right.revision)[0];
   if (!entry) throw new Error(`No pinned journal entry for ${checkpoint.label}`);

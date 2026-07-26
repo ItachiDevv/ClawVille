@@ -4,6 +4,93 @@ export interface FixtureRunHandle {
   runId: string;
 }
 
+export interface PracticeHoldemReconciliation {
+  clean: true;
+  reconciled: boolean;
+  absentStatus: number;
+}
+
+export function buildPracticeHoldemReconciliationScript(
+  apiBase: string,
+): string {
+  const base = apiBase.replace(/\/$/, '');
+  return `(async () => {
+    const apiBase = ${JSON.stringify(base)};
+    const json = async (path, init = {}) => {
+      const response = await fetch(apiBase + path, {
+        credentials: 'include',
+        ...init,
+      });
+      let body = null;
+      try { body = await response.json(); } catch {}
+      return { status: response.status, ok: response.ok, body };
+    };
+    const mutate = (path, body) => json(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const current = await json('/api/cove/holdem/session/current');
+    if (current.status === 404) {
+      return { clean: true, reconciled: false, absentStatus: current.status };
+    }
+    if (!current.ok) {
+      throw new Error(
+        'practice holdem reconciliation current returned HTTP ' + current.status,
+      );
+    }
+    const tableId = current.body?.table?.id;
+    if (typeof tableId !== 'string' || !tableId) {
+      throw new Error(
+        'practice holdem reconciliation could not resolve the open table',
+      );
+    }
+    const handId = current.body?.hand?.handId;
+    if (typeof handId === 'string' && handId) {
+      const folded = await mutate('/api/cove/holdem/action', {
+        handId,
+        action: 'fold',
+      });
+      if (!folded.ok) {
+        throw new Error(
+          'practice holdem reconciliation fold returned HTTP ' + folded.status,
+        );
+      }
+    }
+    const closed = await mutate('/api/cove/holdem/session/close', { tableId });
+    if (!closed.ok) {
+      throw new Error(
+        'practice holdem reconciliation close returned HTTP ' + closed.status,
+      );
+    }
+    const proof = await json('/api/cove/holdem/session/current');
+    if (proof.status !== 404) {
+      throw new Error(
+        'practice holdem reconciliation absence proof returned HTTP '
+        + proof.status,
+      );
+    }
+    return { clean: true, reconciled: true, absentStatus: proof.status };
+  })()`;
+}
+
+export async function reconcilePracticeHoldemSession(
+  driver: Driver,
+  apiBase: string,
+): Promise<PracticeHoldemReconciliation> {
+  const result = await driver.evalJson<PracticeHoldemReconciliation>(
+    buildPracticeHoldemReconciliationScript(apiBase),
+  );
+  if (
+    result?.clean !== true
+    || typeof result.reconciled !== 'boolean'
+    || result.absentStatus !== 404
+  ) {
+    throw new Error('practice holdem reconciliation returned malformed proof');
+  }
+  return result;
+}
+
 async function clickButtonByText(
   driver: Driver,
   labels: readonly string[],
@@ -99,6 +186,7 @@ export async function teardownGame(
     `Boolean(document.querySelector('[data-testid="cash-table-room-hud"]'))`,
   );
   if (!cashHud) {
+    await reconcilePracticeHoldemSession(driver, apiBase);
     await driver.evalJson(`(() => { location.href = '/cove'; return true; })()`);
     return;
   }

@@ -27,6 +27,9 @@ page-context requests from the `9443` web origin:
   app-route redirects. The state file is applied only to that session's first
   `agent-browser open`; later eval/wait requests attach without `--state`
   because replaying it resets the live session.
+- Live and fixture row drivers use that same one-shot saved-state contract:
+  `--state` seeds the first open only, and every later command attaches to the
+  already-authenticated daemon session.
 - If that anonymous guest session expired, open `9443/game` with no state,
   POST `/api/auth/guest`, verify the new guest identity, and save it to
   `scripts/parity/out/auth/guest-state.json`. No credentials are involved.

@@ -66,9 +66,28 @@ export function reachedFor(
       if (row === 'C7') return BigInt(String(outcome.commission ?? '0')) > 0n;
       return Boolean(outcome.winner);
     }
-    const terminal = rec(body.outcome) ?? body;
-    const board = arr(terminal.board ?? body.board);
-    const ownHole = arr(body.humanHole ?? rec(body.view)?.holeCards ?? terminal.humanHole);
+    const directView = rec(body.view);
+    const hand = rec(
+      body.hand
+      ?? body.snapshot
+      ?? body.state
+      ?? rec(directView)?.table
+      ?? body.live,
+    ) ?? body;
+    const terminal = rec(body.outcome ?? hand.outcome) ?? hand;
+    const board = arr(
+      terminal.board
+      ?? hand.communityCards
+      ?? hand.board
+      ?? body.communityCards
+      ?? body.board,
+    );
+    const ownHole = arr(
+      body.humanHole
+      ?? hand.humanHole
+      ?? directView?.holeCards
+      ?? terminal.humanHole,
+    );
     if (row === 'H5' || row === 'H10') return terminal.endedAt === 'showdown';
     if (row === 'H6') return Boolean(terminal.endedAt && terminal.endedAt !== 'showdown');
     if (row === 'H2') return board.length >= 3;
@@ -130,6 +149,228 @@ async function waitAndClick(
   if (!await clickText(driver, labels)) {
     throw new Error(`Action disappeared before click: ${labels.join('/')}`);
   }
+}
+
+interface PracticeHoldemActionStart {
+  clicked: boolean;
+  label: string | null;
+  actionSeq: number;
+  renderRevision: number;
+  dealStep: string;
+  correlationHand: string;
+  actions: string[];
+}
+
+interface PracticeHoldemActionProgress {
+  actionSeen: boolean;
+  actionStatus: number | null;
+  expectedRevision: number | null;
+  renderRevision: number;
+  dealStep: string;
+  correlationHand: string;
+  actions: string[];
+}
+
+async function advancePracticeHoldemStreet(
+  driver: Driver,
+  surface: Surface,
+  expectedDealStep: string,
+  expectedCorrelationHand: string,
+): Promise<void> {
+  const labels = ['Check', 'Call'] as const;
+  const existing = await driver.evalJson<boolean>(`(() => {
+    /* CV_PRACTICE_EXISTING_STEP */
+    return (window.__CV_PARITY_JOURNAL?.(${JSON.stringify(surface)}) ?? [])
+      .some((entry) => {
+        if (entry.dealStep !== ${JSON.stringify(expectedDealStep)}) return false;
+        try {
+          return JSON.parse(entry.signature)[2]
+            === ${JSON.stringify(expectedCorrelationHand)};
+        } catch {
+          return false;
+        }
+      });
+  })()`);
+  if (existing) return;
+
+  await driver.waitFn(`(() => {
+    const scope = document.querySelector('[data-testid="holdem-inline-betting"]');
+    if (!scope) return false;
+    const buttons = [...scope.querySelectorAll('button')];
+    return ${JSON.stringify(labels)}.some((label) =>
+      buttons.some((button) =>
+        button.textContent?.trim().startsWith(label)
+        && !button.disabled
+        && button.getClientRects().length > 0
+      )
+    );
+  })()`, 30_000);
+
+  const started = await driver.evalJson<PracticeHoldemActionStart>(`(() => {
+    /* CV_PRACTICE_ACTION_CLICK */
+    const labels = ${JSON.stringify(labels)};
+    const scope = document.querySelector('[data-testid="holdem-inline-betting"]');
+    const buttons = scope ? [...scope.querySelectorAll('button')] : [];
+    const visible = (button) => button.getClientRects().length > 0;
+    const action = labels
+      .map((label) => buttons.find((button) =>
+        button.textContent?.trim().startsWith(label)
+        && !button.disabled
+        && visible(button)
+      ))
+      .find(Boolean);
+    const root = window.__CV_READ_PARITY?.(${JSON.stringify(surface)}) ?? null;
+    const records = window.__CV_WIRE_ALL?.() ?? [];
+    const actionSeq = records
+      .filter((record) => record.urlSuffix === 'holdem/action')
+      .reduce((max, record) => Math.max(max, record.seq), 0);
+    const snapshot = buttons
+      .filter(visible)
+      .map((button) =>
+        button.textContent?.trim()
+        + (button.disabled ? ' [disabled]' : '')
+      );
+    if (
+      !action
+      || !root
+      || root.correlation?.hand !== ${JSON.stringify(expectedCorrelationHand)}
+    ) {
+      return {
+        clicked: false,
+        label: null,
+        actionSeq,
+        renderRevision: root?.renderRevision ?? 0,
+        dealStep: root?.dealStep ?? 'missing',
+        correlationHand: root?.correlation?.hand ?? '',
+        actions: snapshot,
+      };
+    }
+    const label = action.textContent?.trim() ?? '';
+    const result = {
+      clicked: true,
+      label,
+      actionSeq,
+      renderRevision: root.renderRevision,
+      dealStep: root.dealStep,
+      correlationHand: root.correlation?.hand ?? '',
+      actions: snapshot,
+    };
+    action.click();
+    return result;
+  })()`);
+  if (!started.clicked || !started.correlationHand) {
+    throw new Error(
+      `Hold'em practice action disappeared before click (actions: ${
+        started.actions.join(', ') || 'none'
+      })`,
+    );
+  }
+  if (started.correlationHand !== expectedCorrelationHand) {
+    throw new Error(
+      `Hold'em practice correlation changed before ${expectedDealStep}`,
+    );
+  }
+
+  const deadline = Date.now() + 45_000;
+  let latest: PracticeHoldemActionProgress | null = null;
+  while (Date.now() < deadline) {
+    latest = await driver.evalJson<PracticeHoldemActionProgress>(`(() => {
+      /* CV_PRACTICE_ACTION_PROGRESS */
+      const records = window.__CV_WIRE_SINCE?.(
+        'holdem/action',
+        ${started.actionSeq},
+      ) ?? [];
+      const action = records[records.length - 1] ?? null;
+      const root = window.__CV_READ_PARITY?.(${JSON.stringify(surface)}) ?? null;
+      const expected = (
+        window.__CV_PARITY_JOURNAL?.(${JSON.stringify(surface)}) ?? []
+      )
+        .filter((entry) => {
+          if (
+            entry.revision <= ${started.renderRevision}
+            || entry.dealStep !== ${JSON.stringify(expectedDealStep)}
+          ) return false;
+          try {
+            return JSON.parse(entry.signature)[2]
+              === ${JSON.stringify(started.correlationHand)};
+          } catch {
+            return false;
+          }
+        })
+        .sort((left, right) => left.revision - right.revision)[0] ?? null;
+      const scope = document.querySelector('[data-testid="holdem-inline-betting"]');
+      const buttons = scope ? [...scope.querySelectorAll('button')] : [];
+      return {
+        actionSeen: Boolean(action),
+        actionStatus: action?.status ?? null,
+        expectedRevision: expected?.revision ?? null,
+        renderRevision: root?.renderRevision ?? 0,
+        dealStep: root?.dealStep ?? 'missing',
+        correlationHand: root?.correlation?.hand ?? '',
+        actions: buttons
+          .filter((button) => button.getClientRects().length > 0)
+          .map((button) =>
+            button.textContent?.trim()
+            + (button.disabled ? ' [disabled]' : '')
+          ),
+      };
+    })()`);
+    if (
+      latest.actionSeen
+      && (
+        latest.actionStatus === null
+        || latest.actionStatus < 200
+        || latest.actionStatus >= 300
+      )
+    ) {
+      throw new Error(
+        `Hold'em practice ${started.label} returned HTTP ${
+          String(latest.actionStatus)
+        }`,
+      );
+    }
+    if (
+      latest.actionSeen
+      && latest.expectedRevision !== null
+    ) {
+      return;
+    }
+    if (
+      latest.actionSeen
+      && latest.expectedRevision === null
+      && latest.correlationHand !== started.correlationHand
+    ) {
+      throw new Error(
+        `Hold'em practice ${started.label} ended before ${expectedDealStep}`,
+      );
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+  }
+  throw new Error(
+    `Hold'em practice ${started.label} did not reach ${expectedDealStep} within 45s`
+    + ` (last step=${latest?.dealStep ?? 'missing'},`
+    + ` revision=${latest?.renderRevision ?? 0},`
+    + ` expectedRevision=${String(latest?.expectedRevision ?? 'missing')},`
+    + ` actionStatus=${String(latest?.actionStatus ?? 'missing')},`
+    + ` actions=${latest?.actions.join(', ') || 'none'})`,
+  );
+}
+
+async function practiceHoldemCorrelation(
+  driver: Driver,
+  surface: Surface,
+): Promise<string> {
+  await driver.waitFn(
+    `Boolean(window.__CV_READ_PARITY?.(${JSON.stringify(surface)})?.correlation?.hand)`,
+    30_000,
+  );
+  const correlation = await driver.evalJson<string>(
+    `/* CV_PRACTICE_HAND */ window.__CV_READ_PARITY(${JSON.stringify(surface)}).correlation.hand`,
+  );
+  if (!correlation) {
+    throw new Error("Hold'em practice correlation is unavailable");
+  }
+  return correlation;
 }
 
 async function advanceHoldemToShowdown(
@@ -385,15 +626,44 @@ export async function* driveScenario(
   if (['H5', 'H10'].includes(row)) {
     await advanceHoldemToShowdown(driver, surface);
   }
+  const practiceStreetCorrelation =
+    ['H2', 'H3', 'H4'].includes(row)
+    && surface.endsWith('-practice')
+      ? await practiceHoldemCorrelation(driver, surface)
+      : null;
   for (let index = 0; index < phases.length; index += 1) {
     const phase = phases[index]!;
-    yield checkpointFor(surface, phase, index, phases.length - 1);
+    const checkpoint = checkpointFor(
+      surface,
+      phase,
+      index,
+      phases.length - 1,
+    );
+    yield practiceStreetCorrelation
+      ? {
+          ...checkpoint,
+          expectCorrelationHand: practiceStreetCorrelation,
+        }
+      : checkpoint;
     if (
       !phase.startsWith('every-')
       && !['showdown', 'muck-fading', 'idle'].includes(phase)
       && index < phases.length - 1
     ) {
-      await waitAndClick(driver, ['Check', 'Call', 'Fold'], 30_000);
+      const nextPhase = phases[index + 1]!;
+      if (
+        ['H2', 'H3', 'H4'].includes(row)
+        && surface.endsWith('-practice')
+      ) {
+        await advancePracticeHoldemStreet(
+          driver,
+          surface,
+          nextPhase,
+          practiceStreetCorrelation!,
+        );
+      } else {
+        await waitAndClick(driver, ['Check', 'Call'], 30_000);
+      }
     }
   }
 }

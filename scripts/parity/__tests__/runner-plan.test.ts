@@ -1,11 +1,17 @@
 import { describe, expect, test } from 'bun:test';
 import {
   agentBrowserExecutable,
+  createOneShotStatePath,
   serializeAgentBrowserEval,
   type Driver,
+  waitForParityCheckpoint,
 } from '../driver';
 import { resolveScenarioState } from '../runner-env';
-import { driveScenario, nextJournalStep } from '../scenarios/runtime';
+import {
+  driveScenario,
+  nextJournalStep,
+  reachedFor,
+} from '../scenarios/runtime';
 import { closeFixtureRun } from '../teardown';
 
 class PlanDriver implements Driver {
@@ -25,6 +31,46 @@ class PlanDriver implements Driver {
   async close(): Promise<void> {}
 }
 
+class PracticePlanDriver extends PlanDriver {
+  private revision = 4;
+  private stepIndex = 0;
+  override async evalJson<T>(js: string): Promise<T> {
+    if (js.includes('CV_PRACTICE_HAND')) {
+      return 'practice-hand' as T;
+    }
+    if (js.includes('CV_PRACTICE_EXISTING_STEP')) {
+      return false as T;
+    }
+    if (js.includes('CV_PRACTICE_ACTION_CLICK')) {
+      const action = this.stepIndex === 0 ? 'Call 2 vCLAW' : 'Check';
+      this.actions.push(action.split(' ')[0]!);
+      return {
+        clicked: true,
+        label: action,
+        actionSeq: this.stepIndex,
+        renderRevision: this.revision,
+        dealStep: this.stepIndex === 0 ? 'hole' : 'flop',
+        correlationHand: 'practice-hand',
+        actions: ['Fold', action],
+      } as T;
+    }
+    if (js.includes('CV_PRACTICE_ACTION_PROGRESS')) {
+      this.stepIndex += 1;
+      this.revision += 1;
+      return {
+        actionSeen: true,
+        actionStatus: 200,
+        expectedRevision: this.revision,
+        renderRevision: this.revision,
+        dealStep: this.stepIndex === 1 ? 'flop' : 'turn',
+        correlationHand: 'new-current-hand-after-staged-step',
+        actions: ['Fold', 'Check'],
+      } as T;
+    }
+    return super.evalJson<T>(js);
+  }
+}
+
 async function consume(generator: AsyncGenerator<unknown>): Promise<void> {
   for await (const _value of generator) {
     // advancing the generator executes the next declarative action
@@ -42,6 +88,13 @@ describe('offline live-runner plans', () => {
     if (process.platform === 'win32') {
       expect(agentBrowserExecutable().endsWith('agent-browser-win32-x64.exe')).toBe(true);
     }
+  });
+
+  test('saved browser state is consumed only by the first command', () => {
+    const takeStatePath = createOneShotStatePath('live.state.json');
+    expect(takeStatePath()).toBe('live.state.json');
+    expect(takeStatePath()).toBeNull();
+    expect(takeStatePath()).toBeNull();
   });
 
   test('B4 stands, B8 completes both subhands, B9 insures, H6 folds', async () => {
@@ -87,6 +140,19 @@ describe('offline live-runner plans', () => {
     ));
     expect(h6.actions).toContain('Fold');
     expect(h6.actions).not.toContain('Check');
+  });
+
+  test('H2-H4 advance practice streets with Check/Call and never Fold', async () => {
+    const h3 = new PracticePlanDriver();
+    await consume(driveScenario(
+      'holdem',
+      'H3',
+      'holdem-tray-practice',
+      ['hole', 'flop', 'turn'],
+      h3,
+    ));
+    expect(h3.actions).toEqual(['Call', 'Check']);
+    expect(h3.actions).not.toContain('Fold');
   });
 
   test('fixture guest, live identity, and cash table requirements stay distinct', () => {
@@ -146,5 +212,69 @@ describe('offline live-runner plans', () => {
       'hand-callable',
     )).toEqual({ revision: 2, dealStep: 'turn' });
     expect(surfaces).toEqual(['holdem-tray-practice']);
+  });
+
+  test('checkpoint journal selection filters by expected hand correlation', async () => {
+    const signature = (hand: string) => JSON.stringify([
+      'holdem-tray-practice',
+      2,
+      hand,
+      1,
+      '',
+      'flop',
+      'player-turn',
+      'dealing',
+      [],
+      [],
+    ]);
+    const driver = new PlanDriver();
+    driver.evalJson = async <T>() => [
+      {
+        surface: 'holdem-tray-practice',
+        instanceId: 'wrong',
+        revision: 2,
+        dealStep: 'flop',
+        transition: 'dealing',
+        signature: signature('wrong-hand'),
+        ts: 1,
+      },
+      {
+        surface: 'holdem-tray-practice',
+        instanceId: 'wanted',
+        revision: 3,
+        dealStep: 'flop',
+        transition: 'dealing',
+        signature: signature('wanted-hand'),
+        ts: 2,
+      },
+    ] as T;
+    const root = await waitForParityCheckpoint(
+      driver,
+      {
+        label: 'flop-2',
+        surface: 'holdem-tray-practice',
+        expectRevisionAdvance: true,
+        expectDealStep: 'flop',
+        expectCorrelationHand: 'wanted-hand',
+      },
+      0,
+    );
+    expect(root.correlation.hand).toBe('wanted-hand');
+    expect(root.renderRevision).toBe(3);
+  });
+
+  test('practice street reach reads the landed session/current hand shape', () => {
+    const wire = {
+      hand: {
+        humanHole: [{ rank: 'A', suit: 's' }, { rank: 'K', suit: 's' }],
+        board: [
+          { rank: '2', suit: 'c' },
+          { rank: '3', suit: 'd' },
+          { rank: '4', suit: 'h' },
+        ],
+      },
+    };
+    expect(reachedFor('holdem', 'H2')(wire)).toBe(true);
+    expect(reachedFor('holdem', 'H3')(wire)).toBe(false);
   });
 });
