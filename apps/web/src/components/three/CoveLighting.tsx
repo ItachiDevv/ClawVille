@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 /**
  * CoveLighting.tsx
@@ -13,9 +13,9 @@
  *     from rendering while Cove is inactive.
  */
 
-import * as THREE from 'three/webgpu';
+import * as THREE from "three/webgpu";
 
-const CYAN_COLOR    = new THREE.Color(0x00ffe0);
+const CYAN_COLOR = new THREE.Color(0x00ffe0);
 const AMBIENT_COLOR = new THREE.Color(0x1a0a2e);
 
 export function CoveLighting() {
