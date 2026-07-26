@@ -59,7 +59,8 @@ function clamp(v: number, min: number, max: number): number {
 }
 
 /**
- * @param enabled Gate from the page: `isAuthenticated && !isGuest && !!avatar`.
+ * @param enabled Gate from the world-layout owner:
+ *   `isAuthenticated && !isGuest && !!avatar`.
  *   The endpoint is `requireAuth` and guests never reach 'player' mode, so
  *   this keeps unauthenticated sessions from 401-spamming. Must be passed
  *   (not conditionally calling the hook) to respect the Rules of Hooks.

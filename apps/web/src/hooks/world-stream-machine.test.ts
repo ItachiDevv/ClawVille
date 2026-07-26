@@ -41,7 +41,7 @@ describe('world stream machine', () => {
   });
 
   test('remote presence is limited to one upload per ten seconds', () => {
-    let state = {
+    let state: WorldStreamMachineState = {
       ...createWorldStreamMachineState(),
       everActive: true,
       previousPolicy: 'active' as const,
@@ -86,7 +86,7 @@ describe('world stream machine', () => {
   });
 
   test('409 recovery is spaced, capped, and suspends uploads', () => {
-    let state = {
+    let state: WorldStreamMachineState = {
       ...createWorldStreamMachineState(),
       everActive: true,
       previousPolicy: 'active' as const,
