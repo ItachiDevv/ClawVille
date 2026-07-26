@@ -165,6 +165,15 @@ with frustum culling temporarily disabled before acknowledging stage ready.
 Culling is restored before the controlled warm draw, so runtime rendering and
 features are unchanged.
 
+The first 35-loop confirmation of that correction held geometries at 419 and
+uniform buffers at 789 from loop 20 through final. Three textures attached to
+already-mounted world materials during the existing 60-second post-ready scan
+window; counts and texture bytes plateaued before loop 20, but their shader
+variants compiled later and made `programsSize` differ by 6,013 bytes at final.
+The scanner currently uploads fresh textures without compiling their updated
+material variants. Its in-scope completion is one cooperative, all-world-slot
+compile after each non-empty fresh-texture batch.
+
 ## Serial verification record
 
 Pre-gate implementation checks already completed:
