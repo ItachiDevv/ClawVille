@@ -1596,14 +1596,13 @@ function CovePlayerAvatar() {
 // GLB loader + scene subtree
 // ---------------------------------------------------------------------------
 interface InteriorSceneProps {
-  active: boolean;
   useFallback: boolean;
   onFallbackRequest: () => void;
   onSceneEmpty: () => void;
   onReady: () => void;
 }
 
-function InteriorScene({ active, useFallback, onFallbackRequest, onSceneEmpty, onReady }: InteriorSceneProps) {
+function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty, onReady }: InteriorSceneProps) {
   const glbPath = useFallback ? FALLBACK_GLB : INTERIOR_GLB;
   const { scene } = useGLTF(
     glbPath,
@@ -1908,7 +1907,7 @@ function InteriorScene({ active, useFallback, onFallbackRequest, onSceneEmpty, o
       {/* Invisible click hotspots over the BAKED slot machines (discovered
           at runtime from the GLB). Fallback hotspots from FALLBACK_HOTSPOTS
           are used only when the entire fallback GLB is in play. */}
-      {active && hotspots.map((def, i) => (
+      {hotspots.map((def, i) => (
         <SlotHotspot key={i} def={def} />
       ))}
 
@@ -2118,16 +2117,15 @@ export default function CoveInteriorScene({
 
   return (
     <>
-      {active && <CoveLighting />}
+      <CoveLighting />
 
       {/* Fog scaled with room: near=4000, far=10000 (was 1200/3000 for 600wu room → ×3.333) */}
 
       {/* WorldLabelsOverlay — single overlay root for BankLabels */}
-      {active && <WorldLabelsOverlayMount />}
+      <WorldLabelsOverlayMount />
 
       <Suspense fallback={null}>
         <InteriorScene
-          active={active}
           useFallback={useFallback}
           onFallbackRequest={() => setUseFallback(true)}
           onSceneEmpty={onSceneEmpty ?? NOOP}
@@ -2140,12 +2138,12 @@ export default function CoveInteriorScene({
       <CovePlayerAvatar />
 
       {/* Bank labels + E-key proximity hints */}
-      {active && <BankLabels />}
+      <BankLabels />
 
       {/* Phase 6.4.0 — blackjack table click hotspot.
           Positioned at the dealer station (right wall, X≈307, Z=0).
           Invisible mesh — cursor: pointer on hover. Opens BlackjackModal. */}
-      {active && <BlackjackTableHotspot />}
+      <BlackjackTableHotspot />
 
       {/* Blackjack table label — rendered above the dealer station */}
       <BankBanner
@@ -2157,7 +2155,7 @@ export default function CoveInteriorScene({
       {/* Phase 6.5.0 — Texas Hold'em table click hotspot at the second
           poker table (mirror across X of the blackjack station). Same
           invisible hit-box pattern; opens HoldemModal. */}
-      {active && <HoldemTableHotspot />}
+      <HoldemTableHotspot />
 
       {/* Hold'em table label — rendered above the second poker table. */}
       <BankBanner
@@ -2169,7 +2167,7 @@ export default function CoveInteriorScene({
       {/* Phase 6.6.1 — Baccarat (Punto Banco) table click hotspot at the
           open-floor position (X=285, Z=584). Invisible hit-box (same pattern
           as the blackjack/holdem hotspots); opens BaccaratModal. */}
-      {active && <BaccaratTableHotspot />}
+      <BaccaratTableHotspot />
 
       {/* Baccarat table label — rendered above the baccarat station. */}
       <BankBanner
