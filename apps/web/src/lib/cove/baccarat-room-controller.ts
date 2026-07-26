@@ -22,10 +22,16 @@ import {
   fetchCurrentBaccaratShoe,
   reshuffledBody,
 } from '@/lib/cove/baccarat-api-client';
-import { clearFeltParity } from '@/lib/cove/card-parity-mirror';
+import {
+  buildBaccaratParity,
+  clearFeltParity,
+  type CardParityPayload,
+  type CardParityRoot,
+} from '@/lib/cove/card-parity-mirror';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
 const REVEAL_STEP_MS = 240;
+export const BACCARAT_FINAL_REVEAL_STAGE_MS = 120;
 const LEAVE_AFTER_REVEAL_MS = 900;
 
 export type BaccaratRoomPhase =
@@ -94,6 +100,7 @@ export interface BaccaratRuntimeToken {
 let runtimeToken: BaccaratRuntimeToken | null = null;
 let toastSequence = 0;
 let leaveTimer: number | null = null;
+let finalRevealTimer: number | null = null;
 
 class SeedIntegrityError extends Error {
   constructor(message: string) {
@@ -106,6 +113,12 @@ function cancelLeaveTimer(): void {
   if (leaveTimer === null) return;
   window.clearTimeout(leaveTimer);
   leaveTimer = null;
+}
+
+function cancelFinalRevealTimer(): void {
+  if (finalRevealTimer === null) return;
+  window.clearTimeout(finalRevealTimer);
+  finalRevealTimer = null;
 }
 
 function activeCoup(state: Pick<BaccaratRoomState, 'settled' | 'restored'>) {
@@ -380,6 +393,51 @@ export function maskOutcomeToStep(
   };
 }
 
+export function buildBaccaratRoomParityRevision(input: {
+  maskedOutcome: SerializedBaccaratCoup | null;
+  bet: BaccaratBet;
+  stake: number;
+  correlation: CardParityRoot['correlation'];
+  dealStep: string;
+  phase: BaccaratRoomPhase;
+  transition: Extract<CardParityPayload['transition'], 'idle' | 'revealing'>;
+  bannerText?: string;
+  betzoneSelected?: string;
+}): CardParityPayload {
+  const finalFrame = input.phase === 'settled' || input.phase === 'leaving';
+  const payload = buildBaccaratParity({
+    outcome: input.maskedOutcome,
+    bet: input.bet,
+    stake: input.stake,
+    surface: 'baccarat-3d',
+    correlation: input.correlation,
+    dealStep: input.dealStep,
+    phase: input.phase,
+    transition: input.transition,
+    ...(finalFrame && input.bannerText !== undefined
+      ? { bannerText: input.bannerText }
+      : {}),
+    ...(input.betzoneSelected !== undefined
+      ? { betzoneSelected: input.betzoneSelected }
+      : {}),
+  });
+  if (!finalFrame) {
+    for (const key of [
+      'player-total',
+      'player-natural',
+      'banker-total',
+      'banker-natural',
+      'winner',
+      'commission',
+      'net',
+      'banner-text',
+    ]) {
+      delete payload.meta[key];
+    }
+  }
+  return payload;
+}
+
 export const useBaccaratRoomController = create<BaccaratRoomState>((set, get) => ({
   shoe: null,
   walletBalance: COVE_BACCARAT_GUEST_STACK,
@@ -597,6 +655,7 @@ export const useBaccaratRoomController = create<BaccaratRoomState>((set, get) =>
   reset: () => {
     const state = get();
     cancelLeaveTimer();
+    cancelFinalRevealTimer();
     set({
       ...clearCoupState(),
       shoe: null,
@@ -619,6 +678,7 @@ export function mountBaccaratRuntime(
   instanceId: string,
 ): BaccaratRuntimeToken {
   cancelLeaveTimer();
+  cancelFinalRevealTimer();
   const token: BaccaratRuntimeToken = { valid: true, instanceId };
   runtimeToken = token;
   useBaccaratRoomController.getState().reset();
@@ -629,6 +689,7 @@ export function unmountBaccaratRuntime(
   token: BaccaratRuntimeToken,
 ): void {
   cancelLeaveTimer();
+  cancelFinalRevealTimer();
   token.valid = false;
   if (runtimeToken === token) runtimeToken = null;
   const state = useBaccaratRoomController.getState();
@@ -657,20 +718,36 @@ export function advanceBaccaratReveal(
   if (!isCurrent(capturedEpoch, token)) return;
   const state = useBaccaratRoomController.getState();
   if (state.phase !== 'revealing') return;
+  if (state.revealedStep >= state.dealSteps.length) return;
   const nextStep = Math.min(state.revealedStep + 1, state.dealSteps.length);
   if (nextStep < state.dealSteps.length) {
     useBaccaratRoomController.setState({ revealedStep: nextStep });
     return;
   }
-  useBaccaratRoomController.setState({
-    revealedStep: nextStep,
-    phase: 'settled',
-    pending: null,
-    inFlight: false,
-  });
-  if (state.walkAwayQueued) {
-    void useBaccaratRoomController.getState().handleWalkAway();
-  }
+  // Publish the terminal card as its own controller revision. The explicit
+  // delay is load-bearing: a zero-delay settle coalesces before R3F can
+  // propagate the final reveal to the response-local parity mirror.
+  useBaccaratRoomController.setState({ revealedStep: nextStep });
+  cancelFinalRevealTimer();
+  finalRevealTimer = window.setTimeout(() => {
+    finalRevealTimer = null;
+    if (!isCurrent(capturedEpoch, token)) return;
+    const current = useBaccaratRoomController.getState();
+    if (
+      current.phase !== 'revealing'
+      || current.revealedStep !== current.dealSteps.length
+    ) {
+      return;
+    }
+    useBaccaratRoomController.setState({
+      phase: 'settled',
+      pending: null,
+      inFlight: false,
+    });
+    if (current.walkAwayQueued) {
+      void useBaccaratRoomController.getState().handleWalkAway();
+    }
+  }, BACCARAT_FINAL_REVEAL_STAGE_MS);
 }
 
 export function BaccaratControllerRuntime({

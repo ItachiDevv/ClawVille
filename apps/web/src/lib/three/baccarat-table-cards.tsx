@@ -13,10 +13,12 @@ import type {
   BaccaratDealStep,
   BaccaratRoomPhase,
 } from '@/lib/cove/baccarat-room-controller';
-import { maskOutcomeToStep } from '@/lib/cove/baccarat-room-controller';
+import {
+  buildBaccaratRoomParityRevision,
+  maskOutcomeToStep,
+} from '@/lib/cove/baccarat-room-controller';
 import {
   beginTransition,
-  buildBaccaratParity,
   completeTransition,
   getParitySnapshot,
   publishFeltParity,
@@ -454,11 +456,10 @@ export function BaccaratTableCards3D({
     const dealStep = dealStepFor(view);
     const finalFrame = view.phase === 'settled' || view.phase === 'leaving';
     const buildPayload = (transition: 'idle' | 'revealing') => {
-      const payload = buildBaccaratParity({
-        outcome: masked,
+      return buildBaccaratRoomParityRevision({
+        maskedOutcome: masked,
         bet: view.bet,
         stake: view.stake,
-        surface: 'baccarat-3d',
         correlation: view.correlation,
         dealStep,
         phase: view.phase,
@@ -470,21 +471,6 @@ export function BaccaratTableCards3D({
           ? { betzoneSelected: view.betzoneSelected }
           : {}),
       });
-      if (!finalFrame) {
-        for (const key of [
-          'player-total',
-          'player-natural',
-          'banker-total',
-          'banker-natural',
-          'winner',
-          'commission',
-          'net',
-          'banner-text',
-        ]) {
-          delete payload.meta[key];
-        }
-      }
-      return payload;
     };
 
     if (view.phase === 'revealing') {

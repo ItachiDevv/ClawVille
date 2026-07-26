@@ -3,12 +3,6 @@ import { driveScenario, reachedFor, teardownFor } from './runtime';
 
 const MISSING_2D_PUBLISHER =
   'missing baccarat-2d parity publisher/root on current HEAD';
-const MISSING_FINAL_CARD_REVISION: Readonly<Record<string, string>> =
-  Object.freeze({
-    C1: 'landed baccarat-3d publisher skips frozen banker-2 reveal and jumps player-2 -> settled',
-    C2: 'landed baccarat-3d publisher skips frozen banker-2 reveal and jumps player-2 -> settled',
-    C4: 'landed baccarat-3d publisher skips frozen banker-3 reveal and jumps player-3 -> settled',
-  });
 
 function scenario(
   row: string,
@@ -30,9 +24,7 @@ function scenario(
     ...(fixtureName ? { fixtureName } : {}),
     ...(surface === 'baccarat-2d'
       ? { blockedReason: MISSING_2D_PUBLISHER }
-      : surface === 'baccarat-3d' && MISSING_FINAL_CARD_REVISION[row]
-        ? { blockedReason: MISSING_FINAL_CARD_REVISION[row] }
-        : {}),
+      : {}),
     feltReplay: 'not-applicable',
     reachedPredicate: reachedFor('baccarat', row),
     run: (driver) => driveScenario('baccarat', row, surface, phases, driver),

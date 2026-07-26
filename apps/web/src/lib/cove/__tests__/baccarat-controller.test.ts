@@ -7,6 +7,7 @@ import type {
 } from '@clawville/shared';
 import {
   advanceBaccaratReveal,
+  BACCARAT_FINAL_REVEAL_STAGE_MS,
   buildDealSteps,
   mountBaccaratRuntime,
   type BaccaratRuntimeToken,
@@ -126,6 +127,25 @@ function mount() {
 
 function requestHeader(init: RequestInit | undefined, name: string): string | null {
   return new Headers(init?.headers).get(name);
+}
+
+function installTestWindow(onAssign: (url: string) => void = () => {}) {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      clearTimeout,
+      setTimeout,
+      location: { assign: onAssign },
+    },
+  });
+  return () => {
+    if (originalWindow) {
+      Object.defineProperty(globalThis, 'window', originalWindow);
+    } else {
+      Reflect.deleteProperty(globalThis, 'window');
+    }
+  };
 }
 
 afterEach(() => {
@@ -392,17 +412,19 @@ describe('baccarat room controller operation generations', () => {
       });
     }
     const assigned: string[] = [];
-    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
-    Object.defineProperty(globalThis, 'window', {
-      configurable: true,
-      value: {
-        clearTimeout,
-        setTimeout,
-        location: { assign: (url: string) => assigned.push(url) },
-      },
-    });
+    const restoreWindow = installTestWindow((url) => assigned.push(url));
     try {
       advanceBaccaratReveal(epoch, mountedToken);
+      expect(useBaccaratRoomController.getState()).toMatchObject({
+        phase: 'revealing',
+        opEpoch: epoch,
+        revealedStep: steps.length,
+        pending: { idempotencyKey: 'frozen-key' },
+        walkAwayQueued: true,
+      });
+      await new Promise((resolve) => {
+        setTimeout(resolve, BACCARAT_FINAL_REVEAL_STAGE_MS + 40);
+      });
       expect(useBaccaratRoomController.getState()).toMatchObject({
         phase: 'leaving',
         opEpoch: epoch + 1,
@@ -412,11 +434,7 @@ describe('baccarat room controller operation generations', () => {
       });
       expect(assigned).toEqual(['/cove']);
     } finally {
-      if (originalWindow) {
-        Object.defineProperty(globalThis, 'window', originalWindow);
-      } else {
-        Reflect.deleteProperty(globalThis, 'window');
-      }
+      restoreWindow();
     }
   });
 
