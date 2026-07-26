@@ -1,4 +1,4 @@
-"use client";
+'use client';
 
 /**
  * cove-interior.tsx
@@ -34,48 +34,29 @@
  *   - Draw calls < 140 (room ~21 + cabinets 12 + avatar ~2-4 + hotspot 4)
  */
 
-import {
-  Suspense,
-  useRef,
-  useEffect,
-  useMemo,
-  useState,
-  type RefObject,
-  type MutableRefObject,
-} from "react";
-import { useThree } from "@react-three/fiber";
-import { useGLTF } from "@react-three/drei";
-import * as THREE from "three/webgpu";
-import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
-import { CoveLighting } from "@/components/three/CoveLighting";
-import { useCoveStore } from "@/stores/cove";
-import { useAvatar } from "@/hooks/use-avatar";
+import { Suspense, useRef, useEffect, useMemo, useState, type RefObject, type MutableRefObject } from 'react';
+import { useThree } from '@react-three/fiber';
+import { useGLTF } from '@react-three/drei';
+import * as THREE from 'three/webgpu';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { CoveLighting } from '@/components/three/CoveLighting';
+import { useCoveStore } from '@/stores/cove';
+import { useAvatar } from '@/hooks/use-avatar';
 // Phase 6.4.0 — blackjack table hotspot uses the store action openBlackjackTable
-import { useGameStore } from "@/stores/game";
-import {
-  useVRMInstance,
-  disposeVRMInstance,
-  retainVRMInstance,
-} from "@/lib/three/vrm-loader";
-import { VRMCharacterAnimator } from "@/lib/three/vrm-character-animator";
-import { computeVRMAvatarFit } from "@/lib/three/vrm-avatar-sizing";
-import {
-  MODEL_REGISTRY,
-  type ModelRegistryEntry,
-} from "@/lib/three/agent-model-registry";
-import { makeObject3DWebGPUSafe } from "@/lib/three/webgpu-geometry";
-import { clampCameraToRoom, type RoomBounds } from "@/lib/three/room-camera";
-import {
-  useWorldLabel,
-  WorldLabel,
-  WorldLabelsOverlayMount,
-} from "@/lib/three/world-labels-overlay";
-import { extendLoaderWithKTX2 } from "@/lib/three/ktx2-loader-setup";
-import { preloadKTX2Bytes, useGLTFWithKTX2 } from "@/lib/three/use-gltf-ktx2";
-import type { MachineSlug } from "@/lib/cove/types";
-import { useSceneFrame } from "@/components/three/world-stage/use-scene-frame";
-import { addStageEventListener } from "@/components/three/world-stage/stage-store";
+import { useGameStore } from '@/stores/game';
+import { useVRMInstance, disposeVRMInstance, retainVRMInstance } from '@/lib/three/vrm-loader';
+import { VRMCharacterAnimator } from '@/lib/three/vrm-character-animator';
+import { computeVRMAvatarFit } from '@/lib/three/vrm-avatar-sizing';
+import { MODEL_REGISTRY, type ModelRegistryEntry } from '@/lib/three/agent-model-registry';
+import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
+import { clampCameraToRoom, type RoomBounds } from '@/lib/three/room-camera';
+import { useWorldLabel, WorldLabel, WorldLabelsOverlayMount } from '@/lib/three/world-labels-overlay';
+import { extendLoaderWithKTX2 } from '@/lib/three/ktx2-loader-setup';
+import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
+import type { MachineSlug } from '@/lib/cove/types';
+import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
+import { addStageEventListener } from '@/components/three/world-stage/stage-store';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -84,9 +65,9 @@ import { addStageEventListener } from "@/components/three/world-stage/stage-stor
 /** Gameready GLB path — temporarily pointed at cleaned-v1 to evaluate the
  *  Blender artifact removal pass (pillar fragments + Material4 ghost mesh
  *  removed; stump cleanup possibly over-broad — visual verification pending). */
-const INTERIOR_GLB = "/models/cove/cove-interior-cleaned-v1-ktx.glb?v=6";
+const INTERIOR_GLB = '/models/cove/cove-interior-cleaned-v1-ktx.glb?v=6';
 /** Fallback cartoon GLB */
-const FALLBACK_GLB = "/models/cove/cove-interior-fallback.glb";
+const FALLBACK_GLB = '/models/cove/cove-interior-fallback.glb';
 const NOOP = (): void => {};
 
 /** FPS threshold below which we auto-switch to fallback GLB */
@@ -115,9 +96,9 @@ const PLAYER_SPAWN_X = -12;
 const PLAYER_SPAWN_Z = -411;
 
 /** Interior bounds — keep avatar inside the room */
-const BOUNDS_X = Math.round(115 * _ROOM_SCALE); // ≈ 383
+const BOUNDS_X     = Math.round(115 * _ROOM_SCALE); // ≈ 383
 const BOUNDS_Z_MIN = -Math.round(270 * _ROOM_SCALE); // ≈ -900
-const BOUNDS_Z_MAX = Math.round(270 * _ROOM_SCALE); // ≈  900
+const BOUNDS_Z_MAX =  Math.round(270 * _ROOM_SCALE); // ≈  900
 
 /** Player movement speed (world units / second) — tuned for cove interior */
 // 2026-05-19: 830→450. User report: "WASD movement is way too fast". The
@@ -174,7 +155,7 @@ const COVE_VRM_TARGET_HEIGHT = 160; // wu — deliberately SMALLER than VRM_AVAT
 // a positive feedback loop with camera-relative strafe (see Bug 4 fix
 // 2026-05-19 in the follow-camera block below). The avatar's body still
 // rotates to face movement direction; only the camera is decoupled.
-const CAM_ABOVE = 190;
+const CAM_ABOVE  = 190;
 const CAM_BEHIND = 450;
 const CAM_LOOK_Y = 70;
 
@@ -191,19 +172,19 @@ const CAM_LOOK_Y = 70;
  */
 // 2026-05-19: 1.5→2.2 (user: "camera turn angles is a little bit too slow").
 // 2.2 rad/s = ~126°/s — full 360° in 2.85s, comfortable orbit feel.
-const ARROW_YAW_SPEED = 2.2; // radians / second
-const ARROW_PITCH_SPEED = 200; // wu / second  (camera height shift per second while held)
-const ARROW_PITCH_MIN = -100; // wu relative to CAM_ABOVE (look down)
-const ARROW_PITCH_MAX = 400; // wu relative to CAM_ABOVE (look up — sky)
+const ARROW_YAW_SPEED   = 2.2;   // radians / second
+const ARROW_PITCH_SPEED = 200;   // wu / second  (camera height shift per second while held)
+const ARROW_PITCH_MIN   = -100;  // wu relative to CAM_ABOVE (look down)
+const ARROW_PITCH_MAX   =  400;  // wu relative to CAM_ABOVE (look up — sky)
 
 // AABB for camera containment — derived from room bounds + small inward margin.
 const COVE_ROOM_BOUNDS: RoomBounds = {
   halfX: BOUNDS_X,
-  zMin: BOUNDS_Z_MIN,
-  zMax: BOUNDS_Z_MAX,
-  yMin: 30, // floor + clearance
-  yMax: 600, // ceiling − clearance (room ceiling ≈ 400wu, 600 gives slack for tilt)
-  margin: 50, // wu inset from each wall face
+  zMin:  BOUNDS_Z_MIN,
+  zMax:  BOUNDS_Z_MAX,
+  yMin:  30,    // floor + clearance
+  yMax:  600,   // ceiling − clearance (room ceiling ≈ 400wu, 600 gives slack for tilt)
+  margin: 50,   // wu inset from each wall face
 };
 
 // ---------------------------------------------------------------------------
@@ -231,7 +212,7 @@ let _coveCamYaw = 0;
 // World3DCanvas.ArrowKeyRotationController — the camera orbits around
 // the avatar and stays at the new angle when keys are released.
 // Separate from WASD movement; avatars never rotate from arrow keys.
-let _coveArrowYawOffset = 0; // radians added to _coveCamYaw for behind-position
+let _coveArrowYawOffset   = 0; // radians added to _coveCamYaw for behind-position
 let _coveArrowPitchOffset = 0; // wu added to CAM_ABOVE for camera height
 
 // ---------------------------------------------------------------------------
@@ -246,19 +227,9 @@ let _coveArrowPitchOffset = 0; // wu added to CAM_ABOVE for camera height
 // arrows rotate the camera.
 // ---------------------------------------------------------------------------
 interface CoveKeyState {
-  w: boolean;
-  a: boolean;
-  s: boolean;
-  d: boolean;
-  e: boolean;
+  w: boolean; a: boolean; s: boolean; d: boolean; e: boolean;
 }
-const coveKeys: CoveKeyState = {
-  w: false,
-  a: false,
-  s: false,
-  d: false,
-  e: false,
-};
+const coveKeys: CoveKeyState = { w: false, a: false, s: false, d: false, e: false };
 
 /**
  * Touch-input bridge — mobile joystick controls (iPad / phone) write to
@@ -271,10 +242,7 @@ export function setCoveTouchVelocity(x: number, z: number) {
   _coveTouchVec.x = x;
   _coveTouchVec.z = z;
 }
-export function setCoveTouchArrowKey(
-  key: "left" | "right" | "up" | "down",
-  pressed: boolean,
-) {
+export function setCoveTouchArrowKey(key: 'left' | 'right' | 'up' | 'down', pressed: boolean) {
   _coveArrowKeys[key] = pressed;
 }
 export function setCoveTouchInteract(pressed: boolean) {
@@ -295,23 +263,20 @@ function attachCoveKeyListeners() {
     // are handled exclusively by attachCoveArrowListeners for camera orbit.
     // e.key can be undefined on synthetic events (Chrome autofill).
     const k = e.key?.length === 1 ? e.key.toLowerCase() : null;
-    if (k === "w") coveKeys.w = true;
-    if (k === "s") coveKeys.s = true;
-    if (k === "a") coveKeys.a = true;
-    if (k === "d") coveKeys.d = true;
-    if (k === "e") coveKeys.e = true;
+    if (k === 'w') coveKeys.w = true;
+    if (k === 's') coveKeys.s = true;
+    if (k === 'a') coveKeys.a = true;
+    if (k === 'd') coveKeys.d = true;
+    if (k === 'e') coveKeys.e = true;
   };
   const onKeyUp = (e: KeyboardEvent) => {
     if (!coveInputActive) return;
     const k = e.key?.length === 1 ? e.key.toLowerCase() : null;
-    if (k === "w") coveKeys.w = false;
-    if (k === "s") coveKeys.s = false;
-    if (k === "a") coveKeys.a = false;
-    if (k === "d") coveKeys.d = false;
-    if (k === "e") {
-      coveKeys.e = false;
-      _eKeyConsumed = false;
-    }
+    if (k === 'w') coveKeys.w = false;
+    if (k === 's') coveKeys.s = false;
+    if (k === 'a') coveKeys.a = false;
+    if (k === 'd') coveKeys.d = false;
+    if (k === 'e') { coveKeys.e = false; _eKeyConsumed = false; }
   };
   const onBlur = () => {
     coveKeys.w = coveKeys.a = coveKeys.s = coveKeys.d = coveKeys.e = false;
@@ -324,10 +289,10 @@ function attachCoveKeyListeners() {
     }
   };
   const removers = [
-    addStageEventListener(window, "keydown", onKeyDown as EventListener),
-    addStageEventListener(window, "keyup", onKeyUp as EventListener),
-    addStageEventListener(window, "blur", onBlur as EventListener),
-    addStageEventListener(document, "visibilitychange", onVis as EventListener),
+    addStageEventListener(window, 'keydown', onKeyDown as EventListener),
+    addStageEventListener(window, 'keyup', onKeyUp as EventListener),
+    addStageEventListener(window, 'blur', onBlur as EventListener),
+    addStageEventListener(document, 'visibilitychange', onVis as EventListener),
   ];
   detachCoveKeyListeners = () => {
     if (!coveKeyListenersAttached) return;
@@ -346,17 +311,9 @@ function attachCoveKeyListeners() {
 // No movement whatsoever — these keys ONLY affect the camera, not the avatar.
 // ---------------------------------------------------------------------------
 interface CoveArrowState {
-  left: boolean;
-  right: boolean;
-  up: boolean;
-  down: boolean;
+  left: boolean; right: boolean; up: boolean; down: boolean;
 }
-const _coveArrowKeys: CoveArrowState = {
-  left: false,
-  right: false,
-  up: false,
-  down: false,
-};
+const _coveArrowKeys: CoveArrowState = { left: false, right: false, up: false, down: false };
 let coveArrowListenersAttached = false;
 let detachCoveArrowListeners: (() => void) | null = null;
 
@@ -367,62 +324,32 @@ function attachCoveArrowListeners() {
   const onKeyDown = (e: KeyboardEvent) => {
     if (!coveInputActive) return;
     switch (e.key) {
-      case "ArrowLeft":
-        _coveArrowKeys.left = true;
-        e.preventDefault();
-        break;
-      case "ArrowRight":
-        _coveArrowKeys.right = true;
-        e.preventDefault();
-        break;
-      case "ArrowUp":
-        _coveArrowKeys.up = true;
-        e.preventDefault();
-        break;
-      case "ArrowDown":
-        _coveArrowKeys.down = true;
-        e.preventDefault();
-        break;
+      case 'ArrowLeft':  _coveArrowKeys.left  = true; e.preventDefault(); break;
+      case 'ArrowRight': _coveArrowKeys.right = true; e.preventDefault(); break;
+      case 'ArrowUp':    _coveArrowKeys.up    = true; e.preventDefault(); break;
+      case 'ArrowDown':  _coveArrowKeys.down  = true; e.preventDefault(); break;
     }
   };
   const onKeyUp = (e: KeyboardEvent) => {
     if (!coveInputActive) return;
     switch (e.key) {
-      case "ArrowLeft":
-        _coveArrowKeys.left = false;
-        break;
-      case "ArrowRight":
-        _coveArrowKeys.right = false;
-        break;
-      case "ArrowUp":
-        _coveArrowKeys.up = false;
-        break;
-      case "ArrowDown":
-        _coveArrowKeys.down = false;
-        break;
+      case 'ArrowLeft':  _coveArrowKeys.left  = false; break;
+      case 'ArrowRight': _coveArrowKeys.right = false; break;
+      case 'ArrowUp':    _coveArrowKeys.up    = false; break;
+      case 'ArrowDown':  _coveArrowKeys.down  = false; break;
     }
   };
   const onBlur = () => {
-    _coveArrowKeys.left =
-      _coveArrowKeys.right =
-      _coveArrowKeys.up =
-      _coveArrowKeys.down =
-        false;
+    _coveArrowKeys.left = _coveArrowKeys.right = _coveArrowKeys.up = _coveArrowKeys.down = false;
   };
-  const onVis = () => {
-    if (document.hidden) {
-      _coveArrowKeys.left =
-        _coveArrowKeys.right =
-        _coveArrowKeys.up =
-        _coveArrowKeys.down =
-          false;
-    }
-  };
+  const onVis = () => { if (document.hidden) {
+    _coveArrowKeys.left = _coveArrowKeys.right = _coveArrowKeys.up = _coveArrowKeys.down = false;
+  } };
   const removers = [
-    addStageEventListener(window, "keydown", onKeyDown as EventListener),
-    addStageEventListener(window, "keyup", onKeyUp as EventListener),
-    addStageEventListener(window, "blur", onBlur as EventListener),
-    addStageEventListener(document, "visibilitychange", onVis as EventListener),
+    addStageEventListener(window, 'keydown', onKeyDown as EventListener),
+    addStageEventListener(window, 'keyup', onKeyUp as EventListener),
+    addStageEventListener(window, 'blur', onBlur as EventListener),
+    addStageEventListener(document, 'visibilitychange', onVis as EventListener),
   ];
   detachCoveArrowListeners = () => {
     if (!coveArrowListenersAttached) return;
@@ -436,9 +363,7 @@ function attachCoveArrowListeners() {
 // Draco loader singleton
 // ---------------------------------------------------------------------------
 const _dracoLoader = new DRACOLoader();
-_dracoLoader.setDecoderPath(
-  "https://www.gstatic.com/draco/versioned/decoders/1.5.6/",
-);
+_dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
 
 const extendWithDraco = (loader: unknown) => {
   const gltfLoader = loader as GLTFLoader;
@@ -447,10 +372,10 @@ const extendWithDraco = (loader: unknown) => {
 };
 
 // Preload both GLBs at module scope
-if (typeof window !== "undefined") {
+if (typeof window !== 'undefined') {
   preloadKTX2Bytes(INTERIOR_GLB);
   useGLTF.preload(FALLBACK_GLB);
-  preloadKTX2Bytes("/models/lobster-ktx.glb?v=2");
+  preloadKTX2Bytes('/models/lobster-ktx.glb?v=2');
   _dracoLoader.preload();
 }
 
@@ -464,18 +389,11 @@ interface FitResult {
   offsetZ: number;
 }
 
-function computeAutoFit(
-  scene: THREE.Object3D,
-  targetHeight: number,
-): FitResult {
+function computeAutoFit(scene: THREE.Object3D, targetHeight: number): FitResult {
   _bbox.makeEmpty();
   scene.traverse((child) => {
     const mesh = child as THREE.Mesh;
-    if (
-      mesh.isMesh &&
-      !(mesh as THREE.SkinnedMesh).isSkinnedMesh &&
-      mesh.geometry
-    ) {
+    if (mesh.isMesh && !(mesh as THREE.SkinnedMesh).isSkinnedMesh && mesh.geometry) {
       mesh.geometry.computeBoundingBox();
       const geoBB = mesh.geometry.boundingBox;
       if (!geoBB) return;
@@ -521,38 +439,34 @@ function computeAutoFit(
 //
 // Cabinet top Y = base(16) + body(143) = 159wu = 59% of 270wu avatar = chest.
 // ---------------------------------------------------------------------------
-const _CAB_BODY_H_WU = 143; // world units (NOT room-scaled)
-const _CAB_BASE_H_WU = 16; // world units (NOT room-scaled)
-const _CAB_SCREEN_H = 79; // world units
-const _CAB_LEVER_H = 56; // world units
+const _CAB_BODY_H_WU  = 143; // world units (NOT room-scaled)
+const _CAB_BASE_H_WU  =  16; // world units (NOT room-scaled)
+const _CAB_SCREEN_H   =  79; // world units
+const _CAB_LEVER_H    =  56; // world units
 
-const CABINET_BODY_GEO = new THREE.BoxGeometry(
-  Math.round(38 * _ROOM_SCALE), // 127wu wide (room-scaled footprint)
-  _CAB_BODY_H_WU, // 143wu tall (world-scale height)
-  Math.round(28 * _ROOM_SCALE), // 93wu deep (room-scaled footprint)
+const CABINET_BODY_GEO    = new THREE.BoxGeometry(
+  Math.round(38 * _ROOM_SCALE),  // 127wu wide (room-scaled footprint)
+  _CAB_BODY_H_WU,                // 143wu tall (world-scale height)
+  Math.round(28 * _ROOM_SCALE),  // 93wu deep (room-scaled footprint)
 );
-const CABINET_SCREEN_GEO = new THREE.BoxGeometry(
-  Math.round(24 * _ROOM_SCALE), // 80wu wide
-  _CAB_SCREEN_H, // 79wu tall (world-scale)
-  Math.round(2 * _ROOM_SCALE), // 7wu thick
+const CABINET_SCREEN_GEO  = new THREE.BoxGeometry(
+  Math.round(24 * _ROOM_SCALE),  // 80wu wide
+  _CAB_SCREEN_H,                 // 79wu tall (world-scale)
+  Math.round(2  * _ROOM_SCALE),  // 7wu thick
 );
-const CABINET_LEVER_GEO = new THREE.CylinderGeometry(
-  8, // radius 8wu (world-scale)
+const CABINET_LEVER_GEO   = new THREE.CylinderGeometry(
+  8,  // radius 8wu (world-scale)
   8,
   _CAB_LEVER_H, // 56wu tall (world-scale)
   8,
 );
-const CABINET_BASE_GEO = new THREE.BoxGeometry(
-  Math.round(42 * _ROOM_SCALE), // 140wu wide (room-scaled)
-  _CAB_BASE_H_WU, // 16wu tall (world-scale)
-  Math.round(32 * _ROOM_SCALE), // 107wu deep (room-scaled)
+const CABINET_BASE_GEO    = new THREE.BoxGeometry(
+  Math.round(42 * _ROOM_SCALE),  // 140wu wide (room-scaled)
+  _CAB_BASE_H_WU,                // 16wu tall (world-scale)
+  Math.round(32 * _ROOM_SCALE),  // 107wu deep (room-scaled)
 );
 
-const CABINET_BODY_MAT = new THREE.MeshStandardMaterial({
-  color: 0x1a0a2e,
-  roughness: 0.7,
-  metalness: 0.4,
-});
+const CABINET_BODY_MAT = new THREE.MeshStandardMaterial({ color: 0x1a0a2e, roughness: 0.7, metalness: 0.4 });
 // Bonus cabinet body: subtle gold tint so players can distinguish at a glance
 const CABINET_BODY_BONUS_MAT = new THREE.MeshStandardMaterial({
   color: 0x2a1800,
@@ -561,16 +475,8 @@ const CABINET_BODY_BONUS_MAT = new THREE.MeshStandardMaterial({
   roughness: 0.55,
   metalness: 0.55,
 });
-const CABINET_BASE_MAT = new THREE.MeshStandardMaterial({
-  color: 0x0d0520,
-  roughness: 0.8,
-  metalness: 0.3,
-});
-const CABINET_LEVER_MAT = new THREE.MeshStandardMaterial({
-  color: 0xcc3333,
-  roughness: 0.5,
-  metalness: 0.6,
-});
+const CABINET_BASE_MAT = new THREE.MeshStandardMaterial({ color: 0x0d0520, roughness: 0.8, metalness: 0.3 });
+const CABINET_LEVER_MAT= new THREE.MeshStandardMaterial({ color: 0xcc3333, roughness: 0.5, metalness: 0.6 });
 const CABINET_SCREEN_MAT = new THREE.MeshStandardMaterial({
   color: 0x00ffe0,
   emissive: new THREE.Color(0x00ffe0),
@@ -593,9 +499,9 @@ interface HotspotDef {
 }
 
 // Cabinet Y helpers (world-scale heights — bug fix 2026-05-18, removed _ROOM_SCALE)
-const _CAB_BASE_H = _CAB_BASE_H_WU; // 16wu (world-scale)
-const _CAB_BODY_H = _CAB_BODY_H_WU; // 143wu (world-scale)
-const _CAB_BODY_CY = _CAB_BASE_H + _CAB_BODY_H / 2; // 87.5wu body center Y
+const _CAB_BASE_H  = _CAB_BASE_H_WU;                   // 16wu (world-scale)
+const _CAB_BODY_H  = _CAB_BODY_H_WU;                   // 143wu (world-scale)
+const _CAB_BODY_CY = _CAB_BASE_H + _CAB_BODY_H / 2;   // 87.5wu body center Y
 
 // ---------------------------------------------------------------------------
 // BONUS badge — canvas texture built once at module scope.
@@ -604,39 +510,36 @@ const _CAB_BODY_CY = _CAB_BASE_H + _CAB_BODY_H / 2; // 87.5wu body center Y
 // Declared after _CAB_BASE_H/_CAB_BODY_H so _BADGE_Y can reference them.
 // ---------------------------------------------------------------------------
 function _buildBonusBadgeTexture(): THREE.CanvasTexture {
-  const W = 256,
-    H = 64;
-  const canvas = document.createElement("canvas");
+  const W = 256, H = 64;
+  const canvas = document.createElement('canvas');
   canvas.width = W;
   canvas.height = H;
-  const ctx = canvas.getContext("2d")!;
+  const ctx = canvas.getContext('2d')!;
 
   // Transparent background
   ctx.clearRect(0, 0, W, H);
 
   // Background pill
   const grad = ctx.createLinearGradient(0, 0, W, 0);
-  grad.addColorStop(0, "rgba(255,170,0,0.85)");
-  grad.addColorStop(0.5, "rgba(255,210,80,0.92)");
-  grad.addColorStop(1, "rgba(255,170,0,0.85)");
+  grad.addColorStop(0,   'rgba(255,170,0,0.85)');
+  grad.addColorStop(0.5, 'rgba(255,210,80,0.92)');
+  grad.addColorStop(1,   'rgba(255,170,0,0.85)');
   ctx.fillStyle = grad;
   const r = H / 2;
   ctx.beginPath();
-  ctx.moveTo(r, 0);
-  ctx.lineTo(W - r, 0);
+  ctx.moveTo(r, 0); ctx.lineTo(W - r, 0);
   ctx.arcTo(W, 0, W, H, r);
-  ctx.lineTo(W, H);
-  ctx.lineTo(0, H);
+  ctx.lineTo(W, H); ctx.lineTo(0, H);
   ctx.arcTo(0, H, 0, 0, r);
   ctx.closePath();
   ctx.fill();
 
   // "💎 BONUS" text
-  ctx.fillStyle = "#1a0800";
-  ctx.font = "bold 28px Arial, sans-serif";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText("\u{1F48E} BONUS", W / 2, H / 2);
+  ctx.fillStyle = '#1a0800';
+  ctx.font = 'bold 28px Arial, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('\u{1F48E} BONUS', W / 2, H / 2);
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -653,7 +556,7 @@ function getBonusBadgeTexture(): THREE.CanvasTexture {
 const BONUS_BADGE_GEO = (() => {
   // Badge plane: 120wu wide × 30wu tall — readable above 159wu cabinet top.
   // Built at module scope but only in browser context.
-  if (typeof window === "undefined") return new THREE.PlaneGeometry(1, 1);
+  if (typeof window === 'undefined') return new THREE.PlaneGeometry(1, 1);
   return new THREE.PlaneGeometry(120, 30);
 })();
 
@@ -668,8 +571,8 @@ const _BADGE_Y = _CAB_BASE_H + _CAB_BODY_H + 20 + 15;
 const SLOT_CABINET_POSITIONS: Array<{ x: number; z: number }> = [
   { x: -BOUNDS_X, z: Math.round(-175 * _ROOM_SCALE) }, // ≈ -583
   { x: -BOUNDS_X, z: Math.round(-100 * _ROOM_SCALE) }, // ≈ -333
-  { x: -BOUNDS_X, z: Math.round(-25 * _ROOM_SCALE) }, // ≈  -83
-  { x: -BOUNDS_X, z: Math.round(50 * _ROOM_SCALE) }, // ≈  166
+  { x: -BOUNDS_X, z: Math.round( -25 * _ROOM_SCALE) }, // ≈  -83
+  { x: -BOUNDS_X, z: Math.round(  50 * _ROOM_SCALE) }, // ≈  166
 ];
 
 /**
@@ -684,51 +587,29 @@ const SLOT_CABINET_POSITIONS: Array<{ x: number; z: number }> = [
  * _HOT_SIZE_Y: interaction height = full cabinet body height + base = 159wu
  * _HOT_SIZE_Z: width along wall (z axis) = cabinet width + small buffer = 140wu
  */
-const _CAB_REACH = 80; // wu — reach into room from wall
-const _HOT_SIZE_X = 100; // wu — interaction depth (x)
-const _HOT_SIZE_Y = _CAB_BASE_H + _CAB_BODY_H; // 159wu — full cabinet height
-const _HOT_SIZE_Z = 150; // wu — width along wall (z)
+const _CAB_REACH   = 80; // wu — reach into room from wall
+const _HOT_SIZE_X  = 100; // wu — interaction depth (x)
+const _HOT_SIZE_Y  = _CAB_BASE_H + _CAB_BODY_H; // 159wu — full cabinet height
+const _HOT_SIZE_Z  = 150; // wu — width along wall (z)
 
 /**
  * Cabinet paytable assignment: first 2 cabinets are classic, last 2 are bonus.
  * Cabinet order: z≈-583, z≈-333 = classic; z≈-83, z≈166 = bonus.
  */
-const GAMEREADY_HOTSPOTS: HotspotDef[] = SLOT_CABINET_POSITIONS.map(
-  (pos, i) => {
-    const isBonus = i >= 2;
-    return {
-      position: [pos.x + _CAB_REACH, _CAB_BODY_CY, pos.z] as [
-        number,
-        number,
-        number,
-      ],
-      size: [_HOT_SIZE_X, _HOT_SIZE_Y, _HOT_SIZE_Z] as [number, number, number],
-      machineSlug: (isBonus
-        ? "classic-3x5-bonus"
-        : "classic-3x5") as MachineSlug,
-      paytableId: (isBonus
-        ? "classic-3x5-bonus"
-        : "classic-3x5") as MachineSlug,
-      isBonus,
-    };
-  },
-);
+const GAMEREADY_HOTSPOTS: HotspotDef[] = SLOT_CABINET_POSITIONS.map((pos, i) => {
+  const isBonus = i >= 2;
+  return {
+    position: [pos.x + _CAB_REACH, _CAB_BODY_CY, pos.z] as [number, number, number],
+    size: [_HOT_SIZE_X, _HOT_SIZE_Y, _HOT_SIZE_Z] as [number, number, number],
+    machineSlug: (isBonus ? 'classic-3x5-bonus' : 'classic-3x5') as MachineSlug,
+    paytableId: (isBonus ? 'classic-3x5-bonus' : 'classic-3x5') as MachineSlug,
+    isBonus,
+  };
+});
 
 const FALLBACK_HOTSPOTS: HotspotDef[] = [
-  {
-    position: [-267, 200, -133],
-    size: [167, 267, 133],
-    machineSlug: "classic-3x5",
-    paytableId: "classic-3x5",
-    isBonus: false,
-  },
-  {
-    position: [267, 200, -133],
-    size: [167, 267, 133],
-    machineSlug: "classic-3x5",
-    paytableId: "classic-3x5",
-    isBonus: false,
-  },
+  { position: [-267, 200, -133], size: [167, 267, 133], machineSlug: 'classic-3x5', paytableId: 'classic-3x5', isBonus: false },
+  { position: [ 267, 200, -133], size: [167, 267, 133], machineSlug: 'classic-3x5', paytableId: 'classic-3x5', isBonus: false },
 ];
 
 // ---------------------------------------------------------------------------
@@ -739,61 +620,49 @@ const FALLBACK_HOTSPOTS: HotspotDef[] = [
 /** Distance at which the bank label becomes visible. */
 const BANK_LABEL_FADE_NEAR = 50;
 /** Distance at which the bank label fades to 0. */
-const BANK_LABEL_FADE_FAR = 600;
+const BANK_LABEL_FADE_FAR  = 600;
 /** Distance at which "press E" hint appears in label. */
 const BANK_INTERACT_NEAR = 250;
 /** Distance at which pressing E actually fires openSlotScreen. */
-const BANK_INTERACT_ARM = 200;
+const BANK_INTERACT_ARM  = 200;
 
 // Classic bank: cabinets 0+1 (z≈-583, z≈-333)
 // _CAB_BASE_H_WU=16, _CAB_BODY_H_WU=143 → top=159wu; label at 219wu
-const CLASSIC_BANK_CENTROID_X = -Math.round(115 * (2000 / 600)) + 60; // -383+60 = -323
+const CLASSIC_BANK_CENTROID_X = -(Math.round(115 * (2000 / 600))) + 60; // -383+60 = -323
 const CLASSIC_BANK_CENTROID_Z = -458; // midpoint of cabs 0+1
-const CLASSIC_BANK_LABEL_Y = 219; // 159wu cabinet top + 60wu
+const CLASSIC_BANK_LABEL_Y    = 219;  // 159wu cabinet top + 60wu
 
 // Bonus bank: cabinets 2+3 (z≈-83, z≈166)
-const BONUS_BANK_CENTROID_X = -Math.round(115 * (2000 / 600)) + 60;
-const BONUS_BANK_CENTROID_Z = 41; // midpoint of cabs 2+3
-const BONUS_BANK_LABEL_Y = 219;
+const BONUS_BANK_CENTROID_X = -(Math.round(115 * (2000 / 600))) + 60;
+const BONUS_BANK_CENTROID_Z = 41;   // midpoint of cabs 2+3
+const BONUS_BANK_LABEL_Y    = 219;
 
 // Module-scope anchor Object3Ds for label projection (never added to scene — getWorldPosition still works)
 const _classicBankAnchor = new THREE.Object3D();
-_classicBankAnchor.position.set(
-  CLASSIC_BANK_CENTROID_X,
-  CLASSIC_BANK_LABEL_Y,
-  CLASSIC_BANK_CENTROID_Z,
-);
+_classicBankAnchor.position.set(CLASSIC_BANK_CENTROID_X, CLASSIC_BANK_LABEL_Y, CLASSIC_BANK_CENTROID_Z);
 _classicBankAnchor.matrixAutoUpdate = false;
 _classicBankAnchor.updateMatrix();
 _classicBankAnchor.updateWorldMatrix(false, false);
 
 const _bonusBankAnchor = new THREE.Object3D();
-_bonusBankAnchor.position.set(
-  BONUS_BANK_CENTROID_X,
-  BONUS_BANK_LABEL_Y,
-  BONUS_BANK_CENTROID_Z,
-);
+_bonusBankAnchor.position.set(BONUS_BANK_CENTROID_X, BONUS_BANK_LABEL_Y, BONUS_BANK_CENTROID_Z);
 _bonusBankAnchor.matrixAutoUpdate = false;
 _bonusBankAnchor.updateMatrix();
 _bonusBankAnchor.updateWorldMatrix(false, false);
 
 // Stable RefObjects wrapping the module-scope anchors
-const _classicAnchorRef = {
-  current: _classicBankAnchor,
-} as RefObject<THREE.Object3D | null>;
-const _bonusAnchorRef = {
-  current: _bonusBankAnchor,
-} as RefObject<THREE.Object3D | null>;
+const _classicAnchorRef = { current: _classicBankAnchor } as RefObject<THREE.Object3D | null>;
+const _bonusAnchorRef   = { current: _bonusBankAnchor }   as RefObject<THREE.Object3D | null>;
 
 // E-key armed state
-type ArmedBank = "classic" | "bonus" | null;
+type ArmedBank = 'classic' | 'bonus' | null;
 let _eKeyArmedBank: ArmedBank = null;
 // Consumed guard: prevent repeat-fire while E is held
 let _eKeyConsumed = false;
 // Proximity hint flags: true = player is within BANK_INTERACT_NEAR of that bank
 // Read by BankLabels useFrame to update label content
 let _classicBankNearHint = false;
-let _bonusBankNearHint = false;
+let _bonusBankNearHint   = false;
 // Avatar ClawToken balance — written by avatar components via useEffect, read by E-key handler
 let _coveAvatarClawTokens = 60;
 
@@ -826,27 +695,22 @@ const _cabinetAABBs: CabinetAABB[] = SLOT_CABINET_POSITIONS.map((pos) => ({
 // the sign over the roulette wheel; now matches the poker table the user
 // arrowed in their screenshot.
 const _DEALER_CENTER_X = -299;
-const _DEALER_CENTER_Z = 331;
-const _DEALER_HALF_X = 100;
-const _DEALER_HALF_Z = 100;
+const _DEALER_CENTER_Z =  331;
+const _DEALER_HALF_X   =  100;
+const _DEALER_HALF_Z   =  100;
 
 // Scratch for collision — never allocated in useFrame
-let _col_px = 0,
-  _col_pz = 0;
+let _col_px = 0, _col_pz = 0;
 
-function _resolveCoveCollisions(
-  posX: MutableRefObject<number>,
-  posZ: MutableRefObject<number>,
-  avatarHalf: number,
-): void {
+function _resolveCoveCollisions(posX: MutableRefObject<number>, posZ: MutableRefObject<number>, avatarHalf: number): void {
   _col_px = posX.current;
   _col_pz = posZ.current;
   const aw = avatarHalf;
 
   for (let i = 0; i < _cabinetAABBs.length; i++) {
     const cab = _cabinetAABBs[i]!;
-    const ox = cab.halfX + aw - Math.abs(_col_px - cab.centerX);
-    const oz = cab.halfZ + aw - Math.abs(_col_pz - cab.centerZ);
+    const ox = (cab.halfX + aw) - Math.abs(_col_px - cab.centerX);
+    const oz = (cab.halfZ + aw) - Math.abs(_col_pz - cab.centerZ);
     if (ox > 0 && oz > 0) {
       if (ox < oz) {
         _col_px += _col_px < cab.centerX ? -ox : ox;
@@ -857,8 +721,8 @@ function _resolveCoveCollisions(
   }
 
   {
-    const ox = _DEALER_HALF_X + aw - Math.abs(_col_px - _DEALER_CENTER_X);
-    const oz = _DEALER_HALF_Z + aw - Math.abs(_col_pz - _DEALER_CENTER_Z);
+    const ox = (_DEALER_HALF_X + aw) - Math.abs(_col_px - _DEALER_CENTER_X);
+    const oz = (_DEALER_HALF_Z + aw) - Math.abs(_col_pz - _DEALER_CENTER_Z);
     if (ox > 0 && oz > 0) {
       if (ox < oz) {
         _col_px += _col_px < _DEALER_CENTER_X ? -ox : ox;
@@ -886,7 +750,7 @@ function SlotCabinets({ hotspots }: SlotCabinetsProps) {
 
   // Resolve badge material lazily — CanvasTexture requires browser DOM.
   const bonusBadgeMat = useMemo(() => {
-    if (typeof window === "undefined") return null;
+    if (typeof window === 'undefined') return null;
     return new THREE.MeshBasicMaterial({
       map: getBonusBadgeTexture(),
       transparent: true,
@@ -917,32 +781,15 @@ function SlotCabinets({ hotspots }: SlotCabinetsProps) {
             rotation={[0, Math.PI / 2, 0]} // face into room (+X direction)
           >
             {/* Base plinth — sits on floor, y = half of base height */}
-            <mesh
-              geometry={CABINET_BASE_GEO}
-              material={CABINET_BASE_MAT}
-              position={[0, _CAB_BASE_H / 2, 0]}
-            />
+            <mesh geometry={CABINET_BASE_GEO} material={CABINET_BASE_MAT} position={[0, _CAB_BASE_H / 2, 0]} />
             {/* Body — classic or gold-tinted bonus */}
-            <mesh
-              geometry={CABINET_BODY_GEO}
-              material={bodyMat}
-              position={[0, _CAB_BASE_H + _CAB_BODY_H / 2, 0]}
-            />
+            <mesh geometry={CABINET_BODY_GEO} material={bodyMat} position={[0, _CAB_BASE_H + _CAB_BODY_H / 2, 0]} />
             {/* Emissive screen — upper 75% of body face, inset slightly toward room.
                 Y: base + 75% of body = 16 + 107 = 123wu.
                 Z: 45wu inset (world-scale, was room-scaled 50wu). */}
-            <mesh
-              geometry={CABINET_SCREEN_GEO}
-              material={CABINET_SCREEN_MAT}
-              position={[0, _CAB_BASE_H + Math.round(_CAB_BODY_H * 0.75), -45]}
-            />
+            <mesh geometry={CABINET_SCREEN_GEO} material={CABINET_SCREEN_MAT} position={[0, _CAB_BASE_H + Math.round(_CAB_BODY_H * 0.75), -45]} />
             {/* Lever — extends from right side, world-scale offsets */}
-            <mesh
-              geometry={CABINET_LEVER_GEO}
-              material={CABINET_LEVER_MAT}
-              position={[50, _CAB_BASE_H + _CAB_BODY_H / 2, -15]}
-              rotation={[0, 0, Math.PI / 5]}
-            />
+            <mesh geometry={CABINET_LEVER_GEO} material={CABINET_LEVER_MAT} position={[50, _CAB_BASE_H + _CAB_BODY_H / 2, -15]} rotation={[0, 0, Math.PI / 5]} />
             {/* BONUS badge — canvas texture plane above bonus cabinet only.
                 Faces +Z in cabinet-local space (= +X world after PI/2 rotation),
                 which is the room-facing direction. DoubleSide so player sees it
@@ -971,20 +818,16 @@ function SlotCabinets({ hotspots }: SlotCabinetsProps) {
 // room is small enough that the banner reads from any approach angle when
 // rendered DoubleSide.
 // ---------------------------------------------------------------------------
-function _buildBankBannerTexture(
-  label: string,
-  color: string,
-): THREE.CanvasTexture {
-  const W = 512,
-    H = 128;
-  const canvas = document.createElement("canvas");
+function _buildBankBannerTexture(label: string, color: string): THREE.CanvasTexture {
+  const W = 512, H = 128;
+  const canvas = document.createElement('canvas');
   canvas.width = W;
   canvas.height = H;
-  const ctx = canvas.getContext("2d")!;
+  const ctx = canvas.getContext('2d')!;
   ctx.clearRect(0, 0, W, H);
 
   // Dark capsule background — wood-tinted to match the cove palette
-  ctx.fillStyle = "rgba(15, 25, 40, 0.92)";
+  ctx.fillStyle = 'rgba(15, 25, 40, 0.92)';
   const r = H / 2;
   ctx.beginPath();
   ctx.moveTo(r, 0);
@@ -1005,9 +848,9 @@ function _buildBankBannerTexture(
   ctx.stroke();
 
   // Label text
-  ctx.font = "700 64px system-ui, -apple-system, sans-serif";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
+  ctx.font = '700 64px system-ui, -apple-system, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
   ctx.fillStyle = color;
   // Soft glow
   ctx.shadowColor = color;
@@ -1024,10 +867,7 @@ function _buildBankBannerTexture(
   return tex;
 }
 
-const _bankBannerCache = new Map<
-  string,
-  { tex: THREE.CanvasTexture; mat: THREE.MeshBasicMaterial }
->();
+const _bankBannerCache = new Map<string, { tex: THREE.CanvasTexture; mat: THREE.MeshBasicMaterial }>();
 function _getBankBanner(label: string, color: string) {
   const key = `${label}:${color}`;
   let cached = _bankBannerCache.get(key);
@@ -1047,19 +887,11 @@ function _getBankBanner(label: string, color: string) {
 
 // Module-scope geometry — 240wu wide × 60wu tall, readable from across the room.
 const _BANK_BANNER_GEO = (() => {
-  if (typeof window === "undefined") return new THREE.PlaneGeometry(240, 60);
+  if (typeof window === 'undefined') return new THREE.PlaneGeometry(240, 60);
   return new THREE.PlaneGeometry(240, 60);
 })();
 
-function BankBanner({
-  label,
-  color,
-  position,
-}: {
-  label: string;
-  color: string;
-  position: [number, number, number];
-}) {
+function BankBanner({ label, color, position }: { label: string; color: string; position: [number, number, number] }) {
   // Two back-to-back planes so the label reads correctly from BOTH sides
   // (a single PlaneGeometry is single-sided; viewing from behind shows mirrored text).
   // The two meshes share the same canvas texture; the second is rotated 180° around Y.
@@ -1067,7 +899,7 @@ function BankBanner({
   const frontRef = useRef<THREE.Mesh>(null);
   const backRef = useRef<THREE.Mesh>(null);
   const cached = useMemo(() => {
-    if (typeof window === "undefined") return null;
+    if (typeof window === 'undefined') return null;
     return _getBankBanner(label, color);
   }, [label, color]);
   useEffect(() => {
@@ -1084,12 +916,7 @@ function BankBanner({
   return (
     <group position={position}>
       <mesh ref={frontRef} geometry={_BANK_BANNER_GEO} material={cached.mat} />
-      <mesh
-        ref={backRef}
-        geometry={_BANK_BANNER_GEO}
-        material={cached.mat}
-        rotation={[0, Math.PI, 0]}
-      />
+      <mesh ref={backRef} geometry={_BANK_BANNER_GEO} material={cached.mat} rotation={[0, Math.PI, 0]} />
     </group>
   );
 }
@@ -1120,13 +947,11 @@ function SlotHotspot({ def }: { def: HotspotDef }) {
       position={def.position}
       onPointerOver={(e) => {
         e.stopPropagation();
-        if (typeof document !== "undefined")
-          document.body.style.cursor = "pointer";
+        if (typeof document !== 'undefined') document.body.style.cursor = 'pointer';
       }}
       onPointerOut={(e) => {
         e.stopPropagation();
-        if (typeof document !== "undefined")
-          document.body.style.cursor = "default";
+        if (typeof document !== 'undefined') document.body.style.cursor = 'default';
       }}
       onClick={(e) => {
         e.stopPropagation();
@@ -1159,9 +984,9 @@ function SlotHotspot({ def }: { def: HotspotDef }) {
 // ---------------------------------------------------------------------------
 
 const _BJ_HOTSPOT_POS: [number, number, number] = [
-  _DEALER_CENTER_X, // X = dealer station X (poker table center)
-  100, // Y centre = halfway up the table height
-  _DEALER_CENTER_Z, // Z = dealer station Z (poker table center)
+  _DEALER_CENTER_X,      // X = dealer station X (poker table center)
+  100,                   // Y centre = halfway up the table height
+  _DEALER_CENTER_Z,      // Z = dealer station Z (poker table center)
 ];
 const _BJ_HOTSPOT_SIZE: [number, number, number] = [200, 200, 150];
 
@@ -1207,13 +1032,11 @@ function BlackjackTableHotspot() {
       position={_BJ_HOTSPOT_POS}
       onPointerOver={(e) => {
         e.stopPropagation();
-        if (typeof document !== "undefined")
-          document.body.style.cursor = "pointer";
+        if (typeof document !== 'undefined') document.body.style.cursor = 'pointer';
       }}
       onPointerOut={(e) => {
         e.stopPropagation();
-        if (typeof document !== "undefined")
-          document.body.style.cursor = "default";
+        if (typeof document !== 'undefined') document.body.style.cursor = 'default';
       }}
       onClick={(e) => {
         e.stopPropagation();
@@ -1258,13 +1081,11 @@ function HoldemTableHotspot() {
       position={_HOLDEM_HOTSPOT_POS}
       onPointerOver={(e) => {
         e.stopPropagation();
-        if (typeof document !== "undefined")
-          document.body.style.cursor = "pointer";
+        if (typeof document !== 'undefined') document.body.style.cursor = 'pointer';
       }}
       onPointerOut={(e) => {
         e.stopPropagation();
-        if (typeof document !== "undefined")
-          document.body.style.cursor = "default";
+        if (typeof document !== 'undefined') document.body.style.cursor = 'default';
       }}
       onClick={(e) => {
         e.stopPropagation();
@@ -1320,13 +1141,11 @@ function BaccaratTableHotspot() {
       position={_BACCARAT_HOTSPOT_POS}
       onPointerOver={(e) => {
         e.stopPropagation();
-        if (typeof document !== "undefined")
-          document.body.style.cursor = "pointer";
+        if (typeof document !== 'undefined') document.body.style.cursor = 'pointer';
       }}
       onPointerOut={(e) => {
         e.stopPropagation();
-        if (typeof document !== "undefined")
-          document.body.style.cursor = "default";
+        if (typeof document !== 'undefined') document.body.style.cursor = 'default';
       }}
       onClick={(e) => {
         e.stopPropagation();
@@ -1369,12 +1188,12 @@ function CoveVRMAvatarInner({ reg }: CoveVRMAvatarProps) {
   // starts with the camera directly behind the avatar (no stale yaw /
   // arrow offsets from a previous visit).
   useEffect(() => {
-    _coveCamYaw = 0;
-    _coveArrowYawOffset = 0;
+    _coveCamYaw          = 0;
+    _coveArrowYawOffset   = 0;
     _coveArrowPitchOffset = 0;
   }, []);
 
-  const vrm = useVRMInstance(reg.path, "cove-player");
+  const vrm = useVRMInstance(reg.path, 'cove-player');
 
   const { scale: vrmRenderScale, offsetY: vrmFootOffsetY } = useMemo(
     () => computeVRMAvatarFit(vrm, reg.animatorId, COVE_VRM_TARGET_HEIGHT),
@@ -1382,8 +1201,8 @@ function CoveVRMAvatarInner({ reg }: CoveVRMAvatarProps) {
   );
 
   useEffect(() => {
-    retainVRMInstance(reg.path, "cove-player"); // cancel deferred dispose on StrictMode re-setup
-    return () => disposeVRMInstance(reg.path, "cove-player");
+    retainVRMInstance(reg.path, 'cove-player'); // cancel deferred dispose on StrictMode re-setup
+    return () => disposeVRMInstance(reg.path, 'cove-player');
   }, [reg.path]);
 
   const vrmAnimRef = useRef<VRMCharacterAnimator | null>(null);
@@ -1391,11 +1210,8 @@ function CoveVRMAvatarInner({ reg }: CoveVRMAvatarProps) {
     if (!vrm) return;
     const anim = new VRMCharacterAnimator(vrm, reg.animatorId);
     vrmAnimRef.current = anim;
-    anim.init().catch((e) => console.warn("[CoveVRM] animator init:", e));
-    return () => {
-      vrmAnimRef.current = null;
-      anim.dispose();
-    };
+    anim.init().catch((e) => console.warn('[CoveVRM] animator init:', e));
+    return () => { vrmAnimRef.current = null; anim.dispose(); };
   }, [vrm, reg.animatorId]);
 
   // Position state held in refs (zero React overhead)
@@ -1407,23 +1223,13 @@ function CoveVRMAvatarInner({ reg }: CoveVRMAvatarProps) {
     // Accumulate yaw + pitch offsets while keys are held.
     // ArrowLeft orbits camera left (positive dTheta), ArrowRight orbits right.
     // Mirrors World3DCanvas ARROW_ROT_SPEED convention.
-    const dYaw =
-      ((_coveArrowKeys.left ? 1 : 0) - (_coveArrowKeys.right ? 1 : 0)) *
-      ARROW_YAW_SPEED *
-      delta;
+    const dYaw = ((_coveArrowKeys.left ? 1 : 0) - (_coveArrowKeys.right ? 1 : 0)) * ARROW_YAW_SPEED * delta;
     _coveArrowYawOffset += dYaw;
 
-    const dPitch =
-      ((_coveArrowKeys.up ? 1 : 0) - (_coveArrowKeys.down ? 1 : 0)) *
-      ARROW_PITCH_SPEED *
-      delta;
-    _coveArrowPitchOffset = Math.max(
-      ARROW_PITCH_MIN,
-      Math.min(ARROW_PITCH_MAX, _coveArrowPitchOffset + dPitch),
-    );
+    const dPitch = ((_coveArrowKeys.up ? 1 : 0) - (_coveArrowKeys.down ? 1 : 0)) * ARROW_PITCH_SPEED * delta;
+    _coveArrowPitchOffset = Math.max(ARROW_PITCH_MIN, Math.min(ARROW_PITCH_MAX, _coveArrowPitchOffset + dPitch));
 
-    let vx = 0,
-      vz = 0;
+    let vx = 0, vz = 0;
     // Camera-relative WASD: project camera forward onto XZ plane
     camera.getWorldDirection(_coveAvatarFwd);
     _coveAvatarFwd.y = 0;
@@ -1431,8 +1237,7 @@ function CoveVRMAvatarInner({ reg }: CoveVRMAvatarProps) {
     if (fwdLen > 0.001) {
       _coveAvatarFwd.divideScalar(fwdLen);
       _coveAvatarRight.crossVectors(_coveAvatarFwd, _coveWorldUp).normalize();
-      let inputFwd = 0,
-        inputRight = 0;
+      let inputFwd = 0, inputRight = 0;
       if (coveKeys.w) inputFwd += 1;
       if (coveKeys.s) inputFwd -= 1;
       if (coveKeys.a) inputRight -= 1;
@@ -1440,38 +1245,26 @@ function CoveVRMAvatarInner({ reg }: CoveVRMAvatarProps) {
       // iPad / touch joystick contribution — folded on top of WASD so a user
       // with both keyboard and touch could combine inputs without conflict.
       // _coveTouchVec.x = strafe (+right), _coveTouchVec.z = forward (+fwd).
-      inputFwd += _coveTouchVec.z;
+      inputFwd  += _coveTouchVec.z;
       inputRight += _coveTouchVec.x;
       if (inputFwd !== 0 || inputRight !== 0) {
         vx = _coveAvatarFwd.x * inputFwd + _coveAvatarRight.x * inputRight;
         vz = _coveAvatarFwd.z * inputFwd + _coveAvatarRight.z * inputRight;
         const len = Math.sqrt(vx * vx + vz * vz);
-        if (len > 1) {
-          vx /= len;
-          vz /= len;
-        }
+        if (len > 1) { vx /= len; vz /= len; }
       }
     }
 
     const isMoving = vx !== 0 || vz !== 0;
 
     if (isMoving) {
-      posX.current = Math.max(
-        -BOUNDS_X,
-        Math.min(BOUNDS_X, posX.current + vx * COVE_PLAYER_SPEED * delta),
-      );
-      posZ.current = Math.max(
-        BOUNDS_Z_MIN,
-        Math.min(BOUNDS_Z_MAX, posZ.current + vz * COVE_PLAYER_SPEED * delta),
-      );
+      posX.current = Math.max(-BOUNDS_X, Math.min(BOUNDS_X, posX.current + vx * COVE_PLAYER_SPEED * delta));
+      posZ.current = Math.max(BOUNDS_Z_MIN, Math.min(BOUNDS_Z_MAX, posZ.current + vz * COVE_PLAYER_SPEED * delta));
       // Cabinet + dealer AABB push-out (before wall-bounds clamp so wall still wins)
       _resolveCoveCollisions(posX, posZ, 30);
       // Re-clamp to room bounds after push-out (collision may have nudged past wall)
       posX.current = Math.max(-BOUNDS_X, Math.min(BOUNDS_X, posX.current));
-      posZ.current = Math.max(
-        BOUNDS_Z_MIN,
-        Math.min(BOUNDS_Z_MAX, posZ.current),
-      );
+      posZ.current = Math.max(BOUNDS_Z_MIN, Math.min(BOUNDS_Z_MAX, posZ.current));
       // Bug 1 fix 2026-05-19: lerp rate reduced 0.15→0.08.
       // At 60fps, 0.15 produced ~13.5°/frame on A/D press — visually
       // snapping 45° in 3-4 frames. 0.08 spreads the same 90° turn over
@@ -1490,21 +1283,18 @@ function CoveVRMAvatarInner({ reg }: CoveVRMAvatarProps) {
     {
       const px = posX.current;
       const pz = posZ.current;
-      const dClassicSq =
-        (px - CLASSIC_BANK_CENTROID_X) ** 2 +
-        (pz - CLASSIC_BANK_CENTROID_Z) ** 2;
-      const dBonusSq =
-        (px - BONUS_BANK_CENTROID_X) ** 2 + (pz - BONUS_BANK_CENTROID_Z) ** 2;
-      const armSq = BANK_INTERACT_ARM * BANK_INTERACT_ARM;
-      const nearSq = BANK_INTERACT_NEAR * BANK_INTERACT_NEAR;
+      const dClassicSq = (px - CLASSIC_BANK_CENTROID_X) ** 2 + (pz - CLASSIC_BANK_CENTROID_Z) ** 2;
+      const dBonusSq   = (px - BONUS_BANK_CENTROID_X)   ** 2 + (pz - BONUS_BANK_CENTROID_Z)   ** 2;
+      const armSq      = BANK_INTERACT_ARM  * BANK_INTERACT_ARM;
+      const nearSq     = BANK_INTERACT_NEAR * BANK_INTERACT_NEAR;
 
       if (dClassicSq <= armSq) {
-        _eKeyArmedBank = "classic";
+        _eKeyArmedBank = 'classic';
       } else if (dBonusSq <= armSq) {
-        _eKeyArmedBank = "bonus";
+        _eKeyArmedBank = 'bonus';
       } else {
         _eKeyArmedBank = null;
-        _eKeyConsumed = false;
+        _eKeyConsumed  = false;
       }
 
       // Update setVisible for the "press E" prompt labels (handled in BankLabels component
@@ -1516,8 +1306,7 @@ function CoveVRMAvatarInner({ reg }: CoveVRMAvatarProps) {
         const slotAlreadyOpen = useCoveStore.getState().slotScreenOpen;
         if (!slotAlreadyOpen) {
           const startBalance = _coveAvatarClawTokens;
-          const slug: MachineSlug =
-            _eKeyArmedBank === "bonus" ? "classic-3x5-bonus" : "classic-3x5";
+          const slug: MachineSlug = _eKeyArmedBank === 'bonus' ? 'classic-3x5-bonus' : 'classic-3x5';
           useCoveStore.getState().openSlotScreen(slug, slug, startBalance);
         }
       }
@@ -1525,7 +1314,7 @@ function CoveVRMAvatarInner({ reg }: CoveVRMAvatarProps) {
       // Expose proximity state so BankLabels useFrame can read it
       // nearHint = true when player is within BANK_INTERACT_NEAR (250wu) of that bank
       _classicBankNearHint = dClassicSq <= nearSq;
-      _bonusBankNearHint = dBonusSq <= nearSq;
+      _bonusBankNearHint   = dBonusSq   <= nearSq;
     }
 
     const group = groupRef.current;
@@ -1585,11 +1374,7 @@ function CoveVRMAvatarInner({ reg }: CoveVRMAvatarProps) {
   });
 
   return (
-    <group
-      ref={groupRef}
-      position={[PLAYER_SPAWN_X, 0, PLAYER_SPAWN_Z]}
-      rotation={[0, 0, 0]}
-    >
+    <group ref={groupRef} position={[PLAYER_SPAWN_X, 0, PLAYER_SPAWN_Z]} rotation={[0, 0, 0]}>
       <primitive
         object={vrm.scene}
         scale={[vrmRenderScale, vrmRenderScale, vrmRenderScale]}
@@ -1605,21 +1390,17 @@ function CoveVRMAvatarInner({ reg }: CoveVRMAvatarProps) {
 
 // Scratch for GLB pivot
 const _glbAvatarBbox = new THREE.Box3();
-const _glbMeshBbox = new THREE.Box3();
+const _glbMeshBbox   = new THREE.Box3();
 
 function computeGlbLocalMinY(scene: THREE.Object3D): number {
   scene.updateMatrixWorld(true);
   _glbAvatarBbox.makeEmpty();
   scene.traverse((child) => {
-    if (
-      (child as THREE.Mesh).isMesh &&
-      !(child as THREE.SkinnedMesh).isSkinnedMesh
-    ) {
+    if ((child as THREE.Mesh).isMesh && !(child as THREE.SkinnedMesh).isSkinnedMesh) {
       const mesh = child as THREE.Mesh;
       if (!mesh.geometry) return;
       mesh.geometry.computeBoundingBox();
-      const bb = mesh.geometry.boundingBox;
-      if (!bb) return;
+      const bb = mesh.geometry.boundingBox; if (!bb) return;
       _glbMeshBbox.copy(bb).applyMatrix4(mesh.matrixWorld);
       _glbAvatarBbox.union(_glbMeshBbox);
     }
@@ -1629,8 +1410,8 @@ function computeGlbLocalMinY(scene: THREE.Object3D): number {
 }
 
 function CoveGLBAvatarInner() {
-  const groupRef = useRef<THREE.Group>(null);
-  const rotRef = useRef(0); // face +Z = into the room from the -411 spawn (door side)
+  const groupRef  = useRef<THREE.Group>(null);
+  const rotRef    = useRef(0); // face +Z = into the room from the -411 spawn (door side)
   const { camera } = useThree();
   const { data: avatar } = useAvatar();
 
@@ -1641,12 +1422,12 @@ function CoveGLBAvatarInner() {
 
   // Reset module-scope camera state on mount (mirrors VRM branch).
   useEffect(() => {
-    _coveCamYaw = 0;
-    _coveArrowYawOffset = 0;
+    _coveCamYaw          = 0;
+    _coveArrowYawOffset   = 0;
     _coveArrowPitchOffset = 0;
   }, []);
 
-  const { scene } = useGLTFWithKTX2("/models/lobster-ktx.glb?v=2");
+  const { scene } = useGLTFWithKTX2('/models/lobster-ktx.glb?v=2');
 
   const { cloned, pivotOffsetY } = useMemo(() => {
     const c = scene.clone(true);
@@ -1678,30 +1459,19 @@ function CoveGLBAvatarInner() {
   useSceneFrame((_, delta) => {
     // --- Arrow-key perspective orbit (Bug 2 fix 2026-05-19) ---
     // Shared with VRM branch via module-scope vars.
-    const dYaw =
-      ((_coveArrowKeys.left ? 1 : 0) - (_coveArrowKeys.right ? 1 : 0)) *
-      ARROW_YAW_SPEED *
-      delta;
+    const dYaw = ((_coveArrowKeys.left ? 1 : 0) - (_coveArrowKeys.right ? 1 : 0)) * ARROW_YAW_SPEED * delta;
     _coveArrowYawOffset += dYaw;
-    const dPitch =
-      ((_coveArrowKeys.up ? 1 : 0) - (_coveArrowKeys.down ? 1 : 0)) *
-      ARROW_PITCH_SPEED *
-      delta;
-    _coveArrowPitchOffset = Math.max(
-      ARROW_PITCH_MIN,
-      Math.min(ARROW_PITCH_MAX, _coveArrowPitchOffset + dPitch),
-    );
+    const dPitch = ((_coveArrowKeys.up ? 1 : 0) - (_coveArrowKeys.down ? 1 : 0)) * ARROW_PITCH_SPEED * delta;
+    _coveArrowPitchOffset = Math.max(ARROW_PITCH_MIN, Math.min(ARROW_PITCH_MAX, _coveArrowPitchOffset + dPitch));
 
-    let vx = 0,
-      vz = 0;
+    let vx = 0, vz = 0;
     camera.getWorldDirection(_coveAvatarFwd);
     _coveAvatarFwd.y = 0;
     const fwdLen = _coveAvatarFwd.length();
     if (fwdLen > 0.001) {
       _coveAvatarFwd.divideScalar(fwdLen);
       _coveAvatarRight.crossVectors(_coveAvatarFwd, _coveWorldUp).normalize();
-      let inputFwd = 0,
-        inputRight = 0;
+      let inputFwd = 0, inputRight = 0;
       if (coveKeys.w) inputFwd += 1;
       if (coveKeys.s) inputFwd -= 1;
       if (coveKeys.a) inputRight -= 1;
@@ -1709,37 +1479,25 @@ function CoveGLBAvatarInner() {
       // iPad / touch joystick contribution — folded on top of WASD so a user
       // with both keyboard and touch could combine inputs without conflict.
       // _coveTouchVec.x = strafe (+right), _coveTouchVec.z = forward (+fwd).
-      inputFwd += _coveTouchVec.z;
+      inputFwd  += _coveTouchVec.z;
       inputRight += _coveTouchVec.x;
       if (inputFwd !== 0 || inputRight !== 0) {
         vx = _coveAvatarFwd.x * inputFwd + _coveAvatarRight.x * inputRight;
         vz = _coveAvatarFwd.z * inputFwd + _coveAvatarRight.z * inputRight;
         const len = Math.sqrt(vx * vx + vz * vz);
-        if (len > 1) {
-          vx /= len;
-          vz /= len;
-        }
+        if (len > 1) { vx /= len; vz /= len; }
       }
     }
 
     const isMoving = vx !== 0 || vz !== 0;
 
     if (isMoving) {
-      posX.current = Math.max(
-        -BOUNDS_X,
-        Math.min(BOUNDS_X, posX.current + vx * COVE_PLAYER_SPEED * delta),
-      );
-      posZ.current = Math.max(
-        BOUNDS_Z_MIN,
-        Math.min(BOUNDS_Z_MAX, posZ.current + vz * COVE_PLAYER_SPEED * delta),
-      );
+      posX.current = Math.max(-BOUNDS_X, Math.min(BOUNDS_X, posX.current + vx * COVE_PLAYER_SPEED * delta));
+      posZ.current = Math.max(BOUNDS_Z_MIN, Math.min(BOUNDS_Z_MAX, posZ.current + vz * COVE_PLAYER_SPEED * delta));
       // Cabinet + dealer AABB push-out
       _resolveCoveCollisions(posX, posZ, 30);
       posX.current = Math.max(-BOUNDS_X, Math.min(BOUNDS_X, posX.current));
-      posZ.current = Math.max(
-        BOUNDS_Z_MIN,
-        Math.min(BOUNDS_Z_MAX, posZ.current),
-      );
+      posZ.current = Math.max(BOUNDS_Z_MIN, Math.min(BOUNDS_Z_MAX, posZ.current));
       // Bug 1 fix 2026-05-19: lerp rate 0.15→0.08 (smoother yaw, same formula).
       // lobster-ktx.glb faces +Z at rot=0 — see feedback_lobster_faces_negative_z memory.
       const targetRot = Math.atan2(vx, vz);
@@ -1753,21 +1511,18 @@ function CoveGLBAvatarInner() {
     {
       const px = posX.current;
       const pz = posZ.current;
-      const dClassicSq =
-        (px - CLASSIC_BANK_CENTROID_X) ** 2 +
-        (pz - CLASSIC_BANK_CENTROID_Z) ** 2;
-      const dBonusSq =
-        (px - BONUS_BANK_CENTROID_X) ** 2 + (pz - BONUS_BANK_CENTROID_Z) ** 2;
-      const armSq = BANK_INTERACT_ARM * BANK_INTERACT_ARM;
-      const nearSq = BANK_INTERACT_NEAR * BANK_INTERACT_NEAR;
+      const dClassicSq = (px - CLASSIC_BANK_CENTROID_X) ** 2 + (pz - CLASSIC_BANK_CENTROID_Z) ** 2;
+      const dBonusSq   = (px - BONUS_BANK_CENTROID_X)   ** 2 + (pz - BONUS_BANK_CENTROID_Z)   ** 2;
+      const armSq      = BANK_INTERACT_ARM  * BANK_INTERACT_ARM;
+      const nearSq     = BANK_INTERACT_NEAR * BANK_INTERACT_NEAR;
 
       if (dClassicSq <= armSq) {
-        _eKeyArmedBank = "classic";
+        _eKeyArmedBank = 'classic';
       } else if (dBonusSq <= armSq) {
-        _eKeyArmedBank = "bonus";
+        _eKeyArmedBank = 'bonus';
       } else {
         _eKeyArmedBank = null;
-        _eKeyConsumed = false;
+        _eKeyConsumed  = false;
       }
 
       if (_eKeyArmedBank !== null && coveKeys.e && !_eKeyConsumed) {
@@ -1775,14 +1530,13 @@ function CoveGLBAvatarInner() {
         const slotAlreadyOpen = useCoveStore.getState().slotScreenOpen;
         if (!slotAlreadyOpen) {
           const startBalance = _coveAvatarClawTokens;
-          const slug: MachineSlug =
-            _eKeyArmedBank === "bonus" ? "classic-3x5-bonus" : "classic-3x5";
+          const slug: MachineSlug = _eKeyArmedBank === 'bonus' ? 'classic-3x5-bonus' : 'classic-3x5';
           useCoveStore.getState().openSlotScreen(slug, slug, startBalance);
         }
       }
 
       _classicBankNearHint = dClassicSq <= nearSq;
-      _bonusBankNearHint = dBonusSq <= nearSq;
+      _bonusBankNearHint   = dBonusSq   <= nearSq;
     }
 
     const group = groupRef.current;
@@ -1803,11 +1557,7 @@ function CoveGLBAvatarInner() {
       const orbitYaw = _coveCamYaw + _coveArrowYawOffset;
       const behindX = -Math.sin(orbitYaw) * CAM_BEHIND;
       const behindZ = -Math.cos(orbitYaw) * CAM_BEHIND;
-      _camDesiredPos.set(
-        posX.current + behindX,
-        CAM_ABOVE + _coveArrowPitchOffset,
-        posZ.current + behindZ,
-      );
+      _camDesiredPos.set(posX.current + behindX, CAM_ABOVE + _coveArrowPitchOffset, posZ.current + behindZ);
       // Bug 3 fix 2026-05-19: clamp inside room so camera never clips a wall.
       clampCameraToRoom(_camDesiredPos, COVE_ROOM_BOUNDS);
       cam.position.lerp(_camDesiredPos, 1 - Math.exp(-8 * delta));
@@ -1817,11 +1567,7 @@ function CoveGLBAvatarInner() {
   });
 
   return (
-    <group
-      ref={groupRef}
-      position={[PLAYER_SPAWN_X, 2 - 0, PLAYER_SPAWN_Z]}
-      rotation={[0, Math.PI, 0]}
-    >
+    <group ref={groupRef} position={[PLAYER_SPAWN_X, 2 - 0, PLAYER_SPAWN_Z]} rotation={[0, Math.PI, 0]}>
       <primitive object={cloned} scale={COVE_AVATAR_SCALE} />
     </group>
   );
@@ -1833,10 +1579,9 @@ function CoveGLBAvatarInner() {
 function CovePlayerAvatar() {
   const avatarModelKey = useGameStore((s) => s.avatarModelKey);
   const reg: ModelRegistryEntry =
-    MODEL_REGISTRY[avatarModelKey as keyof typeof MODEL_REGISTRY] ??
-    MODEL_REGISTRY.lobster;
+    MODEL_REGISTRY[avatarModelKey as keyof typeof MODEL_REGISTRY] ?? MODEL_REGISTRY.lobster;
 
-  if (reg.avatar_type === "vrm") {
+  if (reg.avatar_type === 'vrm') {
     return (
       <Suspense fallback={null}>
         <CoveVRMAvatarInner reg={reg} />
@@ -1857,12 +1602,7 @@ interface InteriorSceneProps {
   onReady: () => void;
 }
 
-function InteriorScene({
-  useFallback,
-  onFallbackRequest,
-  onSceneEmpty,
-  onReady,
-}: InteriorSceneProps) {
+function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty, onReady }: InteriorSceneProps) {
   const glbPath = useFallback ? FALLBACK_GLB : INTERIOR_GLB;
   const { scene } = useGLTF(
     glbPath,
@@ -1874,19 +1614,12 @@ function InteriorScene({
 
   const groupRef = useRef<THREE.Group>(null);
 
-  const fpsFrames = useRef(0);
-  const fpsAccum = useRef(0);
+  const fpsFrames  = useRef(0);
+  const fpsAccum   = useRef(0);
   const fpsChecked = useRef(false);
   const emptyFired = useRef(false);
 
-  const {
-    cloned,
-    hotspots,
-    meshCount,
-    classicCentroid,
-    bonusCentroid,
-    hasDiscovery,
-  } = useMemo(() => {
+  const { cloned, hotspots, meshCount, classicCentroid, bonusCentroid, hasDiscovery } = useMemo(() => {
     const c = scene.clone(true);
     c.updateMatrixWorld(true);
 
@@ -1900,33 +1633,14 @@ function InteriorScene({
       obj.matrixAutoUpdate = false;
     });
 
-    if (
-      typeof window !== "undefined" &&
-      process.env.NEXT_PUBLIC_COVE_DEBUG === "1"
-    ) {
+    if (typeof window !== 'undefined' && process.env.NEXT_PUBLIC_COVE_DEBUG === '1') {
       const bbox2 = new THREE.Box3().setFromObject(c);
-      const sz = new THREE.Vector3();
-      bbox2.getSize(sz);
-      const ct = new THREE.Vector3();
-      bbox2.getCenter(ct);
-      console.info(
-        "[cove-fit]",
-        "scale=" + fitResult.scale.toFixed(4),
-        "worldCenter=(" +
-          ct.x.toFixed(1) +
-          "," +
-          ct.y.toFixed(1) +
-          "," +
-          ct.z.toFixed(1) +
-          ")",
-        "worldSize=(" +
-          sz.x.toFixed(1) +
-          "," +
-          sz.y.toFixed(1) +
-          "," +
-          sz.z.toFixed(1) +
-          ")",
-      );
+      const sz = new THREE.Vector3(); bbox2.getSize(sz);
+      const ct = new THREE.Vector3(); bbox2.getCenter(ct);
+      console.info('[cove-fit]',
+        'scale=' + fitResult.scale.toFixed(4),
+        'worldCenter=(' + ct.x.toFixed(1) + ',' + ct.y.toFixed(1) + ',' + ct.z.toFixed(1) + ')',
+        'worldSize=(' + sz.x.toFixed(1) + ',' + sz.y.toFixed(1) + ',' + sz.z.toFixed(1) + ')');
     }
 
     // ─── Slot cabinet discovery — BANK CLUSTER + X-AXIS SPLIT ────────────
@@ -1967,18 +1681,9 @@ function InteriorScene({
     //   Material3_8:  672×2×354   vol≈0.5M  ✓
     //   Material3_4 (room shell): 954×400×1999 vol≈762M ✗
     //   Material3_1 (floor):      897×99×1377 vol≈122M  ✗
-    interface ClusterMesh {
-      name: string;
-      pos: [number, number, number];
-      size: [number, number, number];
-    }
+    interface ClusterMesh { name: string; pos: [number, number, number]; size: [number, number, number]; }
     const clusterMeshes: ClusterMesh[] = [];
-    const allMeshDebug: Array<{
-      name: string;
-      pos: string;
-      size: string;
-      verdict: string;
-    }> = [];
+    const allMeshDebug: Array<{ name: string; pos: string; size: string; verdict: string }> = [];
 
     c.traverse((obj) => {
       const mesh = obj as THREE.Mesh;
@@ -1994,30 +1699,26 @@ function InteriorScene({
       const h = _bbSize.y;
       const d = _bbSize.z;
       const yMid = _bbCenter.y;
-      const name = mesh.name || "(unnamed)";
+      const name = mesh.name || '(unnamed)';
       const volume = w * h * d;
 
       // Bank-row filter
-      const okHeight = h >= 1 && h <= 200; // flat-ish (cabinet tops / bases)
-      const okWidth = w >= 400 && w <= 1000; // bank-width
-      const okDepth = d >= 250 && d <= 500; // bank-depth (one row deep)
-      const okY = yMid >= 30 && yMid <= 200; // floor-level
-      const okVolume = volume <= 30_000_000; // not a room shell
+      const okHeight = h >= 1   && h <= 200;          // flat-ish (cabinet tops / bases)
+      const okWidth  = w >= 400 && w <= 1000;          // bank-width
+      const okDepth  = d >= 250 && d <= 500;           // bank-depth (one row deep)
+      const okY      = yMid >= 30 && yMid <= 200;     // floor-level
+      const okVolume = volume <= 30_000_000;          // not a room shell
       const ok = okHeight && okWidth && okDepth && okY && okVolume;
 
       const verdict = ok
-        ? "✓BANK-MESH"
-        : `skipped (${
-            [
-              !okHeight && `h=${h.toFixed(0)}`,
-              !okWidth && `w=${w.toFixed(0)}`,
-              !okDepth && `d=${d.toFixed(0)}`,
-              !okY && `y=${yMid.toFixed(0)}`,
-              !okVolume && `vol=${(volume / 1e6).toFixed(0)}M`,
-            ]
-              .filter(Boolean)
-              .join(",") || "unknown"
-          })`;
+        ? '✓BANK-MESH'
+        : `skipped (${[
+            !okHeight && `h=${h.toFixed(0)}`,
+            !okWidth  && `w=${w.toFixed(0)}`,
+            !okDepth  && `d=${d.toFixed(0)}`,
+            !okY      && `y=${yMid.toFixed(0)}`,
+            !okVolume && `vol=${(volume/1e6).toFixed(0)}M`,
+          ].filter(Boolean).join(',') || 'unknown'})`;
 
       allMeshDebug.push({
         name,
@@ -2028,46 +1729,24 @@ function InteriorScene({
       if (!ok) return;
       clusterMeshes.push({
         name,
-        pos: [_bbCenter.x, _bbCenter.y, _bbCenter.z],
+        pos:  [_bbCenter.x, _bbCenter.y, _bbCenter.z],
         size: [w, h, d],
       });
     });
 
     // Union the cluster meshes into one bank bbox.
-    let bankBox: {
-      minX: number;
-      maxX: number;
-      minY: number;
-      maxY: number;
-      minZ: number;
-      maxZ: number;
-    } | null = null;
+    let bankBox: { minX: number; maxX: number; minY: number; maxY: number; minZ: number; maxZ: number } | null = null;
     for (const m of clusterMeshes) {
-      const halfW = m.size[0] / 2,
-        halfH = m.size[1] / 2,
-        halfD = m.size[2] / 2;
-      const mx0 = m.pos[0] - halfW,
-        mx1 = m.pos[0] + halfW;
-      const my0 = m.pos[1] - halfH,
-        my1 = m.pos[1] + halfH;
-      const mz0 = m.pos[2] - halfD,
-        mz1 = m.pos[2] + halfD;
+      const halfW = m.size[0] / 2, halfH = m.size[1] / 2, halfD = m.size[2] / 2;
+      const mx0 = m.pos[0] - halfW, mx1 = m.pos[0] + halfW;
+      const my0 = m.pos[1] - halfH, my1 = m.pos[1] + halfH;
+      const mz0 = m.pos[2] - halfD, mz1 = m.pos[2] + halfD;
       if (!bankBox) {
-        bankBox = {
-          minX: mx0,
-          maxX: mx1,
-          minY: my0,
-          maxY: my1,
-          minZ: mz0,
-          maxZ: mz1,
-        };
+        bankBox = { minX: mx0, maxX: mx1, minY: my0, maxY: my1, minZ: mz0, maxZ: mz1 };
       } else {
-        bankBox.minX = Math.min(bankBox.minX, mx0);
-        bankBox.maxX = Math.max(bankBox.maxX, mx1);
-        bankBox.minY = Math.min(bankBox.minY, my0);
-        bankBox.maxY = Math.max(bankBox.maxY, my1);
-        bankBox.minZ = Math.min(bankBox.minZ, mz0);
-        bankBox.maxZ = Math.max(bankBox.maxZ, mz1);
+        bankBox.minX = Math.min(bankBox.minX, mx0); bankBox.maxX = Math.max(bankBox.maxX, mx1);
+        bankBox.minY = Math.min(bankBox.minY, my0); bankBox.maxY = Math.max(bankBox.maxY, my1);
+        bankBox.minZ = Math.min(bankBox.minZ, mz0); bankBox.maxZ = Math.max(bankBox.maxZ, mz1);
       }
     }
 
@@ -2079,7 +1758,7 @@ function InteriorScene({
     // click-zone bbox is what matters for raycast targeting).
     const discoveredHotspots: HotspotDef[] = [];
     let classicCentroid: [number, number, number] = [0, 0, 0];
-    let bonusCentroid: [number, number, number] = [0, 0, 0];
+    let bonusCentroid:   [number, number, number] = [0, 0, 0];
     let splitValue = 0;
     if (bankBox) {
       const cx = (bankBox.minX + bankBox.maxX) / 2;
@@ -2087,15 +1766,15 @@ function InteriorScene({
       splitValue = cx;
       const halfW = (bankBox.maxX - bankBox.minX) / 2;
       const depth = bankBox.maxZ - bankBox.minZ;
-      const clickHeight = 220; // visual cabinet height
-      const clickCenterY = 110; // above floor, below ceiling
+      const clickHeight = 220;                        // visual cabinet height
+      const clickCenterY = 110;                       // above floor, below ceiling
       // Slight reach into the room (+ on Z towards the player) so the
       // click-zone catches the player walking up to the bank face.
       const reach = 30;
       const halfHalfW = halfW / 2;
 
       classicCentroid = [cx - halfHalfW, clickCenterY, cz];
-      bonusCentroid = [cx + halfHalfW, clickCenterY, cz];
+      bonusCentroid   = [cx + halfHalfW, clickCenterY, cz];
 
       // Hotspot X-size is `halfW` (a HALF of the bank), NOT `halfW + reach`.
       // Previously each hotspot covered the FULL bank width — they overlapped
@@ -2107,17 +1786,17 @@ function InteriorScene({
       const halfHotspotW = halfW * 0.92;
       discoveredHotspots.push({
         position: classicCentroid,
-        size: [halfHotspotW, clickHeight, depth + reach],
-        machineSlug: "classic-3x5" as MachineSlug,
-        paytableId: "classic-3x5" as MachineSlug,
-        isBonus: false,
+        size:     [halfHotspotW, clickHeight, depth + reach],
+        machineSlug: 'classic-3x5' as MachineSlug,
+        paytableId:  'classic-3x5' as MachineSlug,
+        isBonus:     false,
       });
       discoveredHotspots.push({
         position: bonusCentroid,
-        size: [halfHotspotW, clickHeight, depth + reach],
-        machineSlug: "classic-3x5-bonus" as MachineSlug,
-        paytableId: "classic-3x5-bonus" as MachineSlug,
-        isBonus: true,
+        size:     [halfHotspotW, clickHeight, depth + reach],
+        machineSlug: 'classic-3x5-bonus' as MachineSlug,
+        paytableId:  'classic-3x5-bonus' as MachineSlug,
+        isBonus:     true,
       });
     }
 
@@ -2125,37 +1804,29 @@ function InteriorScene({
     if (bankBox) {
       console.info(
         `[cove-interior] bank bbox: X=[${bankBox.minX.toFixed(0)}..${bankBox.maxX.toFixed(0)}] ` +
-          `Y=[${bankBox.minY.toFixed(0)}..${bankBox.maxY.toFixed(0)}] ` +
-          `Z=[${bankBox.minZ.toFixed(0)}..${bankBox.maxZ.toFixed(0)}] ` +
-          `· splitX=${splitValue.toFixed(0)} · ${clusterMeshes.length} cluster meshes`,
+        `Y=[${bankBox.minY.toFixed(0)}..${bankBox.maxY.toFixed(0)}] ` +
+        `Z=[${bankBox.minZ.toFixed(0)}..${bankBox.maxZ.toFixed(0)}] ` +
+        `· splitX=${splitValue.toFixed(0)} · ${clusterMeshes.length} cluster meshes`,
       );
     } else {
-      console.warn(
-        `[cove-interior] no bank cluster found — falling back to GAMEREADY_HOTSPOTS`,
-      );
+      console.warn(`[cove-interior] no bank cluster found — falling back to GAMEREADY_HOTSPOTS`);
     }
-    console.groupCollapsed("[cove-interior] mesh inventory (click to expand)");
+    console.groupCollapsed('[cove-interior] mesh inventory (click to expand)');
     for (const d of allMeshDebug) {
-      console.info(
-        `  ${d.name.padEnd(30)} pos=${d.pos.padEnd(20)} size=${d.size.padEnd(20)} ${d.verdict}`,
-      );
+      console.info(`  ${d.name.padEnd(30)} pos=${d.pos.padEnd(20)} size=${d.size.padEnd(20)} ${d.verdict}`);
     }
     console.groupEnd();
 
     // If discovery worked, use the two split hotspots; otherwise fall back.
     const hotspotDefs = useFallback
       ? FALLBACK_HOTSPOTS
-      : discoveredHotspots.length === 2
-        ? discoveredHotspots
-        : GAMEREADY_HOTSPOTS;
+      : (discoveredHotspots.length === 2 ? discoveredHotspots : GAMEREADY_HOTSPOTS);
 
     let count = 0;
-    c.traverse((obj) => {
-      if ((obj as THREE.Mesh).isMesh) count++;
-    });
+    c.traverse((obj) => { if ((obj as THREE.Mesh).isMesh) count++; });
 
     return {
-      cloned: c,
+      cloned:   c,
       hotspots: hotspotDefs,
       meshCount: count,
       classicCentroid,
@@ -2177,18 +1848,18 @@ function InteriorScene({
   useSceneFrame(() => {
     if (debugLogged.current) return;
     debugLogged.current = true;
-    if (process.env.NEXT_PUBLIC_COVE_DEBUG === "1") {
+    if (process.env.NEXT_PUBLIC_COVE_DEBUG === '1') {
       const cam = camera as THREE.PerspectiveCamera;
       const g = groupRef.current;
       console.info(
-        "[cove-interior DEBUG]\n" +
-          `  glb: ${glbPath}\n` +
-          `  meshCount: ${meshCount}\n` +
-          `  cloned.position: (${cloned.position.x.toFixed(1)}, ${cloned.position.y.toFixed(1)}, ${cloned.position.z.toFixed(1)})\n` +
-          `  cloned.scale: ${cloned.scale.x.toFixed(4)}\n` +
-          `  group.position: ${g ? `(${g.position.x.toFixed(1)}, ${g.position.y.toFixed(1)}, ${g.position.z.toFixed(1)})` : "null"}\n` +
-          `  camera.position: (${cam.position.x.toFixed(1)}, ${cam.position.y.toFixed(1)}, ${cam.position.z.toFixed(1)})\n` +
-          `  camera.fov=${cam.fov} near=${cam.near} far=${cam.far}`,
+        '[cove-interior DEBUG]\n' +
+        `  glb: ${glbPath}\n` +
+        `  meshCount: ${meshCount}\n` +
+        `  cloned.position: (${cloned.position.x.toFixed(1)}, ${cloned.position.y.toFixed(1)}, ${cloned.position.z.toFixed(1)})\n` +
+        `  cloned.scale: ${cloned.scale.x.toFixed(4)}\n` +
+        `  group.position: ${g ? `(${g.position.x.toFixed(1)}, ${g.position.y.toFixed(1)}, ${g.position.z.toFixed(1)})` : 'null'}\n` +
+        `  camera.position: (${cam.position.x.toFixed(1)}, ${cam.position.y.toFixed(1)}, ${cam.position.z.toFixed(1)})\n` +
+        `  camera.fov=${cam.fov} near=${cam.near} far=${cam.far}`
       );
     }
   });
@@ -2209,9 +1880,7 @@ function InteriorScene({
       fpsChecked.current = true;
       const avgFps = fpsFrames.current / fpsAccum.current;
       if (avgFps < FPS_FALLBACK_THRESHOLD) {
-        console.warn(
-          `[cove-interior] avg FPS ${avgFps.toFixed(1)} < ${FPS_FALLBACK_THRESHOLD} — switching to fallback GLB`,
-        );
+        console.warn(`[cove-interior] avg FPS ${avgFps.toFixed(1)} < ${FPS_FALLBACK_THRESHOLD} — switching to fallback GLB`);
         onFallbackRequest();
       } else {
         console.log(`[cove-interior] FPS OK (avg ${avgFps.toFixed(1)})`);
@@ -2280,46 +1949,44 @@ function _bankLabelCapsule(name: string, hint: boolean) {
   return (
     <div
       style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        transform: "translateY(-50%)",
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        transform: 'translateY(-50%)',
       }}
     >
       <div
         style={{
-          fontFamily:
-            'var(--font-fraunces, "Cormorant Garamond", "Spectral", Georgia, serif)',
+          fontFamily: 'var(--font-fraunces, "Cormorant Garamond", "Spectral", Georgia, serif)',
           fontVariationSettings: '"opsz" 9',
           fontWeight: 520,
           fontSize: 15,
-          color: "#a0eaff",
-          padding: "7px 15px 9px",
+          color: '#a0eaff',
+          padding: '7px 15px 9px',
           borderRadius: 999,
-          background: "rgba(8, 18, 32, 0.85)",
-          border: "1px solid rgba(120, 220, 255, 0.55)",
-          boxShadow:
-            "0 0 22px rgba(120,240,255,0.5), 0 0 60px -10px rgba(120,240,255,0.45), inset 0 0 14px rgba(120,200,240,0.18)",
-          whiteSpace: "nowrap",
-          letterSpacing: "0.02em",
+          background: 'rgba(8, 18, 32, 0.85)',
+          border: '1px solid rgba(120, 220, 255, 0.55)',
+          boxShadow: '0 0 22px rgba(120,240,255,0.5), 0 0 60px -10px rgba(120,240,255,0.45), inset 0 0 14px rgba(120,200,240,0.18)',
+          whiteSpace: 'nowrap',
+          letterSpacing: '0.02em',
           lineHeight: 1,
-          userSelect: "none",
+          userSelect: 'none',
         }}
       >
         {name}
         {hint && (
           <span
             style={{
-              display: "block",
+              display: 'block',
               fontSize: 9,
-              fontStyle: "italic",
-              fontFamily: "var(--font-oxanium, sans-serif)",
+              fontStyle: 'italic',
+              fontFamily: 'var(--font-oxanium, sans-serif)',
               fontWeight: 400,
-              color: "#ffe875",
+              color: '#ffe875',
               opacity: 0.9,
               marginTop: 2,
-              letterSpacing: "0.1em",
-              textTransform: "uppercase",
+              letterSpacing: '0.1em',
+              textTransform: 'uppercase',
             }}
           >
             press E to play
@@ -2330,11 +1997,10 @@ function _bankLabelCapsule(name: string, hint: boolean) {
         style={{
           width: 1,
           height: 40,
-          backgroundImage:
-            "linear-gradient(rgba(140,240,255,0.78) 50%, transparent 50%)",
-          backgroundSize: "1px 6px",
-          backgroundRepeat: "repeat-y",
-          boxShadow: "0 0 6px rgba(120,240,255,0.55)",
+          backgroundImage: 'linear-gradient(rgba(140,240,255,0.78) 50%, transparent 50%)',
+          backgroundSize: '1px 6px',
+          backgroundRepeat: 'repeat-y',
+          boxShadow: '0 0 6px rgba(120,240,255,0.55)',
           marginBottom: 2,
         }}
       />
@@ -2342,8 +2008,8 @@ function _bankLabelCapsule(name: string, hint: boolean) {
         style={{
           width: 5,
           height: 5,
-          borderRadius: "50%",
-          background: "rgba(160,234,255,1)",
+          borderRadius: '50%',
+          background: 'rgba(160,234,255,1)',
         }}
       />
     </div>
@@ -2353,37 +2019,35 @@ function _bankLabelCapsule(name: string, hint: boolean) {
 function BankLabels() {
   // State-driven hint flags so React re-renders only when proximity changes
   const [classicHint, setClassicHint] = useState(false);
-  const [bonusHint, setBonusHint] = useState(false);
+  const [bonusHint,   setBonusHint]   = useState(false);
 
-  const { divRef: classicDivRef, setVisible: setClassicVisible } =
-    useWorldLabel({
-      id: "cove-classic-bank",
-      anchorRef: _classicAnchorRef,
-      offset: [0, 0, 0],
-      initialVisible: true,
-      fadeNear: BANK_LABEL_FADE_NEAR,
-      fadeFar: BANK_LABEL_FADE_FAR,
-      fadeBaseOpacity: 0.9,
-      occlude: false,
-    });
+  const { divRef: classicDivRef, setVisible: setClassicVisible } = useWorldLabel({
+    id:             'cove-classic-bank',
+    anchorRef:      _classicAnchorRef,
+    offset:         [0, 0, 0],
+    initialVisible: true,
+    fadeNear:       BANK_LABEL_FADE_NEAR,
+    fadeFar:        BANK_LABEL_FADE_FAR,
+    fadeBaseOpacity: 0.9,
+    occlude:        false,
+  });
 
   const { divRef: bonusDivRef } = useWorldLabel({
-    id: "cove-bonus-bank",
-    anchorRef: _bonusAnchorRef,
-    offset: [0, 0, 0],
+    id:             'cove-bonus-bank',
+    anchorRef:      _bonusAnchorRef,
+    offset:         [0, 0, 0],
     initialVisible: true,
-    fadeNear: BANK_LABEL_FADE_NEAR,
-    fadeFar: BANK_LABEL_FADE_FAR,
+    fadeNear:       BANK_LABEL_FADE_NEAR,
+    fadeFar:        BANK_LABEL_FADE_FAR,
     fadeBaseOpacity: 0.9,
-    occlude: false,
+    occlude:        false,
   });
 
   // Poll module-scope hint flags in useFrame and drive React state
   // only when they actually change — one setState per transition.
   useSceneFrame(() => {
-    if (_classicBankNearHint !== classicHint)
-      setClassicHint(_classicBankNearHint);
-    if (_bonusBankNearHint !== bonusHint) setBonusHint(_bonusBankNearHint);
+    if (_classicBankNearHint !== classicHint) setClassicHint(_classicBankNearHint);
+    if (_bonusBankNearHint   !== bonusHint)   setBonusHint(_bonusBankNearHint);
   });
 
   // Suppress unused variable warning from setClassicVisible
@@ -2392,10 +2056,10 @@ function BankLabels() {
   return (
     <>
       <WorldLabel divRef={classicDivRef}>
-        {_bankLabelCapsule("Classic", classicHint)}
+        {_bankLabelCapsule('Classic', classicHint)}
       </WorldLabel>
       <WorldLabel divRef={bonusDivRef}>
-        {_bankLabelCapsule("Bonus", bonusHint)}
+        {_bankLabelCapsule('Bonus', bonusHint)}
       </WorldLabel>
     </>
   );
@@ -2416,8 +2080,8 @@ export default function CoveInteriorScene({
   onSceneEmpty,
 }: CoveInteriorSceneProps = {}) {
   const [useFallback, setUseFallback] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return new URLSearchParams(window.location.search).get("fallback") === "1";
+    if (typeof window === 'undefined') return false;
+    return new URLSearchParams(window.location.search).get('fallback') === '1';
   });
 
   useEffect(() => {
@@ -2430,11 +2094,8 @@ export default function CoveInteriorScene({
         detachCoveKeyListeners?.();
         detachCoveArrowListeners?.();
         coveKeys.w = coveKeys.a = coveKeys.s = coveKeys.d = coveKeys.e = false;
-        _coveArrowKeys.left =
-          _coveArrowKeys.right =
-          _coveArrowKeys.up =
-          _coveArrowKeys.down =
-            false;
+        _coveArrowKeys.left = _coveArrowKeys.right =
+          _coveArrowKeys.up = _coveArrowKeys.down = false;
         _coveTouchVec.x = 0;
         _coveTouchVec.z = 0;
         _eKeyConsumed = false;
@@ -2442,15 +2103,12 @@ export default function CoveInteriorScene({
     }
     detachCoveKeyListeners?.();
     detachCoveArrowListeners?.();
-    if (typeof document !== "undefined") {
-      document.body.style.cursor = "default";
+    if (typeof document !== 'undefined') {
+      document.body.style.cursor = 'default';
     }
     coveKeys.w = coveKeys.a = coveKeys.s = coveKeys.d = coveKeys.e = false;
-    _coveArrowKeys.left =
-      _coveArrowKeys.right =
-      _coveArrowKeys.up =
-      _coveArrowKeys.down =
-        false;
+    _coveArrowKeys.left = _coveArrowKeys.right =
+      _coveArrowKeys.up = _coveArrowKeys.down = false;
     _coveTouchVec.x = 0;
     _coveTouchVec.z = 0;
     _eKeyConsumed = false;
