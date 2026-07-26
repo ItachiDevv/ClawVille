@@ -37,10 +37,7 @@ import {
   requestWorldStageNavigation,
   type WorldStageNavigationRequest,
 } from './stage-navigation';
-import {
-  decideStageNavigationHistoryMethod,
-  decideStageNavigationOwnership,
-} from './stage-navigation-ownership';
+import { decideStageNavigationOwnership } from './stage-navigation-ownership';
 import { readStageSceneInventory } from './resource-ledger';
 
 const WORLD_SCENE_ID = 'world';
@@ -75,7 +72,6 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
     navigation: WorldStageNavigationRequest;
   } | null>(null);
   const coldInitIssuedRef = useRef(false);
-  const committedStageNavigationsRef = useRef(0);
 
   useEffect(() => {
     markWorldStageMounted();
@@ -152,22 +148,6 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
     });
   }, [stageReady]);
 
-  const commitStageNavigation = useCallback(
-    (navigation: WorldStageNavigationRequest) => {
-      navigation.onMidway?.();
-      const method = decideStageNavigationHistoryMethod(
-        committedStageNavigationsRef.current,
-      );
-      committedStageNavigationsRef.current += 1;
-      if (method === 'push') {
-        router.push(navigation.to);
-      } else {
-        router.replace(navigation.to);
-      }
-    },
-    [router],
-  );
-
   useEffect(() => {
     if (!stageReady) return;
     return installWorldStageNavigationHandler((navigation) => {
@@ -181,7 +161,8 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
       });
 
       if (ownership === 'EXECUTE_NOW') {
-        commitStageNavigation(navigation);
+        navigation.onMidway?.();
+        router.push(navigation.to);
         return true;
       }
 
@@ -202,7 +183,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
       };
       return true;
     });
-  }, [commitStageNavigation, stageReady]);
+  }, [router, stageReady]);
 
   const handleTransitionOpaque = useCallback(
     (request: StageRequest) => {
@@ -223,9 +204,10 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
         return;
       }
       navigationRef.current = null;
-      commitStageNavigation(pendingNavigation.navigation);
+      pendingNavigation.navigation.onMidway?.();
+      router.push(pendingNavigation.navigation.to);
     },
-    [commitStageNavigation],
+    [router],
   );
 
   useEffect(() => {

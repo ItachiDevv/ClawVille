@@ -67,23 +67,43 @@ crossings rather than elapsed render time:
 The identity-aware inventory rules out a generation-keyed scene remount:
 every world geometry UUID is identical early versus late. Cove replaces the
 optimized interior's 12 `Material* / BufferGeometry` identities with the
-fallback's 10 `Object_* / BufferGeometry` identities once, and its five
-active click-hotspot `BoxGeometry` identities churn when visibility changes.
-That is bounded and explains the early renderer step; it does not explain
-the forced-GC heap slope.
+fallback's 10 `Object_* / BufferGeometry` identities once. After that swap,
+the only repeated identity churn is five unnamed `BoxGeometry` objects.
 
-**Exact defect:** `WorldStageRoot` calls `router.push()` at both navigation
-commit sites for every `/game` <-> `/cove` crossing. One round trip therefore
-appends two browser/App Router history entries. Those entries retain their
-route payload and page state for back/forward restoration, so the history
-retained by the soak grows linearly even though the persistent Three.js slot
-roots are stable. The dwell lanes append no entries and stay flat. This is
-crossing-correlated route-history retention, not a world/Cove scene-core leak.
+### Falsified hypothesis
 
-The in-scope correction is to preserve one `/game`/`/cove` back-forward pair,
-then use `router.replace()` for later stage-owned crossings so the stage
-history is bounded. The existing pathname-driven back/forward stage adoption
-remains exercised; thresholds and renderer/resource features remain unchanged.
+The first diagnosis attributed the forced-GC slope to two `router.push()`
+calls per round trip. A bounded-history correction held
+`window.history.length` at 4 -> 4, but the subsequent 30-loop route gate still
+grew 11.07% (the previous route result was 11.65%) and renderer geometries
+still rose 268 -> 304 on the final history traversal. Browser history growth
+is therefore not the root cause. That workaround is removed; route semantics
+remain unchanged.
+
+### Corrected exact diagnosis (recorded before the scene fix)
+
+`CoveInteriorScene` contradicts the persistent-slot lifetime. It wraps
+`WorldLabelsOverlayMount`, `BankLabels`, `CoveLighting`, and three table
+hotspots in `active &&`, while `InteriorScene` separately wraps its two slot
+hotspots in `active &&`. Every `/game` <-> `/cove` crossing consequently
+destroys and recreates those React/R3F subtrees even though the Cove slot
+itself remains mounted. The five hotspot remounts are the five fresh unnamed
+`BoxGeometry` identities in the inventory diff; each remount also creates a
+material, event-handler closures, and R3F fiber/interaction bookkeeping. The
+label remount creates a fresh DOM node, `ResizeObserver`, and React
+`createRoot`, whose cleanup is deliberately deferred to a microtask.
+
+This is crossing-correlated activation churn: neither dwell lane changes
+`active`, so both remain flat, while live scene counts can appear flat because
+the prior objects are removed before each sample. The label-host source itself
+states that the world and Cove hosts must coexist against the shared registry,
+and already gates projection/DOM visibility with `useSceneActive`; conditional
+unmounting defeats that design.
+
+The in-scope fix is to mount these Cove resources once with their persistent
+slot and let the existing scene-activity scheduler, slot visibility, and input
+gate control behavior. Features remain enabled, event raycasting remains
+restricted to the active slot, and no plateau threshold changes.
 
 ## Serial verification record
 

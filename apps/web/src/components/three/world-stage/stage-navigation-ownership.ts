@@ -8,14 +8,6 @@ export type StageNavigationOwnership =
   | 'EXECUTE_NOW'
   | 'SUPERSEDE';
 
-export type StageNavigationHistoryMethod = 'push' | 'replace';
-
-export function decideStageNavigationHistoryMethod(
-  committedStageNavigations: number,
-): StageNavigationHistoryMethod {
-  return committedStageNavigations < 2 ? 'push' : 'replace';
-}
-
 export function decideStageNavigationOwnership(input: {
   targetSceneId: string;
   pendingRequest: StageRequest | null;
