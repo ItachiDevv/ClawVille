@@ -156,6 +156,11 @@ interface World3DCanvasProps {
   perfFlags?: Partial<WorldPerfFlags>;
 }
 
+export interface WorldStageWarmupProps {
+  setRenderPaused: (paused: boolean) => void;
+  onReady: () => void;
+}
+
 // The governor may ONLY auto-hide groundCover (seaweed + decorations).
 // activityFx and labels are gameplay-functional signals — never auto-degraded.
 // Tier 0 = full quality; tier 1 = groundCover hidden.
@@ -861,7 +866,7 @@ function forceFirstPaintSizeSync(state: any): void {
   });
 }
 
-function kickRenderLoop(state: any): void {
+export function kickRenderLoop(state: any): void {
   if (typeof state.invalidate === 'function') {
     state.invalidate();
   }
@@ -1365,8 +1370,10 @@ function completeTextureUploadMetrics(metrics: TextureUploadMetrics): void {
 
 function WorldWarmup({
   onFrameloopChange,
+  stageWarmup,
 }: {
   onFrameloopChange: (mode: 'always' | 'never') => void;
+  stageWarmup?: WorldStageWarmupProps;
 }) {
   const rootStore = useStore();
   const state = useThree();
@@ -1413,7 +1420,37 @@ function WorldWarmup({
     let uploadQueue = Promise.resolve();
     let postScanStarted = false;
     let warmupUploadedTextures = 0;
+    let stageResumed = false;
+    let stageReadyPublished = false;
+    let stageLastProgressAt = performance.now();
+    let stageWatchdogInterval: number | undefined;
+    let stageAbsoluteCeilingTimer: number | undefined;
 
+    const publishStageReady = () => {
+      if (stageReadyPublished) return;
+      stageReadyPublished = true;
+      bridge.__W3D_CANVAS_READY = true;
+      bridge.__W3D_TEXTURES_READY = true;
+      markWorldReadyIfUploadsDone();
+      stageWarmup?.onReady();
+    };
+    const noteStageProgress = () => {
+      if (!stageWarmup || stageResumed) return;
+      stageLastProgressAt = performance.now();
+    };
+    const clearStageWatchdogs = () => {
+      if (stageWatchdogInterval !== undefined) {
+        window.clearInterval(stageWatchdogInterval);
+        stageWatchdogInterval = undefined;
+      }
+      if (stageAbsoluteCeilingTimer !== undefined) {
+        window.clearTimeout(stageAbsoluteCeilingTimer);
+        stageAbsoluteCeilingTimer = undefined;
+      }
+      if (activeWorldWarmupProgressNotifier === noteStageProgress) {
+        activeWorldWarmupProgressNotifier = undefined;
+      }
+    };
     // Perf round-3 change A, retained by the 2026-07-14 warmup gate: the
     // initial ordered compile can still precede the 14 asynchronously parsed NPC
     // VRMs. Their skinned-MeshStandardMaterial variants are absent from that
@@ -1649,6 +1686,31 @@ function WorldWarmup({
       }, 60_000);
     };
 
+    if (stageWarmup) {
+      stageWarmup.setRenderPaused(true);
+      activeWorldWarmupProgressNotifier = noteStageProgress;
+      stageWatchdogInterval = window.setInterval(() => {
+        if (stageResumed || performance.now() - stageLastProgressAt <= 10_000) return;
+        stageResumed = true;
+        clearStageWatchdogs();
+        stageWarmup.setRenderPaused(false);
+        publishStageReady();
+        forceFirstPaintSizeSync(rootStore.getState());
+        startPostReadyScans();
+        console.warn('[World3D] stage warmup made no progress for 10s; resumed via safety fuse');
+      }, 2_000);
+      stageAbsoluteCeilingTimer = window.setTimeout(() => {
+        if (stageResumed) return;
+        stageResumed = true;
+        clearStageWatchdogs();
+        stageWarmup.setRenderPaused(false);
+        publishStageReady();
+        forceFirstPaintSizeSync(rootStore.getState());
+        startPostReadyScans();
+        console.warn('[World3D] stage warmup hit the 40s absolute ceiling; resumed via safety fuse');
+      }, 40_000);
+    }
+
     let subscribedResumeGate: WorldWarmupGate | undefined;
     let unsubscribeResume = () => {};
     syncResumeSubscription = (liveGate) => {
@@ -1657,11 +1719,22 @@ function WorldWarmup({
       subscribedResumeGate = liveGate;
       unsubscribeResume = liveGate?.onResume(startPostReadyScans) ?? (() => {});
     };
-    resolveLiveWarmup();
+    if (!stageWarmup) resolveLiveWarmup();
 
     const resumeLiveWarmup = (
       reason: 'warmup-complete' | 'warmup-error',
     ) => {
+      if (stageWarmup) {
+        if (!stageResumed) {
+          stageResumed = true;
+          clearStageWatchdogs();
+          stageWarmup.setRenderPaused(false);
+          publishStageReady();
+          forceFirstPaintSizeSync(rootStore.getState());
+        }
+        startPostReadyScans();
+        return;
+      }
       const { liveState, liveGate } = resolveLiveWarmup();
       if (liveGate) {
         liveGate.resume(reason);
@@ -1687,7 +1760,7 @@ function WorldWarmup({
         await waitForLoadingManagerIdle();
         await waitForCommitFrame();
         const barrierMs = performance.now() - barrierStartedAt;
-        if (cancelled || livePendingGateResumed()) return;
+        if (cancelled || (stageWarmup ? stageResumed : livePendingGateResumed())) return;
 
         const scansStartedAt = performance.now();
         if (!canInitTexture) {
@@ -1705,14 +1778,14 @@ function WorldWarmup({
               zeroScans += 1;
             }
             if (zeroScans < 2) await waitForCommitFrame();
-            if (livePendingGateResumed()) return;
+            if (stageWarmup ? stageResumed : livePendingGateResumed()) return;
           }
           completeTextureUploadMetrics(uploadMetrics);
           console.log(`[World3D] WorldWarmup: uploaded ${uploadedDone}/${discoveredTotal} textures`);
         }
         const scansMs = performance.now() - scansStartedAt;
 
-        if (cancelled || livePendingGateResumed()) return;
+        if (cancelled || (stageWarmup ? stageResumed : livePendingGateResumed())) return;
         let compileMs = 0;
         if (typeof (gl as any).compileAsync === 'function') {
           const compileStartedAt = performance.now();
@@ -1726,12 +1799,12 @@ function WorldWarmup({
             noteWorldWarmupProgress();
           }
         }
-        if (cancelled || livePendingGateResumed()) return;
+        if (cancelled || (stageWarmup ? stageResumed : livePendingGateResumed())) return;
 
         // One controlled warm draw behind the overlay. On WebGL2 this is also
         // the synchronous shader compile. Never run it after the safety watchdog
         // has resumed R3F or it could recreate the historic double-render blue screen.
-        if (cancelled || livePendingGateResumed()) return;
+        if (cancelled || (stageWarmup ? stageResumed : livePendingGateResumed())) return;
         const warmRenderStartedAt = performance.now();
         noteWorldWarmupProgress();
         gl.setClearColor(SKY_COLOR, 1);
@@ -1757,6 +1830,7 @@ function WorldWarmup({
     return () => {
       cancelled = true;
       unsubscribeResume();
+      clearStageWatchdogs();
       if (managerCapTimer !== undefined) window.clearTimeout(managerCapTimer);
       managerIdleCleanup?.();
       if (postScanTimer !== undefined) window.clearTimeout(postScanTimer);
@@ -1772,7 +1846,7 @@ function WorldWarmup({
     // A second async Canvas configure may replace the renderer generation.
     // Cleanup cancels the stale pipeline; these identity deps restart every
     // upload/compile/warm-render step against the final live renderer.
-  }, [camera, gl, onFrameloopChange, rootStore, scene]);
+  }, [camera, gl, onFrameloopChange, rootStore, scene, stageWarmup]);
 
   return null;
 }
@@ -1784,14 +1858,18 @@ function WorldWarmup({
 const isTouchDevice = typeof window !== 'undefined' &&
   (window.matchMedia('(pointer: coarse)').matches || window.innerWidth < 768);
 
-const SceneContents = memo(function SceneContents({
+export const WorldSceneContents = memo(function WorldSceneContents({
   mode,
   perfFlags,
   onFrameloopChange,
+  stageWarmup,
+  stageHosted = false,
 }: {
   mode: WorldMode;
   perfFlags?: Partial<WorldPerfFlags>;
   onFrameloopChange: (mode: 'always' | 'never') => void;
+  stageWarmup?: WorldStageWarmupProps;
+  stageHosted?: boolean;
 }) {
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
   const isGame = mode === 'game';
@@ -1822,7 +1900,10 @@ const SceneContents = memo(function SceneContents({
           tree committed once, then explicitly waits for LoadingManager idle and
           Suspense retry time before the stable texture scans. R3F stays paused
           until this ordered upload → compile → warm-render sequence completes. */}
-      <WorldWarmup onFrameloopChange={onFrameloopChange} />
+      <WorldWarmup
+        onFrameloopChange={onFrameloopChange}
+        stageWarmup={stageWarmup}
+      />
 
       {/* KTX2Loader initialisation — detects GPU compressed format support
           (BC7 on Iris Xe via WebGPU) and arms the module-level singleton used
@@ -1921,7 +2002,9 @@ const SceneContents = memo(function SceneContents({
           visible; everything past ~10500wu fogs out so the distant low-res
           buildings/terrain are hidden again; fog.far(10500) ≤ camera.far(11500)
           so geometry fully fades to fog BEFORE the far-plane cull (no pop). */}
-      {showWaterFogParticles && <fog attach="fog" args={[FOG_COLOR, 5000, 10500]} />}
+      {showWaterFogParticles && !stageHosted && (
+        <fog attach="fog" args={[FOG_COLOR, 5000, 10500]} />
+      )}
 
       {/* Shared world geometry */}
       <group name="perf:terrain" userData={{ perfChunk: 'terrain' }}>
@@ -2140,6 +2223,40 @@ const SceneContents = memo(function SceneContents({
         </group>
       )}
     </>
+  );
+});
+
+export const WORLD_STAGE_APPEARANCE = {
+  background: SKY_COLOR,
+  fog: {
+    color: FOG_COLOR,
+    near: 5000,
+    far: 10500,
+  },
+} as const;
+
+export const WorldScene = memo(function WorldScene({
+  mode,
+  perfFlags,
+  onFrameloopChange,
+  stageWarmup,
+  stageHosted,
+}: {
+  mode: WorldMode;
+  perfFlags?: Partial<WorldPerfFlags>;
+  onFrameloopChange: (mode: 'always' | 'never') => void;
+  stageWarmup?: WorldStageWarmupProps;
+  stageHosted?: boolean;
+}) {
+  const resolvedPerfFlags = useAdaptiveWorldPerfFlags(perfFlags);
+  return (
+    <WorldSceneContents
+      mode={mode}
+      perfFlags={resolvedPerfFlags}
+      onFrameloopChange={onFrameloopChange}
+      stageWarmup={stageWarmup}
+      stageHosted={stageHosted}
+    />
   );
 });
 
@@ -2529,7 +2646,7 @@ function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
           }
         }}
       >
-        <SceneContents
+        <WorldSceneContents
           mode={mode}
           perfFlags={resolvedPerfFlags}
           onFrameloopChange={setFrameloopMode}

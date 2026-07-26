@@ -250,7 +250,7 @@ Browser (Next.js)                          Hetzner CCX13 + Coolify
 +----------------------------+             +----------------------------+
 |  Next.js App Router        |             |  Hono API (Bun :4000)      |
 |  +----------------------+  |             |  +----------------------+  |
-|  | World3DCanvas (R3F)  |  |  REST/SSE   |  | Auth (Lucia)         |  |
+|  | WorldStageCanvas     |  |  REST/SSE   |  | Auth (Lucia)         |  |
 |  | Three.js WebGPU      |<--------------->|  | Agent Orchestrator   |  |
 |  +----------------------+  |             |  | NPC Simulation       |  |
 |  +----------------------+  |             |  +----------------------+  |
@@ -265,7 +265,7 @@ Browser (Next.js)                          Hetzner CCX13 + Coolify
                                            +----------------------------+
 ```
 
-Frontend (`apps/web`): Next.js 16, React 19, R3F 9, Zustand. Entry: `app/game/page.tsx` → dynamically imports `World3DCanvas` (SSR disabled).
+Frontend (`apps/web`): Next.js 16, React 19, R3F 9, Zustand. `/game` lives under `app/(world)/game`; the shared group layout mounts client `WorldStageRoot` as the persistent background and the page supplies the unchanged HUD/stream/effect layer above it. The stage owns the sole `/game` R3F Canvas, async `three/webgpu` renderer factory, root scene appearance, persistent camera, and frameloop. The world scene subtree is a shared export from `World3DCanvas.tsx`, so legacy `World3DCanvas` remains the route-owned Canvas path for `/arena`, `/perf`, and unmigrated routes without a fork. The nested game layout keeps `dynamic='force-dynamic'`; local production evidence returns `Cache-Control: private, no-cache, no-store, max-age=0, must-revalidate`.
 
 Backend (`apps/api`): Bun runtime, Hono 4 HTTP. Entry: `apps/api/src/index.ts`.
 
