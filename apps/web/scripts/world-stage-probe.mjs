@@ -128,6 +128,7 @@ const summary = {
     early: null,
     late: null,
     diff: null,
+    changes: [],
   },
   ledger: null,
   routes: {
@@ -149,6 +150,7 @@ const summary = {
       delta: null,
       maxAddedEntries: 2,
     },
+    assetTimeline: [],
     network: {
       phase: 'cold-cove',
       joins: {
@@ -764,6 +766,8 @@ try {
       summary.heap.baselineBytes = baselineHeap;
     }
     summary.inventory.early = await readSceneInventory(page);
+    let priorChangeInventory = summary.inventory.early;
+    let priorChangeRenderer = warmSnapshot.renderer ?? null;
 
     if (dwellMode) {
       const dwellStartedAt = Date.now();
@@ -880,6 +884,27 @@ try {
           forceGc,
           state: forceGc ? null : afterCove,
         });
+        const currentRenderer = loopSample.state.renderer ?? null;
+        if (
+          currentRenderer &&
+          priorChangeRenderer &&
+          (currentRenderer.textures !== priorChangeRenderer.textures ||
+            currentRenderer.geometries !== priorChangeRenderer.geometries)
+        ) {
+          const currentInventory = await readSceneInventory(page);
+          summary.inventory.changes.push({
+            loop: completedLoop,
+            elapsedMs: Date.now() - experimentStartedAt,
+            rendererBefore: priorChangeRenderer,
+            rendererAfter: currentRenderer,
+            inventoryDiff: diffSceneInventory(
+              priorChangeInventory,
+              currentInventory,
+            ),
+          });
+          priorChangeInventory = currentInventory;
+        }
+        priorChangeRenderer = currentRenderer;
         if (lane === 'soak' && completedLoop === 20) {
           recordRendererSample('loop-20', 20, loopSample.state);
         }
@@ -946,6 +971,21 @@ try {
     );
     removeInventoryIdentities(summary.inventory.early);
     removeInventoryIdentities(summary.inventory.late);
+    summary.routes.assetTimeline = await page.evaluate(() =>
+      performance
+        .getEntriesByType('resource')
+        .filter((entry) =>
+          /\.(?:glb|vrm|ktx2|png|jpe?g|webp)(?:[?#]|$)/i.test(entry.name),
+        )
+        .map((entry) => ({
+          name: entry.name,
+          initiatorType: entry.initiatorType,
+          startTimeMs: entry.startTime,
+          durationMs: entry.duration,
+          transferSize: entry.transferSize,
+        }))
+        .sort((a, b) => a.startTimeMs - b.startTimeMs),
+    );
 
     summary.routes.coldInit = await runColdInitProbe(browser, routeOrigin);
 
