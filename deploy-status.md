@@ -41,6 +41,7 @@
 - **Who it's for:** founder marketing push on the agent-economy work; future sessions reuse the templates for any Register-B announcement.
 - **What broke:** nothing; static assets only. Copy follows brand rules (no em dashes, vCLAW naming n/a, partner names text-only pending their nod).
 - **SCHEMA:** `synced`. **PARITY:** n/a.
+- **Push 4 (`4e1555f3`) — founder rulings codified in BRAND.md/brand-board:** domain is ALWAYS `clawville.world` (we do not own .com; the .com in the Recap exemplar is an error) · naming PayAI/Meridian/OOBE/Covenant in graphics needs NO sign-off (we implement their software and are partnered). Docs-only.
 
 ### 2026-07-26 (repo-scrub session, push 2) — CLAWVILLE BRAND KIT added (`branding/`)
 - **What:** first-ever repo brand kit, built from the marketing team's Drive asset folders (founder-provided): `branding/BRAND.md` (canonical rules: the two visual registers, measured hex palettes, typography stand-ins, logo/mascot rules, the broadcast-banner recipe, copy rules) + `branding/brand-board.html` (visual one-pager, browser-verified) + 23 curated assets under `branding/assets/` (logos incl. mono SVG + PSD source, mascot art, beach banners, 9 stickers, 3 published marketing exemplars, 2 video clips). Also commits the previously untracked `docs/brand-language.md` (locked keeper phrases) which BRAND.md references. `early-ideas.jpg` deliberately NOT committed (contains third-party game characters; Drive-internal reference only).
