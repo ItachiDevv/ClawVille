@@ -45,6 +45,8 @@ coverage
 # plans, reports) stays local.
 .claude/
 CLAUDE.md
+AGENTS.md
+*.itachi-bak
 
 # Misc
 .DS_Store
