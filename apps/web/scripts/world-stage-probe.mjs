@@ -125,6 +125,7 @@ const summary = {
         afterFirstGame: 0,
       },
       events: [],
+      stubUnhandled: {},
     },
     coldInit: null,
   },
@@ -194,15 +195,63 @@ async function startWorldProbeServer() {
       return;
     }
     if (
+      request.method === 'GET' &&
+      pathname === '/api/research/stream'
+    ) {
+      response.writeHead(200, {
+        ...corsHeaders,
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        'Content-Type': 'text/event-stream',
+      });
+      response.write(': world-stage-probe ready\n\n');
+      streams.add(response);
+      request.on('close', () => streams.delete(response));
+      return;
+    }
+    const tutorialClaim = pathname.match(
+      /^\/api\/quests\/tutorial\/([^/]+)\/claim$/,
+    );
+    if (request.method === 'POST' && tutorialClaim) {
+      response.writeHead(200, {
+        ...corsHeaders,
+        'Content-Type': 'application/json',
+      });
+      response.end(
+        JSON.stringify({
+          ok: true,
+          questId: decodeURIComponent(tutorialClaim[1]),
+          credited: 0,
+          balance: 0,
+        }),
+      );
+      return;
+    }
+    if (
+      request.method === 'GET' &&
+      pathname === '/api/land/parcels'
+    ) {
+      response.writeHead(200, {
+        ...corsHeaders,
+        'Content-Type': 'application/json',
+      });
+      response.end('[]');
+      return;
+    }
+    if (
       request.method === 'POST' &&
       (pathname === '/api/world/position' ||
         pathname === '/api/world/leave' ||
-        pathname === '/api/world/watch-heartbeat')
+        pathname === '/api/world/watch-heartbeat' ||
+        pathname === '/api/npc/watch')
     ) {
       response.writeHead(204, corsHeaders);
       response.end();
       return;
     }
+    const unhandledKey = `${request.method ?? 'UNKNOWN'} ${pathname}`;
+    summary.routes.network.stubUnhandled[unhandledKey] =
+      (summary.routes.network.stubUnhandled[unhandledKey] ?? 0) + 1;
     response.writeHead(404, corsHeaders);
     response.end();
   });
@@ -371,13 +420,16 @@ function cacheControlIsNonCacheable(value) {
 }
 
 async function collectGarbage(page) {
+  let client;
   try {
-    const client = await page.createCDPSession();
+    client = await page.createCDPSession();
     await client.send('HeapProfiler.collectGarbage');
   } catch {
     await page.evaluate(() => {
       if (typeof globalThis.gc === 'function') globalThis.gc();
     });
+  } finally {
+    await client?.detach().catch(() => {});
   }
   await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
 }

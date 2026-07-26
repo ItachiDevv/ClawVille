@@ -2,7 +2,8 @@
 
 **Last Audited:** 2026-07-26
 
-Status: implementation complete; final serial release gates pending.
+Status: implementation complete; local release BLOCKED by the mandatory
+60-loop soak plateau gate.
 
 ## Inventory
 
@@ -65,17 +66,27 @@ Pre-gate implementation checks already completed:
 | protocol + agent-paid focused API suites | PASS, 12 tests / 267 assertions |
 | `node --check apps/web/scripts/world-stage-probe.mjs` | PASS, exit 0 |
 
-Final frozen gates (update with the real final run):
+Final frozen gates:
 
 | Order | Gate | Result |
 |---|---|---|
-| 1 | root `bun run build` | PENDING |
-| 2 | `apps/web: bunx tsc --noEmit` | PENDING |
-| 3a | `apps/web: bun test` touched suites | PENDING |
-| 3b | `apps/api: bun test` touched suites | PENDING |
-| 4a | probe `--lane=synthetic` | PENDING |
-| 4b | probe `--lane=synthetic --webgl` | PENDING |
-| 4c | probe `--lane=routes` | PENDING |
-| 4d | probe `--lane=soak` | PENDING |
+| 1 | root `bun run build` | PASS, exit 0; 9/9 packages, web generated 38 static pages |
+| 2 | `apps/web: bunx tsc --noEmit` | PASS, exit 0 |
+| 3a | `apps/web: bun test` touched suites | PASS, 20 tests / 42 assertions |
+| 3b | `apps/api: bun test` touched suites | PASS, 12 tests / 267 assertions |
+| 4a | probe `--lane=synthetic` | PASS, WebGPU, 102/102 transitions, one Canvas, zero hidden/listener/recovery errors, heap +1.2573%; renderer 9 textures / 15 geometries / 4 draw calls per frame at warm and final |
+| 4b | probe `--lane=synthetic --webgl` | PASS, real `webgl=1`, 102/102 transitions, one Canvas, zero hidden/listener/recovery errors, heap +1.2223%; renderer 9 textures / 15 geometries / 2 derived draw calls per frame, unsupported byte/lifetime fields `null` |
+| 4c | probe `--lane=routes` | PASS, 30/30 round trips, one Canvas, cold/first/later joins 0/1/0, streams 0/1/0, cold-init landed once, heap +11.6498% |
+| 4d | probe `--lane=soak` | **BLOCKED after three full 60-loop attempts.** Final: 60/60 round trips and all route/network/freeze/history assertions pass, but heap +22.5388% total and +9.5004% second half (limits 15% / 3%); renderer loop 20 → final grew 294→295 textures and 275→312 geometries, so count/byte plateau also failed. Prior attempts independently reported +23.8286%/+8.8951% and +22.3367%/+9.0415% heap. |
+
+The route/soak harness owns a local in-process world/research transport because
+the frozen execution contract says no local API or database is required. It
+returns one stable join and one stable SSE, permits requested CORS headers,
+quiesces tutorial/land reads, and reports any unhandled mock request. The final
+soak reported `stubUnhandled: {}`, so the monotonic result is not a failed API
+retry artifact. CDP garbage-collection sessions are explicitly detached.
+
+Per the brief's “monotonic = STOP” rule and the user's same-failure retry cap,
+the thresholds were not weakened and no out-of-scope leak fix was improvised.
 
 Reviewer-owned gaps remain explicit: separate-account two-tab drive, same-account supersession drive, `/arena` legacy smoke, staging mock-Hatcher harness, onboarding smoke, hosted runtime probe, and founder/Iris-Xe visual sign-off.

@@ -1,6 +1,6 @@
 # Persistent World Canvas — kill the reload-on-return loading screen
 
-**Last Audited:** 2026-07-26 — P1c implementation is locally complete; serial release gates and reviewer/staging checks are recorded in `docs/world-stage-p1c-notes.md`.
+**Last Audited:** 2026-07-26 — P1c implementation is locally complete but release is blocked by the reproducible 60-loop soak plateau failure; evidence is recorded in `docs/world-stage-p1c-notes.md`.
 
 **v2.1 — 2026-07-24. Round 1 Codex review: REWORK (12 findings, all folded in
 below). Round 2 Codex convergence: all 12 ADDRESSED, verdict
@@ -210,7 +210,7 @@ consulted for stage/camera/scene-graph review points (Rule E3 collaboration).
 | P0b — cove spike + health policy + ledger + probe | DONE `3e01cac6` | `docs/world-stage-p0b-{brief,notes}.md`; cove VERDICT COMPATIBLE (0 material fixes); probe PASS both backends (100/100, 0 violations, ~1.2% heap); cove ledger 27.1 MiB |
 | P1a — world onto the stage behind `(world)` group (parity cutover) | DONE — reviewer-verified locally; staging checkpoint next | `docs/world-stage-p1a-{brief,notes}.md`; build+tsc 0; probes 102/102 both backends (re-run post-review); `/game` no-store header; reviewer browser drive: world+NPCs+HUD live on stage, ~58 FPS dev box, pointer layering correct (HUD clicks + canvas hits), `/game`↔`/perf/stage` round trip clean, `/arena` legacy smoke OK; review fix: stage DPR corrected to live constants [0.55,0.7] (brief carried stale doc value) |
 | P1b — cove joins the stage; returns become fades | DONE — reviewer-verified locally; staging next | `docs/world-stage-p1b-{brief,notes}.md`; build+tsc 0; ALL THREE probe lanes PASS on final build (synthetic WebGPU + WebGL 102/102; real-route 30 game↔cove round trips, canvas mounts 1, zero hidden violations, heap +12.5% <15% gate); reviewer drive: cove renders in stage, Back-to-World return = fade with SeaLoadingScreen NEVER mounting, deep-link /cove loads zero world assets, /cove/history canvas-free; 2 blocking review findings fixed in-slice (world-label bleed via scene-scoped label registry; useSceneFrame priority support for -100 controllers); known P1c items: first-navigate cold-boot fallback, dual interior GLB download, route-lane heap watch |
-| P1c — streams/presence policy to layout + leak soak + staging promotion | IMPLEMENTED LOCALLY — serial release gates pending | `docs/world-stage-p1c-{brief,notes}.md`; layout-owned active/remote presence, durable first-navigation ownership, protocol v40, lifetime network assertions, backend-aware renderer counters, and 60-loop soak lane |
+| P1c — streams/presence policy to layout + leak soak + staging promotion | BLOCKED — implementation complete; soak leak gate failed 3× | `docs/world-stage-p1c-{brief,notes}.md`; build/tsc/focused tests and WebGPU/WebGL/routes probes PASS; 60-loop soak repeatedly shows ~22–24% total and ~9% second-half heap growth plus renderer plateau failures |
 | P2 arena / P3 kelp / P4 activities | pending | — |
 
 P1 is deliberately split into P1a/P1b/P1c: the 5–8-day estimate is too large for
