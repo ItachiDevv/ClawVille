@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { decideStageNavigationOwnership } from './stage-navigation-ownership';
+import {
+  decideStageNavigationHistoryMethod,
+  decideStageNavigationOwnership,
+} from './stage-navigation-ownership';
 
 const pending = {
   sceneId: 'cove',
@@ -8,6 +11,13 @@ const pending = {
 };
 
 describe('stage navigation ownership', () => {
+  test('bounds retained route history after one back-forward pair', () => {
+    expect(decideStageNavigationHistoryMethod(0)).toBe('push');
+    expect(decideStageNavigationHistoryMethod(1)).toBe('push');
+    expect(decideStageNavigationHistoryMethod(2)).toBe('replace');
+    expect(decideStageNavigationHistoryMethod(60)).toBe('replace');
+  });
+
   test('supersedes an error before considering scene identity', () => {
     expect(
       decideStageNavigationOwnership({

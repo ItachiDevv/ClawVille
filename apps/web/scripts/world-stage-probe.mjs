@@ -143,6 +143,12 @@ const summary = {
       back: false,
       forward: false,
     },
+    historyLength: {
+      baseline: null,
+      final: null,
+      delta: null,
+      maxAddedEntries: 2,
+    },
     network: {
       phase: 'cold-cove',
       joins: {
@@ -553,6 +559,7 @@ async function recordSeriesSample(
     loop,
     elapsedMs,
     pathname: sampledState.pathname ?? null,
+    historyLength: sampledState.historyLength ?? null,
     forcedGc: forceGc,
     heapBytes,
     heapMB: typeof heapBytes === 'number' ? heapBytes / (1024 * 1024) : null,
@@ -749,6 +756,8 @@ try {
     summary.backend = warmSnapshot.backend;
     recordRendererSample('post-warmup', 0, warmSnapshot);
     summary.listenerBaseline = warmSnapshot.listenerCount;
+    summary.routes.historyLength.baseline =
+      warmSnapshot.historyLength ?? null;
     const baselineHeap = baseline.sample.heapBytes;
     if (typeof baselineHeap === 'number' && baselineHeap > 0) {
       summary.heap.available = true;
@@ -894,6 +903,15 @@ try {
     summary.listenerEnd = end.listenerCount;
     summary.listenerDelta = summary.listenerEnd - summary.listenerBaseline;
     summary.listenerUnderflowCount = end.listenerUnderflowCount;
+    summary.routes.historyLength.final = end.historyLength ?? null;
+    if (
+      typeof summary.routes.historyLength.baseline === 'number' &&
+      typeof summary.routes.historyLength.final === 'number'
+    ) {
+      summary.routes.historyLength.delta =
+        summary.routes.historyLength.final -
+        summary.routes.historyLength.baseline;
+    }
     summary.recovery = {
       count: end.recoveryCount,
       lastReason: end.lastRecoveryReason,
@@ -983,6 +1001,10 @@ try {
         Boolean(summary.inventory.early?.cove) &&
         Boolean(summary.inventory.late?.world) &&
         Boolean(summary.inventory.late?.cove),
+      stageHistoryBounded:
+        summary.routes.historyLength.delta !== null &&
+        summary.routes.historyLength.delta <=
+          summary.routes.historyLength.maxAddedEntries,
     };
     summary.assertions = dwellMode
       ? {

@@ -37,7 +37,10 @@ import {
   requestWorldStageNavigation,
   type WorldStageNavigationRequest,
 } from './stage-navigation';
-import { decideStageNavigationOwnership } from './stage-navigation-ownership';
+import {
+  decideStageNavigationHistoryMethod,
+  decideStageNavigationOwnership,
+} from './stage-navigation-ownership';
 import { readStageSceneInventory } from './resource-ledger';
 
 const WORLD_SCENE_ID = 'world';
@@ -72,6 +75,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
     navigation: WorldStageNavigationRequest;
   } | null>(null);
   const coldInitIssuedRef = useRef(false);
+  const committedStageNavigationsRef = useRef(0);
 
   useEffect(() => {
     markWorldStageMounted();
@@ -148,6 +152,22 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
     });
   }, [stageReady]);
 
+  const commitStageNavigation = useCallback(
+    (navigation: WorldStageNavigationRequest) => {
+      navigation.onMidway?.();
+      const method = decideStageNavigationHistoryMethod(
+        committedStageNavigationsRef.current,
+      );
+      committedStageNavigationsRef.current += 1;
+      if (method === 'push') {
+        router.push(navigation.to);
+      } else {
+        router.replace(navigation.to);
+      }
+    },
+    [router],
+  );
+
   useEffect(() => {
     if (!stageReady) return;
     return installWorldStageNavigationHandler((navigation) => {
@@ -161,8 +181,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
       });
 
       if (ownership === 'EXECUTE_NOW') {
-        navigation.onMidway?.();
-        router.push(navigation.to);
+        commitStageNavigation(navigation);
         return true;
       }
 
@@ -183,7 +202,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
       };
       return true;
     });
-  }, [stageReady]);
+  }, [commitStageNavigation, stageReady]);
 
   const handleTransitionOpaque = useCallback(
     (request: StageRequest) => {
@@ -204,10 +223,9 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
         return;
       }
       navigationRef.current = null;
-      pendingNavigation.navigation.onMidway?.();
-      router.push(pendingNavigation.navigation.to);
+      commitStageNavigation(pendingNavigation.navigation);
     },
-    [router],
+    [commitStageNavigation],
   );
 
   useEffect(() => {
@@ -230,6 +248,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
         const state = useStageStore.getState();
         return {
           pathname: window.location.pathname,
+          historyLength: window.history.length,
           activeScene: state.activeScene,
           transitionPhase: state.transition?.phase ?? 'idle',
           transitionError: state.transition?.error ?? null,
