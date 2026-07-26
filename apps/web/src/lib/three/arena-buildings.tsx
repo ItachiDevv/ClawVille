@@ -4,7 +4,13 @@ import { useMemo, useRef, useState, useEffect, useCallback, Suspense } from 'rea
 import * as THREE from 'three';
 import { Html } from '@react-three/drei';
 import { useWorldLabel, WorldLabel, resetLabelPrevOpacity } from '@/lib/three/world-labels-overlay';
-import { useFrame, useThree } from '@react-three/fiber';
+import { useThree } from '@react-three/fiber';
+import {
+  useSceneActive,
+  useSceneFrame,
+} from '@/components/three/world-stage/use-scene-frame';
+import { addStageWindowListener } from '@/components/three/world-stage/stage-store';
+import { requestWorldStageNavigation } from '@/components/three/world-stage/stage-navigation';
 import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 import { mergeStaticMeshesByMaterial } from '@/lib/three/utils/merge-static-meshes';
 import {
@@ -88,6 +94,11 @@ const MAX_WALK_WAIT_MS = 1500;
  *  until the transition starts. Cleared right before the transition fires. */
 let _coveWalkInPending = false;
 
+function navigateToCove(): void {
+  if (requestWorldStageNavigation({ to: '/cove' })) return;
+  useTransitionStore.getState().triggerTransition({ to: '/cove' });
+}
+
 /**
  * triggerCoveWalkIn() — called when the user clicks on the cove building.
  *
@@ -104,7 +115,7 @@ export function triggerCoveWalkIn(): void {
   // Only walk in player/npc mode — in explore mode there is no avatar to walk.
   if (store.controlMode === 'explore') {
     // Fallback for explore mode: direct transition, no walk.
-    useTransitionStore.getState().triggerTransition({ to: '/cove' });
+    navigateToCove();
     return;
   }
 
@@ -141,7 +152,7 @@ export function triggerCoveWalkIn(): void {
       // Avatar has arrived (or timed out) — clear the path and fade.
       _coveWalkInPending = false;
       store.clearClickPath();
-      useTransitionStore.getState().triggerTransition({ to: '/cove' });
+      navigateToCove();
       return;
     }
 
@@ -1326,7 +1337,7 @@ function EditableBuilding({
   // Before this fix: intersectObjects(scene.children, true) ran every frame for
   // every building in edit mode (~10-12 buildings × 28,800-tri terrain =
   // ~345k triangle-ray tests/frame at zero benefit post-settle).
-  useFrame(() => {
+  useSceneFrame(() => {
     if (!groupRef.current) return;
     // Settle-once: after the first valid terrain hit, the Y is cached and we
     // only update the group position (no raycast). The useFrame stays subscribed
@@ -1392,6 +1403,7 @@ function EditableBuilding({
 }
 
 function EditMode() {
+  const sceneActive = useSceneActive();
   const [zones, setZones] = useState<EditZone[]>(() => buildingZones.map(toEditZone));
   const [dragging, setDragging] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -1413,7 +1425,7 @@ function EditMode() {
   }, [dragging, controls]);
 
   // Track drag position — only update state when tile changes
-  useFrame(() => {
+  useSceneFrame(() => {
     if (!dragging) return;
     dragRaycaster.setFromCamera(pointer, camera);
     if (!dragRaycaster.ray.intersectPlane(dragPlane, intersection)) return;
@@ -1449,13 +1461,17 @@ function EditMode() {
 
   // End drag on pointer up (window-level to catch releases outside canvas)
   useEffect(() => {
+    if (!sceneActive) {
+      setDragging(null);
+      lastTile.current = { x: -1, y: -1 };
+      return;
+    }
     const onUp = () => {
       setDragging(null);
       lastTile.current = { x: -1, y: -1 };
     };
-    window.addEventListener('pointerup', onUp);
-    return () => window.removeEventListener('pointerup', onUp);
-  }, []);
+    return addStageWindowListener('pointerup', onUp);
+  }, [sceneActive]);
 
   const copyPositions = useCallback(() => {
     const lines = zones.map(

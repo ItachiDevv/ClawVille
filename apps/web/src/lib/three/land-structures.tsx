@@ -49,7 +49,8 @@
 import { useMemo, useEffect, useRef, useState, Suspense, Component } from 'react';
 import type { ReactNode } from 'react';
 import * as THREE from 'three';
-import { useFrame, useThree } from '@react-three/fiber';
+import { useThree } from '@react-three/fiber';
+import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import { useGLTF } from '@react-three/drei';
 import { LAND_PARCELS, MAX_PARCELS_PER_AVATAR } from '@clawville/shared';
 import type { ParcelSlot } from '@clawville/shared';
@@ -357,7 +358,7 @@ function StructureSlot({ parcel, structure }: { parcel: ParcelSlot; structure: P
   const path = catalogKeyToGlbPath(structure.catalogKey, structure.structureType);
 
   // Distance cull — toggle .visible by SQUARED distance from camera. Zero allocs.
-  useFrame(({ camera }) => {
+  useSceneFrame(({ camera }) => {
     const g = outerRef.current;
     if (!g) return;
     camera.getWorldPosition(_camPos);

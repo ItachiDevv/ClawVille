@@ -1,11 +1,23 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
-import { useFrame, type RenderCallback } from '@react-three/fiber';
+import {
+  createContext,
+  createElement,
+  useContext,
+  useLayoutEffect,
+  useRef,
+  type ReactNode,
+} from 'react';
+import {
+  useFrame,
+  useStore,
+  type RenderCallback,
+} from '@react-three/fiber';
 import { useStageStore } from './stage-store';
 
 type CallbackRef = { current: RenderCallback };
 
+const SceneIdContext = createContext<string | null>(null);
 const callbacksByScene = new Map<string, Map<symbol, CallbackRef>>();
 const frameInvocationsByScene = new Map<string, number>();
 let lastFrameSampleAt = 0;
@@ -25,14 +37,71 @@ export function readStageFrameInvocations(): Record<string, number> {
   return Object.fromEntries(frameInvocationsByScene);
 }
 
+export function SceneIdProvider({
+  sceneId,
+  children,
+}: {
+  sceneId: string;
+  children: ReactNode;
+}) {
+  return createElement(
+    SceneIdContext.Provider,
+    { value: sceneId },
+    children,
+  );
+}
+
+export function useSceneId(): string | null {
+  return useContext(SceneIdContext);
+}
+
+export function useSceneActive(): boolean {
+  const sceneId = useSceneId();
+  const active = useStageStore(
+    (state) =>
+      sceneId === null ||
+      state.activeScene === sceneId ||
+      (state.activeScene === null &&
+        state.pendingRequest?.sceneId === sceneId),
+  );
+  return sceneId === null || active;
+}
+
+export function useSceneFrame(callback: RenderCallback): void;
 export function useSceneFrame(
   sceneId: string,
   callback: RenderCallback,
+): void;
+export function useSceneFrame(
+  sceneIdOrCallback: string | RenderCallback,
+  maybeCallback?: RenderCallback,
 ): void {
-  const callbackRef = useRef(callback);
-  callbackRef.current = callback;
+  const contextSceneId = useSceneId();
+  const sceneId =
+    typeof sceneIdOrCallback === 'string'
+      ? sceneIdOrCallback
+      : contextSceneId;
+  const callback =
+    typeof sceneIdOrCallback === 'string'
+      ? maybeCallback
+      : sceneIdOrCallback;
+  const callbackRef = useRef<RenderCallback>(() => undefined);
+  callbackRef.current = callback ?? (() => undefined);
+  const legacyStore = useStore();
+  const subscribeLegacy =
+    legacyStore.getState().internal.subscribe;
 
-  useEffect(() => {
+  // Outside a stage slot there is no central scheduler. Keep the legacy
+  // Canvas contract through R3F's native subscriber list. Stage-hosted owners
+  // never enter that list at all; only StageFrameScheduler is subscribed, so
+  // a hidden resident slot has zero native callback dispatch overhead.
+  useLayoutEffect(() => {
+    if (sceneId !== null) return;
+    return subscribeLegacy(callbackRef, 0, legacyStore);
+  }, [legacyStore, sceneId, subscribeLegacy]);
+
+  useLayoutEffect(() => {
+    if (sceneId === null) return;
     const registrationId = Symbol(sceneId);
     let sceneCallbacks = callbacksByScene.get(sceneId);
     if (!sceneCallbacks) {

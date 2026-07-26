@@ -42,7 +42,7 @@
  */
 
 import { useRef, useMemo, useEffect, memo, Suspense } from 'react';
-import { useFrame } from '@react-three/fiber';
+import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
@@ -254,7 +254,7 @@ const TownGuideInner = memo(function TownGuideInner() {
     cycleIndexRef.current = nextIdx;
   }
 
-  useFrame(({ clock }, delta) => {
+  useSceneFrame(({ clock }, delta) => {
     mixer.update(delta);
 
     // Timer-driven cycle advance — only while NOT waving.

@@ -1,5 +1,7 @@
 # ClawVille — Architecture
 
+**Last Audited:** 2026-07-25 (**Persistent world-stage P1b route membership and lifecycle; local implementation pending serial automated evidence and reviewer sign-off.**) `app/(world)` now contains page-only `/game` and `/cove` siblings under one persistent `WorldStageRoot`; `/cove/history`, `/cove/verify`, and `/cove/poker/**` remain outside the group. Pathname is the authoritative scene request (`world` or `cove`), and in-group client navigation/back-forward runs through the stage fade→navigate→generation-ready/camera/first-frame→fade-in machine. A cold `/cove` lazy-loads only Cove; the world subtree and its asset preloads do not execute until `/game` is requested. Both pages have force-dynamic guards against stale edge-cached chunk graphs. `useWorldStream()` deliberately remains page-owned under `/game`, so Cove entry still closes streams; P1c owns the presence move. **Drift note:** frontend route/render ownership only; no API route, DB/schema, deployment, economy, protocol, or identity change.
+
 **Last Audited:** 2026-07-24 (**Agent-pay minimum and sender daily-count admission limits.**) New avatar-to-avatar payments now require `AGENT_PAY_MIN_USD_CENTS` (default 5 cents, floor 1) after the idempotency lookup, so existing smaller rows retain their original replay/dispatch behavior. `admitPending` also enforces `AGENT_PAY_DAILY_COUNT_CAP` (default 50, floor 1) per sender per UTC day under the existing dual-subject locks; the existing daily aggregate statement now returns sender count alongside sender/recipient dollar totals and applies the same `pending|settling|settled|reconcile` status set plus `cap_exempt IS NOT TRUE` exclusion. The count limit returns the existing `daily_cap_exceeded` code with count-only `detail='daily_count_cap'`; dollar-cap responses stay unchanged. **Drift note:** admission policy, env documentation, and protocol manual/version 38→39 only; no schema, recipient-count limit, dollar-cap value, preflight, settlement, Meridian, fulfillment, resume-worker, or replay/idempotency change. **PARITY:** Lucia humans and connected/hosted agents share the same middleware-resolved avatar-bound payment admission; the new payment-count cap is sender-side only.
 
 **Last Audited:** 2026-07-24 (**Recipient-ATA fail-fast for outbound PayAI transfers.**) Agent-pay now probes the recipient's canonical network USDC associated token account through the rail RPC before fee-payer discovery, payload preparation, or facilitator execution. A definitive missing ATA takes the existing pending-to-settling CAS and terminal `failed` path with `failure_reason='recipient_ata_missing'` and `cap_exempt=true`, matching the established provably-no-broadcast convention; an RPC or derivation error returns indeterminate and fails open to the unchanged PayAI flow. SAP bounty release preparation reuses the same read-only helper before fee-payer discovery and returns its existing retryable `payai_unavailable` shape for definitive absence. No ATA is created. **Drift note:** preflight short-circuit only; no payment build, verify/settle, Meridian, caps, replay/idempotency, schema, wire, alerting, or `PROTOCOL_VERSION` change. **PARITY:** human and connected/hosted-agent payments share the same avatar-bound recipient-ATA guard; SAP worker payouts use the same canonical probe.
@@ -265,7 +267,18 @@ Browser (Next.js)                          Hetzner CCX13 + Coolify
                                            +----------------------------+
 ```
 
-Frontend (`apps/web`): Next.js 16, React 19, R3F 9, Zustand. `/game` lives under `app/(world)/game`; the shared group layout mounts client `WorldStageRoot` as the persistent background and the page supplies the unchanged HUD/stream/effect layer above it. The stage owns the sole `/game` R3F Canvas, async `three/webgpu` renderer factory, root scene appearance, persistent camera, and frameloop. The world scene subtree is a shared export from `World3DCanvas.tsx`, so legacy `World3DCanvas` remains the route-owned Canvas path for `/arena`, `/perf`, and unmigrated routes without a fork. The nested game layout keeps `dynamic='force-dynamic'`; local production evidence returns `Cache-Control: private, no-cache, no-store, max-age=0, must-revalidate`.
+Frontend (`apps/web`): Next.js 16, React 19, R3F 9, Zustand. `/game` and
+page-only `/cove` are siblings under `app/(world)`; the shared group layout
+mounts client `WorldStageRoot` once and each page supplies its own
+HUD/stream/effect layer above it. `/cove/history`, `/cove/verify`, and poker
+subroutes remain outside the group. The stage owns the sole shared R3F Canvas,
+async `three/webgpu` renderer factory, pathname-selected `world`/`cove`
+lifecycle slots, slot-scoped root appearance/cameras/lights, and frameloop.
+The world scene subtree is a shared export from `World3DCanvas.tsx`, so legacy
+`World3DCanvas` remains the route-owned Canvas path for `/arena`, `/perf`, and
+unmigrated routes without a fork. Both grouped pages keep nested
+`dynamic='force-dynamic'` guards; serial production evidence for both headers
+is recorded in `docs/world-stage-p1b-notes.md`.
 
 Backend (`apps/api`): Bun runtime, Hono 4 HTTP. Entry: `apps/api/src/index.ts`.
 

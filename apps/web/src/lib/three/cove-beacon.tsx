@@ -40,7 +40,10 @@
  */
 
 import { useRef, useMemo } from 'react';
-import { useFrame } from '@react-three/fiber';
+import {
+  useSceneActive,
+  useSceneFrame,
+} from '@/components/three/world-stage/use-scene-frame';
 import * as THREE from 'three';
 
 // ---------------------------------------------------------------------------
@@ -215,6 +218,7 @@ const _spokeMat = new THREE.MeshBasicMaterial({
 // CoveBeacon component
 // ---------------------------------------------------------------------------
 export default function CoveBeacon() {
+  const sceneActive = useSceneActive();
   const ringRef = useRef<THREE.Group>(null);
   const signRef = useRef<THREE.Mesh>(null);
 
@@ -224,7 +228,7 @@ export default function CoveBeacon() {
     [],
   );
 
-  useFrame(({ clock }) => {
+  useSceneFrame(({ clock }) => {
     const t = clock.elapsedTime;
 
     // Rotate the glow ring slowly.
@@ -311,27 +315,31 @@ export default function CoveBeacon() {
       {/* Atmosphere lights — all positions derived from RING_Y so they move with constants.
           3 point lights total (unchanged from prior version — staying in budget).
           distance limits prevent bleeding to adjacent building slots (~2600 wu away). */}
-      <pointLight
-        color={0xff44cc}
-        intensity={1.8}
-        distance={1200}
-        decay={2}
-        position={[0, RING_Y + 80, 0]}
-      />
-      <pointLight
-        color={0x00ccff}
-        intensity={1.2}
-        distance={800}
-        decay={2}
-        position={[80, RING_Y - 40, 80]}
-      />
-      <pointLight
-        color={0xffaa00}
-        intensity={0.9}
-        distance={600}
-        decay={2}
-        position={[-80, RING_Y - 40, -80]}
-      />
+      {sceneActive && (
+        <>
+          <pointLight
+            color={0xff44cc}
+            intensity={1.8}
+            distance={1200}
+            decay={2}
+            position={[0, RING_Y + 80, 0]}
+          />
+          <pointLight
+            color={0x00ccff}
+            intensity={1.2}
+            distance={800}
+            decay={2}
+            position={[80, RING_Y - 40, 80]}
+          />
+          <pointLight
+            color={0xffaa00}
+            intensity={0.9}
+            distance={600}
+            decay={2}
+            position={[-80, RING_Y - 40, -80]}
+          />
+        </>
+      )}
     </group>
   );
 }

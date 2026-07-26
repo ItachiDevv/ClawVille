@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
@@ -61,6 +61,7 @@ import ControlModeToggle from '@/components/game/control-mode-toggle';
 import AutonomyHUD from '@/components/game/autonomy-hud';
 import { useResearchStream } from '@/hooks/use-research-stream';
 import SceneTransition from '@/components/transitions/SceneTransition';
+import { useStageStore } from '@/components/three/world-stage/stage-store';
 
 // arena-terrain.tsx evaluates FORCE_WEBGL_TERRAIN at module scope using
 // navigator.userAgent. On the server navigator is undefined → false; on the
@@ -308,6 +309,9 @@ function NanoClawBanner({
 }
 
 export default function GamePage() {
+  const worldHadActivatedOnMount = useRef(
+    useStageStore.getState().scenes.world?.hasEverActivated ?? false,
+  );
   // Mount gate — eliminates React #418 hydration mismatch at the source.
   // The /game HUD tree pulls state from Zustand, localStorage, TanStack Query,
   // and dynamic imports (the Three.js stage belongs to the route-group
@@ -583,7 +587,7 @@ export default function GamePage() {
   return (
     <div className="game-container" suppressHydrationWarning>
       {/* Sea loading overlay — renders immediately, fades out once window.__W3D is set */}
-      <SeaLoadingScreen />
+      {!worldHadActivatedOnMount.current && <SeaLoadingScreen />}
       <BuildingTooltip />
       <NanoClawBanner
         hasAvatar={hasAvatar}

@@ -35,7 +35,8 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { useFrame, useThree } from '@react-three/fiber';
+import { useThree } from '@react-three/fiber';
+import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import * as THREE from 'three/webgpu';
 import { NaniteRasterizer } from '@/lib/three/experimental/nanite-rasterizer';
 import { useMergedBuildingsAsset } from './use-merged-buildings-asset';
@@ -124,7 +125,7 @@ export default function MeshletBuildingsR3F() {
   // 2) rasterizer overlay second WITH autoClear=false so its internal
   // quadMesh.render() doesn't wipe the scene we just rendered.
   const frameCountRef = useRef(0);
-  useFrame((state) => {
+  useSceneFrame((state) => {
     // 1. R3F scene — autoClear=true (default) clears swap chain then renders
     //    sky + terrain + NPCs + player + everything else.
     state.gl.render(state.scene, state.camera);

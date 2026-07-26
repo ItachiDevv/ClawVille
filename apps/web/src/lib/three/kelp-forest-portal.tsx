@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef } from 'react';
-import { useFrame } from '@react-three/fiber';
+import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import * as THREE from 'three/webgpu';
 import { color, float, sin, time } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
@@ -234,7 +234,7 @@ export function KelpForestPortal({ forceWebGL }: { forceWebGL: boolean }) {
     }
   }, []);
 
-  useFrame(({ clock }) => {
+  useSceneFrame(({ clock }) => {
     if (resources.webGlTimeUniform) {
       resources.webGlTimeUniform.value = clock.elapsedTime;
     }

@@ -24,7 +24,7 @@
 
 import { useRef, useMemo, useEffect, memo, Suspense, useCallback } from 'react';
 import type { RefObject } from 'react';
-import { useFrame } from '@react-three/fiber';
+import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import * as THREE from 'three/webgpu';
 import { color, float, sin, time } from 'three/tsl';
 import { useGameStore } from '@/stores/game';
@@ -73,7 +73,7 @@ function QuestNpcMarkerWrapper({ hoveredRef }: { hoveredRef: RefObject<boolean> 
     return mat;
   }, []);
 
-  useFrame(({ clock }) => {
+  useSceneFrame(({ clock }) => {
     if (!markerRef.current) return;
     // Spin and bob — scratch scalar math, zero allocation
     markerRef.current.rotation.y = clock.elapsedTime * 1.4;
@@ -135,7 +135,7 @@ const QuestNpcInner = memo(function QuestNpcInner() {
   // Idle bob + gentle Y sway — pure math, no allocation.
   // Only the outer position Y and animRef rotation change — the XZ position is
   // constant so we don't need to set it every frame.
-  useFrame(({ clock }) => {
+  useSceneFrame(({ clock }) => {
     if (!groupRef.current) return;
     const t = clock.elapsedTime;
     const bob = Math.sin(t * 1.3 + 0.42) * 0.6;

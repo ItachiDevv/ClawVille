@@ -47,7 +47,8 @@ import {
   type RefObject,
 } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { useFrame, useThree } from '@react-three/fiber';
+import { useThree } from '@react-three/fiber';
+import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import * as THREE from 'three';
 import { measureSpike } from '@/lib/perf-tracker';
 import { avatarPositionRef, useGameStore } from '@/stores/game';
@@ -559,7 +560,7 @@ export function WorldLabelsOverlayMount() {
   // Single projection pass — uses ResizeObserver-cached canvas size to avoid
   // the forced reflow from getBoundingClientRect after the previous frame's
   // display:none/block writes invalidated layout.
-  useFrame(() => {
+  useSceneFrame(() => {
     measureSpike('uF:labels', () => {
     if (!_overlayNode) return;
 

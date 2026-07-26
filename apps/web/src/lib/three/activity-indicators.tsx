@@ -1,7 +1,10 @@
 'use client';
 
 import { useRef, useEffect, memo } from 'react';
-import { useFrame } from '@react-three/fiber';
+import {
+  useSceneActive,
+  useSceneFrame,
+} from '@/components/three/world-stage/use-scene-frame';
 // Text removed
 import * as THREE from 'three';
 import { useNpcStore } from '@/stores/npc';
@@ -71,7 +74,7 @@ const NpcIndicator = memo(function NpcIndicator({
 
   const emoji = activity ? ACTIVITY_EMOJIS[activity] ?? '' : '';
 
-  useFrame((state) => {
+  useSceneFrame((state) => {
     const group = groupRef.current;
     if (!group) return;
 
@@ -122,7 +125,7 @@ const TypingDots = memo(function TypingDots({
   const dot2Ref = useRef<THREE.Mesh>(null);
   const dot3Ref = useRef<THREE.Mesh>(null);
 
-  useFrame((state) => {
+  useSceneFrame((state) => {
     const t = state.clock.elapsedTime;
     const refs = [dot1Ref, dot2Ref, dot3Ref];
     for (let i = 0; i < 3; i++) {
@@ -174,6 +177,7 @@ interface NpcActivitySnapshot {
 const EMPTY_SNAPSHOTS: NpcActivitySnapshot[] = [];
 
 function ActivityIndicators() {
+  const sceneActive = useSceneActive();
   // Subscribe to a derived array that only contains the fields we care about.
   // useShallow performs element-by-element shallow comparison on the returned
   // array, so a new array with identical elements does NOT trigger a re-render.
@@ -198,11 +202,12 @@ function ActivityIndicators() {
   // cleanupExpired() is defined in the store but was never called — in demo
   // mode (no server) updateFromSnapshot never runs, so stale bubbles accumulate.
   useEffect(() => {
+    if (!sceneActive) return;
     const id = setInterval(() => {
       useNpcStore.getState().cleanupExpired();
     }, 5000);
     return () => clearInterval(id);
-  }, []);
+  }, [sceneActive]);
 
   if (npcSnapshots.length === 0) return null;
 

@@ -13,7 +13,12 @@
  */
 
 import { useEffect, useRef } from 'react';
-import { useFrame, useThree } from '@react-three/fiber';
+import { useThree } from '@react-three/fiber';
+import {
+  useSceneActive,
+  useSceneFrame,
+} from '@/components/three/world-stage/use-scene-frame';
+import { addStageWindowListener } from '@/components/three/world-stage/stage-store';
 import * as THREE from 'three';
 import { useGameStore, avatarPositionRef, type GameState } from '@/stores/game';
 import { useNpcStore } from '@/stores/npc';
@@ -56,7 +61,6 @@ const _keys: NpcKeyState = {
   arrowup: false, arrowdown: false,
   e: false, escape: false, shift: false,
 };
-let _listenersAttached = false;
 let _lastEState = false;
 let _lastEscState = false;
 
@@ -75,9 +79,7 @@ function resetNpcKeys() {
   (Object.keys(_keys) as Array<keyof NpcKeyState>).forEach((k) => { _keys[k] = false; });
 }
 
-function attachNpcKeyListeners() {
-  if (_listenersAttached) return;
-  _listenersAttached = true;
+function attachNpcKeyListeners(): () => void {
   const onDown = (e: KeyboardEvent) => {
     // Target guard: don't consume WASD/E/Escape when user is typing in a chat input.
     // Fixes pre-existing bug: typing W/A/S/D in chat moved the NPC.
@@ -106,11 +108,17 @@ function attachNpcKeyListeners() {
     const k = rawKey as keyof NpcKeyState;
     if (k in _keys) _keys[k] = false;
   };
-  window.addEventListener('keydown', onDown);
-  window.addEventListener('keyup', onUp);
+  const removeKeyDown = addStageWindowListener('keydown', onDown);
+  const removeKeyUp = addStageWindowListener('keyup', onUp);
   // Release all held keys on focus loss/regain — centralized in input-reset.ts
   // (browser skips keyup when focus leaves the window). See S7.
-  registerInputReset(resetNpcKeys);
+  const unregisterReset = registerInputReset(resetNpcKeys);
+  return () => {
+    removeKeyDown();
+    removeKeyUp();
+    unregisterReset();
+    resetNpcKeys();
+  };
 }
 
 function directionFromVelocity(vx: number, vy: number): NpcSpriteState['direction'] {
@@ -122,7 +130,7 @@ function directionFromVelocity(vx: number, vy: number): NpcSpriteState['directio
 }
 
 export default function NpcController() {
-  const attachedRef = useRef(false);
+  const sceneActive = useSceneActive();
   const kelpPortalPrevXRef = useRef(0);
   const kelpPortalPrevZRef = useRef(0);
   const kelpPortalPrevNpcIdRef = useRef<string | null>(null);
@@ -130,13 +138,14 @@ export default function NpcController() {
   const { camera } = useThree();
 
   useEffect(() => {
-    if (!attachedRef.current) {
-      attachNpcKeyListeners();
-      attachedRef.current = true;
+    if (!sceneActive) {
+      resetNpcKeys();
+      return;
     }
-  }, []);
+    return attachNpcKeyListeners();
+  }, [sceneActive]);
 
-  useFrame((_, delta) => {
+  useSceneFrame((_, delta) => {
     const store = useGameStore.getState();
     const { controlMode, possessedNpcId } = store;
 

@@ -1,5 +1,7 @@
 # ClawVille — Game Features
 
+**Last Audited:** 2026-07-25 (**Persistent world-stage P1b Cove navigation; local implementation pending serial automated evidence and reviewer manual drive.**) `/cove` page-only now shares the `(world)` layout's single persistent Canvas with `/game`; history, verifier, and poker subroutes remain outside the group. In-group entry/exit is a stage-owned fade that awaits the destination slot's generation-ready scene, camera, and first controlled frame. A cold Cove deep link boots only Cove; the first later world activation retains its existing loader, while warmed world returns skip it. Cove HUD, touch/keyboard controls, all four game modals, REST/store flows, guest demo play, real-CT human/agent settlement, and leaderboard effects are unchanged. `useWorldStream()` remains `/game` page-owned and still closes on Cove entry; presence policy moves in P1c. **Drift note:** render/navigation lifecycle only; no API, economy, wager, protocol, agent action, or `PROTOCOL_VERSION` change. **PARITY:** human path = unchanged `/cove` UI and REST routes; connected/hosted-agent path = unchanged avatar-bound Cove action/REST settlement; neither path changes identity or money semantics.
+
 **Last Audited:** 2026-07-23 (**Activity stale-client version-skew guard; local implementation pending scripted browser sign-off.**) Coolify's `SOURCE_COMMIT` is forwarded through the web Docker build and baked as `NEXT_PUBLIC_SOURCE_COMMIT`. Opening an activity lobby performs one non-polling `/health` comparison before queueing; a mismatch between two available commits shows a small refresh banner. The results-only banner adds a dismissible five-second auto-refresh, so an active race is never interrupted. Missing build/server commits and health failures disable the guard gracefully. **Drift note:** client freshness UI plus additive `/health` metadata only; no activity WS, simulation, settlement, agent wire, or `PROTOCOL_VERSION 38` change. **PARITY:** operational browser-bundle protection only; connected/hosted agents and authoritative race behavior are unaffected.
 
 **Last Audited:** 2026-07-23 (**Autonomous decide-prompt venue proximity.**) The autonomous decision prompt now identifies every in-range venue before the places list, tells the agent not to re-enter, and surfaces `play_cove_game` as the Cove's terminal in-venue action. Directive-driven card play can therefore proceed after arrival instead of looping on `enter_cove`. **Drift note:** prompt composition only; no wire, schema, executor, proximity radius, settlement path, wager bound, action menu, or `PROTOCOL_VERSION` change. **PARITY:** human path = chat-bar directive/direct Cove UI; autonomous-agent path = the decision prompt consumes the same in-range world state and emits the existing avatar-bound Cove terminal action.
@@ -1760,6 +1762,15 @@ Visibility:
 
 ## 18a. Casino — Predictive Gaming Cove (Phase 6, Concern 6.0.x)
 
+**Current P1b render/navigation path (2026-07-25):** the live route is `/cove`.
+Its page is a sibling of `/game` under `app/(world)`, so both use the one
+persistent `WorldStageCanvas`; the Cove page owns only HUD/modals/controls.
+Crossings are group-stage fades. The first world boot in a stage generation
+keeps `SeaLoadingScreen`, but warmed returns from Cove do not mount it.
+History, verifier, and poker pages stay outside the group. The older
+route-isolated flow below is retained as implementation history and is
+superseded for the live `/cove` page.
+
 Accessible by clicking the casino building (slot 9, W ring, `casino-exterior.glb` pyramid) in the open world.
 
 **Walk-in flow (Concern 6.0.3 — SHIPPED):** Click casino building → `triggerCasinoWalkIn()` in `arena-buildings.tsx`. In player/NPC/autonomous modes: avatar walks toward door at `(940, 5760 game-px)` using existing `setClickPath`. When within 200 game-px of door OR after 1500ms max-wait → 500ms fade-to-black → mid-fade router push to `/casino` → `/casino` page mounts with `<SceneTransition fadeInOnMount />` and fades from black over 500ms. In explore mode (no avatar): immediate fade with no walk. Total perceived time ≤ 3s.
@@ -2971,6 +2982,15 @@ Visibility:
 ---
 
 ## 18a. Casino — Predictive Gaming Cove (Phase 6, Concern 6.0.x)
+
+**Current P1b render/navigation path (2026-07-25):** the live route is `/cove`.
+Its page is a sibling of `/game` under `app/(world)`, so both use the one
+persistent `WorldStageCanvas`; the Cove page owns only HUD/modals/controls.
+Crossings are group-stage fades. The first world boot in a stage generation
+keeps `SeaLoadingScreen`, but warmed returns from Cove do not mount it.
+History, verifier, and poker pages stay outside the group. The older
+route-isolated flow below is retained as implementation history and is
+superseded for the live `/cove` page.
 
 Accessible by clicking the casino building (slot 9, W ring, `casino-exterior.glb` pyramid) in the open world.
 
