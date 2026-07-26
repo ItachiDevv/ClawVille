@@ -299,8 +299,8 @@ coveTestFixtureRouter.post('/run', async (c) => {
         SELECT r.run_id, r.status, r.expires_at,
                EXISTS (
                  SELECT 1
-                   FROM cove_blackjack_shoes s
-                   JOIN cove_blackjack_hands h ON h.shoe_id = s.id
+                   FROM blackjack_shoes s
+                   JOIN blackjack_hands h ON h.shoe_id = s.id
                   WHERE s.fixture_run_id = r.run_id
                     AND s.status = 'open'
                     AND h.status = 'in_progress'
@@ -331,11 +331,11 @@ coveTestFixtureRouter.post('/run', async (c) => {
          WHERE r.owner_avatar_id = ${ownerAvatarId}
            AND (
              EXISTS (
-               SELECT 1 FROM cove_blackjack_shoes s
+               SELECT 1 FROM blackjack_shoes s
                 WHERE s.fixture_run_id = r.run_id AND s.status = 'open'
              )
              OR EXISTS (
-               SELECT 1 FROM cove_baccarat_shoes s
+               SELECT 1 FROM baccarat_shoes s
                 WHERE s.fixture_run_id = r.run_id AND s.status = 'open'
              )
              OR EXISTS (
