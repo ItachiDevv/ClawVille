@@ -76,6 +76,7 @@ export function rootFromJournalEntry(
     version: 2,
     instanceId: entry.instanceId,
     renderRevision: entry.revision,
+    observedAt: entry.ts,
     correlation: {
       hand: String(hand),
       handNumber: typeof handNumber === 'number' ? handNumber : null,

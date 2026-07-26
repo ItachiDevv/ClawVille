@@ -395,20 +395,25 @@ function holdemExpected(
   }
   const expectedSeatIndices = surface.endsWith('-practice')
     ? [1, 2, 3, 4, 5]
-    : [...bySeat.keys()]
-      .filter((seatIndex) => seatIndex !== selfSeatIndex)
-      .sort((left, right) => left - right);
+    : [0, 1, 2, 3, 4, 5]
+      .filter((seatIndex) => seatIndex !== selfSeatIndex);
   for (const seatIndex of expectedSeatIndices) {
-    const seat = bySeat.get(seatIndex) ?? {};
+    const occupiedSeat = bySeat.get(seatIndex);
+    const seat = occupiedSeat ?? {};
     const status = normalizeStatus(seat.status);
     const cards = array(first(seat.shown, seat.holeCards));
     for (let index = 0; index < 2; index += 1) {
       const key = `opp-${seatIndex}-${index + 1}`;
-      slots[key] = surface.endsWith('-practice')
-        && status !== 'folded'
-        && cards[index]
-        ? up(cards[index], status)
-        : down(status);
+      if (surface.endsWith('-practice')) {
+        slots[key] = status !== 'folded' && cards[index]
+          ? up(cards[index], status)
+          : down(status);
+      } else {
+        slots[key] = occupiedSeat
+          && (status === 'active' || status === 'allin')
+          ? down(status)
+          : empty(status);
+      }
     }
   }
   if (seats.length === 0 && surface.endsWith('-practice')) {

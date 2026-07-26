@@ -21,6 +21,7 @@ const outcomeOf = (wire: unknown): UnknownRecord => {
 export function reachedFor(
   game: ParityGame,
   row: string,
+  surface?: Surface,
 ): (wire: unknown) => boolean {
   return (wire) => {
     const body = rec(wire) ?? {};
@@ -110,7 +111,10 @@ export function reachedFor(
       const practicePublicShape = Array.isArray(body.humanHole)
         && Array.isArray(body.publicActionLog)
         && !('opponentHoleCards' in body);
-      return ownHole.length === 2
+      const entitlementReached = surface?.includes('felt')
+        ? publicSeats.length > 0 || practicePublicShape
+        : ownHole.length === 2;
+      return entitlementReached
         && (publicSeats.length > 0 || practicePublicShape)
         && publicSeats.every((rawSeat) => {
           const seat = rec(rawSeat);
@@ -424,6 +428,30 @@ export async function nextJournalStep(
   })()`);
 }
 
+export function shouldEndHoldemNegativeTraversal(
+  current: {
+    dealStep: string;
+    correlation?: { hand?: string };
+  } | null,
+  initialHand: string,
+): boolean {
+  return !current
+    || current.dealStep === 'showdown'
+    || current.correlation?.hand !== initialHand;
+}
+
+export function shouldEndBlackjackNegativeTraversal(
+  root: {
+    dealStep?: string;
+    correlation?: { hand?: string };
+  } | null,
+  initialHand: string,
+): boolean {
+  return root === null
+    || root.dealStep === 'settled'
+    || root.correlation?.hand !== initialHand;
+}
+
 function checkpointFor(
   surface: Surface,
   token: string,
@@ -480,6 +508,7 @@ export async function* driveScenario(
       let cursor = initial.firstRevision;
       yield {
         ...checkpointFor(surface, phases[0]!, 0, 0),
+        expectRenderRevision: initial.firstRevision,
         expectCorrelationHand: initial.correlation.hand,
       };
       const deadline = Date.now() + 60_000;
@@ -498,17 +527,45 @@ export async function* driveScenario(
             label: `every-in-progress-read-${read}`,
             surface,
             expectRevisionAdvance: true,
+            expectRenderRevision: next.revision,
+            expectCorrelationHand: initial.correlation.hand,
           };
           read += 1;
+          const currentAfterCheckpoint = await driver.evalJson<{
+            dealStep?: string;
+            correlation?: { hand?: string };
+          } | null>(
+            `window.__CV_READ_PARITY?.(${JSON.stringify(surface)}) ?? null`,
+          );
+          if (shouldEndBlackjackNegativeTraversal(
+            currentAfterCheckpoint,
+            initial.correlation.hand,
+          )) return;
           continue;
         }
-        const current = await driver.evalJson<{ dealStep: string } | null>(
+        const current = await driver.evalJson<{
+          dealStep?: string;
+          correlation?: { hand?: string };
+        } | null>(
           `window.__CV_READ_PARITY?.(${JSON.stringify(surface)}) ?? null`,
         );
-        if (!current || current.dealStep === 'settled') return;
+        if (shouldEndBlackjackNegativeTraversal(
+          current,
+          initial.correlation.hand,
+        )) return;
         if (!await clickText(driver, ['Hit'])) return;
         await new Promise((resolveWait) => setTimeout(resolveWait, 100));
       }
+      const currentAtDeadline = await driver.evalJson<{
+        dealStep?: string;
+        correlation?: { hand?: string };
+      } | null>(
+        `window.__CV_READ_PARITY?.(${JSON.stringify(surface)}) ?? null`,
+      );
+      if (shouldEndBlackjackNegativeTraversal(
+        currentAtDeadline,
+        initial.correlation.hand,
+      )) return;
       throw new Error('Blackjack negative traversal exceeded 60s');
     }
     if (['B4', 'B7'].includes(row)) await waitAndClick(driver, ['Stand']);
@@ -581,15 +638,54 @@ export async function* driveScenario(
     ))()`, 30_000);
   }
   if (row === 'H-neg') {
-    await driver.waitFn(
-      `Boolean(window.__CV_READ_PARITY?.(${JSON.stringify(surface)}))`,
-      30_000,
-    );
+    if (surface.endsWith('-3d')) {
+      await driver.waitFn(`(() => {
+        const root = window.__CV_READ_PARITY?.(${JSON.stringify(surface)});
+        if (!root || root.correlation?.handNumber == null) return false;
+        if (
+          ${JSON.stringify(surface)} === 'holdem-tray-3d'
+          && root.slots.filter(
+            (slot) => slot.slot.startsWith('hole-') && slot.facing === 'up'
+          ).length !== 2
+        ) return false;
+        const tableId = root.correlation.hand.slice(
+          0,
+          root.correlation.hand.lastIndexOf(':'),
+        );
+        const hasWitness = (window.__CV_WIRE_ALL?.() ?? []).some((record) =>
+          record.status === 200
+          && record.handNumber === root.correlation.handNumber
+          && record.urlSuffix.includes(
+            'poker/cash/tables/' + tableId + '/state-for-agent'
+          )
+        );
+        if (!hasWitness) return false;
+        const revisions = (window.__CV_PARITY_JOURNAL?.(${JSON.stringify(surface)}) ?? [])
+          .filter((entry) => {
+            if (entry.surface !== ${JSON.stringify(surface)}) return false;
+            try { return JSON.parse(entry.signature)[2] === root.correlation.hand; }
+            catch { return false; }
+          })
+          .map((entry) => entry.revision);
+        window.__CV_HOLD_NEG_INITIAL = {
+          ...root,
+          firstRevision: ${JSON.stringify(surface)} === 'holdem-tray-3d'
+            ? root.renderRevision
+            : Math.min(root.renderRevision, ...revisions),
+        };
+        return true;
+      })()`, 30_000);
+    } else {
+      await driver.waitFn(
+        `Boolean(window.__CV_READ_PARITY?.(${JSON.stringify(surface)}))`,
+        30_000,
+      );
+    }
     const initial = await driver.evalJson<{
       renderRevision: number;
       correlation: { hand: string };
       firstRevision: number;
-    }>(`(() => {
+    }>(surface.endsWith('-3d') ? 'window.__CV_HOLD_NEG_INITIAL' : `(() => {
       const root = window.__CV_READ_PARITY(${JSON.stringify(surface)});
       const revisions = (window.__CV_PARITY_JOURNAL?.(${JSON.stringify(surface)}) ?? [])
         .filter((entry) => {
@@ -606,6 +702,7 @@ export async function* driveScenario(
     let cursor = initial.firstRevision;
     yield {
       ...checkpointFor(surface, phases[0]!, 0, 0),
+      expectRenderRevision: initial.firstRevision,
       expectCorrelationHand: initial.correlation.hand,
     };
     const deadline = Date.now() + 90_000;
@@ -623,18 +720,46 @@ export async function* driveScenario(
           label: `every-step-${read}`,
           surface,
           expectRevisionAdvance: true,
+          expectRenderRevision: next.revision,
+          expectCorrelationHand: initial.correlation.hand,
         };
         read += 1;
+        const currentAfterCheckpoint = await driver.evalJson<{
+          dealStep: string;
+          correlation?: { hand?: string };
+        } | null>(
+          `window.__CV_READ_PARITY?.(${JSON.stringify(surface)}) ?? null`,
+        );
+        if (shouldEndHoldemNegativeTraversal(
+          currentAfterCheckpoint,
+          initial.correlation.hand,
+        )) return;
         if (next.dealStep === 'showdown') return;
         continue;
       }
-      const current = await driver.evalJson<{ dealStep: string } | null>(
+      const current = await driver.evalJson<{
+        dealStep: string;
+        correlation?: { hand?: string };
+      } | null>(
         `window.__CV_READ_PARITY?.(${JSON.stringify(surface)}) ?? null`,
       );
-      if (!current || current.dealStep === 'showdown') return;
+      if (shouldEndHoldemNegativeTraversal(
+        current,
+        initial.correlation.hand,
+      )) return;
       await clickText(driver, ['Check', 'Call']);
       await new Promise((resolveWait) => setTimeout(resolveWait, 100));
     }
+    const currentAtDeadline = await driver.evalJson<{
+      dealStep: string;
+      correlation?: { hand?: string };
+    } | null>(
+      `window.__CV_READ_PARITY?.(${JSON.stringify(surface)}) ?? null`,
+    );
+    if (shouldEndHoldemNegativeTraversal(
+      currentAtDeadline,
+      initial.correlation.hand,
+    )) return;
     throw new Error(`Hold'em negative traversal exceeded 90s`);
   }
   if (row === 'H6') await waitAndClick(driver, ['Fold'], 30_000);

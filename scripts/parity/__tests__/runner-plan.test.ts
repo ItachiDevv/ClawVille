@@ -14,6 +14,8 @@ import {
   driveScenario,
   nextJournalStep,
   reachedFor,
+  shouldEndBlackjackNegativeTraversal,
+  shouldEndHoldemNegativeTraversal,
 } from '../scenarios/runtime';
 import { closeFixtureRun } from '../teardown';
 
@@ -253,6 +255,36 @@ describe('offline live-runner plans', () => {
     expect(surfaces).toEqual(['holdem-tray-practice']);
   });
 
+  test('cash negative traversal accepts showdown or an observed hand boundary', () => {
+    expect(shouldEndHoldemNegativeTraversal(
+      { dealStep: 'turn', correlation: { hand: 'hand-a' } },
+      'hand-a',
+    )).toBe(false);
+    expect(shouldEndHoldemNegativeTraversal(
+      { dealStep: 'showdown', correlation: { hand: 'hand-a' } },
+      'hand-a',
+    )).toBe(true);
+    expect(shouldEndHoldemNegativeTraversal(
+      { dealStep: 'hole', correlation: { hand: 'hand-b' } },
+      'hand-a',
+    )).toBe(true);
+  });
+
+  test('blackjack negative traversal accepts settlement or a hand boundary', () => {
+    expect(shouldEndBlackjackNegativeTraversal(
+      { dealStep: 'player-turn', correlation: { hand: 'hand-a' } },
+      'hand-a',
+    )).toBe(false);
+    expect(shouldEndBlackjackNegativeTraversal(
+      { dealStep: 'settled', correlation: { hand: 'hand-a' } },
+      'hand-a',
+    )).toBe(true);
+    expect(shouldEndBlackjackNegativeTraversal(
+      { dealStep: 'hole', correlation: { hand: 'hand-b' } },
+      'hand-a',
+    )).toBe(true);
+  });
+
   test('checkpoint journal selection filters by expected hand correlation', async () => {
     const signature = (hand: string) => JSON.stringify([
       'holdem-tray-practice',
@@ -302,6 +334,55 @@ describe('offline live-runner plans', () => {
     expect(root.renderRevision).toBe(3);
   });
 
+  test('checkpoint journal selection can pin one immutable revision', async () => {
+    const signature = (dealStep: string) => JSON.stringify([
+      'holdem-tray-practice',
+      2,
+      'same-hand',
+      1,
+      '',
+      dealStep,
+      'player-turn',
+      'revealing',
+      [],
+      [],
+    ]);
+    const entries = [
+      {
+        surface: 'holdem-tray-practice',
+        instanceId: 'same',
+        revision: 2,
+        dealStep: 'flop',
+        transition: 'revealing',
+        signature: signature('flop'),
+        ts: 1,
+      },
+      {
+        surface: 'holdem-tray-practice',
+        instanceId: 'same',
+        revision: 4,
+        dealStep: 'turn',
+        transition: 'revealing',
+        signature: signature('turn'),
+        ts: 2,
+      },
+    ];
+    const driver = new PlanDriver();
+    driver.evalJson = async <T>() => entries as T;
+    const root = await waitForParityCheckpoint(
+      driver,
+      {
+        label: 'every-step-2',
+        surface: 'holdem-tray-practice',
+        expectRevisionAdvance: true,
+        expectRenderRevision: 4,
+        expectCorrelationHand: 'same-hand',
+      },
+      0,
+    );
+    expect(root.renderRevision).toBe(4);
+  });
+
   test('practice street reach reads the landed session/current hand shape', () => {
     const wire = {
       hand: {
@@ -315,5 +396,18 @@ describe('offline live-runner plans', () => {
     };
     expect(reachedFor('holdem', 'H2')(wire)).toBe(true);
     expect(reachedFor('holdem', 'H3')(wire)).toBe(false);
+  });
+
+  test('cash felt negative reach uses the public seat projection', () => {
+    const wire = {
+      live: {
+        seats: [
+          { seatIndex: 0, status: 'active' },
+          { seatIndex: 1, status: 'folded' },
+        ],
+      },
+    };
+    expect(reachedFor('holdem', 'H-neg', 'holdem-felt-3d')(wire)).toBe(true);
+    expect(reachedFor('holdem', 'H-neg', 'holdem-tray-3d')(wire)).toBe(false);
   });
 });

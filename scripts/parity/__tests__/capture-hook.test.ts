@@ -46,6 +46,7 @@ describe('pre-navigation fetch capture hook', () => {
     const records = fakeWindow.__CV_WIRE_SINCE?.('baccarat/coup', 0) ?? [];
     expect(records).toHaveLength(256);
     expect(records[0]!.seq).toBe(5);
+    expect(records[0]!.capturedAt).toBeNumber();
     expect(records.at(-1)?.requestBody).toEqual({
       stake: 259,
       bet: 'player',

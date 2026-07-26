@@ -277,6 +277,9 @@ export async function waitForParityCheckpoint(
 ): Promise<CardParityRoot> {
   const predicate = `(entry) =>
     entry.revision > ${afterRevision}
+    ${checkpoint.expectRenderRevision !== undefined
+      ? `&& entry.revision === ${checkpoint.expectRenderRevision}`
+      : ''}
     ${checkpoint.expectDealStep
       ? `&& entry.dealStep === ${JSON.stringify(checkpoint.expectDealStep)}`
       : ''}
@@ -303,6 +306,10 @@ export async function waitForParityCheckpoint(
   );
   const entry = entries
     .filter((candidate) => candidate.revision > afterRevision)
+    .filter((candidate) => (
+      checkpoint.expectRenderRevision === undefined
+      || candidate.revision === checkpoint.expectRenderRevision
+    ))
     .filter((candidate) => (
       checkpoint.expectDealStep === undefined
       || candidate.dealStep === checkpoint.expectDealStep

@@ -265,6 +265,63 @@ describe('recorded-wire parity assertions', () => {
     }).pass).toBe(false);
   });
 
+  test('cash felt uses fixed POV opponent slots and empties non-card seats', () => {
+    const wire: WireRecord = {
+      seq: 42,
+      method: 'GET',
+      url: '',
+      urlSuffix: 'poker/cash/tables/table-a/state-for-agent',
+      status: 200,
+      requestBody: null,
+      responseBody: {
+        ok: true,
+        view: {
+          handNumber: 16,
+          seatIndex: 3,
+          holeCards: [],
+          table: {
+            tableId: 'cash:table-a',
+            handNumber: 16,
+            board: [],
+            seats: [
+              { seatIndex: 0, status: 'folded' },
+              { seatIndex: 1, status: 'active' },
+              { seatIndex: 3, status: 'active' },
+              { seatIndex: 5, status: 'allin' },
+            ],
+          },
+        },
+      },
+      handId: null,
+      handNumber: 16,
+      coupId: null,
+      shoeId: null,
+      idempotencyKey: null,
+    };
+    const root = {
+      surface: 'holdem-felt-3d',
+      correlation: { hand: 'table-a:16', handNumber: 16 },
+      dealStep: 'hole',
+    } as CardParityRoot;
+    const expected = expectedFromWire(
+      'holdem',
+      root.surface,
+      wire,
+      undefined,
+      { root, records: [wire] },
+    );
+    expect(expected.slots).toMatchObject({
+      'opp-0-1': { facing: 'empty', status: 'folded' },
+      'opp-1-1': { facing: 'down', status: 'active' },
+      'opp-2-1': { facing: 'empty', status: 'active' },
+      'opp-4-1': { facing: 'empty', status: 'active' },
+      'opp-5-1': { facing: 'down', status: 'allin' },
+    });
+    expect(Object.keys(expected.slots).filter((slot) => slot.startsWith('opp-')))
+      .toHaveLength(10);
+    expect(expected.slots['opp-3-1']).toBeUndefined();
+  });
+
   test('a later negative-row revision leak fails even when the first is clean', () => {
     const recorded = RECORDED_CASES[0]!;
     const first = structuredClone(recorded.root);
@@ -296,5 +353,36 @@ describe('recorded-wire parity assertions', () => {
       expected: '',
       actual: 'As',
     });
+  });
+
+  test('journal timestamps pin a root to its nearest same-endpoint wire', () => {
+    const recorded = RECORDED_CASES[0]!;
+    const root = {
+      ...structuredClone(recorded.root),
+      observedAt: 200,
+    };
+    const before = {
+      ...structuredClone(recorded.records[0]!),
+      seq: 10,
+      capturedAt: 180,
+    };
+    const after = {
+      ...structuredClone(recorded.records[0]!),
+      seq: 11,
+      capturedAt: 300,
+      responseBody: { unrelated: 'later same-correlation state' },
+    };
+    const result = assertParityCheckpoint({
+      game: 'blackjack',
+      checkpoint: {
+        label: 'negative-read-timestamped',
+        surface: root.surface,
+        expectRevisionAdvance: true,
+      },
+      root,
+      records: [before, after],
+    });
+    expect(result.pass).toBe(true);
+    expect(result.resolvedWireSeq).toBe(10);
   });
 });

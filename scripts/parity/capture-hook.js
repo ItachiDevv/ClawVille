@@ -179,6 +179,7 @@
       .get('Idempotency-Key');
     append({
       seq: nextSeq++,
+      capturedAt: Date.now(),
       method,
       url: rawUrl,
       urlSuffix: suffixFor(rawUrl),

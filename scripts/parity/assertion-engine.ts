@@ -53,6 +53,16 @@ export function assertParityCheckpoint({
       String(root.renderRevision),
     ));
   }
+  if (
+    checkpoint.expectRenderRevision !== undefined
+    && root.renderRevision !== checkpoint.expectRenderRevision
+  ) {
+    rootMismatches.push(rootMismatch(
+      'meta:render-revision-exact',
+      String(checkpoint.expectRenderRevision),
+      String(root.renderRevision),
+    ));
+  }
   if (checkpoint.expectDealStep !== undefined
     && root.dealStep !== checkpoint.expectDealStep) {
     rootMismatches.push(rootMismatch(

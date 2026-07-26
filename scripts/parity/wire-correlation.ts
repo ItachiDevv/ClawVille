@@ -133,12 +133,22 @@ function endpointWeight(root: CardParityRoot, record: WireRecord): number {
     weight += 20;
   } else if (
     /state-for-agent/.test(suffix)
+    && root.surface === 'holdem-tray-3d'
     && root.dealStep !== 'showdown'
   ) {
     // Cash hand numbers intentionally identify the same hand from deal through
     // settlement. A later last-settled poll can therefore correlate by number
     // while describing terminal truth, but a nonterminal tray checkpoint must
     // use the private live view that owns its hole cards and current pot.
+    weight += 20;
+  } else if (
+    root.surface === 'holdem-felt-3d'
+    && /poker\/cash\/tables\/[^/?]+$/.test(suffix)
+    && root.dealStep !== 'showdown'
+  ) {
+    // The felt is the public table projection. Correlate it to the public
+    // table wire instead of a private state-for-agent poll that may lead the
+    // visible board by one simulator transition.
     weight += 20;
   } else if (/hand|action|current|table/.test(suffix)) {
     weight += 5;
@@ -158,7 +168,23 @@ export function resolveWireForRoot(
   const matches = records
     .filter((record) => record.status >= 200 && record.status < 300)
     .filter((record) => recordMatches(root, record))
-    .sort((a, b) => endpointWeight(root, b) - endpointWeight(root, a));
+    .sort((a, b) => {
+      const endpointOrder =
+        Math.floor(endpointWeight(root, b))
+        - Math.floor(endpointWeight(root, a));
+      if (endpointOrder !== 0) return endpointOrder;
+      if (
+        root.observedAt !== undefined
+        && a.capturedAt !== undefined
+        && b.capturedAt !== undefined
+      ) {
+        const temporalOrder =
+          Math.abs(a.capturedAt - root.observedAt)
+          - Math.abs(b.capturedAt - root.observedAt);
+        if (temporalOrder !== 0) return temporalOrder;
+      }
+      return b.seq - a.seq;
+    });
   return matches[0] ?? null;
 }
 

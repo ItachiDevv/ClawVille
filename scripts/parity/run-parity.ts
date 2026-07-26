@@ -331,6 +331,7 @@ async function runLiveScenario(): Promise<void> {
       const preferCurrentRoot = async (
         candidate: Awaited<ReturnType<typeof waitForParityCheckpoint>>,
       ): Promise<Awaited<ReturnType<typeof waitForParityCheckpoint>>> => {
+        if (checkpoint.label.startsWith('every-')) return candidate;
         const current = await readParityRoot(driver, checkpoint.surface);
         if (
           current
@@ -487,6 +488,7 @@ async function runLiveScenario(): Promise<void> {
           });
         }
         if (result.pass) break;
+        if (checkpoint.label.startsWith('every-')) break;
         try {
           root = await waitForParityCheckpoint(
             driver,

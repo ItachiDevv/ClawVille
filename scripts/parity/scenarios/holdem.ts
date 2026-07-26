@@ -31,7 +31,7 @@ function scenario(
     feltReplay: surface.includes('-felt-')
       ? 'rendered-state-only'
       : 'not-applicable',
-    reachedPredicate: reachedFor('holdem', row),
+    reachedPredicate: reachedFor('holdem', row, surface),
     run: (driver) => driveScenario('holdem', row, surface, phases, driver),
     teardown: teardownFor('holdem'),
   };

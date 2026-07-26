@@ -1,11 +1,15 @@
 import type {
   CardFacing,
-  CardParityRoot,
+  CardParityRoot as AppCardParityRoot,
   Surface,
 } from '../../apps/web/src/lib/cove/card-parity-mirror';
 import type { Driver } from './driver';
 
-export type { CardFacing, CardParityRoot, Surface };
+export type { CardFacing, Surface };
+
+export interface CardParityRoot extends AppCardParityRoot {
+  observedAt?: number;
+}
 
 export type ParityGame = 'holdem' | 'blackjack' | 'baccarat';
 export type ParityTier = 'guest' | 'live';
@@ -13,6 +17,7 @@ export type MatrixStatus = 'PASS' | 'FAIL' | 'UNPROVEN' | 'BLOCKED';
 
 export interface WireRecord {
   seq: number;
+  capturedAt?: number;
   method: string;
   url: string;
   urlSuffix: string;
@@ -48,6 +53,7 @@ export interface ParityCheckpoint {
   label: string;
   surface: Surface;
   expectRevisionAdvance: true;
+  expectRenderRevision?: number;
   expectDealStep?: string;
   expectCorrelationHand?: string;
   expectTransition?: CardParityRoot['transition'];

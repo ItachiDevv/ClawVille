@@ -30,6 +30,6 @@ describe('canonical landed journal signatures', () => {
       transition: root.transition,
       signature,
       ts: 1,
-    })).toEqual(root);
+    })).toEqual({ ...root, observedAt: 1 });
   });
 });

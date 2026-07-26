@@ -91,6 +91,26 @@ describe('immutable application correlation', () => {
     expect(resolveWireForRoot(root, [settled])).toBeNull();
   });
 
+  test('cash felt resolves against the public table projection', () => {
+    const root = {
+      ...RECORDED_CASES[3]!.root,
+      surface: 'holdem-felt-3d',
+      dealStep: 'flop',
+      correlation: { hand: 'table-a:41', handNumber: 41 },
+    } as CardParityRoot;
+    const privateView = baseRecord({
+      seq: 20,
+      urlSuffix: 'poker/cash/tables/table-a/state-for-agent',
+      handNumber: 41,
+    });
+    const publicTable = baseRecord({
+      seq: 19,
+      urlSuffix: 'poker/cash/tables/table-a',
+      handNumber: 41,
+    });
+    expect(resolveWireForRoot(root, [privateView, publicTable])?.seq).toBe(19);
+  });
+
   test('practice does not match a different hand with the same index', () => {
     const root = RECORDED_CASES[3]!.root;
     const wrong = baseRecord({
