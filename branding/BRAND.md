@@ -75,6 +75,9 @@ brushed metal gradient on Gold. Flat color is acceptable for small text and chip
 The kit shipped no font files. Observed styles + open-source stand-ins (use these until
 marketing confirms the real faces; see Open Flags):
 
+The kit bundles the stand-ins as woff2 in `assets/fonts/` (Anton 400, Barlow 600/700; both
+SIL Open Font License) so banner templates render identically everywhere.
+
 | Role | Observed style | Stand-in (Google Fonts) |
 |---|---|---|
 | Logo wordmark | custom chunky rounded slab, playful | never re-set; use the logo files |
@@ -164,6 +167,9 @@ Canonical phrase bank: `docs/brand-language.md`. Non-negotiables:
 | `assets/reference/*.jpg` | 3 published marketing banners (style exemplars) | B |
 | `assets/video/running.mp4` | robots-running clip | A |
 | `assets/video/x-formatted-2.mp4` | X-format motion piece | A |
+| `assets/mascot/mascot-only-transparent.png` | mascot cutout, no sign (derived) | both |
+| `assets/fonts/*.woff2` | Anton + Barlow stand-ins (OFL) | B |
+| `graphics/banner-*.html` | live banner templates (1965x800, Register B recipe); open in a browser at that viewport and screenshot to export | B |
 
 Not in the repo on purpose: `early-ideas.jpg` (Drive only). It contains recognizable
 third-party game characters; internal mood reference ONLY, never publish or commit.

@@ -36,6 +36,12 @@
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-07-26 (repo-scrub session, push 3) — SAP/Meridian announcement banners + banner template system (`branding/graphics/`)
+- **What:** three Register-B banner templates at X-post size (1965x800), built per the BRAND.md §7 recipe and browser-verified: `banner-agents-pay-agents.html` (Electric Blue, LIVE: gasless x402 USDC payments, dual facilitator failover), `banner-agent-economy-live.html` (Neon Lime, LIVE: escrowed bounties, staked agents, provable payouts), `banner-agent-passport.html` (Champagne Gold, COMING SOON: on-chain identity + reputation, uses the locked keeper phrases). Supporting: bundled OFL webfonts (Anton/Barlow woff2), derived mascot-only transparent cutout (sign masked out + hole-healed). Exports = open template at 1965x800 viewport, screenshot.
+- **Who it's for:** founder marketing push on the agent-economy work; future sessions reuse the templates for any Register-B announcement.
+- **What broke:** nothing; static assets only. Copy follows brand rules (no em dashes, vCLAW naming n/a, partner names text-only pending their nod).
+- **SCHEMA:** `synced`. **PARITY:** n/a.
+
 ### 2026-07-26 (repo-scrub session, push 2) — CLAWVILLE BRAND KIT added (`branding/`)
 - **What:** first-ever repo brand kit, built from the marketing team's Drive asset folders (founder-provided): `branding/BRAND.md` (canonical rules: the two visual registers, measured hex palettes, typography stand-ins, logo/mascot rules, the broadcast-banner recipe, copy rules) + `branding/brand-board.html` (visual one-pager, browser-verified) + 23 curated assets under `branding/assets/` (logos incl. mono SVG + PSD source, mascot art, beach banners, 9 stickers, 3 published marketing exemplars, 2 video clips). Also commits the previously untracked `docs/brand-language.md` (locked keeper phrases) which BRAND.md references. `early-ideas.jpg` deliberately NOT committed (contains third-party game characters; Drive-internal reference only).
 - **Who it's for:** every future session producing outward-facing graphics/copy; closes the "repo has zero exposure to marketing's style" gap (founder 2026-07-26).
