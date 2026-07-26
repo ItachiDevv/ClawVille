@@ -300,7 +300,19 @@ const DIRS = [
  * Find a path from pixel (startX, startY) to pixel (endX, endY).
  * Returns pixel-coord waypoints, or empty array if no path found.
  */
+/**
+ * Test/ops observability for A* volume (2026-07-26). `findPath` was measured at
+ * 165-258 ms per call on the town graph, and the 200 ms sim tick shares the Bun
+ * event loop with SSE and HTTP — so "which code paths call A*, and how often" is
+ * a load-bearing invariant, not a nice-to-have. `npc-directed-route.test.ts`
+ * asserts that `moveNpcs()` performs EXACTLY ZERO invocations.
+ */
+let findPathCalls = 0;
+export function getFindPathCallCount(): number { return findPathCalls; }
+export function resetFindPathCallCount(): void { findPathCalls = 0; }
+
 export function findPath(startX: number, startY: number, endX: number, endY: number): PathNode[] {
+  findPathCalls++;
   const grid = getGrid();
 
   // Convert pixel to tile coords

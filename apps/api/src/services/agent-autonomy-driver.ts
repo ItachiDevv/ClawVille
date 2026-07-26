@@ -66,7 +66,7 @@ import {
   type AutonomyStatusThought,
 } from '@clawville/shared';
 import { createHash } from 'crypto';
-import { npcSimulation } from './npc-simulation';
+import { NPC_WORLD_WALK_SPEED_WU_PER_S, npcSimulation } from './npc-simulation';
 import { agentOrchestrator } from './agent-orchestrator';
 import { sessionDigest } from './session-digest';
 import { readEarnedSkillLessons } from './earned-skill-memory';
@@ -122,6 +122,26 @@ interface HouseAgentEntry {
   phaseSince: number;
   /** Building the agent is walking toward / conversing at (null when deciding). */
   targetBuildingId: string | null;
+  /**
+   * epoch-ms this walk LEG must reach its target by, sized from the stamped
+   * route length. 0 → not driver-stamped (legacy entry / phase forced by a
+   * test), in which case the driver falls back to `phaseSince +
+   * WALK_BUDGET_FLOOR_MS` AND performs no free re-routing — today's exact
+   * behavior (see `agent-autonomy-round2.test.ts:177-190`).
+   */
+  walkDeadline: number;
+  /**
+   * HARD cumulative ceiling for the whole episode, set ONCE at walk-start and
+   * never extended by a re-route. 0 when not walking.
+   */
+  walkEpisodeDeadline: number;
+  /** Free (no-LLM) re-routes already spent this episode (cap MAX_WALK_REPLANS). */
+  walkReplans: number;
+  /**
+   * Remaining route length observed on the previous driver tick. null resets the
+   * baseline (walk start / after a re-route) so the first tick never wedges.
+   */
+  lastRemainingWu: number | null;
   /** Last building chosen — favor variety, don't re-pick immediately. */
   lastBuildingId: string | null;
   /**
@@ -180,7 +200,36 @@ const TICK_MS = 30_000; // driver interval — NOT the 200ms sim tick
 // own overlap guard, so a slow pass never stacks.
 const RECONCILE_EVERY_N_TICKS = 10;
 const LLM_TIMEOUT_MS = 15_000; // hard ceiling on one decision
-const WALK_TIMEOUT_MS = 120_000; // give up walking + replan if not arrived
+// Walk give-up budget, scaled to the ACTUAL route length (2026-07-26). Was a flat
+// WALK_TIMEOUT_MS = 120_000 for every trip — generous for a 2,000 wu hop, far too
+// tight for a cross-map one. FLOOR keeps today's exact value, so every route
+// <= 11,000 wu is byte-identical to before. Arithmetic: §4 of the spec.
+export const WALK_BUDGET_FLOOR_MS = 120_000;
+export const WALK_BUDGET_CEIL_MS = 180_000;
+export const WALK_BUDGET_SAFETY = 2;
+export const WALK_BUDGET_SLACK_MS = 20_000;
+/** Free (no-LLM) re-routes allowed per walk episode. */
+export const MAX_WALK_REPLANS = 2;
+/**
+ * HARD cumulative ceiling on ONE walk episode (first walk-start → real
+ * re-decide), never reset by a re-route. Without it, N replans each granting a
+ * fresh route-sized deadline compound into ~16.5 min of no re-decide.
+ */
+export const MAX_WALK_EPISODE_MS = 300_000;
+/**
+ * Minimum remaining-length decrease that counts as progress across one 30 s
+ * driver tick. A healthy body covers ~6,600 wu in 30 s; 220 wu is 1 second of
+ * walking (3.3% of nominal), so anything below it is a genuine wedge.
+ */
+export const WALK_PROGRESS_EPSILON_WU = 220;
+
+/** Pure, deterministic. Exported for direct unit test. */
+export function walkBudgetMsForRouteLength(lengthWu: number): number {
+  const safeLength = Number.isFinite(lengthWu) && lengthWu > 0 ? lengthWu : 0;
+  const raw = WALK_BUDGET_SLACK_MS
+    + (safeLength / NPC_WORLD_WALK_SPEED_WU_PER_S) * 1000 * WALK_BUDGET_SAFETY;
+  return Math.min(WALK_BUDGET_CEIL_MS, Math.max(WALK_BUDGET_FLOOR_MS, Math.round(raw)));
+}
 const TALK_COOLDOWN_MS = 60_000; // linger after a conversation before re-deciding
 const MAX_HOUSE_AGENTS = 64; // bound the registry
 // §B.1 — SEPARATE bound for user-owned autonomous agents (never shares the house
@@ -433,6 +482,10 @@ class AgentAutonomyDriver {
       phase: 'deciding',
       phaseSince: Date.now(),
       targetBuildingId: null,
+      walkDeadline: 0,
+      walkEpisodeDeadline: 0,
+      walkReplans: 0,
+      lastRemainingWu: null,
       lastBuildingId: null,
       consecutiveEmptyDecides: 0,
       lastLesson: null,
@@ -560,6 +613,10 @@ class AgentAutonomyDriver {
       phase: 'deciding',
       phaseSince: Date.now(),
       targetBuildingId: null,
+      walkDeadline: 0,
+      walkEpisodeDeadline: 0,
+      walkReplans: 0,
+      lastRemainingWu: null,
       lastBuildingId: null,
       consecutiveEmptyDecides: 0,
       lastLesson: null,
@@ -689,20 +746,37 @@ class AgentAutonomyDriver {
 
     this.inFlight.add(agentId);
     try {
-      let runtime = agentOrchestrator.getRunningAgentRuntime(entry.platformAgentId);
-      if (!runtime) runtime = await this.warmRuntimeBounded(entry);
-      if (!runtime) return false;
-
-      console.log(
-        `[AutonomyDriver][debug] drive t=${this.tickCount} ${sessionDigest(entry.agentId)} phase=${entry.phase} runtime=yes`,
-      );
-      await this.driveOnce(
-        entry.agentId,
-        (prompt) => this.withTimeout(runtime.decide(prompt, {
-          maxTokens: DECIDE_MAX_TOKENS,
-          localAttemptTimeoutMs: 6_000,
-        })),
-      );
+      // M3 (2026-07-26): the walking phase NEVER calls decide(), so it must not
+      // be gated on a warm cognition runtime. Before this, a persistent runtime
+      // outage stranded a body in phase 'walking' forever — arrival, wedge
+      // recovery, and the re-decide fallback all live there. A pending directive
+      // is excluded: that must take the full cycle so the directive is acted on.
+      if (entry.phase === 'walking' && !entry.directivePending) {
+        console.log(
+          `[AutonomyDriver][debug] drive t=${this.tickCount} ${sessionDigest(entry.agentId)} phase=walking runtime=not-required`,
+        );
+        const perception = npcSimulation.buildPerception(entry.bodyId);
+        if (!perception) {
+          entry.phase = 'deciding';
+          entry.targetBuildingId = null;
+        } else {
+          await this.stepWalkingPhase(entry, perception, Date.now());
+        }
+      } else {
+        let runtime = agentOrchestrator.getRunningAgentRuntime(entry.platformAgentId);
+        if (!runtime) runtime = await this.warmRuntimeBounded(entry);
+        if (!runtime) return false;
+        console.log(
+          `[AutonomyDriver][debug] drive t=${this.tickCount} ${sessionDigest(entry.agentId)} phase=${entry.phase} runtime=yes`,
+        );
+        await this.driveOnce(
+          entry.agentId,
+          (prompt) => this.withTimeout(runtime.decide(prompt, {
+            maxTokens: DECIDE_MAX_TOKENS,
+            localAttemptTimeoutMs: 6_000,
+          })),
+        );
+      }
     } finally {
       this.inFlight.delete(agentId);
     }
@@ -953,57 +1027,10 @@ class AgentAutonomyDriver {
       entry.phaseSince = now;
     }
 
-    // Phase: walking — cheap arrival poll, NO llm.
+    // Phase: walking — cheap arrival poll, NO llm. Extracted so `driveAgentNow`
+    // can run it WITHOUT a warm cognition runtime (M3).
     if (entry.phase === 'walking') {
-      if (this.hasArrived(perception, entry)) {
-        const arrivedDestination = entry.targetBuildingId;
-        if (arrivedDestination) {
-          this.pushThought(
-            entry,
-            'arrival',
-            `Arrived at ${destinationLabel(arrivedDestination) ?? arrivedDestination}`,
-            now,
-          );
-          await this.recordDriverAction(entry, 'agent.visit', {
-            destination: arrivedDestination,
-          });
-        }
-        const teachingTarget = entry.targetBuildingId
-          ? perception.nearbyBuildings.some((building) =>
-              building.buildingId === entry.targetBuildingId)
-          : false;
-        if (teachingTarget && entry.targetBuildingId) {
-          entry.phase = 'arrived';
-          entry.phaseSince = now;
-          // Slice 4: settle only a TEACHING-BUILDING arrival. Places such as the
-          // cove are visible navigation outcomes, never teacher settlement.
-          void this.arrivalSettle({
-            agentId: entry.agentId,
-            bodyId: entry.bodyId,
-            avatarId: entry.avatarId,
-            buildingId: entry.targetBuildingId,
-          }).catch((err) =>
-            console.warn(
-              `[AutonomyDriver] arrival settle failed for ${sessionDigest(entry.agentId)}:`,
-              err instanceof Error ? err.message : err,
-            ),
-          );
-        } else {
-          // A non-teaching destination (cove / poker room) has been reached.
-          // Linger without another LLM call, then return to deciding; never emit
-          // an invalid talk_to_npc(buildingId=cove) or teacher reward.
-          entry.phase = 'talking';
-          entry.phaseSince = now;
-          // Retain the reached place through the talking/linger phase so the
-          // owner HUD truthfully reads "At the Cove" until the next re-decide.
-        }
-      } else if (now - entry.phaseSince > WALK_TIMEOUT_MS) {
-        // Stuck / no progress — abandon this target and replan next tick.
-        this.pushThought(entry, 'observation', 'Walk timed out — re-deciding', now);
-        entry.phase = 'deciding';
-        entry.targetBuildingId = null;
-        entry.phaseSince = now;
-      }
+      await this.stepWalkingPhase(entry, perception, now);
       return; // walking never calls the LLM
     }
 
@@ -1211,6 +1238,14 @@ class AgentAutonomyDriver {
       entry.phaseSince = now;
       entry.targetBuildingId = chosen;
       entry.lastBuildingId = chosen;
+      // Size the give-up budget to the route the executor just stamped, and open
+      // ONE episode window that re-routes may not extend.
+      entry.walkReplans = 0;
+      entry.walkDeadline = now + walkBudgetMsForRouteLength(
+        npcSimulation.getRemainingPathLengthWu(entry.bodyId) ?? 0,
+      );
+      entry.walkEpisodeDeadline = now + MAX_WALK_EPISODE_MS;
+      entry.lastRemainingWu = null; // first walking tick records the baseline
     }
   }
 
@@ -1236,6 +1271,120 @@ class AgentAutonomyDriver {
       (candidate) => candidate.destinationId === entry.targetBuildingId,
     );
     return place ? place.distance <= BUILDING_INTERACTION_RADIUS : false;
+  }
+
+  /** A zero `walkDeadline` (legacy/hand-set entry) keeps the pre-2026-07-26 flat 120 s. */
+  private walkDeadlineFor(entry: HouseAgentEntry): number {
+    return entry.walkDeadline > 0 ? entry.walkDeadline : entry.phaseSince + WALK_BUDGET_FLOOR_MS;
+  }
+
+  /**
+   * One walking-phase step: arrival, wedge recovery, deadline. NEVER calls
+   * decide() — that is what lets `driveAgentNow` run it without a runtime.
+   */
+  private async stepWalkingPhase(
+    entry: HouseAgentEntry,
+    perception: NonNullable<ReturnType<typeof npcSimulation.buildPerception>>,
+    now: number,
+  ): Promise<void> {
+    if (this.hasArrived(perception, entry)) {
+      entry.walkDeadline = 0;
+      entry.walkEpisodeDeadline = 0;
+      entry.walkReplans = 0;
+      entry.lastRemainingWu = null;
+      const arrivedDestination = entry.targetBuildingId;
+      if (arrivedDestination) {
+        this.pushThought(
+          entry,
+          'arrival',
+          `Arrived at ${destinationLabel(arrivedDestination) ?? arrivedDestination}`,
+          now,
+        );
+        await this.recordDriverAction(entry, 'agent.visit', {
+          destination: arrivedDestination,
+        });
+      }
+      const teachingTarget = entry.targetBuildingId
+        ? perception.nearbyBuildings.some((building) =>
+            building.buildingId === entry.targetBuildingId)
+        : false;
+      if (teachingTarget && entry.targetBuildingId) {
+        entry.phase = 'arrived';
+        entry.phaseSince = now;
+        // Slice 4: settle only a TEACHING-BUILDING arrival. Places such as the
+        // cove are visible navigation outcomes, never teacher settlement.
+        void this.arrivalSettle({
+          agentId: entry.agentId,
+          bodyId: entry.bodyId,
+          avatarId: entry.avatarId,
+          buildingId: entry.targetBuildingId,
+        }).catch((err) =>
+          console.warn(
+            `[AutonomyDriver] arrival settle failed for ${sessionDigest(entry.agentId)}:`,
+            err instanceof Error ? err.message : err,
+          ),
+        );
+      } else {
+        // A non-teaching destination (cove / poker room) has been reached.
+        // Linger without another LLM call, then return to deciding; never emit
+        // an invalid talk_to_npc(buildingId=cove) or teacher reward.
+        entry.phase = 'talking';
+        entry.phaseSince = now;
+        // Retain the reached place through the talking/linger phase so the
+        // owner HUD truthfully reads "At the Cove" until the next re-decide.
+      }
+    } else {
+      // --- not arrived ---------------------------------------------------
+      // `stamped` gates BOTH new behaviors on a real driver-stamped walk, so a
+      // legacy/hand-set entry (walkDeadline 0) keeps the exact pre-2026-07-26
+      // flat-120s full-re-decide path (B3 / round2.test.ts:177-190).
+      const stamped = entry.walkDeadline > 0;
+      const remaining = npcSimulation.getRemainingPathLengthWu(entry.bodyId);
+      const previous = entry.lastRemainingWu;
+      // A body whose valid route clips a collider wall-slides without closing
+      // distance. One 30 s tick of < 220 wu progress (nominal is ~6,600) is a
+      // wedge — recover in ~one tick instead of waiting out the whole deadline.
+      const wedged = stamped
+        && remaining !== null
+        && previous !== null
+        && remaining > previous - WALK_PROGRESS_EPSILON_WU;
+      entry.lastRemainingWu = remaining;
+
+      if (wedged || now > this.walkDeadlineFor(entry)) {
+        const canFreeReroute = stamped
+          && !!entry.targetBuildingId
+          && entry.walkReplans < MAX_WALK_REPLANS
+          && now < entry.walkEpisodeDeadline
+          && npcSimulation.repathToDestination(entry.bodyId, entry.targetBuildingId);
+
+        if (canFreeReroute) {
+          entry.walkReplans += 1;
+          entry.phaseSince = now;
+          entry.walkDeadline = now + walkBudgetMsForRouteLength(
+            npcSimulation.getRemainingPathLengthWu(entry.bodyId) ?? 0,
+          );
+          // Episode deadline is deliberately NOT extended (M2).
+          entry.lastRemainingWu = npcSimulation.getRemainingPathLengthWu(entry.bodyId);
+          this.pushThought(
+            entry,
+            'observation',
+            wedged ? 'Path blocked — re-routing to the same destination'
+                   : 'Walk overran — re-routing to the same destination',
+            now,
+          );
+        } else {
+          // Terminal fallback — the pre-2026-07-26 full LLM re-decide.
+          this.pushThought(entry, 'observation', 'Walk timed out — re-deciding', now);
+          entry.phase = 'deciding';
+          entry.targetBuildingId = null;
+          entry.phaseSince = now;
+          entry.walkDeadline = 0;
+          entry.walkEpisodeDeadline = 0;
+          entry.walkReplans = 0;
+          entry.lastRemainingWu = null;
+        }
+      }
+    }
   }
 
   /**
