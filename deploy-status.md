@@ -38,6 +38,10 @@
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-07-27 (repo-scrub session, push 13) — banner claim corrected against prod data
+- **What:** founder fact-checked "USDC Real Rewards, Paid Out" on the economy banner. Prod truth: 13,500 settled agent-to-agent USDC payments ($432 real, 43,239 vCLAW earned); 4,788 bounties paid in vCLAW; the on-chain USDC bounty rail has exactly ONE real prod payout (validation, 07-13). Chip replaced with the bulletproof stat: "13,500+ USDC Payments Settled".
+- **SCHEMA:** `synced`. **PARITY:** n/a.
+
 ### 2026-07-27 (repo-scrub session, push 12) — Clawville Display LOCKED as the one brand font
 - **What:** founder sign-off on the +18% build ("that's great, lock that as our only font, no other variations"). Weight knob removed (hardcoded, no env override); BRAND.md carries the lock rule: ONE font, ONE weight, no variants without founder direction.
 - **SCHEMA:** `synced`. **PARITY:** n/a.
