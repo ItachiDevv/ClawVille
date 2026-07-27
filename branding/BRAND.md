@@ -108,6 +108,13 @@ as the headline; the headline is set in the display type instead.
 ## 6. Mascot
 
 The red lobster is THE brand character (official name: not yet locked, see Open Flags).
+- **Cinematic pirate rendition IS in the kit** (added 2026-07-26 by the founder):
+  `assets/logos/clawville-logo-og.jpg` (square social/OG card, pirate lobster hoisting the
+  sign) and the derived transparent hero `assets/mascot/mascot-pirate-cutout.png` — the
+  DEFAULT hero for Register B banners (it carries the logo sign, so no separate logo badge
+  is needed in the layout).
+- Tagline in use on official art (`assets/world/clawville-logo-banner.jpg`):
+  **"More Than A Game."**
 - Daylight rendition: friendly, wide-eyed, emerging from surf with claws raised.
   `assets/mascot/mascot-logo-lockup-transparent.png` (with logo, transparent) and
   `assets/mascot/mascot-square.jpg` (square, avatar-friendly).
@@ -173,6 +180,9 @@ Canonical phrase bank: `docs/brand-language.md`. Non-negotiables:
 | `assets/video/running.mp4` | robots-running clip | A |
 | `assets/video/x-formatted-2.mp4` | X-format motion piece | A |
 | `assets/mascot/mascot-only-transparent.png` | mascot cutout, no sign (derived) | both |
+| `assets/mascot/mascot-pirate-cutout.png` | cinematic pirate hero, transparent (derived from og) | B |
+| `assets/logos/clawville-logo-og.jpg` | square OG/social card, pirate + sign | B |
+| `assets/world/clawville-logo-banner.jpg` | town-scene banner, "More Than A Game" tagline | A |
 | `assets/fonts/*.woff2` | Anton + Barlow stand-ins (OFL) | B |
 | `graphics/banner-*.html` | live banner templates (1965x800, Register B recipe); open in a browser at that viewport and screenshot to export | B |
 
@@ -189,6 +199,7 @@ third-party game characters; internal mood reference ONLY, never publish or comm
 4. Wordmark casing: logo reads "Clawville"; repo prose uses "ClawVille"; broadcast headlines
    use all-caps. Codified here as: logo files as-is, ALL CAPS in display type, "ClawVille"
    in running prose. Overrule if wrong.
-5. Cinematic mascot renders: marketing's banners use costumed cinematic renders of the
-   lobster (pirate, tropical). If standalone transparent-PNG versions exist, add them to
-   `assets/mascot/` so banner templates can use them instead of the daylight cutout.
+5. ~~Cinematic mascot renders~~ PARTIALLY RESOLVED 2026-07-26: the pirate render arrived
+   (`clawville-logo-og.jpg`, cutout derived) and is now the default Register B hero. The
+   tropical-shirt variant still exists only baked into the Recap exemplar; add it if a
+   standalone version turns up.

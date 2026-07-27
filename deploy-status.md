@@ -37,6 +37,11 @@
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-07-26 (repo-scrub session, push 5) — cinematic pirate mascot lands in the kit + banners
+- **What:** founder supplied two new official art files (fetched over SSH from the laptop): `clawville-logo-og.jpg` (square OG card, cinematic pirate lobster hoisting the sign) + `clawville-logo-banner.jpg` (town scene carrying the "More Than A Game" tagline). Derived `mascot-pirate-cutout.png` (AI background removal + cleanup) and made it the DEFAULT Register-B banner hero across all three templates (the sign in the hero replaces the separate logo badge). BRAND.md + brand board updated (inventory, mascot section, tagline, open-flag 5 partially resolved).
+- **Who it's for:** the SAP/Meridian announcement banners now carry marketing's cinematic mascot.
+- **SCHEMA:** `synced`. **PARITY:** n/a.
+
 ### 2026-07-26 (session copusMax, push 1) — autonomous-agent directed-walk fix (`agent-autonomy-driver.ts` + `npc-simulation.ts` + `pathfinding.ts`)
 - **What:** house/autonomous agents took ~10 min for a ~1-2 min walk. A single collider graze made the sim discard the whole route + destination + go idle; the driver then idled a flat 120 s and burned a full LLM re-decide, repeatedly. Fix: (1) a destination-stamped route is DIRECTED (tracked by path-array WeakSet) and is never self-abandoned on a graze — it falls through to the existing collision-free wall-slide clamp (ZERO findPath in the 200 ms tick — that A* measures 165-258 ms/call and shares the Bun loop with SSE/HTTP); directed routes are also excluded from ambient planning/idle-conversation so a server-managed connected-agent route isn't hijacked. (2) the give-up deadline scales to route length (120 s floor / 180 s ceiling, 5 min episode cap). (3) the 30 s driver re-routes a wedged/overdue trip to the same goal WITHOUT an LLM call (≤2 free re-routes) and now runs the walking phase without a warm runtime.
 - **What broke + fix:** v1 put findPath in the sim tick behind a "2 per tick" budget — Codex adversarial review REJECTED it (measured findPath 165-258 ms; one call exceeds the 200 ms tick; failed searches uncharged; the driver bypassed the counter). v2 moves ALL pathfinding to the 30 s driver, so the sim does zero A* (asserted by a pathfinder call counter).
