@@ -72,6 +72,9 @@ function outcome(
     totalBet: '25',
     totalPayout: '0',
     net: '-25',
+    rake: '0',
+    rakedPayout: '0',
+    rakedNet: '-25',
     cursorBefore: 0,
     cursorAfter: cards.length + 3,
     dealtBefore: 0,
@@ -210,6 +213,7 @@ function expectActionSettledSequence(
       'outcome-0': 'loss',
       'dealer-total': '20',
       'banner-text': 'YOU LOSE · -25 CT',
+      net: '-25',
     },
   });
   expect(settled?.slots.filter((slot) => slot.slot.startsWith('player-')))

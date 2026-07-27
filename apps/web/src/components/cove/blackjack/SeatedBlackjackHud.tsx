@@ -209,7 +209,7 @@ export function SeatedBlackjackHud({ controller }: { controller: Controller }) {
         >
           <div className={styles.settlementHeadline}>{bannerText}</div>
           <div className={styles.settlementDetail}>
-            Net {signedVclaw(net)} vCLAW · Rake {rake} vCLAW
+            Net <span data-testid="bj-banner-net">{signedVclaw(net)}</span> vCLAW · Rake {rake} vCLAW
           </div>
         </div>
       )}

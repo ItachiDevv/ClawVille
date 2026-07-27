@@ -3,8 +3,6 @@ import { driveScenario, reachedFor, teardownFor } from './runtime';
 
 const MISSING_2D_PUBLISHER =
   'missing blackjack-2d parity publisher/root on current HEAD';
-const MISSING_3D_NET_PROBE =
-  'missing frozen [data-testid="bj-banner-net"] on current HEAD';
 
 function scenario(
   row: string,
@@ -26,8 +24,6 @@ function scenario(
     ...(fixtureName ? { fixtureName } : {}),
     ...(surface === 'blackjack-2d'
       ? { blockedReason: MISSING_2D_PUBLISHER }
-      : ['B3', 'B4', 'B5', 'B6', 'B7', 'B8'].includes(row)
-        ? { blockedReason: MISSING_3D_NET_PROBE }
       : {}),
     feltReplay: 'not-applicable',
     reachedPredicate: reachedFor('blackjack', row),

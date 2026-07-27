@@ -704,6 +704,7 @@ export function useBlackjackRoomController(): BlackjackRoomState & {
     });
     setBalance(response.balance);
     setHand(null);
+    setActiveSlotState(0);
     setShoe((current) => current ? { ...current, dealtCount: response.dealtCount } : current);
     setPhase('player-turn');
     setBannerVisible(false);

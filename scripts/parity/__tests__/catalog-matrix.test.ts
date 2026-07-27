@@ -15,8 +15,8 @@ describe('scenario × tier × surface matrix', () => {
     expect(matrix.counts).toEqual({
       PASS: 0,
       FAIL: 0,
-      UNPROVEN: 26,
-      BLOCKED: 32,
+      UNPROVEN: 32,
+      BLOCKED: 26,
     });
     expect(matrix.markdown).toContain('Gate verdict: **FAIL**');
     expect(matrix.markdown).toContain('ordered street replay is tray-only');

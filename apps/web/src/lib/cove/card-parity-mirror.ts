@@ -357,6 +357,9 @@ export function buildBlackjackParity(i: {
   if (i.dealStep === 'settled' && i.bannerText !== undefined) {
     meta['banner-text'] = i.bannerText;
   }
+  if (i.dealStep === 'settled' && i.settled) {
+    meta.net = i.settled.outcome.rakedNet ?? '';
+  }
 
   return {
     surface: i.surface,

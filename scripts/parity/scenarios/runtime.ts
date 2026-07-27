@@ -31,6 +31,7 @@ export function reachedFor(
       const cards = arr(rec(hands[0])?.cards ?? body.playerHand);
       if (row === 'B2') return cards.length >= 3;
       if (row === 'B3') return cards.length >= 3;
+      if (row === 'B4') return arr(rec(outcome.dealer)?.cards).length >= 3;
       if (row === 'B5') return hands.some((hand) => rec(hand)?.isBust === true);
       if (row === 'B6') return hands.some((hand) => rec(hand)?.outcome === 'blackjack');
       if (row === 'B7') return hands.some((hand) => rec(hand)?.outcome === 'push');

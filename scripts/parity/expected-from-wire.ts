@@ -183,7 +183,11 @@ function blackjackExpected(body: UnknownRecord, dealStep: string): ExpectedParit
     });
     meta['dealer-total'] = stringValue(dealer.total);
   } else {
-    const dealerUpcard = first(live?.dealerUpcard, array(live?.dealerCards)[0]);
+    const dealerUpcard = first(
+      live?.dealerUpcard,
+      array(live?.dealerCards)[0],
+      array(record(outcome?.dealer)?.cards)[0],
+    );
     slots['dealer-card-1'] = up(dealerUpcard);
     slots['dealer-card-2'] = down();
   }
@@ -200,6 +204,8 @@ function blackjackExpected(body: UnknownRecord, dealStep: string): ExpectedParit
     meta['banner-text'] = stringValue(
       first(body.bannerText, outcome.bannerText, blackjackBanner(outcome)),
     );
+    // Credited raked net: apps/api/src/services/blackjack-engine.ts:1032.
+    meta.net = stringValue(outcome.rakedNet);
   }
   return { slots, meta };
 }

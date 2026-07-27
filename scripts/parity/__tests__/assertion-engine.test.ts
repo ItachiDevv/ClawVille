@@ -117,6 +117,66 @@ describe('recorded-wire parity assertions', () => {
     ).meta).toEqual({ pot: '30' });
   });
 
+  test('blackjack settled net uses raked outcome rather than gross top-level net', () => {
+    const wire: WireRecord = {
+      seq: 52,
+      method: 'POST',
+      url: '/api/cove/blackjack/hand/settle',
+      urlSuffix: 'blackjack/hand/settle',
+      status: 200,
+      requestBody: null,
+      responseBody: {
+        net: '50',
+        outcome: {
+          rakedNet: '47',
+          playerHands: [{
+            cards: [
+              { suit: 'spades', rank: 'A' },
+              { suit: 'hearts', rank: 'K' },
+            ],
+            total: 21,
+            outcome: 'blackjack',
+          }],
+          dealer: {
+            cards: [
+              { suit: 'clubs', rank: '10' },
+              { suit: 'diamonds', rank: '9' },
+            ],
+            total: 19,
+          },
+        },
+      },
+      handId: 'blackjack-raked-net',
+      handNumber: null,
+      coupId: null,
+      shoeId: 'shoe-raked-net',
+      idempotencyKey: 'settle-raked-net',
+    };
+    const expected = expectedFromWire(
+      'blackjack',
+      'blackjack-3d',
+      wire,
+      undefined,
+      {
+        root: {
+          surface: 'blackjack-3d',
+          version: 2,
+          instanceId: 'blackjack-raked-net',
+          renderRevision: 1,
+          correlation: { hand: 'blackjack-raked-net', handNumber: null },
+          dealStep: 'settled',
+          phase: 'settled',
+          transition: 'idle',
+          slots: [],
+          meta: {},
+        },
+        records: [wire],
+      },
+    );
+    expect(expected.meta.net).toBe('47');
+    expect(expected.meta.net).not.toBe('50');
+  });
+
   test('wrong, missing, extra, duplicate, and facing lies fail set equality', () => {
     const root = structuredClone(RECORDED_CASES[0]!.root);
     const expected = {
