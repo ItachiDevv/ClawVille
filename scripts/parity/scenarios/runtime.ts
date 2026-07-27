@@ -458,16 +458,14 @@ async function advanceHoldemToShowdown(
   while (Date.now() < deadline) {
     const reachedShowdown = await driver.evalJson<boolean>(`(() => {
       const current = window.__CV_READ_PARITY?.(${JSON.stringify(surface)});
-      if (
-        current?.dealStep !== 'showdown'
-        || current.correlation?.hand !== ${JSON.stringify(correlationHand)}
-      ) return false;
+      const practiceFelt =
+        ${JSON.stringify(surface)} === 'holdem-felt-practice';
       const entry = (window.__CV_PARITY_JOURNAL?.(${JSON.stringify(surface)}) ?? [])
         .find((entry) => {
           if (
             entry.surface !== ${JSON.stringify(surface)}
             || entry.dealStep !== 'showdown'
-            || entry.revision !== current.renderRevision
+            || (!practiceFelt && entry.revision !== current?.renderRevision)
           ) return false;
           try {
             return JSON.parse(entry.signature)[2] === ${JSON.stringify(correlationHand)};
@@ -475,11 +473,9 @@ async function advanceHoldemToShowdown(
             return false;
           }
         });
-      if (!entry) return false;
       const banner = document.querySelector(
         '[data-testid="holdem-settlement-narration"]',
       );
-      if (!banner) return false;
       const readText = (selector, bannerText = false) => {
         const element = document.querySelector(selector);
         if (!element) return null;
@@ -491,23 +487,58 @@ async function advanceHoldemToShowdown(
           : element.textContent ?? '';
         return text.trim();
       };
-      window.__CV_HOLDEM_SETTLEMENT_WITNESS = {
-        surface: ${JSON.stringify(surface)},
-        revision: current.renderRevision,
-        correlationHand: ${JSON.stringify(correlationHand)},
-        values: {
-          'banner-text': readText(
-            '[data-testid="holdem-settlement-narration"]',
-            true,
-          ),
-          pot: readText('[data-testid="holdem-pot-amount"]'),
-          'self-stack': readText('[data-testid="holdem-self-stack"]'),
-          'on-felt': document.querySelector(
-            '[data-cv-parity^="holdem-felt"]',
-          )?.getAttribute('data-on-felt') === 'true',
-        },
-      };
-      return true;
+      const settlementWire = practiceFelt
+        ? (window.__CV_WIRE_ALL?.() ?? [])
+          .filter((record) => (
+            record.status >= 200
+            && record.status < 300
+            && record.handId === ${JSON.stringify(correlationHand)}
+          ))
+          .at(-1) ?? null
+        : null;
+      if (
+        banner
+        && (
+          practiceFelt
+            ? settlementWire
+            : entry
+              && current?.dealStep === 'showdown'
+              && current.correlation?.hand === ${JSON.stringify(correlationHand)}
+        )
+      ) {
+        window.__CV_HOLDEM_SETTLEMENT_WITNESS = {
+          surface: ${JSON.stringify(surface)},
+          revision: entry?.revision ?? current?.renderRevision ?? 0,
+          correlationHand: ${JSON.stringify(correlationHand)},
+          ...(settlementWire ? { wireSeq: settlementWire.seq } : {}),
+          values: {
+            'banner-text': readText(
+              '[data-testid="holdem-settlement-narration"]',
+              true,
+            ),
+            pot: readText('[data-testid="holdem-pot-amount"]'),
+            'self-stack': readText('[data-testid="holdem-self-stack"]'),
+            'on-felt': document.querySelector(
+              '[data-cv-parity^="holdem-felt"]',
+            )?.getAttribute('data-on-felt') === 'true',
+          },
+        };
+      }
+      const witness = window.__CV_HOLDEM_SETTLEMENT_WITNESS;
+      if (practiceFelt) {
+        return Boolean(
+          entry
+          && witness?.surface === ${JSON.stringify(surface)}
+          && witness.correlationHand === ${JSON.stringify(correlationHand)}
+          && witness.wireSeq === settlementWire?.seq
+        );
+      }
+      return Boolean(
+        entry
+        && current?.dealStep === 'showdown'
+        && current.correlation?.hand === ${JSON.stringify(correlationHand)}
+        && banner
+      );
     })()`);
     if (reachedShowdown) return correlationHand;
     const rejectedAction = await driver.evalJson<{

@@ -607,10 +607,38 @@ describe('offline live-runner plans', () => {
       'utf8',
     );
     expect(source).toContain('window.__CV_HOLDEM_SETTLEMENT_WITNESS = {');
-    expect(source).toContain(`entry.revision !== current.renderRevision`);
-    expect(source).toContain('revision: current.renderRevision');
+    expect(source).toContain(
+      `|| (!practiceFelt && entry.revision !== current?.renderRevision)`,
+    );
+    expect(source).toContain(
+      `? settlementWire`,
+    );
+    expect(source).toContain(
+      `&& current?.dealStep === 'showdown'`,
+    );
+    expect(source).toContain(
+      'revision: entry?.revision ?? current?.renderRevision ?? 0',
+    );
     expect(source).toContain(`correlationHand: \${JSON.stringify(correlationHand)}`);
     expect(source).toContain(`'[data-testid="holdem-settlement-narration"]'`);
+  });
+
+  test('felt practice pins the mounted banner to its settle wire before checkpoint certification', () => {
+    const source = readFileSync(
+      new URL('../scenarios/runtime.ts', import.meta.url),
+      'utf8',
+    );
+    const mountedBanner = source.indexOf(
+      'window.__CV_HOLDEM_SETTLEMENT_WITNESS = {',
+    );
+    const feltCheckpoint = source.indexOf(
+      'if (practiceFelt) {',
+      mountedBanner,
+    );
+    expect(mountedBanner).toBeGreaterThan(-1);
+    expect(feltCheckpoint).toBeGreaterThan(mountedBanner);
+    expect(source).toContain('...(settlementWire ? { wireSeq: settlementWire.seq } : {})');
+    expect(source).toContain('witness.wireSeq === settlementWire?.seq');
   });
 
   test('felt settlement replay keeps immutable showdown to muck journal order', () => {

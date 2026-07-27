@@ -138,8 +138,75 @@ describe('visible-surface probe scoping', () => {
     expect(source).toContain(`witnessEntry?.dealStep === 'showdown'`);
     expect(source).toContain(`witnessEntry?.transition === 'idle'`);
     expect(source).toContain(
-      'if (!exactRevision && !correlatedFeltTerminal) return null;',
+      '&& !correlatedFeltTerminal',
     );
+    expect(source).toContain(
+      '&& !wireBoundPracticeFelt',
+    );
+  });
+
+  test('felt practice consumes only its certified settle-wire witness and fails wrong text', async () => {
+    const recorded = RECORDED_CASES[3]!;
+    const wire = {
+      ...recorded.records[0]!,
+      seq: 77,
+      responseBody: {
+        handId: 'practice-settled-wire',
+        handIndex: 9,
+        humanStack: '105',
+        net: '5',
+        outcome: {
+          endedAt: 'showdown',
+          pots: [{ amount: '5', winners: [0] }],
+          seats: [{
+            seat: 0,
+            isHuman: true,
+            isWinner: true,
+            won: '5',
+            handCategoryName: 'Pair',
+          }],
+        },
+      },
+      handId: 'practice-settled-wire',
+      handNumber: 9,
+    };
+    const root = {
+      ...recorded.root,
+      surface: 'holdem-felt-practice' as const,
+      renderRevision: 40,
+      dealStep: 'showdown',
+      phase: 'settled',
+      correlation: { hand: 'practice-settled-wire', handNumber: 9 },
+    };
+    const driver = {
+      evalJson: async <T>(js: string): Promise<T> => {
+        expect(js).toContain('witness.wireSeq === 77');
+        return {
+          surface: root.surface,
+          revision: 46,
+          correlationHand: root.correlation.hand,
+          wireSeq: wire.seq,
+          values: {
+            'banner-text': 'Showdown: WRONG winner',
+            pot: 'Pot 5 vCLAW',
+            'self-stack': 'Stack 105 vCLAW',
+            'on-felt': true,
+          },
+        } as T;
+      },
+    } as Driver;
+
+    const visible = await assertVisibleSurface(
+      driver,
+      'holdem',
+      root,
+      wire,
+    );
+    expect(visible['banner-text']).toEqual({
+      expected: 'Showdown: YOU win 5 vCLAW with Pair',
+      actual: 'Showdown: WRONG winner',
+      pass: false,
+    });
   });
 
   test('split active probes do not run for a single blackjack hand', () => {

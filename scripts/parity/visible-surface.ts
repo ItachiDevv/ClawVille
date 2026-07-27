@@ -16,6 +16,7 @@ interface HoldemSettlementWitness {
   surface: string;
   revision: number;
   correlationHand: string;
+  wireSeq?: number;
   values: Record<string, string | boolean | null>;
 }
 
@@ -205,7 +206,15 @@ export async function assertVisibleSurface(
           && correlationAt(rootEntry) === ${JSON.stringify(root.correlation.hand)}
           && correlationAt(witnessEntry) === ${JSON.stringify(root.correlation.hand)}
         );
-        if (!exactRevision && !correlatedFeltTerminal) return null;
+        const wireBoundPracticeFelt = Boolean(
+          ${JSON.stringify(root.surface === 'holdem-felt-practice')}
+          && witness.wireSeq === ${wire.seq}
+        );
+        if (
+          !exactRevision
+          && !correlatedFeltTerminal
+          && !wireBoundPracticeFelt
+        ) return null;
         return witness;
       })()`)
     : null;
