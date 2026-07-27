@@ -441,6 +441,113 @@ describe('recorded-wire parity assertions', () => {
     expect(expected.slots['opp-3-1']).toBeUndefined();
   });
 
+  test('cash settled felt oracle reveals entitled shown cards and conceals folded seats', () => {
+    const snapshot = {
+      handId: 'table-a:17',
+      tableId: 'table-a',
+      handNumber: 17,
+      board: [
+        { suit: 'hearts', rank: 'A' },
+        { suit: 'clubs', rank: 'K' },
+        { suit: 'diamonds', rank: 'Q' },
+        { suit: 'spades', rank: 'J' },
+        { suit: 'hearts', rank: '10' },
+      ],
+      endedAt: 'showdown',
+      pots: [{
+        amount: '30',
+        eligibleSeatIndices: [0, 2],
+        awards: [{ seatIndex: 2, amount: '30' }],
+        winningRank: { category: 4, categoryName: 'straight', tiebreakers: [14] },
+      }],
+      seats: [
+        {
+          seatIndex: 0,
+          status: 'active',
+          shown: [
+            { suit: 'clubs', rank: '2' },
+            { suit: 'diamonds', rank: '3' },
+          ],
+          net: '-10',
+        },
+        {
+          seatIndex: 2,
+          status: 'active',
+          shown: [
+            { suit: 'spades', rank: 'A' },
+            { suit: 'spades', rank: 'K' },
+          ],
+          net: '20',
+        },
+        {
+          seatIndex: 4,
+          status: 'folded',
+          shown: null,
+          net: '-20',
+        },
+      ],
+    };
+    const settledWire: WireRecord = {
+      seq: 43,
+      method: 'GET',
+      url: '',
+      urlSuffix: 'poker/cash/tables/table-a/last-settled',
+      status: 200,
+      requestBody: null,
+      responseBody: snapshot,
+      handId: null,
+      handNumber: 17,
+      coupId: null,
+      shoeId: null,
+      idempotencyKey: null,
+    };
+    const privateWire: WireRecord = {
+      ...settledWire,
+      seq: 42,
+      urlSuffix: 'poker/cash/tables/table-a/state-for-agent',
+      responseBody: {
+        ok: true,
+        view: {
+          handNumber: 17,
+          seatIndex: 0,
+          holeCards: [
+            { suit: 'clubs', rank: '2' },
+            { suit: 'diamonds', rank: '3' },
+          ],
+          table: { tableId: 'table-a', handNumber: 17, seats: [] },
+        },
+      },
+    };
+    const root = {
+      surface: 'holdem-felt-3d',
+      correlation: { hand: 'table-a:17', handNumber: 17 },
+      dealStep: 'showdown',
+    } as CardParityRoot;
+    const expected = expectedFromWire(
+      'holdem',
+      root.surface,
+      settledWire,
+      snapshot,
+      { root, records: [privateWire, settledWire] },
+    );
+
+    expect(expected.slots).toMatchObject({
+      'opp-2-1': { facing: 'up', card: 'As', status: 'active' },
+      'opp-2-2': { facing: 'up', card: 'Ks', status: 'active' },
+      'opp-4-1': { facing: 'empty', card: '', status: 'folded' },
+      'opp-4-2': { facing: 'empty', card: '', status: 'folded' },
+    });
+    expect(expected.slots['opp-0-1']).toBeUndefined();
+    expect(expected.meta).toEqual({
+      outcome: 'showdown',
+      winners: '2',
+      net: '-10',
+      pot: '30',
+      'banner-text': 'Showdown',
+      'on-felt': 'true',
+    });
+  });
+
   test('a later negative-row revision leak fails even when the first is clean', () => {
     const recorded = RECORDED_CASES[0]!;
     const first = structuredClone(recorded.root);

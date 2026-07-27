@@ -107,6 +107,9 @@ export type HoldemFeltInput =
       dealStep: string;
       phase: string;
       transition: CardParityPayload['transition'];
+      settled: HoldemSettledResponse | null;
+      bannerText?: string;
+      pot?: string;
     }
   | {
       kind: 'cash';
@@ -122,6 +125,9 @@ export type HoldemFeltInput =
       dealStep: string;
       phase: string;
       transition: CardParityPayload['transition'];
+      ownSeatIndex: number;
+      bannerText?: string;
+      pot?: string;
     };
 
 export type HoldemTrayInput =
@@ -189,6 +195,9 @@ export function buildHoldemFeltParity(i: HoldemFeltInput): CardParityPayload {
 
   const opponents = [...i.opponents].sort((a, b) => a.seatIndex - b.seatIndex);
   for (const opponent of opponents) {
+    const cashShown = i.kind === 'cash'
+      ? i.settled?.seats.find((seat) => seat.seatIndex === opponent.seatIndex)?.shown ?? null
+      : null;
     for (let cardIndex = 0; cardIndex < 2; cardIndex += 1) {
       const slot = `opp-${opponent.seatIndex}-${cardIndex + 1}`;
       if (
@@ -199,6 +208,13 @@ export function buildHoldemFeltParity(i: HoldemFeltInput): CardParityPayload {
         && !opponent.peek
       ) {
         slots.push(encodedSlot(slot, opponent.cards[cardIndex], opponent.status));
+      } else if (
+        i.kind === 'cash'
+        && cashShown
+        && opponent.status !== 'folded'
+        && !opponent.peek
+      ) {
+        slots.push(encodedSlot(slot, cashShown[cardIndex], opponent.status));
       } else if (opponent.count > cardIndex || opponent.peek) {
         slots.push(downSlot(slot, opponent.status));
       } else {
@@ -206,6 +222,18 @@ export function buildHoldemFeltParity(i: HoldemFeltInput): CardParityPayload {
       }
     }
   }
+  const meta = i.settled
+    ? settledHoldemMeta(
+        i.settled,
+        i.bannerText,
+        i.pot,
+        undefined,
+        i.kind === 'cash' ? i.ownSeatIndex : undefined,
+      )
+    : {
+        ...(i.pot === undefined ? {} : { pot: i.pot }),
+        ...(i.bannerText === undefined ? {} : { 'banner-text': i.bannerText }),
+      };
 
   return {
     surface: holdemSurface(i.kind, 'felt'),
@@ -215,7 +243,7 @@ export function buildHoldemFeltParity(i: HoldemFeltInput): CardParityPayload {
     phase: i.phase,
     transition: i.transition,
     slots,
-    meta: {},
+    meta,
   };
 }
 
@@ -224,6 +252,7 @@ function settledHoldemMeta(
   bannerText?: string,
   potOverride?: string,
   ownHole?: ParityRenderCard[],
+  ownSeatIndex?: number,
 ): Record<string, string> {
   if ('outcome' in settled) {
     const winners = new Set<number>();
@@ -249,11 +278,13 @@ function settledHoldemMeta(
   for (const pot of settled.pots) {
     for (const award of pot.awards) winners.add(award.seatIndex);
   }
-  const matchingSeat = ownHole?.length === 2
-    ? settled.seats.find((seat) => seat.shown?.every((card, index) => (
-        card.suit === ownHole[index]?.suit && card.rank === ownHole[index]?.rank
-      )))
-    : undefined;
+  const matchingSeat = ownSeatIndex === undefined
+    ? ownHole?.length === 2
+      ? settled.seats.find((seat) => seat.shown?.every((card, index) => (
+          card.suit === ownHole[index]?.suit && card.rank === ownHole[index]?.rank
+        )))
+      : undefined
+    : settled.seats.find((seat) => seat.seatIndex === ownSeatIndex);
   return {
     outcome: settled.endedAt === 'showdown' ? 'showdown' : 'fold',
     winners: [...winners].sort((a, b) => a - b).join(','),

@@ -418,6 +418,10 @@ function holdemExpected(
         slots[key] = status !== 'folded' && cards[index]
           ? up(cards[index], status)
           : down(status);
+      } else if (snapshot) {
+        slots[key] = status !== 'folded' && cards[index]
+          ? up(cards[index], status)
+          : empty(status);
       } else {
         slots[key] = occupiedSeat
           && (status === 'active' || status === 'allin')
@@ -439,9 +443,19 @@ function holdemExpected(
       slots[`opp-${seatIndex}-2`] = down(status);
     }
   }
+  const settlementMeta = outcome || snapshot
+    ? holdemMeta(
+        body,
+        outcome,
+        snapshot,
+        [],
+        Number.isSafeInteger(selfSeatIndex) ? selfSeatIndex : undefined,
+      )
+    : {};
   return {
     slots,
     meta: {
+      ...settlementMeta,
       'on-felt': 'true',
       ...(surface.endsWith('-3d') && !Number.isSafeInteger(selfSeatIndex)
         ? { 'wire-self-seat': 'missing' }
@@ -455,6 +469,7 @@ function holdemMeta(
   outcome: UnknownRecord | null,
   snapshot: UnknownRecord | null,
   ownHole: readonly unknown[],
+  ownSeatIndex?: number,
 ): Record<string, string> {
   if (!outcome && !snapshot) {
     const hand = record(first(
@@ -505,6 +520,9 @@ function holdemMeta(
     .map(record)
     .find((seat) => {
       if (!seat) return false;
+      if (ownSeatIndex !== undefined) {
+        return Number(first(seat.seatIndex, seat.seat)) === ownSeatIndex;
+      }
       const shown = array(seat.shown);
       return ownHole.length === 2
         && shown.length === 2

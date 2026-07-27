@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import type {
+  HoldemSettledResponse,
   SerializedBaccaratCoup,
   SerializedBlackjackHandResult,
 } from '@clawville/shared';
@@ -97,6 +98,7 @@ describe('pure parity builders', () => {
       dealStep: 'flop',
       phase: 'flop',
       transition: 'idle',
+      settled: null,
     });
     const tray = buildHoldemTrayParity({
       kind: 'practice',
@@ -147,6 +149,109 @@ describe('pure parity builders', () => {
         { slot: 'board-5', facing: 'empty', card: '' },
       ],
     });
+  });
+
+  test('publishes practice felt settlement metadata from the settled snapshot', () => {
+    const settled: HoldemSettledResponse = {
+      handId: 'practice-settled',
+      tableId: 'practice-table',
+      handIndex: 8,
+      status: 'settled',
+      outcome: {
+        kind: 'holdem',
+        handIndex: 8,
+        buttonSeat: 0,
+        smallBlindSeat: 1,
+        bigBlindSeat: 2,
+        board: [
+          { suit: 'hearts', rank: 'A' },
+          { suit: 'clubs', rank: 'K' },
+          { suit: 'diamonds', rank: 'Q' },
+          { suit: 'spades', rank: 'J' },
+          { suit: 'hearts', rank: '10' },
+        ],
+        endedAt: 'showdown',
+        seats: [
+          {
+            seat: 0,
+            isHuman: true,
+            personality: null,
+            holeCards: [
+              { suit: 'spades', rank: 'A' },
+              { suit: 'spades', rank: 'K' },
+            ],
+            committed: '10',
+            won: '24',
+            net: '14',
+            status: 'active',
+            handCategory: 4,
+            handCategoryName: 'Straight',
+            isWinner: true,
+          },
+          {
+            seat: 2,
+            isHuman: false,
+            personality: 'lag',
+            holeCards: [],
+            committed: '14',
+            won: '0',
+            net: '-14',
+            status: 'folded',
+            handCategory: null,
+            handCategoryName: null,
+            isWinner: false,
+          },
+        ],
+        pots: [{
+          amount: '24',
+          eligibleSeats: [0],
+          winners: [0],
+          perWinner: '24',
+        }],
+        actionLog: [],
+        humanBet: '10',
+        humanPayout: '24',
+        humanNet: '14',
+        nonce: 1,
+        engineVersion: 'test',
+      },
+      playerStack: '114',
+      walletBalance: 100,
+      betAmount: '10',
+      payout: '24',
+      net: '14',
+      idempotencyReplay: false,
+    };
+    const felt = buildHoldemFeltParity({
+      kind: 'practice',
+      board: settled.outcome.board,
+      opponents: [{
+        seatIndex: 2,
+        status: 'folded',
+        cards: null,
+        count: 2,
+        peek: false,
+      }],
+      settled,
+      bannerText: 'Showdown: YOU win 24 vCLAW with Straight',
+      correlation: { hand: settled.handId, handNumber: settled.handIndex },
+      dealStep: 'showdown',
+      phase: 'settled',
+      transition: 'idle',
+    });
+
+    expect(felt.meta).toEqual({
+      outcome: 'showdown',
+      winners: '0',
+      net: '14',
+      pot: '24',
+      'banner-text': 'Showdown: YOU win 24 vCLAW with Straight',
+    });
+    expect(felt.slots.filter((slot) => slot.slot.startsWith('opp-2')))
+      .toEqual([
+        { slot: 'opp-2-1', facing: 'down', card: '', status: 'folded' },
+        { slot: 'opp-2-2', facing: 'down', card: '', status: 'folded' },
+      ]);
   });
 
   test('round-trips Blackjack render state without exposing the dealer hole card', () => {

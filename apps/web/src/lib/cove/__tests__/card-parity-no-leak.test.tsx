@@ -47,6 +47,7 @@ describe('whole-mirror no-leak boundary', () => {
       dealStep: 'showdown',
       phase: 'settled',
       transition: 'idle',
+      settled: null,
     });
     publishFeltParity(OWNER, payload);
 
@@ -89,16 +90,27 @@ describe('whole-mirror no-leak boundary', () => {
     expect(mirrorDom).not.toContain('As');
   });
 
-  test('keeps cash opponent cards down even when the settled snapshot carries shown cards', () => {
+  test('reveals only non-folded cash shown cards and keeps folded seats concealed', () => {
     const payload = buildHoldemFeltParity({
       kind: 'cash',
-      board: [],
-      opponents: [{
-        seatIndex: 2,
-        status: 'active',
-        count: 2,
-        peek: false,
-      }],
+      board: [
+        { suit: 'spades', rank: 'A' },
+        { suit: 'clubs', rank: 'K' },
+      ],
+      opponents: [
+        {
+          seatIndex: 2,
+          status: 'active',
+          count: 2,
+          peek: false,
+        },
+        {
+          seatIndex: 4,
+          status: 'folded',
+          count: 0,
+          peek: false,
+        },
+      ],
       settled: {
         handId: 'cash-table:44',
         handNumber: 44,
@@ -106,23 +118,56 @@ describe('whole-mirror no-leak boundary', () => {
         board: [],
         endedAt: 'showdown',
         pots: [],
-        seats: [{
-          seatIndex: 2,
-          avatarId: 'opponent-avatar',
-          startStack: '100',
-          endStack: '110',
-          totalCommitted: '10',
-          grossWon: '20',
-          rakeAttributed: '0',
-          net: '10',
-          stackDelta: '10',
-          status: 'active',
-          shown: [
-            { suit: 'hearts', rank: 'Q' },
-            { suit: 'diamonds', rank: 'J' },
-          ],
-          mucked: false,
-        }],
+        seats: [
+          {
+            seatIndex: 0,
+            avatarId: 'own-avatar',
+            startStack: '100',
+            endStack: '95',
+            totalCommitted: '5',
+            grossWon: '0',
+            rakeAttributed: '0',
+            net: '-5',
+            stackDelta: '-5',
+            status: 'active',
+            shown: [
+              { suit: 'clubs', rank: '2' },
+              { suit: 'diamonds', rank: '3' },
+            ],
+            mucked: false,
+          },
+          {
+            seatIndex: 2,
+            avatarId: 'opponent-avatar',
+            startStack: '100',
+            endStack: '110',
+            totalCommitted: '10',
+            grossWon: '20',
+            rakeAttributed: '0',
+            net: '10',
+            stackDelta: '10',
+            status: 'active',
+            shown: [
+              { suit: 'hearts', rank: 'Q' },
+              { suit: 'diamonds', rank: 'J' },
+            ],
+            mucked: false,
+          },
+          {
+            seatIndex: 4,
+            avatarId: 'folded-avatar',
+            startStack: '100',
+            endStack: '95',
+            totalCommitted: '5',
+            grossWon: '0',
+            rakeAttributed: '0',
+            net: '-5',
+            stackDelta: '-5',
+            status: 'folded',
+            shown: null,
+            mucked: true,
+          },
+        ],
         settledAtMs: 1,
         displayExpiresAtMs: 2,
       },
@@ -130,6 +175,8 @@ describe('whole-mirror no-leak boundary', () => {
       dealStep: 'showdown',
       phase: 'settled',
       transition: 'idle',
+      ownSeatIndex: 0,
+      bannerText: 'Showdown',
     });
     publishFeltParity(OWNER, payload);
 
@@ -137,8 +184,13 @@ describe('whole-mirror no-leak boundary', () => {
       <ParityMirror surface="holdem-felt-3d" instanceId={OWNER} />,
     );
 
-    expect(mirrorDom.match(/data-facing="down"/g)?.length).toBe(2);
-    expect(mirrorDom).not.toContain('Qh');
-    expect(mirrorDom).not.toContain('Jd');
+    expect(mirrorDom).toContain('data-slot="opp-2-1" data-card="Qh" data-facing="up"');
+    expect(mirrorDom).toContain('data-slot="opp-2-2" data-card="Jd" data-facing="up"');
+    expect(mirrorDom).toContain('data-slot="opp-4-1" data-card="" data-facing="empty"');
+    expect(mirrorDom).toContain('data-slot="opp-4-2" data-card="" data-facing="empty"');
+    expect(mirrorDom).not.toContain('data-slot="opp-4-1" data-facing="up"');
+    expect(mirrorDom).toContain('data-outcome="showdown"');
+    expect(mirrorDom).toContain('data-net="-5"');
+    expect(mirrorDom).toContain('data-banner-text="Showdown"');
   });
 });
