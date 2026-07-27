@@ -38,6 +38,10 @@
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-07-27 (repo-scrub session, push 10) — Clawville Display bolder weight (founder: thicker without the wood background)
+- **What:** glyph masks now dilate before tracing (`CLAWVILLE_BOLD` env in the build script, default 6 = medium, ~+25% stroke; 0/11 = original/heavy). Founder shown a three-weight comparison; medium matches the logo's chunk without closing counters. Kit OTF/woff2 rebuilt at medium.
+- **SCHEMA:** `synced`. **PARITY:** n/a.
+
 ### 2026-07-27 (repo-scrub session, push 9) — embossed text renderer for Clawville Display
 - **What:** founder rejected plank badges + asked for better embossing on the v3 font. Shipped `branding/assets/fonts/render-embossed-text.py`: PIL layered renderer (gradient gold face, thin darker inner rim via erosion, subtle top-edge highlight, crisp chocolate double offset shadow), calibrated side-by-side against the real logo. Produces transparent PNG headline art from any text. BRAND.md updated (emboss recipe implemented; plank = marketing-supplied when needed).
 - **SCHEMA:** `synced`. **PARITY:** n/a.

@@ -16,6 +16,7 @@ SHEETS = [
     (SCRATCH + r"\digits.png", ["0123456789"]),
 ]
 DESCENDERS = set("fgjpqy")
+BOLD_ITER = int(os.environ.get("CLAWVILLE_BOLD", "6"))  # default = founder-picked medium weight
 UPM = 1000
 CAP = 700
 
@@ -129,6 +130,9 @@ for path, rows in SHEETS:
     for (y0, y1), rowstr in zip(bands[:len(rows)], rows):
         row = mask[y0:y1]
         for ch, crop in zip(rowstr, row_glyphs(row, len(rowstr))):
+            if BOLD_ITER > 0:
+                crop = np.pad(crop, BOLD_ITER)
+                crop = ndimage.binary_dilation(crop, iterations=BOLD_ITER)
             glyph_px[ch] = crop
 
 missing = [c for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789" if c not in glyph_px]
