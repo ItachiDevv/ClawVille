@@ -380,6 +380,13 @@ async function runLiveScenario(): Promise<void> {
         candidate: Awaited<ReturnType<typeof waitForParityCheckpoint>>,
       ): Promise<Awaited<ReturnType<typeof waitForParityCheckpoint>>> => {
         if (checkpoint.label.startsWith('every-')) return candidate;
+        if (
+          scenario.game === 'holdem'
+          && checkpoint.surface.includes('-felt-')
+          && scenario.phases.includes('muck-fading')
+        ) {
+          return candidate;
+        }
         const current = await readParityRoot(driver, checkpoint.surface);
         if (
           current

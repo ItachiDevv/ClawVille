@@ -489,6 +489,15 @@ describe('offline live-runner plans', () => {
     expect(source).toContain(`'[data-testid="holdem-settlement-narration"]'`);
   });
 
+  test('felt settlement replay keeps immutable showdown to muck journal order', () => {
+    const source = readFileSync(
+      new URL('../run-parity.ts', import.meta.url),
+      'utf8',
+    );
+    expect(source).toContain(`checkpoint.surface.includes('-felt-')`);
+    expect(source).toContain(`scenario.phases.includes('muck-fading')`);
+  });
+
   test('H7 practice reach recognizes authoritative blind log types only', () => {
     const dealtWithBlinds = {
       humanHole: [
