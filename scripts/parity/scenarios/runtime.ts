@@ -932,8 +932,16 @@ export async function* driveScenario(
       };
     })()`);
     let cursor = initial.firstRevision;
-    const expectsNoWire = surface === 'holdem-felt-practice'
-      && initial.correlation.hand === '';
+    // SeatedHoldemHud.tsx:764-782 publishes its empty, client-only practice
+    // tray before a hand exists as `practice:idle`. Its early null/zero
+    // hand-number restamps have no successful server hand wire by design.
+    const expectsNoWire = (
+      surface === 'holdem-felt-practice'
+      && initial.correlation.hand === ''
+    ) || (
+      surface === 'holdem-tray-practice'
+      && initial.correlation.hand === 'practice:idle'
+    );
     yield {
       ...checkpointFor(surface, phases[0]!, 0, 0),
       expectRenderRevision: initial.firstRevision,
@@ -942,7 +950,10 @@ export async function* driveScenario(
         ? { expectResolvedWire: '<none>' as const }
         : {}),
     };
-    if (expectsNoWire) return;
+    if (
+      surface === 'holdem-felt-practice'
+      && initial.correlation.hand === ''
+    ) return;
     const deadline = Date.now() + 90_000;
     let read = 2;
     while (Date.now() < deadline) {
@@ -960,6 +971,9 @@ export async function* driveScenario(
           expectRevisionAdvance: true,
           expectRenderRevision: next.revision,
           expectCorrelationHand: initial.correlation.hand,
+          ...(expectsNoWire
+            ? { expectResolvedWire: '<none>' as const }
+            : {}),
         };
         read += 1;
         const currentAfterCheckpoint = await driver.evalJson<{

@@ -89,6 +89,33 @@ class CashPlanDriver extends PlanDriver {
   }
 }
 
+class IdlePracticeNegativeDriver extends PlanDriver {
+  private nextStepRead = false;
+
+  override async evalJson<T>(js: string): Promise<T> {
+    if (js.includes('const revisions =')) {
+      return {
+        renderRevision: 3,
+        firstRevision: 1,
+        dealStep: 'hole',
+        correlation: { hand: 'practice:idle' },
+      } as T;
+    }
+    if (js.includes('const entries = (window.__CV_PARITY_JOURNAL')) {
+      if (this.nextStepRead) return null as T;
+      this.nextStepRead = true;
+      return { revision: 3, dealStep: 'hole' } as T;
+    }
+    if (js.trim().startsWith('window.__CV_READ_PARITY')) {
+      return {
+        dealStep: 'hole',
+        correlation: { hand: 'practice:new-hand' },
+      } as T;
+    }
+    return super.evalJson<T>(js);
+  }
+}
+
 async function consume(generator: AsyncGenerator<unknown>): Promise<void> {
   for await (const _value of generator) {
     // advancing the generator executes the next declarative action
@@ -373,6 +400,33 @@ describe('offline live-runner plans', () => {
       'hand-callable',
     )).toEqual({ revision: 2, dealStep: 'turn' });
     expect(surfaces).toEqual(['holdem-tray-practice']);
+  });
+
+  test('practice negative idle restamps expect no wire at r1 and r3', async () => {
+    const checkpoints = [];
+    for await (const checkpoint of driveScenario(
+      'holdem',
+      'H-neg',
+      'holdem-tray-practice',
+      ['every-step'],
+      new IdlePracticeNegativeDriver(),
+    )) {
+      checkpoints.push(checkpoint);
+    }
+    expect(checkpoints).toEqual([
+      expect.objectContaining({
+        label: 'every-step-1',
+        expectRenderRevision: 1,
+        expectCorrelationHand: 'practice:idle',
+        expectResolvedWire: '<none>',
+      }),
+      expect.objectContaining({
+        label: 'every-step-2',
+        expectRenderRevision: 3,
+        expectCorrelationHand: 'practice:idle',
+        expectResolvedWire: '<none>',
+      }),
+    ]);
   });
 
   test('cash negative traversal accepts showdown or an observed hand boundary', () => {
