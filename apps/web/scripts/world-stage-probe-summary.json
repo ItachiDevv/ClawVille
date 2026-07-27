@@ -30,13 +30,27 @@
   },
   "heap": {
     "available": true,
-    "baselineBytes": 67891529,
-    "endBytes": 68731037,
-    "growthRatio": 0.012365430744680975,
-    "threshold": 0.15,
+    "baselineBytes": 67867992,
+    "endBytes": 68727448,
+    "growthRatio": 0.012663642678569302,
+    "totalGrowthThreshold": 0.2,
     "midpointBytes": null,
     "secondHalfGrowthRatio": null,
-    "secondHalfThreshold": 0.03
+    "secondHalfSlopeMBPerLoop": null,
+    "secondHalfSlopeThresholdMBPerLoop": 0.8,
+    "dwellDriftMBPerSecond": null,
+    "dwellDriftThresholdMBPerSecond": 0.05
+  },
+  "heapDiff": {
+    "enabled": false,
+    "status": "disabled",
+    "snapshotLoops": [],
+    "reportPath": null,
+    "aggregation": null,
+    "baseline": null,
+    "final": null,
+    "topConstructors": [],
+    "retainerChains": []
   },
   "renderer": {
     "samples": [
@@ -64,7 +78,8 @@
         "drawCallsFrame": 2,
         "memoryBreakdown": null
       }
-    ]
+    ],
+    "byteGrowthTolerance": 0.01
   },
   "series": [],
   "inventory": {
@@ -146,7 +161,8 @@
       "baseline": null,
       "final": null,
       "delta": null,
-      "maxAddedEntries": 2
+      "maxAddedEntries": 2,
+      "maxLength": 4
     },
     "assetTimeline": [],
     "network": {
@@ -183,9 +199,8 @@
     "activeCallbacksAdvance": true,
     "listenerDeltaZero": true,
     "listenerAccountingNeverUnderflowed": true,
-    "zeroTransitionErrors": true,
-    "heapBelow15Percent": true
+    "zeroTransitionErrors": true
   },
   "failure": null,
-  "generatedAt": "2026-07-27T00:04:55.488Z"
+  "generatedAt": "2026-07-27T01:22:00.639Z"
 }
