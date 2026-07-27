@@ -241,6 +241,7 @@ async function runLiveScenario(): Promise<void> {
   let allWires = [] as Awaited<ReturnType<typeof readCapturedWire>>;
   const visibleSurface: ScenarioResult['visibleSurface'] = {};
   const moneyAssertions: ScenarioResult['money'][] = [];
+  let holdemTerminalVisibleCaptured = false;
   let ba1Snapshot: unknown;
   const navigate = async (
     path: string,
@@ -529,6 +530,42 @@ async function runLiveScenario(): Promise<void> {
         previousRevision: after,
         ba1Snapshot,
       });
+      const captureTerminalSurface = async (): Promise<void> => {
+        if (
+          result.resolvedWireSeq === null
+          || !['settled', 'showdown'].includes(root.dealStep)
+          || (scenario.game === 'holdem' && holdemTerminalVisibleCaptured)
+        ) {
+          return;
+        }
+        const terminalWire = allWires.find(
+          (candidate) => candidate.seq === result.resolvedWireSeq,
+        ) ?? null;
+        if (!terminalWire) return;
+        const visible = await assertVisibleSurface(
+          driver,
+          scenario.game,
+          root,
+          terminalWire,
+          ba1Snapshot,
+          allWires,
+        );
+        for (const [name, assertion] of Object.entries(visible)) {
+          visibleSurface[`${checkpoint.label}:${name}`] = assertion;
+        }
+        moneyAssertions.push(assertMoneyFromWire(
+          scenario.game,
+          terminalWire,
+          allWires,
+          ba1Snapshot,
+        ));
+        if (scenario.game === 'holdem') {
+          holdemTerminalVisibleCaptured = true;
+        }
+      };
+      if (scenario.game === 'holdem') {
+        await captureTerminalSurface();
+      }
       // Eventual-consistency window: a pre-existing intermediate revision
       // (e.g. the hole→player-turn transition published before an action's
       // response lands) can satisfy "newer than the last checkpoint" while the
@@ -595,31 +632,16 @@ async function runLiveScenario(): Promise<void> {
           ba1Snapshot,
         });
       }
-      const wire = result.resolvedWireSeq === null
-        ? null
-        : allWires.find(
-            (candidate) => candidate.seq === result.resolvedWireSeq,
-          ) ?? null;
-      if (wire && ['settled', 'showdown'].includes(root.dealStep)) {
-        const visible = await assertVisibleSurface(
-          driver,
-          scenario.game,
-          root,
-          wire,
-          ba1Snapshot,
-          allWires,
-        );
-        for (const [name, assertion] of Object.entries(visible)) {
-          visibleSurface[`${checkpoint.label}:${name}`] = assertion;
-        }
-        moneyAssertions.push(assertMoneyFromWire(
-          scenario.game,
-          wire,
-          allWires,
-          ba1Snapshot,
-        ));
-      }
-      previous.set(checkpoint.surface, root.renderRevision);
+      await captureTerminalSurface();
+      previous.set(
+        checkpoint.surface,
+        scenario.game === 'holdem'
+          && checkpoint.label.startsWith('showdown-')
+          && root.transition === 'muck-fading'
+          && scenario.phases.includes('muck-fading')
+          ? Math.max(after, root.renderRevision - 1)
+          : root.renderRevision,
+      );
       const screenshot = resolve(
         config.screenshotDir,
         `${scenario.id}-${checkpoint.label}-r${root.renderRevision}.png`,

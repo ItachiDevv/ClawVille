@@ -496,6 +496,23 @@ describe('offline live-runner plans', () => {
     );
     expect(source).toContain(`checkpoint.surface.includes('-felt-')`);
     expect(source).toContain(`scenario.phases.includes('muck-fading')`);
+    expect(source).toContain(`root.transition === 'muck-fading'`);
+    expect(source).toContain('Math.max(after, root.renderRevision - 1)');
+  });
+
+  test('holdem settlement visibility is captured before transient felt replay', () => {
+    const source = readFileSync(
+      new URL('../run-parity.ts', import.meta.url),
+      'utf8',
+    );
+    const firstCapture = source.indexOf(`if (scenario.game === 'holdem') {
+        await captureTerminalSurface();`);
+    const transientLoop = source.indexOf(
+      'while (!result.pass && Date.now() < settleDeadline)',
+    );
+    expect(firstCapture).toBeGreaterThan(-1);
+    expect(firstCapture).toBeLessThan(transientLoop);
+    expect(source).toContain('holdemTerminalVisibleCaptured = true');
   });
 
   test('H7 practice reach recognizes authoritative blind log types only', () => {
