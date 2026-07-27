@@ -92,8 +92,25 @@ color. Small connector words ("ON") drop to a smaller gold weight between lines.
 
 ## 5. Logo rules
 
+**THE OFFICIAL LOGO** (founder-confirmed 2026-07-26, pulled from the token's DexScreener
+profile): `assets/logos/clawville-logo-official.jpg` (200x200) = the daylight mascot bursting
+from the surf under the wood sign. Hi-res version of the same composition:
+`assets/mascot/mascot-square.jpg`. The pirate OG card is ALTERNATE promo art, not the logo.
+
+**THE OFFICIAL BANNER**: `assets/world/clawville-banner-official.gif` (600x200 ANIMATED,
+144 frames, the DexScreener header; prefer the GIF wherever animation plays) + static
+fallback `assets/world/clawville-banner-official-static.jpg`. The town-square
+"More Than A Game" scene (`clawville-logo-banner.jpg`) is a one-off ARTICLE PROMO banner,
+not the official banner.
+
+**Token identity + live source of truth:** $CLAWVILLE mint
+`Epht7Fw4Sgh6fdcJj6afWXuNcAUmLLMc3MSthUqELiZA` (Solana). Re-pull current official assets any
+time from the DexScreener API (`https://api.dexscreener.com/latest/dex/tokens/<mint>` →
+`info.imageUrl` logo / `info.header` banner; strip the query params from the CDN URL to get
+the ORIGINAL file, which is how the kit copies were fetched).
+
 Files in `assets/logos/`:
-- `clawville-logo-transparent.png`: full-color wood sign, transparent bg. DEFAULT logo.
+- `clawville-logo-transparent.png`: full-color wood sign, transparent bg. DEFAULT wordmark.
 - `clawville-logo-wood-large.png`: hi-res version of the same.
 - `clawville-wordmark-mono.svg`: one-color vector wordmark (`#231F20`). For stamps, engraving,
   single-color contexts. Recolor the fill as needed.
@@ -113,8 +130,9 @@ The red lobster is THE brand character (official name: not yet locked, see Open 
   sign) and the derived transparent hero `assets/mascot/mascot-pirate-cutout.png` — the
   DEFAULT hero for Register B banners (it carries the logo sign, so no separate logo badge
   is needed in the layout).
-- Tagline in use on official art (`assets/world/clawville-logo-banner.jpg`):
-  **"More Than A Game."**
+- Tagline "More Than A Game" appears on the article-promo banner
+  (`assets/world/clawville-logo-banner.jpg`); treat as available copy, not locked brand
+  language (the promo banner is not the official banner).
 - Daylight rendition: friendly, wide-eyed, emerging from surf with claws raised.
   `assets/mascot/mascot-logo-lockup-transparent.png` (with logo, transparent) and
   `assets/mascot/mascot-square.jpg` (square, avatar-friendly).
@@ -181,8 +199,11 @@ Canonical phrase bank: `docs/brand-language.md`. Non-negotiables:
 | `assets/video/x-formatted-2.mp4` | X-format motion piece | A |
 | `assets/mascot/mascot-only-transparent.png` | mascot cutout, no sign (derived) | both |
 | `assets/mascot/mascot-pirate-cutout.png` | cinematic pirate hero, transparent (derived from og) | B |
-| `assets/logos/clawville-logo-og.jpg` | square OG/social card, pirate + sign | B |
-| `assets/world/clawville-logo-banner.jpg` | town-scene banner, "More Than A Game" tagline | A |
+| `assets/logos/clawville-logo-og.jpg` | square OG/social card, pirate + sign (ALTERNATE promo art) | B |
+| `assets/logos/clawville-logo-official.jpg` | THE official logo (DexScreener token profile, 200x200) | both |
+| `assets/world/clawville-banner-official.gif` | THE official banner, animated (DexScreener header) | A |
+| `assets/world/clawville-banner-official-static.jpg` | official banner, static frame | A |
+| `assets/world/clawville-logo-banner.jpg` | article PROMO banner ("More Than A Game"), not official | A |
 | `assets/fonts/*.woff2` | Anton + Barlow stand-ins (OFL) | B |
 | `graphics/banner-*.html` | live banner templates (1965x800, Register B recipe); open in a browser at that viewport and screenshot to export | B |
 

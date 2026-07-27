@@ -38,12 +38,17 @@
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-07-26 (repo-scrub session, push 6) — OFFICIAL logo + animated banner pulled from DexScreener
+- **What:** founder corrections: the town "More Than A Game" scene is an ARTICLE PROMO (not official), and the pirate OG is ALTERNATE art. THE official logo (200x200, mascot-in-surf under the sign) + THE official ANIMATED banner (600x200 GIF, 144 frames) pulled as originals from the $CLAWVILLE DexScreener profile (mint `Epht7Fw4Sgh6fdcJj6afWXuNcAUmLLMc3MSthUqELiZA`; re-pull recipe documented in BRAND.md §5). Static banner copy added; BRAND.md hierarchy + inventory + board updated; "More Than A Game" demoted to promo copy.
+- **SCHEMA:** `synced`. **PARITY:** n/a.
+
 ### 2026-07-27 (session notDev) — P1c: presence continuity + nav hardening + soak gate (merge `f9786879`)
 
 - **What changed:** cove crossings keep your body in the shared world ("at the Cove" tag, layout-owned streams, protocol v40); durable first-crossing navigation + history bounded at 4; new 60-loop soak gate.
 - **What broke + root cause + fix:** the soak's first three runs FAILED honestly — four real leaks (cove/world lights+labels+hotspots remounting every crossing; App Router history growing 2 entries/crossing; incomplete warmup allocating late) — all fixed, scene inventories now diff to exactly zero. Residual ~0.45 MB/crossing heap-snapshot-named as three r185 WebGPU-internal bindGroups caching (not ours; follow-up tracked on r186+ upgrade). Codex final leg died on provider capacity ("model at capacity") after committing gate calibration — Fable ran the full gate suite personally. Merge conflicted with the same-day autonomy-walk + mascot pushes in the 3 canonical doc headers — resolved keeping both audit entries.
 - **Who it's for:** every player/agent crossing between town and the Cove (no more vanishing bodies); the P2-P4 stage migrations inherit the soak gate.
 
+### 2026-07-26 (repo-scrub session, push 5) — cinematic pirate mascot lands in the kit + banners
 - **What:** founder supplied two new official art files (fetched over SSH from the laptop): `clawville-logo-og.jpg` (square OG card, cinematic pirate lobster hoisting the sign) + `clawville-logo-banner.jpg` (town scene carrying the "More Than A Game" tagline). Derived `mascot-pirate-cutout.png` (AI background removal + cleanup) and made it the DEFAULT Register-B banner hero across all three templates (the sign in the hero replaces the separate logo badge). BRAND.md + brand board updated (inventory, mascot section, tagline, open-flag 5 partially resolved).
 - **Who it's for:** the SAP/Meridian announcement banners now carry marketing's cinematic mascot.
 - **SCHEMA:** `synced`. **PARITY:** n/a.
