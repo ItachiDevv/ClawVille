@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import {
   agentBrowserExecutable,
   createOneShotStatePath,
@@ -463,6 +464,18 @@ describe('offline live-runner plans', () => {
       dealStep: 'showdown',
       correlationHand: 'hand-1',
     }, 'hand-1')).toBe(true);
+  });
+
+  test('visible settlement probes run before checkpoint screenshots', () => {
+    const source = readFileSync(
+      new URL('../run-parity.ts', import.meta.url),
+      'utf8',
+    );
+    const visibleProbe = source.indexOf('const visible = await assertVisibleSurface');
+    const screenshot = source.indexOf('await driver.screenshot(screenshot)');
+    expect(visibleProbe).toBeGreaterThan(-1);
+    expect(screenshot).toBeGreaterThan(-1);
+    expect(visibleProbe).toBeLessThan(screenshot);
   });
 
   test('H7 practice reach recognizes authoritative blind log types only', () => {

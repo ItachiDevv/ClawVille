@@ -588,6 +588,30 @@ async function runLiveScenario(): Promise<void> {
           ba1Snapshot,
         });
       }
+      const wire = result.resolvedWireSeq === null
+        ? null
+        : allWires.find(
+            (candidate) => candidate.seq === result.resolvedWireSeq,
+          ) ?? null;
+      if (wire && ['settled', 'showdown'].includes(root.dealStep)) {
+        const visible = await assertVisibleSurface(
+          driver,
+          scenario.game,
+          root,
+          wire,
+          ba1Snapshot,
+          allWires,
+        );
+        for (const [name, assertion] of Object.entries(visible)) {
+          visibleSurface[`${checkpoint.label}:${name}`] = assertion;
+        }
+        moneyAssertions.push(assertMoneyFromWire(
+          scenario.game,
+          wire,
+          allWires,
+          ba1Snapshot,
+        ));
+      }
       previous.set(checkpoint.surface, root.renderRevision);
       const screenshot = resolve(
         config.screenshotDir,
@@ -637,30 +661,6 @@ async function runLiveScenario(): Promise<void> {
         );
       }
       console.log(`[row ${scenario.id}] checkpoint ${checkpoint.label} r${root.renderRevision} pass=${result.pass}${result.pass ? '' : ` mismatches=${JSON.stringify(result.mismatches ?? []).slice(0, 400)}`}`);
-      const wire = result.resolvedWireSeq === null
-        ? null
-        : allWires.find(
-          (candidate) => candidate.seq === result.resolvedWireSeq,
-        ) ?? null;
-      if (wire && ['settled', 'showdown'].includes(root.dealStep)) {
-        const visible = await assertVisibleSurface(
-          driver,
-          scenario.game,
-          root,
-          wire,
-          ba1Snapshot,
-          allWires,
-        );
-        for (const [name, assertion] of Object.entries(visible)) {
-          visibleSurface[`${checkpoint.label}:${name}`] = assertion;
-        }
-        moneyAssertions.push(assertMoneyFromWire(
-          scenario.game,
-          wire,
-          allWires,
-          ba1Snapshot,
-        ));
-      }
     }
     allWires = await readCapturedWire(driver);
     const finalWire = resolveWireForReachedPredicate(
