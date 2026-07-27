@@ -482,12 +482,12 @@ export function renderHeapDiffReport(summary, summaryPath) {
       ' and ',
     )}. ${heapDiff.aggregation}`,
     '',
-    '| Rank | Constructor | Type | Count Δ | Self-size Δ | Retained-size Δ |',
-    '|---:|---|---|---:|---:|---:|',
+    '| Rank | Constructor | Type | Count at loop 20 | Count at loop 50 | Count delta | Self-size delta | Retained-size delta |',
+    '|---:|---|---|---:|---:|---:|---:|---:|',
   ];
   heapDiff.topConstructors.forEach((entry, index) => {
     lines.push(
-      `| ${index + 1} | ${entry.constructor.replaceAll('|', '\\|')} | ${entry.nodeType} | ${entry.countDelta} | ${entry.selfSizeDeltaBytes} | ${entry.retainedSizeDeltaBytes} |`,
+      `| ${index + 1} | ${entry.constructor.replaceAll('|', '\\|')} | ${entry.nodeType} | ${entry.countAtBaseline} | ${entry.countAtFinal} | ${entry.countDelta} | ${entry.selfSizeDeltaBytes} | ${entry.retainedSizeDeltaBytes} |`,
     );
   });
   lines.push(

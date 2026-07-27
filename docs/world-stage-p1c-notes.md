@@ -255,7 +255,9 @@ Heap-naming follow-up (the historical strict-byte result above is retained):
 | Order | Check | Result |
 |---|---|---|
 | H1 | Correct soak byte plateau contract | PASS. Texture and geometry counts still require exact equality at loop 20 versus final. Each WebGPU byte field now passes when its final value is no greater than the loop-20 value plus 1%; flat or decreasing usage passes, while growth beyond 1% fails. The 3% second-half heap gate is unchanged. |
-| H2 | Add `--lane=soak --heap-diff` retention probe | PASS implementation checks. The probe forces GC and streams CDP heap snapshots at loops 20 and 50, computes constructor/name aggregates from the documented flat node/edge arrays, derives retained sizes with a Lengauer-Tarjan dominator tree, and emits the top 20 retained-size deltas plus trimmed real-edge root paths for the top three representatives. Raw snapshots are temporary; no dependency was added. |
+| H2 | Add `--lane=soak --heap-diff` retention probe | PASS implementation checks: both probe/parser modules pass `node --check`; focused parser/gate suite passes 4 tests / 13 assertions. The probe forces GC and streams CDP heap snapshots at loops 20 and 50, computes constructor/name aggregates from the documented flat node/edge arrays, derives retained sizes with a Lengauer-Tarjan dominator tree, and emits the top 20 retained-size deltas plus trimmed real-edge root paths for the top three representatives. Raw snapshots are temporary; no dependency was added. |
+| H3 | 60-loop heap naming soak | **BLOCKED**, 60/60 round trips. Heap 336.03 -> 378.81 MB (+12.7307% overall) and midpoint 356.96 -> 378.81 MB (+6.1192%, fails unchanged 3% gate). Inventories and history (4 -> 4) are flat. The corrected byte gate passes (291,024,569 -> 291,106,586 bytes, +0.0282%); this diagnostic run allocated one late texture (287 -> 288), so count equality fails. |
+| H4 | One authorized 120-loop boundedness soak | **BLOCKED**, 120/120 round trips. Forced-GC quartile slopes are Q1 0.5995, Q2 0.1979, Q3 0.2377, and Q4 0.5217 MB/loop. Q4 rises instead of decaying toward zero. Forced-GC heap ceiling/final is 388.78 MB (all-sample transient ceiling 536.57 MB), +15.6922% overall and +7.2336% in the second half. Renderer counts are exactly flat at 288 textures / 419 geometries, bytes decrease 291,024,908 -> 290,994,503, both inventories are flat, and history remains 4 -> 4. |
 
 The P1c v2 brief specified exact equality for renderer texture/geometry counts,
 but exact byte equality was an implementation addition. WebGPU renderer
@@ -270,6 +272,33 @@ avoiding double-counting instances dominated by another instance in the same
 group. `--heap-diff` requires at least 50 crossing loops. The soak cap is 120
 only so the authorized boundedness run can use the same harness; all existing
 60-loop defaults and heap thresholds remain unchanged.
+
+### Named residual and stop decision
+
+The loop-20 to loop-50 diff names the dominant retained-size growth as `Set`:
+1,255 -> 2,893 instances, +26,208 shallow bytes, and +3,061,192 maximum
+retained bytes. Its representative strong-edge chain ends at a texture backend
+record's `bindGroups` property. This maps directly to Three's
+`Textures.js`, which initializes `textureData.bindGroups = new Set()`, and
+`Bindings.js`, which adds each referencing bind group. The next two groups are
+the minified WebGPU backend object (`_k`, +263,024 retained bytes) and its
+`Backend.data` `WeakMap` (+32 instances / +262,144 retained bytes). Their
+chains traverse `Renderer._geometries -> Geometries.attributes -> backend`
+and `Backend.data`, respectively.
+
+This is category (c), Three/WebGPU renderer-internal cache retention. It is not
+an App Router cache entry and does not terminate in stage/world/Cove objects or
+hooks. Clearing renderer-private bind-group/backend caches from application
+code would be an eviction workaround, which is explicitly out of scope, and
+editing vendored Three internals is outside the allowed file slice. No
+application fix was made.
+
+The ordinary 120-loop run confirms that the named retention is not bounded by
+the observed window: the last forced-GC quartile slope increases to 0.5217
+MB/loop. Although the renderer's public counts and bytes plateau, the unchanged
+second-half heap gate fails. Per the frozen stop rule, re-gating stops here with
+the named renderer-internal cause and boundedness evidence; the orchestrator
+owns any heap-gate decision.
 
 The route/soak harness owns a local in-process world/research transport because
 the frozen execution contract says no local API or database is required. It
