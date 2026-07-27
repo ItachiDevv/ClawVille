@@ -38,6 +38,10 @@
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-07-27 (repo-scrub session, push 18) — dev card FINAL per founder ("we're good"): chip reads 0 SOL FEES
+- **What:** the 0 SOL chip could read as zero volume at a glance; now "0 SOL FEES / Gasless For Agents". Founder accepted the card with this change — this export is the postable final.
+- **SCHEMA:** `synced`. **PARITY:** n/a.
+
 ### 2026-07-27 (repo-scrub session, push 17) — footer polish across all banners (founder redlines)
 - **What:** Discord invite removed from banner footers (ugly raw code); X logo (inline SVG) added before @Clawville_World so the handle reads as an X username. All four templates updated; dev card re-exported and delivered.
 - **SCHEMA:** `synced`. **PARITY:** n/a.
