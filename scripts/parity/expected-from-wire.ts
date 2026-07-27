@@ -545,16 +545,18 @@ function holdemBanner(terminal: UnknownRecord, cash: boolean): string {
   };
   const human = winners.find((seat) => seat.isHuman === true);
   if (endedAt !== 'showdown' && human) {
-    return `Everyone folded — you take the pot: +${stringValue(terminal.humanPayout)} vCLAW`;
+    return `Everyone folded. You take the pot: +${stringValue(terminal.humanPayout)} vCLAW`;
   }
   if (endedAt !== 'showdown' && winners[0]) {
-    return `Everyone else folded — ${name(Number(winners[0].seat))} takes ${stringValue(winners[0].won)} vCLAW`;
+    return `Everyone else folded. ${name(Number(winners[0].seat))} takes ${stringValue(winners[0].won)} vCLAW`;
   }
   const winnerText = winners.map((winner) => {
     const category = stringValue(winner.handCategoryName);
-    return `${name(Number(winner.seat))} wins ${stringValue(winner.won)} vCLAW${category ? ` with ${category}` : ''}`;
+    const seat = Number(winner.seat);
+    const verb = seat === 0 ? 'win' : 'wins';
+    return `${name(seat)} ${verb} ${stringValue(winner.won)} vCLAW${category ? ` with ${category}` : ''}`;
   }).join(' · ');
-  return `Showdown — ${winnerText || 'pot awarded'}`;
+  return `Showdown: ${winnerText || 'pot awarded'}`;
 }
 
 export interface ExpectedContext {

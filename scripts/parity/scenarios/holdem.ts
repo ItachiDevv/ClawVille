@@ -6,8 +6,6 @@ import { driveScenario, reachedFor, teardownFor } from './runtime';
 
 const MISSING_FELT_SETTLEMENT_META =
   'landed Holdem felt publisher omits required outcome/winners/net/banner settlement metadata';
-const MISSING_PRACTICE_TRAY_NARRATION =
-  'landed practice tray omits frozen [data-testid="holdem-settlement-narration"]';
 const MISSING_CASH_FIXTURE_SHOWDOWN =
   'landed cash tray journal never publishes the H10 fixture-hand showdown checkpoint';
 
@@ -31,9 +29,7 @@ function scenario(
     ...(fixtureName ? { fixtureName } : {}),
     ...(surface.includes('-felt-') && ['H5', 'H6', 'H10'].includes(row)
       ? { blockedReason: MISSING_FELT_SETTLEMENT_META }
-      : surface === 'holdem-tray-practice' && ['H5', 'H6'].includes(row)
-        ? { blockedReason: MISSING_PRACTICE_TRAY_NARRATION }
-        : surface === 'holdem-tray-3d' && row === 'H10'
+      : surface === 'holdem-tray-3d' && row === 'H10'
           ? { blockedReason: MISSING_CASH_FIXTURE_SHOWDOWN }
         : {}),
     feltReplay: surface.includes('-felt-')

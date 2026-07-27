@@ -51,7 +51,6 @@ import type { RaiseConfig } from '@/lib/cove/holdem-types';
 import {
   COVE_HOLDEM_MIN_BUYIN,
   COVE_HOLDEM_MAX_BUYIN,
-  HOLDEM_BOT_PERSONALITIES,
 } from '@clawville/shared';
 import {
   computeAllIn,
@@ -59,6 +58,7 @@ import {
   useHoldemController,
   type HoldemAgentMode,
 } from '@/lib/cove/holdem-controller';
+import { settlementNarration } from '@/lib/cove/holdem-settlement-narration';
 
 // impl-card polished primitives — prop shapes match holdem-types.ts.
 import { RaiseSlider } from './RaiseSlider';
@@ -66,31 +66,6 @@ import SeatPosition from './SeatPosition';
 import CommunityCardRow from './CommunityCardRow';
 import PotDisplay from './PotDisplay';
 import ChipStack from './ChipStack';
-
-// ---------------------------------------------------------------------------
-// Bot display names (deterministic, parallel to seats 1..5).
-// ---------------------------------------------------------------------------
-const BOT_NAMES: Record<number, string> = {
-  1: 'Tess',  // tag
-  2: 'Vex',   // lag
-  3: 'Pip',   // tight-passive
-  4: 'Cal',   // calling-station
-  5: 'Nita',  // nit
-};
-
-function botLabel(seat: number): string {
-  const p = HOLDEM_BOT_PERSONALITIES[seat];
-  const name = BOT_NAMES[seat] ?? `Bot ${seat}`;
-  if (!p) return name;
-  // Short personality tag in parens (e.g. "Vex (LAG)").
-  const short =
-    p === 'tag' ? 'TAG' :
-    p === 'lag' ? 'LAG' :
-    p === 'tight-passive' ? 'TP' :
-    p === 'calling-station' ? 'CS' :
-    'NIT';
-  return `${name} (${short})`;
-}
 
 // ---------------------------------------------------------------------------
 // Seat oval layout positions — absolute within the felt area.
@@ -207,18 +182,10 @@ export default function HoldemModal() {
   }, [resetHand]);
 
   // ── Derived display values ─────────────────────────────────────────────────
-  const outcome = settled?.outcome ?? null;
-
-  const winnerLabel = useMemo(() => {
-    if (!outcome) return null;
-    const winners = outcome.seats.filter((s) => s.isWinner);
-    if (winners.length === 0) return null;
-    if (winners.length === 1) {
-      const w = winners[0]!;
-      return w.isHuman ? 'YOU WIN' : `${botLabel(w.seat).split(' ')[0]} WINS`;
-    }
-    return winners.some((w) => w.isHuman) ? 'SPLIT POT (you share)' : 'SPLIT POT';
-  }, [outcome]);
+  const narration = useMemo(
+    () => settled ? settlementNarration(settled) : null,
+    [settled],
+  );
 
   const humanNetNum = settled ? Number(settled.net) : 0;
 
@@ -385,10 +352,12 @@ export default function HoldemModal() {
         {/* ── Settled banner — IN FLOW between the felt and the action strip.
               The old absolute top-28% overlay sat on the top-arc seats and
               covered the bots' hole cards exactly when they reveal at showdown. */}
-        {phase === 'settled' && winnerLabel && (
+        {phase === 'settled' && narration && (
           <div
             role="status"
             aria-live="assertive"
+            data-testid="holdem-settlement-narration"
+            data-banner-text={narration.headline}
             style={{
               flexShrink: 0, alignSelf: 'center',
               pointerEvents: 'none',
@@ -414,14 +383,14 @@ export default function HoldemModal() {
                 fontSize: 11, fontFamily: 'var(--pt-data)',
                 letterSpacing: '0.2em', fontWeight: 700, marginBottom: 3,
               }}>
-                {winnerLabel}
+                {narration.headline}
               </div>
               <div style={{
                 color: humanNetNum >= 0 ? 'var(--pt-cream)' : '#e85555',
-                fontSize: 20, fontWeight: 700,
-                fontFamily: 'var(--pt-display)', lineHeight: 1,
+                fontSize: 13, fontWeight: 700,
+                fontFamily: 'var(--pt-display)', lineHeight: 1.3,
               }}>
-                {humanNetNum >= 0 ? `+${humanNetNum}` : `${humanNetNum}`} vCLAW
+                {narration.detail}
               </div>
             </div>
           </div>

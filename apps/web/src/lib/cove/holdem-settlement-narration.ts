@@ -40,20 +40,21 @@ export function settlementNarration(
 
   if (endedByFold && humanWinner) {
     return {
-      headline: `Everyone folded — you take the pot: +${settled.payout} vCLAW`,
+      headline: `Everyone folded. You take the pot: +${settled.payout} vCLAW`,
       detail: `Your net: ${netText}`,
     };
   }
   if (endedByFold && winners[0]) {
     return {
-      headline: `Everyone else folded — ${holdemSeatName(winners[0].seat)} takes ${winners[0].won} vCLAW`,
+      headline: `Everyone else folded. ${holdemSeatName(winners[0].seat)} takes ${winners[0].won} vCLAW`,
       detail: `Your net: ${netText}`,
     };
   }
 
   const winnerText = winners.map((winner) => {
     const category = winner.handCategoryName ? ` with ${winner.handCategoryName}` : '';
-    return `${holdemSeatName(winner.seat)} wins ${winner.won} vCLAW${category}`;
+    const verb = winner.isHuman ? 'win' : 'wins';
+    return `${holdemSeatName(winner.seat)} ${verb} ${winner.won} vCLAW${category}`;
   }).join(' · ');
   const splitDetail = outcome.pots.length > 1 || outcome.pots.some((pot) => pot.winners.length > 1)
     ? outcome.pots.map((pot, index) => {
@@ -62,7 +63,7 @@ export function settlementNarration(
       }).join(' · ')
     : '';
   return {
-    headline: `Showdown — ${winnerText || 'pot awarded'}`,
+    headline: `Showdown: ${winnerText || 'pot awarded'}`,
     detail: [splitDetail, `Your net: ${netText}`].filter(Boolean).join(' · '),
   };
 }
