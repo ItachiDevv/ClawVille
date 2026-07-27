@@ -153,6 +153,7 @@ export type HoldemTrayInput =
       dealStep: string;
       phase: string;
       transition: CardParityPayload['transition'];
+      ownSeatIndex: number;
       bannerText?: string;
       pot?: string;
     };
@@ -306,7 +307,13 @@ export function buildHoldemTrayParity(i: HoldemTrayInput): CardParityPayload {
     slots.push(encodedSlot(`board-${index + 1}`, board[index]));
   }
   const meta = i.settled
-    ? settledHoldemMeta(i.settled, i.bannerText, i.pot, i.hole)
+    ? settledHoldemMeta(
+        i.settled,
+        i.bannerText,
+        i.pot,
+        i.hole,
+        i.kind === 'cash' ? i.ownSeatIndex : undefined,
+      )
     : {
         ...(i.pot === undefined ? {} : { pot: i.pot }),
         ...(i.bannerText === undefined ? {} : { 'banner-text': i.bannerText }),

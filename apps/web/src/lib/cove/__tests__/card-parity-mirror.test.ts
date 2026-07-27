@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import type {
+  CashSettledHandSnapshot,
   HoldemSettledResponse,
   SerializedBaccaratCoup,
   SerializedBlackjackHandResult,
@@ -252,6 +253,100 @@ describe('pure parity builders', () => {
         { slot: 'opp-2-1', facing: 'down', card: '', status: 'folded' },
         { slot: 'opp-2-2', facing: 'down', card: '', status: 'folded' },
       ]);
+  });
+
+  test('publishes a cash tray showdown root even after the live hand advances', () => {
+    const settled: CashSettledHandSnapshot = {
+      handId: 'cash-table:19',
+      tableId: 'cash-table',
+      handNumber: 19,
+      board: [
+        { suit: 'hearts', rank: 'A' },
+        { suit: 'clubs', rank: 'K' },
+        { suit: 'diamonds', rank: 'Q' },
+        { suit: 'spades', rank: 'J' },
+        { suit: 'hearts', rank: '10' },
+      ],
+      endedAt: 'showdown',
+      pots: [{
+        amount: '30',
+        eligibleSeatIndices: [0, 2],
+        awards: [{ seatIndex: 2, amount: '30' }],
+        winningRank: { category: 4, categoryName: 'straight', tiebreakers: [14] },
+      }],
+      seats: [
+        {
+          seatIndex: 0,
+          avatarId: 'own-avatar',
+          startStack: '100',
+          endStack: '90',
+          totalCommitted: '10',
+          grossWon: '0',
+          rakeAttributed: '0',
+          net: '-10',
+          stackDelta: '-10',
+          status: 'folded',
+          shown: null,
+          mucked: true,
+        },
+        {
+          seatIndex: 2,
+          avatarId: 'winner-avatar',
+          startStack: '100',
+          endStack: '120',
+          totalCommitted: '10',
+          grossWon: '30',
+          rakeAttributed: '0',
+          net: '20',
+          stackDelta: '20',
+          status: 'active',
+          shown: [
+            { suit: 'spades', rank: 'A' },
+            { suit: 'spades', rank: 'K' },
+          ],
+          mucked: false,
+        },
+      ],
+      settledAtMs: 1,
+      displayExpiresAtMs: 8_001,
+    };
+    const tray = buildHoldemTrayParity({
+      kind: 'cash',
+      hole: [],
+      board: settled.board,
+      settled,
+      correlation: {
+        hand: `${settled.tableId}:${settled.handNumber}`,
+        handNumber: settled.handNumber,
+      },
+      dealStep: 'showdown',
+      phase: 'settled',
+      transition: 'idle',
+      ownSeatIndex: 0,
+      bannerText: 'Showdown',
+    });
+
+    expect(tray).toMatchObject({
+      correlation: { hand: 'cash-table:19', handNumber: 19 },
+      dealStep: 'showdown',
+      phase: 'settled',
+      slots: [
+        { slot: 'hole-1', facing: 'empty', card: '' },
+        { slot: 'hole-2', facing: 'empty', card: '' },
+        { slot: 'board-1', facing: 'up', card: 'Ah' },
+        { slot: 'board-2', facing: 'up', card: 'Kc' },
+        { slot: 'board-3', facing: 'up', card: 'Qd' },
+        { slot: 'board-4', facing: 'up', card: 'Js' },
+        { slot: 'board-5', facing: 'up', card: 'Th' },
+      ],
+      meta: {
+        outcome: 'showdown',
+        winners: '2',
+        net: '-10',
+        pot: '30',
+        'banner-text': 'Showdown',
+      },
+    });
   });
 
   test('round-trips Blackjack render state without exposing the dealer hole card', () => {

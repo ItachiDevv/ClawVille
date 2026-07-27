@@ -4,9 +4,6 @@ import type {
 } from '../types';
 import { driveScenario, reachedFor, teardownFor } from './runtime';
 
-const MISSING_CASH_FIXTURE_SHOWDOWN =
-  'landed cash tray journal never publishes the H10 fixture-hand showdown checkpoint';
-
 function scenario(
   row: string,
   tier: 'guest' | 'live',
@@ -25,9 +22,6 @@ function scenario(
     required: true,
     phases,
     ...(fixtureName ? { fixtureName } : {}),
-    ...(surface === 'holdem-tray-3d' && row === 'H10'
-      ? { blockedReason: MISSING_CASH_FIXTURE_SHOWDOWN }
-      : {}),
     feltReplay: surface.includes('-felt-')
       ? 'rendered-state-only'
       : 'not-applicable',

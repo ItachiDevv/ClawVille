@@ -181,20 +181,38 @@ export function CashTableRoomHud({
   const settledPot = settled?.pots
     .reduce((total, item) => total + BigInt(item.amount), 0n)
     .toString() ?? null;
-  const trayPot = live ? String(live.pot) : null;
   const settlementHeadline = settled
     ? settled.endedAt === 'showdown' ? 'Showdown' : 'Hand won without showdown'
     : null;
-  const matchingSettled = settled && live?.handNumber === settled.handNumber ? settled : null;
 
   useEffect(() => {
+    if (settled) {
+      publishFeltParity(instanceId, buildHoldemTrayParity({
+        kind: 'cash',
+        hole: settledSelf?.shown ?? [],
+        board: settled.board,
+        settled,
+        correlation: {
+          hand: `${settled.tableId}:${settled.handNumber}`,
+          handNumber: settled.handNumber,
+        },
+        dealStep: 'showdown',
+        phase: 'settled',
+        transition: 'idle',
+        ownSeatIndex: povSeatIndex,
+        ...(settlementHeadline ? { bannerText: settlementHeadline } : {}),
+        ...(settledPot === null ? {} : { pot: settledPot }),
+      }));
+      return;
+    }
+
     const handNumber = live?.handNumber ?? null;
     const dealStep = live?.street === 'preflop' ? 'hole' : live?.street ?? 'hole';
     publishFeltParity(instanceId, buildHoldemTrayParity({
       kind: 'cash',
       hole: freshSelf?.holeCards ?? [],
       board: live?.board ?? [],
-      settled: matchingSettled,
+      settled: null,
       correlation: {
         hand: handNumber == null ? `${state?.table.id ?? 'cash'}:idle` : `${state?.table.id ?? 'cash'}:${handNumber}`,
         handNumber,
@@ -202,17 +220,19 @@ export function CashTableRoomHud({
       dealStep,
       phase: live?.street ?? 'idle',
       transition: 'idle',
-      ...(matchingSettled && settlementHeadline ? { bannerText: settlementHeadline } : {}),
-      ...(trayPot === null ? {} : { pot: trayPot }),
+      ownSeatIndex: povSeatIndex,
+      ...(live ? { pot: String(live.pot) } : {}),
     }));
   }, [
     freshSelf,
     instanceId,
     live,
-    matchingSettled,
+    povSeatIndex,
+    settled,
     settlementHeadline,
+    settledPot,
+    settledSelf,
     state?.table.id,
-    trayPot,
   ]);
 
   return (
