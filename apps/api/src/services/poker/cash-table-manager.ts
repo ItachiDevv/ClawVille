@@ -68,6 +68,8 @@ import { REAL_CLOCK } from './poker-table-types';
 import {
   chargeFixtureExposure,
   consumeFixtureArm,
+  fixtureEnabled,
+  hasPendingHoldemCashFixtureArm,
   resolveCashFixtureServerSeed,
 } from '../cove-test-fixture';
 import type {
@@ -154,6 +156,14 @@ export interface CashTableManagerDeps {
     bindReservation(tableId: string, seatIndex: number, avatarId: string): boolean;
     release(tableId: string, seatIndex: number): void;
   };
+  /** W-F FIX-D2 staging-only organic-tick yield seams. */
+  fixtureEnabled?: () => boolean;
+  hasPendingHoldemCashFixtureArm?: (
+    ownerAvatarIds: readonly string[],
+    now?: Date,
+  ) => Promise<boolean>;
+  /** Existing fixture consumer, injectable only so the headered binding path is unit-testable. */
+  consumeFixtureArm?: typeof consumeFixtureArm;
 }
 
 /** Config for a new cash table (the route validates the shape; this re-checks bounds). */
@@ -320,6 +330,11 @@ export class CashTableManager {
   private readonly seededAgentReservationController: NonNullable<
     CashTableManagerDeps['seededAgentReservationController']
   >;
+  private readonly fixtureEnabled: NonNullable<CashTableManagerDeps['fixtureEnabled']>;
+  private readonly hasPendingHoldemCashFixtureArm: NonNullable<
+    CashTableManagerDeps['hasPendingHoldemCashFixtureArm']
+  >;
+  private readonly consumeFixtureArm: NonNullable<CashTableManagerDeps['consumeFixtureArm']>;
 
   /**
    * Per-table async mutex so concurrent sit/leave/action/settle for the SAME
@@ -353,6 +368,10 @@ export class CashTableManager {
     this.houseBankAvatarProvider = deps.houseBankAvatarProvider;
     this.seededAgentReservationController =
       deps.seededAgentReservationController ?? cashHouseSeeder;
+    this.fixtureEnabled = deps.fixtureEnabled ?? fixtureEnabled;
+    this.hasPendingHoldemCashFixtureArm =
+      deps.hasPendingHoldemCashFixtureArm ?? hasPendingHoldemCashFixtureArm;
+    this.consumeFixtureArm = deps.consumeFixtureArm ?? consumeFixtureArm;
 
     // This manager EXCLUSIVELY owns the hand-complete handler on ITS sim instance.
     // The sim fires it synchronously inside resolveHand; we just capture the result
@@ -874,8 +893,16 @@ export class CashTableManager {
    * agents close it (a fold-around or check-down between two seeded agents would
    * otherwise hang waiting for a human poke). Lock is already held by the caller.
    */
-  private async startAndAdvance(tableId: string, fixtureAuth?: CashFixtureAuth): Promise<void> {
-    const started = await this.maybeStartHand(tableId, fixtureAuth);
+  private async startAndAdvance(
+    tableId: string,
+    fixtureAuth?: CashFixtureAuth,
+    yieldToPendingFixtureArm = false,
+  ): Promise<void> {
+    const started = await this.maybeStartHand(
+      tableId,
+      fixtureAuth,
+      yieldToPendingFixtureArm,
+    );
     if (!started) return;
     // BOT-YIELD: if real players grew at this house table, queue seeded bots to
     // stand up at the NEXT between-hands boundary (keeping ≥2 players), so real
@@ -1380,7 +1407,7 @@ export class CashTableManager {
       // DEALS only when a real player is present (Option B gate); a bot-only table
       // returns false here and stays idle (no deal, no re-buy, no bank churn).
       if (!this.sim.getPublicSnapshot(sid)) {
-        await this.startAndAdvance(tableId);
+        await this.startAndAdvance(tableId, undefined, true);
       }
     });
     // 4: lobby self-heal — keep the seated-bot count topped up toward the lobby
@@ -1426,6 +1453,7 @@ export class CashTableManager {
   private async maybeStartHand(
     tableId: string,
     fixtureAuth?: CashFixtureAuth,
+    yieldToPendingFixtureArm = false,
   ): Promise<boolean> {
     const sid = simTableId(tableId);
     // A live, unfinished hand → nothing to do.
@@ -1450,6 +1478,23 @@ export class CashTableManager {
     // fillSeededAgents run (below) + a hand deal.
     const currentSeats = await this.activeSeats(tableId);
     if (!this.tableHasRealPlayer(currentSeats)) return false;
+
+    // W-F FIX-D2: on staging with the deterministic fixture enabled, the
+    // autonomous organic tick yields while any SITTING-IN REAL player's avatar
+    // owns an unconsumed, unexpired holdem-cash arm. The fixture-headered request
+    // bypasses this read-only guard and remains the sole authoritative consumer.
+    // Production never executes the query because fixtureEnabled() is false.
+    if (yieldToPendingFixtureArm && !fixtureAuth && this.fixtureEnabled()) {
+      const realPlayerAvatarIds = currentSeats
+        .filter(
+          (seat) =>
+            seat.status === 'sitting_in' &&
+            Number(seat.currentStackCt) > 0 &&
+            seat.isSeeded !== 'true',
+        )
+        .map((seat) => seat.avatarId);
+      if (await this.hasPendingHoldemCashFixtureArm(realPlayerAvatarIds)) return false;
+    }
 
     // A real player is present → top up / re-buy bots toward the fill target, then
     // deal. fillSeededAgents itself re-checks the real-player gate before any
@@ -1481,7 +1526,7 @@ export class CashTableManager {
     let fixtureRunId: string | null = null;
     if (fixtureAuth) {
       const fixtureResult = await this.db.transaction(async (tx) => {
-        const consumption = await consumeFixtureArm(tx, {
+        const consumption = await this.consumeFixtureArm(tx, {
           header: fixtureAuth.header,
           ownerAvatarId: fixtureAuth.ownerAvatarId,
           arm: 'holdem-cash',

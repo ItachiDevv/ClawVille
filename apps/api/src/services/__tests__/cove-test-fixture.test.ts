@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { join } from 'path';
 import {
   FIXTURE_SCENARIOS,
+  HOLDEM_CASH_FIXTURE_SCENARIO_NAMES,
   assertFixtureScenarioArm,
   assertFixtureResourceHeader,
   chargeFixtureRecord,
@@ -68,6 +69,16 @@ describe('BA-2 fixture safety gate', () => {
       stderr: 'pipe',
     });
     expect(result.exitCode).toBe(0);
+  });
+
+  it('derives the holdem-cash scenario family from the authoritative arm catalog', () => {
+    expect(HOLDEM_CASH_FIXTURE_SCENARIO_NAMES).toEqual([
+      'holdem-multiway-showdown',
+      'holdem-fold-win',
+    ]);
+    for (const scenarioName of HOLDEM_CASH_FIXTURE_SCENARIO_NAMES) {
+      expect(FIXTURE_SCENARIOS[scenarioName].arms).toContain('holdem-cash');
+    }
   });
 
   it('crashes at module load when enabled outside staging', () => {

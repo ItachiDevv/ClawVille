@@ -27,8 +27,10 @@ import { randomUUID } from 'crypto';
 import {
   buildCashSettledHandSnapshot,
   CashTableManager,
+  type CashTableManagerDeps,
   type CashSubject,
 } from '../cash-table-manager';
+import { FIXTURE_SCENARIOS } from '../../cove-test-fixture';
 import { PokerTableSim } from '../poker-table-sim';
 import type { HandResult, SimClock } from '../poker-table-types';
 
@@ -440,6 +442,7 @@ class FakeDb {
     leftAt: ['leftAt', 'left_at'],
     updatedAt: ['updatedAt', 'updated_at'],
     createdAt: ['createdAt', 'created_at'],
+    fixtureRunId: ['fixtureRunId', 'fixture_run_id'],
     handNumber: ['handNumber', 'hand_number'],
     serverSeedCommit: ['serverSeedCommit', 'server_seed_commit'],
     serverSeedReveal: ['serverSeedReveal', 'server_seed_reveal'],
@@ -2157,5 +2160,165 @@ describe('CashTableManager — turn-clock timeout settles under the lock (OPEN H
     // SUPPLY conservation: every chip in escrow traces to a real debit (human + house
     // bank), nothing minted. Σ debits == Σ credits + escrow.
     expect(ledger.totalDebited()).toBe(ledger.totalCredited() + cons.escrow);
+  });
+});
+
+describe('CashTableManager — W-F FIX-D2 fixture/tick deal arbitration', () => {
+  const HOUSE_BANK_AVATAR = 'fixture-guard-house-bank';
+  const OWNER_AVATAR = 'fixture-guard-owner';
+  const FIXTURE_RUN_ID = '11111111-1111-4111-8111-111111111111';
+
+  function makeGuardHarness(options: {
+    fixtureEnabled: boolean;
+    hasPendingHoldemCashFixtureArm: NonNullable<
+      CashTableManagerDeps['hasPendingHoldemCashFixtureArm']
+    >;
+    consumeFixtureArm?: CashTableManagerDeps['consumeFixtureArm'];
+  }) {
+    const db = new FakeDb();
+    const ledger = new FakeLedger();
+    ledger.setBalance(HOUSE_BANK_AVATAR, 1_000_000);
+    const sim = new PokerTableSim(new FakeClock());
+    let seedCounter = 1;
+    const mgr = new CashTableManager({
+      db: db as never,
+      ledger: ledger as never,
+      sim,
+      clock: new FakeClock(),
+      seedFn: () => (seedCounter++).toString(16).padStart(64, '0'),
+      seededAgentProvider: (_tableId, seatIndex) => ({
+        avatarId: `fixture-guard-seeded-bot-${seatIndex}`,
+        agentId: `fixture-guard-seeded-agent-${seatIndex}`,
+        name: `Fixture Guard Seeded Agent ${seatIndex}`,
+      }),
+      houseBankAvatarProvider: () => HOUSE_BANK_AVATAR,
+      seededAgentReservationController: {
+        bindReservation: () => true,
+        release: () => {},
+      },
+      fixtureEnabled: () => options.fixtureEnabled,
+      hasPendingHoldemCashFixtureArm: options.hasPendingHoldemCashFixtureArm,
+      consumeFixtureArm: options.consumeFixtureArm,
+    });
+    return { db, ledger, sim, mgr };
+  }
+
+  async function seatFixtureOwner(
+    harness: ReturnType<typeof makeGuardHarness>,
+  ) {
+    const table = await harness.mgr.createTable(
+      {
+        source: 'house',
+        visibility: 'public',
+        tierKey: 'low',
+        buyInCt: 100,
+        smallBlindCt: 1,
+        bigBlindCt: 2,
+        maxSeats: 6,
+        seededAgentSlots: 2,
+      },
+      houseCreatorSubject(HOUSE_BANK_AVATAR),
+    );
+    harness.ledger.setBalance(OWNER_AVATAR, 100);
+    await harness.mgr['seatSubject'](
+      table,
+      humanSubject(OWNER_AVATAR),
+      5,
+      100,
+      false,
+    );
+    await harness.mgr.seatHouseBots(table.id);
+    return table;
+  }
+
+  it('fixture enabled + pending arm makes the organic tick skip before bot funding or deal', async () => {
+    const checkedOwners: string[][] = [];
+    const harness = makeGuardHarness({
+      fixtureEnabled: true,
+      hasPendingHoldemCashFixtureArm: async (ownerAvatarIds) => {
+        checkedOwners.push([...ownerAvatarIds]);
+        return true;
+      },
+    });
+    const table = await seatFixtureOwner(harness);
+    const houseBalanceBeforeTick = harness.ledger.get(HOUSE_BANK_AVATAR);
+
+    await harness.mgr.advanceTable(table.id);
+
+    expect(checkedOwners).toEqual([[OWNER_AVATAR]]);
+    expect(harness.sim.getPublicSnapshot(`cash:${table.id}`)).toBeNull();
+    expect(harness.ledger.get(HOUSE_BANK_AVATAR)).toBe(houseBalanceBeforeTick);
+  });
+
+  it('an expired or consumed arm no longer blocks the organic tick deal', async () => {
+    for (const arm of [
+      { consumedAt: null, expiresAt: new Date(Date.now() - 1) },
+      { consumedAt: new Date(), expiresAt: new Date(Date.now() + 60_000) },
+    ]) {
+      const harness = makeGuardHarness({
+        fixtureEnabled: true,
+        hasPendingHoldemCashFixtureArm: async () =>
+          arm.consumedAt === null && arm.expiresAt.getTime() > Date.now(),
+      });
+      const table = await seatFixtureOwner(harness);
+
+      await harness.mgr.advanceTable(table.id);
+
+      expect(harness.sim.getPublicSnapshot(`cash:${table.id}`)).not.toBeNull();
+    }
+  });
+
+  it('fixture disabled leaves the organic deal path live and never queries pending arms', async () => {
+    let pendingChecks = 0;
+    const harness = makeGuardHarness({
+      fixtureEnabled: false,
+      hasPendingHoldemCashFixtureArm: async () => {
+        pendingChecks++;
+        return true;
+      },
+    });
+    const table = await seatFixtureOwner(harness);
+
+    await harness.mgr.advanceTable(table.id);
+
+    expect(pendingChecks).toBe(0);
+    expect(harness.sim.getPublicSnapshot(`cash:${table.id}`)).not.toBeNull();
+  });
+
+  it('a fixture-headered human deal bypasses the yield and binds the fixture hand', async () => {
+    let pendingChecks = 0;
+    const consumeCalls: Array<{ ownerAvatarId: string; arm: string }> = [];
+    const harness = makeGuardHarness({
+      fixtureEnabled: true,
+      hasPendingHoldemCashFixtureArm: async () => {
+        pendingChecks++;
+        return true;
+      },
+      consumeFixtureArm: async (_tx, args) => {
+        consumeCalls.push({ ownerAvatarId: args.ownerAvatarId, arm: args.arm });
+        return {
+          ok: true,
+          fixture: {
+            ...FIXTURE_SCENARIOS['holdem-multiway-showdown'],
+            runId: FIXTURE_RUN_ID,
+          },
+        };
+      },
+    });
+    const table = await seatFixtureOwner(harness);
+
+    const started = await harness.mgr['maybeStartHand'](table.id, {
+      header: `${FIXTURE_RUN_ID}.fixture-test-token`,
+      ownerAvatarId: OWNER_AVATAR,
+    });
+
+    expect(started).toBe(true);
+    expect(pendingChecks).toBe(0);
+    expect(consumeCalls).toEqual([{ ownerAvatarId: OWNER_AVATAR, arm: 'holdem-cash' }]);
+    const [placeholder] = harness.db.stores
+      .get(pokerCashHands)!
+      .filter((row) => row.table_id === table.id);
+    expect(placeholder?.fixture_run_id).toBe(FIXTURE_RUN_ID);
+    expect(harness.sim.getPublicSnapshot(`cash:${table.id}`)).not.toBeNull();
   });
 });

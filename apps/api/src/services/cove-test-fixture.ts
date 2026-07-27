@@ -8,7 +8,17 @@
  */
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { HTTPException } from 'hono/http-exception';
-import { db, sql, coveTestFixtureRuns, avatars, eq, and } from '@clawville/database';
+import {
+  db,
+  sql,
+  coveTestFixtureRuns,
+  avatars,
+  eq,
+  and,
+  gt,
+  inArray,
+  isNull,
+} from '@clawville/database';
 import { PokerTableSim } from './poker/poker-table-sim';
 import type {
   Action,
@@ -185,6 +195,14 @@ export const FIXTURE_SCENARIOS = {
   },
 } as const satisfies Record<string, FixtureScenario>;
 
+/**
+ * Cash-arm authority comes from the same catalog `arms` consumed by
+ * `consumeFixtureArm`; do not maintain a second scenario-name list.
+ */
+export const HOLDEM_CASH_FIXTURE_SCENARIO_NAMES = Object.values(FIXTURE_SCENARIOS)
+  .filter((scenario) => (scenario.arms as readonly FixtureArm[]).includes('holdem-cash'))
+  .map((scenario) => scenario.name);
+
 export function assertFixtureScenarioArm(
   scenario: Pick<FixtureScenario, 'arms'>,
   arm: FixtureArm,
@@ -333,6 +351,32 @@ function assertFixtureUsable(): void {
 
 export function fixtureEnabled(): boolean {
   return Boolean(RAW_FIXTURE_ENABLED?.trim()) && isStagingEnv();
+}
+
+/**
+ * Read-only W-F FIX-D2 tick predicate over the authoritative
+ * `cove_test_fixture_runs` schema. This is deliberately separate from arm
+ * consumption: it never locks, consumes, closes, charges, or moves money.
+ */
+export async function hasPendingHoldemCashFixtureArm(
+  ownerAvatarIds: readonly string[],
+  now = new Date(),
+): Promise<boolean> {
+  if (ownerAvatarIds.length === 0) return false;
+  const [pending] = await db
+    .select({ runId: coveTestFixtureRuns.runId })
+    .from(coveTestFixtureRuns)
+    .where(
+      and(
+        inArray(coveTestFixtureRuns.ownerAvatarId, [...ownerAvatarIds]),
+        eq(coveTestFixtureRuns.status, 'active'),
+        isNull(coveTestFixtureRuns.consumedAt),
+        gt(coveTestFixtureRuns.expiresAt, now),
+        inArray(coveTestFixtureRuns.scenarioName, HOLDEM_CASH_FIXTURE_SCENARIO_NAMES),
+      ),
+    )
+    .limit(1);
+  return Boolean(pending);
 }
 
 export function hashFixtureToken(token: string): string {
