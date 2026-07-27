@@ -38,6 +38,10 @@
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-07-27 (repo-scrub session, push 7) — Clawville Display: a REAL font built from the logo lettering
+- **What:** the logo lettering was AI art with no font behind it (founder confirmed). Built one: gpt-image-1 generated a full A-Z/a-z/0-9 glyph sheet styled on the logo (OpenAI per founder, no Gemini), then a local pipeline (yellow-fill mask -> per-glyph slice -> potrace vectorize -> fontTools CFF assemble) produced `branding/assets/fonts/ClawvilleDisplay.otf` + `.woff2`. Sheet + build script committed for regeneration. Caveats doc'd: display-quality (no kerning), lowercase z synthesized from Z, digits spanned two sheet rows. Brand board renders a live specimen.
+- **SCHEMA:** `synced`. **PARITY:** n/a.
+
 ### 2026-07-26 (repo-scrub session, push 6) — OFFICIAL logo + animated banner pulled from DexScreener
 - **What:** founder corrections: the town "More Than A Game" scene is an ARTICLE PROMO (not official), and the pirate OG is ALTERNATE art. THE official logo (200x200, mascot-in-surf under the sign) + THE official ANIMATED banner (600x200 GIF, 144 frames) pulled as originals from the $CLAWVILLE DexScreener profile (mint `Epht7Fw4Sgh6fdcJj6afWXuNcAUmLLMc3MSthUqELiZA`; re-pull recipe documented in BRAND.md §5). Static banner copy added; BRAND.md hierarchy + inventory + board updated; "More Than A Game" demoted to promo copy.
 - **SCHEMA:** `synced`. **PARITY:** n/a.

@@ -75,8 +75,18 @@ brushed metal gradient on Gold. Flat color is acceptable for small text and chip
 The kit shipped no font files. Observed styles + open-source stand-ins (use these until
 marketing confirms the real faces; see Open Flags):
 
-The kit bundles the stand-ins as woff2 in `assets/fonts/` (Anton 400, Barlow 600/700; both
-SIL Open Font License) so banner templates render identically everywhere.
+**Clawville Display — the REAL brand font (built 2026-07-27, fully ours).** The logo
+lettering was AI-generated art with no font file behind it, so we built one: a full A-Z /
+a-z / 0-9 alphabet sheet was generated with gpt-image-1 using the logo as the style
+reference, then auto-traced and assembled into a working font.
+`assets/fonts/ClawvilleDisplay.otf` + `.woff2`. Use it for Register A display text,
+headlines, and anywhere the playful chunky-slab voice fits. Caveats: display use only (no
+kerning, basic metrics); lowercase z is synthesized from Z; the LOGO files themselves remain
+canonical, never re-typeset the logo. Regenerate/improve via
+`assets/fonts/build-clawville-display.py` + `clawville-display-glyphsheet.png`.
+
+The kit also bundles the broadcast stand-ins as woff2 in `assets/fonts/` (Anton 400, Barlow
+600/700; both SIL Open Font License) so banner templates render identically everywhere.
 
 | Role | Observed style | Stand-in (Google Fonts) |
 |---|---|---|
