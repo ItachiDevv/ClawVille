@@ -255,6 +255,7 @@ Heap-naming follow-up (the historical strict-byte result above is retained):
 | Order | Check | Result |
 |---|---|---|
 | H1 | Correct soak byte plateau contract | PASS. Texture and geometry counts still require exact equality at loop 20 versus final. Each WebGPU byte field now passes when its final value is no greater than the loop-20 value plus 1%; flat or decreasing usage passes, while growth beyond 1% fails. The 3% second-half heap gate is unchanged. |
+| H2 | Add `--lane=soak --heap-diff` retention probe | PASS implementation checks. The probe forces GC and streams CDP heap snapshots at loops 20 and 50, computes constructor/name aggregates from the documented flat node/edge arrays, derives retained sizes with a Lengauer-Tarjan dominator tree, and emits the top 20 retained-size deltas plus trimmed real-edge root paths for the top three representatives. Raw snapshots are temporary; no dependency was added. |
 
 The P1c v2 brief specified exact equality for renderer texture/geometry counts,
 but exact byte equality was an implementation addition. WebGPU renderer
@@ -262,6 +263,13 @@ program and uniform caches can vary downward without representing retained
 scene resources; the observed 67,539-byte decrease must therefore pass the
 actual leak contract. The corrected byte check is an upper-bound growth gate,
 not a relaxation of the independent heap threshold.
+
+The constructor aggregate uses the maximum retained size within each
+constructor/name group, matching DevTools-style aggregate semantics and
+avoiding double-counting instances dominated by another instance in the same
+group. `--heap-diff` requires at least 50 crossing loops. The soak cap is 120
+only so the authorized boundedness run can use the same harness; all existing
+60-loop defaults and heap thresholds remain unchanged.
 
 The route/soak harness owns a local in-process world/research transport because
 the frozen execution contract says no local API or database is required. It

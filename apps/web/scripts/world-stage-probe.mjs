@@ -1,10 +1,24 @@
 #!/usr/bin/env bun
 
 import puppeteer from 'puppeteer-core';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
+import {
+  mkdir,
+  mkdtemp,
+  rmdir,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { once } from 'node:events';
+import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  diffHeapSnapshots,
+  renderHeapDiffReport,
+  withinGrowthTolerance,
+} from './world-stage-heap-snapshot.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const argv = new Map(
@@ -37,6 +51,10 @@ if (
   throw new Error('--dwell-seconds must be between 10 and 600');
 }
 const dwellMode = dwellTarget !== null;
+const heapDiffRequested = argv.has('heap-diff');
+if (heapDiffRequested && (lane !== 'soak' || dwellMode)) {
+  throw new Error('--heap-diff requires the crossing form of --lane=soak');
+}
 const forceWebGL = argv.has('webgl');
 const requestedUrl =
   argv.get('url') ??
@@ -57,11 +75,14 @@ if (
   transitionCount <= 0 ||
   (lane === 'soak' &&
     !dwellMode &&
-    (transitionCount < 20 || transitionCount > 100))
+    (transitionCount < 20 || transitionCount > 120)) ||
+  (heapDiffRequested && transitionCount < 50)
 ) {
   throw new Error(
-    lane === 'soak'
-      ? 'The soak lane requires integer --loops between 20 and 100'
+    heapDiffRequested && transitionCount < 50
+      ? '--heap-diff requires at least 50 soak loops'
+      : lane === 'soak'
+        ? 'The soak lane requires integer --loops between 20 and 120'
       : '--transitions must be a positive integer',
   );
 }
@@ -75,6 +96,10 @@ const outputPath = resolve(
 );
 const chromePath =
   argv.get('chrome') ?? 'C:/Program Files/Google/Chrome/Application/chrome.exe';
+const heapReportPath = resolve(
+  argv.get('heap-report') ??
+    `${SCRIPT_DIR}/../../../reports/p1c-heapname-report.md`,
+);
 const scenes = ['alpha', 'beta', 'cove-spike'];
 const WORLD_ONLY_ASSET_PATTERN =
   /\/models\/(?:characters\/|(?:pineapple-house|chum-bucket|krusty-krab|salty-spitoon|boating-school|patty-building|building-lighthouse|arcade\/claw-arcade-exterior|cove\/cove-exterior|patricks-rock|squidward-house|coral-reef|kelp\.glb|building-shell|building-seashell|building-anchor|building-barrel|building-chest|building-lantern|crayfish|building-tower2|quest-bounty-pavilion|bazaar-merchant-stand|shisha-oasis))/i;
@@ -119,6 +144,17 @@ const summary = {
     midpointBytes: null,
     secondHalfGrowthRatio: null,
     secondHalfThreshold: 0.03,
+  },
+  heapDiff: {
+    enabled: heapDiffRequested,
+    status: heapDiffRequested ? 'pending' : 'disabled',
+    snapshotLoops: heapDiffRequested ? [20, 50] : [],
+    reportPath: heapDiffRequested ? heapReportPath : null,
+    aggregation: null,
+    baseline: null,
+    final: null,
+    topConstructors: [],
+    retainerChains: [],
   },
   renderer: {
     samples: [],
@@ -180,6 +216,8 @@ const summary = {
 
 let browser;
 let worldProbeServer;
+let heapSnapshotDirectory;
+const heapSnapshotPaths = new Map();
 
 async function startWorldProbeServer() {
   const streams = new Set();
@@ -451,6 +489,43 @@ async function collectGarbage(page) {
   await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
 }
 
+async function captureHeapSnapshot(page, loop) {
+  if (!heapSnapshotDirectory) {
+    throw new Error('Heap snapshot directory was not initialized');
+  }
+  const path = resolve(heapSnapshotDirectory, `loop-${loop}.heapsnapshot`);
+  const writer = createWriteStream(path, {
+    encoding: 'utf8',
+    highWaterMark: 4 * 1024 * 1024,
+  });
+  const writerFinished = new Promise((resolveFinished, rejectFinished) => {
+    writer.once('finish', resolveFinished);
+    writer.once('error', rejectFinished);
+  });
+  const client = await page.createCDPSession();
+  const onChunk = ({ chunk }) => {
+    writer.write(chunk);
+  };
+  client.on('HeapProfiler.addHeapSnapshotChunk', onChunk);
+  try {
+    await client.send('HeapProfiler.enable');
+    await client.send('HeapProfiler.collectGarbage');
+    await client.send('HeapProfiler.takeHeapSnapshot', {
+      reportProgress: false,
+      captureNumericValue: true,
+    });
+    writer.end();
+    await writerFinished;
+    heapSnapshotPaths.set(loop, path);
+  } catch (error) {
+    writer.destroy();
+    throw error;
+  } finally {
+    client.off('HeapProfiler.addHeapSnapshotChunk', onChunk);
+    await client.detach().catch(() => {});
+  }
+}
+
 async function readHeapBytes(page) {
   return page.evaluate(() => {
     const memory = performance.memory;
@@ -616,6 +691,11 @@ async function runColdInitProbe(browser, routeOrigin) {
 }
 
 try {
+  if (heapDiffRequested) {
+    heapSnapshotDirectory = await mkdtemp(
+      resolve(tmpdir(), 'world-stage-heap-'),
+    );
+  }
   if (routeLane) {
     worldProbeServer = await startWorldProbeServer();
   }
@@ -910,6 +990,12 @@ try {
         if (lane === 'soak' && completedLoop === 20) {
           recordRendererSample('loop-20', 20, loopSample.state);
         }
+        if (
+          heapDiffRequested &&
+          (completedLoop === 20 || completedLoop === 50)
+        ) {
+          await captureHeapSnapshot(page, completedLoop);
+        }
         if (lane === 'soak' && completedLoop === midpointLoop) {
           summary.heap.midpointBytes = loopSample.sample.heapBytes;
         }
@@ -1009,16 +1095,16 @@ try {
       lane !== 'soak' ||
       dwellMode ||
       finalRenderer?.backend === 'webgl' ||
-      (typeof loop20Renderer?.texturesSizeBytes === 'number' &&
-        typeof finalRenderer?.texturesSizeBytes === 'number' &&
-        finalRenderer.texturesSizeBytes <=
-          loop20Renderer.texturesSizeBytes *
-            (1 + summary.renderer.byteGrowthTolerance) &&
-        typeof loop20Renderer?.memoryTotalBytes === 'number' &&
-        typeof finalRenderer?.memoryTotalBytes === 'number' &&
-        finalRenderer.memoryTotalBytes <=
-          loop20Renderer.memoryTotalBytes *
-            (1 + summary.renderer.byteGrowthTolerance));
+      (withinGrowthTolerance(
+        loop20Renderer?.texturesSizeBytes,
+        finalRenderer?.texturesSizeBytes,
+        summary.renderer.byteGrowthTolerance,
+      ) &&
+        withinGrowthTolerance(
+          loop20Renderer?.memoryTotalBytes,
+          finalRenderer?.memoryTotalBytes,
+          summary.renderer.byteGrowthTolerance,
+        ));
     const commonAssertions = {
       oneCanvas: summary.canvasMountCount === 1,
       listenerDeltaZero: summary.listenerDelta === 0,
@@ -1264,7 +1350,45 @@ try {
       summary.pass = false;
     }
   }
+  if (heapDiffRequested) {
+    const loop20Path = heapSnapshotPaths.get(20);
+    const loop50Path = heapSnapshotPaths.get(50);
+    try {
+      if (!loop20Path || !loop50Path) {
+        throw new Error('Heap diff did not capture both loop 20 and loop 50');
+      }
+      const diff = await diffHeapSnapshots(loop20Path, loop50Path);
+      summary.heapDiff = {
+        ...summary.heapDiff,
+        ...diff,
+        status: 'complete',
+      };
+    } catch (error) {
+      const heapDiffFailure =
+        error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      summary.heapDiff.status = 'failed';
+      summary.heapDiff.failure = heapDiffFailure;
+      summary.failure = summary.failure
+        ? `${summary.failure} | heap diff: ${heapDiffFailure}`
+        : `heap diff: ${heapDiffFailure}`;
+      summary.pass = false;
+    }
+  }
   summary.generatedAt = new Date().toISOString();
+  if (heapDiffRequested) {
+    await mkdir(dirname(heapReportPath), { recursive: true });
+    const report =
+      summary.heapDiff.status === 'complete'
+        ? renderHeapDiffReport(summary, outputPath)
+        : `# P1c Heap Retention Naming Report\n\n**Generated:** ${summary.generatedAt}\n\nHeap snapshot diff failed: ${summary.heapDiff.failure}\n`;
+    await writeFile(heapReportPath, report, 'utf8');
+  }
+  for (const path of heapSnapshotPaths.values()) {
+    await unlink(path).catch(() => {});
+  }
+  if (heapSnapshotDirectory) {
+    await rmdir(heapSnapshotDirectory).catch(() => {});
+  }
   await mkdir(dirname(outputPath), { recursive: true });
   await writeFile(outputPath, `${JSON.stringify(summary, null, 2)}\n`, 'utf8');
   process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
