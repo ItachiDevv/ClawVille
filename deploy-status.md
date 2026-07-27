@@ -38,6 +38,10 @@
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-07-27 (repo-scrub session, push 17) — footer polish across all banners (founder redlines)
+- **What:** Discord invite removed from banner footers (ugly raw code); X logo (inline SVG) added before @Clawville_World so the handle reads as an X username. All four templates updated; dev card re-exported and delivered.
+- **SCHEMA:** `synced`. **PARITY:** n/a.
+
 ### 2026-07-27 (repo-scrub session, push 16) — Meridian removed from the dev-update card (founder call)
 - **What:** the SAP announcement no longer mentions Meridian: kicker now "SAP PROTOCOL", the Meridian list line replaced with the prod-verified "13,500+ agent-to-agent USDC payments settled" stat, the 2-RAILS chip replaced with ESCROW. Meridian remains in the other (unposted) banner templates.
 - **SCHEMA:** `synced`. **PARITY:** n/a.
