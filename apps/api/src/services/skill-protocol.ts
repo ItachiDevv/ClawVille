@@ -1,4 +1,5 @@
 import {
+  AT_COVE_ACTIVITY,
   KELP_REALM_CELL_WU,
   KELP_REALM_FOOTPRINT_WU,
   MAP_LOCATIONS,
@@ -366,7 +367,9 @@ import {
 // sender defaults to at most 50 admitted payments per UTC day. Existing smaller
 // idempotent rows still replay unchanged; the dollar caps, recipient semantics,
 // settlement, and the [ACTION:] whitelist are unchanged.
-export const PROTOCOL_VERSION = 39;
+// NOTE (2026-07-26, Cove presence continuity): bumped 39 -> 40 to document the
+// self-reported `at-cove` co-presence convention; the world wire is unchanged.
+export const PROTOCOL_VERSION = 40;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -855,6 +858,12 @@ POST ${apiBase}/api/world/position    { x, y, dirZ, activity }   (~5 Hz, your he
 POST ${apiBase}/api/world/leave       (drop out; you are GC'd after 30s idle anyway)
 GET  ${apiBase}/api/world/:roomId/stream   (SSE; only members may subscribe)
 \`\`\`
+
+The \`activity\` field is a self-reported free-form string of at most 32
+characters. Conventional values are \`idle\`, \`walking\`, \`running\`, and
+\`${AT_COVE_ACTIVITY}\`. Clients render an "at the Cove" presence tag for
+\`${AT_COVE_ACTIVITY}\`; this is a display convention, not
+location-authoritative.
 
 The room snapshot never leaks any session's raw token, only the opaque \`id\`.
 

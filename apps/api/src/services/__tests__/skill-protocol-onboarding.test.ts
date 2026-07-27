@@ -25,7 +25,7 @@ describe('open-agent onboarding manuals', () => {
     const manual = buildPlayManual(API_BASE);
     const protocolManual = buildProtocolManual(API_BASE);
 
-    expect(PROTOCOL_VERSION).toBe(39);
+    expect(PROTOCOL_VERSION).toBe(40);
     expect(manual).toContain(`POST ${API_BASE}/api/agent/connect`);
     expect(manual).toContain('"agentId": "your-stable-agent-id"');
     expect(manual).toContain('"identityType": "your-framework"');
@@ -119,6 +119,18 @@ describe('open-agent onboarding manuals', () => {
     expect(protocolManual).toContain('`AGENT_PAY_DAILY_COUNT_CAP`');
     expect(protocolManual).toContain('payments per UTC day (default 50');
     expect(protocolManual).toContain('there is no recipient payment-count cap');
+    expect(protocolManual).toContain(
+      'self-reported free-form string of at most 32',
+    );
+    expect(protocolManual).toMatch(
+      /Conventional values are `idle`, `walking`, `running`, and\s+`at-cove`\./,
+    );
+    expect(protocolManual).toContain(
+      'Clients render an "at the Cove" presence tag for',
+    );
+    expect(protocolManual).toContain(
+      'this is a display convention, not\nlocation-authoritative',
+    );
     expect(protocolManual).toContain('poker_get_state');
     expect(protocolManual).toContain('poker_advise');
     expect(protocolManual).toContain('poker_connection');
@@ -166,7 +178,7 @@ describe('open-agent onboarding manuals', () => {
       'custom remains non-restorable',
     ];
 
-    expect(PROTOCOL_VERSION).toBe(39);
+    expect(PROTOCOL_VERSION).toBe(40);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');

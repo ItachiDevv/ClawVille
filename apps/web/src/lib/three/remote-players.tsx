@@ -2,6 +2,7 @@
 
 import { Suspense, memo, useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
+import { AT_COVE_ACTIVITY } from '@clawville/shared';
 import type { NpcSpriteState } from '@/stores/npc';
 import { usePlayerStore, type RemotePlayerState } from '@/stores/players';
 import { GLBNpcMesh, VRMNpcMesh } from '@/lib/three/arena-npcs';
@@ -46,11 +47,12 @@ import { preloadVRMBytes } from '@/lib/three/vrm-loader';
  * applied -- static colliders are identical across clients.
  */
 function adaptPlayer(player: RemotePlayerState): NpcSpriteState {
+  const isAtCove = player.activity === AT_COVE_ACTIVITY;
   const direction: NpcSpriteState['direction'] =
-    player.activity === 'idle' ? 'idle' : 'down';
+    player.activity === 'idle' || isAtCove ? 'idle' : 'down';
   return {
     id: player.id,
-    name: player.name,
+    name: isAtCove ? `${player.name} · at the Cove` : player.name,
     x: player.x,
     y: player.y,
     prevX: player.prevX,

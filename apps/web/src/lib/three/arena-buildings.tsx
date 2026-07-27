@@ -95,7 +95,21 @@ const MAX_WALK_WAIT_MS = 1500;
 let _coveWalkInPending = false;
 
 function navigateToCove(): void {
-  if (requestWorldStageNavigation({ to: '/cove' })) return;
+  if (
+    requestWorldStageNavigation({
+      to: '/cove',
+      onExpired: () => {
+        if (
+          typeof window !== 'undefined' &&
+          window.location.pathname === '/game'
+        ) {
+          useTransitionStore.getState().triggerTransition({ to: '/cove' });
+        }
+      },
+    })
+  ) {
+    return;
+  }
   useTransitionStore.getState().triggerTransition({ to: '/cove' });
 }
 

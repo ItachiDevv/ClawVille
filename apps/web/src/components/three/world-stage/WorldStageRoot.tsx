@@ -14,6 +14,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import {
   readStageBackend,
   readStageCameraPoses,
+  readStageRendererCounters,
   WorldStageCanvas,
   type WorldStageScene,
 } from './WorldStageCanvas';
@@ -29,10 +30,18 @@ import {
   resetStageFrameDiagnostics,
 } from './use-scene-frame';
 import {
+  advanceWorldStageRoute,
   installWorldStageNavigationHandler,
+  markWorldStageMounted,
+  markWorldStageUnmounted,
   requestWorldStageNavigation,
   type WorldStageNavigationRequest,
 } from './stage-navigation';
+import {
+  decideStageNavigationHistoryMethod,
+  decideStageNavigationOwnership,
+} from './stage-navigation-ownership';
+import { readStageSceneInventory } from './resource-ledger';
 
 const WORLD_SCENE_ID = 'world';
 const COVE_SCENE_ID = 'cove';
@@ -65,6 +74,17 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
     requestId: number;
     navigation: WorldStageNavigationRequest;
   } | null>(null);
+  const coldInitIssuedRef = useRef(false);
+  const committedStageNavigationsRef = useRef(0);
+
+  useEffect(() => {
+    markWorldStageMounted();
+    return () => markWorldStageUnmounted();
+  }, []);
+
+  useEffect(() => {
+    advanceWorldStageRoute(pathname);
+  }, [pathname]);
 
   useEffect(() => {
     resetStageStore();
@@ -104,17 +124,75 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
   }, [children, pathname, stageReady]);
 
   useEffect(() => {
+    if (!stageReady || coldInitIssuedRef.current) return;
+    const target = new URLSearchParams(window.location.search).get(
+      'stageColdInit',
+    );
+    if (target !== '/game' && target !== '/cove') return;
+    const navigationTarget: '/game' | '/cove' = target;
+    coldInitIssuedRef.current = true;
+    const probeWindow = window as typeof window & {
+      __WORLD_STAGE_COLD_INIT__?: {
+        accepted: boolean;
+        target: '/game' | '/cove';
+        midwayCount: number;
+      };
+    };
+    const coldInit = {
+      accepted: false,
+      target: navigationTarget,
+      midwayCount: 0,
+    };
+    probeWindow.__WORLD_STAGE_COLD_INIT__ = coldInit;
+    coldInit.accepted = requestWorldStageNavigation({
+      to: navigationTarget,
+      onMidway: () => {
+        coldInit.midwayCount += 1;
+      },
+    });
+  }, [stageReady]);
+
+  const commitStageNavigation = useCallback(
+    (navigation: WorldStageNavigationRequest) => {
+      navigation.onMidway?.();
+      const method = decideStageNavigationHistoryMethod(
+        committedStageNavigationsRef.current,
+      );
+      committedStageNavigationsRef.current += 1;
+      if (method === 'push') {
+        router.push(navigation.to);
+      } else {
+        router.replace(navigation.to);
+      }
+    },
+    [router],
+  );
+
+  useEffect(() => {
     if (!stageReady) return;
     return installWorldStageNavigationHandler((navigation) => {
       const sceneId = sceneIdForPathname(navigation.to);
       if (!sceneId) return false;
       const state = useStageStore.getState();
-      if (
-        state.pendingRequest !== null ||
-        state.transition?.phase === 'error'
-      ) {
+      const ownership = decideStageNavigationOwnership({
+        targetSceneId: sceneId,
+        pendingRequest: state.pendingRequest,
+        transitionPhase: state.transition?.phase ?? null,
+      });
+
+      if (ownership === 'EXECUTE_NOW') {
+        commitStageNavigation(navigation);
         return true;
       }
+
+      if (ownership === 'ADOPT' && state.pendingRequest) {
+        navigationRef.current = {
+          requestId: state.pendingRequest.requestId,
+          navigation,
+        };
+        return true;
+      }
+
       requestStageScene(sceneId);
       const request = useStageStore.getState().pendingRequest;
       if (!request || request.sceneId !== sceneId) return false;
@@ -124,7 +202,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
       };
       return true;
     });
-  }, [stageReady]);
+  }, [commitStageNavigation, stageReady]);
 
   const handleTransitionOpaque = useCallback(
     (request: StageRequest) => {
@@ -145,10 +223,9 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
         return;
       }
       navigationRef.current = null;
-      pendingNavigation.navigation.onMidway?.();
-      router.push(pendingNavigation.navigation.to);
+      commitStageNavigation(pendingNavigation.navigation);
     },
-    [router],
+    [commitStageNavigation],
   );
 
   useEffect(() => {
@@ -157,6 +234,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
       __WORLD_STAGE_PROBE__?: {
         request: (sceneId: string) => void;
         navigate?: (to: '/game' | '/cove') => boolean;
+        sceneInventory: () => Record<string, unknown>;
         snapshot: () => Record<string, unknown>;
       };
     };
@@ -165,10 +243,12 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
       navigate: (to) => {
         return requestWorldStageNavigation({ to });
       },
+      sceneInventory: readStageSceneInventory,
       snapshot: () => {
         const state = useStageStore.getState();
         return {
           pathname: window.location.pathname,
+          historyLength: window.history.length,
           activeScene: state.activeScene,
           transitionPhase: state.transition?.phase ?? 'idle',
           transitionError: state.transition?.error ?? null,
@@ -178,6 +258,13 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
           recoveryCount: state.recovery.count,
           lastRecoveryReason: state.recovery.lastReason,
           backend: readStageBackend(),
+          renderer: readStageRendererCounters(),
+          coldInit:
+            (
+              window as typeof window & {
+                __WORLD_STAGE_COLD_INIT__?: Record<string, unknown>;
+              }
+            ).__WORLD_STAGE_COLD_INIT__ ?? null,
           frames: readStageFrameInvocations(),
           cameras: readStageCameraPoses(),
           slots: state.scenes,

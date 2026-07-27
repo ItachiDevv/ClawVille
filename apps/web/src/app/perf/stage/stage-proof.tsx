@@ -11,6 +11,7 @@ import * as THREE from 'three/webgpu';
 import {
   readStageBackend,
   readStageCameraPoses,
+  readStageRendererCounters,
   WorldStageCanvas,
   type WorldStageScene,
 } from '@/components/three/world-stage/WorldStageCanvas';
@@ -182,6 +183,7 @@ interface StageProbeSnapshot {
   recoveryCount: number;
   lastRecoveryReason: string | null;
   backend: ReturnType<typeof readStageBackend>;
+  renderer: ReturnType<typeof readStageRendererCounters>;
   frames: Record<string, number>;
   cameras: Record<string, number[]>;
   slots: Record<
@@ -220,6 +222,7 @@ function readProbeSnapshot(): StageProbeSnapshot {
     recoveryCount: state.recovery.count,
     lastRecoveryReason: state.recovery.lastReason,
     backend: readStageBackend(),
+    renderer: readStageRendererCounters(),
     frames: readStageFrameInvocations(),
     cameras: readStageCameraPoses(),
     slots: Object.fromEntries(

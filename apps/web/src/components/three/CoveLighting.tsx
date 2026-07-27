@@ -9,7 +9,8 @@
  * Iris Xe rules enforced:
  *   - NO shadows (castShadow always false)
  *   - Exactly three objects: ambient + hemisphere + one non-shadow point.
- *   - The persistent slot mounts this only while Cove is active.
+ *   - The persistent slot mounts these once; its hidden root removes them
+ *     from rendering while Cove is inactive.
  */
 
 import * as THREE from 'three/webgpu';

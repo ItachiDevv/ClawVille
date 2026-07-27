@@ -15,6 +15,7 @@ import {
   _roots,
   events as createPointerEvents,
   extend,
+  useFrame,
   useThree,
   type RootState,
   type ThreeToJSXElements,
@@ -415,6 +416,8 @@ class StageRendererHealth {
 
       if (replacement) {
         this.renderer = replacement;
+        currentStageRenderer = replacement;
+        currentStageBackend = this.forceWebGL ? 'webgl' : 'webgpu';
         binding.install(replacement);
         if (!isCurrent()) {
           replacement.dispose();
@@ -443,9 +446,120 @@ const rendererHealthByCanvas = new WeakMap<
   StageRendererHealth
 >();
 let currentStageBackend: 'webgpu' | 'webgl' | 'unknown' = 'unknown';
+let currentStageRenderer: THREE.WebGPURenderer | null = null;
+let previousStageRenderCalls: number | null = null;
+let currentStageDrawCallsFrame: number | null = null;
 
 export function readStageBackend(): 'webgpu' | 'webgl' | 'unknown' {
   return currentStageBackend;
+}
+
+export interface StageRendererCounters {
+  backend: 'webgpu' | 'webgl' | 'unknown';
+  textures: number | null;
+  geometries: number | null;
+  texturesSizeBytes: number | null;
+  memoryTotalBytes: number | null;
+  renderCallsLifetime: number | null;
+  drawCallsFrame: number | null;
+  memoryBreakdown: Record<string, number> | null;
+}
+
+export function readStageRendererCounters(): StageRendererCounters {
+  const backend = currentStageBackend;
+  const info = (
+    currentStageRenderer as unknown as {
+      info?: {
+        memory?: {
+          textures?: number;
+          geometries?: number;
+          texturesSize?: number;
+          total?: number;
+          [key: string]: unknown;
+        };
+        render?: {
+          calls?: number;
+          drawCalls?: number;
+        };
+      };
+    } | null
+  )?.info;
+  const memory = info?.memory;
+  const render = info?.render;
+  const numberOrNull = (value: unknown): number | null =>
+    typeof value === 'number' && Number.isFinite(value) ? value : null;
+
+  if (backend === 'webgpu') {
+    return {
+      backend,
+      textures: numberOrNull(memory?.textures),
+      geometries: numberOrNull(memory?.geometries),
+      texturesSizeBytes: numberOrNull(memory?.texturesSize),
+      memoryTotalBytes: numberOrNull(memory?.total),
+      renderCallsLifetime: numberOrNull(render?.calls),
+      drawCallsFrame: numberOrNull(render?.drawCalls),
+      memoryBreakdown: memory
+        ? Object.fromEntries(
+            Object.entries(memory).filter(
+              (entry): entry is [string, number] =>
+                typeof entry[1] === 'number' && Number.isFinite(entry[1]),
+            ),
+          )
+        : null,
+    };
+  }
+  if (backend === 'webgl') {
+    return {
+      backend,
+      textures: numberOrNull(memory?.textures),
+      geometries: numberOrNull(memory?.geometries),
+      texturesSizeBytes: null,
+      memoryTotalBytes: null,
+      renderCallsLifetime: null,
+      drawCallsFrame: currentStageDrawCallsFrame,
+      memoryBreakdown: null,
+    };
+  }
+  return {
+    backend,
+    textures: null,
+    geometries: null,
+    texturesSizeBytes: null,
+    memoryTotalBytes: null,
+    renderCallsLifetime: null,
+    drawCallsFrame: null,
+    memoryBreakdown: null,
+  };
+}
+
+function StageRendererCounterSampler(): null {
+  const gl = useThree((state) => state.gl);
+  useFrame(() => {
+    if (currentStageBackend !== 'webgl') {
+      previousStageRenderCalls = null;
+      currentStageDrawCallsFrame = null;
+      return;
+    }
+    queueMicrotask(() => {
+      const render = (
+        gl as unknown as {
+          info?: { render?: { calls?: number } };
+        }
+      ).info?.render;
+      const calls = render?.calls;
+      if (typeof calls !== 'number' || !Number.isFinite(calls)) {
+        previousStageRenderCalls = null;
+        currentStageDrawCallsFrame = null;
+        return;
+      }
+      currentStageDrawCallsFrame =
+        previousStageRenderCalls === null || calls < previousStageRenderCalls
+          ? null
+          : calls - previousStageRenderCalls;
+      previousStageRenderCalls = calls;
+    });
+  });
+  return null;
 }
 
 function createStageRenderer(props: {
@@ -490,6 +604,9 @@ function createStageRenderer(props: {
       usedWebGL = true;
     }
     currentStageBackend = usedWebGL ? 'webgl' : 'webgpu';
+    currentStageRenderer = renderer;
+    previousStageRenderCalls = null;
+    currentStageDrawCallsFrame = null;
     const health = new StageRendererHealth(canvas);
     health.setInitial(renderer, usedWebGL);
     rendererHealthByCanvas.set(canvas, health);
@@ -903,6 +1020,7 @@ export function WorldStageCanvas({
           cameras={cameras}
         />
         <StageFrameScheduler />
+        <StageRendererCounterSampler />
         {scenes.map((scene) => (
           <group key={scene.sceneId}>
             <StageSceneAppearance scene={scene} />

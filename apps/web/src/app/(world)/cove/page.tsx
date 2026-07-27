@@ -127,6 +127,14 @@ export default function CovePage() {
           }
         }
       },
+      onExpired: () => {
+        if (
+          typeof window !== 'undefined' &&
+          window.location.pathname === '/cove'
+        ) {
+          router.push('/game');
+        }
+      },
     });
     if (!requested) router.push('/game');
   }, [router]);

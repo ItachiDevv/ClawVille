@@ -6,6 +6,7 @@ import type { Camera, Scene } from 'three/webgpu';
 import CoveInteriorScene from '@/lib/three/cove-interior';
 import { useSceneActive } from './use-scene-frame';
 import { useStageStore } from './stage-store';
+import { withStageSlotFrustumCullingDisabled } from './resource-ledger';
 
 const COVE_SCENE_ID = 'cove';
 
@@ -64,17 +65,24 @@ export default function StageHostedCoveScene({
       if (!warmedOnceRef.current) {
         try {
           if (typeof (gl as { compileAsync?: unknown }).compileAsync === 'function') {
-            await (
-              gl as unknown as {
-                compileAsync: (
-                  scene: Scene,
-                  camera: Camera,
-                ) => Promise<void>;
-              }
-            ).compileAsync(scene, camera);
+            await withStageSlotFrustumCullingDisabled('cove', () =>
+              (
+                gl as unknown as {
+                  compileAsync: (
+                    scene: Scene,
+                    camera: Camera,
+                  ) => Promise<void>;
+                }
+              ).compileAsync(scene, camera),
+            );
           }
           if (!isCurrent()) return;
-          gl.render(scene, camera);
+          await withStageSlotFrustumCullingDisabled(
+            'cove',
+            async () => {
+              gl.render(scene, camera);
+            },
+          );
           warmedOnceRef.current = true;
         } catch (error) {
           console.warn('[CoveStage] warmup failed; continuing:', error);

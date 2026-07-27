@@ -1,12 +1,20 @@
 {
   "pass": true,
+  "lane": "synthetic",
   "url": "http://localhost:3000/perf/stage?stage=1&webgl=1",
   "backend": "webgl",
-  "requestedTransitions": 100,
-  "completedTransitions": 100,
+  "requestedTransitions": 102,
+  "requestedRoundTrips": null,
+  "experiment": {
+    "mode": "crossings",
+    "dwellSeconds": null,
+    "sampleIntervalSeconds": null
+  },
+  "completedRoundTrips": 0,
+  "completedTransitions": 102,
   "warmupTransitions": 3,
   "canvasMountCount": 1,
-  "hiddenWindowsChecked": 100,
+  "hiddenWindowsChecked": 102,
   "hiddenFrameViolations": [],
   "hiddenCameraViolations": [],
   "hiddenStoreViolations": [],
@@ -14,6 +22,7 @@
   "listenerBaseline": 4,
   "listenerEnd": 4,
   "listenerDelta": 0,
+  "listenerUnderflowCount": 0,
   "transitionErrors": [],
   "recovery": {
     "count": 0,
@@ -21,10 +30,45 @@
   },
   "heap": {
     "available": true,
-    "baselineBytes": 67800002,
-    "endBytes": 68546946,
-    "growthRatio": 0.011016872831360684,
-    "threshold": 0.15
+    "baselineBytes": 67869072,
+    "endBytes": 68705208,
+    "growthRatio": 0.012319838408870538,
+    "threshold": 0.15,
+    "midpointBytes": null,
+    "secondHalfGrowthRatio": null,
+    "secondHalfThreshold": 0.03
+  },
+  "renderer": {
+    "samples": [
+      {
+        "label": "post-warmup",
+        "loop": 0,
+        "backend": "webgl",
+        "textures": 9,
+        "geometries": 15,
+        "texturesSizeBytes": null,
+        "memoryTotalBytes": null,
+        "renderCallsLifetime": null,
+        "drawCallsFrame": 2
+      },
+      {
+        "label": "final",
+        "loop": 102,
+        "backend": "webgl",
+        "textures": 9,
+        "geometries": 15,
+        "texturesSizeBytes": null,
+        "memoryTotalBytes": null,
+        "renderCallsLifetime": null,
+        "drawCallsFrame": 2
+      }
+    ]
+  },
+  "series": [],
+  "inventory": {
+    "early": null,
+    "late": null,
+    "diff": null
   },
   "ledger": {
     "alpha": {
@@ -71,7 +115,7 @@
       "counts": {
         "textures": 12,
         "geometries": 14,
-        "attributes": 56,
+        "attributes": 32,
         "renderTargets": 0,
         "unknownTextures": 0
       },
@@ -81,6 +125,42 @@
         "unknownTextureBytes": 0
       }
     }
+  },
+  "routes": {
+    "cacheControl": {
+      "game": null,
+      "cove": null
+    },
+    "coldCoveAssetRequests": [],
+    "coldCoveWorldAssetRequests": [],
+    "pathSequence": [],
+    "returnLoaderViolations": [],
+    "historyTraversal": {
+      "back": false,
+      "forward": false
+    },
+    "historyLength": {
+      "baseline": null,
+      "final": null,
+      "delta": null,
+      "maxAddedEntries": 2
+    },
+    "network": {
+      "phase": "cold-cove",
+      "joins": {
+        "coldCove": 0,
+        "firstGame": 0,
+        "afterFirstGame": 0
+      },
+      "streams": {
+        "coldCove": 0,
+        "firstGame": 0,
+        "afterFirstGame": 0
+      },
+      "events": [],
+      "stubUnhandled": {}
+    },
+    "coldInit": null
   },
   "console": {
     "errors": [
@@ -98,9 +178,10 @@
     "hiddenStoresFrozen": true,
     "activeCallbacksAdvance": true,
     "listenerDeltaZero": true,
+    "listenerAccountingNeverUnderflowed": true,
     "zeroTransitionErrors": true,
     "heapBelow15Percent": true
   },
   "failure": null,
-  "generatedAt": "2026-07-25T06:44:35.702Z"
+  "generatedAt": "2026-07-26T23:12:21.243Z"
 }
