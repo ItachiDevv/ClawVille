@@ -38,6 +38,10 @@
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-07-27 (repo-scrub session, push 14) — the SAP x Meridian dev-update card (the graphic the founder actually asked for)
+- **What:** `branding/graphics/banner-protocol-upgrades.html` — Register-B dev-update card listing the session's concrete ships with LIVE/NEXT tags: on-chain USDC bounty escrow (mainnet) · escrow-to-x402 payout composition · Meridian second facilitator with auto failover · SOL staking for escrowed work · payment-rail hardening (caps/preflight/self-healing) · NEXT: on-chain identity + reputation (EIP-8004). Every LIVE claim prod-verified this session.
+- **SCHEMA:** `synced`. **PARITY:** n/a.
+
 ### 2026-07-27 (repo-scrub session, push 13) — banner claim corrected against prod data
 - **What:** founder fact-checked "USDC Real Rewards, Paid Out" on the economy banner. Prod truth: 13,500 settled agent-to-agent USDC payments ($432 real, 43,239 vCLAW earned); 4,788 bounties paid in vCLAW; the on-chain USDC bounty rail has exactly ONE real prod payout (validation, 07-13). Chip replaced with the bulletproof stat: "13,500+ USDC Payments Settled".
 - **SCHEMA:** `synced`. **PARITY:** n/a.
