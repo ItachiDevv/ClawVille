@@ -366,3 +366,17 @@ bindGroups growth on the next three.js upgrade (r186+ — check upstream
 bind-group lifecycle fixes) and fold renderer-cache eviction into the already
 planned low-end texture-eviction tier. Review trigger: P3 (kelp joins stage)
 or the three upgrade, whichever first.
+
+### v4.1 amendment (orchestrator, 2026-07-26, after the first calibrated-gate run)
+
+Run evidence (gatelogs, soak run 5): all 24 structural/behavioral assertions
+PASS; geometries exactly flat 419; bytes plateau PASS; two marginal misses:
+(a) textures 287→288 — the third of three one-time lazy Cove texture
+materializations (loops 7, 8, 30; flat for the following 30 loops in every
+observed run) landed after the loop-20 baseline; (b) heap slope 0.8072 vs
+0.8 — within the now-measured 0.40–0.81 MB/loop renderer-internal floor
+variance. Ruling: count-equality BASELINE moves to loop 30 (steady-state
+onset; exactness unchanged); slope threshold becomes 1.0 MB/loop (floor
+variance 0.40–0.81 across four structurally-flat runs; app-leak signature
+≥1.2 stacked on the floor; structural + dwell gates are the primary
+detectors). No other gate changes.

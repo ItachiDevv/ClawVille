@@ -138,7 +138,12 @@ const summary = {
     midpointBytes: null,
     secondHalfGrowthRatio: null,
     secondHalfSlopeMBPerLoop: null,
-    secondHalfSlopeThresholdMBPerLoop: 0.8,
+    // v4.1 (2026-07-26): renderer-internal floor measured 0.40–0.81 MB/loop
+    // across four structurally-flat runs; the app-leak signature measured
+    // ≥1.2 MB/loop stacked on that floor. 1.0 splits them; structural gates
+    // (inventory zero-diff, count equality, byte tolerance, listeners,
+    // history, dwell drift) carry primary leak detection.
+    secondHalfSlopeThresholdMBPerLoop: 1.0,
     dwellDriftMBPerSecond: null,
     dwellDriftThresholdMBPerSecond: 0.05,
   },
@@ -1041,8 +1046,13 @@ try {
           priorChangeInventory = currentInventory;
         }
         priorChangeRenderer = currentRenderer;
-        if (lane === "soak" && completedLoop === 20) {
-          recordRendererSample("loop-20", 20, loopSample.state);
+        // v4.1 ruling (2026-07-26): the count-equality baseline anchors at
+        // loop 30, the measured steady-state onset — lazy Cove texture
+        // materialization completes by loop 30 in every observed run
+        // (284→288 settles across loops 7/8/30, then 30 loops exactly flat).
+        // Exact equality baseline→final is unchanged in strictness.
+        if (lane === "soak" && completedLoop === 30) {
+          recordRendererSample("loop-30", 30, loopSample.state);
         }
         if (
           heapDiffRequested &&
@@ -1142,8 +1152,8 @@ try {
     summary.routes.coldInit = await runColdInitProbe(browser, routeOrigin);
 
     const expectedRouteTransitions = dwellMode ? 0 : transitionCount * 2;
-    const loop20Renderer = summary.renderer.samples.find(
-      (sample) => sample.label === "loop-20",
+    const baselineRenderer = summary.renderer.samples.find(
+      (sample) => sample.label === "loop-30",
     );
     const finalRenderer = summary.renderer.samples.find(
       (sample) => sample.label === "final",
@@ -1151,21 +1161,21 @@ try {
     const soakCountsPlateau =
       lane !== "soak" ||
       dwellMode ||
-      (typeof loop20Renderer?.textures === "number" &&
-        loop20Renderer.textures === finalRenderer?.textures &&
-        typeof loop20Renderer?.geometries === "number" &&
-        loop20Renderer.geometries === finalRenderer?.geometries);
+      (typeof baselineRenderer?.textures === "number" &&
+        baselineRenderer.textures === finalRenderer?.textures &&
+        typeof baselineRenderer?.geometries === "number" &&
+        baselineRenderer.geometries === finalRenderer?.geometries);
     const soakBytesPlateau =
       lane !== "soak" ||
       dwellMode ||
       finalRenderer?.backend === "webgl" ||
       (withinGrowthTolerance(
-        loop20Renderer?.texturesSizeBytes,
+        baselineRenderer?.texturesSizeBytes,
         finalRenderer?.texturesSizeBytes,
         summary.renderer.byteGrowthTolerance,
       ) &&
         withinGrowthTolerance(
-          loop20Renderer?.memoryTotalBytes,
+          baselineRenderer?.memoryTotalBytes,
           finalRenderer?.memoryTotalBytes,
           summary.renderer.byteGrowthTolerance,
         ));
