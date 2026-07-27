@@ -7,8 +7,8 @@ import type {
   WireRecord,
 } from '../types';
 import {
+  evaluateReachedPredicate,
   resolveWireForCheckpoint,
-  resolveWireForReachedPredicate,
   resolveWireForRoot,
 } from '../wire-correlation';
 
@@ -158,12 +158,13 @@ describe('immutable application correlation', () => {
     expect(resolveWireForCheckpoint(secondRoot, [first, second], 'coup-1')).toBe(second);
   });
 
-  test('reached uses the last passing checkpoint wire instead of teardown tail', () => {
-    const finalRoot = {
-      ...structuredClone(RECORDED_CASES[3]!.root),
-      correlation: { hand: 'closed', handNumber: null },
-    } as CardParityRoot;
-    const certified = baseRecord({
+  test('reached uses the last passing certified wire instead of a post-boundary final wire', () => {
+    const firstCertified = baseRecord({
+      seq: 6,
+      handId: 'practice-hand',
+      responseBody: { handId: 'practice-hand', humanHole: [] },
+    });
+    const lastCertified = baseRecord({
       seq: 7,
       handId: 'practice-hand',
       responseBody: {
@@ -180,28 +181,88 @@ describe('immutable application correlation', () => {
       handId: 'closed',
       responseBody: { ok: true, closed: true },
     });
-    const checkpoints: CheckpointResult[] = [{
-      label: 'hole-1',
-      revision: 3,
-      correlationHand: 'practice-hand',
-      surface: 'holdem-tray-practice',
-      pass: true,
-      mismatches: [],
-      resolvedWireSeq: certified.seq,
-    }];
+    const checkpoints: CheckpointResult[] = [
+      {
+        label: 'hole-1',
+        revision: 2,
+        correlationHand: 'practice-hand',
+        surface: 'holdem-tray-practice',
+        pass: true,
+        mismatches: [],
+        resolvedWireSeq: firstCertified.seq,
+      },
+      {
+        label: 'hole-2',
+        revision: 3,
+        correlationHand: 'practice-hand',
+        surface: 'holdem-tray-practice',
+        pass: true,
+        mismatches: [],
+        resolvedWireSeq: lastCertified.seq,
+      },
+    ];
     const predicate = reachedFor(
       'holdem',
       'H7',
       'holdem-tray-practice',
     );
-    expect(predicate(certified.responseBody)).toBe(true);
+    expect(predicate(lastCertified.responseBody)).toBe(true);
     expect(predicate(teardown.responseBody)).toBe(false);
-    const reachedWire = resolveWireForReachedPredicate(
-      finalRoot,
+    expect(evaluateReachedPredicate(
+      predicate,
+      teardown,
       checkpoints,
-      [certified, teardown],
-    );
-    expect(reachedWire).toBe(certified);
-    expect(predicate(reachedWire?.responseBody)).toBe(true);
+      [firstCertified, lastCertified, teardown],
+    )).toBe(true);
+  });
+
+  test('reached falls back to final wire when no passing checkpoint certified a wire', () => {
+    const finalWire = baseRecord({
+      seq: 9,
+      responseBody: { reached: true },
+    });
+    const checkpoints: CheckpointResult[] = [{
+      label: 'failed',
+      revision: 1,
+      correlationHand: null,
+      surface: 'blackjack-3d',
+      pass: false,
+      mismatches: [],
+      resolvedWireSeq: null,
+    }];
+    expect(evaluateReachedPredicate(
+      (wire) => (
+        typeof wire === 'object'
+        && wire !== null
+        && 'reached' in wire
+        && wire.reached === true
+      ),
+      finalWire,
+      checkpoints,
+      [finalWire],
+    )).toBe(true);
+  });
+
+  test('reached preserves the last passing <none> sentinel', () => {
+    const finalWire = baseRecord({
+      seq: 10,
+      responseBody: { reached: false },
+    });
+    const checkpoints: CheckpointResult[] = [{
+      label: 'non-leak',
+      revision: 4,
+      correlationHand: null,
+      surface: 'holdem-tray-practice',
+      pass: true,
+      mismatches: [],
+      resolvedWireSeq: null,
+      expectedResolvedWire: '<none>',
+    }];
+    expect(evaluateReachedPredicate(
+      () => false,
+      finalWire,
+      checkpoints,
+      [finalWire],
+    )).toBe(true);
   });
 });

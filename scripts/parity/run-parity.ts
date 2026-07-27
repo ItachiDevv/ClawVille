@@ -22,9 +22,9 @@ import { closeFixtureRun, type FixtureRunHandle } from './teardown';
 import type { ScenarioResult } from './types';
 import { assertVisibleSurface } from './visible-surface';
 import {
+  evaluateReachedPredicate,
   explainWireCorrelation,
   resolveWireForCheckpoint,
-  resolveWireForReachedPredicate,
   resolveWireForRoot,
 } from './wire-correlation';
 import {
@@ -694,17 +694,15 @@ async function runLiveScenario(): Promise<void> {
       console.log(`[row ${scenario.id}] checkpoint ${checkpoint.label} r${root.renderRevision} pass=${result.pass}${result.pass ? '' : ` mismatches=${JSON.stringify(result.mismatches ?? []).slice(0, 400)}`}`);
     }
     allWires = await readCapturedWire(driver);
-    const finalWire = resolveWireForReachedPredicate(
-      finalRoot,
+    const finalWire = finalRoot
+      ? resolveWireForRoot(finalRoot, allWires)
+      : null;
+    const reached = evaluateReachedPredicate(
+      scenario.reachedPredicate,
+      finalWire,
       checkpoints,
       allWires,
     );
-    const lastPassingCheckpoint = checkpoints
-      .slice()
-      .reverse()
-      .find((checkpoint) => checkpoint.pass);
-    const reached = lastPassingCheckpoint?.expectedResolvedWire === '<none>'
-      || Boolean(finalWire && scenario.reachedPredicate(finalWire.responseBody));
     const money = moneyAssertions.length > 0
       ? {
           equation: moneyAssertions.map((assertion) => assertion.equation).join('; '),

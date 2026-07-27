@@ -212,11 +212,20 @@ export function resolveWireForCheckpoint(
   return resolveWireForRoot(root, records);
 }
 
-export function resolveWireForReachedPredicate(
-  finalRoot: CardParityRoot | null,
+export function evaluateReachedPredicate(
+  reachedPredicate: (wire: unknown) => boolean,
+  finalWire: WireRecord | null,
   checkpoints: readonly CheckpointResult[],
   records: readonly WireRecord[],
-): WireRecord | null {
+): boolean {
+  const lastPassingCheckpoint = checkpoints
+    .slice()
+    .reverse()
+    .find((checkpoint) => checkpoint.pass);
+  if (lastPassingCheckpoint?.expectedResolvedWire === '<none>') {
+    return true;
+  }
+
   const certifiedCheckpoint = checkpoints
     .slice()
     .reverse()
@@ -224,11 +233,14 @@ export function resolveWireForReachedPredicate(
       checkpoint.pass && checkpoint.resolvedWireSeq !== null
     ));
   if (certifiedCheckpoint) {
-    return records.find(
+    const certifiedWire = records.find(
       (record) => record.seq === certifiedCheckpoint.resolvedWireSeq,
     ) ?? null;
+    return Boolean(
+      certifiedWire && reachedPredicate(certifiedWire.responseBody),
+    );
   }
-  return finalRoot ? resolveWireForRoot(finalRoot, records) : null;
+  return Boolean(finalWire && reachedPredicate(finalWire.responseBody));
 }
 
 export function immutableFieldsFromBodies(
