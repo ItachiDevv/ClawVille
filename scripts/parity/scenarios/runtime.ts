@@ -95,7 +95,35 @@ export function reachedFor(
     if (row === 'H2') return board.length >= 3;
     if (row === 'H3') return board.length >= 4;
     if (row === 'H4' || row === 'H9') return board.length >= 5;
-    if (row === 'H1' || row === 'H8') return ownHole.length === 2;
+    if (row === 'H1') return ownHole.length === 2;
+    if (row === 'H8') {
+      if (surface?.startsWith('holdem-felt-')) {
+        const tableSeats = arr(body.seats).map(rec).filter(Boolean);
+        const liveSeats = arr(rec(body.live)?.seats).map(rec).filter(Boolean);
+        // Public cash projection field contract:
+        // cash-table-manager.ts:749-760,779-785 emits
+        // seats[].{avatarId,isSeeded,stackCt}; cove-cash-poker.ts:433-447
+        // publishes that list plus live.seats[].{avatarId,chipStack,status}.
+        // holdem-table-room.tsx:931-935 turns active/allin into exactly two
+        // concealed felt cards, with cards:null.
+        const requesterSeat = tableSeats.find((seat) => (
+          seat?.isSeeded === false
+          && typeof seat.avatarId === 'string'
+          && typeof seat.stackCt === 'string'
+        ));
+        const requesterLiveSeat = liveSeats.find((seat) => (
+          seat?.avatarId === requesterSeat?.avatarId
+        ));
+        const concealedHoleCardCount = (
+          requesterLiveSeat?.status === 'active'
+          || requesterLiveSeat?.status === 'allin'
+        ) ? 2 : 0;
+        return concealedHoleCardCount === 2
+          && typeof requesterLiveSeat?.chipStack === 'number'
+          && !('holeCards' in (requesterLiveSeat ?? {}));
+      }
+      return ownHole.length === 2;
+    }
     if (row === 'H7') {
       const log = arr(body.publicActionLog);
       // Authoritative blind log types are 'post-sb'/'post-bb' (holdem-engine.ts

@@ -187,6 +187,57 @@ describe('offline live-runner plans', () => {
     ]);
   });
 
+  test('H8 felt reach uses the hydrated concealed public seat while tray still requires own hole', () => {
+    const publicFeltWire = {
+      seats: [{
+        seatIndex: 4,
+        avatarId: 'requester-avatar',
+        subjectType: 'human',
+        isSeeded: false,
+        stackCt: '50',
+        status: 'sitting_in',
+      }],
+      live: {
+        seats: [{
+          seatIndex: 4,
+          avatarId: 'requester-avatar',
+          chipStack: 48,
+          status: 'active',
+        }],
+      },
+    };
+    expect(reachedFor(
+      'holdem',
+      'H8',
+      'holdem-felt-3d',
+    )(publicFeltWire)).toBe(true);
+    expect(reachedFor(
+      'holdem',
+      'H8',
+      'holdem-felt-3d',
+    )({
+      ...publicFeltWire,
+      live: { seats: [] },
+    })).toBe(false);
+    expect(reachedFor(
+      'holdem',
+      'H8',
+      'holdem-tray-3d',
+    )(publicFeltWire)).toBe(false);
+    expect(reachedFor(
+      'holdem',
+      'H8',
+      'holdem-tray-3d',
+    )({
+      view: {
+        holeCards: [
+          { rank: 'A', suit: 'spades' },
+          { rank: 'K', suit: 'spades' },
+        ],
+      },
+    })).toBe(true);
+  });
+
   test('fixture guest, live identity, and cash table requirements stay distinct', () => {
     expect(resolveScenarioState(
       { game: 'blackjack', tier: 'guest', fixtureName: 'bj-split' },
