@@ -546,6 +546,88 @@ describe('recorded-wire parity assertions', () => {
       'banner-text': 'Showdown',
       'on-felt': 'true',
     });
+
+    const trayExpected = expectedFromWire(
+      'holdem',
+      'holdem-tray-3d',
+      settledWire,
+      snapshot,
+      {
+        root: {
+          ...root,
+          surface: 'holdem-tray-3d',
+        },
+        records: [privateWire, settledWire],
+      },
+    );
+    expect(trayExpected.slots).toMatchObject({
+      'hole-1': { facing: 'up', card: '2c' },
+      'hole-2': { facing: 'up', card: '3d' },
+    });
+    expect(trayExpected.meta.net).toBe('-10');
+  });
+
+  test('practice fold settlement conceals every opponent even when terminal cards exist', () => {
+    const wire: WireRecord = {
+      seq: 44,
+      method: 'POST',
+      url: '/api/cove/holdem/action',
+      urlSuffix: 'holdem/action',
+      status: 200,
+      requestBody: { action: 'fold' },
+      responseBody: {
+        handId: 'practice-fold-settled',
+        status: 'settled',
+        outcome: {
+          endedAt: 'preflop',
+          board: [],
+          pots: [{ amount: '3', winners: [2] }],
+          seats: [
+            {
+              seat: 2,
+              status: 'active',
+              holeCards: [
+                { suit: 'clubs', rank: '8' },
+                { suit: 'clubs', rank: 'J' },
+              ],
+              isWinner: true,
+            },
+            {
+              seat: 4,
+              status: 'folded',
+              holeCards: [
+                { suit: 'spades', rank: 'A' },
+                { suit: 'spades', rank: 'K' },
+              ],
+            },
+          ],
+        },
+      },
+      handId: 'practice-fold-settled',
+      handNumber: 1,
+      coupId: null,
+      shoeId: null,
+      idempotencyKey: null,
+    };
+    const root = {
+      surface: 'holdem-felt-practice',
+      correlation: { hand: 'practice-fold-settled', handNumber: 1 },
+      dealStep: 'showdown',
+    } as CardParityRoot;
+    const expected = expectedFromWire(
+      'holdem',
+      root.surface,
+      wire,
+      undefined,
+      { root, records: [wire] },
+    );
+
+    expect(expected.slots).toMatchObject({
+      'opp-2-1': { facing: 'down', card: '', status: 'active' },
+      'opp-2-2': { facing: 'down', card: '', status: 'active' },
+      'opp-4-1': { facing: 'down', card: '', status: 'folded' },
+      'opp-4-2': { facing: 'down', card: '', status: 'folded' },
+    });
   });
 
   test('a later negative-row revision leak fails even when the first is clean', () => {

@@ -429,11 +429,17 @@ async function advanceHoldemToShowdown(
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
     const reachedShowdown = await driver.evalJson<boolean>(`(() => {
+      const current = window.__CV_READ_PARITY?.(${JSON.stringify(surface)});
+      if (
+        current?.dealStep !== 'showdown'
+        || current.correlation?.hand !== ${JSON.stringify(correlationHand)}
+      ) return false;
       const entry = (window.__CV_PARITY_JOURNAL?.(${JSON.stringify(surface)}) ?? [])
         .find((entry) => {
           if (
             entry.surface !== ${JSON.stringify(surface)}
             || entry.dealStep !== 'showdown'
+            || entry.revision !== current.renderRevision
           ) return false;
           try {
             return JSON.parse(entry.signature)[2] === ${JSON.stringify(correlationHand)};
@@ -459,7 +465,7 @@ async function advanceHoldemToShowdown(
       };
       window.__CV_HOLDEM_SETTLEMENT_WITNESS = {
         surface: ${JSON.stringify(surface)},
-        revision: entry.revision,
+        revision: current.renderRevision,
         correlationHand: ${JSON.stringify(correlationHand)},
         values: {
           'banner-text': readText(
@@ -535,7 +541,8 @@ async function advanceHoldemToShowdown(
       };
     })()`);
     if (isMatchingHoldemShowdown(current, correlationHand)) {
-      return correlationHand;
+      await new Promise((resolveWait) => setTimeout(resolveWait, 150));
+      continue;
     }
     if (!await clickText(driver, ['Check', 'Call'])) {
       await new Promise((resolveWait) => setTimeout(resolveWait, 150));
@@ -965,9 +972,11 @@ export async function* driveScenario(
     )) return;
     throw new Error(`Hold'em negative traversal exceeded 90s`);
   }
-  if (row === 'H6') await waitAndClick(driver, ['Fold'], 30_000);
+  // Fixture-gated first-deal recovery can consume the normal client retry
+  // window before the practice action surface mounts.
+  if (row === 'H6') await waitAndClick(driver, ['Fold'], 90_000);
   let terminalCorrelation: string | null = null;
-  if (['H5', 'H10'].includes(row)) {
+  if (['H5', 'H6', 'H10'].includes(row)) {
     terminalCorrelation = await advanceHoldemToShowdown(driver, surface);
   }
   const practiceStreetCorrelation =

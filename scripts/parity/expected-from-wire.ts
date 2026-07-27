@@ -313,6 +313,7 @@ function holdemExpected(
     body.live,
   )) ?? body;
   const outcome = record(first(body.outcome, hand.outcome, snapshot)) ?? null;
+  const terminalIsShowdown = stringValue((snapshot ?? outcome)?.endedAt) === 'showdown';
   let board = array(first(
     snapshot?.board,
     outcome?.board,
@@ -339,11 +340,20 @@ function holdemExpected(
   const tray = surface.includes('-tray-');
   if (tray) {
     const self = record(first(hand.self, body.self));
+    const matchingPrivateView = [
+      directView,
+      ...records.map((candidate) => record(record(candidate.responseBody)?.view)),
+    ].find((view) => (
+      view
+      && Number(view.handNumber) === root?.correlation.handNumber
+      && array(view.holeCards).length === 2
+    ));
     const terminalSelf = array(outcome?.seats)
       .map(record)
       .find((seat) => seat?.isHuman === true);
     const hole = array(first(
       directView?.holeCards,
+      matchingPrivateView?.holeCards,
       self?.holeCards,
       terminalSelf?.holeCards,
       hand.humanHole,
@@ -415,11 +425,11 @@ function holdemExpected(
     for (let index = 0; index < 2; index += 1) {
       const key = `opp-${seatIndex}-${index + 1}`;
       if (surface.endsWith('-practice')) {
-        slots[key] = status !== 'folded' && cards[index]
+        slots[key] = terminalIsShowdown && status !== 'folded' && cards[index]
           ? up(cards[index], status)
           : down(status);
       } else if (snapshot) {
-        slots[key] = status !== 'folded' && cards[index]
+        slots[key] = terminalIsShowdown && status !== 'folded' && cards[index]
           ? up(cards[index], status)
           : empty(status);
       } else {

@@ -484,7 +484,8 @@ describe('offline live-runner plans', () => {
       'utf8',
     );
     expect(source).toContain('window.__CV_HOLDEM_SETTLEMENT_WITNESS = {');
-    expect(source).toContain('revision: entry.revision');
+    expect(source).toContain(`entry.revision !== current.renderRevision`);
+    expect(source).toContain('revision: current.renderRevision');
     expect(source).toContain(`correlationHand: \${JSON.stringify(correlationHand)}`);
     expect(source).toContain(`'[data-testid="holdem-settlement-narration"]'`);
   });

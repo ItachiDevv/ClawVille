@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import { RECORDED_CASES } from '../fixtures/recorded';
 import type { WireRecord } from '../types';
 import {
@@ -68,6 +69,20 @@ describe('visible-surface probe scoping', () => {
       'self-stack': { expected: 137, actual: 137, pass: true },
       'on-felt': { expected: true, actual: true, pass: true },
     });
+  });
+
+  test('felt settlement witness may trail cards only at correlated terminal idle', () => {
+    const source = readFileSync(
+      new URL('../visible-surface.ts', import.meta.url),
+      'utf8',
+    );
+    expect(source).toContain('const correlatedFeltTerminal = Boolean(');
+    expect(source).toContain(`rootEntry?.dealStep === 'showdown'`);
+    expect(source).toContain(`witnessEntry?.dealStep === 'showdown'`);
+    expect(source).toContain(`witnessEntry?.transition === 'idle'`);
+    expect(source).toContain(
+      'if (!exactRevision && !correlatedFeltTerminal) return null;',
+    );
   });
 
   test('split active probes do not run for a single blackjack hand', () => {

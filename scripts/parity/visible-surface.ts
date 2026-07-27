@@ -181,9 +181,31 @@ export async function assertVisibleSurface(
         if (
           !witness
           || witness.surface !== ${JSON.stringify(root.surface)}
-          || witness.revision !== ${root.renderRevision}
           || witness.correlationHand !== ${JSON.stringify(root.correlation.hand)}
         ) return null;
+        const exactRevision = witness.revision === ${root.renderRevision};
+        const journal = window.__CV_PARITY_JOURNAL?.(${JSON.stringify(root.surface)}) ?? [];
+        const correlationAt = (entry) => {
+          try { return JSON.parse(entry.signature)[2] ?? null; }
+          catch { return null; }
+        };
+        const rootEntry = journal.find(
+          (entry) => entry.revision === ${root.renderRevision},
+        );
+        const witnessEntry = journal.find(
+          (entry) => entry.revision === witness.revision,
+        );
+        const correlatedFeltTerminal = Boolean(
+          ${JSON.stringify(root.surface.includes('-felt-'))}
+          && ${JSON.stringify(root.dealStep)} === 'showdown'
+          && witness.revision > ${root.renderRevision}
+          && rootEntry?.dealStep === 'showdown'
+          && witnessEntry?.dealStep === 'showdown'
+          && witnessEntry?.transition === 'idle'
+          && correlationAt(rootEntry) === ${JSON.stringify(root.correlation.hand)}
+          && correlationAt(witnessEntry) === ${JSON.stringify(root.correlation.hand)}
+        );
+        if (!exactRevision && !correlatedFeltTerminal) return null;
         return witness;
       })()`)
     : null;
