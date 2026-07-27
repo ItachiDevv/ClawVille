@@ -75,6 +75,16 @@ brushed metal gradient on Gold. Flat color is acceptable for small text and chip
 The kit shipped no font files. Observed styles + open-source stand-ins (use these until
 marketing confirms the real faces; see Open Flags):
 
+**RULE (founder insight 2026-07-27): the brand lettering NEVER appears standalone.** It has
+only ever existed as one fused unit: letterforms + wood plank texture + embossed layering
+(darker inner rim, soft bevel, top highlight, chocolate offset shadow). Rendering the font
+alone on a flat background always lands flat and is NOT the brand look. The reusable
+component is the SIGN: wood plank + Clawville Display text + the emboss layer recipe.
+The emboss layering is IMPLEMENTED as a renderer: `assets/fonts/render-embossed-text.py`
+(text + size in, transparent PNG out: gradient face, thin darker inner rim, subtle top
+highlight, crisp chocolate offset shadow) — calibrated side-by-side against the real logo.
+Use it for headline art. Plank/wood backing: still marketing-supplied when needed.
+
 **Clawville Display — the REAL brand font (v3, built 2026-07-27, fully ours).** The logo
 lettering was AI-generated art with no font file behind it, so we built one. Pipeline:
 gpt-image-2 generated three alphabet sheets (upper / lower / digits) styled on THREE logo

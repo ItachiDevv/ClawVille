@@ -38,6 +38,10 @@
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-07-27 (repo-scrub session, push 9) — embossed text renderer for Clawville Display
+- **What:** founder rejected plank badges + asked for better embossing on the v3 font. Shipped `branding/assets/fonts/render-embossed-text.py`: PIL layered renderer (gradient gold face, thin darker inner rim via erosion, subtle top-edge highlight, crisp chocolate double offset shadow), calibrated side-by-side against the real logo. Produces transparent PNG headline art from any text. BRAND.md updated (emboss recipe implemented; plank = marketing-supplied when needed).
+- **SCHEMA:** `synced`. **PARITY:** n/a.
+
 ### 2026-07-27 (repo-scrub session, push 8) — Clawville Display v3: founder-driven quality redo on gpt-image-2
 - **What:** founder rejected v1 ("kinda sucks", flat + generic; also caught that the prompt suppressed the logo's dimensional 3D feel). v3: gpt-image-2 (confirmed live on the key), THREE logo references per generation, prompt preserves the plump rounded dimensional bouncy style; three separate sheets (upper/lower/digits) for bigger glyphs. Slicing rewritten to connected-component analysis (projection segmentation could not split tilted letters sharing x-range) + noise-speck filter (1px specks collapsed the median and inflated l/s advances). Committed: rebuilt OTF/woff2 v3, the three sheets under `glyphsheets/`, the sheet generator + portable build script (repo-relative, verified reproducible).
 - **SCHEMA:** `synced`. **PARITY:** n/a.
