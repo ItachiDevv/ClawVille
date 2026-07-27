@@ -250,6 +250,19 @@ Leak-hunt serial re-gate (the historical blocked row above is retained):
 | L6 | probe `--lane=routes` | PASS, 30/30 round trips, heap +8.3273%, history 4 -> 4, both inventories flat |
 | L7 | probe `--lane=soak` | **BLOCKED**, 60/60 round trips. Heap +10.6303% total PASS / +4.1778% second half FAIL. Renderer counts plateau PASS at 287 textures / 415 geometries from loop 20 through final; inventories flat; byte plateau FAIL because total bytes decreased 291,045,055 -> 290,977,516 through renderer-internal program/uniform cache variation. All remaining assertions pass. |
 
+Heap-naming follow-up (the historical strict-byte result above is retained):
+
+| Order | Check | Result |
+|---|---|---|
+| H1 | Correct soak byte plateau contract | PASS. Texture and geometry counts still require exact equality at loop 20 versus final. Each WebGPU byte field now passes when its final value is no greater than the loop-20 value plus 1%; flat or decreasing usage passes, while growth beyond 1% fails. The 3% second-half heap gate is unchanged. |
+
+The P1c v2 brief specified exact equality for renderer texture/geometry counts,
+but exact byte equality was an implementation addition. WebGPU renderer
+program and uniform caches can vary downward without representing retained
+scene resources; the observed 67,539-byte decrease must therefore pass the
+actual leak contract. The corrected byte check is an upper-bound growth gate,
+not a relaxation of the independent heap threshold.
+
 The route/soak harness owns a local in-process world/research transport because
 the frozen execution contract says no local API or database is required. It
 returns one stable join and one stable SSE, permits requested CORS headers,

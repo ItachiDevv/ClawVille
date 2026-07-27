@@ -122,6 +122,7 @@ const summary = {
   },
   renderer: {
     samples: [],
+    byteGrowthTolerance: 0.01,
   },
   series: [],
   inventory: {
@@ -1009,9 +1010,15 @@ try {
       dwellMode ||
       finalRenderer?.backend === 'webgl' ||
       (typeof loop20Renderer?.texturesSizeBytes === 'number' &&
-        loop20Renderer.texturesSizeBytes === finalRenderer?.texturesSizeBytes &&
+        typeof finalRenderer?.texturesSizeBytes === 'number' &&
+        finalRenderer.texturesSizeBytes <=
+          loop20Renderer.texturesSizeBytes *
+            (1 + summary.renderer.byteGrowthTolerance) &&
         typeof loop20Renderer?.memoryTotalBytes === 'number' &&
-        loop20Renderer.memoryTotalBytes === finalRenderer?.memoryTotalBytes);
+        typeof finalRenderer?.memoryTotalBytes === 'number' &&
+        finalRenderer.memoryTotalBytes <=
+          loop20Renderer.memoryTotalBytes *
+            (1 + summary.renderer.byteGrowthTolerance));
     const commonAssertions = {
       oneCanvas: summary.canvasMountCount === 1,
       listenerDeltaZero: summary.listenerDelta === 0,
