@@ -69,15 +69,31 @@ class FakeLedger {
   get(avatarId: string): number {
     return this.balances.get(avatarId) ?? 0;
   }
-  debitClawTokens = async (input: { avatarId: string; amount: number; reason: string }) => {
+  debitClawTokens = async (
+    input: { avatarId: string; amount: number; reason: string },
+    tx?: { onRollback?: (fn: () => void) => void },
+  ) => {
     const bal = this.get(input.avatarId);
     if (bal < input.amount) throw new InsufficientTokensError(input.avatarId, bal, input.amount);
+    const debitCountBefore = this.debits.length;
+    tx?.onRollback?.(() => {
+      this.balances.set(input.avatarId, bal);
+      this.debits.length = debitCountBefore;
+    });
     this.balances.set(input.avatarId, bal - input.amount);
     this.debits.push({ avatarId: input.avatarId, amount: input.amount, reason: input.reason });
     return { balanceAfter: bal - input.amount, ledgerId: randomUUID() };
   };
-  creditClawTokens = async (input: { avatarId: string; amount: number; reason: string }) => {
+  creditClawTokens = async (
+    input: { avatarId: string; amount: number; reason: string },
+    tx?: { onRollback?: (fn: () => void) => void },
+  ) => {
     const bal = this.get(input.avatarId);
+    const creditCountBefore = this.credits.length;
+    tx?.onRollback?.(() => {
+      this.balances.set(input.avatarId, bal);
+      this.credits.length = creditCountBefore;
+    });
     this.balances.set(input.avatarId, bal + input.amount);
     this.credits.push({ avatarId: input.avatarId, amount: input.amount, reason: input.reason });
     return { balanceAfter: bal + input.amount, ledgerId: randomUUID() };
@@ -189,6 +205,9 @@ class FakeDb {
     [coveGameEvents, []],
     [avatars, []],
   ]);
+  private rollbackScopes: Array<Array<() => void>> = [];
+  private nextSeatConflict: Row | null = null;
+  private committedSeatAfterRollback: Row | null = null;
 
   private store(table: unknown): Row[] {
     const s = this.stores.get(table);
@@ -197,12 +216,39 @@ class FakeDb {
   }
 
   // ── transaction(fn) — single-threaded test: the "tx" is just this same db.
-  // The real Postgres rolls back on throw; here every money mutation body throws
-  // BEFORE a partial commit matters for the assertions (the ledger fake is the
-  // first money op and throws on insufficient funds before any row write that the
-  // tests inspect), mirroring the tournament-manager test's fake transaction.
+  // The real Postgres rolls back on throw. This fake snapshots DB rows and lets the
+  // ledger register rollback callbacks so the FIX-D 23505 race test can prove the
+  // losing debit disappears with the failed seat insert.
+  onRollback(fn: () => void): void {
+    this.rollbackScopes.at(-1)?.push(fn);
+  }
+
+  failNextSeatInsertWithCommittedConflict(row: Row): void {
+    this.nextSeatConflict = this.toRow(pokerCashSeats, row);
+  }
+
   async transaction<T>(fn: (tx: FakeDb) => Promise<T>): Promise<T> {
-    return fn(this);
+    const snapshot = new Map<unknown, Row[]>();
+    for (const [table, rows] of this.stores) {
+      snapshot.set(table, rows.map((row) => ({ ...row })));
+    }
+    const callbacks: Array<() => void> = [];
+    this.rollbackScopes.push(callbacks);
+    try {
+      return await fn(this);
+    } catch (err) {
+      for (const [table, rows] of snapshot) {
+        this.stores.set(table, rows.map((row) => ({ ...row })));
+      }
+      for (const callback of callbacks.reverse()) callback();
+      if (this.committedSeatAfterRollback) {
+        this.store(pokerCashSeats).push(this.committedSeatAfterRollback);
+        this.committedSeatAfterRollback = null;
+      }
+      throw err;
+    } finally {
+      this.rollbackScopes.pop();
+    }
   }
 
   // ── execute(sql) — interprets ONLY the raw `SELECT … FOR UPDATE` lock reads
@@ -260,6 +306,14 @@ class FakeDb {
         const row = self.toRow(table, v);
         return {
           async returning() {
+            if (table === pokerCashSeats && self.nextSeatConflict) {
+              self.committedSeatAfterRollback = self.nextSeatConflict;
+              self.nextSeatConflict = null;
+              throw Object.assign(new Error('duplicate key value violates unique constraint'), {
+                code: '23505',
+                constraint: 'poker_cash_seats_active_avatar_unique',
+              });
+            }
             self.store(table).push(row);
             return [self.fromRow(table, row)];
           },
@@ -1093,22 +1147,52 @@ describe('CashTableManager — P1 lifecycle + conservation', () => {
 function makeBotProvider() {
   let counter = 0;
   const bySeat = new Map<string, { avatarId: string; agentId: string; name: string }>();
+  const reservedAt = new Map<string, string>();
+  const slots: Array<{ avatarId: string; agentId: string; name: string }> = [];
   const issued = new Set<string>();
   const provider = (tableId: string, seatIndex: number) => {
     const key = `${tableId}:${seatIndex}`;
     const existing = bySeat.get(key);
     if (existing) return existing;
-    const n = counter++;
-    const bot = {
-      avatarId: `bot-${String(n).padStart(3, '0')}`,
-      agentId: `poker-bot-${String(n).padStart(3, '0')}`,
-      name: `Felt-Bot-${String(n).padStart(3, '0')}`,
-    };
+    let bot = slots.find((slot) => !reservedAt.has(slot.avatarId));
+    if (!bot) {
+      const n = counter++;
+      bot = {
+        avatarId: `bot-${String(n).padStart(3, '0')}`,
+        agentId: `poker-bot-${String(n).padStart(3, '0')}`,
+        name: `Felt-Bot-${String(n).padStart(3, '0')}`,
+      };
+      slots.push(bot);
+    }
     bySeat.set(key, bot);
+    reservedAt.set(bot.avatarId, key);
     issued.add(bot.avatarId);
     return bot;
   };
-  return { provider, issued, isBot: (id: string) => issued.has(id) };
+  const controller = {
+    bindReservation(tableId: string, seatIndex: number, avatarId: string): boolean {
+      const bot = slots.find((slot) => slot.avatarId === avatarId);
+      if (!bot) return false;
+      const key = `${tableId}:${seatIndex}`;
+      const previousSeat = reservedAt.get(avatarId);
+      if (previousSeat && previousSeat !== key) bySeat.delete(previousSeat);
+      const previousBot = bySeat.get(key);
+      if (previousBot && previousBot.avatarId !== avatarId) {
+        reservedAt.delete(previousBot.avatarId);
+      }
+      bySeat.set(key, bot);
+      reservedAt.set(avatarId, key);
+      return true;
+    },
+    release(tableId: string, seatIndex: number): void {
+      const key = `${tableId}:${seatIndex}`;
+      const bot = bySeat.get(key);
+      if (!bot) return;
+      bySeat.delete(key);
+      reservedAt.delete(bot.avatarId);
+    },
+  };
+  return { provider, controller, issued, isBot: (id: string) => issued.has(id) };
 }
 
 describe('CashTableManager — house tables: multi-table conservation, self-drive, advisor, yield', () => {
@@ -1131,6 +1215,7 @@ describe('CashTableManager — house tables: multi-table conservation, self-driv
       seedFn: opts?.seedFn ?? (() => (seedCounter++).toString(16).padStart(64, '0')),
       seededAgentProvider: bots.provider,
       houseBankAvatarProvider: () => HOUSE_BANK_AVATAR,
+      seededAgentReservationController: bots.controller,
     });
     return { db, ledger, sim, mgr, bots };
   }
@@ -1160,6 +1245,114 @@ describe('CashTableManager — house tables: multi-table conservation, self-driv
       houseSubject(),
     );
   }
+
+  function addExistingSeededSeat(
+    db: FakeDb,
+    tableId: string,
+    avatarId: string,
+    seatIndex: number,
+    stack = 470,
+  ): Row {
+    const row: Row = {
+      id: randomUUID(),
+      table_id: tableId,
+      avatar_id: avatarId,
+      agent_id: avatarId.replace('bot-', 'poker-bot-'),
+      subject_type: 'agent',
+      is_seeded: 'true',
+      seat_index: seatIndex,
+      current_stack_ct: String(stack),
+      status: 'sitting_in',
+      total_bought_in_ct: '100',
+      total_cashed_out_ct: '0',
+      seated_at: new Date('2026-07-26T00:00:00Z'),
+      left_at: null,
+      updated_at: new Date('2026-07-26T00:00:00Z'),
+    };
+    (db.stores.get(pokerCashSeats) as Row[]).push(row);
+    const tableRow = (db.stores.get(pokerCashTables) as Row[]).find(
+      (candidate) => String(candidate.id) === String(tableId),
+    )!;
+    tableRow.table_escrow_ct = String(Number(tableRow.table_escrow_ct ?? 0) + stack);
+    return row;
+  }
+
+  it('FIX-D same-table divergence binds the actual seat before debit and preserves its money fields', async () => {
+    const { db, ledger, mgr } = makeHouseManager();
+    const table = await createMidHouseTable(mgr);
+    const existing = addExistingSeededSeat(db, table.id, 'bot-000', 4);
+    const before = { ...existing };
+
+    await mgr.seatHouseBots(table.id);
+
+    const seats = (db.stores.get(pokerCashSeats) as Row[]).filter(
+      (seat) => String(seat.table_id) === String(table.id) && seat.status !== 'left',
+    );
+    expect(seats).toHaveLength(3);
+    expect(seats.filter((seat) => seat.avatar_id === 'bot-000')).toHaveLength(1);
+    expect(existing).toEqual(before);
+    expect(ledger.debits).toHaveLength(2);
+    expect(ledger.debits.every((debit) => debit.reason === 'poker_cash_house_seed')).toBe(true);
+    expect(
+      (db.stores.get(pokerCashLedgerEvents) as Row[]).filter(
+        (event) => String(event.table_id) === String(table.id),
+      ),
+    ).toHaveLength(2);
+  });
+
+  it('FIX-D cross-table divergence reserves the actual row, skips that avatar, and claims another bot', async () => {
+    const { db, ledger, mgr } = makeHouseManager();
+    const occupiedTable = await createMidHouseTable(mgr);
+    const fillTable = await createMidHouseTable(mgr);
+    const existing = addExistingSeededSeat(db, occupiedTable.id, 'bot-000', 2, 1090);
+    const before = { ...existing };
+
+    await mgr.seatHouseBots(fillTable.id);
+
+    const filled = (db.stores.get(pokerCashSeats) as Row[]).filter(
+      (seat) => String(seat.table_id) === String(fillTable.id) && seat.status !== 'left',
+    );
+    expect(filled).toHaveLength(3);
+    expect(filled.some((seat) => seat.avatar_id === 'bot-000')).toBe(false);
+    expect(new Set(filled.map((seat) => seat.avatar_id)).size).toBe(3);
+    expect(existing).toEqual(before);
+    expect(ledger.debits).toHaveLength(3);
+  });
+
+  it('FIX-D concurrent fill: 23505 rolls back the losing debit, reconciles, and retries once', async () => {
+    const { db, ledger, mgr } = makeHouseManager();
+    const table = await createMidHouseTable(mgr);
+    const bankBefore = ledger.get(HOUSE_BANK_AVATAR);
+    db.failNextSeatInsertWithCommittedConflict({
+      tableId: table.id,
+      avatarId: 'bot-000',
+      agentId: 'poker-bot-000',
+      subjectType: 'agent',
+      isSeeded: 'true',
+      seatIndex: 0,
+      currentStackCt: '100',
+      status: 'sitting_in',
+      totalBoughtInCt: '100',
+      totalCashedOutCt: '0',
+    });
+
+    await mgr.seatHouseBots(table.id);
+
+    const seats = (db.stores.get(pokerCashSeats) as Row[]).filter(
+      (seat) => String(seat.table_id) === String(table.id) && seat.status !== 'left',
+    );
+    expect(seats).toHaveLength(3);
+    expect(seats.filter((seat) => seat.avatar_id === 'bot-000')).toHaveLength(1);
+    // One concurrent winner + two successful local fills; the failed local debit
+    // is absent because its transaction rolled back.
+    expect(ledger.debits).toHaveLength(2);
+    expect(ledger.get(HOUSE_BANK_AVATAR)).toBe(bankBefore - 200);
+    expect(
+      (db.stores.get(pokerCashLedgerEvents) as Row[]).filter(
+        (event) => String(event.table_id) === String(table.id),
+      ),
+    ).toHaveLength(2);
+  });
 
   /**
    * Drive a single house table to a between-hands idle boundary: the human

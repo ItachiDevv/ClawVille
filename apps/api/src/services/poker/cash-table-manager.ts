@@ -146,6 +146,14 @@ export interface CashTableManagerDeps {
   houseBankAvatarProvider?: (
     tableId: string,
   ) => Promise<string> | string;
+  /**
+   * Process-local reservation coordinator. Production defaults to
+   * `cashHouseSeeder`; tests may inject a deterministic pool.
+   */
+  seededAgentReservationController?: {
+    bindReservation(tableId: string, seatIndex: number, avatarId: string): boolean;
+    release(tableId: string, seatIndex: number): void;
+  };
 }
 
 /** Config for a new cash table (the route validates the shape; this re-checks bounds). */
@@ -269,6 +277,23 @@ export class CashTableError extends Error {
   }
 }
 
+class SeededSeatCollisionError extends Error {
+  constructor(public readonly avatarId: string) {
+    super(`seeded avatar ${avatarId} already has an active cash seat`);
+    this.name = 'SeededSeatCollisionError';
+  }
+}
+
+function isPgUniqueViolation(err: unknown): boolean {
+  let cursor: unknown = err;
+  for (let depth = 0; depth < 4 && cursor && typeof cursor === 'object'; depth++) {
+    const record = cursor as { code?: unknown; cause?: unknown };
+    if (record.code === '23505') return true;
+    cursor = record.cause;
+  }
+  return false;
+}
+
 /** A `poker_cash_tables` sim tableId is the table's own uuid (one table = one uuid). */
 function simTableId(tableId: string): string {
   return `cash:${tableId}`;
@@ -292,6 +317,9 @@ export class CashTableManager {
   private readonly seedFn: () => string;
   private readonly seededAgentProvider: CashTableManagerDeps['seededAgentProvider'];
   private readonly houseBankAvatarProvider: CashTableManagerDeps['houseBankAvatarProvider'];
+  private readonly seededAgentReservationController: NonNullable<
+    CashTableManagerDeps['seededAgentReservationController']
+  >;
 
   /**
    * Per-table async mutex so concurrent sit/leave/action/settle for the SAME
@@ -323,6 +351,8 @@ export class CashTableManager {
     this.seedFn = deps.seedFn ?? (() => createServerSeed().serverSeed);
     this.seededAgentProvider = deps.seededAgentProvider;
     this.houseBankAvatarProvider = deps.houseBankAvatarProvider;
+    this.seededAgentReservationController =
+      deps.seededAgentReservationController ?? cashHouseSeeder;
 
     // This manager EXCLUSIVELY owns the hand-complete handler on ITS sim instance.
     // The sim fires it synchronously inside resolveHand; we just capture the result
@@ -930,6 +960,24 @@ export class CashTableManager {
       }
       if (locked.status !== 'open') {
         throw new CashTableError('table_closed', 'table is closed', 409);
+      }
+      if (isSeeded) {
+        // FIX-D: reservations are process-local while seat rows are durable. Reconcile
+        // any active seeded row BEFORE the house-bank debit. This read-only collision
+        // signal deliberately touches no stack, escrow, totals, status, or ledger.
+        const activeRows = await tx
+          .select({ id: pokerCashSeats.id })
+          .from(pokerCashSeats)
+          .where(
+            and(
+              eq(pokerCashSeats.avatarId, subject.avatarId),
+              ne(pokerCashSeats.status, 'left'),
+            ),
+          )
+          .limit(1);
+        if (activeRows.length > 0) {
+          throw new SeededSeatCollisionError(subject.avatarId);
+        }
       }
       if (fixtureAuth && !isSeeded) {
         const charge = await chargeFixtureExposure(tx, {
@@ -1725,6 +1773,50 @@ export class CashTableManager {
 
   // ── Seeded agents (TRIVIAL STUB policy) ─────────────────────────────────────
 
+  private async reconcileSeededReservation(
+    tableId: string,
+    claimedSeatIndex: number,
+    avatarId: string,
+  ): Promise<'free' | 'same-table' | 'other-table'> {
+    const activeRows = await this.db
+      .select()
+      .from(pokerCashSeats)
+      .where(
+        and(
+          eq(pokerCashSeats.avatarId, avatarId),
+          ne(pokerCashSeats.status, 'left'),
+        ),
+      )
+      .orderBy(asc(pokerCashSeats.seatIndex));
+
+    const sameTable = activeRows.find((seat) => seat.tableId === tableId);
+    if (sameTable) {
+      this.seededAgentReservationController.bindReservation(
+        tableId,
+        sameTable.seatIndex,
+        avatarId,
+      );
+      console.warn(
+        `[cash-table-manager] reconciled seeded bot ${avatarId} to existing ` +
+          `${tableId} seat ${sameTable.seatIndex} (claimed seat ${claimedSeatIndex}); zero money effects`,
+      );
+      return 'same-table';
+    }
+    if (activeRows.length > 0) {
+      this.seededAgentReservationController.bindReservation(
+        activeRows[0]!.tableId,
+        activeRows[0]!.seatIndex,
+        avatarId,
+      );
+      console.warn(
+        `[cash-table-manager] skipped seeded bot ${avatarId}: active at ` +
+          `${activeRows[0]!.tableId} seat ${activeRows[0]!.seatIndex}; zero money effects`,
+      );
+      return 'other-table';
+    }
+    return 'free';
+  }
+
   /**
    * Fill empty seats with seeded agents toward `CASH_HOUSE_FILL_TARGET_SEATS`
    * (default 3 — a solo human + up to ~2 bots, a small live game, NOT a packed
@@ -1805,7 +1897,29 @@ export class CashTableManager {
     if (toAdd <= 0) return;
 
     let live = await this.activeSeats(table.id);
-    for (let i = 0; i < toAdd; i++) {
+    // A stale process-local pool may have to skip several bots that are active on
+    // other tables. Bound the repair loop so a broken custom provider cannot spin.
+    const maxAttempts = 64;
+    let attempts = 0;
+    while (attempts++ < maxAttempts) {
+      const occupiedNow = live.filter(
+        (s) => Number(s.currentStackCt) > 0 || s.status === 'sitting_in',
+      );
+      const realNow = occupiedNow.filter((s) => s.isSeeded !== 'true').length;
+      const seededNow = live.filter((s) => s.isSeeded === 'true').length;
+      const targetNow = Math.min(
+        houseFillTargetSeats(),
+        table.seededAgentSlots + realNow,
+        table.maxSeats,
+      );
+      if (
+        occupiedNow.length >= targetNow ||
+        seededNow >= table.seededAgentSlots ||
+        occupiedNow.length >= table.maxSeats
+      ) {
+        break;
+      }
+
       const seatIndex = this.firstOpenSeatIndex(live, table.maxSeats);
       if (seatIndex === null) break;
       let a: { avatarId: string; agentId: string; name: string };
@@ -1817,6 +1931,15 @@ export class CashTableManager {
         if (err instanceof CashBotPoolExhaustedError) break;
         throw err;
       }
+      const beforeDebit = await this.reconcileSeededReservation(
+        table.id,
+        seatIndex,
+        a.avatarId,
+      );
+      if (beforeDebit !== 'free') {
+        live = await this.activeSeats(table.id);
+        continue;
+      }
       const subject: CashSubject = {
         kind: 'agent',
         userId: a.avatarId, // seeded agent: its own avatar is its identity anchor
@@ -1824,14 +1947,36 @@ export class CashTableManager {
         agentId: a.agentId,
         name: a.name,
       };
-      await this.seatSubject(
-        table,
-        subject,
-        seatIndex,
-        buyIn,
-        /* isSeeded */ true,
-        /* fundSourceAvatarId */ houseBankAvatarId,
-      );
+      try {
+        await this.seatSubject(
+          table,
+          subject,
+          seatIndex,
+          buyIn,
+          /* isSeeded */ true,
+          /* fundSourceAvatarId */ houseBankAvatarId,
+        );
+      } catch (err) {
+        // The pre-debit read closes restart divergence. A concurrent process can
+        // still win after that read; the DB unique constraint rolls our whole tx
+        // back (including the debit). Re-read, bind/skip, and retry with zero money
+        // effects from the losing attempt.
+        if (err instanceof SeededSeatCollisionError || isPgUniqueViolation(err)) {
+          const reconciled = await this.reconcileSeededReservation(
+            table.id,
+            seatIndex,
+            a.avatarId,
+          );
+          if (reconciled === 'free') {
+            // A seat-index race can produce 23505 without the claimed avatar winning.
+            // Drop this stale target reservation, refresh the roster, and retry.
+            this.seededAgentReservationController.release(table.id, seatIndex);
+          }
+          live = await this.activeSeats(table.id);
+          continue;
+        }
+        throw err;
+      }
       live = await this.activeSeats(table.id);
     }
   }
