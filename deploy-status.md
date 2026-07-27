@@ -38,6 +38,10 @@
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-07-27 (repo-scrub session, push 15) — official links corrected in all banners + codified
+- **What:** founder caught wrong footer links. Pulled the official set from the DexScreener token profile: X `@Clawville_World`, Discord `discord.gg/KJfvM4VqQZ` (+ Telegram/TikTok recorded). All four banner templates fixed + re-exported; BRAND.md §8 now lists the ONLY permitted outward links (`@clawville` is not ours).
+- **SCHEMA:** `synced`. **PARITY:** n/a.
+
 ### 2026-07-27 (repo-scrub session, push 14) — the SAP x Meridian dev-update card (the graphic the founder actually asked for)
 - **What:** `branding/graphics/banner-protocol-upgrades.html` — Register-B dev-update card listing the session's concrete ships with LIVE/NEXT tags: on-chain USDC bounty escrow (mainnet) · escrow-to-x402 payout composition · Meridian second facilitator with auto failover · SOL staking for escrowed work · payment-rail hardening (caps/preflight/self-healing) · NEXT: on-chain identity + reputation (EIP-8004). Every LIVE claim prod-verified this session.
 - **SCHEMA:** `synced`. **PARITY:** n/a.
