@@ -75,15 +75,17 @@ brushed metal gradient on Gold. Flat color is acceptable for small text and chip
 The kit shipped no font files. Observed styles + open-source stand-ins (use these until
 marketing confirms the real faces; see Open Flags):
 
-**Clawville Display — the REAL brand font (built 2026-07-27, fully ours).** The logo
-lettering was AI-generated art with no font file behind it, so we built one: a full A-Z /
-a-z / 0-9 alphabet sheet was generated with gpt-image-1 using the logo as the style
-reference, then auto-traced and assembled into a working font.
-`assets/fonts/ClawvilleDisplay.otf` + `.woff2`. Use it for Register A display text,
-headlines, and anywhere the playful chunky-slab voice fits. Caveats: display use only (no
-kerning, basic metrics); lowercase z is synthesized from Z; the LOGO files themselves remain
-canonical, never re-typeset the logo. Regenerate/improve via
-`assets/fonts/build-clawville-display.py` + `clawville-display-glyphsheet.png`.
+**Clawville Display — the REAL brand font (v3, built 2026-07-27, fully ours).** The logo
+lettering was AI-generated art with no font file behind it, so we built one. Pipeline:
+gpt-image-2 generated three alphabet sheets (upper / lower / digits) styled on THREE logo
+references with the dimensional bouncy hand-drawn character preserved, then a local pipeline
+(color mask, connected-component glyph slicing, potrace vectorization, fontTools assembly)
+produced `assets/fonts/ClawvilleDisplay.otf` + `.woff2`. Use it for Register A display text,
+headlines, and anywhere the playful chunky-slab voice fits; pair with Logo Yellow fill +
+Plank Wood offset shadow to reproduce the logo treatment. Caveats: display use only (no
+kerning, basic metrics); the LOGO files themselves remain canonical, never re-typeset the
+logo. Regenerate: sheets via `assets/fonts/generate-glyphsheets.py` (needs OPENAI_API_KEY),
+font via `assets/fonts/build-clawville-display.py` (reads `assets/fonts/glyphsheets/`).
 
 The kit also bundles the broadcast stand-ins as woff2 in `assets/fonts/` (Anton 400, Barlow
 600/700; both SIL Open Font License) so banner templates render identically everywhere.
