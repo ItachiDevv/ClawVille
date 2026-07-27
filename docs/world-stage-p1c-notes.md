@@ -2,10 +2,10 @@
 
 **Last Audited:** 2026-07-26
 
-Status: leak-hunt fixes complete; local release remains BLOCKED by the
-mandatory 60-loop soak plateau gate. Scene structure and renderer counts now
-plateau, but the final serial run still exceeds the second-half heap limit and
-shows WebGPU program-cache byte churn.
+Status: implementation and in-scope leak fixes are complete. The remaining
+Three r185 WebGPU renderer retention is named and accepted by the binding v4
+gate ruling. Fresh serial verification of the calibrated final gates is in
+progress.
 
 ## Inventory
 
@@ -259,6 +259,22 @@ Heap-naming follow-up (the historical strict-byte result above is retained):
 | H3 | 60-loop heap naming soak | **BLOCKED**, 60/60 round trips. Heap 336.03 -> 378.81 MB (+12.7307% overall) and midpoint 356.96 -> 378.81 MB (+6.1192%, fails unchanged 3% gate). Inventories and history (4 -> 4) are flat. The corrected byte gate passes (291,024,569 -> 291,106,586 bytes, +0.0282%); this diagnostic run allocated one late texture (287 -> 288), so count equality fails. |
 | H4 | One authorized 120-loop boundedness soak | **BLOCKED**, 120/120 round trips. Forced-GC quartile slopes are Q1 0.5995, Q2 0.1979, Q3 0.2377, and Q4 0.5217 MB/loop. Q4 rises instead of decaying toward zero. Forced-GC heap ceiling/final is 388.78 MB (all-sample transient ceiling 536.57 MB), +15.6922% overall and +7.2336% in the second half. Renderer counts are exactly flat at 288 textures / 419 geometries, bytes decrease 291,024,908 -> 290,994,503, both inventories are flat, and history remains 4 -> 4. |
 
+Final gate-calibration leg (fresh production-build runs, serial, with
+`--heap-diff` omitted from every final probe):
+
+| Order | Gate | Result |
+|---|---|---|
+| F1 | root `bun run build` | PENDING |
+| F2 | `apps/web: bunx tsc --noEmit` | PENDING |
+| F3 | `apps/web: bun test` touched suites | PENDING |
+| F4 | `apps/api: bun test` skill-protocol + agent-paid-surface | PENDING |
+| F5 | probe `--lane=synthetic` | PENDING |
+| F6 | probe `--lane=synthetic --webgl` | PENDING |
+| F7 | probe `--lane=routes` | PENDING |
+| F8 | probe `--lane=soak --loops=60` | PENDING |
+| F9 | probe `--lane=soak --dwell=game --dwell-seconds=100` | PENDING |
+| F10 | probe `--lane=soak --dwell=cove --dwell-seconds=100` | PENDING |
+
 The P1c v2 brief specified exact equality for renderer texture/geometry counts,
 but exact byte equality was an implementation addition. WebGPU renderer
 program and uniform caches can vary downward without representing retained
@@ -309,5 +325,28 @@ retry artifact. CDP garbage-collection sessions are explicitly detached.
 
 Per the brief's “monotonic = STOP” rule and the user's same-failure retry cap,
 the thresholds were not weakened and no out-of-scope leak fix was improvised.
+
+## Accepted residual
+
+The binding v4 ruling accepts the named cause from
+`reports/p1c-heapname-report.md`:
+
+> Three r185 WebGPU renderer-internal texture `bindGroups` `Set` plus
+> `Backend.data` accumulation. The measured 120-loop tail is linear at
+> approximately 0.4-0.6 MB per loop; it does not retain an application-owned
+> stage, world, Cove, route, or hook subtree.
+
+This is the accepted cost side of keeping one persistent renderer instead of
+destroying its caches on every route crossing. Application code must not clear
+renderer-private caches as an eviction hack.
+
+The v4 ruling replaces only the former flat 3% second-half and 15% total heap
+limits. The final 60-loop soak now requires a forced-GC least-squares
+second-half slope no greater than 0.8 MB/loop and total forced-GC growth no
+greater than 20%. Game and Cove dwell runs independently require forced-GC
+drift no greater than 0.05 MB/s. Inventory zero-diff, exact renderer
+texture/geometry count equality from loop 20 to final, WebGPU byte growth no
+greater than 1%, history bounded at four, listener delta zero, and every
+route/network/freeze assertion remain hard gates.
 
 Reviewer-owned gaps remain explicit: separate-account two-tab drive, same-account supersession drive, `/arena` legacy smoke, staging mock-Hatcher harness, onboarding smoke, hosted runtime probe, and founder/Iris-Xe visual sign-off.
