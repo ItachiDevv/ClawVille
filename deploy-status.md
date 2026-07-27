@@ -38,6 +38,10 @@
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-07-27 (repo-scrub session, push 12) — Clawville Display LOCKED as the one brand font
+- **What:** founder sign-off on the +18% build ("that's great, lock that as our only font, no other variations"). Weight knob removed (hardcoded, no env override); BRAND.md carries the lock rule: ONE font, ONE weight, no variants without founder direction.
+- **SCHEMA:** `synced`. **PARITY:** n/a.
+
 ### 2026-07-27 (repo-scrub session, push 11) — font weight settled at ~+18% stroke (founder redline of medium)
 - **What:** founder rejected the +25% medium (degraded the emboss). Rebuilt at dilation 4 (~+18%, closest to his requested 20%): emboss rim/highlight stay crisp, serifs intact. `CLAWVILLE_BOLD` default now 4.
 - **SCHEMA:** `synced`. **PARITY:** n/a.

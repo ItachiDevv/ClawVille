@@ -85,6 +85,11 @@ The emboss layering is IMPLEMENTED as a renderer: `assets/fonts/render-embossed-
 highlight, crisp chocolate offset shadow) — calibrated side-by-side against the real logo.
 Use it for headline art. Plank/wood backing: still marketing-supplied when needed.
 
+**⛔ LOCKED (founder 2026-07-27): the shipped `ClawvilleDisplay.otf`/`.woff2` is THE brand
+font — ONE font, ONE weight (the +18% build), NO variants.** Do not rebuild at other
+weights, regenerate sheets, or introduce alternate cuts without explicit founder direction.
+The pipeline below stays only for repair/regeneration of THIS font.
+
 **Clawville Display — the REAL brand font (v3, built 2026-07-27, fully ours).** The logo
 lettering was AI-generated art with no font file behind it, so we built one. Pipeline:
 gpt-image-2 generated three alphabet sheets (upper / lower / digits) styled on THREE logo
