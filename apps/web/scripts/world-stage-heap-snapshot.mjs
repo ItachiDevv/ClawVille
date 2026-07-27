@@ -22,6 +22,10 @@ function constructorKey(type, name) {
   return `${type}\u0000${name}`;
 }
 
+function aggregateName(name) {
+  return name.replace(/\s+@(?:0x[0-9a-f]+|\d+)$/i, '');
+}
+
 function cleanLabel(value, limit = 120) {
   const normalized = String(value).replace(/\s+/g, ' ').trim();
   return normalized.length <= limit
@@ -99,6 +103,8 @@ function analyzeSnapshot(snapshot, keepGraph) {
       `Heap snapshot edge count mismatch: expected ${edgeCursor}, got ${edges.length}`,
     );
   }
+  const edgeIsRetaining = (edgeOffset) =>
+    edgeTypes[edges[edgeOffset + edgeTypeOffset]] !== 'weak';
 
   // Iterative DFS supplies the spanning tree needed by Lengauer-Tarjan and an
   // actual root-to-node edge path for representative retainer chains.
@@ -125,6 +131,7 @@ function analyzeSnapshot(snapshot, keepGraph) {
       continue;
     }
     stackEdges[stackTop] += edgeFieldCount;
+    if (!edgeIsRetaining(edgeOffset)) continue;
     const targetNodeOffset = edges[edgeOffset + edgeToNodeOffset];
     const targetNodeIndex = targetNodeOffset / nodeFieldCount;
     if (
@@ -155,6 +162,7 @@ function analyzeSnapshot(snapshot, keepGraph) {
       edgeOffset < edgeStarts[sourceNode + 1];
       edgeOffset += edgeFieldCount
     ) {
+      if (!edgeIsRetaining(edgeOffset)) continue;
       const targetNode =
         edges[edgeOffset + edgeToNodeOffset] / nodeFieldCount;
       if (dfsByNode[targetNode] !== 0) reachableEdgeCount += 1;
@@ -174,6 +182,7 @@ function analyzeSnapshot(snapshot, keepGraph) {
       edgeOffset < edgeStarts[sourceNode + 1];
       edgeOffset += edgeFieldCount
     ) {
+      if (!edgeIsRetaining(edgeOffset)) continue;
       const targetNode =
         edges[edgeOffset + edgeToNodeOffset] / nodeFieldCount;
       const targetDfs = dfsByNode[targetNode];
@@ -270,7 +279,9 @@ function analyzeSnapshot(snapshot, keepGraph) {
     const nodeIndex = vertex[dfs];
     const nodeOffset = nodeIndex * nodeFieldCount;
     const type = nodeTypes[nodes[nodeOffset + nodeTypeOffset]];
-    const name = strings[nodes[nodeOffset + nodeNameOffset]] ?? '';
+    const name = aggregateName(
+      strings[nodes[nodeOffset + nodeNameOffset]] ?? '',
+    );
     const key = constructorKey(type, name);
     let aggregate = aggregates.get(key);
     if (!aggregate) {
@@ -356,7 +367,7 @@ function representativeRetainerChain(analysis, groupKey) {
 
   const reverseSteps = [];
   let dfs = aggregate.representativeDfs;
-  while (dfs > 1 && reverseSteps.length < 80) {
+  while (dfs > 1 && reverseSteps.length < analysis.reachableCount) {
     const parentDfs = graph.parent[dfs];
     reverseSteps.push({
       from: nodeLabel(graph, parentDfs),
@@ -419,7 +430,10 @@ export async function diffHeapSnapshots(baselinePath, finalPath) {
       right.countDelta - left.countDelta,
   );
   const positiveGrowth = constructors.filter(
-    (entry) => entry.retainedSizeDeltaBytes > 0,
+    (entry) =>
+      entry.retainedSizeDeltaBytes > 0 &&
+      entry.nodeType !== 'synthetic' &&
+      entry.nodeType !== 'hidden',
   );
   const topConstructors = (positiveGrowth.length > 0
     ? positiveGrowth
@@ -504,5 +518,6 @@ export function renderHeapDiffReport(summary, summaryPath) {
 }
 
 export const testOnly = {
+  aggregateName,
   analyzeSnapshot,
 };
