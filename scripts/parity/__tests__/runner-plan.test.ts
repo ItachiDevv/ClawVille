@@ -12,6 +12,7 @@ import {
   requiresGuestShoeReset,
   requiresFixtureOwnerPreflight,
   resolveScenarioState,
+  shouldCaptureHoldemTerminalSurface,
 } from '../runner-env';
 import {
   driveScenario,
@@ -312,6 +313,23 @@ describe('offline live-runner plans', () => {
     })).toBe(false);
   });
 
+  test('terminal surface capture excludes negative traversal but retains settlement plans', () => {
+    expect(shouldCaptureHoldemTerminalSurface({
+      game: 'holdem',
+      phases: ['every-step'],
+    })).toBe(false);
+    for (const phases of [
+      ['showdown', 'muck-fading', 'idle'],
+      ['showdown'],
+      ['settled'],
+    ]) {
+      expect(shouldCaptureHoldemTerminalSurface({
+        game: 'holdem',
+        phases,
+      })).toBe(true);
+    }
+  });
+
   test('fixture teardown rejects a non-2xx delete result', async () => {
     const driver = new PlanDriver();
     driver.evalJson = async <T>() => ({
@@ -557,13 +575,16 @@ describe('offline live-runner plans', () => {
       new URL('../run-parity.ts', import.meta.url),
       'utf8',
     );
-    const firstCapture = source.indexOf(`if (scenario.game === 'holdem') {
+    const firstCapture = source.indexOf(`if (shouldCaptureHoldemTerminalSurface(scenario)) {
         await captureTerminalSurface();`);
     const transientLoop = source.indexOf(
       'while (!result.pass && Date.now() < settleDeadline)',
     );
     expect(firstCapture).toBeGreaterThan(-1);
     expect(firstCapture).toBeLessThan(transientLoop);
+    expect(source).toContain(
+      `(scenario.game === 'holdem' && !shouldCaptureHoldemTerminalSurface(scenario))`,
+    );
     expect(source).toContain('holdemTerminalVisibleCaptured = true');
   });
 

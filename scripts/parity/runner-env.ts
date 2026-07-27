@@ -29,6 +29,15 @@ export function requiresGuestShoeReset(
     && (scenario.game === 'blackjack' || scenario.game === 'baccarat');
 }
 
+export function shouldCaptureHoldemTerminalSurface(
+  scenario: Pick<ScenarioDefinition, 'game' | 'phases'>,
+): boolean {
+  return scenario.game === 'holdem'
+    && scenario.phases.some((phase) => (
+      phase === 'settled' || phase === 'showdown'
+    ));
+}
+
 export function resolveScenarioState(
   scenario: Pick<ScenarioDefinition, 'game' | 'tier' | 'fixtureName'>,
   env: NodeJS.ProcessEnv = process.env,

@@ -32,6 +32,7 @@ import {
   requiresGuestShoeReset,
   requiresFixtureOwnerPreflight,
   resolveScenarioState,
+  shouldCaptureHoldemTerminalSurface,
 } from './runner-env';
 import { resetGuestShoes } from './reset-guest-shoes';
 import {
@@ -532,7 +533,8 @@ async function runLiveScenario(): Promise<void> {
       });
       const captureTerminalSurface = async (): Promise<void> => {
         if (
-          result.resolvedWireSeq === null
+          (scenario.game === 'holdem' && !shouldCaptureHoldemTerminalSurface(scenario))
+          || result.resolvedWireSeq === null
           || !['settled', 'showdown'].includes(root.dealStep)
           || (scenario.game === 'holdem' && holdemTerminalVisibleCaptured)
         ) {
@@ -563,7 +565,7 @@ async function runLiveScenario(): Promise<void> {
           holdemTerminalVisibleCaptured = true;
         }
       };
-      if (scenario.game === 'holdem') {
+      if (shouldCaptureHoldemTerminalSurface(scenario)) {
         await captureTerminalSurface();
       }
       // Eventual-consistency window: a pre-existing intermediate revision

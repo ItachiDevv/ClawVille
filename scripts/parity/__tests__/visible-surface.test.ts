@@ -71,6 +71,63 @@ describe('visible-surface probe scoping', () => {
     });
   });
 
+  test('settled holdem still fails a wrong terminal banner and pot', async () => {
+    const recorded = RECORDED_CASES[3]!;
+    const root = {
+      ...recorded.root,
+      surface: 'holdem-tray-3d' as const,
+      dealStep: 'showdown',
+      phase: 'settled',
+      correlation: { hand: 'cash-table:9', handNumber: 9 },
+    };
+    const driver = {
+      evalJson: async <T>(): Promise<T> => ({
+        surface: root.surface,
+        revision: root.renderRevision,
+        correlationHand: root.correlation.hand,
+        values: {
+          'banner-text': 'Wrong winner',
+          pot: 'Pot 999 vCLAW',
+          'self-stack': 'Stack 137 vCLAW',
+          'on-felt': true,
+        },
+      }) as T,
+    } as Driver;
+    const visible = await assertVisibleSurface(
+      driver,
+      'holdem',
+      root,
+      recorded.records[0]!,
+      {
+        endedAt: 'showdown',
+        pots: [{
+          amount: '40',
+          awards: [{ seatIndex: 4, amount: '40' }],
+        }],
+        seats: [{ seatIndex: 4, endStack: '137', net: '37' }],
+      },
+      [{
+        ...recorded.records[0]!,
+        responseBody: {
+          view: {
+            handNumber: root.correlation.handNumber,
+            seatIndex: 4,
+          },
+        },
+      }],
+    );
+    expect(visible['banner-text']).toEqual({
+      expected: 'Showdown',
+      actual: 'Wrong winner',
+      pass: false,
+    });
+    expect(visible.pot).toEqual({
+      expected: 40,
+      actual: 999,
+      pass: false,
+    });
+  });
+
   test('felt settlement witness may trail cards only at correlated terminal idle', () => {
     const source = readFileSync(
       new URL('../visible-surface.ts', import.meta.url),
