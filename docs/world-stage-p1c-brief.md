@@ -332,3 +332,37 @@ mandatory amendments:
 
 Gate 2 additionally includes `stage-navigation.test.ts` + the ADOPT/SUPERSEDE
 helper tests. Everything else in v2 stands.
+
+---
+
+## v4 GATE RULING (orchestrator, 2026-07-26, after the heap-naming evidence — BINDING)
+
+Evidence: reports/p1c-heapname-report.md — the residual soak heap growth is
+Three r185 WebGPU renderer-internal texture `bindGroups` Set + `Backend.data`
+accumulation (Sets 1,255→2,893 loops 20→50; retainer chains terminate in
+renderer privates; nothing ours). 120-loop tail slope ~0.4-0.6 MB/loop, linear.
+This is the accepted cost-side of the persistent-renderer architecture (the
+legacy per-route canvas freed renderer caches by paying the reload), external
+to this codebase, and NOT fixable in-scope (clearing renderer privates =
+banned eviction hack).
+
+**Final soak gate set (replaces the flat 3%/15% heap gates ONLY; all other
+gates unchanged and still exact):**
+- scene inventories: exact zero diff (unchanged)
+- renderer texture+geometry COUNTS: exact equality loop 20 vs final
+  (unchanged; the final gate run must NOT enable --heap-diff — snapshot
+  instrumentation may perturb late textures)
+- WebGPU byte counters: final ≤ loop20 × 1.01 (v3-corrected, unchanged)
+- history bounded 4, listener delta 0, all route/network/freeze assertions
+  (unchanged)
+- JS heap (forced-GC): second-half PER-LOOP SLOPE ≤ 0.8 MB/loop AND total
+  growth ≤ 20% over 60 loops — calibrated: renderer-internal floor measured
+  ~0.45 MB/loop; the original app leak ran >1.2 MB/loop and also failed the
+  count/inventory gates. DWELL runs (game + cove) must stay ≤ 0.05 MB/s
+  drift (time-correlated leaks still fail hard).
+
+**Tracked follow-up (plan-ledger entry, not a code comment):** re-measure the
+bindGroups growth on the next three.js upgrade (r186+ — check upstream
+bind-group lifecycle fixes) and fold renderer-cache eviction into the already
+planned low-end texture-eviction tier. Review trigger: P3 (kelp joins stage)
+or the three upgrade, whichever first.
