@@ -1,0 +1,7 @@
+status: BLOCKED
+evidence_commit: f12fb101d344a5d121dac1a3b4b8cecaf37e7f21
+cause: Three/WebGPU renderer-internal texture bindGroups Set and Backend.data WeakMap retention
+heap_diff: loop 20 to 50 Set retained-size delta +3,061,192 bytes; count 1,255 to 2,893
+soak_60: second-half heap +6.1192% (unchanged limit 3%)
+soak_120: forced-GC Q1/Q2/Q3/Q4 slopes 0.5995/0.1979/0.2377/0.5217 MB per loop; forced-GC ceiling 388.78 MB
+decision: last-quartile slope does not decay toward zero; orchestrator owns the heap-gate decision
