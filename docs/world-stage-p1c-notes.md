@@ -377,3 +377,14 @@ loops 7/8/30 then 30 loops flat in every run); slope limit 1.0 MB/loop
 structurally-flat runs; app-leak signature ≥1.2). First dwell-cove attempt
 crashed on a Puppeteer detached-frame harness race with flat heap underneath
 (0.004 MB/s); rerun below.
+
+## Partner contract check (reviewer, staging step)
+
+`.hatcher-ref` staged copies live at `cv-minors/.hatcher-ref` + `cv-sap-sdk/.hatcher-ref`
+(absent from this worktree post-purge — gitignored). Verified against the partner's REAL
+staged frontend code: zero references to `/api/world/position` or the world co-presence
+wire anywhere in their `lib`/`docs`/tests — the surface P1c documents (self-reported
+`at-cove` activity, v40 manual text) has no contact point with Hatcher's code paths, and
+the register/PATCH/stats/session wire shapes they DO consume are byte-untouched. The
+CONTRACT.md file itself is not present in either staged copy; the code-level
+no-contact-surface check above is the stronger validation.
