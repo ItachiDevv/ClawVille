@@ -47,7 +47,8 @@ import {
   type RefObject,
 } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { useFrame, useThree } from '@react-three/fiber';
+import { useThree } from '@react-three/fiber';
+import { useSceneActive, useSceneFrame, useSceneId } from '@/components/three/world-stage/use-scene-frame';
 import * as THREE from 'three';
 import { measureSpike } from '@/lib/perf-tracker';
 import { avatarPositionRef, useGameStore } from '@/stores/game';
@@ -114,6 +115,13 @@ interface LabelEntry {
   _occludeResult: boolean;
   /** Whether the projection pass currently keeps this label displayed. */
   _active: boolean;
+  /** Stage scene slot this label belongs to (null on legacy canvases).
+   *  Captured from SceneIdContext at registration. Under the persistent stage
+   *  BOTH the world host and the cove host are mounted simultaneously against
+   *  ONE module registry — each host renders/projects ONLY its own scene's
+   *  entries, otherwise world labels bleed into the cove overlay (P1b review
+   *  finding 2026-07-26). */
+  sceneId: string | null;
 }
 
 const _registry = new Map<string, LabelEntry>();
@@ -439,14 +447,16 @@ let _overlayRoot: Root | null = null;
 // LabelsHost — single React tree that renders every label
 // ---------------------------------------------------------------------------
 
-function LabelsHost() {
+function LabelsHost({ hostSceneId }: { hostSceneId: string | null }) {
   const entries = useSyncExternalStore(_subscribe, _getSnapshot, _getSnapshot);
 
   return (
     <>
-      {entries.map((entry) => (
-        <LabelView key={entry.id} entry={entry} />
-      ))}
+      {entries
+        .filter((entry) => (entry.sceneId ?? null) === hostSceneId)
+        .map((entry) => (
+          <LabelView key={entry.id} entry={entry} />
+        ))}
     </>
   );
 }
@@ -495,6 +505,18 @@ let _canvasH = 0;
 
 export function WorldLabelsOverlayMount() {
   const { gl, camera, scene } = useThree();
+  const sceneActive = useSceneActive();
+  // Stage slot this host serves (null on legacy canvases). Each host renders
+  // and projects ONLY its own scene's labels — under the persistent stage the
+  // world host and the cove host coexist against one module registry, and an
+  // unfiltered host paints the other scene's labels over its page (P1b review
+  // finding 2026-07-26).
+  const hostSceneId = useSceneId();
+  // Instance-scoped overlay element. The module-level _overlayNode is
+  // last-host-wins (kept for legacy metrics); the projection pass and the
+  // visibility gate below MUST target THIS host's node or a second host's
+  // mount/unmount corrupts the first host's wiring.
+  const overlayElRef = useRef<HTMLDivElement | null>(null);
 
   // Capture scene for the module-scope occluder raycaster.
   useEffect(() => {
@@ -505,23 +527,34 @@ export function WorldLabelsOverlayMount() {
     return () => { _sceneRef = null; };
   }, [scene]);
 
+  // Stage-slot visibility gate: the projection pass FREEZES when this slot is
+  // hidden (useSceneFrame stops dispatching), but frozen is not hidden — this
+  // host's label DOM keeps painting at its last projected position over the
+  // ACTIVE slot's page. Hide this instance's container while its slot is
+  // inactive. Legacy canvases have no SceneIdContext → always active.
+  useEffect(() => {
+    const node = overlayElRef.current;
+    if (node) node.style.display = sceneActive ? '' : 'none';
+  }, [sceneActive]);
+
   useEffect(() => {
     const canvas = gl.domElement;
     const container = canvas.parentElement ?? document.body;
 
     const overlay = document.createElement('div');
-    overlay.setAttribute('data-world-labels', '1');
+    overlay.setAttribute('data-world-labels', hostSceneId ?? '1');
     overlay.style.cssText =
       'position:absolute;inset:0;overflow:hidden;pointer-events:none;z-index:10';
     container.appendChild(overlay);
 
+    overlayElRef.current = overlay;
     _overlayNode = overlay;
     _overlayActive = true;
 
     const root = createRoot(overlay);
     _overlayRoot = root;
     _rebuildSnapshot();
-    root.render(<LabelsHost />);
+    root.render(<LabelsHost hostSceneId={hostSceneId ?? null} />);
 
     // Initialise + track canvas size without per-frame getBoundingClientRect.
     const rect = canvas.getBoundingClientRect();
@@ -539,10 +572,16 @@ export function WorldLabelsOverlayMount() {
 
     return () => {
       ro.disconnect();
-      const r = _overlayRoot;
-      _overlayRoot = null;
-      _overlayNode = null;
-      _overlayActive = false;
+      const r = root;
+      overlayElRef.current = null;
+      // Equality-guarded: only clear the module singletons if they still point
+      // at THIS instance — a second host (cove) unmounting must never null the
+      // first host's (world's) registration.
+      if (_overlayRoot === root) _overlayRoot = null;
+      if (_overlayNode === overlay) {
+        _overlayNode = null;
+        _overlayActive = false;
+      }
       _labelRenderRate = 0;
       _labelRenderCount = 0;
       // Defer unmount past the parent's commit phase to avoid React's "race
@@ -552,16 +591,21 @@ export function WorldLabelsOverlayMount() {
         overlay.remove();
       });
     };
-    // gl is stable post-init.
+    // gl is stable post-init; hostSceneId is fixed for the host's lifetime.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Single projection pass — uses ResizeObserver-cached canvas size to avoid
   // the forced reflow from getBoundingClientRect after the previous frame's
   // display:none/block writes invalidated layout.
-  useFrame(() => {
+  useSceneFrame(() => {
     measureSpike('uF:labels', () => {
-    if (!_overlayNode) return;
+    // Instance-scoped node — never the module singleton, which the other
+    // stage host may have replaced. Also self-heal the occluder scene ref:
+    // a second host's mount/unmount clobbers the singleton _sceneRef, and
+    // this host only runs while ACTIVE, so reasserting here is correct.
+    if (!overlayElRef.current) return;
+    _sceneRef = scene;
 
     const W = _canvasW;
     const H = _canvasH;
@@ -591,7 +635,11 @@ export function WorldLabelsOverlayMount() {
       const occEntry = _occludeList[_occludeCursor];
       _occludeCursor++;
       const occAnchor = occEntry.anchorRef.current;
-      if (occAnchor && occEntry.visible) {
+      if (
+        occAnchor &&
+        occEntry.visible &&
+        (occEntry.sceneId ?? null) === (hostSceneId ?? null)
+      ) {
         occAnchor.getWorldPosition(_scratchRawAnchor);
         _scratchAnchorWorld.set(
           _scratchRawAnchor.x + occEntry.offset[0],
@@ -608,6 +656,9 @@ export function WorldLabelsOverlayMount() {
     }
 
     _registry.forEach((entry) => {
+      // Foreign-scene entries belong to the other stage host's overlay — their
+      // divs live in that host's DOM tree; writing to them corrupts it.
+      if ((entry.sceneId ?? null) !== (hostSceneId ?? null)) return;
       const div = entry.divRef.current;
       if (!div) return;
 
@@ -793,6 +844,9 @@ export function useWorldLabel({
 }: UseWorldLabelOpts): UseWorldLabelReturn {
   // Stable ref the consumer + LabelView share.
   const divRef = useRef<HTMLDivElement | null>(null);
+  // Stage slot ownership — read during render (hook), captured into the entry
+  // at synchronous registration below. Null outside the stage (legacy canvas).
+  const labelSceneId = useSceneId();
   // Tracks whether we've registered our entry. Used to handle React 18 strict
   // mode (mount → unmount → mount) and re-register after cleanup.
   const registeredRef = useRef(false);
@@ -827,6 +881,7 @@ export function useWorldLabel({
       occludePhase: _registry.size % 30,
       _occludeResult: false,
       _active: false,
+      sceneId: labelSceneId,
     };
     _registry.set(id, entry);
     _refToId.set(divRef, id);

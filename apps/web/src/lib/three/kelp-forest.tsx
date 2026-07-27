@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo } from 'react';
-import { useFrame } from '@react-three/fiber';
+import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import * as THREE from 'three/webgpu';
 import { attribute, cos, float, positionLocal, sin, time, vec3 } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
@@ -391,7 +391,7 @@ function useDisposableVariantResources(
 export function KelpForestAmbient({ forceWebGL }: { forceWebGL: boolean }) {
   const resources = useDisposableVariantResources(generatePlacements, forceWebGL);
 
-  useFrame(({ clock }) => {
+  useSceneFrame(({ clock }) => {
     for (let index = 0; index < resources.length; index++) {
       const uniform = resources[index]!.webGlTimeUniform;
       if (uniform) uniform.value = clock.elapsedTime;

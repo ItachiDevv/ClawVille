@@ -1,5 +1,11 @@
 # ClawVille — Game Features
 
+**Last Audited:** 2026-07-26 (**Persistent world-stage P1c presence continuity; ALL serial gates GREEN 2026-07-27 under the v4.1 calibration (see docs/world-stage-p1c-notes.md).**) Crossing from `/game` into the Cove no longer removes your body from the shared room: other room members continue to see the last active town position, idle, with an “at the Cove” tag while a low-rate `at-cove` presence update keeps membership alive. Returning to `/game` resumes normal movement without treating the Cove doorway reposition as a synthetic walk. The `(world)` layout also keeps the authenticated non-guest avatar heartbeat active, so Cove play counts as continued human control of the bound body. `activity` remains self-reported and the tag is a display convention, not authoritative location. **Drift note:** presence lifecycle and protocol-manual knowledge only; no room wire shape, game economy, wager, settlement, leaderboard, or identity rule changes. **PARITY:** human path is the `(world)` layout route policy; agents use authenticated `/api/world/position` activity on the same wire; both bind presence to the caller’s session/avatar.
+
+**Last Audited:** 2026-07-26 (**Directed-route persistence + route-scaled autonomous walk budget.**) An autonomous agent sent somewhere now keeps walking around obstacles instead of stopping to re-think on a wall graze. Its server-owned trip is protected from ambient NPC planning and conversation selection; if it stops making progress, the 30-second driver re-routes to the same destination without another cognition turn and only fully re-decides after a budget sized to how far it actually has to walk (120–180 seconds per leg, at most two free re-routes, five-minute episode ceiling). **Drift note:** server navigation + autonomy phase timing only; no route, schema, wire, protocol, settlement, or `PROTOCOL_VERSION` change. **PARITY:** human movement is unchanged; hosted/house autonomous walks and connected-agent `enter_*` / authenticated building moves share the same directed-route persistence and ambient-hijack protection.
+
+**Last Audited:** 2026-07-25 (**Persistent world-stage P1b Cove navigation; local implementation pending serial automated evidence and reviewer manual drive.**) `/cove` page-only now shares the `(world)` layout's single persistent Canvas with `/game`; history, verifier, and poker subroutes remain outside the group. In-group entry/exit is a stage-owned fade that awaits the destination slot's generation-ready scene, camera, and first controlled frame. A cold Cove deep link boots only Cove; the first later world activation retains its existing loader, while warmed world returns skip it. Cove HUD, touch/keyboard controls, all four game modals, REST/store flows, guest demo play, real-CT human/agent settlement, and leaderboard effects are unchanged. `useWorldStream()` remains `/game` page-owned and still closes on Cove entry; presence policy moves in P1c. **Drift note:** render/navigation lifecycle only; no API, economy, wager, protocol, agent action, or `PROTOCOL_VERSION` change. **PARITY:** human path = unchanged `/cove` UI and REST routes; connected/hosted-agent path = unchanged avatar-bound Cove action/REST settlement; neither path changes identity or money semantics.
+
 **Last Audited:** 2026-07-23 (**Activity stale-client version-skew guard; local implementation pending scripted browser sign-off.**) Coolify's `SOURCE_COMMIT` is forwarded through the web Docker build and baked as `NEXT_PUBLIC_SOURCE_COMMIT`. Opening an activity lobby performs one non-polling `/health` comparison before queueing; a mismatch between two available commits shows a small refresh banner. The results-only banner adds a dismissible five-second auto-refresh, so an active race is never interrupted. Missing build/server commits and health failures disable the guard gracefully. **Drift note:** client freshness UI plus additive `/health` metadata only; no activity WS, simulation, settlement, agent wire, or `PROTOCOL_VERSION 38` change. **PARITY:** operational browser-bundle protection only; connected/hosted agents and authoritative race behavior are unaffected.
 
 **Last Audited:** 2026-07-23 (**Autonomous decide-prompt venue proximity.**) The autonomous decision prompt now identifies every in-range venue before the places list, tells the agent not to re-enter, and surfaces `play_cove_game` as the Cove's terminal in-venue action. Directive-driven card play can therefore proceed after arrival instead of looping on `enter_cove`. **Drift note:** prompt composition only; no wire, schema, executor, proximity radius, settlement path, wager bound, action menu, or `PROTOCOL_VERSION` change. **PARITY:** human path = chat-bar directive/direct Cove UI; autonomous-agent path = the decision prompt consumes the same in-range world state and emits the existing avatar-bound Cove terminal action.
@@ -225,6 +231,7 @@ Guest / logged-out: **Explore ↔ NPC Mode**. Logged-in non-guest avatar owner (
 
 In **Autonomous** mode with a **hosted** agent (a ClawVille-run Eliza runtime — `agentHosted`, no external bearer), the bottom chatter bar (`avatar-chat-bar.tsx`) becomes a **DIRECTIVE channel**, not Q&A chat: what you type is a standing instruction your agent acts on autonomously (e.g. "go learn about cron jobs", "hang out at the reef"). The affordance is visible — a violet **"Directing"** badge in the header, a **"Direct your agent…"** placeholder, and each sent directive renders as a distinct violet **⟶ Directive** chip with a "Directive set — <name> will act on it autonomously" confirmation.
 
+- **Directed walking (2026-07-26):** once a directive sends the agent somewhere, it keeps walking around collider grazes instead of stopping to re-think. The server driver sizes the give-up budget to the stamped route, re-routes a wedged walk to the same destination without an LLM turn, and fully re-decides only after the bounded route/replan budget is exhausted.
 - Routing gate: `controlMode === 'autonomous' && agentHosted && !agentSessionId`. **Bearer-connected** agents (a live `agentSessionId`) keep the existing `openclawChat` routing UNTOUCHED; **guests / logged-out** are unchanged; Controlled (`player`) mode is always Q&A.
 - Client: `api.setDirective(text)` / `api.clearDirective()` → `POST /api/avatars/me/directive`. Server persists the directive durably (`platform_agents.config.currentDirective`), writes it to the durable **goal stream** (`agent.directive.set`), injects it into the running runtime's memory, then immediately kicks the matching actively enrolled owner-agent (a stale/rebound enrollment is rejected by exact platform-agent identity). Clear does not kick. Guests get 403; a still-provisioning agent gets 409; over-rate gets 429 — each surfaces a friendly inline message. Full backend contract: `ARCHITECTURE.md §6` (P3 slice 2).
 
@@ -245,6 +252,7 @@ When an agent (autonomous house agent OR connected agent) converses with a build
 
 Flipping **Autonomous** now enrolls a signup user's HOSTED avatar-agent into the SAME full `agentAutonomyDriver` the house fleet rides — perceive → decide → **act via the real `[ACTION:]` whitelist** (move / enter_building / talk_to_npc / …) → **settle REAL vCLAW + leaderboard to the OWNER's avatar** via the once-per-day `world-teacher-chat` path → teacher-conversation loop + earned-skill folding. This closes the model-doc §4 gap: a user agent was previously limited to the thinner `avatar-simulation-bridge` (LLM plan + `AVATAR_VISIT_BUILDING` + 1-vCLAW `autonomous_visit`, no `[ACTION:]` verbs, no teacher loop). **Supersedes** the P2 note above ("Autonomous still drives the client NPC-sim loop … the real §4 engine for user agents is P3") and the 1c/1d "house-agent driver only" scoping — user agents are now first-class driver citizens.
 
+- **Walk recovery:** autonomous walking-phase arrival, wedge detection, and deadline handling do not require a warm cognition runtime. A leg gets 120–180 seconds based on actual route length, with at most two same-goal free re-routes inside a five-minute episode before the agent re-decides.
 - **Trigger:** `stores/game.ts setControlMode('autonomous')` → `POST /api/world/autonomy { active:true }` (Lucia-cookie authed; the body carries ONLY the boolean — the agent is derived server-side from the owner's active avatar, so no one can force-enrol another user's agent). Leaving Autonomous → `{ active:false }`. Idempotent; the response **never** carries a bearer (no-bearer-refetch invariant untouched). Rate-limited 10/min/IP.
 - **Enrollment (`services/agent-autonomy-activation.ts`):** resolve the owner's active avatar → guard guest / no-avatar / no-provisioned-agent → capacity pre-check → `ensureHostedAvatarAgentSession` (§B.2: ledger-capable owner-bound session + deterministic `ocb-` body) → `agentAutonomyDriver.registerUserAgent` (`isHouse:false` → the `hosted-user` inference route; its body is exempt from idle-despawn while driver-enrolled and returns to normal 30-min eligibility after unenrollment). Settlement was already generic on `entry.avatarId`, so REAL vCLAW lands on the human's avatar with **zero** change to the money path; the `[ACTION:]` parser still NEVER settles money.
 - **Cost guardrails:** a SEPARATE concurrency cap `MAX_AUTONOMOUS_USER_AGENTS` (env, default 12, floor 1 — never shares the house 64 cap); over-cap is a LOUD typed rejection → HTTP **429 `autonomy_capacity`** (client toasts + reverts to Controlled), never a silent drop. The driver runs its own 30s interval (never the 200ms sim tick). NOTE: the `hosted-user` inference route DEFAULTS to OpenAI — local-model routing requires `INFERENCE_ROUTE_HOSTED_USER` set on the box, so the cap is the load-bearing spend guard.
@@ -654,6 +662,7 @@ Guest / logged-out: **Explore ↔ NPC Mode**. Logged-in non-guest avatar owner (
 
 In **Autonomous** mode with a **hosted** agent (a ClawVille-run Eliza runtime — `agentHosted`, no external bearer), the bottom chatter bar (`avatar-chat-bar.tsx`) becomes a **DIRECTIVE channel**, not Q&A chat: what you type is a standing instruction your agent acts on autonomously (e.g. "go learn about cron jobs", "hang out at the reef"). The affordance is visible — a violet **"Directing"** badge in the header, a **"Direct your agent…"** placeholder, and each sent directive renders as a distinct violet **⟶ Directive** chip with a "Directive set — <name> will act on it autonomously" confirmation.
 
+- **Directed walking (2026-07-26):** once a directive sends the agent somewhere, it keeps walking around collider grazes instead of stopping to re-think. The server driver sizes the give-up budget to the stamped route, re-routes a wedged walk to the same destination without an LLM turn, and fully re-decides only after the bounded route/replan budget is exhausted.
 - Routing gate: `controlMode === 'autonomous' && agentHosted && !agentSessionId`. **Bearer-connected** agents (a live `agentSessionId`) keep the existing `openclawChat` routing UNTOUCHED; **guests / logged-out** are unchanged; Controlled (`player`) mode is always Q&A.
 - Client: `api.setDirective(text)` / `api.clearDirective()` → `POST /api/avatars/me/directive`. Server persists the directive durably (`platform_agents.config.currentDirective`), writes it to the durable **goal stream** (`agent.directive.set`), injects it into the running runtime's memory, then immediately kicks the matching actively enrolled owner-agent (a stale/rebound enrollment is rejected by exact platform-agent identity). Clear does not kick. Guests get 403; a still-provisioning agent gets 409; over-rate gets 429 — each surfaces a friendly inline message. Full backend contract: `ARCHITECTURE.md §6` (P3 slice 2).
 - **How the server driver decides (2026-07-15).** The directive is the first prompt block. A named activity or destination takes precedence over learning; only an absent or learning-focused directive falls back to choosing a teacher. The prompt consumes `DECISION_SCOPE`, all six executor verbs (`move`, `emote`, `enter_building`, `enter_cove`, `enter_poker_room`, `talk_to_npc`), all ten teachers, and shared-constant-derived cove/poker places. Output remains one short reason plus one `[ACTION: …]` line. The steady cadence stays 30s, but enrollment and new directives kick immediately; cold runtimes warm then drive in the same cycle with one per-agent overlap guard.
@@ -672,6 +681,7 @@ When an agent (autonomous house agent OR connected agent) converses with a build
 
 Flipping **Autonomous** now enrolls a signup user's HOSTED avatar-agent into the SAME full `agentAutonomyDriver` the house fleet rides — perceive → decide → **act via the real `[ACTION:]` whitelist** (move / enter_building / talk_to_npc / …) → **settle REAL vCLAW + leaderboard to the OWNER's avatar** via the once-per-day `world-teacher-chat` path → teacher-conversation loop + earned-skill folding. This closes the model-doc §4 gap: a user agent was previously limited to the thinner `avatar-simulation-bridge` (LLM plan + `AVATAR_VISIT_BUILDING` + 1-vCLAW `autonomous_visit`, no `[ACTION:]` verbs, no teacher loop). **Supersedes** the P2 note above ("Autonomous still drives the client NPC-sim loop … the real §4 engine for user agents is P3") and the 1c/1d "house-agent driver only" scoping — user agents are now first-class driver citizens.
 
+- **Walk recovery:** autonomous walking-phase arrival, wedge detection, and deadline handling do not require a warm cognition runtime. A leg gets 120–180 seconds based on actual route length, with at most two same-goal free re-routes inside a five-minute episode before the agent re-decides.
 - **Trigger:** `stores/game.ts setControlMode('autonomous')` → `POST /api/world/autonomy { active:true }` (Lucia-cookie authed; the body carries ONLY the boolean — the agent is derived server-side from the owner's active avatar, so no one can force-enrol another user's agent). Leaving Autonomous → `{ active:false }`. Idempotent; the response **never** carries a bearer (no-bearer-refetch invariant untouched). Rate-limited 10/min/IP.
 - **Enrollment (`services/agent-autonomy-activation.ts`):** resolve the owner's active avatar → guard guest / no-avatar / no-provisioned-agent → capacity pre-check → `ensureHostedAvatarAgentSession` (§B.2: ledger-capable owner-bound session + deterministic `ocb-` body) → `agentAutonomyDriver.registerUserAgent` (`isHouse:false` → the `hosted-user` inference route; its body is exempt from idle-despawn while driver-enrolled and returns to normal 30-min eligibility after unenrollment). Settlement was already generic on `entry.avatarId`, so REAL vCLAW lands on the human's avatar with **zero** change to the money path; the `[ACTION:]` parser still NEVER settles money.
 - **Cost guardrails:** a SEPARATE concurrency cap `MAX_AUTONOMOUS_USER_AGENTS` (env, default 12, floor 1 — never shares the house 64 cap); over-cap is a LOUD typed rejection → HTTP **429 `autonomy_capacity`** (client toasts + reverts to Controlled), never a silent drop. The driver runs its own 30s interval (never the 200ms sim tick). NOTE: the `hosted-user` inference route DEFAULTS to OpenAI — local-model routing requires `INFERENCE_ROUTE_HOSTED_USER` set on the box, so the cap is the load-bearing spend guard.
@@ -1371,6 +1381,8 @@ for one release.
 
 See `WorldContent.md §3` for the canonical NPC roster + counts. This section covers the gameplay-facing behavior.
 
+An autonomous or connected agent sent somewhere now keeps its directed route through collider grazes and is protected from ambient NPC planning/conversation ownership. The simulation wall-slides without doing pathfinding; the 30-second autonomous driver re-routes a wedged trip to the same goal and only asks the agent to re-decide after a route-length-sized, bounded walk budget.
+
 ### 12a. Wandering NPCs
 
 Server tick (`apps/api/src/services/npc-simulation.ts`) streams positions/directions/conversations to clients via SSE (`/api/npc/*`). Client smooths positions via lerp — see `3dStructure.md §6a`.
@@ -1759,6 +1771,15 @@ Visibility:
 ---
 
 ## 18a. Casino — Predictive Gaming Cove (Phase 6, Concern 6.0.x)
+
+**Current P1b render/navigation path (2026-07-25):** the live route is `/cove`.
+Its page is a sibling of `/game` under `app/(world)`, so both use the one
+persistent `WorldStageCanvas`; the Cove page owns only HUD/modals/controls.
+Crossings are group-stage fades. The first world boot in a stage generation
+keeps `SeaLoadingScreen`, but warmed returns from Cove do not mount it.
+History, verifier, and poker pages stay outside the group. The older
+route-isolated flow below is retained as implementation history and is
+superseded for the live `/cove` page.
 
 Accessible by clicking the casino building (slot 9, W ring, `casino-exterior.glb` pyramid) in the open world.
 
@@ -2630,6 +2651,8 @@ for one release.
 
 See `WorldContent.md §3` for the canonical NPC roster + counts. This section covers the gameplay-facing behavior.
 
+An autonomous or connected agent sent somewhere now keeps its directed route through collider grazes and is protected from ambient NPC planning/conversation ownership. The simulation wall-slides without doing pathfinding; the 30-second autonomous driver re-routes a wedged trip to the same goal and only asks the agent to re-decide after a route-length-sized, bounded walk budget.
+
 ### 12a. Wandering NPCs
 
 Server tick (`apps/api/src/services/npc-simulation.ts`) streams positions/directions/conversations to clients via SSE (`/api/npc/*`). Client smooths positions via lerp — see `3dStructure.md §6a`.
@@ -2971,6 +2994,15 @@ Visibility:
 ---
 
 ## 18a. Casino — Predictive Gaming Cove (Phase 6, Concern 6.0.x)
+
+**Current P1b render/navigation path (2026-07-25):** the live route is `/cove`.
+Its page is a sibling of `/game` under `app/(world)`, so both use the one
+persistent `WorldStageCanvas`; the Cove page owns only HUD/modals/controls.
+Crossings are group-stage fades. The first world boot in a stage generation
+keeps `SeaLoadingScreen`, but warmed returns from Cove do not mount it.
+History, verifier, and poker pages stay outside the group. The older
+route-isolated flow below is retained as implementation history and is
+superseded for the live `/cove` page.
 
 Accessible by clicking the casino building (slot 9, W ring, `casino-exterior.glb` pyramid) in the open world.
 

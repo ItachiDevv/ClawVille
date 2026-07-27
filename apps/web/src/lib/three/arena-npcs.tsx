@@ -1,7 +1,8 @@
 'use client';
 
 import { useRef, useMemo, useEffect, memo, Suspense } from 'react';
-import { useFrame, useThree } from '@react-three/fiber';
+import { useThree } from '@react-three/fiber';
+import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 import * as THREE from 'three';
 import { useWorldLabel, WorldLabel } from '@/lib/three/world-labels-overlay';
@@ -627,7 +628,7 @@ export const GLBNpcMesh = memo(function GLBNpcMesh({ npc }: { npc: NpcSpriteStat
     };
   }, [cloned, npc.id, npc.species, speciesInfo.path, npcScale, pivotOffsetY]);
 
-  useFrame(({ clock, camera }, delta) => {
+  useSceneFrame(({ clock, camera }, delta) => {
     const d = npcRef.current;
     const group = groupRef.current;
     const animGroup = animGroupRef.current;
@@ -1152,7 +1153,7 @@ export const VRMNpcMesh = memo(function VRMNpcMesh({ npc }: { npc: NpcSpriteStat
     };
   }, [vrm]);
 
-  useFrame(({ clock, camera }, delta) => {
+  useSceneFrame(({ clock, camera }, delta) => {
     const d = npcRef.current;
     const group = groupRef.current;
     if (!group) return;

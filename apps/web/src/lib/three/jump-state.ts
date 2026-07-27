@@ -17,6 +17,7 @@
 // ---------------------------------------------------------------------------
 
 import { registerInputReset } from './input-reset';
+import { addStageWindowListener } from '@/components/three/world-stage/stage-store';
 
 export type JumpPhase = 'grounded' | 'charging' | 'quick' | 'launch' | 'sinking' | 'quicksink';
 
@@ -105,12 +106,8 @@ export function isEditable(t: EventTarget | null): boolean {
 // Keyboard listener — idempotent, server-safe
 // ---------------------------------------------------------------------------
 
-let _jumpListenersAttached = false;
-
-export function attachJumpListeners(): void {
+export function attachJumpListeners(): (() => void) | undefined {
   if (typeof window === 'undefined') return;
-  if (_jumpListenersAttached) return;
-  _jumpListenersAttached = true;
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.code !== 'Space') return;
@@ -133,12 +130,18 @@ export function attachJumpListeners(): void {
     }
   };
 
-  window.addEventListener('keydown', onKeyDown);
-  window.addEventListener('keyup', onKeyUp);
+  const removeKeyDown = addStageWindowListener('keydown', onKeyDown);
+  const removeKeyUp = addStageWindowListener('keyup', onKeyUp);
   // Release a held SPACE on focus loss/regain so the charge/jump doesn't strand
   // when a window steals focus mid-hold (browser skips keyup). See S7. Clears
   // ONLY the input flags — never the airborne/altitude physics in resetJump().
-  registerInputReset(resetJumpInput);
+  const unregisterReset = registerInputReset(resetJumpInput);
+  return () => {
+    removeKeyDown();
+    removeKeyUp();
+    unregisterReset();
+    resetJumpInput();
+  };
 }
 
 /**

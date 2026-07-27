@@ -3,9 +3,8 @@
 /**
  * Cove Interior — /cove route
  *
- * Route-isolated interior scene for the Predictive Gaming Cove.
- * Canvas key={'cove-interior'} ensures a clean WebGPU context teardown
- * when the user navigates away (back to /game or elsewhere).
+ * DOM/HUD layer for the Predictive Gaming Cove. The `(world)` layout owns
+ * its persistent render slot and shared Canvas.
  *
  * Scope — Concern 6.0.2:
  *   - Loads cove-interior.glb (gameready, 4.2MB, Draco-compressed)
@@ -14,11 +13,9 @@
  *   - "Back to World" exit button (top-left, absolute over Canvas) → /game
  *
  * Walk-in flow — Concern 6.0.3:
- *   - SceneTransition with fadeInOnMount=true: page fades in from black after
- *     the route push that happened at the midpoint of the walk-in fade-out.
- *   - "Back to World" button uses triggerTransition({ to: '/game' }) so there
- *     is a matching 500ms fade-out before the route push back to the world,
- *     and the /game page avatar spawns at the cove door position (outside).
+ *   - StageTransition owns fade-out, route push, slot readiness, and fade-in.
+ *   - The obsolete keyed-Canvas teardown path is removed; capable GPUs retain
+ *     the world and Cove slots after first load.
  *
  * Out of scope:
  *   - 2D slot screen UI (Concern 6.0.4)
@@ -26,9 +23,8 @@
  */
 
 import { useCallback, useEffect, useRef } from 'react';
-import dynamic from 'next/dynamic';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import SceneTransition, { useSceneTransition } from '@/components/transitions/SceneTransition';
 import SlotScreenModal from '@/components/cove/SlotScreenModal';
 import BlackjackModal from '@/components/cove/blackjack/BlackjackModal';
 import HoldemModal from '@/components/cove/holdem/HoldemModal';
@@ -40,43 +36,13 @@ import { useGameStore } from '@/stores/game';
 import { useCoveStore } from '@/stores/cove';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { MAP_WIDTH, MAP_HEIGHT } from '@/lib/pixi/tilemap-data';
+import { requestWorldStageNavigation } from '@/components/three/world-stage/stage-navigation';
 
 /**
  * CoveCanvas — dynamically imported with ssr:false so Three.js /
  * WebGPU never runs in the Next.js SSR environment.
  * Follows the same pattern as Arena3DCanvas on /arena.
  */
-const CoveCanvas = dynamic(
-  () => import('@/components/three/CoveCanvas'),
-  {
-    ssr: false,
-    loading: () => (
-      <div
-        style={{
-          width: '100%',
-          height: '100%',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          background: '#0a0015',
-        }}
-      >
-        <p
-          style={{
-            color: '#00ffe0',
-            fontFamily: 'monospace',
-            fontSize: 18,
-            fontWeight: 700,
-            letterSpacing: '0.06em',
-          }}
-        >
-          Loading Cove...
-        </p>
-      </div>
-    ),
-  },
-);
-
 // ---------------------------------------------------------------------------
 // Cove door position in game-px — avatar spawns here on exit so it feels
 // like stepping back out through the same door they entered.
@@ -93,7 +59,7 @@ const COVE_EXIT_PX = { x: MAP_WIDTH / 2 - 3760, y: MAP_HEIGHT / 2 };
 // Page component
 // ---------------------------------------------------------------------------
 export default function CovePage() {
-  const { triggerTransition } = useSceneTransition();
+  const router = useRouter();
   const isMobile = useIsMobile();
 
   // Phase 6.1.20 — sync the user's authenticated avatar into the gameStore
@@ -141,7 +107,7 @@ export default function CovePage() {
     // Fade-out → restore avatar at cove door → push /game → fade-in handled
     // by the /game page. Avatar position is set at midway so the world scene
     // mounts with the avatar already at the door, not at the default spawn.
-    triggerTransition({
+    const requested = requestWorldStageNavigation({
       to: '/game',
       onMidway: () => {
         // Reposition avatar to outside the cove door in game-px space.
@@ -161,27 +127,29 @@ export default function CovePage() {
           }
         }
       },
+      onExpired: () => {
+        if (
+          typeof window !== 'undefined' &&
+          window.location.pathname === '/cove'
+        ) {
+          router.push('/game');
+        }
+      },
     });
-  }, [triggerTransition]);
+    if (!requested) router.push('/game');
+  }, [router]);
 
   return (
     <div
+      className="game-container"
       style={{
-        position: 'fixed',
-        inset: 0,
-        background: '#0a0015',
+        background: 'transparent',
         overflow: 'hidden',
       }}
     >
       {/* 3D Cove Interior Canvas — full viewport */}
-      <div style={{ position: 'absolute', inset: 0 }}>
-        <CoveCanvas />
-      </div>
-
       {/* SceneTransition overlay — fades in from black on mount (walk-in arrival),
           also handles fade-out for "Back to World" button via triggerTransition(). */}
-      <SceneTransition fadeInOnMount />
-
       {/* Back to World — top-left, always above canvas */}
       <button
         onClick={handleBack}

@@ -1,11 +1,19 @@
 'use client';
 
 import { useRef, useState, useEffect, useCallback, memo, Suspense, type RefObject } from 'react';
-import { Canvas, _roots, useFrame, extend, useStore, useThree } from '@react-three/fiber';
+import { Canvas, _roots, extend, useStore, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import type { ThreeToJSXElements } from '@react-three/fiber';
+import {
+  useSceneActive,
+  useSceneFrame,
+} from './world-stage/use-scene-frame';
+import {
+  addStageEventListener,
+  addStageWindowListener,
+} from './world-stage/stage-store';
 
 // Register Three.js WebGPU elements with R3F 9
 declare module '@react-three/fiber' {
@@ -20,7 +28,12 @@ import MeshletBuildingsR3F from '@/lib/three/meshlet/meshlet-buildings-r3f';
 import ArenaNpcs from '@/lib/three/arena-npcs';
 import RemotePlayers from '@/lib/three/remote-players';
 import ArenaLocationNpcs from '@/lib/three/arena-location-npcs';
-import { VRM_METRICS_ENABLED, registerBulkVRMIdleCallback } from '@/lib/three/vrm-loader';
+import {
+  hasBulkVRMBatchStarted,
+  VRM_METRICS_ENABLED,
+  registerBulkVRMIdleCallback,
+} from '@/lib/three/vrm-loader';
+import { withStageSlotFrustumCullingDisabled } from '@/components/three/world-stage/resource-ledger';
 import PlayerAvatar from '@/lib/three/player-avatar';
 import NpcController from '@/lib/three/npc-controller';
 import MergedSeaweed from '@/lib/three/merged-seaweed';
@@ -173,6 +186,7 @@ function applyQualityTier(flags: WorldPerfFlags, tier: number): WorldPerfFlags {
 }
 
 function useAdaptiveWorldPerfFlags(perfFlags?: Partial<WorldPerfFlags>): WorldPerfFlags {
+  const sceneActive = useSceneActive();
   const base = { ...DEFAULT_WORLD_PERF_FLAGS, ...perfFlags };
 
   // ?fast=1 is an explicit opt-in DEBUG flag — allowed to hide groundCover, activityFx,
@@ -194,7 +208,13 @@ function useAdaptiveWorldPerfFlags(perfFlags?: Partial<WorldPerfFlags>): WorldPe
   const [qualityTier, setQualityTier] = useState(initialTier);
 
   useEffect(() => {
-    if (!adaptiveEnabled || typeof window === 'undefined') return;
+    if (
+      !sceneActive ||
+      !adaptiveEnabled ||
+      typeof window === 'undefined'
+    ) {
+      return;
+    }
 
     let raf = 0;
     let frames = 0;
@@ -240,7 +260,7 @@ function useAdaptiveWorldPerfFlags(perfFlags?: Partial<WorldPerfFlags>): WorldPe
 
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [adaptiveEnabled, initialTier]);
+  }, [adaptiveEnabled, initialTier, sceneActive]);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -338,7 +358,12 @@ function ArrowKeyRotationController({
 }: {
   controlsRef: React.RefObject<OrbitControlsImpl | null>;
 }) {
+  const sceneActive = useSceneActive();
   useEffect(() => {
+    if (!sceneActive) {
+      resetArrowKeys();
+      return;
+    }
     const onKeyDown = (e: KeyboardEvent) => {
       switch (e.key) {
         case 'ArrowUp':    _arrowKeys.arrowup    = true; e.preventDefault(); break;
@@ -355,17 +380,18 @@ function ArrowKeyRotationController({
         case 'ArrowRight': _arrowKeys.arrowright = false; break;
       }
     };
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
+    const removeKeyDown = addStageWindowListener('keydown', onKeyDown);
+    const removeKeyUp = addStageWindowListener('keyup', onKeyUp);
     const unregisterReset = registerInputReset(resetArrowKeys);
     return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
+      removeKeyDown();
+      removeKeyUp();
       unregisterReset();
+      resetArrowKeys();
     };
-  }, []);
+  }, [sceneActive]);
 
-  useFrame((_, delta) => {
+  useSceneFrame((_, delta) => {
     const controls = controlsRef.current;
     if (!controls) return;
 
@@ -415,6 +441,7 @@ function WASDCameraController({
 }: {
   controlsRef: React.RefObject<OrbitControlsImpl | null>;
 }) {
+  const sceneActive = useSceneActive();
   const keysRef = useRef<Pick<KeyState, 'w' | 'a' | 's' | 'd'>>({
     w: false,
     a: false,
@@ -423,6 +450,14 @@ function WASDCameraController({
   });
 
   useEffect(() => {
+    const resetKeys = () => {
+      const k = keysRef.current;
+      k.w = false; k.a = false; k.s = false; k.d = false;
+    };
+    if (!sceneActive) {
+      resetKeys();
+      return;
+    }
     // e.key can be undefined on synthetic events (Chrome autofill fires
     // keydown/keyup with no key during password-manager fill) — guard or the
     // handler throws on every login.
@@ -435,22 +470,20 @@ function WASDCameraController({
       if (key in keysRef.current) keysRef.current[key] = false;
     };
 
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
+    const removeKeyDown = addStageWindowListener('keydown', onKeyDown);
+    const removeKeyUp = addStageWindowListener('keyup', onKeyUp);
     // S7 — clear held WASD pan keys on focus loss/regain so the explore-mode
     // camera doesn't keep panning after a window steals focus mid-hold.
-    const unregisterReset = registerInputReset(() => {
-      const k = keysRef.current;
-      k.w = false; k.a = false; k.s = false; k.d = false;
-    });
+    const unregisterReset = registerInputReset(resetKeys);
     return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
+      removeKeyDown();
+      removeKeyUp();
       unregisterReset();
+      resetKeys();
     };
-  }, []);
+  }, [sceneActive]);
 
-  useFrame((_, delta) => {
+  useSceneFrame((_, delta) => {
     const controls = controlsRef.current;
     if (!controls) return;
 
@@ -552,7 +585,7 @@ function FPSFollowCamera({
     y: 0,
   });
 
-  useFrame((_, delta) => {
+  useSceneFrame((_, delta) => {
     const controls = controlsRef.current;
     if (!controls) return;
 
@@ -1144,7 +1177,7 @@ function createWorldWarmupGate(
 function MinimapPositionTracker() {
   const { camera } = useThree();
   const lastWriteRef = useRef(0);
-  useFrame(({ clock }) => {
+  useSceneFrame(({ clock }) => {
     const now = clock.elapsedTime;
     // 5×/sec throttle
     if (now - lastWriteRef.current < 0.2) return;
@@ -1227,9 +1260,14 @@ const _covePushScratch = new THREE.Vector3();
 
 function CoveEntranceCameraPush() {
   const { camera } = useThree();
+  const sceneActive = useSceneActive();
   const pushRef = useRef<{ startTime: number; startX: number; startY: number; startZ: number } | null>(null);
 
   useEffect(() => {
+    if (!sceneActive) {
+      pushRef.current = null;
+      return;
+    }
     function onCoveWalkIn() {
       pushRef.current = {
         startTime: performance.now(),
@@ -1238,11 +1276,18 @@ function CoveEntranceCameraPush() {
         startZ: camera.position.z,
       };
     }
-    window.addEventListener('cove-walkin-start', onCoveWalkIn);
-    return () => window.removeEventListener('cove-walkin-start', onCoveWalkIn);
-  }, [camera]);
+    const remove = addStageEventListener(
+      window,
+      'cove-walkin-start',
+      onCoveWalkIn,
+    );
+    return () => {
+      pushRef.current = null;
+      remove();
+    };
+  }, [camera, sceneActive]);
 
-  useFrame(() => {
+  useSceneFrame(() => {
     const state = pushRef.current;
     if (!state) return;
     const elapsed = (performance.now() - state.startTime) / 1000;
@@ -1451,30 +1496,6 @@ function WorldWarmup({
         activeWorldWarmupProgressNotifier = undefined;
       }
     };
-    // Perf round-3 change A, retained by the 2026-07-14 warmup gate: the
-    // initial ordered compile can still precede the 14 asynchronously parsed NPC
-    // VRMs. Their skinned-MeshStandardMaterial variants are absent from that
-    // first scene walk and otherwise lazy-compile at reveal (7.5s main-thread
-    // smear in the pre-r185 baseline). The bulk-idle hook fires once the parse
-    // queue first drains, when those meshes are in the scene, so run one more
-    // cooperative r185 compileAsync pass. It may occur after resume; it yields
-    // between objects, performs no independent render, and is guarded against
-    // an unmounted/stale renderer.
-    registerBulkVRMIdleCallback(() => {
-      if (cancelled || typeof (gl as any).compileAsync !== 'function') return;
-      noteWorldWarmupProgress();
-      (gl as any).compileAsync(scene, camera)
-        .then(() => {
-          if (!cancelled) bridge.__W3D_VRM_COMPILE_DONE = performance.now();
-        })
-        .catch((err: unknown) => {
-          console.warn('[World3D] post-VRM compileAsync failed:', err);
-        })
-        .finally(() => {
-          noteWorldWarmupProgress();
-        });
-    });
-
     const uploadMetrics = createTextureUploadMetrics(hasIdle ? 'idle' : 'raf', discoveredTotal);
 
     const publishProgress = () => {
@@ -1762,6 +1783,41 @@ function WorldWarmup({
         const barrierMs = performance.now() - barrierStartedAt;
         if (cancelled || (stageWarmup ? stageResumed : livePendingGateResumed())) return;
 
+        // Initial avatar fetches are now accounted for by LoadingManager. If a
+        // bulk VRM parse batch started, do not publish stage readiness until it
+        // drains and every resulting world-slot object has been compiled once.
+        if (
+          hasBulkVRMBatchStarted() &&
+          typeof (gl as any).compileAsync === 'function'
+        ) {
+          await new Promise<void>((resolveBulkCompile) => {
+            registerBulkVRMIdleCallback(() => {
+              if (cancelled) {
+                resolveBulkCompile();
+                return;
+              }
+              noteWorldWarmupProgress();
+              void withStageSlotFrustumCullingDisabled(
+                'world',
+                () => (gl as any).compileAsync(scene, camera),
+              )
+                .then(() => {
+                  if (!cancelled) {
+                    bridge.__W3D_VRM_COMPILE_DONE = performance.now();
+                  }
+                })
+                .catch((err: unknown) => {
+                  console.warn('[World3D] bulk-VRM compileAsync failed:', err);
+                })
+                .finally(() => {
+                  noteWorldWarmupProgress();
+                  resolveBulkCompile();
+                });
+            });
+          });
+        }
+        if (cancelled || (stageWarmup ? stageResumed : livePendingGateResumed())) return;
+
         const scansStartedAt = performance.now();
         if (!canInitTexture) {
           console.warn('[World3D] WorldWarmup: renderer.initTexture() not available, skipping uploads');
@@ -1791,7 +1847,10 @@ function WorldWarmup({
           const compileStartedAt = performance.now();
           noteWorldWarmupProgress();
           try {
-            await (gl as any).compileAsync(scene, camera);
+            await withStageSlotFrustumCullingDisabled(
+              'world',
+              () => (gl as any).compileAsync(scene, camera),
+            );
           } catch (err) {
             console.warn('[World3D] compileAsync failed (continuing warmup):', err);
           } finally {
@@ -1809,7 +1868,12 @@ function WorldWarmup({
         noteWorldWarmupProgress();
         gl.setClearColor(SKY_COLOR, 1);
         gl.setClearAlpha?.(1);
-        gl.render(scene, camera);
+        await withStageSlotFrustumCullingDisabled(
+          'world',
+          async () => {
+            gl.render(scene, camera);
+          },
+        );
         const warmRenderMs = performance.now() - warmRenderStartedAt;
         bridge.__W3D_TEXTURES_READY = true;
         markWorldReadyIfUploadsDone();

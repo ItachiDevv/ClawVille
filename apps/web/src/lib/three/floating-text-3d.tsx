@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useState, memo } from 'react';
-import { useFrame } from '@react-three/fiber';
+import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 // Text removed
 import * as THREE from 'three';
 import { useGameStore } from '@/stores/game';
@@ -45,7 +45,7 @@ function FloatingTexts3D() {
   const [texts, setTexts] = useState<FloatingTextInstance[]>([]);
   const prevCountRef = useRef(0);
 
-  useFrame((_, delta) => {
+  useSceneFrame((_, delta) => {
     const dt = Math.min(delta, 0.1);
 
     // Consume any pending floating texts from the game store

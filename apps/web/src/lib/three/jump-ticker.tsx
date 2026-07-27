@@ -16,16 +16,21 @@
  */
 
 import { useEffect } from 'react';
-import { useFrame } from '@react-three/fiber';
+import {
+  useSceneActive,
+  useSceneFrame,
+} from '@/components/three/world-stage/use-scene-frame';
 import { useGameStore } from '@/stores/game';
 import { attachJumpListeners, updateJump } from '@/lib/three/jump-state';
 
 export default function JumpTicker() {
+  const sceneActive = useSceneActive();
   useEffect(() => {
-    attachJumpListeners();
-  }, []);
+    if (!sceneActive) return;
+    return attachJumpListeners();
+  }, [sceneActive]);
 
-  useFrame((_, delta) => {
+  useSceneFrame((_, delta) => {
     const { controlMode, movementFrozen } = useGameStore.getState();
     // enterBuilding() calls resetJump() synchronously before setting movementFrozen=true,
     // so we can early-return here without leaving the avatar stranded airborne.

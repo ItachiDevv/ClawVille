@@ -35,9 +35,9 @@
  */
 
 import { Suspense, useRef, useEffect, useMemo, useState, type RefObject, type MutableRefObject } from 'react';
-import { useFrame, useThree } from '@react-three/fiber';
+import { useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
-import * as THREE from 'three';
+import * as THREE from 'three/webgpu';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { CoveLighting } from '@/components/three/CoveLighting';
@@ -55,6 +55,8 @@ import { useWorldLabel, WorldLabel, WorldLabelsOverlayMount } from '@/lib/three/
 import { extendLoaderWithKTX2 } from '@/lib/three/ktx2-loader-setup';
 import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
 import type { MachineSlug } from '@/lib/cove/types';
+import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
+import { addStageEventListener } from '@/components/three/world-stage/stage-store';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -66,6 +68,7 @@ import type { MachineSlug } from '@/lib/cove/types';
 const INTERIOR_GLB = '/models/cove/cove-interior-cleaned-v1-ktx.glb?v=6';
 /** Fallback cartoon GLB */
 const FALLBACK_GLB = '/models/cove/cove-interior-fallback.glb';
+const NOOP = (): void => {};
 
 /** FPS threshold below which we auto-switch to fallback GLB */
 const FPS_FALLBACK_THRESHOLD = 40;
@@ -247,12 +250,15 @@ export function setCoveTouchInteract(pressed: boolean) {
   if (!pressed) _eKeyConsumed = false;
 }
 let coveKeyListenersAttached = false;
+let coveInputActive = false;
+let detachCoveKeyListeners: (() => void) | null = null;
 
 function attachCoveKeyListeners() {
   if (coveKeyListenersAttached) return;
   coveKeyListenersAttached = true;
 
   const onKeyDown = (e: KeyboardEvent) => {
+    if (!coveInputActive) return;
     // Only single-character keys drive movement. Arrow keys (multi-char)
     // are handled exclusively by attachCoveArrowListeners for camera orbit.
     // e.key can be undefined on synthetic events (Chrome autofill).
@@ -264,6 +270,7 @@ function attachCoveKeyListeners() {
     if (k === 'e') coveKeys.e = true;
   };
   const onKeyUp = (e: KeyboardEvent) => {
+    if (!coveInputActive) return;
     const k = e.key?.length === 1 ? e.key.toLowerCase() : null;
     if (k === 'w') coveKeys.w = false;
     if (k === 's') coveKeys.s = false;
@@ -281,10 +288,18 @@ function attachCoveKeyListeners() {
       _eKeyConsumed = false;
     }
   };
-  window.addEventListener('keydown', onKeyDown);
-  window.addEventListener('keyup', onKeyUp);
-  window.addEventListener('blur', onBlur);
-  document.addEventListener('visibilitychange', onVis);
+  const removers = [
+    addStageEventListener(window, 'keydown', onKeyDown as EventListener),
+    addStageEventListener(window, 'keyup', onKeyUp as EventListener),
+    addStageEventListener(window, 'blur', onBlur as EventListener),
+    addStageEventListener(document, 'visibilitychange', onVis as EventListener),
+  ];
+  detachCoveKeyListeners = () => {
+    if (!coveKeyListenersAttached) return;
+    coveKeyListenersAttached = false;
+    for (const remove of removers) remove();
+    detachCoveKeyListeners = null;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -300,12 +315,14 @@ interface CoveArrowState {
 }
 const _coveArrowKeys: CoveArrowState = { left: false, right: false, up: false, down: false };
 let coveArrowListenersAttached = false;
+let detachCoveArrowListeners: (() => void) | null = null;
 
 function attachCoveArrowListeners() {
   if (coveArrowListenersAttached) return;
   coveArrowListenersAttached = true;
 
   const onKeyDown = (e: KeyboardEvent) => {
+    if (!coveInputActive) return;
     switch (e.key) {
       case 'ArrowLeft':  _coveArrowKeys.left  = true; e.preventDefault(); break;
       case 'ArrowRight': _coveArrowKeys.right = true; e.preventDefault(); break;
@@ -314,6 +331,7 @@ function attachCoveArrowListeners() {
     }
   };
   const onKeyUp = (e: KeyboardEvent) => {
+    if (!coveInputActive) return;
     switch (e.key) {
       case 'ArrowLeft':  _coveArrowKeys.left  = false; break;
       case 'ArrowRight': _coveArrowKeys.right = false; break;
@@ -327,10 +345,18 @@ function attachCoveArrowListeners() {
   const onVis = () => { if (document.hidden) {
     _coveArrowKeys.left = _coveArrowKeys.right = _coveArrowKeys.up = _coveArrowKeys.down = false;
   } };
-  window.addEventListener('keydown', onKeyDown);
-  window.addEventListener('keyup', onKeyUp);
-  window.addEventListener('blur', onBlur);
-  document.addEventListener('visibilitychange', onVis);
+  const removers = [
+    addStageEventListener(window, 'keydown', onKeyDown as EventListener),
+    addStageEventListener(window, 'keyup', onKeyUp as EventListener),
+    addStageEventListener(window, 'blur', onBlur as EventListener),
+    addStageEventListener(document, 'visibilitychange', onVis as EventListener),
+  ];
+  detachCoveArrowListeners = () => {
+    if (!coveArrowListenersAttached) return;
+    coveArrowListenersAttached = false;
+    for (const remove of removers) remove();
+    detachCoveArrowListeners = null;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1192,10 +1218,7 @@ function CoveVRMAvatarInner({ reg }: CoveVRMAvatarProps) {
   const posX = useRef(PLAYER_SPAWN_X);
   const posZ = useRef(PLAYER_SPAWN_Z);
 
-  useFrame((_, delta) => {
-    attachCoveKeyListeners();
-    attachCoveArrowListeners();
-
+  useSceneFrame((_, delta) => {
     // --- Arrow-key perspective orbit (Bug 2 fix 2026-05-19) ---
     // Accumulate yaw + pitch offsets while keys are held.
     // ArrowLeft orbits camera left (positive dTheta), ArrowRight orbits right.
@@ -1433,10 +1456,7 @@ function CoveGLBAvatarInner() {
   const posX = useRef(PLAYER_SPAWN_X);
   const posZ = useRef(PLAYER_SPAWN_Z);
 
-  useFrame((_, delta) => {
-    attachCoveKeyListeners();
-    attachCoveArrowListeners();
-
+  useSceneFrame((_, delta) => {
     // --- Arrow-key perspective orbit (Bug 2 fix 2026-05-19) ---
     // Shared with VRM branch via module-scope vars.
     const dYaw = ((_coveArrowKeys.left ? 1 : 0) - (_coveArrowKeys.right ? 1 : 0)) * ARROW_YAW_SPEED * delta;
@@ -1579,9 +1599,10 @@ interface InteriorSceneProps {
   useFallback: boolean;
   onFallbackRequest: () => void;
   onSceneEmpty: () => void;
+  onReady: () => void;
 }
 
-function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: InteriorSceneProps) {
+function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty, onReady }: InteriorSceneProps) {
   const glbPath = useFallback ? FALLBACK_GLB : INTERIOR_GLB;
   const { scene } = useGLTF(
     glbPath,
@@ -1815,28 +1836,16 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
   }, [scene, useFallback]);
 
   useEffect(() => {
-    return () => {
-      cloned.traverse((obj) => {
-        const mesh = obj as THREE.Mesh;
-        if (mesh.isMesh) {
-          mesh.geometry?.dispose();
-          const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-          mats.forEach((m) => m?.dispose());
-        }
-      });
-    };
-  }, [cloned]);
-
-  useEffect(() => {
     const g = groupRef.current;
     if (!g) return;
     g.matrixAutoUpdate = false;
     g.updateMatrix();
-  }, [cloned]);
+    onReady();
+  }, [cloned, onReady]);
 
   // Camera debug log
   const debugLogged = useRef(false);
-  useFrame(() => {
+  useSceneFrame(() => {
     if (debugLogged.current) return;
     debugLogged.current = true;
     if (process.env.NEXT_PUBLIC_COVE_DEBUG === '1') {
@@ -1856,7 +1865,7 @@ function InteriorScene({ useFallback, onFallbackRequest, onSceneEmpty }: Interio
   });
 
   // FPS auto-fallback + scene-empty fail-safe
-  useFrame((_, delta) => {
+  useSceneFrame((_, delta) => {
     if (useFallback && fpsChecked.current && emptyFired.current) return;
 
     fpsAccum.current += delta;
@@ -2036,7 +2045,7 @@ function BankLabels() {
 
   // Poll module-scope hint flags in useFrame and drive React state
   // only when they actually change — one setState per transition.
-  useFrame(() => {
+  useSceneFrame(() => {
     if (_classicBankNearHint !== classicHint) setClassicHint(_classicBankNearHint);
     if (_bonusBankNearHint   !== bonusHint)   setBonusHint(_bonusBankNearHint);
   });
@@ -2060,21 +2069,57 @@ function BankLabels() {
 // Default export — full cove interior scene
 // ---------------------------------------------------------------------------
 export interface CoveInteriorSceneProps {
+  active?: boolean;
+  onReady?: () => void;
   onSceneEmpty?: () => void;
 }
 
-export default function CoveInteriorScene({ onSceneEmpty }: CoveInteriorSceneProps = {}) {
+export default function CoveInteriorScene({
+  active = true,
+  onReady,
+  onSceneEmpty,
+}: CoveInteriorSceneProps = {}) {
   const [useFallback, setUseFallback] = useState(() => {
     if (typeof window === 'undefined') return false;
     return new URLSearchParams(window.location.search).get('fallback') === '1';
   });
+
+  useEffect(() => {
+    coveInputActive = active;
+    if (active) {
+      attachCoveKeyListeners();
+      attachCoveArrowListeners();
+      return () => {
+        coveInputActive = false;
+        detachCoveKeyListeners?.();
+        detachCoveArrowListeners?.();
+        coveKeys.w = coveKeys.a = coveKeys.s = coveKeys.d = coveKeys.e = false;
+        _coveArrowKeys.left = _coveArrowKeys.right =
+          _coveArrowKeys.up = _coveArrowKeys.down = false;
+        _coveTouchVec.x = 0;
+        _coveTouchVec.z = 0;
+        _eKeyConsumed = false;
+      };
+    }
+    detachCoveKeyListeners?.();
+    detachCoveArrowListeners?.();
+    if (typeof document !== 'undefined') {
+      document.body.style.cursor = 'default';
+    }
+    coveKeys.w = coveKeys.a = coveKeys.s = coveKeys.d = coveKeys.e = false;
+    _coveArrowKeys.left = _coveArrowKeys.right =
+      _coveArrowKeys.up = _coveArrowKeys.down = false;
+    _coveTouchVec.x = 0;
+    _coveTouchVec.z = 0;
+    _eKeyConsumed = false;
+    return undefined;
+  }, [active]);
 
   return (
     <>
       <CoveLighting />
 
       {/* Fog scaled with room: near=4000, far=10000 (was 1200/3000 for 600wu room → ×3.333) */}
-      <fog attach="fog" args={[0x0a0015, 4000, 10000]} />
 
       {/* WorldLabelsOverlay — single overlay root for BankLabels */}
       <WorldLabelsOverlayMount />
@@ -2083,7 +2128,8 @@ export default function CoveInteriorScene({ onSceneEmpty }: CoveInteriorScenePro
         <InteriorScene
           useFallback={useFallback}
           onFallbackRequest={() => setUseFallback(true)}
-          onSceneEmpty={onSceneEmpty ?? (() => {})}
+          onSceneEmpty={onSceneEmpty ?? NOOP}
+          onReady={onReady ?? NOOP}
         />
       </Suspense>
 

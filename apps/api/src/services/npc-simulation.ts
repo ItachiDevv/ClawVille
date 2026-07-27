@@ -250,6 +250,13 @@ const FREE_ROAMER_MAX_RADIUS = 3200;
 const FREE_ROAMER_MIN_RADIUS_SQ = FREE_ROAMER_MIN_RADIUS * FREE_ROAMER_MIN_RADIUS;
 const FREE_ROAMER_MAX_RADIUS_SQ = FREE_ROAMER_MAX_RADIUS * FREE_ROAMER_MAX_RADIUS;
 const NPC_COLLISION_HALF = 30;
+/**
+ * World-mode walk speed. MIRRORS `moveNpcs`: baseStep 44 wu/tick x 5 Hz. Do NOT
+ * "fix slow NPCs" by editing either value — see the load-bearing comment above
+ * `baseStep`. `npc-directed-route.test.ts` asserts both this arithmetic AND the
+ * measured per-tick displacement so the mirror cannot drift.
+ */
+export const NPC_WORLD_WALK_SPEED_WU_PER_S = 220;
 
 const FREE_ROAMER_IDS = new Set(
   NPC_DEFINITIONS.filter((def) => def.buildingId === '').map((def) => def.id),
@@ -490,6 +497,25 @@ class NpcSimulation {
   private banterLlmWindowStart = 0;
   private banterLlmUsed = 0;
   private intervalId: ReturnType<typeof setInterval> | null = null;
+  /**
+   * Path arrays stamped as DIRECTED routes — a CHOSEN trip from the Hatcher
+   * `enter_*` verbs or the authed `POST /api/agent/:sessionId/move?buildingId`.
+   * Keyed by ARRAY IDENTITY, not npc id: the other 19 runtime writers of
+   * `npc.path` (ambient planners :2690/2736/2759/2780/2840/2915, abandons
+   * :778/2466/2550/2945/2948/3091/3123/3169/3201, conversation :3278/3280/
+   * 3416/3417) all install a DIFFERENT array object, so they are automatically
+   * non-directed with zero bookkeeping at those sites. That is what makes
+   * "ambient behavior is unchanged" structural rather than asserted.
+   *
+   * WeakSet → no retention, and NOTHING is added to `NpcRuntimeState`, which is
+   * spread verbatim onto the 5 Hz SSE wire (`getRoomSnapshot:963`).
+   *
+   * NOTE: `destinationBuildingId != null` is NOT usable as the discriminator —
+   * `planVisitBuilding:2689` sets it for AMBIENT residents, and
+   * `handleActivityDurations:2969` NULLS it mid-walk once the enter_cove
+   * 'trading' activity expires.
+   */
+  private readonly directedRoutes = new WeakSet<PathNode[]>();
   private arenaMode = false;
   private tickCount = 0;
   private conversationCooldown = 0;
@@ -1490,7 +1516,73 @@ class NpcSimulation {
    */
   clearDestinationBuilding(npcId: string): void {
     const npc = this.npcs.get(npcId);
-    if (npc) npc.destinationBuildingId = null;
+    if (!npc) return;
+    npc.destinationBuildingId = null;
+    // The driver clears prior-turn intent before dispatching a new decision; a
+    // stale route must stop being DIRECTED at the same moment.
+    this.directedRoutes.delete(npc.path);
+  }
+
+  /**
+   * World units the body still has to walk: current position → every remaining
+   * polyline waypoint. The autonomy driver uses this BOTH to size the walk
+   * give-up budget and to detect a wedge (no decrease across a 30 s tick).
+   * `null` = unknown body; `0` = nothing left to walk.
+   */
+  getRemainingPathLengthWu(npcId: string): number | null {
+    const npc = this.npcs.get(npcId);
+    if (!npc) return null;
+    if (npc.path.length === 0 || npc.pathIndex >= npc.path.length) return 0;
+    let total = 0;
+    let px = npc.x;
+    let py = npc.y;
+    for (let i = npc.pathIndex; i < npc.path.length; i++) {
+      const wp = npc.path[i]!;
+      total += Math.hypot(wp.x - px, wp.y - py);
+      px = wp.x;
+      py = wp.y;
+    }
+    return total;
+  }
+
+  /**
+   * Re-route a body to a named destination WITHOUT a cognition turn.
+   *
+   * *** CALLED ONLY FROM `agent-autonomy-driver.ts` (30 s cadence). NEVER call
+   * this from the 200 ms sim tick — `findPath` measures 165-258 ms and would
+   * blow the tick for every co-present player. ***
+   *
+   * `destinationId` defaults to the body's own `destinationBuildingId`, but the
+   * driver passes its tracked `entry.targetBuildingId` because the sim
+   * legitimately nulls the body's copy mid-walk (`handleActivityDurations:2969`).
+   *
+   * Resolution: the 10 teaching buildings first (`Object.hasOwn` — inherited
+   * prototype keys must never resolve, same guard as the executor), then the
+   * shared enterable places by `destinationId` ('cove', 'kelp-forest-portal'),
+   * which stays drift-proof as places are added. Targets the resolved CENTER
+   * exactly — no jitter — so the call is deterministic (C5); `findPath` hops a
+   * blocked end tile, and the <=40 wu difference versus the executor's jitter is
+   * immaterial against the 1000 wu interaction radius.
+   */
+  repathToDestination(npcId: string, destinationId?: string): boolean {
+    const npc = this.npcs.get(npcId);
+    if (!npc) return false;
+    const destination = destinationId ?? npc.destinationBuildingId;
+    if (!destination) return false;
+
+    let center: { x: number; y: number } | null = null;
+    if (Object.hasOwn(NPC_BUILDING_CENTERS, destination)) {
+      center = NPC_BUILDING_CENTERS[destination]!;
+    } else {
+      const place = AUTONOMY_PLACE_CENTERS.find((candidate) => candidate.destinationId === destination);
+      if (place) center = { x: place.centerX, y: place.centerY };
+    }
+    if (!center) return false;
+
+    const path = findPath(npc.x, npc.y, Math.round(center.x), Math.round(center.y));
+    if (path.length === 0) return false;
+    this.setNpcPath(npcId, path, destination);   // re-marks the new array DIRECTED
+    return true;
   }
 
   /** Map a session ID to the NPC body it controls */
@@ -1687,6 +1779,8 @@ class NpcSimulation {
     npc.activity = 'walking';
     npc.activityEmoji = '';
     npc.destinationBuildingId = destinationBuildingId ?? null;
+    // 2026-07-26: a route stamped WITH a destination is a DIRECTED trip.
+    if (npc.destinationBuildingId !== null) this.directedRoutes.add(path);
     npc.behaviorCooldown = 200; // Prevent server from overriding agent's path
   }
 
@@ -2605,6 +2699,10 @@ class NpcSimulation {
       if (npc.isDead || npc.inConversation || npc.inCombat) continue;
       if (npc.activity !== 'idle') continue;
       if (npc.isOpenClaw && npc.autonomyMode === 'self-managed') continue;
+      // 2026-07-26 (B2): a live DIRECTED route is agent-owned, not town
+      // liveliness. Without this, a default server-managed Hatcher route is
+      // replaced 2.0-5.8s after the enter_cove activity expiry.
+      if (this.directedRoutes.has(npc.path)) continue;
       // Owner is driving this proxy in 'player' mode — don't plan autonomy for it.
       if (this.isHumanControlledOpenClawNpc(npc.id)) continue;
 
@@ -3088,15 +3186,23 @@ class NpcSimulation {
           const prevX = npc.x;
           const prevY = npc.y;
           if (!isCollisionFreeWorld(desiredX, desiredY, 30)) {
-            npc.path = [];
-            npc.pathIndex = 0;
-            npc.activity = 'idle';
-            npc.activityEmoji = '';
-            npc.destinationBuildingId = null;
-            npc.behaviorCooldown = 5 + Math.floor(Math.random() * 10);
-            npc.stuckTicks = 0;
-            npc.direction = 'idle';
-            continue;
+            // 2026-07-26: AMBIENT routes keep the original abandon. A DIRECTED
+            // route is a CHOSEN trip — never self-abandon it. Fall through to the
+            // clamp below, which slides the body along the wall (max 44 wu of
+            // penetration by construction) instead of collapsing the trip to idle.
+            // Sim-side recovery is intentionally A*-FREE; the 30 s driver owns
+            // re-routing (findPath measured at 165-258 ms — see §0.1).
+            if (!this.directedRoutes.has(npc.path)) {
+              npc.path = [];
+              npc.pathIndex = 0;
+              npc.activity = 'idle';
+              npc.activityEmoji = '';
+              npc.destinationBuildingId = null;
+              npc.behaviorCooldown = 5 + Math.floor(Math.random() * 10);
+              npc.stuckTicks = 0;
+              npc.direction = 'idle';
+              continue;
+            }
           }
           const wx = desiredX - WORLD_COLLIDER_MAP_HALF;
           const wz = desiredY - WORLD_COLLIDER_MAP_HALF;
@@ -3119,7 +3225,12 @@ class NpcSimulation {
 
           // If collider blocked this step, abandon current path and pick a new
           // patrol target — prevents NPCs humping a wall for the whole path.
-          if (clamped.hit || npc.stuckTicks >= 4) {
+          // 2026-07-26: DIRECTED routes take the commit branch instead. Its
+          // `shaved` guard already keeps the old pathIndex when the clamp shaved
+          // the move, so the body retries the SAME waypoint next tick from its
+          // slid position — exactly the wall-slide recovery we want. `stuckTicks`
+          // still accumulates (observability) but no longer abandons.
+          if ((clamped.hit || npc.stuckTicks >= 4) && !this.directedRoutes.has(npc.path)) {
             npc.path = [];
             npc.pathIndex = 0;
             npc.activity = 'idle';
@@ -3166,15 +3277,17 @@ class NpcSimulation {
         const prevX = npc.x;
         const prevY = npc.y;
         if (!isCollisionFreeWorld(desiredX, desiredY, 30)) {
-          npc.path = [];
-          npc.pathIndex = 0;
-          npc.activity = 'idle';
-          npc.activityEmoji = '';
-          npc.destinationBuildingId = null;
-          npc.behaviorCooldown = 5 + Math.floor(Math.random() * 10);
-          npc.stuckTicks = 0;
-          npc.direction = 'idle';
-          return;
+          if (!this.directedRoutes.has(npc.path)) {
+            npc.path = [];
+            npc.pathIndex = 0;
+            npc.activity = 'idle';
+            npc.activityEmoji = '';
+            npc.destinationBuildingId = null;
+            npc.behaviorCooldown = 5 + Math.floor(Math.random() * 10);
+            npc.stuckTicks = 0;
+            npc.direction = 'idle';
+            return;
+          }
         }
         const clamped = clampPosition2D(
           desiredX - WORLD_COLLIDER_MAP_HALF,
@@ -3197,7 +3310,7 @@ class NpcSimulation {
           // Applied-step heading for wander continuity (see headingAngle doc).
           npc.headingAngle = Math.atan2(npc.y - prevY, npc.x - prevX);
         }
-        if (clamped.hit || npc.stuckTicks >= 4) {
+        if ((clamped.hit || npc.stuckTicks >= 4) && !this.directedRoutes.has(npc.path)) {
           npc.path = [];
           npc.pathIndex = 0;
           npc.activity = 'idle';
@@ -3235,6 +3348,7 @@ class NpcSimulation {
       (n) =>
         !this.isHumanControlledOpenClawNpc(n.id, now) &&
         !this.isSelfManagedOpenClawNpc(n) && // N4: never an ambient-conversation subject
+        !this.directedRoutes.has(n.path) && // 2026-07-26 (B2): mid-trip agent route
         !n.isDead && !n.inConversation && !n.inCombat && now >= n.conversationCooldownUntil
     );
   }
@@ -3246,6 +3360,7 @@ class NpcSimulation {
     for (const other of this.npcs.values()) {
       if (this.isHumanControlledOpenClawNpc(other.id, now)) continue;
       if (this.isSelfManagedOpenClawNpc(other)) continue; // N4: not an ambient-conversation partner
+      if (this.directedRoutes.has(other.path)) continue; // 2026-07-26 (B2)
       if (other.id === npc.id || other.isDead || other.inConversation || other.inCombat || now < other.invulnerableUntil || now < other.conversationCooldownUntil) continue;
       const dx = other.x - npc.x;
       const dy = other.y - npc.y;

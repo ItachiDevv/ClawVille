@@ -13,7 +13,9 @@ import {
 import {
   Canvas,
   _roots,
+  events as createPointerEvents,
   extend,
+  useFrame,
   useThree,
   type RootState,
   type ThreeToJSXElements,
@@ -30,6 +32,7 @@ import {
 import { useStageStore } from './stage-store';
 import {
   requestStageDeltaClamp,
+  SceneIdProvider,
   StageFrameScheduler,
 } from './use-scene-frame';
 import {
@@ -62,6 +65,37 @@ const IOS_SAFARI =
 const WEBGPU_ABSENT =
   typeof navigator !== 'undefined' && !('gpu' in navigator);
 const WEBGPU_UNHEALTHY_KEY = 'world-stage-webgpu-unhealthy';
+
+function belongsToActiveStageSlot(
+  object: THREE.Object3D,
+  activeScene: string | null,
+): boolean {
+  let current: THREE.Object3D | null = object;
+  while (current) {
+    if (current.name.startsWith('world-stage:')) {
+      return current.name === `world-stage:${activeScene ?? ''}`;
+    }
+    current = current.parent;
+  }
+  return true;
+}
+
+function createStagePointerEvents(
+  store: Parameters<typeof createPointerEvents>[0],
+) {
+  const manager = createPointerEvents(store);
+  const defaultFilter = manager.filter;
+  manager.filter = (items, state) => {
+    const ordered = defaultFilter
+      ? defaultFilter(items, state)
+      : items;
+    const activeScene = useStageStore.getState().activeScene;
+    return ordered.filter((intersection) =>
+      belongsToActiveStageSlot(intersection.object, activeScene),
+    );
+  };
+  return manager;
+}
 function readWebGpuUnhealthyFlag(): boolean {
   if (typeof window === 'undefined') return false;
   try {
@@ -382,6 +416,8 @@ class StageRendererHealth {
 
       if (replacement) {
         this.renderer = replacement;
+        currentStageRenderer = replacement;
+        currentStageBackend = this.forceWebGL ? 'webgl' : 'webgpu';
         binding.install(replacement);
         if (!isCurrent()) {
           replacement.dispose();
@@ -410,9 +446,120 @@ const rendererHealthByCanvas = new WeakMap<
   StageRendererHealth
 >();
 let currentStageBackend: 'webgpu' | 'webgl' | 'unknown' = 'unknown';
+let currentStageRenderer: THREE.WebGPURenderer | null = null;
+let previousStageRenderCalls: number | null = null;
+let currentStageDrawCallsFrame: number | null = null;
 
 export function readStageBackend(): 'webgpu' | 'webgl' | 'unknown' {
   return currentStageBackend;
+}
+
+export interface StageRendererCounters {
+  backend: 'webgpu' | 'webgl' | 'unknown';
+  textures: number | null;
+  geometries: number | null;
+  texturesSizeBytes: number | null;
+  memoryTotalBytes: number | null;
+  renderCallsLifetime: number | null;
+  drawCallsFrame: number | null;
+  memoryBreakdown: Record<string, number> | null;
+}
+
+export function readStageRendererCounters(): StageRendererCounters {
+  const backend = currentStageBackend;
+  const info = (
+    currentStageRenderer as unknown as {
+      info?: {
+        memory?: {
+          textures?: number;
+          geometries?: number;
+          texturesSize?: number;
+          total?: number;
+          [key: string]: unknown;
+        };
+        render?: {
+          calls?: number;
+          drawCalls?: number;
+        };
+      };
+    } | null
+  )?.info;
+  const memory = info?.memory;
+  const render = info?.render;
+  const numberOrNull = (value: unknown): number | null =>
+    typeof value === 'number' && Number.isFinite(value) ? value : null;
+
+  if (backend === 'webgpu') {
+    return {
+      backend,
+      textures: numberOrNull(memory?.textures),
+      geometries: numberOrNull(memory?.geometries),
+      texturesSizeBytes: numberOrNull(memory?.texturesSize),
+      memoryTotalBytes: numberOrNull(memory?.total),
+      renderCallsLifetime: numberOrNull(render?.calls),
+      drawCallsFrame: numberOrNull(render?.drawCalls),
+      memoryBreakdown: memory
+        ? Object.fromEntries(
+            Object.entries(memory).filter(
+              (entry): entry is [string, number] =>
+                typeof entry[1] === 'number' && Number.isFinite(entry[1]),
+            ),
+          )
+        : null,
+    };
+  }
+  if (backend === 'webgl') {
+    return {
+      backend,
+      textures: numberOrNull(memory?.textures),
+      geometries: numberOrNull(memory?.geometries),
+      texturesSizeBytes: null,
+      memoryTotalBytes: null,
+      renderCallsLifetime: null,
+      drawCallsFrame: currentStageDrawCallsFrame,
+      memoryBreakdown: null,
+    };
+  }
+  return {
+    backend,
+    textures: null,
+    geometries: null,
+    texturesSizeBytes: null,
+    memoryTotalBytes: null,
+    renderCallsLifetime: null,
+    drawCallsFrame: null,
+    memoryBreakdown: null,
+  };
+}
+
+function StageRendererCounterSampler(): null {
+  const gl = useThree((state) => state.gl);
+  useFrame(() => {
+    if (currentStageBackend !== 'webgl') {
+      previousStageRenderCalls = null;
+      currentStageDrawCallsFrame = null;
+      return;
+    }
+    queueMicrotask(() => {
+      const render = (
+        gl as unknown as {
+          info?: { render?: { calls?: number } };
+        }
+      ).info?.render;
+      const calls = render?.calls;
+      if (typeof calls !== 'number' || !Number.isFinite(calls)) {
+        previousStageRenderCalls = null;
+        currentStageDrawCallsFrame = null;
+        return;
+      }
+      currentStageDrawCallsFrame =
+        previousStageRenderCalls === null || calls < previousStageRenderCalls
+          ? null
+          : calls - previousStageRenderCalls;
+      previousStageRenderCalls = calls;
+    });
+  });
+  return null;
 }
 
 function createStageRenderer(props: {
@@ -457,6 +604,9 @@ function createStageRenderer(props: {
       usedWebGL = true;
     }
     currentStageBackend = usedWebGL ? 'webgl' : 'webgpu';
+    currentStageRenderer = renderer;
+    previousStageRenderCalls = null;
+    currentStageDrawCallsFrame = null;
     const health = new StageRendererHealth(canvas);
     health.setInitial(renderer, usedWebGL);
     rendererHealthByCanvas.set(canvas, health);
@@ -507,6 +657,8 @@ interface WorldStageCanvasProps {
   transitionTimeoutMs?: number;
   pauseOnCreate?: boolean;
   onStageCreated?: (state: RootState) => void;
+  renderTransitionOverlay?: boolean;
+  onTransitionOpaque?: (request: import('./stage-store').StageRequest) => void;
 }
 
 function createPersistentCameras(
@@ -728,7 +880,11 @@ function StageSceneSlot({
       name={`world-stage:${sceneId}`}
       visible={visible}
     >
-      {mounted ? children : null}
+      {mounted ? (
+        <SceneIdProvider sceneId={sceneId}>
+          {children}
+        </SceneIdProvider>
+      ) : null}
     </group>
   );
 }
@@ -741,7 +897,8 @@ function StageSceneAppearance({
   const ownsAppearance = useStageStore(
     (state) =>
       state.activeScene === scene.sceneId ||
-      state.pendingRequest?.sceneId === scene.sceneId,
+      (state.activeScene === null &&
+        state.pendingRequest?.sceneId === scene.sceneId),
   );
   const rootScene = useThree((state) => state.scene);
   const gl = useThree((state) => state.gl);
@@ -794,6 +951,8 @@ export function WorldStageCanvas({
   transitionTimeoutMs = 20_000,
   pauseOnCreate = false,
   onStageCreated,
+  renderTransitionOverlay = true,
+  onTransitionOpaque,
 }: WorldStageCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [cameras] = useState(() => createPersistentCameras(scenes));
@@ -838,6 +997,7 @@ export function WorldStageCanvas({
       className="relative h-full w-full overflow-hidden bg-[#07131d]"
     >
       <Canvas
+        events={createStagePointerEvents}
         frameloop="always"
         dpr={DPR_RANGE}
         camera={initialCamera}
@@ -860,6 +1020,7 @@ export function WorldStageCanvas({
           cameras={cameras}
         />
         <StageFrameScheduler />
+        <StageRendererCounterSampler />
         {scenes.map((scene) => (
           <group key={scene.sceneId}>
             <StageSceneAppearance scene={scene} />
@@ -869,7 +1030,12 @@ export function WorldStageCanvas({
           </group>
         ))}
       </Canvas>
-      <StageTransition timeoutMs={transitionTimeoutMs} />
+      {renderTransitionOverlay && (
+        <StageTransition
+          timeoutMs={transitionTimeoutMs}
+          onOpaque={onTransitionOpaque}
+        />
+      )}
     </div>
   );
 }

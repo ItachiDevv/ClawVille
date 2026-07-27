@@ -1,8 +1,16 @@
 {
   "pass": true,
-  "url": "http://localhost:3000/perf/stage?stage=1&webgpu=1",
-  "backend": "webgpu",
+  "lane": "synthetic",
+  "url": "http://localhost:3000/perf/stage?stage=1&webgl=1",
+  "backend": "webgl",
   "requestedTransitions": 102,
+  "requestedRoundTrips": null,
+  "experiment": {
+    "mode": "crossings",
+    "dwellSeconds": null,
+    "sampleIntervalSeconds": null
+  },
+  "completedRoundTrips": 0,
   "completedTransitions": 102,
   "warmupTransitions": 3,
   "canvasMountCount": 1,
@@ -11,8 +19,8 @@
   "hiddenCameraViolations": [],
   "hiddenStoreViolations": [],
   "activeGrowthViolations": [],
-  "listenerBaseline": 5,
-  "listenerEnd": 5,
+  "listenerBaseline": 4,
+  "listenerEnd": 4,
   "listenerDelta": 0,
   "listenerUnderflowCount": 0,
   "transitionErrors": [],
@@ -22,17 +30,70 @@
   },
   "heap": {
     "available": true,
-    "baselineBytes": 68033199,
-    "endBytes": 68898267,
-    "growthRatio": 0.012715380324832293,
-    "threshold": 0.15
+    "baselineBytes": 67867992,
+    "endBytes": 68727448,
+    "growthRatio": 0.012663642678569302,
+    "totalGrowthThreshold": 0.2,
+    "midpointBytes": null,
+    "secondHalfGrowthRatio": null,
+    "secondHalfSlopeMBPerLoop": null,
+    "secondHalfSlopeThresholdMBPerLoop": 0.8,
+    "dwellDriftMBPerSecond": null,
+    "dwellDriftThresholdMBPerSecond": 0.05
+  },
+  "heapDiff": {
+    "enabled": false,
+    "status": "disabled",
+    "snapshotLoops": [],
+    "reportPath": null,
+    "aggregation": null,
+    "baseline": null,
+    "final": null,
+    "topConstructors": [],
+    "retainerChains": []
+  },
+  "renderer": {
+    "samples": [
+      {
+        "label": "post-warmup",
+        "loop": 0,
+        "backend": "webgl",
+        "textures": 9,
+        "geometries": 15,
+        "texturesSizeBytes": null,
+        "memoryTotalBytes": null,
+        "renderCallsLifetime": null,
+        "drawCallsFrame": 2,
+        "memoryBreakdown": null
+      },
+      {
+        "label": "final",
+        "loop": 102,
+        "backend": "webgl",
+        "textures": 9,
+        "geometries": 15,
+        "texturesSizeBytes": null,
+        "memoryTotalBytes": null,
+        "renderCallsLifetime": null,
+        "drawCallsFrame": 2,
+        "memoryBreakdown": null
+      }
+    ],
+    "byteGrowthTolerance": 0.01
+  },
+  "series": [],
+  "inventory": {
+    "early": null,
+    "late": null,
+    "diff": null,
+    "changes": []
   },
   "ledger": {
     "alpha": {
       "texturesBytes": 0,
-      "geometryBytes": 2736,
+      "geometryBytes": 2520,
       "renderTargetsBytes": 0,
-      "total": 2736,
+      "total": 2520,
       "counts": {
         "textures": 0,
         "geometries": 3,
@@ -48,9 +109,9 @@
     },
     "beta": {
       "texturesBytes": 0,
-      "geometryBytes": 66720,
+      "geometryBytes": 53760,
       "renderTargetsBytes": 0,
-      "total": 66720,
+      "total": 53760,
       "counts": {
         "textures": 0,
         "geometries": 3,
@@ -66,9 +127,9 @@
     },
     "cove-spike": {
       "texturesBytes": 10595302,
-      "geometryBytes": 17873160,
+      "geometryBytes": 17784432,
       "renderTargetsBytes": 0,
-      "total": 28468462,
+      "total": 28379734,
       "counts": {
         "textures": 12,
         "geometries": 14,
@@ -82,6 +143,44 @@
         "unknownTextureBytes": 0
       }
     }
+  },
+  "routes": {
+    "cacheControl": {
+      "game": null,
+      "cove": null
+    },
+    "coldCoveAssetRequests": [],
+    "coldCoveWorldAssetRequests": [],
+    "pathSequence": [],
+    "returnLoaderViolations": [],
+    "historyTraversal": {
+      "back": false,
+      "forward": false
+    },
+    "historyLength": {
+      "baseline": null,
+      "final": null,
+      "delta": null,
+      "maxAddedEntries": 2,
+      "maxLength": 4
+    },
+    "assetTimeline": [],
+    "network": {
+      "phase": "cold-cove",
+      "joins": {
+        "coldCove": 0,
+        "firstGame": 0,
+        "afterFirstGame": 0
+      },
+      "streams": {
+        "coldCove": 0,
+        "firstGame": 0,
+        "afterFirstGame": 0
+      },
+      "events": [],
+      "stubUnhandled": {}
+    },
+    "coldInit": null
   },
   "console": {
     "errors": [
@@ -100,9 +199,8 @@
     "activeCallbacksAdvance": true,
     "listenerDeltaZero": true,
     "listenerAccountingNeverUnderflowed": true,
-    "zeroTransitionErrors": true,
-    "heapBelow15Percent": true
+    "zeroTransitionErrors": true
   },
   "failure": null,
-  "generatedAt": "2026-07-25T21:26:15.989Z"
+  "generatedAt": "2026-07-27T01:22:00.639Z"
 }

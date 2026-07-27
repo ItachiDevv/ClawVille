@@ -32,13 +32,13 @@ const WATCH_HEARTBEAT_MS = 30_000;
  * `useNpcStream` for /arena + /perf). Fire-and-forget — a failed beat just
  * means banter degrades to canned lines for a bit.
  */
-export function useWatchHeartbeat() {
+export function useWatchHeartbeat(enabled = true) {
   const connected = useNpcStore((s) => s.connected);
   useEffect(() => {
     // Dead or never-opened stream: this tab can't see banter — never arm the
     // paid-inference latch from it. The effect re-runs when the stream hook
     // flips `connected`, restarting beats on recovery.
-    if (!connected) return;
+    if (!connected || !enabled) return;
     let watchInterval: ReturnType<typeof setInterval> | null = null;
 
     function sendWatchBeat() {
@@ -70,5 +70,5 @@ export function useWatchHeartbeat() {
       document.removeEventListener('visibilitychange', onVisibilityChange);
       stopWatchBeat();
     };
-  }, [connected]);
+  }, [connected, enabled]);
 }

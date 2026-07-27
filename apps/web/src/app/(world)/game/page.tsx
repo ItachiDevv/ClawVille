@@ -1,14 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { useAvatar } from '@/hooks/use-avatar';
-import { useAvatarHeartbeat } from '@/hooks/use-avatar-heartbeat';
 import { useMiladyEmbed } from '@/hooks/use-milady-embed';
 import { useAuthMe } from '@/hooks/use-auth-me';
-import { useWorldStream } from '@/hooks/use-world-stream';
 import { useGameStore, type GameState } from '@/stores/game';
 import { useQuestStore } from '@/stores/quest';
 import { api } from '@/lib/api';
@@ -61,6 +59,7 @@ import ControlModeToggle from '@/components/game/control-mode-toggle';
 import AutonomyHUD from '@/components/game/autonomy-hud';
 import { useResearchStream } from '@/hooks/use-research-stream';
 import SceneTransition from '@/components/transitions/SceneTransition';
+import { useStageStore } from '@/components/three/world-stage/stage-store';
 
 // arena-terrain.tsx evaluates FORCE_WEBGL_TERRAIN at module scope using
 // navigator.userAgent. On the server navigator is undefined → false; on the
@@ -308,6 +307,9 @@ function NanoClawBanner({
 }
 
 export default function GamePage() {
+  const worldHadActivatedOnMount = useRef(
+    useStageStore.getState().scenes.world?.hasEverActivated ?? false,
+  );
   // Mount gate — eliminates React #418 hydration mismatch at the source.
   // The /game HUD tree pulls state from Zustand, localStorage, TanStack Query,
   // and dynamic imports (the Three.js stage belongs to the route-group
@@ -467,25 +469,8 @@ export default function GamePage() {
     }
   }, [agentSession, avatar, authData, authLoading]);
 
-  // Multiplayer world stream — REPLACES the legacy useNpcStream. Drives
-  // BOTH the NPC store (room-filtered roster + conversations + combats + events)
-  // AND the player store (remote viewers in the same room). Uploads the local
-  // avatar position at 5 Hz so other clients can render us.
-  useWorldStream();
-
   // Connect to research thought stream
   useResearchStream();
-
-  // Agent-magic-link-onboarding D3 — presence heartbeat while the HUMAN
-  // drives their own body (controlMode 'player'): POSTs
-  // /api/avatars/me/heartbeat every 10s with { controlMode: 'player' } so the
-  // server keeps the bound agent's in-world body suppressed (no double body,
-  // ≈15s server TTL) and the avatar's lastActiveAt fresh. No sends in other
-  // modes — the suppression lapses and the agent body returns (the designed
-  // Autonomous release path). Gated to authed non-guest avatar owners: the
-  // endpoint is requireAuth and guests never reach 'player' mode. Cadence
-  // math + hot-path discipline documented in use-avatar-heartbeat.ts.
-  useAvatarHeartbeat(isAuthenticated && !isGuest && !!avatar);
 
   // 2026-05-12: removed the auto-redirect to /create-agent for authenticated
   // users without an avatar. NPC mode is now a first-class landing surface —
@@ -583,7 +568,7 @@ export default function GamePage() {
   return (
     <div className="game-container" suppressHydrationWarning>
       {/* Sea loading overlay — renders immediately, fades out once window.__W3D is set */}
-      <SeaLoadingScreen />
+      {!worldHadActivatedOnMount.current && <SeaLoadingScreen />}
       <BuildingTooltip />
       <NanoClawBanner
         hasAvatar={hasAvatar}

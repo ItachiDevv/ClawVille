@@ -1,12 +1,48 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
-import { useFrame, type RenderCallback } from '@react-three/fiber';
+import {
+  createContext,
+  createElement,
+  useContext,
+  useLayoutEffect,
+  useRef,
+  type ReactNode,
+} from 'react';
+import {
+  useFrame,
+  useStore,
+  type RenderCallback,
+} from '@react-three/fiber';
 import { useStageStore } from './stage-store';
 
 type CallbackRef = { current: RenderCallback };
+type SceneRegistration = { ref: CallbackRef; priority: number };
 
-const callbacksByScene = new Map<string, Map<symbol, CallbackRef>>();
+const SceneIdContext = createContext<string | null>(null);
+const callbacksByScene = new Map<string, Map<symbol, SceneRegistration>>();
+// Dispatch iterates a priority-sorted snapshot (ascending, matching R3F's
+// subscriber ordering so a legacy `useFrame(cb, -100)` owner keeps running
+// before priority-0 owners after the sweep). Rebuilt lazily on registration
+// change — never per frame.
+const sortedByScene = new Map<string, SceneRegistration[]>();
+
+function invalidateSceneOrder(sceneId: string): void {
+  sortedByScene.delete(sceneId);
+}
+
+function getSceneDispatchOrder(
+  sceneId: string,
+): SceneRegistration[] | undefined {
+  const cached = sortedByScene.get(sceneId);
+  if (cached) return cached;
+  const registrations = callbacksByScene.get(sceneId);
+  if (!registrations) return undefined;
+  const sorted = [...registrations.values()].sort(
+    (a, b) => a.priority - b.priority,
+  );
+  sortedByScene.set(sceneId, sorted);
+  return sorted;
+}
 const frameInvocationsByScene = new Map<string, number>();
 let lastFrameSampleAt = 0;
 let clampNextFrameDelta = false;
@@ -25,21 +61,91 @@ export function readStageFrameInvocations(): Record<string, number> {
   return Object.fromEntries(frameInvocationsByScene);
 }
 
+export function SceneIdProvider({
+  sceneId,
+  children,
+}: {
+  sceneId: string;
+  children: ReactNode;
+}) {
+  return createElement(
+    SceneIdContext.Provider,
+    { value: sceneId },
+    children,
+  );
+}
+
+export function useSceneId(): string | null {
+  return useContext(SceneIdContext);
+}
+
+export function useSceneActive(): boolean {
+  const sceneId = useSceneId();
+  const active = useStageStore(
+    (state) =>
+      sceneId === null ||
+      state.activeScene === sceneId ||
+      (state.activeScene === null &&
+        state.pendingRequest?.sceneId === sceneId),
+  );
+  return sceneId === null || active;
+}
+
+export function useSceneFrame(
+  callback: RenderCallback,
+  priority?: number,
+): void;
 export function useSceneFrame(
   sceneId: string,
   callback: RenderCallback,
+  priority?: number,
+): void;
+export function useSceneFrame(
+  sceneIdOrCallback: string | RenderCallback,
+  callbackOrPriority?: RenderCallback | number,
+  maybePriority?: number,
 ): void {
-  const callbackRef = useRef(callback);
-  callbackRef.current = callback;
+  const contextSceneId = useSceneId();
+  const explicitSceneId =
+    typeof sceneIdOrCallback === 'string' ? sceneIdOrCallback : null;
+  const sceneId = explicitSceneId ?? contextSceneId;
+  const callback =
+    typeof sceneIdOrCallback === 'string'
+      ? (callbackOrPriority as RenderCallback | undefined)
+      : sceneIdOrCallback;
+  const priority =
+    typeof sceneIdOrCallback === 'string'
+      ? maybePriority ?? 0
+      : typeof callbackOrPriority === 'number'
+        ? callbackOrPriority
+        : 0;
+  const callbackRef = useRef<RenderCallback>(() => undefined);
+  callbackRef.current = callback ?? (() => undefined);
+  const legacyStore = useStore();
+  const subscribeLegacy =
+    legacyStore.getState().internal.subscribe;
 
-  useEffect(() => {
+  // Outside a stage slot there is no central scheduler. Keep the legacy
+  // Canvas contract through R3F's native subscriber list (including the
+  // caller's render priority — controllers rely on negative priority to run
+  // before the follow camera). Stage-hosted owners never enter that list at
+  // all; only StageFrameScheduler is subscribed, so a hidden resident slot
+  // has zero native callback dispatch overhead.
+  useLayoutEffect(() => {
+    if (sceneId !== null) return;
+    return subscribeLegacy(callbackRef, priority, legacyStore);
+  }, [legacyStore, priority, sceneId, subscribeLegacy]);
+
+  useLayoutEffect(() => {
+    if (sceneId === null) return;
     const registrationId = Symbol(sceneId);
     let sceneCallbacks = callbacksByScene.get(sceneId);
     if (!sceneCallbacks) {
       sceneCallbacks = new Map();
       callbacksByScene.set(sceneId, sceneCallbacks);
     }
-    sceneCallbacks.set(registrationId, callbackRef);
+    sceneCallbacks.set(registrationId, { ref: callbackRef, priority });
+    invalidateSceneOrder(sceneId);
 
     return () => {
       const registeredCallbacks = callbacksByScene.get(sceneId);
@@ -47,8 +153,9 @@ export function useSceneFrame(
       if (registeredCallbacks?.size === 0) {
         callbacksByScene.delete(sceneId);
       }
+      invalidateSceneOrder(sceneId);
     };
-  }, [sceneId]);
+  }, [priority, sceneId]);
 }
 
 export function StageFrameScheduler(): null {
@@ -63,10 +170,10 @@ export function StageFrameScheduler(): null {
     const sceneId = snapshot.activeScene;
     if (!sceneId) return;
 
-    const callbacks = callbacksByScene.get(sceneId);
-    if (callbacks) {
-      for (const callbackRef of callbacks.values()) {
-        callbackRef.current(state, controlledDelta, frame);
+    const dispatchOrder = getSceneDispatchOrder(sceneId);
+    if (dispatchOrder) {
+      for (const registration of dispatchOrder) {
+        registration.ref.current(state, controlledDelta, frame);
         frameInvocationsByScene.set(
           sceneId,
           (frameInvocationsByScene.get(sceneId) ?? 0) + 1,

@@ -40,7 +40,7 @@
  */
 
 import { useRef, useMemo } from 'react';
-import { useFrame } from '@react-three/fiber';
+import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import * as THREE from 'three';
 
 // ---------------------------------------------------------------------------
@@ -224,7 +224,7 @@ export default function CoveBeacon() {
     [],
   );
 
-  useFrame(({ clock }) => {
+  useSceneFrame(({ clock }) => {
     const t = clock.elapsedTime;
 
     // Rotate the glow ring slowly.

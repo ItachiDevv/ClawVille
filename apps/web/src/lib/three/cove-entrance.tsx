@@ -47,7 +47,7 @@
  */
 
 import { useRef } from 'react';
-import { useFrame } from '@react-three/fiber';
+import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import * as THREE from 'three';
 import { triggerCoveWalkIn } from './arena-buildings';
 import { avatarPositionRef, useGameStore } from '@/stores/game';
@@ -285,7 +285,7 @@ export default function CoveEntrance() {
   const labelRef = useRef<THREE.Mesh>(null);
   const glowRef  = useRef<THREE.Mesh>(null);
 
-  useFrame(({ clock }) => {
+  useSceneFrame(({ clock }) => {
     // ── Auto-enter: walk deep into the corridor → fade to /cove (no click/E) ──
     // Only for human-driven avatars (player/npc). Autonomous agents and the
     // explore free-cam never get yanked in. One trigger per entry via the
