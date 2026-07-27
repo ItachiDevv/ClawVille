@@ -759,4 +759,342 @@ describe('recorded-wire parity assertions', () => {
     expect(result.pass).toBe(true);
     expect(result.resolvedWireSeq).toBe(10);
   });
+
+  test('live negative traversal accepts a root ahead of its pinned wire when a causal same-hand wire justifies it', () => {
+    const privateWire: WireRecord = {
+      seq: 80,
+      capturedAt: 180,
+      method: 'GET',
+      url: '',
+      urlSuffix: 'poker/cash/tables/table-causal/state-for-agent',
+      status: 200,
+      requestBody: null,
+      responseBody: {
+        view: {
+          handNumber: 8,
+          seatIndex: 0,
+          holeCards: [
+            { suit: 'spades', rank: 'A' },
+            { suit: 'hearts', rank: 'K' },
+          ],
+          table: {
+            tableId: 'table-causal',
+            handNumber: 8,
+            board: [
+              { suit: 'clubs', rank: '2' },
+              { suit: 'diamonds', rank: '3' },
+              { suit: 'hearts', rank: '4' },
+            ],
+            seats: [],
+          },
+        },
+      },
+      handId: null,
+      handNumber: 8,
+      coupId: null,
+      shoeId: null,
+      idempotencyKey: null,
+    };
+    const publicWire: WireRecord = {
+      ...privateWire,
+      seq: 81,
+      capturedAt: 195,
+      urlSuffix: 'poker/cash/tables/table-causal',
+      responseBody: {
+        table: { id: 'table-causal' },
+        seats: [],
+        live: {
+          tableId: 'table-causal',
+          handNumber: 8,
+          board: [
+            { suit: 'clubs', rank: '2' },
+            { suit: 'diamonds', rank: '3' },
+            { suit: 'hearts', rank: '4' },
+            { suit: 'spades', rank: '5' },
+          ],
+          seats: [],
+        },
+      },
+    };
+    const root: CardParityRoot = {
+      surface: 'holdem-tray-3d',
+      version: 2,
+      instanceId: 'causal-live-tray',
+      renderRevision: 8,
+      observedAt: 200,
+      correlation: { hand: 'table-causal:8', handNumber: 8 },
+      dealStep: 'turn',
+      phase: 'turn',
+      transition: 'idle',
+      slots: [
+        { slot: 'hole-1', facing: 'up', card: 'As' },
+        { slot: 'hole-2', facing: 'up', card: 'Kh' },
+        { slot: 'board-1', facing: 'up', card: '2c' },
+        { slot: 'board-2', facing: 'up', card: '3d' },
+        { slot: 'board-3', facing: 'up', card: '4h' },
+        { slot: 'board-4', facing: 'up', card: '5s' },
+        { slot: 'board-5', facing: 'empty', card: '' },
+      ],
+      meta: { pot: '30' },
+    };
+    const checkpoint = {
+      label: 'every-step-causal',
+      surface: root.surface,
+      expectRevisionAdvance: true,
+      expectCausalCardJustification: true,
+    } as const;
+    const result = assertParityCheckpoint({
+      game: 'holdem',
+      checkpoint,
+      root,
+      records: [privateWire, publicWire],
+    });
+    expect(result).toMatchObject({
+      pass: true,
+      mismatches: [],
+      resolvedWireSeq: privateWire.seq,
+    });
+
+    const invented = structuredClone(root);
+    invented.slots[5] = {
+      slot: 'board-4',
+      facing: 'up',
+      card: '5h',
+    };
+    const laterWire = {
+      ...structuredClone(publicWire),
+      seq: 82,
+      capturedAt: 205,
+      responseBody: {
+        table: { id: 'table-causal' },
+        seats: [],
+        live: {
+          tableId: 'table-causal',
+          handNumber: 8,
+          board: [
+            { suit: 'clubs', rank: '2' },
+            { suit: 'diamonds', rank: '3' },
+            { suit: 'hearts', rank: '4' },
+            { suit: 'hearts', rank: '5' },
+          ],
+          seats: [],
+        },
+      },
+    };
+    const otherHandWire = {
+      ...structuredClone(laterWire),
+      seq: 83,
+      capturedAt: 190,
+      handNumber: 9,
+      responseBody: {
+        table: { id: 'table-causal' },
+        seats: [],
+        live: {
+          tableId: 'table-causal',
+          handNumber: 9,
+          board: [
+            { suit: 'clubs', rank: '2' },
+            { suit: 'diamonds', rank: '3' },
+            { suit: 'hearts', rank: '4' },
+            { suit: 'hearts', rank: '5' },
+          ],
+          seats: [],
+        },
+      },
+    };
+    expect(assertParityCheckpoint({
+      game: 'holdem',
+      checkpoint,
+      root: invented,
+      records: [privateWire, publicWire, laterWire, otherHandWire],
+    })).toMatchObject({
+      pass: false,
+      mismatches: [expect.objectContaining({
+        slot: 'board-4',
+        field: 'card',
+        actual: '5h',
+      })],
+    });
+  });
+
+  test('live negative traversal rejects an unexplained mid-hand empty own slot but permits boundary reset', () => {
+    const wire: WireRecord = {
+      seq: 90,
+      capturedAt: 100,
+      method: 'GET',
+      url: '',
+      urlSuffix: 'poker/cash/tables/table-reset/state-for-agent',
+      status: 200,
+      requestBody: null,
+      responseBody: {
+        view: {
+          handNumber: 11,
+          seatIndex: 0,
+          holeCards: [
+            { suit: 'clubs', rank: 'Q' },
+            { suit: 'diamonds', rank: 'J' },
+          ],
+          table: {
+            tableId: 'table-reset',
+            handNumber: 11,
+            board: [],
+            seats: [],
+          },
+        },
+      },
+      handId: null,
+      handNumber: 11,
+      coupId: null,
+      shoeId: null,
+      idempotencyKey: null,
+    };
+    const base: CardParityRoot = {
+      surface: 'holdem-tray-3d',
+      version: 2,
+      instanceId: 'causal-reset',
+      renderRevision: 11,
+      observedAt: 110,
+      correlation: { hand: 'table-reset:11', handNumber: 11 },
+      dealStep: 'flop',
+      phase: 'flop',
+      transition: 'idle',
+      slots: [
+        { slot: 'hole-1', facing: 'up', card: 'Qc' },
+        { slot: 'hole-2', facing: 'empty', card: '' },
+        { slot: 'board-1', facing: 'empty', card: '' },
+        { slot: 'board-2', facing: 'empty', card: '' },
+        { slot: 'board-3', facing: 'empty', card: '' },
+        { slot: 'board-4', facing: 'empty', card: '' },
+        { slot: 'board-5', facing: 'empty', card: '' },
+      ],
+      meta: {},
+    };
+    const checkpoint = {
+      label: 'every-step-reset',
+      surface: base.surface,
+      expectRevisionAdvance: true,
+      expectCausalCardJustification: true,
+    } as const;
+    expect(assertParityCheckpoint({
+      game: 'holdem',
+      checkpoint,
+      root: base,
+      records: [wire],
+    })).toMatchObject({
+      pass: false,
+      mismatches: [expect.objectContaining({
+        slot: 'hole-2',
+        field: 'card',
+        expected: 'Jd',
+        actual: '',
+      })],
+    });
+
+    const boundary = {
+      ...structuredClone(base),
+      renderRevision: 12,
+      dealStep: 'flop',
+      phase: 'flop',
+    };
+    const boundaryWire: WireRecord = {
+      ...wire,
+      seq: 91,
+      capturedAt: 105,
+      responseBody: {
+        view: {
+          handNumber: 12,
+          seatIndex: 0,
+          holeCards: [
+            { suit: 'spades', rank: 'A' },
+            { suit: 'hearts', rank: 'K' },
+          ],
+          table: {
+            tableId: 'table-reset',
+            handNumber: 12,
+            board: [],
+            seats: [],
+          },
+        },
+      },
+      handNumber: 12,
+    };
+    expect(assertParityCheckpoint({
+      game: 'holdem',
+      checkpoint,
+      root: boundary,
+      records: [wire, boundaryWire],
+    })).toMatchObject({
+      pass: true,
+      mismatches: [],
+      resolvedWireSeq: wire.seq,
+    });
+  });
+
+  test('live negative traversal still rejects an opponent leak at any revision', () => {
+    const wire: WireRecord = {
+      seq: 100,
+      capturedAt: 300,
+      method: 'GET',
+      url: '',
+      urlSuffix: 'poker/cash/tables/table-concealed',
+      status: 200,
+      requestBody: null,
+      responseBody: {
+        table: { id: 'table-concealed' },
+        seats: [{ seatIndex: 1, status: 'active' }],
+        live: {
+          tableId: 'table-concealed',
+          handNumber: 4,
+          board: [],
+          seats: [{ seatIndex: 1, status: 'active' }],
+        },
+      },
+      handId: null,
+      handNumber: 4,
+      coupId: null,
+      shoeId: null,
+      idempotencyKey: null,
+    };
+    const root: CardParityRoot = {
+      surface: 'holdem-felt-3d',
+      version: 2,
+      instanceId: 'causal-concealed',
+      renderRevision: 4,
+      observedAt: 310,
+      correlation: { hand: 'table-concealed:4', handNumber: 4 },
+      dealStep: 'hole',
+      phase: 'preflop',
+      transition: 'idle',
+      slots: [
+        { slot: 'board-1', facing: 'empty', card: '' },
+        { slot: 'board-2', facing: 'empty', card: '' },
+        { slot: 'board-3', facing: 'empty', card: '' },
+        { slot: 'board-4', facing: 'empty', card: '' },
+        { slot: 'board-5', facing: 'empty', card: '' },
+        { slot: 'opp-1-1', facing: 'up', card: 'As', status: 'active' },
+        { slot: 'opp-1-2', facing: 'down', card: '', status: 'active' },
+      ],
+      meta: { 'on-felt': 'true' },
+    };
+    const result = assertParityCheckpoint({
+      game: 'holdem',
+      checkpoint: {
+        label: 'every-step-leak',
+        surface: root.surface,
+        expectRevisionAdvance: true,
+        expectCausalCardJustification: true,
+      },
+      root,
+      records: [wire],
+    });
+    expect(result).toMatchObject({
+      pass: false,
+      mismatches: [expect.objectContaining({
+        slot: 'opp-1-1',
+        field: 'card',
+        expected: '<concealed>',
+        actual: 'As',
+      })],
+    });
+  });
 });

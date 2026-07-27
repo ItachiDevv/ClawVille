@@ -54,6 +54,7 @@ export interface ParityCheckpoint {
   label: string;
   surface: Surface;
   expectRevisionAdvance: true;
+  expectCausalCardJustification?: true;
   expectRenderRevision?: number;
   expectDealStep?: string;
   expectCorrelationHand?: string;

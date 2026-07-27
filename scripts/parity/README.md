@@ -26,6 +26,14 @@ Hold’em ordered `hole -> flop -> turn -> river -> showdown` replay is asserted
 on `holdem-tray-practice` only. Felt rows assert only full-board/opponent states
 the felt actually renders.
 
+Live H-neg every-step checkpoints keep byte-strict non-leak checks but use the
+immutable journal publish timestamp as a causal ceiling for own-hole/board card
+justification. Every rendered card must appear at the same slot in a successful
+same-hand wire captured no later than that revision; later and other-hand wires
+cannot justify it. A filled causal slot disappearing mid-hand fails. Empty slots
+are accepted only after a causal settled/no-live/next-hand boundary. Positive
+rows and guest H-neg checkpoints retain exact correlated equality.
+
 The 53-cell contact sheet is not self-approving. A human records the exact PNG
 SHA-256 in ignored `out/atlas/APPROVED.md`; absence or hash drift is an
 `UNPROVEN` atlas visual gate.

@@ -946,6 +946,9 @@ export async function* driveScenario(
       ...checkpointFor(surface, phases[0]!, 0, 0),
       expectRenderRevision: initial.firstRevision,
       expectCorrelationHand: initial.correlation.hand,
+      ...(surface.endsWith('-3d')
+        ? { expectCausalCardJustification: true as const }
+        : {}),
       ...(expectsNoWire
         ? { expectResolvedWire: '<none>' as const }
         : {}),
@@ -971,6 +974,9 @@ export async function* driveScenario(
           expectRevisionAdvance: true,
           expectRenderRevision: next.revision,
           expectCorrelationHand: initial.correlation.hand,
+          ...(surface.endsWith('-3d')
+            ? { expectCausalCardJustification: true as const }
+            : {}),
           ...(expectsNoWire
             ? { expectResolvedWire: '<none>' as const }
             : {}),
