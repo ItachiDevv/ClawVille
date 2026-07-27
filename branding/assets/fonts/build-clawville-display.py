@@ -16,7 +16,7 @@ SHEETS = [
     (SCRATCH + r"\digits.png", ["0123456789"]),
 ]
 DESCENDERS = set("fgjpqy")
-BOLD_ITER = int(os.environ.get("CLAWVILLE_BOLD", "6"))  # default = founder-picked medium weight
+BOLD_ITER = int(os.environ.get("CLAWVILLE_BOLD", "4"))  # default ~+18% stroke (founder: ~20%, keeps emboss crisp)
 UPM = 1000
 CAP = 700
 

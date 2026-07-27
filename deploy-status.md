@@ -38,6 +38,10 @@
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-07-27 (repo-scrub session, push 11) — font weight settled at ~+18% stroke (founder redline of medium)
+- **What:** founder rejected the +25% medium (degraded the emboss). Rebuilt at dilation 4 (~+18%, closest to his requested 20%): emboss rim/highlight stay crisp, serifs intact. `CLAWVILLE_BOLD` default now 4.
+- **SCHEMA:** `synced`. **PARITY:** n/a.
+
 ### 2026-07-27 (repo-scrub session, push 10) — Clawville Display bolder weight (founder: thicker without the wood background)
 - **What:** glyph masks now dilate before tracing (`CLAWVILLE_BOLD` env in the build script, default 6 = medium, ~+25% stroke; 0/11 = original/heavy). Founder shown a three-weight comparison; medium matches the logo's chunk without closing counters. Kit OTF/woff2 rebuilt at medium.
 - **SCHEMA:** `synced`. **PARITY:** n/a.
