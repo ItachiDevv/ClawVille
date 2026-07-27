@@ -429,8 +429,8 @@ async function advanceHoldemToShowdown(
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
     const reachedShowdown = await driver.evalJson<boolean>(`(() => {
-      return (window.__CV_PARITY_JOURNAL?.(${JSON.stringify(surface)}) ?? [])
-        .some((entry) => {
+      const entry = (window.__CV_PARITY_JOURNAL?.(${JSON.stringify(surface)}) ?? [])
+        .find((entry) => {
           if (
             entry.surface !== ${JSON.stringify(surface)}
             || entry.dealStep !== 'showdown'
@@ -441,6 +441,39 @@ async function advanceHoldemToShowdown(
             return false;
           }
         });
+      if (!entry) return false;
+      const banner = document.querySelector(
+        '[data-testid="holdem-settlement-narration"]',
+      );
+      if (!banner) return false;
+      const readText = (selector, bannerText = false) => {
+        const element = document.querySelector(selector);
+        if (!element) return null;
+        const text = bannerText
+          ? element.getAttribute('data-banner-text')
+            ?? element.firstElementChild?.textContent
+            ?? element.textContent
+            ?? ''
+          : element.textContent ?? '';
+        return text.trim();
+      };
+      window.__CV_HOLDEM_SETTLEMENT_WITNESS = {
+        surface: ${JSON.stringify(surface)},
+        revision: entry.revision,
+        correlationHand: ${JSON.stringify(correlationHand)},
+        values: {
+          'banner-text': readText(
+            '[data-testid="holdem-settlement-narration"]',
+            true,
+          ),
+          pot: readText('[data-testid="holdem-pot-amount"]'),
+          'self-stack': readText('[data-testid="holdem-self-stack"]'),
+          'on-felt': document.querySelector(
+            '[data-cv-parity^="holdem-felt"]',
+          )?.getAttribute('data-on-felt') === 'true',
+        },
+      };
+      return true;
     })()`);
     if (reachedShowdown) return correlationHand;
     const rejectedAction = await driver.evalJson<{

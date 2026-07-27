@@ -12,6 +12,13 @@ export interface VisibleProbe {
   kind: 'text' | 'integer' | 'active' | 'on-felt';
 }
 
+interface HoldemSettlementWitness {
+  surface: string;
+  revision: number;
+  correlationHand: string;
+  values: Record<string, string | boolean | null>;
+}
+
 export const VISIBLE_PROBES: Readonly<Record<ParityGame, readonly VisibleProbe[]>> =
   Object.freeze({
     holdem: Object.freeze([
@@ -168,6 +175,18 @@ export async function assertVisibleSurface(
     actual: string | number | boolean | null;
     pass: boolean;
   }> = {};
+  const pinnedHoldemWitness = game === 'holdem'
+    ? await driver.evalJson<HoldemSettlementWitness | null>(`(() => {
+        const witness = window.__CV_HOLDEM_SETTLEMENT_WITNESS;
+        if (
+          !witness
+          || witness.surface !== ${JSON.stringify(root.surface)}
+          || witness.revision !== ${root.renderRevision}
+          || witness.correlationHand !== ${JSON.stringify(root.correlation.hand)}
+        ) return null;
+        return witness;
+      })()`)
+    : null;
   for (const probe of visibleProbesFor(game, root, wire)) {
     const expected = expectedProbeValue(
       probe,
@@ -177,7 +196,12 @@ export async function assertVisibleSurface(
       ba1Snapshot,
       records,
     );
-    const actual = await probeVisibleSurface(driver, probe);
+    const witnessed = pinnedHoldemWitness?.values[probe.name];
+    const actual = witnessed === undefined
+      ? await probeVisibleSurface(driver, probe)
+      : probe.kind === 'integer' && typeof witnessed === 'string'
+        ? parseVisibleInteger(probe.name, witnessed)
+        : witnessed;
     const normalizedActual = normalizeVisibleProbeActual(probe.name, actual);
     results[probe.name] = {
       expected,

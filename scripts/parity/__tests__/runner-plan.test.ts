@@ -478,6 +478,17 @@ describe('offline live-runner plans', () => {
     expect(visibleProbe).toBeLessThan(screenshot);
   });
 
+  test('showdown drive pins the mounted settlement witness to its revision', () => {
+    const source = readFileSync(
+      new URL('../scenarios/runtime.ts', import.meta.url),
+      'utf8',
+    );
+    expect(source).toContain('window.__CV_HOLDEM_SETTLEMENT_WITNESS = {');
+    expect(source).toContain('revision: entry.revision');
+    expect(source).toContain(`correlationHand: \${JSON.stringify(correlationHand)}`);
+    expect(source).toContain(`'[data-testid="holdem-settlement-narration"]'`);
+  });
+
   test('H7 practice reach recognizes authoritative blind log types only', () => {
     const dealtWithBlinds = {
       humanHole: [
