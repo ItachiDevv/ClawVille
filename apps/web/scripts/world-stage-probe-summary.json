@@ -5,6 +5,11 @@
   "backend": "webgl",
   "requestedTransitions": 102,
   "requestedRoundTrips": null,
+  "experiment": {
+    "mode": "crossings",
+    "dwellSeconds": null,
+    "sampleIntervalSeconds": null
+  },
   "completedRoundTrips": 0,
   "completedTransitions": 102,
   "warmupTransitions": 3,
@@ -25,9 +30,9 @@
   },
   "heap": {
     "available": true,
-    "baselineBytes": 67896964,
-    "endBytes": 68726887,
-    "growthRatio": 0.012223271131828516,
+    "baselineBytes": 67891529,
+    "endBytes": 68731037,
+    "growthRatio": 0.012365430744680975,
     "threshold": 0.15,
     "midpointBytes": null,
     "secondHalfGrowthRatio": null,
@@ -44,7 +49,8 @@
         "texturesSizeBytes": null,
         "memoryTotalBytes": null,
         "renderCallsLifetime": null,
-        "drawCallsFrame": 2
+        "drawCallsFrame": 2,
+        "memoryBreakdown": null
       },
       {
         "label": "final",
@@ -55,9 +61,17 @@
         "texturesSizeBytes": null,
         "memoryTotalBytes": null,
         "renderCallsLifetime": null,
-        "drawCallsFrame": 2
+        "drawCallsFrame": 2,
+        "memoryBreakdown": null
       }
     ]
+  },
+  "series": [],
+  "inventory": {
+    "early": null,
+    "late": null,
+    "diff": null,
+    "changes": []
   },
   "ledger": {
     "alpha": {
@@ -128,6 +142,13 @@
       "back": false,
       "forward": false
     },
+    "historyLength": {
+      "baseline": null,
+      "final": null,
+      "delta": null,
+      "maxAddedEntries": 2
+    },
+    "assetTimeline": [],
     "network": {
       "phase": "cold-cove",
       "joins": {
@@ -140,7 +161,8 @@
         "firstGame": 0,
         "afterFirstGame": 0
       },
-      "events": []
+      "events": [],
+      "stubUnhandled": {}
     },
     "coldInit": null
   },
@@ -165,5 +187,5 @@
     "heapBelow15Percent": true
   },
   "failure": null,
-  "generatedAt": "2026-07-26T22:09:09.864Z"
+  "generatedAt": "2026-07-27T00:04:55.488Z"
 }

@@ -2,8 +2,10 @@
 
 **Last Audited:** 2026-07-26
 
-Status: implementation complete; local release BLOCKED by the mandatory
-60-loop soak plateau gate.
+Status: leak-hunt fixes complete; local release remains BLOCKED by the
+mandatory 60-loop soak plateau gate. Scene structure and renderer counts now
+plateau, but the final serial run still exceeds the second-half heap limit and
+shows WebGPU program-cache byte churn.
 
 ## Inventory
 
@@ -170,9 +172,9 @@ uniform buffers at 789 from loop 20 through final. Three textures attached to
 already-mounted world materials during the existing 60-second post-ready scan
 window; counts and texture bytes plateaued before loop 20, but their shader
 variants compiled later and made `programsSize` differ by 6,013 bytes at final.
-The scanner currently uploads fresh textures without compiling their updated
-material variants. Its in-scope completion is one cooperative, all-world-slot
-compile after each non-empty fresh-texture batch.
+An experiment that added a compile after every scanner batch did not stabilize
+the renderer cache and increased heap pressure, so it was reverted rather than
+retained as a speculative fix.
 
 The next trace tied each 128 KiB texture step to exactly two additional draw
 calls, matching a two-sided Cove `BankBanner`. `compileAsync` initializes its
@@ -181,6 +183,34 @@ all-slot helper was restoring culling before the controlled warm draw, so
 off-camera banners still paid their first texture upload later. The controlled
 loading-screen draw must remain inside the temporary no-frustum section; normal
 culling is restored immediately afterward.
+
+### Final leak-hunt blocker
+
+The final serial 60-loop run proves that the stage-owned scene leak has been
+removed:
+
+- world and Cove inventories are identical early and late, including object,
+  mesh, geometry-reference, unique-geometry, name/type, and geometry-identity
+  tallies;
+- textures and geometries are exactly flat from loop 20 through loop 60 at
+  287 / 415;
+- browser history is bounded at 4 entries, and listener, route, stream,
+  recovery, hidden-frame, and mock-transport assertions all pass.
+
+The remaining byte failure is exclusively renderer-internal WebGPU cache
+variation. From loop 20 to final, attributes, geometry, indexes, textures, and
+their byte sizes are unchanged. Only programs change 146 -> 158 while program
+bytes fall by 67,827, and one uniform buffer adds 288 bytes; total reported
+memory therefore falls by 67,539 bytes (291,045,055 -> 290,977,516). The byte
+plateau assertion is strict equality, so even this decrease fails it. Forced-GC
+heap is +10.63% overall (passes 15%) but +4.18% in the second half (fails 3%).
+
+There is no growing stage subtree left to dispose or re-key, and the residual
+program/uniform cache is owned below the allowed web-side stage/world/Cove
+files. Further correction would require changing Three/WebGPU renderer cache
+semantics or the frozen gate rather than fixing an identified scene lifetime
+defect. Both are outside this slice, so the leak hunt stops BLOCKED without
+weakening thresholds or disabling features.
 
 ## Serial verification record
 
@@ -207,6 +237,18 @@ Final frozen gates:
 | 4b | probe `--lane=synthetic --webgl` | PASS, real `webgl=1`, 102/102 transitions, one Canvas, zero hidden/listener/recovery errors, heap +1.2223%; renderer 9 textures / 15 geometries / 2 derived draw calls per frame, unsupported byte/lifetime fields `null` |
 | 4c | probe `--lane=routes` | PASS, 30/30 round trips, one Canvas, cold/first/later joins 0/1/0, streams 0/1/0, cold-init landed once, heap +11.6498% |
 | 4d | probe `--lane=soak` | **BLOCKED after three full 60-loop attempts.** Final: 60/60 round trips and all route/network/freeze/history assertions pass, but heap +22.5388% total and +9.5004% second half (limits 15% / 3%); renderer loop 20 → final grew 294→295 textures and 275→312 geometries, so count/byte plateau also failed. Prior attempts independently reported +23.8286%/+8.8951% and +22.3367%/+9.0415% heap. |
+
+Leak-hunt serial re-gate (the historical blocked row above is retained):
+
+| Order | Gate | Result |
+|---|---|---|
+| L1 | root `bun run build` | PASS, exit 0; 9/9 packages, web generated 38 static pages |
+| L2 | `apps/web: bunx tsc --noEmit` | PASS, exit 0 |
+| L3 | `apps/web: bun test` touched stage-navigation suites | PASS, 15 tests / 26 assertions |
+| L4 | probe `--lane=synthetic` | PASS, WebGPU, 102/102 transitions, heap +1.2365%; renderer stable at 9 textures / 15 geometries / 4 draw calls |
+| L5 | probe `--lane=synthetic --webgl` | PASS, WebGL, 102/102 transitions, heap +1.2320%; renderer stable at 9 textures / 15 geometries / 2 draw calls |
+| L6 | probe `--lane=routes` | PASS, 30/30 round trips, heap +8.3273%, history 4 -> 4, both inventories flat |
+| L7 | probe `--lane=soak` | **BLOCKED**, 60/60 round trips. Heap +10.6303% total PASS / +4.1778% second half FAIL. Renderer counts plateau PASS at 287 textures / 415 geometries from loop 20 through final; inventories flat; byte plateau FAIL because total bytes decreased 291,045,055 -> 290,977,516 through renderer-internal program/uniform cache variation. All remaining assertions pass. |
 
 The route/soak harness owns a local in-process world/research transport because
 the frozen execution contract says no local API or database is required. It
