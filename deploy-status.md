@@ -38,6 +38,10 @@
 
 ## DEPLOY LOG (newest first — keep ~15 entries, trim the tail)
 
+### 2026-07-27 (repo-scrub session, push 16) — Meridian removed from the dev-update card (founder call)
+- **What:** the SAP announcement no longer mentions Meridian: kicker now "SAP PROTOCOL", the Meridian list line replaced with the prod-verified "13,500+ agent-to-agent USDC payments settled" stat, the 2-RAILS chip replaced with ESCROW. Meridian remains in the other (unposted) banner templates.
+- **SCHEMA:** `synced`. **PARITY:** n/a.
+
 ### 2026-07-27 (repo-scrub session, push 15) — official links corrected in all banners + codified
 - **What:** founder caught wrong footer links. Pulled the official set from the DexScreener token profile: X `@Clawville_World`, Discord `discord.gg/KJfvM4VqQZ` (+ Telegram/TikTok recorded). All four banner templates fixed + re-exported; BRAND.md §8 now lists the ONLY permitted outward links (`@clawville` is not ours).
 - **SCHEMA:** `synced`. **PARITY:** n/a.
