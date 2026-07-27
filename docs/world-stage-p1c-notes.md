@@ -350,3 +350,30 @@ greater than 1%, history bounded at four, listener delta zero, and every
 route/network/freeze assertion remain hard gates.
 
 Reviewer-owned gaps remain explicit: separate-account two-tab drive, same-account supersession drive, `/arena` legacy smoke, staging mock-Hatcher harness, onboarding smoke, hosted runtime probe, and founder/Iris-Xe visual sign-off.
+
+## Final gate pass (Fable-run, 2026-07-26/27 — v4.1 gates)
+
+Reviewer/orchestrator ran the full serial suite personally (Codex's final leg
+died on provider capacity after committing the gate calibration; the
+mechanical suite run folded into the reviewer pass):
+
+| Gate | Result |
+|---|---|
+| root `bun run build` | PASS |
+| `apps/web: bunx tsc --noEmit` | PASS |
+| web tests (machine + navigation + ownership) | PASS |
+| api tests (skill-protocol + agent-paid-surface) | PASS |
+| synthetic WebGPU | PASS |
+| synthetic forced-WebGL | PASS |
+| routes (30 trips, network phases, cold-init) | PASS |
+| dwell-game (100 s) | PASS |
+| **soak 60 (v4.1)** | **PASS — 28/28 assertions; textures 288→288, geometries 419→419 exact from loop-30 baseline; renderer bytes −77 KB; heap total +13.82% (limit 20%), second-half slope 0.293 MB/loop (limit 1.0)** |
+| dwell-cove rerun (100 s) | PASS — drift 0.0018 MB/s (limit 0.05); all assertions green |
+
+v4.1 calibration (brief addendum, commit 55d3f2cb): count baseline anchored
+at loop 30 (lazy Cove texture materialization completes by loop 30 — steps at
+loops 7/8/30 then 30 loops flat in every run); slope limit 1.0 MB/loop
+(renderer-internal floor variance 0.40–0.81 measured across four
+structurally-flat runs; app-leak signature ≥1.2). First dwell-cove attempt
+crashed on a Puppeteer detached-frame harness race with flat heap underneath
+(0.004 MB/s); rerun below.
