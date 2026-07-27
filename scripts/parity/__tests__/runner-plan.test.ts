@@ -14,6 +14,8 @@ import {
 } from '../runner-env';
 import {
   driveScenario,
+  isActiveHoldemCorrelation,
+  isMatchingHoldemShowdown,
   nextJournalStep,
   reachedFor,
   shouldEndBlackjackNegativeTraversal,
@@ -444,6 +446,23 @@ describe('offline live-runner plans', () => {
     };
     expect(reachedFor('holdem', 'H2')(wire)).toBe(true);
     expect(reachedFor('holdem', 'H3')(wire)).toBe(false);
+  });
+
+  test('Holdem showdown drive ignores idle and cross-hand correlations', () => {
+    expect(isActiveHoldemCorrelation({
+      correlation: { hand: 'practice:idle', handNumber: null },
+    })).toBe(false);
+    expect(isActiveHoldemCorrelation({
+      correlation: { hand: 'hand-1', handNumber: 1 },
+    })).toBe(true);
+    expect(isMatchingHoldemShowdown({
+      dealStep: 'showdown',
+      correlationHand: 'hand-2',
+    }, 'hand-1')).toBe(false);
+    expect(isMatchingHoldemShowdown({
+      dealStep: 'showdown',
+      correlationHand: 'hand-1',
+    }, 'hand-1')).toBe(true);
   });
 
   test('H7 practice reach recognizes authoritative blind log types only', () => {

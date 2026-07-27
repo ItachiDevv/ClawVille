@@ -368,7 +368,15 @@ async function practiceHoldemCorrelation(
   surface: Surface,
 ): Promise<string> {
   await driver.waitFn(
-    `Boolean(window.__CV_READ_PARITY?.(${JSON.stringify(surface)})?.correlation?.hand)`,
+    `(() => {
+      const root = window.__CV_READ_PARITY?.(${JSON.stringify(surface)});
+      const hand = root?.correlation?.hand;
+      return Boolean(
+        hand
+        && Number.isSafeInteger(root?.correlation?.handNumber)
+        && !hand.endsWith(':idle')
+      );
+    })()`,
     30_000,
   );
   const correlation = await driver.evalJson<string>(
@@ -380,12 +388,39 @@ async function practiceHoldemCorrelation(
   return correlation;
 }
 
+export function isActiveHoldemCorrelation(root: {
+  correlation?: { hand?: string; handNumber?: number | null };
+} | null): boolean {
+  const hand = root?.correlation?.hand;
+  return Boolean(
+    hand
+    && Number.isSafeInteger(root?.correlation?.handNumber)
+    && !hand.endsWith(':idle')
+  );
+}
+
+export function isMatchingHoldemShowdown(
+  current: { dealStep: string | null; correlationHand: string | null },
+  expectedCorrelationHand: string,
+): boolean {
+  return current.dealStep === 'showdown'
+    && current.correlationHand === expectedCorrelationHand;
+}
+
 async function advanceHoldemToShowdown(
   driver: Driver,
   surface: Surface,
 ): Promise<string> {
   await driver.waitFn(
-    `Boolean(window.__CV_READ_PARITY?.(${JSON.stringify(surface)})?.correlation?.hand)`,
+    `(() => {
+      const root = window.__CV_READ_PARITY?.(${JSON.stringify(surface)});
+      const hand = root?.correlation?.hand;
+      return Boolean(
+        hand
+        && Number.isSafeInteger(root?.correlation?.handNumber)
+        && !hand.endsWith(':idle')
+      );
+    })()`,
     30_000,
   );
   const correlationHand = await driver.evalJson<string>(
@@ -456,10 +491,19 @@ async function advanceHoldemToShowdown(
         })`,
       );
     }
-    const step = await driver.evalJson<string | null>(
-      `window.__CV_READ_PARITY?.(${JSON.stringify(surface)})?.dealStep ?? null`,
-    );
-    if (step === 'showdown') return correlationHand;
+    const current = await driver.evalJson<{
+      dealStep: string | null;
+      correlationHand: string | null;
+    }>(`(() => {
+      const root = window.__CV_READ_PARITY?.(${JSON.stringify(surface)});
+      return {
+        dealStep: root?.dealStep ?? null,
+        correlationHand: root?.correlation?.hand ?? null,
+      };
+    })()`);
+    if (isMatchingHoldemShowdown(current, correlationHand)) {
+      return correlationHand;
+    }
     if (!await clickText(driver, ['Check', 'Call'])) {
       await new Promise((resolveWait) => setTimeout(resolveWait, 150));
       continue;
