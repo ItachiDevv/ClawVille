@@ -275,6 +275,36 @@ describe('Baccarat2dRevealEpoch', () => {
     expect(commits.at(-1)).toBe('fresh-settled');
   });
 
+  test('committed display steps schedule exactly one following paint', () => {
+    const { callbacks, epoch } = fakeEpoch();
+    const commits: string[] = [];
+    let step = 1;
+    epoch.begin('coup-4');
+    const schedule = () => epoch.scheduleCommittedStep(
+      RESPONSE,
+      step,
+      (nextStep) => {
+        step = nextStep;
+        commits.push(`step-${nextStep}`);
+        schedule();
+      },
+      () => commits.push('settled'),
+    );
+    schedule();
+    schedule();
+    for (let index = 0; index < callbacks.length; index += 1) {
+      callbacks[index]!();
+    }
+    expect(commits).toEqual([
+      'step-2',
+      'step-3',
+      'step-4',
+      'step-5',
+      'step-6',
+      'settled',
+    ]);
+  });
+
   test('fake-timer frames conceal banner, result, and balance until settled', () => {
     const { callbacks, epoch } = fakeEpoch();
     let phase: Baccarat2dDisplaySnapshot['phase'] = 'revealing';

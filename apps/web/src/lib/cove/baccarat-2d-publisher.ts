@@ -190,6 +190,7 @@ type ClearTimer = (handle: TimerHandle) => void;
 export class Baccarat2dRevealEpoch {
   private epoch = 0;
   private correlation: string | null = null;
+  private committedStepKey: string | null = null;
   private readonly timers = new Set<TimerHandle>();
 
   constructor(
@@ -217,9 +218,33 @@ export class Baccarat2dRevealEpoch {
     );
   }
 
+  scheduleCommittedStep(
+    response: BaccaratCoupResponse,
+    revealedStep: number,
+    reveal: (step: number) => void,
+    settle: () => void,
+  ): void {
+    if (this.correlation !== response.coupId) return;
+    const key = `${response.coupId}:${revealedStep}`;
+    if (this.committedStepKey === key) return;
+    this.committedStepKey = key;
+    const steps = buildBaccarat2dDealSteps(response.outcome);
+    const commit = (callback: () => void) => {
+      if (this.committedStepKey !== key) return;
+      this.committedStepKey = null;
+      callback();
+    };
+    if (revealedStep < steps.length) {
+      this.schedule(CARD_STEP_MS, () => commit(() => reveal(revealedStep + 1)));
+      return;
+    }
+    this.schedule(BACCARAT_2D_FINAL_REVEAL_MS, () => commit(settle));
+  }
+
   cancel(): void {
     this.epoch += 1;
     this.correlation = null;
+    this.committedStepKey = null;
     for (const timer of this.timers) this.clearTimer(timer);
     this.timers.clear();
   }

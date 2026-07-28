@@ -504,14 +504,6 @@ export default function BaccaratModal() {
     setPendingSettlement(res);
     setRevealedStep(1);
     setDisplayPhase('revealing');
-    revealEpochRef.current?.scheduleCoup(
-      res,
-      (step) => setRevealedStep(step),
-      () => {
-        setDisplayPhase('settled');
-        setBalance(res.balance);
-      },
-    );
     // Reflect the shoe's new dealtCount locally so the next coup's penetration
     // gate + fairness HUD are accurate without a refetch.
     setShoe((prev) => (prev ? { ...prev, dealtCount: res.dealtCount } : prev));
@@ -519,6 +511,19 @@ export default function BaccaratModal() {
       showToast('Shoe nearly spent. The next coup opens a fresh shoe.', 'info');
     }
   }, [showToast]);
+
+  useEffect(() => {
+    if (!pendingSettlement || displayPhase !== 'revealing') return;
+    revealEpochRef.current?.scheduleCommittedStep(
+      pendingSettlement,
+      revealedStep,
+      (step) => setRevealedStep(step),
+      () => {
+        setDisplayPhase('settled');
+        setBalance(pendingSettlement.balance);
+      },
+    );
+  }, [displayPhase, pendingSettlement, revealedStep]);
 
   // ── DEAL THE COUP ────────────────────────────────────────────────────────────
   const handleDeal = useCallback(async () => {
