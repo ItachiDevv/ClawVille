@@ -682,48 +682,17 @@ export default function BlackjackModal() {
     if (!blackjackOpen || !correlation) return;
     const epoch = revealEpochRef.current;
     if (!epoch?.isCurrent(correlation)) return;
-
-    if (!pendingSettlement && displayStep === 'hole') {
-      const timer = window.setTimeout(() => {
-        if (!epoch.isCurrent(correlation)) return;
-        setDisplayStep('player-turn');
-      }, 120);
-      return () => window.clearTimeout(timer);
-    }
-
-    if (!pendingSettlement && displayStep === 'split') {
-      const timer = window.setTimeout(() => {
-        if (!epoch.isCurrent(correlation)) return;
-        setDisplayStep('player-turn');
-      }, 120);
-      return () => window.clearTimeout(timer);
-    }
-
-    if (pendingSettlement && displayStep === 'hole') {
-      const timer = window.setTimeout(() => {
-        if (!epoch.isCurrent(correlation)) return;
-        setDisplayStep('dealer-reveal');
-      }, 420);
-      return () => window.clearTimeout(timer);
-    }
-
-    if (pendingSettlement && displayStep === 'player-turn') {
-      const timer = window.setTimeout(() => {
-        if (!epoch.isCurrent(correlation)) return;
-        setDisplayStep('dealer-reveal');
-      }, 120);
-      return () => window.clearTimeout(timer);
-    }
-
-    if (pendingSettlement && displayStep === 'dealer-reveal') {
-      const timer = window.setTimeout(() => {
-        if (!epoch.isCurrent(correlation)) return;
-        setDisplayStep('settled');
+    return epoch.scheduleCommittedStep(
+      correlation,
+      displayStep,
+      pendingSettlement !== null,
+      (nextStep) => {
+        setDisplayStep(nextStep);
+        if (nextStep !== 'settled' || !pendingSettlement) return;
         setActiveSlot(0);
         setBalance(pendingSettlement.balance);
-      }, 550);
-      return () => window.clearTimeout(timer);
-    }
+      },
+    );
   }, [blackjackOpen, displayStep, liveHand?.handId, pendingSettlement]);
 
   // ── Force back to Control if the agent disconnects mid-session ──────────────

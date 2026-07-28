@@ -174,6 +174,7 @@ export function useBlackjack2dPublisher({
 type TimerHandle = ReturnType<typeof setTimeout>;
 type SetTimer = (callback: () => void, delayMs: number) => TimerHandle;
 type ClearTimer = (handle: TimerHandle) => void;
+type BlackjackCommittedStep = 'player-turn' | 'dealer-reveal' | 'settled';
 
 /**
  * Owns one reveal generation. Every callback captures both the epoch and the
@@ -182,11 +183,15 @@ type ClearTimer = (handle: TimerHandle) => void;
 export class BlackjackRevealEpoch {
   private epoch = 0;
   private correlation: string | null = null;
+  private committedStepKey: string | null = null;
+  private actionSettlement = false;
   private readonly timers = new Set<TimerHandle>();
 
   constructor(
-    private readonly setTimer: SetTimer = setTimeout,
-    private readonly clearTimer: ClearTimer = clearTimeout,
+    private readonly setTimer: SetTimer = (callback, delayMs) => (
+      setTimeout(callback, delayMs)
+    ),
+    private readonly clearTimer: ClearTimer = (handle) => clearTimeout(handle),
   ) {}
 
   begin(correlation: string): void {
@@ -194,10 +199,53 @@ export class BlackjackRevealEpoch {
     this.correlation = correlation;
   }
 
-  schedule(delayMs: number, callback: () => void): void {
+  scheduleCommittedStep(
+    correlation: string,
+    displayStep: Blackjack2dDisplayStep,
+    hasPendingSettlement: boolean,
+    commit: (step: BlackjackCommittedStep) => void,
+  ): (() => void) | undefined {
+    if (this.correlation !== correlation) return;
+
+    let delayMs: number;
+    let nextStep: BlackjackCommittedStep;
+    if (!hasPendingSettlement && (displayStep === 'hole' || displayStep === 'split')) {
+      delayMs = 120;
+      nextStep = 'player-turn';
+    } else if (hasPendingSettlement && displayStep === 'hole') {
+      delayMs = 420;
+      nextStep = 'dealer-reveal';
+    } else if (hasPendingSettlement && displayStep === 'player-turn') {
+      this.actionSettlement = true;
+      delayMs = 120;
+      nextStep = 'dealer-reveal';
+    } else if (hasPendingSettlement && displayStep === 'dealer-reveal') {
+      delayMs = this.actionSettlement ? 420 : 550;
+      nextStep = 'settled';
+    } else {
+      return;
+    }
+
+    const key = `${correlation}:${hasPendingSettlement ? 'settlement' : 'live'}:${displayStep}`;
+    if (this.committedStepKey === key) return;
+    this.committedStepKey = key;
+    const cleanup = this.schedule(delayMs, () => {
+      if (this.committedStepKey !== key) return;
+      this.committedStepKey = null;
+      commit(nextStep);
+    });
+    return () => {
+      if (this.committedStepKey === key) this.committedStepKey = null;
+      cleanup();
+    };
+  }
+
+  private schedule(delayMs: number, callback: () => void): () => void {
     const scheduledEpoch = this.epoch;
     const scheduledCorrelation = this.correlation;
+    let active = true;
     const handle = this.setTimer(() => {
+      active = false;
       this.timers.delete(handle);
       if (
         scheduledEpoch !== this.epoch ||
@@ -209,6 +257,12 @@ export class BlackjackRevealEpoch {
       callback();
     }, delayMs);
     this.timers.add(handle);
+    return () => {
+      if (!active) return;
+      active = false;
+      this.timers.delete(handle);
+      this.clearTimer(handle);
+    };
   }
 
   isCurrent(correlation: string): boolean {
@@ -218,6 +272,8 @@ export class BlackjackRevealEpoch {
   cancel(): void {
     this.epoch += 1;
     this.correlation = null;
+    this.committedStepKey = null;
+    this.actionSettlement = false;
     for (const timer of this.timers) this.clearTimer(timer);
     this.timers.clear();
   }

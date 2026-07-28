@@ -178,12 +178,21 @@ describe('blackjack 2D publisher', () => {
     })!;
 
     expect(playerTurn.dealStep).toBe('player-turn');
-    expect(playerTurn.slots.find((slot) => slot.slot === 'player-0-card-3'))
-      .toEqual({ slot: 'player-0-card-3', facing: 'up', card: 'Qc' });
-    expect(playerTurn.slots.find((slot) => slot.slot === 'dealer-card-1'))
-      .toEqual({ slot: 'dealer-card-1', facing: 'up', card: 'Ac' });
-    expect(playerTurn.slots.find((slot) => slot.slot === 'dealer-card-2'))
-      .toEqual({ slot: 'dealer-card-2', facing: 'down', card: '' });
+    const thirdCard = playerTurn.slots.find(
+      (slot) => slot.slot === 'player-0-card-3',
+    );
+    expect(thirdCard?.facing).toBe('up');
+    expect(String(thirdCard?.card)).toBe('Qc');
+    const dealerUpcard = playerTurn.slots.find(
+      (slot) => slot.slot === 'dealer-card-1',
+    );
+    expect(dealerUpcard?.facing).toBe('up');
+    expect(String(dealerUpcard?.card)).toBe('Ac');
+    const dealerHole = playerTurn.slots.find(
+      (slot) => slot.slot === 'dealer-card-2',
+    );
+    expect(dealerHole?.facing).toBe('down');
+    expect(String(dealerHole?.card)).toBe('');
     expect(playerTurn.meta['player-0-total']).toBe('26');
     expect(playerTurn.meta['dealer-total']).toBeUndefined();
     expect(playerTurn.meta['outcome-0']).toBeUndefined();
@@ -257,28 +266,30 @@ describe('blackjack 2D publisher', () => {
       ),
       'utf8',
     );
-    expect(source).toContain(
-      "if (!pendingSettlement && displayStep === 'hole')",
-    );
-    expect(source).toContain(
-      "if (pendingSettlement && displayStep === 'hole')",
-    );
-    expect(source).toContain(
-      "if (pendingSettlement && displayStep === 'player-turn')",
-    );
-    expect(source).toContain(
-      "if (!pendingSettlement && displayStep === 'split')",
-    );
-    expect(source).toContain(
-      "if (pendingSettlement && displayStep === 'dealer-reveal')",
-    );
-    expect(source).toContain('if (!epoch.isCurrent(correlation)) return;');
+    expect(source).toContain('return epoch.scheduleCommittedStep(');
+    expect(source).not.toContain('window.setTimeout');
     expect(source).not.toContain(
       "setDisplayStep('settled');\n        setLiveHand(null);",
     );
     expect(source).toContain("if (displayStep !== 'settled')");
     expect(source).toContain(
       "setDisplayStep(sourceAction === 'split' ? 'split' : 'player-turn')",
+    );
+  });
+
+  test('browser timer defaults are lexical wrappers, not illegally rebound globals', () => {
+    const publisherSource = readFileSync(
+      new URL('../blackjack-2d-publisher.ts', import.meta.url),
+      'utf8',
+    );
+    expect(publisherSource).toContain(
+      'private readonly setTimer: SetTimer = (callback, delayMs)',
+    );
+    expect(publisherSource).toContain(
+      'private readonly clearTimer: ClearTimer = (handle)',
+    );
+    expect(publisherSource).not.toContain(
+      'private readonly setTimer: SetTimer = setTimeout',
     );
   });
 
@@ -301,73 +312,139 @@ describe('blackjack 2D publisher', () => {
 });
 
 describe('BlackjackRevealEpoch', () => {
-  test('close invalidates callbacks even if the host scheduler still fires them', () => {
+  function fakeEpoch() {
     const callbacks: Array<() => void> = [];
+    const delays: number[] = [];
+    const cleared: number[] = [];
     const epoch = new BlackjackRevealEpoch(
-      ((callback: () => void) => {
+      ((callback: () => void, delayMs: number) => {
         callbacks.push(callback);
+        delays.push(delayMs);
         return callbacks.length as unknown as ReturnType<typeof setTimeout>;
       }),
-      () => {},
+      ((handle) => cleared.push(handle as unknown as number)),
     );
+    return { callbacks, cleared, delays, epoch };
+  }
+
+  test('close invalidates the real committed-step callback', () => {
+    const { callbacks, epoch } = fakeEpoch();
     const commits: string[] = [];
     epoch.begin('hand-a');
-    epoch.schedule(10, () => commits.push('dealer-reveal'));
+    epoch.scheduleCommittedStep(
+      'hand-a',
+      'player-turn',
+      true,
+      (step) => commits.push(step),
+    );
     epoch.cancel();
     callbacks[0]!();
     expect(commits).toEqual([]);
   });
 
-  test('a consecutive hand cannot receive the prior hand timer', () => {
-    const callbacks: Array<() => void> = [];
-    const epoch = new BlackjackRevealEpoch(
-      ((callback: () => void) => {
-        callbacks.push(callback);
-        return callbacks.length as unknown as ReturnType<typeof setTimeout>;
-      }),
-      () => {},
-    );
+  test('Next Hand invalidates the prior settlement callback', () => {
+    const { callbacks, epoch } = fakeEpoch();
     const commits: string[] = [];
     epoch.begin('hand-a');
-    epoch.schedule(10, () => commits.push('stale-a'));
-    epoch.begin('hand-b');
-    epoch.schedule(10, () => commits.push('fresh-b'));
+    epoch.scheduleCommittedStep(
+      'hand-a',
+      'dealer-reveal',
+      true,
+      (step) => commits.push(step),
+    );
+    epoch.cancel();
     callbacks[0]!();
-    callbacks[1]!();
-    expect(commits).toEqual(['fresh-b']);
+    expect(commits).toEqual([]);
   });
 
-  test('new correlation cancels every outstanding handle before scheduling', () => {
-    const cleared: number[] = [];
-    let nextHandle = 0;
-    const epoch = new BlackjackRevealEpoch(
-      (() => {
-        nextHandle += 1;
-        return nextHandle as unknown as ReturnType<typeof setTimeout>;
-      }),
-      ((handle) => {
-        cleared.push(handle as unknown as number);
-      }),
-    );
+  test('a new deal cannot receive the prior hand timer', () => {
+    const { callbacks, epoch } = fakeEpoch();
+    const commits: string[] = [];
     epoch.begin('hand-a');
-    epoch.schedule(100, () => {});
-    epoch.schedule(200, () => {});
+    epoch.scheduleCommittedStep(
+      'hand-a',
+      'hole',
+      false,
+      (step) => commits.push(`stale-${step}`),
+    );
+    epoch.begin('hand-b');
+    epoch.scheduleCommittedStep(
+      'hand-b',
+      'hole',
+      false,
+      (step) => commits.push(`fresh-${step}`),
+    );
+    callbacks[0]!();
+    callbacks[1]!();
+    expect(commits).toEqual(['fresh-player-turn']);
+  });
+
+  test('a mismatched correlation cannot arm a committed-step timer', () => {
+    const { callbacks, epoch } = fakeEpoch();
+    epoch.begin('hand-a');
+    const cleanup = epoch.scheduleCommittedStep(
+      'hand-b',
+      'hole',
+      false,
+      () => {},
+    );
+    expect(cleanup).toBeUndefined();
+    expect(callbacks).toHaveLength(0);
+  });
+
+  test('new correlation clears the effect-owned handle before scheduling', () => {
+    const { cleared, epoch } = fakeEpoch();
+    epoch.begin('hand-a');
+    epoch.scheduleCommittedStep('hand-a', 'hole', false, () => {});
     expect(epoch.isCurrent('hand-a')).toBe(true);
     epoch.begin('hand-b');
-    expect(cleared).toEqual([1, 2]);
+    expect(cleared).toEqual([1]);
     expect(epoch.isCurrent('hand-a')).toBe(false);
     expect(epoch.isCurrent('hand-b')).toBe(true);
   });
 
-  test('fake-timer DOM frames conceal settlement and bankroll until settled', () => {
-    const callbacks: Array<() => void> = [];
-    const epoch = new BlackjackRevealEpoch(
-      ((callback: () => void) => {
-        callbacks.push(callback);
-        return callbacks.length as unknown as ReturnType<typeof setTimeout>;
-      }),
-      () => {},
+  test('effect cleanup clears only its scheduled committed step', () => {
+    const { callbacks, cleared, epoch } = fakeEpoch();
+    const commits: string[] = [];
+    epoch.begin('hand-a');
+    const cleanup = epoch.scheduleCommittedStep(
+      'hand-a',
+      'hole',
+      false,
+      (step) => commits.push(step),
     );
+    cleanup?.();
+    callbacks[0]!();
+    expect(cleared).toEqual([1]);
+    expect(commits).toEqual([]);
+    expect(epoch.isCurrent('hand-a')).toBe(true);
+  });
+
+  test('terminal action uses the 120ms masked beat then a 420ms dealer beat', () => {
+    const { callbacks, delays, epoch } = fakeEpoch();
+    const commits: string[] = [];
+    let step: Blackjack2dDisplaySnapshot['displayStep'] = 'player-turn';
+    epoch.begin('hand-a');
+    const schedule = () => epoch.scheduleCommittedStep(
+      'hand-a',
+      step,
+      true,
+      (nextStep) => {
+        step = nextStep;
+        commits.push(nextStep);
+        schedule();
+      },
+    );
+    schedule();
+    for (let index = 0; index < callbacks.length; index += 1) {
+      callbacks[index]!();
+    }
+    expect(delays).toEqual([120, 420]);
+    expect(commits).toEqual(['dealer-reveal', 'settled']);
+  });
+
+  test('fake-timer DOM frames conceal settlement and bankroll until settled', () => {
+    const { callbacks, delays, epoch } = fakeEpoch();
     let step: Blackjack2dDisplaySnapshot['displayStep'] = 'hole';
     let displayedBalance = 100;
     const frames: string[] = [];
@@ -385,18 +462,23 @@ describe('BlackjackRevealEpoch', () => {
 
     epoch.begin('hand-7');
     renderFrame();
-    epoch.schedule(420, () => {
-      step = 'dealer-reveal';
-      renderFrame();
-    });
-    epoch.schedule(970, () => {
-      step = 'settled';
-      displayedBalance = SETTLED.balance;
-      renderFrame();
-    });
-    callbacks[0]!();
-    callbacks[1]!();
+    const schedule = () => epoch.scheduleCommittedStep(
+      'hand-7',
+      step,
+      true,
+      (nextStep) => {
+        step = nextStep;
+        if (nextStep === 'settled') displayedBalance = SETTLED.balance;
+        renderFrame();
+        schedule();
+      },
+    );
+    schedule();
+    for (let index = 0; index < callbacks.length; index += 1) {
+      callbacks[index]!();
+    }
 
+    expect(delays).toEqual([420, 550]);
     expect(frames).toHaveLength(3);
     expect(frames[0]).toContain('data-balance="100"');
     expect(frames[0]).not.toContain('136');
