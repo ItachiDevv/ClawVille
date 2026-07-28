@@ -1,173 +1,240 @@
-# World-Stage Watchdog RE-LAND — Frozen Brief v1 (2026-07-27)
+# World-Stage Watchdog RE-LAND — Frozen Brief v2 (2026-07-27)
 
-**Status: FROZEN for /copus-max critique round 1.** Author: Fable (planner/reviewer).
-Executor: Codex via /copus-max. Branch: `feat/watchdog-reland` off `staging`
-(worktree `C:/Users/itachi/Documents/Crypto/cv-covefreeze`, staging = `89b6daac`).
+**Status: FROZEN v2 after Codex critique round 1 (VERDICT: REJECT — all findings
+folded).** Author: Fable (planner/reviewer). Executor: Codex via /copus-max.
+Branch: `feat/watchdog-reland` off `staging` (worktree
+`C:/Users/itachi/Documents/Crypto/cv-covefreeze`, staging = `89b6daac`).
+v1 is in git history; v2 SUPERSEDES it entirely.
 
-## Context — read first
+## Root-cause CORRECTION (folded from critique round 1 — read first)
 
-The progress-aware readiness watchdog (v3) shipped to prod in PR #253 and was
-**emergency-reverted** (`e19d040f` on master) the same night: it fixed the founder's
-mobile 45s "transition failed" card but introduced a worse failure (kelp portal exit
-→ stuck opaque input-blocking overlay). Root causes were pinned by a diff audit and
-recorded in `docs/persistent-world-canvas-plan-2026-07-24.md` (INCIDENT LEDGER
-2026-07-28). Prod today = master `5db3a134`: the ORIGINAL blind 45s timer (the open
-incident) + the loader-portal hotfix #254. **Staging still carries watchdog v3** —
-this re-land fixes v3 in place on staging; staging→master promotion is BLOCKED until
-this lands and gates pass.
+The v1 narrative ("silent retry orphans the parked adopted navigation — the
+exact revert cause") is **not reachable under production timings**:
 
-Current v3 code: `apps/web/src/components/three/world-stage/StageTransition.tsx`
-(watchdog effect ~lines 81–187). Companion files:
-`WorldStageRoot.tsx` (navigationRef parking :73–76, ADOPT/park :183–204, complete
-handler :206–229), `StageHostedCoveScene.tsx` (module-level `inflightCoveCompile`
-dedupe :20–99), `stage-store.ts` (`requestStageScene` :415), probe
-`apps/web/scripts/world-stage-probe.mjs` (lanes synthetic/routes/soak).
+- A parked navigation is committed and cleared at the 250 ms opaque midpoint
+  (`WorldStageRoot.tsx:207-229` is the OPAQUE-midpoint handler, not a
+  completion handler; completion is `stage-store.ts:304-329`).
+- A v3 watchdog retry cannot fire before ~75 s visible (45 s timeout + 30 s
+  stall window). By then no parked ref exists.
+- `ADOPT` is only possible during `fadingOut` (250 ms window)
+  (`stage-navigation-ownership.ts:24-36`); after the midpoint, same-scene
+  navigation is `EXECUTE_NOW`.
+- `/kelp` never touches the stage-navigation bridge at all — its exit is the
+  generic `SceneTransition` → `router.push` (`app/kelp/page.tsx:135-156`).
 
-The loader-visibility root cause (#1 in the ledger) is ALREADY FIXED on both prod
-(#254) and staging (`f42fe97b` — SeaLoadingScreen portaled to body). NOT in scope
-to re-fix; IS in scope to gate (Lane A below).
+**Revised incident hypothesis (drives priority):** the live prod wedge
+(input-blocking opaque overlay; kelp portal click that never changed the URL)
+is most consistent with the **cove compile dedupe wedge** — a watchdog retry
+mints a new generation whose warmup `await`s the SAME never-settling
+`compileAsync` promise forever → overlay stays opaque + input-blocking
+indefinitely. Fix C is therefore **P0**, and Fix A is DOWNGRADED to
+**defensive hardening** contingent on a reproduction attempt (Fix A0).
+The plan-doc INCIDENT LEDGER root-cause entry must be corrected in the same
+diff as this work (see Docs section).
 
-## Fix A — orphaned adopted navigation on silent retry (P0, the revert cause)
+## Fix C — bounded cove compile await (P0 — probable real revert cause)
 
-**Bug:** watchdog's silent retry calls `requestStageScene(request.sceneId)`, minting
-a NEW `pendingRequest` with a new `requestId`. WorldStageRoot's parked
-`navigationRef` (`{requestId, navigation}`) is keyed to the OLD requestId. When the
-retry completes, the complete handler (`WorldStageRoot.tsx:218-226`) sees
-`pendingNavigation.requestId !== request.requestId` → returns early → the adopted
-navigation (e.g. the cove exit the user clicked) is NEVER committed → overlay stuck
-opaque + input-blocking. This is the exact live wedge I hit and the kelp black
-screen the founder hit.
+**Bug:** `StageHostedCoveScene.tsx:20-21,77-99` — module-level
+`inflightCoveCompile` keyed by renderer; cleanup only in the compile promise's
+`.finally`. A never-settling `compileAsync` wedges every later generation
+(including watchdog-retry generations) forever.
 
-**Required fix (exact chain, no sceneId heuristics):** add a store-level
-`retryStageScene(previous: StageRequest)` action that mints the fresh
-generation/requestId AND records the lineage (e.g. `retryOfRequestId` on the new
-pendingRequest, or a store-level `retryChain` map). StageTransition's silent retry
-calls THIS instead of bare `requestStageScene`. WorldStageRoot re-keys its parked
-`navigationRef` when the pendingRequest it is keyed to is superseded by a retry of
-that same requestId (subscribe or check in the complete handler — either works, but
-the match must be exact lineage, never "same sceneId", because a genuinely new
-navigation to the same scene must not resurrect a stale parked navigation).
+**Required design (exact semantics from critique):**
+- Renderer-keyed entry `{ compilePromise, timedOut, settled }`.
+- Per-generation wait = `Promise.race(compilePromise, sentinel timer 20 s)`.
+  The timeout **resolves a sentinel — never rejects** (no unhandled-rejection
+  path).
+- Cleanup + rejection handling attach to the ORIGINAL compile promise, never
+  the race (a race-attached `.finally` would clear the entry while
+  `compileAsync` still runs → double-compile).
+- On timeout: set `timedOut = true`, `console.warn`, and CONTINUE through the
+  direct `gl.render` warm + ack path (the current `catch` placement at
+  :101-111 must not skip the direct warm on timeout — restructure so timeout
+  is not an exception path).
+- `timedOut` entry = renderer TOMBSTONE: retained until renderer replacement
+  (`gl` identity change). Later generations seeing a tombstone bypass compile
+  entirely and proceed to direct render — never re-issue `compileAsync` on
+  that renderer, even after late settlement of the original promise.
+- Late settlement AFTER timeout: original-promise handlers must not clear the
+  tombstone in a way that lets a later remount start a second compile on the
+  same renderer; late REJECTION must land in an attached handler.
 
-**Proof required:** unit test on the re-key path (stage-navigation-ownership tests
-pattern) + the end-to-end lane (Lane C).
+**Proof required:** unit tests (extract the entry-management into a testable
+seam if needed) covering: late resolve, late reject, timeout→bypass on next
+generation, generation supersession mid-wait, renderer replacement clears the
+tombstone. Plus synthetic lane still 30/30.
 
-## Fix B — attempt ceiling blind to the GPU texture-upload phase (P0, the incident's discard class)
+## Fix B — verdict-machine watchdog with budgets + activity classes (P0)
 
-**Bug:** v3's `ATTEMPT_CEILING_MS` (90s visible) fires "regardless of activity."
-During the world boot's dominant phase — GPU texture upload — ALL of v3's activity
-signals freeze: `__W3D_PROGRESS` sits at 1.0 (LoadingManager drained), slot status
-static, no recoveries. A slow mobile device 95% done uploading at 90s gets its boot
-DISCARDED and restarted (retry #1), then the card. The ceiling punishes exactly the
-users it was built for.
+Replaces v3's inline tick logic. Extract a PURE REDUCER
+(`stage-watchdog-machine.ts`, mirroring `world-stream-machine.ts`): state
+INCLUDES request identity, phase/terminal status, visible-elapsed clocks,
+per-attempt activity high-water marks, attempt index, and chain budget. A
+terminal request always returns `none`; a new request identity initializes
+fresh state. (v1's stateless signature could not enforce Fix D — corrected.)
 
-**Fact found in recon:** the needed signals ALREADY EXIST on the window bridge
-(written by StaggeredTextureUpload / World3DCanvas, consumed by
-`sea-loading-screen.tsx:154-167`): `__W3D_TEXTURE_UPLOAD_TOTAL`,
-`__W3D_TEXTURE_UPLOAD_DONE`, `__W3D_CANVAS_READY`, `__W3D_TEXTURES_READY`. No new
-instrumentation is required — the watchdog just never reads them.
+**Budgets (explicit contract — replaces v1's rejected 240s-per-attempt):**
+- `SOFT_TIMEOUT_MS = 45_000` (prod default, prop-driven as today): soft
+  trigger = elapsed ≥ timeout AND no activity of ANY class for
+  `STALL_WINDOW_MS = 30_000`.
+- `HARD_CEILING_MS = 90_000` per attempt: fires only if no GENUINE progress
+  in the trailing `STALL_WINDOW_MS`; genuine progress may extend the attempt
+  past 90 s…
+- …up to `ATTEMPT_MAX_MS = 150_000` per attempt (absolute, no extension), and
+- `CHAIN_MAX_MS = 240_000` absolute visible-time across the WHOLE attempt
+  chain (both attempts + retry). At chain-max: fail immediately — do NOT
+  spend a retry that cannot fit.
+- Exactly ONE silent retry per scene (latch semantics unchanged from v3).
+- Worst-case time-to-card = 240 s visible (vs v1's rejected 480 s; vs prod's
+  45 s false-failure on genuinely progressing boots — the incident class).
+  Hidden time still pauses all clocks (visible-time semantics + 2× cadence
+  clamp preserved verbatim from v3).
 
-**Required fix — two activity classes:**
-- **GENUINE FORWARD PROGRESS** = monotonic movement: `__W3D_PROGRESS` strictly
-  increasing, `__W3D_TEXTURE_UPLOAD_DONE` strictly increasing while `TOTAL > 0`,
-  `__W3D_CANVAS_READY`/`__W3D_TEXTURES_READY` false→true flips, slot status forward
-  transitions. Genuine progress defers the soft trigger AND extends the hard
-  ceiling.
-- **NOISE** = everything else v3 counted (recovery count changes, non-monotonic
-  progress writes). Defers the SOFT trigger only, exactly as v3 (Codex finding 2
-  stands: noise must never postpone the card forever).
-- **Absolute backstop:** a genuine-progress-extended attempt still hard-fails at
-  `ATTEMPT_MAX_MS` (propose 240s visible) no matter what — the card can never be
-  postponed indefinitely. This also bounds the v3 review-3 P2 residual (repeated
-  60s freezes stretching the ceiling).
+**Activity classes (with high-water semantics — v1's per-tick comparison is
+BANNED, it misreads the loader's bridge re-zero as progress):**
+- GENUINE (extends hard ceiling, world-scene requests ONLY):
+  `__W3D_TEXTURE_UPLOAD_DONE` exceeding the attempt's historical MAXIMUM
+  while `TOTAL > 0`; `__W3D_CANVAS_READY` / `__W3D_TEXTURES_READY` false→true
+  at most ONE genuine edge per attempt (never re-fires after
+  true→false→true). Decreases/resets never lower the high-water. Seed the
+  machine from the first snapshot.
+- NOISE (defers soft trigger only — exactly v3's semantics): everything else,
+  INCLUDING `__W3D_PROGRESS` movement (it is the GLOBAL
+  DefaultLoadingManager ratio, non-monotonic across drain/refill, and can
+  reflect unrelated loads — critique MAJOR 4), slot status transitions,
+  recovery count changes.
+- COVE requests get NO genuine-class signals (the bridge writers are
+  world-scoped: `World3DCanvas.tsx:1416-1511`; `StageHostedCoveScene` writes
+  none; late world post-ready scans run up to 60 s and must never extend a
+  cove attempt — critique MAJOR 4). Cove relies on slot lifecycle (noise
+  class) + Fix C's bounded compile, so a cove wedge escapes at ~20 s via the
+  compile sentinel and the watchdog card lands at v3-equivalent timings.
 
-**Proof required:** extract the per-tick decision into a PURE module
-(`stage-watchdog-machine.ts` or similar — mirror `world-stream-machine.ts`):
-inputs (visible elapsed, signal snapshot, thresholds) → verdict
-(`none | soft-stall | hard-ceiling | backstop`). Unit tests must cover: upload
-crawling at 1 file/10s past 90s → NO retry; upload frozen 30s+ past soft window →
-retry; noise-only churn past ceiling → retry (v3 behavior preserved); backstop
-fires at MAX regardless.
+**Proof required:** reducer unit tests: upload crawling 1-file/10s past 90 s →
+no retry until attempt-max; upload frozen 30 s past soft window → retry;
+noise-only churn → hard at 90 s (v3 preserved); bridge re-zero mid-attempt →
+NOT genuine; boolean re-assert → no second edge; chain-max → immediate fail
+with no wasted retry; terminal state → `none` forever; new request identity →
+fresh state. Fix D lives here as assertions (v3's guards
+`StageTransition.tsx:121-127,166-180` + `stage-store.ts:331-355` verified
+airtight in critique — preserve them and pin with tests).
 
-## Fix C — cove compile dedupe wedge on never-settling promise (P1)
+## Fix A0 — deterministic reproduction attempt (before any lineage code)
 
-**Bug:** `StageHostedCoveScene.tsx` module-level `inflightCoveCompile` — if a
-`compileAsync` never settles (wedged GPU/driver), `.finally` never runs, the entry
-never clears, and EVERY later generation `await`s it forever → all subsequent cove
-entries wedge silently (renderer-keying only helps if the renderer was replaced).
+Write a regression test (jsdom/unit against WorldStageRoot + stage-store +
+ownership modules) that attempts to reproduce a parked `navigationRef`
+surviving past the opaque midpoint under PRODUCTION timings (250 ms fade,
+45 s timeout — no test-only timing that fires the watchdog before the
+midpoint; that would manufacture a race prod cannot reach). Record outcome
+honestly in the notes doc:
+- If reproducible → Fix A upgrades back to a root-cause fix; ledger entry
+  updated with the exact sequence.
+- If NOT reproducible → Fix A ships as defensive hardening; the plan-doc
+  INCIDENT LEDGER is corrected to name Fix C's class as the probable cause
+  and the orphan narrative as unconfirmed.
 
-**Required fix:** bound the per-generation wait — `Promise.race` the shared promise
-against a timer (propose 20s). On timeout: mark the entry `timedOut`, log a
-console.warn, and proceed WITHOUT the compile warm (the direct `gl.render` warm +
-ack path continues; first-frame hitch is the graceful degradation). Later
-generations seeing a `timedOut` entry must NOT re-await it; they proceed directly
-(do NOT issue a second `compileAsync` on the same renderer — a wedged compile means
-a wedged renderer, and recovery replaces `gl`, which already re-keys the entry).
-Review the `.finally`/`isCurrent` interplay while in there (review-3 flagged it).
+## Fix A — retry lineage (defensive hardening; exact rules from critique)
 
-**Proof required:** unit-level coverage if the seam allows; otherwise a
-code-review-level walkthrough in the notes doc + the synthetic lane must still pass
-30/30.
+Implement ONLY with the following semantics (critique MAJOR 6 state matrix is
+BINDING — reproduce it in the notes doc with each row's disposition):
+- Lineage is an OPTIONAL FIELD on the pending request
+  (`retryOfRequestId?: number`) minted by a new store action
+  `retryStageScene(previous: StageRequest)` — atomic, records the direct
+  parent id. NOT a separate map (separate maps outlive resets:
+  `resetStage` zeroes id minting on every stage-root mount,
+  `stage-store.ts:93-110,410-420` + `WorldStageRoot.tsx:89-93`, so a map
+  could match a reused id).
+- StageTransition's silent retry calls `retryStageScene`; a stale watchdog
+  calling it after supersession is a NO-OP (identity revalidated in the
+  action).
+- WorldStageRoot's parked-ref matching: match exact requestId OR exact
+  `retryOfRequestId` chain to the parked id; commit once and clear. Re-key
+  via compare-and-swap only — a new ADOPT during the retry's `fadingOut`
+  overwrites the ref under the retry id and must not be clobbered.
+- Different-scene supersession overwrites the parked ref (existing
+  `WorldStageRoot.tsx:196-203` behavior); stale retry callbacks fail identity
+  validation.
+- Lifecycle clearing: completion clears via `pendingRequest: null`
+  (`stage-store.ts:304-327`); failure retains `pendingRequest` — lineage goes
+  with it on supersede/reset; stage unmount mid-request: specify and
+  implement `navigationRef` cleanup on unmount (today
+  `markWorldStageUnmounted` only flips a boolean, `stage-navigation.ts:75-81`
+  — the parked ref must not survive a remount).
 
-## Fix D — verify, don't trust: no watchdog-after-fail spam
+## New MANDATORY probe gate lanes (mechanics from critique — adopt verbatim)
 
-v3 appears to handle this (early return on `phase === 'error'`,
-StageTransition.tsx:122-127, + clearInterval before failTransition). VERIFY it
-survives your refactor; add a unit assertion in the pure-module tests (verdict
-machine never fires after a terminal fail for the same request).
+Parser: extend the lane whitelist (`world-stage-probe.mjs:24-30`); each new
+lane gets a DISTINCT output summary file (defaults at :83-90 must not
+overwrite the routes/synthetic summaries). Real-route lanes start the API
+stub exactly like `routes`.
 
-## New MANDATORY gate lanes (the blind spot that let #253 ship)
+- **Lane `loader`:** `page.goto('/')` → install a same-document
+  MutationObserver → click the real homepage `a[href="/game"]` Link
+  (`app/page.tsx:209-221`) → assert: `[aria-label="Loading ClawVille"]`
+  appeared while `__W3D_READY !== true`; topmost via
+  `document.elementFromPoint(center)?.closest('.claw-loading-overlay') ===
+  overlay` (loader is body-portaled + pointer-blocking:
+  `sea-loading-screen.tsx:308-315,397-408,725-727`); max `aria-valuenow > 0`;
+  loader disappearance requires GENUINE `__W3D_READY === true` (the 45 s
+  force-dismiss must not false-pass).
+- **Lane `kelp-exit`:** boot `/game` → set
+  `window.__CV_STORES__` gameStore `nearLocation` to the kelp portal
+  (`World3DCanvas.tsx:1427-1432`, `location-hud.tsx:43-45,66-80,100-104`) →
+  click the REAL HUD portal button (production `SceneTransition` path — no
+  test code on /game) → assert URL `/kelp` + kelp canvas painted
+  (`app/kelp/page.tsx:123-133,158-167`) → click the real "Back to the Reef"
+  exit with a MutationObserver armed → assert: client-side navigation (window
+  sentinel survives — this is `router.push`, NOT a document reload; only the
+  `(world)` layout/stage unmounts+remounts), URL `/game`, fresh
+  `__WORLD_STAGE_PROBE__` installed, loader observed while not ready,
+  `__W3D_READY === true`, loader absent, `data-stage-transition="idle"`,
+  `elementFromPoint` over an unobstructed point = the stage canvas.
+- **Lane `retry-adoption`:** runs on `/perf/stage` (proof route). Wedge the
+  FIRST generation's ack via a proof-route-only knob in `useSyntheticWarmup`
+  (`stage-proof.tsx:43-71`) + tiny thresholds via the existing
+  `transitionTimeoutMs` plumbing (`WorldStageCanvas.tsx:655-662,1033-1037`)
+  → assert the silent retry completes to idle. SCOPE HONESTY (critique
+  MAJOR 7): the proof route has NO WorldStageRoot/navigationRef — this lane
+  covers watchdog retry + store lineage only; `navigationRef` re-key coverage
+  comes from the Fix A0/Fix A unit tests. State exactly that in the notes.
+  No test-only code reachable from `/game`.
 
-The existing lanes only covered game↔cove. Add to `world-stage-probe.mjs`:
+## Acceptance gates (Fable re-runs every one personally; commands verbatim)
 
-- **Lane A — `loader`:** fresh context → open `/` (homepage) → client-navigate to
-  `/game` → DURING boot (while `__W3D_READY` is falsy), assert SeaLoadingScreen is
-  mounted AND topmost (`document.elementFromPoint(viewport center)` resolves inside
-  the loader overlay) AND the progress bar shows nonzero width in at least one
-  sample; assert the loader dismisses after ready. This pins #254/`f42fe97b`
-  forever.
-- **Lane B — `kelp-exit`:** boot `/game` → programmatic navigation to `/kelp` (same
-  router path the portal uses) → assert URL changed + kelp page painted → navigate
-  back to `/game` → assert the return completes to a playable world: loader visible
-  during the return boot, `data-stage-transition` reaches `idle` within budget, NO
-  stuck opaque overlay, no input-blocking残留 (elementFromPoint over the canvas hits
-  the canvas). Kelp is NOT on the stage yet (P3) — the reload is expected; the lane
-  asserts the return is CLEAN, which is the incident path.
-- **Lane C — retry-adoption (synthetic):** exercise Fix A end-to-end: force the
-  first attempt to exhaust (test-only knob on the `/perf/stage` proof route ONLY —
-  e.g. query-driven tiny watchdog timings + a wedge-first-ack-once hook; NOTHING
-  test-only on the /game path) → watchdog silently retries → assert the retry
-  completes AND a parked/adopted navigation still commits (overlay reaches idle,
-  navigation executed). If a browser-lane wedge hook is genuinely infeasible
-  without polluting prod paths, the fallback is exhaustive unit coverage of the
-  retry-lineage re-key + the verdict machine — but say so explicitly in the notes,
-  don't silently downgrade.
+```text
+bun run build
+bun run typecheck
+bun test apps/web
+bun run --filter @clawville/web start   # :3000 prod bundle; NEVER bun run dev
+bun apps/web/scripts/world-stage-probe.mjs --lane=synthetic
+bun apps/web/scripts/world-stage-probe.mjs --lane=routes
+bun apps/web/scripts/world-stage-probe.mjs --lane=loader
+bun apps/web/scripts/world-stage-probe.mjs --lane=kelp-exit
+bun apps/web/scripts/world-stage-probe.mjs --lane=retry-adoption
+bun apps/web/scripts/world-stage-probe.mjs --lane=soak --loops=60
+```
 
-## Acceptance gates (Fable re-runs every one personally before staging push)
+Port-preflight kill any zombie :3000/:4000 holders before lanes. Soak
+thresholds per the v4.1 calibration (P1c brief) — unchanged.
 
-1. `bun run build` + tsc clean + full `bun test` (web workspace) green.
-2. New unit tests green (verdict machine + retry lineage re-key).
-3. Probe lanes: `synthetic` PASS, `routes` 30/30 PASS, `loader` PASS, `kelp-exit`
-   PASS, Lane C PASS (or documented unit-fallback).
-4. One full `soak` 60/60 PASS (the retry/generation flow touches scene lifecycle —
-   the leak gates must stay green; thresholds per the v4.1 calibration in the P1c
-   brief, unchanged).
-5. Local-first: everything runs against `bun run build && bun run start` on :3000
-   (NEVER `bun run dev`). Port-preflight kill any zombie :3000/:4000 holders before
-   lanes (the environmental class that burned us repeatedly).
-6. Same-diff docs: this brief committed; execution-ledger entry appended to
-   `docs/persistent-world-canvas-plan-2026-07-24.md`; `deploy-status.md` entry on
-   the staging push. `3dStructure.md`/`GameFeatures.md` untouched unless behavior
-   visible to players changes beyond the error-card timing (it shouldn't).
+## Docs (same diff)
 
-## Hard constraints (non-negotiable, from CLAUDE.md + incident ledger)
+- This brief (v2) committed; execution-ledger entry in
+  `docs/persistent-world-canvas-plan-2026-07-24.md` INCLUDING the
+  root-cause correction to the 2026-07-28 INCIDENT LEDGER (orphan narrative
+  → unconfirmed/downgraded; compile-wedge → probable cause; final wording
+  depends on Fix A0's outcome).
+- Notes doc `docs/world-stage-watchdog-reland-notes.md`: Fix A0 outcome, the
+  MAJOR-6 state matrix with dispositions, lane scope-honesty statement,
+  worst-case timing table (fast-fail / noise-only / genuine-slow /
+  wedge, vs v3 and prod).
+- `deploy-status.md` on the staging push (Fable's step, not Codex's).
 
-- Visible-time clock semantics stay (hidden tab pauses the budget; per-tick delta
-  clamped ≤ 2× cadence).
-- Exactly ONE silent retry per scene before any card; latch clears on idle.
-- No drei `<Text>`/`<Billboard>`, no `InstancedMesh + ShaderMaterial`, no per-frame
-  allocations (Iris Xe rules).
+## Hard constraints (unchanged from v1)
+
+- Visible-time clock semantics (hidden pauses; 2× cadence clamp).
+- ONE silent retry per scene; latch clears on idle.
+- Iris Xe rules (no drei Text/Billboard, no InstancedMesh+ShaderMaterial, no
+  per-frame allocations).
 - No test-only code reachable from `/game`.
-- Prod stays untouched until a separate, deliberate staging→master promotion AFTER
-  founder-visible verification; do NOT bundle unrelated staging deltas into that
-  promotion decision (staging is deliberately ahead).
-- Push flow: feature branch → my review → staging. Never master.
+- No staging push by Codex — Fable reviews + runs gates first. Never master.
