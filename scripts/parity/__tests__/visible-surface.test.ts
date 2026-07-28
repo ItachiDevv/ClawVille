@@ -269,6 +269,12 @@ describe('visible-surface probe scoping', () => {
   });
 
   test('baccarat probes separate the bet label, odds, and vCLAW stake', () => {
+    const betZoneProbe = VISIBLE_PROBES.baccarat.find(
+      (candidate) => candidate.name === 'bet-zone',
+    );
+    expect(betZoneProbe?.selector).toBe(
+      '[data-testid="bac-bet-zones"] [role="radio"][aria-checked="true"]',
+    );
     for (const [bet, label] of [
       ['player', 'Player · 1:1 · 25 vCLAW'],
       ['banker', 'Banker · 0.95:1 · 25 vCLAW'],
@@ -276,6 +282,17 @@ describe('visible-surface probe scoping', () => {
     ] as const) {
       expect(parseVisibleInteger('stake', label)).toBe(25);
       expect(normalizeVisibleProbeActual('bet-zone', label)).toBe(bet);
+    }
+  });
+
+  test('both baccarat surfaces retain the scoped bet-zone container', () => {
+    for (const path of [
+      '../../../apps/web/src/components/cove/baccarat/BaccaratModal.tsx',
+      '../../../apps/web/src/components/cove/baccarat/SeatedBaccaratHud.tsx',
+    ]) {
+      expect(readFileSync(new URL(path, import.meta.url), 'utf8')).toContain(
+        'data-testid="bac-bet-zones"',
+      );
     }
   });
 });

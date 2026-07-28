@@ -38,7 +38,11 @@ export const VISIBLE_PROBES: Readonly<Record<ParityGame, readonly VisibleProbe[]
       { name: 'banner-text', selector: '[data-testid="bac-outcome-banner"]', kind: 'text' },
       { name: 'net', selector: '[data-testid="bac-banner-net"]', kind: 'integer' },
       { name: 'stake', selector: '[data-testid="bac-bet-pill"]', kind: 'integer' },
-      { name: 'bet-zone', selector: '[role="radio"][aria-checked="true"]', kind: 'text' },
+      {
+        name: 'bet-zone',
+        selector: '[data-testid="bac-bet-zones"] [role="radio"][aria-checked="true"]',
+        kind: 'text',
+      },
     ]),
   } satisfies Record<ParityGame, readonly VisibleProbe[]>);
 

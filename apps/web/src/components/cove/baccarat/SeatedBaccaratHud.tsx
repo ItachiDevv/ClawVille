@@ -126,7 +126,12 @@ export function SeatedBaccaratHud({
       )}
 
       <section className={styles.controls} aria-label="Baccarat controls">
-        <div className={styles.row} role="radiogroup" aria-label="Baccarat bet">
+        <div
+          className={styles.row}
+          role="radiogroup"
+          aria-label="Baccarat bet"
+          data-testid="bac-bet-zones"
+        >
           <span className={styles.label}>Bet</span>
           {(['player', 'banker', 'tie'] as const).map((bet) => (
             <button
