@@ -10,16 +10,6 @@ import { withStageSlotFrustumCullingDisabled } from './resource-ledger';
 
 const COVE_SCENE_ID = 'cove';
 
-// Warmup compile dedupe (Codex P0-review finding 4): a watchdog-driven
-// same-scene retry bumps the generation and re-runs the warmup effect while
-// a prior non-cancellable compileAsync may still be in flight. All
-// generations share ONE in-flight compile promise; whichever generation is
-// current when it settles performs the ack. Keyed by RENDERER identity
-// (review-2 finding 3): renderer recovery replaces `gl`, and a promise from
-// a disposed renderer must never satisfy the replacement's warmup.
-let inflightCoveCompile: { gl: unknown; promise: Promise<void> } | null =
-  null;
-
 export default function StageHostedCoveScene({
   onSceneEmpty,
 }: {
@@ -75,28 +65,16 @@ export default function StageHostedCoveScene({
       if (!warmedOnceRef.current) {
         try {
           if (typeof (gl as { compileAsync?: unknown }).compileAsync === 'function') {
-            if (!inflightCoveCompile || inflightCoveCompile.gl !== gl) {
-              const entry = {
-                gl: gl as unknown,
-                promise: withStageSlotFrustumCullingDisabled('cove', () =>
-                  (
-                    gl as unknown as {
-                      compileAsync: (
-                        scene: Scene,
-                        camera: Camera,
-                      ) => Promise<void>;
-                    }
-                  ).compileAsync(scene, camera),
-                ),
-              };
-              entry.promise = entry.promise.finally(() => {
-                if (inflightCoveCompile === entry) {
-                  inflightCoveCompile = null;
+            await withStageSlotFrustumCullingDisabled('cove', () =>
+              (
+                gl as unknown as {
+                  compileAsync: (
+                    scene: Scene,
+                    camera: Camera,
+                  ) => Promise<void>;
                 }
-              });
-              inflightCoveCompile = entry;
-            }
-            await inflightCoveCompile.promise;
+              ).compileAsync(scene, camera),
+            );
           }
           if (!isCurrent()) return;
           await withStageSlotFrustumCullingDisabled(
