@@ -194,8 +194,10 @@ export class Baccarat2dRevealEpoch {
   private readonly timers = new Set<TimerHandle>();
 
   constructor(
-    private readonly setTimer: SetTimer = setTimeout,
-    private readonly clearTimer: ClearTimer = clearTimeout,
+    private readonly setTimer: SetTimer = (callback, delayMs) => (
+      setTimeout(callback, delayMs)
+    ),
+    private readonly clearTimer: ClearTimer = (handle) => clearTimeout(handle),
   ) {}
 
   begin(correlation: string): void {

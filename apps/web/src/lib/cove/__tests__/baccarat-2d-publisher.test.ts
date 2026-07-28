@@ -222,6 +222,22 @@ describe('baccarat 2D publisher', () => {
       expect(modalSource).toContain(contract);
     }
   });
+
+  test('browser timer defaults are lexical wrappers, not illegally rebound globals', () => {
+    const publisherSource = readFileSync(
+      new URL('../baccarat-2d-publisher.ts', import.meta.url),
+      'utf8',
+    );
+    expect(publisherSource).toContain(
+      'private readonly setTimer: SetTimer = (callback, delayMs)',
+    );
+    expect(publisherSource).toContain(
+      'private readonly clearTimer: ClearTimer = (handle)',
+    );
+    expect(publisherSource).not.toContain(
+      'private readonly setTimer: SetTimer = setTimeout',
+    );
+  });
 });
 
 describe('Baccarat2dRevealEpoch', () => {
