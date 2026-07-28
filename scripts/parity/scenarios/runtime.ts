@@ -858,9 +858,10 @@ export async function* driveScenario(
 
   if (game === 'baccarat') {
     if (row === 'C6') {
-      const bets = ['Player', 'Banker', 'Tie'] as const;
+      // BaccaratModal.tsx:103-105 emits these exact uppercase radio labels.
+      const bets = ['PLAYER', 'BANKER', 'TIE'] as const;
       for (let index = 0; index < bets.length; index += 1) {
-        await clickText(driver, [bets[index]!]);
+        await waitAndClick(driver, [bets[index]!]);
         await waitAndClick(driver, ['Deal']);
         yield {
           label: `settled-${bets[index]!.toLowerCase()}`,
@@ -873,8 +874,9 @@ export async function* driveScenario(
       }
       return;
     }
-    const bet = row === 'C5' ? 'Tie' : row === 'C7' ? 'Banker' : 'Player';
-    await clickText(driver, [bet]);
+    // BaccaratModal.tsx:103-105 emits these exact uppercase radio labels.
+    const bet = row === 'C5' ? 'TIE' : row === 'C7' ? 'BANKER' : 'PLAYER';
+    await waitAndClick(driver, [bet]);
     await waitAndClick(driver, ['Deal']);
     for (let index = 0; index < phases.length; index += 1) {
       yield checkpointFor(surface, phases[index]!, index, phases.length - 1);
