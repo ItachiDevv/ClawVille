@@ -58,6 +58,8 @@ export interface ParityCheckpoint {
   expectRenderRevision?: number;
   expectDealStep?: string;
   expectCorrelationHand?: string;
+  actionFloorRevision?: number;
+  expectMinPlayerCards?: number;
   expectResolvedWire?: '<none>';
   expectTransition?: CardParityRoot['transition'];
   final?: boolean;

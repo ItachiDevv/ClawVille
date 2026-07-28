@@ -296,6 +296,20 @@ export function assertParityCheckpoint({
       root.transition,
     ));
   }
+  if (checkpoint.expectMinPlayerCards !== undefined) {
+    const actualPlayerCards = root.slots.filter((slot) => (
+      slot.slot.startsWith('player-')
+      && slot.facing === 'up'
+      && slot.card.length > 0
+    )).length;
+    if (actualPlayerCards < checkpoint.expectMinPlayerCards) {
+      rootMismatches.push(rootMismatch(
+        'meta:player-card-floor',
+        `>=${checkpoint.expectMinPlayerCards}`,
+        String(actualPlayerCards),
+      ));
+    }
+  }
 
   if (checkpoint.expectCausalCardJustification) {
     const causal = assertCausalHoldemCards(root, records, ba1Snapshot);
@@ -366,6 +380,22 @@ export function assertParityCheckpoint({
     ba1Snapshot,
     { root, records },
   );
+  if (checkpoint.expectMinPlayerCards !== undefined) {
+    const expectedPlayerCards = Object.entries(expected.slots).filter(
+      ([slot, value]) => (
+        slot.startsWith('player-')
+        && value.facing === 'up'
+        && value.card.length > 0
+      ),
+    ).length;
+    if (expectedPlayerCards < checkpoint.expectMinPlayerCards) {
+      rootMismatches.push(rootMismatch(
+        'meta:wire-player-card-floor',
+        `>=${checkpoint.expectMinPlayerCards}`,
+        String(expectedPlayerCards),
+      ));
+    }
+  }
   const compared = diffParity(expected, root);
   const mismatches = [...rootMismatches, ...compared.mismatches];
   return {

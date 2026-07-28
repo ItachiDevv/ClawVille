@@ -296,6 +296,22 @@ export async function waitForParityCheckpoint(
           }
         })()`
       : ''}
+    ${checkpoint.expectMinPlayerCards !== undefined
+      ? `&& (() => {
+          try {
+            const slots = JSON.parse(entry.signature)[8];
+            return Array.isArray(slots)
+              && slots.filter((slot) =>
+                Array.isArray(slot)
+                && String(slot[0]).startsWith('player-')
+                && slot[1] === 'up'
+                && String(slot[2]).length > 0
+              ).length >= ${checkpoint.expectMinPlayerCards};
+          } catch {
+            return false;
+          }
+        })()`
+      : ''}
     ${checkpoint.final ? "&& entry.transition === 'idle'" : ''}`;
   await driver.waitFn(`(() => {
     const entries = window.__CV_PARITY_JOURNAL?.(${JSON.stringify(checkpoint.surface)}) ?? [];
@@ -323,6 +339,21 @@ export async function waitForParityCheckpoint(
       try {
         return JSON.parse(candidate.signature)[2]
           === checkpoint.expectCorrelationHand;
+      } catch {
+        return false;
+      }
+    })
+    .filter((candidate) => {
+      if (checkpoint.expectMinPlayerCards === undefined) return true;
+      try {
+        const slots = JSON.parse(candidate.signature)[8] as unknown;
+        return Array.isArray(slots)
+          && slots.filter((slot) => (
+            Array.isArray(slot)
+            && String(slot[0]).startsWith('player-')
+            && slot[1] === 'up'
+            && String(slot[2]).length > 0
+          )).length >= checkpoint.expectMinPlayerCards;
       } catch {
         return false;
       }

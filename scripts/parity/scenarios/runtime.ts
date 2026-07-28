@@ -186,6 +186,26 @@ async function waitAndClick(
   }
 }
 
+async function waitAndClickWithFloor(
+  driver: Driver,
+  surface: Surface,
+  labels: readonly string[],
+  timeoutMs = 20_000,
+): Promise<ActionFloor> {
+  await driver.waitFn(`(() => {
+    const labels = ${JSON.stringify(labels)};
+    return [...document.querySelectorAll('button')].some((candidate) =>
+      labels.some((label) => candidate.textContent?.trim().startsWith(label))
+      && !candidate.disabled
+    );
+  })()`, timeoutMs);
+  const floor = await captureActionFloor(driver, surface);
+  if (!await clickText(driver, labels)) {
+    throw new Error(`Action disappeared before click: ${labels.join('/')}`);
+  }
+  return floor;
+}
+
 interface PracticeHoldemActionStart {
   clicked: boolean;
   label: string | null;
@@ -664,6 +684,54 @@ interface JournalStep {
   dealStep: string;
 }
 
+interface ActionFloor {
+  revision: number;
+  correlationHand: string;
+}
+
+export async function captureActionFloor(
+  driver: Driver,
+  surface: Surface,
+): Promise<ActionFloor> {
+  const floor = await driver.evalJson<ActionFloor | null>(`(() => {
+    /* CV_ACTION_REVISION_FLOOR */
+    const root = window.__CV_READ_PARITY?.(${JSON.stringify(surface)}) ?? null;
+    const correlationHand = root?.correlation?.hand;
+    if (!root || typeof correlationHand !== 'string' || !correlationHand) {
+      return null;
+    }
+    const revision = (window.__CV_PARITY_JOURNAL?.(${JSON.stringify(surface)}) ?? [])
+      .filter((entry) => {
+        if (entry.surface !== ${JSON.stringify(surface)}) return false;
+        try { return JSON.parse(entry.signature)[2] === correlationHand; }
+        catch { return false; }
+      })
+      .reduce(
+        (latest, entry) => Math.max(latest, entry.revision),
+        root.renderRevision,
+      );
+    return { revision, correlationHand };
+  })()`);
+  if (!floor) {
+    throw new Error(`Cannot capture action floor for ${surface}`);
+  }
+  return floor;
+}
+
+function applyActionFloor(
+  checkpoint: ParityCheckpoint,
+  floor: ActionFloor | null,
+): ParityCheckpoint {
+  return floor
+    ? {
+        ...checkpoint,
+        actionFloorRevision: floor.revision,
+        expectCorrelationHand:
+          checkpoint.expectCorrelationHand ?? floor.correlationHand,
+      }
+    : checkpoint;
+}
+
 export async function nextJournalStep(
   driver: Driver,
   surface: Surface,
@@ -831,27 +899,73 @@ export async function* driveScenario(
       )) return;
       throw new Error('Blackjack negative traversal exceeded 60s');
     }
-    if (['B4', 'B7'].includes(row)) await waitAndClick(driver, ['Stand']);
+    let pendingActionFloor: ActionFloor | null = null;
+    if (['B4', 'B7'].includes(row)) {
+      pendingActionFloor = await waitAndClickWithFloor(
+        driver,
+        surface,
+        ['Stand'],
+      );
+    }
     for (let index = 0; index < phases.length; index += 1) {
       const phase = phases[index]!;
-      yield checkpointFor(surface, phase, index, phases.length - 1);
-      if (row === 'B2' && phase === 'hole') await waitAndClick(driver, ['Hit']);
-      if (row === 'B3' && phase === 'player-turn') await waitAndClick(driver, ['Double']);
+      const checkpoint = applyActionFloor(
+        checkpointFor(surface, phase, index, phases.length - 1),
+        pendingActionFloor,
+      );
+      yield row === 'B2' && phase === 'player-turn'
+        ? { ...checkpoint, expectMinPlayerCards: 3 }
+        : checkpoint;
+      pendingActionFloor = null;
+      if (row === 'B2' && phase === 'hole') {
+        pendingActionFloor = await waitAndClickWithFloor(
+          driver,
+          surface,
+          ['Hit'],
+        );
+      }
+      if (row === 'B3' && phase === 'player-turn') {
+        pendingActionFloor = await waitAndClickWithFloor(
+          driver,
+          surface,
+          ['Double'],
+        );
+      }
       if (row === 'B5' && phase === 'player-turn') {
         for (let hits = 0; hits < 10; hits += 1) {
+          const floor = await captureActionFloor(driver, surface);
           if (!await clickText(driver, ['Hit'])) break;
+          pendingActionFloor = floor;
           await new Promise((resolveWait) => setTimeout(resolveWait, 120));
         }
       }
       if (row === 'B8' && phase === 'player-turn' && index === 1) {
-        await waitAndClick(driver, ['Split']);
+        pendingActionFloor = await waitAndClickWithFloor(
+          driver,
+          surface,
+          ['Split'],
+        );
       } else if (row === 'B8' && phase === 'player-turn' && index > 2) {
         // Both split subhands must resolve before dealer reveal. A single Stand
         // only advances from subhand 0 to subhand 1.
-        await waitAndClick(driver, ['Stand']);
-        await waitAndClick(driver, ['Stand']);
+        pendingActionFloor = await waitAndClickWithFloor(
+          driver,
+          surface,
+          ['Stand'],
+        );
+        pendingActionFloor = await waitAndClickWithFloor(
+          driver,
+          surface,
+          ['Stand'],
+        );
       }
-      if (row === 'B9' && phase === 'hole') await waitAndClick(driver, ['Insure']);
+      if (row === 'B9' && phase === 'hole') {
+        pendingActionFloor = await waitAndClickWithFloor(
+          driver,
+          surface,
+          ['Insure'],
+        );
+      }
     }
     return;
   }

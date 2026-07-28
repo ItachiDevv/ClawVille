@@ -380,7 +380,10 @@ async function runLiveScenario(): Promise<void> {
     const previous = new Map<string, number>();
     const previousSettlementCorrelation = new Map<string, string>();
     for await (const checkpoint of scenario.run(driver)) {
-      const after = previous.get(checkpoint.surface) ?? 0;
+      const after = Math.max(
+        previous.get(checkpoint.surface) ?? 0,
+        checkpoint.actionFloorRevision ?? 0,
+      );
       const preferCurrentRoot = async (
         candidate: Awaited<ReturnType<typeof waitForParityCheckpoint>>,
       ): Promise<Awaited<ReturnType<typeof waitForParityCheckpoint>>> => {

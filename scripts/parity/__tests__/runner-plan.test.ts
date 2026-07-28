@@ -28,6 +28,12 @@ import { closeFixtureRun } from '../teardown';
 class PlanDriver implements Driver {
   actions: string[] = [];
   async evalJson<T>(js: string): Promise<T> {
+    if (js.includes('CV_ACTION_REVISION_FLOOR')) {
+      return {
+        revision: 7,
+        correlationHand: 'planned-hand',
+      } as T;
+    }
     if (js.includes('__CV_READ_PARITY')) return 'showdown' as T;
     const labels = /const labels = (\[[^;]+\]);/.exec(js)?.[1];
     if (labels) this.actions.push(JSON.parse(labels)[0]);
@@ -555,6 +561,75 @@ describe('offline live-runner plans', () => {
       0,
     );
     expect(root.renderRevision).toBe(4);
+  });
+
+  test('action floor rejects an auto-published pre-action player-turn', async () => {
+    const signature = (
+      dealStep: string,
+      playerCards: number,
+    ) => JSON.stringify([
+      'blackjack-3d',
+      2,
+      'same-hand',
+      4,
+      'same-shoe',
+      dealStep,
+      'player-turn',
+      'idle',
+      Array.from({ length: playerCards }, (_, index) => [
+        `player-0-card-${index + 1}`,
+        'up',
+        `${index + 2}S`,
+        '',
+      ]),
+      [],
+    ]);
+    const entries = [
+      {
+        surface: 'blackjack-3d',
+        instanceId: 'same',
+        revision: 1,
+        dealStep: 'hole',
+        transition: 'idle',
+        signature: signature('hole', 2),
+        ts: 1,
+      },
+      {
+        surface: 'blackjack-3d',
+        instanceId: 'same',
+        revision: 2,
+        dealStep: 'player-turn',
+        transition: 'idle',
+        signature: signature('player-turn', 2),
+        ts: 2,
+      },
+      {
+        surface: 'blackjack-3d',
+        instanceId: 'same',
+        revision: 3,
+        dealStep: 'player-turn',
+        transition: 'idle',
+        signature: signature('player-turn', 3),
+        ts: 3,
+      },
+    ];
+    const driver = new PlanDriver();
+    driver.evalJson = async <T>() => entries as T;
+    const root = await waitForParityCheckpoint(
+      driver,
+      {
+        label: 'player-turn-after-hit',
+        surface: 'blackjack-3d',
+        expectRevisionAdvance: true,
+        expectDealStep: 'player-turn',
+        expectCorrelationHand: 'same-hand',
+        actionFloorRevision: 2,
+        expectMinPlayerCards: 3,
+      },
+      2,
+    );
+    expect(root.renderRevision).toBe(3);
+    expect(root.slots.filter((slot) => slot.slot.startsWith('player-'))).toHaveLength(3);
   });
 
   test('practice street reach reads the landed session/current hand shape', () => {
