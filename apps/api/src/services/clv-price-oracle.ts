@@ -39,13 +39,15 @@
  * LP DEPTH (Tokenomics C3, 2026-07-07) — `poolLiquidityUsd`:
  *   The highest-liquidity DexScreener pair's `liquidity.usd` (BOTH sides of the
  *   pool, USD). Previously fetched into a local `bestLiq` and DISCARDED; now
- *   surfaced through the cache so the CLV swap executor (`clv-swap-executor.ts`)
- *   can size price-impact-capped clips. DexScreener is the ONLY depth source
- *   (Helius DAS carries no pool liquidity), so `fetchSpot` now runs BOTH feeds
- *   in parallel every poll: the PRICE preference is unchanged (configured
- *   Helius primary → keyless DexScreener fallback) while the DEPTH always
- *   refreshes from DexScreener when
- *   it responds. Depth is memory-only (NOT persisted to `clv_price_snapshots` —
+ *   surfaced through the cache for dry-run/advisory planning. DexScreener is
+ *   the oracle's LAST-RESORT depth observation (Helius DAS carries no pool
+ *   liquidity), but it is NOT a live-execution dependency: `clv-swap-live.ts`
+ *   caps the first candidate at $25 and gates the exact Jupiter quote's own
+ *   `priceImpactPct`, shrinking/re-quoting before any signing. No heterogeneous
+ *   Jupiter route is extrapolated into constant-product depth. `fetchSpot`
+ *   still runs both price feeds in parallel: PRICE preference is configured
+ *   Helius primary → keyless DexScreener fallback; Dex depth refreshes when it
+ *   responds. Depth is memory-only (NOT persisted to `clv_price_snapshots` —
  *   no schema change), so it re-warms within one poll (~60s) of boot; it goes
  *   `null` when the reading is missing or older than the same max-stale window
  *   as the price (a stale depth must never size a clip plan).

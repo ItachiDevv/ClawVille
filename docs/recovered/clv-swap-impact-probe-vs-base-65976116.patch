@@ -1,0 +1,563 @@
+diff --git a/.env.example b/.env.example
+index 529b6e55..b1ed21de 100644
+--- a/.env.example
++++ b/.env.example
+@@ -130,6 +130,10 @@ CLV_SWAP_EXECUTE=
+ # Per-clip price-impact cap in bps against one-side pool depth (≈liquidity/2).
+ # Default 100 (=1%), floor 1, cap 10000.
+ CLV_SWAP_MAX_IMPACT_BPS=100
++# First live Jupiter quote candidate cap in USDC. Default/max $25; operators may
++# tune DOWN only. This is NOT extrapolated into pool depth: the exact candidate
++# quote must pass priceImpactPct <= CLV_SWAP_MAX_IMPACT_BPS before /swap/sign.
++CLV_SWAP_JUPITER_PROBE_USDC=25
+ # Dry-run worker scan interval (ms). Default 300000 (5 min), floor 30000.
+ CLV_SWAP_POLL_MS=300000
+ # Intended spacing between clips in a plan (ms; informational in dry-run — the
+diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
+index f099b1b5..b4ac888c 100644
+--- a/ARCHITECTURE.md
++++ b/ARCHITECTURE.md
+@@ -1,5 +1,7 @@
+ # ClawVille — Architecture
+ 
++**Last Audited:** 2026-07-14 (26): **CLV live-swap depth hard-dependency removed locally; Fable staging proof pending, not shipped.** `clv-swap-live.ts` no longer requires DexScreener `poolLiquidityUsd` to execute cash-out rail ② or E3 redemption delivery. Each clip starts at `min(remaining, CLV_SWAP_JUPITER_PROBE_USDC)` (default/max $25; exact µUSDC parse, operators may tune down), validates the complete Jupiter ExactIn quote/echo/route, and accepts only that exact candidate's decimal-fraction `priceImpactPct <= CLV_SWAP_MAX_IMPACT_BPS/10_000`. Over-cap quotes are never signed: `nextµ=floor(currentµ × allowedImpact / observedImpact)`, additionally capped at `floor(currentµ/2)` for conservative bounded termination, then re-quoted down to 1 µUSDC; the accepted quote object is reused unchanged for `/swap`. Long Jupiter decimals are fixed-point CEILed at 18dp, so discarded precision cannot understate impact. A $P probe was deliberately NOT converted to depth: even for one fee-free balanced CPMM, exact both-side TVL is `L=2P(1-i)/i`; Jupiter split/multi-hop CLMM/DLMM routes do not satisfy that single-curve contract, so any inferred `L` can over-size a later clip. Dex depth remains a max-stale-gated, memory-only dry-run/advisory observation and never affects live liveness. `planClips`/`sizeClipMicro`, µUSD floor, oracle price/freshness+tolerance gate, Jupiter tx binding, and settle/reconcile machine are unchanged. Operator `live-tick-once.ts` now waits for fresh price only. No DDL/protocol/parity surface changed. **PARITY:** shared backend money executor; human cash-out and agent/human E3 redemption consume the identical guarded queue path.
++
+ **Last Audited:** 2026-07-14 (25): **Tokenomics E1/E2 backing + sybil teeth and E3 EARNED exit rail — BUILT-GATED DARK, not migrated/deployed/signed off.** Additive idempotent migrations `0030a`/`0030b`/`0031` introduce the singleton `treasury_wallets(purpose='earned-backing')`, `earn_events`, wallet/first-funder cluster epoch counters, per-mint fungibility lots, physical `earned_backing`, exact lot consumption/accounted-ledger cutover repair, claw-backs, and the durable redemption/funding/delivery machine. Founder economics are integer exact: 1 vCLAW=$0.01=10,000 micro-USDC; E1 entry rake is zero; the loop's only fee is 444 bps at exit; net `amountVclaw×9556` micro-USDC market-buys floating-price CLV and conservative confirmed output is delivered to the earner's custodial ATA. Dead 40/20/30/10, dividend, P/E, reserve, and fixed-anchor models remain forbidden. E2 imports verify exact same-network inbound USDC plus current custody solvency under a shared custody mutex/advisory lock; pending mints are spendable but not redeemable; the job resolves payer age/history + first funder, cluster-caps sibling payers per earner/epoch, and transitions verified/rejected. Rejection releases backing without deleting spendability. Named-admin claw-back debits available EARNED, records deficit durably, marks the event, and releases unconsumed backing idempotently. Rail ④ agent-pay remains direct-to-recipient and therefore dual-writes `backing='none'`; making it cashable later requires re-routing payer USDC through backing custody. E3 `POST /api/tokenomics/redeem` + owner-scoped `GET /:id` use `requireAuthOrAgentSession`; human and ledger-capable bound agent resolve the same avatar/custodial wallet, guests/unbound refuse. State: requested/refused → debited → buy_queued → bought → delivering → delivered/reconcile; capture-before-send, CAS claims, exactly-once queue source, confirmed-slot RPC freshness, and ambiguous⇒reconcile inherit `docs/money-rails.md §3`. Route and every service/worker entry require literal `TOKENOMICS_REDEEM_ENABLED==='true'`, default OFF; G2 funded adversarial smoke and G3 founder legal/MSB/money-transmitter/KYC/sanctions clearance are launch prerequisites. Universal `clawville_redeem_earned` tools.json + protocol manual §14 move `PROTOCOL_VERSION 17→18`; Hatcher `[ACTION:]` whitelist and partner wire are unchanged (public ref cross-check `9cc426b…`, staging harness pending). **Drift note:** the Drizzle `earn_events.backing_network` type is narrowed to `'mainnet' | 'devnet'`, matching the existing `earn_events_backing_network_valid` CHECK; no DDL changed. **PARITY:** human path = same POST/GET via Lucia; agent path = same endpoints/tool via `X-Clawville-Agent-Session`; settlement binds middleware-resolved `identity.avatarId` and its server-resolved custodial wallet. Canonical ops/funding/solvency/reconcile/gas runbooks: `docs/money-rails.md`. No migrations were applied by this build.
+ 
+ **Last Audited:** 2026-07-14 (24): **Money rails CLOSED — all four LIVE on prod** (`a0b43c1c`; `CLV_SWAP_EXECUTE=true` + `RECONCILE_APPLY=true` flipped, LIVE worker boot-verified; ② proven end-to-end on mainnet-staging with on-chain sigs). **Canonical ops reference: `docs/money-rails.md`** — wallet map (pubkeys, gas floors, key custody), settle-machine invariants, runbooks (gas funding, evidence-gated queue resets, reconcile CLI, deploy/flip verification), backup/recovery chain (`VANITY_ENCRYPTION_KEY` escrowed 2026-07-14 — was Coolify-only single point of failure). Read that doc before touching any money-path file. PARITY: docs-only entry.
+diff --git a/apps/api/scripts/clv-swap/live-tick-once.ts b/apps/api/scripts/clv-swap/live-tick-once.ts
+index 6fe9c832..f05d4e50 100644
+--- a/apps/api/scripts/clv-swap/live-tick-once.ts
++++ b/apps/api/scripts/clv-swap/live-tick-once.ts
+@@ -31,10 +31,7 @@ function isOracleReady(price: ClvPrice): boolean {
+     price.available &&
+     typeof price.quoteUsd === 'number' &&
+     Number.isFinite(price.quoteUsd) &&
+-    price.quoteUsd > 0 &&
+-    typeof price.poolLiquidityUsd === 'number' &&
+-    Number.isFinite(price.poolLiquidityUsd) &&
+-    price.poolLiquidityUsd > 0
++    price.quoteUsd > 0
+   );
+ }
+ 
+@@ -46,7 +43,7 @@ async function waitForOracleReady(): Promise<ClvPrice> {
+     await new Promise<void>((resolve) => setTimeout(resolve, 250));
+   }
+   throw new Error(
+-    'CLV oracle did not expose a positive finite quote and pool depth within 30 seconds; live tick was not run',
++    'CLV oracle did not expose a fresh positive finite price within 30 seconds; live tick was not run',
+   );
+ }
+ 
+@@ -57,9 +54,9 @@ async function main(): Promise<void> {
+   console.log('[clv-swap-live-once] resolveJupiterBaseUrl():');
+   console.log(resolveJupiterBaseUrl());
+ 
+-  // Require BOTH price and live DexScreener depth before any funding sweep.
+-  // seedFromDb can make `available` true while depth is still cold, so checking
+-  // `available` alone can move USDC and then stop at the first clip.
++  // Require a fresh price before any funding sweep. Pool depth is deliberately
++  // not a readiness dependency: the live executor gates each exact bounded
++  // Jupiter candidate by its own priceImpactPct before signing.
+   let startedOracle = false;
+   try {
+     if (!isOracleReady(initialPrice)) {
+diff --git a/apps/api/src/services/__tests__/clv-swap-live.test.ts b/apps/api/src/services/__tests__/clv-swap-live.test.ts
+index 07a764ef..9ece9353 100644
+--- a/apps/api/src/services/__tests__/clv-swap-live.test.ts
++++ b/apps/api/src/services/__tests__/clv-swap-live.test.ts
+@@ -71,6 +71,10 @@ const {
+   requireLiveClvSwapExecution,
+   assertMainnetRealMoneyContext,
+   sizeClipMicro,
++  parseJupiterPriceImpactPct,
++  jupiterImpactWithinBps,
++  shrinkClipMicroForImpact,
++  resolveClvSwapImpactProbeMicro,
+   oracleMinOutClvAtomic,
+   resolveClvSwapOracleToleranceBps,
+   resolveJupiterBaseUrl,
+@@ -256,6 +260,7 @@ function makeHarness(opts: {
+   checkouts?: Array<Record<string, unknown>>;
+   prices?: ClvPriceQuote[];
+   quoteAmounts?: { outAmountAtomic: string; otherAmountThresholdAtomic: string };
++  quotePriceImpacts?: string[];
+   quoteRouteFee?: 'absent' | 'valid' | 'amount_only' | 'mint_only' | 'excessive' | 'wrong_mint';
+   swapTxPayer?: PublicKey;
+   swapTxMode?:
+@@ -457,6 +462,7 @@ function makeHarness(opts: {
+       const u = new URL(url);
+       const amount = u.searchParams.get('amount')!;
+       quoteRequests.push({ amount, slippageBps: u.searchParams.get('slippageBps')! });
++      const priceImpactPct = opts.quotePriceImpacts?.[quoteRequests.length - 1] ?? '0.001';
+       const expected = Number(amount) / PRICE; // atomic CLV
+       const out = Math.floor(expected * 1.01);
+       const body = {
+@@ -469,7 +475,7 @@ function makeHarness(opts: {
+         swapMode: 'ExactIn',
+         slippageBps: Number(u.searchParams.get('slippageBps')),
+         instructionVersion: 'V1',
+-        priceImpactPct: '0.001',
++        priceImpactPct,
+         routePlan: [{
+           swapInfo: {
+             ammKey: Keypair.generate().publicKey.toBase58(),
+@@ -767,6 +773,7 @@ beforeEach(() => {
+   delete process.env.CLV_SWAP_MAX_IMPACT_BPS;
+   delete process.env.CLV_SWAP_CLIP_SPACING_MS;
+   delete process.env.CLV_SWAP_JUPITER_BASE_URL;
++  delete process.env.CLV_SWAP_JUPITER_PROBE_USDC;
+   delete process.env.CLV_SWAP_EXECUTING_STALE_MS;
+ });
+ 
+@@ -1023,6 +1030,36 @@ describe('FUNDING SWEEP — exactly-once merchant→swap-wallet USDC', () => {
+ });
+ 
+ // ─────────────────────────────────────────────────────────────────────────────
++describe('Jupiter exact-impact gate — fixed point + conservative shrink', () => {
++  it('uses decimal-fraction units, accepts zero/exact boundary, and CEILs long tails', () => {
++    expect(parseJupiterPriceImpactPct('0')).toBe(0n);
++    expect(jupiterImpactWithinBps(parseJupiterPriceImpactPct('0')!, 100)).toBe(true);
++    expect(jupiterImpactWithinBps(parseJupiterPriceImpactPct('0.01')!, 100)).toBe(true);
++    expect(parseJupiterPriceImpactPct('0.0014436537437998371390113307'))
++      .toBe(1_443_653_743_799_838n);
++    const overBoundary = parseJupiterPriceImpactPct('0.0100000000000000001');
++    expect(overBoundary).toBe(10_000_000_000_000_001n);
++    expect(jupiterImpactWithinBps(overBoundary!, 100)).toBe(false);
++  });
++
++  it('rejects malformed impact and halves every rejected candidate', () => {
++    for (const value of ['-0.01', '1', '0.1e-2', 'NaN', '', ' 0.01']) {
++      expect(parseJupiterPriceImpactPct(value)).toBeNull();
++    }
++    expect(shrinkClipMicroForImpact(25_000_001n, parseJupiterPriceImpactPct('0.02')!, 100))
++      .toBe(12_500_000n);
++    expect(shrinkClipMicroForImpact(1n, parseJupiterPriceImpactPct('0.02')!, 100)).toBeNull();
++  });
++
++  it('defaults/caps the first candidate at $25 and permits tuning down only', () => {
++    expect(resolveClvSwapImpactProbeMicro()).toBe(25_000_000n);
++    process.env.CLV_SWAP_JUPITER_PROBE_USDC = '10.123456';
++    expect(resolveClvSwapImpactProbeMicro()).toBe(10_123_456n);
++    process.env.CLV_SWAP_JUPITER_PROBE_USDC = '100';
++    expect(resolveClvSwapImpactProbeMicro()).toBe(25_000_000n);
++  });
++});
++
+ describe('LIVE EXECUTION — atomic claim + per-clip oracle-checked Jupiter swaps', () => {
+   it('refuses when the funding is not swept — the claim is never taken', async () => {
+     const h = makeHarness({ queueRows: [plannedQueueRow()] }); // no funding row
+@@ -1032,26 +1069,21 @@ describe('LIVE EXECUTION — atomic claim + per-clip oracle-checked Jupiter swap
+     expect(h.log).not.toContain('loadSwapKeypair');
+   });
+ 
+-  it('HAPPY PATH: per-clip depth re-fetch resizes clips; conservation exact; executed', async () => {
+-    // $150 queued. Depths per clip: 22k → cap $110; then 4k → cap $20.
++  it('HAPPY PATH: null/tiny Dex depth cannot stall or under-size; $25 cap conserves', async () => {
+     const h = makeHarness({
+       queueRows: [plannedQueueRow({ amountUsdc: '150.000000' })],
+       checkouts: [settledCheckout({ usdCents: 15_000 })],
+       fundingRows: [sweptFundingRow({ amountUsdc: '150.000000' })],
+-      prices: [quoteOf(22_000), quoteOf(4_000), quoteOf(4_000)],
++      // First clip reproduces the live null-depth defect; later clips prove a
++      // tiny positive reading cannot under-size (old cap: 5 µUSDC → >10k clips).
++      prices: [quoteOf(null), quoteOf(0.001)],
+     });
+     const res = await executeQueuedClvBuy('q-1', h.deps);
+     expect(res.ok).toBe(true);
+     if (!res.ok) throw new Error('unreachable');
+-    expect(res.clipCount).toBe(3);
+-
+-    // PER-CLIP DEPTH RE-FETCH: clip 2 was sized by the NEW (4k) depth — $20,
+-    // not the $40 remainder a stale 22k depth would have allowed in one clip.
+-    expect(h.quoteRequests.map((q) => q.amount)).toEqual([
+-      '110000000', // $110 (22k depth, 100 bps)
+-      '20000000', // $20 (4k depth)
+-      '20000000', // $20
+-    ]);
++    expect(res.clipCount).toBe(6);
++
++    expect(h.quoteRequests.map((q) => q.amount)).toEqual(Array(6).fill('25000000'));
+     // CONSERVATION: Σ clip µUSD === queued amount exactly.
+     const sum = h.quoteRequests.reduce((a, q) => a + BigInt(q.amount), 0n);
+     expect(sum).toBe(150_000_000n);
+@@ -1060,7 +1092,7 @@ describe('LIVE EXECUTION — atomic claim + per-clip oracle-checked Jupiter swap
+     expect(row.status).toBe('executed');
+     expect(Number(row.executedPrice)).toBeGreaterThan(0);
+     expect(Number(row.executedPrice)).toBeLessThan(0.001);
+-    expect((row.fills as unknown[]).length).toBe(3);
++    expect((row.fills as unknown[]).length).toBe(6);
+ 
+     // Capture-before-send holds for EVERY clip.
+     const captures = h.log
+@@ -1071,17 +1103,64 @@ describe('LIVE EXECUTION — atomic claim + per-clip oracle-checked Jupiter swap
+       .map((l, i) => [l, i] as const)
+       .filter(([l]) => l === 'sendRaw')
+       .map(([, i]) => i);
+-    expect(captures.length).toBe(3);
+-    expect(sends.length).toBe(3);
+-    for (let i = 0; i < 3; i += 1) expect(captures[i]).toBeLessThan(sends[i]);
++    expect(captures.length).toBe(6);
++    expect(sends.length).toBe(6);
++    for (let i = 0; i < 6; i += 1) expect(captures[i]).toBeLessThan(sends[i]);
+ 
+     // Spacing sleeps between clips (not after the last).
+-    expect(h.sleeps.length).toBe(2);
++    expect(h.sleeps.length).toBe(5);
+ 
+     // The atomic claim preceded custody.
+     expect(h.log.indexOf('claimQueueRow')).toBeLessThan(h.log.indexOf('loadSwapKeypair'));
+   });
+ 
++  it('shrinks over-cap quotes and forwards only accepted quote objects to /swap', async () => {
++    const h = makeHarness({
++      queueRows: [plannedQueueRow()],
++      fundingRows: [sweptFundingRow()],
++      quotePriceImpacts: ['0.02', '0.005', '0.005'],
++    });
++    const res = await executeQueuedClvBuy('q-1', h.deps);
++    expect(res).toMatchObject({ ok: true, clipCount: 2 });
++    expect(h.quoteRequests.map((q) => q.amount)).toEqual(['5000000', '2500000', '2500000']);
++    expect(h.swapRequests).toHaveLength(2);
++    expect((h.swapRequests[0].quoteResponse as { inAmount: string }).inAmount).toBe('2500000');
++    expect(h.log.filter((entry) => entry === 'sendRaw')).toHaveLength(2);
++  });
++
++  it('refuses at 1 µUSDC when exact impact remains over cap; nothing signs/sends', async () => {
++    const h = makeHarness({
++      queueRows: [plannedQueueRow({ amountUsdc: '0.000002' })],
++      fundingRows: [sweptFundingRow({ amountUsdc: '0.000002' })],
++      quotePriceImpacts: ['0.02', '0.02'],
++    });
++    expect(await executeQueuedClvBuy('q-1', h.deps)).toMatchObject({
++      ok: false,
++      code: 'no_liquidity',
++      detail: 'price_impact_exceeds_cap_at_dust',
++    });
++    expect(h.quoteRequests.map((q) => q.amount)).toEqual(['2', '1']);
++    expect(h.swapRequests).toHaveLength(0);
++    expect(h.log).not.toContain('appendClipFill');
++    expect(h.log).not.toContain('sendRaw');
++  });
++
++  it('fails closed on malformed priceImpactPct before /swap/sign/send', async () => {
++    const h = makeHarness({
++      queueRows: [plannedQueueRow()],
++      fundingRows: [sweptFundingRow()],
++      quotePriceImpacts: ['NaN'],
++    });
++    expect(await executeQueuedClvBuy('q-1', h.deps)).toMatchObject({
++      ok: false,
++      code: 'jupiter_quote_failed',
++      detail: 'price_impact_invalid',
++    });
++    expect(h.swapRequests).toHaveLength(0);
++    expect(h.log).not.toContain('appendClipFill');
++    expect(h.log).not.toContain('sendRaw');
++  });
++
+   it('accounts from ExactIn threshold, never optimistic Jupiter outAmount', async () => {
+     const optimisticOutAtomic = '80000000000';
+     const guaranteedOutAtomic = jupiterExactInMinimumOut(
+@@ -1435,30 +1514,31 @@ describe('LIVE EXECUTION — atomic claim + per-clip oracle-checked Jupiter swap
+     expect(h.log).toContain('releaseQueueClaim');
+   });
+ 
+-  it('refuses a projected 10,001-clip row before the first Jupiter quote/signature and releases the empty claim', async () => {
++  it('refuses a projected 10,001-clip row after exact quote but before /swap/signature', async () => {
++    process.env.CLV_SWAP_JUPITER_PROBE_USDC = '0.000001';
+     const h = makeHarness({
+       queueRows: [plannedQueueRow({ amountUsdc: '0.010001' })],
+       fundingRows: [sweptFundingRow({ amountUsdc: '0.010001' })],
+-      prices: [quoteOf(0.0002)], // current safe cap = exactly 1 micro-USDC
+     });
+     const res = await executeQueuedClvBuy('q-1', h.deps);
+     expect(res).toMatchObject({ ok: false, code: 'clip_count_excessive', executedClips: 0 });
+-    expect(h.quoteRequests).toHaveLength(0);
++    expect(h.quoteRequests).toHaveLength(1); // exact 1µ candidate accepted, then projected
+     expect(h.swapRequests).toHaveLength(0);
+     expect(h.log).not.toContain('sendRaw');
+     expect(h.log).toContain('releaseQueueClaim');
+     expect(h.queue.get('q-1')!.status).toBe('planned');
+   });
+ 
+-  it('depth shrink beyond the cap after one fill keeps that fill durable and the claim executing', async () => {
++  it('post-impact shrink beyond the clip-count cap keeps the prior fill durable', async () => {
++    process.env.CLV_SWAP_JUPITER_PROBE_USDC = '0.000002';
+     const h = makeHarness({
+       queueRows: [plannedQueueRow({ amountUsdc: '0.010002' })],
+       fundingRows: [sweptFundingRow({ amountUsdc: '0.010002' })],
+-      prices: [quoteOf(0.0004), quoteOf(0.0002)], // first cap=2 micro, then cap=1
++      quotePriceImpacts: ['0.001', '0.02', '0.001'],
+     });
+     const res = await executeQueuedClvBuy('q-1', h.deps);
+     expect(res).toMatchObject({ ok: false, code: 'clip_count_excessive', executedClips: 1 });
+-    expect(h.quoteRequests).toHaveLength(1);
++    expect(h.quoteRequests).toHaveLength(3); // 2µ accepted; then 2µ rejected → 1µ accepted
+     expect(h.sentRaw).toHaveLength(1);
+     expect(h.queue.get('q-1')!.status).toBe('executing');
+     expect(h.queue.get('q-1')!.fills as unknown[]).toHaveLength(1);
+diff --git a/apps/api/src/services/clv-price-oracle.ts b/apps/api/src/services/clv-price-oracle.ts
+index 63dc8213..836062d1 100644
+--- a/apps/api/src/services/clv-price-oracle.ts
++++ b/apps/api/src/services/clv-price-oracle.ts
+@@ -39,13 +39,15 @@
+  * LP DEPTH (Tokenomics C3, 2026-07-07) — `poolLiquidityUsd`:
+  *   The highest-liquidity DexScreener pair's `liquidity.usd` (BOTH sides of the
+  *   pool, USD). Previously fetched into a local `bestLiq` and DISCARDED; now
+- *   surfaced through the cache so the CLV swap executor (`clv-swap-executor.ts`)
+- *   can size price-impact-capped clips. DexScreener is the ONLY depth source
+- *   (Helius DAS carries no pool liquidity), so `fetchSpot` now runs BOTH feeds
+- *   in parallel every poll: the PRICE preference is unchanged (configured
+- *   Helius primary → keyless DexScreener fallback) while the DEPTH always
+- *   refreshes from DexScreener when
+- *   it responds. Depth is memory-only (NOT persisted to `clv_price_snapshots` —
++ *   surfaced through the cache for dry-run/advisory planning. DexScreener is
++ *   the oracle's LAST-RESORT depth observation (Helius DAS carries no pool
++ *   liquidity), but it is NOT a live-execution dependency: `clv-swap-live.ts`
++ *   caps the first candidate at $25 and gates the exact Jupiter quote's own
++ *   `priceImpactPct`, shrinking/re-quoting before any signing. No heterogeneous
++ *   Jupiter route is extrapolated into constant-product depth. `fetchSpot`
++ *   still runs both price feeds in parallel: PRICE preference is configured
++ *   Helius primary → keyless DexScreener fallback; Dex depth refreshes when it
++ *   responds. Depth is memory-only (NOT persisted to `clv_price_snapshots` —
+  *   no schema change), so it re-warms within one poll (~60s) of boot; it goes
+  *   `null` when the reading is missing or older than the same max-stale window
+  *   as the price (a stale depth must never size a clip plan).
+diff --git a/apps/api/src/services/clv-swap-live.ts b/apps/api/src/services/clv-swap-live.ts
+index 197c0acb..10530fea 100644
+--- a/apps/api/src/services/clv-swap-live.ts
++++ b/apps/api/src/services/clv-swap-live.ts
+@@ -57,15 +57,16 @@
+  *      case, partial fills durable in tx_signatures). A zero-clip stop before
+  *      signing/sending safely releases the empty claim back to `planned`.
+  *      Then per clip:
+- *        a. RE-FETCH `getClvPrice()` — `available===false` HARD-STOPS sizing
+- *           (for BOTH quoteUsd and poolLiquidityUsd; a present-but-stale depth
+- *           never sizes a clip);
+- *        b. size the clip from the CURRENT depth (same constant-product cap
+- *           math as `planClips`, µUSD-floored, house-favorable);
+- *        c. Jupiter /quote (lite-api v1) — zod-parsed; quoted `outAmount`
+- *           MUST be ≥ the oracle mid less the independent oracle-tolerance
+- *           allowance. Jupiter slippage remains separate and is bound to the
+- *           amount encoded in the transaction, not a response-only field;
++ *        a. RE-FETCH `getClvPrice()` — `available===false` HARD-STOPS on the
++ *           price. Stale/null pool depth is ignored by live execution;
++ *        b. choose min(remaining, configurable $25 probe cap), independent of
++ *           DexScreener depth. `planClips`/`sizeClipMicro` stay unchanged for
++ *           dry-run/advisory callers;
++ *        c. Jupiter /quote — fully validated for the exact candidate. Its own
++ *           decimal-fraction `priceImpactPct` MUST be <= maxImpactBps; an
++ *           over-cap candidate is shrunk and re-quoted before signing. The
++ *           accepted quote is reused for /swap and its `outAmount` MUST also
++ *           clear the independent oracle-tolerance floor;
+  *        d. Jupiter /swap → deserialize → resolve v0 lookup tables → bind the
+  *           pinned V1 route to OUR wallet, canonical token accounts, exact
+  *           amounts/slippage, zero platform fee, bounded compute fee, and a
+@@ -210,6 +211,19 @@ export function resolveClvSwapOracleToleranceBps(): number {
+   return Math.min(Math.max(1, n), 1_000);
+ }
+ 
++const DEFAULT_IMPACT_PROBE_MICRO = 25_000_000n;
++/** `CLV_SWAP_JUPITER_PROBE_USDC` is an exact first-candidate cap, NOT an
++ * inferred-depth input. Plain positive USDC <= $25; malformed/above-cap values
++ * fall back to $25. Operators may tune down only. */
++export function resolveClvSwapImpactProbeMicro(): bigint {
++  const raw = process.env.CLV_SWAP_JUPITER_PROBE_USDC?.trim();
++  if (!raw) return DEFAULT_IMPACT_PROBE_MICRO;
++  const micro = usdcToMicro(raw);
++  return micro !== null && micro <= DEFAULT_IMPACT_PROBE_MICRO
++    ? micro
++    : DEFAULT_IMPACT_PROBE_MICRO;
++}
++
+ /**
+  * Per-row slippage override: `clv_buy_queue.max_slippage` is a FRACTION
+  * (numeric(6,4), e.g. 0.0100 = 1%). Present + valid ⇒ it overrides the env
+@@ -288,6 +302,9 @@ const CLV_DECIMALS = 6;
+ /** USDC is 6-decimal — 1 µUSD == 1 atomic USDC unit (the sweep/quote identity). */
+ const USDC_DECIMALS = 6;
+ const OUTBOUND_FETCH_TIMEOUT_MS = 15_000;
++/** Bounded above the <=25 halvings needed to reach 1 µUSDC from $25. */
++export const MAX_IMPACT_QUOTE_ATTEMPTS = 32;
++const JUPITER_IMPACT_SCALE = 1_000_000_000_000_000_000n;
+ 
+ // ---------------------------------------------------------------------------
+ // SPL plumbing (hand-rolled, dependency-light — fetch + web3.js only)
+@@ -413,6 +430,41 @@ export function oracleMinOutClvAtomic(
+   return BigInt(Math.max(0, minOut));
+ }
+ 
++/** Parse Jupiter's `priceImpactPct` as a decimal FRACTION (`0.01` = 1%).
++ * Longer bounded decimals CEIL at 18dp, so discarded precision can never
++ * understate impact. Zero gates only this exact quote; it is never extrapolated
++ * into infinite depth. */
++export function parseJupiterPriceImpactPct(value: string): bigint | null {
++  const match = /^0(?:\.(\d{1,120}))?$/.exec(value);
++  if (!match) return null;
++  const fraction = match[1] ?? '';
++  const head = (fraction + '0'.repeat(18)).slice(0, 18);
++  return BigInt(head) + (/[1-9]/.test(fraction.slice(18)) ? 1n : 0n);
++}
++
++export function jupiterImpactWithinBps(impactScaled: bigint, maxImpactBps: number): boolean {
++  const bps = BigInt(Math.min(Math.max(1, Math.floor(maxImpactBps)), 10_000));
++  return impactScaled * 10_000n <= bps * JUPITER_IMPACT_SCALE;
++}
++
++/** DOWN-only shrink: floor(current × allowed/observed), additionally capped at
++ * floor(current/2) for conservative, provably bounded termination. The result
++ * is only a next candidate and MUST be re-quoted. */
++export function shrinkClipMicroForImpact(
++  currentMicro: bigint,
++  impactScaled: bigint,
++  maxImpactBps: number,
++): bigint | null {
++  if (currentMicro <= 1n || impactScaled <= 0n) return null;
++  const bps = BigInt(Math.min(Math.max(1, Math.floor(maxImpactBps)), 10_000));
++  let next =
++    (currentMicro * bps * JUPITER_IMPACT_SCALE) /
++    (impactScaled * 10_000n);
++  const half = currentMicro / 2n;
++  if (next > half) next = half;
++  return next > 0n ? next : 1n;
++}
++
+ // ---------------------------------------------------------------------------
+ // Jupiter wire schemas (zod on every network input — never trust the wire)
+ // ---------------------------------------------------------------------------
+@@ -428,7 +480,7 @@ const jupQuoteSchema = z
+     swapMode: z.literal('ExactIn'),
+     slippageBps: z.number().int().min(1).max(1_000),
+     instructionVersion: z.literal('V1').optional(),
+-    priceImpactPct: z.string(),
++    priceImpactPct: z.string().max(128),
+     platformFee: z.null().optional(),
+     routePlan: z
+       .array(
+@@ -1496,9 +1548,8 @@ export async function executeQueuedClvBuy(
+   let totalOutAtomic = 0n;
+ 
+   while (remaining > 0n) {
+-    // 4a) PER-CLIP ORACLE RE-FETCH + HARD-STOP. `available === false` stops
+-    //     sizing outright — BOTH quoteUsd and poolLiquidityUsd are refused
+-    //     regardless of whether the stale struct still carries numbers.
++    // 4a) PER-CLIP ORACLE PRICE RE-FETCH + HARD-STOP. Depth is deliberately
++    //     not a live-execution prerequisite.
+     const quote = await runBeforeSigning(() => d.getPrice());
+     if (!quote.available || quote.quoteUsd === null) {
+       console.error(
+@@ -1512,22 +1563,10 @@ export async function executeQueuedClvBuy(
+       });
+     }
+ 
+-    // 4b) Size THIS clip from the CURRENT depth (re-fetched every iteration).
+-    const clipMicro = sizeClipMicro(remaining, quote.poolLiquidityUsd, maxImpactBps);
+-    if (clipMicro === null) {
+-      console.error(
+-        `[clv-swap-live] NO SAFE CLIP SIZE (depth=${quote.poolLiquidityUsd ?? 'null'}) — ` +
+-          `queue=${queueId} after ${clipIndex} clip(s); stopping before the next clip`,
+-      );
+-      return stopBeforeSigning({ ok: false, code: 'no_liquidity', executedClips: clipIndex });
+-    }
+-    if (wouldExceedMaxPlannedClips(clipIndex, remaining, clipMicro)) {
+-      return stopBeforeSigning({
+-        ok: false,
+-        code: 'clip_count_excessive',
+-        executedClips: clipIndex,
+-      });
+-    }
++    // 4b) Bound the first candidate independently of DexScreener depth. The
++    //     exact Jupiter quote below is the authoritative impact proof.
++    const probeCap = resolveClvSwapImpactProbeMicro();
++    let clipMicro = remaining < probeCap ? remaining : probeCap;
+ 
+     // 4c) Jupiter quote, zod-parsed. Oracle sanity is deliberately on quoted
+     //     outAmount with an INDEPENDENT tolerance. Comparing Jupiter's
+@@ -1535,10 +1574,16 @@ export async function executeQueuedClvBuy(
+     //     and making every fee-bearing route structurally impossible. We gate
+     //     O≥M×(1−t); Jupiter separately enforces threshold O×(1−s) on-chain.
+     const quoteUsd = quote.quoteUsd; // narrowed non-null above; closures don't inherit it
+-    const minOut = await runBeforeSigning(() =>
+-      oracleMinOutClvAtomic(clipMicro, quoteUsd, oracleToleranceBps),
+-    );
+     let jupQuote: JupQuote;
++    for (let quoteAttempt = 0; ; quoteAttempt += 1) {
++      if (quoteAttempt >= MAX_IMPACT_QUOTE_ATTEMPTS) {
++        return stopBeforeSigning({
++          ok: false,
++          code: 'no_liquidity',
++          executedClips: clipIndex,
++          detail: 'price_impact_search_exhausted',
++        });
++      }
+     try {
+       const url =
+         `${jupiterBase}/swap/v1/quote?inputMint=${USDC_MINT_MAINNET}&outputMint=${CLV_MINT}` +
+@@ -1597,6 +1642,37 @@ export async function executeQueuedClvBuy(
+         detail: 'quote_route_mismatch',
+       });
+     }
++      const impactScaled = parseJupiterPriceImpactPct(jupQuote.priceImpactPct);
++      if (impactScaled === null) {
++        return stopBeforeSigning({
++          ok: false,
++          code: 'jupiter_quote_failed',
++          executedClips: clipIndex,
++          detail: 'price_impact_invalid',
++        });
++      }
++      if (jupiterImpactWithinBps(impactScaled, maxImpactBps)) break;
++      const smaller = shrinkClipMicroForImpact(clipMicro, impactScaled, maxImpactBps);
++      if (smaller === null) {
++        return stopBeforeSigning({
++          ok: false,
++          code: 'no_liquidity',
++          executedClips: clipIndex,
++          detail: 'price_impact_exceeds_cap_at_dust',
++        });
++      }
++      clipMicro = smaller;
++    }
++    if (wouldExceedMaxPlannedClips(clipIndex, remaining, clipMicro)) {
++      return stopBeforeSigning({
++        ok: false,
++        code: 'clip_count_excessive',
++        executedClips: clipIndex,
++      });
++    }
++    const minOut = await runBeforeSigning(() =>
++      oracleMinOutClvAtomic(clipMicro, quoteUsd, oracleToleranceBps),
++    );
+     const outAmount = BigInt(jupQuote.outAmount);
+     const transactionMinimumOut = jupiterExactInMinimumOut(outAmount, slippageBps);
+     // The threshold is untrusted wire data too. Its safe floor applies Jupiter
+diff --git a/docs/money-rails.md b/docs/money-rails.md
+index b663cf12..66bf89a8 100644
+--- a/docs/money-rails.md
++++ b/docs/money-rails.md
+@@ -1,6 +1,6 @@
+ # Money Rails — Canonical Operations Reference
+ 
+-> **Last Audited: 2026-07-14** (E1/E2 + E3 exit rail built locally, GATED DARK; no migration applied, no deploy/sign-off. The prior four rails remain live at master `a0b43c1c`).
++> **Last Audited: 2026-07-14** (Jupiter exact-impact clip gate built locally; Fable parked-redemption proof pending, no deploy/sign-off. E1/E2 + E3 remain locally GATED DARK; the prior four rails remain live at master `a0b43c1c`).
+ > Authoritative for agents and operators. Precedence: live code > this doc + ARCHITECTURE.md > memory files.
+ > Deep architecture detail lives in `ARCHITECTURE.md` entries (20) agent-pay, (21) CLV cashout, (22) reconcile-apply, and (25) E1/E2/E3.
+ > NEVER print, log, or commit private key material. Pubkeys only in docs.
+@@ -35,10 +35,11 @@
+ 4. **Chain evidence before mutating a captured fill**: `getSignatureStatuses`/parseTransactions NOT-FOUND **after blockhash expiry**, evidence stamped into the reset. Never guess claim ids — read them from the row.
+ 5. **Zero-clip pre-SIGN stops self-release** (since `296651f0`): claim released to `planned` only when nothing signed, nothing sent, zero captured fills — enforced BOTH in-memory and by the DB CAS (`jsonb_array_length(tx_signatures)=0`).
+ 6. **Gate algebra** (since `296651f0`): quote passes iff `outAmount ≥ oracleMid × (1 − CLV_SWAP_ORACLE_TOLERANCE_BPS)` (default 300); untrusted wire threshold must clear `mid × (1−t) × (1−slippage)`. NEVER compare Jupiter's threshold to an oracle floor built with the same slippage — the (1−s) cancels and the gate becomes unsatisfiable.
+-7. **Exactly-once by schema**: UNIQUE `source_ref`, partial-UNIQUE `tx_signature`, EARNED mints inside the settled-flip transaction.
+-8. **Money test ladder**: devnet-staging → mainnet-staging → mainnet-prod. Prod IS mainnet. No rung claimed without on-chain signatures.
+-9. **EARNED dollar conservation**: 1 vCLAW = 10,000 micro-USDC. Redeemable means EARNED ∧ house-backed ∧ payer-verified ∧ vested ∧ not clawed. Current on-chain custody must cover network-partitioned outstanding backing + retained fees + unswept buy principal; captured-ambiguous funding makes solvency indeterminate. Admission and funding share one custody mutex + Postgres advisory lock.
+-10. **No dead economics**: no entry rake, treasury split, dividend pool, pro-rata P/E rate, 20% reserve, or fixed CLV anchor. The sole loop fee is 444 bps at exit; CLV floats.
++7. **Executable impact, never inferred depth** (local, pending Fable proof): live clips ignore DexScreener depth for liveness. First candidate is `min(remaining, CLV_SWAP_JUPITER_PROBE_USDC)` (default/max $25). Require the exact Jupiter quote's decimal-fraction `priceImpactPct ≤ maxImpactBps/10,000`; otherwise set `nextµ = min(floor(currentµ × allowedImpact / observedImpact), floor(currentµ/2))` and re-quote down to 1 µUSDC. Both floors only shrink, and long impact decimals CEIL at 18dp, so rounding can never enlarge a clip or understate impact. Reuse the accepted quote for `/swap`; rejected quotes never sign/send. Do NOT derive pool depth from a probe: the single fee-free CPMM identity `Lboth=2P(1−i)/i` does not bound Jupiter's changing split/multi-hop/concentrated-liquidity route.
++8. **Exactly-once by schema**: UNIQUE `source_ref`, partial-UNIQUE `tx_signature`, EARNED mints inside the settled-flip transaction.
++9. **Money test ladder**: devnet-staging → mainnet-staging → mainnet-prod. Prod IS mainnet. No rung claimed without on-chain signatures.
++10. **EARNED dollar conservation**: 1 vCLAW = 10,000 micro-USDC. Redeemable means EARNED ∧ house-backed ∧ payer-verified ∧ vested ∧ not clawed. Current on-chain custody must cover network-partitioned outstanding backing + retained fees + unswept buy principal; captured-ambiguous funding makes solvency indeterminate. Admission and funding share one custody mutex + Postgres advisory lock.
++11. **No dead economics**: no entry rake, treasury split, dividend pool, pro-rata P/E rate, 20% reserve, or fixed CLV anchor. The sole loop fee is 444 bps at exit; CLV floats.
+ 
+ ## 4. Runbooks
+ 
