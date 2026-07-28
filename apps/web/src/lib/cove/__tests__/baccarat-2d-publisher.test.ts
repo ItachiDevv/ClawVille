@@ -218,6 +218,7 @@ describe('baccarat 2D publisher', () => {
       'data-testid="bac-banner-net"',
       'data-testid="bac-bet-pill"',
       'surface="baccarat-2d"',
+      "disabled={inFlight || phase !== 'idle'}",
     ]) {
       expect(modalSource).toContain(contract);
     }

@@ -773,32 +773,31 @@ export default function BaccaratModal() {
           borderTop: '1px solid rgba(60,180,120,0.2)', padding: '12px 16px',
           display: 'flex', flexDirection: 'column', gap: 10,
         }}>
-          {/* Bet-type + stake selector — idle only */}
+          {/* Keep the selected bet zone visible through settlement for parity. */}
+          <BetTypeSelector
+            value={betType}
+            disabled={inFlight || phase !== 'idle'}
+            onChange={setBetType}
+          />
+          {/* Stake selector — idle only */}
           {phase === 'idle' && (
-            <>
-              <BetTypeSelector
-                value={betType}
-                disabled={inFlight}
-                onChange={setBetType}
-              />
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{
-                  fontSize: 10, fontFamily: 'var(--pt-data)', color: 'var(--pt-mute)',
-                  letterSpacing: '0.12em', textTransform: 'uppercase', flexShrink: 0,
-                }}>
-                  STAKE ({COVE_BACCARAT_MIN_BET}–{COVE_BACCARAT_MAX_BET})
-                </span>
-                {BET_STEPS.map((step) => (
-                  <BetChip
-                    key={step}
-                    value={step}
-                    selected={baccaratBet === step}
-                    disabled={inFlight}
-                    onClick={() => setBaccaratBet(step)}
-                  />
-                ))}
-              </div>
-            </>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{
+                fontSize: 10, fontFamily: 'var(--pt-data)', color: 'var(--pt-mute)',
+                letterSpacing: '0.12em', textTransform: 'uppercase', flexShrink: 0,
+              }}>
+                STAKE ({COVE_BACCARAT_MIN_BET}–{COVE_BACCARAT_MAX_BET})
+              </span>
+              {BET_STEPS.map((step) => (
+                <BetChip
+                  key={step}
+                  value={step}
+                  selected={baccaratBet === step}
+                  disabled={inFlight}
+                  onClick={() => setBaccaratBet(step)}
+                />
+              ))}
+            </div>
           )}
 
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
