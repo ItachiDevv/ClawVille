@@ -79,6 +79,13 @@ import {
   type DealResponse,
   type SettledHandResponse,
 } from '@/lib/cove/blackjack-api-client';
+import {
+  BlackjackRevealEpoch,
+  buildBlackjack2dBannerText,
+  buildNaturalHoleHand,
+  useBlackjack2dPublisher,
+  type Blackjack2dDisplayStep,
+} from '@/lib/cove/blackjack-2d-publisher';
 
 // ---------------------------------------------------------------------------
 // Bet chips — must stay within engine bounds (5–500 CT).
@@ -302,6 +309,14 @@ const MOVEMENT_KEYS = new Set([
 // Pause between a settled hand and the agent auto-dealing the next one.
 const AGENT_NEXT_HAND_PAUSE_MS = 2200;
 
+function waitForCommittedPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => resolve());
+    });
+  });
+}
+
 // ── In-modal Autonomous availability ───────────────────────────────────────
 // The in-modal, human-supervised Autonomous driver below is LIVE: it asks the
 // human's connected agent for a decision via the
@@ -338,6 +353,7 @@ interface SubHandView {
 interface HandView {
   handId: string;
   shoeId: string;
+  handIndex: number | null;
   /** Player sub-hands (1 normally, 2 after split). */
   playerHands: SubHandView[];
   dealerUpcard: BJCard | null;
@@ -363,8 +379,11 @@ export default function BlackjackModal() {
   // ── Server-mirrored state ────────────────────────────────────────────────
   const [shoe, setShoe] = useState<BlackjackShoeWire | null>(null);
   const [balance, setBalance] = useState(0);
-  const [hand, setHand] = useState<HandView | null>(null);
-  const [settled, setSettled] = useState<SettledHandResponse | null>(null);
+  const [liveHand, setLiveHand] = useState<HandView | null>(null);
+  const [pendingSettlement, setPendingSettlement] =
+    useState<SettledHandResponse | null>(null);
+  const [displayStep, setDisplayStep] =
+    useState<Blackjack2dDisplayStep>('idle');
   const [activeSlot, setActiveSlot] = useState<0 | 1>(0);
   const [revealedSeed, setRevealedSeed] = useState<string | null>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -437,13 +456,42 @@ export default function BlackjackModal() {
   const toastSeqRef = useRef(0);
   const shoeRef = useRef<BlackjackShoeWire | null>(null);
   shoeRef.current = shoe;
+  const parityInstanceIdRef = useRef(crypto.randomUUID());
+  const revealEpochRef = useRef<BlackjackRevealEpoch | null>(null);
+  if (!revealEpochRef.current) {
+    revealEpochRef.current = new BlackjackRevealEpoch();
+  }
+
+  const hand = liveHand;
+  const settled = pendingSettlement;
 
   // Hook must run unconditionally — a short-circuited call here would change
   // the hook order when the avatar query resolves after mount.
   const isGuestTier = useIsGuest();
   const isRealTier = Boolean(avatar) && !isGuestTier;
-  const phase: 'idle' | 'player-turn' | 'settled' =
-    settled ? 'settled' : hand ? 'player-turn' : 'idle';
+  const phase: 'idle' | 'revealing' | 'player-turn' | 'settled' =
+    pendingSettlement
+      ? displayStep === 'settled' ? 'settled' : 'revealing'
+      : liveHand
+        ? displayStep === 'player-turn' || displayStep === 'split'
+          ? 'player-turn'
+          : 'revealing'
+        : 'idle';
+  const bannerText = pendingSettlement
+    ? buildBlackjack2dBannerText(pendingSettlement.outcome)
+    : null;
+  const paritySnapshot = useMemo(() => ({
+    liveHand,
+    pendingSettlement,
+    displayStep,
+    activeSlot,
+    bannerText,
+  }), [activeSlot, bannerText, displayStep, liveHand, pendingSettlement]);
+  useBlackjack2dPublisher({
+    open: blackjackOpen,
+    instanceId: parityInstanceIdRef.current,
+    snapshot: paritySnapshot,
+  });
 
   // ── Toast helpers ──────────────────────────────────────────────────────────
   const showToast = useCallback((message: string, tone: ToastTone = 'info') => {
@@ -463,8 +511,10 @@ export default function BlackjackModal() {
 
   // ── Reset transient state ──────────────────────────────────────────────────
   const resetHand = useCallback(() => {
-    setHand(null);
-    setSettled(null);
+    revealEpochRef.current?.cancel();
+    setLiveHand(null);
+    setPendingSettlement(null);
+    setDisplayStep('idle');
     setActiveSlot(0);
     dealKeyRef.current = null;
     actionKeyRef.current = null;
@@ -505,9 +555,11 @@ export default function BlackjackModal() {
         isBust: h.isBust,
         isResolved: h.isResolved,
       }));
-      setHand({
+      revealEpochRef.current?.begin(live.handId);
+      setLiveHand({
         handId: live.handId,
         shoeId: live.shoeId,
+        handIndex: live.handIndex,
         playerHands: subHands.length > 0 ? subHands : [{ cards: [], total: 0, isSoft: false, isBust: false, isResolved: false }],
         dealerUpcard: live.dealerUpcard,
         insuranceOffered: live.insuranceOffered,
@@ -525,14 +577,15 @@ export default function BlackjackModal() {
       } else {
         setActiveSlot(0);
       }
-      setSettled(null);
+      setPendingSettlement(null);
+      setDisplayStep(live.didSplit ? 'split' : 'player-turn');
     } else if (allowClear) {
       // Server confirms NO in-progress hand (the prior hand settled) → clear.
       // Gated by allowClear so the eager-restore-on-open path can't wipe a hand
       // the user dealt during the await (FINDING #1).
-      setHand(null);
+      resetHand();
     }
-  }, []);
+  }, [resetHand]);
 
   // ── Eager restore on open ──────────────────────────────────────────────────
   useEffect(() => {
@@ -605,6 +658,10 @@ export default function BlackjackModal() {
     }
   }, [blackjackOpen, resetHand]);
 
+  useEffect(() => () => {
+    revealEpochRef.current?.cancel();
+  }, []);
+
   // ── Force back to Control if the agent disconnects mid-session ──────────────
   // Autonomous has no decision source without a connected agent, so drop the
   // human back into Control rather than stranding a dead table.
@@ -669,13 +726,35 @@ export default function BlackjackModal() {
   }, [openShoe, showToast]);
 
   // ── Apply a settled response (single place balance/outcome land) ───────────
-  const applySettled = useCallback((res: SettledHandResponse) => {
+  const applySettled = useCallback((
+    res: SettledHandResponse,
+    source: 'deal' | 'action',
+  ) => {
     // F4: remember this hand is settled so a late/stale /hand/current restore
     // (server commit→settle window) can never re-seed it as a live player-turn hand.
     settledHandIdsRef.current.add(res.handId);
-    setSettled(res);
-    setBalance(res.balance);
-    setHand(null);
+    revealEpochRef.current?.begin(res.handId);
+    setPendingSettlement(res);
+    setLiveHand(buildNaturalHoleHand(res));
+    setActiveSlot(0);
+    if (source === 'deal' && res.dealtImmediately) {
+      setDisplayStep('hole');
+      revealEpochRef.current?.schedule(420, () => {
+        setDisplayStep('dealer-reveal');
+      });
+      revealEpochRef.current?.schedule(970, () => {
+        setDisplayStep('settled');
+        setActiveSlot(0);
+        setBalance(res.balance);
+      });
+    } else {
+      setDisplayStep('dealer-reveal');
+      revealEpochRef.current?.schedule(550, () => {
+        setDisplayStep('settled');
+        setActiveSlot(0);
+        setBalance(res.balance);
+      });
+    }
     // Reflect the shoe's new dealtCount locally so the next deal's penetration
     // gate + fairness HUD are accurate without a refetch.
     setShoe((prev) => (prev ? { ...prev, dealtCount: res.dealtCount } : prev));
@@ -692,6 +771,7 @@ export default function BlackjackModal() {
     return {
       handId: res.handId,
       shoeId: res.shoeId,
+      handIndex: res.handIndex,
       // A fresh deal's single sub-hand is always live (the player hasn't acted yet,
       // and a dealt natural settles inline via isSettled, never reaching here).
       playerHands: [{ cards: opening, total: t.total, isSoft: t.isSoft, isBust: false, isResolved: false }],
@@ -707,7 +787,9 @@ export default function BlackjackModal() {
   const mergeActionInProgress = useCallback((
     res: Extract<ActionResponse, { status: 'in_progress'; playerHands: unknown }>,
   ) => {
-    setHand((prev) => {
+    revealEpochRef.current?.begin(res.handId);
+    setPendingSettlement(null);
+    setLiveHand((prev) => {
       if (!prev) return prev;
       const merged: SubHandView[] = res.playerHands.map((h) => ({
         cards: h.cards,
@@ -726,9 +808,11 @@ export default function BlackjackModal() {
         handId: res.handId,
         playerHands: merged,
         dealerUpcard: res.dealerUpcard ?? prev.dealerUpcard,
+        insuranceOffered: false,
         didSplit: res.didSplit,
       };
     });
+    setDisplayStep(res.didSplit ? 'split' : 'player-turn');
     // After a split, focus the first non-RESOLVED sub-hand. isBust alone is the
     // pre-existing live-split bug — a stood-21/doubled/split-ace slot is resolved
     // yet not bust, so focusing it routes the next action to a terminal slot (400
@@ -851,12 +935,17 @@ export default function BlackjackModal() {
         }
       }
 
-      setSettled(null);
       if (isSettled(res)) {
-        applySettled(res); // natural settled inline
+        applySettled(res, 'deal'); // natural settled inline
       } else {
-        setHand(handViewFromDeal(res));
+        revealEpochRef.current?.begin(res.handId);
+        setPendingSettlement(null);
+        setLiveHand(handViewFromDeal(res));
+        setDisplayStep('hole');
         setActiveSlot(0);
+        revealEpochRef.current?.schedule(120, () => {
+          setDisplayStep('player-turn');
+        });
         // Stake is committed at deal (finding #3) — reflect the debited balance
         // in the HUD immediately if the server returned it.
         if (typeof res.balance === 'number') setBalance(res.balance);
@@ -901,7 +990,13 @@ export default function BlackjackModal() {
     // has to reach takeInsurance.mutateAsync to get a 409 stale_agent_decision back —
     // the catch below then resyncs + re-asks. Dropping it silently here would strand the
     // agent on a stale view (the round-4 stale-decision contract, parity with runAction).
-    if (!agentDriven && (hand.tookInsurance || !hand.insuranceOffered)) return;
+    if (hand.tookInsurance || !hand.insuranceOffered) {
+      if (agentDriven) {
+        void resyncAfterStaleDecision();
+        pushAdvisor('Insurance is no longer available on this hand.');
+      }
+      return;
+    }
     if (agentMode === 'autonomous' && !agentDriven) {
       agentRunRef.current += 1;
       setAgentPending(null);
@@ -922,10 +1017,27 @@ export default function BlackjackModal() {
       // main action path does, never as a phantom { tookInsurance } ack on a dead
       // hand. A live in-progress ack just flips the tookInsurance flag.
       if (isSettled(res)) {
-        applySettled(res);
+        applySettled(res, 'action');
       } else {
-        setHand((prev) => (prev ? { ...prev, tookInsurance: res.tookInsurance } : prev));
+        setLiveHand((prev) => (prev
+          ? {
+              ...prev,
+              insuranceOffered: false,
+              tookInsurance: res.tookInsurance,
+            }
+          : prev));
+        setDisplayStep('player-turn');
         showToast('Insurance taken.', 'info');
+        // The ACK is intentionally rendered/published first. Only after that paint
+        // do we read the complete current-hand wire and publish its player-turn
+        // revision (the insure ACK itself is card-free).
+        await waitForCommittedPaint();
+        try {
+          const current = await fetchCurrentBlackjackHand();
+          restoreHandFromServer(current, false);
+        } catch {
+          // Keep the truthful ACK state; the next action/resync remains authoritative.
+        }
       }
     } catch (err) {
       // Stale agent decision (409): the human advanced the hand since the agent
@@ -944,7 +1056,16 @@ export default function BlackjackModal() {
     } finally {
       busyRef.current = false;
     }
-  }, [hand, agentMode, takeInsurance, showToast, applySettled, resyncAfterStaleDecision, pushAdvisor]);
+  }, [
+    hand,
+    agentMode,
+    takeInsurance,
+    showToast,
+    applySettled,
+    resyncAfterStaleDecision,
+    pushAdvisor,
+    restoreHandFromServer,
+  ]);
 
   // ── ACTION (hit / stand / double / split / surrender) ──────────────────────
   const runAction = useCallback(async (
@@ -989,7 +1110,7 @@ export default function BlackjackModal() {
           : {}),
       });
       if (isSettled(res)) {
-        applySettled(res);
+        applySettled(res, 'action');
         actionKeyRef.current = null;
       } else if (isActionInProgress(res)) {
         mergeActionInProgress(res);
@@ -1320,7 +1441,10 @@ export default function BlackjackModal() {
   }, [phase, hand, inFlight, resyncAfterStaleDecision, showToast]);
 
   // ── Settled outcome view helpers ───────────────────────────────────────────
-  const settledOutcome: SerializedBlackjackHandResult | null = settled?.outcome ?? null;
+  const settledOutcome: SerializedBlackjackHandResult | null =
+    (displayStep === 'dealer-reveal' || displayStep === 'settled')
+      ? settled?.outcome ?? null
+      : null;
   const settledPrimary: SerializedPlayerHand | null =
     settledOutcome?.playerHands[0] ?? null;
 
