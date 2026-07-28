@@ -83,6 +83,38 @@ humans (balance reads for hold-tiers); agent-path parity is the planned Phase C.
 - Pricing: free tier **1,000 monthly-active wallets** (best free fit for a fleet).
 - Strongest compliance posture: SOC 2 + MiCA CASP licenses across the EU.
 
+### Steward (steward.fi, Steward-Fi/steward) — the open-source, self-hosted option (added same-day per founder pointer; evaluated from the repo + the waifu.fun session logs where it ran in production)
+- **What it is:** MIT-licensed, self-hostable agent-wallet platform: encrypted vault + per-agent
+  policy engine + approval queue + audit trail + credential proxy. Docker compose (API :3200,
+  proxy :8080, Postgres, Redis) — fits our Hetzner boxes as-is. Multi-tenant. ~40-package
+  monorepo, 645 commits since 2026-03, 403 test files incl. red-team suites.
+- **ElizaOS-native (the strategic edge):** `@stwd/eliza-plugin` peer-deps on `@elizaos/core`
+  2.0.0-alpha (our exact substrate); Shaw is the #2 committer (75 commits); Eliza Cloud
+  provisions Steward tenants on login; waifu.fun runs every agent on it. This is effectively
+  the ElizaOS ecosystem's wallet layer — an alignment Turnkey/Privy/Crossmint cannot offer.
+- **Battle evidence from our own waifu sessions:** Steward auth was explicitly CLEARED in the
+  June regression hunt (bug was Eliza Cloud's; Steward inbound auth byte-identical throughout).
+  Policy audit sweeps reported zero anomalies since launch. Known gotchas captured: cross-tenant
+  agents need a short-TTL HS256 bearer (tenant key 403s), `STEWARD_JWT_SECRET` is triple-duty.
+- **Solana:** REAL at the vault/API layer — Ed25519, SPL + Token-2022 TransferChecked, v0
+  versioned txs, adaptive priority fees, and a spoof-resistant `sign-solana` route that decodes
+  the tx bytes to derive authoritative policy fields (fail-closed on undecodable instructions).
+  GAP: the ElizaOS plugin's transfer ACTION is EVM-only today — Solana via the SDK call, so
+  runtime wiring is on us. (waifu never exercised Solana signing; custody yes, signing no.)
+- **Policy engine:** per-agent `spending-limit` (per-tx/day/week), `approved-addresses`
+  (mint+recipient for SPL), auto-approve thresholds → approval queue, rate limits, quiet hours,
+  fail-closed composition. "Agent may spend ≤ X USDC/day" is directly expressible — the
+  farm-resistance our self-roll lacks.
+- **Custody honesty (the trade-off):** SOFTWARE custody — AES-256-GCM with scrypt KDF domain
+  separation + AAD context binding (strictly better than our single-env-key scheme), optional
+  AWS-KMS/PKCS#11 envelope, and an external-custody interface. But the key is plaintext
+  in-process at sign time in every mode except external custody; no TEE/MPC (their docs say so
+  plainly, which is itself a good sign). NO external audit yet; core team is small (Sol + Shaw).
+- **Migration friction:** no first-class raw-keypair import (generate or mnemonic-restore only)
+  — adopting it for EXISTING wallets means a custom import script on vault primitives (needs an
+  adversarial pass) or fresh wallets + balance sweep.
+- **Cost:** $0 license; the price is ops (we run/patch/back up it) + owning the risk.
+
 ### Also-rans (checked, not shortlisted)
 Fireblocks+Dynamic (enterprise MPC, overkill/pricier), Coinbase CDP Agentic Wallets
 (overlaps Privy), thirdweb (EVM-centric), Phantom (no server-custody product), Para (no fit
@@ -107,7 +139,50 @@ surfaced).
 3. **Do NOT inject raw PKs into hosted-agent runtimes.** Delegated signing (server-side or
    provider policy engine) gives the agent the capability without the exfiltration risk.
 
-**Provider pilot (recommended): Turnkey**, scoped to hosted-agent runtime signing:
+**SUPERSEDED same-day — FOUNDER REJECTED STEWARD (2026-07-21 evening): "we're not going to
+do Steward."** The Steward evaluation above stays for the record; the staging stack was torn
+down and the import-bridge work reverted. Final direction below in "FINAL STATE".
+
+**FINAL STATE 2026-07-21 (after Meridian/PayAI/Privy research rounds, two Opus agents each):**
+1. **Layer map is settled: custody is ADDITIVE-UNDERNEATH, partners ride on top.** PayAI does
+   NOT provision or custody wallets (docs explicit: facilitation only, payer wallet always
+   client-side, never holds keys). Meridian ($MRDN, mrdn.finance) is an x402 FACILITATOR like
+   PayAI — non-custodial for keys (it escrows receiver BALANCES with withdrawal controls,
+   1% withdrawal fee), live on Base+USDC only today ("all chains" is roadmap). Integrating
+   Meridian = a second payment rail beside PayAI (and its balance-escrow overlaps SAP
+   escrow), NOT wallet infrastructure. SAP/OOBE also holds no keys. ⇒ The ONLY custody
+   decision is Turnkey vs Privy vs keep-self-rolling, and it should be ONE unified signer
+   under all rails — fragmenting custody across partner systems splinters policy enforcement
+   and cross-feature settlement.
+2. **Privy findings (the fear was wrong):** Server Wallets are signature/volume-metered, NOT
+   MAU-metered (free tier = 50K signatures + $1M volume/mo — covers us until real scale;
+   enterprise floor ~$0.001/sig ⇒ even 100K sigs/mo ≈ $50). Solana server signing is
+   first-class (versioned txs, SPL, <20ms, 4-nines SLA); the policy engine explicitly covers
+   SVM (spend limits, recipient/program allowlists, default-deny) with one caveat:
+   simulation-based limits evaluate at the API layer, not fully in-enclave. **Key IMPORT
+   preserves addresses** (base58 secret key via HPKE flow → same TEE protection) and EXPORT
+   exists ⇒ migration in AND out with zero address churn. Ships an OpenClaw agentic-wallets
+   skill (mirrors our agent-onboarding pattern); AgentKit provider; Stripe/Bridge fiat↔USDC
+   ramps bundled (NOTE: founder has fiat on-ramp OFF the roadmap 2026-07-21, so this is a
+   later-option, not a deciding factor). DILIGENCE ITEM before committing: written
+   confirmation from Privy that backend-only server wallets accrue no MAU charges and the
+   per-signature floor applies to Solana server-wallet volume.
+3. **Decision frame (founder to pick):** Privy = bundled product (fleet + human-side embedded
+   UX + agent-skill ecosystem + optional fiat rails; ~free at our volume). Turnkey = cleanest
+   signing boundary (policy enforced inside the key-holding enclave, pure per-signature,
+   $99/mo Pro; the conservative treasury-grade pick). Defensible hybrid: Turnkey for
+   treasury/settlement-authority keys, Privy for the agent fleet. Both make idle wallets
+   ~free; neither costs real money until scale. Steward wins on strategy (ElizaOS-native, the same
+wallet layer Eliza Cloud + waifu.fun run, $0 license, self-hosted on boxes we already operate,
+policy engine at least as expressive as Turnkey's) and loses on custody hardness (software
+custody, key in-process at sign time, no external audit). Per our own money-path rules that
+means: Steward may take the NON-money pilot (hosted-agent runtime signing with tight spend
+policies) immediately; the CUSTODIAL money paths stay on our current vault until either
+Steward's KMS/external-custody mode + a Codex adversarial pass clears it, or we choose Turnkey
+TEE for that layer specifically. Hybrid end-state (Steward policy layer + hardened key backend)
+is explicitly on the table.
+
+**Turnkey (fallback for custody hardness)**, scoped to hosted-agent runtime signing:
 - Least rearchitecture: it's a signer swap — wallet addresses can even be imported/exported,
   and our `loadAvatarWalletForSigning` seam is the single integration point.
 - Solves the founder's three concerns at once: raw-key liability leaves our process (TEE),
