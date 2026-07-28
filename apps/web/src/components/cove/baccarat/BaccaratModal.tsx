@@ -134,6 +134,7 @@ function BetTypeSelector({ value, disabled, onChange }: {
             type="button"
             role="radio"
             aria-checked={selected}
+            data-bet-zone={b}
             onClick={() => onChange(b)}
             disabled={disabled}
             style={{

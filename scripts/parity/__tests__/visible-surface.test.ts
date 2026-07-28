@@ -275,6 +275,13 @@ describe('visible-surface probe scoping', () => {
     expect(betZoneProbe?.selector).toBe(
       '[data-testid="bac-bet-zones"] [role="radio"][aria-checked="true"]',
     );
+    expect(readFileSync(
+      new URL(
+        '../../../apps/web/src/components/cove/baccarat/BaccaratModal.tsx',
+        import.meta.url,
+      ),
+      'utf8',
+    )).toContain('data-bet-zone={b}');
     for (const [bet, label] of [
       ['player', 'Player · 1:1 · 25 vCLAW'],
       ['banker', 'Banker · 0.95:1 · 25 vCLAW'],

@@ -56,6 +56,9 @@ export async function probeVisibleSurface(
     const kind = ${JSON.stringify(probe.kind)};
     if (kind === 'active') return element.getAttribute('data-active') === 'true';
     if (kind === 'on-felt') return element.getAttribute('data-on-felt') === 'true';
+    if (${JSON.stringify(probe.name)} === 'bet-zone') {
+      return element.getAttribute('data-bet-zone') ?? element.textContent ?? '';
+    }
     const text = ${JSON.stringify(probe.name)} === 'banner-text'
       ? element.getAttribute('data-banner-text')
         ?? element.firstElementChild?.textContent
