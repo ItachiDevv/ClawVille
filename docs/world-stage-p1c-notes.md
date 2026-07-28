@@ -377,3 +377,44 @@ loops 7/8/30 then 30 loops flat in every run); slope limit 1.0 MB/loop
 structurally-flat runs; app-leak signature ≥1.2). First dwell-cove attempt
 crashed on a Puppeteer detached-frame harness race with flat heap underneath
 (0.004 MB/s); rerun below.
+
+## Partner contract check (reviewer, staging step)
+
+`.hatcher-ref` staged copies live at `cv-minors/.hatcher-ref` + `cv-sap-sdk/.hatcher-ref`
+(absent from this worktree post-purge — gitignored). Verified against the partner's REAL
+staged frontend code: zero references to `/api/world/position` or the world co-presence
+wire anywhere in their `lib`/`docs`/tests — the surface P1c documents (self-reported
+`at-cove` activity, v40 manual text) has no contact point with Hatcher's code paths, and
+the register/PATCH/stats/session wire shapes they DO consume are byte-untouched. The
+CONTRACT.md file itself is not present in either staged copy; the code-level
+no-contact-surface check above is the stronger validation.
+
+## Live staging drive (reviewer, 2026-07-27, staging api+web @ 39a6d642/86abeb7d)
+
+Two ISOLATED browser sessions (separate identities, per R2 minor 4), WebGL lane:
+
+| Check | Result |
+|---|---|
+| A (spectator) sees B's body pre-crossing | PASS — "Guest9811" label in A's world |
+| B crosses /game→/cove via stage bridge | PASS — fade, loader NEVER mounted (MutationObserver armed), 1 canvas |
+| A keeps seeing B while B is at /cove | **PASS — "Guest9811 · at the Cove" rendered in A's world** |
+| B returns /cove→/game | PASS (see transient below) — world active, loader never mounted, canvasMounts 1, recoveries 0 |
+| A sees B's tag CLEAR after return | PASS |
+| /arena legacy smoke | PASS — 1 canvas, no error text |
+| mock-Hatcher client + contract-probe | ALL PASS + 7/7 (test signer set → used → REMOVED + api redeployed; resting state verified signer-free) |
+| onboarding smoke | 12/12 PASS |
+| hosted runtime probe | 16/16 PASS (run ON the api host — its loopback gateway mocks make dev-box runs 500 by design) |
+
+**Transient (recorded, non-blocking):** B's FIRST return `navigate('/game')` from a
+~40 s cove dwell returned `false` once on the deployed build; the immediate retry
+returned `true` and the crossing completed (canvasMounts stayed 1 — not a remount).
+The local 30-trip routes lane asserts every navigate true and passes, so this is
+live-staging-timing-specific. Production UI callers carry `router.push`/transition
+fallbacks, so a user's click still lands (worst case: that one crossing skips
+`onMidway`). Watch item for the P2 slice.
+
+**Same-account supersession:** NOT reproducible with guest tabs — two tabs share one
+session cookie ⇒ the server sees the SAME presence (one body, both tabs control it),
+which is correct behavior, not eviction. True supersession needs one account with two
+distinct session cookies; client handling is unit-tested (machine SUPERSEDED terminal)
+and the server path is byte-untouched by P1c.
