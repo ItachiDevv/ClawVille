@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useGameStore } from '@/stores/game';
 
 // ---------------------------------------------------------------------------
@@ -304,7 +305,14 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
 
   if (!visible) return null;
 
-  return (
+  // Portal to <body>: inside the (world) route group the page-children layer
+  // is `absolute z-10` (WorldStageRoot), a stacking context that traps this
+  // overlay's zIndex 9999 BELOW the sibling StageTransition cover (real
+  // z-[9999]) — users saw "WARMING SCENE" on black instead of the progress
+  // bar for the whole first boot (field incident 2026-07-28; pre-existing
+  // since the P1a cutover). Rendering into <body> (appended AFTER the stage
+  // root) restores a true top-level 9999 that wins by DOM order.
+  return createPortal(
     <>
       {/* All keyframes inline — component is fully self-contained */}
       <style>{`
@@ -714,6 +722,7 @@ export default function SeaLoadingScreen({ forceReady }: Props) {
           )}
         </div>
       </div>
-    </>
+    </>,
+    document.body,
   );
 }
