@@ -39,6 +39,7 @@ import {
   DEFAULT_CASH_TABLE_STATE_PATH,
   readPersistedCashTableState,
 } from './pack-cash-table-state';
+import { routeForScenario } from './scenario-route';
 
 interface Config {
   webBase: string;
@@ -192,15 +193,7 @@ async function runLiveScenario(): Promise<void> {
     `cove-parity-${scenario.id}-${Date.now().toString(36)}`,
     statePath,
   );
-  const route = `${
-      scenario.game === 'blackjack'
-        ? '/cove/blackjack'
-        : scenario.game === 'baccarat'
-          ? '/cove/baccarat'
-          : `/cove/table${cashTableId
-            ? `?tableId=${encodeURIComponent(cashTableId)}`
-            : ''}`
-    }`;
+  const route = routeForScenario(scenario, cashTableId);
   let fixture: FixtureRunHandle | null = null;
   let cleaning = false;
   const cleanup = async (): Promise<void> => {
