@@ -87,4 +87,62 @@ describe('terminal blackjack insurance oracle', () => {
     expect(expected.meta['insurance-taken']).toBe('false');
     expect(expected.meta['insurance-offered']).toBe('false');
   });
+
+  test('Ace upcard without settled insurance stays offered but not taken', () => {
+    const responseBody = wire.responseBody as {
+      outcome: Record<string, unknown>;
+    };
+    const expected = expectedFromWire(
+      'blackjack',
+      'blackjack-2d',
+      {
+        ...wire,
+        responseBody: {
+          ...responseBody,
+          outcome: {
+            ...responseBody.outcome,
+            insurance: null,
+          },
+        },
+      },
+      undefined,
+      { root: root('settled') },
+    );
+    expect(expected.meta['insurance-taken']).toBe('false');
+    expect(expected.meta['insurance-offered']).toBe('true');
+  });
+
+  test('non-Ace settled upcard without live flags stays not offered', () => {
+    const responseBody = wire.responseBody as {
+      outcome: Record<string, unknown> & {
+        dealer: Record<string, unknown> & {
+          cards: Array<Record<string, unknown>>;
+        };
+      };
+    };
+    const expected = expectedFromWire(
+      'blackjack',
+      'blackjack-2d',
+      {
+        ...wire,
+        responseBody: {
+          ...responseBody,
+          outcome: {
+            ...responseBody.outcome,
+            dealer: {
+              ...responseBody.outcome.dealer,
+              cards: [
+                { rank: '9', suit: 'clubs' },
+                ...responseBody.outcome.dealer.cards.slice(1),
+              ],
+            },
+            insurance: null,
+          },
+        },
+      },
+      undefined,
+      { root: root('settled') },
+    );
+    expect(expected.meta['insurance-offered']).toBe('false');
+  });
 });
