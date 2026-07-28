@@ -216,7 +216,7 @@ function HandSide({ label, cards, slotCount, total, isNatural, accent, isWinner,
             fontSize: 16, fontWeight: 800, fontFamily: 'var(--pt-display)',
             color: 'var(--pt-cream)', lineHeight: 1, minWidth: 18, textAlign: 'right',
           }}>
-            {total ?? '—'}
+            {total ?? '-'}
           </span>
         </div>
       </div>
@@ -540,7 +540,7 @@ export default function BaccaratModal() {
       } catch (err) {
         // 75% penetration → open a fresh shoe (new seed pair) + retry once.
         if (reshuffledBody(err)) {
-          showToast('Shoe reshuffled — dealing from a fresh shoe.', 'info');
+          showToast('Shoe reshuffled. Dealing from a fresh shoe.', 'info');
           setShoe(null);
           const fresh = await ensureShoe();
           if (!fresh) return;
@@ -578,7 +578,7 @@ export default function BaccaratModal() {
       const res = await closeShoe.mutateAsync({ shoeId: s.id });
       setRevealedSeed(res.serverSeed);
       setShoe((prev) => (prev ? { ...prev, status: 'closed', serverSeed: res.serverSeed } : prev));
-      showToast(`Cashed out — seed ${res.serverSeed.slice(0, 10)}…${res.serverSeed.slice(-6)} revealed.`, 'info');
+      showToast(`Cashed out. Seed ${res.serverSeed.slice(0, 10)}…${res.serverSeed.slice(-6)} revealed.`, 'info');
       setTimeout(() => handleClose(), 1400);
     } catch (err) {
       showToast(describeBaccaratError(err), 'warn');
@@ -891,13 +891,13 @@ export default function BaccaratModal() {
               <div>
                 <span style={{ color: 'var(--pt-brass)' }}>Server seed hash: </span>
                 <span style={{ wordBreak: 'break-all', color: 'var(--pt-cream)' }}>
-                  {shoe?.serverSeedHash ?? '— (no shoe open yet)'}
+                  {shoe?.serverSeedHash ?? 'No shoe open yet'}
                 </span>
               </div>
               <div>
                 <span style={{ color: 'var(--pt-brass)' }}>Client seed: </span>
                 <span style={{ wordBreak: 'break-all', color: 'var(--pt-cream)' }}>
-                  {shoe?.clientSeed ?? '—'}
+                  {shoe?.clientSeed ?? 'Not available'}
                 </span>
               </div>
               {revealedSeed ? (
@@ -907,7 +907,7 @@ export default function BaccaratModal() {
                 </div>
               ) : isRealTier ? (
                 <div style={{ color: 'var(--pt-cream-soft)' }}>
-                  Server seed reveals when you walk away — then replay any coup at /cove/history.
+                  Server seed reveals when you walk away; then replay any coup at /cove/history.
                 </div>
               ) : (
                 <div style={{ color: 'var(--pt-cream-soft)' }}>

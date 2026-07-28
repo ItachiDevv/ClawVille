@@ -6,7 +6,7 @@ import {
 } from '../scenarios';
 
 describe('scenario × tier × surface matrix', () => {
-  test('expands every frozen row with only baccarat 2D still blocked', () => {
+  test('expands every frozen row with every surface runnable', () => {
     expect(SCENARIO_CATALOG).toHaveLength(58);
     const ids = new Set(SCENARIO_CATALOG.map((scenario) => scenario.id));
     expect(ids.size).toBe(SCENARIO_CATALOG.length);
@@ -15,15 +15,13 @@ describe('scenario × tier × surface matrix', () => {
     expect(matrix.counts).toEqual({
       PASS: 0,
       FAIL: 0,
-      UNPROVEN: 50,
-      BLOCKED: 8,
+      UNPROVEN: 58,
+      BLOCKED: 0,
     });
     expect(matrix.markdown).toContain('Gate verdict: **FAIL**');
     expect(matrix.markdown).toContain('ordered street replay is tray-only');
     expect(SCENARIO_CATALOG.filter((scenario) => scenario.blockedReason))
-      .toHaveLength(8);
-    expect(SCENARIO_CATALOG.filter((scenario) => scenario.blockedReason)
-      .every((scenario) => scenario.surface === 'baccarat-2d')).toBe(true);
+      .toHaveLength(0);
   });
 
   test('contains all thirteen frozen BA-2 fixture names', () => {
