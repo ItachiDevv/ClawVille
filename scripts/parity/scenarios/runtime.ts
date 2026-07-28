@@ -206,6 +206,38 @@ async function waitAndClickWithFloor(
   return floor;
 }
 
+export async function waitFor2DSurfaceReachable(
+  driver: Driver,
+  surface: Surface,
+): Promise<void> {
+  if (surface !== 'blackjack-2d' && surface !== 'baccarat-2d') return;
+  const dialogSelector = surface === 'blackjack-2d'
+    // BlackjackModal.tsx:1363-1367 emits this dialog label.
+    ? '[aria-label="Blackjack table"]'
+    // BaccaratModal.tsx:551-553 emits this dialog label.
+    : '[aria-label="Baccarat table"]';
+  await driver.waitFn(`(() => {
+    const dialog = document.querySelector(${JSON.stringify(dialogSelector)});
+    if (!dialog) return false;
+    // SceneTransition.tsx:193-205 emits a fixed aria-hidden black overlay at
+    // z-index 9999, with opacity 0 and pointer-events none after its fade.
+    const overlay = [...document.querySelectorAll('div[aria-hidden="true"]')]
+      .find((candidate) => {
+        const style = getComputedStyle(candidate);
+        return style.position === 'fixed'
+          && style.zIndex === '9999'
+          && style.backgroundColor === 'rgb(0, 0, 0)';
+      });
+    if (!overlay) return false;
+    const style = getComputedStyle(overlay);
+    return Number(style.opacity) <= 0.001 && style.pointerEvents === 'none';
+  })()`, 20_000);
+  await driver.evalJson<boolean>(`new Promise((resolve) => {
+    /* CV_2D_OVERLAY_PAINT */
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)));
+  })`);
+}
+
 interface PracticeHoldemActionStart {
   clicked: boolean;
   label: string | null;
@@ -1042,6 +1074,7 @@ export async function* driveScenario(
   phases: readonly string[],
   driver: Driver,
 ): AsyncGenerator<ParityCheckpoint> {
+  await waitFor2DSurfaceReachable(driver, surface);
   if (game === 'blackjack') {
     await waitAndClick(driver, ['Deal']);
     if (row === 'B-neg') {
