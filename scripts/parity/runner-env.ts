@@ -22,11 +22,16 @@ export function fixtureTeardownRunsFirst(
 }
 
 export function requiresGuestShoeReset(
-  scenario: Pick<ScenarioDefinition, 'game' | 'tier' | 'fixtureName'>,
+  scenario: Pick<
+    ScenarioDefinition,
+    'game' | 'tier' | 'fixtureName' | 'requiresGuestShoeReset'
+  >,
 ): boolean {
-  return requiresFixtureOwnerPreflight(scenario)
-    && scenario.tier === 'guest'
-    && (scenario.game === 'blackjack' || scenario.game === 'baccarat');
+  return scenario.requiresGuestShoeReset === true || (
+    requiresFixtureOwnerPreflight(scenario)
+      && scenario.tier === 'guest'
+      && (scenario.game === 'blackjack' || scenario.game === 'baccarat')
+  );
 }
 
 export function shouldCaptureHoldemTerminalSurface(

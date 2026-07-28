@@ -22,6 +22,9 @@ function scenario(
     required: true,
     phases,
     ...(fixtureName ? { fixtureName } : {}),
+    ...(row === 'C6' && tier === 'guest'
+      ? { requiresGuestShoeReset: true as const }
+      : {}),
     ...(surface === 'baccarat-2d'
       ? { blockedReason: MISSING_2D_PUBLISHER }
       : {}),

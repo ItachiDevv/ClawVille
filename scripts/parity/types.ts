@@ -76,6 +76,7 @@ export interface ScenarioDefinition {
   required: boolean;
   phases: readonly string[];
   fixtureName?: string;
+  requiresGuestShoeReset?: true;
   blockedReason?: string;
   feltReplay: 'rendered-state-only' | 'not-applicable';
   reachedPredicate: (wire: unknown) => boolean;

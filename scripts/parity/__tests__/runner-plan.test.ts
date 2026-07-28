@@ -14,6 +14,7 @@ import {
   resolveScenarioState,
   shouldCaptureHoldemTerminalSurface,
 } from '../runner-env';
+import { SCENARIO_CATALOG } from '../scenarios';
 import {
   driveScenario,
   isActiveHoldemCorrelation,
@@ -374,6 +375,22 @@ describe('offline live-runner plans', () => {
       tier: 'live',
       fixtureName: 'bac-player-third',
     })).toBe(false);
+  });
+
+  test('C6 guest reset is an explicit catalog flag on both surfaces', () => {
+    const guestC6 = SCENARIO_CATALOG.filter((scenario) => (
+      scenario.row === 'C6' && scenario.tier === 'guest'
+    ));
+    expect(guestC6.map((scenario) => scenario.id)).toEqual([
+      'c6.baccarat.guest.baccarat-2d',
+      'c6.baccarat.guest.baccarat-3d',
+    ]);
+    expect(guestC6.every(
+      (scenario) => scenario.requiresGuestShoeReset === true,
+    )).toBe(true);
+    for (const scenario of guestC6) {
+      expect(requiresGuestShoeReset(scenario)).toBe(true);
+    }
   });
 
   test('terminal surface capture excludes negative traversal but retains settlement plans', () => {
