@@ -281,8 +281,12 @@ subroutes remain outside the group. The stage owns the sole shared R3F Canvas,
 async `three/webgpu` renderer factory, pathname-selected `world`/`cove`
 lifecycle slots, slot-scoped root appearance/cameras/lights, and frameloop.
 The world scene subtree is a shared export from `World3DCanvas.tsx`, so legacy
-`World3DCanvas` remains the route-owned Canvas path for `/arena`, `/perf`, and
-unmigrated routes without a fork. Both grouped pages keep nested
+`World3DCanvas` remains the route-owned Canvas path for `/perf` and
+unmigrated routes without a fork (the legacy `/arena` spectator page and its
+exclusive components — `Arena3DCanvas`, `ArenaHUD`, pixi `ArenaCanvas`, the
+`/arena/openclaw-*` override demo pages — were RETIRED 2026-07-28, founder
+order; the retired override/sideload connect surfaces they advertised are
+superseded by the universal one-step magic link). Both grouped pages keep nested
 `dynamic='force-dynamic'` guards; serial production evidence for both headers
 is recorded in `docs/world-stage-p1b-notes.md`.
 

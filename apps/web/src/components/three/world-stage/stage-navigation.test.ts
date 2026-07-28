@@ -80,7 +80,7 @@ describe('world stage navigation bridge', () => {
   test('discards a buffer when browser route generation moved', async () => {
     const received: string[] = [];
     expect(requestWorldStageNavigation({ to: '/cove' })).toBe(true);
-    advanceWorldStageRoute('/arena');
+    advanceWorldStageRoute('/leaderboard');
     installWorldStageNavigationHandler((request) => {
       received.push(request.to);
       return true;
@@ -134,7 +134,7 @@ describe('world stage navigation bridge', () => {
         },
       }),
     ).toBe(true);
-    advanceWorldStageRoute('/arena');
+    advanceWorldStageRoute('/leaderboard');
 
     advanceTime(5_000);
     expect(expired).toBe(0);
