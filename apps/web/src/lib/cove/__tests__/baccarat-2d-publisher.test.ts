@@ -204,6 +204,24 @@ describe('baccarat 2D publisher', () => {
     expect(html).toContain('data-banner-text="PLAYER WINS · YOU LOSE"');
     clearFeltParity(instanceId);
   });
+
+  test('modal mounts the frozen visible probes and baccarat-2d mirror', () => {
+    const modalSource = readFileSync(
+      new URL(
+        '../../../components/cove/baccarat/BaccaratModal.tsx',
+        import.meta.url,
+      ),
+      'utf8',
+    );
+    for (const contract of [
+      'data-testid="bac-outcome-banner"',
+      'data-testid="bac-banner-net"',
+      'data-testid="bac-bet-pill"',
+      'surface="baccarat-2d"',
+    ]) {
+      expect(modalSource).toContain(contract);
+    }
+  });
 });
 
 describe('Baccarat2dRevealEpoch', () => {
