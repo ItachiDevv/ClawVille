@@ -34,6 +34,7 @@ export interface StageRequest {
   sceneId: string;
   generation: number;
   requestId: number;
+  retryOfRequestId?: number;
 }
 
 interface StageGenerationAck {
@@ -49,6 +50,7 @@ interface StageTransitionSnapshot extends StageRequest {
 interface StageStore {
   scenes: Record<string, StageSceneSlot>;
   activeScene: string | null;
+  stageEpoch: number;
   requestSequence: number;
   pendingRequest: StageRequest | null;
   transition: StageTransitionSnapshot | null;
@@ -62,6 +64,7 @@ interface StageStore {
   renderPaused: boolean;
   registerScenes: (sceneIds: readonly string[]) => void;
   requestScene: (sceneId: string) => void;
+  retryStageScene: (previous: StageRequest) => boolean;
   setSceneWarming: (sceneId: string, generation: number) => void;
   ackReady: (sceneId: string, generation: number) => void;
   activateScene: (request: StageRequest) => void;
@@ -90,9 +93,10 @@ const createSceneSlot = (): StageSceneSlot => ({
   hasEverActivated: false,
 });
 
-const createInitialState = () => ({
+const createInitialState = (stageEpoch = 0) => ({
   scenes: {} as Record<string, StageSceneSlot>,
   activeScene: null as string | null,
+  stageEpoch,
   requestSequence: 0,
   pendingRequest: null as StageRequest | null,
   transition: null as StageTransitionSnapshot | null,
@@ -186,6 +190,46 @@ export const useStageStore = create<StageStore>((set, get) => ({
         renderPaused: false,
       };
     });
+  },
+
+  retryStageScene: (previous) => {
+    let retried = false;
+    set((state) => {
+      if (!isCurrentRequest(state.pendingRequest, previous)) return state;
+      const slot = state.scenes[previous.sceneId];
+      if (!slot || slot.generation !== previous.generation) return state;
+
+      const generation = slot.generation + 1;
+      const requestId = state.requestSequence + 1;
+      const request: StageRequest = {
+        sceneId: previous.sceneId,
+        generation,
+        requestId,
+        retryOfRequestId: previous.requestId,
+      };
+      retried = true;
+      return {
+        scenes: {
+          ...state.scenes,
+          [previous.sceneId]: {
+            ...slot,
+            status: 'loading',
+            generation,
+          },
+        },
+        pendingRequest: request,
+        requestSequence: requestId,
+        transition: {
+          ...request,
+          phase: 'fadingOut',
+          error: null,
+        },
+        cameraInstalled: null,
+        firstControlledFrame: null,
+        renderPaused: false,
+      };
+    });
+    return retried;
   },
 
   setSceneWarming: (sceneId, generation) => {
@@ -408,12 +452,16 @@ export const useStageStore = create<StageStore>((set, get) => ({
   },
 
   resetStage: () => {
-    set(createInitialState());
+    set((state) => createInitialState(state.stageEpoch + 1));
   },
 }));
 
 export function requestStageScene(sceneId: string): void {
   useStageStore.getState().requestScene(sceneId);
+}
+
+export function retryStageScene(previous: StageRequest): boolean {
+  return useStageStore.getState().retryStageScene(previous);
 }
 
 export function resetStageStore(): void {

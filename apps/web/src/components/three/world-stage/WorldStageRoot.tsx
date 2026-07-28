@@ -41,6 +41,10 @@ import {
   decideStageNavigationHistoryMethod,
   decideStageNavigationOwnership,
 } from './stage-navigation-ownership';
+import {
+  rekeyParkedNavigationForRetry,
+  takeParkedNavigationForOpaque,
+} from './stage-navigation-lineage';
 import { readStageSceneInventory } from './resource-ledger';
 
 const WORLD_SCENE_ID = 'world';
@@ -74,12 +78,18 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
     requestId: number;
     navigation: WorldStageNavigationRequest;
   } | null>(null);
+  const pendingRequestForLineage = useStageStore(
+    (state) => state.pendingRequest,
+  );
   const coldInitIssuedRef = useRef(false);
   const committedStageNavigationsRef = useRef(0);
 
   useEffect(() => {
     markWorldStageMounted();
-    return () => markWorldStageUnmounted();
+    return () => {
+      navigationRef.current = null;
+      markWorldStageUnmounted();
+    };
   }, []);
 
   useEffect(() => {
@@ -204,6 +214,17 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
     });
   }, [commitStageNavigation, stageReady]);
 
+  useEffect(() => {
+    const parked = navigationRef.current;
+    const rekeyed = rekeyParkedNavigationForRetry(
+      parked,
+      pendingRequestForLineage,
+    );
+    if (rekeyed !== parked && navigationRef.current === parked) {
+      navigationRef.current = rekeyed;
+    }
+  }, [pendingRequestForLineage]);
+
   const handleTransitionOpaque = useCallback(
     (request: StageRequest) => {
       const pendingRoute = pendingRouteChildrenRef.current;
@@ -216,14 +237,15 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
         setDisplayedChildren(pendingRoute.children);
       }
       const pendingNavigation = navigationRef.current;
-      if (
-        !pendingNavigation ||
-        pendingNavigation.requestId !== request.requestId
-      ) {
+      const taken = takeParkedNavigationForOpaque(
+        pendingNavigation,
+        request,
+      );
+      if (!taken.navigation || navigationRef.current !== pendingNavigation) {
         return;
       }
-      navigationRef.current = null;
-      commitStageNavigation(pendingNavigation.navigation);
+      navigationRef.current = taken.remaining;
+      commitStageNavigation(taken.navigation);
     },
     [commitStageNavigation],
   );

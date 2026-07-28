@@ -31,6 +31,7 @@ import {
   readStageResourceLedger,
   type ResourceLedgerResult,
 } from '@/components/three/world-stage/resource-ledger';
+import type { WatchdogConfig } from '@/components/three/world-stage/stage-watchdog-machine';
 import { CoveStageSpike } from './cove-stage-spike';
 
 const EMPTY_SLOT: StageSceneSlot = {
@@ -40,7 +41,22 @@ const EMPTY_SLOT: StageSceneSlot = {
   hasEverActivated: false,
 };
 
-function useSyntheticWarmup(sceneId: string): void {
+const RETRY_ADOPTION_WATCHDOG_CONFIG: WatchdogConfig = {
+  // The soft window (softTimeoutMs + trailing stall) MUST exceed the
+  // synthetic warmup's 1s first-ack delay, or the RETRY attempt soft-stalls
+  // before it can ever ack and the lane sees a card instead of a recovery.
+  tickMs: 100,
+  softTimeoutMs: 1_500,
+  stallWindowMs: 600,
+  hardCeilingMs: 4_000,
+  attemptMaxMs: 5_000,
+  chainMaxMs: 12_000,
+};
+
+function useSyntheticWarmup(
+  sceneId: string,
+  wedgeFirstGeneration = false,
+): void {
   const active = useStageStore(
     (state) => state.activeScene === sceneId,
   );
@@ -51,6 +67,7 @@ function useSyntheticWarmup(sceneId: string): void {
     (state) => state.pendingRequest?.sceneId === sceneId,
   );
   const warmedOnceRef = useRef(false);
+  const firstGenerationRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!active || !requested || generation <= 0) return;
@@ -59,6 +76,15 @@ function useSyntheticWarmup(sceneId: string): void {
     if (!slot || slot.generation !== generation) return;
 
     state.setSceneWarming(sceneId, generation);
+    if (firstGenerationRef.current === null) {
+      firstGenerationRef.current = generation;
+    }
+    if (
+      wedgeFirstGeneration &&
+      generation === firstGenerationRef.current
+    ) {
+      return;
+    }
     const delayMs = warmedOnceRef.current ? 0 : 1_000;
     const warmingTimer = window.setTimeout(() => {
       const current = useStageStore.getState().scenes[sceneId];
@@ -68,12 +94,16 @@ function useSyntheticWarmup(sceneId: string): void {
     }, delayMs);
 
     return () => window.clearTimeout(warmingTimer);
-  }, [active, generation, requested, sceneId]);
+  }, [active, generation, requested, sceneId, wedgeFirstGeneration]);
 }
 
-function AlphaScene() {
+function AlphaScene({
+  wedgeFirstGeneration,
+}: {
+  wedgeFirstGeneration: boolean;
+}) {
   const groupRef = useRef<THREE.Group>(null);
-  useSyntheticWarmup('alpha');
+  useSyntheticWarmup('alpha', wedgeFirstGeneration);
   useSceneFrame('alpha', (_state, delta) => {
     if (!groupRef.current) return;
     groupRef.current.rotation.y += delta * 0.65;
@@ -259,6 +289,7 @@ function SlotLine({
 
 export default function StageProof() {
   const [stageReady, setStageReady] = useState(false);
+  const [retryAdoptionProof, setRetryAdoptionProof] = useState(false);
   const windowListenerBaselineRef = useRef(0);
   const [instrumentation, setInstrumentation] = useState(
     readInstrumentation,
@@ -267,6 +298,11 @@ export default function StageProof() {
   useEffect(() => {
     resetStageStore();
     resetStageFrameDiagnostics();
+    setRetryAdoptionProof(
+      new URLSearchParams(window.location.search).get(
+        'retryAdoption',
+      ) === '1',
+    );
     windowListenerBaselineRef.current =
       useStageStore.getState().windowListenerCount;
     setInstrumentation(
@@ -313,7 +349,9 @@ export default function StageProof() {
           position: [0, 3.5, 8],
           lookAt: [0, 0, 0],
         },
-        content: <AlphaScene />,
+        content: (
+          <AlphaScene wedgeFirstGeneration={retryAdoptionProof} />
+        ),
       },
       {
         sceneId: 'beta',
@@ -342,7 +380,7 @@ export default function StageProof() {
         ),
       },
     ],
-    [],
+    [retryAdoptionProof],
   );
 
   if (!stageReady) {
@@ -355,7 +393,14 @@ export default function StageProof() {
 
   return (
     <main className="relative h-screen min-h-[520px] overflow-hidden bg-[#07131d] text-white">
-      <WorldStageCanvas scenes={scenes} />
+      <WorldStageCanvas
+        scenes={scenes}
+        watchdogConfig={
+          retryAdoptionProof
+            ? RETRY_ADOPTION_WATCHDOG_CONFIG
+            : undefined
+        }
+      />
 
       <section className="pointer-events-auto absolute left-4 top-4 z-30 w-[min(32rem,calc(100vw-2rem))] rounded-xl border border-cyan-300/30 bg-slate-950/85 p-4 shadow-2xl backdrop-blur">
         <div className="flex flex-wrap items-center gap-2">
