@@ -59,6 +59,7 @@ export default function ThoughtLog() {
   const {
     thoughtLogOpen,
     thoughtLogMinimized,
+    thoughtLogExpanded,
     activeTab,
     setActiveTab,
     thoughts,
@@ -68,6 +69,7 @@ export default function ThoughtLog() {
     currentLocationId,
     progress,
     toggleMinimize,
+    toggleThoughtLogExpanded,
     setThoughtLogOpen,
     clearThoughtEntries,
     clearCollaborationEntries,
@@ -174,7 +176,7 @@ export default function ThoughtLog() {
   return (
     <div
       className="fixed bottom-0 left-0 right-0 z-40 bg-gray-900/95 backdrop-blur-sm border-t border-green-500/30 flex flex-col"
-      style={{ maxHeight: '260px' }}
+      style={{ maxHeight: thoughtLogExpanded ? 'min(50vh, 460px)' : '260px' }}
     >
       {/* Header + Tabs */}
       <div className="flex items-center justify-between px-4 py-1.5 border-b border-green-500/20 shrink-0">
@@ -209,6 +211,15 @@ export default function ThoughtLog() {
           </div>
         </div>
         <div className="flex items-center gap-1">
+          {/* Maximize / restore — grows the panel so long logs aren't cut off */}
+          <button
+            onClick={toggleThoughtLogExpanded}
+            className="w-6 h-6 flex items-center justify-center text-gray-500 hover:text-gray-300 font-mono text-xs transition-colors"
+            title={thoughtLogExpanded ? 'Restore size' : 'Expand'}
+            aria-label={thoughtLogExpanded ? 'Restore log size' : 'Expand log'}
+          >
+            {thoughtLogExpanded ? '⤡' : '⤢'}
+          </button>
           {/* Minimize */}
           <button
             onClick={toggleMinimize}
@@ -250,11 +261,16 @@ export default function ThoughtLog() {
       >
         {unified.length === 0 ? (
           <div className="text-gray-600 py-2">
-            {activeTab === 'collaboration'
-              ? 'No collaboration activity yet...'
-              : activeTab === 'research'
-                ? 'No research activity yet...'
-                : 'No agent activity yet...'}
+            <div>
+              {activeTab === 'collaboration'
+                ? 'No collaboration activity yet...'
+                : activeTab === 'research'
+                  ? 'No research activity yet...'
+                  : 'No agent activity yet...'}
+            </div>
+            <div className="text-gray-600/80 mt-1">
+              Visit a building and your agent starts researching. Everything it learns lands here and stays in its memory.
+            </div>
           </div>
         ) : (
           unified.map((entry) => {
@@ -300,9 +316,17 @@ export default function ThoughtLog() {
         )}
       </div>
 
+      {/* Persistent hint: the log is the agent's memory, askable once it's running */}
+      <div className="px-4 py-1 border-t border-green-500/10 shrink-0 flex items-start gap-2">
+        <span aria-hidden className="text-green-400/70 text-xs shrink-0">🧠</span>
+        <span className="text-green-300/50 font-mono text-[10px] leading-snug">
+          Your agent saves everything it researches here to its memory. Once it is connected and running, you can ask it about anything in this log.
+        </span>
+      </div>
+
       {/* Progress bar (research only) */}
       {isResearching && progress > 0 && (
-        <div className="px-4 py-1 border-t border-green-500/10 shrink-0">
+        <div className="px-4 py-1 shrink-0">
           <div className="w-full bg-gray-800 rounded-full h-1.5">
             <div
               className="bg-green-500 h-1.5 rounded-full transition-all duration-500"
