@@ -156,11 +156,14 @@ export function reachedFor(
   };
 }
 
-async function clickText(driver: Driver, labels: readonly string[]): Promise<boolean> {
+export async function clickText(driver: Driver, labels: readonly string[]): Promise<boolean> {
   return driver.evalJson<boolean>(`(() => {
     const labels = ${JSON.stringify(labels)};
+    const normalizedLabels = labels.map((label) => label.trim().toLowerCase());
     const button = [...document.querySelectorAll('button')].find((candidate) =>
-      labels.some((label) => candidate.textContent?.trim().startsWith(label))
+      normalizedLabels.some((label) =>
+        candidate.textContent?.trim().toLowerCase().startsWith(label)
+      )
       && !candidate.disabled
     );
     if (!button) return false;
@@ -176,8 +179,11 @@ async function waitAndClick(
 ): Promise<void> {
   await driver.waitFn(`(() => {
     const labels = ${JSON.stringify(labels)};
+    const normalizedLabels = labels.map((label) => label.trim().toLowerCase());
     return [...document.querySelectorAll('button')].some((candidate) =>
-      labels.some((label) => candidate.textContent?.trim().startsWith(label))
+      normalizedLabels.some((label) =>
+        candidate.textContent?.trim().toLowerCase().startsWith(label)
+      )
       && !candidate.disabled
     );
   })()`, timeoutMs);
@@ -194,8 +200,11 @@ async function waitAndClickWithFloor(
 ): Promise<ActionFloor> {
   await driver.waitFn(`(() => {
     const labels = ${JSON.stringify(labels)};
+    const normalizedLabels = labels.map((label) => label.trim().toLowerCase());
     return [...document.querySelectorAll('button')].some((candidate) =>
-      labels.some((label) => candidate.textContent?.trim().startsWith(label))
+      normalizedLabels.some((label) =>
+        candidate.textContent?.trim().toLowerCase().startsWith(label)
+      )
       && !candidate.disabled
     );
   })()`, timeoutMs);
