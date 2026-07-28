@@ -28,7 +28,7 @@ function scenario(
     feltReplay: 'not-applicable',
     reachedPredicate: reachedFor('blackjack', row),
     run: (driver) => driveScenario('blackjack', row, surface, phases, driver),
-    teardown: teardownFor('blackjack'),
+    teardown: teardownFor('blackjack', surface),
   };
 }
 

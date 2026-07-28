@@ -3,6 +3,7 @@ import {
   reconcilePracticeHoldemSession,
   teardownGame,
 } from './teardown';
+import type { Surface } from './types';
 
 export interface PreflightResult {
   clean: boolean;
@@ -34,6 +35,7 @@ async function browserRequest<T>(
 export async function preflight(
   driver: Driver,
   game: 'holdem' | 'blackjack' | 'baccarat',
+  surface: Surface,
   apiBase: string,
 ): Promise<PreflightResult> {
   const notes: string[] = [];
@@ -47,12 +49,18 @@ export async function preflight(
       const uiReady = await driver.evalJson<boolean>(
         `Boolean(document.querySelector(${JSON.stringify(
           game === 'blackjack'
-            ? '[data-testid="seated-blackjack-hud"]'
-            : '[aria-label="Baccarat controls"]',
+            ? surface === 'blackjack-2d'
+              // BlackjackModal.tsx:1363-1367 emits this dialog label.
+              ? '[aria-label="Blackjack table"]'
+              : '[data-testid="seated-blackjack-hud"]'
+            : surface === 'baccarat-2d'
+              // BaccaratModal.tsx:551-553 emits this dialog label.
+              ? '[aria-label="Baccarat table"]'
+              : '[aria-label="Baccarat controls"]',
         )}))`,
       );
       if (uiReady) {
-        await teardownGame(driver, game, apiBase);
+        await teardownGame(driver, game, surface, apiBase);
         current = await browserRequest<unknown>(
           driver,
           apiBase,
@@ -95,7 +103,7 @@ export async function preflight(
         `Boolean(document.querySelector('[data-testid="cash-table-room-hud"]'))`,
         15_000,
       );
-      await teardownGame(driver, 'holdem', apiBase);
+      await teardownGame(driver, 'holdem', surface, apiBase);
       const remains = await driver.evalJson<boolean>(`(async () => {
         const tableId = new URL(location.href).searchParams.get('tableId');
         if (!tableId) return false;

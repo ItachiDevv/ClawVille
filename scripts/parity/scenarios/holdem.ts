@@ -27,7 +27,7 @@ function scenario(
       : 'not-applicable',
     reachedPredicate: reachedFor('holdem', row, surface),
     run: (driver) => driveScenario('holdem', row, surface, phases, driver),
-    teardown: teardownFor('holdem'),
+    teardown: teardownFor('holdem', surface),
   };
 }
 

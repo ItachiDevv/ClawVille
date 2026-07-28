@@ -28,7 +28,7 @@ function scenario(
     feltReplay: 'not-applicable',
     reachedPredicate: reachedFor('baccarat', row),
     run: (driver) => driveScenario('baccarat', row, surface, phases, driver),
-    teardown: teardownFor('baccarat'),
+    teardown: teardownFor('baccarat', surface),
   };
 }
 

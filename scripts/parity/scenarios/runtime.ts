@@ -1109,6 +1109,7 @@ export async function* driveScenario(
 
 export function teardownFor(
   game: ParityGame,
+  surface: Surface,
 ): (driver: Driver, apiBase: string) => Promise<void> {
-  return (driver, apiBase) => teardownGame(driver, game, apiBase);
+  return (driver, apiBase) => teardownGame(driver, game, surface, apiBase);
 }

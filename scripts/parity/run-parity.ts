@@ -285,7 +285,12 @@ async function runLiveScenario(): Promise<void> {
     }
     // Reconcile on the actual game UI only when the neutral preflight finds
     // state. This preserves the fixture-before-seed-arm ordering.
-    let clean = await preflight(driver, scenario.game, config.apiBase);
+    let clean = await preflight(
+      driver,
+      scenario.game,
+      scenario.surface,
+      config.apiBase,
+    );
     if (
       !clean.clean
       || (
@@ -308,7 +313,12 @@ async function runLiveScenario(): Promise<void> {
           30_000,
         );
       }
-      clean = await preflight(driver, scenario.game, config.apiBase);
+      clean = await preflight(
+        driver,
+        scenario.game,
+        scenario.surface,
+        config.apiBase,
+      );
       await navigate('/cove');
     }
     if (!clean.clean) {

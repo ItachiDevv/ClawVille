@@ -1,5 +1,6 @@
 import type { Driver } from './driver';
 import postgres from '../../apps/api/node_modules/postgres/src/index.js';
+import type { Surface } from './types';
 
 export interface FixtureRunHandle {
   runId: string;
@@ -218,27 +219,52 @@ async function readCashSeatProof(
 export async function teardownGame(
   driver: Driver,
   game: 'holdem' | 'blackjack' | 'baccarat',
+  surface: Surface,
   apiBase: string,
 ): Promise<void> {
   if (game === 'blackjack') {
+    const rootSurface = surface === 'blackjack-2d'
+      ? 'blackjack-2d'
+      : 'blackjack-3d';
     for (let attempts = 0; attempts < 8; attempts += 1) {
       const settled = await driver.evalJson<boolean>(
-        `window.__CV_READ_PARITY?.('blackjack-3d')?.dealStep === 'settled'`,
+        `window.__CV_READ_PARITY?.(${JSON.stringify(rootSurface)})?.dealStep === 'settled'`,
       );
       if (settled) break;
+      const before = await driver.evalJson<number>(
+        `window.__CV_READ_PARITY?.(${JSON.stringify(rootSurface)})?.renderRevision ?? 0`,
+      );
       if (!await clickButtonByText(driver, ['Stand', 'Surrender'])) break;
-      await new Promise((resolveWait) => setTimeout(resolveWait, 150));
+      await driver.waitFn(
+        `(() => {
+          const root = window.__CV_READ_PARITY?.(${JSON.stringify(rootSurface)});
+          return !root
+            || root.dealStep === 'settled'
+            || root.renderRevision > ${before};
+        })()`,
+        20_000,
+      );
     }
     await driver.waitFn(
-      `!window.__CV_READ_PARITY?.('blackjack-3d')
-        || window.__CV_READ_PARITY?.('blackjack-3d')?.dealStep === 'settled'`,
+      `(() => {
+        const root = window.__CV_READ_PARITY?.(${JSON.stringify(rootSurface)});
+        if (!root) return true;
+        const terminal = root.dealStep === 'settled' && root.transition === 'idle';
+        // BlackjackModal.tsx:1624-1646 emits enabled Walk Away/Close at settle.
+        const closeEnabled = [...document.querySelectorAll('button')].some(
+          (button) => ['Walk Away', 'Close'].some(
+            (label) => button.textContent?.trim().startsWith(label)
+          ) && !button.disabled
+        );
+        return terminal || closeEnabled;
+      })()`,
       20_000,
     );
     if (!await clickButtonByText(driver, ['Walk Away', 'Close'])) {
       throw new Error('blackjack teardown could not find Walk Away/Close');
     }
     await driver.waitFn(
-      `!window.__CV_READ_PARITY?.('blackjack-3d')`,
+      `!window.__CV_READ_PARITY?.(${JSON.stringify(rootSurface)})`,
       10_000,
     );
     const status = await currentStatus(driver, 'blackjack', apiBase);
@@ -248,16 +274,29 @@ export async function teardownGame(
     return;
   }
   if (game === 'baccarat') {
+    const rootSurface = surface === 'baccarat-2d'
+      ? 'baccarat-2d'
+      : 'baccarat-3d';
     await driver.waitFn(
-      `!window.__CV_READ_PARITY?.('baccarat-3d')
-        || window.__CV_READ_PARITY?.('baccarat-3d')?.transition === 'idle'`,
+      `(() => {
+        const root = window.__CV_READ_PARITY?.(${JSON.stringify(rootSurface)});
+        if (!root) return true;
+        // BaccaratModal.tsx:725-747 emits enabled Walk Away/Close at settle.
+        const closeEnabled = [...document.querySelectorAll('button')].some(
+          (button) => ['Walk Away', 'Close'].some(
+            (label) => button.textContent?.trim().startsWith(label)
+          ) && !button.disabled
+        );
+        return (root.dealStep === 'settled' && root.transition === 'idle')
+          || closeEnabled;
+      })()`,
       15_000,
     );
     if (!await clickButtonByText(driver, ['Walk Away', 'Close'])) {
       throw new Error('baccarat teardown could not find Walk Away/Close');
     }
     await driver.waitFn(
-      `!window.__CV_READ_PARITY?.('baccarat-3d')`,
+      `!window.__CV_READ_PARITY?.(${JSON.stringify(rootSurface)})`,
       10_000,
     );
     const status = await currentStatus(driver, 'baccarat', apiBase);
