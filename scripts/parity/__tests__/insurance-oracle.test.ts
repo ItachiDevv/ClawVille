@@ -119,6 +119,18 @@ describe('in-progress blackjack insurance oracle', () => {
     expect(expected.meta['insurance-offered']).toBe('true');
   });
 
+  test('historical hole root derives an Ace offer from an inline-settled natural wire', () => {
+    const expected = expectedFromWire(
+      'blackjack',
+      'blackjack-3d',
+      wire,
+      undefined,
+      { root: root('hole', 'blackjack-3d') },
+    );
+    expect(expected.meta['insurance-offered']).toBe('true');
+    expect(expected.meta['insurance-taken']).toBe('false');
+  });
+
   test('split hands are not offered', () => {
     const action = actionWire({ didSplit: true });
     action.responseBody = {

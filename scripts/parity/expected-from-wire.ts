@@ -177,6 +177,7 @@ function blackjackExpected(body: UnknownRecord, dealStep: string): ExpectedParit
   const visibleDealerUpcard = first(
     live?.dealerUpcard,
     array(live?.dealerCards)[0],
+    array(record(outcome?.dealer)?.cards)[0],
   );
   const dealer = (dealStep === 'dealer-reveal' || dealStep === 'settled')
     ? record(outcome?.dealer)
@@ -187,11 +188,7 @@ function blackjackExpected(body: UnknownRecord, dealStep: string): ExpectedParit
     });
     meta['dealer-total'] = stringValue(dealer.total);
   } else {
-    const dealerUpcard = first(
-      visibleDealerUpcard,
-      array(record(outcome?.dealer)?.cards)[0],
-    );
-    slots['dealer-card-1'] = up(dealerUpcard);
+    slots['dealer-card-1'] = up(visibleDealerUpcard);
     slots['dealer-card-2'] = down();
   }
   meta['active-slot'] = stringValue(first(live?.activeSlot, body.activeSlot, 0));
