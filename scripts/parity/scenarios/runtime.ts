@@ -845,6 +845,124 @@ async function nextBlackjackTerminalStep(
   return step;
 }
 
+interface BlackjackHitReadiness {
+  terminal: boolean;
+  actionSeq: number;
+}
+
+interface BlackjackHitProgress {
+  terminal: boolean;
+  newerRevision: boolean;
+  hitEnabled: boolean;
+  actionStatus: number | null;
+}
+
+export async function submitBlackjackHitAndWait(
+  driver: Driver,
+  surface: Surface,
+  correlationHand: string,
+): Promise<ActionFloor | null> {
+  await driver.waitFn(`(() => {
+    const root = window.__CV_READ_PARITY?.(${JSON.stringify(surface)}) ?? null;
+    if (
+      !root
+      || root.dealStep === 'settled'
+      || root.correlation?.hand !== ${JSON.stringify(correlationHand)}
+    ) return true;
+    // BlackjackModal.tsx:1583-1592 emits the Hit action and disables it while
+    // the request is pending.
+    return [...document.querySelectorAll('button')].some((button) =>
+      button.textContent?.trim().startsWith('Hit') && !button.disabled
+    );
+  })()`, 20_000);
+  const readiness = await driver.evalJson<BlackjackHitReadiness>(`(() => {
+    /* CV_BLACKJACK_HIT_READY */
+    const root = window.__CV_READ_PARITY?.(${JSON.stringify(surface)}) ?? null;
+    const records = window.__CV_WIRE_ALL?.() ?? [];
+    return {
+      terminal: !root
+        || root.dealStep === 'settled'
+        || root.correlation?.hand !== ${JSON.stringify(correlationHand)},
+      actionSeq: records
+        .filter((record) => record.urlSuffix === 'blackjack/action')
+        .reduce((latest, record) => Math.max(latest, record.seq), 0),
+    };
+  })()`);
+  if (readiness.terminal) return null;
+
+  const floor = await captureActionFloor(driver, surface);
+  if (!await clickText(driver, ['Hit'])) {
+    throw new Error('Hit disappeared after readiness proof');
+  }
+  await driver.waitFn(`(() => {
+    const root = window.__CV_READ_PARITY?.(${JSON.stringify(surface)}) ?? null;
+    const terminal = !root
+      || root.dealStep === 'settled'
+      || root.correlation?.hand !== ${JSON.stringify(correlationHand)};
+    const newerRevision = (window.__CV_PARITY_JOURNAL?.(${JSON.stringify(surface)}) ?? [])
+      .some((entry) => {
+        if (entry.revision <= ${floor.revision}) return false;
+        try {
+          return JSON.parse(entry.signature)[2]
+            === ${JSON.stringify(correlationHand)};
+        } catch {
+          return false;
+        }
+      });
+    const response = (window.__CV_WIRE_ALL?.() ?? [])
+      .filter((record) =>
+        record.seq > ${readiness.actionSeq}
+        && record.urlSuffix === 'blackjack/action'
+      )
+      .at(-1);
+    const hitEnabled = [...document.querySelectorAll('button')].some((button) =>
+      button.textContent?.trim().startsWith('Hit') && !button.disabled
+    );
+    return terminal
+      || newerRevision
+      || Boolean(response && response.status >= 200 && response.status < 300 && hitEnabled);
+  })()`, 20_000);
+  const progress = await driver.evalJson<BlackjackHitProgress>(`(() => {
+    /* CV_BLACKJACK_HIT_PROGRESS */
+    const root = window.__CV_READ_PARITY?.(${JSON.stringify(surface)}) ?? null;
+    const response = (window.__CV_WIRE_ALL?.() ?? [])
+      .filter((record) =>
+        record.seq > ${readiness.actionSeq}
+        && record.urlSuffix === 'blackjack/action'
+      )
+      .at(-1);
+    return {
+      terminal: !root
+        || root.dealStep === 'settled'
+        || root.correlation?.hand !== ${JSON.stringify(correlationHand)},
+      newerRevision: (window.__CV_PARITY_JOURNAL?.(${JSON.stringify(surface)}) ?? [])
+        .some((entry) => {
+          if (entry.revision <= ${floor.revision}) return false;
+          try {
+            return JSON.parse(entry.signature)[2]
+              === ${JSON.stringify(correlationHand)};
+          } catch {
+            return false;
+          }
+        }),
+      hitEnabled: [...document.querySelectorAll('button')].some((button) =>
+        button.textContent?.trim().startsWith('Hit') && !button.disabled
+      ),
+      actionStatus: response?.status ?? null,
+    };
+  })()`);
+  if (
+    progress.actionStatus !== null
+    && (progress.actionStatus < 200 || progress.actionStatus >= 300)
+  ) {
+    throw new Error(`Blackjack Hit returned HTTP ${progress.actionStatus}`);
+  }
+  if (!progress.terminal && !progress.newerRevision && !progress.hitEnabled) {
+    throw new Error('Blackjack Hit produced no bounded progress proof');
+  }
+  return floor;
+}
+
 export async function nextJournalStep(
   driver: Driver,
   surface: Surface,
@@ -997,8 +1115,12 @@ export async function* driveScenario(
           current,
           initial.correlation.hand,
         )) return;
-        if (!await clickText(driver, ['Hit'])) return;
-        await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+        const floor = await submitBlackjackHitAndWait(
+          driver,
+          surface,
+          initial.correlation.hand,
+        );
+        if (!floor) return;
       }
       const currentAtDeadline = await driver.evalJson<{
         dealStep?: string;
@@ -1094,11 +1216,20 @@ export async function* driveScenario(
         );
       }
       if (row === 'B5' && phase === 'player-turn') {
+        const correlationHand = await driver.evalJson<string>(
+          `window.__CV_READ_PARITY?.(${JSON.stringify(surface)})?.correlation?.hand ?? ''`,
+        );
+        if (!correlationHand) {
+          throw new Error('B5 could not resolve its blackjack correlation');
+        }
         for (let hits = 0; hits < 10; hits += 1) {
-          const floor = await captureActionFloor(driver, surface);
-          if (!await clickText(driver, ['Hit'])) break;
+          const floor = await submitBlackjackHitAndWait(
+            driver,
+            surface,
+            correlationHand,
+          );
+          if (!floor) break;
           pendingActionFloor = floor;
-          await new Promise((resolveWait) => setTimeout(resolveWait, 120));
         }
       }
       if (row === 'B8' && phase === 'player-turn' && index === 1) {
