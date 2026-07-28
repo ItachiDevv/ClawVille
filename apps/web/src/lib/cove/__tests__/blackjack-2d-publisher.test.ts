@@ -221,10 +221,16 @@ describe('blackjack 2D publisher', () => {
       "if (pendingSettlement && displayStep === 'hole')",
     );
     expect(source).toContain(
+      "if (!pendingSettlement && displayStep === 'split')",
+    );
+    expect(source).toContain(
       "if (pendingSettlement && displayStep === 'dealer-reveal')",
     );
     expect(source).toContain('if (!epoch.isCurrent(correlation)) return;');
     expect(source).toContain('setLiveHand(null);');
+    expect(source).toContain(
+      "setDisplayStep(sourceAction === 'split' ? 'split' : 'player-turn')",
+    );
   });
 });
 

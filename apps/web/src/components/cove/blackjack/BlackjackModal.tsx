@@ -691,6 +691,14 @@ export default function BlackjackModal() {
       return () => window.clearTimeout(timer);
     }
 
+    if (!pendingSettlement && displayStep === 'split') {
+      const timer = window.setTimeout(() => {
+        if (!epoch.isCurrent(correlation)) return;
+        setDisplayStep('player-turn');
+      }, 120);
+      return () => window.clearTimeout(timer);
+    }
+
     if (pendingSettlement && displayStep === 'hole') {
       const timer = window.setTimeout(() => {
         if (!epoch.isCurrent(correlation)) return;
@@ -822,6 +830,7 @@ export default function BlackjackModal() {
   // ── Merge an in-progress action response into the HandView ─────────────────
   const mergeActionInProgress = useCallback((
     res: Extract<ActionResponse, { status: 'in_progress'; playerHands: unknown }>,
+    sourceAction: 'hit' | 'stand' | 'double' | 'split' | 'surrender',
   ) => {
     revealEpochRef.current?.begin(res.handId);
     setPendingSettlement(null);
@@ -829,7 +838,7 @@ export default function BlackjackModal() {
       if (!prev) return prev;
       return mergeBlackjack2dActionHand(prev, res);
     });
-    setDisplayStep(res.didSplit ? 'split' : 'player-turn');
+    setDisplayStep(sourceAction === 'split' ? 'split' : 'player-turn');
     // After a split, focus the first non-RESOLVED sub-hand. isBust alone is the
     // pre-existing live-split bug — a stood-21/doubled/split-ace slot is resolved
     // yet not bust, so focusing it routes the next action to a terminal slot (400
@@ -1127,7 +1136,7 @@ export default function BlackjackModal() {
         applySettled(res, 'action');
         actionKeyRef.current = null;
       } else if (isActionInProgress(res)) {
-        mergeActionInProgress(res);
+        mergeActionInProgress(res, act);
         // A non-terminal continuation: clear the key so the NEXT terminal
         // action mints a fresh one (the key is per terminal settle, not per
         // hand). Hits/non-terminal continuations are naturally idempotent
