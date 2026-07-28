@@ -174,6 +174,10 @@ function blackjackExpected(body: UnknownRecord, dealStep: string): ExpectedParit
     }
   });
 
+  const visibleDealerUpcard = first(
+    live?.dealerUpcard,
+    array(live?.dealerCards)[0],
+  );
   const dealer = (dealStep === 'dealer-reveal' || dealStep === 'settled')
     ? record(outcome?.dealer)
     : null;
@@ -184,8 +188,7 @@ function blackjackExpected(body: UnknownRecord, dealStep: string): ExpectedParit
     meta['dealer-total'] = stringValue(dealer.total);
   } else {
     const dealerUpcard = first(
-      live?.dealerUpcard,
-      array(live?.dealerCards)[0],
+      visibleDealerUpcard,
       array(record(outcome?.dealer)?.cards)[0],
     );
     slots['dealer-card-1'] = up(dealerUpcard);
@@ -204,12 +207,28 @@ function blackjackExpected(body: UnknownRecord, dealStep: string): ExpectedParit
     dealStep === 'dealer-reveal' || dealStep === 'settled'
   ) && settledDealerCards.length > 0
     && stringValue(record(settledDealerCards[0])?.rank) === 'A';
+  const inProgressInsuranceStep = (
+    dealStep === 'hole' || dealStep === 'player-turn' || dealStep === 'split'
+  );
+  const everyPlayerHandHasTwoCards = normalizedHands.length > 0
+    && normalizedHands.every((rawHand) => (
+      array(record(rawHand)?.cards).length === 2
+    ));
+  // cove-blackjack.ts:2432-2435 and :2683-2685 define an offer as an
+  // Ace upcard before any main decision. On the resolved wire, exactly two
+  // cards in every hand plus didSplit !== true is the noDecisionsYet proxy.
+  const inProgressInsuranceOffered = inProgressInsuranceStep
+    && stringValue(record(visibleDealerUpcard)?.rank) === 'A'
+    && everyPlayerHandHasTwoCards
+    && live?.didSplit !== true;
   meta['insurance-offered'] = String(boolValue(first(
     live?.insuranceOffered,
     body.insuranceOffered,
-    // blackjack-engine.ts:966-980 emits the settled dealer row; an Ace upcard
-    // is the authoritative fallback when the terminal shape omits live flags.
-    dealerUpcardIsAce,
+    inProgressInsuranceStep
+      ? inProgressInsuranceOffered
+      // blackjack-engine.ts:966-980 emits the settled dealer row; an Ace upcard
+      // is the authoritative fallback when the terminal shape omits live flags.
+      : dealerUpcardIsAce,
   )));
   meta['insurance-taken'] = String(boolValue(first(
     live?.tookInsurance,

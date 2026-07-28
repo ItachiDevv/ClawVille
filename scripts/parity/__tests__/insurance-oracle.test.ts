@@ -39,9 +39,12 @@ const wire: WireRecord = {
   idempotencyKey: null,
 };
 
-function root(dealStep: 'dealer-reveal' | 'settled'): CardParityRoot {
+function root(
+  dealStep: 'hole' | 'player-turn' | 'split' | 'dealer-reveal' | 'settled',
+  surface: 'blackjack-2d' | 'blackjack-3d' = 'blackjack-2d',
+): CardParityRoot {
   return {
-    surface: 'blackjack-2d',
+    surface,
     version: 2,
     instanceId: 'test',
     renderRevision: 1,
@@ -53,6 +56,124 @@ function root(dealStep: 'dealer-reveal' | 'settled'): CardParityRoot {
     meta: {},
   };
 }
+
+function actionWire({
+  cards = [
+    { rank: '10', suit: 'spades' },
+    { rank: '5', suit: 'hearts' },
+  ],
+  didSplit = false,
+  insuranceOffered,
+}: {
+  cards?: Array<{ rank: string; suit: string }>;
+  didSplit?: boolean;
+  insuranceOffered?: boolean;
+} = {}): WireRecord {
+  return {
+    ...wire,
+    requestBody: { action: 'hit', handSlot: 0 },
+    responseBody: {
+      handId: 'insurance-hand',
+      status: 'in_progress',
+      playerHands: [{
+        cards,
+        total: 15,
+        isSoft: false,
+        isBust: false,
+        isResolved: false,
+      }],
+      dealerUpcard: { rank: 'A', suit: 'diamonds' },
+      didSplit,
+      ...(insuranceOffered === undefined ? {} : { insuranceOffered }),
+      tookInsurance: false,
+    },
+  };
+}
+
+describe('in-progress blackjack insurance oracle', () => {
+  test('post-Hit Ace-upcard wire without flags is not offered', () => {
+    const expected = expectedFromWire(
+      'blackjack',
+      'blackjack-3d',
+      actionWire({
+        cards: [
+          { rank: '10', suit: 'spades' },
+          { rank: '5', suit: 'hearts' },
+          { rank: '2', suit: 'clubs' },
+        ],
+      }),
+      undefined,
+      { root: root('player-turn', 'blackjack-3d') },
+    );
+    expect(expected.meta['insurance-offered']).toBe('false');
+  });
+
+  test('fresh two-card Ace-upcard wire without flags is offered', () => {
+    const expected = expectedFromWire(
+      'blackjack',
+      'blackjack-3d',
+      actionWire(),
+      undefined,
+      { root: root('hole', 'blackjack-3d') },
+    );
+    expect(expected.meta['insurance-offered']).toBe('true');
+  });
+
+  test('split hands are not offered', () => {
+    const action = actionWire({ didSplit: true });
+    action.responseBody = {
+      ...(action.responseBody as object),
+      playerHands: [
+        {
+          cards: [
+            { rank: '8', suit: 'spades' },
+            { rank: '3', suit: 'hearts' },
+          ],
+        },
+        {
+          cards: [
+            { rank: '8', suit: 'clubs' },
+            { rank: '4', suit: 'diamonds' },
+          ],
+        },
+      ],
+    };
+    const expected = expectedFromWire(
+      'blackjack',
+      'blackjack-3d',
+      action,
+      undefined,
+      { root: root('split', 'blackjack-3d') },
+    );
+    expect(expected.meta['insurance-offered']).toBe('false');
+  });
+
+  test('explicit live flags win in both boolean directions', () => {
+    for (const [cards, insuranceOffered] of [
+      [[
+        { rank: '10', suit: 'spades' },
+        { rank: '5', suit: 'hearts' },
+        { rank: '2', suit: 'clubs' },
+      ], true],
+      [[
+        { rank: '10', suit: 'spades' },
+        { rank: '5', suit: 'hearts' },
+      ], false],
+    ] as const) {
+      const expected = expectedFromWire(
+        'blackjack',
+        'blackjack-3d',
+        actionWire({
+          cards: [...cards],
+          insuranceOffered,
+        }),
+        undefined,
+        { root: root('player-turn', 'blackjack-3d') },
+      );
+      expect(expected.meta['insurance-offered']).toBe(String(insuranceOffered));
+    }
+  });
+});
 
 describe('terminal blackjack insurance oracle', () => {
   test('derives taken insurance and Ace offer from terminal outcome truth', () => {
