@@ -1158,7 +1158,6 @@ export default function BlackjackModal() {
   const handleWalkAway = useCallback(async () => {
     const s = shoeRef.current;
     if (!s || !isRealTier) { handleClose(); return; }
-    if (displayStep !== 'settled') { showToast('Finish the current hand first.', 'warn'); return; }
     busyRef.current = true;
     try {
       const res = await closeShoe.mutateAsync({ shoeId: s.id });
@@ -1171,7 +1170,7 @@ export default function BlackjackModal() {
     } finally {
       busyRef.current = false;
     }
-  }, [isRealTier, displayStep, closeShoe, showToast, handleClose]);
+  }, [isRealTier, closeShoe, showToast, handleClose]);
 
   // ── Derived button legality (server is final validator; this gates UI) ─────
   const activeHand = hand?.playerHands[activeSlot] ?? hand?.playerHands[0] ?? null;
@@ -1648,10 +1647,10 @@ export default function BlackjackModal() {
               net = the RAKED net (what the balance actually moved) — the gross
               `net` overstated wins by the 5% rake and made the HUD math look
               wrong (+75 shown, +72 credited). Falls back to gross for pre-rake rows. */}
-          {phase === 'settled' && settledPrimary && settledOutcome && (
+          {phase === 'settled' && settledPrimary && settledOutcome && bannerText && (
             <OutcomeBanner
               outcome={settledOutcome}
-              bannerText={bannerText ?? 'YOU LOSE'}
+              bannerText={bannerText}
               net={BigInt(settledOutcome?.rakedNet ?? settled?.net ?? '0')}
               rake={BigInt(settledOutcome?.rake ?? '0')}
             />

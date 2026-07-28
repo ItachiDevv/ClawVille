@@ -271,7 +271,6 @@ describe('blackjack 2D publisher', () => {
     expect(source).not.toContain(
       "setDisplayStep('settled');\n        setLiveHand(null);",
     );
-    expect(source).toContain("if (displayStep !== 'settled')");
     expect(source).toContain(
       "setDisplayStep(sourceAction === 'split' ? 'split' : 'player-turn')",
     );

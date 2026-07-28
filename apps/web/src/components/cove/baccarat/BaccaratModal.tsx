@@ -618,12 +618,8 @@ export default function BaccaratModal() {
   // after settle.
   const playerCards: BACCard[] = outcome?.player.cards ?? [];
   const bankerCards: BACCard[] = outcome?.banker.cards ?? [];
-  const playerSlotCount = pendingSettlement
-    ? pendingSettlement.outcome.player.cards.length
-    : 2;
-  const bankerSlotCount = pendingSettlement
-    ? pendingSettlement.outcome.banker.cards.length
-    : 2;
+  const playerSlotCount = Math.max(2, playerCards.length);
+  const bankerSlotCount = Math.max(2, bankerCards.length);
   const playerTotal = playerCards.length > 0 ? outcome?.player.total ?? null : null;
   const bankerTotal = bankerCards.length > 0 ? outcome?.banker.total ?? null : null;
   const winner: BaccaratWinner | null = outcome?.winner ?? null;

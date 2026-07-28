@@ -180,26 +180,28 @@ const BACCARAT_SETTLED = {
       cards: [
         { suit: 'hearts', rank: '4' },
         { suit: 'spades', rank: '3' },
+        { suit: 'clubs', rank: '2' },
       ],
-      total: 7,
+      total: 9,
       isNatural: false,
     },
     banker: {
       cards: [
         { suit: 'clubs', rank: '5' },
         { suit: 'diamonds', rank: '4' },
+        { suit: 'hearts', rank: 'K' },
       ],
       total: 9,
-      isNatural: true,
+      isNatural: false,
     },
     winner: 'banker',
     payout: '49',
     net: '24',
     commission: '1',
     cursorBefore: 0,
-    cursorAfter: 4,
+    cursorAfter: 6,
     dealtBefore: 0,
-    dealtAfter: 4,
+    dealtAfter: 6,
     nonce: 1,
     engineVersion: 'test',
   },
@@ -207,7 +209,7 @@ const BACCARAT_SETTLED = {
   totalBet: '25',
   totalPayout: '49',
   net: '24',
-  dealtCount: 4,
+  dealtCount: 6,
   reshuffleSuggested: false,
   idempotencyReplay: false,
 };
@@ -419,12 +421,22 @@ describe('executed 2D modal DOM honesty', () => {
 
       expect(container.querySelector('[data-testid="bac-outcome-banner"]')).toBeNull();
       expect(container.querySelectorAll('.bac2d-hands [aria-label*=" of "]')).toHaveLength(1);
+      expect([...container.querySelectorAll('.bac2d-hands > div')].map(
+        (hand) => [...(hand.children[1]?.children ?? [])]
+          .filter((child) => child.tagName === 'DIV').length,
+      )).toEqual([2, 2]);
       expect(container.querySelector('.bac2d-header')?.textContent).toContain('100 vCLAW');
 
       await timers.run(240);
       await timers.run(240);
       await timers.run(240);
-      expect(container.querySelectorAll('.bac2d-hands [aria-label*=" of "]')).toHaveLength(4);
+      await timers.run(240);
+      await timers.run(240);
+      expect(container.querySelectorAll('.bac2d-hands [aria-label*=" of "]')).toHaveLength(6);
+      expect([...container.querySelectorAll('.bac2d-hands > div')].map(
+        (hand) => [...(hand.children[1]?.children ?? [])]
+          .filter((child) => child.tagName === 'DIV').length,
+      )).toEqual([3, 3]);
       expect(container.querySelector('[data-testid="bac-outcome-banner"]')).toBeNull();
       expect(container.querySelector('.bac2d-header')?.textContent).toContain('100 vCLAW');
 

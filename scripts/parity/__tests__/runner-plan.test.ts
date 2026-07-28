@@ -766,6 +766,16 @@ describe('offline live-runner plans', () => {
     expect(visibleProbe).toBeLessThan(screenshot);
   });
 
+  test('checkpoint failures surface captured page errors beside journal tail', () => {
+    const source = readFileSync(
+      new URL('../run-parity.ts', import.meta.url),
+      'utf8',
+    );
+    expect(source).toContain('Array.isArray(window.__CV_PAGE_ERRORS)');
+    expect(source).toContain('window.__CV_PAGE_ERRORS.slice(-12)');
+    expect(source).toContain('}; pageErrors=${JSON.stringify(pageErrors)}');
+  });
+
   test('showdown drive pins the mounted settlement witness to its revision', () => {
     const source = readFileSync(
       new URL('../scenarios/runtime.ts', import.meta.url),

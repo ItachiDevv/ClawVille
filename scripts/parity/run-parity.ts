@@ -474,10 +474,20 @@ async function runLiveScenario(): Promise<void> {
               };
             })
         ))()`).catch(() => []);
+        const pageErrors = await driver.evalJson<Array<{
+          kind: string;
+          message: string;
+          stack: string;
+          ts: number;
+        }>>(`(() => (
+          Array.isArray(window.__CV_PAGE_ERRORS)
+            ? window.__CV_PAGE_ERRORS.slice(-12)
+            : []
+        ))()`).catch(() => []);
         throw new Error(
           `checkpoint ${checkpoint.label} wait failed: ${String(error)}; journalTail=${
             JSON.stringify(journalTail)
-          }`,
+          }; pageErrors=${JSON.stringify(pageErrors)}`,
         );
       }
       root = await preferCurrentRoot(root);
