@@ -230,6 +230,29 @@ const KELP_FOREST_CENTER: { x: number; y: number } | null = (() => {
   return kelp ? { x: kelp.centerX, y: kelp.centerY } : null;
 })();
 
+/**
+ * Destinations whose COMPLETED directed route stays agent-owned after arrival
+ * (OQ-1, 2026-07-27). These are exactly the ids the gateway `enter_*` verbs
+ * stamp: `enter_cove` and `enter_poker_room` both stamp 'cove' (:2128/:2219),
+ * `enter_kelp_forest` stamps 'kelp-forest-portal' (:2243).
+ *
+ * WHY only these: before OQ-1 the gateway verbs never reached the arrival branch
+ * (their activity was 'trading'/'exploring', never 'walking'), so their ORIGINAL
+ * route array kept its `directedRoutes` mark and the parked body was never
+ * ambient-hijacked. Removing the activity override makes the arrival branch fire
+ * and replace `npc.path`, which would silently drop that mark. Re-stamping ONLY
+ * these ids RESTORES pre-OQ-1 behavior; it is deliberately NOT applied to
+ * teaching-building or REST `/move?buildingId` arrivals, whose arrival branch
+ * ALREADY fired and released ownership before this change — and whose only
+ * release valve (`clearDestinationBuilding`) is called from exactly one place,
+ * the autonomy driver (`agent-autonomy-driver.ts:1222`), so a connected-agent or
+ * REST-moved body has no driver to release it.
+ *
+ * Deliberately a literal set, NOT derived from AUTONOMY_PLACE_CENTERS: adding a
+ * new enterable place must not silently change parking behavior.
+ */
+const GATEWAY_PARK_DESTINATIONS: ReadonlySet<string> = new Set(['cove', 'kelp-forest-portal']);
+
 // Town-center anchor and the annulus (ring) free-roaming wanderers stay inside.
 // Buildings are on a ring at ~4160wu from center (R=130 tiles). Keep free
 // roamers in the open commons between the dense town-center prop cluster
@@ -1778,6 +1801,16 @@ class NpcSimulation {
     npc.pathIndex = 0;
     npc.activity = 'walking';
     npc.activityEmoji = '';
+    // 2026-07-27 (OQ-1): a NEW walk must never inherit a PRIOR activity's
+    // countdown. Every caller here is starting a fresh route, so a leftover
+    // future `activityEndsAt` is always stale — and it fires in
+    // `handleActivityDurations:3065` on an early tick of the new walk, dropping
+    // the body to 'idle' and NULLING `destinationBuildingId` mid-approach.
+    // Previously masked on the three gateway verbs because they re-stamped the
+    // clock one line later; `move` / `enter_building` /
+    // `POST /api/agent/:sessionId/move` never masked it, so this also fixes a
+    // latent bug on those paths.
+    npc.activityEndsAt = 0;
     npc.destinationBuildingId = destinationBuildingId ?? null;
     // 2026-07-26: a route stamped WITH a destination is a DIRECTED trip.
     if (npc.destinationBuildingId !== null) this.directedRoutes.add(path);
@@ -1813,6 +1846,37 @@ class NpcSimulation {
     npc.activity = activity;
     npc.activityEmoji = emoji;
     npc.activityEndsAt = Date.now() + 8000 + Math.random() * 12000;
+  }
+
+  /**
+   * Set ONLY an NPC's `activityEmoji` wire field — no `activity` override, no
+   * duration clock.
+   *
+   * 2026-07-27 (OQ-1): the three gateway `enter_*` verbs used `setNpcActivity`
+   * purely to stamp a venue emoji for the approach. That also flipped `activity`
+   * to a non-walking value, and the `moveNpcs` gate
+   * (`activity !== 'idle' && activity !== 'walking' -> continue`, :3126) then
+   * FROZE the body for the whole 8-20 s `activityEndsAt` window before it took
+   * its first step. Use this when the emoji is decorative and the body must keep
+   * moving; use `setNpcActivity` when the pose should genuinely hold the body
+   * still (emotes, arrival activities).
+   *
+   * NOTE (honest scope): `activityEmoji` is serialized on the 5 Hz snapshot
+   * (`getSnapshot:944-946` spreads NpcRuntimeState verbatim) but the CURRENT web
+   * client drops it — `updateFromSnapshot` does not copy it onto NpcSpriteState
+   * (`apps/web/src/stores/npc.ts:480-508`) and `ActivityIndicators` renders only
+   * dead/combat/conversation. So this preserves an existing WIRE semantic for
+   * external consumers and a future client; it is not a visible bubble today.
+   *
+   * The `npcs.get` guard is defensive parity with `setNpcActivity` (identical
+   * no-op on an unknown id), NOT a race guard: `executeHatcherAction` already
+   * holds a live `npc` reference and there is no `await` between `setNpcPath`
+   * and this call, so the lookup cannot miss in the current call graph.
+   */
+  setNpcActivityEmoji(npcId: string, emoji: string) {
+    const npc = this.npcs.get(npcId);
+    if (!npc) return;
+    npc.activityEmoji = emoji;
   }
 
   /**
@@ -2126,9 +2190,13 @@ class NpcSimulation {
           return;
         }
         this.setNpcPath(npcId, path, 'cove');
-        // 'trading' is the closest valid NpcActivity for casino play; override
-        // the emoji to the slot 🎰 so the bubble reads as "at the Cove".
-        this.setNpcActivity(npcId, 'trading', '🎰');
+        // 2026-07-27 (OQ-1): stamp the 🎰 wire emoji for the APPROACH without
+        // overriding `activity`. `setNpcPath` just set 'walking', and the
+        // moveNpcs gate (:3126) skips every other value — that override is what
+        // froze the body for 8-20 s at the START of every cove trip. The
+        // at-the-tables 'trading' state is set on ARRIVAL (:3035) and, after a
+        // real settled hand, by `settleAutonomousCoveGame` (:2009).
+        this.setNpcActivityEmoji(npcId, '🎰');
         this.recordAgentWorldAction(attribution, 'agent.move', {
           destination: 'cove',
           venue: 'cove',
@@ -2217,9 +2285,9 @@ class NpcSimulation {
           return;
         }
         this.setNpcPath(npcId, path, 'cove');
-        // 'trading' is the closest valid NpcActivity for casino play; ♠ reads as
-        // "at the poker tables".
-        this.setNpcActivity(npcId, 'trading', '♠️');
+        // 2026-07-27 (OQ-1): ♠️ APPROACH wire emoji only. Never override
+        // `activity` here — see enter_cove above.
+        this.setNpcActivityEmoji(npcId, '♠️');
         this.recordAgentWorldAction(attribution, 'agent.move', {
           destination: 'cove',
           venue: 'poker',
@@ -2241,7 +2309,9 @@ class NpcSimulation {
           return;
         }
         this.setNpcPath(npcId, path, 'kelp-forest-portal');
-        this.setNpcActivity(npcId, 'exploring', '🫧');
+        // 2026-07-27 (OQ-1): 🫧 APPROACH wire emoji only. Never override
+        // `activity` here — see enter_cove above.
+        this.setNpcActivityEmoji(npcId, '🫧');
         this.recordAgentWorldAction(attribution, 'agent.move', {
           destination: 'kelp-forest-portal',
           venue: 'kelp-forest',
@@ -3034,6 +3104,10 @@ class NpcSimulation {
       // Arrived at destination — start building activity
       if (npc.activity === 'walking' && npc.path.length > 0 && npc.pathIndex >= npc.path.length) {
         if (npc.destinationBuildingId) {
+          // 2026-07-27 (OQ-1): read ownership BEFORE the array is replaced.
+          const parkDirected =
+            GATEWAY_PARK_DESTINATIONS.has(npc.destinationBuildingId)
+            && this.directedRoutes.has(npc.path);
           const activities = BUILDING_ACTIVITIES[npc.destinationBuildingId] ?? ['thinking'];
           const picked = activities[Math.floor(Math.random() * activities.length)];
           npc.activity = picked;
@@ -3041,6 +3115,18 @@ class NpcSimulation {
           npc.activityEndsAt = now + 8000 + Math.random() * 12000;
           npc.intentDescription = `${picked} at ${npc.destinationBuildingId}`;
           npc.path = []; npc.pathIndex = 0;
+          // 2026-07-27 (OQ-1): `directedRoutes` is keyed by ARRAY IDENTITY, so
+          // replacing `npc.path` with a fresh `[]` drops the B2 protection.
+          // Re-stamp ONLY for the gateway destinations, which retained it before
+          // this change (see GATEWAY_PARK_DESTINATIONS). Without this, a body
+          // that just arrived at the Cove is picked up by `planNpcBehaviors:2705`
+          // 2.0-6.0 s after this activity expires — the exact B2 regression — and
+          // can wander outside the 1000 wu interaction radius, so its next
+          // `play_cove_game` is dropped. Released when any writer replaces
+          // `npc.path` (the agent's next directed action) or when the driver calls
+          // `clearDestinationBuilding` (:1523). Teaching-building and REST
+          // arrivals keep their CURRENT release-at-arrival behavior.
+          if (parkDirected) this.directedRoutes.add(npc.path);
         } else {
           npc.activity = 'idle'; npc.activityEmoji = '';
           npc.path = []; npc.pathIndex = 0;

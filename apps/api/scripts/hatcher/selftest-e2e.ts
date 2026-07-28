@@ -731,11 +731,16 @@ async function main() {
     check('D10 talk_to_npc with unknown target is DROPPED (no agent_chat event)', after === before && cleaned === '' && !cleaned.includes('[ACTION:'), `agent_chat events with "${uniqueMsg}": before=${before} after=${after} (expect unchanged) cleaned=${JSON.stringify(cleaned)}`);
   });
 
-  // INVERTED from the old false-pass: D11 is now the enter_cove HAPPY PATH against
-  // the SHIPPING 5-verb whitelist. The shipping executor (npc-simulation.ts:942)
-  // walks the body to COVE_CENTER, tags destinationBuildingId='cove', and sets
-  // activity 'trading' with the 🎰 emoji. This is the Rule-E5 Cove gateway verb.
-  await safe('D11 enter_cove() HAPPY PATH — walks to the Cove, tags dest=cove, activity=trading 🎰 (shipping 5-verb whitelist)', () => {
+  // INVERTED from the old false-pass: D11 is the enter_cove HAPPY PATH against
+  // the SHIPPING whitelist. 2026-07-27 (OQ-1): the executor no longer overrides
+  // `activity` at dispatch. It walks the body toward COVE_CENTER, tags
+  // destinationBuildingId='cove', LEAVES activity 'walking' so the body moves on
+  // the very next 200 ms sim tick, stamps the 🎰 wire emoji, and leaves
+  // activityEndsAt at 0. Asserting 'trading' here was asserting the 8-20 s
+  // start-of-trip FREEZE. `activityEndsAt === 0` is the live end-to-end proof
+  // that setNpcPath cleared the clock this case set two lines above.
+  // Executor: npc-simulation.ts `executeHatcherAction` case 'enter_cove'.
+  await safe("D11 enter_cove() HAPPY PATH — walks to the Cove, tags dest=cove, stays 'walking' with the 🎰 wire emoji and no activity clock", () => {
     if (!coveLoc) throw new Error("MAP_LOCATIONS has no 'cove' rect — enter_cove cannot resolve a center (would no-op)");
     npcSimulation.setNpcActivity(overrideNpcId, 'idle', '');
     const npc0 = npcSimulation.getNpcById(overrideNpcId)!; npc0.path = []; npc0.pathIndex = 0; npc0.destinationBuildingId = null;
@@ -744,12 +749,13 @@ async function main() {
     const ok =
       after.path.length > 0 &&
       after.destinationBuildingId === 'cove' &&
-      after.activity === 'trading' &&
+      after.activity === 'walking' &&
       after.activityEmoji === '\u{1F3B0}' && // 🎰
+      after.activityEndsAt === 0 &&
       cleaned === 'To the casino' &&
       !cleaned.includes('[ACTION:');
-    if (!ok) bugs.push('enter_cove() did NOT execute the shipping behavior (walk to cove + dest=cove + trading/🎰) — Rule-E5 Cove gateway broken');
-    check('D11 enter_cove() HAPPY PATH — walks to the Cove, tags dest=cove, activity=trading 🎰 (shipping 5-verb whitelist)', ok, `path.len=${after.path.length} (expect >0) destinationBuildingId=${after.destinationBuildingId} (expect 'cove') activity=${after.activity} (expect 'trading') emoji=${after.activityEmoji} (expect 🎰) cleaned=${JSON.stringify(cleaned)}`);
+    if (!ok) bugs.push('enter_cove() did NOT execute the shipping behavior (walk to cove + dest=cove + walking/🎰 + no activity clock) — Rule-E5 Cove gateway broken');
+    check("D11 enter_cove() HAPPY PATH — walks to the Cove, tags dest=cove, stays 'walking' with the 🎰 wire emoji and no activity clock", ok, `path.len=${after.path.length} (expect >0) destinationBuildingId=${after.destinationBuildingId} (expect 'cove') activity=${after.activity} (expect 'walking') emoji=${after.activityEmoji} (expect 🎰) activityEndsAt=${after.activityEndsAt} (expect 0) cleaned=${JSON.stringify(cleaned)}`);
   });
 
   // ===================================================================
