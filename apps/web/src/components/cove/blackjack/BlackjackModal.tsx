@@ -83,6 +83,7 @@ import {
   BlackjackRevealEpoch,
   buildBlackjack2dBannerText,
   buildNaturalHoleHand,
+  mergeBlackjack2dActionHand,
   useBlackjack2dPublisher,
   type Blackjack2dDisplayStep,
 } from '@/lib/cove/blackjack-2d-publisher';
@@ -791,26 +792,7 @@ export default function BlackjackModal() {
     setPendingSettlement(null);
     setLiveHand((prev) => {
       if (!prev) return prev;
-      const merged: SubHandView[] = res.playerHands.map((h) => ({
-        cards: h.cards,
-        total: h.total,
-        isSoft: h.isSoft,
-        isBust: h.isBust,
-        isResolved: h.isResolved,
-      }));
-      return {
-        ...prev,
-        // Reflect the SERVER-AUTHORITATIVE hand id the action actually targeted
-        // (concurrency minor #2). After an agent action applied to the relay's
-        // decision.handId (which may differ from the modal's prev.handId when the
-        // local view was stale), the merged view must carry res.handId so the next
-        // human/agent action targets the same server hand, not the stale local one.
-        handId: res.handId,
-        playerHands: merged,
-        dealerUpcard: res.dealerUpcard ?? prev.dealerUpcard,
-        insuranceOffered: false,
-        didSplit: res.didSplit,
-      };
+      return mergeBlackjack2dActionHand(prev, res);
     });
     setDisplayStep(res.didSplit ? 'split' : 'player-turn');
     // After a split, focus the first non-RESOLVED sub-hand. isBust alone is the

@@ -5,6 +5,7 @@ import {
   buildBlackjack2dBannerText,
   buildBlackjack2dParityRevision,
   buildNaturalHoleHand,
+  mergeBlackjack2dActionHand,
   type Blackjack2dDisplaySnapshot,
 } from '../blackjack-2d-publisher';
 
@@ -113,6 +114,30 @@ describe('blackjack 2D publisher', () => {
         shoe: 'shoe-3',
       });
     }
+  });
+
+  test('partial action merges retain deal-time handIndex correlation', () => {
+    const merged = mergeBlackjack2dActionHand(buildNaturalHoleHand(SETTLED), {
+      handId: 'hand-7',
+      status: 'in_progress',
+      playerHands: [{
+        cards: [
+          { suit: 'hearts', rank: 'A' },
+          { suit: 'spades', rank: 'K' },
+          { suit: 'clubs', rank: '2' },
+        ],
+        total: 13,
+        isSoft: false,
+        isBust: false,
+        isResolved: false,
+      }],
+      dealerUpcard: { suit: 'clubs', rank: 'A' },
+      didSplit: false,
+    });
+    expect(merged.handIndex).toBe(7);
+    expect(merged.shoeId).toBe('shoe-3');
+    expect(merged.playerHands[0]?.cards).toHaveLength(3);
+    expect(merged.insuranceOffered).toBe(false);
   });
 
   test('mixed split banner uses the frozen full-hand string', () => {

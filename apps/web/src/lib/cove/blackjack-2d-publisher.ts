@@ -6,7 +6,10 @@ import type {
   BlackjackOutcome,
   SerializedBlackjackHandResult,
 } from '@/lib/cove/blackjack-types';
-import type { SettledHandResponse } from '@/lib/cove/blackjack-api-client';
+import type {
+  ActionInProgressResponse,
+  SettledHandResponse,
+} from '@/lib/cove/blackjack-api-client';
 import {
   buildBlackjackParity,
   clearFeltParity,
@@ -90,6 +93,22 @@ export function buildNaturalHoleHand(
     tookInsurance: outcome.insurance !== null,
     didSplit: outcome.playerHands.length > 1,
     bet: Number(outcome.playerHands[0]?.bet ?? response.totalBet),
+  };
+}
+
+export function mergeBlackjack2dActionHand(
+  current: Blackjack2dHandView,
+  response: ActionInProgressResponse,
+): Blackjack2dHandView {
+  return {
+    ...current,
+    handId: response.handId,
+    playerHands: response.playerHands.map((hand) => ({ ...hand })),
+    dealerUpcard: response.dealerUpcard ?? current.dealerUpcard,
+    // The server expires the offer on the first main decision. The action wire
+    // omits the boolean, so the client mirrors that authoritative transition.
+    insuranceOffered: false,
+    didSplit: response.didSplit,
   };
 }
 
