@@ -31,6 +31,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useCoveStore } from '@/stores/cove';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useIsGuest } from '@/hooks/use-is-guest';
+import { ParityMirror } from '@/components/cove/CardParityMirror';
 import BaccaratCard from './BaccaratCard';
 import '@/styles/cove-tokens.css';
 import {
@@ -56,6 +57,13 @@ import {
   useOpenBaccaratShoe,
   usePlayBaccaratCoup,
 } from '@/lib/cove/baccarat-api-client';
+import {
+  Baccarat2dRevealEpoch,
+  buildBaccarat2dBannerText,
+  maskBaccarat2dOutcome,
+  useBaccarat2dPublisher,
+  type Baccarat2dPhase,
+} from '@/lib/cove/baccarat-2d-publisher';
 
 // ---------------------------------------------------------------------------
 // Bet chips — must stay within engine bounds (5–500 CT).
@@ -111,7 +119,12 @@ function BetTypeSelector({ value, disabled, onChange }: {
   onChange: (b: BaccaratBet) => void;
 }) {
   return (
-    <div role="radiogroup" aria-label="Baccarat bet" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+    <div
+      role="radiogroup"
+      aria-label="Baccarat bet"
+      data-testid="bac-bet-zones"
+      style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}
+    >
       {(['player', 'banker', 'tie'] as const).map((b) => {
         const meta = BET_META[b];
         const selected = value === b;
@@ -153,9 +166,10 @@ function BetTypeSelector({ value, disabled, onChange }: {
 // ---------------------------------------------------------------------------
 // Hand row — Player or Banker side with its server-derived total + natural badge.
 // ---------------------------------------------------------------------------
-function HandSide({ label, cards, total, isNatural, accent, isWinner, settled }: {
+function HandSide({ label, cards, slotCount, total, isNatural, accent, isWinner, settled }: {
   label: string;
   cards: BACCard[];
+  slotCount: number;
   total: number | null;
   isNatural: boolean;
   accent: string;
@@ -207,16 +221,12 @@ function HandSide({ label, cards, total, isNatural, accent, isWinner, settled }:
         </div>
       </div>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', minHeight: 68 }}>
-        {cards.length === 0 ? (
-          <>
-            <EmptyCardSlot />
-            <EmptyCardSlot />
-          </>
-        ) : (
-          cards.map((card, i) => (
-            <BaccaratCard key={i} card={card} slideIn delay={i * 70} />
-          ))
-        )}
+        {Array.from({ length: slotCount }, (_, index) => {
+          const card = cards[index];
+          return card
+            ? <BaccaratCard key={index} card={card} slideIn delay={index * 70} />
+            : <EmptyCardSlot key={index} />;
+        })}
       </div>
     </div>
   );
@@ -234,7 +244,13 @@ function EmptyCardSlot() {
 // ---------------------------------------------------------------------------
 // Outcome banner — driven entirely by the server-settled coup.
 // ---------------------------------------------------------------------------
-function OutcomeBanner({ outcome }: { outcome: SerializedBaccaratCoup }) {
+function OutcomeBanner({
+  outcome,
+  bannerText,
+}: {
+  outcome: SerializedBaccaratCoup;
+  bannerText: string;
+}) {
   const net = Number(outcome.net);
   const won = net > 0;
   const push = net === 0; // tie + P/B bet returns the stake (PUSH)
@@ -243,18 +259,14 @@ function OutcomeBanner({ outcome }: { outcome: SerializedBaccaratCoup }) {
     : push
       ? 'var(--pt-cream-soft)'
       : '#e85555';
-  const winnerLabel =
-    outcome.winner === 'player' ? 'PLAYER WINS' :
-    outcome.winner === 'banker' ? 'BANKER WINS' :
-    'TIE';
-
-  const resultLabel = won ? 'YOU WIN' : push ? 'PUSH (stake returned)' : 'YOU LOSE';
   const commission = Number(outcome.commission);
 
   return (
     <div
       role="status"
       aria-live="assertive"
+      data-testid="bac-outcome-banner"
+      data-banner-text={bannerText}
       style={{
         // IN-FLOW below the two hand columns — never absolute over the cards.
         // The old absolute center placement (top 50%) sat directly on the
@@ -285,20 +297,28 @@ function OutcomeBanner({ outcome }: { outcome: SerializedBaccaratCoup }) {
           color: accent, fontSize: 11, fontFamily: 'var(--pt-data)',
           letterSpacing: '0.2em', fontWeight: 700, marginBottom: 3,
         }}>
-          {winnerLabel} · {resultLabel}
+          {bannerText}
         </div>
-        <div style={{
+        <div data-testid="bac-banner-net" style={{
           color: won ? 'var(--pt-cream)' : push ? 'var(--pt-cream-soft)' : '#e85555',
           fontSize: 20, fontWeight: 700, fontFamily: 'var(--pt-display)', lineHeight: 1,
         }}>
           {net > 0 ? `+${net}` : `${net}`} vCLAW
         </div>
+        {push && (
+          <div style={{
+            marginTop: 5, fontSize: 10, fontFamily: 'var(--pt-data)',
+            color: 'var(--pt-cream-soft)', letterSpacing: '0.04em',
+          }}>
+            Stake returned
+          </div>
+        )}
         {commission > 0 && (
           <div style={{
             marginTop: 6, fontSize: 10, fontFamily: 'var(--pt-data)',
             color: 'var(--pt-brass)', letterSpacing: '0.04em',
           }}>
-            Banker win — {commission} vCLAW commission ({COVE_BACCARAT_BANKER_COMMISSION_PERCENT}%) kept
+            Banker win: {commission} vCLAW commission ({COVE_BACCARAT_BANKER_COMMISSION_PERCENT}%) kept
           </div>
         )}
       </div>
@@ -332,7 +352,10 @@ export default function BaccaratModal() {
   // ── Server-mirrored state ────────────────────────────────────────────────
   const [shoe, setShoe] = useState<BaccaratShoeWire | null>(null);
   const [balance, setBalance] = useState(0);
-  const [settled, setSettled] = useState<BaccaratCoupResponse | null>(null);
+  const [pendingSettlement, setPendingSettlement] =
+    useState<BaccaratCoupResponse | null>(null);
+  const [revealedStep, setRevealedStep] = useState(0);
+  const [displayPhase, setDisplayPhase] = useState<Baccarat2dPhase>('idle');
   const [revealedSeed, setRevealedSeed] = useState<string | null>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
   const [fairnessOpen, setFairnessOpen] = useState(false);
@@ -348,9 +371,37 @@ export default function BaccaratModal() {
   const toastSeqRef = useRef(0);
   const shoeRef = useRef<BaccaratShoeWire | null>(null);
   shoeRef.current = shoe;
+  const parityInstanceIdRef = useRef(crypto.randomUUID());
+  const revealEpochRef = useRef<Baccarat2dRevealEpoch | null>(null);
+  if (!revealEpochRef.current) {
+    revealEpochRef.current = new Baccarat2dRevealEpoch();
+  }
 
   const isRealTier = Boolean(avatar) && !isGuest;
-  const phase: 'idle' | 'settled' = settled ? 'settled' : 'idle';
+  const phase = displayPhase;
+  const bannerText = pendingSettlement && displayPhase === 'settled'
+    ? buildBaccarat2dBannerText(pendingSettlement.outcome)
+    : null;
+  const paritySnapshot = useMemo(() => ({
+    pendingSettlement,
+    revealedStep,
+    phase: displayPhase,
+    selectedBet: betType,
+    selectedStake: baccaratBet,
+    bannerText,
+  }), [
+    baccaratBet,
+    bannerText,
+    betType,
+    displayPhase,
+    pendingSettlement,
+    revealedStep,
+  ]);
+  useBaccarat2dPublisher({
+    open: baccaratOpen,
+    instanceId: parityInstanceIdRef.current,
+    snapshot: paritySnapshot,
+  });
 
   // ── Toast helpers ──────────────────────────────────────────────────────────
   const showToast = useCallback((message: string, tone: ToastTone = 'info') => {
@@ -365,7 +416,10 @@ export default function BaccaratModal() {
 
   // ── Reset transient coup state ─────────────────────────────────────────────
   const resetCoup = useCallback(() => {
-    setSettled(null);
+    revealEpochRef.current?.cancel();
+    setPendingSettlement(null);
+    setRevealedStep(0);
+    setDisplayPhase('idle');
     coupKeyRef.current = null;
   }, []);
 
@@ -401,6 +455,10 @@ export default function BaccaratModal() {
       busyRef.current = false;
     }
   }, [baccaratOpen, resetCoup]);
+
+  useEffect(() => () => {
+    revealEpochRef.current?.cancel();
+  }, []);
 
   // ── Close handler ───────────────────────────────────────────────────────────
   const handleClose = useCallback(() => {
@@ -442,13 +500,23 @@ export default function BaccaratModal() {
 
   // ── Apply a settled coup (single place balance/outcome land) ───────────────
   const applySettled = useCallback((res: BaccaratCoupResponse) => {
-    setSettled(res);
-    setBalance(res.balance);
+    revealEpochRef.current?.begin(res.coupId);
+    setPendingSettlement(res);
+    setRevealedStep(1);
+    setDisplayPhase('revealing');
+    revealEpochRef.current?.scheduleCoup(
+      res,
+      (step) => setRevealedStep(step),
+      () => {
+        setDisplayPhase('settled');
+        setBalance(res.balance);
+      },
+    );
     // Reflect the shoe's new dealtCount locally so the next coup's penetration
     // gate + fairness HUD are accurate without a refetch.
     setShoe((prev) => (prev ? { ...prev, dealtCount: res.dealtCount } : prev));
     if (res.reshuffleSuggested) {
-      showToast('Shoe nearly spent — next coup opens a fresh shoe.', 'info');
+      showToast('Shoe nearly spent. The next coup opens a fresh shoe.', 'info');
     }
   }, [showToast]);
 
@@ -521,7 +589,13 @@ export default function BaccaratModal() {
 
   const inFlight = openShoe.isPending || playCoup.isPending || closeShoe.isPending;
 
-  const outcome: SerializedBaccaratCoup | null = settled?.outcome ?? null;
+  const outcome: SerializedBaccaratCoup | null = pendingSettlement
+    ? maskBaccarat2dOutcome(
+      pendingSettlement.outcome,
+      revealedStep,
+      displayPhase === 'settled',
+    )
+    : null;
 
   // ── Fairness summary ───────────────────────────────────────────────────────
   const fairnessSummary = useMemo(() => {
@@ -538,8 +612,14 @@ export default function BaccaratModal() {
   // after settle.
   const playerCards: BACCard[] = outcome?.player.cards ?? [];
   const bankerCards: BACCard[] = outcome?.banker.cards ?? [];
-  const playerTotal = outcome ? outcome.player.total : null;
-  const bankerTotal = outcome ? outcome.banker.total : null;
+  const playerSlotCount = pendingSettlement
+    ? pendingSettlement.outcome.player.cards.length
+    : 2;
+  const bankerSlotCount = pendingSettlement
+    ? pendingSettlement.outcome.banker.cards.length
+    : 2;
+  const playerTotal = playerCards.length > 0 ? outcome?.player.total ?? null : null;
+  const bankerTotal = bankerCards.length > 0 ? outcome?.banker.total ?? null : null;
   const winner: BaccaratWinner | null = outcome?.winner ?? null;
 
   const toastClass = toast
@@ -560,6 +640,10 @@ export default function BaccaratModal() {
         animation: 'cv-modal-bg-in var(--cv-motion-base) var(--cv-ease-standard)',
       }}
     >
+      <ParityMirror
+        surface="baccarat-2d"
+        instanceId={parityInstanceIdRef.current}
+      />
       <div
         style={{
           position: 'relative', width: '100%', maxWidth: 640,
@@ -639,6 +723,7 @@ export default function BaccaratModal() {
             <HandSide
               label="Player"
               cards={playerCards}
+              slotCount={playerSlotCount}
               total={playerTotal}
               isNatural={outcome?.player.isNatural ?? false}
               accent={BET_META.player.accent}
@@ -648,6 +733,7 @@ export default function BaccaratModal() {
             <HandSide
               label="Banker"
               cards={bankerCards}
+              slotCount={bankerSlotCount}
               total={bankerTotal}
               isNatural={outcome?.banker.isNatural ?? false}
               accent={BET_META.banker.accent}
@@ -657,11 +743,13 @@ export default function BaccaratModal() {
           </div>
 
           {/* Settled banner — IN FLOW under the hands so it can never cover a card */}
-          {phase === 'settled' && outcome && <OutcomeBanner outcome={outcome} />}
+          {phase === 'settled' && outcome && bannerText && (
+            <OutcomeBanner outcome={outcome} bannerText={bannerText} />
+          )}
 
           {/* Your bet pill — shows the active wager once a coup is settled */}
           {phase === 'settled' && outcome && (
-            <div style={{
+            <div data-testid="bac-bet-pill" style={{
               position: 'relative', zIndex: 1, textAlign: 'center',
               fontSize: 10, fontFamily: 'var(--pt-data)', color: 'var(--pt-cream-soft)',
               letterSpacing: '0.08em',
