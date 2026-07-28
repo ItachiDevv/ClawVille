@@ -227,7 +227,10 @@ describe('blackjack 2D publisher', () => {
       "if (pendingSettlement && displayStep === 'dealer-reveal')",
     );
     expect(source).toContain('if (!epoch.isCurrent(correlation)) return;');
-    expect(source).toContain('setLiveHand(null);');
+    expect(source).not.toContain(
+      "setDisplayStep('settled');\n        setLiveHand(null);",
+    );
+    expect(source).toContain("if (displayStep !== 'settled')");
     expect(source).toContain(
       "setDisplayStep(sourceAction === 'split' ? 'split' : 'player-turn')",
     );

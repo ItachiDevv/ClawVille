@@ -711,7 +711,6 @@ export default function BlackjackModal() {
       const timer = window.setTimeout(() => {
         if (!epoch.isCurrent(correlation)) return;
         setDisplayStep('settled');
-        setLiveHand(null);
         setActiveSlot(0);
         setBalance(pendingSettlement.balance);
       }, 550);
@@ -1180,7 +1179,7 @@ export default function BlackjackModal() {
   const handleWalkAway = useCallback(async () => {
     const s = shoeRef.current;
     if (!s || !isRealTier) { handleClose(); return; }
-    if (hand) { showToast('Finish the current hand first.', 'warn'); return; }
+    if (displayStep !== 'settled') { showToast('Finish the current hand first.', 'warn'); return; }
     busyRef.current = true;
     try {
       const res = await closeShoe.mutateAsync({ shoeId: s.id });
@@ -1193,7 +1192,7 @@ export default function BlackjackModal() {
     } finally {
       busyRef.current = false;
     }
-  }, [isRealTier, hand, closeShoe, showToast, handleClose]);
+  }, [isRealTier, displayStep, closeShoe, showToast, handleClose]);
 
   // ── Derived button legality (server is final validator; this gates UI) ─────
   const activeHand = hand?.playerHands[activeSlot] ?? hand?.playerHands[0] ?? null;
