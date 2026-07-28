@@ -25,6 +25,7 @@ import { detectLowEndGpuClass } from '@/lib/three/gpu-tier';
 import { resetAllHeldInputs } from '@/lib/three/input-reset';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 import { StageTransition } from './StageTransition';
+import type { WatchdogConfig } from './stage-watchdog-machine';
 import {
   StageCameraCoordinator,
   type StageCameraDefinition,
@@ -655,6 +656,7 @@ export function readStageCameraPoses(): Record<string, number[]> {
 interface WorldStageCanvasProps {
   scenes: readonly WorldStageScene[];
   transitionTimeoutMs?: number;
+  watchdogConfig?: WatchdogConfig;
   pauseOnCreate?: boolean;
   onStageCreated?: (state: RootState) => void;
   renderTransitionOverlay?: boolean;
@@ -948,7 +950,8 @@ function StageSceneAppearance({
 
 export function WorldStageCanvas({
   scenes,
-  transitionTimeoutMs = 20_000,
+  transitionTimeoutMs = 45_000,
+  watchdogConfig,
   pauseOnCreate = false,
   onStageCreated,
   renderTransitionOverlay = true,
@@ -1033,6 +1036,7 @@ export function WorldStageCanvas({
       {renderTransitionOverlay && (
         <StageTransition
           timeoutMs={transitionTimeoutMs}
+          watchdogConfig={watchdogConfig}
           onOpaque={onTransitionOpaque}
         />
       )}

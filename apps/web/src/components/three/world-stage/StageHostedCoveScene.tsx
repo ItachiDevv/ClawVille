@@ -7,18 +7,9 @@ import CoveInteriorScene from '@/lib/three/cove-interior';
 import { useSceneActive } from './use-scene-frame';
 import { useStageStore } from './stage-store';
 import { withStageSlotFrustumCullingDisabled } from './resource-ledger';
+import { warmCoveRendererForGeneration } from './cove-warmup-entry-manager';
 
 const COVE_SCENE_ID = 'cove';
-
-// Warmup compile dedupe (Codex P0-review finding 4): a watchdog-driven
-// same-scene retry bumps the generation and re-runs the warmup effect while
-// a prior non-cancellable compileAsync may still be in flight. All
-// generations share ONE in-flight compile promise; whichever generation is
-// current when it settles performs the ack. Keyed by RENDERER identity
-// (review-2 finding 3): renderer recovery replaces `gl`, and a promise from
-// a disposed renderer must never satisfy the replacement's warmup.
-let inflightCoveCompile: { gl: unknown; promise: Promise<void> } | null =
-  null;
 
 export default function StageHostedCoveScene({
   onSceneEmpty,
@@ -38,7 +29,7 @@ export default function StageHostedCoveScene({
   );
   const active = useSceneActive();
   const [assetReady, setAssetReady] = useState(false);
-  const warmedOnceRef = useRef(false);
+  const warmedRendererRef = useRef<{ gl: unknown } | null>(null);
   const { camera, gl, scene } = useThree();
 
   useEffect(() => {
@@ -72,45 +63,49 @@ export default function StageHostedCoveScene({
     void (async () => {
       const state = useStageStore.getState();
       state.setRenderPaused(true);
-      if (!warmedOnceRef.current) {
-        try {
-          if (typeof (gl as { compileAsync?: unknown }).compileAsync === 'function') {
-            if (!inflightCoveCompile || inflightCoveCompile.gl !== gl) {
-              const entry = {
-                gl: gl as unknown,
-                promise: withStageSlotFrustumCullingDisabled('cove', () =>
-                  (
-                    gl as unknown as {
-                      compileAsync: (
-                        scene: Scene,
-                        camera: Camera,
-                      ) => Promise<void>;
-                    }
-                  ).compileAsync(scene, camera),
-                ),
-              };
-              entry.promise = entry.promise.finally(() => {
-                if (inflightCoveCompile === entry) {
-                  inflightCoveCompile = null;
-                }
-              });
-              inflightCoveCompile = entry;
-            }
-            await inflightCoveCompile.promise;
-          }
-          if (!isCurrent()) return;
-          await withStageSlotFrustumCullingDisabled(
-            'cove',
-            async () => {
-              gl.render(scene, camera);
-            },
+      const compileAsync =
+        typeof (gl as { compileAsync?: unknown }).compileAsync === 'function'
+          ? () =>
+              withStageSlotFrustumCullingDisabled('cove', () =>
+                (
+                  gl as unknown as {
+                    compileAsync: (
+                      scene: Scene,
+                      camera: Camera,
+                    ) => Promise<void>;
+                  }
+                ).compileAsync(scene, camera),
+              )
+          : undefined;
+      const result = await warmCoveRendererForGeneration({
+        gl,
+        warmedRenderer: warmedRendererRef.current?.gl ?? null,
+        compile: compileAsync,
+        directWarm: () =>
+          withStageSlotFrustumCullingDisabled('cove', async () => {
+            gl.render(scene, camera);
+          }),
+        isCurrent,
+        onCompileRejected: (error) => {
+          console.warn(
+            '[CoveStage] compileAsync failed; continuing to direct warm:',
+            error,
           );
-          warmedOnceRef.current = true;
-        } catch (error) {
-          console.warn('[CoveStage] warmup failed; continuing:', error);
-        }
-      }
-      if (!isCurrent()) return;
+        },
+        onCompileTimedOut: () => {
+          console.warn(
+            '[CoveStage] compileAsync exceeded 20s; bypassing it for this renderer',
+          );
+        },
+        onDirectWarmRejected: (error) => {
+          console.warn(
+            '[CoveStage] direct warm failed; continuing:',
+            error,
+          );
+        },
+      });
+      if (result.status !== 'completed' || !isCurrent()) return;
+      warmedRendererRef.current = { gl: result.warmedRenderer };
       const current = useStageStore.getState();
       current.setRenderPaused(false);
       current.ackReady(COVE_SCENE_ID, generation);

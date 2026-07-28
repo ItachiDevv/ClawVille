@@ -1,8 +1,8 @@
 {
   "pass": true,
   "lane": "synthetic",
-  "url": "http://localhost:3000/perf/stage?stage=1&webgl=1",
-  "backend": "webgl",
+  "url": "http://localhost:3000/perf/stage?stage=1&webgpu=1",
+  "backend": "webgpu",
   "requestedTransitions": 102,
   "requestedRoundTrips": null,
   "experiment": {
@@ -19,8 +19,8 @@
   "hiddenCameraViolations": [],
   "hiddenStoreViolations": [],
   "activeGrowthViolations": [],
-  "listenerBaseline": 4,
-  "listenerEnd": 4,
+  "listenerBaseline": 5,
+  "listenerEnd": 5,
   "listenerDelta": 0,
   "listenerUnderflowCount": 0,
   "transitionErrors": [],
@@ -30,14 +30,14 @@
   },
   "heap": {
     "available": true,
-    "baselineBytes": 67867992,
-    "endBytes": 68727448,
-    "growthRatio": 0.012663642678569302,
+    "baselineBytes": 63253156,
+    "endBytes": 64133744,
+    "growthRatio": 0.01392164526936806,
     "totalGrowthThreshold": 0.2,
     "midpointBytes": null,
     "secondHalfGrowthRatio": null,
     "secondHalfSlopeMBPerLoop": null,
-    "secondHalfSlopeThresholdMBPerLoop": 0.8,
+    "secondHalfSlopeThresholdMBPerLoop": 1,
     "dwellDriftMBPerSecond": null,
     "dwellDriftThresholdMBPerSecond": 0.05
   },
@@ -57,26 +57,66 @@
       {
         "label": "post-warmup",
         "loop": 0,
-        "backend": "webgl",
+        "backend": "webgpu",
         "textures": 9,
         "geometries": 15,
-        "texturesSizeBytes": null,
-        "memoryTotalBytes": null,
-        "renderCallsLifetime": null,
-        "drawCallsFrame": 2,
-        "memoryBreakdown": null
+        "texturesSizeBytes": 11409667,
+        "memoryTotalBytes": 37219550,
+        "renderCallsLifetime": 606,
+        "drawCallsFrame": 4,
+        "memoryBreakdown": {
+          "attributes": 35,
+          "attributesSize": 24041196,
+          "geometries": 15,
+          "indexAttributes": 14,
+          "indexAttributesSize": 1708896,
+          "indirectStorageAttributes": 0,
+          "indirectStorageAttributesSize": 0,
+          "programs": 12,
+          "programsSize": 56159,
+          "readbackBuffers": 0,
+          "readbackBuffersSize": 0,
+          "renderTargets": 1,
+          "storageAttributes": 0,
+          "storageAttributesSize": 0,
+          "textures": 9,
+          "texturesSize": 11409667,
+          "uniformBuffers": 21,
+          "uniformBuffersSize": 3632,
+          "total": 37219550
+        }
       },
       {
         "label": "final",
         "loop": 102,
-        "backend": "webgl",
+        "backend": "webgpu",
         "textures": 9,
         "geometries": 15,
-        "texturesSizeBytes": null,
-        "memoryTotalBytes": null,
-        "renderCallsLifetime": null,
-        "drawCallsFrame": 2,
-        "memoryBreakdown": null
+        "texturesSizeBytes": 11409667,
+        "memoryTotalBytes": 37219550,
+        "renderCallsLifetime": 7248,
+        "drawCallsFrame": 4,
+        "memoryBreakdown": {
+          "attributes": 35,
+          "attributesSize": 24041196,
+          "geometries": 15,
+          "indexAttributes": 14,
+          "indexAttributesSize": 1708896,
+          "indirectStorageAttributes": 0,
+          "indirectStorageAttributesSize": 0,
+          "programs": 12,
+          "programsSize": 56159,
+          "readbackBuffers": 0,
+          "readbackBuffersSize": 0,
+          "renderTargets": 1,
+          "storageAttributes": 0,
+          "storageAttributesSize": 0,
+          "textures": 9,
+          "texturesSize": 11409667,
+          "uniformBuffers": 21,
+          "uniformBuffersSize": 3632,
+          "total": 37219550
+        }
       }
     ],
     "byteGrowthTolerance": 0.01
@@ -91,9 +131,9 @@
   "ledger": {
     "alpha": {
       "texturesBytes": 0,
-      "geometryBytes": 2520,
+      "geometryBytes": 2736,
       "renderTargetsBytes": 0,
-      "total": 2520,
+      "total": 2736,
       "counts": {
         "textures": 0,
         "geometries": 3,
@@ -109,9 +149,9 @@
     },
     "beta": {
       "texturesBytes": 0,
-      "geometryBytes": 53760,
+      "geometryBytes": 66720,
       "renderTargetsBytes": 0,
-      "total": 53760,
+      "total": 66720,
       "counts": {
         "textures": 0,
         "geometries": 3,
@@ -127,9 +167,9 @@
     },
     "cove-spike": {
       "texturesBytes": 10595302,
-      "geometryBytes": 17784432,
+      "geometryBytes": 17873160,
       "renderTargetsBytes": 0,
-      "total": 28379734,
+      "total": 28468462,
       "counts": {
         "textures": 12,
         "geometries": 14,
@@ -178,13 +218,21 @@
         "afterFirstGame": 0
       },
       "events": [],
+      "fixtureTraffic": {
+        "GET /api/auth/me": 0,
+        "GET /api/avatars/me": 0,
+        "GET /api/auth/me/agent-session": 0
+      },
       "stubUnhandled": {}
     },
     "coldInit": null
   },
+  "loader": null,
+  "kelpExit": null,
+  "retryAdoption": null,
   "console": {
     "errors": [
-      "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      "Failed to load resource: net::ERR_CONNECTION_REFUSED"
     ],
     "warnings": [
       "THREE.Clock: This module has been deprecated. Please use THREE.Timer instead."
@@ -202,5 +250,5 @@
     "zeroTransitionErrors": true
   },
   "failure": null,
-  "generatedAt": "2026-07-27T01:22:00.639Z"
+  "generatedAt": "2026-07-28T04:48:03.970Z"
 }

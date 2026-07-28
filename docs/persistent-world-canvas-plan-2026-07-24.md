@@ -257,3 +257,32 @@ a feature port.
   homepage→/game loader-visibility lane and a kelp portal exit lane (the
   game↔cove-only lanes were the blind spot); 45s card remains the open
   incident until this re-lands.
+
+## World-stage watchdog re-land execution ledger (2026-07-27)
+
+| Scope | Implementation | Evidence |
+| --- | --- | --- |
+| Fix C | Renderer-identity-scoped cove warmup entry manager, 20 s compile wait bound, late-settlement tombstones, direct-warm fallback | Entry-manager unit tests and a rendered `StageHostedCoveScene` in-place renderer-replacement test |
+| Fix B | Pure chain-aware watchdog reducer plus `StageTransition` adapter; inline v3 timer and per-scene retry set removed | Reducer contract suite, typecheck, web tests, and probe lanes |
+| Fix A0 | Production-midpoint parked-navigation reproduction and responsive-event-loop compile-wedge reproduction | Outcomes recorded in `world-stage-watchdog-reland-notes.md` |
+| Fix A | Optional direct-parent retry lineage, exact-current retry CAS, parked-navigation CAS re-key, unmount cleanup | Retry-lineage matrix and unit tests |
+| Probe lanes | Separate `loader`, `kelp-exit`, and `retry-adoption` outputs with lane-specific predicates | Committed probe summaries and implementation report |
+
+### Incident root-cause correction — PROVISIONAL
+
+The previously asserted orphaned parked-navigation-ref root cause is
+unreachable as stated under the ownership contract. The production-timing A0
+test encodes the correction (the parked same-scene navigation crosses the
+fading-out midpoint, commits once, and remains single-shot after a further
+75 seconds) and is GREEN under execution (reviewer gate run 2026-07-28 —
+the implementation host's process-creation outage was cleared and every
+gate re-run; see `world-stage-watchdog-reland-notes.md` reviewer record).
+Retry lineage is retained as defensive hardening, not as proof of that
+historical explanation.
+
+A never-settling renderer compile promise remains a **PROVISIONAL** explanation.
+The re-land bounds that condition when the JavaScript event loop is responsive:
+the cove entry manager stops awaiting compile at approximately 20 seconds and
+the watchdog independently enforces attempt and chain ceilings. No JavaScript
+timer can establish boundedness while the event loop itself is frozen. See
+`world-stage-watchdog-reland-notes.md` for the evidence boundaries.
