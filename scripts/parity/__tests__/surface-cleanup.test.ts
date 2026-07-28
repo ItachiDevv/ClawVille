@@ -65,6 +65,9 @@ describe('surface-aware preflight cleanup', () => {
     );
     expect(driver.waits.join('\n')).toContain("blackjack-2d");
     expect(driver.waits.join('\n')).toContain("root.transition === 'idle'");
+    expect(driver.waits.join('\n')).toContain(
+      "['Stand', 'Surrender']",
+    );
   });
 
   test('3D blackjack teardown does not accept enabled Walk Away mid-hand', async () => {

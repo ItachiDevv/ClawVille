@@ -231,6 +231,23 @@ export async function teardownGame(
         `window.__CV_READ_PARITY?.(${JSON.stringify(rootSurface)})?.dealStep === 'settled'`,
       );
       if (settled) break;
+      if (rootSurface === 'blackjack-2d') {
+        // The honest 2D publisher commits `hole` before its distinct
+        // `player-turn` paint. A row can finish on that hole revision, so wait
+        // for the staged action controls instead of racing the reveal timer.
+        await driver.waitFn(
+          `(() => {
+            const root = window.__CV_READ_PARITY?.('blackjack-2d');
+            if (!root || root.dealStep === 'settled') return true;
+            return [...document.querySelectorAll('button')].some(
+              (button) => ['Stand', 'Surrender'].some(
+                (label) => button.textContent?.trim().startsWith(label)
+              ) && !button.disabled
+            );
+          })()`,
+          20_000,
+        );
+      }
       const before = await driver.evalJson<number>(
         `window.__CV_READ_PARITY?.(${JSON.stringify(rootSurface)})?.renderRevision ?? 0`,
       );
