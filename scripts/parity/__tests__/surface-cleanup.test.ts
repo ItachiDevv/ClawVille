@@ -67,6 +67,40 @@ describe('surface-aware preflight cleanup', () => {
     expect(driver.waits.join('\n')).toContain("root.transition === 'idle'");
   });
 
+  test('3D blackjack teardown does not accept enabled Walk Away mid-hand', async () => {
+    const driver = new SurfaceCleanupDriver();
+    const result = await preflight(
+      driver,
+      'blackjack',
+      'blackjack-3d',
+      'http://api.test',
+    );
+    expect(result).toEqual({ clean: true, notes: [] });
+    const settleWait = driver.waits.find((script) =>
+      script.includes('const closeEnabled')
+    );
+    expect(settleWait).toBeDefined();
+    const evaluate = new Function(
+      'window',
+      'document',
+      `return ${settleWait};`,
+    ) as (windowValue: unknown, documentValue: unknown) => boolean;
+    expect(evaluate(
+      {
+        __CV_READ_PARITY: () => ({
+          dealStep: 'player-turn',
+          transition: 'idle',
+        }),
+      },
+      {
+        querySelectorAll: () => [{
+          textContent: 'Walk Away',
+          disabled: false,
+        }],
+      },
+    )).toBe(false);
+  });
+
   test('closes a settled baccarat-2d coup and proves session absence', async () => {
     const driver = new SurfaceCleanupDriver();
     const result = await preflight(

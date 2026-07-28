@@ -256,7 +256,11 @@ export async function teardownGame(
             (label) => button.textContent?.trim().startsWith(label)
           ) && !button.disabled
         );
-        return terminal || closeEnabled;
+        return terminal || (
+          (${JSON.stringify(rootSurface)} === 'blackjack-2d'
+            || root.dealStep === 'settled')
+          && closeEnabled
+        );
       })()`,
       20_000,
     );
