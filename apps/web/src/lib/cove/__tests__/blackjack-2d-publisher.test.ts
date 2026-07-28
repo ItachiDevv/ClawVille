@@ -281,6 +281,23 @@ describe('blackjack 2D publisher', () => {
       "setDisplayStep(sourceAction === 'split' ? 'split' : 'player-turn')",
     );
   });
+
+  test('stale-decision resync cannot clear a settlement being staged', () => {
+    const source = readFileSync(
+      new URL(
+        '../../../components/cove/blackjack/BlackjackModal.tsx',
+        import.meta.url,
+      ),
+      'utf8',
+    );
+    expect(source).toContain(
+      '} else if (allowClear && !pendingSettlement) {',
+    );
+    expect(source).not.toContain('} else if (allowClear) {');
+    expect(source).toContain(
+      '}, [pendingSettlement, resetHand]);',
+    );
+  });
 });
 
 describe('BlackjackRevealEpoch', () => {

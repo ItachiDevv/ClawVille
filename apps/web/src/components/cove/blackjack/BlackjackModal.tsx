@@ -590,13 +590,13 @@ export default function BlackjackModal() {
       }
       setPendingSettlement(null);
       setDisplayStep(live.didSplit ? 'split' : 'player-turn');
-    } else if (allowClear) {
+    } else if (allowClear && !pendingSettlement) {
       // Server confirms NO in-progress hand (the prior hand settled) → clear.
       // Gated by allowClear so the eager-restore-on-open path can't wipe a hand
       // the user dealt during the await (FINDING #1).
       resetHand();
     }
-  }, [resetHand]);
+  }, [pendingSettlement, resetHand]);
 
   // ── Eager restore on open ──────────────────────────────────────────────────
   useEffect(() => {
