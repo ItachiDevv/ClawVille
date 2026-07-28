@@ -167,17 +167,48 @@ describe('offline live-runner plans', () => {
     expect(takeStatePath()).toBeNull();
   });
 
-  test('B4 stands, B8 completes both subhands, B9 insures, H6 folds', async () => {
+  test('B4/B7 floor Stand on dealer reveal, B8 completes both subhands, B9 insures, H6 folds', async () => {
     const b4 = new PlanDriver();
-    await consume(driveScenario(
+    const b4Checkpoints = [];
+    for await (const checkpoint of driveScenario(
       'blackjack',
       'B4',
       'blackjack-3d',
       ['dealer-reveal', 'settled'],
       b4,
-    ));
+    )) {
+      b4Checkpoints.push(checkpoint);
+    }
     expect(b4.actions).toContain('Deal');
     expect(b4.actions).toContain('Stand');
+    expect(b4Checkpoints.map((checkpoint) => ({
+      dealStep: checkpoint.expectDealStep,
+      floor: checkpoint.actionFloorRevision ?? null,
+    }))).toEqual([
+      { dealStep: 'dealer-reveal', floor: 7 },
+      { dealStep: 'settled', floor: null },
+    ]);
+
+    const b7 = new PlanDriver();
+    const b7Checkpoints = [];
+    for await (const checkpoint of driveScenario(
+      'blackjack',
+      'B7',
+      'blackjack-3d',
+      ['hole', 'dealer-reveal', 'settled'],
+      b7,
+    )) {
+      b7Checkpoints.push(checkpoint);
+    }
+    expect(b7.actions).toContain('Stand');
+    expect(b7Checkpoints.map((checkpoint) => ({
+      dealStep: checkpoint.expectDealStep,
+      floor: checkpoint.actionFloorRevision ?? null,
+    }))).toEqual([
+      { dealStep: 'hole', floor: null },
+      { dealStep: 'dealer-reveal', floor: 7 },
+      { dealStep: 'settled', floor: null },
+    ]);
 
     const b8 = new PlanDriver();
     await consume(driveScenario(

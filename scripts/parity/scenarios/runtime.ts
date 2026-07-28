@@ -1226,7 +1226,7 @@ export async function* driveScenario(
       return;
     }
     let pendingActionFloor: ActionFloor | null = null;
-    if (['B4', 'B7'].includes(row)) {
+    if (row === 'B4') {
       pendingActionFloor = await waitAndClickWithFloor(
         driver,
         surface,
@@ -1243,6 +1243,13 @@ export async function* driveScenario(
         ? { ...checkpoint, expectMinPlayerCards: 3 }
         : checkpoint;
       pendingActionFloor = null;
+      if (row === 'B7' && phase === 'hole') {
+        pendingActionFloor = await waitAndClickWithFloor(
+          driver,
+          surface,
+          ['Stand'],
+        );
+      }
       if (row === 'B2' && phase === 'hole') {
         pendingActionFloor = await waitAndClickWithFloor(
           driver,
