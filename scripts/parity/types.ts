@@ -61,6 +61,7 @@ export interface ParityCheckpoint {
   actionFloorRevision?: number;
   expectMinPlayerCards?: number;
   expectResolvedWire?: '<none>';
+  expectResolvedWireSuffix?: string;
   expectTransition?: CardParityRoot['transition'];
   final?: boolean;
 }

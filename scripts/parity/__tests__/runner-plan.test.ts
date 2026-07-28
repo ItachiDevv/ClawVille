@@ -27,7 +27,19 @@ import { closeFixtureRun } from '../teardown';
 
 class PlanDriver implements Driver {
   actions: string[] = [];
+  requests: Array<{ action: string }> = [];
   async evalJson<T>(js: string): Promise<T> {
+    if (js.includes('CV_B9_CURRENT_HAND_HYDRATION')) {
+      return {
+        handId: 'planned-hand',
+        tookInsurance: true,
+        playerCards: 2,
+        urlSuffix: 'blackjack/hand/current',
+      } as T;
+    }
+    if (js.includes('CV_B9_TERMINAL_STEP')) {
+      return { revision: 9, dealStep: 'settled' } as T;
+    }
     if (js.includes('CV_ACTION_REVISION_FLOOR')) {
       return {
         revision: 7,
@@ -36,7 +48,13 @@ class PlanDriver implements Driver {
     }
     if (js.includes('__CV_READ_PARITY')) return 'showdown' as T;
     const labels = /const labels = (\[[^;]+\]);/.exec(js)?.[1];
-    if (labels) this.actions.push(JSON.parse(labels)[0]);
+    if (labels) {
+      const action = String((JSON.parse(labels) as string[])[0]);
+      this.actions.push(action);
+      if (['Hit', 'Stand', 'Double', 'Split', 'Surrender', 'Insure'].includes(action)) {
+        this.requests.push({ action: action.toLowerCase() });
+      }
+    }
     return true as T;
   }
   async waitFn(): Promise<void> {}
@@ -172,14 +190,26 @@ describe('offline live-runner plans', () => {
     expect(b8.actions.filter((action) => action === 'Stand')).toHaveLength(2);
 
     const b9 = new PlanDriver();
-    await consume(driveScenario(
+    const b9Checkpoints = [];
+    for await (const checkpoint of driveScenario(
       'blackjack',
       'B9',
       'blackjack-2d',
       ['hole', 'player-turn', 'settled'],
       b9,
-    ));
+    )) {
+      b9Checkpoints.push(checkpoint);
+    }
     expect(b9.actions).toContain('Insure');
+    expect(b9.actions.at(-1)).toBe('Stand');
+    expect(b9.requests.at(-1)).toEqual({ action: 'stand' });
+    expect(b9Checkpoints.find(
+      (checkpoint) => checkpoint.expectDealStep === 'player-turn',
+    )).toMatchObject({
+      expectCorrelationHand: 'planned-hand',
+      expectResolvedWireSuffix: 'blackjack/hand/current',
+      actionFloorRevision: 7,
+    });
 
     const h6 = new PlanDriver();
     await consume(driveScenario(

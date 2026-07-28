@@ -192,13 +192,29 @@ function blackjackExpected(body: UnknownRecord, dealStep: string): ExpectedParit
     slots['dealer-card-2'] = down();
   }
   meta['active-slot'] = stringValue(first(live?.activeSlot, body.activeSlot, 0));
+  const terminalInsurance = (
+    dealStep === 'dealer-reveal' || dealStep === 'settled'
+  ) && outcome !== null && Object.hasOwn(outcome, 'insurance')
+    // blackjack-engine.ts:966-980,1001-1024 emits null when insurance was not
+    // taken and a non-null settlement object when it was.
+    ? outcome.insurance !== null
+    : false;
+  const settledDealerCards = array(record(outcome?.dealer)?.cards);
+  const dealerUpcardIsAce = (
+    dealStep === 'dealer-reveal' || dealStep === 'settled'
+  ) && settledDealerCards.length > 0
+    && stringValue(record(settledDealerCards[0])?.rank) === 'A';
   meta['insurance-offered'] = String(boolValue(first(
     live?.insuranceOffered,
     body.insuranceOffered,
+    // blackjack-engine.ts:966-980 emits the settled dealer row; an Ace upcard
+    // is the authoritative fallback when the terminal shape omits live flags.
+    dealerUpcardIsAce,
   )));
   meta['insurance-taken'] = String(boolValue(first(
     live?.tookInsurance,
     body.tookInsurance,
+    terminalInsurance,
   )));
   if (dealStep === 'settled' && outcome) {
     meta['banner-text'] = stringValue(

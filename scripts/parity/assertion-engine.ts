@@ -372,6 +372,16 @@ export function assertParityCheckpoint({
       resolvedWireSeq: null,
     };
   }
+  if (
+    checkpoint.expectResolvedWireSuffix !== undefined
+    && !wire.urlSuffix.endsWith(checkpoint.expectResolvedWireSuffix)
+  ) {
+    rootMismatches.push(rootMismatch(
+      'meta:resolved-wire',
+      checkpoint.expectResolvedWireSuffix,
+      wire.urlSuffix,
+    ));
+  }
 
   const expected = expectedFromWire(
     game,

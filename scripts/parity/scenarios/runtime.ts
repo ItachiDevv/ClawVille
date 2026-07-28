@@ -732,6 +732,119 @@ function applyActionFloor(
     : checkpoint;
 }
 
+interface InsuranceHydration {
+  handId: string;
+  tookInsurance: true;
+  playerCards: number;
+  urlSuffix: 'blackjack/hand/current';
+}
+
+export async function hydrateInsuranceCurrentHand(
+  driver: Driver,
+): Promise<InsuranceHydration> {
+  await driver.waitFn(`(() => (
+    (window.__CV_WIRE_ALL?.() ?? []).some((record) =>
+      record.method === 'POST'
+      && record.urlSuffix === 'blackjack/action'
+      && record.requestBody?.action === 'insure'
+      && record.status >= 200
+      && record.status < 300
+    )
+  ))()`, 20_000);
+  const hydration = await driver.evalJson<InsuranceHydration>(`(async () => {
+    /* CV_B9_CURRENT_HAND_HYDRATION */
+    const ack = (window.__CV_WIRE_ALL?.() ?? [])
+      .filter((record) =>
+        record.method === 'POST'
+        && record.urlSuffix === 'blackjack/action'
+        && record.requestBody?.action === 'insure'
+        && record.status >= 200
+        && record.status < 300
+      )
+      .at(-1);
+    if (!ack) throw new Error('B9 insurance ACK was not captured');
+    // blackjack-api-client.ts:326-340 emits this authoritative existing GET.
+    const response = await fetch(
+      new URL(ack.url).origin + '/api/cove/blackjack/hand/current',
+      { credentials: 'include' },
+    );
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error('B9 current-hand hydration returned HTTP ' + response.status);
+    }
+    if (
+      body?.status !== 'in_progress'
+      || body.handId !== ack.responseBody?.handId
+      || body.tookInsurance !== true
+      || !Array.isArray(body.playerHands)
+    ) {
+      throw new Error('B9 current-hand hydration returned malformed live truth');
+    }
+    return {
+      handId: body.handId,
+      tookInsurance: true,
+      playerCards: body.playerHands.reduce(
+        (count, hand) => count + (Array.isArray(hand?.cards) ? hand.cards.length : 0),
+        0,
+      ),
+      urlSuffix: 'blackjack/hand/current',
+    };
+  })()`);
+  if (
+    !hydration.handId
+    || hydration.tookInsurance !== true
+    || hydration.playerCards < 2
+    || hydration.urlSuffix !== 'blackjack/hand/current'
+  ) {
+    throw new Error('B9 current-hand hydration proof was malformed');
+  }
+  return hydration;
+}
+
+async function nextBlackjackTerminalStep(
+  driver: Driver,
+  surface: Surface,
+  floor: ActionFloor,
+): Promise<JournalStep> {
+  await driver.waitFn(`(() => (
+    (window.__CV_PARITY_JOURNAL?.(${JSON.stringify(surface)}) ?? []).some((entry) => {
+      if (
+        entry.revision <= ${floor.revision}
+        || !['dealer-reveal', 'settled'].includes(entry.dealStep)
+      ) return false;
+      try {
+        return JSON.parse(entry.signature)[2]
+          === ${JSON.stringify(floor.correlationHand)};
+      } catch {
+        return false;
+      }
+    })
+  ))()`, 45_000);
+  const step = await driver.evalJson<JournalStep | null>(`(() => {
+    /* CV_B9_TERMINAL_STEP */
+    return (window.__CV_PARITY_JOURNAL?.(${JSON.stringify(surface)}) ?? [])
+      .filter((entry) => {
+        if (
+          entry.revision <= ${floor.revision}
+          || !['dealer-reveal', 'settled'].includes(entry.dealStep)
+        ) return false;
+        try {
+          return JSON.parse(entry.signature)[2]
+            === ${JSON.stringify(floor.correlationHand)};
+        } catch {
+          return false;
+        }
+      })
+      .sort((left, right) => left.revision - right.revision)
+      .map((entry) => ({
+        revision: entry.revision,
+        dealStep: entry.dealStep,
+      }))[0] ?? null;
+  })()`);
+  if (!step) throw new Error('B9 Stand produced no terminal journal revision');
+  return step;
+}
+
 export async function nextJournalStep(
   driver: Driver,
   surface: Surface,
@@ -899,6 +1012,55 @@ export async function* driveScenario(
       )) return;
       throw new Error('Blackjack negative traversal exceeded 60s');
     }
+    if (row === 'B9') {
+      yield checkpointFor(surface, 'hole', 0, 2);
+      const insureFloor = await waitAndClickWithFloor(
+        driver,
+        surface,
+        ['Insure'],
+      );
+      const hydration = await hydrateInsuranceCurrentHand(driver);
+      yield {
+        ...applyActionFloor(
+          checkpointFor(surface, 'player-turn', 1, 2),
+          insureFloor,
+        ),
+        expectCorrelationHand: hydration.handId,
+        expectResolvedWireSuffix: hydration.urlSuffix,
+      };
+      const standFloor = await waitAndClickWithFloor(
+        driver,
+        surface,
+        ['Stand'],
+      );
+      const terminal = await nextBlackjackTerminalStep(
+        driver,
+        surface,
+        standFloor,
+      );
+      if (terminal.dealStep === 'dealer-reveal') {
+        yield {
+          ...applyActionFloor(
+            checkpointFor(surface, 'dealer-reveal', 2, 3),
+            standFloor,
+          ),
+          expectRenderRevision: terminal.revision,
+        };
+      }
+      yield {
+        ...applyActionFloor(
+          checkpointFor(
+            surface,
+            'settled',
+            terminal.dealStep === 'dealer-reveal' ? 3 : 2,
+            terminal.dealStep === 'dealer-reveal' ? 3 : 2,
+          ),
+          standFloor,
+        ),
+        final: true,
+      };
+      return;
+    }
     let pendingActionFloor: ActionFloor | null = null;
     if (['B4', 'B7'].includes(row)) {
       pendingActionFloor = await waitAndClickWithFloor(
@@ -957,13 +1119,6 @@ export async function* driveScenario(
           driver,
           surface,
           ['Stand'],
-        );
-      }
-      if (row === 'B9' && phase === 'hole') {
-        pendingActionFloor = await waitAndClickWithFloor(
-          driver,
-          surface,
-          ['Insure'],
         );
       }
     }
