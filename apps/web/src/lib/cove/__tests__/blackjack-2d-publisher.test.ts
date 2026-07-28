@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { readFileSync } from 'node:fs';
 import { ParityMirror } from '@/components/cove/CardParityMirror';
 import {
   clearFeltParity,
@@ -203,6 +204,27 @@ describe('blackjack 2D publisher', () => {
     expect(html).toContain('data-banner-text="BLACKJACK!"');
     expect(html).toContain('data-active-slot="0"');
     clearFeltParity(instanceId);
+  });
+
+  test('modal schedules each reveal from its committed display step', () => {
+    const source = readFileSync(
+      new URL(
+        '../../../components/cove/blackjack/BlackjackModal.tsx',
+        import.meta.url,
+      ),
+      'utf8',
+    );
+    expect(source).toContain(
+      "if (!pendingSettlement && displayStep === 'hole')",
+    );
+    expect(source).toContain(
+      "if (pendingSettlement && displayStep === 'hole')",
+    );
+    expect(source).toContain(
+      "if (pendingSettlement && displayStep === 'dealer-reveal')",
+    );
+    expect(source).toContain('if (!epoch.isCurrent(correlation)) return;');
+    expect(source).toContain('setLiveHand(null);');
   });
 });
 

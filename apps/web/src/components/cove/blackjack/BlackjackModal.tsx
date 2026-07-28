@@ -673,6 +673,44 @@ export default function BlackjackModal() {
     revealEpochRef.current?.cancel();
   }, []);
 
+  // Advance only from a committed display snapshot. Scheduling inside the
+  // async action/deal callback races the modal-open restore effect; that
+  // restore can invalidate the epoch after the response arrives and leave the
+  // DOM pinned on `hole`. Each committed step owns exactly one next-step timer.
+  useEffect(() => {
+    const correlation = pendingSettlement?.handId ?? liveHand?.handId ?? null;
+    if (!blackjackOpen || !correlation) return;
+    const epoch = revealEpochRef.current;
+    if (!epoch?.isCurrent(correlation)) return;
+
+    if (!pendingSettlement && displayStep === 'hole') {
+      const timer = window.setTimeout(() => {
+        if (!epoch.isCurrent(correlation)) return;
+        setDisplayStep('player-turn');
+      }, 120);
+      return () => window.clearTimeout(timer);
+    }
+
+    if (pendingSettlement && displayStep === 'hole') {
+      const timer = window.setTimeout(() => {
+        if (!epoch.isCurrent(correlation)) return;
+        setDisplayStep('dealer-reveal');
+      }, 420);
+      return () => window.clearTimeout(timer);
+    }
+
+    if (pendingSettlement && displayStep === 'dealer-reveal') {
+      const timer = window.setTimeout(() => {
+        if (!epoch.isCurrent(correlation)) return;
+        setDisplayStep('settled');
+        setLiveHand(null);
+        setActiveSlot(0);
+        setBalance(pendingSettlement.balance);
+      }, 550);
+      return () => window.clearTimeout(timer);
+    }
+  }, [blackjackOpen, displayStep, liveHand?.handId, pendingSettlement]);
+
   // ── Force back to Control if the agent disconnects mid-session ──────────────
   // Autonomous has no decision source without a connected agent, so drop the
   // human back into Control rather than stranding a dead table.
@@ -750,21 +788,8 @@ export default function BlackjackModal() {
     setActiveSlot(0);
     if (source === 'deal' && res.dealtImmediately) {
       setDisplayStep('hole');
-      revealEpochRef.current?.schedule(420, () => {
-        setDisplayStep('dealer-reveal');
-      });
-      revealEpochRef.current?.schedule(970, () => {
-        setDisplayStep('settled');
-        setActiveSlot(0);
-        setBalance(res.balance);
-      });
     } else {
       setDisplayStep('dealer-reveal');
-      revealEpochRef.current?.schedule(550, () => {
-        setDisplayStep('settled');
-        setActiveSlot(0);
-        setBalance(res.balance);
-      });
     }
     // Reflect the shoe's new dealtCount locally so the next deal's penetration
     // gate + fairness HUD are accurate without a refetch.
@@ -935,9 +960,6 @@ export default function BlackjackModal() {
         setLiveHand(handViewFromDeal(res));
         setDisplayStep('hole');
         setActiveSlot(0);
-        revealEpochRef.current?.schedule(120, () => {
-          setDisplayStep('player-turn');
-        });
         // Stake is committed at deal (finding #3) — reflect the debited balance
         // in the HUD immediately if the server returned it.
         if (typeof res.balance === 'number') setBalance(res.balance);
