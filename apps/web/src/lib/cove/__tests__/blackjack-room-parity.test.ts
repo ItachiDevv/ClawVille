@@ -12,7 +12,10 @@ import {
   getParitySnapshot,
   type ParityJournalEntry,
 } from '../card-parity-mirror';
-import type { BlackjackRoomState } from '../use-blackjack-room-controller';
+import {
+  deriveDealerRenderView,
+  type BlackjackRoomState,
+} from '../use-blackjack-room-controller';
 
 const OWNERS = ['blackjack-action-bust', 'blackjack-action-stand'] as const;
 let previousWindow: typeof globalThis.window | undefined;
@@ -93,10 +96,14 @@ function view(
     { suit: 'diamonds', rank: '7' },
   ];
   const player = handOutcome?.playerHands[0];
+  const dealerView = deriveDealerRenderView(
+    handOutcome?.dealer.cards[0],
+    handOutcome,
+    dealStep,
+  );
   return {
     phase: dealStep === 'settled' ? 'settled' : 'player-turn',
-    dealerCards: handOutcome?.dealer.cards ?? [{ suit: 'hearts', rank: '8' }],
-    dealerTotalLabel: handOutcome ? '20' : '8+?',
+    ...dealerView,
     playerHands: [{
       cards: player?.cards ?? liveCards,
       total: player?.total ?? 17,
@@ -156,8 +163,19 @@ function expectActionSettledSequence(
   expect(advanceBlackjackRoomParity(owner, live, null)).toBeNull();
 
   const dealerReveal = view(handOutcome, 'dealer-reveal');
+  const actionSettled = view(handOutcome, 'player-turn');
+  expect(actionSettled.dealerCards).toEqual([
+    handOutcome.dealer.cards[0],
+    { suit: 'spades', rank: 'A', hidden: true },
+  ]);
+  expect(actionSettled.dealerTotalLabel).toBe('8+?');
+  expect(dealerReveal.dealerCards).toEqual(handOutcome.dealer.cards);
+  expect(dealerReveal.dealerTotalLabel).toBe('20');
+  const settledView = view(handOutcome, 'settled');
+  expect(settledView.dealerCards).toEqual(handOutcome.dealer.cards);
+  expect(settledView.dealerTotalLabel).toBe('20');
   const terminalPlayerTruth = buildBlackjackRoomParity(
-    view(handOutcome, 'player-turn'),
+    actionSettled,
     'player-turn',
     'idle',
   );

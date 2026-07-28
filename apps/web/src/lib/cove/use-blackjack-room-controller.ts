@@ -162,6 +162,28 @@ export function displayTotal(cards: BlackjackCard[]): { total: number; isSoft: b
   return { total: total + (isSoft ? 10 : 0), isSoft };
 }
 
+export function deriveDealerRenderView(
+  dealerUpcard: BlackjackCard | null | undefined,
+  settledOutcome: Pick<SerializedBlackjackHandResult, 'dealer'> | null,
+  dealStep: BlackjackDealStep,
+): Pick<BlackjackRoomState, 'dealerCards' | 'dealerTotalLabel'> {
+  const dealerRevealed = dealStep === 'dealer-reveal' || dealStep === 'settled';
+  if (settledOutcome && dealerRevealed) {
+    return {
+      dealerCards: settledOutcome.dealer.cards,
+      dealerTotalLabel:
+        `${settledOutcome.dealer.total}${settledOutcome.dealer.isBust ? ' BUST' : ''}`,
+    };
+  }
+  const upcard = dealerUpcard ?? settledOutcome?.dealer.cards[0] ?? null;
+  return upcard
+    ? {
+        dealerCards: [upcard, { suit: 'spades', rank: 'A', hidden: true }],
+        dealerTotalLabel: `${displayTotal([upcard]).total}+?`,
+      }
+    : { dealerCards: [], dealerTotalLabel: undefined };
+}
+
 export function cardValuePair(cards: BlackjackCard[]): boolean {
   if (cards.length !== 2) return false;
   const value = (rank: string) => (
@@ -1090,16 +1112,11 @@ export function useBlackjackRoomController(): BlackjackRoomState & {
         isDoubled: playerHand.isDoubled,
       }))
     : hand?.playerHands ?? [], [hand?.playerHands, settledOutcome]);
-  const dealerCards: BlackjackCard[] = settledOutcome
-    ? settledOutcome.dealer.cards
-    : hand?.dealerUpcard
-      ? [hand.dealerUpcard, { suit: 'spades', rank: 'A', hidden: true }]
-      : [];
-  const dealerTotalLabel = settledOutcome
-    ? `${settledOutcome.dealer.total}${settledOutcome.dealer.isBust ? ' BUST' : ''}`
-    : hand?.dealerUpcard
-      ? `${displayTotal([hand.dealerUpcard]).total}+?`
-      : undefined;
+  const { dealerCards, dealerTotalLabel } = deriveDealerRenderView(
+    hand?.dealerUpcard,
+    settledOutcome,
+    dealStep,
+  );
   const activeHand = playerHands[activeSlot] ?? playerHands[0] ?? null;
   const activeResolved = Boolean(activeHand?.isResolved);
   const canDouble = Boolean(activeHand && activeHand.cards.length === 2 && !activeResolved);

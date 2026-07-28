@@ -4,6 +4,7 @@ import {
   BlackjackControllerRuntime,
   actionErrorPolicy,
   dealErrorPolicy,
+  deriveDealerRenderView,
   firstUnresolvedSlot,
   type SubHandView,
 } from '../use-blackjack-room-controller';
@@ -306,5 +307,36 @@ describe('useBlackjackRoomController runtime over mocked wire', () => {
     expect(actionCalls).toBe(1);
     expect(reconcileCalls).toBe(1);
     expect(runtime.actionKeyRef.current).toBeNull();
+  });
+
+  test('13. action-settled dealer view stays masked until dealer reveal', () => {
+    const upcard = { suit: 'hearts' as const, rank: '8' as const };
+    const settledOutcome = {
+      dealer: {
+        cards: [
+          upcard,
+          { suit: 'clubs' as const, rank: '10' as const },
+          { suit: 'diamonds' as const, rank: '2' as const },
+        ],
+        total: 20,
+        isSoft: false,
+        isBust: false,
+        isBlackjack: false,
+      },
+    };
+
+    expect(deriveDealerRenderView(null, settledOutcome, 'player-turn')).toEqual({
+      dealerCards: [
+        upcard,
+        { suit: 'spades', rank: 'A', hidden: true },
+      ],
+      dealerTotalLabel: '8+?',
+    });
+    for (const dealStep of ['dealer-reveal', 'settled'] as const) {
+      expect(deriveDealerRenderView(null, settledOutcome, dealStep)).toEqual({
+        dealerCards: settledOutcome.dealer.cards,
+        dealerTotalLabel: '20',
+      });
+    }
   });
 });
