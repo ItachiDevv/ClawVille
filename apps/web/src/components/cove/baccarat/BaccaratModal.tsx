@@ -637,6 +637,7 @@ export default function BaccaratModal() {
       role="dialog"
       aria-modal="true"
       aria-label="Baccarat table"
+      className="bac2d-dialog"
       style={{
         position: 'fixed', inset: 0, zIndex: 9990,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -650,7 +651,40 @@ export default function BaccaratModal() {
         surface="baccarat-2d"
         instanceId={parityInstanceIdRef.current}
       />
+      <style>{`
+        @media (max-height: 500px) and (orientation: landscape) {
+          .bac2d-dialog {
+            padding: 4px !important;
+          }
+          .bac2d-shell {
+            max-width: 820px !important;
+            max-height: calc(100dvh - 8px) !important;
+          }
+          .bac2d-header {
+            padding: 6px 10px !important;
+          }
+          .bac2d-felt {
+            display: grid !important;
+            grid-template-columns: minmax(0, 1fr) minmax(180px, 240px);
+            grid-template-rows: 1fr auto;
+            align-items: center;
+            gap: 8px 12px !important;
+            padding: 8px 12px !important;
+          }
+          .bac2d-hands {
+            grid-row: 1 / span 2;
+          }
+          .bac2d-actions {
+            padding: 6px 10px !important;
+            gap: 4px !important;
+          }
+          .bac2d-footer {
+            display: none;
+          }
+        }
+      `}</style>
       <div
+        className="bac2d-shell"
         style={{
           position: 'relative', width: '100%', maxWidth: 640,
           maxHeight: 'min(94vh, 760px)', borderRadius: 14, overflow: 'hidden',
@@ -661,7 +695,7 @@ export default function BaccaratModal() {
         }}
       >
         {/* ── Header ───────────────────────────────────────────────────── */}
-        <header style={{
+        <header className="bac2d-header" style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: '12px 16px', background: 'rgba(0,0,0,0.3)',
           borderBottom: '1px solid rgba(60,180,120,0.25)', flexShrink: 0,
@@ -712,7 +746,7 @@ export default function BaccaratModal() {
         </header>
 
         {/* ── Felt ─────────────────────────────────────────────────────── */}
-        <div style={{
+        <div className="bac2d-felt" style={{
           flex: 1, position: 'relative',
           background: 'linear-gradient(180deg, #0d3a1e 0%, #0a2e18 50%, #0d3a1e 100%)',
           padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 16,
@@ -725,7 +759,7 @@ export default function BaccaratModal() {
           }} />
 
           {/* Player + Banker side-by-side */}
-          <div style={{ display: 'flex', gap: 14, position: 'relative', zIndex: 1 }}>
+          <div className="bac2d-hands" style={{ display: 'flex', gap: 14, position: 'relative', zIndex: 1 }}>
             <HandSide
               label="Player"
               cards={playerCards}
@@ -769,7 +803,7 @@ export default function BaccaratModal() {
         </div>
 
         {/* ── Action strip ─────────────────────────────────────────────── */}
-        <div style={{
+        <div className="bac2d-actions" style={{
           flexShrink: 0, background: 'rgba(0,0,0,0.35)',
           borderTop: '1px solid rgba(60,180,120,0.2)', padding: '12px 16px',
           display: 'flex', flexDirection: 'column', gap: 10,
@@ -843,7 +877,7 @@ export default function BaccaratModal() {
           </div>
 
           {/* Footer line */}
-          <div style={{
+          <div className="bac2d-footer" style={{
             fontSize: 9, color: 'rgba(100,180,130,0.45)', fontFamily: 'var(--pt-data)',
             letterSpacing: '0.12em', textAlign: 'right',
           }}>
