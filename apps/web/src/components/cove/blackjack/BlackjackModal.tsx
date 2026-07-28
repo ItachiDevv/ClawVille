@@ -1603,17 +1603,20 @@ export default function BlackjackModal() {
               <HandRow label="You" cards={[]} />
             ) : (
               playerRenderHands.map((h, i) => {
-                const isActive = phase === 'player-turn' && hand?.didSplit && i === activeSlot;
-                const labelSuffix = hand?.didSplit ? ` · Hand ${i + 1}` : '';
+                const splitVisible = playerRenderHands.length > 1;
+                const displayedActiveSlot = phase === 'settled' ? 0 : activeSlot;
+                const isActive = splitVisible && i === displayedActiveSlot;
+                const labelSuffix = splitVisible ? ` · Hand ${i + 1}` : '';
                 const total = `${h.total}${h.isSoft ? ' (soft)' : ''}${h.isBust ? ' BUST' : ''}`;
                 return (
                   <div
                     key={i}
+                    data-active={String(isActive)}
                     onClick={() => { if (phase === 'player-turn' && hand?.didSplit) setActiveSlot((i === 1 ? 1 : 0) as 0 | 1); }}
                     style={{
                       borderRadius: 8,
-                      padding: hand?.didSplit ? '8px 10px' : 0,
-                      border: hand?.didSplit
+                      padding: splitVisible ? '8px 10px' : 0,
+                      border: splitVisible
                         ? `1.5px solid ${isActive ? 'var(--pt-amber)' : 'rgba(160,140,100,0.25)'}`
                         : 'none',
                       cursor: phase === 'player-turn' && hand?.didSplit ? 'pointer' : 'default',
