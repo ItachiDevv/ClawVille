@@ -14,10 +14,15 @@ import {
 } from '../card-parity-mirror';
 import {
   deriveDealerRenderView,
+  expireInsuranceOffer,
   type BlackjackRoomState,
 } from '../use-blackjack-room-controller';
 
-const OWNERS = ['blackjack-action-bust', 'blackjack-action-stand'] as const;
+const OWNERS = [
+  'blackjack-action-bust',
+  'blackjack-action-stand',
+  'blackjack-action-insurance-expiry',
+] as const;
 let previousWindow: typeof globalThis.window | undefined;
 
 beforeEach(() => {
@@ -246,6 +251,39 @@ function expectActionSettledSequence(
 }
 
 describe('Blackjack 3D action-settled parity cadence', () => {
+  test('publishes insurance offered before a dealer-Ace hit and false after its action response', () => {
+    const owner = 'blackjack-action-insurance-expiry';
+    const dealerCards: BlackjackCard[] = [
+      { suit: 'spades', rank: 'A' },
+      { suit: 'spades', rank: 'A', hidden: true },
+    ];
+    const before = {
+      ...view(null, 'player-turn'),
+      dealerCards,
+      insuranceOffered: true,
+    };
+    expect(advanceBlackjackRoomParity(owner, before, null)).toBeNull();
+    expect(getParitySnapshot('blackjack-3d')?.meta['insurance-offered']).toBe('true');
+
+    const insuranceState = expireInsuranceOffer({ offered: true, took: false });
+    const after = {
+      ...before,
+      playerHands: [{
+        ...before.playerHands[0]!,
+        cards: [
+          ...before.playerHands[0]!.cards,
+          { suit: 'clubs', rank: '2' } as const,
+        ],
+        total: 19,
+      }],
+      insuranceOffered: insuranceState.offered,
+      tookInsurance: insuranceState.took,
+      publishSeq: before.publishSeq + 1,
+    };
+    expect(advanceBlackjackRoomParity(owner, after, null)).toBeNull();
+    expect(getParitySnapshot('blackjack-3d')?.meta['insurance-offered']).toBe('false');
+  });
+
   test('publishes an upcard-safe terminal player-turn truth before a hit bust reveal', () => {
     expectActionSettledSequence(
       'blackjack-action-bust',

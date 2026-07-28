@@ -196,6 +196,12 @@ export function firstUnresolvedSlot(hands: readonly Pick<SubHandView, 'isResolve
   return hands.findIndex((hand) => !hand.isResolved) === 1 ? 1 : 0;
 }
 
+export function expireInsuranceOffer(
+  current: { offered: boolean; took: boolean },
+): { offered: boolean; took: boolean } {
+  return { ...current, offered: false };
+}
+
 export function buildBannerLabel(outcome: SerializedBlackjackHandResult): string {
   if (outcome.playerHands.length > 1) {
     return outcome.playerHands
@@ -793,6 +799,7 @@ export function useBlackjackRoomController(): BlackjackRoomState & {
       dealerUpcard: response.dealerUpcard ?? current.dealerUpcard,
       didSplit: response.didSplit,
     } : current);
+    setInsuranceState(expireInsuranceOffer);
     setActiveSlotState(response.didSplit ? firstUnresolvedSlot(response.playerHands) : 0);
     setDealStep(justSplit ? 'split' : 'player-turn');
     bumpPublish();
