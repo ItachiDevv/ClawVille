@@ -229,3 +229,31 @@ goes live in P1c.
 - Presence continuity: the agent's body stays live in the world while its
   human is at the tables (metaverse premise upheld) — pending founder's call
   on the presence policy defaults.
+
+## FOUNDER RULING 2026-07-28 — unified player-capability scope (BINDS P2/P3/P4)
+
+One shared player-capability controller (movement, sprint, jump, emotes,
+interaction) reused across world/cove/kelp/reef, parameterized by a per-scene
+CAPABILITY MASK declared beside the stage-slot registration (kelp:
+`{ jump: false }` — jump would break the maze; default = everything enabled).
+Per-area re-implementation of movement/actions is the defect class this
+deletes — today world/kelp/reef/cove each carry their own controller, which is
+why capabilities silently diverge between areas. Every stage migration (P2
+arena, P3 kelp, P4 reef) MUST consume the shared controller rather than
+porting its area-local one; "action missing in area X" is a mask entry, never
+a feature port.
+
+## INCIDENT LEDGER 2026-07-28 (watchdog promotion + revert — full detail in p1c notes + memory)
+
+- #253 (watchdog v3 + HUD hotfix) promoted → founder reported worse (no
+  loading bar; kelp black screen) → EMERGENCY REVERT `e19d040f`, prod verified
+  restored (cove fades intact; kelp beacon auth passes with a session).
+- Root causes: loading bar trapped under the stage cover by the P1a z-10
+  stacking context (PRE-EXISTING — fixed forward via portal-to-body hotfix
+  #254 `5db3a134`, verified live on prod); watchdog v3 orphaned adopted
+  navigations on silent retry + ceiling blind to the texture-upload phase +
+  cove compile dedupe wedge (all pinned; re-land requirements below).
+- WATCHDOG RE-LAND REQUIREMENTS: fix the 4 pinned flaws; gates MUST add a
+  homepage→/game loader-visibility lane and a kelp portal exit lane (the
+  game↔cove-only lanes were the blind spot); 45s card remains the open
+  incident until this re-lands.
