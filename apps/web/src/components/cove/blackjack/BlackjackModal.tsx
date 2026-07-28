@@ -1511,6 +1511,7 @@ export default function BlackjackModal() {
       role="dialog"
       aria-modal="true"
       aria-label="Blackjack table"
+      className="bj2d-dialog"
       style={{
         position: 'fixed', inset: 0, zIndex: 9990,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -1524,7 +1525,49 @@ export default function BlackjackModal() {
         surface="blackjack-2d"
         instanceId={parityInstanceIdRef.current}
       />
+      <style>{`
+        @media (max-height: 500px) and (orientation: landscape) {
+          .bj2d-dialog {
+            padding: 4px !important;
+          }
+          .bj2d-shell {
+            max-width: 820px !important;
+            max-height: calc(100dvh - 8px) !important;
+          }
+          .bj2d-header {
+            padding: 6px 10px !important;
+          }
+          .bj2d-agent-bar {
+            padding: 4px 10px !important;
+            gap: 2px !important;
+          }
+          .bj2d-agent-advisor {
+            display: none !important;
+          }
+          .bj2d-felt {
+            display: grid !important;
+            grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+            align-items: center;
+            gap: 8px !important;
+            padding: 8px 12px !important;
+          }
+          .bj2d-dealer {
+            padding: 8px 10px !important;
+          }
+          .bj2d-divider {
+            display: none;
+          }
+          .bj2d-actions {
+            padding: 6px 10px !important;
+            gap: 4px !important;
+          }
+          .bj2d-footer {
+            display: none;
+          }
+        }
+      `}</style>
       <div
+        className="bj2d-shell"
         style={{
           position: 'relative', width: '100%', maxWidth: 620,
           maxHeight: 'min(94vh, 760px)', borderRadius: 14, overflow: 'hidden',
@@ -1535,7 +1578,7 @@ export default function BlackjackModal() {
         }}
       >
         {/* ── Header ───────────────────────────────────────────────────── */}
-        <header style={{
+        <header className="bj2d-header" style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: '12px 16px', background: 'rgba(0,0,0,0.3)',
           borderBottom: '1px solid rgba(60,180,120,0.25)', flexShrink: 0,
@@ -1596,7 +1639,7 @@ export default function BlackjackModal() {
         />
 
         {/* ── Felt ─────────────────────────────────────────────────────── */}
-        <div style={{
+        <div className="bj2d-felt" style={{
           flex: 1, position: 'relative',
           background: 'linear-gradient(180deg, #0d3a1e 0%, #0a2e18 50%, #0d3a1e 100%)',
           padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 18,
@@ -1609,7 +1652,7 @@ export default function BlackjackModal() {
           }} />
 
           {/* Dealer */}
-          <div style={{
+          <div className="bj2d-dealer" style={{
             background: 'rgba(0,0,0,0.25)', border: '1px solid rgba(60,180,100,0.18)',
             borderRadius: 10, padding: '14px 16px', position: 'relative', zIndex: 1,
           }}>
@@ -1635,7 +1678,7 @@ export default function BlackjackModal() {
             />
           )}
 
-          <div aria-hidden style={{ borderTop: '1px dashed rgba(60,180,100,0.2)', position: 'relative', zIndex: 1 }} />
+          <div className="bj2d-divider" aria-hidden style={{ borderTop: '1px dashed rgba(60,180,100,0.2)', position: 'relative', zIndex: 1 }} />
 
           {/* Player (one or two sub-hands) */}
           <div style={{ position: 'relative', zIndex: 1, display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -1695,7 +1738,7 @@ export default function BlackjackModal() {
         </div>
 
         {/* ── Action strip ─────────────────────────────────────────────── */}
-        <div style={{
+        <div className="bj2d-actions" style={{
           flexShrink: 0, background: 'rgba(0,0,0,0.35)',
           borderTop: '1px solid rgba(60,180,120,0.2)', padding: '12px 16px',
           display: 'flex', flexDirection: 'column', gap: 10,
@@ -1804,7 +1847,7 @@ export default function BlackjackModal() {
           </div>
 
           {/* Footer line */}
-          <div style={{
+          <div className="bj2d-footer" style={{
             fontSize: 9, color: 'rgba(100,180,130,0.45)', fontFamily: 'var(--pt-data)',
             letterSpacing: '0.12em', textAlign: 'right',
           }}>
@@ -1941,7 +1984,7 @@ function AgentModeBar({
         ? 'This agent plays itself from its own runtime and cannot be co-piloted here. Switch to Control.'
         : 'Let your connected agent decide. You keep an 8s (15s if steering) window to take over.';
   return (
-    <div style={{
+    <div className="bj2d-agent-bar" style={{
       flexShrink: 0, background: 'rgba(0,0,0,0.28)',
       borderBottom: '1px solid rgba(60,180,120,0.18)', padding: '8px 16px',
       display: 'flex', flexDirection: 'column', gap: 6,
@@ -1998,7 +2041,7 @@ function AgentModeBar({
       </div>
 
       {/* Advisor surface — read-only display channel, NEVER a decision input. */}
-      <div style={{
+      <div className="bj2d-agent-advisor" style={{
         background: 'rgba(10,22,40,0.55)', border: '1px solid rgba(60,180,180,0.18)',
         borderRadius: 6, padding: '6px 10px', minHeight: 26, maxHeight: 64,
         overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 3,
