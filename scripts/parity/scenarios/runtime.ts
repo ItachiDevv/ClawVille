@@ -37,7 +37,9 @@ export function reachedFor(
       if (row === 'B7') return hands.some((hand) => rec(hand)?.outcome === 'push');
       if (row === 'B8') return hands.length === 2 || body.didSplit === true;
       if (row === 'B9') {
-        return body.insuranceOffered === true
+        const dealerCards = arr(rec(outcome.dealer)?.cards);
+        const terminalAceOffer = rec(dealerCards[0])?.rank === 'A';
+        return (body.insuranceOffered === true || terminalAceOffer)
           && (body.tookInsurance === true || rec(outcome.insurance) !== null);
       }
       if (row === 'B1') return cards.length === 2;

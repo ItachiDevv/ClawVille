@@ -242,6 +242,18 @@ describe('offline live-runner plans', () => {
       expectResolvedWireSuffix: 'blackjack/hand/current',
       actionFloorRevision: 7,
     });
+    expect(reachedFor('blackjack', 'B9')({
+      outcome: {
+        dealer: { cards: [{ rank: 'A', suit: 'spades' }] },
+        insurance: { bet: '25', payout: '50' },
+      },
+    })).toBe(true);
+    expect(reachedFor('blackjack', 'B9')({
+      outcome: {
+        dealer: { cards: [{ rank: 'K', suit: 'spades' }] },
+        insurance: { bet: '25', payout: '50' },
+      },
+    })).toBe(false);
 
     const h6 = new PlanDriver();
     await consume(driveScenario(
