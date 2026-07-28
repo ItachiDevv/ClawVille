@@ -148,6 +148,49 @@ describe('blackjack 2D publisher', () => {
     expect(merged.insuranceOffered).toBe(false);
   });
 
+  test('terminal action player-turn publishes the bust card with dealer masked', () => {
+    const bustSettlement: SettledHandResponse = {
+      ...SETTLED,
+      outcome: {
+        ...SETTLED.outcome,
+        playerHands: [{
+          ...SETTLED.outcome.playerHands[0]!,
+          cards: [
+            { suit: 'hearts', rank: 'K' },
+            { suit: 'spades', rank: '6' },
+            { suit: 'clubs', rank: 'Q' },
+          ],
+          total: 26,
+          isSoft: false,
+          isBust: true,
+          isBlackjack: false,
+          outcome: 'loss',
+          payout: '0',
+        }],
+      },
+    };
+    const playerTurn = buildBlackjack2dParityRevision({
+      liveHand: buildNaturalHoleHand(bustSettlement),
+      pendingSettlement: bustSettlement,
+      displayStep: 'player-turn',
+      activeSlot: 0,
+      bannerText: buildBlackjack2dBannerText(bustSettlement.outcome),
+    })!;
+
+    expect(playerTurn.dealStep).toBe('player-turn');
+    expect(playerTurn.slots.find((slot) => slot.slot === 'player-0-card-3'))
+      .toEqual({ slot: 'player-0-card-3', facing: 'up', card: 'Qc' });
+    expect(playerTurn.slots.find((slot) => slot.slot === 'dealer-card-1'))
+      .toEqual({ slot: 'dealer-card-1', facing: 'up', card: 'Ac' });
+    expect(playerTurn.slots.find((slot) => slot.slot === 'dealer-card-2'))
+      .toEqual({ slot: 'dealer-card-2', facing: 'down', card: '' });
+    expect(playerTurn.meta['player-0-total']).toBe('26');
+    expect(playerTurn.meta['dealer-total']).toBeUndefined();
+    expect(playerTurn.meta['outcome-0']).toBeUndefined();
+    expect(playerTurn.meta['banner-text']).toBeUndefined();
+    expect(playerTurn.meta.net).toBeUndefined();
+  });
+
   test('mixed split banner uses the frozen full-hand string', () => {
     const split = {
       ...SETTLED.outcome,
@@ -219,6 +262,9 @@ describe('blackjack 2D publisher', () => {
     );
     expect(source).toContain(
       "if (pendingSettlement && displayStep === 'hole')",
+    );
+    expect(source).toContain(
+      "if (pendingSettlement && displayStep === 'player-turn')",
     );
     expect(source).toContain(
       "if (!pendingSettlement && displayStep === 'split')",

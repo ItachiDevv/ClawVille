@@ -707,6 +707,14 @@ export default function BlackjackModal() {
       return () => window.clearTimeout(timer);
     }
 
+    if (pendingSettlement && displayStep === 'player-turn') {
+      const timer = window.setTimeout(() => {
+        if (!epoch.isCurrent(correlation)) return;
+        setDisplayStep('dealer-reveal');
+      }, 120);
+      return () => window.clearTimeout(timer);
+    }
+
     if (pendingSettlement && displayStep === 'dealer-reveal') {
       const timer = window.setTimeout(() => {
         if (!epoch.isCurrent(correlation)) return;
@@ -796,7 +804,9 @@ export default function BlackjackModal() {
     if (source === 'deal' && res.dealtImmediately) {
       setDisplayStep('hole');
     } else {
-      setDisplayStep('dealer-reveal');
+      // Commit the terminal player action first so the drawn card visibly lands
+      // against the still-masked dealer before the dealer reveal begins.
+      setDisplayStep('player-turn');
     }
     // Reflect the shoe's new dealtCount locally so the next deal's penetration
     // gate + fairness HUD are accurate without a refetch.
