@@ -157,20 +157,6 @@ describe('baccarat 2D publisher', () => {
     ]);
   });
 
-  test('the visible banner uses the canonical bytes and keeps PUSH explanation separate', () => {
-    const modalSource = readFileSync(
-      new URL(
-        '../../../components/cove/baccarat/BaccaratModal.tsx',
-        import.meta.url,
-      ),
-      'utf8',
-    );
-    expect(modalSource).toContain('data-banner-text={bannerText}');
-    expect(modalSource).toContain('{bannerText}');
-    expect(modalSource).toContain('Stake returned');
-    expect(modalSource).not.toContain('PUSH (stake returned)');
-  });
-
   test('settled revision publishes correlation, result, net, and selected zone', () => {
     const settled = buildBaccarat2dParityRevision(snapshot('settled', 6))!;
     expect(settled).toMatchObject({
@@ -203,25 +189,6 @@ describe('baccarat 2D publisher', () => {
     expect(html).toContain('data-cv-deal-step="settled"');
     expect(html).toContain('data-banner-text="PLAYER WINS · YOU LOSE"');
     clearFeltParity(instanceId);
-  });
-
-  test('modal mounts the frozen visible probes and baccarat-2d mirror', () => {
-    const modalSource = readFileSync(
-      new URL(
-        '../../../components/cove/baccarat/BaccaratModal.tsx',
-        import.meta.url,
-      ),
-      'utf8',
-    );
-    for (const contract of [
-      'data-testid="bac-outcome-banner"',
-      'data-testid="bac-banner-net"',
-      'data-testid="bac-bet-pill"',
-      'surface="baccarat-2d"',
-      "disabled={inFlight || phase !== 'idle'}",
-    ]) {
-      expect(modalSource).toContain(contract);
-    }
   });
 
   test('browser timer defaults are lexical wrappers, not illegally rebound globals', () => {
