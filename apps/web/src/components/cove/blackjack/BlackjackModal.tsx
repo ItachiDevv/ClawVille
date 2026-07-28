@@ -635,7 +635,7 @@ export default function BlackjackModal() {
           // holds a hidden in_progress hand we couldn't restore — surface a real
           // error instead of the misleading "Resumed your open shoe." toast below.
           if (err instanceof CoveApiError && err.status >= 500) {
-            showToast('Could not restore your hand — refresh to retry.', 'warn');
+            showToast('Could not restore your hand. Refresh to retry.', 'warn');
           }
         }
         if (cancelled) return;
@@ -681,7 +681,7 @@ export default function BlackjackModal() {
       setAgentMode('control');
       setAgentPending(null);
       agentRunRef.current += 1;
-      showToast('Agent disconnected — back to Control mode.', 'warn');
+      showToast('Agent disconnected. Back to Control mode.', 'warn');
     }
   }, [agentConnected, agentMode, showToast]);
 
@@ -770,7 +770,7 @@ export default function BlackjackModal() {
     // gate + fairness HUD are accurate without a refetch.
     setShoe((prev) => (prev ? { ...prev, dealtCount: res.dealtCount } : prev));
     if (res.reshuffleSuggested) {
-      showToast('Shoe nearly spent — next deal opens a fresh shoe.', 'info');
+      showToast('Shoe nearly spent. The next deal opens a fresh shoe.', 'info');
     }
     // SEAM: in Control mode an advisor could comment on the result here.
   }, [showToast]);
@@ -911,7 +911,7 @@ export default function BlackjackModal() {
         // fresh shoe has its OWN epoch the agent never decided against, so the
         // retry deal MUST omit expectedHandsPlayed (the original epoch is stale).
         if (reshuffledBody(err)) {
-          showToast('Shoe reshuffled — dealing from a fresh shoe.', 'info');
+          showToast('Shoe reshuffled. Dealing from a fresh shoe.', 'info');
           setShoe(null);
           const fresh = await ensureShoe();
           if (!fresh) return;
@@ -953,7 +953,7 @@ export default function BlackjackModal() {
         err.status === 409 && err.code === 'stale_agent_deal'
       ) {
         void resyncAfterStaleDecision();
-        pushAdvisor('You dealt this hand — the agent stood down. Still in Autonomous.');
+        pushAdvisor('You dealt this hand; the agent stood down. Still in Autonomous.');
       } else {
         showToast(describeBlackjackError(err), err instanceof CoveApiError && err.status >= 500 ? 'error' : 'warn');
       }
@@ -1041,7 +1041,7 @@ export default function BlackjackModal() {
         err.status === 409 && err.code === 'stale_agent_decision'
       ) {
         void resyncAfterStaleDecision();
-        pushAdvisor('You took over this hand — the agent stood down. Still in Autonomous.');
+        pushAdvisor('You took over this hand; the agent stood down. Still in Autonomous.');
       } else {
         showToast(describeBlackjackError(err), 'warn');
       }
@@ -1131,7 +1131,7 @@ export default function BlackjackModal() {
         // b) so the agent's next decision is made against fresh state, not the
         // stale local view the human already advanced past.
         void resyncAfterStaleDecision();
-        pushAdvisor('You took over this hand — the agent stood down. Still in Autonomous.');
+        pushAdvisor('You took over this hand; the agent stood down. Still in Autonomous.');
       } else {
         showToast(describeBlackjackError(err), err instanceof CoveApiError && err.status >= 500 ? 'error' : 'warn');
       }
@@ -1155,7 +1155,7 @@ export default function BlackjackModal() {
       const res = await closeShoe.mutateAsync({ shoeId: s.id });
       setRevealedSeed(res.serverSeed);
       setShoe((prev) => (prev ? { ...prev, status: 'closed', serverSeed: res.serverSeed } : prev));
-      showToast(`Cashed out — seed ${res.serverSeed.slice(0, 10)}…${res.serverSeed.slice(-6)} revealed.`, 'info');
+      showToast(`Cashed out. Seed ${res.serverSeed.slice(0, 10)}…${res.serverSeed.slice(-6)} revealed.`, 'info');
       setTimeout(() => handleClose(), 1400);
     } catch (err) {
       showToast(describeBlackjackError(err), 'warn');
@@ -1335,7 +1335,7 @@ export default function BlackjackModal() {
           ? AGENT_DECISION_WAIT_KEYBOARD_MS
           : AGENT_DECISION_WAIT_BASE_MS;
         pushAdvisor(
-          `Agent will ${decision.action}${decision.amount ? ` ${decision.amount} vCLAW` : ''} in ${Math.round(waitMs / 1000)}s — tap any action to take over.`,
+          `Agent will ${decision.action}${decision.amount ? ` ${decision.amount} vCLAW` : ''} in ${Math.round(waitMs / 1000)}s. Tap any action to take over.`,
         );
         setAgentPending({
           action: decision.action,
@@ -1352,8 +1352,8 @@ export default function BlackjackModal() {
           // Transient: the agent replied but produced no parseable move for this
           // spot. Skip THIS decision (the human can act) and stay in Autonomous
           // so the next decision point asks the agent again.
-          pushAdvisor('Agent could not decide this hand — your call. Still in Autonomous.');
-          showToast('Agent did not return a decision — tap an action; autonomous resumes next hand.', 'info');
+          pushAdvisor('Agent could not decide this hand. Your call. Still in Autonomous.');
+          showToast('Agent did not return a decision. Tap an action; autonomous resumes next hand.', 'info');
         } else if (err instanceof AgentDriverUnavailableError) {
           // Sticky: cannot ask the agent for this table at all → Control. Only a
           // nanoclaw self-managed agent gets the "plays itself" message; other
@@ -1428,7 +1428,7 @@ export default function BlackjackModal() {
     if (!hand.playerHands.every((h) => h.isResolved)) return;
     if (healedHandIdRef.current === hand.handId) return;
     healedHandIdRef.current = hand.handId;
-    showToast('Hand resolved — syncing the table…', 'info');
+    showToast('Hand resolved. Syncing the table…', 'info');
     void resyncAfterStaleDecision();
   }, [phase, hand, inFlight, resyncAfterStaleDecision, showToast]);
 
@@ -1710,14 +1710,14 @@ export default function BlackjackModal() {
               <>
                 <button type="button" onClick={() => { void runAction('hit'); }}
                   disabled={inFlight || activeResolved}
-                  title={activeResolved ? 'This hand is finished — tap your other hand' : undefined}
+                  title={activeResolved ? 'This hand is finished. Tap your other hand.' : undefined}
                   className="pt-btn pt-btn-primary"
                   style={{ height: 40, fontSize: 13, fontWeight: 700, minWidth: 70, opacity: activeResolved ? 0.4 : 1 }}>
                   Hit
                 </button>
                 <button type="button" onClick={() => { void runAction('stand'); }}
                   disabled={inFlight || activeResolved}
-                  title={activeResolved ? 'This hand is finished — tap your other hand' : undefined}
+                  title={activeResolved ? 'This hand is finished. Tap your other hand.' : undefined}
                   className="pt-btn pt-btn-ghost"
                   style={{ height: 40, fontSize: 12, minWidth: 70, opacity: activeResolved ? 0.4 : 1 }}>
                   Stand
@@ -1739,7 +1739,7 @@ export default function BlackjackModal() {
                 <button type="button" onClick={() => { void runAction('surrender'); }}
                   disabled={inFlight || !canSurrender}
                   className="pt-btn pt-btn-ghost"
-                  title={canSurrender ? 'Surrender — forfeit half your bet' : 'Surrender only on your first two cards (no split)'}
+                  title={canSurrender ? 'Surrender: forfeit half your bet' : 'Surrender only on your first two cards (no split)'}
                   style={{ height: 40, fontSize: 12, minWidth: 90, opacity: canSurrender ? 1 : 0.4 }}>
                   Surrender
                 </button>
@@ -1807,7 +1807,7 @@ export default function BlackjackModal() {
             <p style={{ margin: '0 0 14px 0', color: 'var(--pt-cream-soft)' }}>
               Before any card is dealt, the server publishes <code>sha256(serverSeed)</code> as a
               commitment. Every card in the shoe is derived from
-              <code> (serverSeed, clientSeed, handIndex, cursor)</code> — the server cannot change
+              <code> (serverSeed, clientSeed, handIndex, cursor)</code>. The server cannot change
               the cards after seeing your decisions. The seed is revealed when you walk away so you
               can replay every hand.
             </p>
@@ -1815,13 +1815,13 @@ export default function BlackjackModal() {
               <div>
                 <span style={{ color: 'var(--pt-brass)' }}>Server seed hash: </span>
                 <span style={{ wordBreak: 'break-all', color: 'var(--pt-cream)' }}>
-                  {shoe?.serverSeedHash ?? '— (no shoe open yet)'}
+                  {shoe?.serverSeedHash ?? 'Not available (no shoe open yet)'}
                 </span>
               </div>
               <div>
                 <span style={{ color: 'var(--pt-brass)' }}>Client seed: </span>
                 <span style={{ wordBreak: 'break-all', color: 'var(--pt-cream)' }}>
-                  {shoe?.clientSeed ?? '—'}
+                  {shoe?.clientSeed ?? 'Not available'}
                 </span>
               </div>
               {revealedSeed ? (
@@ -1831,7 +1831,7 @@ export default function BlackjackModal() {
                 </div>
               ) : (
                 <div style={{ color: 'var(--pt-cream-soft)' }}>
-                  Server seed reveals when you walk away — then replay any hand at /cove/history.
+                  Server seed reveals when you walk away. Then replay any hand at /cove/history.
                 </div>
               )}
             </div>
@@ -1908,8 +1908,8 @@ function AgentModeBar({
     : !agentConnected
       ? 'Connect an agent to let it play your open table on its own'
       : driverUnavailable
-        ? 'This agent plays itself from its own runtime and cannot be co-piloted here — switch to Control'
-        : 'Let your connected agent decide — you keep an 8s (15s if steering) window to take over';
+        ? 'This agent plays itself from its own runtime and cannot be co-piloted here. Switch to Control.'
+        : 'Let your connected agent decide. You keep an 8s (15s if steering) window to take over.';
   return (
     <div style={{
       flexShrink: 0, background: 'rgba(0,0,0,0.28)',
@@ -1975,7 +1975,7 @@ function AgentModeBar({
       }}>
         {mode === 'autonomous' && pendingAction && (
           <span style={{ fontSize: 10, color: 'var(--pt-amber)', fontFamily: 'var(--pt-data)', fontWeight: 700 }}>
-            Agent is about to {pendingAction} — tap any action to take over.
+            Agent is about to {pendingAction}. Tap any action to take over.
           </span>
         )}
         {advisorMessages.length === 0 ? (
@@ -1983,8 +1983,8 @@ function AgentModeBar({
             {!AUTONOMOUS_RELAY_LIVE
               ? 'Advisor: a connected agent plays blackjack on its own from its runtime (via the cove tools). In-modal supervised Autonomous, where it plays your open table and you keep an 8s/15s window to take over, arrives with the agent-decision relay.'
               : agentConnected
-                ? 'Advisor: your connected agent posts hints here (read-only — your taps stay the decision in Control mode). Switch to Autonomous to let it play.'
-                : 'Advisor: connect an agent to get basic-strategy hints here (read-only — your taps stay the decision).'}
+                ? 'Advisor: your connected agent posts hints here (read-only; your taps stay the decision in Control mode). Switch to Autonomous to let it play.'
+                : 'Advisor: connect an agent to get basic-strategy hints here (read-only; your taps stay the decision).'}
           </span>
         ) : (
           advisorMessages.map((m) => (

@@ -1,9 +1,6 @@
 import type { ScenarioDefinition, Surface } from '../types';
 import { driveScenario, reachedFor, teardownFor } from './runtime';
 
-const MISSING_2D_PUBLISHER =
-  'missing blackjack-2d parity publisher/root on current HEAD';
-
 function scenario(
   row: string,
   tier: 'guest' | 'live',
@@ -22,9 +19,6 @@ function scenario(
     required: true,
     phases,
     ...(fixtureName ? { fixtureName } : {}),
-    ...(surface === 'blackjack-2d'
-      ? { blockedReason: MISSING_2D_PUBLISHER }
-      : {}),
     feltReplay: 'not-applicable',
     reachedPredicate: reachedFor('blackjack', row),
     run: (driver) => driveScenario('blackjack', row, surface, phases, driver),
