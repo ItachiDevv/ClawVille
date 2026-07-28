@@ -725,6 +725,10 @@ interface JournalStep {
   dealStep: string;
 }
 
+interface BlackjackNegativeJournalStep extends JournalStep {
+  terminalPaired: boolean;
+}
+
 interface ActionFloor {
   revision: number;
   correlationHand: string;
@@ -1031,6 +1035,71 @@ export async function nextJournalStep(
   })()`);
 }
 
+export async function nextBlackjackNegativeJournalStep(
+  driver: Driver,
+  surface: Surface,
+  afterRevision: number,
+  correlationHand: string,
+): Promise<BlackjackNegativeJournalStep | null> {
+  return driver.evalJson<BlackjackNegativeJournalStep | null>(`(() => {
+    /* CV_BLACKJACK_NEGATIVE_JOURNAL_STEP */
+    const entries = (window.__CV_PARITY_JOURNAL?.(${JSON.stringify(surface)}) ?? [])
+      .filter((entry) => {
+        if (
+          entry.surface !== ${JSON.stringify(surface)}
+          || entry.revision <= ${afterRevision}
+        ) return false;
+        try {
+          return JSON.parse(entry.signature)[2] === ${JSON.stringify(correlationHand)};
+        } catch {
+          return false;
+        }
+      })
+      .sort((left, right) => left.revision - right.revision);
+    const entry = entries[0];
+    if (!entry) return null;
+    const terminalPaired = (window.__CV_WIRE_ALL?.() ?? []).some((record) => {
+      const body = record.responseBody;
+      if (
+        record.status < 200
+        || record.status >= 300
+        || (
+          record.urlSuffix !== 'blackjack/action'
+          && record.urlSuffix !== 'blackjack/hand/deal'
+        )
+        || typeof record.capturedAt !== 'number'
+        || typeof entry.ts !== 'number'
+        || record.capturedAt > entry.ts
+        || !body
+        || typeof body !== 'object'
+        || Array.isArray(body)
+      ) return false;
+      // blackjack-api-client.ts SettledHandResponse (lines 208-224) emits these
+      // authoritative fields. Requiring the full settled shape avoids treating
+      // an unrelated status string as this hand's terminal response.
+      return body.handId === ${JSON.stringify(correlationHand)}
+        && body.status === 'settled'
+        && typeof body.shoeId === 'string'
+        && typeof body.handIndex === 'number'
+        && body.outcome
+        && typeof body.outcome === 'object'
+        && !Array.isArray(body.outcome)
+        && typeof body.balance === 'number'
+        && typeof body.totalBet === 'string'
+        && typeof body.totalPayout === 'string'
+        && typeof body.net === 'string'
+        && typeof body.dealtCount === 'number'
+        && typeof body.reshuffleSuggested === 'boolean'
+        && typeof body.idempotencyReplay === 'boolean';
+    });
+    return {
+      revision: entry.revision,
+      dealStep: entry.dealStep,
+      terminalPaired,
+    };
+  })()`);
+}
+
 export function shouldEndHoldemNegativeTraversal(
   current: {
     dealStep: string;
@@ -1118,13 +1187,14 @@ export async function* driveScenario(
       const deadline = Date.now() + 60_000;
       let read = 2;
       while (Date.now() < deadline) {
-        const next = await nextJournalStep(
+        const next = await nextBlackjackNegativeJournalStep(
           driver,
           surface,
           cursor,
           initial.correlation.hand,
         );
         if (next) {
+          if (next.terminalPaired) return;
           cursor = next.revision;
           if (next.dealStep === 'settled') return;
           yield {
