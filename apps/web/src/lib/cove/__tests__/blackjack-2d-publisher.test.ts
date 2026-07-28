@@ -156,6 +156,28 @@ describe('blackjack 2D publisher', () => {
       'Hand 1: BLACKJACK! · Hand 2: YOU LOSE',
     );
   });
+
+  test('all frozen single-hand labels are canonical', () => {
+    expect([
+      'blackjack',
+      'win',
+      'push',
+      'surrender',
+      'loss',
+    ].map((outcome) => buildBlackjack2dBannerText({
+      ...SETTLED.outcome,
+      playerHands: [{
+        ...SETTLED.outcome.playerHands[0]!,
+        outcome: outcome as 'blackjack' | 'win' | 'push' | 'surrender' | 'loss',
+      }],
+    }))).toEqual([
+      'BLACKJACK!',
+      'YOU WIN',
+      'PUSH',
+      'SURRENDER',
+      'YOU LOSE',
+    ]);
+  });
 });
 
 describe('BlackjackRevealEpoch', () => {

@@ -50,7 +50,6 @@ import {
 } from '@/lib/cove/blackjack-types';
 import type {
   BlackjackCard as BJCard,
-  BlackjackOutcome,
   SerializedBlackjackHandResult,
   SerializedPlayerHand,
 } from '@/lib/cove/blackjack-types';
@@ -130,22 +129,27 @@ function BetChip({ value, selected, disabled, onClick }: {
 // ---------------------------------------------------------------------------
 // Outcome banner — driven entirely by the server-settled result.
 // ---------------------------------------------------------------------------
-function OutcomeBanner({ outcome, net, rake }: { outcome: BlackjackOutcome; net: bigint; rake: bigint }) {
-  const isWin = outcome === 'blackjack' || outcome === 'win';
-  const isPush = outcome === 'push';
-  const isSurrender = outcome === 'surrender';
+function OutcomeBanner({
+  outcome,
+  bannerText,
+  net,
+  rake,
+}: {
+  outcome: SerializedBlackjackHandResult;
+  bannerText: string;
+  net: bigint;
+  rake: bigint;
+}) {
+  const isWin = outcome.playerHands.some(
+    (hand) => hand.outcome === 'blackjack' || hand.outcome === 'win',
+  );
+  const isPush = outcome.playerHands.every((hand) => hand.outcome === 'push');
+  const isSurrender = outcome.playerHands.every((hand) => hand.outcome === 'surrender');
   const accent =
     isWin ? 'var(--pt-amber-glow)' :
     isPush ? 'var(--pt-cream-soft)' :
     isSurrender ? '#d6a14a' :
     '#e85555';
-  const label =
-    outcome === 'blackjack' ? 'BLACKJACK!' :
-    outcome === 'win' ? 'YOU WIN' :
-    outcome === 'push' ? 'PUSH' :
-    outcome === 'surrender' ? 'SURRENDER' :
-    'YOU LOSE';
-
   const netNum = Number(net);
   const showNet = netNum !== 0;
 
@@ -189,7 +193,7 @@ function OutcomeBanner({ outcome, net, rake }: { outcome: BlackjackOutcome; net:
           fontWeight: 700,
           marginBottom: showNet ? 3 : 0,
         }}>
-          {label}
+          {bannerText}
         </div>
         {showNet && (
           <div style={{
@@ -1582,9 +1586,10 @@ export default function BlackjackModal() {
               net = the RAKED net (what the balance actually moved) — the gross
               `net` overstated wins by the 5% rake and made the HUD math look
               wrong (+75 shown, +72 credited). Falls back to gross for pre-rake rows. */}
-          {phase === 'settled' && settledPrimary && (
+          {phase === 'settled' && settledPrimary && settledOutcome && (
             <OutcomeBanner
-              outcome={settledPrimary.outcome}
+              outcome={settledOutcome}
+              bannerText={bannerText ?? 'YOU LOSE'}
               net={BigInt(settledOutcome?.rakedNet ?? settled?.net ?? '0')}
               rake={BigInt(settledOutcome?.rake ?? '0')}
             />
