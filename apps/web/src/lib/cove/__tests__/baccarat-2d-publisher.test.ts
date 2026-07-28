@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { readFileSync } from 'node:fs';
 import type {
   BaccaratCoupResponse,
   SerializedBaccaratCoup,
@@ -154,6 +155,20 @@ describe('baccarat 2D publisher', () => {
       'TIE · PUSH',
       'TIE · YOU LOSE',
     ]);
+  });
+
+  test('the visible banner uses the canonical bytes and keeps PUSH explanation separate', () => {
+    const modalSource = readFileSync(
+      new URL(
+        '../../../components/cove/baccarat/BaccaratModal.tsx',
+        import.meta.url,
+      ),
+      'utf8',
+    );
+    expect(modalSource).toContain('data-banner-text={bannerText}');
+    expect(modalSource).toContain('{bannerText}');
+    expect(modalSource).toContain('Stake returned');
+    expect(modalSource).not.toContain('PUSH (stake returned)');
   });
 
   test('settled revision publishes correlation, result, net, and selected zone', () => {
