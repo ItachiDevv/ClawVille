@@ -163,8 +163,13 @@ function expectActionSettledSequence(
   );
   expect(terminalPlayerTruth.slots.filter((slot) => slot.slot.startsWith('player-')))
     .toHaveLength(handOutcome.playerHands[0]!.cards.length);
-  expect(terminalPlayerTruth.slots.find((slot) => slot.slot === 'dealer-card-1'))
-    .toEqual({ slot: 'dealer-card-1', facing: 'empty', card: '' });
+  const dealerUpcard = terminalPlayerTruth.slots.find(
+    (slot) => slot.slot === 'dealer-card-1',
+  );
+  expect({
+    ...dealerUpcard,
+    card: String(dealerUpcard?.card),
+  }).toEqual({ slot: 'dealer-card-1', facing: 'up', card: '8h' });
   expect(terminalPlayerTruth.slots.find((slot) => slot.slot === 'dealer-card-2'))
     .toEqual({ slot: 'dealer-card-2', facing: 'down', card: '' });
   expect(terminalPlayerTruth.meta['player-0-bust'])
@@ -223,7 +228,7 @@ function expectActionSettledSequence(
 }
 
 describe('Blackjack 3D action-settled parity cadence', () => {
-  test('publishes a concealed terminal player-turn truth before a hit bust reveal', () => {
+  test('publishes an upcard-safe terminal player-turn truth before a hit bust reveal', () => {
     expectActionSettledSequence(
       'blackjack-action-bust',
       outcome([
@@ -234,7 +239,7 @@ describe('Blackjack 3D action-settled parity cadence', () => {
     );
   });
 
-  test('publishes a concealed terminal player-turn truth before a stand reveal', () => {
+  test('publishes an upcard-safe terminal player-turn truth before a stand reveal', () => {
     expectActionSettledSequence(
       'blackjack-action-stand',
       outcome([

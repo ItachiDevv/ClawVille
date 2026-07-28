@@ -20,7 +20,6 @@ export function buildBlackjackRoomParity(
   const settled = (dealStep === 'dealer-reveal' || dealStep === 'settled') && view.settled
     ? { outcome: view.settled.outcome }
     : null;
-  const terminalActionTruth = dealStep === 'player-turn' && view.settled !== null;
   return buildBlackjackParity({
     hand: {
       playerHands: view.playerHands.map((hand) => ({
@@ -30,7 +29,7 @@ export function buildBlackjackRoomParity(
         isBust: hand.isBust,
         isResolved: hand.isResolved,
       })),
-      dealerUpcard: terminalActionTruth ? null : view.dealerCards[0] ?? null,
+      dealerUpcard: view.dealerCards[0] ?? null,
       insuranceOffered: view.insuranceOffered,
       tookInsurance: view.tookInsurance,
       didSplit: view.didSplit,
