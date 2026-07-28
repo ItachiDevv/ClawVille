@@ -1,7 +1,8 @@
-# World-Stage Watchdog RE-LAND — Frozen Brief v3 (2026-07-27)
+# World-Stage Watchdog RE-LAND — Frozen Brief v3.1 (2026-07-27)
 
-**Status: FROZEN v3 after Codex critique rounds 1 (REJECT) + 2 (REJECT) — all
-findings folded.** Author: Fable (planner/reviewer). Executor: Codex via
+**Status: FROZEN v3.1 after Codex critique rounds 1 (REJECT) + 2 (REJECT) +
+3 (APPROVE-WITH-FIXES — the three R3 fixes are folded below; this is the
+implementation contract).** Author: Fable (planner/reviewer). Executor: Codex via
 /copus-max. Branch: `feat/watchdog-reland` off `staging` (worktree
 `C:/Users/itachi/Documents/Crypto/cv-covefreeze`, staging = `89b6daac`).
 v1/v2 in git history; v3 SUPERSEDES both. Round-2 report:
@@ -100,8 +101,21 @@ accrual; do not leave the origins inferable).
 `chainElapsedMs < CHAIN_MAX_MS`; its effective attempt budget is
 `min(ATTEMPT_MAX_MS, CHAIN_MAX_MS − chainElapsedMs)` (a retry minted at chain
 200 s gets a 40 s truncated attempt). At `chainElapsedMs ≥ CHAIN_MAX_MS`:
-fail-card immediately, never mint an unfittable retry. Exactly ONE silent
-retry per scene (latch unchanged). Worst-case time-to-card = 240 s visible.
+fail-card immediately, never mint an unfittable retry. Worst-case
+time-to-card = 240 s visible.
+
+**Retry eligibility is REDUCER-OWNED (R3 MAJOR 1 — verbatim contract):**
+remove `autoRetriedScenesRef` (the component-external `Set<sceneId>` latch,
+`StageTransition.tsx:76-79,168-175,189-196` — it has independent authority
+that desyncs from chain state). `attemptIndex === 0` is retry-eligible; an
+exact retry continuation increments it to 1, after which any watchdog failure
+produces `fail-card`. "One retry per scene" means one retry per scene request
+CHAIN. Add a monotonically increasing `stageEpoch` to the store,
+`WatchdogSample`, and `WatchdogState`; increment it on every `resetStage`
+WITHOUT resetting it to zero, and compare request identities as
+`{stageEpoch, requestId}` (request ids are reusable across mounts — the epoch
+disambiguates). An epoch change, unrelated identity, `idle`, or unmount
+discards the prior machine state.
 
 **Tick pipeline + precedence (R2 MAJOR 2 — verbatim contract):** on each
 visible tick: (1) identity/terminal/readiness guards — a satisfied
@@ -195,11 +209,19 @@ routes/synthetic summaries). `loader` + `kelp-exit` start the API stub like
   `sea-loading-screen.tsx:308-315,397-408,725-727`); max `aria-valuenow > 0`
   (`:645-649`); loader disappearance requires GENUINE `__W3D_READY === true`
   (the REAL force-dismiss is 45 s, `:75,177-187` — must not false-pass).
-- **Lane `kelp-exit` (R2 BLOCKER 2 fixture contract):** install deterministic
-  route-stub fixtures for `GET /api/avatars/me` (valid avatar) + the matching
-  auth/session response BEFORE `page.goto('/game')` (LocationHUD renders only
-  when `hasAvatar`, `app/(world)/game/page.tsx:542-545,662-664`, and returns
-  null in explore mode, `location-hud.tsx:26-45`). After world readiness set
+- **Lane `kelp-exit` (R2 BLOCKER 2 + R3 MAJOR 2 fixture contract):** BEFORE
+  `page.goto('/game')`, install and SEPARATELY RECORD these exact fixtures on
+  the probe's port-4000 stub (`world-stage-probe.mjs:225-327`):
+  `GET /api/auth/me` → an authenticated GUEST user (`isGuest: true` — keeps
+  the agent-session request deterministic and avoids the non-guest heartbeat
+  becoming another required fixture; `use-auth-me.ts:49-70`, `api.ts:360`);
+  `GET /api/avatars/me` → `{ avatar: { id, name, species, color, gender,
+  modelKey, characterConfig } }` with a valid model key (`use-avatar.ts:7-20`,
+  `api.ts:510`); `GET /api/auth/me/agent-session` →
+  `{ connected: false, mode: 'none' }`
+  (`app/(world)/game/page.tsx:398-418`, `api.ts:407-440`). (LocationHUD
+  renders only when `hasAvatar`, `app/(world)/game/page.tsx:542-545,662-664`,
+  and returns null in explore mode, `location-hud.tsx:26-45`.) After world readiness set
   BOTH `controlMode: 'player'` AND `nearLocation: 'kelp-forest-portal'` via
   `window.__CV_STORES__.useGameStore`, wait for
   `button[aria-label="Walk through to enter the Kelp Forest"]`
@@ -233,7 +255,11 @@ routes/synthetic summaries). `loader` + `kelp-exit` start the API stub like
 ## Acceptance gates (Fable re-runs every one personally; commands verbatim)
 
 ```text
-bun run build
+NEXT_PUBLIC_API_URL=http://localhost:4000 NEXT_PUBLIC_API_SAME_ORIGIN=0 bun run build
+    # (R3 MAJOR 3: NEXT_PUBLIC_API_URL is BUILD-TIME; without it the app
+    #  falls back to same-origin :3000 and the lane fixtures on the probe's
+    #  :4000 stub are unreachable. PowerShell form:
+    #  $env:NEXT_PUBLIC_API_URL='http://localhost:4000'; $env:NEXT_PUBLIC_API_SAME_ORIGIN='0'; bun run build)
 bun run typecheck
 bun test apps/web
 bun run --filter @clawville/web start   # :3000 prod bundle; NEVER bun run dev
@@ -267,6 +293,6 @@ v4.1 calibration — unchanged.
 ## Hard constraints (unchanged)
 
 - Visible-time semantics (hidden pauses; 2× cadence clamp). ONE silent retry
-  per scene; latch clears on idle. Iris Xe rules. No test-only code reachable
-  from `/game`. No staging push by Codex — Fable reviews + runs gates first.
-  Never master.
+  per scene request CHAIN, reducer-owned (R3 MAJOR 1 — `autoRetriedScenesRef`
+  is REMOVED). Iris Xe rules. No test-only code reachable from `/game`. No
+  staging push by Codex — Fable reviews + runs gates first. Never master.
