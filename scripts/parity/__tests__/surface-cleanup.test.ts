@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import type { Driver } from '../driver';
 import { preflight } from '../preflight';
 
@@ -119,5 +120,15 @@ describe('surface-aware preflight cleanup', () => {
     );
     expect(driver.waits.join('\n')).toContain("baccarat-2d");
     expect(driver.waits.join('\n')).toContain("root.dealStep === 'settled'");
+  });
+
+  test('idle authenticated surface cleanup retains the labeled close fallback', () => {
+    const source = readFileSync(
+      new URL('../teardown.ts', import.meta.url),
+      'utf8',
+    );
+    expect(source).toContain("'Close blackjack table'");
+    expect(source).toContain("'Close baccarat table'");
+    expect(source).toContain('waitForClosedStatus');
   });
 });

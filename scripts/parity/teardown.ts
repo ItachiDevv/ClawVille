@@ -109,6 +109,20 @@ async function clickButtonByText(
   })()`);
 }
 
+async function clickButtonByAriaLabel(
+  driver: Driver,
+  label: string,
+): Promise<boolean> {
+  return driver.evalJson<boolean>(`(() => {
+    const button = document.querySelector(
+      'button[aria-label=${JSON.stringify(label)}]'
+    );
+    if (!(button instanceof HTMLButtonElement) || button.disabled) return false;
+    button.click();
+    return true;
+  })()`);
+}
+
 async function currentStatus(
   driver: Driver,
   game: 'blackjack' | 'baccarat',
@@ -131,6 +145,19 @@ async function currentStatus(
   throw new Error(
     `${game} session/current probe returned a non-number after 3 attempts: ${JSON.stringify(lastValue)}`,
   );
+}
+
+async function waitForClosedStatus(
+  driver: Driver,
+  game: 'blackjack' | 'baccarat',
+  apiBase: string,
+): Promise<number> {
+  let status = await currentStatus(driver, game, apiBase);
+  for (let attempt = 0; status === 200 && attempt < 10; attempt += 1) {
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
+    status = await currentStatus(driver, game, apiBase);
+  }
+  return status;
 }
 
 interface CashOutLedgerProof {
@@ -281,14 +308,18 @@ export async function teardownGame(
       })()`,
       20_000,
     );
-    if (!await clickButtonByText(driver, ['Walk Away', 'Close'])) {
+    const textClose = await clickButtonByText(driver, ['Walk Away', 'Close']);
+    const idleClose = textClose
+      ? false
+      : await clickButtonByAriaLabel(driver, 'Close blackjack table');
+    if (!textClose && !idleClose) {
       throw new Error('blackjack teardown could not find Walk Away/Close');
     }
     await driver.waitFn(
       `!window.__CV_READ_PARITY?.(${JSON.stringify(rootSurface)})`,
       10_000,
     );
-    const status = await currentStatus(driver, 'blackjack', apiBase);
+    const status = await waitForClosedStatus(driver, 'blackjack', apiBase);
     if (![403, 404].includes(status)) {
       throw new Error(`blackjack teardown verification returned ${status}`);
     }
@@ -313,14 +344,18 @@ export async function teardownGame(
       })()`,
       15_000,
     );
-    if (!await clickButtonByText(driver, ['Walk Away', 'Close'])) {
+    const textClose = await clickButtonByText(driver, ['Walk Away', 'Close']);
+    const idleClose = textClose
+      ? false
+      : await clickButtonByAriaLabel(driver, 'Close baccarat table');
+    if (!textClose && !idleClose) {
       throw new Error('baccarat teardown could not find Walk Away/Close');
     }
     await driver.waitFn(
       `!window.__CV_READ_PARITY?.(${JSON.stringify(rootSurface)})`,
       10_000,
     );
-    const status = await currentStatus(driver, 'baccarat', apiBase);
+    const status = await waitForClosedStatus(driver, 'baccarat', apiBase);
     if (![403, 404].includes(status)) {
       throw new Error(`baccarat teardown verification returned ${status}`);
     }
