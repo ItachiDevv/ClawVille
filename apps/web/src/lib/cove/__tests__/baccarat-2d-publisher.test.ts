@@ -295,6 +295,11 @@ describe('Baccarat2dRevealEpoch', () => {
       expect(frame.payload.meta.net).toBeUndefined();
       expect(frame.payload.meta['banner-text']).toBeUndefined();
     }
+    const terminalCardFrame = frames.at(-2)!;
+    expect(
+      terminalCardFrame.payload.slots.filter((slot) => slot.facing === 'up'),
+    ).toHaveLength(6);
+    expect(terminalCardFrame.balance).toBe(100);
     expect(frames.at(-1)?.balance).toBe(75);
     expect(frames.at(-1)?.payload.meta).toMatchObject({
       winner: 'player',
