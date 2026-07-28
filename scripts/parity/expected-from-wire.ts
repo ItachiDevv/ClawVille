@@ -174,10 +174,6 @@ function blackjackExpected(body: UnknownRecord, dealStep: string): ExpectedParit
     }
   });
 
-  const visibleDealerUpcard = first(
-    live?.dealerUpcard,
-    array(live?.dealerCards)[0],
-  );
   const dealer = (dealStep === 'dealer-reveal' || dealStep === 'settled')
     ? record(outcome?.dealer)
     : null;
@@ -188,7 +184,8 @@ function blackjackExpected(body: UnknownRecord, dealStep: string): ExpectedParit
     meta['dealer-total'] = stringValue(dealer.total);
   } else {
     const dealerUpcard = first(
-      visibleDealerUpcard,
+      live?.dealerUpcard,
+      array(live?.dealerCards)[0],
       array(record(outcome?.dealer)?.cards)[0],
     );
     slots['dealer-card-1'] = up(dealerUpcard);
@@ -203,25 +200,16 @@ function blackjackExpected(body: UnknownRecord, dealStep: string): ExpectedParit
     ? outcome.insurance !== null
     : false;
   const settledDealerCards = array(record(outcome?.dealer)?.cards);
-  // blackjack-engine.ts:966-980 emits the settled dealer row; an Ace upcard
-  // is the authoritative fallback when the terminal shape omits live flags.
   const dealerUpcardIsAce = (
     dealStep === 'dealer-reveal' || dealStep === 'settled'
   ) && settledDealerCards.length > 0
     && stringValue(record(settledDealerCards[0])?.rank) === 'A';
-  const inProgressInsuranceStep = (
-    dealStep === 'hole' || dealStep === 'player-turn' || dealStep === 'split'
-  );
-  const derivedInsuranceOffered = inProgressInsuranceStep
-    ? stringValue(record(visibleDealerUpcard)?.rank) === 'A'
-    : dealerUpcardIsAce;
   meta['insurance-offered'] = String(boolValue(first(
     live?.insuranceOffered,
     body.insuranceOffered,
-    // blackjack-api-client.ts ActionInProgressResponse.dealerUpcard mirrors the
-    // /action route's `dealerUpcard: peek.dealer.cards[0] ?? null`; adapters may
-    // expose the same visible hand fact as `live.dealerCards[0]`.
-    derivedInsuranceOffered,
+    // blackjack-engine.ts:966-980 emits the settled dealer row; an Ace upcard
+    // is the authoritative fallback when the terminal shape omits live flags.
+    dealerUpcardIsAce,
   )));
   meta['insurance-taken'] = String(boolValue(first(
     live?.tookInsurance,
