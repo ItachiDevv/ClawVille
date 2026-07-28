@@ -219,6 +219,28 @@ describe('BlackjackRevealEpoch', () => {
     expect(commits).toEqual(['fresh-b']);
   });
 
+  test('new correlation cancels every outstanding handle before scheduling', () => {
+    const cleared: number[] = [];
+    let nextHandle = 0;
+    const epoch = new BlackjackRevealEpoch(
+      (() => {
+        nextHandle += 1;
+        return nextHandle as unknown as ReturnType<typeof setTimeout>;
+      }),
+      ((handle) => {
+        cleared.push(handle as unknown as number);
+      }),
+    );
+    epoch.begin('hand-a');
+    epoch.schedule(100, () => {});
+    epoch.schedule(200, () => {});
+    expect(epoch.isCurrent('hand-a')).toBe(true);
+    epoch.begin('hand-b');
+    expect(cleared).toEqual([1, 2]);
+    expect(epoch.isCurrent('hand-a')).toBe(false);
+    expect(epoch.isCurrent('hand-b')).toBe(true);
+  });
+
   test('fake-timer DOM frames conceal settlement and bankroll until settled', () => {
     const callbacks: Array<() => void> = [];
     const epoch = new BlackjackRevealEpoch(
