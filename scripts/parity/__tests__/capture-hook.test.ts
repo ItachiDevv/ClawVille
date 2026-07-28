@@ -15,6 +15,14 @@ interface HookWindow {
 }
 
 describe('pre-navigation fetch capture hook', () => {
+  test('records bounded page errors before application scripts execute', async () => {
+    const source = await readFile('scripts/parity/capture-hook.js', 'utf8');
+    expect(source).toContain('window.__CV_PAGE_ERRORS = []');
+    expect(source).toContain("window.addEventListener?.('error'");
+    expect(source).toContain("window.addEventListener?.('unhandledrejection'");
+    expect(source).toContain('window.__CV_PAGE_ERRORS.length > 16');
+  });
+
   test('separates bodies, canonicalizes queryless suffix, bounds, and redacts secrets', async () => {
     const source = await readFile('scripts/parity/capture-hook.js', 'utf8');
     let calls = 0;

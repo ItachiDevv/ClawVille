@@ -7,6 +7,26 @@
   const nativeFetch = window.fetch.bind(window);
   window.__CV_CAPTURE_DOCUMENT_ID =
     `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  window.__CV_PAGE_ERRORS = [];
+  const recordPageError = (kind, message, stack = '') => {
+    window.__CV_PAGE_ERRORS.push({
+      kind,
+      message: String(message || 'unknown page error').slice(0, 500),
+      stack: String(stack || '').slice(0, 2_000),
+      ts: Date.now(),
+    });
+    if (window.__CV_PAGE_ERRORS.length > 16) window.__CV_PAGE_ERRORS.shift();
+  };
+  window.addEventListener?.('error', (event) => {
+    recordPageError('error', event.message, event.error?.stack);
+  });
+  window.addEventListener?.('unhandledrejection', (event) => {
+    recordPageError(
+      'unhandledrejection',
+      event.reason?.message ?? event.reason,
+      event.reason?.stack,
+    );
+  });
   let releaseFixtureGate;
   let fixtureGateReleased = false;
   const fixtureGate = new Promise((resolve) => {
