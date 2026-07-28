@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import type { SettledHandResponse } from '../blackjack-api-client';
 import {
   BlackjackRevealEpoch,
@@ -215,5 +217,59 @@ describe('BlackjackRevealEpoch', () => {
     callbacks[0]!();
     callbacks[1]!();
     expect(commits).toEqual(['fresh-b']);
+  });
+
+  test('fake-timer DOM frames conceal settlement and bankroll until settled', () => {
+    const callbacks: Array<() => void> = [];
+    const epoch = new BlackjackRevealEpoch(
+      ((callback: () => void) => {
+        callbacks.push(callback);
+        return callbacks.length as unknown as ReturnType<typeof setTimeout>;
+      }),
+      () => {},
+    );
+    let step: Blackjack2dDisplaySnapshot['displayStep'] = 'hole';
+    let displayedBalance = 100;
+    const frames: string[] = [];
+    const renderFrame = () => {
+      const payload = buildBlackjack2dParityRevision(snapshot(step))!;
+      frames.push(renderToStaticMarkup(createElement('div', {
+        'data-step': payload.dealStep,
+        'data-balance': String(displayedBalance),
+        'data-dealer-total': payload.meta['dealer-total'] ?? '',
+        'data-outcome': payload.meta['outcome-0'] ?? '',
+        'data-banner': payload.meta['banner-text'] ?? '',
+        'data-net': payload.meta.net ?? '',
+      })));
+    };
+
+    epoch.begin('hand-7');
+    renderFrame();
+    epoch.schedule(420, () => {
+      step = 'dealer-reveal';
+      renderFrame();
+    });
+    epoch.schedule(970, () => {
+      step = 'settled';
+      displayedBalance = SETTLED.balance;
+      renderFrame();
+    });
+    callbacks[0]!();
+    callbacks[1]!();
+
+    expect(frames).toHaveLength(3);
+    expect(frames[0]).toContain('data-balance="100"');
+    expect(frames[0]).not.toContain('136');
+    expect(frames[0]).not.toContain('BLACKJACK!');
+    expect(frames[0]).toContain('data-dealer-total=""');
+    expect(frames[1]).toContain('data-balance="100"');
+    expect(frames[1]).toContain('data-dealer-total="20"');
+    expect(frames[1]).toContain('data-outcome=""');
+    expect(frames[1]).toContain('data-banner=""');
+    expect(frames[1]).toContain('data-net=""');
+    expect(frames[2]).toContain('data-balance="136"');
+    expect(frames[2]).toContain('data-outcome="blackjack"');
+    expect(frames[2]).toContain('data-banner="BLACKJACK!"');
+    expect(frames[2]).toContain('data-net="36"');
   });
 });
