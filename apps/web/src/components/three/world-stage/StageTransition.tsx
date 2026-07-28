@@ -1,7 +1,32 @@
 'use client';
 
-import { useEffect } from 'react';
-import { useStageStore, type StageRequest } from './stage-store';
+import { useEffect, useRef } from 'react';
+import {
+  requestStageScene,
+  useStageStore,
+  type StageRequest,
+} from './stage-store';
+
+/** Watchdog cadence for the readiness deadline check. */
+const WATCHDOG_TICK_MS = 5_000;
+/**
+ * A transition may only fail while loading has been STALLED this long.
+ * Slow devices/connections legitimately exceed the base deadline while
+ * assets are still downloading (field incident 2026-07-28: mobile users hit
+ * the 45 s error card mid-download returning to /game) — active progress
+ * must never produce the error card.
+ */
+const STALL_WINDOW_MS = 25_000;
+
+/** Read the module-global loading progress (0..1) written by the
+ *  DefaultLoadingManager wiring in asset-preload-manifest.ts. Read-only —
+ *  absent (no loads started) reads as null. */
+function readLoadProgress(): number | null {
+  const value = (
+    window as typeof window & { __W3D_PROGRESS?: number }
+  ).__W3D_PROGRESS;
+  return typeof value === 'number' ? value : null;
+}
 
 interface StageTransitionProps {
   fadeDurationMs?: number;
@@ -37,6 +62,11 @@ export function StageTransition({
     (state) => state.firstControlledFrame,
   );
 
+  // One silent auto-retry per scene before any error card. Cleared on every
+  // successful completion. Covers the wedged-ack / mobile context-recovery
+  // classes without the user ever seeing red.
+  const autoRetriedScenesRef = useRef<Set<string>>(new Set());
+
   useEffect(() => {
     if (!pendingRequest) return;
     const request = pendingRequest;
@@ -49,20 +79,69 @@ export function StageTransition({
       state.setTransitionPhase(request.requestId, 'awaiting');
     }, fadeDurationMs);
 
-    const timeoutTimer = window.setTimeout(() => {
+    // Progress-aware readiness watchdog (replaces the former fixed-deadline
+    // timer). The deadline can only fire while loading is STALLED: any
+    // movement of the global asset-progress value, or of the requested
+    // slot's lifecycle status, re-arms the stall window. A slow phone
+    // mid-download therefore keeps its loading screen instead of getting
+    // the error card.
+    const startedAt = Date.now();
+    let lastActivityAt = startedAt;
+    let lastProgress = readLoadProgress();
+    let lastStatus: string | undefined;
+
+    const watchdog = window.setInterval(() => {
       const state = useStageStore.getState();
       if (state.pendingRequest?.requestId !== request.requestId) return;
+
+      const now = Date.now();
+      const progress = readLoadProgress();
+      const status = state.scenes[request.sceneId]?.status;
+      if (
+        (progress !== null && progress !== lastProgress) ||
+        status !== lastStatus
+      ) {
+        lastProgress = progress;
+        lastStatus = status;
+        lastActivityAt = now;
+        return;
+      }
+
+      if (
+        now - startedAt < timeoutMs ||
+        now - lastActivityAt < STALL_WINDOW_MS
+      ) {
+        return;
+      }
+
+      if (!autoRetriedScenesRef.current.has(request.sceneId)) {
+        // First stall: silently re-request the scene (fresh generation) —
+        // the overlay stays on WARMING SCENE, no error surfaced.
+        autoRetriedScenesRef.current.add(request.sceneId);
+        requestStageScene(request.sceneId);
+        return;
+      }
+
       state.failTransition(
         request,
-        `Scene "${request.sceneId}" did not become ready within ${Math.round(timeoutMs / 1000)} seconds. Choose a scene to retry.`,
+        `Scene "${request.sceneId}" did not become ready within ${Math.round((now - startedAt) / 1000)} seconds. Choose a scene to retry.`,
       );
-    }, timeoutMs);
+    }, WATCHDOG_TICK_MS);
 
     return () => {
       window.clearTimeout(activateTimer);
-      window.clearTimeout(timeoutTimer);
+      window.clearInterval(watchdog);
     };
   }, [fadeDurationMs, onOpaque, pendingRequest, timeoutMs]);
+
+  // Successful completion clears the auto-retry latch so a later slow spell
+  // gets its own fresh silent retry.
+  const phaseForLatch = transition?.phase ?? 'idle';
+  useEffect(() => {
+    if (phaseForLatch === 'idle') {
+      autoRetriedScenesRef.current.clear();
+    }
+  }, [phaseForLatch]);
 
   useEffect(() => {
     if (
