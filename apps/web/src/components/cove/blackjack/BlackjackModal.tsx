@@ -43,6 +43,7 @@ import { useGameStore } from '@/stores/game';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useIsGuest } from '@/hooks/use-is-guest';
 import BlackjackCard from './BlackjackCard';
+import { ParityMirror } from '@/components/cove/CardParityMirror';
 import '@/styles/cove-tokens.css';
 import {
   COVE_BLACKJACK_MIN_BET,
@@ -151,12 +152,12 @@ function OutcomeBanner({
     isSurrender ? '#d6a14a' :
     '#e85555';
   const netNum = Number(net);
-  const showNet = netNum !== 0;
-
   return (
     <div
       role="status"
       aria-live="assertive"
+      data-testid="bj-outcome-banner"
+      data-banner-text={bannerText}
       style={{
         // IN-FLOW between the dealer and player rows — never absolute over the
         // card strips. The old absolute top-38% placement sat ON the dealer row
@@ -191,21 +192,26 @@ function OutcomeBanner({
           fontFamily: 'var(--pt-data)',
           letterSpacing: '0.2em',
           fontWeight: 700,
-          marginBottom: showNet ? 3 : 0,
+          marginBottom: 3,
         }}>
           {bannerText}
         </div>
-        {showNet && (
-          <div style={{
-            color: netNum > 0 ? 'var(--pt-cream)' : '#e85555',
+        <div
+          data-testid="bj-banner-net"
+          style={{
+            color: netNum > 0
+              ? 'var(--pt-cream)'
+              : netNum < 0
+                ? '#e85555'
+                : 'var(--pt-cream-soft)',
             fontSize: 20,
             fontWeight: 700,
             fontFamily: 'var(--pt-display)',
             lineHeight: 1,
-          }}>
-            {netNum > 0 ? `+${netNum}` : `${netNum}`} vCLAW
-          </div>
-        )}
+          }}
+        >
+          {netNum > 0 ? `+${netNum}` : `${netNum}`} vCLAW
+        </div>
         {rake > 0n && (
           <div style={{
             marginTop: 4, fontSize: 10, fontFamily: 'var(--pt-data)',
@@ -1484,6 +1490,10 @@ export default function BlackjackModal() {
         animation: 'cv-modal-bg-in var(--cv-motion-base) var(--cv-ease-standard)',
       }}
     >
+      <ParityMirror
+        surface="blackjack-2d"
+        instanceId={parityInstanceIdRef.current}
+      />
       <div
         style={{
           position: 'relative', width: '100%', maxWidth: 620,
@@ -1611,6 +1621,7 @@ export default function BlackjackModal() {
                 return (
                   <div
                     key={i}
+                    data-testid={`bj-subhand-${i}`}
                     data-active={String(isActive)}
                     onClick={() => { if (phase === 'player-turn' && hand?.didSplit) setActiveSlot((i === 1 ? 1 : 0) as 0 | 1); }}
                     style={{

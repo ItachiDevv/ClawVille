@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { ParityMirror } from '@/components/cove/CardParityMirror';
+import {
+  clearFeltParity,
+  publishFeltParity,
+} from '../card-parity-mirror';
 import type { SettledHandResponse } from '../blackjack-api-client';
 import {
   BlackjackRevealEpoch,
@@ -179,6 +184,25 @@ describe('blackjack 2D publisher', () => {
       'SURRENDER',
       'YOU LOSE',
     ]);
+  });
+
+  test('mounted mirror exposes the published 2D correlation and settled contract', () => {
+    const instanceId = 'blackjack-2d-test-owner';
+    publishFeltParity(
+      instanceId,
+      buildBlackjack2dParityRevision(snapshot('settled'))!,
+    );
+    const html = renderToStaticMarkup(createElement(ParityMirror, {
+      surface: 'blackjack-2d',
+      instanceId,
+    }));
+    expect(html).toContain('data-cv-parity="blackjack-2d"');
+    expect(html).toContain('data-cv-correlation-hand="hand-7"');
+    expect(html).toContain('data-cv-hand-number="7"');
+    expect(html).toContain('data-cv-deal-step="settled"');
+    expect(html).toContain('data-banner-text="BLACKJACK!"');
+    expect(html).toContain('data-active-slot="0"');
+    clearFeltParity(instanceId);
   });
 });
 
