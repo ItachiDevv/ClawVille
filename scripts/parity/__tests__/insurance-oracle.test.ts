@@ -39,9 +39,12 @@ const wire: WireRecord = {
   idempotencyKey: null,
 };
 
-function root(dealStep: 'dealer-reveal' | 'settled'): CardParityRoot {
+function root(
+  dealStep: 'hole' | 'player-turn' | 'split' | 'dealer-reveal' | 'settled',
+  surface: 'blackjack-2d' | 'blackjack-3d' = 'blackjack-2d',
+): CardParityRoot {
   return {
-    surface: 'blackjack-2d',
+    surface,
     version: 2,
     instanceId: 'test',
     renderRevision: 1,
@@ -53,6 +56,81 @@ function root(dealStep: 'dealer-reveal' | 'settled'): CardParityRoot {
     meta: {},
   };
 }
+
+function actionWire(rank: string): WireRecord {
+  return {
+    ...wire,
+    requestBody: { action: 'hit', handSlot: 0 },
+    responseBody: {
+      handId: 'insurance-hand',
+      status: 'in_progress',
+      playerHands: [{
+        cards: [
+          { rank: '10', suit: 'spades' },
+          { rank: '5', suit: 'hearts' },
+          { rank: '2', suit: 'clubs' },
+        ],
+        total: 17,
+        isSoft: false,
+        isBust: false,
+        isResolved: false,
+      }],
+      dealerUpcard: { rank, suit: 'diamonds' },
+      didSplit: false,
+    },
+  };
+}
+
+describe('in-progress blackjack insurance oracle', () => {
+  test('derives an offered insurance hand from the action wire Ace upcard', () => {
+    const expected = expectedFromWire(
+      'blackjack',
+      'blackjack-3d',
+      actionWire('A'),
+      undefined,
+      { root: root('player-turn', 'blackjack-3d') },
+    );
+    expect(expected.meta['insurance-offered']).toBe('true');
+    expect(expected.meta['insurance-taken']).toBe('false');
+  });
+
+  test('keeps an action wire with a non-Ace upcard not offered', () => {
+    const expected = expectedFromWire(
+      'blackjack',
+      'blackjack-3d',
+      actionWire('9'),
+      undefined,
+      { root: root('player-turn', 'blackjack-3d') },
+    );
+    expect(expected.meta['insurance-offered']).toBe('false');
+    expect(expected.meta['insurance-taken']).toBe('false');
+  });
+
+  test('explicit live insurance flags win in both boolean directions', () => {
+    for (const [rank, insuranceOffered, tookInsurance] of [
+      ['A', false, true],
+      ['9', true, false],
+    ] as const) {
+      const action = actionWire(rank);
+      const expected = expectedFromWire(
+        'blackjack',
+        'blackjack-3d',
+        {
+          ...action,
+          responseBody: {
+            ...(action.responseBody as object),
+            insuranceOffered,
+            tookInsurance,
+          },
+        },
+        undefined,
+        { root: root('player-turn', 'blackjack-3d') },
+      );
+      expect(expected.meta['insurance-offered']).toBe(String(insuranceOffered));
+      expect(expected.meta['insurance-taken']).toBe(String(tookInsurance));
+    }
+  });
+});
 
 describe('terminal blackjack insurance oracle', () => {
   test('derives taken insurance and Ace offer from terminal outcome truth', () => {
