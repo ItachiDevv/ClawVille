@@ -166,9 +166,12 @@ function buildEvalContext(state: QuestStoreState): CondEvalContext {
 let lastClaimsSyncAccount: string | null = null;
 
 /**
- * Undo handle for the single pending post-hydration claims apply. A newer
- * sync (or a store reset) cancels the previous pending apply so listeners
- * never accumulate across account transitions (Codex adversarial round 1).
+ * Undo handle for the single pending post-hydration claims apply. A NEWER
+ * sync cancels the previous pending apply so listeners never accumulate
+ * across account transitions (Codex adversarial round 1). A store reset
+ * does NOT cancel it (Codex round 2) — the apply's own owner guard makes a
+ * stale pending apply a no-op, while a valid one must survive the
+ * reset-then-restamp the watcher performs in the same hydration pass.
  */
 let pendingClaimsApplyUnsub: (() => void) | null = null;
 
@@ -176,6 +179,11 @@ function cancelPendingClaimsApply(): void {
   pendingClaimsApplyUnsub?.();
   pendingClaimsApplyUnsub = null;
 }
+
+/** In-flight sync promise so concurrent callers await the SAME request. */
+let inflightClaimsSync: Promise<void> | null = null;
+/** Identity token for the CURRENT in-flight sync — an older sync's finally must never clear a newer sync's promise. */
+let inflightClaimsSyncToken: symbol | null = null;
 
 export const useQuestStore = create<QuestStoreState>()(
   persist(
@@ -191,10 +199,16 @@ export const useQuestStore = create<QuestStoreState>()(
 
       resetQuestStore: () => {
         // A wipe means whatever account resolves next must re-pull its
-        // server-side claims — drop the sync dedup marker AND any pending
-        // post-hydration apply with the state.
+        // server-side claims — drop the sync dedup marker with the state.
+        // Deliberately does NOT cancel a pending post-hydration apply
+        // (Codex adversarial round 2, BLOCKING 1): the watcher's own
+        // reconcile calls this reset when hydration surfaces a stale
+        // FOREIGN blob, BEFORE the pending apply for the CURRENT account
+        // gets its turn in the same listener pass — cancelling here would
+        // suppress that valid restore and blank the board. The apply's
+        // ownerUserId guard already makes a stale pending apply a no-op,
+        // so surviving a reset is safe in every ordering.
         lastClaimsSyncAccount = null;
-        cancelPendingClaimsApply();
         set({
           progress: getDefaultProgress(),
           counters: { ...DEFAULT_COUNTERS },
@@ -522,46 +536,63 @@ export function retryUnclaimedRewards(): Promise<void> {
  * fast account switch can never graft one account's completions onto
  * another's board.
  */
-export async function syncTutorialClaimsFromServer(
+export function syncTutorialClaimsFromServer(
   accountUserId: string,
 ): Promise<void> {
-  if (lastClaimsSyncAccount === accountUserId) return;
-  lastClaimsSyncAccount = accountUserId;
-  try {
-    const res = await api.getTutorialQuestClaims();
-    if (!res?.ok || !Array.isArray(res.claims)) return;
-    if (res.userId !== accountUserId) {
-      // The server answered for a DIFFERENT authenticated subject than this
-      // sync was started for — the cookie moved mid-flight. Never apply;
-      // allow the watcher's next resolution (which sees the new account) to
-      // start a correctly-bound sync.
-      lastClaimsSyncAccount = null;
-      return;
-    }
-    const claims = res.claims;
-    const apply = () => {
-      const s = useQuestStore.getState();
-      if (s.ownerUserId !== accountUserId) return; // owner moved on — stale sync
-      s.applyServerClaims(claims);
-    };
-    cancelPendingClaimsApply();
-    if (useQuestStore.persist.hasHydrated()) {
-      apply();
-    } else {
-      const unsub = useQuestStore.persist.onFinishHydration(() => {
-        unsub();
-        if (pendingClaimsApplyUnsub === unsub) pendingClaimsApplyUnsub = null;
-        apply();
-      });
-      pendingClaimsApplyUnsub = unsub;
-    }
-  } catch (err) {
-    // Transient failure (network / API blip): allow the next auth resolution
-    // or QuestTracker mount to retry. A 401 lands here too — harmless, the
-    // watcher won't re-invoke until an account actually resolves.
-    lastClaimsSyncAccount = null;
-    console.warn('[quest] server-claims restore fetch failed', err);
+  if (lastClaimsSyncAccount === accountUserId) {
+    // Duplicate/concurrent caller for the same account: await the SAME
+    // in-flight request (Codex adversarial round 2, SHOULD-FIX 1) so the
+    // caller's restore-before-sweep sequencing actually holds instead of
+    // resolving while the watcher's fetch is still airborne.
+    return inflightClaimsSync ?? Promise.resolve();
   }
+  lastClaimsSyncAccount = accountUserId;
+  const token = Symbol('claims-sync');
+  inflightClaimsSyncToken = token;
+  const sync = (async () => {
+    try {
+      const res = await api.getTutorialQuestClaims();
+      if (!res?.ok || !Array.isArray(res.claims)) return;
+      if (res.userId !== accountUserId) {
+        // The server answered for a DIFFERENT authenticated subject than this
+        // sync was started for — the cookie moved mid-flight. Never apply;
+        // allow the watcher's next resolution (which sees the new account) to
+        // start a correctly-bound sync.
+        lastClaimsSyncAccount = null;
+        return;
+      }
+      const claims = res.claims;
+      const apply = () => {
+        const s = useQuestStore.getState();
+        if (s.ownerUserId !== accountUserId) return; // owner moved on — stale sync
+        s.applyServerClaims(claims);
+      };
+      cancelPendingClaimsApply();
+      if (useQuestStore.persist.hasHydrated()) {
+        apply();
+      } else {
+        const unsub = useQuestStore.persist.onFinishHydration(() => {
+          unsub();
+          if (pendingClaimsApplyUnsub === unsub) pendingClaimsApplyUnsub = null;
+          apply();
+        });
+        pendingClaimsApplyUnsub = unsub;
+      }
+    } catch (err) {
+      // Transient failure (network / API blip): allow the next auth resolution
+      // or QuestTracker mount to retry. A 401 lands here too — harmless, the
+      // watcher won't re-invoke until an account actually resolves.
+      lastClaimsSyncAccount = null;
+      console.warn('[quest] server-claims restore fetch failed', err);
+    } finally {
+      if (inflightClaimsSyncToken === token) {
+        inflightClaimsSync = null;
+        inflightClaimsSyncToken = null;
+      }
+    }
+  })();
+  inflightClaimsSync = sync;
+  return sync;
 }
 
 /**
