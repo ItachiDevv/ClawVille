@@ -1559,15 +1559,32 @@ questRoutes.post('/tutorial/:id/claim', requireAuth, async (c) => {
 // empty list. Read-only — no ledger or economy mutation.
 questRoutes.get('/tutorial/claims', requireAuth, noStorePrivate, async (c) => {
   const user = c.get('user') as { id: string };
+
+  // Explicit guest contract (Codex adversarial round 1): guests are
+  // 403-blocked from the claim write above, so they can have no rows —
+  // answer the empty list explicitly instead of relying on that write-path
+  // history implicitly.
+  const userRow = await db.query.users.findFirst({
+    where: eq(users.id, user.id),
+    columns: { isGuest: true },
+  });
+  if (userRow?.isGuest) {
+    return c.json({ ok: true, userId: user.id, claims: [] });
+  }
+
   const rows = await db.query.tutorialQuestClaims.findMany({
     where: eq(tutorialQuestClaims.userId, user.id),
-    columns: { questId: true, tokensCredited: true, claimedAt: true },
+    columns: { questId: true, claimedAt: true },
   });
   return c.json({
     ok: true,
+    // Echoed so the client can bind this response to the account it started
+    // the sync for — a session cookie that switched mid-flight fails that
+    // check instead of applying another account's claims (Codex adversarial
+    // round 1, BLOCKING 2).
+    userId: user.id,
     claims: rows.map((r) => ({
       questId: r.questId,
-      tokensCredited: r.tokensCredited,
       claimedAt: r.claimedAt.toISOString(),
     })),
   });

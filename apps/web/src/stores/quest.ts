@@ -165,6 +165,18 @@ function buildEvalContext(state: QuestStoreState): CondEvalContext {
  */
 let lastClaimsSyncAccount: string | null = null;
 
+/**
+ * Undo handle for the single pending post-hydration claims apply. A newer
+ * sync (or a store reset) cancels the previous pending apply so listeners
+ * never accumulate across account transitions (Codex adversarial round 1).
+ */
+let pendingClaimsApplyUnsub: (() => void) | null = null;
+
+function cancelPendingClaimsApply(): void {
+  pendingClaimsApplyUnsub?.();
+  pendingClaimsApplyUnsub = null;
+}
+
 export const useQuestStore = create<QuestStoreState>()(
   persist(
     (set, get) => ({
@@ -179,8 +191,10 @@ export const useQuestStore = create<QuestStoreState>()(
 
       resetQuestStore: () => {
         // A wipe means whatever account resolves next must re-pull its
-        // server-side claims — drop the sync dedup marker with the state.
+        // server-side claims — drop the sync dedup marker AND any pending
+        // post-hydration apply with the state.
         lastClaimsSyncAccount = null;
+        cancelPendingClaimsApply();
         set({
           progress: getDefaultProgress(),
           counters: { ...DEFAULT_COUNTERS },
@@ -493,13 +507,20 @@ export function retryUnclaimedRewards(): Promise<void> {
  * a durable tutorial_quest_claims row server-side, so the SAME account
  * logging back in can always recover its completion display.
  *
- * Hydration-aware: the store uses skipHydration, and the persist merge
- * spreads the localStorage blob over in-memory state — applying only before
- * /game calls persist.rehydrate() would be overwritten. A pre-hydration call
- * therefore applies now (harmless on defaults) AND re-applies after
- * hydration. Cross-account guard: apply only while the store's stamped owner
- * still matches the account this sync was started for, so a fast account
- * switch can never graft one account's completions onto another's board.
+ * NEVER applies before hydration: with skipHydration, ANY store set()
+ * makes the persist middleware write CURRENT state over the un-read
+ * localStorage blob (zustand persist writes on every setState), which would
+ * destroy counters and locally-completed-but-unclaimed progress before
+ * /game reads them (Codex adversarial round 1, BLOCKING 1). A pre-hydration
+ * call therefore only registers a post-hydration apply; routes that never
+ * hydrate never apply (nothing reads the store there).
+ *
+ * Cross-account guards (Codex round 1, BLOCKING 2): the response's echoed
+ * server-authenticated `userId` must match the account this sync started
+ * for (a cookie that switched mid-flight fails the check), and the apply
+ * additionally requires the store's stamped owner to still match — so a
+ * fast account switch can never graft one account's completions onto
+ * another's board.
  */
 export async function syncTutorialClaimsFromServer(
   accountUserId: string,
@@ -509,20 +530,30 @@ export async function syncTutorialClaimsFromServer(
   try {
     const res = await api.getTutorialQuestClaims();
     if (!res?.ok || !Array.isArray(res.claims)) return;
+    if (res.userId !== accountUserId) {
+      // The server answered for a DIFFERENT authenticated subject than this
+      // sync was started for — the cookie moved mid-flight. Never apply;
+      // allow the watcher's next resolution (which sees the new account) to
+      // start a correctly-bound sync.
+      lastClaimsSyncAccount = null;
+      return;
+    }
     const claims = res.claims;
     const apply = () => {
       const s = useQuestStore.getState();
       if (s.ownerUserId !== accountUserId) return; // owner moved on — stale sync
       s.applyServerClaims(claims);
     };
+    cancelPendingClaimsApply();
     if (useQuestStore.persist.hasHydrated()) {
       apply();
     } else {
-      apply(); // pre-hydration defaults — harmless, mirrors the watcher's reconcile
       const unsub = useQuestStore.persist.onFinishHydration(() => {
         unsub();
+        if (pendingClaimsApplyUnsub === unsub) pendingClaimsApplyUnsub = null;
         apply();
       });
+      pendingClaimsApplyUnsub = unsub;
     }
   } catch (err) {
     // Transient failure (network / API blip): allow the next auth resolution
@@ -537,10 +568,14 @@ export async function syncTutorialClaimsFromServer(
  * Belt for QuestTracker mount: re-run the server-claims restore for the
  * currently stamped owner (no-op when unstamped or already synced). Covers
  * a transient fetch failure whose retry window the watcher already passed.
+ * Returns the sync promise so the caller can sequence the local claim sweep
+ * AFTER server-known completions land (avoids 409-spamming the claim
+ * endpoint for quests the server already recorded).
  */
-export function retryServerClaimsRestore(): void {
+export function retryServerClaimsRestore(): Promise<void> {
   const owner = useQuestStore.getState().ownerUserId;
-  if (owner) void syncTutorialClaimsFromServer(owner);
+  if (owner) return syncTutorialClaimsFromServer(owner);
+  return Promise.resolve();
 }
 
 export function triggerQuestCheck() {

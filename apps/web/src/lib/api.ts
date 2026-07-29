@@ -1183,10 +1183,13 @@ export const api = {
   // claimed tutorial quests so the client can restore its completion display
   // after the identity sweep wipes localStorage (session expiry / account
   // switch). Server keeps the durable record in tutorial_quest_claims.
+  // `userId` echoes the server-authenticated subject so the caller can bind
+  // the response to the account it started the sync for.
   getTutorialQuestClaims: () =>
     honoRequest<{
       ok: boolean;
-      claims: Array<{ questId: string; tokensCredited: number; claimedAt: string }>;
+      userId: string;
+      claims: Array<{ questId: string; claimedAt: string }>;
     }>(`/api/quests/tutorial/claims`),
   getQuest: (id: string) =>
     honoRequest<{ quest: any }>(`/api/quests/${id}`),

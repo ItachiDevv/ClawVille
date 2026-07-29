@@ -25,11 +25,14 @@ export default function QuestTracker({ forceVisible = false }: { forceVisible?: 
   // network failure. Server is idempotent (409 = already_claimed = no-op).
   // Also probes serverOnly quests once their prereqs land.
   useEffect(() => {
-    // Quest-board restore belt (2026-07-29): re-pull server-known claims for
-    // the stamped owner before the local claim sweep — restores a board that
-    // an identity-sweep wipe zeroed. No-op when unstamped or already synced.
-    retryServerClaimsRestore();
-    void retryUnclaimedRewards();
+    // Quest-board restore belt (2026-07-29): server-known completions land
+    // BEFORE the local claim sweep, so the sweep doesn't 409-spam the claim
+    // endpoint for quests the server already recorded. No-op when unstamped
+    // or already synced.
+    void (async () => {
+      await retryServerClaimsRestore();
+      await retryUnclaimedRewards();
+    })();
   }, []);
 
   // Only show after tutorial dismissed
