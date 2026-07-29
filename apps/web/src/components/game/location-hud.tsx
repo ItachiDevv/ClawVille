@@ -2,7 +2,7 @@
 
 import { useGameStore, type GameState } from '@/stores/game';
 import { useIsMobile } from '@/hooks/use-is-mobile';
-import { MAP_LOCATIONS, BUILDING_OPENCLAW_THEMES, isShopBuilding } from '@clawville/shared';
+import { MAP_LOCATIONS, BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 import { triggerCoveWalkIn } from '@/lib/three/arena-buildings';
 import { triggerKelpForestWalkIn } from '@/lib/three/kelp-forest-transition';
 
@@ -183,17 +183,6 @@ export default function LocationHUD() {
         >
           {agentConnected ? '🔌 Your bot will learn: ' : 'Learn about '}
           {theme.focus.split(',')[0]}
-        </span>
-      )}
-      {isShopBuilding(nearLocation) && !isCove && !isKelpForest && (
-        <span
-          style={{
-            fontSize: 11,
-            color: 'rgba(253,224,71,0.92)',
-            fontWeight: 600,
-          }}
-        >
-          🛒 Sells books you can buy
         </span>
       )}
     </button>
