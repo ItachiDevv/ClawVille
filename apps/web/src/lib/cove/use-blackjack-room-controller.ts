@@ -621,6 +621,7 @@ export function useBlackjackRoomController(): BlackjackRoomState & {
       // Never wipe a settlement mid-reveal (mirror of the certified 2D
       // allowClear guard, W-G G3.2) — the staged commit lands in under a second.
       if (pendingSettlementRef.current) return;
+      roomRevealEpoch.cancel();
         setHand(null);
         setSettledResponse(null);
         setInsuranceState({ offered: false, took: false });
@@ -725,6 +726,7 @@ export function useBlackjackRoomController(): BlackjackRoomState & {
 
   useEffect(() => () => {
     roomRevealEpoch.cancel();
+    pendingSettlementRef.current = false;
     if (holeTimerRef.current) clearTimeout(holeTimerRef.current);
     concurrency.dispose();
   }, [concurrency, roomRevealEpoch]);

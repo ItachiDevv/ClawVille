@@ -370,7 +370,7 @@ describe('verifier.replaySpin', () => {
           [1, 4, 3],
           [2, 2, 9], // tampered (was 0)
         ],
-        winAmount: '55',
+        winAmount: '54', // correct value — ONLY the reel cell is tampered
         cursorAfter: 20,
       },
     });
