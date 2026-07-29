@@ -16,7 +16,6 @@ import {
   BlackjackTableCards3D,
   type BlackjackCardLayout,
 } from '@/lib/three/blackjack-table-cards';
-import { advanceBlackjackRoomParity } from '@/lib/cove/blackjack-room-parity';
 import type {
   BlackjackRoomHandlers,
   BlackjackRoomState,
@@ -331,25 +330,9 @@ function Precompile() {
   return null;
 }
 
-function BlackjackParityPublisher({
-  instanceId,
-  view,
-}: {
-  instanceId: string;
-  view: BlackjackRoomState;
-}) {
-  const revealSpanRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    revealSpanRef.current = advanceBlackjackRoomParity(
-      instanceId,
-      view,
-      revealSpanRef.current,
-    );
-  }, [instanceId, view.dealStep, view.publishSeq]);
-
-  return null;
-}
+// The parity publisher moved to page level (BlackjackRoomParityPublisher in
+// components/cove/blackjack) — inside this suspended subtree it could miss
+// revisions dealt before the GLBs resolved.
 
 function BlackjackTableRoomScene({
   instanceId,
@@ -377,7 +360,6 @@ function BlackjackTableRoomScene({
 
   return (
     <>
-      <BlackjackParityPublisher instanceId={instanceId} view={view} />
       <SeatedBlackjackCamera />
       <ambientLight intensity={0.85} color={0xffe6cf} />
       <directionalLight position={[-70, 130, 80]} intensity={2.2} color={0xffd2a1} />

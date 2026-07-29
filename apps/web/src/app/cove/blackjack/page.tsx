@@ -3,6 +3,7 @@
 import dynamic from 'next/dynamic';
 import { useEffect, useRef } from 'react';
 import { ParityMirror } from '@/components/cove/CardParityMirror';
+import { BlackjackRoomParityPublisher } from '@/components/cove/blackjack/BlackjackRoomParityPublisher';
 import { SeatedBlackjackHud } from '@/components/cove/blackjack/SeatedBlackjackHud';
 import { useAuthMe } from '@/hooks/use-auth-me';
 import { useIsGuest } from '@/hooks/use-is-guest';
@@ -47,6 +48,7 @@ export default function BlackjackTableRoomPage() {
       style={{ position: 'fixed', inset: 0, overflow: 'hidden', background: '#100b16' }}
     >
       <BlackjackTableRoomCanvas view={controller} instanceId={instanceId} />
+      <BlackjackRoomParityPublisher instanceId={instanceId} view={controller} />
       <ParityMirror surface="blackjack-3d" instanceId={instanceId} />
       <SeatedBlackjackHud controller={controller} />
       {isLoading && (
