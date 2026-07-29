@@ -6,10 +6,9 @@
  * Mounted ONCE at the top of SceneContents in World3DCanvas.tsx, BEFORE
  * FPSFollowCamera, ArenaNpcs, NpcController, and PlayerAvatar.
  *
- * R3F runs useFrame hooks in mount order. Hoisting the tick here guarantees
- * every consumer (camera, NPC mesh, player avatar) reads the current frame's
- * jumpState.heightOffset rather than the previous frame's stale value
- * (~4.67 wu visible lag at peak thrust velocity if the tick ran last).
+ * Stage frame callbacks run in ascending priority order. Player controllers
+ * subscribe at -100 and this ticker remains at the default priority 0, so the
+ * controller dispatches first and JumpTicker advances physics afterward.
  *
  * The SPACE keyboard listener is attached on mount via attachJumpListeners()
  * (idempotent — safe to call multiple times across hot reloads).
