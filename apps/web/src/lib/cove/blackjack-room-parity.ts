@@ -72,12 +72,10 @@ export function advanceBlackjackRoomParity(
     if (nextRevealSpan === null) {
       const snapshot = getParitySnapshot('blackjack-3d');
       if (!snapshot || snapshot.instanceId !== instanceId) {
-        // A natural may settle before this Canvas ever owned the surface.
-        // Seed the entitlement-safe hole state so beginTransition() can bind.
-        publishFeltParity(
-          instanceId,
-          buildBlackjackRoomParity(view, 'hole', 'idle'),
-        );
+        // Defensive: this instance has no snapshot yet (e.g. a mid-hand
+        // remount). Seed the COMMITTED view as-is so beginTransition() can
+        // bind — the journal must never carry a frame the DOM didn't paint.
+        publishFeltParity(instanceId, buildBlackjackRoomParity(view));
       }
       nextRevealSpan = beginTransition(
         instanceId,
@@ -97,10 +95,8 @@ export function advanceBlackjackRoomParity(
     if (nextRevealSpan === null) {
       const snapshot = getParitySnapshot('blackjack-3d');
       if (!snapshot || snapshot.instanceId !== instanceId) {
-        publishFeltParity(
-          instanceId,
-          buildBlackjackRoomParity(view, 'hole', 'idle'),
-        );
+        // Defensive committed-view seed — see the dealer-reveal branch.
+        publishFeltParity(instanceId, buildBlackjackRoomParity(view));
       }
       nextRevealSpan = beginTransition(
         instanceId,

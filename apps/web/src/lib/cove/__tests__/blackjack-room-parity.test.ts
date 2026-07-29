@@ -22,6 +22,9 @@ const OWNERS = [
   'blackjack-action-bust',
   'blackjack-action-stand',
   'blackjack-action-insurance-expiry',
+  'blackjack-natural-hole-beat',
+  'blackjack-empty-store-reveal',
+  'blackjack-empty-store-settled',
 ] as const;
 let previousWindow: typeof globalThis.window | undefined;
 
@@ -128,8 +131,10 @@ function view(
     insuranceOffered: false,
     tookInsurance: false,
     dealStep,
-    transition: dealStep === 'player-turn' ? 'idle' : 'revealing',
-    publishSeq: dealStep === 'player-turn' ? 1 : dealStep === 'dealer-reveal' ? 2 : 3,
+    transition: dealStep === 'player-turn' || dealStep === 'hole' ? 'idle' : 'revealing',
+    publishSeq: dealStep === 'player-turn' || dealStep === 'hole'
+      ? 1
+      : dealStep === 'dealer-reveal' ? 2 : 3,
     bannerVisible: dealStep === 'settled',
     handId: 'hand-action-settled',
     handIndex: 4,
@@ -151,6 +156,7 @@ function view(
     canSplit: false,
     canSurrender: false,
     activeResolved: handOutcome !== null,
+    walkAwayLocked: handOutcome !== null && dealStep !== 'settled',
     agentMode: 'control',
     agentConnected: false,
     agentDriverUnavailable: false,
@@ -303,5 +309,99 @@ describe('Blackjack 3D action-settled parity cadence', () => {
         { suit: 'diamonds', rank: '7' },
       ], 17, false),
     );
+  });
+});
+
+describe('Blackjack 3D natural hole-beat cadence (MAJOR-A)', () => {
+  test('a dealt natural journals a real masked-dealer hole frame before the reveal', () => {
+    const owner = 'blackjack-natural-hole-beat';
+    const natural = outcome([
+      { suit: 'spades', rank: 'A' },
+      { suit: 'diamonds', rank: 'K' },
+    ], 21, false);
+
+    const holeView = view(natural, 'hole');
+    expect(holeView.dealerCards).toEqual([
+      natural.dealer.cards[0],
+      { suit: 'spades', rank: 'A', hidden: true },
+    ]);
+    expect(holeView.dealerTotalLabel).toBe('8+?');
+    const holeTruth = buildBlackjackRoomParity(holeView);
+    expect(holeTruth.meta['dealer-total']).toBeUndefined();
+    expect(holeTruth.meta['outcome-0']).toBeUndefined();
+    expect(holeTruth.meta['banner-text']).toBeUndefined();
+
+    expect(advanceBlackjackRoomParity(owner, holeView, null)).toBeNull();
+    const revealSpan = advanceBlackjackRoomParity(owner, view(natural, 'dealer-reveal'), null);
+    expect(revealSpan).not.toBeNull();
+    expect(advanceBlackjackRoomParity(owner, view(natural, 'settled'), revealSpan)).toBeNull();
+
+    const journal = globalThis.window.__CV_PARITY_JOURNAL?.('blackjack-3d')
+      .filter((entry: ParityJournalEntry) => entry.instanceId === owner);
+    expect(journal?.map((entry: ParityJournalEntry) => [
+      entry.dealStep,
+      entry.transition,
+    ])).toEqual([
+      ['hole', 'idle'],
+      ['hole', 'revealing'],
+      ['dealer-reveal', 'revealing'],
+      ['settled', 'revealing'],
+      ['settled', 'idle'],
+    ]);
+  });
+});
+
+describe('Blackjack 3D adapter empty-store seeds (MAJOR-A C4)', () => {
+  test('an unowned dealer-reveal seeds the COMMITTED view, never a fabricated hole', () => {
+    const owner = 'blackjack-empty-store-reveal';
+    const handOutcome = outcome([
+      { suit: 'spades', rank: '10' },
+      { suit: 'diamonds', rank: '7' },
+      { suit: 'hearts', rank: '9' },
+    ], 26, true);
+
+    const revealSpan = advanceBlackjackRoomParity(owner, view(handOutcome, 'dealer-reveal'), null);
+    expect(revealSpan).not.toBeNull();
+    expect(advanceBlackjackRoomParity(owner, view(handOutcome, 'settled'), revealSpan)).toBeNull();
+
+    const journal = globalThis.window.__CV_PARITY_JOURNAL?.('blackjack-3d')
+      .filter((entry: ParityJournalEntry) => entry.instanceId === owner);
+    expect(journal?.map((entry: ParityJournalEntry) => [
+      entry.dealStep,
+      entry.transition,
+    ])).toEqual([
+      ['dealer-reveal', 'revealing'],
+      ['dealer-reveal', 'revealing'],
+      ['settled', 'revealing'],
+      ['settled', 'idle'],
+    ]);
+    expect(journal?.some((entry: ParityJournalEntry) => entry.dealStep === 'hole')).toBe(false);
+  });
+
+  test('an unowned settled seeds the COMMITTED view, never a fabricated hole', () => {
+    const owner = 'blackjack-empty-store-settled';
+    const handOutcome = outcome([
+      { suit: 'spades', rank: '10' },
+      { suit: 'diamonds', rank: '7' },
+    ], 17, false);
+
+    expect(advanceBlackjackRoomParity(owner, view(handOutcome, 'settled'), null)).toBeNull();
+
+    const journal = globalThis.window.__CV_PARITY_JOURNAL?.('blackjack-3d')
+      .filter((entry: ParityJournalEntry) => entry.instanceId === owner);
+    expect(journal?.map((entry: ParityJournalEntry) => [
+      entry.dealStep,
+      entry.transition,
+    ])).toEqual([
+      ['settled', 'revealing'],
+      ['settled', 'revealing'],
+      ['settled', 'idle'],
+    ]);
+    expect(journal?.some((entry: ParityJournalEntry) => entry.dealStep === 'hole')).toBe(false);
+    expect(getParitySnapshot('blackjack-3d')).toMatchObject({
+      instanceId: owner,
+      dealStep: 'settled',
+      transition: 'idle',
+    });
   });
 });
