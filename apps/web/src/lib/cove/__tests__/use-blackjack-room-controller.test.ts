@@ -6,6 +6,7 @@ import {
   dealErrorPolicy,
   deriveDealerRenderView,
   firstUnresolvedSlot,
+  isWalkAwayLocked,
   type SubHandView,
 } from '../use-blackjack-room-controller';
 
@@ -338,5 +339,20 @@ describe('useBlackjackRoomController runtime over mocked wire', () => {
         dealerTotalLabel: '20',
       });
     }
+  });
+});
+
+describe('isWalkAwayLocked', () => {
+  test('locked during every staged settlement beat, unlocked at settled', () => {
+    expect(isWalkAwayLocked(true, 'hole')).toBe(true);
+    expect(isWalkAwayLocked(true, 'player-turn')).toBe(true);
+    expect(isWalkAwayLocked(true, 'dealer-reveal')).toBe(true);
+    expect(isWalkAwayLocked(true, 'settled')).toBe(false);
+  });
+
+  test('never locked without a staged settlement', () => {
+    expect(isWalkAwayLocked(false, 'hole')).toBe(false);
+    expect(isWalkAwayLocked(false, 'player-turn')).toBe(false);
+    expect(isWalkAwayLocked(false, 'idle')).toBe(false);
   });
 });

@@ -375,7 +375,7 @@ export function SeatedBlackjackHud({ controller }: { controller: Controller }) {
             <button
               type="button"
               onClick={() => { void handlers.handleWalkAway(); }}
-              disabled={inFlight}
+              disabled={inFlight || controller.walkAwayLocked}
               className={`${styles.actionButton} ${styles.walkButton}`}
             >
               {isRealTier ? 'Walk Away' : 'Close'}

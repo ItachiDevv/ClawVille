@@ -109,6 +109,7 @@ export interface BlackjackRoomState {
   canSplit: boolean;
   canSurrender: boolean;
   activeResolved: boolean;
+  walkAwayLocked: boolean;
   agentMode: 'control' | 'autonomous';
   agentConnected: boolean;
   agentDriverUnavailable: boolean;
@@ -201,6 +202,18 @@ export function expireInsuranceOffer(
   current: { offered: boolean; took: boolean },
 ): { offered: boolean; took: boolean } {
   return { ...current, offered: false };
+}
+
+/**
+ * Leave controls are locked while a settlement is staging (settled response
+ * held, settled frame not yet painted) — walking away or navigating mid-reveal
+ * would drop the staged banner/balance commit. Resolves in under a second.
+ */
+export function isWalkAwayLocked(
+  hasStagedSettlement: boolean,
+  dealStep: BlackjackDealStep,
+): boolean {
+  return hasStagedSettlement && dealStep !== 'settled';
 }
 
 export function buildBannerLabel(outcome: SerializedBlackjackHandResult): string {
@@ -1003,6 +1016,9 @@ export function useBlackjackRoomController(): BlackjackRoomState & {
   }, [closeShoe, isRealTier, revealedSeed, router]);
 
   const handleWalkAway = useCallback(async () => {
+    // Locked while a settlement is staging — BEFORE the guest branch, which
+    // would otherwise navigate away mid-reveal (isWalkAwayLocked mirror).
+    if (pendingSettlementRef.current) return;
     const currentShoe = shoeRef.current;
     if (!currentShoe || !isRealTier) {
       requestClose();
@@ -1176,6 +1192,7 @@ export function useBlackjackRoomController(): BlackjackRoomState & {
     balance: settledResponse.balance,
     handId: settledResponse.handId,
   } : null;
+  const walkAwayLocked = isWalkAwayLocked(settledResponse !== null, dealStep);
 
   const handlers = useMemo<BlackjackRoomHandlers>(() => ({
     setBet: (value) => {
@@ -1232,6 +1249,7 @@ export function useBlackjackRoomController(): BlackjackRoomState & {
     canSplit,
     canSurrender,
     activeResolved,
+    walkAwayLocked,
     agentMode,
     agentConnected,
     agentDriverUnavailable,
