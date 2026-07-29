@@ -1547,3 +1547,28 @@ questRoutes.post('/tutorial/:id/claim', requireAuth, async (c) => {
     throw err;
   }
 });
+
+// Quest-board restore (2026-07-29 prod incident): the tutorial ladder's
+// completion DISPLAY lives in client localStorage and is wiped by the
+// auth-transition identity sweep on session expiry / account switch — but
+// every claimed quest already has a durable tutorial_quest_claims row. This
+// read-back lets the SAME account re-mark its claimed quests as completed
+// after login, restoring the quest board. Human-only (`requireAuth`) by the
+// same design as the claim write above (the tutorial ladder is the human
+// onboarding surface); guest accounts have no claim rows and receive an
+// empty list. Read-only — no ledger or economy mutation.
+questRoutes.get('/tutorial/claims', requireAuth, noStorePrivate, async (c) => {
+  const user = c.get('user') as { id: string };
+  const rows = await db.query.tutorialQuestClaims.findMany({
+    where: eq(tutorialQuestClaims.userId, user.id),
+    columns: { questId: true, tokensCredited: true, claimedAt: true },
+  });
+  return c.json({
+    ok: true,
+    claims: rows.map((r) => ({
+      questId: r.questId,
+      tokensCredited: r.tokensCredited,
+      claimedAt: r.claimedAt.toISOString(),
+    })),
+  });
+});

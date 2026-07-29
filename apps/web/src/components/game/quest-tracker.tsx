@@ -1,7 +1,11 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { useQuestStore, retryUnclaimedRewards } from '@/stores/quest';
+import {
+  useQuestStore,
+  retryUnclaimedRewards,
+  retryServerClaimsRestore,
+} from '@/stores/quest';
 import { QUEST_DEFINITIONS, type QuestId, type QuestDefinition } from '@/lib/quests';
 import { useGameStore } from '@/stores/game';
 
@@ -21,6 +25,10 @@ export default function QuestTracker({ forceVisible = false }: { forceVisible?: 
   // network failure. Server is idempotent (409 = already_claimed = no-op).
   // Also probes serverOnly quests once their prereqs land.
   useEffect(() => {
+    // Quest-board restore belt (2026-07-29): re-pull server-known claims for
+    // the stamped owner before the local claim sweep — restores a board that
+    // an identity-sweep wipe zeroed. No-op when unstamped or already synced.
+    retryServerClaimsRestore();
     void retryUnclaimedRewards();
   }, []);
 

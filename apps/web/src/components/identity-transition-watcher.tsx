@@ -88,7 +88,8 @@ export function IdentityTransitionWatcher() {
 
     const reconcileQuestOwner = () => {
       try {
-        const { useQuestStore } = require('@/stores/quest') as typeof import('@/stores/quest');
+        const { useQuestStore, syncTutorialClaimsFromServer } =
+          require('@/stores/quest') as typeof import('@/stores/quest');
         const account = accountId(next);
         const run = () => {
           const s = useQuestStore.getState();
@@ -106,6 +107,14 @@ export function IdentityTransitionWatcher() {
         } else {
           run(); // pre-hydration state is defaults — harmless, keeps invariants simple
           unsubHydrationRef.current = useQuestStore.persist.onFinishHydration(run);
+        }
+        if (account !== null) {
+          // Quest-board restore (2026-07-29): re-pull this account's claimed
+          // tutorial quests so a store wiped by expiry / account switch
+          // re-displays its server-known completions. Deduped per account,
+          // hydration-aware, and owner-guarded inside — safe to fire on every
+          // resolution.
+          void syncTutorialClaimsFromServer(account);
         }
       } catch { /* store not loaded on this route */ }
     };

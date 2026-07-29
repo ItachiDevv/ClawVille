@@ -69,6 +69,17 @@ interface QuestStoreState {
 
   /** Stamp the account that owns the current progress (watcher reconcile). */
   setQuestOwner: (userId: string) => void;
+
+  /**
+   * Quest-board restore (2026-07-29): re-mark quests the SERVER knows this
+   * account claimed (tutorial_quest_claims) as completed + serverClaimed,
+   * then unlock any quest whose prerequisite chain is now fully completed.
+   * Never downgrades local state; unknown/superseded quest ids are ignored.
+   * Counters have no server record and are NOT restored.
+   */
+  applyServerClaims: (
+    claims: Array<{ questId: string; claimedAt: string }>,
+  ) => void;
 }
 
 function getDefaultProgress(): Record<QuestId, QuestProgress> {
@@ -146,6 +157,14 @@ function buildEvalContext(state: QuestStoreState): CondEvalContext {
   };
 }
 
+/**
+ * Per-page-load dedup for the server-claims restore fetch: one successful
+ * sync per account. Cleared by resetQuestStore so a wipe (expiry/switch)
+ * followed by a re-login of the same account re-syncs, and cleared on fetch
+ * failure so the next invocation retries.
+ */
+let lastClaimsSyncAccount: string | null = null;
+
 export const useQuestStore = create<QuestStoreState>()(
   persist(
     (set, get) => ({
@@ -158,16 +177,59 @@ export const useQuestStore = create<QuestStoreState>()(
       markServerClaimed: (id) =>
         set((s) => ({ serverClaimed: { ...s.serverClaimed, [id]: true } })),
 
-      resetQuestStore: () =>
+      resetQuestStore: () => {
+        // A wipe means whatever account resolves next must re-pull its
+        // server-side claims — drop the sync dedup marker with the state.
+        lastClaimsSyncAccount = null;
         set({
           progress: getDefaultProgress(),
           counters: { ...DEFAULT_COUNTERS },
           distinct: { ...DEFAULT_DISTINCT },
           serverClaimed: {},
           ownerUserId: null,
-        }),
+        });
+      },
 
       setQuestOwner: (userId) => set({ ownerUserId: userId }),
+
+      applyServerClaims: (claims) => {
+        const state = get();
+        const progress = { ...state.progress };
+        const serverClaimed = { ...state.serverClaimed };
+        let changed = false;
+
+        for (const claim of claims) {
+          const def = QUEST_DEFINITIONS.find((q) => q.id === claim.questId);
+          if (!def) continue; // superseded id from an older quest ladder
+          const qid = def.id;
+          if (!serverClaimed[qid]) {
+            serverClaimed[qid] = true;
+            changed = true;
+          }
+          if (progress[qid]?.status !== 'completed') {
+            const at = Date.parse(claim.claimedAt);
+            progress[qid] = {
+              status: 'completed',
+              completedAt: Number.isFinite(at) ? at : Date.now(),
+            };
+            changed = true;
+          }
+        }
+        if (!changed) return;
+
+        // Unlock pass — single sweep suffices: every server-known completion
+        // was applied above, so a locked quest whose full prerequisite chain
+        // is claimed has all prereqs already marked completed.
+        for (const quest of QUEST_DEFINITIONS) {
+          if (progress[quest.id]?.status !== 'locked') continue;
+          const allPrereqsMet = quest.prerequisites.every(
+            (pid) => progress[pid]?.status === 'completed',
+          );
+          if (allPrereqsMet) progress[quest.id] = { status: 'active' };
+        }
+
+        set({ progress, serverClaimed });
+      },
 
       incrementCounter: (key, amount = 1) => {
         set((s) => ({
@@ -421,6 +483,64 @@ export function retryUnclaimedRewards(): Promise<void> {
   });
   retryUnclaimedRewardsInFlight = sweep;
   return sweep;
+}
+
+/**
+ * Quest-board restore (2026-07-29): pull the signed-in account's claimed
+ * tutorial quests from the server and re-mark them completed locally. The
+ * identity sweep deliberately wipes localStorage quest progress on session
+ * expiry / account switch (shared-machine leak guard) — but every claim has
+ * a durable tutorial_quest_claims row server-side, so the SAME account
+ * logging back in can always recover its completion display.
+ *
+ * Hydration-aware: the store uses skipHydration, and the persist merge
+ * spreads the localStorage blob over in-memory state — applying only before
+ * /game calls persist.rehydrate() would be overwritten. A pre-hydration call
+ * therefore applies now (harmless on defaults) AND re-applies after
+ * hydration. Cross-account guard: apply only while the store's stamped owner
+ * still matches the account this sync was started for, so a fast account
+ * switch can never graft one account's completions onto another's board.
+ */
+export async function syncTutorialClaimsFromServer(
+  accountUserId: string,
+): Promise<void> {
+  if (lastClaimsSyncAccount === accountUserId) return;
+  lastClaimsSyncAccount = accountUserId;
+  try {
+    const res = await api.getTutorialQuestClaims();
+    if (!res?.ok || !Array.isArray(res.claims)) return;
+    const claims = res.claims;
+    const apply = () => {
+      const s = useQuestStore.getState();
+      if (s.ownerUserId !== accountUserId) return; // owner moved on — stale sync
+      s.applyServerClaims(claims);
+    };
+    if (useQuestStore.persist.hasHydrated()) {
+      apply();
+    } else {
+      apply(); // pre-hydration defaults — harmless, mirrors the watcher's reconcile
+      const unsub = useQuestStore.persist.onFinishHydration(() => {
+        unsub();
+        apply();
+      });
+    }
+  } catch (err) {
+    // Transient failure (network / API blip): allow the next auth resolution
+    // or QuestTracker mount to retry. A 401 lands here too — harmless, the
+    // watcher won't re-invoke until an account actually resolves.
+    lastClaimsSyncAccount = null;
+    console.warn('[quest] server-claims restore fetch failed', err);
+  }
+}
+
+/**
+ * Belt for QuestTracker mount: re-run the server-claims restore for the
+ * currently stamped owner (no-op when unstamped or already synced). Covers
+ * a transient fetch failure whose retry window the watcher already passed.
+ */
+export function retryServerClaimsRestore(): void {
+  const owner = useQuestStore.getState().ownerUserId;
+  if (owner) void syncTutorialClaimsFromServer(owner);
 }
 
 export function triggerQuestCheck() {
