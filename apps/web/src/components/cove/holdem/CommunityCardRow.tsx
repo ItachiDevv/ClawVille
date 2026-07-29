@@ -39,8 +39,10 @@ export default function CommunityCardRow({ cards }: CommunityCardRowProps) {
               width: 48,
               height: 70,
               borderRadius: 5,
-              border: '1.5px dashed rgba(60,180,100,0.18)',
-              opacity: 0.35,
+              border: '1px dashed rgba(212,175,55,0.42)',
+              background: 'rgba(18,50,39,0.28)',
+              boxShadow: 'inset 0 0 0 2px rgba(15,34,28,0.22)',
+              opacity: 0.58,
               flexShrink: 0,
             }}
           />

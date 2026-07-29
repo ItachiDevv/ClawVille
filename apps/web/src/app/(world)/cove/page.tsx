@@ -28,6 +28,8 @@ import Link from 'next/link';
 import SlotScreenModal from '@/components/cove/SlotScreenModal';
 import BlackjackModal from '@/components/cove/blackjack/BlackjackModal';
 import HoldemModal from '@/components/cove/holdem/HoldemModal';
+import { SeatedHoldemHud } from '@/components/cove/holdem/SeatedHoldemHud';
+import { HoldemControllerRuntime } from '@/lib/cove/holdem-controller';
 import BaccaratModal from '@/components/cove/baccarat/BaccaratModal';
 import CoveMobileControls from '@/components/cove/CoveMobileControls';
 import SupportLauncher from '@/components/support/SupportLauncher';
@@ -61,6 +63,31 @@ const COVE_EXIT_PX = { x: MAP_WIDTH / 2 - 3760, y: MAP_HEIGHT / 2 };
 export default function CovePage() {
   const router = useRouter();
   const isMobile = useIsMobile();
+  const enterTableRoom = useCoveStore((state) => state.enterTableRoom);
+  const enterBlackjackRoom = useCoveStore((state) => state.enterBlackjackRoom);
+  const enterBaccaratRoom = useCoveStore((state) => state.enterBaccaratRoom);
+
+  // One-shot 3D-room navigation intents emitted by the in-world table
+  // hotspots (T1 hold'em, blackjack, baccarat). The room routes live OUTSIDE
+  // the (world) stage group — each owns its own Canvas — so a plain
+  // router.push (not requestWorldStageNavigation) is the correct exit.
+  useEffect(() => {
+    if (!enterTableRoom) return;
+    useCoveStore.getState().clearEnterTableRoom();
+    router.push('/cove/table');
+  }, [enterTableRoom, router]);
+
+  useEffect(() => {
+    if (!enterBlackjackRoom) return;
+    useCoveStore.getState().clearEnterBlackjackRoom();
+    router.push('/cove/blackjack');
+  }, [enterBlackjackRoom, router]);
+
+  useEffect(() => {
+    if (!enterBaccaratRoom) return;
+    useCoveStore.getState().clearEnterBaccaratRoom();
+    router.push('/cove/baccarat');
+  }, [enterBaccaratRoom, router]);
 
   // Phase 6.1.20 — sync the user's authenticated avatar into the gameStore
   // every time this page mounts. Mirrors the same effect on /game (line 346)
@@ -246,7 +273,12 @@ export default function CovePage() {
           server-authoritative, ClawToken stack custody, 5 deterministic bots).
           Same z-index policy as the other game modals. Connected-agent
           WebSocket protocol + real-money SOL/USDC land in Phase 6.5.2 / 6.5.4. */}
+      <HoldemControllerRuntime />
       <HoldemModal />
+      {/* P3 — seated in-world action HUD: the ONLY action surface while
+          seated at T1 (the modal is suppressed there). Pure consumer of the
+          shared controller — same mutation path as the modal. */}
+      <SeatedHoldemHud />
 
       {/* Phase 6.6.1 — Baccarat (Punto Banco) table modal (REAL engine,
           server-authoritative, ClawToken fun-money tier, 8-deck commit-reveal

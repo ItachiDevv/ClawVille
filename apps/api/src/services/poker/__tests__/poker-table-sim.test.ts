@@ -22,7 +22,7 @@ import {
   type Card,
   type PlaySeat,
 } from '../../holdem-engine';
-import { PokerTableSim } from '../poker-table-sim';
+import { PokerTableSim, serializeSettledPots } from '../poker-table-sim';
 import type {
   HandResult,
   PrivateSeatView,
@@ -449,7 +449,16 @@ describe('poker-table-sim — 6-seat multi-way all-in side pots', () => {
       status: folded.has(seat) ? 'folded' : 'active',
       hasActed: true,
     }));
-    const expectedAward = awardPots(realPlaySeats, buildSidePots(realPlaySeats), deal.board5, 'showdown');
+    const expectedSettledPots = buildSidePots(realPlaySeats);
+    const expectedAward = awardPots(
+      realPlaySeats,
+      expectedSettledPots,
+      deal.board5,
+      'showdown',
+    );
+    expect(result.settledPots).toEqual(
+      serializeSettledPots(expectedSettledPots, expectedAward, 'showdown'),
+    );
     for (const er of expectedAward) {
       const simSeat = result.perSeat.find((s) => s.seatIndex === er.seat)!;
       expect(simSeat.won).toBe(Number(er.won));
@@ -1106,6 +1115,9 @@ describe('poker-table-sim — parity with engine showdown math', () => {
     }));
     const enginePots = buildSidePots(engineSeats);
     const engineAward = awardPots(engineSeats, enginePots, deal.board5, 'showdown');
+    expect(result.settledPots).toEqual(
+      serializeSettledPots(enginePots, engineAward, 'showdown'),
+    );
     for (const er of engineAward) {
       const simSeat = result.perSeat.find((s) => s.seatIndex === er.seat)!;
       expect(simSeat.won).toBe(Number(er.won));

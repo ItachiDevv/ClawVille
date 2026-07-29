@@ -26,6 +26,7 @@
  */
 
 import { CoveApiError } from './slot-api-client';
+import type { CashSettledHandSnapshot } from '@clawville/shared';
 export { CoveApiError } from './slot-api-client';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
@@ -285,6 +286,10 @@ export interface StateForAgentResponse {
   view: CashAgentView;
 }
 
+export interface LastSettledResponse {
+  snapshot: CashSettledHandSnapshot;
+}
+
 // ---------------------------------------------------------------------------
 // Client surface — one function per route. All resolve to the parsed body;
 // the leave/sit/join callers branch on the returned `status` where it matters.
@@ -359,6 +364,22 @@ export const cashPokerApi = {
       { method: 'GET' },
     );
     return res.body;
+  },
+
+  /**
+   * GET /tables/:id/last-settled — terminal BA-1 truth for a historical
+   * participant. A 204 means there is no hand newer than `afterHandNumber`.
+   */
+  async lastSettled(
+    tableId: string,
+    afterHandNumber: number,
+  ): Promise<CashSettledHandSnapshot | null> {
+    const res = await cashFetch<LastSettledResponse | undefined>(
+      `/api/cove/poker/cash/tables/${encodeURIComponent(tableId)}/last-settled`
+        + `?afterHandNumber=${afterHandNumber}`,
+      { method: 'GET' },
+    );
+    return res.status === 204 ? null : res.body?.snapshot ?? null;
   },
 
   /** GET /tables/:id — public table state (config + seats + live snapshot). */

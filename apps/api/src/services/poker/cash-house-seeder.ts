@@ -27,11 +27,12 @@
  *   - `release(tableId, seatIndex)` / `releaseTable(tableId)` — free reservations.
  *   - `isBotAvatar(avatarId): boolean`  — pool membership check (anti-farm / audit).
  *
- * The bot reservation pool mirrors `activity/bots/bot-pool.ts`: in-memory only,
+ * The bot reservation pool mirrors `activity/bots/bot-pool.ts`: process-local,
  * per-(table,seat) uniqueness, recyclable across tables, never two LIVE seats on the
- * same bot uuid concurrently. On pod crash reservations drop and the next boot starts
- * clean (the manager would reclaim any orphaned seeded chips to the house bank on the
- * next sweep / table close, conservation intact).
+ * same bot uuid concurrently. On pod restart the maps are rehydrated from active
+ * seeded `poker_cash_seats` rows before the scaler/tick starts. Those authoritative
+ * rows already own their stack/escrow/totals; rehydration only restores reservations
+ * and never moves money.
  *
  * MONEY DISCIPLINE: the ONLY write to a CT balance here is the single guarded
  * bankroll `creditClawTokens` (house bank). Bot avatars are NEVER credited. Per-seat
@@ -39,8 +40,14 @@
  * back at reclaim) — this seeder never touches `avatars.clawTokens` directly.
  */
 
-import { eq, and, sql } from 'drizzle-orm';
-import { db, users, avatars, clawTokenTransactions } from '@clawville/database';
+import { eq, and, inArray, ne, sql } from 'drizzle-orm';
+import {
+  db,
+  users,
+  avatars,
+  clawTokenTransactions,
+  pokerCashSeats,
+} from '@clawville/database';
 import { creditClawTokens } from '../claw-token-ledger';
 import { recordCovenantAction } from '../covenant-action-recorder';
 import { houseBankBankroll, houseBankLowAlarm, houseBotPoolSize } from './cash-house-config';
@@ -74,7 +81,7 @@ const COLORS = ['green', 'red', 'blue', 'yellow'] as const;
 const GENDERS = ['male', 'female'] as const;
 const ARCHETYPE = 'brave-adventurer'; // benign default; bots never chat / run Eliza
 
-interface BotSlot {
+export interface BotSlot {
   /** 1..M */
   index: number;
   /** Stable agentId, e.g. 'poker-bot-001'. */
@@ -82,6 +89,12 @@ interface BotSlot {
   /** Display name, e.g. 'Felt-Bot-001'. */
   name: string;
   /** avatars.id uuid — what lands in poker_cash_seats.avatar_id. */
+  avatarId: string;
+}
+
+export interface ActiveSeededBotSeat {
+  tableId: string;
+  seatIndex: number;
   avatarId: string;
 }
 
@@ -173,11 +186,73 @@ class CashHouseSeederService {
     }
     slots.sort((a, b) => a.index - b.index);
     this.slots = slots;
+
+    // Active cash seats survive a process restart; the reservation maps do not.
+    // Restore them before `ensured=true` lets the scaler/tick claim any bot.
+    await this.rehydrateReservationsFromDb();
     this.ensured = true;
 
     console.log(
-      `[cash-house-seeder] ensured house bank ${bankAvatarId} + ${slots.length}/${M} bot avatars`,
+      `[cash-house-seeder] ensured house bank ${bankAvatarId} + ${slots.length}/${M} bot avatars; ` +
+        `${this.reservations.size} active reservations rehydrated`,
     );
+  }
+
+  private async rehydrateReservationsFromDb(): Promise<void> {
+    if (this.slots.length === 0) {
+      this.rehydrateReservations([]);
+      return;
+    }
+    const rows = await db
+      .select({
+        tableId: pokerCashSeats.tableId,
+        seatIndex: pokerCashSeats.seatIndex,
+        avatarId: pokerCashSeats.avatarId,
+      })
+      .from(pokerCashSeats)
+      .where(
+        and(
+          eq(pokerCashSeats.isSeeded, 'true'),
+          ne(pokerCashSeats.status, 'left'),
+          inArray(
+            pokerCashSeats.avatarId,
+            this.slots.map((slot) => slot.avatarId),
+          ),
+        ),
+      );
+    this.rehydrateReservations(rows);
+  }
+
+  /**
+   * Restore process-local reservations from authoritative active DB seats.
+   * Duplicate active rows for one bot are historical divergence: bind the
+   * deterministic first row and warn, but never mutate either seat or money.
+   */
+  private rehydrateReservations(rows: readonly ActiveSeededBotSeat[]): void {
+    this.reservations.clear();
+    this.seatToAvatar.clear();
+
+    const ordered = [...rows].sort(
+      (a, b) =>
+        a.tableId.localeCompare(b.tableId) ||
+        a.seatIndex - b.seatIndex ||
+        a.avatarId.localeCompare(b.avatarId),
+    );
+    for (const row of ordered) {
+      const sk = this.seatKey(row.tableId, row.seatIndex);
+      if (!this.isBotAvatar(row.avatarId)) continue;
+      const reservedAt = this.reservations.get(row.avatarId);
+      const occupant = this.seatToAvatar.get(sk);
+      if (reservedAt || occupant) {
+        console.warn(
+          `[cash-house-seeder] reservation rehydrate divergence for bot ${row.avatarId} ` +
+            `at ${sk}; keeping ${reservedAt ?? occupant}`,
+        );
+        continue;
+      }
+      this.reservations.set(row.avatarId, sk);
+      this.seatToAvatar.set(sk, row.avatarId);
+    }
   }
 
   /**
@@ -383,6 +458,27 @@ class CashHouseSeederService {
     return null;
   }
 
+  /**
+   * Bind a reservation to an already-active authoritative DB seat. This is the
+   * same-table reconciliation path: maps only, zero seat/stack/escrow/ledger writes.
+   */
+  bindReservation(tableId: string, seatIndex: number, avatarId: string): boolean {
+    if (!this.isBotAvatar(avatarId)) return false;
+    const sk = this.seatKey(tableId, seatIndex);
+
+    const previousSeat = this.reservations.get(avatarId);
+    if (previousSeat && previousSeat !== sk) {
+      this.seatToAvatar.delete(previousSeat);
+    }
+    const previousAvatar = this.seatToAvatar.get(sk);
+    if (previousAvatar && previousAvatar !== avatarId) {
+      this.reservations.delete(previousAvatar);
+    }
+    this.reservations.set(avatarId, sk);
+    this.seatToAvatar.set(sk, avatarId);
+    return true;
+  }
+
   /** Release the bot reserved to (tableId, seatIndex). Idempotent. */
   release(tableId: string, seatIndex: number): void {
     const sk = this.seatKey(tableId, seatIndex);
@@ -427,6 +523,11 @@ class CashHouseSeederService {
     this.ensuringPromise = null;
     this.reservations.clear();
     this.seatToAvatar.clear();
+  }
+
+  /** Test hook: model a process restart from authoritative active seat rows. */
+  __rehydrateForTest(rows: readonly ActiveSeededBotSeat[]): void {
+    this.rehydrateReservations(rows);
   }
 }
 

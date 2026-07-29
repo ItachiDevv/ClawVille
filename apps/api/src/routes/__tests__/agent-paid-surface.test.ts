@@ -39,7 +39,9 @@ describe('agent paid surfaces', () => {
 
   it('publishes the additive commerce and default-off exit contract', () => {
     const manual = buildProtocolManual('https://api.example.test');
-    expect(PROTOCOL_VERSION).toBe(40);
+    // 41 = cove recovery re-land (BA-1 /last-settled + W-D baccarat
+    // settled-coup recovery documented in the manual; see skill-protocol.ts).
+    expect(PROTOCOL_VERSION).toBe(41);
     expect(manual).toContain('POST https://api.example.test/api/agent-pay');
     expect(manual).toContain('Idempotency-Key');
     expect(manual).toContain('/api/v2/agent/expert-consult');

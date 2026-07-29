@@ -273,7 +273,8 @@ export function useHoldemAction() {
 }
 
 // ---------------------------------------------------------------------------
-// useCloseHoldemTable — POST /session/close (Lucia auth → reveals seed + cashes out)
+// useCloseHoldemTable — POST /session/close (any owner: authed/agent cash out +
+// seed reveal; guest closes its own demo table with no ledger ops)
 // ---------------------------------------------------------------------------
 
 export interface CloseHoldemArgs {

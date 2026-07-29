@@ -38,11 +38,15 @@ import {
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { users } from './users';
+import { coveTestFixtureRuns } from './cove-test-fixture';
 
 export const baccaratShoes = pgTable(
   'baccarat_shoes',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    fixtureRunId: uuid('fixture_run_id').references(() => coveTestFixtureRuns.runId, {
+      onDelete: 'restrict',
+    }),
     /** Exactly one of (userId, guestFpHash) is set (XOR check below). */
     userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
     guestFpHash: text('guest_fp_hash'),
@@ -60,6 +64,7 @@ export const baccaratShoes = pgTable(
     cursorCounter: integer('cursor_counter').notNull().default(0),
     /** Cards dealt so far this shoe. Crosses 312 (75% of 416) ⇒ shoe rolls. */
     dealtCount: integer('dealt_count').notNull().default(0),
+    fixtureInitialDealtCount: integer('fixture_initial_dealt_count').notNull().default(0),
     /** For authed users: snapshot of avatar.clawTokens at open (UI display). Guest: demo wallet. */
     startingBalance: text('starting_balance').notNull(),
     /** Net shoe P&L (signed, stringified bigint). */

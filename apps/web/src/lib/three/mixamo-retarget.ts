@@ -1,10 +1,43 @@
 /**
  * mixamo-retarget.ts
  *
- * Retargets a Mixamo AnimationClip to a VRM humanoid skeleton.
+ * Retargets a Mixamo (or Meshy) AnimationClip to a VRM humanoid skeleton.
  *
  * This is a direct port of Milady's retargetMixamoGltfToVrm (MIT-licensed):
  *   milady-ai/milady/packages/app-core/src/components/avatar/retargetMixamoGltfToVrm.ts
+ *
+ * Meshy support (2026-07-12, cove sit-flow slice): the rest-pose-differential
+ * math below is source-rig-agnostic — it reads the CLIP's own scene for rest
+ * poses, not a hardcoded skeleton — so a second bone-name map (`meshyVRMRigMap`)
+ * plus a near-identity normalizer covers Meshy's animation-library clips. Both
+ * wrappers call a shared `buildRetargetedClip()` core, but explicitly select
+ * source policies. Mixamo preserves the legacy VRM0 X/Z quaternion flip and
+ * all-mapped-bones position output byte-for-byte. Meshy preserves that flip
+ * for the already-validated hips/legs. Clean rigs skip it for the arm chains,
+ * whose GLB quaternions are already target-handed after the rest differential;
+ * the known scale-100 Mixamo-era rigs expose a vertical raw-arm basis instead,
+ * so Meshy reflects X/Z for those eight arm bones only. Meshy also keeps only
+ * hips translation because its exports bake junk position channels.
+ *
+ * Meshy bone-name ground truth was NOT assumed — verified headlessly against
+ * the actual clip GLBs (`stand_to_sit.glb`, `sit_idle_m/f.glb`, etc.) fired
+ * from Meshy's animation library (action IDs 57/60/33/32/53/52) onto a rig
+ * from our own `/rigging` task: bare names (`Hips`, `LeftUpLeg`, `Spine01`, …,
+ * lowercase `neck`), no fingers — matching `scripts/hermes-pipeline/
+ * inject-vrm-meshy.mjs`'s `MESHY_TO_VRM` map exactly. The skeleton has 24
+ * skin joints total; 22 map to VRM humanoid bones (`meshyVRMRigMap` below) —
+ * `head_end` and `headfront` are deliberately unmapped (no VRM humanoid
+ * equivalent, harmless to skip).
+ * Also verified the clip GLBs share a BIT-IDENTICAL rest pose with the rigging
+ * task's own `rigged.glb` (diffed Hips + 5 other bones' rest rotation
+ * component-for-component) — Meshy's animation library retargets onto the
+ * exact rig it just built, not a separate shared skeleton with a different
+ * rest pose, so there is no cross-rig pose divergence for the differential
+ * transform to fight for this specific clip set. THREE's GLTFLoader resolves
+ * `channel.target.node` to the node's own `name` (no "Armature|" FBX-export
+ * prefix the way Mixamo's glTF conversion embeds one) — track names for these
+ * clips are already bare ("Hips.quaternion"), so `normalizeMeshyRigName` is a
+ * defensive near-identity, not a real parser.
  *
  * Root cause of the permanent T-pose bug (naive clone+rename approach):
  *   A Mixamo bone's keyframe quaternions are stored relative to the Mixamo
@@ -109,6 +142,44 @@ export const mixamoVRMRigMap: Record<string, VRMHumanBoneName> = {
 };
 
 // ---------------------------------------------------------------------------
+// Meshy bone name → VRMHumanBoneName
+//
+// Bare names, no namespace/prefix — verified against the actual clip GLBs
+// (see file header) and cross-checked against
+// scripts/hermes-pipeline/inject-vrm-meshy.mjs's MESHY_TO_VRM (the injector
+// that gives our rigged Meshy characters their VRMC_vrm humanoid mapping in
+// the first place, so this MUST agree with it or the same clip would resolve
+// to different VRM bones depending on which map ran first).
+// No finger bones — Meshy's /rigging output has 24 skin joints total, none
+// of them fingers.
+// ---------------------------------------------------------------------------
+
+export const meshyVRMRigMap: Record<string, VRMHumanBoneName> = {
+  Hips:           'hips',
+  Spine:          'spine',
+  Spine01:        'chest',
+  Spine02:        'upperChest',
+  neck:           'neck', // lowercase in Meshy's own rig — not a typo
+  Head:           'head',
+  LeftShoulder:   'leftShoulder',
+  LeftArm:        'leftUpperArm',
+  LeftForeArm:    'leftLowerArm',
+  LeftHand:       'leftHand',
+  RightShoulder:  'rightShoulder',
+  RightArm:       'rightUpperArm',
+  RightForeArm:   'rightLowerArm',
+  RightHand:      'rightHand',
+  LeftUpLeg:      'leftUpperLeg',
+  LeftLeg:        'leftLowerLeg',
+  LeftFoot:       'leftFoot',
+  LeftToeBase:    'leftToes',
+  RightUpLeg:     'rightUpperLeg',
+  RightLeg:       'rightLowerLeg',
+  RightFoot:      'rightFoot',
+  RightToeBase:   'rightToes',
+};
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -141,6 +212,20 @@ function normalizeMixamoRigName(name: string): string {
   }
 
   return base;
+}
+
+/**
+ * Normalize a Meshy rig node name. Verified (see file header) that THREE's
+ * GLTFLoader hands us bare names ("Hips", "LeftUpLeg", …) directly with no
+ * "Armature|" export-path prefix — so this is a defensive identity, kept as
+ * a real function (not a bare pass of the name) only so a future Meshy export
+ * variant with a pipe-prefixed name doesn't silently fail to map, mirroring
+ * normalizeMixamoRigName's pipe-stripping without needing colon/namespace
+ * handling (Meshy names carry no colon).
+ */
+function normalizeMeshyRigName(name: string): string {
+  const pipe = name.lastIndexOf('|');
+  return pipe >= 0 ? name.slice(pipe + 1) : name;
 }
 
 function isVrm0(vrm: VRM): boolean {
@@ -180,26 +265,221 @@ export interface MixamoGltf {
   animations: THREE.AnimationClip[];
 }
 
+type PositionTrackPolicy = 'legacy-all' | 'hips-only';
+type Vrm0QuaternionPolicy = 'legacy-all' | 'meshy-arm-chain-target-handed';
+
+const MESHY_TARGET_HANDED_ARM_BONES: ReadonlySet<VRMHumanBoneName> = new Set([
+  'leftShoulder',
+  'leftUpperArm',
+  'leftLowerArm',
+  'leftHand',
+  'rightShoulder',
+  'rightUpperArm',
+  'rightLowerArm',
+  'rightHand',
+]);
+
 /**
- * Retarget a Mixamo animation GLB to a VRM humanoid skeleton.
- *
- * @param animation  The loaded Mixamo GLB ({ scene, animations }).
- *                   animation.scene must have its matrixWorld updated before
- *                   calling (call animation.scene.updateMatrixWorld(true)).
- * @param vrm        The target VRM instance (vrm.scene.updateMatrixWorld(true)
- *                   called internally).
- * @param clipName   Optional name for the returned clip (defaults to source clip name).
- *
- * @throws if the GLB has no animation clips, or if no hips track could be mapped.
- *
- * The returned AnimationClip targets `vrmNode.name + '.quaternion'` tracks.
- * The AnimationMixer MUST be rooted at `vrm.scene` (not normalizedHumanBonesRoot)
- * so that PropertyBinding can resolve Normalized_* node names via
- * vrm.scene.getObjectByName().
+ * Hermes-female's Mixamo-era VRM 1 export bakes a uniform scale of ~100 into
+ * raw Hips and expresses both upper-arm offsets primarily along local Y;
+ * Hermes-male/Tekk share that detected signature. Clean Milady rigs use scale
+ * 1 and a horizontal local-X arm basis. Hermes-female raw-rig sampling proves
+ * the Meshy arm channels need the opposite X/Z convention on that scaled
+ * vertical basis. Keep this structural (the affected assets have no reliable
+ * authored name/title metadata) and require both sides so a lone unusual bone
+ * cannot opt an otherwise clean rig into the compatibility path.
  */
-export function retargetMixamoClip(
+function hasScaledVerticalRawArmBasis(vrm: VRM): boolean {
+  const hips = vrm.humanoid?.getRawBoneNode('hips');
+  const leftUpperArm = vrm.humanoid?.getRawBoneNode('leftUpperArm');
+  const rightUpperArm = vrm.humanoid?.getRawBoneNode('rightUpperArm');
+  if (!hips || !leftUpperArm || !rightUpperArm) return false;
+
+  const hipsScale = [Math.abs(hips.scale.x), Math.abs(hips.scale.y), Math.abs(hips.scale.z)];
+  const minHipsScale = Math.min(...hipsScale);
+  const maxHipsScale = Math.max(...hipsScale);
+  const hipsHasBakedScale = minHipsScale > 10 && maxHipsScale / minHipsScale <= 1.01;
+  const isVertical = (position: THREE.Vector3): boolean => {
+    const y = Math.abs(position.y);
+    return y > 1e-6 && y > Math.abs(position.x) * 4 && y > Math.abs(position.z) * 4;
+  };
+
+  return hipsHasBakedScale && isVertical(leftUpperArm.position) && isVertical(rightUpperArm.position);
+}
+
+/**
+ * Per-VRM-instance memo for `measureVrmHipsHeightAboveFloor` — see that
+ * function's doc comment for why this must be BOTH pose-safe and cached.
+ * WeakMap keyed by the VRM instance so disposed VRMs don't leak entries.
+ */
+const _vrmHipsHeightCache = new WeakMap<VRM, number>();
+
+/**
+ * Measure a VRM's live hip height above its skinned-mesh floor at scale=1.
+ * This bbox-floor quantity is useful for the cove seat-height assertion and
+ * future world-space measurements, but it is deliberately NOT the retarget
+ * scale basis: retarget tracks bind to normalized humanoid nodes, so their
+ * frame-correct target basis is `normalizedRestPose.hips.position[1]`.
+ *
+ * The measurement hardening remains load-bearing for its own consumers. It
+ * saves/resets/restores raw pose and scene scale exception-safely, refreshes
+ * skeleton matrices and skinned bounds, divides out parent Y scale on a
+ * defensive parented call, and caches only an eager pre-animator prime. That
+ * ordering matters because `VRMCharacterAnimator` later replaces automatic
+ * `skeleton.update()` calls with its batched flush; a post-animator bbox read
+ * could otherwise combine current bone nodes with stale bone matrices.
+ *
+ * A non-eager call is best-effort and deliberately not cached. The eager
+ * prime therefore runs once per VRM instance at load time, while future live
+ * callers remain visible through the development warning below.
+ */
+function measureVrmHipsHeightAboveFloor(vrm: VRM, _isEagerPrime = false): number {
+  const cached = _vrmHipsHeightCache.get(vrm);
+  if (cached !== undefined) return cached;
+
+  if (!_isEagerPrime && typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production') {
+    console.warn(
+      '[mixamo-retarget] measureVrmHipsHeightAboveFloor: cache was cold on a ' +
+      'non-eager measurement — primeVrmHipsHeightCache(vrm) should have run at ' +
+      'VRM load time (vrm-loader.ts normaliseVRM), before any ' +
+      'VRMCharacterAnimator existed for this instance. Proceeding with a ' +
+      'best-effort measurement, which may read a stale/mixed pose if an ' +
+      'animator has already monkey-patched this VRM\'s skeleton.update.',
+    );
+  }
+
+  const hipsNode = vrm.humanoid?.getRawBoneNode('hips' as VRMHumanBoneName);
+  if (!hipsNode) return 0;
+
+  const savedPose = vrm.humanoid!.getRawPose();
+  const prevScale = vrm.scene.scale.clone();
+  let ancestorScaleY = 1;
+  if (vrm.scene.parent) {
+    // Eager priming runs unparented; compensate for ancestor scale only as a
+    // defensive measure on a best-effort non-eager call.
+    const ancestorScale = new THREE.Vector3();
+    vrm.scene.parent.getWorldScale(ancestorScale);
+    if (Number.isFinite(ancestorScale.y) && Math.abs(ancestorScale.y) > Number.EPSILON) {
+      ancestorScaleY = ancestorScale.y;
+    }
+  }
+
+  let result = 0;
+  let measurementError: unknown;
+  let measurementFailed = false;
+  let restoreError: unknown;
+  let restoreFailed = false;
+  try {
+    vrm.humanoid!.resetRawPose();
+    vrm.scene.scale.setScalar(1);
+    vrm.scene.updateMatrixWorld(true);
+
+    // Settle skeleton bone matrices before measuring — same requirement
+    // computeVRMAvatarFit documents: Box3.setFromObject on a SkinnedMesh reads
+    // skeleton.boneMatrices, which are stale/zero until skeleton.update() runs.
+    vrm.scene.traverse((obj) => {
+      const sm = obj as THREE.SkinnedMesh;
+      if (sm.isSkinnedMesh && sm.skeleton) sm.skeleton.update();
+    });
+    // Refresh each skinned bound after every skeleton has settled:
+    // setFromObject otherwise may reuse a box cached under a previous pose.
+    vrm.scene.traverse((obj) => {
+      const sm = obj as THREE.SkinnedMesh;
+      if (sm.isSkinnedMesh) sm.computeBoundingBox();
+    });
+
+    const box = new THREE.Box3().setFromObject(vrm.scene);
+    const hipsWorldPos = new THREE.Vector3();
+    hipsNode.getWorldPosition(hipsWorldPos);
+
+    const height = (hipsWorldPos.y - box.min.y) / ancestorScaleY;
+    result = Number.isFinite(height) ? Math.abs(height) : 0;
+  } catch (error) {
+    measurementError = error;
+    measurementFailed = true;
+  } finally {
+    // Restore whatever pose the caller's animation had the VRM in — this
+    // function must be a read, never visibly disturb a live character. Try
+    // every step even if one fails, and never mask the measurement exception.
+    const tryRestore = (restore: () => void): void => {
+      try {
+        restore();
+      } catch (error) {
+        if (!restoreFailed) restoreError = error;
+        restoreFailed = true;
+      }
+    };
+
+    tryRestore(() => vrm.scene.scale.copy(prevScale));
+    tryRestore(() => vrm.humanoid!.setRawPose(savedPose));
+    tryRestore(() => vrm.scene.updateMatrixWorld(true));
+    tryRestore(() => {
+      vrm.scene.traverse((obj) => {
+        const sm = obj as THREE.SkinnedMesh;
+        if (sm.isSkinnedMesh && sm.skeleton) sm.skeleton.update();
+      });
+    });
+    tryRestore(() => {
+      vrm.scene.traverse((obj) => {
+        const sm = obj as THREE.SkinnedMesh;
+        if (sm.isSkinnedMesh) sm.computeBoundingBox();
+      });
+    });
+  }
+
+  if (measurementFailed) throw measurementError;
+  if (restoreFailed) throw restoreError;
+  if (_isEagerPrime) _vrmHipsHeightCache.set(vrm, result);
+  return result;
+}
+
+/**
+ * Eagerly populate `_vrmHipsHeightCache` for a freshly-parsed VRM. MUST be
+ * called before any `VRMCharacterAnimator` is constructed for this VRM
+ * instance — see `measureVrmHipsHeightAboveFloor`'s "POSE-SAFETY, ROUND 2"
+ * doc comment for why that ordering is load-bearing (skeleton.update() gets
+ * monkey-patched to a no-op the moment an animator exists).
+ *
+ * Canonical call site: `vrm-loader.ts` `normaliseVRM(vrm)`, which runs
+ * inside the parse queue before the VRM is handed to any consumer. Every
+ * humanoid VRM in the game goes through that path (it's the sole producer
+ * behind `useVRMInstance`), so calling this unconditionally there covers the
+ * whole roster without per-consumer opt-in — no risk of "did I remember to
+ * prime this specific character" bugs.
+ */
+export function primeVrmHipsHeightCache(vrm: VRM): void {
+  measureVrmHipsHeightAboveFloor(vrm, /* _isEagerPrime */ true);
+}
+
+/**
+ * Shared rest-pose-differential retarget core. Both `retargetMixamoClip` and
+ * `retargetMeshyClip` call this with their own bone-name map + normalizer —
+ * the math itself doesn't care which source rig it came from, only the
+ * clip's OWN scene rest pose (read fresh per call, never hardcoded).
+ *
+ * @param animation      The loaded source GLB ({ scene, animations }).
+ *                       animation.scene must have its matrixWorld updated
+ *                       before calling (done internally below).
+ * @param vrm            The target VRM instance.
+ * @param rigMap         Source rig bone name → VRMHumanBoneName.
+ * @param normalizeName  Normalizes a raw track rig-name before rigMap lookup.
+ * @param positionTracks Selects legacy all-bone translations (Mixamo) or the
+ *                       hips-only safety gate required by Meshy exports.
+ * @param vrm0Quaternion Selects the legacy all-bone VRM0 component flip or
+ *                       Meshy's arm-chain exception to that legacy policy.
+ * @param sourceLabel    Only used in error messages (e.g. "mixamo-retarget"
+ *                       vs "meshy-retarget") so a thrown error identifies
+ *                       which pipeline failed.
+ * @param clipName       Optional name for the returned clip.
+ */
+function buildRetargetedClip(
   animation: MixamoGltf,
   vrm: VRM,
+  rigMap: Record<string, VRMHumanBoneName>,
+  normalizeName: (name: string) => string,
+  positionTracks: PositionTrackPolicy,
+  vrm0Quaternion: Vrm0QuaternionPolicy,
+  sourceLabel: string,
   clipName?: string,
 ): THREE.AnimationClip {
   animation.scene.updateMatrixWorld(true);
@@ -207,7 +487,7 @@ export function retargetMixamoClip(
 
   const sourceClip = animation.animations[0];
   if (!sourceClip) {
-    throw new Error('[mixamo-retarget] GLB contains no animation clips');
+    throw new Error(`[${sourceLabel}] GLB contains no animation clips`);
   }
 
   const tracks: THREE.QuaternionKeyframeTrack[] = [];
@@ -218,12 +498,23 @@ export function retargetMixamoClip(
   const q                        = new THREE.Quaternion();
 
   const vrm0 = isVrm0(vrm);
+  const meshyScaledVerticalArmBasis =
+    !vrm0 &&
+    vrm0Quaternion === 'meshy-arm-chain-target-handed' &&
+    hasScaledVerticalRawArmBasis(vrm);
 
-  // Compute hip position scale (vrmHipsHeight / motionHipsHeight) so that
-  // the hip vertical bob in the clip lands at the VRM's hip height. Without
-  // this the bob is in Mixamo-rig units (character ~1.5m tall) applied to a
-  // VRM that may be taller/shorter → disproportionate vertical movement.
-  const motionHipsNode = findNode(animation.scene, 'mixamorigHips', 'mixamorigHips');
+  // Compute hip position scale (normalized-rest target hips Y / source-rest
+  // hips Y). Retargeted tracks bind to normalized humanoid nodes, so both
+  // sides must use rest values in that target space; the bbox-floor utility
+  // above measures a different world-space quantity and is not a valid basis.
+  // This makes the hip vertical bob land at the VRM's normalized hip height. Without
+  // this the bob is in source-rig units (character ~1.5-1.7m tall) applied to
+  // a VRM that may be taller/shorter → disproportionate vertical movement.
+  // Hips is looked up by normalized name directly against the source scene —
+  // works for both "mixamorigHips" (Mixamo) and "Hips" (Meshy) since
+  // normalizeName has already been applied by the caller's map convention.
+  const hipsRawName = Object.keys(rigMap).find((k) => rigMap[k] === 'hips') ?? 'Hips';
+  const motionHipsNode = findNode(animation.scene, hipsRawName, hipsRawName);
   const motionHipsHeight = Math.abs(motionHipsNode?.position.y ?? 0);
   const vrmHipsHeight = Math.abs(
     (vrm.humanoid as any)?.normalizedRestPose?.hips?.position?.[1] ?? 0,
@@ -239,8 +530,8 @@ export function retargetMixamoClip(
     const propertyName = parts[1];
     if (!rawRigName || !propertyName) continue;
 
-    const normalizedRigName = normalizeMixamoRigName(rawRigName);
-    const vrmBoneName       = mixamoVRMRigMap[normalizedRigName];
+    const normalizedRigName = normalizeName(rawRigName);
+    const vrmBoneName       = rigMap[normalizedRigName];
     if (!vrmBoneName) continue;
 
     // IMPORTANT: getNormalizedBoneNode, not getRawBoneNode.
@@ -264,20 +555,42 @@ export function retargetMixamoClip(
         q.toArray(values, i);
       }
 
+      const isMeshyArmChain =
+        vrm0Quaternion === 'meshy-arm-chain-target-handed' &&
+        MESHY_TARGET_HANDED_ARM_BONES.has(vrmBoneName);
+      // The four `cove_*` frozen poses author Spine/Head explicitly in the
+      // normalized human frame, just like their arm chains. Reflecting X/Z a
+      // second time on VRM0 targets reverses the authored forward pitch
+      // (cove_watch -19deg source delta became +19deg backward live). Legacy
+      // Meshy library clips keep the established all-non-arm VRM0 reflection;
+      // this exception is narrowly keyed to our authored clips + torso bones.
+      const isAuthoredCoveTorso =
+        vrm0Quaternion === 'meshy-arm-chain-target-handed' &&
+        clipName?.startsWith('cove_') === true &&
+        (vrmBoneName === 'spine' || vrmBoneName === 'head');
+      // Clean Meshy targets keep their already-target-handed arm channels.
+      // The scale-100 vertical-arm family needs the opposite arm-only basis;
+      // non-arm tracks retain the existing VRM0 rule, and Mixamo never enters
+      // this source-specific branch.
+      const reflectXZ = isMeshyArmChain
+        ? meshyScaledVerticalArmBasis
+        : isAuthoredCoveTorso
+          ? false
+          : vrm0;
+
       tracks.push(
         new THREE.QuaternionKeyframeTrack(
           `${vrmNode.name}.quaternion`,
           track.times,
-          // VRM 0.x axis flip: VRMUtils.rotateVRM0 adds π rotation to vrm.scene,
-          // which inverts the X and Z axes of every bone. Every even-indexed component
-          // (x, z in each xyzw tuple) must be negated to compensate.
-          values.map((v, i) => (vrm0 && i % 2 === 0 ? -v : v)),
+          // Legacy VRM 0.x axis flip: VRMUtils.rotateVRM0 adds π rotation to
+          // vrm.scene, so Mixamo negates every x/z quaternion component.
+          values.map((v, i) => (reflectXZ && i % 2 === 0 ? -v : v)),
         ),
       );
       continue;
     }
 
-    // Position tracks (typically only on hips): keep ONLY the Y axis
+    // Position tracks: keep ONLY the Y axis
     // (vertical hip bob). Rationale: Mixamo walk/run clips encode forward
     // motion as positive Z on the hip bone. After the VRM 0.x coord flip
     // (i%3!=1 → negate X and Z) that becomes -Z locally; combined with
@@ -291,7 +604,21 @@ export function retargetMixamoClip(
     // Y axis is safe — vertical bob doesn't conflict with horizontal
     // game-position. We keep it so hair/skirt spring bones receive the
     // vertical shock they need to swing naturally.
-    if (propertyName === 'position' && track instanceof THREE.VectorKeyframeTrack) {
+    //
+    // Policy is deliberately selected by the public wrappers, not inferred
+    // here. Mixamo's `legacy-all` path re-emits every mapped position track in
+    // source order exactly as production did before 736a2c33 (including the
+    // force-sampled translations produced by blender-convert-anims.py).
+    // Meshy's `hips-only` path drops its junk per-bone translation channels:
+    // stand_to_sit.glb's LeftUpLeg track, for example, is two identical copies
+    // of the rest-local offset (1.282, -4.161, 10.124). Scaling that Y with a
+    // hips-specific factor would deform the target skeleton; only the real
+    // hips descent is retained.
+    if (
+      propertyName === 'position' &&
+      track instanceof THREE.VectorKeyframeTrack &&
+      (positionTracks === 'legacy-all' || vrmBoneName === 'hips')
+    ) {
       const src = track.values;
       const values = new Float32Array(src.length);
       for (let i = 0; i < src.length; i += 3) {
@@ -318,9 +645,8 @@ export function retargetMixamoClip(
 
   if (!hasHipsTrack) {
     throw new Error(
-      `[mixamo-retarget] Retargeting failed: no hips bone track found ` +
-        `(mapped ${tracks.length} tracks total). ` +
-        'Expected Mixamo bone names like mixamorigHips / mixamorigSpine...',
+      `[${sourceLabel}] Retargeting failed: no hips bone track found ` +
+        `(mapped ${tracks.length} tracks total, rig map has ${Object.keys(rigMap).length} entries).`,
     );
   }
 
@@ -328,4 +654,72 @@ export function retargetMixamoClip(
   const clip = new THREE.AnimationClip(name, sourceClip.duration, tracks);
   clip.optimize();
   return clip;
+}
+
+/**
+ * Retarget a Mixamo animation GLB to a VRM humanoid skeleton.
+ *
+ * @param animation  The loaded Mixamo GLB ({ scene, animations }).
+ *                   animation.scene must have its matrixWorld updated before
+ *                   calling (call animation.scene.updateMatrixWorld(true)).
+ * @param vrm        The target VRM instance (vrm.scene.updateMatrixWorld(true)
+ *                   called internally).
+ * @param clipName   Optional name for the returned clip (defaults to source clip name).
+ *
+ * @throws if the GLB has no animation clips, or if no hips track could be mapped.
+ *
+ * The returned AnimationClip targets `vrmNode.name + '.quaternion'` tracks.
+ * The AnimationMixer MUST be rooted at `vrm.scene` (not normalizedHumanBonesRoot)
+ * so that PropertyBinding can resolve Normalized_* node names via
+ * vrm.scene.getObjectByName().
+ */
+export function retargetMixamoClip(
+  animation: MixamoGltf,
+  vrm: VRM,
+  clipName?: string,
+): THREE.AnimationClip {
+  return buildRetargetedClip(
+    animation,
+    vrm,
+    mixamoVRMRigMap,
+    normalizeMixamoRigName,
+    'legacy-all',
+    'legacy-all',
+    'mixamo-retarget',
+    clipName,
+  );
+}
+
+/**
+ * Retarget a Meshy animation-library GLB to a VRM humanoid skeleton.
+ * Same rest-pose-differential math as `retargetMixamoClip`, different bone
+ * map + normalizer (see file header for the verification this map is built
+ * on). Unlike the legacy Mixamo path, clean Meshy targets skip the VRM0 X/Z
+ * component flip for shoulder/arm/forearm/hand chains: headless source-vs-raw-
+ * rig sampling proved those channels are already target-handed after the rest
+ * differential. The scale-100 Mixamo-era vertical-arm family needs that arm-
+ * only reflection restored; the predicate reads raw rest basis, not unreliable
+ * asset metadata. Hips/legs retain their validated legacy output unchanged.
+ * Meshy also uses an explicit hips-only position policy: its exports bake
+ * junk rest-local translation onto every bone, while hips carries the real
+ * seated descent. X/Z are still zeroed and hips Y is scaled from source-rest
+ * hips height into the target VRM's normalized-rest hips height. `walk_to_sit`
+ * remains deliberately unwired because it carries large real forward hip
+ * drift that requires distance-matched root-motion consumption.
+ */
+export function retargetMeshyClip(
+  animation: MixamoGltf,
+  vrm: VRM,
+  clipName?: string,
+): THREE.AnimationClip {
+  return buildRetargetedClip(
+    animation,
+    vrm,
+    meshyVRMRigMap,
+    normalizeMeshyRigName,
+    'hips-only',
+    'meshy-arm-chain-target-handed',
+    'meshy-retarget',
+    clipName,
+  );
 }

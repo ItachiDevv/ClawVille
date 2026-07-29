@@ -29,8 +29,15 @@
  */
 
 import type { Card } from '../holdem-engine';
+import type { SettledPotResult } from '@clawville/shared';
 
 export type { Card };
+export type {
+  CashSettledHandSnapshot,
+  CashSettledSeat,
+  SettledPotResult,
+  TypedHandRank,
+} from '@clawville/shared';
 
 /** Streets, in order. Showdown is the terminal "betting is closed" state. */
 export type Street = 'preflop' | 'flop' | 'turn' | 'river' | 'showdown';
@@ -242,6 +249,11 @@ export interface HandResult {
   perSeat: HandResultSeat[];
   board: Card[];
   sidePots: PublicSidePot[];
+  /**
+   * Full-fidelity terminal pot truth captured before the public `sidePots`
+   * projection discards winners, award amounts, and winning ranks.
+   */
+  settledPots: SettledPotResult[];
   /** The street the hand ended on. */
   endedAt: Street;
   endedAtMs: number;

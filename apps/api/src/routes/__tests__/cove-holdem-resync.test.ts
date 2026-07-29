@@ -19,13 +19,19 @@ import {
   SEATS,
   SMALL_BLIND,
   BIG_BLIND,
+  serializeHoldemHand,
   type HoldemActionRecord,
 } from '../../services/holdem-engine';
 import {
   buildInProgressHandView,
+  publicActionLogFromPeek,
   runEngine,
   type InProgressHandRow,
 } from '../cove-holdem';
+import {
+  deriveHoldemPublicSeats,
+  type SerializedHoldemLogEntry,
+} from '@clawville/shared';
 
 const SERVER = 'b'.repeat(64);
 const CLIENT = 'cafebabe';
@@ -200,5 +206,107 @@ describe('cove-holdem — buildInProgressHandView (resync view builder)', () => 
       actions: null,
     });
     expect(view.humanHole.length).toBe(2);
+  });
+
+  it('public logs grow as strict prefixes and the settled log extends every view', () => {
+    let checked = 0;
+    for (let nonce = 0; nonce < 40; nonce += 1) {
+      const buttonSeat = nonce % SEATS;
+      const views = walkViews(nonce, buttonSeat, 100n);
+      if (views.length < 2) continue;
+      const logs = views.map(({ view }) => view.publicActionLog);
+      for (let index = 0; index + 1 < logs.length; index += 1) {
+        const before = logs[index]!;
+        const after = logs[index + 1]!;
+        expect(after.length).toBeGreaterThan(before.length);
+        expect(after.slice(0, before.length)).toEqual(before);
+      }
+
+      const settled = serializeHoldemHand(runEngine(
+        TABLE,
+        { handIndex: nonce, buttonSeat, startingStack: '100' },
+        Array.from({ length: views.length }, () => ({ type: 'call' as const })),
+      ));
+      for (const publicLog of logs) {
+        expect(settled.actionLog.length).toBeGreaterThan(publicLog.length);
+        expect(settled.actionLog.slice(0, publicLog.length)).toEqual(publicLog);
+      }
+      checked += 1;
+    }
+    expect(checked).toBeGreaterThan(0);
+  });
+
+  it('never includes the synthetic fold or any post-fold continuation', () => {
+    const log: SerializedHoldemLogEntry[] = [
+      { seat: 1, street: 'preflop', type: 'post-sb', amount: '1', isHuman: false },
+      { seat: 2, street: 'preflop', type: 'post-bb', amount: '2', isHuman: false },
+      { seat: 3, street: 'preflop', type: 'call', amount: '2', isHuman: false },
+      { seat: 0, street: 'preflop', type: 'fold', amount: '0', isHuman: true },
+      { seat: 4, street: 'flop', type: 'bet', amount: '8', isHuman: false },
+      { seat: 5, street: 'flop', type: 'fold', amount: '0', isHuman: false },
+    ];
+    expect(publicActionLogFromPeek(log)).toEqual(log.slice(0, 3));
+  });
+
+  it('includes both blind posts in the first preflop public view', () => {
+    let checked = false;
+    for (let nonce = 0; nonce < 40 && !checked; nonce += 1) {
+      const buttonSeat = nonce % SEATS;
+      const handMeta = { handIndex: nonce, buttonSeat, startingStack: '100' };
+      if (isTerminal(handMeta, [])) continue;
+      const view = buildInProgressHandView(TABLE, row('h', nonce, buttonSeat, '100', []));
+      expect(view.publicActionLog.some((entry) => entry.type === 'post-sb')).toBe(true);
+      expect(view.publicActionLog.some((entry) => entry.type === 'post-bb')).toBe(true);
+      checked = true;
+    }
+    expect(checked).toBe(true);
+  });
+
+  it('does not build an in-progress peek after the human goes all-in', () => {
+    // Once seat 0 reaches stack=0, every later betting round skips it. The
+    // engine completes from the recorded shove alone, so the route settles
+    // instead of calling buildInProgressHandView. Thus every reachable peek's
+    // last human log entry remains the synthetic fold.
+    expect(isTerminal(
+      { handIndex: 0, buttonSeat: 0, startingStack: '10' },
+      [{ type: 'raise', amount: '10' }],
+    )).toBe(true);
+  });
+});
+
+describe('deriveHoldemPublicSeats', () => {
+  it('uses last-per-street commitments across a raise re-commit and a fold', () => {
+    const log: SerializedHoldemLogEntry[] = [
+      { seat: 1, street: 'preflop', type: 'post-sb', amount: '1', isHuman: false },
+      { seat: 0, street: 'preflop', type: 'call', amount: '2', isHuman: true },
+      { seat: 1, street: 'preflop', type: 'raise', amount: '6', isHuman: false },
+      { seat: 0, street: 'preflop', type: 'call', amount: '6', isHuman: true },
+      { seat: 1, street: 'flop', type: 'bet', amount: '4', isHuman: false },
+      { seat: 0, street: 'flop', type: 'fold', amount: '0', isHuman: true },
+    ];
+    expect(deriveHoldemPublicSeats(log)).toEqual({
+      0: {
+        folded: true,
+        streetCommitted: '0',
+        totalCommitted: '6',
+        lastAction: { type: 'fold', amount: '0' },
+      },
+      1: {
+        folded: false,
+        streetCommitted: '4',
+        totalCommitted: '10',
+        lastAction: { type: 'bet', amount: '4' },
+      },
+    });
+  });
+
+  it('keeps decimal bigint strings exact beyond Number.MAX_SAFE_INTEGER', () => {
+    const huge = '900719925474099312345';
+    const derived = deriveHoldemPublicSeats([
+      { seat: 2, street: 'preflop', type: 'raise', amount: huge, isHuman: false },
+      { seat: 2, street: 'turn', type: 'bet', amount: '7', isHuman: false },
+    ]);
+    expect(derived[2]!.streetCommitted).toBe('7');
+    expect(derived[2]!.totalCommitted).toBe('900719925474099312352');
   });
 });

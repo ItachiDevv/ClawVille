@@ -329,6 +329,10 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
         camera: {
           fov: 65,
           near: 1,
+          // Install-time placeholder — StageHostedCoveScene raises this to
+          // COVE_CAMERA_FAR (room-scale-derived) after camera install; the
+          // constant lives in the lazy cove chunk to keep this root eager-
+          // bundle-free of cove-interior.
           far: 2_000,
           position: [0, 55, 400],
           lookAt: [0, 70, -411],

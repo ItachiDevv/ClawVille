@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useThree } from '@react-three/fiber';
 import type { Camera, Scene } from 'three/webgpu';
-import CoveInteriorScene from '@/lib/three/cove-interior';
+import CoveInteriorScene, { COVE_CAMERA_FAR } from '@/lib/three/cove-interior';
 import { useSceneActive } from './use-scene-frame';
 import { useStageStore } from './stage-store';
 import { withStageSlotFrustumCullingDisabled } from './resource-ledger';
@@ -38,6 +38,22 @@ export default function StageHostedCoveScene({
       .getState()
       .setSceneWarming(COVE_SCENE_ID, generation);
   }, [generation, requested]);
+
+  // Room-scale-derived far plane (re-land of the CoveCanvas 2026-07-11 fix):
+  // the stage's static cove scene config carries a flat far=2000, which
+  // undershoots the room's 3D bbox diagonal (COVE_CAMERA_FAR, 2600 at the
+  // current knob) and far-clips the interior. Applied only after the stage's
+  // camera install for this generation, so the install write cannot clobber
+  // it; switching back to the world re-installs that scene's own camera.
+  // Lives in this lazy chunk so WorldStageRoot never eagerly imports the
+  // cove-interior module for one constant.
+  useEffect(() => {
+    if (!cameraInstalled) return;
+    if (camera.far !== COVE_CAMERA_FAR) {
+      camera.far = COVE_CAMERA_FAR;
+      camera.updateProjectionMatrix();
+    }
+  }, [camera, cameraInstalled]);
 
   useEffect(() => {
     if (

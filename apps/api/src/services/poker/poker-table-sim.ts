@@ -47,11 +47,14 @@ import {
   buildSidePots,
   awardPots,
   estimateStrength,
+  handCategoryName,
   sha256Hex,
   type Card,
   type PlaySeat,
+  type PotResult,
   type SeatResult,
 } from '../holdem-engine';
+import type { SettledPotResult } from '@clawville/shared';
 import type {
   Action,
   ActionKind,
@@ -91,6 +94,52 @@ interface SimSeat {
   status: 'active' | 'folded' | 'allin' | 'sitting_out' | 'busted';
   /** True once the seat has acted since the last full bet/raise. */
   hasActed: boolean;
+}
+
+/** Freeze the engine-mutated pot awards before the public lossy projection. */
+export function serializeSettledPots(
+  pots: readonly PotResult[],
+  seatResults: readonly SeatResult[],
+  endedAt: Street,
+): SettledPotResult[] {
+  const resultBySeat = new Map<number, SeatResult>();
+  for (const result of seatResults) resultBySeat.set(result.seat, result);
+  return pots.map((pot) => {
+    const orderedWinners = [...pot.winners].sort((a, b) => a - b);
+    const share = orderedWinners.length > 0
+      ? pot.amount / BigInt(orderedWinners.length)
+      : 0n;
+    let remainder = orderedWinners.length > 0
+      ? pot.amount - share * BigInt(orderedWinners.length)
+      : 0n;
+    const awards = orderedWinners.map((seatIndex) => {
+      let amount = share;
+      if (remainder > 0n) {
+        amount += 1n;
+        remainder -= 1n;
+      }
+      return { seatIndex, amount: amount.toString() };
+    });
+    const winningSeat = orderedWinners[0];
+    const winningRank =
+      endedAt === 'showdown' && winningSeat !== undefined
+        ? resultBySeat.get(winningSeat)?.handRank ?? null
+        : null;
+    return {
+      amount: pot.amount.toString(),
+      eligibleSeatIndices: [...pot.eligibleSeats],
+      awards,
+      winningRank: winningRank
+        ? {
+            category: winningRank.category,
+            categoryName: handCategoryName(winningRank.category)
+              .toLowerCase()
+              .replaceAll(' ', '_'),
+            tiebreakers: [...winningRank.tiebreakers],
+          }
+        : null,
+    };
+  });
 }
 
 /** Internal mutable table state for one live hand. */
@@ -988,6 +1037,7 @@ export class PokerTableSim {
       amount: Number(p.amount),
       eligibleSeatIndices: [...p.eligibleSeats],
     }));
+    const settledPots = serializeSettledPots(pots, seatResults, endedAt);
 
     const result: HandResult = {
       tableId: t.tableId,
@@ -995,6 +1045,7 @@ export class PokerTableSim {
       perSeat,
       board,
       sidePots,
+      settledPots,
       endedAt,
       endedAtMs: this.clock.now(),
       serverSeedRevealed: t.serverSeed,

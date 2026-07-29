@@ -1,0 +1,653 @@
+.surface {
+  --hm-panel: rgba(26, 18, 28, 0.88);
+  --hm-panel-solid: #1a121c;
+  --hm-panel-soft: rgba(39, 25, 39, 0.86);
+  --hm-felt: rgba(28, 64, 51, 0.88);
+  --hm-felt-soft: rgba(44, 91, 71, 0.42);
+  --hm-gold: #d4af37;
+  --hm-gold-bright: #e2c15a;
+  --hm-gold-muted: rgba(212, 175, 55, 0.52);
+  --hm-cream: #f3ead8;
+  --hm-cream-muted: #c9bca7;
+  --hm-red: #9f4a4c;
+  --hm-amber: #d18b36;
+  --hm-radius: 10px;
+  --hm-border: 1px solid var(--hm-gold-muted);
+  position: fixed;
+  inset: 0;
+  z-index: 35;
+  pointer-events: none;
+  color: var(--hm-cream);
+  font-family: var(--pt-data), ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.panel {
+  border: var(--hm-border);
+  border-radius: var(--hm-radius);
+  background: var(--hm-panel);
+  box-shadow: 0 12px 32px rgba(5, 2, 7, 0.5), inset 0 1px rgba(255, 244, 214, 0.04);
+  backdrop-filter: blur(10px);
+}
+
+.smallCaps {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.seatBadge {
+  --seat-visible: 1;
+  position: fixed;
+  z-index: 36;
+  min-width: 104px;
+  max-width: 154px;
+  padding: 7px 10px;
+  border: var(--hm-border);
+  border-radius: var(--hm-radius);
+  background: rgba(26, 18, 28, 0.9);
+  box-shadow: 0 7px 20px rgba(5, 2, 7, 0.48), inset 0 1px rgba(255, 244, 214, 0.04);
+  color: var(--hm-cream);
+  text-align: center;
+  transform: translate(-50%, -50%);
+  opacity: var(--seat-visible);
+  transition: opacity 160ms ease, border-color 160ms ease, box-shadow 160ms ease,
+    filter 160ms ease;
+  will-change: left, top, opacity;
+}
+
+.seatBadgeFolded {
+  border-color: rgba(161, 147, 132, 0.28);
+  background: rgba(30, 25, 31, 0.84);
+  filter: grayscale(0.82) saturate(0.25);
+  opacity: calc(var(--seat-visible) * 0.48);
+}
+
+.seatBadgeThinking {
+  animation: hm-thinking 760ms ease-in-out infinite alternate;
+}
+
+.seatNameRow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+
+.seatAction {
+  margin-top: 4px;
+  color: var(--hm-gold-bright);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.seatBadgeFolded .seatAction {
+  color: #aa9f92;
+}
+
+.positionChip {
+  display: inline-grid;
+  min-width: 22px;
+  height: 19px;
+  place-items: center;
+  border: 1px solid var(--hm-gold-muted);
+  border-radius: 5px;
+  color: var(--hm-gold-bright);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  line-height: 1;
+}
+
+.dealerChip {
+  border-color: var(--hm-gold);
+  background: var(--hm-gold);
+  color: #1a121c;
+}
+
+.streetToast {
+  position: fixed;
+  left: 50%;
+  top: 33%;
+  z-index: 48;
+  padding: 10px 24px;
+  border: var(--hm-border);
+  border-radius: var(--hm-radius);
+  background: rgba(26, 18, 28, 0.94);
+  box-shadow: 0 0 28px rgba(212, 175, 55, 0.28);
+  color: var(--hm-gold-bright);
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  transform: translate(-50%, -50%);
+}
+
+.settlement {
+  position: fixed;
+  left: 50%;
+  top: 55%;
+  z-index: 47;
+  width: min(640px, calc(100vw - 24px));
+  padding: 15px 18px;
+  border: 1px solid rgba(226, 193, 90, 0.8);
+  border-radius: var(--hm-radius);
+  background: rgba(26, 18, 28, 0.95);
+  box-shadow: 0 0 36px rgba(212, 175, 55, 0.24), 0 16px 36px rgba(4, 2, 5, 0.5);
+  text-align: center;
+  transform: translate(-50%, -50%);
+}
+
+.settlementHeadline {
+  color: var(--hm-cream);
+  font-size: 17px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+}
+
+.settlementDetail {
+  margin-top: 5px;
+  color: var(--hm-cream-muted);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+}
+
+.hud {
+  position: fixed;
+  left: 50%;
+  bottom: max(12px, env(safe-area-inset-bottom));
+  z-index: 40;
+  display: flex;
+  width: min(940px, calc(100vw - 24px));
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: auto;
+  transform: translateX(-50%);
+}
+
+.cardTray {
+  display: flex;
+  width: max-content;
+  max-width: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 9px 12px;
+  border: 1px solid rgba(212, 175, 55, 0.64);
+  border-radius: var(--hm-radius);
+  background:
+    linear-gradient(135deg, rgba(49, 88, 69, 0.9), rgba(25, 53, 43, 0.94)),
+    var(--hm-felt);
+  box-shadow: 0 12px 28px rgba(4, 2, 5, 0.48), inset 0 0 0 3px rgba(15, 34, 28, 0.38);
+}
+
+.privateCards,
+.boardCards {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+
+.trayLabel {
+  display: flex;
+  min-height: 19px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  color: var(--hm-cream);
+}
+
+.cardPair {
+  display: flex;
+  gap: 6px;
+}
+
+.trayDivider {
+  width: 1px;
+  height: 62px;
+  background: linear-gradient(transparent, rgba(226, 193, 90, 0.58), transparent);
+}
+
+.toast {
+  max-width: min(620px, calc(100vw - 24px));
+  padding: 8px 12px;
+  border: var(--hm-border);
+  border-radius: var(--hm-radius);
+  background: rgba(26, 18, 28, 0.94);
+  box-shadow: 0 8px 22px rgba(5, 2, 7, 0.45);
+  color: var(--hm-cream);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+
+.toastError { color: #f0a1a4; }
+.toastWarn { color: #efbd6f; }
+
+.actionPanel {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.statusRow {
+  display: flex;
+  min-height: 24px;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: var(--hm-cream-muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.metric strong {
+  color: var(--hm-gold-bright);
+  font-weight: 900;
+}
+
+.blindPill {
+  padding: 4px 8px;
+  border: 1px solid rgba(82, 137, 105, 0.68);
+  border-radius: 6px;
+  background: rgba(28, 64, 51, 0.48);
+  color: #c8ddcd;
+}
+
+.playout {
+  color: var(--hm-gold-bright);
+}
+
+.decisionTimer {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 9px;
+  color: var(--hm-gold-bright);
+}
+
+.timerTrack {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(243, 234, 216, 0.1);
+}
+
+.timerFill {
+  width: var(--timer-progress);
+  height: 100%;
+  border-radius: inherit;
+  background: var(--hm-gold);
+  box-shadow: 0 0 10px rgba(212, 175, 55, 0.42);
+  transition: width 100ms linear, background-color 180ms ease;
+}
+
+.timerNumber {
+  min-width: 38px;
+  color: var(--hm-gold-bright);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-align: right;
+}
+
+.timerWarn { color: #efb356; }
+.timerWarn .timerFill { background: var(--hm-amber); }
+.timerWarn .timerNumber { color: #efb356; }
+
+.timerDanger { color: #efa0a0; }
+.timerDanger .timerFill { background: #b95a5d; box-shadow: 0 0 12px rgba(185, 90, 93, 0.62); }
+.timerDanger .timerNumber { color: #efa0a0; }
+
+.timerZero {
+  animation: hm-zero 1.15s ease-in-out infinite;
+}
+
+.actionRow {
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.turnControls {
+  display: grid;
+  width: 100%;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+}
+
+.coreActionRow,
+.inlinePresetRow,
+.inlineAmountRow {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.inlineBetPanel {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(270px, 0.92fr) minmax(300px, 1.08fr);
+  column-gap: 8px;
+  row-gap: 2px;
+}
+
+.inlinePresetRow {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.inlinePresetRow .actionButton {
+  min-width: 0;
+  padding-inline: 7px;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+}
+
+.inlineAmountRow {
+  min-width: 0;
+}
+
+.amountLabel {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  color: var(--hm-cream-muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.inlineRange {
+  min-width: 72px;
+  min-height: 44px;
+  flex: 1;
+  accent-color: var(--hm-gold);
+  cursor: pointer;
+}
+
+.amountInput {
+  width: 78px;
+  min-height: 44px;
+  border: 1px solid rgba(212, 175, 55, 0.62);
+  border-radius: var(--hm-radius);
+  background: rgba(13, 9, 15, 0.86);
+  color: var(--hm-gold-bright);
+  font: 900 12px/1 var(--pt-data), ui-monospace, monospace;
+  text-align: center;
+}
+
+.amountInput:focus-visible,
+.inlineRange:focus-visible {
+  outline: 2px solid var(--hm-cream);
+  outline-offset: 2px;
+}
+
+.betSubmitButton {
+  min-width: 112px;
+  border-color: var(--hm-gold-bright);
+  background: linear-gradient(180deg, #dec15f, #c9a227);
+  color: #1b1420;
+}
+
+.inlineBetPanel > .raiseLimits {
+  grid-column: 2;
+  margin-top: -1px;
+}
+
+.actionButton {
+  min-height: 44px;
+  min-width: 82px;
+  padding: 0 16px;
+  border: 1px solid rgba(212, 175, 55, 0.72);
+  border-radius: var(--hm-radius);
+  background: rgba(31, 21, 33, 0.94);
+  box-shadow: inset 0 1px rgba(255, 244, 214, 0.04), 0 5px 14px rgba(5, 2, 7, 0.3);
+  color: var(--hm-cream);
+  cursor: pointer;
+  font: 800 11px/1 var(--pt-data), ui-monospace, monospace;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  transition: transform 120ms ease, border-color 120ms ease, background 120ms ease,
+    box-shadow 120ms ease, color 120ms ease;
+}
+
+.actionButton:hover:not(:disabled) {
+  border-color: var(--hm-gold-bright);
+  background: rgba(53, 36, 48, 0.98);
+  box-shadow: 0 0 18px rgba(212, 175, 55, 0.22);
+  transform: translateY(-1px);
+}
+
+.actionButton:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.actionButton:focus-visible {
+  outline: 2px solid var(--hm-cream);
+  outline-offset: 2px;
+}
+
+.actionButton:disabled {
+  cursor: not-allowed;
+  filter: saturate(0.25);
+  opacity: 0.48;
+}
+
+.primaryButton {
+  border-color: var(--hm-gold-bright);
+  background: linear-gradient(180deg, #dec15f, #c9a227);
+  color: #1b1420;
+  box-shadow: inset 0 1px rgba(255, 250, 222, 0.48), 0 7px 18px rgba(125, 88, 12, 0.32);
+}
+
+.primaryButton:hover:not(:disabled) {
+  background: linear-gradient(180deg, #ead277, #d4af37);
+  color: #130e16;
+}
+
+.foldButton {
+  border-color: rgba(159, 74, 76, 0.74);
+  background: rgba(83, 36, 42, 0.76);
+  color: #efb6b4;
+}
+
+.allInButton {
+  border-color: rgba(209, 139, 54, 0.82);
+  background: rgba(91, 54, 25, 0.82);
+  color: #f1bd72;
+}
+
+.walkButton {
+  border-color: rgba(159, 74, 76, 0.74);
+  color: #e8b0ae;
+}
+
+.legendRow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  color: #a99c8d;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.controlHint {
+  color: var(--hm-gold-bright);
+}
+
+.raisePanel {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 9px 10px;
+  border: 1px solid rgba(212, 175, 55, 0.36);
+  border-radius: var(--hm-radius);
+  background: rgba(20, 13, 22, 0.64);
+}
+
+.raiseAmountRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.raiseRangeWrap {
+  min-width: 120px;
+  flex: 1;
+}
+
+.raiseRange {
+  width: 100%;
+  min-height: 24px;
+  accent-color: var(--hm-gold);
+  cursor: pointer;
+}
+
+.raiseLimits {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 1px;
+  color: #9f927f;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.raiseValue {
+  min-width: 84px;
+  color: var(--hm-gold-bright);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-align: right;
+}
+
+.presetRow {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.presetButton {
+  flex: 1 1 66px;
+  padding-inline: 10px;
+}
+
+.confirmRaise { flex: 1 1 86px; }
+.cancelRaise { flex: 1 1 74px; }
+
+.backButton {
+  position: absolute;
+  top: max(14px, env(safe-area-inset-top));
+  left: max(14px, env(safe-area-inset-left));
+  z-index: 60;
+  min-height: 44px;
+  padding: 0 15px;
+  border: 1px solid rgba(212, 175, 55, 0.66);
+  border-radius: var(--hm-radius, 10px);
+  background: rgba(26, 18, 28, 0.9);
+  box-shadow: 0 8px 24px rgba(5, 2, 7, 0.42), inset 0 1px rgba(255, 244, 214, 0.04);
+  color: #f3ead8;
+  cursor: pointer;
+  font: 800 11px/1 var(--pt-data), ui-monospace, monospace;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  backdrop-filter: blur(10px);
+}
+
+.backButton:hover {
+  border-color: #e2c15a;
+  background: rgba(49, 33, 46, 0.96);
+}
+
+.backButton:focus-visible {
+  outline: 2px solid #f3ead8;
+  outline-offset: 2px;
+}
+
+@keyframes hm-thinking {
+  from { border-color: rgba(212, 175, 55, 0.52); box-shadow: 0 7px 20px rgba(5, 2, 7, 0.48); }
+  to { border-color: #e2c15a; box-shadow: 0 0 22px rgba(212, 175, 55, 0.48); }
+}
+
+@keyframes hm-zero {
+  0%, 100% { opacity: 0.72; }
+  50% { opacity: 1; }
+}
+
+@media (max-width: 800px) {
+  .hud {
+    bottom: max(8px, env(safe-area-inset-bottom));
+    width: calc(100vw - 16px);
+    gap: 6px;
+  }
+
+  .cardTray {
+    width: calc(100% - 8px);
+    gap: 8px;
+    padding: 7px 8px;
+  }
+
+  .trayDivider { height: 56px; }
+  .actionPanel { gap: 7px; padding: 8px; }
+  .statusRow { gap: 8px; }
+  .actionRow { gap: 6px; }
+  .actionButton { min-width: 70px; padding-inline: 11px; }
+  .turnControls { grid-template-columns: 1fr; gap: 6px; }
+  .coreActionRow .actionButton { flex: 1; }
+  .inlineBetPanel { grid-template-columns: 1fr; row-gap: 6px; }
+  .inlineBetPanel > .raiseLimits { grid-column: 1; }
+  .amountLabel { display: none; }
+  .amountInput { width: 72px; }
+  .betSubmitButton { min-width: 96px; padding-inline: 8px; }
+  .seatBadge { min-width: 94px; padding: 6px 8px; }
+  .legendRow { gap: 6px; font-size: 8px; }
+  .settlement { top: 48%; }
+}
+
+@media (orientation: landscape) and (max-height: 760px) {
+  .hud {
+    bottom: max(6px, env(safe-area-inset-bottom));
+    gap: 5px;
+  }
+
+  .cardTray { padding-block: 6px; }
+  .actionPanel { gap: 6px; padding-block: 7px; }
+  .statusRow { min-height: 20px; }
+  .legendRow { font-size: 8px; }
+  .settlement { top: 46%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .seatBadgeThinking,
+  .timerZero {
+    animation: none;
+  }
+
+  .actionButton,
+  .timerFill {
+    transition: none;
+  }
+}
