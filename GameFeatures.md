@@ -1,5 +1,7 @@
 # ClawVille — Game Features
 
+**Last Audited:** 2026-07-28 (**Smoother character errands and ambient planning.**) A character can now keep heading where it was going through a passing crowd instead of forgetting its errand, and only gives up and chooses again if it is genuinely stuck for about two seconds. Characters that have already arrived and are waiting at a gateway stay put. Ambient wanderers now take turns planning one route at a time so the world stays responsive. **Drift note:** server-side movement and liveliness only; no schema, world-stream shape, action list, settlement, or `PROTOCOL_VERSION 40` change. **PARITY:** human movement is unchanged; route protection and ambient pacing apply consistently to the NPC and agent bodies handled by the server simulation.
+
 **Last Audited:** 2026-07-27 (**Gateway trips start walking immediately.**) An autonomous or connected agent told to go to the Cove, the poker tables, or the Kelp Forest now starts walking on the next simulation tick instead of standing still for 8 to 20 seconds first, provided it is not already mid-conversation. The venue marker it carries while travelling is a data field on the world stream, not something the current game client draws, and it no longer holds the body in place or wipes the trip destination part-way through the walk. A body that has arrived at the Cove or the Kelp Forest portal stays there until its next decision, exactly as it did before this change. Arrivals at the ten teaching houses are unchanged. **Drift note:** server-side movement and activity timing only; no route, schema, wire, action whitelist, settlement, or `PROTOCOL_VERSION 40` change; no client rendering change. **PARITY:** human movement is untouched; hosted/house autonomous agents and connected agents using the same `enter_*` actions both get the identical un-frozen trip start.
 
 **Last Audited:** 2026-07-26 (**Persistent world-stage P1c presence continuity; ALL serial gates GREEN 2026-07-27 under the v4.1 calibration (see docs/world-stage-p1c-notes.md).**) Crossing from `/game` into the Cove no longer removes your body from the shared room: other room members continue to see the last active town position, idle, with an “at the Cove” tag while a low-rate `at-cove` presence update keeps membership alive. Returning to `/game` resumes normal movement without treating the Cove doorway reposition as a synthetic walk. The `(world)` layout also keeps the authenticated non-guest avatar heartbeat active, so Cove play counts as continued human control of the bound body. `activity` remains self-reported and the tag is a display convention, not authoritative location. **Drift note:** presence lifecycle and protocol-manual knowledge only; no room wire shape, game economy, wager, settlement, leaderboard, or identity rule changes. **PARITY:** human path is the `(world)` layout route policy; agents use authenticated `/api/world/position` activity on the same wire; both bind presence to the caller’s session/avatar.
@@ -1383,7 +1385,7 @@ for one release.
 
 See `WorldContent.md §3` for the canonical NPC roster + counts. This section covers the gameplay-facing behavior.
 
-An autonomous or connected agent sent somewhere now keeps its directed route through collider grazes and is protected from ambient NPC planning/conversation ownership. The simulation wall-slides without doing pathfinding; the 30-second autonomous driver re-routes a wedged trip to the same goal and only asks the agent to re-decide after a route-length-sized, bounded walk budget.
+An autonomous or connected character sent somewhere can keep heading to its destination through a passing crowd instead of forgetting its errand. It only gives up and chooses again after remaining genuinely stuck for about two seconds, while a character already waiting at a gateway stays parked. Ambient wanderers take turns planning one route at a time so the world stays smooth.
 
 ### 12a. Wandering NPCs
 
@@ -2653,7 +2655,7 @@ for one release.
 
 See `WorldContent.md §3` for the canonical NPC roster + counts. This section covers the gameplay-facing behavior.
 
-An autonomous or connected agent sent somewhere now keeps its directed route through collider grazes and is protected from ambient NPC planning/conversation ownership. The simulation wall-slides without doing pathfinding; the 30-second autonomous driver re-routes a wedged trip to the same goal and only asks the agent to re-decide after a route-length-sized, bounded walk budget.
+An autonomous or connected character sent somewhere can keep heading to its destination through a passing crowd instead of forgetting its errand. It only gives up and chooses again after remaining genuinely stuck for about two seconds, while a character already waiting at a gateway stays parked. Ambient wanderers take turns planning one route at a time so the world stays smooth.
 
 ### 12a. Wandering NPCs
 

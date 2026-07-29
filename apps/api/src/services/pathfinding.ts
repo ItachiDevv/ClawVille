@@ -308,11 +308,23 @@ const DIRS = [
  * asserts that `moveNpcs()` performs EXACTLY ZERO invocations.
  */
 let findPathCalls = 0;
+type FindPathOverride = (
+  startX: number,
+  startY: number,
+  endX: number,
+  endY: number,
+) => PathNode[];
+let findPathOverride: FindPathOverride | null = null;
+
 export function getFindPathCallCount(): number { return findPathCalls; }
 export function resetFindPathCallCount(): void { findPathCalls = 0; }
+export function __setFindPathOverride(fn: FindPathOverride | null): void {
+  findPathOverride = fn;
+}
 
 export function findPath(startX: number, startY: number, endX: number, endY: number): PathNode[] {
   findPathCalls++;
+  if (findPathOverride) return findPathOverride(startX, startY, endX, endY);
   const grid = getGrid();
 
   // Convert pixel to tile coords

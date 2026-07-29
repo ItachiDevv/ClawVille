@@ -281,11 +281,29 @@ const NPC_COLLISION_HALF = 30;
  */
 export const NPC_WORLD_WALK_SPEED_WU_PER_S = 220;
 
+/**
+ * Ambient-planner A* budget, in searches per planning pass. One worst-case
+ * `findPath` already exceeds the 200 ms simulation cadence, so all six ambient
+ * planners share one admission slot. Directed routes never use this budget.
+ */
+export const AMBIENT_PATHFIND_BUDGET_PER_TICK = 1;
+
+/** A budget deferral retries on the next planning pass, not after a real-failure delay. */
+const AMBIENT_BUDGET_RETRY_COOLDOWN_TICKS = 1;
+
+/** Continuous overlap grace before an active directed trip is abandoned as unrecoverably wedged. */
+const DIRECTED_OVERLAP_ABANDON_TICKS = 10;
+
 const FREE_ROAMER_IDS = new Set(
   NPC_DEFINITIONS.filter((def) => def.buildingId === '').map((def) => def.id),
 );
 
 // --- Types ---
+
+type AmbientPathAttempt =
+  | { status: 'ok'; path: PathNode[] }
+  | { status: 'no-path' }
+  | { status: 'budget-exhausted' };
 
 export interface NpcRuntimeState {
   id: string;
@@ -328,9 +346,9 @@ export interface NpcRuntimeState {
    * Ticks-in-a-row this NPC was involved in an entity push-out with
    * another NPC (2026-05-31). Incremented inside `resolveNpcNpcOverlaps`
    * for every NPC that overlapped another this tick; reset to 0 when
-   * the NPC has no overlap. When ≥ 3 (≈ 600 ms at 5 Hz), the LEX-LOWER
-   * id of an overlapping pair yields — abandons its path, drops to idle,
-   * and waits 8-15 ticks before re-planning so the other NPC walks past.
+   * the NPC has no overlap. At 3 ticks the LEX-LOWER ambient route yields.
+   * Active directed routes instead get a symmetric 10-tick grace before
+   * abandoning, so ordinary crossings do not erase a chosen trip.
    * Symptom this catches: two NPCs walking toward each other freeze at
    * exactly combinedHalf distance because the half-push cancels each
    * step. `stuckTicks` doesn't trip because the perpendicular push
@@ -541,6 +559,10 @@ class NpcSimulation {
   private readonly directedRoutes = new WeakSet<PathNode[]>();
   private arenaMode = false;
   private tickCount = 0;
+  /** Ambient A* searches spent in the current planning pass. Never serialized. */
+  private ambientPathfindsThisTick = 0;
+  /** Stable-map round-robin start offset for ambient planning. Never serialized. */
+  private planCursor = 0;
   private conversationCooldown = 0;
   private combatCooldown = 0;
   private idCounter = 0;
@@ -2545,6 +2567,32 @@ class NpcSimulation {
   // Phase 4 — NPC-vs-NPC entity push-out
   // ---------------------------------------------------------------------------
 
+  /**
+   * A directed route is active only while its marked path is nonempty and
+   * unfinished. Gateway arrivals deliberately park a marked empty path, which
+   * must remain excluded from directed-wedge abandonment.
+   */
+  private hasActiveDirectedRoute(npc: NpcRuntimeState): boolean {
+    return (
+      this.directedRoutes.has(npc.path)
+      && npc.path.length > 0
+      && npc.pathIndex < npc.path.length
+    );
+  }
+
+  /** Historical destructive yield payload, shared by ambient and grace recovery. */
+  private abandonRouteForYield(npc: NpcRuntimeState): void {
+    npc.path = [];
+    npc.pathIndex = 0;
+    npc.activity = 'idle';
+    npc.activityEmoji = '';
+    npc.destinationBuildingId = null;
+    npc.direction = 'idle';
+    npc.intentDescription = 'Stepping aside';
+    npc.behaviorCooldown = 8 + Math.floor(Math.random() * 8);
+    npc.overlapTicks = 0;
+  }
+
   private resolveNpcNpcOverlaps() {
     const alive: NpcRuntimeState[] = [];
     for (const npc of this.npcs.values()) {
@@ -2569,7 +2617,19 @@ class NpcSimulation {
         const dx = a.x - b.x;
         const dy = a.y - b.y;
         const distSq = dx * dx + dy * dy;
-        if (distSq >= combinedHalf * combinedHalf || distSq === 0) continue;
+        if (distSq >= combinedHalf * combinedHalf) continue;
+        if (distSq === 0) {
+          // There is no geometric normal for an exact-coincident pair, so do
+          // not push. Active directed trips must still accrue continuous
+          // overlap accounting so the bounded grace recovery can fire.
+          // When neither route is active-directed this remains the historical
+          // exact-coincident no-op, including all-ambient and parked bodies.
+          if (!this.hasActiveDirectedRoute(a) && !this.hasActiveDirectedRoute(b)) continue;
+          overlappedIds.add(a.id);
+          overlappedIds.add(b.id);
+          overlappingPairs.push([a, b]);
+          continue;
+        }
 
         const dist = Math.sqrt(distSq);
         const overlap = combinedHalf - dist;
@@ -2609,33 +2669,31 @@ class NpcSimulation {
       }
     }
 
-    // Deadlock-yield pass. For each overlapping pair, the LEX-LOWER id is the
-    // yielder. Asymmetric on purpose — if both yielded, both would replan and
-    // potentially reconverge on the same area. Lex-lower is deterministic and
-    // testable. Threshold = 3 ticks (~600 ms at 5 Hz) so a transient
-    // push-through doesn't trigger a spurious yield, but a true deadlock breaks
-    // before the user perceives it as a stuck character.
+    // Deadlock-yield pass. Ambient routes keep the historical 3-tick,
+    // lex-lower yield. Active directed trips get a longer symmetric grace.
     const YIELD_THRESHOLD = 3;
     for (const [a, b] of overlappingPairs) {
+      // Active directed routes survive ordinary crossings. If a route remains
+      // continuously wedged through the longer grace, recover symmetrically.
+      for (const body of [a, b]) {
+        if (
+          this.hasActiveDirectedRoute(body)
+          && !body.inCombat
+          && !body.inConversation
+          && body.overlapTicks >= DIRECTED_OVERLAP_ABANDON_TICKS
+        ) {
+          this.abandonRouteForYield(body);
+        }
+      }
+
       const yielder = a.id < b.id ? a : b;
-      // Already yielded this tick (path empty) or busy in combat — skip.
+      // Historical ambient branch: pathless, busy, and directed bodies skip.
       if (yielder.path.length === 0) continue;
       if (yielder.inCombat || yielder.inConversation) continue;
+      if (this.directedRoutes.has(yielder.path)) continue;
       if (yielder.overlapTicks < YIELD_THRESHOLD) continue;
 
-      // Abandon current path, drop to idle so the client stops playing the
-      // walk-in-place animation immediately. Cooldown 8-15 ticks (≈ 1.6-3s)
-      // before re-planning so the higher-id NPC walks past before the yielder
-      // picks a new target — prevents immediate re-collision.
-      yielder.path = [];
-      yielder.pathIndex = 0;
-      yielder.activity = 'idle';
-      yielder.activityEmoji = '';
-      yielder.destinationBuildingId = null;
-      yielder.direction = 'idle';
-      yielder.intentDescription = 'Stepping aside';
-      yielder.behaviorCooldown = 8 + Math.floor(Math.random() * 8);
-      yielder.overlapTicks = 0;
+      this.abandonRouteForYield(yielder);
     }
   }
 
@@ -2753,19 +2811,33 @@ class NpcSimulation {
     return findNearestWalkable(tx, ty, entityHalf);
   }
 
+  /** Is there ambient A* budget left in this planning pass? */
+  private canAffordAmbientPathfind(): boolean {
+    return this.ambientPathfindsThisTick < AMBIENT_PATHFIND_BUDGET_PER_TICK;
+  }
+
   private findSafePath(
     npc: NpcRuntimeState,
     tx: number,
     ty: number,
     entityHalf: number = NPC_COLLISION_HALF,
-  ): PathNode[] {
+  ): AmbientPathAttempt {
+    if (!this.canAffordAmbientPathfind()) return { status: 'budget-exhausted' };
+    this.ambientPathfindsThisTick++;
     const path = findPath(npc.x, npc.y, tx, ty);
-    if (path.length === 0) return [];
-    return isPathCollisionFree(npc.x, npc.y, path, entityHalf) ? path : [];
+    if (path.length === 0) return { status: 'no-path' };
+    if (!isPathCollisionFree(npc.x, npc.y, path, entityHalf)) return { status: 'no-path' };
+    return { status: 'ok', path };
   }
 
   private planNpcBehaviors() {
-    for (const npc of this.npcs.values()) {
+    this.ambientPathfindsThisTick = 0;
+    const bodies = Array.from(this.npcs.values());
+    if (bodies.length === 0) return;
+    const start = this.planCursor % bodies.length;
+    this.planCursor = (this.planCursor + 1) % bodies.length;
+    for (let i = 0; i < bodies.length; i++) {
+      const npc = bodies[(start + i) % bodies.length]!;
       if (npc.isDead || npc.inConversation || npc.inCombat) continue;
       if (npc.activity !== 'idle') continue;
       if (npc.isOpenClaw && npc.autonomyMode === 'self-managed') continue;
@@ -2778,6 +2850,13 @@ class NpcSimulation {
 
       npc.behaviorCooldown--;
       if (npc.behaviorCooldown > 0) continue;
+
+      // Do not enter another planner after the pass's one real search. Denied
+      // bodies remain eligible on the next round-robin pass.
+      if (!this.canAffordAmbientPathfind()) {
+        npc.behaviorCooldown = AMBIENT_BUDGET_RETRY_COOLDOWN_TICKS;
+        continue;
+      }
 
       // Free-roaming wanderers (`buildingId === ''` in NPC_DEFINITIONS) skip
       // the building-visit and idle-near-home branches entirely. Hermes and
@@ -2847,15 +2926,19 @@ class NpcSimulation {
     // colliders (e.g. messaging-channels halfX=850 wu). When the raw
     // candidate fails the collision test, snapPlannerTarget snaps outward.
     for (let attempt = 0; attempt < 5; attempt++) {
+      if (!this.canAffordAmbientPathfind()) {
+        npc.behaviorCooldown = AMBIENT_BUDGET_RETRY_COOLDOWN_TICKS;
+        return;
+      }
       const offsetX = (Math.random() - 0.5) * 40;
       const offsetY = 20 + Math.random() * 20;
       const snapped = this.snapPlannerTarget(center.x + offsetX, center.y + offsetY);
       if (!snapped) continue;
-      const path = this.findSafePath(npc, snapped.x, snapped.y);
-      if (path.length > 0) {
+      const pathResult = this.findSafePath(npc, snapped.x, snapped.y);
+      if (pathResult.status === 'ok') {
         npc.activity = 'walking'; npc.activityEmoji = '';
         npc.destinationBuildingId = target.id;
-        npc.path = path; npc.pathIndex = 0;
+        npc.path = pathResult.path; npc.pathIndex = 0;
         npc.intentDescription = `Walking to ${target.id}`;
         npc.behaviorCooldown = 120;
         return;
@@ -2875,33 +2958,23 @@ class NpcSimulation {
 
     const target = others[Math.floor(Math.random() * others.length)];
 
-    // Pick a stand-off point 80 wu from the target toward us. Walking to
-    // target.x/y directly can land us on top of (or inside) the target's
-    // own AABB or wedge us against whatever wall the target is parked at
-    // (2026-05-22). 5 attempts: first the chaser-direction stand-off,
-    // then random angles if that's blocked.
+    // Pick a random stand-off bearing per pass. With a one-search budget, a
+    // deterministic first bearing would make every later bearing unreachable.
     const STAND_OFF = 80;
-    const tdx = target.x - npc.x;
-    const tdy = target.y - npc.y;
-    const tdist = Math.sqrt(tdx * tdx + tdy * tdy) || 1;
     for (let attempt = 0; attempt < 5; attempt++) {
-      let standX: number;
-      let standY: number;
-      if (attempt === 0) {
-        // Stand-off along the line from chaser → target.
-        standX = target.x - (tdx / tdist) * STAND_OFF;
-        standY = target.y - (tdy / tdist) * STAND_OFF;
-      } else {
-        const angle = Math.random() * Math.PI * 2;
-        standX = target.x + Math.cos(angle) * STAND_OFF;
-        standY = target.y + Math.sin(angle) * STAND_OFF;
+      if (!this.canAffordAmbientPathfind()) {
+        npc.behaviorCooldown = AMBIENT_BUDGET_RETRY_COOLDOWN_TICKS;
+        return;
       }
+      const angle = Math.random() * Math.PI * 2;
+      const standX = target.x + Math.cos(angle) * STAND_OFF;
+      const standY = target.y + Math.sin(angle) * STAND_OFF;
       const snapped = this.snapPlannerTarget(standX, standY);
       if (!snapped) continue;
-      const path = this.findSafePath(npc, snapped.x, snapped.y);
-      if (path.length > 0) {
+      const pathResult = this.findSafePath(npc, snapped.x, snapped.y);
+      if (pathResult.status === 'ok') {
         npc.activity = 'walking'; npc.activityEmoji = '';
-        npc.path = path; npc.pathIndex = 0;
+        npc.path = pathResult.path; npc.pathIndex = 0;
         npc.intentDescription = `Approaching ${target.name}`;
         npc.behaviorCooldown = 80;
         return;
@@ -2915,16 +2988,20 @@ class NpcSimulation {
     // AABB and a small wiggle radius can land the candidate inside
     // (2026-05-22).
     for (let attempt = 0; attempt < 5; attempt++) {
+      if (!this.canAffordAmbientPathfind()) {
+        npc.behaviorCooldown = AMBIENT_BUDGET_RETRY_COOLDOWN_TICKS;
+        return;
+      }
       const angle = Math.random() * Math.PI * 2;
       const radius = 20 + Math.random() * 40;
       const tx = Math.max(32, Math.min(MAP_WIDTH - 32, npc.homeX + Math.cos(angle) * radius));
       const ty = Math.max(32, Math.min(MAP_HEIGHT - 32, npc.homeY + Math.sin(angle) * radius));
       const snapped = this.snapPlannerTarget(tx, ty);
       if (!snapped) continue;
-      const path = this.findSafePath(npc, snapped.x, snapped.y);
-      if (path.length > 0) {
+      const pathResult = this.findSafePath(npc, snapped.x, snapped.y);
+      if (pathResult.status === 'ok') {
         npc.activity = 'walking'; npc.activityEmoji = '';
-        npc.path = path; npc.pathIndex = 0;
+        npc.path = pathResult.path; npc.pathIndex = 0;
         npc.intentDescription = 'Strolling nearby';
         npc.behaviorCooldown = 40 + Math.floor(Math.random() * 40);
         return;
@@ -2938,14 +3015,18 @@ class NpcSimulation {
     // (2026-05-22). Random map points can easily land in a building or
     // prop AABB now that we rasterize 18 colliders with real extents.
     for (let attempt = 0; attempt < 5; attempt++) {
+      if (!this.canAffordAmbientPathfind()) {
+        npc.behaviorCooldown = AMBIENT_BUDGET_RETRY_COOLDOWN_TICKS;
+        return;
+      }
       const tx = 64 + Math.random() * (MAP_WIDTH - 128);
       const ty = 64 + Math.random() * (MAP_HEIGHT - 128);
       const snapped = this.snapPlannerTarget(tx, ty);
       if (!snapped) continue;
-      const path = this.findSafePath(npc, snapped.x, snapped.y);
-      if (path.length > 0) {
+      const pathResult = this.findSafePath(npc, snapped.x, snapped.y);
+      if (pathResult.status === 'ok') {
         npc.activity = 'walking'; npc.activityEmoji = '';
-        npc.path = path; npc.pathIndex = 0;
+        npc.path = pathResult.path; npc.pathIndex = 0;
         npc.intentDescription = 'Wandering';
         npc.behaviorCooldown = 80 + Math.floor(Math.random() * 60);
         return;
@@ -2979,6 +3060,10 @@ class NpcSimulation {
     const WANDER_MIN_LEG_SQ = 800 * 800;
     const FORWARD_CONE = Math.PI / 3; // ±60°
     for (let attempt = 0; attempt < 12; attempt++) {
+      if (!this.canAffordAmbientPathfind()) {
+        npc.behaviorCooldown = AMBIENT_BUDGET_RETRY_COOLDOWN_TICKS;
+        return;
+      }
       const angle = Math.random() * Math.PI * 2;
       const radius = Math.sqrt(
         Math.random() * (FREE_ROAMER_MAX_RADIUS_SQ - FREE_ROAMER_MIN_RADIUS_SQ) + FREE_ROAMER_MIN_RADIUS_SQ,
@@ -3002,10 +3087,10 @@ class NpcSimulation {
       // wouldn't show up in the coarse A* grid for the FREE_ROAMER ring).
       const snapped = this.snapPlannerTarget(tx, ty);
       if (!snapped) continue;
-      const path = this.findSafePath(npc, snapped.x, snapped.y);
-      if (path.length > 0) {
+      const pathResult = this.findSafePath(npc, snapped.x, snapped.y);
+      if (pathResult.status === 'ok') {
         npc.activity = 'walking'; npc.activityEmoji = '';
-        npc.path = path; npc.pathIndex = 0;
+        npc.path = pathResult.path; npc.pathIndex = 0;
         npc.intentDescription = 'Strolling the town ring';
         npc.behaviorCooldown = 80 + Math.floor(Math.random() * 60);
         return;
@@ -3061,37 +3146,46 @@ class NpcSimulation {
       this.planCenterWander(npc);
       return;
     }
-    // Try up to 8 stand-off angles before giving up. Reject targets without
-    // ≥3 tiles of clearance OR that land outside the FREE_ROAMER annulus —
-    // either keeps approachers in the safe commons zone.
-    for (let attempt = 0; attempt < 8; attempt++) {
-      const approachAngle = Math.random() * Math.PI * 2;
-      const tx = target.x + Math.cos(approachAngle) * standOff;
-      const ty = target.y + Math.sin(approachAngle) * standOff;
-      // Annulus gate: reject stand-off points that would push the approacher
-      // into the inner-core props or outside the outer-ring buildings.
-      const sdx = tx - TOWN_CENTER_X;
-      const sdy = ty - TOWN_CENTER_Y;
-      const sDistSq = sdx * sdx + sdy * sdy;
-      if (sDistSq < FREE_ROAMER_MIN_RADIUS_SQ || sDistSq > FREE_ROAMER_MAX_RADIUS_SQ) continue;
-      // Combined clearance + pixel-accurate AABB test (2026-05-22).
-      const snapped = this.snapPlannerTarget(tx, ty);
-      if (!snapped) continue;
-      const path = this.findSafePath(npc, snapped.x, snapped.y);
-      if (path.length > 0) {
-        npc.activity = 'walking'; npc.activityEmoji = '';
-        npc.path = path; npc.pathIndex = 0;
-        npc.intentDescription = `Approaching ${target.name}`;
-        npc.behaviorCooldown = 80;
-        return;
-      }
-    }
-    {
-      // Pathfinding failed (stand-off point may be inside a blocked tile or
-      // off-map). Fall back to a center-wander instead of sitting idle —
-      // otherwise the NPC just loops back into the same failing approach.
+    // Choose the candidate FAMILY before spending the pass budget. The 8:1
+    // approach:wander weighting preserves the approach bias while giving the
+    // center-wander fallback its own passes in which it can perform the one
+    // real search. No cross-pass planner state is persisted.
+    const chooseApproachCandidate = Math.random() < 8 / 9;
+    if (!chooseApproachCandidate) {
       this.planCenterWander(npc);
+      return;
     }
+
+    if (!this.canAffordAmbientPathfind()) {
+      npc.behaviorCooldown = AMBIENT_BUDGET_RETRY_COOLDOWN_TICKS;
+      return;
+    }
+    const approachAngle = Math.random() * Math.PI * 2;
+    const tx = target.x + Math.cos(approachAngle) * standOff;
+    const ty = target.y + Math.sin(approachAngle) * standOff;
+    const sdx = tx - TOWN_CENTER_X;
+    const sdy = ty - TOWN_CENTER_Y;
+    const sDistSq = sdx * sdx + sdy * sdy;
+    if (sDistSq < FREE_ROAMER_MIN_RADIUS_SQ || sDistSq > FREE_ROAMER_MAX_RADIUS_SQ) {
+      this.planCenterWander(npc);
+      return;
+    }
+    const snapped = this.snapPlannerTarget(tx, ty);
+    if (!snapped) {
+      this.planCenterWander(npc);
+      return;
+    }
+    const pathResult = this.findSafePath(npc, snapped.x, snapped.y);
+    if (pathResult.status === 'ok') {
+      npc.activity = 'walking'; npc.activityEmoji = '';
+      npc.path = pathResult.path; npc.pathIndex = 0;
+      npc.intentDescription = `Approaching ${target.name}`;
+      npc.behaviorCooldown = 80;
+      return;
+    }
+    // A real no-path consumed the pass's sole search. Retry next pass rather
+    // than making a nested wander call that cannot search.
+    npc.behaviorCooldown = AMBIENT_BUDGET_RETRY_COOLDOWN_TICKS;
   }
 
   // --- Activity Duration ---
@@ -3600,6 +3694,26 @@ class NpcSimulation {
     };
   }
 
+  /**
+   * End an ambient conversation without deleting a directed route acquired
+   * while cognition was running. A later action in the same reply may have
+   * armed `activityEndsAt`, so directed release must clear that timer too.
+   */
+  private endConversationHold(npc: NpcRuntimeState, conversationCooldownUntil: number): void {
+    npc.inConversation = false;
+    npc.conversationCooldownUntil = conversationCooldownUntil;
+    if (this.directedRoutes.has(npc.path)) {
+      npc.activity = 'walking';
+      npc.activityEndsAt = 0;
+      return;
+    }
+    npc.activity = 'idle';
+    npc.activityEmoji = '';
+    npc.path = [];
+    npc.pathIndex = 0;
+    npc.behaviorCooldown = 3;
+  }
+
   private progressConversations() {
     const now = Date.now();
     for (const convo of this.conversations.values()) {
@@ -3614,8 +3728,8 @@ class NpcSimulation {
         const npc1 = this.npcs.get(convo.npc1Id);
         const npc2 = this.npcs.get(convo.npc2Id);
         const convoCooldownMs = 15000 + Math.random() * 20000;
-        if (npc1) { npc1.inConversation = false; npc1.activity = 'idle'; npc1.activityEmoji = ''; npc1.path = []; npc1.pathIndex = 0; npc1.behaviorCooldown = 3; npc1.conversationCooldownUntil = Date.now() + convoCooldownMs; }
-        if (npc2) { npc2.inConversation = false; npc2.activity = 'idle'; npc2.activityEmoji = ''; npc2.path = []; npc2.pathIndex = 0; npc2.behaviorCooldown = 3; npc2.conversationCooldownUntil = Date.now() + convoCooldownMs; }
+        if (npc1) this.endConversationHold(npc1, Date.now() + convoCooldownMs);
+        if (npc2) this.endConversationHold(npc2, Date.now() + convoCooldownMs);
       } else {
         const nextMsg = convo.messages[convo.currentIndex];
         const typingDuration = 2000 + Math.random() * 1500;

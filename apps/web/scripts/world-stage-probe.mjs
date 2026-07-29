@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import puppeteer from "puppeteer-core";
+import sharp from "sharp";
 import { createWriteStream } from "node:fs";
 import { mkdir, mkdtemp, rmdir, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -22,12 +23,22 @@ const argv = new Map(
   }),
 );
 const lane = argv.get("lane") ?? "synthetic";
-if (lane !== "synthetic" && lane !== "routes" && lane !== "soak") {
+const supportedLanes = new Set([
+  "synthetic",
+  "routes",
+  "soak",
+  "loader",
+  "kelp-exit",
+  "retry-adoption",
+]);
+if (!supportedLanes.has(lane)) {
   throw new Error(
-    `Unsupported --lane=${lane}; expected synthetic, routes, or soak`,
+    `Unsupported --lane=${lane}; expected ${[...supportedLanes].join(", ")}`,
   );
 }
 const routeLane = lane === "routes" || lane === "soak";
+const apiStubLane =
+  routeLane || lane === "loader" || lane === "kelp-exit";
 const dwellTarget = argv.get("dwell") ?? null;
 if (
   dwellTarget !== null &&
@@ -52,9 +63,15 @@ if (heapDiffRequested && (lane !== "soak" || dwellMode)) {
 const forceWebGL = argv.has("webgl");
 const requestedUrl =
   argv.get("url") ??
-  (routeLane
-    ? "http://localhost:3000/cove"
-    : "http://localhost:3000/perf/stage?stage=1&webgpu=1");
+  (lane === "loader"
+    ? "http://localhost:3000/"
+    : lane === "kelp-exit"
+      ? "http://localhost:3000/game?webgpu=1"
+      : lane === "retry-adoption"
+        ? "http://localhost:3000/perf/stage?stage=1&retryAdoption=1&webgpu=1"
+        : routeLane
+          ? "http://localhost:3000/cove"
+          : "http://localhost:3000/perf/stage?stage=1&webgpu=1");
 const parsedUrl = new URL(requestedUrl);
 if (forceWebGL) {
   parsedUrl.searchParams.delete("webgpu");
@@ -82,11 +99,14 @@ if (
 }
 const outputPath = resolve(
   argv.get("output") ??
-    (routeLane
-      ? lane === "soak"
-        ? `${SCRIPT_DIR}/world-stage-soak-summary.json`
-        : `${SCRIPT_DIR}/world-stage-route-summary.json`
-      : `${SCRIPT_DIR}/world-stage-probe-summary.json`),
+    ({
+      synthetic: `${SCRIPT_DIR}/world-stage-probe-summary.json`,
+      routes: `${SCRIPT_DIR}/world-stage-route-summary.json`,
+      soak: `${SCRIPT_DIR}/world-stage-soak-summary.json`,
+      loader: `${SCRIPT_DIR}/world-stage-loader-summary.json`,
+      "kelp-exit": `${SCRIPT_DIR}/world-stage-kelp-exit-summary.json`,
+      "retry-adoption": `${SCRIPT_DIR}/world-stage-retry-adoption-summary.json`,
+    })[lane],
 );
 const chromePath =
   argv.get("chrome") ?? "C:/Program Files/Google/Chrome/Application/chrome.exe";
@@ -204,10 +224,18 @@ const summary = {
         afterFirstGame: 0,
       },
       events: [],
+      fixtureTraffic: {
+        "GET /api/auth/me": 0,
+        "GET /api/avatars/me": 0,
+        "GET /api/auth/me/agent-session": 0,
+      },
       stubUnhandled: {},
     },
     coldInit: null,
   },
+  loader: null,
+  kelpExit: null,
+  retryAdoption: null,
   console: {
     errors: [],
     warnings: [],
@@ -242,6 +270,104 @@ async function startWorldProbeServer() {
 
     const pathname = new URL(request.url ?? "/", "http://localhost:4000")
       .pathname;
+    const fixtureKey = `${request.method ?? "UNKNOWN"} ${pathname}`;
+    if (
+      lane === "kelp-exit" &&
+      request.method === "GET" &&
+      pathname === "/api/auth/me"
+    ) {
+      summary.routes.network.fixtureTraffic[fixtureKey] += 1;
+      response.writeHead(200, {
+        ...corsHeaders,
+        "Content-Type": "application/json",
+      });
+      response.end(
+        JSON.stringify({
+          user: {
+            id: "world-stage-probe-guest",
+            email: null,
+            name: "Stage Probe Guest",
+            username: "stage-probe-guest",
+            emailVerified: false,
+            isGuest: true,
+          },
+        }),
+      );
+      return;
+    }
+    if (
+      lane === "kelp-exit" &&
+      request.method === "GET" &&
+      pathname === "/api/avatars/me"
+    ) {
+      summary.routes.network.fixtureTraffic[fixtureKey] += 1;
+      response.writeHead(200, {
+        ...corsHeaders,
+        "Content-Type": "application/json",
+      });
+      response.end(
+        JSON.stringify({
+          avatar: {
+            // Full shared Avatar shape (packages/shared/src/types/avatar.ts) —
+            // an incomplete row crashes authed-boot consumers that read
+            // required fields unguarded (avatar-status-bar reads
+            // avatar.stats.strength).
+            id: "world-stage-probe-avatar",
+            userId: "world-stage-probe-user",
+            name: "Stage Probe Lobster",
+            species: "lobster",
+            color: "red",
+            gender: "female",
+            archetype: "explorer",
+            personality: {
+              habitat: "reef",
+              hobby: "exploring",
+              greeting: "friendly",
+            },
+            stats: { strength: 10, defence: 10, movement: 10 },
+            positionX: 0,
+            positionY: 0,
+            modelKey: "lobster",
+            agentCategory: "openclaw",
+            harness: "milady",
+            spawnPreference: "town",
+            homeParcelId: null,
+            level: 1,
+            xp: 0,
+            clawTokens: 0,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            characterConfig: {
+              name: "Stage Probe Lobster",
+              bio: [],
+              lore: [],
+              knowledge: [],
+              messageExamples: [],
+              postExamples: [],
+              topics: [],
+              style: { all: [], chat: [], post: [] },
+              adjectives: [],
+            },
+          },
+        }),
+      );
+      return;
+    }
+    if (
+      lane === "kelp-exit" &&
+      request.method === "GET" &&
+      pathname === "/api/auth/me/agent-session"
+    ) {
+      summary.routes.network.fixtureTraffic[fixtureKey] += 1;
+      response.writeHead(200, {
+        ...corsHeaders,
+        "Content-Type": "application/json",
+      });
+      response.end(
+        JSON.stringify({ connected: false, mode: "none" }),
+      );
+      return;
+    }
     if (request.method === "POST" && pathname === "/api/world/join") {
       response.writeHead(200, {
         ...corsHeaders,
@@ -750,13 +876,149 @@ async function runColdInitProbe(browser, routeOrigin) {
   }
 }
 
+async function armLoaderObserver(page, key) {
+  await page.evaluate((observationKey) => {
+    const probe = {
+      appeared: false,
+      appearedWhileNotReady: false,
+      topmostAtCenter: false,
+      maxAriaValue: 0,
+      disappearedBeforeReady: false,
+      samples: 0,
+    };
+    window[observationKey] = probe;
+    const sample = () => {
+      probe.samples += 1;
+      const overlay = document.querySelector(".claw-loading-overlay");
+      if (overlay) {
+        probe.appeared = true;
+        if (window.__W3D_READY !== true) {
+          probe.appearedWhileNotReady = true;
+        }
+        const progress = overlay.querySelector(
+          '[aria-label="Loading ClawVille"]',
+        );
+        const value = Number(progress?.getAttribute("aria-valuenow") ?? 0);
+        if (Number.isFinite(value)) {
+          probe.maxAriaValue = Math.max(probe.maxAriaValue, value);
+        }
+        const hit = document.elementFromPoint(
+          Math.floor(window.innerWidth / 2),
+          Math.floor(window.innerHeight / 2),
+        );
+        if (hit?.closest(".claw-loading-overlay") === overlay) {
+          probe.topmostAtCenter = true;
+        }
+      } else if (probe.appeared && window.__W3D_READY !== true) {
+        probe.disappearedBeforeReady = true;
+      }
+    };
+    const observer = new MutationObserver(sample);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      childList: true,
+      subtree: true,
+    });
+    const interval = window.setInterval(sample, 50);
+    window[`${observationKey}Cleanup`] = () => {
+      observer.disconnect();
+      window.clearInterval(interval);
+      sample();
+    };
+    sample();
+  }, key);
+}
+
+async function finishLoaderObserver(page, key) {
+  return page.evaluate((observationKey) => {
+    window[`${observationKey}Cleanup`]?.();
+    delete window[`${observationKey}Cleanup`];
+    return window[observationKey];
+  }, key);
+}
+
+async function waitForWorldReadyWithoutLoader(page, timeout = 90_000) {
+  await page.waitForFunction(
+    () =>
+      window.__W3D_READY === true &&
+      !document.querySelector('[aria-label="Loading ClawVille"]'),
+    { timeout },
+  );
+}
+
+async function captureKelpPaintEvidence(page) {
+  const clip = { x: 320, y: 180, width: 640, height: 360 };
+  const png = await page.screenshot({ clip });
+  const { data, info } = await sharp(png)
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const channels = info.channels;
+  const background = [0x0d, 0x45, 0x52];
+  let nonBackground = 0;
+  let sum = 0;
+  let sumSquares = 0;
+  const values = [];
+  for (let index = 0; index < data.length; index += channels * 8) {
+    const red = data[index];
+    const green = data[index + 1];
+    const blue = data[index + 2];
+    const luminance = (red + green + blue) / 3;
+    values.push(`${red >> 3}:${green >> 3}:${blue >> 3}`);
+    sum += luminance;
+    sumSquares += luminance * luminance;
+    if (
+      Math.abs(red - background[0]) +
+        Math.abs(green - background[1]) +
+        Math.abs(blue - background[2]) >
+      24
+    ) {
+      nonBackground += 1;
+    }
+  }
+  const samples = values.length;
+  const mean = samples > 0 ? sum / samples : 0;
+  const variance =
+    samples > 0 ? sumSquares / samples - mean * mean : 0;
+  const nonBackgroundRatio =
+    samples > 0 ? nonBackground / samples : 0;
+  const colorBuckets = new Set(values).size;
+  return {
+    clip,
+    connectedCanvas: await page.evaluate(() => {
+      const canvas = document.querySelector("canvas");
+      return {
+        found: Boolean(canvas),
+        connected: canvas?.isConnected === true,
+        width: canvas?.width ?? null,
+        height: canvas?.height ?? null,
+        nonDefaultBacking:
+          Boolean(canvas) &&
+          canvas.width > 0 &&
+          canvas.height > 0 &&
+          (canvas.width !== 300 || canvas.height !== 150),
+      };
+    }),
+    luminanceVariance: variance,
+    minimumLuminanceVariance: 20,
+    nonBackgroundRatio,
+    minimumNonBackgroundRatio: 0.02,
+    colorBuckets,
+    minimumColorBuckets: 8,
+    pass:
+      variance >= 20 &&
+      nonBackgroundRatio >= 0.02 &&
+      colorBuckets >= 8,
+  };
+}
+
 try {
   if (heapDiffRequested) {
     heapSnapshotDirectory = await mkdtemp(
       resolve(tmpdir(), "world-stage-heap-"),
     );
   }
-  if (routeLane) {
+  if (apiStubLane) {
     worldProbeServer = await startWorldProbeServer();
   }
   browser = await puppeteer.launch({
@@ -838,7 +1100,332 @@ try {
     }
   });
 
-  if (routeLane) {
+  if (lane === "loader") {
+    await page.goto(url, {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    });
+    await page.waitForSelector('a[href="/game"]', { timeout: 30_000 });
+    await armLoaderObserver(page, "__WORLD_STAGE_LOADER_OBSERVATION__");
+    await page.click('a[href="/game"]');
+    await page.waitForFunction(
+      () => window.location.pathname === "/game",
+      { timeout: 30_000 },
+    );
+    await waitForWorldReadyWithoutLoader(page);
+    const observation = await finishLoaderObserver(
+      page,
+      "__WORLD_STAGE_LOADER_OBSERVATION__",
+    );
+    summary.loader = {
+      ...observation,
+      pathname: await page.evaluate(() => window.location.pathname),
+      ready: await page.evaluate(() => window.__W3D_READY === true),
+      loaderAbsent: await page.evaluate(
+        () =>
+          !document.querySelector('[aria-label="Loading ClawVille"]'),
+      ),
+    };
+    summary.assertions = {
+      realHomepageLinkUsed: summary.loader.pathname === "/game",
+      loaderAppearedBeforeReady:
+        observation.appearedWhileNotReady === true,
+      loaderWasTopmostAndPointerBlocking:
+        observation.topmostAtCenter === true,
+      loaderMadeMeasuredProgress: observation.maxAriaValue > 0,
+      loaderNeverDisappearedBeforeReady:
+        observation.disappearedBeforeReady === false,
+      genuineWorldReady: summary.loader.ready === true,
+      loaderGoneAfterReady: summary.loader.loaderAbsent === true,
+    };
+    summary.pass = Object.values(summary.assertions).every(Boolean);
+  } else if (lane === "kelp-exit") {
+    // Model a RETURNING player: the first-login tutorial modal legitimately
+    // covers the viewport center for a fresh avatar, which would fail the
+    // return hit-test through no fault of the stage.
+    await page.evaluateOnNewDocument(() => {
+      window.localStorage.setItem("clawville-tutorial-seen", "true");
+    });
+    await page.goto(url, {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    });
+    await page.waitForFunction(() => Boolean(window.__WORLD_STAGE_PROBE__), {
+      timeout: 30_000,
+    });
+    await waitForWorldReadyWithoutLoader(page);
+    try {
+      await page.waitForFunction(
+        () =>
+          document.querySelector('[data-stage-transition="idle"]') !== null,
+        { timeout: 90_000 },
+      );
+    } catch (error) {
+      const diag = await page.evaluate(() => ({
+        pathname: window.location.pathname,
+        stagePhase: document
+          .querySelector("[data-stage-transition]")
+          ?.getAttribute("data-stage-transition"),
+        w3dReady: window.__W3D_READY,
+        loaderPresent:
+          document.querySelector('[aria-label="Loading ClawVille"]') !==
+          null,
+        probeInstalled: Boolean(window.__WORLD_STAGE_PROBE__),
+        bodyText: document.body.innerText.slice(0, 300),
+      }));
+      console.error("KELP-EXIT DIAG (first idle wait):", JSON.stringify(diag));
+      throw error;
+    }
+    await page.evaluate(() => {
+      window.__KELP_EXIT_SENTINEL__ = {
+        token: "same-document-sentinel",
+        initialProbe: window.__WORLD_STAGE_PROBE__,
+      };
+      const bridge = window.__CV_STORES__;
+      const gameStore = bridge?.useGameStore;
+      if (!gameStore) throw new Error("useGameStore proof bridge missing");
+      if (!bridge.avatarPositionRef || !bridge.worldCenterPx) {
+        throw new Error("avatar position bridge missing");
+      }
+      // Injecting nearLocation directly is clobbered within one frame — the
+      // player controller recomputes it from avatarPositionRef every frame
+      // (player-avatar.tsx). Teleport beside the portal instead (the warp
+      // overlay uses this exact ref-teleport pattern) so the REAL proximity
+      // path mints nearLocation and renders the REAL HUD button.
+      const KELP_PORTAL_WORLD = { x: -547, z: -120 };
+      const STANDOFF_WU = 40;
+      bridge.avatarPositionRef.x =
+        bridge.worldCenterPx.x + KELP_PORTAL_WORLD.x + STANDOFF_WU;
+      bridge.avatarPositionRef.y =
+        bridge.worldCenterPx.y + KELP_PORTAL_WORLD.z;
+      gameStore
+        .getState()
+        .setAvatarPosition(
+          bridge.avatarPositionRef.x,
+          bridge.avatarPositionRef.y,
+        );
+      gameStore.setState({ controlMode: "player" });
+    });
+    const kelpButton =
+      'button[aria-label="Walk through to enter the Kelp Forest"]';
+    await page.waitForSelector(kelpButton, {
+      visible: true,
+      timeout: 30_000,
+    });
+    await page.click(kelpButton);
+    await page.waitForFunction(
+      () => window.location.pathname === "/kelp",
+      { timeout: 30_000 },
+    );
+    await page.waitForFunction(
+      () => {
+        const loading = document.querySelector(
+          '[aria-label="Entering the Kelp Forest"]',
+        );
+        const canvas = document.querySelector("canvas");
+        return (
+          !loading &&
+          canvas?.isConnected === true &&
+          canvas.width > 0 &&
+          canvas.height > 0 &&
+          (canvas.width !== 300 || canvas.height !== 150)
+        );
+      },
+      { timeout: 90_000 },
+    );
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 1_000));
+    // Structural canvas evidence comes from THIS real portal visit; the
+    // pixel-paint predicate runs in a dedicated ?webgl=1 visit at the end
+    // of the lane — a headless WebGPU swapchain screenshots as one solid
+    // color regardless of what the user sees, so pixels are only
+    // falsifiable under the WebGL backend (same real kelp scene).
+    const realPathCanvas = await captureKelpPaintEvidence(page);
+    const spaSentinelOnKelp = await page.evaluate(
+      () =>
+        window.__KELP_EXIT_SENTINEL__?.token ===
+        "same-document-sentinel",
+    );
+
+    await armLoaderObserver(page, "__KELP_RETURN_LOADER_OBSERVATION__");
+    await page.evaluate(() => {
+      const button = [...document.querySelectorAll("button")].find(
+        (candidate) =>
+          candidate.textContent?.trim() === "Back to the Reef",
+      );
+      if (!button) throw new Error("real Back to the Reef button missing");
+      button.click();
+    });
+    await page.waitForFunction(
+      () => window.location.pathname === "/game",
+      { timeout: 30_000 },
+    );
+    await page.waitForFunction(
+      () => Boolean(window.__WORLD_STAGE_PROBE__),
+      { timeout: 30_000 },
+    );
+    await waitForWorldReadyWithoutLoader(page);
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-stage-transition="idle"]') !== null,
+      { timeout: 90_000 },
+    );
+    const returnLoader = await finishLoaderObserver(
+      page,
+      "__KELP_RETURN_LOADER_OBSERVATION__",
+    );
+    const returnEvidence = await page.evaluate(() => {
+      const canvas = document.querySelector(
+        ".world-stage-root canvas",
+      );
+      const x = Math.floor(window.innerWidth / 2);
+      const y = Math.floor(window.innerHeight / 2);
+      const hit = document.elementFromPoint(x, y);
+      return {
+        pathname: window.location.pathname,
+        sentinelSurvived:
+          window.__KELP_EXIT_SENTINEL__?.token ===
+          "same-document-sentinel",
+        freshProbe:
+          Boolean(window.__WORLD_STAGE_PROBE__) &&
+          window.__WORLD_STAGE_PROBE__ !==
+            window.__KELP_EXIT_SENTINEL__?.initialProbe,
+        ready: window.__W3D_READY === true,
+        loaderAbsent: !document.querySelector(
+          '[aria-label="Loading ClawVille"]',
+        ),
+        transitionIdle:
+          document.querySelector('[data-stage-transition="idle"]') !==
+          null,
+        hitTest: {
+          x,
+          y,
+          exactCanvas: Boolean(canvas) && hit === canvas,
+          hitTag: hit?.tagName ?? null,
+          hitClass:
+            typeof hit?.className === "string" ? hit.className : null,
+        },
+      };
+    });
+    // Dedicated paint visit under the capturable WebGL backend (the kelp
+    // canvas honors ?webgl=1 — KelpRealmCanvas.tsx). Runs after the real
+    // round trip so it cannot disturb the incident-path assertions.
+    await page.goto("http://localhost:3000/kelp?webgl=1", {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    });
+    await page.waitForFunction(
+      () => {
+        const loading = document.querySelector(
+          '[aria-label="Entering the Kelp Forest"]',
+        );
+        const canvas = document.querySelector("canvas");
+        return (
+          !loading &&
+          canvas?.isConnected === true &&
+          canvas.width > 0 &&
+          canvas.height > 0 &&
+          (canvas.width !== 300 || canvas.height !== 150)
+        );
+      },
+      { timeout: 90_000 },
+    );
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 2_000));
+    const paint = await captureKelpPaintEvidence(page);
+
+    summary.kelpExit = {
+      fixtureTraffic: {
+        ...summary.routes.network.fixtureTraffic,
+      },
+      spaSentinelOnKelp,
+      realPathCanvas,
+      paint,
+      returnLoader,
+      returnEvidence,
+    };
+    summary.assertions = {
+      exactAuthGuestFixtureUsed:
+        summary.routes.network.fixtureTraffic["GET /api/auth/me"] > 0,
+      exactAvatarFixtureUsed:
+        summary.routes.network.fixtureTraffic["GET /api/avatars/me"] > 0,
+      exactAgentSessionFixtureUsed:
+        summary.routes.network.fixtureTraffic[
+          "GET /api/auth/me/agent-session"
+        ] > 0,
+      kelpNavigationStayedSameDocument: spaSentinelOnKelp === true,
+      kelpCanvasConnectedWithRealBacking:
+        realPathCanvas.connectedCanvas.connected === true &&
+        realPathCanvas.connectedCanvas.nonDefaultBacking === true,
+      kelpPaintHasNonBackgroundVariance: paint.pass === true,
+      returnNavigationStayedSameDocument:
+        returnEvidence.sentinelSurvived === true,
+      returnedToGame: returnEvidence.pathname === "/game",
+      freshWorldStageProbe: returnEvidence.freshProbe === true,
+      returnLoaderAppearedBeforeReady:
+        returnLoader.appearedWhileNotReady === true,
+      returnLoaderNeverDisappearedBeforeReady:
+        returnLoader.disappearedBeforeReady === false,
+      returnWorldGenuinelyReady: returnEvidence.ready === true,
+      returnLoaderAbsent: returnEvidence.loaderAbsent === true,
+      returnTransitionIdle: returnEvidence.transitionIdle === true,
+      centerHitIsExactStageCanvas:
+        returnEvidence.hitTest.exactCanvas === true,
+    };
+    summary.pass = Object.values(summary.assertions).every(Boolean);
+  } else if (lane === "retry-adoption") {
+    await page.goto(url, {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    });
+    await page.waitForFunction(() => Boolean(window.__WORLD_STAGE_PROBE__), {
+      timeout: 30_000,
+    });
+    const deadline = Date.now() + 15_000;
+    const observedGenerations = new Set();
+    let settled = null;
+    while (Date.now() < deadline) {
+      const state = await snapshot(page);
+      const generation = state.slots?.alpha?.generation;
+      if (typeof generation === "number") {
+        observedGenerations.add(generation);
+      }
+      if (state.transitionPhase === "error" || state.transitionError) {
+        throw new Error(
+          state.transitionError ?? "retry-adoption entered error",
+        );
+      }
+      if (
+        state.activeScene === "alpha" &&
+        state.transitionPhase === "idle" &&
+        generation >= 2
+      ) {
+        settled = state;
+        break;
+      }
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+    }
+    summary.retryAdoption = {
+      dedicatedDeadlineMs: 15_000,
+      settled: Boolean(settled),
+      observedGenerations: [...observedGenerations].sort((a, b) => a - b),
+      finalGeneration: settled?.slots?.alpha?.generation ?? null,
+      finalPhase: settled?.transitionPhase ?? null,
+      transitionErrors: settled?.transitionErrors ?? [],
+      scope:
+        "watchdog retry + store lineage only; navigationRef re-key is covered by unit/jsdom tests",
+    };
+    summary.assertions = {
+      silentRetryMintedFreshGeneration:
+        summary.retryAdoption.finalGeneration >= 2,
+      retrySettledToIdle:
+        summary.retryAdoption.settled === true &&
+        summary.retryAdoption.finalPhase === "idle",
+      zeroTransitionErrors:
+        summary.retryAdoption.transitionErrors.length === 0,
+      dedicatedDeadlineUsed:
+        summary.retryAdoption.dedicatedDeadlineMs !== 30_000,
+    };
+    summary.pass = Object.values(summary.assertions).every(Boolean);
+  } else if (routeLane) {
     const routeOrigin = new URL(url).origin;
     for (const [routeName, pathname] of [
       ["cove", "/cove"],

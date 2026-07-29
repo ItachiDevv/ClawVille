@@ -7,6 +7,7 @@ import CoveInteriorScene from '@/lib/three/cove-interior';
 import { useSceneActive } from './use-scene-frame';
 import { useStageStore } from './stage-store';
 import { withStageSlotFrustumCullingDisabled } from './resource-ledger';
+import { warmCoveRendererForGeneration } from './cove-warmup-entry-manager';
 
 const COVE_SCENE_ID = 'cove';
 
@@ -28,7 +29,7 @@ export default function StageHostedCoveScene({
   );
   const active = useSceneActive();
   const [assetReady, setAssetReady] = useState(false);
-  const warmedOnceRef = useRef(false);
+  const warmedRendererRef = useRef<{ gl: unknown } | null>(null);
   const { camera, gl, scene } = useThree();
 
   useEffect(() => {
@@ -62,33 +63,49 @@ export default function StageHostedCoveScene({
     void (async () => {
       const state = useStageStore.getState();
       state.setRenderPaused(true);
-      if (!warmedOnceRef.current) {
-        try {
-          if (typeof (gl as { compileAsync?: unknown }).compileAsync === 'function') {
-            await withStageSlotFrustumCullingDisabled('cove', () =>
-              (
-                gl as unknown as {
-                  compileAsync: (
-                    scene: Scene,
-                    camera: Camera,
-                  ) => Promise<void>;
-                }
-              ).compileAsync(scene, camera),
-            );
-          }
-          if (!isCurrent()) return;
-          await withStageSlotFrustumCullingDisabled(
-            'cove',
-            async () => {
-              gl.render(scene, camera);
-            },
+      const compileAsync =
+        typeof (gl as { compileAsync?: unknown }).compileAsync === 'function'
+          ? () =>
+              withStageSlotFrustumCullingDisabled('cove', () =>
+                (
+                  gl as unknown as {
+                    compileAsync: (
+                      scene: Scene,
+                      camera: Camera,
+                    ) => Promise<void>;
+                  }
+                ).compileAsync(scene, camera),
+              )
+          : undefined;
+      const result = await warmCoveRendererForGeneration({
+        gl,
+        warmedRenderer: warmedRendererRef.current?.gl ?? null,
+        compile: compileAsync,
+        directWarm: () =>
+          withStageSlotFrustumCullingDisabled('cove', async () => {
+            gl.render(scene, camera);
+          }),
+        isCurrent,
+        onCompileRejected: (error) => {
+          console.warn(
+            '[CoveStage] compileAsync failed; continuing to direct warm:',
+            error,
           );
-          warmedOnceRef.current = true;
-        } catch (error) {
-          console.warn('[CoveStage] warmup failed; continuing:', error);
-        }
-      }
-      if (!isCurrent()) return;
+        },
+        onCompileTimedOut: () => {
+          console.warn(
+            '[CoveStage] compileAsync exceeded 20s; bypassing it for this renderer',
+          );
+        },
+        onDirectWarmRejected: (error) => {
+          console.warn(
+            '[CoveStage] direct warm failed; continuing:',
+            error,
+          );
+        },
+      });
+      if (result.status !== 'completed' || !isCurrent()) return;
+      warmedRendererRef.current = { gl: result.warmedRenderer };
       const current = useStageStore.getState();
       current.setRenderPaused(false);
       current.ackReady(COVE_SCENE_ID, generation);

@@ -327,16 +327,12 @@ export default function HomePage() {
               <div className="text-3xl mb-3">🦀</div>
               <h3 className="font-clawville text-xl text-cyan-300 mb-2">OpenClaw</h3>
               <p className="text-white/40 text-sm leading-relaxed mb-4">
-                Override NPCs or inject avatar bots via your OpenClaw gateway.
+                Connects with the universal one-step magic link — full-scope play as itself.
               </p>
               <div className="flex gap-2">
-                <Link href="/arena/openclaw-override" className="text-xs text-cyan-400/70 hover:text-cyan-300 font-mono">
-                  Override NPC
-                </Link>
-                <span className="text-white/20">|</span>
-                <Link href="/arena/openclaw-avatar" className="text-xs text-cyan-400/70 hover:text-cyan-300 font-mono">
-                  Bot Avatar
-                </Link>
+                <span className="text-xs text-cyan-400/70 font-mono">
+                  /api/agent/connect
+                </span>
               </div>
             </div>
 
@@ -359,17 +355,12 @@ export default function HomePage() {
               <div className="text-3xl mb-3">🌸</div>
               <h3 className="font-clawville text-xl text-pink-300 mb-2">Milady AI</h3>
               <p className="text-white/40 text-sm leading-relaxed mb-4">
-                One-click install from the Milady AI curated app grid. Zero-config, runtime-trust.
+                Joins through the same one-step magic link as every framework — no install needed.
               </p>
               <div className="flex gap-2">
-                <a
-                  href="https://www.npmjs.com/package/@clawville/app-clawville"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-xs text-pink-400/70 hover:text-pink-300 font-mono"
-                >
-                  @clawville/app-clawville
-                </a>
+                <span className="text-xs text-pink-400/70 font-mono">
+                  /api/agent/connect
+                </span>
               </div>
             </div>
 

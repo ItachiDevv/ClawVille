@@ -1,11 +1,23 @@
 'use client';
 
-import { useEffect } from 'react';
-import { useStageStore, type StageRequest } from './stage-store';
+import { useEffect, useMemo, useRef } from 'react';
+import {
+  retryStageScene,
+  useStageStore,
+  type StageRequest,
+} from './stage-store';
+import {
+  DEFAULT_WATCHDOG_CONFIG,
+  reduceWatchdog,
+  type WatchdogConfig,
+  type WatchdogSample,
+  type WatchdogState,
+} from './stage-watchdog-machine';
 
 interface StageTransitionProps {
   fadeDurationMs?: number;
   timeoutMs?: number;
+  watchdogConfig?: WatchdogConfig;
   onOpaque?: (request: StageRequest) => void;
 }
 
@@ -21,7 +33,8 @@ function matchesRequest(
 
 export function StageTransition({
   fadeDurationMs = 250,
-  timeoutMs = 20_000,
+  timeoutMs = DEFAULT_WATCHDOG_CONFIG.softTimeoutMs,
+  watchdogConfig,
   onOpaque,
 }: StageTransitionProps) {
   const pendingRequest = useStageStore((state) => state.pendingRequest);
@@ -36,33 +49,139 @@ export function StageTransition({
   const firstControlledFrame = useStageStore(
     (state) => state.firstControlledFrame,
   );
+  const stageEpoch = useStageStore((state) => state.stageEpoch);
+  const machineRef = useRef<WatchdogState | null>(null);
+  const resolvedWatchdogConfig = useMemo<WatchdogConfig>(
+    () =>
+      watchdogConfig ?? {
+        ...DEFAULT_WATCHDOG_CONFIG,
+        softTimeoutMs: timeoutMs,
+      },
+    [timeoutMs, watchdogConfig],
+  );
 
   useEffect(() => {
     if (!pendingRequest) return;
     const request = pendingRequest;
+    const requestEpoch = stageEpoch;
 
     const activateTimer = window.setTimeout(() => {
       const state = useStageStore.getState();
-      if (state.pendingRequest?.requestId !== request.requestId) return;
+      if (
+        state.stageEpoch !== requestEpoch ||
+        state.pendingRequest?.requestId !== request.requestId
+      ) {
+        return;
+      }
       onOpaque?.(request);
       state.activateScene(request);
       state.setTransitionPhase(request.requestId, 'awaiting');
     }, fadeDurationMs);
 
-    const timeoutTimer = window.setTimeout(() => {
+    let lastTickAt = Date.now();
+    const watchdog = window.setInterval(() => {
       const state = useStageStore.getState();
-      if (state.pendingRequest?.requestId !== request.requestId) return;
-      state.failTransition(
-        request,
-        `Scene "${request.sceneId}" did not become ready within ${Math.round(timeoutMs / 1000)} seconds. Choose a scene to retry.`,
+      const now = Date.now();
+      const delta = Math.min(
+        now - lastTickAt,
+        resolvedWatchdogConfig.tickMs * 2,
       );
-    }, timeoutMs);
+      lastTickAt = now;
+      const current = state.pendingRequest;
+      const bridge = window as typeof window & {
+        __W3D_PROGRESS?: number;
+        __W3D_TEXTURE_UPLOAD_TOTAL?: number;
+        __W3D_TEXTURE_UPLOAD_DONE?: number;
+        __W3D_CANVAS_READY?: boolean;
+        __W3D_TEXTURES_READY?: boolean;
+      };
+      const slot = current ? state.scenes[current.sceneId] : undefined;
+      const sample: WatchdogSample = {
+        stageEpoch: state.stageEpoch,
+        requestId: current?.requestId ?? null,
+        retryOfRequestId: current?.retryOfRequestId,
+        sceneKind: current?.sceneId === 'cove' ? 'cove' : 'world',
+        transitionPhase: state.transition?.phase ?? 'idle',
+        terminal:
+          state.transition?.phase === 'error' ||
+          slot?.status === 'error',
+        readiness: {
+          slotReady:
+            slot?.status === 'ready' &&
+            slot.generation === current?.generation,
+          cameraInstalled: current
+            ? matchesRequest(state.cameraInstalled, current)
+            : false,
+          firstControlledFrame: current
+            ? matchesRequest(state.firstControlledFrame, current)
+            : false,
+        },
+        slotStatus: slot?.status,
+        recoveryCount: state.recovery.count,
+        loadProgress:
+          typeof bridge.__W3D_PROGRESS === 'number'
+            ? bridge.__W3D_PROGRESS
+            : null,
+        uploadTotal:
+          typeof bridge.__W3D_TEXTURE_UPLOAD_TOTAL === 'number'
+            ? bridge.__W3D_TEXTURE_UPLOAD_TOTAL
+            : 0,
+        uploadDone:
+          typeof bridge.__W3D_TEXTURE_UPLOAD_DONE === 'number'
+            ? bridge.__W3D_TEXTURE_UPLOAD_DONE
+            : 0,
+        canvasReady: bridge.__W3D_CANVAS_READY === true,
+        texturesReady: bridge.__W3D_TEXTURES_READY === true,
+        hidden: document.hidden,
+        visibleDeltaMs: delta,
+      };
+      const decision = reduceWatchdog(
+        machineRef.current,
+        sample,
+        resolvedWatchdogConfig,
+      );
+      machineRef.current = decision.state;
+      if (decision.verdict === 'none' || !current) return;
+
+      window.clearInterval(watchdog);
+      if (decision.verdict === 'silent-retry') {
+        retryStageScene(current);
+        return;
+      }
+      state.failTransition(
+        current,
+        `Scene "${current.sceneId}" did not become ready within ${Math.round((decision.state?.attemptElapsedMs ?? 0) / 1000)} seconds. Choose a scene to retry.`,
+      );
+    }, resolvedWatchdogConfig.tickMs);
 
     return () => {
       window.clearTimeout(activateTimer);
-      window.clearTimeout(timeoutTimer);
+      window.clearInterval(watchdog);
     };
-  }, [fadeDurationMs, onOpaque, pendingRequest, timeoutMs]);
+  }, [
+    fadeDurationMs,
+    onOpaque,
+    pendingRequest,
+    resolvedWatchdogConfig,
+    stageEpoch,
+  ]);
+
+  useEffect(() => {
+    if (
+      !pendingRequest ||
+      transition?.phase === 'idle' ||
+      machineRef.current?.stageEpoch !== stageEpoch
+    ) {
+      machineRef.current = null;
+    }
+  }, [pendingRequest, stageEpoch, transition?.phase]);
+
+  useEffect(
+    () => () => {
+      machineRef.current = null;
+    },
+    [],
+  );
 
   useEffect(() => {
     if (

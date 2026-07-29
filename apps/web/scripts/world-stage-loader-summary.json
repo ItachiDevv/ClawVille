@@ -1,0 +1,156 @@
+{
+  "pass": true,
+  "lane": "loader",
+  "url": "http://localhost:3000/",
+  "backend": "unknown",
+  "requestedTransitions": 102,
+  "requestedRoundTrips": null,
+  "experiment": {
+    "mode": "crossings",
+    "dwellSeconds": null,
+    "sampleIntervalSeconds": null
+  },
+  "completedRoundTrips": 0,
+  "completedTransitions": 0,
+  "warmupTransitions": 0,
+  "canvasMountCount": null,
+  "hiddenWindowsChecked": 0,
+  "hiddenFrameViolations": [],
+  "hiddenCameraViolations": [],
+  "hiddenStoreViolations": [],
+  "activeGrowthViolations": [],
+  "listenerBaseline": null,
+  "listenerEnd": null,
+  "listenerDelta": null,
+  "listenerUnderflowCount": null,
+  "transitionErrors": [],
+  "recovery": null,
+  "heap": {
+    "available": false,
+    "baselineBytes": null,
+    "endBytes": null,
+    "growthRatio": null,
+    "totalGrowthThreshold": 0.2,
+    "midpointBytes": null,
+    "secondHalfGrowthRatio": null,
+    "secondHalfSlopeMBPerLoop": null,
+    "secondHalfSlopeThresholdMBPerLoop": 1,
+    "dwellDriftMBPerSecond": null,
+    "dwellDriftThresholdMBPerSecond": 0.05
+  },
+  "heapDiff": {
+    "enabled": false,
+    "status": "disabled",
+    "snapshotLoops": [],
+    "reportPath": null,
+    "aggregation": null,
+    "baseline": null,
+    "final": null,
+    "topConstructors": [],
+    "retainerChains": []
+  },
+  "renderer": {
+    "samples": [],
+    "byteGrowthTolerance": 0.01
+  },
+  "series": [],
+  "inventory": {
+    "early": null,
+    "late": null,
+    "diff": null,
+    "changes": []
+  },
+  "ledger": null,
+  "routes": {
+    "cacheControl": {
+      "game": null,
+      "cove": null
+    },
+    "coldCoveAssetRequests": [],
+    "coldCoveWorldAssetRequests": [],
+    "pathSequence": [],
+    "returnLoaderViolations": [],
+    "historyTraversal": {
+      "back": false,
+      "forward": false
+    },
+    "historyLength": {
+      "baseline": null,
+      "final": null,
+      "delta": null,
+      "maxAddedEntries": 2,
+      "maxLength": 4
+    },
+    "assetTimeline": [],
+    "network": {
+      "phase": "cold-cove",
+      "joins": {
+        "coldCove": 0,
+        "firstGame": 0,
+        "afterFirstGame": 0
+      },
+      "streams": {
+        "coldCove": 0,
+        "firstGame": 0,
+        "afterFirstGame": 0
+      },
+      "events": [],
+      "fixtureTraffic": {
+        "GET /api/auth/me": 0,
+        "GET /api/avatars/me": 0,
+        "GET /api/auth/me/agent-session": 0
+      },
+      "stubUnhandled": {
+        "GET /api/x402/stats": 1,
+        "GET /api/auth/me": 4,
+        "GET /api/avatars/me": 1,
+        "GET /api/wallet/link": 1
+      }
+    },
+    "coldInit": null
+  },
+  "loader": {
+    "appeared": true,
+    "appearedWhileNotReady": true,
+    "topmostAtCenter": true,
+    "maxAriaValue": 100,
+    "disappearedBeforeReady": false,
+    "samples": 367,
+    "pathname": "/game",
+    "ready": true,
+    "loaderAbsent": true
+  },
+  "kelpExit": null,
+  "retryAdoption": null,
+  "console": {
+    "errors": [
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "TypeError: Cannot read properties of null (reading 'addEventListener')",
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "Failed to load resource: the server responded with a status of 404 (Not Found)"
+    ],
+    "warnings": [
+      "THREE.Clock: This module has been deprecated. Please use THREE.Timer instead.",
+      "THREE.Clock: This module has been deprecated. Please use THREE.Timer instead.",
+      "THREE.Clock: This module has been deprecated. Please use THREE.Timer instead.",
+      "THREE.Clock: This module has been deprecated. Please use THREE.Timer instead.",
+      "THREE.Clock: This module has been deprecated. Please use THREE.Timer instead.",
+      "THREE.Clock: This module has been deprecated. Please use THREE.Timer instead."
+    ]
+  },
+  "assertions": {
+    "realHomepageLinkUsed": true,
+    "loaderAppearedBeforeReady": true,
+    "loaderWasTopmostAndPointerBlocking": true,
+    "loaderMadeMeasuredProgress": true,
+    "loaderNeverDisappearedBeforeReady": true,
+    "genuineWorldReady": true,
+    "loaderGoneAfterReady": true
+  },
+  "failure": null,
+  "generatedAt": "2026-07-28T04:48:47.871Z"
+}

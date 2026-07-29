@@ -41,7 +41,7 @@ import { requestWorldStageNavigation } from '@/components/three/world-stage/stag
 /**
  * CoveCanvas — dynamically imported with ssr:false so Three.js /
  * WebGPU never runs in the Next.js SSR environment.
- * Follows the same pattern as Arena3DCanvas on /arena.
+ * Follows the legacy route-owned Canvas pattern (originally from the retired /arena page).
  */
 // ---------------------------------------------------------------------------
 // Cove door position in game-px — avatar spawns here on exit so it feels

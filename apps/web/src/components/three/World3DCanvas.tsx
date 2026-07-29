@@ -1428,7 +1428,16 @@ function WorldWarmup({
     // DEBUG PROBE: expose scene/camera/renderer globally so CDP can introspect
     // scale issues without an extra deploy cycle. Safe — no per-frame cost.
     (window as any).__R3F = { scene, camera, gl };
-    (window as any).__CV_STORES__ = { useGameStore, useNpcStore };
+    // avatarPositionRef + the map-px world center ride along so probe lanes
+    // can place the avatar at real world coordinates and exercise the REAL
+    // per-frame proximity path (nearLocation is recomputed from this ref
+    // every frame — an injected store value is clobbered within one frame).
+    (window as any).__CV_STORES__ = {
+      useGameStore,
+      useNpcStore,
+      avatarPositionRef,
+      worldCenterPx: { x: MAP_WIDTH / 2, y: MAP_HEIGHT / 2 },
+    };
 
     // CanvasImpl runs configure() from a no-deps layout effect, so async root
     // configuration and onCreated ownership can change while this long-lived
