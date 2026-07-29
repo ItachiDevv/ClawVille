@@ -36,14 +36,15 @@ import {
   type SettledHandResponse,
 } from '@/lib/cove/blackjack-api-client';
 import type { CardParityPayload } from '@/lib/cove/card-parity-mirror';
+import { BlackjackRoomRevealEpoch } from '@/lib/cove/blackjack-room-reveal-epoch';
 
 const BET_STEPS = [5, 25, 50, 100, 250, 500] as const;
 const AGENT_WAIT_MS = 8_000;
 const AGENT_KEYBOARD_WAIT_MS = 15_000;
 const KEYBOARD_ACTIVE_MS = 5_000;
 const NEXT_HAND_PAUSE_MS = 2_200;
-const SETTLE_REVEAL_MS = 280;
-const ACTION_SETTLED_STAGE_MS = 120;
+// Settled-staging delays (120ms beats, 280ms dealer reveal) live in
+// BlackjackRoomRevealEpoch — the staging runs post-commit through it.
 const HOLE_REVEAL_MS = 120;
 const MOVEMENT_KEYS = new Set([
   'w', 'a', 's', 'd', 'W', 'A', 'S', 'D',
@@ -533,14 +534,26 @@ export function useBlackjackRoomController(): BlackjackRoomState & {
   const insureLatchRef = concurrency.insureLatchRef;
   const toastSeqRef = useRef(0);
   const advisorSeqRef = useRef(0);
-  const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const holeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const roomRevealEpochRef = useRef<BlackjackRoomRevealEpoch | null>(null);
+  if (roomRevealEpochRef.current === null) {
+    roomRevealEpochRef.current = new BlackjackRoomRevealEpoch();
+  }
+  const roomRevealEpoch = roomRevealEpochRef.current;
+  // True from a settled response landing until the staged settled commit paints.
+  // While true, the visible bankroll is frozen — no other writer may spoil the
+  // verdict — and leave controls are locked (the reveal resolves in under a second).
+  const pendingSettlementRef = useRef(false);
 
   shoeRef.current = shoe;
   handRef.current = hand;
   phaseRef.current = phase;
 
   const bumpPublish = useCallback(() => setPublishSeq((value) => value + 1), []);
+  const setBalanceGuarded = useCallback((value: number) => {
+    if (pendingSettlementRef.current) return;
+    setBalance(value);
+  }, []);
   const showToast = useCallback((
     message: string,
     tone: 'info' | 'warn' | 'error' = 'info',
@@ -566,9 +579,9 @@ export function useBlackjackRoomController(): BlackjackRoomState & {
   }, [toast]);
 
   const resetHand = useCallback(() => {
-    if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
+    roomRevealEpoch.cancel();
+    pendingSettlementRef.current = false;
     if (holeTimerRef.current) clearTimeout(holeTimerRef.current);
-    revealTimerRef.current = null;
     holeTimerRef.current = null;
     concurrency.bumpDecisionContext();
     setAgentPending(null);
@@ -583,7 +596,7 @@ export function useBlackjackRoomController(): BlackjackRoomState & {
     dealKeyRef.current = null;
     actionKeyRef.current = null;
     bumpPublish();
-  }, [bumpPublish]);
+  }, [bumpPublish, roomRevealEpoch]);
 
   const restoreHandFromServer = useCallback((
     response: CurrentHandResponse | null,
@@ -592,6 +605,9 @@ export function useBlackjackRoomController(): BlackjackRoomState & {
     const disposition = concurrency.restoredHandDisposition(response, allowClear);
     if (disposition === 'ignore') return;
     if (disposition === 'clear') {
+      // Never wipe a settlement mid-reveal (mirror of the certified 2D
+      // allowClear guard, W-G G3.2) — the staged commit lands in under a second.
+      if (pendingSettlementRef.current) return;
         setHand(null);
         setSettledResponse(null);
         setInsuranceState({ offered: false, took: false });
@@ -603,6 +619,10 @@ export function useBlackjackRoomController(): BlackjackRoomState & {
     }
     if (!response || !isCurrentHandLive(response)) return;
     const live: CurrentHandLive = response;
+    // A live server hand outranks a locally staged reveal — drop the staging
+    // so its timers can never commit over the restored truth.
+    roomRevealEpoch.cancel();
+    pendingSettlementRef.current = false;
     const playerHands = live.playerHands.map((playerHand) => ({ ...playerHand }));
     setHand({
       handId: live.handId,
@@ -626,10 +646,12 @@ export function useBlackjackRoomController(): BlackjackRoomState & {
     setTransition('idle');
     setBannerVisible(false);
     bumpPublish();
-  }, [bumpPublish]);
+  }, [bumpPublish, roomRevealEpoch]);
 
   const reconcile = useCallback(async () => {
     if (!isRealTier) {
+      roomRevealEpoch.cancel();
+      pendingSettlementRef.current = false;
       setShoe(null);
       shoeRef.current = null;
       setHand(null);
@@ -652,17 +674,17 @@ export function useBlackjackRoomController(): BlackjackRoomState & {
       ]);
       if (shoeResponse?.shoe.status === 'open') {
         setShoe(shoeResponse.shoe);
-        setBalance(shoeResponse.walletBalance);
+        setBalanceGuarded(shoeResponse.walletBalance);
       }
       restoreHandFromServer(handResponse);
     } catch {
       showToast("Couldn't restore your hand — refresh to retry.", 'warn');
     }
-  }, [bumpPublish, isRealTier, restoreHandFromServer, showToast]);
+  }, [bumpPublish, isRealTier, restoreHandFromServer, roomRevealEpoch, setBalanceGuarded, showToast]);
 
   useEffect(() => {
-    setBalance(avatar?.clawTokens ?? 0);
-  }, [avatar?.clawTokens]);
+    setBalanceGuarded(avatar?.clawTokens ?? 0);
+  }, [avatar?.clawTokens, setBalanceGuarded]);
 
   useEffect(() => {
     if (!isRealTier) return;
@@ -672,7 +694,7 @@ export function useBlackjackRoomController(): BlackjackRoomState & {
         const current = await fetchCurrentBlackjackShoe();
         if (cancelled || !current || current.shoe.status !== 'open') return;
         setShoe(current.shoe);
-        setBalance(current.walletBalance);
+        setBalanceGuarded(current.walletBalance);
         try {
           const currentHand = await fetchCurrentBlackjackHand();
           if (!cancelled) restoreHandFromServer(currentHand, false);
@@ -686,13 +708,13 @@ export function useBlackjackRoomController(): BlackjackRoomState & {
       }
     })();
     return () => { cancelled = true; };
-  }, [isRealTier, restoreHandFromServer, showToast]);
+  }, [isRealTier, restoreHandFromServer, setBalanceGuarded, showToast]);
 
   useEffect(() => () => {
-    if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
+    roomRevealEpoch.cancel();
     if (holeTimerRef.current) clearTimeout(holeTimerRef.current);
     concurrency.dispose();
-  }, [concurrency]);
+  }, [concurrency, roomRevealEpoch]);
 
   useEffect(() => {
     if (agentMode !== 'autonomous') return;
@@ -709,7 +731,7 @@ export function useBlackjackRoomController(): BlackjackRoomState & {
     try {
       const opened = await openShoe.mutateAsync({ currency: 'clawtoken' });
       setShoe(opened.shoe);
-      setBalance(opened.walletBalance);
+      setBalanceGuarded(opened.walletBalance);
       return opened.shoe;
     } catch (error) {
       showToast(
@@ -718,7 +740,7 @@ export function useBlackjackRoomController(): BlackjackRoomState & {
       );
       return null;
     }
-  }, [openShoe, showToast]);
+  }, [openShoe, setBalanceGuarded, showToast]);
 
   const applySettled = useCallback((
     response: SettledHandResponse,
@@ -730,40 +752,49 @@ export function useBlackjackRoomController(): BlackjackRoomState & {
       offered: response.outcome.dealer.cards[0]?.rank === 'A',
       took: response.outcome.insurance !== null,
     });
-    setBalance(response.balance);
     setHand(null);
     setActiveSlotState(0);
     setShoe((current) => current ? { ...current, dealtCount: response.dealtCount } : current);
     setPhase('player-turn');
     setBannerVisible(false);
-    if (revealTimerRef.current) clearTimeout(revealTimerRef.current);
-    const revealDealer = () => {
-      setDealStep('dealer-reveal');
-      setTransition('revealing');
-      bumpPublish();
-      revealTimerRef.current = setTimeout(() => {
+    // Settlement staging is state-only here; the staged reveal advances
+    // post-commit through the room reveal epoch (effect below), so every
+    // journaled frame provably painted. The visible bankroll is held until
+    // the settled commit — it must not spoil the verdict.
+    pendingSettlementRef.current = true;
+    roomRevealEpoch.begin(response.handId);
+    setTransition('idle');
+    // Dealt naturals paint a real masked-dealer hole beat; terminal actions
+    // paint the drawn card against the still-masked dealer first.
+    setDealStep(source === 'deal' ? 'hole' : 'player-turn');
+    bumpPublish();
+  }, [bumpPublish, concurrency, roomRevealEpoch]);
+
+  useEffect(() => {
+    if (!settledResponse) return;
+    return roomRevealEpoch.scheduleCommittedStep(
+      settledResponse.handId,
+      dealStep,
+      (step) => {
+        if (step === 'dealer-reveal') {
+          setDealStep('dealer-reveal');
+          setTransition('revealing');
+          bumpPublish();
+          return;
+        }
+        // The settled commit — the ONLY place the settled balance reaches the
+        // HUD. Transition resets to idle a tick later (the journal's idle stamp
+        // comes from completeTransition in the parity adapter).
+        pendingSettlementRef.current = false;
         setDealStep('settled');
         setBannerVisible(true);
         setPhase('settled');
+        setBalance(settledResponse.balance);
         bumpPublish();
-        revealTimerRef.current = setTimeout(() => {
-          setTransition('idle');
-          revealTimerRef.current = null;
-        }, 0);
-      }, SETTLE_REVEAL_MS);
-    };
-    if (source === 'action') {
-      // Publish the terminal player result in its own render before dealer
-      // entitlement advances. This preserves the action-response cadence for
-      // bust/stand while naturals continue directly into dealer reveal.
-      setDealStep('player-turn');
-      setTransition('idle');
-      bumpPublish();
-      revealTimerRef.current = setTimeout(revealDealer, ACTION_SETTLED_STAGE_MS);
-    } else {
-      revealDealer();
-    }
-  }, [bumpPublish]);
+        roomRevealEpoch.scheduleDeferred(0, () => setTransition('idle'));
+      },
+    );
+  }, [bumpPublish, dealStep, roomRevealEpoch, settledResponse]);
 
   const handFromDeal = useCallback((
     response: Extract<DealResponse, { status: 'in_progress' }>,
