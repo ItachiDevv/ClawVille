@@ -201,8 +201,9 @@ Canonical phrase bank: `docs/brand-language.md`. Non-negotiables:
   travels with it" / "ClawVille is home base, not a cage."
 - **Official links (from the DexScreener token profile, verified 2026-07-27):** website
   `clawville.world` · X `@Clawville_World` · Discord `discord.gg/KJfvM4VqQZ` · Telegram
-  `t.me/clawvillesol` · TikTok `@clawvilleworld`. These are the ONLY links outward graphics
-  may carry. (`@clawville` is NOT ours.)
+  `t.me/clawvillesol` · TikTok `@clawvilleworld` · GitHub `github.com/ItachiDevv/ClawVille`
+  (added 2026-07-29, founder order — carried in the site header). These are the ONLY links
+  outward graphics may carry. (`@clawville` is NOT ours.)
 - **The domain is ALWAYS `clawville.world`** in every footer, link bar, and printed URL.
   We do not own clawville.com; the `.com` printed in the Spaces Recap exemplar is an error,
   never copy it. (Founder ruling 2026-07-26.)
