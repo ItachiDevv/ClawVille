@@ -226,7 +226,10 @@ describe('verifier.runSpinLocal — byte-identity', () => {
       [1, 4, 3],
       [2, 2, 0],
     ]);
-    expect(result.winAmount.toString()).toBe('55');
+    // 54 re-captured from BOTH engines (server slot-engine AND this verifier,
+    // identical reels) after the Phase 6.1.10 RTP-94% paytable retune; the
+    // original 55 predated the retune.
+    expect(result.winAmount.toString()).toBe('54');
     expect(result.cursorAfter).toBe(20);
     expect(result.freeSpinsAwarded).toBe(0);
     expect(result.isFreeSpin).toBe(false);
@@ -234,7 +237,7 @@ describe('verifier.runSpinLocal — byte-identity', () => {
     // would just duplicate the server test; the deep field that matters
     // for player trust is `winAmount` which we already pin above.
     const winSum = result.winningLines.reduce((s, l) => s + l.winAmount, 0n);
-    expect(winSum).toBe(55n);
+    expect(winSum).toBe(54n);
   });
 
   it('different cursor ⇒ different reels', async () => {
@@ -276,9 +279,9 @@ describe('verifier.runSpinLocal — byte-identity', () => {
 // ---------------------------------------------------------------------------
 
 describe('verifier.evaluateReelsLocal', () => {
-  it('flat 0-0-0-0-0 across middle row pays line 0 5-of-Cherry (multiplier 20)', () => {
-    // middle row [0,0,0,0,0], top/bot filled with id 2 (Orange) so no
-    // accidental cross-pay on diagonals.
+  it('flat 0-0-0-0-0 across middle row pays line 0 5-of-kind id 0 (multiplier 18)', () => {
+    // middle row [0,0,0,0,0] (id 0 = Claw since the roster re-theme), top/bot
+    // filled with id 2 so no accidental cross-pay on diagonals.
     const reels = [
       [2, 0, 2],
       [2, 0, 2],
@@ -287,13 +290,14 @@ describe('verifier.evaluateReelsLocal', () => {
       [2, 0, 2],
     ];
     const { winAmount, winningLines } = evaluateReelsLocal(reels, 'classic-3x5', 20n);
-    // Line 0 is rows [1,1,1,1,1] — middle row all Cherries → 5-of-kind = payouts[3]=20.
-    // perLinePredict = 20 / 20 = 1. So at least line 0 contributes 20.
+    // Line 0 is rows [1,1,1,1,1] — middle row all id 0 → 5-of-kind =
+    // payouts[3]=18 (RTP-94% retune). perLinePredict = 20 / 20 = 1, so at
+    // least line 0 contributes 18.
     const line0 = winningLines.find((l) => l.lineIndex === 0);
     expect(line0).toBeDefined();
-    expect(line0!.multiplier).toBe(20);
-    expect(line0!.winAmount).toBe(20n);
-    expect(winAmount).toBeGreaterThanOrEqual(20n);
+    expect(line0!.multiplier).toBe(18);
+    expect(line0!.winAmount).toBe(18n);
+    expect(winAmount).toBeGreaterThanOrEqual(18n);
   });
 });
 
@@ -318,7 +322,7 @@ describe('verifier.replaySpin', () => {
           [1, 4, 3],
           [2, 2, 0],
         ],
-        winAmount: '55',
+        winAmount: '54',
         cursorAfter: 20,
       },
     });
@@ -666,9 +670,9 @@ describe('verifier.evaluateReelsLocal — bonus scatter + wild multiplier math',
       ],
     });
     const mid = winningLines.find((w) => w.lineIndex === 0)!;
-    expect(mid.multiplier).toBe(20); // 5-of-kind Cherry
-    // perLine=1, raw payout=20, wild product=10 ⇒ 20 × 10 = 200
-    expect(mid.winAmount).toBe(200n);
+    expect(mid.multiplier).toBe(18); // 5-of-kind id 0 (RTP-94% retune)
+    // perLine=1, raw payout=18, wild product=10 ⇒ 18 × 10 = 180
+    expect(mid.winAmount).toBe(180n);
   });
 
   it('wild OUTSIDE matchLen prefix does NOT multiply (line broken before it)', () => {
