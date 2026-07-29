@@ -3279,7 +3279,9 @@ export default function CoveInteriorScene({
     <>
       <CoveLighting />
 
-      {/* Fog scaled with room: near=4000, far=10000 (was 1200/3000 for 600wu room → ×3.333) */}
+      {/* Fog is stage-owned: the cove scene's fog lives in WorldStageRoot's
+          scene appearance (near=4000/far=10000), NOT here — a stage-hosted
+          sub-scene must never attach scene.fog on the shared canvas. */}
 
       {/* WorldLabelsOverlay — single overlay root for BankLabels */}
       <WorldLabelsOverlayMount />

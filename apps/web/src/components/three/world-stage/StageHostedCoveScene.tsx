@@ -41,8 +41,8 @@ export default function StageHostedCoveScene({
 
   // Room-scale-derived far plane (re-land of the CoveCanvas 2026-07-11 fix):
   // the stage's static cove scene config carries a flat far=2000, which
-  // undershoots the room's 3D bbox diagonal (COVE_CAMERA_FAR, 2600 at the
-  // current knob) and far-clips the interior. Applied only after the stage's
+  // undershoots the room's 3D bbox diagonal (COVE_CAMERA_FAR — knob-derived
+  // in cove-interior.tsx) and far-clips the interior. Applied only after the stage's
   // camera install for this generation, so the install write cannot clobber
   // it; switching back to the world re-installs that scene's own camera.
   // Lives in this lazy chunk so WorldStageRoot never eagerly imports the
