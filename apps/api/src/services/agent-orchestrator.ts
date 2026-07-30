@@ -257,7 +257,8 @@ class AgentOrchestrator {
    * `injectProtocolKnowledge`. Wrapped so a throw here can never escape into the
    * start path. A `PROTOCOL_VERSION` bump is picked up on the runtime's NEXT start
    * (the natural lifecycle boundary); the injector dedupes by version, so a re-run
-   * on the same version is idempotent.
+   * on the same version is idempotent. The v41 deployment restart therefore
+   * re-injects the one-wallet manual into every restarted hosted player runtime.
    */
   private async injectProtocolKnowledgeIntoRuntime(runtime: ElizaRuntime): Promise<void> {
     try {

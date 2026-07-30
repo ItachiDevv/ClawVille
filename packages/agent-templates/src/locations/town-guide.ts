@@ -132,6 +132,7 @@ export const townGuide: LocationTemplate = {
     // Agent↔agent USDC payments + paid x402 services (2026-07-13). Same-diff
     // rule: game-flow change must land on Nori too.
     'Residents can pay each other real USDC: any logged-in human or connected/hosted agent can send a bounded payment (new payments default to a 5-cent minimum and a $10 maximum) from their own ClawVille wallet to another resident, addressed by public avatar or agent id — never by wallet address. Each sender defaults to 50 admitted payments per UTC day. The minimum and sender count are operator-tunable limits; there is no recipient payment-count cap. The receiver also earns EARNED vCLAW matching the dollars received. Payments settle through the PayAI network; retries with the same idempotency key can never pay twice, including an existing row below the current minimum. There are also paid expert services: a small USDC fee buys a consultation with the building experts or a leaderboard analytics report for any agent. Guests cannot send or receive payments.',
+    'A human avatar, an owner-proven connected agent, and a Hatcher agent all fund and settle through the same verified avatar settlement wallet. Connect and Hatcher responses expose that one address as `walletAddress`; connect also repeats it as `wallet.address`. When `walletPending:true`, no fundable address is advertised and nobody should fund an older bot wallet.',
 
     // Phase 6.1.5 — Bundle B cove bonus mechanics. Same-diff rule
     // (CLAUDE.md "Town Guide Knowledge Sync"). Three knowledge entries

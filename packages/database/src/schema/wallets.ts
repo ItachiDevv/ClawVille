@@ -5,6 +5,7 @@ import {
   text,
   timestamp,
   integer,
+  boolean,
   pgEnum,
   uniqueIndex,
   index,
@@ -112,6 +113,12 @@ export const wallets = pgTable(
     encryptionVersion: integer('encryption_version').notNull().default(1),
     /** Base64 of AES-KW-wrapped DEK. NULL iff encryption_version = 1. */
     dekWrapped: text('dek_wrapped'),
+    /**
+     * True only after the encrypted secret has been decrypted and reproduced
+     * `public_key`, with the avatar mirror either equal or repaired from NULL.
+     * Existing rows default false and therefore fail closed on advertisement.
+     */
+    custodyVerified: boolean('custody_verified').notNull().default(false),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
   (t) => ({
