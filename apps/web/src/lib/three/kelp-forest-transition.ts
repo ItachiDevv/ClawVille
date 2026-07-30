@@ -1,5 +1,11 @@
 import { useTransitionStore } from '@/components/transitions/SceneTransition';
+import {
+  readWorldStageNavigationSnapshot,
+  requestWorldStageNavigation,
+} from '@/components/three/world-stage/stage-navigation';
+import { useStageStore } from '@/components/three/world-stage/stage-store';
 import { useGameStore } from '@/stores/game';
+import { decideKelpWalkIn } from './kelp-walkin-guard';
 
 let kelpForestTransitionInFlight = false;
 
@@ -10,9 +16,41 @@ export function resetKelpForestWalkInLatch(): void {
 
 export function triggerKelpForestWalkIn(): void {
   const transition = useTransitionStore.getState();
-  if (kelpForestTransitionInFlight || transition.active || transition.pending !== null) return;
-
-  kelpForestTransitionInFlight = true;
+  const stage = useStageStore.getState();
+  const decision = decideKelpWalkIn({
+    nowMs: Date.now(),
+    legacyLatchArmed: kelpForestTransitionInFlight,
+    nav: readWorldStageNavigationSnapshot(),
+    stageActiveScene: stage.activeScene,
+    stagePendingSceneId: stage.pendingRequest?.sceneId ?? null,
+    stageTransitionPhase: stage.transition?.phase ?? null,
+    legacyTransitionActive: transition.active,
+    legacyTransitionPending: transition.pending !== null,
+  });
+  if (decision.releaseLegacyLatch) {
+    kelpForestTransitionInFlight = false;
+  }
+  if (decision.kind === 'BLOCKED') return;
   useGameStore.getState().clearClickPath();
-  transition.triggerTransition({ to: '/kelp' });
+  const requested = requestWorldStageNavigation({
+    to: '/kelp',
+    onExpired: () => {
+      if (
+        typeof window === 'undefined' ||
+        window.location.pathname !== '/game'
+      ) {
+        return;
+      }
+      kelpForestTransitionInFlight = true;
+      useTransitionStore
+        .getState()
+        .triggerTransition({ to: '/kelp' });
+    },
+  });
+  if (!requested) {
+    kelpForestTransitionInFlight = true;
+    useTransitionStore
+      .getState()
+      .triggerTransition({ to: '/kelp' });
+  }
 }

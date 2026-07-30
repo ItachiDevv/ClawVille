@@ -8,6 +8,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
@@ -15,6 +16,7 @@ import {
   readStageBackend,
   readStageCameraPoses,
   readStageRendererCounters,
+  requestStageRendererRecovery,
   WorldStageCanvas,
   type WorldStageScene,
 } from './WorldStageCanvas';
@@ -45,20 +47,53 @@ import {
   rekeyParkedNavigationForRetry,
   takeParkedNavigationForOpaque,
 } from './stage-navigation-lineage';
-import { readStageSceneInventory } from './resource-ledger';
+import {
+  readStageResourceLedger,
+  readStageSceneInventory,
+} from './resource-ledger';
+import { StageCanvasErrorBoundary } from './StageCanvasErrorBoundary';
+import { StageSlotErrorBoundary } from './StageSlotErrorBoundary';
+import {
+  getStageRendererFailure,
+  getStageRendererFailureServerSnapshot,
+  subscribeStageRendererFailure,
+} from './stage-renderer-status';
+import {
+  describeErrorForBeacon,
+  reportKelpRenderFailure,
+} from '@/lib/three/kelp-render-failure-beacon';
 
 const WORLD_SCENE_ID = 'world';
 const COVE_SCENE_ID = 'cove';
+const KELP_SCENE_ID = 'kelp';
 const LazyStageHostedWorldScene = lazy(
   () => import('./StageHostedWorldScene'),
 );
 const LazyStageHostedCoveScene = lazy(
   () => import('./StageHostedCoveScene'),
 );
+const LazyStageHostedKelpScene = lazy(() =>
+  import('./StageHostedKelpScene').catch((error: unknown) => {
+    console.error(
+      '[KelpRealm] slot chunk failed to load:',
+      error,
+    );
+    void import('@/lib/three/kelp-render-failure-beacon')
+      .then(({ reportKelpRenderFailure, describeErrorForBeacon }) =>
+        reportKelpRenderFailure(
+          'chunk-load-failed',
+          describeErrorForBeacon(error),
+        ),
+      )
+      .catch(() => undefined);
+    throw error;
+  }),
+);
 
 function sceneIdForPathname(pathname: string): string | null {
   if (pathname === '/game') return WORLD_SCENE_ID;
   if (pathname === '/cove') return COVE_SCENE_ID;
+  if (pathname === '/kelp') return KELP_SCENE_ID;
   return null;
 }
 
@@ -67,6 +102,8 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
   const router = useRouter();
   const [stageReady, setStageReady] = useState(false);
   const [coveSceneEmpty, setCoveSceneEmpty] = useState(false);
+  const [kelpRuntimeCrashKey, setKelpRuntimeCrashKey] =
+    useState<string | null>(null);
   const [displayedChildren, setDisplayedChildren] =
     useState<ReactNode>(children);
   const displayedPathRef = useRef(pathname);
@@ -81,8 +118,33 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
   const pendingRequestForLineage = useStageStore(
     (state) => state.pendingRequest,
   );
+  const kelpGeneration = useStageStore(
+    (state) => state.scenes[KELP_SCENE_ID]?.generation ?? 0,
+  );
+  const recoveryCount = useStageStore(
+    (state) => state.recovery.count,
+  );
+  const rendererFailure = useSyncExternalStore(
+    subscribeStageRendererFailure,
+    getStageRendererFailure,
+    getStageRendererFailureServerSnapshot,
+  );
+  const kelpResetKey = `${kelpGeneration}:${recoveryCount}`;
   const coldInitIssuedRef = useRef(false);
   const committedStageNavigationsRef = useRef(0);
+
+  useEffect(() => {
+    if (rendererFailure?.route !== '/kelp') return;
+    reportKelpRenderFailure(
+      'renderer-init-failed',
+      `webgpu: ${describeErrorForBeacon(
+        rendererFailure.webGPUError,
+      )} | webgl: ${describeErrorForBeacon(
+        rendererFailure.webGLError,
+      )}`,
+      'unknown',
+    );
+  }, [rendererFailure]);
 
   useEffect(() => {
     markWorldStageMounted();
@@ -138,13 +200,20 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
     const target = new URLSearchParams(window.location.search).get(
       'stageColdInit',
     );
-    if (target !== '/game' && target !== '/cove') return;
-    const navigationTarget: '/game' | '/cove' = target;
+    if (
+      target !== '/game' &&
+      target !== '/cove' &&
+      target !== '/kelp'
+    ) {
+      return;
+    }
+    const navigationTarget: '/game' | '/cove' | '/kelp' =
+      target;
     coldInitIssuedRef.current = true;
     const probeWindow = window as typeof window & {
       __WORLD_STAGE_COLD_INIT__?: {
         accepted: boolean;
-        target: '/game' | '/cove';
+        target: '/game' | '/cove' | '/kelp';
         midwayCount: number;
       };
     };
@@ -255,7 +324,11 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
     const probeWindow = window as typeof window & {
       __WORLD_STAGE_PROBE__?: {
         request: (sceneId: string) => void;
-        navigate?: (to: '/game' | '/cove') => boolean;
+        navigate?: (
+          to: '/game' | '/cove' | '/kelp',
+        ) => boolean;
+        ledger: () => Record<string, unknown>;
+        recover: (reason: string) => boolean;
         sceneInventory: () => Record<string, unknown>;
         snapshot: () => Record<string, unknown>;
       };
@@ -265,6 +338,8 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
       navigate: (to) => {
         return requestWorldStageNavigation({ to });
       },
+      ledger: readStageResourceLedger,
+      recover: requestStageRendererRecovery,
       sceneInventory: readStageSceneInventory,
       snapshot: () => {
         const state = useStageStore.getState();
@@ -290,6 +365,14 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
           frames: readStageFrameInvocations(),
           cameras: readStageCameraPoses(),
           slots: state.scenes,
+          kelp:
+            (
+              window as typeof window & {
+                __KELP_STAGE_PROBE__?: {
+                  snapshot?: () => Record<string, unknown>;
+                };
+              }
+            ).__KELP_STAGE_PROBE__?.snapshot?.() ?? null,
           transitionErrors: [...state.transitionErrors],
         };
       },
@@ -298,6 +381,18 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
       delete probeWindow.__WORLD_STAGE_PROBE__;
     };
   }, [router, stageReady]);
+
+  const handleKelpRuntimeCrash = useCallback(
+    (error: unknown, componentStack: string | null) => {
+      console.error(
+        '[KelpRealm] stage slot runtime crash:',
+        error,
+        componentStack ?? '',
+      );
+      setKelpRuntimeCrashKey(kelpResetKey);
+    },
+    [kelpResetKey],
+  );
 
   const scenes = useMemo<readonly WorldStageScene[]>(
     () => [
@@ -350,21 +445,59 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
           </Suspense>
         ),
       },
+      {
+        sceneId: KELP_SCENE_ID,
+        camera: {
+          fov: 60,
+          near: 1,
+          far: 10_000,
+          position: [0, 470, 1_460],
+        },
+        appearance: {
+          background: 0x14586a,
+          fog: {
+            color: 0x14586a,
+            near: 1_100,
+            far: 3_200,
+          },
+          shadows: false,
+        },
+        capabilities: {
+          jump: false,
+          verticalSwim: false,
+          sprint: false,
+          emotes: false,
+          interact: false,
+          clickPath: false,
+        },
+        content: (
+          <Suspense fallback={null}>
+            <StageSlotErrorBoundary
+              resetKey={kelpResetKey}
+              onRuntimeError={handleKelpRuntimeCrash}
+            >
+              <LazyStageHostedKelpScene />
+            </StageSlotErrorBoundary>
+          </Suspense>
+        ),
+      },
     ],
-    [],
+    [handleKelpRuntimeCrash, kelpResetKey],
   );
 
   return (
     <div className="world-stage-root relative h-screen w-full overflow-hidden">
       {stageReady && (
         <div className="absolute inset-0 z-0">
-          <WorldStageCanvas
-            scenes={scenes}
-            transitionTimeoutMs={45_000}
-            pauseOnCreate
-            renderTransitionOverlay={false}
-            onTransitionOpaque={handleTransitionOpaque}
-          />
+          <StageCanvasErrorBoundary>
+            <WorldStageCanvas
+              scenes={scenes}
+              transitionTimeoutMs={45_000}
+              pauseOnCreate
+              renderTransitionOverlay={false}
+              onTransitionOpaque={handleTransitionOpaque}
+            />
+          </StageCanvasErrorBoundary>
         </div>
       )}
       <div className="world-stage-page-layer pointer-events-none absolute inset-0 z-10">
@@ -374,6 +507,46 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
         <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-[rgba(10,0,21,0.85)]">
           <div className="rounded-lg border border-fuchsia-500 bg-black/60 px-8 py-6 text-center font-mono text-base text-fuchsia-300">
             Cove interior failed to load — please refresh
+          </div>
+        </div>
+      )}
+      {rendererFailure && (
+        <div
+          role="alert"
+          className="absolute inset-0 z-50 flex items-center justify-center bg-[#07131d] p-6"
+        >
+          <div className="max-w-xl text-center font-mono text-cyan-100">
+            <p className="mb-5 text-base font-bold leading-relaxed">
+              This browser couldn&apos;t start the 3D view. Try updating your
+              browser or enabling hardware acceleration.
+            </p>
+            <button
+              type="button"
+              className="rounded-lg border border-cyan-300/70 bg-black/70 px-5 py-3 font-bold text-cyan-200"
+              onClick={() => window.location.reload()}
+            >
+              Reload
+            </button>
+          </div>
+        </div>
+      )}
+      {kelpRuntimeCrashKey === kelpResetKey && (
+        <div
+          role="alert"
+          className="absolute inset-0 z-40 flex items-center justify-center bg-[rgba(13,69,82,0.92)] p-6"
+        >
+          <div className="max-w-xl text-center font-mono text-[#c7fff4]">
+            <p className="mb-5 text-base font-bold leading-relaxed">
+              The kelp forest hit a runtime error. Retry the scene or reload
+              the page.
+            </p>
+            <button
+              type="button"
+              className="rounded-lg border border-[#70ffe2]/70 bg-black/70 px-5 py-3 font-bold text-[#70ffe2]"
+              onClick={() => window.location.reload()}
+            >
+              Reload
+            </button>
           </div>
         </div>
       )}

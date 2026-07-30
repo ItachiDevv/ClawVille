@@ -3,7 +3,10 @@
 import { useEffect, useRef } from 'react';
 import type { JoystickManager } from 'nipplejs';
 import { useIsMobile } from '@/hooks/use-is-mobile';
-import { setKelpRealmTouchCamera, setKelpRealmTouchVelocity } from '@/lib/three/kelp-realm-player';
+import {
+  setPlayerTouchCamera,
+  setPlayerTouchMove,
+} from '@/lib/three/player/player-input';
 
 export default function KelpRealmMobileControls() {
   const isMobile = useIsMobile();
@@ -22,22 +25,22 @@ export default function KelpRealmMobileControls() {
       movement.on('move', (_, data) => {
         if (!data.angle || data.force === undefined) return;
         const force = Math.min(1, data.force);
-        setKelpRealmTouchVelocity(Math.cos(data.angle.radian) * force, Math.sin(data.angle.radian) * force);
+        setPlayerTouchMove(Math.cos(data.angle.radian) * force, Math.sin(data.angle.radian) * force);
       });
-      movement.on('end', () => setKelpRealmTouchVelocity(0, 0));
+      movement.on('end', () => setPlayerTouchMove(0, 0));
       camera.on('move', (_, data) => {
         if (!data.angle || data.force === undefined) return;
         const force = Math.min(1, data.force);
-        setKelpRealmTouchCamera(Math.cos(data.angle.radian) * force, Math.sin(data.angle.radian) * force);
+        setPlayerTouchCamera(Math.cos(data.angle.radian) * force, Math.sin(data.angle.radian) * force);
       });
-      camera.on('end', () => setKelpRealmTouchCamera(0, 0));
+      camera.on('end', () => setPlayerTouchCamera(0, 0));
     });
     return () => {
       cancelled = true;
       movement?.destroy();
       camera?.destroy();
-      setKelpRealmTouchVelocity(0, 0);
-      setKelpRealmTouchCamera(0, 0);
+      setPlayerTouchMove(0, 0);
+      setPlayerTouchCamera(0, 0);
     };
   }, [isMobile]);
 

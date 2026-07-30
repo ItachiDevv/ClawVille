@@ -562,6 +562,16 @@ export function readStageRendererCounters(): StageRendererCounters {
   };
 }
 
+export function requestStageRendererRecovery(reason: string): boolean {
+  const canvas = currentStageRenderer?.domElement;
+  const health = canvas
+    ? rendererHealthByCanvas.get(canvas)
+    : undefined;
+  if (!health) return false;
+  health.requestRecovery(reason);
+  return true;
+}
+
 function StageRendererCounterSampler(): null {
   const gl = useThree((state) => state.gl);
   useFrame(() => {

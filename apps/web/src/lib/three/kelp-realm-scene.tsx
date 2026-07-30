@@ -1,7 +1,12 @@
 'use client';
 
-import { Suspense, useEffect, useRef, useState } from 'react';
-import { useFrame, useThree } from '@react-three/fiber';
+import {
+  Suspense,
+  useEffect,
+  useRef,
+  useState,
+  type ReactElement,
+} from 'react';
 import * as THREE from 'three/webgpu';
 import { attribute, cos, float, fract, positionLocal, sin, time, vec3 } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
@@ -30,6 +35,12 @@ import {
 import KelpRealmPlayer from './kelp-realm-player';
 import { useGLTFWithKTX2 } from './use-gltf-ktx2';
 import { subscribeKelpRealmBeaconVisits } from './kelp-realm-visit-state';
+import {
+  useSceneFrame,
+} from '@/components/three/world-stage/use-scene-frame';
+import type {
+  KelpActivationContext,
+} from './kelp-activation';
 
 const BLADE_COUNT = 15_000;
 const BLADES_PER_VARIANT = BLADE_COUNT / 3;
@@ -1182,7 +1193,15 @@ function CoralGardens({ material }: { readonly material: THREE.Material }) {
   return <mesh geometry={geometry} material={material} matrixAutoUpdate={false} />;
 }
 
-function RealmEnvironment({ forceWebGL }: { forceWebGL: boolean }) {
+function RealmEnvironment({
+  activation,
+  forceWebGL,
+  onEnvironmentReady,
+}: {
+  readonly activation: KelpActivationContext;
+  readonly forceWebGL: boolean;
+  readonly onEnvironmentReady?: () => void;
+}) {
   const kelp = useKelpResources(forceWebGL);
   const discoveries = useDiscoveryResources(forceWebGL);
   const motesRef = useRef<THREE.Points>(null);
@@ -1217,7 +1236,24 @@ function RealmEnvironment({ forceWebGL }: { forceWebGL: boolean }) {
     );
   }, [resources]);
 
-  useFrame(({ camera, clock }, delta) => {
+  useEffect(() => {
+    if (!kelp || !discoveries || !resources) return;
+    const token = activation.token;
+    const frame = requestAnimationFrame(() => {
+      if (activation.isCurrent(token)) {
+        onEnvironmentReady?.();
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [
+    activation,
+    discoveries,
+    kelp,
+    onEnvironmentReady,
+    resources,
+  ]);
+
+  useSceneFrame(({ camera, clock }, delta) => {
     if (!kelp || !discoveries || !resources) return;
     if (domeRef.current) domeRef.current.position.set(camera.position.x, 0, camera.position.z);
     for (let index = 0; index < kelp.length; index++) {
@@ -1264,25 +1300,25 @@ function RealmEnvironment({ forceWebGL }: { forceWebGL: boolean }) {
   );
 }
 
-export default function KelpRealmScene({ forceWebGL }: { forceWebGL: boolean }) {
-  const { scene } = useThree();
-  useEffect(() => {
-    const previousBackground = scene.background;
-    const previousFog = scene.fog;
-    scene.background = FOG_COLOR;
-    scene.fog = new THREE.Fog(FOG_COLOR, 1100, 3200);
-    return () => {
-      scene.background = previousBackground;
-      scene.fog = previousFog;
-    };
-  }, [scene]);
-
+export default function KelpRealmScene({
+  activation,
+  forceWebGL,
+  onEnvironmentReady,
+}: {
+  readonly activation: KelpActivationContext;
+  readonly forceWebGL: boolean;
+  readonly onEnvironmentReady?: () => void;
+}): ReactElement {
   return (
     <>
       <ambientLight intensity={1.05} color={0xaee6dd} />
       <directionalLight position={[500, 1300, 300]} intensity={1.5} color={0xecfff6} />
-      <RealmEnvironment forceWebGL={forceWebGL} />
-      <KelpRealmPlayer />
+      <RealmEnvironment
+        activation={activation}
+        forceWebGL={forceWebGL}
+        onEnvironmentReady={onEnvironmentReady}
+      />
+      <KelpRealmPlayer activation={activation} />
     </>
   );
 }

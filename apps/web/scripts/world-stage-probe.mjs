@@ -37,6 +37,35 @@ if (!supportedLanes.has(lane)) {
   );
 }
 const routeLane = lane === "routes" || lane === "soak";
+const routePair = argv.get("pair") ?? "cove";
+if (
+  (routePair !== "cove" && routePair !== "kelp") ||
+  (lane === "soak" && routePair !== "cove")
+) {
+  throw new Error(
+    "--pair must be cove or kelp for --lane=routes; soak remains cove-only",
+  );
+}
+const routeDestination =
+  routePair === "kelp"
+    ? {
+        path: "/kelp",
+        sceneId: "kelp",
+        label: "Kelp",
+        coldPhase: "cold-kelp",
+        coldKey: "coldKelp",
+        coldAssetKey: "coldKelpAssetRequests",
+        coldWorldAssetKey: "coldKelpWorldAssetRequests",
+      }
+    : {
+        path: "/cove",
+        sceneId: "cove",
+        label: "Cove",
+        coldPhase: "cold-cove",
+        coldKey: "coldCove",
+        coldAssetKey: "coldCoveAssetRequests",
+        coldWorldAssetKey: "coldCoveWorldAssetRequests",
+      };
 const apiStubLane =
   routeLane || lane === "loader" || lane === "kelp-exit";
 const dwellTarget = argv.get("dwell") ?? null;
@@ -70,7 +99,7 @@ const requestedUrl =
       : lane === "retry-adoption"
         ? "http://localhost:3000/perf/stage?stage=1&retryAdoption=1&webgpu=1"
         : routeLane
-          ? "http://localhost:3000/cove"
+          ? `http://localhost:3000${routeDestination.path}`
           : "http://localhost:3000/perf/stage?stage=1&webgpu=1");
 const parsedUrl = new URL(requestedUrl);
 if (forceWebGL) {
@@ -101,7 +130,10 @@ const outputPath = resolve(
   argv.get("output") ??
     ({
       synthetic: `${SCRIPT_DIR}/world-stage-probe-summary.json`,
-      routes: `${SCRIPT_DIR}/world-stage-route-summary.json`,
+      routes:
+        routePair === "kelp"
+          ? `${SCRIPT_DIR}/world-stage-route-kelp-summary.json`
+          : `${SCRIPT_DIR}/world-stage-route-summary.json`,
       soak: `${SCRIPT_DIR}/world-stage-soak-summary.json`,
       loader: `${SCRIPT_DIR}/world-stage-loader-summary.json`,
       "kelp-exit": `${SCRIPT_DIR}/world-stage-kelp-exit-summary.json`,
@@ -117,6 +149,105 @@ const heapReportPath = resolve(
 const scenes = ["alpha", "beta", "cove-spike"];
 const WORLD_ONLY_ASSET_PATTERN =
   /\/models\/(?:characters\/|(?:pineapple-house|chum-bucket|krusty-krab|salty-spitoon|boating-school|patty-building|building-lighthouse|arcade\/claw-arcade-exterior|cove\/cove-exterior|patricks-rock|squidward-house|coral-reef|kelp\.glb|building-shell|building-seashell|building-anchor|building-barrel|building-chest|building-lantern|crayfish|building-tower2|quest-bounty-pavilion|bazaar-merchant-stand|shisha-oasis))/i;
+const KELP_EXIT_API_ORIGINS = new Set([
+  // request() currently resolves its empty API_URL default against the page.
+  // HONO-backed calls use the explicit localhost API origin. Keep both exact
+  // resolved API bases while the fixture-key map below prevents interception
+  // of any navigation, static, or asset request on either origin.
+  new URL(url).origin,
+  "http://localhost:4000",
+]);
+const KELP_EXIT_API_FIXTURES = new Map([
+  [
+    "GET /api/auth/me",
+    {
+      user: {
+        id: "world-stage-probe-user",
+        email: "returning-player@world-stage-probe.invalid",
+        name: "Stage Probe Returning Player",
+        username: "stage-probe-returning-player",
+        emailVerified: true,
+        isGuest: false,
+      },
+    },
+  ],
+  [
+    "GET /api/avatars/me",
+    {
+      avatar: {
+        // Mirror the live `/api/avatars/me` row closely enough for every
+        // game-page consumer. The HUD/body gates require a real avatar while
+        // the renderer consumes species/color/modelKey.
+        id: "world-stage-probe-avatar",
+        userId: "world-stage-probe-user",
+        name: "Stage Probe Lobster",
+        species: "lobster",
+        color: "red",
+        gender: "female",
+        archetype: "wild-explorer",
+        learningFocus: null,
+        personality: {
+          habitat: "sea",
+          hobby: "exploring",
+          greeting: "wave-hello",
+        },
+        stats: { strength: 10, defence: 10, movement: 10 },
+        characterConfig: {
+          name: "Stage Probe Lobster",
+          bio: [],
+          lore: [],
+          knowledge: [],
+          messageExamples: [],
+          postExamples: [],
+          topics: [],
+          style: { all: [], chat: [], post: [] },
+          adjectives: [],
+          system: "Returning-player probe fixture.",
+        },
+        platformAgentId: "world-stage-probe-platform-agent",
+        clawTokens: 1000,
+        softBalance: 1000,
+        boughtBalance: 0,
+        earnedBalance: 0,
+        positionX: 11264,
+        positionY: 11804,
+        spawnPreference: "town",
+        homeParcelId: null,
+        lastActiveAt: null,
+        loginStreak: 0,
+        lastLoginDate: null,
+        slotIndex: 0,
+        isActive: true,
+        equippedSkills: [],
+        level: 1,
+        xp: 0,
+        totalXp: 0,
+        avatarType: "glb",
+        avatarUrl: null,
+        vrmMetadata: null,
+        agentCategory: "openclaw",
+        modelKey: "lobster",
+        harness: "milady",
+        walletAddress: null,
+        flags: {},
+        linkedScapePrincipalId: null,
+        linkedScapeDisplayName: null,
+        linkedHatcherPrincipalId: null,
+        linkedHatcherDisplayName: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    },
+  ],
+  [
+    "GET /api/auth/me/agent-session",
+    {
+      connected: false,
+      reason: "no_bot",
+      mode: "none",
+    },
+  ],
+]);
 
 const summary = {
   pass: false,
@@ -193,10 +324,10 @@ const summary = {
   routes: {
     cacheControl: {
       game: null,
-      cove: null,
+      [routePair]: null,
     },
-    coldCoveAssetRequests: [],
-    coldCoveWorldAssetRequests: [],
+    [routeDestination.coldAssetKey]: [],
+    [routeDestination.coldWorldAssetKey]: [],
     pathSequence: [],
     returnLoaderViolations: [],
     historyTraversal: {
@@ -212,19 +343,24 @@ const summary = {
     },
     assetTimeline: [],
     network: {
-      phase: "cold-cove",
+      phase: routeDestination.coldPhase,
       joins: {
-        coldCove: 0,
+        [routeDestination.coldKey]: 0,
         firstGame: 0,
         afterFirstGame: 0,
       },
       streams: {
-        coldCove: 0,
+        [routeDestination.coldKey]: 0,
         firstGame: 0,
         afterFirstGame: 0,
       },
       events: [],
       fixtureTraffic: {
+        "GET /api/auth/me": 0,
+        "GET /api/avatars/me": 0,
+        "GET /api/auth/me/agent-session": 0,
+      },
+      interceptedFixtureTraffic: {
         "GET /api/auth/me": 0,
         "GET /api/avatars/me": 0,
         "GET /api/auth/me/agent-session": 0,
@@ -482,6 +618,145 @@ async function snapshot(page) {
     }
   }
   return state;
+}
+
+async function readWorldPlayerFacing(page, expectedUuid = null) {
+  return page.evaluate((uuid) => {
+    const bridge = window.__CV_STORES__;
+    const scene = window.__R3F?.scene;
+    if (
+      !bridge?.avatarPositionRef ||
+      !bridge.worldCenterPx ||
+      !scene
+    ) {
+      return null;
+    }
+    if (uuid) {
+      const object = scene.getObjectByProperty("uuid", uuid);
+      return object
+        ? {
+            uuid: object.uuid,
+            facing: object.rotation.y,
+            x: object.position.x,
+            z: object.position.z,
+            children: object.children.length,
+          }
+        : null;
+    }
+    const worldX =
+      bridge.avatarPositionRef.x - bridge.worldCenterPx.x;
+    const worldZ =
+      bridge.avatarPositionRef.y - bridge.worldCenterPx.y;
+    const candidates = [];
+    const seen = new Set();
+    scene.traverse((object) => {
+      if (object.name !== "Lobster_mesh") return;
+      let ancestor = object.parent;
+      while (ancestor && ancestor !== scene) {
+        if (
+          ancestor.type === "Group" &&
+          ancestor.children.length > 0 &&
+          !seen.has(ancestor.uuid)
+        ) {
+          seen.add(ancestor.uuid);
+          const worldPosition = ancestor.getWorldPosition(
+            ancestor.position.clone(),
+          );
+          candidates.push({
+            uuid: ancestor.uuid,
+            facing: ancestor.rotation.y,
+            x: worldPosition.x,
+            z: worldPosition.z,
+            distance: Math.hypot(
+              worldPosition.x - worldX,
+              worldPosition.z - worldZ,
+            ),
+            children: ancestor.children.length,
+          });
+        }
+        ancestor = ancestor.parent;
+      }
+    });
+    candidates.sort(
+      (left, right) =>
+        left.distance - right.distance ||
+        Math.abs(right.facing) - Math.abs(left.facing),
+    );
+    return candidates[0]?.distance <= 10 ? candidates[0] : null;
+  }, expectedUuid);
+}
+
+function isWorldPlayerFacingArmed(read) {
+  return (
+    read !== null &&
+    Math.abs(read.facing) > 0.05 &&
+    Math.abs(Math.abs(read.facing) - Math.PI) > 0.05
+  );
+}
+
+async function waitForWorldPlayerBody(
+  page,
+  { timeoutMs = 60_000, pollMs = 500 } = {},
+) {
+  const startedAt = Date.now();
+  let polls = 0;
+  while (Date.now() - startedAt < timeoutMs) {
+    polls += 1;
+    const facing = await readWorldPlayerFacing(page);
+    if (facing !== null) {
+      return {
+        facing,
+        ready: true,
+        elapsedMs: Date.now() - startedAt,
+        polls,
+        timeoutMs,
+        pollMs,
+      };
+    }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, pollMs));
+  }
+  return {
+    facing: null,
+    ready: false,
+    elapsedMs: Date.now() - startedAt,
+    polls,
+    timeoutMs,
+    pollMs,
+  };
+}
+
+async function armWorldPlayerFacing(page) {
+  const attempts = [];
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    await page.evaluate(() => {
+      window.__CV_STORES__.useGameStore
+        .getState()
+        .setJoystickVelocity(1, 0);
+    });
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
+    await page.evaluate(() => {
+      window.__CV_STORES__.useGameStore
+        .getState()
+        .setJoystickVelocity(0, 0);
+    });
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+    // Search again after the arm: the Lobster_mesh has multiple anonymous
+    // ancestor groups at the same world position, and only the controller-
+    // owned outer group rotates. The non-anchored reader deliberately sorts
+    // the non-zero-facing ancestor first. The successful result becomes the
+    // UUID anchor for the return-side read.
+    const facing = await readWorldPlayerFacing(page);
+    const armed = isWorldPlayerFacingArmed(facing);
+    attempts.push({ attempt, facing, armed });
+    if (armed) {
+      return { facing, attempts, armed: true };
+    }
+  }
+  return {
+    facing: attempts.at(-1)?.facing ?? null,
+    attempts,
+    armed: false,
+  };
 }
 
 async function waitForSettled(page, expectedScene) {
@@ -848,7 +1123,7 @@ async function runColdInitProbe(browser, routeOrigin) {
       height: 720,
       deviceScaleFactor: 1,
     });
-    const coldUrl = new URL("/cove", routeOrigin);
+    const coldUrl = new URL(routeDestination.path, routeOrigin);
     coldUrl.searchParams.set("stageColdInit", "/game");
     coldUrl.searchParams.set(forceWebGL ? "webgl" : "webgpu", "1");
     await coldPage.goto(coldUrl.toString(), {
@@ -947,14 +1222,22 @@ async function waitForWorldReadyWithoutLoader(page, timeout = 90_000) {
 }
 
 async function captureKelpPaintEvidence(page) {
-  const clip = { x: 320, y: 180, width: 640, height: 360 };
+  const viewport = page.viewport() ?? { width: 1280, height: 720 };
+  const width = Math.min(640, viewport.width);
+  const height = Math.min(360, viewport.height);
+  const clip = {
+    x: Math.max(0, Math.floor((viewport.width - width) / 2)),
+    y: Math.max(0, Math.floor((viewport.height - height) / 2)),
+    width,
+    height,
+  };
   const png = await page.screenshot({ clip });
   const { data, info } = await sharp(png)
     .removeAlpha()
     .raw()
     .toBuffer({ resolveWithObject: true });
   const channels = info.channels;
-  const background = [0x0d, 0x45, 0x52];
+  const background = [0x14, 0x58, 0x6a];
   let nonBackground = 0;
   let sum = 0;
   let sumSquares = 0;
@@ -986,7 +1269,7 @@ async function captureKelpPaintEvidence(page) {
   return {
     clip,
     connectedCanvas: await page.evaluate(() => {
-      const canvas = document.querySelector("canvas");
+      const canvas = document.querySelector(".world-stage-root canvas");
       return {
         found: Boolean(canvas),
         connected: canvas?.isConnected === true,
@@ -1049,7 +1332,40 @@ try {
     summary.console.errors.push(String(error).slice(0, 1_000));
   });
 
-  let collectingColdCoveAssets = routeLane;
+  if (lane === "kelp-exit") {
+    await page.setRequestInterception(true);
+    page.on("request", async (request) => {
+      try {
+        const requestUrl = new URL(request.url());
+        const fixtureKey = `${request.method()} ${requestUrl.pathname}`;
+        const fixture = KELP_EXIT_API_FIXTURES.get(fixtureKey);
+        if (!KELP_EXIT_API_ORIGINS.has(requestUrl.origin) || !fixture) {
+          await request.continue();
+          return;
+        }
+        summary.routes.network.interceptedFixtureTraffic[fixtureKey] += 1;
+        await request.respond({
+          status: 200,
+          contentType: "application/json",
+          headers: {
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Allow-Origin": new URL(url).origin,
+            "Cache-Control": "no-store",
+          },
+          body: JSON.stringify(fixture),
+        });
+      } catch (error) {
+        summary.console.errors.push(
+          `kelp-exit API interception failed: ${String(error).slice(0, 800)}`,
+        );
+        if (!request.isInterceptResolutionHandled()) {
+          await request.abort("failed");
+        }
+      }
+    });
+  }
+
+  let collectingColdRouteAssets = routeLane;
   page.on("request", (request) => {
     const requestUrl = request.url();
     let pathname;
@@ -1062,8 +1378,8 @@ try {
     if (routeLane) {
       const phase = summary.routes.network.phase;
       const phaseKey =
-        phase === "cold-cove"
-          ? "coldCove"
+        phase === routeDestination.coldPhase
+          ? routeDestination.coldKey
           : phase === "first-game"
             ? "firstGame"
             : "afterFirstGame";
@@ -1090,12 +1406,14 @@ try {
     }
 
     if (
-      collectingColdCoveAssets &&
+      collectingColdRouteAssets &&
       /\.(?:glb|gltf|ktx2|vrm)$/i.test(pathname)
     ) {
-      summary.routes.coldCoveAssetRequests.push(requestUrl);
+      summary.routes[routeDestination.coldAssetKey].push(requestUrl);
       if (WORLD_ONLY_ASSET_PATTERN.test(pathname)) {
-        summary.routes.coldCoveWorldAssetRequests.push(requestUrl);
+        summary.routes[routeDestination.coldWorldAssetKey].push(
+          requestUrl,
+        );
       }
     }
   });
@@ -1204,7 +1522,60 @@ try {
           bridge.avatarPositionRef.x,
           bridge.avatarPositionRef.y,
         );
-      gameStore.setState({ controlMode: "player" });
+      gameStore.setState({
+        controlMode: "player",
+        movementFrozen: false,
+        nearLocation: "kelp-forest-portal",
+      });
+    });
+    // The avatar GLB mounts asynchronously after stage idle. Wait for the
+    // rendered player body before exercising the real shared controller so
+    // this preservation assertion begins from a deliberate, non-default
+    // facing. Keep every subsequent read anchored to that stable object UUID.
+    const worldPlayerBodyWait = await waitForWorldPlayerBody(page);
+    if (!worldPlayerBodyWait.ready) {
+      summary.kelpExit = {
+        worldFacingArm: {
+          bodyWait: worldPlayerBodyWait,
+          attempts: [],
+          armed: false,
+        },
+      };
+      throw new Error(
+        `world player body did not mount before facing arm: ${JSON.stringify(worldPlayerBodyWait.facing)}`,
+      );
+    }
+    const worldFacingArm = await armWorldPlayerFacing(page);
+    if (!worldFacingArm.armed) {
+      summary.kelpExit = {
+        worldFacingArm: {
+          bodyWait: worldPlayerBodyWait,
+          ...worldFacingArm,
+        },
+      };
+      throw new Error(
+        `world facing arm did not propagate after retry: ${JSON.stringify(worldFacingArm.facing)}`,
+      );
+    }
+    const worldFacingBeforeKelp = worldFacingArm.facing;
+    await page.evaluate(() => {
+      const bridge = window.__CV_STORES__;
+      const KELP_PORTAL_WORLD = { x: -547, z: -120 };
+      bridge.useGameStore.getState().setJoystickVelocity(0, 0);
+      bridge.avatarPositionRef.x =
+        bridge.worldCenterPx.x + KELP_PORTAL_WORLD.x + 40;
+      bridge.avatarPositionRef.y =
+        bridge.worldCenterPx.y + KELP_PORTAL_WORLD.z;
+      bridge.useGameStore
+        .getState()
+        .setAvatarPosition(
+          bridge.avatarPositionRef.x,
+          bridge.avatarPositionRef.y,
+        );
+      bridge.useGameStore.setState({
+        movementFrozen: true,
+        nearLocation: "kelp-forest-portal",
+      });
     });
     const kelpButton =
       'button[aria-label="Walk through to enter the Kelp Forest"]';
@@ -1212,19 +1583,24 @@ try {
       visible: true,
       timeout: 30_000,
     });
+    await armLoaderObserver(
+      page,
+      "__KELP_ENTRY_LOADER_OBSERVATION__",
+    );
     await page.click(kelpButton);
     await page.waitForFunction(
-      () => window.location.pathname === "/kelp",
-      { timeout: 30_000 },
+      () =>
+        window.location.pathname === "/kelp" &&
+        document.querySelector('[data-stage-transition="idle"]') !==
+          null,
+      { timeout: 90_000 },
     );
     await page.waitForFunction(
       () => {
-        const loading = document.querySelector(
-          '[aria-label="Entering the Kelp Forest"]',
+        const canvas = document.querySelector(
+          ".world-stage-root canvas",
         );
-        const canvas = document.querySelector("canvas");
         return (
-          !loading &&
           canvas?.isConnected === true &&
           canvas.width > 0 &&
           canvas.height > 0 &&
@@ -1232,6 +1608,10 @@ try {
         );
       },
       { timeout: 90_000 },
+    );
+    const entryLoader = await finishLoaderObserver(
+      page,
+      "__KELP_ENTRY_LOADER_OBSERVATION__",
     );
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 1_000));
     // Structural canvas evidence comes from THIS real portal visit; the
@@ -1245,6 +1625,60 @@ try {
         window.__KELP_EXIT_SENTINEL__?.token ===
         "same-document-sentinel",
     );
+    await page.setViewport({
+      width: 744,
+      height: 844,
+      deviceScaleFactor: 1,
+    });
+    await page.waitForSelector(
+      '[aria-label="Movement joystick"]',
+      { visible: true, timeout: 10_000 },
+    );
+    const pointerContract = await page.evaluate(() => {
+      const centerHit = (element) => {
+        if (!element) return { present: false, selfHit: false };
+        const rect = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(
+          rect.left + rect.width / 2,
+          rect.top + rect.height / 2,
+        );
+        return {
+          present: true,
+          selfHit: hit === element || element.contains(hit),
+        };
+      };
+      const canvas = document.querySelector(
+        ".world-stage-root canvas",
+      );
+      const backButton = [...document.querySelectorAll("button")].find(
+        (candidate) =>
+          candidate.textContent?.trim() === "Back to the Reef",
+      );
+      const claimButton = document.querySelector(
+        '[aria-label="Kelp Forest collectible claim"] button',
+      );
+      const movement = document.querySelector(
+        '[aria-label="Movement joystick"]',
+      );
+      const camera = document.querySelector(
+        '[aria-label="Camera joystick"]',
+      );
+      const viewportCenter = document.elementFromPoint(
+        window.innerWidth / 2,
+        window.innerHeight / 2,
+      );
+      return {
+        centerCanvas:
+          Boolean(canvas) && viewportCenter === canvas,
+        backButton: centerHit(backButton),
+        claimButton: centerHit(claimButton),
+        movementJoystick: centerHit(movement),
+        cameraJoystick: centerHit(camera),
+      };
+    });
+    const firstKelpState = await snapshot(page);
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
+    const frozenKelpState = await snapshot(page);
 
     await armLoaderObserver(page, "__KELP_RETURN_LOADER_OBSERVATION__");
     await page.evaluate(() => {
@@ -1285,9 +1719,9 @@ try {
         sentinelSurvived:
           window.__KELP_EXIT_SENTINEL__?.token ===
           "same-document-sentinel",
-        freshProbe:
+        stableProbe:
           Boolean(window.__WORLD_STAGE_PROBE__) &&
-          window.__WORLD_STAGE_PROBE__ !==
+          window.__WORLD_STAGE_PROBE__ ===
             window.__KELP_EXIT_SENTINEL__?.initialProbe,
         ready: window.__W3D_READY === true,
         loaderAbsent: !document.querySelector(
@@ -1306,21 +1740,59 @@ try {
         },
       };
     });
+    const firstReturnState = await snapshot(page);
+    const worldFacingAfterReturn = await readWorldPlayerFacing(
+      page,
+      worldFacingBeforeKelp?.uuid ?? null,
+    );
+    await page.evaluate(() => {
+      const bridge = window.__CV_STORES__;
+      if (!bridge?.avatarPositionRef || !bridge.worldCenterPx) {
+        throw new Error("avatar position bridge missing for re-entry");
+      }
+      const KELP_PORTAL_WORLD = { x: -547, z: -120 };
+      bridge.avatarPositionRef.x =
+        bridge.worldCenterPx.x + KELP_PORTAL_WORLD.x + 40;
+      bridge.avatarPositionRef.y =
+        bridge.worldCenterPx.y + KELP_PORTAL_WORLD.z;
+      bridge.useGameStore
+        ?.getState()
+        .setAvatarPosition(
+          bridge.avatarPositionRef.x,
+          bridge.avatarPositionRef.y,
+        );
+      bridge.useGameStore?.setState({
+        movementFrozen: true,
+        nearLocation: "kelp-forest-portal",
+      });
+    });
+    await page.waitForSelector(kelpButton, {
+      visible: true,
+      timeout: 30_000,
+    });
+    await page.click(kelpButton);
+    await page.waitForFunction(
+      () =>
+        window.location.pathname === "/kelp" &&
+        document.querySelector('[data-stage-transition="idle"]') !==
+          null,
+      { timeout: 90_000 },
+    );
+    const secondKelpState = await snapshot(page);
     // Dedicated paint visit under the capturable WebGL backend (the kelp
     // canvas honors ?webgl=1 — KelpRealmCanvas.tsx). Runs after the real
     // round trip so it cannot disturb the incident-path assertions.
-    await page.goto("http://localhost:3000/kelp?webgl=1", {
+    const paintUrl = new URL("/kelp?webgl=1", url);
+    await page.goto(paintUrl.toString(), {
       waitUntil: "domcontentloaded",
       timeout: 30_000,
     });
     await page.waitForFunction(
       () => {
-        const loading = document.querySelector(
-          '[aria-label="Entering the Kelp Forest"]',
+        const canvas = document.querySelector(
+          ".world-stage-root canvas",
         );
-        const canvas = document.querySelector("canvas");
         return (
-          !loading &&
           canvas?.isConnected === true &&
           canvas.width > 0 &&
           canvas.height > 0 &&
@@ -1336,19 +1808,48 @@ try {
       fixtureTraffic: {
         ...summary.routes.network.fixtureTraffic,
       },
+      interceptedFixtureTraffic: {
+        ...summary.routes.network.interceptedFixtureTraffic,
+      },
       spaSentinelOnKelp,
       realPathCanvas,
       paint,
+      entryLoader,
+      pointerContract,
+      worldFacingArm: {
+        bodyWait: worldPlayerBodyWait,
+        ...worldFacingArm,
+      },
+      worldFacingAcrossKelpRoundTrip: {
+        before: worldFacingBeforeKelp,
+        after: worldFacingAfterReturn,
+        preserved:
+          worldFacingBeforeKelp !== null &&
+          worldFacingAfterReturn !== null &&
+          worldFacingBeforeKelp.uuid === worldFacingAfterReturn.uuid &&
+          Math.abs(
+            worldFacingBeforeKelp.facing -
+              worldFacingAfterReturn.facing,
+          ) < 0.0001,
+      },
+      firstKelpState,
+      frozenKelpState,
+      firstReturnState,
+      secondKelpState,
       returnLoader,
       returnEvidence,
     };
     summary.assertions = {
-      exactAuthGuestFixtureUsed:
-        summary.routes.network.fixtureTraffic["GET /api/auth/me"] > 0,
-      exactAvatarFixtureUsed:
-        summary.routes.network.fixtureTraffic["GET /api/avatars/me"] > 0,
-      exactAgentSessionFixtureUsed:
-        summary.routes.network.fixtureTraffic[
+      exactAuthenticatedNonGuestFixtureIntercepted:
+        summary.routes.network.interceptedFixtureTraffic[
+          "GET /api/auth/me"
+        ] > 0,
+      exactAvatarFixtureIntercepted:
+        summary.routes.network.interceptedFixtureTraffic[
+          "GET /api/avatars/me"
+        ] > 0,
+      exactAgentSessionFixtureIntercepted:
+        summary.routes.network.interceptedFixtureTraffic[
           "GET /api/auth/me/agent-session"
         ] > 0,
       kelpNavigationStayedSameDocument: spaSentinelOnKelp === true,
@@ -1356,14 +1857,50 @@ try {
         realPathCanvas.connectedCanvas.connected === true &&
         realPathCanvas.connectedCanvas.nonDefaultBacking === true,
       kelpPaintHasNonBackgroundVariance: paint.pass === true,
+      entryLoaderNeverAppeared:
+        entryLoader.appearedWhileNotReady === false,
+      pointerContract:
+        pointerContract.centerCanvas === true &&
+        pointerContract.backButton.selfHit === true &&
+        (!pointerContract.claimButton.present ||
+          pointerContract.claimButton.selfHit === true) &&
+        pointerContract.movementJoystick.selfHit === true &&
+        pointerContract.cameraJoystick.selfHit === true,
+      worldFramesFrozenWhileKelpActive:
+        firstKelpState.frames.world === frozenKelpState.frames.world,
+      worldCameraFrozenWhileKelpActive:
+        sameNumbers(
+          firstKelpState.cameras.world,
+          frozenKelpState.cameras.world,
+        ),
+      worldFacingAcrossKelpRoundTrip:
+        summary.kelpExit.worldFacingAcrossKelpRoundTrip.preserved ===
+          true &&
+        isWorldPlayerFacingArmed(worldFacingBeforeKelp),
+      oneCanvasAcrossKelpRoundTrip:
+        firstKelpState.canvasMountCount === 1 &&
+        firstReturnState.canvasMountCount === 1 &&
+        secondKelpState.canvasMountCount === 1,
+      zeroTransitionErrors:
+        secondKelpState.transitionErrors.length === 0,
+      zeroRecoveries: secondKelpState.recoveryCount === 0,
+      secondEntryAccepted:
+        secondKelpState.pathname === "/kelp" &&
+        secondKelpState.activeScene === "kelp",
+      beaconChainReset:
+        secondKelpState.kelp?.claim?.visitedCount === 0,
+      playerResetToSpawn:
+        secondKelpState.kelp?.playerPosition?.x === 0 &&
+        secondKelpState.kelp?.playerPosition?.z === 6000,
+      kelpSlotChildMountCountStable:
+        firstKelpState.kelp?.mountCount ===
+        secondKelpState.kelp?.mountCount,
       returnNavigationStayedSameDocument:
         returnEvidence.sentinelSurvived === true,
       returnedToGame: returnEvidence.pathname === "/game",
-      freshWorldStageProbe: returnEvidence.freshProbe === true,
-      returnLoaderAppearedBeforeReady:
-        returnLoader.appearedWhileNotReady === true,
-      returnLoaderNeverDisappearedBeforeReady:
-        returnLoader.disappearedBeforeReady === false,
+      stageProbeIdentityStable: returnEvidence.stableProbe === true,
+      returnLoaderNeverAppeared:
+        returnLoader.appearedWhileNotReady === false,
       returnWorldGenuinelyReady: returnEvidence.ready === true,
       returnLoaderAbsent: returnEvidence.loaderAbsent === true,
       returnTransitionIdle: returnEvidence.transitionIdle === true,
@@ -1428,7 +1965,7 @@ try {
   } else if (routeLane) {
     const routeOrigin = new URL(url).origin;
     for (const [routeName, pathname] of [
-      ["cove", "/cove"],
+      [routePair, routeDestination.path],
       ["game", "/game"],
     ]) {
       const response = await fetch(`${routeOrigin}${pathname}`, {
@@ -1447,16 +1984,18 @@ try {
     await page.waitForFunction(() => Boolean(window.__WORLD_STAGE_PROBE__), {
       timeout: 30_000,
     });
-    await waitForSettled(page, "cove");
-    const coldCove = await snapshot(page);
-    if (coldCove.pathname !== "/cove") {
+    await waitForSettled(page, routeDestination.sceneId);
+    const coldDestination = await snapshot(page);
+    if (coldDestination.pathname !== routeDestination.path) {
       throw new Error(
-        `cold Cove stage settled on ${String(coldCove.pathname)} instead of /cove`,
+        `cold ${routeDestination.label} stage settled on ${String(
+          coldDestination.pathname,
+        )} instead of ${routeDestination.path}`,
       );
     }
-    summary.routes.pathSequence.push("/cove");
+    summary.routes.pathSequence.push(routeDestination.path);
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 750));
-    collectingColdCoveAssets = false;
+    collectingColdRouteAssets = false;
 
     // Warm both real slots before measuring retention. The first /game visit
     // is intentionally excluded because its SeaLoadingScreen is still the
@@ -1465,7 +2004,11 @@ try {
     await navigateAndWait(page, "/game", "world");
     summary.warmupTransitions += 1;
     summary.routes.network.phase = "after-first-game";
-    await navigateAndWait(page, "/cove", "cove");
+    await navigateAndWait(
+      page,
+      routeDestination.path,
+      routeDestination.sceneId,
+    );
     summary.warmupTransitions += 1;
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 750));
 
@@ -1570,35 +2113,51 @@ try {
             pathname: "/game",
           });
         }
-        hiddenStarts.set("cove", afterWorld);
+        hiddenStarts.set(routeDestination.sceneId, afterWorld);
         hiddenStarts.delete("world");
 
-        const beforeCove = await snapshot(page);
-        const hiddenCoveStart = hiddenStarts.get("cove");
-        if (hiddenCoveStart) {
+        const beforeDestination = await snapshot(page);
+        const hiddenDestinationStart = hiddenStarts.get(
+          routeDestination.sceneId,
+        );
+        if (hiddenDestinationStart) {
           recordHiddenWindow(
             transitionIndex,
-            "cove",
-            hiddenCoveStart,
-            beforeCove,
+            routeDestination.sceneId,
+            hiddenDestinationStart,
+            beforeDestination,
           );
         }
-        const coveFramesBefore = beforeCove.frames.cove ?? 0;
-        const afterCove = exerciseHistory
-          ? await traverseHistoryAndWait(page, "forward", "/cove", "cove")
-          : await navigateAndWait(page, "/cove", "cove");
+        const destinationFramesBefore =
+          beforeDestination.frames[routeDestination.sceneId] ?? 0;
+        const afterDestination = exerciseHistory
+          ? await traverseHistoryAndWait(
+              page,
+              "forward",
+              routeDestination.path,
+              routeDestination.sceneId,
+            )
+          : await navigateAndWait(
+              page,
+              routeDestination.path,
+              routeDestination.sceneId,
+            );
         summary.completedTransitions += 1;
         transitionIndex += 1;
-        if ((afterCove.frames.cove ?? 0) <= coveFramesBefore) {
+        if (
+          (afterDestination.frames[routeDestination.sceneId] ?? 0) <=
+          destinationFramesBefore
+        ) {
           summary.activeGrowthViolations.push({
             index: transitionIndex,
-            sceneId: "cove",
-            before: coveFramesBefore,
-            after: afterCove.frames.cove ?? 0,
+            sceneId: routeDestination.sceneId,
+            before: destinationFramesBefore,
+            after:
+              afterDestination.frames[routeDestination.sceneId] ?? 0,
           });
         }
-        hiddenStarts.set("world", afterCove);
-        hiddenStarts.delete("cove");
+        hiddenStarts.set("world", afterDestination);
+        hiddenStarts.delete(routeDestination.sceneId);
         summary.completedRoundTrips += 1;
 
         const completedLoop = summary.completedRoundTrips;
@@ -1610,7 +2169,7 @@ try {
           loop: completedLoop,
           elapsedMs: Date.now() - experimentStartedAt,
           forceGc,
-          state: forceGc ? null : afterCove,
+          state: forceGc ? null : afterDestination,
         });
         const currentRenderer = loopSample.state.renderer ?? null;
         if (
@@ -1772,14 +2331,19 @@ try {
       listenerAccountingNeverUnderflowed: summary.listenerUnderflowCount === 0,
       zeroTransitionErrors: summary.transitionErrors.length === 0,
       zeroRecoveries: summary.recovery?.count === 0,
-      coldCoveSkipsWorldAssets:
-        summary.routes.coldCoveWorldAssetRequests.length === 0,
-      coldCoveJoinsZero: summary.routes.network.joins.coldCove === 0,
+      [routePair === "kelp"
+        ? "coldKelpSkipsWorldAssets"
+        : "coldCoveSkipsWorldAssets"]:
+        summary.routes[routeDestination.coldWorldAssetKey].length === 0,
+      [routePair === "kelp"
+        ? "coldKelpJoinsZero"
+        : "coldCoveJoinsZero"]:
+        summary.routes.network.joins[routeDestination.coldKey] === 0,
       firstGameJoinsOnce: summary.routes.network.joins.firstGame === 1,
       joinsAfterFirstGameZero:
         summary.routes.network.joins.afterFirstGame === 0,
       oneInitialWorldStream:
-        summary.routes.network.streams.coldCove === 0 &&
+        summary.routes.network.streams[routeDestination.coldKey] === 0 &&
         summary.routes.network.streams.firstGame === 1,
       noRouteCorrelatedStreamReopens:
         summary.routes.network.streams.afterFirstGame === 0,
@@ -1788,14 +2352,20 @@ try {
       gameCacheControlNonCacheable:
         summary.routes.cacheControl.game?.status === 200 &&
         cacheControlIsNonCacheable(summary.routes.cacheControl.game?.value),
-      coveCacheControlNonCacheable:
-        summary.routes.cacheControl.cove?.status === 200 &&
-        cacheControlIsNonCacheable(summary.routes.cacheControl.cove?.value),
+      [`${routePair}CacheControlNonCacheable`]:
+        summary.routes.cacheControl[routePair]?.status === 200 &&
+        cacheControlIsNonCacheable(
+          summary.routes.cacheControl[routePair]?.value,
+        ),
       bothSlotInventoriesCaptured:
         Boolean(summary.inventory.early?.world) &&
-        Boolean(summary.inventory.early?.cove) &&
+        Boolean(
+          summary.inventory.early?.[routeDestination.sceneId],
+        ) &&
         Boolean(summary.inventory.late?.world) &&
-        Boolean(summary.inventory.late?.cove),
+        Boolean(
+          summary.inventory.late?.[routeDestination.sceneId],
+        ),
       sceneInventoriesExactZeroDiff: sceneInventoryDiffIsZero(
         summary.inventory.diff,
       ),
@@ -1849,6 +2419,14 @@ try {
             !summary.heap.available ||
             (summary.heap.growthRatio !== null &&
               summary.heap.growthRatio <= summary.heap.totalGrowthThreshold),
+          ...(routePair === "kelp"
+            ? {
+                kelpHeapPlateauAtMost15Percent:
+                  !summary.heap.available ||
+                  (summary.heap.growthRatio !== null &&
+                    summary.heap.growthRatio <= 0.15),
+              }
+            : {}),
         };
     summary.pass = Object.values(summary.assertions).every(Boolean);
   } else {
