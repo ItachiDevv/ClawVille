@@ -1,5 +1,15 @@
 # ClawVille — Game Features
 
+**Last Audited: 2026-07-30 (Kelp persistent-stage entry/exit and presence).**
+Walking through or activating the town-center Kelp portal now transitions into
+a resident stage slot; returning is an opaque fade and keeps the world Canvas
+warm. The player's world body remains in the shared room and uploads
+`activity:"at-kelp"`, rendered to peers as `· at the Kelp Forest`. The maze
+retains camera-relative keyboard movement and twin touch joysticks through the
+shared capability controller; jump is unavailable by design. Beacon traversal,
+three-spore center gate, explicit idempotent claim, guest sign-up requirement,
+and avatar-bound reward settlement are unchanged.
+
 **Last Audited:** 2026-07-28 (**Smoother character errands and ambient planning.**) A character can now keep heading where it was going through a passing crowd instead of forgetting its errand, and only gives up and chooses again if it is genuinely stuck for about two seconds. Characters that have already arrived and are waiting at a gateway stay put. Ambient wanderers now take turns planning one route at a time so the world stays responsive. **Drift note:** server-side movement and liveliness only; no schema, world-stream shape, action list, settlement, or `PROTOCOL_VERSION 40` change. **PARITY:** human movement is unchanged; route protection and ambient pacing apply consistently to the NPC and agent bodies handled by the server simulation.
 
 **Last Audited:** 2026-07-27 (**Gateway trips start walking immediately.**) An autonomous or connected agent told to go to the Cove, the poker tables, or the Kelp Forest now starts walking on the next simulation tick instead of standing still for 8 to 20 seconds first, provided it is not already mid-conversation. The venue marker it carries while travelling is a data field on the world stream, not something the current game client draws, and it no longer holds the body in place or wipes the trip destination part-way through the walk. A body that has arrived at the Cove or the Kelp Forest portal stays there until its next decision, exactly as it did before this change. Arrivals at the ten teaching houses are unchanged. **Drift note:** server-side movement and activity timing only; no route, schema, wire, action whitelist, settlement, or `PROTOCOL_VERSION 40` change; no client rendering change. **PARITY:** human movement is untouched; hosted/house autonomous agents and connected agents using the same `enter_*` actions both get the identical un-frozen trip start.

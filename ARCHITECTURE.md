@@ -1,5 +1,16 @@
 # ClawVille — Architecture
 
+**Last Audited: 2026-07-30 (world-stage P3 Kelp + protocol v41).** Page-only
+`/kelp` is now inside `app/(world)` with `/game` and `/cove`, sharing one
+persistent physical Canvas; non-page Kelp/API surfaces are unchanged.
+`WorldPresence` maps `/game` to active uploads, `/cove` to remote `at-cove`,
+`/kelp` to remote `at-kelp`, and other grouped routes to remote `idle`.
+`AT_KELP_ACTIVITY` is the shared conventional value; peers render an idle
+`· at the Kelp Forest` suffix. The connection manual is
+`PROTOCOL_VERSION 41`; partner request/response fields, signing, SSRF policy,
+session/bearer handling, wallet resolution, action verbs, and settlement are
+unchanged.
+
 **Last Audited:** 2026-07-28 (**NPC simulation follow-up fixes.**) (1) A server-managed body that chooses a directed destination during an ambient conversation resumes that same trip when the conversation ends, survives transient crowd overlaps, and abandons only an active unfinished trip that remains continuously wedged for about two seconds; parked gateway routes remain untouched. (2) Ambient planners share one A* search per 200 ms planning pass and rotate first admission through the stable NPC roster, while directed-walk execution remains zero-A*. **Drift note:** server navigation, collision arbitration, and ambient planning cadence only; no DB/schema, economy, room-registry, wire shape, settlement, action whitelist, or `PROTOCOL_VERSION 40` change. **PARITY:** human movement is outside this simulation and unchanged; conversation release applies to server-managed connected bodies admitted to ambient conversations, while collision grace and ambient planning are route-class behavior shared across applicable agent bodies.
 
 **Last Audited:** 2026-07-27 (**Directed-route lifecycle: gateway dispatch no longer freezes; gateway arrivals stay directed.**) The gateway `enter_cove` / `enter_poker_room` / `enter_kelp_forest` executor cases now set only the `activityEmoji` wire field and leave `activity='walking'`, so the body clears the `moveNpcs` activity gate on the next 200 ms tick; `setNpcPath` additionally resets `activityEndsAt` to 0 so a stale prior-activity clock can no longer expire mid-approach and null `destinationBuildingId`. Because the approach now stays 'walking', the arrival handler fires for these trips and replaces the path array, so directed ownership is re-stamped onto the fresh array for the two gateway destinations only (`cove`, `kelp-forest-portal`) — restoring their pre-change parked-and-ambient-excluded state. Teaching-building and `POST /api/agent/:sessionId/move?buildingId` arrivals continue to release ownership at arrival, since `clearDestinationBuilding` is called only by the autonomy driver. **Drift note:** server navigation + activity timing only; no DB/schema, economy, room-registry, wire shape, settlement, or `PROTOCOL_VERSION 40` change. **PARITY:** human path: unchanged; agent path: hosted/house driver walks AND connected-agent `enter_*` share the identical un-frozen dispatch and identical arrival lifecycle.

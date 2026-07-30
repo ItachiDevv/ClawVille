@@ -2,7 +2,6 @@
 
 import { useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { AT_COVE_ACTIVITY } from '@clawville/shared';
 import { LAND_PARCELS_QUERY_KEY } from '@/lib/land-query-keys';
 import { useNpcStore } from '@/stores/npc';
 import { usePlayerStore } from '@/stores/players';
@@ -57,7 +56,7 @@ interface JoinResponse {
  *      route the unified payload through both `useNpcStore.updateFromSnapshot`
  *      AND `usePlayerStore.updateFromSnapshot`.
  *   4. A mount-owned 5 Hz machine interval triggers bootstrap/recovery and
- *      POSTs active movement or the 10 s remote `at-cove` heartbeat. The
+ *      POSTs active movement or the 10 s route-specific remote heartbeat. The
  *      heading is computed from a 1-tick velocity tracker (atan2(vx, vy)
  *      matches the VRM facing convention used elsewhere in the renderer).
  *   5. On unmount: close SSE, clear position interval, call `/api/world/leave`
@@ -67,9 +66,14 @@ interface JoinResponse {
  * attempts). Mirrors `useNpcStream`. The position interval keeps running
  * across reconnects — server is idempotent on `lastPositionUpdateAt`.
  */
-export function useWorldStream(policy: WorldPresencePolicy) {
+export function useWorldStream(
+  policy: WorldPresencePolicy,
+  remoteActivity?: string,
+) {
   const policyRef = useRef(policy);
   policyRef.current = policy;
+  const remoteActivityRef = useRef(remoteActivity);
+  remoteActivityRef.current = remoteActivity;
   // Ambient-banter watcher heartbeat — visible-tab-only "a human is watching"
   // signal for the server's banter inference gate. See use-watch-heartbeat.ts.
   useWatchHeartbeat(policy === 'active');
@@ -346,7 +350,7 @@ export function useWorldStream(policy: WorldPresencePolicy) {
       postPosition(
         JSON.stringify({
           ...frozen,
-          activity: AT_COVE_ACTIVITY,
+          activity: remoteActivityRef.current ?? 'idle',
         }),
       );
     }

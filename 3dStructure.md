@@ -1,5 +1,17 @@
 # ClawVille — 3D Structure
 
+**Last Audited: 2026-07-30 (Persistent world-stage P3 Kelp cutover).** `/game`,
+`/cove`, and page-only `/kelp` now share the unkeyed `(world)` stage Canvas.
+Kelp is a resident `StageHostedKelpScene` slot whose scene graph, camera,
+controls, activation reset, warmup, health/recovery, and resource ledger remain
+owned by the stage. Returns are fades, not Canvas reloads. The route-scoped
+HUD stays DOM-owned, while the shared player-capability controller runs under
+`KELP_POLICY` (no jump/sprint/emotes/interact; camera-relative movement and
+touch retained). `/kelp` uploads `at-kelp` presence while the world body remains
+co-present. The Kelp scene intentionally uses `Fog(0x0d4552, 1100, 3200)` with
+camera far 10,000; the world-only fog-far/camera-far equality rule does not
+apply to this scene-scoped atmosphere.
+
 **Last edit / Last Audited:** 2026-07-28 (**Legacy `/arena` spectator page RETIRED — founder order.**) The `/arena` route (free-camera town spectator, "ClawVille Agent Arena"), its `/arena/openclaw-override` + `/arena/openclaw-avatar` legacy gateway-override demo pages, and their exclusive components (`Arena3DCanvas.tsx`, `arena-hud.tsx`, pixi `ArenaCanvas.tsx`) are deleted. The `arena-*`-named world renderer files (`arena-buildings.tsx`, `arena-terrain.tsx`, `arena-npcs.tsx`, etc.) are UNAFFECTED — that legacy naming refers to the main world scene, which they still render. `World3DCanvas`'s remaining route-owned consumers are `/perf` pages only. Landing-page harness cards no longer link the retired override flow or the retired Milady npm sideload; both point at the universal one-step magic link (`/api/agent/connect`). No geometry, collider, render-path, or economy change. Arena is DROPPED from the persistent-stage migration queue (was P2); next migrations are kelp (P3) and reef (P4).
 
 **Prior Last edit / Last Audited:** 2026-07-27 (**Gateway approach no longer overrides walking activity.**) The three gateway destination actions now stamp only the serialized activity-emoji field and leave the simulated body in the walking state, so the 5 Hz movement gate no longer skips it for the 8 to 20 second activity window. Arrivals at the two gateway destinations keep their agent-owned route marker across the arrival path reset so a parked agent body is not re-planned by the ambient wander; teaching-building and REST-move arrivals keep their existing release behavior. The emoji field is not rendered by the current client. No client geometry, collider shape, render path, SSE wire shape, NPC speed, or Cove settlement change.
@@ -578,6 +590,17 @@ frame/camera/store counters, zero listener delta/errors/recoveries, under-15%
 post-warmup heap, no world-only asset request on cold Cove, no return loader,
 and non-cacheable headers on both pages.
 
+**P3 Kelp cutover (2026-07-30):** page-only `/kelp` joins the same `(world)`
+route group. The former route-owned `KelpRealmCanvas` and renderer-status store
+are removed. `StageHostedKelpScene` registers one resident `kelp` slot with its
+own camera, scene appearance, activation token, capability mask, frame owners,
+and renderer-health disposition. A guarded portal walk-in requests the slot
+before navigation, and exiting restores the world body/facing through the same
+transition without remounting the physical Canvas. Hidden callbacks are frozen
+by `useSceneFrame`; ownership resets run once per slot generation; readiness
+waits for both owners plus the environment. Kelp resources remain resident
+after first load and are measured by the stage ledger.
+
 P0a is isolated at `apps/web/src/app/perf/stage/page.tsx`; it is available automatically in development and through `/perf/stage?stage=1` on a local production bundle. It is not linked from navigation and does not mount beside any live route-owned Canvas.
 
 `apps/web/src/components/three/world-stage/` owns the synthetic substrate:
@@ -983,13 +1006,31 @@ The portal is gameplay-critical and mounts outside `showGroundCover`/`showWaterF
 
 Spatial parity follows §2h: both `world-colliders.ts` and shared `world-colliders-data.ts` register `kelp-forest-portal` at `(7808, -9900)` with half-extents `(170, 42)` as a prop. The return spawn is outside that AABB plus the 25-wu chibi expansion.
 
-### 8d. Route-isolated Kelp Forest realm (Run A commit 2, 2026-07-18)
+### 8d. Stage-hosted Kelp Forest realm (P3 cutover, 2026-07-30)
 
-**Last Audited:** 2026-07-21 (**Wider corridors and damped three-quarter chase camera; local implementation pending founder browser sign-off.**) The authored 21×21 layout is unchanged while its derived cell width grows 300→480 wu for a 10,080-wu footprint. Realm walls drop 500→420 wu, roots move 60→96 wu behind corridor-facing edges, and the three ribbon variants now span 330–395, 350–420, and 320–405 wu without exceeding the wall height. The chase eye moves from 610/520 to 470 wu above and 660 wu behind, looks at Y=170 plus 150 wu forward along the flattened camera direction, and keeps a per-mount visibility-clamp scalar that tightens at k=8 and relaxes at k=3 before the normal camera lerp; the post-lerp hard clamp is removed. Shared layout-derived wall AABBs remain authoritative for player collision and the camera slab test. Fog remains 450/1,200 until the palette pass; camera far remains 10,000. Draw counts, materials, shaders, layout topology, beacon/spore/reward behavior, and per-frame allocation budget are unchanged.
+**Last Audited:** 2026-07-30. `/kelp` no longer creates, keys, retries, or
+disposes a route-local Canvas. The `(world)` layout keeps one physical Canvas
+alive and activates the resident `kelp` slot. Scene-local camera, fog, lighting,
+maze collision, beacon/spore state, selected-avatar instance, controls, HUD,
+claim path, draw ceiling, and WebGPU/WebGL material behavior are preserved.
+Kelp uses linear fog at 1,100/3,200 wu with camera far 10,000; hidden Cove lights
+remain mounted but invisible under their slot. The route's Back action restores
+the world standoff and uses an opaque fade; no loading screen or world asset
+reload occurs on a warmed return.
+
+**Prior audit (2026-07-21):** The authored 21×21 layout and its derived
+collision/camera contracts were established before the stage migration. P3
+changes ownership and lifecycle, not topology, reward, or scene geometry.
 
 **Last Audited:** 2026-07-21 (**Visible load/init failures; local implementation pending founder browser sign-off.**) The route-level dynamic fallback now shows a centered cyan spinner and “Entering the Kelp Forest…” instead of an indistinguishable flat void. A rejected Canvas chunk logs the original error, rethrows into a client ErrorBoundary, and presents a recoverable Reload panel while the route-owned Back control remains available. Renderer creation still preserves native WebGPU followed by one fresh-canvas force-WebGL retry (or the explicitly forced WebGL-only path); a terminal init failure logs the underlying backend errors and publishes through a tiny SSR-safe external store so the page can render a DOM explanation and Back action even when R3F never commits a frame. No material, shader, scene object, draw call, asset, protocol, or economy behavior changed.
 
-`/kelp` dynamically mounts a Canvas keyed `kelp-realm`; it uses the same static `three/webgpu` module instance for R3F elements, node materials, and the async `WebGPURenderer` factory. The chunk-loading fallback is a visible cyan spinner/status treatment, and a rejected chunk rethrows through a client ErrorBoundary into a Reload panel rather than reproducing the scene background as a silent void. WebGPU is primary; low-end/unsupported clients use `forceWebGL`, and an initialization failure disposes the failed renderer before one fresh-canvas force-WebGL retry. If renderer initialization is terminal, the factory reports the backend errors through an SSR-safe external store and the route presents a DOM explanation plus a Back action even though R3F cannot render. Camera is `fov=60`, `near=1`, `far=10000`; linear fog runs from 450 to 1,200 wu across the 10,080-wu realm footprint without exceeding the far plane. Route exit restores the world avatar outside the portal collider. Desktop uses camera-relative WASD plus arrow orbit; the two mobile joysticks drive the identical scalar input bridge. There is deliberately no minimap.
+`/kelp` activates the stage's static `three/webgpu` renderer and resident scene
+subtree. WebGPU is primary and the stage owns its single recovery followed by
+session-sticky WebGL fallback; terminal failure is reported through the shared
+stage recovery surface. Camera is `fov=60`, `near=1`, `far=10000`; linear fog
+runs from 1,100 to 3,200 wu. Route exit restores the world avatar outside the
+portal collider. Desktop and both mobile joysticks feed the shared capability
+controller. There is deliberately no minimap.
 
 The single authored source is `packages/shared/src/constants/kelp-realm.ts`: a winding 21×21 corridor tree with one outer entry, one reachable center, and nine substantial raw dead ends. Wall AABBs, entry/center/spawn, connected beacon graph, and the deterministic dead-end discovery rotation are all derived from that grid. The focused test locks both markers and dimensions, the sole boundary opening, the approximately 395.6-wu visible corridor retained under opposing maximum sway plus the widest blade's authored width/bend radius, full-raster connectivity and tree uniqueness, an entry-to-center path with at least three turns and no direct sightline, 8–10 raw dead ends with branch edges at least two cells long, center reachability, traversable beacon edges, and one three-type discovery per dead end. Client movement uses those derived AABBs only; no server NPC pathfinding exists in this route.
 

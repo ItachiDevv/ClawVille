@@ -16,6 +16,7 @@
  * by the opaque `id` below, never the raw session token).
  */
 export const AT_COVE_ACTIVITY = 'at-cove' as const;
+export const AT_KELP_ACTIVITY = 'at-kelp' as const;
 
 export interface PlayerSnapshot {
   /**
@@ -43,7 +44,7 @@ export interface PlayerSnapshot {
   y: number;
   /** Heading in radians (atan2(dx, dy) convention — matches VRM facing). */
   dirZ: number;
-  /** Free-form activity verb (conventional: "idle", "walking", "running", or AT_COVE_ACTIVITY). */
+  /** Free-form activity verb (conventional: "idle", "walking", "running", AT_COVE_ACTIVITY, or AT_KELP_ACTIVITY). */
   activity: string;
   /** Visual species key (e.g. "milady_official_1", "hermes_male"). */
   species: string;

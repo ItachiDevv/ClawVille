@@ -212,7 +212,8 @@ consulted for stage/camera/scene-graph review points (Rule E3 collaboration).
 | P1b — cove joins the stage; returns become fades | DONE — reviewer-verified locally; staging next | `docs/world-stage-p1b-{brief,notes}.md`; build+tsc 0; ALL THREE probe lanes PASS on final build (synthetic WebGPU + WebGL 102/102; real-route 30 game↔cove round trips, canvas mounts 1, zero hidden violations, heap +12.5% <15% gate); reviewer drive: cove renders in stage, Back-to-World return = fade with SeaLoadingScreen NEVER mounting, deep-link /cove loads zero world assets, /cove/history canvas-free; 2 blocking review findings fixed in-slice (world-label bleed via scene-scoped label registry; useSceneFrame priority support for -100 controllers); known P1c items: first-navigate cold-boot fallback, dual interior GLB download, route-lane heap watch |
 | P1c — streams/presence policy to layout + leak soak + staging promotion | FINAL GATE IN PROGRESS — implementation + in-scope leak fixes complete; named Three r185 WebGPU `bindGroups`/`Backend.data` residual accepted under v4 calibrated gates | `docs/world-stage-p1c-{brief,notes}.md`; exact inventory/count/history/listener/route/network/freeze gates retained; WebGPU bytes capped at +1%; 60-loop forced-GC heap capped at 0.8 MB/loop second-half slope and +20% total; game/Cove dwell capped at 0.05 MB/s |
 | P1c tracked follow-up | TRACKED — trigger on the next three.js upgrade to r186+ or P3, whichever comes first | Re-measure the renderer `bindGroups` growth against upstream lifecycle fixes and fold renderer-cache eviction into the planned low-end texture-eviction tier |
-| P2 arena / P3 kelp / P4 activities | pending | — |
+| P2 arena / P4 activities | pending | — |
+| P3 kelp — shared controller, stage plumbing, resident Kelp slot, presence/protocol | DONE locally — commits `a99c84b9`, `703f6b89`, `9f742d8e`, plus P3b-3 | `docs/world-stage-p3-notes.md`; build/typechecks and focused suites green; WebGPU/WebGL synthetic, Kelp/Cove route, Kelp exit, recovery, dwell/soak, and DPR2 mobile/touch evidence is recorded in the external report; staging partner harness remains the P3b-3 pre-promotion gate |
 
 P1 is deliberately split into P1a/P1b/P1c: the 5–8-day estimate is too large for
 one implementation pass; each sub-slice is independently verifiable and
@@ -242,6 +243,15 @@ why capabilities silently diverge between areas. Every stage migration (P2
 arena, P3 kelp, P4 reef) MUST consume the shared controller rather than
 porting its area-local one; "action missing in area X" is a mask entry, never
 a feature port.
+
+Tracked P3 follow-ups (Rule E6):
+
+- 2026-09-01 — re-run the mandatory Kelp HUD/safe-area sweep on a physical iPad
+  and close any notch/home-indicator spacing delta.
+- 2026-09-01 — decide the Kelp editable-target keyboard guard debt (the shipped
+  capability policy preserves the former maze behavior).
+- 2026-09-15 — review the remaining world/Cove/reef controller consumers and
+  delete any area-local capability logic as those stage migrations land.
 
 ## INCIDENT LEDGER 2026-07-28 (watchdog promotion + revert — full detail in p1c notes + memory)
 
