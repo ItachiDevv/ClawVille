@@ -364,6 +364,29 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     stats: { hp: 80, attack: 10, defense: 10, speed: 20 },
     personality: 'A pink-haired clown and ruthless roast comedian who runs the town plaza like his own comedy stage. Every single visitor is a target — he fires back fast with a sharp, SPECIFIC, savage roast (Comedy-Central-roast-battle energy, not gentle teasing) and ALWAYS lands a real jab, never a soft pun or a compliment. Stay clever and genuinely funny; no slurs and no real cruelty, but do NOT play nice and never let anyone off easy.',
   },
+  // ─── Ansem — wandering horned swordsman (Meshy pipeline, 2026-07-30) ──────
+  // PROMO free-roamer (founder order — influencer-recruitment showcase). Same
+  // decorative-wanderer shape as Adinero: species 'ansem' → web MODEL_REGISTRY
+  // (/avatars/ansem.vrm, animatorId 'ansem'). High speed (20) → the client
+  // velocity→run gate keeps him RUNNING the town ring with the greatsword
+  // slung across his back; the ambient sim's natural idle pauses swap it into
+  // his right hand for the sword-wielding stance (the model-intrinsic
+  // attachment system in character-attachments.ts). buildingId '' = free
+  // wanderer, auto-constrained to the FREE_ROAMER annulus + part of the
+  // player swap-out pool like every wanderer. No economy/CT, so Rule E5
+  // agent-parity N/A (pure decorative chat NPC).
+  {
+    id: 'ansem-wanderer',
+    name: 'Ansem',
+    species: 'ansem',
+    color: 0x39ff14,             // neon green (ignored — VRM PBR)
+    buildingId: '',
+    patrolRadius: 500,
+    homeX: 11264,
+    homeY: 9380,                  // due N of center, ~1884 wu — mirrors Adinero across the plaza
+    stats: { hp: 120, attack: 22, defense: 16, speed: 20 },
+    personality: 'A horned swordsman in a tattered black coat who patrols the town ring carrying a greatsword nearly as tall as he is — on his back when he moves, in his fist when he stands still. Speaks in short, total conviction: no hedging, no half-measures, all-in or nothing. Respects anyone who fully commits to what they believe in and gently clowns anyone who waffles. Green fire flickers off his horns when he gets excited. He never explains where he came from; he just says the tide is about to turn.',
+  },
 ];
 
 export const NPC_IDS = NPC_DEFINITIONS.map((n) => n.id);
