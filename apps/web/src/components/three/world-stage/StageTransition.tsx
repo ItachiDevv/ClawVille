@@ -14,6 +14,12 @@ import {
   type WatchdogState,
 } from './stage-watchdog-machine';
 
+const STAGE_SCENE_KIND_BY_ID = {
+  world: 'world',
+  cove: 'cove',
+  kelp: 'kelp',
+} as const;
+
 interface StageTransitionProps {
   fadeDurationMs?: number;
   timeoutMs?: number;
@@ -100,7 +106,13 @@ export function StageTransition({
         stageEpoch: state.stageEpoch,
         requestId: current?.requestId ?? null,
         retryOfRequestId: current?.retryOfRequestId,
-        sceneKind: current?.sceneId === 'cove' ? 'cove' : 'world',
+        sceneKind:
+          current?.sceneId &&
+          current.sceneId in STAGE_SCENE_KIND_BY_ID
+            ? STAGE_SCENE_KIND_BY_ID[
+                current.sceneId as keyof typeof STAGE_SCENE_KIND_BY_ID
+              ]
+            : 'world',
         transitionPhase: state.transition?.phase ?? 'idle',
         terminal:
           state.transition?.phase === 'error' ||

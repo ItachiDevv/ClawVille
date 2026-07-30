@@ -1,31 +1,32 @@
-export const COVE_COMPILE_TIMEOUT_MS = 20_000;
+export const STAGE_COMPILE_TIMEOUT_MS = 20_000;
 
-interface CoveCompileEntry {
+interface StageCompileEntry {
   gl: unknown;
   compilePromise: Promise<void>;
   timedOut: boolean;
   settled: boolean;
 }
 
-export type CoveCompileWaitResult =
+export type StageCompileWaitResult =
   | { kind: 'settled' }
   | { kind: 'rejected'; error: unknown }
   | { kind: 'timed-out' }
   | { kind: 'bypassed' };
 
-export interface CoveWarmupResult {
+export interface StageWarmupResult {
   status: 'completed' | 'superseded';
   warmedRenderer: unknown | null;
   warmAttempted: boolean;
 }
 
-let currentCompileEntry: CoveCompileEntry | null = null;
+const compileEntriesBySlot = new Map<string, StageCompileEntry>();
 
 function createEntry(
+  slotId: string,
   gl: unknown,
   compile: () => Promise<void>,
-): CoveCompileEntry {
-  const entry: CoveCompileEntry = {
+): StageCompileEntry {
+  const entry: StageCompileEntry = {
     gl,
     compilePromise: Promise.resolve().then(compile),
     timedOut: false,
@@ -34,43 +35,45 @@ function createEntry(
   entry.compilePromise.then(
     () => {
       entry.settled = true;
-      if (currentCompileEntry === entry && !entry.timedOut) {
-        currentCompileEntry = null;
+      if (compileEntriesBySlot.get(slotId) === entry && !entry.timedOut) {
+        compileEntriesBySlot.delete(slotId);
       }
     },
     () => {
       entry.settled = true;
-      if (currentCompileEntry === entry && !entry.timedOut) {
-        currentCompileEntry = null;
+      if (compileEntriesBySlot.get(slotId) === entry && !entry.timedOut) {
+        compileEntriesBySlot.delete(slotId);
       }
     },
   );
   return entry;
 }
 
-export async function waitForCoveCompile(
+export async function waitForStageSlotCompile(
+  slotId: string,
   gl: unknown,
   compile: () => Promise<void>,
-  timeoutMs = COVE_COMPILE_TIMEOUT_MS,
-): Promise<CoveCompileWaitResult> {
-  if (!currentCompileEntry || currentCompileEntry.gl !== gl) {
-    currentCompileEntry = createEntry(gl, compile);
+  timeoutMs = STAGE_COMPILE_TIMEOUT_MS,
+): Promise<StageCompileWaitResult> {
+  let entry = compileEntriesBySlot.get(slotId);
+  if (!entry || entry.gl !== gl) {
+    entry = createEntry(slotId, gl, compile);
+    compileEntriesBySlot.set(slotId, entry);
   }
-  const entry = currentCompileEntry;
   if (entry.timedOut) return { kind: 'bypassed' };
 
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<CoveCompileWaitResult>((resolve) => {
+  const timeout = new Promise<StageCompileWaitResult>((resolve) => {
     timeoutHandle = setTimeout(() => {
-      if (currentCompileEntry === entry && !entry.settled) {
+      if (compileEntriesBySlot.get(slotId) === entry && !entry.settled) {
         entry.timedOut = true;
       }
       resolve({ kind: 'timed-out' });
     }, timeoutMs);
   });
   const settled = entry.compilePromise.then<
-    CoveCompileWaitResult,
-    CoveCompileWaitResult
+    StageCompileWaitResult,
+    StageCompileWaitResult
   >(
     () => ({ kind: 'settled' }),
     (error: unknown) => ({ kind: 'rejected', error }),
@@ -80,7 +83,8 @@ export async function waitForCoveCompile(
   return result;
 }
 
-export async function warmCoveRendererForGeneration(input: {
+export async function warmStageSlotRenderer(input: {
+  slotId: string;
   gl: unknown;
   warmedRenderer: unknown | null;
   compile?: () => Promise<void>;
@@ -90,7 +94,7 @@ export async function warmCoveRendererForGeneration(input: {
   onCompileRejected?: (error: unknown) => void;
   onCompileTimedOut?: () => void;
   onDirectWarmRejected?: (error: unknown) => void;
-}): Promise<CoveWarmupResult> {
+}): Promise<StageWarmupResult> {
   if (input.warmedRenderer === input.gl) {
     return {
       status: input.isCurrent() ? 'completed' : 'superseded',
@@ -100,7 +104,8 @@ export async function warmCoveRendererForGeneration(input: {
   }
 
   if (input.compile) {
-    const compileResult = await waitForCoveCompile(
+    const compileResult = await waitForStageSlotCompile(
+      input.slotId,
       input.gl,
       input.compile,
       input.timeoutMs,
@@ -140,6 +145,6 @@ export async function warmCoveRendererForGeneration(input: {
   };
 }
 
-export function resetCoveWarmupEntriesForTests(): void {
-  currentCompileEntry = null;
+export function resetStageWarmupEntriesForTests(): void {
+  compileEntriesBySlot.clear();
 }

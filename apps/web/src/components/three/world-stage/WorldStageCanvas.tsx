@@ -24,6 +24,10 @@ import * as THREE from 'three/webgpu';
 import { detectLowEndGpuClass } from '@/lib/three/gpu-tier';
 import { resetAllHeldInputs } from '@/lib/three/input-reset';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
+import {
+  resolvePlayerCapabilities,
+  type PlayerCapabilityMask,
+} from '@/lib/three/player/player-capability-mask';
 import { StageTransition } from './StageTransition';
 import type { WatchdogConfig } from './stage-watchdog-machine';
 import {
@@ -34,11 +38,16 @@ import { useStageStore } from './stage-store';
 import {
   requestStageDeltaClamp,
   SceneIdProvider,
+  SlotCapabilityProvider,
   StageFrameScheduler,
 } from './use-scene-frame';
 import {
   registerStageSlotRoot,
 } from './resource-ledger';
+import {
+  reportStageRendererRecoveryFailure,
+  runStageRendererInitialization,
+} from './stage-renderer-status';
 
 declare module '@react-three/fiber' {
   interface ThreeElements extends ThreeToJSXElements<typeof THREE> {}
@@ -66,6 +75,8 @@ const IOS_SAFARI =
 const WEBGPU_ABSENT =
   typeof navigator !== 'undefined' && !('gpu' in navigator);
 const WEBGPU_UNHEALTHY_KEY = 'world-stage-webgpu-unhealthy';
+const LEGACY_KELP_WEBGPU_UNHEALTHY_KEY =
+  'kelp-realm-webgpu-unhealthy';
 
 function belongsToActiveStageSlot(
   object: THREE.Object3D,
@@ -101,7 +112,10 @@ function readWebGpuUnhealthyFlag(): boolean {
   if (typeof window === 'undefined') return false;
   try {
     return (
-      window.sessionStorage.getItem(WEBGPU_UNHEALTHY_KEY) === '1'
+      window.sessionStorage.getItem(WEBGPU_UNHEALTHY_KEY) === '1' ||
+      window.sessionStorage.getItem(
+        LEGACY_KELP_WEBGPU_UNHEALTHY_KEY,
+      ) === '1'
     );
   } catch {
     return false;
@@ -335,6 +349,7 @@ class StageRendererHealth {
 
   private async recover(reason: string): Promise<void> {
     if (this.recovering || !this.renderer || !this.binding) return;
+    const route = window.location.pathname;
     const binding = this.binding;
     this.recovering = true;
     const generation = ++this.generation;
@@ -360,6 +375,8 @@ class StageRendererHealth {
       current.dispose();
 
       let replacement: THREE.WebGPURenderer | null = null;
+      let webGPUError: unknown = null;
+      let webGLError: unknown = null;
       if (!this.recreatedOnce) {
         this.recreatedOnce = true;
         try {
@@ -371,6 +388,8 @@ class StageRendererHealth {
             dpr,
           );
         } catch (error) {
+          if (this.forceWebGL) webGLError = error;
+          else webGPUError = error;
           console.warn(
             '[WorldStage] in-place renderer recreation failed:',
             error,
@@ -401,6 +420,7 @@ class StageRendererHealth {
             dpr,
           );
         } catch (error) {
+          webGLError = error;
           console.error(
             '[WorldStage] terminal force-WebGL recovery failure:',
             error,
@@ -413,6 +433,15 @@ class StageRendererHealth {
           replacement?.dispose();
           return;
         }
+      }
+
+      if (!replacement) {
+        reportStageRendererRecoveryFailure({
+          webGPUError,
+          webGLError,
+          route,
+        });
+        return;
       }
 
       if (replacement) {
@@ -570,6 +599,7 @@ function createStageRenderer(props: {
   if (existing) return existing;
 
   const creation = (async () => {
+    const route = window.location.pathname;
     const canvas = props.canvas;
     const [width, height] = await waitForCanvasSize(canvas);
     const dpr = Math.max(
@@ -579,31 +609,24 @@ function createStageRenderer(props: {
     canvas.width = Math.round(width * dpr);
     canvas.height = Math.round(height * dpr);
 
-    let renderer: THREE.WebGPURenderer;
-    let usedWebGL = FORCE_WEBGL;
-    try {
-      renderer = await initializeStageRenderer(
-        canvas,
-        FORCE_WEBGL,
-        width,
-        height,
-        dpr,
-      );
-    } catch (webGpuError) {
-      if (FORCE_WEBGL) throw webGpuError;
-      console.warn(
-        '[WorldStage] WebGPU init failed; retrying force-WebGL on the same canvas:',
-        webGpuError,
-      );
-      renderer = await initializeStageRenderer(
-        canvas,
-        true,
-        width,
-        height,
-        dpr,
-      );
-      usedWebGL = true;
-    }
+    const { renderer, usedWebGL } = await runStageRendererInitialization({
+      route,
+      forceWebGL: FORCE_WEBGL,
+      initialize: (forceWebGL) =>
+        initializeStageRenderer(
+          canvas,
+          forceWebGL,
+          width,
+          height,
+          dpr,
+        ),
+      onWebGPUFailure: (error) => {
+        console.warn(
+          '[WorldStage] WebGPU init failed; retrying force-WebGL on the same canvas:',
+          error,
+        );
+      },
+    });
     currentStageBackend = usedWebGL ? 'webgl' : 'webgpu';
     currentStageRenderer = renderer;
     previousStageRenderCalls = null;
@@ -621,6 +644,7 @@ function createStageRenderer(props: {
 
 export interface WorldStageScene extends StageCameraDefinition {
   content: ReactNode;
+  capabilities?: Partial<PlayerCapabilityMask>;
   appearance?: {
     background: THREE.ColorRepresentation;
     fog?: {
@@ -861,11 +885,17 @@ function StageLoopController({
 
 function StageSceneSlot({
   sceneId,
+  capabilities,
   children,
 }: {
   sceneId: string;
+  capabilities?: Partial<PlayerCapabilityMask>;
   children: ReactNode;
 }) {
+  const resolvedCapabilities = useMemo(
+    () => resolvePlayerCapabilities(capabilities),
+    [capabilities],
+  );
   const visible = useStageStore(
     (state) =>
       state.activeScene === sceneId ||
@@ -884,7 +914,9 @@ function StageSceneSlot({
     >
       {mounted ? (
         <SceneIdProvider sceneId={sceneId}>
-          {children}
+          <SlotCapabilityProvider capabilities={resolvedCapabilities}>
+            {children}
+          </SlotCapabilityProvider>
         </SceneIdProvider>
       ) : null}
     </group>
@@ -1027,7 +1059,10 @@ export function WorldStageCanvas({
         {scenes.map((scene) => (
           <group key={scene.sceneId}>
             <StageSceneAppearance scene={scene} />
-            <StageSceneSlot sceneId={scene.sceneId}>
+            <StageSceneSlot
+              sceneId={scene.sceneId}
+              capabilities={scene.capabilities}
+            >
               {scene.content}
             </StageSceneSlot>
           </group>

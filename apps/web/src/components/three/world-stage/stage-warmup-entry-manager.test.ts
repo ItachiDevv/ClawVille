@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import {
-  resetCoveWarmupEntriesForTests,
-  waitForCoveCompile,
-  warmCoveRendererForGeneration,
-} from './cove-warmup-entry-manager';
+  resetStageWarmupEntriesForTests,
+  waitForStageSlotCompile,
+  warmStageSlotRenderer,
+} from './stage-warmup-entry-manager';
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -16,16 +16,17 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
-  resetCoveWarmupEntriesForTests();
+  resetStageWarmupEntriesForTests();
 });
 
-describe('cove compile entry manager', () => {
+describe('stage slot compile entry manager', () => {
   test('late resolve leaves a timed-out renderer tombstoned and bypasses later generations', async () => {
     const gl = {};
     const compile = deferred<void>();
     let compileCalls = 0;
     expect(
-      await waitForCoveCompile(
+      await waitForStageSlotCompile(
+        'cove',
         gl,
         () => {
           compileCalls += 1;
@@ -38,7 +39,8 @@ describe('cove compile entry manager', () => {
     await compile.promise;
 
     expect(
-      await waitForCoveCompile(
+      await waitForStageSlotCompile(
+        'cove',
         gl,
         () => {
           compileCalls += 1;
@@ -54,12 +56,13 @@ describe('cove compile entry manager', () => {
     const gl = {};
     const compile = deferred<void>();
     expect(
-      await waitForCoveCompile(gl, () => compile.promise, 1),
+      await waitForStageSlotCompile('cove', gl, () => compile.promise, 1),
     ).toEqual({ kind: 'timed-out' });
     compile.reject(new Error('late rejection'));
     await compile.promise.catch(() => undefined);
     expect(
-      await waitForCoveCompile(
+      await waitForStageSlotCompile(
+        'cove',
         gl,
         () => Promise.reject(new Error('must not run')),
         1,
@@ -71,7 +74,8 @@ describe('cove compile entry manager', () => {
     const gl = {};
     let compileCalls = 0;
     const never = new Promise<void>(() => {});
-    await waitForCoveCompile(
+    await waitForStageSlotCompile(
+      'cove',
       gl,
       () => {
         compileCalls += 1;
@@ -80,7 +84,8 @@ describe('cove compile entry manager', () => {
       1,
     );
     expect(
-      await waitForCoveCompile(
+      await waitForStageSlotCompile(
+        'cove',
         gl,
         () => {
           compileCalls += 1;
@@ -96,7 +101,8 @@ describe('cove compile entry manager', () => {
     const compile = deferred<void>();
     let current = true;
     let directWarmCalls = 0;
-    const warming = warmCoveRendererForGeneration({
+    const warming = warmStageSlotRenderer({
+      slotId: 'cove',
       gl: {},
       warmedRenderer: null,
       compile: () => compile.promise,
@@ -114,14 +120,16 @@ describe('cove compile entry manager', () => {
   test('renderer replacement clears the prior tombstone', async () => {
     const firstRenderer = {};
     const secondRenderer = {};
-    await waitForCoveCompile(
+    await waitForStageSlotCompile(
+      'cove',
       firstRenderer,
       () => new Promise<void>(() => {}),
       1,
     );
     let replacementCompileCalls = 0;
     expect(
-      await waitForCoveCompile(
+      await waitForStageSlotCompile(
+        'cove',
         secondRenderer,
         () => {
           replacementCompileCalls += 1;
@@ -131,6 +139,74 @@ describe('cove compile entry manager', () => {
       ),
     ).toEqual({ kind: 'settled' });
     expect(replacementCompileCalls).toBe(1);
+  });
+
+  test('two slot ids on the same renderer keep independent compile entries', async () => {
+    const gl = {};
+    const coveCompile = deferred<void>();
+    let kelpCompileCalls = 0;
+    const coveWait = waitForStageSlotCompile(
+      'cove',
+      gl,
+      () => coveCompile.promise,
+      50,
+    );
+    expect(
+      await waitForStageSlotCompile(
+        'kelp',
+        gl,
+        async () => {
+          kelpCompileCalls += 1;
+        },
+        50,
+      ),
+    ).toEqual({ kind: 'settled' });
+    coveCompile.resolve();
+    expect(await coveWait).toEqual({ kind: 'settled' });
+    expect(kelpCompileCalls).toBe(1);
+  });
+
+  test('a timed-out slot entry does not tombstone another slot', async () => {
+    const gl = {};
+    await waitForStageSlotCompile(
+      'cove',
+      gl,
+      () => new Promise<void>(() => {}),
+      1,
+    );
+    let kelpCompileCalls = 0;
+    expect(
+      await waitForStageSlotCompile(
+        'kelp',
+        gl,
+        async () => {
+          kelpCompileCalls += 1;
+        },
+        20,
+      ),
+    ).toEqual({ kind: 'settled' });
+    expect(kelpCompileCalls).toBe(1);
+  });
+
+  test('settling one slot does not clear another slot tombstone', async () => {
+    const gl = {};
+    await waitForStageSlotCompile(
+      'cove',
+      gl,
+      () => new Promise<void>(() => {}),
+      1,
+    );
+    await waitForStageSlotCompile('kelp', gl, async () => {}, 20);
+    expect(
+      await waitForStageSlotCompile(
+        'cove',
+        gl,
+        async () => {
+          throw new Error('must not run');
+        },
+        20,
+      ),
+    ).toEqual({ kind: 'bypassed' });
   });
 });
 
@@ -142,7 +218,8 @@ describe('StageHostedCoveScene renderer-scoped warmup seam', () => {
     let compileCalls = 0;
     let directWarmCalls = 0;
     const warm = async (gl: unknown) => {
-      const result = await warmCoveRendererForGeneration({
+      const result = await warmStageSlotRenderer({
+        slotId: 'cove',
         gl,
         warmedRenderer,
         compile: async () => {

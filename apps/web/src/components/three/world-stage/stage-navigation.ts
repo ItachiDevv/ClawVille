@@ -1,9 +1,16 @@
 'use client';
 
 export interface WorldStageNavigationRequest {
-  to: '/game' | '/cove';
+  to: '/game' | '/cove' | '/kelp';
   onMidway?: () => void;
   onExpired?: () => void;
+}
+
+export interface WorldStageNavigationSnapshot {
+  readonly mounted: boolean;
+  readonly handlerInstalled: boolean;
+  readonly bufferedTo: '/game' | '/cove' | '/kelp' | null;
+  readonly bufferedExpiresAt: number | null;
 }
 
 type WorldStageNavigationHandler = (
@@ -78,6 +85,19 @@ export function markWorldStageMounted(): void {
 
 export function markWorldStageUnmounted(): void {
   worldStageMounted = false;
+}
+
+export function isWorldStageMounted(): boolean {
+  return worldStageMounted;
+}
+
+export function readWorldStageNavigationSnapshot(): WorldStageNavigationSnapshot {
+  return {
+    mounted: worldStageMounted,
+    handlerInstalled: navigationHandler !== null,
+    bufferedTo: bufferedNavigation?.request.to ?? null,
+    bufferedExpiresAt: bufferedNavigation?.expiresAt ?? null,
+  };
 }
 
 export function advanceWorldStageRoute(
