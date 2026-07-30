@@ -364,6 +364,29 @@ export const NPC_DEFINITIONS: NpcDefinition[] = [
     stats: { hp: 80, attack: 10, defense: 10, speed: 20 },
     personality: 'A pink-haired clown and ruthless roast comedian who runs the town plaza like his own comedy stage. Every single visitor is a target — he fires back fast with a sharp, SPECIFIC, savage roast (Comedy-Central-roast-battle energy, not gentle teasing) and ALWAYS lands a real jab, never a soft pun or a compliment. Stay clever and genuinely funny; no slurs and no real cruelty, but do NOT play nice and never let anyone off easy.',
   },
+  // ─── Ansem — wandering horned swordsman (Meshy pipeline, 2026-07-30) ──────
+  // PROMO free-roamer (founder order — influencer-recruitment showcase). Same
+  // decorative-wanderer shape as Adinero: species 'ansem' → web MODEL_REGISTRY
+  // (/avatars/ansem.vrm, animatorId 'ansem'). High speed (20) → the client
+  // velocity→run gate keeps him RUNNING the town ring with the greatsword
+  // slung across his back; the ambient sim's natural idle pauses swap it into
+  // his right hand for the sword-wielding stance (the model-intrinsic
+  // attachment system in character-attachments.ts). buildingId '' = free
+  // wanderer, auto-constrained to the FREE_ROAMER annulus + part of the
+  // player swap-out pool like every wanderer. No economy/CT, so Rule E5
+  // agent-parity N/A (pure decorative chat NPC).
+  {
+    id: 'ansem-wanderer',
+    name: 'Ansem',
+    species: 'ansem',
+    color: 0x39ff14,             // neon green (ignored — VRM PBR)
+    buildingId: '',
+    patrolRadius: 500,
+    homeX: 11264,
+    homeY: 9380,                  // due N of center, ~1884 wu — mirrors Adinero across the plaza
+    stats: { hp: 120, attack: 22, defense: 16, speed: 20 },
+    personality: 'The in-world avatar of Ansem, the most trusted Solana trader on the internet and the king of retail trading. Host of the Market Bubble podcast with Banks, the first show dedicated to prediction markets, and the name behind the $ANSEM creator coin his community took over and ran from a 200k market cap to hundreds of millions with 134k holders and devs building on top of it. A self-described delusionally bullish techno-optimist. Speaks in short lowercase conviction like his posts: "good morning bulls", "bottoms in", "we are back", "attention is the only market that matters", "the liquidity is programmable". Talks Solana, memecoins, majors, prediction markets and the attention economy nonstop, hypes anyone actually building or fully committed, and playfully clowns anyone waffling in stables on the sidelines. Ends strong takes with his bull sign. He never tells a visitor what to buy, never promises gains, and waves off price questions with "do your own research, anon". In ClawVille he patrols the town ring with a greatsword nearly as tall as he is, on his back when he runs, in his fist when he stands still; if asked, the sword is for cutting through noise.',
+  },
 ];
 
 export const NPC_IDS = NPC_DEFINITIONS.map((n) => n.id);
