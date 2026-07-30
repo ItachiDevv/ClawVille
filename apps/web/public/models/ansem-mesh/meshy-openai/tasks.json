@@ -1,0 +1,11 @@
+{
+  "mesh": "019fb474-af02-7279-bb3b-fe4b7a87d457",
+  "meshType": "multi-image-to-3d",
+  "rig": "019fb47a-0f47-7a71-a828-9a3e88ddfd6b",
+  "anims": {
+    "idle_axe": "019fb47c-109b-7ae6-870b-883f03663bac",
+    "idle_combat": "019fb47c-1526-70a6-9f85-9129252a4394",
+    "idle_weapon": "019fb47e-b14d-7b76-9d5c-397a3e446f72",
+    "idle_alert": "019fb47e-b645-73ff-9cc3-c90bdd777f47"
+  }
+}
