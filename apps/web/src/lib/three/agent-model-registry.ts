@@ -201,10 +201,14 @@ export const MODEL_REGISTRY = {
 
   // Ansem — EXCLUSIVE avatar, bespoke Meshy VRM (2026-07-30). Deliberately
   // absent from shared AGENT_MODELS so the API rejects self-assignment; grant
-  // manually via `UPDATE avatars SET model_key='ansem'`. Brand-new asset URL,
-  // so no cache-busting query is needed. animatorId 'ansem' owns the native
-  // idle override, position-strip guard, and model-intrinsic sword attachment.
-  ansem:        { path: '/avatars/ansem.vrm',                  scale: 13, label: 'Ansem',        category: 'hatcher', avatar_type: 'vrm', animatorId: 'ansem',         faceYaw: Math.PI, pickerHidden: true, preview: '/models/ansem-turnaround/openai/front.png' },
+  // manually via `UPDATE avatars SET model_key='ansem'`. animatorId 'ansem'
+  // owns the native idle override, position-strip guard, and model-intrinsic
+  // sword attachment. ?v=1 (2026-07-30): during the prod api→web flip gap a
+  // probe hit the bare URL before the web container served it — Cloudflare
+  // edge-cached the 404 (7d TTL, no purge scope on our token), so the query
+  // bump is the only invalidator. The kill-the-build cache-bust rule now
+  // applies to this URL forever.
+  ansem:        { path: '/avatars/ansem.vrm?v=1',              scale: 13, label: 'Ansem',        category: 'hatcher', avatar_type: 'vrm', animatorId: 'ansem',         faceYaw: Math.PI, pickerHidden: true, preview: '/models/ansem-turnaround/openai/front.png' },
 
   // ── Adinero — wandering NPC clown comedian (Meshy pipeline 2026-06-19) ──
   // NPC-ONLY decorative wanderer (NOT a player/Hatcher avatar). Same OpenAI→Meshy-6
