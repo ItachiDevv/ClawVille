@@ -55,7 +55,7 @@ const CHARACTER_META: Record<Character, { path: string; animatorId: string }> = 
   // ?v=2 — arms-rest-pose T-pose fix (fix-rig-tpose.mjs) re-baked the same path.
   biggie: { path: '/avatars/biggie.vrm?v=2',        animatorId: 'biggie' },
   // Ansem — exclusive Meshy VRM with canonicalized native idle + intrinsic sword.
-  ansem:  { path: '/avatars/ansem.vrm',             animatorId: 'ansem' },
+  ansem:  { path: '/avatars/ansem.vrm?v=1',         animatorId: 'ansem' },
 };
 
 function HermesAvatar({ character, mode }: { character: Character; mode: Mode }) {
