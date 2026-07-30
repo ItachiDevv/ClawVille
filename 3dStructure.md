@@ -1,5 +1,7 @@
 # ClawVille — 3D Structure
 
+**Last edit / Last Audited:** 2026-07-30 (**Land proximity tracker inventory.**) `World3DCanvas` now mounts a headless `LandProximityTracker` beside `MinimapPositionTracker`. It samples the active player, possessed NPC, or confirmed autonomous body at 5 Hz and writes only the containing parcel code after explicit map-pixel to centered-world conversion. **Drift note:** zero geometry, zero materials, zero draw calls, and the per-parcel sweep performs zero allocations; no camera, collider, scene geometry, shader, or world-stream change.
+
 **Last edit / Last Audited:** 2026-07-28 (**Legacy `/arena` spectator page RETIRED — founder order.**) The `/arena` route (free-camera town spectator, "ClawVille Agent Arena"), its `/arena/openclaw-override` + `/arena/openclaw-avatar` legacy gateway-override demo pages, and their exclusive components (`Arena3DCanvas.tsx`, `arena-hud.tsx`, pixi `ArenaCanvas.tsx`) are deleted. The `arena-*`-named world renderer files (`arena-buildings.tsx`, `arena-terrain.tsx`, `arena-npcs.tsx`, etc.) are UNAFFECTED — that legacy naming refers to the main world scene, which they still render. `World3DCanvas`'s remaining route-owned consumers are `/perf` pages only. Landing-page harness cards no longer link the retired override flow or the retired Milady npm sideload; both point at the universal one-step magic link (`/api/agent/connect`). No geometry, collider, render-path, or economy change. Arena is DROPPED from the persistent-stage migration queue (was P2); next migrations are kelp (P3) and reef (P4).
 
 **Prior Last edit / Last Audited:** 2026-07-27 (**Gateway approach no longer overrides walking activity.**) The three gateway destination actions now stamp only the serialized activity-emoji field and leave the simulated body in the walking state, so the 5 Hz movement gate no longer skips it for the 8 to 20 second activity window. Arrivals at the two gateway destinations keep their agent-owned route marker across the arrival path reset so a parked agent body is not re-planned by the ambient wander; teaching-building and REST-move arrivals keep their existing release behavior. The emoji field is not rendered by the current client. No client geometry, collider shape, render path, SSE wire shape, NPC speed, or Cove settlement change.
@@ -531,6 +533,13 @@ Three controllers, mutually exclusive except arrow rotation:
 | `FPSFollowCamera` | `controlMode === 'player' \| 'autonomous'` | `'player'`: tight 3rd-person follow on the LOCAL avatar's position via `avatarPositionRef`. `'autonomous'` (§B.1b, 2026-07-08): follows the server-streamed `ocb-` agent body instead — looks it up in `useNpcStore` by `autonomousBodyId` (set from the `bodyId` `POST /api/world/autonomy` returns on activation), same lookup-by-id shape as the `npc`-possession branch; holds position (no-op that frame) if the id isn't confirmed/streamed in yet, rather than snapping to the map origin. `avatarPositionRef` is FROZEN in this mode because `PlayerAvatar` is unmounted (see the player-avatar render-gate note directly below). |
 | `<OrbitControls>` | always mounted | Mouse drag rotates orbit; scroll zooms. minDistance differs per mode. |
 | `ArrowKeyRotationController` | always mounted | ↑↓ adjust polar, ←→ adjust azimuth at constant speed. Works in every mode. |
+
+Headless `World3DCanvas` tracker inventory:
+
+| Component | Cadence | Contract |
+|---|---|---|
+| `MinimapPositionTracker` | 5 Hz | Writes the current follow point for the minimap from the active control-mode source. |
+| `LandProximityTracker` | 5 Hz | Converts the active body's map-pixel position to centered-world coordinates and writes the containing parcel code. Returns `null`; zero geometry, zero materials, zero draw calls, and no allocations in the indexed per-parcel sweep. |
 
 **Canvas initial camera:** `fov=50, near=1, far=10000`, `position = mode==='game' ? [0, 600, 1300] : [0, 560, 1000]`. `camera.far` was tightened back to 10000 on 2026-05-22 to match the current fog far plane and clip the far half of the map. Invariant: `fog.far` MUST equal `camera.far`.
 

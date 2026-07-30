@@ -21,6 +21,7 @@ import { GuestAvatarBootstrap } from '@/components/game/guest-avatar-bootstrap';
 import Minimap from '@/components/game/minimap';
 import AvatarChatBar from '@/components/game/avatar-chat-bar';
 import TalkToCharacterBar from '@/components/game/talk-to-character-bar';
+import LandOptionsPill from '@/components/game/land-options-pill';
 import ChargeBar from '@/components/game/charge-bar';
 import ShopOverlay from '@/components/game/shop-overlay';
 import InventoryModal from '@/components/game/inventory-modal';
@@ -653,7 +654,8 @@ export default function GamePage() {
 
       {/* World UI that's useful for ALL avatar-bearing visitors — including
           guests minted by the auto-create flow. Shows building labels, the
-          ? help button, the global activity feed, AND the chat panel so
+          ? help button, the land proximity pill, the global activity feed,
+          AND the chat panel so
           NPC-mode guests can talk to building teachers (brand priority #2:
           open agent onboarding — no human account required). ChatPanel
           gates internally on chatOpen / guideChatOpen so it stays hidden
@@ -662,6 +664,7 @@ export default function GamePage() {
       {hasAvatar && (
         <>
           <LocationHUD />
+          <LandOptionsPill />
           <ActivityFeed />
           <ChatPanel />
           {/* AvatarChatBar lives only under the agent-connected branch below.
@@ -681,8 +684,9 @@ export default function GamePage() {
       )}
 
       {/* NPC-mode chat with a non-building wandering character. Self-gates on
-          `controlMode === 'npc' && !chatOpen && !nearLocation` — at a building
-          the proximity prompt → ChatPanel modal owns the chat (2026-06-20). */}
+          `controlMode === 'npc' && !chatOpen && !nearLocation && !nearParcelCode`;
+          at a building the proximity prompt → ChatPanel modal owns the chat,
+          and on land the proximity pill owns the bottom slot. */}
       <TalkToCharacterBar />
 
       {/* Player-mode (agent-connected) UI — hidden in NPC/Explore mode.
