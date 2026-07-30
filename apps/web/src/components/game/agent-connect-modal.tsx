@@ -11,10 +11,11 @@ import { BUILDING_OPENCLAW_THEMES } from '@clawville/shared';
 import { AgentConnectInstructions } from '@/components/agent-connect-instructions';
 import { InGameLoginForm } from '@/components/game/in-game-login-form';
 import { resolvePublicEnterDestination } from '@/lib/public-enter-destination';
+import { isBoundAgentSessionMode } from '@/lib/agent-session-selectors';
 
 export default function AgentConnectModal() {
   const router = useRouter();
-  const { agentConnectModalOpen, agentConnectModalIntent, setAgentConnectModalOpen, agentConnected, agentSessionId, setAgentConnection, addToast, setSkillBuilderOpen } = useGameStore();
+  const { agentConnectModalOpen, agentConnectModalIntent, setAgentConnectModalOpen, agentSessionId, setAgentConnection, addToast, setSkillBuilderOpen } = useGameStore();
   const { data: avatar } = useAvatar();
   const {
     data: authData,
@@ -42,8 +43,11 @@ export default function AgentConnectModal() {
     retry: false,
   });
   const sessionMode = (agentSession as { mode?: string } | undefined)?.mode;
+  const isBoundSession = isBoundAgentSessionMode(sessionMode);
   const isHosted = sessionMode === 'hosted';
   const isExternalActive = sessionMode === 'external-active';
+  const isExternalIdle = sessionMode === 'external-idle';
+  const isExternalExpired = sessionMode === 'external-expired';
 
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -341,12 +345,18 @@ export default function AgentConnectModal() {
           <div className="flex items-start justify-between gap-4">
             <div>
               <h2 className="text-lg font-bold text-white">
-                {activeSurface === 'login' ? 'Log In' : 'Connect Agent'}
+                {activeSurface === 'login'
+                  ? 'Log In'
+                  : isBoundSession
+                    ? 'Manage Agent'
+                    : 'Connect Agent'}
               </h2>
               <p className="mt-1 text-sm text-white/50">
                 {activeSurface === 'login'
                   ? 'Welcome back — sign in without leaving the world.'
-                  : 'Connect your AI agent to explore ClawVille and learn skills from 10 buildings.'}
+                  : isBoundSession
+                    ? 'Manage your agent connection and exported knowledge.'
+                    : 'Connect your AI agent to explore ClawVille and learn skills from 10 buildings.'}
               </p>
             </div>
             <button
@@ -388,7 +398,7 @@ export default function AgentConnectModal() {
                 </button>
               )}
             </div>
-          ) : agentConnected && isAuthenticatedNonGuest ? (
+          ) : isBoundSession && isAuthenticatedNonGuest ? (
             /* ─── Connected state ─── */
             <div className="space-y-3">
               <div className="flex items-center gap-2">
@@ -396,11 +406,13 @@ export default function AgentConnectModal() {
                 <span className="text-green-400 font-bold text-sm">Agent Connected</span>
               </div>
               <p className="text-white/50 text-xs">
-                Your agent is out living in ClawVille: exploring the world, learning from teachers, playing at the Cove card tables, and earning vCLAW.
+                Your agent is connected to this account. Runtime availability does not change that binding.
               </p>
-              <p className="text-white/30 text-xs font-mono">
-                Session: {agentSessionId}
-              </p>
+              {agentSessionId && (
+                <p className="text-white/30 text-xs font-mono">
+                  Session: {agentSessionId}
+                </p>
+              )}
 
               {exportResult && (
                 <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-lg px-3 py-2 space-y-2">
@@ -420,6 +432,16 @@ export default function AgentConnectModal() {
               {isExternalActive && (agentSession as any)?.lastSeenAt && (
                 <p className="text-cyan-300/60 text-[11px] font-mono">
                   Last action: {new Date((agentSession as any).lastSeenAt).toLocaleTimeString()} · auto-grays after 5 min idle
+                </p>
+              )}
+              {isExternalIdle && (
+                <p className="text-cyan-300/60 text-[11px]">
+                  External runtime is idle. The agent remains connected to your account.
+                </p>
+              )}
+              {isExternalExpired && (
+                <p className="text-cyan-300/60 text-[11px]">
+                  External session expired. The agent remains connected to your account.
                 </p>
               )}
               {isHosted && (

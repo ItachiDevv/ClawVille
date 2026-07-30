@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  ACTIVE_IDLE_KEEPALIVE_INTERVAL_MS,
   REMOTE_PRESENCE_INTERVAL_MS,
   createWorldStreamMachineState,
   decide,
@@ -19,6 +20,8 @@ function tick(
     canUpload: true,
     hasFrozenPosition: false,
     recoveryInFlight: false,
+    poseChanged: false,
+    activeActivity: 'idle',
     ...overrides,
   });
 }
@@ -83,6 +86,132 @@ describe('world stream machine', () => {
       'RESET_ACTIVE_POSITION',
       'UPLOAD_ACTIVE',
     ]);
+  });
+
+  test('still active presence is silent until each idle keepalive boundary', () => {
+    let state: WorldStreamMachineState = {
+      ...createWorldStreamMachineState(),
+      everActive: true,
+      previousPolicy: 'active',
+    };
+
+    const first = tick(state, {
+      policy: 'active',
+      hasSession: true,
+      now: 0,
+    });
+    expect(first.actions).toEqual([]);
+
+    const early = tick(first.nextState, {
+      policy: 'active',
+      hasSession: true,
+      now: ACTIVE_IDLE_KEEPALIVE_INTERVAL_MS - 1,
+    });
+    expect(early.actions).toEqual([]);
+
+    const due = tick(early.nextState, {
+      policy: 'active',
+      hasSession: true,
+      now: ACTIVE_IDLE_KEEPALIVE_INTERVAL_MS,
+    });
+    expect(due.actions).toEqual(['UPLOAD_ACTIVE']);
+
+    const nextEarly = tick(due.nextState, {
+      policy: 'active',
+      hasSession: true,
+      now: ACTIVE_IDLE_KEEPALIVE_INTERVAL_MS * 2 - 1,
+    });
+    expect(nextEarly.actions).toEqual([]);
+
+    const nextDue = tick(nextEarly.nextState, {
+      policy: 'active',
+      hasSession: true,
+      now: ACTIVE_IDLE_KEEPALIVE_INTERVAL_MS * 2,
+    });
+    expect(nextDue.actions).toEqual(['UPLOAD_ACTIVE']);
+  });
+
+  test('movement emits on the first changed tick and each sustained changed tick', () => {
+    let state: WorldStreamMachineState = {
+      ...createWorldStreamMachineState(),
+      everActive: true,
+      previousPolicy: 'active',
+    };
+
+    const first = tick(state, {
+      policy: 'active',
+      hasSession: true,
+      poseChanged: true,
+      activeActivity: 'walking',
+    });
+    expect(first.actions).toEqual(['UPLOAD_ACTIVE']);
+
+    const sustained = tick(first.nextState, {
+      policy: 'active',
+      hasSession: true,
+      now: 200,
+      poseChanged: true,
+      activeActivity: 'walking',
+    });
+    expect(sustained.actions).toEqual(['UPLOAD_ACTIVE']);
+  });
+
+  test('movement stop emits one terminal idle sample then stays silent', () => {
+    const moving = tick(
+      {
+        ...createWorldStreamMachineState(),
+        everActive: true,
+        previousPolicy: 'active',
+      },
+      {
+        policy: 'active',
+        hasSession: true,
+        poseChanged: true,
+        activeActivity: 'walking',
+      },
+    );
+
+    const stopped = tick(moving.nextState, {
+      policy: 'active',
+      hasSession: true,
+      now: 200,
+      activeActivity: 'idle',
+    });
+    expect(stopped.actions).toEqual(['UPLOAD_ACTIVE']);
+
+    const stillStopped = tick(stopped.nextState, {
+      policy: 'active',
+      hasSession: true,
+      now: 400,
+      activeActivity: 'idle',
+    });
+    expect(stillStopped.actions).toEqual([]);
+  });
+
+  test('heading-only pose changes and activity transitions emit', () => {
+    const headingOnly = tick(
+      {
+        ...createWorldStreamMachineState(),
+        everActive: true,
+        previousPolicy: 'active',
+      },
+      {
+        policy: 'active',
+        hasSession: true,
+        poseChanged: true,
+        activeActivity: 'idle',
+      },
+    );
+    expect(headingOnly.actions).toEqual(['UPLOAD_ACTIVE']);
+
+    const activityTransition = tick(headingOnly.nextState, {
+      policy: 'active',
+      hasSession: true,
+      now: 200,
+      poseChanged: false,
+      activeActivity: 'walking',
+    });
+    expect(activityTransition.actions).toEqual(['UPLOAD_ACTIVE']);
   });
 
   test('409 recovery is spaced, capped, and suspends uploads', () => {
