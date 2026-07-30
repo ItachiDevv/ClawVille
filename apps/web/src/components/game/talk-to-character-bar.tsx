@@ -32,6 +32,7 @@ export default function TalkToCharacterBar() {
   const controlMode = useGameStore((s) => s.controlMode);
   const nearCharacter = useGameStore((s) => s.nearCharacter);
   const nearLocation = useGameStore((s) => s.nearLocation); // building in range
+  const nearParcelCode = useGameStore((s) => s.nearParcelCode);
   const chatOpen = useGameStore((s) => s.chatOpen); // location chat (full panel) open
 
   const [expanded, setExpanded] = useState(false);
@@ -50,12 +51,13 @@ export default function TalkToCharacterBar() {
     setHasUnread(false);
   }, [nearCharacter]);
 
-  // Don't render outside NPC mode, when the full ChatPanel is open, or when at
-  // a BUILDING (`nearLocation` set). Knowledge-building chat is owned by the
+  // Don't render outside NPC mode, when the full ChatPanel is open, at a
+  // BUILDING (`nearLocation` set), or on a parcel (`nearParcelCode` set).
+  // Knowledge-building chat is owned by the
   // proximity prompt → ChatPanel modal (full ElizaOS resident chat + skill-claim,
-  // 2026-06-20); this bar exists only for any non-building wandering-NPC chat,
-  // so it must not duplicate the building prompt (founder report).
-  if (controlMode !== 'npc' || chatOpen || nearLocation) return null;
+  // 2026-06-20); the parcel pill owns the same bottom slot on land. This bar
+  // exists only for any non-building, non-parcel wandering-NPC chat.
+  if (controlMode !== 'npc' || chatOpen || nearLocation || nearParcelCode) return null;
 
   const characterName = nearCharacter;
   const enabled = !!characterName;

@@ -1,5 +1,7 @@
 # ClawVille — Game Features
 
+**Last Audited:** 2026-07-30 (**In-world land proximity options pill.**) An avatar-bearing player, autonomous body, or guest-controlled NPC standing inside a rendered parcel footprint now gets a read-only amber options pill that routes to the existing Land Office. Building prompts take precedence over the parcel pill, which takes precedence over the NPC talk prompt. The pill refuses to render before an explicit parcel-status hydration and suppresses reserved or retired parcels. **Drift note:** client proximity and routing UI only; no land economy write, API, schema, agent action, protocol, geometry, material, or draw-call change. **PARITY:** the human/guest affordance routes into the existing modal; connected and hosted agents retain the existing land REST surface unchanged.
+
 **Last Audited:** 2026-07-29 (**One verified settlement wallet per avatar.**) Humans, owner-proven connected agents, and Hatcher agents now provision and advertise the canonical avatar settlement wallet used by every settlement path. Connect exposes the same ready address as top-level `walletAddress` and `wallet.address`; Hatcher exposes it as `walletAddress`. When canonical custody is absent, unverified, invalid, or mirror-conflicted, the response omits fundable fields and returns `walletPending:true`. Existing bot wallet mirrors and retained agent wallet rows are not changed. A controlled dry-run/apply backfill validates and promotes avatar wallets with no non-null mirror repointing. The agent manual is `PROTOCOL_VERSION 41`, and deployment restart re-injects it into hosted player runtimes. **PARITY:** human avatar creation, connected-agent onboarding, and Hatcher registration share the same v2 provisioner and resolver; guests and unproven identities receive no wallet.
 
 **Last Audited:** 2026-07-28 (**Smoother character errands and ambient planning.**) A character can now keep heading where it was going through a passing crowd instead of forgetting its errand, and only gives up and chooses again if it is genuinely stuck for about two seconds. Characters that have already arrived and are waiting at a gateway stay put. Ambient wanderers now take turns planning one route at a time so the world stays responsive. **Drift note:** server-side movement and liveliness only; no schema, world-stream shape, action list, settlement, or `PROTOCOL_VERSION 40` change. **PARITY:** human movement is unchanged; route protection and ambient pacing apply consistently to the NPC and agent bodies handled by the server simulation.
@@ -2121,6 +2123,33 @@ A SECOND poker product alongside the MTT tournament (§ARCHITECTURE `cove-poker-
 
 Owned land on the shared world. Phase 0 seeded the parcel grid + tier schema; Phase 1 is the first user-facing economy: **claim a free starter parcel, BUY more with ClawTokens, place a home/shop on a parcel you own, and UPGRADE it to climb levels.** Backend: `apps/api/src/routes/land.ts` (`/api/land/*`). Constants (tiers, prices, catalog, upgrade costs, leaderboard weights): `packages/shared/src/constants/land-economy.ts` + `land-tiers.ts`. Full route/response contract: `ARCHITECTURE.md §2` (`land.ts` row) + the FROZEN CONTRACT block at the top of `land.ts`.
 
+### 18b.0. In-world land proximity options pill (2026-07-30)
+
+`LandProximityTracker` samples the active walking body at 5 Hz, converts map-pixel coordinates to centered world coordinates, and uses the shared `LAND_PARCELS` square footprints to set `nearParcelCode`. Player, autonomous, and avatar-bearing guest NPC modes are covered. Explore mode and anonymous visitors without an avatar have no walking body and show no pill. The DOM `LandOptionsPill` is read-only: it routes into the existing Land Office and creates no economy write.
+
+Bottom-slot precedence is **building > parcel > NPC talk prompt**:
+
+| `nearLocation` | `nearParcelCode` | LocationHUD | LandOptionsPill | TalkToCharacterBar (NPC mode) |
+|---|---|---|---|---|
+| set | set | renders | null | null |
+| set | null | renders | null | null |
+| null | set | null | renders | null |
+| null | null | null | null | renders |
+
+All three surfaces yield to an open chat. The parcel pill also yields while the Land Office is open. Its rendered copy is:
+
+| Store state | Tier | Guest | Title | Sub line | Action |
+|---|---|---|---|---|---|
+| `available` | starter | no | `Parcel <code> · Available` | `Refundable vCLAW deposit` | `View in Land Office` |
+| `available` | c / b / a / founder | no | `Parcel <code> · Available` | `Hold $CLAWVILLE to keep` | `View in Land Office` |
+| `available` | any | yes | `Parcel <code> · Available` | `Preview the Land Office` | `View in Land Office` |
+| `owned`, current avatar | any | n/a | `Your parcel <code>` | `Manage your land` | `Manage` |
+| `owned`, another avatar | any | any | `Claimed parcel <code>` | `Someone already holds this lot` | none |
+| `reserved` or `retired` | any | any | nothing rendered | | |
+| parcel code absent from the hydrated map | any | any | nothing rendered | | |
+
+Actionable variants are buttons; another avatar's claimed parcel is an informational `div`. A guest action opens the guest Land Office sandbox and does not promise that the approached lot will be awarded. Explicit hydration is mandatory: a missing status, a failed fetch, or the pre-hydration window renders nothing instead of inheriting the land store's unsafe available default.
+
 ### 18b.a. Parcels — claim free + buy with CT + rent weekly
 
 - **Free starter (Slice A):** `POST /api/land/claim-starter` grants one starter-tier parcel, once per avatar (idempotent; a second call returns the existing one, `alreadyOwned:true`). No CT cost. Atomic `FOR UPDATE SKIP LOCKED` grant so two concurrent claims never double-grant; empty pool ⇒ 409 `no_starter_available`.
@@ -3345,6 +3374,33 @@ A SECOND poker product alongside the MTT tournament (§ARCHITECTURE `cove-poker-
 ## 18b. Land Economy — parcels, structures, upgrades (Phase 1, 2026-06-17)
 
 Owned land on the shared world. Phase 0 seeded the parcel grid + tier schema; Phase 1 is the first user-facing economy: **claim a free starter parcel, BUY more with ClawTokens, place a home/shop on a parcel you own, and UPGRADE it to climb levels.** Backend: `apps/api/src/routes/land.ts` (`/api/land/*`). Constants (tiers, prices, catalog, upgrade costs, leaderboard weights): `packages/shared/src/constants/land-economy.ts` + `land-tiers.ts`. Full route/response contract: `ARCHITECTURE.md §2` (`land.ts` row) + the FROZEN CONTRACT block at the top of `land.ts`.
+
+### 18b.0. In-world land proximity options pill (2026-07-30)
+
+`LandProximityTracker` samples the active walking body at 5 Hz, converts map-pixel coordinates to centered world coordinates, and uses the shared `LAND_PARCELS` square footprints to set `nearParcelCode`. Player, autonomous, and avatar-bearing guest NPC modes are covered. Explore mode and anonymous visitors without an avatar have no walking body and show no pill. The DOM `LandOptionsPill` is read-only: it routes into the existing Land Office and creates no economy write.
+
+Bottom-slot precedence is **building > parcel > NPC talk prompt**:
+
+| `nearLocation` | `nearParcelCode` | LocationHUD | LandOptionsPill | TalkToCharacterBar (NPC mode) |
+|---|---|---|---|---|
+| set | set | renders | null | null |
+| set | null | renders | null | null |
+| null | set | null | renders | null |
+| null | null | null | null | renders |
+
+All three surfaces yield to an open chat. The parcel pill also yields while the Land Office is open. Its rendered copy is:
+
+| Store state | Tier | Guest | Title | Sub line | Action |
+|---|---|---|---|---|---|
+| `available` | starter | no | `Parcel <code> · Available` | `Refundable vCLAW deposit` | `View in Land Office` |
+| `available` | c / b / a / founder | no | `Parcel <code> · Available` | `Hold $CLAWVILLE to keep` | `View in Land Office` |
+| `available` | any | yes | `Parcel <code> · Available` | `Preview the Land Office` | `View in Land Office` |
+| `owned`, current avatar | any | n/a | `Your parcel <code>` | `Manage your land` | `Manage` |
+| `owned`, another avatar | any | any | `Claimed parcel <code>` | `Someone already holds this lot` | none |
+| `reserved` or `retired` | any | any | nothing rendered | | |
+| parcel code absent from the hydrated map | any | any | nothing rendered | | |
+
+Actionable variants are buttons; another avatar's claimed parcel is an informational `div`. A guest action opens the guest Land Office sandbox and does not promise that the approached lot will be awarded. Explicit hydration is mandatory: a missing status, a failed fetch, or the pre-hydration window renders nothing instead of inheriting the land store's unsafe available default.
 
 ### 18b.a. Parcels — claim free + buy with CT + rent weekly
 
