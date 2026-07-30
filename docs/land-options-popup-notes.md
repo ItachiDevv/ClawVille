@@ -99,3 +99,23 @@ None. Every spec-stated file/line fact used by the implementation matched the li
 6. **Autonomous coverage waits for a confirmed `autonomousBodyId`.** Between the mode toggle and the first confirming SSE tick, the tracker keeps `nearParcelCode` null instead of guessing a body.
 7. **Pixi has no parcel proximity.** The Pixi path has no live mount site, and this slice deliberately leaves it unchanged.
 8. **Ownership is browser-session-scoped.** `useAvatar()` resolves through `/api/avatars/me`, so a raw agent-session-only client does not receive the "Your parcel" variant. This was accepted as out of scope.
+
+---
+
+## Browser verification record (orchestrator, 2026-07-30, local prod bundle :3005 → API :4001 → staging DB)
+
+Gate 7 walk-ons — VERIFIED live:
+- Available parcel (`parcel-starter-10`, warped via World Map fast travel as staging user LandTest1): pill fired "🏝️ Parcel parcel-starter-10 · Available / Refundable vCLAW deposit / VIEW IN LAND OFFICE" within a tick of arrival; amber border; positioned above the avatar chat bar.
+- Pill tap → Land Office opened on the For Sale tab. NOTE (pre-existing modal debt, NOT this slice): the focused parcel's card renders in the DOM but is NOT auto-scrolled into view (card top at y≈4632). Same behavior as the legacy 3D sign-click path (both call `openLandOffice(parcelCode)`); logged as follow-up copy/UX debt beside the modal's "For Sale" tab label.
+- Modal close → pill returned immediately (no blink; the deliberate non-clear in `openLandOffice` behaves as designed).
+- Owned-by-me (`parcel-c-00`, LandTest1's legacy-rented parcel): "🏝️ Your parcel parcel-c-00 / Manage your land / MANAGE" ✔
+- Owned-by-other (`parcel-starter-00`): "🏝️ Claimed parcel parcel-starter-00 / Someone already holds this lot", info-only, no button ✔
+- Boundary correctness: landing ~80 wu outside `parcel-c-00`'s footprint showed NO pill; crossing in showed it. Standing between parcels → nothing.
+- Mode transitions: toggling Controlled→Autonomous with the pill visible cleared it instantly; toggling back (respawn at town center) left no stale pill.
+- Console: no errors during the whole session (only the known world-stage warmup safety-fuse warning, unrelated).
+
+Gate 7 residuals (honest):
+- GUEST npc-mode walk-on NOT live-verified: guests cannot fast-travel ("Take control of your avatar to fast-travel") and footwork to the ring at guest walk speed is impractical in a session. The guest path differs only in the `useIsGuest()` copy branch + TalkToCharacterBar suppression (both code-reviewed; the talk bar was confirmed rendering in guest npc mode pre-parcel). Needs one real guest walk-on or a future dev teleport.
+- Building-precedence live overlap is geometrically unreachable (parcels never overlap building zones), so the `nearLocation` suppression could not be triggered live; verified in code (gate ladder order) instead.
+
+Gate 8 viewport sweep — NOT COMPLETABLE with this session's tooling: `resize_window` resizes the OS window but the profile runs ~70% browser zoom, so the CSS viewport never reaches phone widths, and no chrome-devtools `emulate` MCP was attached. Structural mitigations: the pill calls `useIsMobile()` itself and restates LocationHUD's exact mobile offset formula (character-identical, production-proven at these viewports). Safe-area math was ALWAYS un-provable in emulation (spec §8). NEEDS: founder real-device (iPad + phone) eyeball on a parcel.
