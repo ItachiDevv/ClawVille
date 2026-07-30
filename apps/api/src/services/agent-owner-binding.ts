@@ -74,6 +74,44 @@ export interface ConnectOwnerBindingPlan {
   ownershipChanged: boolean;
 }
 
+export type ConnectOwnerProofSource =
+  | 'connection-token'
+  | 'explicit-identity'
+  | 'milady-inferred'
+  | 'gateway-inferred'
+  | 'anonymous';
+
+export interface PersistedConnectOwnerProof {
+  ownerProven: boolean;
+  boundUserId: string | null;
+  ledgerCapable: boolean;
+}
+
+/**
+ * Wallet provisioning authorization is a persisted bind OUTPUT. Only an owned
+ * token or explicit secret identity can prove ownership, and only when the
+ * atomic write/readback reports that same live user id.
+ */
+export function resolvePersistedConnectOwnerProof(inputs: {
+  source: ConnectOwnerProofSource;
+  candidateUserId: string | null;
+  persistedUserId: string | null;
+  avatarId: string | null;
+}): PersistedConnectOwnerProof {
+  const credentialSource =
+    inputs.source === 'connection-token' || inputs.source === 'explicit-identity';
+  const ownerProven =
+    credentialSource
+    && inputs.candidateUserId !== null
+    && inputs.persistedUserId === inputs.candidateUserId;
+  const boundUserId = ownerProven ? inputs.persistedUserId : null;
+  return {
+    ownerProven,
+    boundUserId,
+    ledgerCapable: boundUserId !== null && inputs.avatarId !== null,
+  };
+}
+
 /**
  * Plan the owner write for `POST /api/agent/connect` without touching the DB.
  *

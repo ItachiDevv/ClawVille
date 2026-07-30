@@ -25,7 +25,7 @@ describe('open-agent onboarding manuals', () => {
     const manual = buildPlayManual(API_BASE);
     const protocolManual = buildProtocolManual(API_BASE);
 
-    expect(PROTOCOL_VERSION).toBe(40);
+    expect(PROTOCOL_VERSION).toBe(41);
     expect(manual).toContain(`POST ${API_BASE}/api/agent/connect`);
     expect(manual).toContain('"agentId": "your-stable-agent-id"');
     expect(manual).toContain('"identityType": "your-framework"');
@@ -35,6 +35,11 @@ describe('open-agent onboarding manuals', () => {
     expect(manual).toContain('`identityKey` is a private account credential');
     expect(manual).toContain('secretIncluded:false');
     expect(manual).toContain('clawville:identity:<userId>');
+    expect(protocolManual).toContain('top-level `walletAddress` always equals `wallet.address`');
+    expect(protocolManual).toContain('`walletPending:true`');
+    expect(protocolManual).not.toContain("agent's\ninternal x402/fee wallet");
+    expect(manual).toContain('"walletAddress": "avatar settlement Solana public address"');
+    expect(manual).toContain('"walletPending": false');
     expect(manual).toContain('X-Clawville-Agent-Session');
     expect(manual).toContain('not** an Authorization');
     expect(manual).toContain('/api/agent/:sessionId/events');
@@ -178,7 +183,7 @@ describe('open-agent onboarding manuals', () => {
       'custom remains non-restorable',
     ];
 
-    expect(PROTOCOL_VERSION).toBe(40);
+    expect(PROTOCOL_VERSION).toBe(41);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');
@@ -190,8 +195,11 @@ describe('open-agent onboarding manuals', () => {
       expect(manual).toContain('`wallet.secretKey` appears');
       expect(manual).toContain('relay it once to the human for their self-custody');
       expect(manual).toContain('backup; do not store it in agent config.');
-      expect(manual).toContain('Both secrets are returned once and are');
-      expect(manual).toContain('never repeated.');
+      expect(manual).toContain('The identity secret is returned once.');
+      expect(manual).toContain('The wallet secret is best-effort');
+      expect(manual).toContain('it may be absent even on first connect.');
+      expect(manual).toContain('top-level `walletAddress` always equals `wallet.address`');
+      expect(manual).toContain('`walletPending:true`');
       for (const phrase of removedMatrixPhrases) expect(manual).not.toContain(phrase);
     }
     expect(block.split(hatcherSentence)).toHaveLength(2);

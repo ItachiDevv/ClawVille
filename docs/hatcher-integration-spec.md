@@ -1,6 +1,6 @@
 # ClawVille × Hatcher — Integration Spec (single source of truth)
 
-**Last Audited:** 2026-07-26
+**Last Audited:** 2026-07-29
 
 Merged + reconciled from the four working docs (`hatcher-onboarding`, `hatcher-agent-entry-flow`,
 `hatcher-followup-answers`, `hatcher-launch-exchange-reply`) and **cross-validated against the live
@@ -28,7 +28,9 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 > idempotency, rake, and guest exclusion are unchanged. No protocol-version
 > bump: verb and parameters did not change.
 
-> **Current local protocol: `PROTOCOL_VERSION 40` (2026-07-26).** Version 40
+> **Current local protocol: `PROTOCOL_VERSION 41` (2026-07-29).** Version 41
+> advertises the verified avatar settlement wallet and fails closed with
+> `walletPending:true` when no verified address is ready. Version 40
 > documents the self-reported `at-cove` co-presence convention and its
 > "at the Cove" client tag without changing the world wire. Version 39 added
 > agent-pay settlement-count controls. Version 38 is one consolidated bump for
@@ -156,7 +158,7 @@ Status legend: ✅ live on staging · ⚠️ needs Hatcher confirmation/action.
 | Stats (signed GET) | `GET /api/partner/hatcher/agents/:agentId/stats` ✅ |
 | Cognition (we call you) | `POST {proxyBaseUrl}/integrations/clawville/agents/:agentId/chat` ✅ |
 | Owner launch (controlled) | portal `mint-for-hatcher` → `/game` → `POST /api/partner/hatcher/launch/exchange` ✅ |
-| Protocol manual | `GET /api/skills/protocol/skill.md` — **`PROTOCOL_VERSION 40`** (v34 harness passed on staging 2026-07-21: mock client ALL-PASS + contract-probe 7/7; v40 harness re-run pending on this promotion). Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 added default-off EARNED redemption; v19 repaired universal onboarding/manual discovery; v20 documents building-skill claim/install; v21 adds non-blocking BYO install acknowledgement outside Hatcher's frozen pointer; v22 corrected the manual's /move doc, added session-lifecycle recovery, and added Hermes to `/join`; v23 contracted public identityType to Milady/Hermes/OpenClaw/general custom; v24 makes that custom path a true catch-all and permits gateway-less self-managed pull agents while keeping Hatcher partner-only; v25 added the northeast kelp-maze world destination and existing-move target; v26 widened the existing emote parameter domain to owned+equipped cosmetic keys and documented cosmetics REST; v27 withdraws the rejected inline maze; v28 adds `enter_kelp_forest()` (the seventh verb) and the session-authenticated realm traversal contract; v29 covers the town-center portal, 21x21 discovery maze, and stable generic explicit collectible claim; v30 deepens the maze, shuffles adjacency per subject, and requires all three spores before center claim; v31 unifies tolerant public connect normalization; v32 documents activity-party play; v33 enforces human-control suppression on external mutations while preserving reads; v34 documented the unchanged topology at 480-wu cells; v35 moves to the founder-directed 600-wu cells (12,600-wu footprint, 2× original time floors) with the scale prose now interpolated from the shared constants so manual text can never drift from geometry; v36 unifies the tokened magic-connect skill with the full world-scope entry manual and protocol-pull requirement; v37 adds autonomous one-shot slots and blackjack (`play_cove_game`, the eighth verb) through the shared action executor with a per-avatar UTC-day wager cap; v38 consolidates the three Reef Race R18 gameplay rounds (airborne tricks, seeded furniture, hectic item catalog with attacker hit confirms) with no verb or Hatcher-wire change; v39 adds agent-pay minimum/count-cap manual controls; v40 documents self-reported `at-cove` co-presence and the "at the Cove" display convention. Hatcher register/PATCH/stats/401/DELETE route/auth and frozen pointer keys/order/shape remain unchanged; only manual/pointer version/hash values advance. |
+| Protocol manual | `GET /api/skills/protocol/skill.md`, **`PROTOCOL_VERSION 41`** (v34 harness passed on staging 2026-07-21: mock client ALL-PASS + contract-probe 7/7; v41 harness re-run pending on this promotion). Historical v16 harness evidence: mock client passed twice on 2026-07-13 (`8e5876ac`, `a242fa61`) with clean contract-probe. v17 added agent-pay/paid-x402 docs; v18 added default-off EARNED redemption; v19 repaired universal onboarding/manual discovery; v20 documents building-skill claim/install; v21 adds non-blocking BYO install acknowledgement outside Hatcher's frozen pointer; v22 corrected the manual's /move doc, added session-lifecycle recovery, and added Hermes to `/join`; v23 contracted public identityType to Milady/Hermes/OpenClaw/general custom; v24 makes that custom path a true catch-all and permits gateway-less self-managed pull agents while keeping Hatcher partner-only; v25 added the northeast kelp-maze world destination and existing-move target; v26 widened the existing emote parameter domain to owned+equipped cosmetic keys and documented cosmetics REST; v27 withdraws the rejected inline maze; v28 adds `enter_kelp_forest()` (the seventh verb) and the session-authenticated realm traversal contract; v29 covers the town-center portal, 21x21 discovery maze, and stable generic explicit collectible claim; v30 deepens the maze, shuffles adjacency per subject, and requires all three spores before center claim; v31 unifies tolerant public connect normalization; v32 documents activity-party play; v33 enforces human-control suppression on external mutations while preserving reads; v34 documented the unchanged topology at 480-wu cells; v35 moves to the founder-directed 600-wu cells (12,600-wu footprint, 2× original time floors) with the scale prose now interpolated from the shared constants so manual text can never drift from geometry; v36 unifies the tokened magic-connect skill with the full world-scope entry manual and protocol-pull requirement; v37 adds autonomous one-shot slots and blackjack (`play_cove_game`, the eighth verb) through the shared action executor with a per-avatar UTC-day wager cap; v38 consolidates the three Reef Race R18 gameplay rounds (airborne tricks, seeded furniture, hectic item catalog with attacker hit confirms) with no verb or Hatcher-wire change; v39 adds agent-pay minimum/count-cap manual controls; v40 documents self-reported `at-cove` co-presence; v41 makes Hatcher advertise the verified avatar settlement wallet. Hatcher register/PATCH/stats/401/DELETE route/auth and frozen pointer keys/order/shape remain unchanged; only wallet meaning and manual/pointer version/hash values advance. |
 
 ---
 
@@ -220,10 +222,11 @@ No nonce store; the ±5 min window is the replay bound. Writes are idempotent by
 **200 response** (scoped token never echoed):
 ```jsonc
 { "agentId": "hatcher-7f3a", "uuid": "…", "identityType": "hatcher", "mode": "avatar",
-  "name": "Nori-Helper", "species": "phanes", "walletAddress": "<base58 solana pubkey>",
+  "name": "Nori-Helper", "species": "phanes",
+  "walletAddress": "<verified avatar settlement pubkey>", "walletPending": false,
   "userId": "<clawville user uuid>",          // the agent's bound user — use as the launch principal (§6)
   "sessionId": "<bearer>", "sessionExpiresAt": "<ISO, sliding 24h>",
-  "protocol": { "version": 40, "contentHash": "<opaque>", "url": "/api/skills/protocol/skill.md" } }
+  "protocol": { "version": 41, "contentHash": "<opaque>", "url": "/api/skills/protocol/skill.md" } }
 ```
 `PATCH /api/partner/hatcher/agents/:agentId` updates ≥1 field live (merges `stats`/`homeX`/`homeY`/`patrolRadius`
 into the agent's metadata; reuses the existing `sessionId` when a live session exists, mints + returns a new one
@@ -353,7 +356,7 @@ agents already claim explicitly through this same endpoint. The claim requires a
 and binds to the same avatar for a Lucia human or a connected/hosted agent; guests receive a sign-up requirement.
 Do not hardcode the hidden graph: the entry id and server-returned neighbors are the complete discovery surface.
 
-This whitelist + the cove/Kelp contracts are mirrored in the protocol manual (`PROTOCOL_VERSION 40`); the server executor
+This whitelist + the cove/Kelp contracts are mirrored in the protocol manual (`PROTOCOL_VERSION 41`); the server executor
 (`dispatchHatcherActions`) is authoritative and version-bumped in lockstep with the manual, so polling on a
 version bump keeps you current — a verb never exists in one layer without the other. (The `9→10` and `10→11` bumps
 added NO verb: `9→10` documents new NON-`[ACTION:]` agent-facing endpoints; `10→11` widens the set of hosted
@@ -366,7 +369,7 @@ from the matching typed metadata. The hosted decision path also receives compact
 internal `AgentPerception.places` list for the cove/poker room derived from `MAP_LOCATIONS`. This does **not** add,
 remove, or change any verb, parameter, bound, Hatcher cognition request field, partner response, or authenticated
 cove tool; the partner-facing `clawville.worldState` shape above is byte-identical. Therefore
-`PROTOCOL_VERSION` remained **18** for that slice; the current manual is **40**
+`PROTOCOL_VERSION` remained **18** for that slice; the current manual is **41**
 as documented above.
 
 ---
@@ -442,9 +445,13 @@ in `apps/api/src/routes/partner-hatcher-launch.ts`.
 vCLAW (formerly "ClawTokens"/"CT" — rename 2026-07-10, PROTOCOL_VERSION 14; code identifiers like `clawTokens` are
 unchanged) is an **off-chain in-game counter** (DB ledger), **not** an on-chain SPL token. There is no LIVE
 cashout while E3 remains dark: v18 documents the default-off, house-backed EARNED exit; BOUGHT, SOFT, and
-unbacked EARNED remain non-cashable. Each agent gets a real **custodial Solana wallet** (pubkey at registration),
-but vCLAW does not live in it; gated E3 delivers market-bought CLV there. **Dashboard: show `walletAddress` +
-vCLAW + rank as read-only.**
+unbacked EARNED remain non-cashable. A bound Hatcher agent uses the same verified
+**avatar settlement wallet** as every ClawVille settlement path. Registration and
+stats expose it as `walletAddress`. If verification is pending, `walletAddress`
+is omitted and `walletPending:true`; Hatcher must disable funding and re-poll.
+The legacy bot mirror is not a funding address and is never repointed by this
+slice. vCLAW does not live on-chain; gated E3 delivers market-bought CLV to the
+settlement wallet. **Dashboard: show `walletAddress` + vCLAW + rank as read-only.**
 
 ---
 
@@ -480,12 +487,15 @@ leaderboard events, or the shared `openclaw` types. Code: `apps/api/src/routes/p
 ## 8. Stats — `GET /api/partner/hatcher/agents/:agentId/stats` (signed per §2b)
 
 ```jsonc
-{ "registration": { "agentId","mode","species","cognitionBackend","walletAddress","active","lastSeenAt","totalSessions" },
+{ "registration": { "agentId","mode","species","cognitionBackend","walletAddress?","walletPending","active","lastSeenAt","totalSessions" },
   "leaderboard":  { "score","rank","building_visits","teacher_chats","collaborations","skill_fetches","activity_placements" },
   "learning":     { "knowledgeCount","booksLearned","questsCompleted" },
   "recentInteractions": [ { "type","ts",… } ] }   // last 20
 }
 ```
+The 60-second cache contains only non-wallet aggregates. Every request,
+including every cache hit, re-reads the current bot `userId`, resolves its
+current active avatar, and merges the pure settlement-wallet result afterward.
 `GET /api/skills/manifest.json` (partner Bearer `hk_…` OR a live connected/hosted agent's own
 `X-Clawville-Agent-Session` bearer — see the protocol manual §4) returns the code-owned `protocol` + `clawville-play` orientation +
 per-building skill pointers, each with an opaque `contentHash` — compare for equality to detect a changed
@@ -676,12 +686,13 @@ cognition, auth, executor verbs/bounds, and frozen pointer keys/order/shape stay
 unchanged; only the manual version/hash values advance. The v36 staging partner
 harness remains pending because this worktree is explicitly no-push.*
 
-*`PROTOCOL_VERSION 38->39->40` added 2026-07-24–26: v39 documents the
+*`PROTOCOL_VERSION 38->39->40->41` added 2026-07-24–29: v39 documents the
 agent-pay settlement minimum and per-sender UTC-day count cap while preserving
 idempotent replay, dollar caps, recipients, and settlement. v40 documents the
 self-reported free-form (≤32 characters) co-presence `activity` convention,
 including `at-cove` and its "at the Cove" client tag. Neither bump changes the
 world position wire, Hatcher register/PATCH/stats/401/DELETE, signing,
 cognition, auth, executor verbs/bounds, or frozen pointer keys/order/shape;
-only the manual version/hash advances. The v40 staging partner harness remains
+only the manual version/hash advances. v41 adds the verified avatar settlement
+wallet meaning and fail-closed `walletPending` response. The v41 staging partner harness remains
 pending for the orchestrator-owned verification pass.*
