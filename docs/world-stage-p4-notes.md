@@ -526,16 +526,19 @@ canonical mismatch above. The whole probe gate is not green.
   (`+1.709444` points, still outside the control band) and `e3c042dd` at
   `17.217116264%` (`+1.264497` points, back inside the control band).
   Therefore `e3c042dd` (`fix(web): retain activity route through opaque
-  midpoint`) is the repairing commit. The exact bisect sample remained 28/29
-  because 17.217% narrowly exceeds the binary 17% assertion; that is retained,
-  while the later full-branch Session 4 Kelp run is green at 16.622%.
+  midpoint`) is the first sampled commit returning inside the accepted band;
+  the single sample does not prove it caused the heap movement. The exact
+  bisect sample remained 28/29 because 17.217% narrowly exceeds the binary 17%
+  assertion; that is retained, while the later full-branch Session 4 Kelp run
+  is green at 16.622%.
 - P4a Kelp-exit passed 26/26. Its canonical v2 is byte-identical to the
   Session 5 staging control at
   `2F4C822F88BFE98579D12E4307B5AF59395F76373E2620BA0FFB413A9871A808`.
 
 **Session 6 status:** the P4a regression leg is closed. Cove and Kelp-exit are
 canonically identical under v2; the sole Kelp difference is an explained
-intermediate heap-gate deviation repaired by `e3c042dd`. With the current
+intermediate heap-gate deviation, with `e3c042dd` only the first sampled commit
+back inside the accepted band, not a proven repair. With the current
 branch's Section 6.4-6.6 lanes green, the entire probe gate passes. Nothing was
 pushed.
 

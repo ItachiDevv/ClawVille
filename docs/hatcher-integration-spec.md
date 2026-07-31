@@ -696,7 +696,8 @@ idempotent replay, dollar caps, recipients, and settlement. v40 documents the
 self-reported free-form (≤32 characters) co-presence `activity` convention,
 including `at-cove` and its "at the Cove" client tag. v41 advertises the verified avatar settlement
 wallet (fail-closed `walletPending`). v42 adds `at-kelp` and its
-"at the Kelp Forest" client tag. v43 adds `at-activity` and its`r`n"in an activity" client tag. The public
+"at the Kelp Forest" client tag. v43 adds `at-activity` and its
+"in an activity" client tag. The public
 `HatcherLabs/hatcher-host-frontend` snapshot was refreshed to
 `2e958638a98081e0c9c9d7385028f0a1c43a137a`; upstream still contains no
 `CONTRACT.md`, while `lib/api/types.ts` retains the extensible three-field
@@ -708,5 +709,5 @@ only the manual version/hash advances (v41 also changes the advertised wallet
 meaning with the fail-closed `walletPending` response). The staging partner
 harness passed against v41 on `bfbd7b16` (2026-07-30: identity-bound mock
 client ALL-PASS; contract probe 7/7; the test signer was then removed and the
-signer-free API redeployed). The v42 harness re-run is pending on this
+signer-free API redeployed). The v42/v43 harness re-run is pending on this
 promotion.*

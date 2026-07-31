@@ -7,7 +7,7 @@ per-room reset behavior remain page-owned. Leave, requeue, cancellation, and
 Play Again route through the same-document stage navigator; a stalled route
 commit keeps the live match mounted behind the cover and offers explicit Retry
 or Hard navigate recovery. The world body remains co-present and reports
-`activity:"at-activity"` so peers see `Â· in an activity`. **Drift note:** the frozen route anchors predated
+`activity:"at-activity"` so peers see `· in an activity`. **Drift note:** the frozen route anchors predated
 the landed P3 Kelp slot, so the activity UX was attached to the live four-slot
 stage contract.
 
