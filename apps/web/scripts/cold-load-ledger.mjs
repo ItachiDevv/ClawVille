@@ -188,7 +188,10 @@ if (import.meta.main) {
   const diets = dietsPath ? JSON.parse(await Bun.file(dietsPath).text()) : {};
   const ledger = buildLedger(report, fixtureName || "guest-default", diets);
   const outPath = reportPath.replace(/\.json$/, "") + ".ledger.json";
-  await Bun.write(outPath, JSON.stringify({ source: reportPath, dietsApplied: dietsPath || null, ...ledger }, null, 2));
+  // Portable provenance: basename only — absolute scratchpad paths are
+  // meaningless once the ledger is committed next to its source report.
+  const sourceName = reportPath.split(/[\\/]/).pop();
+  await Bun.write(outPath, JSON.stringify({ source: sourceName, dietsApplied: dietsPath ? dietsPath.split(/[\\/]/).pop() : null, ...ledger }, null, 2));
   console.log(JSON.stringify({ fixture: ledger.fixture, lanes: ledger.lanes, milestones: ledger.milestones }, null, 2));
   console.log(`[ledger] full ledger: ${outPath}`);
 }

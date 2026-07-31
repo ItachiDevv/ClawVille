@@ -301,12 +301,13 @@ sibling names preferred (auto-bust).
 
 ## 2b. M0 FROZEN BUDGETS (v2 — refrozen 2026-07-31 from VALIDITY-GATED probe-v2 reports)
 
-Source reports (committed under `docs/perf-data/cold-load-m0-2026-07-31/`): probe-v3 batch-v6
-runs, n=2/backend on the local full-stack fixture (fresh profile + fresh browser daemon per
-attempt; page-clock reveal; interval-overlap frame windows; corrected byte split; fail-closed
-validity — every report carries `valid: true`) + one validity-gated STAGING baseline
-(`report-staging-v3b.json`, reveal 17.4s / 34.63MB pre-reveal, `backendWaived: true` — the
-deployed bundle predates the backend stamp; only a NULL backend is waivable, flag-explicit).
+Source reports (committed under `docs/perf-data/cold-load-m0-2026-07-31/`): the batch-v7
+`report-g-*` files — 4 local runs (2/backend, fresh profile + fresh browser daemon per attempt;
+page-clock reveal; interval-overlap frame windows; corrected byte split; fail-closed validity)
++ the STAGING wire baseline `report-g-staging-g1-a1.json` (reveal 20.6s / 34.62MB pre-reveal,
+`backendWaived: true`, wire-valid only — the deployed bundle predates the backend stamp; only a
+NULL backend is waivable, flag-explicit) and its ledger. Superseded batches (e-, f-, v3b) live
+in git history at `bb00fbd5` / `9bb12da2`.
 
 Measured baseline (localhost serving — network done ≤1.6s, so these isolate compute/pipeline):
 - **WebGPU**: reveal 17.7 / 18.1 s · worst frame in the 10s post-reveal window 1.43 / 1.89 s ·
@@ -326,11 +327,16 @@ first ceilings — breached them on 4/4 local runs purely from machine load (a 1
 vs a quiet one: WebGL2 reveal 27.3-27.5s vs the 25s ceiling). Absolute ceilings from an n=2
 quiet-machine sample cannot gate code changes on a shared box. Therefore:
 
-- **Primary gate (paired A/B):** every canary/widening batch runs INTERLEAVED baseline↔candidate
-  pairs in one session (fresh daemon+profile per run, alternating). Acceptance per backend:
-  candidate median ≤ baseline median × 1.15 on reveal, worst-frame, stable-window-start, and
-  pre-reveal longtasks; frames>100 within +2 of baseline. All runs `validForPerformance: true`
-  and `backendWaived: false`.
+- **Primary gate (paired A/B — MACHINE-ENFORCED by `apps/web/scripts/cold-load-paired-gate.mjs`):**
+  every canary/widening batch runs COUNTERBALANCED interleaved baseline↔candidate sessions
+  (AB BA AB BA…, fresh daemon+profile per run; |#AB−#BA| ≤ 1). Acceptance per backend requires
+  **≥8 complete pairs** whose reports are all `validForPerformance: true` (which itself demands
+  complete metric evidence — frames, stable window, longtasks, quiescence) and
+  `backendWaived: false`; per ratio metric (reveal, worst-frame, stable-window-start, pre-reveal
+  longtasks) the **exact one-sided 95% upper confidence bound on the median within-pair log-ratio
+  (binomial order statistic) must be < log(1.15)**; frames>100 uses paired differences with the
+  same bound against +2. A bound that does not close below 12 pairs returns INCONCLUSIVE
+  (extend), never a silent pass; still open at 12 pairs ⇒ FAIL.
 - **Outer sanity bounds** (union of ALL valid runs across batches f+g; a candidate exceeding
   these is rejected regardless of pairing):
 | Metric | WebGPU | WebGL2 |

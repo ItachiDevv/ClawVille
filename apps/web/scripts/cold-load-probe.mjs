@@ -237,10 +237,13 @@ export function computeValidity({ all, revealMs, backend, expectedBackend, waive
   }
   const assetFailures = all.filter((r) => ASSET_CLASSES.has(r.cls) && r.failed);
   if (assetFailures.length) wireReasons.push(`${assetFailures.length} failed asset requests`);
-  const netAssets = all.filter((r) => ASSET_CLASSES.has(r.cls) && !r.failed && isNetworkUrl(r.url));
-  // Redirect legs must be 3xx; terminal responses must be 2xx.
-  const badLegs = netAssets.filter((r) => r.isRedirectLeg && (r.status == null || r.status < 300 || r.status >= 400));
+  // EVERY persisted network redirect leg must be 3xx — independent of URL
+  // class, since a redirect target's extension says nothing about the hop
+  // (re-review #3 residue: an extensionless 200 "redirect" leg escaped the
+  // class-filtered check).
+  const badLegs = all.filter((r) => r.isRedirectLeg && isNetworkUrl(r.url) && (r.status == null || r.status < 300 || r.status >= 400));
   if (badLegs.length) wireReasons.push(`${badLegs.length} redirect legs without a 3xx status`);
+  const netAssets = all.filter((r) => ASSET_CLASSES.has(r.cls) && !r.failed && isNetworkUrl(r.url));
   const terminal = netAssets.filter((r) => !r.isRedirectLeg);
   const badStatus = terminal.filter((r) => r.status != null && (r.status < 200 || r.status >= 300));
   if (badStatus.length) wireReasons.push(`${badStatus.length} non-2xx asset responses (incl. 304 = warm)`);
@@ -260,6 +263,27 @@ export function computeValidity({ all, revealMs, backend, expectedBackend, waive
     reasons: [...new Set([...wireReasons, ...perfReasons])],
     swHits, warmFirsts, backendWaived,
   };
+}
+
+/**
+ * Performance-evidence completeness (re-review #3 blocking 2): a report may
+ * only claim validForPerformance when every metric a paired gate consumes is
+ * present and finite. Missing frames, a null stable window, or an unclaimed
+ * quiescence marker make the run unusable as performance evidence.
+ */
+export function assessPerformanceEvidence({ revealMs, frameMetrics, longtaskCount, networkQuiescedMs }) {
+  const reasons = [];
+  const finite = (v) => typeof v === "number" && Number.isFinite(v);
+  if (!finite(revealMs)) reasons.push("no finite revealMs");
+  if (!frameMetrics) reasons.push("no frame metrics captured");
+  else {
+    if (!finite(frameMetrics.worstFrameMsIn10s)) reasons.push("no finite worst-frame metric");
+    if (!finite(frameMetrics.stableWindowStartMsAfterReveal)) reasons.push("no stable window observed");
+    if (!finite(frameMetrics.framesOver100In10s)) reasons.push("no frame-count metric");
+  }
+  if (!finite(longtaskCount)) reasons.push("no longtask series captured");
+  if (!finite(networkQuiescedMs)) reasons.push("network never quiesced within capture");
+  return { complete: reasons.length === 0, reasons };
 }
 
 // ---------------------------------------------------------------------------
@@ -392,7 +416,10 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
       longtasks = parsed.lt || [];
       frames = parsed.fr || [];
       phases = parsed.ph || null;
-      backend = parsed.be || null;
+      // Preserve falsy-but-present stamps ('' / false): only true absence is
+      // null — anything else must fail the backend check, never launder to a
+      // waivable null (re-review #3 residue).
+      backend = parsed.be === undefined ? null : parsed.be;
       navTiming = parsed.nav || null;
     } catch {}
 
@@ -419,6 +446,12 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
         : null;
 
     const frameMetrics = computeFrameMetrics(frames, revealPageMs);
+    const perfEvidence = assessPerformanceEvidence({
+      revealMs: revealPageMs,
+      frameMetrics,
+      longtaskCount: longtasks.length,
+      networkQuiescedMs: networkQuiescedPageMs,
+    });
     const preRevealLongtaskMs = longtasks.filter((e) => revealPageMs == null || e.s <= revealPageMs).reduce((a, e) => a + e.d, 0);
     const top = [...ok].sort((a, b) => b.wireBytes - a.wireBytes).slice(0, 40)
       .map((r) => ({ mb: +(r.wireBytes / 1048576).toFixed(2), cls: r.cls, sw: r.everFromSW, cf: r.cfCache, start: r.startPageMs != null ? +(r.startPageMs / 1000).toFixed(1) : null, end: r.endPageMs != null ? +(r.endPageMs / 1000).toFixed(1) : null, url: r.url.replace(/^https?:\/\/[^/]+/, "") }));
@@ -431,7 +464,11 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
       // wire verdict for exit-code compatibility.
       valid: verdict.validForWireLedger,
       validForWireLedger: verdict.validForWireLedger,
-      validForPerformance: verdict.validForPerformance,
+      // Performance validity additionally requires COMPLETE metric evidence
+      // (re-review #3 blocking 2) — strict validity with a null stable window
+      // or missing frames is not usable performance evidence.
+      validForPerformance: verdict.validForPerformance && perfEvidence.complete,
+      performanceEvidenceReasons: perfEvidence.reasons,
       invalidReasons: verdict.reasons, backendWaived: verdict.backendWaived,
       backend, expectedBackend, phases, navTiming,
       revealMs: revealPageMs,
@@ -459,6 +496,7 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
       summary, top,
       requests: ok.map(({ chunks, ...rest }) => rest),
       failedRequests: all.filter((r) => r.failed).map(({ chunks, ...rest }) => rest),
+      longtasks, // full series (evidence — summary.longtasks.worst is a projection)
       frames, // full bounded ring (evidence; framesWindow is the projection)
       framesWindow: revealPageMs != null ? frames.filter((f) => f.t >= revealPageMs - 2000 && f.t <= revealPageMs + 15_000) : [],
       revealTimeline: events.filter((_, i) => i % 4 === 0),

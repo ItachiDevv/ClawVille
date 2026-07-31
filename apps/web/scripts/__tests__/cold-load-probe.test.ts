@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import {
+  assessPerformanceEvidence,
   computeByteSplit,
   computeFrameMetrics,
   computeValidity,
@@ -87,6 +88,18 @@ describe('reduceNetworkEvent — redirect legs (event-sequence fixtures)', () =>
     });
     expect(v.validForPerformance).toBe(true);
   });
+  it('an EXTENSIONLESS non-3xx redirect leg still invalidates (class-independent check)', () => {
+    const state = driveEvents([
+      rws('1', 'https://x/asset', 1), // no extension → cls OTHER
+      rws('1', 'https://x/models/b.glb', 2, { status: 200, encodedDataLength: 100 }),
+      resp('1', 200),
+      fin('1', 1000, 3),
+    ]);
+    const v = computeValidity({
+      all: collectorRecords(state), revealMs: REVEAL, backend: 'webgpu', expectedBackend: 'webgpu',
+    });
+    expect(v.reasons.join()).toContain('redirect legs without a 3xx');
+  });
   it('a redirect leg WITHOUT a 3xx status invalidates', () => {
     const state = driveEvents([
       rws('1', 'https://x/models/a.glb', 1),
@@ -98,6 +111,31 @@ describe('reduceNetworkEvent — redirect legs (event-sequence fixtures)', () =>
       all: collectorRecords(state), revealMs: REVEAL, backend: 'webgpu', expectedBackend: 'webgpu',
     });
     expect(v.reasons.join()).toContain('redirect legs without a 3xx');
+  });
+});
+
+describe('assessPerformanceEvidence — completeness fail-closed', () => {
+  const good = {
+    revealMs: 15_000,
+    frameMetrics: { worstFrameMsIn10s: 1000, stableWindowStartMsAfterReveal: 3000, framesOver100In10s: 2 },
+    longtaskCount: 10,
+    networkQuiescedMs: 20_000,
+  };
+  it('accepts complete evidence', () => {
+    expect(assessPerformanceEvidence(good).complete).toBe(true);
+  });
+  it('rejects missing frame metrics entirely', () => {
+    const r = assessPerformanceEvidence({ ...good, frameMetrics: null });
+    expect(r.complete).toBe(false);
+    expect(r.reasons.join()).toContain('no frame metrics');
+  });
+  it('rejects a null stable window', () => {
+    const r = assessPerformanceEvidence({ ...good, frameMetrics: { ...good.frameMetrics, stableWindowStartMsAfterReveal: null } });
+    expect(r.reasons.join()).toContain('no stable window');
+  });
+  it('rejects an unclaimed network quiescence', () => {
+    const r = assessPerformanceEvidence({ ...good, networkQuiescedMs: null });
+    expect(r.reasons.join()).toContain('never quiesced');
   });
 });
 
