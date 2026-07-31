@@ -59,10 +59,10 @@ describe('ActivityCanvasReadyProbe', () => {
   test('scheduled acknowledgement reports its own room key', () => {
     const probe = state();
     const roomKey = 'reef-race:room-a';
-    let reported: string | null = null;
+    const reported: string[] = [];
     advanceActivityCanvasReady(probe, () => {});
-    advanceActivityCanvasReady(probe, () => { reported = roomKey; });
-    expect(reported).toBe(roomKey);
+    advanceActivityCanvasReady(probe, () => { reported.push(roomKey); });
+    expect(reported).toEqual([roomKey]);
   });
 
   test('unmount before the second frame schedules nothing', () => {
