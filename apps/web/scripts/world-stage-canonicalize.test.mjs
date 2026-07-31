@@ -93,6 +93,7 @@ describe("world-stage canonical summary", () => {
       renderCanonicalStageProbeSummary(second),
     );
     const canonical = canonicalizeStageProbeSummary(first);
+    expect(canonical.schema).toBe("world-stage-probe-canonical-v2");
     expect(canonical.verdict.assertions).toEqual({
       exactlyRequestedRoundTrips: true,
       soakTotalHeapGrowthAtMost20Percent: true,
@@ -110,6 +111,24 @@ describe("world-stage canonical summary", () => {
       "routes.historyLength.maxAddedEntries": 2,
       "routes.historyLength.maxLength": 4,
     });
+  });
+
+  test("strips run-variant warmup inventory snapshot deltas", () => {
+    const oneWarmupDelta = summary({
+      inventory: { changes: [{ loop: 1 }] },
+    });
+    const threeWarmupDeltas = summary({
+      inventory: {
+        changes: [{ loop: 2 }, { loop: 3 }, { loop: 25 }],
+      },
+    });
+
+    expect(renderCanonicalStageProbeSummary(oneWarmupDelta)).toBe(
+      renderCanonicalStageProbeSummary(threeWarmupDeltas),
+    );
+    expect(
+      canonicalizeStageProbeSummary(oneWarmupDelta).counts.violations,
+    ).not.toHaveProperty("inventoryChanges");
   });
 
   test("retains behavioral count and assertion changes", () => {
