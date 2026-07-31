@@ -15,23 +15,43 @@ import type { WorldPresencePolicy } from '@/hooks/world-stream-machine';
 export interface WorldPresenceRoute {
   policy: WorldPresencePolicy;
   remoteActivity: string;
+  downlinkEnabled: boolean;
 }
 
 export function getWorldPresenceRoute(pathname: string): WorldPresenceRoute {
-  if (pathname === '/game') return { policy: 'active', remoteActivity: 'idle' };
+  if (pathname === '/game') {
+    return {
+      policy: 'active',
+      remoteActivity: 'idle',
+      downlinkEnabled: true,
+    };
+  }
   if (pathname === '/cove') {
-    return { policy: 'remote', remoteActivity: AT_COVE_ACTIVITY };
+    return {
+      policy: 'remote',
+      remoteActivity: AT_COVE_ACTIVITY,
+      downlinkEnabled: true,
+    };
   }
   if (pathname === '/kelp') {
-    return { policy: 'remote', remoteActivity: AT_KELP_ACTIVITY };
+    return {
+      policy: 'remote',
+      remoteActivity: AT_KELP_ACTIVITY,
+      downlinkEnabled: true,
+    };
   }
-  if (
-    pathname.split('/').length === 4 &&
-    pathname.startsWith('/activity/')
-  ) {
-    return { policy: 'remote', remoteActivity: AT_ACTIVITY };
+  if (/^\/activity\/[^/]+\/[^/]+$/.test(pathname)) {
+    return {
+      policy: 'remote',
+      remoteActivity: AT_ACTIVITY,
+      downlinkEnabled: false,
+    };
   }
-  return { policy: 'remote', remoteActivity: 'idle' };
+  return {
+    policy: 'remote',
+    remoteActivity: 'idle',
+    downlinkEnabled: true,
+  };
 }
 
 export function WorldPresence() {
@@ -42,7 +62,11 @@ export function WorldPresence() {
   const isAuthenticated = !!authData?.user;
   const isGuest = !!authData?.user?.isGuest;
 
-  useWorldStream(presence.policy, presence.remoteActivity);
+  useWorldStream(
+    presence.policy,
+    presence.remoteActivity,
+    presence.downlinkEnabled,
+  );
   useAvatarHeartbeat(isAuthenticated && !isGuest && !!avatar);
 
   return null;

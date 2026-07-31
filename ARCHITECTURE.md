@@ -1,6 +1,6 @@
 # ClawVille — Architecture
 
-**Last Audited: 2026-07-30 (world-stage P4 activity route/overlay
+**Last Audited: 2026-07-30 (world-stage P4 activity route/overlay/downlink
 architecture).** `/activity/:activityId/:roomId` is now part of
 `app/(world)` alongside `/game`, `/cove`, and `/kelp`. The persistent stage owns
 an empty `activity` slot and transition/navigation lineage, while the activity
@@ -11,7 +11,20 @@ stale activity landing as a fresh request. **Drift note:** the frozen citations
 targeted the pre-P3 anchor; implementation uses the landed P3 stage APIs and
 bumped the live protocol baseline from v42 to v43 in the same P4b diff.
 `WorldPresence` maps exact activity match routes to remote `at-activity`, and
-peers render that conventional value as an idle `Â· in an activity` suffix.
+peers render that conventional value as an idle `· in an activity` suffix.
+Activity routes retain the 10-second remote presence uplink while suspending
+the world SSE downlink. A pure three-rule edge policy coordinates that
+suspension with the existing 200 ms machine tick. Retry ownership is carried
+across both timer and async phases by `activeRetryToken`; source death uses
+`dropFailedSource()`, while intentional close, replacement, supersession, and
+teardown rotate `streamEpoch` through `invalidateStream()`. Every EventSource
+listener checks epoch, live downlink intent, and source ownership. While
+ticketed recovery is active it is the sole source-opening owner; other opens
+defer behind a 30-second busy-wait ceiling, and the complete recovery join plus
+body is independently bounded at 15 seconds by a lease-CAS settlement path.
+Bootstrap uses a separate deadline wrapper. Reopening invalidates land state,
+and persisted bfcache restores explicitly discard dead membership so the next
+tick bootstraps cleanly.
 
 **Prior Last Audited: 2026-07-30 (world-stage P3 Kelp + protocol v42 (authored as v41; renumbered 42 in the staging merge over the wallet slice's 41)).** Page-only
 `/kelp` is now inside `app/(world)` with `/game` and `/cove`, sharing one

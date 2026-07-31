@@ -11,22 +11,27 @@ describe('getWorldPresenceRoute', () => {
     expect(getWorldPresenceRoute('/game')).toEqual({
       policy: 'active',
       remoteActivity: 'idle',
+      downlinkEnabled: true,
     });
     expect(getWorldPresenceRoute('/cove')).toEqual({
       policy: 'remote',
       remoteActivity: AT_COVE_ACTIVITY,
+      downlinkEnabled: true,
     });
     expect(getWorldPresenceRoute('/kelp')).toEqual({
       policy: 'remote',
       remoteActivity: AT_KELP_ACTIVITY,
+      downlinkEnabled: true,
     });
     expect(getWorldPresenceRoute('/activity/reef-race/room-a')).toEqual({
       policy: 'remote',
       remoteActivity: AT_ACTIVITY,
+      downlinkEnabled: false,
     });
     expect(getWorldPresenceRoute('/activity/reef-race')).toEqual({
       policy: 'remote',
       remoteActivity: 'idle',
+      downlinkEnabled: true,
     });
   });
 });

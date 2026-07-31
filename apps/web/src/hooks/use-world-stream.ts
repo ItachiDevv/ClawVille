@@ -17,11 +17,14 @@ import {
   type WorldPresencePolicy,
   type WorldStreamMachineInput,
 } from '@/hooks/world-stream-machine';
+import { decideWorldDownlink } from '@/hooks/world-downlink-policy';
 
 const WORLD_API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
 const MAX_RETRIES = 20;
 const RETRY_DELAY_BASE = 3000;
 const RETRY_DELAY_MAX = 60000;
+const JOIN_TIMEOUT_MS = 15_000;
+const RECOVERY_WAIT_CEILING_MS = 30_000;
 /** Position upload rate — matches the server NPC sim tick (5 Hz / 200 ms). */
 /** Minimum game-pixel movement that flips activity from 'idle' → 'walking'. */
 const ACTIVITY_MOTION_EPSILON_PX = 0.5;
@@ -61,6 +64,12 @@ interface JoinResponse {
   roomTicket?: string;
 }
 
+type JoinOutcome =
+  | { kind: 'joined'; data: JoinResponse }
+  | { kind: 'superseded' }
+  | { kind: 'failed' }
+  | { kind: 'timeout' };
+
 /**
  * Multiplayer Phase 1 world stream — REPLACES `useNpcStream`.
  *
@@ -86,11 +95,14 @@ interface JoinResponse {
 export function useWorldStream(
   policy: WorldPresencePolicy,
   remoteActivity?: string,
+  downlinkEnabled = true,
 ) {
   const policyRef = useRef(policy);
   policyRef.current = policy;
   const remoteActivityRef = useRef(remoteActivity);
   remoteActivityRef.current = remoteActivity;
+  const downlinkEnabledRef = useRef(downlinkEnabled);
+  downlinkEnabledRef.current = downlinkEnabled;
   // Ambient-banter watcher heartbeat — visible-tab-only "a human is watching"
   // signal for the server's banter inference gate. See use-watch-heartbeat.ts.
   useWatchHeartbeat(policy === 'active');
@@ -131,6 +143,13 @@ export function useWorldStream(
     let machineInterval: ReturnType<typeof setInterval> | null = null;
     let machineState = createWorldStreamMachineState();
     let cancelled = false;
+    let streamEpoch = 0;
+    let retryTokenSeq = 0;
+    let activeRetryToken: number | null = null;
+    let recoveryInFlight = false;
+    let recoveryLeaseSeq = 0;
+    let activeRecoveryLease: number | null = null;
+    let lastAttemptWasBareReopen = false;
 
     /**
      * @param recovery When true, this is a rejoin AFTER an initial successful
@@ -143,6 +162,7 @@ export function useWorldStream(
      */
     async function join(
       recovery = false,
+      signal?: AbortSignal,
     ): Promise<JoinResponse | { superseded: true } | null> {
       const requestedRoom =
         typeof window !== 'undefined'
@@ -166,6 +186,7 @@ export function useWorldStream(
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
+          signal,
         });
         if (!res.ok) {
           // Identity-dedup ping-pong guard: a newer DELIBERATE login took over
@@ -188,6 +209,74 @@ export function useWorldStream(
       }
     }
 
+    async function joinWithBody(
+      recovery: boolean,
+      signal?: AbortSignal,
+    ): Promise<JoinOutcome> {
+      const joined = await join(recovery, signal);
+      if (!joined) return { kind: 'failed' };
+      if ('superseded' in joined) return { kind: 'superseded' };
+      return { kind: 'joined', data: joined };
+    }
+
+    async function withDeadline<T>(
+      operation: Promise<T>,
+      ms: number,
+    ): Promise<{ settled: T } | { timedOut: true }> {
+      let timer!: ReturnType<typeof setTimeout>;
+      const deadline = new Promise<{ timedOut: true }>((resolve) => {
+        timer = setTimeout(() => resolve({ timedOut: true }), ms);
+      });
+      try {
+        return await Promise.race([
+          operation.then((settled) => ({ settled })),
+          deadline,
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    async function joinBounded(): Promise<
+      JoinResponse | { superseded: true } | null
+    > {
+      const controller = new AbortController();
+      const outcome = await withDeadline(
+        join(false, controller.signal),
+        JOIN_TIMEOUT_MS,
+      );
+      if ('timedOut' in outcome) {
+        controller.abort();
+        return null;
+      }
+      return outcome.settled;
+    }
+
+    function dropFailedSource(source: EventSource) {
+      if (es !== source) return;
+      source.close();
+      es = null;
+    }
+
+    function invalidateStream() {
+      streamEpoch += 1;
+      activeRetryToken = null;
+      es?.close();
+      es = null;
+      if (retryTimeout) {
+        clearTimeout(retryTimeout);
+        retryTimeout = null;
+      }
+    }
+
+    function closeStream() {
+      invalidateStream();
+      retriesRef.current = 0;
+      lastAttemptWasBareReopen = false;
+      setNpcConnected(false);
+      clearPlayers();
+    }
+
     /**
      * Terminal stop when the server reports `presence_superseded`: a newer
      * deliberate login (another tab/device) now owns this account's single
@@ -206,12 +295,7 @@ export function useWorldStream(
         clearInterval(machineInterval);
         machineInterval = null;
       }
-      es?.close();
-      es = null;
-      if (retryTimeout) {
-        clearTimeout(retryTimeout);
-        retryTimeout = null;
-      }
+      invalidateStream();
       setNpcConnected(false);
       try {
         useGameStore
@@ -258,7 +342,6 @@ export function useWorldStream(
     // the ticket, but if that room had filled past the hard cap it spills us to
     // auto-fill. rejoinWithTicket always re-points the SSE at whatever room the
     // rejoin returns, so a changed roomId is handled transparently.
-    let recoveryInFlight = false;
     // Set when the onerror handler schedules a BARE same-url reopen (the cheap
     // transient-blip path). Cleared by the stream's `open` handler (blip healed,
     // zero /join cost) OR when we escalate to a ticketed rejoin. If onerror
@@ -268,7 +351,6 @@ export function useWorldStream(
     // This protects the scarce /join budget (server: 3 per 60s per IP) — a
     // transient network blip costs zero /join, only a confirmed membership loss
     // spends one. See es.onerror below.
-    let lastAttemptWasBareReopen = false;
 
     /**
      * Replay the join flow as a RECOVERY rejoin (ticketed), then refresh the
@@ -290,35 +372,63 @@ export function useWorldStream(
     async function rejoinWithTicket(): Promise<string | null> {
       if (cancelled || recoveryInFlight) return null;
       recoveryInFlight = true;
-      try {
-        const rejoined = await join(true);
-        if (cancelled || !rejoined) return null;
-        if ('superseded' in rejoined) {
-          handleSuperseded();
-          return null;
-        }
-        sessionIdRef.current = rejoined.id;
-        roomIdRef.current = rejoined.roomId;
-        roomTicketRef.current = rejoined.roomTicket ?? roomTicketRef.current;
-        setLocalSessionId(rejoined.id);
-        setRoomId(rejoined.roomId);
-        // Re-point the SSE at the room the rejoin landed us in. After a restart
-        // the prior stream is dead (onerror) or about to 403 (membership wiped),
-        // so we always close + reopen — idempotent if the room is unchanged.
-        es?.close();
-        es = null;
-        // Cancel any pending reconnect a prior onerror queued, so we don't end
-        // up with two EventSources racing.
-        if (retryTimeout) {
-          clearTimeout(retryTimeout);
-          retryTimeout = null;
-        }
-        retriesRef.current = 0;
-        openStream(rejoined.roomId);
-        return rejoined.roomId;
-      } finally {
-        recoveryInFlight = false;
+      const lease = ++recoveryLeaseSeq;
+      activeRecoveryLease = lease;
+
+      let resolveDone!: (value: string | null) => void;
+      const done = new Promise<string | null>((resolve) => {
+        resolveDone = resolve;
+      });
+      const controller = new AbortController();
+      const deadlineTimer = setTimeout(() => {
+        controller.abort();
+        resolveDone(settleRecovery(lease, { kind: 'timeout' }));
+      }, JOIN_TIMEOUT_MS);
+
+      void joinWithBody(true, controller.signal).then(
+        (outcome) => {
+          clearTimeout(deadlineTimer);
+          resolveDone(settleRecovery(lease, outcome));
+        },
+        () => {
+          clearTimeout(deadlineTimer);
+          resolveDone(settleRecovery(lease, { kind: 'failed' }));
+        },
+      );
+
+      return done;
+    }
+
+    function settleRecovery(
+      lease: number,
+      outcome: JoinOutcome,
+    ): string | null {
+      if (activeRecoveryLease !== lease) return null;
+      activeRecoveryLease = null;
+      recoveryInFlight = false;
+      if (cancelled) return null;
+      if (outcome.kind === 'superseded') {
+        handleSuperseded();
+        return null;
       }
+      if (outcome.kind !== 'joined') {
+        transitionMachine({ type: 'RECOVERY_FAILED', now: Date.now() });
+        return null;
+      }
+
+      sessionIdRef.current = outcome.data.id;
+      roomIdRef.current = outcome.data.roomId;
+      roomTicketRef.current =
+        outcome.data.roomTicket ?? roomTicketRef.current;
+      setLocalSessionId(outcome.data.id);
+      setRoomId(outcome.data.roomId);
+      invalidateStream();
+      retriesRef.current = 0;
+      if (downlinkEnabledRef.current) {
+        openStream(outcome.data.roomId);
+      }
+      transitionMachine({ type: 'RECOVERY_OK', now: Date.now() });
+      return outcome.data.roomId;
     }
 
     function postPosition(body: string) {
@@ -401,13 +511,65 @@ export function useWorldStream(
 
     async function recoverWithTicket(): Promise<string | null> {
       if (cancelled || recoveryInFlight) return null;
-      const roomId = await rejoinWithTicket();
-      if (cancelled) return null;
-      transitionMachine({
-        type: roomId ? 'RECOVERY_OK' : 'RECOVERY_FAILED',
-        now: Date.now(),
-      });
-      return roomId;
+      return rejoinWithTicket();
+    }
+
+    function armRetry(
+      roomId: string,
+      delayMs: number,
+      shouldEscalate: boolean,
+      deferredSince: number | null = null,
+    ) {
+      const token = ++retryTokenSeq;
+      activeRetryToken = token;
+      retryTimeout = setTimeout(() => {
+        retryTimeout = null;
+        if (
+          cancelled ||
+          activeRetryToken !== token ||
+          !downlinkEnabledRef.current
+        ) {
+          return;
+        }
+
+        if (recoveryInFlight) {
+          const since = deferredSince ?? Date.now();
+          if (Date.now() - since >= RECOVERY_WAIT_CEILING_MS) {
+            activeRetryToken = null;
+            return;
+          }
+          armRetry(roomId, delayMs, shouldEscalate, since);
+          return;
+        }
+
+        if (!shouldEscalate) {
+          lastAttemptWasBareReopen = true;
+          openStream(roomId);
+          return;
+        }
+
+        lastAttemptWasBareReopen = false;
+        void recoverWithTicket().then((rejoinedRoomId) => {
+          if (cancelled || rejoinedRoomId !== null) return;
+          if (recoveryInFlight) {
+            armRetry(
+              roomId,
+              delayMs,
+              shouldEscalate,
+              deferredSince ?? Date.now(),
+            );
+            return;
+          }
+          if (
+            activeRetryToken !== token ||
+            !downlinkEnabledRef.current
+          ) {
+            return;
+          }
+          lastAttemptWasBareReopen = true;
+          openStream(roomId);
+        });
+      }, delayMs);
     }
 
     function runMachineAction(
@@ -453,6 +615,22 @@ export function useWorldStream(
       const { controlMode } = useGameStore.getState();
       const now = Date.now();
       const currentPolicy = policyRef.current;
+      const downlinkAction = decideWorldDownlink({
+        wanted: downlinkEnabledRef.current,
+        open: es !== null,
+        pendingReopen: activeRetryToken !== null,
+        recoveryInFlight,
+        hasSession: sessionIdRef.current !== null,
+        hasRoom: roomIdRef.current !== null,
+      });
+      if (downlinkAction === 'CLOSE') {
+        closeStream();
+      } else if (downlinkAction === 'OPEN') {
+        openStream(roomIdRef.current!);
+        void queryClient.invalidateQueries({
+          queryKey: LAND_PARCELS_QUERY_KEY,
+        });
+      }
       const activePose =
         currentPolicy === 'active' ? sampleActivePosition(now) : undefined;
       transitionMachine({
@@ -470,10 +648,17 @@ export function useWorldStream(
 
     function openStream(roomId: string) {
       if (cancelled || retriesRef.current >= MAX_RETRIES) return;
+      activeRetryToken = null;
+      streamEpoch += 1;
+      const epoch = streamEpoch;
       const url = `${WORLD_API_URL}/api/world/${encodeURIComponent(roomId)}/stream`;
-      es = new EventSource(url, { withCredentials: true });
+      const source = new EventSource(url, { withCredentials: true });
+      es = source;
 
-      es.addEventListener('open', () => {
+      source.addEventListener('open', () => {
+        if (epoch !== streamEpoch) return;
+        if (!downlinkEnabledRef.current) return;
+        if (es !== source) return;
         retriesRef.current = 0;
         // Stream is live again — whatever the prior failure was (a transient
         // blip that a bare reopen healed, or a ticketed rejoin), it's resolved.
@@ -482,7 +667,10 @@ export function useWorldStream(
         setNpcConnected(true);
       });
 
-      es.addEventListener('snapshot', (event) => {
+      source.addEventListener('snapshot', (event) => {
+        if (epoch !== streamEpoch) return;
+        if (!downlinkEnabledRef.current) return;
+        if (es !== source) return;
         try {
           const snapshot = measureSpike('sse:parse', () =>
             JSON.parse((event as MessageEvent).data),
@@ -525,14 +713,19 @@ export function useWorldStream(
       // LandStateHydrator refetches authoritative ownership and the in-world
       // for-sale signs update live — no reload, no 60s wait. We refetch rather
       // than trust the event payload, so a malformed event is a harmless refetch.
-      es.addEventListener('land', () => {
+      source.addEventListener('land', () => {
+        if (epoch !== streamEpoch) return;
+        if (!downlinkEnabledRef.current) return;
+        if (es !== source) return;
         void queryClient.invalidateQueries({ queryKey: LAND_PARCELS_QUERY_KEY });
       });
 
-      es.onerror = () => {
+      source.onerror = () => {
+        if (epoch !== streamEpoch) return;
+        if (!downlinkEnabledRef.current) return;
+        if (es !== source) return;
         setNpcConnected(false);
-        es?.close();
-        es = null;
+        dropFailedSource(source);
         // A concurrent ticketed rejoin (e.g. a /position 409 in player mode)
         // is already re-establishing the stream — don't queue a second path.
         if (recoveryInFlight) return;
@@ -565,31 +758,12 @@ export function useWorldStream(
         // transient blip — so a flapping stream can't exhaust the 3/min budget.
         const canRejoin = sessionIdRef.current !== null && roomTicketRef.current !== null;
         const shouldEscalate = canRejoin && lastAttemptWasBareReopen;
-        retryTimeout = setTimeout(() => {
-          if (cancelled) return;
-          if (shouldEscalate) {
-            lastAttemptWasBareReopen = false;
-            void recoverWithTicket().then((rejoinedRoomId) => {
-              // Rejoin failed (null) — API likely still restarting. Reopen the
-              // last-known room (a bare reopen) to keep the exp-backoff loop
-              // alive; the next onerror re-escalates to the ticketed rejoin.
-              if (!cancelled && rejoinedRoomId === null) {
-                lastAttemptWasBareReopen = true;
-                openStream(roomId);
-              }
-            });
-          } else {
-            // Step 1 (or no ticket yet): cheap same-url reopen. Mark it so a
-            // follow-on error escalates to the ticketed rejoin.
-            lastAttemptWasBareReopen = true;
-            openStream(roomId);
-          }
-        }, delay);
+        armRetry(roomId, delay, shouldEscalate);
       };
     }
 
     async function bootstrap() {
-      const joined = await join();
+      const joined = await joinBounded();
       if (cancelled) return;
       if (joined && 'superseded' in joined) {
         // Fresh bootstrap joins never carry a recovery ticket, so the server
@@ -609,7 +783,18 @@ export function useWorldStream(
       roomTicketRef.current = joined.roomTicket ?? null;
       setLocalSessionId(joined.id);
       setRoomId(joined.roomId);
-      openStream(joined.roomId);
+      if (downlinkEnabledRef.current) {
+        openStream(joined.roomId);
+      }
+    }
+
+    function handlePageShow(event: PageTransitionEvent) {
+      if (!event.persisted) return;
+      closeStream();
+      sessionIdRef.current = null;
+      roomIdRef.current = null;
+      setLocalSessionId(null);
+      clearPlayers();
     }
 
     machineInterval = setInterval(runMachineTick, WORLD_STREAM_TICK_MS);
@@ -620,15 +805,16 @@ export function useWorldStream(
     // tab-switch would leave+rejoin-churn and burn the 3/60s join budget.)
     if (typeof window !== 'undefined') {
       window.addEventListener('pagehide', leaveBeacon);
+      window.addEventListener('pageshow', handlePageShow);
     }
 
     return () => {
       cancelled = true;
       if (typeof window !== 'undefined') {
         window.removeEventListener('pagehide', leaveBeacon);
+        window.removeEventListener('pageshow', handlePageShow);
       }
-      es?.close();
-      if (retryTimeout) clearTimeout(retryTimeout);
+      invalidateStream();
       if (machineInterval) clearInterval(machineInterval);
       setNpcConnected(false);
       // Best-effort leave — server GCs stale players via 30 s timeout.
