@@ -26,6 +26,16 @@ describe('persistent activity stage slot', () => {
     );
   });
 
+  test('late host warming cannot demote page-owned readiness', () => {
+    useStageStore.getState().registerScenes(['activity']);
+    useStageStore.getState().requestScene('activity');
+    const generation =
+      useStageStore.getState().pendingRequest?.generation ?? 0;
+    useStageStore.getState().ackReady('activity', generation);
+    useStageStore.getState().setSceneWarming('activity', generation);
+    expect(useStageStore.getState().scenes.activity?.status).toBe('ready');
+  });
+
   test('warms the activity slot directly without colliding with cove or kelp', () => {
     expect(hostSource).toContain("slotId: ACTIVITY_SCENE_ID");
     expect(hostSource).toContain('compile: undefined');

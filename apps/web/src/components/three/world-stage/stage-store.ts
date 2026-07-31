@@ -256,6 +256,7 @@ export const useStageStore = create<StageStore>((set, get) => ({
       const request = state.pendingRequest;
       if (
         !slot ||
+        slot.status === 'ready' ||
         slot.generation !== generation ||
         request?.sceneId !== sceneId ||
         request.generation !== generation
