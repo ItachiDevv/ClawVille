@@ -20,6 +20,7 @@ const {
   ACTION_BIT_JUMP,
   ACTION_BIT_POWERUP_0,
   getPlacementItemTable,
+  MIN_LAP_MS,
   REEF_BODY_RADIUS,
   REEF_POWERUP_RADIUS,
   REEF_TICK_MS,
@@ -228,6 +229,78 @@ describe('Reef Race R18d hectic authority', () => {
     expect(crossVictim.lap).toBe(0);
     expect(crossAttacker.prevProgress).toBe(crossAttacker.progress);
     expect(crossVictim.prevProgress).toBe(crossVictim.progress);
+  });
+
+  it('current swap carries the active ghost buffer with its lap clock', () => {
+    const state = start(18_007, 'r18d-current-swap-ghost');
+    const attacker = state.bodies.get(IDS[1]);
+    const victim = state.bodies.get(IDS[0]);
+    attacker.progress = .2; attacker.prevProgress = .2;
+    attacker.startCrossed = true; attacker.lastLapAt = 1_000;
+    attacker.currentLapFrames = [
+      { t: 0, x: 10, z: 10, rot: .1 },
+      { t: 100, x: 20, z: 20, rot: .2 },
+    ];
+    victim.progress = .9; victim.prevProgress = .9;
+    victim.startCrossed = true; victim.lastLapAt = 2_000;
+    victim.currentLapFrames = [
+      { t: 0, x: 100, z: 100, rot: 1.1 },
+      { t: 100, x: 200, z: 200, rot: 1.2 },
+    ];
+    const victimCompletedGhost = [
+      { t: 0, x: -1, z: -1, rot: 0 },
+      { t: 9_000, x: -2, z: -2, rot: 0 },
+    ];
+    victim.bestLapMsSoFar = 9_000;
+    victim.bestLapFrames = victimCompletedGhost;
+
+    (reefRaceSplineSim as any).startCurrentSwap(state, attacker, 2_500);
+    const pending = state.pendingSwaps.get(attacker.avatarId);
+    (reefRaceSplineSim as any).resolvePendingCurrentSwaps(
+      state,
+      pending.resolvesAtMs,
+    );
+
+    expect(attacker.lastLapAt).toBe(2_000);
+    expect(attacker.currentLapFrames.map((frame: any) => frame.x)).toEqual([
+      100,
+      200,
+    ]);
+    expect(victim.lastLapAt).toBe(1_000);
+    expect(victim.currentLapFrames.map((frame: any) => frame.x)).toEqual([
+      10,
+      20,
+    ]);
+    // Already-completed PB ownership never swaps.
+    expect(victim.bestLapFrames).toBe(victimCompletedGhost);
+    expect(attacker.bestLapFrames).toBeNull();
+
+    victim.alive = false;
+    attacker.progressInitialized = true;
+    attacker.progress = .9;
+    attacker.prevProgress = .9;
+    const seam = state.spline.centerlineAt(.05);
+    attacker.x = seam.x;
+    attacker.z = seam.z;
+    (reefRaceSplineSim as any).resolveProgress(
+      state,
+      2_000 + MIN_LAP_MS,
+    );
+
+    const persistedGhost = reefRaceSplineSim
+      .computeResults(state.roomId)
+      .find((row) => row.avatarId === attacker.avatarId)!
+      .reefRace.ghostReplayFrames!;
+    expect(persistedGhost.slice(0, 2).map((frame) => frame.x)).toEqual([
+      100,
+      200,
+    ]);
+    expect(persistedGhost.at(-1)?.t).toBe(MIN_LAP_MS);
+    for (let i = 1; i < persistedGhost.length; i += 1) {
+      expect(persistedGhost[i]!.t).toBeGreaterThan(persistedGhost[i - 1]!.t);
+    }
+    expect(victim.bestLapFrames).toBe(victimCompletedGhost);
+    expect(victim.bestLapMsSoFar).toBe(9_000);
   });
 
   it('schedules 25-40s active-wave cadence and applies with-direction surge', () => {

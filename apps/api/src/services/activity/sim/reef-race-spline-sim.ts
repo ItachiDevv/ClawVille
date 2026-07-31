@@ -3005,13 +3005,16 @@ export class ReefRaceSplineSim {
         x: attacker.x, z: attacker.z, vx: attacker.vx, vz: attacker.vz, rot: attacker.rot,
         progress: attacker.progress, lap: attacker.lap,
         startCrossed: attacker.startCrossed, lastLapAt: attacker.lastLapAt,
+        currentLapFrames: attacker.currentLapFrames,
       };
       attacker.x = victim.x; attacker.z = victim.z; attacker.vx = victim.vx; attacker.vz = victim.vz;
       attacker.rot = victim.rot; attacker.progress = victim.progress; attacker.prevProgress = victim.progress;
       attacker.lap = victim.lap; attacker.startCrossed = victim.startCrossed; attacker.lastLapAt = victim.lastLapAt;
+      attacker.currentLapFrames = victim.currentLapFrames;
       victim.x = attackerPose.x; victim.z = attackerPose.z; victim.vx = attackerPose.vx; victim.vz = attackerPose.vz;
       victim.rot = attackerPose.rot; victim.progress = attackerPose.progress; victim.prevProgress = attackerPose.progress;
       victim.lap = attackerPose.lap; victim.startCrossed = attackerPose.startCrossed; victim.lastLapAt = attackerPose.lastLapAt;
+      victim.currentLapFrames = attackerPose.currentLapFrames;
       this.broadcastFn(state.roomId, {
         type: 'event.current_swap', phase: 'resolved', attackerAvatarId: attacker.avatarId,
         victimAvatarId: victim.avatarId, resolvesAtMs: pending.resolvesAtMs,
