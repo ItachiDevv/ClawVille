@@ -37,6 +37,7 @@ import {
   db,
   activityResults,
   avatars,
+  reefRacePersonalBestClaims,
   users,
   type ActivityRewardConfig,
 } from '@clawville/database';
@@ -406,12 +407,35 @@ export async function issueRewardsForRoom(
       const isBot = participant.subjectType === 'bot';
       const bestStreakThisMatch = sim.reefRace?.bestStreakThisMatch ?? 0;
       const pbWrite = pbWritesByAvatar.get(sim.avatarId);
+      // Money eligibility is re-read from append-only claim history inside
+      // the settlement transaction. The transient PB upsert return is UX-only;
+      // it cannot make a duplicate winner underpay or lose eligibility after a
+      // later room replaces the current PB row.
+      const pbClaimRows =
+        room.activityId === 'reef-race'
+          ? await tx
+              .select({
+                bestLapMs: reefRacePersonalBestClaims.bestLapMs,
+                previousBestLapMs:
+                  reefRacePersonalBestClaims.previousBestLapMs,
+                dailyRank: reefRacePersonalBestClaims.dailyRank,
+              })
+              .from(reefRacePersonalBestClaims)
+              .where(
+                and(
+                  eq(reefRacePersonalBestClaims.sourceRoomId, room.id),
+                  eq(reefRacePersonalBestClaims.avatarId, sim.avatarId),
+                ),
+              )
+              .limit(1)
+          : [];
+      const pbClaim = pbClaimRows[0];
       const legacyWholeMatchPb =
         sim.scoreMs != null &&
         (ctx.priorBestMs == null || sim.scoreMs < ctx.priorBestMs);
       const isPersonalBest =
         room.activityId === 'reef-race'
-          ? pbWrite?.claimedBySourceRoom === true
+          ? pbClaim != null
           : legacyWholeMatchPb;
       const breakdown = computeBreakdown({
         rewardConfig,
@@ -500,10 +524,10 @@ export async function issueRewardsForRoom(
           isPersonalBest,
           // Phase 4 — embed best-streak + PB-rank on the per-match row so
           // the /results endpoint can return them without a JOIN. C2 fix:
-          // dailyRank sourced from the awaited PB-write result.
+          // dailyRank sourced from the durable per-room PB claim.
           matchBestStreak:
             room.activityId === 'reef-race' ? bestStreakThisMatch : null,
-          matchPbDailyRank: pbWrite?.dailyRank ?? null,
+          matchPbDailyRank: pbClaim?.dailyRank ?? null,
         })
         .onConflictDoNothing({
           target: [activityResults.roomId, activityResults.avatarId],
@@ -547,12 +571,15 @@ export async function issueRewardsForRoom(
       // strips it for non-self recipients in the per-recipient match-end
       // dispatch (S7 fix — see emitPerRecipientMatchEnd below).
       const pbDelta =
-        pbWrite && pbWrite.improved && sim.reefRace?.bestLapMs != null
+        pbClaim && sim.reefRace?.bestLapMs != null
           ? {
-              newMs: sim.reefRace.bestLapMs,
-              oldMs: pbWrite.previousMs,
-              dailyRank: pbWrite.dailyRank,
-              newGhostFrames: pbWrite.newGhostFrames,
+              newMs: pbClaim.bestLapMs,
+              oldMs: pbClaim.previousBestLapMs,
+              dailyRank: pbClaim.dailyRank,
+              newGhostFrames:
+                pbWrite?.newGhostFrames ??
+                sim.reefRace.ghostReplayFrames ??
+                undefined,
             }
           : undefined;
 

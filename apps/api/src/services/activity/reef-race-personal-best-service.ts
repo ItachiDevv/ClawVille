@@ -23,9 +23,10 @@
  * gets PB write skipped even if the lap was sub-PB).
  */
 
-import { sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import {
   db,
+  reefRacePersonalBestClaims,
   reefRacePersonalBests,
   type ReefRacePersonalBest,
 } from '@clawville/database';
@@ -56,7 +57,7 @@ export interface PbWriteInput {
 }
 
 export interface PbWriteResult {
-  /** True only when the PB was actually replaced (newBestLapMs < existing). */
+  /** True when this room durably owns an actual best-lap improvement. */
   improved: boolean;
   /**
    * True when this room owns the persisted PB claim. This remains true on
@@ -78,6 +79,15 @@ export interface PbWriteResult {
    * owns the PB claim.
    */
   newGhostFrames?: GhostFrame[];
+}
+
+type PbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+interface DurableClaim {
+  id: string;
+  bestLapMs: number;
+  previousBestLapMs: number | null;
+  dailyRank: number | null;
 }
 
 // ─── 5-min in-memory PB ghost cache ───────────────────────────────────────
@@ -134,106 +144,165 @@ function pruneExpired(now: number): void {
 export async function maybeUpdatePersonalBest(
   input: PbWriteInput,
 ): Promise<PbWriteResult> {
-  // Read previous best inside the same connection so we can return it on
-  // both improved and no-op paths. Could be folded into the upsert via a
-  // CTE, but the explicit two-step reads cleaner and the cost is one
-  // indexed point lookup (the unique key).
-  const priorRows = await db
-    .select({
-      bestLapMs: reefRacePersonalBests.bestLapMs,
-      sourceRoomId: reefRacePersonalBests.sourceRoomId,
-    })
-    .from(reefRacePersonalBests)
-    .where(
-      sql`${reefRacePersonalBests.avatarId} = ${input.avatarId}::uuid AND ${reefRacePersonalBests.activityId} = ${input.activityId}`,
-    )
-    .limit(1);
-  const previousMs = priorRows[0]?.bestLapMs ?? null;
-  const previousSourceRoomId = priorRows[0]?.sourceRoomId ?? null;
+  let replacedCurrentPb = false;
 
-  // PB persistence intentionally precedes the reward transaction. Preserve
-  // the same-room claim on a settlement retry; an equal lap from any other
-  // room is only a tie and earns no PB reward.
-  if (
-    previousMs === input.newBestLapMs &&
-    previousSourceRoomId === input.sourceRoomId
-  ) {
-    return {
-      improved: false,
-      claimedBySourceRoom: true,
-      previousMs,
-      dailyRank: await computeDailyRank(input.newBestLapMs),
-      newGhostFrames: input.ghostReplayData.frames,
-    };
-  }
+  const result = await db.transaction(async (tx) => {
+    // Append-only ownership survives a later/faster room replacing the current
+    // PB row, which makes reward rollback → retry deterministic.
+    const existingClaim = await loadDurableClaim(tx, input);
+    if (existingClaim) return ownedClaimResult(existingClaim, input);
 
-  // No prior row OR improved — INSERT or UPDATE.
-  if (previousMs === null || input.newBestLapMs < previousMs) {
-    // Single-statement upsert. The WHERE predicate guards against a TOCTOU
-    // race where another concurrent write landed a faster lap between our
-    // read above and this upsert — in that race, our update is a no-op
-    // and we return improved=false.
-    const upsertRows = await db.execute<{ best_lap_ms: number }>(
-      sql`
-        INSERT INTO reef_race_personal_bests
-          (avatar_id, activity_id, best_lap_ms, ghost_replay_data, source_room_id)
-        VALUES
-          (${input.avatarId}::uuid,
-           ${input.activityId},
-           ${input.newBestLapMs},
-           ${sql`${JSON.stringify(input.ghostReplayData)}::jsonb`},
-           ${input.sourceRoomId}::uuid)
-        ON CONFLICT (avatar_id, activity_id) DO UPDATE
-          SET best_lap_ms = EXCLUDED.best_lap_ms,
-              ghost_replay_data = EXCLUDED.ghost_replay_data,
-              best_lap_recorded_at = now(),
-              source_room_id = EXCLUDED.source_room_id,
-              updated_at = now()
-          WHERE EXCLUDED.best_lap_ms < reef_race_personal_bests.best_lap_ms
-        RETURNING best_lap_ms
-      `,
-    );
+    const priorRows = await tx
+      .select({
+        bestLapMs: reefRacePersonalBests.bestLapMs,
+        sourceRoomId: reefRacePersonalBests.sourceRoomId,
+      })
+      .from(reefRacePersonalBests)
+      .where(
+        and(
+          eq(reefRacePersonalBests.avatarId, input.avatarId),
+          eq(reefRacePersonalBests.activityId, input.activityId),
+        ),
+      )
+      .limit(1);
+    const previousMs = priorRows[0]?.bestLapMs ?? null;
+    const previousSourceRoomId = priorRows[0]?.sourceRoomId ?? null;
+
+    // Backfill safety for a PB written before the claim-history migration.
+    if (
+      previousMs === input.newBestLapMs &&
+      previousSourceRoomId === input.sourceRoomId
+    ) {
+      return createOrReloadClaim(tx, input, null);
+    }
+
+    if (previousMs !== null && input.newBestLapMs >= previousMs) {
+      return unownedResult(previousMs);
+    }
+
+    const upsertRows = await tx.execute<{ best_lap_ms: number }>(sql`
+      INSERT INTO reef_race_personal_bests
+        (avatar_id, activity_id, best_lap_ms, ghost_replay_data, source_room_id)
+      VALUES
+        (${input.avatarId}::uuid,
+         ${input.activityId},
+         ${input.newBestLapMs},
+         ${sql`${JSON.stringify(input.ghostReplayData)}::jsonb`},
+         ${input.sourceRoomId}::uuid)
+      ON CONFLICT (avatar_id, activity_id) DO UPDATE
+        SET best_lap_ms = EXCLUDED.best_lap_ms,
+            ghost_replay_data = EXCLUDED.ghost_replay_data,
+            best_lap_recorded_at = now(),
+            source_room_id = EXCLUDED.source_room_id,
+            updated_at = now()
+        WHERE EXCLUDED.best_lap_ms < reef_race_personal_bests.best_lap_ms
+      RETURNING best_lap_ms
+    `);
     const upserted = Array.isArray(upsertRows)
       ? (upsertRows as Array<{ best_lap_ms: number }>)
       : [];
-    if (upserted.length === 0) {
-      // Predicate-blocked update (concurrent faster write landed). Still
-      // counts as no-op from our perspective.
-      return {
-        improved: false,
-        claimedBySourceRoom: false,
-        previousMs,
-        dailyRank: null,
-      };
-    }
-    // Compute dailyRank in the same async chain via a single indexed scan
-    // against idx_reef_race_pb_recorded_lap (C2 fix — never the cache).
-    const dailyRank = await computeDailyRank(input.newBestLapMs);
 
-    // S4 fix — flush PB ghost cache for this avatar so a reconnect within
-    // the 5-min TTL sees the freshly-set ghost. C2 fix — flush the public
-    // daily-best-lap cache so the next /leaderboard read sees the new row.
+    if (upserted.length === 0) {
+      // The conditional upsert may lose to an equal concurrent settlement of
+      // this same room. Re-read after the wait and recognize its durable claim.
+      const concurrentClaim = await loadDurableClaim(tx, input);
+      return concurrentClaim
+        ? ownedClaimResult(concurrentClaim, input)
+        : unownedResult(previousMs);
+    }
+
+    replacedCurrentPb = true;
+    return createOrReloadClaim(tx, input, previousMs);
+  });
+
+  if (replacedCurrentPb) {
     invalidatePbGhostCache(input.avatarId);
     try {
       await invalidateDailyCacheLazy();
     } catch (err) {
-      // Cache invalidation failure is non-fatal — at worst the public
-      // surface lags one round-trip. Log + continue.
       console.warn(
         '[reef-race-personal-best] daily cache invalidation failed:',
         err,
       );
     }
-
-    return {
-      improved: true,
-      claimedBySourceRoom: true,
-      previousMs,
-      dailyRank,
-      newGhostFrames: input.ghostReplayData.frames,
-    };
   }
 
+  return result;
+}
+
+async function loadDurableClaim(
+  tx: PbTransaction,
+  input: Pick<PbWriteInput, 'sourceRoomId' | 'avatarId'>,
+): Promise<DurableClaim | null> {
+  const rows = await tx
+    .select({
+      id: reefRacePersonalBestClaims.id,
+      bestLapMs: reefRacePersonalBestClaims.bestLapMs,
+      previousBestLapMs: reefRacePersonalBestClaims.previousBestLapMs,
+      dailyRank: reefRacePersonalBestClaims.dailyRank,
+    })
+    .from(reefRacePersonalBestClaims)
+    .where(
+      and(
+        eq(reefRacePersonalBestClaims.sourceRoomId, input.sourceRoomId),
+        eq(reefRacePersonalBestClaims.avatarId, input.avatarId),
+      ),
+    )
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+async function createOrReloadClaim(
+  tx: PbTransaction,
+  input: PbWriteInput,
+  previousMs: number | null,
+): Promise<PbWriteResult> {
+  const dailyRank = await computeDailyRank(tx, input.newBestLapMs);
+  const [inserted] = await tx
+    .insert(reefRacePersonalBestClaims)
+    .values({
+      sourceRoomId: input.sourceRoomId,
+      avatarId: input.avatarId,
+      activityId: input.activityId,
+      bestLapMs: input.newBestLapMs,
+      previousBestLapMs: previousMs,
+      dailyRank,
+    })
+    .onConflictDoNothing({
+      target: [
+        reefRacePersonalBestClaims.sourceRoomId,
+        reefRacePersonalBestClaims.avatarId,
+      ],
+    })
+    .returning({
+      id: reefRacePersonalBestClaims.id,
+      bestLapMs: reefRacePersonalBestClaims.bestLapMs,
+      previousBestLapMs: reefRacePersonalBestClaims.previousBestLapMs,
+      dailyRank: reefRacePersonalBestClaims.dailyRank,
+    });
+  const claim = inserted ?? (await loadDurableClaim(tx, input));
+  if (!claim) {
+    throw new Error(
+      `PB claim missing after successful write for room ${input.sourceRoomId} avatar ${input.avatarId}`,
+    );
+  }
+  return ownedClaimResult(claim, input);
+}
+
+function ownedClaimResult(
+  claim: DurableClaim,
+  input: PbWriteInput,
+): PbWriteResult {
+  return {
+    improved: true,
+    claimedBySourceRoom: true,
+    previousMs: claim.previousBestLapMs,
+    dailyRank: claim.dailyRank,
+    newGhostFrames: input.ghostReplayData.frames,
+  };
+}
+
+function unownedResult(previousMs: number | null): PbWriteResult {
   return {
     improved: false,
     claimedBySourceRoom: false,
@@ -242,8 +311,11 @@ export async function maybeUpdatePersonalBest(
   };
 }
 
-async function computeDailyRank(bestLapMs: number): Promise<number | null> {
-  const rankRows = await db.execute<{ rank: number }>(sql`
+async function computeDailyRank(
+  tx: PbTransaction,
+  bestLapMs: number,
+): Promise<number | null> {
+  const rankRows = await tx.execute<{ rank: number }>(sql`
     SELECT count(*)::int + 1 AS rank
     FROM reef_race_personal_bests
     WHERE activity_id = 'reef-race'

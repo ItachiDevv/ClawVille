@@ -136,6 +136,14 @@ mock.module('@clawville/database', () => ({
     createdAt: 'created_at',
     updatedAt: 'updated_at',
   },
+  reefRacePersonalBestClaims: {
+    id: 'claim_id',
+    sourceRoomId: 'source_room_id',
+    avatarId: 'avatar_id',
+    bestLapMs: 'best_lap_ms',
+    previousBestLapMs: 'previous_best_lap_ms',
+    dailyRank: 'daily_rank',
+  },
   // Phase 4 — reward-pipeline now imports activity-ws-hub which
   // transitively imports activity-room-manager which references these
   // schemas at module load time. Bun's mock.module is process-scoped
