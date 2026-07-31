@@ -276,6 +276,23 @@ const STAGE_PROBE_API_FIXTURES = new Map([
       mode: "none",
     },
   ],
+  [
+    "GET /api/quests/tutorial/claims",
+    {
+      ok: true,
+      userId: "world-stage-probe-user",
+      claims: [],
+    },
+  ],
+  ["POST /api/avatars/me/heartbeat", { ok: true }],
+  [
+    "GET /api/land/me",
+    {
+      avatarId: "world-stage-probe-avatar",
+      parcels: [],
+      structures: [],
+    },
+  ],
 ]);
 const ACTIVITY_FIXTURE = {
   activityId: "reef-race",
