@@ -320,18 +320,32 @@ Measured baseline (localhost serving — network done ≤1.6s, so these isolate 
   daemon accumulation, §5b.2; one residual fresh-daemon occurrence observed against staging) —
   batch policy: fresh daemon per attempt + retry, hang rate logged per batch.
 
-**Frozen REGRESSION budgets — the rung-1 canary + every A-class widening must stay inside these
-on BOTH backends (the round's goal is to IMPROVE them). "Stable window" = first contiguous 3s run
-of frames all ≤100ms, measured from reveal (probe `frameMetrics.stableWindowStartMsAfterReveal`,
-interval-overlap inclusion).**
+**Acceptance model (amended after batch v7): PAIRED comparison is the PRIMARY gate; absolute
+ceilings are outer sanity bounds only.** Batch v7 — identical code to the batch that froze the
+first ceilings — breached them on 4/4 local runs purely from machine load (a 12h-loaded dev box
+vs a quiet one: WebGL2 reveal 27.3-27.5s vs the 25s ceiling). Absolute ceilings from an n=2
+quiet-machine sample cannot gate code changes on a shared box. Therefore:
+
+- **Primary gate (paired A/B):** every canary/widening batch runs INTERLEAVED baseline↔candidate
+  pairs in one session (fresh daemon+profile per run, alternating). Acceptance per backend:
+  candidate median ≤ baseline median × 1.15 on reveal, worst-frame, stable-window-start, and
+  pre-reveal longtasks; frames>100 within +2 of baseline. All runs `validForPerformance: true`
+  and `backendWaived: false`.
+- **Outer sanity bounds** (union of ALL valid runs across batches f+g; a candidate exceeding
+  these is rejected regardless of pairing):
 | Metric | WebGPU | WebGL2 |
 |---|---|---|
-| reveal (local fixture, page clock) | ≤ 20s | ≤ 25s |
-| worst frame in the 10s post-reveal window | ≤ 2.5s | ≤ 11s |
-| stable-window start after reveal | ≤ 5s | ≤ 12s |
-| frames >100ms in the 10s window | ≤ 5 | ≤ 5 |
-| pre-reveal longtask total | ≤ 5s | ≤ 16s |
+| reveal (local fixture, page clock) | ≤ 22s | ≤ 30s |
+| worst frame in the 10s post-reveal window | ≤ 4s | ≤ 12s |
+| stable-window start after reveal | ≤ 6s | ≤ 15s |
+| frames >100ms in the 10s window | ≤ 6 | ≤ 5 |
+| pre-reveal longtask total | ≤ 6.5s | ≤ 25s |
 | post-queue drain (once the post lane exists) | ≤ 60s after reveal | same |
+
+Union maxima observed (batches f+g, all `validForPerformance`): WebGPU reveal 20.5s / worst
+3.23s / stable 4.95s / f100 5 / ltPre 5.31s; WebGL2 27.5s / 10.85s / 13.24s / 4 / 23.27s.
+"Stable window" = first contiguous 3s run of frames all ≤100ms from reveal
+(`frameMetrics.stableWindowStartMsAfterReveal`, interval-overlap inclusion).
 
 ## 5b. Defects discovered during M0 setup (2026-07-31, local full-stack)
 
