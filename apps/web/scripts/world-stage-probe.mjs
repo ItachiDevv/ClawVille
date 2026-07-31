@@ -2894,6 +2894,9 @@ try {
       historyPage,
       "__ACTIVITY_HISTORY_LOADER__",
     );
+    const readinessLogStart = await historyPage.evaluate(
+      () => window.__ACTIVITY_READINESS_PROBE__?.length ?? 0,
+    );
     await historyPage.evaluate(() => {
       window.__ACTIVITY_HISTORY_RETAINED__ = {
         outgoingRetainedUntilOpaque: true,
@@ -2962,6 +2965,18 @@ try {
       window.__ACTIVITY_HISTORY_RETAINED_CLEANUP__?.();
       return window.__ACTIVITY_HISTORY_RETAINED__;
     });
+    const historyReadinessDecisions = await historyPage.evaluate(
+      (start) =>
+        (window.__ACTIVITY_READINESS_PROBE__ ?? []).slice(start),
+      readinessLogStart,
+    );
+    const outgoingRoomDecisions = historyReadinessDecisions.filter(
+      (entry) =>
+        entry.roomKey ===
+          `${ACTIVITY_FIXTURE.activityId}:${ACTIVITY_FIXTURE.roomA}` &&
+        entry.pendingGeneration ===
+          historyAfterForward.slots.activity.generation,
+    );
     const historyEvidence = {
       precondition: {
         initial: historyInitial.committedStageNavigations,
@@ -2975,6 +2990,14 @@ try {
         historyBeforeForward.slots.activity.generation,
       outgoingRetainedUntilOpaque:
         historyRetention.outgoingRetainedUntilOpaque === true,
+      outgoingRoomDecisions,
+      outgoingRoomNeverAckedIncomingGeneration:
+        outgoingRoomDecisions.length > 0 &&
+        outgoingRoomDecisions.every(
+          (entry) =>
+            entry.decision.kind === "WAIT" &&
+            entry.decision.reason === "wrong-room",
+        ),
       retention: historyRetention,
       entryLoader: historyLoader,
     };
@@ -3129,7 +3152,7 @@ try {
         targetRoomKeySetOnPathnameNav:
           historyAfterForward.activeScene === "activity",
         outgoingRoomNeverAckedIncomingGeneration:
-          historyEvidence.outgoingRetainedUntilOpaque,
+          historyEvidence.outgoingRoomNeverAckedIncomingGeneration,
         pathnameFirstMintedNewGeneration:
           historyEvidence.pathnameFirstMintedNewGeneration,
         historyEvidence,

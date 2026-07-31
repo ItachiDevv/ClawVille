@@ -449,6 +449,31 @@ function ActivityRoomRuntime({
       terminalRoomKey,
       ackedKey,
     });
+    if (
+      process.env.NEXT_PUBLIC_ENABLE_STAGE_PROBE === '1' &&
+      typeof window !== 'undefined'
+    ) {
+      const probeWindow = window as typeof window & {
+        __ACTIVITY_READINESS_PROBE__?: Array<{
+          at: number;
+          roomKey: string;
+          targetRoomKey: string | null;
+          pendingGeneration: number | null;
+          decision: typeof decision;
+        }>;
+      };
+      const log =
+        probeWindow.__ACTIVITY_READINESS_PROBE__ ??
+        (probeWindow.__ACTIVITY_READINESS_PROBE__ = []);
+      log.push({
+        at: performance.now(),
+        roomKey,
+        targetRoomKey,
+        pendingGeneration,
+        decision,
+      });
+      if (log.length > 200) log.splice(0, log.length - 200);
+    }
     if (decision.kind !== 'ACK') return;
     setAckedKey(decision.ackKey);
     useStageStore
