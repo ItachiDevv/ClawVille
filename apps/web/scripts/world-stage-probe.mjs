@@ -110,8 +110,16 @@ if (
 }
 const dwellMode = dwellTarget !== null;
 const heapDiffRequested = argv.has("heap-diff");
-if (heapDiffRequested && (lane !== "soak" || dwellMode)) {
-  throw new Error("--heap-diff requires the crossing form of --lane=soak");
+const activityHeapDiff =
+  heapDiffRequested && lane === "routes" && routePair === "activity";
+if (
+  heapDiffRequested &&
+  !activityHeapDiff &&
+  (lane !== "soak" || dwellMode)
+) {
+  throw new Error(
+    "--heap-diff requires crossing soak or activity routes",
+  );
 }
 const forceWebGL = argv.has("webgl");
 const requestedUrl =
@@ -142,11 +150,15 @@ if (
   (lane === "soak" &&
     !dwellMode &&
     (transitionCount < 20 || transitionCount > 120)) ||
-  (heapDiffRequested && transitionCount < 50)
+  (heapDiffRequested &&
+    transitionCount < (activityHeapDiff ? 30 : 50))
 ) {
   throw new Error(
-    heapDiffRequested && transitionCount < 50
-      ? "--heap-diff requires at least 50 soak loops"
+    heapDiffRequested &&
+      transitionCount < (activityHeapDiff ? 30 : 50)
+      ? `--heap-diff requires at least ${
+          activityHeapDiff ? 30 : 50
+        } loops`
       : lane === "soak"
         ? "The soak lane requires integer --loops between 20 and 120"
         : "--transitions must be a positive integer",
@@ -453,7 +465,11 @@ const summary = {
   heapDiff: {
     enabled: heapDiffRequested,
     status: heapDiffRequested ? "pending" : "disabled",
-    snapshotLoops: heapDiffRequested ? [20, 50] : [],
+    snapshotLoops: heapDiffRequested
+      ? activityHeapDiff
+        ? [5, 30]
+        : [20, 50]
+      : [],
     reportPath: heapDiffRequested ? heapReportPath : null,
     aggregation: null,
     baseline: null,
@@ -3714,7 +3730,7 @@ try {
         }
         if (
           heapDiffRequested &&
-          (completedLoop === 20 || completedLoop === 50)
+          summary.heapDiff.snapshotLoops.includes(completedLoop)
         ) {
           await captureHeapSnapshot(page, completedLoop);
         }
@@ -4239,13 +4255,16 @@ try {
     }
   }
   if (heapDiffRequested) {
-    const loop20Path = heapSnapshotPaths.get(20);
-    const loop50Path = heapSnapshotPaths.get(50);
+    const [baselineLoop, finalLoop] = summary.heapDiff.snapshotLoops;
+    const baselinePath = heapSnapshotPaths.get(baselineLoop);
+    const finalPath = heapSnapshotPaths.get(finalLoop);
     try {
-      if (!loop20Path || !loop50Path) {
-        throw new Error("Heap diff did not capture both loop 20 and loop 50");
+      if (!baselinePath || !finalPath) {
+        throw new Error(
+          `Heap diff did not capture both loop ${baselineLoop} and loop ${finalLoop}`,
+        );
       }
-      const diff = await diffHeapSnapshots(loop20Path, loop50Path);
+      const diff = await diffHeapSnapshots(baselinePath, finalPath);
       summary.heapDiff = {
         ...summary.heapDiff,
         ...diff,
