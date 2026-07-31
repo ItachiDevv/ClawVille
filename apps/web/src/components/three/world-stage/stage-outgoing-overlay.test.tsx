@@ -112,7 +112,7 @@ const cases: Array<readonly [string, () => void]> = [
   }],
   ['children landing clears the overlay and releases fade-in', () => {
     expect(rootSource).toMatch(
-      /setDisplayedChildren\(children\);[\s\S]*?clearOutgoingOverlay\(overlay\.requestId\)/,
+      /setDisplayedPathname\(pathname\);[\s\S]*?overlay\.pathname !== displayedPathname[\s\S]*?clearOutgoingOverlay\(overlay\.requestId\)/,
     );
   }],
   ['does not set an outgoing overlay when leaving cove', () => {
@@ -172,10 +172,16 @@ const cases: Array<readonly [string, () => void]> = [
   }],
   ['retains A until B reaches the opaque midpoint', () => {
     expect(rootSource).toContain(
-      'pendingRouteChildrenRef.current = { pathname, children }',
+      'pendingRouteChildrenRef.current = {\n        pathname,\n        children,\n      }',
     );
     expect(rootSource).toMatch(
       /handleTransitionOpaque[\s\S]*?setDisplayedChildren\(pendingRoute\.children\)/,
+    );
+    expect(rootSource).toContain(
+      '<LazyStageActivityRouteHost pathname={displayedPathname} />',
+    );
+    expect(rootSource).toMatch(
+      /handleTransitionOpaque[\s\S]*?setDisplayedPathname\(pendingRoute\.pathname\)/,
     );
   }],
   ['gates B fade-in on B paint and rejects A readiness', () => {

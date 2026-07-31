@@ -118,6 +118,9 @@ const LazyStageHostedKelpScene = lazy(() =>
 const LazyStageHostedActivityScene = lazy(
   () => import('./StageHostedActivityScene'),
 );
+const LazyStageActivityRouteHost = lazy(
+  () => import('./StageActivityRouteHost'),
+);
 
 export function WorldStageRoot({ children }: { children: ReactNode }) {
   const pathname = usePathname();
@@ -131,6 +134,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
     useState<string | null>(null);
   const [displayedChildren, setDisplayedChildren] =
     useState<ReactNode>(children);
+  const [displayedPathname, setDisplayedPathname] = useState(pathname);
   const displayedPathRef = useRef(pathname);
   const openedMidpointRef = useRef<{
     requestId: number;
@@ -189,6 +193,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
       navigationRef.current = null;
       openedMidpointRef.current = null;
       pendingDestinationKeyRef.current = null;
+      pendingRouteChildrenRef.current = null;
       const overlay = useStageStore.getState().outgoingOverlay;
       if (overlay) {
         useStageStore.getState().clearOutgoingOverlay(overlay.requestId);
@@ -296,12 +301,12 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
       displayedPathRef.current = pathname;
       pendingRouteChildrenRef.current = null;
       setDisplayedChildren(children);
-      const overlay = state.outgoingOverlay;
-      if (overlay && overlay.pathname !== pathname) {
-        state.clearOutgoingOverlay(overlay.requestId);
-      }
+      setDisplayedPathname(pathname);
     } else {
-      pendingRouteChildrenRef.current = { pathname, children };
+      pendingRouteChildrenRef.current = {
+        pathname,
+        children,
+      };
     }
 
     const pendingMatchesDestination =
@@ -335,6 +340,14 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
     searchParams,
     stageReady,
   ]);
+
+  useEffect(() => {
+    const state = useStageStore.getState();
+    const overlay = state.outgoingOverlay;
+    if (overlay && overlay.pathname !== displayedPathname) {
+      state.clearOutgoingOverlay(overlay.requestId);
+    }
+  }, [displayedPathname]);
 
   useEffect(() => {
     if (!stageReady || coldInitIssuedRef.current) return;
@@ -462,6 +475,7 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
         pendingRouteChildrenRef.current = null;
         displayedPathRef.current = pendingRoute.pathname;
         setDisplayedChildren(pendingRoute.children);
+        setDisplayedPathname(pendingRoute.pathname);
       }
       const pendingNavigation = navigationRef.current;
       const taken = takeParkedNavigationForOpaque(
@@ -730,7 +744,14 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
         </div>
       )}
       <div className="world-stage-page-layer pointer-events-none absolute inset-0 z-10">
-        {stageReady ? displayedChildren : null}
+        {stageReady &&
+        sceneIdForPathname(displayedPathname) === ACTIVITY_SCENE_ID ? (
+          <Suspense fallback={null}>
+            <LazyStageActivityRouteHost pathname={displayedPathname} />
+          </Suspense>
+        ) : stageReady ? (
+          displayedChildren
+        ) : null}
       </div>
       {coveSceneEmpty && (
         <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-[rgba(10,0,21,0.85)]">
