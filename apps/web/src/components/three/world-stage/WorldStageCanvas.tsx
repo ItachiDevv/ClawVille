@@ -654,6 +654,7 @@ function createStageRenderer(props: {
 
 export interface WorldStageScene extends StageCameraDefinition {
   content: ReactNode;
+  overlayOpaque?: boolean;
   capabilities?: Partial<PlayerCapabilityMask>;
   appearance?: {
     background: THREE.ColorRepresentation;

@@ -38,11 +38,11 @@ export function decideKelpWalkIn(
 
   const releaseLegacyLatch = input.legacyLatchArmed;
   const bufferedActive =
-    input.nav.bufferedTo !== null &&
+    input.nav.bufferedPathname !== null &&
     input.nav.bufferedExpiresAt !== null &&
     input.nav.bufferedExpiresAt > input.nowMs;
 
-  if (bufferedActive && input.nav.bufferedTo === '/kelp') {
+  if (bufferedActive && input.nav.bufferedPathname === '/kelp') {
     return {
       kind: 'BLOCKED',
       reason: 'in-flight',
@@ -50,7 +50,7 @@ export function decideKelpWalkIn(
     };
   }
 
-  if (bufferedActive && input.nav.bufferedTo !== '/kelp') {
+  if (bufferedActive && input.nav.bufferedPathname !== '/kelp') {
     return { kind: 'PROCEED', releaseLegacyLatch };
   }
 

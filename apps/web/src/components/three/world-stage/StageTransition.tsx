@@ -18,6 +18,7 @@ const STAGE_SCENE_KIND_BY_ID = {
   world: 'world',
   cove: 'cove',
   kelp: 'kelp',
+  activity: 'activity',
 } as const;
 
 interface StageTransitionProps {
@@ -56,6 +57,7 @@ export function StageTransition({
     (state) => state.firstControlledFrame,
   );
   const stageEpoch = useStageStore((state) => state.stageEpoch);
+  const outgoingOverlay = useStageStore((state) => state.outgoingOverlay);
   const machineRef = useRef<WatchdogState | null>(null);
   const resolvedWatchdogConfig = useMemo<WatchdogConfig>(
     () =>
@@ -202,7 +204,8 @@ export function StageTransition({
       transition.requestId !== pendingRequest.requestId ||
       requestedStatus !== 'ready' ||
       !matchesRequest(cameraInstalled, pendingRequest) ||
-      !matchesRequest(firstControlledFrame, pendingRequest)
+      !matchesRequest(firstControlledFrame, pendingRequest) ||
+      outgoingOverlay?.requestId === pendingRequest.requestId
     ) {
       return;
     }
@@ -214,6 +217,7 @@ export function StageTransition({
     cameraInstalled,
     firstControlledFrame,
     pendingRequest,
+    outgoingOverlay,
     requestedStatus,
     transition,
   ]);

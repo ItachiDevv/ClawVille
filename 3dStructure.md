@@ -1,6 +1,18 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-07-30 (Persistent world-stage P3 Kelp cutover).** `/game`,
+**Last Audited: 2026-07-30 (Persistent world-stage P4 activity overlay slot).**
+`/activity/:activityId/:roomId` now joins the `(world)` route group and registers
+an empty resident `activity` stage slot while Reef Race and Bumper Shells retain
+their room-keyed page-layer WebGL canvases. The shared stage pauses only after
+the activity transition reaches idle; readiness is bound to the requested room
+and acknowledged after the activity canvas paints or a room-scoped terminal
+surface is visible. Returns use the stage fade and hold the cover until the
+opaque activity subtree actually unmounts. **Drift note:** P4 citations were
+frozen pre-P3; the live stage already contained the unified controller, Kelp
+slot, and v42 protocol baseline, so the activity slot was applied to those
+landed roles.
+
+**Prior Last Audited: 2026-07-30 (Persistent world-stage P3 Kelp cutover).** `/game`,
 `/cove`, and page-only `/kelp` now share the unkeyed `(world)` stage Canvas.
 Kelp is a resident `StageHostedKelpScene` slot whose scene graph, camera,
 controls, activation reset, warmup, health/recovery, and resource ledger remain

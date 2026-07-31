@@ -76,6 +76,7 @@ import {
 import { clientSpline } from './reef-race-spline-instance';
 import type { ReefRaceEntity } from './reef-race-types';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
+import { ActivityCanvasReadyProbe } from '@/lib/three/activities/ActivityCanvasReadyProbe';
 import { reefRaceStartGridPose, type ReefRaceStartFrame } from '@clawville/shared';
 import {
   getReefRaceSurgeSnapshot,
@@ -584,6 +585,9 @@ interface SceneContentsProps {
   selfAvatarId: string | null;
   matchPhase: string;
   raceStartMs: number;
+  roomKey: string;
+  onPainted: (roomKey: string) => void;
+  onCanvas: (element: HTMLCanvasElement | null) => void;
 }
 
 function SceneContents({
@@ -592,6 +596,9 @@ function SceneContents({
   selfAvatarId,
   matchPhase,
   raceStartMs,
+  roomKey,
+  onPainted,
+  onCanvas,
 }: SceneContentsProps) {
   const selfEntity = selfAvatarId ? (entities.get(selfAvatarId) ?? null) : null;
   const selfIsStaged = selfAvatarId ? stagedAvatarIds.has(selfAvatarId) : false;
@@ -716,6 +723,11 @@ function SceneContents({
           the render loop (positive-priority useFrame) so it MUST be the LAST
           child — it composes the final framebuffer. Iris-Xe-gated (half-res). */}
       <SurfBloom />
+      <ActivityCanvasReadyProbe
+        roomKey={roomKey}
+        onPainted={onPainted}
+        onCanvas={onCanvas}
+      />
     </>
   );
 }
@@ -727,9 +739,18 @@ export interface ReefRaceSceneProps {
   roomId: string;
   /** The current user's avatar ID, used for chase-cam and self-highlight. */
   selfAvatarId?: string | null;
+  roomKey: string;
+  onPainted: (roomKey: string) => void;
+  onCanvas: (element: HTMLCanvasElement | null) => void;
 }
 
-export default function ReefRaceScene({ roomId, selfAvatarId = null }: ReefRaceSceneProps) {
+export default function ReefRaceScene({
+  roomId,
+  selfAvatarId = null,
+  roomKey,
+  onPainted,
+  onCanvas,
+}: ReefRaceSceneProps) {
   const entities    = useActivityStore((s) => s.entities as Map<string, ReefRaceEntity>);
   const matchPhase  = useActivityStore((s) => s.matchPhase);
   const participantMeta = useActivityStore((s) => s.reefParticipantMeta);
@@ -762,6 +783,9 @@ export default function ReefRaceScene({ roomId, selfAvatarId = null }: ReefRaceS
         selfAvatarId={selfAvatarId}
         matchPhase={matchPhase}
         raceStartMs={raceStartMs}
+        roomKey={roomKey}
+        onPainted={onPainted}
+        onCanvas={onCanvas}
       />
     </Canvas>
   );

@@ -22,7 +22,7 @@
  * §"Out of scope … new runtime deps that aren't already in dependencies").
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ClientFrame, ServerFrame } from '@clawville/shared';
 import { useActivityStore, type ConnectionStatus } from '@/stores/activity';
 
@@ -63,6 +63,7 @@ export interface UseActivityWsResult {
   send: (frame: ClientFrame) => boolean;
   ping: number;
   status: ConnectionStatus;
+  leaveAndClose: () => void;
 }
 
 // ─── Implementation ─────────────────────────────────────────────────────────
@@ -116,6 +117,39 @@ export function useActivityWs(opts: UseActivityWsOptions): UseActivityWsResult {
       return false;
     }
   };
+
+  const leaveAndClose = useCallback((): void => {
+    if (intentionallyClosedRef.current) return;
+    intentionallyClosedRef.current = true;
+    if (pingIntervalRef.current) {
+      clearInterval(pingIntervalRef.current);
+      pingIntervalRef.current = null;
+    }
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    const ws = wsRef.current;
+    if (
+      ws &&
+      (ws.readyState === WebSocket.OPEN ||
+        ws.readyState === WebSocket.CONNECTING)
+    ) {
+      try {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'leave' }));
+        }
+      } catch {
+        // Best effort at document teardown.
+      }
+      try {
+        ws.close(1000, 'leave');
+      } catch {
+        // Best effort at document teardown.
+      }
+    }
+    wsRef.current = null;
+  }, []);
 
   // ── Lifecycle ────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -331,11 +365,12 @@ export function useActivityWs(opts: UseActivityWsOptions): UseActivityWsResult {
       // Don't push `closed` into the store on unmount — the next page mount
       // resets it via `useActivityStore.getState().reset(roomId)`.
     };
-  }, [wsUrl, shortCode, sessionToken]);
+  }, [leaveAndClose, wsUrl, shortCode, sessionToken]);
 
   return {
     send: sendRef.current,
     ping,
     status,
+    leaveAndClose,
   };
 }

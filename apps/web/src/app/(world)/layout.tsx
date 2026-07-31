@@ -2,6 +2,8 @@ import type { ReactNode } from 'react';
 import { WorldStageRoot } from '@/components/three/world-stage/WorldStageRoot';
 import { WorldPresence } from '@/components/three/world-stage/WorldPresence';
 
+export const dynamic = 'force-dynamic';
+
 export default function WorldRouteGroupLayout({
   children,
 }: {

@@ -1,6 +1,17 @@
 # ClawVille — Architecture
 
-**Last Audited: 2026-07-30 (world-stage P3 Kelp + protocol v42 (authored as v41; renumbered 42 in the staging merge over the wallet slice's 41)).** Page-only
+**Last Audited: 2026-07-30 (world-stage P4 activity route/overlay
+architecture).** `/activity/:activityId/:roomId` is now part of
+`app/(world)` alongside `/game`, `/cove`, and `/kelp`. The persistent stage owns
+an empty `activity` slot and transition/navigation lineage, while the activity
+page owns the room-keyed Reef Race or Bumper Shells canvas, HUD, WebSocket, and
+30 Hz input loop. Component-issued stage URLs carry a document-scoped nonce so
+overlapping or late App Router commits can be classified without treating a
+stale activity landing as a fresh request. **Drift note:** the frozen citations
+targeted the pre-P3 anchor; implementation uses the landed P3 stage APIs and
+the live v42 protocol baseline.
+
+**Prior Last Audited: 2026-07-30 (world-stage P3 Kelp + protocol v42 (authored as v41; renumbered 42 in the staging merge over the wallet slice's 41)).** Page-only
 `/kelp` is now inside `app/(world)` with `/game` and `/cove`, sharing one
 persistent physical Canvas; non-page Kelp/API surfaces are unchanged.
 `WorldPresence` maps `/game` to active uploads, `/cove` to remote `at-cove`,

@@ -1,6 +1,16 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-07-30 (Kelp persistent-stage entry/exit and presence).**
+**Last Audited: 2026-07-30 (Reef Race + Bumper Shells persistent-stage
+entry/exit).** Match routes now enter through the shared world-stage fade while
+their existing activity canvases, HUDs, input cadence, room WebSocket, and
+per-room reset behavior remain page-owned. Leave, requeue, cancellation, and
+Play Again route through the same-document stage navigator; a stalled route
+commit keeps the live match mounted behind the cover and offers explicit Retry
+or Hard navigate recovery. **Drift note:** the frozen route anchors predated
+the landed P3 Kelp slot, so the activity UX was attached to the live four-slot
+stage contract.
+
+**Prior Last Audited: 2026-07-30 (Kelp persistent-stage entry/exit and presence).**
 Walking through or activating the town-center Kelp portal now transitions into
 a resident stage slot; returning is an opaque fade and keeps the world Canvas
 warm. The player's world body remains in the shared room and uploads
