@@ -298,6 +298,28 @@ sibling names preferred (auto-bust).
 - Same-diff docs: `3dStructure.md` (assets/loading), this doc (results per milestone),
   `deploy-status.md` on any staging push.
 
+## 2b. M0 FROZEN BUDGETS (2026-07-31, local full-stack fixture, fresh profiles, n=3/backend)
+
+Measured baseline (localhost serving — network done ≤1.6s, so these isolate compute/pipeline):
+- **WebGPU**: reveal 20.5 / 21.3 / 24.1 s · vrmBulk 18.1-29.1 s · worst post-reveal frame 2.6-4.4 s
+- **WebGL2 (`?webgl=1`, Iris-proxy on desktop GPU)**: reveal 22.5 / 33.6 / 41.0 s · vrmBulk
+  9.6-35.4 s (high variance) · worst post-reveal frame 8.0-11.6 s
+- Longtasks >100ms: 16-17 both backends. One run completed the classic full sequence
+  (scans 143ms / 263 textures · compile 3.9s · warmRender 2.8s); the rest published reveal via
+  the racing stage-ready path.
+- **Local cold-boot hang tally: 3 hangs / 9 fresh-profile attempts (~33%)**; staging 2/2 green.
+  Hang signature: stage canvas never mounts, zero page errors (see §5b.2).
+
+**Frozen REGRESSION budgets (canary + every A-class widening must stay inside; the round's goal
+is to IMPROVE them, and any single run may be retried once given the known local hang):**
+| Metric | WebGPU | WebGL2 |
+|---|---|---|
+| reveal (local fixture) | ≤ 25s | ≤ 42s |
+| worst post-reveal frame (10s window) | ≤ 4.5s | ≤ 12s |
+| longtasks >100ms (whole boot) | ≤ 20 | ≤ 20 |
+| stable-frame rule | no frame >100ms in any 3s window starting ≤10s after reveal | same |
+| post-queue drain (once the post lane exists) | ≤ 60s after reveal | same |
+
 ## 5b. Defects discovered during M0 setup (2026-07-31, local full-stack)
 
 1. **API-failure boot = permanent black "WARMING SCENE".** A fresh visitor whose API calls fail
