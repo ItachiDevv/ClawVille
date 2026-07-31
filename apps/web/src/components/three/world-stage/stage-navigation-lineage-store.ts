@@ -81,8 +81,7 @@ export function pushIssue(issue: StageNavigationIssue): void {
     if (evicted) {
       pushTombstone({
         id: evicted.id,
-        status:
-          evicted.status === 'superseded' ? 'superseded' : 'settled',
+        status: 'superseded',
       });
     }
   }
