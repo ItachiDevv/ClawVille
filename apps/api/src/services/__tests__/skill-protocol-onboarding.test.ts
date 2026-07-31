@@ -25,7 +25,7 @@ describe('open-agent onboarding manuals', () => {
     const manual = buildPlayManual(API_BASE);
     const protocolManual = buildProtocolManual(API_BASE);
 
-    expect(PROTOCOL_VERSION).toBe(42);
+    expect(PROTOCOL_VERSION).toBe(43);
     expect(manual).toContain(`POST ${API_BASE}/api/agent/connect`);
     expect(manual).toContain('"agentId": "your-stable-agent-id"');
     expect(manual).toContain('"identityType": "your-framework"');
@@ -128,14 +128,17 @@ describe('open-agent onboarding manuals', () => {
       'self-reported free-form string of at most 32',
     );
     expect(protocolManual).toMatch(
-      /Conventional values are `idle`, `walking`, `running`,\s+`at-cove`, and `at-kelp`\./,
+      /Conventional values are `idle`, `walking`, `running`,\s+`at-cove`, `at-kelp`, and `at-activity`\./,
     );
     expect(protocolManual).toContain(
       'Clients render an\n"at the Cove" presence tag for',
     );
-    expect(protocolManual).toContain(
-      'an "at the Kelp\nForest" presence tag for `at-kelp`',
-    );
+      expect(protocolManual).toContain(
+        'an "at the Kelp\nForest" presence tag for `at-kelp`',
+      );
+      expect(protocolManual).toContain(
+        'an "in an activity"\npresence tag for `at-activity`',
+      );
     expect(protocolManual).toContain(
       'these are display conventions,\nnot location-authoritative',
     );
@@ -186,7 +189,7 @@ describe('open-agent onboarding manuals', () => {
       'custom remains non-restorable',
     ];
 
-    expect(PROTOCOL_VERSION).toBe(42);
+    expect(PROTOCOL_VERSION).toBe(43);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');

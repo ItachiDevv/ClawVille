@@ -9,7 +9,9 @@ page owns the room-keyed Reef Race or Bumper Shells canvas, HUD, WebSocket, and
 overlapping or late App Router commits can be classified without treating a
 stale activity landing as a fresh request. **Drift note:** the frozen citations
 targeted the pre-P3 anchor; implementation uses the landed P3 stage APIs and
-the live v42 protocol baseline.
+bumped the live protocol baseline from v42 to v43 in the same P4b diff.
+`WorldPresence` maps exact activity match routes to remote `at-activity`, and
+peers render that conventional value as an idle `Â· in an activity` suffix.
 
 **Prior Last Audited: 2026-07-30 (world-stage P3 Kelp + protocol v42 (authored as v41; renumbered 42 in the staging merge over the wallet slice's 41)).** Page-only
 `/kelp` is now inside `app/(world)` with `/game` and `/cove`, sharing one

@@ -1,4 +1,5 @@
 import {
+  AT_ACTIVITY,
   AT_COVE_ACTIVITY,
   AT_KELP_ACTIVITY,
   KELP_REALM_CELL_WU,
@@ -377,7 +378,7 @@ import {
 // self-reported `at-kelp` co-presence convention; the world wire is unchanged.
 // (Authored against base 40 as "41" concurrently with the wallet slice; the
 // merge resolves the collision by stacking kelp on top as 42.)
-export const PROTOCOL_VERSION = 42;
+export const PROTOCOL_VERSION = 43;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -874,9 +875,10 @@ GET  ${apiBase}/api/world/:roomId/stream   (SSE; only members may subscribe)
 
 The \`activity\` field is a self-reported free-form string of at most 32
 characters. Conventional values are \`idle\`, \`walking\`, \`running\`,
-\`${AT_COVE_ACTIVITY}\`, and \`${AT_KELP_ACTIVITY}\`. Clients render an
+\`${AT_COVE_ACTIVITY}\`, \`${AT_KELP_ACTIVITY}\`, and \`${AT_ACTIVITY}\`. Clients render an
 "at the Cove" presence tag for \`${AT_COVE_ACTIVITY}\` and an "at the Kelp
-Forest" presence tag for \`${AT_KELP_ACTIVITY}\`; these are display conventions,
+Forest" presence tag for \`${AT_KELP_ACTIVITY}\`, and an "in an activity"
+presence tag for \`${AT_ACTIVITY}\`; these are display conventions,
 not location-authoritative.
 
 The room snapshot never leaks any session's raw token, only the opaque \`id\`.

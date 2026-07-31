@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test';
-import { AT_COVE_ACTIVITY, AT_KELP_ACTIVITY } from '@clawville/shared';
+import {
+  AT_ACTIVITY,
+  AT_COVE_ACTIVITY,
+  AT_KELP_ACTIVITY,
+} from '@clawville/shared';
 import { getWorldPresenceRoute } from './WorldPresence';
 
 describe('getWorldPresenceRoute', () => {
@@ -15,6 +19,10 @@ describe('getWorldPresenceRoute', () => {
     expect(getWorldPresenceRoute('/kelp')).toEqual({
       policy: 'remote',
       remoteActivity: AT_KELP_ACTIVITY,
+    });
+    expect(getWorldPresenceRoute('/activity/reef-race/room-a')).toEqual({
+      policy: 'remote',
+      remoteActivity: AT_ACTIVITY,
     });
     expect(getWorldPresenceRoute('/activity/reef-race')).toEqual({
       policy: 'remote',

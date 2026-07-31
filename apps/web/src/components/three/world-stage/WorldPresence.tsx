@@ -1,7 +1,11 @@
 'use client';
 
 import { usePathname } from 'next/navigation';
-import { AT_COVE_ACTIVITY, AT_KELP_ACTIVITY } from '@clawville/shared';
+import {
+  AT_ACTIVITY,
+  AT_COVE_ACTIVITY,
+  AT_KELP_ACTIVITY,
+} from '@clawville/shared';
 import { useAuthMe } from '@/hooks/use-auth-me';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useAvatarHeartbeat } from '@/hooks/use-avatar-heartbeat';
@@ -20,6 +24,12 @@ export function getWorldPresenceRoute(pathname: string): WorldPresenceRoute {
   }
   if (pathname === '/kelp') {
     return { policy: 'remote', remoteActivity: AT_KELP_ACTIVITY };
+  }
+  if (
+    pathname.split('/').length === 4 &&
+    pathname.startsWith('/activity/')
+  ) {
+    return { policy: 'remote', remoteActivity: AT_ACTIVITY };
   }
   return { policy: 'remote', remoteActivity: 'idle' };
 }
