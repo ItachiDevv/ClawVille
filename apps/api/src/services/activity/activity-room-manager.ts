@@ -72,8 +72,11 @@ const LIVE_NO_WS_TTL_MS = 30_000;
 
 /**
  * Activities whose LIVE rooms LEGITIMATELY have 0 connected WS sockets for long
- * stretches and must NOT be crash-swept on the 30s `LIVE_NO_WS_TTL_MS`. A poker
- * tournament table is the canonical case: between hands (and during the window
+ * stretches and must NOT be crash-swept on the 30s `LIVE_NO_WS_TTL_MS`. Reef
+ * Race and Bumper Shells continue server-side after a voluntary forfeit so the
+ * sim can persist the player's DNF placement; their own terminal callbacks and
+ * hard timeouts own cleanup. A poker tournament table is another case: between
+ * hands (and during the window
  * after seating but before a human/agent opens its socket) the room can sit with
  * zero live connections for minutes while the TournamentManager's per-table hand
  * loop keeps running server-side. Crash-aborting such a room would strand the
@@ -83,8 +86,22 @@ const LIVE_NO_WS_TTL_MS = 30_000;
  * them to a terminal state. (Poker MTT P4.)
  */
 const LIVE_NO_WS_SWEEP_EXEMPT_ACTIVITIES: ReadonlySet<string> = new Set<string>([
+  'reef-race',
+  'bumper-shells',
   'texas-holdem-mtt',
 ]);
+
+export function shouldCrashSweepLiveRoom(
+  activityId: string,
+  connectedCount: number,
+  idleMs: number,
+): boolean {
+  return (
+    !LIVE_NO_WS_SWEEP_EXEMPT_ACTIVITIES.has(activityId) &&
+    connectedCount === 0 &&
+    idleMs > LIVE_NO_WS_TTL_MS
+  );
+}
 
 /** RESULTS rooms older than this are GC'd regardless of viewers (backend §1.6) */
 const RESULTS_RETENTION_MS = 120_000;
@@ -691,12 +708,12 @@ class ActivityRoomManager {
           // before players connect — their owner (the TournamentManager) drives
           // them to a terminal state, so the sweeper must NOT crash-abort them
           // (would strand the tournament's CT escrow). See the exempt set above.
-          if (LIVE_NO_WS_SWEEP_EXEMPT_ACTIVITIES.has(room.activityId)) {
-            break;
-          }
           if (
-            this.connectedCount(room) === 0 &&
-            now - room.lastTouchedAt > LIVE_NO_WS_TTL_MS
+            shouldCrashSweepLiveRoom(
+              room.activityId,
+              this.connectedCount(room),
+              now - room.lastTouchedAt,
+            )
           ) {
             toAbortCrash.push(room);
           }

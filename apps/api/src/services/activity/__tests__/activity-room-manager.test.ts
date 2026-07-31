@@ -88,6 +88,7 @@ const {
   MAX_ROOMS_PER_ACTIVITY,
   MAX_ROOMS_TOTAL,
   REEF_RACE_NO_SHOW_ABORT_MS,
+  shouldCrashSweepLiveRoom,
 } = await import(
   '../activity-room-manager'
 );
@@ -101,6 +102,20 @@ const ACTIVITY_CONFIG = {
   maxPlayers: 8,
   preferredPlayers: 6,
 };
+
+describe('live no-WS crash sweep', () => {
+  it('allows server-driven activity sims to settle voluntary DNF rows', () => {
+    const longIdle = 60_000;
+    expect(shouldCrashSweepLiveRoom('reef-race', 0, longIdle)).toBe(false);
+    expect(shouldCrashSweepLiveRoom('bumper-shells', 0, longIdle)).toBe(false);
+    expect(shouldCrashSweepLiveRoom('texas-holdem-mtt', 0, longIdle)).toBe(false);
+  });
+
+  it('retains crash sweeping for non-exempt live rooms', () => {
+    expect(shouldCrashSweepLiveRoom('other-activity', 0, 60_000)).toBe(true);
+    expect(shouldCrashSweepLiveRoom('other-activity', 1, 60_000)).toBe(false);
+  });
+});
 
 function makeParticipants(count: number) {
   return Array.from({ length: count }, (_, i) => ({
