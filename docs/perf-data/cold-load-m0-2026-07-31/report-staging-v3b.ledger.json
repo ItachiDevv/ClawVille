@@ -1,14 +1,25 @@
 {
-  "source": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/docs/perf-data/cold-load-m0-2026-07-31/report-cold1.json",
+  "source": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-staging-v3b.json",
   "dietsApplied": null,
   "fixture": "guest-default",
   "fixtureNote": "fresh guest, no remotes; demo-body VRM provisional pending canary demand trace",
+  "accounting": {
+    "reportTotalBytes": 36312072,
+    "includedBytes": 36303028,
+    "excludedBytes": 9044,
+    "excludedByReason": {
+      "failed": 0,
+      "zeroByte": 0,
+      "classExcluded": 9044,
+      "nonNetworkUrl": 0
+    }
+  },
   "lanes": {
     "post-ambient-vrm": {
       "urls": 14,
       "requests": 14,
-      "beforeMB": 11.593,
-      "afterMB": 11.593,
+      "beforeMB": 11.604,
+      "afterMB": 11.604,
       "savingMB": 0
     },
     "post-anim-char": {
@@ -41,10 +52,10 @@
     }
   },
   "milestones": {
-    "baselineTotalMB": 34.611,
+    "baselineTotalMB": 34.621,
     "m1RevealProjectionMB": 15.541,
     "m2RevealProjectionMB": 15.541,
-    "queueDrainedTotalMB": 34.611,
+    "queueDrainedTotalMB": 34.621,
     "note": "m1 subtracts POST-EXCLUSIVE rows only (fixture-critical shared URLs stay reveal-gated); m2 subtracts reveal-side diet savings; queue-drained total counts diets across ALL lanes and NEVER credits deferral."
   },
   "rows": [
@@ -60,8 +71,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 3750157,
-      "afterBytes": 3750157,
+      "beforeBytes": 3750148,
+      "afterBytes": 3750148,
       "saving": 0
     },
     {
@@ -77,8 +88,8 @@
       "sharedDemand": true,
       "fixtureCritical": false,
       "postExclusive": true,
-      "beforeBytes": 2741428,
-      "afterBytes": 2741428,
+      "beforeBytes": 2741429,
+      "afterBytes": 2741429,
       "saving": 0
     },
     {
@@ -94,8 +105,8 @@
       "sharedDemand": true,
       "fixtureCritical": false,
       "postExclusive": true,
-      "beforeBytes": 2732709,
-      "afterBytes": 2732709,
+      "beforeBytes": 2732849,
+      "afterBytes": 2732849,
       "saving": 0
     },
     {
@@ -110,8 +121,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": true,
-      "beforeBytes": 2011491,
-      "afterBytes": 2011491,
+      "beforeBytes": 2011401,
+      "afterBytes": 2011401,
       "saving": 0
     },
     {
@@ -144,8 +155,8 @@
       "sharedDemand": true,
       "fixtureCritical": false,
       "postExclusive": true,
-      "beforeBytes": 1272757,
-      "afterBytes": 1272757,
+      "beforeBytes": 1295668,
+      "afterBytes": 1295668,
       "saving": 0
     },
     {
@@ -160,25 +171,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": true,
-      "beforeBytes": 1247916,
-      "afterBytes": 1247916,
-      "saving": 0
-    },
-    {
-      "url": "/avatars/eliza-chibi.vrm?v=3",
-      "cls": "VRM",
-      "requestCount": 1,
-      "manifestLane": "post-ambient-vrm",
-      "effectiveLane": "post-ambient-vrm",
-      "consumers": [
-        "ambient-npc",
-        "player-capable"
-      ],
-      "sharedDemand": true,
-      "fixtureCritical": false,
-      "postExclusive": true,
-      "beforeBytes": 1109054,
-      "afterBytes": 1109054,
+      "beforeBytes": 1247898,
+      "afterBytes": 1247898,
       "saving": 0
     },
     {
@@ -199,6 +193,23 @@
       "saving": 0
     },
     {
+      "url": "/avatars/eliza-chibi.vrm?v=3",
+      "cls": "VRM",
+      "requestCount": 1,
+      "manifestLane": "post-ambient-vrm",
+      "effectiveLane": "post-ambient-vrm",
+      "consumers": [
+        "ambient-npc",
+        "player-capable"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 1097719,
+      "afterBytes": 1097719,
+      "saving": 0
+    },
+    {
       "url": "/models/pineapple-house-opt1-ktx.glb?v=3",
       "cls": "GLB",
       "requestCount": 1,
@@ -210,8 +221,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 1054986,
-      "afterBytes": 1054986,
+      "beforeBytes": 1055030,
+      "afterBytes": 1055030,
       "saving": 0
     },
     {
@@ -226,8 +237,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": true,
-      "beforeBytes": 1015453,
-      "afterBytes": 1015453,
+      "beforeBytes": 1015448,
+      "afterBytes": 1015448,
       "saving": 0
     },
     {
@@ -275,8 +286,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 793662,
-      "afterBytes": 793662,
+      "beforeBytes": 793685,
+      "afterBytes": 793685,
       "saving": 0
     },
     {
@@ -291,8 +302,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 736100,
-      "afterBytes": 736100,
+      "beforeBytes": 736105,
+      "afterBytes": 736105,
       "saving": 0
     },
     {
@@ -307,8 +318,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 726720,
-      "afterBytes": 726720,
+      "beforeBytes": 726743,
+      "afterBytes": 726743,
       "saving": 0
     },
     {
@@ -323,8 +334,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 715511,
-      "afterBytes": 715511,
+      "beforeBytes": 715502,
+      "afterBytes": 715502,
       "saving": 0
     },
     {
@@ -373,8 +384,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 605856,
-      "afterBytes": 605856,
+      "beforeBytes": 605820,
+      "afterBytes": 605820,
       "saving": 0
     },
     {
@@ -405,8 +416,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 567072,
-      "afterBytes": 567072,
+      "beforeBytes": 567012,
+      "afterBytes": 567012,
       "saving": 0
     },
     {
@@ -421,8 +432,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 552623,
-      "afterBytes": 552623,
+      "beforeBytes": 552655,
+      "afterBytes": 552655,
       "saving": 0
     },
     {
@@ -453,8 +464,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 476527,
-      "afterBytes": 476527,
+      "beforeBytes": 476504,
+      "afterBytes": 476504,
       "saving": 0
     },
     {
@@ -470,8 +481,8 @@
       "sharedDemand": true,
       "fixtureCritical": false,
       "postExclusive": true,
-      "beforeBytes": 364429,
-      "afterBytes": 364429,
+      "beforeBytes": 364418,
+      "afterBytes": 364418,
       "saving": 0
     },
     {
@@ -486,8 +497,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 320238,
-      "afterBytes": 320238,
+      "beforeBytes": 320229,
+      "afterBytes": 320229,
       "saving": 0
     },
     {
@@ -520,8 +531,8 @@
       "sharedDemand": true,
       "fixtureCritical": false,
       "postExclusive": true,
-      "beforeBytes": 263067,
-      "afterBytes": 263067,
+      "beforeBytes": 263088,
+      "afterBytes": 263088,
       "saving": 0
     },
     {
@@ -537,8 +548,8 @@
       "sharedDemand": true,
       "fixtureCritical": false,
       "postExclusive": true,
-      "beforeBytes": 256556,
-      "afterBytes": 256556,
+      "beforeBytes": 256502,
+      "afterBytes": 256502,
       "saving": 0
     },
     {
@@ -553,8 +564,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 247913,
-      "afterBytes": 247913,
+      "beforeBytes": 247915,
+      "afterBytes": 247915,
       "saving": 0
     },
     {
@@ -603,8 +614,8 @@
       "sharedDemand": true,
       "fixtureCritical": false,
       "postExclusive": true,
-      "beforeBytes": 195977,
-      "afterBytes": 195977,
+      "beforeBytes": 195973,
+      "afterBytes": 195973,
       "saving": 0
     },
     {
@@ -635,8 +646,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 188006,
-      "afterBytes": 188006,
+      "beforeBytes": 187983,
+      "afterBytes": 187983,
       "saving": 0
     },
     {
@@ -652,8 +663,8 @@
       "sharedDemand": true,
       "fixtureCritical": false,
       "postExclusive": true,
-      "beforeBytes": 185631,
-      "afterBytes": 185631,
+      "beforeBytes": 185619,
+      "afterBytes": 185619,
       "saving": 0
     },
     {
@@ -668,8 +679,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 182079,
-      "afterBytes": 182079,
+      "beforeBytes": 182052,
+      "afterBytes": 182052,
       "saving": 0
     },
     {
@@ -700,8 +711,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 160245,
-      "afterBytes": 160245,
+      "beforeBytes": 160218,
+      "afterBytes": 160218,
       "saving": 0
     },
     {
@@ -717,8 +728,8 @@
       "sharedDemand": true,
       "fixtureCritical": false,
       "postExclusive": true,
-      "beforeBytes": 160162,
-      "afterBytes": 160162,
+      "beforeBytes": 160160,
+      "afterBytes": 160160,
       "saving": 0
     },
     {
@@ -733,8 +744,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 159617,
-      "afterBytes": 159617,
+      "beforeBytes": 159635,
+      "afterBytes": 159635,
       "saving": 0
     },
     {
@@ -798,8 +809,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 132224,
-      "afterBytes": 132224,
+      "beforeBytes": 132182,
+      "afterBytes": 132182,
       "saving": 0
     },
     {
@@ -830,8 +841,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 116224,
-      "afterBytes": 116224,
+      "beforeBytes": 116187,
+      "afterBytes": 116187,
       "saving": 0
     },
     {
@@ -846,8 +857,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 112074,
-      "afterBytes": 112074,
+      "beforeBytes": 112065,
+      "afterBytes": 112065,
       "saving": 0
     },
     {
@@ -862,8 +873,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": true,
-      "beforeBytes": 111905,
-      "afterBytes": 111905,
+      "beforeBytes": 111873,
+      "afterBytes": 111873,
       "saving": 0
     },
     {
@@ -878,8 +889,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 101516,
-      "afterBytes": 101516,
+      "beforeBytes": 101553,
+      "afterBytes": 101553,
       "saving": 0
     },
     {
@@ -894,8 +905,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 100623,
-      "afterBytes": 100623,
+      "beforeBytes": 100614,
+      "afterBytes": 100614,
       "saving": 0
     },
     {
@@ -959,8 +970,8 @@
       "sharedDemand": true,
       "fixtureCritical": false,
       "postExclusive": true,
-      "beforeBytes": 79700,
-      "afterBytes": 79700,
+      "beforeBytes": 79702,
+      "afterBytes": 79702,
       "saving": 0
     },
     {
@@ -1039,8 +1050,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 67558,
-      "afterBytes": 67558,
+      "beforeBytes": 67495,
+      "afterBytes": 67495,
       "saving": 0
     },
     {
@@ -1071,8 +1082,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": true,
-      "beforeBytes": 59808,
-      "afterBytes": 59808,
+      "beforeBytes": 59871,
+      "afterBytes": 59871,
       "saving": 0
     },
     {
@@ -1087,8 +1098,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 58310,
-      "afterBytes": 58310,
+      "beforeBytes": 58311,
+      "afterBytes": 58311,
       "saving": 0
     },
     {
@@ -1120,8 +1131,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 50559,
-      "afterBytes": 50559,
+      "beforeBytes": 50541,
+      "afterBytes": 50541,
       "saving": 0
     },
     {
@@ -1152,8 +1163,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 46959,
-      "afterBytes": 46959,
+      "beforeBytes": 46950,
+      "afterBytes": 46950,
       "saving": 0
     },
     {
@@ -1168,8 +1179,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 42683,
-      "afterBytes": 42683,
+      "beforeBytes": 42720,
+      "afterBytes": 42720,
       "saving": 0
     },
     {
@@ -1216,8 +1227,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 38531,
-      "afterBytes": 38531,
+      "beforeBytes": 38522,
+      "afterBytes": 38522,
       "saving": 0
     },
     {
@@ -1296,8 +1307,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 30500,
-      "afterBytes": 30500,
+      "beforeBytes": 30491,
+      "afterBytes": 30491,
       "saving": 0
     },
     {
@@ -1345,8 +1356,8 @@
       "sharedDemand": true,
       "fixtureCritical": false,
       "postExclusive": true,
-      "beforeBytes": 25738,
-      "afterBytes": 25738,
+      "beforeBytes": 25750,
+      "afterBytes": 25750,
       "saving": 0
     },
     {
@@ -1361,8 +1372,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 23964,
-      "afterBytes": 23964,
+      "beforeBytes": 23955,
+      "afterBytes": 23955,
       "saving": 0
     },
     {
@@ -1393,8 +1404,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 22857,
-      "afterBytes": 22857,
+      "beforeBytes": 22833,
+      "afterBytes": 22833,
       "saving": 0
     },
     {
@@ -1442,8 +1453,8 @@
       "sharedDemand": true,
       "fixtureCritical": false,
       "postExclusive": true,
-      "beforeBytes": 19476,
-      "afterBytes": 19476,
+      "beforeBytes": 19478,
+      "afterBytes": 19478,
       "saving": 0
     },
     {
@@ -1556,8 +1567,8 @@
       "sharedDemand": true,
       "fixtureCritical": false,
       "postExclusive": true,
-      "beforeBytes": 17365,
-      "afterBytes": 17365,
+      "beforeBytes": 17369,
+      "afterBytes": 17369,
       "saving": 0
     },
     {
@@ -1638,8 +1649,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 15402,
-      "afterBytes": 15402,
+      "beforeBytes": 15259,
+      "afterBytes": 15259,
       "saving": 0
     },
     {
@@ -1672,8 +1683,8 @@
       "sharedDemand": true,
       "fixtureCritical": false,
       "postExclusive": true,
-      "beforeBytes": 13862,
-      "afterBytes": 13862,
+      "beforeBytes": 13860,
+      "afterBytes": 13860,
       "saving": 0
     },
     {
@@ -1704,8 +1715,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 12932,
-      "afterBytes": 12932,
+      "beforeBytes": 12956,
+      "afterBytes": 12956,
       "saving": 0
     },
     {
@@ -1773,6 +1784,22 @@
       "saving": 0
     },
     {
+      "url": "/_next/static/media/0acc7fdf55eb3220-s.p.12o-f1.6qra-s.woff2",
+      "cls": "FONT",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 11899,
+      "afterBytes": 11899,
+      "saving": 0
+    },
+    {
       "url": "/_next/static/chunks/0pivq4cidzfu5.js",
       "cls": "JS",
       "requestCount": 1,
@@ -1786,22 +1813,6 @@
       "postExclusive": false,
       "beforeBytes": 11894,
       "afterBytes": 11894,
-      "saving": 0
-    },
-    {
-      "url": "/_next/static/media/0acc7fdf55eb3220-s.p.12o-f1.6qra-s.woff2",
-      "cls": "FONT",
-      "requestCount": 1,
-      "manifestLane": "reveal-core",
-      "effectiveLane": "reveal-core",
-      "consumers": [
-        "world"
-      ],
-      "sharedDemand": false,
-      "fixtureCritical": false,
-      "postExclusive": false,
-      "beforeBytes": 11836,
-      "afterBytes": 11836,
       "saving": 0
     },
     {
@@ -1848,8 +1859,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 10598,
-      "afterBytes": 10598,
+      "beforeBytes": 10571,
+      "afterBytes": 10571,
       "saving": 0
     },
     {
@@ -2056,8 +2067,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 7865,
-      "afterBytes": 7865,
+      "beforeBytes": 7721,
+      "afterBytes": 7721,
       "saving": 0
     },
     {
@@ -2136,8 +2147,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 7023,
-      "afterBytes": 7023,
+      "beforeBytes": 7000,
+      "afterBytes": 7000,
       "saving": 0
     },
     {
@@ -2184,8 +2195,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 5824,
-      "afterBytes": 5824,
+      "beforeBytes": 5806,
+      "afterBytes": 5806,
       "saving": 0
     },
     {
@@ -2205,6 +2216,22 @@
       "saving": 0
     },
     {
+      "url": "/_next/static/chunks/0ioy4qpiax0il.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 4328,
+      "afterBytes": 4328,
+      "saving": 0
+    },
+    {
       "url": "/_next/static/chunks/02k0g21h6n6xa.js",
       "cls": "JS",
       "requestCount": 1,
@@ -2218,22 +2245,6 @@
       "postExclusive": false,
       "beforeBytes": 4311,
       "afterBytes": 4311,
-      "saving": 0
-    },
-    {
-      "url": "/_next/static/chunks/0ioy4qpiax0il.js",
-      "cls": "JS",
-      "requestCount": 1,
-      "manifestLane": "reveal-core",
-      "effectiveLane": "reveal-core",
-      "consumers": [
-        "world"
-      ],
-      "sharedDemand": false,
-      "fixtureCritical": false,
-      "postExclusive": false,
-      "beforeBytes": 4305,
-      "afterBytes": 4305,
       "saving": 0
     },
     {
@@ -2264,8 +2275,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 3785,
-      "afterBytes": 3785,
+      "beforeBytes": 3827,
+      "afterBytes": 3827,
       "saving": 0
     },
     {
@@ -2280,8 +2291,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 3618,
-      "afterBytes": 3618,
+      "beforeBytes": 3641,
+      "afterBytes": 3641,
       "saving": 0
     },
     {
@@ -2296,8 +2307,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 3355,
-      "afterBytes": 3355,
+      "beforeBytes": 3344,
+      "afterBytes": 3344,
       "saving": 0
     },
     {
@@ -2312,8 +2323,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 3100,
-      "afterBytes": 3100,
+      "beforeBytes": 3049,
+      "afterBytes": 3049,
       "saving": 0
     },
     {
@@ -2333,6 +2344,22 @@
       "saving": 0
     },
     {
+      "url": "/_next/static/chunks/0z6_42bo-c37f.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 2879,
+      "afterBytes": 2879,
+      "saving": 0
+    },
+    {
       "url": "/_next/static/chunks/0nmmsdjhh~5n1.css",
       "cls": "CSS",
       "requestCount": 1,
@@ -2349,22 +2376,6 @@
       "saving": 0
     },
     {
-      "url": "/_next/static/chunks/0z6_42bo-c37f.js",
-      "cls": "JS",
-      "requestCount": 1,
-      "manifestLane": "reveal-core",
-      "effectiveLane": "reveal-core",
-      "consumers": [
-        "world"
-      ],
-      "sharedDemand": false,
-      "fixtureCritical": false,
-      "postExclusive": false,
-      "beforeBytes": 2759,
-      "afterBytes": 2759,
-      "saving": 0
-    },
-    {
       "url": "/_next/static/chunks/01cn4w5trm.72.js",
       "cls": "JS",
       "requestCount": 1,
@@ -2376,8 +2387,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 2033,
-      "afterBytes": 2033,
+      "beforeBytes": 2061,
+      "afterBytes": 2061,
       "saving": 0
     },
     {
@@ -2456,8 +2467,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 1193,
-      "afterBytes": 1193,
+      "beforeBytes": 1189,
+      "afterBytes": 1189,
       "saving": 0
     },
     {
@@ -2520,8 +2531,8 @@
       "sharedDemand": false,
       "fixtureCritical": false,
       "postExclusive": false,
-      "beforeBytes": 306,
-      "afterBytes": 306,
+      "beforeBytes": 321,
+      "afterBytes": 321,
       "saving": 0
     }
   ]

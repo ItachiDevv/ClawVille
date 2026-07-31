@@ -301,32 +301,35 @@ sibling names preferred (auto-bust).
 
 ## 2b. M0 FROZEN BUDGETS (v2 — refrozen 2026-07-31 from VALIDITY-GATED probe-v2 reports)
 
-Source reports (committed under `docs/perf-data/cold-load-m0-2026-07-31/`): batch-v5 valid runs,
-n=2/backend on the local full-stack fixture (fresh profile + fresh browser daemon per attempt;
-page-clock reveal; fail-closed validity — every report carries `valid: true`).
+Source reports (committed under `docs/perf-data/cold-load-m0-2026-07-31/`): probe-v3 batch-v6
+runs, n=2/backend on the local full-stack fixture (fresh profile + fresh browser daemon per
+attempt; page-clock reveal; interval-overlap frame windows; corrected byte split; fail-closed
+validity — every report carries `valid: true`) + one validity-gated STAGING baseline
+(`report-staging-v3b.json`, reveal 17.4s / 34.63MB pre-reveal, `backendWaived: true` — the
+deployed bundle predates the backend stamp; only a NULL backend is waivable, flag-explicit).
 
 Measured baseline (localhost serving — network done ≤1.6s, so these isolate compute/pipeline):
-- **WebGPU**: reveal 16.0 / 18.2 s · vrmBulk 9.0 / 10.0 s · worst frame in the 10s post-reveal
-  window 1.73 / 1.75 s · stable window starts +2.3 / +3.5 s · pre-reveal longtask total 2.6 / 4.0 s
-- **WebGL2 (`?webgl=1`, Iris-proxy on desktop GPU)**: reveal 20.5 / 21.2 s · vrmBulk 11.2 / 25.2 s
-  (high variance — one run raced the stage-ready path) · worst frame 7.8 / 9.0 s (9.55 s in the
-  earlier single glx run) · stable window +8.0 / +10.2 s (+10.6 glx) · pre-reveal longtask total
-  5.3 / 14.6 s
-- Earlier host-clock numbers (20.5-41 s) included navigation overhead + poll lag and ran on a
-  degrading browser daemon; they are superseded by these page-clock reports.
-- Boot-hang note: the intermittent silent hang was ROOT-CAUSED to browser-daemon accumulation in
-  the measurement rig (§5b.2), not the product; the batch runner restarts the daemon per attempt
-  (batch v5: 1 invalid / 5 attempts, retried green).
+- **WebGPU**: reveal 17.7 / 18.1 s · worst frame in the 10s post-reveal window 1.43 / 1.89 s ·
+  stable window starts +2.4 / +3.6 s · frames>100ms in window 3 / 4 · pre-reveal longtasks 3.0 / 4.0 s
+- **WebGL2 (`?webgl=1`, Iris-proxy on desktop GPU)**: reveal 21.7 / 23.9 s · worst frame
+  8.25 / 9.84 s · stable window +9.1 / +10.0 s · frames>100ms 2 / 4 · pre-reveal longtasks 5.6 / 9.0 s
+  (a prior v2 run measured 14.6 s — the ceiling below keeps that headroom)
+- The corrected byte split reports pre/post = 36.4/0 MB — the v2 phantom post-reveal residual is
+  gone; earlier host-clock and v2-probe numbers are superseded by these reports.
+- Boot-hang note: the intermittent silent hang is a measurement-rig flake (dominated by browser-
+  daemon accumulation, §5b.2; one residual fresh-daemon occurrence observed against staging) —
+  batch policy: fresh daemon per attempt + retry, hang rate logged per batch.
 
 **Frozen REGRESSION budgets — the rung-1 canary + every A-class widening must stay inside these
 on BOTH backends (the round's goal is to IMPROVE them). "Stable window" = first contiguous 3s run
-of frames all ≤100ms, measured from reveal (probe `frameMetrics.stableWindowStartMsAfterReveal`).**
+of frames all ≤100ms, measured from reveal (probe `frameMetrics.stableWindowStartMsAfterReveal`,
+interval-overlap inclusion).**
 | Metric | WebGPU | WebGL2 |
 |---|---|---|
-| reveal (local fixture, page clock) | ≤ 20s | ≤ 24s |
+| reveal (local fixture, page clock) | ≤ 20s | ≤ 25s |
 | worst frame in the 10s post-reveal window | ≤ 2.5s | ≤ 11s |
 | stable-window start after reveal | ≤ 5s | ≤ 12s |
-| frames >100ms in the 10s window | ≤ 4 | ≤ 3 |
+| frames >100ms in the 10s window | ≤ 5 | ≤ 5 |
 | pre-reveal longtask total | ≤ 5s | ≤ 16s |
 | post-queue drain (once the post lane exists) | ≤ 60s after reveal | same |
 

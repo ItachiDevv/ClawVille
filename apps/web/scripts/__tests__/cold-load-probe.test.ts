@@ -115,6 +115,16 @@ describe('computeValidity — adversarial fixtures', () => {
     const v = computeValidity({ all: [goodAsset()], ...base, revealMs: null });
     expect(v.reasons.join()).toContain('reveal never observed');
   });
+  it('backend waiver: only a NULL backend passes, only with the flag, and is stamped', () => {
+    const nullBackend = { all: [goodAsset()], revealMs: 5000, backend: null, expectedBackend: 'webgpu' };
+    expect(computeValidity(nullBackend).valid).toBe(false);
+    const waived = computeValidity({ ...nullBackend, waiveBackend: true });
+    expect(waived.valid).toBe(true);
+    expect(waived.backendWaived).toBe(true);
+    // A present-but-wrong backend is NEVER waivable.
+    const wrong = computeValidity({ ...nullBackend, backend: 'unknown', waiveBackend: true });
+    expect(wrong.valid).toBe(false);
+  });
   it('data:/blob: never participate in the cold criterion', () => {
     const v = computeValidity({
       all: [goodAsset(), { url: 'data:image/webp;base64,AA', cls: 'OTHER', failed: false, finished: true, status: 200, everFromCache: true, everFromSW: false, startPageMs: 1, wireBytes: 0 }],

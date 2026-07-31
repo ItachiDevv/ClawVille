@@ -106,8 +106,9 @@ export function computeFrameMetrics(frames, revealMs, windowMs = FRAME_WINDOW_MS
  * Fail-closed validity (delta-review blocker 2). `all` includes FAILED legs.
  * expectedBackend derives from the test lane (?webgl=1 ⇒ 'webgl2', else 'webgpu').
  */
-export function computeValidity({ all, revealMs, backend, expectedBackend }) {
+export function computeValidity({ all, revealMs, backend, expectedBackend, waiveBackend = false }) {
   const reasons = [];
+  let backendWaived = false;
   const isNetworkUrl = (u) => u.startsWith("http://") || u.startsWith("https://");
   const swHits = all.filter((r) => r.everFromSW).length;
   if (swHits > 0) reasons.push(`not cold: ${swHits} service-worker hits`);
@@ -122,8 +123,17 @@ export function computeValidity({ all, revealMs, backend, expectedBackend }) {
   const warmFirsts = [...firstByUrl.values()].filter((r) => r.everFromCache).length;
   if (warmFirsts > 0) reasons.push(`not cold: ${warmFirsts} first-occurrence cache hits`);
   if (revealMs == null) reasons.push("reveal never observed");
-  if (backend !== "webgpu" && backend !== "webgl2") reasons.push(`backend not actual: ${backend}`);
-  else if (expectedBackend && backend !== expectedBackend) reasons.push(`backend ${backend} != requested lane ${expectedBackend}`);
+  if (backend !== "webgpu" && backend !== "webgl2") {
+    // --allow-uninstrumented-backend: EXPLICIT waiver for wire-ledger baseline
+    // runs against deployed bundles that predate the __W3D_BACKEND
+    // instrumentation (backend does not affect wire bytes). Only a NULL
+    // backend is waivable — a present-but-wrong value always fails, and the
+    // waiver is stamped into the summary for auditability.
+    if (waiveBackend && backend == null) backendWaived = true;
+    else reasons.push(`backend not actual: ${backend}`);
+  } else if (expectedBackend && backend !== expectedBackend) {
+    reasons.push(`backend ${backend} != requested lane ${expectedBackend}`);
+  }
   const assetFailures = all.filter((r) => ASSET_CLASSES.has(r.cls) && r.failed);
   if (assetFailures.length) reasons.push(`${assetFailures.length} failed asset requests`);
   const netAssets = all.filter((r) => ASSET_CLASSES.has(r.cls) && !r.failed && isNetworkUrl(r.url));
@@ -133,16 +143,18 @@ export function computeValidity({ all, revealMs, backend, expectedBackend }) {
   if (noStatus.length) reasons.push(`${noStatus.length} finished network assets with no observed status`);
   const unfinished = netAssets.filter((r) => !r.finished);
   if (unfinished.length) reasons.push(`${unfinished.length} unfinished asset requests at capture end`);
-  return { valid: reasons.length === 0, reasons, swHits, warmFirsts };
+  return { valid: reasons.length === 0, reasons, swHits, warmFirsts, backendWaived };
 }
 
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 if (import.meta.main) {
-  const [wsUrl, targetUrl, reportPath] = process.argv.slice(2);
+  const cliArgs = process.argv.slice(2);
+  const waiveBackend = cliArgs.includes("--allow-uninstrumented-backend");
+  const [wsUrl, targetUrl, reportPath] = cliArgs.filter((a) => !a.startsWith("--"));
   if (!wsUrl || !targetUrl || !reportPath) {
-    console.error("usage: bun cold-load-probe.mjs <cdp-ws-url> <target-url> <report-path>");
+    console.error("usage: bun cold-load-probe.mjs <cdp-ws-url> <target-url> <report-path> [--allow-uninstrumented-backend]");
     process.exit(2);
   }
   const expectedBackend = targetUrl.includes("webgl=1") ? "webgl2" : "webgpu";
@@ -329,7 +341,7 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
       b.count++; b.bytes += r.wireBytes; b.preBytes += pre; b.postBytes += post;
     }
 
-    const verdict = computeValidity({ all, revealMs: revealPageMs, backend, expectedBackend });
+    const verdict = computeValidity({ all, revealMs: revealPageMs, backend, expectedBackend, waiveBackend });
     const lastAssetEnd = Math.max(0, ...ok.filter((r) => ASSET_CLASSES.has(r.cls) && r.endPageMs != null).map((r) => r.endPageMs));
     const captureEndPageMs = revealPageMs != null ? revealPageMs + POST_REVEAL_CAPTURE_MS : null;
     const unfinishedAssets = ok.filter((r) => ASSET_CLASSES.has(r.cls) && !r.finished && (r.url.startsWith("http://") || r.url.startsWith("https://"))).length;
@@ -345,7 +357,7 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
 
     const summary = {
       targetUrl, capturedAt: new Date().toISOString(),
-      valid: verdict.valid, invalidReasons: verdict.reasons,
+      valid: verdict.valid, invalidReasons: verdict.reasons, backendWaived: verdict.backendWaived,
       backend, expectedBackend, phases, navTiming,
       revealMs: revealPageMs,
       loaderFirstSeenHostMs: loaderFirstSeenAt, canvasFirstSeenHostMs: canvasFirstSeenAt,
