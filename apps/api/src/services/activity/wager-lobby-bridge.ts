@@ -105,7 +105,7 @@ const WAGER_ABORT_ACTIVITY_IDS = new Set(['bumper-shells', 'reef-race']);
 const WAGER_ABORT_RECOVERY_INTERVAL_MS = 60_000;
 let wagerAbortRecoveryHandle: ReturnType<typeof setInterval> | null = null;
 
-const productionWagerAbortRecoveryDeps: WagerAbortRecoveryDeps = {
+export const productionWagerAbortRecoveryDeps: WagerAbortRecoveryDeps = {
   findLobbyForRoom,
   withResolvedFence: (lobbyRowId, run) =>
     withResolvedWagerLobbyFence(lobbyRowId, async (tx) =>
@@ -220,7 +220,9 @@ export async function handleWagerRoomAborted(
 }
 
 /** Retry durable aborted_crash escrow rows, including across process restarts. */
-export async function sweepAbortedCrashWagerLobbies(): Promise<{
+export async function sweepAbortedCrashWagerLobbies(
+  deps: WagerAbortRecoveryDeps = productionWagerAbortRecoveryDeps,
+): Promise<{
   attempted: number;
   recovered: number;
   failed: number;
@@ -244,7 +246,7 @@ export async function sweepAbortedCrashWagerLobbies(): Promise<{
   let failed = 0;
   for (const row of rows) {
     try {
-      const result = await cancelLobbyForAbortedRoom(row.roomId);
+      const result = await cancelLobbyForAbortedRoom(row.roomId, deps);
       if (result === 'cancelled' || result === 'reconciled_cancelled') recovered++;
     } catch (err) {
       failed++;

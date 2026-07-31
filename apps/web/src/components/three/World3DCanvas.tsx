@@ -746,6 +746,39 @@ function FPSFollowCamera({
 // internally via its store subscriber, but belt-and-suspenders — if anything
 // races in future upgrades, the explicit kick keeps the scene alive.
 // ---------------------------------------------------------------------------
+/**
+ * Cold-load telemetry stamp (docs/perf-cold-load-diet-2026-07-31.md M0).
+ * MUST be impossible to throw: a frozen/sealed/accessor-poisoned global, or a
+ * primitive squatting on __W3D_PHASES, must never affect the boot path — some
+ * stamps run before readiness publication, so an exception here would strand
+ * the reveal. Numbers are rounded; non-object squatters are replaced when
+ * writable and silently abandoned when not.
+ */
+function stampColdLoadPhase(key: string, value: number | string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const w = window as any;
+    let phases = w.__W3D_PHASES;
+    if (phases === null || typeof phases !== 'object') {
+      phases = {};
+      w.__W3D_PHASES = phases;
+    }
+    phases[key] = typeof value === 'number' ? Math.round(value) : value;
+  } catch {
+    /* telemetry never throws */
+  }
+}
+
+/** Same never-throw contract for the backend stamp. */
+function stampColdLoadBackend(backend: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    (window as any).__W3D_BACKEND = backend;
+  } catch {
+    /* telemetry never throws */
+  }
+}
+
 function markWorldReadyIfUploadsDone(): void {
   if (typeof window === 'undefined') return;
   const bridge = window as any;
@@ -1108,9 +1141,8 @@ function createWorldWarmupGate(
       // The normal completion path already set this flag, so repeating it here
       // keeps every resume reason idempotent and prevents a safety fuse/error
       // from turning into a second, much longer apparent hang.
-      (((window as any).__W3D_PHASES ||= {}) as Record<string, number>).resumeReadyAt =
-        Math.round(performance.now());
-      ((window as any).__W3D_PHASES as Record<string, string>).resumeReason = String(reason);
+      stampColdLoadPhase('resumeReadyAt', performance.now());
+      stampColdLoadPhase('resumeReason', String(reason));
       (window as any).__W3D_TEXTURES_READY = true;
       markWorldReadyIfUploadsDone();
       // Heal both blue-until-resize boot races (WebGPU swapchain config +
@@ -1546,8 +1578,7 @@ function WorldWarmup({
     const publishStageReady = () => {
       if (stageReadyPublished) return;
       stageReadyPublished = true;
-      ((bridge.__W3D_PHASES ||= {}) as Record<string, number>).stageReadyAt =
-        Math.round(performance.now());
+      stampColdLoadPhase('stageReadyAt', performance.now());
       bridge.__W3D_CANVAS_READY = true;
       bridge.__W3D_TEXTURES_READY = true;
       markWorldReadyIfUploadsDone();
@@ -1839,8 +1870,7 @@ function WorldWarmup({
         onFrameloopChange('always');
         liveState.setFrameloop('always');
         liveState.invalidate();
-        (((window as any).__W3D_PHASES ||= {}) as Record<string, number>).fallbackResumeAt =
-          Math.round(performance.now());
+        stampColdLoadPhase('fallbackResumeAt', performance.now());
         (window as any).__W3D_TEXTURES_READY = true;
         markWorldReadyIfUploadsDone();
         forceFirstPaintSizeSync(liveState);
@@ -1850,11 +1880,9 @@ function WorldWarmup({
 
     // Cold-load phase instrumentation: progressive, probe-readable breakdown of
     // the post-network reveal gap (docs/perf-cold-load-diet-2026-07-31.md M0).
-    // Write-only telemetry — nothing in the warmup reads it back.
-    const publishPhase = (key: string, value: number) => {
-      const phases = (bridge.__W3D_PHASES ||= {});
-      phases[key] = Math.round(value);
-    };
+    // Write-only telemetry — nothing in the warmup reads it back; the helper
+    // is guaranteed non-throwing.
+    const publishPhase = stampColdLoadPhase;
 
     void (async () => {
       try {
@@ -2524,8 +2552,9 @@ const FORCE_WEBGL = FORCE_WEBGL_OVERRIDE
     : (IOS_SAFARI || WEBGPU_ABSENT || LOW_END_GPU_DETECTED));
 
 if (typeof window !== 'undefined') {
-  // Probe-readable backend stamp (cold-load instrumentation; read-only signal).
-  (window as any).__W3D_BACKEND = FORCE_WEBGL ? 'webgl2' : 'webgpu';
+  // Probe-readable backend stamp — the REQUESTED path; overwritten with the
+  // ACTUAL backend after renderer.init() (Three may fall back WebGPU→WebGL2).
+  stampColdLoadBackend(FORCE_WEBGL ? 'webgl2-requested' : 'webgpu-requested');
   console.log(
     `[World3D] GPU path: ${FORCE_WEBGL ? 'forceWebGL (WebGL2+TSL)' : 'WebGPU'} — iOS:${IOS_SAFARI} noGPU:${WEBGPU_ABSENT} lowEnd:${LOW_END_GPU_DETECTED} webgpuOverride:${FORCE_WEBGPU_OVERRIDE} webglOverride:${FORCE_WEBGL_OVERRIDE}`,
   );
@@ -2598,6 +2627,11 @@ async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<any> {
   // With forceWebGL:true, init() goes straight to WebGLBackend (no adapter request).
   // Without forceWebGL, init() tries WebGPU first then falls back to WebGL2.
   await renderer.init();
+  // ACTUAL backend after init — Three's getFallback path can land on WebGL2
+  // even when WebGPU was requested; the probe must record what really runs.
+  stampColdLoadBackend(
+    (renderer as any).backend?.isWebGPUBackend ? 'webgpu' : 'webgl2',
+  );
   renderer.setClearColor(SKY_COLOR, 1);
   renderer.setClearAlpha?.(1);
   renderer.setSize(cssW, cssH, false);
