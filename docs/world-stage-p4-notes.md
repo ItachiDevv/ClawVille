@@ -7,6 +7,7 @@
 - DRIFT: spec cites four live v42 references in `docs/hatcher-integration-spec.md`; post-P3 live is five current references plus the append-only version ledger; requirement applied as v43 on every current reference and an appended v43 ledger clause while preserving v42 history.
 - DRIFT: spec cites an existing `apps/web/.env.example`; live has only the repository-root `.env.example`; requirement applied as the whitelisted new `apps/web/.env.example` containing only the frozen probe-gate row and comment.
 - DRIFT: spec cites pre-P3 `use-world-stream.ts` line anchors; live includes P3's ref-delivered `remoteActivity` and unified 200 ms stream machine; requirement applied as the third ref-delivered downlink parameter and frozen retry/epoch/lease policy inside that landed effect without changing its dependency array or `world-stream-machine.ts`.
+- DRIFT: spec cites the pre-extraction `useActivityInput.ts` attachment block at `:533-548`; live role is the keydown/keyup/pointer/custom attachment block beside `resetHeldInput`; requirement applied there through `attachHeldKeyListeners` while leaving the key mapping and 30 Hz send loop unchanged.
 
 ## Decisions
 
@@ -19,7 +20,7 @@
 - P4a: PASS — `bun run build` exit 0; `bun run typecheck` 12/12, 0 errors.
 - P4b: PASS — protocol 42→43 propagated through manual, derived orientation pointers, test pins, Hatcher live references/history, presence, peer rendering, and canonical docs; 13 focused tests pass; build exit 0; typecheck 12/12.
 - P4c: PASS — exact activity routes suspend only the SSE downlink; retry lineage, epoch/source guards, bounded recovery/bootstrap, land refresh, and bfcache reset are wired without changing the world machine or effect dependencies; 11 focused tests pass; build exit 0; typecheck 12/12.
-- P4d: pending.
+- P4d: PASS — the neutral held-key attachment/reset primitive now owns both avatar and activity listener lifetimes; custom activity actions use the string-typed stage helper; key/action mapping and the 30 Hz activity loop are unchanged; the exact 17-test equivalence suite plus 20 inherited player-frame tests pass; build exit 0; typecheck 12/12.
 
 ## Final gates
 

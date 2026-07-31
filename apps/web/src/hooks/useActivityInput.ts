@@ -31,7 +31,7 @@ import { useEffect, useRef } from 'react';
 import type { ClientFrame } from '@clawville/shared';
 import { useGameStore } from '@/stores/game';
 import { useActivityStore } from '@/stores/activity';
-import { registerInputReset } from '@/lib/three/input-reset';
+import { attachHeldKeyListeners } from '@/lib/three/player/player-input';
 import {
   selfInputBus,
   selfPoseBus,
@@ -300,61 +300,41 @@ export function useActivityInput({
       }
     }
 
-    function onKeyDown(e: KeyboardEvent) {
-      if (!enabledRef.current) return;
-      // Don't grab input while the user is typing into a chat box etc.
-      const target = e.target as HTMLElement | null;
-      if (
-        target &&
-        (target.tagName === 'INPUT' ||
-          target.tagName === 'TEXTAREA' ||
-          target.isContentEditable)
-      ) {
-        return;
-      }
-
-      const code = e.code;
+    function onKeyDown(code: string, e: KeyboardEvent): boolean {
+      if (!enabledRef.current) return false;
       switch (code) {
         case 'KeyW':
           keysRef.current.w = true;
           recomputeDirFromKeys();
-          e.preventDefault();
-          break;
+          return true;
         case 'ArrowUp':
           keysRef.current.arrowUp = true;
           recomputeDirFromKeys();
-          e.preventDefault();
-          break;
+          return true;
         case 'KeyA':
           keysRef.current.a = true;
           recomputeDirFromKeys();
-          e.preventDefault();
-          break;
+          return true;
         case 'ArrowLeft':
           keysRef.current.arrowLeft = true;
           recomputeDirFromKeys();
-          e.preventDefault();
-          break;
+          return true;
         case 'KeyS':
           keysRef.current.s = true;
           recomputeDirFromKeys();
-          e.preventDefault();
-          break;
+          return true;
         case 'ArrowDown':
           keysRef.current.arrowDown = true;
           recomputeDirFromKeys();
-          e.preventDefault();
-          break;
+          return true;
         case 'KeyD':
           keysRef.current.d = true;
           recomputeDirFromKeys();
-          e.preventDefault();
-          break;
+          return true;
         case 'ArrowRight':
           keysRef.current.arrowRight = true;
           recomputeDirFromKeys();
-          e.preventDefault();
-          break;
+          return true;
         case 'Space': {
           const jumpWasHeld = spaceHeldRef.current || shiftHeldRef.current;
           spaceHeldRef.current = true;
@@ -372,19 +352,16 @@ export function useActivityInput({
             // Capture immediately so even short taps register on the next send.
             oneShotBitsRef.current |= ACTION_BIT_BOOST;
           }
-          e.preventDefault();
-          break;
+          return true;
         }
         case 'KeyQ':
           if (isReefRaceRef.current && e.repeat) {
-            e.preventDefault();
-            break;
+            return true;
           }
           oneShotBitsRef.current |= isReefRaceRef.current
             ? ACTION_BIT_BOOST
             : ACTION_BIT_USE_POWERUP;
-          e.preventDefault();
-          break;
+          return true;
         case 'ShiftLeft':
         case 'ShiftRight': {
           const jumpWasHeld = spaceHeldRef.current || shiftHeldRef.current;
@@ -394,19 +371,19 @@ export function useActivityInput({
             selfInputBus.jumpPressSeq += 1;
             oneShotBitsRef.current |= ACTION_BIT_JUMP;
           }
-          break;
+          return false;
         }
         default:
-          break;
+          return false;
       }
     }
 
     recomputeDirFromKeysRef.current = recomputeDirFromKeys;
 
-    function onKeyUp(e: KeyboardEvent) {
+    function onKeyUp(code: string, _e: KeyboardEvent) {
       // We unset key state regardless of `enabled` — otherwise toggling the
       // gate mid-keypress can leave a phantom direction.
-      switch (e.code) {
+      switch (code) {
         case 'KeyW':
           keysRef.current.w = false;
           recomputeDirFromKeys();
@@ -530,23 +507,26 @@ export function useActivityInput({
       }
     }
 
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-    window.addEventListener('pointerdown', onPointerDown);
-    window.addEventListener('clawville:activity-action', onCustomAction as EventListener);
-    // S7 — release held input on focus loss/regain via the shared util (covers
-    // blur + visibilitychange + focus + pageshow). Replaces the local blur/visibility.
-    const unregisterReset = registerInputReset(resetHeldInput);
+    const detachHeldKeyListeners = attachHeldKeyListeners({
+      keyIdentity: 'code',
+      keyTargetGuard: 'isEditable',
+      onKeyDown,
+      onKeyUp,
+      onReset: resetHeldInput,
+      extra: [
+        {
+          type: 'pointerdown',
+          listener: onPointerDown as EventListener,
+        },
+        {
+          type: 'clawville:activity-action',
+          listener: onCustomAction as EventListener,
+        },
+      ],
+    });
 
     return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
-      window.removeEventListener('pointerdown', onPointerDown);
-      window.removeEventListener(
-        'clawville:activity-action',
-        onCustomAction as EventListener,
-      );
-      unregisterReset();
+      detachHeldKeyListeners();
       // Reset key state on teardown to prevent leak across remounts.
       keysRef.current = {
         w: false,

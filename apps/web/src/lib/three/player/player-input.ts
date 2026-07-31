@@ -1,5 +1,8 @@
 import * as THREE from 'three';
-import { addStageWindowListener } from '@/components/three/world-stage/stage-store';
+import {
+  addStageEventListener,
+  addStageWindowListener,
+} from '@/components/three/world-stage/stage-store';
 import { registerInputReset } from '@/lib/three/input-reset';
 import { isEditable } from '@/lib/three/jump-state';
 import type { PlayerInputPolicy } from './player-motion-policy';
@@ -45,6 +48,70 @@ export const RUN_JOYSTICK_THRESHOLD = 0.7;
 export const playerCameraForwardScratch = new THREE.Vector3();
 export const playerCameraRightScratch = new THREE.Vector3();
 export const playerWorldUpScratch = new THREE.Vector3(0, 1, 0);
+
+export interface HeldKeyListenerConfig {
+  /** 'code' → event.code (activity + kelp); 'key' → event.key.toLowerCase() (world). */
+  readonly keyIdentity: 'code' | 'key';
+  /** 'isEditable' skips keydown when the target is an input/textarea/contentEditable. */
+  readonly keyTargetGuard: 'isEditable' | 'none';
+  /** Return true to preventDefault this keydown. */
+  readonly onKeyDown: (
+    identity: string,
+    event: KeyboardEvent,
+  ) => boolean;
+  /** keyup is deliberately not target-guarded. */
+  readonly onKeyUp: (
+    identity: string,
+    event: KeyboardEvent,
+  ) => void;
+  /** Registered through registerInputReset for blur/visibility/focus/pageshow. */
+  readonly onReset: () => void;
+  /** Registered through the string-typed stage helper for custom events. */
+  readonly extra?: ReadonlyArray<{
+    type: string;
+    listener: EventListener;
+    options?: AddEventListenerOptions;
+  }>;
+}
+
+export function attachHeldKeyListeners(
+  config: HeldKeyListenerConfig,
+): () => void {
+  const identityFor = (event: KeyboardEvent) =>
+    config.keyIdentity === 'code'
+      ? event.code
+      : event.key.toLowerCase();
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (
+      config.keyTargetGuard === 'isEditable' &&
+      isEditable(event.target)
+    ) {
+      return;
+    }
+    if (config.onKeyDown(identityFor(event), event)) {
+      event.preventDefault();
+    }
+  };
+  const onKeyUp = (event: KeyboardEvent) => {
+    config.onKeyUp(identityFor(event), event);
+  };
+
+  const removeKeyDown = addStageWindowListener('keydown', onKeyDown);
+  const removeKeyUp = addStageWindowListener('keyup', onKeyUp);
+  const removeExtra = (config.extra ?? []).map(
+    ({ type, listener, options }) =>
+      addStageEventListener(window, type, listener, options),
+  );
+  const unregisterReset = registerInputReset(config.onReset);
+
+  return () => {
+    removeKeyDown();
+    removeKeyUp();
+    for (const remove of removeExtra) remove();
+    unregisterReset();
+    config.onReset();
+  };
+}
 
 export function resetPlayerKeys(): void {
   for (const key of Object.keys(playerKeyState) as Array<keyof PlayerKeyState>) {
@@ -101,48 +168,35 @@ function eventKey(
 export function attachPlayerKeyListeners(
   policy: PlayerInputPolicy,
 ): () => void {
-  const onKeyDown = (event: KeyboardEvent) => {
-    if (
-      policy.keyTargetGuard === 'isEditable' &&
-      isEditable(event.target)
-    ) {
-      return;
-    }
-    const key = eventKey(event, policy.keyIdentity);
-    if (
-      policy.preventArrowDefault &&
-      key !== null &&
-      key.startsWith('arrow')
-    ) {
-      event.preventDefault();
-    }
-    if (key === 'shift') {
-      playerKeyState.shift = true;
-      return;
-    }
-    playerKeyState.shift = event.shiftKey;
-    if (key !== null) playerKeyState[key] = true;
-  };
-  const onKeyUp = (event: KeyboardEvent) => {
-    const key = eventKey(event, policy.keyIdentity);
-    if (key === 'shift') {
-      playerKeyState.shift = false;
-      return;
-    }
-    playerKeyState.shift = event.shiftKey;
-    if (key !== null) playerKeyState[key] = false;
-  };
-  const removeKeyDown = addStageWindowListener('keydown', onKeyDown);
-  const removeKeyUp = addStageWindowListener('keyup', onKeyUp);
-  const reset = () => {
-    resetPlayerKeys();
-    resetPlayerTouch();
-  };
-  const unregisterReset = registerInputReset(reset);
-  return () => {
-    removeKeyDown();
-    removeKeyUp();
-    unregisterReset();
-    reset();
-  };
+  return attachHeldKeyListeners({
+    keyIdentity: policy.keyIdentity,
+    keyTargetGuard: policy.keyTargetGuard,
+    onKeyDown: (_identity, event) => {
+      const key = eventKey(event, policy.keyIdentity);
+      const shouldPrevent =
+        policy.preventArrowDefault &&
+        key !== null &&
+        key.startsWith('arrow');
+      if (key === 'shift') {
+        playerKeyState.shift = true;
+        return shouldPrevent;
+      }
+      playerKeyState.shift = event.shiftKey;
+      if (key !== null) playerKeyState[key] = true;
+      return shouldPrevent;
+    },
+    onKeyUp: (_identity, event) => {
+      const key = eventKey(event, policy.keyIdentity);
+      if (key === 'shift') {
+        playerKeyState.shift = false;
+        return;
+      }
+      playerKeyState.shift = event.shiftKey;
+      if (key !== null) playerKeyState[key] = false;
+    },
+    onReset: () => {
+      resetPlayerKeys();
+      resetPlayerTouch();
+    },
+  });
 }
