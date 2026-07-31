@@ -1252,6 +1252,7 @@ process.on('uncaughtException', (err) => {
               placement: r.placement,
               score: r.score,
               scoreMs: r.scoreMs,
+              reefRace: r.reefRace,
             }));
         default:
           return [];
