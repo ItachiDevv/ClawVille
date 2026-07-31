@@ -973,3 +973,120 @@ recorded/updated `2026-07-31T10:26:02.488Z`, UTC day `2026-07-31`.
 **FINAL LOCAL IMPLEMENTATION GATE STATUS — §6.1-§6.7: PASS. §6.8 harness and
 §6.9 founder-floor drive are staging-push/after-staging-push gates and were not
 run in this local no-push scope.**
+
+## Session 9 — adversarial-review closure
+
+### Orchestrator ruling — §6.7 semantics (verbatim)
+
+> The best-lap-based PB semantics are AUTHORIZED explicitly: `is_personal_best`, the 10-CT PB bonus, and the persisted PB row must all derive from ONE clock — the persisted best-lap claim. The legacy whole-match predicate paying a "PB bonus" while the PB table stores best laps was the split-brain defect itself; parity with it is not a goal. Consequences: (1) the §6.7 comparison gate closes by RE-RUNNING the controlled normalized comparison AFTER ALL money commits (including this session's), with the intentional semantic differences ENUMERATED (`is_personal_best` provenance, PB-bonus provenance, PB/daily-rank rows) and EVERYTHING ELSE required identical — row cardinality, base tokens, placement, event shape, subject binding; (2) the notes' "repeatable-bonus leak" wording is corrected to the reviewer's precise characterization (split-brain eligibility between whole-match time and persisted best-lap time; staging's bonus derived from whole-match history).
+
+This ruling replaces the overturned Session 8 ruling. In particular, the
+Session 8 phrase “repeatable-bonus leak” is retracted: the demonstrated defect
+was split-brain eligibility between whole-match time and persisted best-lap
+time, and staging's bonus was derived from whole-match history.
+
+### Review findings and commits
+
+| Review finding | Commit | Closure |
+| --- | --- | --- |
+| BLOCKER 1 — durable PB claim ownership | `8e800ac3` `fix(api): make Reef PB reward claims durable` | Added the unique `(source_room_id, avatar_id)` claim/history row, composed PB update + claim creation in one transaction, transaction-scoped reward claim reads, equal-value same-room re-read, migration `0047`, and deterministic tests for both adversarial schedules. |
+| MEDIUM — crash-sweep exemption | `ff908ffc` `fix(api): watchdog live activity owner leases` | Replaced the static activity exemption with bounded live-owner leases and a post-hard-deadline watchdog; the dead-interval test proves crash abort/recovery and participant eviction. |
+| MEDIUM — Current Swap ghost lineage | `d47cbe11` `fix(api): preserve Current Swap ghost lineage` | Swaps `currentLapFrames` with the lap clock while retaining completed `bestLap*` ownership; the completion test proves monotonic persisted ghost time. |
+| MEDIUM — E6 gate hygiene | `86d34616` `docs(api): graduate Reef spline feature gate` | Records the deployed/closed gate and removes the completed ghost-capture TODO. |
+| LOW — transcription, mojibake, and heap-evidence wording | `2223d037` `docs: correct P4 review transcription defects` | Corrects the Hatcher newline and v42/v43 note, both UTF-8 middots, and describes `e3c042dd` only as the first sampled commit back inside the accepted band. |
+| BLOCKER 2 — §6.7 rerun | this Session 9 notes commit | Re-ran the real production-build P4/control comparison after every money commit and closed it under the ruling below. |
+
+Migration preflight found 58 applied migrations with matching checksums and
+only `0047_reef_race_pb_claim_ownership.sql` pending. The forward-only runner
+then applied exactly `0047` to the shared staging database successfully.
+
+### §6.7 controlled normalized comparison — PASS
+
+Runtime and scope:
+
+- P4 branch began Session 9 at `fb573b6b7043726303ffa1a75221b94cb52712f3`;
+  the comparison ran after commits through `2223d037a6b7085b49509c29dff869d39ad2715f`.
+- P4: direct production API build on `127.0.0.1:4000` and production web
+  bundle on `127.0.0.1:3008`, with Spline and stage-probe flags enabled.
+- Detached current `origin/staging` control:
+  `0e7d19844e33b6d6402a6e0d2ed7cd83c00db645`, API `:4001`, web `:3009`.
+- Both legs used the same staging database, user
+  `8f83d834-4660-438b-b367-2200ca830a97`, avatar
+  `a74c90f9-8460-4b24-83e2-baede9dbe3d3` (`LandTest1`), real queue/UI,
+  controller, SQL templates, and exact room/avatar scoping. Port `:3000` was
+  untouched. No row was inserted, changed, deleted, or compensated by hand.
+- Accepted artifacts:
+  `C:\Users\itachi\AppData\Local\Temp\world-stage-p4-s9-reef-p4.png` and
+  `C:\Users\itachi\AppData\Local\Temp\world-stage-p4-s9-reef-staging.png`.
+
+Accepted P4 room `eb487467-0c7a-4c77-8452-900108e01ad4` finished first. Its
+65,233 ms best lap improved the previous 66,833 ms PB. The scoped writes were:
+
+- exactly one result `d379cec6-14b3-4e0b-be2a-f056802e6362`: placement 1,
+  score/score_ms `-134300` / `134300`, tokens 60, leaderboard 30,
+  `is_personal_best=true`, streak 0, daily rank 1;
+- exactly one placed event `25820`, with the correct human subject and room;
+- exactly one CT credit `7d26fe3d-0431-4b25-a653-7065f7ff2919`:
+  amount 60, base 50, PB bonus 10, all other bonuses 0,
+  `reason='activity_match_placed'`, `source='simulation'`,
+  `provenance='soft'`;
+- PB row `373aca77-4ca2-44df-9b7a-1b9b1a0a9be5` updated to 65,233 ms,
+  source P4 room, 251 ghost frames, daily rank 1;
+- exactly one durable claim `ff1e0f9a-bb35-444a-b6ff-1006624c4603`, owned by
+  the P4 room, best 65,233 ms, previous 66,833 ms, daily rank 1.
+
+Accepted staging room `8104a5b6-3277-4bf0-b320-25ec1800578b` also finished
+first. Its visible best lap was 61.99 s, faster than the P4-persisted 65.233 s,
+and its whole-match time was also faster. The scoped writes were:
+
+- exactly one result `c33609c8-45f4-40a0-b061-fda240223345`: placement 1,
+  score/score_ms `-128233` / `128233`, tokens 60, leaderboard 30,
+  `is_personal_best=true`, streak 0, daily rank `NULL`;
+- exactly one placed event `25852`, with the correct human subject and room;
+- exactly one CT credit `2371567d-c6a0-4411-9b69-007f259a4425`:
+  amount 60, base 50, PB bonus 10, all other bonuses 0, and the same
+  reason/source/provenance;
+- no durable claim for the staging room; the PB row stayed at 65,233 ms with
+  the P4 room as owner despite staging's faster valid lap.
+
+Normalization removes opaque IDs, timestamps, room UUIDs, `balance_after`, and
+the exact finite race-time values produced by independent simulations. It
+retains row/key cardinality, value classes, placement and all placement-derived
+awards, activity and subject identity, event payload shape, ledger semantics,
+all breakdown values, and PB ownership/mutation.
+
+| Axis retained by the ruling | P4 | Detached staging | Verdict |
+| --- | --- | --- | --- |
+| Result / placed-event / CT-credit cardinality | `1 / 1 / 1` | `1 / 1 / 1` | identical |
+| Activity / subject binding | `reef-race` / exact LandTest1 / `human` | same | identical |
+| Placement / base / total / leaderboard | `1 / 50 / 60 / 30` | `1 / 50 / 60 / 30` | identical |
+| Result/event shape and enums | same columns/keys; finite score; non-guest; simulation/soft | same | identical |
+| Other bonus breakdown | first-play/focus/streak all `0` | all `0` | identical |
+| `is_personal_best` | `true`, derived from durable best-lap claim | `true`, derived from legacy whole-match history | intentional provenance difference |
+| 10-CT PB bonus | `10`, derived from durable best-lap claim | `10`, derived from legacy whole-match history | intentional provenance difference |
+| PB / daily-rank / claim rows | PB became 65,233 ms, rank 1, durable room claim | faster 61.99 s lap omitted; old P4 PB retained, rank `NULL`, no claim | intentional PB/daily-row difference |
+
+There is no non-enumerated normalized difference. §6.7 therefore **PASSES
+under the Session 9 ruling**.
+
+### Session 9 verification
+
+- Monorepo `bun run typecheck`: 12/12 tasks PASS, zero errors.
+- Direct API production build: PASS.
+- Probe/Spline-enabled web production build: PASS.
+- PB service 9/9; durable reward ownership 2/2; reward pipeline 31/31;
+  activity room manager 41/41; MTT WS integration 6/6; Spline sim 37/37:
+  combined 126/126 PASS.
+- R18d hectic/Current Swap: 10/10 PASS in its isolated process, 57,480
+  assertions. One earlier mixed seven-file process ran the old four-bot
+  endurance case after other simulation suites and got `finishers=0`
+  (135/136); the new Current Swap test passed in that run, and the suite's
+  intended isolated rerun passed all ten without a code change.
+- Owned ports `:3008`, `:3009`, `:4000`, and `:4001` were stopped; `:3000`
+  was never touched. Nothing was pushed.
+
+**SESSION 9 HONEST STATUS — both adversarial-review blockers, all three MEDIUM
+findings, and both LOW findings are closed locally. §6.7 passes under the new
+best-lap ruling. §6.8/v43 staging partner harness and §6.9 founder-floor drive
+remain push/deploy-time gates and were not run because this task forbids a
+push.**
