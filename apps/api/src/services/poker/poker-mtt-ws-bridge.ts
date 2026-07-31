@@ -48,6 +48,7 @@ import type { Street } from './poker-table-types';
 export const MTT_ACTIVITY_ID = 'texas-holdem-mtt';
 const MTT_OWNER_LEASE = 'poker-mtt-tournament-manager';
 const MTT_OWNER_LEASE_WINDOW_MS = 15 * 60_000;
+let unregisterMttAbortRecovery: (() => void) | null = null;
 
 /**
  * Wire the MTT sim + TournamentManager to the activity WS hub.
@@ -138,9 +139,10 @@ export function wirePokerMttToHub(sim: PokerTableSim, tm: TournamentManager): vo
   // A poker table holds a bounded owner lease, renewed at every hand boundary.
   // If that owner dies and the lease expires, this callback resolves the owning
   // tournament and cancels/refunds escrow idempotently so CT is never stranded.
-  activityRoomManager.setAbortNotifyFn((roomId, activityId) => {
+  unregisterMttAbortRecovery?.();
+  unregisterMttAbortRecovery = activityRoomManager.registerAbortNotifyFn((roomId, activityId) => {
     if (activityId !== MTT_ACTIVITY_ID) return;
-    void tm.onRoomAborted(roomId);
+    return tm.onRoomAborted(roomId);
   });
 
   // ── (1) Seat seam: create ONE long-lived MTT room PER TABLE + go live ───────

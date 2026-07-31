@@ -79,6 +79,8 @@ export interface LiveOwnerLease {
   watchdogAt: number;
 }
 
+export type RoomAbortStatus = 'aborted' | 'aborted_crash';
+
 export function shouldCrashSweepLiveRoom(
   connectedCount: number,
   idleMs: number,
@@ -239,15 +241,16 @@ class ActivityRoomManager {
   private evictionFn: ((room: Room) => void) | null = null;
 
   /**
-   * Abort-notification hook (Poker MTT P4). Fired with `(roomId, activityId)`
-   * whenever a room transitions to `aborted` / `aborted_crash` — so an owner that
-   * holds money/state behind the room (the TournamentManager, which escrows CT
-   * for a tournament table) can recover (settle/refund) instead of stranding it.
-   * Best-effort: the receiver's errors are swallowed (must never break a sweep).
-   * Most activities don't register one (it stays a no-op).
+   * Composed abort-recovery hooks. Each escrow/state owner registers its own
+   * activity-filtered handler, and every handler runs independently.
    */
-  private abortNotifyFn: ((roomId: string, activityId: string) => void) | null =
-    null;
+  private abortNotifyFns = new Set<
+    (
+      roomId: string,
+      activityId: string,
+      status: RoomAbortStatus,
+    ) => Promise<void> | void
+  >();
 
   /**
    * Per-activity sim → placement-list resolver. Registered at boot from
@@ -943,13 +946,16 @@ class ActivityRoomManager {
     this.evictionFn = fn;
   }
 
-  /**
-   * Register the abort-notification hook (Poker MTT P4). Called when any room
-   * aborts so an owner holding escrow behind the room (the TournamentManager) can
-   * recover. Idempotent registration (last writer wins). See `abortNotifyFn`.
-   */
-  setAbortNotifyFn(fn: (roomId: string, activityId: string) => void): void {
-    this.abortNotifyFn = fn;
+  /** Register one composed abort handler and return its unregister callback. */
+  registerAbortNotifyFn(
+    fn: (
+      roomId: string,
+      activityId: string,
+      status: RoomAbortStatus,
+    ) => Promise<void> | void,
+  ): () => void {
+    this.abortNotifyFns.add(fn);
+    return () => this.abortNotifyFns.delete(fn);
   }
 
   /**
@@ -1023,6 +1029,14 @@ class ActivityRoomManager {
         });
       }
 
+      // The bulk status update bypasses persistAbortedTransition(), so boot
+      // orphans must explicitly drive the same composed recovery callbacks.
+      await Promise.all(
+        orphaned.map((row) =>
+          this.notifyAbortHandlers(row.id, row.activityId, 'aborted_crash'),
+        ),
+      );
+
       void alertError({
         severity: 'warning',
         source: 'activity-room-manager',
@@ -1046,6 +1060,7 @@ class ActivityRoomManager {
     this.lastResults.clear();
     this.liveOwnerLeases.clear();
     this.countdownSyncAttemptedRooms.clear();
+    this.abortNotifyFns.clear();
   }
 
   // ─── Persistence helpers ────────────────────────────────────────────────
@@ -1262,16 +1277,27 @@ class ActivityRoomManager {
       });
     }
 
-    // Notify any owner holding escrow/state behind this room (Poker MTT P4) so it
-    // can recover (settle/refund) — covers BOTH abort paths. Best-effort: a
-    // throwing receiver must NEVER break the abort persistence / sweep.
-    if (this.abortNotifyFn) {
-      try {
-        this.abortNotifyFn(room.id, room.activityId);
-      } catch (err) {
+    // Notify every escrow/state owner — covers BOTH abort paths. Each receiver is
+    // best-effort and cannot break abort persistence or suppress another handler.
+    await this.notifyAbortHandlers(room.id, room.activityId, status);
+  }
+
+  /** Invoke every recovery independently; one failure cannot mask another. */
+  private async notifyAbortHandlers(
+    roomId: string,
+    activityId: string,
+    status: RoomAbortStatus,
+  ): Promise<void> {
+    const outcomes = await Promise.allSettled(
+      Array.from(this.abortNotifyFns, (handler) =>
+        Promise.resolve().then(() => handler(roomId, activityId, status)),
+      ),
+    );
+    for (const outcome of outcomes) {
+      if (outcome.status === 'rejected') {
         console.error(
-          '[activity-room-manager] abortNotifyFn threw (swallowed):',
-          err,
+          '[activity-room-manager] abort recovery handler failed (swallowed):',
+          outcome.reason,
         );
       }
     }

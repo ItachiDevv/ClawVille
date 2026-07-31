@@ -20,6 +20,11 @@ import { activityRoutes } from './routes/activity';
 import { activitiesV2Routes } from './routes/activities';
 import { landRoutes } from './routes/land';
 import { activityRoomManager } from './services/activity/activity-room-manager';
+import {
+  handleWagerRoomAborted,
+  startWagerAbortRecoveryWorker,
+  stopWagerAbortRecoveryWorker,
+} from './services/activity/wager-lobby-bridge';
 import { activityQueueService } from './services/activity/activity-queue';
 import { activityWsHub } from './services/activity/activity-ws-hub';
 import { bumperShellsSim } from './services/activity/sim/bumper-shells-sim';
@@ -1081,6 +1086,7 @@ process.on('uncaughtException', (err) => {
     activityRoomManager.setBroadcastFn((roomId, frame) => {
       activityWsHub.broadcastEvent(roomId, frame);
     });
+    activityRoomManager.registerAbortNotifyFn(handleWagerRoomAborted);
     activityRoomManager.setLiveTransitionFn(async (room) => {
       // Wager bridge — if this room has a wager lobby attached, flip it
       // from `open` → `locked` on chain in lockstep with the FSM
@@ -1462,18 +1468,11 @@ process.on('uncaughtException', (err) => {
     wirePokerMttToHub(pokerMttSim, tournamentManager);
 
     await activityRoomManager.recoverOrphanedRooms();
-    // Poker MTT (P4) — MONEY-side crash recovery. `recoverOrphanedRooms()` above
-    // only flips the `texas-holdem-mtt` ROOMS to `aborted_crash` via a direct bulk
-    // UPDATE that BYPASSES `persistAbortedTransition`, so the `abortNotifyFn` →
-    // `onRoomAborted` → `cancelAndRefundOrphan` chain never fires for boot-orphaned
-    // rooms. And the start-trigger sweeper below only scans status IN
-    // ('registering','seating') — a crashed `running` tournament is invisible to it.
-    // This driver is the ONLY code that scans status IN ('running','seating') AND
-    // settled_at IS NULL AND cancelled_at IS NULL to CANCEL + REFUND the escrowed
-    // buy-ins. Without this call a pod crash mid-tournament strands every entrant's
-    // buy-in in `prize_pool_ct` PERMANENTLY (no sweeper path, no abort-notify path,
-    // no boot path would ever refund it). Idempotent (FOR UPDATE + per-entrant
-    // `status <> 'refunded'` guard) so re-boot never double-refunds.
+    startWagerAbortRecoveryWorker();
+    // Poker MTT (P4) — keep the authoritative tournament-wide boot scan in
+    // addition to composed room-abort callbacks. It also covers a crashed running
+    // tournament whose room binding is absent/corrupt; both paths are idempotent
+    // (FOR UPDATE + per-entrant `status <> 'refunded'`), so they cannot double-refund.
     await tournamentManager.recoverOrphanedTournaments();
     await activityQueueService.hydrateFromDb();
     // Chunk #10 — hydrate the bot avatarId pool BEFORE the matcher starts
@@ -1619,6 +1618,7 @@ async function gracefulShutdown(signal: string) {
       // If the driver module failed to load earlier, there's nothing to stop.
     }
     activityRoomManager.stopSweeper();
+    stopWagerAbortRecoveryWorker();
     activityQueueService.stopMatchmaker();
     tournamentManager.stopStartTriggerSweeper();
     // Poker cash-house intervals (scaler + self-drive tick). Import inside the
