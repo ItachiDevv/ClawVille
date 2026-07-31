@@ -1,6 +1,15 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-07-30 (Kelp persistent-stage entry/exit and presence).**
+**Last Audited: 2026-07-31 (world position over one persistent connection).**
+Your character's position now rides one persistent connection instead of a
+request every fifth of a second; if that connection cannot be made (or the
+server has the feature switched off, which is the default today), the game
+quietly goes back to the old method with no visible difference. Standing
+still sends one keepalive every 10 seconds either way; switching tabs no
+longer risks your character vanishing from the shared world while the
+connection stays healthy.
+
+**Prior Last Audited: 2026-07-30 (Kelp persistent-stage entry/exit and presence).**
 Walking through or activating the town-center Kelp portal now transitions into
 a resident stage slot; returning is an opaque fade and keeps the world Canvas
 warm. The player's world body remains in the shared room and uploads

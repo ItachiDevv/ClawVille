@@ -9,6 +9,7 @@ import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { WebSocketServer } from "ws";
 import {
   diffHeapSnapshots,
   renderHeapDiffReport,
@@ -68,6 +69,30 @@ const routeDestination =
       };
 const apiStubLane =
   routeLane || lane === "loader" || lane === "kelp-exit";
+const uplinkMode = argv.get("uplink") ?? "http";
+const wsFault = argv.get("ws-fault") ?? "none";
+if (!["http", "ws", "refuse"].includes(uplinkMode)) {
+  throw new Error("--uplink must be http, ws, or refuse");
+}
+if (
+  ![
+    "none",
+    "membership_lost",
+    "socket_replaced",
+    "bad_frame",
+    "flood",
+    "shutdown",
+    "silent1006",
+  ].includes(wsFault)
+) {
+  throw new Error("unsupported --ws-fault");
+}
+if (uplinkMode !== "http" && !apiStubLane) {
+  throw new Error("--uplink applies only to API-stub lanes");
+}
+if (wsFault !== "none" && uplinkMode !== "ws") {
+  throw new Error("--ws-fault requires --uplink=ws");
+}
 const dwellTarget = argv.get("dwell") ?? null;
 if (
   dwellTarget !== null &&
@@ -85,6 +110,14 @@ if (
   throw new Error("--dwell-seconds must be between 10 and 600");
 }
 const dwellMode = dwellTarget !== null;
+if (
+  uplinkMode === "refuse" &&
+  (!dwellMode || dwellSeconds < 60)
+) {
+  throw new Error(
+    "--uplink=refuse requires a dwell lane (--lane=soak --dwell=game --dwell-seconds>=60)",
+  );
+}
 const heapDiffRequested = argv.has("heap-diff");
 if (heapDiffRequested && (lane !== "soak" || dwellMode)) {
   throw new Error("--heap-diff requires the crossing form of --lane=soak");
@@ -354,6 +387,22 @@ const summary = {
         firstGame: 0,
         afterFirstGame: 0,
       },
+      uplinkSockets: {
+        [routeDestination.coldKey]: 0,
+        firstGame: 0,
+        afterFirstGame: 0,
+      },
+      positionPosts: {
+        [routeDestination.coldKey]: 0,
+        firstGame: 0,
+        afterFirstGame: 0,
+      },
+      uplinkFramesReceived: 0,
+      uplinkPongsReceived: 0,
+      uplinkUpgradeRefusals: 0,
+      uplinkFrameViolations: [],
+      uplinkMode,
+      wsFault,
       events: [],
       fixtureTraffic: {
         "GET /api/auth/me": 0,
@@ -386,8 +435,34 @@ let worldProbeServer;
 let heapSnapshotDirectory;
 const heapSnapshotPaths = new Map();
 
+function currentPhaseKey() {
+  const phase = summary.routes.network.phase;
+  return phase === routeDestination.coldPhase
+    ? routeDestination.coldKey
+    : phase === "first-game"
+      ? "firstGame"
+      : "afterFirstGame";
+}
+
+function totalUplinkSockets(report) {
+  return Object.values(report.routes.network.uplinkSockets).reduce(
+    (total, count) => total + count,
+    0,
+  );
+}
+
+function totalPositionPosts(report) {
+  return Object.values(report.routes.network.positionPosts).reduce(
+    (total, count) => total + count,
+    0,
+  );
+}
+
 async function startWorldProbeServer() {
   const streams = new Set();
+  const uplinkWss = new WebSocketServer({ noServer: true });
+  const uplinkSockets = new Set();
+  let wsFaultInjected = false;
   const server = createServer((request, response) => {
     const origin = request.headers.origin ?? "http://localhost:3000";
     const corsHeaders = {
@@ -514,6 +589,9 @@ async function startWorldProbeServer() {
           roomId: "world-stage-probe",
           id: "world-stage-probe-session",
           roomTicket: "world-stage-probe-ticket",
+          ...(uplinkMode === "http"
+            ? {}
+            : { transports: { positionWs: true } }),
         }),
       );
       return;
@@ -578,6 +656,9 @@ async function startWorldProbeServer() {
         pathname === "/api/world/watch-heartbeat" ||
         pathname === "/api/npc/watch")
     ) {
+      if (pathname === "/api/world/position") {
+        summary.routes.network.positionPosts[currentPhaseKey()] += 1;
+      }
       response.writeHead(204, corsHeaders);
       response.end();
       return;
@@ -587,6 +668,124 @@ async function startWorldProbeServer() {
       (summary.routes.network.stubUnhandled[unhandledKey] ?? 0) + 1;
     response.writeHead(404, corsHeaders);
     response.end();
+  });
+  server.on("upgrade", (request, socket, head) => {
+    const pathname = new URL(
+      request.url ?? "/",
+      "http://localhost:4000",
+    ).pathname;
+    if (!/^\/api\/world\/[^/]+\/ws$/.test(pathname)) {
+      socket.destroy();
+      return;
+    }
+    if (uplinkMode !== "ws") {
+      summary.routes.network.uplinkUpgradeRefusals += 1;
+      socket.write(
+        "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n",
+      );
+      socket.destroy();
+      return;
+    }
+    socket.setTimeout(0);
+    uplinkWss.handleUpgrade(request, socket, head, (ws) => {
+      summary.routes.network.uplinkSockets[currentPhaseKey()] += 1;
+      if (wsFault === "silent1006" && !wsFaultInjected) {
+        wsFaultInjected = true;
+        ws.terminate();
+        return;
+      }
+      ws.send(
+        JSON.stringify({
+          type: "presence.ready",
+          roomId: "world-stage-probe",
+          presenceId: "world-stage-probe-session",
+          serverTimeMs: Date.now(),
+        }),
+      );
+      const ping = setInterval(() => {
+        if (ws.readyState === ws.OPEN) {
+          ws.send(
+            JSON.stringify({
+              type: "presence.ping",
+              serverTimeMs: Date.now(),
+            }),
+          );
+        }
+      }, 25_000);
+      let faultTimer = null;
+      if (wsFault !== "none" && !wsFaultInjected) {
+        wsFaultInjected = true;
+        faultTimer = setTimeout(() => {
+          const fault = {
+            membership_lost: {
+              frame: {
+                type: "presence.error",
+                code: "membership_lost",
+              },
+              code: 4409,
+            },
+            socket_replaced: {
+              frame: {
+                type: "presence.error",
+                code: "socket_replaced",
+              },
+              code: 4410,
+            },
+            bad_frame: {
+              frame: { type: "presence.error", code: "bad_frame" },
+              code: 4400,
+            },
+            flood: {
+              frame: { type: "presence.error", code: "flood" },
+              code: 4429,
+            },
+            shutdown: {
+              frame: {
+                type: "presence.error",
+                code: "server_shutdown",
+              },
+              code: 4413,
+            },
+          }[wsFault];
+          if (!fault || ws.readyState !== ws.OPEN) return;
+          ws.send(JSON.stringify(fault.frame));
+          ws.close(fault.code);
+        }, 3_000);
+      }
+      ws.on("message", (raw) => {
+        let frame = null;
+        try {
+          frame = JSON.parse(String(raw));
+        } catch {
+          // Recorded as a violation below.
+        }
+        if (frame?.type === "presence.pong") {
+          summary.routes.network.uplinkPongsReceived += 1;
+          return;
+        }
+        summary.routes.network.uplinkFramesReceived += 1;
+        const valid =
+          frame?.type === "presence.position" &&
+          Number.isFinite(frame.x) &&
+          Number.isFinite(frame.y) &&
+          Number.isFinite(frame.dirZ) &&
+          typeof frame.activity === "string";
+        if (
+          !valid &&
+          summary.routes.network.uplinkFrameViolations.length < 10
+        ) {
+          summary.routes.network.uplinkFrameViolations.push(
+            String(raw).slice(0, 200),
+          );
+        }
+      });
+      uplinkSockets.add(ws);
+      ws.on("close", () => {
+        clearInterval(ping);
+        if (faultTimer) clearTimeout(faultTimer);
+        uplinkSockets.delete(ws);
+      });
+    });
   });
   await new Promise((resolveStart, rejectStart) => {
     server.once("error", rejectStart);
@@ -598,6 +797,8 @@ async function startWorldProbeServer() {
   return {
     async close() {
       for (const stream of streams) stream.end();
+      for (const socket of uplinkSockets) socket.terminate();
+      uplinkWss.close();
       await new Promise((resolveClose, rejectClose) => {
         server.close((error) => {
           if (error) rejectClose(error);
@@ -1377,12 +1578,7 @@ try {
 
     if (routeLane) {
       const phase = summary.routes.network.phase;
-      const phaseKey =
-        phase === routeDestination.coldPhase
-          ? routeDestination.coldKey
-          : phase === "first-game"
-            ? "firstGame"
-            : "afterFirstGame";
+      const phaseKey = currentPhaseKey();
       const method = request.method();
       let type = null;
       if (method === "POST" && pathname === "/api/world/join") {
@@ -2347,6 +2543,37 @@ try {
         summary.routes.network.streams.firstGame === 1,
       noRouteCorrelatedStreamReopens:
         summary.routes.network.streams.afterFirstGame === 0,
+      [routePair === "kelp"
+        ? "coldKelpUplinkSocketsZero"
+        : "coldCoveUplinkSocketsZero"]:
+        summary.routes.network.uplinkSockets[routeDestination.coldKey] === 0,
+      uplinkFramesWellFormed:
+        summary.routes.network.uplinkFrameViolations.length === 0,
+      singlePersistentUplinkSocket:
+        uplinkMode !== "ws" ||
+        wsFault !== "none" ||
+        totalUplinkSockets(summary) === 1,
+      noRouteCorrelatedSocketReopens:
+        wsFault !== "none" ||
+        summary.routes.network.uplinkSockets.afterFirstGame === 0,
+      uplinkTransportMatchesMode:
+        uplinkMode === "ws" && wsFault === "none"
+          ? totalPositionPosts(summary) === 0 &&
+            summary.routes.network.uplinkFramesReceived > 0
+          : uplinkMode === "refuse"
+            ? summary.routes.network.uplinkUpgradeRefusals >= 1 &&
+              summary.routes.network.uplinkUpgradeRefusals <= 6 &&
+              totalPositionPosts(summary) > 0 &&
+              totalUplinkSockets(summary) === 0
+            : uplinkMode === "http"
+              ? totalUplinkSockets(summary) === 0 &&
+                totalPositionPosts(summary) > 0
+              : true,
+      uplinkPongAnswered:
+        uplinkMode !== "ws" ||
+        !dwellMode ||
+        dwellSeconds < 30 ||
+        summary.routes.network.uplinkPongsReceived >= 1,
       coldInitBridgeLandsExactlyOnce:
         summary.routes.coldInit?.landedExactlyOnce === true,
       gameCacheControlNonCacheable:

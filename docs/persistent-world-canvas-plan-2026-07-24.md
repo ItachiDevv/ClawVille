@@ -296,3 +296,14 @@ the cove entry manager stops awaiting compile at approximately 20 seconds and
 the watchdog independently enforces attempt and chain ceilings. No JavaScript
 timer can establish boundedness while the event loop itself is frozen. See
 `world-stage-watchdog-reland-notes.md` for the evidence boundaries.
+
+## Execution ledger — world-presence WS uplink (2026-07-31)
+
+The position uplink joined the persistent-stage architecture: one WebSocket per
+presence (behind `WORLD_POSITION_WS_ENABLED`, default OFF) replaces per-request
+HTTP position POSTs; the SSE downlink, `/join` bootstrap, recovery tickets, and
+the pure reducer are unchanged. The 488-line `use-world-stream` lifecycle effect
+is extracted into the route-layout-scoped `world-presence-controller.ts` (owner
+model identical to the persistent Canvas: created once above `/game`//`/cove`/
+`/kelp`, policy swaps without teardown). Full spec, seam record, deferred gates,
+and follow-ups: `docs/world-presence-ws-uplink-plan-2026-07-30.md`.

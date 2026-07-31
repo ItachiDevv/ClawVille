@@ -164,6 +164,21 @@ Test the full matrix: logged-out, guest, non-guest/no avatar, provisioning pendi
 
 Same-day recommendation: land the Issue 2 surface correction and the HTTP motion gate. The durable WS/controller work is roughly 700–1,100 touched/new lines including tests and probe support; it deserves its own gated pass because it carries P1c recovery and route-persistence risk. Do not rush that pass by deleting SSE, recovery tickets, HTTP fallback, or the pure machine.
 
+## Execution ledger (2026-07-31)
+
+Both waves implemented on branch `feat/world-presence-ws` (local only; staging frozen for founder testing at execution time). Pipeline: two Opus-5-MAX frozen specs (server 2.1, client rev 2) -> two Codex gpt-5.6-sol adversarial critiques (both REJECT; 13 blockers total, all repo-evidenced) -> revision -> orchestrator seam ledger D1-D18 -> Codex implementation, orchestrator re-ran every gate personally.
+
+- **Server wave (`75c89275` + shared-type fix `5d70aff9`):** hub/route/shared-wire/guest-cookie/identity-resolver/position-apply/smoke-harness. Gates: shared build 0 - api tsc 0 - 56/56 new tests (6 files) - isolated runner failures byte-identical to clean HEAD (stash comparison). DEFERRED: live localhost smoke (`apps/api/scripts/world-ws-smoke.ts`) — needs a real API+DB boot; local boot would side-effect the staging DB mid-freeze. Runs at freeze-lift, before promotion.
+- **Client wave:** controller extraction (1,019 LOC + 733 test), machine transport states, hook adapter, probe uplink fixture. Gates: web tsc 0 (492 files) - 50/50 new machine+controller tests - existing 10 machine tests byte-identical (zero removed lines) - web prod build 0. DEFERRED: P1c probe lanes (routes http/ws, refuse soak) — double-blocked environmentally at execution time: fixture port :4000 contended by a concurrent session's P4 probes, AND headless world boot failing box-wide (baseline control at HEAD without this diff fails identically, so not a regression of this diff). Lanes are REQUIRED before staging promotion; run on a quiet box at freeze-lift.
+
+### Amended-seam record (binding wire deltas vs the design above)
+
+- **`socket_replaced` replaces scope-discriminated `superseded` (ledger D3-REVISED, critique B1):** same-session socket replacement is `{type:'presence.error', code:'socket_replaced'}` + close 4410 — NOT terminal, no rejoin; the client latches to HTTP with the advertisement cleared. `superseded` (close 4411) is RESERVED for terminal presence takeover and is never emitted this pass; the real terminal path stays ticketed `/join` HTTP 409 `presence_superseded`. The client's transport-loss type structurally cannot map a socket signal to terminal SUPERSEDED.
+- **Two-way ping/pong with pong-refreshed liveness (ledger D7-REVERSED, critique B5):** `presence.ping` every 25s; the client MUST answer `presence.pong` from `onmessage` (not timer-throttled in background tabs); the hub reaps sockets missing a 70s pong deadline and refreshes registry membership via `touchPresence` (pose untouched). HTTP-fallback clients keep the 30s pose-staleness kick.
+- **Guest binding cookie (ledger D9/D15):** `/join` mints a SESSION-SCOPED (no maxAge) HttpOnly cookie; `/join`, `/position`, `/leave`, and the upgrade resolve guests through it (browser WS handshakes cannot carry `X-CV-Fingerprint`).
+- **Membership-class upgrade failures complete the upgrade and signal via control frame + 4409 (ledger D10):** browsers cannot read handshake bodies; HTTP-level rejection only for origin/rate/flag-off/IP-cap. `room_mismatch` is cut from the wire.
+- **No live flag drain (ledger D11):** env flips reach the process only via restart; rollback = restart -> 4413 drain -> reopen 503 -> fallback ladder. 4412 reserved (FU-4).
+
 ## Follow-ups
 
 - **FU-1 — Hatcher controlled-launch suppression TTL.** `refreshHumanControlledOpenClawForUser` defaults to 3,000ms and assumes the owner's former 5 Hz `/api/world/position` cadence. Motion-gated idle uploads run every 10s, so suppression can lapse between uploads. Deliberately unchanged in the WS diff: no smuggled Hatcher behavior change. Owner: world-presence + agent-protocol-partner. Review by 2026-08-31.
