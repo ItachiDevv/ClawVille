@@ -49,6 +49,7 @@ import {
   type InputBounds,
 } from '../anti-cheat/shared';
 import type {
+  GhostFrame,
   ReefPowerUpBoxVariant,
   ReefPufferMineState,
   ReefWaveSweepState,
@@ -144,6 +145,9 @@ import {
   REEF_WAVE_DURATION_MS,
   REEF_WAVE_BAND_LENGTH_WU,
   REEF_WAVE_SURGE_MULT,
+  GHOST_CAPTURE_HZ,
+  MAX_GHOST_FRAMES_PER_LAP,
+  MIN_LAP_MS,
 } from './reef-race-config';
 import {
   buildReefRaceFurniture,
@@ -345,6 +349,10 @@ interface SplineBody {
    * each lap completion. Used to stamp `event.lap_completed.splitMs`.
    */
   lastLapAt: number;
+  /** Phase 4 money-path metadata consumed by the PB writer at settlement. */
+  currentLapFrames: GhostFrame[];
+  bestLapFrames: GhostFrame[] | null;
+  bestLapMsSoFar: number | null;
   /**
    * False until the first `resolveProgress` sample seeds `progress`/`prevProgress`
    * from the body's actual spawn position (behind the line, t≈0.97-1.0). Without
@@ -786,6 +794,9 @@ export class ReefRaceSplineSim {
         lap: 0,
         startCrossed: false,
         lastLapAt: startedAt,
+        currentLapFrames: [],
+        bestLapFrames: null,
+        bestLapMsSoFar: null,
         progressInitialized: false,
         finishedAt: null,
         placement: null,
@@ -1097,6 +1108,7 @@ export class ReefRaceSplineSim {
     placement: number;
     score: number;
     scoreMs: number | null;
+    reefRace: SplineReefRaceResult;
   }> {
     const state = this.rooms.get(roomId);
     if (!state) return [];
@@ -1121,6 +1133,7 @@ export class ReefRaceSplineSim {
       placement: number;
       score: number;
       scoreMs: number | null;
+      reefRace: SplineReefRaceResult;
     }> = [];
     let placement = 1;
 
@@ -1130,6 +1143,7 @@ export class ReefRaceSplineSim {
         placement: placement++,
         score: -f.totalTimeMs,
         scoreMs: f.totalTimeMs,
+        reefRace: extractSplineReefRaceBlock(f),
       });
     }
     for (const d of dnfers) {
@@ -1140,6 +1154,7 @@ export class ReefRaceSplineSim {
         // exceed the loop hard timeout), so finishers always outrank DNFers.
         score: -(REEF_RACE_LOOP_HARD_TIMEOUT_MS + 1),
         scoreMs: null,
+        reefRace: extractSplineReefRaceBlock(d),
       });
     }
     return out;
@@ -1266,6 +1281,30 @@ export class ReefRaceSplineSim {
 
     // 6. Pickup respawn cycle.
     this.tickPickups(state, now);
+
+    // 6a. Capture lap-relative replay samples before seam handling potentially
+    // closes and resets the active lap buffer.
+    const ghostStrideTicks = Math.max(
+      1,
+      Math.round(REEF_SIM_HZ / GHOST_CAPTURE_HZ),
+    );
+    if (state.tick % ghostStrideTicks === 0) {
+      for (const body of state.bodies.values()) {
+        if (
+          !body.alive || body.dnf || body.finishedAt !== null ||
+          !body.startCrossed
+        ) continue;
+        if (body.currentLapFrames.length >= MAX_GHOST_FRAMES_PER_LAP) {
+          body.currentLapFrames.shift();
+        }
+        body.currentLapFrames.push({
+          t: now - body.lastLapAt,
+          x: body.x,
+          z: body.z,
+          rot: body.rot,
+        });
+      }
+    }
 
     // 7. Update race progress (arclength fraction) + finish-line detection.
     this.resolveProgress(state, now);
@@ -2034,6 +2073,7 @@ export class ReefRaceSplineSim {
           body.startCrossed = false;
           body.lastLapAt = now;
         }
+        resetSplineGhostLap(body);
         continue;
       }
 
@@ -2044,12 +2084,14 @@ export class ReefRaceSplineSim {
         // First crossing = the START GUN. Now genuinely on lap 1; lap stays 0.
         body.startCrossed = true;
         body.lastLapAt = now;
+        resetSplineGhostLap(body);
         continue;
       }
 
       // A genuine lap completion. Increment completed-lap count.
       const splitMs = now - body.lastLapAt;
       body.lastLapAt = now;
+      closeSplineGhostLap(body, splitMs);
       body.lap += 1;
 
       if (body.lap >= REEF_RACE_LAPS) {
@@ -3876,6 +3918,56 @@ export class ReefRaceSplineSim {
 }
 
 // ─── Silence unused imports (used via body.mults or reserved for later phases) ─
+
+interface SplineReefRaceResult {
+  bestLapMs: number | null;
+  ghostReplayFrames: GhostFrame[] | null;
+  bestStreakThisMatch: number;
+  currentStreakAtMatchEnd: number;
+}
+
+function resetSplineGhostLap(body: SplineBody): void {
+  body.currentLapFrames.length = 0;
+  body.currentLapFrames.push({
+    t: 0,
+    x: body.x,
+    z: body.z,
+    rot: body.rot,
+  });
+}
+
+function closeSplineGhostLap(body: SplineBody, splitMs: number): void {
+  if (
+    body.currentLapFrames.length === 0 ||
+    body.currentLapFrames.at(-1)?.t !== splitMs
+  ) {
+    body.currentLapFrames.push({
+      t: splitMs,
+      x: body.x,
+      z: body.z,
+      rot: body.rot,
+    });
+  }
+  if (
+    splitMs >= MIN_LAP_MS &&
+    (body.bestLapMsSoFar === null || splitMs < body.bestLapMsSoFar)
+  ) {
+    body.bestLapMsSoFar = splitMs;
+    body.bestLapFrames = body.currentLapFrames.slice();
+  }
+  resetSplineGhostLap(body);
+}
+
+function extractSplineReefRaceBlock(body: SplineBody): SplineReefRaceResult {
+  return {
+    bestLapMs: body.bestLapMsSoFar,
+    ghostReplayFrames: body.bestLapFrames?.slice() ?? null,
+    // Spline v2 has no apex-streak mechanic. Preserve the established
+    // settlement shape with neutral values rather than omitting the block.
+    bestStreakThisMatch: 0,
+    currentStreakAtMatchEnd: 0,
+  };
+}
 
 void NEUTRAL_BODY_MULTIPLIERS;
 void SLIPSTREAM_GRACE_TICKS; // used via body.mults.slipstreamGraceTicks
