@@ -44,7 +44,7 @@ export function decideActivityReadiness(
     return { kind: 'WAIT', reason: 'already-acked' };
   }
   if (
-    input.targetRoomKey === null ||
+    input.targetRoomKey !== null &&
     input.roomKey !== input.targetRoomKey
   ) {
     return { kind: 'WAIT', reason: 'wrong-room' };
