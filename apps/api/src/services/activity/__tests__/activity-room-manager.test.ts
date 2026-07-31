@@ -49,6 +49,14 @@ mock.module('@clawville/database', () => ({
     bestLapMs: 'best_lap_ms',
     ghostReplayData: 'ghost_replay_data',
   },
+  reefRacePersonalBestClaims: {
+    id: 'claim_id',
+    sourceRoomId: 'source_room_id',
+    avatarId: 'avatar_id',
+    bestLapMs: 'best_lap_ms',
+    previousBestLapMs: 'previous_best_lap_ms',
+    dailyRank: 'daily_rank',
+  },
 }));
 
 mock.module('../../alert-error', () => ({
@@ -88,11 +96,13 @@ const {
   MAX_ROOMS_PER_ACTIVITY,
   MAX_ROOMS_TOTAL,
   REEF_RACE_NO_SHOW_ABORT_MS,
+  LIVE_OWNER_WATCHDOG_GRACE_MS,
   shouldCrashSweepLiveRoom,
 } = await import(
   '../activity-room-manager'
 );
 const { REEF_RACE_COUNTDOWN_DURATION_MS } = await import('@clawville/shared');
+const { bumperShellsSim } = await import('../sim/bumper-shells-sim');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -104,16 +114,19 @@ const ACTIVITY_CONFIG = {
 };
 
 describe('live no-WS crash sweep', () => {
-  it('allows server-driven activity sims to settle voluntary DNF rows', () => {
+  it('allows a bounded live owner lease to settle voluntary DNF rows', () => {
+    const now = 1_000_000;
     const longIdle = 60_000;
-    expect(shouldCrashSweepLiveRoom('reef-race', 0, longIdle)).toBe(false);
-    expect(shouldCrashSweepLiveRoom('bumper-shells', 0, longIdle)).toBe(false);
-    expect(shouldCrashSweepLiveRoom('texas-holdem-mtt', 0, longIdle)).toBe(false);
+    expect(
+      shouldCrashSweepLiveRoom(0, longIdle, now + 1, now),
+    ).toBe(false);
   });
 
-  it('retains crash sweeping for non-exempt live rooms', () => {
-    expect(shouldCrashSweepLiveRoom('other-activity', 0, 60_000)).toBe(true);
-    expect(shouldCrashSweepLiveRoom('other-activity', 1, 60_000)).toBe(false);
+  it('retains no-WS sweeping without a lease and watchdogs expired owners', () => {
+    const now = 1_000_000;
+    expect(shouldCrashSweepLiveRoom(0, 60_000, null, now)).toBe(true);
+    expect(shouldCrashSweepLiveRoom(1, 60_000, null, now)).toBe(false);
+    expect(shouldCrashSweepLiveRoom(1, 0, now - 1, now)).toBe(true);
   });
 });
 
@@ -451,6 +464,60 @@ describe('Room sweeper', () => {
     room.endedAt = Date.now() - 121_000;
     await activityRoomManager.roomSweeper();
     expect(activityRoomManager.getRoom(room.id)).toBeUndefined();
+  });
+
+  it('reaps a dead sim after its hard deadline and runs abort recovery', async () => {
+    jest.useFakeTimers();
+    const startedAt = new Date('2026-07-31T12:00:00.000Z').getTime();
+    jest.setSystemTime(startedAt);
+    const recovered: Array<{ roomId: string; activityId: string }> = [];
+    const evictedParticipants: string[][] = [];
+    activityRoomManager.setAbortNotifyFn((roomId, activityId) => {
+      recovered.push({ roomId, activityId });
+    });
+    activityRoomManager.setEvictionFn((room) => {
+      evictedParticipants.push(Array.from(room.participants.keys()));
+      bumperShellsSim.stopRoom(room.id);
+    });
+
+    const room = await activityRoomManager.createRoom(
+      ACTIVITY_ID,
+      makeParticipants(4),
+      ACTIVITY_CONFIG,
+    );
+    await activityRoomManager.transitionRoom(room.id, 'live');
+    const simState = bumperShellsSim.startRoom(
+      room.id,
+      room.activityId,
+      Array.from(room.participants.keys()),
+    );
+    activityRoomManager.acquireLiveOwnerLease(
+      room.id,
+      'bumper-shells-sim',
+      simState.endsAt,
+    );
+    // Deterministically model the interval owner dying without firing endRound.
+    if (simState.intervalHandle) clearInterval(simState.intervalHandle);
+    simState.intervalHandle = null;
+    for (const participant of room.participants.values()) {
+      participant.connected = true;
+    }
+
+    jest.setSystemTime(simState.endsAt + LIVE_OWNER_WATCHDOG_GRACE_MS - 1);
+    await activityRoomManager.roomSweeper();
+    expect(activityRoomManager.getRoom(room.id)).toBeDefined();
+
+    jest.setSystemTime(simState.endsAt + LIVE_OWNER_WATCHDOG_GRACE_MS + 1);
+    await activityRoomManager.roomSweeper();
+    expect(activityRoomManager.getRoom(room.id)).toBeUndefined();
+    expect(bumperShellsSim.__getState(room.id)).toBeUndefined();
+    expect(recovered).toEqual([{ roomId: room.id, activityId: ACTIVITY_ID }]);
+    expect(evictedParticipants).toEqual([Array.from(room.participants.keys())]);
+    expect(
+      activityRoomManager.getPlayerActiveRoom(
+        room.participants.keys().next().value!,
+      ),
+    ).toBeUndefined();
   });
 });
 

@@ -70,37 +70,26 @@ const PENDING_EMPTY_TTL_MS = 90_000;
 /** LIVE rooms with no live WS for > this duration are killed (backend §1.6) */
 const LIVE_NO_WS_TTL_MS = 30_000;
 
-/**
- * Activities whose LIVE rooms LEGITIMATELY have 0 connected WS sockets for long
- * stretches and must NOT be crash-swept on the 30s `LIVE_NO_WS_TTL_MS`. Reef
- * Race and Bumper Shells continue server-side after a voluntary forfeit so the
- * sim can persist the player's DNF placement; their own terminal callbacks and
- * hard timeouts own cleanup. A poker tournament table is another case: between
- * hands (and during the window
- * after seating but before a human/agent opens its socket) the room can sit with
- * zero live connections for minutes while the TournamentManager's per-table hand
- * loop keeps running server-side. Crash-aborting such a room would strand the
- * tournament's CT escrow. The TournamentManager owns these rooms' lifecycle
- * (it transitions them → results on table-break / completion), so the sweeper
- * leaves them alone entirely; they are NOT abandoned because their owner drives
- * them to a terminal state. (Poker MTT P4.)
- */
-const LIVE_NO_WS_SWEEP_EXEMPT_ACTIVITIES: ReadonlySet<string> = new Set<string>([
-  'reef-race',
-  'bumper-shells',
-  'texas-holdem-mtt',
-]);
+/** Grace beyond an owner's authoritative sim deadline before crash recovery. */
+export const LIVE_OWNER_WATCHDOG_GRACE_MS = 15_000;
+
+export interface LiveOwnerLease {
+  owner: string;
+  hardDeadlineAt: number;
+  watchdogAt: number;
+}
 
 export function shouldCrashSweepLiveRoom(
-  activityId: string,
   connectedCount: number,
   idleMs: number,
+  leaseWatchdogAt: number | null,
+  now = Date.now(),
 ): boolean {
-  return (
-    !LIVE_NO_WS_SWEEP_EXEMPT_ACTIVITIES.has(activityId) &&
-    connectedCount === 0 &&
-    idleMs > LIVE_NO_WS_TTL_MS
-  );
+  // A live owner suppresses the ordinary no-WS sweep only until its bounded
+  // watchdog. Once the authoritative deadline + grace passes, reap the room
+  // even if a stale client socket remains connected.
+  if (leaseWatchdogAt != null) return now > leaseWatchdogAt;
+  return connectedCount === 0 && idleMs > LIVE_NO_WS_TTL_MS;
 }
 
 /** RESULTS rooms older than this are GC'd regardless of viewers (backend §1.6) */
@@ -280,6 +269,9 @@ class ActivityRoomManager {
    * room GCs.
    */
   private lastResults = new Map<string, IssuedResult[]>();
+
+  /** Bounded proof that a server-side sim/tournament owner is still in charge. */
+  private liveOwnerLeases = new Map<string, LiveOwnerLease>();
 
   private sweeperHandle: ReturnType<typeof setInterval> | null = null;
 
@@ -576,6 +568,10 @@ class ActivityRoomManager {
       throw err;
     }
 
+    if (fromState === 'live' && toState !== 'live') {
+      this.liveOwnerLeases.delete(roomId);
+    }
+
     // Broadcast an FSM-state event for hub-attached clients (chunk #3).
     // The hub callback handles missing connections silently.
     this.broadcastFn(roomId, this.fsmEventFrame(room, toState));
@@ -664,6 +660,7 @@ class ActivityRoomManager {
     // Tracked separately so the dispatch loop below picks the right
     // target state per room.
     const toAbortCrash: Room[] = [];
+    const expiredOwnerLeaseIds = new Set<string>();
     const toGc: Room[] = [];
 
     for (const room of this.rooms.values()) {
@@ -704,18 +701,19 @@ class ActivityRoomManager {
           break;
         }
         case 'live': {
-          // Long-lived poker tables legitimately have 0 sockets between hands /
-          // before players connect — their owner (the TournamentManager) drives
-          // them to a terminal state, so the sweeper must NOT crash-abort them
-          // (would strand the tournament's CT escrow). See the exempt set above.
+          const lease = this.liveOwnerLeases.get(room.id);
           if (
             shouldCrashSweepLiveRoom(
-              room.activityId,
               this.connectedCount(room),
               now - room.lastTouchedAt,
+              lease?.watchdogAt ?? null,
+              now,
             )
           ) {
             toAbortCrash.push(room);
+            if (lease && now > lease.watchdogAt) {
+              expiredOwnerLeaseIds.add(room.id);
+            }
           }
           break;
         }
@@ -762,7 +760,9 @@ class ActivityRoomManager {
           payload: {
             activityId: room.activityId,
             roomId: room.id,
-            reason: 'live_no_ws',
+            reason: expiredOwnerLeaseIds.has(room.id)
+              ? 'live_owner_lease_expired'
+              : 'live_no_ws',
             playerCount: room.participants.size,
           },
         });
@@ -892,6 +892,47 @@ class ActivityRoomManager {
   }
 
   /**
+   * Install/replace a bounded LIVE-owner lease. The deadline is supplied by
+   * the authoritative sim (or renewed tournament hand loop), never inferred
+   * from activityId.
+   */
+  acquireLiveOwnerLease(
+    roomId: string,
+    owner: string,
+    hardDeadlineAt: number,
+  ): LiveOwnerLease {
+    const room = this.rooms.get(roomId);
+    if (!room || room.state !== 'live') {
+      throw new Error(`Cannot lease non-live room ${roomId}`);
+    }
+    if (!Number.isFinite(hardDeadlineAt)) {
+      throw new Error(`Invalid owner-lease deadline for room ${roomId}`);
+    }
+    const lease = {
+      owner,
+      hardDeadlineAt,
+      watchdogAt: hardDeadlineAt + LIVE_OWNER_WATCHDOG_GRACE_MS,
+    };
+    this.liveOwnerLeases.set(roomId, lease);
+    return lease;
+  }
+
+  /** Renew only the current owner; a stale owner cannot extend a successor. */
+  renewLiveOwnerLease(
+    roomId: string,
+    owner: string,
+    hardDeadlineAt: number,
+  ): LiveOwnerLease | null {
+    const existing = this.liveOwnerLeases.get(roomId);
+    if (!existing || existing.owner !== owner) return null;
+    return this.acquireLiveOwnerLease(roomId, owner, hardDeadlineAt);
+  }
+
+  getLiveOwnerLease(roomId: string): LiveOwnerLease | undefined {
+    return this.liveOwnerLeases.get(roomId);
+  }
+
+  /**
    * Register a callback fired immediately before a room is evicted from
    * memory (any terminal path). The receiver is responsible for cleaning
    * up auxiliary state — e.g. returning bot reservations to the pool.
@@ -1003,6 +1044,7 @@ class ActivityRoomManager {
     this.shortCodeIndex.clear();
     this.playerToRoom.clear();
     this.lastResults.clear();
+    this.liveOwnerLeases.clear();
     this.countdownSyncAttemptedRooms.clear();
   }
 
@@ -1260,6 +1302,7 @@ class ActivityRoomManager {
       this.reefNoShowTimers.delete(room.id);
     }
     this.countdownSyncAttemptedRooms.delete(room.id);
+    this.liveOwnerLeases.delete(room.id);
     this.rooms.delete(room.id);
     this.shortCodeIndex.delete(room.shortCode);
     // Chunk #7 — release the in-memory result snapshot. The DB row is

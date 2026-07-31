@@ -46,6 +46,8 @@ import type { Street } from './poker-table-types';
 
 /** The activityId tournament tables run under — isolated from the demo `texas-holdem`. */
 export const MTT_ACTIVITY_ID = 'texas-holdem-mtt';
+const MTT_OWNER_LEASE = 'poker-mtt-tournament-manager';
+const MTT_OWNER_LEASE_WINDOW_MS = 15 * 60_000;
 
 /**
  * Wire the MTT sim + TournamentManager to the activity WS hub.
@@ -74,6 +76,11 @@ export function wirePokerMttToHub(sim: PokerTableSim, tm: TournamentManager): vo
   sim.setBroadcastFn((tableId, snapshot) => {
     const roomId = tm.resolveTableToRoom(tableId);
     if (!roomId) return; // no live WS room for this table (shouldn't happen post-seat)
+    activityRoomManager.renewLiveOwnerLease(
+      roomId,
+      MTT_OWNER_LEASE,
+      Date.now() + MTT_OWNER_LEASE_WINDOW_MS,
+    );
     activityWsHub.broadcastEvent(roomId, {
       type: 'poker.table_state',
       snapshot,
@@ -104,6 +111,11 @@ export function wirePokerMttToHub(sim: PokerTableSim, tm: TournamentManager): vo
   sim.setShowdownBroadcastFn((tableId, result) => {
     const roomId = tm.resolveTableToRoom(tableId);
     if (!roomId) return;
+    activityRoomManager.renewLiveOwnerLease(
+      roomId,
+      MTT_OWNER_LEASE,
+      Date.now() + MTT_OWNER_LEASE_WINDOW_MS,
+    );
     // Public showdown reveal — ONLY on a genuine showdown. On a fold-around
     // (endedAt !== 'showdown') nobody shows, so we skip it; the hand_ended payload
     // below still carries the resolution. The sim already nulls every folded
@@ -123,12 +135,9 @@ export function wirePokerMttToHub(sim: PokerTableSim, tm: TournamentManager): vo
   });
 
   // ── (6) Abort-notify: an mtt room aborting → recover the tournament escrow ───
-  // A poker table is exempt from the LIVE_NO_WS_TTL crash sweep (the room manager
-  // owns that exemption), so this fires only when a room genuinely aborts (manual
-  // abort, pod-orphan boot recovery, an aborted countdown). The TM resolves the
-  // owning tournament + cancels/refunds the escrow idempotently so CT is never
-  // stranded. Registered ONCE for the whole pod (last writer wins) — it filters
-  // to mtt rooms internally (a non-mtt room id resolves to nothing → no-op).
+  // A poker table holds a bounded owner lease, renewed at every hand boundary.
+  // If that owner dies and the lease expires, this callback resolves the owning
+  // tournament and cancels/refunds escrow idempotently so CT is never stranded.
   activityRoomManager.setAbortNotifyFn((roomId, activityId) => {
     if (activityId !== MTT_ACTIVITY_ID) return;
     void tm.onRoomAborted(roomId);
@@ -158,6 +167,11 @@ export function wirePokerMttToHub(sim: PokerTableSim, tm: TournamentManager): vo
       // from countdown) and fires `liveTransitionFn`, whose `texas-holdem-mtt`
       // branch is a deliberate NO-OP (the TM, not the dispatcher, starts hand 1).
       await activityRoomManager.transitionRoom(room.id, 'live');
+      activityRoomManager.acquireLiveOwnerLease(
+        room.id,
+        MTT_OWNER_LEASE,
+        Date.now() + MTT_OWNER_LEASE_WINDOW_MS,
+      );
       return { roomId: room.id, shortCode: room.shortCode, activityId: MTT_ACTIVITY_ID };
     },
     onTournamentEndFn: async ({ roomId }) => {

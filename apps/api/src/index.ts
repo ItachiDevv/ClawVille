@@ -25,7 +25,9 @@ import { activityWsHub } from './services/activity/activity-ws-hub';
 import { bumperShellsSim } from './services/activity/sim/bumper-shells-sim';
 import { reefRaceSim } from './services/activity/sim/reef-race-sim';
 import { reefRaceSplineSim } from './services/activity/sim/reef-race-spline-sim';
-import { REEF_RACE_USE_SPLINE } from './services/activity/sim/reef-race-config';
+import {
+  REEF_RACE_USE_SPLINE,
+} from './services/activity/sim/reef-race-config';
 
 /**
  * Reef Race v2 sim selector. Mirrors the activity-ws-hub one — the env flag
@@ -1105,11 +1107,16 @@ process.on('uncaughtException', (err) => {
       const participantIds = Array.from(room.participants.keys());
       switch (room.activityId) {
         case 'bumper-shells':
-          bumperShellsSim.startRoom(
+          const bumperState = bumperShellsSim.startRoom(
             room.id,
             room.activityId,
             participantIds,
             { bots },
+          );
+          activityRoomManager.acquireLiveOwnerLease(
+            room.id,
+            'bumper-shells-sim',
+            bumperState.endsAt,
           );
           break;
         case 'reef-race': {
@@ -1131,7 +1138,7 @@ process.on('uncaughtException', (err) => {
           }
           const avatarProfiles = await loadRacingProfiles(humanAvatarIds, botAvatarIds);
 
-          reefRaceImpl.startRoom(
+          const reefState = reefRaceImpl.startRoom(
             room.id,
             room.activityId,
             participantIds,
@@ -1141,6 +1148,13 @@ process.on('uncaughtException', (err) => {
               launchBoosts,
               avatarProfiles,
             },
+          );
+          activityRoomManager.acquireLiveOwnerLease(
+            room.id,
+            REEF_RACE_USE_SPLINE
+              ? 'reef-race-spline-sim'
+              : 'reef-race-ellipse-sim',
+            reefState.hardEndsAt,
           );
           break;
         }
@@ -1214,6 +1228,11 @@ process.on('uncaughtException', (err) => {
     // ends (RESULTS→GC / ABORTED / ABORTED_CRASH). Idempotent.
     activityRoomManager.setEvictionFn((room) => {
       botPool.releaseRoom(room.id);
+      if (room.activityId === 'bumper-shells') {
+        bumperShellsSim.stopRoom(room.id);
+      } else if (room.activityId === 'reef-race') {
+        reefRaceImpl.stopRoom(room.id);
+      }
     });
 
     // Phase 4 (S7 fix) — wire the reward-pipeline's per-recipient match-

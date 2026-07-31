@@ -40,6 +40,7 @@ mock.module('@clawville/database', () => ({
     bestLapMs: 'best_lap_ms',
     ghostReplayData: 'ghost_replay_data',
   },
+  reefRacePersonalBestClaims: {},
   activityResults: { id: 'id', avatarId: 'avatar_id', activityId: 'activity_id', createdAt: 'created_at', scoreMs: 'score_ms' },
   activityRooms: { id: 'id', status: 'status', startedAt: 'started_at', endedAt: 'ended_at' },
   activityRoomParticipants: { roomId: 'room_id', avatarId: 'avatar_id' },
