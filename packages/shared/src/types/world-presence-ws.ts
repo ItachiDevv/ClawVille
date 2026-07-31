@@ -45,6 +45,14 @@ export type WorldPresenceServerFrame =
 /** Private RFC 6455 close codes. Control frames remain authoritative. */
 export const WORLD_PRESENCE_WS_CLOSE_CODES = {
   BAD_FRAME: 4400,
+  /**
+   * Pong-deadline reap of a half-open socket. A private code because Bun
+   * rewrites close(1001) to 1000 on the wire (proven by in-container repro),
+   * which would make reaps indistinguishable from voluntary closes; 4xxx
+   * codes pass through intact. Clients route it to the generic bare-reopen
+   * ladder like any unlisted close.
+   */
+  PONG_TIMEOUT: 4408,
   MEMBERSHIP_LOST: 4409,
   SOCKET_REPLACED: 4410,
   /** Reserved; pairs with the never-emitted `superseded` error code. */

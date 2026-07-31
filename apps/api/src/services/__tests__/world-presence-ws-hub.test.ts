@@ -397,7 +397,7 @@ describe('WorldPresenceWsHub heartbeat, cleanup, and caps', () => {
     hub.registerConnection(fake.ws);
     now += WORLD_WS_PONG_DEADLINE_MS + 1;
     hub.__heartbeatTickForTest(now);
-    expect(fake.closes.at(-1)?.code).toBe(1001);
+    expect(fake.closes.at(-1)?.code).toBe(4408);
     expect(
       fake.sent.filter((frame) => frame.type === 'presence.error'),
     ).toHaveLength(0);

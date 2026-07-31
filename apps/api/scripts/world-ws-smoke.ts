@@ -540,8 +540,11 @@ async function main(): Promise<void> {
       delay(100_000).then(() => ({ code: -1, reason: 'timeout' })),
     ]);
     clearInterval(keepFresh);
-    assert(halfOpenClose.code === 1001, `half-open close was ${halfOpenClose.code}`);
-    pass('S7', 'ignored pings were reaped with 1001 inside the bounded deadline');
+    assert(
+      halfOpenClose.code === WORLD_PRESENCE_WS_CLOSE_CODES.PONG_TIMEOUT,
+      `half-open close was ${halfOpenClose.code}`,
+    );
+    pass('S7', 'ignored pings were reaped with 4408 inside the bounded deadline');
     active = openSocket({
       roomId: joined.roomId,
       cookie: joined.cookie,

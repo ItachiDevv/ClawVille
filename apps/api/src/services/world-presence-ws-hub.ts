@@ -364,7 +364,7 @@ export class WorldPresenceWsHub {
     this.sweepExpiredReservations(now);
     for (const ws of Array.from(this.connections.values())) {
       if (now - ws.data.lastPongAt > WORLD_WS_PONG_DEADLINE_MS) {
-        this.safeClose(ws, 1001, 'pong_timeout');
+        this.safeClose(ws, WORLD_PRESENCE_WS_CLOSE_CODES.PONG_TIMEOUT, 'pong_timeout');
         this.unregisterConnection(ws);
         continue;
       }
