@@ -10,13 +10,13 @@
  * Spec:         .claude/plans/reef-race-v2.md
  *
  * FEATURE_GATE: reef_race_spline_sim
- * Status: Phase 1 implementation — full sim, races complete end-to-end.
- * Metric to graduate: Phase 1 ship gate met (races complete end-to-end on
+ * Status: GRADUATED / CLOSED (2026-07-31).
+ * Deployed state: production Reef Race runs the spline implementation; the
+ *   dispatcher, server-authoritative completion path, PB/ghost persistence,
+ *   and end-to-end race gate are live.
+ * Graduation evidence: Phase 1 ship metric met (races complete end-to-end on
  *   the spline track per `.claude/plans/reef-race-v2.md` Phase 1).
- * Current reading: Phase 1 complete — wired into dispatcher pending env flip.
- * Review deadline: 2026-05-12
- * On deadline: If the spline sim hasn't graduated past skeleton by then,
- *   delete this file and reopen the v2 plan instead of carrying dead code.
+ * Gate disposition: closed; the former rollback deadline is no longer active.
  * Reference: `.claude/plans/reef-race-v2.md` "Phased Implementation"
  *
  * Coordinate convention:
@@ -40,7 +40,6 @@
  *   - Off-track reset (spline corridor wall clamp replaces it)
  *   - Lap counter + checkpoint AABB system (progress replaces)
  *   - Oval apex/ribbon drift variant
- *   - Ghost frame capture (TODO Phase 2)
  *   - Streak counter (TODO Phase 2)
  */
 
