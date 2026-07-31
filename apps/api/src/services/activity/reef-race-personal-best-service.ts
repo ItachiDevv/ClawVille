@@ -58,18 +58,24 @@ export interface PbWriteInput {
 export interface PbWriteResult {
   /** True only when the PB was actually replaced (newBestLapMs < existing). */
   improved: boolean;
+  /**
+   * True when this room owns the persisted PB claim. This remains true on
+   * an idempotent settlement retry where the PB write succeeded before the
+   * reward transaction rolled back.
+   */
+  claimedBySourceRoom: boolean;
   /** Previous best in ms; null when no prior PB row existed. */
   previousMs: number | null;
   /**
-   * 1-indexed daily rank for the just-written PB if `improved=true`. null
-   * when the rank scan returned a count >= 100 (off-board) OR `improved=false`
-   * (write was a no-op).
+   * 1-indexed daily rank for the PB claim owned by this room. null when the
+   * rank scan returned a count >= 100 (off-board) or another room owns it.
    */
   dailyRank: number | null;
   /**
    * The captured frames that were just persisted. Echoed back so the
    * reward pipeline can embed them into `event.match_ended.pbDelta
-   * .newGhostFrames` without an extra DB read. Undefined when not improved.
+   * .newGhostFrames` without an extra DB read. Undefined when another room
+   * owns the PB claim.
    */
   newGhostFrames?: GhostFrame[];
 }
@@ -133,13 +139,33 @@ export async function maybeUpdatePersonalBest(
   // CTE, but the explicit two-step reads cleaner and the cost is one
   // indexed point lookup (the unique key).
   const priorRows = await db
-    .select({ bestLapMs: reefRacePersonalBests.bestLapMs })
+    .select({
+      bestLapMs: reefRacePersonalBests.bestLapMs,
+      sourceRoomId: reefRacePersonalBests.sourceRoomId,
+    })
     .from(reefRacePersonalBests)
     .where(
       sql`${reefRacePersonalBests.avatarId} = ${input.avatarId}::uuid AND ${reefRacePersonalBests.activityId} = ${input.activityId}`,
     )
     .limit(1);
   const previousMs = priorRows[0]?.bestLapMs ?? null;
+  const previousSourceRoomId = priorRows[0]?.sourceRoomId ?? null;
+
+  // PB persistence intentionally precedes the reward transaction. Preserve
+  // the same-room claim on a settlement retry; an equal lap from any other
+  // room is only a tie and earns no PB reward.
+  if (
+    previousMs === input.newBestLapMs &&
+    previousSourceRoomId === input.sourceRoomId
+  ) {
+    return {
+      improved: false,
+      claimedBySourceRoom: true,
+      previousMs,
+      dailyRank: await computeDailyRank(input.newBestLapMs),
+      newGhostFrames: input.ghostReplayData.frames,
+    };
+  }
 
   // No prior row OR improved — INSERT or UPDATE.
   if (previousMs === null || input.newBestLapMs < previousMs) {
@@ -173,22 +199,16 @@ export async function maybeUpdatePersonalBest(
     if (upserted.length === 0) {
       // Predicate-blocked update (concurrent faster write landed). Still
       // counts as no-op from our perspective.
-      return { improved: false, previousMs, dailyRank: null };
+      return {
+        improved: false,
+        claimedBySourceRoom: false,
+        previousMs,
+        dailyRank: null,
+      };
     }
     // Compute dailyRank in the same async chain via a single indexed scan
     // against idx_reef_race_pb_recorded_lap (C2 fix — never the cache).
-    const rankRows = await db.execute<{ rank: number }>(sql`
-      SELECT count(*)::int + 1 AS rank
-      FROM reef_race_personal_bests
-      WHERE activity_id = 'reef-race'
-        AND best_lap_recorded_at > now() - interval '24 hours'
-        AND best_lap_ms < ${input.newBestLapMs}
-    `);
-    const rank =
-      Array.isArray(rankRows) && rankRows.length > 0
-        ? Number((rankRows[0] as { rank: number }).rank) || 1
-        : 1;
-    const dailyRank = rank > 100 ? null : rank;
+    const dailyRank = await computeDailyRank(input.newBestLapMs);
 
     // S4 fix — flush PB ghost cache for this avatar so a reconnect within
     // the 5-min TTL sees the freshly-set ghost. C2 fix — flush the public
@@ -207,13 +227,34 @@ export async function maybeUpdatePersonalBest(
 
     return {
       improved: true,
+      claimedBySourceRoom: true,
       previousMs,
       dailyRank,
       newGhostFrames: input.ghostReplayData.frames,
     };
   }
 
-  return { improved: false, previousMs, dailyRank: null };
+  return {
+    improved: false,
+    claimedBySourceRoom: false,
+    previousMs,
+    dailyRank: null,
+  };
+}
+
+async function computeDailyRank(bestLapMs: number): Promise<number | null> {
+  const rankRows = await db.execute<{ rank: number }>(sql`
+    SELECT count(*)::int + 1 AS rank
+    FROM reef_race_personal_bests
+    WHERE activity_id = 'reef-race'
+      AND best_lap_recorded_at > now() - interval '24 hours'
+      AND best_lap_ms < ${bestLapMs}
+  `);
+  const rank =
+    Array.isArray(rankRows) && rankRows.length > 0
+      ? Number((rankRows[0] as { rank: number }).rank) || 1
+      : 1;
+  return rank > 100 ? null : rank;
 }
 
 /**

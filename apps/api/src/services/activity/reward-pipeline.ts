@@ -11,7 +11,8 @@
  *   2. For each non-bot participant, computes:
  *        base = placement tier OR participation floor
  *        + first-play-of-day bonus (if no prior result row today)
- *        + personal-best bonus (Reef Race only, when `score_ms < min`)
+ *        + personal-best bonus (Reef Race only, when this room owns the
+ *          persisted best-lap claim)
  *        + focus-aligned bonus (+pct% when avatar matches activity's
  *          `skillBuildingMatches[]` — looks at `avatars.flags.learningFocus`)
  *      All four steps execute inside ONE composed DB transaction so a
@@ -108,7 +109,8 @@ export function setMatchEndDeliveryFn(fn: MatchEndDeliveryFn): void {
  *
  * `score` semantics are activity-specific (Bumper: kills; Reef: -finishMs
  * so DESC sort puts winners first). `scoreMs` is Reef-only and drives the
- * "Fastest" leaderboard tab + personal-best bonus check.
+ * legacy whole-match "Fastest" leaderboard tab. PB rewards use the separate
+ * persisted best-lap claim.
  */
 export interface SimResultRow {
   avatarId: string;
@@ -403,6 +405,14 @@ export async function issueRewardsForRoom(
 
       const isBot = participant.subjectType === 'bot';
       const bestStreakThisMatch = sim.reefRace?.bestStreakThisMatch ?? 0;
+      const pbWrite = pbWritesByAvatar.get(sim.avatarId);
+      const legacyWholeMatchPb =
+        sim.scoreMs != null &&
+        (ctx.priorBestMs == null || sim.scoreMs < ctx.priorBestMs);
+      const isPersonalBest =
+        room.activityId === 'reef-race'
+          ? pbWrite?.claimedBySourceRoom === true
+          : legacyWholeMatchPb;
       const breakdown = computeBreakdown({
         rewardConfig,
         placement: sim.placement,
@@ -412,14 +422,11 @@ export async function issueRewardsForRoom(
         flags: ctx.flags,
         activityId: room.activityId,
         isBot,
+        personalBestQualified: isPersonalBest,
         // C3 fix — read from the embedded SimResultRow.reefRace block,
         // NEVER from a live sim accessor.
         bestStreakThisMatch,
       });
-
-      const isPersonalBest =
-        sim.scoreMs != null &&
-        (ctx.priorBestMs == null || sim.scoreMs < ctx.priorBestMs);
 
       // Guest all-demo economy (founder ruling 2026-07-06): guests earn NO
       // real CT — a real account is required to earn to the real ledger. So
@@ -473,8 +480,6 @@ export async function issueRewardsForRoom(
             `lbp ${leaderboardPointsRaw}->${leaderboardPoints}`,
         );
       }
-
-      const pbWrite = pbWritesByAvatar.get(sim.avatarId);
 
       // Insert the result row first so we have an id for the breakdown
       // return + the event payload. `returning()` in the same tx avoids
@@ -698,6 +703,8 @@ export function computeBreakdown(input: {
   flags: Record<string, unknown> | null;
   activityId: string;
   isBot: boolean;
+  /** Authoritative PB outcome from the persisted best-lap claim. */
+  personalBestQualified?: boolean;
   /**
    * Phase 4 — best consecutive clean checkpoint crosses this match. Reef
    * Race only; defaults to 0 for other activities (no behaviour change).
@@ -727,9 +734,12 @@ export function computeBreakdown(input: {
   const firstPlayOfDayBonus =
     input.todayCount === 0 ? rewardConfig?.firstPlayOfDayBonusTokens ?? 0 : 0;
 
+  const personalBestQualified =
+    input.personalBestQualified ??
+    (input.scoreMs != null &&
+      (input.priorBestMs == null || input.scoreMs < input.priorBestMs));
   const personalBestBonus =
-    input.scoreMs != null &&
-    (input.priorBestMs == null || input.scoreMs < input.priorBestMs)
+    personalBestQualified
       ? rewardConfig?.personalBestBonusTokens ?? 0
       : 0;
 

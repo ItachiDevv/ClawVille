@@ -24,6 +24,7 @@ interface MockRow {
   best_lap_ms?: number;
   ghost_replay_data?: unknown;
   ghostReplayData?: unknown;
+  source_room_id?: string;
 }
 
 const dbState: {
@@ -47,7 +48,10 @@ function mockDb() {
                   // sufficient.
                   return Promise.resolve(
                     dbState.rows.length > 0
-                      ? [{ bestLapMs: dbState.rows[0].best_lap_ms }]
+                      ? [{
+                          bestLapMs: dbState.rows[0].best_lap_ms,
+                          sourceRoomId: dbState.rows[0].source_room_id,
+                        }]
                       : [],
                   );
                 },
@@ -67,6 +71,14 @@ function mockDb() {
       // second is rank scan.
       const callIdx = dbState.executeCalls.length;
       dbState.executeCalls.push({ sql: String(query) });
+      if (
+        callIdx === 0 &&
+        (dbState as unknown as { __rankOnly?: boolean }).__rankOnly
+      ) {
+        const rank =
+          (dbState as unknown as { __nextRank?: number }).__nextRank ?? 1;
+        return Promise.resolve([{ rank }] as unknown as T[]) as Promise<T[]>;
+      }
       if (callIdx === 0) {
         // Simulate the upsert behavior:
         //   - if no prior row, write + return one row
@@ -118,6 +130,7 @@ mock.module('@clawville/database', () => ({
     avatarId: 'avatar_id',
     activityId: 'activity_id',
     bestLapMs: 'best_lap_ms',
+    sourceRoomId: 'source_room_id',
   },
   activityResults: { id: 'id', avatarId: 'avatar_id', activityId: 'activity_id', createdAt: 'created_at', scoreMs: 'score_ms' },
   activityRooms: { id: 'id', status: 'status', startedAt: 'started_at', endedAt: 'ended_at' },
@@ -152,6 +165,7 @@ beforeEach(() => {
   dbState.executeCalls = [];
   delete (dbState as unknown as { __nextWriteMs?: number }).__nextWriteMs;
   delete (dbState as unknown as { __nextRank?: number }).__nextRank;
+  delete (dbState as unknown as { __rankOnly?: boolean }).__rankOnly;
   _dailyInvalidations = 0;
   __resetPbGhostCacheForTest();
 });
@@ -170,6 +184,7 @@ describe('maybeUpdatePersonalBest', () => {
       sourceRoomId: '00000000-0000-0000-0000-000000000001',
     });
     expect(result.improved).toBe(true);
+    expect(result.claimedBySourceRoom).toBe(true);
     expect(result.previousMs).toBeNull();
     expect(result.dailyRank).toBe(1);
     expect(result.newGhostFrames?.length).toBe(1);
@@ -189,6 +204,7 @@ describe('maybeUpdatePersonalBest', () => {
       sourceRoomId: '00000000-0000-0000-0000-000000000001',
     });
     expect(result.improved).toBe(true);
+    expect(result.claimedBySourceRoom).toBe(true);
     expect(result.previousMs).toBe(14_000);
     expect(result.dailyRank).toBe(5);
   });
@@ -204,8 +220,26 @@ describe('maybeUpdatePersonalBest', () => {
       sourceRoomId: '00000000-0000-0000-0000-000000000001',
     });
     expect(result.improved).toBe(false);
+    expect(result.claimedBySourceRoom).toBe(false);
     expect(result.previousMs).toBe(12_000);
     expect(result.dailyRank).toBeNull();
+  });
+
+  it('keeps the claim and rank on an idempotent same-room retry', async () => {
+    const sourceRoomId = '00000000-0000-0000-0000-000000000001';
+    dbState.rows = [{ best_lap_ms: 12_000, source_room_id: sourceRoomId }];
+    (dbState as unknown as { __rankOnly?: boolean }).__rankOnly = true;
+    (dbState as unknown as { __nextRank?: number }).__nextRank = 3;
+    const result = await maybeUpdatePersonalBest({
+      avatarId: 'avatar-1',
+      activityId: 'reef-race',
+      newBestLapMs: 12_000,
+      ghostReplayData: { frames: [] },
+      sourceRoomId,
+    });
+    expect(result.improved).toBe(false);
+    expect(result.claimedBySourceRoom).toBe(true);
+    expect(result.dailyRank).toBe(3);
   });
 
   // P4-T11 — dailyRank > 100 → null

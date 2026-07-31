@@ -402,6 +402,36 @@ describe('computeBreakdown — Reef Race personal-best', () => {
   });
 });
 
+describe('computeBreakdown - persisted Reef lap PB', () => {
+  const reefInput = {
+    rewardConfig: REEF.rewardConfig,
+    placement: 1,
+    scoreMs: 95_000,
+    priorBestMs: 90_000,
+    todayCount: 1,
+    flags: null,
+    activityId: 'reef-race',
+    isBot: false,
+  };
+
+  it('awards from the lap claim even when whole-match score is slower', () => {
+    const breakdown = computeBreakdown({
+      ...reefInput,
+      personalBestQualified: true,
+    });
+    expect(breakdown.personalBestBonus).toBe(10);
+  });
+
+  it('does not award without the lap claim even when whole-match score is faster', () => {
+    const breakdown = computeBreakdown({
+      ...reefInput,
+      priorBestMs: 100_000,
+      personalBestQualified: false,
+    });
+    expect(breakdown.personalBestBonus).toBe(0);
+  });
+});
+
 describe('getReefRaceFlagCount — PB anti-cheat sim selection', () => {
   it('reads only the legacy counter when the spline flag is off', () => {
     const calls: string[] = [];
