@@ -88,6 +88,23 @@ export default function ActivityRoomPage({ params }: ActivityPageProps) {
   const { activityId, roomId } = use(params);
   const leaveRef = useRef<(() => void) | null>(null);
   const [handoffAttemptNonce, setHandoffAttemptNonce] = useState(0);
+  useEffect(() => {
+    function unlock() {
+      primeActivitySounds();
+      preloadActivitySounds();
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('keydown', unlock);
+      window.removeEventListener('touchstart', unlock);
+    }
+    window.addEventListener('pointerdown', unlock, { passive: true });
+    window.addEventListener('keydown', unlock);
+    window.addEventListener('touchstart', unlock, { passive: true });
+    return () => {
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('keydown', unlock);
+      window.removeEventListener('touchstart', unlock);
+    };
+  }, []);
   return (
     <div
       className="game-container"
@@ -364,27 +381,6 @@ function ActivityRoomRuntime({
   const isSpectating = matchPhase === 'live' && !selfAlive;
   const sceneSpectatorCamMode = isSpectating ? spectatorCamMode : undefined;
   const sceneSpectatorTargetAvatarId = isSpectating ? spectatorTargetAvatarId : null;
-
-  // ── Chunk #12 — prime SFX bus on first user interaction ────────────────
-  // The route mount itself isn't a user gesture, so AudioContext.resume()
-  // would be denied. We prime on the first pointer/key event instead.
-  useEffect(() => {
-    function unlock() {
-      primeActivitySounds();
-      preloadActivitySounds();
-      window.removeEventListener('pointerdown', unlock);
-      window.removeEventListener('keydown', unlock);
-      window.removeEventListener('touchstart', unlock);
-    }
-    window.addEventListener('pointerdown', unlock, { passive: true });
-    window.addEventListener('keydown', unlock);
-    window.addEventListener('touchstart', unlock, { passive: true });
-    return () => {
-      window.removeEventListener('pointerdown', unlock);
-      window.removeEventListener('keydown', unlock);
-      window.removeEventListener('touchstart', unlock);
-    };
-  }, []);
 
   // Surface ping into local state already — no extra wiring needed
   // (BumperShellsHud reads from the store).
