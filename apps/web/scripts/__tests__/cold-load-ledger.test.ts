@@ -106,6 +106,16 @@ describe('buildLedger', () => {
     expect(ledger.milestones.m1RevealProjectionMB).toBe(0);
   });
 
+  it('reconciles failed requests as excluded-by-reason bytes (never silently absent)', () => {
+    const ledger = buildLedger({
+      requests: [req('https://x/models/a.glb', 1000, 'GLB')],
+      failedRequests: [{ url: 'https://x/config.json', wireBytes: 300, cls: 'JSON', failed: true }],
+    });
+    expect(ledger.accounting.reportTotalBytes).toBe(1300);
+    expect(ledger.accounting.excludedByReason.failed).toBe(300);
+    expect(ledger.accounting.includedBytes + ledger.accounting.excludedBytes).toBe(1300);
+  });
+
   it('applies diets by canonical url with and without the query', () => {
     const ledger = buildLedger({
       requests: [req('https://x/models/lobster_plush-ktx.glb?v=2', 1_048_576, 'GLB')],

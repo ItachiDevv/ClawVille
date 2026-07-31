@@ -28,8 +28,107 @@ const HARD_CAP_MS = 210_000;
 const POLL_MS = 500;
 
 // Asset classes that must complete cleanly for a run to be VALID. API/OTHER
-// (SSE streams, blobs, RSC prefetches) legitimately stay open or fail.
-export const ASSET_CLASSES = new Set(["VRM", "GLB", "KTX2", "JS", "CSS", "WASM", "IMG", "FONT", "AUDIO", "HTML"]);
+// (SSE streams, blobs, RSC prefetches) legitimately stay open or fail. JSON is
+// IN scope (re-review #2 blocker 2): a failed config/manifest fetch is a
+// broken run, not ignorable noise.
+export const ASSET_CLASSES = new Set(["VRM", "GLB", "KTX2", "JS", "CSS", "WASM", "IMG", "FONT", "AUDIO", "JSON", "HTML"]);
+
+/**
+ * Network-event reducer (re-review #2 blocker 1 — exported so event-sequence
+ * fixtures can drive it). State: { requests: Map<id, rec>, legs: rec[] }.
+ * On a redirect re-emission the PRIOR leg is closed from
+ * `params.redirectResponse` (the CDP Response of the redirect hop: status,
+ * encodedDataLength, cache/SW flags), persisted into `legs` so its wire bytes
+ * and warmth cannot vanish, and the chain-wide coldness evidence carries onto
+ * the new leg.
+ */
+export function reduceNetworkEvent(state, msg, monoToPageMs, classifyFn = classify) {
+  const { method, params } = msg;
+  if (method === "Network.requestWillBeSent") {
+    const { cls, host } = classifyFn(params.request.url);
+    const prev = state.requests.get(params.requestId);
+    let chainFromCache = prev?.everFromCache ?? false;
+    let chainFromSW = prev?.everFromSW ?? false;
+    if (prev && params.redirectResponse) {
+      const rr = params.redirectResponse;
+      const legFromCache = !!rr.fromDiskCache || !!rr.fromPrefetchCache;
+      const legFromSW = !!rr.fromServiceWorker;
+      chainFromCache = chainFromCache || legFromCache;
+      chainFromSW = chainFromSW || legFromSW;
+      state.legs.push({
+        ...prev,
+        isRedirectLeg: true,
+        finished: true,
+        status: rr.status,
+        wireBytes: rr.encodedDataLength || 0,
+        endPageMs: monoToPageMs(params.timestamp),
+        everFromCache: prev.everFromCache || legFromCache,
+        everFromSW: prev.everFromSW || legFromSW,
+      });
+    }
+    state.requests.set(params.requestId, {
+      url: params.request.url, cls, host,
+      startPageMs: monoToPageMs(params.timestamp),
+      endPageMs: null,
+      wireBytes: 0, chunks: [], failed: false,
+      status: null, finished: false,
+      everFromCache: chainFromCache,
+      everFromSW: chainFromSW,
+      redirectLegs: (prev?.redirectLegs ?? 0) + (prev ? 1 : 0),
+      type: params.type || "?",
+      initiator: prev?.initiator ?? state.initiatorOf?.(params.initiator) ?? null,
+      initialPriority: params.request.initialPriority,
+    });
+  } else if (method === "Network.requestServedFromCache") {
+    const r = state.requests.get(params.requestId);
+    if (r) r.everFromCache = true;
+  } else if (method === "Network.resourceChangedPriority") {
+    const r = state.requests.get(params.requestId);
+    if (r) r.finalPriority = params.newPriority;
+  } else if (method === "Network.dataReceived") {
+    const r = state.requests.get(params.requestId);
+    if (r && params.encodedDataLength > 0) {
+      r.chunks.push({ pageMs: monoToPageMs(params.timestamp), bytes: params.encodedDataLength });
+    }
+  } else if (method === "Network.responseReceived") {
+    const r = state.requests.get(params.requestId);
+    if (r) {
+      r.everFromSW = r.everFromSW || !!params.response.fromServiceWorker;
+      r.everFromCache = r.everFromCache || !!params.response.fromDiskCache || !!params.response.fromPrefetchCache;
+      r.mime = params.response.mimeType;
+      r.status = params.response.status;
+      r.protocol = params.response.protocol;
+      const h = params.response.headers || {};
+      const hget = (k) => h[k] ?? h[k.toLowerCase()] ?? h[k.toUpperCase()];
+      const cf = hget("cf-cache-status");
+      const age = hget("age");
+      if (cf) r.cfCache = cf;
+      if (age) r.cfAge = age;
+    }
+  } else if (method === "Network.loadingFinished") {
+    const r = state.requests.get(params.requestId);
+    if (r) {
+      r.wireBytes = params.encodedDataLength || 0;
+      r.endPageMs = monoToPageMs(params.timestamp);
+      r.finished = true;
+    }
+  } else if (method === "Network.loadingFailed") {
+    const r = state.requests.get(params.requestId);
+    if (r) {
+      r.failed = true;
+      r.endPageMs = monoToPageMs(params.timestamp);
+      r.errorText = params.errorText;
+      // Retain the best-known partial wire bytes (chunk sum) so failed bytes
+      // cannot disappear from the accounting (re-review #2 blocker 2).
+      if (!r.wireBytes) r.wireBytes = (r.chunks ?? []).reduce((a, c) => a + c.bytes, 0);
+    }
+  }
+}
+
+/** All records the aggregation/validity consume: live legs + closed redirect legs. */
+export function collectorRecords(state) {
+  return [...state.legs, ...state.requests.values()];
+}
 
 export function classify(url) {
   let u;
@@ -107,13 +206,15 @@ export function computeFrameMetrics(frames, revealMs, windowMs = FRAME_WINDOW_MS
  * expectedBackend derives from the test lane (?webgl=1 ⇒ 'webgl2', else 'webgpu').
  */
 export function computeValidity({ all, revealMs, backend, expectedBackend, waiveBackend = false }) {
-  const reasons = [];
+  const wireReasons = [];
+  const perfReasons = [];
   let backendWaived = false;
   const isNetworkUrl = (u) => u.startsWith("http://") || u.startsWith("https://");
   const swHits = all.filter((r) => r.everFromSW).length;
-  if (swHits > 0) reasons.push(`not cold: ${swHits} service-worker hits`);
+  if (swHits > 0) wireReasons.push(`not cold: ${swHits} service-worker hits`);
   // Cold criterion: the FIRST leg of each network URL must not be ever-cached
   // (disk, memory-dedupe on later duplicates is fine, prefetch cache is NOT).
+  // Redirect legs carry their own everFromCache from redirectResponse.
   const firstByUrl = new Map();
   for (const r of all) {
     if (!isNetworkUrl(r.url)) continue;
@@ -121,29 +222,44 @@ export function computeValidity({ all, revealMs, backend, expectedBackend, waive
     if (!prev || (r.startPageMs ?? Infinity) < (prev.startPageMs ?? Infinity)) firstByUrl.set(r.url, r);
   }
   const warmFirsts = [...firstByUrl.values()].filter((r) => r.everFromCache).length;
-  if (warmFirsts > 0) reasons.push(`not cold: ${warmFirsts} first-occurrence cache hits`);
-  if (revealMs == null) reasons.push("reveal never observed");
+  if (warmFirsts > 0) wireReasons.push(`not cold: ${warmFirsts} first-occurrence cache hits`);
+  if (revealMs == null) wireReasons.push("reveal never observed");
+  // Backend: a PERFORMANCE requirement always; a WIRE requirement unless the
+  // explicit uninstrumented-bundle waiver applies. Only a true null/undefined
+  // stamp is waivable — ''/false/other falsy stamps are present-but-wrong.
   if (backend !== "webgpu" && backend !== "webgl2") {
-    // --allow-uninstrumented-backend: EXPLICIT waiver for wire-ledger baseline
-    // runs against deployed bundles that predate the __W3D_BACKEND
-    // instrumentation (backend does not affect wire bytes). Only a NULL
-    // backend is waivable — a present-but-wrong value always fails, and the
-    // waiver is stamped into the summary for auditability.
+    perfReasons.push(`backend not actual: ${backend}`);
     if (waiveBackend && backend == null) backendWaived = true;
-    else reasons.push(`backend not actual: ${backend}`);
+    else wireReasons.push(`backend not actual: ${backend}`);
   } else if (expectedBackend && backend !== expectedBackend) {
-    reasons.push(`backend ${backend} != requested lane ${expectedBackend}`);
+    perfReasons.push(`backend ${backend} != requested lane ${expectedBackend}`);
+    wireReasons.push(`backend ${backend} != requested lane ${expectedBackend}`);
   }
   const assetFailures = all.filter((r) => ASSET_CLASSES.has(r.cls) && r.failed);
-  if (assetFailures.length) reasons.push(`${assetFailures.length} failed asset requests`);
+  if (assetFailures.length) wireReasons.push(`${assetFailures.length} failed asset requests`);
   const netAssets = all.filter((r) => ASSET_CLASSES.has(r.cls) && !r.failed && isNetworkUrl(r.url));
-  const badStatus = netAssets.filter((r) => r.status != null && (r.status < 200 || r.status >= 300));
-  if (badStatus.length) reasons.push(`${badStatus.length} non-2xx asset responses (incl. 304 = warm)`);
-  const noStatus = netAssets.filter((r) => r.finished && r.status == null);
-  if (noStatus.length) reasons.push(`${noStatus.length} finished network assets with no observed status`);
-  const unfinished = netAssets.filter((r) => !r.finished);
-  if (unfinished.length) reasons.push(`${unfinished.length} unfinished asset requests at capture end`);
-  return { valid: reasons.length === 0, reasons, swHits, warmFirsts, backendWaived };
+  // Redirect legs must be 3xx; terminal responses must be 2xx.
+  const badLegs = netAssets.filter((r) => r.isRedirectLeg && (r.status == null || r.status < 300 || r.status >= 400));
+  if (badLegs.length) wireReasons.push(`${badLegs.length} redirect legs without a 3xx status`);
+  const terminal = netAssets.filter((r) => !r.isRedirectLeg);
+  const badStatus = terminal.filter((r) => r.status != null && (r.status < 200 || r.status >= 300));
+  if (badStatus.length) wireReasons.push(`${badStatus.length} non-2xx asset responses (incl. 304 = warm)`);
+  const noStatus = terminal.filter((r) => r.finished && r.status == null);
+  if (noStatus.length) wireReasons.push(`${noStatus.length} finished network assets with no observed status`);
+  const unfinished = terminal.filter((r) => !r.finished);
+  if (unfinished.length) wireReasons.push(`${unfinished.length} unfinished asset requests at capture end`);
+
+  const validForWireLedger = wireReasons.length === 0;
+  // Performance validity is STRICT: every wire reason plus the un-waived
+  // backend requirement. Budget/canary consumers use THIS and must also
+  // reject backendWaived reports.
+  const validForPerformance = validForWireLedger && perfReasons.length === 0;
+  return {
+    validForWireLedger,
+    validForPerformance,
+    reasons: [...new Set([...wireReasons, ...perfReasons])],
+    swHits, warmFirsts, backendWaived,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -170,7 +286,6 @@ if (import.meta.main) {
     return new Promise((resolve, reject) => pending.set(id, { resolve, reject, method }));
   }
 
-  const requests = new Map();
   const events = [];
   const pageErrors = [];
   const t0 = Date.now();
@@ -188,64 +303,17 @@ if (import.meta.main) {
       url: (init.url || top?.url || "").replace(/^https?:\/\/[^/]+/, "").slice(0, 120) || undefined,
     };
   };
+  // Collector state — Network events go through the exported reducer so the
+  // exact ingestion path is what the event-sequence fixtures exercise.
+  const collector = { requests: new Map(), legs: [], initiatorOf: initiatorBrief };
 
   function onEvent(msg) {
     const { method, params } = msg;
-    if (method === "Network.requestWillBeSent") {
-      if (navMono == null && params.type === "Document") navMono = params.timestamp;
-      const { cls, host } = classify(params.request.url);
-      const prev = requests.get(params.requestId);
-      // Redirect legs re-emit the same requestId: reset accumulators for the
-      // new leg but RETAIN ever-cached/ever-SW evidence (blocker 2).
-      requests.set(params.requestId, {
-        url: params.request.url, cls, host,
-        startPageMs: monoToPageMs(params.timestamp),
-        endPageMs: null,
-        wireBytes: 0, chunks: [], failed: false,
-        status: null, finished: false,
-        everFromCache: prev?.everFromCache ?? false,
-        everFromSW: prev?.everFromSW ?? false,
-        redirectLegs: (prev?.redirectLegs ?? 0) + (prev ? 1 : 0),
-        type: params.type || "?",
-        initiator: initiatorBrief(params.initiator),
-        initialPriority: params.request.initialPriority,
-      });
-    } else if (method === "Network.requestServedFromCache") {
-      const r = requests.get(params.requestId);
-      if (r) r.everFromCache = true;
-    } else if (method === "Network.resourceChangedPriority") {
-      const r = requests.get(params.requestId);
-      if (r) r.finalPriority = params.newPriority;
-    } else if (method === "Network.dataReceived") {
-      const r = requests.get(params.requestId);
-      if (r && params.encodedDataLength > 0) {
-        r.chunks.push({ pageMs: monoToPageMs(params.timestamp), bytes: params.encodedDataLength });
-      }
-    } else if (method === "Network.responseReceived") {
-      const r = requests.get(params.requestId);
-      if (r) {
-        r.everFromSW = r.everFromSW || !!params.response.fromServiceWorker;
-        r.everFromCache = r.everFromCache || !!params.response.fromDiskCache || !!params.response.fromPrefetchCache;
-        r.mime = params.response.mimeType;
-        r.status = params.response.status;
-        r.protocol = params.response.protocol;
-        const h = params.response.headers || {};
-        const hget = (k) => h[k] ?? h[k.toLowerCase()] ?? h[k.toUpperCase()];
-        const cf = hget("cf-cache-status");
-        const age = hget("age");
-        if (cf) r.cfCache = cf;
-        if (age) r.cfAge = age;
-      }
-    } else if (method === "Network.loadingFinished") {
-      const r = requests.get(params.requestId);
-      if (r) {
-        r.wireBytes = params.encodedDataLength || 0;
-        r.endPageMs = monoToPageMs(params.timestamp);
-        r.finished = true;
-      }
-    } else if (method === "Network.loadingFailed") {
-      const r = requests.get(params.requestId);
-      if (r) { r.failed = true; r.endPageMs = monoToPageMs(params.timestamp); r.errorText = params.errorText; }
+    if (method === "Network.requestWillBeSent" && navMono == null && params.type === "Document") {
+      navMono = params.timestamp;
+    }
+    if (method?.startsWith("Network.")) {
+      reduceNetworkEvent(collector, msg, monoToPageMs);
     } else if (method === "Runtime.exceptionThrown") {
       const d = params.exceptionDetails;
       pageErrors.push({ t: Date.now() - t0, kind: "exception", text: `${d.text} ${d.exception?.description ?? ""}`.slice(0, 400) });
@@ -302,7 +370,7 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
       await new Promise((r) => setTimeout(r, POLL_MS));
       let st;
       try {
-        st = await evalInPage(`JSON.stringify({reveal:(window.__COLD_PROBE__?window.__COLD_PROBE__.revealAt:null),overlay:!!document.querySelector('.claw-loading-overlay'),prog:(window.__W3D_PROGRESS!=null?window.__W3D_PROGRESS:null),canvases:document.querySelectorAll('canvas').length,backend:window.__W3D_BACKEND||null})`);
+        st = await evalInPage(`JSON.stringify({reveal:(window.__COLD_PROBE__?window.__COLD_PROBE__.revealAt:null),overlay:!!document.querySelector('.claw-loading-overlay'),prog:(window.__W3D_PROGRESS!=null?window.__W3D_PROGRESS:null),canvases:document.querySelectorAll('canvas').length,backend:(window.__W3D_BACKEND===undefined?null:window.__W3D_BACKEND)})`);
       } catch { continue; }
       if (!st) continue;
       const s = JSON.parse(st);
@@ -319,7 +387,7 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
 
     let longtasks = [], frames = [], navTiming = null, phases = null, backend = null;
     try {
-      const blob = await evalInPage(`JSON.stringify({lt:window.__COLD_PROBE__.longtasks,fr:window.__COLD_PROBE__.frames,ph:window.__W3D_PHASES||null,be:window.__W3D_BACKEND||null,nav:(()=>{const n=performance.getEntriesByType('navigation')[0];return n?{dcl:Math.round(n.domContentLoadedEventEnd),load:Math.round(n.loadEventEnd),ttfb:Math.round(n.responseStart)}:null})()})`);
+      const blob = await evalInPage(`JSON.stringify({lt:window.__COLD_PROBE__.longtasks,fr:window.__COLD_PROBE__.frames,ph:window.__W3D_PHASES||null,be:(window.__W3D_BACKEND===undefined?null:window.__W3D_BACKEND),nav:(()=>{const n=performance.getEntriesByType('navigation')[0];return n?{dcl:Math.round(n.domContentLoadedEventEnd),load:Math.round(n.loadEventEnd),ttfb:Math.round(n.responseStart)}:null})()})`);
       const parsed = JSON.parse(blob || "{}");
       longtasks = parsed.lt || [];
       frames = parsed.fr || [];
@@ -328,7 +396,7 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
       navTiming = parsed.nav || null;
     } catch {}
 
-    const all = [...requests.values()];
+    const all = collectorRecords(collector);
     const ok = all.filter((r) => !r.failed);
     const totalWire = ok.reduce((a, r) => a + r.wireBytes, 0);
 
@@ -357,7 +425,14 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
 
     const summary = {
       targetUrl, capturedAt: new Date().toISOString(),
-      valid: verdict.valid, invalidReasons: verdict.reasons, backendWaived: verdict.backendWaived,
+      // Scoped validity (re-review #2 finding 3): the wire ledger accepts
+      // validForWireLedger; budget/canary consumers require the STRICT
+      // validForPerformance AND backendWaived === false. `valid` mirrors the
+      // wire verdict for exit-code compatibility.
+      valid: verdict.validForWireLedger,
+      validForWireLedger: verdict.validForWireLedger,
+      validForPerformance: verdict.validForPerformance,
+      invalidReasons: verdict.reasons, backendWaived: verdict.backendWaived,
       backend, expectedBackend, phases, navTiming,
       revealMs: revealPageMs,
       loaderFirstSeenHostMs: loaderFirstSeenAt, canvasFirstSeenHostMs: canvasFirstSeenAt,
@@ -391,7 +466,7 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
     console.log("[probe] ==== SUMMARY ====");
     console.log(JSON.stringify(summary, null, 2));
     console.log(`[probe] report: ${reportPath}`);
-    if (!verdict.valid) {
+    if (!verdict.validForWireLedger) {
       console.log(`[probe] RUN INVALID: ${verdict.reasons.join("; ")}`);
       ws.close();
       process.exit(3);

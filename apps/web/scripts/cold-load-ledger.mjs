@@ -82,11 +82,15 @@ export function buildLedger(report, fixtureName = "guest-default", diets = {}) {
   const fixture = FIXTURES[fixtureName];
   if (!fixture) throw new Error(`unknown fixture: ${fixtureName}`);
 
-  // Aggregate per canonical URL; track every excluded byte by reason.
+  // Aggregate per canonical URL; track every excluded byte by reason. BOTH
+  // collections are consumed (re-review #2 blocker 2): successful requests AND
+  // the separately persisted failed ones — failed bytes are excluded-by-reason,
+  // never silently absent from the reconciliation.
   const byUrl = new Map();
   const excluded = { failed: 0, zeroByte: 0, classExcluded: 0, nonNetworkUrl: 0 };
   let reportTotalBytes = 0;
-  for (const rec of report.requests) {
+  const allRecords = [...(report.requests ?? []), ...(report.failedRequests ?? [])];
+  for (const rec of allRecords) {
     reportTotalBytes += rec.wireBytes || 0;
     if (rec.failed) { excluded.failed += rec.wireBytes || 0; continue; }
     if (!rec.wireBytes) { excluded.zeroByte += 0; continue; }
@@ -170,11 +174,13 @@ if (import.meta.main) {
     process.exit(2);
   }
   const report = JSON.parse(await Bun.file(reportPath).text());
-  // Only affirmatively-valid probe-v3 reports may feed the ledger — a legacy
-  // report with NO verdict is refused too (delta-review blocker 3).
-  if (report.summary?.valid !== true) {
+  // Only affirmatively wire-valid probe reports may feed the ledger — a legacy
+  // report with NO scoped verdict is refused too (re-review #2 finding 3: the
+  // waiver makes a report wire-valid only; performance consumers have their
+  // own stricter field).
+  if (report.summary?.validForWireLedger !== true) {
     console.error(
-      `[ledger] REFUSING non-validity-gated probe report (valid=${report.summary?.valid ?? "absent"})` +
+      `[ledger] REFUSING non-wire-valid probe report (validForWireLedger=${report.summary?.validForWireLedger ?? "absent"})` +
       (report.summary?.invalidReasons?.length ? `: ${report.summary.invalidReasons.join("; ")}` : ""),
     );
     process.exit(3);
