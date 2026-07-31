@@ -163,3 +163,11 @@ Test the full matrix: logged-out, guest, non-guest/no avatar, provisioning pendi
 | P1c WS fixture/instrumentation and staging probes | 60–120 LOC plus soak artifacts | Medium | Required before WS promotion |
 
 Same-day recommendation: land the Issue 2 surface correction and the HTTP motion gate. The durable WS/controller work is roughly 700–1,100 touched/new lines including tests and probe support; it deserves its own gated pass because it carries P1c recovery and route-persistence risk. Do not rush that pass by deleting SSE, recovery tickets, HTTP fallback, or the pure machine.
+
+## Follow-ups
+
+- **FU-1 — Hatcher controlled-launch suppression TTL.** `refreshHumanControlledOpenClawForUser` defaults to 3,000ms and assumes the owner's former 5 Hz `/api/world/position` cadence. Motion-gated idle uploads run every 10s, so suppression can lapse between uploads. Deliberately unchanged in the WS diff: no smuggled Hatcher behavior change. Owner: world-presence + agent-protocol-partner. Review by 2026-08-31.
+- **FU-2 — Automatic browser HTTP fallback graduation.** The `/position` endpoint remains indefinitely for old/headless clients and connected agents. Only the browser's automatic fallback is rollout-scoped. Disable it only after seven production days with the flag ON, abnormal closes below 2%, `/join` no higher than flag-OFF baseline, pong-timeout reaps below 1%, and WS-capable browser `/position` volume near zero. Review by 2026-09-15.
+- **FU-3 — Recovery exhausted leaves uploads dead for the mount.** The existing client stops after three ticketed recovery attempts. This predates the WS transport and remains out of scope, but needs a focused recovery-policy fix.
+- **FU-4 — Runtime-reloadable transport config.** `transport_disabled` and close 4412 are reserved but never emitted because env changes reach the process only through restart. Emitting them requires a runtime-reloadable config source. Review by 2026-09-15.
+- **FU-5 — Single-pod assumption.** One-socket-per-session, the shared 10 Hz map, and per-IP reservations are process-local, like `RoomRegistry` and `ActivityWsHub`. Horizontal API scaling requires moving all three to shared state.

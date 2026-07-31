@@ -47,6 +47,8 @@ import { pokerTableSim } from './services/poker/poker-table-sim-singleton';
 import { logEvent } from './services/event-logger';
 import { randomBytes } from 'node:crypto';
 import { getBunWebSocketHelper } from './lib/bun-ws-adapter';
+import { isAllowedOrigin, resolveAllowedOrigins } from './lib/allowed-origins';
+import { worldPresenceWsHub } from './services/world-presence-ws-hub';
 import { researchSseRoutes } from './routes/research-sse';
 import { researchApiRoutes } from './routes/research';
 import { clawRoutes } from './routes/claws';
@@ -193,29 +195,10 @@ app.use('*', secureHeaders({ crossOriginResourcePolicy: 'cross-origin' }));
 app.use(
   '*',
   cors({
-    origin: (origin) => {
-      const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000')
-        .split(',')
-        .map((o) => o.trim());
-      if (origin && allowedOrigins.includes(origin)) return origin;
-
-      // Local dev across any port (Next.js dev server, Milady port 2138, etc.)
-      if (origin?.startsWith('http://localhost:')) return origin;
-      if (origin?.startsWith('http://127.0.0.1:')) return origin;
-
-      // Milady desktop shell origins — Electrobun / Capacitor / Tauri embed
-      // the Milady webview with these URL schemes. When the
-      // @clawville/app-clawville plugin fetches api.clawville.world from
-      // inside a Milady viewer, the Origin header looks like `electrobun://`
-      // or `capacitor://localhost` depending on the host platform.
-      if (origin === 'electrobun://localhost') return origin;
-      if (origin === 'capacitor://localhost') return origin;
-      if (origin === 'tauri://localhost') return origin;
-      if (origin === 'app://localhost') return origin;
-      // file:// has no explicit origin but some Electrobun builds send null
-
-      return allowedOrigins[0];
-    },
+    origin: (origin) =>
+      isAllowedOrigin(origin)
+        ? (origin as string)
+        : resolveAllowedOrigins()[0],
     credentials: true,
   })
 );
@@ -603,6 +586,7 @@ warnIfTestPartnerPubkeyEnabled();
 // Start NPC simulation (arena mode runs combat, world mode is peaceful)
 const arenaMode = process.env.NPC_ARENA_MODE === 'true';
 startSimulation(arenaMode);
+worldPresenceWsHub.startHeartbeat();
 
 // ── Process-level crash guards (2026-07-02 — boot-crush crash-loop fix) ──────
 // Registered BEFORE the boot IIFE so they cover boot-time faults. This IS the
@@ -1738,6 +1722,14 @@ async function gracefulShutdown(signal: string) {
       stopClvSwapWorker();
     } catch {
       // Nothing to stop.
+    }
+    try {
+      const { worldPresenceWsHub } = await import(
+        './services/world-presence-ws-hub'
+      );
+      worldPresenceWsHub.shutdown();
+    } catch {
+      // If the module never loaded, there is nothing to drain.
     }
     await Promise.allSettled([
       npcSimulation.avatarAutonomyManager.shutdown(),

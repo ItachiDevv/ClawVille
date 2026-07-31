@@ -1,4 +1,5 @@
 import type { User, Session } from 'lucia';
+import type { WorldWsBinding } from './services/world-presence-ws-hub';
 
 export interface AppContext {
   Variables: {
@@ -35,6 +36,11 @@ export interface AppContext {
      * Set by the `endUserOrPartnerKey` gate in `routes/skills.ts`.
      */
     skillReadVia?: 'partner-import' | undefined;
+    /**
+     * Set only by the world WebSocket guard before the Bun upgrade helper runs.
+     * Kept as an import type to avoid a runtime cycle through this global type.
+     */
+    worldWsBinding?: WorldWsBinding;
   };
 }
 
