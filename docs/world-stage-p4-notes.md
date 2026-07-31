@@ -183,3 +183,246 @@ Scope assertion: PASS. Under `activities/reef-race/`, only
 four pre-existing `origin/staging` Cove verifier failures, `:3000` being
 occupied (production browser proof ran on `:3001`), and API-backed `:4000`
 activity gameplay/WS paths not exercised.**
+
+## Probe-gate Session 4
+
+### Activity-exit retention defect
+
+- Fixed in `e3c042dd` (`fix(web): retain activity route through opaque
+  midpoint`). `StageActivityRouteHost` now keeps the activity page under the
+  stage root's midpoint-owned `displayedPathname`; the route host changes only
+  after the opaque midpoint, and overlay release follows that committed page
+  swap.
+- The final real-history lane passed all assertions. Its exact precondition was
+  committed stage navigation `0 -> 1 -> 2`, `history.go(-2)`, then
+  `history.go(+2)`. Generation advanced `4 -> 5`; the outgoing canvas remained
+  connected for 553.4 ms and disconnected in `awaiting`, after the opaque
+  midpoint. Its incoming-generation readiness trace contains the required
+  `WAIT wrong-room` decision and never acknowledges the incoming room.
+- Evidence:
+  `C:\Users\itachi\AppData\Local\Temp\world-stage-p4-activity-exit-session4-final.json`.
+- The touched inherited surfaces passed: Cove routes at 6.898% heap growth,
+  Kelp routes at 16.622% (within its unchanged 17% gate), and Kelp-exit on the
+  third clean attempt. The first two Kelp-exit attempts hit its known
+  pre-crossing facing-arm flake; the passing 26/26 output is
+  `C:\Users\itachi\AppData\Local\Temp\world-stage-p4-kelp-exit-session4-rerun2.json`.
+- Focused overlay tests passed 81/81, `bunx tsc --noEmit` passed, and the
+  probe-enabled production build passed 9/9. Activity builds used both
+  `NEXT_PUBLIC_ENABLE_STAGE_PROBE=1` and
+  `NEXT_PUBLIC_REEF_RACE_USE_SPLINE=true`, as required by the real activity
+  route exercised by the lane.
+
+### Activity heap gate ruling
+
+- The loop-5-to-30 controls and activity diagnostic all have the P1c-known
+  Three/WebGPU renderer-private
+  `textureData.bindGroups -> Set -> _k / Backend.data WeakMap` signature. This
+  is the residual accepted and tracked for r186+ in
+  `docs/world-stage-p1c-brief.md` under **v4 GATE RULING**, not a
+  scene-correlated P4 leak: renderer counts and every scene inventory remain
+  flat.
+- Cove control: 7.7247% heap growth, +1,850 Sets, +3,192,044 retained bytes.
+  Kelp control: 15.5759%, +4,583 Sets, +7,718,396 bytes. Activity diagnostic:
+  30.046%, +4,714 Sets, +7,401,384 bytes. Activity's Set count is only 1.03x
+  Kelp's despite crossing more contexts.
+- The four requested ordinary pre-calibration activity observations were
+  38.66%, 41.91%, 40.57%, and 33.35%. The activity-only limit is therefore
+  45%, 3.09 percentage points above the observed maximum. Cove is unchanged;
+  Kelp remains 17%.
+- The change and inline evidence comment are in `56684132`
+  (`test(web): probe - calibrate activity heap gate`). A fresh ordinary
+  activity run passed every assertion at 39.377%:
+  `C:\Users\itachi\AppData\Local\Temp\world-stage-p4-routes-activity-session4-final.json`.
+
+### Canonical P4a-alone ruling
+
+- Consecutive Cove summaries from the same current-branch production build
+  differed:
+  `FD113080F75F80EBB85568AA4D04CAEA47ABB8308880DAA40F5D41463A115DB3`
+  versus
+  `C77F14B3A76A6553D9A571E2EF3321C6F8C4A56517EF7FE907E1B7D497C07CAD`.
+  Their canonical forms were identical at
+  `1B6E5EBC620D44BA5F88C66B0570244B99A56A29C60A3FA3792BC08049C4328A`.
+- **Deviation:** byte-diff replaced by canonical-form diff per orchestrator
+  ruling (volatility proven:
+  `FD113080F75F80EBB85568AA4D04CAEA47ABB8308880DAA40F5D41463A115DB3`,
+  `C77F14B3A76A6553D9A571E2EF3321C6F8C4A56517EF7FE907E1B7D497C07CAD`);
+  intent preserved (no behavioral diff).
+- `eb5f91f3` (`test(web): probe - add canonical summary form`) adds the
+  standalone canonicalizer and two passing tests. The existing probe's default
+  output and committed baselines are untouched. Canonical v1 preserves lane
+  identity, assertion names and verdicts, verdict/count totals, network and
+  violation counts, and threshold/tolerance values while removing run IDs,
+  timestamps, durations, paths/URLs, and measured series.
+- A detached worktree at exact P4a commit `f25520bf` was freshly installed,
+  built 9/9 with the probe flag, served only on `127.0.0.1:3008`, and exercised
+  for Cove, Kelp, and Kelp-exit. Cove passed at 3.377%. Kelp completed all 60
+  crossings and passed every non-heap assertion, but failed the inherited 17%
+  gate in all three clean runs: 21.821%, 19.455%, and 17.829%. Kelp-exit passed
+  26/26 on its first run.
+- The committed tree has no generated Kelp routes baseline. The comparison
+  therefore used the retained final P3 merge artifact
+  `C:\Users\itachi\AppData\Local\Temp\world-stage-p3merge-kelp-routes-run3.json`
+  (raw SHA-256
+  `B95584FCBCFE7AB201BE7D4F28CD27A18A68FEFF406C1AF216886C11B6118E82`,
+  PASS at 16.5815%). This baseline gap is itself recorded rather than hidden.
+- All three canonical comparisons HARD STOPPED. The preserved diffs are:
+
+```diff
+# Cove: committed P3 -> P4a f25520bf
+@@ -85,11 +85,12 @@
+         "GET /api/auth/me/agent-session": 0,
+         "GET /api/avatars/me": 0
+       },
+-      "stubUnhandled": {
+-        "GET /api/auth/me": 39,
+-        "GET /api/avatars/me": 3,
+-        "GET /api/wallet/link": 32
+-      }
++      "interceptedFixtureTraffic": {
++        "GET /api/auth/me": 0,
++        "GET /api/auth/me/agent-session": 0,
++        "GET /api/avatars/me": 0
++      },
++      "stubUnhandled": {}
+     }
+   },
+   "thresholds": {
+```
+
+```diff
+# Kelp: retained final P3 artifact -> P4a f25520bf
+@@ -6,7 +6,7 @@
+     "experimentMode": "crossings"
+   },
+   "verdict": {
+-    "pass": true,
++    "pass": false,
+     "assertions": {
+       "activeCallbacksAdvance": true,
+       "bothSlotInventoriesCaptured": true,
+@@ -22,7 +22,7 @@
+       "hiddenStoresFrozen": true,
+       "joinsAfterFirstGameZero": true,
+       "kelpCacheControlNonCacheable": true,
+-      "kelpHeapPlateauAtMost17Percent": true,
++      "kelpHeapPlateauAtMost17Percent": false,
+       "listenerAccountingNeverUnderflowed": true,
+       "listenerDeltaZero": true,
+       "noRouteCorrelatedStreamReopens": true,
+@@ -40,8 +40,8 @@
+     },
+     "counts": {
+       "total": 29,
+-      "passed": 29,
+-      "failed": 0
++      "passed": 28,
++      "failed": 1
+     }
+   },
+   "counts": {
+@@ -65,7 +65,7 @@
+       "activeGrowthViolations": 0,
+       "transitionErrors": 0,
+       "returnLoaderViolations": 0,
+-      "inventoryChanges": 3
++      "inventoryChanges": 2
+     },
+     "recovery": {
+       "count": 0
+```
+
+```diff
+# Kelp-exit: committed P3 -> P4a f25520bf
+@@ -8,25 +8,36 @@
+   "verdict": {
+     "pass": true,
+     "assertions": {
++      "beaconChainReset": true,
+       "centerHitIsExactStageCanvas": true,
+-      "exactAgentSessionFixtureUsed": true,
+-      "exactAuthGuestFixtureUsed": true,
+-      "exactAvatarFixtureUsed": true,
+-      "freshWorldStageProbe": true,
++      "entryLoaderNeverAppeared": true,
++      "exactAgentSessionFixtureIntercepted": true,
++      "exactAuthenticatedNonGuestFixtureIntercepted": true,
++      "exactAvatarFixtureIntercepted": true,
+       "kelpCanvasConnectedWithRealBacking": true,
+       "kelpNavigationStayedSameDocument": true,
+       "kelpPaintHasNonBackgroundVariance": true,
++      "kelpSlotChildMountCountStable": true,
++      "oneCanvasAcrossKelpRoundTrip": true,
++      "playerResetToSpawn": true,
++      "pointerContract": true,
+       "returnedToGame": true,
+       "returnLoaderAbsent": true,
+-      "returnLoaderAppearedBeforeReady": true,
+-      "returnLoaderNeverDisappearedBeforeReady": true,
++      "returnLoaderNeverAppeared": true,
+       "returnNavigationStayedSameDocument": true,
+       "returnTransitionIdle": true,
+-      "returnWorldGenuinelyReady": true
++      "returnWorldGenuinelyReady": true,
++      "secondEntryAccepted": true,
++      "stageProbeIdentityStable": true,
++      "worldCameraFrozenWhileKelpActive": true,
++      "worldFacingAcrossKelpRoundTrip": true,
++      "worldFramesFrozenWhileKelpActive": true,
++      "zeroRecoveries": true,
++      "zeroTransitionErrors": true
+     },
+     "counts": {
+-      "total": 15,
+-      "passed": 15,
++      "total": 26,
++      "passed": 26,
+       "failed": 0
+     }
+   },
+@@ -66,15 +77,20 @@
+         "firstGame": 0
+       },
+       "fixtureTraffic": {
++        "GET /api/auth/me": 0,
++        "GET /api/auth/me/agent-session": 0,
++        "GET /api/avatars/me": 0
++      },
++      "interceptedFixtureTraffic": {
+         "GET /api/auth/me": 2,
+         "GET /api/auth/me/agent-session": 1,
+         "GET /api/avatars/me": 2
+       },
+       "stubUnhandled": {
+-        "GET /api/cosmetics/owned": 2,
+-        "GET /api/land/me": 2,
+-        "GET /api/wallet/link": 2,
+-        "POST /api/kelp/beacon/entry/visit": 2
++        "GET /api/land/me": 1,
++        "GET /api/quests/tutorial/claims": 3,
++        "POST /api/avatars/me/heartbeat": 8,
++        "POST /api/kelp/beacon/entry/visit": 3
+       }
+     }
+   },
+```
+
+- Canonical hashes (baseline -> P4a) were:
+  Cove
+  `EC2CE0FFC46E7BEA6F61B44950B1EDAE435D4A3B28320F609BD045240E25F558`
+  ->
+  `1B6E5EBC620D44BA5F88C66B0570244B99A56A29C60A3FA3792BC08049C4328A`;
+  Kelp
+  `1B151D058945E6600098B5A70155BA45B103EAD37911498CE81971D4B530DE36`
+  ->
+  `51BDB8CF476EB69A3E50E9333E3469362D9E6D026D1AFE02B9E6B2A5CFE17BE7`;
+  Kelp-exit
+  `1BF3C36D005F94B5156688392990726DCB587C555FC821B9C0F627165848BFAE`
+  ->
+  `C3F000039BD1CDB6FD9A510C284B40DBD45C559974B1634F0BEE8BF17199FCB3`.
+- The detached listener was stopped and its exact temporary worktree removed.
+  Nothing was pushed. Sections 6.7-6.9 remain out of scope.
+
+**Session 4 status:** Items 1 and 2 are closed and green. Item 3 is honestly
+BLOCKED by the three preserved canonical diffs above; no volatile field was
+reintroduced and no preserved verdict/count was normalized away.
