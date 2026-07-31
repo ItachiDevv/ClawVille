@@ -298,6 +298,27 @@ sibling names preferred (auto-bust).
 - Same-diff docs: `3dStructure.md` (assets/loading), this doc (results per milestone),
   `deploy-status.md` on any staging push.
 
+## 5b. Defects discovered during M0 setup (2026-07-31, local full-stack)
+
+1. **API-failure boot = permanent black "WARMING SCENE".** A fresh visitor whose API calls fail
+   (observed with a web build lacking a working API URL) hangs forever on the stage's black
+   'awaiting' overlay: the SeaLoadingScreen force-dismisses at 45s but the stage warmup has no
+   fail-open to any usable state, and the world scene never mounts. Class-match with the
+   re-review's finding 2 (gate/lifecycle failure behind a dismissed loader). Not introduced by
+   this round — needs a fix ticket independent of the diet.
+2. **Intermittent healthy-API cold-boot hang (local).** With API + web both healthy on
+   localhost, one of two fresh-profile cold boots deadlocked the same way (world scene module
+   never evaluated — the stage never mounted it); the next identical run booted fine. Staging
+   fresh-profile probes are 2/2 green. Suspected race in the stage/session handshake that fast
+   local networks make more likely. M0 runs will record the hang rate; the rung-1 canary's
+   watchdog matrix must cover it.
+3. **`vrmBulkMs` ≈ 30.9s observed on a local WebGPU boot** (first phase-instrumented run): the
+   bulk VRM parse+compile is a dominant reveal-time component when all 15 VRMs arrive
+   near-simultaneously (fast network = worst case). Direct quantitative support for deferring
+   ambient VRMs in workstream A. Also: that boot completed via the stage-ready publication path,
+   not the classic full-sequence path — phase stamps now cover all four publication sites
+   (classic, stage-ready, resume fail-open incl. reason, defensive fallback).
+
 ## 6. Non-goals
 
 - JS bundle work, route code-splitting.

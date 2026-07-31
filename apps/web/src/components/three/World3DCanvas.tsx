@@ -1108,6 +1108,9 @@ function createWorldWarmupGate(
       // The normal completion path already set this flag, so repeating it here
       // keeps every resume reason idempotent and prevents a safety fuse/error
       // from turning into a second, much longer apparent hang.
+      (((window as any).__W3D_PHASES ||= {}) as Record<string, number>).resumeReadyAt =
+        Math.round(performance.now());
+      ((window as any).__W3D_PHASES as Record<string, string>).resumeReason = String(reason);
       (window as any).__W3D_TEXTURES_READY = true;
       markWorldReadyIfUploadsDone();
       // Heal both blue-until-resize boot races (WebGPU swapchain config +
@@ -1543,6 +1546,8 @@ function WorldWarmup({
     const publishStageReady = () => {
       if (stageReadyPublished) return;
       stageReadyPublished = true;
+      ((bridge.__W3D_PHASES ||= {}) as Record<string, number>).stageReadyAt =
+        Math.round(performance.now());
       bridge.__W3D_CANVAS_READY = true;
       bridge.__W3D_TEXTURES_READY = true;
       markWorldReadyIfUploadsDone();
@@ -1834,11 +1839,21 @@ function WorldWarmup({
         onFrameloopChange('always');
         liveState.setFrameloop('always');
         liveState.invalidate();
+        (((window as any).__W3D_PHASES ||= {}) as Record<string, number>).fallbackResumeAt =
+          Math.round(performance.now());
         (window as any).__W3D_TEXTURES_READY = true;
         markWorldReadyIfUploadsDone();
         forceFirstPaintSizeSync(liveState);
       }
       startPostReadyScans();
+    };
+
+    // Cold-load phase instrumentation: progressive, probe-readable breakdown of
+    // the post-network reveal gap (docs/perf-cold-load-diet-2026-07-31.md M0).
+    // Write-only telemetry — nothing in the warmup reads it back.
+    const publishPhase = (key: string, value: number) => {
+      const phases = (bridge.__W3D_PHASES ||= {});
+      phases[key] = Math.round(value);
     };
 
     void (async () => {
@@ -1847,9 +1862,11 @@ function WorldWarmup({
         // for all already-started world loads (8s cap), then this RAF gives
         // Suspense retries one commit opportunity before the first scan.
         const barrierStartedAt = performance.now();
+        publishPhase('warmupStartAt', barrierStartedAt);
         await waitForLoadingManagerIdle();
         await waitForCommitFrame();
         const barrierMs = performance.now() - barrierStartedAt;
+        publishPhase('barrierMs', barrierMs);
         if (cancelled || (stageWarmup ? stageResumed : livePendingGateResumed())) return;
 
         // Initial avatar fetches are now accounted for by LoadingManager. If a
@@ -1859,6 +1876,7 @@ function WorldWarmup({
           hasBulkVRMBatchStarted() &&
           typeof (gl as any).compileAsync === 'function'
         ) {
+          const vrmBulkStartedAt = performance.now();
           await new Promise<void>((resolveBulkCompile) => {
             registerBulkVRMIdleCallback(() => {
               if (cancelled) {
@@ -1884,6 +1902,7 @@ function WorldWarmup({
                 });
             });
           });
+          publishPhase('vrmBulkMs', performance.now() - vrmBulkStartedAt);
         }
         if (cancelled || (stageWarmup ? stageResumed : livePendingGateResumed())) return;
 
@@ -1909,6 +1928,8 @@ function WorldWarmup({
           console.log(`[World3D] WorldWarmup: uploaded ${uploadedDone}/${discoveredTotal} textures`);
         }
         const scansMs = performance.now() - scansStartedAt;
+        publishPhase('scansMs', scansMs);
+        publishPhase('scansTextures', warmupUploadedTextures);
 
         if (cancelled || (stageWarmup ? stageResumed : livePendingGateResumed())) return;
         let compileMs = 0;
@@ -1924,6 +1945,7 @@ function WorldWarmup({
             console.warn('[World3D] compileAsync failed (continuing warmup):', err);
           } finally {
             compileMs = performance.now() - compileStartedAt;
+            publishPhase('compileMs', compileMs);
             noteWorldWarmupProgress();
           }
         }
@@ -1944,6 +1966,8 @@ function WorldWarmup({
           },
         );
         const warmRenderMs = performance.now() - warmRenderStartedAt;
+        publishPhase('warmRenderMs', warmRenderMs);
+        publishPhase('warmupDoneAt', performance.now());
         bridge.__W3D_TEXTURES_READY = true;
         markWorldReadyIfUploadsDone();
         console.log(
@@ -2486,13 +2510,24 @@ const FORCE_WEBGPU_OVERRIDE =
   typeof window !== 'undefined' &&
   (new URLSearchParams(window.location.search).get('webgpu') === '1' ||
    new URLSearchParams(window.location.search).get('meshlets') === '1');
-const FORCE_WEBGL = FORCE_WEBGPU_OVERRIDE
-  ? (IOS_SAFARI || WEBGPU_ABSENT)              // override: drop the low-end gate
-  : (IOS_SAFARI || WEBGPU_ABSENT || LOW_END_GPU_DETECTED);
+// `?webgl=1` — the symmetric opt-in: forces the WebGL2 backend on ANY GPU.
+// Exists for the cold-load per-backend budget runs (Iris Xe floor proxy on
+// dedicated-GPU dev boxes — docs/perf-cold-load-diet-2026-07-31.md). WebGPU
+// override wins if both are passed.
+const FORCE_WEBGL_OVERRIDE =
+  typeof window !== 'undefined' &&
+  !FORCE_WEBGPU_OVERRIDE &&
+  new URLSearchParams(window.location.search).get('webgl') === '1';
+const FORCE_WEBGL = FORCE_WEBGL_OVERRIDE
+  || (FORCE_WEBGPU_OVERRIDE
+    ? (IOS_SAFARI || WEBGPU_ABSENT)              // override: drop the low-end gate
+    : (IOS_SAFARI || WEBGPU_ABSENT || LOW_END_GPU_DETECTED));
 
 if (typeof window !== 'undefined') {
+  // Probe-readable backend stamp (cold-load instrumentation; read-only signal).
+  (window as any).__W3D_BACKEND = FORCE_WEBGL ? 'webgl2' : 'webgpu';
   console.log(
-    `[World3D] GPU path: ${FORCE_WEBGL ? 'forceWebGL (WebGL2+TSL)' : 'WebGPU'} — iOS:${IOS_SAFARI} noGPU:${WEBGPU_ABSENT} lowEnd:${LOW_END_GPU_DETECTED} webgpuOverride:${FORCE_WEBGPU_OVERRIDE}`,
+    `[World3D] GPU path: ${FORCE_WEBGL ? 'forceWebGL (WebGL2+TSL)' : 'WebGPU'} — iOS:${IOS_SAFARI} noGPU:${WEBGPU_ABSENT} lowEnd:${LOW_END_GPU_DETECTED} webgpuOverride:${FORCE_WEBGPU_OVERRIDE} webglOverride:${FORCE_WEBGL_OVERRIDE}`,
   );
 }
 

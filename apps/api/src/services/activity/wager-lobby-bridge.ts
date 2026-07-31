@@ -33,6 +33,7 @@ import {
   lobbies,
   lobbyPlayers,
   lobbyEvents,
+  sql,
 } from '@clawville/database';
 import {
   cancelLobby,
@@ -227,7 +228,10 @@ export async function sweepAbortedCrashWagerLobbies(): Promise<{
   const rows = await db
     .select({ roomId: lobbies.roomId })
     .from(lobbies)
-    .innerJoin(activityRooms, eq(activityRooms.id, lobbies.roomId))
+    // activity_rooms.id is uuid; wager lobbies.room_id is text (it can carry
+    // non-uuid ids for other modes), so cast the uuid side — `uuid = text` has
+    // no operator and made every sweep tick throw 42883 since the P4 deploy.
+    .innerJoin(activityRooms, sql`${activityRooms.id}::text = ${lobbies.roomId}`)
     .where(
       and(
         eq(lobbies.mode, 'multiplayer'),
