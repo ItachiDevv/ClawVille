@@ -40,6 +40,7 @@ mock.module('next/navigation', () => ({
 mock.module('./WorldStageCanvas', () => ({
   WorldStageCanvas: () => null,
   readStageBackend: () => 'unknown',
+  requestStageRendererRecovery: () => false,
   readStageCameraPoses: () => ({}),
   readStageRendererCounters: () => ({
     backend: 'unknown',
@@ -55,6 +56,7 @@ mock.module('./WorldStageCanvas', () => ({
 
 mock.module('./resource-ledger', () => ({
   readStageSceneInventory: () => ({}),
+  readStageResourceLedger: () => ({}),
   withStageSlotFrustumCullingDisabled: (
     _sceneId: string,
     operation: () => unknown,
