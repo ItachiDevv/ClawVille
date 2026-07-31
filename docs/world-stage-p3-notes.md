@@ -9,12 +9,12 @@ real Kelp Forest scene a resident stage slot. The four reviewable commits are:
 - P3b-1 — renderer/stage plumbing, boundaries, readiness, and slot capability.
 - P3b-2 — guarded Kelp walk-in, route handoff, resident scene, controls, health,
   recovery, and probe coverage.
-- P3b-3 — `at-kelp` co-presence and connection protocol version 41.
+- P3b-3 — `at-kelp` co-presence and connection protocol version 42 (authored as 41; renumbered in the staging merge over the wallet slice's 41).
 
 The human path is `/kelp` in-world portal → stage slot. The agent path is
 unchanged: Kelp exposes no new `[ACTION:]` verb and no settlement change. The
 only agent-visible addition is the `at-kelp` co-presence convention documented
-by protocol version 41.
+by protocol version 42.
 
 ## Frame and listener ownership
 
@@ -43,7 +43,7 @@ ledger.
   suites.
 - Production-bundle WebGPU/WebGL synthetic, Kelp/Cove routes, Kelp exit,
   retry-adoption, loader, dwell, soak, recovery, and mobile/touch checks.
-- Protocol v41 pins, exact `at-kelp` manual convention, refreshed public Hatcher
+- Protocol v42 pins, exact `at-kelp` manual convention, refreshed public Hatcher
   client comparison, contract probe, and staging signed mock-Hatcher harness.
 
 ## Deviations and limitations

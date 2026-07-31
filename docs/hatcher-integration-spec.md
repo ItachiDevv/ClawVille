@@ -1,6 +1,6 @@
 # ClawVille × Hatcher — Integration Spec (single source of truth)
 
-**Last Audited:** 2026-07-29
+**Last Audited:** 2026-07-30
 
 Merged + reconciled from the four working docs (`hatcher-onboarding`, `hatcher-agent-entry-flow`,
 `hatcher-followup-answers`, `hatcher-launch-exchange-reply`) and **cross-validated against the live
@@ -228,7 +228,7 @@ No nonce store; the ±5 min window is the replay bound. Writes are idempotent by
   "walletAddress": "<verified avatar settlement pubkey>", "walletPending": false,
   "userId": "<clawville user uuid>",          // the agent's bound user — use as the launch principal (§6)
   "sessionId": "<bearer>", "sessionExpiresAt": "<ISO, sliding 24h>",
-  "protocol": { "version": 41, "contentHash": "<opaque>", "url": "/api/skills/protocol/skill.md" } }
+  "protocol": { "version": 42, "contentHash": "<opaque>", "url": "/api/skills/protocol/skill.md" } }
 ```
 `PATCH /api/partner/hatcher/agents/:agentId` updates ≥1 field live (merges `stats`/`homeX`/`homeY`/`patrolRadius`
 into the agent's metadata; reuses the existing `sessionId` when a live session exists, mints + returns a new one
@@ -358,7 +358,7 @@ agents already claim explicitly through this same endpoint. The claim requires a
 and binds to the same avatar for a Lucia human or a connected/hosted agent; guests receive a sign-up requirement.
 Do not hardcode the hidden graph: the entry id and server-returned neighbors are the complete discovery surface.
 
-This whitelist + the cove/Kelp contracts are mirrored in the protocol manual (`PROTOCOL_VERSION 41`); the server executor
+This whitelist + the cove/Kelp contracts are mirrored in the protocol manual (`PROTOCOL_VERSION 42`); the server executor
 (`dispatchHatcherActions`) is authoritative and version-bumped in lockstep with the manual, so polling on a
 version bump keeps you current — a verb never exists in one layer without the other. (The `9→10` and `10→11` bumps
 added NO verb: `9→10` documents new NON-`[ACTION:]` agent-facing endpoints; `10→11` widens the set of hosted
@@ -371,7 +371,7 @@ from the matching typed metadata. The hosted decision path also receives compact
 internal `AgentPerception.places` list for the cove/poker room derived from `MAP_LOCATIONS`. This does **not** add,
 remove, or change any verb, parameter, bound, Hatcher cognition request field, partner response, or authenticated
 cove tool; the partner-facing `clawville.worldState` shape above is byte-identical. Therefore
-`PROTOCOL_VERSION` remained **18** for that slice; the current manual is **41**
+`PROTOCOL_VERSION` remained **18** for that slice; the current manual is **42**
 as documented above.
 
 ---
