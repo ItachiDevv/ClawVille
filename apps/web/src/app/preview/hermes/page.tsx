@@ -38,7 +38,7 @@ const SCENE_BG = new THREE.Color(0xffffff); // white backdrop for video capture
 // Target visual height — camera at y=8 looking at y=7 frames a 6.5u-tall avatar.
 const TARGET_HEIGHT = 6.5;
 
-type Character = 'female' | 'male' | 'tekk' | 'biggie';
+type Character = 'female' | 'male' | 'tekk' | 'biggie' | 'ansem';
 type Mode = 'idle' | 'walk' | 'run' | 'swim' | 'fly' | 'pray';
 
 // VRM URL + animator characterId per selectable character. Tekk is a
@@ -54,6 +54,8 @@ const CHARACTER_META: Record<Character, { path: string; animatorId: string }> = 
   // with idle/walk/run position tracks stripped (adinero-pattern underground guard).
   // ?v=2 — arms-rest-pose T-pose fix (fix-rig-tpose.mjs) re-baked the same path.
   biggie: { path: '/avatars/biggie.vrm?v=2',        animatorId: 'biggie' },
+  // Ansem — exclusive Meshy VRM with canonicalized native idle + intrinsic sword.
+  ansem:  { path: '/avatars/ansem.vrm?v=1',         animatorId: 'ansem' },
 };
 
 function HermesAvatar({ character, mode }: { character: Character; mode: Mode }) {
@@ -93,6 +95,10 @@ function HermesAvatar({ character, mode }: { character: Character; mode: Mode })
     animator.init().catch((err) => {
       console.warn('[hermes preview] animator init failed:', err);
     });
+    // QC-harness debug handle (this page only, like the ?az= param): lets a
+    // CDP session reach the live VRM scene to tune attachment anchor offsets
+    // (e.g. window.__PREVIEW_VRM_SCENE.getObjectByName('character-attachment')).
+    (window as any).__PREVIEW_VRM_SCENE = vrm.scene;
     return () => {
       animatorRef.current = null;
       animator.dispose();
@@ -164,6 +170,7 @@ function PreviewHermesInner() {
     c === 'male' ? 'male' :
     c === 'tekk' ? 'tekk' :
     c === 'biggie' ? 'biggie' :
+    c === 'ansem' ? 'ansem' :
     'female';
   const [character, setCharacter] = useState<Character>(initial);
   const [mode, setMode] = useState<Mode>('idle');
@@ -200,6 +207,8 @@ function PreviewHermesInner() {
             style={btn(character === 'tekk')}>Tekk</button>
           <button onClick={() => setCharacter('biggie')}
             style={btn(character === 'biggie')}>Biggie</button>
+          <button onClick={() => setCharacter('ansem')}
+            style={btn(character === 'ansem')}>Ansem</button>
         </div>
         <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
           <button onClick={() => setMode('idle')} style={btn(mode === 'idle')}>Idle</button>

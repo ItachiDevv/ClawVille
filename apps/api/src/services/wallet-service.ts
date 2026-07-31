@@ -1,17 +1,14 @@
 /**
- * Unified wallet service — auto-generates a custodial Solana keypair for any
- * subject (avatar, agent, future subject types) and mirrors the pubkey onto the
- * owning table's `wallet_address` column for O(1) lookups.
+ * Unified wallet service for custodial avatar settlement wallets.
  *
- * Single source of truth: the `wallets` table keyed on
- * (subject_type, subject_id). Replaces the previous split where avatars had
- * `avatar_wallet` and agents had nothing.
+ * The `wallets` table is canonical. Avatar mirrors are compatibility reads
+ * only: provisioning may fill a null mirror, but it never repoints one.
  *
  * Called from:
- *   - POST /api/avatars              (human users → ensureWallet('avatar', avatarId))
- *   - POST /api/agent/connect     (external agents → ensureWallet('agent', botId))
- *   - POST /api/agent/join        (Phase 5.1 — uses ensureWalletWithFirstTimeSecret)
- *   - scripts/backfill-wallets.ts (one-time backfill for existing subjects)
+ *   - POST /api/avatars (interactive first-mint disclosure)
+ *   - POST /api/agent/connect (interactive first-mint disclosure)
+ *   - POST /api/partner/hatcher/agents (no-disclosure provisioning)
+ *   - apps/api/scripts/wallet-unification/promote-avatar-wallets.ts
  *
  * ⚠️  CUSTODIAL — ClawVille holds the secret. Intended use in v1 is as a
  *     payment source for Phase 4 x402 pings (~$0.001 each). Do not load
@@ -29,15 +26,58 @@ import {
   wallets,
   eq,
   and,
+  isNull,
   type WalletSubjectType,
 } from '@clawville/database';
-import { encryptSecretKey, encryptSecretKeyEnveloped } from './keypair-vault';
+import {
+  decryptSecretKeyEnveloped,
+  decryptWalletRow,
+  encryptSecretKey,
+  encryptSecretKeyEnveloped,
+} from './keypair-vault';
+import {
+  reconcileAvatarWallet,
+  type AvatarWalletMatrixBranch,
+  type AvatarWalletReconciliationAdapter,
+  type AvatarWalletReconciliationResult,
+  type CanonicalAvatarWallet,
+} from './avatar-wallet-reconciliation';
+import {
+  resolveAvatarSettlementAddressFromCanonical,
+  type AvatarSettlementResolution,
+} from './avatar-settlement';
+export {
+  avatarSettlementAddressFields,
+  resolveAvatarSettlementAddressFromCanonical,
+  type AvatarSettlementAddressFields,
+  type AvatarSettlementResolution,
+} from './avatar-settlement';
 
 export interface GeneratedWallet {
   subjectType: WalletSubjectType;
   subjectId: string;
   publicKey: string;
   alreadyExisted: boolean;
+}
+
+export interface ProvisionAvatarWalletOptions {
+  disclose: boolean;
+}
+
+export type ProvisionAvatarWalletResult = AvatarWalletReconciliationResult;
+
+/**
+ * Pure settlement read. This reads only the canonical avatar-subject row and
+ * never decrypts, mints, repairs a mirror, or writes.
+ */
+export async function resolveAvatarSettlementAddress(
+  avatarId: string,
+): Promise<AvatarSettlementResolution> {
+  const row = await db.query.wallets.findFirst({
+    where: and(eq(wallets.subjectType, 'avatar'), eq(wallets.subjectId, avatarId)),
+    columns: { publicKey: true, custodyVerified: true },
+  });
+  return resolveAvatarSettlementAddressFromCanonical(row);
 }
 
 /**
@@ -58,18 +98,21 @@ export async function ensureWallet(
   subjectType: WalletSubjectType,
   subjectId: string,
 ): Promise<GeneratedWallet> {
-  // Step 1: fast path via mirror column
   if (subjectType === 'avatar') {
-    const [row] = await db
-      .select({ walletAddress: avatars.walletAddress })
-      .from(avatars)
-      .where(eq(avatars.id, subjectId))
-      .limit(1);
-    if (!row) throw new Error(`[wallet] Avatar ${subjectId} not found`);
-    if (row.walletAddress) {
-      return { subjectType, subjectId, publicKey: row.walletAddress, alreadyExisted: true };
+    const result = await provisionAvatarWallet(subjectId, { disclose: false });
+    if (result.status !== 'ready' || !result.address) {
+      throw new Error(`[wallet] Avatar ${subjectId} settlement wallet is pending`);
     }
-  } else if (subjectType === 'agent') {
+    return {
+      subjectType,
+      subjectId,
+      publicKey: result.address,
+      alreadyExisted: !result.inserted,
+    };
+  }
+
+  // Step 1: fast path via mirror column
+  if (subjectType === 'agent') {
     const [row] = await db
       .select({ walletAddress: agentBots.walletAddress })
       .from(agentBots)
@@ -220,19 +263,25 @@ export async function ensureWalletWithFirstTimeSecret(
   subjectType: WalletSubjectType,
   subjectId: string,
 ): Promise<GeneratedWalletWithSecret> {
-  // Fast path via mirror column — identical to ensureWallet(). Treasury
-  // is still a no-op (managed by separate scripts).
   if (subjectType === 'avatar') {
-    const [row] = await db
-      .select({ walletAddress: avatars.walletAddress })
-      .from(avatars)
-      .where(eq(avatars.id, subjectId))
-      .limit(1);
-    if (!row) throw new Error(`[wallet] Avatar ${subjectId} not found`);
-    if (row.walletAddress) {
-      return { subjectType, subjectId, publicKey: row.walletAddress, alreadyExisted: true };
+    const result = await provisionAvatarWallet(subjectId, { disclose: true });
+    if (result.status !== 'ready' || !result.address) {
+      throw new Error(`[wallet] Avatar ${subjectId} settlement wallet is pending`);
     }
-  } else if (subjectType === 'agent') {
+    return {
+      subjectType,
+      subjectId,
+      publicKey: result.address,
+      alreadyExisted: !result.inserted,
+      ...(result.firstTimeSecretKeyBase58
+        ? { firstTimeSecretKeyBase58: result.firstTimeSecretKeyBase58 }
+        : {}),
+    };
+  }
+
+  // Fast path via mirror column, identical to ensureWallet(). Treasury
+  // is still a no-op (managed by separate scripts).
+  if (subjectType === 'agent') {
     const [row] = await db
       .select({ walletAddress: agentBots.walletAddress })
       .from(agentBots)
@@ -326,17 +375,175 @@ export async function ensureWalletWithFirstTimeSecret(
   };
 }
 
+function uniqueViolationCode(err: unknown): string | undefined {
+  return (
+    (err as { code?: string; cause?: { code?: string } } | null)?.code
+    ?? (err as { cause?: { code?: string } } | null)?.cause?.code
+  );
+}
+
+async function loadCanonicalAvatarWallet(
+  avatarId: string,
+): Promise<CanonicalAvatarWallet | null> {
+  const row = await db.query.wallets.findFirst({
+    where: and(eq(wallets.subjectType, 'avatar'), eq(wallets.subjectId, avatarId)),
+    columns: {
+      id: true,
+      publicKey: true,
+      custodyVerified: true,
+    },
+  });
+  return row ?? null;
+}
+
+function createAvatarWalletAdapter(avatarId: string): AvatarWalletReconciliationAdapter {
+  return {
+    async loadSnapshot() {
+      const [avatarRow, canonical] = await Promise.all([
+        db.query.avatars.findFirst({
+          where: eq(avatars.id, avatarId),
+          columns: { id: true, walletAddress: true },
+        }),
+        loadCanonicalAvatarWallet(avatarId),
+      ]);
+      return {
+        avatarExists: avatarRow != null,
+        mirrorAddress: avatarRow?.walletAddress ?? null,
+        canonical,
+      };
+    },
+
+    async validateCanonical(canonical) {
+      const row = await db.query.wallets.findFirst({
+        where: and(
+          eq(wallets.id, canonical.id),
+          eq(wallets.subjectType, 'avatar'),
+          eq(wallets.subjectId, avatarId),
+        ),
+      });
+      if (!row) return false;
+      const keypair = await decryptWalletRow(row);
+      return keypair.publicKey.toBase58() === row.publicKey;
+    },
+
+    async createValidatedCanonical(disclose) {
+      const keypair = Keypair.generate();
+      const publicKey = keypair.publicKey.toBase58();
+      const encrypted = await encryptSecretKeyEnveloped(keypair.secretKey);
+
+      const reproduced = await decryptSecretKeyEnveloped(encrypted);
+      if (reproduced.publicKey.toBase58() !== publicKey) {
+        throw new Error('[wallet] envelope round-trip did not reproduce public_key');
+      }
+
+      try {
+        const [inserted] = await db
+          .insert(wallets)
+          .values({
+            subjectType: 'avatar',
+            subjectId: avatarId,
+            publicKey,
+            encryptedSecretKey: encrypted.encryptedSecretKey,
+            encryptionIv: encrypted.encryptionIv,
+            encryptionTag: encrypted.encryptionTag,
+            dekWrapped: encrypted.dekWrapped,
+            encryptionVersion: encrypted.encryptionVersion,
+            custodyVerified: true,
+          })
+          .returning({
+            id: wallets.id,
+            publicKey: wallets.publicKey,
+            custodyVerified: wallets.custodyVerified,
+          });
+        if (!inserted) {
+          throw new Error(`[wallet] avatar wallet insert returned no row for ${avatarId}`);
+        }
+        return {
+          canonical: inserted,
+          inserted: true,
+          ...(disclose
+            ? { firstTimeSecretKeyBase58: bs58.encode(keypair.secretKey) }
+            : {}),
+        };
+      } catch (err) {
+        if (uniqueViolationCode(err) !== '23505') throw err;
+        const winner = await loadCanonicalAvatarWallet(avatarId);
+        if (!winner) {
+          throw new Error(
+            `[wallet] unique-violation on avatar insert but no winner exists for ${avatarId}`,
+          );
+        }
+        return { canonical: winner, inserted: false };
+      }
+    },
+
+    async setCustodyVerified(walletId, verified) {
+      await db
+        .update(wallets)
+        .set({ custodyVerified: verified })
+        .where(
+          and(
+            eq(wallets.id, walletId),
+            eq(wallets.subjectType, 'avatar'),
+            eq(wallets.subjectId, avatarId),
+          ),
+        );
+    },
+
+    async fillMirrorIfNull(address) {
+      const updated = await db
+        .update(avatars)
+        .set({ walletAddress: address, updatedAt: new Date() })
+        .where(and(eq(avatars.id, avatarId), isNull(avatars.walletAddress)))
+        .returning({ walletAddress: avatars.walletAddress });
+      if (updated[0]?.walletAddress === address) return 'equal';
+
+      const current = await db.query.avatars.findFirst({
+        where: eq(avatars.id, avatarId),
+        columns: { walletAddress: true },
+      });
+      if (!current) return 'missing';
+      return current.walletAddress === address ? 'equal' : 'mismatch';
+    },
+
+    trackException(branch: AvatarWalletMatrixBranch, detail: string) {
+      console.error(
+        `[wallet] avatar settlement exception avatar=${avatarId} branch=${branch}: ${detail}`,
+      );
+    },
+  };
+}
+
+/**
+ * Mutating avatar settlement provisioner. New rows are envelope-encrypted v2,
+ * validated before insert, and disclosed only to the unique insert winner.
+ */
+export async function provisionAvatarWallet(
+  avatarId: string,
+  options: ProvisionAvatarWalletOptions,
+): Promise<ProvisionAvatarWalletResult> {
+  return reconcileAvatarWallet(createAvatarWalletAdapter(avatarId), {
+    apply: true,
+    disclose: options.disclose,
+  });
+}
+
+/** Read/decrypt classification for the controlled backfill dry-run only. */
+export async function inspectAvatarWalletProvision(
+  avatarId: string,
+): Promise<ProvisionAvatarWalletResult> {
+  return reconcileAvatarWallet(createAvatarWalletAdapter(avatarId), {
+    apply: false,
+    disclose: false,
+  });
+}
+
 async function writeMirror(
   subjectType: WalletSubjectType,
   subjectId: string,
   publicKey: string,
 ): Promise<void> {
-  if (subjectType === 'avatar') {
-    await db
-      .update(avatars)
-      .set({ walletAddress: publicKey, updatedAt: new Date() })
-      .where(eq(avatars.id, subjectId));
-  } else if (subjectType === 'agent') {
+  if (subjectType === 'agent') {
     await db
       .update(agentBots)
       .set({ walletAddress: publicKey, updatedAt: new Date() })

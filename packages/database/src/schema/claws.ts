@@ -67,7 +67,7 @@ export const agentBots = pgTable('openclaw_bots', {
    * Mirror of the agent's custodial Solana wallet address (base58 public key).
    * Secret key lives encrypted in the unified `wallets` table keyed on
    * (subject_type='agent', subject_id=openclaw_bots.id). Auto-populated by
-   * ensureWallet() at /api/agent/connect time.
+   * Retained legacy mirror. New agent-subject wallets are not minted.
    */
   walletAddress: varchar('wallet_address', { length: 64 }),
   /**

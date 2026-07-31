@@ -10,6 +10,14 @@ shared capability controller; jump is unavailable by design. Beacon traversal,
 three-spore center gate, explicit idempotent claim, guest sign-up requirement,
 and avatar-bound reward settlement are unchanged.
 
+**Last Audited:** 2026-07-30 (**Ansem promo wanderer NPC.**) The `ansem` model now ALSO runs as decorative free-roamer NPC `ansem-wanderer` (Adinero pattern: town-ring wanderer, transient NPC chat with an in-world swordsman personality, speed 20 keeps him running; idle pauses show the sword-wielding stance via the intrinsic attachment). Founder order — influencer-recruitment promo; the account grant is deferred until the influencer signs up. **Drift note:** roster data only; no economy write, no route, no protocol change. **PARITY:** decorative chat NPC (E5 N/A, same as Adinero).
+
+**Prior Last Audited:** 2026-07-30 (**Ansem exclusive avatar.**) `ansem` follows the Biggie registry-only grant precedent: the hidden-picker VRM is available to every shared avatar renderer once an operator grants `model_key='ansem'`, but it is deliberately absent from shared `AGENT_MODELS`, so no avatar API accepts self-assignment. The model has a canonicalized Meshy-native sword idle and an intrinsic greatsword that is held in the right hand while idle and re-anchors to the upper chest/back while walking, running, playing one-shots, or using a non-idle surface clip. Anchor offsets are live-tuned constants verified in the built preview (grip-in-palm idle, diagonal back carry while moving). **Drift note:** cosmetic client rendering only; no economy/state surface, agent action, route, protocol, partner surface, or `PROTOCOL_VERSION` change (E5 N/A). **PARITY:** owner, peer, NPC, preview, Cove, Kelp, picker, and Reef VRM construction paths all receive the same animator-owned attachment behavior after the same manual avatar grant.
+
+**Last Audited:** 2026-07-30 (**In-world land proximity options pill.**) An avatar-bearing player, autonomous body, or guest-controlled NPC standing inside a rendered parcel footprint now gets a read-only amber options pill that routes to the existing Land Office. Building prompts take precedence over the parcel pill, which takes precedence over the NPC talk prompt. The pill refuses to render before an explicit parcel-status hydration and suppresses reserved or retired parcels. **Drift note:** client proximity and routing UI only; no land economy write, API, schema, agent action, protocol, geometry, material, or draw-call change. **PARITY:** the human/guest affordance routes into the existing modal; connected and hosted agents retain the existing land REST surface unchanged.
+
+**Last Audited:** 2026-07-29 (**One verified settlement wallet per avatar.**) Humans, owner-proven connected agents, and Hatcher agents now provision and advertise the canonical avatar settlement wallet used by every settlement path. Connect exposes the same ready address as top-level `walletAddress` and `wallet.address`; Hatcher exposes it as `walletAddress`. When canonical custody is absent, unverified, invalid, or mirror-conflicted, the response omits fundable fields and returns `walletPending:true`. Existing bot wallet mirrors and retained agent wallet rows are not changed. A controlled dry-run/apply backfill validates and promotes avatar wallets with no non-null mirror repointing. The agent manual is `PROTOCOL_VERSION 41`, and deployment restart re-injects it into hosted player runtimes. **PARITY:** human avatar creation, connected-agent onboarding, and Hatcher registration share the same v2 provisioner and resolver; guests and unproven identities receive no wallet.
+
 **Last Audited:** 2026-07-28 (**Smoother character errands and ambient planning.**) A character can now keep heading where it was going through a passing crowd instead of forgetting its errand, and only gives up and chooses again if it is genuinely stuck for about two seconds. Characters that have already arrived and are waiting at a gateway stay put. Ambient wanderers now take turns planning one route at a time so the world stays responsive. **Drift note:** server-side movement and liveliness only; no schema, world-stream shape, action list, settlement, or `PROTOCOL_VERSION 40` change. **PARITY:** human movement is unchanged; route protection and ambient pacing apply consistently to the NPC and agent bodies handled by the server simulation.
 
 **Last Audited:** 2026-07-27 (**Gateway trips start walking immediately.**) An autonomous or connected agent told to go to the Cove, the poker tables, or the Kelp Forest now starts walking on the next simulation tick instead of standing still for 8 to 20 seconds first, provided it is not already mid-conversation. The venue marker it carries while travelling is a data field on the world stream, not something the current game client draws, and it no longer holds the body in place or wipes the trip destination part-way through the walk. A body that has arrived at the Cove or the Kelp Forest portal stays there until its next decision, exactly as it did before this change. Arrivals at the ten teaching houses are unchanged. **Drift note:** server-side movement and activity timing only; no route, schema, wire, action whitelist, settlement, or `PROTOCOL_VERSION 40` change; no client rendering change. **PARITY:** human movement is untouched; hosted/house autonomous agents and connected agents using the same `enter_*` actions both get the identical un-frozen trip start.
@@ -1514,6 +1522,8 @@ Full Phase 5.1 architecture (keypair roles, envelope encryption, signed-challeng
 
 ## 15. Landing page (`apps/web/src/app/page.tsx`)
 
+**Updated 2026-07-29** — GitHub icon added to the sticky `SiteHeader` social cluster (founder emergency order): fourth 40×40 icon button linking to `https://github.com/ItachiDevv/ClawVille`, placed between Telegram and Discord in `SOCIAL_LINKS`, identical styling/hover treatment to the existing icons.
+
 **Updated 2026-06-16** — added the **Qwerti buy widget** (partner integration, step 1): a floating "buy/swap $CLAWVILLE" launcher (Qwerti's non-custodial DeFAI aggregator — card / Apple Pay / Google Pay / crypto on-ramp). `components/landing/qwerti-buy-widget.tsx` renders null and self-injects `https://widget.qwerti.ai/widget/v1/buy.js` (campaign `clawville-792703809-76951`) on `requestIdleCallback` so it never competes with the 3D hero's first paint (priority #1). **HOMEPAGE ONLY** — injected/torn down in `page.tsx`, never in the root layout, so the launcher never appears over the `/game` WebGPU scene; cleanup calls `Qwerti.destroy()` + removes the `<script>` and `#qwerti-widget-root`. `data-auto-open="false"` (dashboard snippet defaults `true` — overridden so it never auto-pops a buy modal on load). **Themed to ClawVille cyan in code** via `--wt-*` CSS custom-property overrides on `#qwerti-widget-root` (THEME_CSS in the component — custom props pierce the shadow boundary; the widget sets these vars INLINE on the host, so our `#id` rule needs `!important` to win), recoloring the launcher, modal border, glow, message box, and Buy-Token button (no Qwerti-dashboard change needed). A branded **"Buy $CLAWVILLE" header pill** (next to the CA pill, responsive: "Buy" on mobile) calls `openQwertiBuy()` → opens the hosted buy page (magic link) in a new tab. (The widget's `Qwerti.openWidget()` API is a no-op in the current build — verified live; only the launcher's own real click opens the in-page panel — so the button uses the always-reliable hosted page; the in-page cyan widget stays reachable via its floating launcher.) CSP note: `next.config.mjs` sets only `frame-ancestors` (no `script-src`/`default-src`), so the third-party script + its iframes load unblocked. Marketing/economy surface (buy $CLAWVILLE) — NOT a live in-world game mechanic, so intentionally NOT propagated to Nori/SKILL.md. See `Partnerships.md` → QwertiAI.
 
 **Updated 2026-06-10** — restored PayAI press-release hyperlink parity with the Google Docs source: inline article links now wrap the source phrases for ClawVille, PayAI, x402 protocol docs, PayAI Facilitator, agent-native payment infrastructure, and the x402 quickstart; the inline ClawVille link routes to `/game` on-site while footer/community links remain external.
@@ -1527,7 +1537,7 @@ Full Phase 5.1 architecture (keypair roles, envelope encryption, signed-challeng
 | Section | Description | Source |
 |---|---|---|
 | `<LandingScene>` (z-0) | Cinematic reef-canyon 3D backdrop — mounts behind hero via `position:fixed` equivalent | `components/three/LandingScene.tsx` (dynamic, SSR disabled) |
-| `<SiteHeader>` (sticky) | Top-bar: CA copy-pill + How-It-Works + Leaderboard + X/Telegram/Web/Discord icons | `page.tsx` (bottom of file) |
+| `<SiteHeader>` (sticky) | Top-bar: CA copy-pill + How-It-Works + Leaderboard + X/Telegram/GitHub/Discord icons (GitHub → `github.com/ItachiDevv/ClawVille`, added 2026-07-29 founder order) | `page.tsx` (bottom of file) |
 | **Hero `<section>`** — `h-[100svh]` | Exactly one viewport tall (svh = handles mobile browser chrome). Contains: **🔴 BREAKING news banner** (top, scrolls to `#press-release`), powered-by badge, h1 ClawVille, tagline, one-line subtitle, Create Agent + Enter ClawVille CTAs, "Already have an account? Log in" link, scroll cue. Legibility overlay at `z-[5]` (radial + vertical dark gradient) between scene and content. | `page.tsx` |
 | **`<PressRelease id="press-release">`** | PayAI × ClawVille press-release article — enlarged co-branded lockup + `announce.webp` lead banner, 8 numbered sections each with a lazy WebP banner, ClawVille/PayAI community-links footer. Renders directly below the hero. | `components/landing/press-release.tsx` |
 | **Collaboration `<section id="collaboration">`** | Relocated from hero. Eyebrow "Three Ways To Collaborate" + `<MiladyAvatarShowcase>` + `<CollaborationAxes>` grid + stats strip (1B / 10 / 3 / Any) + quick-jump nav pills (Gameplay / Tokenomics / Roadmap). | `page.tsx` |
@@ -2126,6 +2136,33 @@ A SECOND poker product alongside the MTT tournament (§ARCHITECTURE `cove-poker-
 ## 18b. Land Economy — parcels, structures, upgrades (Phase 1, 2026-06-17)
 
 Owned land on the shared world. Phase 0 seeded the parcel grid + tier schema; Phase 1 is the first user-facing economy: **claim a free starter parcel, BUY more with ClawTokens, place a home/shop on a parcel you own, and UPGRADE it to climb levels.** Backend: `apps/api/src/routes/land.ts` (`/api/land/*`). Constants (tiers, prices, catalog, upgrade costs, leaderboard weights): `packages/shared/src/constants/land-economy.ts` + `land-tiers.ts`. Full route/response contract: `ARCHITECTURE.md §2` (`land.ts` row) + the FROZEN CONTRACT block at the top of `land.ts`.
+
+### 18b.0. In-world land proximity options pill (2026-07-30)
+
+`LandProximityTracker` samples the active walking body at 5 Hz, converts map-pixel coordinates to centered world coordinates, and uses the shared `LAND_PARCELS` square footprints to set `nearParcelCode`. Player, autonomous, and avatar-bearing guest NPC modes are covered. Explore mode and anonymous visitors without an avatar have no walking body and show no pill. The DOM `LandOptionsPill` is read-only: it routes into the existing Land Office and creates no economy write.
+
+Bottom-slot precedence is **building > parcel > NPC talk prompt**:
+
+| `nearLocation` | `nearParcelCode` | LocationHUD | LandOptionsPill | TalkToCharacterBar (NPC mode) |
+|---|---|---|---|---|
+| set | set | renders | null | null |
+| set | null | renders | null | null |
+| null | set | null | renders | null |
+| null | null | null | null | renders |
+
+All three surfaces yield to an open chat. The parcel pill also yields while the Land Office is open. Its rendered copy is:
+
+| Store state | Tier | Guest | Title | Sub line | Action |
+|---|---|---|---|---|---|
+| `available` | starter | no | `Parcel <code> · Available` | `Refundable vCLAW deposit` | `View in Land Office` |
+| `available` | c / b / a / founder | no | `Parcel <code> · Available` | `Hold $CLAWVILLE to keep` | `View in Land Office` |
+| `available` | any | yes | `Parcel <code> · Available` | `Preview the Land Office` | `View in Land Office` |
+| `owned`, current avatar | any | n/a | `Your parcel <code>` | `Manage your land` | `Manage` |
+| `owned`, another avatar | any | any | `Claimed parcel <code>` | `Someone already holds this lot` | none |
+| `reserved` or `retired` | any | any | nothing rendered | | |
+| parcel code absent from the hydrated map | any | any | nothing rendered | | |
+
+Actionable variants are buttons; another avatar's claimed parcel is an informational `div`. A guest action opens the guest Land Office sandbox and does not promise that the approached lot will be awarded. Explicit hydration is mandatory: a missing status, a failed fetch, or the pre-hydration window renders nothing instead of inheriting the land store's unsafe available default.
 
 ### 18b.a. Parcels — claim free + buy with CT + rent weekly
 
@@ -2782,6 +2819,8 @@ Full Phase 5.1 architecture (keypair roles, envelope encryption, signed-challeng
 
 ## 15. Landing page (`apps/web/src/app/page.tsx`)
 
+**Updated 2026-07-29** — GitHub icon added to the sticky `SiteHeader` social cluster (founder emergency order): fourth 40×40 icon button linking to `https://github.com/ItachiDevv/ClawVille`, placed between Telegram and Discord in `SOCIAL_LINKS`, identical styling/hover treatment to the existing icons.
+
 **Updated 2026-06-16** — added the **Qwerti buy widget** (partner integration, step 1): a floating "buy/swap $CLAWVILLE" launcher (Qwerti's non-custodial DeFAI aggregator — card / Apple Pay / Google Pay / crypto on-ramp). `components/landing/qwerti-buy-widget.tsx` renders null and self-injects `https://widget.qwerti.ai/widget/v1/buy.js` (campaign `clawville-792703809-76951`) on `requestIdleCallback` so it never competes with the 3D hero's first paint (priority #1). **HOMEPAGE ONLY** — injected/torn down in `page.tsx`, never in the root layout, so the launcher never appears over the `/game` WebGPU scene; cleanup calls `Qwerti.destroy()` + removes the `<script>` and `#qwerti-widget-root`. `data-auto-open="false"` (dashboard snippet defaults `true` — overridden so it never auto-pops a buy modal on load). **Themed to ClawVille cyan in code** via `--wt-*` CSS custom-property overrides on `#qwerti-widget-root` (THEME_CSS in the component — custom props pierce the shadow boundary; the widget sets these vars INLINE on the host, so our `#id` rule needs `!important` to win), recoloring the launcher, modal border, glow, message box, and Buy-Token button (no Qwerti-dashboard change needed). A branded **"Buy $CLAWVILLE" header pill** (next to the CA pill, responsive: "Buy" on mobile) calls `openQwertiBuy()` → opens the hosted buy page (magic link) in a new tab. (The widget's `Qwerti.openWidget()` API is a no-op in the current build — verified live; only the launcher's own real click opens the in-page panel — so the button uses the always-reliable hosted page; the in-page cyan widget stays reachable via its floating launcher.) CSP note: `next.config.mjs` sets only `frame-ancestors` (no `script-src`/`default-src`), so the third-party script + its iframes load unblocked. Marketing/economy surface (buy $CLAWVILLE) — NOT a live in-world game mechanic, so intentionally NOT propagated to Nori/SKILL.md. See `Partnerships.md` → QwertiAI.
 
 **Updated 2026-06-10** — restored PayAI press-release hyperlink parity with the Google Docs source: inline article links now wrap the source phrases for ClawVille, PayAI, x402 protocol docs, PayAI Facilitator, agent-native payment infrastructure, and the x402 quickstart; the inline ClawVille link routes to `/game` on-site while footer/community links remain external.
@@ -2795,7 +2834,7 @@ Full Phase 5.1 architecture (keypair roles, envelope encryption, signed-challeng
 | Section | Description | Source |
 |---|---|---|
 | `<LandingScene>` (z-0) | Cinematic reef-canyon 3D backdrop — mounts behind hero via `position:fixed` equivalent | `components/three/LandingScene.tsx` (dynamic, SSR disabled) |
-| `<SiteHeader>` (sticky) | Top-bar: CA copy-pill + How-It-Works + Leaderboard + X/Telegram/Web/Discord icons | `page.tsx` (bottom of file) |
+| `<SiteHeader>` (sticky) | Top-bar: CA copy-pill + How-It-Works + Leaderboard + X/Telegram/GitHub/Discord icons (GitHub → `github.com/ItachiDevv/ClawVille`, added 2026-07-29 founder order) | `page.tsx` (bottom of file) |
 | **Hero `<section>`** — `h-[100svh]` | Exactly one viewport tall (svh = handles mobile browser chrome). Contains: **🔴 BREAKING news banner** (top, scrolls to `#press-release`), powered-by badge, h1 ClawVille, tagline, one-line subtitle, Create Agent + Enter ClawVille CTAs, "Already have an account? Log in" link, scroll cue. Legibility overlay at `z-[5]` (radial + vertical dark gradient) between scene and content. | `page.tsx` |
 | **`<PressRelease id="press-release">`** | PayAI × ClawVille press-release article — enlarged co-branded lockup + `announce.webp` lead banner, 8 numbered sections each with a lazy WebP banner, ClawVille/PayAI community-links footer. Renders directly below the hero. | `components/landing/press-release.tsx` |
 | **Collaboration `<section id="collaboration">`** | Relocated from hero. Eyebrow "Three Ways To Collaborate" + `<MiladyAvatarShowcase>` + `<CollaborationAxes>` grid + stats strip (1B / 10 / 3 / Any) + quick-jump nav pills (Gameplay / Tokenomics / Roadmap). | `page.tsx` |
@@ -3349,6 +3388,33 @@ A SECOND poker product alongside the MTT tournament (§ARCHITECTURE `cove-poker-
 ## 18b. Land Economy — parcels, structures, upgrades (Phase 1, 2026-06-17)
 
 Owned land on the shared world. Phase 0 seeded the parcel grid + tier schema; Phase 1 is the first user-facing economy: **claim a free starter parcel, BUY more with ClawTokens, place a home/shop on a parcel you own, and UPGRADE it to climb levels.** Backend: `apps/api/src/routes/land.ts` (`/api/land/*`). Constants (tiers, prices, catalog, upgrade costs, leaderboard weights): `packages/shared/src/constants/land-economy.ts` + `land-tiers.ts`. Full route/response contract: `ARCHITECTURE.md §2` (`land.ts` row) + the FROZEN CONTRACT block at the top of `land.ts`.
+
+### 18b.0. In-world land proximity options pill (2026-07-30)
+
+`LandProximityTracker` samples the active walking body at 5 Hz, converts map-pixel coordinates to centered world coordinates, and uses the shared `LAND_PARCELS` square footprints to set `nearParcelCode`. Player, autonomous, and avatar-bearing guest NPC modes are covered. Explore mode and anonymous visitors without an avatar have no walking body and show no pill. The DOM `LandOptionsPill` is read-only: it routes into the existing Land Office and creates no economy write.
+
+Bottom-slot precedence is **building > parcel > NPC talk prompt**:
+
+| `nearLocation` | `nearParcelCode` | LocationHUD | LandOptionsPill | TalkToCharacterBar (NPC mode) |
+|---|---|---|---|---|
+| set | set | renders | null | null |
+| set | null | renders | null | null |
+| null | set | null | renders | null |
+| null | null | null | null | renders |
+
+All three surfaces yield to an open chat. The parcel pill also yields while the Land Office is open. Its rendered copy is:
+
+| Store state | Tier | Guest | Title | Sub line | Action |
+|---|---|---|---|---|---|
+| `available` | starter | no | `Parcel <code> · Available` | `Refundable vCLAW deposit` | `View in Land Office` |
+| `available` | c / b / a / founder | no | `Parcel <code> · Available` | `Hold $CLAWVILLE to keep` | `View in Land Office` |
+| `available` | any | yes | `Parcel <code> · Available` | `Preview the Land Office` | `View in Land Office` |
+| `owned`, current avatar | any | n/a | `Your parcel <code>` | `Manage your land` | `Manage` |
+| `owned`, another avatar | any | any | `Claimed parcel <code>` | `Someone already holds this lot` | none |
+| `reserved` or `retired` | any | any | nothing rendered | | |
+| parcel code absent from the hydrated map | any | any | nothing rendered | | |
+
+Actionable variants are buttons; another avatar's claimed parcel is an informational `div`. A guest action opens the guest Land Office sandbox and does not promise that the approached lot will be awarded. Explicit hydration is mandatory: a missing status, a failed fetch, or the pre-hydration window renders nothing instead of inheriting the land store's unsafe available default.
 
 ### 18b.a. Parcels — claim free + buy with CT + rent weekly
 

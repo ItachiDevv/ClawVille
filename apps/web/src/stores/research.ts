@@ -17,15 +17,12 @@ interface ResearchState {
   // Panel visibility
   thoughtLogOpen: boolean;
   thoughtLogMinimized: boolean;
-  /** Tall/maximized panel — independent axis from minimized (bar vs height) */
-  thoughtLogExpanded: boolean;
   activeTab: ThoughtLogTab;
   /** Sticky flag — once the user closes the log, don't auto-reopen */
   userClosedLog: boolean;
   toggleThoughtLog: () => void;
   setThoughtLogOpen: (v: boolean) => void;
   toggleMinimize: () => void;
-  toggleThoughtLogExpanded: () => void;
   setActiveTab: (tab: ThoughtLogTab) => void;
 
   // Research state
@@ -62,7 +59,6 @@ const MAX_COLLABORATION = 200;
 export const useResearchStore = create<ResearchState>((set) => ({
   thoughtLogOpen: false,
   thoughtLogMinimized: false,
-  thoughtLogExpanded: false,
   activeTab: 'all',
   userClosedLog: false,
   toggleThoughtLog: () =>
@@ -78,7 +74,6 @@ export const useResearchStore = create<ResearchState>((set) => ({
       userClosedLog: !v,
     }),
   toggleMinimize: () => set((s) => ({ thoughtLogMinimized: !s.thoughtLogMinimized })),
-  toggleThoughtLogExpanded: () => set((s) => ({ thoughtLogExpanded: !s.thoughtLogExpanded })),
   setActiveTab: (tab) => set({ activeTab: tab }),
 
   isResearching: false,

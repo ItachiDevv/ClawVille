@@ -1,7 +1,11 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { useQuestStore, retryUnclaimedRewards } from '@/stores/quest';
+import {
+  useQuestStore,
+  retryUnclaimedRewards,
+  retryServerClaimsRestore,
+} from '@/stores/quest';
 import { QUEST_DEFINITIONS, type QuestId, type QuestDefinition } from '@/lib/quests';
 import { useGameStore } from '@/stores/game';
 
@@ -21,7 +25,14 @@ export default function QuestTracker({ forceVisible = false }: { forceVisible?: 
   // network failure. Server is idempotent (409 = already_claimed = no-op).
   // Also probes serverOnly quests once their prereqs land.
   useEffect(() => {
-    void retryUnclaimedRewards();
+    // Quest-board restore belt (2026-07-29): server-known completions land
+    // BEFORE the local claim sweep, so the sweep doesn't 409-spam the claim
+    // endpoint for quests the server already recorded. No-op when unstamped
+    // or already synced.
+    void (async () => {
+      await retryServerClaimsRestore();
+      await retryUnclaimedRewards();
+    })();
   }, []);
 
   // Only show after tutorial dismissed

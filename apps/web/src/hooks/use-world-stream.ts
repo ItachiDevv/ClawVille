@@ -13,6 +13,7 @@ import {
   WORLD_STREAM_TICK_MS,
   createWorldStreamMachineState,
   decide,
+  type ActivePresenceActivity,
   type WorldPresencePolicy,
   type WorldStreamMachineInput,
 } from '@/hooks/world-stream-machine';
@@ -24,6 +25,22 @@ const RETRY_DELAY_MAX = 60000;
 /** Position upload rate — matches the server NPC sim tick (5 Hz / 200 ms). */
 /** Minimum game-pixel movement that flips activity from 'idle' → 'walking'. */
 const ACTIVITY_MOTION_EPSILON_PX = 0.5;
+/** Minimum heading change that warrants an absolute pose upload. */
+const HEADING_MOTION_EPSILON_RAD = 0.01;
+
+interface ActivePresencePose {
+  x: number;
+  y: number;
+  dirZ: number;
+  activity: ActivePresenceActivity;
+}
+
+interface SentPresencePose {
+  x: number;
+  y: number;
+  dirZ: number;
+  activity: string;
+}
 
 interface JoinResponse {
   roomId: string;
@@ -105,6 +122,8 @@ export function useWorldStream(
   const frozenPositionRef = useRef<{ x: number; y: number; dirZ: number } | null>(
     null,
   );
+  const initialActivePoseRef = useRef<ActivePresencePose | null>(null);
+  const lastSentPoseRef = useRef<SentPresencePose | null>(null);
 
   useEffect(() => {
     let es: EventSource | null = null;
@@ -320,11 +339,11 @@ export function useWorldStream(
         });
     }
 
-    function uploadActivePosition(now: number) {
+    function sampleActivePosition(now: number): ActivePresencePose {
       const x = avatarPositionRef.x;
       const y = avatarPositionRef.y;
       const prev = lastPosRef.current;
-      let activity = 'idle';
+      let activity: ActivePresenceActivity = 'idle';
       if (prev) {
         const dx = x - prev.x;
         const dy = y - prev.y;
@@ -336,23 +355,48 @@ export function useWorldStream(
       }
       lastPosRef.current = { x, y, ts: now };
       frozenPositionRef.current = { x, y, dirZ: lastDirZRef.current };
-      postPosition(
-        JSON.stringify({
-          ...frozenPositionRef.current,
-          activity,
-        }),
+      const pose = { ...frozenPositionRef.current, activity };
+      initialActivePoseRef.current ??= pose;
+      return pose;
+    }
+
+    function activePoseChanged(pose: ActivePresencePose): boolean {
+      const reference = lastSentPoseRef.current ?? initialActivePoseRef.current;
+      if (!reference) return false;
+
+      const dx = pose.x - reference.x;
+      const dy = pose.y - reference.y;
+      const positionChanged =
+        dx * dx + dy * dy >
+        ACTIVITY_MOTION_EPSILON_PX * ACTIVITY_MOTION_EPSILON_PX;
+      const headingDelta = Math.abs(
+        Math.atan2(
+          Math.sin(pose.dirZ - reference.dirZ),
+          Math.cos(pose.dirZ - reference.dirZ),
+        ),
       );
+      return (
+        positionChanged ||
+        headingDelta > HEADING_MOTION_EPSILON_RAD ||
+        pose.activity !== reference.activity
+      );
+    }
+
+    function uploadActivePosition(pose: ActivePresencePose) {
+      lastSentPoseRef.current = pose;
+      initialActivePoseRef.current = null;
+      postPosition(JSON.stringify(pose));
     }
 
     function uploadRemotePosition() {
       const frozen = frozenPositionRef.current;
       if (!frozen) return;
-      postPosition(
-        JSON.stringify({
-          ...frozen,
-          activity: remoteActivityRef.current ?? 'idle',
-        }),
-      );
+      const pose = {
+        ...frozen,
+        activity: remoteActivityRef.current ?? 'idle',
+      };
+      lastSentPoseRef.current = pose;
+      postPosition(JSON.stringify(pose));
     }
 
     async function recoverWithTicket(): Promise<string | null> {
@@ -369,6 +413,7 @@ export function useWorldStream(
     function runMachineAction(
       action: ReturnType<typeof decide>['actions'][number],
       now: number,
+      activePose?: ActivePresencePose,
     ) {
       switch (action) {
         case 'BOOTSTRAP':
@@ -382,7 +427,7 @@ export function useWorldStream(
           };
           break;
         case 'UPLOAD_ACTIVE':
-          uploadActivePosition(now);
+          if (activePose) uploadActivePosition(activePose);
           break;
         case 'UPLOAD_REMOTE':
           uploadRemotePosition();
@@ -393,25 +438,34 @@ export function useWorldStream(
       }
     }
 
-    function transitionMachine(input: WorldStreamMachineInput) {
+    function transitionMachine(
+      input: WorldStreamMachineInput,
+      activePose?: ActivePresencePose,
+    ) {
       const decision = decide(machineState, input);
       machineState = decision.nextState;
       for (const action of decision.actions) {
-        runMachineAction(action, input.now);
+        runMachineAction(action, input.now, activePose);
       }
     }
 
     function runMachineTick() {
       const { controlMode } = useGameStore.getState();
+      const now = Date.now();
+      const currentPolicy = policyRef.current;
+      const activePose =
+        currentPolicy === 'active' ? sampleActivePosition(now) : undefined;
       transitionMachine({
         type: 'TICK',
-        now: Date.now(),
-        policy: policyRef.current,
+        now,
+        policy: currentPolicy,
         hasSession: sessionIdRef.current !== null,
         canUpload: controlMode !== 'explore' && controlMode !== 'autonomous',
         hasFrozenPosition: frozenPositionRef.current !== null,
         recoveryInFlight,
-      });
+        poseChanged: activePose ? activePoseChanged(activePose) : false,
+        activeActivity: activePose?.activity ?? 'idle',
+      }, activePose);
     }
 
     function openStream(roomId: string) {

@@ -76,6 +76,7 @@ interface CapturedGatewayRequest {
 interface ProtocolEvidence {
   title: string;
   versionLine: string;
+  walletLine: string;
   version: number;
 }
 
@@ -265,10 +266,13 @@ function deriveProtocolEvidence(
   const versionLine = manual
     .split('\n')
     .find((line) => line.trim().endsWith(String(source.PROTOCOL_VERSION)) && line.includes('protocol_version'));
-  if (!title || !versionLine) {
+  const walletLine = manual
+    .split('\n')
+    .find((line) => line.includes('top-level `walletAddress` always equals `wallet.address`'));
+  if (!title || !versionLine || !walletLine) {
     throw new ProbeFailure('could not derive protocol evidence from the source-generated manual');
   }
-  return { title, versionLine, version: source.PROTOCOL_VERSION };
+  return { title, versionLine, walletLine, version: source.PROTOCOL_VERSION };
 }
 
 function currentStateContext(prompt: string): string {
@@ -287,6 +291,7 @@ function promptHasEvidence(
   return context.includes(canary)
     && context.includes(protocol.title)
     && context.includes(protocol.versionLine)
+    && context.includes(protocol.walletLine)
     && context.includes(String(protocol.version));
 }
 

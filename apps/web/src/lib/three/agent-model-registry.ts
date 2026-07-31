@@ -199,6 +199,17 @@ export const MODEL_REGISTRY = {
   // underground-idle guard for this Meshy rig class).
   biggie:       { path: '/avatars/biggie.vrm?v=2',           scale: 13, label: 'Biggie',       category: 'hatcher', avatar_type: 'vrm', animatorId: 'biggie',        faceYaw: Math.PI, pickerHidden: true, preview: '/models/biggie-turnaround/openai/front.png' },
 
+  // Ansem — EXCLUSIVE avatar, bespoke Meshy VRM (2026-07-30). Deliberately
+  // absent from shared AGENT_MODELS so the API rejects self-assignment; grant
+  // manually via `UPDATE avatars SET model_key='ansem'`. animatorId 'ansem'
+  // owns the native idle override, position-strip guard, and model-intrinsic
+  // sword attachment. ?v=1 (2026-07-30): during the prod api→web flip gap a
+  // probe hit the bare URL before the web container served it — Cloudflare
+  // edge-cached the 404 (7d TTL, no purge scope on our token), so the query
+  // bump is the only invalidator. The kill-the-build cache-bust rule now
+  // applies to this URL forever.
+  ansem:        { path: '/avatars/ansem.vrm?v=1',              scale: 13, label: 'Ansem',        category: 'hatcher', avatar_type: 'vrm', animatorId: 'ansem',         faceYaw: Math.PI, pickerHidden: true, preview: '/models/ansem-turnaround/openai/front.png' },
+
   // ── Adinero — wandering NPC clown comedian (Meshy pipeline 2026-06-19) ──
   // NPC-ONLY decorative wanderer (NOT a player/Hatcher avatar). Same OpenAI→Meshy-6
   // →rig→VRM pipeline as the Hatcher fleet (VRM 1.0, 22 humanoid bones, meshopt+WebP
@@ -354,6 +365,8 @@ export const MODEL_KEY_TO_LEGACY_SPECIES: Record<ModelKey, LegacySpecies> = {
   clytemnestra:       'fox',
   // Biggie (exclusive avatar, 2026-07-23) — humanoid → 'fox' 2D fallback like the rest.
   biggie:             'fox',
+  // Ansem (exclusive avatar, 2026-07-30) — humanoid → 'fox' 2D fallback.
+  ansem:              'fox',
   // Adinero (wandering NPC clown, 2026-06-19) — humanoid → 'fox' 2D fallback.
   adinero:            'fox',
 };

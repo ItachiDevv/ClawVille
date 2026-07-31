@@ -44,5 +44,9 @@
   },
   "biggie": {
     "$comment": "Biggie (2026-07-22) — same Meshy VRM 1.0 rig class as Adinero, same treatment: GLOBAL clips for idle/walk/run via fallback, PER_CHARACTER_IN_PLACE_CLIPS['biggie'] strips all three position tracks so the FK rest-pose governs foot placement. Meshy-native clips for this rig exist on disk at public/models/biggie-mesh/meshy-openai/anim/*.glb but target RAW bone names (native-Meshy animator mode, still unwired) — do NOT wire them here as Mixamo-retarget overrides."
+  },
+  "ansem": {
+    "$comment": "Ansem (2026-07-30) — same Meshy VRM 1.0 rig class as Adinero/Biggie. Its Meshy-native action 334 idle source was canonicalized from bare Meshy bone names to mixamorig* and stripped to the full rest-pose node hierarchy plus animation, so it is safe for the existing Mixamo retarget path. PER_CHARACTER_IN_PLACE_CLIPS['ansem'] strips idle/walk/run position tracks to prevent the 0.01-scale armature hips from translating underground.",
+    "idle": "/avatars/animations/ansem/idle.glb"
   }
 }

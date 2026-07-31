@@ -179,6 +179,13 @@ export interface GameState {
   nearCharacter: string | null;
   setNearCharacter: (name: string | null) => void;
 
+  // Near land parcel — parcelCode of the parcel whose footprint the ACTIVE body
+  // is standing inside, or null. Written at 5 Hz by LandProximityTracker
+  // (World3DCanvas). Building precedence is enforced render-side by
+  // LandOptionsPill, not here.
+  nearParcelCode: string | null;
+  setNearParcelCode: (code: string | null) => void;
+
   // Near Town Guide (Nori) — true when player is within TALK_RADIUS_WORLD of
   // the town-guide anchor (0, _, 240). Drives the in-HUD "Talk to Nori" pill
   // glow + label swap so Nori gets the same proximity affordance the 10
@@ -798,6 +805,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       // prompt the human could fire against a building the spectated agent has
       // long since walked away from).
       ...(mode === 'explore' || mode === 'autonomous' ? { nearLocation: null, nearCharacter: null } : {}),
+      nearParcelCode: null,
     });
   },
   toggleControlMode: () => {
@@ -905,6 +913,12 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({ nearCharacter: name });
   },
 
+  nearParcelCode: null,
+  setNearParcelCode: (code) => {
+    if (code === get().nearParcelCode) return;
+    set({ nearParcelCode: code });
+  },
+
   nearGuide: false,
   setNearGuide: (near) => set({ nearGuide: near }),
 
@@ -944,6 +958,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       movementFrozen: true,
       nearLocation: null,
       nearCharacter: null,
+      nearParcelCode: null,
     });
     // Same discovery-toast semantic as enterBuilding's chat path — clicking
     // a portal-bearing building also "meets" the character behind it.
@@ -1004,6 +1019,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       movementFrozen: true,
       nearLocation: null,
       nearCharacter: null,
+      nearParcelCode: null,
     });
     // Track discovery — a friendly toast the first time you meet a character
     const isNew = get().markBuildingVisited(locationId);
@@ -1465,6 +1481,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     avatarSpeed: 0,
     nearLocation: null,
     nearCharacter: null,
+    nearParcelCode: null,
     currentLocation: null,
     currentCharacter: null,
     chatOpen: false,

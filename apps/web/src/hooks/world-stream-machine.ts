@@ -1,6 +1,8 @@
 export type WorldPresencePolicy = 'active' | 'remote';
+export type ActivePresenceActivity = 'idle' | 'walking';
 
 export const WORLD_STREAM_TICK_MS = 200;
+export const ACTIVE_IDLE_KEEPALIVE_INTERVAL_MS = 10_000;
 export const REMOTE_PRESENCE_INTERVAL_MS = 10_000;
 
 const MAX_BOOTSTRAP_ATTEMPTS = 20;
@@ -13,6 +15,8 @@ const RECOVERY_RETRY_MAX_MS = 60_000;
 export interface WorldStreamMachineState {
   everActive: boolean;
   previousPolicy: WorldPresencePolicy;
+  nextActiveIdleAt: number | null;
+  lastSentActiveActivity: ActivePresenceActivity | null;
   nextRemoteAt: number;
   bootstrapInFlight: boolean;
   bootstrapAttempts: number;
@@ -39,6 +43,8 @@ export type WorldStreamMachineInput =
       canUpload: boolean;
       hasFrozenPosition: boolean;
       recoveryInFlight: boolean;
+      poseChanged: boolean;
+      activeActivity: ActivePresenceActivity;
     }
   | { type: 'BOOTSTRAP_OK'; now: number }
   | { type: 'BOOTSTRAP_FAILED'; now: number }
@@ -56,6 +62,8 @@ export function createWorldStreamMachineState(): WorldStreamMachineState {
   return {
     everActive: false,
     previousPolicy: 'remote',
+    nextActiveIdleAt: null,
+    lastSentActiveActivity: null,
     nextRemoteAt: 0,
     bootstrapInFlight: false,
     bootstrapAttempts: 0,
@@ -88,9 +96,11 @@ export function decide(
 
   switch (input.type) {
     case 'TICK': {
+      const becameActive =
+        input.policy === 'active' && state.previousPolicy === 'remote';
       if (input.policy === 'active') {
         nextState.everActive = true;
-        if (state.previousPolicy === 'remote') {
+        if (becameActive) {
           actions.push('RESET_ACTIVE_POSITION');
         }
       }
@@ -128,7 +138,29 @@ export function decide(
       }
 
       if (input.policy === 'active') {
-        actions.push('UPLOAD_ACTIVE');
+        if (state.nextActiveIdleAt === null) {
+          nextState.nextActiveIdleAt =
+            input.now + ACTIVE_IDLE_KEEPALIVE_INTERVAL_MS;
+        }
+        const activityChanged =
+          state.lastSentActiveActivity !== null &&
+          state.lastSentActiveActivity !== input.activeActivity;
+        const idleKeepaliveDue =
+          input.activeActivity === 'idle' &&
+          nextState.nextActiveIdleAt !== null &&
+          input.now >= nextState.nextActiveIdleAt;
+
+        if (
+          (becameActive && input.hasFrozenPosition) ||
+          input.poseChanged ||
+          activityChanged ||
+          idleKeepaliveDue
+        ) {
+          nextState.nextActiveIdleAt =
+            input.now + ACTIVE_IDLE_KEEPALIVE_INTERVAL_MS;
+          nextState.lastSentActiveActivity = input.activeActivity;
+          actions.push('UPLOAD_ACTIVE');
+        }
       } else if (
         input.hasFrozenPosition &&
         input.now >= state.nextRemoteAt

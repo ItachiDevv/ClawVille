@@ -92,6 +92,11 @@ export const SPECIES_TARGET_HEIGHT_WU: Record<string, number> = {
   // modelKey/species 'biggie' — identical string, no FIX-11-class split).
   biggie: 297,
 
+  // Ansem — exclusive Meshy male-humanoid avatar. One identical model/
+  // animator key covers both owner and peer resolution paths, matching the
+  // Biggie male-humanoid target height.
+  ansem: 297,
+
   // Tekk — design intent is "taller than everyone else" + wing-bbox
   // overhead. Iteration 2026-05-18:
   //   - 230 (original): body ~Milady height, wings fan above (base 179.2)

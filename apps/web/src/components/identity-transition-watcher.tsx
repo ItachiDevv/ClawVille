@@ -50,8 +50,9 @@
  * resolved account then stamps itself as owner — unowned (guest-era) blobs
  * stamp without reset, which IS the designed upgrade claim. The quest store
  * uses skipHydration (see quest.ts persist config), so the reconcile runs
- * now if hydrated and re-runs after persist.rehydrate() — reconciling only
- * pre-hydration would be overwritten by the merge when /game rehydrates.
+ * immediately when already hydrated and otherwise ONLY at
+ * onFinishHydration — never before: persist writes on every set(), so a
+ * pre-hydration write clobbers the un-read blob (2026-07-29 incident).
  */
 
 import { useEffect, useRef } from 'react';
@@ -88,7 +89,8 @@ export function IdentityTransitionWatcher() {
 
     const reconcileQuestOwner = () => {
       try {
-        const { useQuestStore } = require('@/stores/quest') as typeof import('@/stores/quest');
+        const { useQuestStore, syncTutorialClaimsFromServer } =
+          require('@/stores/quest') as typeof import('@/stores/quest');
         const account = accountId(next);
         const run = () => {
           const s = useQuestStore.getState();
@@ -104,8 +106,25 @@ export function IdentityTransitionWatcher() {
         if (useQuestStore.persist.hasHydrated()) {
           run();
         } else {
-          run(); // pre-hydration state is defaults — harmless, keeps invariants simple
+          // NEVER touch the store pre-hydration: with skipHydration, any
+          // set() — the owner stamp included — makes the persist middleware
+          // write CURRENT state (defaults) over the un-read localStorage
+          // blob, destroying real quest progress on every authed visit to a
+          // route that never hydrates (/, /login). This was the silent
+          // quest-wipe vector behind the 2026-07-29 prod incident (Codex
+          // adversarial round 1, BLOCKING 1 — supersedes the earlier
+          // "pre-hydration defaults are harmless" reasoning). Defer the
+          // whole reconcile to hydration; a route that never hydrates needs
+          // no reconcile because nothing reads the store there.
           unsubHydrationRef.current = useQuestStore.persist.onFinishHydration(run);
+        }
+        if (account !== null) {
+          // Quest-board restore (2026-07-29): re-pull this account's claimed
+          // tutorial quests so a store wiped by expiry / account switch
+          // re-displays its server-known completions. Deduped per account,
+          // hydration-aware, and owner-guarded inside — safe to fire on every
+          // resolution.
+          void syncTutorialClaimsFromServer(account);
         }
       } catch { /* store not loaded on this route */ }
     };

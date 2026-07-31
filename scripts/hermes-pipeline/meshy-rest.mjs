@@ -77,13 +77,38 @@ if (cmd === 'submit') {
   };
   const r = await req('POST', '/multi-image-to-3d', body);
   tasks.mesh = r.result || r.id || r;
+  tasks.meshType = 'multi-image-to-3d';
   saveTasks();
   console.log(`submitted multi-image-to-3d task: ${JSON.stringify(tasks.mesh)}`);
+} else if (cmd === 'submit-image') {
+  // Single-image PROP submission (e.g. the ansem greatsword) — dedicated
+  // image-to-3d endpoint, no pose_mode (not a character), symmetry auto
+  // (a side-profile prop's mirror plane is the image plane, not image-left/right).
+  const imgPath = resolve(arg3 || '');
+  if (!arg3 || !existsSync(imgPath)) throw new Error(`usage: submit-image <slug> <imagePath> — missing ${arg3}`);
+  const body = {
+    image_url: dataUri(imgPath),
+    ai_model: 'meshy-6',
+    topology: 'quad',
+    target_polycount: 20000,
+    symmetry_mode: 'auto',
+    should_remesh: true,
+    should_texture: true,
+    enable_pbr: true,
+    image_enhancement: true,
+    remove_lighting: true,
+    target_formats: ['glb'],
+  };
+  const r = await req('POST', '/image-to-3d', body);
+  tasks.mesh = r.result || r.id || r;
+  tasks.meshType = 'image-to-3d';
+  saveTasks();
+  console.log(`submitted image-to-3d task: ${JSON.stringify(tasks.mesh)}`);
 } else if (cmd === 'status') {
-  const r = await req('GET', `/multi-image-to-3d/${tasks.mesh}`);
+  const r = await req('GET', `/${tasks.meshType || 'multi-image-to-3d'}/${tasks.mesh}`);
   console.log(JSON.stringify({ status: r.status, progress: r.progress, error: r.task_error }, null, 2));
 } else if (cmd === 'download') {
-  const r = await req('GET', `/multi-image-to-3d/${tasks.mesh}`);
+  const r = await req('GET', `/${tasks.meshType || 'multi-image-to-3d'}/${tasks.mesh}`);
   if (r.status !== 'SUCCEEDED') throw new Error(`not ready: ${r.status} ${r.progress ?? ''}`);
   await download(r.model_urls.glb, join(meshDir, 'mesh.glb'));
   if (r.texture_urls?.length) {

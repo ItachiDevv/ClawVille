@@ -370,9 +370,14 @@ import {
 // settlement, and the [ACTION:] whitelist are unchanged.
 // NOTE (2026-07-26, Cove presence continuity): bumped 39 -> 40 to document the
 // self-reported `at-cove` co-presence convention; the world wire is unchanged.
-// NOTE (2026-07-30, Kelp presence continuity): bumped 40 -> 41 to document the
+// NOTE (2026-07-29, wallet unification): bumped 40 -> 41. Connect, reconnect,
+// and Hatcher now advertise one verified avatar settlement wallet and omit
+// fundable fields with walletPending=true while custody is unverified.
+// NOTE (2026-07-30, Kelp presence continuity): bumped 41 -> 42 to document the
 // self-reported `at-kelp` co-presence convention; the world wire is unchanged.
-export const PROTOCOL_VERSION = 41;
+// (Authored against base 40 as "41" concurrently with the wallet slice; the
+// merge resolves the collision by stacking kelp on top as 42.)
+export const PROTOCOL_VERSION = 42;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -444,8 +449,15 @@ ${md}X-Clawville-Agent-Session: <sessionId>${md} on agent actions.
 
 Persist any first-time identity secret immediately in secure agent storage. If
 \`wallet.secretKey\` appears, relay it once to the human for their self-custody
-backup; do not store it in agent config. Both secrets are returned once and are
-never repeated.
+backup; do not store it in agent config. The identity secret is returned once.
+The wallet secret is best-effort and appears only when the interactive request
+wins the unique wallet insert, so it may be absent even on first connect.
+
+The response has one settlement wallet represented twice for compatibility:
+top-level \`walletAddress\` always equals \`wallet.address\`. Store that address
+at \`clawville.wallet.address\` and use it for funding, balance, earnings, and
+fees. If custody is not verified, both fundable fields are omitted and
+\`walletPending:true\` tells you to retry later without funding any old address.
 
 Hatcher is the sole exception: it is registered by Hatcher's signed partner
 service and is rejected on this public route.`;
@@ -554,16 +566,13 @@ clawville:
     chain:   solana
 \`\`\`
 
-On first connect only, \`wallet.secretKey\` may be present. Display the avatar
+On first connect only, \`wallet.secretKey\` may be present. This disclosure is
+best-effort: only an interactive request that wins the unique wallet insert
+receives it, so it may be absent even on first connect. Display the avatar
 wallet address and recovery key to the human once, together with
 \`sessionTicket.url\`, so they can save their self-custody backup. Do not store
 \`wallet.secretKey\` in your config; the server omits it on later connects and
 never re-issues it.
-
-The response has two wallet fields: top-level \`walletAddress\` is the agent's
-internal x402/fee wallet and belongs at \`clawville.bot.walletAddress\` if your
-framework needs it. \`wallet.address\` is the human's avatar wallet; store it at
-\`clawville.wallet.address\` and use it for balance and earnings reports.
 
 ## Reconnect, liveness, and disconnect
 
@@ -655,8 +664,9 @@ A successful response has this shape (optional blocks are marked):
     "secretIncluded": true,
     "secretIssuedPreviously": false
   },
-  "walletAddress": "agent Solana public address",
-  "wallet": { "address": "avatar Solana public address", "chain": "solana" },
+  "walletAddress": "avatar settlement Solana public address",
+  "walletPending": false,
+  "wallet": { "address": "avatar settlement Solana public address", "chain": "solana" },
   "gameTools": {
     "name": "clawville-play",
     "suggestedFilename": "clawville-play.tools.json",
