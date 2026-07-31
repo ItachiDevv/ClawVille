@@ -235,7 +235,6 @@ export class WorldPresenceController {
   #lastStreamAttemptWasBareReopen = false;
 
   #socket: WorldPresenceSocketLike | null = null;
-  readonly #intentionalCloseGenerations = new Set<number>();
 
   #sessionId: string | null = null;
   #roomId: string | null = null;
@@ -657,7 +656,14 @@ export class WorldPresenceController {
   }
 
   #openSocket(generation: number): void {
-    if (this.#stopped || !this.#roomId || !this.#sessionId) return;
+    if (this.#stopped || !this.#roomId || !this.#sessionId) {
+      this.#dispatch({
+        type: 'SOCKET_CLOSED',
+        now: this.#env.now(),
+        generation,
+      });
+      return;
+    }
     const socket = this.#env.createSocket(
       resolveUplinkUrl(this.#apiBaseUrl, this.#roomId),
     );
@@ -698,7 +704,6 @@ export class WorldPresenceController {
       }
       this.#socket = null;
       this.#detachSocketHandlers(socket);
-      if (this.#intentionalCloseGenerations.delete(generation)) return;
       this.#handleSocketClose(generation, event.code);
     };
   }
@@ -851,10 +856,18 @@ export class WorldPresenceController {
     const socket = this.#socket;
     if (!socket) return;
     const generation = this.#state.socketGeneration;
-    this.#intentionalCloseGenerations.add(generation);
     this.#socket = null;
     this.#detachSocketHandlers(socket);
-    socket.close(code);
+    try {
+      socket.close(code);
+    } catch {
+      return;
+    }
+    this.#dispatch({
+      type: 'SOCKET_CLOSED',
+      now: this.#env.now(),
+      generation,
+    });
   }
 
   #detachSocketHandlers(socket: WorldPresenceSocketLike): void {
@@ -1004,6 +1017,15 @@ export class WorldPresenceController {
       this.#retireSocket();
       this.#callbacks.setNpcConnected(false);
       return;
+    }
+    if (
+      !this.#stopped &&
+      this.#sessionId &&
+      this.#roomId &&
+      !this.#eventSource
+    ) {
+      this.#streamRetries = 0;
+      this.#openStream(this.#roomId);
     }
     if (!event.persisted || !this.#pageHiddenPersisted) return;
     this.#pageHiddenPersisted = false;

@@ -60,6 +60,7 @@ class FakeSocket implements WorldPresenceSocketLike {
     | null = null;
   readonly sent: string[] = [];
   readonly closeCalls: Array<number | undefined> = [];
+  throwOnClose = false;
 
   send(data: string): void {
     this.sent.push(data);
@@ -67,6 +68,7 @@ class FakeSocket implements WorldPresenceSocketLike {
 
   close(code?: number): void {
     this.closeCalls.push(code);
+    if (this.throwOnClose) throw new Error('socket close failed');
     this.readyState = 3;
   }
 
@@ -476,10 +478,11 @@ describe('world presence controller', () => {
     harness.controller.stop();
   });
 
-  test('no fallback POST is sent while a socket is retiring', async () => {
+  test('the retire-timeout sweep survives a socket close failure', async () => {
     const harness = createHarness();
     const socket = await startJoined(harness);
     ready(socket!);
+    socket!.throwOnClose = true;
     socket!.emitMessage({
       type: 'presence.error',
       code: 'socket_replaced',
@@ -629,7 +632,11 @@ describe('world presence controller', () => {
     expect(socket).not.toBeNull();
     harness.advance(5_000);
     expect(socket!.closeCalls).toEqual([1000]);
-    harness.advance(1_000);
+    expect(harness.controller.getDiagnostics().socketPhase).toBe('idle');
+    expect(harness.sockets).toHaveLength(1);
+    harness.advance(999);
+    expect(harness.sockets).toHaveLength(1);
+    harness.advance(1);
     expect(harness.sockets).toHaveLength(2);
     expect(harness.controller.getDiagnostics().httpFallbackTripped).toBe(false);
     harness.controller.stop();
@@ -694,13 +701,18 @@ describe('world presence controller', () => {
     await flush();
     harness.advance(200);
     expect(harness.sockets).toHaveLength(2);
+    harness.controller.stop();
+  });
 
-    const fresh = createHarness();
-    await startJoined(fresh);
-    fresh.firePageLifecycle({ type: 'pagehide', persisted: false });
-    fresh.firePageLifecycle({ type: 'pageshow', persisted: false });
-    expect(callsEndingWith(fresh.fetches, '/api/world/join')).toHaveLength(1);
-    fresh.controller.stop();
+  test('non-persisted pageshow reopens SSE without joining', async () => {
+    const harness = createHarness();
+    await startJoined(harness);
+    expect(harness.eventSources).toHaveLength(1);
+    harness.firePageLifecycle({ type: 'pagehide', persisted: false });
+    expect(harness.eventSources[0]!.closed).toBe(true);
+    harness.firePageLifecycle({ type: 'pageshow', persisted: false });
+    expect(harness.eventSources).toHaveLength(2);
+    expect(callsEndingWith(harness.fetches, '/api/world/join')).toHaveLength(1);
     harness.controller.stop();
   });
 

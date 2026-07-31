@@ -57,7 +57,6 @@ export interface WorldWsConnectionData {
   frameWindowCount: number;
   lastPongAt: number;
   openedAt: number;
-  internalCloseCode: number | null;
 }
 
 export interface WorldWsTransport {
@@ -170,7 +169,6 @@ export class WorldPresenceWsHub {
       frameWindowCount: 0,
       lastPongAt: now,
       openedAt: now,
-      internalCloseCode: null,
     };
   }
 
@@ -342,7 +340,7 @@ export class WorldPresenceWsHub {
   startHeartbeat(): void {
     if (this.heartbeatTimer) return;
     this.heartbeatTimer = setInterval(() => {
-      this.__heartbeatTickForTest(this.now());
+      this.runHeartbeatTick(this.now());
     }, WORLD_WS_HEARTBEAT_MS);
     this.heartbeatTimer.unref?.();
   }
@@ -362,7 +360,7 @@ export class WorldPresenceWsHub {
     this.reservations.clear();
   }
 
-  __heartbeatTickForTest(now: number): void {
+  runHeartbeatTick(now: number): void {
     this.sweepExpiredReservations(now);
     for (const ws of Array.from(this.connections.values())) {
       if (now - ws.data.lastPongAt > WORLD_WS_PONG_DEADLINE_MS) {
@@ -372,6 +370,10 @@ export class WorldPresenceWsHub {
       }
       this.safeSend(ws, { type: 'presence.ping', serverTimeMs: now });
     }
+  }
+
+  __heartbeatTickForTest(now: number): void {
+    this.runHeartbeatTick(now);
   }
 
   __resetForTest(): void {
@@ -421,7 +423,6 @@ export class WorldPresenceWsHub {
   }
 
   private safeClose(ws: WorldWs, code: number, reason: string): void {
-    ws.data.internalCloseCode = code;
     try {
       ws.close(code, reason);
     } catch {

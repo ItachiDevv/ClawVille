@@ -371,7 +371,7 @@ describe('world stream transport machine', () => {
       socketPhase: 'retiring',
       socketPhaseSince: 10,
       socketConnectFailures: 2,
-      socketDropStreak: 1,
+      socketDropTotal: 1,
     };
     const decision = tick(state, {
       now: 1_010,
@@ -379,7 +379,7 @@ describe('world stream transport machine', () => {
     });
     expect(decision.nextState.socketPhase).toBe('idle');
     expect(decision.nextState.socketConnectFailures).toBe(2);
-    expect(decision.nextState.socketDropStreak).toBe(1);
+    expect(decision.nextState.socketDropTotal).toBe(1);
   });
 
   test('the first tick after a confirmed open resyncs the pose', () => {
@@ -722,7 +722,7 @@ describe('world stream transport machine', () => {
         wsAdvertised: true,
         socketPhase: 'open',
         socketGeneration: 1,
-        socketDropStreak: 2,
+        socketDropTotal: 2,
       };
       const closing = tick(state, {
         now: 1,
@@ -732,7 +732,7 @@ describe('world stream transport machine', () => {
       expect(closing.actions).toEqual(['CLOSE_SOCKET']);
       expect(closing.nextState).toMatchObject({
         socketPhase: 'retiring',
-        socketDropStreak: 0,
+        socketDropTotal: 0,
       });
       const repeated = tick(closing.nextState, {
         now: 200,

@@ -178,6 +178,8 @@ Both waves implemented on branch `feat/world-presence-ws` (local only; staging f
 - **Guest binding cookie (ledger D9/D15):** `/join` mints a SESSION-SCOPED (no maxAge) HttpOnly cookie; `/join`, `/position`, `/leave`, and the upgrade resolve guests through it (browser WS handshakes cannot carry `X-CV-Fingerprint`).
 - **Membership-class upgrade failures complete the upgrade and signal via control frame + 4409 (ledger D10):** browsers cannot read handshake bodies; HTTP-level rejection only for origin/rate/flag-off/IP-cap. `room_mismatch` is cut from the wire.
 - **No live flag drain (ledger D11):** env flips reach the process only via restart; rollback = restart -> 4413 drain -> reopen 503 -> fallback ladder. 4412 reserved (FU-4).
+- **Lifetime socket-drop counter:** `socketDropTotal` is deliberately a lifetime counter. Resetting it on open, as the spec required, would make `MAX_BARE_SOCKET_REOPENS` unreachable and permit an unbounded 1s flap loop. Three lifetime drops latch HTTP-with-probe, which recovers via the 60s probe.
+- **Fallback rejoin probe:** spec-verbatim and deliberate, any `/join` during a fallback window re-arms an immediate WS probe rather than honoring the remaining 60s.
 
 ## Follow-ups
 
@@ -186,3 +188,4 @@ Both waves implemented on branch `feat/world-presence-ws` (local only; staging f
 - **FU-3 — Recovery exhausted leaves uploads dead for the mount.** The existing client stops after three ticketed recovery attempts. This predates the WS transport and remains out of scope, but needs a focused recovery-policy fix.
 - **FU-4 — Runtime-reloadable transport config.** `transport_disabled` and close 4412 are reserved but never emitted because env changes reach the process only through restart. Emitting them requires a runtime-reloadable config source. Review by 2026-09-15.
 - **FU-5 — Single-pod assumption.** One-socket-per-session, the shared 10 Hz map, and per-IP reservations are process-local, like `RoomRegistry` and `ActivityWsHub`. Horizontal API scaling requires moving all three to shared state.
+- **FU-6 — Revisit the `http://localhost:*` Origin allowance.** For the uplink it is the only CSWSH defense and now permits pose-driving, not just read access. Impact remains bounded: no money, leaderboard, or capability access. Owner: world-presence. Review by 2026-09-15.

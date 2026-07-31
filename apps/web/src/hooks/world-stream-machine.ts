@@ -49,7 +49,7 @@ export interface WorldStreamMachineState {
   socketGeneration: number;
   consumedSignalGeneration: number | null;
   socketConnectFailures: number;
-  socketDropStreak: number;
+  socketDropTotal: number;
   nextSocketOpenAt: number;
   pendingActiveResync: boolean;
 }
@@ -126,7 +126,7 @@ export function createWorldStreamMachineState(): WorldStreamMachineState {
     socketGeneration: 0,
     consumedSignalGeneration: null,
     socketConnectFailures: 0,
-    socketDropStreak: 0,
+    socketDropTotal: 0,
     nextSocketOpenAt: 0,
     pendingActiveResync: false,
   };
@@ -173,7 +173,7 @@ function applyHttpFallback(
   nextState.transport = 'http';
   nextState.httpFallbackTripped = true;
   nextState.socketConnectFailures = 0;
-  nextState.socketDropStreak = 0;
+  nextState.socketDropTotal = 0;
   nextState.nextSocketOpenAt = now + FALLBACK_PROBE_INTERVAL_MS;
   nextState.pendingActiveResync = true;
 }
@@ -187,7 +187,7 @@ function applyStandDown(
   nextState.wsAdvertised = false;
   nextState.httpFallbackTripped = false;
   nextState.socketConnectFailures = 0;
-  nextState.socketDropStreak = 0;
+  nextState.socketDropTotal = 0;
   nextState.nextSocketOpenAt = 0;
   nextState.pendingActiveResync = true;
 }
@@ -215,15 +215,15 @@ function applyConfirmedSocketDrop(
   now: number,
 ): void {
   nextState.socketConnectFailures = 0;
-  nextState.socketDropStreak += 1;
-  if (nextState.socketDropStreak > MAX_BARE_SOCKET_REOPENS) {
+  nextState.socketDropTotal += 1;
+  if (nextState.socketDropTotal > MAX_BARE_SOCKET_REOPENS) {
     applyHttpFallback(nextState, now);
     return;
   }
   nextState.nextSocketOpenAt =
     now +
     exponentialDelay(
-      nextState.socketDropStreak,
+      nextState.socketDropTotal,
       SOCKET_REOPEN_BASE_MS,
       SOCKET_REOPEN_MAX_MS,
     );
@@ -315,7 +315,7 @@ export function decide(
         ) {
           actions.push('CLOSE_SOCKET');
           setPhase(nextState, 'retiring', input.now);
-          nextState.socketDropStreak = 0;
+          nextState.socketDropTotal = 0;
           nextState.socketConnectFailures = 0;
         }
         return { actions, nextState };

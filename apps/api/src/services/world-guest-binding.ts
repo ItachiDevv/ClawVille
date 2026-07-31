@@ -13,6 +13,9 @@ export const WORLD_GUEST_COOKIE_NAME = 'cv_world_guest';
 export const WORLD_GUEST_BINDING_MAX_AGE_MS = 24 * 60 * 60_000;
 
 const MAX_BINDING_LENGTH = 1024;
+// The fallback master string is only ever exercised in unit tests that import
+// this module without the env wired up (sign/verify stay internally consistent
+// there, which is all the tests need — mirrors room-registry.ts PRESENCE_ID_SALT).
 const masterSecret = process.env.FINGERPRINT_SECRET || 'test-only-world-guest-binding-salt';
 const bindingHmacKey = createHash('sha256')
   .update(masterSecret + 'world-guest-binding-v1:')

@@ -612,7 +612,10 @@ worldRoutes.get(
     await next();
   },
   upgradeWebSocket((c) => {
-    const binding = c.get('worldWsBinding') as WorldWsBinding;
+    const binding = c.get('worldWsBinding');
+    if (!binding) {
+      throw new Error('worldWsBinding missing after world WS upgrade guard');
+    }
     return {
       onOpen(_event, ws) {
         worldPresenceWsHub.registerConnection(getOrMakeWorldAdapter(ws, binding));
