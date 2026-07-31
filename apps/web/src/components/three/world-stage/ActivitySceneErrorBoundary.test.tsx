@@ -72,8 +72,13 @@ function renderBoundary(
 ) {
   return createElement(
     ActivitySceneErrorBoundary,
-    { resetKey, onFailed, onReload, onTryAgain },
-    createElement(Crash),
+    {
+      resetKey,
+      onFailed,
+      onReload,
+      onTryAgain,
+      children: createElement(Crash),
+    },
   );
 }
 
