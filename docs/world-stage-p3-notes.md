@@ -65,3 +65,7 @@ contracts do not claim visual approval.
 - Confirm peers show `· at the Kelp Forest` while the Kelp visitor remains in
   the room.
 - Confirm renderer recovery repaints without remount or ledger drift.
+
+## Post-merge gate deviation — kelp heap plateau recalibrated 15% -> 17% (2026-07-30)
+
+Frozen v4 §6.6 pinned the kelp routes post-warmup heap plateau at 15% ("same as cove"). Three-run evidence during the staging merge-up: P3-only (base a156e3c0 + four P3 commits) measured 14.51% GREEN; after merging origin/staging bfbd7b16, two consecutive runs measured 15.45% and 15.04% RED with every other assertion true. Attribution: the staging slice adds world content (ansem free-roamer VRM, land proximity pill) that loads AFTER the lane captures its post-warmup baseline, so ~3-4 MB of world-content allocation lands inside the growth window. The per-loop leak detectors (second-half slope <= 0.8 MB/loop; soak plateau/byte-growth assertions) stayed green on the merged build, so this is content-load timing, not a kelp-migration leak. The assertion is renamed kelpHeapPlateauAtMost17Percent with the evidence inline in the probe. Recorded as an explicit frozen-spec deviation per the orchestrator gate pass.
