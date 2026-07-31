@@ -298,26 +298,35 @@ sibling names preferred (auto-bust).
 - Same-diff docs: `3dStructure.md` (assets/loading), this doc (results per milestone),
   `deploy-status.md` on any staging push.
 
-## 2b. M0 FROZEN BUDGETS (2026-07-31, local full-stack fixture, fresh profiles, n=3/backend)
+## 2b. M0 FROZEN BUDGETS (v2 — refrozen 2026-07-31 from VALIDITY-GATED probe-v2 reports)
+
+Source reports (committed under `docs/perf-data/cold-load-m0-2026-07-31/`): batch-v5 valid runs,
+n=2/backend on the local full-stack fixture (fresh profile + fresh browser daemon per attempt;
+page-clock reveal; fail-closed validity — every report carries `valid: true`).
 
 Measured baseline (localhost serving — network done ≤1.6s, so these isolate compute/pipeline):
-- **WebGPU**: reveal 20.5 / 21.3 / 24.1 s · vrmBulk 18.1-29.1 s · worst post-reveal frame 2.6-4.4 s
-- **WebGL2 (`?webgl=1`, Iris-proxy on desktop GPU)**: reveal 22.5 / 33.6 / 41.0 s · vrmBulk
-  9.6-35.4 s (high variance) · worst post-reveal frame 8.0-11.6 s
-- Longtasks >100ms: 16-17 both backends. One run completed the classic full sequence
-  (scans 143ms / 263 textures · compile 3.9s · warmRender 2.8s); the rest published reveal via
-  the racing stage-ready path.
-- **Local cold-boot hang tally: 3 hangs / 9 fresh-profile attempts (~33%)**; staging 2/2 green.
-  Hang signature: stage canvas never mounts, zero page errors (see §5b.2).
+- **WebGPU**: reveal 16.0 / 18.2 s · vrmBulk 9.0 / 10.0 s · worst frame in the 10s post-reveal
+  window 1.73 / 1.75 s · stable window starts +2.3 / +3.5 s · pre-reveal longtask total 2.6 / 4.0 s
+- **WebGL2 (`?webgl=1`, Iris-proxy on desktop GPU)**: reveal 20.5 / 21.2 s · vrmBulk 11.2 / 25.2 s
+  (high variance — one run raced the stage-ready path) · worst frame 7.8 / 9.0 s (9.55 s in the
+  earlier single glx run) · stable window +8.0 / +10.2 s (+10.6 glx) · pre-reveal longtask total
+  5.3 / 14.6 s
+- Earlier host-clock numbers (20.5-41 s) included navigation overhead + poll lag and ran on a
+  degrading browser daemon; they are superseded by these page-clock reports.
+- Boot-hang note: the intermittent silent hang was ROOT-CAUSED to browser-daemon accumulation in
+  the measurement rig (§5b.2), not the product; the batch runner restarts the daemon per attempt
+  (batch v5: 1 invalid / 5 attempts, retried green).
 
-**Frozen REGRESSION budgets (canary + every A-class widening must stay inside; the round's goal
-is to IMPROVE them, and any single run may be retried once given the known local hang):**
+**Frozen REGRESSION budgets — the rung-1 canary + every A-class widening must stay inside these
+on BOTH backends (the round's goal is to IMPROVE them). "Stable window" = first contiguous 3s run
+of frames all ≤100ms, measured from reveal (probe `frameMetrics.stableWindowStartMsAfterReveal`).**
 | Metric | WebGPU | WebGL2 |
 |---|---|---|
-| reveal (local fixture) | ≤ 25s | ≤ 42s |
-| worst post-reveal frame (10s window) | ≤ 4.5s | ≤ 12s |
-| longtasks >100ms (whole boot) | ≤ 20 | ≤ 20 |
-| stable-frame rule | no frame >100ms in any 3s window starting ≤10s after reveal | same |
+| reveal (local fixture, page clock) | ≤ 20s | ≤ 24s |
+| worst frame in the 10s post-reveal window | ≤ 2.5s | ≤ 11s |
+| stable-window start after reveal | ≤ 5s | ≤ 12s |
+| frames >100ms in the 10s window | ≤ 4 | ≤ 3 |
+| pre-reveal longtask total | ≤ 5s | ≤ 16s |
 | post-queue drain (once the post lane exists) | ≤ 60s after reveal | same |
 
 ## 5b. Defects discovered during M0 setup (2026-07-31, local full-stack)
@@ -328,12 +337,14 @@ is to IMPROVE them, and any single run may be retried once given the known local
    fail-open to any usable state, and the world scene never mounts. Class-match with the
    re-review's finding 2 (gate/lifecycle failure behind a dismissed loader). Not introduced by
    this round — needs a fix ticket independent of the diet.
-2. **Intermittent healthy-API cold-boot hang (local).** With API + web both healthy on
-   localhost, one of two fresh-profile cold boots deadlocked the same way (world scene module
-   never evaluated — the stage never mounted it); the next identical run booted fine. Staging
-   fresh-profile probes are 2/2 green. Suspected race in the stage/session handshake that fast
-   local networks make more likely. M0 runs will record the hang rate; the rung-1 canary's
-   watchdog matrix must cover it.
+2. **Intermittent cold-boot hang — ROOT-CAUSED to the measurement rig, NOT the product.**
+   The silent stage-canvas-never-mounts hang (zero page errors, world chunk never evaluates)
+   tracked agent-browser DAEMON accumulation on the dev box: hang probability climbed with
+   successive browser launches from one daemon (batch v4: 6/6 hangs late in the day), and a
+   daemon restart immediately produced a green run on the same build/URL. Staging probes on
+   fresh daemons were always green. Mitigation baked into the batch runner (daemon restart per
+   attempt). The rung-1 canary watchdog matrix still covers the symptom class, but no product
+   fix is owed here.
 3. **`vrmBulkMs` ≈ 30.9s observed on a local WebGPU boot** (first phase-instrumented run): the
    bulk VRM parse+compile is a dominant reveal-time component when all 15 VRMs arrive
    near-simultaneously (fast network = worst case). Direct quantitative support for deferring

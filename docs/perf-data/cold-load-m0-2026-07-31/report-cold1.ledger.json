@@ -1,0 +1,2528 @@
+{
+  "source": "C:/Users/itachi/Documents/Crypto/cv-covefreeze/docs/perf-data/cold-load-m0-2026-07-31/report-cold1.json",
+  "dietsApplied": null,
+  "fixture": "guest-default",
+  "fixtureNote": "fresh guest, no remotes; demo-body VRM provisional pending canary demand trace",
+  "lanes": {
+    "post-ambient-vrm": {
+      "urls": 14,
+      "requests": 14,
+      "beforeMB": 11.593,
+      "afterMB": 11.593,
+      "savingMB": 0
+    },
+    "post-anim-char": {
+      "urls": 11,
+      "requests": 11,
+      "beforeMB": 0.417,
+      "afterMB": 0.417,
+      "savingMB": 0
+    },
+    "post-attachment": {
+      "urls": 1,
+      "requests": 1,
+      "beforeMB": 0.348,
+      "afterMB": 0.348,
+      "savingMB": 0
+    },
+    "post-location": {
+      "urls": 12,
+      "requests": 12,
+      "beforeMB": 6.712,
+      "afterMB": 6.712,
+      "savingMB": 0
+    },
+    "reveal-core": {
+      "urls": 115,
+      "requests": 115,
+      "beforeMB": 15.541,
+      "afterMB": 15.541,
+      "savingMB": 0
+    }
+  },
+  "milestones": {
+    "baselineTotalMB": 34.611,
+    "m1RevealProjectionMB": 15.541,
+    "m2RevealProjectionMB": 15.541,
+    "queueDrainedTotalMB": 34.611,
+    "note": "m1 subtracts POST-EXCLUSIVE rows only (fixture-critical shared URLs stay reveal-gated); m2 subtracts reveal-side diet savings; queue-drained total counts diets across ALL lanes and NEVER credits deferral."
+  },
+  "rows": [
+    {
+      "url": "/models/quest-bounty-pavilion-ktx.glb?v=4",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 3750157,
+      "afterBytes": 3750157,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/ansem.vrm?v=1",
+      "cls": "VRM",
+      "requestCount": 1,
+      "manifestLane": "post-ambient-vrm",
+      "effectiveLane": "post-ambient-vrm",
+      "consumers": [
+        "ambient-npc",
+        "player-capable"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 2741428,
+      "afterBytes": 2741428,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/adinero.vrm?v=1",
+      "cls": "VRM",
+      "requestCount": 1,
+      "manifestLane": "post-ambient-vrm",
+      "effectiveLane": "post-ambient-vrm",
+      "consumers": [
+        "ambient-npc",
+        "player-capable"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 2732709,
+      "afterBytes": 2732709,
+      "saving": 0
+    },
+    {
+      "url": "/models/characters/spongebob-ktx.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "post-location",
+      "effectiveLane": "post-location",
+      "consumers": [
+        "location-npc"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 2011491,
+      "afterBytes": 2011491,
+      "saving": 0
+    },
+    {
+      "url": "/models/lobster_plush-ktx.glb?v=2",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "post-location",
+      "effectiveLane": "post-location",
+      "consumers": [
+        "location-npc",
+        "wandering-npc"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 1463577,
+      "afterBytes": 1463577,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/tekk.vrm?v=2",
+      "cls": "VRM",
+      "requestCount": 1,
+      "manifestLane": "post-ambient-vrm",
+      "effectiveLane": "post-ambient-vrm",
+      "consumers": [
+        "ambient-npc",
+        "player-capable"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 1272757,
+      "afterBytes": 1272757,
+      "saving": 0
+    },
+    {
+      "url": "/models/characters/pearl-ktx.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "post-location",
+      "effectiveLane": "post-location",
+      "consumers": [
+        "location-npc"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 1247916,
+      "afterBytes": 1247916,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/eliza-chibi.vrm?v=3",
+      "cls": "VRM",
+      "requestCount": 1,
+      "manifestLane": "post-ambient-vrm",
+      "effectiveLane": "post-ambient-vrm",
+      "consumers": [
+        "ambient-npc",
+        "player-capable"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 1109054,
+      "afterBytes": 1109054,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/milady-chibi.vrm?v=3",
+      "cls": "VRM",
+      "requestCount": 1,
+      "manifestLane": "post-ambient-vrm",
+      "effectiveLane": "post-ambient-vrm",
+      "consumers": [
+        "ambient-npc",
+        "player-capable"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 1107379,
+      "afterBytes": 1107379,
+      "saving": 0
+    },
+    {
+      "url": "/models/pineapple-house-opt1-ktx.glb?v=3",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 1054986,
+      "afterBytes": 1054986,
+      "saving": 0
+    },
+    {
+      "url": "/models/characters/flying-dutchman-ktx.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "post-location",
+      "effectiveLane": "post-location",
+      "consumers": [
+        "location-npc"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 1015453,
+      "afterBytes": 1015453,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/hermes-female.vrm?v=2",
+      "cls": "VRM",
+      "requestCount": 1,
+      "manifestLane": "post-ambient-vrm",
+      "effectiveLane": "post-ambient-vrm",
+      "consumers": [
+        "ambient-npc",
+        "player-capable"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 980149,
+      "afterBytes": 980149,
+      "saving": 0
+    },
+    {
+      "url": "/models/shisha-oasis-ktx.glb?v=2",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 950318,
+      "afterBytes": 950318,
+      "saving": 0
+    },
+    {
+      "url": "/models/chum-bucket-v2-opt1-ktx.glb?v=4",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 793662,
+      "afterBytes": 793662,
+      "saving": 0
+    },
+    {
+      "url": "/models/salty-spitoon-opt1-ktx.glb?v=3",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 736100,
+      "afterBytes": 736100,
+      "saving": 0
+    },
+    {
+      "url": "/models/arcade/claw-arcade-exterior-opt1-ktx.glb?v=4",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 726720,
+      "afterBytes": 726720,
+      "saving": 0
+    },
+    {
+      "url": "/models/krusty-krab-v2-opt1-ktx.glb?v=4",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 715511,
+      "afterBytes": 715511,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/hermes-male.vrm?v=2",
+      "cls": "VRM",
+      "requestCount": 1,
+      "manifestLane": "post-ambient-vrm",
+      "effectiveLane": "post-ambient-vrm",
+      "consumers": [
+        "ambient-npc",
+        "player-capable"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 650429,
+      "afterBytes": 650429,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/milady-official-5.vrm",
+      "cls": "VRM",
+      "requestCount": 1,
+      "manifestLane": "post-ambient-vrm",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "ambient-npc",
+        "player-capable"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": true,
+      "postExclusive": false,
+      "beforeBytes": 628107,
+      "afterBytes": 628107,
+      "saving": 0
+    },
+    {
+      "url": "/models/patricks-rock-v2-opt1-ktx.glb?v=5",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 605856,
+      "afterBytes": 605856,
+      "saving": 0
+    },
+    {
+      "url": "/models/patty-building-opt1-ktx.glb?v=3",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 571385,
+      "afterBytes": 571385,
+      "saving": 0
+    },
+    {
+      "url": "/models/squidward-house-opt1-ktx.glb?v=5",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 567072,
+      "afterBytes": 567072,
+      "saving": 0
+    },
+    {
+      "url": "/models/guide-rigged.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 552623,
+      "afterBytes": 552623,
+      "saving": 0
+    },
+    {
+      "url": "/models/characters/gary-ktx.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "post-location",
+      "effectiveLane": "post-location",
+      "consumers": [
+        "location-npc"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 552207,
+      "afterBytes": 552207,
+      "saving": 0
+    },
+    {
+      "url": "/models/bazaar-merchant-stand-ktx.glb?v=3",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 476527,
+      "afterBytes": 476527,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/ansem-sword.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "post-attachment",
+      "effectiveLane": "post-attachment",
+      "consumers": [
+        "ansem-wanderer",
+        "player-ansem"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 364429,
+      "afterBytes": 364429,
+      "saving": 0
+    },
+    {
+      "url": "/models/lobster-ktx.glb?v=2",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 320238,
+      "afterBytes": 320238,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/milady-official-8.vrm",
+      "cls": "VRM",
+      "requestCount": 1,
+      "manifestLane": "post-ambient-vrm",
+      "effectiveLane": "post-ambient-vrm",
+      "consumers": [
+        "ambient-npc",
+        "player-capable"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 311279,
+      "afterBytes": 311279,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/milady-official-7.vrm",
+      "cls": "VRM",
+      "requestCount": 1,
+      "manifestLane": "post-ambient-vrm",
+      "effectiveLane": "post-ambient-vrm",
+      "consumers": [
+        "ambient-npc",
+        "player-capable"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 263067,
+      "afterBytes": 263067,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/milady-official-4.vrm",
+      "cls": "VRM",
+      "requestCount": 1,
+      "manifestLane": "post-ambient-vrm",
+      "effectiveLane": "post-ambient-vrm",
+      "consumers": [
+        "ambient-npc",
+        "player-capable"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 256556,
+      "afterBytes": 256556,
+      "saving": 0
+    },
+    {
+      "url": "/basis/basis_transcoder.wasm",
+      "cls": "WASM",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 247913,
+      "afterBytes": 247913,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/milady-official-3.vrm",
+      "cls": "VRM",
+      "requestCount": 1,
+      "manifestLane": "post-ambient-vrm",
+      "effectiveLane": "post-ambient-vrm",
+      "consumers": [
+        "ambient-npc",
+        "player-capable"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 200426,
+      "afterBytes": 200426,
+      "saving": 0
+    },
+    {
+      "url": "/models/characters/mrs-puff-ktx.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "post-location",
+      "effectiveLane": "post-location",
+      "consumers": [
+        "location-npc"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 197433,
+      "afterBytes": 197433,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/milady-official-1.vrm",
+      "cls": "VRM",
+      "requestCount": 1,
+      "manifestLane": "post-ambient-vrm",
+      "effectiveLane": "post-ambient-vrm",
+      "consumers": [
+        "ambient-npc",
+        "player-capable"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 195977,
+      "afterBytes": 195977,
+      "saving": 0
+    },
+    {
+      "url": "/models/characters/sandy-ktx.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "post-location",
+      "effectiveLane": "post-location",
+      "consumers": [
+        "location-npc"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 194201,
+      "afterBytes": 194201,
+      "saving": 0
+    },
+    {
+      "url": "/models/cove/cove-exterior-opt1-ktx.glb?v=4",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 188006,
+      "afterBytes": 188006,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/milady-official-6.vrm",
+      "cls": "VRM",
+      "requestCount": 1,
+      "manifestLane": "post-ambient-vrm",
+      "effectiveLane": "post-ambient-vrm",
+      "consumers": [
+        "ambient-npc",
+        "player-capable"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 185631,
+      "afterBytes": 185631,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/01e0jpmoid7bt.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 182079,
+      "afterBytes": 182079,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0vmq5na8krrnl.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 170621,
+      "afterBytes": 170621,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0jteeo6d60tmh.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 160245,
+      "afterBytes": 160245,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/animations/chibi/idle.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "post-anim-char",
+      "effectiveLane": "post-anim-char",
+      "consumers": [
+        "ambient-npc",
+        "player-same-species"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 160162,
+      "afterBytes": 160162,
+      "saving": 0
+    },
+    {
+      "url": "/models/boating-school-opt1-ktx.glb?v=3",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 159617,
+      "afterBytes": 159617,
+      "saving": 0
+    },
+    {
+      "url": "/models/building-seashell-ktx.glb?v=2",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 159517,
+      "afterBytes": 159517,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0joommz5_9cpp.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 156945,
+      "afterBytes": 156945,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/milady-official-2.vrm",
+      "cls": "VRM",
+      "requestCount": 1,
+      "manifestLane": "post-ambient-vrm",
+      "effectiveLane": "post-ambient-vrm",
+      "consumers": [
+        "ambient-npc",
+        "player-capable"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 148938,
+      "afterBytes": 148938,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/08ptkupqkzrqs.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 132224,
+      "afterBytes": 132224,
+      "saving": 0
+    },
+    {
+      "url": "/models/land-structures/driftwood-cabin/home.glb?v=2",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 124621,
+      "afterBytes": 124621,
+      "saving": 0
+    },
+    {
+      "url": "/models/coral-reef1-ktx.glb?v=2",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 116224,
+      "afterBytes": 116224,
+      "saving": 0
+    },
+    {
+      "url": "/models/coral-reef3-ktx.glb?v=2",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 112074,
+      "afterBytes": 112074,
+      "saving": 0
+    },
+    {
+      "url": "/models/characters/plankton-ktx.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "post-location",
+      "effectiveLane": "post-location",
+      "consumers": [
+        "location-npc"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 111905,
+      "afterBytes": 111905,
+      "saving": 0
+    },
+    {
+      "url": "/models/coral-reef2-ktx.glb?v=2",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 101516,
+      "afterBytes": 101516,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0~ia2n~f~5z0x.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 100623,
+      "afterBytes": 100623,
+      "saving": 0
+    },
+    {
+      "url": "/models/building-chest.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 99227,
+      "afterBytes": 99227,
+      "saving": 0
+    },
+    {
+      "url": "/models/land-structures/fantasy-cottage/home.glb?v=2",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 95370,
+      "afterBytes": 95370,
+      "saving": 0
+    },
+    {
+      "url": "/models/land-structures/driftwood-cabin/shop.glb?v=2",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 80100,
+      "afterBytes": 80100,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/animations/hermes-female/idle.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "post-anim-char",
+      "effectiveLane": "post-anim-char",
+      "consumers": [
+        "ambient-npc",
+        "player-same-species"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 79700,
+      "afterBytes": 79700,
+      "saving": 0
+    },
+    {
+      "url": "/models/characters/patrick-ktx.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "post-location",
+      "effectiveLane": "post-location",
+      "consumers": [
+        "location-npc"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 76663,
+      "afterBytes": 76663,
+      "saving": 0
+    },
+    {
+      "url": "/models/land-structures/coastal-cottage/home.glb?v=2",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 76220,
+      "afterBytes": 76220,
+      "saving": 0
+    },
+    {
+      "url": "/models/land-structures/fantasy-cottage/shop.glb?v=2",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 74865,
+      "afterBytes": 74865,
+      "saving": 0
+    },
+    {
+      "url": "/models/characters/karen-ktx.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "post-location",
+      "effectiveLane": "post-location",
+      "consumers": [
+        "location-npc"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 69577,
+      "afterBytes": 69577,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/media/791bf8c4bb753ed6-s.p.0524igg32t-c1.woff2",
+      "cls": "FONT",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 67558,
+      "afterBytes": 67558,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/03iiob6jp8cg..js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 64178,
+      "afterBytes": 64178,
+      "saving": 0
+    },
+    {
+      "url": "/models/characters/mr-krabs-ktx.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "post-location",
+      "effectiveLane": "post-location",
+      "consumers": [
+        "location-npc"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 59808,
+      "afterBytes": 59808,
+      "saving": 0
+    },
+    {
+      "url": "/models/building-shell-ktx.glb?v=2",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 58310,
+      "afterBytes": 58310,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/animations/hermes-male/idle.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "post-anim-char",
+      "effectiveLane": "post-anim-char",
+      "consumers": [
+        "ambient-npc",
+        "player-same-species"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 55535,
+      "afterBytes": 55535,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0.of27cg5lavm.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 50559,
+      "afterBytes": 50559,
+      "saving": 0
+    },
+    {
+      "url": "/models/building-lantern-ktx.glb?v=2",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 47717,
+      "afterBytes": 47717,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/00_7uytyen4ez.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 46959,
+      "afterBytes": 46959,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/animations/idle.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "all-avatars"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 42683,
+      "afterBytes": 42683,
+      "saving": 0
+    },
+    {
+      "url": "/models/land-structures/coastal-cottage/shop.glb?v=2",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 42280,
+      "afterBytes": 42280,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0s3ubf~q7oo5k.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 41822,
+      "afterBytes": 41822,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0hg1~~52~71nh.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 38531,
+      "afterBytes": 38531,
+      "saving": 0
+    },
+    {
+      "url": "/models/building-lighthouse-opt1-ktx.glb?v=3",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 38306,
+      "afterBytes": 38306,
+      "saving": 0
+    },
+    {
+      "url": "/models/characters/squidward-ktx.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "post-location",
+      "effectiveLane": "post-location",
+      "consumers": [
+        "location-npc"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 38022,
+      "afterBytes": 38022,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0374eff8-ai~-.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 37240,
+      "afterBytes": 37240,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/animations/run.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "all-avatars"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 37163,
+      "afterBytes": 37163,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/06uiin3x22dnh.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 30500,
+      "afterBytes": 30500,
+      "saving": 0
+    },
+    {
+      "url": "/models/building-tower2.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 28807,
+      "afterBytes": 28807,
+      "saving": 0
+    },
+    {
+      "url": "/models/land-structures/tower-cand-3/home.glb?v=2",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 26134,
+      "afterBytes": 26134,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/animations/tekk-male/idle.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "post-anim-char",
+      "effectiveLane": "post-anim-char",
+      "consumers": [
+        "ambient-npc",
+        "player-same-species"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 25738,
+      "afterBytes": 25738,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/14d~.gx7gip~r.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 23964,
+      "afterBytes": 23964,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0kkq6.ww-zdn8.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 23580,
+      "afterBytes": 23580,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0.r-~utd67c7x.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 22857,
+      "afterBytes": 22857,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/08m2hyp6c_xjt.css",
+      "cls": "CSS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 20020,
+      "afterBytes": 20020,
+      "saving": 0
+    },
+    {
+      "url": "/models/building-barrel.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 19806,
+      "afterBytes": 19806,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/animations/tekk-male/walk.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "post-anim-char",
+      "effectiveLane": "post-anim-char",
+      "consumers": [
+        "ambient-npc",
+        "player-same-species"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 19476,
+      "afterBytes": 19476,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/animations/walk.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "all-avatars"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 19256,
+      "afterBytes": 19256,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0t8glht~~w-mo.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 19222,
+      "afterBytes": 19222,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/animations/ansem/idle.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "post-anim-char",
+      "effectiveLane": "post-anim-char",
+      "consumers": [
+        "ambient-npc",
+        "player-same-species"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 18378,
+      "afterBytes": 18378,
+      "saving": 0
+    },
+    {
+      "url": "/models/land-structures/tower-cand-1/home.glb?v=2",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 17705,
+      "afterBytes": 17705,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0n20zjrot7jfh.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 17441,
+      "afterBytes": 17441,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/172j8jwz7_79k.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 17435,
+      "afterBytes": 17435,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/animations/hermes-female/run.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "post-anim-char",
+      "effectiveLane": "post-anim-char",
+      "consumers": [
+        "ambient-npc",
+        "player-same-species"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 17365,
+      "afterBytes": 17365,
+      "saving": 0
+    },
+    {
+      "url": "/models/land-structures/premium-mall/shop.glb?v=2",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 16853,
+      "afterBytes": 16853,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/animations/chibi/walk.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "post-anim-char",
+      "effectiveLane": "post-anim-char",
+      "consumers": [
+        "ambient-npc",
+        "player-same-species"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 16528,
+      "afterBytes": 16528,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/13zxs5~g~q8up.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 16325,
+      "afterBytes": 16325,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/animations/hermes-male/run.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "post-anim-char",
+      "effectiveLane": "post-anim-char",
+      "consumers": [
+        "ambient-npc",
+        "player-same-species"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 16200,
+      "afterBytes": 16200,
+      "saving": 0
+    },
+    {
+      "url": "/basis/basis_transcoder.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 15402,
+      "afterBytes": 15402,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/animations/tekk-male/run.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "post-anim-char",
+      "effectiveLane": "post-anim-char",
+      "consumers": [
+        "ambient-npc",
+        "player-same-species"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 14127,
+      "afterBytes": 14127,
+      "saving": 0
+    },
+    {
+      "url": "/avatars/animations/chibi/run.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "post-anim-char",
+      "effectiveLane": "post-anim-char",
+      "consumers": [
+        "ambient-npc",
+        "player-same-species"
+      ],
+      "sharedDemand": true,
+      "fixtureCritical": false,
+      "postExclusive": true,
+      "beforeBytes": 13862,
+      "afterBytes": 13862,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0qdrlyc6tpdo9.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 12957,
+      "afterBytes": 12957,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0qk9~03kq4k5b.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 12932,
+      "afterBytes": 12932,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0ehmslic1ktmf.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 12725,
+      "afterBytes": 12725,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0fjhmw3e1kpih.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 12702,
+      "afterBytes": 12702,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/media/5fe5f57ee794eff4-s.p.01io3axyxl295.woff2",
+      "cls": "FONT",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 12408,
+      "afterBytes": 12408,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0x4939w_wja8h.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 12267,
+      "afterBytes": 12267,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0pivq4cidzfu5.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 11894,
+      "afterBytes": 11894,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/media/0acc7fdf55eb3220-s.p.12o-f1.6qra-s.woff2",
+      "cls": "FONT",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 11836,
+      "afterBytes": 11836,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0-~ddz9f5h4mc.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 11774,
+      "afterBytes": 11774,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0n70al~2cxtet.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 11415,
+      "afterBytes": 11415,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0jujhle9zu3ry.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 10598,
+      "afterBytes": 10598,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/05pfub3ukccgh.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 10320,
+      "afterBytes": 10320,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/139it58poztl..js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 10110,
+      "afterBytes": 10110,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0i30pn6yq2a0r.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 10086,
+      "afterBytes": 10086,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0k_9osz.txmvz.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 9699,
+      "afterBytes": 9699,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/media/8d05cfa5faa8406c-s.p.0kbulo~7o8gic.woff2",
+      "cls": "FONT",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 9620,
+      "afterBytes": 9620,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/media/dc0d9adbac686440-s.p.0~z396rbj0t4w.woff2",
+      "cls": "FONT",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 9532,
+      "afterBytes": 9532,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0k-fng~m4jpo0.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 9240,
+      "afterBytes": 9240,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0hv1~1bp9_0nn.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 9117,
+      "afterBytes": 9117,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/17v~xk8~d.83n.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 8748,
+      "afterBytes": 8748,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/07so_2kbny4_j.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 8553,
+      "afterBytes": 8553,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0ona~r03m_0oy.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 8169,
+      "afterBytes": 8169,
+      "saving": 0
+    },
+    {
+      "url": "/models/kelp.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 7918,
+      "afterBytes": 7918,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0jytks-zgun8n.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 7865,
+      "afterBytes": 7865,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/07~yixz9~0238.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 7714,
+      "afterBytes": 7714,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0350y321_8725.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 7504,
+      "afterBytes": 7504,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/17hewv3ocf0fb.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 7300,
+      "afterBytes": 7300,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0186s31s25iok.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 7024,
+      "afterBytes": 7024,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/154vyranw5nus.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 7023,
+      "afterBytes": 7023,
+      "saving": 0
+    },
+    {
+      "url": "/models/crayfish-ktx.glb?v=2",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 6981,
+      "afterBytes": 6981,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0cjsdttb8ew._.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 6500,
+      "afterBytes": 6500,
+      "saving": 0
+    },
+    {
+      "url": "/game",
+      "cls": "HTML",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 5824,
+      "afterBytes": 5824,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0rktkt-09dc33.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 4742,
+      "afterBytes": 4742,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/02k0g21h6n6xa.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 4311,
+      "afterBytes": 4311,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0ioy4qpiax0il.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 4305,
+      "afterBytes": 4305,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/turbopack-16tglx9x895nv.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 4242,
+      "afterBytes": 4242,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0uyz4a4q~xvsq.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 3785,
+      "afterBytes": 3785,
+      "saving": 0
+    },
+    {
+      "url": "/favicon.ico?favicon.0gmag-~bk~mwt.ico",
+      "cls": "IMG",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 3618,
+      "afterBytes": 3618,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0kl-s43jjciwt.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 3355,
+      "afterBytes": 3355,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0c7af7p1~gcdb.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 3100,
+      "afterBytes": 3100,
+      "saving": 0
+    },
+    {
+      "url": "/models/building-anchor.glb",
+      "cls": "GLB",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 2896,
+      "afterBytes": 2896,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0nmmsdjhh~5n1.css",
+      "cls": "CSS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 2878,
+      "afterBytes": 2878,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0z6_42bo-c37f.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 2759,
+      "afterBytes": 2759,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/01cn4w5trm.72.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 2033,
+      "afterBytes": 2033,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0~i39e6qokcjn.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 1897,
+      "afterBytes": 1897,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/05gy2tgt7wrhs.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 1881,
+      "afterBytes": 1881,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0pk3x9-i~c1oc.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 1632,
+      "afterBytes": 1632,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/08bo38zk-we_3.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 1210,
+      "afterBytes": 1210,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/040vak_optcib.css",
+      "cls": "CSS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 1193,
+      "afterBytes": 1193,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/074w50oqamc1s.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 759,
+      "afterBytes": 759,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0bwx1.4xy56zc.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 631,
+      "afterBytes": 631,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0a00kwu~j5bkq.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 457,
+      "afterBytes": 457,
+      "saving": 0
+    },
+    {
+      "url": "/_next/static/chunks/0ekb4.0uagz50.js",
+      "cls": "JS",
+      "requestCount": 1,
+      "manifestLane": "reveal-core",
+      "effectiveLane": "reveal-core",
+      "consumers": [
+        "world"
+      ],
+      "sharedDemand": false,
+      "fixtureCritical": false,
+      "postExclusive": false,
+      "beforeBytes": 306,
+      "afterBytes": 306,
+      "saving": 0
+    }
+  ]
+}

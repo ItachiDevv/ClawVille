@@ -268,9 +268,19 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
   // ---- validity (fail closed — blocker 4) ----
   const invalidReasons = [];
   const swHits = ok.filter((r) => r.fromSW).length;
-  const cacheHits = ok.filter((r) => r.fromCache).length + servedFromCacheIds.size;
   if (swHits > 0) invalidReasons.push(`not cold: ${swHits} service-worker hits`);
-  if (cacheHits > 0) invalidReasons.push(`not cold: ${cacheHits} cache hits`);
+  // Cold criterion: the FIRST request of each URL must hit the network. A
+  // later duplicate of the same URL served from cache is normal same-session
+  // dedup (preload + component fetch), not warmth.
+  const firstByUrl = new Map();
+  for (const r of ok) {
+    // data:/blob: are not network fetches — Chrome reports them as cached.
+    if (r.url.startsWith("data:") || r.url.startsWith("blob:")) continue;
+    const prev = firstByUrl.get(r.url);
+    if (!prev || (r.startPageMs ?? Infinity) < (prev.startPageMs ?? Infinity)) firstByUrl.set(r.url, r);
+  }
+  const warmFirsts = [...firstByUrl.values()].filter((r) => r.fromCache).length;
+  if (warmFirsts > 0) invalidReasons.push(`not cold: ${warmFirsts} first-occurrence cache hits`);
   if (revealPageMs == null) invalidReasons.push("reveal never observed");
   if (!backend || String(backend).endsWith("-requested")) invalidReasons.push(`backend not actual: ${backend}`);
   const assetFailures = all.filter((r) => ASSET_CLASSES.has(r.cls) && r.failed);
@@ -326,7 +336,8 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
     totalWireMB: +(totalWire / 1048576).toFixed(2),
     preRevealMB: +(preTotal / 1048576).toFixed(2),
     postRevealMB: +(postTotal / 1048576).toFixed(2),
-    fromSW: swHits, fromCache: cacheHits,
+    fromSW: swHits, fromCacheFirstOccurrence: warmFirsts,
+    fromCacheDuplicates: ok.filter((r) => r.fromCache).length - warmFirsts,
     byClass: Object.fromEntries(Object.entries(byClass).sort((a, b) => b[1].bytes - a[1].bytes)
       .map(([k, v]) => [k, { count: v.count, mb: +(v.bytes / 1048576).toFixed(2), preMB: +(v.preBytes / 1048576).toFixed(2), postMB: +(v.postBytes / 1048576).toFixed(2) }])),
     longtasks: {
