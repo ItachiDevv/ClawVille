@@ -573,6 +573,11 @@ export function WorldStageRoot({ children }: { children: ReactNode }) {
         error,
         componentStack ?? '',
       );
+      const state = useStageStore.getState();
+      const request = state.pendingRequest;
+      if (request?.sceneId === ACTIVITY_SCENE_ID) {
+        state.ackReady(ACTIVITY_SCENE_ID, request.generation);
+      }
       setActivityRuntimeCrashKey(activityResetKey);
     },
     [activityResetKey],
