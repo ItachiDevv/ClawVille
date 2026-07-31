@@ -12,7 +12,6 @@ import {
 } from 'react';
 import {
   Canvas,
-  _roots,
   events as createPointerEvents,
   extend,
   useFrame,
@@ -873,23 +872,18 @@ function StageRendererHealthBridge({
   return null;
 }
 
-function StageLoopController({
-  rearmNativeRoot,
-}: {
-  rearmNativeRoot: () => void;
-}): null {
+function StageLoopController(): null {
   const paused = useStageStore((state) => state.renderPaused);
   const setFrameloop = useThree((state) => state.setFrameloop);
 
   const invalidate = useThree((state) => state.invalidate);
 
   useLayoutEffect(() => {
-    setFrameloop(paused ? 'never' : 'always');
+    setFrameloop(paused ? 'demand' : 'always');
     if (!paused) {
-      rearmNativeRoot();
       invalidate();
     }
-  }, [invalidate, paused, rearmNativeRoot, setFrameloop]);
+  }, [invalidate, paused, setFrameloop]);
 
   return null;
 }
@@ -1005,27 +999,13 @@ export function WorldStageCanvas({
   const initialCamera =
     cameras.get(scenes[0]?.sceneId ?? '') ??
     new THREE.PerspectiveCamera(50, 1, 0.1, 2_000);
-  const capturedR3FRootRef = useRef<{
-    canvas: HTMLCanvasElement;
-    entry: NonNullable<ReturnType<typeof _roots.get>>;
-  } | null>(null);
   const glFactory = useCallback(
     async (props: { canvas: HTMLCanvasElement }) => {
-      const entry = _roots.get(props.canvas);
-      if (entry) {
-        capturedR3FRootRef.current = { canvas: props.canvas, entry };
-      }
       const renderer = await createStageRenderer(props);
       return renderer;
     },
     [],
   );
-  const rearmNativeRoot = useCallback(() => {
-    const captured = capturedR3FRootRef.current;
-    if (!captured || !captured.canvas.isConnected) return;
-    if (_roots.get(captured.canvas)) return;
-    _roots.set(captured.canvas, captured.entry);
-  }, []);
 
   useEffect(() => {
     diagnosticCameras = cameras;
@@ -1051,7 +1031,7 @@ export function WorldStageCanvas({
         onCreated={(state) => {
           if (pauseOnCreate) {
             useStageStore.getState().setRenderPaused(true);
-            state.setFrameloop('never');
+            state.setFrameloop('demand');
           }
           onStageCreated?.(state);
         }}
@@ -1060,7 +1040,7 @@ export function WorldStageCanvas({
         <KTX2LoaderSetup />
         <StageCanvasMountProbe />
         <StageRendererHealthBridge containerRef={containerRef} />
-        <StageLoopController rearmNativeRoot={rearmNativeRoot} />
+        <StageLoopController />
         <StageCameraCoordinator
           definitions={scenes}
           cameras={cameras}

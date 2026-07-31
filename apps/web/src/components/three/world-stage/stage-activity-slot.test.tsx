@@ -52,6 +52,14 @@ describe('persistent activity stage slot', () => {
     );
   });
 
+  test('idles on demand without detaching the persistent R3F root', () => {
+    const canvasSource = source('WorldStageCanvas.tsx');
+    expect(canvasSource).toContain(
+      "setFrameloop(paused ? 'demand' : 'always')",
+    );
+    expect(canvasSource).not.toContain('_roots');
+  });
+
   test('an awaiting-phase pause variant violates the required guard', () => {
     const shouldPause = (phase: 'awaiting' | 'idle') => phase === 'idle';
     expect(shouldPause('awaiting')).toBeFalse();
