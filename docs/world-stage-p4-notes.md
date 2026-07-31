@@ -538,3 +538,209 @@ canonically identical under v2; the sole Kelp difference is an explained
 intermediate heap-gate deviation repaired by `e3c042dd`. With the current
 branch's Section 6.4-6.6 lanes green, the entire probe gate passes. Nothing was
 pushed.
+
+## §6.7 race integrity — Session 7 money gate
+
+### Verdict
+
+**HARD STOP at checkbox 3.** The repaired P4 branch wrote the Reef lap PB and
+an integer daily rank. A controlled `origin/staging` race then completed a
+faster lap, but did not update that PB row and wrote a `NULL` daily-rank value.
+That is both a state-transition difference and a preserved integer-vs-NULL
+value-class difference. Per the §6.7 contract, the mid-race Leave and Bumper
+Shells checkboxes were not run.
+
+No rows were inserted, updated, deleted, or compensated by hand. All money
+evidence below came from the real UI flow and the same staging database used by
+the corresponding API process.
+
+### Runtime and scope
+
+- Starting P4 HEAD: `7f31af9ea6dd0bcce4ed569143f3721207cb01dc`.
+- P4 API after §6.7 fixes: `3e4a77d5ff5fb64eaa8f87d00166b8612dbcc0e9`,
+  direct `apps/api` production build on `127.0.0.1:4000`,
+  `REEF_RACE_USE_SPLINE=true`, session-pooler DB, `DB_POOL_MAX=4`.
+- P4 web: probe-enabled production bundle on `127.0.0.1:3008`, built with
+  `NEXT_PUBLIC_API_URL=http://127.0.0.1:4000` and
+  `NEXT_PUBLIC_REEF_RACE_USE_SPLINE=true`.
+- Detached control: exact `origin/staging`
+  `89d059c5d2958ee68db06fa101f9b47ea42be24c`, API `:4001`, web `:3009`,
+  same DB/env/account/procedure.
+- Account: user `8f83d834-4660-438b-b367-2200ca830a97`, avatar
+  `a74c90f9-8460-4b24-83e2-baede9dbe3d3` (`LandTest1`).
+- DB `current_date` was `2026-07-31` UTC. Queries were scoped by the exact
+  avatar, room, activity/reason, and run time; live staging traffic was not
+  counted.
+
+### Defects exposed and fixed
+
+The first complete P4 run, room
+`eee9a8f9-f545-4e26-9864-a1b77ed2c57e`, reached the real results modal in
+3rd. It wrote result `2ce3078a-032b-4289-b7e9-1a5bdfda47a4`, event `25658`,
+and one 50-CT transaction `99fb5daf-e2b1-40dc-94af-38caecc7b3ef`, but the
+direct PB query returned zero rows. The result claimed `is_personal_best=true`
+and the ledger included a 10-CT PB bonus, making this a money/PB split-brain,
+not a presentation defect.
+
+Two independent app defects caused it:
+
+1. The Spline sim never embedded `reefRace.bestLapMs` / ghost metadata in
+   `computeResults`. Commit `15ceda18` (`fix(api): persist spline reef race
+   personal bests`) adds bounded 5 Hz lap capture, best-lap selection, the
+   established settlement block for finishers and DNF rows, and focused tests.
+2. The API's central Reef result adapter then rebuilt every sim row without its
+   `reefRace` field. Commit `3e4a77d5` (`fix(api): preserve Reef PB metadata at
+   settlement`) preserves that field into the reward pipeline.
+
+Validation:
+
+- API strict typecheck: PASS.
+- Spline sim focused suite: 37/37 PASS.
+- Spline sim + reward pipeline + PB service + room manager: 110/110 PASS.
+- Adapter follow-up reward/room-manager suites: 67/67 PASS.
+- Direct API production builds after each fix: PASS.
+
+### Checkbox 1 — real P4 Reef Race: PASS
+
+The retained passing UI artifact is
+`C:\Users\itachi\AppData\Local\Temp\world-stage-p4-s7-reef-p4-pass.json`
+with screenshot
+`C:\Users\itachi\AppData\Local\Temp\world-stage-p4-s7-reef-p4-pass.png`.
+The browser used `/game?quickQueue=reef-race`; the real queue matched room
+`951ad185-9f9e-42fb-b671-ac106f5a5b4e` (`QMB209`), then observed countdown,
+LIVE, lap completion, the human `event.crossed_finish` at placement 4 and
+143632.983 ms, `event.match_ended`, and the results modal (`You placed 4th`,
+`+25 vCLAW`, `+2` leaderboard).
+
+### Checkbox 2 — P4 database money assertions: PASS
+
+The exact scoped queries were:
+
+```sql
+SELECT id, room_id, activity_id, avatar_id, subject_type, placement,
+       score, score_ms, tokens_awarded, leaderboard_points,
+       is_personal_best, match_best_streak, match_pb_daily_rank, created_at
+FROM activity_results
+WHERE room_id = '951ad185-9f9e-42fb-b671-ac106f5a5b4e'
+  AND avatar_id = 'a74c90f9-8460-4b24-83e2-baede9dbe3d3';
+
+SELECT id, event_type, avatar_id, payload, ts
+FROM events
+WHERE event_type = 'activity.match.placed'
+  AND avatar_id = 'a74c90f9-8460-4b24-83e2-baede9dbe3d3'
+  AND payload->>'roomId' = '951ad185-9f9e-42fb-b671-ac106f5a5b4e';
+
+SELECT id, avatar_id, amount, balance_after, reason, source, provenance,
+       metadata, created_at
+FROM claw_token_transactions
+WHERE avatar_id = 'a74c90f9-8460-4b24-83e2-baede9dbe3d3'
+  AND reason = 'activity_match_placed'
+  AND metadata->>'roomId' = '951ad185-9f9e-42fb-b671-ac106f5a5b4e';
+
+SELECT id, avatar_id, activity_id, best_lap_ms, best_lap_recorded_at,
+       source_room_id,
+       jsonb_array_length(ghost_replay_data->'frames') AS ghost_frame_count,
+       created_at, updated_at,
+       (best_lap_recorded_at AT TIME ZONE 'UTC')::date AS utc_day
+FROM reef_race_personal_bests
+WHERE avatar_id = 'a74c90f9-8460-4b24-83e2-baede9dbe3d3'
+  AND activity_id = 'reef-race';
+```
+
+Results:
+
+- `activity_results`: exactly one row,
+  `ab4e132d-1fb5-47e8-bd71-2f401d4c5a7d`; placement 4,
+  score/score_ms `-143633` / `143633`, tokens 25, leaderboard 2,
+  `is_personal_best=true`, streak 0, `match_pb_daily_rank=1`,
+  created `2026-07-31T09:53:25.929Z`.
+- Human `activity.match.placed`: exactly one row, event `25680`; payload
+  placement 4, activity `reef-race`, subject `human`, leaderboard 2, room
+  correct. Three additional room-scoped placed events (`25682`-`25684`) belong
+  to the three bots and are excluded by the required account/avatar scope.
+- CT credit: exactly one row,
+  `9632e5cb-5357-4de7-b4fb-fb7c1dbfaa3e`; amount 25,
+  `reason='activity_match_placed'`, source `simulation`, provenance `soft`,
+  metadata room correct, breakdown `{base:15, personalBestBonus:10,
+  firstPlayOfDayBonus:0, focusBonus:0, perfectStreakBonus:0}`.
+- PB/daily-best source: exactly one PB row,
+  `373aca77-4ca2-44df-9b7a-1b9b1a0a9be5`; best lap 70,233 ms,
+  source room is the P4 room, 251 stored ghost frames,
+  recorded/created/updated `2026-07-31T09:53:25.767Z`,
+  `utc_day='2026-07-31'`. The daily-best is an indexed aggregation over this
+  PB table, not a separate append table; the per-match persisted daily outcome
+  is `activity_results.match_pb_daily_rank=1`.
+
+### Checkbox 3 — exact `origin/staging` comparison: HARD STOP
+
+The first staging control completed room
+`24c5ecbf-ae60-42d7-8163-a43303752537` in 4th. Its 70.83 s best lap was slower
+than the stored 70.233 s P4 PB, so its null daily rank was performance-dependent
+and was not used to claim a code difference.
+
+After restarting only the owned staging API so a new room could be matched, the
+controlled rerun completed room
+`67018cc7-00ad-4269-94e8-e876c9d8ee5c` in 3rd. Its real
+`event.lap_completed.splitMs=68166.50024414062` was 2,066 ms faster than the
+stored PB. Artifacts:
+
+- `C:\Users\itachi\AppData\Local\Temp\world-stage-p4-s7-reef-staging-2.json`
+- `C:\Users\itachi\AppData\Local\Temp\world-stage-p4-s7-reef-staging-2.png`
+
+The same four SQL templates above, substituting staging room
+`67018cc7-00ad-4269-94e8-e876c9d8ee5c`, returned:
+
+- result `e4a74048-02c0-4630-8d8a-b160f5a10618`: placement 3,
+  score/score_ms `-135900` / `135900`, tokens 25, leaderboard 8,
+  `is_personal_best=false`, streak 0, **`match_pb_daily_rank=NULL`**;
+- exactly one human placed event, `25704`, correct placement 3;
+- exactly one CT row, `ebc765c0-c1a4-485c-a891-678acf780593`,
+  amount 25, correct room/reason/source/provenance;
+- PB query still returned id
+  `373aca77-4ca2-44df-9b7a-1b9b1a0a9be5`, best lap **70,233 ms**,
+  source room **the earlier P4 room**, and unchanged
+  recorded/created/updated time `2026-07-31T09:53:25.767Z`.
+  In other words, staging did not apply the demonstrated 68,166 ms improvement.
+
+Normalization used for the comparison:
+
+- removed opaque row IDs, timestamps, and room/source-room UUID values;
+- removed `balance_after` because the shared DB had scoped background traffic;
+- normalized placement and values directly derived from placement (base award,
+  total award, leaderboard award, ordinal);
+- retained every column/key, row cardinality, enum/string/boolean meaning,
+  null-vs-non-null class, integer/finite performance-value class, activity and
+  subject identity, ledger reason/source/provenance, breakdown keys, and PB
+  mutation/source ownership.
+
+The decisive normalized diff is:
+
+```diff
+ activity_results
+- match_pb_daily_rank: integer
++ match_pb_daily_rank: null
+
+ reef_race_personal_bests state transition for a faster valid lap
+- updated: true; best_lap_ms: 70233; source: current P4 run
++ updated: false; best_lap_ms: 70233; source: earlier P4 run
+```
+
+The second line deliberately records mutation semantics: for the initial P4
+run the no-row state became a dated PB row; for the staging faster-lap run the
+existing row did not change at all. This is not an ID, timestamp, room,
+placement, or live-traffic normalization.
+
+**Verbatim hard-stop finding:** `origin/staging` completed a valid 68,166 ms
+lap, faster than the persisted 70,233 ms PB, but left the PB row unchanged and
+wrote `match_pb_daily_rank=NULL`; the repaired P4 path persisted its valid PB
+and wrote an integer daily rank. The normalized money-path write sets are not
+identical. §6.7 checkbox 3 FAILS and execution stops.
+
+### Checkboxes 4 and 5
+
+- Mid-race voluntary Leave: **NOT RUN — prohibited after checkbox 3 HARD
+  STOP.**
+- Bumper Shells completion/DB check (and any comparison note): **NOT RUN —
+  prohibited after checkbox 3 HARD STOP.**
+
+Nothing was pushed.
