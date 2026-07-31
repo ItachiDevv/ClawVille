@@ -132,4 +132,13 @@ describe('persistent activity stage slot', () => {
       "if (sample.sceneKind === 'world')",
     );
   });
+
+  test('empty activity slot does not wait for a nonexistent controlled frame', () => {
+    expect(transitionSource).toContain(
+      'current?.sceneId === ACTIVITY_SCENE_ID',
+    );
+    expect(transitionSource).toContain(
+      'pendingRequest.sceneId !== ACTIVITY_SCENE_ID',
+    );
+  });
 });

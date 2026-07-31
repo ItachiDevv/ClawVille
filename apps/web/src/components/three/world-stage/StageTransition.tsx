@@ -6,6 +6,7 @@ import {
   useStageStore,
   type StageRequest,
 } from './stage-store';
+import { ACTIVITY_SCENE_ID } from './stage-scene-id';
 import {
   DEFAULT_WATCHDOG_CONFIG,
   reduceWatchdog,
@@ -126,9 +127,11 @@ export function StageTransition({
           cameraInstalled: current
             ? matchesRequest(state.cameraInstalled, current)
             : false,
-          firstControlledFrame: current
-            ? matchesRequest(state.firstControlledFrame, current)
-            : false,
+          firstControlledFrame:
+            current?.sceneId === ACTIVITY_SCENE_ID ||
+            (current
+              ? matchesRequest(state.firstControlledFrame, current)
+              : false),
         },
         slotStatus: slot?.status,
         recoveryCount: state.recovery.count,
@@ -204,7 +207,8 @@ export function StageTransition({
       transition.requestId !== pendingRequest.requestId ||
       requestedStatus !== 'ready' ||
       !matchesRequest(cameraInstalled, pendingRequest) ||
-      !matchesRequest(firstControlledFrame, pendingRequest) ||
+      (pendingRequest.sceneId !== ACTIVITY_SCENE_ID &&
+        !matchesRequest(firstControlledFrame, pendingRequest)) ||
       outgoingOverlay?.requestId === pendingRequest.requestId
     ) {
       return;
