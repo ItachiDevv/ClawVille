@@ -124,15 +124,16 @@ separately before any promotion talk.
   (b) **numeric per-backend acceptance budgets** — worst-frame ms, longtask ms, the exact
   stable-frame calculation, and queue-drain deadline, frozen separately for the desktop backend
   AND the WebGL2 path (Iris proxy) before any behavior change.
-- **M1 (post-A):** reveal-gated wire **≤15.5MB** (arithmetic floor ~14.97 under the §A animation
-  role split; 15.37 if the split under-delivers — the ledger decides); per-phase reveal-time
+- **M1 (post-A):** reveal-gated wire **≤15.6MB** (revised from 15.5 at the delta re-review:
+  the honest post-exclusive ledger — guest fixture keeps its own body VRM reveal-gated — computes
+  **15.541MB**, and the threshold must sit above the arithmetic it gates); per-phase reveal-time
   improvement measured; both backends inside their M0 budgets.
-- **M2 (post-A+B/C): PROVISIONAL ≤11MB reveal-gated / ≤22MB total-session** — the re-review
-  showed the currently-named diets sum to ~11.2MB reveal and only ~6.5-7MB of the 12.6MB
-  total-session savings needed. These targets are ratified or revised AT M0 by the ledger: either
-  the rung-0 ledger names the additional still-gated core savings (building texture/geometry
-  rows are candidates but are NOT yet quantified) and enough eventual-stream diets to close, or
-  the targets move to what the named rows actually sum to. No un-named savings may be assumed.
+- **M2 (post-A+B/C): PROVISIONAL ≤11MB reveal-gated / ≤22MB total-session** — the currently-named
+  diets do NOT close these numbers (~11.2MB reveal; only ~6.5-7MB of the 12.6MB total-session
+  savings needed). **Freeze point (per the delta re-review): M2 is frozen from MEASURED diet
+  rows — actual sibling-artifact sizes fed to the ledger's diets input — at the END of rung 2,
+  before rung 3 widening starts. If the measured rows don't close ≤11/≤22, the targets move to
+  what the rows sum to.** No un-named savings may be assumed at any point.
 - **Reveal time target: provisional until M0 phase data exists.** The 8s dev-probe number from v1
   is downgraded to a hypothesis; M0 decides what the compile/warm floor actually is per backend.
 - **Zero conditional omission** (every NPC still appears; timing-only), zero visual regression at

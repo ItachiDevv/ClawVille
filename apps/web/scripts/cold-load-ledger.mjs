@@ -29,8 +29,13 @@ export const ROLE_MANIFEST = [
   { test: () => true, lane: "reveal-core", consumers: ["world"], sharedDemand: false },
 ];
 
-/** Classes excluded from asset lanes entirely (streams, RSC, blobs, api). */
-const EXCLUDED_CLASSES = new Set(["API", "OTHER", "JSON", "AUDIO"]);
+/**
+ * Accounting scope (delta-review minor 5): finite assets — including AUDIO and
+ * JSON — are IN scope; only API traffic and OTHER (streams/blobs/RSC noise)
+ * are excluded, and exclusions are emitted by reason with a bytes total that
+ * must reconcile: included + excluded === report request bytes.
+ */
+const EXCLUDED_CLASSES = new Set(["API", "OTHER"]);
 
 // ---------------------------------------------------------------------------
 // Fixtures — which URLs are CRITICAL for a given session shape. Substring
@@ -77,13 +82,17 @@ export function buildLedger(report, fixtureName = "guest-default", diets = {}) {
   const fixture = FIXTURES[fixtureName];
   if (!fixture) throw new Error(`unknown fixture: ${fixtureName}`);
 
-  // Aggregate per canonical URL.
+  // Aggregate per canonical URL; track every excluded byte by reason.
   const byUrl = new Map();
+  const excluded = { failed: 0, zeroByte: 0, classExcluded: 0, nonNetworkUrl: 0 };
+  let reportTotalBytes = 0;
   for (const rec of report.requests) {
-    if (rec.failed || !rec.wireBytes) continue;
-    if (EXCLUDED_CLASSES.has(rec.cls)) continue;
+    reportTotalBytes += rec.wireBytes || 0;
+    if (rec.failed) { excluded.failed += rec.wireBytes || 0; continue; }
+    if (!rec.wireBytes) { excluded.zeroByte += 0; continue; }
+    if (EXCLUDED_CLASSES.has(rec.cls)) { excluded.classExcluded += rec.wireBytes; continue; }
     const path = canonicalUrl(rec.url);
-    if (!path) continue;
+    if (!path) { excluded.nonNetworkUrl += rec.wireBytes; continue; }
     const agg = byUrl.get(path) ?? { url: path, cls: rec.cls, requestCount: 0, beforeBytes: 0 };
     agg.requestCount += 1;
     agg.beforeBytes += rec.wireBytes;
@@ -124,8 +133,21 @@ export function buildLedger(report, fixtureName = "guest-default", diets = {}) {
   const revealDietSaving = sum((r) => !r.postExclusive, "beforeBytes") - sum((r) => !r.postExclusive, "afterBytes");
   const totalAfterDiets = sum(() => true, "afterBytes");
 
+  const excludedTotal = excluded.failed + excluded.zeroByte + excluded.classExcluded + excluded.nonNetworkUrl;
+  if (totalBefore + excludedTotal !== reportTotalBytes) {
+    throw new Error(
+      `ledger accounting does not reconcile: included ${totalBefore} + excluded ${excludedTotal} != report ${reportTotalBytes}`,
+    );
+  }
+
   return {
     fixture: fixtureName, fixtureNote: fixture.note,
+    accounting: {
+      reportTotalBytes,
+      includedBytes: totalBefore,
+      excludedBytes: excludedTotal,
+      excludedByReason: excluded,
+    },
     lanes,
     milestones: {
       baselineTotalMB: mb(totalBefore),
@@ -148,8 +170,13 @@ if (import.meta.main) {
     process.exit(2);
   }
   const report = JSON.parse(await Bun.file(reportPath).text());
-  if (report.summary && report.summary.valid === false) {
-    console.error(`[ledger] REFUSING invalid probe report: ${report.summary.invalidReasons.join("; ")}`);
+  // Only affirmatively-valid probe-v3 reports may feed the ledger — a legacy
+  // report with NO verdict is refused too (delta-review blocker 3).
+  if (report.summary?.valid !== true) {
+    console.error(
+      `[ledger] REFUSING non-validity-gated probe report (valid=${report.summary?.valid ?? "absent"})` +
+      (report.summary?.invalidReasons?.length ? `: ${report.summary.invalidReasons.join("; ")}` : ""),
+    );
     process.exit(3);
   }
   const diets = dietsPath ? JSON.parse(await Bun.file(dietsPath).text()) : {};
