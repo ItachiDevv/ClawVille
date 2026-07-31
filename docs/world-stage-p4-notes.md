@@ -1090,3 +1090,67 @@ findings, and both LOW findings are closed locally. §6.7 passes under the new
 best-lap ruling. §6.8/v43 staging partner harness and §6.9 founder-floor drive
 remain push/deploy-time gates and were not run because this task forbids a
 push.**
+
+## Session 10 — wager-abort recovery
+
+The fix-delta re-review found one collateral blocker in the Session 9 lease
+watchdog: if a live Reef Race or Bumper Shells simulation died after its
+multiplayer WAGER lobby was locked, the room reached `aborted_crash` but only
+the Texas Hold'em MTT recovery callback was registered. The lobby therefore had
+no automatic settlement-authority cancellation path. Commit `9d3d6267`
+(`fix(api): recover wagers after activity crash aborts`) closes that finding.
+
+### Recovery behavior
+
+- Activity abort notification is now composed registration: every registered
+  handler runs, one handler's failure does not suppress the others, and the MTT
+  handler retains its exact `texas-holdem-mtt` filter and behavior.
+- Reef/Bumper register an additive wager handler for `aborted_crash` only. It
+  enters the existing wager lifecycle fence, reconciles captured create/join
+  intents, re-reads the lobby, and acts only on an attached multiplayer lobby
+  whose create transaction is confirmed and whose DB state is open or locked.
+- The handler reads the exact program-owned wager PDA before any send. An
+  already-cancelled account is reconciled forward in the DB without another
+  transaction. An open/locked account uses the existing
+  `cancelLobby({ lobbyIdBigint, signerKind: 'settlement-authority' })` path;
+  settled or unknown state is never forced backward.
+- A durable 60-second retry sweep selects only Reef/Bumper rooms already marked
+  `aborted_crash` with open/locked multiplayer wager rows. Thus an RPC outage or
+  an ambiguous lost response is retried after chain reconciliation, including
+  after process restart, without double-cancel risk.
+- Boot orphan recovery now dispatches the same composed `aborted_crash`
+  handlers, so crash-aborted rooms discovered at startup enter the identical
+  recovery path. Graceful shutdown stops the retry worker.
+
+No on-chain program or existing wager-client transaction semantics changed.
+The tests stub the program client at its existing seam and assert the exact
+settlement-authority cancel call; no devnet RPC or fake success path is used.
+
+### Deterministic coverage
+
+The activity manager watchdog test now drives a locked Bumper wager through a
+dead simulation interval and hard-deadline-plus-grace lease expiry. It proves
+the room becomes `aborted_crash`, the lobby becomes cancelled/unlocked and
+refundable, a second handler run is a no-op, and exactly one cancellation is
+sent. The same composition test proves the MTT callback does not fire for
+Bumper and still fires for an MTT room. A separate ambiguous-RPC test makes the
+first cancellation reach chain state and then throw; the retry reads
+`cancelled`, reconciles the DB, and still records one send total.
+
+### Session 10 verification
+
+- Monorepo `bun run typecheck`: 12/12 tasks PASS, zero errors.
+- Direct API production build: PASS.
+- PB service 9/9; durable reward ownership 2/2; reward pipeline 31/31;
+  activity room manager 42/42; MTT WS integration 6/6; Spline sim 37/37:
+  combined 127/127 PASS.
+- MTT tournament multi-table/recovery/boot wiring: 6/6 PASS.
+- Wager intent reconciliation/lifecycle fence: 6/6 PASS.
+- R18d hectic/Current Swap: 10/10 PASS in its isolated process, 57,480
+  assertions.
+- `git diff --check`: PASS. No dev server was started.
+
+**SESSION 10 HONEST STATUS — the lease-expiry wager-escrow blocker is closed
+locally by `9d3d6267`. The branch was not pushed and the newer
+`origin/staging` was not merged. §6.8/v43 staging partner harness and §6.9
+founder-floor drive remain push/deploy-time gates owned by the orchestrator.**
