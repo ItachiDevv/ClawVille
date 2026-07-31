@@ -1,6 +1,15 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-07-30 (Reef Race + Bumper Shells persistent-stage
+**Last Audited: 2026-07-31 (world position over one persistent connection).**
+Your character's position now rides one persistent connection instead of a
+request every fifth of a second; if that connection cannot be made (or the
+server has the feature switched off, which is the default today), the game
+quietly goes back to the old method with no visible difference. Standing
+still sends one keepalive every 10 seconds either way. When the new connection
+method is enabled, switching tabs no longer risks your character vanishing
+from the shared world while the connection stays healthy.
+
+**Prior Last Audited: 2026-07-30 (Reef Race + Bumper Shells persistent-stage
 entry/exit).** Match routes now enter through the shared world-stage fade while
 their existing activity canvases, HUDs, input cadence, room WebSocket, and
 per-room reset behavior remain page-owned. Leave, requeue, cancellation, and

@@ -1154,3 +1154,104 @@ first cancellation reach chain state and then throw; the retry reads
 locally by `9d3d6267`. The branch was not pushed and the newer
 `origin/staging` was not merged. §6.8/v43 staging partner harness and §6.9
 founder-floor drive remain push/deploy-time gates owned by the orchestrator.**
+
+## Session 11 — staging merge reconciliation
+
+This session reconciles `origin/staging` at `d738a2e5` (world-presence WS
+uplink, dark by default) into `feat/world-stage-p4-activities`. The in-progress
+merge was preserved and completed in place: it was not aborted, squashed, or
+pushed, and no development server was started.
+
+### Conflict dispositions and controller port
+
+- `use-world-stream.ts` adopts staging's thin-hook architecture and delegates
+  lifecycle ownership to `WorldPresenceController`. The hook retains the P4
+  downlink-enabled input and exposes the controller only in probe-flag builds
+  for transport diagnostics.
+- `WorldPresenceController` now makes every SSE open/close decision through the
+  unchanged pure `decideWorldDownlink` policy. Its 64 pinned policy tests remain
+  intact.
+- The controller carries P4's pending-reopen CLOSE edge, rotates stream epochs
+  on every source replacement, and gates every event handler, timer, and async
+  recovery callback by source identity, epoch, and current enablement.
+- Retry tokens own their timers and async recovery work, including the 30-second
+  recovery-deferral ceiling. Recovery/bootstrap joins are bounded to 15 seconds
+  and settle through lease-CAS ownership (`settleRecovery`).
+- Reopen invalidates land state, while persisted-bfcache restores reset local
+  membership before recovery.
+- Exact activity routes suspend SSE throughout the activity dwell but keep the
+  remote uplink alive with `at-activity` poses at the keepalive cadence. Kelp's
+  existing `at-kelp` behavior remains unchanged.
+- `world-stage-probe.mjs` retains both P4 activity/canonicalizer lanes and the
+  staging WS-uplink stub/assertions. The duplicate `WebSocketServer` import was
+  removed. Two staging-probe defects were repaired without weakening the new
+  assertions: the route fixture now enters stable remote NPC control before
+  transport checks, and HTTP position posts are counted in their reachable
+  request branch.
+
+No existing controller assertion was removed or weakened. Five focused tests
+were added for dark activity entry, activity dwell with continuing WS uplink,
+pending-reopen cancellation, stale-epoch inertness, and bounded recovery lease
+release. The downlink structural test was retargeted from the former monolithic
+hook to the controller, and machine fixtures gained staging's required
+`documentHidden`/`wsAdvertised` inputs; their behavioral assertions were not
+relaxed. The unmount structural assertion was updated from the former one-line
+cleanup spelling to require exactly one cleanup block, exactly one
+`controller.stop()`, and deletion of the probe-only controller handle; this is
+the same lifecycle contract with the added probe resource accounted for.
+
+### Auto-merge audit
+
+Every requested auto-merge was read for both-parent survival. `apps/api/src/index.ts`
+retains the composed abort handlers and lease/sweep/recovery boot order while
+also starting and stopping the WS hub heartbeat. `packages/shared/src/index.ts`
+retains the existing world exports and adds the WS protocol export. The auth,
+world route, world-position apply, and room-registry changes are additive and
+preserve P4 autonomy, land/SSE, NPC-refresh, throttling, and presence-touch
+behavior. `.env.example`, `ARCHITECTURE.md`, `deploy-status.md`, and the
+persistent-world plan retain both the P4 and dark-uplink documentation. No
+auto-merge defect or dropped wiring was found.
+
+### Session 11 gate table
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| Shared/database dist rebuild | PASS | both workspace package builds completed before typecheck |
+| Monorepo typecheck | PASS | 12/12 tasks |
+| API production build | PASS | direct build completed |
+| Web production build | PASS | standard build and probe/Spline build completed |
+| P4 constituent matrix | PASS | 287/287; the former 270 set grew by 17 checked-in activity/Kelp cases; includes downlink 64/64 and overlay 81/81 |
+| Controller + machine + API WS suites | PASS | 112/112 |
+| Session 9/10 money suites | PASS | 139/139 |
+| Hectic / Current Swap isolation | PASS | 10/10; 57,480 assertions |
+| `routes-cove 30` | PASS | 30/30 loops, 34/34 assertions, heap +5.19% |
+| `routes-kelp 30` | PASS | 30/30 loops, 35/35 assertions, heap +14.71% (17% gate) |
+| `kelp-exit` | PASS | 26/26 assertions |
+| `activity-exit` | PASS | 25/25 assertions |
+| `routes-activity 30` | PASS | 30/30 loops, 43/43 assertions, including all decisive P4c downlink checks |
+| WS transport probe | PASS | 1/1 loop, 34/34 assertions; one WS socket/frame and zero HTTP position posts |
+| Local API WS smoke | PASS | 12 passed, 4 intentional optional skips, 0 failed |
+
+The Cove tracked raw summary remains untouched. Relative to the accepted
+pre-merge P4 canonical artifact, the merged result differs only by six additive
+all-true WS assertions; projecting those new keys out reproduces the exact
+pre-merge hash
+`A5B79D4742800A6BAEEAD5337F237F09811724B0D1E588AF95F5BE52C9C02B8B`.
+The repository's older checked-in P3 raw artifact still has the previously
+documented fixture-bookkeeping delta; it was not rewritten to manufacture a
+literal comparison. A WS-enabled 30-loop Kelp diagnostic also passed every
+functional assertion but measured +17.43% heap against the 17% HTTP-lane gate;
+the required dark/default Kelp run passed at +14.71%, and no threshold was
+weakened.
+
+The self-hosted WS smoke used a deterministic local fingerprint secret. Its
+long-duration reap scenarios, bearer-agent scenario, and external-process
+shutdown scenario were skipped exactly as the script marks them optional. The
+smoke harness left API timers alive after printing its successful summary, so
+its owned local process was stopped after the results were captured.
+
+**SESSION 11 HONEST STATUS — the staging merge conflicts are reconciled, both
+parents' wiring is retained, all required local functional gates pass, and the
+dark WS uplink plus frozen P4 downlink semantics coexist. The tracked P3 raw
+Cove artifact caveat above is pre-existing and explicit. Nothing was pushed,
+and no development server was run.**

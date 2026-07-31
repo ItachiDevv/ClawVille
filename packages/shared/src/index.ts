@@ -95,6 +95,7 @@ export * from './activities';
 // Multiplayer Phase 1 — room snapshot + player wire types shared by
 // `/api/world/:roomId/stream` and the web client's world-stream hook.
 export * from './types/world';
+export * from './types/world-presence-ws';
 // Server-usable AABB collision data (buildings + town-center props).
 export * from './constants/world-colliders-data';
 // Dedicated Kelp Forest realm: one authored maze layout derives client wall

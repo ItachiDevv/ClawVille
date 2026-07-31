@@ -9,6 +9,7 @@
  *  POST /api/world/position         — fire-and-forget 5 Hz position update.
  *                                     Server-side rate-limited to 10 Hz/session.
  *  GET  /api/world/autonomy/status  — owner-safe server autonomy state.
+ *  GET  /api/world/:roomId/ws       — kill-switched position WebSocket uplink.
  *  GET  /api/world/:roomId/stream   — SSE snapshot stream for the room.
  *  GET  /api/world/rooms            — admin-only roster of live rooms.
  *
@@ -23,28 +24,59 @@
  */
 
 import { Hono } from 'hono';
+import { setCookie } from 'hono/cookie';
 import { HTTPException } from 'hono/http-exception';
 import { streamSSE, type SSEStreamingApi } from 'hono/streaming';
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { db, avatars } from '@clawville/database';
-import { SPAWN_PX, WORLD_PX_WIDTH, WORLD_PX_HEIGHT } from '@clawville/shared';
+import {
+  SPAWN_PX,
+  WORLD_PRESENCE_WS_CLOSE_CODES,
+  WORLD_PX_HEIGHT,
+  WORLD_PX_WIDTH,
+} from '@clawville/shared';
 import { sessionMiddleware } from '../middleware/auth';
 import { adminOnly } from '../middleware/admin-only';
-import {
-  AGENT_SESSION_HEADER,
-  validateLiveAgentSession,
-} from '../middleware/require-auth-or-agent';
 import { npcSimulation } from '../services/npc-simulation';
 import {
   activateAutonomyForOwner,
   deactivateAutonomyForOwner,
 } from '../services/agent-autonomy-activation';
 import { agentAutonomyDriver } from '../services/agent-autonomy-driver';
-import { roomRegistry, ROOM_MAX_PLAYERS, PresenceSupersededError } from '../services/room-registry';
+import {
+  derivePublicId,
+  roomRegistry,
+  ROOM_MAX_PLAYERS,
+  PresenceSupersededError,
+} from '../services/room-registry';
 import { signRoomTicket, resolveRecoveryRoomId } from '../services/room-ticket';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
-import type { Context } from 'hono';
+import { getBunWebSocketHelper } from '../lib/bun-ws-adapter';
+import { isAllowedOrigin } from '../lib/allowed-origins';
+import {
+  guestBindingCookieOptions,
+  signGuestBinding,
+  WORLD_GUEST_COOKIE_NAME,
+} from '../services/world-guest-binding';
+import {
+  resolveWorldPresence,
+  type ResolvedPresence,
+} from '../services/world-presence-identity';
+import {
+  admitWorldPositionRate,
+  applyWorldPosition,
+  forgetWorldPositionThrottle,
+  worldPositionSchema,
+} from '../services/world-position-apply';
+import {
+  decideWorldWsUpgrade,
+  isWorldPositionWsEnabled,
+  worldPresenceWsHub,
+  WORLD_WS_UPGRADE_MAX_PER_MINUTE,
+  type WorldWs,
+  type WorldWsBinding,
+} from '../services/world-presence-ws-hub';
 import type { AppContext } from '../types';
 
 // Town-center spawn for guests / avatar-less agents / avatar rows missing a
@@ -116,61 +148,6 @@ export function broadcastLandEvent(payload: {
 // Helpers
 // ---------------------------------------------------------------------------
 
-type PresenceKind = 'human' | 'guest' | 'agent';
-
-interface ResolvedPresence {
-  /** Raw internal session key. NEVER returned to the client. */
-  sessionId: string;
-  kind: PresenceKind;
-  /**
-   * The userId whose avatar this presence plays AS. Non-null for humans and
-   * for agents bound to an avatar; null for guests and for agents not yet
-   * bound to an avatar (they still get a guest-style presence so they can
-   * walk around, but earn nothing persistent until they have an avatar).
-   */
-  userId: string | null;
-}
-
-/**
- * Resolve a stable per-session presence with precedence:
- *   1. Lucia user      → sessionId = Lucia session id, kind 'human'.
- *   2. Agent session   → X-Clawville-Agent-Session header validated via the
- *                        single fail-closed liveness gate. sessionId is an
- *                        `a:<agentId>` handle (the raw agentId is NOT leaked;
- *                        derivePublicId hashes it like everyone else), kind
- *                        'agent', userId = the bound human's userId so the
- *                        agent joins AS its avatar (Rule E5 parity).
- *   3. Guest           → fingerprint hash prefixed `g:`, kind 'guest'.
- *
- * Async because the agent path hits the DB (validateLiveAgentSession).
- */
-async function resolvePresence(c: Context<AppContext>): Promise<ResolvedPresence> {
-  const session = c.get('session');
-  if (session?.id) {
-    const user = c.get('user');
-    return { sessionId: session.id, kind: 'human', userId: user?.id ?? null };
-  }
-
-  // Agent-session path: honor the SAME header every other economy/activity
-  // surface uses. An EXPIRED / unknown session fails closed (returns null)
-  // and falls through to the guest path rather than throwing.
-  const agentSessionId = c.req.header(AGENT_SESSION_HEADER);
-  if (agentSessionId) {
-    const live = await validateLiveAgentSession(agentSessionId);
-    if (live) {
-      return {
-        sessionId: `a:${live.config.agentId}`,
-        kind: 'agent',
-        userId: live.bot.userId ?? null,
-      };
-    }
-  }
-
-  const fp = c.get('fpHash');
-  if (fp) return { sessionId: `g:${fp}`, kind: 'guest', userId: null };
-  throw new HTTPException(500, { message: 'No session or fingerprint available' });
-}
-
 /**
  * Build a JoinAvatarMeta payload from the resolved presence. Humans AND
  * avatar-bound agents load their real avatar row (name/species/modelKey/
@@ -240,23 +217,6 @@ async function resolveAvatarMeta(presence: ResolvedPresence) {
   };
 }
 
-// Server-side per-session position-update throttle. The client SHOULD send
-// at 5 Hz (matches NPC tick); 10 Hz is the upper bound we accept before
-// silently dropping. Spec: "Cap server-side at 10 Hz/session".
-const POSITION_MIN_INTERVAL_MS = 100;
-const positionLastSeen = new Map<string, number>();
-
-// B3 (punch list) — when RoomRegistry kicks stale sessions inside its
-// tick GC, drop their throttle entries too so the Map can't grow
-// unbounded across an attacker spamming /position with rotating
-// fingerprints. RoomRegistry already enumerates the kicked sessionIds
-// in `staleSessionsRemoved`; we just hook the tick result.
-roomRegistry.subscribeTick((result) => {
-  for (const sid of result.staleSessionsRemoved) {
-    positionLastSeen.delete(sid);
-  }
-});
-
 // B2 (punch list) — per-IP rate limit on POST /join. Caps anonymous
 // room-mint spam at 3/min/IP; auth'd users hit the same limit but
 // they're already individually accountable via the Lucia session.
@@ -287,13 +247,6 @@ const joinSchema = z.object({
   // invalid/expired/mismatched ticket is silently ignored (fail-closed → normal
   // auto-fill), never an error.
   roomTicket: z.string().max(512).optional(),
-});
-
-const positionSchema = z.object({
-  x: z.number().finite(),
-  y: z.number().finite(),
-  dirZ: z.number().finite(),
-  activity: z.string().max(32).default('idle'),
 });
 
 // §B.1 — Autonomous-mode toggle. ONE idempotent endpoint: `active:true` enrolls
@@ -328,7 +281,7 @@ worldRoutes.post('/join', async (c) => {
   if (!joinRateLimiter.check(ip)) {
     throw new HTTPException(429, { message: 'Too many join attempts — try again in a minute' });
   }
-  const presence = await resolvePresence(c);
+  const presence = await resolveWorldPresence(c);
   const body = (await c.req.json().catch(() => ({}))) as unknown;
   const parsed = joinSchema.safeParse(body);
   if (!parsed.success) {
@@ -384,12 +337,22 @@ worldRoutes.post('/join', async (c) => {
   }
   const { room, player, swappedOutNpcId, evictedSessionIds } = joinResult;
 
-  // Purge the position-throttle entries of any same-account session this fresh
-  // join evicted (identity dedup). The evicted session is no longer in a room,
-  // so the tick GC never re-kicks it to clean these up — mirror the tick
-  // subscriber's positionLastSeen cleanup here. (NB-1, two-force review.)
+  if (presence.kind === 'guest' && presence.guestPresenceKey) {
+    setCookie(
+      c,
+      WORLD_GUEST_COOKIE_NAME,
+      signGuestBinding(presence.guestPresenceKey),
+      guestBindingCookieOptions(),
+    );
+  }
+
   for (const sid of evictedSessionIds) {
-    positionLastSeen.delete(sid);
+    forgetWorldPositionThrottle(sid);
+    worldPresenceWsHub.dropSession(sid, {
+      control: 'membership_lost',
+      closeCode: WORLD_PRESENCE_WS_CLOSE_CODES.MEMBERSHIP_LOST,
+      reason: 'evicted',
+    });
   }
 
   // Mint a fresh recovery ticket for the room the session actually landed in,
@@ -411,13 +374,19 @@ worldRoutes.post('/join', async (c) => {
     playerCount: room.players.size,
     swappedOutNpcId,
     players: roomRegistry.getPlayerSnapshots(room.id),
+    transports: { positionWs: isWorldPositionWsEnabled() },
   });
 });
 
 worldRoutes.post('/leave', async (c) => {
-  const { sessionId } = await resolvePresence(c);
+  const { sessionId } = await resolveWorldPresence(c);
   const result = roomRegistry.leavePlayer(sessionId);
-  positionLastSeen.delete(sessionId);
+  forgetWorldPositionThrottle(sessionId);
+  worldPresenceWsHub.dropSession(sessionId, {
+    control: null,
+    closeCode: 1000,
+    reason: 'left',
+  });
   return c.json({
     ok: true,
     roomId: result?.room.id ?? null,
@@ -426,37 +395,19 @@ worldRoutes.post('/leave', async (c) => {
 });
 
 worldRoutes.post('/position', async (c) => {
-  const presence = await resolvePresence(c);
-  const { sessionId } = presence;
-  const now = Date.now();
-  const last = positionLastSeen.get(sessionId) ?? 0;
-  if (now - last < POSITION_MIN_INTERVAL_MS) {
-    // Silently accepted — the client is over-publishing; we drop the
-    // update but don't error so it doesn't have to backoff on every
-    // throttle event.
+  const presence = await resolveWorldPresence(c);
+  if (!admitWorldPositionRate(presence.sessionId)) {
     return c.json({ ok: true, throttled: true });
   }
-  positionLastSeen.set(sessionId, now);
-
   const body = await c.req.json().catch(() => ({}));
-  const parsed = positionSchema.safeParse(body);
+  const parsed = worldPositionSchema.safeParse(body);
   if (!parsed.success) {
     throw new HTTPException(400, { message: parsed.error.message });
   }
-  const player = roomRegistry.updatePosition(sessionId, parsed.data);
-  if (!player) {
+  if (applyWorldPosition(presence, parsed.data) === 'not_in_room') {
     // Session has no room yet — client must call /join first. 409 makes
     // the client error path explicit so it can re-join automatically.
     throw new HTTPException(409, { message: 'Session is not in a room — call /api/world/join first' });
-  }
-  // Controlled Hatcher launch: a logged-in human actively uploading position is
-  // the live "owner is driving" signal. Refresh the suppression TTL for any
-  // launched Hatcher proxy NPC recorded for this user so its autonomous body
-  // stays hidden + frozen while the owner drives their avatar. No-op for users
-  // with no controlled launch binding. Suppression lapses on its own once these
-  // uploads stop (e.g. the owner switches to explore mode).
-  if (presence.kind === 'human' && presence.userId) {
-    npcSimulation.refreshHumanControlledOpenClawForUser(presence.userId);
   }
   return c.json({ ok: true });
 });
@@ -559,6 +510,129 @@ worldRoutes.get('/autonomy/status', (c) => {
   return c.json(agentAutonomyDriver.getOwnerStatus(user.id));
 });
 
+const { upgradeWebSocket } = getBunWebSocketHelper();
+const worldWsAdapters = new WeakMap<object, WorldWs>();
+const wsUpgradeLimiter = createRateLimiter({
+  maxPerWindow: WORLD_WS_UPGRADE_MAX_PER_MINUTE,
+  windowMs: 60_000,
+});
+
+interface WorldWsContextLike {
+  send(source: string): void;
+  close(code?: number, reason?: string): void;
+  raw?: unknown;
+}
+
+function worldAdapterKey(ws: WorldWsContextLike): object {
+  if (typeof ws.raw === 'object' && ws.raw !== null) return ws.raw;
+  return ws as object;
+}
+
+function getOrMakeWorldAdapter(
+  ws: WorldWsContextLike,
+  binding: WorldWsBinding,
+): WorldWs {
+  const key = worldAdapterKey(ws);
+  const existing = worldWsAdapters.get(key);
+  if (existing) return existing;
+  const adapter: WorldWs = {
+    send: (frame) => ws.send(frame),
+    close: (code, reason) => ws.close(code, reason),
+    data: worldPresenceWsHub.makeConnectionData(binding),
+  };
+  worldWsAdapters.set(key, adapter);
+  return adapter;
+}
+
+function detachWorldAdapter(ws: WorldWsContextLike): void {
+  const key = worldAdapterKey(ws);
+  const adapter = worldWsAdapters.get(key);
+  if (!adapter) return;
+  worldPresenceWsHub.unregisterConnection(adapter);
+  worldWsAdapters.delete(key);
+}
+
+worldRoutes.get(
+  '/:roomId/ws',
+  async (c, next) => {
+    const roomId = c.req.param('roomId');
+    const ip = getClientIp(c.req.raw.headers);
+    const origin = c.req.header('Origin') ?? null;
+    const enabled = isWorldPositionWsEnabled();
+
+    // Keep flag-off probes free: token spend begins only when this process is
+    // configured to accept the transport.
+    const ipUpgradeAllowed = enabled ? wsUpgradeLimiter.check(ip) : true;
+    const roomIdValid = ROOM_ID_REGEX.test(roomId);
+    const originAllowed = origin === null || isAllowedOrigin(origin);
+
+    let presence: ResolvedPresence | null = null;
+    if (enabled && ipUpgradeAllowed && roomIdValid && originAllowed) {
+      presence = await resolveWorldPresence(c).catch(() => null);
+    }
+
+    // Atomic reservation closes the check-then-open concurrency race.
+    const ipSlotToken = presence ? worldPresenceWsHub.reserveIpSlot(ip) : null;
+    const decision = decideWorldWsUpgrade({
+      enabled,
+      ipUpgradeAllowed,
+      roomIdValid,
+      originAllowed,
+      presenceResolved: presence !== null,
+      ipSlotReserved: ipSlotToken !== null,
+    });
+    if (!decision.ok) {
+      if (ipSlotToken) worldPresenceWsHub.releaseIpSlot(ipSlotToken);
+      return c.json(
+        { error: 'World presence WebSocket upgrade rejected', code: decision.code },
+        decision.status,
+      );
+    }
+
+    // The pure decision guarantees these, but retain a fail-closed runtime fence.
+    if (!presence || !ipSlotToken) {
+      return c.json(
+        { error: 'World presence could not be resolved', code: 'no_presence' },
+        401,
+      );
+    }
+
+    const memberRoomId =
+      roomRegistry.getRoomForSession(presence.sessionId)?.id ?? null;
+    c.set('worldWsBinding', {
+      sessionId: presence.sessionId,
+      kind: presence.kind,
+      userId: presence.userId,
+      roomId,
+      presenceId: derivePublicId(presence.sessionId),
+      ip,
+      ipSlotToken,
+      membershipOk: memberRoomId === roomId,
+    });
+    await next();
+  },
+  upgradeWebSocket((c) => {
+    const binding = c.get('worldWsBinding');
+    if (!binding) {
+      throw new Error('worldWsBinding missing after world WS upgrade guard');
+    }
+    return {
+      onOpen(_event, ws) {
+        worldPresenceWsHub.registerConnection(getOrMakeWorldAdapter(ws, binding));
+      },
+      onMessage(event, ws) {
+        worldPresenceWsHub.handleMessage(
+          getOrMakeWorldAdapter(ws, binding),
+          event.data,
+        );
+      },
+      onClose(_event, ws) {
+        detachWorldAdapter(ws);
+      },
+    };
+  }),
+);
+
 worldRoutes.get('/:roomId/stream', async (c) => {
   const roomId = c.req.param('roomId');
   const isSolo = roomId.startsWith('solo-');
@@ -574,7 +648,7 @@ worldRoutes.get('/:roomId/stream', async (c) => {
   // membership (it is a private single-viewer NPC stream from the npc-sse
   // shim) so it is exempt: there is no other session's data to leak.
   if (!isSolo) {
-    const presence = await resolvePresence(c);
+    const presence = await resolveWorldPresence(c);
     const callerRoom = roomRegistry.getRoomForSession(presence.sessionId);
     if (!callerRoom || callerRoom.id !== roomId) {
       throw new HTTPException(403, {

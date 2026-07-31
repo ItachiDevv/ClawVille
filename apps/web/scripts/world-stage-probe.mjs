@@ -63,35 +63,59 @@ const routeDestination =
         afterFirstGamePhase: "activity-after-first-game",
       }
     : routePair === "kelp"
-    ? {
-        path: "/kelp",
-        alternatePath: "/kelp",
-        sceneId: "kelp",
-        label: "Kelp",
-        coldPhase: "cold-kelp",
-        coldKey: "coldKelp",
-        coldAssetKey: "coldKelpAssetRequests",
-        coldWorldAssetKey: "coldKelpWorldAssetRequests",
-        firstGamePhase: "first-game",
-        afterFirstGamePhase: "after-first-game",
-      }
+      ? {
+          path: "/kelp",
+          alternatePath: "/kelp",
+          sceneId: "kelp",
+          label: "Kelp",
+          coldPhase: "cold-kelp",
+          coldKey: "coldKelp",
+          coldAssetKey: "coldKelpAssetRequests",
+          coldWorldAssetKey: "coldKelpWorldAssetRequests",
+          firstGamePhase: "first-game",
+          afterFirstGamePhase: "after-first-game",
+        }
       : {
-        path: "/cove",
-        alternatePath: "/cove",
-        sceneId: "cove",
-        label: "Cove",
-        coldPhase: "cold-cove",
-        coldKey: "coldCove",
-        coldAssetKey: "coldCoveAssetRequests",
-        coldWorldAssetKey: "coldCoveWorldAssetRequests",
-        firstGamePhase: "first-game",
-        afterFirstGamePhase: "after-first-game",
-      };
+          path: "/cove",
+          alternatePath: "/cove",
+          sceneId: "cove",
+          label: "Cove",
+          coldPhase: "cold-cove",
+          coldKey: "coldCove",
+          coldAssetKey: "coldCoveAssetRequests",
+          coldWorldAssetKey: "coldCoveWorldAssetRequests",
+          firstGamePhase: "first-game",
+          afterFirstGamePhase: "after-first-game",
+        };
 const apiStubLane =
   routeLane ||
   lane === "loader" ||
   lane === "kelp-exit" ||
   lane === "activity-exit";
+const uplinkMode = argv.get("uplink") ?? "http";
+const wsFault = argv.get("ws-fault") ?? "none";
+if (!["http", "ws", "refuse"].includes(uplinkMode)) {
+  throw new Error("--uplink must be http, ws, or refuse");
+}
+if (
+  ![
+    "none",
+    "membership_lost",
+    "socket_replaced",
+    "bad_frame",
+    "flood",
+    "shutdown",
+    "silent1006",
+  ].includes(wsFault)
+) {
+  throw new Error("unsupported --ws-fault");
+}
+if (uplinkMode !== "http" && !apiStubLane) {
+  throw new Error("--uplink applies only to API-stub lanes");
+}
+if (wsFault !== "none" && uplinkMode !== "ws") {
+  throw new Error("--ws-fault requires --uplink=ws");
+}
 const dwellTarget = argv.get("dwell") ?? null;
 if (
   dwellTarget !== null &&
@@ -109,16 +133,15 @@ if (
   throw new Error("--dwell-seconds must be between 10 and 600");
 }
 const dwellMode = dwellTarget !== null;
+if (uplinkMode === "refuse" && (!dwellMode || dwellSeconds < 60)) {
+  throw new Error(
+    "--uplink=refuse requires a dwell lane (--lane=soak --dwell=game --dwell-seconds>=60)",
+  );
+}
 const heapDiffRequested = argv.has("heap-diff");
 const routeHeapDiff = heapDiffRequested && lane === "routes";
-if (
-  heapDiffRequested &&
-  !routeHeapDiff &&
-  (lane !== "soak" || dwellMode)
-) {
-  throw new Error(
-    "--heap-diff requires crossing soak or routes",
-  );
+if (heapDiffRequested && !routeHeapDiff && (lane !== "soak" || dwellMode)) {
+  throw new Error("--heap-diff requires crossing soak or routes");
 }
 const forceWebGL = argv.has("webgl");
 const requestedUrl =
@@ -129,11 +152,11 @@ const requestedUrl =
       ? "http://localhost:3000/game?webgpu=1"
       : lane === "activity-exit"
         ? "http://localhost:3000/game?webgpu=1"
-      : lane === "retry-adoption"
-        ? "http://localhost:3000/perf/stage?stage=1&retryAdoption=1&webgpu=1"
-        : routeLane
-          ? `http://localhost:3000${routeDestination.path}`
-          : "http://localhost:3000/perf/stage?stage=1&webgpu=1");
+        : lane === "retry-adoption"
+          ? "http://localhost:3000/perf/stage?stage=1&retryAdoption=1&webgpu=1"
+          : routeLane
+            ? `http://localhost:3000${routeDestination.path}`
+            : "http://localhost:3000/perf/stage?stage=1&webgpu=1");
 const parsedUrl = new URL(requestedUrl);
 if (forceWebGL) {
   parsedUrl.searchParams.delete("webgpu");
@@ -149,15 +172,11 @@ if (
   (lane === "soak" &&
     !dwellMode &&
     (transitionCount < 20 || transitionCount > 120)) ||
-  (heapDiffRequested &&
-    transitionCount < (routeHeapDiff ? 30 : 50))
+  (heapDiffRequested && transitionCount < (routeHeapDiff ? 30 : 50))
 ) {
   throw new Error(
-    heapDiffRequested &&
-      transitionCount < (routeHeapDiff ? 30 : 50)
-      ? `--heap-diff requires at least ${
-          routeHeapDiff ? 30 : 50
-        } loops`
+    heapDiffRequested && transitionCount < (routeHeapDiff ? 30 : 50)
+      ? `--heap-diff requires at least ${routeHeapDiff ? 30 : 50} loops`
       : lane === "soak"
         ? "The soak lane requires integer --loops between 20 and 120"
         : "--transitions must be a positive integer",
@@ -165,20 +184,20 @@ if (
 }
 const outputPath = resolve(
   argv.get("output") ??
-    ({
+    {
       synthetic: `${SCRIPT_DIR}/world-stage-probe-summary.json`,
       routes:
         routePair === "activity"
           ? `${SCRIPT_DIR}/world-stage-activity-route-summary.json`
           : routePair === "kelp"
-          ? `${SCRIPT_DIR}/world-stage-route-kelp-summary.json`
-          : `${SCRIPT_DIR}/world-stage-route-summary.json`,
+            ? `${SCRIPT_DIR}/world-stage-route-kelp-summary.json`
+            : `${SCRIPT_DIR}/world-stage-route-summary.json`,
       soak: `${SCRIPT_DIR}/world-stage-soak-summary.json`,
       loader: `${SCRIPT_DIR}/world-stage-loader-summary.json`,
       "kelp-exit": `${SCRIPT_DIR}/world-stage-kelp-exit-summary.json`,
       "activity-exit": `${SCRIPT_DIR}/world-stage-activity-exit-summary.json`,
       "retry-adoption": `${SCRIPT_DIR}/world-stage-retry-adoption-summary.json`,
-    })[lane],
+    }[lane],
 );
 const chromePath =
   argv.get("chrome") ?? "C:/Program Files/Google/Chrome/Application/chrome.exe";
@@ -521,6 +540,22 @@ const summary = {
         firstGame: 0,
         afterFirstGame: 0,
       },
+      uplinkSockets: {
+        [routeDestination.coldKey]: 0,
+        firstGame: 0,
+        afterFirstGame: 0,
+      },
+      positionPosts: {
+        [routeDestination.coldKey]: 0,
+        firstGame: 0,
+        afterFirstGame: 0,
+      },
+      uplinkFramesReceived: 0,
+      uplinkPongsReceived: 0,
+      uplinkUpgradeRefusals: 0,
+      uplinkFrameViolations: [],
+      uplinkMode,
+      wsFault,
       events: [],
       fixtureTraffic: {
         "GET /api/auth/me": 0,
@@ -585,6 +620,29 @@ let worldProbeServer;
 let heapSnapshotDirectory;
 const heapSnapshotPaths = new Map();
 
+function currentPhaseKey() {
+  const phase = summary.routes.network.phase;
+  return phase === routeDestination.coldPhase
+    ? routeDestination.coldKey
+    : phase === routeDestination.firstGamePhase
+      ? "firstGame"
+      : "afterFirstGame";
+}
+
+function totalUplinkSockets(report) {
+  return Object.values(report.routes.network.uplinkSockets).reduce(
+    (total, count) => total + count,
+    0,
+  );
+}
+
+function totalPositionPosts(report) {
+  return Object.values(report.routes.network.positionPosts).reduce(
+    (total, count) => total + count,
+    0,
+  );
+}
+
 async function startWorldProbeServer() {
   const streams = new Set();
   const activitySockets = new Set();
@@ -600,6 +658,9 @@ async function startWorldProbeServer() {
     for await (const chunk of request) chunks.push(chunk);
     return Buffer.concat(chunks).toString("utf8");
   };
+  const uplinkWss = new WebSocketServer({ noServer: true });
+  const uplinkSockets = new Set();
+  let wsFaultInjected = false;
   const server = createServer(async (request, response) => {
     const origin = request.headers.origin ?? "http://localhost:3000";
     const corsHeaders = {
@@ -734,9 +795,7 @@ async function startWorldProbeServer() {
         ...corsHeaders,
         "Content-Type": "application/json",
       });
-      response.end(
-        JSON.stringify({ connected: false, mode: "none" }),
-      );
+      response.end(JSON.stringify({ connected: false, mode: "none" }));
       return;
     }
     if (request.method === "POST" && pathname === "/api/world/join") {
@@ -749,6 +808,9 @@ async function startWorldProbeServer() {
           roomId: "world-stage-probe",
           id: "world-stage-probe-session",
           roomTicket: "world-stage-probe-ticket",
+          ...(uplinkMode === "http"
+            ? {}
+            : { transports: { positionWs: true } }),
         }),
       );
       return;
@@ -827,6 +889,7 @@ async function startWorldProbeServer() {
       return;
     }
     if (request.method === "POST" && pathname === "/api/world/position") {
+      summary.routes.network.positionPosts[currentPhaseKey()] += 1;
       const rawBody = await readBody(request);
       let body = null;
       try {
@@ -875,15 +938,12 @@ async function startWorldProbeServer() {
   });
   const activityWebSocketServer = new WebSocketServer({ noServer: true });
   server.on("upgrade", (request, socket, head) => {
-    const pathname = new URL(
-      request.url ?? "/",
-      "http://localhost:4000",
-    ).pathname;
+    const pathname = new URL(request.url ?? "/", "http://localhost:4000")
+      .pathname;
     const match = pathname.match(
       /^\/api\/activities\/reef-race\/rooms\/([^/]+)\/ws$/,
     );
     if (!match) {
-      socket.destroy();
       return;
     }
     const roomId = decodeURIComponent(match[1]);
@@ -896,84 +956,194 @@ async function startWorldProbeServer() {
       },
     );
   });
-  activityWebSocketServer.on(
-    "connection",
-    (webSocket, _request, roomId) => {
-      const connection = {
-        id: activityConnections.length + 1,
+  activityWebSocketServer.on("connection", (webSocket, _request, roomId) => {
+    const connection = {
+      id: activityConnections.length + 1,
+      roomId,
+      shortCode: null,
+      openedAt: Date.now(),
+      closedAt: null,
+      frames: [],
+    };
+    activityConnections.push(connection);
+    activitySockets.add(webSocket);
+    webSocket.on("message", (raw) => {
+      let frame;
+      try {
+        frame = JSON.parse(raw.toString());
+      } catch {
+        frame = { type: "invalid", raw: raw.toString() };
+      }
+      const recorded = {
+        connectionId: connection.id,
         roomId,
-        shortCode: null,
-        openedAt: Date.now(),
-        closedAt: null,
-        frames: [],
+        at: Date.now(),
+        frame,
       };
-      activityConnections.push(connection);
-      activitySockets.add(webSocket);
-      webSocket.on("message", (raw) => {
-        let frame;
-        try {
-          frame = JSON.parse(raw.toString());
-        } catch {
-          frame = { type: "invalid", raw: raw.toString() };
-        }
-        const recorded = {
-          connectionId: connection.id,
-          roomId,
-          at: Date.now(),
-          frame,
-        };
-        connection.frames.push(recorded);
-        activityFrames.push(recorded);
-        if (frame.type === "auth") {
-          connection.shortCode = frame.shortCode ?? null;
-          webSocket.send(
+      connection.frames.push(recorded);
+      activityFrames.push(recorded);
+      if (frame.type === "auth") {
+        connection.shortCode = frame.shortCode ?? null;
+        webSocket.send(
+          JSON.stringify({
+            type: "snapshot.init",
+            serverTimeMs: Date.now(),
+            room: {
+              roomId,
+              shortCode: fixtureShortCode(roomId),
+              activityId: "reef-race",
+              status: "live",
+              startedAt: Date.now() - 1_000,
+            },
+            world: {
+              tick: 1,
+              entities: [
+                {
+                  avatarId: ACTIVITY_FIXTURE.avatarId,
+                  position: { x: 0, y: 0 },
+                  velocity: { x: 0, y: 0 },
+                  rotation: 0,
+                  state: "alive",
+                },
+              ],
+              powerUps: [],
+              scores: [
+                {
+                  avatarId: ACTIVITY_FIXTURE.avatarId,
+                  score: 0,
+                  lap: 0,
+                  totalLaps: 3,
+                  position: 1,
+                },
+              ],
+            },
+            seed: 42,
+          }),
+        );
+      } else if (frame.type === "ping") {
+        webSocket.send(JSON.stringify({ type: "pong", sentAt: frame.sentAt }));
+      }
+    });
+    webSocket.on("close", () => {
+      connection.closedAt = Date.now();
+      activitySockets.delete(webSocket);
+    });
+  });
+  server.on("upgrade", (request, socket, head) => {
+    const pathname = new URL(request.url ?? "/", "http://localhost:4000")
+      .pathname;
+    if (!/^\/api\/world\/[^/]+\/ws$/.test(pathname)) {
+      return;
+    }
+    if (uplinkMode !== "ws") {
+      summary.routes.network.uplinkUpgradeRefusals += 1;
+      socket.write(
+        "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n",
+      );
+      socket.destroy();
+      return;
+    }
+    socket.setTimeout(0);
+    uplinkWss.handleUpgrade(request, socket, head, (ws) => {
+      summary.routes.network.uplinkSockets[currentPhaseKey()] += 1;
+      if (wsFault === "silent1006" && !wsFaultInjected) {
+        wsFaultInjected = true;
+        ws.terminate();
+        return;
+      }
+      ws.send(
+        JSON.stringify({
+          type: "presence.ready",
+          roomId: "world-stage-probe",
+          presenceId: "world-stage-probe-session",
+          serverTimeMs: Date.now(),
+        }),
+      );
+      const ping = setInterval(() => {
+        if (ws.readyState === ws.OPEN) {
+          ws.send(
             JSON.stringify({
-              type: "snapshot.init",
+              type: "presence.ping",
               serverTimeMs: Date.now(),
-              room: {
-                roomId,
-                shortCode: fixtureShortCode(roomId),
-                activityId: "reef-race",
-                status: "live",
-                startedAt: Date.now() - 1_000,
-              },
-              world: {
-                tick: 1,
-                entities: [
-                  {
-                    avatarId: ACTIVITY_FIXTURE.avatarId,
-                    position: { x: 0, y: 0 },
-                    velocity: { x: 0, y: 0 },
-                    rotation: 0,
-                    state: "alive",
-                  },
-                ],
-                powerUps: [],
-                scores: [
-                  {
-                    avatarId: ACTIVITY_FIXTURE.avatarId,
-                    score: 0,
-                    lap: 0,
-                    totalLaps: 3,
-                    position: 1,
-                  },
-                ],
-              },
-              seed: 42,
             }),
           );
-        } else if (frame.type === "ping") {
-          webSocket.send(
-            JSON.stringify({ type: "pong", sentAt: frame.sentAt }),
+        }
+      }, 25_000);
+      let faultTimer = null;
+      if (wsFault !== "none" && !wsFaultInjected) {
+        wsFaultInjected = true;
+        faultTimer = setTimeout(() => {
+          const fault = {
+            membership_lost: {
+              frame: {
+                type: "presence.error",
+                code: "membership_lost",
+              },
+              code: 4409,
+            },
+            socket_replaced: {
+              frame: {
+                type: "presence.error",
+                code: "socket_replaced",
+              },
+              code: 4410,
+            },
+            bad_frame: {
+              frame: { type: "presence.error", code: "bad_frame" },
+              code: 4400,
+            },
+            flood: {
+              frame: { type: "presence.error", code: "flood" },
+              code: 4429,
+            },
+            shutdown: {
+              frame: {
+                type: "presence.error",
+                code: "server_shutdown",
+              },
+              code: 4413,
+            },
+          }[wsFault];
+          if (!fault || ws.readyState !== ws.OPEN) return;
+          ws.send(JSON.stringify(fault.frame));
+          ws.close(fault.code);
+        }, 3_000);
+      }
+      ws.on("message", (raw) => {
+        let frame = null;
+        try {
+          frame = JSON.parse(String(raw));
+        } catch {
+          // Recorded as a violation below.
+        }
+        if (frame?.type === "presence.pong") {
+          summary.routes.network.uplinkPongsReceived += 1;
+          return;
+        }
+        summary.routes.network.uplinkFramesReceived += 1;
+        const valid =
+          frame?.type === "presence.position" &&
+          Number.isFinite(frame.x) &&
+          Number.isFinite(frame.y) &&
+          Number.isFinite(frame.dirZ) &&
+          typeof frame.activity === "string";
+        if (
+          !valid &&
+          summary.routes.network.uplinkFrameViolations.length < 10
+        ) {
+          summary.routes.network.uplinkFrameViolations.push(
+            String(raw).slice(0, 200),
           );
         }
       });
-      webSocket.on("close", () => {
-        connection.closedAt = Date.now();
-        activitySockets.delete(webSocket);
+      uplinkSockets.add(ws);
+      ws.on("close", () => {
+        clearInterval(ping);
+        if (faultTimer) clearTimeout(faultTimer);
+        uplinkSockets.delete(ws);
       });
-    },
-  );
+    });
+  });
   await new Promise((resolveStart, rejectStart) => {
     server.once("error", rejectStart);
     server.listen(4000, () => {
@@ -1028,6 +1198,8 @@ async function startWorldProbeServer() {
       await new Promise((resolveClose) =>
         activityWebSocketServer.close(() => resolveClose()),
       );
+      for (const socket of uplinkSockets) socket.terminate();
+      uplinkWss.close();
       await new Promise((resolveClose, rejectClose) => {
         server.close((error) => {
           if (error) rejectClose(error);
@@ -1039,10 +1211,9 @@ async function startWorldProbeServer() {
 }
 
 async function snapshot(page) {
-  await page.waitForFunction(
-    () => Boolean(window.__WORLD_STAGE_PROBE__),
-    { timeout: 30_000 },
-  );
+  await page.waitForFunction(() => Boolean(window.__WORLD_STAGE_PROBE__), {
+    timeout: 30_000,
+  });
   const state = await page.evaluate(() =>
     window.__WORLD_STAGE_PROBE__.snapshot(),
   );
@@ -1058,11 +1229,7 @@ async function readWorldPlayerFacing(page, expectedUuid = null) {
   return page.evaluate((uuid) => {
     const bridge = window.__CV_STORES__;
     const scene = window.__R3F?.scene;
-    if (
-      !bridge?.avatarPositionRef ||
-      !bridge.worldCenterPx ||
-      !scene
-    ) {
+    if (!bridge?.avatarPositionRef || !bridge.worldCenterPx || !scene) {
       return null;
     }
     if (uuid) {
@@ -1077,10 +1244,8 @@ async function readWorldPlayerFacing(page, expectedUuid = null) {
           }
         : null;
     }
-    const worldX =
-      bridge.avatarPositionRef.x - bridge.worldCenterPx.x;
-    const worldZ =
-      bridge.avatarPositionRef.y - bridge.worldCenterPx.y;
+    const worldX = bridge.avatarPositionRef.x - bridge.worldCenterPx.x;
+    const worldZ = bridge.avatarPositionRef.y - bridge.worldCenterPx.y;
     const candidates = [];
     const seen = new Set();
     scene.traverse((object) => {
@@ -1163,15 +1328,11 @@ async function armWorldPlayerFacing(page) {
   const attempts = [];
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     await page.evaluate(() => {
-      window.__CV_STORES__.useGameStore
-        .getState()
-        .setJoystickVelocity(1, 0);
+      window.__CV_STORES__.useGameStore.getState().setJoystickVelocity(1, 0);
     });
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
     await page.evaluate(() => {
-      window.__CV_STORES__.useGameStore
-        .getState()
-        .setJoystickVelocity(0, 0);
+      window.__CV_STORES__.useGameStore.getState().setJoystickVelocity(0, 0);
     });
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
     // Search again after the arm: the Lobster_mesh has multiple anonymous
@@ -1216,24 +1377,23 @@ async function waitForSettled(page, expectedScene) {
   const dom = await page
     .evaluate(() => ({
       hidden: document.hidden,
-      activityCanvas: Boolean(
-        document.querySelector(".game-container canvas"),
-      ),
-      activityCanvasCount: document.querySelectorAll(
-        ".game-container canvas",
-      ).length,
+      activityCanvas: Boolean(document.querySelector(".game-container canvas")),
+      activityCanvasCount: document.querySelectorAll(".game-container canvas")
+        .length,
       bodyText: document.body.innerText.slice(0, 240),
     }))
     .catch(() => null);
   throw new Error(
-    `transition to ${expectedScene} did not settle within 30000ms; last=${JSON.stringify({
-      pathname: lastState?.pathname,
-      activeScene: lastState?.activeScene,
-      transitionPhase: lastState?.transitionPhase,
-      transitionError: lastState?.transitionError,
-      activitySlot: lastState?.slots?.activity,
-      dom,
-    })}`,
+    `transition to ${expectedScene} did not settle within 30000ms; last=${JSON.stringify(
+      {
+        pathname: lastState?.pathname,
+        activeScene: lastState?.activeScene,
+        transitionPhase: lastState?.transitionPhase,
+        transitionError: lastState?.transitionError,
+        activitySlot: lastState?.slots?.activity,
+        dom,
+      },
+    )}`,
   );
 }
 
@@ -1296,12 +1456,7 @@ async function traverseHistoryAndWait(page, direction, pathname, sceneId) {
   return state;
 }
 
-async function traverseHistoryByDeltaAndWait(
-  page,
-  delta,
-  pathname,
-  sceneId,
-) {
+async function traverseHistoryByDeltaAndWait(page, delta, pathname, sceneId) {
   await page.evaluate((historyDelta) => {
     window.history.go(historyDelta);
   }, delta);
@@ -1347,12 +1502,8 @@ async function waitForActivityCanvas(page, expectedPathname, timeout = 90_000) {
 
 async function readCanvasEvidence(page) {
   return page.evaluate(() => {
-    const stageCanvas = document.querySelector(
-      ".world-stage-root canvas",
-    );
-    const activityCanvas = document.querySelector(
-      ".game-container canvas",
-    );
+    const stageCanvas = document.querySelector(".world-stage-root canvas");
+    const activityCanvas = document.querySelector(".game-container canvas");
     const liveCanvases = [...document.querySelectorAll("canvas")].filter(
       (canvas) => canvas.isConnected,
     );
@@ -1793,10 +1944,8 @@ async function captureKelpPaintEvidence(
   }
   const samples = values.length;
   const mean = samples > 0 ? sum / samples : 0;
-  const variance =
-    samples > 0 ? sumSquares / samples - mean * mean : 0;
-  const nonBackgroundRatio =
-    samples > 0 ? nonBackground / samples : 0;
+  const variance = samples > 0 ? sumSquares / samples - mean * mean : 0;
+  const nonBackgroundRatio = samples > 0 ? nonBackground / samples : 0;
   const colorBuckets = new Set(values).size;
   return {
     clip,
@@ -1820,10 +1969,7 @@ async function captureKelpPaintEvidence(
     minimumNonBackgroundRatio: 0.02,
     colorBuckets,
     minimumColorBuckets: 8,
-    pass:
-      variance >= 20 &&
-      nonBackgroundRatio >= 0.02 &&
-      colorBuckets >= 8,
+    pass: variance >= 20 && nonBackgroundRatio >= 0.02 && colorBuckets >= 8,
   };
 }
 
@@ -1892,12 +2038,7 @@ try {
 
     if (routeLane) {
       const phase = summary.routes.network.phase;
-      const phaseKey =
-        phase === routeDestination.coldPhase
-          ? routeDestination.coldKey
-          : phase === routeDestination.firstGamePhase
-            ? "firstGame"
-            : "afterFirstGame";
+      const phaseKey = currentPhaseKey();
       const method = request.method();
       let type = null;
       if (method === "POST" && pathname === "/api/world/join") {
@@ -1926,9 +2067,7 @@ try {
     ) {
       summary.routes[routeDestination.coldAssetKey].push(requestUrl);
       if (WORLD_ONLY_ASSET_PATTERN.test(pathname)) {
-        summary.routes[routeDestination.coldWorldAssetKey].push(
-          requestUrl,
-        );
+        summary.routes[routeDestination.coldWorldAssetKey].push(requestUrl);
       }
     }
   });
@@ -1941,10 +2080,9 @@ try {
     await page.waitForSelector('a[href="/game"]', { timeout: 30_000 });
     await armLoaderObserver(page, "__WORLD_STAGE_LOADER_OBSERVATION__");
     await page.click('a[href="/game"]');
-    await page.waitForFunction(
-      () => window.location.pathname === "/game",
-      { timeout: 30_000 },
-    );
+    await page.waitForFunction(() => window.location.pathname === "/game", {
+      timeout: 30_000,
+    });
     await waitForWorldReadyWithoutLoader(page);
     const observation = await finishLoaderObserver(
       page,
@@ -1955,16 +2093,13 @@ try {
       pathname: await page.evaluate(() => window.location.pathname),
       ready: await page.evaluate(() => window.__W3D_READY === true),
       loaderAbsent: await page.evaluate(
-        () =>
-          !document.querySelector('[aria-label="Loading ClawVille"]'),
+        () => !document.querySelector('[aria-label="Loading ClawVille"]'),
       ),
     };
     summary.assertions = {
       realHomepageLinkUsed: summary.loader.pathname === "/game",
-      loaderAppearedBeforeReady:
-        observation.appearedWhileNotReady === true,
-      loaderWasTopmostAndPointerBlocking:
-        observation.topmostAtCenter === true,
+      loaderAppearedBeforeReady: observation.appearedWhileNotReady === true,
+      loaderWasTopmostAndPointerBlocking: observation.topmostAtCenter === true,
       loaderMadeMeasuredProgress: observation.maxAriaValue > 0,
       loaderNeverDisappearedBeforeReady:
         observation.disappearedBeforeReady === false,
@@ -1989,8 +2124,7 @@ try {
     await waitForWorldReadyWithoutLoader(page);
     try {
       await page.waitForFunction(
-        () =>
-          document.querySelector('[data-stage-transition="idle"]') !== null,
+        () => document.querySelector('[data-stage-transition="idle"]') !== null,
         { timeout: 90_000 },
       );
     } catch (error) {
@@ -2001,8 +2135,7 @@ try {
           ?.getAttribute("data-stage-transition"),
         w3dReady: window.__W3D_READY,
         loaderPresent:
-          document.querySelector('[aria-label="Loading ClawVille"]') !==
-          null,
+          document.querySelector('[aria-label="Loading ClawVille"]') !== null,
         probeInstalled: Boolean(window.__WORLD_STAGE_PROBE__),
         bodyText: document.body.innerText.slice(0, 300),
       }));
@@ -2029,8 +2162,7 @@ try {
       const STANDOFF_WU = 40;
       bridge.avatarPositionRef.x =
         bridge.worldCenterPx.x + KELP_PORTAL_WORLD.x + STANDOFF_WU;
-      bridge.avatarPositionRef.y =
-        bridge.worldCenterPx.y + KELP_PORTAL_WORLD.z;
+      bridge.avatarPositionRef.y = bridge.worldCenterPx.y + KELP_PORTAL_WORLD.z;
       gameStore
         .getState()
         .setAvatarPosition(
@@ -2079,8 +2211,7 @@ try {
       bridge.useGameStore.getState().setJoystickVelocity(0, 0);
       bridge.avatarPositionRef.x =
         bridge.worldCenterPx.x + KELP_PORTAL_WORLD.x + 40;
-      bridge.avatarPositionRef.y =
-        bridge.worldCenterPx.y + KELP_PORTAL_WORLD.z;
+      bridge.avatarPositionRef.y = bridge.worldCenterPx.y + KELP_PORTAL_WORLD.z;
       bridge.useGameStore
         .getState()
         .setAvatarPosition(
@@ -2098,23 +2229,17 @@ try {
       visible: true,
       timeout: 30_000,
     });
-    await armLoaderObserver(
-      page,
-      "__KELP_ENTRY_LOADER_OBSERVATION__",
-    );
+    await armLoaderObserver(page, "__KELP_ENTRY_LOADER_OBSERVATION__");
     await page.click(kelpButton);
     await page.waitForFunction(
       () =>
         window.location.pathname === "/kelp" &&
-        document.querySelector('[data-stage-transition="idle"]') !==
-          null,
+        document.querySelector('[data-stage-transition="idle"]') !== null,
       { timeout: 90_000 },
     );
     await page.waitForFunction(
       () => {
-        const canvas = document.querySelector(
-          ".world-stage-root canvas",
-        );
+        const canvas = document.querySelector(".world-stage-root canvas");
         return (
           canvas?.isConnected === true &&
           canvas.width > 0 &&
@@ -2136,19 +2261,17 @@ try {
     // falsifiable under the WebGL backend (same real kelp scene).
     const realPathCanvas = await captureKelpPaintEvidence(page);
     const spaSentinelOnKelp = await page.evaluate(
-      () =>
-        window.__KELP_EXIT_SENTINEL__?.token ===
-        "same-document-sentinel",
+      () => window.__KELP_EXIT_SENTINEL__?.token === "same-document-sentinel",
     );
     await page.setViewport({
       width: 744,
       height: 844,
       deviceScaleFactor: 1,
     });
-    await page.waitForSelector(
-      '[aria-label="Movement joystick"]',
-      { visible: true, timeout: 10_000 },
-    );
+    await page.waitForSelector('[aria-label="Movement joystick"]', {
+      visible: true,
+      timeout: 10_000,
+    });
     const pointerContract = await page.evaluate(() => {
       const centerHit = (element) => {
         if (!element) return { present: false, selfHit: false };
@@ -2162,12 +2285,9 @@ try {
           selfHit: hit === element || element.contains(hit),
         };
       };
-      const canvas = document.querySelector(
-        ".world-stage-root canvas",
-      );
+      const canvas = document.querySelector(".world-stage-root canvas");
       const backButton = [...document.querySelectorAll("button")].find(
-        (candidate) =>
-          candidate.textContent?.trim() === "Back to the Reef",
+        (candidate) => candidate.textContent?.trim() === "Back to the Reef",
       );
       const claimButton = document.querySelector(
         '[aria-label="Kelp Forest collectible claim"] button',
@@ -2175,16 +2295,13 @@ try {
       const movement = document.querySelector(
         '[aria-label="Movement joystick"]',
       );
-      const camera = document.querySelector(
-        '[aria-label="Camera joystick"]',
-      );
+      const camera = document.querySelector('[aria-label="Camera joystick"]');
       const viewportCenter = document.elementFromPoint(
         window.innerWidth / 2,
         window.innerHeight / 2,
       );
       return {
-        centerCanvas:
-          Boolean(canvas) && viewportCenter === canvas,
+        centerCanvas: Boolean(canvas) && viewportCenter === canvas,
         backButton: centerHit(backButton),
         claimButton: centerHit(claimButton),
         movementJoystick: centerHit(movement),
@@ -2198,24 +2315,20 @@ try {
     await armLoaderObserver(page, "__KELP_RETURN_LOADER_OBSERVATION__");
     await page.evaluate(() => {
       const button = [...document.querySelectorAll("button")].find(
-        (candidate) =>
-          candidate.textContent?.trim() === "Back to the Reef",
+        (candidate) => candidate.textContent?.trim() === "Back to the Reef",
       );
       if (!button) throw new Error("real Back to the Reef button missing");
       button.click();
     });
-    await page.waitForFunction(
-      () => window.location.pathname === "/game",
-      { timeout: 30_000 },
-    );
-    await page.waitForFunction(
-      () => Boolean(window.__WORLD_STAGE_PROBE__),
-      { timeout: 30_000 },
-    );
+    await page.waitForFunction(() => window.location.pathname === "/game", {
+      timeout: 30_000,
+    });
+    await page.waitForFunction(() => Boolean(window.__WORLD_STAGE_PROBE__), {
+      timeout: 30_000,
+    });
     await waitForWorldReadyWithoutLoader(page);
     await page.waitForFunction(
-      () =>
-        document.querySelector('[data-stage-transition="idle"]') !== null,
+      () => document.querySelector('[data-stage-transition="idle"]') !== null,
       { timeout: 90_000 },
     );
     const returnLoader = await finishLoaderObserver(
@@ -2223,17 +2336,14 @@ try {
       "__KELP_RETURN_LOADER_OBSERVATION__",
     );
     const returnEvidence = await page.evaluate(() => {
-      const canvas = document.querySelector(
-        ".world-stage-root canvas",
-      );
+      const canvas = document.querySelector(".world-stage-root canvas");
       const x = Math.floor(window.innerWidth / 2);
       const y = Math.floor(window.innerHeight / 2);
       const hit = document.elementFromPoint(x, y);
       return {
         pathname: window.location.pathname,
         sentinelSurvived:
-          window.__KELP_EXIT_SENTINEL__?.token ===
-          "same-document-sentinel",
+          window.__KELP_EXIT_SENTINEL__?.token === "same-document-sentinel",
         stableProbe:
           Boolean(window.__WORLD_STAGE_PROBE__) &&
           window.__WORLD_STAGE_PROBE__ ===
@@ -2243,15 +2353,13 @@ try {
           '[aria-label="Loading ClawVille"]',
         ),
         transitionIdle:
-          document.querySelector('[data-stage-transition="idle"]') !==
-          null,
+          document.querySelector('[data-stage-transition="idle"]') !== null,
         hitTest: {
           x,
           y,
           exactCanvas: Boolean(canvas) && hit === canvas,
           hitTag: hit?.tagName ?? null,
-          hitClass:
-            typeof hit?.className === "string" ? hit.className : null,
+          hitClass: typeof hit?.className === "string" ? hit.className : null,
         },
       };
     });
@@ -2268,8 +2376,7 @@ try {
       const KELP_PORTAL_WORLD = { x: -547, z: -120 };
       bridge.avatarPositionRef.x =
         bridge.worldCenterPx.x + KELP_PORTAL_WORLD.x + 40;
-      bridge.avatarPositionRef.y =
-        bridge.worldCenterPx.y + KELP_PORTAL_WORLD.z;
+      bridge.avatarPositionRef.y = bridge.worldCenterPx.y + KELP_PORTAL_WORLD.z;
       bridge.useGameStore
         ?.getState()
         .setAvatarPosition(
@@ -2289,8 +2396,7 @@ try {
     await page.waitForFunction(
       () =>
         window.location.pathname === "/kelp" &&
-        document.querySelector('[data-stage-transition="idle"]') !==
-          null,
+        document.querySelector('[data-stage-transition="idle"]') !== null,
       { timeout: 90_000 },
     );
     const secondKelpState = await snapshot(page);
@@ -2304,9 +2410,7 @@ try {
     });
     await page.waitForFunction(
       () => {
-        const canvas = document.querySelector(
-          ".world-stage-root canvas",
-        );
+        const canvas = document.querySelector(".world-stage-root canvas");
         return (
           canvas?.isConnected === true &&
           canvas.width > 0 &&
@@ -2343,8 +2447,7 @@ try {
           worldFacingAfterReturn !== null &&
           worldFacingBeforeKelp.uuid === worldFacingAfterReturn.uuid &&
           Math.abs(
-            worldFacingBeforeKelp.facing -
-              worldFacingAfterReturn.facing,
+            worldFacingBeforeKelp.facing - worldFacingAfterReturn.facing,
           ) < 0.0001,
       },
       firstKelpState,
@@ -2356,9 +2459,8 @@ try {
     };
     summary.assertions = {
       exactAuthenticatedNonGuestFixtureIntercepted:
-        summary.routes.network.interceptedFixtureTraffic[
-          "GET /api/auth/me"
-        ] > 0,
+        summary.routes.network.interceptedFixtureTraffic["GET /api/auth/me"] >
+        0,
       exactAvatarFixtureIntercepted:
         summary.routes.network.interceptedFixtureTraffic[
           "GET /api/avatars/me"
@@ -2372,8 +2474,7 @@ try {
         realPathCanvas.connectedCanvas.connected === true &&
         realPathCanvas.connectedCanvas.nonDefaultBacking === true,
       kelpPaintHasNonBackgroundVariance: paint.pass === true,
-      entryLoaderNeverAppeared:
-        entryLoader.appearedWhileNotReady === false,
+      entryLoaderNeverAppeared: entryLoader.appearedWhileNotReady === false,
       pointerContract:
         pointerContract.centerCanvas === true &&
         pointerContract.backButton.selfHit === true &&
@@ -2383,49 +2484,41 @@ try {
         pointerContract.cameraJoystick.selfHit === true,
       worldFramesFrozenWhileKelpActive:
         firstKelpState.frames.world === frozenKelpState.frames.world,
-      worldCameraFrozenWhileKelpActive:
-        sameNumbers(
-          firstKelpState.cameras.world,
-          frozenKelpState.cameras.world,
-        ),
+      worldCameraFrozenWhileKelpActive: sameNumbers(
+        firstKelpState.cameras.world,
+        frozenKelpState.cameras.world,
+      ),
       worldFacingAcrossKelpRoundTrip:
-        summary.kelpExit.worldFacingAcrossKelpRoundTrip.preserved ===
-          true &&
+        summary.kelpExit.worldFacingAcrossKelpRoundTrip.preserved === true &&
         isWorldPlayerFacingArmed(worldFacingBeforeKelp),
       oneCanvasAcrossKelpRoundTrip:
         firstKelpState.canvasMountCount === 1 &&
         firstReturnState.canvasMountCount === 1 &&
         secondKelpState.canvasMountCount === 1,
-      zeroTransitionErrors:
-        secondKelpState.transitionErrors.length === 0,
+      zeroTransitionErrors: secondKelpState.transitionErrors.length === 0,
       zeroRecoveries: secondKelpState.recoveryCount === 0,
       secondEntryAccepted:
         secondKelpState.pathname === "/kelp" &&
         secondKelpState.activeScene === "kelp",
-      beaconChainReset:
-        secondKelpState.kelp?.claim?.visitedCount === 0,
+      beaconChainReset: secondKelpState.kelp?.claim?.visitedCount === 0,
       playerResetToSpawn:
         secondKelpState.kelp?.playerPosition?.x === 0 &&
         secondKelpState.kelp?.playerPosition?.z === 6000,
       kelpSlotChildMountCountStable:
-        firstKelpState.kelp?.mountCount ===
-        secondKelpState.kelp?.mountCount,
+        firstKelpState.kelp?.mountCount === secondKelpState.kelp?.mountCount,
       returnNavigationStayedSameDocument:
         returnEvidence.sentinelSurvived === true,
       returnedToGame: returnEvidence.pathname === "/game",
       stageProbeIdentityStable: returnEvidence.stableProbe === true,
-      returnLoaderNeverAppeared:
-        returnLoader.appearedWhileNotReady === false,
+      returnLoaderNeverAppeared: returnLoader.appearedWhileNotReady === false,
       returnWorldGenuinelyReady: returnEvidence.ready === true,
       returnLoaderAbsent: returnEvidence.loaderAbsent === true,
       returnTransitionIdle: returnEvidence.transitionIdle === true,
-      centerHitIsExactStageCanvas:
-        returnEvidence.hitTest.exactCanvas === true,
+      centerHitIsExactStageCanvas: returnEvidence.hitTest.exactCanvas === true,
     };
     summary.pass = Object.values(summary.assertions).every(Boolean);
   } else if (lane === "activity-exit") {
-    const activityPath =
-      "/activity/reef-race/world-stage-probe-a";
+    const activityPath = "/activity/reef-race/world-stage-probe-a";
     await page.goto(url, {
       waitUntil: "domcontentloaded",
       timeout: 30_000,
@@ -2440,9 +2533,7 @@ try {
       window.__ACTIVITY_EXIT_SENTINEL__ = {
         token: "activity-exit-same-document",
         probe: window.__WORLD_STAGE_PROBE__,
-        stageCanvas: document.querySelector(
-          ".world-stage-root canvas",
-        ),
+        stageCanvas: document.querySelector(".world-stage-root canvas"),
       };
       window.__ACTIVITY_CANVAS_OBSERVER__ = {
         mounts: 0,
@@ -2457,10 +2548,7 @@ try {
         const canvases = [...document.querySelectorAll("canvas")].filter(
           (canvas) => canvas.isConnected,
         );
-        observation.maxLive = Math.max(
-          observation.maxLive,
-          canvases.length,
-        );
+        observation.maxLive = Math.max(observation.maxLive, canvases.length);
         for (const canvas of document.querySelectorAll(
           ".game-container canvas",
         )) {
@@ -2483,10 +2571,7 @@ try {
       sample();
     });
 
-    await armLoaderObserver(
-      page,
-      "__ACTIVITY_ENTRY_LOADER_OBSERVATION__",
-    );
+    await armLoaderObserver(page, "__ACTIVITY_ENTRY_LOADER_OBSERVATION__");
     await navigateAndWait(page, activityPath, "activity");
     await waitForActivityCanvas(page, activityPath);
     const entryLoader = await finishLoaderObserver(
@@ -2524,15 +2609,11 @@ try {
           selfHit: hit === element || element.contains(hit),
         };
       };
-      const activityCanvas = document.querySelector(
-        ".game-container canvas",
-      );
+      const activityCanvas = document.querySelector(".game-container canvas");
       const leaveButton = [...document.querySelectorAll("button")].find(
         (candidate) => candidate.textContent?.trim() === "LEAVE",
       );
-      const jumpButton = document.querySelector(
-        'button[aria-label="Jump"]',
-      );
+      const jumpButton = document.querySelector('button[aria-label="Jump"]');
       const itemButton = document.querySelector(
         'button[aria-label="Use power-up"]',
       );
@@ -2557,13 +2638,11 @@ try {
           centerHit !== hudRoot &&
           !hudRoot.contains(centerHit),
         mobileActionButtonsClickable:
-          hitAtCenter(jumpButton).selfHit &&
-          hitAtCenter(itemButton).selfHit,
+          hitAtCenter(jumpButton).selfHit && hitAtCenter(itemButton).selfHit,
       };
     });
 
-    const happyFramesBefore =
-      worldProbeServer.activityEvidence().frames.length;
+    const happyFramesBefore = worldProbeServer.activityEvidence().frames.length;
     await page.evaluate(() => {
       const observation = {
         activityPageUnmountedBeforeFadeIn: false,
@@ -2582,10 +2661,7 @@ try {
           document.querySelector(".game-container canvas"),
         );
         const now = performance.timeOrigin + performance.now();
-        if (
-          observation.fadeInAt === null &&
-          transition === "fadingIn"
-        ) {
+        if (observation.fadeInAt === null && transition === "fadingIn") {
           observation.fadeInAt = now;
         }
         if (activityWasPresent && !activityPresent) {
@@ -2607,10 +2683,7 @@ try {
       };
       sample();
     });
-    await armLoaderObserver(
-      page,
-      "__ACTIVITY_RETURN_LOADER_OBSERVATION__",
-    );
+    await armLoaderObserver(page, "__ACTIVITY_RETURN_LOADER_OBSERVATION__");
     await page.evaluate(() => {
       const button = [...document.querySelectorAll("button")].find(
         (candidate) => candidate.textContent?.trim() === "LEAVE",
@@ -2618,10 +2691,9 @@ try {
       if (!button) throw new Error("activity LEAVE button missing");
       button.click();
     });
-    await page.waitForFunction(
-      () => window.location.pathname === "/game",
-      { timeout: 30_000 },
-    );
+    await page.waitForFunction(() => window.location.pathname === "/game", {
+      timeout: 30_000,
+    });
     await waitForWorldReadyWithoutLoader(page);
     await waitForSettled(page, "world");
     const returnLoader = await finishLoaderObserver(
@@ -2640,15 +2712,12 @@ try {
     );
     const returnState = await snapshot(page);
     const returnCanvas = await readCanvasEvidence(page);
-    const canvasObservation =
-      (await page.evaluate(() => {
-        window.__ACTIVITY_CANVAS_OBSERVER_CLEANUP__?.();
-        return window.__ACTIVITY_CANVAS_OBSERVER__;
-      })) ?? { mounts: null, maxLive: null };
+    const canvasObservation = (await page.evaluate(() => {
+      window.__ACTIVITY_CANVAS_OBSERVER_CLEANUP__?.();
+      return window.__ACTIVITY_CANVAS_OBSERVER__;
+    })) ?? { mounts: null, maxLive: null };
     const returnEvidence = await page.evaluate(() => {
-      const stageCanvas = document.querySelector(
-        ".world-stage-root canvas",
-      );
+      const stageCanvas = document.querySelector(".world-stage-root canvas");
       const x = Math.floor(window.innerWidth / 2);
       const y = Math.floor(window.innerHeight / 2);
       const hit = document.elementFromPoint(x, y);
@@ -2661,15 +2730,13 @@ try {
           window.__WORLD_STAGE_PROBE__ ===
           window.__ACTIVITY_EXIT_SENTINEL__?.probe,
         stageCanvasStable:
-          stageCanvas ===
-          window.__ACTIVITY_EXIT_SENTINEL__?.stageCanvas,
+          stageCanvas === window.__ACTIVITY_EXIT_SENTINEL__?.stageCanvas,
         ready: window.__W3D_READY === true,
         loaderAbsent: !document.querySelector(
           '[aria-label="Loading ClawVille"]',
         ),
         transitionIdle:
-          document.querySelector('[data-stage-transition="idle"]') !==
-          null,
+          document.querySelector('[data-stage-transition="idle"]') !== null,
         hitTest: {
           exactCanvas: Boolean(stageCanvas) && hit === stageCanvas,
           tag: hit?.tagName ?? null,
@@ -2687,10 +2754,7 @@ try {
         key: "gameToActivity",
       },
     ]) {
-      await armLoaderObserver(
-        page,
-        `__ACTIVITY_R4_${crossing.key}_LOADER__`,
-      );
+      await armLoaderObserver(page, `__ACTIVITY_R4_${crossing.key}_LOADER__`);
       const state = await navigateAndWait(
         page,
         crossing.pathname,
@@ -2722,8 +2786,7 @@ try {
       await navigateAndWait(page, activityPath, "activity");
       await waitForActivityCanvas(page, activityPath);
       const recoveryBefore = (await snapshot(page)).recoveryCount;
-      const framesBefore =
-        worldProbeServer.activityEvidence().frames.length;
+      const framesBefore = worldProbeServer.activityEvidence().frames.length;
       navigationInterception.stallGameNavigation = true;
       await page.evaluate(() => {
         const button = [...document.querySelectorAll("button")].find(
@@ -2735,8 +2798,7 @@ try {
       await page.waitForFunction(
         () =>
           [...document.querySelectorAll("button")].some(
-            (button) =>
-              button.textContent?.trim() === "Hard navigate",
+            (button) => button.textContent?.trim() === "Hard navigate",
           ),
         { timeout: 30_000 },
       );
@@ -2768,15 +2830,12 @@ try {
       const framesAtTimeout = worldProbeServer
         .activityEvidence()
         .frames.slice(framesBefore);
-      for (const request of navigationInterception.stalledRequests.splice(
-        0,
-      )) {
+      for (const request of navigationInterception.stalledRequests.splice(0)) {
         if (!request.isInterceptResolutionHandled()) {
           await request.abort("failed");
         }
       }
-      navigationInterception.stallGameNavigation =
-        action === "Hard navigate";
+      navigationInterception.stallGameNavigation = action === "Hard navigate";
       await page.evaluate((label) => {
         const button = [...document.querySelectorAll("button")].find(
           (candidate) => candidate.textContent?.trim() === label,
@@ -2790,9 +2849,7 @@ try {
           navigationInterception.stalledRequests.length === 0 &&
           Date.now() < hardDeadline
         ) {
-          await new Promise((resolveDelay) =>
-            setTimeout(resolveDelay, 25),
-          );
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
         }
         const hardFrames = worldProbeServer
           .activityEvidence()
@@ -2808,10 +2865,9 @@ try {
             await request.continue();
           }
         }
-        await page.waitForFunction(
-          () => window.location.pathname === "/game",
-          { timeout: 30_000 },
-        );
+        await page.waitForFunction(() => window.location.pathname === "/game", {
+          timeout: 30_000,
+        });
         recoveryDrills[action] = {
           ...timedOutEvidence,
           recoveryCountUnchanged:
@@ -2823,10 +2879,9 @@ try {
         };
       } else {
         navigationInterception.stallGameNavigation = false;
-        await page.waitForFunction(
-          () => window.location.pathname === "/game",
-          { timeout: 30_000 },
-        );
+        await page.waitForFunction(() => window.location.pathname === "/game", {
+          timeout: 30_000,
+        });
         await waitForSettled(page, "world");
         recoveryDrills[action] = {
           ...timedOutEvidence,
@@ -2871,10 +2926,7 @@ try {
       window.localStorage.setItem("clawville-tutorial-seen", "true");
     });
     await installStageApiInterception(historyPage);
-    const historyA = new URL(
-      "/activity/reef-race/world-stage-probe-a",
-      url,
-    );
+    const historyA = new URL("/activity/reef-race/world-stage-probe-a", url);
     historyA.search = "";
     await historyPage.goto(historyA.toString(), {
       waitUntil: "domcontentloaded",
@@ -2922,10 +2974,7 @@ try {
       "/activity/reef-race/world-stage-probe-a",
     );
     const historyBeforeForward = await snapshot(historyPage);
-    await armLoaderObserver(
-      historyPage,
-      "__ACTIVITY_HISTORY_LOADER__",
-    );
+    await armLoaderObserver(historyPage, "__ACTIVITY_HISTORY_LOADER__");
     const readinessLogStart = await historyPage.evaluate(
       () => window.__ACTIVITY_READINESS_PROBE__?.length ?? 0,
     );
@@ -2937,9 +2986,7 @@ try {
         unmountPhase: null,
         unmountElapsedMs: null,
       };
-      const outgoingCanvas = document.querySelector(
-        ".game-container canvas",
-      );
+      const outgoingCanvas = document.querySelector(".game-container canvas");
       const sample = () => {
         const phase = document
           .querySelector("[data-stage-transition]")
@@ -2998,8 +3045,7 @@ try {
       return window.__ACTIVITY_HISTORY_RETAINED__;
     });
     const historyReadinessDecisions = await historyPage.evaluate(
-      (start) =>
-        (window.__ACTIVITY_READINESS_PROBE__ ?? []).slice(start),
+      (start) => (window.__ACTIVITY_READINESS_PROBE__ ?? []).slice(start),
       readinessLogStart,
     );
     const outgoingRoomDecisions = historyReadinessDecisions.filter(
@@ -3034,10 +3080,7 @@ try {
       entryLoader: historyLoader,
     };
     await historyBrowser.close();
-    auxiliaryBrowsers.splice(
-      auxiliaryBrowsers.indexOf(historyBrowser),
-      1,
-    );
+    auxiliaryBrowsers.splice(auxiliaryBrowsers.indexOf(historyBrowser), 1);
 
     browser = await puppeteer.launch({
       executablePath: chromePath,
@@ -3086,9 +3129,7 @@ try {
     const retryState = await snapshot(page);
     const recoveryCountBefore = retryState.recoveryCount;
     const recoveryAccepted = await page.evaluate(() =>
-      window.__WORLD_STAGE_PROBE__.recover(
-        "activity-exit-readiness-recovery",
-      ),
+      window.__WORLD_STAGE_PROBE__.recover("activity-exit-readiness-recovery"),
     );
     await page.waitForFunction(
       (before) =>
@@ -3096,10 +3137,9 @@ try {
       { timeout: 30_000 },
       recoveryCountBefore,
     );
-    await page.waitForFunction(
-      () => Boolean(window.__WORLD_STAGE_PROBE__),
-      { timeout: 30_000 },
-    );
+    await page.waitForFunction(() => Boolean(window.__WORLD_STAGE_PROBE__), {
+      timeout: 30_000,
+    });
     const recoveryState = await snapshot(page);
     await navigateAndWait(
       page,
@@ -3117,14 +3157,10 @@ try {
       waitUntil: "domcontentloaded",
       timeout: 30_000,
     });
-    await page.waitForFunction(
-      () => Boolean(window.__WORLD_STAGE_PROBE__),
-      { timeout: 30_000 },
-    );
-    await waitForActivityCanvas(
-      page,
-      "/activity/reef-race/world-stage-paint",
-    );
+    await page.waitForFunction(() => Boolean(window.__WORLD_STAGE_PROBE__), {
+      timeout: 30_000,
+    });
+    await waitForActivityCanvas(page, "/activity/reef-race/world-stage-paint");
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 2_000));
     const paint = await captureKelpPaintEvidence(
       page,
@@ -3154,8 +3190,7 @@ try {
         outgoingOverlayTimedOut: false,
         recoverySurfaceShown: false,
         recoveryActionCount:
-          retryDrill.actionLabels.length +
-          hardDrill.actionLabels.length,
+          retryDrill.actionLabels.length + hardDrill.actionLabels.length,
         leaveFrameObservedBeforeFadeIn:
           Boolean(happyLeaveFrame) &&
           (handoffObservation.fadeInAt === null ||
@@ -3197,8 +3232,7 @@ try {
       },
       stagePausedWhileActivityIdle:
         firstActivityState.transitionPhase === "idle" &&
-        firstActivityState.frames.world ===
-          frozenActivityState.frames.world &&
+        firstActivityState.frames.world === frozenActivityState.frames.world &&
         returnState.frames.world > frozenActivityState.frames.world,
       regressionCrossings,
       paint,
@@ -3222,14 +3256,11 @@ try {
       maxLiveCanvases:
         summary.activityExit.maxLiveCanvases === 2 &&
         returnCanvas.liveCanvasCount === 1,
-      entryLoaderNeverAppeared:
-        entryLoader.appearedWhileNotReady === false,
-      returnLoaderNeverAppeared:
-        returnLoader.appearedWhileNotReady === false,
+      entryLoaderNeverAppeared: entryLoader.appearedWhileNotReady === false,
+      returnLoaderNeverAppeared: returnLoader.appearedWhileNotReady === false,
       activityNavigationStayedSameDocument,
       worldFramesFrozenWhileActivityActive:
-        firstActivityState.frames.world ===
-        frozenActivityState.frames.world,
+        firstActivityState.frames.world === frozenActivityState.frames.world,
       worldCameraFrozenWhileActivityActive: sameNumbers(
         firstActivityState.cameras.world,
         frozenActivityState.cameras.world,
@@ -3239,28 +3270,28 @@ try {
       activityPageUnmountedBeforeFadeIn:
         handoffObservation.activityPageUnmountedBeforeFadeIn === true,
       leaveFrameObservedBeforeFadeIn:
-        summary.activityExit.overlayHandoff
-          .leaveFrameObservedBeforeFadeIn === true,
+        summary.activityExit.overlayHandoff.leaveFrameObservedBeforeFadeIn ===
+        true,
       outgoingOverlayTimedOut:
-        summary.activityExit.overlayHandoff.outgoingOverlayTimedOut ===
-        false,
-      stallDrillTimedOutWithoutLeaving:
-        [retryDrill, hardDrill].every(
-          (drill) =>
-            drill.recoverySurfaceShown === true &&
-            drill.transitionPhase === "awaiting" &&
-            drill.activityCanvasPresent === true &&
-            drill.recoveryCountUnchanged === true &&
-            drill.leaveFrameEmittedByTimeout === false,
-        ),
-      recoverySurfaceHasExactlyTwoActionsAndNoStay:
-        [retryDrill, hardDrill].every(
-          (drill) =>
-            drill.actionLabels.length === 2 &&
-            drill.actionLabels.includes("Hard navigate") &&
-            drill.actionLabels.includes("Retry navigation") &&
-            !drill.actionLabels.includes("Stay"),
-        ),
+        summary.activityExit.overlayHandoff.outgoingOverlayTimedOut === false,
+      stallDrillTimedOutWithoutLeaving: [retryDrill, hardDrill].every(
+        (drill) =>
+          drill.recoverySurfaceShown === true &&
+          drill.transitionPhase === "awaiting" &&
+          drill.activityCanvasPresent === true &&
+          drill.recoveryCountUnchanged === true &&
+          drill.leaveFrameEmittedByTimeout === false,
+      ),
+      recoverySurfaceHasExactlyTwoActionsAndNoStay: [
+        retryDrill,
+        hardDrill,
+      ].every(
+        (drill) =>
+          drill.actionLabels.length === 2 &&
+          drill.actionLabels.includes("Hard navigate") &&
+          drill.actionLabels.includes("Retry navigation") &&
+          !drill.actionLabels.includes("Stay"),
+      ),
       bothRecoveryActionsDriven:
         retryDrill.completedToGame === true &&
         hardDrill.hardNavigateLeaveFrameSent === true,
@@ -3275,14 +3306,11 @@ try {
         historyEvidence.pathnameFirstMintedNewGeneration === true &&
         historyEvidence.outgoingRetainedUntilOpaque === true &&
         historyEvidence.entryLoader.appearedWhileNotReady === false,
-      handlerOwnedCrossingsFade:
-        Object.values(regressionCrossings).every(
-          (crossing) => crossing.pass,
-        ),
-      pointerContract:
-        Object.values(pointerContract).every(Boolean),
-      zeroTransitionErrors:
-        summary.transitionErrors.length === 0,
+      handlerOwnedCrossingsFade: Object.values(regressionCrossings).every(
+        (crossing) => crossing.pass,
+      ),
+      pointerContract: Object.values(pointerContract).every(Boolean),
+      zeroTransitionErrors: summary.transitionErrors.length === 0,
       zeroUnexpectedRecoveries: deliberateRecoveries === 1,
       returnEvidence:
         returnEvidence.pathname === "/game" &&
@@ -3342,8 +3370,7 @@ try {
       retrySettledToIdle:
         summary.retryAdoption.settled === true &&
         summary.retryAdoption.finalPhase === "idle",
-      zeroTransitionErrors:
-        summary.retryAdoption.transitionErrors.length === 0,
+      zeroTransitionErrors: summary.retryAdoption.transitionErrors.length === 0,
       dedicatedDeadlineUsed:
         summary.retryAdoption.dedicatedDeadlineMs !== 30_000,
     };
@@ -3395,14 +3422,31 @@ try {
     // required first-world-boot path.
     summary.routes.network.phase = routeDestination.firstGamePhase;
     await navigateAndWait(page, "/game", "world");
+    // The route fixture intentionally runs without a real authenticated avatar.
+    // Keep it in the guest-controlled mode so the transport assertions exercise
+    // actual pose traffic instead of silently staying in spectator/explore.
+    // `npc` is also stable under the game page's no-avatar correction, unlike
+    // forcing the authenticated-only `player` mode.
+    await page.evaluate(() => {
+      const gameStore = window.__CV_STORES__?.useGameStore;
+      if (!gameStore) throw new Error("useGameStore proof bridge missing");
+      gameStore.getState().setControlMode("npc");
+    });
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+    summary.routes.uplinkFixture = await page.evaluate(() => ({
+      controlMode:
+        window.__CV_STORES__?.useGameStore.getState().controlMode ?? null,
+      controller:
+        window.__WORLD_PRESENCE_CONTROLLER__?.getDiagnostics?.() ?? null,
+    }));
+    if (summary.routes.uplinkFixture.controlMode !== "npc") {
+      throw new Error(
+        `route uplink fixture did not retain npc control mode: ${String(summary.routes.uplinkFixture.controlMode)}`,
+      );
+    }
     summary.warmupTransitions += 1;
-    summary.routes.network.phase =
-      routeDestination.afterFirstGamePhase;
-    await navigateAndWait(
-      page,
-      warmDestinationPath,
-      routeDestination.sceneId,
-    );
+    summary.routes.network.phase = routeDestination.afterFirstGamePhase;
+    await navigateAndWait(page, warmDestinationPath, routeDestination.sceneId);
     if (activityRoute) {
       await waitForActivityCanvas(page, warmDestinationPath);
       worldProbeServer.setActivityDwell(true);
@@ -3487,9 +3531,7 @@ try {
                 next: 1,
                 ids: new WeakMap(),
               });
-            const canvas = document.querySelector(
-              ".game-container canvas",
-            );
+            const canvas = document.querySelector(".game-container canvas");
             if (!canvas) return null;
             if (!probe.ids.has(canvas)) {
               probe.ids.set(canvas, probe.next++);
@@ -3525,8 +3567,7 @@ try {
         summary.completedTransitions += 1;
         if (
           activityRoute &&
-          summary.routes.network.joins.afterFirstGame !==
-            joinsBeforeReturn
+          summary.routes.network.joins.afterFirstGame !== joinsBeforeReturn
         ) {
           resumeJoinViolations += 1;
         }
@@ -3569,8 +3610,7 @@ try {
           activityRoute && exerciseHistory
             ? activityPathForLoop(roundTrip - 1)
             : activityPathForLoop(roundTrip);
-        const joinsBeforeDrill =
-          summary.routes.network.joins.afterFirstGame;
+        const joinsBeforeDrill = summary.routes.network.joins.afterFirstGame;
         const streamsBeforeDrill =
           summary.routes.network.streams.afterFirstGame;
         if (activityRoute && roundTrip === 0) {
@@ -3594,9 +3634,7 @@ try {
             );
         if (activityRoute) {
           await waitForActivityCanvas(page, destinationPath);
-          await new Promise((resolveDelay) =>
-            setTimeout(resolveDelay, 250),
-          );
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
           if (worldProbeServer.activeWorldStreams() !== 0) {
             summary.routes.downlink.allActivityDwellsStreamClosed = false;
           }
@@ -3607,9 +3645,7 @@ try {
                 next: 1,
                 ids: new WeakMap(),
               });
-            const canvas = document.querySelector(
-              ".game-container canvas",
-            );
+            const canvas = document.querySelector(".game-container canvas");
             if (!canvas) return null;
             if (!probe.ids.has(canvas)) {
               probe.ids.set(canvas, probe.next++);
@@ -3621,14 +3657,12 @@ try {
             activityCanvas &&
             previousActivityCanvas !== activityCanvas
           ) {
-            summary.routes.roomIsolation.activityCanvasRekeyedOnRoomChange =
-              true;
+            summary.routes.roomIsolation.activityCanvasRekeyedOnRoomChange = true;
           }
           previousActivityCanvas = activityCanvas;
           const activityEvidence = worldProbeServer.activityEvidence();
           if (
-            activityEvidence.connections.length >
-            priorActivityConnectionCount
+            activityEvidence.connections.length > priorActivityConnectionCount
           ) {
             const recentConnections = activityEvidence.connections.slice(
               priorActivityConnectionCount,
@@ -3638,25 +3672,20 @@ try {
               recentConnections.some(
                 (connection) =>
                   connection.roomId === currentRoomId &&
-                  connection.shortCode ===
-                    fixtureShortCode(destinationPath),
+                  connection.shortCode === fixtureShortCode(destinationPath),
               )
             ) {
-              summary.routes.roomIsolation.shortCodeResetOnRoomChange =
-                true;
-              summary.routes.roomIsolation.wsSocketIdentityChangedOnRoomChange =
-                true;
+              summary.routes.roomIsolation.shortCodeResetOnRoomChange = true;
+              summary.routes.roomIsolation.wsSocketIdentityChangedOnRoomChange = true;
             }
-            priorActivityConnectionCount =
-              activityEvidence.connections.length;
+            priorActivityConnectionCount = activityEvidence.connections.length;
           }
           if (roundTrip === 0) {
             await new Promise((resolveDelay) =>
               setTimeout(resolveDelay, 11_000),
             );
             summary.routes.downlink.forcedPosition409RejoinedWithoutSse =
-              summary.routes.network.joins.afterFirstGame >
-                joinsBeforeDrill &&
+              summary.routes.network.joins.afterFirstGame > joinsBeforeDrill &&
               summary.routes.network.streams.afterFirstGame ===
                 streamsBeforeDrill;
           }
@@ -3673,14 +3702,13 @@ try {
         if (
           !activityRoute &&
           (afterDestination.frames[routeDestination.sceneId] ?? 0) <=
-          destinationFramesBefore
+            destinationFramesBefore
         ) {
           summary.activeGrowthViolations.push({
             index: transitionIndex,
             sceneId: routeDestination.sceneId,
             before: destinationFramesBefore,
-            after:
-              afterDestination.frames[routeDestination.sceneId] ?? 0,
+            after: afterDestination.frames[routeDestination.sceneId] ?? 0,
           });
         }
         hiddenStarts.set("world", afterDestination);
@@ -3772,9 +3800,7 @@ try {
       summary.routes.roomIsolation.selfBusesResetOnRoomChange =
         activityEvidence.connections
           .filter((connection) =>
-            connection.frames.some(
-              ({ frame }) => frame.type === "input",
-            ),
+            connection.frames.some(({ frame }) => frame.type === "input"),
           )
           .every((connection) => {
             const firstInput = connection.frames.find(
@@ -3784,8 +3810,7 @@ try {
           });
       summary.routes.roomIsolation.lobbyGateResetOnRoomChange = true;
       summary.routes.roomIsolation.spectatorStateResetOnRoomChange = true;
-      summary.routes.downlink.extraJoinsOnResume =
-        resumeJoinViolations;
+      summary.routes.downlink.extraJoinsOnResume = resumeJoinViolations;
       summary.routes.downlink.landInvalidatedOnReopen =
         summary.routes.network.streams.afterFirstGame >= 1;
     }
@@ -3890,24 +3915,25 @@ try {
         ));
     const activitySlotEmpty =
       !activityRoute ||
-      [summary.inventory.early?.activity, summary.inventory.late?.activity]
-        .every(
-          (inventory) =>
-            Boolean(inventory) &&
-            inventory.meshes === 0 &&
-            inventory.geometryReferences === 0 &&
-            inventory.uniqueGeometries === 0 &&
-            Object.keys(inventory.meshesByNameType ?? {}).length === 0 &&
-            Object.keys(inventory.geometriesByNameType ?? {}).length === 0,
-        );
-    const activityPositions =
-      activityRoute
-        ? summary.routes.downlink.positionUploads.filter(
-            (upload) =>
-              upload.atActivity === true &&
-              upload.body?.activity === "at-activity",
-          )
-        : [];
+      [
+        summary.inventory.early?.activity,
+        summary.inventory.late?.activity,
+      ].every(
+        (inventory) =>
+          Boolean(inventory) &&
+          inventory.meshes === 0 &&
+          inventory.geometryReferences === 0 &&
+          inventory.uniqueGeometries === 0 &&
+          Object.keys(inventory.meshesByNameType ?? {}).length === 0 &&
+          Object.keys(inventory.geometriesByNameType ?? {}).length === 0,
+      );
+    const activityPositions = activityRoute
+      ? summary.routes.downlink.positionUploads.filter(
+          (upload) =>
+            upload.atActivity === true &&
+            upload.body?.activity === "at-activity",
+        )
+      : [];
     const commonAssertions = {
       ...(activityRoute
         ? { oneStageCanvas: summary.canvasMountCount === 1 }
@@ -3947,6 +3973,39 @@ try {
             noRouteCorrelatedStreamReopens:
               summary.routes.network.streams.afterFirstGame === 0,
           }),
+      [routePair === "activity"
+        ? "coldActivityUplinkSocketsZero"
+        : routePair === "kelp"
+          ? "coldKelpUplinkSocketsZero"
+          : "coldCoveUplinkSocketsZero"]:
+        summary.routes.network.uplinkSockets[routeDestination.coldKey] === 0,
+      uplinkFramesWellFormed:
+        summary.routes.network.uplinkFrameViolations.length === 0,
+      singlePersistentUplinkSocket:
+        uplinkMode !== "ws" ||
+        wsFault !== "none" ||
+        totalUplinkSockets(summary) === 1,
+      noRouteCorrelatedSocketReopens:
+        wsFault !== "none" ||
+        summary.routes.network.uplinkSockets.afterFirstGame === 0,
+      uplinkTransportMatchesMode:
+        uplinkMode === "ws" && wsFault === "none"
+          ? totalPositionPosts(summary) === 0 &&
+            summary.routes.network.uplinkFramesReceived > 0
+          : uplinkMode === "refuse"
+            ? summary.routes.network.uplinkUpgradeRefusals >= 1 &&
+              summary.routes.network.uplinkUpgradeRefusals <= 6 &&
+              totalPositionPosts(summary) > 0 &&
+              totalUplinkSockets(summary) === 0
+            : uplinkMode === "http"
+              ? totalUplinkSockets(summary) === 0 &&
+                totalPositionPosts(summary) > 0
+              : true,
+      uplinkPongAnswered:
+        uplinkMode !== "ws" ||
+        !dwellMode ||
+        dwellSeconds < 30 ||
+        summary.routes.network.uplinkPongsReceived >= 1,
       coldInitBridgeLandsExactlyOnce:
         summary.routes.coldInit?.landedExactlyOnce === true,
       gameCacheControlNonCacheable:
@@ -3959,13 +4018,9 @@ try {
         ),
       bothSlotInventoriesCaptured:
         Boolean(summary.inventory.early?.world) &&
-        Boolean(
-          summary.inventory.early?.[routeDestination.sceneId],
-        ) &&
+        Boolean(summary.inventory.early?.[routeDestination.sceneId]) &&
         Boolean(summary.inventory.late?.world) &&
-        Boolean(
-          summary.inventory.late?.[routeDestination.sceneId],
-        ),
+        Boolean(summary.inventory.late?.[routeDestination.sceneId]),
       sceneInventoriesExactZeroDiff: activityRoute
         ? sceneInventoryDiffIsZero({
             world: summary.inventory.diff?.world,
@@ -4050,8 +4105,7 @@ try {
                     ),
                   worldStreamClosedWhileInActivity:
                     summary.routes.downlink.allActivityDwellsStreamClosed ===
-                      true &&
-                    summary.routes.downlink.sseBytesDuringDwell === 0,
+                      true && summary.routes.downlink.sseBytesDuringDwell === 0,
                   positionUploadsContinue: activityPositions.length > 0,
                   forcedPosition409RejoinsWithoutSse:
                     summary.routes.downlink.forcedPosition409 === true &&
@@ -4061,11 +4115,9 @@ try {
                     summary.routes.downlink.landInvalidatedOnReopen === true,
                   closeEmittedWithNullSource:
                     summary.routes.downlink.forcedSse500AtEntry === true &&
-                    summary.routes.downlink.closeEmittedWithNullSource ===
-                      true,
+                    summary.routes.downlink.closeEmittedWithNullSource === true,
                   openStreamCallsWhileDisabledZero:
-                    summary.routes.downlink
-                      .openStreamCallsWhileDisabled === 0,
+                    summary.routes.downlink.openStreamCallsWhileDisabled === 0,
                   // Activity route churn amplifies the accepted Three/WebGPU
                   // texture bindGroups Set residual tracked for r186+ in the
                   // P1c v4 gate ruling. Ordinary runs measured 38.66%,
@@ -4080,12 +4132,11 @@ try {
                     !summary.heap.available ||
                     (summary.heap.growthRatio !== null &&
                       summary.heap.growthRatio <= 0.45),
-                  roomIsolation:
-                    Object.values(summary.routes.roomIsolation).every(
-                      Boolean,
-                    ),
+                  roomIsolation: Object.values(
+                    summary.routes.roomIsolation,
+                  ).every(Boolean),
                 }
-            : {}),
+              : {}),
         };
     summary.pass = Object.values(summary.assertions).every(Boolean);
   } else {
