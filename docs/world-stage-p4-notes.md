@@ -744,3 +744,229 @@ identical. §6.7 checkbox 3 FAILS and execution stops.
   prohibited after checkbox 3 HARD STOP.**
 
 Nothing was pushed.
+
+## §6.7 race integrity — Session 8 orchestrator ruling and completion
+
+### Orchestrator ruling (verbatim)
+
+> Session 7's hard stop is CLEARED by orchestrator ruling. The control run proved the spline PB persistence defect is PRE-EXISTING on `origin/staging` (faster lap 68,166 ms vs stored 70,233 ms PB → no update, `match_pb_daily_rank=NULL`), and it has a money component (the ledger paid a 10-CT PB bonus while the PB row never persisted — a repeatable-bonus leak). Repo law: pre-existing bugs found are FIXED, not walked past. The two fixes (`15ceda18`, `3e4a77d5`) STAY. The §6.7 comparison passes WITH the documented intentional difference: money rows (result/event/CT credit) identical in shape; PB/daily-rank rows now correctly written on the branch where staging wrongly omits them.
+
+This ruling supersedes the Session 7 hard-stop verdict above and authorizes the
+remaining §6.7 work. No row was inserted, updated, deleted, or compensated by
+hand. All assertions below use the same `LandTest1` account and staging database
+as Session 7, with P4 API `:4000`, P4 web `:3008`, spline/probe flags enabled,
+and exact avatar/room scoping. Port `:3000` remained untouched. Nothing was
+pushed.
+
+### Final checkbox verdicts
+
+| Checkbox | Verdict | Evidence |
+| --- | --- | --- |
+| 1 — complete real-UI P4 Reef Race | **PASS** | Session 7 retained complete race plus Session 8 complete post-repair room `4cb633c8-53b9-490d-ab24-5faed8ced74f`. |
+| 2 — one result, one placed event, one CT credit, correct PB behavior | **PASS** | The post-repair race was slower than the 66,833 ms stored PB: result `55e65dfe-461c-4ab0-850c-90631f75b437` is not a PB, CT row `7c963e17-0a92-4959-b67e-2741c2eb4e77` contains base 15 and PB bonus 0, and PB row `373aca77-4ca2-44df-9b7a-1b9b1a0a9be5` remained unchanged. |
+| 3 — `origin/staging` normalized comparison | **PASS WITH DOCUMENTED INTENTIONAL DIFFERENCE** | Per the ruling: result/event/CT-credit rows are identical in shape; P4 additionally persists the valid PB and integer daily rank that staging wrongly omits. No unexplained money-row difference exists. |
+| 4 — mid-race voluntary Leave | **PASS** | Real UI sent `{type:'leave'}` in room `efa19c44-3c2b-4d06-b60c-39c3636c00b6`; hub routes it to `event.player_left` with `reason:'voluntary'`; DNF result `92277b1c-9d63-4bdd-8807-e47d1f4b0ec3` settled once with no PB write/bonus. |
+| 5 — complete Bumper Shells | **PASS** | Real UI joined and drove room `c04ddf11-ba76-4e7e-8a86-ebf69c0a0d8c` through its 90-second sim; result `eeefb4c1-6f1a-49e6-b155-d6761dd5e084`, event `25777`, and CT row `7667ee62-b12b-41ea-9dd9-fe7616385ca9` are each singular and consistent. |
+
+### PB-fix bidirectional proof
+
+The first Session 8 complete Reef run used the real queue/UI and finished room
+`4afcc9ab-0bda-4941-86bf-71a94bda5b21` in first. Its best lap was 66,833 ms,
+faster than the stored 70,233 ms PB. The PB row correctly updated to 66,833 ms,
+source room `4afcc9ab-0bda-4941-86bf-71a94bda5b21`, daily rank 1. It exposed a
+third pre-existing defect: the reward pipeline compared whole-match `score_ms`
+history while the PB writer compared best-lap time. Consequently result
+`c96a9f75-95a1-4b05-bdd6-bfa64f3757db` said
+`is_personal_best=false` and transaction
+`44c1ac31-fb1e-46b3-89fd-f989271ae04a` paid base 50 with PB bonus 0 even
+though the PB row was claimed by that room. Commit `f3bc1de0`
+(`fix(api): pay Reef bonus from persisted lap PB`) makes the persisted lap-PB
+claim authoritative for the result flag and one-time bonus, including
+same-room settlement retry idempotence.
+
+The required post-repair complete UI proof then took the accepted **slower**
+branch in room `4cb633c8-53b9-490d-ab24-5faed8ced74f`:
+
+- UI artifacts:
+  `C:\Users\itachi\AppData\Local\Temp\world-stage-p4-s8-reef-proof.json`
+  and
+  `C:\Users\itachi\AppData\Local\Temp\world-stage-p4-s8-reef-proof.png`.
+- Exactly one result,
+  `55e65dfe-461c-4ab0-850c-90631f75b437`: placement 4,
+  score/score_ms `-150266` / `150266`, tokens 15, leaderboard 2,
+  `is_personal_best=false`, streak 0, `match_pb_daily_rank=NULL`.
+- Exactly one scoped human `activity.match.placed`, event `25726`.
+- Exactly one CT transaction,
+  `7c963e17-0a92-4959-b67e-2741c2eb4e77`: amount 15,
+  `source='simulation'`, `provenance='soft'`, breakdown base 15 and every bonus
+  including `personalBestBonus` equal to 0.
+- PB row `373aca77-4ca2-44df-9b7a-1b9b1a0a9be5` remained exactly 66,833 ms,
+  recorded/updated `2026-07-31T10:26:02.488Z`, source room still
+  `4afcc9ab-0bda-4941-86bf-71a94bda5b21`. No write and no repeat bonus occurred.
+
+This real slower-path proof establishes that the repair does not overpay. The
+focused reward/PB suites cover the corresponding faster claim and retry path,
+while the preceding complete faster run supplied the end-to-end defect evidence
+that drove the repair.
+
+### Checkbox 4 — voluntary Leave and DNF settlement
+
+The real UI matched Reef room
+`efa19c44-3c2b-4d06-b60c-39c3636c00b6`, entered LIVE, drove for eight seconds,
+clicked the live Leave control, emitted an outbound `{type:'leave'}` frame, and
+returned to `/game`. The evidence is
+`C:\Users\itachi\AppData\Local\Temp\world-stage-p4-s8-reef-leave3.json` and
+`C:\Users\itachi\AppData\Local\Temp\world-stage-p4-s8-reef-leave3-room.png`.
+
+Hub/sim evidence is deterministic and seekable in source:
+
+- `activity-ws-hub.ts` handles `type:'leave'` by assigning internal close code
+  1000 and closing as `voluntary leave` (lines 402-405).
+- The close path immediately calls `notifyForfeit(..., 'voluntary')` without a
+  reconnect grace period (lines 323-329).
+- `notifyForfeit` invokes the live Reef sim's `forfeit` and broadcasts
+  `event.player_left` with the same avatar and `reason:'voluntary'` (lines
+  949-960).
+- `reef-race-spline-sim.ts` marks the body `forfeited=true`, `dnf=true`, and
+  `alive=false`, and emits the same `event.player_left` payload (lines
+  1070-1088).
+
+The first diagnostic attempts exposed that the generic 30-second no-WS crash
+sweeper aborted a server-driven race after the voluntarily-leaving human was
+gone, before the sim could settle its DNF. Commit `87114e6b`
+(`fix(api): settle activity DNFs after voluntary leave`) exempts Reef Race and
+Bumper Shells from that generic sweep; their sim terminal callbacks and hard
+timeouts remain the owners of completion and cleanup.
+
+Post-repair DB assertions for the passing room:
+
+- Exactly one DNF result,
+  `92277b1c-9d63-4bdd-8807-e47d1f4b0ec3`: placement 4,
+  score `-630001`, `score_ms=NULL`, tokens 15, leaderboard 2,
+  `is_personal_best=false`, streak 0, `match_pb_daily_rank=NULL`.
+- Exactly one scoped placed event, `25755`.
+- Exactly one CT transaction,
+  `4e693aae-657c-4526-add6-a58f25145770`: amount/base 15 and PB bonus 0.
+- PB row `373aca77-4ca2-44df-9b7a-1b9b1a0a9be5` remained at 66,833 ms with
+  unchanged timestamp/source. The DNF produced neither a PB write nor bonus.
+
+`event.player_left` is a real-time hub/sim protocol event, not an analytics row
+in the `events` table; the persisted event assertion for settlement is the
+single `activity.match.placed` row above.
+
+### Checkbox 5 — Bumper Shells
+
+The browser used `/game?quickQueue=bumper-shells`, matched room
+`c04ddf11-ba76-4e7e-8a86-ebf69c0a0d8c` (`EHJCEW`), opened the real activity
+route with one connected human, reached LIVE, and supplied movement/jump/item
+inputs while the authoritative sim ran from
+`2026-07-31T10:53:31.570Z` through `2026-07-31T10:55:01.747Z`.
+Artifacts are
+`C:\Users\itachi\AppData\Local\Temp\world-stage-p4-s8-bumper2.json` and
+`C:\Users\itachi\AppData\Local\Temp\world-stage-p4-s8-bumper2-room.png`.
+
+The temporary harness captured `event.match_ended` and exited its control loop,
+then timed out only on an additional Reef-style terminal-copy/modal wait. The
+authoritative settlement had already completed. That harness timeout is not a
+match or money-path failure; the exact DB rows are:
+
+- one result, `eeefb4c1-6f1a-49e6-b155-d6761dd5e084`: placement 4, score 0,
+  `score_ms=NULL`, tokens 10, leaderboard 2, `is_personal_best=false`, PB/streak
+  columns `NULL` where Bumper does not define them;
+- one scoped human placed event, `25777`;
+- one CT transaction, `7667ee62-b12b-41ea-9dd9-fe7616385ca9`: amount/base 10,
+  correct room/activity/reason/source/provenance, every bonus 0.
+
+Bumper Shells does **not** write a distinct reward row class. Both activities
+settle through `activity-room-manager.ts` → `issueRewardsForRoom`, producing the
+same `activity_results`, `events(activity.match.placed)`, and
+`claw_token_transactions(activity_match_placed)` classes. Reef alone adds its
+PB table semantics. Therefore the ruled Reef staging comparison suffices for
+Bumper; no separate staging-control run is required.
+
+### Exact Session 8 scoped SQL
+
+The Session 8 reconciliation used the following exact room list. The first room
+is the faster defect-discovery run; the other three are the accepted slower Reef
+proof, voluntary-Leave DNF proof, and Bumper completion proof respectively.
+
+```sql
+SELECT id, room_id, activity_id, avatar_id, subject_type, placement,
+       score, score_ms, tokens_awarded, leaderboard_points,
+       is_personal_best, match_best_streak, match_pb_daily_rank, created_at
+FROM activity_results
+WHERE room_id IN (
+  '4afcc9ab-0bda-4941-86bf-71a94bda5b21',
+  '4cb633c8-53b9-490d-ab24-5faed8ced74f',
+  'efa19c44-3c2b-4d06-b60c-39c3636c00b6',
+  'c04ddf11-ba76-4e7e-8a86-ebf69c0a0d8c'
+)
+  AND avatar_id = 'a74c90f9-8460-4b24-83e2-baede9dbe3d3'
+ORDER BY created_at;
+
+SELECT id, event_type, avatar_id, payload, ts
+FROM events
+WHERE event_type = 'activity.match.placed'
+  AND avatar_id = 'a74c90f9-8460-4b24-83e2-baede9dbe3d3'
+  AND payload->>'roomId' IN (
+    '4afcc9ab-0bda-4941-86bf-71a94bda5b21',
+    '4cb633c8-53b9-490d-ab24-5faed8ced74f',
+    'efa19c44-3c2b-4d06-b60c-39c3636c00b6',
+    'c04ddf11-ba76-4e7e-8a86-ebf69c0a0d8c'
+  )
+ORDER BY ts;
+
+SELECT id, avatar_id, amount, balance_after, reason, source, provenance,
+       metadata, created_at
+FROM claw_token_transactions
+WHERE avatar_id = 'a74c90f9-8460-4b24-83e2-baede9dbe3d3'
+  AND reason = 'activity_match_placed'
+  AND metadata->>'roomId' IN (
+    '4afcc9ab-0bda-4941-86bf-71a94bda5b21',
+    '4cb633c8-53b9-490d-ab24-5faed8ced74f',
+    'efa19c44-3c2b-4d06-b60c-39c3636c00b6',
+    'c04ddf11-ba76-4e7e-8a86-ebf69c0a0d8c'
+  )
+ORDER BY created_at;
+
+SELECT id, avatar_id, activity_id, best_lap_ms, best_lap_recorded_at,
+       source_room_id,
+       jsonb_array_length(ghost_replay_data->'frames') AS ghost_frame_count,
+       created_at, updated_at,
+       (best_lap_recorded_at AT TIME ZONE 'UTC')::date AS utc_day
+FROM reef_race_personal_bests
+WHERE avatar_id = 'a74c90f9-8460-4b24-83e2-baede9dbe3d3'
+  AND activity_id = 'reef-race';
+
+SELECT id, activity_id, status, started_at, ended_at
+FROM activity_rooms
+WHERE id = 'c04ddf11-ba76-4e7e-8a86-ebf69c0a0d8c';
+```
+
+The ordered result/event/credit row IDs were:
+
+| Room | Result | Placed event | CT transaction |
+| --- | --- | --- | --- |
+| faster Reef defect discovery `4afcc9ab-0bda-4941-86bf-71a94bda5b21` | `c96a9f75-95a1-4b05-bdd6-bfa64f3757db` | `25715` | `44c1ac31-fb1e-46b3-89fd-f989271ae04a` |
+| post-repair slower Reef proof `4cb633c8-53b9-490d-ab24-5faed8ced74f` | `55e65dfe-461c-4ab0-850c-90631f75b437` | `25726` | `7c963e17-0a92-4959-b67e-2741c2eb4e77` |
+| voluntary-Leave DNF `efa19c44-3c2b-4d06-b60c-39c3636c00b6` | `92277b1c-9d63-4bdd-8807-e47d1f4b0ec3` | `25755` | `4e693aae-657c-4526-add6-a58f25145770` |
+| Bumper completion `c04ddf11-ba76-4e7e-8a86-ebf69c0a0d8c` | `eeefb4c1-6f1a-49e6-b155-d6761dd5e084` | `25777` | `7667ee62-b12b-41ea-9dd9-fe7616385ca9` |
+
+The PB query returned exactly row
+`373aca77-4ca2-44df-9b7a-1b9b1a0a9be5`: 66,833 ms, source
+`4afcc9ab-0bda-4941-86bf-71a94bda5b21`, 251 ghost frames,
+recorded/updated `2026-07-31T10:26:02.488Z`, UTC day `2026-07-31`.
+
+### Session 8 repair verification
+
+- `reef-race-personal-best-service`: 7/7 PASS.
+- `reward-pipeline`: 31/31 PASS.
+- `activity-room-manager`: 40/40 PASS.
+- `reef-race-spline-sim`: 37/37 PASS, including voluntary-forfeit event/row
+  semantics.
+- API strict typecheck: PASS after both Session 8 repairs.
+- Direct API production build: PASS after both Session 8 repairs.
+
+**FINAL LOCAL IMPLEMENTATION GATE STATUS — §6.1-§6.7: PASS. §6.8 harness and
+§6.9 founder-floor drive are staging-push/after-staging-push gates and were not
+run in this local no-push scope.**
