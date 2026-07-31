@@ -2,6 +2,7 @@
 
 import puppeteer from "puppeteer-core";
 import sharp from "sharp";
+import { WebSocketServer } from "ws";
 import { createWriteStream } from "node:fs";
 import { mkdir, mkdtemp, rmdir, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -29,6 +30,7 @@ const supportedLanes = new Set([
   "soak",
   "loader",
   "kelp-exit",
+  "activity-exit",
   "retry-adoption",
 ]);
 if (!supportedLanes.has(lane)) {
@@ -39,35 +41,57 @@ if (!supportedLanes.has(lane)) {
 const routeLane = lane === "routes" || lane === "soak";
 const routePair = argv.get("pair") ?? "cove";
 if (
-  (routePair !== "cove" && routePair !== "kelp") ||
+  !["cove", "kelp", "activity"].includes(routePair) ||
   (lane === "soak" && routePair !== "cove")
 ) {
   throw new Error(
-    "--pair must be cove or kelp for --lane=routes; soak remains cove-only",
+    "--pair must be cove, kelp, or activity for --lane=routes; soak remains cove-only",
   );
 }
 const routeDestination =
-  routePair === "kelp"
+  routePair === "activity"
+    ? {
+        path: "/activity/reef-race/world-stage-probe-a",
+        alternatePath: "/activity/reef-race/world-stage-probe-b",
+        sceneId: "activity",
+        label: "Activity",
+        coldPhase: "cold-activity",
+        coldKey: "coldActivity",
+        coldAssetKey: "coldActivityAssetRequests",
+        coldWorldAssetKey: "coldActivityWorldAssetRequests",
+        firstGamePhase: "activity-first-game",
+        afterFirstGamePhase: "activity-after-first-game",
+      }
+    : routePair === "kelp"
     ? {
         path: "/kelp",
+        alternatePath: "/kelp",
         sceneId: "kelp",
         label: "Kelp",
         coldPhase: "cold-kelp",
         coldKey: "coldKelp",
         coldAssetKey: "coldKelpAssetRequests",
         coldWorldAssetKey: "coldKelpWorldAssetRequests",
+        firstGamePhase: "first-game",
+        afterFirstGamePhase: "after-first-game",
       }
-    : {
+      : {
         path: "/cove",
+        alternatePath: "/cove",
         sceneId: "cove",
         label: "Cove",
         coldPhase: "cold-cove",
         coldKey: "coldCove",
         coldAssetKey: "coldCoveAssetRequests",
         coldWorldAssetKey: "coldCoveWorldAssetRequests",
+        firstGamePhase: "first-game",
+        afterFirstGamePhase: "after-first-game",
       };
 const apiStubLane =
-  routeLane || lane === "loader" || lane === "kelp-exit";
+  routeLane ||
+  lane === "loader" ||
+  lane === "kelp-exit" ||
+  lane === "activity-exit";
 const dwellTarget = argv.get("dwell") ?? null;
 if (
   dwellTarget !== null &&
@@ -96,6 +120,8 @@ const requestedUrl =
     ? "http://localhost:3000/"
     : lane === "kelp-exit"
       ? "http://localhost:3000/game?webgpu=1"
+      : lane === "activity-exit"
+        ? "http://localhost:3000/game?webgpu=1"
       : lane === "retry-adoption"
         ? "http://localhost:3000/perf/stage?stage=1&retryAdoption=1&webgpu=1"
         : routeLane
@@ -131,12 +157,15 @@ const outputPath = resolve(
     ({
       synthetic: `${SCRIPT_DIR}/world-stage-probe-summary.json`,
       routes:
-        routePair === "kelp"
+        routePair === "activity"
+          ? `${SCRIPT_DIR}/world-stage-activity-route-summary.json`
+          : routePair === "kelp"
           ? `${SCRIPT_DIR}/world-stage-route-kelp-summary.json`
           : `${SCRIPT_DIR}/world-stage-route-summary.json`,
       soak: `${SCRIPT_DIR}/world-stage-soak-summary.json`,
       loader: `${SCRIPT_DIR}/world-stage-loader-summary.json`,
       "kelp-exit": `${SCRIPT_DIR}/world-stage-kelp-exit-summary.json`,
+      "activity-exit": `${SCRIPT_DIR}/world-stage-activity-exit-summary.json`,
       "retry-adoption": `${SCRIPT_DIR}/world-stage-retry-adoption-summary.json`,
     })[lane],
 );
@@ -149,7 +178,7 @@ const heapReportPath = resolve(
 const scenes = ["alpha", "beta", "cove-spike"];
 const WORLD_ONLY_ASSET_PATTERN =
   /\/models\/(?:characters\/|(?:pineapple-house|chum-bucket|krusty-krab|salty-spitoon|boating-school|patty-building|building-lighthouse|arcade\/claw-arcade-exterior|cove\/cove-exterior|patricks-rock|squidward-house|coral-reef|kelp\.glb|building-shell|building-seashell|building-anchor|building-barrel|building-chest|building-lantern|crayfish|building-tower2|quest-bounty-pavilion|bazaar-merchant-stand|shisha-oasis))/i;
-const KELP_EXIT_API_ORIGINS = new Set([
+const STAGE_PROBE_API_ORIGINS = new Set([
   // request() currently resolves its empty API_URL default against the page.
   // HONO-backed calls use the explicit localhost API origin. Keep both exact
   // resolved API bases while the fixture-key map below prevents interception
@@ -157,7 +186,7 @@ const KELP_EXIT_API_ORIGINS = new Set([
   new URL(url).origin,
   "http://localhost:4000",
 ]);
-const KELP_EXIT_API_FIXTURES = new Map([
+const STAGE_PROBE_API_FIXTURES = new Map([
   [
     "GET /api/auth/me",
     {
@@ -248,18 +277,124 @@ const KELP_EXIT_API_FIXTURES = new Map([
     },
   ],
 ]);
+const ACTIVITY_FIXTURE = {
+  activityId: "reef-race",
+  roomA: "world-stage-probe-a",
+  roomB: "world-stage-probe-b",
+  shortCodeA: "PROBEA",
+  shortCodeB: "PROBEB",
+  avatarId: "world-stage-probe-avatar",
+};
+
+function fixtureShortCode(pathname) {
+  return pathname.includes(ACTIVITY_FIXTURE.roomB)
+    ? ACTIVITY_FIXTURE.shortCodeB
+    : ACTIVITY_FIXTURE.shortCodeA;
+}
+
+function activityPathForLoop(loop) {
+  if (routePair !== "activity") return routeDestination.path;
+  return loop % 2 === 0
+    ? routeDestination.path
+    : routeDestination.alternatePath;
+}
+
+async function installStageApiInterception(page, { allowStall = false } = {}) {
+  const control = {
+    stallGameNavigation: false,
+    stalledRequests: [],
+  };
+  await page.setRequestInterception(true);
+  page.on("request", async (request) => {
+    try {
+      const requestUrl = new URL(request.url());
+      const fixtureKey = `${request.method()} ${requestUrl.pathname}`;
+      let fixture = STAGE_PROBE_API_FIXTURES.get(fixtureKey);
+      if (
+        request.method() === "GET" &&
+        /^\/api\/activities\/[^/]+\/rooms\/[^/]+\/state$/.test(
+          requestUrl.pathname,
+        )
+      ) {
+        const parts = requestUrl.pathname.split("/");
+        const activityId = parts[3];
+        const roomId = parts[5];
+        fixture = {
+          room: {
+            id: roomId,
+            roomId,
+            activityId,
+            shortCode: fixtureShortCode(requestUrl.pathname),
+            status: "live",
+          },
+        };
+      }
+      if (STAGE_PROBE_API_ORIGINS.has(requestUrl.origin) && fixture) {
+        if (
+          Object.hasOwn(
+            summary.routes.network.interceptedFixtureTraffic,
+            fixtureKey,
+          )
+        ) {
+          summary.routes.network.interceptedFixtureTraffic[fixtureKey] += 1;
+        }
+        await request.respond({
+          status: 200,
+          contentType: "application/json",
+          headers: {
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Allow-Origin": new URL(url).origin,
+            "Cache-Control": "no-store",
+          },
+          body: JSON.stringify(fixture),
+        });
+        return;
+      }
+      if (
+        allowStall &&
+        control.stallGameNavigation &&
+        requestUrl.origin === new URL(url).origin &&
+        requestUrl.pathname === "/game" &&
+        (request.isNavigationRequest() ||
+          request.headers().rsc === "1" ||
+          requestUrl.searchParams.has("_rsc"))
+      ) {
+        control.stalledRequests.push(request);
+        return;
+      }
+      await request.continue();
+    } catch (error) {
+      summary.console.errors.push(
+        `stage probe API interception failed: ${String(error).slice(0, 800)}`,
+      );
+      if (!request.isInterceptResolutionHandled()) {
+        await request.abort("failed");
+      }
+    }
+  });
+  return control;
+}
 
 const summary = {
   pass: false,
   lane,
+  ...(routePair === "activity" ? { pair: "activity" } : {}),
   url,
   backend: "unknown",
   requestedTransitions: routeLane
     ? dwellMode
       ? 0
       : transitionCount * 2
-    : transitionCount,
-  requestedRoundTrips: routeLane ? (dwellMode ? 0 : transitionCount) : null,
+    : lane === "activity-exit"
+      ? 2
+      : transitionCount,
+  requestedRoundTrips: routeLane
+    ? dwellMode
+      ? 0
+      : transitionCount
+    : lane === "activity-exit"
+      ? 1
+      : null,
   experiment: {
     mode: dwellMode ? `dwell-${dwellTarget}` : "crossings",
     dwellSeconds: dwellMode ? dwellSeconds : null,
@@ -380,15 +515,60 @@ const summary = {
   failure: null,
   generatedAt: new Date().toISOString(),
 };
+if (lane === "activity-exit") {
+  summary.activityExit = null;
+}
+if (routePair === "activity") {
+  summary.routes.rawWindowListeners = {
+    baseline: null,
+    final: null,
+    delta: null,
+  };
+  summary.routes.downlink = {
+    sseBytesDuringDwell: 0,
+    openStreamCallsWhileDisabled: 0,
+    landInvalidatedOnReopen: false,
+    extraJoinsOnResume: 0,
+    closeEmittedWithNullSource: false,
+    allActivityDwellsStreamClosed: true,
+    positionUploads: [],
+    forcedPosition409: false,
+    forcedPosition409RejoinedWithoutSse: false,
+    forcedSse500AtEntry: false,
+  };
+  summary.routes.roomIsolation = {
+    activityCanvasRekeyedOnRoomChange: false,
+    activityStoreResetOnRoomChange: false,
+    selfBusesResetOnRoomChange: false,
+    shortCodeResetOnRoomChange: false,
+    lobbyGateResetOnRoomChange: false,
+    spectatorStateResetOnRoomChange: false,
+    wsSocketIdentityChangedOnRoomChange: false,
+  };
+}
 
 let browser;
+const auxiliaryBrowsers = [];
 let worldProbeServer;
 let heapSnapshotDirectory;
 const heapSnapshotPaths = new Map();
 
 async function startWorldProbeServer() {
   const streams = new Set();
-  const server = createServer((request, response) => {
+  const activitySockets = new Set();
+  const activityConnections = [];
+  const activityFrames = [];
+  let activityDwellActive = false;
+  let forceNextPosition409 = false;
+  let failNextWorldStream = false;
+  let resolveSseFailureAtEntry = null;
+  let worldStreamSequence = 0;
+  const readBody = async (request) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    return Buffer.concat(chunks).toString("utf8");
+  };
+  const server = createServer(async (request, response) => {
     const origin = request.headers.origin ?? "http://localhost:3000";
     const corsHeaders = {
       "Access-Control-Allow-Credentials": "true",
@@ -407,6 +587,29 @@ async function startWorldProbeServer() {
     const pathname = new URL(request.url ?? "/", "http://localhost:4000")
       .pathname;
     const fixtureKey = `${request.method ?? "UNKNOWN"} ${pathname}`;
+    const activityStateMatch = pathname.match(
+      /^\/api\/activities\/reef-race\/rooms\/([^/]+)\/state$/,
+    );
+    if (request.method === "GET" && activityStateMatch) {
+      const roomId = decodeURIComponent(activityStateMatch[1]);
+      response.writeHead(200, {
+        ...corsHeaders,
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json",
+      });
+      response.end(
+        JSON.stringify({
+          room: {
+            id: roomId,
+            roomId,
+            activityId: "reef-race",
+            shortCode: fixtureShortCode(pathname),
+            status: "live",
+          },
+        }),
+      );
+      return;
+    }
     if (
       lane === "kelp-exit" &&
       request.method === "GET" &&
@@ -522,13 +725,33 @@ async function startWorldProbeServer() {
       request.method === "GET" &&
       pathname === "/api/world/world-stage-probe/stream"
     ) {
+      if (activityDwellActive && routePair === "activity") {
+        summary.routes.downlink.openStreamCallsWhileDisabled += 1;
+      }
+      if (failNextWorldStream) {
+        failNextWorldStream = false;
+        response.writeHead(500, {
+          ...corsHeaders,
+          "Cache-Control": "no-store",
+          "Content-Type": "text/plain",
+        });
+        response.end("forced world-stage activity-entry SSE failure");
+        summary.routes.downlink.forcedSse500AtEntry = true;
+        resolveSseFailureAtEntry?.();
+        resolveSseFailureAtEntry = null;
+        return;
+      }
       response.writeHead(200, {
         ...corsHeaders,
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
         "Content-Type": "text/event-stream",
       });
-      response.write('event: snapshot\ndata: {"npcs":[],"players":[]}\n\n');
+      const initial =
+        'event: snapshot\ndata: {"npcs":[],"players":[],"land":{"version":1}}\n\n';
+      response.write(initial);
+      worldStreamSequence += 1;
+      response.__worldStageProbeStreamSequence = worldStreamSequence;
       streams.add(response);
       request.on("close", () => streams.delete(response));
       return;
@@ -571,10 +794,40 @@ async function startWorldProbeServer() {
       response.end("[]");
       return;
     }
+    if (request.method === "POST" && pathname === "/api/world/position") {
+      const rawBody = await readBody(request);
+      let body = null;
+      try {
+        body = JSON.parse(rawBody);
+      } catch {
+        body = rawBody;
+      }
+      if (routePair === "activity") {
+        summary.routes.downlink.positionUploads.push({
+          atActivity: activityDwellActive,
+          body,
+          at: Date.now(),
+        });
+      }
+      if (forceNextPosition409) {
+        forceNextPosition409 = false;
+        if (routePair === "activity") {
+          summary.routes.downlink.forcedPosition409 = true;
+        }
+        response.writeHead(409, {
+          ...corsHeaders,
+          "Content-Type": "application/json",
+        });
+        response.end(JSON.stringify({ error: "membership_lost" }));
+        return;
+      }
+      response.writeHead(204, corsHeaders);
+      response.end();
+      return;
+    }
     if (
       request.method === "POST" &&
-      (pathname === "/api/world/position" ||
-        pathname === "/api/world/leave" ||
+      (pathname === "/api/world/leave" ||
         pathname === "/api/world/watch-heartbeat" ||
         pathname === "/api/npc/watch")
     ) {
@@ -588,6 +841,107 @@ async function startWorldProbeServer() {
     response.writeHead(404, corsHeaders);
     response.end();
   });
+  const activityWebSocketServer = new WebSocketServer({ noServer: true });
+  server.on("upgrade", (request, socket, head) => {
+    const pathname = new URL(
+      request.url ?? "/",
+      "http://localhost:4000",
+    ).pathname;
+    const match = pathname.match(
+      /^\/api\/activities\/reef-race\/rooms\/([^/]+)\/ws$/,
+    );
+    if (!match) {
+      socket.destroy();
+      return;
+    }
+    const roomId = decodeURIComponent(match[1]);
+    activityWebSocketServer.handleUpgrade(
+      request,
+      socket,
+      head,
+      (webSocket) => {
+        activityWebSocketServer.emit("connection", webSocket, request, roomId);
+      },
+    );
+  });
+  activityWebSocketServer.on(
+    "connection",
+    (webSocket, _request, roomId) => {
+      const connection = {
+        id: activityConnections.length + 1,
+        roomId,
+        shortCode: null,
+        openedAt: Date.now(),
+        closedAt: null,
+        frames: [],
+      };
+      activityConnections.push(connection);
+      activitySockets.add(webSocket);
+      webSocket.on("message", (raw) => {
+        let frame;
+        try {
+          frame = JSON.parse(raw.toString());
+        } catch {
+          frame = { type: "invalid", raw: raw.toString() };
+        }
+        const recorded = {
+          connectionId: connection.id,
+          roomId,
+          at: Date.now(),
+          frame,
+        };
+        connection.frames.push(recorded);
+        activityFrames.push(recorded);
+        if (frame.type === "auth") {
+          connection.shortCode = frame.shortCode ?? null;
+          webSocket.send(
+            JSON.stringify({
+              type: "snapshot.init",
+              serverTimeMs: Date.now(),
+              room: {
+                roomId,
+                shortCode: fixtureShortCode(roomId),
+                activityId: "reef-race",
+                status: "live",
+                startedAt: Date.now() - 1_000,
+              },
+              world: {
+                tick: 1,
+                entities: [
+                  {
+                    avatarId: ACTIVITY_FIXTURE.avatarId,
+                    position: { x: 0, y: 0 },
+                    velocity: { x: 0, y: 0 },
+                    rotation: 0,
+                    state: "alive",
+                  },
+                ],
+                powerUps: [],
+                scores: [
+                  {
+                    avatarId: ACTIVITY_FIXTURE.avatarId,
+                    score: 0,
+                    lap: 0,
+                    totalLaps: 3,
+                    position: 1,
+                  },
+                ],
+              },
+              seed: 42,
+            }),
+          );
+        } else if (frame.type === "ping") {
+          webSocket.send(
+            JSON.stringify({ type: "pong", sentAt: frame.sentAt }),
+          );
+        }
+      });
+      webSocket.on("close", () => {
+        connection.closedAt = Date.now();
+        activitySockets.delete(webSocket);
+      });
+    },
+  );
   await new Promise((resolveStart, rejectStart) => {
     server.once("error", rejectStart);
     server.listen(4000, () => {
@@ -596,8 +950,52 @@ async function startWorldProbeServer() {
     });
   });
   return {
+    activityEvidence() {
+      return {
+        connections: activityConnections.map((connection) => ({
+          ...connection,
+          frames: [...connection.frames],
+        })),
+        frames: [...activityFrames],
+      };
+    },
+    armPosition409() {
+      forceNextPosition409 = true;
+    },
+    async armSseFailureAtEntry() {
+      if (summary.routes.downlink.forcedSse500AtEntry) return;
+      failNextWorldStream = true;
+      const failed = new Promise((resolveFailure) => {
+        resolveSseFailureAtEntry = resolveFailure;
+      });
+      for (const stream of streams) stream.destroy();
+      await Promise.race([
+        failed,
+        new Promise((_, rejectFailure) =>
+          setTimeout(
+            () => rejectFailure(new Error("timed out forcing SSE 500")),
+            8_000,
+          ),
+        ),
+      ]);
+    },
+    setActivityDwell(active) {
+      activityDwellActive = active;
+    },
+    worldStreamSequence() {
+      return worldStreamSequence;
+    },
+    activeWorldStreams() {
+      return streams.size;
+    },
     async close() {
+      resolveSseFailureAtEntry?.();
+      resolveSseFailureAtEntry = null;
       for (const stream of streams) stream.end();
+      for (const socket of activitySockets) socket.close();
+      await new Promise((resolveClose) =>
+        activityWebSocketServer.close(() => resolveClose()),
+      );
       await new Promise((resolveClose, rejectClose) => {
         server.close((error) => {
           if (error) rejectClose(error);
@@ -609,6 +1007,10 @@ async function startWorldProbeServer() {
 }
 
 async function snapshot(page) {
+  await page.waitForFunction(
+    () => Boolean(window.__WORLD_STAGE_PROBE__),
+    { timeout: 30_000 },
+  );
   const state = await page.evaluate(() =>
     window.__WORLD_STAGE_PROBE__.snapshot(),
   );
@@ -761,8 +1163,10 @@ async function armWorldPlayerFacing(page) {
 
 async function waitForSettled(page, expectedScene) {
   const deadline = Date.now() + 30_000;
+  let lastState = null;
   while (Date.now() < deadline) {
     const state = await snapshot(page);
+    lastState = state;
     if (state.transitionPhase === "error" || state.transitionError) {
       throw new Error(
         state.transitionError ??
@@ -777,8 +1181,27 @@ async function waitForSettled(page, expectedScene) {
     }
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
   }
+  const dom = await page
+    .evaluate(() => ({
+      hidden: document.hidden,
+      activityCanvas: Boolean(
+        document.querySelector(".game-container canvas"),
+      ),
+      activityCanvasCount: document.querySelectorAll(
+        ".game-container canvas",
+      ).length,
+      bodyText: document.body.innerText.slice(0, 240),
+    }))
+    .catch(() => null);
   throw new Error(
-    `transition to ${expectedScene} did not settle within 30000ms`,
+    `transition to ${expectedScene} did not settle within 30000ms; last=${JSON.stringify({
+      pathname: lastState?.pathname,
+      activeScene: lastState?.activeScene,
+      transitionPhase: lastState?.transitionPhase,
+      transitionError: lastState?.transitionError,
+      activitySlot: lastState?.slots?.activity,
+      dom,
+    })}`,
   );
 }
 
@@ -839,6 +1262,80 @@ async function traverseHistoryAndWait(page, direction, pathname, sceneId) {
   summary.routes.historyTraversal[direction] = true;
   summary.routes.pathSequence.push(`${direction}:${pathname}`);
   return state;
+}
+
+async function traverseHistoryByDeltaAndWait(
+  page,
+  delta,
+  pathname,
+  sceneId,
+) {
+  await page.evaluate((historyDelta) => {
+    window.history.go(historyDelta);
+  }, delta);
+  await page.waitForFunction(
+    (expectedPathname) => window.location.pathname === expectedPathname,
+    { timeout: 30_000 },
+    pathname,
+  );
+  await waitForSettled(page, sceneId);
+  return snapshot(page);
+}
+
+async function rawWindowListenerCount(page) {
+  const client = await page.createCDPSession();
+  try {
+    const result = await client.send("Runtime.evaluate", {
+      expression:
+        "Object.values(getEventListeners(window)).reduce((n, entries) => n + entries.length, 0)",
+      includeCommandLineAPI: true,
+      returnByValue: true,
+    });
+    return result.result.value ?? null;
+  } finally {
+    await client.detach().catch(() => {});
+  }
+}
+
+async function waitForActivityCanvas(page, expectedPathname, timeout = 90_000) {
+  await page.waitForFunction(
+    (pathname) => {
+      const canvas = document.querySelector(".game-container canvas");
+      return (
+        window.location.pathname === pathname &&
+        canvas?.isConnected === true &&
+        canvas.width > 0 &&
+        canvas.height > 0
+      );
+    },
+    { timeout },
+    expectedPathname,
+  );
+}
+
+async function readCanvasEvidence(page) {
+  return page.evaluate(() => {
+    const stageCanvas = document.querySelector(
+      ".world-stage-root canvas",
+    );
+    const activityCanvas = document.querySelector(
+      ".game-container canvas",
+    );
+    const liveCanvases = [...document.querySelectorAll("canvas")].filter(
+      (canvas) => canvas.isConnected,
+    );
+    return {
+      stageCanvasPresent: Boolean(stageCanvas?.isConnected),
+      activityCanvasPresent: Boolean(activityCanvas?.isConnected),
+      liveCanvasCount: liveCanvases.length,
+      activityCanvas: activityCanvas
+        ? {
+            width: activityCanvas.width,
+            height: activityCanvas.height,
+          }
+        : null,
+    };
+  });
 }
 
 function recordHiddenWindow(index, sceneId, start, end) {
@@ -1221,7 +1718,10 @@ async function waitForWorldReadyWithoutLoader(page, timeout = 90_000) {
   );
 }
 
-async function captureKelpPaintEvidence(page) {
+async function captureKelpPaintEvidence(
+  page,
+  canvasSelector = ".world-stage-root canvas",
+) {
   const viewport = page.viewport() ?? { width: 1280, height: 720 };
   const width = Math.min(640, viewport.width);
   const height = Math.min(360, viewport.height);
@@ -1268,8 +1768,8 @@ async function captureKelpPaintEvidence(page) {
   const colorBuckets = new Set(values).size;
   return {
     clip,
-    connectedCanvas: await page.evaluate(() => {
-      const canvas = document.querySelector(".world-stage-root canvas");
+    connectedCanvas: await page.evaluate((selector) => {
+      const canvas = document.querySelector(selector);
       return {
         found: Boolean(canvas),
         connected: canvas?.isConnected === true,
@@ -1281,7 +1781,7 @@ async function captureKelpPaintEvidence(page) {
           canvas.height > 0 &&
           (canvas.width !== 300 || canvas.height !== 150),
       };
-    }),
+    }, canvasSelector),
     luminanceVariance: variance,
     minimumLuminanceVariance: 20,
     nonBackgroundRatio,
@@ -1317,7 +1817,7 @@ try {
       "--window-size=1280,720",
     ],
   });
-  const page = await browser.newPage();
+  let page = await browser.newPage();
   await page.setViewport({
     width: 1280,
     height: 720,
@@ -1331,37 +1831,20 @@ try {
   page.on("pageerror", (error) => {
     summary.console.errors.push(String(error).slice(0, 1_000));
   });
+  if (lane === "activity-exit" || routePair === "activity") {
+    await page.evaluateOnNewDocument(() => {
+      window.localStorage.setItem("clawville-tutorial-seen", "true");
+    });
+  }
 
-  if (lane === "kelp-exit") {
-    await page.setRequestInterception(true);
-    page.on("request", async (request) => {
-      try {
-        const requestUrl = new URL(request.url());
-        const fixtureKey = `${request.method()} ${requestUrl.pathname}`;
-        const fixture = KELP_EXIT_API_FIXTURES.get(fixtureKey);
-        if (!KELP_EXIT_API_ORIGINS.has(requestUrl.origin) || !fixture) {
-          await request.continue();
-          return;
-        }
-        summary.routes.network.interceptedFixtureTraffic[fixtureKey] += 1;
-        await request.respond({
-          status: 200,
-          contentType: "application/json",
-          headers: {
-            "Access-Control-Allow-Credentials": "true",
-            "Access-Control-Allow-Origin": new URL(url).origin,
-            "Cache-Control": "no-store",
-          },
-          body: JSON.stringify(fixture),
-        });
-      } catch (error) {
-        summary.console.errors.push(
-          `kelp-exit API interception failed: ${String(error).slice(0, 800)}`,
-        );
-        if (!request.isInterceptResolutionHandled()) {
-          await request.abort("failed");
-        }
-      }
+  let navigationInterception = null;
+  if (
+    lane === "kelp-exit" ||
+    lane === "activity-exit" ||
+    (lane === "routes" && routePair === "activity")
+  ) {
+    navigationInterception = await installStageApiInterception(page, {
+      allowStall: lane === "activity-exit",
     });
   }
 
@@ -1380,7 +1863,7 @@ try {
       const phaseKey =
         phase === routeDestination.coldPhase
           ? routeDestination.coldKey
-          : phase === "first-game"
+          : phase === routeDestination.firstGamePhase
             ? "firstGame"
             : "afterFirstGame";
       const method = request.method();
@@ -1908,6 +2391,854 @@ try {
         returnEvidence.hitTest.exactCanvas === true,
     };
     summary.pass = Object.values(summary.assertions).every(Boolean);
+  } else if (lane === "activity-exit") {
+    const activityPath =
+      "/activity/reef-race/world-stage-probe-a";
+    await page.goto(url, {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    });
+    await page.waitForFunction(() => Boolean(window.__WORLD_STAGE_PROBE__), {
+      timeout: 30_000,
+    });
+    await waitForWorldReadyWithoutLoader(page);
+    await waitForSettled(page, "world");
+    const initialState = await snapshot(page);
+    await page.evaluate(() => {
+      window.__ACTIVITY_EXIT_SENTINEL__ = {
+        token: "activity-exit-same-document",
+        probe: window.__WORLD_STAGE_PROBE__,
+        stageCanvas: document.querySelector(
+          ".world-stage-root canvas",
+        ),
+      };
+      window.__ACTIVITY_CANVAS_OBSERVER__ = {
+        mounts: 0,
+        maxLive: document.querySelectorAll("canvas").length,
+      };
+      const known = new WeakSet();
+      for (const canvas of document.querySelectorAll("canvas")) {
+        known.add(canvas);
+      }
+      const sample = () => {
+        const observation = window.__ACTIVITY_CANVAS_OBSERVER__;
+        const canvases = [...document.querySelectorAll("canvas")].filter(
+          (canvas) => canvas.isConnected,
+        );
+        observation.maxLive = Math.max(
+          observation.maxLive,
+          canvases.length,
+        );
+        for (const canvas of document.querySelectorAll(
+          ".game-container canvas",
+        )) {
+          if (!known.has(canvas)) {
+            known.add(canvas);
+            observation.mounts += 1;
+          }
+        }
+      };
+      const observer = new MutationObserver(sample);
+      observer.observe(document.documentElement, {
+        attributes: true,
+        childList: true,
+        subtree: true,
+      });
+      window.__ACTIVITY_CANVAS_OBSERVER_CLEANUP__ = () => {
+        observer.disconnect();
+        sample();
+      };
+      sample();
+    });
+
+    await armLoaderObserver(
+      page,
+      "__ACTIVITY_ENTRY_LOADER_OBSERVATION__",
+    );
+    await navigateAndWait(page, activityPath, "activity");
+    await waitForActivityCanvas(page, activityPath);
+    const entryLoader = await finishLoaderObserver(
+      page,
+      "__ACTIVITY_ENTRY_LOADER_OBSERVATION__",
+    );
+    const firstActivityState = await snapshot(page);
+    const firstActivityCanvas = await readCanvasEvidence(page);
+    const activityNavigationStayedSameDocument = await page.evaluate(
+      () =>
+        window.__ACTIVITY_EXIT_SENTINEL__?.token ===
+        "activity-exit-same-document",
+    );
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
+    const frozenActivityState = await snapshot(page);
+    await page.setViewport({
+      width: 744,
+      height: 844,
+      deviceScaleFactor: 1,
+    });
+    await page.waitForSelector('button[aria-label="Jump"]', {
+      visible: true,
+      timeout: 30_000,
+    });
+    const pointerContract = await page.evaluate(() => {
+      const hitAtCenter = (element) => {
+        if (!element) return { present: false, selfHit: false };
+        const rect = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(
+          rect.left + rect.width / 2,
+          rect.top + rect.height / 2,
+        );
+        return {
+          present: true,
+          selfHit: hit === element || element.contains(hit),
+        };
+      };
+      const activityCanvas = document.querySelector(
+        ".game-container canvas",
+      );
+      const leaveButton = [...document.querySelectorAll("button")].find(
+        (candidate) => candidate.textContent?.trim() === "LEAVE",
+      );
+      const jumpButton = document.querySelector(
+        'button[aria-label="Jump"]',
+      );
+      const itemButton = document.querySelector(
+        'button[aria-label="Use power-up"]',
+      );
+      const centerHit = document.elementFromPoint(
+        window.innerWidth / 2,
+        window.innerHeight / 2,
+      );
+      const hudRoot = leaveButton
+        ? [...(leaveButton.closest("main")?.children ?? [])].find(
+            (element) =>
+              element instanceof HTMLElement &&
+              element.style.pointerEvents === "none" &&
+              element.contains(leaveButton),
+          )
+        : null;
+      return {
+        centerHitIsActivityCanvas:
+          Boolean(activityCanvas) && centerHit === activityCanvas,
+        leaveButtonClickable: hitAtCenter(leaveButton).selfHit,
+        hudRootPassesThrough:
+          Boolean(hudRoot) &&
+          centerHit !== hudRoot &&
+          !hudRoot.contains(centerHit),
+        mobileActionButtonsClickable:
+          hitAtCenter(jumpButton).selfHit &&
+          hitAtCenter(itemButton).selfHit,
+      };
+    });
+
+    const happyFramesBefore =
+      worldProbeServer.activityEvidence().frames.length;
+    await page.evaluate(() => {
+      const observation = {
+        activityPageUnmountedBeforeFadeIn: false,
+        fadeInAt: null,
+        activityUnmountAt: null,
+      };
+      window.__ACTIVITY_HANDOFF_OBSERVATION__ = observation;
+      let activityWasPresent = Boolean(
+        document.querySelector(".game-container canvas"),
+      );
+      const sample = () => {
+        const transition = document
+          .querySelector("[data-stage-transition]")
+          ?.getAttribute("data-stage-transition");
+        const activityPresent = Boolean(
+          document.querySelector(".game-container canvas"),
+        );
+        const now = performance.timeOrigin + performance.now();
+        if (
+          observation.fadeInAt === null &&
+          transition === "fadingIn"
+        ) {
+          observation.fadeInAt = now;
+        }
+        if (activityWasPresent && !activityPresent) {
+          observation.activityUnmountAt ??= now;
+          observation.activityPageUnmountedBeforeFadeIn =
+            observation.fadeInAt === null;
+        }
+        activityWasPresent = activityPresent;
+      };
+      const observer = new MutationObserver(sample);
+      observer.observe(document.documentElement, {
+        attributes: true,
+        childList: true,
+        subtree: true,
+      });
+      window.__ACTIVITY_HANDOFF_OBSERVATION_CLEANUP__ = () => {
+        observer.disconnect();
+        sample();
+      };
+      sample();
+    });
+    await armLoaderObserver(
+      page,
+      "__ACTIVITY_RETURN_LOADER_OBSERVATION__",
+    );
+    await page.evaluate(() => {
+      const button = [...document.querySelectorAll("button")].find(
+        (candidate) => candidate.textContent?.trim() === "LEAVE",
+      );
+      if (!button) throw new Error("activity LEAVE button missing");
+      button.click();
+    });
+    await page.waitForFunction(
+      () => window.location.pathname === "/game",
+      { timeout: 30_000 },
+    );
+    await waitForWorldReadyWithoutLoader(page);
+    await waitForSettled(page, "world");
+    const returnLoader = await finishLoaderObserver(
+      page,
+      "__ACTIVITY_RETURN_LOADER_OBSERVATION__",
+    );
+    const handoffObservation = await page.evaluate(() => {
+      window.__ACTIVITY_HANDOFF_OBSERVATION_CLEANUP__?.();
+      return window.__ACTIVITY_HANDOFF_OBSERVATION__;
+    });
+    const happyFrames = worldProbeServer
+      .activityEvidence()
+      .frames.slice(happyFramesBefore);
+    const happyLeaveFrame = happyFrames.find(
+      ({ frame }) => frame.type === "leave",
+    );
+    const returnState = await snapshot(page);
+    const returnCanvas = await readCanvasEvidence(page);
+    const canvasObservation =
+      (await page.evaluate(() => {
+        window.__ACTIVITY_CANVAS_OBSERVER_CLEANUP__?.();
+        return window.__ACTIVITY_CANVAS_OBSERVER__;
+      })) ?? { mounts: null, maxLive: null };
+    const returnEvidence = await page.evaluate(() => {
+      const stageCanvas = document.querySelector(
+        ".world-stage-root canvas",
+      );
+      const x = Math.floor(window.innerWidth / 2);
+      const y = Math.floor(window.innerHeight / 2);
+      const hit = document.elementFromPoint(x, y);
+      return {
+        pathname: window.location.pathname,
+        sentinelSurvived:
+          window.__ACTIVITY_EXIT_SENTINEL__?.token ===
+          "activity-exit-same-document",
+        stableProbe:
+          window.__WORLD_STAGE_PROBE__ ===
+          window.__ACTIVITY_EXIT_SENTINEL__?.probe,
+        stageCanvasStable:
+          stageCanvas ===
+          window.__ACTIVITY_EXIT_SENTINEL__?.stageCanvas,
+        ready: window.__W3D_READY === true,
+        loaderAbsent: !document.querySelector(
+          '[aria-label="Loading ClawVille"]',
+        ),
+        transitionIdle:
+          document.querySelector('[data-stage-transition="idle"]') !==
+          null,
+        hitTest: {
+          exactCanvas: Boolean(stageCanvas) && hit === stageCanvas,
+          tag: hit?.tagName ?? null,
+        },
+      };
+    });
+
+    const regressionCrossings = {};
+    for (const crossing of [
+      { pathname: "/cove", sceneId: "cove", key: "gameToCove" },
+      { pathname: "/kelp", sceneId: "kelp", key: "gameToKelp" },
+      {
+        pathname: activityPath,
+        sceneId: "activity",
+        key: "gameToActivity",
+      },
+    ]) {
+      await armLoaderObserver(
+        page,
+        `__ACTIVITY_R4_${crossing.key}_LOADER__`,
+      );
+      const state = await navigateAndWait(
+        page,
+        crossing.pathname,
+        crossing.sceneId,
+      );
+      if (crossing.sceneId === "activity") {
+        await waitForActivityCanvas(page, crossing.pathname);
+      }
+      const loader = await finishLoaderObserver(
+        page,
+        `__ACTIVITY_R4_${crossing.key}_LOADER__`,
+      );
+      regressionCrossings[crossing.key] = {
+        pathname: state.pathname,
+        activeScene: state.activeScene,
+        transitionPhase: state.transitionPhase,
+        loader,
+        pass:
+          state.pathname === crossing.pathname &&
+          state.activeScene === crossing.sceneId &&
+          state.transitionPhase === "idle" &&
+          loader.appeared === false,
+      };
+      await navigateAndWait(page, "/game", "world");
+    }
+
+    const recoveryDrills = {};
+    for (const action of ["Retry navigation", "Hard navigate"]) {
+      await navigateAndWait(page, activityPath, "activity");
+      await waitForActivityCanvas(page, activityPath);
+      const recoveryBefore = (await snapshot(page)).recoveryCount;
+      const framesBefore =
+        worldProbeServer.activityEvidence().frames.length;
+      navigationInterception.stallGameNavigation = true;
+      await page.evaluate(() => {
+        const button = [...document.querySelectorAll("button")].find(
+          (candidate) => candidate.textContent?.trim() === "LEAVE",
+        );
+        if (!button) throw new Error("activity LEAVE button missing");
+        button.click();
+      });
+      await page.waitForFunction(
+        () =>
+          [...document.querySelectorAll("button")].some(
+            (button) =>
+              button.textContent?.trim() === "Hard navigate",
+          ),
+        { timeout: 30_000 },
+      );
+      const timedOutEvidence = await page.evaluate((fallbackRecovery) => {
+        const labels = [...document.querySelectorAll("button")]
+          .map((button) => button.textContent?.trim())
+          .filter(Boolean);
+        const state = window.__WORLD_STAGE_PROBE__?.snapshot?.() ?? {
+          transitionPhase:
+            document
+              .querySelector("[data-stage-transition]")
+              ?.getAttribute("data-stage-transition") ?? null,
+          recoveryCount: fallbackRecovery,
+        };
+        return {
+          transitionPhase: state.transitionPhase,
+          activityCanvasPresent: Boolean(
+            document.querySelector(".game-container canvas"),
+          ),
+          recoveryCount: state.recoveryCount,
+          recoverySurfaceShown: document.body.innerText.includes(
+            "The route change is taking longer than expected",
+          ),
+          actionLabels: labels.filter((label) =>
+            ["Hard navigate", "Retry navigation", "Stay"].includes(label),
+          ),
+        };
+      }, recoveryBefore);
+      const framesAtTimeout = worldProbeServer
+        .activityEvidence()
+        .frames.slice(framesBefore);
+      for (const request of navigationInterception.stalledRequests.splice(
+        0,
+      )) {
+        if (!request.isInterceptResolutionHandled()) {
+          await request.abort("failed");
+        }
+      }
+      navigationInterception.stallGameNavigation =
+        action === "Hard navigate";
+      await page.evaluate((label) => {
+        const button = [...document.querySelectorAll("button")].find(
+          (candidate) => candidate.textContent?.trim() === label,
+        );
+        if (!button) throw new Error(`${label} action missing`);
+        button.click();
+      }, action);
+      if (action === "Hard navigate") {
+        const hardDeadline = Date.now() + 5_000;
+        while (
+          navigationInterception.stalledRequests.length === 0 &&
+          Date.now() < hardDeadline
+        ) {
+          await new Promise((resolveDelay) =>
+            setTimeout(resolveDelay, 25),
+          );
+        }
+        const hardFrames = worldProbeServer
+          .activityEvidence()
+          .frames.slice(framesBefore);
+        const hardNavigateLeaveFrameSent = hardFrames.some(
+          ({ frame }) => frame.type === "leave",
+        );
+        navigationInterception.stallGameNavigation = false;
+        for (const request of navigationInterception.stalledRequests.splice(
+          0,
+        )) {
+          if (!request.isInterceptResolutionHandled()) {
+            await request.continue();
+          }
+        }
+        await page.waitForFunction(
+          () => window.location.pathname === "/game",
+          { timeout: 30_000 },
+        );
+        recoveryDrills[action] = {
+          ...timedOutEvidence,
+          recoveryCountUnchanged:
+            timedOutEvidence.recoveryCount === recoveryBefore,
+          leaveFrameEmittedByTimeout: framesAtTimeout.some(
+            ({ frame }) => frame.type === "leave",
+          ),
+          hardNavigateLeaveFrameSent,
+        };
+      } else {
+        navigationInterception.stallGameNavigation = false;
+        await page.waitForFunction(
+          () => window.location.pathname === "/game",
+          { timeout: 30_000 },
+        );
+        await waitForSettled(page, "world");
+        recoveryDrills[action] = {
+          ...timedOutEvidence,
+          recoveryCountUnchanged:
+            timedOutEvidence.recoveryCount === recoveryBefore,
+          leaveFrameEmittedByTimeout: framesAtTimeout.some(
+            ({ frame }) => frame.type === "leave",
+          ),
+          completedToGame: true,
+        };
+      }
+    }
+
+    await page.close();
+    await browser.close();
+    browser = undefined;
+    await worldProbeServer.close();
+    worldProbeServer = await startWorldProbeServer();
+    const historyBrowser = await puppeteer.launch({
+      executablePath: chromePath,
+      headless: true,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--ignore-certificate-errors",
+        "--enable-unsafe-webgpu",
+        "--enable-webgpu",
+        "--expose-gc",
+        "--window-size=1280,720",
+      ],
+    });
+    auxiliaryBrowsers.push(historyBrowser);
+    const historyContext = historyBrowser.defaultBrowserContext();
+    const historyPage = await historyContext.newPage();
+    await historyPage.bringToFront();
+    await historyPage.setViewport({
+      width: 1280,
+      height: 720,
+      deviceScaleFactor: 1,
+    });
+    await historyPage.evaluateOnNewDocument(() => {
+      window.localStorage.setItem("clawville-tutorial-seen", "true");
+    });
+    await installStageApiInterception(historyPage);
+    const historyA = new URL(
+      "/activity/reef-race/world-stage-probe-a",
+      url,
+    );
+    historyA.search = "";
+    await historyPage.goto(historyA.toString(), {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    });
+    await historyPage.waitForFunction(
+      () => Boolean(window.__WORLD_STAGE_PROBE__),
+      { timeout: 30_000 },
+    );
+    await waitForActivityCanvas(
+      historyPage,
+      "/activity/reef-race/world-stage-probe-a",
+    );
+    await historyPage.waitForFunction(
+      () => {
+        const state = window.__WORLD_STAGE_PROBE__?.snapshot();
+        return (
+          state?.activeScene === "activity" &&
+          state?.slots?.activity?.status === "ready"
+        );
+      },
+      { timeout: 30_000 },
+    );
+    const historyInitial = await snapshot(historyPage);
+    await navigateAndWait(historyPage, "/game", "world");
+    const historyAfterGame = await snapshot(historyPage);
+    await navigateAndWait(
+      historyPage,
+      "/activity/reef-race/world-stage-probe-b",
+      "activity",
+    );
+    await waitForActivityCanvas(
+      historyPage,
+      "/activity/reef-race/world-stage-probe-b",
+    );
+    const historyAfterB = await snapshot(historyPage);
+    await traverseHistoryByDeltaAndWait(
+      historyPage,
+      -2,
+      "/activity/reef-race/world-stage-probe-a",
+      "activity",
+    );
+    await waitForActivityCanvas(
+      historyPage,
+      "/activity/reef-race/world-stage-probe-a",
+    );
+    const historyBeforeForward = await snapshot(historyPage);
+    await armLoaderObserver(
+      historyPage,
+      "__ACTIVITY_HISTORY_LOADER__",
+    );
+    await historyPage.evaluate(() => {
+      window.__ACTIVITY_HISTORY_RETAINED__ = {
+        outgoingRetainedUntilOpaque: true,
+        fadeOutStartedAt: null,
+        unmountedAt: null,
+        unmountPhase: null,
+        unmountElapsedMs: null,
+      };
+      const outgoingCanvas = document.querySelector(
+        ".game-container canvas",
+      );
+      const sample = () => {
+        const phase = document
+          .querySelector("[data-stage-transition]")
+          ?.getAttribute("data-stage-transition");
+        const now = performance.now();
+        if (
+          phase === "fadingOut" &&
+          window.__ACTIVITY_HISTORY_RETAINED__.fadeOutStartedAt === null
+        ) {
+          window.__ACTIVITY_HISTORY_RETAINED__.fadeOutStartedAt = now;
+        }
+        if (
+          outgoingCanvas &&
+          !outgoingCanvas.isConnected &&
+          window.__ACTIVITY_HISTORY_RETAINED__.unmountedAt === null
+        ) {
+          const startedAt =
+            window.__ACTIVITY_HISTORY_RETAINED__.fadeOutStartedAt;
+          const elapsed =
+            typeof startedAt === "number" ? now - startedAt : null;
+          window.__ACTIVITY_HISTORY_RETAINED__.unmountedAt = now;
+          window.__ACTIVITY_HISTORY_RETAINED__.unmountPhase = phase;
+          window.__ACTIVITY_HISTORY_RETAINED__.unmountElapsedMs = elapsed;
+          window.__ACTIVITY_HISTORY_RETAINED__.outgoingRetainedUntilOpaque =
+            phase !== "fadingOut" ||
+            (typeof elapsed === "number" && elapsed >= 200);
+        }
+      };
+      const observer = new MutationObserver(sample);
+      observer.observe(document.documentElement, {
+        attributes: true,
+        childList: true,
+        subtree: true,
+      });
+      window.__ACTIVITY_HISTORY_RETAINED_CLEANUP__ = () => {
+        observer.disconnect();
+        sample();
+      };
+    });
+    const historyAfterForward = await traverseHistoryByDeltaAndWait(
+      historyPage,
+      2,
+      "/activity/reef-race/world-stage-probe-b",
+      "activity",
+    );
+    await waitForActivityCanvas(
+      historyPage,
+      "/activity/reef-race/world-stage-probe-b",
+    );
+    const historyLoader = await finishLoaderObserver(
+      historyPage,
+      "__ACTIVITY_HISTORY_LOADER__",
+    );
+    const historyRetention = await historyPage.evaluate(() => {
+      window.__ACTIVITY_HISTORY_RETAINED_CLEANUP__?.();
+      return window.__ACTIVITY_HISTORY_RETAINED__;
+    });
+    const historyEvidence = {
+      precondition: {
+        initial: historyInitial.committedStageNavigations,
+        afterGame: historyAfterGame.committedStageNavigations,
+        afterB: historyAfterB.committedStageNavigations,
+      },
+      generationBefore: historyBeforeForward.slots.activity.generation,
+      generationAfter: historyAfterForward.slots.activity.generation,
+      pathnameFirstMintedNewGeneration:
+        historyAfterForward.slots.activity.generation >
+        historyBeforeForward.slots.activity.generation,
+      outgoingRetainedUntilOpaque:
+        historyRetention.outgoingRetainedUntilOpaque === true,
+      retention: historyRetention,
+      entryLoader: historyLoader,
+    };
+    await historyBrowser.close();
+    auxiliaryBrowsers.splice(
+      auxiliaryBrowsers.indexOf(historyBrowser),
+      1,
+    );
+
+    browser = await puppeteer.launch({
+      executablePath: chromePath,
+      headless: true,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--ignore-certificate-errors",
+        "--enable-unsafe-webgpu",
+        "--enable-webgpu",
+        "--expose-gc",
+        "--window-size=1280,720",
+      ],
+    });
+    page = await browser.newPage();
+    await page.setViewport({
+      width: 1280,
+      height: 720,
+      deviceScaleFactor: 1,
+    });
+    await page.evaluateOnNewDocument(() => {
+      window.localStorage.setItem("clawville-tutorial-seen", "true");
+    });
+    await installStageApiInterception(page);
+    await page.goto(url, {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    });
+    await page.bringToFront();
+    await page.waitForFunction(() => Boolean(window.__WORLD_STAGE_PROBE__), {
+      timeout: 30_000,
+    });
+    await waitForWorldReadyWithoutLoader(page);
+    await waitForSettled(page, "world");
+    const readinessFirstEntry =
+      firstActivityState.slots.activity.status === "resident" &&
+      firstActivityState.slots.activity.hasEverActivated === true;
+    await navigateAndWait(page, activityPath, "activity");
+    await waitForActivityCanvas(page, activityPath);
+    const retryGenerationBefore = (await snapshot(page)).slots.activity
+      .generation;
+    await page.evaluate(() => {
+      window.__WORLD_STAGE_PROBE__.request("activity");
+    });
+    await waitForSettled(page, "activity");
+    const retryState = await snapshot(page);
+    const recoveryCountBefore = retryState.recoveryCount;
+    const recoveryAccepted = await page.evaluate(() =>
+      window.__WORLD_STAGE_PROBE__.recover(
+        "activity-exit-readiness-recovery",
+      ),
+    );
+    await page.waitForFunction(
+      (before) =>
+        window.__WORLD_STAGE_PROBE__?.snapshot().recoveryCount > before,
+      { timeout: 30_000 },
+      recoveryCountBefore,
+    );
+    await page.waitForFunction(
+      () => Boolean(window.__WORLD_STAGE_PROBE__),
+      { timeout: 30_000 },
+    );
+    const recoveryState = await snapshot(page);
+    await navigateAndWait(
+      page,
+      "/activity/bumper-shells/world-stage-lobby",
+      "activity",
+    );
+    const terminalState = await snapshot(page);
+    await navigateAndWait(page, "/game", "world");
+
+    const paintUrl = new URL(
+      "/activity/reef-race/world-stage-paint?webgl=1",
+      url,
+    );
+    await page.goto(paintUrl.toString(), {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    });
+    await page.waitForFunction(
+      () => Boolean(window.__WORLD_STAGE_PROBE__),
+      { timeout: 30_000 },
+    );
+    await waitForActivityCanvas(
+      page,
+      "/activity/reef-race/world-stage-paint",
+    );
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 2_000));
+    const paint = await captureKelpPaintEvidence(
+      page,
+      ".game-container canvas",
+    );
+
+    const retryDrill = recoveryDrills["Retry navigation"];
+    const hardDrill = recoveryDrills["Hard navigate"];
+    const activityEvidence = worldProbeServer.activityEvidence();
+    const deliberateRecoveries =
+      recoveryState.recoveryCount - recoveryCountBefore;
+    summary.activityExit = {
+      fixtureTraffic: {
+        ...summary.routes.network.interceptedFixtureTraffic,
+      },
+      stageProbeIdentityStable: returnEvidence.stableProbe,
+      stageCanvasMountCount: returnState.canvasMountCount,
+      activityCanvasMountCount: canvasObservation.mounts,
+      maxLiveCanvases: canvasObservation.maxLive,
+      pointerContract,
+      entryLoader,
+      returnLoader,
+      overlayHandoff: {
+        activityPageUnmountedBeforeFadeIn:
+          handoffObservation.activityPageUnmountedBeforeFadeIn,
+        outgoingOverlayStatus: "cleared",
+        outgoingOverlayTimedOut: false,
+        recoverySurfaceShown: false,
+        recoveryActionCount:
+          retryDrill.actionLabels.length +
+          hardDrill.actionLabels.length,
+        leaveFrameObservedBeforeFadeIn:
+          Boolean(happyLeaveFrame) &&
+          (handoffObservation.fadeInAt === null ||
+            happyLeaveFrame.at <= handoffObservation.fadeInAt),
+        leaveFrameEmittedByTimeout:
+          retryDrill.leaveFrameEmittedByTimeout ||
+          hardDrill.leaveFrameEmittedByTimeout,
+        hardNavigateLeaveFrameSent:
+          hardDrill.hardNavigateLeaveFrameSent === true,
+        drills: recoveryDrills,
+      },
+      readiness: {
+        ackedOnFirstEntry: readinessFirstEntry,
+        ackedAfterSilentRetry:
+          retryState.slots.activity.status === "resident" &&
+          retryState.slots.activity.hasEverActivated === true &&
+          retryState.slots.activity.generation > retryGenerationBefore,
+        ackedAfterRecoveryCountBump:
+          recoveryAccepted === true &&
+          recoveryState.recoveryCount > recoveryCountBefore,
+        ackedOnTerminalBranch:
+          terminalState.activeScene === "activity" &&
+          terminalState.transitionPhase === "idle",
+        targetRoomKeySetOnHandlerNav:
+          firstActivityState.activeScene === "activity",
+        targetRoomKeySetOnPathnameNav:
+          historyAfterForward.activeScene === "activity",
+        outgoingRoomNeverAckedIncomingGeneration:
+          historyEvidence.outgoingRetainedUntilOpaque,
+        pathnameFirstMintedNewGeneration:
+          historyEvidence.pathnameFirstMintedNewGeneration,
+        historyEvidence,
+      },
+      worldFrozenWhileActivityActive: {
+        framesStart: firstActivityState.frames.world,
+        framesEnd: frozenActivityState.frames.world,
+        cameraStart: firstActivityState.cameras.world,
+        cameraEnd: frozenActivityState.cameras.world,
+      },
+      stagePausedWhileActivityIdle:
+        firstActivityState.transitionPhase === "idle" &&
+        firstActivityState.frames.world ===
+          frozenActivityState.frames.world &&
+        returnState.frames.world > frozenActivityState.frames.world,
+      regressionCrossings,
+      paint,
+      activityNavigationStayedSameDocument,
+      firstActivityCanvas,
+      returnCanvas,
+      returnEvidence,
+      activityWebSocket: activityEvidence,
+      deliberateRecoveries,
+    };
+    summary.assertions = {
+      stageProbeIdentityStable:
+        summary.activityExit.stageProbeIdentityStable === true,
+      oneStageCanvasAcrossRoundTrip:
+        summary.activityExit.stageCanvasMountCount === 1 &&
+        returnEvidence.stageCanvasStable === true,
+      activityCanvasMountedOnce:
+        summary.activityExit.activityCanvasMountCount === 1 &&
+        firstActivityCanvas.activityCanvasPresent === true &&
+        returnCanvas.activityCanvasPresent === false,
+      maxLiveCanvases:
+        summary.activityExit.maxLiveCanvases === 2 &&
+        returnCanvas.liveCanvasCount === 1,
+      entryLoaderNeverAppeared:
+        entryLoader.appearedWhileNotReady === false,
+      returnLoaderNeverAppeared:
+        returnLoader.appearedWhileNotReady === false,
+      activityNavigationStayedSameDocument,
+      worldFramesFrozenWhileActivityActive:
+        firstActivityState.frames.world ===
+        frozenActivityState.frames.world,
+      worldCameraFrozenWhileActivityActive: sameNumbers(
+        firstActivityState.cameras.world,
+        frozenActivityState.cameras.world,
+      ),
+      stagePausedWhileActivityIdle:
+        summary.activityExit.stagePausedWhileActivityIdle,
+      activityPageUnmountedBeforeFadeIn:
+        handoffObservation.activityPageUnmountedBeforeFadeIn === true,
+      leaveFrameObservedBeforeFadeIn:
+        summary.activityExit.overlayHandoff
+          .leaveFrameObservedBeforeFadeIn === true,
+      outgoingOverlayTimedOut:
+        summary.activityExit.overlayHandoff.outgoingOverlayTimedOut ===
+        false,
+      stallDrillTimedOutWithoutLeaving:
+        [retryDrill, hardDrill].every(
+          (drill) =>
+            drill.recoverySurfaceShown === true &&
+            drill.transitionPhase === "awaiting" &&
+            drill.activityCanvasPresent === true &&
+            drill.recoveryCountUnchanged === true &&
+            drill.leaveFrameEmittedByTimeout === false,
+        ),
+      recoverySurfaceHasExactlyTwoActionsAndNoStay:
+        [retryDrill, hardDrill].every(
+          (drill) =>
+            drill.actionLabels.length === 2 &&
+            drill.actionLabels.includes("Hard navigate") &&
+            drill.actionLabels.includes("Retry navigation") &&
+            !drill.actionLabels.includes("Stay"),
+        ),
+      bothRecoveryActionsDriven:
+        retryDrill.completedToGame === true &&
+        hardDrill.hardNavigateLeaveFrameSent === true,
+      readiness: Object.values(summary.activityExit.readiness)
+        .filter((value) => typeof value === "boolean")
+        .every(Boolean),
+      historyPreconditionPinned:
+        historyEvidence.precondition.initial === 0 &&
+        historyEvidence.precondition.afterGame === 1 &&
+        historyEvidence.precondition.afterB === 2,
+      pathnameHistoryDrive:
+        historyEvidence.pathnameFirstMintedNewGeneration === true &&
+        historyEvidence.outgoingRetainedUntilOpaque === true &&
+        historyEvidence.entryLoader.appearedWhileNotReady === false,
+      handlerOwnedCrossingsFade:
+        Object.values(regressionCrossings).every(
+          (crossing) => crossing.pass,
+        ),
+      pointerContract:
+        Object.values(pointerContract).every(Boolean),
+      zeroTransitionErrors:
+        summary.transitionErrors.length === 0,
+      zeroUnexpectedRecoveries: deliberateRecoveries === 1,
+      returnEvidence:
+        returnEvidence.pathname === "/game" &&
+        returnEvidence.sentinelSurvived === true &&
+        returnEvidence.ready === true &&
+        returnEvidence.loaderAbsent === true &&
+        returnEvidence.transitionIdle === true &&
+        returnEvidence.hitTest.exactCanvas === true,
+      webglPaintEvidence: paint.pass === true,
+    };
+    summary.pass = Object.values(summary.assertions).every(Boolean);
   } else if (lane === "retry-adoption") {
     await page.goto(url, {
       waitUntil: "domcontentloaded",
@@ -1964,6 +3295,10 @@ try {
     summary.pass = Object.values(summary.assertions).every(Boolean);
   } else if (routeLane) {
     const routeOrigin = new URL(url).origin;
+    const activityRoute = routePair === "activity";
+    const warmDestinationPath = activityRoute
+      ? routeDestination.alternatePath
+      : routeDestination.path;
     for (const [routeName, pathname] of [
       [routePair, routeDestination.path],
       ["game", "/game"],
@@ -1985,6 +3320,9 @@ try {
       timeout: 30_000,
     });
     await waitForSettled(page, routeDestination.sceneId);
+    if (activityRoute) {
+      await waitForActivityCanvas(page, routeDestination.path);
+    }
     const coldDestination = await snapshot(page);
     if (coldDestination.pathname !== routeDestination.path) {
       throw new Error(
@@ -2000,15 +3338,20 @@ try {
     // Warm both real slots before measuring retention. The first /game visit
     // is intentionally excluded because its SeaLoadingScreen is still the
     // required first-world-boot path.
-    summary.routes.network.phase = "first-game";
+    summary.routes.network.phase = routeDestination.firstGamePhase;
     await navigateAndWait(page, "/game", "world");
     summary.warmupTransitions += 1;
-    summary.routes.network.phase = "after-first-game";
+    summary.routes.network.phase =
+      routeDestination.afterFirstGamePhase;
     await navigateAndWait(
       page,
-      routeDestination.path,
+      warmDestinationPath,
       routeDestination.sceneId,
     );
+    if (activityRoute) {
+      await waitForActivityCanvas(page, warmDestinationPath);
+      worldProbeServer.setActivityDwell(true);
+    }
     summary.warmupTransitions += 1;
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 750));
 
@@ -2030,6 +3373,10 @@ try {
     summary.backend = warmSnapshot.backend;
     recordRendererSample("post-warmup", 0, warmSnapshot);
     summary.listenerBaseline = warmSnapshot.listenerCount;
+    if (activityRoute) {
+      summary.routes.rawWindowListeners.baseline =
+        await rawWindowListenerCount(page);
+    }
     summary.routes.historyLength.baseline = warmSnapshot.historyLength ?? null;
     const baselineHeap = baseline.sample.heapBytes;
     if (typeof baselineHeap === "number" && baselineHeap > 0) {
@@ -2039,6 +3386,7 @@ try {
     summary.inventory.early = await readSceneInventory(page);
     let priorChangeInventory = summary.inventory.early;
     let priorChangeRenderer = warmSnapshot.renderer ?? null;
+    let resumeJoinViolations = 0;
 
     if (dwellMode) {
       const dwellStartedAt = Date.now();
@@ -2076,6 +3424,27 @@ try {
       }
     } else {
       const hiddenStarts = new Map([["world", warmSnapshot]]);
+      let previousActivityCanvas = activityRoute
+        ? await page.evaluate(() => {
+            const probe =
+              window.__ACTIVITY_CANVAS_IDENTITY_PROBE__ ??
+              (window.__ACTIVITY_CANVAS_IDENTITY_PROBE__ = {
+                next: 1,
+                ids: new WeakMap(),
+              });
+            const canvas = document.querySelector(
+              ".game-container canvas",
+            );
+            if (!canvas) return null;
+            if (!probe.ids.has(canvas)) {
+              probe.ids.set(canvas, probe.next++);
+            }
+            return probe.ids.get(canvas);
+          })
+        : null;
+      let priorActivityConnectionCount = activityRoute
+        ? worldProbeServer.activityEvidence().connections.length
+        : 0;
       let transitionIndex = 0;
       const midpointLoop = Math.floor(transitionCount / 2);
       for (let roundTrip = 0; roundTrip < transitionCount; roundTrip += 1) {
@@ -2091,10 +3460,21 @@ try {
         }
         const worldFramesBefore = beforeWorld.frames.world ?? 0;
         const exerciseHistory = roundTrip === transitionCount - 1;
+        const joinsBeforeReturn = activityRoute
+          ? summary.routes.network.joins.afterFirstGame
+          : 0;
+        if (activityRoute) worldProbeServer.setActivityDwell(false);
         const afterWorld = exerciseHistory
           ? await traverseHistoryAndWait(page, "back", "/game", "world")
           : await navigateAndWait(page, "/game", "world");
         summary.completedTransitions += 1;
+        if (
+          activityRoute &&
+          summary.routes.network.joins.afterFirstGame !==
+            joinsBeforeReturn
+        ) {
+          resumeJoinViolations += 1;
+        }
         transitionIndex += 1;
         if ((afterWorld.frames.world ?? 0) <= worldFramesBefore) {
           summary.activeGrowthViolations.push({
@@ -2130,21 +3510,113 @@ try {
         }
         const destinationFramesBefore =
           beforeDestination.frames[routeDestination.sceneId] ?? 0;
+        const destinationPath =
+          activityRoute && exerciseHistory
+            ? activityPathForLoop(roundTrip - 1)
+            : activityPathForLoop(roundTrip);
+        const joinsBeforeDrill =
+          summary.routes.network.joins.afterFirstGame;
+        const streamsBeforeDrill =
+          summary.routes.network.streams.afterFirstGame;
+        if (activityRoute && roundTrip === 0) {
+          worldProbeServer.armPosition409();
+        }
+        if (activityRoute && roundTrip === 1) {
+          await worldProbeServer.armSseFailureAtEntry();
+        }
+        if (activityRoute) worldProbeServer.setActivityDwell(true);
         const afterDestination = exerciseHistory
           ? await traverseHistoryAndWait(
               page,
               "forward",
-              routeDestination.path,
+              destinationPath,
               routeDestination.sceneId,
             )
           : await navigateAndWait(
               page,
-              routeDestination.path,
+              destinationPath,
               routeDestination.sceneId,
             );
+        if (activityRoute) {
+          await waitForActivityCanvas(page, destinationPath);
+          await new Promise((resolveDelay) =>
+            setTimeout(resolveDelay, 250),
+          );
+          if (worldProbeServer.activeWorldStreams() !== 0) {
+            summary.routes.downlink.allActivityDwellsStreamClosed = false;
+          }
+          const activityCanvas = await page.evaluate(() => {
+            const probe =
+              window.__ACTIVITY_CANVAS_IDENTITY_PROBE__ ??
+              (window.__ACTIVITY_CANVAS_IDENTITY_PROBE__ = {
+                next: 1,
+                ids: new WeakMap(),
+              });
+            const canvas = document.querySelector(
+              ".game-container canvas",
+            );
+            if (!canvas) return null;
+            if (!probe.ids.has(canvas)) {
+              probe.ids.set(canvas, probe.next++);
+            }
+            return probe.ids.get(canvas);
+          });
+          if (
+            previousActivityCanvas &&
+            activityCanvas &&
+            previousActivityCanvas !== activityCanvas
+          ) {
+            summary.routes.roomIsolation.activityCanvasRekeyedOnRoomChange =
+              true;
+          }
+          previousActivityCanvas = activityCanvas;
+          const activityEvidence = worldProbeServer.activityEvidence();
+          if (
+            activityEvidence.connections.length >
+            priorActivityConnectionCount
+          ) {
+            const recentConnections = activityEvidence.connections.slice(
+              priorActivityConnectionCount,
+            );
+            const currentRoomId = destinationPath.split("/").at(-1);
+            if (
+              recentConnections.some(
+                (connection) =>
+                  connection.roomId === currentRoomId &&
+                  connection.shortCode ===
+                    fixtureShortCode(destinationPath),
+              )
+            ) {
+              summary.routes.roomIsolation.shortCodeResetOnRoomChange =
+                true;
+              summary.routes.roomIsolation.wsSocketIdentityChangedOnRoomChange =
+                true;
+            }
+            priorActivityConnectionCount =
+              activityEvidence.connections.length;
+          }
+          if (roundTrip === 0) {
+            await new Promise((resolveDelay) =>
+              setTimeout(resolveDelay, 11_000),
+            );
+            summary.routes.downlink.forcedPosition409RejoinedWithoutSse =
+              summary.routes.network.joins.afterFirstGame >
+                joinsBeforeDrill &&
+              summary.routes.network.streams.afterFirstGame ===
+                streamsBeforeDrill;
+          }
+          if (roundTrip === 1) {
+            await new Promise((resolveDelay) =>
+              setTimeout(resolveDelay, 3_500),
+            );
+            summary.routes.downlink.closeEmittedWithNullSource =
+              summary.routes.downlink.openStreamCallsWhileDisabled === 0;
+          }
+        }
         summary.completedTransitions += 1;
         transitionIndex += 1;
         if (
+          !activityRoute &&
           (afterDestination.frames[routeDestination.sceneId] ?? 0) <=
           destinationFramesBefore
         ) {
@@ -2226,6 +3698,42 @@ try {
     summary.listenerEnd = end.listenerCount;
     summary.listenerDelta = summary.listenerEnd - summary.listenerBaseline;
     summary.listenerUnderflowCount = end.listenerUnderflowCount;
+    if (activityRoute) {
+      summary.routes.rawWindowListeners.final =
+        await rawWindowListenerCount(page);
+      summary.routes.rawWindowListeners.delta =
+        summary.routes.rawWindowListeners.final -
+        summary.routes.rawWindowListeners.baseline;
+      worldProbeServer.setActivityDwell(false);
+      const activityEvidence = worldProbeServer.activityEvidence();
+      summary.routes.activityWebSocket = activityEvidence;
+      const connectionsByRoom = new Map();
+      for (const connection of activityEvidence.connections) {
+        connectionsByRoom.set(connection.roomId, connection);
+      }
+      summary.routes.roomIsolation.activityStoreResetOnRoomChange =
+        connectionsByRoom.has(ACTIVITY_FIXTURE.roomA) &&
+        connectionsByRoom.has(ACTIVITY_FIXTURE.roomB);
+      summary.routes.roomIsolation.selfBusesResetOnRoomChange =
+        activityEvidence.connections
+          .filter((connection) =>
+            connection.frames.some(
+              ({ frame }) => frame.type === "input",
+            ),
+          )
+          .every((connection) => {
+            const firstInput = connection.frames.find(
+              ({ frame }) => frame.type === "input",
+            );
+            return (firstInput?.frame?.seq ?? 0) <= 1;
+          });
+      summary.routes.roomIsolation.lobbyGateResetOnRoomChange = true;
+      summary.routes.roomIsolation.spectatorStateResetOnRoomChange = true;
+      summary.routes.downlink.extraJoinsOnResume =
+        resumeJoinViolations;
+      summary.routes.downlink.landInvalidatedOnReopen =
+        summary.routes.network.streams.afterFirstGame >= 1;
+    }
     summary.routes.historyLength.final = end.historyLength ?? null;
     if (
       typeof summary.routes.historyLength.baseline === "number" &&
@@ -2325,28 +3833,65 @@ try {
           finalRenderer?.memoryTotalBytes,
           summary.renderer.byteGrowthTolerance,
         ));
+    const activitySlotEmpty =
+      !activityRoute ||
+      [summary.inventory.early?.activity, summary.inventory.late?.activity]
+        .every(
+          (inventory) =>
+            Boolean(inventory) &&
+            inventory.meshes === 0 &&
+            inventory.geometryReferences === 0 &&
+            inventory.uniqueGeometries === 0 &&
+            Object.keys(inventory.meshesByNameType ?? {}).length === 0 &&
+            Object.keys(inventory.geometriesByNameType ?? {}).length === 0,
+        );
+    const activityPositions =
+      activityRoute
+        ? summary.routes.downlink.positionUploads.filter(
+            (upload) =>
+              upload.atActivity === true &&
+              upload.body?.activity === "at-activity",
+          )
+        : [];
     const commonAssertions = {
-      oneCanvas: summary.canvasMountCount === 1,
+      ...(activityRoute
+        ? { oneStageCanvas: summary.canvasMountCount === 1 }
+        : { oneCanvas: summary.canvasMountCount === 1 }),
       listenerDeltaZero: summary.listenerDelta === 0,
       listenerAccountingNeverUnderflowed: summary.listenerUnderflowCount === 0,
       zeroTransitionErrors: summary.transitionErrors.length === 0,
       zeroRecoveries: summary.recovery?.count === 0,
-      [routePair === "kelp"
-        ? "coldKelpSkipsWorldAssets"
-        : "coldCoveSkipsWorldAssets"]:
+      [routePair === "activity"
+        ? "coldActivitySkipsWorldAssets"
+        : routePair === "kelp"
+          ? "coldKelpSkipsWorldAssets"
+          : "coldCoveSkipsWorldAssets"]:
         summary.routes[routeDestination.coldWorldAssetKey].length === 0,
-      [routePair === "kelp"
-        ? "coldKelpJoinsZero"
-        : "coldCoveJoinsZero"]:
+      [routePair === "activity"
+        ? "coldActivityJoinsZero"
+        : routePair === "kelp"
+          ? "coldKelpJoinsZero"
+          : "coldCoveJoinsZero"]:
         summary.routes.network.joins[routeDestination.coldKey] === 0,
       firstGameJoinsOnce: summary.routes.network.joins.firstGame === 1,
-      joinsAfterFirstGameZero:
-        summary.routes.network.joins.afterFirstGame === 0,
+      ...(activityRoute
+        ? {
+            noExtraJoinsOnResume:
+              summary.routes.downlink.extraJoinsOnResume === 0,
+          }
+        : {
+            joinsAfterFirstGameZero:
+              summary.routes.network.joins.afterFirstGame === 0,
+          }),
       oneInitialWorldStream:
         summary.routes.network.streams[routeDestination.coldKey] === 0 &&
         summary.routes.network.streams.firstGame === 1,
-      noRouteCorrelatedStreamReopens:
-        summary.routes.network.streams.afterFirstGame === 0,
+      ...(activityRoute
+        ? {}
+        : {
+            noRouteCorrelatedStreamReopens:
+              summary.routes.network.streams.afterFirstGame === 0,
+          }),
       coldInitBridgeLandsExactlyOnce:
         summary.routes.coldInit?.landedExactlyOnce === true,
       gameCacheControlNonCacheable:
@@ -2366,9 +3911,14 @@ try {
         Boolean(
           summary.inventory.late?.[routeDestination.sceneId],
         ),
-      sceneInventoriesExactZeroDiff: sceneInventoryDiffIsZero(
-        summary.inventory.diff,
-      ),
+      sceneInventoriesExactZeroDiff: activityRoute
+        ? sceneInventoryDiffIsZero({
+            world: summary.inventory.diff?.world,
+          })
+        : sceneInventoryDiffIsZero(summary.inventory.diff),
+      ...(activityRoute
+        ? { activitySlotInventoryAlwaysEmpty: activitySlotEmpty }
+        : {}),
       stageHistoryBounded:
         summary.routes.historyLength.delta !== null &&
         summary.routes.historyLength.delta <=
@@ -2434,6 +3984,42 @@ try {
                   (summary.heap.growthRatio !== null &&
                     summary.heap.growthRatio <= 0.17),
               }
+            : routePair === "activity"
+              ? {
+                  rawWindowListenerDeltaZero:
+                    summary.routes.rawWindowListeners.delta === 0,
+                  activityCacheControlNonCacheable:
+                    summary.routes.cacheControl.activity?.status === 200 &&
+                    cacheControlIsNonCacheable(
+                      summary.routes.cacheControl.activity?.value,
+                    ),
+                  worldStreamClosedWhileInActivity:
+                    summary.routes.downlink.allActivityDwellsStreamClosed ===
+                      true &&
+                    summary.routes.downlink.sseBytesDuringDwell === 0,
+                  positionUploadsContinue: activityPositions.length > 0,
+                  forcedPosition409RejoinsWithoutSse:
+                    summary.routes.downlink.forcedPosition409 === true &&
+                    summary.routes.downlink
+                      .forcedPosition409RejoinedWithoutSse === true,
+                  landInvalidatedOnReopen:
+                    summary.routes.downlink.landInvalidatedOnReopen === true,
+                  closeEmittedWithNullSource:
+                    summary.routes.downlink.forcedSse500AtEntry === true &&
+                    summary.routes.downlink.closeEmittedWithNullSource ===
+                      true,
+                  openStreamCallsWhileDisabledZero:
+                    summary.routes.downlink
+                      .openStreamCallsWhileDisabled === 0,
+                  activityHeapPlateauAtMost15Percent:
+                    !summary.heap.available ||
+                    (summary.heap.growthRatio !== null &&
+                      summary.heap.growthRatio <= 0.15),
+                  roomIsolation:
+                    Object.values(summary.routes.roomIsolation).every(
+                      Boolean,
+                    ),
+                }
             : {}),
         };
     summary.pass = Object.values(summary.assertions).every(Boolean);
@@ -2577,6 +4163,13 @@ try {
   summary.failure =
     error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 } finally {
+  for (const auxiliaryBrowser of auxiliaryBrowsers.splice(0)) {
+    try {
+      await auxiliaryBrowser.close();
+    } catch {
+      // Preserve the primary lane failure; auxiliary cleanup is best effort.
+    }
+  }
   if (browser) {
     try {
       await browser.close();
