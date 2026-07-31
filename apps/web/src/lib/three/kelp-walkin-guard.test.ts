@@ -220,4 +220,52 @@ describe('kelp walk-in ownership guard', () => {
       ),
     ).toEqual({ kind: 'PROCEED', releaseLegacyLatch: false });
   });
+
+  test('rule 3 evaluates bufferedPathname instead of the full buffered href', () => {
+    expect(
+      decideKelpWalkIn(
+        input({
+          nav: {
+            mounted: true,
+            handlerInstalled: false,
+            bufferedTo: '/cove',
+            bufferedPathname: '/kelp',
+            bufferedExpiresAt: 1_001,
+          },
+        }),
+      ),
+    ).toMatchObject({ kind: 'BLOCKED', reason: 'in-flight' });
+  });
+
+  test('rule 4 evaluates bufferedPathname and preserves supersession', () => {
+    expect(
+      decideKelpWalkIn(
+        input({
+          nav: {
+            mounted: true,
+            handlerInstalled: false,
+            bufferedTo: '/kelp',
+            bufferedPathname: '/cove',
+            bufferedExpiresAt: 1_001,
+          },
+        }),
+      ),
+    ).toEqual({ kind: 'PROCEED', releaseLegacyLatch: false });
+  });
+
+  test('a buffered kelp href with a query still blocks through its pathname', () => {
+    expect(
+      decideKelpWalkIn(
+        input({
+          nav: {
+            mounted: true,
+            handlerInstalled: false,
+            bufferedTo: '/kelp?x=1',
+            bufferedPathname: '/kelp',
+            bufferedExpiresAt: 1_001,
+          },
+        }),
+      ),
+    ).toMatchObject({ kind: 'BLOCKED', reason: 'in-flight' });
+  });
 });
