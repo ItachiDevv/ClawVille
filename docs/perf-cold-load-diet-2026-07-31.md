@@ -4,9 +4,12 @@
 > ULTRA-HIGH reasoning (`xhigh`, verified accepted by CLI v0.144.3) is the adversarial teammate
 > at every stage (plan critique → implementation → diff review).
 >
-> Status: **DRAFT v2 — revision after Codex REJECT of v1
-> (`perf-cold-load-diet-2026-07-31-adversarial-review.md`, 12 findings, 5 BLOCKING). All five
-> blockers adopted; v2 is under re-review before any code.**
+> Status: **v3 — Codex delta re-review of v2 returned APPROVE-WITH-CHANGES
+> (`perf-cold-load-diet-2026-07-31-adversarial-review.md`): rung 0 cleared immediately; rung 1
+> cleared only after the re-review's findings 1–3 are incorporated (done in this v3) and M0
+> freezes numeric per-backend budgets (finding 5). Rungs 2–5 stay result-gated; finding 6 adds a
+> VRM sub-canary before ambient-VRM widening. v1's full 12-finding review is preserved at commit
+> `619abc8c`.**
 > Branch: `perf/cold-load-diet` off `origin/staging` (`57a425a7`).
 > Runs independently of the pending kelp+reef staging→master promotion.
 
@@ -113,12 +116,23 @@ alongside but not part of the ratchet. Founder Iris Xe (WebGL2 path) is the floo
 separately before any promotion talk.
 
 - **M0 (instrumented baseline):** phase timestamps + renderer backend + CF cache state exported;
-  today's 34.62MB / 20.5s re-confirmed under the fixture.
-- **M1 (post-A):** reveal-gated wire **≤15.5MB** (arithmetic floor ~15.0 + margin); reveal-time
-  improvement measured per phase, no post-reveal frame-SLO violation (§5).
-- **M2 (post-A+B/C):** reveal-gated wire **≤11MB** (pavilion −~1.8, shisha −~0.5, building
-  texture diets −~1.5, remaining core trims); stretch 10MB only if the diets over-deliver —
-  not promised. Total cold session (to a deterministic post-queue-drained marker) **≤22MB**.
+  today's 34.62MB / 20.5s re-confirmed under the fixture. M0 also delivers TWO frozen artifacts
+  (re-review findings 4+5, both prerequisites for rung 1):
+  (a) the **URL-level ledger** — per-URL `before / after / lane / saving` rows for M1, M2-reveal,
+  and queue-drained-total, with the animation rows derived from the §A role split; **A deferral
+  is never credited toward total-session savings**;
+  (b) **numeric per-backend acceptance budgets** — worst-frame ms, longtask ms, the exact
+  stable-frame calculation, and queue-drain deadline, frozen separately for the desktop backend
+  AND the WebGL2 path (Iris proxy) before any behavior change.
+- **M1 (post-A):** reveal-gated wire **≤15.5MB** (arithmetic floor ~14.97 under the §A animation
+  role split; 15.37 if the split under-delivers — the ledger decides); per-phase reveal-time
+  improvement measured; both backends inside their M0 budgets.
+- **M2 (post-A+B/C): PROVISIONAL ≤11MB reveal-gated / ≤22MB total-session** — the re-review
+  showed the currently-named diets sum to ~11.2MB reveal and only ~6.5-7MB of the 12.6MB
+  total-session savings needed. These targets are ratified or revised AT M0 by the ledger: either
+  the rung-0 ledger names the additional still-gated core savings (building texture/geometry
+  rows are candidates but are NOT yet quantified) and enough eventual-stream diets to close, or
+  the targets move to what the named rows actually sum to. No un-named savings may be assumed.
 - **Reveal time target: provisional until M0 phase data exists.** The 8s dev-probe number from v1
   is downgraded to a hypothesis; M0 decides what the compile/warm floor actually is per backend.
 - **Zero conditional omission** (every NPC still appears; timing-only), zero visual regression at
@@ -141,9 +155,17 @@ separately before any promotion talk.
 ### A. Reveal-gate scope cut — the §4 replacement seam from the adversarial review (adopted)
 
 Deferred set: explicitly tagged static ambient wanderer NPCs, the 12 location character GLBs,
-ansem-sword + per-character anim files of deferred-only species, spawn-distant decorations if
-cheaply separable. NEVER deferred: local player's avatar (any model incl. ansem), possessed NPC,
-autonomous avatar bodies, real remote players, locomotion clips, buildings, town props, terrain.
+ansem-sword, spawn-distant decorations if cheaply separable. NEVER deferred: local player's
+avatar (any model incl. ansem), possessed NPC, autonomous avatar bodies, real remote players,
+buildings, town props, terrain.
+
+**Animation-clip role split (re-review finding 2 — resolves the v2 contradiction):** the shared
+base locomotion set (`/avatars/animations/idle|walk|run.glb`) is invariant critical and stays
+reveal-priority. Character-specific clip files (`hermes-*/`, `tekk-male/`, `chibi/`, `ansem/`)
+are deferred to the post lane **iff their only live consumers are deferred ambient NPCs**; the
+moment a critical consumer (local player, remote, possessed, autonomous) needs the same clip URL,
+its demand wins and the fetch goes reveal-priority. The rung-0 accounting script derives the
+credited ~0.40MB from this rule (URL × consumer-role join), not from a hand list.
 
 Design (per review §4, steps 1-8 — implementer treats these as the spec):
 1. One-shot `decorativeReleased` controller owned by the persistent world scene; released on
@@ -153,11 +175,16 @@ Design (per review §4, steps 1-8 — implementer treats these as the spec):
 2. Texture scheduler refactored to lanes (`reveal` | `post`): one serialized queue, one active
    resolver, per-lane `seen`/total/done. Only the reveal lane publishes
    `__W3D_TEXTURE_UPLOAD_TOTAL/DONE`. Post metrics get new names; no relationship to `__W3D_READY`.
-3. Event-driven `warmDeferredObject3D(object, renderer, camera, liveScene)`: for VRMs, construct
-   and await the one owning `VRMCharacterAnimator` (incl. clips + configured attachment), evaluate
-   the mixer once at t=0 (first visible frame is posed — no T-pose), queue textures through the
-   post lane, `renderer.compileAsync(object, camera, liveScene)`, cache by object+renderer,
-   Suspense wrapper, bounded fail-open resolving to VISIBLE (never suspended forever).
+3. Event-driven `warmDeferredObject3D(object, renderer, camera, liveScene)` — exact sequence
+   (re-review finding 1; deviations are defects): (a) for VRMs, construct the SOLE owning
+   `VRMCharacterAnimator`, await clips + configured attachment, evaluate the mixer once at t=0
+   (first visible frame is posed — no T-pose), and RETAIN that animator as the component's
+   animator (never construct a second post-commit); (b) traverse the COMPLETE detached object,
+   queueing every texture through the post lane; (c) save each mesh's `frustumCulled`, disable,
+   then await `renderer.compileAsync(object, camera, liveScene)`, restoring all flags in a
+   `finally` (off-frustum materials must not stay cold); (d) cache the promise/status by
+   object+renderer; (e) Suspense wrapper; (f) bounded no-progress + absolute ceilings whose
+   timeout resolves fail-open to VISIBLE (never suspended forever).
 4. Remove the blanket wanderer `preloadVRMBytes()` calls from `asset-preload-manifest.ts` AND the
    module-scope preloads in `arena-npcs.tsx`. Shared player/wanderer URLs fetch early only on
    real critical demand.
@@ -177,11 +204,13 @@ Design (per review §4, steps 1-8 — implementer treats these as the spec):
 ### B. Geometry diets (census-first)
 
 - **ansem/adinero**: (1) accessor/meshopt byte census, exact-tuple weld dry-run, UV/hard-normal
-  seam audit, quantization check; (2) sibling prototypes on a rate-distortion ladder
-  (90k/60k/45k/38k tris) → pick the visual knee (idle/walk/run, shoulder/hand/face deformation,
-  sword attachment, silhouette, promo closeups); (3) parameterize `scripts/decimate-vrm.ts`'s
-  38k–42k validation band. Ansem is the influencer showpiece: if no knee is acceptable, welding +
-  attribute-precision wins alone still land ~30-40%.
+  seam audit, quantization check, vertex-cache/overdraw analysis; (2) sibling prototypes on a
+  rate-distortion ladder (90k/60k/45k/38k tris) → pick the visual knee (idle/walk/run,
+  shoulder/hand/face deformation, sword attachment, silhouette, promo closeups); (3) parameterize
+  `scripts/decimate-vrm.ts`'s 38k–42k validation band. Acceptance per prototype: grounding/bounds
+  unchanged, all `VRMC_*` extensions preserved byte-for-byte in the JSON chunk, and a real
+  runtime-load check in the world (not just a parse). Ansem is the influencer showpiece: if no
+  knee is acceptable, welding + attribute-precision wins alone still land ~30-40%.
 - **chibi VRMs**: meshopt via the repo's VRM-safe capture/reinject pipeline
   (`scripts/assets-optimize.ts` — stock glTF transforms strip `VRMC_vrm` data; never raw gltfpack
   on a VRM). ~1.06 → ~0.45MB each.
@@ -204,9 +233,17 @@ dutchman 0.62, pavilion's 16 UASTC 512s, tekk 0.32 webp normal):
 
 ### SW — service-worker parity (new workstream; binds A and B/C)
 
-- Define the reveal-core URL set; make `PRECACHE_GLBS` cover it EXACTLY (today it misses the town
-  props, player VRMs, location NPCs) including every mutated `?v=N`/sibling URL.
-- Automated URL-parity test: manifest/runtime/attachment/SW references move together.
+**Role-aware cache sets (re-review finding 3 — a flat "cover everything" precache would have the
+SW fetch deferred bytes at install time and undo workstream A):**
+- **Invariant boot-core precache** (small): buildings, town props, shared locomotion, terrain
+  cores — including every mutated `?v=N`/sibling URL of these.
+- **Demand-cached** (runtime cache-first, NEVER install-precached): player-capable VRMs and other
+  demand-dependent assets — membership depends on the session's avatar/room.
+- **Post-release ambient set** (location NPCs, ambient wanderer VRMs, deferred clips):
+  **explicitly FORBIDDEN from install precache**; runtime-cached only after `decorativeReleasedAt`.
+- URL-parity automation validates each URL's assigned ROLE (boot-core vs demand vs post-release),
+  not mere presence in one master list; manifest/runtime/attachment/SW references move together.
+- The rung-1 clean-install assertion REJECTS any SW-initiated deferred request before release.
 - Explicit upgrade policy, tested: bump the cache namespace and measure the one-time refill, OR
   prune superseded URLs without deleting warm assets. Verify: clean install → first reveal → post
   queue drain → second navigation; and old-build cache → new SW activation → navigation.
@@ -215,18 +252,31 @@ dutchman 0.62, pavilion's 16 UASTC 512s, tekk 0.32 webp normal):
 
 - Only act on the 89-small-GLB fanout / 6x `/login` RSC prefetch if step-0's
   initiator/priority/protocol data shows they delay critical requests. No refactor on request
-  count alone.
+  count alone. For `/login`: find the emitting Next.js prefetch at its source, run a
+  disable-A/B, and KEEP the change only if critical request start times or reveal improve —
+  else revert.
 
 ## 4. Sequencing (canary ladder — replaces v1's A-then-B/C)
 
-0. Step-0 instrumentation + exact allowlist accounting script + fixture definition → M0.
-1. **A canary on ONE location GLB** proving: counter-lane isolation, detached upload+compile,
-   all watchdog ceilings, stage world→activity→world return, SW behavior.
+0. Step-0 instrumentation + exact URL-ledger accounting script + fixture definition + frozen
+   per-backend numeric budgets → M0. **Cleared unconditionally by the re-review.**
+1. **A canary on ONE location GLB** proving: counter-lane isolation, detached upload+compile
+   (full §A.3 sequence incl. frustum-culling save/restore), all watchdog ceilings, stage
+   world→activity→world return, and the clean-install SW assertion (no SW-initiated deferred
+   fetch before release). **Pass requires BOTH backends inside their M0 budgets — the WebGL2
+   path (Iris proxy, forced locally) runs at the canary, not at promotion time; the
+   founder-hardware run remains the final floor check.**
 2. **B/C on the largest future-post-reveal assets FIRST** (ansem/adinero/spongebob/plush…) so
    their post-reveal streaming cost is bounded before A widens.
-3. Widen A class-by-class (location NPCs → ambient wanderer VRMs → decorations), re-probing
-   reveal + the 10s post-reveal frame SLO after each class.
-4. B/C on still-gated core (pavilion, shisha, buildings) → M2.
+3a. Widen A to the location-NPC class, re-probing reveal + the post-reveal budgets per backend.
+3b. **Ambient-VRM SUB-CANARY** (re-review finding 6) before the VRM class widens: ONE ambient
+   wanderer VRM through the full warm seam with throttled animation/attachment responses,
+   frame-by-frame first-visible capture (no T-pose/rest-pose frame), and a shared
+   critical-demand variant (Ansem as local avatar while ansem-wanderer is deferred; single
+   network fetch for the shared URL).
+3c. Widen A to the ambient wanderer VRM class, then decorations — re-probing per class, both
+   backends inside budgets each time.
+4. B/C on still-gated core (pavilion, shisha, buildings per the M0 ledger) → M2.
 5. D only with step-0 evidence.
 
 Every mutated asset ships under a NEW `?v=N` or sibling filename (CF 7-day edge cache, no purge);
