@@ -23,6 +23,7 @@ export const worldPresenceClientFrameSchema = z.discriminatedUnion('type', [
   worldPresencePongFrameSchema,
 ]);
 
+export type WorldPresencePositionFrame = z.infer<typeof worldPresencePositionFrameSchema>;
 export type WorldPresenceClientFrame = z.infer<typeof worldPresenceClientFrameSchema>;
 
 export type WorldPresenceErrorCode =
