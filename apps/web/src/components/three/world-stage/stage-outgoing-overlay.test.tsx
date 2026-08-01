@@ -110,6 +110,11 @@ const cases: Array<readonly [string, () => void]> = [
       'outgoingOverlay?.requestId === pendingRequest.requestId',
     );
   }],
+  ['uses in-world copy throughout the opaque scene handoff', () => {
+    expect(transitionSource).toContain('RIDING THE CURRENT…');
+    expect(transitionSource).not.toContain('WARMING SCENE');
+    expect(transitionSource).not.toContain('SWITCHING SCENE');
+  }],
   ['children landing clears the overlay and releases fade-in', () => {
     expect(rootSource).toMatch(
       /setDisplayedPathname\(pathname\);[\s\S]*?overlay\.pathname !== displayedPathname[\s\S]*?clearOutgoingOverlay\(overlay\.requestId\)/,
@@ -171,8 +176,8 @@ const cases: Array<readonly [string, () => void]> = [
     );
   }],
   ['retains A until B reaches the opaque midpoint', () => {
-    expect(rootSource).toContain(
-      'pendingRouteChildrenRef.current = {\n        pathname,\n        children,\n      }',
+    expect(rootSource).toMatch(
+      /pendingRouteChildrenRef\.current = \{\r?\n\s+pathname,\r?\n\s+children,\r?\n\s+\}/,
     );
     expect(rootSource).toMatch(
       /handleTransitionOpaque[\s\S]*?setDisplayedChildren\(pendingRoute\.children\)/,
@@ -570,7 +575,7 @@ const cases: Array<readonly [string, () => void]> = [
   }],
 ];
 
-if (cases.length !== 81) {
+if (cases.length !== 82) {
   throw new Error(`frozen stage-outgoing-overlay count drifted: ${cases.length}`);
 }
 
