@@ -414,8 +414,9 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
     if (revealPageMs == null) console.log(`[probe] WARNING: reveal never observed within ${HARD_CAP_MS / 1000}s`);
 
     let longtasks = [], longtasksSeries = null, frames = [], navTiming = null, phases = null, backend = null;
+    let decorativeReleasedAt = null, decorativeReleaseReason = null;
     try {
-      const blob = await evalInPage(`JSON.stringify({lt:window.__COLD_PROBE__.longtasks,fr:window.__COLD_PROBE__.frames,ph:window.__W3D_PHASES||null,be:(window.__W3D_BACKEND===undefined?null:window.__W3D_BACKEND),nav:(()=>{const n=performance.getEntriesByType('navigation')[0];return n?{dcl:Math.round(n.domContentLoadedEventEnd),load:Math.round(n.loadEventEnd),ttfb:Math.round(n.responseStart)}:null})()})`);
+      const blob = await evalInPage(`JSON.stringify({lt:window.__COLD_PROBE__.longtasks,fr:window.__COLD_PROBE__.frames,ph:window.__W3D_PHASES||null,be:(window.__W3D_BACKEND===undefined?null:window.__W3D_BACKEND),dr:(window.__W3D_DECORATIVE_RELEASED_AT===undefined?null:window.__W3D_DECORATIVE_RELEASED_AT),drr:(window.__W3D_DECORATIVE_RELEASE_REASON===undefined?null:window.__W3D_DECORATIVE_RELEASE_REASON),nav:(()=>{const n=performance.getEntriesByType('navigation')[0];return n?{dcl:Math.round(n.domContentLoadedEventEnd),load:Math.round(n.loadEventEnd),ttfb:Math.round(n.responseStart)}:null})()})`);
       const parsed = JSON.parse(blob || "{}");
       // Preserve ABSENCE: a missing series must not launder to a valid empty
       // capture (re-review #4 finding 3).
@@ -427,6 +428,11 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
       // null — anything else must fail the backend check, never launder to a
       // waivable null (re-review #3 residue).
       backend = parsed.be === undefined ? null : parsed.be;
+      // Rung-1 canary evidence: page-clock ms when the decorative release
+      // fired. Only a finite number is a real stamp; anything else stays null
+      // (absence — canary assertions must refuse to run against it).
+      decorativeReleasedAt = typeof parsed.dr === "number" && Number.isFinite(parsed.dr) ? parsed.dr : null;
+      decorativeReleaseReason = typeof parsed.drr === "string" ? parsed.drr : null;
       navTiming = parsed.nav || null;
     } catch {}
 
@@ -478,6 +484,7 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
       performanceEvidenceReasons: perfEvidence.reasons,
       invalidReasons: verdict.reasons, backendWaived: verdict.backendWaived,
       backend, expectedBackend, phases, navTiming,
+      decorativeReleasedAt, decorativeReleaseReason,
       revealMs: revealPageMs,
       loaderFirstSeenHostMs: loaderFirstSeenAt, canvasFirstSeenHostMs: canvasFirstSeenAt,
       networkQuiescedMs: networkQuiescedPageMs, lastAssetByteMs: lastAssetEnd || null,

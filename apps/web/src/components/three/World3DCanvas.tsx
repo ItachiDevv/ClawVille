@@ -2560,7 +2560,13 @@ const FORCE_WEBGL = FORCE_WEBGL_OVERRIDE
 if (typeof window !== 'undefined') {
   // Probe-readable backend stamp — the REQUESTED path; overwritten with the
   // ACTUAL backend after renderer.init() (Three may fall back WebGPU→WebGL2).
-  stampColdLoadBackend(FORCE_WEBGL ? 'webgl2-requested' : 'webgpu-requested');
+  // NEVER clobber an existing stamp: on stage-hosted routes the stage renderer
+  // (WorldStageCanvas initializeStageRenderer) can init and stamp the ACTUAL
+  // backend BEFORE this module chunk evaluates — the '-requested' default
+  // overwriting it invalidated every probe run ("backend not actual").
+  if ((window as any).__W3D_BACKEND === undefined) {
+    stampColdLoadBackend(FORCE_WEBGL ? 'webgl2-requested' : 'webgpu-requested');
+  }
   console.log(
     `[World3D] GPU path: ${FORCE_WEBGL ? 'forceWebGL (WebGL2+TSL)' : 'WebGPU'} — iOS:${IOS_SAFARI} noGPU:${WEBGPU_ABSENT} lowEnd:${LOW_END_GPU_DETECTED} webgpuOverride:${FORCE_WEBGPU_OVERRIDE} webglOverride:${FORCE_WEBGL_OVERRIDE}`,
   );
