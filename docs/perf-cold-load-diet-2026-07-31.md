@@ -305,8 +305,32 @@ sibling names preferred (auto-bust).
   committed g-batch artifacts carry actual backends, so the working tree that produced them had
   this stamping live; it was lost before commit — treat probe evidence as tied to the exact
   BUILT bundle, not the branch (deferred punch-list item "build-ID attestation" covers this).
-- **Next:** paired-gate A/B batch (§2b; 8 strict pairs/backend, baseline = tooling commit,
-  candidate = canary commit) + Codex diff review of the canary.
+- **Codex xhigh canary diff review: VERDICT APPROVE** (no blocking/major behavior defects; the
+  one MINOR — shared preload cancellation handles — and the assert-tool advisory — failed fetch
+  counting as loaded — were folded in `ef63cc4d`; report archived in the adversarial-review doc).
+
+### Rung-1 paired A/B verdict (2026-08-01 batch; baseline `7ddf319e` :3011 vs candidate `1dda54eb` :3010)
+
+24 usable strict pairs (12/backend, 6 AB / 6 BA each, 0 drops after the hardened daemon recipe;
+build identity attested by grepping served chunks for the canary flag — present only in the
+candidate). Gate outputs + manifests committed under `docs/perf-data/cold-load-rung1-2026-08-01/`
+(raw per-run reports remain on the dev box scratchpad referenced by the manifests).
+
+- **WebGPU: PASS at n=12 (exit 0, all five metrics).** Candidate faster at the median on every
+  ratio metric: reveal −2.1% (ub 0.016 < 0.140), worst-frame −2.6% (ub 0.130), stable-window
+  −10.9% (ub 0.072), pre-reveal longtasks −2.2% (ub 0.050); frame-count diff bound 2 ≤ +2.
+  Candidate faster reveal in 9/12 pairs; spread [−0.126, +0.073].
+- **WebGL2: formal FAIL by the frozen still-open-at-12 rule — NOT evidence of regression.**
+  Medians: worst-frame −0.4% (candidate faster), pre-reveal longtasks −34.5% (candidate much
+  faster), reveal +3.6%, stable-window +9.9%; frame-count PASS. The bounds (0.32–3.28 in log
+  space vs the 0.140 limit) are dominated by the lane's bimodal identical-code variance —
+  within-pair reveal log-ratios span [−0.343, +0.457] with 6 negative / 6 positive, and the
+  BASELINE arm alone drew both ~21s and ~35s reveals in the same session (the M0 vrmBulk
+  9.6–35.4s variance). A 0.97MB reveal-set removal has no mechanism to slow this lane; the
+  instrument simply cannot resolve a 15% effect inside ±40% noise on this box. **Disposition is
+  a founder call above the frozen rules:** accept the WebGPU pass + WebGL2 noise analysis as
+  rung-1 evidence, or demand gate closure on a quieter box / bigger n for the WebGL2 lane
+  before widening (rung 3a). We did NOT re-run lanes until green.
 
 ## 5. Verification protocol
 
