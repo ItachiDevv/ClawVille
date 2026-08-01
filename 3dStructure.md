@@ -1,6 +1,10 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-07-30 (Persistent world-stage P4 activity overlay slot).**
+**Last Audited: 2026-07-31 (Cold-load rung-1 canary: decorative release + Flying Dutchman deferral).**
+
+**Last edit / Last Audited:** 2026-07-31 (**Cold-load rung-1 canary — decorative release controller + Flying Dutchman post-reveal deferral.**) New `lib/three/decorative-release.ts` one-shot monotonic controller fires from all four World3DCanvas ready paths (warmup-complete / stage-ready / resume / fallback-resume) with a 45s absolute deadline armed at warmup start; stamps `__W3D_DECORATIVE_RELEASED_AT`/`_REASON`. `arena-location-npcs.tsx`: `LocationNpcConfig.deferUntilDecorativeRelease` (set ONLY on `api-integrations`/Flying Dutchman, 0.97MB) stops the parent `LocationNpc` before the `NpcMesh` `useGLTF` demand until release, and `DeferredNpcPreloads` splits its preload list so release-deferred models warm on the release signal (shared models stay immediate). Timing-only deferral — atomic mount post-release, never conditional omission; release is module-state monotonic so SPA/canvas remounts mount instantly. Telemetry: the ACTUAL-backend probe stamp moved to the live path — `WorldStageCanvas initializeStageRenderer` (the /game renderer under `WorldStageRoot`) stamps `__W3D_BACKEND` post-init (initial + both recovery paths); World3DCanvas's module-eval `'-requested'` stamp is now non-clobbering. Verified local strict-evidence probe: dutchman fetch starts +1.5ms AFTER release, zero pre-release bytes, NPC mounts. **Perf:** −0.97MB from the reveal-gated set; no shader, geometry, or per-frame-alloc change.
+
+**Prior Last Audited: 2026-07-30 (Persistent world-stage P4 activity overlay slot).**
 `/activity/:activityId/:roomId` now joins the `(world)` route group and registers
 an empty resident `activity` stage slot while Reef Race and Bumper Shells retain
 their room-keyed page-layer WebGL canvases. The shared stage pauses only after
