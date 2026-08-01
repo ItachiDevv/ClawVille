@@ -46,6 +46,13 @@ if (matches.length === 0) {
   console.error(`[canary] VIOLATION: no request matching "${needle}" in the capture — the deferred asset never loaded (stranded content is a product defect, not a byte win).`);
   process.exit(3);
 }
+// A FAILED request is not proof of loading (Codex canary review advisory):
+// the ordering check below still covers failed matches, but "it loaded" needs
+// at least one request that actually finished successfully.
+if (!matches.some((r) => !r.failed)) {
+  console.error(`[canary] VIOLATION: ${matches.length} matching request(s) but none succeeded — the deferred asset never actually loaded.`);
+  process.exit(3);
+}
 
 const early = matches.filter((r) => typeof r.startPageMs === "number" && r.startPageMs < releasedAt - CLOCK_EPSILON_MS);
 const unstamped = matches.filter((r) => typeof r.startPageMs !== "number" || !Number.isFinite(r.startPageMs));

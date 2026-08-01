@@ -825,8 +825,12 @@ const LocationNpc = memo(function LocationNpc({
 export function DeferredNpcPreloads(): ReactElement | null {
   useEffect(() => {
     let cancelled = false;
-    let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
-    let idleHandle = 0;
+    // Arrays, not single slots: the immediate and release-deferred chains can
+    // both have a pending callback at unmount; a shared slot would cancel only
+    // the latest one (Codex canary review MINOR — the orphan exits on
+    // `cancelled` either way, this just cancels it outright).
+    const timers: ReturnType<typeof globalThis.setTimeout>[] = [];
+    const idleHandles: number[] = [];
 
     const preloadNext = (models: string[], index: number) => {
       if (cancelled || index >= models.length) return;
@@ -838,9 +842,9 @@ export function DeferredNpcPreloads(): ReactElement | null {
       };
 
       if ('requestIdleCallback' in window) {
-        idleHandle = window.requestIdleCallback(run, { timeout: 2500 });
+        idleHandles.push(window.requestIdleCallback(run, { timeout: 2500 }));
       } else {
-        timer = globalThis.setTimeout(run, 250);
+        timers.push(globalThis.setTimeout(run, 250));
       }
     };
 
@@ -868,13 +872,13 @@ export function DeferredNpcPreloads(): ReactElement | null {
     const waitForReady = () => {
       if (cancelled) return;
       if (!(window as any).__W3D_READY) {
-        timer = globalThis.setTimeout(waitForReady, 500);
+        timers.push(globalThis.setTimeout(waitForReady, 500));
         return;
       }
       preloadNext(immediateModels, 0);
     };
 
-    timer = globalThis.setTimeout(waitForReady, 500);
+    timers.push(globalThis.setTimeout(waitForReady, 500));
 
     // Deferred models warm strictly after the decorative release — the same
     // signal that lets their NpcMesh render. Release also fires on the 45s
@@ -886,9 +890,9 @@ export function DeferredNpcPreloads(): ReactElement | null {
     return () => {
       cancelled = true;
       unsubscribeRelease?.();
-      if (timer !== undefined) globalThis.clearTimeout(timer);
-      if (idleHandle && 'cancelIdleCallback' in window) {
-        window.cancelIdleCallback(idleHandle);
+      for (const t of timers) globalThis.clearTimeout(t);
+      if ('cancelIdleCallback' in window) {
+        for (const h of idleHandles) window.cancelIdleCallback(h);
       }
     };
   }, []);
