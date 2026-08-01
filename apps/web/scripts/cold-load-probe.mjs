@@ -271,7 +271,7 @@ export function computeValidity({ all, revealMs, backend, expectedBackend, waive
  * present and finite. Missing frames, a null stable window, or an unclaimed
  * quiescence marker make the run unusable as performance evidence.
  */
-export function assessPerformanceEvidence({ revealMs, frameMetrics, longtaskCount, networkQuiescedMs }) {
+export function assessPerformanceEvidence({ revealMs, frameMetrics, longtaskSeries, networkQuiescedMs }) {
   const reasons = [];
   const finite = (v) => typeof v === "number" && Number.isFinite(v);
   if (!finite(revealMs)) reasons.push("no finite revealMs");
@@ -281,7 +281,11 @@ export function assessPerformanceEvidence({ revealMs, frameMetrics, longtaskCoun
     if (!finite(frameMetrics.stableWindowStartMsAfterReveal)) reasons.push("no stable window observed");
     if (!finite(frameMetrics.framesOver100In10s)) reasons.push("no frame-count metric");
   }
-  if (!finite(longtaskCount)) reasons.push("no longtask series captured");
+  // An ABSENT series is not a legitimately-empty one (re-review #4 finding 3):
+  // extraction preserves absence as null; a real capture is an array whose
+  // entries are all finite {s, d}.
+  if (!Array.isArray(longtaskSeries)) reasons.push("no longtask series captured");
+  else if (longtaskSeries.some((e) => !finite(e?.s) || !finite(e?.d))) reasons.push("malformed longtask entries");
   if (!finite(networkQuiescedMs)) reasons.push("network never quiesced within capture");
   return { complete: reasons.length === 0, reasons };
 }
@@ -409,11 +413,14 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
     }
     if (revealPageMs == null) console.log(`[probe] WARNING: reveal never observed within ${HARD_CAP_MS / 1000}s`);
 
-    let longtasks = [], frames = [], navTiming = null, phases = null, backend = null;
+    let longtasks = [], longtasksSeries = null, frames = [], navTiming = null, phases = null, backend = null;
     try {
       const blob = await evalInPage(`JSON.stringify({lt:window.__COLD_PROBE__.longtasks,fr:window.__COLD_PROBE__.frames,ph:window.__W3D_PHASES||null,be:(window.__W3D_BACKEND===undefined?null:window.__W3D_BACKEND),nav:(()=>{const n=performance.getEntriesByType('navigation')[0];return n?{dcl:Math.round(n.domContentLoadedEventEnd),load:Math.round(n.loadEventEnd),ttfb:Math.round(n.responseStart)}:null})()})`);
       const parsed = JSON.parse(blob || "{}");
-      longtasks = parsed.lt || [];
+      // Preserve ABSENCE: a missing series must not launder to a valid empty
+      // capture (re-review #4 finding 3).
+      longtasksSeries = Array.isArray(parsed.lt) ? parsed.lt : null;
+      longtasks = longtasksSeries ?? [];
       frames = parsed.fr || [];
       phases = parsed.ph || null;
       // Preserve falsy-but-present stamps ('' / false): only true absence is
@@ -449,7 +456,7 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
     const perfEvidence = assessPerformanceEvidence({
       revealMs: revealPageMs,
       frameMetrics,
-      longtaskCount: longtasks.length,
+      longtaskSeries: longtasksSeries,
       networkQuiescedMs: networkQuiescedPageMs,
     });
     const preRevealLongtaskMs = longtasks.filter((e) => revealPageMs == null || e.s <= revealPageMs).reduce((a, e) => a + e.d, 0);

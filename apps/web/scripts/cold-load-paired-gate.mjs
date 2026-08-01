@@ -57,6 +57,35 @@ export function upperBoundOfMedian(values, confidence = CONFIDENCE) {
   return sorted[k - 1];
 }
 
+/** §2b outer sanity bounds — a candidate beyond these fails regardless of pairing. */
+export const SANITY_BOUNDS = {
+  webgpu: { revealMs: 22_000, worstFrameMsIn10s: 4_000, stableWindowStartMsAfterReveal: 6_000, framesOver100In10s: 6, preRevealLongtaskMs: 6_500 },
+  webgl2: { revealMs: 30_000, worstFrameMsIn10s: 12_000, stableWindowStartMsAfterReveal: 15_000, framesOver100In10s: 5, preRevealLongtaskMs: 25_000 },
+};
+
+const METRIC_GETTERS = new Map([...RATIO_METRICS, [COUNT_METRIC[0], COUNT_METRIC[1]]]);
+
+/** All gate metrics must be finite numbers on a summary; returns defect reasons. */
+export function rawMetricDefects(summary) {
+  const defects = [];
+  for (const [name, get] of METRIC_GETTERS) {
+    const v = get(summary);
+    if (typeof v !== "number" || !Number.isFinite(v)) defects.push(`${name} not finite (${v})`);
+  }
+  return defects;
+}
+
+export function sanityBreaches(summary, backend) {
+  const bounds = SANITY_BOUNDS[backend];
+  if (!bounds) return [`no sanity bounds for backend ${backend}`];
+  const out = [];
+  for (const [name, limit] of Object.entries(bounds)) {
+    const v = METRIC_GETTERS.get(name)(summary);
+    if (typeof v === "number" && v > limit) out.push(`${name} ${v} > sanity bound ${limit}`);
+  }
+  return out;
+}
+
 function usableReport(summary) {
   return summary?.validForPerformance === true && summary?.backendWaived === false;
 }
@@ -70,11 +99,28 @@ export function evaluatePairedGate(pairs, {
   countDiffLimit = COUNT_DIFF_LIMIT,
   minPairs = MIN_PAIRS,
   confidence = CONFIDENCE,
+  backend = null,
 } = {}) {
   const reasons = [];
-  const usable = pairs.filter((p) => usableReport(p.baseline) && usableReport(p.candidate));
+  // Order tokens must be exactly AB|BA — an unknown token is a DEFECT, not a
+  // silently uncounted row (re-review #4 finding 1).
+  const badOrders = pairs.filter((p) => p.order !== "AB" && p.order !== "BA").length;
+  if (badOrders) {
+    return { verdict: "fail", reasons: [`${badOrders} pairs with invalid order token`], perMetric: {}, usablePairs: 0 };
+  }
+  const usable = pairs.filter((p) =>
+    usableReport(p.baseline) && usableReport(p.candidate)
+    && rawMetricDefects(p.baseline).length === 0 && rawMetricDefects(p.candidate).length === 0
+    && (!backend || (p.baseline.backend === backend && p.candidate.backend === backend)));
   if (usable.length < pairs.length) {
-    reasons.push(`${pairs.length - usable.length} pairs dropped (not strict performance evidence)`);
+    reasons.push(`${pairs.length - usable.length} pairs dropped (not strict/finite/backend-matched evidence)`);
+  }
+  // Outer sanity bounds (§2b): ANY candidate breach fails regardless of pairing.
+  if (backend) {
+    const breaches = usable.flatMap((p) => sanityBreaches(p.candidate, backend));
+    if (breaches.length) {
+      return { verdict: "fail", reasons: [...reasons, ...breaches.slice(0, 6)], perMetric: {}, usablePairs: usable.length };
+    }
   }
   if (usable.length < minPairs) {
     return { verdict: "inconclusive", reasons: [...reasons, `only ${usable.length}/${minPairs} usable pairs`], perMetric: {}, usablePairs: usable.length };
@@ -117,7 +163,12 @@ export function evaluatePairedGate(pairs, {
     } else {
       const ub = upperBoundOfMedian(diffs, confidence);
       const pass = ub != null && ub <= countDiffLimit;
-      perMetric[name] = { verdict: ub == null ? "inconclusive" : pass ? "pass" : "fail", upperBoundDiff: ub, limit: countDiffLimit, n: diffs.length };
+      // Same disposition as ratio metrics: below the extension cap, a
+      // non-passing bound EXTENDS; only at the cap does it fail (finding 4).
+      perMetric[name] = {
+        verdict: ub == null ? "inconclusive" : pass ? "pass" : usable.length < EXTEND_PAIRS ? "inconclusive" : "fail",
+        upperBoundDiff: ub, limit: countDiffLimit, n: diffs.length,
+      };
       if (perMetric[name].verdict === "fail") anyFail = true;
       if (perMetric[name].verdict === "inconclusive") anyInconclusive = true;
     }
@@ -140,13 +191,29 @@ if (import.meta.main) {
     process.exit(2);
   }
   const manifest = JSON.parse(await Bun.file(manifestPath).text());
+  if (manifest.backend !== "webgpu" && manifest.backend !== "webgl2") {
+    console.error(`[paired-gate] manifest.backend must be webgpu|webgl2 (got ${manifest.backend})`);
+    process.exit(2);
+  }
+  const seenPaths = new Set();
   const pairs = [];
   for (const p of manifest.pairs) {
+    if (p.baseline === p.candidate) {
+      console.error(`[paired-gate] baseline and candidate are the same file: ${p.baseline}`);
+      process.exit(2);
+    }
+    for (const path of [p.baseline, p.candidate]) {
+      if (seenPaths.has(path)) {
+        console.error(`[paired-gate] report reused across arms/pairs: ${path}`);
+        process.exit(2);
+      }
+      seenPaths.add(path);
+    }
     const baseline = JSON.parse(await Bun.file(p.baseline).text()).summary;
     const candidate = JSON.parse(await Bun.file(p.candidate).text()).summary;
     pairs.push({ order: p.order, baseline, candidate });
   }
-  const result = evaluatePairedGate(pairs);
+  const result = evaluatePairedGate(pairs, { backend: manifest.backend });
   console.log(JSON.stringify(result, null, 2));
   process.exit(result.verdict === "pass" ? 0 : result.verdict === "inconclusive" ? 4 : 3);
 }

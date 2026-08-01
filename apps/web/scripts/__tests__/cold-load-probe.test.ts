@@ -117,7 +117,7 @@ describe('assessPerformanceEvidence — completeness fail-closed', () => {
   const good = {
     revealMs: 15_000,
     frameMetrics: { worstFrameMsIn10s: 1000, stableWindowStartMsAfterReveal: 3000, framesOver100In10s: 2 },
-    longtaskCount: 10,
+    longtaskSeries: [{ s: 100, d: 150 }],
     networkQuiescedMs: 20_000,
   };
   it('accepts complete evidence', () => {
@@ -131,6 +131,11 @@ describe('assessPerformanceEvidence — completeness fail-closed', () => {
   it('rejects a null stable window', () => {
     const r = assessPerformanceEvidence({ ...good, frameMetrics: { ...good.frameMetrics, stableWindowStartMsAfterReveal: null } });
     expect(r.reasons.join()).toContain('no stable window');
+  });
+  it('rejects an ABSENT longtask series but accepts a legitimately empty one', () => {
+    expect(assessPerformanceEvidence({ ...good, longtaskSeries: null }).reasons.join()).toContain('no longtask series');
+    expect(assessPerformanceEvidence({ ...good, longtaskSeries: [] }).complete).toBe(true);
+    expect(assessPerformanceEvidence({ ...good, longtaskSeries: [{ s: 1 }] }).reasons.join()).toContain('malformed');
   });
   it('rejects an unclaimed network quiescence', () => {
     const r = assessPerformanceEvidence({ ...good, networkQuiescedMs: null });
