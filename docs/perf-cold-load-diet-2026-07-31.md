@@ -366,7 +366,7 @@ quiet-machine sample cannot gate code changes on a shared box. Therefore:
   these is rejected regardless of pairing):
 | Metric | WebGPU | WebGL2 |
 |---|---|---|
-| reveal (local fixture, page clock) | ≤ 22s | ≤ 30s |
+| reveal (local fixture, page clock) | ≤ 22s | ≤ 40s |
 | worst frame in the 10s post-reveal window | ≤ 4s | ≤ 12s |
 | stable-window start after reveal | ≤ 6s | ≤ 15s |
 | frames >100ms in the 10s window | ≤ 6 | ≤ 5 |
@@ -375,6 +375,15 @@ quiet-machine sample cannot gate code changes on a shared box. Therefore:
 
 Union maxima observed (batches f+g, all `validForPerformance`): WebGPU reveal 20.5s / worst
 3.23s / stable 4.95s / f100 5 / ltPre 5.31s; WebGL2 27.5s / 10.85s / 13.24s / 4 / 23.27s.
+
+**WebGL2 reveal sanity bound recalibrated 30s → 40s (2026-08-01, rung-1 canary batch):** the
+canary batch's BASELINE arm — identical pre-canary code — breached 30s in 4/8 pairs
+(31.3–34.8s) in the same session that measured 21–26s on other draws; the lane is bimodal on
+this box (the M0 vrmBulk 9.6–35.4s variance), so 30s sat INSIDE the identical-code
+environmental ceiling — exactly the failure mode that demoted absolute ceilings to sanity
+bounds in the first place. 40s stays above the observed baseline max while still catching true
+pathology; regression detection remains the paired statistics' job. Evidence:
+`manifest-webgl2.json` pairs 3/4/5/6 baseline reports (scratchpad canary batch).
 "Stable window" = first contiguous 3s run of frames all ≤100ms from reveal
 (`frameMetrics.stableWindowStartMsAfterReveal`, interval-overlap inclusion).
 

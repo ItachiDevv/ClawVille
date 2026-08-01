@@ -57,10 +57,17 @@ export function upperBoundOfMedian(values, confidence = CONFIDENCE) {
   return sorted[k - 1];
 }
 
-/** §2b outer sanity bounds — a candidate beyond these fails regardless of pairing. */
+/** §2b outer sanity bounds — a candidate beyond these fails regardless of pairing.
+ *  webgl2.revealMs recalibrated 30_000→40_000 (2026-08-01, rung-1 batch): 4/8
+ *  BASELINE (pre-canary, identical-code) runs breached 30s at 31.3-34.8s in the
+ *  same session — the lane is bimodal on this box (~21-26s / ~31-35s, the M0
+ *  vrmBulk variance), so 30s sat inside the environmental ceiling and failed
+ *  identical code. 40s stays above the observed baseline max while still
+ *  catching true pathology; the PAIRED statistics remain the regression
+ *  instrument. Evidence: manifest-webgl2.json pairs 3/4/5/6 baselines. */
 export const SANITY_BOUNDS = {
   webgpu: { revealMs: 22_000, worstFrameMsIn10s: 4_000, stableWindowStartMsAfterReveal: 6_000, framesOver100In10s: 6, preRevealLongtaskMs: 6_500 },
-  webgl2: { revealMs: 30_000, worstFrameMsIn10s: 12_000, stableWindowStartMsAfterReveal: 15_000, framesOver100In10s: 5, preRevealLongtaskMs: 25_000 },
+  webgl2: { revealMs: 40_000, worstFrameMsIn10s: 12_000, stableWindowStartMsAfterReveal: 15_000, framesOver100In10s: 5, preRevealLongtaskMs: 25_000 },
 };
 
 const METRIC_GETTERS = new Map([...RATIO_METRICS, [COUNT_METRIC[0], COUNT_METRIC[1]]]);
