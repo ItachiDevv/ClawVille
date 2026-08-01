@@ -26,6 +26,7 @@ import { applyColorTint } from '@/lib/three/character-animations';
 import { clampMovement2D } from '@/lib/three/collision/world-colliders';
 import { applyFattenedFrustumCulling } from '@/lib/three/vrm-loader';
 import { extendLoaderWithKTX2 } from '@/lib/three/ktx2-loader-setup';
+import { isDecorativeReleased, onDecorativeRelease } from '@/lib/three/decorative-release';
 
 // ---------------------------------------------------------------------------
 // Location NPCs — SpongeBob characters at their canonical buildings
@@ -101,6 +102,12 @@ type NpcModelConfig = {
  *  stands beside the primary. It does NOT register as a chat target — interaction
  *  always routes to the primary character. */
 type LocationNpcConfig = NpcModelConfig & {
+  /** Cold-load rung-1 canary (perf-cold-load-diet §3A): when true, this slot's
+   *  NpcMesh (primary AND companion) does not RENDER until the decorative
+   *  release fires, so its GLB fetch starts post-reveal instead of gating the
+   *  loading screen. Timing-only deferral — the NPC always mounts once
+   *  released (atomic, no fade); release is monotonic across canvas remounts. */
+  deferUntilDecorativeRelease?: boolean;
   companion?: NpcModelConfig & {
     /** World-unit X offset from primary NPC position (default 80). */
     offsetX?: number;
@@ -136,7 +143,9 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   // ghostFloat: static mesh with no skeleton — uses procedural ghost-float
   // (large Y bob + Z sway) which is more thematic for a ghost than walk anims
   // anyway. Compare to Pearl in cron-automation which ships with 5 built-in animations.
-  'api-integrations': { name: 'Flying Dutchman', model: '/models/characters/flying-dutchman-ktx.glb', ghostFloat: true },
+  // deferUntilDecorativeRelease: rung-1 canary slot (2026-07-31) — the 0.97MB
+  // GLB is decorative at spawn distance and now loads after world reveal.
+  'api-integrations': { name: 'Flying Dutchman', model: '/models/characters/flying-dutchman-ktx.glb', ghostFloat: true, deferUntilDecorativeRelease: true },
 
   // Slot 3 — cron-automation — Downtown Building (Pearl Krabs's downtown teen vibe)
   // Pearl Krabs GLB sourced from Sketchfab (CC-BY 4.0) 2026-04-23 — official-look
@@ -735,6 +744,17 @@ const LocationNpc = memo(function LocationNpc({
   const config = LOCATION_NPCS[zoneId];
   const { camera } = useThree();
   const [mounted, setMounted] = useState(false);
+  // Cold-load rung-1 canary: a release-deferred slot renders nothing (so its
+  // NpcMesh never issues the useGLTF demand) until the decorative release
+  // fires. The release is one-shot module state, so on SPA returns / canvas
+  // remounts isDecorativeReleased() is already true and the NPC mounts
+  // immediately — timing-only deferral, never conditional omission.
+  const deferToRelease = config?.deferUntilDecorativeRelease === true;
+  const [released, setReleased] = useState(() => !deferToRelease || isDecorativeReleased());
+  useEffect(() => {
+    if (released) return undefined;
+    return onDecorativeRelease(() => setReleased(true));
+  }, [released]);
   // Real incrementing frame counter — replaces Math.floor(clock.elapsedTime * 60)
   // which drifted when the tab was backgrounded or the frame rate varied.
   const frameCountRef = useRef(0);
@@ -760,7 +780,7 @@ const LocationNpc = memo(function LocationNpc({
   });
 
   if (!config) return null;
-  if (!mounted) return null;
+  if (!mounted || !released) return null;
 
   const companion = config.companion;
   const companionX = companion ? worldX + (companion.offsetX ?? 80) : 0;
@@ -824,33 +844,48 @@ export function DeferredNpcPreloads(): ReactElement | null {
       }
     };
 
+    // Split the preload list on the rung-1 canary flag. A model shared between
+    // a deferred and a non-deferred slot stays immediate (collect non-deferred
+    // slots first) — only models whose EVERY consumer is release-deferred wait
+    // for the decorative release.
+    const seen = new Set<string>();
+    const immediateModels: string[] = [];
+    const releaseDeferredModels: string[] = [];
+    const collect = (model: string, deferred: boolean) => {
+      if (seen.has(model)) return;
+      seen.add(model);
+      (deferred ? releaseDeferredModels : immediateModels).push(model);
+    };
+    for (const cfg of Object.values(LOCATION_NPCS).filter((c) => !c.deferUntilDecorativeRelease)) {
+      collect(cfg.model, false);
+      if (cfg.companion) collect(cfg.companion.model, false);
+    }
+    for (const cfg of Object.values(LOCATION_NPCS).filter((c) => c.deferUntilDecorativeRelease)) {
+      collect(cfg.model, true);
+      if (cfg.companion) collect(cfg.companion.model, true);
+    }
+
     const waitForReady = () => {
       if (cancelled) return;
       if (!(window as any).__W3D_READY) {
         timer = globalThis.setTimeout(waitForReady, 500);
         return;
       }
-
-      const seen = new Set<string>();
-      const models: string[] = [];
-      Object.values(LOCATION_NPCS).forEach((cfg) => {
-        if (!seen.has(cfg.model)) {
-          seen.add(cfg.model);
-          models.push(cfg.model);
-        }
-        if (cfg.companion && !seen.has(cfg.companion.model)) {
-          seen.add(cfg.companion.model);
-          models.push(cfg.companion.model);
-        }
-      });
-
-      preloadNext(models, 0);
+      preloadNext(immediateModels, 0);
     };
 
     timer = globalThis.setTimeout(waitForReady, 500);
 
+    // Deferred models warm strictly after the decorative release — the same
+    // signal that lets their NpcMesh render. Release also fires on the 45s
+    // absolute deadline, so a wedged ready-gate can never strand these.
+    const unsubscribeRelease = releaseDeferredModels.length > 0
+      ? onDecorativeRelease(() => { if (!cancelled) preloadNext(releaseDeferredModels, 0); })
+      : null;
+
     return () => {
       cancelled = true;
+      unsubscribeRelease?.();
       if (timer !== undefined) globalThis.clearTimeout(timer);
       if (idleHandle && 'cancelIdleCallback' in window) {
         window.cancelIdleCallback(idleHandle);

@@ -283,6 +283,31 @@ SW fetch deferred bytes at install time and undo workstream A):**
 Every mutated asset ships under a NEW `?v=N` or sibling filename (CF 7-day edge cache, no purge);
 sibling names preferred (auto-bust).
 
+### Rung-1 canary status (2026-07-31)
+
+- **Part 1 (`42437ec7`):** `decorative-release.ts` one-shot controller, released from all four
+  World3DCanvas ready paths + 45s absolute deadline armed at warmup start.
+- **Part 2 (this commit pair):** `flying-dutchman-ktx.glb` (0.97MB) gated behind the release in
+  `arena-location-npcs.tsx` — `deferUntilDecorativeRelease` on the `api-integrations` slot stops
+  the parent before the `NpcMesh` `useGLTF` demand, and `DeferredNpcPreloads` defers the same
+  model's preload to the release (models shared with non-deferred slots stay immediate). Verified
+  locally on a strict-evidence run (`validForPerformance:true`, backend `webgpu` actual): release
+  19228ms (`stage-ready`) → dutchman fetch +1.5ms after, zero pre-release bytes, reveal 19.7s,
+  NPC mounts post-release (DOM label present — no stranding). Assertion tool:
+  `apps/web/scripts/cold-load-canary-assert.mjs <report.json> flying-dutchman` (exit 0/3/2).
+- **Instrumentation gap found+fixed while validating (tooling commit):** the ACTUAL-backend stamp
+  lived only in World3DCanvas's legacy `createWebGPURenderer` — a path stage-hosted routes never
+  run (the /game world renders through `WorldStageCanvas initializeStageRenderer` under
+  `WorldStageRoot`). Every probe run on the committed code stamped only the module-eval
+  `'-requested'` value → "backend not actual" invalids. Fix: stamp the actual backend at the
+  single stage-renderer choke point (initial + both recovery paths), and make the module-eval
+  `'-requested'` stamp non-clobbering (the stage can init before that chunk evaluates). The
+  committed g-batch artifacts carry actual backends, so the working tree that produced them had
+  this stamping live; it was lost before commit — treat probe evidence as tied to the exact
+  BUILT bundle, not the branch (deferred punch-list item "build-ID attestation" covers this).
+- **Next:** paired-gate A/B batch (§2b; 8 strict pairs/backend, baseline = tooling commit,
+  candidate = canary commit) + Codex diff review of the canary.
+
 ## 5. Verification protocol
 
 - Probe re-runs per rung (headless + headed) on local prod build (`bun run build && bun run start`,
