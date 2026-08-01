@@ -5,7 +5,6 @@
  * demand under fixtures, and the lobster_plush shared flag.
  */
 import { describe, expect, it } from 'bun:test';
-// @ts-expect-error — plain .mjs module, no type declarations
 import { buildLedger, canonicalUrl, classifyRole } from '../cold-load-ledger.mjs';
 
 const req = (url: string, wireBytes: number, cls = 'VRM') => ({ url, wireBytes, cls, failed: false });
@@ -58,7 +57,7 @@ describe('buildLedger', () => {
         req('http://localhost:3010/avatars/tekk.vrm?v=2', 1000),
       ],
     });
-    const row = ledger.rows.find((r: any) => r.url === '/avatars/tekk.vrm?v=2');
+    const row = ledger.rows.find((r: any) => r.url === '/avatars/tekk.vrm?v=2')!;
     expect(row.requestCount).toBe(2);
     expect(row.beforeBytes).toBe(2000);
     expect(ledger.rows.length).toBe(1);
@@ -71,8 +70,8 @@ describe('buildLedger', () => {
         req('https://staging.clawville.world/avatars/milady-official-1.vrm', 200_000),
       ],
     }, 'guest-default');
-    const critical = ledger.rows.find((r: any) => r.url.includes('milady-official-5'));
-    const ambient = ledger.rows.find((r: any) => r.url.includes('milady-official-1'));
+    const critical = ledger.rows.find((r: any) => r.url.includes('milady-official-5'))!;
+    const ambient = ledger.rows.find((r: any) => r.url.includes('milady-official-1'))!;
     expect(critical.effectiveLane).toBe('reveal-core');
     expect(critical.postExclusive).toBe(false);
     expect(ambient.postExclusive).toBe(true);
@@ -90,11 +89,11 @@ describe('buildLedger', () => {
       ],
     }, 'ansem-owner');
     for (const url of ['ansem.vrm', 'ansem-sword', '/animations/ansem/']) {
-      const row = ledger.rows.find((r: any) => r.url.includes(url));
+      const row = ledger.rows.find((r: any) => r.url.includes(url))!;
       expect(row.fixtureCritical).toBe(true);
       expect(row.effectiveLane).toBe('reveal-core');
     }
-    expect(ledger.rows.find((r: any) => r.url.includes('adinero')).postExclusive).toBe(true);
+    expect(ledger.rows.find((r: any) => r.url.includes('adinero'))!.postExclusive).toBe(true);
   });
 
   it('never credits deferral toward the queue-drained total', () => {

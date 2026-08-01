@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef, useState, useEffect, useCallback, memo, Suspense, type RefObject } from 'react';
+import { armDecorativeDeadline, releaseDecorative } from '@/lib/three/decorative-release';
 import { Canvas, _roots, extend, useStore, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
@@ -1142,6 +1143,7 @@ function createWorldWarmupGate(
       // keeps every resume reason idempotent and prevents a safety fuse/error
       // from turning into a second, much longer apparent hang.
       stampColdLoadPhase('resumeReadyAt', performance.now());
+      releaseDecorative('resume');
       stampColdLoadPhase('resumeReason', String(reason));
       (window as any).__W3D_TEXTURES_READY = true;
       markWorldReadyIfUploadsDone();
@@ -1579,6 +1581,7 @@ function WorldWarmup({
       if (stageReadyPublished) return;
       stageReadyPublished = true;
       stampColdLoadPhase('stageReadyAt', performance.now());
+      releaseDecorative('stage-ready');
       bridge.__W3D_CANVAS_READY = true;
       bridge.__W3D_TEXTURES_READY = true;
       markWorldReadyIfUploadsDone();
@@ -1871,6 +1874,7 @@ function WorldWarmup({
         liveState.setFrameloop('always');
         liveState.invalidate();
         stampColdLoadPhase('fallbackResumeAt', performance.now());
+        releaseDecorative('fallback-resume');
         (window as any).__W3D_TEXTURES_READY = true;
         markWorldReadyIfUploadsDone();
         forceFirstPaintSizeSync(liveState);
@@ -1891,6 +1895,7 @@ function WorldWarmup({
         // Suspense retries one commit opportunity before the first scan.
         const barrierStartedAt = performance.now();
         publishPhase('warmupStartAt', barrierStartedAt);
+        armDecorativeDeadline();
         await waitForLoadingManagerIdle();
         await waitForCommitFrame();
         const barrierMs = performance.now() - barrierStartedAt;
@@ -1996,6 +2001,7 @@ function WorldWarmup({
         const warmRenderMs = performance.now() - warmRenderStartedAt;
         publishPhase('warmRenderMs', warmRenderMs);
         publishPhase('warmupDoneAt', performance.now());
+        releaseDecorative('warmup-complete');
         bridge.__W3D_TEXTURES_READY = true;
         markWorldReadyIfUploadsDone();
         console.log(

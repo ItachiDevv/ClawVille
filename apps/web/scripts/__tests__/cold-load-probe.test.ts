@@ -12,7 +12,6 @@ import {
   computeValidity,
   reduceNetworkEvent,
   collectorRecords,
-  // @ts-expect-error — plain .mjs module, no type declarations
 } from '../cold-load-probe.mjs';
 
 const REVEAL = 10_000;
@@ -190,7 +189,7 @@ describe('computeFrameMetrics — interval overlap', () => {
       { t: REVEAL + 1000, d: 10 },
       { t: REVEAL + 17_000, d: 9000 }, // interval [reveal+8s, reveal+17s] overlaps
     ];
-    const m = computeFrameMetrics(frames, REVEAL);
+    const m = computeFrameMetrics(frames, REVEAL)!;
     expect(m.worstFrameMsIn10s).toBe(9000);
     expect(m.framesOver100In10s).toBe(1);
   });
@@ -199,14 +198,14 @@ describe('computeFrameMetrics — interval overlap', () => {
       { t: REVEAL + 1000, d: 10 },
       { t: REVEAL + 25_000, d: 5000 }, // interval [reveal+20s, reveal+25s]
     ];
-    expect(computeFrameMetrics(frames, REVEAL).worstFrameMsIn10s).toBe(10);
+    expect(computeFrameMetrics(frames, REVEAL)!.worstFrameMsIn10s).toBe(10);
   });
   it('stable window: first contiguous 3s run of ≤100ms frames after reveal', () => {
     const frames = [];
     for (let t = REVEAL + 16; t <= REVEAL + 1500; t += 16) frames.push({ t, d: 16 });
     frames.push({ t: REVEAL + 1600, d: 200 }); // breaks the run at +1.6s
     for (let t = REVEAL + 1616; t <= REVEAL + 6000; t += 16) frames.push({ t, d: 16 });
-    const m = computeFrameMetrics(frames, REVEAL);
+    const m = computeFrameMetrics(frames, REVEAL)!;
     expect(m.stableWindowStartMsAfterReveal).toBe(1600);
   });
 });

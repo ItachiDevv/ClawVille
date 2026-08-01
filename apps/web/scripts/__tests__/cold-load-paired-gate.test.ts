@@ -9,7 +9,6 @@ import {
   evaluatePairedGate,
   medianUpperBoundIndex,
   upperBoundOfMedian,
-  // @ts-expect-error — plain .mjs module, no type declarations
 } from '../cold-load-paired-gate.mjs';
 
 function summary(revealMs: number, over: any = {}) {
@@ -46,7 +45,7 @@ describe('evaluatePairedGate', () => {
   it('passes when the candidate is consistently well inside the ratio limit', () => {
     const r = evaluatePairedGate(makePairs(8, 1.02));
     expect(r.verdict).toBe('pass');
-    expect(r.perMetric.revealMs.verdict).toBe('pass');
+    expect((r.perMetric as any).revealMs.verdict).toBe('pass');
   });
   it('is inconclusive (extend) below the cap when the bound does not close', () => {
     const r = evaluatePairedGate(makePairs(8, 1.3));
@@ -79,6 +78,6 @@ describe('evaluatePairedGate', () => {
     const pairs = makePairs(8, 1.0);
     for (const p of pairs) (p.candidate.frameMetrics as any).framesOver100In10s = 9; // +7 vs baseline 2
     const r = evaluatePairedGate(pairs, {});
-    expect(r.perMetric.framesOver100In10s.verdict).not.toBe('pass');
+    expect((r.perMetric as any).framesOver100In10s.verdict).not.toBe('pass');
   });
 });
