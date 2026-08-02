@@ -395,6 +395,17 @@ export const landStructures = pgTable(
      * — NOT a free-form mesh (DESIGN decision #8).
      */
     catalogKey: varchar('catalog_key', { length: 64 }).notNull(),
+    /**
+     * Player-selected render shell. Nullable during the rolling P1 deploy;
+     * every read must explicitly fall back to `coastal-cottage` until the
+     * deferred NOT NULL hardening migration has shipped.
+     */
+    shellKey: text('shell_key'),
+    /**
+     * Player-selected vertex-colour preset. Nullable during the rolling P1
+     * deploy; reads explicitly fall back to `classic`.
+     */
+    paletteKey: text('palette_key'),
     /** Upgrade level 1..5 (Lv1 → Lv5). Drives perk magnitude + prestige + visual tier. */
     level: integer('level').notNull().default(1),
     /**
