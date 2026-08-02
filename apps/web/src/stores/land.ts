@@ -57,6 +57,12 @@ interface LandStore {
    *  The Map is keyed by PlacedStructure.parcelCode. */
   setStructures: (list: PlacedStructure[]) => void;
 
+  /** Optimistically patch one rendered structure's shell/palette by parcelCode. */
+  updateStructureAppearance: (
+    parcelCode: string,
+    appearance: Pick<PlacedStructure, 'shellKey' | 'paletteKey'>,
+  ) => void;
+
   /** Reset a single parcel (by parcelCode) to 'available'. */
   release: (parcelCode: string) => void;
 
@@ -94,6 +100,15 @@ export const useLandStore = create<LandStore>()((set) => ({
       // Key by parcelCode (= LAND_PARCELS[i].id) so the render layer's
       // parcelById.get(structure.parcelCode) join resolves correctly.
       for (const s of list) next.set(s.parcelCode, s);
+      return { structures: next };
+    }),
+
+  updateStructureAppearance: (parcelCode, appearance) =>
+    set((state) => {
+      const current = state.structures.get(parcelCode);
+      if (!current) return state;
+      const next = new Map(state.structures);
+      next.set(parcelCode, { ...current, ...appearance });
       return { structures: next };
     }),
 

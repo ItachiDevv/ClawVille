@@ -52,6 +52,7 @@ import { api, ApiError } from '@/lib/api';
 import { useLandStore, type ParcelState } from '@/stores/land';
 import { LAND_PARCELS_QUERY_KEY } from '@/lib/three/land-state-hydrator';
 import GuestLandSandbox from './guest-land-sandbox';
+import { StructureAppearancePicker } from './structure-appearance-picker';
 import type {
   LandParcelDTO,
   LandStructureDTO,
@@ -1260,12 +1261,22 @@ function BuildTab({
         {/* Place OR Upgrade */}
         <div className="rounded-xl border border-cyan-400/15 bg-cyan-500/[0.03] p-3">
           {structure ? (
-            <UpgradePanel
-              structure={structure}
-              catalog={catalog}
-              upgrading={upgrading}
-              onUpgrade={handleUpgrade}
-            />
+            <>
+              <UpgradePanel
+                structure={structure}
+                catalog={catalog}
+                upgrading={upgrading}
+                onUpgrade={handleUpgrade}
+              />
+              <StructureAppearancePicker
+                structure={structure}
+                parcelCode={parcel.parcelCode}
+                parcelTier={parcel.tier}
+                isMobile={isMobile}
+                onStructureChange={setStructure}
+                onChanged={onChanged}
+              />
+            </>
           ) : (
             <PlacePanel
               catalog={catalog}

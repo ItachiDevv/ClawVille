@@ -55,6 +55,7 @@ import type { ParcelSlot } from '@clawville/shared';
 import { api } from '@/lib/api';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useLandStore, type PlacedStructure } from '@/stores/land';
+import { LAND_STRUCTURES_REFRESH_EVENT } from '@/lib/land-query-keys';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { extendLoaderWithMeshopt } from '@/lib/three/meshopt-loader-setup';
 
@@ -408,13 +409,15 @@ function StructureHydrator() {
   useEffect(() => {
     let cancelled = false;
     let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    let requestVersion = 0;
 
     const hydrate = async (): Promise<void> => {
+      const version = ++requestVersion;
       const [publicStructures, owned] = await Promise.all([
         api.getPublicLandStructures().catch(() => null),
         avatar ? api.getMyLand().catch(() => null) : Promise.resolve(null),
       ]);
-      if (cancelled) return;
+      if (cancelled || version !== requestVersion) return;
 
       if (publicStructures !== null) {
         const merged = new Map<string, PlacedStructure>();
@@ -454,12 +457,22 @@ function StructureHydrator() {
         setStructures([...merged.values()]);
       }
 
-      if (!cancelled) pollTimer = setTimeout(hydrate, 60_000);
+      if (!cancelled) {
+        if (pollTimer !== null) clearTimeout(pollTimer);
+        pollTimer = setTimeout(hydrate, 60_000);
+      }
+    };
+
+    const refreshNow = () => {
+      if (pollTimer !== null) clearTimeout(pollTimer);
+      void hydrate();
     };
 
     void hydrate();
+    window.addEventListener(LAND_STRUCTURES_REFRESH_EVENT, refreshNow);
     return () => {
       cancelled = true;
+      window.removeEventListener(LAND_STRUCTURES_REFRESH_EVENT, refreshNow);
       if (pollTimer !== null) clearTimeout(pollTimer);
     };
   }, [setStructures, avatar]);
