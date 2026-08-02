@@ -332,6 +332,38 @@ candidate). Gate outputs + manifests committed under `docs/perf-data/cold-load-r
   rung-1 evidence, or demand gate closure on a quieter box / bigger n for the WebGL2 lane
   before widening (rung 3a). We did NOT re-run lanes until green.
 
+### Rung-1 WebGL2 RETEST (2026-08-01 late, founder-authorized, NEW-RAM environment)
+
+Founder call on the noise-fail above: **"retest — I added more ram today"** (a RAM upgrade on the
+dev box, i.e. a legitimate environmental change, NOT a reroll of the same conditions). Fresh rig
+rebuilt and re-attested (baseline `7ddf319e` :3011, candidate HEAD :3010, canary-marker chunk grep
+discriminates the ports), then:
+
+- **4-run baseline noise probe first:** reveals 18.6 / 20.9 / 22.7 / 25.2 s — the old ~31–35s slow
+  mode NEVER appeared. The bimodality was RAM pressure from concurrent sessions, as the founder
+  suspected. (`noise-probe-rt.log`)
+- **Fresh 12-pair counterbalanced batch (6 AB / 6 BA, 0 drops, strict validity):**
+  `manifest-webgl2-rt.json` + `gate-webgl2-rt-n12.json` + `pairs-webgl2-rt.txt` in this dir.
+- **Result: 4 of 5 metrics now formally PASS** — reveal median −2.3% (ub 0.019 « 0.140!), worst-frame
+  +3.2% (ub 0.103), pre-reveal longtasks −2.3% (ub 0.025), frame-count diff bound 1 ≤ +2. The
+  noise-fail thesis is CONFIRMED: same code, same gate, quieter box ⇒ bounds close decisively.
+- **Remaining open: `stableWindowStartMsAfterReveal` (formal FAIL, ub 0.269).** Median is candidate-
+  FASTER (−2.5%); 9/12 pairs within ±0.20; the bound is held open by 3 positive pairs, one a freak:
+  p10's baseline revealed at 26.2s (slowest run of the batch) so late that its post-reveal window
+  read "instantly stable" at 503ms vs the normal 6–10s band → +2.56 log-ratio against a normal
+  6.5s candidate (`report-rt-p10-baseline-freak.json`). Two causal notes: (a) this metric is a
+  threshold-crossing detector and inherently jumpier than the ratio metrics; (b) the post-reveal
+  window is exactly where the canary DELIBERATELY moves the 0.97MB fetch+decode, so a small
+  stable-window cost there is the intended trade of the diet — and even so the median favors the
+  canary (as it did on WebGPU, −10.9%). Canary behavior re-verified on the outlier candidates
+  (dutchman fetch +0–20ms after release, canary-assert exit 0 on p5/p10/p11).
+- **Batch-ops note:** the first launch double-ran (a TaskStop'd background instance survived and
+  fought the detached relaunch — each probe's daemon-kill murdered the other's browsers). Both
+  trees killed, state cleaned, verified single-instance before the counted batch.
+
+We again did NOT re-run until green. Founder disposition on the single remaining stable-window
+bound (accept the median-faster + freak-pair analysis, or extend that one metric) gates rung 3a.
+
 ## 5. Verification protocol
 
 - Probe re-runs per rung (headless + headed) on local prod build (`bun run build && bun run start`,
