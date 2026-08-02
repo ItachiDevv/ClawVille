@@ -222,7 +222,10 @@ import {
   type LandTier,
 } from '@clawville/shared';
 import { sessionMiddleware } from '../middleware/auth';
-import { requireAuthOrAgentSession } from '../middleware/require-auth-or-agent';
+import {
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+} from '../middleware/require-auth-or-agent';
 import type { ActivityAuthContext } from '../middleware/require-auth-or-agent';
 import { requireNonGuestIdentity } from '../middleware/require-non-guest';
 import { createRateLimiter, getClientIp } from '../middleware/rate-limit';
@@ -917,7 +920,7 @@ landRoutes.get('/me', requireAuthOrAgentSession, noStorePrivate, async (c) => {
 
 // ─── 4. POST /claim-starter  (AUTH, PARITY-BOUND, idempotent, atomic) ───────
 
-landRoutes.post('/claim-starter', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+landRoutes.post('/claim-starter', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -1353,7 +1356,7 @@ landRoutes.post('/parcels/:parcelId/buy', (c) => c.json({ error: 'tenure_model_a
 // stacked-threshold SUM + the compare + the flip, and those all run inside the
 // tx under advisory(avatar) + FOR UPDATE, so two concurrent claims by the same
 // subject serialize and the second sees the first's committed hold in its SUM.
-landRoutes.post('/parcels/:parcelId/claim-hold', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+landRoutes.post('/parcels/:parcelId/claim-hold', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -1622,7 +1625,7 @@ landRoutes.post('/parcels/:parcelId/claim-hold', requireAuthOrAgentSession, requ
 // conservation shape as the claim (claimant debited, NOBODY credited, the
 // remainder number grows). A remainder that again covers a full week clears an
 // open grace window.
-landRoutes.post('/parcels/:parcelId/deposit-topup', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+landRoutes.post('/parcels/:parcelId/deposit-topup', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -1751,7 +1754,7 @@ landRoutes.post('/parcels/:parcelId/deposit-topup', requireAuthOrAgentSession, r
 // refunds. Both revert the parcel (status='available', every tenure field
 // cleared) and archive the active structure (restored on a same-avatar
 // re-acquire, purged on a re-lease — the eviction convention).
-landRoutes.post('/parcels/:parcelId/release', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+landRoutes.post('/parcels/:parcelId/release', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -1944,7 +1947,7 @@ landRoutes.post('/parcels/:parcelId/release', requireAuthOrAgentSession, require
 
 // ─── 8. POST /parcels/:parcelId/structure  (AUTH, PARITY-BOUND, free Lv1) ────
 
-landRoutes.post('/parcels/:parcelId/structure', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+landRoutes.post('/parcels/:parcelId/structure', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -2080,7 +2083,7 @@ landRoutes.post('/parcels/:parcelId/structure', requireAuthOrAgentSession, requi
 
 // ─── 9. POST /structures/:structureId/upgrade  (AUTH, PARITY-BOUND, priced) ──
 
-landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -2511,6 +2514,7 @@ landRoutes.post('/parcels/:parcelId/rent', (c) => c.json({ error: 'tenure_model_
 landRoutes.post(
   '/structures/:structureId/services',
   requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
   requireNonGuestIdentity,
   async (c) => {
     const identity = c.get('identity');
@@ -2642,7 +2646,7 @@ landRoutes.post(
 //   401/403 as elsewhere   ·   403 → { error: 'not_listing_owner' }
 //   404 → { error: 'listing_not_found' }
 
-landRoutes.patch('/services/:listingId', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+landRoutes.patch('/services/:listingId', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 
@@ -2831,7 +2835,7 @@ landRoutes.get('/services', async (c) => {
 // the buyer's action). A cached replay (same-key retry OR a concurrent 23505
 // loser re-served) emits NOTHING — the original request already emitted once.
 
-landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, requireNonGuestIdentity, async (c) => {
+landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, requireLedgerCapableIdentity, requireNonGuestIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 

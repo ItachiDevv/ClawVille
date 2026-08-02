@@ -1,6 +1,9 @@
 # ClawVille — Architecture
 
-**Last Audited: 2026-07-30 (world-stage P4 activity route/overlay/downlink
+**Last Audited: 2026-08-02 (land money-route ledger-capability hotfix — §13 top
+entry; route middleware only, no structural drift).**
+
+**Prior Last Audited: 2026-07-30 (world-stage P4 activity route/overlay/downlink
 architecture).** `/activity/:activityId/:roomId` is now part of
 `app/(world)` alongside `/game`, `/cove`, and `/kelp`. The persistent stage owns
 an empty `activity` slot and transition/navigation lineage, while the activity
@@ -972,6 +975,8 @@ UI locale layer landed 2026-05-22 (Phase 1+2). English + Simplified Chinese ship
 ---
 
 ## 13. Recent material changes
+
+- 2026-08-02. **Land money routes gain the ledger-capability gate (hotfix).** All 9 land money mutations (`/api/land/claim-starter`, `parcels/:id/claim-hold|deposit-topup|release|structure`, `structures/:id/upgrade|services`, `services/:id` PATCH, `services/:id/buy`) now chain the shared `requireLedgerCapableIdentity` (middleware/require-auth-or-agent.ts) between auth resolution and the non-guest gate — the same fail-closed rule cove/cosmetics/kelp/quests/wager already enforce. Previously a non-ledger agent session (stale/restored bearer that never proved avatar ownership) could reach land claim/escrow/refund writes. Found by the land-redesign Codex adversarial review (round 3, finding 29); the structural guard-coverage test now locks the guard on all 9 routes plus the 3 tenure routes missing from the non-guest manifest. No schema/wire/PROTOCOL_VERSION change. **PARITY:** proven agent sessions unchanged; unproven sessions 403 exactly as they do in the cove.
 
 - 2026-07-23. **Meridian x402 fallback ACTIVATED on staging + prod.** `MERIDIAN_FACILITATOR_URL` + `MERIDIAN_API_KEY` (per-env org keys) + `MERIDIAN_PLATFORM_FEE_BPS=0` staged into both api apps via Coolify tinker (Eloquent model writes; Coolify gotcha discovered: replicating an env row as template can clone the `is_preview=true` variant, which never injects into the real container — always filter `is_preview=false`). Activation ladder fully green before env staging: devnet settle SETTLED (tx `n4AoJr…P8r`) and mainnet settle SETTLED (~5¢ real USDC rescue→merchant, exact 1% treasury split, tx `5Z7SBwvU…iwnR`) — both driven through the shipped `x402-meridian.ts` against the live facilitator. Live-proven wire facts (now pinned in fixtures): x402 v1 envelope, plain `solana`/`solana-devnet` network strings, REQUIRED `description`, LEGACY transaction serialization (v0 rejected), and the org-pinned recipient: Meridian settles ONLY to the org's dashboard wallet, which must equal `CLAWVILLE_MERCHANT_WALLET_PUBKEY` (runtime-asserted). Effect: on PayAI outage-class failures (5xx/timeout/`free_tier_exhausted`), custodial inbound settles (ct-topup, x402-checkout) fail over to Meridian automatically; vCLAW credits use NET of Meridian's 1% fee. OPERATIONS NOTE — outage backlog reconciler: the per-row `probe_merchant` apply is NOT viable for the 6,315-row 2026-07-21/22 PayAI-outage backlog (merchant-wallet signature history exceeds the per-row probe lookback ⇒ rows resolve "probe indeterminate: skipped", ~1 row/5 min). A bulk reconciler (single merchant-wallet history sweep over the outage window, in-memory matching) is the specced replacement; until it lands the backlog stays safely parked in `reconcile` (no credit lost, no double-credit possible — receipt claims are signature-unique). **PARITY:** fallback is facilitator-side only; human and agent settlement behavior identical by resolved identity.
 

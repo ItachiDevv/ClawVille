@@ -34,7 +34,11 @@ const MIDDLEWARE_FILE = join(import.meta.dir, '..', '..', 'middleware', 'require
 type Method = 'get' | 'post' | 'patch' | 'delete';
 interface Entry {
   file: string;
-  guard: 'requireNonGuestUser' | 'requireNonGuestIdentity' | 'requireWagerCancelCaller';
+  guard:
+    | 'requireNonGuestUser'
+    | 'requireNonGuestIdentity'
+    | 'requireWagerCancelCaller'
+    | 'requireLedgerCapableIdentity';
   routes: Array<{ method: Method; path: string }>;
 }
 
@@ -91,9 +95,33 @@ const MANIFEST: Entry[] = [
     routes: [
       p('post', '/claim-starter'),
       p('post', '/parcels/:parcelId/buy'),
+      p('post', '/parcels/:parcelId/claim-hold'),
+      p('post', '/parcels/:parcelId/deposit-topup'),
+      p('post', '/parcels/:parcelId/release'),
       p('post', '/parcels/:parcelId/structure'),
       p('post', '/structures/:structureId/upgrade'),
       p('post', '/parcels/:parcelId/rent'),
+      p('post', '/structures/:structureId/services'),
+      p('patch', '/services/:listingId'),
+      p('post', '/services/:listingId/buy'),
+    ],
+  },
+  {
+    // Ledger-capability lock (2026-08-02 hotfix): every land money mutation must
+    // also fail closed on a non-ledger agent session (stale/restored/unproven
+    // bearer). Every other money domain (cove, cosmetics, kelp, quests, wager)
+    // already chains this guard; land was the gap (Codex land-redesign round 3,
+    // finding 29). The two 409 tenure stubs (/buy, /rent) have no handler chain
+    // and are asserted only under the non-guest entry above.
+    file: 'land.ts',
+    guard: 'requireLedgerCapableIdentity',
+    routes: [
+      p('post', '/claim-starter'),
+      p('post', '/parcels/:parcelId/claim-hold'),
+      p('post', '/parcels/:parcelId/deposit-topup'),
+      p('post', '/parcels/:parcelId/release'),
+      p('post', '/parcels/:parcelId/structure'),
+      p('post', '/structures/:structureId/upgrade'),
       p('post', '/structures/:structureId/services'),
       p('patch', '/services/:listingId'),
       p('post', '/services/:listingId/buy'),
