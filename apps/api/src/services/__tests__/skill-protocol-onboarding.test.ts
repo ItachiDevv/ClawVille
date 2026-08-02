@@ -3,6 +3,7 @@ import {
   KELP_REALM_FOOTPRINT_WU,
   MAP_LOCATIONS,
   SHOP_BUILDINGS,
+  CLAWVILLE_ORIENTATION_KNOWLEDGE,
 } from '@clawville/shared';
 import { describe, expect, test } from 'bun:test';
 import {
@@ -25,7 +26,7 @@ describe('open-agent onboarding manuals', () => {
     const manual = buildPlayManual(API_BASE);
     const protocolManual = buildProtocolManual(API_BASE);
 
-    expect(PROTOCOL_VERSION).toBe(43);
+    expect(PROTOCOL_VERSION).toBe(44);
     expect(manual).toContain(`POST ${API_BASE}/api/agent/connect`);
     expect(manual).toContain('"agentId": "your-stable-agent-id"');
     expect(manual).toContain('"identityType": "your-framework"');
@@ -145,6 +146,12 @@ describe('open-agent onboarding manuals', () => {
     expect(protocolManual).toContain('poker_get_state');
     expect(protocolManual).toContain('poker_advise');
     expect(protocolManual).toContain('poker_connection');
+    expect(protocolManual).toContain('/api/land/structures/public');
+    expect(protocolManual).toContain('/api/land/structures/:structureId/appearance');
+    expect(protocolManual).toContain('there is no appearance `[ACTION:]` verb');
+    expect(CLAWVILLE_ORIENTATION_KNOWLEDGE).toContainEqual(
+      expect.stringContaining('/api/land/structures/public'),
+    );
     expect(manual).toContain('knowledge_added');
     expect(manual).not.toMatch(/\b(?:CT|ClawTokens?|casino|pet)\b/i);
   });
@@ -189,7 +196,7 @@ describe('open-agent onboarding manuals', () => {
       'custom remains non-restorable',
     ];
 
-    expect(PROTOCOL_VERSION).toBe(43);
+    expect(PROTOCOL_VERSION).toBe(44);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');
