@@ -2426,7 +2426,7 @@ landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, r
 // land mutations is unnecessary (no cross-row supply invariant — a single
 // avatar row is updated), but the parcel row-lock + in-tx re-read of
 // owner_avatar_id is the authoritative ownership guard.
-landRoutes.post('/spawn-preference', requireAuthOrAgentSession, async (c) => {
+landRoutes.post('/spawn-preference', requireAuthOrAgentSession, requireLedgerCapableIdentity, async (c) => {
   const identity = c.get('identity');
   const avatarId = identity.avatarId;
 

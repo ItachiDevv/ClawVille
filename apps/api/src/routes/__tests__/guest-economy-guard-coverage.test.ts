@@ -93,14 +93,17 @@ const MANIFEST: Entry[] = [
     file: 'land.ts',
     guard: 'requireNonGuestIdentity',
     routes: [
+      // NOTE: the two disabled tenure stubs (`/parcels/:parcelId/buy`, `…/rent`)
+      // are deliberately NOT listed — they are synchronous 409 stubs with no
+      // middleware chain, and the span-to-first-`async` matcher would bleed into
+      // the NEXT route's chain and falsely bless them (Codex hotfix review,
+      // LOW). Their 409 behavior is pinned by land-tenure-phaseb.test.ts.
       p('post', '/claim-starter'),
-      p('post', '/parcels/:parcelId/buy'),
       p('post', '/parcels/:parcelId/claim-hold'),
       p('post', '/parcels/:parcelId/deposit-topup'),
       p('post', '/parcels/:parcelId/release'),
       p('post', '/parcels/:parcelId/structure'),
       p('post', '/structures/:structureId/upgrade'),
-      p('post', '/parcels/:parcelId/rent'),
       p('post', '/structures/:structureId/services'),
       p('patch', '/services/:listingId'),
       p('post', '/services/:listingId/buy'),
@@ -111,8 +114,9 @@ const MANIFEST: Entry[] = [
     // also fail closed on a non-ledger agent session (stale/restored/unproven
     // bearer). Every other money domain (cove, cosmetics, kelp, quests, wager)
     // already chains this guard; land was the gap (Codex land-redesign round 3,
-    // finding 29). The two 409 tenure stubs (/buy, /rent) have no handler chain
-    // and are asserted only under the non-guest entry above.
+    // finding 29). `/spawn-preference` is included per the Codex hotfix review
+    // (MEDIUM): no money moves, but it persistently rewrites the bound avatar's
+    // spawn state — same convention as the free cosmetic equip routes.
     file: 'land.ts',
     guard: 'requireLedgerCapableIdentity',
     routes: [
@@ -122,6 +126,7 @@ const MANIFEST: Entry[] = [
       p('post', '/parcels/:parcelId/release'),
       p('post', '/parcels/:parcelId/structure'),
       p('post', '/structures/:structureId/upgrade'),
+      p('post', '/spawn-preference'),
       p('post', '/structures/:structureId/services'),
       p('patch', '/services/:listingId'),
       p('post', '/services/:listingId/buy'),
