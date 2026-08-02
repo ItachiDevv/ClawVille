@@ -9,14 +9,15 @@ response so recent local mutations remain responsive. A structure resolves its
 `coastal-cottage` fallback; `levelScale(level)` remains the progression scale.
 
 Model normalization now treats footprint and height independently. The base
-scale is `min(parcelSize * 0.62 / widestXZ, parcelSize * 1.50 / height)`, then
-the existing level scale is applied. Bounds below are transformed native GLB
+scale is `min((parcelSize * 0.62 / widestXZ) * levelScale,
+parcelSize * 1.50 / height)`, so the independent height cap clamps the final
+level-scaled result. Bounds below are transformed native GLB
 bounds; fitted dimensions use the smallest shell-rendered parcel (founder,
 1,216 world units) at the first premium levels:
 
 | Premium asset | Native X × Y × Z | widest XZ / height | Mesh cost | Lv4 fitted X × Y × Z | Lv5 fitted X × Y × Z | Limiter |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| `premium-tower/home.glb` | 40,634 × 180,218.5 × 44,814 | 44,814 / 180,218.5 | 986 triangles, 6 primitives | 465.7504 × 2,065.68 × 513.6619 | 514.0733 × 2,280 × 566.9558 | height |
+| `premium-tower/home.glb` | 40,634 × 180,218.5 × 44,814 | 44,814 / 180,218.5 | 986 triangles, 6 primitives | 411.2586 × 1,824 × 453.5646 | 411.2586 × 1,824 × 453.5646 | height |
 | `premium-mall/shop.glb` | 66,844.6788 × 55,053.4790 × 40,632.7192 | 66,844.6788 / 55,053.4790 | 2,364 triangles, 4 primitives | 853.8144 × 703.2041 × 519.0062 | 942.4 × 776.1635 × 572.8545 | footprint |
 
 Palette tinting clones only each rendered mesh's geometry, stamps a preset

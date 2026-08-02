@@ -294,7 +294,12 @@ function GLBStructure({
     const footprintScale = widestXZ > 0.001 ? targetFootprint / widestXZ : 1;
     const heightCap = parcel.size * HEIGHT_CAP_FRACTION;
     const heightScale = _size.y > 0.001 ? heightCap / _size.y : footprintScale;
-    const finalScale = Math.min(footprintScale, heightScale) * levelScale(structure.level);
+    // Apply level growth to the footprint candidate, then enforce the height
+    // ceiling on the final result. A tall shell must never regrow past the cap.
+    const finalScale = Math.min(
+      footprintScale * levelScale(structure.level),
+      heightScale,
+    );
 
     // Ground: subtract bbox.min.y * scale so the model floor lands on FLOOR_Y
     // (memory: building-glb-pivot-offset-far-from-scene-origin).
