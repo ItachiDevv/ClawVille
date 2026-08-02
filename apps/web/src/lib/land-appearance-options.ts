@@ -1,6 +1,7 @@
 import {
   PALETTE_PRESETS,
   SHELL_CATALOG,
+  TIER_STRUCTURE_RULES,
   isPaletteAllowed,
   isShellAllowed,
   type LandStructureType,
@@ -38,6 +39,22 @@ export function getShellAppearanceOptions(
     // parcel tier itself cannot use this premium shell.
     tierLocked: entry.premium && !isShellAllowed(structureType, entry.minLevel, parcelTier, entry.key),
   }));
+}
+
+/** Player-facing lock reasons without advertising unreachable tier levels. */
+export function getShellLockCopy(
+  option: ShellAppearanceOption,
+  parcelTier: LandTier,
+): string[] {
+  const copy: string[] = [];
+  if (
+    option.levelLocked
+    && option.entry.minLevel <= TIER_STRUCTURE_RULES[parcelTier].maxLevel
+  ) {
+    copy.push(`Unlocks at Lv ${option.entry.minLevel}`);
+  }
+  if (option.tierLocked) copy.push('Needs a B-tier parcel or higher');
+  return copy;
 }
 
 /** Build palette chips from the shared preset list and its allowlist helper. */

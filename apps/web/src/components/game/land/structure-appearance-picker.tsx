@@ -10,7 +10,7 @@ import { requestLandStructuresRefresh } from '@/lib/land-query-keys';
 import {
   getPaletteAppearanceOptions,
   getShellAppearanceOptions,
-  type ShellAppearanceOption,
+  getShellLockCopy,
 } from '@/lib/land-appearance-options';
 import type { LandStructureDTO } from './types';
 
@@ -36,6 +36,8 @@ function appearanceErrorMessage(error: unknown): string {
       return 'Those colors are still locked for this structure.';
     case 'not_structure_owner':
       return 'You do not own this structure.';
+    case 'ownership_desync':
+      return 'This parcel ownership record is out of sync. Try again later.';
     case 'structure_archived':
       return 'That structure is no longer active.';
     case 'structure_not_found':
@@ -47,13 +49,6 @@ function appearanceErrorMessage(error: unknown): string {
       if (status === 401) return 'Log in to change this appearance.';
       return 'Could not update the appearance. Try again.';
   }
-}
-
-function shellLockCopy(option: ShellAppearanceOption): string[] {
-  const copy: string[] = [];
-  if (option.levelLocked) copy.push(`Unlocks at Lv ${option.entry.minLevel}`);
-  if (option.tierLocked) copy.push('Founder tier');
-  return copy;
 }
 
 export function StructureAppearancePicker({
@@ -159,7 +154,7 @@ export function StructureAppearancePicker({
           {shellOptions.map((option) => {
             const current = option.entry.key === structure.shellKey;
             const selected = option.entry.key === shellKey;
-            const lockCopy = shellLockCopy(option);
+            const lockCopy = getShellLockCopy(option, parcelTier);
             const thumbnail = SHELL_THUMBNAILS[option.entry.key] ?? ['#4b7ea8', '#cbd5e1'];
             return (
               <button

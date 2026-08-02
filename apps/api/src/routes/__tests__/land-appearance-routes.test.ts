@@ -15,6 +15,7 @@ const OTHER_ID = '22222222-2222-4222-8222-222222222222';
 
 const authority: AppearanceAuthority = {
   ownerAvatarId: OWNER_ID,
+  parcelOwnerAvatarId: OWNER_ID,
   status: 'active',
   structureType: 'home',
   level: 2,
@@ -50,6 +51,23 @@ describe('PATCH /structures/:structureId/appearance', () => {
     expect(validateAppearanceMutation(authority, OTHER_ID, { shellKey: 'coastal-cottage' })).toBe(
       'not_structure_owner',
     );
+  });
+
+  it('rejects denormalized ownership drift after authoritative parcel ownership', () => {
+    expect(
+      validateAppearanceMutation(
+        { ...authority, ownerAvatarId: OTHER_ID },
+        OWNER_ID,
+        { paletteKey: 'classic' },
+      ),
+    ).toBe('ownership_desync');
+    expect(
+      validateAppearanceMutation(
+        { ...authority, parcelOwnerAvatarId: OTHER_ID },
+        OWNER_ID,
+        { paletteKey: 'classic' },
+      ),
+    ).toBe('not_structure_owner');
   });
 
   it('rejects archived structures', () => {
@@ -104,14 +122,14 @@ describe('PATCH /structures/:structureId/appearance', () => {
     expect(await response.text()).toContain('X-Clawville-Agent-Session');
   });
 
-  it('chains auth + guest protection and deliberately has no ledger gate', () => {
+  it('chains auth, ledger capability, and guest protection', () => {
     const source = readFileSync(join(import.meta.dir, '..', 'land.ts'), 'utf8');
     const route = source.match(
       /landRoutes\.patch\(\s*'\/structures\/:structureId\/appearance'([\s\S]*?)async \(c\)/,
     )?.[1];
     expect(route).toContain('requireAuthOrAgentSession');
     expect(route).toContain('requireNonGuestIdentity');
-    expect(route).not.toContain('requireLedgerCapableIdentity');
+    expect(route).toContain('requireLedgerCapableIdentity');
   });
 });
 
@@ -148,6 +166,7 @@ describe('GET /structures/public DTO', () => {
     )?.[1];
     expect(route).toContain('publicReadLimiter.check');
     expect(route).toContain('getPublicStructuresCache');
+    expect(route).toContain("c.header('Cache-Control', 'public, max-age=30')");
     expect(route).toContain("eq(landStructures.status, 'active')");
     expect(route).toContain('.innerJoin(landParcels');
     expect(route).not.toContain('requireAuthOrAgentSession');

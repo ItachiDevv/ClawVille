@@ -1470,7 +1470,7 @@ export const api = {
 
   /** Every active structure in the shared world. Public; server-cached for 60s. */
   getPublicLandStructures: () =>
-    honoRequest<PublicLandStructureDTO[]>('/api/land/structures/public'),
+    honoRequest<PublicLandStructureDTO[]>('/api/land/structures/public', { cache: 'default' }),
 
   /** Free owner-only shell/palette mutation; current level/tier are server-read. */
   updateStructureAppearance: (

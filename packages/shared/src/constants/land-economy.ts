@@ -306,7 +306,7 @@ export const SHELL_CATALOG: readonly ShellCatalogEntry[] = [
 export interface PalettePreset {
   readonly key: string;
   readonly label: string;
-  /** Base, accent, and trim tints baked into geometry vertex colours. */
+  /** Base, accent, and trim tints multiplied into authored mesh materials. */
   readonly swatches: readonly [string, string, string];
   readonly minLevel: 1 | 2;
 }
@@ -316,7 +316,8 @@ export const PALETTE_PRESETS: readonly PalettePreset[] = [
   {
     key: 'classic',
     label: 'Harbor Classic',
-    swatches: ['#F4E7CE', '#5E9BA6', '#C96F4A'],
+    // Identity tint: existing structures retain their authored GLB appearance.
+    swatches: ['#FFFFFF', '#FFFFFF', '#FFFFFF'],
     minLevel: 1,
   },
   {
@@ -381,6 +382,13 @@ export function getPalettePreset(paletteKey: string): PalettePreset | null {
 }
 
 /**
+ * Tiers that may equip premium appearance shells. This is intentionally not
+ * `TierStructureRule.premium`, which describes founder-only SKU/acquisition
+ * privileges rather than the appearance-shell gate.
+ */
+export const PREMIUM_SHELL_TIERS: readonly LandTier[] = ['b', 'a', 'founder'];
+
+/**
  * Server-authoritative shell gate. The current DB level and parcel tier are
  * both required: a level outside its parcel ceiling is invalid, and the D2
  * starter/c max-level raise must never grant either tier a premium shell.
@@ -397,7 +405,7 @@ export function isShellAllowed(
   const shell = getShellCatalogEntry(structureType, shellKey);
   if (shell === null || level < shell.minLevel) return false;
   if (!shell.premium) return true;
-  return parcelTier === 'b' || parcelTier === 'a' || parcelTier === 'founder';
+  return PREMIUM_SHELL_TIERS.includes(parcelTier);
 }
 
 /** Server-authoritative palette gate: three presets at Lv1, all eight at Lv2+. */

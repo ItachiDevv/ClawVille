@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   LAND_TIERS,
   PALETTE_PRESETS,
+  PREMIUM_SHELL_TIERS,
   SHELL_CATALOG,
   TIER_STRUCTURE_RULES,
   isPaletteAllowed,
@@ -86,6 +87,12 @@ describe("land appearance allowlists", () => {
     expect(isPaletteAllowed(0, "classic")).toBe(false);
     expect(isPaletteAllowed(6, "classic")).toBe(false);
     expect(isPaletteAllowed(2, "not-a-palette")).toBe(false);
+  });
+
+  it("keeps classic as an identity tint and names the premium shell tiers", () => {
+    expect(PALETTE_PRESETS.find((preset) => preset.key === "classic")?.swatches)
+      .toEqual(["#FFFFFF", "#FFFFFF", "#FFFFFF"]);
+    expect(PREMIUM_SHELL_TIERS).toEqual(["b", "a", "founder"]);
   });
 });
 

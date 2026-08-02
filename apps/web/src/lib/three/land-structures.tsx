@@ -22,8 +22,9 @@
  *   - NO InstancedMesh + ShaderMaterial
  *   - NO per-frame new Vector3()/Matrix4() — module-scope scratch only
  *   - Primitive fallback uses MeshStandardMaterial (NOT ShaderMaterial)
- *   - Per-structure geometry clones + one shared vertex-color material are
- *     disposed on unmount; useGLTF cache originals are never mutated/disposed.
+ *   - Per-mesh clones preserve authored PBR materials/textures, multiply one
+ *     palette swatch into `.color`, and are disposed on structure unmount.
+ *   - useGLTF cache geometry/textures are shared and never disposed here.
  *
  * Robustness — the primitive ALWAYS wins on a missing/failed GLB:
  *   drei useGLTF REJECTS (not just suspends) when a file 404s. A bare
@@ -34,14 +35,13 @@
  *     - a <GLBErrorBoundary fallback={<PrimitiveStructure/>}> (covers the THROW
  *       on a missing/failed GLB).
  *
- * Occupancy is currently ~8 structures. Each GLB keeps its authored mesh count
- * but shares one material; far parcels are distance-culled. P3 owns chunk merges.
+ * Occupancy is currently ~8 structures. At most the 48 structures nearest the
+ * camera are mounted; the set refreshes as the player walks. P3 owns chunk merges.
  */
 
 import { useMemo, useEffect, useRef, useState, Suspense, Component } from 'react';
 import type { ReactNode } from 'react';
 import * as THREE from 'three';
-import { useThree } from '@react-three/fiber';
 import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import { useGLTF } from '@react-three/drei';
 import {
@@ -90,20 +90,10 @@ function levelScale(level: number): number {
   return LEVEL_SCALE_MIN + (lv - 1) * ((LEVEL_SCALE_MAX - LEVEL_SCALE_MIN) / 4);
 }
 
-/**
- * Distance cull (camera → structure), SQUARED. GENEROUS by design.
- *
- * Parcels reach a Chebyshev half-side of 8704wu (outer starter frame); a corner
- * parcel is therefore ~sqrt(8704² + 8704²) ≈ 12309wu from world origin. The
- * camera roams near world center but can be pushed outward, so the camera→
- * structure distance for a far corner parcel can exceed ~12300wu. To NEVER
- * vanish an on-screen structure (the classic too-tight-cull bug — far-spawned
- * objects never get a frame), we cull only beyond 14000wu. Building GLBs (ring
- * at 4160wu) are never culled at all, so this layer being visible out to 14000wu
- * is consistent with the rest of the world. Current occupancy is ~8 structures.
- */
-const CULL_DIST = 14000;
-const CULL_DIST_SQ = CULL_DIST * CULL_DIST;
+/** Hard mount budget; walking reselects the nearest set after meaningful movement. */
+const MAX_MOUNTED_STRUCTURES = 48;
+const MOUNT_RESELECT_DISTANCE = 512;
+const MOUNT_RESELECT_DISTANCE_SQ = MOUNT_RESELECT_DISTANCE * MOUNT_RESELECT_DISTANCE;
 
 // ---------------------------------------------------------------------------
 // shellKey → verified GLB path
@@ -160,7 +150,7 @@ _primRoofGeo.translate(0, PRIM_BODY_H + PRIM_ROOF_H * 0.5, 0);
 const _primDoorGeo = new THREE.BoxGeometry(PRIM_BODY_W * 0.32, PRIM_BODY_H * 0.55, 6);
 _primDoorGeo.translate(0, PRIM_BODY_H * 0.275, PRIM_BODY_W * 0.5 + 1);
 
-/** Native max-dim of the primitive (for footprint normalization parity with GLBs). */
+/** Native max-dim of the fallback primitive. */
 const PRIM_MAX_DIM = Math.max(PRIM_BODY_W, PRIM_BODY_H + PRIM_ROOF_H, PRIM_BODY_W);
 
 // ---------------------------------------------------------------------------
@@ -172,9 +162,8 @@ function PrimitiveStructure({ parcel, structure }: { parcel: ParcelSlot; structu
   const bodyMat = isShop ? SHOP_BODY_MAT : HOME_BODY_MAT;
   const roofMat = isShop ? SHOP_ROOF_MAT : HOME_ROOF_MAT;
 
-  // Normalize the primitive so its max-dim fits the target footprint at L1, then
-  // apply the level ramp. Same math the GLB path uses, so primitive↔GLB swap is
-  // visually consistent in size.
+  // Normalize the fallback's own max dimension to the footprint, then apply the
+  // shared level ramp. Authored GLBs use independent XZ and height constraints.
   const targetFootprint = parcel.size * FOOTPRINT_FRACTION;
   const baseScale = targetFootprint / PRIM_MAX_DIM;
   const scale = baseScale * levelScale(structure.level);
@@ -229,63 +218,44 @@ class GLBErrorBoundary extends Component<
 // GLBStructure — the real model (suspends while loading)
 // ---------------------------------------------------------------------------
 
-/** Clone a cache-owned geometry and bake one palette swatch into vertex colors. */
-function cloneTintedGeometry(
-  source: THREE.BufferGeometry,
-  paletteKey: string,
-  swatchIndex: number,
-): THREE.BufferGeometry {
-  const geometry = source.clone();
-  const preset = getPalettePreset(paletteKey) ?? getPalettePreset(DEFAULT_PALETTE_KEY)!;
-  const tint = new THREE.Color(preset.swatches[swatchIndex % preset.swatches.length]);
-  const position = geometry.getAttribute('position');
-  const sourceColors = geometry.getAttribute('color');
-  const colors = new Float32Array(position.count * 3);
-
-  for (let index = 0; index < position.count; index++) {
-    const offset = index * 3;
-    colors[offset] = tint.r * (sourceColors?.getX(index) ?? 1);
-    colors[offset + 1] = tint.g * (sourceColors?.getY(index) ?? 1);
-    colors[offset + 2] = tint.b * (sourceColors?.getZ(index) ?? 1);
-  }
-
-  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-  geometry.computeBoundingBox();
-  geometry.computeBoundingSphere();
-  return geometry;
-}
-
 function GLBStructure({
   parcel,
   structure,
   path,
-  sharedMaterial,
 }: {
   parcel: ParcelSlot;
   structure: PlacedStructure;
   path: string;
-  sharedMaterial: THREE.MeshStandardMaterial;
 }) {
   const { scene } = useGLTF(path, undefined, undefined, extendLoaderWithMeshopt);
   const groupRef = useRef<THREE.Group>(null);
 
-  // Clone the cached scene graph, then replace each cache-owned geometry with an
-  // owned vertex-colored clone and every source material with the shared one.
-  const { cloned, scale, groundOffset, ownedGeometries } = useMemo(() => {
+  // Clone the cached scene graph and each authored material. Geometry/textures
+  // remain cache-shared; palette swatches multiply material color, preserving
+  // authored maps, roughness, metalness, side, and all other PBR properties.
+  const { cloned, scale, groundOffset, ownedMaterials } = useMemo(() => {
     const c = scene.clone(true);
-    const geometries: THREE.BufferGeometry[] = [];
+    makeObject3DWebGPUSafe(c);
+
+    const materials: THREE.Material[] = [];
+    const preset = getPalettePreset(structure.paletteKey) ?? getPalettePreset(DEFAULT_PALETTE_KEY)!;
     let meshOrdinal = 0;
     c.traverse((o) => {
       const m = o as THREE.Mesh;
       if (!m.isMesh) return;
       m.frustumCulled = true;
-      const geometry = cloneTintedGeometry(m.geometry, structure.paletteKey, meshOrdinal++);
-      geometries.push(geometry);
-      m.geometry = geometry;
-      m.material = sharedMaterial;
+      const tint = new THREE.Color(preset.swatches[meshOrdinal++ % preset.swatches.length]);
+      const cloneMaterial = (source: THREE.Material): THREE.Material => {
+        const material = source.clone();
+        const colored = material as THREE.Material & { color?: THREE.Color };
+        if (colored.color instanceof THREE.Color) colored.color.multiply(tint);
+        materials.push(material);
+        return material;
+      };
+      m.material = Array.isArray(m.material)
+        ? m.material.map(cloneMaterial)
+        : cloneMaterial(m.material);
     });
-    // WebGPU normalization now touches only owned clones, never useGLTF cache assets.
-    makeObject3DWebGPUSafe(c);
 
     c.updateMatrixWorld(true);
     _bbox.setFromObject(c);
@@ -294,13 +264,13 @@ function GLBStructure({
     const targetFootprint = parcel.size * FOOTPRINT_FRACTION;
     const footprintScale = widestXZ > 0.001 ? targetFootprint / widestXZ : 1;
     const heightCap = parcel.size * HEIGHT_CAP_FRACTION;
-    const heightScale = _size.y > 0.001 ? heightCap / _size.y : footprintScale;
-    // Apply level growth to the footprint candidate, then enforce the height
-    // ceiling on the final result. A tall shell must never regrow past the cap.
-    const finalScale = Math.min(
-      footprintScale * levelScale(structure.level),
-      heightScale,
-    );
+    const heightScale = _size.y > 0.001
+      ? heightCap / _size.y
+      : Number.POSITIVE_INFINITY;
+    // Fit Lv5 to both constraints, then derive lower levels as fractions of
+    // that capped scale so tall shells visibly progress without exceeding it.
+    const fittedBaseScale = Math.min(footprintScale, heightScale / LEVEL_SCALE_MAX);
+    const finalScale = fittedBaseScale * levelScale(structure.level);
 
     // Ground: subtract bbox.min.y * scale so the model floor lands on FLOOR_Y
     // (memory: building-glb-pivot-offset-far-from-scene-origin).
@@ -310,9 +280,9 @@ function GLBStructure({
       cloned: c,
       scale: finalScale,
       groundOffset: ground,
-      ownedGeometries: geometries,
+      ownedMaterials: materials,
     };
-  }, [scene, parcel.size, structure.level, structure.paletteKey, sharedMaterial]);
+  }, [scene, parcel.size, structure.level, structure.paletteKey]);
 
   // Lock static transforms (matrixAutoUpdate=false) after the scale/ground apply.
   useEffect(() => {
@@ -326,11 +296,11 @@ function GLBStructure({
     g.updateMatrix();
   }, [cloned, scale, groundOffset]);
 
-  // These are deep geometry clones, so this consumer owns and disposes them.
-  // Source useGLTF geometry/textures and materials are never disposed here.
+  // Dispose only the per-mesh material clones. Their shared texture references
+  // and the useGLTF cache geometries remain cache-owned.
   useEffect(() => {
-    return () => { for (const geometry of ownedGeometries) geometry.dispose(); };
-  }, [ownedGeometries]);
+    return () => { for (const material of ownedMaterials) material.dispose(); };
+  }, [ownedMaterials]);
 
   return (
     <group
@@ -344,56 +314,74 @@ function GLBStructure({
 }
 
 // ---------------------------------------------------------------------------
-// StructureSlot — one placed structure: distance-culled wrapper around the
-// GLB (with primitive fallback on pending/error).
+// StructureSlot — one mounted GLB with primitive fallback on pending/error.
 // ---------------------------------------------------------------------------
 
 function StructureSlot({
   parcel,
   structure,
-  sharedMaterial,
 }: {
   parcel: ParcelSlot;
   structure: PlacedStructure;
-  sharedMaterial: THREE.MeshStandardMaterial;
 }) {
-  const outerRef = useRef<THREE.Group>(null);
   const path = shellKeyToGlbPath(structure.shellKey, structure.structureType);
-
-  useEffect(() => {
-    const group = outerRef.current;
-    if (!group) return;
-    group.matrixAutoUpdate = false;
-    group.updateMatrix();
-  }, []);
-
-  // Distance cull — toggle .visible by SQUARED distance from camera. Zero allocs.
-  useSceneFrame(({ camera }) => {
-    const g = outerRef.current;
-    if (!g) return;
-    camera.getWorldPosition(_camPos);
-    const dx = _camPos.x - parcel.cx;
-    const dz = _camPos.z - parcel.cz;
-    const distSq = dx * dx + dz * dz;
-    const visible = distSq <= CULL_DIST_SQ;
-    if (g.visible !== visible) g.visible = visible;
-  });
 
   const primitive = <PrimitiveStructure parcel={parcel} structure={structure} />;
 
   return (
-    <group ref={outerRef}>
-      <GLBErrorBoundary fallback={primitive}>
-        <Suspense fallback={primitive}>
-          <GLBStructure
-            parcel={parcel}
-            structure={structure}
-            path={path}
-            sharedMaterial={sharedMaterial}
-          />
-        </Suspense>
-      </GLBErrorBoundary>
-    </group>
+    <GLBErrorBoundary fallback={primitive}>
+      <Suspense fallback={primitive}>
+        <GLBStructure parcel={parcel} structure={structure} path={path} />
+      </Suspense>
+    </GLBErrorBoundary>
+  );
+}
+
+type StructureRenderSlot = { parcel: ParcelSlot; structure: PlacedStructure };
+
+function selectNearestSlots(
+  slots: readonly StructureRenderSlot[],
+  cameraX: number,
+  cameraZ: number,
+): StructureRenderSlot[] {
+  return [...slots]
+    .sort((a, b) => {
+      const adx = cameraX - a.parcel.cx;
+      const adz = cameraZ - a.parcel.cz;
+      const bdx = cameraX - b.parcel.cx;
+      const bdz = cameraZ - b.parcel.cz;
+      return (adx * adx + adz * adz) - (bdx * bdx + bdz * bdz)
+        || a.parcel.id.localeCompare(b.parcel.id);
+    })
+    .slice(0, MAX_MOUNTED_STRUCTURES);
+}
+
+/** Hard mount gate that streams the nearest structures as the camera walks. */
+function BoundedStructureSlots({ slots }: { slots: readonly StructureRenderSlot[] }) {
+  const lastCameraPosition = useRef({ x: 0, z: 0 });
+  const [mountedSlots, setMountedSlots] = useState(() => selectNearestSlots(slots, 0, 0));
+
+  useEffect(() => {
+    const { x, z } = lastCameraPosition.current;
+    setMountedSlots(selectNearestSlots(slots, x, z));
+  }, [slots]);
+
+  useSceneFrame(({ camera }) => {
+    camera.getWorldPosition(_camPos);
+    const dx = _camPos.x - lastCameraPosition.current.x;
+    const dz = _camPos.z - lastCameraPosition.current.z;
+    if (dx * dx + dz * dz < MOUNT_RESELECT_DISTANCE_SQ) return;
+    lastCameraPosition.current.x = _camPos.x;
+    lastCameraPosition.current.z = _camPos.z;
+    setMountedSlots(selectNearestSlots(slots, _camPos.x, _camPos.z));
+  });
+
+  return (
+    <>
+      {mountedSlots.map(({ parcel, structure }) => (
+        <StructureSlot key={parcel.id} parcel={parcel} structure={structure} />
+      ))}
+    </>
   );
 }
 
@@ -410,14 +398,18 @@ function StructureHydrator() {
     let cancelled = false;
     let pollTimer: ReturnType<typeof setTimeout> | null = null;
     let requestVersion = 0;
+    let ownedOverlay: Awaited<ReturnType<typeof api.getMyLand>> | null = null;
 
-    const hydrate = async (): Promise<void> => {
+    const hydrate = async (includeOwned: boolean): Promise<void> => {
       const version = ++requestVersion;
-      const [publicStructures, owned] = await Promise.all([
+      const [publicStructures, ownedResult] = await Promise.all([
         api.getPublicLandStructures().catch(() => null),
-        avatar ? api.getMyLand().catch(() => null) : Promise.resolve(null),
+        includeOwned && avatar
+          ? api.getMyLand().catch(() => null)
+          : Promise.resolve(undefined),
       ]);
       if (cancelled || version !== requestVersion) return;
+      if (ownedResult) ownedOverlay = ownedResult;
 
       if (publicStructures !== null) {
         const merged = new Map<string, PlacedStructure>();
@@ -435,12 +427,12 @@ function StructureHydrator() {
 
         // The uncached owner read overlays the 60s public snapshot, keeping the
         // signed-in player's just-completed/optimistic appearance fresh.
-        if (owned !== null) {
+        if (ownedOverlay !== null) {
           const uuidToParcelCode = new Map<string, string>();
-          for (const parcel of owned.parcels) {
+          for (const parcel of ownedOverlay.parcels) {
             uuidToParcelCode.set(parcel.id, parcel.parcelCode);
           }
-          for (const structure of owned.structures) {
+          for (const structure of ownedOverlay.structures) {
             const parcelCode = uuidToParcelCode.get(structure.parcelId);
             if (!parcelCode) continue;
             merged.set(parcelCode, {
@@ -459,16 +451,16 @@ function StructureHydrator() {
 
       if (!cancelled) {
         if (pollTimer !== null) clearTimeout(pollTimer);
-        pollTimer = setTimeout(hydrate, 60_000);
+        pollTimer = setTimeout(() => { void hydrate(false); }, 60_000);
       }
     };
 
     const refreshNow = () => {
       if (pollTimer !== null) clearTimeout(pollTimer);
-      void hydrate();
+      void hydrate(true);
     };
 
-    void hydrate();
+    void hydrate(true);
     window.addEventListener(LAND_STRUCTURES_REFRESH_EVENT, refreshNow);
     return () => {
       cancelled = true;
@@ -483,17 +475,6 @@ function StructureHydrator() {
 export default function LandStructures() {
   // Narrow selector — only re-render when the structures Map identity changes.
   const structures = useLandStore((s) => s.structures);
-  const sharedMaterial = useMemo(
-    () => new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      vertexColors: true,
-      roughness: 0.78,
-      metalness: 0.04,
-    }),
-    [],
-  );
-
-  useEffect(() => () => sharedMaterial.dispose(), [sharedMaterial]);
 
   // parcelCode → ParcelSlot lookup, built once (LAND_PARCELS is frozen).
   const parcelById = useMemo(() => {
@@ -529,14 +510,7 @@ export default function LandStructures() {
   return (
     <>
       <StructureHydrator />
-      {slots.map(({ parcel, structure }) => (
-        <StructureSlot
-          key={parcel.id}
-          parcel={parcel}
-          structure={structure}
-          sharedMaterial={sharedMaterial}
-        />
-      ))}
+      <BoundedStructureSlots slots={slots} />
     </>
   );
 }

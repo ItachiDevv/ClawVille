@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test';
-import { getPaletteAppearanceOptions, getShellAppearanceOptions } from './land-appearance-options';
+import {
+  getPaletteAppearanceOptions,
+  getShellAppearanceOptions,
+  getShellLockCopy,
+} from './land-appearance-options';
 
 describe('land appearance picker options', () => {
   test('shows only the matching shell type and marks level locks', () => {
@@ -25,6 +29,20 @@ describe('land appearance picker options', () => {
       levelLocked: true,
       tierLocked: true,
     });
+    expect(getShellLockCopy(option!, 'starter')).toEqual([
+      'Needs a B-tier parcel or higher',
+    ]);
+  });
+
+  test('shows a reachable level requirement alongside the premium tier requirement', () => {
+    const option = getShellAppearanceOptions('home', 2, 'c').find(
+      (candidate) => candidate.entry.key === 'premium-tower',
+    );
+
+    expect(getShellLockCopy(option!, 'c')).toEqual([
+      'Unlocks at Lv 4',
+      'Needs a B-tier parcel or higher',
+    ]);
   });
 
   test('unlocks every founder shell at its required level', () => {

@@ -47,6 +47,8 @@
  *     structureType: 'home'|'shop';
  *     catalogKey: string;    // STRUCTURE_CATALOG key
  *     level: number;         // int 1..5
+ *     shellKey: string;      // SHELL_CATALOG key
+ *     paletteKey: string;    // PALETTE_PRESETS key
  *   };
  *
  * 1. GET /api/land/parcels?tier=&status=   (PUBLIC, 60s cache, 60/min/IP)
@@ -176,6 +178,19 @@
  *              op is refused rather than charged against a stale denorm. Ownership
  *              is checked against the LOCKED parcel row (FOR UPDATE OF s, p), never
  *              the denorm alone.
+ *
+ * 10. GET /api/land/structures/public             (PUBLIC, 60/min/IP)
+ *      200 → PublicLandStructureDTO[]              (active-only, no owner identity)
+ *      Server cache 60s; HTTP Cache-Control public, max-age=30.
+ *
+ * 11. PATCH /api/land/structures/:structureId/appearance  (AUTH, PARITY-BOUND)
+ *      body: { shellKey?: string, paletteKey?: string } (.strict(), at least one)
+ *      200 → { structure: LandStructureDTO }
+ *      400 → { error: 'invalid_body' | 'invalid_structure_id' |
+ *                       'shell_not_allowed' | 'palette_not_allowed' }
+ *      403 → { error: 'not_structure_owner' }
+ *      404 → { error: 'structure_not_found' }
+ *      409 → { error: 'structure_archived' | 'ownership_desync' }
  * ─────────────────────────────────────────────────────────────────────────────
  *
  * PHASE3: expose buy / structure / upgrade via the agent tools.json surface +
@@ -387,6 +402,7 @@ export const appearanceBodySchema = z
 
 export interface AppearanceAuthority {
   ownerAvatarId: string;
+  parcelOwnerAvatarId: string | null;
   status: 'active' | 'archived';
   structureType: 'home' | 'shop';
   level: number;
@@ -395,6 +411,7 @@ export interface AppearanceAuthority {
 
 export type AppearanceValidationError =
   | 'not_structure_owner'
+  | 'ownership_desync'
   | 'structure_archived'
   | 'shell_not_allowed'
   | 'palette_not_allowed';
@@ -405,7 +422,8 @@ export function validateAppearanceMutation(
   avatarId: string,
   patch: z.infer<typeof appearanceBodySchema>,
 ): AppearanceValidationError | null {
-  if (authority.ownerAvatarId !== avatarId) return 'not_structure_owner';
+  if (authority.parcelOwnerAvatarId !== avatarId) return 'not_structure_owner';
+  if (authority.ownerAvatarId !== authority.parcelOwnerAvatarId) return 'ownership_desync';
   if (authority.status !== 'active') return 'structure_archived';
   if (
     patch.shellKey !== undefined
@@ -1016,6 +1034,7 @@ landRoutes.get('/structures/public', async (c) => {
   if (!publicReadLimiter.check(getClientIp(c.req.raw.headers))) {
     return c.json({ error: 'rate_limited' }, 429);
   }
+  c.header('Cache-Control', 'public, max-age=30');
 
   const cached = getPublicStructuresCache();
   if (cached) return c.json(cached);
@@ -2252,6 +2271,7 @@ landRoutes.post('/parcels/:parcelId/structure', requireAuthOrAgentSession, requi
 landRoutes.patch(
   '/structures/:structureId/appearance',
   requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
   requireNonGuestIdentity,
   async (c) => {
     const avatarId = c.get('identity').avatarId;
@@ -2276,6 +2296,7 @@ landRoutes.patch(
           id: string;
           parcel_id: string;
           owner_avatar_id: string;
+          parcel_owner_avatar_id: string | null;
           status: 'active' | 'archived';
           structure_type: 'home' | 'shop';
           catalog_key: string;
@@ -2284,7 +2305,8 @@ landRoutes.patch(
           palette_key: string | null;
           tier: LandTier;
         }>(
-          sql`SELECT s.id, s.parcel_id, s.owner_avatar_id, s.status,
+          sql`SELECT s.id, s.parcel_id, s.owner_avatar_id,
+                     p.owner_avatar_id AS parcel_owner_avatar_id, s.status,
                      s.structure_type, s.catalog_key, s.level,
                      s.shell_key, s.palette_key, p.tier
               FROM land_structures s
@@ -2300,6 +2322,7 @@ landRoutes.patch(
         const validationError = validateAppearanceMutation(
           {
             ownerAvatarId: row.owner_avatar_id,
+            parcelOwnerAvatarId: row.parcel_owner_avatar_id,
             status: row.status,
             structureType: row.structure_type,
             level: Number(row.level),
@@ -2311,7 +2334,7 @@ landRoutes.patch(
         if (validationError !== null) {
           const status = validationError === 'not_structure_owner'
             ? 403
-            : validationError === 'structure_archived'
+            : validationError === 'structure_archived' || validationError === 'ownership_desync'
               ? 409
               : 400;
           throw new HTTPException(status, { message: validationError });

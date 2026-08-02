@@ -6,7 +6,7 @@ default coastal-cottage shell and offers `classic`, `seafoam`, and
 `sunset-coral`. Level 2 and above unlock the three cottage shell styles
 (`coastal-cottage`, `driftwood-cabin`, and `fantasy-cottage`) plus all eight
 named palettes. Level 4 adds `premium-tower` for homes and `premium-mall` for
-shops, but only on parcel tiers whose level cap actually reaches that shell;
+shops, but only on b, a, and founder parcels;
 there is no separate founder-shell asset, so premium is also the Lv5 ceiling.
 Appearance changes are free, owner-only, and checked against the structure's
 current server-side level and parcel tier.

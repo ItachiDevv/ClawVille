@@ -2,30 +2,42 @@
 
 **Last Audited: 2026-08-02 (Land P1 public, shell-aware structures).**
 `StructureHydrator` now reads the public, active-only
-`GET /api/land/structures/public` feed for every player's building, polls the
-60-second cache interval, and overlays the authenticated owner's uncached land
-response so recent local mutations remain responsive. A structure resolves its
+`GET /api/land/structures/public` feed for every player's building and polls its
+60-second cache interval. It fetches the authenticated owner's uncached overlay
+only on mount and the explicit structure-refresh event, so local mutations stay
+responsive without polling `/api/land/me`. A structure resolves its
 `home.glb` or `shop.glb` from the server-returned shell key with the explicit
 `coastal-cottage` fallback; `levelScale(level)` remains the progression scale.
 
-Model normalization now treats footprint and height independently. The base
-scale is `min((parcelSize * 0.62 / widestXZ) * levelScale,
-parcelSize * 1.50 / height)`, so the independent height cap clamps the final
-level-scaled result. Bounds below are transformed native GLB
-bounds; fitted dimensions use the smallest shell-rendered parcel (founder,
-1,216 world units) at the first premium levels:
+Model normalization treats footprint and height independently. It first fits the
+Lv5 base with `min(parcelSize * 0.62 / widestXZ,
+(parcelSize * 1.50 / height) / 1.25)`, then multiplies that base by
+`levelScale(level)`. The height ceiling is therefore authoritative at Lv5 while
+lower levels remain visible fractions of the capped size. Decoded model-space
+bounds and mesh costs are:
 
-| Premium asset | Native X × Y × Z | widest XZ / height | Mesh cost | Lv4 fitted X × Y × Z | Lv5 fitted X × Y × Z | Limiter |
-| --- | ---: | ---: | ---: | ---: | ---: | --- |
-| `premium-tower/home.glb` | 40,634 × 180,218.5 × 44,814 | 44,814 / 180,218.5 | 986 triangles, 6 primitives | 411.2586 × 1,824 × 453.5646 | 411.2586 × 1,824 × 453.5646 | height |
-| `premium-mall/shop.glb` | 66,844.6788 × 55,053.4790 × 40,632.7192 | 66,844.6788 / 55,053.4790 | 2,364 triangles, 4 primitives | 853.8144 × 703.2041 × 519.0062 | 942.4 × 776.1635 × 572.8545 | footprint |
+| Premium asset | Decoded native X × Y × Z | Mesh cost | Lv5 limiter |
+| --- | ---: | ---: | --- |
+| `premium-tower/home.glb` | 1.240 × 5.500 × 1.368 | 986 triangles, 6 primitives | height |
+| `premium-mall/shop.glb` | 2.040 × 1.680 × 1.240 | 2,364 triangles, 4 primitives | footprint |
 
-Palette tinting clones only each rendered mesh's geometry, stamps a preset
-swatch into vertex colors, and reuses one parent-owned vertex-color
-`MeshStandardMaterial`. Static shell groups disable matrix auto-update; owned
-geometry and the shared tint material are disposed on unmount, while `useGLTF`
-cache assets are never disposed. This keeps the current small-occupancy draw
-cost compatible with a later chunk-merge implementation.
+On a 1,216-world-unit founder parcel, the resulting fitted dimensions are:
+
+| Level | `premium-tower` X × Y × Z | `premium-mall` X × Y × Z |
+| ---: | ---: | ---: |
+| Lv1 | 256.6254 × 1,138.1760 × 283.0243 | 588.0576 × 484.3260 × 357.4612 |
+| Lv2 | 295.2837 × 1,309.6320 × 325.6594 | 676.6432 × 557.2854 × 411.3095 |
+| Lv3 | 333.9420 × 1,481.0880 × 368.2945 | 765.2288 × 630.2448 × 465.1579 |
+| Lv4 | 372.6003 × 1,652.5440 × 410.9295 | 853.8144 × 703.2041 × 519.0062 |
+| Lv5 | 411.2586 × 1,824.0000 × 453.5646 | 942.4000 × 776.1635 × 572.8545 |
+
+Palette tinting clones each authored mesh material and multiplies the cycling
+base/accent/trim swatch into its existing color. This preserves authored maps,
+roughness, metalness, side, and other PBR settings. `classic` uses three white
+identity swatches, so existing structures retain their pre-P1 authored look.
+Owned material clones are disposed on unmount; cache-owned geometry and textures
+are never disposed. The renderer mounts only the 48 structures nearest the camera
+and refreshes that set as the player walks, bounding GLB work until P3 chunking.
 
 **Manual overlap check:** on `/game`, inspect allowed Lv4/Lv5 founder-parcel
 premium shells from several camera angles against all ten procedural
