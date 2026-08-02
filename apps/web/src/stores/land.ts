@@ -1,9 +1,8 @@
 /**
  * land.ts — Zustand store for land parcel ownership state.
  *
- * Phase 1 / Slice A: placeholder store. All 180 parcels default to 'available'.
- * The gameplay turn (GET /api/land/owned) will hydrate this with real ownership.
- * The render reads this store so the wiring exists end-to-end from day 1.
+ * Parcel ownership and the public active-structure render snapshot share this
+ * store. Structures are keyed by stable parcelCode, never owner identity.
  *
  * ParcelStatus lifecycle:
  *   'available' — for sale (default; shown as for-sale lot in 3D)
@@ -23,13 +22,12 @@ export interface ParcelState {
 /**
  * A placed structure (home or shop) on an owned parcel, narrowed to exactly the
  * fields the 3D render layer needs. Keyed by `parcelCode` in the store (one
- * structure per parcel by the backend contract). `catalogKey` selects the GLB
- * (e.g. `home-cottage`, `shop-market`); `level` (1..5) drives the scale ramp.
+ * structure per parcel by the backend contract). `shellKey` selects the GLB,
+ * `paletteKey` selects baked vertex colors, and `level` drives the scale ramp.
  *
  * `parcelCode` — the render-key, equals `LAND_PARCELS[i].id` (e.g. `parcel-a-01`).
  *   The 3D layer joins on this, NOT on the DB UUID.
- * `parcelId`   — the DB UUID; kept for backwards-compat with StructureHydrator until
- *   land-structures.tsx is migrated to use parcelCode for the parcelById lookup.
+ * `parcelId` — DB UUID for the owner's DTO, parcelCode sentinel for public rows.
  */
 export interface PlacedStructure {
   /** DB UUID of the parcel row — kept for backward-compat. */
@@ -39,24 +37,23 @@ export interface PlacedStructure {
   catalogKey: string;
   structureType: 'home' | 'shop';
   level: number;
+  shellKey: string;
+  paletteKey: string;
 }
 
 interface LandStore {
   /** Per-parcel state keyed by ParcelSlot.id (= parcelCode, e.g. 'parcel-a-01'). */
   parcels: Map<string, ParcelState>;
 
-  /** Placed structures keyed by parcelCode (= LAND_PARCELS[i].id). One entry
-   *  per owned parcel. Populated by the render layer's self-hydration
-   *  (`api.getMyLand()`) and by the Land Office modal on edit. */
+  /** Every public active structure keyed by parcelCode, with owner DTO overlays. */
   structures: Map<string, PlacedStructure>;
 
   /** Bulk-set parcel state from an API response. Existing entries not in the
    *  update are left unchanged (patch semantics, not replace). */
   setParcels: (updates: Record<string, ParcelState>) => void;
 
-  /** REPLACE the visible owner's structure set (full replace, not patch) — the
-   *  list is the authoritative snapshot of one avatar's placed structures, so a
-   *  removed/swapped structure must disappear rather than linger.
+  /** REPLACE the public structure set (full replace, not patch), so archived or
+   *  removed structures disappear rather than linger.
    *  The Map is keyed by PlacedStructure.parcelCode. */
   setStructures: (list: PlacedStructure[]) => void;
 

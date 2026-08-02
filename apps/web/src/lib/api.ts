@@ -33,6 +33,9 @@ import type {
   StructureServicesResponse,
   BrowseServicesResponse,
   BuyServiceResponse,
+  PublicLandStructureDTO,
+  UpdateStructureAppearanceRequest,
+  UpdateStructureAppearanceResponse,
 } from '@/components/game/land/types';
 import { getFingerprint } from './fingerprint';
 
@@ -1464,6 +1467,20 @@ export const api = {
 
   /** The signed-in player's owned parcels + structures (auth). */
   getMyLand: () => honoRequest<MyLandResponse>('/api/land/me'),
+
+  /** Every active structure in the shared world. Public; server-cached for 60s. */
+  getPublicLandStructures: () =>
+    honoRequest<PublicLandStructureDTO[]>('/api/land/structures/public'),
+
+  /** Free owner-only shell/palette mutation; current level/tier are server-read. */
+  updateStructureAppearance: (
+    structureId: string,
+    body: UpdateStructureAppearanceRequest,
+  ) =>
+    honoRequest<UpdateStructureAppearanceResponse>(
+      `/api/land/structures/${encodeURIComponent(structureId)}/appearance`,
+      { method: 'PATCH', body: JSON.stringify(body) },
+    ),
 
   /** Place a free Lv1 structure on an owned parcel (auth). */
   placeStructure: (

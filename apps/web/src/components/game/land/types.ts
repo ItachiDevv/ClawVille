@@ -58,6 +58,29 @@ export interface LandStructureDTO {
   structureType: 'home' | 'shop';
   catalogKey: string;
   level: number;
+  shellKey: string;
+  paletteKey: string;
+}
+
+/** Public world-render feed row; owner identity and DB ids are intentionally omitted. */
+export interface PublicLandStructureDTO {
+  parcelCode: string;
+  gridX: number;
+  gridY: number;
+  tier: LandTier;
+  structureType: 'home' | 'shop';
+  level: number;
+  shellKey: string;
+  paletteKey: string;
+}
+
+export interface UpdateStructureAppearanceRequest {
+  shellKey?: string;
+  paletteKey?: string;
+}
+
+export interface UpdateStructureAppearanceResponse {
+  structure: LandStructureDTO;
 }
 
 /** Catalog SKU entry (key + display label) for a tier. */
