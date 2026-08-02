@@ -1,6 +1,38 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-07-30 (Persistent world-stage P4 activity overlay slot).**
+**Last Audited: 2026-08-02 (Land P1 public, shell-aware structures).**
+`StructureHydrator` now reads the public, active-only
+`GET /api/land/structures/public` feed for every player's building, polls the
+60-second cache interval, and overlays the authenticated owner's uncached land
+response so recent local mutations remain responsive. A structure resolves its
+`home.glb` or `shop.glb` from the server-returned shell key with the explicit
+`coastal-cottage` fallback; `levelScale(level)` remains the progression scale.
+
+Model normalization now treats footprint and height independently. The base
+scale is `min(parcelSize * 0.62 / widestXZ, parcelSize * 1.50 / height)`, then
+the existing level scale is applied. Bounds below are transformed native GLB
+bounds; fitted dimensions use the smallest shell-rendered parcel (founder,
+1,216 world units) at the first premium levels:
+
+| Premium asset | Native X × Y × Z | widest XZ / height | Mesh cost | Lv4 fitted X × Y × Z | Lv5 fitted X × Y × Z | Limiter |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `premium-tower/home.glb` | 40,634 × 180,218.5 × 44,814 | 44,814 / 180,218.5 | 986 triangles, 6 primitives | 465.7504 × 2,065.68 × 513.6619 | 514.0733 × 2,280 × 566.9558 | height |
+| `premium-mall/shop.glb` | 66,844.6788 × 55,053.4790 × 40,632.7192 | 66,844.6788 / 55,053.4790 | 2,364 triangles, 4 primitives | 853.8144 × 703.2041 × 519.0062 | 942.4 × 776.1635 × 572.8545 | footprint |
+
+Palette tinting clones only each rendered mesh's geometry, stamps a preset
+swatch into vertex colors, and reuses one parent-owned vertex-color
+`MeshStandardMaterial`. Static shell groups disable matrix auto-update; owned
+geometry and the shared tint material are disposed on unmount, while `useGLTF`
+cache assets are never disposed. This keeps the current small-occupancy draw
+cost compatible with a later chunk-merge implementation.
+
+**Manual overlap check:** on `/game`, inspect allowed Lv4/Lv5 founder-parcel
+premium shells from several camera angles against all ten procedural
+`land-founder-apartments.tsx` skyline pieces. Confirm no footprint or roofline
+interpenetration. The apartment geometry is intentionally unchanged and this
+visual sign-off remains with the orchestrator.
+
+**Prior Last Audited: 2026-07-30 (Persistent world-stage P4 activity overlay slot).**
 `/activity/:activityId/:roomId` now joins the `(world)` route group and registers
 an empty resident `activity` stage slot while Reef Race and Bumper Shells retain
 their room-keyed page-layer WebGL canvases. The shared stage pauses only after

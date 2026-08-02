@@ -1,6 +1,21 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-07-31 (world position over one persistent connection).**
+**Last Audited: 2026-08-02 (Land P1 appearance ladder and tier capacity).**
+Placed homes and shops now carry a shell and palette. Level 1 uses only the
+default coastal-cottage shell and offers `classic`, `seafoam`, and
+`sunset-coral`. Level 2 and above unlock the three cottage shell styles
+(`coastal-cottage`, `driftwood-cabin`, and `fantasy-cottage`) plus all eight
+named palettes. Level 4 adds `premium-tower` for homes and `premium-mall` for
+shops, but only on parcel tiers whose level cap actually reaches that shell;
+there is no separate founder-shell asset, so premium is also the Lv5 ceiling.
+Appearance changes are free, owner-only, and checked against the structure's
+current server-side level and parcel tier.
+
+D2 raises the starter parcel structure cap from level 2 to level 3 and the C
+tier cap from level 3 to level 4. These capacity changes do not expand either
+tier's size-SKU allowlist and do not unlock premium/founder shells there.
+
+**Prior Last Audited: 2026-07-31 (world position over one persistent connection).**
 Your character's position now rides one persistent connection instead of a
 request every fifth of a second; if that connection cannot be made (or the
 server has the feature switched off, which is the default today), the game
