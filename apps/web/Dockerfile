@@ -9,6 +9,8 @@ WORKDIR /app
 
 # Copy root workspace files
 COPY package.json bun.lock turbo.json tsconfig.json ./
+# Vendored npm tarballs (packages pulled from the registry — see vendor/npm/README.md)
+COPY vendor/ vendor/
 
 # Copy all workspace packages + web app
 COPY packages/ packages/
