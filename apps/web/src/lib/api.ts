@@ -186,9 +186,28 @@ function apiErrorExtras(err: Record<string, unknown>): {
   };
 }
 
+async function fetchWithTransientGetRetry(
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  const method = (init.method ?? 'GET').toUpperCase();
+
+  try {
+    const response = await fetch(url, init);
+    if (method !== 'GET' || ![502, 503, 504].includes(response.status)) {
+      return response;
+    }
+  } catch (err) {
+    if (method !== 'GET') throw err;
+  }
+
+  await new Promise<void>((resolve) => setTimeout(resolve, 750));
+  return fetch(url, init);
+}
+
 async function honoRequest<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = await withFingerprint(options?.headers);
-  const res = await fetch(`${HONO_API_URL}${path}`, {
+  const res = await fetchWithTransientGetRetry(`${HONO_API_URL}${path}`, {
     // DEFAULT no-store: personalized JSON must never replay from the
     // browser HTTP cache into another session. TanStack Query is the
     // caching layer for API data. Placed BEFORE the spread so a caller
@@ -211,7 +230,7 @@ async function honoRequest<T>(path: string, options?: RequestInit): Promise<T> {
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = await withFingerprint(options?.headers);
-  const res = await fetch(`${API_URL}${path}`, {
+  const res = await fetchWithTransientGetRetry(`${API_URL}${path}`, {
     // Same overridable no-store default as honoRequest — see comment there.
     cache: 'no-store',
     ...options,
