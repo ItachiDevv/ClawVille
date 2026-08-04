@@ -364,6 +364,27 @@ discriminates the ports), then:
 We again did NOT re-run until green. Founder disposition on the single remaining stable-window
 bound (accept the median-faster + freak-pair analysis, or extend that one metric) gates rung 3a.
 
+### Rung-1 WebGL2 CONFIRMATORY BATCH — PREDECLARATION (2026-08-04, committed BEFORE any data read)
+
+The 2026-08-04 Codex adversarial audit (VERDICT: REJECT — full report folded below) found the
+in-flight "extend the open metric to n=18" plan to be OPTIONAL STOPPING (evaluating at n=18 after
+seeing the n=12 result inflates the false-pass rate to ~5.4%, and updating only the failed metric
+is selective endpoint updating). Its prescribed valid rescue: **a fresh fixed-size confirmatory
+batch with no interim decision.** This section IS that predeclaration, committed before any
+metric value from the new pairs has been read:
+
+- **Sample:** pairs 13–24 from the retest rig (12 fresh counterbalanced pairs, 6 AB / 6 BA,
+  same hardened recipe, same attested servers :3011=`7ddf319e` / :3010=HEAD-bundle). Pairs 13–15
+  were collected before this predeclaration but NO metric value from them has been read (only
+  scheduler "PAIR OK" events); no selection or filtering has been applied to them.
+- **Evaluation: EXACTLY ONCE at n=12, all five metrics together** (no per-metric carve-out),
+  via the unmodified `cold-load-paired-gate.mjs` with the currently-frozen bounds (incl. the
+  prospective 40s webgl2 reveal sanity bound — legitimate for NEW batches per audit finding 4).
+- **Disposition is binding:** gate exit 0 ⇒ WebGL2 lane PASSES rung 1. Any other exit ⇒ the
+  WebGL2 lane verdict for rung 1 is FAIL, recorded as such with no further batches this rung.
+- The earlier n=12 retest batch retains its own recorded verdict (fail on stable-window); this
+  confirmatory batch does not amend it — it is a new, independently-evaluated sample.
+
 ## 5. Verification protocol
 
 - Probe re-runs per rung (headless + headed) on local prod build (`bun run build && bun run start`,
