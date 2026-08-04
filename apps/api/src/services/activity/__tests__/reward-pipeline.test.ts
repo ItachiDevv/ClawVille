@@ -136,6 +136,14 @@ mock.module('@clawville/database', () => ({
     createdAt: 'created_at',
     updatedAt: 'updated_at',
   },
+  reefRacePersonalBestClaims: {
+    id: 'claim_id',
+    sourceRoomId: 'source_room_id',
+    avatarId: 'avatar_id',
+    bestLapMs: 'best_lap_ms',
+    previousBestLapMs: 'previous_best_lap_ms',
+    dailyRank: 'daily_rank',
+  },
   // Phase 4 — reward-pipeline now imports activity-ws-hub which
   // transitively imports activity-room-manager which references these
   // schemas at module load time. Bun's mock.module is process-scoped
@@ -399,6 +407,36 @@ describe('computeBreakdown — Reef Race personal-best', () => {
   it('finish faster than priorBest → PB bonus', () => {
     const b = computeBreakdown({ ...reefInput, priorBestMs: 100_000 });
     expect(b.personalBestBonus).toBe(10);
+  });
+});
+
+describe('computeBreakdown - persisted Reef lap PB', () => {
+  const reefInput = {
+    rewardConfig: REEF.rewardConfig,
+    placement: 1,
+    scoreMs: 95_000,
+    priorBestMs: 90_000,
+    todayCount: 1,
+    flags: null,
+    activityId: 'reef-race',
+    isBot: false,
+  };
+
+  it('awards from the lap claim even when whole-match score is slower', () => {
+    const breakdown = computeBreakdown({
+      ...reefInput,
+      personalBestQualified: true,
+    });
+    expect(breakdown.personalBestBonus).toBe(10);
+  });
+
+  it('does not award without the lap claim even when whole-match score is faster', () => {
+    const breakdown = computeBreakdown({
+      ...reefInput,
+      priorBestMs: 100_000,
+      personalBestQualified: false,
+    });
+    expect(breakdown.personalBestBonus).toBe(0);
   });
 });
 

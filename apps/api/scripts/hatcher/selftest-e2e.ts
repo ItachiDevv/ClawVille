@@ -497,7 +497,10 @@ async function main() {
       createdAt: new Date(Date.now() - 86_400_000),
       updatedAt: new Date(Date.now() - 3_600_000),
     } as unknown as Parameters<typeof ph.publicAgentRecord>[0];
-    const out = ph.publicAgentRecord(syntheticRow) as Record<string, unknown>;
+    const out = ph.publicAgentRecord(syntheticRow, {
+      status: 'ready',
+      address: 'SoLPubKey1111111111111111111111111111111111',
+    }) as Record<string, unknown>;
     const keys = Object.keys(out);
     const proto = out.protocol as { version?: unknown; contentHash?: unknown; url?: unknown } | undefined;
     const presentOk = out.agentId === 'test-agent-123' && out.uuid === 'uuid-1' && out.identityType === 'hatcher' && out.mode === 'avatar' && out.targetNpcId === null && out.name === 'TestBot' && out.species === 'hatcher_1' && out.color === 0xff0000 && out.cognitionBackend === 'hatcher-proxy' && out.proxyUrl === 'https://api.hatcher.host' && out.walletAddress === 'SoLPubKey1111111111111111111111111111111111' && out.userId === 'user-id-1' && out.sessionExpiresAt instanceof Date && !!proto && typeof proto.version === 'number' && typeof proto.contentHash === 'string' && (proto.contentHash as string).startsWith('sha256:') && proto.url === '/api/skills/protocol/skill.md';
@@ -537,7 +540,10 @@ async function main() {
       walletAddress: 'SoLAvatarWallet22222222222222222222222222222', userId: 'real-user-uuid-42', sessionExpiresAt: future,
       createdAt: new Date(Date.now() - 86_400_000), updatedAt: new Date(Date.now() - 3_600_000),
     } as unknown as Parameters<typeof ph.publicAgentRecord>[0];
-    const out = ph.publicAgentRecord(boundRow) as Record<string, unknown>;
+    const out = ph.publicAgentRecord(boundRow, {
+      status: 'ready',
+      address: 'SoLAvatarWallet22222222222222222222222222222',
+    }) as Record<string, unknown>;
     // userId present + echoed (the ledger anchor) and walletAddress present (the
     // avatar's real wallet) — the two facts that make agent play settle for real.
     const bindingOk = out.userId === 'real-user-uuid-42' && out.walletAddress === 'SoLAvatarWallet22222222222222222222222222222' && out.mode === 'override' && out.targetNpcId === 'milady-miu';

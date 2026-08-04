@@ -106,7 +106,7 @@ describe('Kelp Forest portal plane crossing', () => {
     )).toBe(false);
   });
 
-  test('trigger remains idempotent after the pending transition is consumed', () => {
+  test('a consumed legacy transition releases its stale latch for a retry', () => {
     resetKelpForestWalkInLatch();
 
     triggerKelpForestWalkIn();
@@ -114,7 +114,7 @@ describe('Kelp Forest portal plane crossing', () => {
 
     useTransitionStore.getState()._consume();
     triggerKelpForestWalkIn();
-    expect(useTransitionStore.getState().pending).toBeNull();
+    expect(useTransitionStore.getState().pending?.to).toBe('/kelp');
     resetKelpForestWalkInLatch();
   });
 });

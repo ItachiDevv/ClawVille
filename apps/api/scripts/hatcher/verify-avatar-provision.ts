@@ -11,10 +11,12 @@
  *       identical to the human POST /api/avatars + agent POST /api/agent/join
  *       paths) NOR `isActive` (schema default true) — and 100 >= the Cove min
  *       bet, so the avatar is immediately playable.
- *   V3. invalid/absent modelKey => falls back to a VALID random hatcher_N.
+ *   V3. invalid/absent modelKey => falls back to a valid Hatcher-category model.
  *   V4. IDEMPOTENCY: ensureHatcherAvatar reuses an existing active avatar
  *       (created:false) — the guard that makes the one-time grant fire once, so a
  *       re-register cannot mint a 2nd avatar nor re-grant CT.
+ *   V5. MONEY PATH: public Hatcher records advertise only a resolver-ready
+ *       avatar settlement wallet and fail closed with walletPending otherwise.
  *
  * V1-V3 call the EXPORTED PURE `buildHatcherAvatarValues` (no I/O). V4 drives the
  * real `ensureHatcherAvatar` with only `db.query.avatars.findFirst` stubbed (the
@@ -49,13 +51,17 @@ async function main() {
   const shared = await import('@clawville/shared');
   const { COVE_BLACKJACK_MIN_BET, getAgentModel } = shared;
   const ph = await import('../../src/routes/partner-hatcher.ts');
-  const { buildHatcherAvatarValues, ensureHatcherAvatar } = ph as unknown as {
+  const { buildHatcherAvatarValues, ensureHatcherAvatar, publicAgentRecord } = ph as unknown as {
     buildHatcherAvatarValues: (
       userId: string, modelKey: string | null | undefined, name: string | null | undefined,
     ) => Record<string, unknown>;
     ensureHatcherAvatar: (
       userId: string, modelKey: string | null | undefined, name: string | null | undefined,
     ) => Promise<{ avatarId: string; created: boolean }>;
+    publicAgentRecord: (
+      row: Record<string, unknown>,
+      settlement: { status: 'ready'; address: string } | { status: 'pending' },
+    ) => Record<string, unknown>;
   };
 
   const SELFTEST_USER = '00000000-0000-4000-8000-0000000ava01';
@@ -84,9 +90,9 @@ async function main() {
   // ── V3: invalid modelKey => valid random hatcher_N fallback ────────────────
   const vFallback = buildHatcherAvatarValues(SELFTEST_USER, 'not-a-real-model', null);
   const mk = vFallback.modelKey as string;
-  const fellBack = typeof mk === 'string' && mk.startsWith('hatcher_') && getAgentModel(mk)?.category === 'hatcher';
+  const fellBack = typeof mk === 'string' && getAgentModel(mk)?.category === 'hatcher';
   const defaultNameUsed = typeof vFallback.name === 'string' && (vFallback.name as string).startsWith('Hatcher Agent ');
-  check('V3 invalid modelKey => valid random hatcher_N (category hatcher) + default name',
+  check('V3 invalid modelKey => valid Hatcher-category model + default name',
     fellBack && defaultNameUsed,
     `modelKey=${mk} category=${getAgentModel(mk)?.category} name=${vFallback.name}`);
 
@@ -108,8 +114,38 @@ async function main() {
     reuse.created === false && reuse.avatarId === 'pre-existing-avatar-id-999' && findFirstCalls === 1,
     `created=${reuse.created} avatarId=${reuse.avatarId} findFirstCalls=${findFirstCalls} (expect created:false, pre-existing id, exactly 1 findFirst, NO insert)`);
 
+  // ── V5: verified settlement advertisement + fail-closed pending shape ──────
+  const publicRow = {
+    agentId: 'hatcher:wallet-verification',
+    id: 'wallet-verification-row',
+    identityType: 'hatcher',
+    mode: 'avatar',
+    targetNpcId: null,
+    name: 'Wallet Verification',
+    species: 'phanes',
+    color: null,
+    cognitionBackend: 'hatcher-proxy',
+    proxyUrl: 'https://api.hatcher.host',
+    ack: null,
+    userId: SELFTEST_USER,
+    sessionExpiresAt: new Date(Date.now() + 60_000),
+    createdAt: new Date(Date.now() - 60_000),
+    updatedAt: new Date(),
+  };
+  const readyRecord = publicAgentRecord(publicRow, {
+    status: 'ready',
+    address: 'verified-avatar-settlement-wallet',
+  });
+  const pendingRecord = publicAgentRecord(publicRow, { status: 'pending' });
+  check('V5 MONEY PATH: Hatcher advertises only resolver-ready settlement wallet and pending omits the address',
+    readyRecord.walletAddress === 'verified-avatar-settlement-wallet'
+      && readyRecord.walletPending === false
+      && !('walletAddress' in pendingRecord)
+      && pendingRecord.walletPending === true,
+    `readyAddress=${readyRecord.walletAddress} readyPending=${readyRecord.walletPending} pendingHasAddress=${'walletAddress' in pendingRecord} pendingFlag=${pendingRecord.walletPending}`);
+
   console.log('\n========================================================');
-  console.log(`SUMMARY: ${fails.length === 0 ? 'ALL PASS (4/4)' : `${fails.length} FAIL`}`);
+  console.log(`SUMMARY: ${fails.length === 0 ? 'ALL PASS (5/5)' : `${fails.length} FAIL`}`);
   if (fails.length) for (const f of fails) console.log(`  - FAIL: ${f}`);
   console.log('========================================================');
   process.exit(fails.length > 0 ? 1 : 0);

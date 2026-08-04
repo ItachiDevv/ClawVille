@@ -34,7 +34,11 @@ const MIDDLEWARE_FILE = join(import.meta.dir, '..', '..', 'middleware', 'require
 type Method = 'get' | 'post' | 'patch' | 'delete';
 interface Entry {
   file: string;
-  guard: 'requireNonGuestUser' | 'requireNonGuestIdentity' | 'requireWagerCancelCaller';
+  guard:
+    | 'requireNonGuestUser'
+    | 'requireNonGuestIdentity'
+    | 'requireWagerCancelCaller'
+    | 'requireLedgerCapableIdentity';
   routes: Array<{ method: Method; path: string }>;
 }
 
@@ -89,11 +93,42 @@ const MANIFEST: Entry[] = [
     file: 'land.ts',
     guard: 'requireNonGuestIdentity',
     routes: [
+      // NOTE: the two disabled tenure stubs (`/parcels/:parcelId/buy`, `…/rent`)
+      // are deliberately NOT listed — they are synchronous 409 stubs with no
+      // middleware chain, and the span-to-first-`async` matcher would bleed into
+      // the NEXT route's chain and falsely bless them (Codex hotfix review,
+      // LOW). Their 409 behavior is pinned by land-tenure-phaseb.test.ts.
       p('post', '/claim-starter'),
-      p('post', '/parcels/:parcelId/buy'),
+      p('post', '/parcels/:parcelId/claim-hold'),
+      p('post', '/parcels/:parcelId/deposit-topup'),
+      p('post', '/parcels/:parcelId/release'),
       p('post', '/parcels/:parcelId/structure'),
+      p('patch', '/structures/:structureId/appearance'),
       p('post', '/structures/:structureId/upgrade'),
-      p('post', '/parcels/:parcelId/rent'),
+      p('post', '/structures/:structureId/services'),
+      p('patch', '/services/:listingId'),
+      p('post', '/services/:listingId/buy'),
+    ],
+  },
+  {
+    // Ledger-capability lock (2026-08-02 hotfix): every land money mutation must
+    // also fail closed on a non-ledger agent session (stale/restored/unproven
+    // bearer). Every other money domain (cove, cosmetics, kelp, quests, wager)
+    // already chains this guard; land was the gap (Codex land-redesign round 3,
+    // finding 29). `/spawn-preference` is included per the Codex hotfix review
+    // (MEDIUM): no money moves, but it persistently rewrites the bound avatar's
+    // spawn state — same convention as the free cosmetic equip routes.
+    file: 'land.ts',
+    guard: 'requireLedgerCapableIdentity',
+    routes: [
+      p('post', '/claim-starter'),
+      p('post', '/parcels/:parcelId/claim-hold'),
+      p('post', '/parcels/:parcelId/deposit-topup'),
+      p('post', '/parcels/:parcelId/release'),
+      p('post', '/parcels/:parcelId/structure'),
+      p('patch', '/structures/:structureId/appearance'),
+      p('post', '/structures/:structureId/upgrade'),
+      p('post', '/spawn-preference'),
       p('post', '/structures/:structureId/services'),
       p('patch', '/services/:listingId'),
       p('post', '/services/:listingId/buy'),

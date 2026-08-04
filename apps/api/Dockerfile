@@ -1,8 +1,13 @@
 FROM oven/bun:1
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Copy root workspace files
 COPY package.json bun.lock turbo.json tsconfig.json ./
+# Vendored npm tarballs (packages pulled from the registry — see vendor/npm/README.md)
+COPY vendor/ vendor/
 
 # Copy all workspace packages (needed for workspace:* resolution)
 COPY packages/ packages/
@@ -26,6 +31,8 @@ RUN cd packages/agent-runtime && bunx tsc
 RUN cd packages/wager-program && bunx tsc
 
 EXPOSE 4000
+
+HEALTHCHECK --interval=5s --timeout=5s --start-period=60s --retries=3 CMD curl -fsS "http://127.0.0.1:${PORT:-4000}/health" || exit 1
 
 # Run directly from source — bun handles TS natively
 CMD ["bun", "run", "apps/api/src/index.ts"]

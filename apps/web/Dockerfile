@@ -1,5 +1,7 @@
 FROM node:20-alpine AS base
 
+RUN apk add --no-cache curl
+
 # Install bun
 RUN npm install -g bun
 
@@ -7,6 +9,8 @@ WORKDIR /app
 
 # Copy root workspace files
 COPY package.json bun.lock turbo.json tsconfig.json ./
+# Vendored npm tarballs (packages pulled from the registry — see vendor/npm/README.md)
+COPY vendor/ vendor/
 
 # Copy all workspace packages + web app
 COPY packages/ packages/
@@ -34,5 +38,7 @@ ENV NEXT_PUBLIC_SOURCE_COMMIT=$NEXT_PUBLIC_SOURCE_COMMIT
 RUN cd apps/web && bun run build
 
 EXPOSE 3000
+
+HEALTHCHECK --interval=5s --timeout=5s --start-period=30s --retries=3 CMD curl -fsS "http://127.0.0.1:${PORT:-3000}/health" || exit 1
 
 CMD ["bun", "run", "--cwd", "apps/web", "start"]

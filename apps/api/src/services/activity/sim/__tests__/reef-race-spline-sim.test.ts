@@ -46,6 +46,7 @@ const {
   REEF_MAX_ACCEL,
   REEF_TURN_RATE,
   REEF_KINEMATIC_TOLERANCE,
+  MIN_LAP_MS,
 } = await import('../reef-race-config');
 const {
   integrateSurfStep,
@@ -451,6 +452,27 @@ describe('ReefRaceSplineSim', () => {
       expect(body.lap).toBe(0);
       expect(body.finishedAt).toBeNull();
     });
+
+    it('embeds a valid best lap and ghost frames for PB settlement', () => {
+      reefRaceSplineSim.startRoom(ROOM_ID, 'reef-race', [AVATAR_A]);
+      const state = reefRaceSplineSim.__getState(ROOM_ID)!;
+
+      reefRaceSplineSim.__tickOnceForTest(ROOM_ID);
+      placeAtT(ROOM_ID, AVATAR_A, 0.05); // start gun
+      state.simTimeMs += MIN_LAP_MS;
+      placeAtT(ROOM_ID, AVATAR_A, 0.5);
+      placeAtT(ROOM_ID, AVATAR_A, 0.9);
+      placeAtT(ROOM_ID, AVATAR_A, 0.05); // valid lap close
+
+      const result = reefRaceSplineSim.computeResults(ROOM_ID)[0];
+      expect(result.reefRace.bestLapMs).toBeGreaterThanOrEqual(MIN_LAP_MS);
+      expect(result.reefRace.ghostReplayFrames).not.toBeNull();
+      expect(result.reefRace.ghostReplayFrames![0].t).toBe(0);
+      expect(result.reefRace.ghostReplayFrames!.at(-1)!.t)
+        .toBe(result.reefRace.bestLapMs!);
+      expect(result.reefRace.bestStreakThisMatch).toBe(0);
+      expect(result.reefRace.currentStreakAtMatchEnd).toBe(0);
+    });
   });
 
   // ── Live placement ordering by (lap, within-lap progress) ──────────────────
@@ -717,6 +739,12 @@ describe('ReefRaceSplineSim', () => {
       expect(results[0].avatarId).toBe(AVATAR_A);
       expect(results[0].placement).toBe(1);
       expect(results[0].scoreMs).toBe(50000);
+      expect(results[0].reefRace).toEqual({
+        bestLapMs: null,
+        ghostReplayFrames: null,
+        bestStreakThisMatch: 0,
+        currentStreakAtMatchEnd: 0,
+      });
       expect(results[1].avatarId).toBe(AVATAR_B);
       expect(results[1].placement).toBe(2);
       expect(results[1].scoreMs).toBeNull();

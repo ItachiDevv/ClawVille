@@ -20,12 +20,19 @@ import { activityRoutes } from './routes/activity';
 import { activitiesV2Routes } from './routes/activities';
 import { landRoutes } from './routes/land';
 import { activityRoomManager } from './services/activity/activity-room-manager';
+import {
+  handleWagerRoomAborted,
+  startWagerAbortRecoveryWorker,
+  stopWagerAbortRecoveryWorker,
+} from './services/activity/wager-lobby-bridge';
 import { activityQueueService } from './services/activity/activity-queue';
 import { activityWsHub } from './services/activity/activity-ws-hub';
 import { bumperShellsSim } from './services/activity/sim/bumper-shells-sim';
 import { reefRaceSim } from './services/activity/sim/reef-race-sim';
 import { reefRaceSplineSim } from './services/activity/sim/reef-race-spline-sim';
-import { REEF_RACE_USE_SPLINE } from './services/activity/sim/reef-race-config';
+import {
+  REEF_RACE_USE_SPLINE,
+} from './services/activity/sim/reef-race-config';
 
 /**
  * Reef Race v2 sim selector. Mirrors the activity-ws-hub one — the env flag
@@ -47,6 +54,8 @@ import { pokerTableSim } from './services/poker/poker-table-sim-singleton';
 import { logEvent } from './services/event-logger';
 import { randomBytes } from 'node:crypto';
 import { getBunWebSocketHelper } from './lib/bun-ws-adapter';
+import { isAllowedOrigin, resolveAllowedOrigins } from './lib/allowed-origins';
+import { worldPresenceWsHub } from './services/world-presence-ws-hub';
 import { researchSseRoutes } from './routes/research-sse';
 import { researchApiRoutes } from './routes/research';
 import { clawRoutes } from './routes/claws';
@@ -96,6 +105,7 @@ import { agentEip8004Routes } from './routes/agent-eip8004';
 import { adminIdentityRoutes } from './routes/admin-identity';
 import { startSimulation } from './services/npc-simulation';
 import { alertError } from './services/alert-error';
+import { isTransientDbConnectionError } from './services/transient-db-error';
 import { getPublishedIssuerInfo } from './services/service-issuer';
 import { warnIfTestPartnerPubkeyEnabled } from './services/partner-signature';
 import { fingerprintMiddleware } from './middleware/fingerprint';
@@ -193,29 +203,10 @@ app.use('*', secureHeaders({ crossOriginResourcePolicy: 'cross-origin' }));
 app.use(
   '*',
   cors({
-    origin: (origin) => {
-      const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000')
-        .split(',')
-        .map((o) => o.trim());
-      if (origin && allowedOrigins.includes(origin)) return origin;
-
-      // Local dev across any port (Next.js dev server, Milady port 2138, etc.)
-      if (origin?.startsWith('http://localhost:')) return origin;
-      if (origin?.startsWith('http://127.0.0.1:')) return origin;
-
-      // Milady desktop shell origins — Electrobun / Capacitor / Tauri embed
-      // the Milady webview with these URL schemes. When the
-      // @clawville/app-clawville plugin fetches api.clawville.world from
-      // inside a Milady viewer, the Origin header looks like `electrobun://`
-      // or `capacitor://localhost` depending on the host platform.
-      if (origin === 'electrobun://localhost') return origin;
-      if (origin === 'capacitor://localhost') return origin;
-      if (origin === 'tauri://localhost') return origin;
-      if (origin === 'app://localhost') return origin;
-      // file:// has no explicit origin but some Electrobun builds send null
-
-      return allowedOrigins[0];
-    },
+    origin: (origin) =>
+      isAllowedOrigin(origin)
+        ? (origin as string)
+        : resolveAllowedOrigins()[0],
     credentials: true,
   })
 );
@@ -545,6 +536,24 @@ app.onError((err, c) => {
     return c.json({ error: err.message, code: 400 }, 400);
   }
 
+  if (isTransientDbConnectionError(err)) {
+    void alertError({
+      severity: 'warning',
+      source: 'api-route',
+      message: `Transient DB connection error on ${c.req.method} ${c.req.path}`,
+      context: { error: String(err), userId: c.get('user')?.id },
+    });
+    c.header('Retry-After', '1');
+    return c.json(
+      {
+        error: 'Service temporarily unavailable, please retry',
+        code: 503,
+        retryable: true,
+      },
+      503,
+    );
+  }
+
   // Genuinely unexpected — fire a critical alert (rate-limited in alertError).
   void alertError({
     severity: 'critical',
@@ -603,6 +612,7 @@ warnIfTestPartnerPubkeyEnabled();
 // Start NPC simulation (arena mode runs combat, world mode is peaceful)
 const arenaMode = process.env.NPC_ARENA_MODE === 'true';
 startSimulation(arenaMode);
+worldPresenceWsHub.startHeartbeat();
 
 // ── Process-level crash guards (2026-07-02 — boot-crush crash-loop fix) ──────
 // Registered BEFORE the boot IIFE so they cover boot-time faults. This IS the
@@ -1079,6 +1089,7 @@ process.on('uncaughtException', (err) => {
     activityRoomManager.setBroadcastFn((roomId, frame) => {
       activityWsHub.broadcastEvent(roomId, frame);
     });
+    activityRoomManager.registerAbortNotifyFn(handleWagerRoomAborted);
     activityRoomManager.setLiveTransitionFn(async (room) => {
       // Wager bridge — if this room has a wager lobby attached, flip it
       // from `open` → `locked` on chain in lockstep with the FSM
@@ -1105,11 +1116,16 @@ process.on('uncaughtException', (err) => {
       const participantIds = Array.from(room.participants.keys());
       switch (room.activityId) {
         case 'bumper-shells':
-          bumperShellsSim.startRoom(
+          const bumperState = bumperShellsSim.startRoom(
             room.id,
             room.activityId,
             participantIds,
             { bots },
+          );
+          activityRoomManager.acquireLiveOwnerLease(
+            room.id,
+            'bumper-shells-sim',
+            bumperState.endsAt,
           );
           break;
         case 'reef-race': {
@@ -1131,7 +1147,7 @@ process.on('uncaughtException', (err) => {
           }
           const avatarProfiles = await loadRacingProfiles(humanAvatarIds, botAvatarIds);
 
-          reefRaceImpl.startRoom(
+          const reefState = reefRaceImpl.startRoom(
             room.id,
             room.activityId,
             participantIds,
@@ -1141,6 +1157,13 @@ process.on('uncaughtException', (err) => {
               launchBoosts,
               avatarProfiles,
             },
+          );
+          activityRoomManager.acquireLiveOwnerLease(
+            room.id,
+            REEF_RACE_USE_SPLINE
+              ? 'reef-race-spline-sim'
+              : 'reef-race-ellipse-sim',
+            reefState.hardEndsAt,
           );
           break;
         }
@@ -1214,6 +1237,11 @@ process.on('uncaughtException', (err) => {
     // ends (RESULTS→GC / ABORTED / ABORTED_CRASH). Idempotent.
     activityRoomManager.setEvictionFn((room) => {
       botPool.releaseRoom(room.id);
+      if (room.activityId === 'bumper-shells') {
+        bumperShellsSim.stopRoom(room.id);
+      } else if (room.activityId === 'reef-race') {
+        reefRaceImpl.stopRoom(room.id);
+      }
     });
 
     // Phase 4 (S7 fix) — wire the reward-pipeline's per-recipient match-
@@ -1252,6 +1280,7 @@ process.on('uncaughtException', (err) => {
               placement: r.placement,
               score: r.score,
               scoreMs: r.scoreMs,
+              reefRace: r.reefRace,
             }));
         default:
           return [];
@@ -1442,18 +1471,11 @@ process.on('uncaughtException', (err) => {
     wirePokerMttToHub(pokerMttSim, tournamentManager);
 
     await activityRoomManager.recoverOrphanedRooms();
-    // Poker MTT (P4) — MONEY-side crash recovery. `recoverOrphanedRooms()` above
-    // only flips the `texas-holdem-mtt` ROOMS to `aborted_crash` via a direct bulk
-    // UPDATE that BYPASSES `persistAbortedTransition`, so the `abortNotifyFn` →
-    // `onRoomAborted` → `cancelAndRefundOrphan` chain never fires for boot-orphaned
-    // rooms. And the start-trigger sweeper below only scans status IN
-    // ('registering','seating') — a crashed `running` tournament is invisible to it.
-    // This driver is the ONLY code that scans status IN ('running','seating') AND
-    // settled_at IS NULL AND cancelled_at IS NULL to CANCEL + REFUND the escrowed
-    // buy-ins. Without this call a pod crash mid-tournament strands every entrant's
-    // buy-in in `prize_pool_ct` PERMANENTLY (no sweeper path, no abort-notify path,
-    // no boot path would ever refund it). Idempotent (FOR UPDATE + per-entrant
-    // `status <> 'refunded'` guard) so re-boot never double-refunds.
+    startWagerAbortRecoveryWorker();
+    // Poker MTT (P4) — keep the authoritative tournament-wide boot scan in
+    // addition to composed room-abort callbacks. It also covers a crashed running
+    // tournament whose room binding is absent/corrupt; both paths are idempotent
+    // (FOR UPDATE + per-entrant `status <> 'refunded'`), so they cannot double-refund.
     await tournamentManager.recoverOrphanedTournaments();
     await activityQueueService.hydrateFromDb();
     // Chunk #10 — hydrate the bot avatarId pool BEFORE the matcher starts
@@ -1578,11 +1600,33 @@ process.on('uncaughtException', (err) => {
 // we accumulate across Phase 1/2/3. Without this, Hetzner/Coolify SIGTERM
 // leaks 10+ ElizaRuntime instances, their DB pools, and the broker/registry
 // setIntervals on every container restart.
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 let shuttingDown = false;
 async function gracefulShutdown(signal: string) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`[API] Received ${signal}, shutting down gracefully...`);
+
+  await sleep(2000);
+  console.log('[API] draining HTTP…');
+  let httpDrained = false;
+  try {
+    // Guarded: a rejected stop() must never abort shutdown before the
+    // worker teardown + process.exit below.
+    await Promise.race([
+      server.stop().then(() => {
+        httpDrained = true;
+      }),
+      sleep(5000),
+    ]);
+  } catch (err) {
+    console.error('[API] HTTP drain error (proceeding):', err);
+  }
+  console.log(
+    httpDrained ? '[API] HTTP drained' : '[API] drain timeout — proceeding',
+  );
 
   try {
     // Import inside the handler so a failed import doesn't crash startup
@@ -1599,6 +1643,7 @@ async function gracefulShutdown(signal: string) {
       // If the driver module failed to load earlier, there's nothing to stop.
     }
     activityRoomManager.stopSweeper();
+    stopWagerAbortRecoveryWorker();
     activityQueueService.stopMatchmaker();
     tournamentManager.stopStartTriggerSweeper();
     // Poker cash-house intervals (scaler + self-drive tick). Import inside the
@@ -1739,6 +1784,14 @@ async function gracefulShutdown(signal: string) {
     } catch {
       // Nothing to stop.
     }
+    try {
+      const { worldPresenceWsHub } = await import(
+        './services/world-presence-ws-hub'
+      );
+      worldPresenceWsHub.shutdown();
+    } catch {
+      // If the module never loaded, there is nothing to drain.
+    }
     await Promise.allSettled([
       npcSimulation.avatarAutonomyManager.shutdown(),
       getCollaborationBroker().shutdown(),
@@ -1757,11 +1810,11 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 // Q2 Activity Portals — WebSocket handler plumbing. The adapter is
 // shared with `apps/api/src/routes/activities.ts` so both halves see the
-// same `createBunWebSocket` instance. Bun.serve reads `websocket` off
-// the default export to drive the WS lifecycle.
+// same `createBunWebSocket` instance. Bun.serve reads `websocket` from
+// the server config to drive the WS lifecycle.
 const { websocket: activityWebsocketHandler } = getBunWebSocketHelper();
 
-export default {
+const server = Bun.serve({
   port,
   fetch: app.fetch,
   websocket: activityWebsocketHandler,
@@ -1772,4 +1825,4 @@ export default {
   // probe: ECONNRESET on localhost:4000 after the initial 'connected' event,
   // never reaching even the upstream proxy. 255 is Bun's max value.
   idleTimeout: 255,
-};
+});

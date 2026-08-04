@@ -11,7 +11,8 @@
  *   2. For each non-bot participant, computes:
  *        base = placement tier OR participation floor
  *        + first-play-of-day bonus (if no prior result row today)
- *        + personal-best bonus (Reef Race only, when `score_ms < min`)
+ *        + personal-best bonus (Reef Race only, when this room owns the
+ *          persisted best-lap claim)
  *        + focus-aligned bonus (+pct% when avatar matches activity's
  *          `skillBuildingMatches[]` — looks at `avatars.flags.learningFocus`)
  *      All four steps execute inside ONE composed DB transaction so a
@@ -36,6 +37,7 @@ import {
   db,
   activityResults,
   avatars,
+  reefRacePersonalBestClaims,
   users,
   type ActivityRewardConfig,
 } from '@clawville/database';
@@ -108,7 +110,8 @@ export function setMatchEndDeliveryFn(fn: MatchEndDeliveryFn): void {
  *
  * `score` semantics are activity-specific (Bumper: kills; Reef: -finishMs
  * so DESC sort puts winners first). `scoreMs` is Reef-only and drives the
- * "Fastest" leaderboard tab + personal-best bonus check.
+ * legacy whole-match "Fastest" leaderboard tab. PB rewards use the separate
+ * persisted best-lap claim.
  */
 export interface SimResultRow {
   avatarId: string;
@@ -403,6 +406,37 @@ export async function issueRewardsForRoom(
 
       const isBot = participant.subjectType === 'bot';
       const bestStreakThisMatch = sim.reefRace?.bestStreakThisMatch ?? 0;
+      const pbWrite = pbWritesByAvatar.get(sim.avatarId);
+      // Money eligibility is re-read from append-only claim history inside
+      // the settlement transaction. The transient PB upsert return is UX-only;
+      // it cannot make a duplicate winner underpay or lose eligibility after a
+      // later room replaces the current PB row.
+      const pbClaimRows =
+        room.activityId === 'reef-race'
+          ? await tx
+              .select({
+                bestLapMs: reefRacePersonalBestClaims.bestLapMs,
+                previousBestLapMs:
+                  reefRacePersonalBestClaims.previousBestLapMs,
+                dailyRank: reefRacePersonalBestClaims.dailyRank,
+              })
+              .from(reefRacePersonalBestClaims)
+              .where(
+                and(
+                  eq(reefRacePersonalBestClaims.sourceRoomId, room.id),
+                  eq(reefRacePersonalBestClaims.avatarId, sim.avatarId),
+                ),
+              )
+              .limit(1)
+          : [];
+      const pbClaim = pbClaimRows[0];
+      const legacyWholeMatchPb =
+        sim.scoreMs != null &&
+        (ctx.priorBestMs == null || sim.scoreMs < ctx.priorBestMs);
+      const isPersonalBest =
+        room.activityId === 'reef-race'
+          ? pbClaim != null
+          : legacyWholeMatchPb;
       const breakdown = computeBreakdown({
         rewardConfig,
         placement: sim.placement,
@@ -412,14 +446,11 @@ export async function issueRewardsForRoom(
         flags: ctx.flags,
         activityId: room.activityId,
         isBot,
+        personalBestQualified: isPersonalBest,
         // C3 fix — read from the embedded SimResultRow.reefRace block,
         // NEVER from a live sim accessor.
         bestStreakThisMatch,
       });
-
-      const isPersonalBest =
-        sim.scoreMs != null &&
-        (ctx.priorBestMs == null || sim.scoreMs < ctx.priorBestMs);
 
       // Guest all-demo economy (founder ruling 2026-07-06): guests earn NO
       // real CT — a real account is required to earn to the real ledger. So
@@ -474,8 +505,6 @@ export async function issueRewardsForRoom(
         );
       }
 
-      const pbWrite = pbWritesByAvatar.get(sim.avatarId);
-
       // Insert the result row first so we have an id for the breakdown
       // return + the event payload. `returning()` in the same tx avoids
       // a second round-trip.
@@ -495,10 +524,10 @@ export async function issueRewardsForRoom(
           isPersonalBest,
           // Phase 4 — embed best-streak + PB-rank on the per-match row so
           // the /results endpoint can return them without a JOIN. C2 fix:
-          // dailyRank sourced from the awaited PB-write result.
+          // dailyRank sourced from the durable per-room PB claim.
           matchBestStreak:
             room.activityId === 'reef-race' ? bestStreakThisMatch : null,
-          matchPbDailyRank: pbWrite?.dailyRank ?? null,
+          matchPbDailyRank: pbClaim?.dailyRank ?? null,
         })
         .onConflictDoNothing({
           target: [activityResults.roomId, activityResults.avatarId],
@@ -542,12 +571,15 @@ export async function issueRewardsForRoom(
       // strips it for non-self recipients in the per-recipient match-end
       // dispatch (S7 fix — see emitPerRecipientMatchEnd below).
       const pbDelta =
-        pbWrite && pbWrite.improved && sim.reefRace?.bestLapMs != null
+        pbClaim && sim.reefRace?.bestLapMs != null
           ? {
-              newMs: sim.reefRace.bestLapMs,
-              oldMs: pbWrite.previousMs,
-              dailyRank: pbWrite.dailyRank,
-              newGhostFrames: pbWrite.newGhostFrames,
+              newMs: pbClaim.bestLapMs,
+              oldMs: pbClaim.previousBestLapMs,
+              dailyRank: pbClaim.dailyRank,
+              newGhostFrames:
+                pbWrite?.newGhostFrames ??
+                sim.reefRace.ghostReplayFrames ??
+                undefined,
             }
           : undefined;
 
@@ -698,6 +730,8 @@ export function computeBreakdown(input: {
   flags: Record<string, unknown> | null;
   activityId: string;
   isBot: boolean;
+  /** Authoritative PB outcome from the persisted best-lap claim. */
+  personalBestQualified?: boolean;
   /**
    * Phase 4 — best consecutive clean checkpoint crosses this match. Reef
    * Race only; defaults to 0 for other activities (no behaviour change).
@@ -727,9 +761,12 @@ export function computeBreakdown(input: {
   const firstPlayOfDayBonus =
     input.todayCount === 0 ? rewardConfig?.firstPlayOfDayBonusTokens ?? 0 : 0;
 
+  const personalBestQualified =
+    input.personalBestQualified ??
+    (input.scoreMs != null &&
+      (input.priorBestMs == null || input.scoreMs < input.priorBestMs));
   const personalBestBonus =
-    input.scoreMs != null &&
-    (input.priorBestMs == null || input.scoreMs < input.priorBestMs)
+    personalBestQualified
       ? rewardConfig?.personalBestBonusTokens ?? 0
       : 0;
 

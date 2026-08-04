@@ -1,73 +1,75 @@
 import { describe, expect, test } from 'bun:test';
-import {
-  decideStageNavigationHistoryMethod,
-  decideStageNavigationOwnership,
-} from './stage-navigation-ownership';
+import { decideStageNavigationOwnership } from './stage-navigation-ownership';
 
 const pending = {
-  sceneId: 'cove',
+  sceneId: 'activity',
   requestId: 7,
   generation: 2,
 };
 
-describe('stage navigation ownership', () => {
-  test('bounds retained route history after one back-forward pair', () => {
-    expect(decideStageNavigationHistoryMethod(0)).toBe('push');
-    expect(decideStageNavigationHistoryMethod(1)).toBe('push');
-    expect(decideStageNavigationHistoryMethod(2)).toBe('replace');
-    expect(decideStageNavigationHistoryMethod(60)).toBe('replace');
-  });
-
-  test('supersedes an error before considering scene identity', () => {
+describe('stage navigation ownership destination identity', () => {
+  test('different activity destination supersedes during fadingOut', () => {
     expect(
       decideStageNavigationOwnership({
-        targetSceneId: 'cove',
+        targetSceneId: 'activity',
+        targetDestinationKey: 'activity:reef:C',
+        pendingDestinationKey: 'activity:reef:B',
         pendingRequest: pending,
-        transitionPhase: 'error',
+        transitionPhase: 'fadingOut',
       }),
     ).toBe('SUPERSEDE');
   });
 
-  test('adopts the same scene only while fading out', () => {
+  test('different activity destination supersedes during awaiting', () => {
     expect(
       decideStageNavigationOwnership({
-        targetSceneId: 'cove',
+        targetSceneId: 'activity',
+        targetDestinationKey: 'activity:reef:C',
+        pendingDestinationKey: 'activity:reef:B',
+        pendingRequest: pending,
+        transitionPhase: 'awaiting',
+      }),
+    ).toBe('SUPERSEDE');
+  });
+
+  test('same activity destination still adopts during fadingOut', () => {
+    expect(
+      decideStageNavigationOwnership({
+        targetSceneId: 'activity',
+        targetDestinationKey: 'activity:reef:B',
+        pendingDestinationKey: 'activity:reef:B',
         pendingRequest: pending,
         transitionPhase: 'fadingOut',
       }),
     ).toBe('ADOPT');
   });
 
-  test.each(['awaiting', 'fadingIn', 'idle'] as const)(
-    'executes immediately after the midpoint in %s',
-    (transitionPhase) => {
-      expect(
-        decideStageNavigationOwnership({
-          targetSceneId: 'cove',
-          pendingRequest: pending,
-          transitionPhase,
-        }),
-      ).toBe('EXECUTE_NOW');
-    },
-  );
-
-  test('supersedes a different pending scene', () => {
+  test('same activity destination still executes after the midpoint', () => {
     expect(
       decideStageNavigationOwnership({
-        targetSceneId: 'world',
+        targetSceneId: 'activity',
+        targetDestinationKey: 'activity:reef:B',
+        pendingDestinationKey: 'activity:reef:B',
+        pendingRequest: pending,
+        transitionPhase: 'awaiting',
+      }),
+    ).toBe('EXECUTE_NOW');
+  });
+
+  test('omitting both destination keys preserves the anchor behavior', () => {
+    expect(
+      decideStageNavigationOwnership({
+        targetSceneId: 'activity',
         pendingRequest: pending,
         transitionPhase: 'fadingOut',
       }),
-    ).toBe('SUPERSEDE');
-  });
-
-  test('creates a new request when none is pending', () => {
+    ).toBe('ADOPT');
     expect(
       decideStageNavigationOwnership({
-        targetSceneId: 'cove',
-        pendingRequest: null,
+        targetSceneId: 'activity',
+        pendingRequest: pending,
         transitionPhase: 'idle',
       }),
-    ).toBe('SUPERSEDE');
+    ).toBe('EXECUTE_NOW');
   });
 });

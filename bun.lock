@@ -236,6 +236,7 @@
     },
   },
   "overrides": {
+    "@bonfida/spl-name-service": "file:./vendor/npm/bonfida-spl-name-service-3.0.23.tgz",
     "@types/three": "^0.185.0",
   },
   "packages": {
@@ -287,7 +288,7 @@
 
     "@bonfida/sns-records": ["@bonfida/sns-records@0.1.0", "", { "dependencies": { "borsh": "1.0.0", "bs58": "5.0.0", "buffer": "^6.0.3" }, "peerDependencies": { "@solana/web3.js": "^1.87.3" } }, "sha512-/viuqvsjvAUjFxzqX0L3ZntfK1S5K1Nj+j2avxq2tCXhA2Ee7Qt0gPCaQKuMv3hh8cKAEMaZ8crZHomns3UuqA=="],
 
-    "@bonfida/spl-name-service": ["@bonfida/spl-name-service@3.0.23", "", { "dependencies": { "@bonfida/sns-records": "0.1.0", "@noble/curves": "^1.9.1", "@scure/base": "^1.2.5", "@solana/spl-token": "0.4.6", "borsh": "2.0.0", "buffer": "^6.0.3", "graphemesplit": "^2.6.0", "ipaddr.js": "^2.2.0", "punycode": "^2.3.1" }, "peerDependencies": { "@solana/web3.js": "^1.98.2" } }, "sha512-RXx4vkIHwU8LJPPFVHcntY0c5l3DNZZZujuD7XnkMScNAO9Pykp4EwQxmDLC9o07uRupoya0WB2uY1LDHJHNFw=="],
+    "@bonfida/spl-name-service": ["@bonfida/spl-name-service@./vendor/npm/bonfida-spl-name-service-3.0.23.tgz", { "dependencies": { "@bonfida/sns-records": "0.1.0", "@noble/curves": "^1.9.1", "@scure/base": "^1.2.5", "@solana/spl-token": "0.4.6", "borsh": "2.0.0", "buffer": "^6.0.3", "graphemesplit": "^2.6.0", "ipaddr.js": "^2.2.0", "punycode": "^2.3.1" }, "peerDependencies": { "@solana/web3.js": "^1.98.2" } }, "sha512-RXx4vkIHwU8LJPPFVHcntY0c5l3DNZZZujuD7XnkMScNAO9Pykp4EwQxmDLC9o07uRupoya0WB2uY1LDHJHNFw=="],
 
     "@borewit/text-codec": ["@borewit/text-codec@0.2.2", "", {}, "sha512-DDaRehssg1aNrH4+2hnj1B7vnUGEjU6OIlyRdkMd0aUdIUvKXrJfXsy8LVtXAy7DRvYVluWbMspsRhz2lcW0mQ=="],
 

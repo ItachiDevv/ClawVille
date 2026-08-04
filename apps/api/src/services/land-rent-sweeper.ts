@@ -82,7 +82,12 @@ import {
   getWalletClvBalance,
 } from './linked-wallet-clv-balance';
 import { broadcastLandEvent } from '../routes/world';
-import { bustOwnedCache, bustParcelsAvailableCache, parcelHasLiveDeedLock } from '../routes/land';
+import {
+  bustOwnedCache,
+  bustParcelsAvailableCache,
+  bustPublicStructuresCache,
+  parcelHasLiveDeedLock,
+} from '../routes/land';
 import { alertError } from './alert-error';
 
 const DEFAULT_SWEEP_PERIOD_MS = 60 * 60 * 1000; // 1 hour
@@ -834,6 +839,7 @@ export async function sweepDueRents(): Promise<{
         evicted++;
         bustOwnedCache(action.ownerAvatarId);
         bustParcelsAvailableCache(action.tier);
+        bustPublicStructuresCache();
         // Live: the parcel is back in the pool — its for-sale sign reappears for
         // every connected player. Fire-and-forget (already fully guarded).
         broadcastLandEvent({

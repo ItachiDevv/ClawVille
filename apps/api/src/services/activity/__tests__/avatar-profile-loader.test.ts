@@ -56,6 +56,7 @@ mock.module('@clawville/database', () => {
       bestLapMs: {},
       ghostReplayData: {},
     },
+    reefRacePersonalBestClaims: {},
   };
 });
 

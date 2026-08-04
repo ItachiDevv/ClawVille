@@ -212,6 +212,209 @@ export const STRUCTURE_UPGRADE_COSTS: readonly number[] = [0, 0, 600, 1800, 4500
 /** Max structure level (Lv5). Matches the `land_structures.level BETWEEN 1 AND 5` DB check. */
 export const MAX_STRUCTURE_LEVEL = 5;
 
+// Structure appearance catalogs (P1 shell + palette build loop).
+
+export const DEFAULT_SHELL_KEY = 'coastal-cottage' as const;
+export const DEFAULT_PALETTE_KEY = 'classic' as const;
+
+export type LandStructureType = 'home' | 'shop';
+
+export interface ShellCatalogEntry {
+  readonly key: string;
+  readonly label: string;
+  readonly structureType: LandStructureType;
+  /** Public path to the verified on-disk GLB. */
+  readonly modelPath: string;
+  /** Structure level at which the shell first becomes eligible. */
+  readonly minLevel: number;
+  /** Premium shells also require a b/a/founder parcel. */
+  readonly premium: boolean;
+}
+
+/**
+ * Server-owned shell catalog. Every entry below was verified on disk under
+ * `apps/web/public/models/land-structures`; there is no distinct founder GLB,
+ * so the type-specific premium asset is the Lv5 ceiling in P1.
+ */
+export const SHELL_CATALOG: readonly ShellCatalogEntry[] = [
+  {
+    key: 'coastal-cottage',
+    label: 'Coastal Cottage',
+    structureType: 'home',
+    modelPath: '/models/land-structures/coastal-cottage/home.glb',
+    minLevel: 1,
+    premium: false,
+  },
+  {
+    key: 'driftwood-cabin',
+    label: 'Driftwood Cabin',
+    structureType: 'home',
+    modelPath: '/models/land-structures/driftwood-cabin/home.glb',
+    minLevel: 2,
+    premium: false,
+  },
+  {
+    key: 'fantasy-cottage',
+    label: 'Fantasy Cottage',
+    structureType: 'home',
+    modelPath: '/models/land-structures/fantasy-cottage/home.glb',
+    minLevel: 2,
+    premium: false,
+  },
+  {
+    key: 'premium-tower',
+    label: 'Tideglass Tower',
+    structureType: 'home',
+    modelPath: '/models/land-structures/premium-tower/home.glb',
+    minLevel: 4,
+    premium: true,
+  },
+  {
+    key: 'coastal-cottage',
+    label: 'Coastal Shop',
+    structureType: 'shop',
+    modelPath: '/models/land-structures/coastal-cottage/shop.glb',
+    minLevel: 1,
+    premium: false,
+  },
+  {
+    key: 'driftwood-cabin',
+    label: 'Driftwood Shop',
+    structureType: 'shop',
+    modelPath: '/models/land-structures/driftwood-cabin/shop.glb',
+    minLevel: 2,
+    premium: false,
+  },
+  {
+    key: 'fantasy-cottage',
+    label: 'Fantasy Shop',
+    structureType: 'shop',
+    modelPath: '/models/land-structures/fantasy-cottage/shop.glb',
+    minLevel: 2,
+    premium: false,
+  },
+  {
+    key: 'premium-mall',
+    label: 'Pearl Arcade',
+    structureType: 'shop',
+    modelPath: '/models/land-structures/premium-mall/shop.glb',
+    minLevel: 4,
+    premium: true,
+  },
+] as const;
+
+export interface PalettePreset {
+  readonly key: string;
+  readonly label: string;
+  /** Base, accent, and trim tints multiplied into authored mesh materials. */
+  readonly swatches: readonly [string, string, string];
+  readonly minLevel: 1 | 2;
+}
+
+/** Eight curated sea-town presets; Lv1 exposes the first three, Lv2+ all eight. */
+export const PALETTE_PRESETS: readonly PalettePreset[] = [
+  {
+    key: 'classic',
+    label: 'Harbor Classic',
+    // Identity tint: existing structures retain their authored GLB appearance.
+    swatches: ['#FFFFFF', '#FFFFFF', '#FFFFFF'],
+    minLevel: 1,
+  },
+  {
+    key: 'seafoam',
+    label: 'Seafoam',
+    swatches: ['#DDF3E4', '#73B9A2', '#2F6F73'],
+    minLevel: 1,
+  },
+  {
+    key: 'sunset-coral',
+    label: 'Sunset Coral',
+    swatches: ['#FFE0C2', '#E9826B', '#7D5A7A'],
+    minLevel: 1,
+  },
+  {
+    key: 'deep-current',
+    label: 'Deep Current',
+    swatches: ['#C8DCE8', '#315B7D', '#163247'],
+    minLevel: 2,
+  },
+  {
+    key: 'pearl-gold',
+    label: 'Pearl & Gold',
+    swatches: ['#F7F1E3', '#C8A45D', '#6B7C82'],
+    minLevel: 2,
+  },
+  {
+    key: 'kelp-garden',
+    label: 'Kelp Garden',
+    swatches: ['#DDE6C7', '#728C56', '#C58B57'],
+    minLevel: 2,
+  },
+  {
+    key: 'storm-lilac',
+    label: 'Storm Lilac',
+    swatches: ['#DED9EA', '#756C91', '#39465C'],
+    minLevel: 2,
+  },
+  {
+    key: 'lagoon-night',
+    label: 'Lagoon Night',
+    swatches: ['#A9D9D0', '#176B78', '#F0B86E'],
+    minLevel: 2,
+  },
+] as const;
+
+/** Resolve a verified shell entry for a structure type, or null for bad input. */
+export function getShellCatalogEntry(
+  structureType: LandStructureType,
+  shellKey: string,
+): ShellCatalogEntry | null {
+  return (
+    SHELL_CATALOG.find(
+      (entry) => entry.structureType === structureType && entry.key === shellKey,
+    ) ?? null
+  );
+}
+
+/** Resolve a named palette preset, or null for bad input. */
+export function getPalettePreset(paletteKey: string): PalettePreset | null {
+  return PALETTE_PRESETS.find((preset) => preset.key === paletteKey) ?? null;
+}
+
+/**
+ * Tiers that may equip premium appearance shells. This is intentionally not
+ * `TierStructureRule.premium`, which describes founder-only SKU/acquisition
+ * privileges rather than the appearance-shell gate.
+ */
+export const PREMIUM_SHELL_TIERS: readonly LandTier[] = ['b', 'a', 'founder'];
+
+/**
+ * Server-authoritative shell gate. The current DB level and parcel tier are
+ * both required: a level outside its parcel ceiling is invalid, and the D2
+ * starter/c max-level raise must never grant either tier a premium shell.
+ */
+export function isShellAllowed(
+  structureType: LandStructureType,
+  level: number,
+  parcelTier: LandTier,
+  shellKey: string,
+): boolean {
+  if (!Number.isInteger(level) || level < 1 || level > TIER_STRUCTURE_RULES[parcelTier].maxLevel) {
+    return false;
+  }
+  const shell = getShellCatalogEntry(structureType, shellKey);
+  if (shell === null || level < shell.minLevel) return false;
+  if (!shell.premium) return true;
+  return PREMIUM_SHELL_TIERS.includes(parcelTier);
+}
+
+/** Server-authoritative palette gate: three presets at Lv1, all eight at Lv2+. */
+export function isPaletteAllowed(level: number, paletteKey: string): boolean {
+  if (!Number.isInteger(level) || level < 1 || level > MAX_STRUCTURE_LEVEL) return false;
+  const preset = getPalettePreset(paletteKey);
+  return preset !== null && level >= preset.minLevel;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Structure catalog (allowlist of catalog keys → metadata; GLBs bind in Phase 2)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -314,13 +517,13 @@ export interface TierStructureRule {
 
 export const TIER_STRUCTURE_RULES: Record<LandTier, TierStructureRule> = {
   starter: {
-    maxLevel: 2,
+    maxLevel: 3,
     homeSkus: ['home-shack', 'home-cottage'],
     shopSkus: ['shop-stall', 'shop-shopfront'],
     premium: false,
   },
   c: {
-    maxLevel: 3,
+    maxLevel: 4,
     homeSkus: ['home-shack', 'home-cottage', 'home-house'],
     shopSkus: ['shop-stall', 'shop-shopfront', 'shop-market'],
     premium: false,

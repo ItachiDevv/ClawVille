@@ -57,6 +57,7 @@ import LandShowroom from '@/lib/three/land-showroom';
 import LandRingDecorations from '@/lib/three/land-ring-decorations';
 import LandFounderApartments from '@/lib/three/land-founder-apartments';
 import LandStateHydrator from '@/lib/three/land-state-hydrator';
+import { findParcelAtWorldPos } from '@/lib/land-proximity';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 import { MeshoptLoaderSetup } from '@/lib/three/meshopt-loader-setup';
 import { WorldLabelsOverlayMount } from '@/lib/three/world-labels-overlay';
@@ -1227,6 +1228,65 @@ function MinimapPositionTracker() {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// LandProximityTracker — resolves the active walking body's map-pixel position
+// to centered world coordinates and writes the containing parcel at 5 Hz.
+// Headless: zero geometry, materials, or draw calls.
+// ---------------------------------------------------------------------------
+function LandProximityTracker() {
+  const lastWriteRef = useRef(0);
+
+  useSceneFrame(({ clock }) => {
+    const now = clock.elapsedTime;
+    if (now - lastWriteRef.current < 0.2) return;
+    lastWriteRef.current = now;
+
+    const store = useGameStore.getState();
+    const mode = store.controlMode;
+    let mapX: number;
+    let mapY: number;
+
+    if (mode === 'player') {
+      mapX = avatarPositionRef.x;
+      mapY = avatarPositionRef.y;
+    } else if (mode === 'npc') {
+      if (!store.possessedNpcId) {
+        if (store.nearParcelCode !== null) store.setNearParcelCode(null);
+        return;
+      }
+      const npc = useNpcStore.getState().npcs.find((n) => n.id === store.possessedNpcId);
+      if (!npc) {
+        if (store.nearParcelCode !== null) store.setNearParcelCode(null);
+        return;
+      }
+      mapX = npc.x;
+      mapY = npc.y;
+    } else if (mode === 'autonomous') {
+      if (!store.autonomousBodyId) {
+        if (store.nearParcelCode !== null) store.setNearParcelCode(null);
+        return;
+      }
+      const body = useNpcStore.getState().npcs.find((n) => n.id === store.autonomousBodyId);
+      if (!body) {
+        if (store.nearParcelCode !== null) store.setNearParcelCode(null);
+        return;
+      }
+      mapX = body.x;
+      mapY = body.y;
+    } else {
+      if (store.nearParcelCode !== null) store.setNearParcelCode(null);
+      return;
+    }
+
+    const worldX = mapX - HALF_W;
+    const worldZ = mapY - HALF_H;
+    const code = findParcelAtWorldPos(worldX, worldZ);
+    if (code !== store.nearParcelCode) store.setNearParcelCode(code);
+  });
+
+  return null;
+}
+
 function PerfCameraPreset({
   controlsRef,
 }: {
@@ -2084,7 +2144,7 @@ export const WorldSceneContents = memo(function WorldSceneContents({
         <ArenaTerrain />
       </group>
       {/* Land state hydrator — headless, no geometry, returns null.
-          Fetches all parcel ownership (available + owned) from the public API
+          Fetches all parcel ownership statuses from the public API
           and writes the parcelCode-keyed result into useLandStore.parcels so
           every land-parcels / land-structures / land-showroom consumer reflects
           real DB ownership without opening any modal. Invalidated by the Land
@@ -2209,6 +2269,7 @@ export const WorldSceneContents = memo(function WorldSceneContents({
           (avatar/NPC/camera). Player-avatar + NPC controller update the avatar position
           themselves; this covers explore/spectator mode (no entity → camera target). */}
       <MinimapPositionTracker />
+      <LandProximityTracker />
 
       {/* Town center — guide NPC + scaled marketplace anchors (8× from original sizes) */}
       {showNpcs && (

@@ -522,6 +522,21 @@ export class RoomRegistry {
   }
 
   /**
+   * Refresh membership liveness from the CURRENT world-presence socket's pong
+   * without mutating pose or the broadcast pose timestamp (`player.ts`).
+   */
+  touchPresence(sessionId: string): boolean {
+    const room = this.getRoomForSession(sessionId);
+    if (!room) return false;
+    const player = room.players.get(sessionId);
+    if (!player) return false;
+    const now = this.now();
+    player.lastPositionUpdateAt = now;
+    room.lastActivityAt = now;
+    return true;
+  }
+
+  /**
    * Periodic maintenance. Caller decides the cadence (NpcSimulation runs us
    * once per 200 ms tick). Three jobs per call:
    *

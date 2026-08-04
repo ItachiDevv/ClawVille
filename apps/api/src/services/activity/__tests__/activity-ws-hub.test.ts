@@ -87,6 +87,7 @@ mock.module('@clawville/database', () => ({
     bestLapMs: 'best_lap_ms',
     ghostReplayData: 'ghost_replay_data',
   },
+  reefRacePersonalBestClaims: {},
 }));
 
 // Chunk #7 — claw-token-ledger import chain.

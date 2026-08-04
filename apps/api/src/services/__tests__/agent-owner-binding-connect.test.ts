@@ -4,6 +4,7 @@ import {
   buildReturningIdentityDisclosure,
   connectionTokenClaimError,
   planConnectOwnerBinding,
+  resolvePersistedConnectOwnerProof,
 } from '../agent-owner-binding';
 
 describe('connect owner binding', () => {
@@ -102,4 +103,27 @@ describe('connect owner binding', () => {
       ownershipChanged: true,
     });
   });
+
+  test.each([
+    ['connection token', 'connection-token', 'owner-a', 'owner-a', true],
+    ['explicit identity', 'explicit-identity', 'owner-a', 'owner-a', true],
+    ['Milady inferred', 'milady-inferred', null, 'owner-a', false],
+    ['gateway inferred', 'gateway-inferred', null, 'owner-a', false],
+    ['conflicting owner', 'explicit-identity', 'owner-b', 'owner-a', false],
+    ['anonymous', 'anonymous', null, null, false],
+  ] as const)(
+    '%s wallet authorization is derived from the persisted bind',
+    (_label, source, candidateUserId, persistedUserId, ownerProven) => {
+      expect(resolvePersistedConnectOwnerProof({
+        source,
+        candidateUserId,
+        persistedUserId,
+        avatarId: 'avatar-a',
+      })).toEqual({
+        ownerProven,
+        boundUserId: ownerProven ? persistedUserId : null,
+        ledgerCapable: ownerProven,
+      });
+    },
+  );
 });

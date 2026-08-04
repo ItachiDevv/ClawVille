@@ -62,6 +62,13 @@ interface StageStore {
   transitionErrors: readonly string[];
   recovery: StageRecoverySnapshot;
   renderPaused: boolean;
+  outgoingOverlay: {
+    pathname: string;
+    href: string;
+    requestId: number;
+    status: 'holding' | 'timed-out';
+  } | null;
+  activityTarget: { roomKey: string } | null;
   registerScenes: (sceneIds: readonly string[]) => void;
   requestScene: (sceneId: string) => void;
   retryStageScene: (previous: StageRequest) => boolean;
@@ -83,6 +90,15 @@ interface StageStore {
   adjustWindowListenerCount: (delta: number) => void;
   noteRecovery: (reason: string) => void;
   setRenderPaused: (paused: boolean) => void;
+  setOutgoingOverlay: (entry: {
+    pathname: string;
+    href: string;
+    requestId: number;
+  }) => void;
+  markOutgoingOverlayTimedOut: (requestId: number) => void;
+  clearOutgoingOverlay: (requestId: number) => void;
+  setActivityTarget: (target: { roomKey: string }) => void;
+  clearActivityTarget: () => void;
   resetStage: () => void;
 }
 
@@ -111,6 +127,8 @@ const createInitialState = (stageEpoch = 0) => ({
     lastReason: null,
   } as StageRecoverySnapshot,
   renderPaused: false,
+  outgoingOverlay: null as StageStore['outgoingOverlay'],
+  activityTarget: null as StageStore['activityTarget'],
 });
 
 function isCurrentRequest(
@@ -238,6 +256,7 @@ export const useStageStore = create<StageStore>((set, get) => ({
       const request = state.pendingRequest;
       if (
         !slot ||
+        slot.status === 'ready' ||
         slot.generation !== generation ||
         request?.sceneId !== sceneId ||
         request.generation !== generation
@@ -299,6 +318,8 @@ export const useStageStore = create<StageStore>((set, get) => ({
       return {
         scenes,
         activeScene: request.sceneId,
+        activityTarget:
+          request.sceneId === 'activity' ? state.activityTarget : null,
       };
     });
   },
@@ -449,6 +470,44 @@ export const useStageStore = create<StageStore>((set, get) => ({
   setRenderPaused: (paused) => {
     if (get().renderPaused === paused) return;
     set({ renderPaused: paused });
+  },
+
+  setOutgoingOverlay: (entry) => {
+    set({
+      outgoingOverlay: {
+        ...entry,
+        status: 'holding',
+      },
+    });
+  },
+
+  markOutgoingOverlayTimedOut: (requestId) => {
+    set((state) =>
+      state.outgoingOverlay?.requestId === requestId
+        ? {
+            outgoingOverlay: {
+              ...state.outgoingOverlay,
+              status: 'timed-out',
+            },
+          }
+        : state,
+    );
+  },
+
+  clearOutgoingOverlay: (requestId) => {
+    set((state) =>
+      state.outgoingOverlay?.requestId === requestId
+        ? { outgoingOverlay: null }
+        : state,
+    );
+  },
+
+  setActivityTarget: (target) => {
+    set({ activityTarget: target });
+  },
+
+  clearActivityTarget: () => {
+    set({ activityTarget: null });
   },
 
   resetStage: () => {

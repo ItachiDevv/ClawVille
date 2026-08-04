@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'bun:test';
 import {
   KELP_MOBILE_CLAIM_PANEL_BOTTOM,
+  KELP_MOBILE_GUEST_BANNER_TOP,
   calculateKelpMobileClaimPanelTop,
+  calculateKelpMobileGuestBannerTop,
   shouldShowKelpGuestEntryBanner,
   shouldShowKelpSporeCounter,
 } from './kelp-realm-hud-layout';
@@ -33,7 +35,19 @@ describe('Kelp realm mobile claim HUD layout', () => {
 
   it('pins the CSS height bound used by the rendered HUD', () => {
     expect(KELP_MOBILE_CLAIM_PANEL_BOTTOM)
-      .toBe('min(max(316px, calc(env(safe-area-inset-bottom, 0px) + 316px)), calc(100dvh - 140px))');
+      .toBe('min(max(316px, calc(env(safe-area-inset-bottom, 0px) + 316px)), calc(100dvh - 156px))');
+  });
+
+  it('separates the guest banner from the claim panel in short landscape', () => {
+    expect(KELP_MOBILE_GUEST_BANNER_TOP)
+      .toBe('min(72px, max(16px, calc(100dvh - 374px)))');
+    expect(calculateKelpMobileGuestBannerTop(390)).toBe(16);
+    expect(calculateKelpMobileGuestBannerTop(844)).toBe(72);
+
+    const claimTop = calculateKelpMobileClaimPanelTop(390, 70, 0);
+    expect(claimTop).toBe(86);
+    expect(calculateKelpMobileGuestBannerTop(390) + 59)
+      .toBeLessThan(claimTop);
   });
 
   it('hands guest messaging from the entry banner to the center claim panel', () => {

@@ -18,6 +18,8 @@ export function decideStageNavigationHistoryMethod(
 
 export function decideStageNavigationOwnership(input: {
   targetSceneId: string;
+  targetDestinationKey?: string | null;
+  pendingDestinationKey?: string | null;
   pendingRequest: StageRequest | null;
   transitionPhase: StageTransitionPhase | null;
 }): StageNavigationOwnership {
@@ -28,6 +30,13 @@ export function decideStageNavigationOwnership(input: {
     return 'SUPERSEDE';
   }
   if (input.pendingRequest.sceneId !== input.targetSceneId) {
+    return 'SUPERSEDE';
+  }
+  if (
+    input.targetDestinationKey != null &&
+    input.pendingDestinationKey != null &&
+    input.pendingDestinationKey !== input.targetDestinationKey
+  ) {
     return 'SUPERSEDE';
   }
   if (input.transitionPhase === 'fadingOut') {

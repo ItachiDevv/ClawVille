@@ -33,6 +33,9 @@ import type {
   StructureServicesResponse,
   BrowseServicesResponse,
   BuyServiceResponse,
+  PublicLandStructureDTO,
+  UpdateStructureAppearanceRequest,
+  UpdateStructureAppearanceResponse,
 } from '@/components/game/land/types';
 import { getFingerprint } from './fingerprint';
 
@@ -183,9 +186,28 @@ function apiErrorExtras(err: Record<string, unknown>): {
   };
 }
 
+async function fetchWithTransientGetRetry(
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  const method = (init.method ?? 'GET').toUpperCase();
+
+  try {
+    const response = await fetch(url, init);
+    if (method !== 'GET' || ![502, 503, 504].includes(response.status)) {
+      return response;
+    }
+  } catch (err) {
+    if (method !== 'GET') throw err;
+  }
+
+  await new Promise<void>((resolve) => setTimeout(resolve, 750));
+  return fetch(url, init);
+}
+
 async function honoRequest<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = await withFingerprint(options?.headers);
-  const res = await fetch(`${HONO_API_URL}${path}`, {
+  const res = await fetchWithTransientGetRetry(`${HONO_API_URL}${path}`, {
     // DEFAULT no-store: personalized JSON must never replay from the
     // browser HTTP cache into another session. TanStack Query is the
     // caching layer for API data. Placed BEFORE the spread so a caller
@@ -208,7 +230,7 @@ async function honoRequest<T>(path: string, options?: RequestInit): Promise<T> {
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = await withFingerprint(options?.headers);
-  const res = await fetch(`${API_URL}${path}`, {
+  const res = await fetchWithTransientGetRetry(`${API_URL}${path}`, {
     // Same overridable no-store default as honoRequest — see comment there.
     cache: 'no-store',
     ...options,
@@ -1464,6 +1486,20 @@ export const api = {
 
   /** The signed-in player's owned parcels + structures (auth). */
   getMyLand: () => honoRequest<MyLandResponse>('/api/land/me'),
+
+  /** Every active structure in the shared world. Public; server-cached for 60s. */
+  getPublicLandStructures: () =>
+    honoRequest<PublicLandStructureDTO[]>('/api/land/structures/public', { cache: 'default' }),
+
+  /** Free owner-only shell/palette mutation; current level/tier are server-read. */
+  updateStructureAppearance: (
+    structureId: string,
+    body: UpdateStructureAppearanceRequest,
+  ) =>
+    honoRequest<UpdateStructureAppearanceResponse>(
+      `/api/land/structures/${encodeURIComponent(structureId)}/appearance`,
+      { method: 'PATCH', body: JSON.stringify(body) },
+    ),
 
   /** Place a free Lv1 structure on an owned parcel (auth). */
   placeStructure: (

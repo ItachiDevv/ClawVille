@@ -6,6 +6,7 @@ import {
   useContext,
   useLayoutEffect,
   useRef,
+  type ReactElement,
   type ReactNode,
 } from 'react';
 import {
@@ -13,12 +14,19 @@ import {
   useStore,
   type RenderCallback,
 } from '@react-three/fiber';
+import {
+  DEFAULT_PLAYER_CAPABILITIES,
+  type PlayerCapabilityMask,
+} from '@/lib/three/player/player-capability-mask';
 import { useStageStore } from './stage-store';
 
 type CallbackRef = { current: RenderCallback };
 type SceneRegistration = { ref: CallbackRef; priority: number };
 
 const SceneIdContext = createContext<string | null>(null);
+const SlotCapabilityContext = createContext<PlayerCapabilityMask>(
+  DEFAULT_PLAYER_CAPABILITIES,
+);
 const callbacksByScene = new Map<string, Map<symbol, SceneRegistration>>();
 // Dispatch iterates a priority-sorted snapshot (ascending, matching R3F's
 // subscriber ordering so a legacy `useFrame(cb, -100)` owner keeps running
@@ -77,6 +85,24 @@ export function SceneIdProvider({
 
 export function useSceneId(): string | null {
   return useContext(SceneIdContext);
+}
+
+export function SlotCapabilityProvider({
+  capabilities,
+  children,
+}: {
+  capabilities: PlayerCapabilityMask;
+  children: ReactNode;
+}): ReactElement {
+  return createElement(
+    SlotCapabilityContext.Provider,
+    { value: capabilities },
+    children,
+  );
+}
+
+export function useSlotCapabilities(): PlayerCapabilityMask {
+  return useContext(SlotCapabilityContext);
 }
 
 export function useSceneActive(): boolean {

@@ -113,11 +113,24 @@ mock.module('../../services/identity-service', () => ({
 }));
 
 mock.module('../../services/wallet-service', () => ({
-  ensureWallet: async () => ({ publicKey: 'agent-wallet' }),
   ensureWalletWithFirstTimeSecret: async () => ({
     publicKey: 'avatar-wallet',
     firstTimeSecretKeyBase58: undefined,
   }),
+  provisionAvatarWallet: async () => ({
+    status: 'ready',
+    branch: 'canonical-valid-mirror-equal',
+    address: 'avatar-wallet',
+    inserted: false,
+  }),
+  resolveAvatarSettlementAddress: async () => ({
+    status: 'ready',
+    address: 'avatar-wallet',
+  }),
+  avatarSettlementAddressFields: (resolution: { status: string; address?: string }) =>
+    resolution.status === 'ready'
+      ? { walletAddress: resolution.address, walletPending: false }
+      : { walletPending: true },
 }));
 
 mock.module('../../services/session-ticket-service', () => ({
@@ -317,8 +330,8 @@ describe('logged-out front-door agent connect', () => {
     expect(insertedBot).toBeNull();
     expect(pendingConnections.get(token)).toMatchObject({
       connected: false,
-      userId: USER_ID,
-      avatarId: AVATAR_ID,
+      userId: null,
+      avatarId: null,
     });
     expect(pendingConnections.get(token)?.publicHandoff?.enterUrl).toBeUndefined();
 

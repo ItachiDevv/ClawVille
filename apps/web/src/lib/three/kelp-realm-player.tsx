@@ -1,14 +1,24 @@
 'use client';
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
-import { useFrame, useThree } from '@react-three/fiber';
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  type ReactNode,
+} from 'react';
+import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { z } from 'zod';
 import {
   KELP_REALM_FOOTPRINT_WU,
   KELP_REALM_BEACON_GRAPH,
   KELP_REALM_BEACON_VISIT_RADIUS_WU,
+  KELP_REALM_COLS,
   KELP_REALM_PLAYER_SPAWN,
+  KELP_REALM_ROWS,
   KELP_REALM_PLAYER_SPEED_WU_PER_SEC,
   KELP_REALM_SPORE_COUNT,
   KELP_REALM_WALL_AABBS,
@@ -31,6 +41,19 @@ import {
   setKelpRealmBeaconTotalCount,
   setKelpRealmCenterProximity,
 } from '@/lib/three/kelp-realm-visit-state';
+import {
+  useSceneFrame,
+  useSlotCapabilities,
+} from '@/components/three/world-stage/use-scene-frame';
+import {
+  usePlayerCapabilityController,
+  type PlayerSpaceAdapter,
+} from '@/lib/three/player/player-capability-controller';
+import { KELP_POLICY } from '@/lib/three/player/player-motion-policy';
+import type {
+  KelpActivationContext,
+  KelpActivationToken,
+} from '@/lib/three/kelp-activation';
 
 const PLAYER_RADIUS = 34;
 const AVATAR_TARGET_HEIGHT = 270;
@@ -57,67 +80,11 @@ const CAM_PITCH_MIN = -35;
 const CAM_PITCH_MAX = 160;
 const CAM_WALL_CLEARANCE = 24;
 const CAM_WALL_PADDING = 18;
+/** The authored footprint has a two-cell-thick perimeter around the maze. */
+const CAM_BOUNDARY_BAND_CELLS = 2;
+const CAM_BOUNDARY_RELEASE_RATE = 3;
 const HALF_REALM = KELP_REALM_FOOTPRINT_WU / 2;
 const KELP_REALM_COSMETIC_SKU_ALLOWLIST = Object.freeze([KELP_MAZE_COLLECTIBLE_SLUG]);
-
-const keyboard = { w: false, a: false, s: false, d: false, left: false, right: false, up: false, down: false };
-const touch = { x: 0, z: 0, yaw: 0, pitch: 0 };
-
-export function setKelpRealmTouchVelocity(x: number, z: number): void {
-  touch.x = x;
-  touch.z = z;
-}
-
-export function setKelpRealmTouchCamera(yaw: number, pitch: number): void {
-  touch.yaw = yaw;
-  touch.pitch = pitch;
-}
-
-function resetInput(): void {
-  keyboard.w = keyboard.a = keyboard.s = keyboard.d = false;
-  keyboard.left = keyboard.right = keyboard.up = keyboard.down = false;
-  touch.x = touch.z = touch.yaw = touch.pitch = 0;
-}
-
-function keyField(code: string): keyof typeof keyboard | null {
-  if (code === 'KeyW') return 'w';
-  if (code === 'KeyA') return 'a';
-  if (code === 'KeyS') return 's';
-  if (code === 'KeyD') return 'd';
-  if (code === 'ArrowLeft') return 'left';
-  if (code === 'ArrowRight') return 'right';
-  if (code === 'ArrowUp') return 'up';
-  if (code === 'ArrowDown') return 'down';
-  return null;
-}
-
-function InputLifecycle() {
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const field = keyField(event.code);
-      if (!field) return;
-      keyboard[field] = true;
-      if (event.code.startsWith('Arrow')) event.preventDefault();
-    };
-    const onKeyUp = (event: KeyboardEvent) => {
-      const field = keyField(event.code);
-      if (field) keyboard[field] = false;
-    };
-    const onVisibility = () => { if (document.hidden) resetInput(); };
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-    window.addEventListener('blur', resetInput);
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
-      window.removeEventListener('blur', resetInput);
-      document.removeEventListener('visibilitychange', onVisibility);
-      resetInput();
-    };
-  }, []);
-  return null;
-}
 
 /** Axis-separated realm collision using the AABBs derived from the one layout. */
 function collidesWithWall(x: number, z: number): boolean {
@@ -149,14 +116,12 @@ export function clampKelpRealmMovement2D(
 }
 
 const forwardScratch = new THREE.Vector3();
-const rightScratch = new THREE.Vector3();
-const upScratch = new THREE.Vector3(0, 1, 0);
 const cameraScratch = new THREE.Vector3();
 const targetScratch = new THREE.Vector3();
 const movementScratch = { x: KELP_REALM_PLAYER_SPAWN.x, z: KELP_REALM_PLAYER_SPAWN.z };
 export const kelpRealmPlayerPositionRef = { x: KELP_REALM_PLAYER_SPAWN.x, z: KELP_REALM_PLAYER_SPAWN.z };
 
-function firstCameraWallHitT(
+function firstCameraBoundaryHitT(
   originX: number,
   originZ: number,
   targetX: number,
@@ -171,6 +136,12 @@ function firstCameraWallHitT(
 
   for (let index = 0; index < KELP_REALM_WALL_AABBS.length; index++) {
     const wall = KELP_REALM_WALL_AABBS[index]!;
+    const boundaryWall =
+      wall.row < CAM_BOUNDARY_BAND_CELLS ||
+      wall.row >= KELP_REALM_ROWS - CAM_BOUNDARY_BAND_CELLS ||
+      wall.col < CAM_BOUNDARY_BAND_CELLS ||
+      wall.col >= KELP_REALM_COLS - CAM_BOUNDARY_BAND_CELLS;
+    if (!boundaryWall) continue;
     const minX = wall.centerX - wall.halfX - CAM_WALL_CLEARANCE;
     const maxX = wall.centerX + wall.halfX + CAM_WALL_CLEARANCE;
     const minZ = wall.centerZ - wall.halfZ - CAM_WALL_CLEARANCE;
@@ -219,14 +190,23 @@ function firstCameraWallHitT(
   return firstHit;
 }
 
-function cameraVisibleSegmentSafeT(
+export function cameraBoundarySegmentSafeT(
   originX: number,
   originZ: number,
-  target: THREE.Vector3,
+  targetX: number,
+  targetZ: number,
+  targetY: number,
 ): number {
-  const hitT = firstCameraWallHitT(originX, originZ, target.x, target.z, CAM_LOOK_Y, target.y);
-  const deltaX = target.x - originX;
-  const deltaZ = target.z - originZ;
+  const hitT = firstCameraBoundaryHitT(
+    originX,
+    originZ,
+    targetX,
+    targetZ,
+    CAM_LOOK_Y,
+    targetY,
+  );
+  const deltaX = targetX - originX;
+  const deltaZ = targetZ - originZ;
   const segmentLength = Math.max(1, Math.sqrt(deltaX * deltaX + deltaZ * deltaZ));
   if (hitT >= 1) return 1;
   const safeT = Math.max(0, hitT - CAM_WALL_PADDING / segmentLength);
@@ -236,96 +216,171 @@ function cameraVisibleSegmentSafeT(
 }
 
 interface MotionProps {
+  readonly activation: KelpActivationContext;
   readonly children: ReactNode;
   readonly baseY?: number;
   readonly updateAnimation: (delta: number, elapsed: number, moving: boolean) => void;
 }
 
-function KelpRealmAvatarMotion({ children, baseY = 0, updateAnimation }: MotionProps) {
+function KelpRealmAvatarMotion({
+  activation,
+  children,
+  baseY = 0,
+  updateAnimation,
+}: MotionProps) {
   const groupRef = useRef<THREE.Group>(null);
   const posX = useRef(KELP_REALM_PLAYER_SPAWN.x);
   const posZ = useRef(KELP_REALM_PLAYER_SPAWN.z);
-  const rotation = useRef(Math.PI);
   const cameraYaw = useRef(0);
   const cameraPitch = useRef(0);
   const cameraClampT = useRef(1);
+  const snapCameraRef = useRef(true);
   const { camera } = useThree();
+  const capabilities = useSlotCapabilities();
+  const space = useMemo<PlayerSpaceAdapter>(
+    () => ({
+      speedPerSec: KELP_REALM_PLAYER_SPEED_WU_PER_SEC,
+      readPosition: (out) => {
+        out.x = posX.current;
+        out.z = posZ.current;
+      },
+      clampMovement: (
+        currentX,
+        currentZ,
+        desiredX,
+        desiredZ,
+        out,
+      ) => {
+        clampKelpRealmMovement2D(
+          currentX,
+          currentZ,
+          desiredX,
+          desiredZ,
+          movementScratch,
+        );
+        out.x = movementScratch.x;
+        out.z = movementScratch.z;
+        out.groundY = 0;
+      },
+      commitPosition: (result) => {
+        posX.current = result.x;
+        posZ.current = result.z;
+      },
+    }),
+    [],
+  );
 
-  useFrame(({ clock }, delta) => {
-    const safeDelta = Math.min(delta, 0.1);
-    cameraYaw.current += (((keyboard.left ? 1 : 0) - (keyboard.right ? 1 : 0)) - touch.yaw) * CAM_YAW_SPEED * safeDelta;
+  useLayoutEffect(() => {
+    const token = activation.token;
+    posX.current = KELP_REALM_PLAYER_SPAWN.x;
+    posZ.current = KELP_REALM_PLAYER_SPAWN.z;
+    cameraYaw.current = 0;
+    cameraPitch.current = 0;
+    cameraClampT.current = 1;
+    snapCameraRef.current = true;
+    kelpRealmPlayerPositionRef.x = KELP_REALM_PLAYER_SPAWN.x;
+    kelpRealmPlayerPositionRef.z = KELP_REALM_PLAYER_SPAWN.z;
+    const group = groupRef.current;
+    if (group) {
+      group.position.set(
+        KELP_REALM_PLAYER_SPAWN.x,
+        baseY,
+        KELP_REALM_PLAYER_SPAWN.z,
+      );
+      group.rotation.y = KELP_POLICY.motion.initialFacing;
+    }
+    activation.reportResetComplete(token, 'motion');
+  }, [activation.reportResetComplete, activation.token, baseY]);
+
+  usePlayerCapabilityController({
+    sceneId: 'kelp',
+    capabilities,
+    motion: KELP_POLICY.motion,
+    input: KELP_POLICY.input,
+    space,
+    isDriving: () => activation.owned,
+    onAfterMove: (state, _rawDelta, elapsed) => {
+      const safeDelta = state.integrationDelta;
+      cameraYaw.current +=
+        state.intent.cameraYawInput * CAM_YAW_SPEED * safeDelta;
     cameraPitch.current = Math.max(
       CAM_PITCH_MIN,
-      Math.min(CAM_PITCH_MAX, cameraPitch.current + (((keyboard.up ? 1 : 0) - (keyboard.down ? 1 : 0)) + touch.pitch) * CAM_PITCH_SPEED * safeDelta),
+        Math.min(
+          CAM_PITCH_MAX,
+          cameraPitch.current +
+            state.intent.cameraPitchInput * CAM_PITCH_SPEED * safeDelta,
+        ),
     );
 
     camera.getWorldDirection(forwardScratch);
     forwardScratch.y = 0;
     if (forwardScratch.lengthSq() > 0.0001) forwardScratch.normalize();
-    rightScratch.crossVectors(forwardScratch, upScratch).normalize();
-    let inputForward = (keyboard.w ? 1 : 0) - (keyboard.s ? 1 : 0) + touch.z;
-    let inputRight = (keyboard.d ? 1 : 0) - (keyboard.a ? 1 : 0) + touch.x;
-    const inputLength = Math.sqrt(inputForward * inputForward + inputRight * inputRight);
-    if (inputLength > 1) {
-      inputForward /= inputLength;
-      inputRight /= inputLength;
-    }
-    let velocityX = forwardScratch.x * inputForward + rightScratch.x * inputRight;
-    let velocityZ = forwardScratch.z * inputForward + rightScratch.z * inputRight;
-    const velocityLength = Math.sqrt(velocityX * velocityX + velocityZ * velocityZ);
-    if (velocityLength > 1) {
-      velocityX /= velocityLength;
-      velocityZ /= velocityLength;
-    }
-    const moving = velocityLength > 0.001;
-    if (moving) {
-      clampKelpRealmMovement2D(
-        posX.current,
-        posZ.current,
-        posX.current + velocityX * KELP_REALM_PLAYER_SPEED_WU_PER_SEC * safeDelta,
-        posZ.current + velocityZ * KELP_REALM_PLAYER_SPEED_WU_PER_SEC * safeDelta,
-        movementScratch,
-      );
-      posX.current = movementScratch.x;
-      posZ.current = movementScratch.z;
-      const targetRotation = Math.atan2(velocityX, velocityZ);
-      let difference = targetRotation - rotation.current;
-      while (difference > Math.PI) difference -= Math.PI * 2;
-      while (difference < -Math.PI) difference += Math.PI * 2;
-      rotation.current += difference * (1 - Math.exp(-10 * safeDelta));
-    }
 
     const group = groupRef.current;
-    kelpRealmPlayerPositionRef.x = posX.current;
-    kelpRealmPlayerPositionRef.z = posZ.current;
+      kelpRealmPlayerPositionRef.x = state.x;
+      kelpRealmPlayerPositionRef.z = state.z;
     if (group) {
-      group.position.set(posX.current, baseY, posZ.current);
-      group.rotation.y = rotation.current;
+        group.position.set(state.x, baseY, state.z);
+        group.rotation.y = state.facing;
     }
 
     const behindX = -Math.sin(cameraYaw.current) * CAM_BEHIND;
     const behindZ = Math.cos(cameraYaw.current) * CAM_BEHIND;
-    cameraScratch.set(posX.current + behindX, CAM_ABOVE + cameraPitch.current, posZ.current + behindZ);
-    const desiredClampT = cameraVisibleSegmentSafeT(posX.current, posZ.current, cameraScratch);
-    const clampRate = desiredClampT < cameraClampT.current ? 8 : 3;
-    cameraClampT.current += (desiredClampT - cameraClampT.current)
-      * (1 - Math.exp(-clampRate * safeDelta));
-    cameraScratch.x = posX.current + behindX * cameraClampT.current;
-    cameraScratch.z = posZ.current + behindZ * cameraClampT.current;
-    camera.position.lerp(cameraScratch, 1 - Math.exp(-7 * safeDelta));
+      cameraScratch.set(
+        state.x + behindX,
+        CAM_ABOVE + cameraPitch.current,
+        state.z + behindZ,
+      );
+      const desiredClampT = cameraBoundarySegmentSafeT(
+        state.x,
+        state.z,
+        cameraScratch.x,
+        cameraScratch.z,
+        cameraScratch.y,
+      );
+      const snapCamera = snapCameraRef.current;
+      const boundaryClampInward = desiredClampT < cameraClampT.current;
+      // A perimeter hit must move inward immediately: easing from the old
+      // point would sweep the camera through the boundary wall. Releasing
+      // back toward the full chase distance remains smooth.
+      if (snapCamera || boundaryClampInward) {
+        cameraClampT.current = desiredClampT;
+      } else {
+        cameraClampT.current +=
+          (desiredClampT - cameraClampT.current) *
+          (1 - Math.exp(-CAM_BOUNDARY_RELEASE_RATE * safeDelta));
+      }
+      cameraScratch.x = state.x + behindX * cameraClampT.current;
+      cameraScratch.z = state.z + behindZ * cameraClampT.current;
+      if (snapCamera || boundaryClampInward) {
+        camera.position.copy(cameraScratch);
+      } else {
+        camera.position.lerp(
+          cameraScratch,
+          1 - Math.exp(-7 * safeDelta),
+        );
+      }
+      if (snapCamera) snapCameraRef.current = false;
     targetScratch.set(
-      posX.current + forwardScratch.x * CAM_LOOK_AHEAD,
+        state.x + forwardScratch.x * CAM_LOOK_AHEAD,
       CAM_LOOK_Y,
-      posZ.current + forwardScratch.z * CAM_LOOK_AHEAD,
+        state.z + forwardScratch.z * CAM_LOOK_AHEAD,
     );
     camera.lookAt(targetScratch);
-    updateAnimation(safeDelta, clock.elapsedTime, moving);
+      updateAnimation(safeDelta, elapsed, state.moving);
+    },
   });
 
   return <group ref={groupRef}>{children}</group>;
 }
 
-function KelpRealmVRMPlayerInner({ reg }: { readonly reg: ModelRegistryEntry }) {
+function KelpRealmVRMPlayerInner({
+  activation,
+  reg,
+}: {
+  readonly activation: KelpActivationContext;
+  readonly reg: ModelRegistryEntry;
+}) {
   const vrm = useVRMInstance(reg.path, 'kelp-realm-player');
   const { scale: vrmRenderScale, offsetY: vrmFootOffsetY } = useMemo(
     () => computeVRMAvatarFit(vrm, reg.animatorId, AVATAR_TARGET_HEIGHT),
@@ -352,7 +407,10 @@ function KelpRealmVRMPlayerInner({ reg }: { readonly reg: ModelRegistryEntry }) 
   }, []);
 
   return (
-    <KelpRealmAvatarMotion updateAnimation={updateAnimation}>
+    <KelpRealmAvatarMotion
+      activation={activation}
+      updateAnimation={updateAnimation}
+    >
       <primitive
         object={vrm.scene}
         scale={[vrmRenderScale, vrmRenderScale, vrmRenderScale]}
@@ -373,7 +431,13 @@ function KelpRealmVRMPlayerInner({ reg }: { readonly reg: ModelRegistryEntry }) 
 
 const glbBoundsScratch = new THREE.Box3();
 
-function KelpRealmGLBPlayerInner({ reg }: { readonly reg: ModelRegistryEntry }) {
+function KelpRealmGLBPlayerInner({
+  activation,
+  reg,
+}: {
+  readonly activation: KelpActivationContext;
+  readonly reg: ModelRegistryEntry;
+}) {
   const { scene } = useGLTFWithKTX2(reg.path);
   const { cloned, scale, offsetY } = useMemo(() => {
     const next = scene.clone(true);
@@ -418,7 +482,10 @@ function KelpRealmGLBPlayerInner({ reg }: { readonly reg: ModelRegistryEntry }) 
 
   const updateAnimation = useCallback(() => undefined, []);
   return (
-    <KelpRealmAvatarMotion updateAnimation={updateAnimation}>
+    <KelpRealmAvatarMotion
+      activation={activation}
+      updateAnimation={updateAnimation}
+    >
       <primitive object={cloned} scale={scale} position={[0, offsetY, 0]} />
       <CosmeticLoader
         avatarId="self"
@@ -486,27 +553,45 @@ async function kelpPost(
   });
 }
 
-function KelpRealmBeaconController() {
+function KelpRealmBeaconController({
+  activation,
+}: {
+  readonly activation: KelpActivationContext;
+}) {
   const chainRef = useRef<{ beaconId: string; token: string } | null>(null);
   const pendingRef = useRef(false);
   const lastInsideRef = useRef<string | null>(null);
   const retryAtRef = useRef(0);
-  const activeRef = useRef(true);
   const visitAbortRef = useRef<AbortController | null>(null);
 
-  useEffect(() => {
-    activeRef.current = true;
+  useLayoutEffect(() => {
+    const token = activation.token;
+    visitAbortRef.current?.abort();
+    chainRef.current = null;
+    pendingRef.current = false;
+    lastInsideRef.current = null;
+    retryAtRef.current = 0;
+    visitAbortRef.current = null;
     resetKelpRealmBeaconVisits();
     setKelpRealmBeaconTotalCount(KELP_REALM_BEACON_GRAPH.nodes.length);
-    return () => {
-      activeRef.current = false;
+    activation.reportResetComplete(token, 'beacon');
+  }, [
+    activation.reportResetComplete,
+    activation.token,
+  ]);
+
+  useEffect(() => {
+    if (!activation.owned) {
       visitAbortRef.current?.abort();
       visitAbortRef.current = null;
-      resetKelpRealmBeaconVisits();
-    };
-  }, []);
+      pendingRef.current = false;
+      lastInsideRef.current = null;
+      retryAtRef.current = 0;
+    }
+  }, [activation.owned]);
 
   const visit = useCallback(async (beaconId: string) => {
+    const token: KelpActivationToken = activation.token;
     const previous = chainRef.current;
     const controller = new AbortController();
     visitAbortRef.current = controller;
@@ -516,8 +601,19 @@ function KelpRealmBeaconController() {
         previous && beaconId !== 'entry' ? { prevToken: previous.token } : {},
         controller.signal,
       );
+      if (
+        !activation.isCurrent(token) ||
+        controller.signal.aborted
+      ) {
+        return;
+      }
       const payload = await response.json().catch(() => null) as unknown;
-      if (!activeRef.current || controller.signal.aborted) return;
+      if (
+        !activation.isCurrent(token) ||
+        controller.signal.aborted
+      ) {
+        return;
+      }
       if (!response.ok) {
         const errorResult = beaconVisitErrorSchema.safeParse(payload);
         const errorPayload = errorResult.success ? errorResult.data : {};
@@ -558,7 +654,12 @@ function KelpRealmBeaconController() {
         parsedPayload.spores,
       );
     } catch (error) {
-      if (!activeRef.current || controller.signal.aborted) return;
+      if (
+        !activation.isCurrent(token) ||
+        controller.signal.aborted
+      ) {
+        return;
+      }
       publishKelpRealmNotice(
         error instanceof Error
           ? `The beacon request could not reach the reef (${error.message}). Step away and try again.`
@@ -566,11 +667,12 @@ function KelpRealmBeaconController() {
       );
       lastInsideRef.current = beaconId;
     } finally {
+      if (!activation.isCurrent(token)) return;
       if (visitAbortRef.current === controller) visitAbortRef.current = null;
     }
-  }, []);
+  }, [activation]);
 
-  useFrame(() => {
+  useSceneFrame(() => {
     let insideId: string | null = null;
     let nearestSq = Number.POSITIVE_INFINITY;
     for (const node of KELP_REALM_BEACON_GRAPH.nodes) {
@@ -592,28 +694,40 @@ function KelpRealmBeaconController() {
     if (!chainRef.current && insideId !== 'entry') return;
     lastInsideRef.current = insideId;
     pendingRef.current = true;
-    void visit(insideId).finally(() => { pendingRef.current = false; });
+    const token = activation.token;
+    void visit(insideId).finally(() => {
+      if (activation.isCurrent(token)) {
+        pendingRef.current = false;
+      }
+    });
   });
   return null;
 }
 
-function KelpRealmAvatarRouter() {
+function KelpRealmAvatarRouter({
+  activation,
+}: {
+  readonly activation: KelpActivationContext;
+}) {
   const avatarModelKey = useGameStore((state) => state.avatarModelKey);
   const reg: ModelRegistryEntry =
     MODEL_REGISTRY[avatarModelKey as keyof typeof MODEL_REGISTRY] ?? MODEL_REGISTRY.lobster;
 
   return reg.avatar_type === 'vrm'
-    ? <KelpRealmVRMPlayerInner reg={reg} />
-    : <KelpRealmGLBPlayerInner reg={reg} />;
+    ? <KelpRealmVRMPlayerInner activation={activation} reg={reg} />
+    : <KelpRealmGLBPlayerInner activation={activation} reg={reg} />;
 }
 
-export default function KelpRealmPlayer() {
+export default function KelpRealmPlayer({
+  activation,
+}: {
+  readonly activation: KelpActivationContext;
+}) {
   return (
     <>
-      <InputLifecycle />
-      <KelpRealmBeaconController />
+      <KelpRealmBeaconController activation={activation} />
       <Suspense fallback={null}>
-        <KelpRealmAvatarRouter />
+        <KelpRealmAvatarRouter activation={activation} />
       </Suspense>
     </>
   );

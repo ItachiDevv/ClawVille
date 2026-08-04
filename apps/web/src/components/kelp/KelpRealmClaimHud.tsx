@@ -9,6 +9,7 @@ import { useIsMobile } from '@/hooks/use-is-mobile';
 import { useGameStore } from '@/stores/game';
 import {
   KELP_MOBILE_CLAIM_PANEL_BOTTOM,
+  KELP_MOBILE_GUEST_BANNER_TOP,
   shouldShowKelpGuestEntryBanner,
   shouldShowKelpSporeCounter,
 } from './kelp-realm-hud-layout';
@@ -213,7 +214,7 @@ export function KelpRealmClaimHud() {
           aria-live="polite"
           style={{
             position: 'fixed',
-            top: isMobile ? 72 : 16,
+            top: isMobile ? KELP_MOBILE_GUEST_BANNER_TOP : 16,
             left: '50%',
             zIndex: 70,
             maxWidth: isMobile

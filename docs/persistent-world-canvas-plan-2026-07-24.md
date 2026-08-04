@@ -181,7 +181,7 @@ Android Chrome, bfcache, 5-minute background tab, memory pressure.
 | **P1** | Cove in the stage: per-scene lifecycle, presence policy, leak soak (50–100 loops), staging + founder eyes | 5–8 days |
 | **P2** | Arena as a world presentation mode (already same canvas) | ~1 day |
 | **P3** | Kelp (after renderer-health consolidation) | 2–3 days |
-| **P4** | Reef Race / Bumper activities (authoritative networking + postprocessing) | 3–5 days per activity |
+| **P4** | Reef Race / Bumper activities join the persistent route-group stage through an overlay-slot handoff: the stage owns fades/readiness while each activity retains its plain-Three canvas, authoritative networking, and postprocessing. A true in-canvas slot is blocked on the Reef `ShaderMaterial`/WebGPU node-library port and is tracked separately. | Overlay cutover in this phase; in-canvas migration deferred to OQ-1 |
 | Later | Low-end exclusive-texture eviction, only after measured retention results | — |
 
 Docs (`3dStructure.md` camera/perf sections, `GameFeatures.md` mode flow,
@@ -212,7 +212,9 @@ consulted for stage/camera/scene-graph review points (Rule E3 collaboration).
 | P1b — cove joins the stage; returns become fades | DONE — reviewer-verified locally; staging next | `docs/world-stage-p1b-{brief,notes}.md`; build+tsc 0; ALL THREE probe lanes PASS on final build (synthetic WebGPU + WebGL 102/102; real-route 30 game↔cove round trips, canvas mounts 1, zero hidden violations, heap +12.5% <15% gate); reviewer drive: cove renders in stage, Back-to-World return = fade with SeaLoadingScreen NEVER mounting, deep-link /cove loads zero world assets, /cove/history canvas-free; 2 blocking review findings fixed in-slice (world-label bleed via scene-scoped label registry; useSceneFrame priority support for -100 controllers); known P1c items: first-navigate cold-boot fallback, dual interior GLB download, route-lane heap watch |
 | P1c — streams/presence policy to layout + leak soak + staging promotion | FINAL GATE IN PROGRESS — implementation + in-scope leak fixes complete; named Three r185 WebGPU `bindGroups`/`Backend.data` residual accepted under v4 calibrated gates | `docs/world-stage-p1c-{brief,notes}.md`; exact inventory/count/history/listener/route/network/freeze gates retained; WebGPU bytes capped at +1%; 60-loop forced-GC heap capped at 0.8 MB/loop second-half slope and +20% total; game/Cove dwell capped at 0.05 MB/s |
 | P1c tracked follow-up | TRACKED — trigger on the next three.js upgrade to r186+ or P3, whichever comes first | Re-measure the renderer `bindGroups` growth against upstream lifecycle fixes and fold renderer-cache eviction into the planned low-end texture-eviction tier |
-| P2 arena / P3 kelp / P4 activities | pending | — |
+| P2 arena | pending | — |
+| P3 kelp — shared controller, stage plumbing, resident Kelp slot, presence/protocol | DONE locally — commits `a99c84b9`, `703f6b89`, `9f742d8e`, plus P3b-3 | `docs/world-stage-p3-notes.md`; build/typechecks and focused suites green; WebGPU/WebGL synthetic, Kelp/Cove route, Kelp exit, recovery, dwell/soak, and DPR2 mobile/touch evidence is recorded in the external report; staging partner harness remains the P3b-3 pre-promotion gate |
+| P4 activities — overlay-slot cutover, room readiness/handoff, co-presence/downlink, shared held-key listener seam | DONE locally — review and production-browser gates pending | `docs/world-stage-p4-{brief,notes}.md`; Reef/Bumper retain their plain-Three canvases by design while `/activity/:activityId/:roomId` joins `(world)` and stage-owned transitions; build/typecheck and frozen unit/probe gates are recorded in the external implementation report |
 
 P1 is deliberately split into P1a/P1b/P1c: the 5–8-day estimate is too large for
 one implementation pass; each sub-slice is independently verifiable and
@@ -242,6 +244,30 @@ why capabilities silently diverge between areas. Every stage migration (P2
 arena, P3 kelp, P4 reef) MUST consume the shared controller rather than
 porting its area-local one; "action missing in area X" is a mask entry, never
 a feature port.
+
+Tracked P3 follow-ups (Rule E6):
+
+- 2026-09-01 — re-run the mandatory Kelp HUD/safe-area sweep on a physical iPad
+  and close any notch/home-indicator spacing delta.
+- 2026-09-01 — decide the Kelp editable-target keyboard guard debt (the shipped
+  capability policy preserves the former maze behavior).
+- 2026-09-15 — review the remaining world/Cove/reef controller consumers and
+  delete any area-local capability logic as those stage migrations land.
+
+Tracked P4 follow-ups (Rule E6):
+
+- **OQ-1 — owners: reef + world-stage; deadline: 2026-10-01.** Port Reef's
+  `ShaderMaterial` stack to a WebGPU-compatible node-material path, then
+  re-evaluate moving Bumper first and Reef second from the overlay-slot model
+  into true in-canvas activity slots.
+- **OQ-6 — owner: world-stage; deadline: 2026-09-15.** Close the input-ruling
+  decision if the shared held-key extraction is ever dropped. As built, P4d
+  keeps the neutral DOM-listener/reset seam shared while the vehicle action
+  mapping and 30 Hz wire loop remain activity-specific.
+- **Retraction:** do not revive the earlier `_renderedPoseByAvatar` “unbounded
+  growth” punch-list item. The Reef player module already deletes the
+  identity-owned entry in its effect cleanup; the frozen P4 review established
+  that no defect exists.
 
 ## INCIDENT LEDGER 2026-07-28 (watchdog promotion + revert — full detail in p1c notes + memory)
 
@@ -286,3 +312,14 @@ the cove entry manager stops awaiting compile at approximately 20 seconds and
 the watchdog independently enforces attempt and chain ceilings. No JavaScript
 timer can establish boundedness while the event loop itself is frozen. See
 `world-stage-watchdog-reland-notes.md` for the evidence boundaries.
+
+## Execution ledger — world-presence WS uplink (2026-07-31)
+
+The position uplink joined the persistent-stage architecture: one WebSocket per
+presence (behind `WORLD_POSITION_WS_ENABLED`, default OFF) replaces per-request
+HTTP position POSTs; the SSE downlink, `/join` bootstrap, recovery tickets, and
+the pure reducer are unchanged. The 488-line `use-world-stream` lifecycle effect
+is extracted into the route-layout-scoped `world-presence-controller.ts` (owner
+model identical to the persistent Canvas: created once above `/game`//`/cove`/
+`/kelp`, policy swaps without teardown). Full spec, seam record, deferred gates,
+and follow-ups: `docs/world-presence-ws-uplink-plan-2026-07-30.md`.
