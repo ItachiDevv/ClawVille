@@ -293,8 +293,16 @@ sibling names preferred (auto-bust).
   model's preload to the release (models shared with non-deferred slots stay immediate). Verified
   locally on a strict-evidence run (`validForPerformance:true`, backend `webgpu` actual): release
   19228ms (`stage-ready`) → dutchman fetch +1.5ms after, zero pre-release bytes, reveal 19.7s,
-  NPC mounts post-release (DOM label present — no stranding). Assertion tool:
+  NPC mounts post-release (DOM label present — MANUAL observation at the time, not
+  machine-recorded; automated mount evidence added in the 2026-08-04 audit fold). Assertion tool:
   `apps/web/scripts/cold-load-canary-assert.mjs <report.json> flying-dutchman` (exit 0/3/2).
+  **Precision (2026-08-04 audit finding 2): the deferral is past the READINESS RELEASE, not past
+  paint-reveal** — across all 36 candidate runs the fetch starts after the release but 0.4–3.1s
+  (WebGPU/retest) to 4–17.7s (first bimodal WebGL2 batch) BEFORE reveal, so `preRevealMB` is
+  unchanged by this canary. What rung 1 proves is the RELEASE-SEAM MECHANISM (deferral out of
+  the warmup/readiness critical path, no stranding, no perf cost) — not a pre-reveal byte
+  reduction. Rung-3a widening that intends post-REVEAL streaming must first re-anchor the
+  release (or add a second seam) to actual first paint.
 - **Instrumentation gap found+fixed while validating (tooling commit):** the ACTUAL-backend stamp
   lived only in World3DCanvas's legacy `createWebGPURenderer` — a path stage-hosted routes never
   run (the /game world renders through `WorldStageCanvas initializeStageRenderer` under
@@ -352,9 +360,10 @@ discriminates the ports), then:
   p10's baseline revealed at 26.2s (slowest run of the batch) so late that its post-reveal window
   read "instantly stable" at 503ms vs the normal 6–10s band → +2.56 log-ratio against a normal
   6.5s candidate (`report-rt-p10-baseline-freak.json`). Two causal notes: (a) this metric is a
-  threshold-crossing detector and inherently jumpier than the ratio metrics; (b) the post-reveal
-  window is exactly where the canary DELIBERATELY moves the 0.97MB fetch+decode, so a small
-  stable-window cost there is the intended trade of the diet — and even so the median favors the
+  threshold-crossing detector and inherently jumpier than the ratio metrics; (b) the post-RELEASE
+  window is where the canary DELIBERATELY moves the 0.97MB fetch+decode (the release lands 0.4–3s
+  before paint-reveal on this rig — audit finding 2), so a small settle cost near reveal is the
+  intended trade of the diet — and even so the median favors the
   canary (as it did on WebGPU, −10.9%). Canary behavior re-verified on the outlier candidates
   (dutchman fetch +0–20ms after release, canary-assert exit 0 on p5/p10/p11).
 - **Batch-ops note:** the first launch double-ran (a TaskStop'd background instance survived and
@@ -384,6 +393,45 @@ metric value from the new pairs has been read:
   WebGL2 lane verdict for rung 1 is FAIL, recorded as such with no further batches this rung.
 - The earlier n=12 retest batch retains its own recorded verdict (fail on stable-window); this
   confirmatory batch does not amend it — it is a new, independently-evaluated sample.
+- **Collection amendment (2026-08-04 18:58, OUTCOME-BLIND, committed before collection):** slot
+  p20 dropped (baseline boot-hang flake ×3), so the scheduler delivered pairs 13–19, 21–25 =
+  7 AB / 5 BA — a composition the frozen gate rejects (|#AB−#BA| ≤ 1). One additional BA pair
+  (p26) is collected to restore balance; the single binding evaluation runs over ALL usable
+  pairs (n=13, 7 AB / 6 BA). This amendment is derived ONLY from scheduler PAIR OK/DROPPED
+  events (which carry no metric values); no outcome data has been read.
+
+### 2026-08-04 Codex adversarial audit fold (gpt-5.6-sol xhigh, VERDICT: REJECT — full report `docs/perf-cold-load-diet-2026-08-04-rung1-audit.md`)
+
+Dispositions, finding by finding:
+
+1. **BLOCKING (n=18 extension = optional stopping): ACCEPTED.** The extension-as-planned was
+   abandoned unevaluated; the predeclared confirmatory batch above is the audit-prescribed valid
+   rescue. Its single evaluation is binding either way.
+2. **MAJOR (post-release ≠ post-reveal): ACCEPTED — claims corrected in place** (canary-status +
+   retest sections). Rung 1 proves the release-seam mechanism, not a pre-reveal byte reduction.
+   Rung-3a design note recorded: re-anchor (or add a second seam at) actual first paint before
+   any widening that intends post-reveal streaming.
+3. **MAJOR (assert proves fetch, not mount): ACCEPTED.** Automated mount evidence added same-day:
+   a DOM-level check against the live candidate build (label text present after release; see the
+   confirmatory-batch results block). Punch-list: a machine-recorded mount stamp consumed by
+   `cold-load-canary-assert.mjs` lands with the rung-2 tooling window (tooling is otherwise
+   frozen per the founder course-correction).
+4. **MAJOR (30→40s recalibration outcome-dependent): ACCEPTED with clarification.** The first
+   WebGL2 batch's recorded verdict is FAIL under BOTH the original 30s bound and the paired
+   bounds — the recalibration never flipped any recorded verdict. 40s stands prospectively
+   (finding's own disposition) and binds the retest + confirmatory batches, whose candidate
+   reveals are all < 26.4s regardless.
+5. **MAJOR (no durable build/evidence attestation): PARTIALLY FOLDED NOW** — a SHA-256 + summary
+   ledger of every referenced raw report plus a build-identity block (commits, BUILD_IDs, served
+   canary-marker grep) is committed with the confirmatory results; full manifest-embedded
+   attestation remains on the frozen-tooling punch list.
+6. **MINOR (evaluator counterbalance/reuse enforcement): punch list** (tooling frozen). The
+   audit itself verified chronological AB/BA execution + 72 unique SHA-256 contents externally.
+7. **MINOR (45s deadline armed at warmup start, not page boot): punch list** — mitigated today
+   by the stage's 40s init fuse; no mid-rung code change.
+8. **ADVISORY (commit-range wording): corrected** — the rung-1 core is the 9 commits
+   `42437ec7~1..5d176d01` (inclusive of `42437ec7`, the release controller); the branch
+   additionally carries 3 earlier probe/statistics commits from the measurement phase.
 
 ## 5. Verification protocol
 
