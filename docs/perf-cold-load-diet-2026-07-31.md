@@ -400,6 +400,30 @@ metric value from the new pairs has been read:
   pairs (n=13, 7 AB / 6 BA). This amendment is derived ONLY from scheduler PAIR OK/DROPPED
   events (which carry no metric values); no outcome data has been read.
 
+**CONFIRMATORY RESULT (2026-08-04 19:4x, the single binding evaluation — RECORDED AS-IS):
+gate exit 3 ⇒ per the predeclaration, the WebGL2 lane rung-1 verdict is FAIL.** No metric was
+ever evaluated: the gate dropped 3 of 13 pairs (p14-cand, p18-base, p22-cand) as
+`validForPerformance:false` — every one for the same reason, "network never quiesced within
+capture" (a late `_emotes2.glb?v=1` emote-warming fetch at t≈93s + late blob churn kept the
+capture window from going quiet) — leaving 7 AB / 3 BA, which fails the counterbalance rule.
+Root cause is a RIG DEFECT: the collection scripts gate an arm on probe EXIT CODE (`valid`),
+while the gate filters on the stricter `validForPerformance`; the mismatch first bit tonight
+because the emote-warm fetch straddled the capture window in 3/26 runs. Punch-list (rig, before
+any future batch): collection must parse the report and require `validForPerformance:true`,
+not exit 0. **We did NOT patch-and-re-run; the binding disposition stands.** Full rung-1
+metric picture for the founder: across every batch and both backends, NO metric bound ever
+closed AGAINST the canary — the WebGL2 lane fails on protocol/composition grounds only
+(first batch: environmental bimodality; retest: one jumpy detector metric, median
+candidate-faster; confirmatory: evidence-validity composition).
+
+**Mount evidence (audit finding 3, automated, same evaluation session):** on the live candidate
+build (`:3010`, `?webgl=1`), scene-graph inventory via `__WORLD_STAGE_PROBE__.sceneInventory()`
+showed 2 `defaultMaterial` meshes pre-release (samples at 6.5s/9.1s/14.56s), release fired at
+14554ms (`warmup-complete`), the dutchman fetch started +25ms later (the ONLY new model fetch),
+and a third `defaultMaterial` mesh appeared in the world scene — the before/after mount delta,
+machine-read. (The DOM label check is distance-gated at spawn and stays false — the label div
+is not a reliable mount signal; scene-inventory delta is.)
+
 ### 2026-08-04 Codex adversarial audit fold (gpt-5.6-sol xhigh, VERDICT: REJECT — full report `docs/perf-cold-load-diet-2026-08-04-rung1-audit.md`)
 
 Dispositions, finding by finding:

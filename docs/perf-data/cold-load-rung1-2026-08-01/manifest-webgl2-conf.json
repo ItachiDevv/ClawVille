@@ -1,0 +1,70 @@
+{
+  "backend": "webgl2",
+  "pairs": [
+    {
+      "order": "AB",
+      "baseline": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p13-base-a1.json",
+      "candidate": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p13-cand-a1.json"
+    },
+    {
+      "order": "BA",
+      "baseline": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p14-base-a1.json",
+      "candidate": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p14-cand-a1.json"
+    },
+    {
+      "order": "AB",
+      "baseline": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p15-base-a1.json",
+      "candidate": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p15-cand-a2.json"
+    },
+    {
+      "order": "BA",
+      "baseline": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p16-base-a2.json",
+      "candidate": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p16-cand-a3.json"
+    },
+    {
+      "order": "AB",
+      "baseline": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p17-base-a1.json",
+      "candidate": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p17-cand-a1.json"
+    },
+    {
+      "order": "BA",
+      "baseline": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p18-base-a1.json",
+      "candidate": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p18-cand-a1.json"
+    },
+    {
+      "order": "AB",
+      "baseline": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p19-base-a2.json",
+      "candidate": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p19-cand-a1.json"
+    },
+    {
+      "order": "AB",
+      "baseline": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p21-base-a1.json",
+      "candidate": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p21-cand-a1.json"
+    },
+    {
+      "order": "BA",
+      "baseline": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p22-base-a3.json",
+      "candidate": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p22-cand-a2.json"
+    },
+    {
+      "order": "AB",
+      "baseline": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p23-base-a1.json",
+      "candidate": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p23-cand-a1.json"
+    },
+    {
+      "order": "BA",
+      "baseline": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p24-base-a1.json",
+      "candidate": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p24-cand-a2.json"
+    },
+    {
+      "order": "AB",
+      "baseline": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p25-base-a1.json",
+      "candidate": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p25-cand-a2.json"
+    },
+    {
+      "order": "BA",
+      "baseline": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p26-base-a1.json",
+      "candidate": "C:/Users/itachi/AppData/Local/Temp/claude/C--Users-itachi-Documents-Crypto-clawville/aa839a38-c6cb-48bb-9086-3a7b55129d0a/scratchpad/coldload/report-rt-webgl2-p26-cand-a1.json"
+    }
+  ]
+}
