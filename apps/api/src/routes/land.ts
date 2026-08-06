@@ -51,6 +51,11 @@
  *     paletteKey: string;    // PALETTE_PRESETS key
  *   };
  *
+ *   type LandStructurePieceDTO = {
+ *     id: string; parcelId: string; pieceKey: string;
+ *     gridX: number; gridY: number; rotationStep: number; stackLevel: number;
+ *   };
+ *
  * 1. GET /api/land/parcels?tier=&status=   (PUBLIC, 60s cache, 60/min/IP)
  *      200 → LandParcelDTO[]                   (flat array; status defaults 'available')
  *      400 → { error: 'invalid_query' }        (bad tier/status enum)
@@ -193,6 +198,17 @@
  *      409 → { error: 'structure_archived' | 'ownership_desync' }
  * ─────────────────────────────────────────────────────────────────────────────
  *
+ * 12. POST /api/land/parcels/:parcelId/pieces (AUTH, D5 priced placement)
+ *     strict body: { pieceKey, gridX, gridY, rotationStep, stackLevel,
+ *                    idempotencyKey: string (8..64, required) }
+ *     200: { piece: LandStructurePieceDTO, costCt, idempotencyReplay?: true }
+ *     Requires an active structure; fee transfers owner-to-house in the insert tx.
+ * 13. PATCH /api/land/pieces/:pieceId (AUTH, FREE move)
+ *     strict body: { gridX, gridY, rotationStep, stackLevel }
+ * 14. DELETE /api/land/pieces/:pieceId (AUTH, FREE, NO REFUND)
+ * 15. GET /api/land/pieces/public (PUBLIC, cached, no PII)
+ *     200: { parcelCode, pieceKey, gridX, gridY, rotationStep, stackLevel }[]
+ *
  * PHASE3: expose buy / structure / upgrade via the agent tools.json surface +
  * the npc-simulation `[ACTION:]` whitelist + a PROTOCOL_VERSION bump, so a
  * connected Hatcher agent can run the land economy through its action channel
@@ -210,6 +226,7 @@ import {
   avatars,
   landParcels,
   landStructures,
+  landStructurePieces,
   landUpgrades,
   serviceListings,
   servicePurchases,
@@ -238,6 +255,15 @@ import {
   isPaletteAllowed,
   DEFAULT_SHELL_KEY,
   DEFAULT_PALETTE_KEY,
+  KIT_CATALOG,
+  KIT_GRID_SIZE,
+  KIT_LEVEL_RULES,
+  KIT_PIECE_FEE_CT,
+  isCellPlaceable,
+  isPiecePlacementAllowed,
+  isRotationAllowed,
+  type KitPieceKey,
+  type KitPieceSize,
   type LandTier,
 } from '@clawville/shared';
 import { sessionMiddleware } from '../middleware/auth';
@@ -343,6 +369,27 @@ export interface PublicLandStructureDTO {
   paletteKey: string;
 }
 
+/** Private mutation shape. Public reads intentionally omit both UUIDs. */
+export interface LandStructurePieceDTO {
+  id: string;
+  parcelId: string;
+  pieceKey: KitPieceKey;
+  gridX: number;
+  gridY: number;
+  rotationStep: number;
+  stackLevel: number;
+}
+
+/** Frozen no-PII shape consumed by the stage-B renderer. */
+export interface PublicLandStructurePieceDTO {
+  parcelCode: string;
+  pieceKey: KitPieceKey;
+  gridX: number;
+  gridY: number;
+  rotationStep: number;
+  stackLevel: number;
+}
+
 /** The 4 valid parcel statuses (mirrors `landParcelStatusEnum`). */
 const PARCEL_STATUSES = ['available', 'owned', 'reserved', 'retired'] as const;
 
@@ -366,6 +413,7 @@ const claimStarterBodySchema = z.object({}).strict();
 const avatarIdSchema = z.string().uuid();
 const parcelIdSchema = z.string().uuid();
 const structureIdSchema = z.string().uuid();
+const pieceIdSchema = z.string().uuid();
 
 // claim-hold + release take NO input — every value is server-resolved. Reject
 // any stray field so a client cannot smuggle a price/tier/threshold/etc.
@@ -443,6 +491,150 @@ export function validateAppearanceMutation(
     return 'palette_not_allowed';
   }
   return null;
+}
+
+export const createKitPieceBodySchema = z
+  .object({
+    pieceKey: z.string().min(1).max(64),
+    gridX: z.number().int(),
+    gridY: z.number().int(),
+    rotationStep: z.number().int(),
+    stackLevel: z.number().int(),
+    idempotencyKey: z.string().min(8).max(64),
+  })
+  .strict();
+
+export const moveKitPieceBodySchema = z
+  .object({
+    gridX: z.number().int(),
+    gridY: z.number().int(),
+    rotationStep: z.number().int(),
+    stackLevel: z.number().int(),
+  })
+  .strict();
+
+const kitPieceSnapshotSchema = z.object({
+  id: z.string().uuid(),
+  parcelId: z.string().uuid(),
+  pieceKey: z.string(),
+  gridX: z.number().int(),
+  gridY: z.number().int(),
+  rotationStep: z.number().int(),
+  stackLevel: z.number().int(),
+});
+
+export type KitPlacementValidationError =
+  | 'unknown_piece_key'
+  | 'structure_level_invalid'
+  | 'cell_out_of_bounds'
+  | 'cell_reserved'
+  | 'rotation_not_allowed'
+  | 'stack_not_allowed'
+  | 'piece_cap_reached';
+
+export interface KitPlacementValidationInput {
+  pieceKey: string;
+  level: number;
+  gridX: number;
+  gridY: number;
+  rotationStep: number;
+  stackLevel: number;
+  currentSmall?: number;
+  currentLarge?: number;
+  addingPiece?: boolean;
+}
+
+export function isKitPieceKey(pieceKey: string): pieceKey is KitPieceKey {
+  return Object.prototype.hasOwnProperty.call(KIT_CATALOG, pieceKey);
+}
+
+/** Pure route seam: catalog + grid + level ladder validation, with no DB state. */
+export function validateKitPlacementInput(
+  input: KitPlacementValidationInput,
+): KitPlacementValidationError | null {
+  if (!isKitPieceKey(input.pieceKey)) return 'unknown_piece_key';
+  if (!Number.isInteger(input.level) || input.level < 1 || input.level > 5) {
+    return 'structure_level_invalid';
+  }
+  if (
+    !Number.isInteger(input.gridX)
+    || !Number.isInteger(input.gridY)
+    || input.gridX < 0
+    || input.gridX >= KIT_GRID_SIZE
+    || input.gridY < 0
+    || input.gridY >= KIT_GRID_SIZE
+  ) {
+    return 'cell_out_of_bounds';
+  }
+  if (!isCellPlaceable(input.gridX, input.gridY)) return 'cell_reserved';
+  if (!isRotationAllowed(input.level, input.rotationStep)) return 'rotation_not_allowed';
+  const levelRule = KIT_LEVEL_RULES[input.level as 1 | 2 | 3 | 4 | 5];
+  if (
+    !Number.isInteger(input.stackLevel)
+    || input.stackLevel < 1
+    || input.stackLevel > levelRule.maxStackHeight
+  ) {
+    return 'stack_not_allowed';
+  }
+  if (
+    input.addingPiece !== false
+    && !isPiecePlacementAllowed(
+      input.level,
+      input.currentSmall ?? 0,
+      input.currentLarge ?? 0,
+      KIT_CATALOG[input.pieceKey].size,
+    )
+  ) {
+    return 'piece_cap_reached';
+  }
+  return null;
+}
+
+export type KitAuthorityError =
+  | 'not_parcel_owner'
+  | 'ownership_desync'
+  | 'structure_required'
+  | 'structure_not_active';
+
+export interface KitAuthority {
+  parcelOwnerAvatarId: string | null;
+  pieceOwnerAvatarId?: string;
+  structureOwnerAvatarId?: string | null;
+  structureStatus?: 'active' | 'archived' | null;
+}
+
+/** Authoritative parcel ownership is checked before either denormalized owner. */
+export function validateKitAuthority(
+  authority: KitAuthority,
+  avatarId: string,
+  requireActiveStructure: boolean,
+): KitAuthorityError | null {
+  if (authority.parcelOwnerAvatarId !== avatarId) return 'not_parcel_owner';
+  if (
+    authority.pieceOwnerAvatarId !== undefined
+    && authority.pieceOwnerAvatarId !== authority.parcelOwnerAvatarId
+  ) {
+    return 'ownership_desync';
+  }
+  if (requireActiveStructure) {
+    if (!authority.structureOwnerAvatarId || !authority.structureStatus) {
+      return 'structure_required';
+    }
+    if (authority.structureOwnerAvatarId !== authority.parcelOwnerAvatarId) {
+      return 'ownership_desync';
+    }
+    if (authority.structureStatus !== 'active') return 'structure_not_active';
+  }
+  return null;
+}
+
+export function kitPlacementFeeForKey(pieceKey: string): number | null {
+  return isKitPieceKey(pieceKey) ? KIT_PIECE_FEE_CT[KIT_CATALOG[pieceKey].size] : null;
+}
+
+function throwKitAuthorityError(error: KitAuthorityError): never {
+  const status = error === 'not_parcel_owner' ? 403 : 409;
+  throw new HTTPException(status, { message: error });
 }
 
 // upgrade: the only client input is a REQUIRED idempotency key (Codex BLOCK
@@ -543,6 +735,11 @@ let publicStructuresCache: {
   expiresAt: number;
 } | null = null;
 
+let publicPiecesCache: {
+  payload: PublicLandStructurePieceDTO[];
+  expiresAt: number;
+} | null = null;
+
 function getPublicStructuresCache(): PublicLandStructureDTO[] | null {
   if (publicStructuresCache === null) return null;
   if (publicStructuresCache.expiresAt < Date.now()) {
@@ -559,6 +756,24 @@ function setPublicStructuresCache(payload: PublicLandStructureDTO[]): void {
 /** Bust after any write that can change an active structure's public render. */
 export function bustPublicStructuresCache(): void {
   publicStructuresCache = null;
+}
+
+function getPublicPiecesCache(): PublicLandStructurePieceDTO[] | null {
+  if (publicPiecesCache === null) return null;
+  if (publicPiecesCache.expiresAt < Date.now()) {
+    publicPiecesCache = null;
+    return null;
+  }
+  return publicPiecesCache.payload;
+}
+
+function setPublicPiecesCache(payload: PublicLandStructurePieceDTO[]): void {
+  publicPiecesCache = { payload, expiresAt: Date.now() + READ_CACHE_TTL_MS };
+}
+
+/** Bust after create, move, removal, or a parcel-level cascade deletion. */
+export function bustPublicPiecesCache(): void {
+  publicPiecesCache = null;
 }
 
 function getReadCache(key: string): LandParcelDTO[] | null {
@@ -729,6 +944,43 @@ export function toPublicLandStructureDTO(row: {
     shellKey: row.shellKey ?? DEFAULT_SHELL_KEY,
     paletteKey: row.paletteKey ?? DEFAULT_PALETTE_KEY,
   };
+}
+
+function toLandStructurePieceDTO(row: {
+  id: string;
+  parcelId: string;
+  pieceKey: string;
+  gridX: number;
+  gridY: number;
+  rotationStep: number;
+  stackLevel: number;
+}): LandStructurePieceDTO {
+  if (!isKitPieceKey(row.pieceKey)) {
+    throw new Error(`[land] unknown persisted kit piece key: ${row.pieceKey}`);
+  }
+  return { ...row, pieceKey: row.pieceKey };
+}
+
+export function toPublicLandStructurePieceDTO(row: {
+  parcelCode: string;
+  pieceKey: string;
+  gridX: number;
+  gridY: number;
+  rotationStep: number;
+  stackLevel: number;
+}): PublicLandStructurePieceDTO {
+  if (!isKitPieceKey(row.pieceKey)) {
+    throw new Error(`[land] unknown persisted public kit piece key: ${row.pieceKey}`);
+  }
+  return { ...row, pieceKey: row.pieceKey };
+}
+
+function pieceFromPlacementAudit(metadata: unknown): LandStructurePieceDTO | null {
+  if (!metadata || typeof metadata !== 'object') return null;
+  const piece = (metadata as { piece?: unknown }).piece;
+  const parsed = kitPieceSnapshotSchema.safeParse(piece);
+  if (!parsed.success || !isKitPieceKey(parsed.data.pieceKey)) return null;
+  return { ...parsed.data, pieceKey: parsed.data.pieceKey };
 }
 
 /** Shared owned-structures query (routes 2 + 3) — one indexed scan on owner_avatar_id. */
@@ -1057,6 +1309,39 @@ landRoutes.get('/structures/public', async (c) => {
 
   const payload = rows.map(toPublicLandStructureDTO);
   setPublicStructuresCache(payload);
+  return c.json(payload);
+});
+
+// Public kit render feed (cached 60s, no owner identity or database UUIDs).
+landRoutes.get('/pieces/public', async (c) => {
+  if (!publicReadLimiter.check(getClientIp(c.req.raw.headers))) {
+    return c.json({ error: 'rate_limited' }, 429);
+  }
+  c.header('Cache-Control', 'public, max-age=30');
+
+  const cached = getPublicPiecesCache();
+  if (cached) return c.json(cached);
+
+  const rows = await db
+    .select({
+      parcelCode: landParcels.parcelCode,
+      pieceKey: landStructurePieces.pieceKey,
+      gridX: landStructurePieces.gridX,
+      gridY: landStructurePieces.gridY,
+      rotationStep: landStructurePieces.rotationStep,
+      stackLevel: landStructurePieces.stackLevel,
+    })
+    .from(landStructurePieces)
+    .innerJoin(landParcels, eq(landParcels.id, landStructurePieces.parcelId))
+    .orderBy(
+      landParcels.parcelCode,
+      landStructurePieces.gridX,
+      landStructurePieces.gridY,
+      landStructurePieces.stackLevel,
+    );
+
+  const payload = rows.map(toPublicLandStructurePieceDTO);
+  setPublicPiecesCache(payload);
   return c.json(payload);
 });
 
@@ -2267,6 +2552,405 @@ landRoutes.post('/parcels/:parcelId/structure', requireAuthOrAgentSession, requi
 });
 
 // ─── 9. POST /structures/:structureId/upgrade  (AUTH, PARITY-BOUND, priced) ──
+
+// P3 stage A: paid kit-piece placement. Moving and removal are free below.
+landRoutes.post(
+  '/parcels/:parcelId/pieces',
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+  requireNonGuestIdentity,
+  async (c) => {
+    const identity = c.get('identity');
+    const avatarId = identity.avatarId;
+    const idParsed = parcelIdSchema.safeParse(c.req.param('parcelId'));
+    if (!idParsed.success) return c.json({ error: 'invalid_parcel_id' }, 400);
+    const parcelId = idParsed.data;
+
+    const PARSE_FAILED = Symbol('parse_failed');
+    const rawBody: unknown = await c.req.json().catch(() => PARSE_FAILED);
+    if (rawBody === PARSE_FAILED) return c.json({ error: 'invalid_body' }, 400);
+    const bodyParsed = createKitPieceBodySchema.safeParse(rawBody);
+    if (!bodyParsed.success) {
+      const missingKey = bodyParsed.error.issues.some(
+        (issue) => issue.path.length === 1 && issue.path[0] === 'idempotencyKey',
+      );
+      return c.json({ error: missingKey ? 'idempotency_key_required' : 'invalid_body' }, 400);
+    }
+    const body = bodyParsed.data;
+
+    type PlacementResult =
+      | { kind: 'placed'; piece: LandStructurePieceDTO; costCt: number }
+      | { kind: 'replay'; piece: LandStructurePieceDTO; costCt: number };
+    let result: PlacementResult;
+
+    try {
+      result = await db.transaction(async (tx): Promise<PlacementResult> => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${avatarId}, 0))`);
+        const parcelRows = await tx.execute<{ id: string; owner_avatar_id: string | null }>(
+          sql`SELECT id, owner_avatar_id FROM land_parcels
+              WHERE id = ${parcelId} FOR UPDATE`,
+        );
+        const parcel = parcelRows[0];
+        if (!parcel) throw new HTTPException(404, { message: 'parcel_not_found' });
+
+        const structureRows = await tx.execute<{
+          id: string;
+          owner_avatar_id: string;
+          status: 'active' | 'archived';
+          level: number | string;
+        }>(
+          sql`SELECT id, owner_avatar_id, status, level FROM land_structures
+              WHERE parcel_id = ${parcelId} FOR UPDATE`,
+        );
+        const structure = structureRows[0] ?? null;
+        const authorityError = validateKitAuthority(
+          {
+            parcelOwnerAvatarId: parcel.owner_avatar_id,
+            structureOwnerAvatarId: structure?.owner_avatar_id ?? null,
+            structureStatus: structure?.status ?? null,
+          },
+          avatarId,
+          true,
+        );
+        if (authorityError) throwKitAuthorityError(authorityError);
+
+        // Owner-first and idempotency-first, exactly like structure upgrades:
+        // a replay returns before validation, debit, credit, or insertion.
+        const priorRows = await tx.execute<{ metadata: unknown; amount_ct: number | string }>(
+          sql`SELECT metadata, amount_ct FROM land_transactions
+              WHERE kind = 'structure_placement'
+                AND avatar_id = ${avatarId}
+                AND metadata->>'operation' = 'kit_piece_placement'
+                AND metadata->>'idempotencyKey' = ${body.idempotencyKey}
+              ORDER BY created_at DESC LIMIT 1`,
+        );
+        const prior = priorRows[0];
+        if (prior) {
+          const piece = pieceFromPlacementAudit(prior.metadata);
+          if (!piece) throw new HTTPException(409, { message: 'idempotency_record_corrupt' });
+          return { kind: 'replay', piece, costCt: Number(prior.amount_ct) };
+        }
+
+        const baseValidation = validateKitPlacementInput({
+          ...body,
+          level: Number(structure!.level),
+          addingPiece: false,
+        });
+        if (baseValidation) {
+          throw new HTTPException(baseValidation === 'cell_reserved' ? 409 : 400, {
+            message: baseValidation,
+          });
+        }
+
+        const currentRows = await tx.execute<{
+          piece_key: string;
+          grid_x: number | string;
+          grid_y: number | string;
+          stack_level: number | string;
+        }>(
+          sql`SELECT piece_key, grid_x, grid_y, stack_level
+              FROM land_structure_pieces WHERE parcel_id = ${parcelId}`,
+        );
+        if (
+          currentRows.some(
+            (piece) =>
+              Number(piece.grid_x) === body.gridX
+              && Number(piece.grid_y) === body.gridY
+              && Number(piece.stack_level) === body.stackLevel,
+          )
+        ) {
+          throw new HTTPException(409, { message: 'cell_occupied' });
+        }
+
+        let currentSmall = 0;
+        let currentLarge = 0;
+        for (const current of currentRows) {
+          if (!isKitPieceKey(current.piece_key)) {
+            throw new HTTPException(409, { message: 'piece_catalog_drift' });
+          }
+          if (KIT_CATALOG[current.piece_key].size === 'small') currentSmall += 1;
+          else currentLarge += 1;
+        }
+        const capValidation = validateKitPlacementInput({
+          ...body,
+          level: Number(structure!.level),
+          currentSmall,
+          currentLarge,
+        });
+        if (capValidation) {
+          throw new HTTPException(capValidation === 'piece_cap_reached' ? 409 : 400, {
+            message: capValidation,
+          });
+        }
+
+        const pieceKey = body.pieceKey as KitPieceKey;
+        const size: KitPieceSize = KIT_CATALOG[pieceKey].size;
+        const feeCt = KIT_PIECE_FEE_CT[size];
+        const treasuryId = await getHouseTreasuryAvatarId();
+        if (!treasuryId) {
+          // D5 is a transfer, never a burn: roll back/fail closed.
+          throw new HTTPException(503, { message: 'house_treasury_unavailable' });
+        }
+        const debit = await debitClawTokens(
+          {
+            avatarId,
+            amount: feeCt,
+            reason: 'land_kit_piece_fee',
+            source: 'api',
+            metadata: { parcelId, pieceKey, size, idempotencyKey: body.idempotencyKey },
+            actorKind: toActorKind(identity.kind),
+          },
+          tx,
+        );
+        const credit = await creditClawTokens(
+          {
+            avatarId: treasuryId,
+            amount: feeCt,
+            reason: 'house_fee_land_kit_piece',
+            source: 'system',
+            metadata: { parcelId, pieceKey, size, ownerAvatarId: avatarId },
+            actorKind: 'system',
+          },
+          tx,
+        );
+
+        const inserted = await tx
+          .insert(landStructurePieces)
+          .values({
+            parcelId,
+            ownerAvatarId: avatarId,
+            pieceKey,
+            gridX: body.gridX,
+            gridY: body.gridY,
+            rotationStep: body.rotationStep,
+            stackLevel: body.stackLevel,
+          })
+          .returning({
+            id: landStructurePieces.id,
+            parcelId: landStructurePieces.parcelId,
+            pieceKey: landStructurePieces.pieceKey,
+            gridX: landStructurePieces.gridX,
+            gridY: landStructurePieces.gridY,
+            rotationStep: landStructurePieces.rotationStep,
+            stackLevel: landStructurePieces.stackLevel,
+          });
+        const piece = toLandStructurePieceDTO(inserted[0]!);
+        const auditMetadata = JSON.stringify({
+          operation: 'kit_piece_placement',
+          idempotencyKey: body.idempotencyKey,
+          size,
+          piece,
+        });
+        await tx.execute(
+          sql`INSERT INTO land_transactions
+                (kind, parcel_id, structure_id, avatar_id, amount_ct,
+                 debit_ledger_tx_id, credit_ledger_tx_id, metadata)
+              VALUES ('structure_placement', ${parcelId}, ${structure!.id}, ${avatarId}, ${feeCt},
+                      ${debit.ledgerId}, ${credit.ledgerId}, ${auditMetadata}::jsonb)`,
+        );
+        return { kind: 'placed', piece, costCt: feeCt };
+      });
+    } catch (err) {
+      if ((err as { code?: string } | undefined)?.code === '23505') {
+        return c.json({ error: 'cell_occupied' }, 409);
+      }
+      if (err instanceof InsufficientTokensError) {
+        return c.json({ error: 'insufficient_clawtokens' }, 400);
+      }
+      if (err instanceof HTTPException) {
+        return c.json({ error: err.message }, err.status as 400 | 403 | 404 | 409 | 503);
+      }
+      throw err;
+    }
+
+    if (result.kind === 'replay') {
+      return c.json({ piece: result.piece, costCt: result.costCt, idempotencyReplay: true });
+    }
+    bustPublicPiecesCache();
+    return c.json({ piece: result.piece, costCt: result.costCt });
+  },
+);
+
+landRoutes.patch(
+  '/pieces/:pieceId',
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+  requireNonGuestIdentity,
+  async (c) => {
+    const avatarId = c.get('identity').avatarId;
+    const idParsed = pieceIdSchema.safeParse(c.req.param('pieceId'));
+    if (!idParsed.success) return c.json({ error: 'invalid_piece_id' }, 400);
+    const pieceId = idParsed.data;
+    const rawBody = await c.req.json().catch(() => ({}));
+    const bodyParsed = moveKitPieceBodySchema.safeParse(rawBody);
+    if (!bodyParsed.success) return c.json({ error: 'invalid_body' }, 400);
+    const body = bodyParsed.data;
+
+    let piece: LandStructurePieceDTO;
+    try {
+      piece = await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${avatarId}, 0))`);
+        const pieceRows = await tx.execute<{
+          id: string;
+          parcel_id: string;
+          owner_avatar_id: string;
+          parcel_owner_avatar_id: string | null;
+          piece_key: string;
+        }>(
+          sql`SELECT kp.id, kp.parcel_id, kp.owner_avatar_id,
+                     p.owner_avatar_id AS parcel_owner_avatar_id, kp.piece_key
+              FROM land_structure_pieces kp
+              JOIN land_parcels p ON p.id = kp.parcel_id
+              WHERE kp.id = ${pieceId}
+              FOR UPDATE OF kp, p`,
+        );
+        const current = pieceRows[0];
+        if (!current) throw new HTTPException(404, { message: 'piece_not_found' });
+
+        const structureRows = await tx.execute<{
+          owner_avatar_id: string;
+          status: 'active' | 'archived';
+          level: number | string;
+        }>(
+          sql`SELECT owner_avatar_id, status, level FROM land_structures
+              WHERE parcel_id = ${current.parcel_id} FOR UPDATE`,
+        );
+        const structure = structureRows[0] ?? null;
+        const authorityError = validateKitAuthority(
+          {
+            parcelOwnerAvatarId: current.parcel_owner_avatar_id,
+            pieceOwnerAvatarId: current.owner_avatar_id,
+            structureOwnerAvatarId: structure?.owner_avatar_id ?? null,
+            structureStatus: structure?.status ?? null,
+          },
+          avatarId,
+          true,
+        );
+        if (authorityError) throwKitAuthorityError(authorityError);
+
+        const validationError = validateKitPlacementInput({
+          pieceKey: current.piece_key,
+          level: Number(structure!.level),
+          ...body,
+          addingPiece: false,
+        });
+        if (validationError) {
+          throw new HTTPException(validationError === 'cell_reserved' ? 409 : 400, {
+            message: validationError,
+          });
+        }
+
+        const occupied = await tx.execute<{ hit: number }>(
+          sql`SELECT 1 AS hit FROM land_structure_pieces
+              WHERE parcel_id = ${current.parcel_id}
+                AND grid_x = ${body.gridX}
+                AND grid_y = ${body.gridY}
+                AND stack_level = ${body.stackLevel}
+                AND id <> ${pieceId}
+              LIMIT 1`,
+        );
+        if (occupied[0]) throw new HTTPException(409, { message: 'cell_occupied' });
+
+        const updated = await tx
+          .update(landStructurePieces)
+          .set({ ...body, updatedAt: new Date() })
+          .where(eq(landStructurePieces.id, pieceId))
+          .returning({
+            id: landStructurePieces.id,
+            parcelId: landStructurePieces.parcelId,
+            pieceKey: landStructurePieces.pieceKey,
+            gridX: landStructurePieces.gridX,
+            gridY: landStructurePieces.gridY,
+            rotationStep: landStructurePieces.rotationStep,
+            stackLevel: landStructurePieces.stackLevel,
+          });
+        return toLandStructurePieceDTO(updated[0]!);
+      });
+    } catch (err) {
+      if ((err as { code?: string } | undefined)?.code === '23505') {
+        return c.json({ error: 'cell_occupied' }, 409);
+      }
+      if (err instanceof HTTPException) {
+        return c.json({ error: err.message }, err.status as 400 | 403 | 404 | 409);
+      }
+      throw err;
+    }
+
+    // D5: moving a placed piece is free.
+    bustPublicPiecesCache();
+    return c.json({ piece });
+  },
+);
+
+landRoutes.delete(
+  '/pieces/:pieceId',
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+  requireNonGuestIdentity,
+  async (c) => {
+    const avatarId = c.get('identity').avatarId;
+    const idParsed = pieceIdSchema.safeParse(c.req.param('pieceId'));
+    if (!idParsed.success) return c.json({ error: 'invalid_piece_id' }, 400);
+    const pieceId = idParsed.data;
+
+    let piece: LandStructurePieceDTO;
+    try {
+      piece = await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${avatarId}, 0))`);
+        const rows = await tx.execute<{
+          id: string;
+          parcel_id: string;
+          owner_avatar_id: string;
+          parcel_owner_avatar_id: string | null;
+          piece_key: string;
+          grid_x: number | string;
+          grid_y: number | string;
+          rotation_step: number | string;
+          stack_level: number | string;
+        }>(
+          sql`SELECT kp.id, kp.parcel_id, kp.owner_avatar_id,
+                     p.owner_avatar_id AS parcel_owner_avatar_id, kp.piece_key,
+                     kp.grid_x, kp.grid_y, kp.rotation_step, kp.stack_level
+              FROM land_structure_pieces kp
+              JOIN land_parcels p ON p.id = kp.parcel_id
+              WHERE kp.id = ${pieceId}
+              FOR UPDATE OF kp, p`,
+        );
+        const current = rows[0];
+        if (!current) throw new HTTPException(404, { message: 'piece_not_found' });
+        const authorityError = validateKitAuthority(
+          {
+            parcelOwnerAvatarId: current.parcel_owner_avatar_id,
+            pieceOwnerAvatarId: current.owner_avatar_id,
+          },
+          avatarId,
+          false,
+        );
+        if (authorityError) throwKitAuthorityError(authorityError);
+
+        await tx.delete(landStructurePieces).where(eq(landStructurePieces.id, pieceId));
+        return toLandStructurePieceDTO({
+          id: current.id,
+          parcelId: current.parcel_id,
+          pieceKey: current.piece_key,
+          gridX: Number(current.grid_x),
+          gridY: Number(current.grid_y),
+          rotationStep: Number(current.rotation_step),
+          stackLevel: Number(current.stack_level),
+        });
+      });
+    } catch (err) {
+      if (err instanceof HTTPException) {
+        return c.json({ error: err.message }, err.status as 403 | 404 | 409);
+      }
+      throw err;
+    }
+
+    // D5: removal is free and intentionally performs no refund ledger write.
+    bustPublicPiecesCache();
+    return c.json({ deleted: true, piece });
+  },
+);
 
 landRoutes.patch(
   '/structures/:structureId/appearance',
