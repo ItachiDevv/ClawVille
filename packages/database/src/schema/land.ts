@@ -431,6 +431,57 @@ export const landStructures = pgTable(
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
+// land_structure_pieces — decorative snap-grid kit pieces (P3 stage A)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Render-agnostic decorative kit placements (P3 stage A). `piece_key` is
+ * validated against the shared catalog by the API; stage B alone maps it to
+ * authored assets. There is intentionally no collider/pathfinding state.
+ */
+export const landStructurePieces = pgTable(
+  'land_structure_pieces',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    parcelId: uuid('parcel_id')
+      .notNull()
+      .references(() => landParcels.id, { onDelete: 'cascade' }),
+    /** Denormalized for audit/read convenience; parcel ownership stays authoritative. */
+    ownerAvatarId: uuid('owner_avatar_id')
+      .notNull()
+      .references(() => avatars.id),
+    pieceKey: text('piece_key').notNull(),
+    gridX: integer('grid_x').notNull(),
+    gridY: integer('grid_y').notNull(),
+    /** Integer 0..7, each unit representing 45 degrees. */
+    rotationStep: integer('rotation_step').notNull(),
+    /** One-based vertical tier; the structure level further limits the usable maximum. */
+    stackLevel: integer('stack_level').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    parcelIdx: index('land_structure_pieces_parcel_idx').on(t.parcelId),
+    cellStackUnique: uniqueIndex('land_structure_pieces_cell_stack_unique').on(
+      t.parcelId,
+      t.gridX,
+      t.gridY,
+      t.stackLevel,
+    ),
+    gridXRange: check('land_structure_pieces_grid_x_range', sql`${t.gridX} BETWEEN 0 AND 15`),
+    gridYRange: check('land_structure_pieces_grid_y_range', sql`${t.gridY} BETWEEN 0 AND 15`),
+    rotationRange: check(
+      'land_structure_pieces_rotation_step_range',
+      sql`${t.rotationStep} BETWEEN 0 AND 7`,
+    ),
+    stackRange: check(
+      'land_structure_pieces_stack_level_range',
+      sql`${t.stackLevel} BETWEEN 1 AND 3`,
+    ),
+  }),
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // land_upgrades — append-only audit of each Lv→Lv upgrade
 // ─────────────────────────────────────────────────────────────────────────────
 

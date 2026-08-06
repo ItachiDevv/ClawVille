@@ -177,6 +177,7 @@ import { bounties, bountyRewards, bountyAttempts, bountyReputation } from './bou
 import {
   landParcels,
   landStructures,
+  landStructurePieces,
   landUpgrades,
   landTransactions,
   serviceListings,
@@ -362,6 +363,7 @@ export const landParcelsRelations = relations(landParcels, ({ one, many }) => ({
     fields: [landParcels.id],
     references: [landStructures.parcelId],
   }),
+  pieces: many(landStructurePieces),
   transactions: many(landTransactions),
 }));
 
@@ -376,6 +378,17 @@ export const landStructuresRelations = relations(landStructures, ({ one, many })
   }),
   upgrades: many(landUpgrades),
   serviceListings: many(serviceListings),
+}));
+
+export const landStructurePiecesRelations = relations(landStructurePieces, ({ one }) => ({
+  parcel: one(landParcels, {
+    fields: [landStructurePieces.parcelId],
+    references: [landParcels.id],
+  }),
+  owner: one(avatars, {
+    fields: [landStructurePieces.ownerAvatarId],
+    references: [avatars.id],
+  }),
 }));
 
 export const landUpgradesRelations = relations(landUpgrades, ({ one }) => ({
