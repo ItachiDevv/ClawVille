@@ -24,6 +24,24 @@
 
 ---
 
+## Staking mechanics (founder direction 2026-08-06)
+
+- **Land hold-verification v1 = declared-wallet balance checks, NOT wallet binding.** For the
+  two-door tenure model (land P2 slice): the user states a wallet address, we verify on-chain
+  that it holds the tier's $Clawville minimum, and a periodic sweeper re-checks that it still
+  does. No signature/ownership binding in v1 — that comes later with the staking contract.
+  (Implementation caveat to resolve at P2 build time: without ownership proof, one whale wallet
+  could back many accounts — needs at least a one-wallet-one-account uniqueness rule.)
+- **Why this shape matters (founder, 2026-08-06): doing this allows us to introduce a BORROW or
+  LENDING mechanism on the staking protocol position.** The verified hold is the primordial
+  staking position; once it graduates to a real staking contract, the position itself becomes
+  collateral — lend against it or borrow with it — without changing the land-tier semantics
+  built on top.
+- Standing guardrail (unchanged): land mints zero vCLAW; any holder yield must be real revenue
+  share or CLV, never vCLAW emission. Full tenure design: `.claude/plans/land-economy/upgrade-redesign-2026-07-30.md` §4/§8.
+
+---
+
 ## 🟢 Active — biggest blocks first
 
 ### ⭐ FOUNDER QUEUE — decisions + sign-offs blocking "done" (keep at top; P0+P1+P2+P3 s1/s2/s4/s5 all live-proven on staging (P3s3 built+approved, cognition legs blocked on the OpenAI quota incident), Rule E4 gates open)
