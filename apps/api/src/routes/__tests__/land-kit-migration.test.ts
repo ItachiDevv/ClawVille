@@ -2,8 +2,8 @@ import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-describe('0049 land structure pieces migration', () => {
-  const sql = readFileSync(
+function readMigration(fileName: string): string {
+  return readFileSync(
     join(
       import.meta.dir,
       '..',
@@ -14,10 +14,14 @@ describe('0049 land structure pieces migration', () => {
       'packages',
       'database',
       'migrations',
-      '0049_land_structure_pieces.sql',
+      fileName,
     ),
     'utf8',
   );
+}
+
+describe('0049 land structure pieces migration', () => {
+  const sql = readMigration('0049_land_structure_pieces.sql');
 
   it('creates only the additive idempotent piece table and parcel index', () => {
     expect(sql).toContain('CREATE TABLE IF NOT EXISTS "land_structure_pieces"');
@@ -40,5 +44,33 @@ describe('0049 land structure pieces migration', () => {
 
   it('contains no renderer, asset, collider, or pathfinding columns', () => {
     expect(sql).not.toMatch(/asset|\.glb|collider|pathfinding/i);
+  });
+});
+
+describe('0050 land kit integrity migration', () => {
+  const sql = readMigration('0050_land_kit_integrity.sql');
+  const normalized = sql.replace(/\s+/g, ' ');
+
+  it('creates the scoped durable kit-placement idempotency backstop', () => {
+    expect(normalized).toContain(
+      'CREATE UNIQUE INDEX IF NOT EXISTS "land_tx_kit_piece_idem_unique" '
+      + 'ON "land_transactions" ((metadata->>\'idempotencyKey\'))',
+    );
+    expect(normalized).toContain("WHERE kind = 'structure_placement'");
+    expect(normalized).toContain("AND metadata->>'operation' = 'kit_piece_placement'");
+  });
+
+  it('replaces the owner FK with avatar-delete cascade semantics', () => {
+    expect(sql).toContain(
+      'DROP CONSTRAINT IF EXISTS "land_structure_pieces_owner_avatar_fk"',
+    );
+    expect(normalized).toContain(
+      'FOREIGN KEY ("owner_avatar_id") REFERENCES "avatars"("id") ON DELETE CASCADE',
+    );
+  });
+
+  it('contains no table/data destruction or enum mutation', () => {
+    expect(sql).not.toMatch(/DROP\s+TABLE|TRUNCATE|DELETE\s+FROM/i);
+    expect(sql).not.toMatch(/ALTER\s+TYPE/i);
   });
 });

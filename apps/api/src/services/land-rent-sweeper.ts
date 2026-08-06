@@ -85,6 +85,7 @@ import { broadcastLandEvent } from '../routes/world';
 import {
   bustOwnedCache,
   bustParcelsAvailableCache,
+  bustPublicPiecesCache,
   bustPublicStructuresCache,
   parcelHasLiveDeedLock,
 } from '../routes/land';
@@ -840,6 +841,7 @@ export async function sweepDueRents(): Promise<{
         bustOwnedCache(action.ownerAvatarId);
         bustParcelsAvailableCache(action.tier);
         bustPublicStructuresCache();
+        bustPublicPiecesCache();
         // Live: the parcel is back in the pool — its for-sale sign reappears for
         // every connected player. Fire-and-forget (already fully guarded).
         broadcastLandEvent({

@@ -55,6 +55,14 @@ export interface KitLevelRule {
   readonly rotationDegrees: 45 | 90;
 }
 
+// FEATURE_GATE: land_kit_lv4_lv5_render_capacity
+// Status: Lv4/Lv5 backend caps are data-live (up to 48 small + 4 large), but
+//   stage B rendering is not yet graduated.
+// Metric to graduate: capture the renderer-stat baseline required by the canonical
+//   land design §2.3 on the Iris Xe floor before rendering Lv4/Lv5 occupancy.
+// Review deadline: stage B.
+// On-deadline action: if the baseline is absent, clamp Lv4/Lv5 small+large caps
+//   to the Lv3 values (28 small, 2 large) until the baseline exists.
 /** Authoritative §2.2 ladder. */
 export const KIT_LEVEL_RULES: Readonly<Record<KitStructureLevel, KitLevelRule>> = {
   1: { smallPieceCap: 6, largePieceCap: 0, maxStackHeight: 1, rotationDegrees: 90 },

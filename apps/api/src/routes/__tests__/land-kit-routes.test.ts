@@ -4,8 +4,10 @@ import { join } from 'node:path';
 import { Hono } from 'hono';
 import {
   createKitPieceBodySchema,
+  hasKitStackSupport,
   kitPlacementFeeForKey,
   landRoutes,
+  matchesKitPlacementReplay,
   moveKitPieceBodySchema,
   toPublicLandStructurePieceDTO,
   validateKitAuthority,
@@ -16,6 +18,14 @@ const OWNER_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_ID = '22222222-2222-4222-8222-222222222222';
 const IDEM = 'kit-place-0001';
 const source = readFileSync(join(import.meta.dir, '..', 'land.ts'), 'utf8');
+const sweeperSource = readFileSync(
+  join(import.meta.dir, '..', '..', 'services', 'land-rent-sweeper.ts'),
+  'utf8',
+);
+const deedTransferSource = readFileSync(
+  join(import.meta.dir, '..', '..', 'services', 'market-deed-transfer-executor.ts'),
+  'utf8',
+);
 
 function routeSpan(method: 'get' | 'post' | 'patch' | 'delete', path: string): string {
   const needle = `landRoutes.${method}(`;
@@ -198,13 +208,70 @@ describe('land kit ownership and money discipline', () => {
     expect(create).toContain('idempotencyReplay: true');
   });
 
+  it('rejects idempotency replay when any stored placement target field differs', () => {
+    const piece = {
+      id: '33333333-3333-4333-8333-333333333333',
+      parcelId: OWNER_ID,
+      pieceKey: 'fence-picket' as const,
+      gridX: 0,
+      gridY: 1,
+      rotationStep: 2,
+      stackLevel: 1,
+    };
+    const request = {
+      parcelId: OWNER_ID,
+      pieceKey: 'fence-picket',
+      gridX: 0,
+      gridY: 1,
+      rotationStep: 2,
+      stackLevel: 1,
+    };
+    expect(matchesKitPlacementReplay(piece, request)).toBe(true);
+    for (const mismatch of [
+      { parcelId: OTHER_ID },
+      { pieceKey: 'statue-shell' },
+      { gridX: 1 },
+      { gridY: 2 },
+      { rotationStep: 4 },
+      { stackLevel: 2 },
+    ]) {
+      expect(matchesKitPlacementReplay(piece, { ...request, ...mismatch })).toBe(false);
+    }
+    const create = routeSpan('post', '/parcels/:parcelId/pieces');
+    expect(create).toContain('matchesKitPlacementReplay(piece, { parcelId, ...body })');
+    expect(create).toContain("message: 'idempotency_key_conflict'");
+  });
+
   it('checks occupancy before the ledger and maps the DB unique backstop to 409', () => {
     const create = routeSpan('post', '/parcels/:parcelId/pieces');
     expect(create.indexOf("message: 'cell_occupied'")).toBeLessThan(
       create.indexOf('debitClawTokens'),
     );
-    expect(create).toContain("?.code === '23505'");
+    expect(create).toContain("constraint === 'land_structure_pieces_cell_stack_unique'");
+    expect(create).toContain("constraint === 'land_tx_kit_piece_idem_unique'");
     expect(routeSpan('patch', '/pieces/:pieceId')).toContain("message: 'cell_occupied'");
+  });
+
+  it('requires the immediately lower piece before placing above stack level one', () => {
+    expect(hasKitStackSupport([], { gridX: 0, gridY: 0, stackLevel: 1 })).toBe(true);
+    expect(hasKitStackSupport([], { gridX: 0, gridY: 0, stackLevel: 2 })).toBe(false);
+    expect(
+      hasKitStackSupport(
+        [{ gridX: 0, gridY: 0, stackLevel: 1 }],
+        { gridX: 0, gridY: 0, stackLevel: 2 },
+      ),
+    ).toBe(true);
+    expect(
+      hasKitStackSupport(
+        [{ gridX: 0, gridY: 0, stackLevel: 1 }],
+        { gridX: 0, gridY: 0, stackLevel: 3 },
+      ),
+    ).toBe(false);
+    const create = routeSpan('post', '/parcels/:parcelId/pieces');
+    expect(create.indexOf('hasKitStackSupport(currentPieces, body)')).toBeLessThan(
+      create.indexOf('debitClawTokens'),
+    );
+    expect(create).toContain("message: 'stack_support_required'");
   });
 
   it('keeps move and removal free with no refund path', () => {
@@ -283,6 +350,38 @@ describe('land kit middleware and public feed contract', () => {
     expect(feed).toContain('.innerJoin(landParcels');
     expect(feed).toContain('toPublicLandStructurePieceDTO');
     expect(feed).not.toContain('requireAuthOrAgentSession');
+  });
+
+  it("excludes an archived structure's parcel pieces from the public feed", () => {
+    const feed = routeSpan('get', '/pieces/public');
+    expect(feed).toContain('.innerJoin(landStructures');
+    expect(feed).toContain(".where(eq(landStructures.status, 'active'))");
+  });
+
+  it('purges stale pieces on different-owner re-acquire and mirrors structure cache busts', () => {
+    expect(source).toMatch(
+      /else \{[\s\S]*?DELETE FROM land_structure_pieces WHERE parcel_id[\s\S]*?DELETE FROM land_structures/,
+    );
+    const claimHold = routeSpan('post', '/parcels/:parcelId/claim-hold');
+    expect(claimHold).toContain('reconcileArchivedStructureOnAcquire');
+    expect(claimHold).toContain('bustPublicStructuresCache();');
+    expect(claimHold).toContain('bustPublicPiecesCache();');
+
+    const structureBusts = [...source.matchAll(/bustPublicStructuresCache\(\);/g)];
+    expect(structureBusts).toHaveLength(6);
+    for (const bust of structureBusts) {
+      expect(source.slice(bust.index, bust.index + 100)).toContain('bustPublicPiecesCache();');
+    }
+    expect(sweeperSource).toMatch(
+      /bustPublicStructuresCache\(\);\s*bustPublicPiecesCache\(\);/,
+    );
+    expect(deedTransferSource).toContain('land_structure_pieces');
+    expect(deedTransferSource).toContain('FLAG for land review');
+  });
+
+  it('documents structure_required as 404 and the DELETE response shape', () => {
+    expect(source).toContain("error === 'structure_required' ? 404 : 409");
+    expect(source).toContain('200: { deleted: true, piece: LandStructurePieceDTO }');
   });
 
   it('contains no collider, pathfinding, GLB, or asset mapping write', () => {

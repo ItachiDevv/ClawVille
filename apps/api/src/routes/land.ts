@@ -203,9 +203,14 @@
  *                    idempotencyKey: string (8..64, required) }
  *     200: { piece: LandStructurePieceDTO, costCt, idempotencyReplay?: true }
  *     Requires an active structure; fee transfers owner-to-house in the insert tx.
+ *     404: { error: 'parcel_not_found' | 'structure_required' }
+ *     409: { error: 'cell_reserved' | 'cell_occupied' | 'stack_support_required' |
+ *                    'piece_cap_reached' | 'structure_not_active' |
+ *                    'ownership_desync' | 'idempotency_key_conflict' }
  * 13. PATCH /api/land/pieces/:pieceId (AUTH, FREE move)
  *     strict body: { gridX, gridY, rotationStep, stackLevel }
  * 14. DELETE /api/land/pieces/:pieceId (AUTH, FREE, NO REFUND)
+ *     200: { deleted: true, piece: LandStructurePieceDTO }
  * 15. GET /api/land/pieces/public (PUBLIC, cached, no PII)
  *     200: { parcelCode, pieceKey, gridX, gridY, rotationStep, stackLevel }[]
  *
@@ -633,7 +638,7 @@ export function kitPlacementFeeForKey(pieceKey: string): number | null {
 }
 
 function throwKitAuthorityError(error: KitAuthorityError): never {
-  const status = error === 'not_parcel_owner' ? 403 : 409;
+  const status = error === 'not_parcel_owner' ? 403 : error === 'structure_required' ? 404 : 409;
   throw new HTTPException(status, { message: error });
 }
 
@@ -771,7 +776,7 @@ function setPublicPiecesCache(payload: PublicLandStructurePieceDTO[]): void {
   publicPiecesCache = { payload, expiresAt: Date.now() + READ_CACHE_TTL_MS };
 }
 
-/** Bust after create, move, removal, or a parcel-level cascade deletion. */
+/** Bust after piece mutations or any structure-status/parcel lifecycle write. */
 export function bustPublicPiecesCache(): void {
   publicPiecesCache = null;
 }
@@ -983,6 +988,36 @@ function pieceFromPlacementAudit(metadata: unknown): LandStructurePieceDTO | nul
   return { ...parsed.data, pieceKey: parsed.data.pieceKey };
 }
 
+export function matchesKitPlacementReplay(
+  piece: LandStructurePieceDTO,
+  request: {
+    parcelId: string;
+    pieceKey: string;
+    gridX: number;
+    gridY: number;
+    rotationStep: number;
+    stackLevel: number;
+  },
+): boolean {
+  return piece.parcelId === request.parcelId
+    && piece.pieceKey === request.pieceKey
+    && piece.gridX === request.gridX
+    && piece.gridY === request.gridY
+    && piece.rotationStep === request.rotationStep
+    && piece.stackLevel === request.stackLevel;
+}
+
+export function hasKitStackSupport(
+  pieces: readonly { gridX: number; gridY: number; stackLevel: number }[],
+  placement: { gridX: number; gridY: number; stackLevel: number },
+): boolean {
+  return placement.stackLevel === 1 || pieces.some(
+    (piece) => piece.gridX === placement.gridX
+      && piece.gridY === placement.gridY
+      && piece.stackLevel === placement.stackLevel - 1,
+  );
+}
+
 /** Shared owned-structures query (routes 2 + 3) — one indexed scan on owner_avatar_id. */
 async function fetchOwnedStructures(avatarId: string): Promise<LandStructureDTO[]> {
   const rows = await db
@@ -1036,6 +1071,7 @@ async function reconcileArchivedStructureOnAcquire(
       sql`UPDATE land_structures SET status = 'active', updated_at = now() WHERE id = ${s.id}`,
     );
   } else {
+    await tx.execute(sql`DELETE FROM land_structure_pieces WHERE parcel_id = ${parcelId}`);
     await tx.execute(sql`DELETE FROM land_structures WHERE id = ${s.id}`);
   }
 }
@@ -1333,6 +1369,8 @@ landRoutes.get('/pieces/public', async (c) => {
     })
     .from(landStructurePieces)
     .innerJoin(landParcels, eq(landParcels.id, landStructurePieces.parcelId))
+    .innerJoin(landStructures, eq(landStructures.parcelId, landStructurePieces.parcelId))
+    .where(eq(landStructures.status, 'active'))
     .orderBy(
       landParcels.parcelCode,
       landStructurePieces.gridX,
@@ -1651,6 +1689,7 @@ landRoutes.post('/claim-starter', requireAuthOrAgentSession, requireLedgerCapabl
   // the new parcel within the same request, then emit the leaderboard credit.
   bustOwnedCache(avatarId);
   bustPublicStructuresCache();
+  bustPublicPiecesCache();
 
   void logEventFromContext(c, {
     eventType: LAND_EVENT_TYPES.PARCEL_PURCHASED,
@@ -2049,6 +2088,7 @@ landRoutes.post('/parcels/:parcelId/claim-hold', requireAuthOrAgentSession, requ
   // this tier (the parcel left 'available'). Then emit the leaderboard credit.
   bustOwnedCache(avatarId);
   bustPublicStructuresCache();
+  bustPublicPiecesCache();
   bustParcelsAvailableCache(claimed.parcel.tier);
 
   // Acquiring a parcel (hold, like buy/rent before it) is one PARCEL_PURCHASED
@@ -2398,6 +2438,7 @@ landRoutes.post('/parcels/:parcelId/release', requireAuthOrAgentSession, require
   // for-sale pool cache, and tell every connected player live.
   bustOwnedCache(avatarId);
   bustPublicStructuresCache();
+  bustPublicPiecesCache();
   bustParcelsAvailableCache(released.parcel.tier);
   broadcastLandEvent({
     parcelCode: released.parcel.parcelCode,
@@ -2531,6 +2572,7 @@ landRoutes.post('/parcels/:parcelId/structure', requireAuthOrAgentSession, requi
 
   bustOwnedCache(avatarId);
   bustPublicStructuresCache();
+  bustPublicPiecesCache();
 
   void logEventFromContext(c, {
     eventType: LAND_EVENT_TYPES.STRUCTURE_PLACED,
@@ -2628,6 +2670,9 @@ landRoutes.post(
         if (prior) {
           const piece = pieceFromPlacementAudit(prior.metadata);
           if (!piece) throw new HTTPException(409, { message: 'idempotency_record_corrupt' });
+          if (!matchesKitPlacementReplay(piece, { parcelId, ...body })) {
+            throw new HTTPException(409, { message: 'idempotency_key_conflict' });
+          }
           return { kind: 'replay', piece, costCt: Number(prior.amount_ct) };
         }
 
@@ -2651,24 +2696,33 @@ landRoutes.post(
           sql`SELECT piece_key, grid_x, grid_y, stack_level
               FROM land_structure_pieces WHERE parcel_id = ${parcelId}`,
         );
+        const currentPieces = currentRows.map((piece) => ({
+          pieceKey: piece.piece_key,
+          gridX: Number(piece.grid_x),
+          gridY: Number(piece.grid_y),
+          stackLevel: Number(piece.stack_level),
+        }));
         if (
-          currentRows.some(
+          currentPieces.some(
             (piece) =>
-              Number(piece.grid_x) === body.gridX
-              && Number(piece.grid_y) === body.gridY
-              && Number(piece.stack_level) === body.stackLevel,
+              piece.gridX === body.gridX
+              && piece.gridY === body.gridY
+              && piece.stackLevel === body.stackLevel,
           )
         ) {
           throw new HTTPException(409, { message: 'cell_occupied' });
         }
+        if (!hasKitStackSupport(currentPieces, body)) {
+          throw new HTTPException(409, { message: 'stack_support_required' });
+        }
 
         let currentSmall = 0;
         let currentLarge = 0;
-        for (const current of currentRows) {
-          if (!isKitPieceKey(current.piece_key)) {
+        for (const current of currentPieces) {
+          if (!isKitPieceKey(current.pieceKey)) {
             throw new HTTPException(409, { message: 'piece_catalog_drift' });
           }
-          if (KIT_CATALOG[current.piece_key].size === 'small') currentSmall += 1;
+          if (KIT_CATALOG[current.pieceKey].size === 'small') currentSmall += 1;
           else currentLarge += 1;
         }
         const capValidation = validateKitPlacementInput({
@@ -2688,7 +2742,8 @@ landRoutes.post(
         const feeCt = KIT_PIECE_FEE_CT[size];
         const treasuryId = await getHouseTreasuryAvatarId();
         if (!treasuryId) {
-          // D5 is a transfer, never a burn: roll back/fail closed.
+          // D5 is a transfer, never a burn: deliberately unlike the upgrade/cove
+          // burn fallback, this pre-settlement atomic route rolls back/fails closed.
           throw new HTTPException(503, { message: 'house_treasury_unavailable' });
         }
         const debit = await debitClawTokens(
@@ -2751,7 +2806,16 @@ landRoutes.post(
         return { kind: 'placed', piece, costCt: feeCt };
       });
     } catch (err) {
-      if ((err as { code?: string } | undefined)?.code === '23505') {
+      const pgError = err as {
+        code?: string;
+        constraint_name?: string;
+        constraint?: string;
+      } | undefined;
+      const constraint = pgError?.constraint_name ?? pgError?.constraint;
+      if (pgError?.code === '23505' && constraint === 'land_tx_kit_piece_idem_unique') {
+        return c.json({ error: 'idempotency_key_conflict' }, 409);
+      }
+      if (pgError?.code === '23505' && constraint === 'land_structure_pieces_cell_stack_unique') {
         return c.json({ error: 'cell_occupied' }, 409);
       }
       if (err instanceof InsufficientTokensError) {
@@ -2876,7 +2940,8 @@ landRoutes.patch(
       throw err;
     }
 
-    // D5: moving a placed piece is free.
+    // D5: moving a placed piece is free. Deliberate bounded cost: every PATCH
+    // invalidates the shared public feed; no per-route limiter is added this round.
     bustPublicPiecesCache();
     return c.json({ piece });
   },
@@ -3055,6 +3120,7 @@ landRoutes.patch(
 
     bustOwnedCache(avatarId);
     bustPublicStructuresCache();
+    bustPublicPiecesCache();
     return c.json({ structure });
   },
 );
@@ -3362,6 +3428,7 @@ landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, r
 
   bustOwnedCache(avatarId);
   bustPublicStructuresCache();
+  bustPublicPiecesCache();
 
   if (result.kind === 'replay') {
     return c.json({

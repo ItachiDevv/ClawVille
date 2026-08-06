@@ -320,9 +320,10 @@ function makeTxApi(tx: DrizzleTx): DeedTransferTx {
       // untouched). Scoped to `owner_avatar_id = seller AND status = 'active'`
       // (adversarial-audit item 3): a bare `WHERE parcel_id` would also reassign
       // an ARCHIVED structure left by a PRIOR evicted tenant (a third party) to
-      // the buyer. What happens to a seller-owned ARCHIVED structure on a deed
-      // sale (transfer vs purge, mirroring `reconcileArchivedStructureOnAcquire`)
-      // is a land-domain policy decision — left untouched here, FLAG for land review.
+      // the buyer. What happens to a seller-owned ARCHIVED structure and its
+      // seller-owned `land_structure_pieces` rows on a deed sale (transfer vs
+      // purge, mirroring `reconcileArchivedStructureOnAcquire`) is a land-domain
+      // policy decision — left untouched here, FLAG for land review.
       const rows = await tx.execute<{ id: string }>(
         sql`UPDATE land_structures
             SET owner_avatar_id = ${buyerAvatarId}, updated_at = now()

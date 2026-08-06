@@ -449,7 +449,7 @@ export const landStructurePieces = pgTable(
     /** Denormalized for audit/read convenience; parcel ownership stays authoritative. */
     ownerAvatarId: uuid('owner_avatar_id')
       .notNull()
-      .references(() => avatars.id),
+      .references(() => avatars.id, { onDelete: 'cascade' }),
     pieceKey: text('piece_key').notNull(),
     gridX: integer('grid_x').notNull(),
     gridY: integer('grid_y').notNull(),
@@ -525,13 +525,14 @@ export const landUpgrades = pgTable(
  * shape (which parcel/structure, buyer→seller, kind) so we don't reverse-
  * engineer it from ledger reasons.
  *
- * NO idempotency key BY DESIGN. Parcel-buy single-charge safety is the
+ * NO dedicated idempotency column BY DESIGN. Parcel-buy single-charge safety is the
  * `land_parcels.status='owned'` ownership flip under `SELECT … FOR UPDATE` —
  * a replayed buy sees `owned` and 409s (one parcel, one owner = the natural
  * idempotency key). `claim-starter` idempotency is the "avatar already owns a
  * starter" check. Replayable money paths that AREN'T self-idempotent carry
- * their own key: `land_upgrades`, `service_purchases`, `ct_topups`. So the
- * Phase-1 buy route must NOT look for a `land_transactions` idempotency key.
+ * their own key: `land_upgrades`, `service_purchases`, `ct_topups`. Kit-piece
+ * placement alone stores its key in JSONB metadata and has a scoped expression
+ * unique index. The Phase-1 buy route must NOT look for a land-transaction key.
  */
 export const landTransactions = pgTable(
   'land_transactions',
@@ -548,9 +549,8 @@ export const landTransactions = pgTable(
     /** Cross-ref to the canonical ledger debit row (source of truth for balance). */
     debitLedgerTxId: uuid('debit_ledger_tx_id'),
     /**
-     * RESERVED (§6.C8 burn-sink): v1 primary sale debits the buyer and CT
-     * leaves circulation — there is NO treasury-avatar credit. This column is
-     * for a FUTURE treasury-credit model only; no v1 route writes it.
+     * Optional cross-ref to a treasury/recipient credit. Primary-sale burn-sink
+     * rows leave it null; kit-piece placement writes the atomic house credit.
      */
     creditLedgerTxId: uuid('credit_ledger_tx_id'),
     metadata: jsonb('metadata').$type<Record<string, unknown>>().default({}).notNull(),
@@ -560,6 +560,12 @@ export const landTransactions = pgTable(
     parcelIdx: index('land_tx_parcel_idx').on(t.parcelId, t.createdAt),
     avatarIdx: index('land_tx_avatar_idx').on(t.avatarId, t.createdAt),
     kindIdx: index('land_tx_kind_idx').on(t.kind, t.createdAt),
+    kitPieceIdemUnique: uniqueIndex('land_tx_kit_piece_idem_unique')
+      .on(sql`(${t.metadata}->>'idempotencyKey')`)
+      .where(
+        sql`${t.kind} = 'structure_placement'
+          AND ${t.metadata}->>'operation' = 'kit_piece_placement'`,
+      ),
   }),
 );
 
