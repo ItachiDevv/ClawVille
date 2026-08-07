@@ -61,12 +61,15 @@ four BLOCKING pipeline gates added before any mutation (§Gates).
    `assets-optimize.ts` skips KTX2 images). C work needs a new semantic texture-only pipeline
    that preserves geometry/animation/skins/material params and the byte-identity of every KTX
    image outside the targeted slot.
-5. **Runtime-structure equality for world GLBs (critiques #10/#11).** Cove: assert primitive/
-   material counts, node names/transforms, KTX image hashes, and cove hotspot/click-zone behavior
-   — not just file size. Buildings: meshopt quantization can leave mixed UV typed arrays that
-   silently break the runtime `mergeGeometries()` draw-call merge (documented in
-   `compress-glb-targeted.ts:112`; merger live at `arena-buildings.tsx:1079`) — assert pre/post
-   runtime merge counts per building.
+5. **Runtime-structure equality for world GLBs (critiques #10/#11; amended by the tooling
+   review).** Cove: assert primitive/material counts, node names/transforms, KTX image hashes,
+   and cove hotspot/click-zone behavior — not just file size. Buildings: meshopt quantization can
+   leave mixed UV typed arrays that silently break the runtime `mergeGeometries()` draw-call
+   merge (documented in `compress-glb-targeted.ts:112`; merger live at `arena-buildings.tsx:1079`)
+   — assert pre/post runtime merge counts per building. **Amendment (tooling review): gate-5
+   visual verification must include FIXED-POSE/DEFORMATION comparison (for skinned assets) and
+   MATERIAL appearance comparison — "it loads without errors" is NOT acceptance; screenshots A/B
+   must cover an animated pose and a lit material view.**
 
 ## B — Geometry diets (VRMs + no-meshopt sweep)
 

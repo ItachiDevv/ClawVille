@@ -405,34 +405,64 @@ async function main(): Promise<void> {
   // Rung-2 gate 3 (census 2026-08-07): target band + simplifier error budget
   // are CLI knobs so the RD ladder can probe rungs per asset. Defaults preserve
   // the original hermes-era behavior (40k band, error 0.01) exactly.
+  //
+  // ERROR SEMANTICS (Codex tooling review finding 7): meshoptimizer's simplify
+  // error is RELATIVE TO MESH EXTENT (gltf-transform does not request
+  // ErrorAbsolute) — 0.01 permits ~1% of the mesh's bounding extent in
+  // positional deviation, 0.05 permits ~5%. Values above 0.05 are visually
+  // hazardous on a character and require the explicit --unsafe-error flag.
   let cliTargetTris: number | null = null;
   let cliError: number | null = null;
+  let unsafeError = false;
   const positional: string[] = [];
+  const seen = new Set<string>();
+  const takeValue = (a: string, name: string, i: number): [number, number] => {
+    if (seen.has(name)) {
+      console.error(`duplicate ${name}`);
+      process.exit(1);
+    }
+    seen.add(name);
+    if (a.includes('=')) return [Number(a.slice(name.length + 1)), i];
+    return [Number(rawArgs[i + 1]), i + 1];
+  };
   for (let i = 0; i < rawArgs.length; i++) {
     const a = rawArgs[i];
     if (a === '--tex1024' || a === 'tex1024') continue;
-    if (a.startsWith('--target-tris')) {
-      cliTargetTris = Number(a.includes('=') ? a.split('=')[1] : rawArgs[++i]);
+    if (a === '--unsafe-error') { unsafeError = true; continue; }
+    if (a === '--target-tris' || a.startsWith('--target-tris=')) {
+      [cliTargetTris, i] = takeValue(a, '--target-tris', i);
       continue;
     }
-    if (a.startsWith('--error')) {
-      cliError = Number(a.includes('=') ? a.split('=')[1] : rawArgs[++i]);
+    if (a === '--error' || a.startsWith('--error=')) {
+      [cliError, i] = takeValue(a, '--error', i);
       continue;
+    }
+    if (a.startsWith('--')) {
+      console.error(`unknown flag ${a}`);
+      process.exit(1);
     }
     positional.push(a);
   }
-  if (cliTargetTris !== null && !(Number.isFinite(cliTargetTris) && cliTargetTris >= 1000)) {
-    console.error(`--target-tris must be a number >= 1000; got ${cliTargetTris}`);
+  if (cliTargetTris !== null && !(Number.isSafeInteger(cliTargetTris) && cliTargetTris >= 1000)) {
+    console.error(`--target-tris must be an integer >= 1000; got ${cliTargetTris}`);
     process.exit(1);
   }
+  const ERROR_SAFE_CAP = 0.05;
   if (cliError !== null && !(Number.isFinite(cliError) && cliError > 0 && cliError <= 0.2)) {
     console.error(`--error must be in (0, 0.2]; got ${cliError}`);
+    process.exit(1);
+  }
+  if (cliError !== null && cliError > ERROR_SAFE_CAP && !unsafeError) {
+    console.error(
+      `--error ${cliError} exceeds the safe cap ${ERROR_SAFE_CAP} (~${cliError * 100}% of mesh extent). ` +
+        `Pass --unsafe-error to override deliberately.`,
+    );
     process.exit(1);
   }
   const [inRel, ratioStr, outRel] = positional;
   if (!inRel || !ratioStr || !outRel) {
     console.error(
-      'Usage: bun run scripts/decimate-vrm.ts <input.vrm> <ratio 0..1> <output.vrm> [tex1024|--tex1024] [--target-tris N] [--error E]',
+      'Usage: bun run scripts/decimate-vrm.ts <input.vrm> <ratio 0..1> <output.vrm> [tex1024|--tex1024] [--target-tris N] [--error E] [--unsafe-error]',
     );
     process.exit(1);
   }

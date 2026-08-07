@@ -1,298 +1,404 @@
 #!/usr/bin/env bun
 /**
- * ktx2-texture-diet.mjs — Gate-4 texture-only diet tool (cold-load rung 2).
+ * ktx2-texture-diet.mjs — Gate-4 texture-only diet tool (cold-load rung 2). v2.
  *
- * RAW GLB SURGERY, no gltf-transform Document round-trip: removes the targeted
- * normal-map images (and their material slot references) from a GLB/VRM while
- * keeping EVERY other byte of the file identical — geometry accessors, meshopt
- * streams, animations, skins, VRM extension JSON, and all non-targeted KTX/WebP
- * images are byte-compared against the source in a built-in verification pass.
+ * RAW GLB SURGERY: removes the targeted normal-map images (and their material
+ * slot references) from a GLB/VRM while keeping every other byte identical.
  *
- * v1 scope: --drop-slot normal (the C-ladder step-1 drop test). Resize mode is
- * deliberately deferred until a drop test fails visually (census REV 3, gate 4).
- *
- * Meshopt handling: EXT_meshopt_compression bufferViews carry their compressed
- * stream as (buffer, byteOffset, byteLength) IN THE EXTENSION, while the
- * bufferView itself points into a hole buffer. Repacking the BIN chunk must
- * therefore rewrite BOTH plain bufferView.byteOffset AND the extension's
- * byteOffset. Segments are tracked explicitly; any overlap aborts.
+ * v2 (Codex tooling review, findings 1–3 + 8):
+ *  - FAIL CLOSED on any extension outside the ALLOW-LIST (no generic walker
+ *    mutation; unknown texture-ish keys in materials are a REFUSAL, and
+ *    `extras` subtrees are never scanned or touched).
+ *  - Texture SOURCE VARIANTS: dropping a texture drops core `source` AND
+ *    KHR_texture_basisu / EXT_texture_webp sources (no orphaned fallbacks).
+ *  - Meshopt: a bufferView whose PARENT buffer is 0 while carrying
+ *    EXT_meshopt_compression is REFUSED (its fallback bytes would be lost);
+ *    only the parent-hole (buffer 1) layout is accepted, and only the
+ *    extension's compressed range (buffer 0) is repacked.
+ *  - Verification v2 (independent of the transform):
+ *      V1 content-addressing — every kept accessor/image/meshopt stream's bytes
+ *         at the offsets DECLARED IN THE OUTPUT JSON equal the bytes at the
+ *         offsets declared in the source JSON;
+ *      V2 range/alignment — every declared range fits the new BIN, 4-aligned;
+ *      V3 reference closure — every texture/image/bufferView index in the
+ *         output JSON is in range (schema-known sites);
+ *      V4 whole-JSON determinism — output JSON equals an expected JSON built
+ *         by re-running the transform on a fresh copy of the source;
+ *      V5 no surviving normal-slot references.
  *
  * Usage:
- *   bun scripts/ktx2-texture-diet.mjs <in.glb|.vrm> <out.glb|.vrm> --drop-slot normal [--dry-run]
+ *   bun scripts/ktx2-texture-diet.mjs <in.glb|.vrm> <out.glb|.vrm> --drop-slot=normal [--dry-run]
  *
  * Exit: 0 ok · 2 usage/refused · 3 verification failed
  */
 import * as fs from 'fs';
 
-const args = process.argv.slice(2);
-let dropSlot = null;
-const dryRun = args.includes('--dry-run');
+// ---------------------------------------------------------------------------
+// CLI (exact flags only; duplicates rejected)
+// ---------------------------------------------------------------------------
+const argv = process.argv.slice(2);
+let dropSlot = null, dryRun = false;
 const files = [];
-for (let i = 0; i < args.length; i++) {
-  const a = args[i];
-  if (a === '--dry-run') continue;
-  if (a.startsWith('--drop-slot')) {
-    dropSlot = a.includes('=') ? a.split('=')[1] : args[++i];
+for (let i = 0; i < argv.length; i++) {
+  const a = argv[i];
+  if (a === '--dry-run') { if (dryRun) usage('duplicate --dry-run'); dryRun = true; continue; }
+  if (a === '--drop-slot' || a.startsWith('--drop-slot=')) {
+    if (dropSlot !== null) usage('duplicate --drop-slot');
+    dropSlot = a.includes('=') ? a.slice('--drop-slot='.length) : argv[++i];
     continue;
   }
+  if (a.startsWith('--')) usage(`unknown flag ${a}`);
   files.push(a);
 }
-if (files.length !== 2 || dropSlot !== 'normal') {
-  console.error('Usage: bun scripts/ktx2-texture-diet.mjs <in> <out> --drop-slot normal [--dry-run]');
+function usage(msg) {
+  if (msg) console.error(`error: ${msg}`);
+  console.error('Usage: bun scripts/ktx2-texture-diet.mjs <in> <out> --drop-slot=normal [--dry-run]');
   process.exit(2);
 }
+if (files.length !== 2 || dropSlot !== 'normal') usage();
 const [inFile, outFile] = files;
+const refuse = (msg) => { console.error(`REFUSED: ${msg}`); process.exit(2); };
+
+// ---------------------------------------------------------------------------
+// Extension allow-list (fail closed — finding 1)
+// ---------------------------------------------------------------------------
+const ALLOWED_EXTENSIONS = new Set([
+  'KHR_texture_basisu', 'EXT_texture_webp', 'KHR_texture_transform',
+  'EXT_meshopt_compression', 'KHR_mesh_quantization', 'KHR_draco_mesh_compression',
+  'KHR_materials_transmission', 'KHR_materials_ior', 'KHR_materials_specular',
+  'KHR_materials_unlit', 'KHR_materials_emissive_strength',
+  'VRMC_vrm', 'VRMC_springBone', 'VRMC_materials_mtoon', 'VRMC_node_constraint', 'VRM',
+]);
+
+// Schema-known material texture slots: [path, isNormalSlot]
+const MATERIAL_TEXTURE_SLOTS = [
+  [['pbrMetallicRoughness', 'baseColorTexture'], false],
+  [['pbrMetallicRoughness', 'metallicRoughnessTexture'], false],
+  [['normalTexture'], true],
+  [['occlusionTexture'], false],
+  [['emissiveTexture'], false],
+  [['extensions', 'KHR_materials_specular', 'specularTexture'], false],
+  [['extensions', 'KHR_materials_specular', 'specularColorTexture'], false],
+  [['extensions', 'KHR_materials_transmission', 'transmissionTexture'], false],
+  [['extensions', 'VRMC_materials_mtoon', 'shadeMultiplyTexture'], false],
+  [['extensions', 'VRMC_materials_mtoon', 'shadingShiftTexture'], false],
+  [['extensions', 'VRMC_materials_mtoon', 'matcapTexture'], false],
+  [['extensions', 'VRMC_materials_mtoon', 'rimMultiplyTexture'], false],
+  [['extensions', 'VRMC_materials_mtoon', 'outlineWidthMultiplyTexture'], false],
+  [['extensions', 'VRMC_materials_mtoon', 'uvAnimationMaskTexture'], false],
+];
+const KNOWN_SLOT_KEYS = new Set(MATERIAL_TEXTURE_SLOTS.map((s) => s[0][s[0].length - 1]));
 
 // ---------------------------------------------------------------------------
 // GLB parse
 // ---------------------------------------------------------------------------
-const src = fs.readFileSync(inFile);
-if (src.readUInt32LE(0) !== 0x46546c67) { console.error('not a GLB'); process.exit(2); }
-const totalLen = src.readUInt32LE(8);
-let off = 12, jsonStart = 0, jsonLen = 0, binStart = 0, binLen = 0;
-while (off < totalLen) {
-  const chunkLen = src.readUInt32LE(off);
-  const type = src.readUInt32LE(off + 4);
-  if (type === 0x4e4f534a) { jsonStart = off + 8; jsonLen = chunkLen; }
-  else if (type === 0x004e4942) { binStart = off + 8; binLen = chunkLen; }
-  off += 8 + chunkLen;
-}
-const json = JSON.parse(src.subarray(jsonStart, jsonStart + jsonLen).toString('utf8'));
-const bin = src.subarray(binStart, binStart + binLen);
-
-const materials = json.materials || [];
-const textures = json.textures || [];
-const images = json.images || [];
-const bufferViews = json.bufferViews || [];
-const accessors = json.accessors || [];
-
-// ---------------------------------------------------------------------------
-// 1. Collect EVERY texture reference in the document with its rewrite site.
-//    Generic detector: any object property whose key ends in "Texture"
-//    (case-insensitive) holding {index:number} is a texture reference.
-//    Plus the VRM specials: VRM0 materialProperties.textureProperties (bare
-//    numbers), VRM0 meta.texture (texture index), VRMC_vrm.meta.thumbnailImage
-//    (IMAGE index — handled separately in the image remap).
-// ---------------------------------------------------------------------------
-const texRefs = []; // {holder, key, texIndex, slot, isBare}
-function walkForTexRefs(node, pathStr) {
-  if (Array.isArray(node)) { node.forEach((v, i) => walkForTexRefs(v, `${pathStr}[${i}]`)); return; }
-  if (node === null || typeof node !== 'object') return;
-  for (const [key, val] of Object.entries(node)) {
-    if (/texture$/i.test(key) && val && typeof val === 'object' && typeof val.index === 'number') {
-      texRefs.push({ holder: val, key: 'index', texIndex: val.index, slot: `${pathStr}.${key}`, container: node, containerKey: key });
-    }
-    walkForTexRefs(val, `${pathStr}.${key}`);
+function parseGlb(buf, label) {
+  if (buf.readUInt32LE(0) !== 0x46546c67) refuse(`${label}: not a GLB`);
+  const totalLen = buf.readUInt32LE(8);
+  let off = 12, json = null, jsonRaw = null, bin = Buffer.alloc(0);
+  while (off < totalLen) {
+    const chunkLen = buf.readUInt32LE(off);
+    const type = buf.readUInt32LE(off + 4);
+    const body = buf.subarray(off + 8, off + 8 + chunkLen);
+    if (type === 0x4e4f534a) { jsonRaw = body; json = JSON.parse(body.toString('utf8')); }
+    else if (type === 0x004e4942) bin = body;
+    off += 8 + chunkLen;
   }
+  return { json, jsonRaw, bin };
 }
-materials.forEach((m, i) => walkForTexRefs(m, `materials[${i}]`));
-// VRM0 specials
-const vrm0 = json.extensions?.VRM;
-if (vrm0?.materialProperties) {
-  vrm0.materialProperties.forEach((mp, i) => {
-    for (const [prop, ti] of Object.entries(mp.textureProperties || {})) {
-      if (typeof ti === 'number') texRefs.push({ holder: mp.textureProperties, key: prop, texIndex: ti, slot: `VRM0.materialProperties[${i}].${prop}`, isBare: true });
+const src = fs.readFileSync(inFile);
+const { json: srcJson, bin } = parseGlb(src, inFile);
+
+for (const e of srcJson.extensionsUsed || []) {
+  if (!ALLOWED_EXTENSIONS.has(e)) refuse(`unsupported extension ${e} (allow-list is fail-closed)`);
+}
+if ((srcJson.buffers || []).length > 2) refuse('more than 2 buffers');
+
+// ---------------------------------------------------------------------------
+// The transform, as a pure function of a parsed JSON copy. Returns the new
+// json + drop sets; used once for the real output and once for the expected-
+// JSON verification copy (V4).
+// ---------------------------------------------------------------------------
+function getPath(obj, path) { let c = obj; for (const k of path) { if (c == null) return undefined; c = c[k]; } return c; }
+function deleteAtPath(obj, path) {
+  const parent = getPath(obj, path.slice(0, -1));
+  if (parent) delete parent[path[path.length - 1]];
+}
+
+function applyTransform(json) {
+  const materials = json.materials || [];
+  const textures = json.textures || [];
+  const images = json.images || [];
+  const bufferViews = json.bufferViews || [];
+
+  // 1. Unknown texture-ish keys in materials => refuse (scan skips `extras`).
+  const scanUnknown = (node, inExtras) => {
+    if (Array.isArray(node)) { node.forEach((v) => scanUnknown(v, inExtras)); return; }
+    if (node === null || typeof node !== 'object') return;
+    for (const [key, val] of Object.entries(node)) {
+      if (key === 'extras') continue;
+      if (/texture/i.test(key) && val && typeof val === 'object' && typeof val.index === 'number' && !KNOWN_SLOT_KEYS.has(key)) {
+        refuse(`unknown texture reference key "${key}" in materials`);
+      }
+      scanUnknown(val, inExtras);
+    }
+  };
+  scanUnknown(materials, false);
+
+  // 2. Collect texture references from the schema-known sites.
+  const refs = []; // {texIndex, isNormal, matIndex, path}
+  materials.forEach((m, mi) => {
+    for (const [slotPath, isNormal] of MATERIAL_TEXTURE_SLOTS) {
+      const info = getPath(m, slotPath);
+      if (info && typeof info.index === 'number') refs.push({ texIndex: info.index, isNormal, matIndex: mi, slotPath });
     }
   });
-}
-if (typeof vrm0?.meta?.texture === 'number') {
-  texRefs.push({ holder: vrm0.meta, key: 'texture', texIndex: vrm0.meta.texture, slot: 'VRM0.meta.texture', isBare: true });
-}
-
-// ---------------------------------------------------------------------------
-// 2. Resolve the DROP TARGET set. slot 'normal' = material.normalTexture and
-//    the VRM0/MToon bump equivalents (_BumpMap). NOT shadingShift/matcap.
-// ---------------------------------------------------------------------------
-const isNormalSlot = (r) => /\.normalTexture$/.test(r.slot) || /_BumpMap$/.test(r.slot);
-const targetTexIndexes = new Set(texRefs.filter(isNormalSlot).map((r) => r.texIndex));
-if (targetTexIndexes.size === 0) { console.error('REFUSED: no normal-slot texture references found'); process.exit(2); }
-
-// A targeted texture must not be used by any NON-normal slot.
-for (const r of texRefs) {
-  if (targetTexIndexes.has(r.texIndex) && !isNormalSlot(r)) {
-    console.error(`REFUSED: texture ${r.texIndex} targeted for drop is also referenced by ${r.slot}`);
-    process.exit(2);
+  const vrm0 = json.extensions?.VRM;
+  const vrm0Bare = []; // {holder, key, texIndex, isNormal}
+  if (vrm0?.materialProperties) {
+    for (const mp of vrm0.materialProperties) {
+      for (const [prop, ti] of Object.entries(mp.textureProperties || {})) {
+        if (typeof ti === 'number') vrm0Bare.push({ holder: mp.textureProperties, key: prop, texIndex: ti, isNormal: /_BumpMap$/.test(prop) });
+      }
+    }
   }
-}
+  if (typeof vrm0?.meta?.texture === 'number') vrm0Bare.push({ holder: vrm0.meta, key: 'texture', texIndex: vrm0.meta.texture, isNormal: false });
 
-const imgSource = (t) => t.extensions?.KHR_texture_basisu?.source ?? t.extensions?.EXT_texture_webp?.source ?? t.source;
-const targetImageIndexes = new Set([...targetTexIndexes].map((ti) => imgSource(textures[ti])).filter((v) => v != null));
-// A targeted image must not be shared with any non-targeted texture, nor be the VRM thumbnail.
-textures.forEach((t, ti) => {
-  const s = imgSource(t);
-  if (s != null && targetImageIndexes.has(s) && !targetTexIndexes.has(ti)) {
-    console.error(`REFUSED: image ${s} shared with non-targeted texture ${ti}`);
-    process.exit(2);
+  // 3. Target textures = normal-slot refs only; refuse mixed usage.
+  const targetTex = new Set([
+    ...refs.filter((r) => r.isNormal).map((r) => r.texIndex),
+    ...vrm0Bare.filter((r) => r.isNormal).map((r) => r.texIndex),
+  ]);
+  if (targetTex.size === 0) refuse('no normal-slot texture references found');
+  for (const r of [...refs, ...vrm0Bare]) {
+    if (targetTex.has(r.texIndex) && !r.isNormal) refuse(`texture ${r.texIndex} also used by a non-normal slot`);
   }
-});
-const vrm1Thumb = json.extensions?.VRMC_vrm?.meta?.thumbnailImage;
-if (vrm1Thumb != null && targetImageIndexes.has(vrm1Thumb)) { console.error('REFUSED: target image is the VRM thumbnail'); process.exit(2); }
 
-const targetBufferViews = new Set([...targetImageIndexes].map((ii) => images[ii]?.bufferView).filter((v) => v != null));
+  // 4. Target images = ALL source variants of targeted textures (finding 1c).
+  const sourceVariants = (t) => [t.source, t.extensions?.KHR_texture_basisu?.source, t.extensions?.EXT_texture_webp?.source]
+    .filter((v) => v != null);
+  const targetImg = new Set();
+  targetTex.forEach((ti) => sourceVariants(textures[ti]).forEach((s) => targetImg.add(s)));
+  textures.forEach((t, ti) => {
+    if (targetTex.has(ti)) return;
+    for (const s of sourceVariants(t)) if (targetImg.has(s)) refuse(`image ${s} shared with non-targeted texture ${ti}`);
+  });
+  const vrm1Thumb = json.extensions?.VRMC_vrm?.meta?.thumbnailImage;
+  if (vrm1Thumb != null && targetImg.has(vrm1Thumb)) refuse('target image is the VRM thumbnail');
 
-// ---------------------------------------------------------------------------
-// 3. Build the segment map of the BIN chunk (what bytes belong to whom).
-// ---------------------------------------------------------------------------
-const segments = []; // {kind:'bv'|'meshopt', bvIndex, offset, length}
-bufferViews.forEach((bv, i) => {
-  const mo = bv.extensions?.EXT_meshopt_compression;
-  if (mo) {
-    if ((mo.buffer ?? 0) !== 0) { console.error(`REFUSED: meshopt view ${i} on buffer ${mo.buffer}`); process.exit(2); }
-    segments.push({ kind: 'meshopt', bvIndex: i, offset: mo.byteOffset ?? 0, length: mo.byteLength ?? 0 });
-  } else if ((bv.buffer ?? 0) === 0) {
-    segments.push({ kind: 'bv', bvIndex: i, offset: bv.byteOffset ?? 0, length: bv.byteLength ?? 0 });
+  const targetBv = new Set([...targetImg].map((ii) => images[ii]?.bufferView).filter((v) => v != null));
+
+  // 5. Drop slot references.
+  materials.forEach((m) => {
+    for (const [slotPath, isNormal] of MATERIAL_TEXTURE_SLOTS) {
+      if (isNormal && getPath(m, slotPath)) deleteAtPath(m, slotPath);
+    }
+  });
+  for (const r of vrm0Bare) if (r.isNormal) delete r.holder[r.key];
+
+  // 6. Entry removal + dense order-preserving remaps.
+  const remapArray = (arr, dropSet) => {
+    const remap = new Map(); const kept = [];
+    arr.forEach((v, i) => { if (!dropSet.has(i)) { remap.set(i, kept.length); kept.push(v); } });
+    return { remap, kept };
+  };
+  const texR = remapArray(textures, targetTex);
+  const imgR = remapArray(images, targetImg);
+  const bvR = remapArray(bufferViews, targetBv);
+  const re = (map, v, what) => {
+    if (v == null) return v;
+    if (!map.has(v)) refuse(`dangling ${what} index ${v} during remap`);
+    return map.get(v);
+  };
+
+  // 7. Rewrite references (schema-known sites only).
+  materials.forEach((m) => {
+    for (const [slotPath] of MATERIAL_TEXTURE_SLOTS) {
+      const info = getPath(m, slotPath);
+      if (info && typeof info.index === 'number') info.index = re(texR.remap, info.index, 'texture');
+    }
+  });
+  for (const r of vrm0Bare) {
+    if (!r.isNormal && typeof r.holder[r.key] === 'number') r.holder[r.key] = re(texR.remap, r.holder[r.key], 'texture');
   }
-  // bufferViews on the meshopt hole buffer (buffer 1) own no BIN bytes.
-});
-segments.sort((a, b) => a.offset - b.offset);
-for (let i = 1; i < segments.length; i++) {
-  const prev = segments[i - 1], cur = segments[i];
-  if (cur.offset < prev.offset + prev.length) {
-    console.error(`REFUSED: overlapping bin segments (bv ${prev.bvIndex} and bv ${cur.bvIndex})`);
-    process.exit(2);
+  texR.kept.forEach((t) => {
+    if (t.source != null) t.source = re(imgR.remap, t.source, 'image');
+    if (t.extensions?.KHR_texture_basisu?.source != null) t.extensions.KHR_texture_basisu.source = re(imgR.remap, t.extensions.KHR_texture_basisu.source, 'image');
+    if (t.extensions?.EXT_texture_webp?.source != null) t.extensions.EXT_texture_webp.source = re(imgR.remap, t.extensions.EXT_texture_webp.source, 'image');
+  });
+  imgR.kept.forEach((img) => { if (img.bufferView != null) img.bufferView = re(bvR.remap, img.bufferView, 'bufferView'); });
+  if (vrm1Thumb != null) json.extensions.VRMC_vrm.meta.thumbnailImage = re(imgR.remap, vrm1Thumb, 'image');
+  (json.accessors || []).forEach((a) => {
+    if (a.bufferView != null) a.bufferView = re(bvR.remap, a.bufferView, 'bufferView');
+    if (a.sparse?.indices?.bufferView != null) a.sparse.indices.bufferView = re(bvR.remap, a.sparse.indices.bufferView, 'bufferView');
+    if (a.sparse?.values?.bufferView != null) a.sparse.values.bufferView = re(bvR.remap, a.sparse.values.bufferView, 'bufferView');
+  });
+  (json.meshes || []).forEach((m) => (m.primitives || []).forEach((p) => {
+    const dr = p.extensions?.KHR_draco_mesh_compression;
+    if (dr?.bufferView != null) dr.bufferView = re(bvR.remap, dr.bufferView, 'bufferView');
+  }));
+  json.textures = texR.kept; json.images = imgR.kept; json.bufferViews = bvR.kept;
+  return { json, targetTex, targetImg, targetBv, texRemap: texR.remap, imgRemap: imgR.remap, bvRemap: bvR.remap };
+}
+
+// ---------------------------------------------------------------------------
+// Segment model of the source BIN (finding 2: refuse meshopt fallback in buf 0)
+// ---------------------------------------------------------------------------
+function segmentsOf(json) {
+  const segs = [];
+  (json.bufferViews || []).forEach((bv, i) => {
+    const mo = bv.extensions?.EXT_meshopt_compression;
+    if (mo) {
+      if ((mo.buffer ?? 0) !== 0) refuse(`meshopt view ${i}: compressed stream on buffer ${mo.buffer}`);
+      if ((bv.buffer ?? 0) === 0) refuse(`meshopt view ${i}: parent fallback bufferView on buffer 0 — repack would destroy it`);
+      segs.push({ kind: 'meshopt', bvIndex: i, offset: mo.byteOffset ?? 0, length: mo.byteLength ?? 0 });
+    } else if ((bv.buffer ?? 0) === 0) {
+      segs.push({ kind: 'bv', bvIndex: i, offset: bv.byteOffset ?? 0, length: bv.byteLength ?? 0 });
+    }
+  });
+  segs.sort((a, b) => a.offset - b.offset);
+  for (let i = 1; i < segs.length; i++) {
+    if (segs[i].offset < segs[i - 1].offset + segs[i - 1].length) {
+      refuse(`overlapping bin segments (bv ${segs[i - 1].bvIndex} / bv ${segs[i].bvIndex})`);
+    }
   }
+  return segs;
 }
 
-// ---------------------------------------------------------------------------
-// 4. Remove references + entries; build index remaps.
-// ---------------------------------------------------------------------------
-// 4a. Remove normal-slot references from their holders.
-for (const r of texRefs) {
-  if (!isNormalSlot(r)) continue;
-  if (r.isBare) delete r.holder[r.key];
-  else delete r.container[r.containerKey]; // remove the whole normalTexture info object
-}
-// 4b. Entry drop + remap tables (kept entries keep relative order).
-const remapArray = (arr, dropSet) => {
-  const remap = new Map();
-  const kept = [];
-  arr.forEach((v, i) => { if (!dropSet.has(i)) { remap.set(i, kept.length); kept.push(v); } });
-  return { remap, kept };
-};
-const texR = remapArray(textures, targetTexIndexes);
-const imgR = remapArray(images, targetImageIndexes);
-const bvR = remapArray(bufferViews, targetBufferViews);
-
-// 4c. Rewrite every index reference.
-const reIdx = (map, v, what) => {
-  if (v == null) return v;
-  if (!map.has(v)) { console.error(`VERIFY-FAIL: dangling ${what} index ${v}`); process.exit(3); }
-  return map.get(v);
-};
-for (const r of texRefs) {                           // texture refs that survive
-  if (isNormalSlot(r)) continue;
-  if (r.isBare) r.holder[r.key] = reIdx(texR.remap, r.holder[r.key], 'texture');
-  else r.holder.index = reIdx(texR.remap, r.holder.index, 'texture');
-}
-texR.kept.forEach((t) => {                            // texture -> image
-  if (t.source != null) t.source = reIdx(imgR.remap, t.source, 'image');
-  if (t.extensions?.KHR_texture_basisu?.source != null) t.extensions.KHR_texture_basisu.source = reIdx(imgR.remap, t.extensions.KHR_texture_basisu.source, 'image');
-  if (t.extensions?.EXT_texture_webp?.source != null) t.extensions.EXT_texture_webp.source = reIdx(imgR.remap, t.extensions.EXT_texture_webp.source, 'image');
-});
-imgR.kept.forEach((img) => { if (img.bufferView != null) img.bufferView = reIdx(bvR.remap, img.bufferView, 'bufferView'); });
-if (vrm1Thumb != null) json.extensions.VRMC_vrm.meta.thumbnailImage = reIdx(imgR.remap, vrm1Thumb, 'image');
-accessors.forEach((a) => {
-  if (a.bufferView != null) a.bufferView = reIdx(bvR.remap, a.bufferView, 'bufferView');
-  if (a.sparse?.indices?.bufferView != null) a.sparse.indices.bufferView = reIdx(bvR.remap, a.sparse.indices.bufferView, 'bufferView');
-  if (a.sparse?.values?.bufferView != null) a.sparse.values.bufferView = reIdx(bvR.remap, a.sparse.values.bufferView, 'bufferView');
-});
-(json.meshes || []).forEach((m) => (m.primitives || []).forEach((p) => {
-  const dr = p.extensions?.KHR_draco_mesh_compression;
-  if (dr?.bufferView != null) dr.bufferView = reIdx(bvR.remap, dr.bufferView, 'bufferView');
-}));
-json.textures = texR.kept; json.images = imgR.kept; json.bufferViews = bvR.kept;
+const srcSegments = segmentsOf(srcJson); // refusals fire on the SOURCE layout first
+const work = JSON.parse(JSON.stringify(srcJson));
+const t = applyTransform(work);
 
 // ---------------------------------------------------------------------------
-// 5. Repack the BIN chunk (drop targeted segments, keep order, 4-align).
+// Repack BIN: keep all segments except targeted image bufferViews.
 // ---------------------------------------------------------------------------
-const keptSegments = segments.filter((s) => !targetBufferViews.has(s.bvIndex));
+const keptSegments = srcSegments.filter((s) => !t.targetBv.has(s.bvIndex));
 const align4 = (n) => (n + 3) & ~3;
 let cursor = 0;
-const parts = [];
+for (const s of keptSegments) { cursor = align4(cursor); s.newOffset = cursor; cursor += s.length; }
+const newBinLen = align4(cursor);
+const newBin = Buffer.alloc(newBinLen);
+for (const s of keptSegments) bin.copy(newBin, s.newOffset, s.offset, s.offset + s.length);
 for (const s of keptSegments) {
-  cursor = align4(cursor);
-  const bytes = bin.subarray(s.offset, s.offset + s.length);
-  s.newOffset = cursor;
-  parts.push({ pad: cursor - (parts.length ? parts[parts.length - 1].end : 0), bytes });
-  parts[parts.length - 1].end = cursor + s.length;
-  cursor += s.length;
-  const bv = bufferViews[s.bvIndex]; // original object, now living in bvR.kept
+  const bv = work.bufferViews[t.bvRemap.get(s.bvIndex)];
   if (s.kind === 'meshopt') bv.extensions.EXT_meshopt_compression.byteOffset = s.newOffset;
   else bv.byteOffset = s.newOffset;
 }
-const newBinLen = align4(cursor);
-const newBin = Buffer.alloc(newBinLen);
-{
-  let w = 0;
-  for (const p of parts) { w += p.pad; p.bytes.copy(newBin, w); w += p.bytes.length; }
-}
-if ((json.buffers?.[0]?.byteLength ?? 0) !== 0) json.buffers[0].byteLength = newBinLen;
+if (work.buffers?.length) work.buffers[0].byteLength = newBinLen;
 
 // ---------------------------------------------------------------------------
-// 6. Assemble output GLB.
+// Assemble output
 // ---------------------------------------------------------------------------
-let jsonOut = Buffer.from(JSON.stringify(json), 'utf8');
+let jsonOut = Buffer.from(JSON.stringify(work), 'utf8');
 if (jsonOut.length % 4) jsonOut = Buffer.concat([jsonOut, Buffer.alloc(4 - (jsonOut.length % 4), 0x20)]);
+const chunk = (type, body) => { const h = Buffer.alloc(8); h.writeUInt32LE(body.length, 0); h.writeUInt32LE(type, 4); return Buffer.concat([h, body]); };
 const header = Buffer.alloc(12);
 header.writeUInt32LE(0x46546c67, 0); header.writeUInt32LE(2, 4);
-const chunk = (type, body) => { const h = Buffer.alloc(8); h.writeUInt32LE(body.length, 0); h.writeUInt32LE(type, 4); return Buffer.concat([h, body]); };
 const out = Buffer.concat([header, chunk(0x4e4f534a, jsonOut), chunk(0x004e4942, newBin)]);
 out.writeUInt32LE(out.length, 8);
 
 // ---------------------------------------------------------------------------
-// 7. VERIFICATION (always runs, on the in-memory output).
+// VERIFICATION v2 — independent property checks on the assembled output.
 // ---------------------------------------------------------------------------
 const errs = [];
 {
-  const vJsonLen = out.readUInt32LE(12);
-  const vJson = JSON.parse(out.subarray(20, 20 + vJsonLen).toString('utf8'));
-  const vBinStart = 20 + vJsonLen + 8;
-  const vBin = out.subarray(vBinStart, vBinStart + out.readUInt32LE(20 + vJsonLen));
-  // (a) every kept segment byte-identical to source
-  for (const s of keptSegments) {
-    const a = bin.subarray(s.offset, s.offset + s.length);
-    const b = vBin.subarray(s.newOffset, s.newOffset + s.length);
-    if (!a.equals(b)) errs.push(`segment bytes differ (orig bv ${s.bvIndex})`);
+  const { json: vJson, bin: vBin } = parseGlb(out, 'output');
+
+  // Declared-range reader for a bufferView index in a given (json, bin).
+  const declaredBytes = (json, binBuf, bvIndex, label) => {
+    const bv = json.bufferViews?.[bvIndex];
+    if (!bv) { errs.push(`${label}: bufferView ${bvIndex} out of range`); return null; }
+    const mo = bv.extensions?.EXT_meshopt_compression;
+    const offset = mo ? (mo.byteOffset ?? 0) : (bv.byteOffset ?? 0);
+    const length = mo ? (mo.byteLength ?? 0) : (bv.byteLength ?? 0);
+    const onBin = mo ? (mo.buffer ?? 0) === 0 : (bv.buffer ?? 0) === 0;
+    if (!onBin) return Buffer.alloc(0); // hole-buffer views own no BIN bytes
+    if (offset % 4 !== 0) errs.push(`${label}: bufferView ${bvIndex} offset ${offset} not 4-aligned`);
+    if (offset + length > binBuf.length) { errs.push(`${label}: bufferView ${bvIndex} range ${offset}+${length} exceeds bin ${binBuf.length}`); return null; }
+    return binBuf.subarray(offset, offset + length);
+  };
+
+  // V1a accessors: content at output-declared offsets == content at source-declared offsets.
+  const sAcc = srcJson.accessors || [], vAcc = vJson.accessors || [];
+  if (sAcc.length !== vAcc.length) errs.push(`accessor count drifted ${sAcc.length} -> ${vAcc.length}`);
+  for (let i = 0; i < Math.min(sAcc.length, vAcc.length); i++) {
+    for (const [sv, vv, tag] of [
+      [sAcc[i].bufferView, vAcc[i].bufferView, `accessor ${i}`],
+      [sAcc[i].sparse?.indices?.bufferView, vAcc[i].sparse?.indices?.bufferView, `accessor ${i} sparse.indices`],
+      [sAcc[i].sparse?.values?.bufferView, vAcc[i].sparse?.values?.bufferView, `accessor ${i} sparse.values`],
+    ]) {
+      if (sv == null && vv == null) continue;
+      if (sv == null || vv == null) { errs.push(`${tag}: bufferView presence drifted`); continue; }
+      const a = declaredBytes(srcJson, bin, sv, `${tag} (src)`);
+      const b = declaredBytes(vJson, vBin, vv, `${tag} (out)`);
+      if (a && b && !a.equals(b)) errs.push(`${tag}: bytes differ at declared offsets`);
+    }
   }
-  // (b) all index references in range
-  (vJson.textures || []).forEach((t, i) => {
-    const srcIdx = t.extensions?.KHR_texture_basisu?.source ?? t.extensions?.EXT_texture_webp?.source ?? t.source;
-    if (srcIdx == null || srcIdx >= (vJson.images || []).length) errs.push(`texture ${i} bad image ref`);
+  // V1b draco geometry bufferViews.
+  const dracoBvs = (json) => (json.meshes || []).flatMap((m) => (m.primitives || [])
+    .map((p) => p.extensions?.KHR_draco_mesh_compression?.bufferView).filter((v) => v != null));
+  const sDr = dracoBvs(srcJson), vDr = dracoBvs(vJson);
+  if (sDr.length !== vDr.length) errs.push('draco primitive count drifted');
+  for (let i = 0; i < Math.min(sDr.length, vDr.length); i++) {
+    const a = declaredBytes(srcJson, bin, sDr[i], `draco ${i} (src)`);
+    const b = declaredBytes(vJson, vBin, vDr[i], `draco ${i} (out)`);
+    if (a && b && !a.equals(b)) errs.push(`draco ${i}: bytes differ at declared offsets`);
+  }
+  // V1c kept images by identity: source kept-image bytes must appear at the
+  // output image's declared range, matched via the independent old->new map.
+  const keptImagePairs = [];
+  (srcJson.images || []).forEach((img, i) => { if (!t.targetImg.has(i)) keptImagePairs.push([i, t.imgRemap.get(i)]); });
+  if ((vJson.images || []).length !== keptImagePairs.length) errs.push(`image count ${vJson.images?.length} != expected ${keptImagePairs.length}`);
+  for (const [si, oi] of keptImagePairs) {
+    const sImg = srcJson.images[si], oImg = vJson.images?.[oi];
+    if (!oImg) { errs.push(`image ${si}->${oi} missing in output`); continue; }
+    if (sImg.bufferView == null && oImg.bufferView == null) continue;
+    const a = declaredBytes(srcJson, bin, sImg.bufferView, `image ${si} (src)`);
+    const b = declaredBytes(vJson, vBin, oImg.bufferView, `image ${oi} (out)`);
+    if (a && b && !a.equals(b)) errs.push(`image ${si}->${oi}: bytes differ at declared offsets`);
+  }
+  // V2 every output bufferView range valid (also covers views not referenced above).
+  (vJson.bufferViews || []).forEach((bv, i) => void declaredBytes(vJson, vBin, i, 'range-scan'));
+  // V3 reference closure.
+  (vJson.textures || []).forEach((tx, i) => {
+    for (const s of [tx.source, tx.extensions?.KHR_texture_basisu?.source, tx.extensions?.EXT_texture_webp?.source]) {
+      if (s != null && (s < 0 || s >= (vJson.images || []).length)) errs.push(`texture ${i}: image ref ${s} out of range`);
+    }
   });
-  (vJson.images || []).forEach((img, i) => { if (img.bufferView != null && img.bufferView >= vJson.bufferViews.length) errs.push(`image ${i} bad bv ref`); });
-  (vJson.accessors || []).forEach((a, i) => { if (a.bufferView != null && a.bufferView >= vJson.bufferViews.length) errs.push(`accessor ${i} bad bv ref`); });
-  // (c) no normal slots remain; counts add up
-  const rem = JSON.stringify(vJson.materials || []);
-  if (/normalTexture/.test(rem)) errs.push('normalTexture reference survived');
-  if ((vJson.textures || []).length !== textures.length - targetTexIndexes.size + (json.textures.length - texR.kept.length)) { /* structural */ }
-  // (d) structural JSON equality outside the touched families
-  const strip = (j) => { const c = JSON.parse(JSON.stringify(j)); delete c.textures; delete c.images; delete c.bufferViews; delete c.materials; delete c.buffers; delete c.extensions; return c; };
-  const srcStripped = JSON.parse(src.subarray(jsonStart, jsonStart + jsonLen).toString('utf8'));
-  const stripSrc = strip(srcStripped);
-  // accessors/draco got bufferView index rewrites — normalize by deleting those fields on both sides
-  const normAcc = (j) => { (j.accessors || []).forEach((a) => { delete a.bufferView; if (a.sparse) { delete a.sparse.indices?.bufferView; delete a.sparse.values?.bufferView; } }); (j.meshes || []).forEach((m) => (m.primitives || []).forEach((p) => { delete p.extensions?.KHR_draco_mesh_compression?.bufferView; })); return j; };
-  if (JSON.stringify(normAcc(stripSrc)) !== JSON.stringify(normAcc(strip(vJson)))) errs.push('non-texture JSON drifted (meshes/skins/animations/nodes)');
-  // (e) root-extension equality: apply the EXPECTED transforms to the source
-  //     extensions (thumbnail remap, VRM0 _BumpMap prop removal + texture-index
-  //     remap) and require exact equality with the output extensions.
-  if (srcStripped.extensions) {
-    const expected = JSON.parse(JSON.stringify(srcStripped.extensions));
-    if (expected.VRMC_vrm?.meta?.thumbnailImage != null) expected.VRMC_vrm.meta.thumbnailImage = imgR.remap.get(expected.VRMC_vrm.meta.thumbnailImage);
-    if (expected.VRM?.materialProperties) {
-      for (const mp of expected.VRM.materialProperties) {
-        for (const [prop, ti] of Object.entries(mp.textureProperties || {})) {
-          if (/_BumpMap$/.test(prop)) delete mp.textureProperties[prop];
-          else mp.textureProperties[prop] = texR.remap.get(ti);
-        }
+  (vJson.materials || []).forEach((m, mi) => {
+    for (const [slotPath] of MATERIAL_TEXTURE_SLOTS) {
+      const info = getPath(m, slotPath);
+      if (info && typeof info.index === 'number' && (info.index < 0 || info.index >= (vJson.textures || []).length)) {
+        errs.push(`material ${mi} ${slotPath.join('.')}: texture ref out of range`);
       }
     }
-    if (typeof expected.VRM?.meta?.texture === 'number') expected.VRM.meta.texture = texR.remap.get(expected.VRM.meta.texture);
-    if (JSON.stringify(expected) !== JSON.stringify(vJson.extensions ?? null)) errs.push('root extensions drifted beyond the expected thumbnail/_BumpMap rewrites');
+  });
+  const vThumb = vJson.extensions?.VRMC_vrm?.meta?.thumbnailImage;
+  if (vThumb != null && (vThumb < 0 || vThumb >= (vJson.images || []).length)) errs.push('VRM thumbnail ref out of range');
+  // V4 whole-JSON determinism: expected = transform re-run on a FRESH copy.
+  const fresh = JSON.parse(JSON.stringify(srcJson));
+  const t2 = applyTransform(fresh);
+  const freshSegs = segmentsOf(srcJson).filter((s) => !t2.targetBv.has(s.bvIndex));
+  let c2 = 0;
+  for (const s of freshSegs) {
+    c2 = align4(c2);
+    const bv = fresh.bufferViews[t2.bvRemap.get(s.bvIndex)];
+    if (s.kind === 'meshopt') bv.extensions.EXT_meshopt_compression.byteOffset = c2;
+    else bv.byteOffset = c2;
+    c2 += s.length;
+  }
+  if (fresh.buffers?.length) fresh.buffers[0].byteLength = align4(c2);
+  if (JSON.stringify(fresh) !== JSON.stringify(vJson)) errs.push('output JSON != independently rebuilt expected JSON');
+  // V5 no surviving normal-slot refs.
+  (vJson.materials || []).forEach((m, mi) => { if (m.normalTexture) errs.push(`material ${mi}: normalTexture survived`); });
+  for (const mp of vJson.extensions?.VRM?.materialProperties || []) {
+    for (const prop of Object.keys(mp.textureProperties || {})) if (/_BumpMap$/.test(prop)) errs.push('_BumpMap survived');
   }
 }
+
 const mb = (b) => (b / 1048576).toFixed(3);
 console.log(`${inFile}: ${mb(src.length)}MB -> ${mb(out.length)}MB  (save ${mb(src.length - out.length)}MB)`);
-console.log(`dropped: ${targetTexIndexes.size} texture(s), ${targetImageIndexes.size} image(s), ${targetBufferViews.size} bufferView(s)`);
+console.log(`dropped: ${t.targetTex.size} texture(s), ${t.targetImg.size} image(s), ${t.targetBv.size} bufferView(s)`);
 if (errs.length) { console.error('VERIFY-FAIL:\n  ' + errs.join('\n  ')); process.exit(3); }
-console.log('verification: PASS (kept segments byte-identical, refs valid, no surviving normal refs, non-texture JSON unchanged)');
+console.log('verification: PASS (V1 content-addressed bytes @ declared offsets, V2 ranges/alignment, V3 ref closure, V4 deterministic expected-JSON, V5 no surviving normal refs)');
 if (!dryRun) { fs.writeFileSync(outFile, out); console.log(`wrote ${outFile}`); }
