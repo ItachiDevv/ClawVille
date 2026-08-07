@@ -16,6 +16,10 @@
  *
  * Renderer rules (same as /preview/avatar): plain 'three' WebGL on its OWN
  * page canvas — NO three/webgpu imports, no drei Text (Iris Xe).
+ *
+ * NOTE: like every /preview/* route this page ships publicly — it is a
+ * production-accessible DIAGNOSTIC page (loads only same-origin /models|
+ * /avatars assets, no auth surface, no writes), not a gated dev tool.
  */
 
 import { Suspense, useEffect, useRef, useState } from 'react';
@@ -25,8 +29,6 @@ import * as THREE from 'three';
 import { GLTFLoader, type GLTF } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'meshoptimizer';
 import { KTX2LoaderSetup, getKTX2Loader } from '@/lib/three/ktx2-loader-setup';
-
-export const dynamic = 'force-dynamic';
 
 let _loader: GLTFLoader | null = null;
 function loader(): GLTFLoader {
@@ -60,11 +62,25 @@ function AssetScene({ url, lightPhase, dist, spin, onInfo }: {
   useEffect(() => {
     let cancelled = false;
     const group = groupRef.current;
-    group.clear();
+    const disposeTree = (obj: THREE.Object3D) => {
+      obj.traverse((child) => {
+        const mesh = child as THREE.Mesh;
+        if (mesh.isMesh) {
+          mesh.geometry?.dispose();
+          const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+          mats.forEach((m) => {
+            if (!m) return;
+            Object.values(m).forEach((v) => { if (v instanceof THREE.Texture) v.dispose(); });
+            m.dispose();
+          });
+        }
+      });
+    };
+    group.children.slice().forEach((c) => { disposeTree(c); group.remove(c); });
     loader().load(
       url,
       (gltf: GLTF) => {
-        if (cancelled) return;
+        if (cancelled) { disposeTree(gltf.scene); return; }
         const root = gltf.scene;
         root.traverse((o) => { o.frustumCulled = false; });
         // center on origin, measure radius
@@ -85,7 +101,10 @@ function AssetScene({ url, lightPhase, dist, spin, onInfo }: {
       undefined,
       (err) => onInfo(`LOAD ERROR: ${String((err as Error)?.message ?? err)}`),
     );
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      group.children.slice().forEach((c) => { disposeTree(c); group.remove(c); });
+    };
   }, [url, onInfo]);
 
   useFrame((state) => {
@@ -121,7 +140,8 @@ function AssetABInner() {
   const params = useSearchParams();
   const glb = sanitizeGlbParam(params.get('glb'));
   const lightPhase = params.get('lightphase') != null ? Number(params.get('lightphase')) : null;
-  const dist = Number(params.get('dist') ?? '1.8') || 1.8;
+  const rawDist = Number(params.get('dist') ?? '1.8');
+  const dist = Number.isFinite(rawDist) ? Math.min(20, Math.max(0.5, rawDist)) : 1.8;
   const spin = params.get('spin') === '1';
   const [info, setInfo] = useState('loading…');
 
@@ -130,7 +150,7 @@ function AssetABInner() {
   }
   return (
     <div style={{ position: 'fixed', inset: 0, background: '#25455e' }}>
-      <Canvas camera={{ fov: 40, position: [0, 1, 4] }} gl={{ antialias: true }}>
+      <Canvas camera={{ fov: 40, position: [0, 1, 4] }} gl={{ antialias: true }} dpr={[1, 1.5]}>
         <KTX2LoaderSetup />
         <Suspense fallback={null}>
           <AssetScene url={glb} lightPhase={Number.isFinite(lightPhase as number) ? lightPhase : null} dist={dist} spin={spin} onInfo={setInfo} />

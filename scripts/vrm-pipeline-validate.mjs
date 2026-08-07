@@ -124,7 +124,11 @@ const nodeSig = (doc) => doc.getRoot().listNodes().map((n) => ({
 check('S4', jeq(nodeSig(sDoc), nodeSig(oDoc)), 'node graph signature drifted');
 
 // --- S5 root VRM extensions (raw) -------------------------------------------
-for (const extName of ['VRMC_vrm', 'VRMC_springBone', 'VRM']) {
+// In texture-diet mode the VRM0 root extension legitimately changes
+// (_BumpMap removal + texture-index remap) — it is validated exactly by
+// S9.VRM0 below instead of raw equality here.
+const s5Exts = expectTextureDiet ? ['VRMC_vrm', 'VRMC_springBone'] : ['VRMC_vrm', 'VRMC_springBone', 'VRM'];
+for (const extName of s5Exts) {
   const a = sj.extensions?.[extName], b = oj.extensions?.[extName];
   if (a === undefined && b === undefined) continue;
   if (a === undefined || b === undefined) { check(`S5.${extName}`, false, `${extName} ${a === undefined ? 'appeared in' : 'MISSING from'} output`); continue; }
@@ -165,22 +169,65 @@ check('S7+S8', jeq(primSig(sDoc, sj), primSig(oDoc, oj)), 'primitive structure (
 if (!expectTextureDiet) {
   check('S9', jeq(sj.materials, oj.materials), 'materials JSON drifted (count/order/props/mtoon)');
 } else {
-  const normMats = (mats, dropNormal) => (mats || []).map((m) => {
-    const c = JSON.parse(JSON.stringify(m));
-    if (dropNormal) delete c.normalTexture;
-    const maskIndices = (node) => {
-      if (Array.isArray(node)) { node.forEach(maskIndices); return; }
-      if (node === null || typeof node !== 'object') return;
-      for (const [k, v] of Object.entries(node)) {
-        if (/texture$/i.test(k) && v && typeof v === 'object' && typeof v.index === 'number') v.index = -1;
-        maskIndices(v);
+  // Asset-batch review MAJOR 1: texture indices are SEMANTIC BINDINGS — never
+  // mask them. Build the EXPECTED source->output texture mapping implied by
+  // the normal-slot drop (dense, order-preserving over surviving textures),
+  // apply it to a source copy, and require EXACT equality with the output.
+  const droppedTex = new Set();
+  for (const m of sj.materials || []) {
+    if (typeof m.normalTexture?.index === 'number') droppedTex.add(m.normalTexture.index);
+  }
+  for (const mp of sj.extensions?.VRM?.materialProperties || []) {
+    for (const [prop, ti] of Object.entries(mp.textureProperties || {})) {
+      if (/_BumpMap$/.test(prop) && typeof ti === 'number') droppedTex.add(ti);
+    }
+  }
+  const texRemap = new Map();
+  {
+    let next = 0;
+    for (let i = 0; i < (sj.textures || []).length; i++) if (!droppedTex.has(i)) texRemap.set(i, next++);
+  }
+  let remapFailure = null;
+  const remapRefs = (node) => {
+    if (Array.isArray(node)) { node.forEach(remapRefs); return; }
+    if (node === null || typeof node !== 'object') return;
+    for (const [k, v] of Object.entries(node)) {
+      if (/texture$/i.test(k) && v && typeof v === 'object' && typeof v.index === 'number') {
+        if (!texRemap.has(v.index)) remapFailure = `surviving slot ${k} referenced dropped texture ${v.index}`;
+        else v.index = texRemap.get(v.index);
       }
-    };
-    maskIndices(c);
-    return c;
-  });
-  check('S9', jeq(normMats(sj.materials, true), normMats(oj.materials, false)),
-    'materials JSON drifted beyond the expected normal-slot drop (texture-diet mode)');
+      remapRefs(v);
+    }
+  };
+  const expectedMats = JSON.parse(JSON.stringify(sj.materials || []));
+  for (const m of expectedMats) delete m.normalTexture;
+  remapRefs(expectedMats);
+  check('S9', !remapFailure && jeq(expectedMats, oj.materials),
+    remapFailure ?? 'materials differ from the EXPECTED normal-drop transform (bindings compared exactly)');
+  // MAJOR 2: VRM0 materialProperties live under extensions.VRM — apply the
+  // same expected transform there (_BumpMap removed, other textureProperties
+  // + meta.texture remapped) and require exact equality with the output.
+  if (sj.extensions?.VRM || oj.extensions?.VRM) {
+    const expVrm0 = JSON.parse(JSON.stringify(sj.extensions?.VRM ?? null));
+    let vrm0Failure = null;
+    if (expVrm0?.materialProperties) {
+      for (const mp of expVrm0.materialProperties) {
+        for (const [prop, ti] of Object.entries(mp.textureProperties || {})) {
+          if (/_BumpMap$/.test(prop)) { delete mp.textureProperties[prop]; continue; }
+          if (typeof ti === 'number') {
+            if (!texRemap.has(ti)) vrm0Failure = `VRM0 ${prop} referenced dropped texture ${ti}`;
+            else mp.textureProperties[prop] = texRemap.get(ti);
+          }
+        }
+      }
+    }
+    if (typeof expVrm0?.meta?.texture === 'number') {
+      if (!texRemap.has(expVrm0.meta.texture)) vrm0Failure = 'VRM0 meta.texture was dropped';
+      else expVrm0.meta.texture = texRemap.get(expVrm0.meta.texture);
+    }
+    check('S9.VRM0', !vrm0Failure && jeq(expVrm0, oj.extensions?.VRM ?? null),
+      vrm0Failure ?? 'VRM0 materialProperties differ from the expected _BumpMap-drop transform');
+  }
 }
 
 // --- S10 nodes + scenes raw --------------------------------------------------
