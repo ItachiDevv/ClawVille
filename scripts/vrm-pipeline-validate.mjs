@@ -182,21 +182,29 @@ check('S11', jeq(skinsNorm(sj), skinsNorm(oj)), 'skins JSON drifted (joints list
   }
   for (const [mesh, jointCount] of meshJointCount) {
     for (const prim of mesh.listPrimitives()) {
-      // collect continuous paired sets
+      // Round-3: enumerate ALL present JOINTS_n/WEIGHTS_n suffixes first —
+      // set numbers must be identical between the two families and
+      // consecutive from 0 (sets {0,3} with {1,2} absent is a defect).
+      const sems = prim.listSemantics();
+      const setNums = (prefix) => sems
+        .map((s) => s.match(new RegExp(`^${prefix}_(\\d+)$`)))
+        .filter(Boolean).map((m) => Number(m[1])).sort((a, b) => a - b);
+      const jNums = setNums('JOINTS'), wNums = setNums('WEIGHTS');
+      if (JSON.stringify(jNums) !== JSON.stringify(wNums)) say(`JOINTS sets [${jNums}] != WEIGHTS sets [${wNums}]`);
+      jNums.forEach((n, i) => { if (n !== i) say(`non-consecutive skin set numbering: JOINTS_${n} at position ${i}`); });
       const sets = [];
-      for (let set = 0; ; set++) {
+      for (const set of jNums) {
         const jAcc = prim.getAttribute(`JOINTS_${set}`);
         const wAcc = prim.getAttribute(`WEIGHTS_${set}`);
-        if (!jAcc && !wAcc) {
-          // continuity: no higher-numbered set may exist past a gap
-          if (prim.getAttribute(`JOINTS_${set + 1}`) || prim.getAttribute(`WEIGHTS_${set + 1}`)) say(`set ${set} missing but set ${set + 1} present`);
-          break;
-        }
-        if (!jAcc || !wAcc) { say(`JOINTS_${set}/WEIGHTS_${set} presence mismatch`); break; }
+        if (!jAcc || !wAcc) { say(`JOINTS_${set}/WEIGHTS_${set} presence mismatch`); continue; }
         if (jAcc.getType() !== 'VEC4' || wAcc.getType() !== 'VEC4') say(`set ${set}: not VEC4`);
         if (!JOINT_CTYPES.has(jAcc.getComponentType())) say(`set ${set}: joints componentType ${jAcc.getComponentType()}`);
+        if (jAcc.getNormalized()) say(`set ${set}: JOINTS must not be normalized`);
         const wc = wAcc.getComponentType();
-        if (!(wc === 5126 || (WEIGHT_CTYPES_NORM.has(wc) && wAcc.getNormalized()))) say(`set ${set}: weights componentType ${wc} norm=${wAcc.getNormalized()}`);
+        // spec-allowed forms: float32 non-normalized, or u8/u16 normalized
+        if (!((wc === 5126 && !wAcc.getNormalized()) || (WEIGHT_CTYPES_NORM.has(wc) && wAcc.getNormalized()))) {
+          say(`set ${set}: weights componentType ${wc} norm=${wAcc.getNormalized()} not a spec-allowed form`);
+        }
         const posCount = prim.getAttribute('POSITION')?.getCount();
         if (jAcc.getCount() !== posCount || wAcc.getCount() !== posCount) say(`set ${set}: count mismatch vs POSITION`);
         sets.push([jAcc, wAcc]);
@@ -222,7 +230,9 @@ check('S11', jeq(skinsNorm(sj), skinsNorm(oj)), 'skins JSON drifted (joints list
           if (bad) break;
         }
         if (bad) break;
-        if (sum > 0 && Math.abs(sum - 1) > 0.02) { say(`vert ${v}: aggregate weight sum ${sum.toFixed(3)}`); break; }
+        // Round-3: a zero aggregate sum is a defect too (an unweighted vertex
+        // on a skinned primitive), not a tolerated case.
+        if (Math.abs(sum - 1) > 0.02) { say(`vert ${v}: aggregate weight sum ${sum.toFixed(3)}`); break; }
       }
     }
   }
@@ -248,7 +258,14 @@ check('S11', jeq(skinsNorm(sj), skinsNorm(oj)), 'skins JSON drifted (joints list
     const img = glb.json.images?.[ti];
     const bv = img?.bufferView != null ? glb.json.bufferViews?.[img.bufferView] : null;
     if (!bv) return { unresolvable: label };
-    return glb.bin.subarray(bv.byteOffset ?? 0, (bv.byteOffset ?? 0) + bv.byteLength);
+    // Round-3: strict range validation — Buffer.subarray clamps, so two
+    // out-of-range thumbnails could otherwise compare equal as empty buffers.
+    const off = bv.byteOffset ?? 0, len = bv.byteLength;
+    if ((bv.buffer ?? 0) !== 0 || !Number.isSafeInteger(off) || off < 0 ||
+        !Number.isSafeInteger(len) || len <= 0 || off + len > glb.bin.length) {
+      return { unresolvable: label };
+    }
+    return glb.bin.subarray(off, off + len);
   };
   const springOk = jeq(springNames(sj), springNames(oj));
   const ta = thumbBytes(s, 'source'), tb = thumbBytes(o, 'output');

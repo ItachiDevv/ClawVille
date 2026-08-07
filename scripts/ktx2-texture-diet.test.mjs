@@ -130,6 +130,16 @@ console.log('ktx2-texture-diet adversarial fixtures:');
   run('refuse-known-key-wrong-path', j, baseBinParts(), 2);
 }
 
+// 6b2. ARRAY along a schema-known path (round-3): pbrMetallicRoughness as an
+//      array must NOT collapse to the known path string => refuse.
+{
+  const j = baseJson();
+  j.materials[0].pbrMetallicRoughness = [{ baseColorTexture: { index: 1 } }];
+  delete j.materials[0].normalTexture;
+  j.materials.push({ normalTexture: { index: 0 } }); // keep a valid normal target
+  run('refuse-array-along-known-path', j, baseBinParts(), 2);
+}
+
 // 6c. Extension object present but not declared/allowed => refuse.
 {
   const j = baseJson();

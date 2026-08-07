@@ -44,8 +44,12 @@ const THUMB_A = Buffer.concat([Buffer.alloc(48, 0xaa), Buffer.alloc(16, 0x01)]);
 const THUMB_B = Buffer.concat([Buffer.alloc(48, 0xaa), Buffer.alloc(16, 0x02)]); // differs only after byte 48
 
 /**
- * Build a minimal VRM: nodes [root, hips(joint), body(mesh+skin)], one skin.
- * opts: { joints0, weights0, joints1?, weights1?, twoSkins?, meshSkin?, thumb }
+ * Build a minimal VRM: nodes [root, hips(joint), spine, body(mesh+skin)].
+ * opts: {
+ *   sets: Array<[jointsArr, weightsArr] | null>  — skin sets by index (null = gap),
+ *   jointsNormalized?, twoSkins?, meshSkin?, thumb,
+ *   mutate?: (json) => void  — post-build JSON tamper hook
+ * }
  */
 function vrmJson(opts) {
   const binParts = [];
@@ -60,13 +64,12 @@ function vrmJson(opts) {
   };
   const posAcc = addAcc(POS, 5126, 3, 'VEC3');
   accessors[posAcc].min = [0, 0, 0]; accessors[posAcc].max = [0, 0, 0];
-  const j0Acc = addAcc(u8(opts.joints0), 5121, 3, 'VEC4');
-  const w0Acc = addAcc(f32(opts.weights0), 5126, 3, 'VEC4');
-  const attrs = { POSITION: posAcc, JOINTS_0: j0Acc, WEIGHTS_0: w0Acc };
-  if (opts.joints1) {
-    attrs.JOINTS_1 = addAcc(u8(opts.joints1), 5121, 3, 'VEC4');
-    attrs.WEIGHTS_1 = addAcc(f32(opts.weights1), 5126, 3, 'VEC4');
-  }
+  const attrs = { POSITION: posAcc };
+  opts.sets.forEach((set, i) => {
+    if (!set) return; // deliberate gap
+    attrs[`JOINTS_${i}`] = addAcc(u8(set[0]), 5121, 3, 'VEC4', i === 0 && opts.jointsNormalized);
+    attrs[`WEIGHTS_${i}`] = addAcc(f32(set[1]), 5126, 3, 'VEC4');
+  });
   const ibmAcc = addAcc(opts.twoSkins ? IBM2 : IBM1, 5126, opts.twoSkins ? 2 : 1, 'MAT4');
   const ibmAccA = opts.twoSkins ? addAcc(IBM1, 5126, 1, 'MAT4') : ibmAcc;
   // thumbnail image
@@ -85,7 +88,8 @@ function vrmJson(opts) {
     ? [{ joints: [1], inverseBindMatrices: ibmAccA }, { joints: [1, 2], inverseBindMatrices: ibmAcc }]
     : [{ joints: [1], inverseBindMatrices: ibmAcc }];
   const binLen = binParts.reduce((s, p) => s + p.length + ((4 - (p.length % 4)) % 4), 0);
-  const json = {
+  let json;
+  json = {
     asset: { version: '2.0' },
     scene: 0,
     scenes: [{ nodes: [0] }],
@@ -105,6 +109,7 @@ function vrmJson(opts) {
       },
     },
   };
+  if (opts.mutate) opts.mutate(json);
   return { json, binParts };
 }
 
@@ -115,11 +120,12 @@ function write(name, opts) {
   return f;
 }
 
-function run(name, a, b, expectExit, mustMention) {
+function run(name, a, b, expectExits, mustMention) {
+  const wanted = Array.isArray(expectExits) ? expectExits : [expectExits];
   const r = spawnSync('bun', [TOOL, a, b], { encoding: 'utf8', timeout: 120_000 });
   const out = r.stdout + r.stderr;
-  const ok = r.status === expectExit && (!mustMention || out.includes(mustMention));
-  console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name} (exit ${r.status}, want ${expectExit}${mustMention ? `, mentions ${mustMention}` : ''})`);
+  const ok = wanted.includes(r.status) && (!mustMention || out.includes(mustMention));
+  console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name} (exit ${r.status}, want ${wanted.join('|')}${mustMention ? `, mentions ${mustMention}` : ''})`);
   if (!ok) { failures++; console.log(out.split('\n').filter((l) => /FAIL|error/.test(l)).slice(0, 6).map((l) => `        ${l}`).join('\n')); }
 }
 
@@ -127,28 +133,49 @@ console.log('vrm-pipeline-validate fixtures:');
 
 const W1 = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0];   // full weight on influence 0
 const J0 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+const half = [0.5, 0, 0, 0, 0.5, 0, 0, 0, 0.5, 0, 0, 0];
 
 // 1. Identity on a healthy single-skin VRM => PASS.
-const base = write('base', { joints0: J0, weights0: W1, thumb: THUMB_A });
+const base = write('base', { sets: [[J0, W1]], thumb: THUMB_A });
 run('identity-pass', base, base, 0);
 
 // 2. Thumbnail differs ONLY after byte 48 => S13 must FAIL.
-const thumbTail = write('thumb-tail', { joints0: J0, weights0: W1, thumb: THUMB_B });
+const thumbTail = write('thumb-tail', { sets: [[J0, W1]], thumb: THUMB_B });
 run('thumbnail-tail-drift', base, thumbTail, 3, 'S13');
 
 // 3. Two skins with different joint counts; mesh bound to the 1-joint skin but
 //    JOINTS references joint 1 => S12 must FAIL (a global-max check would pass).
 const twoSkinsBad = write('two-skins-bad', {
-  joints0: [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0], weights0: W1,
+  sets: [[[1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0], W1]],
   twoSkins: true, meshSkin: 0, thumb: THUMB_A,
 });
 run('two-skins-joint-bounds', twoSkinsBad, twoSkinsBad, 3, 'S12');
 
 // 4. Two weight sets each summing 0.5 (aggregate 1.0) => S12 must PASS
 //    (a per-set sum check would fail this valid asset).
-const half = [0.5, 0, 0, 0, 0.5, 0, 0, 0, 0.5, 0, 0, 0];
-const multiSet = write('multi-set', { joints0: J0, weights0: half, joints1: J0, weights1: half, thumb: THUMB_A });
+const multiSet = write('multi-set', { sets: [[J0, half], [J0, half]], thumb: THUMB_A });
 run('multi-set-aggregate-weights', multiSet, multiSet, 0);
+
+// 5. Round-3: GAP in set numbering (JOINTS_0 + JOINTS_2, no set 1) => S12 FAIL.
+const gapSets = write('gap-sets', { sets: [[J0, half], null, [J0, half]], thumb: THUMB_A });
+run('gap-set-numbering', gapSets, gapSets, 3, 'S12');
+
+// 6. Round-3: JOINTS accessor normalized:true => S12 FAIL.
+const jNorm = write('joints-normalized', { sets: [[J0, W1]], jointsNormalized: true, thumb: THUMB_A });
+run('joints-normalized', jNorm, jNorm, 3, 'S12');
+
+// 7. Round-3: a vertex with aggregate weight sum ZERO => S12 FAIL.
+const zeroSum = write('zero-sum', { sets: [[J0, [1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]]], thumb: THUMB_A });
+run('zero-aggregate-weight', zeroSum, zeroSum, 3, 'S12');
+
+// 8. Round-3: thumbnail bufferView range beyond the BIN on BOTH sides — the
+//    old clamped subarray compared two empty buffers equal; must now FAIL
+//    (either S13 unresolvable => exit 3, or a fail-closed read error => 2).
+const thumbOOR = write('thumb-oor', {
+  sets: [[J0, W1]], thumb: THUMB_A,
+  mutate: (j) => { j.bufferViews[j.images[0].bufferView].byteOffset = 1_000_000; },
+});
+run('thumbnail-out-of-range', thumbOOR, thumbOOR, [2, 3]);
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(failures ? `\nRESULT: FAIL (${failures})` : '\nRESULT: PASS');

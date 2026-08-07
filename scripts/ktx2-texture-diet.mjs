@@ -160,8 +160,11 @@ function applyTransform(json) {
   //    (round-2 F1: terminal-key matching accepted wrong-path slots that were
   //    then never remapped). Scan skips `extras`.
   materials.forEach((m, mi) => {
+    // Array indices are PRESERVED in the path (round-3: an array along a
+    // schema-known path, e.g. pbrMetallicRoughness as an array, must NOT
+    // collapse to the known path string — it fails the exact-path check).
     const scan = (node, pathParts) => {
-      if (Array.isArray(node)) { node.forEach((v, i) => scan(v, pathParts)); return; }
+      if (Array.isArray(node)) { node.forEach((v, i) => scan(v, [...pathParts, String(i)])); return; }
       if (node === null || typeof node !== 'object') return;
       for (const [key, val] of Object.entries(node)) {
         if (key === 'extras') continue;
