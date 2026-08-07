@@ -402,10 +402,38 @@ async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   // tex1024 may arrive as a positional `tex1024` token or a `--tex1024` flag.
   const tex1024 = rawArgs.some((a) => a === '--tex1024' || a === 'tex1024');
-  const positional = rawArgs.filter((a) => a !== '--tex1024' && a !== 'tex1024');
+  // Rung-2 gate 3 (census 2026-08-07): target band + simplifier error budget
+  // are CLI knobs so the RD ladder can probe rungs per asset. Defaults preserve
+  // the original hermes-era behavior (40k band, error 0.01) exactly.
+  let cliTargetTris: number | null = null;
+  let cliError: number | null = null;
+  const positional: string[] = [];
+  for (let i = 0; i < rawArgs.length; i++) {
+    const a = rawArgs[i];
+    if (a === '--tex1024' || a === 'tex1024') continue;
+    if (a.startsWith('--target-tris')) {
+      cliTargetTris = Number(a.includes('=') ? a.split('=')[1] : rawArgs[++i]);
+      continue;
+    }
+    if (a.startsWith('--error')) {
+      cliError = Number(a.includes('=') ? a.split('=')[1] : rawArgs[++i]);
+      continue;
+    }
+    positional.push(a);
+  }
+  if (cliTargetTris !== null && !(Number.isFinite(cliTargetTris) && cliTargetTris >= 1000)) {
+    console.error(`--target-tris must be a number >= 1000; got ${cliTargetTris}`);
+    process.exit(1);
+  }
+  if (cliError !== null && !(Number.isFinite(cliError) && cliError > 0 && cliError <= 0.2)) {
+    console.error(`--error must be in (0, 0.2]; got ${cliError}`);
+    process.exit(1);
+  }
   const [inRel, ratioStr, outRel] = positional;
   if (!inRel || !ratioStr || !outRel) {
-    console.error('Usage: bun run scripts/decimate-vrm.ts <input.vrm> <ratio 0..1> <output.vrm> [tex1024|--tex1024]');
+    console.error(
+      'Usage: bun run scripts/decimate-vrm.ts <input.vrm> <ratio 0..1> <output.vrm> [tex1024|--tex1024] [--target-tris N] [--error E]',
+    );
     process.exit(1);
   }
   const ratio = Number(ratioStr);
@@ -434,11 +462,14 @@ async function main(): Promise<void> {
   }
   fs.mkdirSync(path.dirname(outFile), { recursive: true });
 
-  const targetTris = 40000;
-  const minTris = 38000;
-  const maxTris = 42000;
+  const targetTris = cliTargetTris ?? 40000;
+  const minTris = Math.round(targetTris * 0.95);
+  const maxTris = Math.round(targetTris * 1.05);
+  const simplifyError = cliError ?? 0.01;
 
-  console.log(`\n=== decimate-vrm  ratio=${ratio}  tex1024=${tex1024}  ${isProto ? '(PROTOTYPE)' : '(SHIP over original)'} ===`);
+  console.log(
+    `\n=== decimate-vrm  ratio=${ratio}  tex1024=${tex1024}  band=[${minTris}-${maxTris}]  error=${simplifyError}  ${isProto ? '(PROTOTYPE)' : '(SHIP over original)'} ===`,
+  );
   console.log(`  in : ${inRel}`);
   console.log(`  out: ${outRel}`);
 
@@ -463,7 +494,7 @@ async function main(): Promise<void> {
   // simplify: per-primitive, keeps skeleton + skin. lockBorder protects
   // silhouette/open edges (wings). error is meshoptimizer's absolute bound.
   const transforms: Array<Parameters<typeof doc.transform>[number]> = [
-    simplify({ simplifier: MeshoptSimplifier, ratio, error: 0.01, lockBorder: true }),
+    simplify({ simplifier: MeshoptSimplifier, ratio, error: simplifyError, lockBorder: true }),
   ];
   if (tex1024) {
     // Track-E: downscale every texture to a 1024px max edge + re-encode WebP.
