@@ -425,10 +425,17 @@ async function main(): Promise<void> {
     if (a.includes('=')) return [Number(a.slice(name.length + 1)), i];
     return [Number(rawArgs[i + 1]), i + 1];
   };
+  const takeBool = (name: string): void => {
+    if (seen.has(name)) {
+      console.error(`duplicate ${name}`);
+      process.exit(1);
+    }
+    seen.add(name);
+  };
   for (let i = 0; i < rawArgs.length; i++) {
     const a = rawArgs[i];
-    if (a === '--tex1024' || a === 'tex1024') continue;
-    if (a === '--unsafe-error') { unsafeError = true; continue; }
+    if (a === '--tex1024' || a === 'tex1024') { takeBool('--tex1024'); continue; }
+    if (a === '--unsafe-error') { takeBool('--unsafe-error'); unsafeError = true; continue; }
     if (a === '--target-tris' || a.startsWith('--target-tris=')) {
       [cliTargetTris, i] = takeValue(a, '--target-tris', i);
       continue;
@@ -437,11 +444,15 @@ async function main(): Promise<void> {
       [cliError, i] = takeValue(a, '--error', i);
       continue;
     }
-    if (a.startsWith('--')) {
+    if (a.startsWith('-')) {
       console.error(`unknown flag ${a}`);
       process.exit(1);
     }
     positional.push(a);
+  }
+  if (positional.length > 3) {
+    console.error(`unexpected extra arguments: ${positional.slice(3).join(' ')}`);
+    process.exit(1);
   }
   if (cliTargetTris !== null && !(Number.isSafeInteger(cliTargetTris) && cliTargetTris >= 1000)) {
     console.error(`--target-tris must be an integer >= 1000; got ${cliTargetTris}`);

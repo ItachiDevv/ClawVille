@@ -87,7 +87,7 @@ const MATERIAL_TEXTURE_SLOTS = [
   [['extensions', 'VRMC_materials_mtoon', 'outlineWidthMultiplyTexture'], false],
   [['extensions', 'VRMC_materials_mtoon', 'uvAnimationMaskTexture'], false],
 ];
-const KNOWN_SLOT_KEYS = new Set(MATERIAL_TEXTURE_SLOTS.map((s) => s[0][s[0].length - 1]));
+const KNOWN_SLOT_PATHS = new Set(MATERIAL_TEXTURE_SLOTS.map((s) => s[0].join('.')));
 
 // ---------------------------------------------------------------------------
 // GLB parse
@@ -112,7 +112,32 @@ const { json: srcJson, bin } = parseGlb(src, inFile);
 for (const e of srcJson.extensionsUsed || []) {
   if (!ALLOWED_EXTENSIONS.has(e)) refuse(`unsupported extension ${e} (allow-list is fail-closed)`);
 }
+// Round-2 F1: also validate the ACTUAL extension object names document-wide
+// (extensionsUsed can under-declare). `extras` subtrees are skipped.
+{
+  const scanExtNames = (node) => {
+    if (Array.isArray(node)) { node.forEach(scanExtNames); return; }
+    if (node === null || typeof node !== 'object') return;
+    for (const [key, val] of Object.entries(node)) {
+      if (key === 'extras') continue;
+      if (key === 'extensions' && val && typeof val === 'object') {
+        for (const name of Object.keys(val)) {
+          if (!ALLOWED_EXTENSIONS.has(name)) refuse(`unsupported extension object "${name}" present in document`);
+        }
+      }
+      scanExtNames(val);
+    }
+  };
+  scanExtNames(srcJson);
+}
 if ((srcJson.buffers || []).length > 2) refuse('more than 2 buffers');
+// Round-2 F3/V2: a plain (non-meshopt) bufferView on a nonzero buffer is an
+// unsupported secondary-buffer layout — refuse up front rather than skipping.
+(srcJson.bufferViews || []).forEach((bv, i) => {
+  if (!bv.extensions?.EXT_meshopt_compression && (bv.buffer ?? 0) !== 0) {
+    refuse(`bufferView ${i} on secondary buffer ${bv.buffer} without meshopt — unsupported layout`);
+  }
+});
 
 // ---------------------------------------------------------------------------
 // The transform, as a pure function of a parsed JSON copy. Returns the new
@@ -131,19 +156,25 @@ function applyTransform(json) {
   const images = json.images || [];
   const bufferViews = json.bufferViews || [];
 
-  // 1. Unknown texture-ish keys in materials => refuse (scan skips `extras`).
-  const scanUnknown = (node, inExtras) => {
-    if (Array.isArray(node)) { node.forEach((v) => scanUnknown(v, inExtras)); return; }
-    if (node === null || typeof node !== 'object') return;
-    for (const [key, val] of Object.entries(node)) {
-      if (key === 'extras') continue;
-      if (/texture/i.test(key) && val && typeof val === 'object' && typeof val.index === 'number' && !KNOWN_SLOT_KEYS.has(key)) {
-        refuse(`unknown texture reference key "${key}" in materials`);
+  // 1. Texture-ish keys in materials must sit at an EXACT known slot path
+  //    (round-2 F1: terminal-key matching accepted wrong-path slots that were
+  //    then never remapped). Scan skips `extras`.
+  materials.forEach((m, mi) => {
+    const scan = (node, pathParts) => {
+      if (Array.isArray(node)) { node.forEach((v, i) => scan(v, pathParts)); return; }
+      if (node === null || typeof node !== 'object') return;
+      for (const [key, val] of Object.entries(node)) {
+        if (key === 'extras') continue;
+        const childPath = [...pathParts, key];
+        if (/texture/i.test(key) && val && typeof val === 'object' && typeof val.index === 'number' &&
+            !KNOWN_SLOT_PATHS.has(childPath.join('.'))) {
+          refuse(`texture reference at unknown path materials[${mi}].${childPath.join('.')}`);
+        }
+        scan(val, childPath);
       }
-      scanUnknown(val, inExtras);
-    }
-  };
-  scanUnknown(materials, false);
+    };
+    scan(m, []);
+  });
 
   // 2. Collect texture references from the schema-known sites.
   const refs = []; // {texIndex, isNormal, matIndex, path}
@@ -357,8 +388,15 @@ const errs = [];
     const b = declaredBytes(vJson, vBin, oImg.bufferView, `image ${oi} (out)`);
     if (a && b && !a.equals(b)) errs.push(`image ${si}->${oi}: bytes differ at declared offsets`);
   }
-  // V2 every output bufferView range valid (also covers views not referenced above).
-  (vJson.bufferViews || []).forEach((bv, i) => void declaredBytes(vJson, vBin, i, 'range-scan'));
+  // V2 every output bufferView range valid (also covers views not referenced
+  // above), and no non-meshopt view may sit on a secondary buffer.
+  (vJson.bufferViews || []).forEach((bv, i) => {
+    if (!bv.extensions?.EXT_meshopt_compression && (bv.buffer ?? 0) !== 0) {
+      errs.push(`output bufferView ${i} on secondary buffer ${bv.buffer} without meshopt`);
+      return;
+    }
+    void declaredBytes(vJson, vBin, i, 'range-scan');
+  });
   // V3 reference closure.
   (vJson.textures || []).forEach((tx, i) => {
     for (const s of [tx.source, tx.extensions?.KHR_texture_basisu?.source, tx.extensions?.EXT_texture_webp?.source]) {
@@ -375,6 +413,15 @@ const errs = [];
   });
   const vThumb = vJson.extensions?.VRMC_vrm?.meta?.thumbnailImage;
   if (vThumb != null && (vThumb < 0 || vThumb >= (vJson.images || []).length)) errs.push('VRM thumbnail ref out of range');
+  // V3b VRM0 texture references (round-2 F3): bare texture indices must close.
+  const vTexCount = (vJson.textures || []).length;
+  for (const [mi, mp] of (vJson.extensions?.VRM?.materialProperties || []).entries()) {
+    for (const [prop, ti] of Object.entries(mp.textureProperties || {})) {
+      if (typeof ti === 'number' && (ti < 0 || ti >= vTexCount)) errs.push(`VRM0 materialProperties[${mi}].${prop}: texture ref ${ti} out of range`);
+    }
+  }
+  const vrm0MetaTex = vJson.extensions?.VRM?.meta?.texture;
+  if (typeof vrm0MetaTex === 'number' && (vrm0MetaTex < 0 || vrm0MetaTex >= vTexCount)) errs.push('VRM0 meta.texture ref out of range');
   // V4 whole-JSON determinism: expected = transform re-run on a FRESH copy.
   const fresh = JSON.parse(JSON.stringify(srcJson));
   const t2 = applyTransform(fresh);

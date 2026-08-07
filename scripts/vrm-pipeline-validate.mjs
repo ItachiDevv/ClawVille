@@ -155,38 +155,74 @@ check('S7+S8', jeq(primSig(sDoc, sj), primSig(oDoc, oj)), 'primitive structure (
 check('S9', jeq(sj.materials, oj.materials), 'materials JSON drifted (count/order/props/mtoon)');
 
 // --- S10 nodes + scenes raw --------------------------------------------------
-check('S10', jeq(sj.nodes, oj.nodes) && jeq(sj.scenes, oj.scenes) && (sj.scene ?? 0) === (oj.scene ?? 0),
-  'nodes/scenes JSON drifted (TRS, children, mesh/skin indices, node extensions, scene roots)');
+check('S10', jeq(sj.nodes, oj.nodes) && jeq(sj.scenes, oj.scenes) && jeq(sj.scene, oj.scene),
+  'nodes/scenes JSON drifted (TRS, children, mesh/skin indices, node extensions, scene roots, default scene)');
 
 // --- S11 skins raw modulo IBM accessor index --------------------------------
 const skinsNorm = (j) => (j.skins || []).map((sk) => { const c = { ...sk }; delete c.inverseBindMatrices; return c; });
 check('S11', jeq(skinsNorm(sj), skinsNorm(oj)), 'skins JSON drifted (joints list / skeleton root)');
 
-// --- S12 output JOINTS/WEIGHTS validity -------------------------------------
+// --- S12 output JOINTS/WEIGHTS validity (round-2 rewrite) -------------------
+// Per-MESH actual skin binding (not a global max), joint bounds checked for
+// EVERY joint value, weight sums aggregated ACROSS all sets per vertex, and
+// accessor shape (VEC4, allowed component types, paired continuous sets)
+// validated.
 {
   let checked = 0; const problems = [];
-  for (const mesh of oDoc.getRoot().listMeshes()) {
+  const JOINT_CTYPES = new Set([5121, 5123]);            // u8, u16
+  const WEIGHT_CTYPES_NORM = new Set([5121, 5123]);      // u8/u16 normalized
+  const say = (msg) => { if (problems.length < 8) problems.push(msg); };
+  // mesh -> strictest joint count among the skins of nodes binding it
+  const meshJointCount = new Map();
+  for (const node of oDoc.getRoot().listNodes()) {
+    const mesh = node.getMesh(), skin = node.getSkin();
+    if (!mesh || !skin) continue;
+    const jc = skin.listJoints().length;
+    meshJointCount.set(mesh, Math.min(meshJointCount.get(mesh) ?? Infinity, jc));
+  }
+  for (const [mesh, jointCount] of meshJointCount) {
     for (const prim of mesh.listPrimitives()) {
+      // collect continuous paired sets
+      const sets = [];
       for (let set = 0; ; set++) {
         const jAcc = prim.getAttribute(`JOINTS_${set}`);
         const wAcc = prim.getAttribute(`WEIGHTS_${set}`);
-        if (!jAcc && !wAcc) break;
-        if (!jAcc || !wAcc) { problems.push(`JOINTS_${set}/WEIGHTS_${set} presence mismatch`); break; }
-        const joints = jAcc.getArray(), weights = wAcc.getArray();
-        const jointCount = Math.max(...oSkins.map((sk) => sk.listJoints().length), 0);
-        const wNorm = wAcc.getNormalized();
-        const wMax = wNorm ? (weights instanceof Uint8Array ? 255 : weights instanceof Uint16Array ? 65535 : 1) : 1;
-        for (let v = 0; v < wAcc.getCount(); v++) {
-          let sum = 0;
+        if (!jAcc && !wAcc) {
+          // continuity: no higher-numbered set may exist past a gap
+          if (prim.getAttribute(`JOINTS_${set + 1}`) || prim.getAttribute(`WEIGHTS_${set + 1}`)) say(`set ${set} missing but set ${set + 1} present`);
+          break;
+        }
+        if (!jAcc || !wAcc) { say(`JOINTS_${set}/WEIGHTS_${set} presence mismatch`); break; }
+        if (jAcc.getType() !== 'VEC4' || wAcc.getType() !== 'VEC4') say(`set ${set}: not VEC4`);
+        if (!JOINT_CTYPES.has(jAcc.getComponentType())) say(`set ${set}: joints componentType ${jAcc.getComponentType()}`);
+        const wc = wAcc.getComponentType();
+        if (!(wc === 5126 || (WEIGHT_CTYPES_NORM.has(wc) && wAcc.getNormalized()))) say(`set ${set}: weights componentType ${wc} norm=${wAcc.getNormalized()}`);
+        const posCount = prim.getAttribute('POSITION')?.getCount();
+        if (jAcc.getCount() !== posCount || wAcc.getCount() !== posCount) say(`set ${set}: count mismatch vs POSITION`);
+        sets.push([jAcc, wAcc]);
+      }
+      if (!sets.length) continue;
+      checked++;
+      const vertCount = sets[0][1].getCount();
+      const decoded = sets.map(([jAcc, wAcc]) => {
+        const weights = wAcc.getArray();
+        const wMax = wAcc.getNormalized() ? (weights instanceof Uint8Array ? 255 : weights instanceof Uint16Array ? 65535 : 1) : 1;
+        return { joints: jAcc.getArray(), weights, wMax };
+      });
+      for (let v = 0; v < vertCount; v++) {
+        let sum = 0; let bad = false;
+        for (const { joints, weights, wMax } of decoded) {
           for (let k = 0; k < 4; k++) {
-            const jv = joints[v * 4 + k], wv = weights[v * 4 + k] / wMax;
-            if (!Number.isFinite(wv) || wv < 0) { problems.push(`vert ${v}: bad weight ${wv}`); v = wAcc.getCount(); break; }
-            if (wv > 0 && jv >= jointCount) { problems.push(`vert ${v}: joint ${jv} >= ${jointCount}`); v = wAcc.getCount(); break; }
+            const jv = joints[v * 4 + k];
+            const wv = weights[v * 4 + k] / wMax;
+            if (jv >= jointCount) { say(`vert ${v}: joint ${jv} >= skin joint count ${jointCount}`); bad = true; break; }
+            if (!Number.isFinite(wv) || wv < 0) { say(`vert ${v}: bad weight ${wv}`); bad = true; break; }
             sum += wv;
           }
-          if (sum > 0 && Math.abs(sum - 1) > 0.02) { problems.push(`vert ${v}: weight sum ${sum.toFixed(3)}`); break; }
+          if (bad) break;
         }
-        checked++;
+        if (bad) break;
+        if (sum > 0 && Math.abs(sum - 1) > 0.02) { say(`vert ${v}: aggregate weight sum ${sum.toFixed(3)}`); break; }
       }
     }
   }
@@ -204,17 +240,24 @@ check('S11', jeq(skinsNorm(sj), skinsNorm(oj)), 'skins JSON drifted (joints list
       colliders: (sb.colliders || []).map((c) => nn(c.node)),
     };
   };
-  const thumbBytes = (glb) => {
+  // Full-buffer comparison (round-2 F6: truncated hashes let thumbnails
+  // sharing a header pass). Unresolvable-but-declared thumbnails are a FAIL.
+  const thumbBytes = (glb, label) => {
     const ti = glb.json.extensions?.VRMC_vrm?.meta?.thumbnailImage;
-    if (ti == null) return null;
+    if (ti == null) return null; // legitimately absent
     const img = glb.json.images?.[ti];
-    if (!img || img.bufferView == null) return 'missing';
-    const bv = glb.json.bufferViews[img.bufferView];
-    return glb.bin.subarray(bv.byteOffset ?? 0, (bv.byteOffset ?? 0) + bv.byteLength).toString('base64').slice(0, 64);
+    const bv = img?.bufferView != null ? glb.json.bufferViews?.[img.bufferView] : null;
+    if (!bv) return { unresolvable: label };
+    return glb.bin.subarray(bv.byteOffset ?? 0, (bv.byteOffset ?? 0) + bv.byteLength);
   };
   const springOk = jeq(springNames(sj), springNames(oj));
-  const thumbOk = thumbBytes(s) === thumbBytes(o);
-  check('S13', springOk && thumbOk, !springOk ? 'spring-bone node resolution drifted' : 'thumbnail image bytes drifted');
+  const ta = thumbBytes(s, 'source'), tb = thumbBytes(o, 'output');
+  let thumbOk, thumbMsg;
+  if (ta === null && tb === null) { thumbOk = true; }
+  else if (ta?.unresolvable || tb?.unresolvable) { thumbOk = false; thumbMsg = `thumbnail declared but unresolvable in ${ta?.unresolvable ?? tb?.unresolvable}`; }
+  else if (ta === null || tb === null) { thumbOk = false; thumbMsg = 'thumbnail presence drifted'; }
+  else { thumbOk = ta.equals(tb); thumbMsg = 'thumbnail image bytes drifted'; }
+  check('S13', springOk && thumbOk, !springOk ? 'spring-bone node resolution drifted' : thumbMsg);
 }
 
 console.log(failures.length ? `\nRESULT: FAIL (${failures.join(', ')})` : '\nRESULT: PASS');

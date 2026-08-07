@@ -122,6 +122,29 @@ console.log('ktx2-texture-diet adversarial fixtures:');
   });
 }
 
+// 6b. KNOWN slot key at a WRONG path => refuse (round-2 F1: exact-path check).
+{
+  const j = baseJson();
+  j.extensionsUsed = ['KHR_materials_transmission'];
+  j.materials[0].extensions = { KHR_materials_transmission: { baseColorTexture: { index: 1 } } };
+  run('refuse-known-key-wrong-path', j, baseBinParts(), 2);
+}
+
+// 6c. Extension object present but not declared/allowed => refuse.
+{
+  const j = baseJson();
+  j.materials[0].extensions = { MSFT_fancy_material: { foo: 1 } };
+  run('refuse-undeclared-extension-object', j, baseBinParts(), 2);
+}
+
+// 6d. Plain bufferView on a secondary buffer => refuse.
+{
+  const j = baseJson();
+  j.buffers.push({ byteLength: 8 });
+  j.bufferViews.push({ buffer: 1, byteOffset: 0, byteLength: 8 });
+  run('refuse-secondary-buffer-view', j, baseBinParts(), 2);
+}
+
 // 7. No normal map => refuse.
 { const j = baseJson(); delete j.materials[0].normalTexture; run('refuse-no-normal', j, baseBinParts(), 2); }
 
@@ -142,5 +165,5 @@ console.log('ktx2-texture-diet adversarial fixtures:');
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });
-console.log(failures ? `\nRESULT: FAIL (${failures})` : '\nRESULT: PASS (8 fixtures)');
+console.log(failures ? `\nRESULT: FAIL (${failures})` : '\nRESULT: PASS');
 process.exit(failures ? 1 : 0);
