@@ -134,7 +134,8 @@ attribute (WEIGHTS float32 VEC4 = 16B/vert) with no meshopt — hence the huge m
 the chibis' ONLY live skin (1 skin, node-referenced) — and `assets-optimize.ts` calls the SAME
 wrapper, so "the shipping chain is safe" is an assumption the skin-safety gate (§Gates 1) must
 prove, not a fact. Numbers are optimistic (a retained skin + IBM adds bytes back): call it
-**≤0.45MB each, MODELLED save ≈ 2.1MB combined**, credited only after the exact-chain sibling run.
+**~0.45MB each (approximate), MODELLED save ≈ 2.1MB combined as a planning estimate**, credited
+only after the exact-chain sibling run.
 
 Handoff's stale-number warning confirmed: these are ~1.5–1.6MB now (plan's ~1.06MB row is dead).
 Geometry is already sane (24–26k verts on 40k tris — welded); the weight is UNCOMPRESSED
@@ -228,15 +229,15 @@ here is believed pre-reveal-critical. Step-4 probe ratchets will attach the actu
 | Bucket | Save | Basis |
 |---|---|---|
 | B1 seven showpiece VRMs | **6.1MB** at the reachable ~90k rung (more only if raised-error per-asset knees pass founder eyes) | MODELLED dry-run |
-| B2 chibis | **≤2.1MB** | MODELLED dry-run (−76% but skin was lost; exact chain will land above) |
+| B2 chibis | **≈2.1MB** (planning estimate) | MODELLED dry-run (−76% but skin was lost; exact chain sets the real row) |
 | B3/C tekk normal | 0.33MB | census bytes, drop-test pending |
 | B4 cove interior | **12.29MB** | MODELLED dry-run (−68.4%) |
 | B4 shisha | **1.13MB** | MODELLED dry-run (−71.6%) |
 | B4 small set + buildings + land structures + lobster base (12 assets, marginals skipped) | **2.91MB** | MODELLED dry-run batch |
 | B4 lobster sea-creature dedupe | 1.2MB | census + loader wiring VERIFIED (clip GLBs consumed as animations[0] only) |
-| C character normals (plush/spongebob/pearl/dutchman) | 3.3–4.2MB | census bytes; dutchman+pearl bias to downsize (critique #9) |
+| C character normals (plush/spongebob/pearl/dutchman) | 3.50–4.18MB | census bytes; dutchman+pearl bias to downsize (critique #9) |
 | C pavilion | 0.65–1.0MB | census bytes, per-map A/B pending |
-| **Total** | **≈ 30–31.5MB** of served asset weight — ALL of it MODELLED or census-derived, NONE yet shipping-measured (critique #14: sandy removed, arithmetic corrected, "measured" label retired) |  |
+| **Total** | **≈ 30.2–31.2MB** of served asset weight (fixed subtotal 23.96MB + B2 ≈2.10 + C characters 3.50–4.18 + pavilion 0.65–1.00; arithmetic per Codex re-verdict #2) — ALL MODELLED or census-derived, NONE yet shipping-measured |  |
 
 M2 itself freezes ONLY from exact-shipping-chain rows (temporary siblings through the real
 pipeline, §Gates 2) at the end of the rung — the table above only picks execution order (plan §2).
