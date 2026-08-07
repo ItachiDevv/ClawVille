@@ -44,8 +44,18 @@ import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
 import { MeshoptDecoder, MeshoptEncoder } from 'meshoptimizer';
 
+const flagArgs = process.argv.slice(2).filter((a) => a.startsWith('--'));
+// --expect-texture-diet: the output came from ktx2-texture-diet (normal-slot
+// drop). S9 then compares materials with the INTENDED change normalized out
+// (normalTexture / VRM0 _BumpMap removed on the source side; texture .index
+// values masked on both sides since the diet remaps them) — every OTHER
+// material property must still match exactly. All other checks stay strict.
+const expectTextureDiet = flagArgs.includes('--expect-texture-diet');
+for (const f of flagArgs) {
+  if (f !== '--expect-texture-diet') { console.error(`unknown flag ${f}`); process.exit(2); }
+}
 const [srcFile, outFile] = process.argv.slice(2).filter((a) => !a.startsWith('--'));
-if (!srcFile || !outFile) { console.error('Usage: bun scripts/vrm-pipeline-validate.mjs <source.vrm> <output.vrm>'); process.exit(2); }
+if (!srcFile || !outFile) { console.error('Usage: bun scripts/vrm-pipeline-validate.mjs <source.vrm> <output.vrm> [--expect-texture-diet]'); process.exit(2); }
 
 function parseGlb(file) {
   const buf = fs.readFileSync(file);
@@ -152,7 +162,26 @@ const primSig = (doc, json) => {
 check('S7+S8', jeq(primSig(sDoc, sj), primSig(oDoc, oj)), 'primitive structure (attrs/mode/material-index/morph-target semantics) drifted');
 
 // --- S9 materials raw --------------------------------------------------------
-check('S9', jeq(sj.materials, oj.materials), 'materials JSON drifted (count/order/props/mtoon)');
+if (!expectTextureDiet) {
+  check('S9', jeq(sj.materials, oj.materials), 'materials JSON drifted (count/order/props/mtoon)');
+} else {
+  const normMats = (mats, dropNormal) => (mats || []).map((m) => {
+    const c = JSON.parse(JSON.stringify(m));
+    if (dropNormal) delete c.normalTexture;
+    const maskIndices = (node) => {
+      if (Array.isArray(node)) { node.forEach(maskIndices); return; }
+      if (node === null || typeof node !== 'object') return;
+      for (const [k, v] of Object.entries(node)) {
+        if (/texture$/i.test(k) && v && typeof v === 'object' && typeof v.index === 'number') v.index = -1;
+        maskIndices(v);
+      }
+    };
+    maskIndices(c);
+    return c;
+  });
+  check('S9', jeq(normMats(sj.materials, true), normMats(oj.materials, false)),
+    'materials JSON drifted beyond the expected normal-slot drop (texture-diet mode)');
+}
 
 // --- S10 nodes + scenes raw --------------------------------------------------
 check('S10', jeq(sj.nodes, oj.nodes) && jeq(sj.scenes, oj.scenes) && jeq(sj.scene, oj.scene),
