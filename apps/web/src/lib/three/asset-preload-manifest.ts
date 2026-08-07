@@ -132,7 +132,7 @@ export const WANDERING_VRM_PATHS: readonly string[] = [
   // the cache. hermes/tekk = ?v=2 (geom decimate); chibis = ?v=2→?v=3 (geom + tex).
   '/avatars/hermes-female.vrm?v=2',
   '/avatars/hermes-male.vrm?v=2',
-  '/avatars/tekk.vrm?v=2',
+  '/avatars/tekk-nonorm.vrm',
   '/avatars/eliza-chibi.vrm?v=3',
   '/avatars/milady-chibi.vrm?v=3',
 ] as const;
@@ -154,7 +154,7 @@ export const PLAYER_VRM_PATHS: readonly string[] = [
   // Identical ?v scheme as WANDERING_VRM_PATHS above; MUST match the registry.
   '/avatars/hermes-female.vrm?v=2',
   '/avatars/hermes-male.vrm?v=2',
-  '/avatars/tekk.vrm?v=2',
+  '/avatars/tekk-nonorm.vrm',
   '/avatars/eliza-chibi.vrm?v=3',
   '/avatars/milady-chibi.vrm?v=3',
 ] as const;
@@ -165,11 +165,11 @@ export const PLAYER_VRM_PATHS: readonly string[] = [
 
 /** SpongeBob character GLBs from arena-location-npcs.tsx LOCATION_NPCS */
 export const LOCATION_NPC_GLBS: readonly string[] = [
-  '/models/characters/spongebob-ktx.glb',
+  '/models/characters/spongebob-nonorm-ktx.glb',
   '/models/characters/gary-ktx.glb',       // companion at visual-creation
   '/models/characters/squidward-ktx.glb',
-  '/models/characters/flying-dutchman-ktx.glb',
-  '/models/characters/pearl-ktx.glb',
+  '/models/characters/flying-dutchman-nonorm-ktx.glb',
+  '/models/characters/pearl-nonorm-ktx.glb',
   '/models/characters/mrs-puff-ktx.glb',
   '/models/characters/mr-krabs-ktx.glb',
   '/models/characters/plankton-ktx.glb',

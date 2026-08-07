@@ -54,7 +54,7 @@ const VRM_PATH   = '/avatars/milady-official-3.vrm';
 const VRM_ID     = 'building-visit-vignette';
 const IDLE_PATH  = '/avatars/animations/idle.glb'; // Milady stands + breathes (no walk)
 const BLDG_PATH  = '/models/pineapple-house-opt1-ktx.glb?v=3';
-const SB_PATH    = '/models/characters/spongebob-ktx.glb';
+const SB_PATH    = '/models/characters/spongebob-nonorm-ktx.glb';
 const GARY_PATH  = '/models/characters/gary-ktx.glb';
 
 // ---------------------------------------------------------------------------

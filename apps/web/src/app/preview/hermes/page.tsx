@@ -49,7 +49,7 @@ const CHARACTER_META: Record<Character, { path: string; animatorId: string }> = 
   // the dev page shares the same cache entry as /game instead of fetching a 2nd).
   female: { path: '/avatars/hermes-female.vrm?v=2', animatorId: 'hermes-female' },
   male:   { path: '/avatars/hermes-male.vrm?v=2',   animatorId: 'hermes-male' },
-  tekk:   { path: '/avatars/tekk.vrm?v=2',          animatorId: 'tekk' },
+  tekk:   { path: '/avatars/tekk-nonorm.vrm',          animatorId: 'tekk' },
   // Biggie — bespoke Meshy VRM exclusive avatar (2026-07-23); dedicated animatorId
   // with idle/walk/run position tracks stripped (adinero-pattern underground guard).
   // ?v=2 — arms-rest-pose T-pose fix (fix-rig-tpose.mjs) re-baked the same path.

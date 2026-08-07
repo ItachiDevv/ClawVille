@@ -121,7 +121,7 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   // Gary lives here too: he's a passive companion (no chat target)
   'visual-creation': {
     name: 'SpongeBob',
-    model: '/models/characters/spongebob-ktx.glb',
+    model: '/models/characters/spongebob-nonorm-ktx.glb',
     companion: {
       name: 'Gary',
       model: '/models/characters/gary-ktx.glb',
@@ -145,14 +145,14 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   // anyway. Compare to Pearl in cron-automation which ships with 5 built-in animations.
   // deferUntilDecorativeRelease: rung-1 canary slot (2026-07-31) — the 0.97MB
   // GLB is decorative at spawn distance and now loads after world reveal.
-  'api-integrations': { name: 'Flying Dutchman', model: '/models/characters/flying-dutchman-ktx.glb', ghostFloat: true, deferUntilDecorativeRelease: true },
+  'api-integrations': { name: 'Flying Dutchman', model: '/models/characters/flying-dutchman-nonorm-ktx.glb', ghostFloat: true, deferUntilDecorativeRelease: true },
 
   // Slot 3 — cron-automation — Downtown Building (Pearl Krabs's downtown teen vibe)
   // Pearl Krabs GLB sourced from Sketchfab (CC-BY 4.0) 2026-04-23 — official-look
   // low-poly Pearl, rigged with 5 idle/talk animations. ~4k tris, 2.1MB.
   // scaleOverride=184 (2026-05-18 pass 3): user requested 20-25% size increase from 150.
   // Midpoint 22.5% → 150 * 1.225 ≈ 184.
-  'cron-automation': { name: 'Pearl', model: '/models/characters/pearl-ktx.glb', scaleOverride: 184 },
+  'cron-automation': { name: 'Pearl', model: '/models/characters/pearl-nonorm-ktx.glb', scaleOverride: 184 },
 
   // Slot 4 — app-publishing — Boating School (Mrs. Puff's workplace)
   // scaleOverride=3.3 (2026-05-18 pass 3): user requested 20-25% size increase from 2.7.

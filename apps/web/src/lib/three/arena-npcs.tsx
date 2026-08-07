@@ -472,7 +472,7 @@ preloadVRMBytes('/avatars/milady-official-8.vrm');
 // asset-preload-manifest urls exactly (a ?v mismatch double-fetches the VRM).
 preloadVRMBytes('/avatars/hermes-female.vrm?v=2');
 preloadVRMBytes('/avatars/hermes-male.vrm?v=2');
-preloadVRMBytes('/avatars/tekk.vrm?v=2');
+preloadVRMBytes('/avatars/tekk-nonorm.vrm');
 preloadMixamoClips();
 
 // ---------------------------------------------------------------------------

@@ -52,7 +52,7 @@ export const AGENT_MODEL_BODY_PATHS: Record<AgentModelKey, AgentModelBodyRef> = 
   // ── Hermes (VRM humanoid) — ?v=2 = perf-round-2 decimation bust ──
   hermes_female: { path: '/avatars/hermes-female.vrm?v=2', format: 'vrm' },
   hermes_male: { path: '/avatars/hermes-male.vrm?v=2', format: 'vrm' },
-  tekk: { path: '/avatars/tekk.vrm?v=2', format: 'vrm' },
+  tekk: { path: '/avatars/tekk-nonorm.vrm', format: 'vrm' },
 
   // ── Hatcher placeholders (point at the 8 Milady VRMs until bespoke art) ──
   hatcher_1: { path: '/avatars/milady-official-1.vrm', format: 'vrm' },

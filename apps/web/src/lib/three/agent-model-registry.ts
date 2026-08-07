@@ -131,7 +131,7 @@ export const MODEL_REGISTRY = {
   hermes_female: { path: '/avatars/hermes-female.vrm?v=2', scale: 13, label: 'Hermes',      category: 'hermes', avatar_type: 'vrm', animatorId: 'hermes-female', faceYaw: Math.PI, preview: '/models/hermes-turnaround/female-front.png' },
   hermes_male:   { path: '/avatars/hermes-male.vrm?v=2',   scale: 13, label: 'Hermes Male', category: 'hermes', avatar_type: 'vrm', animatorId: 'hermes-male',   faceYaw: Math.PI, preview: '/models/hermes-turnaround/male-front.png' },
   // ?v=2 bust 2026-05-22 — Cloudflare cached a 404 for this URL from the window before the PNG was committed; CF edge TTL is 7d and our deploy token lacks cache_purge scope, so the URL query is the only invalidator. See "Asset cache-bust" kill-the-build rule in CLAUDE.md. The VRM ?v=2 (2026-06-13) is the decimation bust (separate from the preview PNG bust).
-  tekk:          { path: '/avatars/tekk.vrm?v=2',          scale: 13, label: 'Tekk',        category: 'hermes', avatar_type: 'vrm', animatorId: 'tekk',          faceYaw: Math.PI, preview: '/models/tekk-turnaround/with-wings-front.png?v=2' },
+  tekk:          { path: '/avatars/tekk-nonorm.vrm',          scale: 13, label: 'Tekk',        category: 'hermes', avatar_type: 'vrm', animatorId: 'tekk',          faceYaw: Math.PI, preview: '/models/tekk-turnaround/with-wings-front.png?v=2' },
 
   // ── Chibi VRM avatars (added 2026-05-21) ──────────────────────────────────
   // Mini-Nori-style stylized humanoids — large head, short stubby limbs.
