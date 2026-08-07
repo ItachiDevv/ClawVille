@@ -48,11 +48,12 @@ function sanitizeGlbParam(raw: string | null): string | null {
   return raw;
 }
 
-function AssetScene({ url, lightPhase, dist, spin, onInfo }: {
+function AssetScene({ url, lightPhase, dist, spin, dragRot, onInfo }: {
   url: string;
   lightPhase: number | null;
   dist: number;
   spin: boolean;
+  dragRot: React.MutableRefObject<{ x: number; y: number }>;
   onInfo: (s: string) => void;
 }) {
   const groupRef = useRef<THREE.Group>(null!);
@@ -125,6 +126,10 @@ function AssetScene({ url, lightPhase, dist, spin, onInfo }: {
       lightRef.current.target.updateMatrixWorld();
     }
     if (spin && groupRef.current) groupRef.current.rotation.y = state.clock.elapsedTime * 0.3;
+    else if (groupRef.current) {
+      groupRef.current.rotation.y = dragRot.current.y;
+      groupRef.current.rotation.x = dragRot.current.x;
+    }
   });
 
   return (
@@ -144,16 +149,29 @@ function AssetABInner() {
   const dist = Number.isFinite(rawDist) ? Math.min(20, Math.max(0.5, rawDist)) : 1.8;
   const spin = params.get('spin') === '1';
   const [info, setInfo] = useState('loading…');
+  const dragRot = useRef({ x: 0, y: 0 });
+  const dragging = useRef<{ px: number; py: number } | null>(null);
 
   if (!glb) {
     return <div style={{ color: '#fff', padding: 24, fontFamily: 'monospace' }}>asset-ab: pass ?glb=/models/… or /avatars/… (.glb/.vrm, optional ?v=N)</div>;
   }
   return (
-    <div style={{ position: 'fixed', inset: 0, background: '#25455e' }}>
+    <div
+      style={{ position: 'fixed', inset: 0, background: '#25455e', touchAction: 'none' }}
+      onPointerDown={(e) => { dragging.current = { px: e.clientX, py: e.clientY }; }}
+      onPointerUp={() => { dragging.current = null; }}
+      onPointerLeave={() => { dragging.current = null; }}
+      onPointerMove={(e) => {
+        if (!dragging.current) return;
+        dragRot.current.y += (e.clientX - dragging.current.px) * 0.01;
+        dragRot.current.x = Math.max(-1.2, Math.min(1.2, dragRot.current.x + (e.clientY - dragging.current.py) * 0.006));
+        dragging.current = { px: e.clientX, py: e.clientY };
+      }}
+    >
       <Canvas camera={{ fov: 40, position: [0, 1, 4] }} gl={{ antialias: true }} dpr={[1, 1.5]}>
         <KTX2LoaderSetup />
         <Suspense fallback={null}>
-          <AssetScene url={glb} lightPhase={Number.isFinite(lightPhase as number) ? lightPhase : null} dist={dist} spin={spin} onInfo={setInfo} />
+          <AssetScene url={glb} lightPhase={Number.isFinite(lightPhase as number) ? lightPhase : null} dist={dist} spin={spin} dragRot={dragRot} onInfo={setInfo} />
         </Suspense>
       </Canvas>
       <div
