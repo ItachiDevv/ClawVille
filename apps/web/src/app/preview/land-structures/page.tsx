@@ -166,7 +166,7 @@ const CANDIDATES: CandidateDef[] = [
  * disposes the clone on unmount.
  */
 function Structure({ path, x, z }: { path: string; x: number; z: number }) {
-  // extendLoaderWithMeshopt is a no-op for these uncompressed GLBs but keeps
+  // extendLoaderWithMeshopt decodes these now-meshopt-compressed GLBs and keeps
   // the preview aligned with the project loader stack (Stage 2 may add it).
   const { scene } = useGLTF(path, undefined, undefined, extendLoaderWithMeshopt);
 

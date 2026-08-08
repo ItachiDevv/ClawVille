@@ -25,8 +25,8 @@
  * (update this comment + the arrays below whenever an asset is added/removed)
  *
  * BUILDINGS (11 GLBs + 1 procedural treedome, arena-buildings.tsx BUILDING_MODELS):
- *   pineapple-house-opt1-ktx.glb?v=3, chum-bucket-v2-opt1-ktx.glb?v=4,
- *   krusty-krab-v2-opt1-ktx.glb?v=4, salty-spitoon-opt1-ktx.glb?v=3,
+ *   pineapple-house-opt1-mo-ktx.glb, chum-bucket-v2-opt1-mo-ktx.glb,
+ *   krusty-krab-v2-opt1-mo-ktx.glb, salty-spitoon-opt1-ktx.glb?v=3,
  *   boating-school-opt1-ktx.glb?v=3,
  *   patty-building-opt1-ktx.glb?v=3, building-lighthouse-opt1-ktx.glb?v=3,
  *   arcade/claw-arcade-exterior-opt1-ktx.glb?v=4, cove/cove-exterior-opt1-ktx.glb?v=4,

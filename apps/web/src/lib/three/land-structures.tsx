@@ -124,8 +124,8 @@ const CULL_DIST_SQ = CULL_DIST * CULL_DIST;
  * rule (3dStructure.md §6f rule 9).
  */
 const DEFAULT_STYLE = 'coastal-cottage';
-const DEFAULT_HOME_GLB = `/models/land-structures/${DEFAULT_STYLE}/home.glb`;
-const DEFAULT_SHOP_GLB = `/models/land-structures/${DEFAULT_STYLE}/shop.glb`;
+const DEFAULT_HOME_GLB = `/models/land-structures/${DEFAULT_STYLE}/home-mo.glb`;
+const DEFAULT_SHOP_GLB = `/models/land-structures/${DEFAULT_STYLE}/shop-mo.glb`;
 
 /**
  * Resolve a catalogKey to its GLB path. EXHAUSTIVE over the 12 catalog keys via a

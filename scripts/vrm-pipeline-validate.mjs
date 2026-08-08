@@ -271,8 +271,16 @@ if (sSkins.length === oSkins.length) {
         const candCache = new Array(cOld.length);
         for (let oi = 0; oi < cOld.length && !problem; oi++) {
           candCache[oi] = candidatesOf(cOld[oi]);
-          const r = tryMatch(oi, candCache[oi], new Set());
-          if (r === 'cap') { problem = 'position matching exceeded work cap (pathological coincident cluster) — refusing'; break; }
+          let r;
+          try {
+            r = tryMatch(oi, candCache[oi], new Set());
+          } catch (e) {
+            // long sparse alternating paths can overflow the JS call stack
+            // before the work cap — treat exactly like the cap: refuse.
+            if (e instanceof RangeError) r = 'cap';
+            else throw e;
+          }
+          if (r === 'cap') { problem = 'position matching exceeded work/stack cap (pathological cluster) — refusing'; break; }
           if (!r) { problem = 'position multiset mismatch: no bijection within quantization tolerance (augmenting-path matching)'; break; }
         }
         if (problem) break;

@@ -684,7 +684,7 @@ function applyChildScaleOverrides(scene: THREE.Object3D, overrides: Record<strin
 
 // Preload all 12 models (Phase 6.0.1: added cove-exterior.glb + claw-arcade-exterior.glb).
 // extendLoaderWithMeshopt registers MeshoptDecoder on the per-call loader so
-// GLBs with EXT_meshopt_compression (patricks-rock, krusty-krab, chum-bucket)
+// GLBs with EXT_meshopt_compression (all five -mo-ktx replaced buildings + legacy meshopt ones)
 // decode at preload time. Without this, the module-scope preload fires before
 // drei's shared loader has the decoder registered → those buildings load as
 // empty scenes and don't render.

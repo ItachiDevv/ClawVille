@@ -97,7 +97,7 @@ function showroomGlbPath(
   style: ShowroomEntry['style'],
   structureType: ShowroomEntry['structureType'],
 ): string {
-  return `/models/land-structures/${style}/${structureType}.glb?v=2`;
+  return `/models/land-structures/${style}/${structureType}-mo.glb`;
 }
 
 // ---------------------------------------------------------------------------
