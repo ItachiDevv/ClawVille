@@ -266,6 +266,25 @@ Each asset ships under a **sibling filename** (CF 7-day edge cache, no purge sco
 + SW `ASSET_PATH_PREFIXES` updated same-diff, screenshot A/B + runtime load + probe ratchet
 (`validForPerformance:true`, never exit code) before commit, Codex xhigh diff review per batch.
 
+## Rung-2 results ledger (updated as rows land — M2 freezes from THESE rows)
+
+**C-ladder normal-map drops — SHIPPED on the branch, FOUNDER SIGN-OFF 2026-08-08 ("Yes, those all
+look good", after reviewing the A/B gallery incl. the lobster closeup weave loss; full drop chosen
+over the 256 downsize):**
+
+| Asset | Before | After | MEASURED save | Verification |
+|---|---|---|---|---|
+| lobster_plush → `-nonorm` | 1.400MB | 0.215MB | **1.185MB** | tool V1–V5 PASS; runtime fetch + Larry mounts (`730aeb1d`) |
+| spongebob → `-nonorm` | 2.006MB | 0.629MB | **1.377MB** | 〃 + cold-wire trace (`0556d8f5`) |
+| pearl → `-nonorm` | 1.242MB | 0.308MB | **0.935MB** | 〃 |
+| flying-dutchman → `-nonorm` | 1.007MB | 0.387MB | **0.620MB** | 〃 |
+| tekk → `tekk-nonorm.vrm` | 1.242MB | 0.922MB | **0.320MB** | 〃 + `vrm-pipeline-validate --expect-texture-diet` PASS (binding-exact S9/S9.VRM0) |
+| **Batch total** | 6.90MB | 2.46MB | **4.44MB file-level (~4.3MB wire)** | all five fetched as siblings; zero old URLs on fresh cold loads |
+
+Codex asset-batch diff review: no blocking findings, no omitted ref sites; validator/harness
+findings folded (`8ac4b0d7`). Old files retained on disk (rollout-safe; cleanup rides the
+dead-disk punch list). Remaining C: pavilion per-map A/B (0.65–1.0MB) + tekk was the last VRM row.
+
 ## Punch-list (found during census — NOT rung-2 wire scope)
 
 1. **~505MB of Meshy pipeline intermediates are COMMITTED and on origin/staging**:
