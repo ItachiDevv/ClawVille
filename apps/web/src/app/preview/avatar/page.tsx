@@ -56,9 +56,9 @@ function isValidMode(m: string | null): m is PreviewMode {
 
 const GLB_BASE = '/models/lobster-ktx.glb?v=2';
 const GLB_RIGGED_BASE = '/models/sea-creatures/lobster/base-mo-ktx.glb';
-const GLB_IDLE = '/models/sea-creatures/lobster/animations/idle-ktx.glb?v=2';
-const GLB_SWIM = '/models/sea-creatures/lobster/animations/swim-ktx.glb?v=2';
-const GLB_HIT = '/models/sea-creatures/lobster/animations/hit-ktx.glb?v=2';
+const GLB_IDLE = '/models/sea-creatures/lobster/animations/idle-clip-ktx.glb';
+const GLB_SWIM = '/models/sea-creatures/lobster/animations/swim-clip-ktx.glb';
+const GLB_HIT = '/models/sea-creatures/lobster/animations/hit-clip-ktx.glb';
 const GLB_SKETCHFAB = '/models/sea-creatures/sketchfab/cc0-crab.glb';
 
 // ---------------------------------------------------------------------------

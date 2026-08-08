@@ -194,7 +194,7 @@ export async function createSeaCreatureAnimator(
   const clipLoadPromises: Promise<void>[] = [];
   for (const state of manifest.availableStates) {
     const url = species === 'lobster'
-      ? `/models/sea-creatures/lobster/animations/${state}-ktx.glb?v=2`
+      ? `/models/sea-creatures/lobster/animations/${state}-clip-ktx.glb`
       : `/models/sea-creatures/${species}/animations/${state}.glb`;
     const p = loadGlb(url)
       .then((gltf) => {
