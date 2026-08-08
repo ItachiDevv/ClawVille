@@ -10,7 +10,7 @@ import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import { useStageStore } from '@/components/three/world-stage/stage-store';
 
 const COVE_INTERIOR_GLB =
-  '/models/cove/cove-interior-cleaned-v1-ktx.glb?v=6';
+  '/models/cove/cove-interior-cleaned-v1-mo-ktx.glb';
 const TARGET_MAX_DIMENSION = 8;
 const FIT_BOX = new THREE.Box3();
 const FIT_SIZE = new THREE.Vector3();

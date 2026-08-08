@@ -65,7 +65,7 @@ import { addStageEventListener } from '@/components/three/world-stage/stage-stor
 /** Gameready GLB path — temporarily pointed at cleaned-v1 to evaluate the
  *  Blender artifact removal pass (pillar fragments + Material4 ghost mesh
  *  removed; stump cleanup possibly over-broad — visual verification pending). */
-const INTERIOR_GLB = '/models/cove/cove-interior-cleaned-v1-ktx.glb?v=6';
+const INTERIOR_GLB = '/models/cove/cove-interior-cleaned-v1-mo-ktx.glb';
 /** Fallback cartoon GLB */
 const FALLBACK_GLB = '/models/cove/cove-interior-fallback.glb';
 const NOOP = (): void => {};
