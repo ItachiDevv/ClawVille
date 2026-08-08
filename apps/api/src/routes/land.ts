@@ -213,6 +213,15 @@
  *     200: { deleted: true, piece: LandStructurePieceDTO }
  * 15. GET /api/land/pieces/public (PUBLIC, cached, no PII)
  *     200: { parcelCode, pieceKey, gridX, gridY, rotationStep, stackLevel }[]
+ * 16. GET /api/land/parcels/:parcelId/pieces (AUTH, owner read, no-store)
+ *     200: { pieces: LandStructurePieceDTO[] }
+ *     Owner of the parcel's ACTIVE structure only; includes private piece IDs
+ *     so pieces remain movable/removable after a reload. READ-ONLY: no ledger
+ *     writes and no public-cache interaction.
+ *     400: { error: 'invalid_parcel_id' }
+ *     403: { error: 'not_structure_owner' }
+ *     404: { error: 'parcel_not_found' | 'structure_required' }
+ *     429: { error: 'rate_limited' }
  *
  * PHASE3: expose buy / structure / upgrade via the agent tools.json surface +
  * the npc-simulation `[ACTION:]` whitelist + a PROTOCOL_VERSION bump, so a
@@ -726,6 +735,7 @@ const spawnPreferenceBodySchema = z
 
 const READ_CACHE_TTL_MS = 60_000;
 const publicReadLimiter = createRateLimiter({ maxPerWindow: 60, windowMs: 60_000 });
+const ownerPiecesReadLimiter = createRateLimiter({ maxPerWindow: 60, windowMs: 60_000 });
 
 interface ReadCacheEntry {
   payload: LandParcelDTO[];
@@ -1382,6 +1392,86 @@ landRoutes.get('/pieces/public', async (c) => {
   setPublicPiecesCache(payload);
   return c.json(payload);
 });
+
+// Owner-scoped piece IDs complete the move/remove loop after a reload. The
+// resolved avatar id is both the authorization subject and the rate-limit key.
+landRoutes.get(
+  '/parcels/:parcelId/pieces',
+  requireAuthOrAgentSession,
+  requireLedgerCapableIdentity,
+  noStorePrivate,
+  async (c) => {
+    const avatarId = c.get('identity').avatarId;
+    if (!ownerPiecesReadLimiter.check(avatarId)) {
+      return c.json({ error: 'rate_limited' }, 429);
+    }
+
+    const idParsed = parcelIdSchema.safeParse(c.req.param('parcelId'));
+    if (!idParsed.success) {
+      return c.json({ error: 'invalid_parcel_id' }, 400);
+    }
+    const parcelId = idParsed.data;
+
+    const authorityRows = await db
+      .select({
+        parcelOwnerAvatarId: landParcels.ownerAvatarId,
+        structureOwnerAvatarId: landStructures.ownerAvatarId,
+        structureStatus: landStructures.status,
+      })
+      .from(landParcels)
+      // Join the ACTIVE structure only — archived rows can coexist on a parcel
+      // after eviction + re-placement, and a bare parcelId join with limit(1)
+      // would nondeterministically pick one (false 403/404 for the real owner).
+      .leftJoin(
+        landStructures,
+        and(
+          eq(landStructures.parcelId, landParcels.id),
+          eq(landStructures.status, 'active'),
+        ),
+      )
+      .where(eq(landParcels.id, parcelId))
+      .limit(1);
+    const authority = authorityRows[0];
+    if (!authority) {
+      return c.json({ error: 'parcel_not_found' }, 404);
+    }
+    if (
+      authority.parcelOwnerAvatarId !== avatarId
+      || (
+        authority.structureOwnerAvatarId !== null
+        && authority.structureOwnerAvatarId !== avatarId
+      )
+    ) {
+      return c.json({ error: 'not_structure_owner' }, 403);
+    }
+    if (
+      authority.structureOwnerAvatarId === null
+      || authority.structureStatus !== 'active'
+    ) {
+      return c.json({ error: 'structure_required' }, 404);
+    }
+
+    const rows = await db
+      .select({
+        id: landStructurePieces.id,
+        parcelId: landStructurePieces.parcelId,
+        pieceKey: landStructurePieces.pieceKey,
+        gridX: landStructurePieces.gridX,
+        gridY: landStructurePieces.gridY,
+        rotationStep: landStructurePieces.rotationStep,
+        stackLevel: landStructurePieces.stackLevel,
+      })
+      .from(landStructurePieces)
+      .where(eq(landStructurePieces.parcelId, parcelId))
+      .orderBy(
+        landStructurePieces.gridX,
+        landStructurePieces.gridY,
+        landStructurePieces.stackLevel,
+      );
+
+    return c.json({ pieces: rows.map(toLandStructurePieceDTO) });
+  },
+);
 
 landRoutes.get('/owned/:avatarId', async (c) => {
   if (!publicReadLimiter.check(getClientIp(c.req.raw.headers))) {

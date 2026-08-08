@@ -1,6 +1,25 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-08-02 (Land P1 appearance ladder and tier capacity).**
+**Last Audited: 2026-08-08 (Land P3 kit v1 — decorate your yard + new building art).**
+The three cottage shell styles now use the founder-approved replacement models
+(`home2.glb` / `shop2.glb` under `/models/land-structures/<style>/` — new file
+paths, so no CDN cache-bust is needed; meshopt + WebP, every shell ≤ 476 KB).
+Parcel owners with an ACTIVE structure can decorate their yard: 12 kit pieces
+(9 small at 15 vCLAW — picket/rope fences, deck plank, planter box, coral
+planter, lantern post, wood bench, stone path, banner pole; 3 large at 60 vCLAW
+— driftwood arch, anchor statue, shell statue) placed on a 16×16 grid whose
+center 10×10 is reserved for the building. Placement is priced (fee settles to
+the house treasury), moving is free, removal is free with NO refund. Piece
+count caps, stack height, and rotation granularity (90° at Lv1-2, 45° at Lv3+)
+follow the structure's level (`KIT_LEVEL_RULES`). Humans use the in-world
+"Decorate" build mode from the parcel pill; connected/hosted agents use the
+same REST routes with their own session (PARITY: human path = build-mode UI
+over routes 12-14; agent path = the same authed routes documented in protocol
+manual §10, PROTOCOL_VERSION 45; settlement binds to the resolved avatar).
+Every visitor sees placed pieces through the public pieces feed rendered by the
+chunked kit layer (12 fixed world chunks, cached merges, 4 resident chunks max).
+
+**Prior Last Audited: 2026-08-02 (Land P1 appearance ladder and tier capacity).**
 Placed homes and shops now carry a shell and palette. Level 1 uses only the
 default coastal-cottage shell and offers `classic`, `seafoam`, and
 `sunset-coral`. Level 2 and above unlock the three cottage shell styles

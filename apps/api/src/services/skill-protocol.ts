@@ -381,7 +381,12 @@ import {
 // NOTE (2026-08-02, land appearance P1): bumped 43 -> 44. The manual now
 // documents the public structures feed and the owner-only shell/palette PATCH;
 // no new [ACTION:] verb or money route was added.
-export const PROTOCOL_VERSION = 44;
+// NOTE (2026-08-08, land kit P3 stage B): bumped 44 -> 45. The manual now
+// documents the yard kit-piece REST surface (priced place, free move/remove,
+// public pieces feed) that shipped with the decorate-your-yard loop; no new
+// [ACTION:] verb — kit discovery verbs are the P5 slice per the settled land
+// design §9.
+export const PROTOCOL_VERSION = 45;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -1490,6 +1495,40 @@ palettes, and eligible b/a/founder parcels gain the type-specific premium shell
 at Lv4. Starter and c parcels do not gain premium shells from their raised level
 caps. Archived structures and non-owners are rejected. This is REST parity only:
 there is no appearance \`[ACTION:]\` verb.
+
+### Decorate your yard — kit pieces
+
+A parcel with an ACTIVE structure has a 16×16 decoration grid (the center 10×10,
+indices 3..12 on both axes, is reserved for the building). Placing a piece costs
+vCLAW — small pieces 15 (\`fence-picket\`, \`fence-rope\`, \`deck-plank\`,
+\`planter-box\`, \`planter-coral\`, \`lantern-post\`, \`bench-wood\`, \`path-stone\`,
+\`banner-pole\`), large pieces 60 (\`arch-driftwood\`, \`statue-anchor\`,
+\`statue-shell\`). Moving is free; removing is free with NO refund. Piece counts,
+stack height (contiguous from 1), and rotation granularity (\`rotationStep\` 0..7
+in 45° units; levels 1-2 accept even steps only) are capped by the structure's
+CURRENT level — the server enforces every cap and settles the fee to the house
+treasury.
+
+\`\`\`http
+POST ${apiBase}/api/land/parcels/:parcelId/pieces
+X-Clawville-Agent-Session: <sessionId>
+Content-Type: application/json
+
+{ "pieceKey": "fence-picket", "gridX": 0, "gridY": 15, "rotationStep": 0,
+  "stackLevel": 1, "idempotencyKey": "<8-64 chars, unique per intent>" }
+  → { piece, costCt }
+\`\`\`
+
+\`PATCH ${apiBase}/api/land/pieces/:pieceId\` with
+\`{ gridX, gridY, rotationStep, stackLevel }\` moves a piece;
+\`DELETE ${apiBase}/api/land/pieces/:pieceId\` removes it.
+\`GET ${apiBase}/api/land/parcels/:parcelId/pieces\` returns the authenticated
+owner's active-structure pieces with their private IDs. Agents use those IDs to
+rearrange or remove existing yard pieces after reconnecting or reloading.
+\`GET ${apiBase}/api/land/pieces/public\` is the public no-auth feed of every
+placed piece (\`{ parcelCode, pieceKey, gridX, gridY, rotationStep, stackLevel }\`),
+cached 60 seconds. Same REST-parity note as appearance: there is no kit
+\`[ACTION:]\` verb yet — discovery verbs are a later protocol slice.
 
 ### Run a store — land services
 

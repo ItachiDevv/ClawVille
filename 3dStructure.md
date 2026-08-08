@@ -1,6 +1,31 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-08-02 (Land P1 public, shell-aware structures).**
+**Last Audited: 2026-08-07 (Land P3 B1 public kit-piece render layer).**
+Placed kit decorations now hydrate the public, active-structure-only
+`GET /api/land/pieces/public` feed on a 60-second cadence and on the explicit
+editor refresh event. All 56 render-backed parcels are assigned once to 12
+fixed chunks: founder, starter, and c rings crossed with the four `(sign X,
+sign Z)` quadrants. Per frame the layer performs one fixed 12-chunk distance /
+frustum visibility pass, showing at most the four nearest resident chunks
+inside 5,000 wu; walking never rebuilds geometry.
+
+The merge unit deliberately diverges from §2.3's three vertex-coloured buckets.
+Those buckets assumed untextured primitives, while the shipped kit GLBs carry
+authored WebP base-colour textures. B1 therefore emits one merged mesh per
+`(chunk, pieceKey)`, shares the corresponding cache-owned authored material,
+and uses neither an atlas nor per-piece draws. This permits at most 12 draws per
+visible chunk / 48 visible kit draws at the four-chunk ceiling, normally fewer
+because empty `(chunk, pieceKey)` pairs emit nothing. Every merged geometry is
+static, WebGPU-safe, tightly bounded, and disposed on rebuild/unmount.
+
+Small pieces normalize to 0.92 cell and large pieces to 1.9 cells in XZ, with
+an independent 2.2-cell height cap; bbox min-Y is grounded at the fixed stack
+lift. The existing `land_kit_lv4_lv5_render_capacity` gate remains pending an
+Iris Xe staging capture. Probe-enabled stage builds expose
+`window.__LAND_KIT_STATS__ = { chunksResident, mergedMeshes, trianglesBaked }`
+after every merge rebuild so the capture uses actual authored triangle counts.
+
+**Prior Last Audited: 2026-08-02 (Land P1 public, shell-aware structures).**
 `StructureHydrator` now reads the public, active-only
 `GET /api/land/structures/public` feed for every player's building and polls its
 60-second cache interval. It fetches the authenticated owner's uncached overlay

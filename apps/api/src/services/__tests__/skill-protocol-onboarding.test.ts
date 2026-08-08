@@ -26,7 +26,7 @@ describe('open-agent onboarding manuals', () => {
     const manual = buildPlayManual(API_BASE);
     const protocolManual = buildProtocolManual(API_BASE);
 
-    expect(PROTOCOL_VERSION).toBe(44);
+    expect(PROTOCOL_VERSION).toBe(45);
     expect(manual).toContain(`POST ${API_BASE}/api/agent/connect`);
     expect(manual).toContain('"agentId": "your-stable-agent-id"');
     expect(manual).toContain('"identityType": "your-framework"');
@@ -149,6 +149,9 @@ describe('open-agent onboarding manuals', () => {
     expect(protocolManual).toContain('/api/land/structures/public');
     expect(protocolManual).toContain('/api/land/structures/:structureId/appearance');
     expect(protocolManual).toContain('there is no appearance `[ACTION:]` verb');
+    expect(protocolManual).toContain('/api/land/parcels/:parcelId/pieces');
+    expect(protocolManual).toContain('rearrange or remove existing yard pieces');
+    expect(protocolManual).toContain('/api/land/pieces/public');
     expect(CLAWVILLE_ORIENTATION_KNOWLEDGE).toContainEqual(
       expect.stringContaining('/api/land/structures/public'),
     );
@@ -196,7 +199,7 @@ describe('open-agent onboarding manuals', () => {
       'custom remains non-restorable',
     ];
 
-    expect(PROTOCOL_VERSION).toBe(44);
+    expect(PROTOCOL_VERSION).toBe(45);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');

@@ -5,7 +5,7 @@
  * live on staging. The Land panel components + the api.ts client methods both
  * import from here so the wire shape is defined exactly once on the web side.
  */
-import type { LandTier } from '@clawville/shared';
+import type { KitPieceKey, LandTier } from '@clawville/shared';
 
 /** Parcel lifecycle status as returned by the API. */
 export type LandParcelStatus = 'available' | 'owned' | 'reserved' | 'retired';
@@ -114,6 +114,52 @@ export interface OwnedLandResponse {
 /** GET /api/land/me adds the resolved avatarId. */
 export interface MyLandResponse extends OwnedLandResponse {
   avatarId: string;
+}
+
+/** Private owner mutation shape for stage-A kit routes 12-14. */
+export interface LandStructurePieceDTO {
+  id: string;
+  parcelId: string;
+  pieceKey: KitPieceKey;
+  gridX: number;
+  gridY: number;
+  rotationStep: number;
+  stackLevel: number;
+}
+
+export interface OwnerLandPiecesResponse {
+  pieces: LandStructurePieceDTO[];
+}
+
+export interface PlaceLandPieceRequest {
+  pieceKey: KitPieceKey;
+  gridX: number;
+  gridY: number;
+  rotationStep: number;
+  stackLevel: number;
+  idempotencyKey: string;
+}
+
+export interface MoveLandPieceRequest {
+  gridX: number;
+  gridY: number;
+  rotationStep: number;
+  stackLevel: number;
+}
+
+export interface PlaceLandPieceResponse {
+  piece: LandStructurePieceDTO;
+  costCt: number;
+  idempotencyReplay?: boolean;
+}
+
+export interface MoveLandPieceResponse {
+  piece: LandStructurePieceDTO;
+}
+
+export interface DeleteLandPieceResponse {
+  deleted: true;
+  piece: LandStructurePieceDTO;
 }
 
 /** POST /api/land/claim-starter response. */

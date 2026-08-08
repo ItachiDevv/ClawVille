@@ -1,8 +1,8 @@
 /**
  * land.ts — Zustand store for land parcel ownership state.
  *
- * Parcel ownership and the public active-structure render snapshot share this
- * store. Structures are keyed by stable parcelCode, never owner identity.
+ * Parcel ownership and the public active structure/kit render snapshots share
+ * this store. Both are keyed by stable parcelCode, never owner identity.
  *
  * ParcelStatus lifecycle:
  *   'available' — for sale (default; shown as for-sale lot in 3D)
@@ -41,12 +41,43 @@ export interface PlacedStructure {
   paletteKey: string;
 }
 
+/** Public kit render-feed row. Database and owner identities stay server-side. */
+export interface PlacedPiece {
+  /** Private owner-only UUID, present for the active editor parcel. */
+  id?: string;
+  /** Private parcel UUID, present alongside `id`; never returned by the public feed. */
+  parcelId?: string;
+  parcelCode: string;
+  pieceKey: string;
+  gridX: number;
+  gridY: number;
+  rotationStep: number;
+  stackLevel: number;
+}
+
+export type YardEditorMode = 'place' | 'move' | 'remove';
+
+export interface LandBuildMode {
+  parcelCode: string;
+}
+
 interface LandStore {
   /** Per-parcel state keyed by ParcelSlot.id (= parcelCode, e.g. 'parcel-a-01'). */
   parcels: Map<string, ParcelState>;
 
   /** Every public active structure keyed by parcelCode, with owner DTO overlays. */
   structures: Map<string, PlacedStructure>;
+
+  /** Every public active kit piece grouped by parcelCode. */
+  pieces: Map<string, PlacedPiece[]>;
+
+  /** Active in-world yard editor, or null outside build mode. */
+  buildMode: LandBuildMode | null;
+  buildParcelId: string | null;
+  yardEditorMode: YardEditorMode;
+  selectedPieceKey: string;
+  rotationStep: number;
+  selectedPlacedPieceId: string | null;
 
   /** Bulk-set parcel state from an API response. Existing entries not in the
    *  update are left unchanged (patch semantics, not replace). */
@@ -56,6 +87,23 @@ interface LandStore {
    *  removed structures disappear rather than linger.
    *  The Map is keyed by PlacedStructure.parcelCode. */
   setStructures: (list: PlacedStructure[]) => void;
+
+  /** REPLACE the public piece set so moved/deleted pieces cannot linger. */
+  setPieces: (list: PlacedPiece[]) => void;
+
+  /** Replace one parcel with its owner read, preserving the rest of the public world. */
+  setParcelPieces: (parcelCode: string, list: PlacedPiece[]) => void;
+
+  enterBuildMode: (parcelCode: string) => void;
+  exitBuildMode: () => void;
+  setBuildParcelId: (parcelId: string | null) => void;
+  setYardEditorMode: (mode: YardEditorMode) => void;
+  setSelectedPieceKey: (pieceKey: string) => void;
+  setRotationStep: (rotationStep: number) => void;
+  setSelectedPlacedPieceId: (pieceId: string | null) => void;
+  addPiece: (piece: PlacedPiece) => void;
+  updatePiece: (pieceId: string, piece: PlacedPiece) => void;
+  removePiece: (pieceId: string) => void;
 
   /** Optimistically patch one rendered structure's shell/palette by parcelCode. */
   updateStructureAppearance: (
@@ -85,6 +133,16 @@ export const useLandStore = create<LandStore>()((set) => ({
   // reads this empty default so the world has nothing to draw pre-hydration.
   structures: new Map<string, PlacedStructure>(),
 
+  // No pieces until the public render feed hydrates.
+  pieces: new Map<string, PlacedPiece[]>(),
+
+  buildMode: null,
+  buildParcelId: null,
+  yardEditorMode: 'place',
+  selectedPieceKey: 'fence-picket',
+  rotationStep: 0,
+  selectedPlacedPieceId: null,
+
   setParcels: (updates) =>
     set((state) => {
       const next = new Map(state.parcels);
@@ -102,6 +160,92 @@ export const useLandStore = create<LandStore>()((set) => ({
       for (const s of list) next.set(s.parcelCode, s);
       return { structures: next };
     }),
+
+  setPieces: (list) =>
+    set((state) => {
+      const next = new Map<string, PlacedPiece[]>();
+      for (const piece of list) {
+        // The public feed intentionally omits UUIDs. Preserve a session-known
+        // private UUID across its immediate post-mutation refresh by matching
+        // the complete public placement tuple.
+        const known = state.pieces.get(piece.parcelCode)?.find((candidate) =>
+          candidate.pieceKey === piece.pieceKey
+          && candidate.gridX === piece.gridX
+          && candidate.gridY === piece.gridY
+          && candidate.rotationStep === piece.rotationStep
+          && candidate.stackLevel === piece.stackLevel
+        );
+        const merged = known?.id
+          ? { ...piece, id: known.id, parcelId: known.parcelId }
+          : piece;
+        const parcelPieces = next.get(piece.parcelCode);
+        if (parcelPieces) parcelPieces.push(merged);
+        else next.set(piece.parcelCode, [merged]);
+      }
+      return { pieces: next };
+    }),
+
+  setParcelPieces: (parcelCode, list) =>
+    set((state) => {
+      const next = new Map(state.pieces);
+      if (list.length === 0) next.delete(parcelCode);
+      else next.set(parcelCode, list);
+      return { pieces: next };
+    }),
+
+  enterBuildMode: (parcelCode) => set({
+    buildMode: { parcelCode },
+    buildParcelId: null,
+    yardEditorMode: 'place',
+    selectedPlacedPieceId: null,
+    rotationStep: 0,
+  }),
+
+  exitBuildMode: () => set({
+    buildMode: null,
+    buildParcelId: null,
+    selectedPlacedPieceId: null,
+  }),
+
+  setBuildParcelId: (buildParcelId) => set({ buildParcelId }),
+  setYardEditorMode: (yardEditorMode) => set({
+    yardEditorMode,
+    selectedPlacedPieceId: null,
+  }),
+  setSelectedPieceKey: (selectedPieceKey) => set({ selectedPieceKey }),
+  setRotationStep: (rotationStep) => set({ rotationStep }),
+  setSelectedPlacedPieceId: (selectedPlacedPieceId) => set({ selectedPlacedPieceId }),
+
+  addPiece: (piece) => set((state) => {
+    const next = new Map(state.pieces);
+    next.set(piece.parcelCode, [...(next.get(piece.parcelCode) ?? []), piece]);
+    return { pieces: next };
+  }),
+
+  updatePiece: (pieceId, piece) => set((state) => {
+    const next = new Map(state.pieces);
+    for (const [parcelCode, parcelPieces] of next) {
+      const index = parcelPieces.findIndex((candidate) => candidate.id === pieceId);
+      if (index < 0) continue;
+      const updated = [...parcelPieces];
+      updated[index] = piece;
+      next.set(parcelCode, updated);
+      break;
+    }
+    return { pieces: next };
+  }),
+
+  removePiece: (pieceId) => set((state) => {
+    const next = new Map(state.pieces);
+    for (const [parcelCode, parcelPieces] of next) {
+      const filtered = parcelPieces.filter((candidate) => candidate.id !== pieceId);
+      if (filtered.length === parcelPieces.length) continue;
+      if (filtered.length === 0) next.delete(parcelCode);
+      else next.set(parcelCode, filtered);
+      break;
+    }
+    return { pieces: next, selectedPlacedPieceId: null };
+  }),
 
   updateStructureAppearance: (parcelCode, appearance) =>
     set((state) => {

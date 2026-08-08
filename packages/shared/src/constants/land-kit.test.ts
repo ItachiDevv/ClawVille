@@ -47,8 +47,8 @@ describe('isPiecePlacementAllowed', () => {
     1: { small: 6, large: 0 },
     2: { small: 16, large: 0 },
     3: { small: 28, large: 2 },
-    4: { small: 38, large: 3 },
-    5: { small: 48, large: 4 },
+    4: { small: 28, large: 2 },
+    5: { small: 28, large: 2 },
   };
 
   for (const level of [1, 2, 3, 4, 5] as const) {

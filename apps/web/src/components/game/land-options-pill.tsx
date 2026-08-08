@@ -17,12 +17,15 @@ export default function LandOptionsPill() {
   const landOfficeOpen = useGameStore((s: GameState) => s.landOfficeOpen);
   const openLandOffice = useGameStore((s: GameState) => s.openLandOffice);
   const parcels = useLandStore((s) => s.parcels);
+  const structures = useLandStore((s) => s.structures);
+  const buildMode = useLandStore((s) => s.buildMode);
+  const enterBuildMode = useLandStore((s) => s.enterBuildMode);
   const { data: avatar } = useAvatar();
   const isGuest = useIsGuest();
   const isMobile = useIsMobile();
 
   if (controlMode === 'explore') return null;
-  if (chatOpen || guideChatOpen || landOfficeOpen) return null;
+  if (chatOpen || guideChatOpen || landOfficeOpen || buildMode) return null;
   if (nearLocation) return null;
   if (!nearParcelCode) return null;
 
@@ -34,9 +37,8 @@ export default function LandOptionsPill() {
   const tier = slot?.tier ?? null;
   const myId = (avatar as { id?: string } | null | undefined)?.id ?? null;
   const ownedByMe =
-    state.status === 'owned'
-    && !!myId
-    && state.ownerAvatarId === myId;
+    state.status === 'owned' && !!myId && state.ownerAvatarId === myId;
+  const canDecorate = ownedByMe && structures.has(nearParcelCode);
 
   let titlePrefix: string;
   let secondaryLine: string;
@@ -83,7 +85,7 @@ export default function LandOptionsPill() {
     boxShadow:
       '0 0 0 1px rgba(251,191,36,0.2), 0 18px 44px -10px rgba(251,191,36,0.4), 0 0 38px rgba(251,191,36,0.3)',
     color: '#e0f2fe',
-    cursor: actionLabel ? 'pointer' : 'default',
+    cursor: 'default',
     textAlign: 'center',
     touchAction: 'manipulation',
     userSelect: 'none',
@@ -106,8 +108,7 @@ export default function LandOptionsPill() {
           lineHeight: 1.25,
         }}
       >
-        <span aria-hidden>🏝️</span>{' '}
-        {titlePrefix}{' '}
+        <span aria-hidden>🏝️</span> {titlePrefix}{' '}
         <code style={{ color: '#fff', fontFamily: 'inherit', fontWeight: 800 }}>
           {nearParcelCode}
         </code>
@@ -123,35 +124,54 @@ export default function LandOptionsPill() {
       >
         {secondaryLine}
       </span>
-      {actionLabel && (
-        <span
-          style={{
-            color: '#e0f2fe',
-            fontSize: 12,
-            fontWeight: 800,
-            letterSpacing: '0.08em',
-            lineHeight: 1.25,
-            textTransform: 'uppercase',
-          }}
-        >
-          {actionLabel}
-        </span>
-      )}
     </>
   );
 
-  if (!actionLabel) {
-    return <div style={style}>{content}</div>;
-  }
-
   return (
-    <button
-      type="button"
-      onClick={() => openLandOffice(nearParcelCode)}
-      aria-label={`${actionLabel}: ${nearParcelCode}`}
-      style={style}
-    >
+    <div style={style}>
       {content}
-    </button>
+      {actionLabel ? (
+        <span style={{ display: 'flex', gap: 8, marginTop: 5 }}>
+          <button
+            type="button"
+            onClick={() => openLandOffice(nearParcelCode)}
+            aria-label={`${actionLabel}: ${nearParcelCode}`}
+            style={{
+              minHeight: 44,
+              borderRadius: 999,
+              padding: '8px 16px',
+              border: '1px solid rgba(125,211,252,0.42)',
+              background: 'rgba(8,47,73,0.82)',
+              color: '#e0f2fe',
+              fontWeight: 850,
+              cursor: 'pointer',
+              touchAction: 'manipulation',
+            }}
+          >
+            {actionLabel}
+          </button>
+          {canDecorate ? (
+            <button
+              type="button"
+              onClick={() => enterBuildMode(nearParcelCode)}
+              aria-label={`Decorate: ${nearParcelCode}`}
+              style={{
+                minHeight: 44,
+                borderRadius: 999,
+                padding: '8px 16px',
+                border: '1px solid rgba(251,191,36,0.64)',
+                background: 'rgba(180,83,9,0.74)',
+                color: '#fff7ed',
+                fontWeight: 900,
+                cursor: 'pointer',
+                touchAction: 'manipulation',
+              }}
+            >
+              Decorate
+            </button>
+          ) : null}
+        </span>
+      ) : null}
+    </div>
   );
 }

@@ -120,10 +120,21 @@ describe('land kit request and ladder validation', () => {
         ...validCreate,
         level: 5,
         pieceKey: 'statue-shell',
-        currentLarge: 4,
+        currentLarge: 2,
         addingPiece: false,
       }),
     ).toBeNull();
+    expect(
+      validateKitPlacementInput({ ...validCreate, level: 4, currentSmall: 28 }),
+    ).toBe('piece_cap_reached');
+    expect(
+      validateKitPlacementInput({
+        ...validCreate,
+        level: 5,
+        pieceKey: 'statue-shell',
+        currentLarge: 2,
+      }),
+    ).toBe('piece_cap_reached');
   });
 });
 
@@ -317,6 +328,35 @@ describe('land kit middleware and public feed contract', () => {
         idempotencyKey: IDEM,
       }),
     });
+    expect(response.status).toBe(401);
+  });
+
+  it('serves owner piece IDs through a private, ledger-capable read-only route', () => {
+    const ownerRead = routeSpan('get', '/parcels/:parcelId/pieces');
+    expect(ownerRead).toContain('requireAuthOrAgentSession');
+    expect(ownerRead).toContain('requireLedgerCapableIdentity');
+    expect(ownerRead).toContain('noStorePrivate');
+    expect(ownerRead).not.toContain('requireNonGuestIdentity');
+    expect(ownerRead).toContain('ownerPiecesReadLimiter.check(avatarId)');
+    // The authority join must scope to the ACTIVE structure — archived rows can
+    // coexist on a parcel after eviction + re-placement, and an unscoped join
+    // with limit(1) picks one nondeterministically (false 403/404 for the owner).
+    expect(ownerRead).toContain('.leftJoin(');
+    expect(ownerRead).toContain("eq(landStructures.status, 'active')");
+    expect(ownerRead).toContain("authority.structureStatus !== 'active'");
+    expect(ownerRead).toContain("error: 'not_structure_owner'");
+    expect(ownerRead).toContain("error: 'parcel_not_found'");
+    expect(ownerRead).toContain("error: 'structure_required'");
+    expect(ownerRead).toContain('rows.map(toLandStructurePieceDTO)');
+    expect(ownerRead).not.toContain('debitClawTokens');
+    expect(ownerRead).not.toContain('creditClawTokens');
+    expect(ownerRead).not.toContain('bustPublicPiecesCache');
+  });
+
+  it('401s the owner piece-ID read before DB access without auth', async () => {
+    const app = new Hono();
+    app.route('/api/land', landRoutes);
+    const response = await app.request(`/api/land/parcels/${OWNER_ID}/pieces`);
     expect(response.status).toBe(401);
   });
 

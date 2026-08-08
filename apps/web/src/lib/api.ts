@@ -9,6 +9,7 @@ import type {
 // heartbeat body's optional controlMode mirrors the game store's union so the
 // two can never drift.
 import type { ControlMode } from '@/stores/game';
+import type { PlacedPiece } from '@/stores/land';
 import type {
   LandParcelDTO,
   LandParcelStatus,
@@ -36,6 +37,12 @@ import type {
   PublicLandStructureDTO,
   UpdateStructureAppearanceRequest,
   UpdateStructureAppearanceResponse,
+  PlaceLandPieceRequest,
+  PlaceLandPieceResponse,
+  OwnerLandPiecesResponse,
+  MoveLandPieceRequest,
+  MoveLandPieceResponse,
+  DeleteLandPieceResponse,
 } from '@/components/game/land/types';
 import { getFingerprint } from './fingerprint';
 
@@ -1490,6 +1497,42 @@ export const api = {
   /** Every active structure in the shared world. Public; server-cached for 60s. */
   getPublicLandStructures: () =>
     honoRequest<PublicLandStructureDTO[]>('/api/land/structures/public', { cache: 'default' }),
+
+  /** Every active kit piece in the shared world. Public; server-cached for 60s. */
+  getPublicLandPieces: (fresh = false) =>
+    honoRequest<PlacedPiece[]>('/api/land/pieces/public', {
+      // Explicit post-mutation refreshes bypass the browser cache; the server's
+      // own public-feed cache is already busted atomically by routes 12-14.
+      cache: fresh ? 'no-store' : 'default',
+    }),
+
+  /** Owner-only active-structure pieces, including IDs for move/remove after reload. */
+  getLandParcelPieces: (parcelId: string) =>
+    honoRequest<OwnerLandPiecesResponse>(
+      `/api/land/parcels/${encodeURIComponent(parcelId)}/pieces`,
+      { cache: 'no-store' },
+    ),
+
+  /** Paid owner placement; idempotency key is mandatory and server-priced. */
+  placeLandPiece: (parcelId: string, body: PlaceLandPieceRequest) =>
+    honoRequest<PlaceLandPieceResponse>(
+      `/api/land/parcels/${encodeURIComponent(parcelId)}/pieces`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
+  /** Free owner move. */
+  moveLandPiece: (pieceId: string, body: MoveLandPieceRequest) =>
+    honoRequest<MoveLandPieceResponse>(
+      `/api/land/pieces/${encodeURIComponent(pieceId)}`,
+      { method: 'PATCH', body: JSON.stringify(body) },
+    ),
+
+  /** Free owner removal with no refund. */
+  deleteLandPiece: (pieceId: string) =>
+    honoRequest<DeleteLandPieceResponse>(
+      `/api/land/pieces/${encodeURIComponent(pieceId)}`,
+      { method: 'DELETE' },
+    ),
 
   /** Free owner-only shell/palette mutation; current level/tier are server-read. */
   updateStructureAppearance: (

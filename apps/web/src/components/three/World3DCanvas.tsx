@@ -53,6 +53,8 @@ import NpcSpeechBubbles from '@/lib/three/npc-speech-bubbles';
 import ClickToMove from '@/lib/three/click-to-move';
 import LandParcels, { LandParcelSignHitboxes } from '@/lib/three/land-parcels';
 import LandStructures from '@/lib/three/land-structures';
+import LandKitPieces from '@/lib/three/land-kit-pieces';
+import YardEditorThree from '@/lib/three/yard-editor-three';
 import LandShowroom from '@/lib/three/land-showroom';
 import LandRingDecorations from '@/lib/three/land-ring-decorations';
 import LandFounderApartments from '@/lib/three/land-founder-apartments';
@@ -2181,6 +2183,12 @@ export const WorldSceneContents = memo(function WorldSceneContents({
           <LandStructures />
         </group>
       </Suspense>
+      <Suspense fallback={null}>
+        <group name="perf:land-kit-pieces" userData={{ perfChunk: 'land-kit-pieces' }}>
+          <LandKitPieces />
+        </group>
+      </Suspense>
+      <YardEditorThree />
 
       {/* Land showroom — ~15 model buildings on outer starter lots with FOR RENT
           signs. Decorative only (no backend). Hides when a lot is actually owned

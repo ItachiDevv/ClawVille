@@ -56,20 +56,21 @@ export interface KitLevelRule {
 }
 
 // FEATURE_GATE: land_kit_lv4_lv5_render_capacity
-// Status: Lv4/Lv5 backend caps are data-live (up to 48 small + 4 large), but
-//   stage B rendering is not yet graduated.
-// Metric to graduate: capture the renderer-stat baseline required by the canonical
-//   land design §2.3 on the Iris Xe floor before rendering Lv4/Lv5 occupancy.
+// Status: clamp ACTIVE — Lv4/Lv5 small+large caps are held at the Lv3 values
+//   while stage B rendering remains ungraduated.
+// Current reading: the B1 window.__LAND_KIT_STATS__ baseline probe now exists;
+//   the Iris Xe staging metric still needs to be captured.
+// Graduation: restore Lv4 38/3 and Lv5 48/4 only after a real
+//   window.__LAND_KIT_STATS__ Iris Xe staging capture shows headroom against the
+//   renderer-stat baseline required by the canonical land design §2.3.
 // Review deadline: stage B.
-// On-deadline action: if the baseline is absent, clamp Lv4/Lv5 small+large caps
-//   to the Lv3 values (28 small, 2 large) until the baseline exists.
 /** Authoritative §2.2 ladder. */
 export const KIT_LEVEL_RULES: Readonly<Record<KitStructureLevel, KitLevelRule>> = {
   1: { smallPieceCap: 6, largePieceCap: 0, maxStackHeight: 1, rotationDegrees: 90 },
   2: { smallPieceCap: 16, largePieceCap: 0, maxStackHeight: 2, rotationDegrees: 90 },
   3: { smallPieceCap: 28, largePieceCap: 2, maxStackHeight: 2, rotationDegrees: 45 },
-  4: { smallPieceCap: 38, largePieceCap: 3, maxStackHeight: 3, rotationDegrees: 45 },
-  5: { smallPieceCap: 48, largePieceCap: 4, maxStackHeight: 3, rotationDegrees: 45 },
+  4: { smallPieceCap: 28, largePieceCap: 2, maxStackHeight: 3, rotationDegrees: 45 },
+  5: { smallPieceCap: 28, largePieceCap: 2, maxStackHeight: 3, rotationDegrees: 45 },
 };
 
 /** D5 placement fees, in whole vCLAW/CT units. Moving and removal are free. */
