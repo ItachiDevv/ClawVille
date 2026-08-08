@@ -63,13 +63,13 @@
  *   bun run scripts/decimate-vrm.ts apps/web/public/avatars/milady-chibi.vrm 0.41 apps/web/public/avatars/milady-chibi.vrm --tex1024
  */
 
-import { NodeIO } from '@gltf-transform/core';
+import { type Accessor, type Document, NodeIO, Primitive } from '@gltf-transform/core';
 import {
   KHRONOS_EXTENSIONS,
   EXTMeshoptCompression,
   EXTTextureWebP,
 } from '@gltf-transform/extensions';
-import { simplify, meshopt, textureCompress } from '@gltf-transform/functions';
+import { compactPrimitive, simplify, meshopt, textureCompress } from '@gltf-transform/functions';
 import { MeshoptEncoder, MeshoptDecoder, MeshoptSimplifier } from 'meshoptimizer';
 import sharp from 'sharp';
 import * as fs from 'fs';
@@ -147,6 +147,189 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}K`;
   return `${(bytes / (1024 * 1024)).toFixed(2)}MB`;
+}
+
+// Two UNORM16 steps: large enough to ignore a quantization-rounding wobble,
+// small enough that every material UV split in the two showpieces is locked.
+const UV_SEAM_TOLERANCE = 2 / 65535;
+
+interface PositionRemapStats {
+  primitiveCount: number;
+  sourceVertices: number;
+  canonicalVertices: number;
+  sourceTris: number;
+  outputTris: number;
+  uvSeamLocks: number;
+  maxError: number;
+}
+
+/** Decode POSITION to the tightly-packed float32 layout meshoptimizer expects. */
+function readFloatPositions(position: Accessor): Float32Array {
+  const positions = new Float32Array(position.getCount() * 3);
+  const element: number[] = [];
+  for (let i = 0; i < position.getCount(); i++) {
+    position.getElement(i, element);
+    positions[i * 3] = element[0];
+    positions[i * 3 + 1] = element[1];
+    positions[i * 3 + 2] = element[2];
+  }
+  return positions;
+}
+
+/**
+ * Simplify using topology reconstructed from bitwise-identical POSITION values.
+ *
+ * The simplifier sees one dense vertex per unique position. Its output is then
+ * mapped back to representative source vertices before compactPrimitive() copies
+ * every source attribute (including morph targets) without interpolation or
+ * numeric conversion. UV-conflict positions are explicitly locked, and the
+ * most frequently referenced source vertex is selected as their representative.
+ */
+function simplifyPositionRemap(document: Document, ratio: number, errorLimit: number): PositionRemapStats {
+  const stats: PositionRemapStats = {
+    primitiveCount: 0,
+    sourceVertices: 0,
+    canonicalVertices: 0,
+    sourceTris: 0,
+    outputTris: 0,
+    uvSeamLocks: 0,
+    maxError: 0,
+  };
+
+  for (const mesh of document.getRoot().listMeshes()) {
+    for (const prim of mesh.listPrimitives()) {
+      if (prim.getMode() !== Primitive.Mode.TRIANGLES) {
+        throw new Error('--weld-islands currently requires TRIANGLES primitives');
+      }
+
+      const position = prim.getAttribute('POSITION');
+      const indices = prim.getIndices();
+      if (!position || !indices?.getArray()) {
+        throw new Error('--weld-islands requires indexed primitives with POSITION');
+      }
+
+      const sourceIndices = indices.getArray()!;
+      const sourceVertexCount = position.getCount();
+      const floatPositions = readFloatPositions(position);
+
+      // meshoptimizer performs an exact (bitwise float32 XYZ) remap. No epsilon
+      // grid is used: both showpieces already recover the expected ~59k topology
+      // through exact equality, avoiding accidental near-surface welding.
+      const positionRepresentatives = MeshoptSimplifier.generatePositionRemap(floatPositions, 3);
+      const canonicalByVertex = new Uint32Array(sourceVertexCount);
+      const canonicalMembers: number[][] = [];
+      const canonicalIdByRepresentative = new Map<number, number>();
+
+      for (let vertex = 0; vertex < sourceVertexCount; vertex++) {
+        const positionRepresentative = positionRepresentatives[vertex];
+        let canonicalId = canonicalIdByRepresentative.get(positionRepresentative);
+        if (canonicalId === undefined) {
+          canonicalId = canonicalMembers.length;
+          canonicalIdByRepresentative.set(positionRepresentative, canonicalId);
+          canonicalMembers.push([]);
+        }
+        canonicalByVertex[vertex] = canonicalId;
+        canonicalMembers[canonicalId].push(vertex);
+      }
+
+      const canonicalPositions = new Float32Array(canonicalMembers.length * 3);
+      const referenceCounts = new Uint32Array(sourceVertexCount);
+      for (let i = 0; i < sourceIndices.length; i++) referenceCounts[sourceIndices[i]]++;
+
+      const representativeByCanonical = new Uint32Array(canonicalMembers.length);
+      const uvSeamLocks = new Uint8Array(canonicalMembers.length);
+      const uvAccessors = prim
+        .listSemantics()
+        .filter((semantic) => /^TEXCOORD_\d+$/.test(semantic))
+        .map((semantic) => prim.getAttribute(semantic)!);
+      const baseline: number[] = [];
+      const candidate: number[] = [];
+
+      for (let canonicalId = 0; canonicalId < canonicalMembers.length; canonicalId++) {
+        const members = canonicalMembers[canonicalId];
+        const first = members[0];
+        canonicalPositions[canonicalId * 3] = floatPositions[first * 3];
+        canonicalPositions[canonicalId * 3 + 1] = floatPositions[first * 3 + 1];
+        canonicalPositions[canonicalId * 3 + 2] = floatPositions[first * 3 + 2];
+
+        // A modal-by-index-use representative minimizes changed triangle corners
+        // at attribute seams while still returning an untouched source tuple.
+        let representative = first;
+        for (let memberIndex = 1; memberIndex < members.length; memberIndex++) {
+          const member = members[memberIndex];
+          if (referenceCounts[member] > referenceCounts[representative]) representative = member;
+        }
+        representativeByCanonical[canonicalId] = representative;
+
+        for (const uv of uvAccessors) {
+          uv.getElement(first, baseline);
+          for (let memberIndex = 1; memberIndex < members.length; memberIndex++) {
+            uv.getElement(members[memberIndex], candidate);
+            let disagrees = false;
+            for (let component = 0; component < uv.getElementSize(); component++) {
+              if (Math.abs(candidate[component] - baseline[component]) > UV_SEAM_TOLERANCE) {
+                disagrees = true;
+                break;
+              }
+            }
+            if (disagrees) {
+              uvSeamLocks[canonicalId] = 1;
+              break;
+            }
+          }
+          if (uvSeamLocks[canonicalId]) break;
+        }
+      }
+
+      const canonicalIndices = new Uint32Array(sourceIndices.length);
+      for (let i = 0; i < sourceIndices.length; i++) {
+        canonicalIndices[i] = canonicalByVertex[sourceIndices[i]];
+      }
+
+      const targetIndexCount = Math.floor((ratio * canonicalIndices.length) / 3) * 3;
+      const [simplifiedCanonicalIndices, measuredError] = MeshoptSimplifier.simplifyWithAttributes(
+        canonicalIndices,
+        canonicalPositions,
+        3,
+        new Float32Array(),
+        0,
+        [],
+        uvSeamLocks,
+        targetIndexCount,
+        errorLimit,
+        ['LockBorder'],
+      );
+
+      const survivingSourceIndices = new Uint32Array(simplifiedCanonicalIndices.length);
+      for (let i = 0; i < simplifiedCanonicalIndices.length; i++) {
+        survivingSourceIndices[i] = representativeByCanonical[simplifiedCanonicalIndices[i]];
+      }
+
+      // compactPrimitive clones every base + morph attribute with its original
+      // typed-array representation, selecting only the representative tuples.
+      indices.setArray(survivingSourceIndices);
+      compactPrimitive(prim);
+
+      let primitiveLocks = 0;
+      for (let i = 0; i < uvSeamLocks.length; i++) primitiveLocks += uvSeamLocks[i];
+      stats.primitiveCount++;
+      stats.sourceVertices += sourceVertexCount;
+      stats.canonicalVertices += canonicalMembers.length;
+      stats.sourceTris += sourceIndices.length / 3;
+      stats.outputTris += simplifiedCanonicalIndices.length / 3;
+      stats.uvSeamLocks += primitiveLocks;
+      stats.maxError = Math.max(stats.maxError, measuredError);
+
+      console.log(
+        `  weld-islands prim ${stats.primitiveCount}: ${sourceVertexCount} verts -> ${canonicalMembers.length} exact positions, ` +
+          `${sourceIndices.length / 3}->${simplifiedCanonicalIndices.length / 3} tris, ` +
+          `${primitiveLocks} UV-conflict locks, error=${measuredError.toExponential(3)}`,
+      );
+    }
+  }
+
+  if (stats.primitiveCount === 0) throw new Error('--weld-islands found no mesh primitives');
+  return stats;
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -414,6 +597,7 @@ async function main(): Promise<void> {
   let cliTargetTris: number | null = null;
   let cliError: number | null = null;
   let unsafeError = false;
+  let weldIslands = false;
   const positional: string[] = [];
   const seen = new Set<string>();
   const takeValue = (a: string, name: string, i: number): [number, number] => {
@@ -436,6 +620,7 @@ async function main(): Promise<void> {
     const a = rawArgs[i];
     if (a === '--tex1024' || a === 'tex1024') { takeBool('--tex1024'); continue; }
     if (a === '--unsafe-error') { takeBool('--unsafe-error'); unsafeError = true; continue; }
+    if (a === '--weld-islands') { takeBool('--weld-islands'); weldIslands = true; continue; }
     if (a === '--target-tris' || a.startsWith('--target-tris=')) {
       [cliTargetTris, i] = takeValue(a, '--target-tris', i);
       continue;
@@ -473,7 +658,7 @@ async function main(): Promise<void> {
   const [inRel, ratioStr, outRel] = positional;
   if (!inRel || !ratioStr || !outRel) {
     console.error(
-      'Usage: bun run scripts/decimate-vrm.ts <input.vrm> <ratio 0..1> <output.vrm> [tex1024|--tex1024] [--target-tris N] [--error E] [--unsafe-error]',
+      'Usage: bun run scripts/decimate-vrm.ts <input.vrm> <ratio 0..1> <output.vrm> [tex1024|--tex1024] [--target-tris N] [--error E] [--unsafe-error] [--weld-islands]',
     );
     process.exit(1);
   }
@@ -509,7 +694,7 @@ async function main(): Promise<void> {
   const simplifyError = cliError ?? 0.01;
 
   console.log(
-    `\n=== decimate-vrm  ratio=${ratio}  tex1024=${tex1024}  band=[${minTris}-${maxTris}]  error=${simplifyError}  ${isProto ? '(PROTOTYPE)' : '(SHIP over original)'} ===`,
+    `\n=== decimate-vrm  ratio=${ratio}  tex1024=${tex1024}  weldIslands=${weldIslands}  band=[${minTris}-${maxTris}]  error=${simplifyError}  ${isProto ? '(PROTOTYPE)' : '(SHIP over original)'} ===`,
   );
   console.log(`  in : ${inRel}`);
   console.log(`  out: ${outRel}`);
@@ -532,11 +717,19 @@ async function main(): Promise<void> {
   const vrmExtensions = captureVrmExtensions(inFile);
   const doc = await io.read(inFile);
 
-  // simplify: per-primitive, keeps skeleton + skin. lockBorder protects
-  // silhouette/open edges (wings). error is meshoptimizer's absolute bound.
-  const transforms: Array<Parameters<typeof doc.transform>[number]> = [
-    simplify({ simplifier: MeshoptSimplifier, ratio, error: simplifyError, lockBorder: true }),
-  ];
+  // Default path stays byte-for-byte behavior-compatible with the prior script.
+  // The opt-in path reconstructs position topology first, then maps surviving
+  // triangles back to untouched source attribute tuples.
+  const transforms: Array<Parameters<typeof doc.transform>[number]> = [];
+  if (weldIslands) {
+    simplifyPositionRemap(doc, ratio, simplifyError);
+  } else {
+    // simplify: per-primitive, keeps skeleton + skin. lockBorder protects
+    // silhouette/open edges (wings). error is meshoptimizer's relative bound.
+    transforms.push(
+      simplify({ simplifier: MeshoptSimplifier, ratio, error: simplifyError, lockBorder: true }),
+    );
+  }
   if (tex1024) {
     // Track-E: downscale every texture to a 1024px max edge + re-encode WebP.
     // `formats: /png|jpe?g|webp/i` so we catch the chibis' RAW PNG sources AND

@@ -285,6 +285,58 @@ Codex asset-batch diff review: no blocking findings, no omitted ref sites; valid
 findings folded (`8ac4b0d7`). Old files retained on disk (rollout-safe; cleanup rides the
 dead-disk punch list). Remaining C: pavilion per-map A/B (0.65–1.0MB) + tekk was the last VRM row.
 
+### B1 position-remap decimator prototypes (E3 co-authored, 2026-08-08)
+
+**Root cause re-verified:** exact float32 POSITION remapping reduces Ansem's 193,946 uploaded
+vertices to 59,183 canonical positions and Adinero's 201,659 to 59,577. No epsilon grid was
+needed or used. This confirms that bitwise-identical positions are sufficient to reconstruct the
+topology hidden by the exported triangle-corner splits.
+
+`scripts/decimate-vrm.ts` now has an opt-in `--weld-islands` path. It builds a dense canonical
+POSITION/index stream, calls `MeshoptSimplifier.simplifyWithAttributes()` on that position-only
+topology, maps the result back through one representative source vertex per canonical position,
+and runs `compactPrimitive()`. Base attributes and morph-target attributes are copied from the
+surviving source tuples in their original typed-array representation; there is no interpolation.
+The existing VRMC capture/reinject, WebP handling, meshopt re-encode, atomic write, and validation
+table remain in the chain. The flag defaults OFF.
+
+**Seam mitigation:** every canonical position whose originals differ in any `TEXCOORD_n` by more
+than `2/65535` is passed to meshoptimizer as a vertex lock, alongside `LockBorder`. That locks
+11,135 Ansem positions and 9,610 Adinero positions. The representative is the original vertex most
+frequently referenced by the source index buffer, minimizing tuple substitution at split corners.
+Skin data is not ambiguous here: measured JOINTS/WEIGHTS disagreement inside position groups is
+zero for both assets.
+
+**Measured prototype ladder (exact final-chain bytes):**
+
+| Prototype | Ratio | Error cap / measured | Tris | Verts | Bytes | Save vs source | External validator |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `ansem-w65k.vrm` | 0.5500681 | 0.0005 / 0.0001463 | 64,999 | 32,599 | 626,380 | 78.44% | only S3.0 FAIL |
+| `ansem-w45k.vrm` | 0.3808173 | 0.0005 / 0.0003341 | 44,999 | 22,599 | 463,572 | 84.04% | only S3.0 FAIL |
+| `ansem-w30k.vrm` | 0.2538783 | 0.0010 / 0.0008095 | 29,999 | 15,099 | 334,156 | 88.50% | only S3.0 FAIL |
+| `adinero-w65k.vrm` | 0.5458429 | 0.0005 / 0.0001330 | 65,000 | 32,536 | 660,904 | 77.69% | only S3.0 FAIL |
+| `adinero-w45k.vrm` | 0.3778900 | 0.0005 / 0.0002514 | 44,998 | 22,535 | 497,928 | 83.19% | only S3.0 FAIL |
+| `adinero-w30k.vrm` | 0.2519272 | 0.0010 / 0.0005591 | 29,998 | 15,035 | 371,572 | 87.46% | only S3.0 FAIL |
+
+Source bytes are 2,905,444 (Ansem) and 2,962,048 (Adinero). Every rung is inside its requested
+band (±5%). For all six, `vrm-pipeline-validate.mjs --expect-quantize` reports exactly the
+decimation-inherent S3.0 POSITION-count failure; S1, S2.0, S4, S5, S6, S7+S8, and S9–S13 pass.
+`vrm-pipeline-validate.test.mjs` remains **9/9 PASS**.
+
+**Default-path regression guard:** plain runs without `--weld-islands` still floor at 89,497
+Ansem tris and 90,706 Adinero tris. Their outputs are byte-identical to the pre-change floor
+prototypes: Ansem SHA-256 `12987DAA6DB619FA01CB783D72A66B2428BF81292DB7837CF3C9A62FCC17B9D5`;
+Adinero `4E505F3042A04BA637CB43517EEF72F8E9A1E22ECBCFA5603DA17273836EDEE0`.
+
+**Residual visual risk / no ship decision:** a canonical position can still have multiple valid UV
+or hard-normal tuples. Locking prevents that position from moving during collapse, but the final
+one-representative mapping cannot preserve every per-island tuple. In particular, nearly every
+duplicate-position group has differing normals, so grazing-light shading and minority UV-island
+corners can still change even though every emitted tuple is source-exact. The 30k rung also needs a
+0.001 error cap (0.0005 stops Ansem around 36.7k). These are prototypes only: animated
+idle/walk/run, shoulder/hand/face deformation, Ansem sword attachment, close-up texture seams,
+and grazing-light normals still require founder-eyed A/B before choosing any per-asset knee.
+
 ## Punch-list (found during census — NOT rung-2 wire scope)
 
 1. **~505MB of Meshy pipeline intermediates are COMMITTED and on origin/staging**:
