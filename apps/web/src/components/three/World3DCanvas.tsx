@@ -8,6 +8,7 @@ import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import type { ThreeToJSXElements } from '@react-three/fiber';
 import {
   useSceneActive,
+  useSceneCamera,
   useSceneFrame,
 } from './world-stage/use-scene-frame';
 import {
@@ -1996,17 +1997,63 @@ const isTouchDevice = typeof window !== 'undefined' &&
 export const WorldSceneContents = memo(function WorldSceneContents({
   mode,
   perfFlags,
+  perfCameraPreset = false,
   onFrameloopChange,
   stageWarmup,
   stageHosted = false,
 }: {
   mode: WorldMode;
   perfFlags?: Partial<WorldPerfFlags>;
+  /**
+   * Mount the /perf-page camera preset (fixed overview pose + [0,80,0] orbit
+   * target). MUST stay false on the live stage: wrappers resolve adaptive
+   * perfFlags so `perfFlags` is always truthy here — the old
+   * `{perfFlags && <PerfCameraPreset/>}` gate therefore mounted it on /game,
+   * and its useEffect depends on the DEFAULT camera, which the stage swaps
+   * per scene. Every swap re-ran the effect and stomped the incoming slot's
+   * camera + the orbit target (2026-08-08 kelp round-trip bug: the world
+   * view always snapped back to the origin overview after a kelp visit).
+   */
+  perfCameraPreset?: boolean;
   onFrameloopChange: (mode: 'always' | 'never') => void;
   stageWarmup?: WorldStageWarmupProps;
   stageHosted?: boolean;
 }) {
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
+  // Preserved orbit pivot across OrbitControls unmount/remount cycles (the
+  // controls instance dies with the scene-active gate below, but the world
+  // camera persists — restoring the target keeps the pre-transition
+  // composition instead of snapping the view back to the origin overview).
+  const savedOrbitTargetRef = useRef(new THREE.Vector3(0, 10, 0));
+  const bindControlsRef = useCallback(
+    (next: OrbitControlsImpl | null) => {
+      const previous = controlsRef.current;
+      if (previous && previous !== next) {
+        savedOrbitTargetRef.current.copy(previous.target);
+      }
+      controlsRef.current = next;
+      if (next) {
+        next.target.copy(savedOrbitTargetRef.current);
+        next.update();
+      }
+    },
+    [],
+  );
+  // Drei's OrbitControls binds to the CURRENT default camera reactively and
+  // registers a native (non-scene-gated) useFrame for its update(). When the
+  // stage swaps the default camera to another slot's camera (kelp/cove/
+  // activity), a mounted OrbitControls rebinds to THAT camera and its
+  // per-frame distance/polar clamps + lookAt(worldTarget) fight the other
+  // scene's chase controller at 60Hz (2026-08-08 kelp bug: maxDistance=5500
+  // measured from the world orbit target pinned the kelp camera in FRONT of
+  // the player at spawn z=6000 — reversed facing, jitter, and a rotated
+  // WASD basis). Two guards: mount only while the world scene owns the
+  // stage, AND pin the controls to the world slot's persistent camera so a
+  // remount during the default-camera swap window can never construct
+  // against another slot's camera.
+  const worldSceneActive = useSceneActive();
+  const worldSlotCamera = useSceneCamera();
+  const stageDefaultCamera = useThree((state) => state.camera);
   const isGame = mode === 'game';
   const flags = { ...DEFAULT_WORLD_PERF_FLAGS, ...perfFlags };
   const staticOnly = flags.staticWorldOnly;
@@ -2068,23 +2115,25 @@ export const WorldSceneContents = memo(function WorldSceneContents({
           node ready on their first render. */}
       {showLabels && <WorldLabelsOverlayMount />}
 
-      {/* Camera controls.
-          Target at z=-50 centres on the middle building row (z ≈ -64) so the
-          initial overview shows all 3 rows symmetrically. */}
-      <OrbitControls
-        ref={controlsRef}
-        makeDefault
-        enablePan={!isTouchDevice}
-        enableZoom={true}
-        enableRotate={true}
-        minDistance={followMode ? 40 : 160}
-        maxDistance={5500}
-        maxPolarAngle={Math.PI * 0.85}
-        rotateSpeed={isTouchDevice ? 0.4 : 1}
-        zoomSpeed={isTouchDevice ? 0.6 : 1}
-        target={[0, 10, 0]}
-      />
-      {perfFlags && <PerfCameraPreset controlsRef={controlsRef} />}
+      {/* Camera controls. Target [0,10,0] = the town-center overview pivot
+          (restored from savedOrbitTargetRef on remount so a scene round-trip
+          keeps the pre-transition composition). */}
+      {worldSceneActive && (
+        <OrbitControls
+          ref={bindControlsRef}
+          camera={worldSlotCamera ?? stageDefaultCamera}
+          makeDefault
+          enablePan={!isTouchDevice}
+          enableZoom={true}
+          enableRotate={true}
+          minDistance={followMode ? 40 : 160}
+          maxDistance={5500}
+          maxPolarAngle={Math.PI * 0.85}
+          rotateSpeed={isTouchDevice ? 0.4 : 1}
+          zoomSpeed={isTouchDevice ? 0.6 : 1}
+        />
+      )}
+      {perfCameraPreset && <PerfCameraPreset controlsRef={controlsRef} />}
 
       {/* Camera controller routing based on controlMode:
             explore           → WASDCameraController (free cam, WASD pans world)
@@ -2395,6 +2444,7 @@ export const WorldScene = memo(function WorldScene({
     <WorldSceneContents
       mode={mode}
       perfFlags={resolvedPerfFlags}
+      perfCameraPreset={perfFlags !== undefined}
       onFrameloopChange={onFrameloopChange}
       stageWarmup={stageWarmup}
       stageHosted={stageHosted}
@@ -2791,6 +2841,7 @@ function World3DCanvas({ mode, perfFlags }: World3DCanvasProps) {
         <WorldSceneContents
           mode={mode}
           perfFlags={resolvedPerfFlags}
+          perfCameraPreset={perfFlags !== undefined}
           onFrameloopChange={setFrameloopMode}
         />
       </Canvas>

@@ -37,6 +37,7 @@ import {
 import { useStageStore } from './stage-store';
 import {
   requestStageDeltaClamp,
+  SceneCameraProvider,
   SceneIdProvider,
   SlotCapabilityProvider,
   StageFrameScheduler,
@@ -896,10 +897,12 @@ function StageLoopController({
 
 function StageSceneSlot({
   sceneId,
+  camera = null,
   capabilities,
   children,
 }: {
   sceneId: string;
+  camera?: THREE.PerspectiveCamera | null;
   capabilities?: Partial<PlayerCapabilityMask>;
   children: ReactNode;
 }) {
@@ -924,11 +927,13 @@ function StageSceneSlot({
       visible={visible}
     >
       {mounted ? (
-        <SceneIdProvider sceneId={sceneId}>
-          <SlotCapabilityProvider capabilities={resolvedCapabilities}>
-            {children}
-          </SlotCapabilityProvider>
-        </SceneIdProvider>
+        <SceneCameraProvider camera={camera}>
+          <SceneIdProvider sceneId={sceneId}>
+            <SlotCapabilityProvider capabilities={resolvedCapabilities}>
+              {children}
+            </SlotCapabilityProvider>
+          </SceneIdProvider>
+        </SceneCameraProvider>
       ) : null}
     </group>
   );
@@ -1072,6 +1077,7 @@ export function WorldStageCanvas({
             <StageSceneAppearance scene={scene} />
             <StageSceneSlot
               sceneId={scene.sceneId}
+              camera={cameras.get(scene.sceneId) ?? null}
               capabilities={scene.capabilities}
             >
               {scene.content}
