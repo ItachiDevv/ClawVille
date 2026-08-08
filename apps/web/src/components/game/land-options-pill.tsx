@@ -1,6 +1,7 @@
 'use client';
 
 import type { CSSProperties } from 'react';
+import { parcelDisplayName } from '@clawville/shared';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useIsGuest } from '@/hooks/use-is-guest';
 import { useIsMobile } from '@/hooks/use-is-mobile';
@@ -35,29 +36,26 @@ export default function LandOptionsPill() {
 
   const slot = getParcelSlotByCode(nearParcelCode);
   const tier = slot?.tier ?? null;
+  const displayName = tier ? parcelDisplayName(nearParcelCode, tier) : nearParcelCode;
   const myId = (avatar as { id?: string } | null | undefined)?.id ?? null;
   const ownedByMe =
     state.status === 'owned' && !!myId && state.ownerAvatarId === myId;
   const canDecorate = ownedByMe && structures.has(nearParcelCode);
 
-  let titlePrefix: string;
   let secondaryLine: string;
   let actionLabel: string | null;
 
   if (state.status === 'available') {
-    titlePrefix = 'Parcel';
     secondaryLine = isGuest
       ? 'Preview the Land Office'
-      : tier === 'starter'
-        ? 'Refundable vCLAW deposit'
-        : 'Hold $CLAWVILLE to keep';
+      : tier === 'founder'
+        ? 'CLV hold door · auction allocation'
+        : 'Choose CLV hold or vCLAW rent';
     actionLabel = 'View in Land Office';
   } else if (ownedByMe) {
-    titlePrefix = 'Your parcel';
     secondaryLine = 'Manage your land';
     actionLabel = 'Manage';
   } else {
-    titlePrefix = 'Claimed parcel';
     secondaryLine = 'Someone already holds this lot';
     actionLabel = null;
   }
@@ -108,11 +106,8 @@ export default function LandOptionsPill() {
           lineHeight: 1.25,
         }}
       >
-        <span aria-hidden>🏝️</span> {titlePrefix}{' '}
-        <code style={{ color: '#fff', fontFamily: 'inherit', fontWeight: 800 }}>
-          {nearParcelCode}
-        </code>
-        {state.status === 'available' ? ' · Available' : null}
+        <span aria-hidden>🏝️</span> {displayName}
+        {state.status === 'available' ? ' · Available' : ownedByMe ? ' · Yours' : ' · Claimed'}
       </span>
       <span
         style={{
@@ -135,7 +130,7 @@ export default function LandOptionsPill() {
           <button
             type="button"
             onClick={() => openLandOffice(nearParcelCode)}
-            aria-label={`${actionLabel}: ${nearParcelCode}`}
+            aria-label={`${actionLabel}: ${displayName} (${nearParcelCode})`}
             style={{
               minHeight: 44,
               borderRadius: 999,
@@ -154,7 +149,7 @@ export default function LandOptionsPill() {
             <button
               type="button"
               onClick={() => enterBuildMode(nearParcelCode)}
-              aria-label={`Decorate: ${nearParcelCode}`}
+              aria-label={`Decorate: ${displayName} (${nearParcelCode})`}
               style={{
                 minHeight: 44,
                 borderRadius: 999,

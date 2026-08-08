@@ -31,6 +31,28 @@ export function tierLabel(tier: LandTier): string {
   return LAND_TIER_LABELS[tier];
 }
 
+/** Compact place names used when a specific parcel is shown to a person. */
+const PARCEL_DISPLAY_TIER_LABELS: Record<LandTier, string> = {
+  founder: "Founders' Row",
+  a: 'Town Crest',
+  b: 'Inner Ward',
+  c: 'Outer Ward',
+  starter: 'Starter Cove',
+};
+
+/**
+ * Stable human-facing name for a technical parcel code.
+ *
+ * The wire key remains `parcelCode`; this helper only derives presentation
+ * copy from its frozen numeric suffix, so no database field or mutable naming
+ * registry can drift. Canonical codes use a two-digit, zero-based suffix.
+ */
+export function parcelDisplayName(code: string, tier: LandTier): string {
+  const suffix = /-(\d+)$/.exec(code)?.[1];
+  if (!suffix) return PARCEL_DISPLAY_TIER_LABELS[tier];
+  return `${PARCEL_DISPLAY_TIER_LABELS[tier]} #${suffix.padStart(2, '0')}`;
+}
+
 /**
  * FIXED supply per tier (founder-locked 2026-06-15).
  * Founder/A scarce (prestige + land-rush); Starter raised well above day-1 concurrency so it

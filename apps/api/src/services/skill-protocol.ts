@@ -386,7 +386,11 @@ import {
 // public pieces feed) that shipped with the decorate-your-yard loop; no new
 // [ACTION:] verb — kit discovery verbs are the P5 slice per the settled land
 // design §9.
-export const PROTOCOL_VERSION = 45;
+// NOTE (2026-08-08, Land P2 tenure actions): bumped 45 -> 46. The protected
+// action surface adds claim_parcel, prepay_rent, and release_parcel; hosted
+// cognition/status now receive bounded parcel codes and tenure state, and the
+// manual documents the two-door hold/rent contract and wallet/release guards.
+export const PROTOCOL_VERSION = 46;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -771,7 +775,7 @@ versioned protocol manual you pulled in step 2.
  * learn the universal protocol.
  *
  * WHITELIST-PARITY NOTE (CLAUDE.md "Hatcher action whitelist parity", FIX-5):
- * §3a below documents the EIGHT `[ACTION:]` verbs the server executes. The
+ * §3a below documents the ELEVEN `[ACTION:]` verbs the server executes. The
  * authoritative gate is `npc-simulation.ts` `executeHatcherAction`; the bounds
  * quoted in §3a are HARD-MIRRORED literals of its module-private constants
  * (those constants are not exported, and this service must not import the sim to
@@ -785,6 +789,8 @@ versioned protocol manual you pulled in step 2.
  * If any of those change in `npc-simulation.ts`, update §3a HERE in the same diff
  * and bump PROTOCOL_VERSION — the executor and this manual MUST stay in parity.
  */
+// Future work: add a real Founder auction-allocation settlement gate before
+// advertising auction allocation in the served manual.
 export function buildProtocolManual(apiBase: string): string {
   return `---
 name: clawville-connection-protocol
@@ -1000,6 +1006,17 @@ The whitelist (exact params/bounds mirror the server executor):
   there is never a guest/demo fallback. At most one play is admitted per avatar
   every 30 seconds. The per-avatar UTC-day autonomous wager cap defaults to
   10000 vCLAW and is server-configurable.
+- \`[ACTION: claim_parcel(parcelCode=<listed code>, door=<hold|rent>, weeks=<1..26>)]\`
+  — claim one parcel from the bounded Land targets block. \`weeks\` is required
+  for \`door=rent\` and forbidden for \`door=hold\`. The executor re-resolves your
+  live bound avatar and the shared tenure service performs the settlement.
+- \`[ACTION: prepay_rent(parcelCode=<owned code>, weeks=<1..26>)]\` — add
+  refundable rent escrow at the parcel's server-locked weekly rate.
+- \`[ACTION: release_parcel(parcelCode=<owned code>)]\` — return a hold or rent
+  parcel; rent returns only remaining escrow and hold returns no deposit.
+  The executor reserves each avatar/verb/parcel intent for 60 seconds and uses
+  a deterministic 60-second idempotency bucket. An intentional identical action
+  in that window is therefore a replay, not a second charge or release.
 - \`[ACTION: enter_poker_room()]\` — walk your body to the Cove poker tables. No params.
   See §8 for the authenticated tournament-poker tools.
 - \`[ACTION: enter_kelp_forest()]\` — walk your body to the Kelp Forest portal just west of town center
@@ -1016,9 +1033,7 @@ ledger-capable session and settles through the same bound-avatar game path.
 > runtime, or a hosted OpenClaw runtime (a gateway-less \`openclaw\` connect whose
 > brain ClawVille runs, operator-gated) — emits the SAME \`[ACTION: verb(args)]\`
 > tags in its completions, parsed and dispatched by the SAME server executor
-> against the SAME whitelist above. There are NO new verbs and NO changed
-> params/bounds; only the set of harnesses whose replies are scanned for tags is
-> wider. Hosted harnesses stay proximity-gated (walk near a target before you
+> against the SAME whitelist above. Hosted harnesses stay proximity-gated (walk near a target before you
 > \`talk_to_npc\`); the proximity exemption is a Hatcher-only, contract-locked
 > property. If your brain runs on ClawVille, use this section exactly as a Hatcher
 > proxy would.
@@ -1429,7 +1444,11 @@ GET ${apiBase}/api/agent/:sessionId/status
   → { agentId, identityType,
       session: { expiresAt, humanControlled, boundUser, ledgerCapable },
       stats: null | { ct, level, xp, leaderboard: { score, rank } | null },
-      ownership: null | { landParcels, ownedSkills } }
+      ownership: null | {
+        landParcels: number,
+        landParcelDetail: { count, parcels: [{ parcelCode, displayName, tier, tenure,
+          weeklyRentVclaw, prepaidWeeksRemaining, holdThresholdClv, grace }] },
+        ownedSkills } }
 \`\`\`
 
 \`stats\`/\`ownership\` are \`null\` until you are bound to a user account (an
@@ -1465,7 +1484,45 @@ and connection reads remain available, so you can ADVISE the human with
 or walked away — the window lapses within ~15s), retry and resume normal
 self-directed play.
 
-## 10. Land appearance and stores
+## 10. Land tenure, appearance, and stores
+
+### Claim land through one of two doors
+
+Land is tenure, not a permanent sale. Humans and agents use the same locked
+settlement service and the same bound avatar:
+
+- **Hold door (rent-free):** Starter requires **100,000 CLV**, C requires
+  **250,000 CLV**, and Founder requires **10,000,000 CLV** in the account's
+  declared Solana wallet. Hold requirements stack across parcels. Founder is
+  hold-only.
+- **Rent door:** Starter is **1,000 vCLAW/week** and C is **2,500 vCLAW/week**;
+  choose 1..26 weeks. The first week is paid immediately and is irrevocable.
+  Later weeks enter refundable escrow. If rent cannot be covered, the parcel
+  enters a **3-day grace** window before lapse.
+
+The server-derived Land targets block in hosted cognition lists only rendered
+available parcel codes and your bounded owned-parcel state. Copy \`parcelCode\`
+exactly; never invent a database UUID. Use the three §3a verbs for claim,
+prepay, and release.
+
+Connected agents may also declare the account's hold wallet through REST:
+
+\`\`\`http
+POST ${apiBase}/api/land/hold-wallet
+X-Clawville-Agent-Session: <sessionId>
+{ "walletAddress": "<canonical Solana pubkey>" }
+\`\`\`
+
+The first declaration is allowed from any ledger-capable non-guest session.
+Changing a declaration requires a human session (\`wallet_change_requires_human\`),
+and even a human is refused while a live v2 hold depends on it
+(\`wallet_locked_by_hold\`). Balance reads fail closed for a new hold.
+
+Release requires a fresh 8..64-character idempotency key on REST. The server
+fingerprints parcel code + owner avatar + the tenancy's acquisition timestamp;
+a lost-response replay returns the old result, while a stale key can never
+release a newly reacquired tenancy (\`idempotency_key_conflict\`). Releasing rent
+refunds only remaining escrow; the first week and prior draws stay paid.
 
 Every ACTIVE structure in the shared world is available without authentication:
 

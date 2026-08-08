@@ -17,10 +17,11 @@ import type {
   LandCatalogAllResponse,
   OwnedLandResponse,
   MyLandResponse,
-  ClaimStarterResponse,
-  BuyParcelResponse,
-  RentParcelResponse,
   ClaimHoldResponse,
+  ClaimRentResponse,
+  LandHoldWalletStatus,
+  RentPrepayResponse,
+  ReleaseParcelResponse,
   PlaceStructureResponse,
   UpgradeStructureResponse,
   ParcelStructureResponse,
@@ -1449,46 +1450,41 @@ export const api = {
   },
 
   /**
-   * Claim a Starter Cove (auth, non-guest). NO body/parcelId — the server
-   * AUTO-PICKS an available starter and debits the refundable
-   * LAND_STARTER_DEPOSIT_CT (2000 CT) into escrow (NOT free, NOT a purchase;
-   * weekly upkeep auto-draws from it). Idempotent — `alreadyOwned: true` on
-   * repeat, never re-charged.
+   * Claim a rendered Starter, C, or Founder parcel through the rent-free CLV
+   * hold door. The server derives the stacked threshold and verifies the fresh
+   * declared-wallet balance; the client supplies only its retry-stable key.
    */
-  claimStarterPlot: () =>
-    honoRequest<ClaimStarterResponse>('/api/land/claim-starter', {
+  getLandHoldWallet: () =>
+    honoRequest<LandHoldWalletStatus>('/api/land/hold-wallet'),
+
+  declareLandHoldWallet: (walletAddress: string) =>
+    honoRequest<{ walletAddress: string }>('/api/land/hold-wallet', {
       method: 'POST',
+      body: JSON.stringify({ walletAddress }),
     }),
 
-  /** Buy a priced parcel with CT (auth). */
-  buyParcel: (parcelId: string) =>
-    honoRequest<BuyParcelResponse>(
-      `/api/land/parcels/${encodeURIComponent(parcelId)}/buy`,
-      { method: 'POST' },
-    ),
-
-  /**
-   * Rent a c-tier parcel with CT (auth). Charges the first week immediately from
-   * the SERVER-stamped `rent_ct_weekly` — the body is empty, NO client price.
-   * Returns the paid-through date; the sweeper auto-charges each subsequent week.
-   */
-  rentParcel: (parcelId: string) =>
-    honoRequest<RentParcelResponse>(
-      `/api/land/parcels/${encodeURIComponent(parcelId)}/rent`,
-      { method: 'POST', body: JSON.stringify({}) },
-    ),
-
-  /**
-   * Claim a c/b/a/founder parcel by PROVING a CLV hold (Phase B2 hold-to-keep,
-   * auth non-guest). EMPTY body (`emptyStrictBodySchema` rejects stray fields) —
-   * NO client price/threshold EVER reaches the write: the server derives the
-   * stacked CLV requirement and reads the live balance itself. No CT is debited
-   * at claim; the weekly CT upkeep is auto-charged by the rent sweeper.
-   */
-  claimHoldParcel: (parcelId: string) =>
+  claimHoldParcel: (parcelId: string, idempotencyKey: string) =>
     honoRequest<ClaimHoldResponse>(
       `/api/land/parcels/${encodeURIComponent(parcelId)}/claim-hold`,
-      { method: 'POST', body: JSON.stringify({}) },
+      { method: 'POST', body: JSON.stringify({ idempotencyKey }) },
+    ),
+
+  claimRentParcel: (parcelId: string, weeks: number, idempotencyKey: string) =>
+    honoRequest<ClaimRentResponse>(
+      `/api/land/parcels/${encodeURIComponent(parcelId)}/claim-rent`,
+      { method: 'POST', body: JSON.stringify({ weeks, idempotencyKey }) },
+    ),
+
+  prepayLandRent: (parcelId: string, weeks: number, idempotencyKey: string) =>
+    honoRequest<RentPrepayResponse>(
+      `/api/land/parcels/${encodeURIComponent(parcelId)}/deposit-topup`,
+      { method: 'POST', body: JSON.stringify({ weeks, idempotencyKey }) },
+    ),
+
+  releaseLandParcel: (parcelId: string, idempotencyKey: string) =>
+    honoRequest<ReleaseParcelResponse>(
+      `/api/land/parcels/${encodeURIComponent(parcelId)}/release`,
+      { method: 'POST', body: JSON.stringify({ idempotencyKey }) },
     ),
 
   /** The signed-in player's owned parcels + structures (auth). */

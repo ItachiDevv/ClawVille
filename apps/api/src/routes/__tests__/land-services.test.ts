@@ -283,7 +283,7 @@ describe('land services — routing integrity + pre-DB validation', () => {
     const app = buildRoutingApp();
     const res = await app.request(`/api/land/structures/${crypto.randomUUID()}/services`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': 'test-land-services-routing' },
       body: JSON.stringify({ title: 'x', priceCt: 1 }),
     });
     expect(res.status).toBe(401);
@@ -431,6 +431,7 @@ describeIfDb('land services — money-path route tests (requires DATABASE_URL)',
         priceCt: 500,
         ownerAvatarId,
         tenure: 'owned',
+        tenureTermsVersion: 1,
         acquiredAt: new Date(),
       })
       .returning();

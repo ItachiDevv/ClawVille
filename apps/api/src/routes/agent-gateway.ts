@@ -12,6 +12,7 @@ import {
   DEFAULT_AGENT_MODEL_KEY,
   DEFAULT_AGENT_CATEGORY,
   DEFAULT_AGENT_HARNESS,
+  parcelDisplayName,
   type NpcActivity,
   type AgentStats,
   type AgentSubstrateRegistration,
@@ -21,7 +22,7 @@ import { npcSimulation } from '../services/npc-simulation';
 import { recordCovenantAction } from '../services/covenant-action-recorder';
 import { findPath } from '../services/pathfinding';
 import { memoryService } from '../services/memory-service';
-import { db, agentBots, avatars, users, buildingSkills, landParcels, eq, and, isNull, sql, type AgentBotAck } from '@clawville/database';
+import { db, agentBots, avatars, users, buildingSkills, landParcels, eq, and, asc, isNull, sql, type AgentBotAck } from '@clawville/database';
 import { agentOrchestrator } from '../services/agent-orchestrator';
 import { getSessionAgent } from '../services/session-agent-map';
 import { AgentSubstrateClient } from '../services/agent-substrate-client';
@@ -3877,12 +3878,45 @@ agentGatewayRoutes.get('/:sessionId/status', async (c) => {
 
       // Land — one indexed count on owner_avatar_id.
       let landCount = 0;
+      let ownedLand: AgentStatusOwnership['landParcelDetail']['parcels'] = [];
       try {
-        const [row] = await db
+        const rows = await db
+          .select({
+            parcelCode: landParcels.parcelCode,
+            tier: landParcels.tier,
+            tenure: landParcels.tenure,
+            rentCtWeekly: landParcels.rentCtWeekly,
+            depositRemainingCt: landParcels.depositRemainingCt,
+            holdThresholdCt: landParcels.holdThresholdCt,
+            graceUntil: landParcels.graceUntil,
+          })
+          .from(landParcels)
+          .where(eq(landParcels.ownerAvatarId, avatar.id))
+          .orderBy(asc(landParcels.parcelCode))
+          .limit(5);
+        const [countRow] = await db
           .select({ c: sql<number>`count(*)::int` })
           .from(landParcels)
           .where(eq(landParcels.ownerAvatarId, avatar.id));
-        landCount = row?.c ?? 0;
+        landCount = countRow?.c ?? 0;
+        ownedLand = rows.map((parcel) => ({
+          parcelCode: parcel.parcelCode,
+          displayName: parcelDisplayName(parcel.parcelCode, parcel.tier),
+          tier: parcel.tier,
+          tenure: parcel.tenure === 'hold' || parcel.tenure === 'deposit'
+            ? parcel.tenure
+            : 'legacy',
+          weeklyRentVclaw: parcel.rentCtWeekly,
+          prepaidWeeksRemaining:
+            parcel.tenure === 'deposit'
+            && parcel.rentCtWeekly != null
+            && parcel.rentCtWeekly > 0
+            && parcel.depositRemainingCt != null
+              ? Math.floor(parcel.depositRemainingCt / parcel.rentCtWeekly)
+              : null,
+          holdThresholdClv: parcel.holdThresholdCt,
+          grace: parcel.graceUntil == null ? 'active' : 'grace',
+        }));
       } catch (err) {
         console.warn('[AgentStatus] land count failed (non-fatal):', err);
       }
@@ -3908,7 +3942,11 @@ agentGatewayRoutes.get('/:sessionId/status', async (c) => {
           if (owned) ownedSkills.push(`clawville-${buildingId}`);
         }
       }
-      ownership = { landParcels: landCount, ownedSkills };
+      ownership = {
+        landParcels: landCount,
+        landParcelDetail: { count: landCount, parcels: ownedLand },
+        ownedSkills,
+      };
     }
   }
 

@@ -8,6 +8,7 @@ import {
   type AutonomyEnterablePlace,
   HATCHER_ACTION_VERBS,
   type HatcherActionVerb,
+  LAND_PARCELS,
   COVE_SLOTS_BET_STEP,
   COVE_SLOTS_MIN_BET,
   COVE_SLOTS_MAX_BET,
@@ -173,6 +174,9 @@ const HATCHER_ACTION_REGEX = /\[ACTION:\s*(\w+)\(([^)]*)\)\]/g;
 const HATCHER_TALK_MESSAGE_MAX = 500;
 
 const HATCHER_ACTION_VERB_SET: ReadonlySet<string> = new Set(HATCHER_ACTION_VERBS);
+const HATCHER_LAND_PARCEL_CODES: ReadonlySet<string> = new Set(
+  LAND_PARCELS.map((parcel) => parcel.id),
+);
 
 function isHatcherActionVerb(name: string): name is HatcherActionVerb {
   return HATCHER_ACTION_VERB_SET.has(name);
@@ -198,6 +202,39 @@ interface AgentActionAttribution {
 }
 
 const AUTONOMOUS_COVE_PLAY_INTERVAL_MS = 30_000;
+const AUTONOMOUS_LAND_ACTION_INTERVAL_MS = 60_000;
+
+type AutonomousLandOperation =
+  | { verb: 'claim_parcel'; parcelCode: string; door: 'hold' | 'rent'; weeks?: number }
+  | { verb: 'prepay_rent'; parcelCode: string; weeks: number }
+  | { verb: 'release_parcel'; parcelCode: string };
+
+type AutonomousLandSettlementResult =
+  | {
+      kind: 'claim';
+      fresh: boolean;
+      parcel: { parcelCode: string; tier: 'starter' | 'c' | 'b' | 'a' | 'founder' };
+      door: 'hold' | 'rent';
+      amountCt: number;
+    }
+  | { kind: 'prepay'; fresh: boolean; parcelCode: string; amountCt: number }
+  | {
+      kind: 'release';
+      fresh: boolean;
+      parcel: { parcelCode: string; tier: 'starter' | 'c' | 'b' | 'a' | 'founder' };
+      refundedCt: number;
+    };
+
+export function autonomousLandIdempotencyKey(
+  avatarId: string,
+  operation: AutonomousLandOperation,
+  now = Date.now(),
+): string {
+  const bucket = Math.floor(now / AUTONOMOUS_LAND_ACTION_INTERVAL_MS);
+  return createHash('sha256')
+    .update(JSON.stringify({ avatarId, ...operation, bucket }), 'utf8')
+    .digest('hex');
+}
 
 // Non-teaching place centers in town-pixel coords. Built venues resolve from
 // MAP_LOCATIONS; world POIs without a map row provide an inline center derived
@@ -606,6 +643,101 @@ class NpcSimulation {
       resolveAgentSession,
     );
   };
+  /** Test seam; production dispatches exclusively into the shared tenure service. */
+  autonomousLandSettle: (input: {
+    operation: AutonomousLandOperation;
+    identity: {
+      kind: 'agent';
+      userId: string;
+      avatarId: string;
+      agentId: string;
+      sessionId: string;
+      ledgerCapable: true;
+    };
+    idempotencyKey: string;
+  }) => Promise<AutonomousLandSettlementResult> = async (input) => {
+    const {
+      settleRentPrepay,
+      settleTenureClaim,
+      settleTenureRelease,
+    } = await import('./land-tenure-settlement');
+    const common = {
+      identity: input.identity,
+      expectedAgentId: input.identity.agentId,
+      expectedAvatarId: input.identity.avatarId,
+      expectedUserId: input.identity.userId,
+      parcelCode: input.operation.parcelCode,
+      idempotencyKey: input.idempotencyKey,
+      autonomous: true,
+    } as const;
+    if (input.operation.verb === 'claim_parcel') {
+      const result = input.operation.door === 'rent'
+        ? await settleTenureClaim({ ...common, door: 'rent', weeks: input.operation.weeks! })
+        : await settleTenureClaim({ ...common, door: 'hold' });
+      return {
+        kind: 'claim',
+        fresh: result.fresh,
+        parcel: result.parcel,
+        door: result.door,
+        amountCt: (result.weeklyCt ?? 0) * (result.weeks ?? 0),
+      };
+    }
+    if (input.operation.verb === 'prepay_rent') {
+      const result = await settleRentPrepay({ ...common, weeks: input.operation.weeks });
+      return {
+        kind: 'prepay',
+        fresh: result.fresh,
+        parcelCode: result.parcelCode,
+        amountCt: result.amountCt,
+      };
+    }
+    const result = await settleTenureRelease(common);
+    return {
+      kind: 'release',
+      fresh: result.fresh,
+      parcel: result.parcel,
+      refundedCt: result.refundedCt,
+    };
+  };
+  /** Test seam; production emits the same post-commit cache/event/world effects as REST. */
+  autonomousLandEffects: (input: {
+    result: AutonomousLandSettlementResult;
+    identity: { userId: string; avatarId: string; agentId: string };
+  }) => Promise<void> = async ({ result, identity }) => {
+    if (!result.fresh || result.kind === 'prepay') {
+      if (result.fresh) {
+        const { bustOwnedCache } = await import('../routes/land');
+        bustOwnedCache(identity.avatarId);
+      }
+      return;
+    }
+    const [{ bustOwnedCache, bustParcelsAvailableCache, bustPublicPiecesCache, bustPublicStructuresCache }, { broadcastLandEvent }] =
+      await Promise.all([import('../routes/land'), import('../routes/world')]);
+    bustOwnedCache(identity.avatarId);
+    bustParcelsAvailableCache(result.parcel.tier);
+    bustPublicStructuresCache();
+    bustPublicPiecesCache();
+    broadcastLandEvent({
+      parcelCode: result.parcel.parcelCode,
+      status: result.kind === 'claim' ? 'owned' : 'available',
+      ownerAvatarId: result.kind === 'claim' ? identity.avatarId : null,
+    });
+    if (result.kind === 'claim') {
+      const { logEvent } = await import('./event-logger');
+      void logEvent({
+        eventType: 'land.parcel.purchased',
+        userId: identity.userId,
+        avatarId: identity.avatarId,
+        agentId: identity.agentId,
+        payload: {
+          parcelCode: result.parcel.parcelCode,
+          tier: result.parcel.tier,
+          amountCt: result.amountCt,
+          tenure: result.door === 'hold' ? 'hold' : 'deposit',
+        },
+      });
+    }
+  };
   private arenaSettings: ArenaSettings = { ...DEFAULT_ARENA_SETTINGS };
   private arenaRound: ArenaRoundState | null = null;
 
@@ -615,6 +747,7 @@ class NpcSimulation {
   /** Bounded warn-once keys for bodies whose action attribution is unavailable. */
   /** Elapsed-time limiter reservation; set before async settle to close tag races. */
   private autonomousCovePlayLastAdmittedAt = new Map<string, number>();
+  private autonomousLandActionLastAdmittedAt = new Map<string, number>();
   private missingActionAttributionWarned: Set<string> = new Set();
   // Magic-link onboarding D3 (2026-07-02): direct npcId → agentId for AVATAR-mode
   // (`ocb-`) bodies, written at registerAgentBot and cleared with the ownership-
@@ -1913,6 +2046,9 @@ class NpcSimulation {
    *   enter_building(buildingId in the 10 MAP_LOCATIONS ids)      -> walk to building
    *   enter_cove()                                        -> walk to the Cove
    *   play_cove_game(game=slots|blackjack, wager=game bounds) -> one settled game
+   *   claim_parcel(parcelCode, door=hold|rent, weeks?)    -> shared tenure claim
+   *   prepay_rent(parcelCode, weeks)                      -> shared rent prepay
+   *   release_parcel(parcelCode)                          -> shared tenure release
    *   enter_poker_room()                                  -> walk to the Cove poker tables
    *   enter_kelp_forest()                                 -> walk to the Kelp Forest portal
    *   talk_to_npc(npcId|buildingId, message<=500)         -> injectAgentChat bubble
@@ -1922,9 +2058,10 @@ class NpcSimulation {
    *
    * NOTE (honest scope): non-economic verbs dispatch only their visible
    * in-world effects; their REST-side CT/event/RAG/knowledge effects remain on
-   * the authenticated /api/agent/:sid/* endpoints. play_cove_game is the one
-   * economic exception: it re-resolves the live ledger session and delegates to
-   * the existing atomic slots handlers before tagging the visible body.
+   * the authenticated /api/agent/:sid/* endpoints. Cove play and the three Land
+   * verbs are explicit economic exceptions: each re-resolves the live ledger
+   * session and delegates to its shared atomic settlement path before tagging
+   * the visible body.
    */
   dispatchHatcherActions(npcId: string, replyText: string): string {
     if (!replyText) return replyText;
@@ -2099,6 +2236,76 @@ class NpcSimulation {
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       console.warn(`[Hatcher] play_cove_game dropped — ${reason}`);
+    }
+  }
+
+  private async settleAutonomousLandAction(
+    npcId: string,
+    attribution: AgentActionAttribution,
+    operation: AutonomousLandOperation,
+  ): Promise<void> {
+    const resolved = await this.autonomousCoveAgentResolve(
+      attribution.sessionId,
+      attribution.agentId,
+    );
+    if (!resolved) {
+      console.warn(`[Hatcher] ${operation.verb} dropped â€” invalid or expired agent session`);
+      return;
+    }
+    if (!resolved.ledgerCapable) {
+      console.warn(`[Hatcher] ${operation.verb} dropped â€” agent session is not ledger-authorized`);
+      return;
+    }
+    if (!resolved.avatarId || !resolved.userId) {
+      console.warn(`[Hatcher] ${operation.verb} dropped â€” agent has no bound avatar`);
+      return;
+    }
+    if (resolved.avatarId !== attribution.avatarId || resolved.agentId !== attribution.agentId) {
+      console.warn(`[Hatcher] ${operation.verb} dropped â€” live agent/avatar binding changed`);
+      return;
+    }
+
+    const admittedAt = Date.now();
+    if (this.autonomousLandActionLastAdmittedAt.size > 5_000) {
+      for (const [key, lastAt] of this.autonomousLandActionLastAdmittedAt) {
+        if (admittedAt - lastAt >= AUTONOMOUS_LAND_ACTION_INTERVAL_MS) {
+          this.autonomousLandActionLastAdmittedAt.delete(key);
+        }
+      }
+    }
+    const reservationKey = `${resolved.avatarId}:${operation.verb}:${operation.parcelCode}`;
+    const prior = this.autonomousLandActionLastAdmittedAt.get(reservationKey);
+    if (prior !== undefined && admittedAt - prior < AUTONOMOUS_LAND_ACTION_INTERVAL_MS) {
+      console.warn(`[Hatcher] ${operation.verb} dropped â€” duplicate action reserved for 60 seconds`);
+      return;
+    }
+    // Reserve synchronously before the settlement await. The deterministic
+    // bucketed key is the durable cross-process/restart backstop; an intentional
+    // identical action within this real 60-second window replays by design.
+    this.autonomousLandActionLastAdmittedAt.set(reservationKey, admittedAt);
+    const identity = {
+      kind: 'agent' as const,
+      userId: resolved.userId,
+      avatarId: resolved.avatarId,
+      agentId: resolved.agentId,
+      sessionId: attribution.sessionId,
+      ledgerCapable: true as const,
+    };
+    try {
+      const result = await this.autonomousLandSettle({
+        operation,
+        identity,
+        idempotencyKey: autonomousLandIdempotencyKey(resolved.avatarId, operation, admittedAt),
+      });
+      await this.autonomousLandEffects({ result, identity });
+      const body = this.npcs.get(npcId);
+      if (body) {
+        this.setNpcActivity(npcId, 'trading', 'ðŸï¸');
+        body.intentDescription = `${operation.verb.replaceAll('_', ' ')} ${operation.parcelCode}`;
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      console.warn(`[Hatcher] ${operation.verb} dropped â€” ${reason}`);
     }
   }
 
@@ -2282,6 +2489,96 @@ class NpcSimulation {
         void this.settleAutonomousCoveGame(npcId, attribution, params.game, wager).catch((err) => {
           const reason = err instanceof Error ? err.message : String(err);
           console.warn(`[Hatcher] play_cove_game dropped — ${reason}`);
+        });
+        return;
+      }
+      case 'claim_parcel': {
+        const keys = Object.keys(params);
+        if (keys.some((key) => key !== 'parcelCode' && key !== 'door' && key !== 'weeks')) {
+          console.warn('[Hatcher] claim_parcel dropped â€” unknown parameter');
+          return;
+        }
+        if (!HATCHER_LAND_PARCEL_CODES.has(params.parcelCode)) {
+          console.warn(`[Hatcher] claim_parcel dropped â€” unknown parcelCode "${params.parcelCode}"`);
+          return;
+        }
+        if (params.door !== 'hold' && params.door !== 'rent') {
+          console.warn(`[Hatcher] claim_parcel dropped â€” door must be hold or rent (got "${params.door}")`);
+          return;
+        }
+        let weeks: number | undefined;
+        if (params.door === 'rent') {
+          if (!/^\d+$/.test(params.weeks ?? '')) {
+            console.warn('[Hatcher] claim_parcel dropped â€” rent weeks must be an integer');
+            return;
+          }
+          weeks = Number(params.weeks);
+          if (!Number.isSafeInteger(weeks) || weeks < 1 || weeks > 26) {
+            console.warn('[Hatcher] claim_parcel dropped â€” rent weeks must be 1..26');
+            return;
+          }
+        } else if (params.weeks !== undefined) {
+          console.warn('[Hatcher] claim_parcel dropped â€” weeks is rent-only');
+          return;
+        }
+        if (!attribution) {
+          console.warn('[Hatcher] claim_parcel dropped â€” no bound agent/avatar attribution');
+          return;
+        }
+        void this.settleAutonomousLandAction(npcId, attribution, {
+          verb: 'claim_parcel',
+          parcelCode: params.parcelCode,
+          door: params.door,
+          ...(weeks === undefined ? {} : { weeks }),
+        });
+        return;
+      }
+      case 'prepay_rent': {
+        const keys = Object.keys(params);
+        if (keys.some((key) => key !== 'parcelCode' && key !== 'weeks')) {
+          console.warn('[Hatcher] prepay_rent dropped â€” unknown parameter');
+          return;
+        }
+        if (!HATCHER_LAND_PARCEL_CODES.has(params.parcelCode)) {
+          console.warn(`[Hatcher] prepay_rent dropped â€” unknown parcelCode "${params.parcelCode}"`);
+          return;
+        }
+        if (!/^\d+$/.test(params.weeks ?? '')) {
+          console.warn('[Hatcher] prepay_rent dropped â€” weeks must be an integer');
+          return;
+        }
+        const weeks = Number(params.weeks);
+        if (!Number.isSafeInteger(weeks) || weeks < 1 || weeks > 26) {
+          console.warn('[Hatcher] prepay_rent dropped â€” weeks must be 1..26');
+          return;
+        }
+        if (!attribution) {
+          console.warn('[Hatcher] prepay_rent dropped â€” no bound agent/avatar attribution');
+          return;
+        }
+        void this.settleAutonomousLandAction(npcId, attribution, {
+          verb: 'prepay_rent',
+          parcelCode: params.parcelCode,
+          weeks,
+        });
+        return;
+      }
+      case 'release_parcel': {
+        if (Object.keys(params).some((key) => key !== 'parcelCode')) {
+          console.warn('[Hatcher] release_parcel dropped â€” unknown parameter');
+          return;
+        }
+        if (!HATCHER_LAND_PARCEL_CODES.has(params.parcelCode)) {
+          console.warn(`[Hatcher] release_parcel dropped â€” unknown parcelCode "${params.parcelCode}"`);
+          return;
+        }
+        if (!attribution) {
+          console.warn('[Hatcher] release_parcel dropped â€” no bound agent/avatar attribution');
+          return;
+        }
+        void this.settleAutonomousLandAction(npcId, attribution, {
+          verb: 'release_parcel',
+          parcelCode: params.parcelCode,
         });
         return;
       }

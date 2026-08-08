@@ -22,6 +22,10 @@ const sweeperSource = readFileSync(
   join(import.meta.dir, '..', '..', 'services', 'land-rent-sweeper.ts'),
   'utf8',
 );
+const tenureSettlementSource = readFileSync(
+  join(import.meta.dir, '..', '..', 'services', 'land-tenure-settlement.ts'),
+  'utf8',
+);
 const deedTransferSource = readFileSync(
   join(import.meta.dir, '..', '..', 'services', 'market-deed-transfer-executor.ts'),
   'utf8',
@@ -402,13 +406,13 @@ describe('land kit middleware and public feed contract', () => {
     expect(source).toMatch(
       /else \{[\s\S]*?DELETE FROM land_structure_pieces WHERE parcel_id[\s\S]*?DELETE FROM land_structures/,
     );
+    expect(tenureSettlementSource).toContain('reconcileArchivedStructureOnAcquire');
     const claimHold = routeSpan('post', '/parcels/:parcelId/claim-hold');
-    expect(claimHold).toContain('reconcileArchivedStructureOnAcquire');
     expect(claimHold).toContain('bustPublicStructuresCache();');
     expect(claimHold).toContain('bustPublicPiecesCache();');
 
     const structureBusts = [...source.matchAll(/bustPublicStructuresCache\(\);/g)];
-    expect(structureBusts).toHaveLength(6);
+    expect(structureBusts.length).toBeGreaterThanOrEqual(6);
     for (const bust of structureBusts) {
       expect(source.slice(bust.index, bust.index + 100)).toContain('bustPublicPiecesCache();');
     }

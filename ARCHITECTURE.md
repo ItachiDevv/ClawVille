@@ -1,9 +1,48 @@
 # ClawVille — Architecture
 
-**Last Audited: 2026-08-06 (Land P3 stage-A Opus fix round — §8/§13; piece
+**Last Audited: 2026-08-08 (Land P2 round 2 — executor/UI/protocol v46).**
+`npc-simulation.ts` admits `claim_parcel`, `prepay_rent`, and `release_parcel`
+only after the existing autonomous-cove identity resolver proves a live,
+ledger-capable bound avatar (including the server-owned house-agent binding).
+It reserves `(avatar, verb, parcelCode)` before awaiting settlement and derives
+a semantic 60-second-bucket idempotency key; all money and tenancy writes remain
+inside `land-tenure-settlement.ts`. The autonomy prompt receives a bounded,
+render-backed Land target projection (claimable availability plus owned tenure,
+paid weeks, and grace) and the shared whitelist menu exposes every admitted verb.
+The Land Office is the human adapter over the same REST settlement routes: fresh
+hold-wallet eligibility and declaration, Hold/Rent acquisition, prepay, and
+fingerprinted release. Protocol v46 documents the wire and tenure contract.
+
+**Prior Last Audited: 2026-08-06 (Land P3 stage-A Opus fix round — §8/§13; piece
 schema catalog, active-feed lifecycle/cache invariant, and idempotency backstop).**
 
 **Drift note:** stage A now includes migration `0050` integrity/lifecycle fixes; stage B rendering remains untouched.
+
+**Land P2 tenure backend core (2026-08-08).** Migrations `0051` and `0052`
+introduce explicit terms versions, one-account-per-declared-hold-wallet, a
+cross-column deposit escrow invariant, durable shared settlement idempotency,
+and the all-or-nothing 18-row ghost absorption. Runtime settlement is centralized
+in `apps/api/src/services/land-tenure-settlement.ts`: claim/prepay/release all use
+`withKeyedMutex(avatar)` -> `pg_advisory_xact_lock(avatar)` -> parcel `FOR UPDATE`,
+then ledger-only effects and the idempotency response in one transaction. The
+service accepts `parcelCode`, revalidates expected user/avatar/agent bindings,
+and performs no caches/events/broadcasts; REST adapters own those fresh-only
+effects. Normal REST and future executor calls therefore share the same money
+implementation without an internal HTTP hop.
+
+Terms-v2 rent pays week one irreversibly and escrows only future whole weeks;
+the public parcel DTO's `claimRentCtWeekly` is derived from the same constants
+used for the debit and claim-time row stamp, never the legacy row quote.
+terms-v2 hold is rent-free and uses the account's signatureless declared wallet.
+Claims require a fresh CLV read. The sweeper's bounded read can renew, open a
+non-extending three-day grace, or lapse on confirmed data; unavailable data parks
+the row unchanged and alerts after three consecutive passes. Terms-v1 logic is
+kept separate; repeated low-to-healthy grace recoveries are also alerted for
+flash-hold review. `linked-wallet-clv-balance.ts` now requires every consumer to
+state freshness explicitly when needed and refuses stale fallback beyond a hard
+maximum, while retaining the marketplace consumer's default five-minute cache.
+The legacy `claim-starter` route is a stable pre-auth 409 and no new code can
+stamp terms version 1.
 
 **Prior Last Audited: 2026-07-30 (world-stage P4 activity route/overlay/downlink
 architecture).** `/activity/:activityId/:roomId` is now part of

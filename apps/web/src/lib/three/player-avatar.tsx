@@ -91,8 +91,8 @@ const AVATAR_SCALE = 40;
  * past `RUN_JOYSTICK_THRESHOLD` (mobile) promotes the player from walk to
  * run — `effectiveSpeed = isRunning ? SPEED * RUN_SPEED_MULT : SPEED`.
  *
- * 1.5× matches the Mixamo "Running" clip's natural gait speed relative
- * to "Walking"; foot-skating is minimal at this ratio. Crustacean GLB
+ * 2.025× is the founder-approved faster run pace (1.5× raised by 35%).
+ * Crustacean GLB
  * avatars (no run clip) get this same multiplier on BOTH position step
  * and the procedural-animation rate so their walk cycle visibly speeds
  * up to match the faster ground motion.

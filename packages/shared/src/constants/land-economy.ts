@@ -52,10 +52,7 @@ export {
  * until Phase B replaces buy-outright with claim-locks) and MUST NOT be treated
  * as a coherent USD price. Migration 0011 ×10's only the starter parcel rows.
  */
-export const LAND_TIER_LADDER: Record<
-  LandTier,
-  { minCt: number | null; maxCt: number | null }
-> = {
+export const LAND_TIER_LADDER: Record<LandTier, { minCt: number | null; maxCt: number | null }> = {
   starter: { minCt: 0, maxCt: 1500 },
   // Buy-outright bands (founder-locked 2026-06-24). LEFT UNCHANGED by the A3
   // re-band — DEPRECATED/IRRELEVANT (Phase B replaces buy-outright with CLV
@@ -85,10 +82,7 @@ export const LAND_TIER_LADDER: Record<
  * rent_ct_weekly rows). At the $0.01 peg that is $0.50–24/wk (was $5–240/wk at
  * the old $0.10 rate — rent got 10× cheaper in USD, deliberately).
  */
-export const LAND_RENT_LADDER: Record<
-  LandTier,
-  { minCt: number | null; maxCt: number | null }
-> = {
+export const LAND_RENT_LADDER: Record<LandTier, { minCt: number | null; maxCt: number | null }> = {
   starter: { minCt: null, maxCt: null },
   c: { minCt: 50, maxCt: 100 },
   b: { minCt: 250, maxCt: 550 },
@@ -99,8 +93,8 @@ export const LAND_RENT_LADDER: Record<
 /** Convenience flag: which tiers are buyable with CT in v1 (founder is USDC/auction-only). */
 export const CT_BUYABLE_TIERS: readonly LandTier[] = ['starter', 'c', 'b', 'a'] as const;
 
-/** Which tiers can be RENTED with CT in v1 (starter is free+owned; founder is auction-only). */
-export const CT_RENTABLE_TIERS: readonly LandTier[] = ['c', 'b', 'a'] as const;
+/** P2 vCLAW rent door; founder is hold/auction-only and a/b are retired. */
+export const CT_RENTABLE_TIERS: readonly LandTier[] = ['starter', 'c'] as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Phase B tenure model (FOUNDER-DECIDED 2026-07-07) — deposit-escrow + hold-to-keep
@@ -140,8 +134,21 @@ export const LAND_STARTER_DEPOSIT_CT = 2000;
  */
 export const LAND_STARTER_RENT_CT_WEEKLY = 100;
 
+/** P2 claim prices. Never derive a quote from a parcel row's legacy stamp. */
+export const LAND_TENURE_RENT_CT_WEEKLY: Record<LandTier, number | null> = {
+  starter: 1_000,
+  c: 2_500,
+  b: null,
+  a: null,
+  founder: null,
+};
+
+export function tenureRentCtWeeklyForTier(tier: LandTier): number | null {
+  return LAND_TENURE_RENT_CT_WEEKLY[tier];
+}
+
 /**
- * Per-tier CLV hold thresholds for B2 hold-to-keep, in CLV **uiAmount** (human
+ * P2 per-tier CLV hold thresholds, in CLV **uiAmount** (human
  * token count — NOT atomic base units; compare against
  * `ClvBalanceResult.uiAmount`). FOUNDER-LOCKED 2026-07-07:
  * c 100k / b 500k / a 2.5M / founder 10M. `null` = the tier is not holdable
@@ -149,10 +156,10 @@ export const LAND_STARTER_RENT_CT_WEEKLY = 100;
  * multiple parcels requires the SUM of their thresholds.
  */
 export const LAND_HOLD_THRESHOLDS_CLV: Record<LandTier, number | null> = {
-  starter: null,
-  c: 100_000,
-  b: 500_000,
-  a: 2_500_000,
+  starter: 100_000,
+  c: 250_000,
+  b: null,
+  a: null,
   founder: 10_000_000,
 };
 
@@ -365,15 +372,8 @@ export const PALETTE_PRESETS: readonly PalettePreset[] = [
 ] as const;
 
 /** Resolve a verified shell entry for a structure type, or null for bad input. */
-export function getShellCatalogEntry(
-  structureType: LandStructureType,
-  shellKey: string,
-): ShellCatalogEntry | null {
-  return (
-    SHELL_CATALOG.find(
-      (entry) => entry.structureType === structureType && entry.key === shellKey,
-    ) ?? null
-  );
+export function getShellCatalogEntry(structureType: LandStructureType, shellKey: string): ShellCatalogEntry | null {
+  return SHELL_CATALOG.find((entry) => entry.structureType === structureType && entry.key === shellKey) ?? null;
 }
 
 /** Resolve a named palette preset, or null for bad input. */
@@ -443,31 +443,66 @@ export interface StructureCatalogEntry {
 export const STRUCTURE_CATALOG: readonly StructureCatalogEntry[] = [
   // ── Homes (utility hubs) ──
   { key: 'home-shack', label: 'Shack', structureType: 'home', tierLevel: 1 },
-  { key: 'home-cottage', label: 'Cottage', structureType: 'home', tierLevel: 2 },
+  {
+    key: 'home-cottage',
+    label: 'Cottage',
+    structureType: 'home',
+    tierLevel: 2,
+  },
   { key: 'home-house', label: 'House', structureType: 'home', tierLevel: 3 },
   { key: 'home-villa', label: 'Villa', structureType: 'home', tierLevel: 4 },
-  { key: 'home-mansion', label: 'Mansion', structureType: 'home', tierLevel: 5 },
+  {
+    key: 'home-mansion',
+    label: 'Mansion',
+    structureType: 'home',
+    tierLevel: 5,
+  },
   // ── Founder-only premium home (Founders' Row exclusive) ──
-  { key: 'home-founders-estate', label: "Founders' Estate", structureType: 'home', tierLevel: 5 },
+  {
+    key: 'home-founders-estate',
+    label: "Founders' Estate",
+    structureType: 'home',
+    tierLevel: 5,
+  },
   // ── Shops (commercial — run paid services) ──
   { key: 'shop-stall', label: 'Stall', structureType: 'shop', tierLevel: 1 },
-  { key: 'shop-shopfront', label: 'Shopfront', structureType: 'shop', tierLevel: 2 },
+  {
+    key: 'shop-shopfront',
+    label: 'Shopfront',
+    structureType: 'shop',
+    tierLevel: 2,
+  },
   { key: 'shop-market', label: 'Market', structureType: 'shop', tierLevel: 3 },
-  { key: 'shop-emporium', label: 'Emporium', structureType: 'shop', tierLevel: 4 },
-  { key: 'shop-grand-bazaar', label: 'Grand Bazaar', structureType: 'shop', tierLevel: 5 },
+  {
+    key: 'shop-emporium',
+    label: 'Emporium',
+    structureType: 'shop',
+    tierLevel: 4,
+  },
+  {
+    key: 'shop-grand-bazaar',
+    label: 'Grand Bazaar',
+    structureType: 'shop',
+    tierLevel: 5,
+  },
   // ── Founder-only premium shop (Founders' Row exclusive) ──
-  { key: 'shop-founders-exchange', label: "Founders' Exchange", structureType: 'shop', tierLevel: 5 },
+  {
+    key: 'shop-founders-exchange',
+    label: "Founders' Exchange",
+    structureType: 'shop',
+    tierLevel: 5,
+  },
 ] as const;
 
 /** Catalog keys valid for HOME placement. */
-export const HOME_CATALOG_KEYS: readonly string[] = STRUCTURE_CATALOG.filter(
-  (e) => e.structureType === 'home',
-).map((e) => e.key);
+export const HOME_CATALOG_KEYS: readonly string[] = STRUCTURE_CATALOG.filter((e) => e.structureType === 'home').map(
+  (e) => e.key,
+);
 
 /** Catalog keys valid for SHOP placement. */
-export const SHOP_CATALOG_KEYS: readonly string[] = STRUCTURE_CATALOG.filter(
-  (e) => e.structureType === 'shop',
-).map((e) => e.key);
+export const SHOP_CATALOG_KEYS: readonly string[] = STRUCTURE_CATALOG.filter((e) => e.structureType === 'shop').map(
+  (e) => e.key,
+);
 
 /** O(1) lookup of a catalog entry by key (null if not an allowlisted key). */
 export function getCatalogEntry(key: string): StructureCatalogEntry | null {
@@ -537,25 +572,12 @@ export const TIER_STRUCTURE_RULES: Record<LandTier, TierStructureRule> = {
   a: {
     maxLevel: 5,
     homeSkus: ['home-shack', 'home-cottage', 'home-house', 'home-villa', 'home-mansion'],
-    shopSkus: [
-      'shop-stall',
-      'shop-shopfront',
-      'shop-market',
-      'shop-emporium',
-      'shop-grand-bazaar',
-    ],
+    shopSkus: ['shop-stall', 'shop-shopfront', 'shop-market', 'shop-emporium', 'shop-grand-bazaar'],
     premium: false,
   },
   founder: {
     maxLevel: 5,
-    homeSkus: [
-      'home-shack',
-      'home-cottage',
-      'home-house',
-      'home-villa',
-      'home-mansion',
-      'home-founders-estate',
-    ],
+    homeSkus: ['home-shack', 'home-cottage', 'home-house', 'home-villa', 'home-mansion', 'home-founders-estate'],
     shopSkus: [
       'shop-stall',
       'shop-shopfront',
@@ -588,11 +610,7 @@ export function getTierMaxLevel(tier: LandTier): number {
  *
  * Routes MUST call this — never trust a client-asserted SKU/type/tier.
  */
-export function isSkuAllowedForTier(
-  sku: string,
-  structureType: 'home' | 'shop',
-  tier: LandTier,
-): boolean {
+export function isSkuAllowedForTier(sku: string, structureType: 'home' | 'shop', tier: LandTier): boolean {
   const entry = getCatalogEntry(sku);
   if (entry === null || entry.structureType !== structureType) return false;
   const rule = TIER_STRUCTURE_RULES[tier];

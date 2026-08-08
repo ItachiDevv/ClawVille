@@ -21,6 +21,8 @@ export type LandTenure = 'rented' | 'owned' | 'starter' | 'deposit' | 'hold';
 export interface LandParcelDTO {
   id: string;
   parcelCode: string;
+  /** Deterministic human label; parcelCode remains the wire/render key. */
+  displayName: string;
   tier: LandTier;
   status: LandParcelStatus;
   gridX: number;
@@ -33,6 +35,8 @@ export interface LandParcelDTO {
    * `rentCtWeekly != null`.
    */
   rentCtWeekly: number | null;
+  /** Server quote for a fresh rent-door claim; null when that door is unavailable. */
+  claimRentCtWeekly: number | null;
   /** How the parcel is held; null = available/unsold. */
   tenure: LandTenure | null;
   /**
@@ -48,6 +52,10 @@ export interface LandParcelDTO {
    * this field only for owned parcels.
    */
   holdThresholdCt: number | null;
+  rentPaidThrough?: string | null;
+  graceUntil?: string | null;
+  /** Last authoritative tenure-row update/check exposed to the owner UI. */
+  tenureLastCheckedAt?: string | null;
 }
 
 /** A structure (home or shop) placed on an owned parcel. */
@@ -162,30 +170,6 @@ export interface DeleteLandPieceResponse {
   piece: LandStructurePieceDTO;
 }
 
-/** POST /api/land/claim-starter response. */
-export interface ClaimStarterResponse {
-  parcel: LandParcelDTO;
-  alreadyOwned: boolean;
-}
-
-/** POST /api/land/parcels/:id/buy response. */
-export interface BuyParcelResponse {
-  parcel: LandParcelDTO;
-  amountCt: number;
-}
-
-/**
- * POST /api/land/parcels/:id/rent response. `amountCt` = the weekly rent debited
- * for the first week (server-read `rent_ct_weekly`). `rentPaidThrough` = ISO date
- * the rent is paid through; the hourly sweeper charges the next week + grace →
- * evict if unpaid.
- */
-export interface RentParcelResponse {
-  parcel: LandParcelDTO;
-  amountCt: number;
-  rentPaidThrough: string;
-}
-
 /**
  * POST /api/land/parcels/:id/claim-hold response (Phase B2 hold-to-keep).
  * `requiredClv` = the server-computed STACKED requirement (Σ existing
@@ -198,6 +182,41 @@ export interface ClaimHoldResponse {
   parcel: LandParcelDTO;
   requiredClv: number;
   heldClv: number;
+}
+
+export interface ClaimRentResponse {
+  parcel: LandParcelDTO;
+  weeks: number;
+  weeklyCt: number;
+  idempotencyReplay?: boolean;
+}
+
+export interface LandHoldWalletStatus {
+  walletAddress: string | null;
+  declaredAt: string | null;
+  balance: {
+    available: boolean;
+    amountAtomic: string | null;
+    decimals: number | null;
+    uiAmount: number | null;
+    cached: boolean;
+    fetchedAt: string | null;
+  } | null;
+}
+
+export interface RentPrepayResponse {
+  parcelCode: string;
+  depositRemainingCt: number;
+  amountCt: number;
+  graceCleared: boolean;
+  idempotencyReplay?: boolean;
+}
+
+export interface ReleaseParcelResponse {
+  released: true;
+  refundedCt: number;
+  parcel: LandParcelDTO;
+  idempotencyReplay?: boolean;
 }
 
 /** POST /api/land/parcels/:id/structure response. */

@@ -98,7 +98,8 @@ const MANIFEST: Entry[] = [
       // middleware chain, and the span-to-first-`async` matcher would bleed into
       // the NEXT route's chain and falsely bless them (Codex hotfix review,
       // LOW). Their 409 behavior is pinned by land-tenure-phaseb.test.ts.
-      p('post', '/claim-starter'),
+      p('post', '/hold-wallet'),
+      p('post', '/parcels/:parcelId/claim-rent'),
       p('post', '/parcels/:parcelId/claim-hold'),
       p('post', '/parcels/:parcelId/deposit-topup'),
       p('post', '/parcels/:parcelId/release'),
@@ -124,7 +125,8 @@ const MANIFEST: Entry[] = [
     file: 'land.ts',
     guard: 'requireLedgerCapableIdentity',
     routes: [
-      p('post', '/claim-starter'),
+      p('post', '/hold-wallet'),
+      p('post', '/parcels/:parcelId/claim-rent'),
       p('post', '/parcels/:parcelId/claim-hold'),
       p('post', '/parcels/:parcelId/deposit-topup'),
       p('post', '/parcels/:parcelId/release'),

@@ -7,6 +7,8 @@ import {
   KIT_PIECE_FEE_CT,
   KIT_PIECE_KEYS,
   isRotationAllowed,
+  parcelDisplayName,
+  parseParcelCode,
   type KitPieceKey,
   type KitPieceSize,
   type KitStructureLevel,
@@ -299,6 +301,10 @@ export default function YardEditorOverlay() {
   ]);
 
   if (!buildMode) return null;
+  const parcelTier = parseParcelCode(buildMode.parcelCode)?.tier;
+  const displayName = parcelTier
+    ? parcelDisplayName(buildMode.parcelCode, parcelTier)
+    : buildMode.parcelCode;
 
   const topButton = (active = false): React.CSSProperties => ({
     minHeight: 44,
@@ -383,7 +389,7 @@ export default function YardEditorOverlay() {
                 fontWeight: 700,
               }}
             >
-              {buildMode.parcelCode} · Building Lv{level}
+              {displayName} · Building Lv{level}
             </span>
           </span>
           <button

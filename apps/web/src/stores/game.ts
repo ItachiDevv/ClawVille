@@ -424,8 +424,8 @@ export interface GameState {
   closeLandOffice: () => void;
   /**
    * The parcel the Land Office should pre-focus on open. Set by openLandOffice
-   * when the caller provides a parcelCode; cleared by the modal once it has
-   * consumed the focus (or on close). null = no pre-selection.
+   * when the caller provides a parcelCode; retained while open so the focused
+   * card stays highlighted, then cleared on close. null = no pre-selection.
    */
   landOfficeFocusParcel: string | null;
   clearLandOfficeFocus: () => void;

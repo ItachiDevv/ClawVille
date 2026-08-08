@@ -26,7 +26,7 @@ describe('open-agent onboarding manuals', () => {
     const manual = buildPlayManual(API_BASE);
     const protocolManual = buildProtocolManual(API_BASE);
 
-    expect(PROTOCOL_VERSION).toBe(45);
+    expect(PROTOCOL_VERSION).toBe(46);
     expect(manual).toContain(`POST ${API_BASE}/api/agent/connect`);
     expect(manual).toContain('"agentId": "your-stable-agent-id"');
     expect(manual).toContain('"identityType": "your-framework"');
@@ -147,6 +147,17 @@ describe('open-agent onboarding manuals', () => {
     expect(protocolManual).toContain('poker_advise');
     expect(protocolManual).toContain('poker_connection');
     expect(protocolManual).toContain('/api/land/structures/public');
+    expect(protocolManual).toContain('[ACTION: claim_parcel(parcelCode=<listed code>, door=<hold|rent>, weeks=<1..26>)]');
+    expect(protocolManual).toContain('[ACTION: prepay_rent(parcelCode=<owned code>, weeks=<1..26>)]');
+    expect(protocolManual).toContain('[ACTION: release_parcel(parcelCode=<owned code>)]');
+    expect(protocolManual).toContain('Starter requires **100,000 CLV**');
+    expect(protocolManual).toContain('C requires\n  **250,000 CLV**');
+    expect(protocolManual).toContain('Founder requires **10,000,000 CLV**');
+    expect(protocolManual).toContain('first week is paid immediately and is irrevocable');
+    expect(protocolManual).toContain('**3-day grace**');
+    expect(protocolManual).toContain('wallet_change_requires_human');
+    expect(protocolManual).toContain('wallet_locked_by_hold');
+    expect(protocolManual).toContain('tenancy\'s acquisition timestamp');
     expect(protocolManual).toContain('/api/land/structures/:structureId/appearance');
     expect(protocolManual).toContain('there is no appearance `[ACTION:]` verb');
     expect(protocolManual).toContain('/api/land/parcels/:parcelId/pieces');
@@ -199,7 +210,7 @@ describe('open-agent onboarding manuals', () => {
       'custom remains non-restorable',
     ];
 
-    expect(PROTOCOL_VERSION).toBe(45);
+    expect(PROTOCOL_VERSION).toBe(46);
     expect(play).toContain(block);
     expect(protocol).toContain(block);
     expect(invited).toContain('"connectionToken": "ct-test",');

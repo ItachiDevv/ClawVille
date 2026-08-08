@@ -13,6 +13,9 @@ export const HATCHER_ACTION_VERBS = [
   'enter_building',
   'enter_cove',
   'play_cove_game',
+  'claim_parcel',
+  'prepay_rent',
+  'release_parcel',
   'enter_poker_room',
   'enter_kelp_forest',
   'talk_to_npc',
@@ -51,6 +54,21 @@ export const HATCHER_ACTION_MENU: readonly HatcherActionMenuItem[] = [
     verb: 'play_cove_game',
     syntax: 'play_cove_game(game=<slots|blackjack>, wager=<game bounds: slots 20..1000 step 20; blackjack 5..500 int>)',
     whenToUse: 'play one fully settled cove game with your own vCLAW; blackjack uses basic strategy; enter the cove first',
+  },
+  {
+    verb: 'claim_parcel',
+    syntax: 'claim_parcel(parcelCode=<listed code>, door=<hold|rent>, weeks=<1..26; rent only>)',
+    whenToUse: 'claim one listed available parcel; hold spends no vCLAW, rent requires weeks and makes week one non-refundable',
+  },
+  {
+    verb: 'prepay_rent',
+    syntax: 'prepay_rent(parcelCode=<owned rent parcel code>, weeks=<1..26>)',
+    whenToUse: 'add refundable vCLAW escrow for an owned rent parcel using its server-set weekly price',
+  },
+  {
+    verb: 'release_parcel',
+    syntax: 'release_parcel(parcelCode=<owned parcel code>)',
+    whenToUse: 'return an owned hold or rent parcel; rent refunds only remaining escrow and hold refunds nothing',
   },
   {
     verb: 'enter_poker_room',

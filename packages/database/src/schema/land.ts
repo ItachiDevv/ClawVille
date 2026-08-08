@@ -46,6 +46,7 @@ import {
   varchar,
   text,
   integer,
+  smallint,
   numeric,
   boolean,
   timestamp,
@@ -129,13 +130,7 @@ export const landTransactionKindEnum = pgEnum('land_transaction_kind', [
  *             thresholds required; weekly CT upkeep debits the holder → treasury;
  *             CLV-below OR insufficient CT → grace → lapse
  */
-export const landTenureEnum = pgEnum('land_tenure', [
-  'rented',
-  'owned',
-  'starter',
-  'deposit',
-  'hold',
-]);
+export const landTenureEnum = pgEnum('land_tenure', ['rented', 'owned', 'starter', 'deposit', 'hold']);
 
 /**
  * Which SUBJECT's CLV backs a B2 hold parcel — decides how the sweeper re-checks
@@ -158,18 +153,10 @@ export const landStructureStatusEnum = pgEnum('land_structure_status', ['active'
 export const serviceListingKindEnum = pgEnum('service_listing_kind', ['peer', 'partner']);
 
 /** Service listing lifecycle. */
-export const serviceListingStatusEnum = pgEnum('service_listing_status', [
-  'active',
-  'paused',
-  'delisted',
-]);
+export const serviceListingStatusEnum = pgEnum('service_listing_status', ['active', 'paused', 'delisted']);
 
 /** Vetted-partner storefront lifecycle (INERT in v1 — CT-only core loop). */
-export const partnerStorefrontStatusEnum = pgEnum('partner_storefront_status', [
-  'pending',
-  'active',
-  'suspended',
-]);
+export const partnerStorefrontStatusEnum = pgEnum('partner_storefront_status', ['pending', 'active', 'suspended']);
 
 /** CT top-up on-ramp rail. Only `x402` is wired in Phase 4; `stripe`/`clv` reserved. */
 export const ctTopupRailEnum = pgEnum('ct_topup_rail', ['x402', 'stripe', 'clv']);
@@ -241,6 +228,8 @@ export const landParcels = pgTable(
      * cleared to NULL on eviction (parcel returns to the available pool).
      */
     tenure: landTenureEnum('tenure'),
+    /** 1 = legacy terms; 2 = P2 rent / rent-free hold terms. */
+    tenureTermsVersion: smallint('tenure_terms_version'),
     /**
      * Weekly rent in CT, STAMPED per-row at seed/migration from `LAND_RENT_LADDER`
      * (same per-tier interpolation as price_ct). The rent route reads THIS, never
@@ -363,6 +352,45 @@ export const landParcels = pgTable(
       'land_parcels_deposit_remaining_nonneg',
       sql`${t.depositRemainingCt} IS NULL OR ${t.depositRemainingCt} >= 0`,
     ),
+    tenureEscrowShape: check(
+      'land_parcels_tenure_escrow_shape',
+      sql`${t.tenureTermsVersion} <> 2 OR ${t.tenure} <> 'deposit' OR (
+        ${t.depositRemainingCt} IS NOT NULL
+        AND ${t.depositRemainingCt} >= 0
+        AND ${t.rentCtWeekly} IS NOT NULL
+        AND ${t.rentCtWeekly} > 0
+      )`,
+    ),
+    tenureTermsVersionValid: check(
+      'land_parcels_tenure_terms_version_valid',
+      sql`(${t.tenure} IS NULL AND ${t.tenureTermsVersion} IS NULL)
+        OR (${t.tenure} IS NOT NULL AND ${t.tenureTermsVersion} IS NOT NULL
+          AND ${t.tenureTermsVersion} IN (1, 2))`,
+    ),
+  }),
+);
+
+/** Durable idempotency spine shared by tenure claim, prepay, and release. */
+export const landTenureSettlements = pgTable(
+  'land_tenure_settlements',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    avatarId: uuid('avatar_id')
+      .notNull()
+      .references(() => avatars.id, { onDelete: 'cascade' }),
+    operation: varchar('operation', { length: 32 }).notNull(),
+    idempotencyKey: varchar('idempotency_key', { length: 64 }),
+    fingerprint: text('fingerprint').notNull(),
+    response: jsonb('response').$type<Record<string, unknown>>().notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    avatarIdemUnique: uniqueIndex('land_tenure_settlements_avatar_idem_unique')
+      .on(t.avatarId, t.idempotencyKey)
+      .where(sql`${t.idempotencyKey} IS NOT NULL`),
+    releaseParcelCreatedIdx: index('land_tenure_settlements_release_parcel_created_idx')
+      .on(sql`(${t.response}->'parcel'->>'parcelCode')`, t.createdAt.desc(), t.id.desc())
+      .where(sql`${t.operation} = 'tenure_release'`),
   }),
 );
 
@@ -470,14 +498,8 @@ export const landStructurePieces = pgTable(
     ),
     gridXRange: check('land_structure_pieces_grid_x_range', sql`${t.gridX} BETWEEN 0 AND 15`),
     gridYRange: check('land_structure_pieces_grid_y_range', sql`${t.gridY} BETWEEN 0 AND 15`),
-    rotationRange: check(
-      'land_structure_pieces_rotation_step_range',
-      sql`${t.rotationStep} BETWEEN 0 AND 7`,
-    ),
-    stackRange: check(
-      'land_structure_pieces_stack_level_range',
-      sql`${t.stackLevel} BETWEEN 1 AND 3`,
-    ),
+    rotationRange: check('land_structure_pieces_rotation_step_range', sql`${t.rotationStep} BETWEEN 0 AND 7`),
+    stackRange: check('land_structure_pieces_stack_level_range', sql`${t.stackLevel} BETWEEN 1 AND 3`),
   }),
 );
 
@@ -539,12 +561,16 @@ export const landTransactions = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     kind: landTransactionKindEnum('kind').notNull(),
-    parcelId: uuid('parcel_id').references(() => landParcels.id, { onDelete: 'set null' }),
+    parcelId: uuid('parcel_id').references(() => landParcels.id, {
+      onDelete: 'set null',
+    }),
     structureId: uuid('structure_id').references(() => landStructures.id, {
       onDelete: 'set null',
     }),
     /** Payer/debited (primary-sale buyer, upgrader). */
-    avatarId: uuid('avatar_id').references(() => avatars.id, { onDelete: 'set null' }),
+    avatarId: uuid('avatar_id').references(() => avatars.id, {
+      onDelete: 'set null',
+    }),
     amountCt: integer('amount_ct').notNull(),
     /** Cross-ref to the canonical ledger debit row (source of truth for balance). */
     debitLedgerTxId: uuid('debit_ledger_tx_id'),
@@ -680,7 +706,9 @@ export const partnerStorefronts = pgTable(
     slug: varchar('slug', { length: 64 }).notNull().unique(),
     displayName: varchar('display_name', { length: 120 }).notNull(),
     /** The prime parcel this storefront occupies (A-tier / town-square adjacent). */
-    parcelId: uuid('parcel_id').references(() => landParcels.id, { onDelete: 'set null' }),
+    parcelId: uuid('parcel_id').references(() => landParcels.id, {
+      onDelete: 'set null',
+    }),
     /** USDC payout destination — partner's own Solana pubkey (base58, validated at write). */
     payoutPubkey: varchar('payout_pubkey', { length: 64 }).notNull(),
     status: partnerStorefrontStatusEnum('status').notNull().default('pending'),
@@ -719,7 +747,9 @@ export const ctTopups = pgTable(
     avatarId: uuid('avatar_id')
       .notNull()
       .references(() => avatars.id, { onDelete: 'cascade' }),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+    userId: uuid('user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
     /** Only 'x402' is wired in Phase 4; 'stripe'/'clv' reserved. */
     rail: ctTopupRailEnum('rail').notNull(),
     amountCt: integer('amount_ct').notNull(),

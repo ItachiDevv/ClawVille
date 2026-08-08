@@ -27,6 +27,7 @@ import {
   STRUCTURE_UPGRADE_COSTS,
   getTierStructureRules,
   getCatalogEntry,
+  parcelDisplayName,
 } from '@clawville/shared';
 import { RpgButton } from '@/components/rpg';
 import { useGameStore } from '@/stores/game';
@@ -301,7 +302,7 @@ export default function GuestLandSandbox() {
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-cyan-100">
-                  {cove.parcelCode}
+                  {parcelDisplayName(cove.parcelCode, GUEST_SANDBOX_TIER)}
                 </span>
                 <span className="inline-flex items-center rounded-full border border-amber-300/40 bg-amber-400/15 px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.14em] text-amber-200">
                   Demo

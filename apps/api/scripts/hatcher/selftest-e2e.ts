@@ -5,7 +5,7 @@
  * ed25519 keypair, with hard per-case evidence, BEFORE Hatcher sends real keys.
  *
  * RUN AGAINST: the SHIPPING working-tree HEAD of feat/hatcher-portal
- * (5-verb whitelist INCLUDING enter_cove, full Cove-play protocol manual). All
+ * (live shared whitelist, including Cove and Land economy verbs). All
  * version assertions track the imported single-source PROTOCOL_VERSION constant
  * (currently 5) rather than a hardcoded literal, so a bump needs no harness edit.
  * The previous revision of this harness mistakenly ran against origin/staging @
@@ -556,7 +556,7 @@ async function main() {
   const simMod = await import('../../src/services/npc-simulation.ts');
   const { npcSimulation, startSimulation, stopSimulation } = simMod;
   const shared = await import('@clawville/shared');
-  const { NPC_IDS, NPC_BUILDING_CENTERS, MAP_LOCATIONS } = shared;
+  const { NPC_IDS, NPC_BUILDING_CENTERS, MAP_LOCATIONS, HATCHER_ACTION_VERBS } = shared;
 
   startSimulation(false);
 
@@ -1067,8 +1067,8 @@ async function main() {
   // but executor dropped it" (the v1/v2 skew the previous harness missed) fails.
   await safe('G4 EXECUTOR verb-set === MANUAL verb-set (whitelist-parity, the same-diff MANDATORY rule)', () => {
     const manual = buildProtocolManual(resolveApiBase());
-    // The 5 verbs the shipping executor implements (npc-simulation.ts switch).
-    const EXPECTED_EXECUTOR_VERBS = ['move', 'emote', 'enter_building', 'enter_cove', 'talk_to_npc'];
+    // The canonical shared set consumed by the shipping executor and prompt.
+    const EXPECTED_EXECUTOR_VERBS = [...HATCHER_ACTION_VERBS];
 
     // Probe the executor: capture console.warn to detect "not in whitelist".
     const origWarn = console.warn;
@@ -1088,28 +1088,28 @@ async function main() {
       emote: '[ACTION: emote(name=wave)]',
       enter_building: `[ACTION: enter_building(buildingId=${testBuildingId})]`,
       enter_cove: '[ACTION: enter_cove()]',
+      play_cove_game: '[ACTION: play_cove_game(game=slots, wager=20)]',
+      claim_parcel: '[ACTION: claim_parcel(parcelCode=parcel-starter-01, door=rent, weeks=1)]',
+      prepay_rent: '[ACTION: prepay_rent(parcelCode=parcel-starter-01, weeks=1)]',
+      release_parcel: '[ACTION: release_parcel(parcelCode=parcel-starter-01)]',
+      enter_poker_room: '[ACTION: enter_poker_room()]',
+      enter_kelp_forest: '[ACTION: enter_kelp_forest()]',
       talk_to_npc: `[ACTION: talk_to_npc(npcId=${NPC_IDS[1]}, message=parity-probe)]`,
     };
     const executorSet = EXPECTED_EXECUTOR_VERBS.filter((v) => executorAccepts(v, samples[v]));
     // A verb that should NOT exist must be rejected (negative control).
     const bogusRejected = !executorAccepts('selfdestruct', '[ACTION: selfdestruct(x=1)]');
 
-    // Manual-documented verbs: enter_cove is an [ACTION:] tag; the world verbs
-    // (move/emote/enter_building/talk_to_npc) are documented via the world-verb
-    // [ACTION: name()] mechanism (manual line ~162) + their REST twins. We assert
-    // the manual at minimum documents enter_cove as an action tag AND references
-    // the action-tag world-verb mechanism, so an agent learns the shipping verb.
-    const manualDocsEnterCove = manual.includes('[ACTION: enter_cove()]');
-    const manualDocsActionMechanism = manual.includes('[ACTION:');
+    const undocumented = EXPECTED_EXECUTOR_VERBS.filter(
+      (verb) => !manual.includes(`[ACTION: ${verb}(`),
+    );
 
     const executorMatchesExpected =
       executorSet.length === EXPECTED_EXECUTOR_VERBS.length &&
       EXPECTED_EXECUTOR_VERBS.every((v) => executorSet.includes(v));
-    const enterCoveParity = executorSet.includes('enter_cove') && manualDocsEnterCove;
-
-    const ok = executorMatchesExpected && bogusRejected && enterCoveParity && manualDocsActionMechanism;
-    if (!ok) bugs.push(`whitelist-parity FAIL: executorSet=[${executorSet.join(',')}] expected=[${EXPECTED_EXECUTOR_VERBS.join(',')}] manualDocsEnterCove=${manualDocsEnterCove}`);
-    check('G4 EXECUTOR verb-set === MANUAL verb-set (whitelist-parity, the same-diff MANDATORY rule)', ok, `executor accepts=[${executorSet.join(',')}] (expect all 5) bogusRejected=${bogusRejected} manual docs enter_cove=${manualDocsEnterCove} manual uses [ACTION:]=${manualDocsActionMechanism} enterCoveParity=${enterCoveParity}`);
+    const ok = executorMatchesExpected && bogusRejected && undocumented.length === 0;
+    if (!ok) bugs.push(`whitelist-parity FAIL: executorSet=[${executorSet.join(',')}] expected=[${EXPECTED_EXECUTOR_VERBS.join(',')}] undocumented=[${undocumented.join(',')}]`);
+    check('G4 EXECUTOR verb-set === MANUAL verb-set (whitelist-parity, the same-diff MANDATORY rule)', ok, `executor accepts=[${executorSet.join(',')}] (expect all ${EXPECTED_EXECUTOR_VERBS.length}) bogusRejected=${bogusRejected} undocumented=[${undocumented.join(',')}]`);
   });
 
   // ===================================================================

@@ -42,7 +42,8 @@ export const playerTouchState = {
   pitch: 0,
 };
 
-export const RUN_SPEED_MULT = 1.5;
+/** Founder playtest 2026-08-08: run pace raised 35% (1.5 → 2.025). */
+export const RUN_SPEED_MULT = 2.025;
 export const RUN_JOYSTICK_THRESHOLD = 0.7;
 
 export const playerCameraForwardScratch = new THREE.Vector3();

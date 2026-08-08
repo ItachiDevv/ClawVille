@@ -312,7 +312,7 @@ describe('derivePlayerFrameIntent', () => {
     playerKeyState.shift = true;
     expect(derive().move.running).toBe(false);
     playerKeyState.w = true;
-    expect(derive().move).toMatchObject({ running: true, speedMultiplier: 1.5 });
+    expect(derive().move).toMatchObject({ running: true, speedMultiplier: 2.025 });
     playerKeyState.w = false;
     playerKeyState.shift = false;
     expect(derive({ storeJoystick: { x: 0.71, y: 0 } }).move.running).toBe(true);

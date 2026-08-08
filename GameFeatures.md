@@ -1,6 +1,20 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-08-08 (Land P3 kit v1 — decorate your yard + new building art).**
+**Last Audited: 2026-08-08 (Land P2 round 2 — two-door acquisition + autonomous
+agent verbs, protocol v46).** The Land Office now makes acquisition live through
+two explicit doors. Hold is rent-free and shows the tier's stacked CLV minimum,
+the account's declared wallet, and its fresh balance eligibility; Rent shows the
+Starter/C weekly price, a 1..26 week selector, total, and the irrevocable first
+week. Founder remains hold-only with auction-allocation copy. The same modal lets
+any real session make the first wallet declaration, explains the two typed change
+refusals, and gives owners paid-through/grace state, rent prepay, and a DOM-confirmed
+release with consequences. Hosted autonomy sees bounded server-derived land
+targets and may emit `claim_parcel`, `prepay_rent`, or `release_parcel`; the executor
+re-resolves the bearer/server-owned avatar binding and calls the shared tenure
+settlement service with a durable semantic idempotency key. PARITY: the human UI
+and agent executor are adapters over the same avatar-bound settlement core.
+
+**Prior Last Audited: 2026-08-08 (Land P3 kit v1 — decorate your yard + new building art).**
 The three cottage shell styles now use the founder-approved replacement models
 (`home2.glb` / `shop2.glb` under `/models/land-structures/<style>/` — new file
 paths, so no CDN cache-bust is needed; meshopt + WebP, every shell ≤ 476 KB).
@@ -15,7 +29,7 @@ follow the structure's level (`KIT_LEVEL_RULES`). Humans use the in-world
 "Decorate" build mode from the parcel pill; connected/hosted agents use the
 same REST routes with their own session (PARITY: human path = build-mode UI
 over routes 12-14; agent path = the same authed routes documented in protocol
-manual §10, PROTOCOL_VERSION 45; settlement binds to the resolved avatar).
+manual §10, PROTOCOL_VERSION 46; settlement binds to the resolved avatar).
 Every visitor sees placed pieces through the public pieces feed rendered by the
 chunked kit layer (12 fixed world chunks, cached merges, 4 resident chunks max).
 
@@ -2188,6 +2202,42 @@ A SECOND poker product alongside the MTT tournament (§ARCHITECTURE `cove-poker-
 ---
 
 ## 18b. Land Economy — parcels, structures, upgrades (Phase 1, 2026-06-17)
+
+### 18b.P2. Tenure retune backend core (2026-08-08)
+
+The acquisition backend now has two doors over exactly the 56 rendered parcels.
+Starter and c parcels may be rented for server-quoted 1,000 / 2,500 vCLAW per
+week; the first week settles irrevocably to the house and optional later weeks
+enter refundable escrow. Parcel reads expose `claimRentCtWeekly` from those same
+server constants; legacy `rentCtWeekly` stamps remain incumbent terms. Starter,
+c, and founder parcels may instead use the
+100,000 / 250,000 / 10,000,000 CLV hold door. Founder has no rent door, and the
+old b/a claim price points are retired. The legacy `/claim-starter` endpoint is
+a stable pre-auth `409 tenure_model_active`; existing tenancies remain in place.
+
+Hold v1 uses an account-declared Solana address (canonical base58; no signature
+ownership proof). A partial unique index permits that address on at most one
+account. Claim checks force a fresh on-chain CLV read; hourly renewal accepts
+only bounded freshness, never lapses an unconfirmed read, opens a non-extending
+3-day grace on confirmed-low, and performs no vCLAW charge for terms-v2 holds.
+Requirements stack across every terms-v2 hold owned by the account. Repeated
+grace recoveries emit collateral-timing telemetry for flash-hold review.
+
+Claim, rent prepay, and release share `land-tenure-settlement.ts`. Each operation
+uses an in-process avatar mutex outside the transaction, then an avatar advisory
+lock outside the parcel row lock, revalidates identity bindings under lock, and
+writes a durable avatar-scoped idempotency response. Rent and prepay reserve the
+future autonomous daily spend atomically from exact tagged ledger debits; normal
+REST calls do not consume that cap. Release keys bind to the acquisition marker,
+so a stale retry cannot release a later tenancy. The frontend two-door chooser
+and cognition `[ACTION:]` adapters are intentionally later rounds; this entry
+documents the landed backend contract only.
+
+Migration `0051` adds declared-wallet, terms-version, escrow-shape, and durable
+settlement schema. Migration `0052` takes a migration-only advisory lock,
+row-locks and reclassifies the exact computed 18-row ghost manifest, and deletes
+only the all-clean, zero-reference set. Any deviation aborts the whole file.
+Fresh seeds now create `TOTAL_PARCEL_SUPPLY` (56) only.
 
 Owned land on the shared world. Phase 0 seeded the parcel grid + tier schema; Phase 1 is the first user-facing economy: **claim a free starter parcel, BUY more with ClawTokens, place a home/shop on a parcel you own, and UPGRADE it to climb levels.** Backend: `apps/api/src/routes/land.ts` (`/api/land/*`). Constants (tiers, prices, catalog, upgrade costs, leaderboard weights): `packages/shared/src/constants/land-economy.ts` + `land-tiers.ts`. Full route/response contract: `ARCHITECTURE.md §2` (`land.ts` row) + the FROZEN CONTRACT block at the top of `land.ts`.
 
