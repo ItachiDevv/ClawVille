@@ -53,9 +53,9 @@ const CHARACTER_META: Record<Character, { path: string; animatorId: string }> = 
   // Biggie — bespoke Meshy VRM exclusive avatar (2026-07-23); dedicated animatorId
   // with idle/walk/run position tracks stripped (adinero-pattern underground guard).
   // ?v=2 — arms-rest-pose T-pose fix (fix-rig-tpose.mjs) re-baked the same path.
-  biggie: { path: '/avatars/biggie.vrm?v=2',        animatorId: 'biggie' },
+  biggie: { path: '/avatars/biggie-w30k.vrm',        animatorId: 'biggie' },
   // Ansem — exclusive Meshy VRM with canonicalized native idle + intrinsic sword.
-  ansem:  { path: '/avatars/ansem.vrm?v=1',         animatorId: 'ansem' },
+  ansem:  { path: '/avatars/ansem-w30k.vrm',         animatorId: 'ansem' },
 };
 
 function HermesAvatar({ character, mode }: { character: Character; mode: Mode }) {

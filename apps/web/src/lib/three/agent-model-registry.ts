@@ -186,10 +186,10 @@ export const MODEL_REGISTRY = {
   // animatorId by sex shares the existing retarget set for now — native Meshy-clip
   // animation is the deferred "wire-in" step (clips at /models/<slug>-mesh/meshy-openai/anim/).
   // ?v=2 cache-busts the prior VRMs at the same /avatars/ URLs.
-  phanes:       { path: '/avatars/phanes.vrm?v=2',       scale: 13, label: 'Phanes',       category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-male',   faceYaw: Math.PI, pickerHidden: true, preview: '/models/phanes-turnaround/openai/front.png?v=2' },
-  cronus:       { path: '/avatars/cronus.vrm?v=2',       scale: 13, label: 'Cronus',       category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-male',   faceYaw: Math.PI, pickerHidden: true, preview: '/models/cronus-turnaround/openai/front.png?v=2' },
-  helen:        { path: '/avatars/helen.vrm?v=2',        scale: 13, label: 'Helen',        category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-female', faceYaw: Math.PI, pickerHidden: true, preview: '/models/helen-turnaround/openai-v2/front.png?v=2' },
-  clytemnestra: { path: '/avatars/clytemnestra.vrm?v=2', scale: 13, label: 'Clytemnestra', category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-female', faceYaw: Math.PI, pickerHidden: true, preview: '/models/clytemnestra-turnaround/openai-v2/front.png?v=2' },
+  phanes:       { path: '/avatars/phanes-w30k.vrm',       scale: 13, label: 'Phanes',       category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-male',   faceYaw: Math.PI, pickerHidden: true, preview: '/models/phanes-turnaround/openai/front.png?v=2' },
+  cronus:       { path: '/avatars/cronus-w35k.vrm',       scale: 13, label: 'Cronus',       category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-male',   faceYaw: Math.PI, pickerHidden: true, preview: '/models/cronus-turnaround/openai/front.png?v=2' },
+  helen:        { path: '/avatars/helen-w30k.vrm',        scale: 13, label: 'Helen',        category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-female', faceYaw: Math.PI, pickerHidden: true, preview: '/models/helen-turnaround/openai-v2/front.png?v=2' },
+  clytemnestra: { path: '/avatars/clytemnestra-w30k.vrm', scale: 13, label: 'Clytemnestra', category: 'hatcher', avatar_type: 'vrm', animatorId: 'hermes-female', faceYaw: Math.PI, pickerHidden: true, preview: '/models/clytemnestra-turnaround/openai-v2/front.png?v=2' },
 
   // Biggie — EXCLUSIVE avatar, bespoke Meshy VRM (2026-07-23). NOT an NPC and NOT
   // in shared AGENT_MODELS (API rejects self-assignment); granted manually via
@@ -197,7 +197,7 @@ export const MODEL_REGISTRY = {
   // asset path (never previously cached at this URL) so no ?v= query is needed.
   // animatorId 'biggie' strips idle/walk/run position tracks (adinero-pattern
   // underground-idle guard for this Meshy rig class).
-  biggie:       { path: '/avatars/biggie.vrm?v=2',           scale: 13, label: 'Biggie',       category: 'hatcher', avatar_type: 'vrm', animatorId: 'biggie',        faceYaw: Math.PI, pickerHidden: true, preview: '/models/biggie-turnaround/openai/front.png' },
+  biggie:       { path: '/avatars/biggie-w30k.vrm',           scale: 13, label: 'Biggie',       category: 'hatcher', avatar_type: 'vrm', animatorId: 'biggie',        faceYaw: Math.PI, pickerHidden: true, preview: '/models/biggie-turnaround/openai/front.png' },
 
   // Ansem — EXCLUSIVE avatar, bespoke Meshy VRM (2026-07-30). Deliberately
   // absent from shared AGENT_MODELS so the API rejects self-assignment; grant
@@ -208,7 +208,7 @@ export const MODEL_REGISTRY = {
   // edge-cached the 404 (7d TTL, no purge scope on our token), so the query
   // bump is the only invalidator. The kill-the-build cache-bust rule now
   // applies to this URL forever.
-  ansem:        { path: '/avatars/ansem.vrm?v=1',              scale: 13, label: 'Ansem',        category: 'hatcher', avatar_type: 'vrm', animatorId: 'ansem',         faceYaw: Math.PI, pickerHidden: true, preview: '/models/ansem-turnaround/openai/front.png' },
+  ansem:        { path: '/avatars/ansem-w30k.vrm',              scale: 13, label: 'Ansem',        category: 'hatcher', avatar_type: 'vrm', animatorId: 'ansem',         faceYaw: Math.PI, pickerHidden: true, preview: '/models/ansem-turnaround/openai/front.png' },
 
   // ── Adinero — wandering NPC clown comedian (Meshy pipeline 2026-06-19) ──
   // NPC-ONLY decorative wanderer (NOT a player/Hatcher avatar). Same OpenAI→Meshy-6
@@ -218,7 +218,7 @@ export const MODEL_REGISTRY = {
   // locomotion (walk/run/idle) — same as Cyrus (hermes_male wanderer). faceYaw Math.PI
   // (VRM1 faces +Z → flip to -Z toward camera). NOT in shared AGENT_MODELS — NPC species
   // are free strings, only the web render map needs the key.
-  adinero:      { path: '/avatars/adinero.vrm?v=1',      scale: 13, label: 'Adinero',      category: 'other',   avatar_type: 'vrm', animatorId: 'adinero',       faceYaw: Math.PI, pickerHidden: true },
+  adinero:      { path: '/avatars/adinero-w30k.vrm',      scale: 13, label: 'Adinero',      category: 'other',   avatar_type: 'vrm', animatorId: 'adinero',       faceYaw: Math.PI, pickerHidden: true },
 
   // NOTE: `crayfish` removed from the picker 2026-04-16 — the mesh renders
   // noticeably larger than lobster at the same scale (different pivot) and

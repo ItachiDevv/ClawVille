@@ -215,11 +215,11 @@ for (let _n = 1; _n <= 8; _n++) {
 // avatars (Phanes/Cronus/Helen/Clytemnestra/Adinero) are NOT, and are now reachable
 // as reef riders via the generalized registry router. Warm them here.
 for (const _meshyVrmPath of [
-  '/avatars/phanes.vrm?v=2',
-  '/avatars/cronus.vrm?v=2',
-  '/avatars/helen.vrm?v=2',
-  '/avatars/clytemnestra.vrm?v=2',
-  '/avatars/adinero.vrm?v=1',
+  '/avatars/phanes-w30k.vrm',
+  '/avatars/cronus-w35k.vrm',
+  '/avatars/helen-w30k.vrm',
+  '/avatars/clytemnestra-w30k.vrm',
+  '/avatars/adinero-w30k.vrm',
 ]) {
   preloadVRMBytes(_meshyVrmPath);
 }

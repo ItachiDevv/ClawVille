@@ -10,7 +10,7 @@
  *
  * ⚠️ KEEP IN SYNC with `MODEL_REGISTRY[key].path` in the web registry,
  * INCLUDING the `?v=N` cache-bust query strings (the bytes at
- * `/avatars/phanes.vrm` differ from `/avatars/phanes.vrm?v=2`, so the query is
+ * `/avatars/phanes-w30k.vrm` differ from `/avatars/phanes-w30k.vrm`, so the query is
  * part of the content-address). Drift is caught by the coverage test in
  * `apps/api/src/services/__tests__/avatar-manifest.test.ts`, which asserts this
  * map's keys equal `AGENT_MODEL_KEYS` — adding a model without a body path
@@ -65,10 +65,10 @@ export const AGENT_MODEL_BODY_PATHS: Record<AgentModelKey, AgentModelBodyRef> = 
   hatcher_8: { path: '/avatars/milady-official-8.vrm', format: 'vrm' },
 
   // ── Bespoke Hatcher avatars (Meshy pipeline) — VRM 1.0 ~3MB ──
-  phanes: { path: '/avatars/phanes.vrm?v=2', format: 'vrm' },
-  cronus: { path: '/avatars/cronus.vrm?v=2', format: 'vrm' },
-  helen: { path: '/avatars/helen.vrm?v=2', format: 'vrm' },
-  clytemnestra: { path: '/avatars/clytemnestra.vrm?v=2', format: 'vrm' },
+  phanes: { path: '/avatars/phanes-w30k.vrm', format: 'vrm' },
+  cronus: { path: '/avatars/cronus-w35k.vrm', format: 'vrm' },
+  helen: { path: '/avatars/helen-w30k.vrm', format: 'vrm' },
+  clytemnestra: { path: '/avatars/clytemnestra-w30k.vrm', format: 'vrm' },
 
   // ── Chibi (VRM humanoid, half-height) — promoted into AGENT_MODELS 2026-06-21 ──
   // paths match MODEL_REGISTRY[*_chibi].path in the web registry — the -mo
