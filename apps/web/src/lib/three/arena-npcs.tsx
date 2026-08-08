@@ -341,9 +341,9 @@ const SPECIES_MODEL: Record<string, { path: string; key: string }> = {
   hermitcrab:    { path: '/models/hermitcrab-ktx.glb?v=2',                 key: 'hermitcrab' },
   // chihiro / priestess / chibi_goku removed 2026-04-21 — GLBs deleted from disk.
   // Any legacy DB rows with these species values will fall back to DEFAULT_SPECIES (lobster).
-  jellyfish:     { path: '/models/jellyfish-ktx.glb?v=2',                  key: 'jellyfish' },
-  octopus:       { path: '/models/octopus_toy-ktx.glb?v=2',                key: 'octopus' },
-  seahorse:      { path: '/models/sea_horse-ktx.glb?v=2',                  key: 'seahorse' },
+  jellyfish:     { path: '/models/jellyfish-mo-ktx.glb',                  key: 'jellyfish' },
+  octopus:       { path: '/models/octopus_toy-mo-ktx.glb',                key: 'octopus' },
+  seahorse:      { path: '/models/sea_horse-mo-ktx.glb',                  key: 'seahorse' },
 };
 const DEFAULT_SPECIES = SPECIES_MODEL.lobster;
 

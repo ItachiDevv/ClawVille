@@ -87,16 +87,16 @@ import { preloadKTX2Bytes } from '@/lib/three/use-gltf-ktx2';
 
 /** Building GLBs from arena-buildings.tsx BUILDING_MODELS. Sandy's Treedome is procedural. */
 export const BUILDING_GLBS: readonly string[] = [
-  '/models/pineapple-house-opt1-ktx.glb?v=3',
-  '/models/chum-bucket-v2-opt1-ktx.glb?v=4',
-  '/models/krusty-krab-v2-opt1-ktx.glb?v=4',
+  '/models/pineapple-house-opt1-mo-ktx.glb?v=3',
+  '/models/chum-bucket-v2-opt1-mo-ktx.glb?v=4',
+  '/models/krusty-krab-v2-opt1-mo-ktx.glb?v=4',
   '/models/salty-spitoon-opt1-ktx.glb?v=3',
   '/models/boating-school-opt1-ktx.glb?v=3',
-  '/models/patty-building-opt1-ktx.glb?v=3',
+  '/models/patty-building-opt1-mo-ktx.glb?v=3',
   '/models/building-lighthouse-opt1-ktx.glb?v=3',
   '/models/arcade/claw-arcade-exterior-opt1-ktx.glb?v=4',
   '/models/cove/cove-exterior-opt1-ktx.glb?v=4',
-  '/models/patricks-rock-v2-opt1-ktx.glb?v=5',
+  '/models/patricks-rock-v2-opt1-mo-ktx.glb?v=5',
   '/models/squidward-house-opt1-ktx.glb?v=5',
 ] as const;
 

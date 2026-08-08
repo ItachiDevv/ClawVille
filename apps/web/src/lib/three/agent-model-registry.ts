@@ -73,9 +73,9 @@ export const MODEL_REGISTRY = {
   hermitcrab:    { path: '/models/hermitcrab-ktx.glb?v=2',                 scale: 10, label: 'Hermit Crab',     category: 'openclaw', avatar_type: 'glb' },
 
   // ── Other (sea creatures) ─────────────────────────────────────────────────
-  jellyfish:     { path: '/models/jellyfish-ktx.glb?v=2',                  scale: 10, label: 'Jellyfish',       category: 'other',    avatar_type: 'glb', yOffset: 1.5 },
-  octopus:       { path: '/models/octopus_toy-ktx.glb?v=2',                scale: 10, label: 'Octopus',         category: 'other',    avatar_type: 'glb' },
-  seahorse:      { path: '/models/sea_horse-ktx.glb?v=2',                  scale: 8,  label: 'Sea Horse',       category: 'other',    avatar_type: 'glb' },
+  jellyfish:     { path: '/models/jellyfish-mo-ktx.glb',                  scale: 10, label: 'Jellyfish',       category: 'other',    avatar_type: 'glb', yOffset: 1.5 },
+  octopus:       { path: '/models/octopus_toy-mo-ktx.glb',                scale: 10, label: 'Octopus',         category: 'other',    avatar_type: 'glb' },
+  seahorse:      { path: '/models/sea_horse-mo-ktx.glb',                  scale: 8,  label: 'Sea Horse',       category: 'other',    avatar_type: 'glb' },
 
   // ── Milady (VRM humanoid avatars) ─────────────────────────────────────────
   // VRM spec: human-scale models with feet at origin (Y=0 at ground plane).

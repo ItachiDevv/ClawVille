@@ -67,7 +67,7 @@ const CANDIDATES: CandidateDef[] = [
     label: 'Fantasy Cottage',
     blurb: 'Storybook pointed roofs — whimsical, pairs with Pineapple/Patrick',
     home: {
-      path: '/models/land-structures/fantasy-cottage/home.glb',
+      path: '/models/land-structures/fantasy-cottage/home-mo.glb',
       source: 'Quaternius (CC0) · 5,758 tris',
     },
     shop: {
@@ -93,11 +93,11 @@ const CANDIDATES: CandidateDef[] = [
     label: 'Driftwood Cabin',
     blurb: 'Rustic timber — weathered plank look, sea-salvage vibe',
     home: {
-      path: '/models/land-structures/driftwood-cabin/home.glb',
+      path: '/models/land-structures/driftwood-cabin/home-mo.glb',
       source: 'CreativeTrio Cabin Shed (CC0) · 2,745 tris',
     },
     shop: {
-      path: '/models/land-structures/driftwood-cabin/shop.glb',
+      path: '/models/land-structures/driftwood-cabin/shop-mo.glb',
       source: 'Zsky Blacksmith Shop (CC-BY) · 5,216 tris',
     },
   },

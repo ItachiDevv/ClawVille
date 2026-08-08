@@ -35,9 +35,9 @@ export const AGENT_MODEL_BODY_PATHS: Record<AgentModelKey, AgentModelBodyRef> = 
   hermitcrab: { path: '/models/hermitcrab-ktx.glb', format: 'glb' },
 
   // ── Other (sea creatures) — GLB bodies ──
-  jellyfish: { path: '/models/jellyfish-ktx.glb', format: 'glb' },
-  octopus: { path: '/models/octopus_toy-ktx.glb', format: 'glb' },
-  seahorse: { path: '/models/sea_horse-ktx.glb', format: 'glb' },
+  jellyfish: { path: '/models/jellyfish-mo-ktx.glb', format: 'glb' },
+  octopus: { path: '/models/octopus_toy-mo-ktx.glb', format: 'glb' },
+  seahorse: { path: '/models/sea_horse-mo-ktx.glb', format: 'glb' },
 
   // ── Milady (VRM humanoid) ──
   milady_official_1: { path: '/avatars/milady-official-1.vrm', format: 'vrm' },
