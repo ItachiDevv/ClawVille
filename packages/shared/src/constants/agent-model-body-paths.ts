@@ -9,9 +9,10 @@
  * paths-only mirror — NO Three.js, NO scale/anim/render metadata.
  *
  * ⚠️ KEEP IN SYNC with `MODEL_REGISTRY[key].path` in the web registry,
- * INCLUDING the `?v=N` cache-bust query strings (the bytes at
- * `/avatars/phanes-w30k.vrm` differ from `/avatars/phanes-w30k.vrm`, so the query is
- * part of the content-address). Drift is caught by the coverage test in
+ * including any `?v=N` query where one is still used. Diet siblings (rung 2,
+ * 2026-08-08: `-w30k`/`-mo`/`-nonorm` names) are FILENAME-addressed — the new
+ * name IS the cache-bust and carries no query; legacy assets (hermes, milady
+ * previews) still use `?v=N`. Drift is caught by the coverage test in
  * `apps/api/src/services/__tests__/avatar-manifest.test.ts`, which asserts this
  * map's keys equal `AGENT_MODEL_KEYS` — adding a model without a body path
  * fails CI. (A value drift, e.g. a stale `?v`, is not auto-detected; update

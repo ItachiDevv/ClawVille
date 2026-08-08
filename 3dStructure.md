@@ -1656,3 +1656,13 @@ Founder report: the cove **walk-IN** (physically walking into the tunnel to ente
 **Town directory sign (same diff, `town-directory-sign.tsx`):** the bottom row crammed "← COSMETICS" (x=0.26) and "EXCHANGE →" (x=0.74) onto ONE baseline → read as "COSMETICS EXCHANGE" squeezed at sign scale. Restacked as two centred lines — "← COSMETICS" (y=545) over "EXCHANGE →" (y=665) — on the 1024×768 board.
 
 **R18d late-fix non-regression evidence (2026-07-21):** a fresh production-bundle run sampled 600 frames across four karts at **59.9 FPS**. Self conform stayed within **7.55wu Y / 1.48° pitch / 1.00° roll**, grounded remotes within **5.33wu Y / 0.42° pitch / 0.66° roll**, and the rendered jump/trick probe passed both the manual arc (**189.78wu peak, 0 plateau frames**) and remote ramp arc (**333.57wu peak, 1 plateau frame**) with one authoritative trick arm/land and the expected `1 → 1.25` trick speed modifier. The fresh live R18c contact probe completed a race but sampled zero random obstacle contacts, so strict post-R18d live-contact observation remains open; deterministic R18c mechanics (5/5), furniture (4/4), and repeated bot-race gates remain green.
+
+## Cold-load rung 2 asset diets (2026-08-08) — Last Audited 2026-08-08
+All served heavy assets moved to SIBLING-FILENAME diets (filename IS the cache-bust; KTX2 siblings
+MUST end in `-ktx.glb` — the boot preloader routes on that substring, violating it crashes boot):
+7 showpiece VRMs → `-w30k.vrm` (cronus `-w35k`) via `decimate-vrm.ts --weld-islands` (UV-island-aware,
+30k tris, ~0.5-0.7MB each from ~3MB); chibis/shisha/cove-interior/12 buildings/all land-structures →
+`-mo(-ktx)` meshopt siblings; 5 character normal-maps dropped (`-nonorm-ktx`); lobster clips stripped
+to animation-only (`-clip-ktx`, bind by node name). Cold wire 34.62→22.74MB. Validator:
+`scripts/vrm-pipeline-validate.mjs` (S1-S13; --expect-quantize/--expect-texture-diet modes) gates
+every VRM pipeline pass. Full ledger: docs/perf-cold-load-rung2-census-2026-08-07.md (M2 FREEZE).

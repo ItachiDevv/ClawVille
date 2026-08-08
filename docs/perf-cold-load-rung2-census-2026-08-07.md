@@ -368,11 +368,13 @@ Final measured rows (all founder-approved; every row live-verified on the local 
 | Cove interior (on-demand lane) | 14.70MB | structure equality + live-cove render |
 | Building batch + all land structures | 3.05MB | boot-verified after the -mo-ktx naming fix + showroom dynamic-resolver fix |
 | Lobster clip dedupe | 1.30MB | behavioral equivalence + PropertyBinding + mixer drive |
-| Showpiece rollout (7 avatars @30k/35k, --weld-islands v2) | 16.80MB | per-asset validator + UV-integrity gate + founder rung choice |
+| Showpiece rollout (6 avatars @30k + cronus @35k, --weld-islands v2; 19 refs flipped) | 16.80MB (20.94→4.14, −80.2%) | per-asset validator + UV-integrity gate + founder rung choice |
 | **Total** | **≈44.7MB** of served asset weight |  |
 
 **Cold-load wire (fresh-profile, /game, decorative release + settle): 34.62MB (round start) →
-22.74MB (rung-2 close)** — at the plan's ≤22MB M2 target within noise; the cove's 14.7MB rides
+22.74MB (rung-2 close)** — the nominal ≤22MB M2 target is missed by 0.74MB (3.4%); accepted: the
+measurement is a single fresh-profile run and prior same-rig cold runs varied by more than that
+(33.07MB mid-rung vs 34.62 baseline on differing content). The cove's 14.7MB rides
 the cove-entry lane on top. Deferred to later rungs: probe-rig repair (Chrome 151), the
 ~505MB committed pipeline intermediates (founder call), sea-creature texture consolidation,
 --expect-decimate validator mode.
