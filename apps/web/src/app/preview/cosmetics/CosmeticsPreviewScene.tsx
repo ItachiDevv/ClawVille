@@ -44,7 +44,7 @@ const AVATARS: AvatarDef[] = [
   { instanceId: 'cp-hermes', vrmPath: '/avatars/hermes-female.vrm',     animatorId: 'hermes-female', rigKey: 'hermes', label: 'Hermes', xOffset: -300, focusY: 250 },
   { instanceId: 'cp-tekk',   vrmPath: '/avatars/tekk-nonorm.vrm',              animatorId: 'tekk',          rigKey: 'tekk',   label: 'Tekk',   xOffset: 0,    focusY: 300 },
   { instanceId: 'cp-phanes', vrmPath: '/avatars/phanes.vrm?v=1',        animatorId: 'hermes-male',   rigKey: 'phanes', label: 'Phanes', xOffset: 300,  focusY: 270 },
-  { instanceId: 'cp-chibi',  vrmPath: '/avatars/eliza-chibi.vrm?v=2',   animatorId: 'chibi',         rigKey: 'chibi',  label: 'chibi',  xOffset: 600,  focusY: 90 },
+  { instanceId: 'cp-chibi',  vrmPath: '/avatars/eliza-chibi-mo.vrm',   animatorId: 'chibi',         rigKey: 'chibi',  label: 'chibi',  xOffset: 600,  focusY: 90 },
 ];
 
 const HAT_URL = '/cosmetics/hats/top-hat.glb';

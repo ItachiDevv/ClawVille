@@ -73,6 +73,6 @@ export const AGENT_MODEL_BODY_PATHS: Record<AgentModelKey, AgentModelBodyRef> = 
   // ── Chibi (VRM humanoid, half-height) — promoted into AGENT_MODELS 2026-06-21 ──
   // ?v=3 matches MODEL_REGISTRY[*_chibi].path in the web registry (the query is
   // part of the content-address — keep in sync, incl. the ?v on every bump).
-  eliza_chibi: { path: '/avatars/eliza-chibi.vrm?v=3', format: 'vrm' },
-  milady_chibi: { path: '/avatars/milady-chibi.vrm?v=3', format: 'vrm' },
+  eliza_chibi: { path: '/avatars/eliza-chibi-mo.vrm', format: 'vrm' },
+  milady_chibi: { path: '/avatars/milady-chibi-mo.vrm', format: 'vrm' },
 };

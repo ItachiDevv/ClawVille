@@ -51,8 +51,16 @@ const flagArgs = process.argv.slice(2).filter((a) => a.startsWith('--'));
 // values masked on both sides since the diet remaps them) — every OTHER
 // material property must still match exactly. All other checks stay strict.
 const expectTextureDiet = flagArgs.includes('--expect-texture-diet');
+// --expect-quantize: the output came from the quantizing meshopt chain
+// (assets-optimize/decimate-vrm). gltf-transform's quantize() bakes the
+// position-quantization volume transform into skinned meshes' IBMs as
+// DELIBERATE COMPENSATION (render-equivalent; the live showpiece VRMs shipped
+// this way). S3 then replaces byte-equality with a geometric-consistency
+// check: every joint's compensation A_j = IBM_old_j^-1 * IBM_new_j must be
+// ONE shared affine, scale+translation only (no rotation/shear), within eps.
+const expectQuantize = flagArgs.includes('--expect-quantize');
 for (const f of flagArgs) {
-  if (f !== '--expect-texture-diet') { console.error(`unknown flag ${f}`); process.exit(2); }
+  if (f !== '--expect-texture-diet' && f !== '--expect-quantize') { console.error(`unknown flag ${f}`); process.exit(2); }
 }
 const [srcFile, outFile] = process.argv.slice(2).filter((a) => !a.startsWith('--'));
 if (!srcFile || !outFile) { console.error('Usage: bun scripts/vrm-pipeline-validate.mjs <source.vrm> <output.vrm> [--expect-texture-diet]'); process.exit(2); }
@@ -108,12 +116,71 @@ if (sSkins.length === oSkins.length) {
     const sA = sSkins[i].getInverseBindMatrices();
     const oA = oSkins[i].getInverseBindMatrices();
     const sIbm = sA?.getArray(), oIbm = oA?.getArray();
-    const bytesEqual = !!sIbm && !!oIbm && sIbm.length === oIbm.length &&
-      Buffer.from(sIbm.buffer, sIbm.byteOffset, sIbm.byteLength).equals(Buffer.from(oIbm.buffer, oIbm.byteOffset, oIbm.byteLength));
     const metaEqual = !!sA && !!oA && sA.getType() === oA.getType() && sA.getComponentType() === oA.getComponentType() &&
       sA.getNormalized() === oA.getNormalized() && sA.getCount() === oA.getCount();
-    check(`S3.${i}`, bytesEqual && metaEqual,
-      !metaEqual ? 'IBM accessor metadata differs' : `IBM bytes differ (len ${sIbm?.length} vs ${oIbm?.length})`);
+    if (!expectQuantize) {
+      const bytesEqual = !!sIbm && !!oIbm && sIbm.length === oIbm.length &&
+        Buffer.from(sIbm.buffer, sIbm.byteOffset, sIbm.byteLength).equals(Buffer.from(oIbm.buffer, oIbm.byteOffset, oIbm.byteLength));
+      check(`S3.${i}`, bytesEqual && metaEqual,
+        !metaEqual ? 'IBM accessor metadata differs' : `IBM bytes differ (len ${sIbm?.length} vs ${oIbm?.length})`);
+    } else {
+      // Geometric-consistency mode. Plain column-major mat4 math (no deps).
+      const jc = sA.getCount();
+      const getM = (arr, j) => Array.from(arr.slice(j * 16, j * 16 + 16));
+      const mul = (a, b) => { // column-major: (a*b)[c][r] = sum_k a[k][r]*b[c][k]
+        const o = new Array(16).fill(0);
+        for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+          let s = 0;
+          for (let k = 0; k < 4; k++) s += a[k * 4 + r] * b[c * 4 + k];
+          o[c * 4 + r] = s;
+        }
+        return o;
+      };
+      const inv4 = (m) => { // Gauss-Jordan on row-major view of the column-major array
+        const M = [];
+        for (let r = 0; r < 4; r++) M.push([m[r], m[4 + r], m[8 + r], m[12 + r], r === 0 ? 1 : 0, r === 1 ? 1 : 0, r === 2 ? 1 : 0, r === 3 ? 1 : 0]);
+        for (let col = 0; col < 4; col++) {
+          let piv = col;
+          for (let r = col + 1; r < 4; r++) if (Math.abs(M[r][col]) > Math.abs(M[piv][col])) piv = r;
+          if (Math.abs(M[piv][col]) < 1e-12) return null;
+          [M[col], M[piv]] = [M[piv], M[col]];
+          const d = M[col][col];
+          for (let k = 0; k < 8; k++) M[col][k] /= d;
+          for (let r = 0; r < 4; r++) {
+            if (r === col) continue;
+            const f = M[r][col];
+            for (let k = 0; k < 8; k++) M[r][k] -= f * M[col][k];
+          }
+        }
+        const o = new Array(16);
+        for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) o[c * 4 + r] = M[r][4 + c];
+        return o;
+      };
+      let problem = null;
+      let A0 = null;
+      const EPS = 1e-3;
+      for (let j = 0; j < jc && !problem; j++) {
+        const mOld = getM(sIbm, j);
+        const mNew = getM(oIbm, j);
+        const mOldInv = inv4(mOld);
+        if (!mOldInv) continue; // degenerate joint matrix — skip
+        // A_j = IBM_old^-1 * IBM_new  (IBM_new = IBM_old * A)
+        const e = mul(mOldInv, mNew);
+        // scale+translation only: off-diagonal linear terms ~0, bottom row [0,0,0,1]
+        const offDiag = [e[1], e[2], e[4], e[6], e[8], e[9], e[3], e[7], e[11]];
+        if (offDiag.some((v) => Math.abs(v) > EPS)) { problem = `joint ${j}: compensation has rotation/shear`; break; }
+        if (Math.abs(e[15] - 1) > EPS) { problem = `joint ${j}: bad homogeneous row`; break; }
+        if (!A0) A0 = e.slice();
+        else {
+          for (let k = 0; k < 16; k++) {
+            const tol = EPS * Math.max(1, Math.abs(A0[k]));
+            if (Math.abs(e[k] - A0[k]) > tol) { problem = `joint ${j}: compensation differs from joint 0 at element ${k} (${A0[k].toFixed(5)} vs ${e[k].toFixed(5)})`; break; }
+          }
+        }
+      }
+      check(`S3.${i}`, metaEqual && !problem && !!A0,
+        !metaEqual ? 'IBM accessor metadata differs' : (problem ?? 'no invertible joints to check'));
+    }
   }
 }
 

@@ -133,8 +133,8 @@ export const WANDERING_VRM_PATHS: readonly string[] = [
   '/avatars/hermes-female.vrm?v=2',
   '/avatars/hermes-male.vrm?v=2',
   '/avatars/tekk-nonorm.vrm',
-  '/avatars/eliza-chibi.vrm?v=3',
-  '/avatars/milady-chibi.vrm?v=3',
+  '/avatars/eliza-chibi-mo.vrm',
+  '/avatars/milady-chibi-mo.vrm',
 ] as const;
 
 /** All selectable player VRM paths (agent-model-registry.ts MODEL_REGISTRY).
@@ -155,8 +155,8 @@ export const PLAYER_VRM_PATHS: readonly string[] = [
   '/avatars/hermes-female.vrm?v=2',
   '/avatars/hermes-male.vrm?v=2',
   '/avatars/tekk-nonorm.vrm',
-  '/avatars/eliza-chibi.vrm?v=3',
-  '/avatars/milady-chibi.vrm?v=3',
+  '/avatars/eliza-chibi-mo.vrm',
+  '/avatars/milady-chibi-mo.vrm',
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -211,7 +211,7 @@ export const DECORATION_GLBS: readonly string[] = [
 export const TOWN_PROP_GLBS: readonly string[] = [
   '/models/quest-bounty-pavilion-ktx.glb?v=4',
   '/models/bazaar-merchant-stand-ktx.glb?v=3', // ?v=3 — P1b non-color KTX2 coverage (2026-07-14)
-  '/models/shisha-oasis-ktx.glb?v=2',
+  '/models/shisha-oasis-mo-ktx.glb',
   // town-directory-sign.tsx uses Three.js primitives only (no GLB) — nothing to preload here.
   // Auction podium removed 2026-07-15 — superseded by quest-bounty-pavilion.
 ] as const;

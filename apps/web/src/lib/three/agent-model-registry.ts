@@ -151,8 +151,8 @@ export const MODEL_REGISTRY = {
   // downscaled to 1024² WebP (perf round 2, Track C+E). Stable URL content
   // changed → ?v bump REQUIRED (see chibi cache-bust note above). Preload url in
   // asset-preload-manifest.ts MUST match this ?v=3 exactly.
-  eliza_chibi:   { path: '/avatars/eliza-chibi.vrm?v=3',   scale: 13, label: 'Eliza Chibi',  category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', faceYaw: Math.PI, preview: '/models/eliza-chibi-turnaround/front.png' },
-  milady_chibi:  { path: '/avatars/milady-chibi.vrm?v=3',  scale: 13, label: 'Milady Chibi', category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', faceYaw: Math.PI, preview: '/models/milady-chibi-turnaround/front.png' },
+  eliza_chibi:   { path: '/avatars/eliza-chibi-mo.vrm',   scale: 13, label: 'Eliza Chibi',  category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', faceYaw: Math.PI, preview: '/models/eliza-chibi-turnaround/front.png' },
+  milady_chibi:  { path: '/avatars/milady-chibi-mo.vrm',  scale: 13, label: 'Milady Chibi', category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', faceYaw: Math.PI, preview: '/models/milady-chibi-turnaround/front.png' },
 
   // ── Hatcher (placeholder — Phase 4 swap) ─────────────────────────────────
   // PLACEHOLDER (Phase 4 swap): these 8 keys point at existing Milady VRMs
