@@ -63,7 +63,7 @@ for (const f of flagArgs) {
   if (f !== '--expect-texture-diet' && f !== '--expect-quantize') { console.error(`unknown flag ${f}`); process.exit(2); }
 }
 const [srcFile, outFile] = process.argv.slice(2).filter((a) => !a.startsWith('--'));
-if (!srcFile || !outFile) { console.error('Usage: bun scripts/vrm-pipeline-validate.mjs <source.vrm> <output.vrm> [--expect-texture-diet]'); process.exit(2); }
+if (!srcFile || !outFile) { console.error('Usage: bun scripts/vrm-pipeline-validate.mjs <source.vrm> <output.vrm> [--expect-texture-diet] [--expect-quantize]'); process.exit(2); }
 
 function parseGlb(file) {
   const buf = fs.readFileSync(file);
@@ -124,62 +124,135 @@ if (sSkins.length === oSkins.length) {
       check(`S3.${i}`, bytesEqual && metaEqual,
         !metaEqual ? 'IBM accessor metadata differs' : `IBM bytes differ (len ${sIbm?.length} vs ${oIbm?.length})`);
     } else {
-      // Geometric-consistency mode. Plain column-major mat4 math (no deps).
+      // Geometric-consistency mode v2 (B2 Codex review MAJORs 1-2): the
+      // expected compensation Q is DERIVED FROM THE POSITION DATA, not merely
+      // assumed shared — a fabricated shared affine (e.g. diag(0,0,0,1))
+      // cannot pass because the positions pin Q. Verified in residual form
+      // IBM_new ~= IBM_old * Q with NO matrix inversions; every value must be
+      // finite; nothing is silently skipped.
       const jc = sA.getCount();
-      const getM = (arr, j) => Array.from(arr.slice(j * 16, j * 16 + 16));
-      const mul = (a, b) => { // column-major: (a*b)[c][r] = sum_k a[k][r]*b[c][k]
-        const o = new Array(16).fill(0);
-        for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
-          let s = 0;
-          for (let k = 0; k < 4; k++) s += a[k * 4 + r] * b[c * 4 + k];
-          o[c * 4 + r] = s;
-        }
-        return o;
-      };
-      const inv4 = (m) => { // Gauss-Jordan on row-major view of the column-major array
-        const M = [];
-        for (let r = 0; r < 4; r++) M.push([m[r], m[4 + r], m[8 + r], m[12 + r], r === 0 ? 1 : 0, r === 1 ? 1 : 0, r === 2 ? 1 : 0, r === 3 ? 1 : 0]);
-        for (let col = 0; col < 4; col++) {
-          let piv = col;
-          for (let r = col + 1; r < 4; r++) if (Math.abs(M[r][col]) > Math.abs(M[piv][col])) piv = r;
-          if (Math.abs(M[piv][col]) < 1e-12) return null;
-          [M[col], M[piv]] = [M[piv], M[col]];
-          const d = M[col][col];
-          for (let k = 0; k < 8; k++) M[col][k] /= d;
-          for (let r = 0; r < 4; r++) {
-            if (r === col) continue;
-            const f = M[r][col];
-            for (let k = 0; k < 8; k++) M[r][k] -= f * M[col][k];
-          }
-        }
-        const o = new Array(16);
-        for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) o[c * 4 + r] = M[r][4 + c];
-        return o;
-      };
       let problem = null;
-      let A0 = null;
       const EPS = 1e-3;
-      for (let j = 0; j < jc && !problem; j++) {
-        const mOld = getM(sIbm, j);
-        const mNew = getM(oIbm, j);
-        const mOldInv = inv4(mOld);
-        if (!mOldInv) continue; // degenerate joint matrix — skip
-        // A_j = IBM_old^-1 * IBM_new  (IBM_new = IBM_old * A)
-        const e = mul(mOldInv, mNew);
-        // scale+translation only: off-diagonal linear terms ~0, bottom row [0,0,0,1]
-        const offDiag = [e[1], e[2], e[4], e[6], e[8], e[9], e[3], e[7], e[11]];
-        if (offDiag.some((v) => Math.abs(v) > EPS)) { problem = `joint ${j}: compensation has rotation/shear`; break; }
-        if (Math.abs(e[15] - 1) > EPS) { problem = `joint ${j}: bad homogeneous row`; break; }
-        if (!A0) A0 = e.slice();
+      // 1. Meshes bound to this skin on both sides (paired by node identity;
+      //    S10/S11 already pin node/skin structure equality).
+      const sNodes = sDoc.getRoot().listNodes();
+      const oNodes = oDoc.getRoot().listNodes();
+      const meshPairs = [];
+      for (let n = 0; n < sNodes.length; n++) {
+        if (sNodes[n].getSkin() === sSkins[i] && sNodes[n].getMesh()) {
+          if (!(oNodes[n]?.getSkin() === oSkins[i]) || !oNodes[n]?.getMesh()) { problem = `node ${n}: mesh/skin binding drifted`; break; }
+          meshPairs.push([sNodes[n].getMesh(), oNodes[n].getMesh()]);
+        }
+      }
+      if (!problem && meshPairs.length === 0) problem = 'skin bound to no mesh';
+      // 2. Derive Q per bound mesh from POSITION bounds (dequantized via
+      //    getElement) and require the SAME Q across all meshes of this skin
+      //    (quantize() computes one volume per mesh; a shared skin cannot
+      //    compensate two different volumes — that case must FAIL).
+      let Q = null; // {s:[3], t:[3]}
+      const el = [0, 0, 0];
+      for (const [sm, om] of problem ? [] : meshPairs) {
+        const bounds = (mesh) => {
+          const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+          for (const prim of mesh.listPrimitives()) {
+            const pos = prim.getAttribute('POSITION');
+            if (!pos) return null;
+            for (let v = 0; v < pos.getCount(); v++) {
+              pos.getElement(v, el);
+              for (let k = 0; k < 3; k++) {
+                if (!Number.isFinite(el[k])) return 'nonfinite';
+                if (el[k] < min[k]) min[k] = el[k];
+                if (el[k] > max[k]) max[k] = el[k];
+              }
+            }
+          }
+          return { min, max };
+        };
+        const bs = bounds(sm), bo = bounds(om);
+        if (bs === null || bo === null) { problem = 'skinned primitive missing POSITION'; break; }
+        if (bs === 'nonfinite' || bo === 'nonfinite') { problem = 'non-finite POSITION data'; break; }
+        const s = [], t = [];
+        for (let k = 0; k < 3; k++) {
+          const dOld = bs.max[k] - bs.min[k], dNew = bo.max[k] - bo.min[k];
+          if (!(dNew > 1e-12)) { problem = `degenerate quantized extent on axis ${k}`; break; }
+          s[k] = dOld / dNew;
+          t[k] = bs.min[k] - s[k] * bo.min[k];
+          if (!Number.isFinite(s[k]) || !Number.isFinite(t[k]) || s[k] <= 0) { problem = `bad derived scale/offset on axis ${k}`; break; }
+        }
+        if (problem) break;
+        // quantize() uses one uniform scale; allow small anisotropy tolerance.
+        const sAvg = (s[0] + s[1] + s[2]) / 3;
+        if (Math.abs(s[0] - sAvg) > EPS * sAvg || Math.abs(s[1] - sAvg) > EPS * sAvg || Math.abs(s[2] - sAvg) > EPS * sAvg) {
+          problem = `derived scale not uniform (${s.map((v) => v.toFixed(5)).join(',')})`;
+          break;
+        }
+        if (!Q) Q = { s, t };
         else {
-          for (let k = 0; k < 16; k++) {
-            const tol = EPS * Math.max(1, Math.abs(A0[k]));
-            if (Math.abs(e[k] - A0[k]) > tol) { problem = `joint ${j}: compensation differs from joint 0 at element ${k} (${A0[k].toFixed(5)} vs ${e[k].toFixed(5)})`; break; }
+          for (let k = 0; k < 3; k++) {
+            if (Math.abs(Q.s[k] - s[k]) > EPS * Math.max(Q.s[k], s[k]) || Math.abs(Q.t[k] - t[k]) > EPS * Math.max(1, Math.abs(Q.t[k]))) {
+              problem = 'two meshes bound to one skin have DIFFERENT quantization volumes';
+              break;
+            }
+          }
+          if (problem) break;
+        }
+        // 3. ORDER-INDEPENDENT position sanity: meshopt REORDERS vertices, so
+        //    indexed pairing is invalid. Instead the per-axis centroid and
+        //    mean absolute deviation of the whole cloud must map through Q
+        //    (statistics are permutation-invariant; gross position corruption
+        //    breaks them, quantization noise does not).
+        const stats = (mesh) => {
+          const sum = [0, 0, 0]; let n = 0;
+          const tmp = [0, 0, 0];
+          for (const prim of mesh.listPrimitives()) {
+            const pos = prim.getAttribute('POSITION');
+            for (let v = 0; v < pos.getCount(); v++) { pos.getElement(v, tmp); for (let k = 0; k < 3; k++) sum[k] += tmp[k]; n++; }
+          }
+          const mean = sum.map((v) => v / n);
+          const mad = [0, 0, 0];
+          for (const prim of mesh.listPrimitives()) {
+            const pos = prim.getAttribute('POSITION');
+            for (let v = 0; v < pos.getCount(); v++) { pos.getElement(v, tmp); for (let k = 0; k < 3; k++) mad[k] += Math.abs(tmp[k] - mean[k]); }
+          }
+          return { mean, mad: mad.map((v) => v / n), n };
+        };
+        const stOld = stats(sm), stNew = stats(om);
+        if (stOld.n !== stNew.n) { problem = `POSITION vertex count drifted (${stOld.n} vs ${stNew.n})`; break; }
+        const posTol = 8 * (sAvg / 32767) + 1e-6;
+        for (let k = 0; k < 3; k++) {
+          if (Math.abs(stOld.mean[k] - (s[k] * stNew.mean[k] + t[k])) > posTol) { problem = `axis ${k}: position centroid does not map through Q`; break; }
+          if (Math.abs(stOld.mad[k] - s[k] * stNew.mad[k]) > posTol) { problem = `axis ${k}: position spread does not map through Q`; break; }
+        }
+        if (problem) break;
+      }
+      // 4. Every joint, no skips: IBM_new_j ~= IBM_old_j * Q (residual form,
+      //    no inversions). Column-major: right-multiplying by Q (scale s +
+      //    translation t) gives: newCol_c = oldCol_c * s[c] for c<3, and
+      //    newCol_3 = old * [t,1] = t0*col0 + t1*col1 + t2*col2 + col3.
+      if (!problem && (!sIbm || !oIbm || sIbm.length !== jc * 16 || oIbm.length !== jc * 16)) problem = 'IBM accessor missing or wrong length';
+      for (let j = 0; j < jc && !problem && Q; j++) {
+        const o16 = j * 16;
+        for (let idx = 0; idx < 16 && !problem; idx++) {
+          if (!Number.isFinite(sIbm[o16 + idx]) || !Number.isFinite(oIbm[o16 + idx])) { problem = `joint ${j}: non-finite IBM value`; break; }
+        }
+        if (problem) break;
+        for (let c = 0; c < 4 && !problem; c++) {
+          for (let r = 0; r < 4; r++) {
+            const old = (k) => sIbm[o16 + k * 4 + r];
+            const expected = c < 3
+              ? old(c) * Q.s[c]
+              : Q.t[0] * old(0) + Q.t[1] * old(1) + Q.t[2] * old(2) + old(3);
+            const got = oIbm[o16 + c * 4 + r];
+            const tol = EPS * Math.max(1, Math.abs(expected));
+            if (Math.abs(got - expected) > tol) {
+              problem = `joint ${j}: IBM col ${c} row ${r} deviates from IBM_old*Q (${expected.toFixed(5)} vs ${got.toFixed(5)})`;
+              break;
+            }
           }
         }
       }
-      check(`S3.${i}`, metaEqual && !problem && !!A0,
-        !metaEqual ? 'IBM accessor metadata differs' : (problem ?? 'no invertible joints to check'));
+      check(`S3.${i}`, metaEqual && !problem && !!Q,
+        !metaEqual ? 'IBM accessor metadata differs' : (problem ?? 'no Q derivable'));
     }
   }
 }

@@ -150,7 +150,7 @@ export const MODEL_REGISTRY = {
   // ?v=2→?v=3 bump 2026-06-13 — VRM decimated to ~40k tris + 2048² PNG texture
   // downscaled to 1024² WebP (perf round 2, Track C+E). Stable URL content
   // changed → ?v bump REQUIRED (see chibi cache-bust note above). Preload url in
-  // asset-preload-manifest.ts MUST match this ?v=3 exactly.
+  // asset-preload-manifest.ts MUST match these paths exactly (now -mo sibling filenames, no ?v query).
   eliza_chibi:   { path: '/avatars/eliza-chibi-mo.vrm',   scale: 13, label: 'Eliza Chibi',  category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', faceYaw: Math.PI, preview: '/models/eliza-chibi-turnaround/front.png' },
   milady_chibi:  { path: '/avatars/milady-chibi-mo.vrm',  scale: 13, label: 'Milady Chibi', category: 'chibi',  avatar_type: 'vrm', animatorId: 'chibi', faceYaw: Math.PI, preview: '/models/milady-chibi-turnaround/front.png' },
 

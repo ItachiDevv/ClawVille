@@ -71,7 +71,7 @@ export const AGENT_MODEL_BODY_PATHS: Record<AgentModelKey, AgentModelBodyRef> = 
   clytemnestra: { path: '/avatars/clytemnestra.vrm?v=2', format: 'vrm' },
 
   // ── Chibi (VRM humanoid, half-height) — promoted into AGENT_MODELS 2026-06-21 ──
-  // ?v=3 matches MODEL_REGISTRY[*_chibi].path in the web registry (the query is
+  // paths match MODEL_REGISTRY[*_chibi].path in the web registry (-mo sibling filenames; the old query-version scheme is
   // part of the content-address — keep in sync, incl. the ?v on every bump).
   eliza_chibi: { path: '/avatars/eliza-chibi-mo.vrm', format: 'vrm' },
   milady_chibi: { path: '/avatars/milady-chibi-mo.vrm', format: 'vrm' },
