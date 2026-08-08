@@ -115,7 +115,8 @@ if (sSkins.length === oSkins.length) {
     check(`S2.${i}`, jeq(sJ, oJ), `joint names differ (${sJ.length} vs ${oJ.length})`);
     const sA = sSkins[i].getInverseBindMatrices();
     const oA = oSkins[i].getInverseBindMatrices();
-    const sIbm = sA?.getArray(), oIbm = oA?.getArray();
+    if (!sA || !oA) { check(`S3.${i}`, false, `inverseBindMatrices accessor ${!sA ? 'missing on source' : 'missing on output'}`); continue; }
+    const sIbm = sA.getArray(), oIbm = oA.getArray();
     const metaEqual = !!sA && !!oA && sA.getType() === oA.getType() && sA.getComponentType() === oA.getComponentType() &&
       sA.getNormalized() === oA.getNormalized() && sA.getCount() === oA.getCount();
     if (!expectQuantize) {
@@ -196,32 +197,58 @@ if (sSkins.length === oSkins.length) {
           }
           if (problem) break;
         }
-        // 3. ORDER-INDEPENDENT position sanity: meshopt REORDERS vertices, so
-        //    indexed pairing is invalid. Instead the per-axis centroid and
-        //    mean absolute deviation of the whole cloud must map through Q
-        //    (statistics are permutation-invariant; gross position corruption
-        //    breaks them, quantization noise does not).
-        const stats = (mesh) => {
-          const sum = [0, 0, 0]; let n = 0;
+        // 3. ORDER-INDEPENDENT position multiset check (B2 re-review MAJOR:
+        //    per-axis statistics discard cross-axis correlation — a coordinate
+        //    permutation like {000,110,011,101}->{010,100,001,111} preserves
+        //    centroid/MAD but changes the mesh). Meshopt reorders vertices, so
+        //    both clouds are mapped into the SAME space (old mapped through
+        //    Q^-1), sorted lexicographically as full 3D TUPLES, and compared
+        //    pairwise within quantization tolerance.
+        const cloud = (mesh, mapOld) => {
+          const out = [];
           const tmp = [0, 0, 0];
           for (const prim of mesh.listPrimitives()) {
             const pos = prim.getAttribute('POSITION');
-            for (let v = 0; v < pos.getCount(); v++) { pos.getElement(v, tmp); for (let k = 0; k < 3; k++) sum[k] += tmp[k]; n++; }
+            for (let v = 0; v < pos.getCount(); v++) {
+              pos.getElement(v, tmp);
+              out.push(mapOld
+                ? [(tmp[0] - t[0]) / s[0], (tmp[1] - t[1]) / s[1], (tmp[2] - t[2]) / s[2]]
+                : [tmp[0], tmp[1], tmp[2]]);
+            }
           }
-          const mean = sum.map((v) => v / n);
-          const mad = [0, 0, 0];
-          for (const prim of mesh.listPrimitives()) {
-            const pos = prim.getAttribute('POSITION');
-            for (let v = 0; v < pos.getCount(); v++) { pos.getElement(v, tmp); for (let k = 0; k < 3; k++) mad[k] += Math.abs(tmp[k] - mean[k]); }
-          }
-          return { mean, mad: mad.map((v) => v / n), n };
+          return out;
         };
-        const stOld = stats(sm), stNew = stats(om);
-        if (stOld.n !== stNew.n) { problem = `POSITION vertex count drifted (${stOld.n} vs ${stNew.n})`; break; }
-        const posTol = 8 * (sAvg / 32767) + 1e-6;
-        for (let k = 0; k < 3; k++) {
-          if (Math.abs(stOld.mean[k] - (s[k] * stNew.mean[k] + t[k])) > posTol) { problem = `axis ${k}: position centroid does not map through Q`; break; }
-          if (Math.abs(stOld.mad[k] - s[k] * stNew.mad[k]) > posTol) { problem = `axis ${k}: position spread does not map through Q`; break; }
+        const cOld = cloud(sm, true), cNew = cloud(om, false);
+        if (cOld.length !== cNew.length) { problem = `POSITION vertex count drifted (${cOld.length} vs ${cNew.length})`; break; }
+        // Both clouds live in the quantized/normalized space (int16 grid step
+        // 1/32767). Tolerant multiset match via spatial cell hash — immune to
+        // vertex reordering AND to sort-rank instability at near-equal coords.
+        const posTol = 8 / 32767 + 1e-6;
+        const cell = posTol * 2;
+        const keyOf = (x, y, z) => `${Math.floor(x / cell)},${Math.floor(y / cell)},${Math.floor(z / cell)}`;
+        const buckets = new Map();
+        for (const q of cNew) {
+          const k = keyOf(q[0], q[1], q[2]);
+          let b = buckets.get(k);
+          if (!b) { b = []; buckets.set(k, b); }
+          b.push(q);
+        }
+        let unmatched = 0;
+        outerMatch: for (const p of cOld) {
+          const cx = Math.floor(p[0] / cell), cy = Math.floor(p[1] / cell), cz = Math.floor(p[2] / cell);
+          for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+            const b = buckets.get(`${cx + dx},${cy + dy},${cz + dz}`);
+            if (!b) continue;
+            for (let bi = 0; bi < b.length; bi++) {
+              const q = b[bi];
+              if (Math.abs(p[0] - q[0]) <= posTol && Math.abs(p[1] - q[1]) <= posTol && Math.abs(p[2] - q[2]) <= posTol) {
+                b[bi] = b[b.length - 1]; b.pop(); // consume the match
+                continue outerMatch;
+              }
+            }
+          }
+          unmatched++;
+          if (unmatched > 0) { problem = `position multiset mismatch: source vertex has no counterpart within quantization tolerance`; break; }
         }
         if (problem) break;
       }
