@@ -69,7 +69,7 @@ export const MODEL_REGISTRY = {
   // pushed its mid-section behind the modal card.
   lobster:       { path: '/models/lobster-ktx.glb?v=2',                    scale: 10, label: 'Reef Lobster',    category: 'openclaw', avatar_type: 'glb' },
   sweet_crab:    { path: '/models/sweet_crab_sketchfabweekly-ktx.glb?v=2', scale: 10, label: 'Sweet Crab',      category: 'openclaw', avatar_type: 'glb' },
-  lobster_plush: { path: '/models/lobster_plush-ktx.glb?v=2',              scale: 10, label: 'Lobster Plush',   category: 'openclaw', avatar_type: 'glb' },
+  lobster_plush: { path: '/models/lobster_plush-nonorm-ktx.glb',              scale: 10, label: 'Lobster Plush',   category: 'openclaw', avatar_type: 'glb' },
   hermitcrab:    { path: '/models/hermitcrab-ktx.glb?v=2',                 scale: 10, label: 'Hermit Crab',     category: 'openclaw', avatar_type: 'glb' },
 
   // ── Other (sea creatures) ─────────────────────────────────────────────────

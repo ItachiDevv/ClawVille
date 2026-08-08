@@ -337,7 +337,7 @@ const SPECIES_MODEL: Record<string, { path: string; key: string }> = {
   lobster:       { path: '/models/lobster-ktx.glb?v=2',                    key: 'lobster' },
   crayfish:      { path: '/models/crayfish-ktx.glb?v=2',                   key: 'crayfish' },
   sweet_crab:    { path: '/models/sweet_crab_sketchfabweekly-ktx.glb?v=2', key: 'sweet_crab' },
-  lobster_plush: { path: '/models/lobster_plush-ktx.glb?v=2',              key: 'lobster_plush' },
+  lobster_plush: { path: '/models/lobster_plush-nonorm-ktx.glb',              key: 'lobster_plush' },
   hermitcrab:    { path: '/models/hermitcrab-ktx.glb?v=2',                 key: 'hermitcrab' },
   // chihiro / priestess / chibi_goku removed 2026-04-21 — GLBs deleted from disk.
   // Any legacy DB rows with these species values will fall back to DEFAULT_SPECIES (lobster).

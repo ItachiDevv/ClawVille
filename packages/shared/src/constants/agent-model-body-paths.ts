@@ -31,7 +31,7 @@ export const AGENT_MODEL_BODY_PATHS: Record<AgentModelKey, AgentModelBodyRef> = 
   // ── OpenClaw (crustaceans) — GLB bodies ──
   lobster: { path: '/models/lobster-ktx.glb', format: 'glb' },
   sweet_crab: { path: '/models/sweet_crab_sketchfabweekly-ktx.glb', format: 'glb' },
-  lobster_plush: { path: '/models/lobster_plush-ktx.glb', format: 'glb' },
+  lobster_plush: { path: '/models/lobster_plush-nonorm-ktx.glb', format: 'glb' },
   hermitcrab: { path: '/models/hermitcrab-ktx.glb', format: 'glb' },
 
   // ── Other (sea creatures) — GLB bodies ──

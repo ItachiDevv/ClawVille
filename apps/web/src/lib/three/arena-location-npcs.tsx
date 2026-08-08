@@ -165,7 +165,7 @@ const LOCATION_NPCS: Record<string, LocationNpcConfig> = {
   // lobster_plush had a broken bbox (world height 331 at CH=32). SkinnedMesh exclusion
   // should fix normalization; scaleOverride=55 is fallback assuming visual_native_H≈1.0 (= CHARACTER_HEIGHT/1.0).
   // Pass 2 (2026-04-16): reduced 90→55 to match CHARACTER_HEIGHT scale-down.
-  'deployment-ops': { name: 'Larry', model: '/models/lobster_plush-ktx.glb?v=2', color: 0xff2020, scaleOverride: 96 },
+  'deployment-ops': { name: 'Larry', model: '/models/lobster_plush-nonorm-ktx.glb', color: 0xff2020, scaleOverride: 96 },
 
   // Slot 6 — mcp-tool-use — patty-building (Krusty Krab — Mr. Krabs's restaurant)
   // mr-krabs.glb: non-skinned geometry is only tiny accessories → computed scale > CLAMP_MAX.

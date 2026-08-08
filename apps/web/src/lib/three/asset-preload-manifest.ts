@@ -176,7 +176,7 @@ export const LOCATION_NPC_GLBS: readonly string[] = [
   '/models/characters/karen-ktx.glb',      // companion at code-development
   '/models/characters/sandy-ktx.glb',
   '/models/characters/patrick-ktx.glb',
-  '/models/lobster_plush-ktx.glb?v=2',          // Larry (deployment-ops) — shared path w/ wandering
+  '/models/lobster_plush-nonorm-ktx.glb',          // Larry (deployment-ops) — shared path w/ wandering
 ] as const;
 
 // ---------------------------------------------------------------------------
