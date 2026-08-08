@@ -62,13 +62,22 @@ function vrmJson(opts) {
     accessors.push({ bufferView: bufferViews.length - 1, componentType, count, type, ...(normalized ? { normalized: true } : {}) });
     return accessors.length - 1;
   };
-  const posAcc = addAcc(POS, 5126, 3, 'VEC3');
-  accessors[posAcc].min = [0, 0, 0]; accessors[posAcc].max = [0, 0, 0];
+  const positions = opts.positions ?? [0, 0, 0, 0, 0, 0, 0, 0, 0];
+  const vcount = positions.length / 3;
+  const posAcc = addAcc(f32(positions), 5126, vcount, 'VEC3');
+  const mins = [Infinity, Infinity, Infinity], maxs = [-Infinity, -Infinity, -Infinity];
+  for (let v = 0; v < vcount; v++) for (let k = 0; k < 3; k++) {
+    mins[k] = Math.min(mins[k], positions[v * 3 + k]);
+    maxs[k] = Math.max(maxs[k], positions[v * 3 + k]);
+  }
+  accessors[posAcc].min = mins; accessors[posAcc].max = maxs;
   const attrs = { POSITION: posAcc };
   opts.sets.forEach((set, i) => {
     if (!set) return; // deliberate gap
-    attrs[`JOINTS_${i}`] = addAcc(u8(set[0]), 5121, 3, 'VEC4', i === 0 && opts.jointsNormalized);
-    attrs[`WEIGHTS_${i}`] = addAcc(f32(set[1]), 5126, 3, 'VEC4');
+    const jArr = set[0].length === vcount * 4 ? set[0] : Array.from({ length: vcount * 4 }, (_, k) => set[0][k % set[0].length] ?? 0);
+    const wArr = set[1].length === vcount * 4 ? set[1] : Array.from({ length: vcount * 4 }, (_, k) => (k % 4 === 0 ? 1 : 0));
+    attrs[`JOINTS_${i}`] = addAcc(u8(jArr), 5121, vcount, 'VEC4', i === 0 && opts.jointsNormalized);
+    attrs[`WEIGHTS_${i}`] = addAcc(f32(wArr), 5126, vcount, 'VEC4');
   });
   const ibmAcc = addAcc(opts.twoSkins ? IBM2 : IBM1, 5126, opts.twoSkins ? 2 : 1, 'MAT4');
   const ibmAccA = opts.twoSkins ? addAcc(IBM1, 5126, 1, 'MAT4') : ibmAcc;
@@ -120,9 +129,9 @@ function write(name, opts) {
   return f;
 }
 
-function run(name, a, b, expectExits, mustMention) {
+function run(name, a, b, expectExits, mustMention, flags = []) {
   const wanted = Array.isArray(expectExits) ? expectExits : [expectExits];
-  const r = spawnSync('bun', [TOOL, a, b], { encoding: 'utf8', timeout: 120_000 });
+  const r = spawnSync('bun', [TOOL, a, b, ...flags], { encoding: 'utf8', timeout: 120_000 });
   const out = r.stdout + r.stderr;
   const ok = wanted.includes(r.status) && (!mustMention || out.includes(mustMention));
   console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name} (exit ${r.status}, want ${wanted.join('|')}${mustMention ? `, mentions ${mustMention}` : ''})`);
@@ -176,6 +185,22 @@ const thumbOOR = write('thumb-oor', {
   mutate: (j) => { j.bufferViews[j.images[0].bufferView].byteOffset = 1_000_000; },
 });
 run('thumbnail-out-of-range', thumbOOR, thumbOOR, [2, 3]);
+
+// 9. Round-3 (quantize mode): AMBIGUOUS-NEIGHBOR REORDER must still match.
+//    Codex counterexample in int16 grid steps u=1/32767, tol ~8u: source xs
+//    {0.49u, 8.49u} reordered to {8u, 0}. Greedy first-candidate matching can
+//    bind 0.49u->8u and strand 8.49u; augmenting-path matching finds the
+//    valid bijection => validator must PASS (IBMs unchanged, Q=identity via
+//    shared anchors).
+{
+  const u = 1 / 32767;
+  const anchors = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  const srcPos = [0.49 * u, 0, 0, 8.49 * u, 0, 0, ...anchors];
+  const outPos = [8 * u, 0, 0, 0, 0, 0, ...anchors];
+  const ambSrc = write('amb-src', { sets: [[J0, W1]], thumb: THUMB_A, positions: srcPos });
+  const ambOut = write('amb-out', { sets: [[J0, W1]], thumb: THUMB_A, positions: outPos });
+  run('ambiguous-reorder-bijection', ambSrc, ambOut, 0, null, ['--expect-quantize']);
+}
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(failures ? `\nRESULT: FAIL (${failures})` : '\nRESULT: PASS');

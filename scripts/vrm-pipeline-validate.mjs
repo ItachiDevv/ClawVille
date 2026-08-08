@@ -202,8 +202,8 @@ if (sSkins.length === oSkins.length) {
         //    permutation like {000,110,011,101}->{010,100,001,111} preserves
         //    centroid/MAD but changes the mesh). Meshopt reorders vertices, so
         //    both clouds are mapped into the SAME space (old mapped through
-        //    Q^-1), sorted lexicographically as full 3D TUPLES, and compared
-        //    pairwise within quantization tolerance.
+        //    Q^-1) and a tolerance BIJECTION between them is established by
+        //    augmenting-path bipartite matching (see below).
         const cloud = (mesh, mapOld) => {
           const out = [];
           const tmp = [0, 0, 0];
@@ -221,34 +221,59 @@ if (sSkins.length === oSkins.length) {
         const cOld = cloud(sm, true), cNew = cloud(om, false);
         if (cOld.length !== cNew.length) { problem = `POSITION vertex count drifted (${cOld.length} vs ${cNew.length})`; break; }
         // Both clouds live in the quantized/normalized space (int16 grid step
-        // 1/32767). Tolerant multiset match via spatial cell hash — immune to
-        // vertex reordering AND to sort-rank instability at near-equal coords.
+        // 1/32767). Tolerant multiset match: candidate edges come from a
+        // spatial cell hash, and matching runs Kuhn's augmenting-path
+        // bipartite algorithm — greedy first-candidate consumption is ORDER-
+        // DEPENDENT (round-3 counterexample: src [0.49, 8.49] vs out [8, 0]
+        // at tol ~8 strands a valid bijection), so ambiguous local components
+        // are resolved by genuine matching. A DFS work cap bounds adversarial
+        // coincident clusters; exceeding it FAILS (conservative, never a
+        // false pass).
         const posTol = 8 / 32767 + 1e-6;
         const cell = posTol * 2;
-        const keyOf = (x, y, z) => `${Math.floor(x / cell)},${Math.floor(y / cell)},${Math.floor(z / cell)}`;
-        const buckets = new Map();
-        for (const q of cNew) {
-          const k = keyOf(q[0], q[1], q[2]);
+        const keyOf = (cx, cy, cz) => `${cx},${cy},${cz}`;
+        const buckets = new Map(); // cell -> array of NEW indices
+        for (let qi = 0; qi < cNew.length; qi++) {
+          const q = cNew[qi];
+          const k = keyOf(Math.floor(q[0] / cell), Math.floor(q[1] / cell), Math.floor(q[2] / cell));
           let b = buckets.get(k);
           if (!b) { b = []; buckets.set(k, b); }
-          b.push(q);
+          b.push(qi);
         }
-        let unmatched = 0;
-        outerMatch: for (const p of cOld) {
+        const candidatesOf = (p) => {
+          const out = [];
           const cx = Math.floor(p[0] / cell), cy = Math.floor(p[1] / cell), cz = Math.floor(p[2] / cell);
           for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
-            const b = buckets.get(`${cx + dx},${cy + dy},${cz + dz}`);
+            const b = buckets.get(keyOf(cx + dx, cy + dy, cz + dz));
             if (!b) continue;
-            for (let bi = 0; bi < b.length; bi++) {
-              const q = b[bi];
-              if (Math.abs(p[0] - q[0]) <= posTol && Math.abs(p[1] - q[1]) <= posTol && Math.abs(p[2] - q[2]) <= posTol) {
-                b[bi] = b[b.length - 1]; b.pop(); // consume the match
-                continue outerMatch;
-              }
+            for (const qi of b) {
+              const q = cNew[qi];
+              if (Math.abs(p[0] - q[0]) <= posTol && Math.abs(p[1] - q[1]) <= posTol && Math.abs(p[2] - q[2]) <= posTol) out.push(qi);
             }
           }
-          unmatched++;
-          if (unmatched > 0) { problem = `position multiset mismatch: source vertex has no counterpart within quantization tolerance`; break; }
+          return out;
+        };
+        const matchOfNew = new Int32Array(cNew.length).fill(-1); // new idx -> old idx
+        const DFS_CAP = 2_000_000;
+        let dfsWork = 0;
+        const tryMatch = (oi, cands, visited) => {
+          for (const qi of cands) {
+            if (visited.has(qi)) continue;
+            visited.add(qi);
+            if (++dfsWork > DFS_CAP) return 'cap';
+            if (matchOfNew[qi] === -1) { matchOfNew[qi] = oi; return true; }
+            const r = tryMatch(matchOfNew[qi], candCache[matchOfNew[qi]], visited);
+            if (r === 'cap') return 'cap';
+            if (r) { matchOfNew[qi] = oi; return true; }
+          }
+          return false;
+        };
+        const candCache = new Array(cOld.length);
+        for (let oi = 0; oi < cOld.length && !problem; oi++) {
+          candCache[oi] = candidatesOf(cOld[oi]);
+          const r = tryMatch(oi, candCache[oi], new Set());
+          if (r === 'cap') { problem = 'position matching exceeded work cap (pathological coincident cluster) — refusing'; break; }
+          if (!r) { problem = 'position multiset mismatch: no bijection within quantization tolerance (augmenting-path matching)'; break; }
         }
         if (problem) break;
       }
