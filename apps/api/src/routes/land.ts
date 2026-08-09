@@ -313,8 +313,11 @@ import {
   KIT_CATALOG,
   KIT_GRID_SIZE,
   KIT_LEVEL_RULES,
+  KIT_PAYMENT_RAILS,
   KIT_PIECE_FEE_CT_BY_STRUCTURE,
+  isKitPaymentRailAllowed,
   kitPieceFeeCt,
+  kitPieceFeeMaterials,
   type LandStructureType,
   // Land gamification P3 — the SHARED footprint/rotation/stack legality
   // predicate. It replaces anchor-cell-only validation (defect D-1): pieces
@@ -325,6 +328,7 @@ import {
   type PlacementRefusalCode,
   type PlacedFootprint,
   type StoredPlacement,
+  type KitPaymentRail,
   type KitPieceKey,
   type KitPieceSize,
   type LandTier,
@@ -345,6 +349,10 @@ import {
   creditClawTokens,
   InsufficientTokensError,
 } from '../services/claw-token-ledger';
+import {
+  debitMaterials,
+  InsufficientMaterialsError,
+} from '../services/material-ledger';
 import { type CovenantActorKind } from '../services/covenant-action-recorder';
 import { getHouseTreasuryAvatarId } from '../services/house-treasury-seeder';
 import {
@@ -631,6 +639,12 @@ export const createKitPieceBodySchema = z
     rotationStep: z.number().int(),
     stackLevel: z.number().int(),
     idempotencyKey: z.string().min(8).max(64),
+    /**
+     * P5b. Defaults to `vclaw` so every pre-existing client keeps working
+     * unchanged — the material rail is opt-in, never a silent switch of which
+     * currency a player's yard costs.
+     */
+    paymentRail: z.enum(KIT_PAYMENT_RAILS).default('vclaw'),
   })
   .strict();
 
@@ -1228,6 +1242,26 @@ function pieceFromPlacementAudit(metadata: unknown): LandStructurePieceDTO | nul
   const parsed = kitPieceSnapshotSchema.safeParse(piece);
   if (!parsed.success || !isKitPieceKey(parsed.data.pieceKey)) return null;
   return { ...parsed.data, pieceKey: parsed.data.pieceKey };
+}
+
+/**
+ * The rail a stored placement was paid on.
+ *
+ * Audit rows written before P5b carry no `paymentRail`, and every one of them
+ * was a vCLAW placement — that was the only rail that existed. Defaulting to
+ * `vclaw` is therefore a statement of fact about those rows, not a guess.
+ */
+export function railFromPlacementAudit(metadata: unknown): KitPaymentRail {
+  if (!metadata || typeof metadata !== 'object') return 'vclaw';
+  const rail = (metadata as { paymentRail?: unknown }).paymentRail;
+  return rail === 'materials' ? 'materials' : 'vclaw';
+}
+
+/** Materials charged by a stored placement. Zero for every vCLAW row. */
+export function materialsCostFromPlacementAudit(metadata: unknown): number {
+  if (!metadata || typeof metadata !== 'object') return 0;
+  const cost = (metadata as { costMaterials?: unknown }).costMaterials;
+  return typeof cost === 'number' && Number.isInteger(cost) && cost >= 0 ? cost : 0;
 }
 
 export function matchesKitPlacementReplay(
@@ -3088,9 +3122,15 @@ landRoutes.post(
     }
     const body = bodyParsed.data;
 
-    type PlacementResult =
-      | { kind: 'placed'; piece: LandStructurePieceDTO; costCt: number }
-      | { kind: 'replay'; piece: LandStructurePieceDTO; costCt: number };
+    type PlacementResult = {
+      kind: 'placed' | 'replay';
+      piece: LandStructurePieceDTO;
+      /** vCLAW charged. Zero on the material rail. */
+      costCt: number;
+      /** Materials charged. Zero on the vCLAW rail. */
+      costMaterials: number;
+      paymentRail: KitPaymentRail;
+    };
     let result: PlacementResult;
 
     try {
@@ -3149,10 +3189,24 @@ landRoutes.post(
         if (prior) {
           const piece = pieceFromPlacementAudit(prior.metadata);
           if (!piece) throw new HTTPException(409, { message: 'idempotency_record_corrupt' });
-          if (!matchesKitPlacementReplay(piece, { parcelId, ...body })) {
+          const priorRail = railFromPlacementAudit(prior.metadata);
+          // The RAIL is part of the request identity. Replaying a key that
+          // bought a piece with materials while now asking to pay vCLAW is a
+          // different request, and answering it with the stored receipt would
+          // tell the client it spent a currency it did not.
+          if (
+            !matchesKitPlacementReplay(piece, { parcelId, ...body }) ||
+            priorRail !== body.paymentRail
+          ) {
             throw new HTTPException(409, { message: 'idempotency_key_conflict' });
           }
-          return { kind: 'replay', piece, costCt: Number(prior.amount_ct) };
+          return {
+            kind: 'replay',
+            piece,
+            costCt: Number(prior.amount_ct),
+            costMaterials: materialsCostFromPlacementAudit(prior.metadata),
+            paymentRail: priorRail,
+          };
         }
 
         // Cheap non-geometric pre-checks ONLY (unknown key, impossible level).
@@ -3201,48 +3255,82 @@ landRoutes.post(
         const pieceKey = body.pieceKey as KitPieceKey;
         const size: KitPieceSize = KIT_CATALOG[pieceKey].size;
         const structureType = structure!.structure_type;
-        const feeCt = kitPieceFeeCt(structureType, size);
-        const treasuryId = await getHouseTreasuryAvatarId();
-        if (!treasuryId) {
-          // D5 is a transfer, never a burn: deliberately unlike the upgrade/cove
-          // burn fallback, this pre-settlement atomic route rolls back/fails closed.
-          throw new HTTPException(503, { message: 'house_treasury_unavailable' });
+        const paymentRail = body.paymentRail;
+
+        // THE RAIL GATE. `structureType` comes off the FOR UPDATE-locked row,
+        // never from the request, so a client cannot talk its way into paying
+        // for a shop yard with a non-cashable currency (see the reasoning on
+        // `KIT_PIECE_FEE_MATERIALS`).
+        if (!isKitPaymentRailAllowed(paymentRail, structureType)) {
+          throw new HTTPException(400, { message: 'payment_rail_not_allowed' });
         }
-        const debit = await debitClawTokens(
-          {
-            avatarId,
-            amount: feeCt,
-            reason: 'land_kit_piece_fee',
-            source: 'api',
-            metadata: {
-              parcelId,
-              pieceKey,
-              size,
-              structureType,
-              idempotencyKey: body.idempotencyKey,
+
+        let feeCt = 0;
+        let feeMaterials = 0;
+        let debitLedgerId: string | null = null;
+        let creditLedgerId: string | null = null;
+
+        if (paymentRail === 'materials') {
+          feeMaterials = kitPieceFeeMaterials(size);
+          // Materials are a SINK, not a transfer: there is no counterparty and
+          // no treasury leg, because there is nothing on the other side to pay.
+          // The debit is a conditional decrement, so a spend at balance − 1
+          // writes nothing and this transaction rolls the placement back whole.
+          await debitMaterials(
+            {
+              avatarId,
+              amount: feeMaterials,
+              reason: 'land_kit_piece_fee',
+              source: 'build',
             },
-            actorKind: toActorKind(identity.kind),
-          },
-          tx,
-        );
-        const credit = await creditClawTokens(
-          {
-            avatarId: treasuryId,
-            amount: feeCt,
-            reason: 'house_fee_land_kit_piece',
-            source: 'system',
-            metadata: {
-              parcelId,
-              pieceKey,
-              size,
-              structureType,
-              ownerAvatarId: avatarId,
-              idempotencyKey: body.idempotencyKey,
+            tx,
+          );
+        } else {
+          feeCt = kitPieceFeeCt(structureType, size);
+          const treasuryId = await getHouseTreasuryAvatarId();
+          if (!treasuryId) {
+            // D5 is a transfer, never a burn: deliberately unlike the upgrade/cove
+            // burn fallback, this pre-settlement atomic route rolls back/fails closed.
+            throw new HTTPException(503, { message: 'house_treasury_unavailable' });
+          }
+          const debit = await debitClawTokens(
+            {
+              avatarId,
+              amount: feeCt,
+              reason: 'land_kit_piece_fee',
+              source: 'api',
+              metadata: {
+                parcelId,
+                pieceKey,
+                size,
+                structureType,
+                idempotencyKey: body.idempotencyKey,
+              },
+              actorKind: toActorKind(identity.kind),
             },
-            actorKind: 'system',
-          },
-          tx,
-        );
+            tx,
+          );
+          const credit = await creditClawTokens(
+            {
+              avatarId: treasuryId,
+              amount: feeCt,
+              reason: 'house_fee_land_kit_piece',
+              source: 'system',
+              metadata: {
+                parcelId,
+                pieceKey,
+                size,
+                structureType,
+                ownerAvatarId: avatarId,
+                idempotencyKey: body.idempotencyKey,
+              },
+              actorKind: 'system',
+            },
+            tx,
+          );
+          debitLedgerId = debit.ledgerId;
+          creditLedgerId = credit.ledgerId;
+        }
 
         const inserted = await tx
           .insert(landStructurePieces)
@@ -3270,15 +3358,27 @@ landRoutes.post(
           idempotencyKey: body.idempotencyKey,
           size,
           piece,
+          // P5b. `amount_ct` stays the vCLAW column and is 0 on the material
+          // rail, so no CT report double-counts a material placement. The rail
+          // and the material cost live here, which is also what the replay path
+          // reads back.
+          paymentRail,
+          costMaterials: feeMaterials,
         });
         await tx.execute(
           sql`INSERT INTO land_transactions
                 (kind, parcel_id, structure_id, avatar_id, amount_ct,
                  debit_ledger_tx_id, credit_ledger_tx_id, metadata)
               VALUES ('structure_placement', ${parcelId}, ${structure!.id}, ${avatarId}, ${feeCt},
-                      ${debit.ledgerId}, ${credit.ledgerId}, ${auditMetadata}::jsonb)`,
+                      ${debitLedgerId}, ${creditLedgerId}, ${auditMetadata}::jsonb)`,
         );
-        return { kind: 'placed', piece, costCt: feeCt };
+        return {
+          kind: 'placed',
+          piece,
+          costCt: feeCt,
+          costMaterials: feeMaterials,
+          paymentRail,
+        };
       });
     } catch (err) {
       const pgError = err as {
@@ -3296,17 +3396,28 @@ landRoutes.post(
       if (err instanceof InsufficientTokensError) {
         return c.json({ error: 'insufficient_clawtokens' }, 400);
       }
+      if (err instanceof InsufficientMaterialsError) {
+        return c.json({ error: 'insufficient_materials' }, 400);
+      }
       if (err instanceof HTTPException) {
         return c.json({ error: err.message }, err.status as 400 | 403 | 404 | 409 | 503);
       }
       throw err;
     }
 
+    // `costCt` stays in the response on BOTH rails so no existing reader
+    // breaks; it is simply 0 when materials paid. `paymentRail` is what a
+    // client should branch on.
+    const costs = {
+      costCt: result.costCt,
+      costMaterials: result.costMaterials,
+      paymentRail: result.paymentRail,
+    };
     if (result.kind === 'replay') {
-      return c.json({ piece: result.piece, costCt: result.costCt, idempotencyReplay: true });
+      return c.json({ piece: result.piece, ...costs, idempotencyReplay: true });
     }
     bustPublicPiecesCache();
-    return c.json({ piece: result.piece, costCt: result.costCt });
+    return c.json({ piece: result.piece, ...costs });
   },
 );
 
