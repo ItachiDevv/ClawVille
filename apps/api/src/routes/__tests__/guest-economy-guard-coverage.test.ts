@@ -143,9 +143,32 @@ const MANIFEST: Entry[] = [
     ],
   },
   {
+    // The tutorial ladder joined this list in P6 (2026-08-09). It pays real
+    // vCLAW and real materials, and was cookie-gated with a hand-rolled guest
+    // check — the last live economy surface an agent could not reach as itself.
     file: 'quests.ts',
     guard: 'requireNonGuestIdentity',
-    routes: [p('post', '/:id/accept'), p('post', '/:id/start'), p('post', '/:id/submit')],
+    routes: [
+      p('post', '/:id/accept'),
+      p('post', '/:id/start'),
+      p('post', '/:id/submit'),
+      p('post', '/tutorial/:id/claim'),
+      p('get', '/tutorial/claims'),
+    ],
+  },
+  {
+    // Ledger-capability lock on the tutorial ladder: a stale, restored, or
+    // otherwise unproven agent bearer must fail closed before any reward
+    // settles, exactly as on land and cove.
+    file: 'quests.ts',
+    guard: 'requireLedgerCapableIdentity',
+    routes: [
+      p('post', '/:id/accept'),
+      p('post', '/:id/start'),
+      p('post', '/:id/submit'),
+      p('post', '/tutorial/:id/claim'),
+      p('get', '/tutorial/claims'),
+    ],
   },
   {
     file: 'cove-cash-poker.ts',

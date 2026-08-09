@@ -541,7 +541,7 @@ describe('in-world executor covenant hooks', () => {
     expect(responseAt).toBeGreaterThan(bindAt);
   });
 
-  it('dispatches enter_kelp_forest through the public eleven-verb whitelist', () => {
+  it('dispatches enter_kelp_forest through the public twelve-verb whitelist', () => {
     const records: CovenantActionInput[] = [];
     npcSimulation.covenantRecord = async (input) => {
       records.push(input);

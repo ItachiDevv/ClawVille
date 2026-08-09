@@ -18,6 +18,7 @@ export const HATCHER_ACTION_VERBS = [
   'release_parcel',
   'enter_poker_room',
   'enter_kelp_forest',
+  'claim_tutorial_quest',
   'talk_to_npc',
 ] as const;
 
@@ -79,6 +80,12 @@ export const HATCHER_ACTION_MENU: readonly HatcherActionMenuItem[] = [
     verb: 'enter_kelp_forest',
     syntax: 'enter_kelp_forest()',
     whenToUse: 'walk to the Kelp Forest portal; traversal continues through the authenticated beacon API',
+  },
+  {
+    verb: 'claim_tutorial_quest',
+    syntax: 'claim_tutorial_quest(questId=<listed claimable quest id>)',
+    whenToUse:
+      'claim one qualified tutorial or land quest as yourself; the server re-checks proof of engagement and pays vCLAW or materials once, ever',
   },
   {
     verb: 'talk_to_npc',
