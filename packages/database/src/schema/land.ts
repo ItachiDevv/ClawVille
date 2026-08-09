@@ -628,6 +628,23 @@ export const serviceListings = pgTable(
      * treasury sink — a one-line route change, not a migration.
      */
     platformFeeBps: integer('platform_fee_bps').notNull().default(0),
+    /**
+     * The owner's standing INTENT to hold a premium featured slot. "Featured
+     * right now" is `featured AND featuredPaidThrough > now()` — the flag alone
+     * never grants placement, so a lapsed payment drops the feature without
+     * discarding the owner's choice.
+     */
+    featured: boolean('featured').notNull().default(false),
+    /** Weekly slot-rent cursor. Past-due + unpaid ⇒ the listing suspends. */
+    slotPaidThrough: timestamp('slot_paid_through', { withTimezone: true }),
+    /** Weekly featured-rent cursor. Independent of the slot cursor. */
+    featuredPaidThrough: timestamp('featured_paid_through', { withTimezone: true }),
+    /**
+     * Set when a slot-rent charge failed. The row, title, and price are kept
+     * verbatim — suspension is not deletion — and the next successful sweep
+     * clears it.
+     */
+    slotSuspendedAt: timestamp('slot_suspended_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },

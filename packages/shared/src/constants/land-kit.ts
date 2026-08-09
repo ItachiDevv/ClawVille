@@ -5,6 +5,10 @@
  * a stable `piece_key` to authored assets and fixed render chunks.
  */
 
+// Type-only import: erased at compile time, so this introduces no runtime
+// dependency (and no cycle) between the kit catalog and the economy constants.
+import type { LandStructureType } from './land-economy';
+
 export const KIT_PIECE_SIZES = ['small', 'large'] as const;
 export type KitPieceSize = (typeof KIT_PIECE_SIZES)[number];
 
@@ -73,11 +77,49 @@ export const KIT_LEVEL_RULES: Readonly<Record<KitStructureLevel, KitLevelRule>> 
   5: { smallPieceCap: 28, largePieceCap: 2, maxStackHeight: 3, rotationDegrees: 45 },
 };
 
-/** D5 placement fees, in whole vCLAW/CT units. Moving and removal are free. */
-export const KIT_PIECE_FEE_CT: Readonly<Record<KitPieceSize, number>> = {
-  small: 15,
-  large: 60,
+/**
+ * D5 placement fees, in whole vCLAW/CT units, keyed by the STRUCTURE TYPE whose
+ * yard is being decorated and then by piece size. Moving and removal are free.
+ *
+ * Repriced 2026-08-09 (founder ruling Q3). Decorating a HOME is the flagship
+ * player activity and was priced as an endgame: the entire onboarding grant
+ * covered 88% of ONE finished starter yard. Homes now cost a third of the old
+ * fee, which is a giveback the SHOP side funds through its recurring slot
+ * rentals — shop yards are a storefront investment and keep the original
+ * prices, unchanged.
+ *
+ * The server reads the structure's type from the locked `land_structures` row;
+ * the fee is never derived from the request body.
+ */
+export const KIT_PIECE_FEE_CT_BY_STRUCTURE: Readonly<
+  Record<LandStructureType, Readonly<Record<KitPieceSize, number>>>
+> = {
+  home: { small: 5, large: 20 },
+  shop: { small: 15, large: 60 },
 };
+
+/** The authoritative fee lookup. Prefer this over indexing the table directly. */
+export function kitPieceFeeCt(
+  structureType: LandStructureType,
+  size: KitPieceSize,
+): number {
+  return KIT_PIECE_FEE_CT_BY_STRUCTURE[structureType][size];
+}
+
+/**
+ * @deprecated Use `kitPieceFeeCt(structureType, size)`.
+ *
+ * Retained as the SHOP row so the pre-reprice shape and numbers still resolve
+ * for callers that have no structure type in scope. There is exactly one such
+ * caller left — `apps/web/src/components/game/land/yard-editor-overlay.tsx`,
+ * which renders the price chip in the yard editor and is owned by the editor
+ * lane. Until it migrates it will quote SHOP prices on a HOME yard. The server
+ * is authoritative, so this cannot be exploited (a home is always charged the
+ * cheaper home fee); it is a display drift, and closing it is a tracked
+ * hand-off to that lane, not a silent deferral.
+ */
+export const KIT_PIECE_FEE_CT: Readonly<Record<KitPieceSize, number>> =
+  KIT_PIECE_FEE_CT_BY_STRUCTURE.shop;
 
 export const KIT_GRID_SIZE = 16;
 export const KIT_SHELL_RESERVED_MIN = 3;

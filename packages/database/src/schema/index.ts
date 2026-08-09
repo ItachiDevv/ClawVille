@@ -118,6 +118,10 @@ export * from './poker-cash';
 // PURELY ADDITIVE — new tables only, db:push is a clean CREATE. Ownership binds
 // to avatars.id (the human+agent parity seam). See `.claude/plans/land-economy/`.
 export * from './land';
+// Land gamification P4b (2026-08-09) — the material ledger: one pooled,
+// non-cashable build balance per avatar plus the salvage claim receipt. NEVER a
+// ClawToken table; materials have no exit rail. See `land-materials.ts`.
+export * from './land-materials';
 // SAP Option C — on-chain USDC escrow gate settlement ledger (2026-06-22).
 // sap_escrow_settlements / sap_escrow_approvals: the backend at-most-once-settle
 // + depositor-approval guard for the verify-before-release USDC rail. PURELY

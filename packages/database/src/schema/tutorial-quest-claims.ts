@@ -22,7 +22,9 @@ import {
   integer,
   timestamp,
   uniqueIndex,
+  check,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { users } from './users';
 import { avatars } from './avatars';
 
@@ -30,24 +32,48 @@ export const tutorialQuestClaims = pgTable(
   'tutorial_quest_claims',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    userId: uuid('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
+    /**
+     * Nullable so the AVATAR is the authority (migration 0054), not so unbound
+     * actors can claim — every admitted claimer still resolves through
+     * `requireAuthOrAgentSession` to a bound avatar whose agent has a
+     * NOT NULL `platform_agents.user_id`. In practice this stays populated.
+     */
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
     avatarId: uuid('avatar_id')
       .notNull()
       .references(() => avatars.id, { onDelete: 'cascade' }),
     questId: text('quest_id').notNull(),
+    /** vCLAW rail. Exactly one of this and `materialsCredited` is > 0. */
     tokensCredited: integer('tokens_credited').notNull(),
-    /** Echoed from the source-of-truth claw_token_transactions.id for cross-ref. */
+    /** Materials rail (land quests). Exactly one rail is > 0 — DB CHECK. */
+    materialsCredited: integer('materials_credited').notNull().default(0),
+    /**
+     * Echoed from the source-of-truth claw_token_transactions.id for cross-ref.
+     * Always null on the materials rail: materials have no transaction ledger,
+     * this row IS their audit record.
+     */
     ledgerId: uuid('ledger_id'),
     claimedAt: timestamp('claimed_at', { withTimezone: true })
       .defaultNow()
       .notNull(),
   },
   (t) => ({
-    uniqUserQuest: uniqueIndex('uniq_tutorial_quest_claim_user_quest').on(
-      t.userId,
+    /**
+     * THE authoritative idempotency barrier. `avatars.userId` is UNIQUE, so
+     * this is strictly equivalent to the old (user_id, quest_id) index for
+     * human claims while also binding an agent claiming as its own avatar.
+     */
+    uniqAvatarQuest: uniqueIndex('uniq_tutorial_quest_claim_avatar_quest').on(
+      t.avatarId,
       t.questId,
+    ),
+    rewardNonNeg: check(
+      'tutorial_claim_reward_nonneg',
+      sql`${t.tokensCredited} >= 0 AND ${t.materialsCredited} >= 0`,
+    ),
+    singleRail: check(
+      'tutorial_claim_single_rail',
+      sql`(${t.tokensCredited} > 0) <> (${t.materialsCredited} > 0)`,
     ),
   }),
 );

@@ -7,6 +7,7 @@ import {
   AUTONOMY_ENTERABLE_PLACES,
   type AutonomyEnterablePlace,
   HATCHER_ACTION_VERBS,
+  isLiveTutorialQuest,
   type HatcherActionVerb,
   LAND_PARCELS,
   COVE_SLOTS_BET_STEP,
@@ -203,6 +204,7 @@ interface AgentActionAttribution {
 
 const AUTONOMOUS_COVE_PLAY_INTERVAL_MS = 30_000;
 const AUTONOMOUS_LAND_ACTION_INTERVAL_MS = 60_000;
+const AUTONOMOUS_QUEST_CLAIM_INTERVAL_MS = 60_000;
 
 type AutonomousLandOperation =
   | { verb: 'claim_parcel'; parcelCode: string; door: 'hold' | 'rent'; weeks?: number }
@@ -643,6 +645,48 @@ class NpcSimulation {
       resolveAgentSession,
     );
   };
+  /**
+   * Test seam; FAUCET actor resolution for quest claims.
+   *
+   * Deliberately NOT `autonomousCoveAgentResolve`. That resolver checks
+   * `openclaw_bots.is_house` FIRST and, on a hit, returns a ledger-capable
+   * binding while ignoring the session entirely — a carve-out ratified for the
+   * cove, where the house is a wager counterparty. A quest is a pure faucet, so
+   * this path goes straight to the connected-session resolver (which every
+   * connected and user-hosted agent has, and house bots deliberately do not)
+   * and then refuses a house agentId explicitly. Two independent barriers,
+   * because one of them being load-bearing by accident is how B1 happened.
+   */
+  autonomousQuestAgentResolve: (
+    sessionId: string,
+    expectedAgentId: string,
+  ) => Promise<{
+    userId: string | null;
+    avatarId: string | null;
+    agentId: string;
+    ledgerCapable: boolean;
+  } | null> = async (sessionId, expectedAgentId) => {
+    const { isHouseAgentId } = await import('./autonomous-cove-agent-binding');
+    if (await isHouseAgentId(expectedAgentId)) return null;
+    const { resolveAgentSession } = await import('../middleware/require-auth-or-agent');
+    return resolveAgentSession(sessionId);
+  };
+
+  /**
+   * Test seam; production dispatches into the SAME shared quest-settlement
+   * service the REST route uses, so the human and hosted-agent claim paths are
+   * one implementation rather than two.
+   */
+  autonomousQuestClaimSettle: (input: {
+    actor: { kind: 'agent'; userId: string; avatarId: string };
+    questId: string;
+  }) => Promise<{ kind: string; reward?: { kind: string; amount: number } }> = async (
+    input,
+  ) => {
+    const { settleTutorialQuestClaim } = await import('./tutorial-quest-settlement');
+    return settleTutorialQuestClaim(input);
+  };
+
   /** Test seam; production dispatches exclusively into the shared tenure service. */
   autonomousLandSettle: (input: {
     operation: AutonomousLandOperation;
@@ -748,6 +792,7 @@ class NpcSimulation {
   /** Elapsed-time limiter reservation; set before async settle to close tag races. */
   private autonomousCovePlayLastAdmittedAt = new Map<string, number>();
   private autonomousLandActionLastAdmittedAt = new Map<string, number>();
+  private autonomousQuestClaimLastAdmittedAt = new Map<string, number>();
   private missingActionAttributionWarned: Set<string> = new Set();
   // Magic-link onboarding D3 (2026-07-02): direct npcId → agentId for AVATAR-mode
   // (`ocb-`) bodies, written at registerAgentBot and cleared with the ownership-
@@ -2239,6 +2284,122 @@ class NpcSimulation {
     }
   }
 
+  /**
+   * Claim ONE tutorial or land quest as the bound avatar (P6).
+   *
+   * The guard ladder is the land/cove one: re-resolve the live session, require
+   * ledger capability and a bound ACTIVE avatar, and assert the captured
+   * binding still holds before any money moves. An unbound or non-ledger agent
+   * is DROPPED — never demoted to a guest claim.
+   *
+   * Unlike the land verbs this needs no bucketed idempotency key: the unique
+   * index on `(avatar_id, quest_id)` makes a claim once-ever by construction,
+   * so the in-process reservation below only damps a burst.
+   */
+  private async settleAutonomousQuestClaim(
+    npcId: string,
+    attribution: AgentActionAttribution,
+    questId: string,
+  ): Promise<void> {
+    const resolved = await this.autonomousQuestAgentResolve(
+      attribution.sessionId,
+      attribution.agentId,
+    );
+    if (!resolved) {
+      console.warn(
+        '[Hatcher] claim_tutorial_quest dropped — no live connected session, or a house actor (house fleets never claim faucets)',
+      );
+      return;
+    }
+    if (!resolved.ledgerCapable) {
+      console.warn('[Hatcher] claim_tutorial_quest dropped — agent session is not ledger-authorized');
+      return;
+    }
+    if (!resolved.avatarId || !resolved.userId) {
+      console.warn('[Hatcher] claim_tutorial_quest dropped — agent has no bound avatar');
+      return;
+    }
+    if (resolved.avatarId !== attribution.avatarId || resolved.agentId !== attribution.agentId) {
+      console.warn('[Hatcher] claim_tutorial_quest dropped — live agent/avatar binding changed');
+      return;
+    }
+
+    const admittedAt = Date.now();
+    if (this.autonomousQuestClaimLastAdmittedAt.size > 5_000) {
+      for (const [key, lastAt] of this.autonomousQuestClaimLastAdmittedAt) {
+        if (admittedAt - lastAt >= AUTONOMOUS_QUEST_CLAIM_INTERVAL_MS) {
+          this.autonomousQuestClaimLastAdmittedAt.delete(key);
+        }
+      }
+    }
+    const reservationKey = `${resolved.avatarId}:claim_tutorial_quest:${questId}`;
+    const prior = this.autonomousQuestClaimLastAdmittedAt.get(reservationKey);
+    if (prior !== undefined && admittedAt - prior < AUTONOMOUS_QUEST_CLAIM_INTERVAL_MS) {
+      console.warn('[Hatcher] claim_tutorial_quest dropped — duplicate action reserved for 60 seconds');
+      return;
+    }
+    // Reserve synchronously, before the settlement await.
+    this.autonomousQuestClaimLastAdmittedAt.set(reservationKey, admittedAt);
+
+    try {
+      const result = await this.autonomousQuestClaimSettle({
+        actor: {
+          kind: 'agent',
+          userId: resolved.userId,
+          avatarId: resolved.avatarId,
+        },
+        questId,
+      });
+      if (result.kind !== 'settled') {
+        console.warn(`[Hatcher] claim_tutorial_quest "${questId}" not settled — ${result.kind}`);
+        return;
+      }
+      // Telemetry parity with the REST path. A hosted action has NO request
+      // context, so `logEventFromContext` is unavailable and the anti-farm
+      // fp/ip tags are explicitly NULL here — documented, not hidden. Without
+      // this a hosted claim wave is invisible to /dash and to any future
+      // per-subject cap. Post-settlement and best-effort: a dropped event never
+      // un-claims a settled quest.
+      void (async () => {
+        try {
+          const { logEvent } = await import('./event-logger');
+          await logEvent({
+            eventType: 'tutorial_quest.claimed',
+            userId: resolved.userId,
+            avatarId: resolved.avatarId,
+            agentId: resolved.agentId,
+            // EXPLICITLY null: a hosted action has no browser request, so there
+            // is no fingerprint or IP to salt. Documented, not hidden — these
+            // rows are inherently exempt from anti-farm caps, exactly like the
+            // other system/cron writers.
+            fpHash: null,
+            ipPrefixHash: null,
+            payload: {
+              questId,
+              rail: result.reward?.kind ?? null,
+              amount: result.reward?.amount ?? null,
+              subjectKind: 'agent',
+              surface: 'hosted_action',
+            },
+          });
+        } catch (err) {
+          console.warn(
+            `[Hatcher] claim_tutorial_quest telemetry failed — ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      })();
+
+      const body = this.npcs.get(npcId);
+      if (body) {
+        this.setNpcActivity(npcId, 'trading', '🎯');
+        body.intentDescription = `claim quest ${questId}`;
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      console.warn(`[Hatcher] claim_tutorial_quest dropped — ${reason}`);
+    }
+  }
+
   private async settleAutonomousLandAction(
     npcId: string,
     attribution: AgentActionAttribution,
@@ -2580,6 +2741,27 @@ class NpcSimulation {
           verb: 'release_parcel',
           parcelCode: params.parcelCode,
         });
+        return;
+      }
+      case 'claim_tutorial_quest': {
+        if (Object.keys(params).some((key) => key !== 'questId')) {
+          console.warn('[Hatcher] claim_tutorial_quest dropped — unknown parameter');
+          return;
+        }
+        // The shared LIVE-quest list is the whitelist: a pending or unknown id
+        // never reaches settlement. There is no proximity requirement — quests
+        // are claimed from a progress ladder, not a place.
+        if (!isLiveTutorialQuest(params.questId ?? '')) {
+          console.warn(
+            `[Hatcher] claim_tutorial_quest dropped — unknown or not-live questId "${params.questId}"`,
+          );
+          return;
+        }
+        if (!attribution) {
+          console.warn('[Hatcher] claim_tutorial_quest dropped — no bound agent/avatar attribution');
+          return;
+        }
+        void this.settleAutonomousQuestClaim(npcId, attribution, params.questId);
         return;
       }
       case 'enter_poker_room': {

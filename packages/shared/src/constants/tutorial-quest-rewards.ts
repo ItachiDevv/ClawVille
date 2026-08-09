@@ -18,6 +18,17 @@
 
 export type TutorialQuestStatus = 'live' | 'pending';
 
+/** Which currency a quest pays. Absent means the legacy vCLAW rail. */
+export type TutorialQuestRail = 'vclaw' | 'materials';
+
+/**
+ * A settled reward. The claim service dispatches on `kind`, and the claim row
+ * carries exactly one non-zero rail (DB CHECK `tutorial_claim_single_rail`).
+ */
+export type TutorialQuestReward =
+  | { readonly kind: 'vclaw'; readonly amount: number }
+  | { readonly kind: 'materials'; readonly amount: number };
+
 export interface TutorialQuestEntry {
   readonly id: string;
   readonly title: string;
@@ -26,6 +37,12 @@ export interface TutorialQuestEntry {
   readonly reward: number;
   readonly status: TutorialQuestStatus;
   readonly tier: number;
+  /**
+   * Omitted on the 30 legacy quests, which all pay vCLAW. The land quests set
+   * `'materials'`: land mints NO new vCLAW (builder-economics 0) and land
+   * quests award NO leaderboard points (founder ruling Q11).
+   */
+  readonly rail?: TutorialQuestRail;
 }
 
 export const TUTORIAL_QUESTS = [
@@ -76,6 +93,15 @@ export const TUTORIAL_QUESTS = [
   { id: 'full-house',      tier: 9, status: 'live',    icon: '🏘️', title: 'Full House',         reward: 200, description: 'All 10 buildings visited + all 10 teachers chatted + 5 books bought + read' },
   { id: 'elite-trainer',   tier: 9, status: 'live',    icon: '🥋', title: 'Elite Trainer',      reward: 300, description: 'Bot connected + 3 match wins + 10 knowledge topics learned + top-100 reached' },
   { id: 'brand-ambassador', tier: 9, status: 'pending', icon: '🌟', title: 'Brand Ambassador', reward: 500, description: 'Top-10 leaderboard + 2+ bots connected + Milady install verified + scape portal crossed' },
+
+  // -- TIER 10 -- HOMESTEAD (land) ---------------------------------------
+  // Materials only, no leaderboard points (founder ruling Q11). Their
+  // predicates read canonical land STATE (do you own a parcel right now?),
+  // never an event count, so they cannot be farmed by repeating an action.
+  { id: 'homesteader', tier: 10, status: 'live', rail: 'materials', icon: '\u{1F3DD}', title: 'Homesteader', reward: 15, description: 'Hold or rent your first parcel' },
+  { id: 'first-nail',  tier: 10, status: 'live', rail: 'materials', icon: '\u{1F528}', title: 'First Nail',  reward: 20, description: 'Place your first home or shop' },
+  { id: 'yard-work',   tier: 10, status: 'live', rail: 'materials', icon: '\u{1FAB4}', title: 'Yard Work',   reward: 25, description: 'Have 6 kit pieces placed in your yard at once' },
+  { id: 'curb-appeal', tier: 10, status: 'live', rail: 'materials', icon: '\u{2728}',  title: 'Curb Appeal', reward: 27, description: 'Upgrade a structure to level 2 or higher' },
 ] as const satisfies readonly TutorialQuestEntry[];
 
 export type TutorialQuestId = (typeof TUTORIAL_QUESTS)[number]['id'];
@@ -92,13 +118,21 @@ export const TUTORIAL_QUEST_STATUS: Readonly<Record<TutorialQuestId, TutorialQue
     TutorialQuestStatus
   >;
 
-export const TUTORIAL_QUEST_TOTAL_REWARD = TUTORIAL_QUESTS.reduce(
-  (sum, q) => sum + q.reward,
-  0,
-);
+/**
+ * vCLAW totals. These deliberately EXCLUDE the materials-rail land quests --
+ * they are quoted as CT figures in the affordability model and on the quest
+ * UI, so folding a material count into them would silently overstate the
+ * faucet.
+ */
+const questRail = (q: TutorialQuestEntry): TutorialQuestRail =>
+  ('rail' in q ? q.rail : undefined) ?? 'vclaw';
+
+export const TUTORIAL_QUEST_TOTAL_REWARD = TUTORIAL_QUESTS
+  .filter((q) => questRail(q) === 'vclaw')
+  .reduce((sum, q) => sum + q.reward, 0);
 
 export const TUTORIAL_QUEST_LIVE_REWARD = TUTORIAL_QUESTS
-  .filter((q) => q.status === 'live')
+  .filter((q) => q.status === 'live' && questRail(q) === 'vclaw')
   .reduce((sum, q) => sum + q.reward, 0);
 
 export function getTutorialQuestReward(id: string): number | null {
@@ -106,6 +140,29 @@ export function getTutorialQuestReward(id: string): number | null {
     ? TUTORIAL_QUEST_REWARDS[id as TutorialQuestId]
     : null;
 }
+
+/** Which rail a quest settles on. Quests without an explicit rail pay vCLAW. */
+export const TUTORIAL_QUEST_RAILS: Readonly<Record<TutorialQuestId, TutorialQuestRail>> =
+  Object.fromEntries(TUTORIAL_QUESTS.map((q) => [q.id, questRail(q)])) as Record<
+    TutorialQuestId,
+    TutorialQuestRail
+  >;
+
+/**
+ * THE reward lookup the settlement service dispatches on. Returns the rail and
+ * the amount together so a caller can never pair one quest's amount with
+ * another quest's rail.
+ */
+export function getTutorialQuestRewardDetail(id: string): TutorialQuestReward | null {
+  if (!(id in TUTORIAL_QUEST_REWARDS)) return null;
+  const questId = id as TutorialQuestId;
+  return { kind: TUTORIAL_QUEST_RAILS[questId], amount: TUTORIAL_QUEST_REWARDS[questId] };
+}
+
+/** Total materials earnable from the live land quests. */
+export const TUTORIAL_QUEST_LIVE_MATERIALS = TUTORIAL_QUESTS
+  .filter((q) => q.status === 'live' && questRail(q) === 'materials')
+  .reduce((sum, q) => sum + q.reward, 0);
 
 export function isLiveTutorialQuest(id: string): id is TutorialQuestId {
   return id in TUTORIAL_QUEST_STATUS && TUTORIAL_QUEST_STATUS[id as TutorialQuestId] === 'live';

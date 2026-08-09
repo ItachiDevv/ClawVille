@@ -1094,6 +1094,7 @@ async function main() {
       release_parcel: '[ACTION: release_parcel(parcelCode=parcel-starter-01)]',
       enter_poker_room: '[ACTION: enter_poker_room()]',
       enter_kelp_forest: '[ACTION: enter_kelp_forest()]',
+      claim_tutorial_quest: '[ACTION: claim_tutorial_quest(questId=say-hi-nori)]',
       talk_to_npc: `[ACTION: talk_to_npc(npcId=${NPC_IDS[1]}, message=parity-probe)]`,
     };
     const executorSet = EXPECTED_EXECUTOR_VERBS.filter((v) => executorAccepts(v, samples[v]));

@@ -3,6 +3,8 @@ import {
   KIT_CATALOG,
   KIT_LEVEL_RULES,
   KIT_PIECE_FEE_CT,
+  KIT_PIECE_FEE_CT_BY_STRUCTURE,
+  kitPieceFeeCt,
   isCellPlaceable,
   isPiecePlacementAllowed,
   isRotationAllowed,
@@ -37,7 +39,23 @@ describe('land kit catalog', () => {
     }
   });
 
-  it('locks D5 fees exactly', () => {
+  it('locks D5 fees exactly, per structure type', () => {
+    // Founder ruling Q3 (2026-08-09): decorating a HOME is the flagship player
+    // activity and costs a third of a SHOP yard. Shops are unchanged and fund
+    // the giveback through their recurring slot rentals.
+    expect(KIT_PIECE_FEE_CT_BY_STRUCTURE).toEqual({
+      home: { small: 5, large: 20 },
+      shop: { small: 15, large: 60 },
+    });
+    expect(kitPieceFeeCt('home', 'small')).toBe(5);
+    expect(kitPieceFeeCt('home', 'large')).toBe(20);
+    expect(kitPieceFeeCt('shop', 'small')).toBe(15);
+    expect(kitPieceFeeCt('shop', 'large')).toBe(60);
+    // A full Lv3 yard (28 small + 2 large) — the sizing claim the reprice was
+    // built on: 540 CT of pieces became 180.
+    expect(28 * kitPieceFeeCt('home', 'small') + 2 * kitPieceFeeCt('home', 'large')).toBe(180);
+    expect(28 * kitPieceFeeCt('shop', 'small') + 2 * kitPieceFeeCt('shop', 'large')).toBe(540);
+    // The deprecated flat alias still resolves to the unchanged SHOP row.
     expect(KIT_PIECE_FEE_CT).toEqual({ small: 15, large: 60 });
   });
 });

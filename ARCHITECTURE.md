@@ -1,6 +1,127 @@
 # ClawVille — Architecture
 
-**Last Audited: 2026-08-08 (Land P2 round 2 — executor/UI/protocol v46).**
+**Last Audited: 2026-08-09 (Land gamification P4b/P5a/P6 — material ledger,
+structure-type pricing, tutorial-ladder parity, protocol v47).** Three changes.
+
+**(1) Material ledger (P4b).** Migration `0053_land_materials.sql` adds
+`avatar_material_balances` (ONE pooled non-negative balance per avatar, founder
+ruling Q4) and `salvage_claim_receipts` (idempotency receipt for the salvage
+loop, shipped ahead of its routes so the contract is frozen before anything
+writes to it). `apps/api/src/services/material-ledger.ts` is the SOLE writer, in
+the same spirit as `claw-token-ledger`: standalone calls take the per-subject
+stack (`withKeyedMutex` outer, `pg_advisory_xact_lock` inner, one transaction),
+composed calls inherit the caller's locks, and the debit is a CONDITIONAL
+DECREMENT so an unaffordable spend writes nothing. Materials have no provenance
+tags, no transfer path, no exit rail, and no leaderboard weight, so they never
+touch the vCLAW machinery. `SALVAGE_OWNER_DAILY_CLAIM_CAP = 120` (Q2) lands in
+`packages/shared/src/constants/land-salvage.ts`.
+
+**(2) Structure-type pricing (P5a, founder ruling Q3).** Kit-piece fees and the
+structure upgrade ladder are now keyed by structure type:
+`KIT_PIECE_FEE_CT_BY_STRUCTURE` (home 5/20, shop unchanged 15/60) with
+`kitPieceFeeCt()`, and `STRUCTURE_UPGRADE_COSTS_BY_TYPE` (home Lv2 free / Lv3
+900; shop and both Lv4/Lv5 rungs unchanged) with `structureUpgradeCostCt()`.
+`routes/land.ts` derives both from the LOCKED `land_structures` row — the piece
+path widens its existing `FOR UPDATE` select by one column and takes no new
+lock — and both ledger legs stamp `structureType`. A free home Lv2 skips the
+debit and the treasury credit entirely while keeping the level write, the
+`land_upgrades` audit row, and the idempotency key, so it is as replay-safe as a
+paid upgrade; both upgrade REPLAY branches report the type-keyed price.
+`GET /api/land/tiers` gains `upgradeCostsByType` and keeps `upgradeCosts` at the
+unchanged shop ladder, so no client breaks on the wire. The two flat exports are
+deprecated aliases resolving to the SHOP row for the callers with no structure
+type in scope (the yard-editor price chip, the guest demo sandbox).
+
+**(2b) Shop slot rentals — the recurring sink that funds (2).** Migration
+`0055_shop_slot_rentals.sql` adds `featured`, `slot_paid_through`,
+`featured_paid_through`, and `slot_suspended_at` to `service_listings` (existing
+rows are granted the current week, never billed retroactively).
+`apps/api/src/services/service-slot-rent-sweeper.ts` is a SEPARATE sweeper from
+`land-rent-sweeper.ts` because the parcel sweeper's single `rent_paid_through`
+cursor cannot carry two independent weekly cadences. It shares the parcel
+sweeper's exact lock order and OWNER mutex key
+(`land-tenure:<ownerAvatarId>` -> `pg_advisory_xact_lock` -> row `FOR UPDATE`),
+so no AB-BA cycle is constructible between them. Period keying is the
+`slot_paid_through` cursor read and advanced under the row lock against the DB
+clock — advancing to `now() + 7 days`, not `+=`, so an outage forgives missed
+weeks. Non-payment SUSPENDS (stamps `slot_suspended_at`, keeps the row, does not
+advance the cursor); the buy route refuses `listing_suspended` and the public
+feeds hide it, and the next successful sweep clears it. Featured is charged on
+its own cursor and never suspends the listing. Treasury policy matches the
+parcel sweeper (burn-and-proceed on a missing treasury), not the fail-closed kit
+route. Boot-wired in `index.ts`; knob `SERVICE_SLOT_SWEEP_PERIOD_MS`.
+
+**(2d) Money-review fixes (2026-08-09).** Two economic bypasses closed.
+(B1) The hosted quest-claim path resolved its actor through
+`resolveAutonomousCoveAgentBinding`, which checks `openclaw_bots.is_house`
+FIRST and returns a ledger-capable binding while ignoring the session. That
+carve-out is correct for the COVE, where the house is a wager counterparty; a
+quest is a pure FAUCET, so the server's own fleet could have minted the whole
+~1,650 vCLAW ladder into house-owned balances. Quest settlement now uses its own
+`autonomousQuestAgentResolve` seam: the connected-session resolver (which house
+bots structurally cannot satisfy) PLUS an explicit `isHouseAgentId` refusal in
+front of it — two independent barriers.
+(B2) Listing creation stamped an unconditional `now() + 7 days`, so delisting on
+day six and recreating minted a fresh free week forever and the P5a sink
+collected nothing. The free week now belongs to the STRUCTURE, granted once
+ever: `slotPaidThroughOnCreateSql` carries the shop's furthest paid-through
+forward, floored at `now()`, evaluated INSIDE the INSERT so two concurrent
+creates cannot both observe "no history".
+Also: the executor claim path now emits `tutorial_quest.claimed` with explicitly
+NULL fp/ip (hosted actions have no request context) so hosted claims are visible
+to `/dash`; the public board orders on LIVE-featured state rather than the raw
+cursor (Postgres `DESC` defaults to NULLS FIRST, which sorted non-featured
+listings ABOVE featured ones); featured placement is `FEATURE_GATE`d as DARK
+because nothing writes `featured`, and was stripped from all three knowledge
+surfaces; the material SPEND rail is `FEATURE_GATE`d as EARN-ONLY with the same
+surfaces corrected; and the decide prompt gains a bounded server-derived
+claimable-quest block so a hosted agent knows which `questId` values are valid.
+
+**(2c) Kit placement is now the SHARED predicate (P3, closes defect D-1).**
+`isCellPlaceable` validated the ANCHOR CELL ONLY, but a piece spans up to five
+cells once rotated -- so a `path-stone` on a legal perimeter cell overhung the
+shell reservation, and two pieces could occupy the same ground while both
+passed. `routes/land.ts` now runs `evaluatePlacement` from `@clawville/shared`
+(rotated-footprint AABB + level-independent `shellEnvelopeHalfWu` reservation +
+cross-level 3D occupancy) on BOTH the place and move write paths via one
+`evaluateKitWrite` seam. Its occupancy set is built through
+`resolveParcelPlacements`, which never refuses and never drops a row -- that is
+how Q5 grandfathering holds: an existing paid piece the stricter rule would now
+reject still renders, still blocks a new overlap, and is never deleted, while
+its owner may move it to a legal spot for free. A move excludes itself from both
+occupancy and the piece counts, so it never self-collides and stays cap-neutral.
+Refusals map through `kitPlacementRefusalStatus`: state conflicts
+(`level_cap_exceeded`, `stack_exceeds_height`, `unsupported_stack`,
+`outside_parcel`, `intersects_shell`, `intersects_piece`) are 409, malformed
+input (`piece_unknown`, `cell_out_of_bounds`, `rotation_not_allowed`) is 400.
+The superseded `validateKitPlacementInput` and `hasKitStackSupport` are DELETED
+rather than left callable, so there is exactly one geometry authority. The
+shared modules (`land-placement.ts`, `land-kit-manifest.ts`, the
+`shellEnvelopeHalfWu` block, `getParcelFootprintWu`) are sourced verbatim from
+the parallel geometry lane so both branches carry identical blobs.
+
+**(3) Tutorial-ladder three-path parity (P6) — closes live defect D-2.** The
+26-quest / 1,585 vCLAW corpus was cookie-gated and human-only. Migration
+`0054_tutorial_claim_avatar_authority.sql` moves authority from the user to the
+AVATAR (`user_id` nullable, unique index on `(avatar_id, quest_id)` created
+BEFORE the old one drops), adds `materials_credited`, and adds a single-rail
+CHECK; a preflight PROVES collision freedom on the live table and refuses the
+file otherwise. `apps/api/src/services/tutorial-quest-settlement.ts` owns BOTH
+the proof-of-engagement gate (moved verbatim out of the route) and the two-rail
+settlement, because the `[ACTION:]` executor has no Hono context and cannot
+reuse a route body — this is what makes the three subject paths one
+implementation. `POST /api/quests/tutorial/:id/claim` and
+`GET /api/quests/tutorial/claims` now run
+`requireAuthOrAgentSession -> requireLedgerCapableIdentity ->
+requireNonGuestIdentity`, and the read is keyed on the avatar. Four tier-10 land
+quests pay MATERIALS with predicates over canonical land state. New whitelisted
+verb `claim_tutorial_quest(questId)`; `PROTOCOL_VERSION` 46 -> 47 with the
+manual, Nori, and the orientation constant updated in the same diff. **PARITY:**
+human path authed REST; connected-agent path the same REST route with
+`X-Clawville-Agent-Session`; hosted path the `[ACTION:]` verb — all three call
+`settleTutorialQuestClaim`, binding settlement to the resolved bound avatar.
+
+**Prior Last Audited: 2026-08-08 (Land P2 round 2 — executor/UI/protocol v46).**
 `npc-simulation.ts` admits `claim_parcel`, `prepay_rent`, and `release_parcel`
 only after the existing autonomous-cove identity resolver proves a live,
 ledger-capable bound avatar (including the server-owned house-agent binding).

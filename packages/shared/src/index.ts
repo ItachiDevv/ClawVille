@@ -128,6 +128,11 @@ export * from './constants/land-kit-manifest';
 // stack-aware legality predicate shared by the write path and the yard editor.
 // Replaces anchor-cell-only validation (defect D-1).
 export * from './constants/land-placement';
+
+
+// Land gamification P4b — seabed-salvage daily caps (the founder-ratified
+// per-avatar and per-owner claim bounds the material ledger settles against).
+export * from './constants/land-salvage';
 // Land Showroom (2026-06-18) — deterministic ~15 starter-lot showroom (FOR RENT model buildings).
 // Client-only decorative layer; no DB dependency.
 export * from './constants/land-showroom';

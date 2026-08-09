@@ -179,7 +179,8 @@
  *            as a fresh Lv+1 upgrade — a paid double-charge. The client MUST send
  *            the same key to make a retry a no-op replay. (Frontend already does.)
  *      200 → { structure: LandStructureDTO, costCt: number, idempotencyReplay?: true }
- *            costCt = SERVER-derived STRUCTURE_UPGRADE_COSTS[target]; target=level+1.
+ *            costCt = SERVER-derived structureUpgradeCostCt(structureType, target);
+ *            target = level+1. Homes and shops have DIFFERENT ladders (Q3).
  *            idempotencyReplay=true → a prior upgrade with the same key was served
  *            (no new debit, structure already at to_level).
  *      400 → { error: 'invalid_body' | 'idempotency_key_required' |
@@ -223,11 +224,25 @@
  *     200: { piece: LandStructurePieceDTO, costCt, idempotencyReplay?: true }
  *     Requires an active structure; fee transfers owner-to-house in the insert tx.
  *     404: { error: 'parcel_not_found' | 'structure_required' }
- *     409: { error: 'cell_reserved' | 'cell_occupied' | 'stack_support_required' |
- *                    'piece_cap_reached' | 'structure_not_active' |
- *                    'ownership_desync' | 'idempotency_key_conflict' }
+ *     400: { error: 'unknown_piece_key' | 'structure_level_invalid' |
+ *                    'piece_unknown' | 'cell_out_of_bounds' | 'rotation_not_allowed' }
+ *     409: { error: 'level_cap_exceeded' | 'stack_exceeds_height' |
+ *                    'unsupported_stack' | 'outside_parcel' | 'intersects_shell' |
+ *                    'intersects_piece' | 'cell_occupied' | 'piece_catalog_drift' |
+ *                    'structure_not_active' | 'ownership_desync' |
+ *                    'idempotency_key_conflict' }
+ *     Geometry is decided by the SHARED `evaluatePlacement` predicate (rotated
+ *     footprint + level-independent shell envelope + cross-level 3D occupancy),
+ *     NOT the anchor cell alone. `cell_reserved` / `stack_support_required` /
+ *     `piece_cap_reached` are superseded by `intersects_shell` /
+ *     `unsupported_stack` / `level_cap_exceeded`. `cell_occupied` survives as
+ *     the unique-index backstop on an exact (x, y, stackLevel) collision.
  * 13. PATCH /api/land/pieces/:pieceId (AUTH, FREE move)
  *     strict body: { gridX, gridY, rotationStep, stackLevel }
+ *     Re-validated against the SAME predicate, with the moved piece excluded
+ *     from its own occupancy + counts. This is the Q5 free-move escape hatch:
+ *     a grandfathered illegal piece is never deleted, only movable to a legal
+ *     position at no fee. Same 400/409 code set as route 12.
  * 14. DELETE /api/land/pieces/:pieceId (AUTH, FREE, NO REFUND)
  *     200: { deleted: true, piece: LandStructurePieceDTO }
  * 15. GET /api/land/pieces/public (PUBLIC, cached, no PII)
@@ -269,13 +284,15 @@ import {
   eq,
   and,
   desc,
+  isNull,
   sql,
 } from '@clawville/database';
 import {
   LAND_EVENT_TYPES,
   LAND_PARCELS,
   LAND_TIERS,
-  STRUCTURE_UPGRADE_COSTS,
+  STRUCTURE_UPGRADE_COSTS_BY_TYPE,
+  structureUpgradeCostCt,
   MAX_STRUCTURE_LEVEL,
   MAX_PARCELS_PER_AVATAR,
   RENT_PERIOD_DAYS,
@@ -296,10 +313,18 @@ import {
   KIT_CATALOG,
   KIT_GRID_SIZE,
   KIT_LEVEL_RULES,
-  KIT_PIECE_FEE_CT,
-  isCellPlaceable,
-  isPiecePlacementAllowed,
-  isRotationAllowed,
+  KIT_PIECE_FEE_CT_BY_STRUCTURE,
+  kitPieceFeeCt,
+  type LandStructureType,
+  // Land gamification P3 — the SHARED footprint/rotation/stack legality
+  // predicate. It replaces anchor-cell-only validation (defect D-1): pieces
+  // span up to five cells once rotated, so the old check let a piece overhang
+  // the shell reservation and let two pieces occupy the same ground.
+  evaluatePlacement,
+  resolveParcelPlacements,
+  type PlacementRefusalCode,
+  type PlacedFootprint,
+  type StoredPlacement,
   type KitPieceKey,
   type KitPieceSize,
   type LandTier,
@@ -628,71 +653,135 @@ const kitPieceSnapshotSchema = z.object({
   stackLevel: z.number().int(),
 });
 
-export type KitPlacementValidationError =
-  | 'unknown_piece_key'
-  | 'structure_level_invalid'
-  | 'cell_out_of_bounds'
-  | 'cell_reserved'
-  | 'rotation_not_allowed'
-  | 'stack_not_allowed'
-  | 'piece_cap_reached';
-
-export interface KitPlacementValidationInput {
-  pieceKey: string;
-  level: number;
-  gridX: number;
-  gridY: number;
-  rotationStep: number;
-  stackLevel: number;
-  currentSmall?: number;
-  currentLarge?: number;
-  addingPiece?: boolean;
-}
-
 export function isKitPieceKey(pieceKey: string): pieceKey is KitPieceKey {
   return Object.prototype.hasOwnProperty.call(KIT_CATALOG, pieceKey);
 }
 
-/** Pure route seam: catalog + grid + level ladder validation, with no DB state. */
-export function validateKitPlacementInput(
-  input: KitPlacementValidationInput,
-): KitPlacementValidationError | null {
-  if (!isKitPieceKey(input.pieceKey)) return 'unknown_piece_key';
-  if (!Number.isInteger(input.level) || input.level < 1 || input.level > 5) {
-    return 'structure_level_invalid';
+/**
+ * Refusal codes the placement predicate can return that are STATE CONFLICTS
+ * (409) rather than malformed input (400). A conflict means "the request is
+ * well-formed but the yard cannot accept it right now".
+ */
+const KIT_PLACEMENT_CONFLICT_CODES: ReadonlySet<PlacementRefusalCode> = new Set([
+  'level_cap_exceeded',
+  'stack_exceeds_height',
+  'unsupported_stack',
+  'outside_parcel',
+  'intersects_shell',
+  'intersects_piece',
+]);
+
+/** HTTP status for a placement refusal. Conflicts 409, bad input 400. */
+/**
+ * The slot-rent cursor a NEW listing starts on (land gamification P5a, B2 fix).
+ *
+ * Returned as a SQL fragment, not a value, so it is evaluated INSIDE the same
+ * INSERT that creates the row — a read-then-insert would leave a window where a
+ * concurrent create on the same structure could both observe "no history" and
+ * both mint a free week.
+ *
+ * The rule: the free first week belongs to the SHOP, not to a row. It is
+ * granted once per structure, ever; every later listing inherits the furthest
+ * paid-through the shop has already bought, floored at now(). That is what
+ * closes the delist-and-recreate bypass — the delisted row keeps its cursor and
+ * the replacement inherits it, so recreating buys nothing.
+ *
+ * `GREATEST` sits inside an explicit COUNT branch because `GREATEST(now(), NULL)`
+ * returns now() in Postgres, which would have silently denied every genuinely
+ * new shop its first free week.
+ */
+export function slotPaidThroughOnCreateSql(structureId: string) {
+  return sql`(SELECT CASE
+                       WHEN count(*) = 0
+                         THEN now() + make_interval(days => ${RENT_PERIOD_DAYS})
+                       ELSE GREATEST(now(), COALESCE(max(prior.slot_paid_through), now()))
+                     END
+                FROM service_listings prior
+               WHERE prior.structure_id = ${structureId})`;
+}
+
+export function kitPlacementRefusalStatus(code: PlacementRefusalCode): 400 | 409 {
+  return KIT_PLACEMENT_CONFLICT_CODES.has(code) ? 409 : 400;
+}
+
+/**
+ * Evaluate ONE kit-piece write (a new placement or a move) against the parcel's
+ * current contents, using the shared `evaluatePlacement` predicate.
+ *
+ * GRANDFATHERING (Q5) is why this reads through `resolveParcelPlacements`
+ * rather than re-validating the stored rows: that resolver never refuses and
+ * never drops a row, so an existing paid piece the stricter predicate would now
+ * reject still occupies space and still blocks a new overlap. Validation
+ * applies to what is being WRITTEN, never to what is already stored — a legacy
+ * row is neither deleted nor hidden, and its owner may move it to a legal spot
+ * for free.
+ *
+ * `excludePieceRef` is the row being MOVED. It must be excluded from both the
+ * occupancy set (a piece cannot collide with itself) and the piece counts (a
+ * move is cap-neutral: removing then re-adding the same piece must not trip
+ * `level_cap_exceeded` on a full yard).
+ */
+export async function evaluateKitWrite(
+  tx: LandTx,
+  args: {
+    parcelId: string;
+    parcelTier: LandTier;
+    structureLevel: number;
+    request: {
+      pieceKey: KitPieceKey;
+      gridX: number;
+      gridY: number;
+      rotationStep: number;
+      stackLevel: number;
+    };
+    excludePieceRef?: string;
+  },
+): Promise<
+  { ok: true; footprint: PlacedFootprint } | { ok: false; code: PlacementRefusalCode }
+> {
+  const rows = await tx.execute<{
+    id: string;
+    piece_key: string;
+    grid_x: number | string;
+    grid_y: number | string;
+    rotation_step: number | string;
+    stack_level: number | string;
+  }>(
+    sql`SELECT id, piece_key, grid_x, grid_y, rotation_step, stack_level
+        FROM land_structure_pieces WHERE parcel_id = ${args.parcelId}`,
+  );
+
+  const stored: StoredPlacement[] = [];
+  let currentSmall = 0;
+  let currentLarge = 0;
+  for (const row of Array.from(rows)) {
+    if (args.excludePieceRef && row.id === args.excludePieceRef) continue;
+    if (!isKitPieceKey(row.piece_key)) {
+      // A stored key the catalog no longer knows. The caller's own drift guard
+      // raises on it; skip here so one bad row cannot silently widen free space.
+      continue;
+    }
+    if (KIT_CATALOG[row.piece_key].size === 'small') currentSmall += 1;
+    else currentLarge += 1;
+    stored.push({
+      pieceRef: row.id,
+      pieceKey: row.piece_key,
+      gridX: Number(row.grid_x),
+      gridY: Number(row.grid_y),
+      rotationStep: Number(row.rotation_step),
+      stackLevel: Number(row.stack_level),
+    });
   }
-  if (
-    !Number.isInteger(input.gridX)
-    || !Number.isInteger(input.gridY)
-    || input.gridX < 0
-    || input.gridX >= KIT_GRID_SIZE
-    || input.gridY < 0
-    || input.gridY >= KIT_GRID_SIZE
-  ) {
-    return 'cell_out_of_bounds';
-  }
-  if (!isCellPlaceable(input.gridX, input.gridY)) return 'cell_reserved';
-  if (!isRotationAllowed(input.level, input.rotationStep)) return 'rotation_not_allowed';
-  const levelRule = KIT_LEVEL_RULES[input.level as 1 | 2 | 3 | 4 | 5];
-  if (
-    !Number.isInteger(input.stackLevel)
-    || input.stackLevel < 1
-    || input.stackLevel > levelRule.maxStackHeight
-  ) {
-    return 'stack_not_allowed';
-  }
-  if (
-    input.addingPiece !== false
-    && !isPiecePlacementAllowed(
-      input.level,
-      input.currentSmall ?? 0,
-      input.currentLarge ?? 0,
-      KIT_CATALOG[input.pieceKey].size,
-    )
-  ) {
-    return 'piece_cap_reached';
-  }
-  return null;
+
+  const occupied = resolveParcelPlacements(stored, args.parcelTier).map((r) => r.footprint);
+
+  return evaluatePlacement(args.request, {
+    parcelTier: args.parcelTier,
+    structureLevel: args.structureLevel,
+    currentSmall,
+    currentLarge,
+    occupied,
+  });
 }
 
 export type KitAuthorityError =
@@ -733,8 +822,18 @@ export function validateKitAuthority(
   return null;
 }
 
-export function kitPlacementFeeForKey(pieceKey: string): number | null {
-  return isKitPieceKey(pieceKey) ? KIT_PIECE_FEE_CT[KIT_CATALOG[pieceKey].size] : null;
+/**
+ * Placement fee for a piece on a given structure type (founder ruling Q3: homes
+ * are a third of the shop price). `structureType` is read from the LOCKED
+ * `land_structures` row, never from the request body.
+ */
+export function kitPlacementFeeForKey(
+  pieceKey: string,
+  structureType: LandStructureType,
+): number | null {
+  return isKitPieceKey(pieceKey)
+    ? kitPieceFeeCt(structureType, KIT_CATALOG[pieceKey].size)
+    : null;
 }
 
 function throwKitAuthorityError(error: KitAuthorityError): never {
@@ -746,7 +845,7 @@ function throwKitAuthorityError(error: KitAuthorityError): never {
 // HIGH — keyless-replay double-charge). A retry MUST carry the same key or the
 // server would treat the 2nd call as a fresh Lv+1 upgrade and debit AGAIN. The
 // target level + cost are still server-derived (current level + 1 →
-// STRUCTURE_UPGRADE_COSTS) — never client-trusted. The frontend already sends
+// STRUCTURE_UPGRADE_COSTS_BY_TYPE) — never client-trusted. The frontend already sends
 // `upgradeStructure(structureId, idempotencyKey)`, so requiring it is
 // contract-compatible.
 const upgradeBodySchema = z
@@ -1041,6 +1140,27 @@ function toStructureDTO(row: {
   };
 }
 
+
+/** Shared owned-structures query (routes 2 + 3) — one indexed scan on owner_avatar_id. */
+async function fetchOwnedStructures(avatarId: string): Promise<LandStructureDTO[]> {
+  const rows = await db
+    .select({
+      id: landStructures.id,
+      parcelId: landStructures.parcelId,
+      ownerAvatarId: landStructures.ownerAvatarId,
+      structureType: landStructures.structureType,
+      catalogKey: landStructures.catalogKey,
+      level: landStructures.level,
+      shellKey: landStructures.shellKey,
+      paletteKey: landStructures.paletteKey,
+    })
+    .from(landStructures)
+    // Exclude eviction-archived structures — they belong to a parcel the avatar
+    // no longer holds, so they must not show in "my structures" or the renderer.
+    .where(and(eq(landStructures.ownerAvatarId, avatarId), eq(landStructures.status, 'active')));
+  return rows.map(toStructureDTO);
+}
+
 /** Typed row mapper for the public world feed, including rolling-deploy fallbacks. */
 export function toPublicLandStructureDTO(row: {
   parcelCode: string;
@@ -1120,37 +1240,6 @@ export function matchesKitPlacementReplay(
     && piece.stackLevel === request.stackLevel;
 }
 
-export function hasKitStackSupport(
-  pieces: readonly { gridX: number; gridY: number; stackLevel: number }[],
-  placement: { gridX: number; gridY: number; stackLevel: number },
-): boolean {
-  return placement.stackLevel === 1 || pieces.some(
-    (piece) => piece.gridX === placement.gridX
-      && piece.gridY === placement.gridY
-      && piece.stackLevel === placement.stackLevel - 1,
-  );
-}
-
-/** Shared owned-structures query (routes 2 + 3) — one indexed scan on owner_avatar_id. */
-async function fetchOwnedStructures(avatarId: string): Promise<LandStructureDTO[]> {
-  const rows = await db
-    .select({
-      id: landStructures.id,
-      parcelId: landStructures.parcelId,
-      ownerAvatarId: landStructures.ownerAvatarId,
-      structureType: landStructures.structureType,
-      catalogKey: landStructures.catalogKey,
-      level: landStructures.level,
-      shellKey: landStructures.shellKey,
-      paletteKey: landStructures.paletteKey,
-    })
-    .from(landStructures)
-    // Exclude eviction-archived structures — they belong to a parcel the avatar
-    // no longer holds, so they must not show in "my structures" or the renderer.
-    .where(and(eq(landStructures.ownerAvatarId, avatarId), eq(landStructures.status, 'active')));
-  return rows.map(toStructureDTO);
-}
-
 /**
  * Drizzle transaction handle — lets the acquire helper run inside the route's
  * existing tx (mirrors the `LedgerTx` alias in claw-token-ledger).
@@ -1221,6 +1310,10 @@ interface ServiceListingDTO {
   priceCt: number;
   status: 'active' | 'paused' | 'delisted';
   platformFeeBps: number;
+  /** Featured placement is LIVE (intent flag AND an unexpired paid-through). */
+  featured: boolean;
+  /** Slot rent lapsed — kept and restorable, but not sellable (P5a). */
+  suspended: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -1303,6 +1396,13 @@ function toServiceListingDTO(row: typeof serviceListings.$inferSelect): ServiceL
     priceCt: row.priceCt,
     status: row.status,
     platformFeeBps: row.platformFeeBps,
+    // "Featured right now" is the INTENT flag AND a live paid-through — the
+    // flag alone never grants placement.
+    featured:
+      row.featured
+      && row.featuredPaidThrough !== null
+      && new Date(row.featuredPaidThrough).getTime() > Date.now(),
+    suspended: row.slotSuspendedAt !== null,
     // toIso (not a bare .toISOString()) so the mapper is robust even if a caller
     // ever feeds it a raw-execute row (string dates) rather than a typed one.
     createdAt: toIso(row.createdAt),
@@ -1949,7 +2049,8 @@ landRoutes.get('/catalog', async (c) => {
       premium: rules.premium,
       homeSkus: skuList(rules.homeSkus),
       shopSkus: skuList(rules.shopSkus),
-      upgradeCosts: STRUCTURE_UPGRADE_COSTS,
+      upgradeCosts: STRUCTURE_UPGRADE_COSTS_BY_TYPE.shop,
+      upgradeCostsByType: STRUCTURE_UPGRADE_COSTS_BY_TYPE,
     });
   }
 
@@ -1968,7 +2069,11 @@ landRoutes.get('/catalog', async (c) => {
       ];
     }),
   );
-  return c.json({ tiers, upgradeCosts: STRUCTURE_UPGRADE_COSTS });
+  return c.json({
+    tiers,
+    upgradeCosts: STRUCTURE_UPGRADE_COSTS_BY_TYPE.shop,
+    upgradeCostsByType: STRUCTURE_UPGRADE_COSTS_BY_TYPE,
+  });
 });
 
 // ─── 7. POST /parcels/:parcelId/buy  (DISABLED — Phase B tenure model) ──────
@@ -2982,20 +3087,31 @@ landRoutes.post(
     try {
       result = await db.transaction(async (tx): Promise<PlacementResult> => {
         await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${avatarId}, 0))`);
-        const parcelRows = await tx.execute<{ id: string; owner_avatar_id: string | null }>(
-          sql`SELECT id, owner_avatar_id FROM land_parcels
+        // `tier` is selected because the shared placement predicate subtracts a
+        // TIER-scoped (level-independent) shell envelope. The row is already
+        // FOR UPDATE-locked, so this is a column widening with no new lock.
+        const parcelRows = await tx.execute<{
+          id: string;
+          owner_avatar_id: string | null;
+          tier: LandTier;
+        }>(
+          sql`SELECT id, owner_avatar_id, tier FROM land_parcels
               WHERE id = ${parcelId} FOR UPDATE`,
         );
         const parcel = parcelRows[0];
         if (!parcel) throw new HTTPException(404, { message: 'parcel_not_found' });
 
+        // `structure_type` is selected because the placement fee is type-keyed
+        // (founder ruling Q3). The row is already FOR UPDATE-locked, so this is
+        // a column widening with no new lock and no extra round trip.
         const structureRows = await tx.execute<{
           id: string;
           owner_avatar_id: string;
           status: 'active' | 'archived';
           level: number | string;
+          structure_type: LandStructureType;
         }>(
-          sql`SELECT id, owner_avatar_id, status, level FROM land_structures
+          sql`SELECT id, owner_avatar_id, status, level, structure_type FROM land_structures
               WHERE parcel_id = ${parcelId} FOR UPDATE`,
         );
         const structure = structureRows[0] ?? null;
@@ -3030,70 +3146,53 @@ landRoutes.post(
           return { kind: 'replay', piece, costCt: Number(prior.amount_ct) };
         }
 
-        const baseValidation = validateKitPlacementInput({
-          ...body,
-          level: Number(structure!.level),
-          addingPiece: false,
-        });
-        if (baseValidation) {
-          throw new HTTPException(baseValidation === 'cell_reserved' ? 409 : 400, {
-            message: baseValidation,
-          });
+        // Cheap non-geometric pre-checks ONLY (unknown key, impossible level).
+        // Every geometric rule — grid bounds, rotation, caps, stack height,
+        // support, parcel bounds, shell envelope, piece overlap — belongs to
+        // `evaluatePlacement` below, so there is exactly one geometry authority.
+        if (!isKitPieceKey(body.pieceKey)) {
+          throw new HTTPException(400, { message: 'unknown_piece_key' });
+        }
+        const placeLevel = Number(structure!.level);
+        if (!Number.isInteger(placeLevel) || placeLevel < 1 || placeLevel > 5) {
+          throw new HTTPException(400, { message: 'structure_level_invalid' });
         }
 
-        const currentRows = await tx.execute<{
-          piece_key: string;
-          grid_x: number | string;
-          grid_y: number | string;
-          stack_level: number | string;
-        }>(
-          sql`SELECT piece_key, grid_x, grid_y, stack_level
-              FROM land_structure_pieces WHERE parcel_id = ${parcelId}`,
+        // Catalog drift is still its own error: a stored key the catalog no
+        // longer knows must stop the write loudly rather than be skipped.
+        const driftRows = await tx.execute<{ piece_key: string }>(
+          sql`SELECT piece_key FROM land_structure_pieces WHERE parcel_id = ${parcelId}`,
         );
-        const currentPieces = currentRows.map((piece) => ({
-          pieceKey: piece.piece_key,
-          gridX: Number(piece.grid_x),
-          gridY: Number(piece.grid_y),
-          stackLevel: Number(piece.stack_level),
-        }));
-        if (
-          currentPieces.some(
-            (piece) =>
-              piece.gridX === body.gridX
-              && piece.gridY === body.gridY
-              && piece.stackLevel === body.stackLevel,
-          )
-        ) {
-          throw new HTTPException(409, { message: 'cell_occupied' });
-        }
-        if (!hasKitStackSupport(currentPieces, body)) {
-          throw new HTTPException(409, { message: 'stack_support_required' });
-        }
-
-        let currentSmall = 0;
-        let currentLarge = 0;
-        for (const current of currentPieces) {
-          if (!isKitPieceKey(current.pieceKey)) {
+        for (const row of Array.from(driftRows)) {
+          if (!isKitPieceKey(row.piece_key)) {
             throw new HTTPException(409, { message: 'piece_catalog_drift' });
           }
-          if (KIT_CATALOG[current.pieceKey].size === 'small') currentSmall += 1;
-          else currentLarge += 1;
         }
-        const capValidation = validateKitPlacementInput({
-          ...body,
-          level: Number(structure!.level),
-          currentSmall,
-          currentLarge,
+
+        // THE geometry gate (defect D-1). Full rotated-footprint, shell-envelope
+        // and cross-level 3D occupancy test — not the anchor cell alone.
+        const verdict = await evaluateKitWrite(tx, {
+          parcelId,
+          parcelTier: parcel.tier,
+          structureLevel: Number(structure!.level),
+          request: {
+            pieceKey: body.pieceKey as KitPieceKey,
+            gridX: body.gridX,
+            gridY: body.gridY,
+            rotationStep: body.rotationStep,
+            stackLevel: body.stackLevel,
+          },
         });
-        if (capValidation) {
-          throw new HTTPException(capValidation === 'piece_cap_reached' ? 409 : 400, {
-            message: capValidation,
+        if (!verdict.ok) {
+          throw new HTTPException(kitPlacementRefusalStatus(verdict.code), {
+            message: verdict.code,
           });
         }
 
         const pieceKey = body.pieceKey as KitPieceKey;
         const size: KitPieceSize = KIT_CATALOG[pieceKey].size;
-        const feeCt = KIT_PIECE_FEE_CT[size];
+        const structureType = structure!.structure_type;
+        const feeCt = kitPieceFeeCt(structureType, size);
         const treasuryId = await getHouseTreasuryAvatarId();
         if (!treasuryId) {
           // D5 is a transfer, never a burn: deliberately unlike the upgrade/cove
@@ -3106,7 +3205,13 @@ landRoutes.post(
             amount: feeCt,
             reason: 'land_kit_piece_fee',
             source: 'api',
-            metadata: { parcelId, pieceKey, size, idempotencyKey: body.idempotencyKey },
+            metadata: {
+              parcelId,
+              pieceKey,
+              size,
+              structureType,
+              idempotencyKey: body.idempotencyKey,
+            },
             actorKind: toActorKind(identity.kind),
           },
           tx,
@@ -3117,7 +3222,14 @@ landRoutes.post(
             amount: feeCt,
             reason: 'house_fee_land_kit_piece',
             source: 'system',
-            metadata: { parcelId, pieceKey, size, ownerAvatarId: avatarId },
+            metadata: {
+              parcelId,
+              pieceKey,
+              size,
+              structureType,
+              ownerAvatarId: avatarId,
+              idempotencyKey: body.idempotencyKey,
+            },
             actorKind: 'system',
           },
           tx,
@@ -3214,9 +3326,11 @@ landRoutes.patch(
           owner_avatar_id: string;
           parcel_owner_avatar_id: string | null;
           piece_key: string;
+          parcel_tier: LandTier;
         }>(
           sql`SELECT kp.id, kp.parcel_id, kp.owner_avatar_id,
-                     p.owner_avatar_id AS parcel_owner_avatar_id, kp.piece_key
+                     p.owner_avatar_id AS parcel_owner_avatar_id, kp.piece_key,
+                     p.tier AS parcel_tier
               FROM land_structure_pieces kp
               JOIN land_parcels p ON p.id = kp.parcel_id
               WHERE kp.id = ${pieceId}
@@ -3246,28 +3360,37 @@ landRoutes.patch(
         );
         if (authorityError) throwKitAuthorityError(authorityError);
 
-        const validationError = validateKitPlacementInput({
-          pieceKey: current.piece_key,
-          level: Number(structure!.level),
-          ...body,
-          addingPiece: false,
-        });
-        if (validationError) {
-          throw new HTTPException(validationError === 'cell_reserved' ? 409 : 400, {
-            message: validationError,
-          });
+        if (!isKitPieceKey(current.piece_key)) {
+          throw new HTTPException(409, { message: 'piece_catalog_drift' });
+        }
+        const moveLevel = Number(structure!.level);
+        if (!Number.isInteger(moveLevel) || moveLevel < 1 || moveLevel > 5) {
+          throw new HTTPException(400, { message: 'structure_level_invalid' });
         }
 
-        const occupied = await tx.execute<{ hit: number }>(
-          sql`SELECT 1 AS hit FROM land_structure_pieces
-              WHERE parcel_id = ${current.parcel_id}
-                AND grid_x = ${body.gridX}
-                AND grid_y = ${body.gridY}
-                AND stack_level = ${body.stackLevel}
-                AND id <> ${pieceId}
-              LIMIT 1`,
-        );
-        if (occupied[0]) throw new HTTPException(409, { message: 'cell_occupied' });
+        // The move is re-validated against the CURRENT predicate — this is the
+        // Q5 escape hatch: a grandfathered piece the stricter rule now refuses
+        // is never deleted, and its owner moves it to a legal position for free.
+        // The piece is excluded from its own occupancy set and piece counts, so
+        // a move on a full yard is cap-neutral and never self-collides.
+        const verdict = await evaluateKitWrite(tx, {
+          parcelId: current.parcel_id,
+          parcelTier: current.parcel_tier,
+          structureLevel: moveLevel,
+          request: {
+            pieceKey: current.piece_key,
+            gridX: body.gridX,
+            gridY: body.gridY,
+            rotationStep: body.rotationStep,
+            stackLevel: body.stackLevel,
+          },
+          excludePieceRef: pieceId,
+        });
+        if (!verdict.ok) {
+          throw new HTTPException(kitPlacementRefusalStatus(verdict.code), {
+            message: verdict.code,
+          });
+        }
 
         const updated = await tx
           .update(landStructurePieces)
@@ -3618,7 +3741,9 @@ landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, r
               shellKey: s.shell_key ?? DEFAULT_SHELL_KEY,
               paletteKey: s.palette_key ?? DEFAULT_PALETTE_KEY,
             },
-            costCt: STRUCTURE_UPGRADE_COSTS[toLevel] ?? 0,
+            // Type-keyed like the live charge, so a replay reports the exact
+            // price that was actually paid (0 for a free home Lv2).
+            costCt: structureUpgradeCostCt(s.structure_type, toLevel),
           };
         }
       }
@@ -3637,8 +3762,12 @@ landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, r
         throw new HTTPException(409, { message: 'max_level_reached' });
       }
 
-      const cost = STRUCTURE_UPGRADE_COSTS[target] ?? 0;
-      // target >= 2 here always has cost > 0; guard anyway so debit never gets 0.
+      const cost = structureUpgradeCostCt(s.structure_type, target);
+      // A HOME reaching Lv2 is deliberately FREE (founder ruling Q3), so cost 0
+      // is now a real, expected value rather than only a defensive guard: the
+      // whole debit + treasury credit is skipped and no money moves. The
+      // level write, the `land_upgrades` audit row, and the idempotency key all
+      // still apply, so a free upgrade is replay-safe like a paid one.
       let ledgerId: string | null = null;
       if (cost > 0) {
         const debit = await debitClawTokens(
@@ -3763,7 +3892,7 @@ landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, r
           return c.json(
             {
               structure: toStructureDTO(cached),
-              costCt: STRUCTURE_UPGRADE_COSTS[winner.toLevel] ?? 0,
+              costCt: structureUpgradeCostCt(cached.structureType, winner.toLevel),
               idempotencyReplay: true,
             },
             200,
@@ -4002,9 +4131,32 @@ landRoutes.post(
         created_at: string;
         updated_at: string;
       }>(
+        // `slot_paid_through` is CARRIED FORWARD from this shop's listing
+        // history, and the free first week is granted ONCE PER STRUCTURE, ever.
+        //
+        // The naive version (an unconditional `now() + 7 days` on every new
+        // listing) was a permanent bypass of the entire P5a sink: delist on day
+        // six, recreate with the same title, get a fresh free week, repeat.
+        // A delisted row is invisible to the sweeper and does not count against
+        // the per-structure active cap, so the recycle was unbounded and the
+        // shop paid nothing, forever.
+        //
+        // The subquery spans ALL listings on the structure regardless of status
+        // (nothing hard-deletes a listing row — delist is a status change), so:
+        //   - no prior listing on this shop  -> the genuine free week,
+        //   - prior listing paid into the future -> that cursor is inherited,
+        //     so a recreated listing is due on the ORIGINAL schedule,
+        //   - prior listing already lapsed  -> floored at now(), i.e. due on the
+        //     very next sweep.
+        // `GREATEST` is written around an explicit COUNT branch because
+        // `GREATEST(now(), NULL)` returns now() in Postgres, which would have
+        // silently swallowed the no-history case and denied every shop its
+        // first free week.
         sql`INSERT INTO service_listings
-              (structure_id, owner_avatar_id, kind, title, description, price_ct, status)
-            VALUES (${structureId}, ${avatarId}, 'peer', ${title}, ${description ?? null}, ${priceCt}, 'active')
+              (structure_id, owner_avatar_id, kind, title, description, price_ct, status,
+               slot_paid_through)
+            VALUES (${structureId}, ${avatarId}, 'peer', ${title}, ${description ?? null}, ${priceCt}, 'active',
+                    ${slotPaidThroughOnCreateSql(structureId)})
             RETURNING id, structure_id, owner_avatar_id, kind, title, description, price_ct, status, platform_fee_bps, created_at, updated_at`,
       );
       const row = insertRows[0]!;
@@ -4018,6 +4170,9 @@ landRoutes.post(
           title: row.title,
           description: row.description,
           priceCt: Number(row.price_ct),
+          // A brand-new listing is never featured and never suspended.
+          featured: false,
+          suspended: false,
           status: row.status,
           platformFeeBps: Number(row.platform_fee_bps),
           createdAt: toIso(row.created_at),
@@ -4139,7 +4294,15 @@ landRoutes.get('/structures/:structureId/services', async (c) => {
   const rows = await db
     .select()
     .from(serviceListings)
-    .where(and(eq(serviceListings.structureId, structureId), eq(serviceListings.status, 'active')));
+    .where(
+      and(
+        eq(serviceListings.structureId, structureId),
+        eq(serviceListings.status, 'active'),
+        // A slot-rent-suspended listing stays in the table but leaves the
+        // storefront until its owner funds the next week.
+        isNull(serviceListings.slotSuspendedAt),
+      ),
+    );
 
   const payload: ServiceListingsPayload = { listings: rows.map(toServiceListingDTO) };
   setServiceListingsCache(cacheKey, payload);
@@ -4205,8 +4368,17 @@ landRoutes.get('/services', async (c) => {
   const rows = await db
     .select()
     .from(serviceListings)
-    .where(eq(serviceListings.status, 'active'))
-    .orderBy(desc(serviceListings.createdAt))
+    .where(and(eq(serviceListings.status, 'active'), isNull(serviceListings.slotSuspendedAt)))
+    // Order on LIVE-featured state, not the raw cursor. `desc(col)` emits a bare
+    // `col desc`, and Postgres defaults DESC to NULLS FIRST — so ordering on the
+    // cursor alone sorted every NON-featured listing (NULL) ABOVE every featured
+    // one, i.e. paying for placement bought the bottom of the board. Harmless
+    // only while nothing can be featured; fixed now so it is correct the moment
+    // the writer lands.
+    .orderBy(
+      sql`(${serviceListings.featured} AND ${serviceListings.featuredPaidThrough} > now()) DESC`,
+      desc(serviceListings.createdAt),
+    )
     .limit(limit + 1)
     .offset(offset);
 
@@ -4228,7 +4400,7 @@ landRoutes.get('/services', async (c) => {
 //   400 → { error: 'invalid_body' | 'invalid_listing_id' | 'insufficient_clawtokens' }
 //   401/403 as elsewhere
 //   404 → { error: 'listing_not_found' }
-//   409 → { error: 'listing_not_active' | 'not_a_peer_listing' | 'structure_unavailable'
+//   409 → { error: 'listing_not_active' | 'listing_suspended' | 'not_a_peer_listing' | 'structure_unavailable'
 //                  | 'self_purchase' | 'idempotency_key_conflict' | 'concurrent_retry' }
 //     not_a_peer_listing   = a non-CT (USDC 'partner') listing can't settle here;
 //     structure_unavailable = the seller's shop was archived/evicted or the parcel
@@ -4332,8 +4504,10 @@ landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, requireLe
         title: string;
         price_ct: number | string;
         status: string;
+        slot_suspended_at: string | Date | null;
       }>(
-        sql`SELECT id, structure_id, owner_avatar_id, kind, title, price_ct, status
+        sql`SELECT id, structure_id, owner_avatar_id, kind, title, price_ct, status,
+                   slot_suspended_at
             FROM service_listings
             WHERE id = ${listingId}
             FOR UPDATE`,
@@ -4344,6 +4518,12 @@ landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, requireLe
       }
       if (listing.status !== 'active') {
         throw new HTTPException(409, { message: 'listing_not_active' });
+      }
+      // Slot rent lapsed (land gamification P5a). The listing is SUSPENDED, not
+      // deleted: the row, title, and price are intact and the next successful
+      // sweep restores it, but it cannot be bought meanwhile.
+      if (listing.slot_suspended_at !== null) {
+        throw new HTTPException(409, { message: 'listing_suspended' });
       }
       // (2a) CT-TIER GUARD (audit ADVISORY→FIX #2) — only a 'peer' listing
       // settles in CT. A future USDC 'partner' listing must NEVER be paid with
