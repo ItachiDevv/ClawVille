@@ -1,6 +1,36 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-08-08 (Land P2 round 2 — two-door acquisition + autonomous
+**Last Audited: 2026-08-09 (Land gamification P5a/P6 — home pricing reweight,
+materials, tutorial-ladder parity, protocol v47).**
+
+**Building a home got dramatically cheaper (founder ruling Q3).** Decorating a
+home was priced as an endgame: the entire 2,585 vCLAW onboarding grant covered
+88% of ONE finished starter yard, so the flagship activity was out of reach for
+a new player. Home kit pieces now cost 5 (small) and 20 (large) instead of 15
+and 60 — a full Lv3 yard drops from 540 to 180 — and the home upgrade ladder is
+Lv2 FREE, Lv3 900, down from 600 + 1,800. SHOP yards and the shop ladder are
+unchanged: a shop is a storefront investment that earns its cost back, and it is
+where the giveback is recovered. Lv4 and Lv5 stay aspirational for both.
+
+**A second currency: MATERIALS.** Materials are a build currency, not money.
+They are non-cashable, non-transferable, earn no leaderboard points, and are
+spent only on home kit pieces. One pooled balance per avatar. Four new tier-10
+"Homestead" quests pay them — Homesteader (hold or rent a parcel, 15), First
+Nail (place a structure, 20), Yard Work (six pieces standing at once, 25), and
+Curb Appeal (a structure at level 2+, 27). Their conditions read your CURRENT
+land, not your history, so removing pieces un-qualifies Yard Work and a lapsed
+tenancy stops qualifying Homesteader.
+
+**The tutorial ladder is finally playable by agents.** It paid real vCLAW but
+was reachable only with a browser cookie, so a connected or hosted agent could
+not claim a single one of its 26 live quests. Claims are now keyed to the AVATAR
+and reachable three ways: a logged-in human, a connected agent with its session
+bearer on the same REST route, and a hosted agent in-world via
+`[ACTION: claim_tutorial_quest(questId=...)]`. All three run the same
+proof-of-engagement checks and pay the same once-ever reward. Guests still
+cannot claim.
+
+**Prior Last Audited: 2026-08-08 (Land P2 round 2 — two-door acquisition + autonomous
 agent verbs, protocol v46).** The Land Office now makes acquisition live through
 two explicit doors. Hold is rent-free and shows the tier's stacked CLV minimum,
 the account's declared wallet, and its fresh balance eligibility; Rent shows the
@@ -19,17 +49,19 @@ The three cottage shell styles now use the founder-approved replacement models
 (`home2.glb` / `shop2.glb` under `/models/land-structures/<style>/` — new file
 paths, so no CDN cache-bust is needed; meshopt + WebP, every shell ≤ 476 KB).
 Parcel owners with an ACTIVE structure can decorate their yard: 12 kit pieces
-(9 small at 15 vCLAW — picket/rope fences, deck plank, planter box, coral
-planter, lantern post, wood bench, stone path, banner pole; 3 large at 60 vCLAW
-— driftwood arch, anchor statue, shell statue) placed on a 16×16 grid whose
-center 10×10 is reserved for the building. Placement is priced (fee settles to
-the house treasury), moving is free, removal is free with NO refund. Piece
+(9 small — picket/rope fences, deck plank, planter box, coral planter, lantern
+post, wood bench, stone path, banner pole; 3 large — driftwood arch, anchor
+statue, shell statue) placed on a 16×16 grid whose
+center 10×10 is reserved for the building. Placement is priced BY STRUCTURE
+TYPE since 2026-08-09 (founder ruling Q3): a HOME pays 5 vCLAW small / 20 large,
+a SHOP pays the original 15 / 60. The fee settles to the house treasury, moving
+is free, removal is free with NO refund. Piece
 count caps, stack height, and rotation granularity (90° at Lv1-2, 45° at Lv3+)
 follow the structure's level (`KIT_LEVEL_RULES`). Humans use the in-world
 "Decorate" build mode from the parcel pill; connected/hosted agents use the
 same REST routes with their own session (PARITY: human path = build-mode UI
 over routes 12-14; agent path = the same authed routes documented in protocol
-manual §10, PROTOCOL_VERSION 46; settlement binds to the resolved avatar).
+manual §10, PROTOCOL_VERSION 47; settlement binds to the resolved avatar).
 Every visitor sees placed pieces through the public pieces feed rendered by the
 chunked kit layer (12 fixed world chunks, cached merges, 4 resident chunks max).
 
@@ -1509,9 +1541,13 @@ Every user gets an isolated memory partition with each building character. One E
 
 `<TutorialOverlay>` — 7-step welcome modal/drawer triggered by `localStorage` key `clawville-tutorial-seen`. Mounted for all `/game` visitors. The persistent Controls button opens directly to the run/jump controls step; desktop renders a non-blocking drawer left of the right sidebar, while touch/mobile renders a dismissable modal sheet.
 
-### 13b. Tutorial quest tracker — **30 quests, not 8**
+### 13b. Tutorial quest tracker — **34 quests across 10 tiers**
 
-`<QuestTracker>` (`apps/web/src/components/game/quest-tracker.tsx`) reads `QUEST_DEFINITIONS` derived from `TUTORIAL_QUESTS` in `packages/shared/src/constants/tutorial-quest-rewards.ts` (30 entries).
+`<QuestTracker>` (`apps/web/src/components/game/quest-tracker.tsx`) reads `QUEST_DEFINITIONS` derived from `TUTORIAL_QUESTS` in `packages/shared/src/constants/tutorial-quest-rewards.ts` (30 vCLAW entries + the 4 tier-10 land quests added 2026-08-09).
+
+**Two reward rails (2026-08-09).** The 30 legacy quests pay vCLAW. The four tier-10 "Homestead" land quests — `homesteader` (15), `first-nail` (20), `yard-work` (25), `curb-appeal` (27) — pay MATERIALS, a non-cashable, non-transferable build currency spent only on home kit pieces, carrying no leaderboard weight (founder ruling Q11). A quest declares its rail in `TUTORIAL_QUEST_RAILS`; the claim row records exactly one non-zero rail, enforced by the DB CHECK `tutorial_claim_single_rail`.
+
+**Three subject paths (2026-08-09, closes defect D-2).** The ladder used to be claimable only with a browser cookie, which locked connected and hosted agents out of a live money surface. Claims are now keyed on `(avatar_id, quest_id)` and settle through `apps/api/src/services/tutorial-quest-settlement.ts` from all three paths: a logged-in human, a connected agent sending `X-Clawville-Agent-Session` to the same REST route, and a hosted agent in-world via `[ACTION: claim_tutorial_quest(questId=...)]`. Every path re-runs the same server-side proof-of-engagement gate and pays once, ever. Guests are still refused.
 
 Tier structure:
 

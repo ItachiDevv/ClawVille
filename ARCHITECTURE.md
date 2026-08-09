@@ -1,6 +1,59 @@
 # ClawVille — Architecture
 
-**Last Audited: 2026-08-08 (Land P2 round 2 — executor/UI/protocol v46).**
+**Last Audited: 2026-08-09 (Land gamification P4b/P5a/P6 — material ledger,
+structure-type pricing, tutorial-ladder parity, protocol v47).** Three changes.
+
+**(1) Material ledger (P4b).** Migration `0053_land_materials.sql` adds
+`avatar_material_balances` (ONE pooled non-negative balance per avatar, founder
+ruling Q4) and `salvage_claim_receipts` (idempotency receipt for the salvage
+loop, shipped ahead of its routes so the contract is frozen before anything
+writes to it). `apps/api/src/services/material-ledger.ts` is the SOLE writer, in
+the same spirit as `claw-token-ledger`: standalone calls take the per-subject
+stack (`withKeyedMutex` outer, `pg_advisory_xact_lock` inner, one transaction),
+composed calls inherit the caller's locks, and the debit is a CONDITIONAL
+DECREMENT so an unaffordable spend writes nothing. Materials have no provenance
+tags, no transfer path, no exit rail, and no leaderboard weight, so they never
+touch the vCLAW machinery. `SALVAGE_OWNER_DAILY_CLAIM_CAP = 120` (Q2) lands in
+`packages/shared/src/constants/land-salvage.ts`.
+
+**(2) Structure-type pricing (P5a, founder ruling Q3).** Kit-piece fees and the
+structure upgrade ladder are now keyed by structure type:
+`KIT_PIECE_FEE_CT_BY_STRUCTURE` (home 5/20, shop unchanged 15/60) with
+`kitPieceFeeCt()`, and `STRUCTURE_UPGRADE_COSTS_BY_TYPE` (home Lv2 free / Lv3
+900; shop and both Lv4/Lv5 rungs unchanged) with `structureUpgradeCostCt()`.
+`routes/land.ts` derives both from the LOCKED `land_structures` row — the piece
+path widens its existing `FOR UPDATE` select by one column and takes no new
+lock — and both ledger legs stamp `structureType`. A free home Lv2 skips the
+debit and the treasury credit entirely while keeping the level write, the
+`land_upgrades` audit row, and the idempotency key, so it is as replay-safe as a
+paid upgrade; both upgrade REPLAY branches report the type-keyed price.
+`GET /api/land/tiers` gains `upgradeCostsByType` and keeps `upgradeCosts` at the
+unchanged shop ladder, so no client breaks on the wire. The two flat exports are
+deprecated aliases resolving to the SHOP row for the callers with no structure
+type in scope (the yard-editor price chip, the guest demo sandbox).
+
+**(3) Tutorial-ladder three-path parity (P6) — closes live defect D-2.** The
+26-quest / 1,585 vCLAW corpus was cookie-gated and human-only. Migration
+`0054_tutorial_claim_avatar_authority.sql` moves authority from the user to the
+AVATAR (`user_id` nullable, unique index on `(avatar_id, quest_id)` created
+BEFORE the old one drops), adds `materials_credited`, and adds a single-rail
+CHECK; a preflight PROVES collision freedom on the live table and refuses the
+file otherwise. `apps/api/src/services/tutorial-quest-settlement.ts` owns BOTH
+the proof-of-engagement gate (moved verbatim out of the route) and the two-rail
+settlement, because the `[ACTION:]` executor has no Hono context and cannot
+reuse a route body — this is what makes the three subject paths one
+implementation. `POST /api/quests/tutorial/:id/claim` and
+`GET /api/quests/tutorial/claims` now run
+`requireAuthOrAgentSession -> requireLedgerCapableIdentity ->
+requireNonGuestIdentity`, and the read is keyed on the avatar. Four tier-10 land
+quests pay MATERIALS with predicates over canonical land state. New whitelisted
+verb `claim_tutorial_quest(questId)`; `PROTOCOL_VERSION` 46 -> 47 with the
+manual, Nori, and the orientation constant updated in the same diff. **PARITY:**
+human path authed REST; connected-agent path the same REST route with
+`X-Clawville-Agent-Session`; hosted path the `[ACTION:]` verb — all three call
+`settleTutorialQuestClaim`, binding settlement to the resolved bound avatar.
+
+**Prior Last Audited: 2026-08-08 (Land P2 round 2 — executor/UI/protocol v46).**
 `npc-simulation.ts` admits `claim_parcel`, `prepay_rent`, and `release_parcel`
 only after the existing autonomous-cove identity resolver proves a live,
 ledger-capable bound avatar (including the server-owned house-agent binding).
