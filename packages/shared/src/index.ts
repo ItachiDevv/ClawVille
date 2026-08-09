@@ -120,6 +120,9 @@ export * from './constants/land-economy';
 
 // Land P3 stage A — render-agnostic kit catalog, ladder, fees, and grid rules.
 export * from './constants/land-kit';
+// Land gamification P4b — seabed-salvage daily caps (the founder-ratified
+// per-avatar and per-owner claim bounds the material ledger settles against).
+export * from './constants/land-salvage';
 // Land Showroom (2026-06-18) — deterministic ~15 starter-lot showroom (FOR RENT model buildings).
 // Client-only decorative layer; no DB dependency.
 export * from './constants/land-showroom';
