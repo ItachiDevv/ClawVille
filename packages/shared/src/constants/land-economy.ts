@@ -250,6 +250,26 @@ export function structureUpgradeCostCt(
 export const STRUCTURE_UPGRADE_COSTS: readonly number[] =
   STRUCTURE_UPGRADE_COSTS_BY_TYPE.shop;
 
+/**
+ * Weekly rent for ONE shop service-listing slot, in whole vCLAW (founder ruling
+ * Q3). This is the recurring sink that funds the home-side giveback: home piece
+ * fees dropped to a third and the home Lv2 upgrade became free, which is a
+ * ~20,400 CT one-time cost across 10 commerce players. At 100% uptake this
+ * recovers it in about 1.3 weeks; at 25%, about 5.
+ *
+ * Charged by `service-slot-rent-sweeper.ts`, never at listing creation — a new
+ * listing is granted its first week so a shop is never billed before it has had
+ * a chance to sell anything.
+ */
+export const SERVICE_LISTING_SLOT_RENT_CT_WEEKLY = 400;
+
+/**
+ * Weekly rent for the PREMIUM featured placement, in whole vCLAW. Charged on a
+ * cursor entirely separate from the slot rent, so a shop that can afford its
+ * slot but not its feature keeps selling and only loses the placement.
+ */
+export const SERVICE_FEATURED_SLOT_RENT_CT_WEEKLY = 1200;
+
 /** Max structure level (Lv5). Matches the `land_structures.level BETWEEN 1 AND 5` DB check. */
 export const MAX_STRUCTURE_LEVEL = 5;
 

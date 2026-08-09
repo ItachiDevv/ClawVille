@@ -1015,6 +1015,13 @@ process.on('uncaughtException', (err) => {
   try {
     const { startLandRentSweeper } = await import('./services/land-rent-sweeper');
     startLandRentSweeper();
+    // 2026-08-09 — the SHOP-side recurring sink (land gamification P5a). Rents
+    // each shop service-listing slot weekly and the premium featured placement
+    // separately. This is what funds the home-side piece/upgrade giveback.
+    const { startServiceSlotRentSweeper } = await import(
+      './services/service-slot-rent-sweeper'
+    );
+    startServiceSlotRentSweeper();
   } catch (err) {
     console.error('[API] Land rent sweeper failed to start:', err);
   }
@@ -1727,6 +1734,10 @@ async function gracefulShutdown(signal: string) {
     try {
       const { stopLandRentSweeper } = await import('./services/land-rent-sweeper');
       stopLandRentSweeper();
+      const { stopServiceSlotRentSweeper } = await import(
+        './services/service-slot-rent-sweeper'
+      );
+      stopServiceSlotRentSweeper();
     } catch {
       // If the sweeper module failed to load earlier, there's nothing to stop.
     }

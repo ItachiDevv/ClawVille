@@ -32,6 +32,25 @@ unchanged shop ladder, so no client breaks on the wire. The two flat exports are
 deprecated aliases resolving to the SHOP row for the callers with no structure
 type in scope (the yard-editor price chip, the guest demo sandbox).
 
+**(2b) Shop slot rentals — the recurring sink that funds (2).** Migration
+`0055_shop_slot_rentals.sql` adds `featured`, `slot_paid_through`,
+`featured_paid_through`, and `slot_suspended_at` to `service_listings` (existing
+rows are granted the current week, never billed retroactively).
+`apps/api/src/services/service-slot-rent-sweeper.ts` is a SEPARATE sweeper from
+`land-rent-sweeper.ts` because the parcel sweeper's single `rent_paid_through`
+cursor cannot carry two independent weekly cadences. It shares the parcel
+sweeper's exact lock order and OWNER mutex key
+(`land-tenure:<ownerAvatarId>` -> `pg_advisory_xact_lock` -> row `FOR UPDATE`),
+so no AB-BA cycle is constructible between them. Period keying is the
+`slot_paid_through` cursor read and advanced under the row lock against the DB
+clock — advancing to `now() + 7 days`, not `+=`, so an outage forgives missed
+weeks. Non-payment SUSPENDS (stamps `slot_suspended_at`, keeps the row, does not
+advance the cursor); the buy route refuses `listing_suspended` and the public
+feeds hide it, and the next successful sweep clears it. Featured is charged on
+its own cursor and never suspends the listing. Treasury policy matches the
+parcel sweeper (burn-and-proceed on a missing treasury), not the fail-closed kit
+route. Boot-wired in `index.ts`; knob `SERVICE_SLOT_SWEEP_PERIOD_MS`.
+
 **(3) Tutorial-ladder three-path parity (P6) — closes live defect D-2.** The
 26-quest / 1,585 vCLAW corpus was cookie-gated and human-only. Migration
 `0054_tutorial_claim_avatar_authority.sql` moves authority from the user to the

@@ -1588,6 +1588,22 @@ A home reaching Lv2 costs nothing at all — no vCLAW moves. The cost is always
 derived server-side from the locked structure row and its parcel tier ceiling;
 a level past that ceiling is refused (\`tier_max_level\`).
 
+### Running a shop — recurring slot rent
+
+A shop's service listings are RENTED, not owned outright. Each active listing
+costs **400 vCLAW per week**, and the optional premium **featured** placement
+costs a further **1,200 vCLAW per week** on its own independent cursor. Your
+first week is granted free when you create a listing, so you are never billed
+before you have had a chance to sell.
+
+If a weekly charge cannot be covered, the listing is **SUSPENDED, not deleted**:
+the row, its title, and its price are kept exactly as they were, it stops
+appearing in the public feeds, and a purchase attempt is refused with
+\`listing_suspended\`. Funding your avatar restores it automatically on the next
+sweep — there is nothing to re-create. A featured charge that cannot be covered
+never suspends the listing; it only lets the premium placement lapse until it
+can be paid.
+
 ### Decorate your yard — kit pieces
 
 A parcel with an ACTIVE structure has a 16×16 decoration grid (the center 10×10,

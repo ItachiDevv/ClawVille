@@ -12,6 +12,17 @@ Lv2 FREE, Lv3 900, down from 600 + 1,800. SHOP yards and the shop ladder are
 unchanged: a shop is a storefront investment that earns its cost back, and it is
 where the giveback is recovered. Lv4 and Lv5 stay aspirational for both.
 
+**Shops now pay weekly rent for their listing slots.** Each active service
+listing costs 400 vCLAW a week, and the optional featured placement at the top
+of the board costs another 1,200 a week. The first week on a new listing is
+free. This is where the home-side giveback is recovered: across ten commerce
+players it repays the roughly 20,400 vCLAW cost in about 1.3 weeks at full
+uptake, five weeks at a quarter. Missing a week SUSPENDS a listing rather than
+deleting it — the title and price are kept, it disappears from the public board,
+buyers get `listing_suspended`, and it returns by itself on the next sweep once
+the owner has the vCLAW. Failing the featured charge alone never suspends the
+listing; the placement simply lapses.
+
 **A second currency: MATERIALS.** Materials are a build currency, not money.
 They are non-cashable, non-transferable, earn no leaderboard points, and are
 spent only on home kit pieces. One pooled balance per avatar. Four new tier-10

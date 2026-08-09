@@ -270,6 +270,7 @@ import {
   eq,
   and,
   desc,
+  isNull,
   sql,
 } from '@clawville/database';
 import {
@@ -1235,6 +1236,10 @@ interface ServiceListingDTO {
   priceCt: number;
   status: 'active' | 'paused' | 'delisted';
   platformFeeBps: number;
+  /** Featured placement is LIVE (intent flag AND an unexpired paid-through). */
+  featured: boolean;
+  /** Slot rent lapsed — kept and restorable, but not sellable (P5a). */
+  suspended: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -1317,6 +1322,13 @@ function toServiceListingDTO(row: typeof serviceListings.$inferSelect): ServiceL
     priceCt: row.priceCt,
     status: row.status,
     platformFeeBps: row.platformFeeBps,
+    // "Featured right now" is the INTENT flag AND a live paid-through — the
+    // flag alone never grants placement.
+    featured:
+      row.featured
+      && row.featuredPaidThrough !== null
+      && new Date(row.featuredPaidThrough).getTime() > Date.now(),
+    suspended: row.slotSuspendedAt !== null,
     // toIso (not a bare .toISOString()) so the mapper is robust even if a caller
     // ever feeds it a raw-execute row (string dates) rather than a typed one.
     createdAt: toIso(row.createdAt),
@@ -4045,9 +4057,14 @@ landRoutes.post(
         created_at: string;
         updated_at: string;
       }>(
+        // `slot_paid_through` grants the FIRST week free (land gamification
+        // P5a): a shop is never billed before it has had a chance to sell.
+        // The sweeper charges 400/week from then on.
         sql`INSERT INTO service_listings
-              (structure_id, owner_avatar_id, kind, title, description, price_ct, status)
-            VALUES (${structureId}, ${avatarId}, 'peer', ${title}, ${description ?? null}, ${priceCt}, 'active')
+              (structure_id, owner_avatar_id, kind, title, description, price_ct, status,
+               slot_paid_through)
+            VALUES (${structureId}, ${avatarId}, 'peer', ${title}, ${description ?? null}, ${priceCt}, 'active',
+                    now() + make_interval(days => ${RENT_PERIOD_DAYS}))
             RETURNING id, structure_id, owner_avatar_id, kind, title, description, price_ct, status, platform_fee_bps, created_at, updated_at`,
       );
       const row = insertRows[0]!;
@@ -4061,6 +4078,9 @@ landRoutes.post(
           title: row.title,
           description: row.description,
           priceCt: Number(row.price_ct),
+          // A brand-new listing is never featured and never suspended.
+          featured: false,
+          suspended: false,
           status: row.status,
           platformFeeBps: Number(row.platform_fee_bps),
           createdAt: toIso(row.created_at),
@@ -4182,7 +4202,15 @@ landRoutes.get('/structures/:structureId/services', async (c) => {
   const rows = await db
     .select()
     .from(serviceListings)
-    .where(and(eq(serviceListings.structureId, structureId), eq(serviceListings.status, 'active')));
+    .where(
+      and(
+        eq(serviceListings.structureId, structureId),
+        eq(serviceListings.status, 'active'),
+        // A slot-rent-suspended listing stays in the table but leaves the
+        // storefront until its owner funds the next week.
+        isNull(serviceListings.slotSuspendedAt),
+      ),
+    );
 
   const payload: ServiceListingsPayload = { listings: rows.map(toServiceListingDTO) };
   setServiceListingsCache(cacheKey, payload);
@@ -4248,8 +4276,10 @@ landRoutes.get('/services', async (c) => {
   const rows = await db
     .select()
     .from(serviceListings)
-    .where(eq(serviceListings.status, 'active'))
-    .orderBy(desc(serviceListings.createdAt))
+    .where(and(eq(serviceListings.status, 'active'), isNull(serviceListings.slotSuspendedAt)))
+    // Paid featured placement floats to the top of the public board; that is
+    // the entire product the 1,200/week buys.
+    .orderBy(desc(serviceListings.featuredPaidThrough), desc(serviceListings.createdAt))
     .limit(limit + 1)
     .offset(offset);
 
@@ -4271,7 +4301,7 @@ landRoutes.get('/services', async (c) => {
 //   400 → { error: 'invalid_body' | 'invalid_listing_id' | 'insufficient_clawtokens' }
 //   401/403 as elsewhere
 //   404 → { error: 'listing_not_found' }
-//   409 → { error: 'listing_not_active' | 'not_a_peer_listing' | 'structure_unavailable'
+//   409 → { error: 'listing_not_active' | 'listing_suspended' | 'not_a_peer_listing' | 'structure_unavailable'
 //                  | 'self_purchase' | 'idempotency_key_conflict' | 'concurrent_retry' }
 //     not_a_peer_listing   = a non-CT (USDC 'partner') listing can't settle here;
 //     structure_unavailable = the seller's shop was archived/evicted or the parcel
@@ -4375,8 +4405,10 @@ landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, requireLe
         title: string;
         price_ct: number | string;
         status: string;
+        slot_suspended_at: string | Date | null;
       }>(
-        sql`SELECT id, structure_id, owner_avatar_id, kind, title, price_ct, status
+        sql`SELECT id, structure_id, owner_avatar_id, kind, title, price_ct, status,
+                   slot_suspended_at
             FROM service_listings
             WHERE id = ${listingId}
             FOR UPDATE`,
@@ -4387,6 +4419,12 @@ landRoutes.post('/services/:listingId/buy', requireAuthOrAgentSession, requireLe
       }
       if (listing.status !== 'active') {
         throw new HTTPException(409, { message: 'listing_not_active' });
+      }
+      // Slot rent lapsed (land gamification P5a). The listing is SUSPENDED, not
+      // deleted: the row, title, and price are intact and the next successful
+      // sweep restores it, but it cannot be bought meanwhile.
+      if (listing.slot_suspended_at !== null) {
+        throw new HTTPException(409, { message: 'listing_suspended' });
       }
       // (2a) CT-TIER GUARD (audit ADVISORY→FIX #2) — only a 'peer' listing
       // settles in CT. A future USDC 'partner' listing must NEVER be paid with
