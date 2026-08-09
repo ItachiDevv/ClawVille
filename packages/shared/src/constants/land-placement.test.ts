@@ -3,8 +3,10 @@ import {
   KIT_CATALOG,
   KIT_GRID_SIZE,
   KIT_LEVEL_RULES,
+  KIT_FALLBACK_STACK_SURFACE_WU,
   KIT_MAX_STACK_HEIGHT_WU,
   KIT_PIECE_RENDER,
+  LAND_PARCELS,
   advertisedRotationSteps,
   evaluatePlacement,
   getParcelFootprintWu,
@@ -14,12 +16,14 @@ import {
   legalPlacements,
   maxStackHeightWu,
   resolveFootprint,
+  resolveParcelPlacements,
   shellEnvelopeHalfWu,
   structureLevelScale,
   type KitPieceKey,
   type LandTier,
   type PlacedFootprint,
   type PlacementContext,
+  type PlacementRequest,
 } from '../index';
 
 /** The three tiers that actually generate parcels. */
@@ -475,5 +479,114 @@ describe('grandfathering (Q5)', () => {
       'legacy-2',
     );
     expect(orphan).toBeNull();
+  });
+});
+
+describe('plot growth separation (§5.1)', () => {
+  it('leaves every one of the 1,540 parcel pairs disjoint, with ≥ 54 wu slack', () => {
+    // starter 34 → 38 t and c 34 → 52 t are real world-geometry changes. If any
+    // pair of parcels overlapped, two players would own the same ground and the
+    // kit predicate would happily place pieces in the intersection.
+    let minSlack = Number.POSITIVE_INFINITY;
+    let bindingPair = '';
+    let pairs = 0;
+
+    for (let i = 0; i < LAND_PARCELS.length; i++) {
+      for (let j = i + 1; j < LAND_PARCELS.length; j++) {
+        pairs++;
+        const a = LAND_PARCELS[i]!;
+        const b = LAND_PARCELS[j]!;
+        // Chebyshev gap between two axis-aligned squares: they are disjoint iff
+        // they separate on EITHER axis, so the slack is the better of the two.
+        const gapX = Math.abs(a.cx - b.cx) - (a.size + b.size) / 2;
+        const gapZ = Math.abs(a.cz - b.cz) - (a.size + b.size) / 2;
+        const slack = Math.max(gapX, gapZ);
+        if (slack < minSlack) {
+          minSlack = slack;
+          bindingPair = `${a.id} vs ${b.id}`;
+        }
+      }
+    }
+
+    expect(pairs).toBe(1540);
+    expect(minSlack).toBeGreaterThan(0);
+    // §5.1 names the binding case and its slack: 1.6875 t = 54 wu.
+    expect(minSlack).toBeCloseTo(54, 4);
+    expect(bindingPair).toContain('parcel-starter-0');
+  });
+
+  it('keeps every parcel inside the playable grid', () => {
+    const halfWorldWu = 352 * 32;
+    for (const parcel of LAND_PARCELS) {
+      const half = parcel.size / 2;
+      expect(Math.abs(parcel.cx) + half).toBeLessThanOrEqual(halfWorldWu);
+      expect(Math.abs(parcel.cz) + half).toBeLessThanOrEqual(halfWorldWu);
+    }
+  });
+});
+
+describe('resolveParcelPlacements — the render layer contract (Q5)', () => {
+  const tier: LandTier = 'starter';
+
+  function rowsFor(...requests: PlacementRequest[]) {
+    return requests.map((req, index) => ({ ...req, pieceRef: `row-${index}` }));
+  }
+
+  it('resolves a supported stack to real supporter heights, in any input order', () => {
+    const ground = legalPlacements('deck-plank', tier, 3).find((p) => p.rotationStep === 0)!;
+    const rows = rowsFor(
+      { ...ground, stackLevel: 2 },
+      { ...ground, stackLevel: 1 },
+    );
+    const resolved = resolveParcelPlacements(rows, tier);
+    expect(resolved).toHaveLength(2);
+    // Sorted lowest-first internally, so the supporter always resolves first.
+    expect(resolved[0]!.footprint.minY).toBe(0);
+    expect(resolved[1]!.footprint.minY).toBe(40);
+    expect(resolved.every((entry) => !entry.unsupported)).toBe(true);
+  });
+
+  it('renders an orphaned stacked row floating instead of dropping it', () => {
+    const anchor = legalPlacements('lantern-post', tier, 3)[0]!;
+    const resolved = resolveParcelPlacements(rowsFor({ ...anchor, stackLevel: 2 }), tier);
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]!.unsupported).toBe(true);
+    expect(resolved[0]!.footprint.minY).toBe(KIT_FALLBACK_STACK_SURFACE_WU);
+    expect(resolved[0]!.footprint.stackLevel).toBe(2);
+  });
+
+  it('keeps a row the current predicate refuses (grandfathering)', () => {
+    // Anchored inside the shell reservation — illegal to write, still drawn.
+    const illegal = { pieceKey: 'path-stone' as KitPieceKey, gridX: 8, gridY: 8, rotationStep: 0, stackLevel: 1 };
+    expect(evaluatePlacement(illegal, emptyContext(tier, 3)).ok).toBe(false);
+    const resolved = resolveParcelPlacements(rowsFor(illegal), tier);
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]!.footprint.minY).toBe(0);
+  });
+
+  it('leaves the piece above a removed supporter floating, with no cascade (§7.3)', () => {
+    const ground = legalPlacements('deck-plank', tier, 3).find((p) => p.rotationStep === 0)!;
+    const withSupport = resolveParcelPlacements(
+      rowsFor({ ...ground, stackLevel: 1 }, { ...ground, pieceKey: 'bench-wood', stackLevel: 2 }),
+      tier,
+    );
+    expect(withSupport).toHaveLength(2);
+
+    // Now remove the supporter, exactly as a `remove` mutation would.
+    const withoutSupport = resolveParcelPlacements(
+      rowsFor({ ...ground, pieceKey: 'bench-wood', stackLevel: 2 }),
+      tier,
+    );
+    expect(withoutSupport).toHaveLength(1);
+    expect(withoutSupport[0]!.unsupported).toBe(true);
+    expect(withoutSupport[0]!.footprint.minY).toBeGreaterThan(0);
+  });
+
+  it('drops only rows with no drawable geometry at all', () => {
+    const resolved = resolveParcelPlacements(
+      rowsFor({ pieceKey: 'nope' as KitPieceKey, gridX: 0, gridY: 0, rotationStep: 0, stackLevel: 1 }),
+      tier,
+    );
+    expect(resolved).toHaveLength(0);
   });
 });
