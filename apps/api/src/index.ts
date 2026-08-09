@@ -19,6 +19,7 @@ import { openclawRoutes } from './routes/openclaw';
 import { activityRoutes } from './routes/activity';
 import { activitiesV2Routes } from './routes/activities';
 import { landRoutes } from './routes/land';
+import { landSalvageRoutes } from './routes/land-salvage';
 import { activityRoomManager } from './services/activity/activity-room-manager';
 import {
   handleWagerRoomAborted,
@@ -318,6 +319,9 @@ app.route('/api/activities', activitiesV2Routes);
 // Land Economy — Phase 1 / Slice A: free starter-parcel claim + read seams.
 // PARITY (Rule E5): writes bind to identity.avatarId (human cookie OR agent
 // session → bound avatar). No ledger touch this slice (free claim).
+// Seabed salvage (P7b). Mounted BEFORE /api/land so its own '/salvage/*'
+// paths resolve here rather than falling through to land.ts's parcel routes.
+app.route('/api/land/salvage', landSalvageRoutes);
 app.route('/api/land', landRoutes);
 app.route('/api/research', researchSseRoutes);
 app.route('/api/research', researchApiRoutes);
