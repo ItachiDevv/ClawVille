@@ -106,21 +106,55 @@ rather than vanishing. Removing a supporter leaves the piece above it floating
 with no cascade, deliberately, since the alternative relocates or deletes paid
 rows. Only a row with no drawable geometry at all is skipped.
 
-**Render budget (section 4.4).** Per frame the layer ranks chunks by distance,
-admits the **nearest unconditionally** (the retention floor), then admits each
-further chunk only while `sum(distinct draws) <= KIT_VISIBLE_DRAW_BUDGET (60)`
-and `sum(triangles) <= 250,000`, capped at 4 chunks. A heavy near chunk is
-SKIPPED rather than breaking the loop, so it cannot hide a cheap further one.
-Chunks are priced from exact source triangle counts captured as each GLB resolves
-(`SOURCE_TRIANGLES`), so admission never waits a frame for merge stats to catch
-up. The farthest-first parcel drop is React state, not a per-frame decision,
-because dropping a parcel changes merged geometry and re-merging every frame
-would defeat the budget it protects; it can never take the nearest parcel. With
-the shipping catalog it never fires (223,600 authored triangles against 250,000,
-and at most 30 keys against a 60 draw budget), so it exists for the catalog
-growth Q9 deferred the atlas for. Piece overhang padding on the chunk sphere is
-now `KIT_MAX_PIECE_FOOTPRINT_WU / 2`, manifest-derived and parcel-size
-independent.
+**Render budget (section 4.4).** The decision half lives in
+`apps/web/src/lib/three/land-kit-admission.ts`, which imports neither React nor
+three, so the whole mechanism is unit-tested in `land-kit-admission.test.ts`
+rather than reasoned about. That split exists because the parcel drop is a
+feedback loop: its output changes the snapshot its next input is derived from,
+and the first implementation of it oscillated.
+
+Per frame the layer ranks chunks by distance, admits the **nearest
+unconditionally** (the retention floor), then admits each further chunk only
+while `sum(distinct draws) <= KIT_VISIBLE_DRAW_BUDGET (60)` and
+`sum(triangles) <= 250,000`, capped at 4 chunks. A heavy near chunk is SKIPPED
+rather than breaking the loop, so it cannot hide a cheap further one.
+
+**Pricing is asynchronous, and the budget subscribes to it.** A piece key costs
+0 until its GLB resolves, so a cold visit to a region reaches the snapshot
+builder with every key unpriced and the chunk looks free. `priceKitSource`
+records the exact count as each source resolves and bumps a revision;
+`LandKitPieces` reads that revision through `useSyncExternalStore` and the
+snapshot memo depends on it, so one recompute per key picks up the real weight.
+Without that subscription the memo only depended on the placed-piece map, and a
+player who walked around without editing sat in a mispriced admission state for
+the whole session while the drop valve could never fire against an overage it
+had never priced. The recompute does NOT cause a re-merge: `revision` (the merge
+memo's key) is derived from placement rows only, so a price change updates
+`triangles` and leaves every `(chunk, pieceKey)` mesh alone.
+
+**The farthest-first parcel drop decides from UNFILTERED costs and holds its
+membership within a data revision.** Both rules are load-bearing. Deciding from
+the current render snapshot would read the post-drop residue, so a successful
+drop erased its own justification and flipped every render: drop, snapshot
+recomputes under budget, un-drop, back over budget. Every flip changed the
+chunk's content revision, failed the per-`(chunk, pieceKey)` merge memo, and
+forced a full `mergeGeometries` rebuild plus visible pop-in, which is the exact
+per-frame re-merge the budget exists to prevent. So `computeChunkDrop` is handed
+every parcel in the chunk at full cost (`chunkParcelCosts`, built from the raw
+piece map and the pricing store), and re-derives membership only when the
+placed-piece data, the pricing revision, or the identity of the nearest chunk
+changes. Camera drift alone returns the previous set BY REFERENCE, so the caller
+skips the state write entirely. The one thing that always overrides the hold is
+the retention floor: the nearest parcel is never dropped and is re-admitted the
+moment a player walks onto a parcel that was dropped, which is a real change in
+what must be on screen rather than churn. The valve covers both budgets, since
+dropping a parcel removes its distinct keys as well as its triangles.
+
+With the shipping catalog the valve never fires (223,600 authored triangles
+against 250,000, and at most 30 keys against a 60 draw budget), so it exists for
+the catalog growth Q9 deferred the atlas for. Piece overhang padding on the
+chunk sphere is `KIT_MAX_PIECE_FOOTPRINT_WU / 2`, manifest-derived and
+parcel-size independent.
 
 Probe-enabled stage builds now expose `window.__LAND_KIT_STATS__` with
 `{ chunksResident, mergedMeshes, trianglesBaked, chunksVisible, visibleDraws,
@@ -155,6 +189,27 @@ the parcel body splits so the near-coplanar pad (`PAD_Y = FLOOR_Y + 0.9`) become
 a neutral tone and TIER COLOUR MOVES TO THE RAIL, and frames merge per
 (tier, availability) so a buyable plot is legible without its sign in view. Body
 draws go **3 to 9**, inside the section 5.7 3-11 budget.
+
+**TRACKED DEFERRAL — P4a deliverables NOT in the geometry lane (Rule E6).** The
+gamification pass's section 7 lists P4a as also delivering an `owned-vacant`
+sign category and a paid-row migration. Neither is in the geometry lane's diff,
+and neither is claimed anywhere above. Recording them here rather than letting a
+commit titled "P4a geometry activation" quietly redefine what P4a means:
+
+| Deferred item | State today | Owner condition |
+|---|---|---|
+| `owned-vacant` sign category (section 5.7: signs render only on `available`; layer range 3-9 to 3-11 draws, plus one `CanvasTexture`) | NOT shipped. `land-parcels.tsx` still filters signs to `status === 'available'`. Partly compensated: the parcel FRAME now colours per (tier, availability), so an owned plot is already distinguishable from a buyable one without its sign | Ships with the economy-lane merge round, or is explicitly rescoped by the founder. Do not close by pointing at the frame colouring alone, which is a legibility cue, not the sign category the spec names |
+| Paid-row migration | NOT shipped. No file under `packages/database/migrations/` in the geometry lane. Q5 makes this survivable by design: nothing is deleted, a now-illegal row keeps rendering, and the owner may move it free, so there is no data-loss clock on it | Same merge round. The economy lane owns migrations; the geometry lane is barred from `apps/api/**` and migration files |
+
+Also outstanding and NOT a geometry-lane item: the server write path
+(`apps/api/src/routes/land.ts`) still calls the anchor-cell-only
+`isCellPlaceable`, so `evaluatePlacement`'s footprint, rotation, and stacking
+rules are enforced in the editor but not yet on the server. Until that is
+repointed, the render layer is honouring a legality contract the write path does
+not, and `KIT_CHUNK_CEILING_Y` (372 wu) assumes a persisted `stackLevel` bound
+that nothing server-side currently guarantees. The economy lane owns that wiring;
+it must land in the same release window as this geometry work, since P3 is a
+Protected slice and is not complete without it.
 
 **Prior Last Audited: 2026-08-07 (Land P3 B1 public kit-piece render layer).**
 Placed kit decorations now hydrate the public, active-structure-only

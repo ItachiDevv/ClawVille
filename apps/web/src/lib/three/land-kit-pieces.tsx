@@ -22,7 +22,9 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from 'react';
 import { useGLTF } from '@react-three/drei';
@@ -48,6 +50,17 @@ import {
   fitKitPieceToManifest,
   kitGridToWorld,
 } from '@/lib/three/land-kit-assets';
+import {
+  EMPTY_DROP_SET,
+  admitsChunk,
+  computeChunkDrop,
+  getSourcePricingRevision,
+  priceKitSource,
+  sameMembers,
+  subscribeSourcePricing,
+  triangleCostOf,
+  type ParcelCost,
+} from '@/lib/three/land-kit-admission';
 import { extendLoaderWithMeshopt } from '@/lib/three/meshopt-loader-setup';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { useLandStore, type PlacedPiece } from '@/stores/land';
@@ -61,15 +74,12 @@ const KIT_CHUNK_VIEW_DISTANCE_SQ =
   KIT_CHUNK_VIEW_DISTANCE * KIT_CHUNK_VIEW_DISTANCE;
 const MAX_VISIBLE_CHUNKS = 4;
 
-/**
- * §4.4 budget (d): distinct merged draws the kit layer may submit globally.
- * One draw is one (admitted chunk, pieceKey) pair, because the merge unit is
- * `(chunk, pieceKey)` sharing that piece's cache-owned authored material.
- */
-export const KIT_VISIBLE_DRAW_BUDGET = 60;
-
-/** §4.4 budget (c): triangles the kit layer may submit globally. */
-export const KIT_SUBMITTED_TRIANGLE_BUDGET = 250_000;
+// The §4.4 budgets and the whole drop decision live in `land-kit-admission.ts`,
+// which imports neither React nor three so the feedback loop can be unit-tested.
+export {
+  KIT_SUBMITTED_TRIANGLE_BUDGET,
+  KIT_VISIBLE_DRAW_BUDGET,
+} from '@/lib/three/land-kit-admission';
 
 const KIT_RINGS = ['founder', 'starter', 'c'] as const;
 const KIT_QUADRANTS = [
@@ -175,6 +185,8 @@ interface KitChunkSnapshot {
   countByParcel: ReadonlyMap<string, number>;
   /** Exact submitted triangles for this chunk once every source has loaded. */
   triangles: number;
+  /** Which source-pricing generation `triangles` was costed against. */
+  pricingRevision: number;
 }
 
 function compareRenderPieces(a: RenderPiece, b: RenderPiece): number {
@@ -189,16 +201,25 @@ function compareRenderPieces(a: RenderPiece, b: RenderPiece): number {
 }
 
 /**
- * Source triangle count per piece key, filled in as each GLB resolves. Used to
- * price a chunk BEFORE its merges exist, so admission never has to wait a frame
- * for stats to catch up. The merge is a pure concatenation, so per-parcel and
- * per-chunk totals are exact rather than estimated.
+ * The exact per-key triangle pricing that `triangles` below is built from lives
+ * in `land-kit-admission.ts` — it is admission data, and keeping it beside the
+ * decision it feeds is what makes the async-pricing path testable. A price
+ * arriving late bumps `pricingRevision`, which this module subscribes to.
+ *
+ * A price change does NOT cause a re-merge: `revision` (the merge memo's key)
+ * is derived from placement rows only, so a recompute updates `triangles` while
+ * every `(chunk, pieceKey)` mesh is left alone.
  */
-const SOURCE_TRIANGLES = new Map<KitPieceKey, number>();
 
-function buildChunkSnapshots(
+/**
+ * `pricingRevision` is carried onto every snapshot rather than merely gating the
+ * memo, so a snapshot states which pricing generation it was costed against and
+ * a test can assert the recompute actually happened.
+ */
+export function buildChunkSnapshots(
   pieces: ReadonlyMap<string, readonly PlacedPiece[]>,
   droppedParcels: ReadonlySet<string>,
+  pricingRevision: number,
 ): readonly KitChunkSnapshot[] {
   const rowsByChunk = KIT_CHUNKS.map(() => [] as RenderPiece[]);
 
@@ -250,7 +271,7 @@ function buildChunkSnapshots(
       if (keyedRows) keyedRows.push(row);
       else byPieceKey.set(row.pieceKey, [row]);
       countByParcel.set(row.parcelCode, (countByParcel.get(row.parcelCode) ?? 0) + 1);
-      triangles += SOURCE_TRIANGLES.get(row.pieceKey) ?? 0;
+      triangles += triangleCostOf(row.pieceKey);
     }
     return {
       revision: rows
@@ -269,6 +290,7 @@ function buildChunkSnapshots(
       byPieceKey,
       countByParcel,
       triangles,
+      pricingRevision,
     };
   });
 }
@@ -589,13 +611,17 @@ function KitPieceSource({
     [pieceKey, scene],
   );
 
-  // Price this piece for chunk admission the moment its geometry exists, so a
-  // chunk can be budgeted before any of its merges have been built.
-  const positionCount = source.geometry.getAttribute('position')?.count ?? 0;
-  SOURCE_TRIANGLES.set(
-    pieceKey,
-    Math.floor((source.geometry.getIndex()?.count ?? positionCount) / 3),
-  );
+  // Price this piece for chunk admission the moment its geometry exists. This
+  // runs in an effect, not the render body: `priceKitSource` notifies
+  // subscribers, and notifying during render would be a state update inside
+  // another component's render pass.
+  useEffect(() => {
+    const positionCount = source.geometry.getAttribute('position')?.count ?? 0;
+    priceKitSource(
+      pieceKey,
+      Math.floor((source.geometry.getIndex()?.count ?? positionCount) / 3),
+    );
+  }, [pieceKey, source]);
 
   useEffect(
     () => () => {
@@ -737,64 +763,38 @@ function createChunkGroups(): readonly THREE.Group[] {
   });
 }
 
-const EMPTY_DROP_SET: ReadonlySet<string> = new Set();
-
-function sameParcelSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
-  if (a.size !== b.size) return false;
-  for (const value of a) if (!b.has(value)) return false;
-  return true;
-}
-
 /**
- * §4.4 farthest-first parcel drop, the last-resort valve under chunk admission.
- *
- * Fires only when the NEAREST chunk exceeds a budget by itself — every further
- * chunk is already skipped by the admission loop, so nothing else can be over.
- * Within that chunk it drops whole parcels, farthest from the camera first, and
- * NEVER the nearest parcel: dropping the yard the player is standing in would
- * be the one failure a render budget must not cause.
- *
- * With the shipping catalog this returns the empty set — 223,600 authored
- * triangles against a 250,000 ceiling and at most 30 keys against a 60 draw
- * budget. It is written for the catalog growth Q9 deferred the atlas for.
+ * The UNFILTERED cost of every parcel in one chunk, as `computeChunkDrop` needs
+ * it. Built from the raw placed-piece map and the pricing store, never from the
+ * already-filtered render snapshot: deciding from the filtered view is what let
+ * a successful drop erase its own justification and oscillate every render.
  */
-function computeParcelDrop(
-  nearestChunkIndex: number,
-  nearestParcelCode: string | null,
-  snapshots: readonly KitChunkSnapshot[],
+function chunkParcelCosts(
+  chunkIndex: number,
   pieces: ReadonlyMap<string, readonly PlacedPiece[]>,
-): ReadonlySet<string> {
-  if (nearestChunkIndex < 0) return EMPTY_DROP_SET;
-  const snapshot = snapshots[nearestChunkIndex]!;
-  if (
-    snapshot.triangles <= KIT_SUBMITTED_TRIANGLE_BUDGET
-    && snapshot.byPieceKey.size <= KIT_VISIBLE_DRAW_BUDGET
-  ) {
-    return EMPTY_DROP_SET;
+): ParcelCost[] {
+  const costs: ParcelCost[] = [];
+  for (const parcel of KIT_CHUNKS[chunkIndex]!.parcels) {
+    const parcelPieces = pieces.get(parcel.id);
+    if (!parcelPieces || parcelPieces.length === 0) continue;
+    let triangles = 0;
+    const pieceKeys = new Set<string>();
+    for (const piece of parcelPieces) {
+      if (!KIT_PIECE_KEY_SET.has(piece.pieceKey)) continue;
+      triangles += triangleCostOf(piece.pieceKey);
+      pieceKeys.add(piece.pieceKey);
+    }
+    if (pieceKeys.size === 0) continue;
+    const dx = _kitCameraPosition.x - parcel.cx;
+    const dz = _kitCameraPosition.z - parcel.cz;
+    costs.push({
+      parcelCode: parcel.id,
+      triangles,
+      pieceKeys: [...pieceKeys],
+      distanceSq: dx * dx + dz * dz,
+    });
   }
-
-  const candidates = KIT_CHUNKS[nearestChunkIndex]!.parcels
-    .filter((parcel) => parcel.id !== nearestParcelCode && pieces.has(parcel.id))
-    .map((parcel) => {
-      const dx = _kitCameraPosition.x - parcel.cx;
-      const dz = _kitCameraPosition.z - parcel.cz;
-      let triangles = 0;
-      for (const piece of pieces.get(parcel.id) ?? []) {
-        if (!KIT_PIECE_KEY_SET.has(piece.pieceKey)) continue;
-        triangles += SOURCE_TRIANGLES.get(piece.pieceKey as KitPieceKey) ?? 0;
-      }
-      return { id: parcel.id, distance: dx * dx + dz * dz, triangles };
-    })
-    .sort((a, b) => b.distance - a.distance);
-
-  const dropped = new Set<string>();
-  let triangles = snapshot.triangles;
-  for (const candidate of candidates) {
-    if (triangles <= KIT_SUBMITTED_TRIANGLE_BUDGET) break;
-    dropped.add(candidate.id);
-    triangles -= candidate.triangles;
-  }
-  return dropped.size === 0 ? EMPTY_DROP_SET : dropped;
+  return costs;
 }
 
 /**
@@ -833,11 +833,33 @@ export default function LandKitPieces() {
    * budget, so the valve exists for a future catalog rather than for today.
    */
   const [droppedParcels, setDroppedParcels] = useState<ReadonlySet<string>>(EMPTY_DROP_SET);
+  /**
+   * Bumps once per piece key as its GLB resolves and its real triangle count
+   * becomes known. Without this the admission budget would keep pricing a cold
+   * region's pieces at 0 for the whole session.
+   */
+  const pricingRevision = useSyncExternalStore(
+    subscribeSourcePricing,
+    getSourcePricingRevision,
+    getSourcePricingRevision,
+  );
   const snapshots = useMemo(
-    () => buildChunkSnapshots(pieces, droppedParcels),
-    [pieces, droppedParcels],
+    () => buildChunkSnapshots(pieces, droppedParcels, pricingRevision),
+    [pieces, droppedParcels, pricingRevision],
   );
   const chunkGroups = useMemo(createChunkGroups, []);
+
+  /**
+   * The data generation the current drop set was derived from. Membership is
+   * re-derived ONLY when this changes; camera movement alone must never churn
+   * it, or every flip would fail the per-`(chunk, pieceKey)` merge memo and
+   * rebuild the chunk's geometry.
+   */
+  const dropBasisRef = useRef<{
+    pieces: ReadonlyMap<string, readonly PlacedPiece[]> | null;
+    pricingRevision: number;
+    chunkIndex: number;
+  }>({ pieces: null, pricingRevision: -1, chunkIndex: -1 });
 
   /** Persisted rows per parcel — the denominator of the nearest-yard assertion. */
   const persistedByParcel = useMemo(() => {
@@ -928,20 +950,37 @@ export default function LandKitPieces() {
       // ITS OWN can force this, because the chunk loop already skips any
       // further chunk that would not fit. The nearest parcel is never a
       // candidate — that is the retention floor, stated as code.
-      const nextDrop = computeParcelDrop(
-        nearestChunkIndex,
-        nearestParcelCode,
-        snapshots,
-        pieces,
-      );
-      if (!sameParcelSet(nextDrop, droppedParcels)) {
+      //
+      // Costs come from `chunkParcelCosts` (the raw piece map), never from
+      // `snapshots` — the snapshot is already filtered by the current drop set,
+      // so reading it would let a drop erase its own justification and flip
+      // every render. `basisChanged` is what holds the set steady while the
+      // camera moves; `computeChunkDrop` returns the previous set BY REFERENCE
+      // when nothing should change, making this identity check exact.
+      const basis = dropBasisRef.current;
+      const basisChanged =
+        basis.pieces !== pieces
+        || basis.pricingRevision !== pricingRevision
+        || basis.chunkIndex !== nearestChunkIndex;
+      dropBasisRef.current = { pieces, pricingRevision, chunkIndex: nearestChunkIndex };
+
+      const nextDrop =
+        nearestChunkIndex < 0
+          ? EMPTY_DROP_SET
+          : computeChunkDrop({
+              parcels: chunkParcelCosts(nearestChunkIndex, pieces),
+              nearestParcelCode,
+              previousDropped: droppedParcels,
+              basisChanged,
+            });
+      if (nextDrop !== droppedParcels && !sameMembers(nextDrop, droppedParcels)) {
         ADMISSION_STATE.droppedParcels = [...nextDrop];
         setDroppedParcels(nextDrop);
       }
 
       publishLandKitStatsIfChanged();
     },
-    [droppedParcels, persistedByParcel, pieces, snapshots],
+    [droppedParcels, persistedByParcel, pieces, pricingRevision, snapshots],
   );
 
   useSceneFrame(({ camera }) => {
@@ -1001,9 +1040,11 @@ export default function LandKitPieces() {
       const snapshot = snapshots[nearestIndex]!;
       const draws = snapshot.byPieceKey.size;
       if (
-        rank > 0
-        && (admittedDraws + draws > KIT_VISIBLE_DRAW_BUDGET
-          || admittedTriangles + snapshot.triangles > KIT_SUBMITTED_TRIANGLE_BUDGET)
+        !admitsChunk(
+          rank,
+          { draws, triangles: snapshot.triangles },
+          { draws: admittedDraws, triangles: admittedTriangles },
+        )
       ) {
         // Skipping rather than breaking: a nearer-but-heavy chunk must not hide
         // a further cheap one that still fits.

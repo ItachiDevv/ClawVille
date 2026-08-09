@@ -195,7 +195,27 @@ function findSupporter(
   return null;
 }
 
-/** True when two axis-aligned boxes overlap on all three axes. */
+/**
+ * True when two axis-aligned boxes overlap on all three axes.
+ *
+ * INVARIANT THIS RELIES ON — a support piece's `supportSurfaceYWu` must equal
+ * its `extentYWu`. A stacked piece is tested against EVERY occupied footprint,
+ * including its own supporter, and it clears that test only because its `minY`
+ * lands exactly on the supporter's `maxY`, which the epsilon treats as touching
+ * rather than overlapping. Both floor pieces satisfy this today: `path-stone`
+ * (8/8) and `deck-plank` (40/40) have their support surface AT the top of their
+ * bounding box.
+ *
+ * Author a floor whose usable surface sits BELOW its own bbox top — a raised-rim
+ * table, a shelf under a canopy — and anything placed on it would read as
+ * intersecting its own supporter and be refused `intersects_piece` no matter
+ * where it went. The fix at that point is to exclude the resolved supporter from
+ * the collision sweep, not to shrink the piece. The G-H gate ("every support
+ * piece admits at least one legal stacked placement per tier") fails loudly the
+ * moment such an asset is added, so this is a guarded landmine rather than a
+ * silent one — but it is cheaper to read this comment than to re-derive it from
+ * a red test.
+ */
 function intersects3D(a: PlacedFootprint, b: PlacedFootprint): boolean {
   return (
     a.minX < b.maxX - PLACEMENT_EPSILON_WU
