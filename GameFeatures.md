@@ -12,6 +12,17 @@ Lv2 FREE, Lv3 900, down from 600 + 1,800. SHOP yards and the shop ladder are
 unchanged: a shop is a storefront investment that earns its cost back, and it is
 where the giveback is recovered. Lv4 and Lv5 stay aspirational for both.
 
+**Yard decoration is validated properly now.** The old check looked only at the
+cell you anchored a piece to, so a long piece placed near the building could
+overhang into the building's reserved ground, and two pieces could end up
+standing in the same spot. Placement now tests the piece's real rotated
+footprint, the building's reserved square, and -- for stacked pieces -- what is
+underneath and how high the level allows. Refusals say exactly what is wrong:
+the piece leaves the parcel, hits the building, overlaps another piece, has
+nothing to stack on, or exceeds the stack height. Nothing you already paid for
+is deleted: a piece that would no longer be legal keeps standing exactly where
+it is, and you can move it somewhere legal for free.
+
 **Shops now pay weekly rent for their listing slots.** Each active service
 listing costs 400 vCLAW a week, and the optional featured placement at the top
 of the board costs another 1,200 a week. The first week on a new listing is

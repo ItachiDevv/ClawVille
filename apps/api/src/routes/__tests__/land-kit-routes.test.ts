@@ -4,14 +4,13 @@ import { join } from 'node:path';
 import { Hono } from 'hono';
 import {
   createKitPieceBodySchema,
-  hasKitStackSupport,
   kitPlacementFeeForKey,
+  kitPlacementRefusalStatus,
   landRoutes,
   matchesKitPlacementReplay,
   moveKitPieceBodySchema,
   toPublicLandStructurePieceDTO,
   validateKitAuthority,
-  validateKitPlacementInput,
 } from '../land';
 
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
@@ -72,74 +71,8 @@ describe('land kit request and ladder validation', () => {
     expect(moveKitPieceBodySchema.safeParse({ ...move, feeCt: 0 }).success).toBe(false);
   });
 
-  it('rejects unknown keys, bounds, and every center-reserved boundary', () => {
-    expect(validateKitPlacementInput({ ...validCreate, level: 1, pieceKey: 'unknown' })).toBe(
-      'unknown_piece_key',
-    );
-    expect(validateKitPlacementInput({ ...validCreate, level: 1, gridX: -1 })).toBe(
-      'cell_out_of_bounds',
-    );
-    expect(validateKitPlacementInput({ ...validCreate, level: 1, gridY: 16 })).toBe(
-      'cell_out_of_bounds',
-    );
-    for (const [gridX, gridY] of [[3, 3], [3, 12], [12, 3], [12, 12]]) {
-      expect(validateKitPlacementInput({ ...validCreate, level: 1, gridX, gridY })).toBe(
-        'cell_reserved',
-      );
-    }
-  });
 
-  it('enforces rotation by level and stack height by the authoritative structure level', () => {
-    expect(validateKitPlacementInput({ ...validCreate, level: 1, rotationStep: 1 })).toBe(
-      'rotation_not_allowed',
-    );
-    expect(validateKitPlacementInput({ ...validCreate, level: 2, rotationStep: 7 })).toBe(
-      'rotation_not_allowed',
-    );
-    expect(validateKitPlacementInput({ ...validCreate, level: 3, rotationStep: 7 })).toBeNull();
-    expect(validateKitPlacementInput({ ...validCreate, level: 1, stackLevel: 2 })).toBe(
-      'stack_not_allowed',
-    );
-    expect(validateKitPlacementInput({ ...validCreate, level: 2, stackLevel: 2 })).toBeNull();
-    expect(validateKitPlacementInput({ ...validCreate, level: 3, stackLevel: 3 })).toBe(
-      'stack_not_allowed',
-    );
-    expect(validateKitPlacementInput({ ...validCreate, level: 4, stackLevel: 3 })).toBeNull();
-  });
 
-  it('enforces both current-count caps and permits a move without consuming a new cap slot', () => {
-    expect(validateKitPlacementInput({ ...validCreate, level: 1, currentSmall: 6 })).toBe(
-      'piece_cap_reached',
-    );
-    expect(
-      validateKitPlacementInput({
-        ...validCreate,
-        level: 2,
-        pieceKey: 'statue-shell',
-        currentLarge: 0,
-      }),
-    ).toBe('piece_cap_reached');
-    expect(
-      validateKitPlacementInput({
-        ...validCreate,
-        level: 5,
-        pieceKey: 'statue-shell',
-        currentLarge: 2,
-        addingPiece: false,
-      }),
-    ).toBeNull();
-    expect(
-      validateKitPlacementInput({ ...validCreate, level: 4, currentSmall: 28 }),
-    ).toBe('piece_cap_reached');
-    expect(
-      validateKitPlacementInput({
-        ...validCreate,
-        level: 5,
-        pieceKey: 'statue-shell',
-        currentLarge: 2,
-      }),
-    ).toBe('piece_cap_reached');
-  });
 });
 
 describe('land kit ownership and money discipline', () => {
@@ -267,36 +200,49 @@ describe('land kit ownership and money discipline', () => {
     expect(create).toContain("message: 'idempotency_key_conflict'");
   });
 
-  it('checks occupancy before the ledger and maps the DB unique backstop to 409', () => {
+  it('runs the SHARED placement predicate before the ledger and keeps the DB backstop', () => {
     const create = routeSpan('post', '/parcels/:parcelId/pieces');
-    expect(create.indexOf("message: 'cell_occupied'")).toBeLessThan(
+    // Geometry is decided before a single token moves.
+    expect(create.indexOf('evaluateKitWrite(tx, {')).toBeLessThan(
       create.indexOf('debitClawTokens'),
     );
+    expect(create).toContain('kitPlacementRefusalStatus(verdict.code)');
+    // The unique index remains the last-resort backstop on an exact collision.
     expect(create).toContain("constraint === 'land_structure_pieces_cell_stack_unique'");
     expect(create).toContain("constraint === 'land_tx_kit_piece_idem_unique'");
-    expect(routeSpan('patch', '/pieces/:pieceId')).toContain("message: 'cell_occupied'");
+    // The move path re-validates through the same predicate, excluding itself.
+    const move = routeSpan('patch', '/pieces/:pieceId');
+    expect(move).toContain('evaluateKitWrite(tx, {');
+    expect(move).toContain('excludePieceRef: pieceId');
   });
 
-  it('requires the immediately lower piece before placing above stack level one', () => {
-    expect(hasKitStackSupport([], { gridX: 0, gridY: 0, stackLevel: 1 })).toBe(true);
-    expect(hasKitStackSupport([], { gridX: 0, gridY: 0, stackLevel: 2 })).toBe(false);
-    expect(
-      hasKitStackSupport(
-        [{ gridX: 0, gridY: 0, stackLevel: 1 }],
-        { gridX: 0, gridY: 0, stackLevel: 2 },
-      ),
-    ).toBe(true);
-    expect(
-      hasKitStackSupport(
-        [{ gridX: 0, gridY: 0, stackLevel: 1 }],
-        { gridX: 0, gridY: 0, stackLevel: 3 },
-      ),
-    ).toBe(false);
+  it('has exactly ONE geometry authority — the anchor-only validators are gone', () => {
+    // Defect D-1: `isCellPlaceable` validated the ANCHOR CELL ONLY, so a piece
+    // spanning up to five rotated cells could overhang the shell reservation
+    // and two pieces could occupy the same ground. Both superseded helpers are
+    // deleted rather than left callable, so a future edit cannot reintroduce a
+    // second, weaker rule beside `evaluatePlacement`.
+    expect(source).not.toContain('validateKitPlacementInput');
+    expect(source).not.toContain('hasKitStackSupport');
+    expect(source).not.toContain('isCellPlaceable');
+  });
+
+  it('refuses an unsupported stack through the shared predicate, not a local rule', () => {
     const create = routeSpan('post', '/parcels/:parcelId/pieces');
-    expect(create.indexOf('hasKitStackSupport(currentPieces, body)')).toBeLessThan(
-      create.indexOf('debitClawTokens'),
-    );
-    expect(create).toContain("message: 'stack_support_required'");
+    // Stack support is now one of `evaluatePlacement`'s refusal codes, tested
+    // exhaustively in packages/shared/src/constants/land-placement.test.ts.
+    // What the ROUTE owes is that the refusal reaches the client as a 409.
+    expect(kitPlacementRefusalStatus('unsupported_stack')).toBe(409);
+    expect(kitPlacementRefusalStatus('stack_exceeds_height')).toBe(409);
+    expect(kitPlacementRefusalStatus('intersects_shell')).toBe(409);
+    expect(kitPlacementRefusalStatus('intersects_piece')).toBe(409);
+    expect(kitPlacementRefusalStatus('outside_parcel')).toBe(409);
+    expect(kitPlacementRefusalStatus('level_cap_exceeded')).toBe(409);
+    // Malformed input stays a 400 — the pre-reprice contract for these.
+    expect(kitPlacementRefusalStatus('piece_unknown')).toBe(400);
+    expect(kitPlacementRefusalStatus('cell_out_of_bounds')).toBe(400);
+    expect(kitPlacementRefusalStatus('rotation_not_allowed')).toBe(400);
+    expect(create).toContain("message: verdict.code");
   });
 
   it('keeps move and removal free with no refund path', () => {

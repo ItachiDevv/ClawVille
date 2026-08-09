@@ -51,6 +51,29 @@ its own cursor and never suspends the listing. Treasury policy matches the
 parcel sweeper (burn-and-proceed on a missing treasury), not the fail-closed kit
 route. Boot-wired in `index.ts`; knob `SERVICE_SLOT_SWEEP_PERIOD_MS`.
 
+**(2c) Kit placement is now the SHARED predicate (P3, closes defect D-1).**
+`isCellPlaceable` validated the ANCHOR CELL ONLY, but a piece spans up to five
+cells once rotated -- so a `path-stone` on a legal perimeter cell overhung the
+shell reservation, and two pieces could occupy the same ground while both
+passed. `routes/land.ts` now runs `evaluatePlacement` from `@clawville/shared`
+(rotated-footprint AABB + level-independent `shellEnvelopeHalfWu` reservation +
+cross-level 3D occupancy) on BOTH the place and move write paths via one
+`evaluateKitWrite` seam. Its occupancy set is built through
+`resolveParcelPlacements`, which never refuses and never drops a row -- that is
+how Q5 grandfathering holds: an existing paid piece the stricter rule would now
+reject still renders, still blocks a new overlap, and is never deleted, while
+its owner may move it to a legal spot for free. A move excludes itself from both
+occupancy and the piece counts, so it never self-collides and stays cap-neutral.
+Refusals map through `kitPlacementRefusalStatus`: state conflicts
+(`level_cap_exceeded`, `stack_exceeds_height`, `unsupported_stack`,
+`outside_parcel`, `intersects_shell`, `intersects_piece`) are 409, malformed
+input (`piece_unknown`, `cell_out_of_bounds`, `rotation_not_allowed`) is 400.
+The superseded `validateKitPlacementInput` and `hasKitStackSupport` are DELETED
+rather than left callable, so there is exactly one geometry authority. The
+shared modules (`land-placement.ts`, `land-kit-manifest.ts`, the
+`shellEnvelopeHalfWu` block, `getParcelFootprintWu`) are sourced verbatim from
+the parallel geometry lane so both branches carry identical blobs.
+
 **(3) Tutorial-ladder three-path parity (P6) — closes live defect D-2.** The
 26-quest / 1,585 vCLAW corpus was cookie-gated and human-only. Migration
 `0054_tutorial_claim_avatar_authority.sql` moves authority from the user to the

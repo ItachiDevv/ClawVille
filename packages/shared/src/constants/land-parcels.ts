@@ -119,13 +119,30 @@ interface TierConfig {
 //   c       (outer):   h=305t (9760wu) outer edge 322t < new grid half 352t (30t margin).
 //   within-ring spacing >> footprint for all three (founder 176t, starter 20.1t, c 122t).
 // a/b keep nominal configs (never generated at count 0). They come back if we grow further.
+//
+// PLOT GROWTH (gamification pass §5.1, 2026-08-09): starter 34 → 38 t (+24.9%
+// area) and c 34 → 52 t (+133.9%); founder stays 38 t. Verified by exhaustive
+// pairwise AABB over all 1,540 parcel pairs, replicating this generator
+// including `Math.round(xt × 32)`. The binding case is starter-06
+// (218.3125, −258) against starter-07 (258, −218.3125), separated 39.6875 t on
+// both axes — minimum slack 1.6875 t = 54 wu. `land-tiers.test.ts` pins it.
 const TIER_CONFIG: Record<LandTier, TierConfig> = {
   founder: { halfSideTiles: 190, footprintTiles: 38 }, // PREMIUM inner ring (big)
   a: { halfSideTiles: 200, footprintTiles: 7 }, // unused (count 0)
   b: { halfSideTiles: 224, footprintTiles: 7 }, // unused (count 0)
-  c: { halfSideTiles: 305, footprintTiles: 34 }, // OUTER ring (big) — new in the 704 world
-  starter: { halfSideTiles: 258, footprintTiles: 34 }, // REGULAR mid ring (big)
+  c: { halfSideTiles: 305, footprintTiles: 52 }, // OUTER ring (big) — new in the 704 world
+  starter: { halfSideTiles: 258, footprintTiles: 38 }, // REGULAR mid ring (big)
 };
+
+/** Side length, in world units, of one parcel footprint on `tier`. */
+export function getParcelFootprintWu(tier: LandTier): number {
+  return TIER_CONFIG[tier].footprintTiles * TILE_SIZE;
+}
+
+/** Half-side, in tiles, of the square ring frame `tier`'s parcels sit on. */
+export function getTierHalfSideTiles(tier: LandTier): number {
+  return TIER_CONFIG[tier].halfSideTiles;
+}
 
 // ---------------------------------------------------------------------------
 // Arc-length perimeter walk — converts arc-length s (tiles) → (cx_tiles, cz_tiles)
