@@ -37,22 +37,41 @@
  * caller's transaction rolls the rest of the placement back.
  */
 
-// FEATURE_GATE: land_materials_spend_rail
-// Status: EARN-ONLY. `creditMaterials` is live (the four Tier-10 land quests);
-//   `debitMaterials` has ZERO production callers. Kit-piece placement still
-//   charges vCLAW (`kitPieceFeeCt`), so a player who earns 87 materials today
-//   has nothing to spend them on.
-// Why it ships anyway: the spend rail is the design's P5b, deliberately gated
-//   behind the salvage lane's hosted verb so the earn and spend paths reach
-//   G-J three-path parity together rather than shipping a human-only sink.
-// Metric to graduate: `place_kit_piece` accepts `paymentRail: 'materials'` on
-//   all three subject paths, with the HOME-only assertion under test.
-// Current reading: 0 material spends possible.
-// Review deadline: the slice that lands the salvage hosted verb.
-// On deadline: if the spend rail has not landed, either land it or stop paying
-//   the four land quests in materials — an accumulating balance with no sink is
-//   a broken promise to the player, not a feature.
-// Reference: gamification-pass-2026-08-09.md §2.4/§3.3 (P5b), founder Q4/Q11.
+// FEATURE_GATE: land_materials_spend_rail — PARTIALLY GRADUATED 2026-08-09 (P5b).
+//
+// SPEND IS LIVE, and the balance is no longer a dead accumulation:
+//   - human: POST /api/land/parcels/:parcelId/pieces with
+//     `paymentRail: 'materials'` (`routes/land.ts`).
+//   - connected agent: the SAME route with `X-Clawville-Agent-Session`, behind
+//     requireAuthOrAgentSession -> ledger-capable -> non-guest. It spends as
+//     itself against its bound avatar — no guest demotion. Rule E5 is met.
+//   - HOME-only is enforced from the FOR UPDATE-locked `structure_type`, never
+//     from the request body, via the shared `isKitPaymentRailAllowed`.
+//
+// WHAT IS STILL MISSING, stated plainly rather than papered over: the
+// USER-HOSTED (autonomous) leg. A hosted agent cannot yet spend materials
+// because there is no `place_kit_piece` [ACTION:] verb — that verb is P7c, and
+// it needs the kit-placement transaction extracted out of the route body into
+// the design's shared `settleKitMutation` service first (the executor is not a
+// Hono context and cannot call a route). Doing that extraction hastily inside
+// this slice would mean refactoring a live money path without the coverage it
+// deserves, so it is filed, not faked.
+//
+// Metric to fully graduate: `[ACTION: place_kit_piece(..., paymentRail=materials)]`
+//   settles through `settleKitMutation`, with the HOME-only assertion covered on
+//   the hosted path too.
+// Current reading: 2 of 3 subject paths can spend. E5 satisfied; the design's
+//   stricter G-J three-path bar is NOT.
+// Owner condition: the P7c build-verb slice.
+// On deadline: if P7c slips, this gate must be re-reviewed rather than assumed
+//   closed — a hosted agent that can EARN materials (salvage + land quests, all
+//   live below) but never spend them is the same broken promise the earn-only
+//   version of this gate was written about, just one step further along.
+//
+// EARN is live on every path: the four Tier-10 land quests
+// (`tutorial-quest-settlement.ts`) and seabed salvage
+// (`salvage-settlement.ts`, incl. the `salvage_node` hosted verb).
+// Reference: gamification-pass-2026-08-09.md §2.4/§3.3 (P5b), §7 (P7c), Q4/Q11.
 //
 
 import { db, sql } from '@clawville/database';

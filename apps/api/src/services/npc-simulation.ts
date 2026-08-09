@@ -8,6 +8,10 @@ import {
   type AutonomyEnterablePlace,
   HATCHER_ACTION_VERBS,
   isLiveTutorialQuest,
+  SALVAGE_APPROACH_RANGE_WU,
+  SALVAGE_NODES,
+  getSalvageNode,
+  isSalvageNodeId,
   type HatcherActionVerb,
   LAND_PARCELS,
   COVE_SLOTS_BET_STEP,
@@ -205,6 +209,9 @@ interface AgentActionAttribution {
 const AUTONOMOUS_COVE_PLAY_INTERVAL_MS = 30_000;
 const AUTONOMOUS_LAND_ACTION_INTERVAL_MS = 60_000;
 const AUTONOMOUS_QUEST_CLAIM_INTERVAL_MS = 60_000;
+// Salvage's real spacing is the 6-hour per-node cooldown; this only damps a
+// burst of identical tags inside one reply, so it is deliberately short.
+const AUTONOMOUS_SALVAGE_INTERVAL_MS = 30_000;
 
 type AutonomousLandOperation =
   | { verb: 'claim_parcel'; parcelCode: string; door: 'hold' | 'rent'; weeks?: number }
@@ -687,6 +694,47 @@ class NpcSimulation {
     return settleTutorialQuestClaim(input);
   };
 
+  /**
+   * Test seam; production dispatches into the SAME shared salvage-settlement
+   * service the REST route uses, so the human, connected-agent and hosted-agent
+   * claim paths are one implementation rather than three.
+   */
+  autonomousSalvageSettle: (input: {
+    actor: {
+      kind: 'agent';
+      userId: string;
+      avatarId: string;
+      agentId: string;
+      sessionId: string;
+    };
+    nodeId: string;
+    idempotencyKey: string;
+  }) => Promise<{ kind: string; payload?: { materialsGranted: number; balanceAfter: number } }> =
+    async (input) => {
+      const { settleSalvageClaim } = await import('./salvage-settlement');
+      const { resolveAgentSession } = await import('../middleware/require-auth-or-agent');
+      return settleSalvageClaim({
+        actor: {
+          kind: 'agent',
+          userId: input.actor.userId,
+          avatarId: input.actor.avatarId,
+          agentId: input.actor.agentId,
+          sessionId: input.actor.sessionId,
+        },
+        bindings: {
+          expectedAvatarId: input.actor.avatarId,
+          expectedAgentId: input.actor.agentId,
+          expectedUserId: input.actor.userId,
+        },
+        nodeId: input.nodeId,
+        idempotencyKey: input.idempotencyKey,
+        // Re-resolved UNDER the settlement locks, not here: a session that
+        // rotates between this dispatch and the transaction must not settle
+        // against the principal it used to be.
+        revalidateBinding: () => resolveAgentSession(input.actor.sessionId),
+      });
+    };
+
   /** Test seam; production dispatches exclusively into the shared tenure service. */
   autonomousLandSettle: (input: {
     operation: AutonomousLandOperation;
@@ -793,6 +841,7 @@ class NpcSimulation {
   private autonomousCovePlayLastAdmittedAt = new Map<string, number>();
   private autonomousLandActionLastAdmittedAt = new Map<string, number>();
   private autonomousQuestClaimLastAdmittedAt = new Map<string, number>();
+  private autonomousSalvageLastAdmittedAt = new Map<string, number>();
   private missingActionAttributionWarned: Set<string> = new Set();
   // Magic-link onboarding D3 (2026-07-02): direct npcId → agentId for AVATAR-mode
   // (`ocb-`) bodies, written at registerAgentBot and cleared with the ownership-
@@ -2400,6 +2449,169 @@ class NpcSimulation {
     }
   }
 
+  /**
+   * Claim ONE seabed salvage node as the bound avatar (P7b).
+   *
+   * PROXIMITY IS CHECKED AGAINST THE SERVER-OWNED BODY.
+   * The REST paths earn an approach token by reporting their own position,
+   * which the design labels friction rather than proof. This path needs no
+   * token: `npc.x/npc.y` is the simulation's OWN copy of where this agent's
+   * body is, moved by the server's pathfinder. Checking against it is a
+   * STRONGER guarantee than a client-reported coordinate, not a weaker one,
+   * which is why neither path can be used to bypass the other.
+   *
+   * Out of range is NOT a failure - the body is sent walking and the agent
+   * claims on a later tick, exactly like `enter_building`. That is what makes
+   * "go gather materials" a workable autonomous instruction instead of one that
+   * silently drops unless the model happens to already be standing in place.
+   */
+  private async settleAutonomousSalvageClaim(
+    npcId: string,
+    npc: NpcRuntimeState,
+    attribution: AgentActionAttribution,
+    nodeId: string,
+  ): Promise<void> {
+    const node = getSalvageNode(nodeId);
+    if (!node) {
+      console.warn(`[Hatcher] salvage_node dropped - unknown nodeId "${nodeId}"`);
+      return;
+    }
+
+    // Node positions are CENTERED world coords; the simulation runs in
+    // game-pixel coords. Convert once, here, rather than storing both.
+    const nodeGameX = node.x + WORLD_COLLIDER_MAP_HALF;
+    const nodeGameY = node.z + WORLD_COLLIDER_MAP_HALF;
+    const distance = Math.hypot(npc.x - nodeGameX, npc.y - nodeGameY);
+
+    if (distance > SALVAGE_APPROACH_RANGE_WU) {
+      const path = findPath(npc.x, npc.y, nodeGameX, nodeGameY);
+      if (path.length === 0) {
+        console.warn(`[Hatcher] salvage_node dropped - no path to node "${nodeId}"`);
+        return;
+      }
+      this.setNpcPath(npcId, path);
+      this.setNpcActivityEmoji(npcId, '\u{1FAA3}');
+      const body = this.npcs.get(npcId);
+      if (body) body.intentDescription = `swimming to salvage node ${nodeId}`;
+      return;
+    }
+
+    // Same resolver the quest ladder uses, for the same reason: salvage is a
+    // pure faucet with no counterparty, so it refuses HOUSE actors outright.
+    // `settleSalvageClaim` refuses them a second time.
+    const resolved = await this.autonomousQuestAgentResolve(
+      attribution.sessionId,
+      attribution.agentId,
+    );
+    if (!resolved) {
+      console.warn(
+        '[Hatcher] salvage_node dropped - no live connected session, or a house actor (house fleets never claim faucets)',
+      );
+      return;
+    }
+    if (!resolved.ledgerCapable) {
+      console.warn('[Hatcher] salvage_node dropped - agent session is not ledger-authorized');
+      return;
+    }
+    if (!resolved.avatarId || !resolved.userId) {
+      console.warn('[Hatcher] salvage_node dropped - agent has no bound avatar');
+      return;
+    }
+    if (resolved.avatarId !== attribution.avatarId || resolved.agentId !== attribution.agentId) {
+      console.warn('[Hatcher] salvage_node dropped - live agent/avatar binding changed');
+      return;
+    }
+
+    const admittedAt = Date.now();
+    if (this.autonomousSalvageLastAdmittedAt.size > 5_000) {
+      for (const [key, lastAt] of this.autonomousSalvageLastAdmittedAt) {
+        if (admittedAt - lastAt >= AUTONOMOUS_SALVAGE_INTERVAL_MS) {
+          this.autonomousSalvageLastAdmittedAt.delete(key);
+        }
+      }
+    }
+    const reservationKey = `${resolved.avatarId}:salvage_node:${nodeId}`;
+    const prior = this.autonomousSalvageLastAdmittedAt.get(reservationKey);
+    if (prior !== undefined && admittedAt - prior < AUTONOMOUS_SALVAGE_INTERVAL_MS) {
+      console.warn('[Hatcher] salvage_node dropped - duplicate action reserved for 30 seconds');
+      return;
+    }
+    // Reserve synchronously, before the settlement await.
+    this.autonomousSalvageLastAdmittedAt.set(reservationKey, admittedAt);
+
+    // Deterministic bucketed intent key (design 2.9). The in-process
+    // reservation above damps a burst within one process; THIS is the
+    // cross-process and cross-restart backstop, and it lands durably in
+    // `salvage_claim_receipts`. The 6-hour node cooldown is the real spacing
+    // either way, so the bucket only has to be shorter than that.
+    const bucket = Math.floor(admittedAt / AUTONOMOUS_SALVAGE_INTERVAL_MS);
+    const idempotencyKey = createHash('sha256')
+      .update(
+        JSON.stringify({ avatarId: resolved.avatarId, verb: 'salvage_node', nodeId, bucket }),
+        'utf8',
+      )
+      .digest('hex')
+      .slice(0, 48);
+
+    try {
+      const result = await this.autonomousSalvageSettle({
+        actor: {
+          kind: 'agent',
+          userId: resolved.userId,
+          avatarId: resolved.avatarId,
+          agentId: resolved.agentId,
+          sessionId: attribution.sessionId,
+        },
+        nodeId,
+        idempotencyKey,
+      });
+      if (result.kind !== 'settled') {
+        console.warn(`[Hatcher] salvage_node "${nodeId}" not settled - ${result.kind}`);
+        return;
+      }
+
+      // Telemetry parity with the REST path. A hosted action has NO request
+      // context, so `logEventFromContext` is unavailable and the anti-farm
+      // fp/ip tags are explicitly NULL here - documented, not hidden. Without
+      // this a hosted salvage wave is invisible to /dash. Post-settlement and
+      // best-effort: a dropped event never un-claims a settled node.
+      const settledUserId = resolved.userId;
+      const settledAvatarId = resolved.avatarId;
+      void (async () => {
+        try {
+          const { logEvent } = await import('./event-logger');
+          await logEvent({
+            eventType: 'land.salvage.claimed',
+            userId: settledUserId,
+            avatarId: settledAvatarId,
+            agentId: resolved.agentId,
+            fpHash: null,
+            ipPrefixHash: null,
+            payload: {
+              nodeId,
+              materialsGranted: result.payload?.materialsGranted ?? null,
+              subjectKind: 'agent',
+              surface: 'hosted_action',
+            },
+          });
+        } catch (err) {
+          console.warn(
+            `[Hatcher] salvage_node telemetry failed - ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      })();
+
+      const body = this.npcs.get(npcId);
+      if (body) {
+        this.setNpcActivityEmoji(npcId, '\u{1FAA3}');
+        body.intentDescription = `salvaging at ${nodeId}`;
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      console.warn(`[Hatcher] salvage_node dropped - ${reason}`);
+    }
+  }
+
   private async settleAutonomousLandAction(
     npcId: string,
     attribution: AgentActionAttribution,
@@ -2762,6 +2974,24 @@ class NpcSimulation {
           return;
         }
         void this.settleAutonomousQuestClaim(npcId, attribution, params.questId);
+        return;
+      }
+      case 'salvage_node': {
+        if (Object.keys(params).some((key) => key !== 'nodeId')) {
+          console.warn('[Hatcher] salvage_node dropped - unknown parameter');
+          return;
+        }
+        // The frozen shared layout IS the whitelist: an id outside
+        // `SALVAGE_NODES` can never settle, so it never reaches a lock.
+        if (!isSalvageNodeId(params.nodeId ?? '')) {
+          console.warn(`[Hatcher] salvage_node dropped - unknown nodeId "${params.nodeId}"`);
+          return;
+        }
+        if (!attribution) {
+          console.warn('[Hatcher] salvage_node dropped - no bound agent/avatar attribution');
+          return;
+        }
+        void this.settleAutonomousSalvageClaim(npcId, npc, attribution, params.nodeId);
         return;
       }
       case 'enter_poker_room': {

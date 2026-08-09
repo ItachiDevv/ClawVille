@@ -27,6 +27,8 @@ import {
   index,
   uniqueIndex,
   check,
+  date,
+  primaryKey,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { avatars } from './avatars';
@@ -95,3 +97,82 @@ export const salvageClaimReceipts = pgTable(
 
 export type AvatarMaterialBalance = typeof avatarMaterialBalances.$inferSelect;
 export type SalvageClaimReceipt = typeof salvageClaimReceipts.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// Land gamification P7a — the seabed-salvage claim core.
+// Migration: `0056_salvage_nodes.sql`.
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-`(avatar, node)` cooldown state and the monotonic claim ordinal.
+ *
+ * `claimOrdinal` is an input to the HMAC yield, so it must never be reset or
+ * reused — repeating an ordinal repeats a yield, which is how a deterministic
+ * reward becomes a farmable one.
+ */
+export const salvageNodeClaims = pgTable(
+  'salvage_node_claims',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    avatarId: uuid('avatar_id')
+      .notNull()
+      .references(() => avatars.id, { onDelete: 'cascade' }),
+    nodeId: text('node_id').notNull(),
+    layoutVersion: integer('layout_version').notNull(),
+    claimOrdinal: integer('claim_ordinal').notNull().default(0),
+    lastClaimedAt: timestamp('last_claimed_at', { withTimezone: true }).notNull(),
+    nextClaimAt: timestamp('next_claim_at', { withTimezone: true }).notNull(),
+  },
+  (t) => ({
+    uniq: uniqueIndex('salvage_node_claims_uniq').on(t.avatarId, t.nodeId),
+    ready: index('salvage_node_claims_ready').on(t.avatarId, t.nextClaimAt),
+    ordNonNeg: check('salvage_node_claims_ord_nonneg', sql`${t.claimOrdinal} >= 0`),
+  }),
+);
+
+/** Per-avatar UTC-day admission counters. Both caps enforced by conditional upsert. */
+export const salvageDailyAdmissions = pgTable(
+  'salvage_daily_admissions',
+  {
+    avatarId: uuid('avatar_id')
+      .notNull()
+      .references(() => avatars.id, { onDelete: 'cascade' }),
+    utcDay: date('utc_day').notNull(),
+    claimsAdmitted: integer('claims_admitted').notNull().default(0),
+    materialsIssued: integer('materials_issued').notNull().default(0),
+  },
+  (t) => ({
+    pk: primaryKey({ name: 'salvage_daily_pk', columns: [t.avatarId, t.utcDay] }),
+    cap: check('salvage_daily_cap', sql`${t.claimsAdmitted} BETWEEN 0 AND 20`),
+    matCap: check('salvage_daily_mat_cap', sql`${t.materialsIssued} BETWEEN 0 AND 60`),
+  }),
+);
+
+/**
+ * Per-OWNER UTC-day claim counter — the anti-fleet-farm bound.
+ *
+ * `ownerKind` is single-valued ('user') on purpose: `platform_agents.user_id` is
+ * NOT NULL, so every admissible agent resolves to a user principal and shares
+ * that principal's budget. An unbound session gets no bucket, it gets refused.
+ */
+export const salvageOwnerAdmissions = pgTable(
+  'salvage_owner_admissions',
+  {
+    ownerKind: text('owner_kind').notNull(),
+    ownerId: uuid('owner_id').notNull(),
+    utcDay: date('utc_day').notNull(),
+    claimsAdmitted: integer('claims_admitted').notNull().default(0),
+  },
+  (t) => ({
+    pk: primaryKey({
+      name: 'salvage_owner_pk',
+      columns: [t.ownerKind, t.ownerId, t.utcDay],
+    }),
+    kind: check('salvage_owner_kind', sql`${t.ownerKind} = 'user'`),
+    cap: check('salvage_owner_cap', sql`${t.claimsAdmitted} BETWEEN 0 AND 120`),
+  }),
+);
+
+export type SalvageNodeClaim = typeof salvageNodeClaims.$inferSelect;
+export type SalvageDailyAdmission = typeof salvageDailyAdmissions.$inferSelect;
+export type SalvageOwnerAdmission = typeof salvageOwnerAdmissions.$inferSelect;

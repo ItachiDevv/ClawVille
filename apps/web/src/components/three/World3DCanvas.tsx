@@ -61,6 +61,8 @@ import LandShowroom from '@/lib/three/land-showroom';
 import LandRingDecorations from '@/lib/three/land-ring-decorations';
 import LandFounderApartments from '@/lib/three/land-founder-apartments';
 import LandStateHydrator from '@/lib/three/land-state-hydrator';
+import LandSalvageNodesLayer from '@/lib/three/land-salvage-render';
+import { findNearestSalvageNode, salvageApproachPositionRef } from '@/lib/three/land-salvage-nodes';
 import { findParcelAtWorldPos } from '@/lib/land-proximity';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 import { MeshoptLoaderSetup } from '@/lib/three/meshopt-loader-setup';
@@ -1289,6 +1291,11 @@ function MinimapPositionTracker() {
 function LandProximityTracker() {
   const lastWriteRef = useRef(0);
 
+  const clearProximity = (store: ReturnType<typeof useGameStore.getState>) => {
+    if (store.nearParcelCode !== null) store.setNearParcelCode(null);
+    if (store.nearSalvageNodeId !== null) store.setNearSalvageNodeId(null);
+  };
+
   useSceneFrame(({ clock }) => {
     const now = clock.elapsedTime;
     if (now - lastWriteRef.current < 0.2) return;
@@ -1304,30 +1311,30 @@ function LandProximityTracker() {
       mapY = avatarPositionRef.y;
     } else if (mode === 'npc') {
       if (!store.possessedNpcId) {
-        if (store.nearParcelCode !== null) store.setNearParcelCode(null);
+        clearProximity(store);
         return;
       }
       const npc = useNpcStore.getState().npcs.find((n) => n.id === store.possessedNpcId);
       if (!npc) {
-        if (store.nearParcelCode !== null) store.setNearParcelCode(null);
+        clearProximity(store);
         return;
       }
       mapX = npc.x;
       mapY = npc.y;
     } else if (mode === 'autonomous') {
       if (!store.autonomousBodyId) {
-        if (store.nearParcelCode !== null) store.setNearParcelCode(null);
+        clearProximity(store);
         return;
       }
       const body = useNpcStore.getState().npcs.find((n) => n.id === store.autonomousBodyId);
       if (!body) {
-        if (store.nearParcelCode !== null) store.setNearParcelCode(null);
+        clearProximity(store);
         return;
       }
       mapX = body.x;
       mapY = body.y;
     } else {
-      if (store.nearParcelCode !== null) store.setNearParcelCode(null);
+      clearProximity(store);
       return;
     }
 
@@ -1335,6 +1342,17 @@ function LandProximityTracker() {
     const worldZ = mapY - HALF_H;
     const code = findParcelAtWorldPos(worldX, worldZ);
     if (code !== store.nearParcelCode) store.setNearParcelCode(code);
+
+    // The single source SalvageGatherPill's approach poll reads for the
+    // active body's live centered position — see its doc comment.
+    salvageApproachPositionRef.x = worldX;
+    salvageApproachPositionRef.z = worldZ;
+
+    // Salvage nodes are deliberately excluded FROM parcel footprints, so this
+    // is independent of the parcel lookup above, not an else-branch.
+    const nearestNode = findNearestSalvageNode(worldX, worldZ);
+    const nodeId = nearestNode?.id ?? null;
+    if (nodeId !== store.nearSalvageNodeId) store.setNearSalvageNodeId(nodeId);
   });
 
   return null;
@@ -2313,6 +2331,16 @@ export const WorldSceneContents = memo(function WorldSceneContents({
       <Suspense fallback={null}>
         <group name="perf:land-kit-pieces" userData={{ perfChunk: 'land-kit-pieces' }}>
           <LandKitPieces />
+        </group>
+      </Suspense>
+
+      {/* Seabed salvage nodes — 48 fixed world decorations (Land gamification
+          P7b, §2.2). 3 merged draw calls total (one per look variant), no
+          chunk-admission needed since the node count is capped by design, not
+          player growth. See lib/three/land-salvage-render.tsx. */}
+      <Suspense fallback={null}>
+        <group name="perf:land-salvage-nodes" userData={{ perfChunk: 'land-salvage-nodes' }}>
+          <LandSalvageNodesLayer />
         </group>
       </Suspense>
       <YardEditorThree />

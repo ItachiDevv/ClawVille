@@ -24,6 +24,7 @@ import Minimap from '@/components/game/minimap';
 import AvatarChatBar from '@/components/game/avatar-chat-bar';
 import TalkToCharacterBar from '@/components/game/talk-to-character-bar';
 import LandOptionsPill from '@/components/game/land-options-pill';
+import SalvageGatherPill from '@/components/game/land/salvage-gather-pill';
 import YardEditorOverlay from '@/components/game/land/yard-editor-overlay';
 import ChargeBar from '@/components/game/charge-bar';
 import ShopOverlay from '@/components/game/shop-overlay';
@@ -669,6 +670,7 @@ export default function GamePage() {
         <>
           <LocationHUD />
           <LandOptionsPill />
+          <SalvageGatherPill />
           <YardEditorOverlay />
           <ActivityFeed />
           <ChatPanel />

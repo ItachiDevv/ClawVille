@@ -8,6 +8,7 @@ const ERROR_COPY: Readonly<Record<string, string>> = {
   stack_support_required: "Needs a piece underneath first.",
   piece_cap_reached: "Piece limit reached for your building level.",
   insufficient_clawtokens: "Not enough vCLAW.",
+  insufficient_materials: "Not enough materials.",
 };
 
 export function landPieceErrorCode(error: unknown): string | null {

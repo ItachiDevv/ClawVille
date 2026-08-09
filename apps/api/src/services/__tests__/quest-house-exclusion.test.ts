@@ -28,7 +28,20 @@ import { npcSimulation } from '../npc-simulation';
 
 const describeIfDb = process.env.DATABASE_URL ? describe : describe.skip;
 
-const simSource = readFileSync(join(import.meta.dir, '..', 'npc-simulation.ts'), 'utf8');
+/**
+ * Read a source file with line endings NORMALIZED to LF.
+ *
+ * These are structural assertions that search for MULTI-LINE literals. Git
+ * checks this repo out with CRLF on Windows, so a raw read makes every such
+ * search return -1 and the case fails for a reason that has nothing to do with
+ * the guard it is meant to protect. Normalizing makes the assertion mean the
+ * same thing on every developer machine and in CI.
+ */
+function readSourceLf(...segments: string[]): string {
+  return readFileSync(join(...segments), 'utf8').split('\r\n').join('\n');
+}
+
+const simSource = readSourceLf(import.meta.dir, '..', 'npc-simulation.ts');
 
 describe('quest faucet excludes the house fleet (structural)', () => {
   it('resolves quest actors through the QUEST resolver, never the cove one', () => {
@@ -58,9 +71,12 @@ describe('quest faucet excludes the house fleet (structural)', () => {
 });
 
 describe('REST faucet path carries the same house barrier (structural)', () => {
-  const questsSource = readFileSync(
-    join(import.meta.dir, '..', '..', 'routes', 'quests.ts'),
-    'utf8',
+  const questsSource = readSourceLf(
+    import.meta.dir,
+    '..',
+    '..',
+    'routes',
+    'quests.ts',
   );
 
   it('refuses a house agent on the REST tutorial claim, before settlement', () => {

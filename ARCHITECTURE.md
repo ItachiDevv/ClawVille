@@ -1,6 +1,58 @@
 # ClawVille — Architecture
 
-**Last Audited: 2026-08-09 (Land gamification P4b/P5a/P6 — material ledger,
+**Last Audited: 2026-08-09 (Land gamification P7a/P7b/P5b — salvage core,
+hosted salvage verb, material spend rail, protocol v48).** Four changes.
+
+**(1) Salvage node topology (P7a).** `packages/shared/src/constants/land-salvage.ts`
+is the SINGLE source of truth for `SALVAGE_NODES` (48 nodes in centred world
+coords, `SALVAGE_LAYOUT_VERSION = 1`), consumed by the renderer, the claim
+service, the read model and the hosted-target service. Positions come from the
+pure deterministic `generateSalvageNodes()` — the three usable radial gaps in the
+world's square block-frame geometry, plus an FNV-1a hash-based wander per node so
+the field scatters instead of forming a lattice (no `Math.random`, no clock). Its
+output is FROZEN as a literal, with a test asserting the two still agree, because
+node positions are money-path state: computing them at module load would relocate
+nodes under mid-cooldown players whenever a building moved, without bumping the
+layout version. Positions are validated against `getServerColliders()` and every
+`LAND_PARCELS` footprint;
+`land-salvage.test.ts` RE-DERIVES those clearances from live data, so moving a
+building or re-tiering land fails the suite instead of burying a node.
+
+**(2) Salvage claim core (P7a).** Migration `0056_salvage_nodes.sql` adds
+`salvage_node_claims` (per-`(avatar, node)` cooldown + the monotonic
+`claim_ordinal` the yield is derived from), `salvage_daily_admissions`
+(per-avatar UTC-day claim + material counters) and `salvage_owner_admissions`
+(per-OWNER UTC-day claim counter, `owner_kind` pinned to `'user'`).
+`salvage_claim_receipts` already existed from 0053 and is not recreated.
+`apps/api/src/services/salvage-settlement.ts` is the sole settlement authority:
+owner-then-avatar lock order (in-process mutex OUTER, `pg_advisory_xact_lock`
+INNER), live binding revalidation under both locks, durable receipt idempotency
+on the stable fingerprint `sha256(avatarId|nodeId|layoutVersion)`, and a
+server-secret HMAC yield. Caps are ATOMIC CONDITIONAL UPSERTS
+(`... DO UPDATE ... WHERE claims_admitted < cap RETURNING`), never
+read-then-write, and every refusal inside the transaction rolls partial
+admission back. House actors are refused IN THE SERVICE so no adapter can omit
+the check. REST surface: `apps/api/src/routes/land-salvage.ts`, mounted at
+`/api/land/salvage` BEFORE `/api/land`.
+
+**(3) Material spend rail (P5b).** `POST /api/land/parcels/:parcelId/pieces`
+accepts `paymentRail: 'vclaw' | 'materials'` (defaults to `vclaw`, so existing
+clients are unchanged) and returns `costMaterials` + `paymentRail`. Materials
+are HOME-only via the shared `isKitPaymentRailAllowed`, checked against the FOR
+UPDATE-locked `structure_type`. The material leg is a SINK with no treasury
+counterparty; `land_transactions.amount_ct` stays 0 on that rail so no vCLAW
+report double-counts it, and the rail + material cost live in the audit
+metadata, which is also what the replay path reads back.
+
+**(4) Hosted verb + protocol v48.** `[ACTION: salvage_node(nodeId)]` joins the
+whitelist (13 verbs) and routes through the SAME settlement service; proximity
+is checked against the server-owned simulation body.
+`apps/api/src/services/autonomous-salvage-targets.ts` feeds bounded READY-first
+nearest nodes into `buildDecisionPrompt` (the consumption mandate — a model
+cannot invent one of 48 ids). `PROTOCOL_VERSION` 47 -> 48 with the manual, Nori
+`knowledge[]` and `CLAWVILLE_ORIENTATION_KNOWLEDGE` updated in the same diff.
+
+**Prior Last Audited: 2026-08-09 (Land gamification P4b/P5a/P6 — material ledger,
 structure-type pricing, tutorial-ladder parity, protocol v47).** Three changes.
 
 **(1) Material ledger (P4b).** Migration `0053_land_materials.sql` adds
