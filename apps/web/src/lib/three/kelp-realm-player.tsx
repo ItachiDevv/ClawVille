@@ -16,7 +16,9 @@ import {
   KELP_REALM_FOOTPRINT_WU,
   KELP_REALM_BEACON_GRAPH,
   KELP_REALM_BEACON_VISIT_RADIUS_WU,
+  KELP_REALM_COLS,
   KELP_REALM_PLAYER_SPAWN,
+  KELP_REALM_ROWS,
   KELP_REALM_PLAYER_SPEED_WU_PER_SEC,
   KELP_REALM_SPORE_COUNT,
   KELP_REALM_WALL_AABBS,
@@ -78,6 +80,9 @@ const CAM_PITCH_MIN = -35;
 const CAM_PITCH_MAX = 160;
 const CAM_WALL_CLEARANCE = 24;
 const CAM_WALL_PADDING = 18;
+/** The authored footprint has a two-cell-thick perimeter around the maze. */
+const CAM_BOUNDARY_BAND_CELLS = 2;
+const CAM_BOUNDARY_RELEASE_RATE = 3;
 const HALF_REALM = KELP_REALM_FOOTPRINT_WU / 2;
 const KELP_REALM_COSMETIC_SKU_ALLOWLIST = Object.freeze([KELP_MAZE_COLLECTIBLE_SLUG]);
 
@@ -116,7 +121,7 @@ const targetScratch = new THREE.Vector3();
 const movementScratch = { x: KELP_REALM_PLAYER_SPAWN.x, z: KELP_REALM_PLAYER_SPAWN.z };
 export const kelpRealmPlayerPositionRef = { x: KELP_REALM_PLAYER_SPAWN.x, z: KELP_REALM_PLAYER_SPAWN.z };
 
-function firstCameraWallHitT(
+function firstCameraBoundaryHitT(
   originX: number,
   originZ: number,
   targetX: number,
@@ -131,6 +136,12 @@ function firstCameraWallHitT(
 
   for (let index = 0; index < KELP_REALM_WALL_AABBS.length; index++) {
     const wall = KELP_REALM_WALL_AABBS[index]!;
+    const boundaryWall =
+      wall.row < CAM_BOUNDARY_BAND_CELLS ||
+      wall.row >= KELP_REALM_ROWS - CAM_BOUNDARY_BAND_CELLS ||
+      wall.col < CAM_BOUNDARY_BAND_CELLS ||
+      wall.col >= KELP_REALM_COLS - CAM_BOUNDARY_BAND_CELLS;
+    if (!boundaryWall) continue;
     const minX = wall.centerX - wall.halfX - CAM_WALL_CLEARANCE;
     const maxX = wall.centerX + wall.halfX + CAM_WALL_CLEARANCE;
     const minZ = wall.centerZ - wall.halfZ - CAM_WALL_CLEARANCE;
@@ -179,14 +190,23 @@ function firstCameraWallHitT(
   return firstHit;
 }
 
-function cameraVisibleSegmentSafeT(
+export function cameraBoundarySegmentSafeT(
   originX: number,
   originZ: number,
-  target: THREE.Vector3,
+  targetX: number,
+  targetZ: number,
+  targetY: number,
 ): number {
-  const hitT = firstCameraWallHitT(originX, originZ, target.x, target.z, CAM_LOOK_Y, target.y);
-  const deltaX = target.x - originX;
-  const deltaZ = target.z - originZ;
+  const hitT = firstCameraBoundaryHitT(
+    originX,
+    originZ,
+    targetX,
+    targetZ,
+    CAM_LOOK_Y,
+    targetY,
+  );
+  const deltaX = targetX - originX;
+  const deltaZ = targetZ - originZ;
   const segmentLength = Math.max(1, Math.sqrt(deltaX * deltaX + deltaZ * deltaZ));
   if (hitT >= 1) return 1;
   const safeT = Math.max(0, hitT - CAM_WALL_PADDING / segmentLength);
@@ -292,9 +312,17 @@ function KelpRealmAvatarMotion({
         ),
     );
 
-    camera.getWorldDirection(forwardScratch);
-    forwardScratch.y = 0;
-    if (forwardScratch.lengthSq() > 0.0001) forwardScratch.normalize();
+    // Authoritative look-ahead direction from the OWNED yaw — never read it
+    // back from the camera. The persistent slot camera keeps whatever
+    // orientation the previous visit (or another writer) left on it, and a
+    // feedback read turns that stale direction into this frame's look target
+    // (2026-08-08 Codex finding 4: nondeterministic first-frame aim after
+    // re-entry). yaw 0 ⇒ exact -Z forward, matching the +Z chase offset.
+    forwardScratch.set(
+      Math.sin(cameraYaw.current),
+      0,
+      -Math.cos(cameraYaw.current),
+    );
 
     const group = groupRef.current;
       kelpRealmPlayerPositionRef.x = state.x;
@@ -311,30 +339,36 @@ function KelpRealmAvatarMotion({
         CAM_ABOVE + cameraPitch.current,
         state.z + behindZ,
       );
-      const desiredClampT = cameraVisibleSegmentSafeT(
+      const desiredClampT = cameraBoundarySegmentSafeT(
         state.x,
         state.z,
-        cameraScratch,
+        cameraScratch.x,
+        cameraScratch.z,
+        cameraScratch.y,
       );
-    const clampRate = desiredClampT < cameraClampT.current ? 8 : 3;
-      if (snapCameraRef.current) {
+      const snapCamera = snapCameraRef.current;
+      const boundaryClampInward = desiredClampT < cameraClampT.current;
+      // A perimeter hit must move inward immediately: easing from the old
+      // point would sweep the camera through the boundary wall. Releasing
+      // back toward the full chase distance remains smooth.
+      if (snapCamera || boundaryClampInward) {
         cameraClampT.current = desiredClampT;
       } else {
         cameraClampT.current +=
           (desiredClampT - cameraClampT.current) *
-          (1 - Math.exp(-clampRate * safeDelta));
+          (1 - Math.exp(-CAM_BOUNDARY_RELEASE_RATE * safeDelta));
       }
       cameraScratch.x = state.x + behindX * cameraClampT.current;
       cameraScratch.z = state.z + behindZ * cameraClampT.current;
-      if (snapCameraRef.current) {
+      if (snapCamera || boundaryClampInward) {
         camera.position.copy(cameraScratch);
-        snapCameraRef.current = false;
       } else {
         camera.position.lerp(
           cameraScratch,
           1 - Math.exp(-7 * safeDelta),
         );
       }
+      if (snapCamera) snapCameraRef.current = false;
     targetScratch.set(
         state.x + forwardScratch.x * CAM_LOOK_AHEAD,
       CAM_LOOK_Y,

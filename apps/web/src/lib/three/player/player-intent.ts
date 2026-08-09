@@ -188,8 +188,8 @@ export function derivePlayerFrameIntent(
   output.move.running = running;
   output.move.speedMultiplier = running ? RUN_SPEED_MULT : 1;
   output.cameraYawInput = input.capabilities.cameraOrbitKeys
-    ? Number(keys.arrowleft) -
-      Number(keys.arrowright) +
+    ? Number(keys.arrowright) -
+      Number(keys.arrowleft) +
       (input.policy.readsSharedTouch ? playerTouchState.yaw : 0)
     : 0;
   output.cameraPitchInput = input.capabilities.cameraOrbitKeys

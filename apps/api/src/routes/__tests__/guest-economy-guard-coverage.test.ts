@@ -34,7 +34,11 @@ const MIDDLEWARE_FILE = join(import.meta.dir, '..', '..', 'middleware', 'require
 type Method = 'get' | 'post' | 'patch' | 'delete';
 interface Entry {
   file: string;
-  guard: 'requireNonGuestUser' | 'requireNonGuestIdentity' | 'requireWagerCancelCaller';
+  guard:
+    | 'requireNonGuestUser'
+    | 'requireNonGuestIdentity'
+    | 'requireWagerCancelCaller'
+    | 'requireLedgerCapableIdentity';
   routes: Array<{ method: Method; path: string }>;
 }
 
@@ -89,20 +93,82 @@ const MANIFEST: Entry[] = [
     file: 'land.ts',
     guard: 'requireNonGuestIdentity',
     routes: [
-      p('post', '/claim-starter'),
-      p('post', '/parcels/:parcelId/buy'),
+      // NOTE: the two disabled tenure stubs (`/parcels/:parcelId/buy`, `…/rent`)
+      // are deliberately NOT listed — they are synchronous 409 stubs with no
+      // middleware chain, and the span-to-first-`async` matcher would bleed into
+      // the NEXT route's chain and falsely bless them (Codex hotfix review,
+      // LOW). Their 409 behavior is pinned by land-tenure-phaseb.test.ts.
+      p('post', '/hold-wallet'),
+      p('post', '/parcels/:parcelId/claim-rent'),
+      p('post', '/parcels/:parcelId/claim-hold'),
+      p('post', '/parcels/:parcelId/deposit-topup'),
+      p('post', '/parcels/:parcelId/release'),
       p('post', '/parcels/:parcelId/structure'),
+      p('post', '/parcels/:parcelId/pieces'),
+      p('patch', '/pieces/:pieceId'),
+      p('delete', '/pieces/:pieceId'),
+      p('patch', '/structures/:structureId/appearance'),
       p('post', '/structures/:structureId/upgrade'),
-      p('post', '/parcels/:parcelId/rent'),
       p('post', '/structures/:structureId/services'),
       p('patch', '/services/:listingId'),
       p('post', '/services/:listingId/buy'),
     ],
   },
   {
+    // Ledger-capability lock (2026-08-02 hotfix): every land money mutation must
+    // also fail closed on a non-ledger agent session (stale/restored/unproven
+    // bearer). Every other money domain (cove, cosmetics, kelp, quests, wager)
+    // already chains this guard; land was the gap (Codex land-redesign round 3,
+    // finding 29). `/spawn-preference` is included per the Codex hotfix review
+    // (MEDIUM): no money moves, but it persistently rewrites the bound avatar's
+    // spawn state — same convention as the free cosmetic equip routes.
+    file: 'land.ts',
+    guard: 'requireLedgerCapableIdentity',
+    routes: [
+      p('post', '/hold-wallet'),
+      p('post', '/parcels/:parcelId/claim-rent'),
+      p('post', '/parcels/:parcelId/claim-hold'),
+      p('post', '/parcels/:parcelId/deposit-topup'),
+      p('post', '/parcels/:parcelId/release'),
+      p('post', '/parcels/:parcelId/structure'),
+      p('post', '/parcels/:parcelId/pieces'),
+      p('patch', '/pieces/:pieceId'),
+      p('delete', '/pieces/:pieceId'),
+      p('patch', '/structures/:structureId/appearance'),
+      p('post', '/structures/:structureId/upgrade'),
+      p('post', '/spawn-preference'),
+      p('post', '/structures/:structureId/services'),
+      p('patch', '/services/:listingId'),
+      p('post', '/services/:listingId/buy'),
+    ],
+  },
+  {
+    // The tutorial ladder joined this list in P6 (2026-08-09). It pays real
+    // vCLAW and real materials, and was cookie-gated with a hand-rolled guest
+    // check — the last live economy surface an agent could not reach as itself.
     file: 'quests.ts',
     guard: 'requireNonGuestIdentity',
-    routes: [p('post', '/:id/accept'), p('post', '/:id/start'), p('post', '/:id/submit')],
+    routes: [
+      p('post', '/:id/accept'),
+      p('post', '/:id/start'),
+      p('post', '/:id/submit'),
+      p('post', '/tutorial/:id/claim'),
+      p('get', '/tutorial/claims'),
+    ],
+  },
+  {
+    // Ledger-capability lock on the tutorial ladder: a stale, restored, or
+    // otherwise unproven agent bearer must fail closed before any reward
+    // settles, exactly as on land and cove.
+    file: 'quests.ts',
+    guard: 'requireLedgerCapableIdentity',
+    routes: [
+      p('post', '/:id/accept'),
+      p('post', '/:id/start'),
+      p('post', '/:id/submit'),
+      p('post', '/tutorial/:id/claim'),
+      p('get', '/tutorial/claims'),
+    ],
   },
   {
     file: 'cove-cash-poker.ts',

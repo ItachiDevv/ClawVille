@@ -1,36 +1,27 @@
 /**
- * seed-land-parcels.ts — Land primary-sale + Phase-B hold-tier supply seed.
+ * seed-land-parcels.ts — Render-backed land supply seed.
  * ============================================================================
  *
  * WHAT THIS DOES (idempotent — safe to re-run)
  * --------------------------------------------
- * Inserts one `land_parcels` row per parcel across TWO sources:
+ * Inserts one `land_parcels` row per rendered parcel (56 total).
  *   1. The FROZEN geometry constant `LAND_PARCELS` — 56 render-backed parcels
  *      (10 founder + 26 starter + 20 c; the 3-ring layout after the 576->704
  *      world grow added the outer c ring; a/b are 0 in `PARCEL_TIER_COUNTS`).
- *   2. The Phase-B HOLD-tier inventory — 12 b + 6 a parcels generated via the
- *      SHARED `generateParcelsForTier(tier, count)` helper at a seed-only count
- *      (2026-07-07). `PARCEL_TIER_COUNTS` a/b STAY 0, so `LAND_PARCELS` and the
- *      3D render are UNTOUCHED — these 18 rows are pure DB economic inventory
- *      claimable via `POST /api/land/parcels/:id/claim-hold` (CLV hold-to-keep).
- *      They use the IDENTICAL square-perimeter formula as founder/starter/c, so
- *      their grid cells land on the same convention (and `buildSeedRows` asserts
- *      they are disjoint from every render-backed cell — a `land_parcels_grid_
- *      unique` collision fails LOUD in dry-run before any DB is touched).
+ * The former seed-only 12 b + 6 a ghost rows are absorbed by migration 0052
+ * and deliberately never recreated.
  *
  * Each row stamps `parcel_code`, `tier`, `grid_x`, `grid_y`, `price_ct` (the
  * per-row primary-sale price interpolated from `LAND_TIER_LADDER`) AND
- * `rent_ct_weekly` (interpolated from `LAND_RENT_LADDER` — the weekly upkeep the
- * land-rent-sweeper draws; `claim-hold` reads this for c/b/a/founder holds).
+ * `rent_ct_weekly` (a legacy interpolated stamp retained for row compatibility;
+ * P2 rent quotes always come from server constants, never this column).
  * NULL rent for starter/founder (not laddered). All other columns take schema
  * defaults (status 'available', tenure NULL, rake_bps 0, timestamps now()).
  * Idempotent: `ON CONFLICT (parcel_code) DO NOTHING`, so a re-run never
  * duplicates or reprices/re-rents an existing parcel.
  *
- * NOTE on price_ct + Phase B: c/b/a/founder BUY is retired (409
- * `tenure_model_active`); `claim-hold` never reads `price_ct`. It is stamped
- * anyway for row-shape parity with the pre-Phase-B seed (and in case a tier ever
- * re-enables a buy path). The LIVE value for a hold parcel is `rent_ct_weekly`.
+ * NOTE: primary-sale and legacy deposit paths are retired. These stamps remain
+ * only for compatibility with grandfathered rows and old audit data.
  *
  * THE PROD-WRITE INCIDENT — WHY THIS SCRIPT IS EXPLICIT-URL-ONLY
  * -------------------------------------------------------------
@@ -46,8 +37,8 @@
  *     its OWN `postgres()` client from `SEED_DATABASE_URL` and writes raw SQL —
  *     exactly the explicit-only pattern of
  *     `packages/database/scripts/migrate-ci.ts`.
- *   - `@clawville/shared` is imported for the geometry + ladder constants + the
- *     pure `generateParcelsForTier` helper. Those modules (`land-parcels.ts`,
+ *   - `@clawville/shared` is imported for the geometry + ladder constants.
+ *     Those modules (`land-parcels.ts`,
  *     `land-economy.ts`, `land-tiers.ts`) are PURE — they import only from each
  *     other, never touch a DB, and have no side effects at module load — so
  *     importing them cannot trigger a connection.
@@ -75,7 +66,6 @@ import {
   LAND_RENT_LADDER,
   PARCEL_TIER_COUNTS,
   TOTAL_PARCEL_SUPPLY,
-  generateParcelsForTier,
   type LandTier,
   type ParcelSlot,
 } from '@clawville/shared';
@@ -98,21 +88,9 @@ const HALF_MAP_WU = (704 / 2) * TILE_SIZE; // 11264 wu — grid half-width
 const WORLD_TILES = 704; // grid is WORLD_TILES x WORLD_TILES tiles
 
 // ---------------------------------------------------------------------------
-// Phase-B hold-tier seed inventory (2026-07-07). The a/b bands exist in the tier
-// contract but are seeded at 0 in PARCEL_TIER_COUNTS (render supply). Phase B's
-// CLV hold-to-keep needs claimable B/A supply, so we seed b/a HERE via the shared
-// `generateParcelsForTier` helper — WITHOUT touching PARCEL_TIER_COUNTS (render
-// stays untouched). Counts from tokenomics MODEL §M3 ("~12 B, ~6 A").
-// generateParcelsForTier uses the frozen TIER_CONFIG a/b half-side anchors
-// (a=200t, b=224t) + the same perimeter walk, so positions are convention-
-// consistent; buildSeedRows asserts their grid cells are disjoint from the 56.
-// ---------------------------------------------------------------------------
-const BA_SEED_PLAN: readonly { tier: Extract<LandTier, 'a' | 'b'>; count: number }[] = [
-  { tier: 'b', count: 12 },
-  { tier: 'a', count: 6 },
-] as const;
-const BA_SEED_COUNT = BA_SEED_PLAN.reduce((n, p) => n + p.count, 0); // 18
-const EXPECTED_TOTAL = TOTAL_PARCEL_SUPPLY + BA_SEED_COUNT; // 56 + 18 = 74
+// P2 supply is exactly the rendered world. a/b remain historical enum labels,
+// not claimable or seedable inventory.
+const EXPECTED_TOTAL = TOTAL_PARCEL_SUPPLY; // 56 rendered parcels
 
 // ---------------------------------------------------------------------------
 // Derived seed row.
@@ -124,7 +102,7 @@ interface SeedRow {
   gridY: number;
   /** Primary-sale CT price. `null` for the founder tier (auction/USDC-only). */
   priceCt: number | null;
-  /** Weekly upkeep/rent CT (the sweeper draws it; claim-hold reads it). `null` for starter/founder. */
+  /** Legacy weekly rent stamp. P2 claims use server constants instead. */
   rentCtWeekly: number | null;
 }
 
@@ -155,25 +133,20 @@ function interpolate(
 }
 
 /**
- * Build all seed rows (74 = 56 render-backed + 18 b/a hold-tier) in
+ * Build all 56 render-backed seed rows in
  * deterministic order. Asserts grid bounds, parcel-code uniqueness, AND grid-
- * cell uniqueness across ALL rows (the b/a rows must not collide with any
- * render-backed cell — the `land_parcels_grid_unique` DB index backs this, but
- * assert here so a geometry/constant drift fails LOUD in dry-run first).
+ * cell uniqueness across all rendered rows. The `land_parcels_grid_unique` DB
+ * index backs this, but assert here so geometry drift fails in dry-run first.
  */
 function buildSeedRows(): SeedRow[] {
   const rows: SeedRow[] = [];
   const seenCodes = new Set<string>();
   const seenCells = new Set<string>();
 
-  // (1) render-backed supply from the frozen generator (count = PARCEL_TIER_COUNTS),
-  // then (2) the b/a hold-tier inventory via the SAME per-tier generator at the
-  // seed-only BA_SEED_PLAN counts. `count` rides each slot for the price/rent ramp.
+  // Render-backed supply from the frozen generator. `count` rides each slot for
+  // the historical price/rent stamp interpolation.
   const planned: { slot: ParcelSlot; count: number }[] = [
     ...LAND_PARCELS.map((slot) => ({ slot, count: PARCEL_TIER_COUNTS[slot.tier] })),
-    ...BA_SEED_PLAN.flatMap((p) =>
-      generateParcelsForTier(p.tier, p.count).map((slot) => ({ slot, count: p.count })),
-    ),
   ];
 
   for (const { slot, count } of planned) {
@@ -253,7 +226,7 @@ function perTierRanges(rows: SeedRow[], key: 'priceCt' | 'rentCtWeekly'): Record
 function printDryRun(rows: SeedRow[]): void {
   console.log(`${LOG} DRY RUN — no env read, no DB connection, no write.`);
   console.log(
-    `${LOG} total rows: ${rows.length} (expected ${EXPECTED_TOTAL} = ${TOTAL_PARCEL_SUPPLY} render-backed + ${BA_SEED_COUNT} b/a hold-tier)`,
+    `${LOG} total rows: ${rows.length} (expected ${EXPECTED_TOTAL} render-backed)`,
   );
 
   const fmt = (r: SeedRow | undefined): string =>
@@ -324,8 +297,8 @@ async function runSeed(rows: SeedRow[]): Promise<void> {
 async function main(): Promise<void> {
   const dryRun = process.argv.includes('--dry-run');
 
-  // Build + assert rows FIRST (runs in both modes). A geometry/constant drift or
-  // a b/a grid collision throws here, before any DB is touched.
+  // Build + assert rows FIRST (runs in both modes). Geometry drift throws here,
+  // before any DB is touched.
   const rows = buildSeedRows();
 
   if (rows.length !== EXPECTED_TOTAL) {

@@ -274,7 +274,7 @@ export function StageTransition({
         </div>
       ) : phase !== 'idle' && phase !== 'fadingIn' ? (
         <div className="text-sm font-medium tracking-[0.24em] text-cyan-100/80">
-          {phase === 'awaiting' ? 'WARMING SCENE' : 'SWITCHING SCENE'}
+          RIDING THE CURRENT…
         </div>
       ) : null}
     </div>

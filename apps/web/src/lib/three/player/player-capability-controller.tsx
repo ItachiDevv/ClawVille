@@ -14,6 +14,8 @@ import {
   playerKeyState,
   resetPlayerKeys,
   resetPlayerTouch,
+  RUN_JOYSTICK_THRESHOLD,
+  RUN_SPEED_MULT,
 } from './player-input';
 import {
   derivePlayerFrameIntent,
@@ -237,7 +239,7 @@ function runPlayerControllerFrame(
         config.capabilities.sprint &&
         moving &&
         (playerKeyState.shift ||
-          Math.hypot(storeJoystick.x, storeJoystick.y) > 0.7);
+          Math.hypot(storeJoystick.x, storeJoystick.y) > RUN_JOYSTICK_THRESHOLD);
       const move = intent.move as {
         worldVx: number;
         worldVz: number;
@@ -249,7 +251,7 @@ function runPlayerControllerFrame(
       move.worldVz = override.moveOverride.worldVz;
       move.moving = moving;
       move.running = running;
-      move.speedMultiplier = running ? 1.5 : 1;
+      move.speedMultiplier = running ? RUN_SPEED_MULT : 1;
     }
   }
 

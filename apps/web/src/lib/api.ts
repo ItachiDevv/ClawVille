@@ -9,6 +9,7 @@ import type {
 // heartbeat body's optional controlMode mirrors the game store's union so the
 // two can never drift.
 import type { ControlMode } from '@/stores/game';
+import type { PlacedPiece } from '@/stores/land';
 import type {
   LandParcelDTO,
   LandParcelStatus,
@@ -16,10 +17,11 @@ import type {
   LandCatalogAllResponse,
   OwnedLandResponse,
   MyLandResponse,
-  ClaimStarterResponse,
-  BuyParcelResponse,
-  RentParcelResponse,
   ClaimHoldResponse,
+  ClaimRentResponse,
+  LandHoldWalletStatus,
+  RentPrepayResponse,
+  ReleaseParcelResponse,
   PlaceStructureResponse,
   UpgradeStructureResponse,
   ParcelStructureResponse,
@@ -33,6 +35,15 @@ import type {
   StructureServicesResponse,
   BrowseServicesResponse,
   BuyServiceResponse,
+  PublicLandStructureDTO,
+  UpdateStructureAppearanceRequest,
+  UpdateStructureAppearanceResponse,
+  PlaceLandPieceRequest,
+  PlaceLandPieceResponse,
+  OwnerLandPiecesResponse,
+  MoveLandPieceRequest,
+  MoveLandPieceResponse,
+  DeleteLandPieceResponse,
 } from '@/components/game/land/types';
 import { getFingerprint } from './fingerprint';
 
@@ -183,9 +194,28 @@ function apiErrorExtras(err: Record<string, unknown>): {
   };
 }
 
+async function fetchWithTransientGetRetry(
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  const method = (init.method ?? 'GET').toUpperCase();
+
+  try {
+    const response = await fetch(url, init);
+    if (method !== 'GET' || ![502, 503, 504].includes(response.status)) {
+      return response;
+    }
+  } catch (err) {
+    if (method !== 'GET') throw err;
+  }
+
+  await new Promise<void>((resolve) => setTimeout(resolve, 750));
+  return fetch(url, init);
+}
+
 async function honoRequest<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = await withFingerprint(options?.headers);
-  const res = await fetch(`${HONO_API_URL}${path}`, {
+  const res = await fetchWithTransientGetRetry(`${HONO_API_URL}${path}`, {
     // DEFAULT no-store: personalized JSON must never replay from the
     // browser HTTP cache into another session. TanStack Query is the
     // caching layer for API data. Placed BEFORE the spread so a caller
@@ -208,7 +238,7 @@ async function honoRequest<T>(path: string, options?: RequestInit): Promise<T> {
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = await withFingerprint(options?.headers);
-  const res = await fetch(`${API_URL}${path}`, {
+  const res = await fetchWithTransientGetRetry(`${API_URL}${path}`, {
     // Same overridable no-store default as honoRequest — see comment there.
     cache: 'no-store',
     ...options,
@@ -1175,6 +1205,15 @@ export const api = {
       credited: number;
       balance: number;
       error?: string;
+      /**
+       * Machine-readable refusal code. Emitted by the shared
+       * `requireNonGuestIdentity` middleware, whose body is
+       * `{ error: <human message>, code: 'guest_not_allowed' }` — the route's
+       * own older refusals instead put their code in `error`. The quest store
+       * reads both spellings; this field was missing from the declared shape,
+       * so that read did not typecheck.
+       */
+      code?: string;
       reason?: string;
       message?: string;
     }>(`/api/quests/tutorial/${questId}/claim`, { method: 'POST' }),
@@ -1420,50 +1459,95 @@ export const api = {
   },
 
   /**
-   * Claim a Starter Cove (auth, non-guest). NO body/parcelId — the server
-   * AUTO-PICKS an available starter and debits the refundable
-   * LAND_STARTER_DEPOSIT_CT (2000 CT) into escrow (NOT free, NOT a purchase;
-   * weekly upkeep auto-draws from it). Idempotent — `alreadyOwned: true` on
-   * repeat, never re-charged.
+   * Claim a rendered Starter, C, or Founder parcel through the rent-free CLV
+   * hold door. The server derives the stacked threshold and verifies the fresh
+   * declared-wallet balance; the client supplies only its retry-stable key.
    */
-  claimStarterPlot: () =>
-    honoRequest<ClaimStarterResponse>('/api/land/claim-starter', {
+  getLandHoldWallet: () =>
+    honoRequest<LandHoldWalletStatus>('/api/land/hold-wallet'),
+
+  declareLandHoldWallet: (walletAddress: string) =>
+    honoRequest<{ walletAddress: string }>('/api/land/hold-wallet', {
       method: 'POST',
+      body: JSON.stringify({ walletAddress }),
     }),
 
-  /** Buy a priced parcel with CT (auth). */
-  buyParcel: (parcelId: string) =>
-    honoRequest<BuyParcelResponse>(
-      `/api/land/parcels/${encodeURIComponent(parcelId)}/buy`,
-      { method: 'POST' },
-    ),
-
-  /**
-   * Rent a c-tier parcel with CT (auth). Charges the first week immediately from
-   * the SERVER-stamped `rent_ct_weekly` — the body is empty, NO client price.
-   * Returns the paid-through date; the sweeper auto-charges each subsequent week.
-   */
-  rentParcel: (parcelId: string) =>
-    honoRequest<RentParcelResponse>(
-      `/api/land/parcels/${encodeURIComponent(parcelId)}/rent`,
-      { method: 'POST', body: JSON.stringify({}) },
-    ),
-
-  /**
-   * Claim a c/b/a/founder parcel by PROVING a CLV hold (Phase B2 hold-to-keep,
-   * auth non-guest). EMPTY body (`emptyStrictBodySchema` rejects stray fields) —
-   * NO client price/threshold EVER reaches the write: the server derives the
-   * stacked CLV requirement and reads the live balance itself. No CT is debited
-   * at claim; the weekly CT upkeep is auto-charged by the rent sweeper.
-   */
-  claimHoldParcel: (parcelId: string) =>
+  claimHoldParcel: (parcelId: string, idempotencyKey: string) =>
     honoRequest<ClaimHoldResponse>(
       `/api/land/parcels/${encodeURIComponent(parcelId)}/claim-hold`,
-      { method: 'POST', body: JSON.stringify({}) },
+      { method: 'POST', body: JSON.stringify({ idempotencyKey }) },
+    ),
+
+  claimRentParcel: (parcelId: string, weeks: number, idempotencyKey: string) =>
+    honoRequest<ClaimRentResponse>(
+      `/api/land/parcels/${encodeURIComponent(parcelId)}/claim-rent`,
+      { method: 'POST', body: JSON.stringify({ weeks, idempotencyKey }) },
+    ),
+
+  prepayLandRent: (parcelId: string, weeks: number, idempotencyKey: string) =>
+    honoRequest<RentPrepayResponse>(
+      `/api/land/parcels/${encodeURIComponent(parcelId)}/deposit-topup`,
+      { method: 'POST', body: JSON.stringify({ weeks, idempotencyKey }) },
+    ),
+
+  releaseLandParcel: (parcelId: string, idempotencyKey: string) =>
+    honoRequest<ReleaseParcelResponse>(
+      `/api/land/parcels/${encodeURIComponent(parcelId)}/release`,
+      { method: 'POST', body: JSON.stringify({ idempotencyKey }) },
     ),
 
   /** The signed-in player's owned parcels + structures (auth). */
   getMyLand: () => honoRequest<MyLandResponse>('/api/land/me'),
+
+  /** Every active structure in the shared world. Public; server-cached for 60s. */
+  getPublicLandStructures: () =>
+    honoRequest<PublicLandStructureDTO[]>('/api/land/structures/public', { cache: 'default' }),
+
+  /** Every active kit piece in the shared world. Public; server-cached for 60s. */
+  getPublicLandPieces: (fresh = false) =>
+    honoRequest<PlacedPiece[]>('/api/land/pieces/public', {
+      // Explicit post-mutation refreshes bypass the browser cache; the server's
+      // own public-feed cache is already busted atomically by routes 12-14.
+      cache: fresh ? 'no-store' : 'default',
+    }),
+
+  /** Owner-only active-structure pieces, including IDs for move/remove after reload. */
+  getLandParcelPieces: (parcelId: string) =>
+    honoRequest<OwnerLandPiecesResponse>(
+      `/api/land/parcels/${encodeURIComponent(parcelId)}/pieces`,
+      { cache: 'no-store' },
+    ),
+
+  /** Paid owner placement; idempotency key is mandatory and server-priced. */
+  placeLandPiece: (parcelId: string, body: PlaceLandPieceRequest) =>
+    honoRequest<PlaceLandPieceResponse>(
+      `/api/land/parcels/${encodeURIComponent(parcelId)}/pieces`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
+  /** Free owner move. */
+  moveLandPiece: (pieceId: string, body: MoveLandPieceRequest) =>
+    honoRequest<MoveLandPieceResponse>(
+      `/api/land/pieces/${encodeURIComponent(pieceId)}`,
+      { method: 'PATCH', body: JSON.stringify(body) },
+    ),
+
+  /** Free owner removal with no refund. */
+  deleteLandPiece: (pieceId: string) =>
+    honoRequest<DeleteLandPieceResponse>(
+      `/api/land/pieces/${encodeURIComponent(pieceId)}`,
+      { method: 'DELETE' },
+    ),
+
+  /** Free owner-only shell/palette mutation; current level/tier are server-read. */
+  updateStructureAppearance: (
+    structureId: string,
+    body: UpdateStructureAppearanceRequest,
+  ) =>
+    honoRequest<UpdateStructureAppearanceResponse>(
+      `/api/land/structures/${encodeURIComponent(structureId)}/appearance`,
+      { method: 'PATCH', body: JSON.stringify(body) },
+    ),
 
   /** Place a free Lv1 structure on an owned parcel (auth). */
   placeStructure: (

@@ -46,6 +46,7 @@ import {
   varchar,
   text,
   integer,
+  smallint,
   numeric,
   boolean,
   timestamp,
@@ -129,13 +130,7 @@ export const landTransactionKindEnum = pgEnum('land_transaction_kind', [
  *             thresholds required; weekly CT upkeep debits the holder → treasury;
  *             CLV-below OR insufficient CT → grace → lapse
  */
-export const landTenureEnum = pgEnum('land_tenure', [
-  'rented',
-  'owned',
-  'starter',
-  'deposit',
-  'hold',
-]);
+export const landTenureEnum = pgEnum('land_tenure', ['rented', 'owned', 'starter', 'deposit', 'hold']);
 
 /**
  * Which SUBJECT's CLV backs a B2 hold parcel — decides how the sweeper re-checks
@@ -158,18 +153,10 @@ export const landStructureStatusEnum = pgEnum('land_structure_status', ['active'
 export const serviceListingKindEnum = pgEnum('service_listing_kind', ['peer', 'partner']);
 
 /** Service listing lifecycle. */
-export const serviceListingStatusEnum = pgEnum('service_listing_status', [
-  'active',
-  'paused',
-  'delisted',
-]);
+export const serviceListingStatusEnum = pgEnum('service_listing_status', ['active', 'paused', 'delisted']);
 
 /** Vetted-partner storefront lifecycle (INERT in v1 — CT-only core loop). */
-export const partnerStorefrontStatusEnum = pgEnum('partner_storefront_status', [
-  'pending',
-  'active',
-  'suspended',
-]);
+export const partnerStorefrontStatusEnum = pgEnum('partner_storefront_status', ['pending', 'active', 'suspended']);
 
 /** CT top-up on-ramp rail. Only `x402` is wired in Phase 4; `stripe`/`clv` reserved. */
 export const ctTopupRailEnum = pgEnum('ct_topup_rail', ['x402', 'stripe', 'clv']);
@@ -241,6 +228,8 @@ export const landParcels = pgTable(
      * cleared to NULL on eviction (parcel returns to the available pool).
      */
     tenure: landTenureEnum('tenure'),
+    /** 1 = legacy terms; 2 = P2 rent / rent-free hold terms. */
+    tenureTermsVersion: smallint('tenure_terms_version'),
     /**
      * Weekly rent in CT, STAMPED per-row at seed/migration from `LAND_RENT_LADDER`
      * (same per-tier interpolation as price_ct). The rent route reads THIS, never
@@ -363,6 +352,45 @@ export const landParcels = pgTable(
       'land_parcels_deposit_remaining_nonneg',
       sql`${t.depositRemainingCt} IS NULL OR ${t.depositRemainingCt} >= 0`,
     ),
+    tenureEscrowShape: check(
+      'land_parcels_tenure_escrow_shape',
+      sql`${t.tenureTermsVersion} <> 2 OR ${t.tenure} <> 'deposit' OR (
+        ${t.depositRemainingCt} IS NOT NULL
+        AND ${t.depositRemainingCt} >= 0
+        AND ${t.rentCtWeekly} IS NOT NULL
+        AND ${t.rentCtWeekly} > 0
+      )`,
+    ),
+    tenureTermsVersionValid: check(
+      'land_parcels_tenure_terms_version_valid',
+      sql`(${t.tenure} IS NULL AND ${t.tenureTermsVersion} IS NULL)
+        OR (${t.tenure} IS NOT NULL AND ${t.tenureTermsVersion} IS NOT NULL
+          AND ${t.tenureTermsVersion} IN (1, 2))`,
+    ),
+  }),
+);
+
+/** Durable idempotency spine shared by tenure claim, prepay, and release. */
+export const landTenureSettlements = pgTable(
+  'land_tenure_settlements',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    avatarId: uuid('avatar_id')
+      .notNull()
+      .references(() => avatars.id, { onDelete: 'cascade' }),
+    operation: varchar('operation', { length: 32 }).notNull(),
+    idempotencyKey: varchar('idempotency_key', { length: 64 }),
+    fingerprint: text('fingerprint').notNull(),
+    response: jsonb('response').$type<Record<string, unknown>>().notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    avatarIdemUnique: uniqueIndex('land_tenure_settlements_avatar_idem_unique')
+      .on(t.avatarId, t.idempotencyKey)
+      .where(sql`${t.idempotencyKey} IS NOT NULL`),
+    releaseParcelCreatedIdx: index('land_tenure_settlements_release_parcel_created_idx')
+      .on(sql`(${t.response}->'parcel'->>'parcelCode')`, t.createdAt.desc(), t.id.desc())
+      .where(sql`${t.operation} = 'tenure_release'`),
   }),
 );
 
@@ -395,6 +423,17 @@ export const landStructures = pgTable(
      * — NOT a free-form mesh (DESIGN decision #8).
      */
     catalogKey: varchar('catalog_key', { length: 64 }).notNull(),
+    /**
+     * Player-selected render shell. Nullable during the rolling P1 deploy;
+     * every read must explicitly fall back to `coastal-cottage` until the
+     * deferred NOT NULL hardening migration has shipped.
+     */
+    shellKey: text('shell_key'),
+    /**
+     * Player-selected vertex-colour preset. Nullable during the rolling P1
+     * deploy; reads explicitly fall back to `classic`.
+     */
+    paletteKey: text('palette_key'),
     /** Upgrade level 1..5 (Lv1 → Lv5). Drives perk magnitude + prestige + visual tier. */
     level: integer('level').notNull().default(1),
     /**
@@ -416,6 +455,51 @@ export const landStructures = pgTable(
     typeIdx: index('land_structures_type_idx').on(t.structureType),
     /** Level is a server-clamped 1..5 — DB guard against a corrupt write. */
     levelRange: check('land_structure_level_range', sql`${t.level} BETWEEN 1 AND 5`),
+  }),
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// land_structure_pieces — decorative snap-grid kit pieces (P3 stage A)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Render-agnostic decorative kit placements (P3 stage A). `piece_key` is
+ * validated against the shared catalog by the API; stage B alone maps it to
+ * authored assets. There is intentionally no collider/pathfinding state.
+ */
+export const landStructurePieces = pgTable(
+  'land_structure_pieces',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    parcelId: uuid('parcel_id')
+      .notNull()
+      .references(() => landParcels.id, { onDelete: 'cascade' }),
+    /** Denormalized for audit/read convenience; parcel ownership stays authoritative. */
+    ownerAvatarId: uuid('owner_avatar_id')
+      .notNull()
+      .references(() => avatars.id, { onDelete: 'cascade' }),
+    pieceKey: text('piece_key').notNull(),
+    gridX: integer('grid_x').notNull(),
+    gridY: integer('grid_y').notNull(),
+    /** Integer 0..7, each unit representing 45 degrees. */
+    rotationStep: integer('rotation_step').notNull(),
+    /** One-based vertical tier; the structure level further limits the usable maximum. */
+    stackLevel: integer('stack_level').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    parcelIdx: index('land_structure_pieces_parcel_idx').on(t.parcelId),
+    cellStackUnique: uniqueIndex('land_structure_pieces_cell_stack_unique').on(
+      t.parcelId,
+      t.gridX,
+      t.gridY,
+      t.stackLevel,
+    ),
+    gridXRange: check('land_structure_pieces_grid_x_range', sql`${t.gridX} BETWEEN 0 AND 15`),
+    gridYRange: check('land_structure_pieces_grid_y_range', sql`${t.gridY} BETWEEN 0 AND 15`),
+    rotationRange: check('land_structure_pieces_rotation_step_range', sql`${t.rotationStep} BETWEEN 0 AND 7`),
+    stackRange: check('land_structure_pieces_stack_level_range', sql`${t.stackLevel} BETWEEN 1 AND 3`),
   }),
 );
 
@@ -463,32 +547,36 @@ export const landUpgrades = pgTable(
  * shape (which parcel/structure, buyer→seller, kind) so we don't reverse-
  * engineer it from ledger reasons.
  *
- * NO idempotency key BY DESIGN. Parcel-buy single-charge safety is the
+ * NO dedicated idempotency column BY DESIGN. Parcel-buy single-charge safety is the
  * `land_parcels.status='owned'` ownership flip under `SELECT … FOR UPDATE` —
  * a replayed buy sees `owned` and 409s (one parcel, one owner = the natural
  * idempotency key). `claim-starter` idempotency is the "avatar already owns a
  * starter" check. Replayable money paths that AREN'T self-idempotent carry
- * their own key: `land_upgrades`, `service_purchases`, `ct_topups`. So the
- * Phase-1 buy route must NOT look for a `land_transactions` idempotency key.
+ * their own key: `land_upgrades`, `service_purchases`, `ct_topups`. Kit-piece
+ * placement alone stores its key in JSONB metadata and has a scoped expression
+ * unique index. The Phase-1 buy route must NOT look for a land-transaction key.
  */
 export const landTransactions = pgTable(
   'land_transactions',
   {
     id: uuid('id').primaryKey().defaultRandom(),
     kind: landTransactionKindEnum('kind').notNull(),
-    parcelId: uuid('parcel_id').references(() => landParcels.id, { onDelete: 'set null' }),
+    parcelId: uuid('parcel_id').references(() => landParcels.id, {
+      onDelete: 'set null',
+    }),
     structureId: uuid('structure_id').references(() => landStructures.id, {
       onDelete: 'set null',
     }),
     /** Payer/debited (primary-sale buyer, upgrader). */
-    avatarId: uuid('avatar_id').references(() => avatars.id, { onDelete: 'set null' }),
+    avatarId: uuid('avatar_id').references(() => avatars.id, {
+      onDelete: 'set null',
+    }),
     amountCt: integer('amount_ct').notNull(),
     /** Cross-ref to the canonical ledger debit row (source of truth for balance). */
     debitLedgerTxId: uuid('debit_ledger_tx_id'),
     /**
-     * RESERVED (§6.C8 burn-sink): v1 primary sale debits the buyer and CT
-     * leaves circulation — there is NO treasury-avatar credit. This column is
-     * for a FUTURE treasury-credit model only; no v1 route writes it.
+     * Optional cross-ref to a treasury/recipient credit. Primary-sale burn-sink
+     * rows leave it null; kit-piece placement writes the atomic house credit.
      */
     creditLedgerTxId: uuid('credit_ledger_tx_id'),
     metadata: jsonb('metadata').$type<Record<string, unknown>>().default({}).notNull(),
@@ -498,6 +586,12 @@ export const landTransactions = pgTable(
     parcelIdx: index('land_tx_parcel_idx').on(t.parcelId, t.createdAt),
     avatarIdx: index('land_tx_avatar_idx').on(t.avatarId, t.createdAt),
     kindIdx: index('land_tx_kind_idx').on(t.kind, t.createdAt),
+    kitPieceIdemUnique: uniqueIndex('land_tx_kit_piece_idem_unique')
+      .on(sql`(${t.metadata}->>'idempotencyKey')`)
+      .where(
+        sql`${t.kind} = 'structure_placement'
+          AND ${t.metadata}->>'operation' = 'kit_piece_placement'`,
+      ),
   }),
 );
 
@@ -534,6 +628,23 @@ export const serviceListings = pgTable(
      * treasury sink — a one-line route change, not a migration.
      */
     platformFeeBps: integer('platform_fee_bps').notNull().default(0),
+    /**
+     * The owner's standing INTENT to hold a premium featured slot. "Featured
+     * right now" is `featured AND featuredPaidThrough > now()` — the flag alone
+     * never grants placement, so a lapsed payment drops the feature without
+     * discarding the owner's choice.
+     */
+    featured: boolean('featured').notNull().default(false),
+    /** Weekly slot-rent cursor. Past-due + unpaid ⇒ the listing suspends. */
+    slotPaidThrough: timestamp('slot_paid_through', { withTimezone: true }),
+    /** Weekly featured-rent cursor. Independent of the slot cursor. */
+    featuredPaidThrough: timestamp('featured_paid_through', { withTimezone: true }),
+    /**
+     * Set when a slot-rent charge failed. The row, title, and price are kept
+     * verbatim — suspension is not deletion — and the next successful sweep
+     * clears it.
+     */
+    slotSuspendedAt: timestamp('slot_suspended_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -612,7 +723,9 @@ export const partnerStorefronts = pgTable(
     slug: varchar('slug', { length: 64 }).notNull().unique(),
     displayName: varchar('display_name', { length: 120 }).notNull(),
     /** The prime parcel this storefront occupies (A-tier / town-square adjacent). */
-    parcelId: uuid('parcel_id').references(() => landParcels.id, { onDelete: 'set null' }),
+    parcelId: uuid('parcel_id').references(() => landParcels.id, {
+      onDelete: 'set null',
+    }),
     /** USDC payout destination — partner's own Solana pubkey (base58, validated at write). */
     payoutPubkey: varchar('payout_pubkey', { length: 64 }).notNull(),
     status: partnerStorefrontStatusEnum('status').notNull().default('pending'),
@@ -651,7 +764,9 @@ export const ctTopups = pgTable(
     avatarId: uuid('avatar_id')
       .notNull()
       .references(() => avatars.id, { onDelete: 'cascade' }),
-    userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+    userId: uuid('user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
     /** Only 'x402' is wired in Phase 4; 'stripe'/'clv' reserved. */
     rail: ctTopupRailEnum('rail').notNull(),
     amountCt: integer('amount_ct').notNull(),

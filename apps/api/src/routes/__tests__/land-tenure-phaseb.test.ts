@@ -117,25 +117,23 @@ mock.module('../../services/linked-wallet-clv-balance', () => ({
 
 describe('phase B — hold stacking math (pure)', () => {
   it('per-tier thresholds match the founder-locked ladder', () => {
-    expect(holdThresholdForTier('starter')).toBeNull();
-    expect(holdThresholdForTier('c')).toBe(100_000);
-    expect(holdThresholdForTier('b')).toBe(500_000);
-    expect(holdThresholdForTier('a')).toBe(2_500_000);
+    expect(holdThresholdForTier('starter')).toBe(100_000);
+    expect(holdThresholdForTier('c')).toBe(250_000);
+    expect(holdThresholdForTier('b')).toBeNull();
+    expect(holdThresholdForTier('a')).toBeNull();
     expect(holdThresholdForTier('founder')).toBe(10_000_000);
     // The function IS the record — no drift possible.
     expect(holdThresholdForTier('c')).toBe(LAND_HOLD_THRESHOLDS_CLV.c!);
   });
 
-  it('600k CLV holds c+b but NOT c+b+c (thresholds STACK — requirement is the SUM)', () => {
-    const held = 600_000;
-    const cPlusB = holdThresholdForTier('c')! + holdThresholdForTier('b')!;
-    expect(cPlusB).toBe(600_000);
-    // Claiming b while holding c: required = c + b = 600k → 600k passes.
-    expect(held >= cPlusB).toBe(true);
-    // Claiming ANOTHER c while holding c+b: required = c + b + c = 700k → fails.
-    const cPlusBPlusC = cPlusB + holdThresholdForTier('c')!;
-    expect(cPlusBPlusC).toBe(700_000);
-    expect(held >= cPlusBPlusC).toBe(false);
+  it('500k CLV holds starter+c but NOT starter+c+c (thresholds stack account-wide)', () => {
+    const held = 500_000;
+    const starterPlusC = holdThresholdForTier('starter')! + holdThresholdForTier('c')!;
+    expect(starterPlusC).toBe(350_000);
+    expect(held >= starterPlusC).toBe(true);
+    const starterPlusTwoC = starterPlusC + holdThresholdForTier('c')!;
+    expect(starterPlusTwoC).toBe(600_000);
+    expect(held >= starterPlusTwoC).toBe(false);
   });
 
   it('a single founder hold needs 10M — a 9_999_999 wallet fails, 10M passes', () => {
@@ -259,21 +257,21 @@ describe('phase B — escrow conservation over decideDepositSweep (pure)', () =>
     expect(totalDrawn + r.refund + r.forfeit).toBe(D + TOPUP);
   });
 
-  it('partial draw never over-draws: remainder 250 at 100/wk draws 100, 100, then 50 (partial, NOT a full week), then graces', () => {
+  it('sub-week remainder is preserved: 250 at 100/wk draws 100, 100, then leaves 50 for refund/forfeit', () => {
     const r = simulateTenancy({ escrowIn: [250], rentWeekly: W, dueWeeks: 5, terminal: 'lapse' });
-    expect(r.draws).toEqual([100, 100, 50]);
-    expect(r.forfeit).toBe(0); // remainder hit 0 on the partial
-    expect(r.draws.reduce((a, b) => a + b, 0)).toBe(250);
+    expect(r.draws).toEqual([100, 100]);
+    expect(r.forfeit).toBe(50);
+    expect(r.draws.reduce((a, b) => a + b, 0) + r.forfeit).toBe(250);
   });
 
-  it('the partial-draw decision reports fullWeek=false (grace opens, week does NOT advance)', () => {
+  it('a sub-week remainder opens grace without drawing or advancing the week', () => {
     const d = decideDepositSweep({
       graceElapsed: false,
       rentDue: true,
       depositRemainingCt: 50,
       rentCtWeekly: 100,
     });
-    expect(d).toEqual({ kind: 'draw', drawnCt: 50, fullWeek: false });
+    expect(d).toEqual({ kind: 'grace' });
   });
 
   it('sweep idempotency SHAPE: after the advance the week is no longer due → decision is skip (draws nothing)', () => {
@@ -325,23 +323,36 @@ describe('phase B — escrow conservation over decideDepositSweep (pure)', () =>
 // ═════════════════════════════════════════════════════════════════════════
 
 /** Mirrors `land.ts`'s (unexported) `depositTopupBodySchema` — keep in sync. */
-const depositTopupBodySchemaMirror = z
-  .object({
+const depositTopupBodySchemaMirror = z.union([
+  z.object({
+    weeks: z.number().int().min(1).max(26),
+    idempotencyKey: z.string().min(8).max(64),
+  }).strict(),
+  z.object({
     amountCt: z.number().int().min(1).max(1_000_000),
-  })
-  .strict();
+    idempotencyKey: z.string().min(8).max(64),
+  }).strict(),
+]);
 
 describe('phase B — deposit-topup zod mirror (deterministic, no DB)', () => {
-  it('accepts 1 and 1_000_000 (boundaries)', () => {
-    expect(depositTopupBodySchemaMirror.safeParse({ amountCt: 1 }).success).toBe(true);
-    expect(depositTopupBodySchemaMirror.safeParse({ amountCt: 1_000_000 }).success).toBe(true);
+  it('accepts preferred week bounds and the legacy amount bounds', () => {
+    expect(depositTopupBodySchemaMirror.safeParse({ weeks: 1, idempotencyKey: '12345678' }).success).toBe(true);
+    expect(depositTopupBodySchemaMirror.safeParse({ weeks: 26, idempotencyKey: '12345678' }).success).toBe(true);
+    expect(depositTopupBodySchemaMirror.safeParse({ amountCt: 1, idempotencyKey: '12345678' }).success).toBe(true);
+    expect(depositTopupBodySchemaMirror.safeParse({ amountCt: 1_000_000, idempotencyKey: '12345678' }).success).toBe(true);
   });
-  it('rejects 0, negatives, 1_000_001, non-integers, missing, stray keys', () => {
+  it('rejects invalid bounds, mixed forms, missing fields, and stray keys', () => {
+    expect(depositTopupBodySchemaMirror.safeParse({ weeks: 0, idempotencyKey: '12345678' }).success).toBe(false);
+    expect(depositTopupBodySchemaMirror.safeParse({ weeks: 27, idempotencyKey: '12345678' }).success).toBe(false);
+    expect(depositTopupBodySchemaMirror.safeParse({ weeks: 1.5, idempotencyKey: '12345678' }).success).toBe(false);
     expect(depositTopupBodySchemaMirror.safeParse({ amountCt: 0 }).success).toBe(false);
     expect(depositTopupBodySchemaMirror.safeParse({ amountCt: -100 }).success).toBe(false);
     expect(depositTopupBodySchemaMirror.safeParse({ amountCt: 1_000_001 }).success).toBe(false);
     expect(depositTopupBodySchemaMirror.safeParse({ amountCt: 10.5 }).success).toBe(false);
     expect(depositTopupBodySchemaMirror.safeParse({}).success).toBe(false);
+    expect(
+      depositTopupBodySchemaMirror.safeParse({ weeks: 1, amountCt: 100, idempotencyKey: '12345678' }).success,
+    ).toBe(false);
     expect(
       depositTopupBodySchemaMirror.safeParse({ amountCt: 100, parcelId: 'x' }).success,
     ).toBe(false);
@@ -359,12 +370,21 @@ function buildRoutingApp() {
   return app;
 }
 
+describe('P2 retired starter door', () => {
+  it('POST /claim-starter is a stable pre-auth 409 dead end', async () => {
+    const app = buildRoutingApp();
+    const res = await app.request('/api/land/claim-starter', { method: 'POST' });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error?: string }).error).toBe('tenure_model_active');
+  });
+});
+
 describe('phase B — routing integrity (no DB touch)', () => {
   it('POST /parcels/:id/buy -> 409 tenure_model_active for everyone (dead route, pre-auth)', async () => {
     const app = buildRoutingApp();
     const res = await app.request(`/api/land/parcels/${crypto.randomUUID()}/buy`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': 'test-phaseb-routing' },
       body: JSON.stringify({}),
     });
     expect(res.status).toBe(409);
@@ -385,6 +405,8 @@ describe('phase B — routing integrity (no DB touch)', () => {
   it('the three NEW authed writes 401 with zero auth material (mounted under requireAuthOrAgentSession)', async () => {
     const app = buildRoutingApp();
     for (const path of [
+      '/api/land/hold-wallet',
+      `/api/land/parcels/${crypto.randomUUID()}/claim-rent`,
       `/api/land/parcels/${crypto.randomUUID()}/claim-hold`,
       `/api/land/parcels/${crypto.randomUUID()}/deposit-topup`,
       `/api/land/parcels/${crypto.randomUUID()}/release`,
@@ -555,6 +577,7 @@ describeIfDb('phase B — money-path E2E (requires DATABASE_URL + migration 0013
         priceCt: 500,
         ownerAvatarId: holderAvatarId,
         tenure: 'hold' as const,
+        tenureTermsVersion: 1,
         grandfathered: true,
         holdThresholdCt: 100_000,
         rentCtWeekly: 100,
@@ -605,137 +628,6 @@ describeIfDb('phase B — money-path E2E (requires DATABASE_URL + migration 0013
 
   // ─── B1 escrow conservation: claim → draw → idempotent re-sweep → release ─
 
-  it('claim-starter debits the deposit INTO escrow (no treasury credit), stamps the deposit tenancy', async () => {
-    await setBalance(tenantAvatarId, 5000);
-    const treasuryBefore = await treasuryBalance();
-
-    const res = await app.request('/api/land/claim-starter', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Cookie: tenantCookie },
-      body: JSON.stringify({}),
-    });
-    expect(res.status).toBe(200);
-    const data = (await res.json()) as {
-      alreadyOwned: boolean;
-      parcel: { parcelCode: string; tenure: string; depositCt: number; depositRemainingCt: number; rentCtWeekly: number };
-    };
-    expect(data.alreadyOwned).toBe(false);
-    expect(data.parcel.parcelCode).toBe(starterCodeA); // fixture, not live supply
-    expect(data.parcel.tenure).toBe('deposit');
-    expect(data.parcel.depositCt).toBe(LAND_STARTER_DEPOSIT_CT);
-    expect(data.parcel.depositRemainingCt).toBe(LAND_STARTER_DEPOSIT_CT);
-    expect(data.parcel.rentCtWeekly).toBe(LAND_STARTER_RENT_CT_WEEKLY);
-
-    // Claimant −deposit; treasury UNCHANGED (escrow is not revenue).
-    expect(await getBalance(tenantAvatarId)).toBe(5000 - LAND_STARTER_DEPOSIT_CT);
-    expect(await treasuryBalance()).toBe(treasuryBefore);
-  });
-
-  it('a replayed claim is alreadyOwned and NEVER charged twice', async () => {
-    const before = await getBalance(tenantAvatarId);
-    const res = await app.request('/api/land/claim-starter', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Cookie: tenantCookie },
-      body: JSON.stringify({}),
-    });
-    expect(res.status).toBe(200);
-    const data = (await res.json()) as { alreadyOwned: boolean };
-    expect(data.alreadyOwned).toBe(true);
-    expect(await getBalance(tenantAvatarId)).toBe(before); // zero re-charge
-  });
-
-  it('the weekly sweep DRAWS from the escrow → treasury (tenant untouched), and the SAME due week never draws twice', async () => {
-    const parcel = await getParcelByCode(starterCodeA);
-    await forceDue(parcel.id as string);
-    const tenantBefore = await getBalance(tenantAvatarId);
-    const treasuryBefore = await treasuryBalance();
-
-    const action1 = await processDueParcel(parcel.id as string);
-    expect(action1.kind).toBe('charged');
-
-    const afterFirst = await getParcelByCode(starterCodeA);
-    expect(afterFirst.depositRemainingCt).toBe(LAND_STARTER_DEPOSIT_CT - LAND_STARTER_RENT_CT_WEEKLY);
-    expect(await treasuryBalance()).toBe(treasuryBefore + LAND_STARTER_RENT_CT_WEEKLY);
-    expect(await getBalance(tenantAvatarId)).toBe(tenantBefore); // NO tenant debit on draws
-
-    // IDEMPOTENCY: the advance under FOR UPDATE settled this week — a second
-    // pass (overlapping tick / crash-retry) must draw NOTHING.
-    const action2 = await processDueParcel(parcel.id as string);
-    expect(action2.kind).toBe('skip');
-    const afterSecond = await getParcelByCode(starterCodeA);
-    expect(afterSecond.depositRemainingCt).toBe(LAND_STARTER_DEPOSIT_CT - LAND_STARTER_RENT_CT_WEEKLY);
-    expect(await treasuryBalance()).toBe(treasuryBefore + LAND_STARTER_RENT_CT_WEEKLY);
-  });
-
-  it('release refunds EXACTLY the remainder — full-life conservation: claim == draws + refund, 0 net mint', async () => {
-    const parcel = await getParcelByCode(starterCodeA);
-    const tenantBefore = await getBalance(tenantAvatarId);
-    const treasuryBefore = await treasuryBalance();
-    const expectedRefund = LAND_STARTER_DEPOSIT_CT - LAND_STARTER_RENT_CT_WEEKLY; // 1900
-
-    const res = await app.request(`/api/land/parcels/${parcel.id}/release`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Cookie: tenantCookie },
-      body: JSON.stringify({}),
-    });
-    expect(res.status).toBe(200);
-    const data = (await res.json()) as { released: boolean; refundedCt: number; parcel: { status: string; tenure: string | null } };
-    expect(data.released).toBe(true);
-    expect(data.refundedCt).toBe(expectedRefund);
-    expect(data.parcel.status).toBe('available');
-    expect(data.parcel.tenure).toBeNull();
-
-    expect(await getBalance(tenantAvatarId)).toBe(tenantBefore + expectedRefund);
-    expect(await treasuryBalance()).toBe(treasuryBefore); // release credits the TENANT, not the house
-
-    // FULL-LIFE CONSERVATION (exact): escrow-in 2000 == draw 100 + refund 1900
-    // + forfeit 0. Tenant net −100 == treasury net +100 → system supply Δ 0.
-    const reverted = await getParcelByCode(starterCodeA);
-    expect(reverted.depositCt).toBeNull();
-    expect(reverted.depositRemainingCt).toBeNull();
-    expect(reverted.ownerAvatarId).toBeNull();
-  });
-
-  // ─── B1 lapse forfeit: nothing refunds, remainder → treasury, 0 net mint ──
-
-  it('lapse (elapsed grace) forfeits the WHOLE remainder to the treasury and reverts the parcel — zero net mint', async () => {
-    await setBalance(lapserAvatarId, 5000);
-    const claim = await app.request('/api/land/claim-starter', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Cookie: lapserCookie },
-      body: JSON.stringify({}),
-    });
-    expect(claim.status).toBe(200);
-    const claimData = (await claim.json()) as { parcel: { parcelCode: string } };
-    // claim-starter allocates the NEXT AVAILABLE starter — the release test above
-    // returned starterCodeA to the pool, so the allocator may legitimately hand
-    // back A or B. The lapse-conservation math is parcel-agnostic: assert on
-    // WHICHEVER fixture parcel was claimed (first live-DB run caught the hard
-    // .toBe(starterCodeB) as an ordering assumption, not a product bug).
-    const lapsedCode = claimData.parcel.parcelCode;
-    expect([starterCodeA, starterCodeB]).toContain(lapsedCode);
-
-    const parcel = await getParcelByCode(lapsedCode);
-    await forceGraceElapsed(parcel.id as string);
-    const treasuryBefore = await treasuryBalance();
-    const lapserBefore = await getBalance(lapserAvatarId); // 3000 after the claim debit
-
-    const action = await processDueParcel(parcel.id as string);
-    expect(action.kind).toBe('evicted');
-
-    // The FULL 2000 remainder forfeits (no draws happened): lapser stays at
-    // 3000 (net −2000 from claim), treasury +2000 → supply Δ over the tenancy
-    // is exactly 0 (claim debit == forfeit credit). NOTHING refunds on lapse.
-    expect(await getBalance(lapserAvatarId)).toBe(lapserBefore);
-    expect(await treasuryBalance()).toBe(treasuryBefore + LAND_STARTER_DEPOSIT_CT);
-
-    const reverted = await getParcelByCode(lapsedCode);
-    expect(reverted.status).toBe('available');
-    expect(reverted.tenure).toBeNull();
-    expect(reverted.depositRemainingCt).toBeNull();
-    expect(reverted.ownerAvatarId).toBeNull();
-  });
-
   // ─── B2 grandfathered hold: upkeep charge / idempotency / grace / evict ───
 
   it('grandfathered hold pays weekly upkeep (owner debit → treasury) with NO CLV check, exactly once per due week', async () => {
@@ -778,28 +670,17 @@ describeIfDb('phase B — money-path E2E (requires DATABASE_URL + migration 0013
 
   // ─── B2 claim-hold FAIL-CLOSED paths (resolve BEFORE any RPC) ─────────────
 
-  it('claim-hold without a linked wallet -> 403 wallet_not_linked (fail-closed, parcel untouched)', async () => {
+  it('claim-hold without a declared wallet -> 403 wallet_not_declared (fail-closed, parcel untouched)', async () => {
     const res = await app.request(`/api/land/parcels/${cTierParcelId}/claim-hold`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: holderCookie },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ idempotencyKey: 'phaseb-wallet-missing' }),
     });
     expect(res.status).toBe(403);
-    expect(((await res.json()) as { error?: string }).error).toBe('wallet_not_linked');
+    expect(((await res.json()) as { error?: string }).error).toBe('wallet_not_declared');
     const row = await dbMod.db.query.landParcels.findFirst({ where: eq(dbMod.landParcels.id, cTierParcelId) });
     expect(row?.status).toBe('available');
     expect(row?.ownerAvatarId).toBeNull();
-  });
-
-  it('claim-hold on a STARTER parcel -> 400 use_claim_starter', async () => {
-    const starter = await getParcelByCode(starterCodeB); // reverted to available above
-    const res = await app.request(`/api/land/parcels/${starter.id}/claim-hold`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Cookie: holderCookie },
-      body: JSON.stringify({}),
-    });
-    expect(res.status).toBe(400);
-    expect(((await res.json()) as { error?: string }).error).toBe('use_claim_starter');
   });
 
   it('deposit-topup on a NON-deposit parcel -> 409 not_deposit_tenure; on someone else\'s -> 403', async () => {
@@ -807,7 +688,7 @@ describeIfDb('phase B — money-path E2E (requires DATABASE_URL + migration 0013
     const res = await app.request(`/api/land/parcels/${cTierParcelId}/deposit-topup`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Cookie: holderCookie },
-      body: JSON.stringify({ amountCt: 100 }),
+      body: JSON.stringify({ weeks: 1, idempotencyKey: 'phaseb-not-owner' }),
     });
     expect(res.status).toBe(403);
     expect(((await res.json()) as { error?: string }).error).toBe('not_parcel_owner');
@@ -861,6 +742,7 @@ describeIfDb('phase B — money-path E2E (requires DATABASE_URL + migration 0013
           priceCt: 500,
           ownerAvatarId: mixedAvatarId,
           tenure: 'hold' as const,
+          tenureTermsVersion: 1,
           grandfathered: false,
           holdSubject: 'user' as const,
           holdThresholdCt: 100_000,
@@ -881,6 +763,7 @@ describeIfDb('phase B — money-path E2E (requires DATABASE_URL + migration 0013
           priceCt: 2500,
           ownerAvatarId: mixedAvatarId,
           tenure: 'hold' as const,
+          tenureTermsVersion: 1,
           grandfathered: false,
           holdSubject: 'agent' as const,
           holdThresholdCt: 500_000,

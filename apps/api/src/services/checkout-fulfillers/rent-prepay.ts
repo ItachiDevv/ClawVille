@@ -61,7 +61,11 @@ import { enqueueClvBuy } from '../clv-swap-executor';
 
 /** Kind-specific quote refusals the route maps to HTTP statuses. Mirrors the
  *  deposit-topup handler's guard set exactly. */
-export type RentPrepayRefusal = 'parcel_not_found' | 'not_parcel_owner' | 'not_deposit_tenure';
+export type RentPrepayRefusal =
+  | 'parcel_not_found'
+  | 'not_parcel_owner'
+  | 'not_deposit_tenure'
+  | 'invalid_escrow_state';
 
 export type RentPrepayCheckoutItem =
   | { ok: true; priceVclaw: number; parcelCode: string }
@@ -85,6 +89,13 @@ function guardParcel(
   if (!p) return { ok: false, code: 'parcel_not_found' };
   if (p.owner_avatar_id !== avatarId) return { ok: false, code: 'not_parcel_owner' };
   if (p.tenure !== 'deposit') return { ok: false, code: 'not_deposit_tenure' };
+  if (
+    p.deposit_remaining_ct == null ||
+    p.rent_ct_weekly == null ||
+    Number(p.rent_ct_weekly) <= 0
+  ) {
+    return { ok: false, code: 'invalid_escrow_state' };
+  }
   return { ok: true, parcel: p };
 }
 
@@ -139,8 +150,8 @@ const rentPrepayFulfiller: CheckoutFulfiller = async (ctx) => {
   }
   const p = guarded.parcel;
 
-  const newRemaining = Number(p.deposit_remaining_ct ?? 0) + amountCt;
-  const rentWeekly = p.rent_ct_weekly == null ? 0 : Number(p.rent_ct_weekly);
+  const newRemaining = Number(p.deposit_remaining_ct) + amountCt;
+  const rentWeekly = Number(p.rent_ct_weekly);
 
   // Grace-clear decision via the SINGLE draw-math authority, READ-ONLY: we ask
   // decideDepositSweep "would a due week draw in FULL at this remainder?"
@@ -161,7 +172,7 @@ const rentPrepayFulfiller: CheckoutFulfiller = async (ctx) => {
   // nonneg CHECK + concurrent-safety shape stay identical.
   await ctx.tx.execute(
     sql`UPDATE land_parcels
-        SET deposit_remaining_ct = deposit_remaining_ct + ${amountCt},
+        SET deposit_remaining_ct = COALESCE(deposit_remaining_ct, 0) + ${amountCt},
             grace_until = CASE WHEN ${coversWeek} THEN NULL ELSE grace_until END,
             updated_at = now()
         WHERE id = ${p.id}`,

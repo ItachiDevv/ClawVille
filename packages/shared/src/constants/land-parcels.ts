@@ -66,12 +66,7 @@
 //     Outermost frame is now c: h=305t, footprint/2=17t → furthest edge = 322t < 352t → 30t margin ✓
 //     (pre-grow 2-ring bound: starter h=258t furthest edge 275t < 288t half-grid — still holds.)
 
-import {
-  type LandTier,
-  LAND_TIERS,
-  PARCEL_TIER_COUNTS,
-  parcelCode,
-} from './land-tiers';
+import { type LandTier, LAND_TIERS, PARCEL_TIER_COUNTS, parcelCode } from './land-tiers';
 
 // TILE_SIZE duplicated here (32) so land-parcels.ts has no dep on the web tilemap.
 // Keep in sync with TILE_SIZE in tilemap-data.ts.
@@ -124,13 +119,30 @@ interface TierConfig {
 //   c       (outer):   h=305t (9760wu) outer edge 322t < new grid half 352t (30t margin).
 //   within-ring spacing >> footprint for all three (founder 176t, starter 20.1t, c 122t).
 // a/b keep nominal configs (never generated at count 0). They come back if we grow further.
+//
+// PLOT GROWTH (gamification pass §5.1, 2026-08-09): starter 34 → 38 t (+24.9%
+// area) and c 34 → 52 t (+133.9%); founder stays 38 t. Verified by exhaustive
+// pairwise AABB over all 1,540 parcel pairs, replicating this generator
+// including `Math.round(xt × 32)`. The binding case is starter-06
+// (218.3125, −258) against starter-07 (258, −218.3125), separated 39.6875 t on
+// both axes — minimum slack 1.6875 t = 54 wu. `land-tiers.test.ts` pins it.
 const TIER_CONFIG: Record<LandTier, TierConfig> = {
   founder: { halfSideTiles: 190, footprintTiles: 38 }, // PREMIUM inner ring (big)
-  a:       { halfSideTiles: 200, footprintTiles: 7 },  // unused (count 0)
-  b:       { halfSideTiles: 224, footprintTiles: 7 },  // unused (count 0)
-  c:       { halfSideTiles: 305, footprintTiles: 34 }, // OUTER ring (big) — new in the 704 world
-  starter: { halfSideTiles: 258, footprintTiles: 34 }, // REGULAR mid ring (big)
+  a: { halfSideTiles: 200, footprintTiles: 7 }, // unused (count 0)
+  b: { halfSideTiles: 224, footprintTiles: 7 }, // unused (count 0)
+  c: { halfSideTiles: 305, footprintTiles: 52 }, // OUTER ring (big) — new in the 704 world
+  starter: { halfSideTiles: 258, footprintTiles: 38 }, // REGULAR mid ring (big)
 };
+
+/** Side length, in world units, of one parcel footprint on `tier`. */
+export function getParcelFootprintWu(tier: LandTier): number {
+  return TIER_CONFIG[tier].footprintTiles * TILE_SIZE;
+}
+
+/** Half-side, in tiles, of the square ring frame `tier`'s parcels sit on. */
+export function getTierHalfSideTiles(tier: LandTier): number {
+  return TIER_CONFIG[tier].halfSideTiles;
+}
 
 // ---------------------------------------------------------------------------
 // Arc-length perimeter walk — converts arc-length s (tiles) → (cx_tiles, cz_tiles)
@@ -170,13 +182,9 @@ function squarePerimeterPoint(s: number, h: number): { xt: number; zt: number } 
  * OTHER than `PARCEL_TIER_COUNTS[tier]` WITHOUT mutating the frozen render
  * supply. Pure (math only — no RNG/clock); `count <= 0` → `[]`.
  *
- * Two consumers, ONE formula (so positions can never drift between them):
- *   - `LAND_PARCELS` (the render supply) calls it per tier at `PARCEL_TIER_COUNTS`.
- *   - The Phase-B land seed calls it for the a/b HOLD-tier inventory (12 b / 6 a)
- *     that the render supply intentionally OMITS (`PARCEL_TIER_COUNTS` a/b = 0),
- *     so those DB rows land on grid cells consistent with the founder/starter/c
- *     convention by construction. Calling it with a>0/b>0 here does NOT change
- *     `LAND_PARCELS` or `PARCEL_TIER_COUNTS`, so the 3D render is untouched.
+ * `LAND_PARCELS` calls this per tier at `PARCEL_TIER_COUNTS`. Tooling may also
+ * call it at historical counts to audit the retired a/b ghost manifest; doing
+ * so never changes the frozen render supply.
  */
 export function generateParcelsForTier(tier: LandTier, count: number): ParcelSlot[] {
   if (count <= 0) return [];
@@ -217,7 +225,7 @@ function generateParcels(): ParcelSlot[] {
   return parcels;
 }
 
-/** All 180 land parcels in deterministic order (founder→a→b→c→starter).
+/** All 56 rendered parcels in deterministic order (founder→c→starter).
  *  Computed once at module load — safe to reference from React components and
  *  server code without memoisation cost. */
 export const LAND_PARCELS: readonly ParcelSlot[] = generateParcels();
@@ -228,7 +236,11 @@ export const LAND_PARCELS: readonly ParcelSlot[] = generateParcels();
 
 /** World-space center of a parcel. Identical to (parcel.cx, 0, parcel.cz)
  *  but provided as a typed return for convenience. */
-export function parcelCenterWorld(parcel: ParcelSlot): { x: number; y: number; z: number } {
+export function parcelCenterWorld(parcel: ParcelSlot): {
+  x: number;
+  y: number;
+  z: number;
+} {
   return { x: parcel.cx, y: 0, z: parcel.cz };
 }
 

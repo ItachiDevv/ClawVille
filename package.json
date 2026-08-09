@@ -51,7 +51,8 @@
     "node": ">=20.0.0"
   },
   "overrides": {
-    "@types/three": "^0.185.0"
+    "@types/three": "^0.185.0",
+    "@bonfida/spl-name-service": "3.0.23"
   },
   "packageManager": "bun@1.0.25",
   "dependencies": {

@@ -1,19 +1,16 @@
 'use client';
 
 /**
- * land-structures.tsx — STAGE 2 in-world render scaffold for placed land
- * structures (homes + shops).
+ * land-structures.tsx — public in-world render layer for placed homes + shops.
  *
  * A parcel's data already renders as a for-sale lot (land-parcels.tsx, 7 draws).
- * THIS layer draws the BUILDING a player has placed on their parcel — today as a
- * clean low-poly primitive fallback, and (once Stage-1 sources the GLBs) as the
- * real model. The swap to final GLBs happens AFTER the founder picks a style;
- * until then the primitive covers the absence so the world is never empty.
+ * THIS layer draws every ACTIVE building from the public structures feed, with
+ * a low-poly primitive fallback while its selected shell GLB loads or fails.
  *
  * Data flow:
- *   useLandStore.structures (Map<parcelId, PlacedStructure>)
- *     ← setStructures(list)   ← Land Office modal edits (existing wire, not ours)
- *     ← setStructures(...)    ← THIS layer's self-hydration via api.getMyLand()
+ *   useLandStore.structures (Map<parcelCode, PlacedStructure>)
+ *     ← GET /api/land/structures/public (all active structures, 60s poll)
+ *     ← GET /api/land/me overlay (owner's uncached/optimistic state)
  *
  * Per placed structure we render a building at the parcel's world center, sized
  * to fit INSIDE the footprint with margin (so the for-sale frame still reads
@@ -25,8 +22,9 @@
  *   - NO InstancedMesh + ShaderMaterial
  *   - NO per-frame new Vector3()/Matrix4() — module-scope scratch only
  *   - Primitive fallback uses MeshStandardMaterial (NOT ShaderMaterial)
- *   - GLB clones + cloned materials disposed on unmount; GLB-cache originals are
- *     never disposed (shared across consumers).
+ *   - Per-mesh clones preserve authored PBR materials/textures, multiply one
+ *     palette swatch into `.color`, and are disposed on structure unmount.
+ *   - useGLTF cache geometry/textures are shared and never disposed here.
  *
  * Robustness — the primitive ALWAYS wins on a missing/failed GLB:
  *   drei useGLTF REJECTS (not just suspends) when a file 404s. A bare
@@ -35,28 +33,33 @@
  *   wrapped in BOTH:
  *     - a <Suspense fallback={<PrimitiveStructure/>}>  (covers the PENDING load)
  *     - a <GLBErrorBoundary fallback={<PrimitiveStructure/>}> (covers the THROW
- *       on a missing/failed GLB — the TODO-SWAP default paths point at files
- *       Stage-1 may not have shipped yet, so this is the live path today).
- *   Result: with the TODO-SWAP paths pointing at non-existent files, every
- *   placed structure renders a primitive. No hole, no crash.
+ *       on a missing/failed GLB).
  *
- * Draw budget: one player owns at most MAX_PARCELS_PER_AVATAR (5) parcels, so the
- * realistic worst case is 5 VISIBLE owned structures. Primitive = ~3 draws each
- * (body + roof + door); a GLB = however many the model has (small, low-poly
- * homes/shops). Tiny budget. Far parcels are distance-culled.
+ * Occupancy is currently ~8 structures. At most the 48 structures nearest the
+ * camera are mounted; the set refreshes as the player walks. P3 owns chunk merges.
  */
 
 import { useMemo, useEffect, useRef, useState, Suspense, Component } from 'react';
 import type { ReactNode } from 'react';
 import * as THREE from 'three';
-import { useThree } from '@react-three/fiber';
 import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import { useGLTF } from '@react-three/drei';
-import { LAND_PARCELS, MAX_PARCELS_PER_AVATAR } from '@clawville/shared';
+import {
+  LAND_PARCELS,
+  DEFAULT_PALETTE_KEY,
+  DEFAULT_SHELL_KEY,
+  STRUCTURE_FOOTPRINT_FRACTION,
+  STRUCTURE_HEIGHT_CAP_FRACTION,
+  STRUCTURE_LEVEL_SCALE_MAX,
+  getPalettePreset,
+  getShellCatalogEntry,
+  structureLevelScale,
+} from '@clawville/shared';
 import type { ParcelSlot } from '@clawville/shared';
 import { api } from '@/lib/api';
 import { useAvatar } from '@/hooks/use-avatar';
 import { useLandStore, type PlacedStructure } from '@/stores/land';
+import { LAND_STRUCTURES_REFRESH_EVENT } from '@/lib/land-query-keys';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { extendLoaderWithMeshopt } from '@/lib/three/meshopt-loader-setup';
 
@@ -68,74 +71,47 @@ import { extendLoaderWithMeshopt } from '@/lib/three/meshopt-loader-setup';
 const FLOOR_Y = -2;
 
 /**
- * Target footprint fraction relative to parcel.size. The structure is normalized
- * so its widest XZ dimension (at level 1) is ~62% of the parcel footprint, leaving
- * the for-sale frame/pad reading around it. parcel.size is 192wu (founder) or
- * 224wu (all others), so level-1 footprint ≈ 119wu / 139wu.
- */
-const FOOTPRINT_FRACTION = 0.62;
-
-/**
- * Level → scale multiplier. Lerp 0.78 (L1) → 1.25 (L5), linear:
- *   scale(level) = 0.78 + (clamp(level,1,5) - 1) * 0.1175
- * L1=0.78  L2=0.8975  L3=1.015  L4=1.1325  L5=1.25
- * A modest ramp so a maxed structure reads bigger without spilling off the parcel.
- */
-const LEVEL_SCALE_MIN = 0.78;
-const LEVEL_SCALE_MAX = 1.25;
-function levelScale(level: number): number {
-  const lv = Math.max(1, Math.min(5, level || 1));
-  return LEVEL_SCALE_MIN + (lv - 1) * ((LEVEL_SCALE_MAX - LEVEL_SCALE_MIN) / 4);
-}
-
-/**
- * Distance cull (camera → structure), SQUARED. GENEROUS by design.
+ * Structure world-scale contract — IMPORTED, no longer redeclared here.
  *
- * Parcels reach a Chebyshev half-side of 8704wu (outer starter frame); a corner
- * parcel is therefore ~sqrt(8704² + 8704²) ≈ 12309wu from world origin. The
- * camera roams near world center but can be pushed outward, so the camera→
- * structure distance for a far corner parcel can exceed ~12300wu. To NEVER
- * vanish an on-screen structure (the classic too-tight-cull bug — far-spawned
- * objects never get a frame), we cull only beyond 14000wu. Building GLBs (ring
- * at 4160wu) are never culled at all, so this layer being visible out to 14000wu
- * is consistent with the rest of the world. Worst case ≤5 owned structures, so
- * the per-frame .visible toggle cost is trivial.
+ * These numbers used to be private copies in this file and in
+ * land-showroom.tsx (0.62 / 1.5 / 0.78→1.25). They moved to
+ * `@clawville/shared` because the kit placement predicate subtracts
+ * `shellEnvelopeHalfWu()` from every parcel and that reservation is derived
+ * from exactly these values. A renderer-local copy would let the shell we DRAW
+ * and the shell we RESERVE drift apart, which is how a paid kit piece ends up
+ * inside a building.
+ *
+ * Q7 (2026-08-09) reweighted them: footprint 0.62 → 0.64, level ramp
+ * 0.78→1.25 collapsed to 0.94→1.04. The flat ramp is deliberate — scale is not
+ * the level signal, the shell swap and palette are — and the net effect is a
+ * Lv1 shell at 558 wu (2.07× a 270 wu avatar) instead of 401 wu (1.49×).
+ * Parcel sizes are now 1,216 wu (founder/starter) and 1,664 wu (c).
  */
-const CULL_DIST = 14000;
-const CULL_DIST_SQ = CULL_DIST * CULL_DIST;
+const FOOTPRINT_FRACTION = STRUCTURE_FOOTPRINT_FRACTION;
+
+/** Independent Y ceiling; tall shells shrink further without changing XZ math. */
+const HEIGHT_CAP_FRACTION = STRUCTURE_HEIGHT_CAP_FRACTION;
+
+const LEVEL_SCALE_MAX = STRUCTURE_LEVEL_SCALE_MAX;
+const levelScale = structureLevelScale;
+
+/** Hard mount budget; walking reselects the nearest set after meaningful movement. */
+const MAX_MOUNTED_STRUCTURES = 48;
+const MOUNT_RESELECT_DISTANCE = 512;
+const MOUNT_RESELECT_DISTANCE_SQ = MOUNT_RESELECT_DISTANCE * MOUNT_RESELECT_DISTANCE;
 
 // ---------------------------------------------------------------------------
-// catalogKey → GLB path map (the 12 SKUs)
+// shellKey → verified GLB path
 // ---------------------------------------------------------------------------
 
-/**
- * DEFAULT style chosen by the founder in Stage-1. ALL home-* keys map to one
- * home.glb, ALL shop-* keys map to one shop.glb of the default style. The
- * upgrade ladder (level) is expressed by SCALE here, not by swapping GLBs — a
- * deliberate Stage-2 simplification (the catalog's per-level GLB swap is future
- * work).
- *
- * TODO-SWAP: the default style is whatever Stage-1 ships under
- *   /models/land-structures/<style>/home.glb  +  shop.glb
- * Stage-1 may NOT have shipped these files yet when this renders — the primitive
- * fallback (Suspense + error boundary) covers the absence. Once the founder
- * picks a style, update DEFAULT_STYLE below (and/or per-key entries) to the real
- * paths and bust the browser cache with a ?v=N suffix per the asset-cache-bust
- * rule (3dStructure.md §6f rule 9).
- */
-const DEFAULT_STYLE = 'coastal-cottage';
-const DEFAULT_HOME_GLB = `/models/land-structures/${DEFAULT_STYLE}/home-mo.glb`;
-const DEFAULT_SHOP_GLB = `/models/land-structures/${DEFAULT_STYLE}/shop-mo.glb`;
+/** Explicit rolling-deploy fallback; the API also applies this fallback. */
+const DEFAULT_HOME_GLB = getShellCatalogEntry('home', DEFAULT_SHELL_KEY)!.modelPath;
+const DEFAULT_SHOP_GLB = getShellCatalogEntry('shop', DEFAULT_SHELL_KEY)!.modelPath;
 
-/**
- * Resolve a catalogKey to its GLB path. EXHAUSTIVE over the 12 catalog keys via a
- * guaranteed default branch: a `home-*` key → home.glb, a `shop-*` key → shop.glb,
- * anything else → home.glb (defensive — no key is ever unmapped). When per-style /
- * per-SKU GLBs land, replace this with an explicit Record over all 12 keys.
- */
-function catalogKeyToGlbPath(catalogKey: string, structureType: 'home' | 'shop'): string {
-  if (structureType === 'shop' || catalogKey.startsWith('shop-')) return DEFAULT_SHOP_GLB;
-  return DEFAULT_HOME_GLB;
+/** Resolve only verified catalog entries, falling back by structure type. */
+function shellKeyToGlbPath(shellKey: string, structureType: 'home' | 'shop'): string {
+  return getShellCatalogEntry(structureType, shellKey)?.modelPath
+    ?? (structureType === 'shop' ? DEFAULT_SHOP_GLB : DEFAULT_HOME_GLB);
 }
 
 // ---------------------------------------------------------------------------
@@ -144,7 +120,6 @@ function catalogKeyToGlbPath(catalogKey: string, structureType: 'home' | 'shop')
 const _camPos = new THREE.Vector3();
 const _bbox = new THREE.Box3();
 const _size = new THREE.Vector3();
-const _center = new THREE.Vector3();
 
 // ---------------------------------------------------------------------------
 // Tier-agnostic primitive materials (shared module-scope; never disposed —
@@ -180,7 +155,7 @@ _primRoofGeo.translate(0, PRIM_BODY_H + PRIM_ROOF_H * 0.5, 0);
 const _primDoorGeo = new THREE.BoxGeometry(PRIM_BODY_W * 0.32, PRIM_BODY_H * 0.55, 6);
 _primDoorGeo.translate(0, PRIM_BODY_H * 0.275, PRIM_BODY_W * 0.5 + 1);
 
-/** Native max-dim of the primitive (for footprint normalization parity with GLBs). */
+/** Native max-dim of the fallback primitive. */
 const PRIM_MAX_DIM = Math.max(PRIM_BODY_W, PRIM_BODY_H + PRIM_ROOF_H, PRIM_BODY_W);
 
 // ---------------------------------------------------------------------------
@@ -192,9 +167,8 @@ function PrimitiveStructure({ parcel, structure }: { parcel: ParcelSlot; structu
   const bodyMat = isShop ? SHOP_BODY_MAT : HOME_BODY_MAT;
   const roofMat = isShop ? SHOP_ROOF_MAT : HOME_ROOF_MAT;
 
-  // Normalize the primitive so its max-dim fits the target footprint at L1, then
-  // apply the level ramp. Same math the GLB path uses, so primitive↔GLB swap is
-  // visually consistent in size.
+  // Normalize the fallback's own max dimension to the footprint, then apply the
+  // shared level ramp. Authored GLBs use independent XZ and height constraints.
   const targetFootprint = parcel.size * FOOTPRINT_FRACTION;
   const baseScale = targetFootprint / PRIM_MAX_DIM;
   const scale = baseScale * levelScale(structure.level);
@@ -261,50 +235,59 @@ function GLBStructure({
   const { scene } = useGLTF(path, undefined, undefined, extendLoaderWithMeshopt);
   const groupRef = useRef<THREE.Group>(null);
 
-  // Clone the cached scene + materials (shared cache — mutate the clone, never
-  // the original; clone materials to avoid cross-consumer purple in a second
-  // renderer context). Normalize to footprint via max(X,Y,Z), ground so feet sit
-  // on FLOOR_Y, then apply the level ramp.
-  const { cloned, scale, groundOffset } = useMemo(() => {
+  // Clone the cached scene graph and each authored material. Geometry/textures
+  // remain cache-shared; palette swatches multiply material color, preserving
+  // authored maps, roughness, metalness, side, and all other PBR properties.
+  const { cloned, scale, groundOffset, ownedMaterials } = useMemo(() => {
     const c = scene.clone(true);
     makeObject3DWebGPUSafe(c);
 
-    // Clone materials so this consumer owns its own material instances.
-    const clonedMats: THREE.Material[] = [];
+    const materials: THREE.Material[] = [];
+    const preset = getPalettePreset(structure.paletteKey) ?? getPalettePreset(DEFAULT_PALETTE_KEY)!;
+    let meshOrdinal = 0;
     c.traverse((o) => {
       const m = o as THREE.Mesh;
       if (!m.isMesh) return;
       m.frustumCulled = true;
-      if (Array.isArray(m.material)) {
-        m.material = m.material.map((mat) => {
-          const cm = mat.clone();
-          clonedMats.push(cm);
-          return cm;
-        });
-      } else if (m.material) {
-        const cm = m.material.clone();
-        clonedMats.push(cm);
-        m.material = cm;
-      }
+      const tint = new THREE.Color(preset.swatches[meshOrdinal++ % preset.swatches.length]);
+      const cloneMaterial = (source: THREE.Material): THREE.Material => {
+        const material = source.clone();
+        const colored = material as THREE.Material & { color?: THREE.Color };
+        if (colored.color instanceof THREE.Color) colored.color.multiply(tint);
+        materials.push(material);
+        return material;
+      };
+      m.material = Array.isArray(m.material)
+        ? m.material.map(cloneMaterial)
+        : cloneMaterial(m.material);
     });
-    c.userData.__clawClonedMats = clonedMats;
 
-    // Measure bbox (max-dim normalization, memory: building-maxdim-normalization).
     c.updateMatrixWorld(true);
     _bbox.setFromObject(c);
     _bbox.getSize(_size);
-    _bbox.getCenter(_center);
-    const maxDim = Math.max(_size.x, _size.y, _size.z);
+    const widestXZ = Math.max(_size.x, _size.z);
     const targetFootprint = parcel.size * FOOTPRINT_FRACTION;
-    const baseScale = maxDim > 0.001 ? targetFootprint / maxDim : 1;
-    const finalScale = baseScale * levelScale(structure.level);
+    const footprintScale = widestXZ > 0.001 ? targetFootprint / widestXZ : 1;
+    const heightCap = parcel.size * HEIGHT_CAP_FRACTION;
+    const heightScale = _size.y > 0.001
+      ? heightCap / _size.y
+      : Number.POSITIVE_INFINITY;
+    // Fit Lv5 to both constraints, then derive lower levels as fractions of
+    // that capped scale so tall shells visibly progress without exceeding it.
+    const fittedBaseScale = Math.min(footprintScale, heightScale / LEVEL_SCALE_MAX);
+    const finalScale = fittedBaseScale * levelScale(structure.level);
 
     // Ground: subtract bbox.min.y * scale so the model floor lands on FLOOR_Y
     // (memory: building-glb-pivot-offset-far-from-scene-origin).
     const ground = -_bbox.min.y * finalScale;
 
-    return { cloned: c, scale: finalScale, groundOffset: ground };
-  }, [scene, parcel.size, parcel.cx, parcel.cz, structure.level]);
+    return {
+      cloned: c,
+      scale: finalScale,
+      groundOffset: ground,
+      ownedMaterials: materials,
+    };
+  }, [scene, parcel.size, structure.level, structure.paletteKey]);
 
   // Lock static transforms (matrixAutoUpdate=false) after the scale/ground apply.
   useEffect(() => {
@@ -318,24 +301,11 @@ function GLBStructure({
     g.updateMatrix();
   }, [cloned, scale, groundOffset]);
 
-  // Dispose ONLY the cloned MATERIALS on unmount (we explicitly .clone()'d them
-  // above, so disposing them is correct and frees their GPU pipelines).
-  //
-  // NEVER dispose geometry: `scene.clone(true)` does NOT deep-copy BufferGeometry —
-  // `Mesh.copy()` does `this.geometry = source.geometry` (a REFERENCE copy), so the
-  // clone's geometry IS the useGLTF-cache original, shared with every other consumer
-  // of this GLB (all `home-*` structures resolve to ONE home.glb; the preview route;
-  // a re-mount on level upgrade). Disposing it would hand a disposed GPU buffer to
-  // those still-mounted siblings → blank/black models mid-session. This matches the
-  // authoritative rule in player-avatar.tsx (~L808) and memory
-  // `useGLTF-scene-mutation-clone-first`. Textures are likewise NOT disposed —
-  // `material.clone()` shares texture references with the cache.
+  // Dispose only the per-mesh material clones. Their shared texture references
+  // and the useGLTF cache geometries remain cache-owned.
   useEffect(() => {
-    return () => {
-      const mats = cloned.userData.__clawClonedMats as THREE.Material[] | undefined;
-      if (mats) for (const mat of mats) mat.dispose();
-    };
-  }, [cloned]);
+    return () => { for (const material of ownedMaterials) material.dispose(); };
+  }, [ownedMaterials]);
 
   return (
     <group
@@ -349,108 +319,176 @@ function GLBStructure({
 }
 
 // ---------------------------------------------------------------------------
-// StructureSlot — one placed structure: distance-culled wrapper around the
-// GLB (with primitive fallback on pending/error).
+// StructureSlot — one mounted GLB with primitive fallback on pending/error.
 // ---------------------------------------------------------------------------
 
-function StructureSlot({ parcel, structure }: { parcel: ParcelSlot; structure: PlacedStructure }) {
-  const outerRef = useRef<THREE.Group>(null);
-  const path = catalogKeyToGlbPath(structure.catalogKey, structure.structureType);
-
-  // Distance cull — toggle .visible by SQUARED distance from camera. Zero allocs.
-  useSceneFrame(({ camera }) => {
-    const g = outerRef.current;
-    if (!g) return;
-    camera.getWorldPosition(_camPos);
-    const dx = _camPos.x - parcel.cx;
-    const dz = _camPos.z - parcel.cz;
-    const distSq = dx * dx + dz * dz;
-    const visible = distSq <= CULL_DIST_SQ;
-    if (g.visible !== visible) g.visible = visible;
-  });
+function StructureSlot({
+  parcel,
+  structure,
+}: {
+  parcel: ParcelSlot;
+  structure: PlacedStructure;
+}) {
+  const path = shellKeyToGlbPath(structure.shellKey, structure.structureType);
 
   const primitive = <PrimitiveStructure parcel={parcel} structure={structure} />;
 
   return (
-    <group ref={outerRef}>
-      <GLBErrorBoundary fallback={primitive}>
-        <Suspense fallback={primitive}>
-          <GLBStructure parcel={parcel} structure={structure} path={path} />
-        </Suspense>
-      </GLBErrorBoundary>
-    </group>
+    <GLBErrorBoundary fallback={primitive}>
+      <Suspense fallback={primitive}>
+        <GLBStructure parcel={parcel} structure={structure} path={path} />
+      </Suspense>
+    </GLBErrorBoundary>
+  );
+}
+
+type StructureRenderSlot = { parcel: ParcelSlot; structure: PlacedStructure };
+
+function selectNearestSlots(
+  slots: readonly StructureRenderSlot[],
+  cameraX: number,
+  cameraZ: number,
+): StructureRenderSlot[] {
+  return [...slots]
+    .sort((a, b) => {
+      const adx = cameraX - a.parcel.cx;
+      const adz = cameraZ - a.parcel.cz;
+      const bdx = cameraX - b.parcel.cx;
+      const bdz = cameraZ - b.parcel.cz;
+      return (adx * adx + adz * adz) - (bdx * bdx + bdz * bdz)
+        || a.parcel.id.localeCompare(b.parcel.id);
+    })
+    .slice(0, MAX_MOUNTED_STRUCTURES);
+}
+
+/** Hard mount gate that streams the nearest structures as the camera walks. */
+function BoundedStructureSlots({ slots }: { slots: readonly StructureRenderSlot[] }) {
+  const lastCameraPosition = useRef({ x: 0, z: 0 });
+  const [mountedSlots, setMountedSlots] = useState(() => selectNearestSlots(slots, 0, 0));
+
+  useEffect(() => {
+    const { x, z } = lastCameraPosition.current;
+    setMountedSlots(selectNearestSlots(slots, x, z));
+  }, [slots]);
+
+  useSceneFrame(({ camera }) => {
+    camera.getWorldPosition(_camPos);
+    const dx = _camPos.x - lastCameraPosition.current.x;
+    const dz = _camPos.z - lastCameraPosition.current.z;
+    if (dx * dx + dz * dz < MOUNT_RESELECT_DISTANCE_SQ) return;
+    lastCameraPosition.current.x = _camPos.x;
+    lastCameraPosition.current.z = _camPos.z;
+    setMountedSlots(selectNearestSlots(slots, _camPos.x, _camPos.z));
+  });
+
+  return (
+    <>
+      {mountedSlots.map(({ parcel, structure }) => (
+        <StructureSlot key={parcel.id} parcel={parcel} structure={structure} />
+      ))}
+    </>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Self-hydration — fetch the signed-in owner's placed structures so they appear
-// in-world WITHOUT opening any modal. Best-effort, never throws, never blocks.
+// Public hydration — render every active structure, then overlay the owner's
+// uncached DTOs so local mutations are never held behind the 60s public cache.
 // ---------------------------------------------------------------------------
 
 function StructureHydrator() {
-  const setStructures = useLandStore((s) => s.setStructures);
-  // Only fetch once an authed avatar resolved — useAvatar returns null for
-  // guests/logged-out (its queryFn swallows the 401), so gating here stops
-  // the unconditional GET /api/land/me from 401-spamming the console on
-  // every logged-out load.
+  const setStructures = useLandStore((state) => state.setStructures);
   const { data: avatar } = useAvatar();
 
   useEffect(() => {
-    if (!avatar) return;
     let cancelled = false;
-    (async () => {
-      try {
-        const res = await api.getMyLand();
-        if (cancelled) return;
-        // Resolve each structure's parcelId (DB UUID) → parcelCode using the
-        // parcels in the SAME /me payload. parcelCode (= LAND_PARCELS[i].id) is
-        // the join key the 3D render uses; the structure DTO carries ONLY the
-        // UUID (no parcelCode field), so without this map the join falls back to
-        // the UUID and never matches → owned buildings never render. (Fixer:
-        // the orchestrator closed this gap after the render+state diffs landed.)
-        const uuidToParcelCode = new Map<string, string>();
-        for (const p of res.parcels) uuidToParcelCode.set(p.id, p.parcelCode);
-        setStructures(
-          res.structures.map((s) => ({
-            parcelId:      s.parcelId,
-            parcelCode:    uuidToParcelCode.get(s.parcelId) ?? s.parcelId,
-            catalogKey:    s.catalogKey,
-            structureType: s.structureType,
-            level:         s.level,
-          })),
-        );
-      } catch {
-        // Guest / unauthenticated / network failure — silently no-op. The owner
-        // simply sees no structures of their own; other players' structures
-        // would require the modal wire we don't touch (see report).
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    let requestVersion = 0;
+    let ownedOverlay: Awaited<ReturnType<typeof api.getMyLand>> | null = null;
+
+    const hydrate = async (includeOwned: boolean): Promise<void> => {
+      const version = ++requestVersion;
+      const [publicStructures, ownedResult] = await Promise.all([
+        api.getPublicLandStructures().catch(() => null),
+        includeOwned && avatar
+          ? api.getMyLand().catch(() => null)
+          : Promise.resolve(undefined),
+      ]);
+      if (cancelled || version !== requestVersion) return;
+      if (ownedResult) ownedOverlay = ownedResult;
+
+      if (publicStructures !== null) {
+        const merged = new Map<string, PlacedStructure>();
+        for (const structure of publicStructures) {
+          merged.set(structure.parcelCode, {
+            parcelId: structure.parcelCode,
+            parcelCode: structure.parcelCode,
+            catalogKey: `${structure.structureType}-public`,
+            structureType: structure.structureType,
+            level: structure.level,
+            shellKey: structure.shellKey ?? DEFAULT_SHELL_KEY,
+            paletteKey: structure.paletteKey ?? DEFAULT_PALETTE_KEY,
+          });
+        }
+
+        // The uncached owner read overlays the 60s public snapshot, keeping the
+        // signed-in player's just-completed/optimistic appearance fresh.
+        if (ownedOverlay !== null) {
+          const uuidToParcelCode = new Map<string, string>();
+          for (const parcel of ownedOverlay.parcels) {
+            uuidToParcelCode.set(parcel.id, parcel.parcelCode);
+          }
+          for (const structure of ownedOverlay.structures) {
+            const parcelCode = uuidToParcelCode.get(structure.parcelId);
+            if (!parcelCode) continue;
+            merged.set(parcelCode, {
+              parcelId: structure.parcelId,
+              parcelCode,
+              catalogKey: structure.catalogKey,
+              structureType: structure.structureType,
+              level: structure.level,
+              shellKey: structure.shellKey ?? DEFAULT_SHELL_KEY,
+              paletteKey: structure.paletteKey ?? DEFAULT_PALETTE_KEY,
+            });
+          }
+        }
+        setStructures([...merged.values()]);
       }
-    })();
+
+      if (!cancelled) {
+        if (pollTimer !== null) clearTimeout(pollTimer);
+        pollTimer = setTimeout(() => { void hydrate(false); }, 60_000);
+      }
+    };
+
+    const refreshNow = () => {
+      if (pollTimer !== null) clearTimeout(pollTimer);
+      void hydrate(true);
+    };
+
+    void hydrate(true);
+    window.addEventListener(LAND_STRUCTURES_REFRESH_EVENT, refreshNow);
     return () => {
       cancelled = true;
+      window.removeEventListener(LAND_STRUCTURES_REFRESH_EVENT, refreshNow);
+      if (pollTimer !== null) clearTimeout(pollTimer);
     };
   }, [setStructures, avatar]);
 
   return null;
 }
 
-// ---------------------------------------------------------------------------
-// Main component
-// ---------------------------------------------------------------------------
-
 export default function LandStructures() {
   // Narrow selector — only re-render when the structures Map identity changes.
   const structures = useLandStore((s) => s.structures);
 
-  // parcelId → ParcelSlot lookup, built once (LAND_PARCELS is frozen).
+  // parcelCode → ParcelSlot lookup, built once (LAND_PARCELS is frozen).
   const parcelById = useMemo(() => {
     const m = new Map<string, ParcelSlot>();
     for (const p of LAND_PARCELS) m.set(p.id, p);
     return m;
   }, []);
 
-  // Resolve placed structures to (parcel, structure) render pairs. Cap at
-  // MAX_PARCELS_PER_AVATAR for safety — one owner can never have more, and this
-  // guards against a malformed hydration list bloating the scene.
+  // Resolve every public structure to a render-backed parcel.
   //
   // JOIN BUG FIX (feat/land-world-parity): the old code keyed parcelById by
   // LAND_PARCELS[i].id (= the parcelCode, e.g. 'parcel-founder-00') but looked
@@ -470,7 +508,6 @@ export default function LandStructures() {
       const parcel = parcelById.get(joinKey);
       if (!parcel) continue; // unknown key — skip rather than crash
       out.push({ parcel, structure });
-      if (out.length >= MAX_PARCELS_PER_AVATAR) break;
     }
     return out;
   }, [structures, parcelById]);
@@ -478,9 +515,7 @@ export default function LandStructures() {
   return (
     <>
       <StructureHydrator />
-      {slots.map(({ parcel, structure }) => (
-        <StructureSlot key={parcel.id} parcel={parcel} structure={structure} />
-      ))}
+      <BoundedStructureSlots slots={slots} />
     </>
   );
 }

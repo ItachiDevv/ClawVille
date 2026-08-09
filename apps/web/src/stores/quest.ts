@@ -429,7 +429,14 @@ async function claimTutorialQuestReward(
         useQuestStore.getState().markServerClaimed(def.id);
         return 'claimed';
       }
-      if (res.error === 'guest_not_eligible' && !opts?.silent) {
+      // Two spellings: the route's own `guest_not_eligible` (pre-P6) and the
+      // shared `requireNonGuestIdentity` middleware's `guest_not_allowed`,
+      // which replaced it when the tutorial ladder adopted the canonical
+      // three-stage auth chain. Both mean the same thing to a player.
+      if (
+        (res.error === 'guest_not_eligible' || res.code === 'guest_not_allowed')
+        && !opts?.silent
+      ) {
         useGameStore
           .getState()
           .addToast('🔒', 'Sign up to claim tutorial rewards', 4000);
@@ -447,7 +454,12 @@ async function claimTutorialQuestReward(
         return 'claimed';
       }
       if (status !== undefined && status >= 400 && status < 500) {
-        if (status === 403 && String((err as Error)?.message ?? '').includes('guest_not_eligible')) {
+        const guestBlocked =
+          status === 403
+          && /guest_not_eligible|guest_not_allowed|Guests run a demo economy/.test(
+            String((err as Error)?.message ?? ''),
+          );
+        if (guestBlocked) {
           if (!opts?.silent) {
             useGameStore
               .getState()

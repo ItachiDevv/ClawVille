@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import * as THREE from 'three/webgpu';
-import { KELP_REALM_DISCOVERY_TYPES, KELP_REALM_SPORE_BEACON_IDS } from '@clawville/shared';
+import {
+  KELP_REALM_DISCOVERY_TYPES,
+  KELP_REALM_SPORE_BEACON_IDS,
+} from '@clawville/shared';
 import {
   createKelpRealmDiscoveryGeometry,
   createKelpRealmDiscoveryMaterial,
@@ -10,9 +13,22 @@ import {
   KELP_REALM_SCENE_BUDGET,
   markKelpRealmSporeGeometryVisited,
 } from './kelp-realm-scene';
-import { parseKelpRealmBeaconVisitResponse } from './kelp-realm-player';
+import {
+  cameraBoundarySegmentSafeT,
+  parseKelpRealmBeaconVisitResponse,
+} from './kelp-realm-player';
 
 describe('Kelp Forest realm discoveries', () => {
+  test('camera ignores interior kelp curtains but still clamps at the realm boundary', () => {
+    expect(
+      cameraBoundarySegmentSafeT(-4_800, -4_800, -3_600, -3_600, 435),
+    ).toBe(1);
+    expect(
+      cameraBoundarySegmentSafeT(-4_800, -4_800, -4_800, -7_000, 435),
+    ).toBeLessThan(1);
+    expect(cameraBoundarySegmentSafeT(0, 6_000, 0, 6_560, 470)).toBe(1);
+  });
+
   test('constructs one deterministic merged animated geometry per discovery type', () => {
     for (const type of KELP_REALM_DISCOVERY_TYPES) {
       const first = createKelpRealmDiscoveryGeometry(type);

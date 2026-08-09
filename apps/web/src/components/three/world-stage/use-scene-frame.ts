@@ -14,6 +14,7 @@ import {
   useStore,
   type RenderCallback,
 } from '@react-three/fiber';
+import type { Camera } from 'three';
 import {
   DEFAULT_PLAYER_CAPABILITIES,
   type PlayerCapabilityMask,
@@ -24,6 +25,12 @@ type CallbackRef = { current: RenderCallback };
 type SceneRegistration = { ref: CallbackRef; priority: number };
 
 const SceneIdContext = createContext<string | null>(null);
+// The slot's PERSISTENT camera. The R3F default camera is a stage-swapped
+// resource (StageCameraCoordinator reassigns it on every activation), so any
+// controller that must bind "this scene's camera" reads THIS context instead
+// of the default camera — otherwise it can rebind to another slot's camera
+// during the swap window (the 2026-08-08 kelp OrbitControls fight).
+const SceneCameraContext = createContext<Camera | null>(null);
 const SlotCapabilityContext = createContext<PlayerCapabilityMask>(
   DEFAULT_PLAYER_CAPABILITIES,
 );
@@ -85,6 +92,25 @@ export function SceneIdProvider({
 
 export function useSceneId(): string | null {
   return useContext(SceneIdContext);
+}
+
+export function SceneCameraProvider({
+  camera,
+  children,
+}: {
+  camera: Camera | null;
+  children: ReactNode;
+}): ReactElement {
+  return createElement(
+    SceneCameraContext.Provider,
+    { value: camera },
+    children,
+  );
+}
+
+/** The slot's persistent camera; null outside a stage slot (legacy canvases). */
+export function useSceneCamera(): Camera | null {
+  return useContext(SceneCameraContext);
 }
 
 export function SlotCapabilityProvider({

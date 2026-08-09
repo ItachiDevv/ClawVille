@@ -130,7 +130,7 @@ describeIfDb('land.service.sold — scoring CTE (requires DATABASE_URL)', () => 
     // explicit create if the fail-soft provisioning didn't return one.
     const signup = await app.request('/api/auth/signup', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': `test-${TEST_TAG}` },
       body: JSON.stringify({ email, password: PASSWORD, name: 'LB Svc Tester' }),
     });
     expect(signup.status).toBe(200);

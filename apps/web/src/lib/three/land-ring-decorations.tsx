@@ -48,6 +48,7 @@
 
 import { Suspense, useMemo, useEffect, useState } from 'react';
 import * as THREE from 'three/webgpu';
+import { LAND_PARCELS, type LandTier } from '@clawville/shared';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { makeGeometryWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
@@ -71,74 +72,60 @@ const FLOOR_Y = -2;
 const PROP_FLOOR_Y = FLOOR_Y; // -2
 
 // ---------------------------------------------------------------------------
-// Parcel ring geometry — copied from land-parcels.ts constants so this file
-// has zero dep on shared (pure render component). Keep in sync if tier configs
-// change.
+// Parcel ring geometry — READ FROM THE SHARED PARCEL TABLE.
+//
+// This block used to re-declare the ring half-sides AND the per-tier footprints
+// (FOUNDER_FOOT 38 / STARTER_FOOT 34 / C_FOOT 34) as literals under a "keep in
+// sync if tier configs change" comment. They then changed — starter 34 → 38 and
+// c 34 → 52 — and a stale copy here would exclude props from a 1,088 wu square
+// while the parcels underneath became 1,216 and 1,664 wu, dropping coral and
+// barrels inside people's land. A comment is not a synchronisation mechanism,
+// so the literals are gone and LAND_PARCELS is the only source.
 // ---------------------------------------------------------------------------
 
 const TILE_SIZE = 32;
 
-/** Founder ring half-side (tiles). */
-const FOUNDER_H = 190; // tiles → 6080wu
-/** Starter ring half-side (tiles). */
-const STARTER_H = 258; // tiles → 8256wu
-/** C-ring half-side (tiles). */
-const C_H = 305;       // tiles → 9760wu
-
-/** Footprint size per tier (tiles). Used to compute exclusion radii. */
-const FOUNDER_FOOT = 38; // tiles → 1216wu
-const STARTER_FOOT = 34; // tiles → 1088wu
-const C_FOOT       = 34; // tiles → 1088wu
-
-// Parcel center half-footprint in wu — used as the prop exclusion buffer
-// around each parcel. Buffer = half-footprint + a small gap (0.6 tiles).
-const FOUNDER_EXCL_R = (FOUNDER_FOOT / 2 + 0.6) * TILE_SIZE; // ~634wu
-const STARTER_EXCL_R = (STARTER_FOOT / 2 + 0.6) * TILE_SIZE; // ~582wu
-const C_EXCL_R       = (C_FOOT       / 2 + 0.6) * TILE_SIZE; // ~582wu
+/** Clear gap kept between a parcel edge and any ambient prop, in tiles. */
+const PROP_CLEARANCE_TILES = 0.6;
 
 // ---------------------------------------------------------------------------
-// Deterministic parcel centers per ring (matches generateParcels() exactly)
-// This is a local re-computation so we avoid importing the full shared package
-// in a pure render module. The generator is pure math — result identical.
+// Parcel exclusion boxes, straight from LAND_PARCELS. The local re-computation
+// of the arc-length perimeter walk is gone with the literals it depended on.
 // ---------------------------------------------------------------------------
 
-function squarePerimeterPoint(s: number, h: number): { xt: number; zt: number } {
-  const sideLen = 2 * h;
-  const side = Math.floor(s / sideLen);
-  const local = s - side * sideLen;
-  switch (side) {
-    case 0: return { xt: -h + local, zt: -h };
-    case 1: return { xt: +h, zt: -h + local };
-    case 2: return { xt: +h - local, zt: +h };
-    case 3: return { xt: -h, zt: +h - local };
-    default: return { xt: -h, zt: -h };
-  }
+interface ParcelCenter {
+  cx: number;
+  cz: number;
+  /** Half-side of the exclusion SQUARE, in wu. */
+  half: number;
 }
 
-interface ParcelCenter { cx: number; cz: number; exclR: number; }
-
-function buildRingCenters(h: number, count: number, exclR: number): ParcelCenter[] {
-  const perimeter = 8 * h;
-  const step = perimeter / count;
-  const result: ParcelCenter[] = [];
-  for (let i = 0; i < count; i++) {
-    const { xt, zt } = squarePerimeterPoint(i * step, h);
-    result.push({ cx: Math.round(xt * TILE_SIZE), cz: Math.round(zt * TILE_SIZE), exclR });
-  }
-  return result;
+function ringBoxes(tier: LandTier): ParcelCenter[] {
+  const clearance = PROP_CLEARANCE_TILES * TILE_SIZE;
+  return LAND_PARCELS.filter((parcel) => parcel.tier === tier).map((parcel) => ({
+    cx: parcel.cx,
+    cz: parcel.cz,
+    half: parcel.size / 2 + clearance,
+  }));
 }
 
-// All parcel centers for exclusion-zone checks
-const FOUNDER_CENTERS = buildRingCenters(FOUNDER_H, 10, FOUNDER_EXCL_R);
-const STARTER_CENTERS = buildRingCenters(STARTER_H, 26, STARTER_EXCL_R);
-const C_CENTERS       = buildRingCenters(C_H, 20, C_EXCL_R);
-const ALL_CENTERS     = [...FOUNDER_CENTERS, ...STARTER_CENTERS, ...C_CENTERS];
+const FOUNDER_CENTERS = ringBoxes('founder');
+const STARTER_CENTERS = ringBoxes('starter');
+const C_CENTERS = ringBoxes('c');
+const ALL_CENTERS = [...FOUNDER_CENTERS, ...STARTER_CENTERS, ...C_CENTERS];
 
+/**
+ * Square exclusion, not a circle.
+ *
+ * The old test was `dx² + dz² < exclR²` with `exclR = (foot/2 + 0.6) × 32` — a
+ * circle INSCRIBED in the parcel at its half-side. Parcels are squares whose
+ * corners reach `half × √2`, so the four corner regions of every parcel read as
+ * "clear" and props were legitimately scattered onto player land near the
+ * diagonals. Testing the square directly removes that class of overlap (G-B).
+ */
 function isNearParcel(x: number, z: number): boolean {
-  for (const p of ALL_CENTERS) {
-    const dx = x - p.cx;
-    const dz = z - p.cz;
-    if (dx * dx + dz * dz < p.exclR * p.exclR) return true;
+  for (const box of ALL_CENTERS) {
+    if (Math.abs(x - box.cx) < box.half && Math.abs(z - box.cz) < box.half) return true;
   }
   return false;
 }

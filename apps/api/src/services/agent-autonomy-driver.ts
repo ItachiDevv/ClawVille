@@ -88,6 +88,17 @@ import { queryDurableAgentEventsNewest } from './agent-event-query';
 import { recordCovenantAction } from './covenant-action-recorder';
 import { resolveBuildingId } from './building-center';
 import { armAutonomy, isAutonomyActive } from './autonomy-standby';
+import {
+  readAutonomousLandTargets,
+  type AutonomousLandTargets,
+} from './autonomous-land-targets';
+// Bounded server-derived claimable-quest ids for the decide prompt. Without it
+// the agent can form a `claim_tutorial_quest` call but cannot know which ids
+// are valid (world-scope consumption mandate).
+import {
+  readAutonomousQuestTargets,
+  type AutonomousQuestTarget,
+} from './autonomous-quest-targets';
 
 /** Per-agent phase in the perceive→decide→act loop. */
 type DrivePhase = 'deciding' | 'walking' | 'arrived' | 'talking';
@@ -1127,9 +1138,27 @@ class AgentAutonomyDriver {
         );
       }
     }
-    const [lessons, knowledge] = await Promise.all([
+    const [lessons, knowledge, landTargets, questTargets] = await Promise.all([
       this.readRecentLessons(entry, directive?.text ?? null),
       this.readRecentKnowledge(entry, directive?.text ?? null),
+      readAutonomousLandTargets({
+        avatarId: entry.avatarId,
+        x: perception.self.x,
+        y: perception.self.y,
+      }).catch((err: unknown) => {
+        console.warn(
+          `[AutonomyDriver] ${sessionDigest(entry.agentId)} land targets unavailable (non-fatal):`,
+          err instanceof Error ? err.message : err,
+        );
+        return { claimable: [], owned: [] } satisfies AutonomousLandTargets;
+      }),
+      readAutonomousQuestTargets({ avatarId: entry.avatarId }).catch((err: unknown) => {
+        console.warn(
+          `[AutonomyDriver] ${sessionDigest(entry.agentId)} quest targets unavailable (non-fatal):`,
+          err instanceof Error ? err.message : err,
+        );
+        return [] as AutonomousQuestTarget[];
+      }),
     ]);
     const prompt = this.buildDecisionPrompt(
       perception,
@@ -1137,6 +1166,8 @@ class AgentAutonomyDriver {
       lessons,
       directive?.text ?? null,
       knowledge,
+      landTargets,
+      questTargets,
     );
     const reply = await decide(prompt);
     // TEMP DEBUG (see tick()): the RAW decision reply — the smoking gun for
@@ -1398,6 +1429,8 @@ class AgentAutonomyDriver {
     recentLessons: string[] = [],
     directiveText: string | null = null,
     recentKnowledge: string[] = [],
+    landTargets: AutonomousLandTargets = { claimable: [], owned: [] },
+    questTargets: AutonomousQuestTarget[] = [],
   ): string {
     const now = Date.now();
     const options = perception.nearbyBuildings
@@ -1457,6 +1490,34 @@ class AgentAutonomyDriver {
       knowledgeLines.length > 0
         ? `\nKnowledge you already hold (from books and visits — apply it; prefer learning what you do NOT know):\n${knowledgeLines.join('\n')}\n`
         : '';
+    const landBlock = [
+      'Land targets (server-derived; copy parcelCode exactly):',
+      'Owned parcels:',
+      ...(landTargets.owned.length > 0
+        ? landTargets.owned.map((parcel) =>
+            `- ${parcel.displayName} (${parcel.parcelCode}): tier=${parcel.tier}, tenure=${parcel.tenure}, weeklyRent=${parcel.weeklyRentVclaw ?? 'none'} vCLAW, prepaidWeeks=${parcel.prepaidWeeksRemaining ?? 'n/a'}, holdThreshold=${parcel.holdThresholdClv ?? 'n/a'} CLV, grace=${parcel.grace}`,
+          )
+        : ['- none']),
+      'Claimable parcels (nearest first):',
+      ...(landTargets.claimable.length > 0
+        ? landTargets.claimable.map((parcel) =>
+            `- ${parcel.displayName} (${parcel.parcelCode}): tier=${parcel.tier}, holdThreshold=${parcel.holdThresholdClv ?? 'unavailable'} CLV, weeklyRent=${parcel.weeklyRentVclaw ?? 'unavailable'} vCLAW, distance=${parcel.distanceWu}wu`,
+          )
+        : ['- none available']),
+    ].join('\n');
+    // The claimable-quest block. Without it the agent can FORM a
+    // `claim_tutorial_quest` call but cannot know which ids are valid — the
+    // manual names only the four land quests. Server-derived, bounded, and
+    // advisory: the executor re-runs the real proof-of-engagement gate, so an
+    // unqualified suggestion costs one refused action, never a wrong payout.
+    const questBlock = [
+      'Claimable quests (server-derived; copy questId exactly; unclaimed and live only):',
+      ...(questTargets.length > 0
+        ? questTargets.map((quest) =>
+            `- ${quest.questId}: "${quest.title}" pays ${quest.reward} ${quest.rail === 'materials' ? 'materials' : 'vCLAW'} — requires: ${quest.requirement}`,
+          )
+        : ['- none claimable right now']),
+    ].join('\n');
     // P3 slice 2: the human's directive (top priority) + the wake-up event seed.
     // Both are conditional spreads so the prompt is byte-identical to pre-slice-2
     // when neither is present.
@@ -1478,6 +1539,10 @@ class AgentAutonomyDriver {
       learned,
       ...(knowledgeHeld ? [knowledgeHeld] : []),
       ...hereNow,
+      landBlock,
+      '',
+      questBlock,
+      '',
       'Places (placeId: name — purpose — exact action — distance):',
       places,
       '',

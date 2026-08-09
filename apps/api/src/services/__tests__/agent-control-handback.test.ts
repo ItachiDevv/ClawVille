@@ -204,7 +204,11 @@ describe('(d) status shape — E5 honesty + read-side ledger predicate', () => {
     xp: 999,
     leaderboard: { score: 42, rank: 3 as number | null },
   };
-  const realOwnership = { landParcels: 2, ownedSkills: ['clawville-memory-rag'] };
+  const realOwnership = {
+    landParcels: 2,
+    landParcelDetail: { count: 2, parcels: [] },
+    ownedSkills: ['clawville-memory-rag'],
+  };
 
   it('UNBOUND session: stats/ownership forced null even when values were passed', () => {
     const res = buildAgentStatusResponse({

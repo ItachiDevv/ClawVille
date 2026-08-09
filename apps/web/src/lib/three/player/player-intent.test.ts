@@ -312,7 +312,7 @@ describe('derivePlayerFrameIntent', () => {
     playerKeyState.shift = true;
     expect(derive().move.running).toBe(false);
     playerKeyState.w = true;
-    expect(derive().move).toMatchObject({ running: true, speedMultiplier: 1.5 });
+    expect(derive().move).toMatchObject({ running: true, speedMultiplier: 2.025 });
     playerKeyState.w = false;
     playerKeyState.shift = false;
     expect(derive({ storeJoystick: { x: 0.71, y: 0 } }).move.running).toBe(true);
@@ -444,12 +444,12 @@ describe('derivePlayerFrameIntent', () => {
     expect([intent.cameraYawInput, intent.cameraPitchInput]).toEqual([0, 0]);
   });
 
-  test('kelp camera input combines arrow keys with the shared touch bridge', () => {
+  test('kelp camera input flips only arrow yaw while preserving touch and pitch signs', () => {
     playerKeyState.arrowleft = true;
     playerKeyState.arrowup = true;
     setPlayerTouchCamera(0.25, 0.5);
     const intent = derive({ policy: KELP_POLICY.input });
-    expect([intent.cameraYawInput, intent.cameraPitchInput]).toEqual([1.25, 1.5]);
+    expect([intent.cameraYawInput, intent.cameraPitchInput]).toEqual([-0.75, 1.5]);
   });
 
   test('derivation is zero-allocation when the caller reuses its out object', () => {

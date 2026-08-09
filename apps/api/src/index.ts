@@ -105,6 +105,7 @@ import { agentEip8004Routes } from './routes/agent-eip8004';
 import { adminIdentityRoutes } from './routes/admin-identity';
 import { startSimulation } from './services/npc-simulation';
 import { alertError } from './services/alert-error';
+import { isTransientDbConnectionError } from './services/transient-db-error';
 import { getPublishedIssuerInfo } from './services/service-issuer';
 import { warnIfTestPartnerPubkeyEnabled } from './services/partner-signature';
 import { fingerprintMiddleware } from './middleware/fingerprint';
@@ -533,6 +534,24 @@ app.onError((err, c) => {
   // InsufficientTokensError from claw-token-ledger should return 400, not 500
   if (err.name === 'InsufficientTokensError') {
     return c.json({ error: err.message, code: 400 }, 400);
+  }
+
+  if (isTransientDbConnectionError(err)) {
+    void alertError({
+      severity: 'warning',
+      source: 'api-route',
+      message: `Transient DB connection error on ${c.req.method} ${c.req.path}`,
+      context: { error: String(err), userId: c.get('user')?.id },
+    });
+    c.header('Retry-After', '1');
+    return c.json(
+      {
+        error: 'Service temporarily unavailable, please retry',
+        code: 503,
+        retryable: true,
+      },
+      503,
+    );
   }
 
   // Genuinely unexpected — fire a critical alert (rate-limited in alertError).
@@ -996,6 +1015,13 @@ process.on('uncaughtException', (err) => {
   try {
     const { startLandRentSweeper } = await import('./services/land-rent-sweeper');
     startLandRentSweeper();
+    // 2026-08-09 — the SHOP-side recurring sink (land gamification P5a). Rents
+    // each shop service-listing slot weekly and the premium featured placement
+    // separately. This is what funds the home-side piece/upgrade giveback.
+    const { startServiceSlotRentSweeper } = await import(
+      './services/service-slot-rent-sweeper'
+    );
+    startServiceSlotRentSweeper();
   } catch (err) {
     console.error('[API] Land rent sweeper failed to start:', err);
   }
@@ -1581,11 +1607,33 @@ process.on('uncaughtException', (err) => {
 // we accumulate across Phase 1/2/3. Without this, Hetzner/Coolify SIGTERM
 // leaks 10+ ElizaRuntime instances, their DB pools, and the broker/registry
 // setIntervals on every container restart.
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 let shuttingDown = false;
 async function gracefulShutdown(signal: string) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`[API] Received ${signal}, shutting down gracefully...`);
+
+  await sleep(2000);
+  console.log('[API] draining HTTP…');
+  let httpDrained = false;
+  try {
+    // Guarded: a rejected stop() must never abort shutdown before the
+    // worker teardown + process.exit below.
+    await Promise.race([
+      server.stop().then(() => {
+        httpDrained = true;
+      }),
+      sleep(5000),
+    ]);
+  } catch (err) {
+    console.error('[API] HTTP drain error (proceeding):', err);
+  }
+  console.log(
+    httpDrained ? '[API] HTTP drained' : '[API] drain timeout — proceeding',
+  );
 
   try {
     // Import inside the handler so a failed import doesn't crash startup
@@ -1686,6 +1734,10 @@ async function gracefulShutdown(signal: string) {
     try {
       const { stopLandRentSweeper } = await import('./services/land-rent-sweeper');
       stopLandRentSweeper();
+      const { stopServiceSlotRentSweeper } = await import(
+        './services/service-slot-rent-sweeper'
+      );
+      stopServiceSlotRentSweeper();
     } catch {
       // If the sweeper module failed to load earlier, there's nothing to stop.
     }
@@ -1769,11 +1821,11 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 // Q2 Activity Portals — WebSocket handler plumbing. The adapter is
 // shared with `apps/api/src/routes/activities.ts` so both halves see the
-// same `createBunWebSocket` instance. Bun.serve reads `websocket` off
-// the default export to drive the WS lifecycle.
+// same `createBunWebSocket` instance. Bun.serve reads `websocket` from
+// the server config to drive the WS lifecycle.
 const { websocket: activityWebsocketHandler } = getBunWebSocketHelper();
 
-export default {
+const server = Bun.serve({
   port,
   fetch: app.fetch,
   websocket: activityWebsocketHandler,
@@ -1784,4 +1836,4 @@ export default {
   // probe: ECONNRESET on localhost:4000 after the initial 'connected' event,
   // never reaching even the upstream proxy. 255 is Bun's max value.
   idleTimeout: 255,
-};
+});

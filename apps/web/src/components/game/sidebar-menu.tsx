@@ -989,7 +989,7 @@ function SidebarContent({ closeMenu }: SidebarContentProps) {
         <CategoryHeader label="Economy" subtitle="Land · Cosmetics" />
         <div className="rpg-sidebar-group">
           {/* Land Economy (Phase B tenure model) — browse for-sale parcels,
-              claim a Starter Cove (refundable CT deposit) or a higher tier
+              choose a parcel through the CLV hold door or vCLAW rent door
               (CLV hold-to-keep; buy-outright retired), place + upgrade a
               building/shop. Higher tiers unlock nicer buildings + higher levels. */}
           <SidebarRow
