@@ -8,10 +8,19 @@
  *    SPA returns, and canvas remounts must never re-gate or re-hide content
  *    that already released (timing-only deferral; conditional omission is a
  *    product defect).
- *  - Released by WHICHEVER fires first: the world warmup gate's resume
- *    (normal completion or 40s safety), the stage-ready publication, or this
- *    module's own absolute deadline — capped at the SeaLoadingScreen 45s
- *    force-dismiss so deferred content can never outwait a failed-open loader.
+ *  - ANCHORED TO FIRST PAINT (rung 3, founder-approved 2026-08-08): the
+ *    warmup milestones (resume / stage-ready / warmup-complete / fallback)
+ *    no longer release directly — they ARM eligibility, and the release
+ *    fires on the SECOND world frame presented while the reveal condition
+ *    holds (`__W3D_READY` true and the loading overlay gone), so one full
+ *    world frame is on screen before any deferred download/GPU work starts.
+ *    Rung-1 audit finding 2: the milestone anchors fired 0.4–17.7s BEFORE
+ *    the world was visible, so "deferred" bytes competed with reveal-
+ *    critical bytes inside the critical window.
+ *  - The absolute deadline still releases unconditionally — capped at the
+ *    SeaLoadingScreen 45s force-dismiss so deferred content can never
+ *    outwait a failed-open loader, a crashed frameloop, or a background tab
+ *    whose RAF never ticks.
  *  - Subscribers added after release fire synchronously (no missed-release
  *    stranding).
  *
@@ -55,9 +64,71 @@ function fire(reason: string): void {
   listeners.clear();
 }
 
-/** Release now (idempotent). Called from the world warmup ready paths. */
+/** Release now (idempotent). Deadline/test escape hatch — app warmup paths
+ * use armDecorativeReleaseOnFirstPaint instead (first-paint anchor). */
 export function releaseDecorative(reason: string): void {
   fire(reason);
+}
+
+let firstPaintArmedReason: string | null = null;
+let qualifyingFramesSeen = 0;
+
+/**
+ * Arm the first-paint release (idempotent; the FIRST milestone's reason is
+ * kept for telemetry). Called from the warmup ready paths that previously
+ * released directly. The actual release fires from
+ * notifyWorldFramePresented once the world is genuinely on screen.
+ */
+export function armDecorativeReleaseOnFirstPaint(reason: string): void {
+  if (released) return;
+  if (firstPaintArmedReason === null) firstPaintArmedReason = reason;
+}
+
+function revealConditionHolds(): boolean {
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    return false;
+  }
+  // Hidden/occluded documents get throttled RAFs and present nothing — a
+  // frame callback there must not count as a presented revealed frame.
+  if (document.hidden) return false;
+  if ((window as any).__W3D_READY !== true) return false;
+  // The cold-boot loading overlay (unmounted on dismiss — no cache: a
+  // remounted loader must re-gate; the query is a single class lookup).
+  if (document.querySelector('.claw-loading-overlay') !== null) return false;
+  // The stage transition curtain: a fast SPA return can run world frames
+  // while the curtain is still opaque (Codex Lever-1 review finding 2 —
+  // ~170ms window where hasEverActivated skips the sea loader). Only count
+  // frames once the curtain is idle or visibly mid-fade-in (<1 opacity).
+  const transition =
+    document.querySelector<HTMLElement>('[data-stage-transition]');
+  const phase = transition?.dataset.stageTransition;
+  if (phase && phase !== 'idle') {
+    if (phase !== 'fadingIn') return false;
+    const opacity = Number.parseFloat(
+      window.getComputedStyle(transition).opacity,
+    );
+    if (!Number.isFinite(opacity) || opacity >= 1) return false;
+  }
+  return true;
+}
+
+/**
+ * Per-frame hook, called from the world scene's frame loop (frames only run
+ * when the world is active and the frameloop is live). Fires the release on
+ * the SECOND CONSECUTIVE qualifying frame so a full revealed world frame has
+ * presented before any deferred work begins; any non-qualifying frame resets
+ * the run.
+ */
+export function notifyWorldFramePresented(): void {
+  if (released || firstPaintArmedReason === null) return;
+  if (!revealConditionHolds()) {
+    qualifyingFramesSeen = 0;
+    return;
+  }
+  qualifyingFramesSeen += 1;
+  if (qualifyingFramesSeen >= 2) {
+    fire(`first-paint:${firstPaintArmedReason}`);
+  }
 }
 
 /**
@@ -101,6 +172,8 @@ export function __resetDecorativeReleaseForTests(): void {
   released = false;
   releasedAtMs = null;
   releaseReason = null;
+  firstPaintArmedReason = null;
+  qualifyingFramesSeen = 0;
   if (deadlineTimer !== null) {
     clearTimeout(deadlineTimer);
     deadlineTimer = null;

@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useState, useEffect, useCallback, memo, Suspense, type RefObject } from 'react';
-import { armDecorativeDeadline, releaseDecorative } from '@/lib/three/decorative-release';
+import { armDecorativeDeadline, armDecorativeReleaseOnFirstPaint, notifyWorldFramePresented } from '@/lib/three/decorative-release';
 import { Canvas, _roots, extend, useStore, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
@@ -350,6 +350,19 @@ const CHAR_TARGET_Y = 15;
 // Frame-rate independent follow stiffness. The previous fixed 0.1/frame lerp
 // became visibly mushy when the scene dipped below 60 FPS.
 const FPS_FOLLOW_STIFFNESS = 14;
+
+// ---------------------------------------------------------------------------
+// DecorativeFirstPaintNotifier — pumps the decorative-release controller once
+// per world frame so the one-shot release anchors to the first PRESENTED
+// revealed frame instead of a warmup milestone (rung 3, Lever 1).
+// ---------------------------------------------------------------------------
+function DecorativeFirstPaintNotifier() {
+  useSceneFrame(() => {
+    notifyWorldFramePresented();
+  });
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Arrow key camera rotation — active in ALL modes
 // Reads _arrowKeys, adjusts orbit camera angles via spherical coordinates.
@@ -1143,7 +1156,7 @@ function createWorldWarmupGate(
       // keeps every resume reason idempotent and prevents a safety fuse/error
       // from turning into a second, much longer apparent hang.
       stampColdLoadPhase('resumeReadyAt', performance.now());
-      releaseDecorative('resume');
+      armDecorativeReleaseOnFirstPaint('resume');
       stampColdLoadPhase('resumeReason', String(reason));
       (window as any).__W3D_TEXTURES_READY = true;
       markWorldReadyIfUploadsDone();
@@ -1581,7 +1594,7 @@ function WorldWarmup({
       if (stageReadyPublished) return;
       stageReadyPublished = true;
       stampColdLoadPhase('stageReadyAt', performance.now());
-      releaseDecorative('stage-ready');
+      armDecorativeReleaseOnFirstPaint('stage-ready');
       bridge.__W3D_CANVAS_READY = true;
       bridge.__W3D_TEXTURES_READY = true;
       markWorldReadyIfUploadsDone();
@@ -1874,7 +1887,7 @@ function WorldWarmup({
         liveState.setFrameloop('always');
         liveState.invalidate();
         stampColdLoadPhase('fallbackResumeAt', performance.now());
-        releaseDecorative('fallback-resume');
+        armDecorativeReleaseOnFirstPaint('fallback-resume');
         (window as any).__W3D_TEXTURES_READY = true;
         markWorldReadyIfUploadsDone();
         forceFirstPaintSizeSync(liveState);
@@ -2001,7 +2014,7 @@ function WorldWarmup({
         const warmRenderMs = performance.now() - warmRenderStartedAt;
         publishPhase('warmRenderMs', warmRenderMs);
         publishPhase('warmupDoneAt', performance.now());
-        releaseDecorative('warmup-complete');
+        armDecorativeReleaseOnFirstPaint('warmup-complete');
         bridge.__W3D_TEXTURES_READY = true;
         markWorldReadyIfUploadsDone();
         console.log(
@@ -2095,6 +2108,13 @@ export const WorldSceneContents = memo(function WorldSceneContents({
         onFrameloopChange={onFrameloopChange}
         stageWarmup={stageWarmup}
       />
+
+      {/* Decorative-release first-paint anchor (rung 3): pumps the release
+          controller once per WORLD frame. Frames only run when the world
+          scene is active and the frameloop is live, so the release can only
+          fire after the world has actually presented a revealed frame —
+          never during warmup, a stage transition, or another scene. */}
+      <DecorativeFirstPaintNotifier />
 
       {/* KTX2Loader initialisation — detects GPU compressed format support
           (BC7 on Iris Xe via WebGPU) and arms the module-level singleton used

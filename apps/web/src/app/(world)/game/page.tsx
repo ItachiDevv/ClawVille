@@ -13,6 +13,7 @@ import { api } from '@/lib/api';
 import { isBoundAgentSessionMode } from '@/lib/agent-session-selectors';
 import SeaLoadingScreen from '@/components/game/sea-loading-screen';
 import { preloadWorldAssets } from '@/lib/three/asset-preload-manifest';
+import { armDecorativeDeadline } from '@/lib/three/decorative-release';
 import AvatarSettingsModal from '@/components/game/avatar-settings-modal';
 import FirstTimeBackupModal from '@/components/game/first-time-backup-modal';
 import LocationConfigModal from '@/components/game/location-config-modal';
@@ -328,7 +329,13 @@ export default function GamePage() {
   // starts emitting progress events and SeaLoadingScreen's __W3D_PROGRESS
   // bar actually fills. Fire-and-forget — duplicate preload calls inside
   // each mounting component are cheap (useGLTF.preload is idempotent).
-  useEffect(() => { preloadWorldAssets(); }, []);
+  // armDecorativeDeadline rides the same first-mount effect (Codex Lever-1
+  // review finding 1): WorldWarmup's own arm call only commits if the canvas
+  // subtree survives to its passive effect — a renderer-init failure before
+  // that would strand the decorative release with no 45s ceiling while the
+  // page-level DeferredNpcPreloads stays subscribed forever. Arming here
+  // guarantees the ceiling exists the moment the loading screen can.
+  useEffect(() => { armDecorativeDeadline(); preloadWorldAssets(); }, []);
 
   const { data: avatar, isLoading } = useAvatar();
   const controlMode = useGameStore((s: GameState) => s.controlMode);
