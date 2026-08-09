@@ -1,7 +1,8 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-08-09 (Land gamification P2b/P3/P4a: measured kit manifest,
-3D placement predicate, plot growth, ring legibility).**
+**Last Audited: 2026-08-09 (Land gamification P2b/P3/P4a + final assembly:
+measured kit manifest, 3D placement predicate, plot growth, ring legibility,
+7-shell catalog ramp, deck-plank re-author).**
 
 **World-scale constants left the renderers.** `FOOTPRINT_FRACTION`,
 `LEVEL_SCALE_MIN/MAX` and `HEIGHT_CAP_FRACTION` existed as private duplicates in
@@ -46,7 +47,7 @@ frozen source; X and Z fall out of each GLB's own aspect ratio at that height.
 | pieceKey | class | rot | X | Z | Y | Y/av | supportSurfaceYWu | legal placements starter / founder / c | min/step |
 |---|---|---|---:|---:|---:|---:|---:|---|---:|
 | `path-stone` | small | orth | 150.1 | 152.1 | 8 | 0.03 | **8** | 208 / 208 / 208 | 52 |
-| `deck-plank` | small | all | 49.9 | 21.8 | 40 | 0.15 | **40** | 1,248 / 992 / 1,248 | 112 |
+| `deck-plank` | small | all | 56.1 | 24.2 | 6 | 0.02 | **6** | 1,248 / 992 / 1,248 | 112 |
 | `fence-picket` | small | all | 190.5 | 28.6 | 105 | 0.39 | null | 624 / 432 / 624 | 52 |
 | `fence-rope` | small | all | 190.3 | 31.9 | 88 | 0.33 | null | 624 / 432 / 624 | 52 |
 | `bench-wood` | small | all | 149.2 | 66.4 | 85 | 0.32 | null | 528 / 528 / 528 | 52 |
@@ -82,6 +83,28 @@ envelope, then 3D AABB disjoint from every occupied footprint. Refusal codes:
 XZ-only on purpose: the reservation is a column of unbounded height, so a piece
 may not sit above the shell either.
 
+**`deck-plank` re-authored 2026-08-09.** The original mesh measured H/W 0.801
+— a block, not a plank — which §5.3 flagged ROLE-MISMATCH and put on the
+re-author list once stacking made its flat-platform role load-bearing. The
+replacement measures H/W 0.107. The old `targetHeightWu: 40` could not be
+inherited: scale is uniform and driven by height, so 40 wu on the new
+proportions renders the piece 374 wu wide, five times any other small piece.
+Sweeping the height against the predicate found a cliff at 20 wu, where the 45°
+steps go zero-legal on founder and the piece would drop to `orthogonal` with its
+count collapsing to 416 / 112 / 528 — backwards for the one piece players tile a
+floor out of. Re-freezing at **6 wu** preserves the frozen PLAN footprint
+(56.1 × 24.2 against the row's 50 × 22) and reproduces the row's counts
+(1,248 / 992 / 1,248) and min/step (112) EXACTLY, with full rotation intact. The
+re-author therefore changes the piece's shape and nothing else about its
+contract. Consequence: the deck is now a flush floorboard, so it lifts a stacked
+piece 6 wu rather than 40, which makes `path-stone` (8) the tallest support in
+the catalog and drops the §4.4 budget-e vertical bound from **372 to 308 wu** —
+computed from the manifest, so no constant was edited. A RAISED deck would need
+another mesh with real thickness; it cannot be recovered by retuning a number.
+The asset was swapped in place at `/models/land-kit/deck-plank.glb`, which is
+safe ONLY because that path first ships in this push window and has never
+reached prod, so no Cloudflare edge cache holds the old bytes.
+
 **Stacking is real (Q8), replacing the `KIT_STACK_UNIT_WU = 34` ladder.** Level
 *n* used to sit at `floorY + (n - 1) * 34` against pieces rendering 8 to 292 wu
 tall, with no cross-level Y test at all, so two stacked lanterns overlapped by
@@ -91,9 +114,10 @@ the new piece's centre. Containment rather than overlap is deliberate: it stops 
 piece balancing on the corner of a plank it barely clips. Its `minY` is that
 supporter's `minY + supportSurfaceYWu`. `kitGridToWorld()` now takes a REQUIRED
 `baseYWu` argument, because against 8-292 wu pieces there is no sane default.
-**Chunk vertical bound 235.2 to 372 wu**, computed by `maxStackHeightWu(3)` from
-the manifest (deck-plank 40, deck-plank 40, statue-anchor 292), so re-authoring a
-support surface moves the frustum box with it. This is the ONLY section 4.4
+**Chunk vertical bound 235.2 to 308 wu**, computed by `maxStackHeightWu(3)` from
+the manifest (path-stone 8, path-stone 8, statue-anchor 292) — it was 372 until
+the deck re-author above made path-stone the tallest support, which is exactly
+the point of computing it rather than hardcoding it. This is the ONLY section 4.4
 budget Q8 changes: the level rules cap piece COUNT, not cells, so triangles,
 resident bytes and draw calls are unmoved.
 
@@ -189,6 +213,53 @@ the parcel body splits so the near-coplanar pad (`PAD_Y = FLOOR_Y + 0.9`) become
 a neutral tone and TIER COLOUR MOVES TO THE RAIL, and frames merge per
 (tier, availability) so a buyable plot is legible without its sign in view. Body
 draws go **3 to 9**, inside the section 5.7 3-11 budget.
+
+**Meshy catalog ramp — 7 new home shells (2026-08-09).** `SHELL_CATALOG` gains
+`pearl-dome` (Lv1), `tiki-hut` / `anchor-forge` / `shipwreck-mast` (Lv2), and
+`tide-lighthouse` / `kelp-spire` / `coral-highrise` (Lv3), all non-premium
+homes, taking the home roster from 4 to 11. No further wiring was needed: the
+picker (`land-appearance-options.ts`) maps the catalog and locks rows through
+the same `isShellAllowed` the server enforces, so locked shells already display
+as upsells with their unlock level; the renderer resolves `modelPath` from
+`getShellCatalogEntry`. The `minLevel` values are marked **FOUNDER-TUNABLE** in
+the catalog — one more choice at Lv1, a spread of four at Lv2, and the three
+tall silhouettes held to Lv3 so an upgrade visibly changes your skyline rather
+than only your palette. Retuning is a one-line edit per row; nothing structural
+reads these numbers.
+
+Measured at freeze (world-space bbox, meshopt + WebP, 1 material and 1 primitive
+each, all inside the §4.3 shell budget of ≤ 6,000 tri / ≤ 2 materials / ≤ 500 KB):
+
+| shell | X | Y | Z | H/W | tri | KB |
+|---|---:|---:|---:|---:|---:|---:|
+| `pearl-dome` | 1.898 | 1.236 | 1.899 | 0.65 | 3,115 | 238 |
+| `tiki-hut` | 1.857 | 1.165 | 1.287 | 0.63 | 2,753 | 436 |
+| `anchor-forge` | 1.889 | 1.112 | 1.892 | 0.59 | 3,069 | 302 |
+| `shipwreck-mast` | 1.722 | 1.897 | 0.699 | 1.10 | 3,883 | 441 |
+| `tide-lighthouse` | 0.867 | 1.899 | 0.991 | 1.92 | 4,033 | 335 |
+| `kelp-spire` | 0.849 | 1.898 | 0.856 | 2.22 | 4,166 | 413 |
+| `coral-highrise` | 0.609 | 1.895 | 0.491 | 3.11 | 3,785 | 293 |
+
+`coral-highrise` (3.11) and `kelp-spire` (2.22) sit ABOVE the 2.254
+footprint/height crossover, so their rendered size is height-bound rather than
+footprint-bound — they are the first shells that read as genuinely tall on a
+parcel instead of as a wider box. Two new tests guard the roster: one pins each
+key with its `minLevel` and `premium` flag and asserts every non-premium shell
+is reachable on a starter parcel at its own unlock level, and one asserts every
+`modelPath` in the catalog resolves to a file that exists on disk, since a row
+naming a missing GLB is a silent fallback to the default shell that no
+allowlist test would catch. The allowlist boundary test was also rewritten to
+derive its expectations from the catalog's `minLevel` / `premium` rather than a
+hardcoded roster, so it pins the RULE and the roster stays data.
+
+**Yard-editor price chip now type-keyed.** `yard-editor-overlay.tsx` read the
+deprecated flat fee table, which is the SHOP row, so a HOME yard advertised
+15 / 60 vCLAW while the server charged 5 / 20. Never exploitable — the server
+reads the structure type off the locked row and is authoritative — but it showed
+a player four times the real price on the exact screen where they decide whether
+they can afford a piece. Both the chip and the group heading now call
+`kitPieceFeeCt(structureType, size)` with the type from the parcel's structure
+in the land store. `KIT_PIECE_FEE_CT` now has no production callers.
 
 **TRACKED DEFERRAL — P4a deliverables NOT in the geometry lane (Rule E6).** The
 gamification pass's section 7 lists P4a as also delivering an `owned-vacant`

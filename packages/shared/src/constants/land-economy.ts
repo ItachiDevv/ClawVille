@@ -323,6 +323,86 @@ export const SHELL_CATALOG: readonly ShellCatalogEntry[] = [
     minLevel: 2,
     premium: false,
   },
+  // ── Meshy catalog ramp, 2026-08-09 ────────────────────────────────────────
+  // Seven new home shells. All non-premium, so any tier may use them once the
+  // level is reached; premium remains the two Lv4 tower/mall assets below.
+  //
+  // ⚠ minLevel VALUES ARE FOUNDER-TUNABLE. They are a first pass at pacing —
+  // one more shell to choose from at Lv1, a spread of four at Lv2, and the
+  // three tall silhouettes held back to Lv3 so upgrading visibly changes your
+  // skyline rather than just your palette. Nothing structural depends on these
+  // numbers: `isShellAllowed` reads `minLevel` straight off this row, the
+  // picker locks on the same helper, and the allowlist test derives its
+  // expectations from this catalog. Retuning is a one-line edit per row.
+  //
+  // Measured at freeze (world-space bbox, meshopt + WebP, 1 material each):
+  //   pearl-dome      1.898 x 1.236 x 1.899, H/W 0.65, 3,115 tri, 238 KB
+  //   tiki-hut        1.857 x 1.165 x 1.287, H/W 0.63, 2,753 tri, 436 KB
+  //   anchor-forge    1.889 x 1.112 x 1.892, H/W 0.59, 3,069 tri, 302 KB
+  //   shipwreck-mast  1.722 x 1.897 x 0.699, H/W 1.10, 3,883 tri, 441 KB
+  //   tide-lighthouse 0.867 x 1.899 x 0.991, H/W 1.92, 4,033 tri, 335 KB
+  //   kelp-spire      0.849 x 1.898 x 0.856, H/W 2.22, 4,166 tri, 413 KB
+  //   coral-highrise  0.609 x 1.895 x 0.491, H/W 3.11, 3,785 tri, 293 KB
+  // All within the §4.3 shell budget (≤ 6,000 tri, ≤ 2 materials, ≤ 500 KB).
+  // `coral-highrise` (H/W 3.11) and `kelp-spire` (2.22) sit ABOVE the 2.254
+  // footprint/height crossover, so their rendered size is height-bound rather
+  // than footprint-bound — they read as genuinely tall on a parcel.
+  {
+    key: 'pearl-dome',
+    label: 'Pearl Dome',
+    structureType: 'home',
+    modelPath: '/models/land-structures/pearl-dome/home.glb',
+    minLevel: 1,
+    premium: false,
+  },
+  {
+    key: 'tiki-hut',
+    label: 'Tiki Hut',
+    structureType: 'home',
+    modelPath: '/models/land-structures/tiki-hut/home.glb',
+    minLevel: 2,
+    premium: false,
+  },
+  {
+    key: 'anchor-forge',
+    label: 'Anchor Forge',
+    structureType: 'home',
+    modelPath: '/models/land-structures/anchor-forge/home.glb',
+    minLevel: 2,
+    premium: false,
+  },
+  {
+    key: 'shipwreck-mast',
+    label: 'Shipwreck Mast',
+    structureType: 'home',
+    modelPath: '/models/land-structures/shipwreck-mast/home.glb',
+    minLevel: 2,
+    premium: false,
+  },
+  {
+    key: 'tide-lighthouse',
+    label: 'Tide Lighthouse',
+    structureType: 'home',
+    modelPath: '/models/land-structures/tide-lighthouse/home.glb',
+    minLevel: 3,
+    premium: false,
+  },
+  {
+    key: 'kelp-spire',
+    label: 'Kelp Spire',
+    structureType: 'home',
+    modelPath: '/models/land-structures/kelp-spire/home.glb',
+    minLevel: 3,
+    premium: false,
+  },
+  {
+    key: 'coral-highrise',
+    label: 'Coral Highrise',
+    structureType: 'home',
+    modelPath: '/models/land-structures/coral-highrise/home.glb',
+    minLevel: 3,
+    premium: false,
+  },
   {
     key: 'premium-tower',
     label: 'Tideglass Tower',

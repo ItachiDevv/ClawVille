@@ -141,11 +141,39 @@ const KIT_MANIFEST_SEEDS = {
     rotations: 'orthogonal',
     sourceExtent: { x: 1.8726, y: 0.0998, z: 1.8969 },
   },
+  // RE-AUTHORED 2026-08-09. Re-frozen on PLAN FOOTPRINT, not on the old height.
+  //
+  // The original mesh measured H/W 0.801 — a block, not a plank — which §5.3
+  // flagged ROLE-MISMATCH and put on the re-author list, because funding
+  // stacking made its flat-platform role load-bearing. The replacement measures
+  // H/W 0.107, so it is finally the shape its name claims.
+  //
+  // The old `targetHeightWu: 40` could NOT be inherited. Scale is uniform and
+  // driven by height, so 40 wu of height on the new proportions renders the
+  // piece 374 wu wide — five times any other small piece — for a 5-vCLAW item.
+  // Sweeping the height against the predicate showed a cliff at 20 wu, where
+  // the 45° steps go zero-legal on founder and the piece would have to drop to
+  // `orthogonal`; its placement count also collapses (416/112/528). That is
+  // backwards for the one piece players tile a floor out of, which should be
+  // the EASIEST thing to place, not one of the hardest.
+  //
+  // So the height is chosen to preserve the frozen PLAN footprint instead:
+  // 6 wu renders 56.1 × 24.2, against the §5.3 row's 50 × 22, and reproduces
+  // that row's placement counts (1,248 / 992 / 1,248) and min/step (112)
+  // EXACTLY, with full rotation intact as §5.3 states. The re-author therefore
+  // changes the piece's shape and nothing else about its contract.
+  //
+  // Consequence worth naming: the deck is now a flush floorboard, so its
+  // support surface lifts a stacked piece 6 wu rather than 40. That is
+  // physically right for a flat plank, and it makes `path-stone` (8) the
+  // tallest support in the catalog. If the founder wants a RAISED deck to
+  // stack onto, that needs another mesh with real thickness — it cannot be
+  // recovered by retuning this number, because scale is uniform.
   'deck-plank': {
-    targetHeightWu: 40,
-    supportSurfaceYWu: 40,
+    targetHeightWu: 6,
+    supportSurfaceYWu: 6,
     rotations: 'all',
-    sourceExtent: { x: 1.8983, y: 1.521, z: 0.8299 },
+    sourceExtent: { x: 1.8973, y: 0.2031, z: 0.8195 },
   },
   'fence-picket': {
     targetHeightWu: 105,

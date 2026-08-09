@@ -4,14 +4,15 @@ import { useCallback, useEffect, useMemo } from "react";
 import {
   KIT_CATALOG,
   KIT_LEVEL_RULES,
-  KIT_PIECE_FEE_CT,
   KIT_PIECE_KEYS,
   isRotationAllowed,
+  kitPieceFeeCt,
   parcelDisplayName,
   parseParcelCode,
   type KitPieceKey,
   type KitPieceSize,
   type KitStructureLevel,
+  type LandStructureType,
 } from "@clawville/shared";
 import { useAvatar } from "@/hooks/use-avatar";
 import { useIsMobile } from "@/hooks/use-is-mobile";
@@ -49,10 +50,20 @@ function CatalogGroup({
   size,
   used,
   cap,
+  structureType,
 }: {
   size: KitPieceSize;
   used: number;
   cap: number;
+  /**
+   * Drives the price chip. This used to read the deprecated flat fee table,
+   * which is the SHOP row, so a home yard advertised 15/60 while the server
+   * charged the home price of 5/20. The server was always authoritative, so
+   * nobody was overcharged — but the editor was quoting a player a price four
+   * times what they would actually pay, on the exact screen where they decide
+   * whether they can afford it.
+   */
+  structureType: LandStructureType;
 }) {
   const selectedPieceKey = useLandStore((state) => state.selectedPieceKey);
   const setSelectedPieceKey = useLandStore(
@@ -86,7 +97,8 @@ function CatalogGroup({
       >
         <span>{size}</span>
         <span style={{ color: GOLD, letterSpacing: 0, textTransform: "none" }}>
-          {used} of {cap} {size} used
+          {used} of {cap} used
+          {cap > 0 ? ` · ${kitPieceFeeCt(structureType, size)} vCLAW each` : ""}
         </span>
       </div>
       <div style={{ display: "grid", gap: 8 }}>
@@ -155,7 +167,7 @@ function CatalogGroup({
                   whiteSpace: "nowrap",
                 }}
               >
-                {KIT_PIECE_FEE_CT[size]} vCLAW
+                {kitPieceFeeCt(structureType, size)} vCLAW
               </span>
             </button>
           );
@@ -190,6 +202,11 @@ export default function YardEditorOverlay() {
     5,
     Math.max(1, structure?.level ?? 1),
   ) as KitStructureLevel;
+  // Same fallback shape as `level` above, and reachable for the same reason:
+  // the editor only opens on a parcel with an ACTIVE structure, so a null here
+  // is the brief window before the owner overlay hydrates. The server reads the
+  // type off the locked row and is authoritative for what is actually charged.
+  const structureType: LandStructureType = structure?.structureType ?? 'home';
   const levelRule = KIT_LEVEL_RULES[level];
   const parcelPieces = buildMode
     ? (pieces.get(buildMode.parcelCode) ?? EMPTY_PIECES)
@@ -505,11 +522,13 @@ export default function YardEditorOverlay() {
           size="small"
           used={counts.small}
           cap={levelRule.smallPieceCap}
+          structureType={structureType}
         />
         <CatalogGroup
           size="large"
           used={counts.large}
           cap={levelRule.largePieceCap}
+          structureType={structureType}
         />
       </div>
     </aside>

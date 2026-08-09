@@ -1205,6 +1205,15 @@ export const api = {
       credited: number;
       balance: number;
       error?: string;
+      /**
+       * Machine-readable refusal code. Emitted by the shared
+       * `requireNonGuestIdentity` middleware, whose body is
+       * `{ error: <human message>, code: 'guest_not_allowed' }` — the route's
+       * own older refusals instead put their code in `error`. The quest store
+       * reads both spellings; this field was missing from the declared shape,
+       * so that read did not typecheck.
+       */
+      code?: string;
       reason?: string;
       message?: string;
     }>(`/api/quests/tutorial/${questId}/claim`, { method: 'POST' }),

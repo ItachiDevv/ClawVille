@@ -109,14 +109,20 @@ export function kitPieceFeeCt(
 /**
  * @deprecated Use `kitPieceFeeCt(structureType, size)`.
  *
- * Retained as the SHOP row so the pre-reprice shape and numbers still resolve
- * for callers that have no structure type in scope. There is exactly one such
- * caller left — `apps/web/src/components/game/land/yard-editor-overlay.tsx`,
- * which renders the price chip in the yard editor and is owned by the editor
- * lane. Until it migrates it will quote SHOP prices on a HOME yard. The server
- * is authoritative, so this cannot be exploited (a home is always charged the
- * cheaper home fee); it is a display drift, and closing it is a tracked
- * hand-off to that lane, not a silent deferral.
+ * Retained as the SHOP row so the pre-reprice shape and numbers still resolve.
+ *
+ * MIGRATION COMPLETE 2026-08-09 — it has NO remaining production callers. The
+ * last one was the yard editor's price chip
+ * (`apps/web/src/components/game/land/yard-editor-overlay.tsx`), which quoted
+ * SHOP prices on a HOME yard: 15/60 on screen against the 5/20 the server
+ * actually charged. Never exploitable, since the server reads the structure
+ * type off the locked row — but it showed a player four times the real price
+ * on the exact screen where they decide whether they can afford a piece. It now
+ * calls `kitPieceFeeCt(structureType, size)`.
+ *
+ * Only `land-kit.test.ts` still references this, to pin the shop numbers. Do
+ * not add new callers; a caller with no structure type in scope is a sign the
+ * type needs threading, not that the shop price is an acceptable default.
  */
 export const KIT_PIECE_FEE_CT: Readonly<Record<KitPieceSize, number>> =
   KIT_PIECE_FEE_CT_BY_STRUCTURE.shop;

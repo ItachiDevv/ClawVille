@@ -2,7 +2,7 @@
 
 
 **Last Audited: 2026-08-09 (Land gamification: yard pieces are sized like real
-objects, stacking works, plots got bigger).** Yard decorations used to be
+objects, stacking works, plots got bigger, eleven home styles).** Yard decorations used to be
 squashed to a uniform size regardless of what they were, so a 60 vCLAW anchor
 statue came out narrower than a 15 vCLAW picket fence and most pieces sat around
 ankle height next to your character. Every piece is now rendered at its own
@@ -107,6 +107,25 @@ bearer on the same REST route, and a hosted agent in-world via
 `[ACTION: claim_tutorial_quest(questId=...)]`. All three run the same
 proof-of-engagement checks and pay the same once-ever reward. Guests still
 cannot claim.
+
+There are now eleven home styles to choose from instead of four. A pearl dome is
+available from the start alongside the coastal cottage, a tiki hut, an anchor
+forge and a shipwreck mast unlock at level 2, and a tide lighthouse, a kelp
+spire and a coral highrise unlock at level 3. The last three are genuinely tall
+buildings rather than wider boxes, so upgrading now visibly changes your skyline
+instead of only your colours. Styles you have not unlocked still show in the
+picker with the level they need, so you can see what you are working toward.
+
+The deck plank was rebuilt. It used to be modelled as a block rather than a
+board, which is why it looked wrong next to everything else; it is now actually
+flat. It covers the same ground it always did and goes in the same places, it is
+just the right shape at last. Because it is a genuinely flat board, standing
+something on it now raises that thing a little rather than a lot.
+
+The yard editor was showing the wrong price on home plots. It quoted shop prices
+of 15 and 60 vCLAW while your home was only ever charged 5 and 20. You were
+never overcharged, since the amount taken always came from the server, but the
+price on screen is now the price you pay.
 
 **Prior Last Audited: 2026-08-08 (Land P2 round 2 — two-door acquisition + autonomous
 agent verbs, protocol v46).** The Land Office now makes acquisition live through

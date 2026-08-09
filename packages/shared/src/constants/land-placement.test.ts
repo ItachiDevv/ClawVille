@@ -100,7 +100,7 @@ describe('kit manifest (§5.3)', () => {
     );
     expect(heights).toEqual({
       'path-stone': 8,
-      'deck-plank': 40,
+      'deck-plank': 6,
       'fence-picket': 105,
       'fence-rope': 88,
       'bench-wood': 85,
@@ -120,7 +120,7 @@ describe('kit manifest (§5.3)', () => {
     ).sort();
     expect(supporters).toEqual(['deck-plank', 'path-stone']);
     expect(KIT_PIECE_RENDER['path-stone'].supportSurfaceYWu).toBe(8);
-    expect(KIT_PIECE_RENDER['deck-plank'].supportSurfaceYWu).toBe(40);
+    expect(KIT_PIECE_RENDER['deck-plank'].supportSurfaceYWu).toBe(6);
   });
 
   it('restricts rotation ONLY where a step is zero-legal on some tier', () => {
@@ -142,11 +142,16 @@ describe('kit manifest (§5.3)', () => {
     }
   });
 
-  it('bounds the tallest legal stack at 372 wu (§4.4 budget e)', () => {
-    // deck-plank (40) → deck-plank (40) → statue-anchor (292).
-    expect(KIT_MAX_STACK_HEIGHT_WU).toBe(372);
+  it('bounds the tallest legal stack under the §4.4 budget-e ceiling', () => {
+    // path-stone (8) → path-stone (8) → statue-anchor (292). The tallest
+    // SUPPORT became path-stone once deck-plank was re-authored genuinely flat
+    // (40 → 6 wu), so the bound fell 372 → 308. It is computed from the
+    // manifest, never hardcoded, which is why re-authoring one asset moved the
+    // frustum box without anyone editing a constant.
+    expect(KIT_MAX_STACK_HEIGHT_WU).toBe(308);
+    expect(KIT_MAX_STACK_HEIGHT_WU).toBeLessThanOrEqual(372);
     expect(maxStackHeightWu(1)).toBe(292);
-    expect(maxStackHeightWu(2)).toBe(332);
+    expect(maxStackHeightWu(2)).toBe(300);
     // The pre-manifest bound was KIT_STACK_UNIT_WU*2 + cell*1.5 = 235.2 wu,
     // which is exactly why two stacked lanterns overlapped by 216 wu (N-3).
     expect(KIT_MAX_STACK_HEIGHT_WU).toBeGreaterThan(235.2);
@@ -421,8 +426,8 @@ describe('cross-level 3D occupancy (Q8, §7.3)', () => {
     );
     expect(verdict.ok).toBe(true);
     if (!verdict.ok) return;
-    expect(verdict.footprint.minY).toBe(40);
-    expect(verdict.footprint.maxY).toBe(80);
+    expect(verdict.footprint.minY).toBe(6);
+    expect(verdict.footprint.maxY).toBe(12);
   });
 
   it('places a stacked piece at the supporter surface, not floorY + (n−1) × 34', () => {
@@ -434,8 +439,8 @@ describe('cross-level 3D occupancy (Q8, §7.3)', () => {
       [supporter],
       'lantern-1',
     )!;
-    expect(stacked.minY).toBe(40);
-    expect(stacked.maxY).toBe(40 + 250);
+    expect(stacked.minY).toBe(6);
+    expect(stacked.maxY).toBe(6 + 250);
     // The retired model would have put it at 34 wu — 6 wu INSIDE the plank.
     expect(stacked.minY).not.toBe(34);
   });
@@ -542,7 +547,7 @@ describe('resolveParcelPlacements — the render layer contract (Q5)', () => {
     expect(resolved).toHaveLength(2);
     // Sorted lowest-first internally, so the supporter always resolves first.
     expect(resolved[0]!.footprint.minY).toBe(0);
-    expect(resolved[1]!.footprint.minY).toBe(40);
+    expect(resolved[1]!.footprint.minY).toBe(6);
     expect(resolved.every((entry) => !entry.unsupported)).toBe(true);
   });
 
