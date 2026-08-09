@@ -6,19 +6,35 @@
 in CENTRED world coords (the Three.js / collider frame); the NPC simulation
 converts with `+ WORLD_COLLIDER_MAP_HALF` when it needs game-pixel coords.
 
-They sit on three square rings, matching the world's square block-frame geometry
-rather than fighting it with circles. Chebyshev-radial occupancy in tiles is
-building ring ~[99,161], founder frame [171,209], starter [239,277], c [279,331],
-world edge 352 — which leaves exactly three gaps wide enough to stand in:
-`shallows` at half-side 70 t (2,240 wu), `shelf` at 224 t (7,168 wu, dead centre
-of the founder-starter gap) and `deep` at 341 t (10,912 wu, dead centre of the
-c-to-edge gap), 16 nodes each.
+They sit in three bands around three square rings, matching the world's square
+block-frame geometry rather than fighting it with circles. Chebyshev-radial
+occupancy in tiles is building ring ~[99,161], founder frame [171,209], starter
+[239,277], c [279,331], world edge 352 — which leaves exactly three gaps wide
+enough to stand in: `shallows` at half-side 70 t (2,240 wu), `shelf` at 224 t
+(7,168 wu, dead centre of the founder-starter gap) and `deep` at 341 t (10,912
+wu, dead centre of the c-to-edge gap), 16 nodes each.
+
+**They are SCATTERED, not laid on a lattice.** `generateSalvageNodes()` (exported
+from the same file) derives each position from the band table plus a hash-based
+wander along and across the band, so the field reads as salvage strewn on the
+seabed rather than 48 markers on a grid. The wander comes from an FNV-1a hash of
+the node's own id — never `Math.random()`, which would hand every process a
+different world and let the server settle a node the renderer never drew. Jitter
+budgets are what each gap leaves over: `shallows` may wander 300 wu, `shelf` 200,
+`deep` only 95 because its gap is 21 tiles wide.
+
+`SALVAGE_NODES` is the generator's output FROZEN as a literal, and a test asserts
+the two still agree. The freeze is deliberate: node positions are money-path
+state (`salvage_node_claims` is keyed by `(avatar_id, node_id)` and stamped with
+`layout_version`), so computing them at module load would silently relocate nodes
+under players mid-cooldown whenever a building moved, without bumping the layout
+version. Frozen, that becomes a failing test and a decision a person makes.
 
 Every position is validated against `getServerColliders()` (17 building AABBs)
-and all 56 `LAND_PARCELS` footprints. Worst-case clearance is 320 wu — 6x
-`ENTITY_HALF_HUMANOID` — so no node is embedded in geometry or unreachable, and
-no two nodes are within 520 wu of each other (2x the 260 wu approach range), so
-one dwell can never serve two claims. `land-salvage.test.ts` RE-DERIVES all of
+and all 56 `LAND_PARCELS` footprints. Measured at freeze: >= 430 wu from any
+building, >= 261 wu from any parcel — both far past `ENTITY_HALF_HUMANOID` (50) —
+and no two nodes closer than 670 wu, more than twice the 260 wu approach range,
+so one dwell can never arm two nodes. `land-salvage.test.ts` RE-DERIVES all of
 this from the live collider and parcel data: **moving a building or re-tiering
 the land ring fails that suite** rather than silently burying a node.
 

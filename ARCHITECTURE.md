@@ -4,11 +4,17 @@
 hosted salvage verb, material spend rail, protocol v48).** Four changes.
 
 **(1) Salvage node topology (P7a).** `packages/shared/src/constants/land-salvage.ts`
-is the SINGLE source of truth for `SALVAGE_NODES` (48 frozen nodes in centred
-world coords, `SALVAGE_LAYOUT_VERSION = 1`), consumed by the renderer, the claim
-service, the read model and the hosted-target service. Positions were chosen
-from the three usable radial gaps in the world's square block-frame geometry and
-validated against `getServerColliders()` and every `LAND_PARCELS` footprint;
+is the SINGLE source of truth for `SALVAGE_NODES` (48 nodes in centred world
+coords, `SALVAGE_LAYOUT_VERSION = 1`), consumed by the renderer, the claim
+service, the read model and the hosted-target service. Positions come from the
+pure deterministic `generateSalvageNodes()` — the three usable radial gaps in the
+world's square block-frame geometry, plus an FNV-1a hash-based wander per node so
+the field scatters instead of forming a lattice (no `Math.random`, no clock). Its
+output is FROZEN as a literal, with a test asserting the two still agree, because
+node positions are money-path state: computing them at module load would relocate
+nodes under mid-cooldown players whenever a building moved, without bumping the
+layout version. Positions are validated against `getServerColliders()` and every
+`LAND_PARCELS` footprint;
 `land-salvage.test.ts` RE-DERIVES those clearances from live data, so moving a
 building or re-tiering land fails the suite instead of burying a node.
 

@@ -44,90 +44,191 @@ export interface SalvageNode {
   readonly z: number;
 }
 
+// ---------------------------------------------------------------------------
+// The generator
+// ---------------------------------------------------------------------------
+
+const TILE_WU = 32;
+
 /**
- * 48 nodes on three square rings, matching the world's square block-frame
- * geometry rather than fighting it with circles.
+ * The three radial bands, and how far a node may wander inside each.
  *
  * ── HOW THE BANDS WERE CHOSEN (measured, not guessed) ────────────────────────
- * The world is a 704-tile square (`MAP_HALF = 11264` wu). Chebyshev-radial
- * occupancy, in tiles:
+ * The world is a 704-tile square. Chebyshev-radial occupancy, in tiles:
  *
  *   building ring   ~[99, 161]      founder frame [171, 209]
  *   starter frame   [239, 277]      c frame       [279, 331]      world edge 352
  *
- * That leaves exactly three usable gaps wide enough to stand in:
+ * That leaves exactly three gaps wide enough to stand in, and each band sits in
+ * the middle of one. The jitter budgets are what is left over once the gap is
+ * split: `deep` sits in a 21-tile gap so it may only wander 95 wu, while
+ * `shallows` has the open water inside the building ring and may wander 300.
+ */
+const SALVAGE_BANDS: readonly {
+  readonly band: SalvageNodeBand;
+  readonly halfSideTiles: number;
+  readonly count: number;
+  /** Maximum inward/outward wander, world units. */
+  readonly radialJitterWu: number;
+  /** Maximum along-ring wander, as a fraction of the full perimeter. */
+  readonly tangentialJitter: number;
+}[] = [
+  { band: 'shallows', halfSideTiles: 70, count: 16, radialJitterWu: 300, tangentialJitter: 0.022 },
+  { band: 'shelf', halfSideTiles: 224, count: 16, radialJitterWu: 200, tangentialJitter: 0.020 },
+  { band: 'deep', halfSideTiles: 341, count: 16, radialJitterWu: 95, tangentialJitter: 0.018 },
+];
+
+/**
+ * FNV-1a over `<nodeId>|<salt>`, normalized to [0, 1).
  *
- *   shallows  h =  70 t (2,240 wu)  — inside the building ring
- *   shelf     h = 224 t (7,168 wu)  — the 30 t founder↔starter gap, dead centre
- *   deep      h = 341 t (10,912 wu) — the 21 t c↔edge gap, dead centre
+ * THE SCATTER MUST NOT BE RANDOM. `Math.random()` here would hand every process
+ * a different world, which for a money path means the server would settle a
+ * node the renderer never drew. Hashing the node's own id gives an irregular
+ * but completely reproducible offset: the same id always lands in the same
+ * place, on every machine, forever.
+ */
+function scatterHash(nodeId: string, salt: string): number {
+  let hash = 0x811c9dc5;
+  const input = `${nodeId}|${salt}`;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash / 0x1_0000_0000;
+}
+
+/** Hash mapped to [-1, 1) so a node can wander either way. */
+function signedScatter(nodeId: string, salt: string): number {
+  return scatterHash(nodeId, salt) * 2 - 1;
+}
+
+/**
+ * A point on a square ring of half-side `halfSideWu`, at perimeter fraction
+ * `u`. Square rather than circular because the world's parcel frames are
+ * squares — a circular ring would cut corners through them.
+ */
+function squareRingPoint(halfSideWu: number, u: number): { x: number; z: number } {
+  const wrapped = (((u % 1) + 1) % 1) * 8 * halfSideWu;
+  const h = halfSideWu;
+  if (wrapped < 2 * h) return { x: -h + wrapped, z: -h };
+  if (wrapped < 4 * h) return { x: h, z: -h + (wrapped - 2 * h) };
+  if (wrapped < 6 * h) return { x: h - (wrapped - 4 * h), z: h };
+  return { x: -h, z: h - (wrapped - 6 * h) };
+}
+
+/**
+ * Derive the whole layout from the band table. PURE and DETERMINISTIC — no
+ * `Math.random`, no clock, no environment. Calling it twice in any two
+ * processes yields byte-identical output, which is what
+ * `land-salvage.test.ts` asserts against the frozen array below.
  *
- * Every one of the 48 positions was validated against `getServerColliders()`
- * (17 building AABBs) and all 56 `LAND_PARCELS` footprint AABBs. Worst-case
- * clearances measured at layout freeze:
+ * Exported so the test can re-run it; production code reads `SALVAGE_NODES`.
+ */
+export function generateSalvageNodes(): SalvageNode[] {
+  const nodes: SalvageNode[] = [];
+  for (const band of SALVAGE_BANDS) {
+    for (let i = 0; i < band.count; i++) {
+      const id = `${band.band}-${String(i + 1).padStart(2, '0')}`;
+      // Wander in and out of the band...
+      const halfSideWu =
+        band.halfSideTiles * TILE_WU + signedScatter(id, 'radial') * band.radialJitterWu;
+      // ...and along it, which is what breaks the even spacing that otherwise
+      // reads as a grid.
+      const u = (i + 0.5) / band.count + signedScatter(id, 'tangent') * band.tangentialJitter;
+      const point = squareRingPoint(halfSideWu, u);
+      nodes.push({ id, band: band.band, x: Math.round(point.x), z: Math.round(point.z) });
+    }
+  }
+  return nodes;
+}
+
+/**
+ * The 48 nodes, FROZEN.
  *
- *   shallows: >= 498 wu from any building, >= 3,232 wu from any parcel
- *   shelf:    >= 2,318 wu from any building, >= 480 wu from any parcel
- *   deep:     >= 6,158 wu from any building, >= 320 wu from any parcel
+ * ── WHY THIS IS A LITERAL AND NOT `generateSalvageNodes()` AT MODULE LOAD ────
+ * The generator above is the authority on how these were derived, and a test
+ * asserts this array reproduces it exactly. But the exported value is a FROZEN
+ * SNAPSHOT on purpose, because node positions are money-path state:
+ * `salvage_node_claims` rows are keyed by `(avatar_id, node_id)` and stamped
+ * with `layout_version`, and a live cooldown refers to a place in the world.
  *
- * The global worst case is 320 wu — 6x an adult humanoid's collision half-width
- * (`ENTITY_HALF_HUMANOID = 50`), so no node is ever unreachable or embedded in
- * geometry. `land-salvage.test.ts` re-derives these clearances from the live
- * collider + parcel data, so MOVING A BUILDING OR A PARCEL FAILS THE SUITE
- * rather than silently burying a node.
+ * If this were computed at module load, moving a building or re-tiering the
+ * land ring would silently relocate nodes under players who are mid-cooldown,
+ * WITHOUT bumping `SALVAGE_LAYOUT_VERSION` — the renderer and the settlement
+ * service would agree with each other and both be wrong about where the player
+ * had actually been. Freezing turns that into a failing test that says "the
+ * world moved; decide whether to re-freeze and bump the layout version",
+ * which is a decision a person should make rather than a side effect of an
+ * unrelated diff.
+ *
+ * ── SCATTER, NOT A GRID ─────────────────────────────────────────────────────
+ * Positions are hash-scattered along and across each band, so the field reads
+ * as scattered salvage on the seabed rather than 48 markers on a lattice. The
+ * scatter is derived from each node's own id, so it is irregular to look at
+ * and exactly reproducible in code.
+ *
+ * ── VALIDATED, NOT ASSERTED ─────────────────────────────────────────────────
+ * `land-salvage.test.ts` RE-DERIVES every clearance from the live collider map
+ * (17 building AABBs) and all 56 `LAND_PARCELS` footprints, so MOVING A
+ * BUILDING OR A PARCEL FAILS THE SUITE rather than silently burying a node.
+ * Measured at freeze: >= 430 wu from any building, >= 261 wu from any parcel
+ * (both well past an adult humanoid's 50 wu collision half-width), and no two
+ * nodes closer than 670 wu — more than twice the 260 wu approach range, so one
+ * dwell can never arm two nodes.
  *
  * The three bands are a deliberate distance gradient: shallows is a short trip
  * from spawn, deep is a real expedition. Yield does NOT vary by band (founder
  * ruling: uniform 1-3), so the gradient buys variety, never a farming edge.
  */
 export const SALVAGE_NODES: readonly SalvageNode[] = Object.freeze([
-  { id: 'shallows-01', band: 'shallows', x: -1680, z: -2240 },
-  { id: 'shallows-02', band: 'shallows', x: -560, z: -2240 },
-  { id: 'shallows-03', band: 'shallows', x: 560, z: -2240 },
-  { id: 'shallows-04', band: 'shallows', x: 1680, z: -2240 },
-  { id: 'shallows-05', band: 'shallows', x: 2240, z: -1680 },
-  { id: 'shallows-06', band: 'shallows', x: 2240, z: -560 },
-  { id: 'shallows-07', band: 'shallows', x: 2240, z: 560 },
-  { id: 'shallows-08', band: 'shallows', x: 2240, z: 1680 },
-  { id: 'shallows-09', band: 'shallows', x: 1680, z: 2240 },
-  { id: 'shallows-10', band: 'shallows', x: 560, z: 2240 },
-  { id: 'shallows-11', band: 'shallows', x: -560, z: 2240 },
-  { id: 'shallows-12', band: 'shallows', x: -1680, z: 2240 },
-  { id: 'shallows-13', band: 'shallows', x: -2240, z: 1680 },
-  { id: 'shallows-14', band: 'shallows', x: -2240, z: 560 },
-  { id: 'shallows-15', band: 'shallows', x: -2240, z: -560 },
-  { id: 'shallows-16', band: 'shallows', x: -2240, z: -1680 },
-  { id: 'shelf-01', band: 'shelf', x: -5376, z: -7168 },
-  { id: 'shelf-02', band: 'shelf', x: -1792, z: -7168 },
-  { id: 'shelf-03', band: 'shelf', x: 1792, z: -7168 },
-  { id: 'shelf-04', band: 'shelf', x: 5376, z: -7168 },
-  { id: 'shelf-05', band: 'shelf', x: 7168, z: -5376 },
-  { id: 'shelf-06', band: 'shelf', x: 7168, z: -1792 },
-  { id: 'shelf-07', band: 'shelf', x: 7168, z: 1792 },
-  { id: 'shelf-08', band: 'shelf', x: 7168, z: 5376 },
-  { id: 'shelf-09', band: 'shelf', x: 5376, z: 7168 },
-  { id: 'shelf-10', band: 'shelf', x: 1792, z: 7168 },
-  { id: 'shelf-11', band: 'shelf', x: -1792, z: 7168 },
-  { id: 'shelf-12', band: 'shelf', x: -5376, z: 7168 },
-  { id: 'shelf-13', band: 'shelf', x: -7168, z: 5376 },
-  { id: 'shelf-14', band: 'shelf', x: -7168, z: 1792 },
-  { id: 'shelf-15', band: 'shelf', x: -7168, z: -1792 },
-  { id: 'shelf-16', band: 'shelf', x: -7168, z: -5376 },
-  { id: 'deep-01', band: 'deep', x: -8184, z: -10912 },
-  { id: 'deep-02', band: 'deep', x: -2728, z: -10912 },
-  { id: 'deep-03', band: 'deep', x: 2728, z: -10912 },
-  { id: 'deep-04', band: 'deep', x: 8184, z: -10912 },
-  { id: 'deep-05', band: 'deep', x: 10912, z: -8184 },
-  { id: 'deep-06', band: 'deep', x: 10912, z: -2728 },
-  { id: 'deep-07', band: 'deep', x: 10912, z: 2728 },
-  { id: 'deep-08', band: 'deep', x: 10912, z: 8184 },
-  { id: 'deep-09', band: 'deep', x: 8184, z: 10912 },
-  { id: 'deep-10', band: 'deep', x: 2728, z: 10912 },
-  { id: 'deep-11', band: 'deep', x: -2728, z: 10912 },
-  { id: 'deep-12', band: 'deep', x: -8184, z: 10912 },
-  { id: 'deep-13', band: 'deep', x: -10912, z: 8184 },
-  { id: 'deep-14', band: 'deep', x: -10912, z: 2728 },
-  { id: 'deep-15', band: 'deep', x: -10912, z: -2728 },
-  { id: 'deep-16', band: 'deep', x: -10912, z: -8184 },
+  { id: 'shallows-01', band: 'shallows', x: -1844, z: -2164 },
+  { id: 'shallows-02', band: 'shallows', x: -653, z: -2128 },
+  { id: 'shallows-03', band: 'shallows', x: 426, z: -2389 },
+  { id: 'shallows-04', band: 'shallows', x: 2183, z: -2418 },
+  { id: 'shallows-05', band: 'shallows', x: 2050, z: -1548 },
+  { id: 'shallows-06', band: 'shallows', x: 2183, z: -863 },
+  { id: 'shallows-07', band: 'shallows', x: 2143, z: 693 },
+  { id: 'shallows-08', band: 'shallows', x: 2308, z: 1598 },
+  { id: 'shallows-09', band: 'shallows', x: 1501, z: 2407 },
+  { id: 'shallows-10', band: 'shallows', x: 592, z: 2257 },
+  { id: 'shallows-11', band: 'shallows', x: -368, z: 2291 },
+  { id: 'shallows-12', band: 'shallows', x: -1166, z: 1964 },
+  { id: 'shallows-13', band: 'shallows', x: -2280, z: 1545 },
+  { id: 'shallows-14', band: 'shallows', x: -2023, z: 716 },
+  { id: 'shallows-15', band: 'shallows', x: -2006, z: -646 },
+  { id: 'shallows-16', band: 'shallows', x: -2153, z: -1300 },
+  { id: 'shelf-01', band: 'shelf', x: -5178, z: -7166 },
+  { id: 'shelf-02', band: 'shelf', x: -1632, z: -7252 },
+  { id: 'shelf-03', band: 'shelf', x: 2886, z: -7091 },
+  { id: 'shelf-04', band: 'shelf', x: 6050, z: -7165 },
+  { id: 'shelf-05', band: 'shelf', x: 7138, z: -5315 },
+  { id: 'shelf-06', band: 'shelf', x: 7077, z: -800 },
+  { id: 'shelf-07', band: 'shelf', x: 7082, z: 2513 },
+  { id: 'shelf-08', band: 'shelf', x: 7001, z: 5793 },
+  { id: 'shelf-09', band: 'shelf', x: 5822, z: 6993 },
+  { id: 'shelf-10', band: 'shelf', x: 2293, z: 7256 },
+  { id: 'shelf-11', band: 'shelf', x: -2084, z: 7045 },
+  { id: 'shelf-12', band: 'shelf', x: -6225, z: 7263 },
+  { id: 'shelf-13', band: 'shelf', x: -7241, z: 6466 },
+  { id: 'shelf-14', band: 'shelf', x: -7281, z: 825 },
+  { id: 'shelf-15', band: 'shelf', x: -7171, z: -2189 },
+  { id: 'shelf-16', band: 'shelf', x: -7073, z: -4836 },
+  { id: 'deep-01', band: 'deep', x: -8237, z: -10858 },
+  { id: 'deep-02', band: 'deep', x: -1508, z: -10975 },
+  { id: 'deep-03', band: 'deep', x: 3569, z: -11000 },
+  { id: 'deep-04', band: 'deep', x: 7778, z: -10898 },
+  { id: 'deep-05', band: 'deep', x: 10894, z: -6997 },
+  { id: 'deep-06', band: 'deep', x: 10972, z: -2319 },
+  { id: 'deep-07', band: 'deep', x: 10951, z: 3995 },
+  { id: 'deep-08', band: 'deep', x: 10976, z: 8000 },
+  { id: 'deep-09', band: 'deep', x: 9332, z: 10963 },
+  { id: 'deep-10', band: 'deep', x: 2897, z: 10837 },
+  { id: 'deep-11', band: 'deep', x: -3546, z: 10818 },
+  { id: 'deep-12', band: 'deep', x: -6813, z: 10872 },
+  { id: 'deep-13', band: 'deep', x: -10856, z: 7028 },
+  { id: 'deep-14', band: 'deep', x: -10853, z: 2384 },
+  { id: 'deep-15', band: 'deep', x: -10960, z: -2831 },
+  { id: 'deep-16', band: 'deep', x: -10950, z: -8878 },
 ] as const);
 
 /** Node count, derived. Do not hardcode 48 anywhere else. */

@@ -24,6 +24,7 @@ import {
   SALVAGE_OWNER_DAILY_MATERIAL_MAX,
   SALVAGE_YIELD_MAX,
   SALVAGE_YIELD_MIN,
+  generateSalvageNodes,
   getSalvageNode,
   isSalvageNodeId,
   salvageFlavourForYield,
@@ -79,6 +80,40 @@ describe('SALVAGE_NODES — layout integrity', () => {
     }
     expect(getSalvageNode('not-a-node')).toBeNull();
     expect(isSalvageNodeId('not-a-node')).toBe(false);
+  });
+
+  it('REPRODUCES EXACTLY from the deterministic generator', () => {
+    // The frozen array is a snapshot; `generateSalvageNodes()` is the authority
+    // on how it was derived. This case is the link between them. It also proves
+    // the scatter uses no RNG, no clock and no environment — a second call in a
+    // second process must produce byte-identical output or this fails.
+    expect(generateSalvageNodes()).toEqual([...SALVAGE_NODES]);
+    // Called twice in one process for good measure: a stateful hash would drift.
+    expect(generateSalvageNodes()).toEqual(generateSalvageNodes());
+  });
+
+  it('is SCATTERED, not a lattice — the founder sees these in-world', () => {
+    // A regular ring puts every node at an identical radius and an identical
+    // angular step. Both must be visibly broken, or the field reads as 48
+    // markers on a grid instead of salvage strewn on the seabed.
+    for (const band of ['shallows', 'shelf', 'deep'] as const) {
+      const inBand = SALVAGE_NODES.filter((n) => n.band === band);
+      // Chebyshev radius varies (radial wander).
+      const radii = inBand.map((n) => Math.max(Math.abs(n.x), Math.abs(n.z)));
+      const spread = Math.max(...radii) - Math.min(...radii);
+      expect({ band, radialSpread: spread > 50 }).toEqual({ band, radialSpread: true });
+
+      // Neighbour gaps vary (tangential wander). On an even ring every gap is
+      // identical, so the spread would be ~0.
+      const gaps: number[] = [];
+      for (let i = 0; i < inBand.length; i++) {
+        const a = inBand[i]!;
+        const b = inBand[(i + 1) % inBand.length]!;
+        gaps.push(Math.hypot(a.x - b.x, a.z - b.z));
+      }
+      const gapSpread = Math.max(...gaps) - Math.min(...gaps);
+      expect({ band, gapSpread: gapSpread > 100 }).toEqual({ band, gapSpread: true });
+    }
   });
 
   it('spreads across all three bands', () => {
