@@ -1,6 +1,162 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-08-07 (Land P3 B1 public kit-piece render layer).**
+**Last Audited: 2026-08-09 (Land gamification P2b/P3/P4a: measured kit manifest,
+3D placement predicate, plot growth, ring legibility).**
+
+**World-scale constants left the renderers.** `FOOTPRINT_FRACTION`,
+`LEVEL_SCALE_MIN/MAX` and `HEIGHT_CAP_FRACTION` existed as private duplicates in
+`land-structures.tsx` and `land-showroom.tsx`. They now live once in
+`packages/shared/src/constants/land-economy.ts` as
+`STRUCTURE_FOOTPRINT_FRACTION` / `STRUCTURE_LEVEL_SCALE_MIN` /
+`STRUCTURE_LEVEL_SCALE_MAX` / `STRUCTURE_HEIGHT_CAP_FRACTION` +
+`structureLevelScale()`, because `shellEnvelopeHalfWu()` derives the kit
+reservation from exactly those numbers, and a renderer-local copy would let the
+shell we DRAW diverge from the shell we RESERVE. Values re-solved per founder
+ruling Q7: footprint **0.62 to 0.64**, ramp **0.78-1.25 collapsed to 0.94-1.04**
+(flat, step 0.025, because scale is not the level signal, the shell swap and
+palette are), height cap 1.50 unchanged. Net effect at Lv1: **401 wu (1.49x a
+270 wu avatar) becomes 558 wu (2.07x)** with no art change. Footprint binds while
+a shell's `H/W < 1.50 / (0.64 * 1.04) = 2.254`; every shipping shell is under it.
+
+`shellEnvelopeHalfWu(parcelTier)` **takes no level argument, by design.** It is
+computed at the tier's MAXIMUM level, so a kit placement legal at Lv1 stays legal
+after every upgrade. A level parameter would let a Lv4/Lv5 shell grow into pieces
+the server already sold as legal, and founder ruling Q5 forbids deleting a paid
+row to resolve that. Arity is asserted in `land-placement.test.ts`. Half-extents:
+starter **385.2**, founder **404.7**, c **540.5** wu.
+
+**Plot growth (`TIER_CONFIG`, `land-parcels.ts`): starter 34 to 38 t, c 34 to
+52 t, founder 38 t unchanged**, giving sides 1,216 / 1,216 / 1,664 wu. Verified by
+exhaustive pairwise AABB over all **1,540** parcel pairs (`land-placement.test.ts`,
+"plot growth separation"), replicating the generator including
+`Math.round(xt * 32)`. Minimum slack **54 wu**, on the `parcel-starter-06` /
+`parcel-starter-07` pair. New accessors `getParcelFootprintWu(tier)` and
+`getTierHalfSideTiles(tier)`.
+
+**Kit pieces are sized by a measured manifest, not a cell-cube.**
+`fitKitPieceToCell()` (0.92 cell small / 1.9 cells large / 2.2-cell height cap)
+is replaced by `fitKitPieceToManifest()`: uniform scale to a frozen authored
+`targetHeightWu`, derived at runtime from the loaded bbox. Piece size is now
+absolute world units and no longer varies with parcel size. This fixes N-1 (a
+60-vCLAW `statue-anchor` rendered 56.3 wu wide against a 15-vCLAW `fence-picket`
+at 62.6 wu) and N-2 (seven of twelve pieces at or below 0.19x avatar).
+`KIT_PIECE_RENDER` in `packages/shared/src/constants/land-kit-manifest.ts` is the
+frozen source; X and Z fall out of each GLB's own aspect ratio at that height.
+
+| pieceKey | class | rot | X | Z | Y | Y/av | supportSurfaceYWu | legal placements starter / founder / c | min/step |
+|---|---|---|---:|---:|---:|---:|---:|---|---:|
+| `path-stone` | small | orth | 150.1 | 152.1 | 8 | 0.03 | **8** | 208 / 208 / 208 | 52 |
+| `deck-plank` | small | all | 49.9 | 21.8 | 40 | 0.15 | **40** | 1,248 / 992 / 1,248 | 112 |
+| `fence-picket` | small | all | 190.5 | 28.6 | 105 | 0.39 | null | 624 / 432 / 624 | 52 |
+| `fence-rope` | small | all | 190.3 | 31.9 | 88 | 0.33 | null | 624 / 432 / 624 | 52 |
+| `bench-wood` | small | all | 149.2 | 66.4 | 85 | 0.32 | null | 528 / 528 / 528 | 52 |
+| `planter-box` | small | all | 119.8 | 85.7 | 87 | 0.32 | null | 416 / 416 / 528 | 52 |
+| `planter-coral` | small | all | 119.5 | 77.2 | 93 | 0.35 | null | 416 / 416 / 528 | 52 |
+| `banner-pole` | small | all | 110.2 | 30.4 | 232 | 0.86 | null | 624 / 528 / 864 | 52 |
+| `lantern-post` | small | all | 53.6 | 53.6 | 250 | 0.93 | null | 1,072 / 896 / 1,072 | 112 |
+| `statue-shell` | **large** | all | 130.1 | 99.9 | 217 | 0.80 | null | 416 / 416 / 528 | 52 |
+| `statue-anchor` | **large** | all | 109.8 | 90.8 | 292 | 1.08 | null | 416 / 416 / 528 | 52 |
+| `arch-driftwood` | **large** | orth | 199.9 | 148.2 | 197 | 0.73 | null | 208 / **112** / 208 | **28** |
+
+`rotations: 'orthogonal'` is applied ONLY where per-rotation enumeration found an
+advertised step with zero legal anchors on some tier: `arch-driftwood` (starter
+`[52,0,52,0,...]`, founder `[28,0,28,0,...]`) and `path-stone` (founder
+`[52,0,52,0,...]`). The test re-derives that justification rather than asserting
+the flag. `supportSurfaceYWu` is non-null only on the two pieces whose purpose is
+being a floor; nothing stacks on a lantern, a statue or an arch.
+`scripts/land-kit/verify-manifest.mjs` is the section 4.3 manifest-match QC gate,
+green on all 12. It also reports the known 613-2,079 tri and filesize budget debt
+that the P0/P1 `simplify()` pass owns.
+
+**`evaluatePlacement` (`land-placement.ts`) replaces anchor-cell-only validation.**
+`isCellPlaceable` checked the anchor cell alone (defect D-1) while pieces span up
+to five cells rotated. The predicate is SHARED: the write path enforces it and
+the yard editor draws its ghost from it, so a green ghost cannot be refused on
+submit. Order is piece known, anchor in bounds, rotation allowed by BOTH the
+level rule and the piece's own `rotations`, level piece cap, stack height,
+support test, rotated AABB inside the parcel, disjoint from the level-free shell
+envelope, then 3D AABB disjoint from every occupied footprint. Refusal codes:
+`piece_unknown`, `cell_out_of_bounds`, `rotation_not_allowed`,
+`level_cap_exceeded`, `stack_exceeds_height`, `unsupported_stack`,
+`outside_parcel`, `intersects_shell`, `intersects_piece`. The shell test is
+XZ-only on purpose: the reservation is a column of unbounded height, so a piece
+may not sit above the shell either.
+
+**Stacking is real (Q8), replacing the `KIT_STACK_UNIT_WU = 34` ladder.** Level
+*n* used to sit at `floorY + (n - 1) * 34` against pieces rendering 8 to 292 wu
+tall, with no cross-level Y test at all, so two stacked lanterns overlapped by
+216 wu (defect N-3). A piece at `stackLevel n > 1` must now rest on a piece at
+`n - 1` whose `supportSurfaceYWu` is non-null and whose rotated XZ AABB CONTAINS
+the new piece's centre. Containment rather than overlap is deliberate: it stops a
+piece balancing on the corner of a plank it barely clips. Its `minY` is that
+supporter's `minY + supportSurfaceYWu`. `kitGridToWorld()` now takes a REQUIRED
+`baseYWu` argument, because against 8-292 wu pieces there is no sane default.
+**Chunk vertical bound 235.2 to 372 wu**, computed by `maxStackHeightWu(3)` from
+the manifest (deck-plank 40, deck-plank 40, statue-anchor 292), so re-authoring a
+support surface moves the frustum box with it. This is the ONLY section 4.4
+budget Q8 changes: the level rules cap piece COUNT, not cells, so triangles,
+resident bytes and draw calls are unmoved.
+
+**Q5 grandfather plus free move is a render-layer contract, not a filter.**
+`resolveParcelPlacements(rows, tier)` resolves every stored row lowest-level-first
+and NEVER drops one. A placement the current predicate refuses still gets a
+footprint, and a stacked row whose supporter is missing is lifted by
+`KIT_FALLBACK_STACK_SURFACE_WU` (40) per level so it renders visibly floating
+rather than vanishing. Removing a supporter leaves the piece above it floating
+with no cascade, deliberately, since the alternative relocates or deletes paid
+rows. Only a row with no drawable geometry at all is skipped.
+
+**Render budget (section 4.4).** Per frame the layer ranks chunks by distance,
+admits the **nearest unconditionally** (the retention floor), then admits each
+further chunk only while `sum(distinct draws) <= KIT_VISIBLE_DRAW_BUDGET (60)`
+and `sum(triangles) <= 250,000`, capped at 4 chunks. A heavy near chunk is
+SKIPPED rather than breaking the loop, so it cannot hide a cheap further one.
+Chunks are priced from exact source triangle counts captured as each GLB resolves
+(`SOURCE_TRIANGLES`), so admission never waits a frame for merge stats to catch
+up. The farthest-first parcel drop is React state, not a per-frame decision,
+because dropping a parcel changes merged geometry and re-merging every frame
+would defeat the budget it protects; it can never take the nearest parcel. With
+the shipping catalog it never fires (223,600 authored triangles against 250,000,
+and at most 30 keys against a 60 draw budget), so it exists for the catalog
+growth Q9 deferred the atlas for. Piece overhang padding on the chunk sphere is
+now `KIT_MAX_PIECE_FOOTPRINT_WU / 2`, manifest-derived and parcel-size
+independent.
+
+Probe-enabled stage builds now expose `window.__LAND_KIT_STATS__` with
+`{ chunksResident, mergedMeshes, trianglesBaked, chunksVisible, visibleDraws,
+visibleTriangles, verticalBoundWu, droppedParcels, nearestYardIntact, nonEmpty,
+nearestParcelCode, nearestParcelRendered, nearestParcelPersisted }`.
+`nearestYardIntact` and `nonEmpty` ARE the two G-D retention assertions
+(`renderedPieceCount(nearestParcel) === persistedPieceCount(nearestParcel)`, and
+non-empty whenever any in-range parcel has pieces). Publishing is change-guarded
+so the frame loop stays allocation-free.
+
+**Yard editor parity.** The reserved overlay drew
+`PlaneGeometry(cell * 10, cell * 10)`, the retired `isCellPlaceable` centre block,
+which matched neither the real shell nor the tier. It now draws
+`shellEnvelopeHalfWu(tier) * 2`, so the reservation shown at Lv1 is the
+reservation that holds at Lv5. `cellStackLevel` (rows sharing an anchor cell,
+plus one) is replaced by `preferredStackLevel`, the highest level that legally
+evaluates, so hovering a deck plank raises the ghost onto it and hovering bare
+sand drops it to the ground. Hit boxes and the selection highlight use each
+piece's real rotated AABB with a 24 wu minimum span, since an 8 wu `path-stone`
+would otherwise be unclickable.
+
+**Ring and parcel legibility.** `land-ring-decorations.tsx` hardcoded
+`FOUNDER_FOOT 38 / STARTER_FOOT 34 / C_FOOT 34` under a "keep in sync if tier
+configs change" comment. Those literals were already stale and are now gone;
+exclusion boxes derive from `LAND_PARCELS`. Its exclusion test was
+`dx^2 + dz^2 < exclR^2`, a circle INSCRIBED at the parcel half-side, so all four
+corner regions of every square parcel read as clear and props were legitimately
+scattered onto player land near the diagonals. It is now a square AABB (gate
+G-B). In `land-parcels.tsx`, boundary posts go **`POST_H` 38 to 120 wu and
+`POST_W` 5.5 to 14** (0.14x to 0.44x avatar, still 4 boxes / 48 tri per parcel),
+the parcel body splits so the near-coplanar pad (`PAD_Y = FLOOR_Y + 0.9`) becomes
+a neutral tone and TIER COLOUR MOVES TO THE RAIL, and frames merge per
+(tier, availability) so a buyable plot is legible without its sign in view. Body
+draws go **3 to 9**, inside the section 5.7 3-11 budget.
+
+**Prior Last Audited: 2026-08-07 (Land P3 B1 public kit-piece render layer).**
 Placed kit decorations now hydrate the public, active-structure-only
 `GET /api/land/pieces/public` feed on a 60-second cadence and on the explicit
 editor refresh event. All 56 render-backed parcels are assigned once to 12
@@ -1562,7 +1718,7 @@ Compact log. Single line per change with commit reference where applicable.
 | `premium` | founder + a tiers | 380 × 158 | 11 | 270 | 1024×426 | Gold `#ffd24a` double frame + corner studs, "FOR SALE" (Arial Black) white + "PREMIUM" gold serif subtitle |
 | `premium-partner` | curated partner lots | 480 × 200 | 13 | 320 | 1024×426 | Cyan `#7fe6ff`/platinum ornate: topper band + double frame + studs + dots, "FOR SALE" white + "PARTNER" cyan serif subtitle |
 
-**Sign sizes ~4.3× larger than original** (2026-06-18 scaling for 2-ring big-plot layout — founder plots ~1216wu, starter ~1088wu; old ~70–116wu signs were too small to read at plot scale). Post heights 220–320wu (`cfg.postH`).
+**Sign sizes ~4.3× larger than original** (2026-06-18 scaling for 2-ring big-plot layout — founder plots ~1216wu, starter ~1088wu (starter is 1216wu and c is 1664wu since the 2026-08-09 plot growth, so signs read even smaller relative to a plot now); old ~70–116wu signs were too small to read at plot scale). Post heights 220–320wu (`cfg.postH`).
 
 **Texture polish (2026-06-26):** canvases were 256×64 (regular/premium) / 256×80 (partner) on planks 290–480wu wide → ~0.5px/wu (blurry) AND wrong aspect (256×64 = 4:1 vs plank ≈2.42:1 → horizontally squished). Now each canvas MATCHES its plank's W:H aspect at ~1024px on the long edge (1024×424 / 1024×426 / 1024×426), with characterful display fonts (Arial Black/Impact headline + Georgia serif subtitle — canvas-safe, no external load), beveled/inset framing, proper hierarchy (big headline ≫ small subtitle), `anisotropy=8` + mipmaps + `SRGBColorSpace`. Still only **3 sign textures total** (one per CATEGORY, shared across all parcels) so the res bump is cheap VRAM (~3 × 1024×426 ≈ 5MB total, vs old ~0.06MB; +~5MB).
 

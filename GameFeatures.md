@@ -1,6 +1,60 @@
 # ClawVille — Game Features
 
-**Last Audited: 2026-08-08 (Land P2 round 2 — two-door acquisition + autonomous
+**Last Audited: 2026-08-09 (Land gamification: yard pieces are sized like real
+objects, stacking works, plots got bigger).** Yard decorations used to be
+squashed to a uniform size regardless of what they were, so a 60 vCLAW anchor
+statue came out narrower than a 15 vCLAW picket fence and most pieces sat around
+ankle height next to your character. Every piece is now rendered at its own
+authored size, in fixed world units, so it is the same size on every plot and it
+reads at the scale you would expect: a stone path is a flat 8 units, a lantern
+post is roughly knee-to-shoulder on your character, and an anchor statue is
+slightly taller than you are.
+
+Placing a piece now checks the whole piece, not just the square you clicked.
+Before, only the anchor square was validated, so a wide piece could legally be
+dropped half inside your building or hanging off the edge of your land, and two
+pieces could occupy the same ground. The build-mode ghost now turns red the
+moment any part of the piece would leave your plot, cross into the space your
+building reserves, or touch something already placed, and it tells you which of
+those it is. Because the ghost and the server now use the same rule, a green
+ghost cannot be rejected when you click.
+
+The shaded square in build mode is the real reserved area for your building, and
+it is drawn at the size your building will reach at its MAXIMUM level for that
+plot. It used to be a fixed centre block that did not match either. This means a
+thin ring near the middle looks free at level 1 but is deliberately held back, so
+that a spot you decorate at level 1 is never taken away from you when you upgrade.
+
+Stacking pieces on top of each other now works properly. Previously each stack
+level was lifted by a fixed 34 units regardless of what was underneath, so two
+stacked lantern posts sank into each other. You can only stack on a piece that
+has a flat surface to stack on, which today means the stone path and the deck
+plank, and the piece lands ON that surface. Hovering over one of those raises the
+ghost automatically; hovering over bare sand puts it back on the ground. You
+cannot stack on a lantern, a statue or an arch, and the game says so rather than
+silently allowing it. Removing a piece from underneath leaves the piece above it
+floating where it is, and nothing you paid for is deleted or moved for you.
+
+Nothing you already placed is taken away. A piece that the stricter rules would
+no longer allow stays exactly where it is and keeps rendering, and you can move
+it to a legal spot at no cost whenever you want. There is no refund, because
+there is no loss: nothing is deleted.
+
+Plots on two of the three rings got bigger. Starter plots go from 1,088 to 1,216
+world units on a side, and outer C-ring plots from 1,088 to 1,664, which is about
+25% and 134% more area. Founder plots are unchanged. Every plot on every ring was
+checked against every other plot to confirm none of them now touch or overlap.
+
+Plot boundaries are easier to read from a distance. The corner posts are about
+three times taller, the plot colour that marks its ring moved off the almost-flat
+ground pad onto the rail at the top of the posts where it can actually be seen,
+and an empty plot you can buy is now a different, brighter colour from one
+someone already owns, so you can spot what is for sale without having to be close
+enough to read its sign. Ambient scenery around the rings also stopped appearing
+on the corners of people's land, which was a side effect of the old round
+keep-out area being fitted inside a square plot.
+
+**Prior Last Audited: 2026-08-08 (Land P2 round 2 — two-door acquisition + autonomous
 agent verbs, protocol v46).** The Land Office now makes acquisition live through
 two explicit doors. Hold is rent-free and shows the tier's stacked CLV minimum,
 the account's declared wallet, and its fresh balance eligibility; Rent shows the
