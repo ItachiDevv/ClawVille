@@ -57,6 +57,14 @@ export interface PlacedPiece {
 
 export type YardEditorMode = 'place' | 'move' | 'remove';
 
+/**
+ * Which currency a NEW placement spends. HOME-only in practice — the server
+ * refuses `paymentRail: 'materials'` on a shop (gamification-pass §3.3), and
+ * the editor never shows the toggle on a shop. Kept 'vclaw' | 'materials'
+ * (not a boolean) to match the wire union in §2.9 KitMutationInput.op.
+ */
+export type PaymentRail = 'vclaw' | 'materials';
+
 export interface LandBuildMode {
   parcelCode: string;
 }
@@ -78,6 +86,8 @@ interface LandStore {
   selectedPieceKey: string;
   rotationStep: number;
   selectedPlacedPieceId: string | null;
+  /** Rail for the NEXT placement. Reset to 'vclaw' on every build-mode entry/exit. */
+  paymentRail: PaymentRail;
 
   /** Bulk-set parcel state from an API response. Existing entries not in the
    *  update are left unchanged (patch semantics, not replace). */
@@ -101,6 +111,7 @@ interface LandStore {
   setSelectedPieceKey: (pieceKey: string) => void;
   setRotationStep: (rotationStep: number) => void;
   setSelectedPlacedPieceId: (pieceId: string | null) => void;
+  setPaymentRail: (rail: PaymentRail) => void;
   addPiece: (piece: PlacedPiece) => void;
   updatePiece: (pieceId: string, piece: PlacedPiece) => void;
   removePiece: (pieceId: string) => void;
@@ -142,6 +153,7 @@ export const useLandStore = create<LandStore>()((set) => ({
   selectedPieceKey: 'fence-picket',
   rotationStep: 0,
   selectedPlacedPieceId: null,
+  paymentRail: 'vclaw',
 
   setParcels: (updates) =>
     set((state) => {
@@ -199,12 +211,16 @@ export const useLandStore = create<LandStore>()((set) => ({
     yardEditorMode: 'place',
     selectedPlacedPieceId: null,
     rotationStep: 0,
+    // Always start a build session on the vCLAW rail — never carry a
+    // materials selection from a previous (possibly shop) yard into this one.
+    paymentRail: 'vclaw',
   }),
 
   exitBuildMode: () => set({
     buildMode: null,
     buildParcelId: null,
     selectedPlacedPieceId: null,
+    paymentRail: 'vclaw',
   }),
 
   setBuildParcelId: (buildParcelId) => set({ buildParcelId }),
@@ -215,6 +231,7 @@ export const useLandStore = create<LandStore>()((set) => ({
   setSelectedPieceKey: (selectedPieceKey) => set({ selectedPieceKey }),
   setRotationStep: (rotationStep) => set({ rotationStep }),
   setSelectedPlacedPieceId: (selectedPlacedPieceId) => set({ selectedPlacedPieceId }),
+  setPaymentRail: (paymentRail) => set({ paymentRail }),
 
   addPiece: (piece) => set((state) => {
     const next = new Map(state.pieces);

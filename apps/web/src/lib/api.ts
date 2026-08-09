@@ -44,6 +44,11 @@ import type {
   MoveLandPieceRequest,
   MoveLandPieceResponse,
   DeleteLandPieceResponse,
+  LandSalvageStateResponse,
+  LandSalvageApproachRequest,
+  LandSalvageApproachResponse,
+  LandSalvageClaimRequest,
+  LandSalvageClaimResponse,
 } from '@/components/game/land/types';
 import { getFingerprint } from './fingerprint';
 
@@ -112,6 +117,19 @@ export class ApiError extends Error {
    * still treat `code === 'hold_at_risk'` as consent-required.
    */
   holdAtRisk?: WithdrawHoldAtRisk;
+  /**
+   * Present on salvage approach refusals (`anchor_pending`/`dwell_pending`/
+   * `movement_poisoned`/`impossible_movement`) — how long until retrying the
+   * approach poll might succeed. `land-salvage.ts routes` — the field is
+   * `retryAfterMs` on the JSON body, always present or `null` on those codes.
+   */
+  retryAfterMs?: number | null;
+  /**
+   * Present on the salvage claim route's `node_on_cooldown` refusal (429) —
+   * lets the gather UI show a precise cooldown without a round trip to
+   * `GET /state`.
+   */
+  nextClaimAt?: string | null;
   constructor(
     message: string,
     status: number,
@@ -121,6 +139,8 @@ export class ApiError extends Error {
       txSignature?: string;
       withdrawalId?: string;
       holdAtRisk?: WithdrawHoldAtRisk;
+      retryAfterMs?: number | null;
+      nextClaimAt?: string | null;
     },
   ) {
     super(message);
@@ -131,6 +151,8 @@ export class ApiError extends Error {
     this.txSignature = extras?.txSignature;
     this.withdrawalId = extras?.withdrawalId;
     this.holdAtRisk = extras?.holdAtRisk;
+    this.retryAfterMs = extras?.retryAfterMs;
+    this.nextClaimAt = extras?.nextClaimAt;
   }
 }
 
@@ -185,12 +207,20 @@ function apiErrorExtras(err: Record<string, unknown>): {
   txSignature?: string;
   withdrawalId?: string;
   holdAtRisk?: WithdrawHoldAtRisk;
+  retryAfterMs?: number | null;
+  nextClaimAt?: string | null;
 } {
   return {
     detail: typeof err.detail === 'string' ? err.detail : undefined,
     txSignature: typeof err.txSignature === 'string' ? err.txSignature : undefined,
     withdrawalId: typeof err.withdrawalId === 'string' ? err.withdrawalId : undefined,
     holdAtRisk: parseHoldAtRisk(err.holdAtRisk),
+    retryAfterMs: typeof err.retryAfterMs === 'number' || err.retryAfterMs === null
+      ? (err.retryAfterMs as number | null)
+      : undefined,
+    nextClaimAt: typeof err.nextClaimAt === 'string' || err.nextClaimAt === null
+      ? (err.nextClaimAt as string | null)
+      : undefined,
   };
 }
 
@@ -1537,6 +1567,45 @@ export const api = {
     honoRequest<DeleteLandPieceResponse>(
       `/api/land/pieces/${encodeURIComponent(pieceId)}`,
       { method: 'DELETE' },
+    ),
+
+  /**
+   * Seabed salvage read model (P7a/P7b). One closed-field payload feeds the
+   * gather prompt's cooldown display, the daily-cap counters, the `rules`
+   * the client renders caps from (never hardcode them), and the materials
+   * HUD chip. NOT guest-accessible — `requireAuthOrAgentSession ->
+   * requireLedgerCapableIdentity -> requireNonGuestIdentity`, matching the
+   * claim/approach routes below (`apps/api/src/routes/land-salvage.ts`).
+   */
+  getLandSalvageState: () =>
+    honoRequest<LandSalvageStateResponse>('/api/land/salvage/state', { cache: 'no-store' }),
+
+  /**
+   * Advance the server-owned movement anchor toward a node and, once the
+   * avatar has dwelled `SALVAGE_APPROACH_DWELL_MS` (2s) within
+   * `SALVAGE_APPROACH_RANGE_WU` (260wu), receive a short-lived
+   * `approachToken` to spend on the claim call. `x`/`z` are CENTERED world
+   * coords — the same frame `LandProximityTracker` resolves. A 429 refusal
+   * (`anchor_pending`/`dwell_pending`/`out_of_range`/`movement_poisoned`/
+   * `impossible_movement`) is the EXPECTED steady state while polling, not
+   * an exceptional failure — see `ApiError.retryAfterMs`.
+   */
+  approachSalvageNode: (nodeId: string, body: LandSalvageApproachRequest) =>
+    honoRequest<LandSalvageApproachResponse>(
+      `/api/land/salvage/${encodeURIComponent(nodeId)}/approach`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
+  /**
+   * Claim a seabed salvage node. Requires a fresh, unexpired `approachToken`
+   * from `approachSalvageNode` above. Idempotency key is REQUIRED (8-64
+   * chars) and must be the SAME key across a retry of the same gather
+   * gesture — a fresh key on retry double-pays.
+   */
+  claimSalvageNode: (nodeId: string, body: LandSalvageClaimRequest) =>
+    honoRequest<LandSalvageClaimResponse>(
+      `/api/land/salvage/${encodeURIComponent(nodeId)}/claim`,
+      { method: 'POST', body: JSON.stringify(body) },
     ),
 
   /** Free owner-only shell/palette mutation; current level/tier are server-read. */

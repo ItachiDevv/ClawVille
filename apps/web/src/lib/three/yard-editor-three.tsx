@@ -36,7 +36,7 @@ import {
   isIdempotencyConflict,
   landPieceErrorMessage,
 } from "@/lib/land-yard-editor";
-import { requestLandPiecesRefresh } from "@/lib/land-query-keys";
+import { LAND_SALVAGE_REFRESH_EVENT, requestLandPiecesRefresh } from "@/lib/land-query-keys";
 import { getParcelSlotByCode } from "@/lib/land-proximity";
 import { MAP_HEIGHT, MAP_WIDTH } from "@/lib/pixi/tilemap-data";
 import {
@@ -325,6 +325,7 @@ function ActiveYardEditor({ parcel }: { parcel: ParcelSlot }) {
   const updatePiece = useLandStore((state) => state.updatePiece);
   const removePiece = useLandStore((state) => state.removePiece);
   const exitBuildMode = useLandStore((state) => state.exitBuildMode);
+  const paymentRail = useLandStore((state) => state.paymentRail);
   const setSelectedPlacedPieceId = useLandStore(
     (state) => state.setSelectedPlacedPieceId,
   );
@@ -467,6 +468,12 @@ function ActiveYardEditor({ parcel }: { parcel: ParcelSlot }) {
         return;
       }
 
+      // Materials rail: OMIT the field entirely for vCLAW (byte-identical to
+      // the request this route has always accepted). CONFIRMED SERVED — see
+      // PlaceLandPieceRequest.paymentRail's doc comment: the route declares
+      // `paymentRail` with a `default('vclaw')`, so both paths are live.
+      const usingMaterialsRail = paymentRail === "materials";
+
       mutationPending.current = true;
       try {
         const request = (idempotencyKey: string) =>
@@ -477,6 +484,7 @@ function ActiveYardEditor({ parcel }: { parcel: ParcelSlot }) {
             rotationStep,
             stackLevel,
             idempotencyKey,
+            ...(usingMaterialsRail ? { paymentRail: "materials" as const } : {}),
           });
         let response;
         try {
@@ -496,7 +504,14 @@ function ActiveYardEditor({ parcel }: { parcel: ParcelSlot }) {
         addPiece(toPlacedPiece(parcel.id, response.piece));
         requestLandPiecesRefresh();
         await queryClient.invalidateQueries({ queryKey: ["avatar"] });
+        // Materials balance lives in useSalvageStore (poll-hydrated, not
+        // react-query) — refresh it the same way a salvage claim does.
+        if (usingMaterialsRail) window.dispatchEvent(new Event(LAND_SALVAGE_REFRESH_EVENT));
       } catch (error) {
+        // The rail is confirmed served — `insufficient_materials` and any
+        // other refusal here are real domain refusals, handled the same as
+        // any other placement failure (landPieceErrorMessage already maps
+        // `insufficient_materials` -> "Not enough materials.").
         toastError(error);
       } finally {
         mutationPending.current = false;
@@ -510,6 +525,7 @@ function ActiveYardEditor({ parcel }: { parcel: ParcelSlot }) {
       levelRule.maxStackHeight,
       parcel.id,
       parcelPieces,
+      paymentRail,
       queryClient,
       rotationStep,
       selectedPieceKey,
