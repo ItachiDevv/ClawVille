@@ -27,6 +27,7 @@ import {
 } from '@clawville/shared';
 import {
   deriveSalvageYield,
+  isSalvageBountyEnabled,
   readSalvageState,
   salvageFingerprint,
   settleSalvageClaim,
@@ -591,6 +592,52 @@ describeIfDb('salvage settlement (real DB)', () => {
       expect(outcome.kind).toBe('refused');
       if (outcome.kind !== 'refused') throw new Error('unreachable');
       expect(outcome.code).toBe('binding_drift');
+    });
+  });
+
+  // ── The dark vCLAW bounty ────────────────────────────────────────────────
+
+  describe('the §2.10 vCLAW bounty (DARK per founder ruling Q1)', () => {
+    beforeAll(resetSalvageState);
+
+    it('is off, and reports off', () => {
+      expect(isSalvageBountyEnabled()).toBe(false);
+    });
+
+    it('pays ZERO vCLAW and leaves the balance untouched on a real claim', async () => {
+      const before = first(
+        await db.execute<{ claw_tokens: number | string }>(
+          sql`SELECT claw_tokens FROM avatars WHERE id = ${avatarId}`,
+        ),
+      );
+      const outcome = await claim(avatarId, 'deep-13', `${tag}-bounty-dark`);
+      expect(outcome.kind).toBe('settled');
+      if (outcome.kind !== 'settled') throw new Error('unreachable');
+      expect(outcome.payload.bountyVclaw).toBe(0);
+
+      const after = first(
+        await db.execute<{ claw_tokens: number | string }>(
+          sql`SELECT claw_tokens FROM avatars WHERE id = ${avatarId}`,
+        ),
+      );
+      // The decisive assertion: a DARK money rail moves no money.
+      expect(Number(after.claw_tokens)).toBe(Number(before.claw_tokens));
+    });
+
+    it('only reads the exact string "true" — no fuzzy booleans on a money rail', () => {
+      const original = process.env.SALVAGE_CT_BOUNTY_ENABLED;
+      try {
+        for (const value of ['', '1', 'yes', 'TRUE', 'True', 'on', '0', 'false']) {
+          process.env.SALVAGE_CT_BOUNTY_ENABLED = value;
+          expect(isSalvageBountyEnabled()).toBe(false);
+        }
+        process.env.SALVAGE_CT_BOUNTY_ENABLED = 'true';
+        expect(isSalvageBountyEnabled()).toBe(true);
+      } finally {
+        if (original === undefined) delete process.env.SALVAGE_CT_BOUNTY_ENABLED;
+        else process.env.SALVAGE_CT_BOUNTY_ENABLED = original;
+      }
+      expect(isSalvageBountyEnabled()).toBe(false);
     });
   });
 

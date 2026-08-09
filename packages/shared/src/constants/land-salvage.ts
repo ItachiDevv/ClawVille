@@ -230,3 +230,23 @@ export const SALVAGE_APPROACH_DWELL_MS = 2_000;
  * has elapsed to have walked it from the stale anchor.
  */
 export const SALVAGE_MAX_SPEED_WU_PER_S = 420;
+
+// ---------------------------------------------------------------------------
+// The salvage vCLAW bounty (design §2.10) — DARK
+// ---------------------------------------------------------------------------
+
+/**
+ * FOUNDER RULING Q1: salvage pays MATERIALS ONLY; the vCLAW rail STAYS DARK.
+ *
+ * These constants exist so a future decision to light it has a specified path
+ * rather than an improvised one. They are not a plan to turn it on. Nothing
+ * reads them unless `SALVAGE_CT_BOUNTY_ENABLED` is explicitly `'true'`.
+ *
+ * If lit: 5 vCLAW on each of the first 12 claims of a UTC day, funded by the
+ * RECIRCULATING treasury (founder ruling Q6) as a debit-then-credit TRANSFER.
+ * Global vCLAW supply delta is therefore exactly ZERO — it moves money that
+ * already exists, and it never mints.
+ */
+export const SALVAGE_CT_BOUNTY_VCLAW = 5;
+/** Claims per UTC day that would carry the bounty, if it were ever lit. */
+export const SALVAGE_CT_BOUNTY_DAILY_CLAIMS = 12;

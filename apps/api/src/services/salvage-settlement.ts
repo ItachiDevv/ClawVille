@@ -49,6 +49,8 @@ import { db, sql } from '@clawville/database';
 import {
   SALVAGE_AVATAR_DAILY_CLAIM_CAP,
   SALVAGE_LAYOUT_VERSION,
+  SALVAGE_CT_BOUNTY_DAILY_CLAIMS,
+  SALVAGE_CT_BOUNTY_VCLAW,
   SALVAGE_NODES,
   SALVAGE_NODE_COOLDOWN_MS,
   SALVAGE_OWNER_DAILY_CLAIM_CAP,
@@ -114,6 +116,12 @@ export interface SalvageClaimPayload {
   readonly nextClaimAt: string;
   readonly claimsRemainingToday: number;
   readonly ownerClaimsRemainingToday: number;
+  /**
+   * vCLAW paid by the §2.10 bounty. ALWAYS 0 unless that dark rail is lit
+   * (founder ruling Q1 keeps it dark), and it is a TRANSFER from the treasury
+   * either way — never a mint.
+   */
+  readonly bountyVclaw: number;
 }
 
 export type SalvageClaimOutcome =
@@ -268,6 +276,102 @@ function classifyReceipt(
 
 const MUTEX_OWNER_PREFIX = 'salvage:owner:';
 const MUTEX_AVATAR_PREFIX = 'salvage:avatar:';
+
+
+// ---------------------------------------------------------------------------
+// The vCLAW bounty (design §2.10) — DARK
+// ---------------------------------------------------------------------------
+
+// FEATURE_GATE: salvage_ct_bounty
+// Status: DARK. `SALVAGE_CT_BOUNTY_ENABLED` is unset everywhere, so
+//   `bountyVclaw` is 0 on every path and not a single vCLAW moves. The code
+//   exists so that lighting it is a reviewed config event with a specified
+//   implementation, rather than an improvised one written under pressure.
+// Metric to graduate: a founder decision to reverse ruling Q1 (2026-08-09),
+//   which currently states "salvage pays materials only; the vCLAW rail stays
+//   dark". There is no metric that graduates this on its own.
+// Current reading: 0 vCLAW issued by salvage, by construction.
+// Review deadline: whenever Q1 is revisited. Not date-bound — inventing a date
+//   here is the exact thing the design's process note calls out.
+// On deadline: if Q1 still stands, this stays dark. If it is reversed, the
+//   funding source is the RECIRCULATING treasury (ruling Q6) and the global
+//   supply delta must remain exactly zero.
+// Reference: gamification-pass-2026-08-09.md §2.10 (P10), §3.5 ledger 1/3.
+
+/**
+ * Is the bounty lit? Exact-`'true'` only, so a typo, an empty string or a
+ * stray `0` all read as OFF. Money rails do not get fuzzy booleans.
+ */
+export function isSalvageBountyEnabled(): boolean {
+  return process.env.SALVAGE_CT_BOUNTY_ENABLED === 'true';
+}
+
+/**
+ * Pay the bounty for one admitted claim, inside the caller's transaction and
+ * under the locks it already holds. Returns the vCLAW actually paid.
+ *
+ * ── FAIL-CLOSED, AND WHAT THAT MEANS HERE ───────────────────────────────────
+ * The design says to follow the kit-fee pattern ("a transfer, never a burn")
+ * rather than the upgrade burn. The invariant that pattern protects is that
+ * vCLAW is never credited without being debited from somewhere — global supply
+ * delta zero. That is enforced absolutely below: an unresolvable or
+ * insufficient treasury pays NOTHING.
+ *
+ * Where this deliberately differs from the kit fee: the kit fee 503s the whole
+ * request, because a placement WITHOUT its fee would be a free piece. A salvage
+ * bounty is a bonus ON TOP of the materials, so an empty treasury skips the
+ * bonus and still settles the materials rather than taking the core earn loop
+ * offline over a decoration. Both readings are "fail closed" on supply; this
+ * one is also fail-closed on the player's time. Stated here because it is a
+ * judgement call, not something to be discovered later in a diff.
+ */
+async function paySalvageBounty(
+  tx: Parameters<typeof creditMaterials>[1] & object,
+  avatarId: string,
+  claimsAdmittedToday: number,
+): Promise<number> {
+  if (!isSalvageBountyEnabled()) return 0;
+  if (claimsAdmittedToday > SALVAGE_CT_BOUNTY_DAILY_CLAIMS) return 0;
+
+  const { getHouseTreasuryAvatarId } = await import('./house-treasury-seeder');
+  const treasuryId = await getHouseTreasuryAvatarId();
+  if (!treasuryId) return 0;
+
+  const { creditClawTokens, debitClawTokens, InsufficientTokensError } = await import(
+    './claw-token-ledger'
+  );
+  try {
+    // DEBIT FIRST. If the treasury cannot cover it, the credit never runs and
+    // supply is untouched.
+    await debitClawTokens(
+      {
+        avatarId: treasuryId,
+        amount: SALVAGE_CT_BOUNTY_VCLAW,
+        reason: 'salvage_bounty_funding',
+        source: 'system',
+        metadata: { ownerAvatarId: avatarId, claimsAdmittedToday },
+        actorKind: 'system',
+      },
+      tx,
+    );
+  } catch (err) {
+    if (err instanceof InsufficientTokensError) return 0;
+    throw err;
+  }
+
+  await creditClawTokens(
+    {
+      avatarId,
+      amount: SALVAGE_CT_BOUNTY_VCLAW,
+      reason: 'salvage_bounty',
+      source: 'system',
+      metadata: { claimsAdmittedToday },
+      actorKind: 'system',
+    },
+    tx,
+  );
+  return SALVAGE_CT_BOUNTY_VCLAW;
+}
 
 // ---------------------------------------------------------------------------
 // Settlement
@@ -464,6 +568,14 @@ export async function settleSalvageClaim(
       const upsertedRow = upserted[0];
       if (!upsertedRow) throw new SalvageRefusal('node_on_cooldown');
 
+      // Dark by default (Q1). When unlit this is a synchronous `return 0` that
+      // touches no table, so the money path below is provably a no-op.
+      const bountyVclaw = await paySalvageBounty(
+        tx,
+        actor.avatarId,
+        Number(avatarUsed.claims_admitted),
+      );
+
       const payload: SalvageClaimPayload = {
         nodeId,
         layoutVersion: SALVAGE_LAYOUT_VERSION,
@@ -479,6 +591,7 @@ export async function settleSalvageClaim(
           0,
           SALVAGE_OWNER_DAILY_CLAIM_CAP - Number(ownerUsed.claims_admitted),
         ),
+        bountyVclaw,
       };
 
       // (10) RECEIPT. `salvage_receipt_uniq` is the durable barrier; a duplicate

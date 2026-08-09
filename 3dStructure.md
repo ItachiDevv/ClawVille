@@ -1,6 +1,32 @@
 # ClawVille — 3D Structure
 
-**Last Audited: 2026-08-09 (Land gamification P2b/P3/P4a + final assembly:
+**Last Audited: 2026-08-09 (Land gamification P7a — salvage node topology).**
+48 salvage nodes were added to the world as a FROZEN SHARED CONSTANT,
+`SALVAGE_NODES` in `packages/shared/src/constants/land-salvage.ts`. Positions are
+in CENTRED world coords (the Three.js / collider frame); the NPC simulation
+converts with `+ WORLD_COLLIDER_MAP_HALF` when it needs game-pixel coords.
+
+They sit on three square rings, matching the world's square block-frame geometry
+rather than fighting it with circles. Chebyshev-radial occupancy in tiles is
+building ring ~[99,161], founder frame [171,209], starter [239,277], c [279,331],
+world edge 352 — which leaves exactly three gaps wide enough to stand in:
+`shallows` at half-side 70 t (2,240 wu), `shelf` at 224 t (7,168 wu, dead centre
+of the founder-starter gap) and `deep` at 341 t (10,912 wu, dead centre of the
+c-to-edge gap), 16 nodes each.
+
+Every position is validated against `getServerColliders()` (17 building AABBs)
+and all 56 `LAND_PARCELS` footprints. Worst-case clearance is 320 wu — 6x
+`ENTITY_HALF_HUMANOID` — so no node is embedded in geometry or unreachable, and
+no two nodes are within 520 wu of each other (2x the 260 wu approach range), so
+one dwell can never serve two claims. `land-salvage.test.ts` RE-DERIVES all of
+this from the live collider and parcel data: **moving a building or re-tiering
+the land ring fails that suite** rather than silently burying a node.
+
+The renderer consumes `SALVAGE_NODES` directly. Do not re-derive node positions
+client-side — a node the client draws but the server will not settle is a lie
+told in 3D.
+
+**Prior Last Audited: 2026-08-09 (Land gamification P2b/P3/P4a + final assembly:
 measured kit manifest, 3D placement predicate, plot growth, ring legibility,
 7-shell catalog ramp, deck-plank re-author).**
 

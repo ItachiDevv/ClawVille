@@ -145,14 +145,44 @@ describe('land kit ownership and money discipline', () => {
     const create = routeSpan('post', '/parcels/:parcelId/pieces');
     // The fee is derived from the LOCKED structure row's type, never the body.
     expect(create).toContain('const structureType = structure!.structure_type');
-    expect(create).toContain('const feeCt = kitPieceFeeCt(structureType, size)');
+    // P5b moved this out of a `const` and into the vCLAW branch of the rail
+    // split, so the assertion follows it. The property being pinned is
+    // unchanged: the fee comes from `kitPieceFeeCt(structureType, size)` and
+    // from nothing else.
+    expect(create).toContain('feeCt = kitPieceFeeCt(structureType, size)');
     expect(create).toContain('SELECT id, owner_avatar_id, status, level, structure_type');
     expect(create).toContain("reason: 'land_kit_piece_fee'");
     expect(create).toContain("reason: 'house_fee_land_kit_piece'");
     expect(create.match(/amount: feeCt/g)).toHaveLength(2);
     expect(create).toContain('house_treasury_unavailable');
     expect(create).toContain('debit_ledger_tx_id, credit_ledger_tx_id');
-    expect(create).toContain('${debit.ledgerId}, ${credit.ledgerId}');
+    expect(create).toContain('${debitLedgerId}, ${creditLedgerId}');
+  });
+
+  it('gates the MATERIAL rail on the locked structure type, and only debits', () => {
+    const create = routeSpan('post', '/parcels/:parcelId/pieces');
+    // P5b. The rail check must read the LOCKED row, never the request body —
+    // otherwise a client could buy a shop yard with a non-cashable currency.
+    expect(create).toContain('isKitPaymentRailAllowed(paymentRail, structureType)');
+    expect(create).toContain('payment_rail_not_allowed');
+    // It must be decided BEFORE any money moves.
+    expect(create.indexOf('isKitPaymentRailAllowed')).toBeLessThan(
+      create.indexOf('debitMaterials('),
+    );
+    expect(create.indexOf('isKitPaymentRailAllowed')).toBeLessThan(
+      create.indexOf('debitClawTokens('),
+    );
+    // Materials are a SINK: exactly one debit, and NO treasury credit leg,
+    // because there is no counterparty on the other side of a material spend.
+    expect(create.match(/debitMaterials\(/g)).toHaveLength(1);
+    expect(create).toContain("source: 'build'");
+    // The rail and the material cost are recorded in the audit row, which is
+    // what the replay path reads back.
+    expect(create).toContain('paymentRail,');
+    expect(create).toContain('costMaterials: feeMaterials,');
+    // A replay on a DIFFERENT rail is a conflict, not a stored-receipt answer.
+    expect(create).toContain('priorRail !== body.paymentRail');
+    expect(create).toContain('insufficient_materials');
   });
 
   it('checks durable replay before debit and returns the stored original piece', () => {
