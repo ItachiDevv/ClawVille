@@ -1,6 +1,8 @@
 import {
-  KIT_CATALOG,
   KIT_GRID_SIZE,
+  KIT_PIECE_KEYS,
+  KIT_PIECE_RENDER,
+  kitCellCentreWu,
   type KitPieceKey,
   type ParcelSlot,
 } from '@clawville/shared';
@@ -8,19 +10,12 @@ import {
 /** Web-owned asset paths; the shared kit catalog intentionally stays render-agnostic. */
 export const LAND_KIT_ASSET_PATHS = Object.freeze(
   Object.fromEntries(
-    (Object.keys(KIT_CATALOG) as KitPieceKey[]).map((pieceKey) => [
-      pieceKey,
-      `/models/land-kit/${pieceKey}.glb`,
-    ]),
+    KIT_PIECE_KEYS.map((pieceKey) => [pieceKey, `/models/land-kit/${pieceKey}.glb`]),
   ) as Record<KitPieceKey, string>,
 );
 
 /** Sand floor shared by the parcel and structure render layers. */
 export const KIT_FLOOR_Y = -2;
-export const KIT_STACK_UNIT_WU = 34;
-export const KIT_SMALL_FOOTPRINT_FRACTION = 0.92;
-export const KIT_LARGE_FOOTPRINT_FRACTION = 1.9;
-export const KIT_HEIGHT_CAP_FRACTION = 2.2;
 
 /** One 16x16 kit-grid cell in world units. */
 export function KIT_CELL(parcelSize: number): number {
@@ -47,17 +42,27 @@ export interface KitGridCell {
   gridY: number;
 }
 
-/** Convert one server-owned grid placement to its fixed parcel-world transform. */
+/**
+ * Convert one server-owned grid placement to its parcel-world transform.
+ *
+ * `baseYWu` is the parcel-local height the piece's BASE rests at, resolved by
+ * `resolveParcelPlacements()` in `@clawville/shared` from the supporting
+ * piece's own manifest support surface. It is a REQUIRED argument on purpose:
+ * this used to be `KIT_FLOOR_Y + (stackLevel − 1) × 34`, a fixed 34 wu ladder
+ * against pieces that render 8–292 wu tall, which put two stacked lanterns
+ * 216 wu inside each other (defect N-3). There is no sane default, so callers
+ * must resolve a real support height.
+ */
 export function kitGridToWorld(
   parcel: Pick<ParcelSlot, 'cx' | 'cz' | 'size'>,
   placement: KitGridPlacement,
+  baseYWu: number,
 ): KitWorldTransform {
-  const cell = KIT_CELL(parcel.size);
   return {
-    cell,
-    worldX: parcel.cx - parcel.size / 2 + (placement.gridX + 0.5) * cell,
-    worldY: KIT_FLOOR_Y + (placement.stackLevel - 1) * KIT_STACK_UNIT_WU,
-    worldZ: parcel.cz - parcel.size / 2 + (placement.gridY + 0.5) * cell,
+    cell: KIT_CELL(parcel.size),
+    worldX: parcel.cx + kitCellCentreWu(placement.gridX, parcel.size),
+    worldY: KIT_FLOOR_Y + baseYWu,
+    worldZ: parcel.cz + kitCellCentreWu(placement.gridY, parcel.size),
     yaw: (placement.rotationStep * Math.PI) / 4,
   };
 }
@@ -92,7 +97,7 @@ export interface KitPieceBounds {
 }
 
 export interface KitPieceFit {
-  /** Uniform scale satisfying both the XZ footprint and independent height cap. */
+  /** Uniform scale that renders the piece at its manifest `targetHeightWu`. */
   scale: number;
   /** Local-space offsets that center XZ and ground bbox min-Y at worldY. */
   offsetX: number;
@@ -101,33 +106,28 @@ export interface KitPieceFit {
 }
 
 /**
- * Normalize an authored piece for one parcel cell. Small pieces occupy 0.92 of
- * a cell, large pieces 1.9 cells, and either may shrink further to fit 2.2 cell
- * heights. The returned offsets center XZ and put bbox min-Y on the stack lift.
+ * Scale an authored piece to its FROZEN MANIFEST HEIGHT.
+ *
+ * This replaces `fitKitPieceToCell`, which normalized every piece to the same
+ * cell-relative cube — 0.92 of a cell wide for small, 1.9 cells for large. That
+ * made price and geometry disagree (a 60-vCLAW `statue-anchor` rendered 56.3 wu
+ * wide against a 15-vCLAW `fence-picket` at 62.6 wu, defect N-1) and squashed
+ * seven of twelve pieces to 0.19× a 270 wu avatar or less (defect N-2). It was
+ * also parcel-size dependent, so the same piece changed size between tiers.
+ *
+ * The scale is derived from the RUNTIME bbox rather than the manifest's stored
+ * `sourceExtent`, so the drawn height is exactly `targetHeightWu` even if an
+ * asset is re-exported; `scripts/land-kit/verify-manifest.mjs` is what catches
+ * the resulting extent drift against the placement predicate.
  */
-export function fitKitPieceToCell(
+export function fitKitPieceToManifest(
   pieceKey: KitPieceKey,
-  parcelSize: number,
   bounds: KitPieceBounds,
 ): KitPieceFit {
-  const cell = KIT_CELL(parcelSize);
-  const width = Math.max(0, bounds.maxX - bounds.minX);
+  const render = KIT_PIECE_RENDER[pieceKey];
   const height = Math.max(0, bounds.maxY - bounds.minY);
-  const depth = Math.max(0, bounds.maxZ - bounds.minZ);
-  const widestXZ = Math.max(width, depth);
-  const footprintFraction =
-    KIT_CATALOG[pieceKey].size === 'large'
-      ? KIT_LARGE_FOOTPRINT_FRACTION
-      : KIT_SMALL_FOOTPRINT_FRACTION;
-  const footprintScale =
-    widestXZ > 0.001 ? (cell * footprintFraction) / widestXZ : 1;
-  const heightScale =
-    height > 0.001
-      ? (cell * KIT_HEIGHT_CAP_FRACTION) / height
-      : Number.POSITIVE_INFINITY;
-
   return {
-    scale: Math.min(footprintScale, heightScale),
+    scale: height > 1e-6 ? render.targetHeightWu / height : 1,
     offsetX: -(bounds.minX + bounds.maxX) * 0.5,
     offsetY: -bounds.minY,
     offsetZ: -(bounds.minZ + bounds.maxZ) * 0.5,

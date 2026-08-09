@@ -16,12 +16,18 @@ import {
   KIT_CATALOG,
   KIT_GRID_SIZE,
   KIT_LEVEL_RULES,
-  isCellPlaceable,
-  isPiecePlacementAllowed,
-  isRotationAllowed,
+  evaluatePlacement,
+  resolveFootprint,
+  resolveParcelPlacements,
+  shellEnvelopeHalfWu,
   type KitPieceKey,
   type KitStructureLevel,
   type ParcelSlot,
+  type PlacedFootprint,
+  type PlacementContext,
+  type PlacementRefusalCode,
+  type PlacementRequest,
+  type StoredPlacement,
 } from "@clawville/shared";
 import { useSceneFrame } from "@/components/three/world-stage/use-scene-frame";
 import { api } from "@/lib/api";
@@ -36,9 +42,8 @@ import { MAP_HEIGHT, MAP_WIDTH } from "@/lib/pixi/tilemap-data";
 import {
   KIT_CELL,
   KIT_FLOOR_Y,
-  KIT_STACK_UNIT_WU,
   LAND_KIT_ASSET_PATHS,
-  fitKitPieceToCell,
+  fitKitPieceToManifest,
   kitGridToWorld,
   kitWorldToGrid,
 } from "@/lib/three/land-kit-assets";
@@ -54,6 +59,12 @@ const EDITOR_EPSILON_Y = 0.3;
 const HALF_MAP_WIDTH = MAP_WIDTH / 2;
 const HALF_MAP_HEIGHT = MAP_HEIGHT / 2;
 const EMPTY_PIECES: readonly PlacedPiece[] = Object.freeze([]);
+
+/**
+ * Floor for a click target's span. A `path-stone` is only 8 wu tall, which is
+ * 0.03× an avatar — an exact-size hit box would be effectively unclickable.
+ */
+const MIN_HIT_SPAN_WU = 24;
 
 interface HoverCell {
   gridX: number;
@@ -79,22 +90,63 @@ function toPlacedPiece(
   return { ...piece, parcelCode };
 }
 
-function cellStackLevel(
-  pieces: readonly PlacedPiece[],
-  cell: HoverCell,
-  excludePieceId: string | null = null,
-): number {
-  let count = 0;
-  for (const piece of pieces) {
-    if (
-      piece.id !== excludePieceId &&
-      piece.gridX === cell.gridX &&
-      piece.gridY === cell.gridY
-    )
-      count += 1;
-  }
-  return count + 1;
+/** Stable identity for a row, matching the public render layer's synthesis. */
+function pieceRefOf(piece: PlacedPiece): string {
+  return (
+    piece.id
+    ?? `${piece.parcelCode}:${piece.gridX}:${piece.gridY}:${piece.stackLevel}`
+  );
 }
+
+function toStoredPlacement(piece: PlacedPiece): StoredPlacement | null {
+  if (!isKitPieceKey(piece.pieceKey)) return null;
+  return {
+    pieceRef: pieceRefOf(piece),
+    pieceKey: piece.pieceKey,
+    gridX: piece.gridX,
+    gridY: piece.gridY,
+    rotationStep: piece.rotationStep,
+    stackLevel: piece.stackLevel,
+  };
+}
+
+/**
+ * The stack level the ghost should snap to at `cell`: the HIGHEST level that
+ * evaluates legal there, so hovering a deck plank lifts the ghost onto it and
+ * hovering bare sand drops it to the ground.
+ *
+ * This replaces `cellStackLevel`, which returned "one more than the number of
+ * rows sharing this anchor cell". That was the client half of defect N-3 — it
+ * let a player stack onto a lantern, which has no support surface at all, and
+ * it ignored geometry entirely (two pieces at neighbouring anchors that
+ * physically overlap counted as level 1 each).
+ *
+ * When nothing is legal it returns 1 so the refusal is drawn on the ground in
+ * red rather than floating somewhere arbitrary.
+ */
+function preferredStackLevel(
+  base: Omit<PlacementRequest, "stackLevel">,
+  ctx: PlacementContext,
+  maxStackHeight: number,
+): number {
+  for (let level = maxStackHeight; level >= 1; level--) {
+    if (evaluatePlacement({ ...base, stackLevel: level }, ctx).ok) return level;
+  }
+  return 1;
+}
+
+/** Player-facing wording for each refusal the shared predicate can return. */
+const PLACEMENT_REFUSAL_COPY: Record<PlacementRefusalCode, string> = {
+  piece_unknown: "That piece is not in the catalog.",
+  cell_out_of_bounds: "That spot is off your yard.",
+  rotation_not_allowed: "This piece cannot face that way here.",
+  level_cap_exceeded: "Piece limit reached for your building level.",
+  stack_exceeds_height: "You cannot stack that high at this level.",
+  unsupported_stack: "Nothing underneath can hold that.",
+  outside_parcel: "It would hang over your edge.",
+  intersects_shell: "That spot is under your building.",
+  intersects_piece: "Something is already there.",
+};
 
 function createGridGeometry(parcel: ParcelSlot): THREE.BufferGeometry {
   const half = parcel.size / 2;
@@ -123,7 +175,6 @@ function createGridGeometry(parcel: ParcelSlot): THREE.BufferGeometry {
 }
 
 function EditorGrid({ parcel }: { parcel: ParcelSlot }) {
-  const cell = KIT_CELL(parcel.size);
   const gridGeometry = useMemo(() => createGridGeometry(parcel), [parcel]);
   const gridMaterial = useMemo(
     () =>
@@ -135,10 +186,15 @@ function EditorGrid({ parcel }: { parcel: ParcelSlot }) {
       }),
     [],
   );
-  const reservedGeometry = useMemo(
-    () => new THREE.PlaneGeometry(cell * 10, cell * 10),
-    [cell],
-  );
+  // The TRUE reservation, from the same function the predicate subtracts.
+  // This was `cell * 10` — the centre 10×10 cells of the grid — which matched
+  // the retired `isCellPlaceable` but not the actual shell, and never grew with
+  // the tier. Because `shellEnvelopeHalfWu` is computed at the tier's MAX
+  // level, what the player sees reserved at Lv1 is what stays reserved at Lv5.
+  const reservedGeometry = useMemo(() => {
+    const side = shellEnvelopeHalfWu(parcel.tier) * 2;
+    return new THREE.PlaneGeometry(side, side);
+  }, [parcel.tier]);
   const reservedMaterial = useMemo(
     () =>
       new THREE.MeshBasicMaterial({
@@ -181,6 +237,7 @@ function GhostPiece({
   cell,
   rotationStep,
   stackLevel,
+  baseYWu,
   placeable,
 }: {
   parcel: ParcelSlot;
@@ -188,6 +245,8 @@ function GhostPiece({
   cell: HoverCell;
   rotationStep: number;
   stackLevel: number;
+  /** Parcel-local base height, resolved from the supporter under the cursor. */
+  baseYWu: number;
   placeable: boolean;
 }) {
   const { scene } = useGLTF(
@@ -208,10 +267,14 @@ function GhostPiece({
     return clone;
   }, [source]);
   const fit = useMemo(
-    () => fitKitPieceToCell(pieceKey, parcel.size, source.bounds),
-    [parcel.size, pieceKey, source.bounds],
+    () => fitKitPieceToManifest(pieceKey, source.bounds),
+    [pieceKey, source.bounds],
   );
-  const world = kitGridToWorld(parcel, { ...cell, rotationStep, stackLevel });
+  const world = kitGridToWorld(
+    parcel,
+    { ...cell, rotationStep, stackLevel },
+    baseYWu,
+  );
 
   useEffect(() => {
     const colorMaterial = material as THREE.Material & { color?: THREE.Color };
@@ -288,35 +351,66 @@ function ActiveYardEditor({ parcel }: { parcel: ParcelSlot }) {
     mode === "move"
       ? (selectedPlacedPiece?.rotationStep ?? rotationStep)
       : rotationStep;
-  const ghostStackLevel = hoverCell
-    ? cellStackLevel(
-        parcelPieces,
-        hoverCell,
-        mode === "move" ? selectedPlacedPieceId : null,
-      )
-    : 1;
-  let smallCount = 0;
-  let largeCount = 0;
-  for (const piece of parcelPieces) {
-    if (!isKitPieceKey(piece.pieceKey)) continue;
-    if (KIT_CATALOG[piece.pieceKey].size === "small") smallCount += 1;
-    else largeCount += 1;
-  }
-  const ghostPlaceable = !!(
-    hoverCell &&
-    ghostPieceKey &&
-    buildParcelId &&
-    isCellPlaceable(hoverCell.gridX, hoverCell.gridY) &&
-    isRotationAllowed(level, ghostRotation) &&
-    ghostStackLevel <= levelRule.maxStackHeight &&
-    (mode === "move" ||
-      isPiecePlacementAllowed(
-        level,
-        smallCount,
-        largeCount,
-        KIT_CATALOG[ghostPieceKey].size,
-      ))
+  /**
+   * The parcel's current occupancy, resolved through the SAME shared function
+   * the public renderer uses, minus the piece being moved. Q5 grandfathering
+   * means every stored row resolves to a footprint even if it is no longer a
+   * legal placement, so a legacy piece still blocks the ground it sits on.
+   */
+  const excludedRef =
+    mode === "move" && selectedPlacedPiece ? pieceRefOf(selectedPlacedPiece) : null;
+  const { occupied, smallCount, largeCount } = useMemo(() => {
+    const stored: StoredPlacement[] = [];
+    let small = 0;
+    let large = 0;
+    for (const piece of parcelPieces) {
+      const row = toStoredPlacement(piece);
+      if (!row) continue;
+      if (row.pieceRef === excludedRef) continue;
+      stored.push(row);
+      if (KIT_CATALOG[row.pieceKey].size === "small") small += 1;
+      else large += 1;
+    }
+    const footprints: PlacedFootprint[] = resolveParcelPlacements(
+      stored,
+      parcel.tier,
+    ).map((entry) => entry.footprint);
+    return { occupied: footprints, smallCount: small, largeCount: large };
+  }, [excludedRef, parcel.tier, parcelPieces]);
+
+  const placementContext = useMemo<PlacementContext>(
+    () => ({
+      parcelTier: parcel.tier,
+      structureLevel: level,
+      currentSmall: smallCount,
+      currentLarge: largeCount,
+      occupied,
+    }),
+    [largeCount, level, occupied, parcel.tier, smallCount],
   );
+
+  // Ghost legality is the SHARED predicate, so a ghost that reads green cannot
+  // be refused by the server on submit and a red one always names a real
+  // reason. Moving a piece re-checks caps against the reduced counts above,
+  // which is what makes the Q5 free move actually possible for a legacy row.
+  const ghostBase =
+    hoverCell && ghostPieceKey
+      ? { pieceKey: ghostPieceKey, gridX: hoverCell.gridX, gridY: hoverCell.gridY, rotationStep: ghostRotation }
+      : null;
+  const ghostStackLevel = ghostBase
+    ? preferredStackLevel(ghostBase, placementContext, levelRule.maxStackHeight)
+    : 1;
+  const ghostVerdict =
+    ghostBase && buildParcelId
+      ? evaluatePlacement({ ...ghostBase, stackLevel: ghostStackLevel }, placementContext)
+      : null;
+  const ghostPlaceable = ghostVerdict?.ok === true;
+  // A refused ghost still needs somewhere to draw, so fall back to the ground.
+  const ghostBaseYWu = ghostVerdict?.ok
+    ? ghostVerdict.footprint.minY
+    : (ghostBase
+        ? (resolveFootprint({ ...ghostBase, stackLevel: 1 }, parcel.tier, [])?.minY ?? 0)
+        : 0);
 
   useSceneFrame(() => {
     const worldX = avatarPositionRef.x - HALF_MAP_WIDTH;
@@ -354,25 +448,22 @@ function ActiveYardEditor({ parcel }: { parcel: ParcelSlot }) {
         !isKitPieceKey(selectedPieceKey)
       )
         return;
-      const stackLevel = cellStackLevel(parcelPieces, cell);
-      const pieceSize = KIT_CATALOG[selectedPieceKey].size;
-      if (
-        !isCellPlaceable(cell.gridX, cell.gridY) ||
-        !isRotationAllowed(level, rotationStep) ||
-        stackLevel > levelRule.maxStackHeight ||
-        !isPiecePlacementAllowed(level, smallCount, largeCount, pieceSize)
-      ) {
+      const base = {
+        pieceKey: selectedPieceKey,
+        gridX: cell.gridX,
+        gridY: cell.gridY,
+        rotationStep,
+      };
+      const stackLevel = preferredStackLevel(
+        base,
+        placementContext,
+        levelRule.maxStackHeight,
+      );
+      const verdict = evaluatePlacement({ ...base, stackLevel }, placementContext);
+      if (!verdict.ok) {
         useGameStore
           .getState()
-          .addToast(
-            "⚠️",
-            stackLevel > levelRule.maxStackHeight
-              ? "Needs a piece underneath first."
-              : !isCellPlaceable(cell.gridX, cell.gridY)
-                ? "That spot is under your building."
-                : "Piece limit reached for your building level.",
-            3800,
-          );
+          .addToast("⚠️", PLACEMENT_REFUSAL_COPY[verdict.code], 3800);
         return;
       }
 
@@ -442,25 +533,26 @@ function ActiveYardEditor({ parcel }: { parcel: ParcelSlot }) {
           .addToast("!", "Move the top piece first.", 3500);
         return;
       }
-      const stackLevel = cellStackLevel(
-        parcelPieces,
-        cell,
-        selectedPlacedPiece.id,
+      if (!isKitPieceKey(selectedPlacedPiece.pieceKey)) return;
+      const base = {
+        pieceKey: selectedPlacedPiece.pieceKey,
+        gridX: cell.gridX,
+        gridY: cell.gridY,
+        rotationStep: selectedPlacedPiece.rotationStep,
+      };
+      // `placementContext` already excludes this piece, so a Q5 free move of a
+      // now-illegal legacy row is checked against the destination only — the
+      // row's own current position never blocks it.
+      const stackLevel = preferredStackLevel(
+        base,
+        placementContext,
+        levelRule.maxStackHeight,
       );
-      if (
-        !isCellPlaceable(cell.gridX, cell.gridY) ||
-        !isRotationAllowed(level, selectedPlacedPiece.rotationStep) ||
-        stackLevel > levelRule.maxStackHeight
-      ) {
+      const verdict = evaluatePlacement({ ...base, stackLevel }, placementContext);
+      if (!verdict.ok) {
         useGameStore
           .getState()
-          .addToast(
-            "⚠️",
-            !isCellPlaceable(cell.gridX, cell.gridY)
-              ? "That spot is under your building."
-              : "Needs a piece underneath first.",
-            3800,
-          );
+          .addToast("⚠️", PLACEMENT_REFUSAL_COPY[verdict.code], 3800);
         return;
       }
       mutationPending.current = true;
@@ -630,9 +722,18 @@ function ActiveYardEditor({ parcel }: { parcel: ParcelSlot }) {
   );
 
   if (!buildMode || buildMode.parcelCode !== parcel.id) return null;
-  const cellSize = KIT_CELL(parcel.size);
-  const selectedWorld = selectedPlacedPiece
-    ? kitGridToWorld(parcel, selectedPlacedPiece)
+
+  // Draw every stored row where the RENDERER puts it, resolved through the same
+  // shared function, so the click target sits on the piece rather than near it.
+  // Grandfathered rows included — you cannot offer a free move for a piece the
+  // editor refuses to draw a handle on.
+  const drawnPieces = resolveParcelPlacements(
+    parcelPieces.map(toStoredPlacement).filter((row): row is StoredPlacement => row !== null),
+    parcel.tier,
+  );
+  const footprintByRef = new Map(drawnPieces.map((entry) => [entry.row.pieceRef, entry.footprint]));
+  const selectedFootprint = selectedPlacedPiece
+    ? (footprintByRef.get(pieceRefOf(selectedPlacedPiece)) ?? null)
     : null;
 
   return (
@@ -648,44 +749,44 @@ function ActiveYardEditor({ parcel }: { parcel: ParcelSlot }) {
         onPointerDown={handleGroundPointerDown}
       />
       {parcelPieces.map((piece) => {
-        const world = kitGridToWorld(parcel, piece);
-        const footprint =
-          isKitPieceKey(piece.pieceKey) &&
-          KIT_CATALOG[piece.pieceKey].size === "large"
-            ? 1.8
-            : 0.86;
+        const footprint = footprintByRef.get(pieceRefOf(piece));
+        if (!footprint) return null;
+        // The hit box IS the piece's real rotated AABB now, not a fixed
+        // cell-relative cube — so a 292 wu statue is clickable along its whole
+        // height and a 8 wu path stone is not a 34 wu column of dead space.
         return (
           <mesh
-            key={
-              piece.id ??
-              `${piece.pieceKey}:${piece.gridX}:${piece.gridY}:${piece.stackLevel}`
-            }
+            key={pieceRefOf(piece)}
             geometry={hitGeometry}
             material={hitMaterial}
             position={[
-              world.worldX,
-              world.worldY + KIT_STACK_UNIT_WU * 0.45,
-              world.worldZ,
+              parcel.cx + (footprint.minX + footprint.maxX) / 2,
+              KIT_FLOOR_Y + (footprint.minY + footprint.maxY) / 2,
+              parcel.cz + (footprint.minZ + footprint.maxZ) / 2,
             ]}
             scale={[
-              cellSize * footprint,
-              KIT_STACK_UNIT_WU * 0.9,
-              cellSize * footprint,
+              Math.max(footprint.maxX - footprint.minX, MIN_HIT_SPAN_WU),
+              Math.max(footprint.maxY - footprint.minY, MIN_HIT_SPAN_WU),
+              Math.max(footprint.maxZ - footprint.minZ, MIN_HIT_SPAN_WU),
             ]}
             onPointerDown={(event) => handlePiecePointerDown(event, piece)}
           />
         );
       })}
-      {selectedPlacedPiece && selectedWorld ? (
+      {selectedPlacedPiece && selectedFootprint ? (
         <mesh
           geometry={selectionGeometry}
           material={selectionMaterial}
           position={[
-            selectedWorld.worldX,
-            selectedWorld.worldY + KIT_STACK_UNIT_WU * 0.45,
-            selectedWorld.worldZ,
+            parcel.cx + (selectedFootprint.minX + selectedFootprint.maxX) / 2,
+            KIT_FLOOR_Y + (selectedFootprint.minY + selectedFootprint.maxY) / 2,
+            parcel.cz + (selectedFootprint.minZ + selectedFootprint.maxZ) / 2,
           ]}
-          scale={[cellSize * 0.95, KIT_STACK_UNIT_WU * 0.92, cellSize * 0.95]}
+          scale={[
+            Math.max(selectedFootprint.maxX - selectedFootprint.minX, MIN_HIT_SPAN_WU) * 1.06,
+            Math.max(selectedFootprint.maxY - selectedFootprint.minY, MIN_HIT_SPAN_WU) * 1.06,
+            Math.max(selectedFootprint.maxZ - selectedFootprint.minZ, MIN_HIT_SPAN_WU) * 1.06,
+          ]}
           renderOrder={6}
         />
       ) : null}
@@ -700,6 +801,7 @@ function ActiveYardEditor({ parcel }: { parcel: ParcelSlot }) {
               cell={hoverCell}
               rotationStep={ghostRotation}
               stackLevel={ghostStackLevel}
+              baseYWu={ghostBaseYWu}
               placeable={ghostPlaceable}
             />
           </Suspense>

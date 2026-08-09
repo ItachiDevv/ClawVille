@@ -48,8 +48,12 @@ import {
   LAND_PARCELS,
   DEFAULT_PALETTE_KEY,
   DEFAULT_SHELL_KEY,
+  STRUCTURE_FOOTPRINT_FRACTION,
+  STRUCTURE_HEIGHT_CAP_FRACTION,
+  STRUCTURE_LEVEL_SCALE_MAX,
   getPalettePreset,
   getShellCatalogEntry,
+  structureLevelScale,
 } from '@clawville/shared';
 import type { ParcelSlot } from '@clawville/shared';
 import { api } from '@/lib/api';
@@ -67,28 +71,29 @@ import { extendLoaderWithMeshopt } from '@/lib/three/meshopt-loader-setup';
 const FLOOR_Y = -2;
 
 /**
- * Target footprint fraction relative to parcel.size. The structure is normalized
- * so its widest XZ dimension (at level 1) is ~62% of the parcel footprint, leaving
- * the for-sale frame/pad reading around it. Render-backed parcel sizes are
- * 1,216wu (founder) and 1,088wu (starter/c).
+ * Structure world-scale contract — IMPORTED, no longer redeclared here.
+ *
+ * These numbers used to be private copies in this file and in
+ * land-showroom.tsx (0.62 / 1.5 / 0.78→1.25). They moved to
+ * `@clawville/shared` because the kit placement predicate subtracts
+ * `shellEnvelopeHalfWu()` from every parcel and that reservation is derived
+ * from exactly these values. A renderer-local copy would let the shell we DRAW
+ * and the shell we RESERVE drift apart, which is how a paid kit piece ends up
+ * inside a building.
+ *
+ * Q7 (2026-08-09) reweighted them: footprint 0.62 → 0.64, level ramp
+ * 0.78→1.25 collapsed to 0.94→1.04. The flat ramp is deliberate — scale is not
+ * the level signal, the shell swap and palette are — and the net effect is a
+ * Lv1 shell at 558 wu (2.07× a 270 wu avatar) instead of 401 wu (1.49×).
+ * Parcel sizes are now 1,216 wu (founder/starter) and 1,664 wu (c).
  */
-const FOOTPRINT_FRACTION = 0.62;
+const FOOTPRINT_FRACTION = STRUCTURE_FOOTPRINT_FRACTION;
 
 /** Independent Y ceiling; tall shells shrink further without changing XZ math. */
-const HEIGHT_CAP_FRACTION = 1.5;
+const HEIGHT_CAP_FRACTION = STRUCTURE_HEIGHT_CAP_FRACTION;
 
-/**
- * Level → scale multiplier. Lerp 0.78 (L1) → 1.25 (L5), linear:
- *   scale(level) = 0.78 + (clamp(level,1,5) - 1) * 0.1175
- * L1=0.78  L2=0.8975  L3=1.015  L4=1.1325  L5=1.25
- * A modest ramp so a maxed structure reads bigger without spilling off the parcel.
- */
-const LEVEL_SCALE_MIN = 0.78;
-const LEVEL_SCALE_MAX = 1.25;
-function levelScale(level: number): number {
-  const lv = Math.max(1, Math.min(5, level || 1));
-  return LEVEL_SCALE_MIN + (lv - 1) * ((LEVEL_SCALE_MAX - LEVEL_SCALE_MIN) / 4);
-}
+const LEVEL_SCALE_MAX = STRUCTURE_LEVEL_SCALE_MAX;
+const levelScale = structureLevelScale;
 
 /** Hard mount budget; walking reselects the nearest set after meaningful movement. */
 const MAX_MOUNTED_STRUCTURES = 48;

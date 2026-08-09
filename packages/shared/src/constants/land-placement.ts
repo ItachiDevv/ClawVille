@@ -335,3 +335,85 @@ export function legalAnchors(
     (placement) => placement.rotationStep === rotationStep,
   ).length;
 }
+
+/** Tallest support surface in the catalog — the grandfather fallback lift. */
+export const KIT_FALLBACK_STACK_SURFACE_WU = Object.values(KIT_PIECE_RENDER).reduce(
+  (tallest, render) => Math.max(tallest, render.supportSurfaceYWu ?? 0),
+  0,
+);
+
+/** A stored placement row, as both the render layer and the write path see it. */
+export interface StoredPlacement {
+  readonly pieceRef: string;
+  readonly pieceKey: KitPieceKey;
+  readonly gridX: number;
+  readonly gridY: number;
+  readonly rotationStep: number;
+  readonly stackLevel: number;
+}
+
+export interface ResolvedPlacement {
+  readonly row: StoredPlacement;
+  readonly footprint: PlacedFootprint;
+  /**
+   * True when this row's Y could not be derived from a real supporter and the
+   * fallback lift was used — a legacy stack whose supporter never existed or
+   * has since been removed. Q5: render it, never delete it. The editor uses
+   * this to offer the free move.
+   */
+  readonly unsupported: boolean;
+}
+
+/**
+ * Resolve every stored row on one parcel to a concrete footprint, lowest stack
+ * level first so a supporter is always resolved before what rests on it.
+ *
+ * GRANDFATHERING IS THE POINT (Q5). This never refuses and never drops a row:
+ * a placement the current predicate would reject still gets a footprint, and a
+ * stacked row with no valid supporter is lifted by
+ * `KIT_FALLBACK_STACK_SURFACE_WU` per level so it renders visibly floating
+ * rather than vanishing or being silently re-grounded. Removing a supporter
+ * leaves the piece above it floating, deliberately: the alternative is a
+ * cascade that relocates or deletes paid rows.
+ */
+export function resolveParcelPlacements(
+  rows: readonly StoredPlacement[],
+  parcelTier: LandTier,
+): readonly ResolvedPlacement[] {
+  const ordered = [...rows].sort((a, b) => a.stackLevel - b.stackLevel);
+  const resolved: ResolvedPlacement[] = [];
+  const footprints: PlacedFootprint[] = [];
+
+  for (const row of ordered) {
+    const supported = resolveFootprint(row, parcelTier, footprints, row.pieceRef);
+    if (supported) {
+      footprints.push(supported);
+      resolved.push({ row, footprint: supported, unsupported: false });
+      continue;
+    }
+
+    // Either the piece key is unknown / off-grid (nothing to draw), or it is a
+    // stacked row with no supporter. Distinguish by retrying at ground level.
+    const grounded = resolveFootprint(
+      { ...row, stackLevel: 1 },
+      parcelTier,
+      [],
+      row.pieceRef,
+    );
+    if (!grounded) continue;
+
+    const lift = (row.stackLevel - 1) * KIT_FALLBACK_STACK_SURFACE_WU;
+    const floating: PlacedFootprint = {
+      ...grounded,
+      stackLevel: row.stackLevel,
+      minY: grounded.minY + lift,
+      maxY: grounded.maxY + lift,
+      supportSurfaceY:
+        grounded.supportSurfaceY === null ? null : grounded.supportSurfaceY + lift,
+    };
+    footprints.push(floating);
+    resolved.push({ row, footprint: floating, unsupported: true });
+  }
+
+  return resolved;
+}

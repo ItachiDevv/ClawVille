@@ -43,7 +43,12 @@ import type { ReactNode } from 'react';
 import * as THREE from 'three';
 import { useSceneFrame } from '@/components/three/world-stage/use-scene-frame';
 import { useGLTF } from '@react-three/drei';
-import { LAND_PARCELS, LAND_SHOWROOM } from '@clawville/shared';
+import {
+  LAND_PARCELS,
+  LAND_SHOWROOM,
+  STRUCTURE_FOOTPRINT_FRACTION,
+  structureLevelScale,
+} from '@clawville/shared';
 import type { ParcelSlot } from '@clawville/shared';
 import type { ShowroomEntry } from '@clawville/shared';
 import { useLandStore, getParcelStatus } from '@/stores/land';
@@ -57,16 +62,14 @@ import { extendLoaderWithMeshopt } from '@/lib/three/meshopt-loader-setup';
 /** Sand floor Y — matches arena-terrain.tsx + land-parcels.tsx. */
 const FLOOR_Y = -2;
 
-/** Target footprint fraction (same as land-structures.tsx). */
-const FOOTPRINT_FRACTION = 0.62;
-
-/** Level → scale ramp — same formula as land-structures.tsx. */
-const LEVEL_SCALE_MIN = 0.78;
-const LEVEL_SCALE_MAX = 1.25;
-function levelScale(level: number): number {
-  const lv = Math.max(1, Math.min(5, level || 1));
-  return LEVEL_SCALE_MIN + (lv - 1) * ((LEVEL_SCALE_MAX - LEVEL_SCALE_MIN) / 4);
-}
+/**
+ * Footprint fraction and level ramp — imported from `@clawville/shared`, which
+ * is the one place they may live. See the land-structures.tsx note: the kit
+ * placement predicate derives its shell reservation from these, so a local copy
+ * would let the drawn and reserved shells diverge.
+ */
+const FOOTPRINT_FRACTION = STRUCTURE_FOOTPRINT_FRACTION;
+const levelScale = structureLevelScale;
 
 /**
  * Distance cull (squared). Generous 14000wu — outer starters reach ~12309wu
