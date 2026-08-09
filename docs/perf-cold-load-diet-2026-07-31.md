@@ -565,3 +565,23 @@ pathology; regression detection remains the paired statistics' job. Evidence:
 - Material/shader/instancing changes (incl. fade-ins — deleted in v2), Iris-Xe-risk classes.
 - Multiplayer/authoritative-server gap; kelp/reef promotion (separate track).
 - Second-visit warm-path optimization beyond not regressing it.
+
+---
+
+## Rung-3 results ledger (2026-08-09, session perf4.4 — commits `997962dc` + `c824d928` on `perf/cold-load-diet`, LOCAL/unpushed)
+
+**Shipped in the slice:** first-paint release anchor (Lever 1) · deferral widened to 10 location-NPC slots + 12 scatter decorations + 8 land-ring props, crayfish quest-giver deliberately shared-critical (Lever 2) · staggered distance-ordered consumption into a one-at-a-time warm queue (idle-slice texture uploads → compileAsync → fallback-only zero-scissor warm) with a 1.5s first-drain quiet period (Lever 3) · probe longtask boundary = app-authored release stamp (reason-aware). Four Codex xhigh rounds (SHIP-WITH-CHANGES · BLOCK ×2 · implementation); every finding applied incl. the land-ring deferral leak, the missed-release race, and the WebGPU direct-warm blue-flash guard.
+
+**WebGPU lane (final clean batch: 12 pairs, n=11 usable, 0 invalid):**
+- revealMs: **PASS** — median −11.8% (12.93s→11.62s), upper bound −6.0% (confidently faster).
+- framesOver100In10s: **PASS** (paired diff bound 1 ≤ 2).
+- Pre-reveal wire: 22.82 → **19.50MB** (−3.32MB).
+- preRevealLongtaskMs, SYMMETRIC boundary (both arms at polled reveal): **PASS** — median −2.8%, bound +6.0%.
+- preRevealLongtaskMs, per the FROZEN asymmetric released-boundary definition: OPEN (+49% median) — **unpassable by construction** for a first-paint-released candidate: its counted window includes the reveal-adjacent warmup longtask that the baseline's ~1.1s-earlier boundary excludes. AMENDMENT PROPOSED (founder decision): boundary = polled reveal for BOTH arms.
+- worstFrame / stableWindow: OPEN — medians ≈ +4.7%/+4.6% but bounds 0.36/0.18 vs 0.14 (per-run maxima noise at n=11 on the shared box).
+
+**WebGL2 lane (12 pairs, n=11 usable, 0 invalid): formal FAIL on ONE sanity breach** (pair-2 candidate framesOver100 = 6 vs bound 5). Distribution: the lane is bimodal on BOTH arms (reveals 14.7–26.6s); the giant compile frame lands in/out of the 10s window by mode, making the count/max metrics a mode lottery (precedent: this lane's reveal bound was already recalibrated 30→40s for the same reason, 2026-08-01). Pairwise reveal favors the candidate 8/12; both candidate modes are faster than the corresponding baseline modes (fast ≈15–17 vs 17–19s; slow ≈21–23 vs 24–27s). RECALIBRATION QUESTION for the founder alongside the boundary amendment.
+
+**Plan targets NOT yet reached:** reveal 11.6s vs the ≤8s target; pre-reveal wire 19.5MB vs ≤10MB. The dominant remaining row is the 15 wandering/player VRMs (12.19MB, tier-1) → Lever-2 slice 2 (needs its own pop-in acceptance since wanderers are spawn-adjacent).
+
+**Rig lessons burned in this rung (memory: feedback_windows_pid_kills_and_batch_health):** anti-occlusion flags are mandatory on probe Chromes (occluded windows park the boot on the first rAF await — task 6 holds the product-side decision); never taskkill by stored PID; kill by profile basename + smoke-test the kill; per-pair server health checks; every batch gets a health watcher AND a 10-min progress reporter.
