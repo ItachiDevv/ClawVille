@@ -30,7 +30,7 @@ import {
   type StoredPlacement,
 } from "@clawville/shared";
 import { useSceneFrame } from "@/components/three/world-stage/use-scene-frame";
-import { api, ApiError } from "@/lib/api";
+import { api } from "@/lib/api";
 import {
   freshLandPieceIdempotencyKey,
   isIdempotencyConflict,
@@ -326,7 +326,6 @@ function ActiveYardEditor({ parcel }: { parcel: ParcelSlot }) {
   const removePiece = useLandStore((state) => state.removePiece);
   const exitBuildMode = useLandStore((state) => state.exitBuildMode);
   const paymentRail = useLandStore((state) => state.paymentRail);
-  const setPaymentRail = useLandStore((state) => state.setPaymentRail);
   const setSelectedPlacedPieceId = useLandStore(
     (state) => state.setSelectedPlacedPieceId,
   );
@@ -470,9 +469,9 @@ function ActiveYardEditor({ parcel }: { parcel: ParcelSlot }) {
       }
 
       // Materials rail: OMIT the field entirely for vCLAW (byte-identical to
-      // the request this route has always accepted). See
-      // PlaceLandPieceRequest.paymentRail's doc comment — the field may not
-      // be served yet, so a materials attempt can 400; caught below.
+      // the request this route has always accepted). CONFIRMED SERVED — see
+      // PlaceLandPieceRequest.paymentRail's doc comment: the route declares
+      // `paymentRail` with a `default('vclaw')`, so both paths are live.
       const usingMaterialsRail = paymentRail === "materials";
 
       mutationPending.current = true;
@@ -509,19 +508,11 @@ function ActiveYardEditor({ parcel }: { parcel: ParcelSlot }) {
         // react-query) — refresh it the same way a salvage claim does.
         if (usingMaterialsRail) window.dispatchEvent(new Event(LAND_SALVAGE_REFRESH_EVENT));
       } catch (error) {
-        // The server may not accept `paymentRail` yet (strict-schema route,
-        // P5b not landed) — a materials attempt can 400 purely because of the
-        // extra field. Distinguish that from a real refusal (insufficient
-        // materials, cap reached, etc.) so the player isn't stuck silently
-        // retrying a rail the server doesn't support.
-        if (usingMaterialsRail && error instanceof ApiError && error.status === 400) {
-          setPaymentRail("vclaw");
-          useGameStore
-            .getState()
-            .addToast("⚠️", "Material payments aren't live yet — switched back to vCLAW.", 4200);
-        } else {
-          toastError(error);
-        }
+        // The rail is confirmed served — `insufficient_materials` and any
+        // other refusal here are real domain refusals, handled the same as
+        // any other placement failure (landPieceErrorMessage already maps
+        // `insufficient_materials` -> "Not enough materials.").
+        toastError(error);
       } finally {
         mutationPending.current = false;
       }
@@ -538,7 +529,6 @@ function ActiveYardEditor({ parcel }: { parcel: ParcelSlot }) {
       queryClient,
       rotationStep,
       selectedPieceKey,
-      setPaymentRail,
       smallCount,
       toastError,
     ],

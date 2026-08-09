@@ -147,16 +147,15 @@ export interface PlaceLandPieceRequest {
   stackLevel: number;
   idempotencyKey: string;
   /**
-   * OMITTED for the vCLAW rail — byte-identical to the request this route has
-   * always accepted, so the live path takes zero regression risk from this
-   * field's addition. Included ONLY when the player picked the materials
+   * OMITTED for the vCLAW rail — byte-identical to the request this route
+   * has always accepted. Included ONLY when the player picked the materials
    * rail (HOME yards, P5b — gamification-pass-2026-08-09.md §2.9
-   * KitMutationInput.op.paymentRail). NOT YET SERVED: the current
-   * `/api/land/parcels/:parcelId/pieces` schema is `.strict()` and does not
-   * declare this field (verified 2026-08-09, `apps/api/src/routes/land.ts`),
-   * so a materials-rail placement will 400 until the P7c/P5b backend slice
-   * lands. `yard-editor-three.tsx` catches that and reverts the rail with a
-   * toast rather than leaving the player stuck — see its `placeAtCell`.
+   * KitMutationInput.op.paymentRail). CONFIRMED SERVED 2026-08-09: the
+   * backend lane's `9824db4f` (`apps/api/src/routes/land.ts:647`) declares
+   * `paymentRail: z.enum(KIT_PAYMENT_RAILS).default('vclaw')` on the
+   * `/api/land/parcels/:parcelId/pieces` schema, so both omitting it and
+   * sending 'materials' are accepted. `yard-editor-three.tsx` still catches
+   * an unexpected 400 defensively and reverts the rail with a toast.
    */
   paymentRail?: 'materials';
 }
@@ -339,73 +338,113 @@ export interface BuyServiceResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Seabed salvage (P7b, land-salvage-web worktree, 2026-08-09)
-//
-// UNLIKE the rest of this file, this section does NOT mirror a frozen,
-// already-live backend contract — P7a/P7b (schema, settlement, the REST
-// surface) had not shipped when this was written. The shape below is coded
-// against the design doc (gamification-pass-2026-08-09.md §2.6/§2.7/§2.9)
-// and the render lane's brief (endpoint path `/api/land/salvage/:nodeId/claim`
-// + `GET /api/land/salvage/state`). RECONCILE AT MERGE against whatever the
-// backend lane actually ships — treat every field here as a documented
-// assumption, not a verified contract.
+// Seabed salvage (P7a/P7b — FROZEN, verified against the backend lane's
+// shipped commits `7eec61cd`/`9824db4f` on `feat/land-salvage`, merged into
+// this branch 2026-08-09: apps/api/src/routes/land-salvage.ts +
+// apps/api/src/services/{salvage-settlement,salvage-approach}.ts. These
+// shapes are copied from the real route handlers, not guessed.
 // ---------------------------------------------------------------------------
 
-/** Per-node claim availability, as read from `GET /api/land/salvage/state`. */
+/** One node's per-avatar claim state, as read from `GET /api/land/salvage/state`. */
 export interface LandSalvageNodeStatus {
   nodeId: string;
-  /** ISO timestamp; null or <= now means the node is claimable right now. */
+  band: string;
+  x: number;
+  z: number;
+  /** null = never claimed by this avatar, i.e. ready now. */
   nextClaimAt: string | null;
+  ready: boolean;
 }
 
-export interface LandSalvageClaimWindow {
-  used: number;
-  remaining: number;
-  cap: number;
-}
+export type SalvageFlavour = 'common' | 'uncommon' | 'rare';
 
-/** One pooled material balance's last earn event (display only — §2.4 Q4: no per-flavour balances). */
-export interface LandSalvageReceiptDTO {
+/** The exact payload both a claim response and `state.lastClaim` carry. */
+export interface LandSalvageClaimPayload {
   nodeId: string;
+  layoutVersion: number;
   materialsGranted: number;
-  flavour: 'common' | 'uncommon' | 'rare';
-  claimedAt: string;
+  flavour: SalvageFlavour;
+  /** Pooled material balance AFTER the credit. */
+  balanceAfter: number;
+  /** ISO8601 — when this node becomes claimable again for this avatar. */
+  nextClaimAt: string;
+  claimsRemainingToday: number;
+  ownerClaimsRemainingToday: number;
+}
+
+/** Rules the client RENDERS rather than re-derives — never hardcode these. */
+export interface LandSalvageRules {
+  approachRangeWu: number;
+  cooldownMs: number;
+  avatarDailyClaimCap: number;
+  ownerDailyClaimCap: number;
+  layoutVersion: number;
 }
 
 export interface LandSalvageStateResponse {
   layoutVersion: number;
   nodes: LandSalvageNodeStatus[];
-  avatarClaims: LandSalvageClaimWindow;
-  ownerClaims: LandSalvageClaimWindow;
   materialBalance: number;
-  lastReceipt: LandSalvageReceiptDTO | null;
+  claimsUsedToday: number;
+  claimsRemainingToday: number;
+  ownerClaimsUsedToday: number;
+  ownerClaimsRemainingToday: number;
+  lastClaim: LandSalvageClaimPayload | null;
+  rules: LandSalvageRules;
 }
 
+// ---- POST /:nodeId/approach ----
+
+export interface LandSalvageApproachRequest {
+  /** Centered world coords — the SAME frame LandProximityTracker resolves. */
+  x: number;
+  z: number;
+}
+
+export type LandSalvageApproachErrorCode =
+  | 'node_unknown'
+  | 'anchor_pending'
+  | 'movement_poisoned'
+  | 'impossible_movement'
+  | 'out_of_range'
+  | 'dwell_pending'
+  | 'rate_limited';
+
+/** Success body. Failure bodies are `{ok:false,error,retryAfterMs}` — thrown as ApiError, see api.ts. */
+export interface LandSalvageApproachResponse {
+  ok: true;
+  approachToken: string;
+  /** ISO8601 — SALVAGE_APPROACH_TOKEN_TTL_MS (20s) from issuance. */
+  expiresAt: string;
+}
+
+// ---- POST /:nodeId/claim ----
+
 export interface LandSalvageClaimRequest {
+  approachToken: string;
+  /** REQUIRED, 8-64 chars. ONE per gather gesture — reuse on retry or it double-pays. */
   idempotencyKey: string;
 }
 
-export interface LandSalvageClaimResponse {
-  materialsGranted: number;
-  flavour: 'common' | 'uncommon' | 'rare';
-  balanceAfter: number;
-  nextClaimAt: string;
-  avatarClaims: LandSalvageClaimWindow;
-  ownerClaims: LandSalvageClaimWindow;
+/** Success body — `ok:true` plus the claim payload spread flat, plus `replay`. */
+export interface LandSalvageClaimResponse extends LandSalvageClaimPayload {
+  ok: true;
+  replay: boolean;
 }
 
-/**
- * The §2.9 `SettlementFailure` union, narrowed to the codes salvage claim can
- * plausibly return. Copied verbatim from the design doc rather than guessed.
- */
 export type LandSalvageClaimErrorCode =
-  | 'node_on_cooldown'
-  | 'avatar_daily_cap'
-  | 'owner_daily_cap'
+  | 'node_unknown'
   | 'house_excluded'
   | 'owner_unresolved'
   | 'binding_drift'
-  | 'session_expired'
-  | 'not_ledger_capable'
+  | 'owner_daily_cap'
+  | 'avatar_daily_cap'
+  | 'node_on_cooldown'
   | 'idempotency_key_conflict'
-  | 'concurrent_retry';
+  | 'concurrent_retry'
+  | 'idempotency_key_required'
+  | 'invalid_body'
+  | 'rate_limited'
+  /** From the approach-token verify step, surfaced as the claim route's own 403. */
+  | 'invalid_token'
+  | 'expired_token';

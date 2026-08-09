@@ -5,52 +5,73 @@
  * Hydrated by `SalvageStateHydrator` (land-salvage-render.tsx) from
  * `GET /api/land/salvage/state`. Keyed like `useLandStore.pieces` — public
  * world state, not owner-private, so it survives auth transitions the same
- * way `parcels` does (never wiped on logout, since a guest can still see
- * which nodes are on cooldown).
+ * way `parcels` does. NOTE: unlike `parcels`, the salvage read model is
+ * NOT guest-accessible (`requireNonGuestIdentity`), so a guest session never
+ * populates this — `SalvageGatherPill` gates on `useIsGuest()` before even
+ * attempting a hydrate.
  */
 import { create } from 'zustand';
-import type { LandSalvageClaimWindow, LandSalvageReceiptDTO } from '@/components/game/land/types';
+import type { LandSalvageClaimPayload, LandSalvageRules } from '@/components/game/land/types';
 
-const EMPTY_WINDOW: LandSalvageClaimWindow = Object.freeze({ used: 0, remaining: 0, cap: 0 });
+const EMPTY_RULES: LandSalvageRules = Object.freeze({
+  approachRangeWu: 260,
+  cooldownMs: 6 * 60 * 60 * 1000,
+  avatarDailyClaimCap: 20,
+  ownerDailyClaimCap: 120,
+  layoutVersion: 1,
+});
+
+interface SalvageClaimCounters {
+  used: number;
+  remaining: number;
+}
 
 interface SalvageStore {
   /** nodeId -> nextClaimAt (ms epoch), or 0 for "claimable now". */
   nodeCooldowns: Map<string, number>;
   materialBalance: number;
-  avatarClaims: LandSalvageClaimWindow;
-  ownerClaims: LandSalvageClaimWindow;
-  lastReceipt: LandSalvageReceiptDTO | null;
+  avatarClaims: SalvageClaimCounters;
+  ownerClaims: SalvageClaimCounters;
+  lastClaim: LandSalvageClaimPayload | null;
+  /** Rendered caps come FROM the server's `rules` — never hardcode them client-side. */
+  rules: LandSalvageRules;
   /** Last successful full hydration, ms epoch — lets the HUD show staleness if the poll dies. */
   hydratedAt: number;
 
   setState: (input: {
     nodes: readonly { nodeId: string; nextClaimAt: string | null }[];
     materialBalance: number;
-    avatarClaims: LandSalvageClaimWindow;
-    ownerClaims: LandSalvageClaimWindow;
-    lastReceipt: LandSalvageReceiptDTO | null;
+    claimsUsedToday: number;
+    claimsRemainingToday: number;
+    ownerClaimsUsedToday: number;
+    ownerClaimsRemainingToday: number;
+    lastClaim: LandSalvageClaimPayload | null;
+    rules: LandSalvageRules;
   }) => void;
 
   /** Optimistic post-claim patch — one node + the two counters + balance. */
-  applyClaimResult: (input: {
-    nodeId: string;
-    nextClaimAt: string;
-    materialBalance: number;
-    avatarClaims: LandSalvageClaimWindow;
-    ownerClaims: LandSalvageClaimWindow;
-    receipt: LandSalvageReceiptDTO;
-  }) => void;
+  applyClaimResult: (payload: LandSalvageClaimPayload) => void;
 }
 
 export const useSalvageStore = create<SalvageStore>()((set) => ({
   nodeCooldowns: new Map(),
   materialBalance: 0,
-  avatarClaims: EMPTY_WINDOW,
-  ownerClaims: EMPTY_WINDOW,
-  lastReceipt: null,
+  avatarClaims: { used: 0, remaining: 0 },
+  ownerClaims: { used: 0, remaining: 0 },
+  lastClaim: null,
+  rules: EMPTY_RULES,
   hydratedAt: 0,
 
-  setState: ({ nodes, materialBalance, avatarClaims, ownerClaims, lastReceipt }) =>
+  setState: ({
+    nodes,
+    materialBalance,
+    claimsUsedToday,
+    claimsRemainingToday,
+    ownerClaimsUsedToday,
+    ownerClaimsRemainingToday,
+    lastClaim,
+    rules,
+  }) =>
     set(() => {
       const next = new Map<string, number>();
       for (const node of nodes) {
@@ -59,23 +80,30 @@ export const useSalvageStore = create<SalvageStore>()((set) => ({
       return {
         nodeCooldowns: next,
         materialBalance,
-        avatarClaims,
-        ownerClaims,
-        lastReceipt,
+        avatarClaims: { used: claimsUsedToday, remaining: claimsRemainingToday },
+        ownerClaims: { used: ownerClaimsUsedToday, remaining: ownerClaimsRemainingToday },
+        lastClaim,
+        rules,
         hydratedAt: Date.now(),
       };
     }),
 
-  applyClaimResult: ({ nodeId, nextClaimAt, materialBalance, avatarClaims, ownerClaims, receipt }) =>
+  applyClaimResult: (payload) =>
     set((state) => {
       const next = new Map(state.nodeCooldowns);
-      next.set(nodeId, Date.parse(nextClaimAt) || 0);
+      next.set(payload.nodeId, Date.parse(payload.nextClaimAt) || 0);
       return {
         nodeCooldowns: next,
-        materialBalance,
-        avatarClaims,
-        ownerClaims,
-        lastReceipt: receipt,
+        materialBalance: payload.balanceAfter,
+        avatarClaims: {
+          used: state.avatarClaims.used + 1,
+          remaining: payload.claimsRemainingToday,
+        },
+        ownerClaims: {
+          used: state.ownerClaims.used + 1,
+          remaining: payload.ownerClaimsRemainingToday,
+        },
+        lastClaim: payload,
       };
     }),
 }));

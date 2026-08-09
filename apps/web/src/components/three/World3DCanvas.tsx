@@ -61,7 +61,7 @@ import LandRingDecorations from '@/lib/three/land-ring-decorations';
 import LandFounderApartments from '@/lib/three/land-founder-apartments';
 import LandStateHydrator from '@/lib/three/land-state-hydrator';
 import LandSalvageNodesLayer from '@/lib/three/land-salvage-render';
-import { findNearestSalvageNode } from '@/lib/three/land-salvage-nodes';
+import { findNearestSalvageNode, salvageApproachPositionRef } from '@/lib/three/land-salvage-nodes';
 import { findParcelAtWorldPos } from '@/lib/land-proximity';
 import { KTX2LoaderSetup } from '@/lib/three/ktx2-loader-setup';
 import { MeshoptLoaderSetup } from '@/lib/three/meshopt-loader-setup';
@@ -1292,6 +1292,11 @@ function LandProximityTracker() {
     const worldZ = mapY - HALF_H;
     const code = findParcelAtWorldPos(worldX, worldZ);
     if (code !== store.nearParcelCode) store.setNearParcelCode(code);
+
+    // The single source SalvageGatherPill's approach poll reads for the
+    // active body's live centered position — see its doc comment.
+    salvageApproachPositionRef.x = worldX;
+    salvageApproachPositionRef.z = worldZ;
 
     // Salvage nodes are deliberately excluded FROM parcel footprints, so this
     // is independent of the parcel lookup above, not an else-branch.

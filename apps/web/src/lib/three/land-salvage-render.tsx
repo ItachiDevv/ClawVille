@@ -28,17 +28,22 @@
 import { useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { SALVAGE_NODES, type SalvageNode } from '@clawville/shared';
 import { api } from '@/lib/api';
 import { LAND_SALVAGE_REFRESH_EVENT } from '@/lib/land-query-keys';
 import { KIT_FLOOR_Y } from '@/lib/three/land-kit-assets';
-import {
-  SALVAGE_NODES,
-  SALVAGE_NODE_LOOKS,
-  type SalvageNodeLook,
-  type SalvageNodeSlot,
-} from '@/lib/three/land-salvage-nodes';
+import { salvageNodeLook, type SalvageNodeLook } from '@/lib/three/land-salvage-nodes';
 import { makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { isSalvageNodeClaimable, useSalvageStore } from '@/stores/salvage';
+
+const SALVAGE_NODE_LOOKS: readonly SalvageNodeLook[] = ['shells', 'driftwood', 'coral'];
+
+/** Deterministic per-node facing so a look's cluster doesn't read copy-pasted. */
+function salvageNodeYaw(nodeId: string): number {
+  let h = 0;
+  for (let i = 0; i < nodeId.length; i++) h = (h * 31 + nodeId.charCodeAt(i)) >>> 0;
+  return ((h % 3600) / 3600) * Math.PI * 2;
+}
 
 // ---------------------------------------------------------------------------
 // SalvageStateHydrator — headless, public-feed poll + explicit refresh event.
@@ -64,9 +69,12 @@ export function SalvageStateHydrator() {
         setState({
           nodes: response.nodes,
           materialBalance: response.materialBalance,
-          avatarClaims: response.avatarClaims,
-          ownerClaims: response.ownerClaims,
-          lastReceipt: response.lastReceipt,
+          claimsUsedToday: response.claimsUsedToday,
+          claimsRemainingToday: response.claimsRemainingToday,
+          ownerClaimsUsedToday: response.ownerClaimsUsedToday,
+          ownerClaimsRemainingToday: response.ownerClaimsRemainingToday,
+          lastClaim: response.lastClaim,
+          rules: response.rules,
         });
       }
       if (!cancelled) {
@@ -194,7 +202,7 @@ interface LookGeometryResult {
   ranges: NodeVertexRange[];
 }
 
-function buildLookGeometry(look: SalvageNodeLook, nodes: readonly SalvageNodeSlot[]): LookGeometryResult {
+function buildLookGeometry(look: SalvageNodeLook, nodes: readonly SalvageNode[]): LookGeometryResult {
   const parts: THREE.BufferGeometry[] = [];
   const ranges: NodeVertexRange[] = [];
   let cursor = 0;
@@ -206,7 +214,7 @@ function buildLookGeometry(look: SalvageNodeLook, nodes: readonly SalvageNodeSlo
   for (const node of nodes) {
     const cluster = buildClusterLocalGeometry(look, node.id);
     position.set(node.x, KIT_FLOOR_Y, node.z);
-    rotation.setFromAxisAngle(UP, node.yaw);
+    rotation.setFromAxisAngle(UP, salvageNodeYaw(node.id));
     placementMatrix.compose(position, rotation, scale);
     cluster.applyMatrix4(placementMatrix);
 
@@ -239,7 +247,7 @@ function buildLookGeometry(look: SalvageNodeLook, nodes: readonly SalvageNodeSlo
 
 function SalvageLookMesh({ look }: { look: SalvageNodeLook }) {
   const nodesForLook = useMemo(
-    () => SALVAGE_NODES.filter((node) => node.look === look),
+    () => SALVAGE_NODES.filter((node) => salvageNodeLook(node.band) === look),
     [look],
   );
 

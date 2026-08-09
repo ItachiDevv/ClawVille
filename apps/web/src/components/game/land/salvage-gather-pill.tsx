@@ -1,15 +1,22 @@
 'use client';
 
 /**
- * salvage-gather-pill.tsx — proximity "Press E / Tap · Gather" affordance for
- * seabed salvage nodes (Land gamification P7b, §2.2/§2.5).
+ * salvage-gather-pill.tsx — proximity gather affordance for seabed salvage
+ * nodes (Land gamification P7a/P7b).
  *
- * Mirrors location-hud.tsx's bottom-center action-pill pattern (same
- * positioning formula, same Press-E/Tap language) and KelpRealmClaimHud's
- * claim-request flow (idempotency key + retry-once-on-conflict, guest gate,
- * typed error → copy). Hidden whenever a building or parcel prompt would
- * otherwise occupy the same slot — `nearLocation`/`nearParcelCode` take
- * precedence so the two pills never stack.
+ * ONE gather gesture (Press E / Tap) drives the WHOLE approach->claim
+ * sequence as a single continuous action, per the frozen contract:
+ *   1. POST /:nodeId/approach every ~1s with the live centered position
+ *      (`salvageApproachPositionRef`). `anchor_pending`/`dwell_pending` are
+ *      the EXPECTED steady state during the ~2s dwell — polled silently,
+ *      not surfaced as errors ("gathering...", not a bug).
+ *   2. Once an `approachToken` is issued, immediately POST /:nodeId/claim
+ *      with it plus ONE idempotency key generated at gesture start (reused
+ *      across any retry within the same gesture, per the frozen contract's
+ *      "reuse on retry or it double-pays").
+ * The whole sequence shows as one "Gathering..." state; it resolves into a
+ * materials toast or a specific failure toast, never a silent hang (a
+ * bounded attempt budget aborts a stuck sequence with a clear message).
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -19,14 +26,17 @@ import { api, ApiError } from '@/lib/api';
 import { LAND_SALVAGE_REFRESH_EVENT } from '@/lib/land-query-keys';
 import {
   freshSalvageIdempotencyKey,
+  isApproachInProgress,
   isSalvageIdempotencyConflict,
+  isSalvageTokenInvalid,
+  salvageApproachErrorMessage,
   salvageClaimErrorMessage,
 } from '@/lib/land-salvage-client';
-import { getSalvageNodeById } from '@/lib/three/land-salvage-nodes';
+import { getSalvageNodeById, salvageApproachPositionRef, salvageNodeLook } from '@/lib/three/land-salvage-nodes';
 import { useGameStore } from '@/stores/game';
 import { isSalvageNodeClaimable, useSalvageStore } from '@/stores/salvage';
 
-type ClaimPhase = 'idle' | 'claiming';
+type GatherPhase = 'idle' | 'gathering';
 
 const LOOK_LABEL: Readonly<Record<string, string>> = {
   shells: 'a shell pile',
@@ -39,6 +49,13 @@ const LOOK_ICON: Readonly<Record<string, string>> = {
   coral: '🪸',
 };
 
+// Bounds one gather gesture's approach-poll loop. At ~1 attempt/s this is a
+// generous window over the real ~2s dwell + some margin for jitter/retry —
+// past it something is genuinely wrong (walked off, poisoned a long time),
+// so the sequence aborts with a clear message instead of polling forever.
+const APPROACH_MAX_ATTEMPTS = 15;
+const APPROACH_POLL_INTERVAL_MS = 1000;
+
 function cooldownLabel(nextClaimAtMs: number): string {
   const remainingMs = nextClaimAtMs - Date.now();
   if (remainingMs <= 0) return 'Recovering…';
@@ -46,6 +63,10 @@ function cooldownLabel(nextClaimAtMs: number): string {
   const minutes = Math.ceil((remainingMs % 3_600_000) / 60_000);
   if (hours >= 1) return `Recovers in ~${hours}h`;
   return `Recovers in ~${Math.max(1, minutes)}m`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export default function SalvageGatherPill() {
@@ -62,14 +83,22 @@ export default function SalvageGatherPill() {
   const isGuest = useIsGuest();
   const isMobile = useIsMobile();
 
-  const [phase, setPhase] = useState<ClaimPhase>('idle');
+  const [phase, setPhase] = useState<GatherPhase>('idle');
   const requestInFlightRef = useRef(false);
+  /** Bumped whenever the gathered node changes — a running loop checks this to abort if the player walks away or a new gesture starts. */
+  const gestureIdRef = useRef(0);
   const nearNodeIdRef = useRef<string | null>(nearSalvageNodeId);
   nearNodeIdRef.current = nearSalvageNodeId;
   const isGuestRef = useRef(isGuest);
   isGuestRef.current = isGuest;
 
-  const claimNode = useCallback(async () => {
+  // Walking away mid-gather aborts the in-flight sequence — bump the
+  // gesture id so the running loop's staleness check fails on its next tick.
+  useEffect(() => {
+    if (nearSalvageNodeId === null) gestureIdRef.current += 1;
+  }, [nearSalvageNodeId]);
+
+  const gather = useCallback(async () => {
     const nodeId = nearNodeIdRef.current;
     if (!nodeId || requestInFlightRef.current) return;
     if (isGuestRef.current) {
@@ -78,34 +107,72 @@ export default function SalvageGatherPill() {
     }
     if (!isSalvageNodeClaimable(useSalvageStore.getState().nodeCooldowns, nodeId)) return;
 
+    const myGestureId = ++gestureIdRef.current;
+    const idempotencyKey = freshSalvageIdempotencyKey();
     requestInFlightRef.current = true;
-    setPhase('claiming');
-    const attempt = (idempotencyKey: string) =>
-      api.claimSalvageNode(nodeId, { idempotencyKey });
+    setPhase('gathering');
+
     try {
-      let response;
-      try {
-        response = await attempt(freshSalvageIdempotencyKey());
-      } catch (error) {
-        if (!isSalvageIdempotencyConflict(error)) throw error;
-        response = await attempt(freshSalvageIdempotencyKey());
+      let approachToken: string | null = null;
+      for (let attempt = 0; attempt < APPROACH_MAX_ATTEMPTS; attempt++) {
+        if (gestureIdRef.current !== myGestureId) return; // walked away / superseded
+        try {
+          const response = await api.approachSalvageNode(nodeId, {
+            x: salvageApproachPositionRef.x,
+            z: salvageApproachPositionRef.z,
+          });
+          approachToken = response.approachToken;
+          break;
+        } catch (error) {
+          if (isApproachInProgress(error)) {
+            await sleep(APPROACH_POLL_INTERVAL_MS);
+            continue;
+          }
+          // A real problem (out_of_range/movement_poisoned/impossible_movement/
+          // node_unknown/rate_limited) — not the expected in-dwell state.
+          addToast('⚠️', salvageApproachErrorMessage(error), 3600);
+          return;
+        }
       }
-      applyClaimResult({
-        nodeId,
-        nextClaimAt: response.nextClaimAt,
-        materialBalance: response.balanceAfter,
-        avatarClaims: response.avatarClaims,
-        ownerClaims: response.ownerClaims,
-        receipt: {
-          nodeId,
-          materialsGranted: response.materialsGranted,
-          flavour: response.flavour,
-          claimedAt: new Date().toISOString(),
-        },
-      });
+      if (gestureIdRef.current !== myGestureId) return;
+      if (!approachToken) {
+        addToast('⚠️', "Couldn't get close enough — try again.", 3600);
+        return;
+      }
+
+      const attemptClaim = (token: string) =>
+        api.claimSalvageNode(nodeId, { approachToken: token, idempotencyKey });
+      let claimResponse;
+      try {
+        claimResponse = await attemptClaim(approachToken);
+      } catch (error) {
+        if (isSalvageIdempotencyConflict(error)) {
+          addToast('⚠️', 'Try again.', 3200);
+          return;
+        }
+        if (isSalvageTokenInvalid(error)) {
+          // The 20s token window lapsed between issuance and the claim POST
+          // (or was consumed by a concurrent tab) — re-approach ONCE, fresh.
+          try {
+            const reapproach = await api.approachSalvageNode(nodeId, {
+              x: salvageApproachPositionRef.x,
+              z: salvageApproachPositionRef.z,
+            });
+            claimResponse = await attemptClaim(reapproach.approachToken);
+          } catch (retryError) {
+            addToast('⚠️', salvageClaimErrorMessage(retryError), 3600);
+            return;
+          }
+        } else {
+          addToast('⚠️', salvageClaimErrorMessage(error), 3600);
+          return;
+        }
+      }
+
+      applyClaimResult(claimResponse);
       addToast(
         '🐚',
-        `+${response.materialsGranted} material${response.materialsGranted === 1 ? '' : 's'} salvaged`,
+        `+${claimResponse.materialsGranted} material${claimResponse.materialsGranted === 1 ? '' : 's'} salvaged`,
         3200,
       );
       window.dispatchEvent(new Event(LAND_SALVAGE_REFRESH_EVENT));
@@ -113,11 +180,8 @@ export default function SalvageGatherPill() {
       if (error instanceof ApiError && error.status === 401) {
         addToast('🐚', 'Sign in to keep what you salvage.', 3600);
       } else {
-        addToast('⚠️', salvageClaimErrorMessage(error), 3600);
+        addToast('⚠️', "Couldn't gather that — try again.", 3600);
       }
-      // A refusal (cooldown/cap/etc.) may mean our client-side view is stale
-      // (another tab, another avatar under the same owner) — reconcile.
-      window.dispatchEvent(new Event(LAND_SALVAGE_REFRESH_EVENT));
     } finally {
       requestInFlightRef.current = false;
       setPhase('idle');
@@ -135,11 +199,11 @@ export default function SalvageGatherPill() {
         (target instanceof HTMLElement && target.isContentEditable)
       ) return;
       event.preventDefault();
-      void claimNode();
+      void gather();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [claimNode]);
+  }, [gather]);
 
   if (controlMode === 'explore') return null;
   if (chatOpen || guideChatOpen || landOfficeOpen) return null;
@@ -149,6 +213,7 @@ export default function SalvageGatherPill() {
 
   const node = getSalvageNodeById(nearSalvageNodeId);
   if (!node) return null;
+  const look = salvageNodeLook(node.band);
   const claimable = isSalvageNodeClaimable(nodeCooldowns, nearSalvageNodeId);
   const nextClaimAtMs = nodeCooldowns.get(nearSalvageNodeId) ?? 0;
 
@@ -160,9 +225,9 @@ export default function SalvageGatherPill() {
   return (
     <button
       type="button"
-      onClick={() => void claimNode()}
-      disabled={!claimable || phase === 'claiming'}
-      aria-label={claimable ? `Gather ${LOOK_LABEL[node.look] ?? 'salvage'}` : cooldownLabel(nextClaimAtMs)}
+      onClick={() => void gather()}
+      disabled={!claimable || phase === 'gathering'}
+      aria-label={claimable ? `Gather ${LOOK_LABEL[look] ?? 'salvage'}` : cooldownLabel(nextClaimAtMs)}
       style={{
         position: 'fixed',
         bottom: bottomOffset,
@@ -184,7 +249,7 @@ export default function SalvageGatherPill() {
           ? '0 0 0 1px rgba(94,234,212,0.2), 0 18px 44px -10px rgba(94,234,212,0.4), 0 0 38px rgba(94,234,212,0.28)'
           : 'none',
         color: '#e0f2fe',
-        cursor: claimable && phase !== 'claiming' ? 'pointer' : 'not-allowed',
+        cursor: claimable && phase !== 'gathering' ? 'pointer' : 'not-allowed',
         textAlign: 'center',
         touchAction: 'manipulation',
         userSelect: 'none',
@@ -218,11 +283,11 @@ export default function SalvageGatherPill() {
           gap: 8,
         }}
       >
-        <span aria-hidden style={{ fontSize: 22 }}>{LOOK_ICON[node.look] ?? '🐚'}</span>
-        {phase === 'claiming'
+        <span aria-hidden style={{ fontSize: 22 }}>{LOOK_ICON[look] ?? '🐚'}</span>
+        {phase === 'gathering'
           ? 'Gathering…'
           : claimable
-            ? `Gather ${LOOK_LABEL[node.look] ?? 'salvage'}`
+            ? `Gather ${LOOK_LABEL[look] ?? 'salvage'}`
             : cooldownLabel(nextClaimAtMs)}
       </span>
     </button>

@@ -5,8 +5,10 @@ import {
   KIT_CATALOG,
   KIT_LEVEL_RULES,
   KIT_PIECE_KEYS,
+  isKitPaymentRailAllowed,
   isRotationAllowed,
   kitPieceFeeCt,
+  kitPieceFeeMaterials,
   parcelDisplayName,
   parseParcelCode,
   type KitPieceKey,
@@ -17,7 +19,6 @@ import {
 import { useAvatar } from "@/hooks/use-avatar";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { api } from "@/lib/api";
-import { LAND_MATERIAL_PIECE_FEE } from "@/lib/land-materials";
 import { ownerPiecesToPlacedPieces } from "@/lib/land-yard-editor";
 import { resetJump } from "@/lib/three/jump-state";
 import { useGameStore } from "@/stores/game";
@@ -49,14 +50,14 @@ function modeLabel(mode: YardEditorMode): string {
   return mode.charAt(0).toUpperCase() + mode.slice(1);
 }
 
-/** Rail-aware price display. Server is always authoritative — see LAND_MATERIAL_PIECE_FEE. */
+/** Rail-aware price display. Server is always authoritative for what is actually charged. */
 function pieceRailPrice(
   structureType: LandStructureType,
   size: KitPieceSize,
   paymentRail: PaymentRail,
 ): string {
   return paymentRail === "materials"
-    ? `${LAND_MATERIAL_PIECE_FEE[size]} materials`
+    ? `${kitPieceFeeMaterials(size)} materials`
     : `${kitPieceFeeCt(structureType, size)} vCLAW`;
 }
 
@@ -297,11 +298,12 @@ export default function YardEditorOverlay() {
   }, [buildMode, setBuildParcelId, setParcelPieces]);
 
   // Defense in depth alongside enterBuildMode's reset: if the structure DTO
-  // resolves AFTER mount and turns out to be a shop (materials is HOME-only,
-  // §3.3), snap the rail back rather than leaving a shop yard mid-selection
-  // on a rail the server will refuse.
+  // resolves AFTER mount and turns out to be a shop, snap the rail back
+  // rather than leaving a shop yard mid-selection on a rail the server will
+  // refuse. `isKitPaymentRailAllowed` is the shared single authority — the
+  // route, the hosted executor verb and this UI all read the same function.
   useEffect(() => {
-    if (buildMode && structureType !== "home" && paymentRail === "materials") {
+    if (buildMode && paymentRail === "materials" && !isKitPaymentRailAllowed("materials", structureType)) {
       setPaymentRail("vclaw");
     }
   }, [buildMode, paymentRail, setPaymentRail, structureType]);
@@ -502,12 +504,9 @@ export default function YardEditorOverlay() {
             {(avatar?.clawTokens ?? 0).toLocaleString()} vCLAW
           </span>
         </div>
-        {/* Materials rail toggle — HOME yards only (§3.3: shops always pay
-            vCLAW). Shown even while materials spending isn't yet accepted by
-            the server (see PlaceLandPieceRequest.paymentRail doc comment) so
-            the UI is ready the moment P5b lands; a materials placement
-            attempt reverts with a clear toast rather than silently failing. */}
-        {structureType === "home" && (
+        {/* Materials rail toggle — gated by the SAME isKitPaymentRailAllowed
+            the server enforces (HOME-only, §3.3: shops always pay vCLAW). */}
+        {isKitPaymentRailAllowed("materials", structureType) && (
           <div
             style={{
               marginTop: 6,
