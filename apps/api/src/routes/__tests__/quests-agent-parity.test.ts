@@ -187,6 +187,20 @@ describe('tutorial ladder — the P6 parity flip (was tracked debt)', () => {
       expect(await res.text()).toContain('X-Clawville-Agent-Session');
     });
 
+  }
+});
+
+const describeIfDbTutorial = process.env.DATABASE_URL ? describe : describe.skip;
+// Resolving a bearer HITS THE DATABASE, so these cannot run in the in-memory
+// tier — `bun scripts/test-isolated.mjs` blanks DATABASE_URL and the lazy db
+// proxy throws, which would surface as a 500 rather than the 401 under test.
+describeIfDbTutorial('tutorial ladder — agent-session resolution (DB tier)', () => {
+  const TUTORIAL_ROUTES: Array<{ method: 'GET' | 'POST'; path: string }> = [
+    { method: 'POST', path: '/api/quests/tutorial/say-hi-nori/claim' },
+    { method: 'GET', path: '/api/quests/tutorial/claims' },
+  ];
+
+  for (const { method, path } of TUTORIAL_ROUTES) {
     it(`${method} ${path} → rejects an unresolvable agent session (401, session-aware)`, async () => {
       const res = await app.request(path, {
         method,
@@ -196,8 +210,8 @@ describe('tutorial ladder — the P6 parity flip (was tracked debt)', () => {
         },
         ...(method === 'POST' ? { body: JSON.stringify({}) } : {}),
       });
-      // requireAuth would have ignored the header and produced its own 401.
-      // This 401 comes from session resolution, so the header was READ.
+      // requireAuth would have ignored the header entirely. This 401 comes from
+      // SESSION RESOLUTION, which proves the header was actually read.
       expect(res.status).toBe(401);
       expect(await res.text()).toContain('agent session');
     });
