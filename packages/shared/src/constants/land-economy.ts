@@ -13,6 +13,7 @@
  */
 
 import { type LandTier, PARCEL_TIER_COUNTS, parcelCode } from './land-tiers';
+import { getParcelFootprintWu } from './land-parcels';
 
 // Re-export the frozen contract symbols this file builds on, so a consumer can
 // import the whole land-economy surface from one module.
@@ -695,4 +696,70 @@ export const REST_BONUS_DAILY_CAP_CT: number | null = null;
 /** True only once the founder has set a real `REST_BONUS_DAILY_CAP_CT`. */
 export function isRestBonusEnabled(): boolean {
   return REST_BONUS_DAILY_CAP_CT !== null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Structure world-scale contract (gamification pass §5.6, Q7 RATIFIED)
+//
+// These three numbers used to live as private duplicates inside
+// `land-structures.tsx` and `land-showroom.tsx` (0.62 / 0.78→1.25 / 1.5). They
+// are promoted here because `shellEnvelopeHalfWu` — the reservation the kit
+// placement predicate subtracts from every parcel — is derived from them, and a
+// renderer-only copy would let the drawn shell and the reserved shell diverge.
+//
+// Q7 accepted the FLAT ramp: scale is not a level signal (the shell swap and the
+// palette are), so the ladder is a 2.5%-per-level nudge rather than a 60% growth
+// curve. Raising FOOTPRINT_FRACTION 0.62 → 0.64 and collapsing the ramp to
+// 0.94 → 1.04 lifts the Lv1 shell from 401 wu (1.49× a 270 wu avatar) to 558 wu
+// (2.07×) with no art change.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Fraction of a parcel's side the structure footprint targets at levelScale 1. */
+export const STRUCTURE_FOOTPRINT_FRACTION = 0.64;
+
+/** Level 1 end of the flat scale ramp. */
+export const STRUCTURE_LEVEL_SCALE_MIN = 0.94;
+
+/** Level 5 end of the flat scale ramp. */
+export const STRUCTURE_LEVEL_SCALE_MAX = 1.04;
+
+/**
+ * Height ceiling as a multiple of the parcel side. Footprint binds iff the
+ * shell's `H/W < HEIGHT_CAP_FRACTION / (FOOTPRINT_FRACTION × LEVEL_SCALE_MAX)`
+ * = 1.50 / (0.64 × 1.04) = 2.254. Every shipping shell is below that crossover,
+ * so footprint is the binding constraint today.
+ */
+export const STRUCTURE_HEIGHT_CAP_FRACTION = 1.5;
+
+/**
+ * Structure scale multiplier for a build level. Clamped to 1..5; the step is
+ * `(1.04 − 0.94)/4 = 0.025` → 0.94 / 0.965 / 0.99 / 1.015 / 1.04.
+ */
+export function structureLevelScale(level: number): number {
+  const clamped = Math.max(1, Math.min(5, Number.isFinite(level) ? level : 1));
+  return (
+    STRUCTURE_LEVEL_SCALE_MIN
+    + (clamped - 1) * ((STRUCTURE_LEVEL_SCALE_MAX - STRUCTURE_LEVEL_SCALE_MIN) / 4)
+  );
+}
+
+/**
+ * Half-side, in parcel-local world units, of the square a parcel reserves for
+ * its structure shell — the region kit pieces may never intersect.
+ *
+ * DELIBERATELY LEVEL-INDEPENDENT (defect D-1). The signature takes a tier and
+ * NOTHING ELSE: the envelope is computed at the tier's MAXIMUM level, so a
+ * placement that is legal at Lv1 stays legal after every upgrade. A level
+ * parameter here would let a Lv4/Lv5 shell grow into pieces the server had
+ * already sold as legal, and Q5 forbids deleting a paid row to resolve that.
+ *
+ * The honest cost: at Lv1 a 19–39 wu ring of ground looks free but is reserved.
+ * The yard editor draws THIS function's square, so the reservation is visible
+ * rather than a surprise at upgrade time.
+ */
+export function shellEnvelopeHalfWu(parcelTier: LandTier): number {
+  const sideWu = getParcelFootprintWu(parcelTier);
+  return (
+    (sideWu * STRUCTURE_FOOTPRINT_FRACTION * structureLevelScale(getTierMaxLevel(parcelTier))) / 2
+  );
 }
