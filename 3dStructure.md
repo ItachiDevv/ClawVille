@@ -1,5 +1,6 @@
 # ClawVille — 3D Structure
 
+
 **Last Audited: 2026-08-09 (Land gamification P7a — salvage node topology).**
 48 salvage nodes were added to the world as a FROZEN SHARED CONSTANT,
 `SALVAGE_NODES` in `packages/shared/src/constants/land-salvage.ts`. Positions are
@@ -43,6 +44,12 @@ client-side — a node the client draws but the server will not settle is a lie
 told in 3D.
 
 **Prior Last Audited: 2026-08-09 (Land gamification P2b/P3/P4a + final assembly:
+
+**Last Audited: 2026-07-31 (Cold-load rung-1 canary: decorative release + Flying Dutchman deferral).**
+
+**Last edit / Last Audited:** 2026-07-31 (**Cold-load rung-1 canary — decorative release controller + Flying Dutchman post-reveal deferral.**) New `lib/three/decorative-release.ts` one-shot monotonic controller fires from all four World3DCanvas ready paths (warmup-complete / stage-ready / resume / fallback-resume) with a 45s absolute deadline armed at warmup start; stamps `__W3D_DECORATIVE_RELEASED_AT`/`_REASON`. `arena-location-npcs.tsx`: `LocationNpcConfig.deferUntilDecorativeRelease` (set ONLY on `api-integrations`/Flying Dutchman, 0.97MB) stops the parent `LocationNpc` before the `NpcMesh` `useGLTF` demand until release, and `DeferredNpcPreloads` splits its preload list so release-deferred models warm on the release signal (shared models stay immediate). Timing-only deferral — atomic mount post-release, never conditional omission; release is module-state monotonic so SPA/canvas remounts mount instantly. Telemetry: the ACTUAL-backend probe stamp moved to the live path — `WorldStageCanvas initializeStageRenderer` (the /game renderer under `WorldStageRoot`) stamps `__W3D_BACKEND` post-init (initial + both recovery paths); World3DCanvas's module-eval `'-requested'` stamp is now non-clobbering. Verified local strict-evidence probe: dutchman fetch starts +1.5ms AFTER release, zero pre-release bytes, NPC mounts. **Perf:** −0.97MB from the reveal-gated set; no shader, geometry, or per-frame-alloc change.
+
+**Last Audited: 2026-08-09 (Land gamification P2b/P3/P4a + final assembly:
 measured kit manifest, 3D placement predicate, plot growth, ring legibility,
 7-shell catalog ramp, deck-plank re-author).**
 
@@ -2046,3 +2053,13 @@ Founder report: the cove **walk-IN** (physically walking into the tunnel to ente
 **Town directory sign (same diff, `town-directory-sign.tsx`):** the bottom row crammed "← COSMETICS" (x=0.26) and "EXCHANGE →" (x=0.74) onto ONE baseline → read as "COSMETICS EXCHANGE" squeezed at sign scale. Restacked as two centred lines — "← COSMETICS" (y=545) over "EXCHANGE →" (y=665) — on the 1024×768 board.
 
 **R18d late-fix non-regression evidence (2026-07-21):** a fresh production-bundle run sampled 600 frames across four karts at **59.9 FPS**. Self conform stayed within **7.55wu Y / 1.48° pitch / 1.00° roll**, grounded remotes within **5.33wu Y / 0.42° pitch / 0.66° roll**, and the rendered jump/trick probe passed both the manual arc (**189.78wu peak, 0 plateau frames**) and remote ramp arc (**333.57wu peak, 1 plateau frame**) with one authoritative trick arm/land and the expected `1 → 1.25` trick speed modifier. The fresh live R18c contact probe completed a race but sampled zero random obstacle contacts, so strict post-R18d live-contact observation remains open; deterministic R18c mechanics (5/5), furniture (4/4), and repeated bot-race gates remain green.
+
+## Cold-load rung 2 asset diets (2026-08-08) — Last Audited 2026-08-08
+All served heavy assets moved to SIBLING-FILENAME diets (filename IS the cache-bust; KTX2 siblings
+MUST end in `-ktx.glb` — the boot preloader routes on that substring, violating it crashes boot):
+7 showpiece VRMs → `-w30k.vrm` (cronus `-w35k`) via `decimate-vrm.ts --weld-islands` (UV-island-aware,
+30k tris, ~0.5-0.7MB each from ~3MB); chibis/shisha/cove-interior/12 buildings/all land-structures →
+`-mo(-ktx)` meshopt siblings; 5 character normal-maps dropped (`-nonorm-ktx`); lobster clips stripped
+to animation-only (`-clip-ktx`, bind by node name). Cold wire 34.62→22.74MB. Validator:
+`scripts/vrm-pipeline-validate.mjs` (S1-S13; --expect-quantize/--expect-texture-diet modes) gates
+every VRM pipeline pass. Full ledger: docs/perf-cold-load-rung2-census-2026-08-07.md (M2 FREEZE).

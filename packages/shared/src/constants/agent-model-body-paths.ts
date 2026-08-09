@@ -9,9 +9,10 @@
  * paths-only mirror — NO Three.js, NO scale/anim/render metadata.
  *
  * ⚠️ KEEP IN SYNC with `MODEL_REGISTRY[key].path` in the web registry,
- * INCLUDING the `?v=N` cache-bust query strings (the bytes at
- * `/avatars/phanes.vrm` differ from `/avatars/phanes.vrm?v=2`, so the query is
- * part of the content-address). Drift is caught by the coverage test in
+ * including any `?v=N` query where one is still used. Diet siblings (rung 2,
+ * 2026-08-08: `-w30k`/`-mo`/`-nonorm` names) are FILENAME-addressed — the new
+ * name IS the cache-bust and carries no query; legacy assets (hermes, milady
+ * previews) still use `?v=N`. Drift is caught by the coverage test in
  * `apps/api/src/services/__tests__/avatar-manifest.test.ts`, which asserts this
  * map's keys equal `AGENT_MODEL_KEYS` — adding a model without a body path
  * fails CI. (A value drift, e.g. a stale `?v`, is not auto-detected; update
@@ -31,13 +32,13 @@ export const AGENT_MODEL_BODY_PATHS: Record<AgentModelKey, AgentModelBodyRef> = 
   // ── OpenClaw (crustaceans) — GLB bodies ──
   lobster: { path: '/models/lobster-ktx.glb', format: 'glb' },
   sweet_crab: { path: '/models/sweet_crab_sketchfabweekly-ktx.glb', format: 'glb' },
-  lobster_plush: { path: '/models/lobster_plush-ktx.glb', format: 'glb' },
+  lobster_plush: { path: '/models/lobster_plush-nonorm-ktx.glb', format: 'glb' },
   hermitcrab: { path: '/models/hermitcrab-ktx.glb', format: 'glb' },
 
   // ── Other (sea creatures) — GLB bodies ──
-  jellyfish: { path: '/models/jellyfish-ktx.glb', format: 'glb' },
-  octopus: { path: '/models/octopus_toy-ktx.glb', format: 'glb' },
-  seahorse: { path: '/models/sea_horse-ktx.glb', format: 'glb' },
+  jellyfish: { path: '/models/jellyfish-mo-ktx.glb', format: 'glb' },
+  octopus: { path: '/models/octopus_toy-mo-ktx.glb', format: 'glb' },
+  seahorse: { path: '/models/sea_horse-mo-ktx.glb', format: 'glb' },
 
   // ── Milady (VRM humanoid) ──
   milady_official_1: { path: '/avatars/milady-official-1.vrm', format: 'vrm' },
@@ -52,7 +53,7 @@ export const AGENT_MODEL_BODY_PATHS: Record<AgentModelKey, AgentModelBodyRef> = 
   // ── Hermes (VRM humanoid) — ?v=2 = perf-round-2 decimation bust ──
   hermes_female: { path: '/avatars/hermes-female.vrm?v=2', format: 'vrm' },
   hermes_male: { path: '/avatars/hermes-male.vrm?v=2', format: 'vrm' },
-  tekk: { path: '/avatars/tekk.vrm?v=2', format: 'vrm' },
+  tekk: { path: '/avatars/tekk-nonorm.vrm', format: 'vrm' },
 
   // ── Hatcher placeholders (point at the 8 Milady VRMs until bespoke art) ──
   hatcher_1: { path: '/avatars/milady-official-1.vrm', format: 'vrm' },
@@ -65,14 +66,14 @@ export const AGENT_MODEL_BODY_PATHS: Record<AgentModelKey, AgentModelBodyRef> = 
   hatcher_8: { path: '/avatars/milady-official-8.vrm', format: 'vrm' },
 
   // ── Bespoke Hatcher avatars (Meshy pipeline) — VRM 1.0 ~3MB ──
-  phanes: { path: '/avatars/phanes.vrm?v=2', format: 'vrm' },
-  cronus: { path: '/avatars/cronus.vrm?v=2', format: 'vrm' },
-  helen: { path: '/avatars/helen.vrm?v=2', format: 'vrm' },
-  clytemnestra: { path: '/avatars/clytemnestra.vrm?v=2', format: 'vrm' },
+  phanes: { path: '/avatars/phanes-w30k.vrm', format: 'vrm' },
+  cronus: { path: '/avatars/cronus-w35k.vrm', format: 'vrm' },
+  helen: { path: '/avatars/helen-w30k.vrm', format: 'vrm' },
+  clytemnestra: { path: '/avatars/clytemnestra-w30k.vrm', format: 'vrm' },
 
   // ── Chibi (VRM humanoid, half-height) — promoted into AGENT_MODELS 2026-06-21 ──
-  // ?v=3 matches MODEL_REGISTRY[*_chibi].path in the web registry (the query is
-  // part of the content-address — keep in sync, incl. the ?v on every bump).
-  eliza_chibi: { path: '/avatars/eliza-chibi.vrm?v=3', format: 'vrm' },
-  milady_chibi: { path: '/avatars/milady-chibi.vrm?v=3', format: 'vrm' },
+  // paths match MODEL_REGISTRY[*_chibi].path in the web registry — the -mo
+  // sibling filename IS the cache-bust (no ?v query); keep the two files in sync.
+  eliza_chibi: { path: '/avatars/eliza-chibi-mo.vrm', format: 'vrm' },
+  milady_chibi: { path: '/avatars/milady-chibi-mo.vrm', format: 'vrm' },
 };

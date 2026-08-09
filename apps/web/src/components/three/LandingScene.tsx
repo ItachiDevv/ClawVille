@@ -108,15 +108,15 @@ interface LandingBuildingDef {
 }
 
 const LANDING_BUILDINGS: LandingBuildingDef[] = [
-  { model: '/models/pineapple-house-opt1-ktx.glb?v=3',      rotY:  0.000 },  // visual-creation
-  { model: '/models/chum-bucket-v2-opt1-ktx.glb?v=4',       rotY: -0.522 },  // code-development
-  { model: '/models/krusty-krab-v2-opt1-ktx.glb?v=4',       rotY: -1.049 },  // mcp-tool-use
+  { model: '/models/pineapple-house-opt1-mo-ktx.glb?v=3',      rotY:  0.000 },  // visual-creation
+  { model: '/models/chum-bucket-v2-opt1-mo-ktx.glb?v=4',       rotY: -0.522 },  // code-development
+  { model: '/models/krusty-krab-v2-opt1-mo-ktx.glb?v=4',       rotY: -1.049 },  // mcp-tool-use
   { model: '/models/salty-spitoon-opt1-ktx.glb?v=3',        rotY: -2.093 },  // api-integrations
   { model: '/models/boating-school-opt1-ktx.glb?v=3',       rotY: -2.620 },  // app-publishing
-  { model: '/models/patty-building-opt1-ktx.glb?v=3',       rotY:  3.142 },  // cron-automation
+  { model: '/models/patty-building-opt1-mo-ktx.glb?v=3',       rotY:  3.142 },  // cron-automation
   { model: '/models/building-lighthouse-opt1-ktx.glb?v=3',  rotY:  2.620 },  // deployment-ops
   { model: '/models/arcade/claw-arcade-exterior-opt1-ktx.glb?v=4', rotY: 2.093 }, // claw-arcade
-  { model: '/models/patricks-rock-v2-opt1-ktx.glb?v=5',    rotY:  1.049 },  // agent-security
+  { model: '/models/patricks-rock-v2-opt1-mo-ktx.glb?v=5',    rotY:  1.049 },  // agent-security
   { model: '/models/squidward-house-opt1-ktx.glb?v=5',      rotY:  0.522 },  // memory-rag
 ];
 

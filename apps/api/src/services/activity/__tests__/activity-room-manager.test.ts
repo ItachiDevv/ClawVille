@@ -24,6 +24,7 @@ mock.module('@clawville/database', () => ({
   and: (...args: unknown[]) => args,
   eq: (...args: unknown[]) => args,
   inArray: (...args: unknown[]) => args,
+  sql: (strings: TemplateStringsArray, ...vals: unknown[]) => ({ strings, vals }),
   activityRooms: {
     id: 'id',
     activityId: 'activity_id',

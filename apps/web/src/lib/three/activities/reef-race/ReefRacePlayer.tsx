@@ -179,7 +179,7 @@ import {
 // Canonical creature models use KHR_texture_basisu. The race Canvas does not
 // exist yet at module load, so warm HTTP bytes only; parsing waits until
 // KTX2LoaderSetup has detected renderer support inside ReefRaceScene.
-preloadKTX2Bytes('/models/sea_horse-ktx.glb?v=2');
+preloadKTX2Bytes('/models/sea_horse-mo-ktx.glb');
 preloadKTX2Bytes('/models/lobster-ktx.glb?v=2');
 preloadKTX2Bytes('/models/crayfish-ktx.glb?v=2');  // SPEC 1 — 3rd species, static mesh
 // v2 spline path surfboard — plain .clone() (no skeleton, static mesh).
@@ -193,8 +193,8 @@ useGLTF.preload('/models/reef-race/surfboards/surfboard_1.glb');
 // no duplicate call needed.
 preloadKTX2Bytes('/models/sweet_crab_sketchfabweekly-ktx.glb');
 preloadKTX2Bytes('/models/hermitcrab-ktx.glb');
-preloadKTX2Bytes('/models/jellyfish-ktx.glb');
-preloadKTX2Bytes('/models/octopus_toy-ktx.glb');
+preloadKTX2Bytes('/models/jellyfish-mo-ktx.glb');
+preloadKTX2Bytes('/models/octopus_toy-mo-ktx.glb');
 
 // SPEC 2 — Milady VRM preloads.
 // preloadMixamoClips() warms the raw Mixamo GLB cache (idle/walk/run only).
@@ -215,11 +215,11 @@ for (let _n = 1; _n <= 8; _n++) {
 // avatars (Phanes/Cronus/Helen/Clytemnestra/Adinero) are NOT, and are now reachable
 // as reef riders via the generalized registry router. Warm them here.
 for (const _meshyVrmPath of [
-  '/avatars/phanes.vrm?v=2',
-  '/avatars/cronus.vrm?v=2',
-  '/avatars/helen.vrm?v=2',
-  '/avatars/clytemnestra.vrm?v=2',
-  '/avatars/adinero.vrm?v=1',
+  '/avatars/phanes-w30k.vrm',
+  '/avatars/cronus-w35k.vrm',
+  '/avatars/helen-w30k.vrm',
+  '/avatars/clytemnestra-w30k.vrm',
+  '/avatars/adinero-w30k.vrm',
 ]) {
   preloadVRMBytes(_meshyVrmPath);
 }
@@ -1019,7 +1019,7 @@ function ReefRacePlayerInner({
     switch (speciesKey) {
       case 'crayfish':  return '/models/crayfish-ktx.glb?v=2';
       case 'seahorse':
-      case 'sea_horse': return '/models/sea_horse-ktx.glb?v=2';
+      case 'sea_horse': return '/models/sea_horse-mo-ktx.glb';
       default:
         // Unknown species — not in the registry, not a legacy special case.
         // Log once, render lobster.
