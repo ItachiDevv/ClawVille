@@ -19,6 +19,7 @@ export const HATCHER_ACTION_VERBS = [
   'enter_poker_room',
   'enter_kelp_forest',
   'claim_tutorial_quest',
+  'salvage_node',
   'talk_to_npc',
 ] as const;
 
@@ -86,6 +87,12 @@ export const HATCHER_ACTION_MENU: readonly HatcherActionMenuItem[] = [
     syntax: 'claim_tutorial_quest(questId=<listed claimable quest id>)',
     whenToUse:
       'claim one qualified tutorial or land quest as yourself; the server re-checks proof of engagement and pays vCLAW or materials once, ever',
+  },
+  {
+    verb: 'salvage_node',
+    syntax: 'salvage_node(nodeId=<listed salvage node id>)',
+    whenToUse:
+      'gather build materials from one seabed salvage node; walk there first, then call it again on arrival to claim',
   },
   {
     verb: 'talk_to_npc',

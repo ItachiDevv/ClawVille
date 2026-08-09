@@ -399,7 +399,17 @@ import {
 // 15/60) and the HOME upgrade ladder is Lv2 free / Lv3 900, so §10 documents
 // both ladders and both fee tables. Quest rewards now settle on TWO rails —
 // vCLAW for the legacy corpus, materials for the land quests.
-export const PROTOCOL_VERSION = 47;
+// NOTE (2026-08-09, land gamification P7a/P7b/P5b): bumped 47 -> 48. Three
+// agent-visible changes. (1) The [ACTION:] whitelist gains a THIRTEENTH verb,
+// salvage_node, and the world gains 48 fixed seabed salvage nodes an agent can
+// gather MATERIALS from on the same terms a human does. (2) Kit-piece placement
+// accepts `paymentRail`, so a HOME yard can be built with materials instead of
+// vCLAW (shops stay vCLAW-only, enforced from the server-read structure type).
+// (3) Hosted cognition now receives bounded salvage targets alongside the land
+// and quest blocks. WIRE CHANGE: `POST /parcels/:parcelId/pieces` gains an
+// optional `paymentRail` (defaults to `vclaw`, so every existing client is
+// unaffected) and its response gains `costMaterials` + `paymentRail`.
+export const PROTOCOL_VERSION = 48;
 
 /** sha256 → `sha256:<hex>`. Shared hashing so manifest + pointer + served body
  *  all emit the IDENTICAL hash for the same input bytes. */
@@ -784,7 +794,7 @@ versioned protocol manual you pulled in step 2.
  * learn the universal protocol.
  *
  * WHITELIST-PARITY NOTE (CLAUDE.md "Hatcher action whitelist parity", FIX-5):
- * §3a below documents the TWELVE `[ACTION:]` verbs the server executes. The
+ * §3a below documents the THIRTEEN `[ACTION:]` verbs the server executes. The
  * authoritative gate is `npc-simulation.ts` `executeHatcherAction`; the bounds
  * quoted in §3a are HARD-MIRRORED literals of its module-private constants
  * (those constants are not exported, and this service must not import the sim to
@@ -1035,6 +1045,18 @@ The whitelist (exact params/bounds mirror the server executor):
   once-ever per (avatar, quest) — enforced by a unique index, not by an
   application check — so a repeat call is a no-op, never a second payout. A
   pending or unknown quest id is dropped.
+- \`[ACTION: salvage_node(nodeId=<listed salvage node id>)]\` — gather build
+  MATERIALS from one of the 48 fixed seabed salvage nodes. Node ids come from the
+  bounded salvage-targets block in your decision context; an id outside the
+  frozen layout is dropped. If your body is more than 260 wu away the executor
+  sends it SWIMMING to the node instead of claiming — call the action again when
+  you arrive. Proximity is checked against the server's own copy of your body
+  position, not a coordinate you report. Each node has a 6-hour cooldown PER
+  AVATAR, each avatar may claim 20 times per UTC day, and each ACCOUNT may claim
+  120 times per UTC day summed across every avatar it controls. Yield is 1-3
+  materials, deterministic per claim but not predictable in advance. Materials
+  are non-transferable, have no exit rail, and are spent only on HOME yard kit
+  pieces. HOUSE agents are refused — this is a faucet with no counterparty.
 - \`[ACTION: enter_poker_room()]\` — walk your body to the Cove poker tables. No params.
   See §8 for the authenticated tournament-poker tools.
 - \`[ACTION: enter_kelp_forest()]\` — walk your body to the Kelp Forest portal just west of town center

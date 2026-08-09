@@ -107,6 +107,57 @@ export function kitPieceFeeCt(
 }
 
 /**
+ * Which currency a kit placement is paid in (Land gamification P5b).
+ *
+ * A PLAYER CHOICE, not a server preference. Both rails buy the identical
+ * piece — materials are the reward loop's sink, vCLAW is for a player who has
+ * the coin and does not want the walk.
+ */
+export const KIT_PAYMENT_RAILS = ['vclaw', 'materials'] as const;
+export type KitPaymentRail = (typeof KIT_PAYMENT_RAILS)[number];
+
+/**
+ * Material cost of one kit piece. HOME YARDS ONLY.
+ *
+ * ── WHY MATERIALS ARE HOME-ONLY ─────────────────────────────────────────────
+ * Materials are earned by playing the land loop and have no exit rail. A home
+ * yard is self-expression, so paying for it with time spent playing is the
+ * whole design. A SHOP yard is a commercial investment that earns vCLAW back
+ * through listings and featured slots — letting it be built from a non-cashable
+ * currency would let a player convert unsellable materials into a revenue
+ * stream, which is an exit rail through the back door.
+ *
+ * The server reads `structure_type` from the LOCKED `land_structures` row and
+ * refuses `materials` on a shop. The rail is never trusted from the request
+ * body beyond "which one did you ask for".
+ *
+ * Sizing (design §3.3): 8 small / 30 large against the §2.3 earn model of ~40
+ * materials per avatar-day at expectation. A Lv1 home yard (6 small) is 48
+ * materials, about 1.2 days; a full Lv3 yard (28 small + 2 large) is 284, about
+ * 7.1 days. Change these together with the earn rate or the pacing breaks.
+ */
+export const KIT_PIECE_FEE_MATERIALS: Readonly<Record<KitPieceSize, number>> = {
+  small: 8,
+  large: 30,
+};
+
+export function kitPieceFeeMaterials(size: KitPieceSize): number {
+  return KIT_PIECE_FEE_MATERIALS[size];
+}
+
+/**
+ * Is this rail legal for this structure type? The ONE authority — the route,
+ * the executor verb and the manual all read it, so they cannot disagree about
+ * what a shop may do.
+ */
+export function isKitPaymentRailAllowed(
+  rail: KitPaymentRail,
+  structureType: LandStructureType,
+): boolean {
+  return rail === 'vclaw' || structureType === 'home';
+}
+
+/**
  * @deprecated Use `kitPieceFeeCt(structureType, size)`.
  *
  * Retained as the SHOP row so the pre-reprice shape and numbers still resolve.
