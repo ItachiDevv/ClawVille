@@ -7,13 +7,14 @@
  * owner pays up.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import { db, sql } from '@clawville/database';
 import {
   SERVICE_LISTING_SLOT_RENT_CT_WEEKLY,
   SERVICE_FEATURED_SLOT_RENT_CT_WEEKLY,
 } from '@clawville/shared';
 import { processDueListing } from '../service-slot-rent-sweeper';
+import { slotPaidThroughOnCreateSql } from '../../routes/land';
 import { getHouseTreasuryAvatarId } from '../house-treasury-seeder';
 
 const describeIfDb = process.env.DATABASE_URL ? describe : describe.skip;
@@ -32,6 +33,7 @@ describeIfDb('service slot rent sweeper (real DB)', () => {
   let structureId = '';
   let listingId = '';
   let treasuryId = '';
+  let b2ParcelIdOuter = '';
 
   const balance = async (): Promise<number> =>
     Number(
@@ -53,6 +55,20 @@ describeIfDb('service slot rent sweeper (real DB)', () => {
             FROM service_listings WHERE id = ${listingId}`,
       ),
     );
+
+  /**
+   * What a FRESH free-week grant would evaluate to, on the DATABASE clock.
+   * Every cursor assertion compares against this rather than local wall-clock:
+   * the cursors are set by `now()` on the server, and this machine's clock runs
+   * ~1s behind Supabase's, which is enough to make a naive `Date.now()` delta
+   * read 7.00001 days and fail a "< 7" assertion for no real reason.
+   */
+  const freshGrantMs = async (): Promise<number> =>
+    new Date(
+      first(
+        await db.execute<{ t: string }>(sql`SELECT (now() + interval '7 days') AS t`),
+      ).t,
+    ).getTime();
 
   /** Force the slot cursor into the past so the next sweep sees it as due. */
   const makeSlotDue = async () => {
@@ -267,6 +283,119 @@ describeIfDb('service slot rent sweeper (real DB)', () => {
     const state = await listingState();
     expect(state.slot_suspended_at).toBeNull();
     expect(new Date(state.slot_paid_through!).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  // -- B2: the free week must attach to the SHOP, not to a re-mintable row --
+  describe('free-week grant (delist/recreate bypass)', () => {
+    let b2StructureId = '';
+    const created: string[] = [];
+
+    /** Create a listing exactly the way the route does - same SQL fragment. */
+    const createListing = async (): Promise<{ id: string; slotPaidThrough: string }> => {
+      const row = first(
+        await db.execute<{ id: string; slot_paid_through: string }>(
+          sql`INSERT INTO service_listings
+                (structure_id, owner_avatar_id, kind, title, price_ct, status, slot_paid_through)
+              VALUES (${b2StructureId}, ${avatarId}, 'peer', ${`${tag} b2`}, 100, 'active',
+                      ${slotPaidThroughOnCreateSql(b2StructureId)})
+              RETURNING id, slot_paid_through`,
+        ),
+      );
+      created.push(row.id);
+      return { id: row.id, slotPaidThrough: row.slot_paid_through };
+    };
+
+    beforeAll(async () => {
+      // One structure per parcel, so this block borrows its own parcel + shop.
+      const parcels = await db.execute<{ id: string }>(
+        sql`SELECT id FROM land_parcels
+            WHERE status = 'available' AND owner_avatar_id IS NULL AND tier = 'starter'
+            ORDER BY parcel_code LIMIT 1`,
+      );
+      b2ParcelIdOuter = first(parcels).id;
+      await db.execute(
+        sql`UPDATE land_parcels SET status = 'owned', owner_avatar_id = ${avatarId},
+                                    tenure = 'rented', tenure_terms_version = 2,
+                                    acquired_at = now(), updated_at = now()
+            WHERE id = ${b2ParcelIdOuter}`,
+      );
+      b2StructureId = first(
+        await db.execute<{ id: string }>(
+          sql`INSERT INTO land_structures (parcel_id, owner_avatar_id, structure_type, catalog_key, level, status)
+              VALUES (${b2ParcelIdOuter}, ${avatarId}, 'shop', 'starter-shop', 1, 'active')
+              RETURNING id`,
+        ),
+      ).id;
+    });
+
+    afterAll(async () => {
+      const clean = (q: ReturnType<typeof sql>) => db.execute(q).catch(() => {});
+      await clean(sql`DELETE FROM service_listings WHERE structure_id = ${b2StructureId}`);
+      await clean(sql`DELETE FROM land_structures WHERE id = ${b2StructureId}`);
+      if (b2ParcelIdOuter) {
+        await clean(sql`UPDATE land_parcels SET
+                          status = 'available', owner_avatar_id = NULL, tenure = NULL,
+                          tenure_terms_version = NULL, acquired_at = NULL, updated_at = now()
+                        WHERE id = ${b2ParcelIdOuter}`);
+      }
+    });
+
+    it('grants the genuine free week to a shop FIRST listing', async () => {
+      const listing = await createListing();
+      const grant = await freshGrantMs();
+      // Within a few seconds of a fresh 7-day grant on the server clock.
+      expect(Math.abs(new Date(listing.slotPaidThrough).getTime() - grant)).toBeLessThan(
+        10_000,
+      );
+    });
+
+    it('does NOT grant a second free week on delist + recreate', async () => {
+      // The bypass: delist mid-week, recreate, collect another free week, and
+      // repeat forever - paying 0 slot rent while never losing sellability.
+      const original = first(
+        await db.execute<{ slot_paid_through: string }>(
+          sql`SELECT slot_paid_through FROM service_listings WHERE id = ${created[0]}`,
+        ),
+      ).slot_paid_through;
+
+      await db.execute(
+        sql`UPDATE service_listings SET status = 'delisted' WHERE id = ${created[0]}`,
+      );
+      const replacement = await createListing();
+
+      // The replacement INHERITS the original cursor instead of restarting it.
+      expect(new Date(replacement.slotPaidThrough).getTime()).toBe(
+        new Date(original).getTime(),
+      );
+      // And it is emphatically NOT a fresh grant: a new free week would land
+      // strictly later than the inherited cursor by the elapsed time.
+      const grant = await freshGrantMs();
+      expect(new Date(replacement.slotPaidThrough).getTime()).toBeLessThan(grant);
+    });
+
+    it('makes a recreated listing due immediately when the shop already lapsed', async () => {
+      // Every prior cursor in the past => the replacement starts at now(), so
+      // the next sweep charges it rather than granting a grace week.
+      await db.execute(
+        sql`UPDATE service_listings SET slot_paid_through = now() - interval '2 days',
+                                        status = 'delisted'
+            WHERE structure_id = ${b2StructureId}`,
+      );
+      const replacement = await createListing();
+      const nowMs = new Date(
+        first(await db.execute<{ t: string }>(sql`SELECT now() AS t`)).t,
+      ).getTime();
+      // Floored at now() on the server clock - NOT a week out.
+      expect(Math.abs(new Date(replacement.slotPaidThrough).getTime() - nowMs)).toBeLessThan(
+        10_000,
+      );
+
+      expect(await processDueListing(replacement.id)).toEqual({
+        kind: 'charged',
+        slotCt: SERVICE_LISTING_SLOT_RENT_CT_WEEKLY,
+        featuredCt: 0,
+      });
+    });
   });
 
   it('skips a delisted listing entirely', async () => {

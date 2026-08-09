@@ -525,6 +525,16 @@ export async function settleTutorialQuestClaim(input: {
   const { actor, questId } = input;
   const reward = getTutorialQuestRewardDetail(questId);
   if (!reward) return { kind: 'unknown_quest', questId };
+  // A zero (or negative, or fractional) reward would write 0/0 and violate
+  // `tutorial_claim_single_rail` as SQLSTATE 23514 — an uncaught 500 rather
+  // than a refusal. Every shipping reward is >= 5, so this is latent; refuse it
+  // here as a malformed catalog entry instead of discovering it in production.
+  if (!Number.isInteger(reward.amount) || reward.amount <= 0) {
+    console.error(
+      `[tutorial-quest] quest "${questId}" declares a non-positive reward (${reward.amount}) — refusing`,
+    );
+    return { kind: 'unknown_quest', questId };
+  }
 
   // Cheap pre-check. The unique index is the authority; this only avoids
   // running the full validator and transaction when we know they will fail.
@@ -614,6 +624,15 @@ export async function settleTutorialQuestClaim(input: {
   } catch (err) {
     // The unique index fired: a concurrent claim won. Report the replay rather
     // than the raw conflict — the caller's contract is "one effect, ever".
+    // 23514 = check_violation. Reaching it means the catalog and the DB
+    // disagree about what a valid reward is; surface it loudly rather than as
+    // an opaque 500, but do NOT treat it as a replay — nothing was written.
+    if (pgErrorCode(err) === '23514') {
+      console.error(
+        `[tutorial-quest] claim for "${questId}" violated a reward CHECK constraint`,
+      );
+      return { kind: 'unknown_quest', questId };
+    }
     if (pgErrorCode(err) === '23505') {
       return {
         kind: 'already_claimed',

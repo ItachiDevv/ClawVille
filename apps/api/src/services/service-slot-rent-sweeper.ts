@@ -56,8 +56,37 @@ import {
 import { getHouseTreasuryAvatarId } from './house-treasury-seeder';
 import { withKeyedMutex } from './keyed-mutex';
 
+// FEATURE_GATE: shop_featured_placement
+// Status: DARK — the column, the constant, the index, and the charge branch
+//   below all exist, but NOTHING WRITES `service_listings.featured = true`.
+//   Both listing schemas are `.strict()` and carry no `featured` field, so the
+//   1,200/week charge is unreachable and this branch is dead code today.
+// Why it is here: the schema + charge groundwork is the expensive half and it
+//   is verified by the executed suite (which sets the flag directly). Adding
+//   the writer is a small follow-up; shipping the writer WITHOUT the ordering
+//   fix below would have sold placement that sorted to the BOTTOM of the board.
+// Metric to graduate: a listing mutation accepts `featured`, and the public
+//   board demonstrably orders a live-featured listing first.
+// Current reading: 0 rows with `featured = true`.
+// Review deadline: the slice that adds the featured writer.
+// On deadline: if no writer has landed, DELETE this branch, the constant, and
+//   `service_listings_featured_sweep_idx` rather than carrying dead money code.
+// Reference: money review 2026-08-09 findings M1/M2.
+//
+// The knowledge surfaces (manual §10, Nori, orientation) deliberately do NOT
+// mention featured placement while this gate is open — advertising a product
+// the server cannot sell is the exact defect class the world-scope rule exists
+// for.
+
 const DEFAULT_SWEEP_PERIOD_MS = 60 * 60 * 1000; // hourly, like the parcel sweeper
 const MIN_SWEEP_PERIOD_MS = 5 * 60 * 1000;
+/**
+ * Per-pass candidate ceiling. Beyond this many due listings a single pass never
+ * reaches the tail — but nothing is LOST: an un-swept row keeps its cursor and
+ * is picked up next pass. The real consequence at scale is drift: the effective
+ * billing period stretches past 7 days once sustained due-volume exceeds this
+ * per hour. Revisit if active listings ever approach 2,000.
+ */
 const MAX_CANDIDATES_PER_PASS = 2000;
 
 /** Only knob. Unset or below the floor falls back to hourly. */
@@ -220,6 +249,9 @@ export async function processDueListing(listingId: string): Promise<SlotSweepAct
 
       // The featured charge is independent: failing it never suspends the
       // listing, it just lets the premium placement lapse until it can be paid.
+      // FEATURE_GATE shop_featured_placement — unreachable today (no writer
+      // sets `featured`). Kept charging-correct so graduating the gate is a
+      // one-line schema change, not a money-path rewrite.
       if (featured && featuredDue) {
         const paid = await chargeOwner(
           tx,

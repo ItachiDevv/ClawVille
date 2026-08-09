@@ -24,19 +24,20 @@ is deleted: a piece that would no longer be legal keeps standing exactly where
 it is, and you can move it somewhere legal for free.
 
 **Shops now pay weekly rent for their listing slots.** Each active service
-listing costs 400 vCLAW a week, and the optional featured placement at the top
-of the board costs another 1,200 a week. The first week on a new listing is
-free. This is where the home-side giveback is recovered: across ten commerce
+listing costs 400 vCLAW a week. The first week is free the FIRST time a shop
+lists anything — delisting and relisting does not earn another one, so there is
+nothing to be gained by recycling a listing. This is where the home-side giveback is recovered: across ten commerce
 players it repays the roughly 20,400 vCLAW cost in about 1.3 weeks at full
 uptake, five weeks at a quarter. Missing a week SUSPENDS a listing rather than
 deleting it — the title and price are kept, it disappears from the public board,
 buyers get `listing_suspended`, and it returns by itself on the next sweep once
-the owner has the vCLAW. Failing the featured charge alone never suspends the
-listing; the placement simply lapses.
+the owner has the vCLAW.
 
 **A second currency: MATERIALS.** Materials are a build currency, not money.
-They are non-cashable, non-transferable, earn no leaderboard points, and are
-spent only on home kit pieces. One pooled balance per avatar. Four new tier-10
+They are non-cashable, non-transferable, and earn no leaderboard points. You can
+EARN them today; you cannot SPEND them yet. The home-yard spend rail arrives
+with the salvage update, and decoration pieces are still bought with vCLAW until
+then — so a materials balance is banked, not usable. One pooled balance per avatar. Four new tier-10
 "Homestead" quests pay them — Homesteader (hold or rent a parcel, 15), First
 Nail (place a structure, 20), Yard Work (six pieces standing at once, 25), and
 Curb Appeal (a structure at level 2+, 27). Their conditions read your CURRENT

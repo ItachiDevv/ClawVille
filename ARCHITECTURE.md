@@ -51,6 +51,32 @@ its own cursor and never suspends the listing. Treasury policy matches the
 parcel sweeper (burn-and-proceed on a missing treasury), not the fail-closed kit
 route. Boot-wired in `index.ts`; knob `SERVICE_SLOT_SWEEP_PERIOD_MS`.
 
+**(2d) Money-review fixes (2026-08-09).** Two economic bypasses closed.
+(B1) The hosted quest-claim path resolved its actor through
+`resolveAutonomousCoveAgentBinding`, which checks `openclaw_bots.is_house`
+FIRST and returns a ledger-capable binding while ignoring the session. That
+carve-out is correct for the COVE, where the house is a wager counterparty; a
+quest is a pure FAUCET, so the server's own fleet could have minted the whole
+~1,650 vCLAW ladder into house-owned balances. Quest settlement now uses its own
+`autonomousQuestAgentResolve` seam: the connected-session resolver (which house
+bots structurally cannot satisfy) PLUS an explicit `isHouseAgentId` refusal in
+front of it — two independent barriers.
+(B2) Listing creation stamped an unconditional `now() + 7 days`, so delisting on
+day six and recreating minted a fresh free week forever and the P5a sink
+collected nothing. The free week now belongs to the STRUCTURE, granted once
+ever: `slotPaidThroughOnCreateSql` carries the shop's furthest paid-through
+forward, floored at `now()`, evaluated INSIDE the INSERT so two concurrent
+creates cannot both observe "no history".
+Also: the executor claim path now emits `tutorial_quest.claimed` with explicitly
+NULL fp/ip (hosted actions have no request context) so hosted claims are visible
+to `/dash`; the public board orders on LIVE-featured state rather than the raw
+cursor (Postgres `DESC` defaults to NULLS FIRST, which sorted non-featured
+listings ABOVE featured ones); featured placement is `FEATURE_GATE`d as DARK
+because nothing writes `featured`, and was stripped from all three knowledge
+surfaces; the material SPEND rail is `FEATURE_GATE`d as EARN-ONLY with the same
+surfaces corrected; and the decide prompt gains a bounded server-derived
+claimable-quest block so a hosted agent knows which `questId` values are valid.
+
 **(2c) Kit placement is now the SHARED predicate (P3, closes defect D-1).**
 `isCellPlaceable` validated the ANCHOR CELL ONLY, but a piece spans up to five
 cells once rotated -- so a `path-stone` on a legal perimeter cell overhung the

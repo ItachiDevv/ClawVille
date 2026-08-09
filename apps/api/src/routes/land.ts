@@ -672,6 +672,34 @@ const KIT_PLACEMENT_CONFLICT_CODES: ReadonlySet<PlacementRefusalCode> = new Set(
 ]);
 
 /** HTTP status for a placement refusal. Conflicts 409, bad input 400. */
+/**
+ * The slot-rent cursor a NEW listing starts on (land gamification P5a, B2 fix).
+ *
+ * Returned as a SQL fragment, not a value, so it is evaluated INSIDE the same
+ * INSERT that creates the row — a read-then-insert would leave a window where a
+ * concurrent create on the same structure could both observe "no history" and
+ * both mint a free week.
+ *
+ * The rule: the free first week belongs to the SHOP, not to a row. It is
+ * granted once per structure, ever; every later listing inherits the furthest
+ * paid-through the shop has already bought, floored at now(). That is what
+ * closes the delist-and-recreate bypass — the delisted row keeps its cursor and
+ * the replacement inherits it, so recreating buys nothing.
+ *
+ * `GREATEST` sits inside an explicit COUNT branch because `GREATEST(now(), NULL)`
+ * returns now() in Postgres, which would have silently denied every genuinely
+ * new shop its first free week.
+ */
+export function slotPaidThroughOnCreateSql(structureId: string) {
+  return sql`(SELECT CASE
+                       WHEN count(*) = 0
+                         THEN now() + make_interval(days => ${RENT_PERIOD_DAYS})
+                       ELSE GREATEST(now(), COALESCE(max(prior.slot_paid_through), now()))
+                     END
+                FROM service_listings prior
+               WHERE prior.structure_id = ${structureId})`;
+}
+
 export function kitPlacementRefusalStatus(code: PlacementRefusalCode): 400 | 409 {
   return KIT_PLACEMENT_CONFLICT_CODES.has(code) ? 409 : 400;
 }
@@ -4103,14 +4131,32 @@ landRoutes.post(
         created_at: string;
         updated_at: string;
       }>(
-        // `slot_paid_through` grants the FIRST week free (land gamification
-        // P5a): a shop is never billed before it has had a chance to sell.
-        // The sweeper charges 400/week from then on.
+        // `slot_paid_through` is CARRIED FORWARD from this shop's listing
+        // history, and the free first week is granted ONCE PER STRUCTURE, ever.
+        //
+        // The naive version (an unconditional `now() + 7 days` on every new
+        // listing) was a permanent bypass of the entire P5a sink: delist on day
+        // six, recreate with the same title, get a fresh free week, repeat.
+        // A delisted row is invisible to the sweeper and does not count against
+        // the per-structure active cap, so the recycle was unbounded and the
+        // shop paid nothing, forever.
+        //
+        // The subquery spans ALL listings on the structure regardless of status
+        // (nothing hard-deletes a listing row — delist is a status change), so:
+        //   - no prior listing on this shop  -> the genuine free week,
+        //   - prior listing paid into the future -> that cursor is inherited,
+        //     so a recreated listing is due on the ORIGINAL schedule,
+        //   - prior listing already lapsed  -> floored at now(), i.e. due on the
+        //     very next sweep.
+        // `GREATEST` is written around an explicit COUNT branch because
+        // `GREATEST(now(), NULL)` returns now() in Postgres, which would have
+        // silently swallowed the no-history case and denied every shop its
+        // first free week.
         sql`INSERT INTO service_listings
               (structure_id, owner_avatar_id, kind, title, description, price_ct, status,
                slot_paid_through)
             VALUES (${structureId}, ${avatarId}, 'peer', ${title}, ${description ?? null}, ${priceCt}, 'active',
-                    now() + make_interval(days => ${RENT_PERIOD_DAYS}))
+                    ${slotPaidThroughOnCreateSql(structureId)})
             RETURNING id, structure_id, owner_avatar_id, kind, title, description, price_ct, status, platform_fee_bps, created_at, updated_at`,
       );
       const row = insertRows[0]!;
@@ -4323,9 +4369,16 @@ landRoutes.get('/services', async (c) => {
     .select()
     .from(serviceListings)
     .where(and(eq(serviceListings.status, 'active'), isNull(serviceListings.slotSuspendedAt)))
-    // Paid featured placement floats to the top of the public board; that is
-    // the entire product the 1,200/week buys.
-    .orderBy(desc(serviceListings.featuredPaidThrough), desc(serviceListings.createdAt))
+    // Order on LIVE-featured state, not the raw cursor. `desc(col)` emits a bare
+    // `col desc`, and Postgres defaults DESC to NULLS FIRST — so ordering on the
+    // cursor alone sorted every NON-featured listing (NULL) ABOVE every featured
+    // one, i.e. paying for placement bought the bottom of the board. Harmless
+    // only while nothing can be featured; fixed now so it is correct the moment
+    // the writer lands.
+    .orderBy(
+      sql`(${serviceListings.featured} AND ${serviceListings.featuredPaidThrough} > now()) DESC`,
+      desc(serviceListings.createdAt),
+    )
     .limit(limit + 1)
     .offset(offset);
 

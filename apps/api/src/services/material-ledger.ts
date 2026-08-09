@@ -11,7 +11,8 @@
  *   - ONE pooled balance per avatar (founder ruling Q4). There are no
  *     provenance tags because there is no cashability question to answer:
  *     materials have NO exit rail, are not transferable between avatars, and
- *     are sink-only (they leave the economy into home kit pieces).
+ *     are sink-only BY DESIGN — though the sink itself is not live yet, see
+ *     the FEATURE_GATE below before telling a player they can spend these.
  *   - No leaderboard weight (founder ruling Q11), so no scoring emitter.
  *   - No generic transaction table. Each earn path owns its own durable audit
  *     row — the tutorial claim row for quests, `salvage_claim_receipts` for
@@ -35,6 +36,24 @@
  * read-then-write: a spend at balance − 1 refuses without ever writing, and the
  * caller's transaction rolls the rest of the placement back.
  */
+
+// FEATURE_GATE: land_materials_spend_rail
+// Status: EARN-ONLY. `creditMaterials` is live (the four Tier-10 land quests);
+//   `debitMaterials` has ZERO production callers. Kit-piece placement still
+//   charges vCLAW (`kitPieceFeeCt`), so a player who earns 87 materials today
+//   has nothing to spend them on.
+// Why it ships anyway: the spend rail is the design's P5b, deliberately gated
+//   behind the salvage lane's hosted verb so the earn and spend paths reach
+//   G-J three-path parity together rather than shipping a human-only sink.
+// Metric to graduate: `place_kit_piece` accepts `paymentRail: 'materials'` on
+//   all three subject paths, with the HOME-only assertion under test.
+// Current reading: 0 material spends possible.
+// Review deadline: the slice that lands the salvage hosted verb.
+// On deadline: if the spend rail has not landed, either land it or stop paying
+//   the four land quests in materials — an accumulating balance with no sink is
+//   a broken promise to the player, not a feature.
+// Reference: gamification-pass-2026-08-09.md §2.4/§3.3 (P5b), founder Q4/Q11.
+//
 
 import { db, sql } from '@clawville/database';
 import { withKeyedMutex } from './keyed-mutex';
@@ -78,7 +97,18 @@ export class InsufficientMaterialsError extends Error {
   }
 }
 
-/** Thrown when the avatar row does not exist (FK violation on the balance upsert). */
+/**
+ * Thrown when the avatar row does not exist (FK violation on the balance
+ * upsert).
+ *
+ * CALLER CONSTRAINT — this error is NOT recoverable in COMPOSED mode. By the
+ * time this JS catch runs, Postgres has already aborted the surrounding
+ * transaction, so a caller that catches it and issues another statement on the
+ * same `tx` gets `25P02 current transaction is aborted`. It reads like a
+ * recoverable validation error, which is exactly the trap: in composed mode the
+ * only correct responses are rethrow or roll back. Every current caller
+ * rethrows.
+ */
 export class UnknownMaterialSubjectError extends Error {
   constructor(public readonly avatarId: string) {
     super(`Material subject not found: avatar ${avatarId}`);

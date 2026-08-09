@@ -646,6 +646,33 @@ class NpcSimulation {
     );
   };
   /**
+   * Test seam; FAUCET actor resolution for quest claims.
+   *
+   * Deliberately NOT `autonomousCoveAgentResolve`. That resolver checks
+   * `openclaw_bots.is_house` FIRST and, on a hit, returns a ledger-capable
+   * binding while ignoring the session entirely — a carve-out ratified for the
+   * cove, where the house is a wager counterparty. A quest is a pure faucet, so
+   * this path goes straight to the connected-session resolver (which every
+   * connected and user-hosted agent has, and house bots deliberately do not)
+   * and then refuses a house agentId explicitly. Two independent barriers,
+   * because one of them being load-bearing by accident is how B1 happened.
+   */
+  autonomousQuestAgentResolve: (
+    sessionId: string,
+    expectedAgentId: string,
+  ) => Promise<{
+    userId: string | null;
+    avatarId: string | null;
+    agentId: string;
+    ledgerCapable: boolean;
+  } | null> = async (sessionId, expectedAgentId) => {
+    const { isHouseAgentId } = await import('./autonomous-cove-agent-binding');
+    if (await isHouseAgentId(expectedAgentId)) return null;
+    const { resolveAgentSession } = await import('../middleware/require-auth-or-agent');
+    return resolveAgentSession(sessionId);
+  };
+
+  /**
    * Test seam; production dispatches into the SAME shared quest-settlement
    * service the REST route uses, so the human and hosted-agent claim paths are
    * one implementation rather than two.
@@ -2274,12 +2301,14 @@ class NpcSimulation {
     attribution: AgentActionAttribution,
     questId: string,
   ): Promise<void> {
-    const resolved = await this.autonomousCoveAgentResolve(
+    const resolved = await this.autonomousQuestAgentResolve(
       attribution.sessionId,
       attribution.agentId,
     );
     if (!resolved) {
-      console.warn('[Hatcher] claim_tutorial_quest dropped — invalid or expired agent session');
+      console.warn(
+        '[Hatcher] claim_tutorial_quest dropped — no live connected session, or a house actor (house fleets never claim faucets)',
+      );
       return;
     }
     if (!resolved.ledgerCapable) {
@@ -2325,6 +2354,41 @@ class NpcSimulation {
         console.warn(`[Hatcher] claim_tutorial_quest "${questId}" not settled — ${result.kind}`);
         return;
       }
+      // Telemetry parity with the REST path. A hosted action has NO request
+      // context, so `logEventFromContext` is unavailable and the anti-farm
+      // fp/ip tags are explicitly NULL here — documented, not hidden. Without
+      // this a hosted claim wave is invisible to /dash and to any future
+      // per-subject cap. Post-settlement and best-effort: a dropped event never
+      // un-claims a settled quest.
+      void (async () => {
+        try {
+          const { logEvent } = await import('./event-logger');
+          await logEvent({
+            eventType: 'tutorial_quest.claimed',
+            userId: resolved.userId,
+            avatarId: resolved.avatarId,
+            agentId: resolved.agentId,
+            // EXPLICITLY null: a hosted action has no browser request, so there
+            // is no fingerprint or IP to salt. Documented, not hidden — these
+            // rows are inherently exempt from anti-farm caps, exactly like the
+            // other system/cron writers.
+            fpHash: null,
+            ipPrefixHash: null,
+            payload: {
+              questId,
+              rail: result.reward?.kind ?? null,
+              amount: result.reward?.amount ?? null,
+              subjectKind: 'agent',
+              surface: 'hosted_action',
+            },
+          });
+        } catch (err) {
+          console.warn(
+            `[Hatcher] claim_tutorial_quest telemetry failed — ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      })();
+
       const body = this.npcs.get(npcId);
       if (body) {
         this.setNpcActivity(npcId, 'trading', '🎯');

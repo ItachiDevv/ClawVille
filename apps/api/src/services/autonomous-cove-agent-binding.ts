@@ -69,3 +69,27 @@ export async function resolveAutonomousCoveAgentBinding(
     ledgerCapable: Boolean(userId && ownerExists && house.ownerIsGuest === false),
   };
 }
+
+/**
+ * True when `agentId` is a SERVER-OWNED house bot.
+ *
+ * The house carve-out above exists because the cove's house is a WAGER
+ * COUNTERPARTY: it must be able to settle without a bearer session, and every
+ * money transaction on that path re-validates the exact binding. That reasoning
+ * does NOT transfer to a faucet. A tutorial quest has no counterparty — it
+ * credits from nothing — so letting the house fleet claim the ladder would mint
+ * the whole corpus into server-owned balances and leak it into the player
+ * economy as cove bankroll.
+ *
+ * Faucet paths call this and REFUSE on true. Keep it a separate, explicit
+ * question rather than a flag on the resolved binding, so a future caller has
+ * to answer "is this a counterparty settlement or a faucet?" deliberately.
+ */
+export async function isHouseAgentId(agentId: string): Promise<boolean> {
+  const rows = await db
+    .select({ agentId: agentBots.agentId })
+    .from(agentBots)
+    .where(and(eq(agentBots.agentId, agentId), eq(agentBots.isHouse, true)))
+    .limit(1);
+  return rows.length > 0;
+}
