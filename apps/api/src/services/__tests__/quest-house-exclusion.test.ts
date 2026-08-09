@@ -57,6 +57,26 @@ describe('quest faucet excludes the house fleet (structural)', () => {
   });
 });
 
+describe('REST faucet path carries the same house barrier (structural)', () => {
+  const questsSource = readFileSync(
+    join(import.meta.dir, '..', '..', 'routes', 'quests.ts'),
+    'utf8',
+  );
+
+  it('refuses a house agent on the REST tutorial claim, before settlement', () => {
+    const start = questsSource.indexOf("questRoutes.post(\n  '/tutorial/:id/claim'");
+    expect(start).toBeGreaterThan(-1);
+    const body = questsSource.slice(start, start + 4000);
+
+    expect(body).toContain('isHouseAgentId(identity.agentId)');
+    expect(body).toContain('house_actor_not_eligible');
+    // The refusal must precede settlement, not follow it.
+    expect(body.indexOf('isHouseAgentId')).toBeLessThan(
+      body.indexOf('settleTutorialQuestClaim('),
+    );
+  });
+});
+
 describeIfDb('quest faucet excludes the house fleet (real DB)', () => {
   it('identifies the live house fleet and refuses every one of them', async () => {
     const houseBots = await db.execute<{ agent_id: string }>(

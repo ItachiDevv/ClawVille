@@ -65,8 +65,14 @@ import { withKeyedMutex } from './keyed-mutex';
 //   is verified by the executed suite (which sets the flag directly). Adding
 //   the writer is a small follow-up; shipping the writer WITHOUT the ordering
 //   fix below would have sold placement that sorted to the BOTTOM of the board.
-// Metric to graduate: a listing mutation accepts `featured`, and the public
-//   board demonstrably orders a live-featured listing first.
+// Metric to graduate: a listing mutation accepts `featured`, AND the public
+//   board test exercises all three featured states together — live-featured
+//   (cursor in the future), featured-PENDING (featured = true with a NULL
+//   cursor, the state a row sits in between switching featured on and its
+//   first successful charge), and not-featured — asserting the paid row ranks
+//   first and the PENDING row does NOT. The pending case is the one that broke:
+//   `featured AND cursor > now()` is three-valued, and NULL sorts first under
+//   DESC, so an unpaid row outranked a paid one until COALESCE was added.
 // Current reading: 0 rows with `featured = true`.
 // Review deadline: the slice that adds the featured writer.
 // On deadline: if no writer has landed, DELETE this branch, the constant, and
