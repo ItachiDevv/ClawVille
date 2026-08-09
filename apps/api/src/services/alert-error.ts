@@ -41,15 +41,8 @@ export interface AlertErrorParams {
   context?: Record<string, unknown>;
 }
 
-/** Send raw text through the itachi-debug Telegram bot. Never throws.
- * Defaults to PLAIN text: legacy-Markdown parse mode makes Telegram reject the
- * WHOLE message (400) on any unpaired `*`/`_`/backtick, which would silently
- * drop periodic reports. Only the alertError path opts into Markdown — its
- * message shape is fixed and pairs its markers. */
-export async function sendTelegramText(
-  text: string,
-  opts?: { parseMode?: 'Markdown' },
-): Promise<void> {
+/** Send raw plain text through the itachi-debug Telegram bot. Never throws. */
+export async function sendTelegramText(text: string): Promise<void> {
   if (!TOKEN || !CHAT_ID) {
     console.warn('[alert-error] Telegram credentials not configured, skipping send', {
       text,
@@ -64,13 +57,13 @@ export async function sendTelegramText(
       body: JSON.stringify({
         chat_id: CHAT_ID,
         text,
-        ...(opts?.parseMode ? { parse_mode: opts.parseMode } : {}),
       }),
     });
     if (!res.ok) {
       console.warn(
         `[alert-error] Telegram send rejected (${res.status}): ${(await res.text()).slice(0, 200)}`,
       );
+      console.log('[alert-error] Telegram rejected message fallback:', text);
     }
   } catch (err) {
     console.warn('[alert-error] Telegram send failed', err);
@@ -118,5 +111,5 @@ export async function alertError(params: AlertErrorParams): Promise<void> {
     lines.push(`_(+${suppressedCount} more in last 60s)_`);
   }
 
-  await sendTelegramText(lines.join('\n'), { parseMode: 'Markdown' });
+  await sendTelegramText(lines.join('\n'));
 }
