@@ -30,13 +30,13 @@ import {
   type StoredPlacement,
 } from "@clawville/shared";
 import { useSceneFrame } from "@/components/three/world-stage/use-scene-frame";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import {
   freshLandPieceIdempotencyKey,
   isIdempotencyConflict,
   landPieceErrorMessage,
 } from "@/lib/land-yard-editor";
-import { requestLandPiecesRefresh } from "@/lib/land-query-keys";
+import { LAND_SALVAGE_REFRESH_EVENT, requestLandPiecesRefresh } from "@/lib/land-query-keys";
 import { getParcelSlotByCode } from "@/lib/land-proximity";
 import { MAP_HEIGHT, MAP_WIDTH } from "@/lib/pixi/tilemap-data";
 import {
@@ -325,6 +325,8 @@ function ActiveYardEditor({ parcel }: { parcel: ParcelSlot }) {
   const updatePiece = useLandStore((state) => state.updatePiece);
   const removePiece = useLandStore((state) => state.removePiece);
   const exitBuildMode = useLandStore((state) => state.exitBuildMode);
+  const paymentRail = useLandStore((state) => state.paymentRail);
+  const setPaymentRail = useLandStore((state) => state.setPaymentRail);
   const setSelectedPlacedPieceId = useLandStore(
     (state) => state.setSelectedPlacedPieceId,
   );
@@ -467,6 +469,12 @@ function ActiveYardEditor({ parcel }: { parcel: ParcelSlot }) {
         return;
       }
 
+      // Materials rail: OMIT the field entirely for vCLAW (byte-identical to
+      // the request this route has always accepted). See
+      // PlaceLandPieceRequest.paymentRail's doc comment — the field may not
+      // be served yet, so a materials attempt can 400; caught below.
+      const usingMaterialsRail = paymentRail === "materials";
+
       mutationPending.current = true;
       try {
         const request = (idempotencyKey: string) =>
@@ -477,6 +485,7 @@ function ActiveYardEditor({ parcel }: { parcel: ParcelSlot }) {
             rotationStep,
             stackLevel,
             idempotencyKey,
+            ...(usingMaterialsRail ? { paymentRail: "materials" as const } : {}),
           });
         let response;
         try {
@@ -496,8 +505,23 @@ function ActiveYardEditor({ parcel }: { parcel: ParcelSlot }) {
         addPiece(toPlacedPiece(parcel.id, response.piece));
         requestLandPiecesRefresh();
         await queryClient.invalidateQueries({ queryKey: ["avatar"] });
+        // Materials balance lives in useSalvageStore (poll-hydrated, not
+        // react-query) — refresh it the same way a salvage claim does.
+        if (usingMaterialsRail) window.dispatchEvent(new Event(LAND_SALVAGE_REFRESH_EVENT));
       } catch (error) {
-        toastError(error);
+        // The server may not accept `paymentRail` yet (strict-schema route,
+        // P5b not landed) — a materials attempt can 400 purely because of the
+        // extra field. Distinguish that from a real refusal (insufficient
+        // materials, cap reached, etc.) so the player isn't stuck silently
+        // retrying a rail the server doesn't support.
+        if (usingMaterialsRail && error instanceof ApiError && error.status === 400) {
+          setPaymentRail("vclaw");
+          useGameStore
+            .getState()
+            .addToast("⚠️", "Material payments aren't live yet — switched back to vCLAW.", 4200);
+        } else {
+          toastError(error);
+        }
       } finally {
         mutationPending.current = false;
       }
@@ -510,9 +534,11 @@ function ActiveYardEditor({ parcel }: { parcel: ParcelSlot }) {
       levelRule.maxStackHeight,
       parcel.id,
       parcelPieces,
+      paymentRail,
       queryClient,
       rotationStep,
       selectedPieceKey,
+      setPaymentRail,
       smallCount,
       toastError,
     ],

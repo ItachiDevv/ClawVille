@@ -17,11 +17,14 @@ import {
 import { useAvatar } from "@/hooks/use-avatar";
 import { useIsMobile } from "@/hooks/use-is-mobile";
 import { api } from "@/lib/api";
+import { LAND_MATERIAL_PIECE_FEE } from "@/lib/land-materials";
 import { ownerPiecesToPlacedPieces } from "@/lib/land-yard-editor";
 import { resetJump } from "@/lib/three/jump-state";
 import { useGameStore } from "@/stores/game";
+import { useSalvageStore } from "@/stores/salvage";
 import {
   useLandStore,
+  type PaymentRail,
   type PlacedPiece,
   type YardEditorMode,
 } from "@/stores/land";
@@ -46,11 +49,23 @@ function modeLabel(mode: YardEditorMode): string {
   return mode.charAt(0).toUpperCase() + mode.slice(1);
 }
 
+/** Rail-aware price display. Server is always authoritative — see LAND_MATERIAL_PIECE_FEE. */
+function pieceRailPrice(
+  structureType: LandStructureType,
+  size: KitPieceSize,
+  paymentRail: PaymentRail,
+): string {
+  return paymentRail === "materials"
+    ? `${LAND_MATERIAL_PIECE_FEE[size]} materials`
+    : `${kitPieceFeeCt(structureType, size)} vCLAW`;
+}
+
 function CatalogGroup({
   size,
   used,
   cap,
   structureType,
+  paymentRail,
 }: {
   size: KitPieceSize;
   used: number;
@@ -64,6 +79,8 @@ function CatalogGroup({
    * whether they can afford it.
    */
   structureType: LandStructureType;
+  /** 'materials' only ever reaches here for a HOME yard — see the toggle below. */
+  paymentRail: PaymentRail;
 }) {
   const selectedPieceKey = useLandStore((state) => state.selectedPieceKey);
   const setSelectedPieceKey = useLandStore(
@@ -98,7 +115,7 @@ function CatalogGroup({
         <span>{size}</span>
         <span style={{ color: GOLD, letterSpacing: 0, textTransform: "none" }}>
           {used} of {cap} used
-          {cap > 0 ? ` · ${kitPieceFeeCt(structureType, size)} vCLAW each` : ""}
+          {cap > 0 ? ` · ${pieceRailPrice(structureType, size, paymentRail)} each` : ""}
         </span>
       </div>
       <div style={{ display: "grid", gap: 8 }}>
@@ -167,7 +184,7 @@ function CatalogGroup({
                   whiteSpace: "nowrap",
                 }}
               >
-                {kitPieceFeeCt(structureType, size)} vCLAW
+                {pieceRailPrice(structureType, size, paymentRail)}
               </span>
             </button>
           );
@@ -198,6 +215,9 @@ export default function YardEditorOverlay() {
   const setSelectedPlacedPieceId = useLandStore(
     (state) => state.setSelectedPlacedPieceId,
   );
+  const paymentRail = useLandStore((state) => state.paymentRail);
+  const setPaymentRail = useLandStore((state) => state.setPaymentRail);
+  const materialBalance = useSalvageStore((state) => state.materialBalance);
   const level = Math.min(
     5,
     Math.max(1, structure?.level ?? 1),
@@ -275,6 +295,16 @@ export default function YardEditorOverlay() {
       cancelled = true;
     };
   }, [buildMode, setBuildParcelId, setParcelPieces]);
+
+  // Defense in depth alongside enterBuildMode's reset: if the structure DTO
+  // resolves AFTER mount and turns out to be a shop (materials is HOME-only,
+  // §3.3), snap the rail back rather than leaving a shop yard mid-selection
+  // on a rail the server will refuse.
+  useEffect(() => {
+    if (buildMode && structureType !== "home" && paymentRail === "materials") {
+      setPaymentRail("vclaw");
+    }
+  }, [buildMode, paymentRail, setPaymentRail, structureType]);
 
   useEffect(() => {
     if (!buildMode || !isMobile) return;
@@ -472,6 +502,66 @@ export default function YardEditorOverlay() {
             {(avatar?.clawTokens ?? 0).toLocaleString()} vCLAW
           </span>
         </div>
+        {/* Materials rail toggle — HOME yards only (§3.3: shops always pay
+            vCLAW). Shown even while materials spending isn't yet accepted by
+            the server (see PlaceLandPieceRequest.paymentRail doc comment) so
+            the UI is ready the moment P5b lands; a materials placement
+            attempt reverts with a clear toast rather than silently failing. */}
+        {structureType === "home" && (
+          <div
+            style={{
+              marginTop: 6,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 10,
+              borderRadius: 10,
+              padding: "8px 10px",
+              background: "rgba(16,185,129,0.10)",
+              color: TEXT,
+            }}
+          >
+            <span
+              style={{
+                color: "rgba(110,231,183,0.9)",
+                fontSize: 12,
+                fontWeight: 800,
+              }}
+            >
+              🪸 {materialBalance.toLocaleString()} materials
+            </span>
+            <div
+              role="radiogroup"
+              aria-label="Payment rail"
+              style={{ display: "flex", gap: 4, borderRadius: 999, background: "rgba(3,15,29,0.5)", padding: 3 }}
+            >
+              {(["vclaw", "materials"] as const).map((rail) => (
+                <button
+                  key={rail}
+                  type="button"
+                  role="radio"
+                  aria-checked={paymentRail === rail}
+                  onClick={() => setPaymentRail(rail)}
+                  style={{
+                    minHeight: 32,
+                    minWidth: 44,
+                    padding: "4px 10px",
+                    borderRadius: 999,
+                    border: "none",
+                    fontSize: 11,
+                    fontWeight: 900,
+                    cursor: "pointer",
+                    touchAction: "manipulation",
+                    background: paymentRail === rail ? "rgba(16,185,129,0.42)" : "transparent",
+                    color: paymentRail === rail ? "#ecfdf5" : MUTED,
+                  }}
+                >
+                  {rail === "vclaw" ? "vCLAW" : "Materials"}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
       <div
         style={{
@@ -523,12 +613,14 @@ export default function YardEditorOverlay() {
           used={counts.small}
           cap={levelRule.smallPieceCap}
           structureType={structureType}
+          paymentRail={paymentRail}
         />
         <CatalogGroup
           size="large"
           used={counts.large}
           cap={levelRule.largePieceCap}
           structureType={structureType}
+          paymentRail={paymentRail}
         />
       </div>
     </aside>
