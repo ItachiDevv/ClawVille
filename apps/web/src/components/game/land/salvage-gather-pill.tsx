@@ -315,9 +315,11 @@ export default function SalvageGatherPill() {
             overflow: 'hidden',
           }}
         >
-          {/* Keyed by the gesture id so a retry (or the auto re-approach on
-              an expired token) gets a FRESH DOM node and the CSS animation
-              restarts from 0% instead of staying visually stuck at 100%. */}
+          {/* Keyed by the gesture id so a NEW gather gesture gets a fresh DOM
+              node and the CSS fill restarts from 0% instead of staying stuck at
+              100%. The in-gesture auto re-approach on an expired token does not
+              bump this id, so it does not hard-restart the bar — harmless, since
+              by the time that retry fires the bar is already near-complete. */}
           <span
             key={gestureIdRef.current}
             style={{

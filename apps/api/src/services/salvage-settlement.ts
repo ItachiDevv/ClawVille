@@ -296,6 +296,12 @@ const MUTEX_AVATAR_PREFIX = 'salvage:avatar:';
 // On deadline: if Q1 still stands, this stays dark. If it is reversed, the
 //   funding source is the RECIRCULATING treasury (ruling Q6) and the global
 //   supply delta must remain exactly zero.
+// PRE-GRADUATION FIXUP (Opus review N1, 2026-08-09): the "first N daily claims"
+//   the bounty pays is counted PER-AVATAR (SALVAGE_CT_BOUNTY_DAILY_CLAIMS keyed
+//   on the avatar's daily admission), NOT per-owner. Before lighting this, pin
+//   the intended axis: per-avatar lets a fleet multiply the vCLAW bounty by its
+//   avatar count, so a per-OWNER cap is almost certainly what a lit bounty wants
+//   (mirror the owner-daily-cap axis the material earn side already uses).
 // Reference: gamification-pass-2026-08-09.md §2.10 (P10), §3.5 ledger 1/3.
 
 /**
