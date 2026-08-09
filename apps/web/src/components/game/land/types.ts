@@ -146,6 +146,19 @@ export interface PlaceLandPieceRequest {
   rotationStep: number;
   stackLevel: number;
   idempotencyKey: string;
+  /**
+   * OMITTED for the vCLAW rail — byte-identical to the request this route has
+   * always accepted, so the live path takes zero regression risk from this
+   * field's addition. Included ONLY when the player picked the materials
+   * rail (HOME yards, P5b — gamification-pass-2026-08-09.md §2.9
+   * KitMutationInput.op.paymentRail). NOT YET SERVED: the current
+   * `/api/land/parcels/:parcelId/pieces` schema is `.strict()` and does not
+   * declare this field (verified 2026-08-09, `apps/api/src/routes/land.ts`),
+   * so a materials-rail placement will 400 until the P7c/P5b backend slice
+   * lands. `yard-editor-three.tsx` catches that and reverts the rail with a
+   * toast rather than leaving the player stuck — see its `placeAtCell`.
+   */
+  paymentRail?: 'materials';
 }
 
 export interface MoveLandPieceRequest {
@@ -324,3 +337,75 @@ export interface BuyServiceResponse {
   priceCt: number;
   cached: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Seabed salvage (P7b, land-salvage-web worktree, 2026-08-09)
+//
+// UNLIKE the rest of this file, this section does NOT mirror a frozen,
+// already-live backend contract — P7a/P7b (schema, settlement, the REST
+// surface) had not shipped when this was written. The shape below is coded
+// against the design doc (gamification-pass-2026-08-09.md §2.6/§2.7/§2.9)
+// and the render lane's brief (endpoint path `/api/land/salvage/:nodeId/claim`
+// + `GET /api/land/salvage/state`). RECONCILE AT MERGE against whatever the
+// backend lane actually ships — treat every field here as a documented
+// assumption, not a verified contract.
+// ---------------------------------------------------------------------------
+
+/** Per-node claim availability, as read from `GET /api/land/salvage/state`. */
+export interface LandSalvageNodeStatus {
+  nodeId: string;
+  /** ISO timestamp; null or <= now means the node is claimable right now. */
+  nextClaimAt: string | null;
+}
+
+export interface LandSalvageClaimWindow {
+  used: number;
+  remaining: number;
+  cap: number;
+}
+
+/** One pooled material balance's last earn event (display only — §2.4 Q4: no per-flavour balances). */
+export interface LandSalvageReceiptDTO {
+  nodeId: string;
+  materialsGranted: number;
+  flavour: 'common' | 'uncommon' | 'rare';
+  claimedAt: string;
+}
+
+export interface LandSalvageStateResponse {
+  layoutVersion: number;
+  nodes: LandSalvageNodeStatus[];
+  avatarClaims: LandSalvageClaimWindow;
+  ownerClaims: LandSalvageClaimWindow;
+  materialBalance: number;
+  lastReceipt: LandSalvageReceiptDTO | null;
+}
+
+export interface LandSalvageClaimRequest {
+  idempotencyKey: string;
+}
+
+export interface LandSalvageClaimResponse {
+  materialsGranted: number;
+  flavour: 'common' | 'uncommon' | 'rare';
+  balanceAfter: number;
+  nextClaimAt: string;
+  avatarClaims: LandSalvageClaimWindow;
+  ownerClaims: LandSalvageClaimWindow;
+}
+
+/**
+ * The §2.9 `SettlementFailure` union, narrowed to the codes salvage claim can
+ * plausibly return. Copied verbatim from the design doc rather than guessed.
+ */
+export type LandSalvageClaimErrorCode =
+  | 'node_on_cooldown'
+  | 'avatar_daily_cap'
+  | 'owner_daily_cap'
+  | 'house_excluded'
+  | 'owner_unresolved'
+  | 'binding_drift'
+  | 'session_expired'
+  | 'not_ledger_capable'
+  | 'idempotency_key_conflict'
+  | 'concurrent_retry';

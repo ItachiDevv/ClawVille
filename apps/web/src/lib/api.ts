@@ -44,6 +44,9 @@ import type {
   MoveLandPieceRequest,
   MoveLandPieceResponse,
   DeleteLandPieceResponse,
+  LandSalvageStateResponse,
+  LandSalvageClaimRequest,
+  LandSalvageClaimResponse,
 } from '@/components/game/land/types';
 import { getFingerprint } from './fingerprint';
 
@@ -1537,6 +1540,27 @@ export const api = {
     honoRequest<DeleteLandPieceResponse>(
       `/api/land/pieces/${encodeURIComponent(pieceId)}`,
       { method: 'DELETE' },
+    ),
+
+  /**
+   * Seabed salvage read model (P7b). One payload feeds the gather prompt's
+   * cooldown display, the daily-cap counters, and the materials HUD chip.
+   * Public/guest-safe like the other land public feeds — a guest can SEE the
+   * state; the claim route below is where guest/agent-binding is enforced.
+   * ASSUMED PATH — see the `LandSalvageStateResponse` doc comment.
+   */
+  getLandSalvageState: () =>
+    honoRequest<LandSalvageStateResponse>('/api/land/salvage/state', { cache: 'no-store' }),
+
+  /**
+   * Claim a seabed salvage node. Idempotency key is mandatory, matching
+   * every other land money-adjacent write in this file. ASSUMED PATH — see
+   * the `LandSalvageClaimResponse` doc comment.
+   */
+  claimSalvageNode: (nodeId: string, body: LandSalvageClaimRequest) =>
+    honoRequest<LandSalvageClaimResponse>(
+      `/api/land/salvage/${encodeURIComponent(nodeId)}/claim`,
+      { method: 'POST', body: JSON.stringify(body) },
     ),
 
   /** Free owner-only shell/palette mutation; current level/tier are server-read. */
