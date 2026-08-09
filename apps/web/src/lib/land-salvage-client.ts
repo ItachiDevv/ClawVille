@@ -34,8 +34,8 @@ export function isApproachInProgress(error: unknown): boolean {
 const APPROACH_ERROR_COPY: Readonly<Record<string, string>> = {
   node_unknown: "That spot isn't a salvage node.",
   out_of_range: 'Move closer to gather here.',
-  movement_poisoned: 'That was too fast a move — hold still a moment.',
-  impossible_movement: 'That was too fast a move — hold still a moment.',
+  movement_poisoned: 'Move to the node and hold still.',
+  impossible_movement: 'Move to the node and hold still.',
   rate_limited: 'Slow down — try again in a moment.',
 };
 

@@ -20,6 +20,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { SALVAGE_APPROACH_DWELL_MS } from '@clawville/shared';
 import { useIsGuest } from '@/hooks/use-is-guest';
 import { useIsMobile } from '@/hooks/use-is-mobile';
 import { api, ApiError } from '@/lib/api';
@@ -55,6 +56,18 @@ const LOOK_ICON: Readonly<Record<string, string>> = {
 // so the sequence aborts with a clear message instead of polling forever.
 const APPROACH_MAX_ATTEMPTS = 15;
 const APPROACH_POLL_INTERVAL_MS = 1000;
+
+/**
+ * The "Gathering…" fill-bar duration — the real server-tracked dwell
+ * (`SALVAGE_APPROACH_DWELL_MS`, 2s) plus a fixed buffer for the anchor-
+ * establish poll (attempt 1 almost always returns `anchor_pending` before
+ * the dwell clock even starts) and normal request latency. This is a VISUAL
+ * approximation only — the server is the sole authority on when the token
+ * actually issues; the bar is deliberately not exactly synced to it so a
+ * slow network doesn't make the animation finish before the token exists,
+ * which would read as more broken than an approximate fill.
+ */
+const GATHER_FILL_DURATION_MS = SALVAGE_APPROACH_DWELL_MS + 800;
 
 function cooldownLabel(nextClaimAtMs: number): string {
   const remainingMs = nextClaimAtMs - Date.now();
@@ -290,6 +303,39 @@ export default function SalvageGatherPill() {
             ? `Gather ${LOOK_LABEL[look] ?? 'salvage'}`
             : cooldownLabel(nextClaimAtMs)}
       </span>
+      {phase === 'gathering' && (
+        <span
+          aria-hidden
+          style={{
+            width: '100%',
+            height: 4,
+            marginTop: 2,
+            borderRadius: 999,
+            background: 'rgba(94,234,212,0.15)',
+            overflow: 'hidden',
+          }}
+        >
+          {/* Keyed by the gesture id so a retry (or the auto re-approach on
+              an expired token) gets a FRESH DOM node and the CSS animation
+              restarts from 0% instead of staying visually stuck at 100%. */}
+          <span
+            key={gestureIdRef.current}
+            style={{
+              display: 'block',
+              height: '100%',
+              borderRadius: 999,
+              background: 'rgba(94,234,212,0.85)',
+              animation: `cv-salvage-gather-fill ${GATHER_FILL_DURATION_MS}ms linear forwards`,
+            }}
+          />
+        </span>
+      )}
+      <style jsx>{`
+        @keyframes cv-salvage-gather-fill {
+          from { width: 4%; }
+          to { width: 96%; }
+        }
+      `}</style>
     </button>
   );
 }
