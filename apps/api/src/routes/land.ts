@@ -675,10 +675,19 @@ const KIT_PLACEMENT_CONFLICT_CODES: ReadonlySet<PlacementRefusalCode> = new Set(
 /**
  * The slot-rent cursor a NEW listing starts on (land gamification P5a, B2 fix).
  *
- * Returned as a SQL fragment, not a value, so it is evaluated INSIDE the same
- * INSERT that creates the row — a read-then-insert would leave a window where a
- * concurrent create on the same structure could both observe "no history" and
- * both mint a free week.
+ * Returned as a SQL fragment rather than a value so the read and the write are
+ * ONE statement — no extra round trip, and no window in which application code
+ * holds a stale answer.
+ *
+ * That is NOT what makes it safe under concurrency, and an earlier version of
+ * this comment claimed it was. Under READ COMMITTED a subquery inside an INSERT
+ * sees exactly the snapshot a separate SELECT would, so two concurrent creates
+ * could both observe "no history" on their own. What actually serializes them
+ * is the pre-existing PER-OWNER advisory lock the create route already takes
+ * (`pg_advisory_xact_lock(hashtextextended(avatarId, 0))`, land.ts ~4083):
+ * a structure has exactly one owner, so two creates against the same structure
+ * are necessarily the same owner and cannot run concurrently. If that lock is
+ * ever removed or narrowed, THIS rule loses its serialization and needs its own.
  *
  * The rule: the free first week belongs to the SHOP, not to a row. It is
  * granted once per structure, ever; every later listing inherits the furthest
@@ -4369,14 +4378,21 @@ landRoutes.get('/services', async (c) => {
     .select()
     .from(serviceListings)
     .where(and(eq(serviceListings.status, 'active'), isNull(serviceListings.slotSuspendedAt)))
-    // Order on LIVE-featured state, not the raw cursor. `desc(col)` emits a bare
-    // `col desc`, and Postgres defaults DESC to NULLS FIRST — so ordering on the
-    // cursor alone sorted every NON-featured listing (NULL) ABOVE every featured
-    // one, i.e. paying for placement bought the bottom of the board. Harmless
-    // only while nothing can be featured; fixed now so it is correct the moment
-    // the writer lands.
+    // Order on LIVE-featured state, and COALESCE the three-valued result.
+    //
+    // Two separate NULL traps here, both verified against Postgres:
+    //   1. `desc(col)` emits a bare `col desc` and DESC defaults to NULLS
+    //      FIRST, so ordering on the raw cursor sorted every NON-featured
+    //      listing above every featured one.
+    //   2. `featured AND cursor > now()` is THREE-VALUED: a featured row whose
+    //      cursor is still NULL (featured just switched on, or its charge keeps
+    //      failing) evaluates to NULL, not false — and NULL sorts FIRST under
+    //      DESC. So an UNPAID featured-pending row would pin above a genuinely
+    //      paid one, permanently, for as long as it kept failing to pay.
+    // COALESCE(..., false) collapses pending and lapsed into the same bucket as
+    // not-featured, so only a row that has actually PAID ranks first.
     .orderBy(
-      sql`(${serviceListings.featured} AND ${serviceListings.featuredPaidThrough} > now()) DESC`,
+      sql`COALESCE(${serviceListings.featured} AND ${serviceListings.featuredPaidThrough} > now(), false) DESC`,
       desc(serviceListings.createdAt),
     )
     .limit(limit + 1)

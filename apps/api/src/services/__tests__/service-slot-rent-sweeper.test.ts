@@ -8,6 +8,8 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { db, sql } from '@clawville/database';
 import {
   SERVICE_LISTING_SLOT_RENT_CT_WEEKLY,
@@ -395,6 +397,59 @@ describeIfDb('service slot rent sweeper (real DB)', () => {
         slotCt: SERVICE_LISTING_SLOT_RENT_CT_WEEKLY,
         featuredCt: 0,
       });
+    });
+  });
+
+  // -- M4 re-fix: the featured ordering expression is THREE-VALUED --------
+  describe('public-board featured ordering', () => {
+    /**
+     * Asserts the exact SQL the public board uses, against real Postgres,
+     * across all three featured states. Two NULL traps live here:
+     *   - DESC defaults to NULLS FIRST, and
+     *   - `featured AND cursor > now()` yields NULL (not false) when a featured
+     *     row's cursor is still NULL, which is the state a row sits in between
+     *     switching featured on and its FIRST SUCCESSFUL CHARGE.
+     * Together those put an UNPAID row above a paid one, permanently, for as
+     * long as it kept failing to pay.
+     */
+    const rank = async (expr: 'raw' | 'fixed'): Promise<string[]> => {
+      const order =
+        expr === 'raw'
+          ? sql`(featured AND cur > now()) DESC`
+          : sql`COALESCE(featured AND cur > now(), false) DESC`;
+      const rows = await db.execute<{ label: string }>(
+        sql`SELECT label FROM (VALUES
+              ('live-featured',    true,  now() + interval '3 days'),
+              ('featured-pending', true,  NULL::timestamptz),
+              ('featured-lapsed',  true,  now() - interval '1 day'),
+              ('not-featured',     false, NULL::timestamptz)
+            ) t(label, featured, cur)
+            ORDER BY ${order}, label`,
+      );
+      return Array.from(rows).map((r) => r.label);
+    };
+
+    it('ranks only a PAID featured listing first', async () => {
+      const ranked = await rank('fixed');
+      expect(ranked[0]).toBe('live-featured');
+      // Pending and lapsed are NOT live-featured and must not outrank it.
+      expect(ranked.indexOf('featured-pending')).toBeGreaterThan(0);
+      expect(ranked.indexOf('featured-lapsed')).toBeGreaterThan(0);
+    });
+
+    it('pins an UNPAID featured-pending row first without the COALESCE (regression lock)', async () => {
+      // Locks the defect in place so the COALESCE cannot be "simplified" away.
+      expect((await rank('raw'))[0]).toBe('featured-pending');
+    });
+
+    it('uses the COALESCE form on the actual public board query', () => {
+      const routeSource = readFileSync(
+        join(import.meta.dir, '..', '..', 'routes', 'land.ts'),
+        'utf8',
+      );
+      expect(routeSource).toContain(
+        'COALESCE(${serviceListings.featured} AND ${serviceListings.featuredPaidThrough} > now(), false) DESC',
+      );
     });
   });
 

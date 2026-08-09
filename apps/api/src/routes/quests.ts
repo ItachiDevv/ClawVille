@@ -49,6 +49,7 @@ import {
   validateTutorialQuestEngagement,
   type EngagementResult,
 } from '../services/tutorial-quest-settlement';
+import { isHouseAgentId } from '../services/autonomous-cove-agent-binding';
 
 // PARITY (Rule E5, 2026-07-13): the five PLAYER routes (my-quests, quest-log,
 // accept, start, submit) resolve identity via `requireAuthOrAgentSession`, so a
@@ -1076,6 +1077,25 @@ questRoutes.post(
       throw new HTTPException(400, { message: 'Invalid quest id' });
     }
     const questId = parsed.data.id;
+
+    // SECOND faucet barrier, mirroring the hosted executor path. A quest is a
+    // pure faucet with no counterparty, so a SERVER-OWNED house actor must
+    // never claim one — it would mint the ladder into house balances and leak
+    // it into the player economy. House bots are not supposed to hold a bearer
+    // session at all, which is the first barrier; this is the second, so the
+    // invariant does not depend on that remaining true.
+    if (identity.kind === 'agent' && (await isHouseAgentId(identity.agentId))) {
+      return c.json(
+        {
+          ok: false,
+          error: 'house_actor_not_eligible',
+          message: 'Server-owned house agents do not claim quest rewards.',
+          credited: 0,
+          balance: 0,
+        },
+        403,
+      );
+    }
 
     // Everything below — reward lookup, the idempotency barrier, the
     // proof-of-engagement gate, and the two-rail credit — is the shared
