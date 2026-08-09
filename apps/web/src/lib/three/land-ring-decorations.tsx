@@ -26,7 +26,7 @@
  *   - Fog near=5000 / far=10500 naturally hides c-ring props at distance,
  *     making them cost ~0 fill-rate when not approached.
  *
- * GLB MODELS — reuse assets already preloaded by DeferredTerrainPreloads:
+ * GLB MODELS — shared with arena terrain and cached by URL after demand load:
  *   coral-reef1/2/3.glb, kelp.glb, building-barrel.glb, building-lantern-ktx.glb,
  *   building-anchor.glb, building-shell-ktx.glb
  *
@@ -46,12 +46,13 @@
  *  side of c-ring stretch. Scales to full rings once founder approves the look.)
  */
 
-import { Suspense, useMemo, useEffect } from 'react';
-import { useGLTF } from '@react-three/drei';
+import { Suspense, useMemo, useEffect, useState } from 'react';
 import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { makeGeometryWebGPUSafe } from '@/lib/three/webgpu-geometry';
-import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
+import { useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
+import { isDecorativeReleased, onDecorativeReleaseStaggered } from '@/lib/three/decorative-release';
+import { DeferredWarmAttachment } from '@/lib/three/deferred-warm-attachment';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -169,7 +170,8 @@ function seededRng(seed: number): () => number {
   };
 }
 
-// Model paths — all already preloaded by DeferredTerrainPreloads in arena-terrain.tsx
+// Model paths — shared with arena-terrain, but demand begins at this consumer's
+// own stagger tick. useGLTF's URL cache still deduplicates whichever consumer wins.
 const PROP_MODELS_RING = [
   '/models/coral-reef1-ktx.glb?v=2',
   '/models/coral-reef2-ktx.glb?v=2',
@@ -498,7 +500,10 @@ function LandRingDecorationsInner() {
   }, [pathMat]);
 
   return (
-    <>
+    <DeferredWarmAttachment
+      label="land-ring-decorations"
+      priority={Number.POSITIVE_INFINITY}
+    >
       {/* Ambient prop merged meshes — each bucket = one material = one draw call */}
       {propBuckets.map(({ geometry, material }, i) => (
         <mesh
@@ -522,22 +527,33 @@ function LandRingDecorationsInner() {
           castShadow={false}
         />
       )}
-    </>
+    </DeferredWarmAttachment>
   );
 }
 
-// Preload all prop models so they are warm when the component mounts.
-// These overlap with arena-terrain's DeferredTerrainPreloads for the 8 shared
-// model paths — useGLTF caches by URL so there is NO double-parse cost.
-PROP_MODELS_RING.forEach((path) => {
-  if (path.includes('-ktx.glb')) preloadKTX2Bytes(path);
-  else useGLTF.preload(path);
-});
+// Module-scope/release-wide preloads REMOVED (rung-3 Levers 2/3): they let the
+// 8 shared prop models get ahead of this consumer's stagger boundary. The
+// release-gated mount below owns fetch timing; useGLTF still deduplicates URLs.
 
 // ---------------------------------------------------------------------------
-// Public export — wrapped in Suspense; null fallback avoids layout shift.
+// Public export — release-gated (rung-3 Lever 3): the parent stops BEFORE the
+// child that calls useGLTFWithKTX2, so demand starts at this consumer's stagger
+// tick. The resolved meshes commit hidden and join the shared warm queue at
+// POSITIVE_INFINITY priority (visible NPC slots first). Post-release remounts
+// preserve the one-shot monotonic release contract; GPU warming still precedes
+// every new renderer attachment. Suspense null fallback avoids layout shift.
 // ---------------------------------------------------------------------------
 export default function LandRingDecorations() {
+  const [released, setReleased] = useState(isDecorativeReleased);
+  useEffect(() => {
+    // Local-state subscribe only (missed-release race — see arena-terrain).
+    if (released) return undefined;
+    return onDecorativeReleaseStaggered(
+      () => setReleased(true),
+      Number.POSITIVE_INFINITY,
+    );
+  }, [released]);
+  if (!released) return null;
   return (
     <Suspense fallback={null}>
       <LandRingDecorationsInner />

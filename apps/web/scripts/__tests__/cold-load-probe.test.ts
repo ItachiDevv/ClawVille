@@ -39,6 +39,8 @@ const fail = (id: string, ts: number) => ({
   params: { requestId: id, errorText: 'net::ERR_FAILED', timestamp: ts },
 });
 
+import { longtaskBoundaryMs } from '../cold-load-probe.mjs';
+
 describe('reduceNetworkEvent — redirect legs (event-sequence fixtures)', () => {
   it('persists a redirect leg from redirectResponse with its bytes and status', () => {
     const state = driveEvents([
@@ -278,5 +280,20 @@ describe('computeValidity — adversarial fixtures', () => {
       ...base,
     });
     expect(v.validForPerformance).toBe(true);
+  });
+});
+
+
+describe('longtaskBoundaryMs (rung-3 accounting boundary)', () => {
+  it('uses the app-authored release stamp when finite and not deadline', () => {
+    expect(longtaskBoundaryMs(12000, 11500, 'first-paint:warmup-complete')).toBe(11500);
+  });
+  it('falls back to polled reveal for absolute-deadline stamps', () => {
+    expect(longtaskBoundaryMs(12000, 45000, 'absolute-deadline')).toBe(12000);
+  });
+  it('falls back to polled reveal when the stamp is absent or non-finite', () => {
+    expect(longtaskBoundaryMs(12000, null, null)).toBe(12000);
+    expect(longtaskBoundaryMs(12000, Number.NaN, 'first-paint:resume')).toBe(12000);
+    expect(longtaskBoundaryMs(null, null, null)).toBe(null);
   });
 });

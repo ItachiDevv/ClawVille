@@ -8,6 +8,7 @@ import {
   isDecorativeReleased,
   notifyWorldFramePresented,
   onDecorativeRelease,
+  onDecorativeReleaseStaggered,
   releaseDecorative,
 } from './decorative-release';
 
@@ -33,6 +34,12 @@ const dom: DomState = {
 
 const originalWindow = (globalThis as any).window;
 const originalDocument = (globalThis as any).document;
+const pendingTimers: Array<() => void> = [];
+const timerDelays: number[] = [];
+function flushOneTimer(): void {
+  const fn = pendingTimers.shift();
+  if (fn) fn();
+}
 
 function installDom(): void {
   const transitionElement = {
@@ -59,6 +66,12 @@ function installDom(): void {
   (globalThis as any).window = {
     __W3D_READY: undefined,
     getComputedStyle: () => ({ opacity: dom.transitionOpacity }),
+    // stagger scheduler: drain via microtask-free deterministic timer stub
+    setTimeout: (fn: () => void, delayMs?: number) => {
+      pendingTimers.push(fn);
+      timerDelays.push(delayMs ?? 0);
+      return pendingTimers.length;
+    },
   };
 }
 
@@ -67,6 +80,8 @@ function setReady(ready: boolean): void {
 }
 
 beforeEach(() => {
+  pendingTimers.length = 0;
+  timerDelays.length = 0;
   dom.hidden = false;
   dom.overlayPresent = false;
   dom.transitionPhase = null;
@@ -223,6 +238,113 @@ describe('decorative-release first-paint anchor', () => {
     releaseDecorative('test');
     armDecorativeDeadline(); // must be a no-op (released short-circuit)
     expect(isDecorativeReleased()).toBe(true);
+  });
+
+  test('staggered listeners drain one per tick, in subscription order', () => {
+    setReady(true);
+    const fired: string[] = [];
+    onDecorativeReleaseStaggered(() => fired.push('a'));
+    onDecorativeReleaseStaggered(() => fired.push('b'));
+    armDecorativeReleaseOnFirstPaint('resume');
+    notifyWorldFramePresented();
+    notifyWorldFramePresented();
+    expect(isDecorativeReleased()).toBe(true);
+    expect(fired).toEqual([]); // nothing synchronous on the release frame
+    flushOneTimer();
+    expect(fired).toEqual(['a']);
+    flushOneTimer();
+    expect(fired).toEqual(['a', 'b']);
+  });
+
+  test('staggered unsubscribe before delivery removes the listener', () => {
+    setReady(true);
+    const fired: string[] = [];
+    onDecorativeReleaseStaggered(() => fired.push('a'));
+    const offB = onDecorativeReleaseStaggered(() => fired.push('b'));
+    onDecorativeReleaseStaggered(() => fired.push('c'));
+    releaseDecorative('test');
+    offB();
+    flushOneTimer();
+    flushOneTimer();
+    flushOneTimer();
+    expect(fired).toEqual(['a', 'c']);
+  });
+
+  test('unsubscribing the first (already-scheduled) staggered item cancels it', () => {
+    releaseDecorative('test');
+    const fired: string[] = [];
+    const offA = onDecorativeReleaseStaggered(() => fired.push('a'));
+    onDecorativeReleaseStaggered(() => fired.push('b'));
+    offA(); // 'a' is scheduled first — unsubscribe must still cancel it
+    flushOneTimer();
+    flushOneTimer();
+    expect(fired).toEqual(['b']);
+  });
+
+  test('stagger priority drains ascending, ties by subscription order', () => {
+    releaseDecorative('test');
+    const fired: string[] = [];
+    onDecorativeReleaseStaggered(() => fired.push('far'), 9000);
+    onDecorativeReleaseStaggered(() => fired.push('bulk'), Number.POSITIVE_INFINITY);
+    onDecorativeReleaseStaggered(() => fired.push('near'), 100);
+    onDecorativeReleaseStaggered(() => fired.push('near2'), 100);
+    for (let i = 0; i < 4; i += 1) flushOneTimer();
+    expect(fired).toEqual(['near', 'near2', 'far', 'bulk']);
+  });
+
+  test('staggered subscribe after release still delivers via the queue', () => {
+    releaseDecorative('test');
+    const fired: string[] = [];
+    onDecorativeReleaseStaggered(() => fired.push('late'));
+    expect(fired).toEqual([]);
+    flushOneTimer();
+    expect(fired).toEqual(['late']);
+  });
+
+  test('first stagger drain waits the quiet period; later drains use idle ticks', () => {
+    releaseDecorative('test');
+    const fired: string[] = [];
+    onDecorativeReleaseStaggered(() => fired.push('a'));
+    onDecorativeReleaseStaggered(() => fired.push('b'));
+    // first drain scheduled with the 1500ms quiet period
+    expect(timerDelays[0]).toBe(1500);
+    flushOneTimer();
+    expect(fired).toEqual(['a']);
+    // second drain uses the fast fallback tick (120ms in the no-rIC stub)
+    expect(timerDelays[1]).toBe(120);
+    flushOneTimer();
+    expect(fired).toEqual(['a', 'b']);
+  });
+
+  test('reset restores the first-drain quiet period', () => {
+    releaseDecorative('test');
+    onDecorativeReleaseStaggered(() => undefined);
+    expect(timerDelays[0]).toBe(1500);
+    flushOneTimer();
+    __resetDecorativeReleaseForTests();
+    timerDelays.length = 0;
+    pendingTimers.length = 0;
+    releaseDecorative('test-2');
+    onDecorativeReleaseStaggered(() => undefined);
+    expect(timerDelays[0]).toBe(1500); // quiet period restored after reset
+  });
+
+  test('REGRESSION: release between render and effect cannot strand a consumer', () => {
+    // Simulates the bulk-consumer sequence: initial state read false, the
+    // release fires BEFORE the effect subscribes, then the effect subscribes
+    // based on LOCAL state (released=false) — the staggered subscribe must
+    // still deliver via the queue (Codex final-review HIGH).
+    setReady(true);
+    const localReleasedAtRender = isDecorativeReleased();
+    expect(localReleasedAtRender).toBe(false);
+    releaseDecorative('between-render-and-effect');
+    let delivered = false;
+    // effect body under the FIXED pattern: local state false -> subscribe
+    onDecorativeReleaseStaggered(() => {
+      delivered = true;
+    });
+    flushOneTimer();
+    expect(delivered).toBe(true);
   });
 
   test('test reset clears the first-paint state machine', () => {

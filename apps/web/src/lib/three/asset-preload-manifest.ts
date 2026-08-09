@@ -238,8 +238,9 @@ export const EMOTE_BUNDLE = '/avatars/animations/_emotes.glb?v=1' as const;
 // dynamic World3DCanvas chunk mounts. The browser will fetch + decode assets
 // in parallel with the chunk download, hiding the longest network legs.
 //
-// Ordering: critical-path assets first (buildings, locomotion, wandering NPCs),
-// then deferred assets (characters, decorations, player VRMs).
+// Runtime ordering: critical-path assets only (buildings, locomotion, wandering
+// NPCs). Deferred character/decoration paths remain in the audit manifest but
+// are demand-loaded by their release-staggered hidden consumers.
 // All calls are idempotent — useGLTF.preload() and preloadVRMBytes() are
 // no-ops if the asset is already in cache.
 //
@@ -248,10 +249,10 @@ export const EMOTE_BUNDLE = '/avatars/animations/_emotes.glb?v=1' as const;
 // Tier 2 — intentionally lazy:
 //   selectable player VRM bytes are loaded by the active avatar or the avatar picker,
 //   not by the open-world boot path
-// Tier 3 — fire after first rAF (exact timing matches DeferredNpcPreloads):
-//   location NPC GLBs + decoration GLBs (currently done by DeferredTerrainPreloads
-//   + DeferredNpcPreloads, which fire their own rAF preloads from game/page.tsx —
-//   those existing hooks already cover tier-3 correctly).
+// Tier 3 — demand only after each consumer's decorative-release stagger tick:
+//   location NPC GLBs + decoration GLBs. DeferredNpcPreloads intentionally
+//   excludes release-deferred models and DeferredTerrainPreloads is now a
+//   compatibility no-op; the hidden consumer subtrees own these requests.
 // ---------------------------------------------------------------------------
 
 let _preloadCalled = false;
@@ -300,11 +301,9 @@ export function preloadWorldAssets(): void {
   }
 
   // --- Tier 3 note ---
-  // Location NPC GLBs and decoration GLBs are already covered by:
-  //   DeferredNpcPreloads (rAF in game/page.tsx)
-  //   DeferredTerrainPreloads (rAF in game/page.tsx)
-  // Those hooks fire their own useGLTF.preload() calls after first paint.
-  // No duplication needed here.
+  // Release-deferred location NPC and decoration GLBs are intentionally absent
+  // here. Their hidden loader subtrees start demand after individual stagger
+  // ticks, then upload/compile through the global deferred-warm queue.
 }
 
 // ---------------------------------------------------------------------------
@@ -330,7 +329,7 @@ export const ALL_WORLD_VRMS: readonly string[] = [
 //
 // Intended consumers:
 //   - Service worker cache manifest (sw.js ASSET_PATH_PREFIXES supplement)
-//   - `preloadWorldAssets()` above (uses the same ordering internally)
+//   - asset audits and service-worker inventory (not runtime preload ordering)
 //   - `docs/perf-audit-2026-05-22.md` Section B asset inventory
 //
 // Wire-up snippet for game/page.tsx (do NOT edit source files from this manifest;
@@ -358,7 +357,7 @@ export const WORLD_PRELOAD_MANIFEST: readonly string[] = [
   ...WANDERING_NPC_GLBS,
   ...WANDERING_VRM_PATHS,
   // Tier 2 — lazy player VRMs are intentionally omitted from boot preloads.
-  // Tier 3 — deferred (after first paint, handled by DeferredTerrainPreloads / DeferredNpcPreloads)
+  // Tier 3 — manifest-only audit entries; runtime demand is staggered per consumer.
   ...LOCATION_NPC_GLBS,
   ...DECORATION_GLBS,
   EMOTE_BUNDLE,

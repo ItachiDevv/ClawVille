@@ -271,6 +271,34 @@ export function computeValidity({ all, revealMs, backend, expectedBackend, waive
  * present and finite. Missing frames, a null stable window, or an unclaimed
  * quiescence marker make the run unusable as performance evidence.
  */
+/**
+ * Longtask classification boundary (rung-3 accounting fix, Codex Lever-2/3
+ * review finding 5): the POLLED reveal stamp lags real reveal by any longtask
+ * that spans the 50ms poll tick, so boundary work landing right AFTER reveal
+ * gets misattributed to the pre-reveal window. The app-authored
+ * `__W3D_DECORATIVE_RELEASED_AT` stamp is written before release listeners
+ * run and (on first-paint-anchored builds) only after a complete revealed
+ * frame presented — use it as the classification boundary when finite.
+ * On pre-anchor baselines the stamp fires BEFORE reveal, which UNDERCOUNTS
+ * the baseline's pre-reveal longtasks — a bias AGAINST the candidate in
+ * B/A ratios, so gate passes under this rule remain trustworthy.
+ * `revealMs` (the user-visible metric) stays polled and unchanged.
+ */
+export function longtaskBoundaryMs(revealMs, decorativeReleasedAt, decorativeReleaseReason) {
+  // An absolute-deadline stamp can precede the real reveal — trusting it would
+  // EXCLUDE candidate longtasks between deadline and reveal (candidate-
+  // favorable undercount; Codex final-review MEDIUM). Only first-paint /
+  // milestone stamps are trustworthy boundaries.
+  if (
+    decorativeReleaseReason !== "absolute-deadline" &&
+    typeof decorativeReleasedAt === "number" &&
+    Number.isFinite(decorativeReleasedAt)
+  ) {
+    return decorativeReleasedAt;
+  }
+  return revealMs;
+}
+
 export function assessPerformanceEvidence({ revealMs, frameMetrics, longtaskSeries, networkQuiescedMs }) {
   const reasons = [];
   const finite = (v) => typeof v === "number" && Number.isFinite(v);
@@ -465,7 +493,8 @@ try{new PerformanceObserver(l=>{for(const e of l.getEntries())window.__COLD_PROB
       longtaskSeries: longtasksSeries,
       networkQuiescedMs: networkQuiescedPageMs,
     });
-    const preRevealLongtaskMs = longtasks.filter((e) => revealPageMs == null || e.s <= revealPageMs).reduce((a, e) => a + e.d, 0);
+    const ltBoundary = longtaskBoundaryMs(revealPageMs, decorativeReleasedAt, decorativeReleaseReason);
+    const preRevealLongtaskMs = longtasks.filter((e) => ltBoundary == null || e.s <= ltBoundary).reduce((a, e) => a + e.d, 0);
     const top = [...ok].sort((a, b) => b.wireBytes - a.wireBytes).slice(0, 40)
       .map((r) => ({ mb: +(r.wireBytes / 1048576).toFixed(2), cls: r.cls, sw: r.everFromSW, cf: r.cfCache, start: r.startPageMs != null ? +(r.startPageMs / 1000).toFixed(1) : null, end: r.endPageMs != null ? +(r.endPageMs / 1000).toFixed(1) : null, url: r.url.replace(/^https?:\/\/[^/]+/, "") }));
 

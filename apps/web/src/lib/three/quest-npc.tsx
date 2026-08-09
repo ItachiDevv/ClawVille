@@ -45,7 +45,12 @@ const QUEST_NPC_X = -110;
 const QUEST_NPC_Z = -60;
 const QUEST_NPC_FLOOR_Y = -2;
 
-// Preload so GLB is ready before first render
+// Preload so GLB is ready before first render.
+// SHARED-CRITICAL classification (rung-3 Lever 2, deliberate): the quest
+// giver is an interactive gameplay element near spawn, NOT decoration — it
+// stays on the immediate path. crayfish-ktx.glb is therefore the ONE
+// decoration-adjacent URL excluded from the release deferral (11 of 12
+// scatter/prop URLs are deferred).
 preloadKTX2Bytes('/models/crayfish-ktx.glb?v=2');
 
 // Gold color for the quest marker octahedron

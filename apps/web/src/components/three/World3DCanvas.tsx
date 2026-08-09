@@ -2274,8 +2274,8 @@ export const WorldSceneContents = memo(function WorldSceneContents({
           Fills inter-parcel gaps on founder/starter/c-ring with merged sea-themed
           props (coral, kelp, barrels, lanterns, anchors, shells) + flat path
           ribbons connecting parcels. All geometry merged by material UUID into
-          ~10-14 draw calls total. Props already preloaded by DeferredTerrainPreloads
-          (shared model paths) so zero additional fetch cost.
+          ~10-14 draw calls total. Shared URLs dedupe through useGLTF; demand begins
+          at this consumer's release stagger, followed by hidden GPU warming.
           See lib/three/land-ring-decorations.tsx for full perf contract. */}
       <group name="perf:land-ring-decorations" userData={{ perfChunk: 'land-ring-decorations' }}>
         <LandRingDecorations />

@@ -69,8 +69,10 @@ import { useStageStore } from '@/components/three/world-stage/stage-store';
 // client it may be true (iOS Safari). Static import causes React #418 hydration
 // mismatch because the SandFloor useMemo returns a different material type on
 // server vs client, making the React tree diverge. Dynamic + ssr:false prevents
-// the module from executing on the server at all — safe because DeferredTerrainPreloads
-// and DeferredNpcPreloads only fire useGLTF.preload() in useEffect (no server output).
+// the module from executing on the server at all — safe because these
+// compatibility mounts are now NO-OPS (all release-deferred demand belongs to
+// the hidden Canvas consumers after their stagger ticks; the only live preload
+// left in DeferredNpcPreloads covers future non-deferred slots).
 const DeferredTerrainPreloads = dynamic(
   () => import('@/lib/three/arena-terrain').then(m => ({ default: m.DeferredTerrainPreloads })),
   { ssr: false, loading: () => null },
@@ -332,9 +334,8 @@ export default function GamePage() {
   // armDecorativeDeadline rides the same first-mount effect (Codex Lever-1
   // review finding 1): WorldWarmup's own arm call only commits if the canvas
   // subtree survives to its passive effect — a renderer-init failure before
-  // that would strand the decorative release with no 45s ceiling while the
-  // page-level DeferredNpcPreloads stays subscribed forever. Arming here
-  // guarantees the ceiling exists the moment the loading screen can.
+  // that would strand release-gated consumer subtrees with no 45s ceiling.
+  // Arming here guarantees the ceiling exists the moment the loading screen can.
   useEffect(() => { armDecorativeDeadline(); preloadWorldAssets(); }, []);
 
   const { data: avatar, isLoading } = useAvatar();

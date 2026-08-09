@@ -17,12 +17,16 @@
  *    Rung-1 audit finding 2: the milestone anchors fired 0.4–17.7s BEFORE
  *    the world was visible, so "deferred" bytes competed with reveal-
  *    critical bytes inside the critical window.
- *  - The absolute deadline still releases unconditionally — capped at the
- *    SeaLoadingScreen 45s force-dismiss so deferred content can never
+ *  - The absolute deadline still fires the RELEASE unconditionally — capped
+ *    at the SeaLoadingScreen 45s force-dismiss so the release can never
  *    outwait a failed-open loader, a crashed frameloop, or a background tab
- *    whose RAF never ticks.
- *  - Subscribers added after release fire synchronously (no missed-release
- *    stranding).
+ *    whose RAF never ticks. Content DELIVERY may trail the release: the
+ *    staggered queue adds the first-drain quiet period (>=1.5s) plus one
+ *    idle tick per heavy consumer, and hidden-tab timer throttling can
+ *    stretch it further (invisible content, acceptable).
+ *  - Plain onDecorativeRelease subscribers added after release fire
+ *    synchronously (no missed-release stranding); STAGGERED subscribers are
+ *    always asynchronous via the queue.
  *
  * Consumers gate RENDERING only (parent stops before any child that calls
  * useGLTF/useVRMInstance); data/roster state is never gated.
@@ -167,6 +171,127 @@ export function onDecorativeRelease(listener: Listener): () => void {
   return () => listeners.delete(listener);
 }
 
+// ---------------------------------------------------------------------------
+// Staggered consumption (rung 3, Lever 3): heavy consumers (deferred NPC
+// slots, decoration bundles) must NOT all mount on the same frame the release
+// fires — the combined decode/upload burst lands as one longtask at the
+// reveal boundary (measured: the 12-pair Lever-1 gate failed ONLY
+// preRevealLongtaskMs because the synchronous burst delayed the reveal stamp
+// behind it). This queue drains ONE consumer per idle tick instead.
+// ---------------------------------------------------------------------------
+
+type StaggerEntry = {
+  listener: Listener;
+  active: boolean;
+  priority: number;
+  sequence: number;
+};
+
+const staggerQueue: StaggerEntry[] = [];
+let staggerScheduled = false;
+let staggerSequence = 0;
+/**
+ * Quiet period before the FIRST post-release drain (rung-3 gate evidence:
+ * the first warm consumers landed within ~0.5s of the release — right at the
+ * reveal boundary — inflating reveal-adjacent longtask accounting and
+ * competing with the first playable frames). All deferred work now starts
+ * clearly after the reveal settles; subsequent consumers drain per idle tick
+ * as before.
+ */
+export const STAGGER_FIRST_DRAIN_QUIET_MS = 1_500;
+let firstDrainDelayDone = false;
+
+function takeNextStaggered(): StaggerEntry | undefined {
+  if (staggerQueue.length === 0) return undefined;
+  let best = 0;
+  for (let i = 1; i < staggerQueue.length; i += 1) {
+    const candidate = staggerQueue[i]!;
+    const current = staggerQueue[best]!;
+    if (
+      candidate.priority < current.priority ||
+      (candidate.priority === current.priority &&
+        candidate.sequence < current.sequence)
+    ) {
+      best = i;
+    }
+  }
+  return staggerQueue.splice(best, 1)[0];
+}
+
+function drainStaggerQueue(): void {
+  if (staggerScheduled || staggerQueue.length === 0) return;
+
+  const run = () => {
+    staggerScheduled = false;
+    let next = takeNextStaggered();
+    while (next && !next.active) next = takeNextStaggered();
+    if (!next) return;
+    try {
+      next.listener();
+    } catch (err) {
+      console.warn('[decorative-release] staggered listener threw:', err);
+    }
+    drainStaggerQueue();
+  };
+
+  if (typeof window === 'undefined') {
+    run();
+    return;
+  }
+  staggerScheduled = true;
+  const w = window as any;
+  if (!firstDrainDelayDone) {
+    firstDrainDelayDone = true;
+    w.setTimeout(run, STAGGER_FIRST_DRAIN_QUIET_MS);
+    return;
+  }
+  if (typeof w.requestIdleCallback === 'function') {
+    w.requestIdleCallback(run, { timeout: 500 });
+  } else {
+    w.setTimeout(run, 120);
+  }
+}
+
+/**
+ * Subscribe with staggered delivery: after the release fires, queued
+ * listeners run ONE PER IDLE TICK (bounded by a 500ms timeout each) instead
+ * of synchronously, so deferred mounts cannot form a single burst at the
+ * reveal boundary. Delivery order: ascending `priority` (ties by
+ * subscription order) — pass the squared camera distance so near content
+ * populates first, and Number.POSITIVE_INFINITY for bulk background sets.
+ * Entries stay cancellable until the moment they execute (an unsubscribed
+ * entry is skipped even if already scheduled). Late subscribers
+ * (post-release) join the same queue.
+ */
+export function onDecorativeReleaseStaggered(
+  listener: Listener,
+  priority = 0,
+): () => void {
+  const entry: StaggerEntry = {
+    listener,
+    active: true,
+    priority,
+    sequence: staggerSequence++,
+  };
+
+  const enqueue = () => {
+    if (!entry.active) return;
+    staggerQueue.push(entry);
+    drainStaggerQueue();
+  };
+
+  const offRelease = released
+    ? (enqueue(), () => {})
+    : onDecorativeRelease(enqueue);
+
+  return () => {
+    entry.active = false;
+    offRelease();
+    const index = staggerQueue.indexOf(entry);
+    if (index >= 0) staggerQueue.splice(index, 1);
+  };
+}
+
 /** TEST-ONLY: reset module state between unit tests. Never call from app code. */
 export function __resetDecorativeReleaseForTests(): void {
   released = false;
@@ -174,6 +299,10 @@ export function __resetDecorativeReleaseForTests(): void {
   releaseReason = null;
   firstPaintArmedReason = null;
   qualifyingFramesSeen = 0;
+  staggerQueue.length = 0;
+  staggerScheduled = false;
+  staggerSequence = 0;
+  firstDrainDelayDone = false;
   if (deadlineTimer !== null) {
     clearTimeout(deadlineTimer);
     deadlineTimer = null;

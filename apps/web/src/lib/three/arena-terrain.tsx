@@ -1,13 +1,15 @@
 'use client';
 
-import { Suspense, useEffect, useRef, useMemo, type ReactElement } from 'react';
+import { Suspense, useEffect, useRef, useMemo, useState, type ReactElement } from 'react';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three/webgpu';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { MAP_WIDTH, MAP_HEIGHT, TILE_SIZE, buildingZones } from '@/lib/pixi/tilemap-data';
 import { makeGeometryWebGPUSafe, makeObject3DWebGPUSafe } from '@/lib/three/webgpu-geometry';
 import { initTerrainHeightfield } from '@/lib/three/terrain-heightfield';
-import { preloadKTX2Bytes, useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
+import { useGLTFWithKTX2 } from '@/lib/three/use-gltf-ktx2';
+import { isDecorativeReleased, onDecorativeReleaseStaggered } from '@/lib/three/decorative-release';
+import { DeferredWarmAttachment } from '@/lib/three/deferred-warm-attachment';
 
 // ---------------------------------------------------------------------------
 // Terrain: Bikini Bottom GLB + sand floor + coral/kelp decorations
@@ -19,10 +21,9 @@ export const TERRAIN_LAYER = 1;
 // Pineapple, Squidward's, Patrick's Rock) baked into one scene, overlapping
 // with our individual building GLBs. Sand floor + individual buildings is cleaner.
 //
-// Decoration preloads have been MOVED to DeferredTerrainPreloads (exported below).
-// They are fired via requestAnimationFrame after first paint from the game page,
-// so they don't delay the initial scene mount.  The Suspense fallback={null} wrapper
-// on ArenaTerrain means decorations simply render nothing until the assets resolve.
+// Decoration demand begins only when UnderwaterDecorations receives its
+// staggered decorative-release tick. The resolved subtree then warms hidden;
+// it cannot enter an ordinary draw until upload + compile + direct warm finish.
 
 // Sand colors — GRAPHIC high-contrast palette, visible from any camera distance
 const SAND_RIDGE  = new THREE.Color(0xfff0d4); // Bright white-sand peaks
@@ -538,7 +539,10 @@ function MergedDecorationsInner() {
   }, [buckets]);
 
   return (
-    <>
+    <DeferredWarmAttachment
+      label="arena-terrain:merged-decorations"
+      priority={Number.POSITIVE_INFINITY}
+    >
       {buckets.map(({ geometry, material }, i) => (
         <mesh
           key={i}
@@ -551,11 +555,32 @@ function MergedDecorationsInner() {
           matrixAutoUpdate={false}
         />
       ))}
-    </>
+    </DeferredWarmAttachment>
   );
 }
 
 function UnderwaterDecorations() {
+  // Rung-3 Lever 3: the parent stops BEFORE the child that calls
+  // useGLTFWithKTX2, so its 12 GLB fetches begin on this consumer's stagger
+  // tick. MergedDecorationsInner then commits hidden and joins the one-at-a-
+  // time GPU warm queue before attachment (timing-only deferral).
+  // Post-release remounts initialize released (one-shot monotonic contract);
+  // bulk decorations take POSITIVE_INFINITY priority so visible NPC slots
+  // drain from the stagger queue first.
+  const [released, setReleased] = useState(isDecorativeReleased);
+  useEffect(() => {
+    // Subscribe on LOCAL state only: re-checking the global here loses the
+    // release fired between render and effect (returning without subscribing
+    // OR setting state = hidden forever — Codex final-review HIGH). A
+    // post-release staggered subscribe delivers via the queue, so this stays
+    // correct in every interleaving.
+    if (released) return undefined;
+    return onDecorativeReleaseStaggered(
+      () => setReleased(true),
+      Number.POSITIVE_INFINITY,
+    );
+  }, [released]);
+  if (!released) return null;
   return (
     <Suspense fallback={null}>
       <MergedDecorationsInner />
@@ -658,29 +683,11 @@ export default function ArenaTerrain() {
 
 // ---------------------------------------------------------------------------
 // DeferredTerrainPreloads
-// Render this component OUTSIDE the Canvas (e.g. in the game page HUD layer).
-// It fires useGLTF.preload() for all decoration + environment GLBs via
-// requestAnimationFrame so the calls land AFTER the first painted frame, not
-// at module-evaluation time. The ArenaTerrain Suspense fallback={null} means
-// the decorations simply render nothing until each asset resolves — safe.
+// Compatibility export retained for game/page.tsx. Scatter preloads are now
+// deliberately absent: MergedDecorationsInner must start all 12 demands only
+// after its own stagger callback, otherwise a release-wide preload gets ahead
+// of the warm-before-attach consumer boundary.
 // ---------------------------------------------------------------------------
 export function DeferredTerrainPreloads(): ReactElement | null {
-  useEffect(() => {
-    const raf = requestAnimationFrame(() => {
-      // Scatter decoration models
-      for (const model of DECO_MODEL_PATHS) {
-        if (model.includes('-ktx.glb')) preloadKTX2Bytes(model);
-        else useGLTF.preload(model);
-      }
-      // Note: building-lighthouse.glb is intentionally omitted here — arena-buildings.tsx
-      // already preloads it via its module-scope loop over BUILDING_MODELS.
-      // REMOVED 2026-04-16: preloads for building-shipwreck, building-submarine, and
-      // underwater-decorations.glb. The components that used them (FixedLandmarks +
-      // UnderwaterDecorationsGlb) were removed — those landmarks were authored for
-      // the old 2560x2560 world and appeared as massive floating silhouettes in the
-      // current 5120x5120 world.
-    });
-    return () => cancelAnimationFrame(raf);
-  }, []);
   return null;
 }
