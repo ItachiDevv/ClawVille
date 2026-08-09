@@ -197,24 +197,58 @@ export const RENT_GRACE_DAYS = 3;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Server-authoritative CT cost to REACH each level. Index = target level:
- *   [0]            unused (no level 0)
- *   [1] = 0        free placement lands a structure at Lv1
- *   [2] = 600      Lv1 → Lv2
- *   [3] = 1800     Lv2 → Lv3
- *   [4] = 4500     Lv3 → Lv4
- *   [5] = 11000    Lv4 → Lv5  (~weeks of play — aspirational; ROADMAP §6.C4)
+ * Server-authoritative CT cost to REACH each level, keyed by structure type.
+ * Index = target level; `[0]` is unused (there is no level 0) and `[1] = 0`
+ * because free placement lands a structure at Lv1.
  *
- * The upgrade route derives `cost = STRUCTURE_UPGRADE_COSTS[currentLevel + 1]`
- * — never client-trusted.
+ *            Lv2     Lv3     Lv4     Lv5
+ *   home       0     900   4,500  11,000
+ *   shop     600   1,800   4,500  11,000
  *
- * A3 ¢-peg re-band (2026-07-07): LEFT UNCHANGED — structure upgrades were NOT in
- * the founder's explicit A3 re-band list, and they belong to the same land
- * buy-outright surface that Phase B (CLV hold-to-keep) supersedes, so like the
- * c/b/a purchase prices they are DEPRECATED and now ~10× cheaper in USD. Do not
- * treat these as a coherent USD price; Phase B re-sizes the land/structure sinks.
+ * Repriced 2026-08-09 (founder ruling Q3), HOME LADDER ONLY. The problem it
+ * solves: reaching Lv3 on a home cost 2,400 CT of upgrades on top of the
+ * pieces, so the whole 2,585 CT onboarding grant bought 88% of one finished
+ * yard. Lv2 is now free — every new player reaches the first real capacity
+ * bump without saving — and Lv3 is halved. Lv4/Lv5 are untouched: they are
+ * still meant to be aspirational. The SHOP ladder is unchanged; shops recover
+ * the giveback through their recurring slot rentals.
+ *
+ * The upgrade route derives
+ * `cost = structureUpgradeCostCt(structureType, currentLevel + 1)` from the
+ * LOCKED structure row — never client-trusted.
+ *
+ * A3 ¢-peg re-band (2026-07-07): these were left out of the founder's explicit
+ * re-band list, so they are not a coherent USD price. Do not read them as one.
  */
-export const STRUCTURE_UPGRADE_COSTS: readonly number[] = [0, 0, 600, 1800, 4500, 11000];
+export const STRUCTURE_UPGRADE_COSTS_BY_TYPE: Readonly<
+  Record<LandStructureType, readonly number[]>
+> = {
+  home: [0, 0, 0, 900, 4500, 11000],
+  shop: [0, 0, 600, 1800, 4500, 11000],
+};
+
+/**
+ * The authoritative upgrade-cost lookup. Returns 0 for a level outside the
+ * ladder, matching the route's `?? 0` guard.
+ */
+export function structureUpgradeCostCt(
+  structureType: LandStructureType,
+  targetLevel: number,
+): number {
+  return STRUCTURE_UPGRADE_COSTS_BY_TYPE[structureType][targetLevel] ?? 0;
+}
+
+/**
+ * @deprecated Use `structureUpgradeCostCt(structureType, targetLevel)`.
+ *
+ * Retained as the SHOP ladder so the pre-reprice shape and numbers still
+ * resolve for callers with no structure type in scope: the guest land sandbox
+ * (`apps/web/src/stores/land-guest-sandbox.ts`, `guest-land-sandbox.tsx`),
+ * which is a DEMO economy that settles nothing. Real settlement always goes
+ * through the type-keyed lookup above.
+ */
+export const STRUCTURE_UPGRADE_COSTS: readonly number[] =
+  STRUCTURE_UPGRADE_COSTS_BY_TYPE.shop;
 
 /** Max structure level (Lv5). Matches the `land_structures.level BETWEEN 1 AND 5` DB check. */
 export const MAX_STRUCTURE_LEVEL = 5;

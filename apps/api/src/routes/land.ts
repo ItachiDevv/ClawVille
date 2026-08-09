@@ -179,7 +179,8 @@
  *            as a fresh Lv+1 upgrade — a paid double-charge. The client MUST send
  *            the same key to make a retry a no-op replay. (Frontend already does.)
  *      200 → { structure: LandStructureDTO, costCt: number, idempotencyReplay?: true }
- *            costCt = SERVER-derived STRUCTURE_UPGRADE_COSTS[target]; target=level+1.
+ *            costCt = SERVER-derived structureUpgradeCostCt(structureType, target);
+ *            target = level+1. Homes and shops have DIFFERENT ladders (Q3).
  *            idempotencyReplay=true → a prior upgrade with the same key was served
  *            (no new debit, structure already at to_level).
  *      400 → { error: 'invalid_body' | 'idempotency_key_required' |
@@ -275,7 +276,8 @@ import {
   LAND_EVENT_TYPES,
   LAND_PARCELS,
   LAND_TIERS,
-  STRUCTURE_UPGRADE_COSTS,
+  STRUCTURE_UPGRADE_COSTS_BY_TYPE,
+  structureUpgradeCostCt,
   MAX_STRUCTURE_LEVEL,
   MAX_PARCELS_PER_AVATAR,
   RENT_PERIOD_DAYS,
@@ -296,7 +298,9 @@ import {
   KIT_CATALOG,
   KIT_GRID_SIZE,
   KIT_LEVEL_RULES,
-  KIT_PIECE_FEE_CT,
+  KIT_PIECE_FEE_CT_BY_STRUCTURE,
+  kitPieceFeeCt,
+  type LandStructureType,
   isCellPlaceable,
   isPiecePlacementAllowed,
   isRotationAllowed,
@@ -733,8 +737,18 @@ export function validateKitAuthority(
   return null;
 }
 
-export function kitPlacementFeeForKey(pieceKey: string): number | null {
-  return isKitPieceKey(pieceKey) ? KIT_PIECE_FEE_CT[KIT_CATALOG[pieceKey].size] : null;
+/**
+ * Placement fee for a piece on a given structure type (founder ruling Q3: homes
+ * are a third of the shop price). `structureType` is read from the LOCKED
+ * `land_structures` row, never from the request body.
+ */
+export function kitPlacementFeeForKey(
+  pieceKey: string,
+  structureType: LandStructureType,
+): number | null {
+  return isKitPieceKey(pieceKey)
+    ? kitPieceFeeCt(structureType, KIT_CATALOG[pieceKey].size)
+    : null;
 }
 
 function throwKitAuthorityError(error: KitAuthorityError): never {
@@ -746,7 +760,7 @@ function throwKitAuthorityError(error: KitAuthorityError): never {
 // HIGH — keyless-replay double-charge). A retry MUST carry the same key or the
 // server would treat the 2nd call as a fresh Lv+1 upgrade and debit AGAIN. The
 // target level + cost are still server-derived (current level + 1 →
-// STRUCTURE_UPGRADE_COSTS) — never client-trusted. The frontend already sends
+// STRUCTURE_UPGRADE_COSTS_BY_TYPE) — never client-trusted. The frontend already sends
 // `upgradeStructure(structureId, idempotencyKey)`, so requiring it is
 // contract-compatible.
 const upgradeBodySchema = z
@@ -1949,7 +1963,8 @@ landRoutes.get('/catalog', async (c) => {
       premium: rules.premium,
       homeSkus: skuList(rules.homeSkus),
       shopSkus: skuList(rules.shopSkus),
-      upgradeCosts: STRUCTURE_UPGRADE_COSTS,
+      upgradeCosts: STRUCTURE_UPGRADE_COSTS_BY_TYPE.shop,
+      upgradeCostsByType: STRUCTURE_UPGRADE_COSTS_BY_TYPE,
     });
   }
 
@@ -1968,7 +1983,11 @@ landRoutes.get('/catalog', async (c) => {
       ];
     }),
   );
-  return c.json({ tiers, upgradeCosts: STRUCTURE_UPGRADE_COSTS });
+  return c.json({
+    tiers,
+    upgradeCosts: STRUCTURE_UPGRADE_COSTS_BY_TYPE.shop,
+    upgradeCostsByType: STRUCTURE_UPGRADE_COSTS_BY_TYPE,
+  });
 });
 
 // ─── 7. POST /parcels/:parcelId/buy  (DISABLED — Phase B tenure model) ──────
@@ -2989,13 +3008,17 @@ landRoutes.post(
         const parcel = parcelRows[0];
         if (!parcel) throw new HTTPException(404, { message: 'parcel_not_found' });
 
+        // `structure_type` is selected because the placement fee is type-keyed
+        // (founder ruling Q3). The row is already FOR UPDATE-locked, so this is
+        // a column widening with no new lock and no extra round trip.
         const structureRows = await tx.execute<{
           id: string;
           owner_avatar_id: string;
           status: 'active' | 'archived';
           level: number | string;
+          structure_type: LandStructureType;
         }>(
-          sql`SELECT id, owner_avatar_id, status, level FROM land_structures
+          sql`SELECT id, owner_avatar_id, status, level, structure_type FROM land_structures
               WHERE parcel_id = ${parcelId} FOR UPDATE`,
         );
         const structure = structureRows[0] ?? null;
@@ -3093,7 +3116,8 @@ landRoutes.post(
 
         const pieceKey = body.pieceKey as KitPieceKey;
         const size: KitPieceSize = KIT_CATALOG[pieceKey].size;
-        const feeCt = KIT_PIECE_FEE_CT[size];
+        const structureType = structure!.structure_type;
+        const feeCt = kitPieceFeeCt(structureType, size);
         const treasuryId = await getHouseTreasuryAvatarId();
         if (!treasuryId) {
           // D5 is a transfer, never a burn: deliberately unlike the upgrade/cove
@@ -3106,7 +3130,13 @@ landRoutes.post(
             amount: feeCt,
             reason: 'land_kit_piece_fee',
             source: 'api',
-            metadata: { parcelId, pieceKey, size, idempotencyKey: body.idempotencyKey },
+            metadata: {
+              parcelId,
+              pieceKey,
+              size,
+              structureType,
+              idempotencyKey: body.idempotencyKey,
+            },
             actorKind: toActorKind(identity.kind),
           },
           tx,
@@ -3117,7 +3147,14 @@ landRoutes.post(
             amount: feeCt,
             reason: 'house_fee_land_kit_piece',
             source: 'system',
-            metadata: { parcelId, pieceKey, size, ownerAvatarId: avatarId },
+            metadata: {
+              parcelId,
+              pieceKey,
+              size,
+              structureType,
+              ownerAvatarId: avatarId,
+              idempotencyKey: body.idempotencyKey,
+            },
             actorKind: 'system',
           },
           tx,
@@ -3618,7 +3655,9 @@ landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, r
               shellKey: s.shell_key ?? DEFAULT_SHELL_KEY,
               paletteKey: s.palette_key ?? DEFAULT_PALETTE_KEY,
             },
-            costCt: STRUCTURE_UPGRADE_COSTS[toLevel] ?? 0,
+            // Type-keyed like the live charge, so a replay reports the exact
+            // price that was actually paid (0 for a free home Lv2).
+            costCt: structureUpgradeCostCt(s.structure_type, toLevel),
           };
         }
       }
@@ -3637,8 +3676,12 @@ landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, r
         throw new HTTPException(409, { message: 'max_level_reached' });
       }
 
-      const cost = STRUCTURE_UPGRADE_COSTS[target] ?? 0;
-      // target >= 2 here always has cost > 0; guard anyway so debit never gets 0.
+      const cost = structureUpgradeCostCt(s.structure_type, target);
+      // A HOME reaching Lv2 is deliberately FREE (founder ruling Q3), so cost 0
+      // is now a real, expected value rather than only a defensive guard: the
+      // whole debit + treasury credit is skipped and no money moves. The
+      // level write, the `land_upgrades` audit row, and the idempotency key all
+      // still apply, so a free upgrade is replay-safe like a paid one.
       let ledgerId: string | null = null;
       if (cost > 0) {
         const debit = await debitClawTokens(
@@ -3763,7 +3806,7 @@ landRoutes.post('/structures/:structureId/upgrade', requireAuthOrAgentSession, r
           return c.json(
             {
               structure: toStructureDTO(cached),
-              costCt: STRUCTURE_UPGRADE_COSTS[winner.toLevel] ?? 0,
+              costCt: structureUpgradeCostCt(cached.structureType, winner.toLevel),
               idempotencyReplay: true,
             },
             200,

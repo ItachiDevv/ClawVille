@@ -194,16 +194,26 @@ describe('land kit ownership and money discipline', () => {
   });
 
   it('derives the exact D5 fee from the server catalog', () => {
-    expect(kitPlacementFeeForKey('fence-picket')).toBe(15);
-    expect(kitPlacementFeeForKey('banner-pole')).toBe(15);
-    expect(kitPlacementFeeForKey('arch-driftwood')).toBe(60);
-    expect(kitPlacementFeeForKey('statue-anchor')).toBe(60);
-    expect(kitPlacementFeeForKey('unknown')).toBeNull();
+    // Fees are structure-type keyed (founder ruling Q3, 2026-08-09): a HOME
+    // yard costs a third of a SHOP yard for the same piece.
+    expect(kitPlacementFeeForKey('fence-picket', 'shop')).toBe(15);
+    expect(kitPlacementFeeForKey('banner-pole', 'shop')).toBe(15);
+    expect(kitPlacementFeeForKey('arch-driftwood', 'shop')).toBe(60);
+    expect(kitPlacementFeeForKey('statue-anchor', 'shop')).toBe(60);
+    expect(kitPlacementFeeForKey('fence-picket', 'home')).toBe(5);
+    expect(kitPlacementFeeForKey('banner-pole', 'home')).toBe(5);
+    expect(kitPlacementFeeForKey('arch-driftwood', 'home')).toBe(20);
+    expect(kitPlacementFeeForKey('statue-anchor', 'home')).toBe(20);
+    expect(kitPlacementFeeForKey('unknown', 'home')).toBeNull();
+    expect(kitPlacementFeeForKey('unknown', 'shop')).toBeNull();
   });
 
   it('places under one atomic exact debit+house credit and audits both ledger ids', () => {
     const create = routeSpan('post', '/parcels/:parcelId/pieces');
-    expect(create).toContain('const feeCt = KIT_PIECE_FEE_CT[size]');
+    // The fee is derived from the LOCKED structure row's type, never the body.
+    expect(create).toContain('const structureType = structure!.structure_type');
+    expect(create).toContain('const feeCt = kitPieceFeeCt(structureType, size)');
+    expect(create).toContain('SELECT id, owner_avatar_id, status, level, structure_type');
     expect(create).toContain("reason: 'land_kit_piece_fee'");
     expect(create).toContain("reason: 'house_fee_land_kit_piece'");
     expect(create.match(/amount: feeCt/g)).toHaveLength(2);
