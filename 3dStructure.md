@@ -1,7 +1,59 @@
 # ClawVille — 3D Structure
 
 
-**Last Audited: 2026-08-09 (Land gamification P7a — salvage node topology).**
+**Last Audited: 2026-08-10 (Land scale-up render pass — "houses and plots still
+not big enough").** Companion render diff to the shared-constants growth
+(`TIER_CONFIG` founder 192/52 t · starter 257/52 t · c 322/52 t, corner-inset
+per-side plot distribution, `STRUCTURE_FOOTPRINT_FRACTION` 0.64 → **0.68 as
+landed** — the frozen spec said 0.70; the economy lane re-solved to 0.68 and
+live code wins. If it moves again, refresh every derived number flagged
+"(at 0.68)" below). Every plot is now 1,664 wu across (founder/starter were
+1,216) and a shell's target footprint goes 778 → 1,131.5 wu on founder/starter
+(+45% linear at 0.68; 0.70 would have been 1,164.8). Render-side changes, all
+in `apps/web/src/lib/three/land-*.tsx`:
+
+1. **`land-founder-apartments.tsx` drift-proofing + corner retune.** The
+   file's PRIVATE copy of the founder ring (`FOUNDER_H_TILES = 190`,
+   `FOUNDER_FOOT_TILES = 38`, its own perimeter walk) was already stale against
+   the live 192 t ring and is DELETED; gap centers now derive from
+   `LAND_PARCELS` (`@clawville/shared`), so tower placement tracks any future
+   tier-config change automatically. Against the grown parcels the four
+   CORNER-gap towers interpenetrated or grazed founder plots (worst −8.7 wu,
+   tower C@gap2 vs `parcel-founder-02`); their outward `lateralOffset`s were
+   retuned 240/220/220/160 → 620/510/590/500. Verified by an exhaustive
+   tower-circumradius vs parcel-AABB sweep (10 towers × 56 parcels; tower
+   bound = circumradius of each type's widest authored piece, A=183.9 /
+   B=305.4 / C=288.5 wu, rotation-proof): **min tower→parcel gap 259.3 wu**
+   (A@gap9 vs `parcel-founder-09`; the four corner towers sit 259–264, all
+   same-side towers ≥ 780), min tower→tower gap 2,851.8 wu.
+2. **`land-showroom.tsx` derived cull + fit unification.** `CULL_DIST` was a
+   stale literal (14,000, written for the 576 grid); outermost c-ring parcels
+   now reach 13,204 wu from origin. It is now DERIVED:
+   `max(hypot(cx, cz)) over LAND_PARCELS + 1,800 wu margin` = **15,004 wu**
+   (margin covers the 1,177 wu footprint half-diagonal + slack; fog.far 10,500
+   / camera.far 11,500 bound true visibility anyway). The showroom GLB fit
+   also used `max(X, Y, Z)` single-axis normalization while
+   `land-structures.tsx` uses widest-XZ + independent height cap fitted at the
+   Lv5 base — tall shells previewed at a different size than they render
+   in-world. The showroom now runs the IDENTICAL formula (§ "Model
+   normalization" below).
+3. **`land-parcels.tsx` fence + sign scale-up.** Boundary posts 120 → 200 wu
+   (0.74× the 270 wu avatar — estate pillar, not toothpick), `POST_W` 14 → 24,
+   rails 5/4 → 12/9. Signs ×1.45 (tracks the +37% linear plot growth); full
+   table in §14. `HITBOX_HALF` is no longer a second hand-maintained table —
+   it is DERIVED from `SIGN_SIZES` (+35/+70/+42 wu padding), so the
+   click-to-buy tap target can never drift from the drawn sign again.
+4. **Kit pieces intentionally NOT scaled.** `KIT_PIECE_RENDER` heights are
+   avatar-anchored absolutes (a fence is waist-high on a 270 wu avatar
+   regardless of plot size); the 0–15 kit grid is parcel-relative so existing
+   paid rows slide proportionally with the parcel — both by design. Paid kit
+   rows are never deleted or refused (founder ruling Q5).
+
+Zero draw calls added: parcels stay merged per (tier, availability), signs per
+category, towers in 5 material buckets — every change is dimension/derivation
+only. No new geometry, no shader changes, no per-frame allocations.
+
+**Prior Last Audited: 2026-08-09 (Land gamification P7a — salvage node topology).**
 48 salvage nodes were added to the world as a FROZEN SHARED CONSTANT,
 `SALVAGE_NODES` in `packages/shared/src/constants/land-salvage.ts`. Positions are
 in CENTRED world coords (the Three.js / collider frame); the NPC simulation
@@ -64,24 +116,41 @@ reservation from exactly those numbers, and a renderer-local copy would let the
 shell we DRAW diverge from the shell we RESERVE. Values re-solved per founder
 ruling Q7: footprint **0.62 to 0.64**, ramp **0.78-1.25 collapsed to 0.94-1.04**
 (flat, step 0.025, because scale is not the level signal, the shell swap and
-palette are), height cap 1.50 unchanged. Net effect at Lv1: **401 wu (1.49x a
-270 wu avatar) becomes 558 wu (2.07x)** with no art change. Footprint binds while
-a shell's `H/W < 1.50 / (0.64 * 1.04) = 2.254`; every shipping shell is under it.
+palette are), height cap 1.50 unchanged.
+_[2026-08-10 land scale-up: footprint **0.64 → 0.68 as landed** ("houses still
+not big enough"; the frozen spec said 0.70, the economy lane re-solved to
+0.68 — live code wins). On the grown 1,664 wu plots the target footprint is
+1,131.5 wu (at 0.68); a Lv1 shell spans 1,063.6 wu (3.94× a 270 wu avatar).
+Footprint binds while a shell's `H/W < 1.50 / (0.68 × 1.04) = 2.121` —
+`kelp-spire` (2.22) and `coral-highrise` (3.11) remain height-bound, exactly
+as intended for tall silhouettes; every other shipping shell stays
+footprint-bound.]_
 
 `shellEnvelopeHalfWu(parcelTier)` **takes no level argument, by design.** It is
 computed at the tier's MAXIMUM level, so a kit placement legal at Lv1 stays legal
 after every upgrade. A level parameter would let a Lv4/Lv5 shell grow into pieces
 the server already sold as legal, and founder ruling Q5 forbids deleting a paid
-row to resolve that. Arity is asserted in `land-placement.test.ts`. Half-extents:
-starter **385.2**, founder **404.7**, c **540.5** wu.
+row to resolve that. Arity is asserted in `land-placement.test.ts`. Half-extents
+(2026-08-10, at 1,664 wu sides and footprint 0.68): starter **560.1**, founder
+**588.4**, c **574.3** wu.
 
-**Plot growth (`TIER_CONFIG`, `land-parcels.ts`): starter 34 to 38 t, c 34 to
-52 t, founder 38 t unchanged**, giving sides 1,216 / 1,216 / 1,664 wu. Verified by
-exhaustive pairwise AABB over all **1,540** parcel pairs (`land-placement.test.ts`,
-"plot growth separation"), replicating the generator including
-`Math.round(xt * 32)`. Minimum slack **54 wu**, on the `parcel-starter-06` /
-`parcel-starter-07` pair. New accessors `getParcelFootprintWu(tier)` and
-`getTierHalfSideTiles(tier)`.
+**Plot growth (`TIER_CONFIG`, `land-parcels.ts`) — 2026-08-10 land scale-up
+(supersedes the 2026-08-09 38 t pass): founder 192 t half-side / 52 t footprint,
+starter 257 t / 52 t, c 322 t / 52 t** — every plot is now 1,664 wu across
+(founder/starter were 1,216). The layout mechanism also changed: plots are no
+longer placed at even arc-length steps starting AT the top-left corner; each
+side gets `floor(count/4) + (side < count % 4)` plots (founder 3/3/2/2 ·
+starter 7/7/6/6 · c 5/5/5/5), the first and last plot on a side sit 64 t in
+from the corner, and the rest spread evenly between. Parcel CODES and tier
+order are unchanged — only world centers moved. Measured at the growth:
+pairwise min slack between the 56 parcels **384 wu**, min
+parcel-to-building-collider gap **274 wu**, min world-edge margin **128 wu**
+(c outer edge 348 t vs 352 t half-grid). Deviation reported upward: c does NOT
+reach the 60 t target — the world ran out of radial room (salvage bands +
+world edge); going bigger needs a grid grow or a salvage redesign. Accessors
+`getParcelFootprintWu(tier)` and `getTierHalfSideTiles(tier)` are the ONLY way
+renderers may read these numbers (the last private copy, in
+`land-founder-apartments.tsx`, was deleted in this pass).
 
 **Kit pieces are sized by a measured manifest, not a cell-cube.**
 `fitKitPieceToCell()` (0.92 cell small / 1.9 cells large / 2.2-cell height cap)
@@ -257,11 +326,15 @@ exclusion boxes derive from `LAND_PARCELS`. Its exclusion test was
 corner regions of every square parcel read as clear and props were legitimately
 scattered onto player land near the diagonals. It is now a square AABB (gate
 G-B). In `land-parcels.tsx`, boundary posts go **`POST_H` 38 to 120 wu and
-`POST_W` 5.5 to 14** (0.14x to 0.44x avatar, still 4 boxes / 48 tri per parcel),
-the parcel body splits so the near-coplanar pad (`PAD_Y = FLOOR_Y + 0.9`) becomes
-a neutral tone and TIER COLOUR MOVES TO THE RAIL, and frames merge per
-(tier, availability) so a buyable plot is legible without its sign in view. Body
-draws go **3 to 9**, inside the section 5.7 3-11 budget.
+`POST_W` 5.5 to 14** (0.14x to 0.44x avatar, still 4 boxes / 48 tri per parcel)
+_[2026-08-10 land scale-up: 120/14 was tuned for 1,216 wu plots and read as a
+toothpick on 1,664 wu — now **`POST_H` 200 / `POST_W` 24** (0.74× avatar,
+chest-height estate pillar) with rails 5/4 → **12/9** so the top rail survives
+distance over a ~1,464 wu span]_, the parcel body splits so the near-coplanar
+pad (`PAD_Y = FLOOR_Y + 0.9`) becomes a neutral tone and TIER COLOUR MOVES TO
+THE RAIL, and frames merge per (tier, availability) so a buyable plot is
+legible without its sign in view. Body draws go **3 to 9**, inside the section
+5.7 3-11 budget.
 
 **Meshy catalog ramp — 7 new home shells (2026-08-09).** `SHELL_CATALOG` gains
 `pearl-dome` (Lv1), `tiki-hut` / `anchor-forge` / `shipwreck-mast` (Lv2), and
@@ -365,11 +438,18 @@ responsive without polling `/api/land/me`. A structure resolves its
 `home.glb` or `shop.glb` from the server-returned shell key with the explicit
 `coastal-cottage` fallback; `levelScale(level)` remains the progression scale.
 
-Model normalization treats footprint and height independently. It first fits the
-Lv5 base with `min(parcelSize * 0.62 / widestXZ,
-(parcelSize * 1.50 / height) / 1.25)`, then multiplies that base by
-`levelScale(level)`. The height ceiling is therefore authoritative at Lv5 while
-lower levels remain visible fractions of the capped size. Decoded model-space
+Model normalization treats footprint and height independently. It first fits
+the Lv5 base with `min(parcelSize * STRUCTURE_FOOTPRINT_FRACTION / widestXZ,
+(parcelSize * STRUCTURE_HEIGHT_CAP_FRACTION / height) / STRUCTURE_LEVEL_SCALE_MAX)`
+— today `min(parcelSize * 0.68 / widestXZ, (parcelSize * 1.50 / height) / 1.04)`
+— then multiplies that base by `levelScale(level)` (0.94–1.04). The height
+ceiling is therefore authoritative at Lv5 while lower levels remain visible
+fractions of the capped size. _(This block previously showed the retired
+0.62 / 1.25 values — corrected 2026-08-10; the constants live in
+`@clawville/shared` `land-economy.ts` and BOTH render sites import them.
+`land-showroom.tsx` used a divergent `max(X, Y, Z)` normalization until
+2026-08-10; it now runs this exact formula, so the showroom preview and the
+in-world shell can never disagree about a house's size.)_ Decoded model-space
 bounds and mesh costs are:
 
 | Premium asset | Decoded native X × Y × Z | Mesh cost | Lv5 limiter |
@@ -377,15 +457,17 @@ bounds and mesh costs are:
 | `premium-tower/home.glb` | 1.240 × 5.500 × 1.368 | 986 triangles, 6 primitives | height |
 | `premium-mall/shop.glb` | 2.040 × 1.680 × 1.240 | 2,364 triangles, 4 primitives | footprint |
 
-On a 1,216-world-unit founder parcel, the resulting fitted dimensions are:
+On a 1,664-world-unit founder parcel (52 t, 2026-08-10 scale-up; fraction 0.68
+as landed), the resulting fitted dimensions are (`premium-tower` is
+height-bound, so its rows are IDENTICAL under 0.68 or 0.70):
 
 | Level | `premium-tower` X × Y × Z | `premium-mall` X × Y × Z |
 | ---: | ---: | ---: |
-| Lv1 | 256.6254 × 1,138.1760 × 283.0243 | 588.0576 × 484.3260 × 357.4612 |
-| Lv2 | 295.2837 × 1,309.6320 × 325.6594 | 676.6432 × 557.2854 × 411.3095 |
-| Lv3 | 333.9420 × 1,481.0880 × 368.2945 | 765.2288 × 630.2448 × 465.1579 |
-| Lv4 | 372.6003 × 1,652.5440 × 410.9295 | 853.8144 × 703.2041 × 519.0062 |
-| Lv5 | 411.2586 × 1,824.0000 × 453.5646 | 942.4000 × 776.1635 × 572.8545 |
+| Lv1 | 508.63 × 2,256.00 × 561.13 | 1,063.63 × 875.93 × 646.52 |
+| Lv2 | 522.15 × 2,316.00 × 576.05 | 1,091.92 × 899.23 × 663.71 |
+| Lv3 | 535.68 × 2,376.00 × 590.98 | 1,120.20 × 922.52 × 680.91 |
+| Lv4 | 549.21 × 2,436.00 × 605.90 | 1,148.49 × 945.82 × 698.10 |
+| Lv5 | 562.73 × 2,496.00 × 620.82 | 1,176.78 × 969.11 × 715.30 |
 
 Palette tinting clones each authored mesh material and multiplies the cycling
 base/accent/trim swatch into its existing color. This preserves authored maps,
@@ -398,8 +480,12 @@ and refreshes that set as the player walks, bounding GLB work until P3 chunking.
 **Manual overlap check:** on `/game`, inspect allowed Lv4/Lv5 founder-parcel
 premium shells from several camera angles against all ten procedural
 `land-founder-apartments.tsx` skyline pieces. Confirm no footprint or roofline
-interpenetration. The apartment geometry is intentionally unchanged and this
-visual sign-off remains with the orchestrator.
+interpenetration. _(2026-08-10: tower PIECE geometry is still unchanged, but
+PLACEMENT was retuned for the 52 t parcels — ring geometry now derives from
+`LAND_PARCELS` and the four corner-gap towers moved outward; measured min
+tower→parcel gap 259.3 wu, and the largest shell envelope half-extent (founder
+588.4 wu at the landed 0.68 fraction) stays inside the parcel AABB the sweep checks against, so shells are
+covered by the same clearance.)_ Visual sign-off remains with the orchestrator.
 
 **Prior Last Audited: 2026-07-30 (Persistent world-stage P4 activity overlay slot).**
 `/activity/:activityId/:roomId` now joins the `(world)` route group and registers
@@ -1812,6 +1898,8 @@ Draw-call budget (full equipped set): hat ≤ 1, aura ≤ 4 (instanced particles
 
 Compact log. Single line per change with commit reference where applicable.
 
+- 2026-08-10 — Land scale-up render pass (branch `feat/land-scale`, commit pending): `land-founder-apartments.tsx` founder-ring privates deleted → derives from `LAND_PARCELS`; 4 corner-gap tower offsets 240/220/220/160 → 620/510/590/500 (measured min tower→parcel gap 259.3wu over 10×56 sweep). `land-showroom.tsx` `CULL_DIST` literal 14000 → derived `max parcel center dist + 1800` (=15,004wu) + GLB fit unified onto the `land-structures.tsx` widest-XZ/height-cap formula. `land-parcels.tsx` posts 120/14 → 200/24, rails 5/4 → 12/9, signs ×1.45 (planks 420×174 / 550×229 / 695×290, posts 320/390/460), `HITBOX_HALF` now DERIVED from `SIGN_SIZES`. Zero added draw calls. Companion to the shared-constants growth (founder 192/52t · starter 257/52t · c 322/52t corner-inset layout, footprint fraction 0.68 as landed; spec said 0.70).
+
 - 2026-07-25 — Persistent world-stage P0a synthetic proof: isolated `/perf/stage?stage=1`, one stable R3F Canvas, per-scene generation lifecycle, persistent camera coordinator, cancellable DOM fade/await FSM with 20s error, active-only frame scheduler/counters, alpha/beta warming proof, and physical Canvas remount instrumentation. Live route canvases and `World3DCanvas` renderer behavior remain unchanged; renderer extraction is deferred to P1 because the current live fallback swaps DOM canvases.
 - 2026-07-23 — **R18e grand item VFX (presentation-only):** authoritative client event edges now drive bounded world-space ink, puffer, tide, whirlpool, Bubble, Remora, swap, wave-wall, and generic hit spectacle through three new count-driven built-in-material instance pools (320 blobs / 64 rings / 160 streaks). The R18d three-draw ceiling becomes six (**+3 active / +0 dormant**); rendered-victim placement, banked/wave-following rings, deadline-effect reservation, numeric hot-loop colors, and preallocated slots preserve the Iris Xe contract. Victim ink DOM coverage is denser and longer-lived. No asset, API/shared, sim, authority, timing, damage, settlement, schema, protocol, manual, or `PROTOCOL_VERSION` change.
 
@@ -1898,7 +1986,7 @@ Compact log. Single line per change with commit reference where applicable.
 
 - 2026-05-23 — **Experimental: Nanite-style GPU rasterizer spike** (worktree `perf/meshlet-integration` only, NOT on master). Two new files: `apps/web/src/lib/three/experimental/nanite-rasterizer.ts` (exports `NaniteRasterizer`, `geometryToMeshletAsset`, `MeshletAsset`, `RasterizerOptions` — 5-pass compute pipeline: Clear→Frustum→Dispatch→Rasterize→HWArgs, visibility buffer, SW barycentric rasterizer, HW fallback scene) and `apps/web/src/app/preview/meshlet-spike/page.tsx` (loads `building-lighthouse.glb`, single instance, DOM FPS overlay, WebGPU-only — blank/error if `navigator.gpu` absent). Route: `/preview/meshlet-spike`. No production-rendering files touched; spike is fully isolated.
 
-## 14. Land FOR-SALE sign system (updated 2026-06-22; originally 2026-06-18)
+## 14. Land FOR-SALE sign system (updated 2026-08-10 ×1.45 scale-up; reactive 2026-06-22; originally 2026-06-18)
 
 **Files:** `packages/shared/src/constants/land-signage.ts` (NEW 2026-06-18) · `packages/shared/src/index.ts` (updated) · `apps/web/src/lib/three/land-parcels.tsx` (reworked 2026-06-18, reactive 2026-06-22) · `apps/web/src/lib/three/land-showroom.tsx` (simplified) · `apps/web/src/components/three/World3DCanvas.tsx` (hitbox mount 2026-06-22)
 
@@ -1906,15 +1994,15 @@ Compact log. Single line per change with commit reference where applicable.
 
 | Category | Applies to | Plank W×H (wu) | Plank D | Post H (`cfg`) | Canvas | Texture design |
 |---|---|---|---|---|---|---|
-| `regular` | b / c / starter tiers | 290 × 120 | 9 | 220 | 1024×424 | Slate gradient bg, beveled inset frame (`#d8c39a`), bold "FOR SALE" (Arial Black) + tracked "LAND PARCEL" subtitle |
-| `premium` | founder + a tiers | 380 × 158 | 11 | 270 | 1024×426 | Gold `#ffd24a` double frame + corner studs, "FOR SALE" (Arial Black) white + "PREMIUM" gold serif subtitle |
-| `premium-partner` | curated partner lots | 480 × 200 | 13 | 320 | 1024×426 | Cyan `#7fe6ff`/platinum ornate: topper band + double frame + studs + dots, "FOR SALE" white + "PARTNER" cyan serif subtitle |
+| `regular` | b / c / starter tiers | 420 × 174 | 13 | 320 | 1024×424 | Slate gradient bg, beveled inset frame (`#d8c39a`), bold "FOR SALE" (Arial Black) + tracked "LAND PARCEL" subtitle |
+| `premium` | founder + a tiers | 550 × 229 | 16 | 390 | 1024×426 | Gold `#ffd24a` double frame + corner studs, "FOR SALE" (Arial Black) white + "PREMIUM" gold serif subtitle |
+| `premium-partner` | curated partner lots | 695 × 290 | 19 | 460 | 1024×426 | Cyan `#7fe6ff`/platinum ornate: topper band + double frame + studs + dots, "FOR SALE" white + "PARTNER" cyan serif subtitle |
 
-**Sign sizes ~4.3× larger than original** (2026-06-18 scaling for 2-ring big-plot layout — founder plots ~1216wu, starter ~1088wu (starter is 1216wu and c is 1664wu since the 2026-08-09 plot growth, so signs read even smaller relative to a plot now); old ~70–116wu signs were too small to read at plot scale). Post heights 220–320wu (`cfg.postH`).
+**Sign scale history:** ~4.3× on 2026-06-18 (2-ring big-plot layout; old ~70–116wu signs were specks), then **×1.45 on 2026-08-10** for the land scale-up (every plot now 52 t = 1,664wu; a Lv1 shell spans ~1,064wu, so the 290–480wu planks read small from the approach path). ×1.45 tracks the +37% linear plot growth; plank W:H ratios preserved to <0.4% so the three aspect-matched CanvasTextures needed NO change. Post heights 320–460wu (`cfg.postH`); plank centers land at ~215–285wu — at and above the 270wu avatar eyeline.
 
 **Texture polish (2026-06-26):** canvases were 256×64 (regular/premium) / 256×80 (partner) on planks 290–480wu wide → ~0.5px/wu (blurry) AND wrong aspect (256×64 = 4:1 vs plank ≈2.42:1 → horizontally squished). Now each canvas MATCHES its plank's W:H aspect at ~1024px on the long edge (1024×424 / 1024×426 / 1024×426), with characterful display fonts (Arial Black/Impact headline + Georgia serif subtitle — canvas-safe, no external load), beveled/inset framing, proper hierarchy (big headline ≫ small subtitle), `anisotropy=8` + mipmaps + `SRGBColorSpace`. Still only **3 sign textures total** (one per CATEGORY, shared across all parcels) so the res bump is cheap VRAM (~3 × 1024×426 ≈ 5MB total, vs old ~0.06MB; +~5MB).
 
-**Post-height fix (2026-06-26):** `buildSignPostGeo` previously built a full-height post (`cfg.postH`, top at `FLOOR_Y+postH`) that ran straight UP THROUGH the plank's centered text. The post now rises from the floor and STOPS at the plank's bottom edge + a small mount overlap: `postH' = cfg.postH − 0.98·cfg.plankH`, `postY = FLOOR_Y + postH'·0.5`. The plank height (`plankY = FLOOR_Y + postH − plankH·0.6`) is UNCHANGED — sign sits exactly as before. Per-category clearance of post-top below text-center (FLOOR_Y=−2): regular ≈45.6wu, premium ≈60wu, partner ≈76wu; mount overlap 0.12·plankH each. The plank hitbox (`LandParcelSignHitboxes`, keyed on `plankY`) is unaffected.
+**Post-height fix (2026-06-26):** `buildSignPostGeo` previously built a full-height post (`cfg.postH`, top at `FLOOR_Y+postH`) that ran straight UP THROUGH the plank's centered text. The post now rises from the floor and STOPS at the plank's bottom edge + a small mount overlap: `postH' = cfg.postH − 0.98·cfg.plankH`, `postY = FLOOR_Y + postH'·0.5`. The plank height (`plankY = FLOOR_Y + postH − plankH·0.6`) is UNCHANGED — sign sits exactly as before. Per-category clearance of post-top below text-center (FLOOR_Y=−2, at the 2026-08-10 ×1.45 sizes): regular ≈66.1wu, premium ≈87.0wu, partner ≈110.2wu; mount overlap 0.12·plankH each. The plank hitbox (`LandParcelSignHitboxes`, keyed on `plankY`) tracks automatically — since 2026-08-10 `HITBOX_HALF` is DERIVED from `SIGN_SIZES` (hw = plankW/2+35, hh = plankH/2+70, hd = plankD/2+42), never a second hand-maintained table, so the drawn sign and the click-to-buy tap target cannot drift apart.
 
 **Category resolver:** `getLandSignCategory(parcel: ParcelSlot): LandSignCategory` in `land-signage.ts`. Priority: `PREMIUM_PARTNER_PARCEL_IDS.has(id)` → `premium-partner`; tier in `PREMIUM_SIGN_TIERS (['founder','a'])` → `premium`; else → `regular`.
 
@@ -1923,7 +2011,7 @@ Compact log. Single line per change with commit reference where applicable.
 **Placement math (unchanged from old single-sign system):**
 ```
 angle  = atan2(-cx, -cz)       // radial direction toward origin
-offset = size * 0.5 * 0.40     // SIGN_RADIAL_OFFSET=0.40
+offset = size * 0.5 * 0.82     // SIGN_RADIAL_OFFSET=0.82 (doc previously said 0.40 — stale; at 1,664wu plots the sign sits ~682wu from center, ~94wu in front of the largest shell envelope)
 signX  = cx + sin(angle)*offset
 signZ  = cz + cos(angle)*offset
 plankY = FLOOR_Y + postH - plankH*0.6          // text center (unchanged)
@@ -1936,7 +2024,7 @@ plankRotY = angle              // sign face toward origin
 
 **Coverage (updated 2026-06-22):** signs render ONLY on parcels whose `useLandStore.parcels.get(id)?.status` is `'available'` (default when absent). An owned/reserved parcel suppresses its FOR-SALE sign; the buyer's placed structure (`land-structures.tsx`) replaces it. Body meshes (pads/posts/rails) remain static on all 180 plots regardless of ownership.
 
-**Click bridge (2026-06-22):** `LandParcelSignHitboxes` (exported from `land-parcels.tsx`, mounted in `World3DCanvas.tsx`) renders one invisible `<mesh>` per available sign. `onClick` → `openLandOffice(parcelCode)` → Land Office modal opens focused on that parcel. Mobile tap works (R3F pointer-event system). Zero GPU overhead (invisible meshes skipped by renderer). Hitbox dims per category: regular ±360×260×80wu, premium ±460×340×100wu, premium-partner ±560×430×120wu.
+**Click bridge (2026-06-22):** `LandParcelSignHitboxes` (exported from `land-parcels.tsx`, mounted in `World3DCanvas.tsx`) renders one invisible `<mesh>` per available sign. `onClick` → `openLandOffice(parcelCode)` → Land Office modal opens focused on that parcel. Mobile tap works (R3F pointer-event system). Zero GPU overhead (invisible meshes skipped by renderer). Hitbox full dims derive from `SIGN_SIZES` (2026-08-10): regular 490×314×97wu, premium 620×369×100wu, premium-partner 765×430×103wu.
 
 **Reactivity (2026-06-22):** sign meshes rebuild (dispose old geometry, create new) via `useEffect` on `useLandStore.parcels` store change. `availableSetKey()` identity guard: sign rebuild fires only when WHICH parcels are available actually changes (sorted join of available parcelIds). Shared sign materials (signPostMat + 3 plankMats + 3 CanvasTextures) built once in `useMemo([])`, survive rebuilds, disposed only on component unmount.
 

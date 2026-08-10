@@ -16,8 +16,8 @@
  *   • Building zones: game-px center = (zone.x + zone.width/2) * TILE_SIZE.
  *   • Owned parcels (GET /api/land/me) carry gridX/gridY tile coords; game-px =
  *     gridX * TILE_SIZE. The seed (seed-land-parcels.ts) stamps
- *     gridX = floor((cx + 9216)/32), and game-px = worldWu + 9216, so
- *     gridX*32 ≈ the parcel's game-px center. This is the same TILE_SIZE=32 /
+ *     gridX = floor((cx + 11264)/32), and game-px = worldWu + 11264 (704-tile
+ *     world), so gridX*32 ≈ the parcel's game-px center. Same TILE_SIZE=32 /
  *     OFFSET=-MAP_WIDTH/2 mapping character-positions.ts uses to place NPCs
  *     (worldWu = gridX*TILE_SIZE + OFFSET) — land-parcels.tsx renders the 3D
  *     pads from cx/cz directly, but the grid↔game-px identity is the same.

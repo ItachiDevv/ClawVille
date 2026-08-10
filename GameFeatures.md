@@ -1,7 +1,38 @@
 # ClawVille — Game Features
 
 
-**Last Audited: 2026-08-09 (Founder playtest follow-ups §5b — kelp sprint,
+**Last Audited: 2026-08-10 (Land scale-up — every plot is now estate-sized,
+and the salvage rings moved with them).** Founder-ratified plot growth. All
+three populated land rings now carry the SAME 52-tile (1664 wu) plot footprint:
+Founders' Row and Starter Cove grew from 38 tiles (+87% area); the Outer Ward
+already had 52. The rings themselves moved to make that fit (founder half-side
+190→192 t, starter 258→257 t, c 305→322 t) and plots are now distributed
+per-side with a 64-tile corner inset instead of the old even perimeter walk —
+corners stay open, and the two plots flanking each corner keep 384 wu of
+clearance. Parcel ids/codes are UNCHANGED (ownership, deeds, escrow and yard
+pieces are untouched; yard pieces are parcel-relative and slide with their
+plot). Buildings on plots also read bigger: the structure shell now targets
+0.68 of the plot side (was 0.64), which puts a Lv1 starter home at ~4× a
+character's height. NOTE: the ratified brief asked for 0.70 and for the Outer
+Ward at 60 t; both were measured infeasible — 0.70 leaves two yard pieces with
+ZERO legal founder placements (kit cells are 104 wu; the Lv5 shell would leave
+70.3 wu of clearance where path-stone needs 75.05) and 60 t overruns the world
+budget (157.44 + 8 + 52 + 12.5 + 52 + 12.5 + 60 = 354.44 t > the 352 t
+half-world). Salvage: the grown rings swallowed the old shelf/deep homes, so
+those bands moved to the two remaining 13-tile gaps (224.5 t / 289.5 t,
+tangential-only scatter) — `SALVAGE_LAYOUT_VERSION` 1→2, same 48 node ids,
+live cooldowns carry over, old idempotency keys can never replay against moved
+nodes. DB: migration `0059_land_scaleup_grid_rederive.sql` re-derives
+`land_parcels.grid_x/grid_y` for already-seeded DBs (the seed's ON CONFLICT DO
+NOTHING never updates moved centers) — spawn-at-home and the world-map markers
+read those columns. **Drift note:** shared geometry constants + salvage layout
++ one DB migration + test re-pins; no route, wire, verb, or settlement change;
+no `PROTOCOL_VERSION` bump (positions and caps are served live, shapes
+unchanged). **PARITY:** human, connected-agent and hosted-agent paths all read
+the same shared constants and the same live feeds; nothing agent-visible
+changed shape.
+
+**Prior Last Audited: 2026-08-09 (Founder playtest follow-ups §5b — kelp sprint,
 whirlpool made real, urchin spin exits straight, wider reef track).** Four
 gameplay fixes from the 2026-08-09 checkpoint playtest. **Kelp sprint:** the
 Kelp Forest now honors sprint — hold shift (or full-tilt the touch joystick on
@@ -2594,10 +2625,12 @@ See **`3dStructure.md §1`** for the full coordinate system + axis conventions, 
 ## 18c. Seabed salvage — gathering build materials (P7a/P7b, 2026-08-09)
 
 **What a player does.** Forty-eight salvage nodes sit on the seabed in three
-rings — `shallows` (16 nodes, ~2,240 wu from town centre), `shelf` (16, ~7,168
-wu), and `deep` (16, ~10,912 wu). Swim to one, hold position within 260 wu for
-two seconds, and gather. A gather pays **1-3 materials**, and the amount is
-decided by the server.
+rings — `shallows` (16 nodes, ~2,240 wu from town centre), `shelf` (16, 7,184
+wu — the gap between Founders' Row and Starter Cove), and `deep` (16, 9,264 wu
+— the gap between Starter Cove and the Outer Ward; both re-homed 2026-08-10
+when the plot growth closed the old gaps, layout v2). Swim to one, hold
+position within 260 wu for two seconds, and gather. A gather pays **1-3
+materials**, and the amount is decided by the server.
 
 **The limits, and why each exists.**
 

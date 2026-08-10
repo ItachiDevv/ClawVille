@@ -94,17 +94,26 @@ describe('SALVAGE_NODES — layout integrity', () => {
 
   it('is SCATTERED, not a lattice — the founder sees these in-world', () => {
     // A regular ring puts every node at an identical radius and an identical
-    // angular step. Both must be visibly broken, or the field reads as 48
-    // markers on a grid instead of salvage strewn on the seabed.
+    // angular step. The layout must visibly break the lattice, or the field
+    // reads as 48 markers on a grid instead of salvage strewn on the seabed.
+    //
+    // v2 (2026-08-10): only `shallows` still has RADIAL room to wander — the
+    // grown parcel rings squeezed shelf/deep into 13-tile gaps whose 200 wu
+    // node-to-parcel bar leaves ZERO radial budget (16 wu was measured to dip
+    // deep-11 to 192 wu), so their scatter is tangential-only BY DESIGN and a
+    // radial-spread assertion there would demand a clearance violation.
     for (const band of ['shallows', 'shelf', 'deep'] as const) {
       const inBand = SALVAGE_NODES.filter((n) => n.band === band);
-      // Chebyshev radius varies (radial wander).
-      const radii = inBand.map((n) => Math.max(Math.abs(n.x), Math.abs(n.z)));
-      const spread = Math.max(...radii) - Math.min(...radii);
-      expect({ band, radialSpread: spread > 50 }).toEqual({ band, radialSpread: true });
 
-      // Neighbour gaps vary (tangential wander). On an even ring every gap is
-      // identical, so the spread would be ~0.
+      if (band === 'shallows') {
+        // Chebyshev radius varies (radial wander) — shallows only.
+        const radii = inBand.map((n) => Math.max(Math.abs(n.x), Math.abs(n.z)));
+        const spread = Math.max(...radii) - Math.min(...radii);
+        expect({ band, radialSpread: spread > 50 }).toEqual({ band, radialSpread: true });
+      }
+
+      // Neighbour gaps vary (tangential wander), in EVERY band. On an even
+      // ring every gap is identical, so the spread would be ~0.
       const gaps: number[] = [];
       for (let i = 0; i < inBand.length; i++) {
         const a = inBand[i]!;

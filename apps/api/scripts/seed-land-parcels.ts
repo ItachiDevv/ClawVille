@@ -80,8 +80,14 @@ const LOG = '[seed-land-parcels]';
 // `tileX = floor((cx + HALF_MAP_WU) / TILE_SIZE)`. We deliberately re-derive
 // the two literals here (NOT import a web tilemap module) so this script has no
 // dep beyond the pure `@clawville/shared` constants. World grid = 704x704 tiles
-// (grown 576->704 2026-06-24 for the outer c ring; the new c-parcels reach cx up
-// to 9760wu -> gridX floor((9760+11264)/32)=657 < 704, in-bounds).
+// (grown 576->704 2026-06-24 for the outer c ring; after the 2026-08-10 land
+// scale-up the c ring sits at h=322t, cx up to 10304wu -> gridX
+// floor((10304+11264)/32)=674 < 704, in-bounds).
+//
+// NOTE (2026-08-10): existing rows do NOT pick up moved centers from this seed
+// (ON CONFLICT DO NOTHING). Migration 0059_land_scaleup_grid_rederive.sql
+// re-derives grid_x/grid_y for already-seeded DBs; keep it in sync with any
+// future geometry change.
 // ---------------------------------------------------------------------------
 const TILE_SIZE = 32; // wu per tile (== TILE_SIZE in land-parcels.ts)
 const HALF_MAP_WU = (704 / 2) * TILE_SIZE; // 11264 wu — grid half-width
